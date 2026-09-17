@@ -1,0 +1,203 @@
+{
+    "Main Function (int)": {
+        "prefix": "main",
+        "body": [
+            "func main(): int {",
+            "\t$0",
+            "\treturn 0",
+            "}"
+        ],
+        "description": "Main entrypoint function returning int"
+    },
+    "Main Function (void)": {
+        "prefix": "mainv",
+        "body": [
+            "public func main(): void {",
+            "\t$0",
+            "}"
+        ],
+        "description": "Public main entrypoint function returning void"
+    },
+    "Function Declaration": {
+        "prefix": ["func", "fn"],
+        "body": [
+            "func ${1:name}(${2:params}): ${3:void} {",
+            "\t$0",
+            "}"
+        ],
+        "description": "Declare a function"
+    },
+    "Public Function Declaration": {
+        "prefix": ["public func", "pfunc", "pfn"],
+        "body": [
+            "public func ${1:name}(${2:params}): ${3:void} {",
+            "\t$0",
+            "}"
+        ],
+        "description": "Declare a public exported function"
+    },
+    "Let Variable": {
+        "prefix": "let",
+        "body": "let ${1:name} = ${2:value}",
+        "description": "Declare an immutable variable"
+    },
+    "Let Typed Variable": {
+        "prefix": "lett",
+        "body": "let ${1:name}: ${2:i32} = ${3:value}",
+        "description": "Declare an immutable typed variable"
+    },
+    "Let Mutable Variable": {
+        "prefix": ["let mut", "letm"],
+        "body": "let mut ${1:name} = ${2:value}",
+        "description": "Declare a mutable variable"
+    },
+    "Let Mutable Typed Variable": {
+        "prefix": "letmt",
+        "body": "let mut ${1:name}: ${2:i32} = ${3:value}",
+        "description": "Declare a mutable typed variable"
+    },
+    "If Condition": {
+        "prefix": "if",
+        "body": [
+            "if ${1:condition} {",
+            "\t$0",
+            "}"
+        ],
+        "description": "If conditional block"
+    },
+    "If Else Condition": {
+        "prefix": ["ifelse", "ife"],
+        "body": [
+            "if ${1:condition} {",
+            "\t$2",
+            "} else {",
+            "\t$0",
+            "}"
+        ],
+        "description": "If-else conditional block"
+    },
+    "Else If Condition": {
+        "prefix": ["elif", "else if"],
+        "body": [
+            "else if ${1:condition} {",
+            "\t$0",
+            "}"
+        ],
+        "description": "Else-if conditional branch"
+    },
+    "While Loop": {
+        "prefix": "while",
+        "body": [
+            "while ${1:condition} {",
+            "\t$0",
+            "}"
+        ],
+        "description": "While loop"
+    },
+    "For In Loop": {
+        "prefix": "for",
+        "body": [
+            "for ${1:item} in ${2:iterable} {",
+            "\t$0",
+            "}"
+        ],
+        "description": "For-in loop"
+    },
+    "Match Expression": {
+        "prefix": "match",
+        "body": [
+            "match ${1:expr} {",
+            "\t${2:pattern} => {",
+            "\t\t$3",
+            "\t}",
+            "\t_ => {",
+            "\t\t$0",
+            "\t}",
+            "}"
+        ],
+        "description": "Pattern matching expression"
+    },
+    "Struct Declaration": {
+        "prefix": "struct",
+        "body": [
+            "struct ${1:Name} {",
+            "\t${2:field}: ${3:int}",
+            "}"
+        ],
+        "description": "Declare a data structure"
+    },
+    "Enum Declaration": {
+        "prefix": "enum",
+        "body": [
+            "enum ${1:Name} {",
+            "\t${2:Variant}",
+            "}"
+        ],
+        "description": "Declare an algebraic enum"
+    },
+    "Interface Declaration": {
+        "prefix": "interface",
+        "body": [
+            "interface ${1:Name} {",
+            "\tfunc ${2:method}(${3:params}): ${4:void}",
+            "}"
+        ],
+        "description": "Declare an interface contract"
+    },
+    "Impl Block": {
+        "prefix": "impl",
+        "body": [
+            "impl ${1:Interface} for ${2:Type} {",
+            "\t$0",
+            "}"
+        ],
+        "description": "Implement an interface or methods for a type"
+    },
+    "Defer Statement": {
+        "prefix": "defer",
+        "body": "defer ${1:cleanup}()",
+        "description": "Defer execution until enclosing function returns"
+    },
+    "Defer Block": {
+        "prefix": "deferb",
+        "body": [
+            "defer {",
+            "\t$0",
+            "}"
+        ],
+        "description": "Defer a block of statements until enclosing function returns"
+    },
+    "Errdefer Block": {
+        "prefix": "errdefer",
+        "body": [
+            "errdefer {",
+            "\t$0",
+            "}"
+        ],
+        "description": "Defer a block executed only on error exit"
+    },
+    "Print Line": {
+        "prefix": ["println", "pl"],
+        "body": "io.println(\"${1:message}\")",
+        "description": "Print message to standard output with newline"
+    },
+    "Import IO": {
+        "prefix": ["impio", "import io"],
+        "body": "import io",
+        "description": "Import standard I/O module"
+    },
+    "Test Function": {
+        "prefix": ["test", "testfunc"],
+        "body": [
+            "func test_${1:feature}(): void {",
+            "\t$0",
+            "}"
+        ],
+        "description": "Declare a test function (discovered by arandu test)"
+    },
+    "Module Declaration": {
+        "prefix": ["mod", "module"],
+        "body": "module ${1:path.to.module}",
+        "description": "Declare module header"
+    }
+}

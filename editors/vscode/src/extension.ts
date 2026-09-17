@@ -11,6 +11,8 @@ import {
 } from 'vscode-languageclient/node';
 import { discoverServer } from './serverDiscovery';
 import { CrashRestartPolicy } from './serverLifecycle';
+import { registerRunnableCodeLens } from './runnableLens';
+import { checkServerVersion } from './serverVersion';
 import { TestingIntegration, createTestingIntegration } from './testing';
 
 const STOP_TIMEOUT_MS = 2_000;
@@ -82,6 +84,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<Arandu
 
     testingIntegration = createTestingIntegration(context, fileWatcher, traceOutputChannel);
     context.subscriptions.push(testingIntegration);
+    context.subscriptions.push(
+        registerRunnableCodeLens(context, testingIntegration, traceOutputChannel)
+    );
 
     await restartLanguageServer(context, fileWatcher);
     return process.env.ARANDU_LSP_TEST_ALLOW_CRASH === '1'
@@ -123,20 +128,23 @@ async function startLanguageServer(
         extensionPath: context.extensionPath
     });
     if (!result.resolution) {
-        setStatus('missing', result.failure.message);
         traceOutputChannel?.error(result.failure.message);
         for (const candidate of result.failure.checked) {
             traceOutputChannel?.debug(`Checked ${candidate}`);
         }
-        const action = await vscode.window.showErrorMessage(result.failure.message, 'Open Settings');
-        if (action === 'Open Settings') {
-            await vscode.commands.executeCommand('workbench.action.openSettings', 'arandu.server.path');
-        }
+        await reportMissingServer(result.failure.message);
         return;
     }
 
+    const version = await checkServerVersion(result.resolution.command);
+    if (!version.ok) {
+        await reportMissingServer(
+            `The Arandu Language Server found at ${result.resolution.command} (via ${result.resolution.source}) does not respond to --version. The binary may be damaged or not be arandu-lsp.`
+        );
+        return;
+    }
     traceOutputChannel?.info(
-        `Starting ${result.resolution.command} (discovered via ${result.resolution.source})`
+        `Starting Arandu Language Server ${version.output.trim()} (discovered via ${result.resolution.source})`
     );
     const packageInfo = context.extension.packageJSON as { version?: unknown };
     const extensionVersion = typeof packageInfo.version === 'string' ? packageInfo.version : 'unknown';
@@ -269,6 +277,19 @@ async function handleCrashLoopAction(
     } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error);
         traceOutputChannel?.error(`Failed to handle crash recovery action: ${message}`);
+    }
+}
+
+async function reportMissingServer(message: string): Promise<void> {
+    setStatus('missing', message);
+    traceOutputChannel?.error(message);
+    const action = await vscode.window.showErrorMessage(message, 'Install SDK', 'Open Settings');
+    if (action === 'Install SDK') {
+        await vscode.env.openExternal(
+            vscode.Uri.parse('https://github.com/arandu-lang/arandu#readme')
+        );
+    } else if (action === 'Open Settings') {
+        await vscode.commands.executeCommand('workbench.action.openSettings', 'arandu.server.path');
     }
 }
 

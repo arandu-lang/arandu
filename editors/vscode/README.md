@@ -17,8 +17,10 @@ published in the [LSP and editor support matrix](https://github.com/arandu-lang/
 
 ## Requirements
 
-This extension requires the `arandu-lsp` language server binary to be compiled on your system.
-To compile it from the root of the repository:
+Release VSIX packages embed the `arandu-lsp` language server binary for the
+host platform, so installed builds need no separate SDK setup. For development
+from this repository the server must be compiled:
+
 ```bash
 cargo build -p arandu_lsp
 ```
@@ -36,7 +38,7 @@ To load and run this extension locally for testing or development:
 
 You can customize the extension via your VS Code Settings:
 
-* `arandu.server.path`: Absolute path to the `arandu-lsp` executable. If null, the extension will automatically look up the binary under your workspace's `target/debug/arandu-lsp` or under the global `PATH`.
+* `arandu.server.path`: Absolute path to the `arandu-lsp` executable. If null, the extension looks up the binary in this order: the workspace's/repository's `target/{release,debug}` directory, the `arandu-lsp` server bundled in the VSIX (`bin/`), and finally the `PATH`. The resolved binary is validated with `--version` before the server starts.
 * `arandu.trace.server`: Log detail level for tracing communication between VS Code and the server (`off`, `messages`, or `verbose`).
 
 Formatting on save is intentionally disabled by default. Enable it only for

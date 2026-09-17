@@ -22,6 +22,9 @@ pub struct ManifestData {
     pub toolchain_requirement: Option<String>,
     pub binary_target: Option<ManifestTarget>,
     pub library_target: Option<ManifestTarget>,
+    pub component_target: Option<ManifestTarget>,
+    pub target_type: Option<String>,
+    pub wasm: Option<WasmConfig>,
     pub capabilities: CapabilityPolicy,
     pub effect_policy: EffectPolicy,
     /// Dependency requirements, ordered by import alias. Resolution lands in P4.
@@ -51,6 +54,7 @@ pub enum PackageKind {
     Binary,
     Library,
     Mixed,
+    Component,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,12 +109,22 @@ impl ManifestData {
                 exports: BTreeMap::new(),
             }),
             library_target: None,
+            component_target: None,
+            target_type: None,
+            wasm: None,
             capabilities: CapabilityPolicy::default(),
             effect_policy: EffectPolicy::default(),
             dependencies: BTreeMap::new(),
             workspace: None,
         }
     }
+}
+
+/// WebAssembly specific configuration declared in `[wasm]` section of manifest.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct WasmConfig {
+    pub memory_initial_pages: Option<u32>,
+    pub enable_threads: Option<bool>,
 }
 
 /// Result of filesystem discovery before the manifest enters Salsa.

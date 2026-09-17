@@ -32,7 +32,10 @@ impl ParseError {
             code,
             message: message.into().into_boxed_str(),
             span: token.span(file_id),
-            found: token.kind.display_with(token, source).into_boxed_str(),
+            found: token
+                .kind
+                .user_facing_display(token, source)
+                .into_boxed_str(),
             expected: &[],
         }
     }
@@ -51,7 +54,10 @@ impl ParseError {
             code,
             message: message.into().into_boxed_str(),
             span: token.span(file_id),
-            found: token.kind.display_with(token, source).into_boxed_str(),
+            found: token
+                .kind
+                .user_facing_display(token, source)
+                .into_boxed_str(),
             expected,
         }
     }
@@ -106,16 +112,7 @@ impl From<ParseError> for arandu_diagnostics::Diagnostic {
                 arandu_diagnostics::DiagCode::P001UnexpectedToken
             }
         };
-        let msg = if err.expected.is_empty() {
-            format!("{} (found {})", err.message, err.found)
-        } else {
-            format!(
-                "{} (expected {}, found {})",
-                err.message,
-                err.expected.join(" or "),
-                err.found
-            )
-        };
+        let msg = format!("{} (found {})", err.message, err.found);
         arandu_diagnostics::Diagnostic::error(diag_code, msg, err.span)
     }
 }

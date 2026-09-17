@@ -207,14 +207,19 @@ func main() {
                     _ => None,
                 })
                 .collect();
-            // Both fields of Container (b and a in reverse order) must be destroyed!
+            // Both fields of Container (b and a in reverse order) must be
+            // destroyed, then the container's own storage is released.
             assert_eq!(
                 destroys.len(),
-                2,
-                "composite struct without explicit destructor must destroy its 2 destructible fields"
+                3,
+                "composite without explicit destructor must destroy its 2 fields and its own storage"
             );
             assert_eq!(destroys[0].projections.len(), 1);
             assert_eq!(destroys[1].projections.len(), 1);
+            assert!(
+                destroys[2].projections.is_empty(),
+                "the composite's own cell must be released last"
+            );
         }
     }
 }
@@ -266,11 +271,19 @@ func main() {
             _ => None,
         })
         .collect();
-    assert_eq!(destroys.len(), 1, "only the live sibling needs drop glue");
+    assert_eq!(
+        destroys.len(),
+        2,
+        "the live sibling and the composite's own storage need drop glue"
+    );
     let AmirProjection::Field(field) = destroys[0].projections[0] else {
         panic!("remaining drop must target a named field")
     };
     assert_eq!(tc.symbols.get(field).name, "b");
+    assert!(
+        destroys[1].projections.is_empty(),
+        "the partially-moved composite's own cell must still be released"
+    );
 }
 
 #[test]

@@ -3,7 +3,10 @@ mod interfaces;
 mod module_import;
 mod types;
 
-use super::{Attribute, ParseError, ParseErrorCode, Parser, TokenKind, TopLevelDecl, Visibility};
+use super::{
+    Attribute, ParseError, ParseErrorCode, Parser, TokenKind, TopLevelDecl, Visibility,
+    user_facing_token_name,
+};
 use crate::{ExprId, ExprKind};
 
 impl<'a> Parser<'a> {
@@ -200,7 +203,7 @@ impl<'a> Parser<'a> {
             }
             return Err(ParseError::new(
                 ParseErrorCode::ExpectedToken,
-                "expected item before GT",
+                format!("expected item before {}", user_facing_token_name("GT")),
                 self.current(),
                 self.file_id,
                 self.source,
@@ -221,7 +224,10 @@ impl<'a> Parser<'a> {
         if items.len() < min_items {
             return Err(ParseError::new(
                 ParseErrorCode::ExpectedToken,
-                format!("expected at least {min_items} item(s) before GT"),
+                format!(
+                    "expected at least {min_items} item(s) before {}",
+                    user_facing_token_name("GT")
+                ),
                 self.current(),
                 self.file_id,
                 self.source,
@@ -246,7 +252,7 @@ impl<'a> Parser<'a> {
             }
             return Err(ParseError::new(
                 ParseErrorCode::ExpectedToken,
-                format!("expected item before {end_name}"),
+                format!("expected item before {}", user_facing_token_name(end_name)),
                 self.current(),
                 self.file_id,
                 self.source,
@@ -267,7 +273,10 @@ impl<'a> Parser<'a> {
         if items.len() < min_items {
             return Err(ParseError::new(
                 ParseErrorCode::ExpectedToken,
-                format!("expected at least {min_items} item(s) before {end_name}"),
+                format!(
+                    "expected at least {min_items} item(s) before {}",
+                    user_facing_token_name(end_name)
+                ),
                 self.current(),
                 self.file_id,
                 self.source,

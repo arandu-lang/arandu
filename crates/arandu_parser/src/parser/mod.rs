@@ -463,7 +463,7 @@ impl<'a> Parser<'a> {
         }
         Err(ParseError::expected(
             ParseErrorCode::ExpectedToken,
-            format!("expected {name}"),
+            format!("expected {}", user_facing_token_name(name)),
             self.current(),
             self.file_id,
             self.source,
@@ -525,7 +525,7 @@ impl<'a> Parser<'a> {
         }
         Err(ParseError::expected(
             ParseErrorCode::ExpectedToken,
-            "expected GT",
+            format!("expected {}", user_facing_token_name("GT")),
             self.current(),
             self.file_id,
             self.source,
@@ -541,7 +541,7 @@ impl<'a> Parser<'a> {
             let name = kind.name();
             Err(ParseError::expected(
                 ParseErrorCode::ExpectedToken,
-                format!("expected {name}"),
+                format!("expected {}", user_facing_token_name(name)),
                 self.current(),
                 self.file_id,
                 self.source,
@@ -844,12 +844,23 @@ static TOKEN_INFO_TABLE: [TokenInfo; TokenKind::COUNT] = {
     table
 };
 
+pub(super) fn user_facing_token_name(name: &str) -> &'static str {
+    token_expectation_names(name)
+        .first()
+        .copied()
+        .unwrap_or("token")
+}
+
 pub(super) fn token_expectation_names(name: &str) -> &'static [&'static str] {
     match name {
+        // Punctuation and symbol spellings (never the internal kind name).
+        "AMP" => &["&"],
+        "ARROW" => &["->"],
         "AT" => &["@"],
         "COLON" => &[":"],
         "COMMA" => &[","],
         "DOT" => &["."],
+        "ELLIPSIS" => &["..."],
         "EQUAL" => &["="],
         "FAT_ARROW" => &["=>"],
         "GT" => &[">"],
@@ -858,14 +869,54 @@ pub(super) fn token_expectation_names(name: &str) -> &'static [&'static str] {
         "LBRACKET" => &["["],
         "LPAREN" => &["("],
         "LT" => &["<"],
+        "PIPE" => &["|"],
+        "PLUS" => &["+"],
+        "QUESTION" => &["?"],
+        "RANGE_EXCLUSIVE" => &[".."],
+        "RANGE_INCLUSIVE" => &["..="],
         "RBRACKET" => &["]"],
         "RPAREN" => &[")"],
+        "EOF" => &["end of file"],
         "SEMICOLON" => &["statement terminator"],
-        "STRING_END" => &["string end"],
+        "STRING_END" => &["end of string"],
         "STRING_START" => &["string literal"],
+        // Keywords and type keywords spell their source text.
+        "KW_AS" => &["as"],
+        "KW_ASYNC" => &["async"],
+        "KW_BREAK" => &["break"],
+        "KW_CONST" => &["const"],
+        "KW_CONTINUE" => &["continue"],
+        "KW_DEFER" => &["defer"],
+        "KW_ELSE" => &["else"],
+        "KW_ENUM" => &["enum"],
+        "KW_ERRDEFER" => &["errdefer"],
+        "KW_EXTERN" => &["extern"],
+        "KW_FOR" => &["for"],
         "KW_FROM" => &["from"],
         "KW_FUNC" => &["func"],
+        "KW_IF" => &["if"],
+        "KW_IMPL" => &["impl"],
+        "KW_IMPORT" => &["import"],
+        "KW_IN" => &["in"],
+        "KW_INTERFACE" => &["interface"],
+        "KW_IS" => &["is"],
+        "KW_LET" => &["let"],
+        "KW_MATCH" => &["match"],
         "KW_MODULE" => &["module"],
+        "KW_MUT" => &["mut"],
+        "KW_OWN" => &["own"],
+        "KW_PTR" => &["ptr"],
+        "KW_PUBLIC" => &["public"],
+        "KW_REF" => &["ref"],
+        "KW_RETURN" => &["return"],
+        "KW_SELF" => &["self"],
+        "KW_SET" => &["set"],
+        "KW_SHARED" => &["shared"],
+        "KW_STRUCT" => &["struct"],
+        "KW_TYPE" => &["type"],
+        "KW_UNSAFE" => &["unsafe"],
+        "KW_WHERE" => &["where"],
+        "KW_WHILE" => &["while"],
         _ => &["token"],
     }
 }

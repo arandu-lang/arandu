@@ -331,6 +331,7 @@ pub fn semantic_manifest_fingerprint(manifest: &ManifestData) -> String {
             PackageKind::Binary => "binary",
             PackageKind::Library => "library",
             PackageKind::Mixed => "mixed",
+            PackageKind::Component => "component",
         },
     );
     push_component(
@@ -341,6 +342,7 @@ pub fn semantic_manifest_fingerprint(manifest: &ManifestData) -> String {
     for (kind, target) in [
         ("bin", manifest.binary_target.as_ref()),
         ("lib", manifest.library_target.as_ref()),
+        ("component", manifest.component_target.as_ref()),
     ] {
         if let Some(target) = target {
             push_component(&mut canonical, &format!("target.{kind}.name"), &target.name);

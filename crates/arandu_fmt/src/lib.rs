@@ -45,10 +45,58 @@ pub fn format_edits(source: &str) -> Vec<TextEdit> {
     if formatted == source {
         return Vec::new();
     }
+    edits_between(source, &formatted)
+}
+
+/// Format only the top-level items whose text range intersects
+/// `[start, end]` (byte offsets), returning line-local edits that never leave
+/// those items.
+#[must_use]
+pub fn format_edits_in_range(source: &str, start: u32, end: u32) -> Vec<TextEdit> {
+    let tree = parse_syntax(source);
+    if !tree.lex_diagnostics().is_empty() {
+        return Vec::new();
+    }
+    let end = end.min(source.len() as u32);
+    let mut edits = Vec::new();
+    for item in tree.items() {
+        let r = item.text_range();
+        let item_start = u32::from(r.start());
+        let item_end = u32::from(r.end());
+        if item_start >= end || start >= item_end {
+            continue;
+        }
+        let s = item_start as usize;
+        let e = (item_end as usize).min(source.len()).max(s);
+        let item_src = &source[s..e];
+        let mut formatted = format_source(item_src);
+        if !item_src.ends_with('\n') {
+            formatted = formatted
+                .strip_suffix('\n')
+                .map(str::to_owned)
+                .unwrap_or(formatted);
+        }
+        if formatted.is_empty() || formatted == item_src {
+            continue;
+        }
+        edits.extend(
+            edits_between(item_src, &formatted)
+                .into_iter()
+                .map(|mut edit| {
+                    edit.start += item_start;
+                    edit.end += item_start;
+                    edit
+                }),
+        );
+    }
+    edits
+}
+
+fn edits_between(source: &str, formatted: &str) -> Vec<TextEdit> {
     let source_lines = source.split_inclusive('\n').collect::<Vec<_>>();
     let formatted_lines = formatted.split_inclusive('\n').collect::<Vec<_>>();
     if source_lines.len() != formatted_lines.len() {
-        return minimal_edit(source, &formatted, 0).into_iter().collect();
+        return minimal_edit(source, formatted, 0).into_iter().collect();
     }
 
     let mut edits = Vec::new();
@@ -143,21 +191,25 @@ fn reindent_item(item_src: &str) -> String {
     let mut in_string = false;
     let mut in_char = false;
     let mut escaped = false;
+    let mut block_comment = false;
 
     let mut lines_iter = item_src.lines().peekable();
+    let mut emitted_any = false;
     while let Some(line) = lines_iter.next() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
-            if lines_iter.peek().is_some() {
+            if emitted_any && lines_iter.peek().is_some() {
                 out.push('\n');
             }
             continue;
         }
+        emitted_any = true;
+        let formatted = format_colons(trimmed, &mut block_comment);
 
         // Decrease depth for lines that start with `}` before indenting.
         let mut leading_closes = 0;
         if !in_string && !in_char {
-            for c in trimmed.chars() {
+            for c in formatted.chars() {
                 if c == '}' {
                     leading_closes += 1;
                 } else if c.is_whitespace() {
@@ -172,11 +224,11 @@ fn reindent_item(item_src: &str) -> String {
         for _ in 0..indent_depth {
             out.push_str("    ");
         }
-        out.push_str(trimmed);
+        out.push_str(&formatted);
         out.push('\n');
 
         // Update depth from full line braces, ignoring strings, characters, and comments.
-        let mut chars = trimmed.chars().peekable();
+        let mut chars = formatted.chars().peekable();
         while let Some(ch) = chars.next() {
             if escaped {
                 escaped = false;
@@ -216,6 +268,108 @@ fn reindent_item(item_src: &str) -> String {
         out.pop();
     }
     out
+}
+
+/// Normalize spacing around `:` (type annotations, struct literal keys, variant
+/// payloads, generic constraints): no space before, exactly one space after.
+/// Skips string/char literals, line comments and `/* */` block comments.
+/// `block_comment` carries across lines so `:` inside a multiline block comment
+/// is preserved verbatim.
+fn format_colons(line: &str, block_comment: &mut bool) -> String {
+    let mut out = String::with_capacity(line.len() + 4);
+    let mut in_string = false;
+    let mut in_char = false;
+    let mut escaped = false;
+    let mut in_block = *block_comment;
+    let mut chars = line.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if in_block {
+            out.push(ch);
+            if ch == '*' && chars.peek() == Some(&'/') {
+                out.push('/');
+                chars.next();
+                in_block = false;
+            }
+            continue;
+        }
+        if escaped {
+            out.push(ch);
+            escaped = false;
+            continue;
+        }
+        if in_string || in_char {
+            match ch {
+                '\\' => {
+                    out.push(ch);
+                    escaped = true;
+                }
+                '"' if !in_char => {
+                    in_string = !in_string;
+                    out.push(ch);
+                }
+                '\'' if !in_string => {
+                    in_char = !in_char;
+                    out.push(ch);
+                }
+                _ => out.push(ch),
+            }
+            continue;
+        }
+        match ch {
+            '"' => {
+                in_string = true;
+                out.push(ch);
+            }
+            '\'' => {
+                in_char = true;
+                out.push(ch);
+            }
+            '/' if chars.peek() == Some(&'/') => {
+                out.push_str("//");
+                chars.next();
+                out.extend(chars);
+                break;
+            }
+            '/' if chars.peek() == Some(&'*') => {
+                out.push_str("/*");
+                chars.next();
+                in_block = true;
+            }
+            ':' => {
+                trim_trailing_horizontal_ws(&mut out);
+                out.push(':');
+                while matches!(chars.peek(), Some(' ') | Some('\t')) {
+                    chars.next();
+                }
+                let needs_space = !matches!(
+                    chars.peek(),
+                    None | Some(&')')
+                        | Some(&']')
+                        | Some(&'}')
+                        | Some(&',')
+                        | Some(&';')
+                        | Some(&':')
+                );
+                if needs_space {
+                    out.push(' ');
+                }
+            }
+            _ => out.push(ch),
+        }
+    }
+
+    *block_comment = in_block;
+    out
+}
+
+fn trim_trailing_horizontal_ws(out: &mut String) {
+    let bytes = out.as_bytes();
+    let mut end = bytes.len();
+    while end > 0 && matches!(bytes[end - 1], b' ' | b'\t') {
+        end -= 1;
+    }
+    out.truncate(end);
 }
 
 fn normalize_whitespace(source: &str) -> String {
@@ -352,6 +506,22 @@ mod tests {
     }
 
     #[test]
+    fn excess_blank_lines_between_items_collapse_to_one_idempotently() {
+        let src = "func a(): int {\nreturn 1\n}\n\n\n\n\nfunc b(): int {\nreturn 2\n}\n";
+        let out = format_source(src);
+        let once = format_source(&out);
+        assert_eq!(out, once, "formatting must be idempotent:\n{out}");
+        let lines: Vec<&str> = out.split('\n').collect();
+        let brace_i = lines.iter().position(|l| l.ends_with('}')).unwrap();
+        let func_b_i = lines.iter().position(|l| l.starts_with("func b")).unwrap();
+        assert_eq!(
+            func_b_i - brace_i,
+            2,
+            "exactly one blank line must separate items:\n{out}"
+        );
+    }
+
+    #[test]
     fn format_edits_empty_when_stable() {
         let src = "func main(): int {\n    return 1\n}\n";
         assert!(format_edits(src).is_empty());
@@ -404,11 +574,98 @@ mod tests {
     }
 
     #[test]
+    fn format_edits_in_range_never_escapes_the_covered_items() {
+        let src = concat!(
+            "struct Pair {\n",
+            "left:int\n",
+            "right:int\n",
+            "}\n",
+            "func main(): int {\n",
+            "return 1   \n",
+            "}\n",
+        );
+        let struct_end = src.find("func main").unwrap() as u32;
+        let edits = format_edits_in_range(src, 0, struct_end - 1);
+        assert!(!edits.is_empty(), "the struct must be reformatted");
+        for edit in &edits {
+            assert!(
+                edit.end <= struct_end,
+                "edit crossed the covered item boundary: {edit:?}"
+            );
+        }
+        let mut applied = src.to_string();
+        for edit in edits.iter().rev() {
+            applied.replace_range(edit.start as usize..edit.end as usize, &edit.new_text);
+        }
+        assert!(
+            applied.contains("func main(): int {\nreturn 1   \n}"),
+            "range formatting must not touch the untouched item:\n{applied}"
+        );
+        assert!(
+            applied.contains("struct Pair {\n    left: int\n    right: int\n}"),
+            "struct must be reindented:\n{applied}"
+        );
+    }
+
+    #[test]
     fn formatting_preserves_annotation_spelling() {
         let canonical = "@NoFallback\nfunc main() {}\n";
         let legacy = "@no_fallback\nfunc main() {}\n";
         assert!(format_source(canonical).contains("@NoFallback"));
         assert!(format_source(legacy).contains("@no_fallback"));
+    }
+
+    #[test]
+    fn colon_spacing_is_normalized_outside_literals_and_comments() {
+        let src = concat!(
+            "struct Pair{\n",
+            "left    :int\n",
+            "right:    int\n",
+            "}\n",
+            "func main(): str {\n",
+            "/* keep  q:w\n",
+            "   r:t */\n",
+            "let s = \"a:b\"\n",
+            "let c = ':'\n",
+            "let t = \"c:\" // x:y\n",
+            "return s\n",
+            "}\n",
+        );
+        let out = format_source(src);
+        assert!(parses_clean(&out), "formatted must parse:\n{out}");
+        assert!(
+            out.contains("struct Pair{\n    left: int\n    right: int\n}"),
+            "{out}"
+        );
+        assert!(out.contains("func main(): str {"), "{out}");
+        assert!(
+            out.contains("let s = \"a:b\""),
+            "colon in string must be kept:\n{out}"
+        );
+        assert!(
+            out.contains("let c = ':'"),
+            "colon in char must be kept:\n{out}"
+        );
+        assert!(
+            out.contains("let t = \"c:\" // x:y"),
+            "comment must be kept:\n{out}"
+        );
+        assert!(
+            out.contains("keep  q:w"),
+            "block comment must be kept:\n{out}"
+        );
+        assert!(
+            out.contains("   r:t */"),
+            "block comment must be kept:\n{out}"
+        );
+        let once = format_source(src);
+        assert_eq!(once, format_source(&once), "must be idempotent");
+    }
+
+    #[test]
+    fn colon_spacing_keeps_tight_colon_after_closers() {
+        let out = format_source("func f() : int{\nreturn 1\n}\n");
+        assert!(out.contains("func f(): int{"), "{out}");
     }
 
     fn apply_edits(source: &str, edits: &[TextEdit]) -> String {

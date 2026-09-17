@@ -1,7 +1,7 @@
 ---
 version: 0.0.1
 last_revised: 2026-06
-compiler_version: arandu 0.1.0-rc.6
+compiler_version: arandu 0.1.7
 ---
 
 # Especificação e Catálogo de Diagnósticos de Erro do Arandu

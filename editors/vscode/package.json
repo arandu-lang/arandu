@@ -2,7 +2,7 @@
     "name": "arandu-lang",
     "displayName": "Arandu Language Support",
     "description": "VS Code support for the Arandu Programming Language",
-    "version": "0.1.0",
+    "version": "0.1.7",
     "publisher": "arandu",
     "license": "MIT",
     "preview": true,

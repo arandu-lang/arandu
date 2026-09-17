@@ -1,8 +1,10 @@
 //! References, document highlights, folding ranges, and selection ranges.
 
 use arandu_base::LineIndex;
-use arandu_middle::NodeKey;
+use arandu_middle::types::ArType;
+use arandu_middle::{NodeKey, SymbolId};
 use arandu_query::{AnalysisSnapshot, SourceFile};
+use arandu_semantics::TypeCheckResult;
 use lsp_types::{
     DocumentHighlight, DocumentHighlightKind, FoldingRange, FoldingRangeKind, Location, Position,
     SelectionRange, Uri,
@@ -10,6 +12,44 @@ use lsp_types::{
 
 use super::presentation::{symbol_at, typecheck};
 use crate::conv::{position_to_offset, span_to_range};
+
+/// Type symbol targeted by "goto type definition" for `symbol`.
+///
+/// When the cursor sits on a type usage the type symbol is the symbol itself;
+/// for values it is the underlying named type (unwrapping nullable/slice/
+/// array/pointer/reference/result carriers).
+#[must_use]
+pub fn type_definition_symbol(tc: &TypeCheckResult, symbol: SymbolId) -> Option<SymbolId> {
+    let kind = tc.symbols.try_get(symbol)?.kind;
+    if kind.is_type() {
+        return Some(symbol);
+    }
+    let ty = tc.type_info.decl_type(symbol)?;
+    named_type_symbol(tc, &ty)
+}
+
+fn named_type_symbol(tc: &TypeCheckResult, ty: &ArType) -> Option<SymbolId> {
+    use arandu_middle::types::ArType::*;
+    match ty {
+        Named(id, _) => Some(*id),
+        Nullable(inner)
+        | Slice(inner)
+        | Array(_, inner)
+        | Ptr(inner)
+        | Ref(inner)
+        | RefMut(inner)
+        | Coroutine(inner)
+        | Poll(inner)
+        | Range(inner)
+        | Option(inner) => named_type_symbol(tc, &tc.type_info.type_interner.resolve(*inner)),
+        Result(ok, err) => {
+            let ok_ty = tc.type_info.type_interner.resolve(*ok);
+            named_type_symbol(tc, &ok_ty)
+                .or_else(|| named_type_symbol(tc, &tc.type_info.type_interner.resolve(*err)))
+        }
+        _ => None,
+    }
+}
 
 #[must_use]
 pub fn references(

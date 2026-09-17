@@ -95,6 +95,116 @@ pub fn layout(project_root: &Path, profile: &str) -> ArtifactLayout {
     }
 }
 
+pub fn layout_for_target(project_root: &Path, profile: &str, triple: &str) -> ArtifactLayout {
+    let target_root = project_root.join("target");
+    let profile_root = target_root.join(profile).join(triple);
+    let bin = profile_root.join("bin");
+    let deps = profile_root.join("deps");
+    let incremental = profile_root.join("incremental");
+    ArtifactLayout {
+        target_root,
+        profile_root,
+        bin,
+        deps,
+        incremental,
+        triple: triple.to_string(),
+    }
+}
+
+pub fn publish_wasm_artifact(
+    project_root: &Path,
+    package: &str,
+    version: &str,
+    profile: NativeProfile,
+    triple: &str,
+    wasm_bytes: &[u8],
+) -> Result<PublishedNativeArtifact, CliFailure> {
+    let layout = layout_for_target(project_root, profile.directory(), triple);
+    for directory in [&layout.bin, &layout.deps, &layout.incremental] {
+        fs::create_dir_all(directory)
+            .map_err(|error| failure("create artifact layout", directory, error))?;
+    }
+    let lock_path = layout.profile_root.join(".publish.lock");
+    let publish_lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(|error| failure("open build publication lock", &lock_path, error))?;
+    publish_lock
+        .lock()
+        .map_err(|error| failure("lock build publication", &lock_path, error))?;
+    atomic_write(
+        &layout.target_root.join(TARGET_MARKER),
+        b"arandu-target-v1\n",
+    )?;
+
+    let digest = blake3::hash(wasm_bytes).to_hex().to_string();
+    let dep_artifact_name = format!("{package}-{}.wasm", &digest[..16]);
+    let dep_artifact_path = layout.deps.join(&dep_artifact_name);
+    atomic_write(&dep_artifact_path, wasm_bytes)?;
+
+    let wasm_file_name = format!("{package}.wasm");
+    let published_path = layout.bin.join(&wasm_file_name);
+    atomic_write(&published_path, wasm_bytes)?;
+
+    let profile_bin = layout
+        .target_root
+        .join(profile.directory())
+        .join(&wasm_file_name);
+    let _ = atomic_write(&profile_bin, wasm_bytes);
+
+    let relative = format!("bin/{wasm_file_name}");
+    let dep_relative = format!("deps/{dep_artifact_name}");
+    let state = BuildState {
+        schema: 2,
+        package,
+        version,
+        profile: profile.directory(),
+        target: triple,
+        backend: "wasm",
+        artifact_digest: &digest,
+        compiler_version: crate::project::ARANDU_VERSION,
+        artifact: &relative,
+        object: &dep_relative,
+        linker: "wasm-encoder",
+    };
+    let mut encoded = serde_json::to_vec_pretty(&state).map_err(|error| {
+        CliFailure::operational("serialize build provenance", None, error.to_string())
+    })?;
+    encoded.push(b'\n');
+    atomic_replace(&layout.profile_root.join("build-state.json"), &encoded)?;
+    Ok(PublishedNativeArtifact {
+        path: published_path,
+        digest,
+    })
+}
+
+#[allow(dead_code)]
+pub fn current_wasm_artifact(
+    project_root: &Path,
+    profile: NativeProfile,
+    triple: &str,
+) -> Option<PublishedNativeArtifact> {
+    let layout = layout_for_target(project_root, profile.directory(), triple);
+    let state_path = layout.profile_root.join("build-state.json");
+    let bytes = fs::read(&state_path).ok()?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let relative = value.get("artifact")?.as_str()?;
+    let digest = value.get("artifact_digest")?.as_str()?;
+    let artifact_path = layout.profile_root.join(relative);
+    let wasm_bytes = fs::read(&artifact_path).ok()?;
+    if !wasm_bytes.is_empty() && blake3::hash(&wasm_bytes).to_hex().as_str() == digest {
+        Some(PublishedNativeArtifact {
+            path: artifact_path,
+            digest: digest.to_string(),
+        })
+    } else {
+        None
+    }
+}
+
 pub fn publish_native_artifact(
     project_root: &Path,
     package: &str,

@@ -46,3 +46,41 @@ void test('format on save is opt-in and Arandu owns its manual formatter', () =>
     assert.equal(defaults?.['editor.defaultFormatter'], 'arandu.arandu-lang');
     assert.equal(defaults?.['editor.formatOnSave'], false);
 });
+
+void test('arandu snippets are registered in manifest and define core constructs', () => {
+    const root = path.resolve(__dirname, '..', '..', '..');
+    const manifestPath = path.join(root, 'package.json');
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as {
+        contributes?: {
+            snippets?: Array<{
+                language: string;
+                path: string;
+            }>;
+        };
+    };
+    const snippetsEntry = manifest.contributes?.snippets?.find((s) => s.language === 'arandu');
+    assert.ok(snippetsEntry, 'snippets entry for arandu must be declared in package.json');
+    assert.equal(snippetsEntry.path, './snippets/arandu.json');
+
+    const snippetsFilePath = path.resolve(root, snippetsEntry.path);
+    assert.ok(fs.existsSync(snippetsFilePath), 'snippets/arandu.json must exist');
+
+    const snippets = JSON.parse(fs.readFileSync(snippetsFilePath, 'utf8')) as Record<
+        string,
+        { prefix: string | string[]; body: string | string[]; description?: string }
+    >;
+
+    for (const expectedKey of [
+        'Main Function (int)',
+        'Function Declaration',
+        'Let Variable',
+        'While Loop',
+        'If Condition',
+        'Struct Declaration',
+        'Enum Declaration',
+        'Print Line'
+    ]) {
+        assert.ok(snippets[expectedKey], `Snippet '${expectedKey}' must be present in snippets/arandu.json`);
+    }
+});
+

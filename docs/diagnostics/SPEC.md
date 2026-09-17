@@ -1,7 +1,7 @@
 ---
 version: 0.0.1
 last_revised: 2026-06
-compiler_version: arandu 0.1.0-rc.6
+compiler_version: arandu 0.1.7
 ---
 
 # Especificação e Catálogo de Diagnósticos de Erro do Arandu
@@ -193,7 +193,7 @@ Abaixo estão listados todos os diagnósticos mapeados para o compilador Arandu.
 
 | Código | Mensagem Principal no Compilador | Severidade Padrão | Introduzido em | Descrição e Contexto |
 | :--- | :--- | :--- | :--- | :--- |
-| **P001** | `unexpected token: expected '{expected}', found '{found}'` | Error | `0.1.0` | Erro geral do parser Pratt indicando que um token específico era esperado mas outro foi encontrado. |
+| **P001** |  `'{expectation}' (found '{found}')` no formato `expected … (found …)` | Error | `0.1.0` | Erro geral do parser Pratt indicando que um token específico era esperado mas outro foi encontrado. A mensagem usa grafia voltada ao usuário (ex: `expected = (found Mensagem)`), nunca nomes internos de tokens (`EQUAL`/`IDENT_TYPE`). |
 | **P002** | `unclosed block: expected '}', found EOF` | Error | `0.1.0` | Um bloco `{ ... }` ou escopo de função foi aberto mas nunca fechado no final do arquivo. |
 | **P003** | `invalid assignment operator: '{op}'` | Error | `0.1.0` | Uso de operador de atribuição inválido ou malformado na gramática. |
 | **P004** | `expected identifier, found '{token}'` | Error | `0.1.0` | O parser esperava encontrar um nome (identificador de variável/função) mas encontrou uma palavra-chave ou símbolo. |

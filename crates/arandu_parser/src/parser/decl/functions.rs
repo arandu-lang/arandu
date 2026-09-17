@@ -64,20 +64,24 @@ impl<'a> Parser<'a> {
 
     pub(in crate::parser) fn parse_abi_literal(&mut self) -> Result<SmolStr, ParseError> {
         self.expect_name("STRING_START")?;
-        let abi = match &self.current().kind {
-            TokenKind::StringText => {
-                let text = SmolStr::new(self.current_text());
-                self.advance();
-                text
-            }
-            _ => {
-                return Err(ParseError::new(
-                    ParseErrorCode::ExpectedToken,
-                    "expected static ABI string",
-                    self.current(),
-                    self.file_id,
-                    self.source,
-                ));
+        let abi = if self.at_kind_name("STRING_END") {
+            SmolStr::default()
+        } else {
+            match &self.current().kind {
+                TokenKind::StringText => {
+                    let text = SmolStr::new(self.current_text());
+                    self.advance();
+                    text
+                }
+                _ => {
+                    return Err(ParseError::new(
+                        ParseErrorCode::ExpectedToken,
+                        "expected static ABI string",
+                        self.current(),
+                        self.file_id,
+                        self.source,
+                    ));
+                }
             }
         };
         self.expect_name("STRING_END")?;

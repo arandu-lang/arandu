@@ -15,6 +15,7 @@ mod manifest_io;
 mod pipeline;
 mod project;
 mod test_runner;
+mod wasm_opt;
 mod watch;
 
 use std::env;

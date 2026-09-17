@@ -4,7 +4,7 @@ use std::path::Path;
 
 use super::model::{
     CapabilityPolicy, EffectPolicy, ManifestData, ManifestDependency, ManifestEdition,
-    ManifestError, ManifestTarget, ManifestWorkspace, PackageKind,
+    ManifestError, ManifestTarget, ManifestWorkspace, PackageKind, WasmConfig,
 };
 use super::schema::{LegacyManifest, ManifestSchema, RawDependency};
 use super::validate::{validate_relative_path, validate_schema};
@@ -38,22 +38,34 @@ pub fn parse_manifest_str(path: &Path, text: &str) -> Result<ManifestData, Manif
         validate_schema(path, &manifest)?;
         let binary_target = manifest.targets.bin.map(ManifestTarget::from);
         let library_target = manifest.targets.lib.map(ManifestTarget::from);
-        let Some(primary_target) = binary_target.as_ref().or(library_target.as_ref()) else {
+        let component_target = manifest.targets.component.map(ManifestTarget::from);
+        let target_type = manifest.package.target_type.clone();
+        let is_component =
+            target_type.as_deref() == Some("component") || component_target.is_some();
+        let Some(primary_target) = binary_target
+            .as_ref()
+            .or(library_target.as_ref())
+            .or(component_target.as_ref())
+        else {
             return Err(ManifestError::MissingField {
                 path: path.to_path_buf(),
-                field: "targets.bin or targets.lib",
+                field: "targets.bin, targets.lib, or targets.component",
             });
         };
         let primary_root = primary_target.root.clone();
-        let kind = match (binary_target.is_some(), library_target.is_some()) {
-            (true, false) => PackageKind::Binary,
-            (false, true) => PackageKind::Library,
-            (true, true) => PackageKind::Mixed,
-            (false, false) => {
-                return Err(ManifestError::MissingField {
-                    path: path.to_path_buf(),
-                    field: "targets.bin or targets.lib",
-                });
+        let kind = if is_component {
+            PackageKind::Component
+        } else {
+            match (binary_target.is_some(), library_target.is_some()) {
+                (true, false) => PackageKind::Binary,
+                (false, true) => PackageKind::Library,
+                (true, true) => PackageKind::Mixed,
+                (false, false) => {
+                    return Err(ManifestError::MissingField {
+                        path: path.to_path_buf(),
+                        field: "targets.bin or targets.lib",
+                    });
+                }
             }
         };
         ManifestData {
@@ -66,6 +78,12 @@ pub fn parse_manifest_str(path: &Path, text: &str) -> Result<ManifestData, Manif
             toolchain_requirement: manifest.toolchain.map(|toolchain| toolchain.arandu),
             binary_target,
             library_target,
+            component_target,
+            target_type,
+            wasm: manifest.wasm.map(|w| WasmConfig {
+                memory_initial_pages: w.memory_initial_pages,
+                enable_threads: w.enable_threads,
+            }),
             capabilities: CapabilityPolicy {
                 network: manifest.capabilities.network,
                 filesystem_read: manifest.capabilities.filesystem_read,

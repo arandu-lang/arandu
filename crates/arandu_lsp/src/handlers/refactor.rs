@@ -67,6 +67,23 @@ pub(super) fn formatting(
     });
 }
 
+pub(super) fn range_formatting(
+    ctx: &mut HandlerCtx<'_>,
+    id: RequestId,
+    params: lsp_types::DocumentRangeFormattingParams,
+) {
+    let uri = params.text_document.uri;
+    let range = params.range;
+    dispatcher::spawn_json(ctx.state, ctx.pool, ctx.job_tx, id, move |snap, docs| {
+        let Some(info) = docs.get(uri.as_str()) else {
+            return serde_json::Value::Null;
+        };
+        let text = info.source.text(&snap.db);
+        let edits = ide::format_range(text, range);
+        serde_json::to_value(edits).unwrap_or(serde_json::Value::Null)
+    });
+}
+
 pub(super) fn code_actions(
     ctx: &mut HandlerCtx<'_>,
     id: RequestId,

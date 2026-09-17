@@ -21,6 +21,7 @@ pub const ARANDU_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub enum TargetKind {
     Bin,
     Lib,
+    Component,
 }
 
 impl TargetKind {
@@ -29,6 +30,7 @@ impl TargetKind {
         match self {
             Self::Bin => "bin",
             Self::Lib => "lib",
+            Self::Component => "component",
         }
     }
 }
@@ -72,6 +74,7 @@ pub struct ProjectFlags {
     /// Explicit authority to publish a changed graph containing remote code.
     pub accept_lock: bool,
     pub color: crate::args::ColorChoice,
+    pub target: Option<String>,
 }
 
 /// Parse `--stdlib-path=…` / `--stdlib-path …` / `--release` / `-v` from leftover args.
@@ -143,6 +146,18 @@ pub fn parse_project_flags(args: &[String]) -> Result<(ProjectFlags, Vec<String>
             return Err(format!(
                 "unknown --color option: '{v}' (use auto|always|never)"
             ));
+        } else if let Some(v) = a.strip_prefix("--target=") {
+            if v.is_empty() {
+                return Err("--target requires a target triple argument".into());
+            }
+            flags.target = Some(v.to_string());
+        } else if a == "--target" {
+            i += 1;
+            if i < args.len() {
+                flags.target = Some(args[i].clone());
+            } else {
+                return Err("--target requires a target triple argument".into());
+            }
         } else {
             rest.push(a.clone());
         }
@@ -269,7 +284,12 @@ pub fn load_project(
     let name = data.name.clone();
     let version = data.version.clone();
     let entry_rel = data.entry.clone();
-    let target_kind = if data.binary_target.is_some() {
+    let target_kind = if data.kind == arandu_query::PackageKind::Component
+        || data.target_type.as_deref() == Some("component")
+        || data.component_target.is_some()
+    {
+        TargetKind::Component
+    } else if data.binary_target.is_some() {
         TargetKind::Bin
     } else {
         TargetKind::Lib

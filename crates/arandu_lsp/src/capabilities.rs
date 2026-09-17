@@ -9,11 +9,12 @@ use lsp_server::Connection;
 use lsp_types::{
     CodeActionOptions, CodeActionProviderCapability, CompletionOptions, FileOperationFilter,
     FileOperationPattern, FileOperationPatternKind, FileOperationRegistrationOptions,
-    FoldingRangeProviderCapability, HoverProviderCapability, InitializeResult, OneOf,
-    PositionEncodingKind, RenameOptions, SelectionRangeProviderCapability,
-    SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensServerCapabilities,
-    ServerCapabilities, ServerInfo, SignatureHelpOptions, TextDocumentSyncCapability,
-    TextDocumentSyncKind, WorkDoneProgressOptions, WorkspaceFileOperationsServerCapabilities,
+    FoldingRangeProviderCapability, HoverProviderCapability, InitializeResult, InlayHintOptions,
+    InlayHintServerCapabilities, OneOf, PositionEncodingKind, RenameOptions,
+    SelectionRangeProviderCapability, SemanticTokensFullOptions, SemanticTokensOptions,
+    SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo, SignatureHelpOptions,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TypeDefinitionProviderCapability,
+    WorkDoneProgressOptions, WorkspaceFileOperationsServerCapabilities,
     WorkspaceServerCapabilities,
 };
 use std::error::Error;
@@ -69,6 +70,7 @@ pub(crate) fn initialize_connection(
             TextDocumentSyncKind::INCREMENTAL,
         )),
         definition_provider: Some(OneOf::Left(true)),
+        type_definition_provider: Some(TypeDefinitionProviderCapability::Simple(true)),
         hover_provider: Some(HoverProviderCapability::Simple(true)),
         completion_provider: Some(CompletionOptions {
             resolve_provider: Some(false),
@@ -98,7 +100,14 @@ pub(crate) fn initialize_connection(
                 work_done_progress_options: WorkDoneProgressOptions::default(),
             },
         )),
+        inlay_hint_provider: Some(OneOf::Right(InlayHintServerCapabilities::Options(
+            InlayHintOptions {
+                work_done_progress_options: WorkDoneProgressOptions::default(),
+                resolve_provider: None,
+            },
+        ))),
         document_formatting_provider: Some(OneOf::Left(true)),
+        document_range_formatting_provider: Some(OneOf::Left(true)),
         code_action_provider: Some(CodeActionProviderCapability::Options(CodeActionOptions {
             code_action_kinds: Some(vec![lsp_types::CodeActionKind::QUICKFIX]),
             work_done_progress_options: WorkDoneProgressOptions::default(),

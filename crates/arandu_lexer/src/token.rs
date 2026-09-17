@@ -558,6 +558,52 @@ impl TokenKind {
         }
     }
 
+    /// Renders the token as it should appear in user-facing error messages.
+    ///
+    /// Unlike [`display_with`](TokenKind::display_with), this never leaks
+    /// parser-internal kind names (`EQUAL`, `IDENT_TYPE(...)`, `KW_FUNC`): idents
+    /// and literals keep their source spelling, punctuation renders as its symbol
+    /// and keywords as the keyword text.
+    #[must_use]
+    pub fn user_facing_display(self, token: &Token, source: &str) -> String {
+        match self {
+            TokenKind::IdentValue
+            | TokenKind::IdentType
+            | TokenKind::IntDec
+            | TokenKind::IntHex
+            | TokenKind::IntBin
+            | TokenKind::IntOct
+            | TokenKind::Float => token.lexeme(source).to_string(),
+            TokenKind::DocComment => "documentation comment".to_string(),
+            TokenKind::StringText | TokenKind::StringEscape => "string content".to_string(),
+            TokenKind::InterpStart | TokenKind::InterpEnd => "string interpolation".to_string(),
+            TokenKind::StringEnd | TokenKind::MultilineStringEnd => "end of string".to_string(),
+            TokenKind::RawString | TokenKind::StringStart | TokenKind::MultilineStringStart => {
+                "string literal".to_string()
+            }
+            TokenKind::Char => {
+                let content = token.char_content(source);
+                if content.is_empty() {
+                    "character literal".to_string()
+                } else {
+                    content.to_string()
+                }
+            }
+            TokenKind::Eof => "end of file".to_string(),
+            TokenKind::Error(_) => "invalid character".to_string(),
+            // Punctuation, keywords and type keywords spell the source lexeme
+            // (e.g. `=`, `{`, `func`, `int`), so no internal name ever surfaces.
+            other => {
+                let lexeme = token.lexeme(source);
+                if lexeme.is_empty() {
+                    other.name().to_string()
+                } else {
+                    lexeme.to_string()
+                }
+            }
+        }
+    }
+
     #[must_use]
     pub const fn name(&self) -> &'static str {
         match self {

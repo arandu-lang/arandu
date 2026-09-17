@@ -451,8 +451,13 @@ pub(super) fn synth_binary_unary_expr(
                             (right_ty_id, left_id)
                         };
                         let value_ty = checker.resolve(value_ty_id);
-                        let ok = matches!(value_ty, ArType::Nullable(_) | ArType::Option(_))
-                            || value_ty.is_error();
+                        let ok = matches!(
+                            value_ty,
+                            ArType::Nullable(_)
+                                | ArType::Option(_)
+                                | ArType::Ptr(_)
+                                | ArType::GenRef
+                        ) || value_ty.is_error();
                         if ok {
                             // Re-record nil with the value's type so HIR is consistent.
                             checker.record_expr_type(nil_expr, value_ty_id);

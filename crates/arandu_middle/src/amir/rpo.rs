@@ -1,7 +1,25 @@
 use super::{AmirFunc, BlockId};
 
+/// Reverse post-order over the CFG, listing each block's successors in their
+/// original terminator order.
 #[must_use]
 pub fn reverse_post_order(func: &AmirFunc) -> Vec<BlockId> {
+    rpo_traverse(func, false)
+}
+
+/// Reverse post-order that keeps natural loop bodies before their exits.
+///
+/// Successors are enumerated in reverse terminator order during the DFS, so a
+/// loop-exit target listed last by a terminator is visited first and therefore
+/// ends up *after* the loop body in the resulting order. Stackifiers that close
+/// a `loop` scope as soon as the body's maximum rank is passed (such as the
+/// wasm backend) depend on exits having strictly higher ranks than the body.
+#[must_use]
+pub fn reverse_post_order_body_first(func: &AmirFunc) -> Vec<BlockId> {
+    rpo_traverse(func, true)
+}
+
+fn rpo_traverse(func: &AmirFunc, reverse_successors: bool) -> Vec<BlockId> {
     let n = func.blocks.len();
     if n == 0 {
         return Vec::new();
@@ -13,9 +31,17 @@ pub fn reverse_post_order(func: &AmirFunc) -> Vec<BlockId> {
     let mut stack = vec![(entry, 0usize)];
     visited[0] = true;
     // Keep each suspended DFS frame explicit: CFG depth must not consume the
-    // host thread's call stack. Advance successors in their original order.
+    // host thread's call stack.
     while let Some((block, next_successor)) = stack.last_mut() {
-        if let Some(&successor) = func.successors(*block).get(*next_successor) {
+        let successors = func.successors(*block);
+        let successor_index = if reverse_successors {
+            successors
+                .len()
+                .wrapping_sub(next_successor.wrapping_add(1))
+        } else {
+            *next_successor
+        };
+        if let Some(&successor) = successors.get(successor_index) {
             *next_successor += 1;
             let index = successor.as_usize();
             if index < n && !visited[index] {
@@ -163,6 +189,52 @@ mod tests {
         ]);
         assert_eq!(
             reverse_post_order(&func),
+            (0..4).map(BlockId::from_usize).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn rpo_body_first_keeps_loop_body_before_exit() {
+        // bb0 -> bb1; bb1 →(true) bb2, →(false) bb3; bb2 -> bb1; bb3 -> return
+        let func = make_func(vec![
+            make_block(0, &[1]),
+            make_block(1, &[2, 3]),
+            make_block(2, &[1]),
+            make_block(3, &[]),
+        ]);
+        let body_first = reverse_post_order_body_first(&func);
+        assert_eq!(
+            body_first,
+            vec![
+                BlockId::from_usize(0),
+                BlockId::from_usize(1),
+                BlockId::from_usize(2),
+                BlockId::from_usize(3),
+            ]
+        );
+        let plain = reverse_post_order(&func);
+        assert_eq!(
+            plain,
+            vec![
+                BlockId::from_usize(0),
+                BlockId::from_usize(1),
+                BlockId::from_usize(3),
+                BlockId::from_usize(2),
+            ]
+        );
+    }
+
+    #[test]
+    fn rpo_body_first_keeps_if_else_blocks_in_terminator_order() {
+        // bb0 →(true) bb1, →(false) bb2; both jump to bb3; bb3 -> return
+        let func = make_func(vec![
+            make_block(0, &[1, 2]),
+            make_block(1, &[3]),
+            make_block(2, &[3]),
+            make_block(3, &[]),
+        ]);
+        assert_eq!(
+            reverse_post_order_body_first(&func),
             (0..4).map(BlockId::from_usize).collect::<Vec<_>>()
         );
     }

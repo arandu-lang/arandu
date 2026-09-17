@@ -21,9 +21,10 @@ use crate::state::ServerState;
 use lsp_server::{Connection, ErrorCode, Notification, Request};
 use lsp_types::request::{
     CodeActionRequest, Completion, DocumentHighlightRequest, DocumentSymbolRequest,
-    FoldingRangeRequest, Formatting, GotoDefinition, HoverRequest, PrepareRenameRequest,
-    References, Rename, Request as _, SelectionRangeRequest, SemanticTokensFullRequest,
-    SemanticTokensRangeRequest, SignatureHelpRequest, WorkspaceSymbolRequest,
+    FoldingRangeRequest, Formatting, GotoDefinition, GotoTypeDefinition, HoverRequest,
+    InlayHintRequest, PrepareRenameRequest, RangeFormatting, References, Rename, Request as _,
+    SelectionRangeRequest, SemanticTokensFullRequest, SemanticTokensRangeRequest,
+    SignatureHelpRequest, WorkspaceSymbolRequest,
 };
 use std::error::Error;
 
@@ -43,6 +44,7 @@ pub(crate) fn dispatch_request(
     if matches!(
         req.method.as_str(),
         GotoDefinition::METHOD
+            | GotoTypeDefinition::METHOD
             | HoverRequest::METHOD
             | Completion::METHOD
             | References::METHOD
@@ -57,7 +59,9 @@ pub(crate) fn dispatch_request(
             | SemanticTokensFullRequest::METHOD
             | SemanticTokensRangeRequest::METHOD
             | Formatting::METHOD
+            | RangeFormatting::METHOD
             | CodeActionRequest::METHOD
+            | InlayHintRequest::METHOD
     ) {
         dispatcher::flush_for_request(ctx.state, ctx.pool, ctx.job_tx);
     }
@@ -67,6 +71,16 @@ pub(crate) fn dispatch_request(
             let (id, params) =
                 req.extract::<lsp_types::GotoDefinitionParams>(GotoDefinition::METHOD)?;
             nav::goto_definition(ctx, id, params);
+        }
+        GotoTypeDefinition::METHOD => {
+            let (id, params) =
+                req.extract::<lsp_types::GotoDefinitionParams>(GotoTypeDefinition::METHOD)?;
+            nav::type_definition(ctx, id, params);
+        }
+        InlayHintRequest::METHOD => {
+            let (id, params) =
+                req.extract::<lsp_types::InlayHintParams>(InlayHintRequest::METHOD)?;
+            hover_completion::inlay_hints(ctx, id, params);
         }
         HoverRequest::METHOD => {
             let (id, params) = req.extract::<lsp_types::HoverParams>(HoverRequest::METHOD)?;
@@ -134,6 +148,11 @@ pub(crate) fn dispatch_request(
             let (id, params) =
                 req.extract::<lsp_types::DocumentFormattingParams>(Formatting::METHOD)?;
             refactor::formatting(ctx, id, params);
+        }
+        RangeFormatting::METHOD => {
+            let (id, params) =
+                req.extract::<lsp_types::DocumentRangeFormattingParams>(RangeFormatting::METHOD)?;
+            refactor::range_formatting(ctx, id, params);
         }
         CodeActionRequest::METHOD => {
             let (id, params) =

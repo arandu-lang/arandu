@@ -56,3 +56,20 @@ pub(super) fn signature_help(
         }
     });
 }
+
+pub(super) fn inlay_hints(
+    ctx: &mut HandlerCtx<'_>,
+    id: RequestId,
+    params: lsp_types::InlayHintParams,
+) {
+    let uri = params.text_document.uri;
+    let range = params.range;
+    dispatcher::spawn_json(ctx.state, ctx.pool, ctx.job_tx, id, move |snap, docs| {
+        let Some(info) = docs.get(uri.as_str()) else {
+            return serde_json::Value::Null;
+        };
+        let text = info.source.text(&snap.db);
+        let hints = ide::inlay_hints(snap, info.source, text, range);
+        serde_json::to_value(hints).unwrap_or(serde_json::Value::Null)
+    });
+}

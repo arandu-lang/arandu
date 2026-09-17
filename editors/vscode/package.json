@@ -2,7 +2,7 @@
     "name": "arandu-lang",
     "displayName": "Arandu Language Support",
     "description": "VS Code support for the Arandu Programming Language",
-    "version": "0.1.0-rc.6",
+    "version": "0.1.7",
     "publisher": "arandu",
     "license": "MIT",
     "preview": true,
@@ -58,8 +58,14 @@
         "grammars": [
             {
                 "language": "arandu",
-                "scopeName": "source.arandu",
-                "path": "./syntaxes/arandu.tmLanguage.json"
+                "path": "./syntaxes/arandu.tmLanguage.json",
+                "scopeName": "source.arandu"
+            }
+        ],
+        "snippets": [
+            {
+                "language": "arandu",
+                "path": "./snippets/arandu.json"
             }
         ],
         "configuration": {
@@ -72,7 +78,7 @@
                         "null"
                     ],
                     "default": null,
-                    "description": "Absolute path to the arandu-lsp executable. If null, the extension will attempt to find it in the PATH or the workspace target/ directory."
+                    "description": "Absolute path to the arandu-lsp executable. When null, the extension checks the workspace/repository target build, the arandu-lsp server bundled in this VSIX, and finally the PATH."
                 },
                 "arandu.cli.path": {
                     "type": [
@@ -113,6 +119,14 @@
             {
                 "command": "arandu.refreshTests",
                 "title": "Arandu: Refresh Tests"
+            },
+            {
+                "command": "arandu.runProject",
+                "title": "Arandu: Run Project"
+            },
+            {
+                "command": "arandu.checkProject",
+                "title": "Arandu: Check Project"
             },
             {
                 "command": "arandu.runBenchmark",

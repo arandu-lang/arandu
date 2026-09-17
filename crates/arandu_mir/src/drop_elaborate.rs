@@ -90,6 +90,15 @@ fn emit_recursive_drops(
                     emit_recursive_drops(&sub_place, fty, type_info, move_state, false, rebuilt);
                 }
             }
+
+            // The composite has no explicit destructor, so its own storage is
+            // still a cleanup obligation: the fields were walked above and the
+            // root comes last. Backends whose aggregates live in frames treat
+            // this `Destroy` as a no-op; a backend that owns heap storage (the
+            // wasm cell model) reclaims the cell here.
+            if !has_destructor {
+                rebuilt.push(AmirStmt::Destroy(place.clone()));
+            }
         }
     }
 }

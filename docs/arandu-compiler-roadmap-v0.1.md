@@ -167,6 +167,26 @@ e interoperabilidade nativa com o padrão Apache Arrow.
 | SCI.3 — Arandu Compute | `planned` | Motor de consultas preguiçosas (*lazy query engine*). Representação de planos lógicos desacoplada com otimizador puro em pipeline: predicate pushdown, projection pushdown, slice pushdown e simplificação de expressões. Motor de execução física colunar em streaming chunked com controle estrito de RSS para datasets maiores que a memória RAM. |
 | SCI.4 — Arandu Science | `planned` | Matrizes esparsas com ciclo de vida segregado: `CooBuilder` para construção dinâmica mutável e `CsrMatrix`/`CscMatrix`/`BsrMatrix` para computação imutável de alto desempenho. Algoritmos de grafos e redes complexas implementados via álgebra linear esparsa e semirings (padrão GraphBLAS: SpMV, SpGEMM). Transformada rápida de Fourier baseada no modelo de planos reutilizáveis (FFTW: `Plan.estimate` vs `Plan.measure`). Geradores de números pseudo-aleatórios counter-based (Philox) e PCG desacoplados de distribuições, sem estado global mutável e compatíveis com paralelismo determinístico. Solvers para EDOs e processamento digital de sinais. |
 
+### Trilha de IntelliSense, IDE e Playground — consolidação
+
+A direção é uma única engine de análise neutra compartilhada pelo servidor de
+linguagem e pelo playground wasm, apoiada no pipeline CST-first resiliente
+([RFC 0010](./rfcs/0010-cst-resilient-ide-typeck.md)) e no backend Component
+Model ([RFC 0014](./rfcs/0014-native-wasm-component-model-and-runtime.md)).
+Os itens abaixo consolidam desempenho, paridade de apresentação e tooling; não
+criam sintaxe, não relaxam o `parse` estrito e não introduzem uma API de editor
+paralela. O compilador continua retornando erro no primeiro diagnóstico; apenas
+o caminho IDE analisa o programa recuperado.
+
+| Item | Estado | Corpo funcional e critério de saída |
+| --- | --- | --- |
+| IDE.1 — Sessão de análise quente no wasm | `planned` | Manter uma `AnalysisHost` viva no playground e aplicar edições incrementais em vez de reconstruir a DB a cada request de completion. Critério: orçamento de latência documentado no host de referência e itens semânticos idênticos aos do caminho atual. |
+| IDE.2 — Memoização por item do typeck recuperado | `planned` | Aproveitar os memos por item no fallback que analisa um buffer com erro de sintaxe (hoje resolve/checa por request). Critério: cutoff comprovado entre edições que não alteram o item, sem acumular diagnósticos nem tocar `parse`/`type_check`. |
+| IDE.3 — `sortText`/`filterText` alinhados ao cliente | `partial` | Mapear o rank neutro para `sortText` e `filterText` estáveis no LSP e no Monaco. Critério: ordem determinística idêntica entre os dois clientes para o mesmo buffer. |
+| IDE.4 — Hover e signature help sobre apresentação única | `planned` | Consumir a apresentação de tipos, assinaturas e doc comments no hover e no signature help dos dois clientes. Critério: mesma assinatura ativa e nenhum `SymbolId`/`Debug` de IR exposto ao usuário. |
+| IDE.5 — Alinhamento ao marco de typed holes | `planned` | Aproximar a superfície IDE do marco de typed holes listado acima: tipos, completion e hover durante código incompleto, com execução ainda bloqueada. Critério: nenhum caminho de execução aceita programa com holes. |
+| IDE.6 — Build wasm reprodutível e site | `planned` | Automatizar o build do playground fora do host (override das flags de linker globais e perfil sem debug info) e manter o site consumindo o artefato com `astro check` limpo ou exceções justificadas. Critério: um comando reproduz o `.wasm` de ~4 MB e o site o publica sem edição manual. |
+
 ### Resíduos que continuam abertos
 
 - GenRef R0 possui casca pública congelada ([RFC 0001](./rfcs/0001-generational-fallback-genref.md))

@@ -9,6 +9,7 @@ pub mod vcs;
 
 pub use doctor::cmd_doctor;
 pub use load::{
-    ARANDU_VERSION, BackendChoice, ProjectContext, ProjectFlags, load_project, parse_project_flags,
+    ARANDU_VERSION, BackendChoice, ProjectContext, ProjectFlags, TargetKind, load_project,
+    parse_project_flags,
 };
 pub use scaffold::{cmd_init, cmd_new, parse_scaffold_options};

@@ -59,6 +59,49 @@ void test('PATH fallback returns the resolved executable instead of a blind comm
     assert.equal(result.resolution?.source, 'path');
 });
 
+void test('bundled server binaries take precedence over PATH', (): void => {
+    const extensionPath = fixture();
+    const bundled = makeExecutable(
+        path.join(extensionPath, 'bin', bundledServerName())
+    );
+    const result = discoverServer({
+        configuredPath: null,
+        workspaceRoots: [],
+        extensionPath,
+        environment: { PATH: fixture() }
+    });
+    assert.equal(result.resolution?.command, bundled);
+    assert.equal(result.resolution?.source, 'bundle');
+});
+
+void test('missing bundled server falls back to PATH with an actionable failure', (): void => {
+    const extensionPath = fixture();
+    const bin = fixture();
+    const executable = makeExecutable(path.join(bin, serverName()));
+    const result = discoverServer({
+        configuredPath: null,
+        workspaceRoots: [],
+        extensionPath,
+        environment: { PATH: bin }
+    });
+    assert.equal(result.resolution?.command, executable);
+    assert.equal(result.resolution?.source, 'path');
+    const allFailed = discoverServer({
+        configuredPath: null,
+        workspaceRoots: [],
+        extensionPath,
+        environment: { PATH: fixture() }
+    });
+    assert.ok(allFailed.failure);
+    assert.match(allFailed.failure.message, /bundled/);
+    assert.ok(
+        allFailed.failure.checked.some(candidate =>
+            candidate.startsWith(path.join(extensionPath, 'bin'))
+        ),
+        'the bundled candidates must be reported as checked'
+    );
+});
+
 function fixture(): string {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'arandu-vscode-test-'));
     fixtures.push(directory);
@@ -76,4 +119,8 @@ function makeExecutable(file: string): string {
 
 function serverName(): string {
     return process.platform === 'win32' ? 'arandu-lsp.exe' : 'arandu-lsp';
+}
+
+function bundledServerName(): string {
+    return process.platform === 'win32' ? 'arandu-lsp-win32.exe' : `arandu-lsp-${process.platform}`;
 }

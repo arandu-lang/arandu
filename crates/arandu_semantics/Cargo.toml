@@ -1,6 +1,6 @@
 [package]
 name = "arandu_semantics"
-version = "0.1.0-rc.6"
+version = "0.1.7"
 edition = "2024"
 license.workspace = true
 authors.workspace = true

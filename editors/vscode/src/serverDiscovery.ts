@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-export type ServerSource = 'configuration' | 'workspace' | 'development' | 'path';
+export type ServerSource = 'configuration' | 'workspace' | 'development' | 'bundle' | 'path';
 
 export interface ServerResolution {
     readonly command: string;
@@ -67,15 +67,39 @@ export function discoverServer(options: ServerDiscoveryOptions): ServerDiscovery
         }
     }
 
+    const bundled = findBundledServer(options.extensionPath, platform, checked);
+    if (bundled) {
+        return success(bundled, 'bundle');
+    }
+
     const fromPath = findOnPath(executable, environment, platform, checked);
     if (fromPath) {
         return success(fromPath, 'path');
     }
 
     return failure(
-        'Could not find arandu-lsp. Install the Arandu SDK or configure arandu.server.path.',
+        'Could not find an arandu-lsp server. Checked the configured path, the ' +
+            'workspace/repository target builds, the server bundled in this VSIX, and the PATH. ' +
+            'Install the Arandu SDK or set arandu.server.path.',
         checked
     );
+}
+
+function findBundledServer(
+    extensionPath: string,
+    platform: NodeJS.Platform,
+    checked: string[]
+): string | undefined {
+    const suffixed = platform === 'win32' ? 'arandu-lsp-win32.exe' : `arandu-lsp-${platform}`;
+    const plain = platform === 'win32' ? 'arandu-lsp.exe' : 'arandu-lsp';
+    for (const name of [suffixed, plain]) {
+        const candidate = path.join(extensionPath, 'bin', name);
+        checked.push(candidate);
+        if (isExecutableFile(candidate, platform)) {
+            return candidate;
+        }
+    }
+    return undefined;
 }
 
 function expandConfiguredPath(

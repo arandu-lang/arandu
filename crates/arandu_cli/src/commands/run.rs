@@ -490,6 +490,119 @@ pub fn cmd_single_file_dispatch(
                 });
                 print!("{c_src}");
             }
+            "emit-wasm" => {
+                let artifacts = pipeline_lower(&db, source_file, &filepath);
+                if genref_report {
+                    print_genref_report(&filepath, &artifacts);
+                }
+                let type_check = &artifacts.type_check;
+                let mut amir_owned = if opt {
+                    Some(artifacts.amir.clone())
+                } else {
+                    None
+                };
+                if let Some(ref mut amir) = amir_owned {
+                    arandu_base::time_pass!("optimize-amir");
+                    optimize_amir_or_exit(amir, type_check, &filepath);
+                }
+                let amir = match &amir_owned {
+                    Some(a) => a,
+                    None => &artifacts.amir,
+                };
+
+                // Wasm32 requires ptr_width=4; warn if a different layout was
+                // requested via --layout.
+                let wasm_layout = if data_layout.pointer_width() == 4 {
+                    data_layout
+                } else {
+                    tracing::warn!(
+                        "emit-wasm requires ptr_width=4 (wasm32); \
+                         ignoring requested layout ({})",
+                        data_layout.pointer_width()
+                    );
+                    arandu_middle::layout::DataLayout::ptr_width(4)
+                };
+
+                arandu_base::time_pass!("emit-wasm");
+                let wasm_bytes = arandu_backend_wasm::emit_wasm(
+                    amir,
+                    type_check.symbols.as_ref(),
+                    &type_check.type_info.type_interner,
+                    type_check.type_info.as_ref(),
+                    wasm_layout,
+                )
+                .unwrap_or_else(|diag| {
+                    print_diagnostics_and_exit(std::iter::once(diag), &filepath)
+                });
+
+                // Write bytes to stdout; callers can redirect to a .wasm file.
+                use std::io::Write;
+                std::io::stdout()
+                    .write_all(&wasm_bytes)
+                    .unwrap_or_else(|e| {
+                        fail_operational("write wasm output", None, e.to_string());
+                    });
+            }
+            "emit-component" => {
+                let artifacts = pipeline_lower(&db, source_file, &filepath);
+                if genref_report {
+                    print_genref_report(&filepath, &artifacts);
+                }
+                let type_check = &artifacts.type_check;
+                let mut amir_owned = if opt {
+                    Some(artifacts.amir.clone())
+                } else {
+                    None
+                };
+                if let Some(ref mut amir) = amir_owned {
+                    arandu_base::time_pass!("optimize-amir");
+                    optimize_amir_or_exit(amir, type_check, &filepath);
+                }
+                let amir = match &amir_owned {
+                    Some(a) => a,
+                    None => &artifacts.amir,
+                };
+
+                // Wasm32 requires ptr_width=4; warn if a different layout was
+                // requested via --layout.
+                let wasm_layout = if data_layout.pointer_width() == 4 {
+                    data_layout
+                } else {
+                    tracing::warn!(
+                        "emit-component requires ptr_width=4 (wasm32); \
+                         ignoring requested layout ({})",
+                        data_layout.pointer_width()
+                    );
+                    arandu_middle::layout::DataLayout::ptr_width(4)
+                };
+
+                // WIT package name derived from the source file stem (kebab-case).
+                let pkg_name = Path::new(&filepath)
+                    .file_stem()
+                    .map(|s| arandu_backend_wasm::wit_gen::to_wit_ident(&s.to_string_lossy()))
+                    .unwrap_or_else(|| "module".to_owned());
+
+                arandu_base::time_pass!("emit-component");
+                let component_bytes = arandu_backend_wasm::emit_component(
+                    amir,
+                    type_check.symbols.as_ref(),
+                    &type_check.type_info.type_interner,
+                    type_check.type_info.as_ref(),
+                    wasm_layout,
+                    &pkg_name,
+                )
+                .unwrap_or_else(|diag| {
+                    print_diagnostics_and_exit(std::iter::once(diag), &filepath)
+                });
+
+                // Write bytes to stdout; callers can redirect to a .wasm file.
+                use std::io::Write;
+                std::io::stdout()
+                    .write_all(&component_bytes)
+                    .unwrap_or_else(|e| {
+                        fail_operational("write component output", None, e.to_string());
+                    });
+            }
             "graph" => {
                 use arandu_query::db::ArandCompilerDb;
                 let dep_graph = arandu_query::passes::module_dependency_graph(&db, source_file);

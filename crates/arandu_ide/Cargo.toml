@@ -1,0 +1,18 @@
+[package]
+name = "arandu_ide"
+version = "0.1.7"
+edition = "2024"
+license.workspace = true
+authors.workspace = true
+description = "Editor-agnostic IDE analysis helpers (completion, presentation) shared by arandu_lsp and arandu_web"
+
+[dependencies]
+arandu_middle = { path = "../arandu_middle" }
+arandu_parser = { path = "../arandu_parser" }
+arandu_query = { path = "../arandu_query" }
+arandu_semantics = { path = "../arandu_semantics" }
+rustc-hash = { workspace = true }
+serde = { workspace = true }
+
+[lints]
+workspace = true

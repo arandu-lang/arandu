@@ -23,6 +23,8 @@ pub(super) struct ManifestSchema {
     pub(super) metadata: toml::Table,
     #[serde(default)]
     pub(super) workspace: Option<WorkspaceSection>,
+    #[serde(default)]
+    pub(super) wasm: Option<WasmSection>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -31,6 +33,8 @@ pub(super) struct PackageSection {
     pub(super) name: String,
     pub(super) version: String,
     pub(super) edition: String,
+    #[serde(rename = "target-type", default)]
+    pub(super) target_type: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -46,6 +50,8 @@ pub(super) struct TargetsSection {
     pub(super) bin: Option<TargetSection>,
     #[serde(default)]
     pub(super) lib: Option<TargetSection>,
+    #[serde(default)]
+    pub(super) component: Option<TargetSection>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -142,4 +148,13 @@ impl From<TargetSection> for ManifestTarget {
             exports: target.exports,
         }
     }
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct WasmSection {
+    #[serde(rename = "memory-initial-pages", default)]
+    pub(super) memory_initial_pages: Option<u32>,
+    #[serde(rename = "enable-threads", default)]
+    pub(super) enable_threads: Option<bool>,
 }

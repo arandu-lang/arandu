@@ -132,7 +132,7 @@ impl<'a> Parser<'a> {
         let checkpoint = self.checkpoint();
         // Optional `set` keyword (EBNF mutation form). Both
         // `set x = 1` and `x = 1` lower to the same `Stmt::Set`.
-        let _explicit_set = self.eat_name("KW_SET");
+        let explicit_set = self.eat_name("KW_SET");
         let mut places = Vec::new();
         match self.parse_place() {
             Ok(place) => {
@@ -140,7 +140,10 @@ impl<'a> Parser<'a> {
                 while self.eat_name("COMMA") {
                     match self.parse_place() {
                         Ok(p) => places.push(p),
-                        Err(_) => {
+                        Err(e) => {
+                            if explicit_set {
+                                return Some(Err(e));
+                            }
                             checkpoint.rollback(self);
                             return None;
                         }
@@ -164,13 +167,19 @@ impl<'a> Parser<'a> {
                             value,
                         })))
                     }
-                    Err(_) => {
+                    Err(e) => {
+                        if explicit_set {
+                            return Some(Err(e));
+                        }
                         checkpoint.rollback(self);
                         None
                     }
                 }
             }
-            Err(_) => {
+            Err(e) => {
+                if explicit_set {
+                    return Some(Err(e));
+                }
                 checkpoint.rollback(self);
                 None
             }

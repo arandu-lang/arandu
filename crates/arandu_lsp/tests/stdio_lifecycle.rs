@@ -239,13 +239,22 @@ impl LspProcess {
                 .and_then(Value::as_bool),
             Some(true)
         );
+        for capability in [
+            "typeDefinitionProvider",
+            "documentRangeFormattingProvider",
+            "inlayHintProvider",
+        ] {
+            assert!(
+                response
+                    .pointer(&format!("/result/capabilities/{capability}"))
+                    .is_some(),
+                "newly implemented capability must be advertised: {capability}: {response}"
+            );
+        }
         for unsupported in [
             "declarationProvider",
-            "typeDefinitionProvider",
             "implementationProvider",
-            "documentRangeFormattingProvider",
             "documentOnTypeFormattingProvider",
-            "inlayHintProvider",
             "codeLensProvider",
             "callHierarchyProvider",
             "typeHierarchyProvider",
@@ -1955,6 +1964,135 @@ fn stdio_cst_navigation_features_are_advertised_and_structured() {
         Some(2),
         "document highlights must use resolved identity: {highlights}"
     );
+    lsp.shutdown(5);
+}
+
+#[test]
+fn stdio_type_definition_inlay_hints_and_range_formatting_are_structured() {
+    let fixture = FixtureDir::new();
+
+    let typed_uri = file_uri(&fixture.path().join("typed.aru"));
+    let typed = concat!(
+        "struct Pair {\n",
+        "    left: int\n",
+        "    right: int\n",
+        "}\n",
+        "func make(): Pair {\n",
+        "    return Pair { left: 1, right: 2 }\n",
+        "}\n",
+        "func main(): int {\n",
+        "    let p = make()\n",
+        "    return p.left\n",
+        "}\n",
+    );
+
+    let fmt_uri = file_uri(&fixture.path().join("fmt.aru"));
+    let messy = "struct Pair {\nleft:int\nright:int\n}\n";
+
+    let mut lsp = LspProcess::spawn();
+    lsp.initialize(fixture.path(), 1);
+    for (uri, source) in [(typed_uri.clone(), typed), (fmt_uri.clone(), messy)] {
+        lsp.send(&json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "arandu",
+                    "version": 1,
+                    "text": source
+                }
+            }
+        }));
+    }
+    let _ = lsp.wait_for(|message| {
+        message.get("method").and_then(Value::as_str) == Some("arandu/status")
+            && message.pointer("/params/state").and_then(Value::as_str) == Some("ready")
+    });
+
+    // typeDefinition on the `p` binding resolves to the struct `Pair`.
+    lsp.send(&json!({
+        "jsonrpc": "2.0", "id": 2, "method": "textDocument/typeDefinition",
+        "params": {
+            "textDocument": { "uri": typed_uri },
+            "position": { "line": 8, "character": 8 }
+        }
+    }));
+    let type_def = lsp.wait_for_response(2);
+    assert_eq!(
+        type_def
+            .pointer("/result/range/start/line")
+            .and_then(Value::as_u64),
+        Some(0),
+        "goto type definition must land on `struct Pair`: {type_def}"
+    );
+    assert_eq!(
+        type_def.pointer("/result/uri").and_then(Value::as_str),
+        Some(typed_uri.as_str()),
+        "type definition must stay in the current document: {type_def}"
+    );
+
+    // inlayHint infers the type of the unannotated `let p`.
+    lsp.send(&json!({
+        "jsonrpc": "2.0", "id": 3, "method": "textDocument/inlayHint",
+        "params": {
+            "textDocument": { "uri": typed_uri },
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 11, "character": 0 }
+            }
+        }
+    }));
+    let hints = lsp.wait_for_response(3);
+    let hint = hints
+        .pointer("/result")
+        .and_then(Value::as_array)
+        .expect("inlay hints must be an array")
+        .iter()
+        .find(|hint| hint.pointer("/position") == Some(&json!({ "line": 8, "character": 9 })))
+        .expect("hint right after `p`");
+    assert_eq!(hint.get("kind"), Some(&json!(1)), "TYPE hints: {hint}");
+    assert_eq!(
+        hint.get("label"),
+        Some(&json!(": Pair")),
+        "hint label: {hint}"
+    );
+
+    // rangeFormatting only touches the selected struct item.
+    lsp.send(&json!({
+        "jsonrpc": "2.0", "id": 4, "method": "textDocument/rangeFormatting",
+        "params": {
+            "textDocument": { "uri": fmt_uri },
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 3, "character": 0 }
+            },
+            "options": { "tabSize": 4, "insertSpaces": true }
+        }
+    }));
+    let range_fmt = lsp.wait_for_response(4);
+    let edits = range_fmt
+        .pointer("/result")
+        .and_then(Value::as_array)
+        .expect("range formatting must return edits");
+    assert!(
+        !edits.is_empty(),
+        "range format must produce edits: {range_fmt}"
+    );
+    for edit in edits {
+        let start_line = edit
+            .pointer("/range/start/line")
+            .and_then(Value::as_u64)
+            .unwrap_or(u64::MAX);
+        let end_line = edit
+            .pointer("/range/end/line")
+            .and_then(Value::as_u64)
+            .unwrap_or(u64::MAX);
+        assert!(
+            start_line <= 3 && end_line <= 3,
+            "range formatting escaped the selected range: {edit}"
+        );
+    }
     lsp.shutdown(5);
 }
 

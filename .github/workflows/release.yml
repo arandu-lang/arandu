@@ -200,6 +200,24 @@ jobs:
         shell: bash
         run: ls -la dist/
 
+      - name: Bundle arandu-lsp server into the extension VSIX
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p editors/vscode/bin
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            cp target/release/arandu-lsp.exe editors/vscode/bin/arandu-lsp-win32.exe
+            server=editors/vscode/bin/arandu-lsp-win32.exe
+          elif [[ "$RUNNER_OS" == "macOS" ]]; then
+            cp target/release/arandu-lsp editors/vscode/bin/arandu-lsp-darwin
+            server=editors/vscode/bin/arandu-lsp-darwin
+          else
+            cp target/release/arandu-lsp editors/vscode/bin/arandu-lsp-linux
+            server=editors/vscode/bin/arandu-lsp-linux
+          fi
+          "$server" --version
+          ls -la editors/vscode/bin
+
       - name: Install package into empty prefix (Unix)
         if: runner.os != 'Windows'
         shell: bash
@@ -387,7 +405,7 @@ jobs:
       - name: Upload documentation artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: arandu-stdlib-docs
+          name: stdlib-docs
           path: dist-docs/*
           if-no-files-found: error
 
@@ -406,7 +424,7 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: release-assets
-          pattern: arandu-*
+          pattern: arandu-*-*
           merge-multiple: true
 
       - name: Validate exact set and generate aggregate manifest
@@ -429,7 +447,7 @@ jobs:
       - name: Ingest stdlib documentation archive
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: arandu-stdlib-docs
+          name: stdlib-docs
           path: release-assets
 
       - name: List final release set

@@ -15,7 +15,7 @@ pub use dominators::Dominators;
 pub use local::{AmirLocal, AmirReceiver, AmirTemp, LocalId, TempId};
 pub use program::{AmirFunc, AmirProgram};
 pub use reachability::reachable_blocks_dense;
-pub use rpo::reverse_post_order;
+pub use rpo::{reverse_post_order, reverse_post_order_body_first};
 pub use stmt::{
     AmirStmt, AmirStmtKind, AmirStmtTable, AmirTerminator, CallBorrowDependency, InstrId,
 };

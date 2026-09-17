@@ -18,6 +18,13 @@ interface DiscoveredCase {
 export interface TestingIntegration extends vscode.Disposable {
     getDiscoveredCount(): number;
     runFirstForTest(): Promise<string>;
+    /** Canonical CLI id of the discovered test whose last path segment is the
+     * given function name, or undefined when the function is not a test. */
+    getTestIdForFunction(uri: vscode.Uri, functionName: string): string | undefined;
+    /** Run the discovered test for a function and return its status string. */
+    runTestById(uri: vscode.Uri, functionName: string): Promise<string>;
+    /** Fires whenever the discovered test tree changes. */
+    readonly onDidChangeTests: vscode.Event<void>;
 }
 
 export function createTestingIntegration(
@@ -28,6 +35,8 @@ export function createTestingIntegration(
     const controller = vscode.tests.createTestController('aranduTests', 'Arandu Tests');
     const cases = new Map<string, DiscoveredCase>();
     const disposables: vscode.Disposable[] = [controller];
+    const testChanges = new vscode.EventEmitter<void>();
+    disposables.push(testChanges);
     let refreshGeneration = 0;
 
     const refresh = async (): Promise<void> => {
@@ -78,6 +87,7 @@ export function createTestingIntegration(
             cases.set(id, testCase);
         }
         controller.items.replace(roots);
+        testChanges.fire();
     };
 
     controller.refreshHandler = refresh;
@@ -137,8 +147,63 @@ export function createTestingIntegration(
                 throw new Error(result.stderr.trim() || 'Invalid Arandu test report');
             }
             return testCase.status;
-        }
+        },
+        getTestIdForFunction: (uri, functionName): string | undefined => {
+            const found = findTestForFunction(controller, cases, uri, functionName);
+            return found?.canonicalId;
+        },
+        runTestById: async (uri, functionName): Promise<string> => {
+            const found = findTestForFunction(controller, cases, uri, functionName);
+            if (!found) {
+                throw new Error(`No Arandu test discovered for function “${functionName}”`);
+            }
+            const statuses = new Map<string, string>();
+            const source = new vscode.CancellationTokenSource();
+            try {
+                await runTests(
+                    controller,
+                    cases,
+                    new vscode.TestRunRequest([found.item]),
+                    source.token,
+                    context,
+                    output,
+                    statuses
+                );
+            } finally {
+                source.dispose();
+            }
+            return statuses.get(found.item.id) ?? 'failed';
+        },
+        onDidChangeTests: testChanges.event
     };
+}
+
+interface FoundTest {
+    readonly item: vscode.TestItem;
+    readonly canonicalId: string;
+}
+
+function findTestForFunction(
+    controller: vscode.TestController,
+    cases: ReadonlyMap<string, DiscoveredCase>,
+    uri: vscode.Uri,
+    functionName: string
+): FoundTest | undefined {
+    let found: FoundTest | undefined;
+    const visit = (item: vscode.TestItem): void => {
+        const entry = cases.get(item.id);
+        if (found === undefined && entry && item.uri?.toString() === uri.toString()) {
+            const separator = entry.canonicalId.lastIndexOf('::');
+            const last = separator >= 0 ? entry.canonicalId.slice(separator + 2) : entry.canonicalId;
+            if (last === functionName) {
+                found = { item, canonicalId: entry.canonicalId };
+                return;
+            }
+        }
+        item.children.forEach(visit);
+    };
+    controller.items.forEach(visit);
+    return found;
 }
 
 async function runTests(
@@ -147,7 +212,8 @@ async function runTests(
     request: vscode.TestRunRequest,
     token: vscode.CancellationToken,
     context: vscode.ExtensionContext,
-    output: vscode.LogOutputChannel
+    output: vscode.LogOutputChannel,
+    statuses?: Map<string, string>
 ): Promise<void> {
     const run = controller.createTestRun(request);
     const selected = collectSelected(controller, cases, request);
@@ -175,6 +241,7 @@ async function runTests(
             );
             const report = parseTestReport(result.stdout);
             const testCase = report?.cases.find(entry => entry.id === discovered.canonicalId);
+            statuses?.set(item.id, testCase?.status ?? 'failed');
             appendOutput(run, testCase?.stdout ?? result.stdout, item);
             appendOutput(run, testCase?.stderr ?? result.stderr, item);
             if (!testCase) {
@@ -273,7 +340,7 @@ async function runBenchmark(
     }
 }
 
-function discoverCli(context: vscode.ExtensionContext, workspaceRoot: string): string | undefined {
+export function discoverCli(context: vscode.ExtensionContext, workspaceRoot: string): string | undefined {
     const configured = vscode.workspace.getConfiguration('arandu').get<string | null>('cli.path')?.trim();
     if (configured && path.isAbsolute(configured) && executable(configured)) {
         return configured;

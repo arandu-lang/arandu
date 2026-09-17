@@ -42,7 +42,8 @@ fn parse_error_reports_expected_tokens_and_found_token() {
     let err = parse(source).expect_err("parser should reject malformed function parameter list");
 
     assert_eq!(err.code, ParseErrorCode::ExpectedToken);
-    assert_eq!(err.found.as_ref(), "LBRACE");
+    assert_eq!(err.found.as_ref(), "{");
+    assert_eq!(err.message.as_ref(), "expected value identifier");
     assert!(err.expected.contains(&"value identifier"));
     let line_index = arandu_base::line_index::LineIndex::new(source);
     let (start_line, _) = line_index.line_col(err.span.start);
@@ -599,4 +600,30 @@ fn test_impl_block_parsing() {
         })
         .collect();
     assert_eq!(names, ["new", "get_x", "set_x"]);
+}
+
+#[test]
+fn test_empty_extern_abi_string_parses_cleanly() {
+    let source = r#"
+    module test.empty_abi
+    extern "" {
+        func puts(s: str): void
+    }
+    "#;
+    let program = arandu_parser::parse(source).expect("extern with empty string should parse");
+    assert_eq!(program.decls.len(), 1);
+}
+
+#[test]
+fn test_impl_after_contextual_import_without_semicolon() {
+    let source = r#"
+    module test.import_impl
+    import foo.bar
+    struct Point { x: int }
+    impl Point {
+        func get(self: ref): int { return self.x }
+    }
+    "#;
+    let program = arandu_parser::parse(source).expect("impl after contextual import should parse");
+    assert!(!program.decls.is_empty());
 }

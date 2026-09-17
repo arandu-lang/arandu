@@ -72,6 +72,34 @@ export async function run(): Promise<void> {
         assert.equal(unresolved.source, 'arandu');
         assert.ok(unresolved.range.end.isAfter(unresolved.range.start));
 
+        const runnableTitles = await poll(async () => {
+            const lenses = await vscode.commands.executeCommand<readonly vscode.CodeLens[]>(
+                'vscode.executeCodeLensProvider',
+                uri
+            );
+            const titles = (lenses ?? []).flatMap(lens =>
+                lens.command?.title ? [lens.command.title] : []);
+            return titles.includes('▶ Run') && titles.includes('Check') ? titles : undefined;
+        });
+        assert.ok(runnableTitles.includes('▶ Run'), 'main must expose a Run code lens');
+        assert.ok(runnableTitles.includes('Check'), 'main must expose a Check code lens');
+
+        const testUri = vscode.Uri.joinPath(workspace.uri, 'tests', 'smoke.aru');
+        const testDocument = await vscode.workspace.openTextDocument(testUri);
+        await vscode.window.showTextDocument(testDocument);
+        const testTitles = await poll(async () => {
+            const lenses = await vscode.commands.executeCommand<readonly vscode.CodeLens[]>(
+                'vscode.executeCodeLensProvider',
+                testUri
+            );
+            const titles = (lenses ?? []).flatMap(lens =>
+                lens.command?.title ? [lens.command.title] : []);
+            return titles.includes('▶ Run Test') ? titles : undefined;
+        });
+        assert.ok(testTitles.includes('▶ Run Test'), 'decorated tests must expose a Run Test lens');
+        await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+        await vscode.window.showTextDocument(document);
+
         const completionUri = vscode.Uri.joinPath(workspace.uri, 'completion.aru');
         const completionDocument = await vscode.workspace.openTextDocument(completionUri);
         await vscode.window.showTextDocument(completionDocument);

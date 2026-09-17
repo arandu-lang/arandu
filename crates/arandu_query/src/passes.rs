@@ -241,6 +241,91 @@ pub fn resolve(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<ResolutionR
     HashEq::new(resolved)
 }
 
+/// Signature-level type-check over an explicit program + resolution result.
+///
+/// Shared by [`module_signatures`] and [`ide_type_check`] so the imported
+/// interface merge stays single-sourced across the strict and IDE paths.
+fn signatures_from_program(
+    db: &dyn ArandCompilerDb,
+    file: SourceFile,
+    program: &Program,
+    resolved_arc: &ResolutionResult,
+) -> TypeCheckResult {
+    // The checker owns mutable tables. Clone only its inputs, not the
+    // documentation map or other resolution-only metadata.
+    let symbols = resolved_arc.symbols.clone();
+    let resolved = resolved_arc.resolved.clone();
+    let diagnostics = resolved_arc.diagnostics.clone();
+    let mut checker = arandu_semantics::TypeChecker::new(
+        symbols,
+        resolved,
+        diagnostics,
+        &program.pool,
+        database_target_info(db),
+    );
+
+    // Merge imported type info (path rewrite shared with resolve).
+    // Each `module_signatures` is Salsa-memoized; merge_from is the cold cost.
+    for import in &program.imports {
+        if let Some(path) = arandu_resolve::canonicalize_import_path(import) {
+            if let Some(imported_file) = db.as_source_db().resolve_module_path(&path) {
+                let imported_sigs = module_signatures(db, imported_file);
+                tracing::debug!(
+                    target: "arandu_query",
+                    %path,
+                    file = ?file.file_id(db),
+                    diags = ?imported_sigs.diagnostics,
+                    "merged imported module signatures"
+                );
+                checker
+                    .type_info
+                    .merge_from(imported_sigs.type_info.as_ref());
+                // Generic exports may mention an interface imported by
+                // their defining module (for example `T: marker.Sync`).
+                // Preserve those contract identities by SymbolId without
+                // adding their names to this module's visible scope.
+                for constraints in imported_sigs.type_info.param_constraints.values() {
+                    for constraint in constraints.iter() {
+                        if checker.symbols.try_get(constraint.iface_sym).is_none() {
+                            if let Some(symbol) =
+                                imported_sigs.symbols.try_get(constraint.iface_sym).cloned()
+                            {
+                                checker.symbols.register_imported_symbol(symbol);
+                            }
+                        }
+                    }
+                }
+                // Body-derived contracts cross the module boundary
+                // through their own HashEq query. A dependency body
+                // edit therefore stops here when the public relation is
+                // unchanged, while a changed relation invalidates the
+                // importing item's checks.
+                let recovered_cycle = imported_sigs
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.message.contains("cyclic"));
+                if !recovered_cycle {
+                    let imported_interfaces = borrow_interfaces(db, imported_file);
+                    for (symbol, summary) in &imported_interfaces.entries {
+                        checker
+                            .type_info
+                            .return_borrow_summaries
+                            .insert(*symbol, summary.clone());
+                    }
+                }
+                for diag in &imported_sigs.diagnostics {
+                    if diag.message.contains("cyclic") {
+                        checker.diagnostics.push(diag.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    arandu_semantics::check_signatures(&mut checker, program);
+    checker.finish()
+}
+
 pub fn cycle_recover_module_signatures(
     _db: &dyn ArandCompilerDb,
     _id: salsa::Id,
@@ -265,81 +350,7 @@ pub fn module_signatures(db: &dyn ArandCompilerDb, file: SourceFile) -> ModuleSi
     let resolved_arc = resolve(db, file);
 
     let res = match &**program_res {
-        Ok(program) => {
-            // The checker owns mutable tables. Clone only its inputs, not the
-            // documentation map or other resolution-only metadata.
-            let symbols = resolved_arc.symbols.clone();
-            let resolved = resolved_arc.resolved.clone();
-            let diagnostics = resolved_arc.diagnostics.clone();
-            let mut checker = arandu_semantics::TypeChecker::new(
-                symbols,
-                resolved,
-                diagnostics,
-                &program.pool,
-                database_target_info(db),
-            );
-
-            // Merge imported type info (path rewrite shared with resolve).
-            // Each `module_signatures` is Salsa-memoized; merge_from is the cold cost.
-            for import in &program.imports {
-                if let Some(path) = arandu_resolve::canonicalize_import_path(import) {
-                    if let Some(imported_file) = db.as_source_db().resolve_module_path(&path) {
-                        let imported_sigs = module_signatures(db, imported_file);
-                        tracing::debug!(
-                            target: "arandu_query",
-                            %path,
-                            file = ?file.file_id(db),
-                            diags = ?imported_sigs.diagnostics,
-                            "merged imported module signatures"
-                        );
-                        checker
-                            .type_info
-                            .merge_from(imported_sigs.type_info.as_ref());
-                        // Generic exports may mention an interface imported by
-                        // their defining module (for example `T: marker.Sync`).
-                        // Preserve those contract identities by SymbolId without
-                        // adding their names to this module's visible scope.
-                        for constraints in imported_sigs.type_info.param_constraints.values() {
-                            for constraint in constraints.iter() {
-                                if checker.symbols.try_get(constraint.iface_sym).is_none() {
-                                    if let Some(symbol) =
-                                        imported_sigs.symbols.try_get(constraint.iface_sym).cloned()
-                                    {
-                                        checker.symbols.register_imported_symbol(symbol);
-                                    }
-                                }
-                            }
-                        }
-                        // Body-derived contracts cross the module boundary
-                        // through their own HashEq query. A dependency body
-                        // edit therefore stops here when the public relation is
-                        // unchanged, while a changed relation invalidates the
-                        // importing item's checks.
-                        let recovered_cycle = imported_sigs
-                            .diagnostics
-                            .iter()
-                            .any(|diagnostic| diagnostic.message.contains("cyclic"));
-                        if !recovered_cycle {
-                            let imported_interfaces = borrow_interfaces(db, imported_file);
-                            for (symbol, summary) in &imported_interfaces.entries {
-                                checker
-                                    .type_info
-                                    .return_borrow_summaries
-                                    .insert(*symbol, summary.clone());
-                            }
-                        }
-                        for diag in &imported_sigs.diagnostics {
-                            if diag.message.contains("cyclic") {
-                                checker.diagnostics.push(diag.clone());
-                            }
-                        }
-                    }
-                }
-            }
-
-            arandu_semantics::check_signatures(&mut checker, program);
-            checker.finish()
-        }
+        Ok(program) => signatures_from_program(db, file, program, resolved_arc.value.as_ref()),
         Err(_) => TypeCheckResult {
             symbols: std::sync::Arc::new(arandu_semantics::SymbolTable::default()),
             resolved: std::sync::Arc::new(resolved_arc.resolved.clone()),
@@ -585,6 +596,83 @@ pub fn type_check(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<TypeChec
 
     // Share the same Arc as `file_typeck_view` — no deep clone of TypeCheckResult.
     HashEq::share(res)
+}
+
+/// IDE-only type-check that tolerates recoverable syntax errors.
+///
+/// Compiler queries stay strict: [`parse`] still reports the first error and
+/// [`type_check`] still yields no signatures for an invalid program. This query
+/// exists so completion, hover and navigation keep working while a buffer is
+/// mid-edit — an editor triggers completion right after `receiver.` or `name:`,
+/// exactly when there is no valid program yet.
+///
+/// It lowers the already-built CST with the recovering lowerer, runs the same
+/// pure resolver and per-item body checks, and merges imported signatures
+/// through [`signatures_from_program`]. No diagnostics are accumulated: the IDE
+/// surfaces recovering-parse diagnostics separately.
+#[salsa::tracked]
+#[tracing::instrument(level = "trace", target = "arandu_query", skip(db), fields(
+    query = "ide_type_check",
+    file = ?file.file_id(db),
+))]
+pub fn ide_type_check(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<TypeCheckResult> {
+    let tree = syntax_tree(db, file);
+    let file_id = *file.file_id(db);
+    let program =
+        arandu_parser::syntax::lower_syntax_to_program_recovering(tree.value.as_ref(), file_id)
+            .program;
+
+    let locals = arandu_resolve::resolve_local_with_poll(file_id, &program, || {
+        db.unwind_if_revision_cancelled();
+    });
+    let resolved = arandu_resolve::resolve_imports_and_bodies_with_poll(
+        &arandu_resolve::SourceDbLoader(db.as_source_db()),
+        &program,
+        locals,
+        || db.unwind_if_revision_cancelled(),
+    );
+
+    let signatures = signatures_from_program(db, file, &program, &resolved);
+
+    // Mirror `file_typeck_view` without per-item memos: this is a transient
+    // fallback for malformed buffers, not the incremental hot path.
+    let item_syms = arandu_semantics::body_item_symbols(&program, signatures.resolved.as_ref());
+    let mut merged_info = Arc::clone(&signatures.type_info);
+    let mut diagnostics = signatures.diagnostics.clone();
+    for &item_sym in &item_syms {
+        let item = arandu_semantics::check_item_body_only(
+            &signatures,
+            &program,
+            item_sym,
+            database_target_info(db),
+        );
+        Arc::make_mut(&mut merged_info).merge_from(item.type_info.as_ref());
+        diagnostics.extend(item.diagnostics);
+    }
+
+    let residual = arandu_semantics::check_non_func_bodies_only(
+        &signatures,
+        &program,
+        database_target_info(db),
+    );
+    if !residual.diagnostics.is_empty()
+        || residual
+            .type_info
+            .expr_types
+            .iter()
+            .any(|slot| slot.is_some())
+        || !residual.type_info.decl_types.is_empty()
+    {
+        Arc::make_mut(&mut merged_info).merge_from(residual.type_info.as_ref());
+        diagnostics.extend(residual.diagnostics);
+    }
+
+    HashEq::new(TypeCheckResult {
+        symbols: Arc::clone(&signatures.symbols),
+        resolved: Arc::clone(&signatures.resolved),
+        type_info: merged_info,
+        diagnostics,
+    })
 }
 
 /// AMIR plus the **post-monomorphize** [`TypeCheckResult`] used to build it.

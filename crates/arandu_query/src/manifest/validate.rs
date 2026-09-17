@@ -28,9 +28,13 @@ pub(super) fn validate_schema(path: &Path, manifest: &ManifestSchema) -> Result<
             message: format!("invalid `toolchain.arandu` requirement: {error}"),
         })?;
     }
-    for target in [manifest.targets.bin.as_ref(), manifest.targets.lib.as_ref()]
-        .into_iter()
-        .flatten()
+    for target in [
+        manifest.targets.bin.as_ref(),
+        manifest.targets.lib.as_ref(),
+        manifest.targets.component.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
     {
         if target.name.is_empty() {
             return Err(ManifestError::Parse {
@@ -54,6 +58,9 @@ pub(super) fn validate_schema(path: &Path, manifest: &ManifestSchema) -> Result<
     }
     if let Some(library) = &manifest.targets.lib {
         validate_exports(path, library)?;
+    }
+    if let Some(component) = &manifest.targets.component {
+        validate_exports(path, component)?;
     }
     for (alias, dependency) in &manifest.dependencies {
         crate::vfs::validate_package_name(alias).map_err(|error| ManifestError::ReservedName {

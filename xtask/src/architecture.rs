@@ -16,8 +16,11 @@ const PURE_CRATES: &[&str] = &[
     "arandu_codegen",
     "arandu_backend_c",
     "arandu_backend_cranelift",
+    "arandu_backend_wasm",
     "arandu_fmt",
     "arandu_doc",
+    "arandu_ide",
+    "arandu_web",
 ];
 
 const FS_EFFECT_MARKERS: &[&str] = &[

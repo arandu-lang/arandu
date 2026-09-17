@@ -58,6 +58,9 @@ pub fn format_edits_in_range(source: &str, start: u32, end: u32) -> Vec<TextEdit
         return Vec::new();
     }
     let end = end.min(source.len() as u32);
+    if start >= end {
+        return Vec::new();
+    }
     let mut edits = Vec::new();
     for item in tree.items() {
         let r = item.text_range();

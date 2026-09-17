@@ -303,7 +303,7 @@ pub fn run(raw_args: Vec<String>) -> CliResult {
                         comparison_policy_set = true;
                         max_regression_percent = parse_benchmark_percentage(
                             arguments.next(),
-                            "--max-regression requires a percentage from 0 to 100",
+                            "--max-regression requires a non-negative percentage",
                         );
                     }
                     "--noise-threshold" => {

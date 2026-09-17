@@ -601,3 +601,29 @@ fn test_impl_block_parsing() {
         .collect();
     assert_eq!(names, ["new", "get_x", "set_x"]);
 }
+
+#[test]
+fn test_empty_extern_abi_string_parses_cleanly() {
+    let source = r#"
+    module test.empty_abi
+    extern "" {
+        func puts(s: str): void
+    }
+    "#;
+    let program = arandu_parser::parse(source).expect("extern with empty string should parse");
+    assert_eq!(program.decls.len(), 1);
+}
+
+#[test]
+fn test_impl_after_contextual_import_without_semicolon() {
+    let source = r#"
+    module test.import_impl
+    import foo.bar
+    struct Point { x: int }
+    impl Point {
+        func get(self: ref): int { return self.x }
+    }
+    "#;
+    let program = arandu_parser::parse(source).expect("impl after contextual import should parse");
+    assert!(!program.decls.is_empty());
+}

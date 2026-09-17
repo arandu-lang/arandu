@@ -1591,3 +1591,19 @@ fn where_clause_with_parameterized_interface_constraint() {
     ";
     assert_type_errors!(source, []);
 }
+
+#[test]
+fn test_ptr_nil_comparison() {
+    let source = "
+        func check_ptr(p: ptr[u8]): bool {
+            if p == nil {
+                return false
+            }
+            if p != nil {
+                return true
+            }
+            return false
+        }
+    ";
+    assert_type_errors!(source, []);
+}

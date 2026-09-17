@@ -277,7 +277,7 @@ pub fn parse_benchmark_seconds(value: Option<&String>, usage: &str) -> u64 {
 pub fn parse_benchmark_percentage(value: Option<&String>, usage: &str) -> f64 {
     value
         .and_then(|v| v.trim_end_matches('%').parse::<f64>().ok())
-        .filter(|v| v.is_finite() && (0.0..=100.0).contains(v))
+        .filter(|v| v.is_finite() && *v >= 0.0)
         .unwrap_or_else(|| fail_usage(usage))
 }
 

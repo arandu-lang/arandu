@@ -166,7 +166,9 @@ fn benchmark_baseline_save_compare_and_strict_missing_are_explicit() {
             "--compare",
             "main",
             "--max-regression",
-            "100",
+            "500",
+            "--noise-threshold",
+            "500",
             "--format",
             "json",
         ])

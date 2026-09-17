@@ -28,6 +28,7 @@ impl<'a> Parser<'a> {
                         | TokenKind::KwEnum
                         | TokenKind::KwInterface
                         | TokenKind::KwExtern
+                        | TokenKind::KwImpl
                 );
             if !(last_segment_is_contextual && next_starts_top_level) {
                 self.expect_semicolon()?;

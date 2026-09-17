@@ -57,15 +57,28 @@ pub fn cmd_project_build(
         semantic_source: false,
     });
 
+    let is_wasm = flags
+        .target
+        .as_deref()
+        .is_some_and(|t| t.starts_with("wasm32"))
+        || ctx.target_kind == project::TargetKind::Component
+        || data_layout.pointer_width() == 4;
+    let wasm_triple = flags.target.as_deref().unwrap_or("wasm32-wasip1");
+
     let session_config = crate::incremental::SessionConfig {
         project_root: &ctx.root,
         package: &ctx.name,
         version: &ctx.version,
         profile,
-        pointer_width: data_layout.pointer_width(),
+        pointer_width: if is_wasm {
+            4
+        } else {
+            data_layout.pointer_width()
+        },
         opt,
         manifest_path: &ctx.manifest_path,
         extra_inputs: &build_inputs,
+        target_triple: if is_wasm { Some(wasm_triple) } else { None },
     };
 
     let check = {
@@ -74,11 +87,20 @@ pub fn cmd_project_build(
     };
     let reusable_input_fingerprints = match check {
         crate::incremental::IncrementalCheck::UpToDate { artifact_path } => {
+            let backend_name = if is_wasm {
+                if ctx.target_kind == project::TargetKind::Component {
+                    "wasm-component"
+                } else {
+                    "wasm-core"
+                }
+            } else {
+                backend.label()
+            };
             println!(
                 "built {} v{} (backend={}, entry={}, artifact={}, incremental: up-to-date)",
                 ctx.name,
                 ctx.version,
-                backend.label(),
+                backend_name,
                 ctx.entry_rel,
                 artifact_path.display()
             );
@@ -123,6 +145,76 @@ pub fn cmd_project_build(
         Some(a) => a,
         None => &artifacts.amir,
     };
+
+    if is_wasm {
+        let is_component = ctx.target_kind == project::TargetKind::Component
+            || wasm_triple.contains("wasi")
+            || wasm_triple == "wasm32";
+        let wasm_layout = arandu_middle::layout::DataLayout::ptr_width(4);
+        let wasm_bytes = if is_component {
+            let pkg_name = arandu_backend_wasm::wit_gen::to_wit_ident(&ctx.name);
+            arandu_backend_wasm::emit_component(
+                amir,
+                type_check.symbols.as_ref(),
+                &type_check.type_info.type_interner,
+                type_check.type_info.as_ref(),
+                wasm_layout,
+                &pkg_name,
+            )
+            .unwrap_or_else(|diag| print_diagnostics_and_exit(std::iter::once(diag), &filepath))
+        } else {
+            arandu_backend_wasm::emit_wasm(
+                amir,
+                type_check.symbols.as_ref(),
+                &type_check.type_info.type_interner,
+                type_check.type_info.as_ref(),
+                wasm_layout,
+            )
+            .unwrap_or_else(|diag| print_diagnostics_and_exit(std::iter::once(diag), &filepath))
+        };
+
+        let optimized_wasm = crate::wasm_opt::optimize_wasm_if_available(
+            wasm_bytes,
+            opt,
+            flags.release,
+            flags.verbose,
+        )?;
+
+        let artifact = artifact::publish_wasm_artifact(
+            &ctx.root,
+            &ctx.name,
+            &ctx.version,
+            profile,
+            wasm_triple,
+            &optimized_wasm,
+        )?;
+
+        {
+            arandu_base::time_pass!("incremental-record");
+            crate::incremental::record_session(
+                &session_config,
+                &artifact.path,
+                Some(artifact.digest),
+                reusable_input_fingerprints,
+            )?;
+        }
+
+        let backend_label = if is_component {
+            "wasm-component"
+        } else {
+            "wasm-core"
+        };
+        println!(
+            "built {} v{} (backend={}, entry={}, artifact={})",
+            ctx.name,
+            ctx.version,
+            backend_label,
+            ctx.entry_rel,
+            artifact.path.display()
+        );
+        return Ok(CliSuccess::Done);
+    }
+
     let toolchain_fingerprint = {
         arandu_base::time_pass!("toolchain-fingerprint");
         if let Some(fingerprint) = reusable_input_fingerprints

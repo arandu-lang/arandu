@@ -388,7 +388,17 @@ pub fn run(raw_args: Vec<String>) -> CliResult {
 
     if !matches!(
         command,
-        "lex" | "parse" | "check" | "hir" | "amir" | "run" | "emit-c" | "graph" | "fmt"
+        "lex"
+            | "parse"
+            | "check"
+            | "hir"
+            | "amir"
+            | "run"
+            | "emit-c"
+            | "emit-wasm"
+            | "emit-component"
+            | "graph"
+            | "fmt"
     ) {
         usage_and_exit();
     }

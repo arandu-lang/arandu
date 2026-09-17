@@ -193,6 +193,7 @@ pub fn parse_invocation(raw_args: impl IntoIterator<Item = String>) -> CliInvoca
             // Collect project flags even before we know the subcommand.
             s if s.starts_with("--stdlib-path")
                 || s.starts_with("--cache-dir")
+                || s.starts_with("--target")
                 || s == "--release"
                 || s == "-v"
                 || s == "--verbose"
@@ -201,17 +202,33 @@ pub fn parse_invocation(raw_args: impl IntoIterator<Item = String>) -> CliInvoca
                 || s == "--frozen"
                 || s == "--accept" =>
             {
-                raw_project_flags.push(arg.clone());
+                if s == "--target" {
+                    raw_project_flags.push(arg.clone());
+                    i += 1;
+                    if i < raw_args_vec.len() {
+                        raw_project_flags.push(raw_args_vec[i].clone());
+                    }
+                } else {
+                    raw_project_flags.push(arg.clone());
+                }
             }
             _ => args.push(arg.clone()),
         }
         i += 1;
     }
-    let data_layout = parse_data_layout(&layout_flags);
+    let mut data_layout = parse_data_layout(&layout_flags);
     let (mut project_flags, extra_positional) = project::parse_project_flags(&raw_project_flags)
         .unwrap_or_else(|message| fail_usage(format!("error: {message}")));
     let _ = extra_positional;
     project_flags.color = color;
+    if layout_flags.is_empty()
+        && project_flags
+            .target
+            .as_deref()
+            .is_some_and(|t| t.starts_with("wasm32"))
+    {
+        data_layout = DataLayout::ptr_width(4);
+    }
 
     CliInvocation {
         debug,
@@ -295,6 +312,8 @@ pub fn usage_and_exit() -> ! {
         "  amir       Dump Arandu Mid-Level IR (SSA/OSSA) [--cfg] [--ascii] [--opt]\n",
         "  graph      Emit module dependency graph in Graphviz DOT format\n",
         "  emit-c     Emit portable C source code\n",
+        "  emit-wasm  Emit WebAssembly binary (wasm32; use --layout=ptr4) [--opt]\n",
+        "  emit-component  Emit WebAssembly Component (WIT-wrapped) [--opt]\n",
         "  fmt        Format source files according to canonical style rules\n",
         "  doctor     Inspect compiler toolchain, environment, and stdlib paths\n",
         "  cache      Inspect, prune, and verify compiler cache <dir|inspect|verify|prune>\n",

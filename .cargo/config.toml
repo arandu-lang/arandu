@@ -1,0 +1,6 @@
+# Target-specific overrides to avoid passing Linux ELF linker flags (-fuse-ld=mold) to wasm-ld
+[target.wasm32-unknown-unknown]
+rustflags = []
+
+[target.wasm32-wasip1]
+rustflags = []

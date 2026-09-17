@@ -106,11 +106,17 @@ pub struct SessionConfig<'a> {
     pub opt: bool,
     pub manifest_path: &'a Path,
     pub extra_inputs: &'a [IncrementalInput],
+    pub target_triple: Option<&'a str>,
 }
 
 /// Check if an incremental build can be skipped entirely (early cutoff).
 pub fn check_incremental(config: &SessionConfig<'_>) -> IncrementalCheck {
-    let layout = artifact::layout(config.project_root, config.profile.directory());
+    let layout = match config.target_triple {
+        Some(triple) => {
+            artifact::layout_for_target(config.project_root, config.profile.directory(), triple)
+        }
+        None => artifact::layout(config.project_root, config.profile.directory()),
+    };
     let fingerprint_path = layout.incremental.join(FINGERPRINT_FILENAME);
     let bytes = match fs::read(&fingerprint_path) {
         Ok(bytes) => bytes,
@@ -205,7 +211,12 @@ pub fn record_session(
     published_artifact_digest: Option<String>,
     reusable_input_fingerprints: Option<BTreeMap<String, FileFingerprint>>,
 ) -> Result<(), CliFailure> {
-    let layout = artifact::layout(config.project_root, config.profile.directory());
+    let layout = match config.target_triple {
+        Some(triple) => {
+            artifact::layout_for_target(config.project_root, config.profile.directory(), triple)
+        }
+        None => artifact::layout(config.project_root, config.profile.directory()),
+    };
     fs::create_dir_all(&layout.incremental).map_err(|error| {
         CliFailure::operational(
             "create incremental cache directory",

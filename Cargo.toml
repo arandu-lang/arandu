@@ -15,6 +15,7 @@ members = [
     "crates/arandu_test_support",
     "crates/arandu_fuzz_support",
     "crates/arandu_backend_c",
+    "crates/arandu_backend_wasm",
     "crates/arandu_runtime",
     "crates/arandu_codegen",
     "crates/arandu_query",
@@ -52,6 +53,12 @@ toml = "0.8.23"
 semver = "1.0.28"
 rowan = "0.17.0"
 bumpalo = "3.20.3"
+wasm-encoder = "0.252.0"
+wasmparser = "0.252.0"
+wit-component = "0.252.0"
+wit-parser = "0.252.0"
+
+
 
 
 [profile.dev]

@@ -1,0 +1,23 @@
+[package]
+name = "arandu_web"
+version = "0.1.0-rc.6"
+edition = "2024"
+license.workspace = true
+authors.workspace = true
+description = "Web bridge and in-browser WebAssembly compiler for the Arandu programming language"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+arandu_base = { path = "../arandu_base" }
+arandu_middle = { path = "../arandu_middle" }
+arandu_parser = { path = "../arandu_parser" }
+arandu_query = { path = "../arandu_query" }
+arandu_ide = { path = "../arandu_ide" }
+arandu_backend_wasm = { path = "../arandu_backend_wasm" }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

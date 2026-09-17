@@ -23,6 +23,7 @@ members = [
     "crates/arandu_ide",
     "crates/arandu_fmt",
     "crates/arandu_doc",
+    "crates/arandu_web",
     "xtask",
 ]
 resolver = "3"

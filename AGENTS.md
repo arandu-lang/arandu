@@ -17,8 +17,9 @@ camadas é uma regressão arquitetural.
 | `arandu_middle` | Contratos entre fases, HIR/AMIR, `SourceDatabase`, IDs e layout. `src/db.rs` declara apenas os tipos Salsa compartilhados; não executa queries. |
 | `arandu_resolve` / `arandu_typeck` / `arandu_mir` | Lógica pura de resolução, tipos, ownership/dataflow e AMIR. Não são donos de Salsa. |
 | `arandu_query` | Único dono de Salsa: DB, inputs, queries tracked, `AnalysisHost` e reparse incremental. |
-| `arandu_backend_cranelift` / `arandu_backend_c` | Backends. |
-| `arandu_cli` / `arandu_lsp` | Orquestram a DB; LSP usa `lsp-server`, VFS e snapshots. |
+| `arandu_backend_cranelift` / `arandu_backend_c` / `arandu_backend_wasm` | Backends de execução nativa e WebAssembly. |
+| `arandu_ide` | Análise pura para IDE (completions, apresentações), compartilhada entre LSP e web sem dependência de UI. |
+| `arandu_cli` / `arandu_lsp` / `arandu_web` | Orquestram a DB e pontos de entrada; LSP usa `lsp-server`, VFS e snapshots; web expõe C-ABI in-memory. |
 | `arandu_fmt` | Formatter puro, sem Salsa/LSP. |
 | `arandu_test_support` / `xtask` | Infraestrutura de testes e tarefas do workspace. |
 

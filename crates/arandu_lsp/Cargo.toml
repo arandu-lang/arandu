@@ -17,6 +17,7 @@ arandu_fmt = { path = "../arandu_fmt" }
 arandu_middle = { path = "../arandu_middle" }
 arandu_base = { path = "../arandu_base" }
 arandu_semantics = { path = "../arandu_semantics" }
+arandu_ide = { path = "../arandu_ide" }
 lsp-server = { workspace = true }
 lsp-types = { workspace = true }
 crossbeam-channel = { workspace = true }

@@ -6,6 +6,7 @@ pub mod code_actions;
 pub mod completion;
 pub mod formatting;
 pub mod hover;
+pub mod inlay_hints;
 pub mod navigation;
 pub mod presentation;
 pub mod rename;
@@ -16,9 +17,12 @@ pub mod types;
 
 pub use code_actions::code_actions;
 pub use completion::completions;
-pub use formatting::format_document;
+pub use formatting::{format_document, format_range};
 pub use hover::hover;
-pub use navigation::{document_highlights, folding_ranges, references, selection_ranges};
+pub use inlay_hints::inlay_hints;
+pub use navigation::{
+    document_highlights, folding_ranges, references, selection_ranges, type_definition_symbol,
+};
 pub use presentation::expr_symbol_at;
 #[cfg(test)]
 pub use presentation::{prefix_at, symbol_at, typecheck};
@@ -34,8 +38,8 @@ mod tests {
     use arandu_base::LineIndex;
     use arandu_query::AnalysisHost;
     use lsp_types::{
-        DocumentHighlightKind, Documentation, FoldingRangeKind, HoverContents, InsertTextFormat,
-        MarkupContent, ParameterLabel, Position,
+        DocumentHighlightKind, Documentation, FoldingRangeKind, HoverContents, InlayHintKind,
+        InsertTextFormat, MarkupContent, ParameterLabel, Position,
     };
 
     use crate::conv::{offset_to_position, utf16_len};
@@ -430,5 +434,116 @@ mod tests {
         assert!(highlights
             .iter()
             .all(|highlight| highlight.kind == Some(DocumentHighlightKind::TEXT)));
+    }
+
+    #[test]
+    fn type_definition_symbol_resolves_value_to_named_type() {
+        use arandu_middle::SymbolKind;
+        use navigation::type_definition_symbol;
+
+        let text = concat!(
+            "struct Pair {\n",
+            "    left: int\n",
+            "    right: int\n",
+            "}\n",
+            "func make(): Pair {\n",
+            "    return Pair { left: 1, right: 2 }\n",
+            "}\n",
+            "func main(): int {\n",
+            "    let p = make()\n",
+            "    return p.left\n",
+            "}\n",
+        );
+        let mut host = AnalysisHost::new();
+        let file = host.new_file("typedef.aru".into(), text.into());
+        let snap = host.snapshot();
+        let tc = typecheck(&snap, file);
+        let p_idx = text.find("let p").expect("binding") + 4;
+        let offset = u32::try_from(p_idx).unwrap();
+        let sym = symbol_at(&tc, offset).expect("binding symbol");
+        let target = type_definition_symbol(&tc, sym).expect("underlying type symbol");
+        let def = tc.symbols.try_get(target).expect("target symbol");
+        assert_eq!(def.kind, SymbolKind::Struct);
+        assert_eq!(def.name.as_str(), "Pair");
+    }
+
+    #[test]
+    fn inlay_hints_show_inferred_types_for_unannotated_lets() {
+        use lsp_types::{InlayHintLabel, Position, Range};
+
+        let text = concat!(
+            "struct Pair {\n",
+            "    left: int\n",
+            "    right: int\n",
+            "}\n",
+            "func make(): Pair {\n",
+            "    return Pair { left: 1, right: 2 }\n",
+            "}\n",
+            "func main(): int {\n",
+            "    let p = make()\n",
+            "    return p.left\n",
+            "}\n",
+        );
+        let mut host = AnalysisHost::new();
+        let file = host.new_file("inlay.aru".into(), text.into());
+        let snap = host.snapshot();
+        let range = Range::new(Position::new(0, 0), Position::new(11, 0));
+        let hints = inlay_hints(&snap, file, text, range);
+        let pair = hints
+            .iter()
+            .find(|hint| hint.position == Position::new(8, 9))
+            .expect("hint after `p`");
+        match &pair.label {
+            InlayHintLabel::String(label) => assert_eq!(label, ": Pair"),
+            InlayHintLabel::LabelParts(parts) => {
+                panic!("expected plain label for Pair, got parts: {parts:?}")
+            }
+        }
+        assert_eq!(pair.kind, Some(InlayHintKind::TYPE));
+        assert!(hints.iter().all(|hint| hint.position.line == 8));
+    }
+
+    #[test]
+    fn format_range_limits_edits_to_the_selected_item() {
+        use crate::conv::position_to_offset;
+        use arandu_base::LineIndex;
+
+        let text = concat!(
+            "struct Pair {\n",
+            "left:int\n",
+            "right:int\n",
+            "}\n",
+            "func main(): int {\n",
+            "return 1   \n",
+            "}\n",
+        );
+        let index = LineIndex::new(text);
+        let range = lsp_types::Range::new(Position::new(0, 0), Position::new(3, 0));
+        let edits = format_range(text, range);
+        assert!(!edits.is_empty(), "struct needs reindentation");
+        for edit in &edits {
+            assert!(
+                edit.range.start.line <= 3 && edit.range.end.line <= 3,
+                "range formatting escaped the selected item: {edits:?}"
+            );
+        }
+        let mut out = text.to_string();
+        for edit in edits.iter().rev() {
+            let start = position_to_offset(&index, edit.range.start, text) as usize;
+            let end = position_to_offset(&index, edit.range.end, text) as usize;
+            out.replace_range(start..end, &edit.new_text);
+        }
+        assert_eq!(
+            out,
+            concat!(
+                "struct Pair {\n",
+                "    left: int\n",
+                "    right: int\n",
+                "}\n",
+                "func main(): int {\n",
+                "return 1   \n",
+                "}\n",
+            )
+        );
     }
 }

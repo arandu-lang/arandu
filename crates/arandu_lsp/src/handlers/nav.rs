@@ -22,6 +22,75 @@ pub(super) fn goto_definition(
     dispatcher::spawn_goto(ctx.state, ctx.pool, ctx.job_tx, id, uri, pos);
 }
 
+/// Goto type definition (LSP `textDocument/typeDefinition`): navigates to the
+/// definition of the value's underlying named type, or to the type symbol
+/// itself when the cursor sits on a type usage.
+pub(super) fn type_definition(
+    ctx: &mut HandlerCtx<'_>,
+    id: RequestId,
+    params: lsp_types::GotoDefinitionParams,
+) {
+    let uri = params.text_document_position_params.text_document.uri;
+    let pos = params.text_document_position_params.position;
+    dispatcher::spawn_json(ctx.state, ctx.pool, ctx.job_tx, id, move |snap, docs| {
+        let Some(info) = docs.get(uri.as_str()) else {
+            return serde_json::Value::Null;
+        };
+        let location = type_definition_on_snapshot(snap, docs, info, &uri, pos);
+        serde_json::to_value(location).unwrap_or(serde_json::Value::Null)
+    });
+}
+
+fn type_definition_on_snapshot(
+    snap: &AnalysisSnapshot,
+    docs: &FxHashMap<String, DocInfo>,
+    info: &DocInfo,
+    uri: &lsp_types::Uri,
+    position: lsp_types::Position,
+) -> Option<lsp_types::Location> {
+    use arandu_base::Span;
+
+    let text = info.source.text(&snap.db);
+    let index = LineIndex::new(text);
+    let offset = position_to_offset(&index, position, text);
+    let tc = arandu_query::passes::type_check(&snap.db, info.source);
+    let program = arandu_query::passes::parse(&snap.db, info.source);
+    let sym_id = ServerState::symbol_at(tc, offset).or_else(|| {
+        program
+            .as_ref()
+            .as_ref()
+            .ok()
+            .and_then(|program| ide::expr_symbol_at(program, tc, offset))
+    })?;
+    let type_id = ide::type_definition_symbol(tc, sym_id)?;
+    let def_span: Span = arandu_query::passes::symbol_span(&snap.db, type_id);
+
+    let (def_uri, def_text) = if def_span.file_id == *info.source.file_id(&snap.db) {
+        let uri = crate::uri_util::parse_uri(uri.as_str())?;
+        (uri, text.to_string())
+    } else if let Some((doc_uri, doc)) = docs
+        .iter()
+        .find(|(_, doc)| *doc.source.file_id(&snap.db) == def_span.file_id)
+    {
+        let doc_uri = crate::uri_util::parse_uri(doc_uri)?;
+        let doc_text = doc.source.text(&snap.db).as_ref().to_string();
+        (doc_uri, doc_text)
+    } else {
+        let p = snap.db.file_path(def_span.file_id);
+        if p.as_os_str().is_empty() {
+            return None;
+        }
+        let uri = crate::uri_util::uri_from_path(p.as_ref())?;
+        let doc_text = std::fs::read_to_string(p.as_ref()).ok()?;
+        (uri, doc_text)
+    };
+    let def_index = LineIndex::new(&def_text);
+    Some(lsp_types::Location {
+        uri: def_uri,
+        range: span_to_range(&def_index, def_span),
+    })
+}
+
 pub(super) fn references(
     ctx: &mut HandlerCtx<'_>,
     id: RequestId,

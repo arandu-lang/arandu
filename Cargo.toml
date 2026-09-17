@@ -19,6 +19,7 @@ members = [
     "crates/arandu_codegen",
     "crates/arandu_query",
     "crates/arandu_lsp",
+    "crates/arandu_ide",
     "crates/arandu_fmt",
     "crates/arandu_doc",
     "xtask",

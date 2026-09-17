@@ -32,8 +32,5 @@ pub struct DiagnosticData {
     pub fixes: Vec<DiagnosticFixData>,
 }
 
-/// Maximum number of completion items returned to the client to avoid latency spikes.
-pub const MAX_COMPLETION_ITEMS: usize = 200;
-
 /// Maximum number of workspace symbols returned to the client.
 pub const MAX_WORKSPACE_SYMBOLS: usize = 200;

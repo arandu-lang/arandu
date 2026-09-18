@@ -58,6 +58,8 @@ pub struct TypeInfo {
     pub variant_instantiations: FxHashMap<(SymbolId, Vec<TypeId>), (Vec<TypeId>, TypeId)>,
     /// Declared and inferred effects per function symbol.
     pub function_effects: FxHashMap<SymbolId, arandu_middle::EffectFlags>,
+    /// Struct symbols that explicitly declare `@Repr("C")` / `#[repr(C)]`.
+    pub struct_repr_c: rustc_hash::FxHashSet<SymbolId>,
 }
 
 impl TypeInfo {
@@ -90,6 +92,7 @@ impl TypeInfo {
             interfaces: FxHashMap::default(),
             variant_instantiations: FxHashMap::default(),
             function_effects: FxHashMap::default(),
+            struct_repr_c: rustc_hash::FxHashSet::default(),
         }
     }
 
@@ -599,6 +602,7 @@ impl TypeInfo {
             && other.generic_defaults.is_empty()
             && other.param_constraints.is_empty()
             && other.interfaces.is_empty()
+            && other.struct_repr_c.is_empty()
             && other.expr_types.iter().all(|s| s.is_none())
         {
             return;
@@ -707,6 +711,8 @@ impl TypeInfo {
                 },
             );
         }
+        self.struct_repr_c.extend(&other.struct_repr_c);
+
         // Expr types (body typeck shards): re-intern TypeIds into `self`.
         // Signature-only TypeInfos leave this empty — skip the O(n) scan.
         if other.expr_types.iter().all(|s| s.is_none()) {
@@ -836,6 +842,10 @@ impl arandu_middle::layout::StructLayoutProvider for TypeInfo {
 
     fn destructor_for_type(&self, ty: TypeId) -> Option<SymbolId> {
         self.destructor_instances.get(&ty).copied()
+    }
+
+    fn is_repr_c(&self, struct_id: SymbolId) -> bool {
+        self.struct_repr_c.contains(&struct_id)
     }
 }
 

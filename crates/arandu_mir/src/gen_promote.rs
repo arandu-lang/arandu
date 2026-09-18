@@ -129,14 +129,24 @@ fn apply_gen_promotion_impl(
     // phi-like block parameters propagated by borrow facts, so loop/backedge
     // order cannot affect the result.
     for temp in &gen_temps {
-        if let Some(info) = func.temps.get_mut(temp.as_usize()) {
+        if let Some(info) = func.temps.get_mut(temp.as_usize())
+            && matches!(
+                interner.resolve(info.ty),
+                ArType::Ref(_) | ArType::RefMut(_)
+            )
+        {
             info.ty = gen_ty;
             info.is_copy = true;
         }
     }
     for block in &func.blocks {
         for param in &mut func.block_params[block.params.as_range()] {
-            if gen_temps.contains(&param.id) {
+            if gen_temps.contains(&param.id)
+                && matches!(
+                    interner.resolve(param.ty),
+                    ArType::Ref(_) | ArType::RefMut(_)
+                )
+            {
                 param.ty = gen_ty;
             }
         }

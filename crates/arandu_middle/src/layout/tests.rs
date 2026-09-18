@@ -161,10 +161,12 @@ fn gen_payload_layout_preserves_zero_sized_void_contract() {
     assert_eq!(layout, GenPayloadLayout { size: 0, align: 1 });
 }
 
+#[derive(Default)]
 struct StructMockProvider {
     fields: FxHashMap<SymbolId, StructFields>,
     generic_params: FxHashMap<SymbolId, Vec<SymbolId>>,
     enum_variants: FxHashMap<SymbolId, Vec<EnumPayloadShape>>,
+    repr_c: rustc_hash::FxHashSet<SymbolId>,
 }
 
 impl StructLayoutProvider for StructMockProvider {
@@ -176,6 +178,9 @@ impl StructLayoutProvider for StructMockProvider {
     }
     fn get_enum_variants(&self, enum_id: SymbolId) -> Option<Vec<EnumPayloadShape>> {
         self.enum_variants.get(&enum_id).cloned()
+    }
+    fn is_repr_c(&self, struct_id: SymbolId) -> bool {
+        self.repr_c.contains(&struct_id)
     }
 }
 
@@ -447,6 +452,7 @@ fn test_zst_allocator_field_adds_no_size() {
         fields: FxHashMap::<SymbolId, StructFields>::default(),
         generic_params: FxHashMap::<SymbolId, Vec<SymbolId>>::default(),
         enum_variants: FxHashMap::<SymbolId, Vec<EnumPayloadShape>>::default(),
+        repr_c: rustc_hash::FxHashSet::default(),
     };
 
     // Create ZST struct "GlobalAllocator"
@@ -552,23 +558,33 @@ fn test_struct_layout_and_padding() {
     let mut fields_map = FxHashMap::<SymbolId, StructFields>::default();
     fields_map.insert(struct_sym, fields);
 
-    let provider = StructMockProvider {
+    let mut provider = StructMockProvider {
         fields: fields_map,
         generic_params: FxHashMap::<SymbolId, Vec<SymbolId>>::default(),
         enum_variants: FxHashMap::<SymbolId, Vec<EnumPayloadShape>>::default(),
+        repr_c: rustc_hash::FxHashSet::default(),
     };
 
     let struct_ty = ArType::Named(struct_sym, IndexRange::empty());
     let struct_id = interner.intern(struct_ty);
 
+    // A4.0: Default Arandu struct reorders fields by descending alignment:
+    // b (I32, align 4): offset 0
+    // a (U8, align 1): offset 4
+    // c (U8, align 1): offset 5
+    // total size: 8 (reduced from 12 bytes!)
     let layout = engine.layout_of(struct_id, &interner, &provider);
-    // a: offset 0
-    // b: offset 4 (due to align 4 of I32)
-    // c: offset 8
-    // total size: 12 (aligned to max alignment 4)
     assert_eq!(layout.align, 4);
-    assert_eq!(layout.field_offsets, vec![0, 4, 8]);
-    assert_eq!(layout.size, 12);
+    assert_eq!(layout.field_offsets, vec![4, 0, 5]);
+    assert_eq!(layout.size, 8);
+
+    // With repr(C), declaration order is preserved:
+    // a: offset 0, b: offset 4, c: offset 8 -> size 12
+    provider.repr_c.insert(struct_sym);
+    let layout_c = engine.layout_of(struct_id, &interner, &provider);
+    assert_eq!(layout_c.align, 4);
+    assert_eq!(layout_c.field_offsets, vec![0, 4, 8]);
+    assert_eq!(layout_c.size, 12);
 }
 
 #[test]
@@ -612,6 +628,7 @@ fn test_struct_generic_substitution() {
         fields: fields_map,
         generic_params,
         enum_variants: FxHashMap::<SymbolId, Vec<EnumPayloadShape>>::default(),
+        repr_c: rustc_hash::FxHashSet::default(),
     };
 
     let concrete_int = interner.intern(ArType::Primitive(Primitive::I32));
@@ -663,6 +680,7 @@ fn test_target_32bit_vec_and_string_evidence() {
         fields: fields_map,
         generic_params: FxHashMap::default(),
         enum_variants: FxHashMap::default(),
+        repr_c: rustc_hash::FxHashSet::default(),
     };
 
     let struct_ty = ArType::Named(struct_sym, IndexRange::empty());
@@ -724,28 +742,53 @@ fn test_target_32bit_mixed_alignment_evidence() {
     let mut fields_map = FxHashMap::<SymbolId, StructFields>::default();
     fields_map.insert(struct_sym, fields);
 
-    let provider = StructMockProvider {
+    let mut provider = StructMockProvider {
         fields: fields_map,
         generic_params: FxHashMap::default(),
         enum_variants: FxHashMap::default(),
+        repr_c: rustc_hash::FxHashSet::default(),
     };
 
     let struct_ty = ArType::Named(struct_sym, IndexRange::empty());
     let struct_id = interner.intern(struct_ty);
 
-    // In 64-bit: a@0, pad 7, b@8, c@16, pad 4 -> size=24, align=8
+    // In 64-bit with default Arandu reordering (descending alignment):
+    // b (align 8, size 8) -> offset 0
+    // c (align 4, size 4) -> offset 8
+    // a (align 1, size 1) -> offset 12
+    // total size = align_up(13, 8) = 16 (padding eliminated from 24 down to 16!)
+    // field_offsets indexed by orig_index: a@12, b@0, c@8 -> [12, 0, 8]
     let engine_64 = LayoutEngine::new(8);
     let layout_64 = engine_64.layout_of(struct_id, &interner, &provider);
-    assert_eq!(layout_64.size, 24);
+    assert_eq!(layout_64.size, 16);
     assert_eq!(layout_64.align, 8);
-    assert_eq!(layout_64.field_offsets, vec![0, 8, 16]);
+    assert_eq!(layout_64.field_offsets, vec![12, 0, 8]);
 
-    // In i686 SysV (where u64 align is 4!): a@0, pad 3, b@4, c@12 -> size=16, align=4
+    // In 64-bit with repr(C): a@0, pad 7, b@8, c@16, pad 4 -> size=24, align=8
+    provider.repr_c.insert(struct_sym);
+    let layout_64_c = engine_64.layout_of(struct_id, &interner, &provider);
+    assert_eq!(layout_64_c.size, 24);
+    assert_eq!(layout_64_c.align, 8);
+    assert_eq!(layout_64_c.field_offsets, vec![0, 8, 16]);
+    provider.repr_c.remove(&struct_sym);
+
+    // In i686 SysV (where u64 align is 4!):
+    // b: align 4, size 8 -> offset 0
+    // c: align 4, size 4 -> offset 8
+    // a: align 1, size 1 -> offset 12
+    // size = align_up(13, 4) = 16, align 4, field_offsets: [12, 0, 8]
     let engine_i686 = LayoutEngine::from_data_layout(DataLayout::i686_sysv());
     let layout_i686 = engine_i686.layout_of(struct_id, &interner, &provider);
     assert_eq!(layout_i686.size, 16);
     assert_eq!(layout_i686.align, 4);
-    assert_eq!(layout_i686.field_offsets, vec![0, 4, 12]);
+    assert_eq!(layout_i686.field_offsets, vec![12, 0, 8]);
+
+    // In i686 SysV with repr(C): a@0, pad 3, b@4, c@12 -> size=16, align=4, field_offsets: [0, 4, 12]
+    provider.repr_c.insert(struct_sym);
+    let layout_i686_c = engine_i686.layout_of(struct_id, &interner, &provider);
+    assert_eq!(layout_i686_c.size, 16);
+    assert_eq!(layout_i686_c.align, 4);
+    assert_eq!(layout_i686_c.field_offsets, vec![0, 4, 12]);
 }
 
 #[test]
@@ -773,6 +816,7 @@ fn test_enum_layouts_32bit_and_64bit() {
         fields: FxHashMap::default(),
         generic_params: FxHashMap::default(),
         enum_variants: enum_map,
+        repr_c: rustc_hash::FxHashSet::default(),
     };
 
     let enum_ty = ArType::Named(enum_sym, IndexRange::empty());
@@ -812,6 +856,7 @@ fn test_enum_layouts_32bit_and_64bit() {
         fields: FxHashMap::default(),
         generic_params: FxHashMap::default(),
         enum_variants: enum_map_i64,
+        repr_c: rustc_hash::FxHashSet::default(),
     };
     let enum_id_i64 = interner.intern(ArType::Named(enum_sym_i64, IndexRange::empty()));
 
@@ -833,4 +878,78 @@ fn test_enum_layouts_32bit_and_64bit() {
     assert_eq!(layout_ilp32.size, 16);
     assert_eq!(layout_ilp32.align, 8);
     assert_eq!(layout_ilp32.field_offsets, vec![0, 4]);
+}
+
+#[test]
+fn test_niche_layout_option_ref_vs_val() {
+    let engine_64 = LayoutEngine::new(8);
+    let interner = TypeInterner::new();
+    let provider = StructMockProvider::default();
+
+    let i32_tid = interner.intern(ArType::Primitive(Primitive::I32));
+    let ref_i32_tid = interner.intern(ArType::Ref(i32_tid));
+
+    // Option[ref i32]: has null niche!
+    let opt_ref_tid = interner.intern(ArType::Option(ref_i32_tid));
+    let layout_ref = engine_64.layout_of(opt_ref_tid, &interner, &provider);
+    assert_eq!(layout_ref.size, 8);
+    assert_eq!(layout_ref.align, 8);
+    assert_eq!(layout_ref.field_offsets, vec![0, 0]);
+    assert_eq!(
+        layout_ref.tag_encoding,
+        Some(TagEncoding::Niche {
+            niche_offset: 0,
+            niche_size: 8,
+            niche_value: 0,
+            untagged_variant: 1,
+            tagged_variant: 0,
+        })
+    );
+
+    // Option[i32]: no niche! Direct tag (tag_size=8, payload_offset=8)
+    let opt_i32_tid = interner.intern(ArType::Option(i32_tid));
+    let layout_val = engine_64.layout_of(opt_i32_tid, &interner, &provider);
+    assert_eq!(layout_val.size, 16);
+    assert_eq!(layout_val.align, 8);
+    assert_eq!(layout_val.field_offsets, vec![0, 8]);
+    assert_eq!(
+        layout_val.tag_encoding,
+        Some(TagEncoding::Direct {
+            tag_size: 8,
+            payload_offset: 8,
+        })
+    );
+
+    // Single-field struct wrapping ref i32: struct Wrapper { r: ref i32 }
+    let wrapper_sym = SymbolId::new(0, 300);
+    let wrapper_fields = StructFields::from_entries([StructFieldInfo {
+        name: "r".into(),
+        symbol: None,
+        ty: ref_i32_tid,
+        index: 0,
+    }]);
+    let mut fields_map = FxHashMap::<SymbolId, StructFields>::default();
+    fields_map.insert(wrapper_sym, wrapper_fields);
+    let wrapper_provider = StructMockProvider {
+        fields: fields_map,
+        generic_params: FxHashMap::default(),
+        enum_variants: FxHashMap::default(),
+        repr_c: rustc_hash::FxHashSet::default(),
+    };
+    let wrapper_tid = interner.intern(ArType::Named(wrapper_sym, IndexRange::empty()));
+    let opt_wrapper_tid = interner.intern(ArType::Option(wrapper_tid));
+    let layout_wrapper = engine_64.layout_of(opt_wrapper_tid, &interner, &wrapper_provider);
+    assert_eq!(layout_wrapper.size, 8);
+    assert_eq!(layout_wrapper.align, 8);
+    assert_eq!(layout_wrapper.field_offsets, vec![0, 0]);
+    assert_eq!(
+        layout_wrapper.tag_encoding,
+        Some(TagEncoding::Niche {
+            niche_offset: 0,
+            niche_size: 8,
+            niche_value: 0,
+            untagged_variant: 1,
+            tagged_variant: 0,
+        })
+    );
 }

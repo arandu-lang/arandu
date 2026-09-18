@@ -7,7 +7,7 @@ use arandu_middle::types::{ArType, Primitive};
 
 const C_TRUE: &str = "true";
 const C_FALSE: &str = "false";
-const C_NULL: &str = "NULL";
+const C_NULL: &str = "0";
 
 impl<'a> CEmitter<'a> {
     #[inline]

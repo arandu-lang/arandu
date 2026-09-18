@@ -43,6 +43,34 @@ pub(crate) fn collect_type_shapes(checker: &mut TypeChecker<'_>, program: &Progr
                 }
                 let struct_key = crate::NodeKey::from(struct_decl.span);
                 if let Some(symbol_id) = checker.resolved.definitions.get(&struct_key).copied() {
+                    let is_repr_c = struct_decl.attrs.iter().any(|attr| {
+                        if attr.name == "Repr" || attr.name == "repr" {
+                            attr.args
+                                .first()
+                                .is_some_and(|arg| match checker.pool.expr(*arg) {
+                                    arandu_parser::ExprKind::Path { path } => {
+                                        path.first().is_some_and(|s| s.eq_ignore_ascii_case("c"))
+                                    }
+                                    arandu_parser::ExprKind::InterpolatedString { parts } => {
+                                        let part_ids = checker.pool.string_part_list(*parts);
+                                        part_ids.first().is_some_and(|&id| {
+                                            match checker.pool.string_part(id) {
+                                                arandu_parser::StringPart::Text {
+                                                    text, ..
+                                                } => text.eq_ignore_ascii_case("c"),
+                                                _ => false,
+                                            }
+                                        })
+                                    }
+                                    _ => false,
+                                })
+                        } else {
+                            false
+                        }
+                    });
+                    if is_repr_c {
+                        checker.type_info.struct_repr_c.insert(symbol_id);
+                    }
                     checker.type_info.struct_fields.insert(
                         symbol_id,
                         std::sync::Arc::new(arandu_middle::layout::StructFields::from_entries(

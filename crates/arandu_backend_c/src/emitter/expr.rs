@@ -139,6 +139,11 @@ impl<'a> CEmitter<'a> {
                 }
             }
             AmirRvalue::FieldAccess { base, field } => {
+                let expected_layout = self.checked_layout(expected_ar_type);
+                if expected_layout.size == 0 {
+                    let _ = write!(&mut self.output, "({expected_c_type}){{0}}");
+                    return;
+                }
                 let base_ty = match base {
                     AmirOperand::Copy(t) | AmirOperand::Move(t) => self.temp_ty(func, *t),
                     _ => {
@@ -188,11 +193,32 @@ impl<'a> CEmitter<'a> {
                         return;
                     }
                 };
-                let _ = write!(
-                    &mut self.output,
-                    "({{ int64_t _tag = 0; memcpy(&_tag, (uint8_t*)&t{} + 0, sizeof(_tag)); _tag; }})",
-                    base_temp
-                );
+                let base_ty = self.interner.resolve(func.temps[base_temp].ty);
+                let enum_ty = match base_ty {
+                    ArType::Ptr(inner) => self.interner.resolve(inner),
+                    other => other,
+                };
+                let layout = self.checked_layout(&enum_ty);
+                if let Some(arandu_middle::layout::TagEncoding::Niche {
+                    niche_offset,
+                    niche_value,
+                    untagged_variant,
+                    tagged_variant,
+                    ..
+                }) = layout.tag_encoding
+                {
+                    let _ = write!(
+                        &mut self.output,
+                        "({{ uintptr_t _niche = 0; memcpy(&_niche, (uint8_t*)&t{} + {}, sizeof(_niche)); (_niche == {}) ? (int64_t){} : (int64_t){}; }})",
+                        base_temp, niche_offset, niche_value, tagged_variant, untagged_variant
+                    );
+                } else {
+                    let _ = write!(
+                        &mut self.output,
+                        "({{ int64_t _tag = 0; memcpy(&_tag, (uint8_t*)&t{} + 0, sizeof(_tag)); _tag; }})",
+                        base_temp
+                    );
+                }
             }
             AmirRvalue::EnumPayload {
                 value,
@@ -216,17 +242,27 @@ impl<'a> CEmitter<'a> {
                     ArType::Ptr(inner) => self.interner.resolve(inner),
                     other => other,
                 };
+                let layout = self.checked_layout(&enum_ty);
                 let enum_id = match enum_ty {
                     ArType::Named(id, _) => id,
                     _ => arandu_middle::SymbolId::DUMMY,
                 };
 
                 let mut payload_offset = 0;
-                if arandu_middle::layout::StructLayoutProvider::get_enum_variants(
+                if matches!(
+                    layout.tag_encoding,
+                    Some(arandu_middle::layout::TagEncoding::Niche { .. })
+                ) {
+                    payload_offset = 0;
+                } else if arandu_middle::layout::StructLayoutProvider::get_enum_variants(
                     self.provider,
                     enum_id,
                 )
                 .is_some()
+                    || matches!(
+                        enum_ty,
+                        ArType::Option(_) | ArType::Result(_, _) | ArType::Poll(_)
+                    )
                 {
                     // Tag is pointer-width on the target layout (i686 → 4, host64 → 8).
                     let tag_size = self.layout.pointer_width() as usize;
@@ -242,7 +278,37 @@ impl<'a> CEmitter<'a> {
                 variant_tag,
                 payload,
             } => {
-                if let Some(p) = payload {
+                let enum_layout = self.checked_layout(expected_ar_type);
+                if let Some(arandu_middle::layout::TagEncoding::Niche { tagged_variant, .. }) =
+                    enum_layout.tag_encoding
+                {
+                    if *variant_tag == tagged_variant {
+                        let _ = write!(
+                            &mut self.output,
+                            "({{ {expected_c_type} _res = {{0}}; _res; }})"
+                        );
+                    } else if let Some(p) = payload {
+                        let payload_str = self.format_operand(p, func);
+                        let p_ty = match p {
+                            AmirOperand::Copy(t) | AmirOperand::Move(t) => self.temp_ty(func, *t),
+                            _ => match expected_ar_type {
+                                ArType::Option(inner) => self.interner.resolve(*inner),
+                                _ => ArType::Error,
+                            },
+                        };
+                        let p_c_ty = self.format_type(&p_ty);
+                        let _ = write!(
+                            &mut self.output,
+                            "({{ {expected_c_type} _res = {{0}}; {p_c_ty} _p = {}; memcpy(&_res, &_p, sizeof(_p) < sizeof(_res) ? sizeof(_p) : sizeof(_res)); _res; }})",
+                            payload_str
+                        );
+                    } else {
+                        let _ = write!(
+                            &mut self.output,
+                            "({{ {expected_c_type} _res = {{0}}; _res; }})"
+                        );
+                    }
+                } else if let Some(p) = payload {
                     let payload_str = self.format_operand(p, func);
                     let payload_ty = match expected_ar_type {
                         ArType::Named(id, _) => self
@@ -318,6 +384,10 @@ impl<'a> CEmitter<'a> {
                     } else {
                         ArType::Error
                     };
+                    let field_layout = self.checked_layout(&field_ty);
+                    if field_layout.size == 0 {
+                        continue;
+                    }
                     let field_c_ty = self.format_type(&field_ty);
                     let op_str = self.format_operand(op, func);
                     resolved_fields.push((offset, field_c_ty, op_str));

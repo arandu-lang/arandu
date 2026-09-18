@@ -73,11 +73,24 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     offset + pointer_width as i32,
                 );
             } else {
-                let field_defs = self.type_info.struct_fields.get(struct_symbol);
-                let field_ty = field_defs
-                    .and_then(|m| m.get(name.as_str()))
-                    .map(|f| self.type_info.type_interner.resolve(f.ty))
-                    .unwrap_or(ArType::Error);
+                let field_ty = arandu_semantics::layout::instantiated_field_type(
+                    &struct_ty,
+                    name.as_str(),
+                    &self.type_info.type_interner,
+                    self.type_info,
+                )
+                .map(|id| self.type_info.type_interner.resolve(id))
+                .unwrap_or_else(|| {
+                    let field_defs = self.type_info.struct_fields.get(struct_symbol);
+                    field_defs
+                        .and_then(|m| m.get(name.as_str()))
+                        .map(|f| self.type_info.type_interner.resolve(f.ty))
+                        .unwrap_or_else(|| self.get_operand_ar_type(op))
+                });
+                let field_layout = self.checked_layout(&field_ty);
+                if field_layout.size == 0 {
+                    continue;
+                }
                 let expected_field_ty = match crate::types::clif_type(&field_ty, self.ptr_type) {
                     crate::types::ClifType::Concrete(ty) => Some(ty),
                     crate::types::ClifType::Void => None,
@@ -243,6 +256,12 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             other => other,
         };
         let layout = self.checked_layout(&struct_ty);
+        if let Some(exp_ar) = expected_ar_type {
+            let exp_layout = self.checked_layout(exp_ar);
+            if exp_layout.size == 0 {
+                return self.builder.ins().iconst(self.ptr_type, 0);
+            }
+        }
         let Some(&off) = layout.field_offsets.get(field) else {
             // Dead `p?.field` access branch with nil/ZST base, or incomplete layout.
             return self.poison_i32();

@@ -84,12 +84,41 @@ impl<I: IdIndex> Iterator for DenseRangeIds<I> {
     }
 }
 
+/// Discriminant tag encoding strategy for enums and sum types.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TagEncoding {
+    /// Explicit discriminant tag stored at `tag_offset` with size `tag_size`.
+    Direct { tag_size: u64, payload_offset: u64 },
+    /// Niche optimization: discriminant tag is elided by using an invalid bit-pattern
+    /// (e.g. null pointer 0x0) of the payload at `niche_offset`.
+    Niche {
+        niche_offset: u64,
+        niche_size: u64,
+        niche_value: u64,
+        untagged_variant: usize, // e.g. 1 for Option::Some
+        tagged_variant: usize,   // e.g. 0 for Option::None
+    },
+}
+
 /// Physical memory layout metadata for a resolved type.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TypeLayout {
     pub size: u64,               // Total size in bytes (including trailing padding)
     pub align: u64,              // Alignment required in bytes (power of 2)
     pub field_offsets: Vec<u64>, // Field offsets (populated for structs, tuples, etc.)
+    pub tag_encoding: Option<TagEncoding>,
+}
+
+impl TypeLayout {
+    #[must_use]
+    pub fn simple(size: u64, align: u64) -> Self {
+        Self {
+            size,
+            align,
+            field_offsets: Vec::new(),
+            tag_encoding: None,
+        }
+    }
 }
 
 /// Target-derived runtime contract for a promoted GenRef payload.
@@ -230,6 +259,12 @@ pub trait StructLayoutProvider {
     fn destructor_for_type(&self, _ty: TypeId) -> Option<SymbolId> {
         None
     }
+
+    /// Whether the struct is marked with `#[repr(C)]` / `@Repr("C")` and must
+    /// preserve declaration field order for ABI compatibility.
+    fn is_repr_c(&self, _struct_id: SymbolId) -> bool {
+        false
+    }
 }
 
 /// The physical memory layout engine.
@@ -280,6 +315,44 @@ impl LayoutEngine {
             size: w * 2,
             align,
             field_offsets: vec![0, w],
+            tag_encoding: None,
+        }
+    }
+
+    /// Checks whether `ty` has a null niche (i.e. invalid bit-pattern 0x0 of pointer width at offset 0).
+    /// Safe references (`ref T`, `mut ref T`), function pointers (`Func`), and error handles (`Err`)
+    /// are never null. A struct whose first physical field has a null niche also provides a null niche.
+    #[must_use]
+    pub fn has_null_niche(
+        &self,
+        ty: &ArType,
+        interner: &TypeInterner,
+        provider: &dyn StructLayoutProvider,
+    ) -> bool {
+        match ty {
+            ArType::Ref(_) | ArType::RefMut(_) | ArType::Func(_, _) | ArType::Err => true,
+            ArType::Named(sym, args) => {
+                if let Some(fields_def) = provider.get_struct_fields(*sym)
+                    && let Ok(layout) = self.layout_of_type(ty, interner, provider)
+                {
+                    for f in fields_def.iter() {
+                        if layout.field_offsets.get(f.index) == Some(&0) {
+                            let generic_params = provider.get_generic_params(*sym).unwrap_or(&[]);
+                            let arg_ids = interner.type_args(*args);
+                            let subst: FxHashMap<SymbolId, TypeId> = generic_params
+                                .iter()
+                                .copied()
+                                .zip(arg_ids.iter().copied())
+                                .collect();
+                            let field_ty = interner.resolve(f.ty);
+                            let substituted = substitute(&field_ty, &subst, interner);
+                            return self.has_null_niche(&substituted, interner, provider);
+                        }
+                    }
+                }
+                false
+            }
+            _ => false,
         }
     }
 
@@ -345,126 +418,68 @@ impl LayoutEngine {
     ) -> Result<TypeLayout, LayoutError> {
         Ok(match ty {
             ArType::Primitive(p) => match p {
-                Primitive::I8 | Primitive::U8 | Primitive::Byte | Primitive::Bool => TypeLayout {
-                    size: 1,
-                    align: 1,
-                    field_offsets: Vec::new(),
-                },
-                Primitive::I16 | Primitive::U16 => TypeLayout {
-                    size: 2,
-                    align: 2,
-                    field_offsets: Vec::new(),
-                },
-                Primitive::I32 | Primitive::U32 | Primitive::F32 => TypeLayout {
-                    size: 4,
-                    align: 4,
-                    field_offsets: Vec::new(),
-                },
-                Primitive::Char => TypeLayout {
-                    size: 4,
-                    align: 4,
-                    field_offsets: Vec::new(),
-                },
+                Primitive::I8 | Primitive::U8 | Primitive::Byte | Primitive::Bool => {
+                    TypeLayout::simple(1, 1)
+                }
+                Primitive::I16 | Primitive::U16 => TypeLayout::simple(2, 2),
+                Primitive::I32 | Primitive::U32 | Primitive::F32 => TypeLayout::simple(4, 4),
+                Primitive::Char => TypeLayout::simple(4, 4),
                 Primitive::Float => {
                     let f = self.data_layout.float;
-                    TypeLayout {
-                        size: f.size,
-                        align: f.abi_align,
-                        field_offsets: Vec::new(),
-                    }
+                    TypeLayout::simple(f.size, f.abi_align)
                 }
                 Primitive::I64 | Primitive::U64 => {
                     let t = self.data_layout.i64;
-                    TypeLayout {
-                        size: t.size,
-                        align: t.abi_align,
-                        field_offsets: Vec::new(),
-                    }
+                    TypeLayout::simple(t.size, t.abi_align)
                 }
                 Primitive::F64 => {
                     let t = self.data_layout.f64;
-                    TypeLayout {
-                        size: t.size,
-                        align: t.abi_align,
-                        field_offsets: Vec::new(),
-                    }
+                    TypeLayout::simple(t.size, t.abi_align)
                 }
                 Primitive::Int | Primitive::Uint => {
                     let p = self.data_layout.pointer;
-                    TypeLayout {
-                        size: p.size,
-                        align: p.abi_align,
-                        field_offsets: Vec::new(),
-                    }
+                    TypeLayout::simple(p.size, p.abi_align)
                 }
                 Primitive::Str => self.fat_pointer_layout(),
                 Primitive::Any => {
-                    // Any is dynamic box pointer
                     let p = self.data_layout.pointer;
-                    TypeLayout {
-                        size: p.size,
-                        align: p.abi_align,
-                        field_offsets: Vec::new(),
-                    }
+                    TypeLayout::simple(p.size, p.abi_align)
                 }
             },
             ArType::IntLiteral => {
                 let p = self.data_layout.pointer;
-                TypeLayout {
-                    size: p.size,
-                    align: p.abi_align,
-                    field_offsets: Vec::new(),
-                }
+                TypeLayout::simple(p.size, p.abi_align)
             }
             ArType::FloatLiteral => {
                 let f = self.data_layout.float;
-                TypeLayout {
-                    size: f.size,
-                    align: f.abi_align,
-                    field_offsets: Vec::new(),
-                }
+                TypeLayout::simple(f.size, f.abi_align)
             }
             // `Err` is a non-null message handle (pointer to a NUL-terminated
             // UTF-8 buffer allocated by `err.new`). Not a ZST — payload of
             // `Result<T, Err>` must be distinguishable from nil.
             ArType::Err => {
                 let p = self.data_layout.pointer;
-                TypeLayout {
-                    size: p.size,
-                    align: p.abi_align,
-                    field_offsets: Vec::new(),
-                }
+                TypeLayout::simple(p.size, p.abi_align)
             }
-            ArType::Void | ArType::Error => TypeLayout {
-                size: 0,
-                align: 1,
-                field_offsets: Vec::new(),
-            },
+            ArType::Void | ArType::Error => TypeLayout::simple(0, 1),
             ArType::Ptr(_) | ArType::Ref(_) | ArType::RefMut(_) => {
                 // Safe refs and raw pointers are single machine pointers (fat types later).
                 let p = self.data_layout.pointer;
-                TypeLayout {
-                    size: p.size,
-                    align: p.abi_align,
-                    field_offsets: Vec::new(),
-                }
+                TypeLayout::simple(p.size, p.abi_align)
             }
             // F2.3: GenRef = {u32 index, u32 generation} — always 8 bytes.
             ArType::GenRef => TypeLayout {
                 size: 8,
                 align: 4,
                 field_offsets: vec![0, 4],
+                tag_encoding: None,
             },
             ArType::Nullable(_) => {
                 // Nullable is always a null-or-pointer handle (box for scalars;
                 // heap object pointer for Named/etc.). Never stores the payload
                 // inline — avoids `int? = 0` colliding with `nil`.
                 let p = self.data_layout.pointer;
-                TypeLayout {
-                    size: p.size,
-                    align: p.abi_align,
-                    field_offsets: Vec::new(),
-                }
+                TypeLayout::simple(p.size, p.abi_align)
             }
             ArType::Slice(_) => self.fat_pointer_layout(),
             ArType::Array(len, inner) => {
@@ -477,6 +492,7 @@ impl LayoutEngine {
                     )?,
                     align: inner_layout.align,
                     field_offsets: Vec::new(),
+                    tag_encoding: None,
                 }
             }
             ArType::Tuple(tys) => {
@@ -505,16 +521,11 @@ impl LayoutEngine {
                     size: total_size,
                     align: max_align,
                     field_offsets,
+                    tag_encoding: None,
                 }
             }
             ArType::Named(symbol_id, generic_args) => {
                 if let Some(fields_def) = provider.get_struct_fields(*symbol_id) {
-                    // Field entries already carry their index; keep the sort to
-                    // stay robust against out-of-order table construction.
-                    let mut fields_with_indices: Vec<(usize, TypeId)> =
-                        fields_def.iter().map(|f| (f.index, f.ty)).collect();
-                    fields_with_indices.sort_by_key(|x| x.0);
-
                     let generic_params = provider.get_generic_params(*symbol_id).unwrap_or(&[]);
                     let arg_ids = interner.type_args(*generic_args);
                     let subst: FxHashMap<SymbolId, TypeId> = generic_params
@@ -523,24 +534,53 @@ impl LayoutEngine {
                         .zip(arg_ids.iter().copied())
                         .collect();
 
-                    let mut current_offset = 0;
-                    let mut max_align = 1;
-                    let mut field_offsets = Vec::with_capacity(fields_with_indices.len());
+                    struct FieldItem {
+                        orig_index: usize,
+                        layout: TypeLayout,
+                    }
 
-                    for (_, tid) in fields_with_indices {
-                        let ty = interner.resolve(tid);
+                    let mut items = Vec::with_capacity(fields_def.len());
+                    for f in fields_def.iter() {
+                        let ty = interner.resolve(f.ty);
                         let substituted = substitute(&ty, &subst, interner);
                         let layout = self.layout_of_type(&substituted, interner, provider)?;
-                        max_align = max_align.max(layout.align);
+                        items.push(FieldItem {
+                            orig_index: f.index,
+                            layout,
+                        });
+                    }
+
+                    if provider.is_repr_c(*symbol_id) {
+                        items.sort_by_key(|item| item.orig_index);
+                    } else {
+                        // A4.0: Sort by descending alignment, then descending size,
+                        // with original declaration index as a deterministic tie-breaker.
+                        items.sort_by_key(|item| {
+                            (
+                                std::cmp::Reverse(item.layout.align),
+                                std::cmp::Reverse(item.layout.size),
+                                item.orig_index,
+                            )
+                        });
+                    }
+
+                    let mut current_offset = 0;
+                    let mut max_align = 1;
+                    let mut field_offsets = vec![0u64; items.len()];
+
+                    for item in items {
+                        max_align = max_align.max(item.layout.align);
                         current_offset = self.align_up(
                             current_offset,
-                            layout.align,
+                            item.layout.align,
                             LayoutOperation::FieldOffset,
                         )?;
-                        field_offsets.push(current_offset);
+                        if item.orig_index < field_offsets.len() {
+                            field_offsets[item.orig_index] = current_offset;
+                        }
                         current_offset = self.checked_add(
                             current_offset,
-                            layout.size,
+                            item.layout.size,
                             LayoutOperation::FieldOffset,
                         )?;
                     }
@@ -555,6 +595,7 @@ impl LayoutEngine {
                         size: total_size,
                         align: max_align,
                         field_offsets,
+                        tag_encoding: None,
                     }
                 } else if let Some(variants) = provider.get_enum_variants(*symbol_id) {
                     let tag_size = self.pointer_width();
@@ -581,21 +622,17 @@ impl LayoutEngine {
                         size,
                         align: max_align,
                         field_offsets: vec![0, tag_size],
+                        tag_encoding: Some(TagEncoding::Direct {
+                            tag_size,
+                            payload_offset: tag_size,
+                        }),
                     }
                 } else {
-                    TypeLayout {
-                        size: 0,
-                        align: 1,
-                        field_offsets: Vec::new(),
-                    }
+                    TypeLayout::simple(0, 1)
                 }
             }
 
-            ArType::Func(_, _) => TypeLayout {
-                size: self.pointer_width(),
-                align: self.pointer_width(),
-                field_offsets: Vec::new(),
-            },
+            ArType::Func(_, _) => TypeLayout::simple(self.pointer_width(), self.pointer_width()),
             ArType::Result(ok, err) => {
                 let ok_layout = self.layout_of(*ok, interner, provider)?;
                 let err_layout = self.layout_of(*err, interner, provider)?;
@@ -618,32 +655,54 @@ impl LayoutEngine {
                     size: total_size,
                     align: max_align,
                     field_offsets: vec![tag_offset, payload_offset],
+                    tag_encoding: Some(TagEncoding::Direct {
+                        tag_size: self.pointer_width(),
+                        payload_offset,
+                    }),
                 }
             }
             ArType::Option(inner) | ArType::Poll(inner) => {
+                let inner_ty = interner.resolve(*inner);
                 let inner_layout = self.layout_of(*inner, interner, provider)?;
-                let max_align = inner_layout.align.max(self.pointer_width());
-                let tag_offset = 0;
-                let payload_offset = self.pointer_width();
-                let payload_end = self.checked_add(
-                    payload_offset,
-                    inner_layout.size,
-                    LayoutOperation::OptionPayload,
-                )?;
-                let total_size =
-                    self.align_up(payload_end, max_align, LayoutOperation::AggregatePadding)?;
+                if matches!(ty, ArType::Option(_))
+                    && self.has_null_niche(&inner_ty, interner, provider)
+                {
+                    TypeLayout {
+                        size: inner_layout.size,
+                        align: inner_layout.align,
+                        field_offsets: vec![0, 0],
+                        tag_encoding: Some(TagEncoding::Niche {
+                            niche_offset: 0,
+                            niche_size: self.pointer_width(),
+                            niche_value: 0,
+                            untagged_variant: 1,
+                            tagged_variant: 0,
+                        }),
+                    }
+                } else {
+                    let max_align = inner_layout.align.max(self.pointer_width());
+                    let tag_offset = 0;
+                    let payload_offset = self.pointer_width();
+                    let payload_end = self.checked_add(
+                        payload_offset,
+                        inner_layout.size,
+                        LayoutOperation::OptionPayload,
+                    )?;
+                    let total_size =
+                        self.align_up(payload_end, max_align, LayoutOperation::AggregatePadding)?;
 
-                TypeLayout {
-                    size: total_size,
-                    align: max_align,
-                    field_offsets: vec![tag_offset, payload_offset],
+                    TypeLayout {
+                        size: total_size,
+                        align: max_align,
+                        field_offsets: vec![tag_offset, payload_offset],
+                        tag_encoding: Some(TagEncoding::Direct {
+                            tag_size: self.pointer_width(),
+                            payload_offset,
+                        }),
+                    }
                 }
             }
-            ArType::Coroutine(_) => TypeLayout {
-                size: self.pointer_width(),
-                align: self.pointer_width(),
-                field_offsets: Vec::new(),
-            },
+            ArType::Coroutine(_) => TypeLayout::simple(self.pointer_width(), self.pointer_width()),
             ArType::Range(inner) => {
                 let inner_layout = self.layout_of(*inner, interner, provider)?;
                 let align = inner_layout.align;
@@ -658,6 +717,7 @@ impl LayoutEngine {
                     size: total_size,
                     align,
                     field_offsets: vec![start_offset, end_offset],
+                    tag_encoding: None,
                 }
             }
         })

@@ -161,11 +161,7 @@ impl<'a> FuncTranslator<'a> {
     fn layout_of(&self, ty: &arandu_middle::types::ArType) -> TypeLayout {
         self.layout_engine
             .layout_of_type(ty, self.interner, self.layout_provider)
-            .unwrap_or_else(|_| TypeLayout {
-                size: 0,
-                align: 1,
-                field_offsets: Vec::new(),
-            })
+            .unwrap_or_else(|_| TypeLayout::simple(0, 1))
     }
 
     /// Resolve a `TypeId` and compute its checked layout.

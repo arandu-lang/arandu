@@ -716,6 +716,9 @@ fn annotation_completions(text: &str, offset: u32, prefix: &str) -> Vec<Completi
                     Some(format!("{}(\"${{1:library}}\")", spec.canonical_name)),
                     true,
                 ),
+                attrs::AnnotationArguments::OneStringOrIdent => {
+                    (Some(format!("{}(\"${{1:C}}\")", spec.canonical_name)), true)
+                }
                 attrs::AnnotationArguments::EffectList => {
                     (Some(format!("{}(${{1:Pure}})", spec.canonical_name)), true)
                 }

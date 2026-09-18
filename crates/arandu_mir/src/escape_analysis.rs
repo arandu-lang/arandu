@@ -383,7 +383,13 @@ pub fn find_escapes(func: &AmirFunc, interner: &crate::types::TypeInterner) -> V
                         .get(lhs.local.as_usize())
                         .is_some_and(|l| l.is_memory);
                 let dest_is_ref_slot = func.locals.get(lhs.local.as_usize()).is_some_and(|l| {
-                    matches!(interner.resolve(l.ty), ArType::Ref(_) | ArType::RefMut(_))
+                    match interner.resolve(l.ty) {
+                        ArType::Ref(_) | ArType::RefMut(_) => true,
+                        ArType::Option(inner) | ArType::Nullable(inner) => {
+                            matches!(interner.resolve(inner), ArType::Ref(_) | ArType::RefMut(_))
+                        }
+                        _ => false,
+                    }
                 });
                 if dest_is_memory && !dest_is_ref_slot {
                     events.push(EscapeEvent {

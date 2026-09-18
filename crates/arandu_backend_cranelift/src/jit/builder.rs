@@ -90,6 +90,7 @@ pub(crate) fn create_jit_builder() -> Result<JITBuilder, Diagnostic> {
         "ar_co_make_ready_i64",
         crate::poll_runtime::ar_co_make_ready_i64 as *const u8,
     );
+    builder.symbol("ar_co_free", crate::poll_runtime::ar_co_free as *const u8);
 
     // SL_R.0 cooperative runtime + SL_S path helpers
     builder.symbol(

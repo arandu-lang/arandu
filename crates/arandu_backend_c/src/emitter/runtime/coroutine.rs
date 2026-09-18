@@ -24,6 +24,11 @@ static int64_t ar_co_block_on_i64(uint8_t *state) {{
         if (ar_co_poll_i64(state, &out) == 0) return out;
     }}
 }}
+static void ar_co_free(uint8_t *state) {{
+    if (!state) return;
+    if (*(uint32_t*)(state + 4) != 0x4152434fu) abort(); /* fail-closed magic */
+    free(state);
+}}
 
 /* Standard C99 Range and Coroutine helper functions */
 static inline void** ar_make_range(intptr_t left, intptr_t right) {{

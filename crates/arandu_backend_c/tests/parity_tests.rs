@@ -6,7 +6,7 @@ use arandu_middle::amir::{AmirConstant, AmirOperand, AmirProgram, AmirRvalue, Am
 use arandu_middle::layout::DataLayout;
 use arandu_middle::ops::BinaryOp;
 use arandu_semantics::{
-    CodegenBackend, OptLevel, TypeCheckResult, lower_to_amir, lower_to_hir,
+    CodegenBackend, OptLevel, TypeCheckResult, lower_to_amir_with_interfaces, lower_to_hir,
     optimize_amir_checked_with_level, resolve_for_test, type_check,
 };
 use std::env;
@@ -43,7 +43,7 @@ fn compile_src(src: &str) -> (AmirProgram, TypeCheckResult) {
     );
 
     let hir = lower_to_hir(&mut tc, &program).expect("HIR lowering failed");
-    let amir = lower_to_amir(&tc, &hir, 64).expect("AMIR lowering failed");
+    let (amir, _) = lower_to_amir_with_interfaces(&mut tc, &hir, 64).expect("AMIR lowering failed");
     (amir, tc)
 }
 
@@ -831,6 +831,30 @@ fn parity_enum_layout() {
 }
 
 #[test]
+fn parity_option_niche_ref() {
+    let src = r#"
+    func check_opt(opt: Option<ref int>): int {
+        match opt {
+            Some(r) => { return *r; }
+            None => { return -1; }
+        }
+    }
+
+    func main(): int {
+        let x: int = 42
+        let some_val: Option<ref int> = Option.Some(ref x)
+        let none_val: Option<ref int> = nil
+        let a = check_opt(some_val)
+        let b = check_opt(none_val)
+        if a != 42 { return 1 }
+        if b != -1 { return 2 }
+        return 0
+    }
+    "#;
+    test_execution_parity("option_niche_ref", src);
+}
+
+#[test]
 fn parity_ssa_pattern_bind() {
     let src = r#"
     enum Wrapper {
@@ -1143,11 +1167,17 @@ fn coroutine_value_uses_pointer_abi_in_both_backends() {
     let result = test_execution_result(
         "coroutine_pointer_abi",
         r#"
-extern "C" { func ar_co_block_on_i64(state: ptr[u8]): int }
+extern "C" {
+    func ar_co_block_on_i64(state: ptr[u8]): int
+    func ar_co_free(state: ptr[u8]): void
+}
 async func answer(): int { return 42 }
 func main(): int {
     let job = answer()
-    return unsafe { ar_co_block_on_i64(job as ptr[u8]) }
+    let p = unsafe { job as ptr[u8] }
+    let v = unsafe { ar_co_block_on_i64(p) }
+    unsafe { ar_co_free(p) }
+    return v
 }
 "#,
     );
@@ -1376,7 +1406,7 @@ fn compile_src_mono(src: &str) -> (AmirProgram, TypeCheckResult) {
     let mut hir = lower_to_hir(&mut tc, &program).expect("HIR lowering failed");
     let _specialized =
         arandu_semantics::monomorphize_program(&mut tc, &mut hir).expect("monomorphization failed");
-    let amir = lower_to_amir(&tc, &hir, 64).expect("AMIR lowering failed");
+    let (amir, _) = lower_to_amir_with_interfaces(&mut tc, &hir, 64).expect("AMIR lowering failed");
     (amir, tc)
 }
 
@@ -1499,6 +1529,7 @@ func StatsCombiner.combine(self: ref StatsCombiner, dest: mut ref Stats, partial
     dest.blank = dest.blank + partial.blank
 }
 
+@Repr("C")
 struct ChunkContext {
     subslice: []int,
     seed: Stats,

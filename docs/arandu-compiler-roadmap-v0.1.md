@@ -279,9 +279,9 @@ Fase 2 — A Construção da Infraestrutura & Execução (v0.2) · [FECHADA no c
 [ ] A12    Deterministic CTFE & Comptime Metaprogramming (AMIR VM, Salsa queries, RFC 0013)
 [x] BC     Backend Cranelift (Dev/Debug com compilador em memória)
    ├─ [x] BC.1   Fat Pointer String JIT (tratar String como ptr + len na convenção de chamadas do Cranelift)
-   ├─ [ ] BC.1a  Fechar ownership de buffers produzidos por `ToStr`, interpolação
-   │              e helpers de path nos dois backends; hoje o fat `str` não carrega
-   │              drop glue e os buffers sobrevivem até o fim do processo.
+   ├─ [x] BC.1a  Fechar ownership de buffers produzidos por `ToStr`, interpolação
+   │              e helpers de path nos dois backends; elaboração de drop glue
+   │              em `drop_elaborate` e limpeza de temporários em statement boundaries.
    ├─ [x] BC.2   Implementar EnumPayload & Discriminant no Cranelift JIT (Garantia estática contra double-free depende de M2; atualmente mitigado via poison-check em debug)
    ├─ [x] BC.3   Implementar IndexAccess & Array/Tuple no Cranelift JIT (Garantia estática contra double-free depende de M2; atualmente mitigado via poison-check em debug)
    ├─ [x] BC.4a  Borrow/BorrowMut no Cranelift JIT
@@ -339,8 +339,8 @@ Fase 3 — OSSA Avançado, Semântica e OS Runtime (v0.3) · [PARCIAL; vários m
    ├─ [x] A3.6   poll layout + block_on + `Poll[T]` typeck
    └─ [→] SL_R    Runtime async real (fila, Waker, I/O) — **próximo marco async**, não residual A3
 [ ] A4     Memory Layout Optimization Engine (field reordering, niche tags, SOO)
-   ├─ [ ] A4.0   Struct Field Reordering (eliminação de padding)
-   ├─ [ ] A4.1   Niche Optimization (Option/Enum Packing) — REQUER F2.0 referências seguras
+   ├─ [x] A4.0   Struct Field Reordering (eliminação de padding)
+   ├─ [x] A4.1   Niche Optimization (Option/Enum Packing) — REQUER F2.0 referências seguras
    ├─ [ ] A4.2   Pointer Tagging (metadados nos bits menos significativos)
    └─ [ ] A4.3   Small Object Optimization (SOO) para tipos <= 24 bytes
 [x] F2     OSSA borrow completo — FECHADO no escopo de linguagem v0.3 compiler
@@ -426,10 +426,10 @@ Fase 4 — Expressividade de Linguagem e Tipagem (v0.35) · [PARCIAL; superfíci
 [x] SYN.4  Patterns: `_`, binds, ranges, or-patterns `p1|p2` (parse/typeck/AMIR)
 [→] TYP.1  Structural interface satisfaction (method sig duck) — done; dyn/existential interface types later
 [x] TYP.2  Constraints: `<T: I>` + `where T: I`; Self em interface; check_instantiation T025; call via bound
-[ ] TYP.3  Inferência Bidirecional e Coerção Segura de Literais (Target-Aware Literal Unification)
+[x] TYP.3  Inferência Bidirecional e Coerção Segura de Literais (Target-Aware Literal Unification)
    ├─ [x] TYP.3.1  Descida Contextual Direta (`expected: Option<TypeId>` em chamadas, let, retornos e campos; validação com `TargetInfo` e T038)
-   ├─ [ ] TYP.3.2  Propagação em Operadores Binários e Coleções (Inferência contextual em `1 + x`, `x + 1`, `[1, 2, 3]` sem casts manuais)
-   └─ [ ] TYP.3.3  Unificação de Restrições Tardias no Solver (`TypeVar` de literais não resolvidos; resolução retroativa sem fallback arbitrário `i32`)
+   ├─ [x] TYP.3.2  Propagação em Operadores Binários e Coleções (Inferência contextual em `1 + x`, `x + 1`, `[1, 2, 3]` sem casts manuais)
+   └─ [x] TYP.3.3  Unificação de Restrições Tardias no Solver (`TypeVar` de literais não resolvidos; resolução retroativa sem fallback arbitrário `i32`)
 
 Fase 5 — Otimização Global, CodeGen & Ecossistema (v0.4+) · [NÃO INICIADA]
 [ ] LLVM   Backend LLVM (Release Optimizer, LTO, PGO profile-guided optimization pipeline)
@@ -1204,7 +1204,7 @@ O Arandu implementa inferência contextual bidirecional estrita com coerção se
    - `synth_expr_expected` propaga o tipo esperado top-down para argumentos de função, declarações `let x: T`, retornos de função e campos de struct.
    - O `synth_literal_expr` consulta `TargetInfo` (`uint_max()`, `int_min()`, `int_max()`) derivado do `TargetConfig` (Salsa input) e materializa o tipo concreto diretamente, emitindo `T038IntegerLiteralOutOfRange` se o valor exceder a largura do alvo.
 
-2. **TYP.3.2 — Propagação em Operadores Binários e Coleções [v0.2 / IMEDIATO]**:
+2. **TYP.3.2 — Propagação em Operadores Binários e Coleções [v0.2 / CONCLUÍDO]**:
    - **Operações Binárias**: `1 + x` e `x + 1` onde `x: T` (com `T` sendo qualquer tipo inteiro primitivo) propagam `Some(T)` para o lado literal, sintetizando `T` sem exigir cast explícito.
    - **Coleções e Arrays**: Literais de array `[1, 2, 3]` sob contexto `array[uint, 3]` ou `slice[u8]` propagam o tipo do elemento para cada item da lista.
    - **Requisitos de Implementação**:

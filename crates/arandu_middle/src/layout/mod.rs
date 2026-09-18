@@ -1,5 +1,7 @@
+pub mod abi;
 mod data_layout;
 
+pub use abi::{AbiScalar, AbiSlot, ArgAbi, DirectAbi, TargetAbi, TargetAbiClassifier};
 pub use data_layout::{DataLayout, SizeAlign};
 
 use crate::SymbolId;

@@ -749,14 +749,15 @@ fn jit_struct_field_access() {
         y: i64,
     }
     let p = Point { x: 10, y: 20 };
-    let result: i32 = unsafe {
-        let f: unsafe fn(*const Point) -> i32 = module.get_fn("get_x").unwrap();
-        f(&p as *const Point)
+    let result: i64 = unsafe {
+        let f: unsafe extern "C" fn(Point) -> i64 = module.get_fn("get_x").unwrap();
+        f(p)
     };
     assert_eq!(result, 10);
-    let result: i32 = unsafe {
-        let f: unsafe fn(*const Point) -> i32 = module.get_fn("get_y").unwrap();
-        f(&p as *const Point)
+    let p2 = Point { x: 10, y: 20 };
+    let result: i64 = unsafe {
+        let f: unsafe extern "C" fn(Point) -> i64 = module.get_fn("get_y").unwrap();
+        f(p2)
     };
     assert_eq!(result, 20);
 }
@@ -1906,4 +1907,186 @@ func main(): int {
         f()
     };
     assert_eq!(result, 100 + 200 + 300 + 400 + 500);
+}
+
+#[test]
+fn jit_abi_struct_pass_and_return_by_value() {
+    let src = r#"
+    struct Point {
+        x: int
+        y: int
+    }
+
+    func add_points(a: Point, b: Point): Point {
+        return Point { x: a.x + b.x, y: a.y + b.y }
+    }
+
+    func main(): int {
+        let p1 = Point { x: 10, y: 20 }
+        let p2 = Point { x: 30, y: 40 }
+        let p3 = add_points(p1, p2)
+        return p3.x + p3.y
+    }
+    "#;
+    let (amir, symbols, type_info) = compile_src(src);
+    let backend = backend_for_test();
+    let module = backend.compile(&amir, &symbols, &type_info).unwrap();
+
+    let result: i64 = unsafe {
+        let f: unsafe extern "C" fn() -> i64 = module.get_fn("main").unwrap();
+        f()
+    };
+    assert_eq!(result, (10 + 30) + (20 + 40));
+}
+
+#[test]
+fn jit_abi_mixed_int_float_by_value() {
+    let src = r#"
+    struct Particle {
+        id: int
+        speed: float
+    }
+
+    func accelerate(p: Particle, delta: float): Particle {
+        return Particle { id: p.id, speed: p.speed + delta }
+    }
+
+    func main(): int {
+        let p = Particle { id: 7, speed: 1.5 }
+        let p2 = accelerate(p, 2.5)
+        if p2.speed == 4.0 && p2.id == 7 {
+            return 42
+        }
+        return 0
+    }
+    "#;
+    let (amir, symbols, type_info) = compile_src(src);
+    let backend = backend_for_test();
+    let module = backend.compile(&amir, &symbols, &type_info).unwrap();
+
+    let result: i64 = unsafe {
+        let f: unsafe extern "C" fn() -> i64 = module.get_fn("main").unwrap();
+        f()
+    };
+    assert_eq!(result, 42);
+}
+
+#[test]
+fn jit_abi_two_floats_sse_by_value() {
+    let src = r#"
+    struct Vec2 {
+        x: float
+        y: float
+    }
+
+    func add_vectors(a: Vec2, b: Vec2): Vec2 {
+        return Vec2 { x: a.x + b.x, y: a.y + b.y }
+    }
+
+    func main(): int {
+        let v1 = Vec2 { x: 1.25, y: 2.5 }
+        let v2 = Vec2 { x: 3.75, y: 1.5 }
+        let v3 = add_vectors(v1, v2)
+        if v3.x == 5.0 && v3.y == 4.0 {
+            return 100
+        }
+        return 0
+    }
+    "#;
+    let (amir, symbols, type_info) = compile_src(src);
+    let backend = backend_for_test();
+    let module = backend.compile(&amir, &symbols, &type_info).unwrap();
+
+    let result: i64 = unsafe {
+        let f: unsafe extern "C" fn() -> i64 = module.get_fn("main").unwrap();
+        f()
+    };
+    assert_eq!(result, 100);
+}
+
+#[test]
+fn jit_abi_nested_struct_by_value() {
+    let src = r#"
+    struct Inner {
+        a: int
+        b: int
+    }
+
+    struct Outer {
+        in1: Inner
+    }
+
+    func inspect_outer(o: Outer): int {
+        return o.in1.a + o.in1.b
+    }
+
+    func main(): int {
+        let o = Outer { in1: Inner { a: 15, b: 25 } }
+        return inspect_outer(o)
+    }
+    "#;
+    let (amir, symbols, type_info) = compile_src(src);
+    let backend = backend_for_test();
+    let module = backend.compile(&amir, &symbols, &type_info).unwrap();
+
+    let result: i64 = unsafe {
+        let f: unsafe extern "C" fn() -> i64 = module.get_fn("main").unwrap();
+        f()
+    };
+    assert_eq!(result, 40);
+}
+
+#[test]
+fn jit_abi_zst_struct() {
+    let src = r#"
+    struct Empty {}
+
+    func do_nothing(e: Empty): Empty {
+        return e
+    }
+
+    func main(): int {
+        let e = Empty {}
+        let e2 = do_nothing(e)
+        return 99
+    }
+    "#;
+    let (amir, symbols, type_info) = compile_src(src);
+    let backend = backend_for_test();
+    let module = backend.compile(&amir, &symbols, &type_info).unwrap();
+
+    let result: i64 = unsafe {
+        let f: unsafe extern "C" fn() -> i64 = module.get_fn("main").unwrap();
+        f()
+    };
+    assert_eq!(result, 99);
+}
+
+#[test]
+fn jit_abi_struct_greater_than_16_bytes_indirect() {
+    let src = r#"
+    struct Big {
+        a: int
+        b: int
+        c: int
+    }
+
+    func sum_big(b: Big): int {
+        return b.a + b.b + b.c
+    }
+
+    func main(): int {
+        let b = Big { a: 10, b: 20, c: 30 }
+        return sum_big(b)
+    }
+    "#;
+    let (amir, symbols, type_info) = compile_src(src);
+    let backend = backend_for_test();
+    let module = backend.compile(&amir, &symbols, &type_info).unwrap();
+
+    let result: i64 = unsafe {
+        let f: unsafe extern "C" fn() -> i64 = module.get_fn("main").unwrap();
+        f()
+    };
+    assert_eq!(result, 60);
 }

@@ -134,7 +134,30 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                                 )
                             };
                             let function = self.module.declare_func_in_func(id, self.builder.func);
-                            self.builder.ins().call(function, &[ptr_val]);
+                            let arg_abi = self.classify_arg_abi(&ty);
+                            match arg_abi {
+                                arandu_semantics::layout::ArgAbi::ZeroSized => {
+                                    self.builder.ins().call(function, &[]);
+                                }
+                                arandu_semantics::layout::ArgAbi::Direct(direct) => {
+                                    let mut args = Vec::with_capacity(direct.slots.len());
+                                    for abi_slot in &direct.slots {
+                                        let chunk_ty =
+                                            crate::abi::abi_scalar_to_clif(abi_slot.scalar);
+                                        let chunk_val = self.builder.ins().load(
+                                            chunk_ty,
+                                            cranelift_codegen::ir::MemFlagsData::new(),
+                                            ptr_val,
+                                            abi_slot.offset as i32,
+                                        );
+                                        args.push(chunk_val);
+                                    }
+                                    self.builder.ins().call(function, &args);
+                                }
+                                arandu_semantics::layout::ArgAbi::Indirect => {
+                                    self.builder.ins().call(function, &[ptr_val]);
+                                }
+                            }
                         } else {
                             self.record_ice(
                                 format!("missing @Destructor function '{}'", symbol.name),

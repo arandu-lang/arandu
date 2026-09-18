@@ -12,8 +12,9 @@ use super::builder::create_jit_builder;
 use super::execution::CompiledModule;
 use super::isa::codegen_ice;
 use super::symbols::declare_runtime_imports;
-use crate::abi::build_signature;
+use crate::abi::{build_signature, build_signature_with_classifier, target_abi_for_triple};
 use crate::translator::FunctionTranslator;
+use arandu_semantics::layout::TargetAbiClassifier;
 
 /// Stateful Cranelift JIT context.
 ///
@@ -99,6 +100,9 @@ impl<M: Module> AranduModule<M> {
         let mut func_ids = FxHashMap::default();
         let default_call_conv = self.module.isa().default_call_conv();
         let ptr_type = self.module.target_config().pointer_type();
+        let target_abi = target_abi_for_triple(self.module.isa().triple());
+        let pointer_width = ptr_type.bytes() as u64;
+        let classifier = TargetAbiClassifier::new(target_abi, pointer_width);
 
         declare_runtime_imports(&mut self.module, &mut func_ids, default_call_conv, ptr_type)?;
 
@@ -112,7 +116,15 @@ impl<M: Module> AranduModule<M> {
                 .map(|&p| type_info.type_interner.resolve(func.temps[p.as_usize()].ty))
                 .collect();
             let ret_ty = type_info.type_interner.resolve(func.return_type);
-            let sig = build_signature(&param_types, &ret_ty, default_call_conv, ptr_type);
+            let sig = build_signature_with_classifier(
+                &param_types,
+                &ret_ty,
+                default_call_conv,
+                ptr_type,
+                &classifier,
+                &type_info.type_interner,
+                type_info,
+            );
 
             let linkage = if is_unit_func(func.symbol) {
                 Linkage::Export
@@ -189,7 +201,7 @@ impl<M: Module> AranduModule<M> {
                         codegen_ice(format!("failed to declare drop shim '{name}': {err:?}"))
                     })?;
                 func_ids.insert(name.clone(), shim_id);
-                drop_shims.insert(name, (shim_id, destructor_symbol, signature));
+                drop_shims.insert(name, (shim_id, destructor_symbol, signature, payload_ty));
             }
         }
 
@@ -203,7 +215,15 @@ impl<M: Module> AranduModule<M> {
             let func_id = if let Some(&existing_id) = func_ids.get(c_name) {
                 existing_id
             } else {
-                let sig = build_signature(param_types, return_type, default_call_conv, ptr_type);
+                let sig = build_signature_with_classifier(
+                    param_types,
+                    return_type,
+                    default_call_conv,
+                    ptr_type,
+                    &classifier,
+                    &type_info.type_interner,
+                    type_info,
+                );
                 self.module
                     .declare_function(c_name, Linkage::Import, &sig)
                     .map_err(|err| {
@@ -269,7 +289,15 @@ impl<M: Module> AranduModule<M> {
                 .map(|&p| type_info.type_interner.resolve(func.temps[p.as_usize()].ty))
                 .collect();
             let ret_ty = type_info.type_interner.resolve(func.return_type);
-            let sig = build_signature(&param_types, &ret_ty, default_call_conv, ptr_type);
+            let sig = build_signature_with_classifier(
+                &param_types,
+                &ret_ty,
+                default_call_conv,
+                ptr_type,
+                &classifier,
+                &type_info.type_interner,
+                type_info,
+            );
             context.func.signature = sig;
 
             {
@@ -295,7 +323,7 @@ impl<M: Module> AranduModule<M> {
             self.module.clear_context(&mut context);
         }
 
-        for (name, (shim_id, destructor_symbol, signature)) in drop_shims {
+        for (name, (shim_id, destructor_symbol, signature, payload_ty)) in drop_shims {
             let destructor = symbols.get(destructor_symbol);
             let destructor_name = symbols.host_func_name(destructor);
             let Some(&destructor_id) = func_ids.get(destructor_name) else {
@@ -317,7 +345,33 @@ impl<M: Module> AranduModule<M> {
                 let destructor = self
                     .module
                     .declare_func_in_func(destructor_id, builder.func);
-                builder.ins().call(destructor, &[raw]);
+                let arg_abi = classifier.classify_type(
+                    &type_info.type_interner.resolve(payload_ty),
+                    &type_info.type_interner,
+                    type_info,
+                );
+                match arg_abi {
+                    arandu_semantics::layout::ArgAbi::ZeroSized => {
+                        builder.ins().call(destructor, &[]);
+                    }
+                    arandu_semantics::layout::ArgAbi::Direct(direct) => {
+                        let mut call_args = Vec::with_capacity(direct.slots.len());
+                        for abi_slot in &direct.slots {
+                            let chunk_ty = crate::abi::abi_scalar_to_clif(abi_slot.scalar);
+                            let chunk_val = builder.ins().load(
+                                chunk_ty,
+                                cranelift_codegen::ir::MemFlagsData::new(),
+                                raw,
+                                abi_slot.offset as i32,
+                            );
+                            call_args.push(chunk_val);
+                        }
+                        builder.ins().call(destructor, &call_args);
+                    }
+                    arandu_semantics::layout::ArgAbi::Indirect => {
+                        builder.ins().call(destructor, &[raw]);
+                    }
+                }
                 builder.ins().return_(&[]);
                 builder.seal_all_blocks();
             }

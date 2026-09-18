@@ -192,6 +192,15 @@ impl<'a, 'b, M: Module> FunctionTranslator<'a, 'b, M> {
         }
     }
 
+    pub(crate) fn classify_arg_abi(&mut self, ty: &ArType) -> arandu_semantics::layout::ArgAbi {
+        let triple = self.module.isa().triple();
+        let target_abi = crate::abi::target_abi_for_triple(triple);
+        let pointer_width = self.ptr_type.bytes() as u64;
+        let classifier =
+            arandu_semantics::layout::TargetAbiClassifier::new(target_abi, pointer_width);
+        classifier.classify_type(ty, &self.type_info.type_interner, self.type_info)
+    }
+
     pub(crate) fn poison_i32(&mut self) -> Value {
         self.builder.ins().iconst(self.ptr_type, 0)
     }
@@ -435,6 +444,50 @@ impl<'a, 'b, M: Module> AmirVisitor for FunctionTranslator<'a, 'b, M> {
                     let descriptor = self.materialize_slice_descriptor(data, len);
                     if let Some(&var) = self.temp_map.get(&param_temp_id) {
                         self.builder.def_var(var, descriptor);
+                    }
+                } else if matches!(&param_ty, ArType::Named(_, _) | ArType::Tuple(_)) {
+                    let arg_abi = self.classify_arg_abi(&param_ty);
+                    match arg_abi {
+                        arandu_semantics::layout::ArgAbi::ZeroSized => {
+                            let null_ptr = self.builder.ins().iconst(self.ptr_type, 0);
+                            if let Some(&var) = self.temp_map.get(&param_temp_id) {
+                                self.builder.def_var(var, null_ptr);
+                            }
+                        }
+                        arandu_semantics::layout::ArgAbi::Direct(direct) => {
+                            let layout = self.checked_layout(&param_ty);
+                            let size = u32::try_from(layout.size.max(1)).unwrap_or(1);
+                            let align_shift = layout.align.max(1).trailing_zeros() as u8;
+                            let slot = self.builder.create_sized_stack_slot(
+                                cranelift_codegen::ir::StackSlotData {
+                                    kind: cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+                                    size,
+                                    align_shift,
+                                    key: None,
+                                },
+                            );
+                            let addr = self.builder.ins().stack_addr(self.ptr_type, slot, 0);
+                            for abi_slot in &direct.slots {
+                                let chunk_val = clif_params[clif_slot_idx];
+                                clif_slot_idx += 1;
+                                self.builder.ins().store(
+                                    cranelift_codegen::ir::MemFlagsData::new(),
+                                    chunk_val,
+                                    addr,
+                                    abi_slot.offset as i32,
+                                );
+                            }
+                            if let Some(&var) = self.temp_map.get(&param_temp_id) {
+                                self.builder.def_var(var, addr);
+                            }
+                        }
+                        arandu_semantics::layout::ArgAbi::Indirect => {
+                            let ptr_val = clif_params[clif_slot_idx];
+                            clif_slot_idx += 1;
+                            if let Some(&var) = self.temp_map.get(&param_temp_id) {
+                                self.builder.def_var(var, ptr_val);
+                            }
+                        }
                     }
                 } else if let ClifType::Concrete(_) = clif_type(&param_ty, self.ptr_type) {
                     let val = clif_params[clif_slot_idx];

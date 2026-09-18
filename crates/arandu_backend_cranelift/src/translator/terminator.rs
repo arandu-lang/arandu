@@ -35,6 +35,43 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     let operand = arandu_semantics::amir::AmirOperand::Copy(ret_temp);
                     let (data, len) = self.translate_slice_operand(&operand);
                     self.builder.ins().return_(&[data, len]);
+                } else if matches!(&return_ty, ArType::Named(_, _) | ArType::Tuple(_)) {
+                    let arg_abi = self.classify_arg_abi(&return_ty);
+                    match arg_abi {
+                        arandu_semantics::layout::ArgAbi::ZeroSized => {
+                            self.builder.ins().return_(&[]);
+                        }
+                        arandu_semantics::layout::ArgAbi::Direct(direct) => {
+                            let ret_temp = arandu_semantics::amir::TempId::from_usize(0);
+                            let base_ptr = if let Some(&var) = self.temp_map.get(&ret_temp) {
+                                self.builder.use_var(var)
+                            } else {
+                                self.poison_value(self.ptr_type)
+                            };
+                            let mut chunks = Vec::with_capacity(direct.slots.len());
+                            for abi_slot in &direct.slots {
+                                let chunk_ty = crate::abi::abi_scalar_to_clif(abi_slot.scalar);
+                                let chunk_val = self.builder.ins().load(
+                                    chunk_ty,
+                                    cranelift_codegen::ir::MemFlagsData::new(),
+                                    base_ptr,
+                                    abi_slot.offset as i32,
+                                );
+                                chunks.push(chunk_val);
+                            }
+                            self.builder.ins().return_(&chunks);
+                        }
+                        arandu_semantics::layout::ArgAbi::Indirect => {
+                            let ret_temp = arandu_semantics::amir::TempId::from_usize(0);
+                            if let Some(&var) = self.temp_map.get(&ret_temp) {
+                                let ret_val = self.builder.use_var(var);
+                                self.builder.ins().return_(&[ret_val]);
+                            } else {
+                                let poison = self.poison_value(self.ptr_type);
+                                self.builder.ins().return_(&[poison]);
+                            }
+                        }
+                    }
                 } else {
                     let ret_ty = return_ty;
                     let clif_ret = clif_type(&ret_ty, self.ptr_type);

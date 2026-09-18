@@ -24,13 +24,21 @@ pub(crate) fn synth_result_ctor(
 ) -> Option<ArType> {
     let (type_name, member) = type_path_member(checker.pool, callee)?;
     let global_scope = checker.symbols.global_scope();
-    let result_sym = checker.symbols.lookup_type(global_scope, "Result")?;
-    let resolved_sym = checker
-        .resolved
-        .type_refs
-        .get(&type_name.span.into())
-        .copied()?;
-    if resolved_sym != result_sym {
+    let is_result = if let Some(result_sym) = checker.symbols.lookup_type(global_scope, "Result") {
+        if let Some(resolved_sym) = checker
+            .resolved
+            .type_refs
+            .get(&type_name.span.into())
+            .copied()
+        {
+            resolved_sym == result_sym
+        } else {
+            super::super::types::type_name_base(type_name) == "Result"
+        }
+    } else {
+        super::super::types::type_name_base(type_name) == "Result"
+    };
+    if !is_result {
         return None;
     }
     let arg_ids = checker.pool.expr_list(args).to_vec();
@@ -120,19 +128,33 @@ pub(crate) fn synth_option_ctor(
     callee: ExprId,
     args: IndexRange,
     span: Span,
+    expected: Option<TypeId>,
 ) -> Option<ArType> {
     let (type_name, member) = type_path_member(checker.pool, callee)?;
     let global_scope = checker.symbols.global_scope();
-    let option_sym = checker.symbols.lookup_type(global_scope, "Option")?;
-    let resolved_sym = checker
-        .resolved
-        .type_refs
-        .get(&type_name.span.into())
-        .copied()?;
-    if resolved_sym != option_sym {
+    let is_option = if let Some(option_sym) = checker.symbols.lookup_type(global_scope, "Option") {
+        if let Some(resolved_sym) = checker
+            .resolved
+            .type_refs
+            .get(&type_name.span.into())
+            .copied()
+        {
+            resolved_sym == option_sym
+        } else {
+            super::super::types::type_name_base(type_name) == "Option"
+        }
+    } else {
+        super::super::types::type_name_base(type_name) == "Option"
+    };
+    if !is_option {
         return None;
     }
     let arg_ids = checker.pool.expr_list(args).to_vec();
+    let expected_inner = expected.and_then(|id| match checker.resolve(id) {
+        ArType::Option(inner) => Some(inner),
+        _ => None,
+    });
+
     match member {
         "Some" => {
             if arg_ids.len() != 1 {
@@ -146,7 +168,39 @@ pub(crate) fn synth_option_ctor(
                 checker.diagnostics.push(diag);
                 return Some(ArType::Error);
             }
-            let inner_id = synth_expr(checker, arg_ids[0]);
+            if let Some(exp_inner) = expected_inner {
+                let got = synth_expr(checker, arg_ids[0]);
+                if !checker.unify_ids(exp_inner, got) {
+                    checker.add_constraint(
+                        exp_inner,
+                        got,
+                        ConstraintOrigin::CallArg {
+                            call_span: span,
+                            param_span: span,
+                            arg_span: checker.pool.expr_span(arg_ids[0]),
+                            arg_index: 0,
+                        },
+                    );
+                }
+                Some(ArType::Option(exp_inner))
+            } else {
+                let inner_id = synth_expr(checker, arg_ids[0]);
+                Some(ArType::Option(inner_id))
+            }
+        }
+        "None" => {
+            if !arg_ids.is_empty() {
+                let diag = crate::Diagnostic::error(
+                    crate::DiagCode::T012WrongArgCount,
+                    format!("Option.None expects 0 arguments, found {}", arg_ids.len()),
+                    span,
+                )
+                .with_label(checker.pool.expr_span(callee), "call target is here")
+                .with_label(span, format!("{} arguments provided", arg_ids.len()));
+                checker.diagnostics.push(diag);
+                return Some(ArType::Error);
+            }
+            let inner_id = expected_inner.unwrap_or_else(|| checker.intern(ArType::Error));
             Some(ArType::Option(inner_id))
         }
         _ => None,

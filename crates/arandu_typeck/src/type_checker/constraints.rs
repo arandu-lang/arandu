@@ -56,8 +56,13 @@ pub enum ConstraintOrigin {
         right_span: Span,
     },
 
-    /// `-a` or `!a` — unary operator on wrong type.
-    UnaryOp { op_span: Span, operand_span: Span },
+    /// `-a`, `!a`, `~a` — unary operator on wrong type. `op` lets the
+    /// renderer tailor hints (only `-` mentions "cannot be negated").
+    UnaryOp {
+        op: arandu_parser::UnaryOp,
+        op_span: Span,
+        operand_span: Span,
+    },
 
     /// A condition expression that should be `bool` but isn't.
     Condition { span: Span },
@@ -114,4 +119,51 @@ pub enum ConstraintOrigin {
 
     /// `expr catch handler` — handler type must match `Result` ok type.
     CatchHandler { expr_span: Span, handler_span: Span },
+
+    /// Late promotion of an integer literal that does not fit the concrete
+    /// type it was promoted to (TYP.3.3 / T038).
+    LiteralPromotion {
+        literal: String,
+        literal_span: Span,
+        target_span: Span,
+    },
+}
+
+impl ConstraintOrigin {
+    /// The span of the type that demanded the constraint. Used to point an
+    /// implicit-widening diagnostic at the annotation/call/field that
+    /// required a concrete type.
+    #[must_use]
+    pub fn target_span(&self) -> Span {
+        match self {
+            ConstraintOrigin::Assignment { lhs_span, .. } => *lhs_span,
+            ConstraintOrigin::CallArg { param_span, .. } => *param_span,
+            ConstraintOrigin::ReturnType { declared_span, .. } => *declared_span,
+            ConstraintOrigin::IfBranches { else_span, .. } => *else_span,
+            ConstraintOrigin::MatchArms { mismatch_span, .. } => *mismatch_span,
+            ConstraintOrigin::BinaryOp { op_span, .. } => *op_span,
+            ConstraintOrigin::UnaryOp { op_span, .. } => *op_span,
+            ConstraintOrigin::FieldInit { field_span, .. } => *field_span,
+            ConstraintOrigin::SetTarget { place_span, .. } => *place_span,
+            ConstraintOrigin::CastExpr { target_span, .. } => *target_span,
+            ConstraintOrigin::ImplicitWidening { target_span, .. } => *target_span,
+            ConstraintOrigin::ArrayLiteral { array_span, .. } => *array_span,
+            ConstraintOrigin::LiteralPromotion { target_span, .. } => *target_span,
+            ConstraintOrigin::Condition { span }
+            | ConstraintOrigin::TryInvalid { span }
+            | ConstraintOrigin::AwaitInvalid { span }
+            | ConstraintOrigin::InvalidIndex {
+                index_span: span, ..
+            }
+            | ConstraintOrigin::UndefinedField {
+                field_span: span, ..
+            }
+            | ConstraintOrigin::NullCoalesce {
+                right_span: span, ..
+            }
+            | ConstraintOrigin::CatchHandler {
+                handler_span: span, ..
+            } => *span,
+        }
+    }
 }

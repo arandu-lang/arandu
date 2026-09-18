@@ -651,6 +651,7 @@ fn constraint_unary_op() {
         expected: ArType::Primitive(Primitive::Bool),
         found: ArType::Primitive(Primitive::Int),
         origin: ConstraintOrigin::UnaryOp {
+            op: arandu_parser::UnaryOp::Neg,
             op_span: dummy_span(),
             operand_span: dummy_span(),
         },
@@ -898,6 +899,7 @@ fn constraint_origin_debug() {
             right_span: dummy_span(),
         },
         ConstraintOrigin::UnaryOp {
+            op: arandu_parser::UnaryOp::Neg,
             op_span: dummy_span(),
             operand_span: dummy_span(),
         },
@@ -1040,6 +1042,7 @@ fn all_constraint_origins() -> Vec<ConstraintOrigin> {
             right_span: s,
         },
         ConstraintOrigin::UnaryOp {
+            op: arandu_parser::UnaryOp::Neg,
             op_span: s,
             operand_span: s,
         },

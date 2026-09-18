@@ -134,7 +134,15 @@ pub(crate) fn lower_builtin_generic(
     ctx: &LowerCtx<'_>,
     interner: &mut TypeInterner,
 ) -> Option<ArType> {
-    let resolved_sym = ctx.resolved.type_refs.get(&name.span.into()).copied()?;
+    let resolved_sym = ctx
+        .resolved
+        .type_refs
+        .get(&name.span.into())
+        .copied()
+        .or_else(|| {
+            let base = name.path.last().map(|s| s.as_str())?;
+            ctx.symbols.lookup_type(ctx.symbols.global_scope(), base)
+        })?;
     let lowered: Vec<ArType> = args
         .iter()
         .map(|&a| super::lower::lower_type_expr_ctx(a, ctx, interner))

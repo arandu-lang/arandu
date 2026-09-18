@@ -649,22 +649,22 @@ fn literal_pair_float_literal_with_concrete() {
 #[test]
 fn literal_pair_two_int_literals() {
     let result = resolve_literal_pair(&ArType::IntLiteral, &ArType::IntLiteral);
-    assert_eq!(result, ArType::Primitive(Primitive::Int));
+    assert_eq!(result, ArType::IntLiteral);
 }
 
 #[test]
 fn literal_pair_two_float_literals() {
     let result = resolve_literal_pair(&ArType::FloatLiteral, &ArType::FloatLiteral);
-    assert_eq!(result, ArType::Primitive(Primitive::Float));
+    assert_eq!(result, ArType::FloatLiteral);
 }
 
 #[test]
 fn literal_pair_int_and_float_literals() {
     let result = resolve_literal_pair(&ArType::IntLiteral, &ArType::FloatLiteral);
-    assert_eq!(result, ArType::Primitive(Primitive::Float));
+    assert_eq!(result, ArType::FloatLiteral);
 
     let result = resolve_literal_pair(&ArType::FloatLiteral, &ArType::IntLiteral);
-    assert_eq!(result, ArType::Primitive(Primitive::Float));
+    assert_eq!(result, ArType::FloatLiteral);
 }
 
 #[test]
@@ -684,7 +684,7 @@ fn literal_pair_literal_absorbs_u32() {
 
 #[test]
 fn literal_pair_float_literal_with_int_concrete_promotes() {
-    // IntLiteral + Float -> float should win
-    let result = resolve_literal_pair(&ArType::IntLiteral, &ArType::FloatLiteral);
+    // IntLiteral + Float concrete -> float should win
+    let result = resolve_literal_pair(&ArType::IntLiteral, &ArType::Primitive(Primitive::Float));
     assert_eq!(result, ArType::Primitive(Primitive::Float));
 }

@@ -194,6 +194,18 @@ fn check_single_var_decl(
             let expected = checker.lower_type_expr(*ty_expr, checker.type_scope());
             let bind_ty = checker.resolve(bind_ty_id);
 
+            if let Some(var_id) = checker.literal_table.var_for_expr(value) {
+                let exp_id = checker.intern(expected.clone());
+                checker.constrain_literal_var(
+                    var_id,
+                    exp_id,
+                    ConstraintOrigin::Assignment {
+                        lhs_span: binding.span,
+                        rhs_span: checker.pool.expr_span(value),
+                    },
+                );
+            }
+
             apply_assignment_constraints(
                 checker,
                 &expected,
@@ -202,6 +214,8 @@ fn check_single_var_decl(
                 checker.pool.expr_span(value),
             );
             bind_ty_id = checker.intern(expected);
+        } else if let Some(var_id) = checker.literal_table.var_for_expr(value) {
+            checker.literal_table.bind_symbol(symbol_id, var_id);
         }
 
         checker.ctx.bind(symbol_id, bind_ty_id);
@@ -251,7 +265,11 @@ fn check_set_stmt(
             );
         }
     } else if let Some(place) = places.first() {
-        let expected_ty_id = synth_place(checker, place);
+        // The single-place synthesis already ran above (used as `expected` for
+        // the value); reuse it instead of synthesizing the place twice, which
+        // duplicated T006/T017/T018 diagnostics and re-synthesized the index
+        // sub-expression.
+        let expected_ty_id = expected.unwrap_or_else(|| checker.intern(ArType::Error));
         let mut final_val_ty_id = val_ty_id;
 
         if matches!(checker.pool.expr(value), arandu_parser::ExprKind::Nil)
@@ -274,6 +292,20 @@ fn check_set_stmt(
                 "Result value must be handled with `?` or `value, err = f()`",
                 checker.pool.expr_span(value),
             ));
+        }
+
+        if let Some(var_id) = checker.literal_table.var_for_expr(value) {
+            let exp_ty = checker.resolve(expected_ty_id);
+            if !exp_ty.is_literal() && !exp_ty.is_error() {
+                checker.constrain_literal_var(
+                    var_id,
+                    expected_ty_id,
+                    ConstraintOrigin::SetTarget {
+                        place_span: place.span,
+                        value_span: checker.pool.expr_span(value),
+                    },
+                );
+            }
         }
 
         apply_set_constraints(
@@ -310,6 +342,21 @@ fn check_return_stmt(
         checker.intern(ArType::tuple(&tys_vec, &checker.type_info.type_interner))
     };
     let val_ty = checker.resolve(val_ty_id);
+
+    if values.len() == 1
+        && let Some(var_id) = checker.literal_table.var_for_expr(values[0])
+        && !current_ret.is_literal()
+        && !current_ret.is_error()
+    {
+        checker.constrain_literal_var(
+            var_id,
+            current_ret_id,
+            ConstraintOrigin::ReturnType {
+                return_span: span,
+                declared_span: checker.ctx.current_return_decl_span().unwrap_or(span),
+            },
+        );
+    }
 
     if !checker.is_assignable_return_type(&current_ret, &val_ty) {
         checker.add_subtype_constraint(

@@ -163,6 +163,7 @@ pub struct TypeChecker<'a> {
     pub pool: &'a AstPool,
     pub target_info: TargetInfo,
     pub current_observed_effects: arandu_middle::EffectFlags,
+    pub literal_table: solver::LiteralTable,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -243,6 +244,7 @@ impl<'a> TypeChecker<'a> {
             pool,
             target_info,
             current_observed_effects: arandu_middle::EffectFlags::NONE,
+            literal_table: solver::LiteralTable::new(),
         }
     }
 

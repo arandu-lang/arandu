@@ -31,6 +31,9 @@ pub(super) fn synth_call_expr(
     match kind {
         ExprKind::Path { path: _ } => {
             if let Some(symbol_id) = checker.resolved.expr_symbol(expr) {
+                if let Some(var_id) = checker.literal_table.var_for_symbol(symbol_id) {
+                    checker.literal_table.bind_expr(expr, var_id);
+                }
                 if let Some(ty_id) = checker.ctx.lookup(symbol_id) {
                     return Some(ty_id);
                 }
@@ -348,7 +351,9 @@ pub(super) fn synth_call_expr(
             {
                 return Some(checker.intern(result_ty));
             }
-            if let Some(option_ty) = synth_option_ctor(checker, callee_id, args_range, span) {
+            if let Some(option_ty) =
+                synth_option_ctor(checker, callee_id, args_range, span, expected)
+            {
                 return Some(checker.intern(option_ty));
             }
             if let Some(poll_ty) = synth_poll_ctor(checker, callee_id, args_range, span) {
@@ -418,6 +423,7 @@ pub(super) fn synth_call_expr(
                             if let Some(param_id) = param_id {
                                 check_call_arg(
                                     checker,
+                                    arg_id,
                                     param_id,
                                     arg_ty_id,
                                     span,
@@ -533,6 +539,7 @@ pub(super) fn synth_call_expr(
                                 if let Some(expected_id) = expected_id {
                                     check_call_arg(
                                         checker,
+                                        arg_id,
                                         expected_id,
                                         arg_ty_id,
                                         span,
@@ -702,6 +709,7 @@ pub(super) fn synth_call_expr(
                     if let Some(param_id) = formal {
                         check_call_arg(
                             checker,
+                            arg_id,
                             param_id,
                             arg_ty_id,
                             span,

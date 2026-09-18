@@ -2,7 +2,7 @@ use arandu_parser::{Pattern, ast_pool::PatternId};
 
 use super::super::TypeChecker;
 use super::super::constraints::ConstraintOrigin;
-use super::super::types::{ArType, TypeId};
+use super::super::types::{self, ArType, TypeId};
 use super::expr::synth_expr;
 
 pub fn check_pattern(checker: &mut TypeChecker<'_>, pattern: PatternId, value_ty: TypeId) {
@@ -436,11 +436,16 @@ pub fn check_pattern(checker: &mut TypeChecker<'_>, pattern: PatternId, value_ty
                 let expected_struct_ty =
                     ArType::named(struct_symbol_id, &[], &checker.type_info.type_interner);
                 let val_ty = checker.resolve(value_ty);
-                if !super::super::types::unify(
-                    &val_ty,
-                    &expected_struct_ty,
-                    &checker.type_info.type_interner,
-                ) {
+                // Struct patterns match by *symbol*: the pattern syntax cannot
+                // carry generic arguments (`BoxG { v }`), so a generic struct
+                // pattern must accept any instantiation of the same struct. An
+                // arity-exact `unify` against `Named(struct, [])` made every
+                // generic struct pattern fail with a spurious T002.
+                let same_struct = match val_ty {
+                    ArType::Named(vid, _) => vid == struct_symbol_id,
+                    _ => false,
+                };
+                if !same_struct {
                     checker.add_constraint(
                         expected_struct_ty,
                         value_ty,
@@ -450,14 +455,36 @@ pub fn check_pattern(checker: &mut TypeChecker<'_>, pattern: PatternId, value_ty
                         },
                     );
                 }
+                // Field types come from the *value's* instantiation
+                // (`BoxG<int> { v }` binds `v` as `int`, not as the type
+                // parameter symbol).
+                let val_args: Vec<ArType> = match val_ty {
+                    ArType::Named(_, args) => checker
+                        .type_info
+                        .type_interner
+                        .type_args(args)
+                        .iter()
+                        .map(|&arg_id| checker.resolve(arg_id))
+                        .collect(),
+                    _ => Vec::new(),
+                };
                 for &field_id in checker.pool.field_pattern_list(*fields) {
                     let field = checker.pool.field_pattern(field_id);
-                    let field_ty_id_opt = checker
-                        .type_info
-                        .struct_fields
-                        .get(&struct_symbol_id)
-                        .and_then(|df| df.get(field.name.as_str()))
-                        .map(|f| f.ty);
+                    let field_ty_id_opt = types::struct_field_instantiated(
+                        checker,
+                        struct_symbol_id,
+                        &val_args,
+                        field.name.as_str(),
+                    )
+                    .map(|t| checker.intern(t))
+                    .or_else(|| {
+                        checker
+                            .type_info
+                            .struct_fields
+                            .get(&struct_symbol_id)
+                            .and_then(|df| df.get(field.name.as_str()))
+                            .map(|f| f.ty)
+                    });
                     if let Some(field_ty_id) = field_ty_id_opt {
                         if let Some(pat_id) = field.pattern {
                             check_pattern(checker, pat_id, field_ty_id);

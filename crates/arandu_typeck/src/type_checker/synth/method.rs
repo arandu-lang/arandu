@@ -395,6 +395,7 @@ pub(crate) fn synth_method_call(
         if let Some(expected_id) = expected_id {
             super::expr::check_call_arg(
                 checker,
+                arg_id,
                 expected_id,
                 arg_ty_id,
                 call_span,

@@ -163,9 +163,13 @@ fn check_one_item_body(checker: &mut TypeChecker<'_>, program: &Program, decl: &
             validate_top_level_any(checker, decl);
             let val_ty = synth_expr(checker, const_decl.value);
             let const_key = NodeKey::from(const_decl.span);
-            if let Some(symbol_id) = checker.resolved.definitions.get(&const_key) {
-                checker.record_decl_type(*symbol_id, val_ty);
+            if let Some(&symbol_id) = checker.resolved.definitions.get(&const_key) {
+                checker.record_decl_type(symbol_id, val_ty);
+                if let Some(var_id) = checker.literal_table.var_for_expr(const_decl.value) {
+                    checker.literal_table.bind_symbol(symbol_id, var_id);
+                }
             }
+            checker.finalize_literal_vars();
         }
         TopLevelDecl::Extern(extern_decl) => {
             validate_top_level_any(checker, decl);

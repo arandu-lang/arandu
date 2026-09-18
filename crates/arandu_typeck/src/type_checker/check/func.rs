@@ -62,9 +62,13 @@ fn validate_method_receiver(checker: &mut TypeChecker<'_>, decl: &FuncDecl) {
         self_ty = ArType::named(struct_id, &new_args, &checker.type_info.type_interner);
     }
     if !super::super::types::unify(&recv_ty, &self_ty, &checker.type_info.type_interner) {
+        // `lhs_span` points at the declared `self: T` type and `rhs_span` at
+        // the receiver name in `Type.method`, so `self_ty` is the declared
+        // (expected) type and `recv_ty` the found one. Passing them the other
+        // way round rendered a misleading T002 (labels swapped vs types).
         checker.add_constraint(
-            recv_ty,
             self_ty,
+            recv_ty,
             ConstraintOrigin::Assignment {
                 lhs_span: first.span,
                 rhs_span: receiver.span,
@@ -144,6 +148,7 @@ pub fn check_func_body(checker: &mut TypeChecker<'_>, decl: &FuncDecl) {
     super::block::check_block_tail(checker, checker.pool, &decl.body, Some(ret_id));
     checker.ctx.pop_return();
     checker.type_scope_id = None;
+    checker.finalize_literal_vars();
 
     if let Some(symbol_id) = func_symbol {
         let declared = checker.type_info.function_effects.get(&symbol_id).copied();

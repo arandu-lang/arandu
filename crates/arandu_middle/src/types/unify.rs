@@ -235,6 +235,11 @@ pub fn unify(a: &ArType, b: &ArType, interner: &TypeInterner) -> bool {
 /// Given two types where at least one may be a literal, resolve to the
 /// concrete type. This is used to determine the result type of binary
 /// operations where literals are involved.
+///
+/// A literal paired with a concrete non-literal takes the concrete type.
+/// Two literals of the same kind stay literal, and an `int`/`float` literal
+/// pair stays a literal (float-leaning), keeping the result deferred so it
+/// can still be constrained by the surrounding context (TYP.3.3).
 #[must_use]
 pub fn resolve_literal_pair(a: &ArType, b: &ArType) -> ArType {
     match (a, b) {
@@ -244,10 +249,10 @@ pub fn resolve_literal_pair(a: &ArType, b: &ArType) -> ArType {
         (ArType::FloatLiteral, other) | (other, ArType::FloatLiteral) if !other.is_literal() => {
             other.clone()
         }
-        (ArType::IntLiteral, ArType::IntLiteral) => ArType::Primitive(Primitive::Int),
-        (ArType::FloatLiteral, ArType::FloatLiteral) => ArType::Primitive(Primitive::Float),
+        (ArType::IntLiteral, ArType::IntLiteral) => ArType::IntLiteral,
+        (ArType::FloatLiteral, ArType::FloatLiteral) => ArType::FloatLiteral,
         (ArType::IntLiteral, ArType::FloatLiteral) | (ArType::FloatLiteral, ArType::IntLiteral) => {
-            ArType::Primitive(Primitive::Float)
+            ArType::FloatLiteral
         }
         _ => a.clone(),
     }

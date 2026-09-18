@@ -295,6 +295,226 @@ fn test_literal_absorption_ok() {
     );
 }
 
+// ── Regression: promoted negative literals (Bug A) ──────────────────
+
+#[test]
+fn test_neg_promoted_min_no_t038() {
+    // A promoted negative literal reaching its type's minimum must NOT
+    // produce a spurious T038: the unary `-` participates in the literal
+    // occurrence, so the retroactive range check sees "-128" (not "128").
+    for src in [
+        "func main() { let a = -128; let b: i8 = a }",
+        "func main() { let a = -32768; let b: i16 = a }",
+        "func main() { let a = -9223372036854775808; let b: i64 = a }",
+        "func main() { let a = -0x80; let b: i8 = a }",
+        "func main() { let a = -0b10000000; let b: i8 = a }",
+        "func main() { let a = -0o200; let b: i8 = a }",
+        "func f(x: i8) {} func main() { let a = -128; f(a) }",
+        "func f(): i8 { let a = -128; return a }",
+    ] {
+        assert_type_errors!(src, []);
+    }
+}
+
+#[test]
+fn test_neg_promoted_below_min_rejected() {
+    // One past the minimum is still rejected, even with the sign.
+    assert_type_errors!(
+        "func main() { let a = -129; let b: i8 = a }",
+        [T038IntegerLiteralOutOfRange]
+    );
+}
+
+// ── Regression: parenthesized negative literals (Bug B) ─────────────
+
+#[test]
+fn test_neg_paren_checked() {
+    // Parenthesized negatives were never tied to the promotion group:
+    // `-(129)` overflowed i8 silently. The unary arm now peels groups and
+    // negates the occurrence, so out-of-range still reports T038...
+    assert_type_errors!(
+        "func main() { let a = -(129); let b: i8 = a }",
+        [T038IntegerLiteralOutOfRange]
+    );
+    assert_type_errors!(
+        "func main() { let a = -(1000000000000); let b: i8 = a }",
+        [T038IntegerLiteralOutOfRange]
+    );
+    // ...and the minimum itself is still accepted, including the raw-typed
+    // direct form that flows through the fast path.
+    assert_type_errors!("func main() { let a = -(128); let b: i8 = a }", []);
+    assert_type_errors!("func main() { let a: i8 = -(128) }", []);
+}
+
+// ── Regression: set on undefined field diagnosed once (#1) ──────────
+
+#[test]
+fn test_set_undef_field_single_diag() {
+    // check_set_stmt must reuse the single synthesized place in the
+    // single-place branch; before, the undefined field was diagnosed twice.
+    assert_type_errors!(
+        "
+        struct S { x: i8 }
+        func main() {
+            let s = S{ x: 0 }
+            set s.bad = 1
+        }
+        ",
+        [T018UndefinedField]
+    );
+}
+
+// ── Regression: receiver mismatch labels (#2) ───────────────────────
+
+#[test]
+fn test_receiver_mismatch_expected_found_swap() {
+    // validate_method_receiver must constrain expected = self type, found =
+    // receiver type, so flow labels line up: "type 'B' declared here" on
+    // the self parameter and "value has type 'A'" on the receiver.
+    let program = parse(
+        "
+        struct A {}
+        struct B {}
+        func A.m(self: B) {}
+        func main() {
+            let a = A{}
+            a.m()
+        }
+        ",
+    )
+    .expect("Failed to parse");
+    let resolution = resolve_for_test(0, &program);
+    let result = type_check(resolution, &program, TEST_TARGET);
+
+    let t002 = result
+        .diagnostics
+        .iter()
+        .find(|d| d.code == arandu_semantics::DiagCode::T002IncompatibleAssignment)
+        .expect("expected a receiver mismatch T002");
+    assert!(
+        t002.message.contains("expected 'B', found 'A'"),
+        "unexpected message: {}",
+        t002.message
+    );
+    let labels: Vec<&str> = t002.labels.iter().map(|l| l.message.as_str()).collect();
+    assert_eq!(labels, ["type 'B' declared here", "value has type 'A'"]);
+}
+
+// ── Regression: generic literal fields synthesized once (#3) ────────
+
+#[test]
+fn test_generic_literal_field_synth_once() {
+    // infer_struct_type_args must peek at field values without side
+    // effects: `1 + "x"` gets diagnosed exactly once. Before the fix the
+    // field was synthesized for type inference *and* for the real check,
+    // doubling the T005.
+    assert_type_errors!(
+        "
+        struct BoxG<T> { v: T }
+        func main() {
+            let b = BoxG { v: 1 + \"x\" }
+        }
+        ",
+        [T005OperatorNotApplicable]
+    );
+    // Literal inference itself still works (peek without diagnostics).
+    assert_type_errors!(
+        "
+        struct BoxG<T> { v: T }
+        func main() {
+            let b = BoxG { v: 42 }
+            let c: BoxG<int> = b
+        }
+        ",
+        []
+    );
+}
+
+// ── Regression: generic struct patterns (#4) ────────────────────────
+
+#[test]
+fn test_generic_struct_pattern() {
+    // Struct patterns cannot carry generic arguments (`BoxG { v }`); the
+    // pattern must match by struct symbol and bind field types from the
+    // value's instantiation (`v` is `int` here, not the type parameter).
+    assert_type_errors!(
+        "
+        struct BoxG<T> { v: T }
+        func main() {
+            let b = BoxG { v: 42 }
+            match b {
+                BoxG { v } => {
+                    let x: int = v
+                }
+            }
+        }
+        ",
+        []
+    );
+}
+
+// ── Regression: unsigned-negation hint only for `-` (#5) ────────────
+
+#[test]
+fn test_unary_neg_hint_only_for_minus() {
+    let cases: [(&str, bool); 2] = [
+        ("let a: u8 = 1; let b = -a", true),
+        ("let a: u8 = 1; let b = !a", false),
+    ];
+    for (body, want_hint) in cases {
+        let source = format!("func main() {{ {body} }}");
+        let program = parse(&source).expect("Failed to parse");
+        let resolution = resolve_for_test(0, &program);
+        let result = type_check(resolution, &program, TEST_TARGET);
+        let d = &result.diagnostics[0];
+        assert_eq!(
+            d.code,
+            arandu_semantics::DiagCode::T005OperatorNotApplicable,
+            "unexpected code for `{body}`: {}",
+            d.code
+        );
+        let has_hint = d
+            .hints
+            .iter()
+            .any(|h| h.message.contains("cannot be negated"));
+        assert_eq!(
+            has_hint, want_hint,
+            "hint presence mismatch for `{body}`: hints={:?}",
+            d.hints
+        );
+    }
+}
+
+// ── Regression: call arg widening consistent with assignment (#8) ───
+
+#[test]
+fn test_call_arg_widening_reported() {
+    // Non-literal numeric call args follow `let`/assignment semantics:
+    // int→float is an implicit widening error (T015), matching
+    // apply_assignment_constraints instead of degenerate incompatible-arg
+    // mismatch. Widening int→u8 in a call is also T015.
+    assert_type_errors!(
+        "
+        func f(x: float) {}
+        func main() {
+            let a: int = 1
+            f(a)
+        }
+        ",
+        [T015ImplicitWidening]
+    );
+    assert_type_errors!(
+        "
+        func f(x: u8) {}
+        func main() {
+            let a: int = 1
+            f(a)
+        }
+        ",
+        [T015ImplicitWidening]
+    );
+}
+
 #[test]
 fn test_incompatible_assignment() {
     assert_type_errors!(
@@ -1606,4 +1826,499 @@ fn test_ptr_nil_comparison() {
         }
     ";
     assert_type_errors!(source, []);
+}
+
+// ── TYP.3.2: Propagação em Operadores Binários e Coleções ──
+
+#[test]
+fn typ32_binary_ops_with_expected_type() {
+    let source = "
+        func main() {
+            let x: u64 = 1 + 2
+            let y: u64 = 1 + 2 + 3
+            let z: u8 = 100 + 155
+            let w: i16 = 1000 - 500
+        }
+    ";
+    assert_type_errors!(source, []);
+}
+
+#[test]
+fn typ32_binary_ops_heterogeneous_propagation() {
+    let source = "
+        func test_hetero(x: u64): u64 {
+            let a = x + 1
+            let b = 1 + x
+            let c = (1 + 2) + x
+            let d = x + (1 + 2)
+            return a + b + c + d
+        }
+    ";
+    assert_type_errors!(source, []);
+}
+
+#[test]
+fn typ32_binary_comparisons() {
+    let source = "
+        func test_cmp(x: u8): bool {
+            let a = x > 1 + 2
+            let b = 1 + 2 < x
+            let c = x == 1 + 2
+            let d = 1 + 2 == x
+            return a && b && c && d
+        }
+    ";
+    assert_type_errors!(source, []);
+}
+
+#[test]
+fn typ32_binary_ops_reject_out_of_range() {
+    let source = "
+        func main() {
+            let x: u8 = 100 + 300
+        }
+    ";
+    assert_type_errors!(source, [T038IntegerLiteralOutOfRange]);
+}
+
+#[test]
+fn typ32_negative_literal_range_checking() {
+    let valid_source = "
+        func main() {
+            let a: i8 = -128
+            let b: i16 = -32768
+        }
+    ";
+    assert_type_errors!(valid_source, []);
+
+    let invalid_source = "
+        func main() {
+            let a: i8 = -129
+        }
+    ";
+    assert_type_errors!(invalid_source, [T038IntegerLiteralOutOfRange]);
+}
+
+#[test]
+fn typ32_array_literal_with_expected_type() {
+    let valid_source = "
+        func main() {
+            let a: [3]u8 = [1, 2, 3]
+            let b: [2]u64 = [100, 200]
+        }
+    ";
+    assert_type_errors!(valid_source, []);
+
+    let invalid_source = "
+        func main() {
+            let a: [3]u8 = [1, 300, 3]
+        }
+    ";
+    assert_type_errors!(invalid_source, [T038IntegerLiteralOutOfRange]);
+}
+
+#[test]
+fn typ32_array_literal_concrete_element_inference() {
+    let valid_source = "
+        func main() {
+            let x: u8 = 42
+            let a = [1, 2, x]
+            let b = [x, 1, 2]
+            let c = [1, x, 2]
+        }
+    ";
+    assert_type_errors!(valid_source, []);
+
+    let invalid_source_trailing = "
+        func main() {
+            let x: u8 = 42
+            let a = [1, 300, x]
+        }
+    ";
+    assert_type_errors!(invalid_source_trailing, [T038IntegerLiteralOutOfRange]);
+
+    let invalid_source_leading = "
+        func main() {
+            let x: u8 = 42
+            let a = [x, 300, 1]
+        }
+    ";
+    assert_type_errors!(invalid_source_leading, [T038IntegerLiteralOutOfRange]);
+}
+
+#[test]
+fn typ32_array_literal_pure_literals() {
+    let source = "
+        func main() {
+            let a = [1, 2, 3]
+            let b = [1.0, 2.0, 3.0]
+        }
+    ";
+    assert_type_errors!(source, []);
+
+    let mismatch = "
+        func main() {
+            let a = [1, 2.5]
+        }
+    ";
+    assert_type_errors!(mismatch, [T002IncompatibleAssignment]);
+}
+
+#[test]
+fn typ32_binary_ops_in_call_args_and_return() {
+    let source = "
+        func take_u64(x: u64): u64 {
+            return x
+        }
+        func calc(): u64 {
+            return 10 + 20
+        }
+        func main() {
+            let res = take_u64(1 + 2)
+            let res2 = take_u64(calc() + 5)
+        }
+    ";
+    assert_type_errors!(source, []);
+
+    let overflow_arg = "
+        func take_u8(x: u8): u8 {
+            return x
+        }
+        func main() {
+            let res = take_u8(100 + 300)
+        }
+    ";
+    assert_type_errors!(overflow_arg, [T038IntegerLiteralOutOfRange]);
+}
+
+#[test]
+fn typ32_array_expected_type_in_args_and_let() {
+    let source = "
+        func take_array(a: [3]u8): int {
+            return 0
+        }
+        func main() {
+            let a: [3]u8 = [1, 2, 3]
+            let res = take_array([10, 20, 30])
+        }
+    ";
+    assert_type_errors!(source, []);
+
+    let overflow_source = "
+        func main() {
+            let a: [3]u8 = [1, 300, 3]
+        }
+    ";
+    assert_type_errors!(overflow_source, [T038IntegerLiteralOutOfRange]);
+
+    let overflow_call = "
+        func take_array(a: [3]u8): int {
+            return 0
+        }
+        func main() {
+            let res = take_array([10, 300, 30])
+        }
+    ";
+    assert_type_errors!(overflow_call, [T038IntegerLiteralOutOfRange]);
+}
+
+#[test]
+fn typ33_unify_literal_vars_in_binary_ops() {
+    let source = "
+        func take_u64(x: u64): u64 {
+            return x
+        }
+        func main() {
+            let a = 10
+            let b = a + 20
+            let res = take_u64(b)
+        }
+    ";
+    assert_type_errors!(source, []);
+}
+
+#[test]
+fn typ33_unify_literal_vars_retroactive_overflow_t038() {
+    let source = "
+        func take_u8(x: u8): u8 {
+            return x
+        }
+        func main() {
+            let a = 300
+            let b = a + 1
+            let res = take_u8(b)
+        }
+    ";
+    assert_type_errors!(source, [T038IntegerLiteralOutOfRange]);
+}
+
+#[test]
+fn typ33_unconstrained_literal_defaults_to_native_int() {
+    let source = "
+        func main() {
+            let a = 10
+            let b = a + 20
+        }
+    ";
+    let program = parse(source).expect("Failed to parse");
+    let resolution = resolve_for_test(0, &program);
+    let result = type_check(resolution, &program, crate::TEST_TARGET);
+    assert!(
+        result.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        result.diagnostics
+    );
+
+    for (&sym_id, &type_id) in &result.type_info.decl_types {
+        let sym = result.symbols.get(sym_id);
+        if sym.name == "a" || sym.name == "b" {
+            let ty = result.type_info.resolve_type_id(type_id);
+            let display = ty.display(&result.symbols, &result.type_info.type_interner);
+            assert_eq!(
+                display, "int",
+                "decl {} should default to int, got {}",
+                sym.name, display
+            );
+        }
+    }
+}
+
+#[test]
+fn typ33_unconstrained_float_defaults_to_native_float() {
+    let source = "
+        func main() {
+            let x = 1.5
+            let y = x + 2.0
+        }
+    ";
+    let program = parse(source).expect("Failed to parse");
+    let resolution = resolve_for_test(0, &program);
+    let result = type_check(resolution, &program, crate::TEST_TARGET);
+    assert!(
+        result.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        result.diagnostics
+    );
+
+    for (&sym_id, &type_id) in &result.type_info.decl_types {
+        let sym = result.symbols.get(sym_id);
+        if sym.name == "x" || sym.name == "y" {
+            let ty = result.type_info.resolve_type_id(type_id);
+            let display = ty.display(&result.symbols, &result.type_info.type_interner);
+            assert_eq!(
+                display, "float",
+                "decl {} should default to float, got {}",
+                sym.name, display
+            );
+        }
+    }
+}
+
+#[test]
+fn typ33_promoted_literal_call_arg_widening() {
+    // `let a = 10` is a promoted literal: `take_u8(a)` absorbs the u8
+    // retarget silently, but the subsequent `u8 -> u64` call argument is an
+    // implicit widening, reported as T015 — matching `let`/assignment
+    // semantics instead of the generic incompatible-argument T003.
+    let source = "
+        func take_u8(x: u8) {}
+        func take_u64(x: u64) {}
+        func main() {
+            let a = 10
+            take_u8(a)
+            take_u64(a)
+        }
+    ";
+    assert_type_errors!(source, [T015ImplicitWidening]);
+}
+
+#[test]
+fn typ33_promoted_literal_no_implicit_widening_let() {
+    let source = "
+        func take_int(x: int) {}
+        func main() {
+            let a = 10
+            take_int(a)
+            let b: float = a
+        }
+    ";
+    assert_type_errors!(source, [T015ImplicitWidening]);
+}
+
+#[test]
+fn typ33_literal_incompatible_type() {
+    let source = "
+        func take_bool(b: bool) {}
+        func main() {
+            let a = 10
+            take_bool(a)
+        }
+    ";
+    assert_type_errors!(source, [T003IncompatibleCallArg]);
+}
+
+#[test]
+fn typ33_struct_field_init_promotes_literal_var() {
+    let source = "
+        struct Point {
+            x: u16,
+            y: u16,
+        }
+        func main() {
+            let a = 10
+            let b = 20
+            let p = Point { x: a, y: b }
+        }
+    ";
+    assert_type_errors!(source, []);
+}
+
+#[test]
+fn typ33_return_stmt_promotes_literal_var() {
+    let source = "
+        func make_val(): i16 {
+            let a = 42
+            return a
+        }
+    ";
+    assert_type_errors!(source, []);
+}
+
+#[test]
+fn typ33_tail_expr_promotes_literal_var() {
+    let source = "
+        func make_val(): i16 {
+            let a = 42
+            a
+        }
+    ";
+    assert_type_errors!(source, []);
+}
+
+#[test]
+fn typ33_comparison_promotes_literal_vars() {
+    let source = "
+        func take_u32(x: u32) {}
+        func main() {
+            let a = 10
+            let b = 20
+            let c = a == b
+            take_u32(a)
+        }
+    ";
+    assert_type_errors!(source, []);
+}
+
+#[test]
+fn typ33_unary_neg_promotes_literal_var() {
+    let source = "
+        func take_i16(x: i16) {}
+        func main() {
+            let a = 10
+            let b = -a
+            take_i16(b)
+        }
+    ";
+    assert_type_errors!(source, []);
+}
+
+#[test]
+fn typ33_promoted_literal_no_implicit_widening_unpinned_let() {
+    // Regression: an unannotated literal that is promoted to a variable must
+    // not silently widen to float just because no earlier constraint pinned it.
+    let source = "
+        func main() {
+            let a = 10
+            let b: float = a
+        }
+    ";
+    assert_type_errors!(source, [T015ImplicitWidening]);
+}
+
+#[test]
+fn typ33_promoted_literal_no_implicit_widening_call_arg() {
+    let source = "
+        func take_float(x: float) {}
+        func main() {
+            let a = 10
+            take_float(a)
+        }
+    ";
+    assert_type_errors!(source, [T015ImplicitWidening]);
+}
+
+#[test]
+fn typ33_promoted_literal_no_implicit_widening_return() {
+    let source = "
+        func make_val(): float {
+            let a = 10
+            return a
+        }
+    ";
+    assert_type_errors!(source, [T015ImplicitWidening]);
+}
+
+#[test]
+fn typ33_promoted_literal_no_implicit_widening_binary_merge() {
+    // Merging a promoted int literal with a promoted float literal must not
+    // silently turn the int binding into a float.
+    let source = "
+        func main() {
+            let a = 10
+            let b = 2.5
+            let c = a + b
+        }
+    ";
+    assert_type_errors!(source, [T015ImplicitWidening]);
+}
+
+#[test]
+fn typ33_raw_literal_to_float_is_allowed() {
+    // Direct literals still coerce with the surrounding float context; only
+    // promoted (variable-bound) literals are blocked from widening.
+    let source = "
+        func take_float(x: float) {}
+        func main() {
+            let x: float = 1
+            take_float(2)
+        }
+    ";
+    assert_type_errors!(source, []);
+}
+
+#[test]
+fn typ33_promoted_integer_literal_still_retypes() {
+    let source = "
+        func take_u64(x: u64) {}
+        func main() {
+            let a = 10
+            take_u64(a)
+        }
+    ";
+    assert_type_errors!(source, []);
+}
+
+#[test]
+fn typ33_promoted_literal_no_implicit_widening_array() {
+    // A promoted int literal mixed with a float literal in an array is the
+    // same implicit widening as elsewhere, not a plain element mismatch.
+    let source = "
+        func main() {
+            let a = 10
+            let arr = [a, 2.5]
+        }
+    ";
+    assert_type_errors!(source, [T015ImplicitWidening]);
+}
+
+#[test]
+fn typ32_array_raw_int_float_literals_still_mismatch() {
+    // Raw literals are not promoted, so this is a genuine array element
+    // mismatch (T002), not an implicit widening.
+    let source = "
+        func main() {
+            let arr = [1, 2.5]
+        }
+    ";
+    assert_type_errors!(source, [T002IncompatibleAssignment]);
 }

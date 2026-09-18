@@ -43,6 +43,22 @@ pub fn check_block_tail(
                     last_ty = checker.resolve(last_ty_id);
                     if let Some(expected_id) = tail_expected {
                         let expected = checker.resolve(expected_id);
+                        if let Some(var_id) = checker.literal_table.var_for_expr(*expr)
+                            && !expected.is_literal()
+                            && !expected.is_error()
+                        {
+                            checker.constrain_literal_var(
+                                var_id,
+                                expected_id,
+                                ConstraintOrigin::ReturnType {
+                                    return_span: *span,
+                                    declared_span: checker
+                                        .ctx
+                                        .current_return_decl_span()
+                                        .unwrap_or(*span),
+                                },
+                            );
+                        }
                         if !checker.unify_return_type(&expected, &last_ty) {
                             checker.add_constraint(
                                 expected,

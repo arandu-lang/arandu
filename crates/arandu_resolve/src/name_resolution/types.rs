@@ -89,12 +89,11 @@ impl<'a> Resolver<'a> {
             ));
             return false;
         }
-        if self
-            .symbols
-            .lookup_type(self.symbols.global_scope(), root)
-            .is_some()
-            || matches!(root.as_str(), "void" | "Err")
-        {
+        if let Some(symbol) = self.symbols.lookup_type(self.symbols.global_scope(), root) {
+            self.record_type_ref(name.span, symbol);
+            return true;
+        }
+        if matches!(root.as_str(), "void" | "Err") {
             return true;
         }
         let mut diagnostic = Diagnostic::error(

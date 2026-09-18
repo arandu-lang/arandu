@@ -104,6 +104,7 @@ pub fn causal_chain(constraint: &Constraint) -> Vec<ProvenanceStep> {
             ProvenanceStep::new(FoundOrigin, *right_span, "right operand"),
         ],
         ConstraintOrigin::UnaryOp {
+            op: _,
             op_span,
             operand_span,
         } => vec![
@@ -201,6 +202,14 @@ pub fn causal_chain(constraint: &Constraint) -> Vec<ProvenanceStep> {
         } => vec![
             ProvenanceStep::new(ExpectedOrigin, *expr_span, "Result ok type"),
             ProvenanceStep::new(FoundOrigin, *handler_span, "handler"),
+        ],
+        ConstraintOrigin::LiteralPromotion {
+            literal_span,
+            target_span,
+            ..
+        } => vec![
+            ProvenanceStep::new(ExpectedOrigin, *target_span, "demanded type"),
+            ProvenanceStep::new(FoundOrigin, *literal_span, "literal value"),
         ],
     }
 }

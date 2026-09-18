@@ -79,12 +79,15 @@ pub fn check_match_exhaustiveness(
     match_span: Span,
 ) {
     let resolved_ty = checker.type_info.resolve_type_id(value_ty);
-    let ArType::Named(enum_id, _) = resolved_ty else {
-        return;
-    };
+    // Error-typed match values must not trigger exhaustiveness diagnostics;
+    // the guard has to run *before* the `Named` binding below, otherwise it
+    // is unreachable (`Error` is not `Named`).
     if resolved_ty.is_error() {
         return;
     }
+    let ArType::Named(enum_id, _) = resolved_ty else {
+        return;
+    };
 
     // Collect all variant SymbolIds — O(V) where V = #variants.
     let all_variants = enum_variant_symbol_ids(checker, enum_id);

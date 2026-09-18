@@ -55,7 +55,7 @@ fn synth_expr_inner(
     if let Some(id) = synth_call_expr(checker, expr, kind, span, expected) {
         return id;
     }
-    if let Some(id) = synth_binary_unary_expr(checker, expr, kind, span) {
+    if let Some(id) = synth_binary_unary_expr(checker, expr, kind, span, expected) {
         return id;
     }
     if let Some(id) = synth_control_flow_expr(checker, expr, kind, span, expected) {

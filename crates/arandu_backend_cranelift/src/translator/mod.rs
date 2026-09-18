@@ -180,22 +180,14 @@ impl<'a, 'b, M: Module> FunctionTranslator<'a, 'b, M> {
                     ),
                     self.func_span(),
                 );
-                arandu_semantics::layout::TypeLayout {
-                    size: 0,
-                    align: 1,
-                    field_offsets: Vec::new(),
-                }
+                arandu_semantics::layout::TypeLayout::simple(0, 1)
             }
             Err(error) => {
                 self.record_ice(
                     format!("Cranelift rejected an invalid type layout: {error}"),
                     self.func_span(),
                 );
-                arandu_semantics::layout::TypeLayout {
-                    size: 0,
-                    align: 1,
-                    field_offsets: Vec::new(),
-                }
+                arandu_semantics::layout::TypeLayout::simple(0, 1)
             }
         }
     }

@@ -1,6 +1,6 @@
 use super::CEmitter;
 use arandu_middle::amir::{AmirFunc, AmirOperand, AmirStmt, AmirTerminator, TempId};
-use arandu_middle::types::ArType;
+use arandu_middle::types::{ArType, Primitive};
 use std::fmt::Write;
 
 impl<'a> CEmitter<'a> {
@@ -247,8 +247,16 @@ impl<'a> CEmitter<'a> {
                 let _ = writeln!(&mut self.output, ");");
             }
             AmirStmt::Free(op) => {
+                let op_ty = self.operand_ty(func, op);
                 let op_str = self.format_operand(op, func);
-                let _ = writeln!(&mut self.output, "    free({});", op_str);
+                if matches!(op_ty, ArType::Primitive(Primitive::Str)) {
+                    let _ = writeln!(
+                        &mut self.output,
+                        "    if ({op_str}.ptr) {{ free((void*){op_str}.ptr); }}"
+                    );
+                } else {
+                    let _ = writeln!(&mut self.output, "    free({});", op_str);
+                }
             }
             AmirStmt::StorageLive(_) | AmirStmt::StorageDead(_) => {}
             AmirStmt::Destroy(place) => {
@@ -285,13 +293,21 @@ impl<'a> CEmitter<'a> {
                         arandu_middle::amir::AmirProjection::Index(_) => {}
                     }
                 }
-                let ty_id = self.interner.intern(current_ty.clone());
-                if let Some((_, destructor)) = self.gen_drop_glue(ty_id, &current_ty) {
-                    let destructor_symbol = self.symbols.get(destructor);
-                    let destructor =
-                        super::sanitize_c_ident(self.symbols.host_func_name(destructor_symbol));
+                if matches!(current_ty, ArType::Primitive(Primitive::Str)) {
                     let value = self.format_place(place, func);
-                    let _ = writeln!(&mut self.output, "    {destructor}({value});");
+                    let _ = writeln!(
+                        &mut self.output,
+                        "    if ({value}.ptr) {{ free((void*){value}.ptr); {value}.ptr = NULL; }}"
+                    );
+                } else {
+                    let ty_id = self.interner.intern(current_ty.clone());
+                    if let Some((_, destructor)) = self.gen_drop_glue(ty_id, &current_ty) {
+                        let destructor_symbol = self.symbols.get(destructor);
+                        let destructor =
+                            super::sanitize_c_ident(self.symbols.host_func_name(destructor_symbol));
+                        let value = self.format_place(place, func);
+                        let _ = writeln!(&mut self.output, "    {destructor}({value});");
+                    }
                 }
             }
             AmirStmt::Nop => {}

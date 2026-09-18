@@ -5,7 +5,7 @@ pub(super) mod constructors;
 pub(super) mod control;
 
 use super::{LowerCtx, amir_unsupported};
-use crate::amir::{AmirConstant, AmirOperand, AmirRvalue, TempId};
+use crate::amir::{AmirConstant, AmirOperand, AmirRvalue, AmirStmt, TempId};
 use crate::diagnostics::Diagnostic;
 use crate::hir::{HirExprId, HirExprKind};
 use crate::passes::type_checker::types::{ArType, Primitive, is_option_type};
@@ -35,6 +35,7 @@ impl LowerCtx<'_> {
                 src_ty: src_ty_id,
             },
         );
+        self.owned_string_temps.insert(dest);
         Ok(AmirOperand::Copy(dest))
     }
 
@@ -77,6 +78,7 @@ impl LowerCtx<'_> {
             }
             HirExprKind::StringInterp { parts } => {
                 let mut part_ops = Vec::with_capacity(parts.len());
+                let mut intermediate_to_free = Vec::new();
                 for part in parts {
                     let op = match part {
                         arandu_middle::hir::HirStringPart::Text(t) => {
@@ -85,13 +87,23 @@ impl LowerCtx<'_> {
                         arandu_middle::hir::HirStringPart::Expr(e) => {
                             let part_expr = self.hir.pool.expr(*e);
                             let part_op = self.lower_expr(*e, None, symbols)?;
-                            self.maybe_to_str(part_op, part_expr.ty)?
+                            let str_op = self.maybe_to_str(part_op, part_expr.ty)?;
+                            if let AmirOperand::Copy(t) | AmirOperand::Move(t) = &str_op
+                                && self.owned_string_temps.remove(t)
+                            {
+                                intermediate_to_free.push(str_op);
+                            }
+                            str_op
                         }
                     };
                     part_ops.push(op);
                 }
                 let dest = target.unwrap_or_else(|| self.new_temp_id(expr.ty));
                 self.emit_assign_temp(dest, AmirRvalue::StringInterp { parts: part_ops });
+                self.owned_string_temps.insert(dest);
+                for intermediate in intermediate_to_free {
+                    self.push_stmt(AmirStmt::Free(intermediate));
+                }
                 Ok(AmirOperand::Copy(dest))
             }
             HirExprKind::ToStr { value } => {
@@ -101,6 +113,11 @@ impl LowerCtx<'_> {
                 let str_op = self.maybe_to_str(op, value_expr.ty)?;
                 if let Some(dest) = target {
                     self.emit_assign_temp(dest, AmirRvalue::Use(str_op));
+                    if let AmirOperand::Copy(t) | AmirOperand::Move(t) = &str_op
+                        && self.owned_string_temps.contains(t)
+                    {
+                        self.owned_string_temps.insert(dest);
+                    }
                     Ok(AmirOperand::Copy(dest))
                 } else {
                     Ok(str_op)

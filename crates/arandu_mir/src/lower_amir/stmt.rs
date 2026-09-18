@@ -105,6 +105,9 @@ impl LowerCtx<'_> {
                     let b = &bindings_slice[0];
                     let local_id = self.new_local_id(b.ty, b.symbol, b.span);
                     let val_op = self.lower_expr(*value, None, symbols)?;
+                    if let AmirOperand::Copy(t) | AmirOperand::Move(t) = &val_op {
+                        self.owned_string_temps.remove(t);
+                    }
                     let consumed = self.consume_operand(val_op)?;
                     self.write_variable_source(local_id, consumed)?;
                 } else if bindings_slice.len() == 2 {
@@ -290,7 +293,7 @@ impl LowerCtx<'_> {
                 }
             }
             HirStmtKind::Expr(expr) => {
-                self.lower_expr(*expr, None, symbols)?;
+                self.lower_expr_stmt(*expr, symbols)?;
             }
             HirStmtKind::If {
                 condition,
@@ -575,6 +578,9 @@ impl LowerCtx<'_> {
                     let b = &bindings_slice[0];
                     let local_id = self.new_local_id(b.ty, b.symbol, b.span);
                     let val_op = self.lower_expr(*value, None, symbols)?;
+                    if let AmirOperand::Copy(t) | AmirOperand::Move(t) = &val_op {
+                        self.owned_string_temps.remove(t);
+                    }
                     let consumed = self.consume_operand(val_op)?;
                     self.write_variable_source(local_id, consumed)?;
                 } else if bindings_slice.len() == 2 {
@@ -624,8 +630,28 @@ impl LowerCtx<'_> {
                 self.lower_set_places(self.hir.pool.places_list(*places), op, &val_op, symbols)?;
             }
             HirSimpleStmt::Expr(expr) => {
-                self.lower_expr(*expr, None, symbols)?;
+                self.lower_expr_stmt(*expr, symbols)?;
             }
+        }
+        Ok(())
+    }
+
+    fn lower_expr_stmt(
+        &mut self,
+        expr_id: crate::hir::HirExprId,
+        symbols: &SymbolTable,
+    ) -> Result<(), Diagnostic> {
+        let start_owned = self.owned_string_temps.clone();
+        self.lower_expr(expr_id, None, symbols)?;
+        let to_free: Vec<TempId> = self
+            .owned_string_temps
+            .iter()
+            .copied()
+            .filter(|t| !start_owned.contains(t))
+            .collect();
+        for t in to_free {
+            self.owned_string_temps.remove(&t);
+            self.push_stmt(AmirStmt::Free(AmirOperand::Copy(t)));
         }
         Ok(())
     }
@@ -887,7 +913,9 @@ impl LowerCtx<'_> {
             let stmt = self.hir.pool.stmt(stmt_id);
             if i == last_idx {
                 if let HirStmtKind::Expr(expr) = stmt.kind {
-                    if let (Some(dest), Some(payload_ty)) = (target, async_payload_ty) {
+                    let start_owned = self.owned_string_temps.clone();
+                    let res_op = if let (Some(dest), Some(payload_ty)) = (target, async_payload_ty)
+                    {
                         let inner = self.lower_expr(expr, None, symbols)?;
                         self.emit_assign_temp(
                             dest,
@@ -897,8 +925,27 @@ impl LowerCtx<'_> {
                                 stack: false,
                             },
                         );
+                        AmirOperand::Copy(dest)
                     } else {
-                        self.lower_expr(expr, target, symbols)?;
+                        self.lower_expr(expr, target, symbols)?
+                    };
+                    let returned_temp = match res_op {
+                        AmirOperand::Copy(t) | AmirOperand::Move(t) => Some(t),
+                        _ => None,
+                    };
+                    let to_free: Vec<TempId> = self
+                        .owned_string_temps
+                        .iter()
+                        .copied()
+                        .filter(|t| {
+                            !start_owned.contains(t)
+                                && Some(*t) != returned_temp
+                                && Some(*t) != target
+                        })
+                        .collect();
+                    for t in to_free {
+                        self.owned_string_temps.remove(&t);
+                        self.push_stmt(AmirStmt::Free(AmirOperand::Copy(t)));
                     }
                 } else {
                     self.lower_stmt(stmt, symbols)?;

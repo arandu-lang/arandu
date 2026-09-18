@@ -324,6 +324,8 @@ pub(crate) struct LowerCtx<'a> {
     current_span: Span,
     /// Target pointer width in bytes (drives `mem.sizeOf`/`alignOf` folding).
     pointer_width: u64,
+    /// Temporaries that hold freshly allocated heap string buffers (`ToStr` or `StringInterp`).
+    owned_string_temps: FxHashSet<TempId>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

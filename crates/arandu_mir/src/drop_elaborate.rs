@@ -103,8 +103,41 @@ fn emit_recursive_drops(
     }
 }
 
+/// Identifies locals that hold dynamically allocated string buffers from `ToStr` or `StringInterp`.
+fn find_owned_string_locals(func: &AmirFunc) -> rustc_hash::FxHashSet<LocalId> {
+    let mut owned_temps = rustc_hash::FxHashSet::default();
+    for stmt in func.stmts.payloads.iter() {
+        if let AmirStmt::Assign { lhs, rhs } = stmt
+            && matches!(
+                rhs,
+                crate::amir::AmirRvalue::ToStr { .. }
+                    | crate::amir::AmirRvalue::StringInterp { .. }
+            )
+        {
+            owned_temps.insert(lhs);
+        }
+    }
+    let mut owned_locals = rustc_hash::FxHashSet::default();
+    for stmt in func.stmts.payloads.iter() {
+        if let AmirStmt::Store { lhs, rhs } = stmt
+            && lhs.projections.is_empty()
+        {
+            match rhs {
+                crate::amir::AmirOperand::Copy(t) | crate::amir::AmirOperand::Move(t)
+                    if owned_temps.contains(t) =>
+                {
+                    owned_locals.insert(lhs.local);
+                }
+                _ => {}
+            }
+        }
+    }
+    owned_locals
+}
+
 /// Insert exactly-once root-local and nested cascade destruction before normal function returns.
 pub fn elaborate_drops(func: &mut AmirFunc, type_info: &TypeInfo) {
+    let owned_string_locals = find_owned_string_locals(func);
     let is_destructor_func = type_info
         .destructor_instances
         .values()
@@ -125,21 +158,28 @@ pub fn elaborate_drops(func: &mut AmirFunc, type_info: &TypeInfo) {
             let move_state = &moved[block.id.as_usize()];
             for local in func.locals.iter().rev() {
                 let skip_self = is_destructor_func && local.id.as_usize() == 0;
-                if type_needs_drop(local.ty, type_info)
+                let is_owned_string = owned_string_locals.contains(&local.id);
+                if (type_needs_drop(local.ty, type_info) || is_owned_string)
                     && initialized[block.id.as_usize()].contains(local.id)
                 {
                     let root_place = AmirPlace {
                         local: LocalId::from_usize(local.id.as_usize()),
                         projections: SmallVec::new(),
                     };
-                    emit_recursive_drops(
-                        &root_place,
-                        local.ty,
-                        type_info,
-                        move_state,
-                        skip_self,
-                        &mut rebuilt,
-                    );
+                    if is_owned_string {
+                        if move_state.place_itself_is_available(&root_place) {
+                            rebuilt.push(AmirStmt::Destroy(root_place));
+                        }
+                    } else {
+                        emit_recursive_drops(
+                            &root_place,
+                            local.ty,
+                            type_info,
+                            move_state,
+                            skip_self,
+                            &mut rebuilt,
+                        );
+                    }
                 }
             }
         }

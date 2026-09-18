@@ -106,6 +106,41 @@ impl<'a> CEmitter<'a> {
         self.interner.resolve(func.locals[local.as_usize()].ty)
     }
 
+    #[inline]
+    pub(super) fn operand_ty(
+        &self,
+        func: &AmirFunc,
+        op: &arandu_middle::amir::AmirOperand,
+    ) -> ArType {
+        match op {
+            arandu_middle::amir::AmirOperand::Copy(t)
+            | arandu_middle::amir::AmirOperand::Move(t) => self.temp_ty(func, *t),
+            arandu_middle::amir::AmirOperand::Constant(c) => match c {
+                arandu_middle::amir::AmirConstant::Pool(id) => {
+                    match self.program.literal_pool.get(*id) {
+                        arandu_middle::literal_pool::AmirLiteralEntry::Str(_) => {
+                            ArType::Primitive(arandu_middle::types::Primitive::Str)
+                        }
+                        arandu_middle::literal_pool::AmirLiteralEntry::Int(_) => {
+                            ArType::Primitive(arandu_middle::types::Primitive::Int)
+                        }
+                        arandu_middle::literal_pool::AmirLiteralEntry::Float(_) => {
+                            ArType::Primitive(arandu_middle::types::Primitive::Float)
+                        }
+                        arandu_middle::literal_pool::AmirLiteralEntry::Char(_) => {
+                            ArType::Primitive(arandu_middle::types::Primitive::Char)
+                        }
+                    }
+                }
+                arandu_middle::amir::AmirConstant::Bool(_) => {
+                    ArType::Primitive(arandu_middle::types::Primitive::Bool)
+                }
+                arandu_middle::amir::AmirConstant::Nil => ArType::Void,
+            },
+            _ => ArType::Error,
+        }
+    }
+
     /// Resolve a field through the concrete arguments of a named type.
     ///
     /// Layout already substitutes generic parameters, so code generation must
@@ -145,11 +180,7 @@ impl<'a> CEmitter<'a> {
                         Span::new(0, 0, 0),
                     ));
                 }
-                arandu_middle::layout::TypeLayout {
-                    size: 0,
-                    align: 1,
-                    field_offsets: Vec::new(),
-                }
+                arandu_middle::layout::TypeLayout::simple(0, 1)
             }
         }
     }

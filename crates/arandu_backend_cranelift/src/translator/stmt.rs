@@ -94,41 +94,53 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 self.translate_call(lhs, callee, args);
             }
             AmirStmt::Free(op) => {
-                let ptr_val = self.translate_operand(op, Some(self.ptr_type));
+                let op_ty = self.get_operand_ar_type(op);
+                let ptr_val = if matches!(op_ty, ArType::Primitive(Primitive::Str)) {
+                    self.translate_str_operand(op).0
+                } else {
+                    self.translate_operand(op, Some(self.ptr_type))
+                };
                 self.emit_free_ptr(ptr_val);
             }
             AmirStmt::StorageLive(_) | AmirStmt::StorageDead(_) => {}
             AmirStmt::Destroy(place) => {
                 let ty = self.place_ar_ty(place);
-                let ty_id = self.type_info.type_interner.intern(ty.clone());
-                if let ArType::Named(_, _) = ty
-                    && let Some(destructor) = self.type_info.destructor_instances.get(&ty_id)
-                {
-                    let symbol = self.symbol_table.get(*destructor);
-                    let host_name = self.symbol_table.host_func_name(symbol);
-                    if let Some(&id) = self.func_ids.get(host_name) {
-                        let ptr_val = if place.projections.is_empty() {
-                            if let Some(&var) = self.local_map.get(&place.local) {
-                                self.builder.use_var(var)
+                if matches!(ty, ArType::Primitive(Primitive::Str)) {
+                    if let Some(&(var_ptr, _)) = self.str_local_map.get(&place.local) {
+                        let ptr_val = self.builder.use_var(var_ptr);
+                        self.emit_free_ptr(ptr_val);
+                    }
+                } else {
+                    let ty_id = self.type_info.type_interner.intern(ty.clone());
+                    if let ArType::Named(_, _) = ty
+                        && let Some(destructor) = self.type_info.destructor_instances.get(&ty_id)
+                    {
+                        let symbol = self.symbol_table.get(*destructor);
+                        let host_name = self.symbol_table.host_func_name(symbol);
+                        if let Some(&id) = self.func_ids.get(host_name) {
+                            let ptr_val = if place.projections.is_empty() {
+                                if let Some(&var) = self.local_map.get(&place.local) {
+                                    self.builder.use_var(var)
+                                } else {
+                                    self.translate_place_address_for_load(place).0
+                                }
                             } else {
-                                self.translate_place_address_for_load(place).0
-                            }
+                                let (addr, offset) = self.translate_place_address_for_load(place);
+                                self.builder.ins().load(
+                                    self.ptr_type,
+                                    cranelift_codegen::ir::MemFlagsData::new(),
+                                    addr,
+                                    offset,
+                                )
+                            };
+                            let function = self.module.declare_func_in_func(id, self.builder.func);
+                            self.builder.ins().call(function, &[ptr_val]);
                         } else {
-                            let (addr, offset) = self.translate_place_address_for_load(place);
-                            self.builder.ins().load(
-                                self.ptr_type,
-                                cranelift_codegen::ir::MemFlagsData::new(),
-                                addr,
-                                offset,
-                            )
-                        };
-                        let function = self.module.declare_func_in_func(id, self.builder.func);
-                        self.builder.ins().call(function, &[ptr_val]);
-                    } else {
-                        self.record_ice(
-                            format!("missing @Destructor function '{}'", symbol.name),
-                            self.local_span(place.local),
-                        );
+                            self.record_ice(
+                                format!("missing @Destructor function '{}'", symbol.name),
+                                self.local_span(place.local),
+                            );
+                        }
                     }
                 }
             }

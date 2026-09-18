@@ -67,6 +67,19 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         let Some(free_func_id) = self.free_func_id() else {
             return;
         };
+        let is_null = self.builder.ins().icmp_imm_u(
+            cranelift_codegen::ir::condcodes::IntCC::Equal,
+            ptr_val,
+            0,
+        );
+        let free_block = self.builder.create_block();
+        let cont_block = self.builder.create_block();
+        self.builder
+            .ins()
+            .brif(is_null, cont_block, &[], free_block, &[]);
+        self.builder.switch_to_block(free_block);
+        self.builder.seal_block(free_block);
+
         let local_ref = self
             .module
             .declare_func_in_func(free_func_id, self.builder.func);
@@ -83,5 +96,8 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         }
 
         self.builder.ins().call(local_ref, &[ptr_val]);
+        self.builder.ins().jump(cont_block, &[]);
+        self.builder.switch_to_block(cont_block);
+        self.builder.seal_block(cont_block);
     }
 }

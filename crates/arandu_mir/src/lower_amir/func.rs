@@ -40,6 +40,7 @@ pub(crate) fn lower_func(
         redirected_temps: FxHashMap::default(),
         current_span: arandu_lexer::Span::new(0, 0, 0),
         pointer_width,
+        owned_string_temps: FxHashSet::default(),
     };
 
     // Return register is TempId(0) — span is the function header.

@@ -291,7 +291,7 @@ Fase 2 — A Construção da Infraestrutura & Execução (v0.2) · [FECHADA no c
    │                projeções seguras sobre storage indireto: path BC.4a
    │              · backend C: `format_place` com Deref lvalue
    ├─ [x] BC.4b  Await no Cranelift JIT (A3.0–A3.6: layout disc/payload + block_on; scheduler = SL_R)
-   ├─ [ ] BC.5   Classificador ABI por target para tipos nomeados no Cranelift;
+   ├─ [x] BC.5   Classificador ABI por target para tipos nomeados no Cranelift;
    │              não usar limiar universal `<=16`: SysV AMD64, Windows x64 e
    │              AArch64 divergem em passagem/retorno de agregados
    └─ [x] FUZZ   Fuzzing Lexer/Parser SIMD (arandu_fuzz e cron jobs semanais de robustez)
@@ -436,7 +436,7 @@ Fase 5 — Otimização Global, CodeGen & Ecossistema (v0.4+) · [NÃO INICIADA]
 [ ] REG    Register Allocation (Linear Scan para Cranelift, Graph Coloring para LLVM)
 [ ] GEN    Adaptive Monomorphization (Witness tables para cold paths vs Lazy Monomorphization para loops)
 [ ] ABI    ABI & Layout Stability (repr(C) garantido, fat pointers, stable calling conventions)
-   ├─ [ ] ABI.1   Classificador de ABI System V AMD64 / Calling Conventions (BC.5): classificação de agregados (INTEGER, SSE, MEMORY) para passagem/retorno de structs <= 16 bytes em registradores no Cranelift/LLVM.
+   ├─ [x] ABI.1   Classificador de ABI System V AMD64 / Calling Conventions (BC.5): classificação de agregados (INTEGER, SSE, MEMORY) para passagem/retorno de structs <= 16 bytes em registradores no Cranelift/LLVM.
    └─ [ ] DBG     Metadados de Depuração DWARF v5: emissão de seções .debug_info e .debug_line mapeando CST spans e variáveis locais da AMIR para depuração interativa com GDB/LLDB.
 [ ] PAN    Panic & Error Model sem unwinding (abort nativo UD2/BRK, zero metadata overhead)
 [ ] CACHE  Stable Serialization & Cache (.air, .amir, .ameta, reproducible DET builds)

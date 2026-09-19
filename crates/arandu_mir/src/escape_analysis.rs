@@ -221,6 +221,7 @@ pub fn find_escapes(func: &AmirFunc, interner: &crate::types::TypeInterner) -> V
         }
     }
 
+    let mut enum_construct_temps = rustc_hash::FxHashSet::default();
     // Also walk primary Borrow assigns and aggregate constructions
     // that incorporate stack references.
     let mut changed = true;
@@ -252,15 +253,24 @@ pub fn find_escapes(func: &AmirFunc, interner: &crate::types::TypeInterner) -> V
                 }
                 if let AmirStmt::Assign { lhs, rhs } = stmt {
                     let i = lhs.as_usize();
-                    if i < temp_to_place.len() && temp_to_place[i].is_none() {
-                        match rhs {
-                            AmirRvalue::Use(op) => {
-                                if let Some(p) = operand_stack_place(op, &temp_to_place) {
-                                    temp_to_place[i] = Some(p);
-                                    changed = true;
-                                }
+                    match rhs {
+                        AmirRvalue::Use(op) => {
+                            if i < temp_to_place.len()
+                                && temp_to_place[i].is_none()
+                                && let Some(p) = operand_stack_place(op, &temp_to_place)
+                            {
+                                temp_to_place[i] = Some(p);
+                                changed = true;
                             }
-                            AmirRvalue::StructLiteral { fields, .. } => {
+                            if let AmirOperand::Copy(t) | AmirOperand::Move(t) = op
+                                && enum_construct_temps.contains(t)
+                                && enum_construct_temps.insert(*lhs)
+                            {
+                                changed = true;
+                            }
+                        }
+                        AmirRvalue::StructLiteral { fields, .. } => {
+                            if i < temp_to_place.len() && temp_to_place[i].is_none() {
                                 for (_, op) in fields {
                                     if let Some(p) = operand_stack_place(op, &temp_to_place) {
                                         temp_to_place[i] = Some(p);
@@ -269,7 +279,9 @@ pub fn find_escapes(func: &AmirFunc, interner: &crate::types::TypeInterner) -> V
                                     }
                                 }
                             }
-                            AmirRvalue::Tuple { items } | AmirRvalue::Array { items } => {
+                        }
+                        AmirRvalue::Tuple { items } | AmirRvalue::Array { items } => {
+                            if i < temp_to_place.len() && temp_to_place[i].is_none() {
                                 for op in items {
                                     if let Some(p) = operand_stack_place(op, &temp_to_place) {
                                         temp_to_place[i] = Some(p);
@@ -278,16 +290,21 @@ pub fn find_escapes(func: &AmirFunc, interner: &crate::types::TypeInterner) -> V
                                     }
                                 }
                             }
-                            AmirRvalue::EnumConstruct {
-                                payload: Some(op), ..
-                            } => {
-                                if let Some(p) = operand_stack_place(op, &temp_to_place) {
-                                    temp_to_place[i] = Some(p);
-                                    changed = true;
-                                }
-                            }
-                            _ => {}
                         }
+                        AmirRvalue::EnumConstruct { payload, .. } => {
+                            if enum_construct_temps.insert(*lhs) {
+                                changed = true;
+                            }
+                            if i < temp_to_place.len()
+                                && temp_to_place[i].is_none()
+                                && let Some(op) = payload
+                                && let Some(p) = operand_stack_place(op, &temp_to_place)
+                            {
+                                temp_to_place[i] = Some(p);
+                                changed = true;
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -382,15 +399,33 @@ pub fn find_escapes(func: &AmirFunc, interner: &crate::types::TypeInterner) -> V
                         .locals
                         .get(lhs.local.as_usize())
                         .is_some_and(|l| l.is_memory);
-                let dest_is_ref_slot = func.locals.get(lhs.local.as_usize()).is_some_and(|l| {
-                    match interner.resolve(l.ty) {
-                        ArType::Ref(_) | ArType::RefMut(_) => true,
-                        ArType::Option(inner) | ArType::Nullable(inner) => {
-                            matches!(interner.resolve(inner), ArType::Ref(_) | ArType::RefMut(_))
-                        }
-                        _ => false,
-                    }
-                });
+                let rhs_is_enum = match rhs {
+                    AmirOperand::Copy(t) | AmirOperand::Move(t) => enum_construct_temps.contains(t),
+                    _ => false,
+                };
+                let dest_is_ref_slot = lhs.projections.is_empty()
+                    && (rhs_is_enum
+                        || func.locals.get(lhs.local.as_usize()).is_some_and(|l| {
+                            match interner.resolve(l.ty) {
+                                ArType::Ref(_) | ArType::RefMut(_) => true,
+                                ArType::Option(inner) | ArType::Nullable(inner) => {
+                                    matches!(
+                                        interner.resolve(inner),
+                                        ArType::Ref(_) | ArType::RefMut(_)
+                                    )
+                                }
+                                ArType::Result(ok, err) => {
+                                    matches!(
+                                        interner.resolve(ok),
+                                        ArType::Ref(_) | ArType::RefMut(_)
+                                    ) || matches!(
+                                        interner.resolve(err),
+                                        ArType::Ref(_) | ArType::RefMut(_)
+                                    )
+                                }
+                                _ => false,
+                            }
+                        }));
                 if dest_is_memory && !dest_is_ref_slot {
                     events.push(EscapeEvent {
                         kind: EscapeKind::HeapStore,

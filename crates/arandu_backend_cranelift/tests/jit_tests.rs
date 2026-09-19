@@ -3,7 +3,9 @@
 
 use arandu_backend_cranelift::CraneliftBackend;
 use arandu_semantics::literal_pool::AmirLiteralEntry;
-use arandu_semantics::{DiagCode, lower_to_amir, lower_to_hir, resolve_for_test, type_check};
+use arandu_semantics::{
+    DiagCode, lower_to_amir_with_interfaces, lower_to_hir, resolve_for_test, type_check,
+};
 use std::sync::Arc;
 
 fn compile_src(
@@ -21,7 +23,7 @@ fn compile_src(
         arandu_semantics::TargetInfo { pointer_width: 64 },
     );
     let hir = lower_to_hir(&mut tc, &program).expect("HIR lowering failed");
-    let amir = lower_to_amir(&tc, &hir, 64).expect("AMIR lowering failed");
+    let (amir, _) = lower_to_amir_with_interfaces(&mut tc, &hir, 64).expect("AMIR lowering failed");
     (
         amir,
         Arc::unwrap_or_clone(tc.symbols),
@@ -2089,4 +2091,46 @@ fn jit_abi_struct_greater_than_16_bytes_indirect() {
         f()
     };
     assert_eq!(result, 60);
+}
+
+#[test]
+fn jit_pointer_tag_enum() {
+    let src = r#"
+    enum Node {
+        Leaf(ref int),
+        Branch(ref int),
+        Empty,
+    }
+
+    func eval_node(n: Node): int {
+        return match n {
+            Node.Leaf(r) => *r
+            Node.Branch(r) => *r * 2
+            Node.Empty => 0
+        }
+    }
+
+    func main(): int {
+        let x: int = 15
+        let y: int = 25
+        let n1 = Node.Leaf(ref x)
+        let n2 = Node.Branch(ref y)
+        let n3 = Node.Empty
+        let r1 = eval_node(n1)
+        let r2 = eval_node(n2)
+        let r3 = eval_node(n3)
+        return r1 + r2 + r3
+    }
+    "#;
+    let (amir, symbols, type_info) = compile_src(src);
+    let backend = backend_for_test();
+    let module = backend
+        .compile(&amir, &symbols, &type_info)
+        .expect("pointer tag enum should compile");
+
+    let result: i64 = unsafe {
+        let f: unsafe extern "C" fn() -> i64 = module.get_fn("main").unwrap();
+        f()
+    };
+    assert_eq!(result, 65);
 }

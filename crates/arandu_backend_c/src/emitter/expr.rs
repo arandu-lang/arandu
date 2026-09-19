@@ -199,7 +199,18 @@ impl<'a> CEmitter<'a> {
                     other => other,
                 };
                 let layout = self.checked_layout(&enum_ty);
-                if let Some(arandu_middle::layout::TagEncoding::Niche {
+                if let Some(arandu_middle::layout::TagEncoding::PointerTag {
+                    tag_mask,
+                    pointer_offset,
+                    ..
+                }) = layout.tag_encoding
+                {
+                    let _ = write!(
+                        &mut self.output,
+                        "({{ uintptr_t _raw = 0; memcpy(&_raw, (uint8_t*)&t{} + {}, sizeof(_raw)); (int64_t)(_raw & 0x{:x}ULL); }})",
+                        base_temp, pointer_offset, tag_mask
+                    );
+                } else if let Some(arandu_middle::layout::TagEncoding::Niche {
                     niche_offset,
                     niche_value,
                     untagged_variant,
@@ -243,6 +254,19 @@ impl<'a> CEmitter<'a> {
                     other => other,
                 };
                 let layout = self.checked_layout(&enum_ty);
+                if let Some(arandu_middle::layout::TagEncoding::PointerTag {
+                    tag_mask,
+                    pointer_offset,
+                    ..
+                }) = layout.tag_encoding
+                {
+                    let _ = write!(
+                        &mut self.output,
+                        "({{ uintptr_t _raw = 0; memcpy(&_raw, (uint8_t*)&t{} + {}, sizeof(_raw)); ({expected_c_type})(_raw & ~0x{:x}ULL); }})",
+                        base_temp, pointer_offset, tag_mask
+                    );
+                    return;
+                }
                 let enum_id = match enum_ty {
                     ArType::Named(id, _) => id,
                     _ => arandu_middle::SymbolId::DUMMY,
@@ -279,8 +303,31 @@ impl<'a> CEmitter<'a> {
                 payload,
             } => {
                 let enum_layout = self.checked_layout(expected_ar_type);
-                if let Some(arandu_middle::layout::TagEncoding::Niche { tagged_variant, .. }) =
-                    enum_layout.tag_encoding
+                if let Some(arandu_middle::layout::TagEncoding::PointerTag {
+                    tag_mask,
+                    pointer_offset,
+                    ..
+                }) = enum_layout.tag_encoding
+                {
+                    let tag_val = (*variant_tag as u64) & tag_mask;
+                    if let Some(p) = payload {
+                        let payload_str = self.format_operand(p, func);
+                        let _ = write!(
+                            &mut self.output,
+                            "({{ {expected_c_type} _res = {{0}}; uintptr_t _ptr = (uintptr_t)({payload_str}); uintptr_t _tagged = (_ptr & ~0x{:x}ULL) | 0x{:x}ULL; memcpy((uint8_t*)&_res + {}, &_tagged, sizeof(_tagged)); _res; }})",
+                            tag_mask, tag_val, pointer_offset
+                        );
+                    } else {
+                        let _ = write!(
+                            &mut self.output,
+                            "({{ {expected_c_type} _res = {{0}}; uintptr_t _tagged = 0x{:x}ULL; memcpy((uint8_t*)&_res + {}, &_tagged, sizeof(_tagged)); _res; }})",
+                            tag_val, pointer_offset
+                        );
+                    }
+                } else if let Some(arandu_middle::layout::TagEncoding::Niche {
+                    tagged_variant,
+                    ..
+                }) = enum_layout.tag_encoding
                 {
                     if *variant_tag == tagged_variant {
                         let _ = write!(

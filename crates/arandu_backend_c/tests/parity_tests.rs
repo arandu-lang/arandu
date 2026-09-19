@@ -2447,3 +2447,38 @@ func main(): int {
         "Cranelift backend failed float determinism test"
     );
 }
+
+#[test]
+fn parity_pointer_tag_enum() {
+    let src = r#"
+    enum Node {
+        Leaf(ref int)
+        Branch(ref int)
+        Empty
+    }
+
+    func eval_node(n: Node): int {
+        match n {
+            Node.Leaf(r) => { return *r; }
+            Node.Branch(r) => { return *r * 2; }
+            Node.Empty => { return 0; }
+        }
+    }
+
+    func main(): int {
+        let x: int = 15
+        let y: int = 25
+        let n1: Node = Node.Leaf(ref x)
+        let n2: Node = Node.Branch(ref y)
+        let n3: Node = Node.Empty
+        let r1 = eval_node(n1)
+        let r2 = eval_node(n2)
+        let r3 = eval_node(n3)
+        if r1 != 15 { return 1; }
+        if r2 != 50 { return 2; }
+        if r3 != 0 { return 3; }
+        return 0;
+    }
+    "#;
+    test_execution_parity("pointer_tag_enum", src);
+}

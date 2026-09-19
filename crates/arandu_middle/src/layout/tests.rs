@@ -47,6 +47,24 @@ impl LayoutEngine {
     fn fat_ptr_len_offset(&self) -> u64 {
         self.0.fat_ptr_len_offset()
     }
+
+    fn soo_layout_for_type(
+        &self,
+        ty: &ArType,
+        interner: &TypeInterner,
+        provider: &dyn StructLayoutProvider,
+    ) -> Result<SooLayout, LayoutError> {
+        self.0.soo_layout_for_type(ty, interner, provider)
+    }
+
+    fn is_soo_eligible(
+        &self,
+        ty: &ArType,
+        interner: &TypeInterner,
+        provider: &dyn StructLayoutProvider,
+    ) -> bool {
+        self.0.is_soo_eligible(ty, interner, provider)
+    }
 }
 
 newtype_index!(TestId);
@@ -952,4 +970,294 @@ fn test_niche_layout_option_ref_vs_val() {
             tagged_variant: 0,
         })
     );
+}
+
+#[test]
+fn test_pointer_tagging_8_byte_align() {
+    let engine = LayoutEngine::new(8);
+    let interner = TypeInterner::new();
+
+    // Struct with align 8: struct Node8 { a: i64 }
+    let node_sym = SymbolId::new(0, 500);
+    let i64_tid = interner.intern(ArType::Primitive(Primitive::I64));
+    let node_fields = StructFields::from_entries([StructFieldInfo {
+        name: "a".into(),
+        symbol: None,
+        ty: i64_tid,
+        index: 0,
+    }]);
+    let mut fields_map = FxHashMap::default();
+    fields_map.insert(node_sym, node_fields);
+
+    let node_tid = interner.intern(ArType::Named(node_sym, IndexRange::empty()));
+    let ref_node_tid = interner.intern(ArType::Ref(node_tid));
+
+    // Enum Tree { Nil, Leaf(ref Node8), Branch(ref Node8) } -> 3 variants <= 2^3 = 8
+    let enum_sym = SymbolId::new(0, 501);
+    let variants = vec![
+        EnumPayloadShape { payload_ty: None },
+        EnumPayloadShape {
+            payload_ty: Some(ref_node_tid),
+        },
+        EnumPayloadShape {
+            payload_ty: Some(ref_node_tid),
+        },
+    ];
+    let mut enum_map = FxHashMap::default();
+    enum_map.insert(enum_sym, variants);
+
+    let provider = StructMockProvider {
+        fields: fields_map,
+        generic_params: FxHashMap::default(),
+        enum_variants: enum_map,
+        repr_c: rustc_hash::FxHashSet::default(),
+    };
+
+    let enum_tid = interner.intern(ArType::Named(enum_sym, IndexRange::empty()));
+    let layout = engine.layout_of(enum_tid, &interner, &provider);
+
+    // A4.2: Pointer tagging reduces size from 16 to 8 bytes!
+    assert_eq!(layout.size, 8);
+    assert_eq!(layout.align, 8);
+    assert_eq!(layout.field_offsets, vec![0]);
+    assert_eq!(
+        layout.tag_encoding,
+        Some(TagEncoding::PointerTag {
+            tag_bits: 3,
+            tag_mask: 7,
+            pointer_offset: 0,
+        })
+    );
+}
+
+#[test]
+fn test_pointer_tagging_4_byte_align() {
+    let engine = LayoutEngine::new(8);
+    let interner = TypeInterner::new();
+
+    // Struct with align 4: struct Node4 { a: i32 }
+    let node_sym = SymbolId::new(0, 510);
+    let i32_tid = interner.intern(ArType::Primitive(Primitive::I32));
+    let node_fields = StructFields::from_entries([StructFieldInfo {
+        name: "a".into(),
+        symbol: None,
+        ty: i32_tid,
+        index: 0,
+    }]);
+    let mut fields_map = FxHashMap::default();
+    fields_map.insert(node_sym, node_fields);
+
+    let node_tid = interner.intern(ArType::Named(node_sym, IndexRange::empty()));
+    let ref_node_tid = interner.intern(ArType::Ref(node_tid));
+
+    // Enum Quad { V0, V1(ref Node4), V2(ref Node4), V3 } -> 4 variants <= 2^2 = 4
+    let enum_sym = SymbolId::new(0, 511);
+    let variants = vec![
+        EnumPayloadShape { payload_ty: None },
+        EnumPayloadShape {
+            payload_ty: Some(ref_node_tid),
+        },
+        EnumPayloadShape {
+            payload_ty: Some(ref_node_tid),
+        },
+        EnumPayloadShape { payload_ty: None },
+    ];
+    let mut enum_map = FxHashMap::default();
+    enum_map.insert(enum_sym, variants);
+
+    let provider = StructMockProvider {
+        fields: fields_map,
+        generic_params: FxHashMap::default(),
+        enum_variants: enum_map,
+        repr_c: rustc_hash::FxHashSet::default(),
+    };
+
+    let enum_tid = interner.intern(ArType::Named(enum_sym, IndexRange::empty()));
+    let layout = engine.layout_of(enum_tid, &interner, &provider);
+
+    // A4.2: Pointer tagging with 2 bits (mask 3) fits 4 variants in 8 bytes:
+    assert_eq!(layout.size, 8);
+    assert_eq!(layout.align, 8);
+    assert_eq!(layout.field_offsets, vec![0]);
+    assert_eq!(
+        layout.tag_encoding,
+        Some(TagEncoding::PointerTag {
+            tag_bits: 2,
+            tag_mask: 3,
+            pointer_offset: 0,
+        })
+    );
+}
+
+#[test]
+fn test_pointer_tagging_fallback_when_variants_exceed_capacity() {
+    let engine = LayoutEngine::new(8);
+    let interner = TypeInterner::new();
+
+    // Struct with align 4: struct Node4 { a: i32 } -> max 4 variants for pointer tagging
+    let node_sym = SymbolId::new(0, 520);
+    let i32_tid = interner.intern(ArType::Primitive(Primitive::I32));
+    let node_fields = StructFields::from_entries([StructFieldInfo {
+        name: "a".into(),
+        symbol: None,
+        ty: i32_tid,
+        index: 0,
+    }]);
+    let mut fields_map = FxHashMap::default();
+    fields_map.insert(node_sym, node_fields);
+
+    let node_tid = interner.intern(ArType::Named(node_sym, IndexRange::empty()));
+    let ref_node_tid = interner.intern(ArType::Ref(node_tid));
+
+    // 5 variants > 4 -> must fall back to Direct encoding (16 bytes)
+    let enum_sym = SymbolId::new(0, 521);
+    let variants = vec![
+        EnumPayloadShape { payload_ty: None },
+        EnumPayloadShape {
+            payload_ty: Some(ref_node_tid),
+        },
+        EnumPayloadShape {
+            payload_ty: Some(ref_node_tid),
+        },
+        EnumPayloadShape { payload_ty: None },
+        EnumPayloadShape { payload_ty: None },
+    ];
+    let mut enum_map = FxHashMap::default();
+    enum_map.insert(enum_sym, variants);
+
+    let provider = StructMockProvider {
+        fields: fields_map,
+        generic_params: FxHashMap::default(),
+        enum_variants: enum_map,
+        repr_c: rustc_hash::FxHashSet::default(),
+    };
+
+    let enum_tid = interner.intern(ArType::Named(enum_sym, IndexRange::empty()));
+    let layout = engine.layout_of(enum_tid, &interner, &provider);
+
+    assert_eq!(layout.size, 16);
+    assert_eq!(layout.align, 8);
+    assert_eq!(
+        layout.tag_encoding,
+        Some(TagEncoding::Direct {
+            tag_size: 8,
+            payload_offset: 8,
+        })
+    );
+}
+
+#[test]
+fn test_small_object_optimization_soo_layout() {
+    let engine = LayoutEngine::new(8);
+    let interner = TypeInterner::new();
+    let provider = MockProvider;
+
+    // Primitives
+    let u8_ty = ArType::Primitive(Primitive::U8);
+    let soo_u8 = engine
+        .soo_layout_for_type(&u8_ty, &interner, &provider)
+        .unwrap();
+    assert_eq!(soo_u8.max_inline_bytes, 24);
+    assert_eq!(soo_u8.inline_capacity, 24);
+    assert!(soo_u8.is_inline_eligible);
+
+    let i16_ty = ArType::Primitive(Primitive::I16);
+    let soo_i16 = engine
+        .soo_layout_for_type(&i16_ty, &interner, &provider)
+        .unwrap();
+    assert_eq!(soo_i16.inline_capacity, 12);
+    assert!(soo_i16.is_inline_eligible);
+
+    let i32_ty = ArType::Primitive(Primitive::I32);
+    let soo_i32 = engine
+        .soo_layout_for_type(&i32_ty, &interner, &provider)
+        .unwrap();
+    assert_eq!(soo_i32.inline_capacity, 6);
+    assert!(soo_i32.is_inline_eligible);
+
+    let i64_ty = ArType::Primitive(Primitive::I64);
+    let soo_i64 = engine
+        .soo_layout_for_type(&i64_ty, &interner, &provider)
+        .unwrap();
+    assert_eq!(soo_i64.inline_capacity, 3);
+    assert!(soo_i64.is_inline_eligible);
+
+    // Struct of 24 bytes (3x i64)
+    let s24_sym = SymbolId::new(0, 600);
+    let i64_tid = interner.intern(i64_ty);
+    let s24_fields = StructFields::from_entries([
+        StructFieldInfo {
+            name: "a".into(),
+            symbol: None,
+            ty: i64_tid,
+            index: 0,
+        },
+        StructFieldInfo {
+            name: "b".into(),
+            symbol: None,
+            ty: i64_tid,
+            index: 1,
+        },
+        StructFieldInfo {
+            name: "c".into(),
+            symbol: None,
+            ty: i64_tid,
+            index: 2,
+        },
+    ]);
+    let mut fields_map = FxHashMap::default();
+    fields_map.insert(s24_sym, s24_fields);
+
+    // Struct of 32 bytes (4x i64)
+    let s32_sym = SymbolId::new(0, 601);
+    let s32_fields = StructFields::from_entries([
+        StructFieldInfo {
+            name: "a".into(),
+            symbol: None,
+            ty: i64_tid,
+            index: 0,
+        },
+        StructFieldInfo {
+            name: "b".into(),
+            symbol: None,
+            ty: i64_tid,
+            index: 1,
+        },
+        StructFieldInfo {
+            name: "c".into(),
+            symbol: None,
+            ty: i64_tid,
+            index: 2,
+        },
+        StructFieldInfo {
+            name: "d".into(),
+            symbol: None,
+            ty: i64_tid,
+            index: 3,
+        },
+    ]);
+    fields_map.insert(s32_sym, s32_fields);
+
+    let struct_provider = StructMockProvider {
+        fields: fields_map,
+        generic_params: FxHashMap::default(),
+        enum_variants: FxHashMap::default(),
+        repr_c: rustc_hash::FxHashSet::default(),
+    };
+
+    let s24_ty = ArType::Named(s24_sym, IndexRange::empty());
+    let soo_s24 = engine
+        .soo_layout_for_type(&s24_ty, &interner, &struct_provider)
+        .unwrap();
+    assert_eq!(soo_s24.inline_capacity, 1);
+    assert!(soo_s24.is_inline_eligible);
+    assert!(engine.is_soo_eligible(&s24_ty, &interner, &struct_provider));
+
+    let s32_ty = ArType::Named(s32_sym, IndexRange::empty());
+    let soo_s32 = engine
+        .soo_layout_for_type(&s32_ty, &interner, &struct_provider)
+        .unwrap();
+    assert_eq!(soo_s32.inline_capacity, 0);
+    assert!(!soo_s32.is_inline_eligible);
+    assert!(!engine.is_soo_eligible(&s32_ty, &interner, &struct_provider));
 }

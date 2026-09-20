@@ -1,0 +1,214 @@
+module std.math.matrix
+
+/// Fixed-shape matrices backed by const-generic arrays and dynamic heap matrices
+/// (RFC 0012).
+///
+/// Features:
+/// - StaticMatrix<T, M, N>: one representation for every compile-time shape.
+/// - Destination-passing kernels with no hidden result allocation.
+/// - Shape-safe rectangular multiplication: (M x K) * (K x N).
+/// - Dynamic Matrix<T>: Heap-allocated matrix with explicit deallocation and ArrayView interoperability.
+
+import std.core.mem as mem
+import std.math.view as view
+
+extern "C" {
+    func ar_vec_malloc(size: uint): ptr[u8]
+    func ar_vec_buf_free(p: ptr[u8], size: uint): void
+}
+
+// ── Const-Generic Fixed Matrix ───────────────────────────────────────────────
+
+/// Fixed-shape matrix with dimensions encoded in the type.
+public struct StaticMatrix<T, const M: uint, const N: uint> {
+    data: [M][N]T
+}
+
+/// Returns the compile-time row count.
+public func StaticMatrix.rows<T, const M: uint, const N: uint>(self: ref StaticMatrix<T, M, N>): uint {
+    return M
+}
+
+/// Returns the compile-time column count.
+public func StaticMatrix.cols<T, const M: uint, const N: uint>(self: ref StaticMatrix<T, M, N>): uint {
+    return N
+}
+
+/// Returns the element at (r, c).
+public func StaticMatrix.get<T, const M: uint, const N: uint>(self: ref StaticMatrix<T, M, N>, r: uint, c: uint): T {
+    return self.data[r][c]
+}
+
+/// Sets the element at (r, c).
+public func StaticMatrix.set<T, const M: uint, const N: uint>(self: mut ref StaticMatrix<T, M, N>, r: uint, c: uint, value: T): void {
+    self.data[r][c] = value
+}
+
+/// Fills an existing float matrix without allocating a result.
+public func staticFill<const M: uint, const N: uint>(out: mut ref StaticMatrix<float, M, N>, value: float): void {
+    let mut r: uint = 0
+    while r < M {
+        let mut c: uint = 0
+        while c < N {
+            out.set(r, c, value)
+            c = c + 1
+        }
+        r = r + 1
+    }
+}
+
+/// Writes a square identity matrix into caller-owned storage.
+public func staticIdentityInto<const N: uint>(out: mut ref StaticMatrix<float, N, N>): void {
+    let mut r: uint = 0
+    while r < N {
+        let mut c: uint = 0
+        while c < N {
+            if r == c {
+                out.set(r, c, 1.0)
+            } else {
+                out.set(r, c, 0.0)
+            }
+            c = c + 1
+        }
+        r = r + 1
+    }
+}
+
+/// Computes `out = left + right` without allocating a result.
+public func staticAddInto<const M: uint, const N: uint>(
+    left: ref StaticMatrix<float, M, N>,
+    right: ref StaticMatrix<float, M, N>,
+    out: mut ref StaticMatrix<float, M, N>
+): void {
+    let mut r: uint = 0
+    while r < M {
+        let mut c: uint = 0
+        while c < N {
+            out.set(r, c, left.get(r, c) + right.get(r, c))
+            c = c + 1
+        }
+        r = r + 1
+    }
+}
+
+/// Computes shape-safe rectangular multiplication into caller-owned storage.
+public func staticMulInto<const M: uint, const K: uint, const N: uint>(
+    left: ref StaticMatrix<float, M, K>,
+    right: ref StaticMatrix<float, K, N>,
+    out: mut ref StaticMatrix<float, M, N>
+): void {
+    let mut r: uint = 0
+    while r < M {
+        let mut c: uint = 0
+        while c < N {
+            let mut sum: float = 0.0
+            let mut k: uint = 0
+            while k < K {
+                sum = sum + left.get(r, k) * right.get(k, c)
+                k = k + 1
+            }
+            out.set(r, c, sum)
+            c = c + 1
+        }
+        r = r + 1
+    }
+}
+
+/// Computes the transpose into a matrix whose dimensions are reversed by type.
+public func staticTransposeInto<const M: uint, const N: uint>(
+    input: ref StaticMatrix<float, M, N>,
+    out: mut ref StaticMatrix<float, N, M>
+): void {
+    let mut r: uint = 0
+    while r < M {
+        let mut c: uint = 0
+        while c < N {
+            out.set(c, r, input.get(r, c))
+            c = c + 1
+        }
+        r = r + 1
+    }
+}
+
+/// Computes the determinant of a 2x2 float matrix.
+public func staticDet2(input: ref StaticMatrix<float, 2, 2>): float {
+    return input.get(0, 0) * input.get(1, 1) - input.get(0, 1) * input.get(1, 0)
+}
+
+// ── Dynamic Heap Matrix<T> ───────────────────────────────────────────────────
+
+/// Dynamic row-major matrix allocated on the heap.
+public struct Matrix<T> {
+    data: ptr[T]
+    rows: uint
+    cols: uint
+    capacity: uint
+}
+
+/// Creates a new heap-allocated matrix initialized to `initial`.
+public func newMatrix<T>(rows: uint, cols: uint, initial: T): Option<Matrix<T>> {
+    let total = rows * cols
+    let elemSize = mem.sizeOf<T>()
+    let totalBytes = total * elemSize
+    unsafe {
+        let nullp: ptr[u8] = nil
+        let raw = ar_vec_malloc(totalBytes)
+        if raw == nullp {
+            return Option.None
+        }
+        let p = raw as ptr[T]
+        let mut i: uint = 0
+        while i < total {
+            let elemPtr = mem.ptrOffset<T>(p, i as i32)
+            mem.ptrWrite<T>(elemPtr, initial)
+            i = i + 1
+        }
+        return Option.Some(Matrix<T> {
+            data: p,
+            rows: rows,
+            cols: cols,
+            capacity: total,
+        })
+    }
+}
+
+/// Associated constructor for heap matrix of zeros.
+public func Matrix.zeros(rows: uint, cols: uint): Option<Matrix<float>> {
+    return newMatrix<float>(rows, cols, 0.0)
+}
+
+/// Returns the number of rows.
+public func Matrix.rows<T>(self: ref Matrix<T>): uint {
+    return self.rows
+}
+
+/// Returns the number of columns.
+public func Matrix.cols<T>(self: ref Matrix<T>): uint {
+    return self.cols
+}
+
+/// Returns a shared view over the heap matrix.
+public func Matrix.asView<T>(self: ref Matrix<T>): view.ArrayView<T> {
+    return view.fromRaw<T>(self.data, self.rows, self.cols, self.cols as int, 1)
+}
+
+/// Returns an exclusive mutable view over the heap matrix.
+public func Matrix.asViewMut<T>(self: mut ref Matrix<T>): view.ArrayViewMut<T> {
+    return view.fromRawMut<T>(self.data, self.rows, self.cols, self.cols as int, 1)
+}
+
+/// Frees the underlying heap memory of the matrix.
+public func Matrix.free<T>(self: mut ref Matrix<T>): void {
+    let nullp: ptr[T] = nil
+    if self.data != nullp {
+        let elemSize = mem.sizeOf<T>()
+        let totalBytes = self.capacity * elemSize
+        unsafe {
+            ar_vec_buf_free(self.data as ptr[u8], totalBytes)
+            self.data = nullp
+            self.rows = 0
+            self.cols = 0
+            self.capacity = 0
+        }
+    }
+}

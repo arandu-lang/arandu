@@ -1,0 +1,276 @@
+module std.math.view
+
+/// Zero-Copy Strided Multidimensional Views (RFC 0012).
+///
+/// Follows Data-Oriented Design (DoD):
+/// - Non-owning views with 2D shape (rows, cols) and strides (rowStride, colStride).
+/// - Memory offset formula: offset(r, c) = r * rowStride + c * colStride
+/// - Supports RowMajor (C-contiguous), ColumnMajor (Fortran-contiguous), and arbitrary strided slicing.
+/// - Slicing and transposition are pure O(1) metadata adjustments without copying any buffer bytes.
+
+import std.core.mem as mem
+import std.core.slice as slice
+
+/// Non-owning shared 2D view over contiguous or strided memory.
+public struct ArrayView<T> {
+    data: ptr[T]
+    rows: uint
+    cols: uint
+    rowStride: int
+    colStride: int
+}
+
+/// Creates an `ArrayView<T>` directly from raw pointer, dimensions, and strides.
+public func fromRaw<T>(p: ptr[T], rows: uint, cols: uint, rowStride: int, colStride: int): ArrayView<T> {
+    return ArrayView<T> {
+        data: p,
+        rows: rows,
+        cols: cols,
+        rowStride: rowStride,
+        colStride: colStride,
+    }
+}
+
+/// Creates a row-major `ArrayView<T>` from a borrowed slice `[]T` with given dimensions.
+///
+/// Returns `Option.Some(view)` if `rows * cols <= slice.len(s)`, or `Option.None` otherwise.
+public func fromSlice<T>(s: []T, rows: uint, cols: uint): Option<ArrayView<T>> {
+    let total = rows * cols
+    if total > slice.len<T>(s) {
+        return Option.None
+    }
+    let p = slice.asPtr<T>(s)
+    return Option.Some(ArrayView<T> {
+        data: p,
+        rows: rows,
+        cols: cols,
+        rowStride: cols as int,
+        colStride: 1,
+    })
+}
+
+/// Associated constructor for row-major `ArrayView<T>` from slice.
+public func ArrayView.fromSlice<T>(s: []T, rows: uint, cols: uint): Option<ArrayView<T>> {
+    return fromSlice<T>(s, rows, cols)
+}
+
+/// Returns the number of rows in the view.
+public func ArrayView.rows<T>(self: ref ArrayView<T>): uint {
+    return self.rows
+}
+
+/// Returns the number of columns in the view.
+public func ArrayView.cols<T>(self: ref ArrayView<T>): uint {
+    return self.cols
+}
+
+/// Returns the stride between consecutive rows.
+public func ArrayView.rowStride<T>(self: ref ArrayView<T>): int {
+    return self.rowStride
+}
+
+/// Returns the stride between consecutive columns.
+public func ArrayView.colStride<T>(self: ref ArrayView<T>): int {
+    return self.colStride
+}
+
+/// Returns the total number of elements in the view (rows * cols).
+public func ArrayView.len<T>(self: ref ArrayView<T>): uint {
+    return self.rows * self.cols
+}
+
+/// Returns true if the view is contiguous in row-major layout (rowStride == cols, colStride == 1).
+public func ArrayView.isContiguous<T>(self: ref ArrayView<T>): bool {
+    return self.colStride == 1 && self.rowStride == (self.cols as int)
+}
+
+/// Returns the pointer to the element at (r, c), or null pointer if out of bounds.
+public func ArrayView.ptrAt<T>(self: ref ArrayView<T>, r: uint, c: uint): ptr[T] {
+    let nullp: ptr[T] = nil
+    if r >= self.rows || c >= self.cols {
+        return nullp
+    }
+    let offset = (r as int) * self.rowStride + (c as int) * self.colStride
+    return mem.ptrOffset<T>(self.data, offset as i32)
+}
+
+/// Returns a copy of the element at (r, c) if within bounds.
+public func ArrayView.get<T>(self: ref ArrayView<T>, r: uint, c: uint): Option<T> {
+    let nullp: ptr[T] = nil
+    let p = self.ptrAt<T>(r, c)
+    if p == nullp {
+        return Option.None
+    }
+    return Option.Some(mem.ptrRead<T>(p))
+}
+
+/// Creates a subview starting at (rStart, cStart) with shape (rCount, cCount).
+/// Pure O(1) operation without copying underlying memory.
+public func ArrayView.slice<T>(self: ref ArrayView<T>, rStart: uint, rCount: uint, cStart: uint, cCount: uint): Option<ArrayView<T>> {
+    if rStart + rCount > self.rows || cStart + cCount > self.cols {
+        return Option.None
+    }
+    let offset = (rStart as int) * self.rowStride + (cStart as int) * self.colStride
+    let subData = mem.ptrOffset<T>(self.data, offset as i32)
+    return Option.Some(ArrayView<T> {
+        data: subData,
+        rows: rCount,
+        cols: cCount,
+        rowStride: self.rowStride,
+        colStride: self.colStride,
+    })
+}
+
+/// Transposes the view in O(1) time by swapping rows/cols and their strides.
+/// Zero-copy, zero-allocation transformation.
+public func ArrayView.transpose<T>(self: ref ArrayView<T>): ArrayView<T> {
+    return ArrayView<T> {
+        data: self.data,
+        rows: self.cols,
+        cols: self.rows,
+        rowStride: self.colStride,
+        colStride: self.rowStride,
+    }
+}
+
+// ── Mutable Strided View ─────────────────────────────────────────────────────
+
+/// Non-owning exclusive mutable 2D view over contiguous or strided memory.
+public struct ArrayViewMut<T> {
+    data: ptr[T]
+    rows: uint
+    cols: uint
+    rowStride: int
+    colStride: int
+}
+
+/// Creates an `ArrayViewMut<T>` directly from raw pointer, dimensions, and strides.
+public func fromRawMut<T>(p: ptr[T], rows: uint, cols: uint, rowStride: int, colStride: int): ArrayViewMut<T> {
+    return ArrayViewMut<T> {
+        data: p,
+        rows: rows,
+        cols: cols,
+        rowStride: rowStride,
+        colStride: colStride,
+    }
+}
+
+/// Creates a row-major `ArrayViewMut<T>` from a slice with given dimensions.
+public func fromSliceMut<T>(s: mut ref []T, rows: uint, cols: uint): Option<ArrayViewMut<T>> {
+    let total = rows * cols
+    if total > slice.len<T>(*s) {
+        return Option.None
+    }
+    let p = slice.asPtr<T>(*s)
+    return Option.Some(ArrayViewMut<T> {
+        data: p,
+        rows: rows,
+        cols: cols,
+        rowStride: cols as int,
+        colStride: 1,
+    })
+}
+
+/// Associated constructor for row-major `ArrayViewMut<T>` from slice.
+public func ArrayViewMut.fromSlice<T>(s: mut ref []T, rows: uint, cols: uint): Option<ArrayViewMut<T>> {
+    return fromSliceMut<T>(s, rows, cols)
+}
+
+/// Downcasts exclusive view to shared `ArrayView<T>`.
+public func ArrayViewMut.asView<T>(self: ref ArrayViewMut<T>): ArrayView<T> {
+    return ArrayView<T> {
+        data: self.data,
+        rows: self.rows,
+        cols: self.cols,
+        rowStride: self.rowStride,
+        colStride: self.colStride,
+    }
+}
+
+/// Returns the number of rows in the mutable view.
+public func ArrayViewMut.rows<T>(self: ref ArrayViewMut<T>): uint {
+    return self.rows
+}
+
+/// Returns the number of columns in the mutable view.
+public func ArrayViewMut.cols<T>(self: ref ArrayViewMut<T>): uint {
+    return self.cols
+}
+
+/// Returns the row stride.
+public func ArrayViewMut.rowStride<T>(self: ref ArrayViewMut<T>): int {
+    return self.rowStride
+}
+
+/// Returns the column stride.
+public func ArrayViewMut.colStride<T>(self: ref ArrayViewMut<T>): int {
+    return self.colStride
+}
+
+/// Returns the total number of elements.
+public func ArrayViewMut.len<T>(self: ref ArrayViewMut<T>): uint {
+    return self.rows * self.cols
+}
+
+/// Returns true if contiguous row-major.
+public func ArrayViewMut.isContiguous<T>(self: ref ArrayViewMut<T>): bool {
+    return self.colStride == 1 && self.rowStride == (self.cols as int)
+}
+
+/// Pointer to element at (r, c).
+public func ArrayViewMut.ptrAt<T>(self: ref ArrayViewMut<T>, r: uint, c: uint): ptr[T] {
+    let nullp: ptr[T] = nil
+    if r >= self.rows || c >= self.cols {
+        return nullp
+    }
+    let offset = (r as int) * self.rowStride + (c as int) * self.colStride
+    return mem.ptrOffset<T>(self.data, offset as i32)
+}
+
+/// Reads the element at (r, c).
+public func ArrayViewMut.get<T>(self: ref ArrayViewMut<T>, r: uint, c: uint): Option<T> {
+    let nullp: ptr[T] = nil
+    let p = self.ptrAt<T>(r, c)
+    if p == nullp {
+        return Option.None
+    }
+    return Option.Some(mem.ptrRead<T>(p))
+}
+
+/// Writes `val` into element at (r, c). Returns true if written, false if out of bounds.
+public func ArrayViewMut.set<T>(self: mut ref ArrayViewMut<T>, r: uint, c: uint, val: T): bool {
+    if r >= self.rows || c >= self.cols {
+        return false
+    }
+    let offset = (r as int) * self.rowStride + (c as int) * self.colStride
+    let p = mem.ptrOffset<T>(self.data, offset as i32)
+    mem.ptrWrite<T>(p, val)
+    return true
+}
+
+/// Mutable subview slicing in O(1).
+public func ArrayViewMut.sliceMut<T>(self: mut ref ArrayViewMut<T>, rStart: uint, rCount: uint, cStart: uint, cCount: uint): Option<ArrayViewMut<T>> {
+    if rStart + rCount > self.rows || cStart + cCount > self.cols {
+        return Option.None
+    }
+    let offset = (rStart as int) * self.rowStride + (cStart as int) * self.colStride
+    let subData = mem.ptrOffset<T>(self.data, offset as i32)
+    return Option.Some(ArrayViewMut<T> {
+        data: subData,
+        rows: rCount,
+        cols: cCount,
+        rowStride: self.rowStride,
+        colStride: self.colStride,
+    })
+}
+
+/// Mutable transpose in O(1).
+public func ArrayViewMut.transpose<T>(self: mut ref ArrayViewMut<T>): ArrayViewMut<T> {
+    return ArrayViewMut<T> {
+        data: self.data,
+        rows: self.cols,
+        cols: self.rows,
+        rowStride: self.colStride,
+        colStride: self.rowStride,
+    }
+}

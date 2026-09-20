@@ -2136,3 +2136,50 @@ fn jit_pointer_tag_enum() {
     };
     assert_eq!(result, 65);
 }
+
+#[test]
+fn jit_nested_aggregate_deep_projection_struct_array() {
+    let src = r#"
+    struct Point {
+        x: int
+        y: int
+    }
+
+    struct Line {
+        start: Point
+        end: Point
+    }
+
+    struct Shape {
+        id: int
+        origin: Point
+        lines: [2]Line
+    }
+
+    func inspect_shape(s: Shape): int {
+        let p_origin_x = s.origin.x
+        let p2_y = s.lines[1].end.y
+        let p0_x = s.lines[0].start.x
+        return s.id + p_origin_x + p2_y + p0_x
+    }
+
+    func main(): int {
+        let p1 = Point { x: 10, y: 20 }
+        let l0 = Line { start: Point { x: 1, y: 2 }, end: Point { x: 3, y: 4 } }
+        let l1 = Line { start: Point { x: 5, y: 6 }, end: Point { x: 7, y: 8 } }
+        let arr: [2]Line = [l0, l1]
+        let s = Shape { id: 100, origin: p1, lines: arr }
+        return inspect_shape(s)
+    }
+    "#;
+    let (amir, symbols, type_info) = compile_src(src);
+    let backend = backend_for_test();
+    let module = backend.compile(&amir, &symbols, &type_info).unwrap();
+
+    let result: i64 = unsafe {
+        let f: unsafe extern "C" fn() -> i64 = module.get_fn("main").unwrap();
+        f()
+    };
+    // 100 + 10 (p_origin_x) + 8 (p2_y) + 1 (p0_x) = 119
+    assert_eq!(result, 119);
+}

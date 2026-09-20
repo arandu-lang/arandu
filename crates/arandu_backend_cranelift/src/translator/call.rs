@@ -374,30 +374,41 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         matches!(
             ty,
             ArType::Named(sym_id, _)
-                if matches!(
-                    self.symbol_table.get(*sym_id).kind,
-                    arandu_semantics::SymbolKind::Struct
-                )
+                if self.type_info.struct_fields.contains_key(sym_id)
+                    || matches!(
+                        self.symbol_table.get(*sym_id).kind,
+                        arandu_semantics::SymbolKind::Struct
+                    )
         )
     }
 
-    /// Copies `layout.size` payload bytes at `src` into a fresh `malloc`ed
-    /// blob and returns its address, fed into the aggregate pointer-repr
+    /// Whether `ty` is stored inline as an aggregate (struct, tuple, array, slice).
+    pub(super) fn is_inline_aggregate_ty(&self, ty: &ArType) -> bool {
+        self.is_named_struct_ty(ty)
+            || matches!(
+                ty,
+                ArType::Tuple(_)
+                    | ArType::Array(_, _)
+                    | ArType::ConstArray(_, _)
+                    | ArType::Slice(_)
+            )
+    }
+
+    /// Copies `layout.size` payload bytes at `src` into a fresh stack slot
+    /// and returns its address, fed into the aggregate pointer-repr
     /// value slot used by every other path (`StructLiteral` etc.).
     pub(super) fn materialize_ptr_read_copy(&mut self, src: Value, ty: &ArType) -> Option<Value> {
-        let malloc_id = self.malloc_func_id()?;
-        let memcpy_id = self.memcpy_func_id()?;
         let layout = self.checked_layout(ty);
-        let size_val = self.builder.ins().iconst(self.ptr_type, layout.size as i64);
-        let malloc_ref = self
-            .module
-            .declare_func_in_func(malloc_id, self.builder.func);
-        let call_inst = self.builder.ins().call(malloc_ref, &[size_val]);
-        let dest = self.builder.inst_results(call_inst)[0];
-        let memcpy_ref = self
-            .module
-            .declare_func_in_func(memcpy_id, self.builder.func);
-        self.builder.ins().call(memcpy_ref, &[dest, src, size_val]);
+        let dest = self.call_malloc(layout.size as u32);
+        if layout.size > 0
+            && let Some(memcpy_id) = self.memcpy_func_id()
+        {
+            let memcpy_ref = self
+                .module
+                .declare_func_in_func(memcpy_id, self.builder.func);
+            let size_val = self.builder.ins().iconst(self.ptr_type, layout.size as i64);
+            self.builder.ins().call(memcpy_ref, &[dest, src, size_val]);
+        }
         Some(dest)
     }
 }

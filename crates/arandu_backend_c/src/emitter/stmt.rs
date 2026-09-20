@@ -290,7 +290,14 @@ impl<'a> CEmitter<'a> {
                                 .unwrap_or("");
                             current_ty = self.instantiated_field_ty(&struct_ty, field_name);
                         }
-                        arandu_middle::amir::AmirProjection::Index(_) => {}
+                        arandu_middle::amir::AmirProjection::Index(_) => {
+                            current_ty = match &current_ty {
+                                ArType::Array(_, inner)
+                                | ArType::Slice(inner)
+                                | ArType::ConstArray(_, inner) => self.interner.resolve(*inner),
+                                other => other.clone(),
+                            };
+                        }
                     }
                 }
                 if matches!(current_ty, ArType::Primitive(Primitive::Str)) {

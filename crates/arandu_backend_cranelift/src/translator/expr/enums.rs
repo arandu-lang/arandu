@@ -135,6 +135,42 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     ptr_val,
                     payload_base_offset + pointer_width as i32,
                 );
+            } else if matches!(op_ty, ArType::Slice(_)) {
+                let (elem_ptr, elem_len) = self.translate_slice_operand(op);
+                self.builder.ins().store(
+                    cranelift_codegen::ir::MemFlagsData::new(),
+                    elem_ptr,
+                    ptr_val,
+                    payload_base_offset,
+                );
+                self.builder.ins().store(
+                    cranelift_codegen::ir::MemFlagsData::new(),
+                    elem_len,
+                    ptr_val,
+                    payload_base_offset + pointer_width as i32,
+                );
+            } else if self.is_inline_aggregate_ty(&op_ty)
+                && let Some(memcpy_id) = self.memcpy_func_id()
+            {
+                let op_layout = self.checked_layout(&op_ty);
+                if op_layout.size > 0 {
+                    let val = self.translate_operand(op, Some(self.ptr_type));
+                    let memcpy_ref = self
+                        .module
+                        .declare_func_in_func(memcpy_id, self.builder.func);
+                    let size_val = self
+                        .builder
+                        .ins()
+                        .iconst(self.ptr_type, op_layout.size as i64);
+                    let dest = if payload_base_offset != 0 {
+                        self.builder
+                            .ins()
+                            .iadd_imm_s(ptr_val, i64::from(payload_base_offset))
+                    } else {
+                        ptr_val
+                    };
+                    self.builder.ins().call(memcpy_ref, &[dest, val, size_val]);
+                }
             } else {
                 // Literals retain their source-level `IntLiteral`/`FloatLiteral`
                 // type in AMIR. Translate them using the variant's declared
@@ -299,6 +335,53 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             pointer_width as i32
         };
         let total_offset = base_offset + payload_offset;
+        let payload_ty = match &enum_ty {
+            ArType::Option(inner) => Some(self.type_info.resolve_type_id(*inner)),
+            ArType::Result(ok, err) => {
+                let tag = self
+                    .type_info
+                    .enum_variant_tags
+                    .get(variant)
+                    .copied()
+                    .unwrap_or(0);
+                if tag == 0 {
+                    Some(self.type_info.resolve_type_id(*ok))
+                } else {
+                    Some(self.type_info.resolve_type_id(*err))
+                }
+            }
+            ArType::Poll(inner) => Some(self.type_info.resolve_type_id(*inner)),
+            ArType::Named(enum_id, _) => {
+                arandu_semantics::layout::StructLayoutProvider::get_enum_variants(
+                    self.type_info,
+                    *enum_id,
+                )
+                .and_then(|variants| {
+                    let tag = self
+                        .type_info
+                        .enum_variant_tags
+                        .get(variant)
+                        .copied()
+                        .unwrap_or(0);
+                    variants.get(tag).cloned()
+                })
+                .and_then(|shape| shape.payload_ty)
+                .map(|ty_id| self.type_info.resolve_type_id(ty_id))
+            }
+            _ => None,
+        };
+        if let Some(ref ty) = payload_ty
+            && self.is_inline_aggregate_ty(ty)
+        {
+            return if total_offset == 0 {
+                ptr_val
+            } else {
+                self.builder
+                    .ins()
+                    .iadd_imm_s(ptr_val, i64::from(total_offset))
+            };
+        }
+
         let clif_ty = expected_ty.unwrap_or(self.ptr_type);
         self.builder.ins().load(
             clif_ty,

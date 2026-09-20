@@ -39,6 +39,18 @@ fn type_needs_drop(ty: TypeId, type_info: &TypeInfo) -> bool {
             }
             false
         }
+        ArType::Array(len, elem) => len > 0 && type_needs_drop(elem, type_info),
+        ArType::ConstArray(_, elem) => type_needs_drop(elem, type_info),
+        ArType::Option(elem) => type_needs_drop(elem, type_info),
+        ArType::Result(ok, err) => {
+            type_needs_drop(ok, type_info) || type_needs_drop(err, type_info)
+        }
+        ArType::Tuple(args) => {
+            let arg_ids = type_info.type_interner.type_args(args);
+            arg_ids
+                .iter()
+                .any(|&arg_ty| type_needs_drop(arg_ty, type_info))
+        }
         _ => false,
     }
 }
@@ -46,6 +58,7 @@ fn type_needs_drop(ty: TypeId, type_info: &TypeInfo) -> bool {
 /// Emits `Destroy` statements for `place`:
 /// 1. Runs the type's custom `@Destructor` if declared (unless skipping top-level).
 /// 2. Recursively destroys composite struct fields in reverse declaration order.
+/// 3. Destroys container types (`Array`, `Option`, `Result`, `Tuple`).
 fn emit_recursive_drops(
     place: &AmirPlace,
     ty: TypeId,
@@ -58,48 +71,60 @@ fn emit_recursive_drops(
         return;
     }
     let resolved = type_info.resolve_type_id(ty);
-    if let ArType::Named(sym, _) = resolved {
-        let has_destructor = type_info.destructor_instances.contains_key(&ty);
-        if has_destructor && !skip_top_level_destructor {
-            rebuilt.push(AmirStmt::Destroy(place.clone()));
-            return;
-        }
+    match resolved {
+        ArType::Named(sym, _) => {
+            let has_destructor = type_info.destructor_instances.contains_key(&ty);
+            if has_destructor && !skip_top_level_destructor {
+                rebuilt.push(AmirStmt::Destroy(place.clone()));
+                return;
+            }
 
-        if let Some(fields) = type_info.struct_fields.get(&sym) {
-            let mut indexed: Vec<(usize, Option<SymbolId>, TypeId)> = fields
-                .iter()
-                .map(|f| {
-                    let ty = instantiated_field_type(
-                        &resolved,
-                        &f.name,
-                        &type_info.type_interner,
-                        type_info,
-                    )
-                    .unwrap_or(f.ty);
-                    (f.index, f.symbol, ty)
-                })
-                .collect();
-            indexed.sort_by_key(|(idx, _, _)| std::cmp::Reverse(*idx));
+            if let Some(fields) = type_info.struct_fields.get(&sym) {
+                let mut indexed: Vec<(usize, Option<SymbolId>, TypeId)> = fields
+                    .iter()
+                    .map(|f| {
+                        let ty = instantiated_field_type(
+                            &resolved,
+                            &f.name,
+                            &type_info.type_interner,
+                            type_info,
+                        )
+                        .unwrap_or(f.ty);
+                        (f.index, f.symbol, ty)
+                    })
+                    .collect();
+                indexed.sort_by_key(|(idx, _, _)| std::cmp::Reverse(*idx));
 
-            for (_, fsym, fty) in indexed {
-                if type_needs_drop(fty, type_info) {
-                    let mut sub_place = place.clone();
-                    if let Some(fsym) = fsym {
-                        sub_place.projections.push(AmirProjection::Field(fsym));
+                for (_, fsym, fty) in indexed {
+                    if type_needs_drop(fty, type_info) {
+                        let mut sub_place = place.clone();
+                        if let Some(fsym) = fsym {
+                            sub_place.projections.push(AmirProjection::Field(fsym));
+                        }
+                        emit_recursive_drops(
+                            &sub_place, fty, type_info, move_state, false, rebuilt,
+                        );
                     }
-                    emit_recursive_drops(&sub_place, fty, type_info, move_state, false, rebuilt);
+                }
+
+                // The composite has no explicit destructor, so its own storage is
+                // still a cleanup obligation: the fields were walked above and the
+                // root comes last. Backends whose aggregates live in frames treat
+                // this `Destroy` as a no-op; a backend that owns heap storage (the
+                // wasm cell model) reclaims the cell here.
+                if !has_destructor {
+                    rebuilt.push(AmirStmt::Destroy(place.clone()));
                 }
             }
-
-            // The composite has no explicit destructor, so its own storage is
-            // still a cleanup obligation: the fields were walked above and the
-            // root comes last. Backends whose aggregates live in frames treat
-            // this `Destroy` as a no-op; a backend that owns heap storage (the
-            // wasm cell model) reclaims the cell here.
-            if !has_destructor {
-                rebuilt.push(AmirStmt::Destroy(place.clone()));
-            }
         }
+        ArType::Array(..)
+        | ArType::ConstArray(..)
+        | ArType::Option(..)
+        | ArType::Result(..)
+        | ArType::Tuple(..) => {
+            rebuilt.push(AmirStmt::Destroy(place.clone()));
+        }
+        _ => {}
     }
 }
 
@@ -203,5 +228,123 @@ pub fn elaborate_drops(func: &mut AmirFunc, type_info: &TypeInfo) {
     func.stmts = rebuilt;
     for (block, range) in func.blocks.iter_mut().zip(ranges) {
         block.statements = range;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::SymbolId;
+    use crate::passes::type_checker::types::Primitive;
+
+    #[test]
+    fn test_type_needs_drop_containers() {
+        let mut type_info = TypeInfo::new();
+        let sym_destructible = SymbolId::new(0, 42);
+        let destructible_ty_id = type_info.type_interner.intern(ArType::named(
+            sym_destructible,
+            &[],
+            &type_info.type_interner,
+        ));
+        let destructor_fn = SymbolId::new(0, 99);
+        type_info
+            .destructor_instances
+            .insert(destructible_ty_id, destructor_fn);
+
+        let int_ty_id = type_info
+            .type_interner
+            .intern(ArType::Primitive(Primitive::Int));
+
+        assert!(type_needs_drop(destructible_ty_id, &type_info));
+        assert!(!type_needs_drop(int_ty_id, &type_info));
+
+        // Array
+        let arr_empty = type_info
+            .type_interner
+            .intern(ArType::Array(0, destructible_ty_id));
+        assert!(!type_needs_drop(arr_empty, &type_info));
+
+        let arr_active = type_info
+            .type_interner
+            .intern(ArType::Array(3, destructible_ty_id));
+        assert!(type_needs_drop(arr_active, &type_info));
+
+        let arr_int = type_info.type_interner.intern(ArType::Array(3, int_ty_id));
+        assert!(!type_needs_drop(arr_int, &type_info));
+
+        // ConstArray
+        let const_arr = type_info
+            .type_interner
+            .intern(ArType::ConstArray(SymbolId::new(0, 10), destructible_ty_id));
+        assert!(type_needs_drop(const_arr, &type_info));
+
+        // Option
+        let opt_res = type_info
+            .type_interner
+            .intern(ArType::Option(destructible_ty_id));
+        assert!(type_needs_drop(opt_res, &type_info));
+        let opt_int = type_info.type_interner.intern(ArType::Option(int_ty_id));
+        assert!(!type_needs_drop(opt_int, &type_info));
+
+        // Result
+        let res_ok = type_info
+            .type_interner
+            .intern(ArType::Result(destructible_ty_id, int_ty_id));
+        assert!(type_needs_drop(res_ok, &type_info));
+        let res_err = type_info
+            .type_interner
+            .intern(ArType::Result(int_ty_id, destructible_ty_id));
+        assert!(type_needs_drop(res_err, &type_info));
+        let res_int = type_info
+            .type_interner
+            .intern(ArType::Result(int_ty_id, int_ty_id));
+        assert!(!type_needs_drop(res_int, &type_info));
+
+        // Tuple
+        let tup_res = type_info.type_interner.intern(ArType::tuple(
+            &[int_ty_id, destructible_ty_id],
+            &type_info.type_interner,
+        ));
+        assert!(type_needs_drop(tup_res, &type_info));
+
+        let tup_int = type_info.type_interner.intern(ArType::tuple(
+            &[int_ty_id, int_ty_id],
+            &type_info.type_interner,
+        ));
+        assert!(!type_needs_drop(tup_int, &type_info));
+    }
+
+    #[test]
+    fn test_emit_recursive_drops_for_containers() {
+        let mut type_info = TypeInfo::new();
+        let sym_destructible = SymbolId::new(0, 42);
+        let destructible_ty_id = type_info.type_interner.intern(ArType::named(
+            sym_destructible,
+            &[],
+            &type_info.type_interner,
+        ));
+        let destructor_fn = SymbolId::new(0, 99);
+        type_info
+            .destructor_instances
+            .insert(destructible_ty_id, destructor_fn);
+
+        let arr_ty = type_info
+            .type_interner
+            .intern(ArType::Array(3, destructible_ty_id));
+
+        let place = AmirPlace {
+            local: LocalId::from_usize(0),
+            projections: SmallVec::new(),
+        };
+        let move_state = MoveState::default();
+        let mut rebuilt = AmirStmtTable::new();
+
+        emit_recursive_drops(&place, arr_ty, &type_info, &move_state, false, &mut rebuilt);
+
+        assert_eq!(rebuilt.len(), 1);
+        match &rebuilt.payloads[crate::amir::stmt::InstrId::from_usize(0)] {
+            AmirStmt::Destroy(p) => assert_eq!(p.local, place.local),
+            other => panic!("expected Destroy statement, got: {other:?}"),
+        }
     }
 }

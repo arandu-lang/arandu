@@ -27,6 +27,18 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         }
     }
 
+    pub(super) fn call_malloc(&mut self, size: u32) -> Value {
+        let Some(malloc_func_id) = self.malloc_func_id() else {
+            return self.poison_i32();
+        };
+        let local_ref = self
+            .module
+            .declare_func_in_func(malloc_func_id, self.builder.func);
+        let size_val = self.builder.ins().iconst(self.ptr_type, size.max(1) as i64);
+        let call_inst = self.builder.ins().call(local_ref, &[size_val]);
+        self.builder.inst_results(call_inst)[0]
+    }
+
     pub(super) fn free_func_id(&mut self) -> Option<FuncId> {
         match self.func_ids.get("free") {
             Some(func_id) => Some(*func_id),

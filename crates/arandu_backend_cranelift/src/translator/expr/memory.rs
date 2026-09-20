@@ -33,7 +33,13 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 let element = self.type_info.type_interner.resolve(*inner);
                 self.checked_layout(&element).size
             }
-            _ => 1,
+            _ => match self.get_operand_ar_type(slice) {
+                ArType::Slice(inner) => {
+                    let element = self.type_info.type_interner.resolve(inner);
+                    self.checked_layout(&element).size
+                }
+                _ => 1,
+            },
         };
         let width = self.builder.ins().iconst(self.ptr_type, elem_size as i64);
         let offset = self.builder.ins().imul(start, width);
@@ -83,10 +89,13 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             }
         } else {
             let (base_ptr, offset) = self.translate_place_address_for_load(place);
-            if matches!(expected_ar_type, Some(ArType::Slice(_))) {
-                // Projected slices are inline fat descriptors. Their value in
-                // the single-slot JIT representation is the descriptor address,
-                // not the first (`data`) word.
+            let place_ty = expected_ar_type
+                .cloned()
+                .unwrap_or_else(|| self.place_ar_ty(place));
+            if self.is_inline_aggregate_ty(&place_ty) {
+                // Projected inline aggregates and slices are stored inline. Their value in
+                // the single-slot JIT representation is the address of the sub-aggregate,
+                // not the first scalar word.
                 return if offset == 0 {
                     base_ptr
                 } else {
@@ -161,24 +170,6 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 }
             }
             let (base_ptr, offset) = self.translate_place_address_for_load(place);
-            // Named aggregates use a pointer representation in the JIT.
-            // A projected struct field therefore contains the aggregate
-            // pointer; borrowing that field passes the pointer value, not
-            // the address of the field slot that stores it. Scalar fields
-            // still borrow their slot address.
-            if matches!(borrowed_ty, ArType::Named(_, _))
-                && matches!(
-                    place.projections.last(),
-                    Some(arandu_semantics::amir::AmirProjection::Field(_))
-                )
-            {
-                return self.builder.ins().load(
-                    self.ptr_type,
-                    cranelift_codegen::ir::MemFlagsData::new(),
-                    base_ptr,
-                    offset,
-                );
-            }
             if offset == 0 {
                 base_ptr
             } else {

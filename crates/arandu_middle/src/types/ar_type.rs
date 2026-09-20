@@ -242,6 +242,61 @@ impl ArType {
         )
     }
 
+    /// Exhaustively visit every direct child `TypeId` contained in this type.
+    ///
+    /// This method matches every `ArType` variant explicitly (no wildcard) so that
+    /// adding any new variant to `ArType` immediately alerts the compiler to update
+    /// all type hierarchy visitors.
+    pub fn visit_child_type_ids<F>(&self, interner: &TypeInterner, mut f: F)
+    where
+        F: FnMut(TypeId),
+    {
+        match self {
+            ArType::Primitive(_)
+            | ArType::GenRef
+            | ArType::Err
+            | ArType::Void
+            | ArType::IntLiteral
+            | ArType::FloatLiteral
+            | ArType::Error
+            | ArType::Const(_)
+            | ArType::ConstParam(_) => {}
+            ArType::Named(_, args) => {
+                for arg in interner.type_args(*args) {
+                    f(arg);
+                }
+            }
+            ArType::Func(params, ret) => {
+                for param in interner.type_args(*params) {
+                    f(param);
+                }
+                f(*ret);
+            }
+            ArType::Nullable(inner)
+            | ArType::Slice(inner)
+            | ArType::Array(_, inner)
+            | ArType::ConstArray(_, inner)
+            | ArType::Ptr(inner)
+            | ArType::Ref(inner)
+            | ArType::RefMut(inner)
+            | ArType::Option(inner)
+            | ArType::Coroutine(inner)
+            | ArType::Poll(inner)
+            | ArType::Range(inner) => {
+                f(*inner);
+            }
+            ArType::Tuple(args) => {
+                for arg in interner.type_args(*args) {
+                    f(arg);
+                }
+            }
+            ArType::Result(ok, err) => {
+                f(*ok);
+                f(*err);
+            }
+        }
+    }
+
     /// Produce a human-readable name for this type.
     #[must_use]
     pub fn display(&self, symbols: &SymbolTable, interner: &TypeInterner) -> String {
@@ -841,5 +896,19 @@ mod tests {
         let s = ty.display(&empty, &i);
         assert!(s.contains('?'), "got {s}");
         assert!(s.contains("int"), "got {s}");
+    }
+
+    #[test]
+    fn test_visit_child_type_ids_exhaustive() {
+        let i = new_interner();
+        let int_tid = i.intern(ArType::Primitive(Primitive::Int));
+        let bool_tid = i.intern(ArType::Primitive(Primitive::Bool));
+        let mut visited = Vec::new();
+        ArType::Result(int_tid, bool_tid).visit_child_type_ids(&i, |tid| visited.push(tid));
+        assert_eq!(visited, vec![int_tid, bool_tid]);
+
+        let mut visited_arr = Vec::new();
+        ArType::Array(5, int_tid).visit_child_type_ids(&i, |tid| visited_arr.push(tid));
+        assert_eq!(visited_arr, vec![int_tid]);
     }
 }

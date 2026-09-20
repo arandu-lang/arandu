@@ -1,5 +1,5 @@
 use arandu_semantics::amir::{AmirPlace, AmirProjection};
-use arandu_semantics::passes::type_checker::types::{ArType, Primitive, is_vec_type};
+use arandu_semantics::passes::type_checker::types::{ArType, is_vec_type};
 use cranelift_codegen::ir::{InstBuilder, Value};
 
 use super::FunctionTranslator;
@@ -12,10 +12,16 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
     ///   (heap/`ptr` materialised — identity GEP root).
     /// - **Named/heap objects**: SSA local holds the object pointer.
     pub(super) fn translate_place_address_for_load(&mut self, place: &AmirPlace) -> (Value, i32) {
-        let through_ptr = place
-            .projections
-            .iter()
-            .any(|p| matches!(p, AmirProjection::Deref));
+        let base_is_ptr_like = !place.projections.is_empty()
+            && matches!(
+                self.local_ar_ty(place.local),
+                ArType::Ref(_) | ArType::RefMut(_) | ArType::Ptr(_) | ArType::Nullable(_)
+            );
+        let through_ptr = base_is_ptr_like
+            || place
+                .projections
+                .iter()
+                .any(|p| matches!(p, AmirProjection::Deref));
 
         let mut ptr_val = if !through_ptr {
             if let Some(&slot) = self.local_stack_slots.get(&place.local) {
@@ -35,6 +41,14 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             // BC.4a: local holds the base pointer; do not take address of the stack slot.
             if let Some(&var) = self.local_map.get(&place.local) {
                 self.builder.use_var(var)
+            } else if let Some(&slot) = self.local_stack_slots.get(&place.local) {
+                let addr = self.builder.ins().stack_addr(self.ptr_type, slot, 0);
+                self.builder.ins().load(
+                    self.ptr_type,
+                    cranelift_codegen::ir::MemFlagsData::new(),
+                    addr,
+                    0,
+                )
             } else {
                 self.record_ice(
                     "BC.4a: heap/ptr borrow of undeclared local",
@@ -55,24 +69,8 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 }
                 AmirProjection::Field(symbol_id) => {
                     let offset = self.translate_projection_offset(&mut current_ty, *symbol_id);
-                    if matches!(
-                        current_ty,
-                        ArType::Primitive(Primitive::Str) | ArType::Slice(_)
-                    ) {
-                        // Fat-pointer fields live inline as `{ data, len }`. A following
-                        // projection needs the descriptor address; loading here would
-                        // turn its data word into a descriptor and make the bounds check
-                        // read element bytes as the length.
-                        if offset != 0 {
-                            ptr_val = self.builder.ins().iadd_imm_s(ptr_val, i64::from(offset));
-                        }
-                    } else {
-                        ptr_val = self.builder.ins().load(
-                            self.ptr_type,
-                            cranelift_codegen::ir::MemFlagsData::new(),
-                            ptr_val,
-                            offset,
-                        );
+                    if offset != 0 {
+                        ptr_val = self.builder.ins().iadd_imm_s(ptr_val, i64::from(offset));
                     }
                 }
                 AmirProjection::Index(op) => {
@@ -110,9 +108,10 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                         );
                     }
                     let inner_ty_id = match &current_ty {
-                        ArType::Ptr(inner) | ArType::Slice(inner) | ArType::Array(_, inner) => {
-                            *inner
-                        }
+                        ArType::Ptr(inner)
+                        | ArType::Slice(inner)
+                        | ArType::Array(_, inner)
+                        | ArType::ConstArray(_, inner) => *inner,
                         ArType::Ref(inner) | ArType::RefMut(inner) => *inner,
                         _ => {
                             self.record_ice(
@@ -129,28 +128,6 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     let elem_size = self.builder.ins().iconst(self.ptr_type, layout.size as i64);
                     let offset_val = self.builder.ins().imul(idx_val, elem_size);
                     ptr_val = self.builder.ins().iadd(ptr_val, offset_val);
-                    if matches!(
-                        current_ty,
-                        ArType::Array(_, _)
-                            | ArType::Named(_, _)
-                            | ArType::Tuple(_)
-                            | ArType::Result(_, _)
-                            | ArType::Option(_)
-                            | ArType::Coroutine(_)
-                            | ArType::Poll(_)
-                            | ArType::Range(_)
-                    ) {
-                        // Aggregate array elements are pointer-valued in the JIT.
-                        // Continue a nested projection through the pointee rather
-                        // than treating the slot that stores the pointer as inline
-                        // aggregate bytes.
-                        ptr_val = self.builder.ins().load(
-                            self.ptr_type,
-                            cranelift_codegen::ir::MemFlagsData::new(),
-                            ptr_val,
-                            0,
-                        );
-                    }
                 }
             }
         }
@@ -224,7 +201,10 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     );
                 }
                 let inner_ty_id = match &current_ty {
-                    ArType::Ptr(inner) | ArType::Slice(inner) | ArType::Array(_, inner) => *inner,
+                    ArType::Ptr(inner)
+                    | ArType::Slice(inner)
+                    | ArType::Array(_, inner)
+                    | ArType::ConstArray(_, inner) => *inner,
                     ArType::Ref(inner) | ArType::RefMut(inner) => *inner,
                     ArType::Named(_, args) if is_vec => {
                         self.type_info.type_interner.type_args(*args)[0]
@@ -364,9 +344,10 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     }
                     let is_vec = is_vec_type(&current_ty, self.symbol_table);
                     let inner_ty_id = match &current_ty {
-                        ArType::Ptr(inner) | ArType::Slice(inner) | ArType::Array(_, inner) => {
-                            *inner
-                        }
+                        ArType::Ptr(inner)
+                        | ArType::Slice(inner)
+                        | ArType::Array(_, inner)
+                        | ArType::ConstArray(_, inner) => *inner,
                         ArType::Ref(inner) | ArType::RefMut(inner) => *inner,
                         ArType::Named(_, args) if is_vec => {
                             self.type_info.type_interner.type_args(*args)[0]

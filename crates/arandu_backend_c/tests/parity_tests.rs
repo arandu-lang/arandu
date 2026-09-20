@@ -1680,8 +1680,7 @@ struct SliceDescriptorHost {
 #[repr(C)]
 struct ChunkContextHost {
     subslice: SliceDescriptorHost,
-    seed: *mut StatsHost,
-    _pad1: [u64; 2],
+    seed: StatsHost,
     stop_flag: *const i64,
 }
 
@@ -1719,7 +1718,7 @@ fn parallel_dispatch_chunk_executes_in_worker_pool_and_honors_cancellation() {
         len: items.len() as u64,
     };
     let stop_flag: i64 = 0;
-    let mut stats = StatsHost {
+    let stats = StatsHost {
         code: 0,
         comment: 0,
         blank: 0,
@@ -1727,8 +1726,7 @@ fn parallel_dispatch_chunk_executes_in_worker_pool_and_honors_cancellation() {
 
     let ctx = ChunkContextHost {
         subslice: desc,
-        seed: &mut stats,
-        _pad1: [0; 2],
+        seed: stats,
         stop_flag: &stop_flag,
     };
 
@@ -1753,15 +1751,14 @@ fn parallel_dispatch_chunk_executes_in_worker_pool_and_honors_cancellation() {
 
     // 2. Cooperative cancellation via stop_flag (returns WORK_CANCELED = 2 -> WorkerError::Canceled)
     let canceled_flag: i64 = 1;
-    let mut cancel_stats = StatsHost {
+    let cancel_stats = StatsHost {
         code: 0,
         comment: 0,
         blank: 0,
     };
     let cancel_ctx = ChunkContextHost {
         subslice: desc,
-        seed: &mut cancel_stats,
-        _pad1: [0; 2],
+        seed: cancel_stats,
         stop_flag: &canceled_flag,
     };
     let cancel_task = unsafe {

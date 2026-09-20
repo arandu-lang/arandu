@@ -1,6 +1,6 @@
-use arandu_semantics::amir::AmirStmt;
+use arandu_semantics::amir::{AmirStmt, LocalId};
 use arandu_semantics::passes::type_checker::types::{ArType, Primitive};
-use cranelift_codegen::ir::InstBuilder;
+use cranelift_codegen::ir::{InstBuilder, Value};
 
 use super::FunctionTranslator;
 use crate::types::{ClifType, clif_type};
@@ -121,63 +121,184 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                         self.emit_free_ptr(ptr_val);
                     }
                 } else {
-                    let ty_id = self.type_info.type_interner.intern(ty.clone());
-                    if let ArType::Named(_, _) = ty
-                        && let Some(destructor) = self.type_info.destructor_instances.get(&ty_id)
-                    {
-                        let symbol = self.symbol_table.get(*destructor);
-                        let host_name = self.symbol_table.host_func_name(symbol);
-                        if let Some(&id) = self.func_ids.get(host_name) {
-                            let ptr_val = if place.projections.is_empty() {
-                                if let Some(&var) = self.local_map.get(&place.local) {
-                                    self.builder.use_var(var)
-                                } else {
-                                    self.translate_place_address_for_load(place).0
-                                }
-                            } else {
-                                let (addr, offset) = self.translate_place_address_for_load(place);
-                                self.builder.ins().load(
-                                    self.ptr_type,
-                                    cranelift_codegen::ir::MemFlagsData::new(),
-                                    addr,
-                                    offset,
-                                )
-                            };
-                            let function = self.module.declare_func_in_func(id, self.builder.func);
-                            let arg_abi = self.classify_arg_abi(&ty);
-                            match arg_abi {
-                                arandu_semantics::layout::ArgAbi::ZeroSized => {
-                                    self.builder.ins().call(function, &[]);
-                                }
-                                arandu_semantics::layout::ArgAbi::Direct(direct) => {
-                                    let mut args = Vec::with_capacity(direct.slots.len());
-                                    for abi_slot in &direct.slots {
-                                        let chunk_ty =
-                                            crate::abi::abi_scalar_to_clif(abi_slot.scalar);
-                                        let chunk_val = self.builder.ins().load(
-                                            chunk_ty,
-                                            cranelift_codegen::ir::MemFlagsData::new(),
-                                            ptr_val,
-                                            abi_slot.offset as i32,
-                                        );
-                                        args.push(chunk_val);
-                                    }
-                                    self.builder.ins().call(function, &args);
-                                }
-                                arandu_semantics::layout::ArgAbi::Indirect => {
-                                    self.builder.ins().call(function, &[ptr_val]);
-                                }
-                            }
+                    let ptr_val = if place.projections.is_empty() {
+                        if let Some(&var) = self.local_map.get(&place.local) {
+                            self.builder.use_var(var)
                         } else {
-                            self.record_ice(
-                                format!("missing @Destructor function '{}'", symbol.name),
-                                self.local_span(place.local),
-                            );
+                            self.translate_place_address_for_load(place).0
                         }
-                    }
+                    } else {
+                        let (addr, offset) = self.translate_place_address_for_load(place);
+                        if offset != 0 {
+                            self.builder.ins().iadd_imm_s(addr, i64::from(offset))
+                        } else {
+                            addr
+                        }
+                    };
+                    self.emit_destroy_value(&ty, ptr_val, place.local);
                 }
             }
             AmirStmt::Nop => {}
+        }
+    }
+
+    fn emit_destroy_value(&mut self, ty: &ArType, ptr_val: Value, local: LocalId) {
+        match ty {
+            ArType::Named(_, _) => {
+                let ty_id = self.type_info.type_interner.intern(ty.clone());
+                if let Some(destructor) = self.type_info.destructor_instances.get(&ty_id) {
+                    let symbol = self.symbol_table.get(*destructor);
+                    let host_name = self.symbol_table.host_func_name(symbol);
+                    if let Some(&id) = self.func_ids.get(host_name) {
+                        let function = self.module.declare_func_in_func(id, self.builder.func);
+                        let arg_abi = self.classify_arg_abi(ty);
+                        match arg_abi {
+                            arandu_semantics::layout::ArgAbi::ZeroSized => {
+                                self.builder.ins().call(function, &[]);
+                            }
+                            arandu_semantics::layout::ArgAbi::Direct(direct) => {
+                                let mut args = Vec::with_capacity(direct.slots.len());
+                                for abi_slot in &direct.slots {
+                                    let chunk_ty = crate::abi::abi_scalar_to_clif(abi_slot.scalar);
+                                    let chunk_val = self.builder.ins().load(
+                                        chunk_ty,
+                                        cranelift_codegen::ir::MemFlagsData::new(),
+                                        ptr_val,
+                                        abi_slot.offset as i32,
+                                    );
+                                    args.push(chunk_val);
+                                }
+                                self.builder.ins().call(function, &args);
+                            }
+                            arandu_semantics::layout::ArgAbi::Indirect => {
+                                self.builder.ins().call(function, &[ptr_val]);
+                            }
+                        }
+                    } else {
+                        self.record_ice(
+                            format!("missing @Destructor function '{}'", symbol.name),
+                            self.local_span(local),
+                        );
+                    }
+                }
+            }
+            ArType::Array(_, elem) | ArType::ConstArray(_, elem) => {
+                let elem_ty = self.type_info.resolve_type_id(*elem);
+                let elem_layout = self.checked_layout(&elem_ty);
+                let elem_size = elem_layout.size as i64;
+                let count = match ty {
+                    ArType::Array(len, _) => *len,
+                    _ => 0,
+                };
+                for i in (0..count).rev() {
+                    let offset = (i as i64) * elem_size;
+                    let elem_ptr = if offset != 0 {
+                        self.builder.ins().iadd_imm_s(ptr_val, offset)
+                    } else {
+                        ptr_val
+                    };
+                    self.emit_destroy_value(&elem_ty, elem_ptr, local);
+                }
+            }
+            ArType::Tuple(args) => {
+                let arg_ids = self.type_info.type_interner.type_args(*args).to_vec();
+                let layout = self.checked_layout(ty);
+                for (i, &arg_id) in arg_ids.iter().enumerate().rev() {
+                    let arg_ty = self.type_info.resolve_type_id(arg_id);
+                    let offset = layout.field_offsets.get(i).copied().unwrap_or(0) as i32;
+                    let elem_ptr = if offset != 0 {
+                        self.builder.ins().iadd_imm_s(ptr_val, i64::from(offset))
+                    } else {
+                        ptr_val
+                    };
+                    self.emit_destroy_value(&arg_ty, elem_ptr, local);
+                }
+            }
+            ArType::Option(elem) => {
+                let elem_ty = self.type_info.resolve_type_id(*elem);
+                let layout = self.checked_layout(ty);
+                let tag = self.builder.ins().load(
+                    self.ptr_type,
+                    cranelift_codegen::ir::MemFlagsData::new(),
+                    ptr_val,
+                    0,
+                );
+                let is_some = self.builder.ins().icmp_imm_u(
+                    cranelift_codegen::ir::condcodes::IntCC::NotEqual,
+                    tag,
+                    0,
+                );
+                let payload_offset = layout
+                    .field_offsets
+                    .get(1)
+                    .copied()
+                    .unwrap_or(self.ptr_type.bytes() as u64)
+                    as i32;
+                let payload_ptr = if payload_offset != 0 {
+                    self.builder
+                        .ins()
+                        .iadd_imm_s(ptr_val, i64::from(payload_offset))
+                } else {
+                    ptr_val
+                };
+                let then_block = self.builder.create_block();
+                let merge_block = self.builder.create_block();
+                self.builder
+                    .ins()
+                    .brif(is_some, then_block, &[], merge_block, &[]);
+                self.builder.switch_to_block(then_block);
+                self.builder.seal_block(then_block);
+                self.emit_destroy_value(&elem_ty, payload_ptr, local);
+                self.builder.ins().jump(merge_block, &[]);
+                self.builder.switch_to_block(merge_block);
+                self.builder.seal_block(merge_block);
+            }
+            ArType::Result(ok, err) => {
+                let ok_ty = self.type_info.resolve_type_id(*ok);
+                let err_ty = self.type_info.resolve_type_id(*err);
+                let layout = self.checked_layout(ty);
+                let tag = self.builder.ins().load(
+                    self.ptr_type,
+                    cranelift_codegen::ir::MemFlagsData::new(),
+                    ptr_val,
+                    0,
+                );
+                let is_ok = self.builder.ins().icmp_imm_u(
+                    cranelift_codegen::ir::condcodes::IntCC::Equal,
+                    tag,
+                    0,
+                );
+                let payload_offset = layout
+                    .field_offsets
+                    .get(1)
+                    .copied()
+                    .unwrap_or(self.ptr_type.bytes() as u64)
+                    as i32;
+                let payload_ptr = if payload_offset != 0 {
+                    self.builder
+                        .ins()
+                        .iadd_imm_s(ptr_val, i64::from(payload_offset))
+                } else {
+                    ptr_val
+                };
+                let ok_block = self.builder.create_block();
+                let err_block = self.builder.create_block();
+                let merge_block = self.builder.create_block();
+                self.builder
+                    .ins()
+                    .brif(is_ok, ok_block, &[], err_block, &[]);
+                self.builder.switch_to_block(ok_block);
+                self.builder.seal_block(ok_block);
+                self.emit_destroy_value(&ok_ty, payload_ptr, local);
+                self.builder.ins().jump(merge_block, &[]);
+                self.builder.switch_to_block(err_block);
+                self.builder.seal_block(err_block);
+                self.emit_destroy_value(&err_ty, payload_ptr, local);
+                self.builder.ins().jump(merge_block, &[]);
+                self.builder.switch_to_block(merge_block);
+                self.builder.seal_block(merge_block);
+            }
+            _ => {}
         }
     }
 }

@@ -99,7 +99,18 @@ impl<'a> FuncTranslator<'a> {
                 AmirProjection::Deref => {
                     cur_ty = self.strip_ref(cur_ty).unwrap_or(cur_ty);
                 }
-                AmirProjection::Index(_) => return None,
+                AmirProjection::Index(_) => {
+                    let owner_ty = self.strip_ref(cur_ty).unwrap_or(cur_ty);
+                    let owner = self.interner.resolve(owner_ty);
+                    match owner {
+                        ArType::Array(_, inner)
+                        | ArType::Slice(inner)
+                        | ArType::ConstArray(_, inner) => {
+                            cur_ty = inner;
+                        }
+                        _ => return None,
+                    }
+                }
             }
         }
         Some(cur_ty)

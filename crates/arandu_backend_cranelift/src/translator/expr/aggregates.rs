@@ -13,13 +13,6 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         fields: &[(arandu_semantics::SmolStr, AmirOperand)],
         expected_ar_type: Option<&ArType>,
     ) -> Value {
-        let Some(malloc_func_id) = self.malloc_func_id() else {
-            return self.poison_i32();
-        };
-        let local_ref = self
-            .module
-            .declare_func_in_func(malloc_func_id, self.builder.func);
-
         let pointer_width = self.ptr_type.bytes() as u64;
         let struct_ty = expected_ar_type.cloned().unwrap_or_else(|| {
             arandu_semantics::types::ArType::named(
@@ -30,9 +23,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         });
         let layout = self.checked_layout(&struct_ty);
 
-        let size_val = self.builder.ins().iconst(self.ptr_type, layout.size as i64);
-        let call_inst = self.builder.ins().call(local_ref, &[size_val]);
-        let ptr_val = self.builder.inst_results(call_inst)[0];
+        let ptr_val = self.call_malloc(layout.size as u32);
 
         for (i, (name, op)) in fields.iter().enumerate() {
             let field_idx = self
@@ -91,6 +82,32 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 if field_layout.size == 0 {
                     continue;
                 }
+                let is_aggregate = matches!(
+                    field_ty,
+                    ArType::Named(..)
+                        | ArType::Array(..)
+                        | ArType::ConstArray(..)
+                        | ArType::Tuple(..)
+                );
+                if is_aggregate && let Some(memcpy_id) = self.memcpy_func_id() {
+                    let val = self.translate_operand(op, Some(self.ptr_type));
+                    let memcpy_ref = self
+                        .module
+                        .declare_func_in_func(memcpy_id, self.builder.func);
+                    let size_val = self
+                        .builder
+                        .ins()
+                        .iconst(self.ptr_type, field_layout.size as i64);
+                    let field_dest = if offset != 0 {
+                        self.builder.ins().iadd_imm_s(ptr_val, i64::from(offset))
+                    } else {
+                        ptr_val
+                    };
+                    self.builder
+                        .ins()
+                        .call(memcpy_ref, &[field_dest, val, size_val]);
+                    continue;
+                }
                 let expected_field_ty = match crate::types::clif_type(&field_ty, self.ptr_type) {
                     crate::types::ClifType::Concrete(ty) => Some(ty),
                     crate::types::ClifType::Void => None,
@@ -112,20 +129,11 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         items: &[AmirOperand],
         expected_ar_type: Option<&ArType>,
     ) -> Value {
-        let Some(malloc_func_id) = self.malloc_func_id() else {
-            return self.poison_i32();
-        };
-        let local_ref = self
-            .module
-            .declare_func_in_func(malloc_func_id, self.builder.func);
-
         let pointer_width = self.ptr_type.bytes() as u64;
         let tuple_ty = expected_ar_type.cloned().unwrap_or(ArType::Error);
         let layout = self.checked_layout(&tuple_ty);
 
-        let size_val = self.builder.ins().iconst(self.ptr_type, layout.size as i64);
-        let call_inst = self.builder.ins().call(local_ref, &[size_val]);
-        let ptr_val = self.builder.inst_results(call_inst)[0];
+        let ptr_val = self.call_malloc(layout.size as u32);
 
         for (i, op) in items.iter().enumerate() {
             let offset = layout.field_offsets.get(i).copied().unwrap_or(0) as i32;
@@ -155,6 +163,36 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                         .unwrap_or(ArType::Error),
                     _ => ArType::Error,
                 };
+                let is_aggregate = matches!(
+                    elem_ty,
+                    ArType::Named(..)
+                        | ArType::Array(..)
+                        | ArType::ConstArray(..)
+                        | ArType::Tuple(..)
+                );
+                let elem_layout = self.checked_layout(&elem_ty);
+                if is_aggregate
+                    && elem_layout.size > 0
+                    && let Some(memcpy_id) = self.memcpy_func_id()
+                {
+                    let val = self.translate_operand(op, Some(self.ptr_type));
+                    let memcpy_ref = self
+                        .module
+                        .declare_func_in_func(memcpy_id, self.builder.func);
+                    let size_val = self
+                        .builder
+                        .ins()
+                        .iconst(self.ptr_type, elem_layout.size as i64);
+                    let elem_dest = if offset != 0 {
+                        self.builder.ins().iadd_imm_s(ptr_val, i64::from(offset))
+                    } else {
+                        ptr_val
+                    };
+                    self.builder
+                        .ins()
+                        .call(memcpy_ref, &[elem_dest, val, size_val]);
+                    continue;
+                }
                 let expected_elem_ty = match crate::types::clif_type(&elem_ty, self.ptr_type) {
                     crate::types::ClifType::Concrete(ty) => Some(ty),
                     crate::types::ClifType::Void => None,
@@ -176,20 +214,9 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         items: &[AmirOperand],
         expected_ar_type: Option<&ArType>,
     ) -> Value {
-        let Some(malloc_func_id) = self.malloc_func_id() else {
-            return self.poison_i32();
-        };
-        let local_ref = self
-            .module
-            .declare_func_in_func(malloc_func_id, self.builder.func);
-
         let pointer_width = self.ptr_type.bytes() as u64;
         let array_ty = expected_ar_type.cloned().unwrap_or(ArType::Error);
-        let layout = self.checked_layout(&array_ty);
-
-        let size_val = self.builder.ins().iconst(self.ptr_type, layout.size as i64);
-        let call_inst = self.builder.ins().call(local_ref, &[size_val]);
-        let ptr_val = self.builder.inst_results(call_inst)[0];
+        let _ = self.checked_layout(&array_ty);
 
         let item_ar_ty = match &array_ty {
             ArType::Array(_, inner) => self.type_info.resolve_type_id(*inner),
@@ -197,6 +224,9 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         };
         let item_layout = self.checked_layout(&item_ar_ty);
         let item_size = item_layout.size as i32;
+
+        let total_bytes = items.len() * item_size as usize;
+        let ptr_val = self.call_malloc(total_bytes as u32);
 
         for (i, op) in items.iter().enumerate() {
             let offset = i as i32 * item_size;
@@ -216,6 +246,35 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     offset + pointer_width as i32,
                 );
             } else {
+                let is_aggregate = matches!(
+                    item_ar_ty,
+                    ArType::Named(..)
+                        | ArType::Array(..)
+                        | ArType::ConstArray(..)
+                        | ArType::Tuple(..)
+                );
+                if is_aggregate
+                    && item_layout.size > 0
+                    && let Some(memcpy_id) = self.memcpy_func_id()
+                {
+                    let val = self.translate_operand(op, Some(self.ptr_type));
+                    let memcpy_ref = self
+                        .module
+                        .declare_func_in_func(memcpy_id, self.builder.func);
+                    let size_val = self
+                        .builder
+                        .ins()
+                        .iconst(self.ptr_type, item_layout.size as i64);
+                    let elem_dest = if offset != 0 {
+                        self.builder.ins().iadd_imm_s(ptr_val, i64::from(offset))
+                    } else {
+                        ptr_val
+                    };
+                    self.builder
+                        .ins()
+                        .call(memcpy_ref, &[elem_dest, val, size_val]);
+                    continue;
+                }
                 let expected_item_ty = match crate::types::clif_type(&item_ar_ty, self.ptr_type) {
                     crate::types::ClifType::Concrete(ty) => Some(ty),
                     crate::types::ClifType::Void => None,
@@ -266,15 +325,29 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             // Dead `p?.field` access branch with nil/ZST base, or incomplete layout.
             return self.poison_i32();
         };
-        if matches!(expected_ar_type, Some(ArType::Slice(_))) && self.is_named_struct_ty(&struct_ty)
-        {
-            // Slice fields of named structs are stored inline as
-            // `{ data, len }`; their single-slot JIT value is the
-            // descriptor address. Enum payloads retain their existing
-            // indirect representation and must still load the slot.
+        let is_inline_aggregate = expected_ar_type
+            .map(|exp| self.is_inline_aggregate_ty(exp))
+            .unwrap_or_else(|| match &struct_ty {
+                ArType::Tuple(elems) => self
+                    .type_info
+                    .type_interner
+                    .type_args(*elems)
+                    .get(field)
+                    .map(|tid| self.is_inline_aggregate_ty(&self.type_info.resolve_type_id(*tid)))
+                    .unwrap_or(false),
+                ArType::Named(sym_id, _) => self
+                    .type_info
+                    .struct_fields
+                    .get(sym_id)
+                    .and_then(|fields| fields.fields.iter().find(|f| f.index == field))
+                    .map(|f| self.is_inline_aggregate_ty(&self.type_info.resolve_type_id(f.ty)))
+                    .unwrap_or(false),
+                _ => false,
+            });
+        if is_inline_aggregate {
             let Ok(off_imm) = i64::try_from(off) else {
                 self.record_ice(
-                    "slice field offset does not fit the Cranelift immediate",
+                    "aggregate field offset does not fit the Cranelift immediate",
                     self.func_span(),
                 );
                 return self.poison_i32();
@@ -329,6 +402,22 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     .trapnz(is_oob, cranelift_codegen::ir::TrapCode::unwrap_user(1));
                 self.type_info.resolve_type_id(*elem)
             }
+            ArType::ConstArray(_, elem) => {
+                let arr_layout = self.checked_layout(&deref_ty);
+                let elem_ty = self.type_info.resolve_type_id(*elem);
+                let elem_layout = self.checked_layout(&elem_ty);
+                let len = arr_layout.size.checked_div(elem_layout.size).unwrap_or(0);
+                let len_val = self.builder.ins().iconst(self.ptr_type, len as i64);
+                let is_oob = self.builder.ins().icmp(
+                    cranelift_codegen::ir::condcodes::IntCC::UnsignedGreaterThanOrEqual,
+                    idx_val,
+                    len_val,
+                );
+                self.builder
+                    .ins()
+                    .trapnz(is_oob, cranelift_codegen::ir::TrapCode::unwrap_user(1));
+                elem_ty
+            }
             ArType::Slice(elem) => {
                 let len_val = self.builder.ins().load(
                     self.ptr_type,
@@ -375,6 +464,10 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         let elem_size = self.builder.ins().iconst(self.ptr_type, layout.size as i64);
         let offset_val = self.builder.ins().imul(idx_val, elem_size);
         let target_ptr = self.builder.ins().iadd(ptr_val, offset_val);
+
+        if self.is_inline_aggregate_ty(&elem_ty) {
+            return target_ptr;
+        }
 
         let clif_ty = expected_ty.unwrap_or(self.ptr_type);
         self.builder.ins().load(

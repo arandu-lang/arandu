@@ -440,7 +440,7 @@ jobs:
           if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
             tag="$GITHUB_REF_NAME"
           fi
-          python3 scripts/prepare_release_assets.py release-assets \
+          cargo run --locked -p xtask -- prepare-release-assets release-assets \
             --version "$version" --tag "$tag" --commit "$GITHUB_SHA"
           find release-assets -maxdepth 1 -type f -printf '%f\n' | sort
 

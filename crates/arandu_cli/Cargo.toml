@@ -41,6 +41,9 @@ miette = { workspace = true }
 petgraph = { workspace = true }
 notify = "8.2.0"
 notify-debouncer-full = "0.7.0"
+tar = { workspace = true }
+flate2 = { workspace = true }
+zip = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.189"

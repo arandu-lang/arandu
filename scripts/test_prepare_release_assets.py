@@ -8,9 +8,10 @@ import unittest
 from pathlib import Path
 
 
-SPEC = importlib.util.spec_from_file_location(
-    "prepare_release_assets", Path(__file__).with_name("prepare_release_assets.py")
-)
+_assets_path = Path(__file__).with_name("prepare_release_assets.py")
+if not _assets_path.exists():
+    _assets_path = Path(__file__).parent / "oracles" / "prepare_release_assets.py"
+SPEC = importlib.util.spec_from_file_location("prepare_release_assets", _assets_path)
 MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 SPEC.loader.exec_module(MODULE)

@@ -33,7 +33,8 @@ try {
     $hashLines | Set-Content -Encoding ascii "$tree/BLAKE3SUMS"
     New-Item -ItemType Directory -Force $OutDir | Out-Null
     $zip = Join-Path $OutDir "arandu-$Version-$Target.zip"
-    python "$root/scripts/reproducible_zip.py" $tree $zip --epoch $SourceDateEpoch --version $Version --target $Target
+    cargo run --locked -p xtask -- package-archive --source $tree --output $zip --epoch $SourceDateEpoch
+    cargo run --locked -p xtask -- validate-archive $zip --root "arandu-$Version" --target $Target --version $Version
     $hash = & "$tree/bin/arandu.exe" hash-file $zip
     $hash | Set-Content -Encoding ascii "$zip.blake3"
     "$hash  $([IO.Path]::GetFileName($zip))" | Set-Content -Encoding ascii "$zip.blake3sum"

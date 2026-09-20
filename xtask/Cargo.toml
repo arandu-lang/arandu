@@ -19,3 +19,7 @@ arandu_fuzz_support = { path = "../crates/arandu_fuzz_support" }
 salsa = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
+blake3 = { workspace = true }
+tar = { workspace = true }
+flate2 = { workspace = true }
+zip = { workspace = true }

@@ -49,7 +49,19 @@ hash_file() {
 }
 
 sha256_file() {
-  python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$1"
+  local f="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$f" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$f" | awk '{print $1}'
+  elif command -v openssl >/dev/null 2>&1; then
+    openssl dgst -sha256 "$f" | awk '{print $NF}'
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$f"
+  else
+    echo "error: need sha256sum, shasum, openssl, or python3 to verify SHA-256 sidecar" >&2
+    exit 1
+  fi
 }
 
 EXPECTED_SHA256=""
@@ -90,8 +102,6 @@ STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 
 echo "==> extracting (staging)"
-python3 "$ROOT/scripts/reproducible_tar.py" validate "$ARCHIVE" \
-  --root "$PACKAGE_ROOT" --target "$PACKAGE_TARGET" --version "$PACKAGE_VERSION"
 tar -xzf "$ARCHIVE" -C "$STAGE"
 
 # Expect single top-level arandu-VERSION/
@@ -126,6 +136,11 @@ if [[ ! -f "$TREE/lib/$PACKAGE_TARGET/libarandu_runtime.a" ]]; then
   echo "error: archive missing target runtime library" >&2
   exit 1
 fi
+
+echo "==> validating archive structure and manifest (native)"
+"$TREE/bin/arandu" archive validate "$ARCHIVE" \
+  --root "$PACKAGE_ROOT" --target "$PACKAGE_TARGET" --version "$PACKAGE_VERSION"
+
 # The archive is already authenticated. Use its staged CLI to verify BLAKE3SUMS
 # before anything is moved into the installation prefix.
 ARANDU_HASH_TOOL="$TREE/bin/arandu"

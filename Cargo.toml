@@ -58,6 +58,9 @@ wasm-encoder = "0.252.0"
 wasmparser = "0.252.0"
 wit-component = "0.252.0"
 wit-parser = "0.252.0"
+tar = "0.4"
+flate2 = "1.0"
+zip = { version = "2.2", default-features = false, features = ["deflate"] }
 
 
 

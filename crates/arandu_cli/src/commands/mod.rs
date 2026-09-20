@@ -1,5 +1,6 @@
 //! CLI command dispatching and execution routing.
 
+pub mod archive;
 pub mod bench;
 pub mod build;
 pub mod doc;
@@ -46,6 +47,7 @@ pub fn run(raw_args: Vec<String>) -> CliResult {
 
     // ── Project / environment commands (no mandatory .aru path) ──────────
     match command {
+        "archive" => return archive::cmd_archive(&inv.args),
         "doc" => return doc::cmd_doc(&inv.args, &inv.project_flags, inv.data_layout),
         "new" => return project::cmd_new(&inv.args),
         "init" => return project::cmd_init(&inv.args),

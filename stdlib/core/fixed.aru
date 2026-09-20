@@ -1,0 +1,81 @@
+module std.core.fixed
+
+import std.core.option as option
+
+/// A 32-bit fixed-point number with 16 bits of integer part and 16 bits of fractional part (Q16.16).
+/// Designed for deterministic arithmetic on hardware without a floating-point unit (FPU).
+public struct Q16_16 {
+    raw: int
+}
+
+/// The scaling factor for Q16.16 (2^16 = 65536).
+const FRACTION_BITS = 16
+const SCALE = 65536
+
+/// Creates a `Q16_16` directly from its raw integer representation.
+public func fromRaw(raw: int): Q16_16 {
+    return Q16_16 { raw: raw }
+}
+
+/// Converts an integer into a `Q16_16` fixed-point value.
+public func fromInt(val: int): Q16_16 {
+    return Q16_16 { raw: val << FRACTION_BITS }
+}
+
+/// Converts a `Q16_16` fixed-point value back to an integer, truncating fractional bits.
+public func Q16_16.toInt(self: ref Q16_16): int {
+    return self.raw >> FRACTION_BITS
+}
+
+/// Returns the raw internal 32-bit representation.
+public func Q16_16.toRaw(self: ref Q16_16): int {
+    return self.raw
+}
+
+/// Adds two Q16.16 values.
+public func Q16_16.add(self: ref Q16_16, other: Q16_16): Q16_16 {
+    return Q16_16 { raw: self.raw + other.raw }
+}
+
+/// Subtracts two Q16.16 values.
+public func Q16_16.sub(self: ref Q16_16, other: Q16_16): Q16_16 {
+    return Q16_16 { raw: self.raw - other.raw }
+}
+
+/// Multiplies two Q16.16 values with proper 16-bit shift.
+public func Q16_16.mul(self: ref Q16_16, other: Q16_16): Q16_16 {
+    let prod = (self.raw * other.raw) >> FRACTION_BITS
+    return Q16_16 { raw: prod }
+}
+
+/// Divides two Q16.16 values. Returns `Option.None` on division by zero.
+public func Q16_16.div(self: ref Q16_16, other: Q16_16): Option<Q16_16> {
+    if other.raw == 0 {
+        return Option.None
+    }
+    let quot = (self.raw << FRACTION_BITS) / other.raw
+    return Option.Some(Q16_16 { raw: quot })
+}
+
+/// Computes the absolute value of a Q16.16 value.
+public func Q16_16.abs(self: ref Q16_16): Q16_16 {
+    if self.raw < 0 {
+        return Q16_16 { raw: -self.raw }
+    }
+    return *self
+}
+
+/// Returns `true` if `self` is negative.
+public func Q16_16.isNegative(self: ref Q16_16): bool {
+    return self.raw < 0
+}
+
+/// Returns the fractional part of `self` as a raw value in [0, 65535].
+public func Q16_16.fractionPart(self: ref Q16_16): int {
+    let mask = SCALE - 1
+    let mut val = self.raw
+    if val < 0 {
+        val = -val
+    }
+    return val & mask
+}

@@ -11,7 +11,10 @@ import json
 
 
 def load(name: str, filename: str):
-    spec = importlib.util.spec_from_file_location(name, Path(__file__).with_name(filename))
+    path = Path(__file__).with_name(filename)
+    if not path.exists():
+        path = Path(__file__).parent / "oracles" / filename
+    spec = importlib.util.spec_from_file_location(name, path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

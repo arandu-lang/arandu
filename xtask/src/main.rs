@@ -9,6 +9,7 @@
 //! ```
 
 mod architecture;
+mod archive;
 mod churn;
 mod corpus;
 mod docs_taxonomy;
@@ -16,6 +17,7 @@ mod fuzz_regressions;
 mod incremental;
 mod line_endings;
 mod performance;
+mod release_assets;
 mod release_contract;
 mod slt6;
 
@@ -42,6 +44,9 @@ fn main() {
         "check-release-contract" => release_contract::check(&workspace_root(), args.next()),
         "prepare-release" => release_contract::prepare(&workspace_root(), args.next()),
         "check-slt6-sdk" => slt6::check(&workspace_root(), args),
+        "package-archive" => cmd_package_archive(args),
+        "validate-archive" => cmd_validate_archive(args),
+        "prepare-release-assets" => cmd_prepare_release_assets(args),
         "help" | "-h" | "--help" => {
             print_help();
             0
@@ -73,6 +78,9 @@ Commands:
   check-release-contract  Validate component versions and an optional v* tag
   prepare-release    Update every Arandu component to one version atomically
   check-slt6-sdk     Exercise an installed SDK outside the repository
+  package-archive   Create canonical deterministic .tar.gz or .zip (RFC 0020)
+  validate-archive  Validate archive safety, layout, and release manifest
+  prepare-release-assets  Generate SHA256SUMS, BLAKE3SUMS and release manifest
   help              This message
 
 Examples:
@@ -132,4 +140,174 @@ fn workspace_root() -> PathBuf {
         .parent()
         .expect("xtask parent = workspace root")
         .to_path_buf()
+}
+
+fn cmd_package_archive(mut args: impl Iterator<Item = String>) -> i32 {
+    let mut source = None;
+    let mut output = None;
+    let mut epoch = None;
+    let mut root = None;
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--source" => source = args.next().map(PathBuf::from),
+            "--output" => output = args.next().map(PathBuf::from),
+            "--epoch" => {
+                if let Some(val) = args.next() {
+                    epoch = val.parse::<u64>().ok();
+                }
+            }
+            "--root" => root = args.next(),
+            other if other.starts_with("--source=") => {
+                source = Some(PathBuf::from(&other["--source=".len()..]));
+            }
+            other if other.starts_with("--output=") => {
+                output = Some(PathBuf::from(&other["--output=".len()..]));
+            }
+            other if other.starts_with("--epoch=") => {
+                epoch = other["--epoch=".len()..].parse::<u64>().ok();
+            }
+            other if other.starts_with("--root=") => {
+                root = Some(other["--root=".len()..].to_string());
+            }
+            other if !other.starts_with('-') => {
+                if source.is_none() {
+                    source = Some(PathBuf::from(other));
+                } else if output.is_none() {
+                    output = Some(PathBuf::from(other));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let (Some(source), Some(output)) = (source, output) else {
+        eprintln!("usage: cargo run -p xtask -- package-archive --source <dir> --output <archive> [--epoch <secs>] [--root <name>]");
+        return 2;
+    };
+
+    let epoch = epoch.unwrap_or_else(|| {
+        env::var("SOURCE_DATE_EPOCH")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(1700000000)
+    });
+
+    let opts = archive::ArchiveOptions {
+        source,
+        output: output.clone(),
+        epoch,
+        root,
+    };
+
+    match archive::create_archive(&opts) {
+        Ok(()) => {
+            println!("package-archive: ok (output: {})", output.display());
+            0
+        }
+        Err(err) => {
+            eprintln!("package-archive: error: {err}");
+            1
+        }
+    }
+}
+
+fn cmd_validate_archive(mut args: impl Iterator<Item = String>) -> i32 {
+    let mut archive = None;
+    let mut root = None;
+    let mut version = None;
+    let mut target = None;
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--archive" => archive = args.next().map(PathBuf::from),
+            "--root" => root = args.next(),
+            "--version" => version = args.next(),
+            "--target" => target = args.next(),
+            other if other.starts_with("--root=") => {
+                root = Some(other["--root=".len()..].to_string());
+            }
+            other if other.starts_with("--version=") => {
+                version = Some(other["--version=".len()..].to_string());
+            }
+            other if other.starts_with("--target=") => {
+                target = Some(other["--target=".len()..].to_string());
+            }
+            other if !other.starts_with('-') && archive.is_none() => {
+                archive = Some(PathBuf::from(other));
+            }
+            _ => {}
+        }
+    }
+
+    let (Some(archive), Some(root), Some(version), Some(target)) = (archive, root, version, target)
+    else {
+        eprintln!("usage: cargo run -p xtask -- validate-archive <path> --root <name> --version <ver> --target <target>");
+        return 2;
+    };
+
+    match archive::validate_archive(&archive, &root, &version, &target) {
+        Ok(stats) => {
+            println!(
+                "validate-archive: ok ({} files, {} symlinks, version={}, target={})",
+                stats.files, stats.symlinks, stats.version, stats.target
+            );
+            0
+        }
+        Err(err) => {
+            eprintln!("validate-archive: error: {err}");
+            1
+        }
+    }
+}
+
+fn cmd_prepare_release_assets(mut args: impl Iterator<Item = String>) -> i32 {
+    let mut directory = None;
+    let mut version = None;
+    let mut tag = None;
+    let mut commit = None;
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--dir" | "--directory" => directory = args.next().map(PathBuf::from),
+            "--version" => version = args.next(),
+            "--tag" => tag = args.next(),
+            "--commit" => commit = args.next(),
+            other if other.starts_with("--version=") => {
+                version = Some(other["--version=".len()..].to_string());
+            }
+            other if other.starts_with("--tag=") => {
+                tag = Some(other["--tag=".len()..].to_string());
+            }
+            other if other.starts_with("--commit=") => {
+                commit = Some(other["--commit=".len()..].to_string());
+            }
+            other if !other.starts_with('-') && directory.is_none() => {
+                directory = Some(PathBuf::from(other));
+            }
+            _ => {}
+        }
+    }
+
+    let (Some(directory), Some(version), Some(tag), Some(commit)) =
+        (directory, version, tag, commit)
+    else {
+        eprintln!("usage: cargo run -p xtask -- prepare-release-assets <dir> --version <ver> --tag <tag> --commit <sha1>");
+        return 2;
+    };
+
+    match release_assets::prepare_release_assets(&directory, &version, &tag, &commit) {
+        Ok(()) => {
+            println!(
+                "prepare-release-assets: ok (directory: {}, version={})",
+                directory.display(),
+                version
+            );
+            0
+        }
+        Err(err) => {
+            eprintln!("prepare-release-assets: error: {err}");
+            1
+        }
+    }
 }

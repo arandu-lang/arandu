@@ -84,6 +84,20 @@ does not override language-phase status or promise a stable external ABI.
    returns a JIT module only after finalization or an object only after complete
    serialization; the CLI commits build provenance only after successful link.
 
+### C code quality and structuring model (RFC 0018)
+
+The C backend supports two distinct emission modes:
+1. `--c-style=pretty` (Canonical target): Restructures the AMIR control flow graph
+   into high-level nested C constructs (`if`/`else`, `while`, `for`, `switch`),
+   preserves original source identifiers from `SymbolTable`, and inlines single-use
+   SSA temporaries to generate readable, MISRA-C-friendly (Rule 15.1) code.
+2. `--c-style=raw` (Compiler debug target): Flat basic block emission with
+   explicit labels (`bb0:`, `bb1:`) and `goto` jumps, used for compiler internal
+   verification and AMIR parity testing against Cranelift.
+
+Both modes are semantically equivalent and subject to the same `validate_amir_program`
+invariants.
+
 ### What is required for real cross compilation
 
 Adding a new Gold target requires one named target specification containing at

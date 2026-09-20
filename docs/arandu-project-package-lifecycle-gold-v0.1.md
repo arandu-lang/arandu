@@ -175,24 +175,19 @@ Do not overload one `target` directory with unrelated trust and lifetime rules:
 | project metadata | `<workspace>/.arandu/` | disposable resolution/query metadata; no downloaded executable code |
 | global package cache | platform cache directory | content-addressed immutable sources; shared safely; explicit verify/prune commands |
 
-Project output is separated by profile and target triple:
+Project output is separated by profile and target triple, strictly limited to final deliverables ([RFC 0019](./rfcs/0019-zero-bloat-target-and-shared-cache.md)):
 
 ```text
 target/<profile>/<target-triple>/bin/
-target/<profile>/<target-triple>/deps/
-target/<profile>/<target-triple>/incremental/
+target/<profile>/<target-triple>/lib/
 target/<profile>/<target-triple>/build-state.json
 ```
 
-Final artifacts are published through staging plus atomic rename. A failed
-build cannot replace the last valid binary. `clean` resolves and validates the
-exact project root and refuses symlink/junction escapes or broad targets.
+All intermediate artifacts (relocatable objects, CGUs, incremental dependency graphs and cached `.amir`/`.air` envelopes) reside in the global Content-Addressable Storage (CAS) under the platform cache directory (`~/.cache/arandu/cas/`), subject to automatic LRU disk budget enforcement (default: 2.0 GiB) to eliminate disk bloat across projects.
 
-`build` records schema-2 provenance. The relocatable `.o`/`.obj` is immutable
-under `deps/`; the linked executable is immutable under `bin/`; and
-`build-state.json` selects the current successful pair. Unix replaces this
-state with atomic `rename`; Windows uses `ReplaceFileW` with write-through.
-Link or compilation failure occurs before that commit, so the previous state
+Final artifacts are published from CAS to the project `target/` using copy-on-write reflinks (`ioctl(FICLONE)` on Linux, `clonefile` on macOS APFS, hardlinks or atomic staging plus rename as fallback). A failed build cannot replace the last valid binary. `clean` resolves and validates the exact project root and refuses symlink/junction escapes or broad targets.
+
+`build` records schema-2 provenance. The linked executable is immutable under `bin/`; and `build-state.json` selects the current successful artifact. Unix replaces this state with atomic `rename`; Windows uses `ReplaceFileW` with write-through. Link or compilation failure occurs before that commit, so the previous state
 and executable remain runnable. The SDK ships its target-matched
 `arandu_runtime` static library; its C ABI is compiler-internal, not public FFI.
 

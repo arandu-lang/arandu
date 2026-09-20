@@ -130,6 +130,12 @@ pub fn expand_named_with_defaults(checker: &mut TypeChecker<'_>, ty: ArType) -> 
             let tid = checker.intern(expanded);
             ArType::Array(n, tid)
         }
+        ArType::ConstArray(param, inner) => {
+            let inner_ty = checker.resolve(inner);
+            let expanded = expand_named_with_defaults(checker, inner_ty);
+            let tid = checker.intern(expanded);
+            ArType::ConstArray(param, tid)
+        }
         ArType::Nullable(inner) => {
             let inner_ty = checker.resolve(inner);
             let expanded = expand_named_with_defaults(checker, inner_ty);
@@ -553,6 +559,11 @@ fn expand_aliases_rec(checker: &mut TypeChecker<'_>, ty: ArType, depth: usize) -
             let expanded = expand_aliases_rec(checker, inner_ty, depth + 1);
             ArType::Array(len, checker.intern(expanded))
         }
+        ArType::ConstArray(param, inner) => {
+            let inner_ty = checker.resolve(inner);
+            let expanded = expand_aliases_rec(checker, inner_ty, depth + 1);
+            ArType::ConstArray(param, checker.intern(expanded))
+        }
         ArType::Ptr(inner) => {
             let inner_ty = checker.resolve(inner);
             let expanded = expand_aliases_rec(checker, inner_ty, depth + 1);
@@ -634,12 +645,14 @@ mod tests {
         let param1 = GenericParam {
             span: span1,
             name: "T".into(),
+            const_ty: None,
             constraints: smallvec::SmallVec::new(),
             default: None,
         };
         let param2 = GenericParam {
             span: span2,
             name: "U".into(),
+            const_ty: None,
             constraints: smallvec::SmallVec::new(),
             default: None,
         };

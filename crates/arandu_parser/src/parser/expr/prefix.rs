@@ -165,6 +165,17 @@ impl<'a> Parser<'a> {
                     ))
                 }
             }
+            TokenKind::IdentType if !self.ident_type_starts_type_led_expr() => {
+                let name = SmolStr::new(self.current_text());
+                self.advance();
+                let span = self.span_from_mark(start);
+                Ok(self.pool.alloc_expr(
+                    ExprKind::Path {
+                        path: vec![name].into(),
+                    },
+                    span,
+                ))
+            }
             kind if matches!(kind, TokenKind::IdentType) || is_primitive_type_token(kind) => {
                 self.parse_type_led_expr()
             }
@@ -267,6 +278,57 @@ impl<'a> Parser<'a> {
                 self.file_id,
                 self.source,
             )),
+        }
+    }
+
+    /// Uppercase identifiers normally introduce type-led expressions, but scalar const
+    /// parameters use the same lexical class and are valid values (`i < N`).  Keep the
+    /// decision syntactic: only a following struct literal or associated member requires
+    /// parsing the identifier as a type.
+    fn ident_type_starts_type_led_expr(&self) -> bool {
+        match self.tokens.get(self.pos + 1).map(|token| token.kind) {
+            Some(TokenKind::Dot) => true,
+            Some(TokenKind::LBrace) => {
+                match self.tokens.get(self.pos + 2).map(|token| token.kind) {
+                    Some(TokenKind::RBrace) => true,
+                    Some(TokenKind::IdentValue | TokenKind::IdentType) => {
+                        self.tokens.get(self.pos + 3).is_some_and(|token| {
+                            matches!(
+                                token.kind,
+                                TokenKind::Colon | TokenKind::Comma | TokenKind::RBrace
+                            )
+                        })
+                    }
+                    _ => false,
+                }
+            }
+            Some(TokenKind::Lt) => {
+                let mut depth = 0_u32;
+                for (index, token) in self.tokens.iter().enumerate().skip(self.pos + 1) {
+                    match token.kind {
+                        TokenKind::Lt => depth += 1,
+                        TokenKind::Gt => {
+                            depth = depth.saturating_sub(1);
+                            if depth == 0 {
+                                return self.tokens.get(index + 1).is_some_and(|next| {
+                                    matches!(next.kind, TokenKind::LBrace | TokenKind::Dot)
+                                });
+                            }
+                        }
+                        TokenKind::ShiftRight => {
+                            depth = depth.saturating_sub(2);
+                            if depth == 0 {
+                                return self.tokens.get(index + 1).is_some_and(|next| {
+                                    matches!(next.kind, TokenKind::LBrace | TokenKind::Dot)
+                                });
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                false
+            }
+            _ => false,
         }
     }
 }

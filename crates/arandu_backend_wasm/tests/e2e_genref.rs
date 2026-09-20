@@ -55,6 +55,7 @@ fn emit_one(func: AmirFunc, interner: &TypeInterner, pool: &mut AmirLiteralPool)
         funcs: vec![func],
         literal_pool: std::mem::take(pool),
         extern_funcs: Default::default(),
+        debug_bindings: Vec::new(),
     };
     emit_wasm(
         &program,

@@ -110,7 +110,7 @@ pub(super) fn parse_func_name(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Op
             .is_some_and(|t| matches!(t.kind, TokenKind::Dot))
             && cur
                 .peek_at(2)
-                .is_some_and(|t| matches!(t.kind, TokenKind::IdentValue))
+                .is_some_and(|t| t.kind.is_contextual_member_name())
             && cur
                 .peek_at(3)
                 .is_some_and(|t| matches!(t.kind, TokenKind::LParen | TokenKind::Lt))
@@ -118,7 +118,8 @@ pub(super) fn parse_func_name(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Op
             let recv_tok = cur.bump()?;
             let recv_name = SmolStr::new(ctx.text(recv_tok)?);
             cur.expect(TokenKind::Dot)?;
-            let method_tok = cur.expect(TokenKind::IdentValue)?;
+            let method_tok = cur.peek().filter(|t| t.kind.is_contextual_member_name())?;
+            cur.bump();
             let method = SmolStr::new(ctx.text(method_tok)?);
             return Some(FuncName::Method {
                 span: ctx.span(recv_tok.start, method_tok.start + method_tok.len),

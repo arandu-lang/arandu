@@ -983,6 +983,18 @@ fn parity_to_str_int_interp() {
 }
 
 #[test]
+fn reassigned_owned_string_never_frees_static_storage() {
+    let src = r#"
+    func main(): int {
+        let mut text = "owned=${1}"
+        text = "static"
+        return 0
+    }
+    "#;
+    test_execution_parity("reassigned_owned_string", src);
+}
+
+#[test]
 fn parity_io_println_to_str() {
     // Exercise the official `io.println` lowering. This parity harness compares
     // process status; stdout behavior has its own runtime contract tests.
@@ -2481,4 +2493,58 @@ fn parity_pointer_tag_enum() {
     }
     "#;
     test_execution_parity("pointer_tag_enum", src);
+}
+
+#[test]
+fn c_backend_emits_native_trap_abort_model() {
+    let (amir, tc) = compile_src(
+        r#"
+        module std.core.abort_parity
+
+        extern "arandu-intrinsic" {
+            func abort(): void
+        }
+
+        func safe_or_abort(x: int): int {
+            if x < 0 {
+                unsafe {
+                    abort();
+                }
+            }
+            return x * 2;
+        }
+
+        func main(): int {
+            return safe_or_abort(21);
+        }
+        "#,
+    );
+    let emitted = emit_c(&amir, &tc);
+    assert!(emitted.contains("#define AR_ABORT() __builtin_trap()"));
+    assert!(emitted.contains("#define AR_UNREACHABLE() __builtin_trap()"));
+    assert!(emitted.contains("AR_ABORT();"));
+
+    test_execution_parity(
+        "abort_parity_safe_path",
+        r#"
+        module std.core.abort_parity
+
+        extern "arandu-intrinsic" {
+            func abort(): void
+        }
+
+        func safe_or_abort(x: int): int {
+            if x < 0 {
+                unsafe {
+                    abort();
+                }
+            }
+            return x * 2;
+        }
+
+        func main(): int {
+            return safe_or_abort(21);
+        }
+        "#,
+    );
 }

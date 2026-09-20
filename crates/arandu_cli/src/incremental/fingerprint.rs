@@ -10,12 +10,14 @@ use std::path::{Component, Path, PathBuf};
 use std::time::SystemTime;
 
 use arandu_lexer::TokenKind;
+use arandu_query::{CompilerArtifactKind, decode_compiler_artifact};
 use serde::{Deserialize, Serialize};
 
 use crate::artifact::{self, NativeProfile};
 use crate::cli_error::CliFailure;
+use crate::incremental::compiler_artifacts::compiler_artifact_path;
 
-const SCHEMA_VERSION: u32 = 2;
+const SCHEMA_VERSION: u32 = 4;
 const FINGERPRINT_FILENAME: &str = "session-fingerprint.json";
 
 /// One external input participating in the end-to-end build closure.
@@ -74,9 +76,32 @@ pub struct SessionFingerprint {
     pub target: String,
     pub pointer_width: u64,
     pub opt: bool,
+    pub debug_info: bool,
     pub artifact_relative: String,
     pub artifact_digest: String,
+    pub compiler_artifacts: CompilerArtifactFingerprints,
     pub source_files: BTreeMap<String, FileFingerprint>,
+}
+
+/// Integrity identities for the three compiler sidecar namespaces.
+///
+/// Fixed fields keep the persistent schema typed and avoid string-keyed kind
+/// dispatch in the cache validation path.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompilerArtifactFingerprints {
+    pub air: String,
+    pub amir: String,
+    pub ameta: String,
+}
+
+impl CompilerArtifactFingerprints {
+    fn digest_for(&self, kind: CompilerArtifactKind) -> &str {
+        match kind {
+            CompilerArtifactKind::Air => &self.air,
+            CompilerArtifactKind::Amir => &self.amir,
+            CompilerArtifactKind::Ameta => &self.ameta,
+        }
+    }
 }
 
 /// Result of checking whether an existing session fingerprint is still valid.
@@ -104,6 +129,7 @@ pub struct SessionConfig<'a> {
     pub profile: NativeProfile,
     pub pointer_width: u64,
     pub opt: bool,
+    pub debug_info: bool,
     pub manifest_path: &'a Path,
     pub extra_inputs: &'a [IncrementalInput],
     pub target_triple: Option<&'a str>,
@@ -135,6 +161,7 @@ pub fn check_incremental(config: &SessionConfig<'_>) -> IncrementalCheck {
         || session.target != layout.triple
         || session.pointer_width != config.pointer_width
         || session.opt != config.opt
+        || session.debug_info != config.debug_info
     {
         return rebuild("compilation configuration or compiler version changed");
     }
@@ -180,6 +207,27 @@ pub fn check_incremental(config: &SessionConfig<'_>) -> IncrementalCheck {
         );
     }
 
+    for kind in compiler_artifact_kinds() {
+        let path = compiler_artifact_path(&layout.incremental, kind);
+        let bytes = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                return rebuild_with_inputs(
+                    "cached compiler artifact missing on disk",
+                    capture_input_fingerprints(&current_files, &session.source_files).ok(),
+                );
+            }
+        };
+        if decode_compiler_artifact(&bytes, kind).is_err()
+            || blake3::hash(&bytes).to_hex().as_str() != session.compiler_artifacts.digest_for(kind)
+        {
+            return rebuild_with_inputs(
+                "cached compiler artifact failed its schema or BLAKE3 integrity check",
+                capture_input_fingerprints(&current_files, &session.source_files).ok(),
+            );
+        }
+    }
+
     // The artifact is usable only after the complete input closure cut off.
     // Defer its potentially large read and digest so a known source/configuration
     // change takes the rebuild path without hashing an artifact that will be replaced.
@@ -192,7 +240,7 @@ pub fn check_incremental(config: &SessionConfig<'_>) -> IncrementalCheck {
             );
         }
     };
-    if blake3::hash(&artifact_bytes).to_hex().as_str() != session.artifact_digest {
+    if digest_bytes(&artifact_bytes).to_hex().as_str() != session.artifact_digest {
         return rebuild_with_inputs(
             "cached native artifact failed its BLAKE3 integrity check",
             capture_input_fingerprints(&current_files, &session.source_files).ok(),
@@ -260,6 +308,7 @@ pub fn record_session(
             },
         )?
     };
+    let compiler_artifacts = fingerprint_compiler_artifacts(&layout.incremental)?;
 
     let session = SessionFingerprint {
         schema_version: SCHEMA_VERSION,
@@ -270,8 +319,10 @@ pub fn record_session(
         target: layout.triple,
         pointer_width: config.pointer_width,
         opt: config.opt,
+        debug_info: config.debug_info,
         artifact_relative,
         artifact_digest,
+        compiler_artifacts,
         source_files,
     };
     let mut encoded = serde_json::to_vec_pretty(&session).map_err(|error| {
@@ -279,6 +330,42 @@ pub fn record_session(
     })?;
     encoded.push(b'\n');
     artifact::atomic_replace(&layout.incremental.join(FINGERPRINT_FILENAME), &encoded)
+}
+
+const fn compiler_artifact_kinds() -> [CompilerArtifactKind; 3] {
+    [
+        CompilerArtifactKind::Air,
+        CompilerArtifactKind::Amir,
+        CompilerArtifactKind::Ameta,
+    ]
+}
+
+fn fingerprint_compiler_artifacts(
+    incremental_dir: &Path,
+) -> Result<CompilerArtifactFingerprints, CliFailure> {
+    let fingerprint = |kind| {
+        let path = compiler_artifact_path(incremental_dir, kind);
+        let bytes = fs::read(&path).map_err(|error| {
+            CliFailure::operational(
+                "fingerprint compiler artifact",
+                Some(path.clone()),
+                error.to_string(),
+            )
+        })?;
+        decode_compiler_artifact(&bytes, kind).map_err(|error| {
+            CliFailure::operational(
+                "fingerprint compiler artifact",
+                Some(path),
+                error.to_string(),
+            )
+        })?;
+        Ok::<_, CliFailure>(blake3::hash(&bytes).to_hex().to_string())
+    };
+    Ok(CompilerArtifactFingerprints {
+        air: fingerprint(CompilerArtifactKind::Air)?,
+        amir: fingerprint(CompilerArtifactKind::Amir)?,
+        ameta: fingerprint(CompilerArtifactKind::Ameta)?,
+    })
 }
 
 /// Compute a BLAKE3 digest for a required build input with a descriptive error.
@@ -290,7 +377,17 @@ pub fn content_digest(path: &Path) -> Result<String, CliFailure> {
             error.to_string(),
         )
     })?;
-    Ok(blake3::hash(&bytes).to_hex().to_string())
+    Ok(digest_bytes(&bytes).to_hex().to_string())
+}
+
+fn digest_bytes(bytes: &[u8]) -> blake3::Hash {
+    const PARALLEL_HASH_THRESHOLD: usize = 1024 * 1024;
+    if bytes.len() < PARALLEL_HASH_THRESHOLD {
+        return blake3::hash(bytes);
+    }
+    let mut hasher = blake3::Hasher::new();
+    hasher.update_rayon(bytes);
+    hasher.finalize()
 }
 
 fn semantic_source_hash(content: &[u8], enabled: bool) -> Option<String> {

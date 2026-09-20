@@ -410,6 +410,23 @@ impl<'a> Parser<'a> {
         }
     }
 
+    pub(super) fn expect_member_name(&mut self) -> Result<SmolStr, ParseError> {
+        if self.current().kind.is_contextual_member_name() {
+            let name = SmolStr::new(self.current_text());
+            self.advance();
+            Ok(name)
+        } else {
+            Err(ParseError::expected(
+                ParseErrorCode::ExpectedToken,
+                "expected member name",
+                self.current(),
+                self.file_id,
+                self.source,
+                &["member name"],
+            ))
+        }
+    }
+
     pub(super) fn expect_name_like(&mut self) -> Result<SmolStr, ParseError> {
         match &self.current().kind {
             TokenKind::TypeErr | TokenKind::IdentValue | TokenKind::IdentType => {

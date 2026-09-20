@@ -188,6 +188,7 @@ pub enum LayoutError {
     InvalidAlignment {
         align: u64,
     },
+    UnresolvedConst,
 }
 
 impl std::fmt::Display for LayoutError {
@@ -199,6 +200,9 @@ impl std::fmt::Display for LayoutError {
             ),
             Self::InvalidAlignment { align } => {
                 write!(f, "invalid type alignment {align}; expected a power of two")
+            }
+            Self::UnresolvedConst => {
+                f.write_str("const generic reached layout before monomorphization")
             }
         }
     }
@@ -599,6 +603,9 @@ impl LayoutEngine {
                     tag_encoding: None,
                 }
             }
+            ArType::ConstArray(_, _) | ArType::Const(_) | ArType::ConstParam(_) => {
+                return Err(LayoutError::UnresolvedConst);
+            }
             ArType::Tuple(tys) => {
                 let ty_ids = interner.type_args(*tys).to_vec();
                 let mut current_offset = 0;
@@ -998,6 +1005,18 @@ fn substitute(ty: &ArType, subst: &FxHashMap<SymbolId, TypeId>, interner: &TypeI
             let new_inner = interner.lookup(&substituted_inner).unwrap_or(*inner);
             ArType::Array(*len, new_inner)
         }
+        ArType::ConstArray(param, inner) => {
+            let inner_ty = interner.resolve(*inner);
+            let substituted_inner = substitute(&inner_ty, subst, interner);
+            let new_inner = interner.intern(substituted_inner);
+            match subst.get(param).map(|&id| interner.resolve(id)) {
+                Some(ArType::Const(length)) => ArType::Array(length, new_inner),
+                _ => ArType::ConstArray(*param, new_inner),
+            }
+        }
+        ArType::ConstParam(param) => subst
+            .get(param)
+            .map_or_else(|| ty.clone(), |&id| interner.resolve(id)),
         ArType::Ptr(inner) => {
             let inner_ty = interner.resolve(*inner);
             let substituted_inner = substitute(&inner_ty, subst, interner);

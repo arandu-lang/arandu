@@ -268,6 +268,11 @@ fn discover_nested_keys<'bump>(
             HirCondition::Expr(e) | HirCondition::Is { expr: e, .. } => {
                 visit_expr(hir, *e, tc, bump, template_funcs, enqueue);
             }
+            HirCondition::And(conditions) => {
+                for condition in conditions {
+                    visit_condition(hir, condition, tc, bump, template_funcs, enqueue);
+                }
+            }
         }
     }
 
@@ -448,7 +453,7 @@ fn is_identity_instantiation(tc: &TypeCheckResult, symbol: SymbolId, type_args: 
         matches!(
             interner.resolve(tid),
             ArType::Named(id, ref args) if id == param && args.is_empty()
-        )
+        ) || matches!(interner.resolve(tid), ArType::ConstParam(id) if id == param)
     })
 }
 
@@ -456,6 +461,11 @@ fn is_identity_instantiation(tc: &TypeCheckResult, symbol: SymbolId, type_args: 
 fn type_arg_still_param(tc: &TypeCheckResult, tid: TypeId) -> bool {
     match tc.type_info.type_interner.resolve(tid) {
         ArType::Named(id, ref args) if args.is_empty() => tc
+            .type_info
+            .generic_params
+            .values()
+            .any(|ps| ps.contains(&id)),
+        ArType::ConstParam(id) => tc
             .type_info
             .generic_params
             .values()

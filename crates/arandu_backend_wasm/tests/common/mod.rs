@@ -176,6 +176,7 @@ pub fn emit_one(func: AmirFunc, interner: &TypeInterner, pool: &mut AmirLiteralP
         funcs: vec![func],
         literal_pool: std::mem::take(pool),
         extern_funcs: Default::default(),
+        debug_bindings: Vec::new(),
     };
     emit_wasm(
         &program,
@@ -202,6 +203,7 @@ pub fn emit_with_imported_symbols(
         funcs: vec![func],
         literal_pool: std::mem::take(pool),
         extern_funcs: Default::default(),
+        debug_bindings: Vec::new(),
     };
     emit_wasm(
         &program,

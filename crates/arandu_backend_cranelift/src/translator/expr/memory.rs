@@ -137,6 +137,29 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             );
 
         if is_memory_backed {
+            // Aggregates are represented by a pointer value in the JIT. Their stack
+            // home stores that pointer, so `&aggregate` must pass the stored value —
+            // not the address of the stack slot containing it. The latter adds an
+            // unintended level of indirection and corrupts field/index projection.
+            if place.projections.is_empty()
+                && matches!(
+                    borrowed_ty,
+                    ArType::Named(_, _) | ArType::Array(_, _) | ArType::Tuple(_)
+                )
+            {
+                if let Some(&slot) = self.local_stack_slots.get(&place.local) {
+                    let slot_addr = self.builder.ins().stack_addr(self.ptr_type, slot, 0);
+                    return self.builder.ins().load(
+                        self.ptr_type,
+                        cranelift_codegen::ir::MemFlagsData::new(),
+                        slot_addr,
+                        0,
+                    );
+                }
+                if let Some(&var) = self.local_map.get(&place.local) {
+                    return self.builder.use_var(var);
+                }
+            }
             let (base_ptr, offset) = self.translate_place_address_for_load(place);
             // Named aggregates use a pointer representation in the JIT.
             // A projected struct field therefore contains the aggregate

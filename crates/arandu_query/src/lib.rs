@@ -1,4 +1,5 @@
 pub mod analysis;
+pub mod artifact_cache;
 pub mod cache;
 pub mod dataflow;
 pub mod db;
@@ -22,6 +23,10 @@ pub mod watch_buf;
 pub use analysis::{
     AnalysisHost, AnalysisRevision, AnalysisSnapshot, LspSymbolId, PackageConfiguration,
     ResolvedPackageMap,
+};
+pub use artifact_cache::{
+    decode_compiler_artifact, encode_compiler_artifact, ArtifactDecodeError, ArtifactDigest,
+    CompilerArtifactKind, VerifiedCompilerArtifact, ARTIFACT_SCHEMA_VERSION,
 };
 pub use cache::{
     CacheDigest, CacheDigestError, CacheLayout, CacheLayoutError, CACHE_DIGEST_ALGORITHM,

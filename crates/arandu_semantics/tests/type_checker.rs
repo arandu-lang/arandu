@@ -72,6 +72,23 @@ fn test_implicit_widening_error() {
 }
 
 #[test]
+fn qualified_builtin_pattern_does_not_accept_unrelated_enum_qualifier() {
+    assert_type_errors!(
+        r#"
+        enum Fake { Some(int) }
+
+        func main() {
+            let option: Option<int> = Option.Some(1)
+            if option is Fake.Some(value) {
+                let ignored = value
+            }
+        }
+        "#,
+        [T002IncompatibleAssignment]
+    );
+}
+
+#[test]
 fn test_result_ok() {
     let root = workspace_root();
     let source = fs::read_to_string(root.join("tests/ui/type_checker/result_ok.aru")).unwrap();

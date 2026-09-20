@@ -26,7 +26,7 @@ impl<'a> CEmitter<'a> {
 
         match kind {
             Some(arandu_middle::IntrinsicKind::Abort) => {
-                let _ = writeln!(&mut self.output, "    abort();");
+                let _ = writeln!(&mut self.output, "    AR_ABORT();");
                 true
             }
             Some(arandu_middle::IntrinsicKind::PtrRead) => {

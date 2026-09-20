@@ -819,6 +819,7 @@ pub fn lower_amir(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<LowerAmi
         funcs: vec![],
         literal_pool: arandu_middle::literal_pool::AmirLiteralPool::default(),
         extern_funcs: Default::default(),
+        debug_bindings: Vec::new(),
     };
 
     let mut hir = {

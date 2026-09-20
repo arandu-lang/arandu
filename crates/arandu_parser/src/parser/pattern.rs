@@ -86,7 +86,7 @@ impl<'a> Parser<'a> {
             let type_start_span = self.current().span(self.file_id);
             let name = self.expect_ident_type()?;
             if self.eat_name("DOT") {
-                let variant = self.expect_ident_type()?;
+                let variant = self.expect_member_name()?;
                 let payload = if self.eat_name("LPAREN") {
                     let payload = self.parse_pattern_list_until("RPAREN")?;
                     self.expect_name("RPAREN")?;

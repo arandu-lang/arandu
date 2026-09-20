@@ -70,6 +70,8 @@ pub fn canonicalize_import_path(import: &ImportDecl) -> Option<String> {
                 Some(format!("stdlib/core/{stripped}.aru"))
             } else if let Some(stripped) = path_str.strip_prefix("std/alloc/") {
                 Some(format!("stdlib/alloc/{stripped}.aru"))
+            } else if let Some(stripped) = path_str.strip_prefix("std/math/") {
+                Some(format!("stdlib/math/{stripped}.aru"))
             } else if let Some(stripped) = path_str.strip_prefix("std/") {
                 // SL_S thin: `import std.io as io` → `stdlib/std/io.aru`
                 Some(format!("stdlib/std/{stripped}.aru"))
@@ -82,6 +84,8 @@ pub fn canonicalize_import_path(import: &ImportDecl) -> Option<String> {
                 Some(format!("stdlib/core/{stripped}.aru"))
             } else if let Some(stripped) = source.strip_prefix("std.alloc.") {
                 Some(format!("stdlib/alloc/{stripped}.aru"))
+            } else if let Some(stripped) = source.strip_prefix("std.math.") {
+                Some(format!("stdlib/math/{stripped}.aru"))
             } else if let Some(stripped) = source.strip_prefix("std.") {
                 // SL_S: `import "std.io" as io` → `stdlib/std/io.aru`
                 Some(format!("stdlib/std/{}.aru", stripped.replace('.', "/")))

@@ -50,9 +50,14 @@ impl<'a> CEmitter<'a> {
             let _ = writeln!(&mut self.output, "#include <stdarg.h>");
             let _ = writeln!(&mut self.output, "#include <math.h>");
         }
-        let _ = writeln!(&mut self.output, "#ifndef AR_UNREACHABLE");
-        let _ = writeln!(&mut self.output, "#define AR_UNREACHABLE() abort()");
-        let _ = writeln!(&mut self.output, "#endif");
+        let _ = writeln!(
+            &mut self.output,
+            "#ifndef AR_ABORT\n#if defined(__GNUC__) || defined(__clang__)\n#define AR_ABORT() __builtin_trap()\n#else\n#define AR_ABORT() abort()\n#endif\n#endif"
+        );
+        let _ = writeln!(
+            &mut self.output,
+            "#ifndef AR_UNREACHABLE\n#if defined(__GNUC__) || defined(__clang__)\n#define AR_UNREACHABLE() __builtin_trap()\n#else\n#define AR_UNREACHABLE() abort()\n#endif\n#endif"
+        );
         let _ = writeln!(
             &mut self.output,
             "#if defined(__GNUC__) || defined(__clang__)\n#define AR_BENCH_NOINLINE __attribute__((noinline))\n#elif defined(_MSC_VER)\n#define AR_BENCH_NOINLINE __declspec(noinline)\n#else\n#define AR_BENCH_NOINLINE\n#endif"

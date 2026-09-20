@@ -196,6 +196,9 @@ pub(crate) fn bind_type_params(
 ) {
     let interner = &checker.type_info.type_interner;
     match formal {
+        ArType::ConstParam(id) if type_params.contains(id) => {
+            bindings.entry(*id).or_insert(actual_id);
+        }
         ArType::Named(id, args) if args.is_empty() && type_params.contains(id) => {
             bindings.entry(*id).or_insert(actual_id);
         }
@@ -251,6 +254,21 @@ pub(crate) fn bind_type_params(
                     type_params,
                     &interner.resolve(*inner),
                     ai,
+                    bindings,
+                );
+            }
+        }
+        ArType::ConstArray(param, inner) => {
+            if let ArType::Array(length, actual_inner) = interner.resolve(actual_id) {
+                if type_params.contains(param) {
+                    let length_id = interner.intern(ArType::Const(length));
+                    bindings.entry(*param).or_insert(length_id);
+                }
+                bind_type_params(
+                    checker,
+                    type_params,
+                    &interner.resolve(*inner),
+                    actual_inner,
                     bindings,
                 );
             }

@@ -47,6 +47,7 @@ pub enum SymbolKind {
     Field,
     EnumVariant,
     TypeParam,
+    ConstParam,
     NamespaceMember,
     AssociatedFunc,
 }
@@ -63,6 +64,7 @@ impl SymbolKind {
                 | SymbolKind::Param
                 | SymbolKind::Local
                 | SymbolKind::EnumVariant
+                | SymbolKind::ConstParam
         )
     }
 
@@ -76,6 +78,7 @@ impl SymbolKind {
                 | SymbolKind::Enum
                 | SymbolKind::Interface
                 | SymbolKind::TypeParam
+                | SymbolKind::ConstParam
         )
     }
 }

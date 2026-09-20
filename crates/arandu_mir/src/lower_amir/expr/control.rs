@@ -18,18 +18,13 @@ impl LowerCtx<'_> {
         target: Option<TempId>,
         symbols: &SymbolTable,
     ) -> Result<AmirOperand, Diagnostic> {
-        let cond_op = self.lower_condition(condition, symbols)?;
-        if self.builder.current_block.is_none() {
-            let dest = target.unwrap_or_else(|| self.new_temp_id(expr.ty));
-            return Ok(AmirOperand::Copy(dest));
-        }
         let bb_then = self.new_block();
         let bb_else = self.new_block();
         let bb_join = self.new_block();
 
         let dest = target.unwrap_or_else(|| self.new_temp_id(expr.ty));
 
-        self.set_bool_branch(cond_op, bb_then, bb_else);
+        self.lower_condition_branch(condition, bb_then, bb_else, symbols)?;
         self.seal_block(bb_then);
         self.seal_block(bb_else);
 

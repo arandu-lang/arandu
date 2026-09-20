@@ -343,6 +343,18 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 }
                 true
             }
+            Some(arandu_semantics::IntrinsicKind::Abort) => {
+                // PAN / Invariant 5: lower directly to CPU trap (UD2/BRK) with zero metadata overhead.
+                let code = if bare == "abortGenerationalMismatch"
+                    || full_name.ends_with("abortGenerationalMismatch")
+                {
+                    cranelift_codegen::ir::TrapCode::unwrap_user(2)
+                } else {
+                    cranelift_codegen::ir::TrapCode::unwrap_user(1)
+                };
+                self.builder.ins().trap(code);
+                true
+            }
             _ => false,
         }
     }

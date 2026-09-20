@@ -35,7 +35,7 @@ fn scalar(ty: &ArType) -> Option<bool> {
         }),
         // Literal inference can still be pending at bound checking; every
         // numeric representation it can select has scalar storage.
-        ArType::Void | ArType::IntLiteral | ArType::FloatLiteral => Some(true),
+        ArType::Void | ArType::IntLiteral | ArType::FloatLiteral | ArType::Const(_) => Some(true),
         _ => None,
     }
 }
@@ -157,7 +157,10 @@ pub(super) fn satisfies(
                     _ => return false,
                 }
             }
-            ArType::Array(_, inner) | ArType::Option(inner) | ArType::Range(inner) => {
+            ArType::Array(_, inner)
+            | ArType::ConstArray(_, inner)
+            | ArType::Option(inner)
+            | ArType::Range(inner) => {
                 pending.push_back((inner, depth + 1));
             }
             ArType::Result(ok, error) => {
@@ -181,11 +184,12 @@ pub(super) fn satisfies(
             | ArType::Poll(_)
             | ArType::Func(_, _)
             | ArType::GenRef
+            | ArType::ConstParam(_)
             | ArType::Err
             | ArType::Error
             | ArType::IntLiteral
             | ArType::FloatLiteral => return false,
-            ArType::Primitive(_) | ArType::Void => {} // handled by scalar above
+            ArType::Primitive(_) | ArType::Void | ArType::Const(_) => {} // handled by scalar above
         }
     }
     true

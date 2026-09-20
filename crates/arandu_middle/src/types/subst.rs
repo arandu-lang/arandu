@@ -36,6 +36,10 @@ pub fn substitute_type_id(id: TypeId, subst: &GenericSubst, interner: &TypeInter
 
 pub fn substitute_type(ty: &ArType, subst: &GenericSubst, interner: &TypeInterner) -> ArType {
     match ty {
+        ArType::ConstParam(symbol) => subst
+            .iter()
+            .find_map(|(param, concrete)| (param == symbol).then(|| concrete.clone()))
+            .unwrap_or_else(|| ty.clone()),
         ArType::Named(id, args) => {
             if let Some((_, concrete)) = subst.iter().find(|(param, _)| param == id) {
                 return concrete.clone();
@@ -117,6 +121,19 @@ pub fn substitute_type(ty: &ArType, subst: &GenericSubst, interner: &TypeInterne
             let substituted = substitute_type(&resolved, subst, interner);
             let id = interner.intern(substituted);
             ArType::Array(*n, id)
+        }
+        ArType::ConstArray(param, inner) => {
+            let resolved = interner.resolve(*inner);
+            let substituted = substitute_type(&resolved, subst, interner);
+            let id = interner.intern(substituted);
+            match subst
+                .iter()
+                .find_map(|(symbol, value)| (symbol == param).then_some(value))
+            {
+                Some(ArType::Const(length)) => ArType::Array(*length, id),
+                Some(ArType::ConstParam(replacement)) => ArType::ConstArray(*replacement, id),
+                _ => ArType::ConstArray(*param, id),
+            }
         }
         ArType::Tuple(items) => {
             let old_items = interner.type_args(*items);
@@ -313,6 +330,21 @@ mod tests {
         let result = substitute_type(&ty, &subst, &i);
         let expected_inner = i.intern(ArType::Primitive(super::super::Primitive::Int));
         assert_eq!(result, ArType::Array(4, expected_inner));
+    }
+
+    #[test]
+    fn substitute_const_array_parameter_with_another_parameter() {
+        let i = new_interner();
+        let declared = SymbolId::new(0, 1);
+        let forwarded = SymbolId::new(0, 2);
+        let elem = i.intern(ArType::Primitive(super::super::Primitive::Int));
+        let ty = ArType::ConstArray(declared, elem);
+        let subst = build_subst(&[declared], &[ArType::ConstParam(forwarded)]);
+
+        assert_eq!(
+            substitute_type(&ty, &subst, &i),
+            ArType::ConstArray(forwarded, elem)
+        );
     }
 
     #[test]

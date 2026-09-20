@@ -258,6 +258,15 @@ impl TokenKind {
         )
     }
 
+    /// Returns whether this token can name a member after `.` or `?.`.
+    ///
+    /// Keywords remain reserved in ordinary identifier positions, but become
+    /// contextual after member access (`value.set`, `Type.match`, ...).
+    #[must_use]
+    pub const fn is_contextual_member_name(self) -> bool {
+        matches!(self, TokenKind::IdentValue | TokenKind::IdentType) || self.is_keyword()
+    }
+
     #[must_use]
     pub const fn index(&self) -> usize {
         match self {

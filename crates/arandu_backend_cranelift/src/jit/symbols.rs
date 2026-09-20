@@ -37,18 +37,9 @@ pub(crate) fn declare_runtime_imports<M: Module>(
         .map_err(|err| codegen_ice(format!("failed to declare free: {err:?}")))?;
     insert_sym(func_ids, "free", free_id);
 
-    // Declare abort as import
-    let abort_sig = Signature::new(default_call_conv);
-    let abort_id = module
-        .declare_function("abort", Linkage::Import, &abort_sig)
-        .map_err(|err| codegen_ice(format!("failed to declare abort: {err:?}")))?;
-    insert_sym(func_ids, "abort", abort_id);
-    insert_sym(func_ids, "std.core.intrinsics.abort", abort_id);
-    insert_sym(
-        func_ids,
-        "std.core.intrinsics.abortGenerationalMismatch",
-        abort_id,
-    );
+    // PAN / Invariant 5: `abort` and `abortGenerationalMismatch` are compiler intrinsics
+    // that lower directly to native hardware traps (UD2 on x86_64, BRK on AArch64)
+    // with zero unwinding metadata overhead, without importing libc abort.
 
     // SL_T.4 opaque optimization barriers. Signatures deliberately match
     // the machine representation selected by lowering.

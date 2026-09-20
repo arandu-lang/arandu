@@ -333,6 +333,40 @@ impl<'a> Parser<'a> {
                 expr,
                 pattern,
             })
+        } else if self.condition_has_top_level_is() {
+            let mut conditions = Vec::new();
+            loop {
+                let clause_start = self.mark();
+                // Logical AND has binding power 40. Parsing above it keeps the
+                // conjunction as condition structure rather than burying it in
+                // a boolean expression, which preserves pattern scopes.
+                let expr = self.parse_expr_without_block_calls(41)?;
+                let condition = if self.eat_name("KW_IS") {
+                    let pattern = self.parse_pattern()?;
+                    Condition::Is {
+                        span: self.span_from_mark(clause_start),
+                        expr,
+                        pattern,
+                    }
+                } else {
+                    Condition::Expr {
+                        span: self.span_from_mark(clause_start),
+                        expr,
+                    }
+                };
+                conditions.push(condition);
+                if !self.eat_name("LOGICAL_AND") {
+                    break;
+                }
+            }
+            if conditions.len() == 1 {
+                Ok(conditions.remove(0))
+            } else {
+                Ok(Condition::And {
+                    span: self.span_from_mark(start),
+                    conditions: conditions.into_boxed_slice(),
+                })
+            }
         } else {
             let expr = self.parse_expr_without_block_calls(0)?;
             if self.eat_name("KW_IS") {
@@ -349,6 +383,24 @@ impl<'a> Parser<'a> {
                 })
             }
         }
+    }
+
+    fn condition_has_top_level_is(&self) -> bool {
+        let mut paren_depth = 0u32;
+        let mut bracket_depth = 0u32;
+        for token in &self.tokens[self.pos..] {
+            match token.kind {
+                TokenKind::LParen => paren_depth = paren_depth.saturating_add(1),
+                TokenKind::RParen => paren_depth = paren_depth.saturating_sub(1),
+                TokenKind::LBracket => bracket_depth = bracket_depth.saturating_add(1),
+                TokenKind::RBracket => bracket_depth = bracket_depth.saturating_sub(1),
+                TokenKind::LBrace if paren_depth == 0 && bracket_depth == 0 => break,
+                TokenKind::KwIs if paren_depth == 0 && bracket_depth == 0 => return true,
+                TokenKind::Eof => break,
+                _ => {}
+            }
+        }
+        false
     }
 
     pub(super) fn parse_while(&mut self) -> Result<crate::ast_pool::StmtId, ParseError> {

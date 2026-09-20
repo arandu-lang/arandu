@@ -5,8 +5,8 @@
 //! SSA-like AMIR basic blocks. Aborts early if type-checking already failed.
 
 use crate::amir::{
-    AmirBasicBlock, AmirFunc, AmirLocal, AmirOperand, AmirProgram, AmirRvalue, AmirStmt,
-    AmirStmtTable, AmirTemp, BlockId, LocalId, TempId,
+    AmirBasicBlock, AmirDebugBinding, AmirFunc, AmirLocal, AmirOperand, AmirProgram, AmirRvalue,
+    AmirStmt, AmirStmtTable, AmirTemp, BlockId, LocalId, TempId,
 };
 use crate::diagnostics::{DiagCode, Diagnostic, Severity};
 use crate::hir::{HirBlock, HirDecl, HirFunc, HirProgram};
@@ -75,6 +75,7 @@ pub fn lower_to_amir_with_interfaces(
     let mut funcs = Vec::new();
     let mut diagnostics = Vec::new();
     let mut literal_pool = AmirLiteralPool::default();
+    let mut debug_bindings = Vec::new();
     let mut no_fallback = FxHashMap::default();
     // Single post-mono table: receiver Shared/Mut/Own → Copy vs Move at call sites.
     let arg_modes = CalleeArgModes::from_hir(hir, &tc.type_info.type_interner);
@@ -102,7 +103,14 @@ pub fn lower_to_amir_with_interfaces(
                 &mut diagnostics,
                 pointer_width,
             ) {
-                Ok(amir_f) => {
+                Ok((amir_f, local_debug_bindings)) => {
+                    debug_bindings.extend(local_debug_bindings.into_iter().map(|(temp, local)| {
+                        AmirDebugBinding {
+                            function: f.symbol,
+                            temp,
+                            local,
+                        }
+                    }));
                     funcs.push(amir_f);
                 }
                 Err(diag) => diagnostics.push(diag),
@@ -135,6 +143,7 @@ pub fn lower_to_amir_with_interfaces(
             funcs,
             literal_pool,
             extern_funcs,
+            debug_bindings,
         };
 
         let solution =
@@ -206,9 +215,13 @@ pub fn lower_to_amir_with_interfaces(
 pub(crate) fn is_memory_type(ty: &ArType) -> bool {
     match ty {
         ArType::Primitive(p) => matches!(p, Primitive::Str | Primitive::Any),
-        ArType::IntLiteral | ArType::FloatLiteral | ArType::Void | ArType::Err | ArType::Error => {
-            false
-        }
+        ArType::IntLiteral
+        | ArType::FloatLiteral
+        | ArType::Const(_)
+        | ArType::ConstParam(_)
+        | ArType::Void
+        | ArType::Err
+        | ArType::Error => false,
         // Pointers and safe refs are scalar values (fat/thin pointers), not memory objects.
         ArType::Ptr(_)
         | ArType::Ref(_)
@@ -218,6 +231,7 @@ pub(crate) fn is_memory_type(ty: &ArType) -> bool {
         | ArType::Func(_, _)
         | ArType::Slice(_) => false,
         ArType::Array(_, _)
+        | ArType::ConstArray(_, _)
         | ArType::Named(_, _)
         | ArType::Tuple(_)
         | ArType::Option(_)
@@ -313,6 +327,8 @@ pub(crate) struct LowerCtx<'a> {
     defer_frames: Vec<DeferFrame>,
     temp_states: Vec<MoveState>,
     temp_origins: Vec<Option<LocalId>>,
+    /// Cold typed mapping consumed only by native debug-info emission.
+    debug_bindings: Vec<(TempId, LocalId)>,
     local_states: Vec<MoveState>,
 
     // SSA builder fields (OSSA Braun et al.)

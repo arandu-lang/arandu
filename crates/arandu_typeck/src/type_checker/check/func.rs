@@ -35,7 +35,12 @@ fn validate_method_receiver(checker: &mut TypeChecker<'_>, decl: &FuncDecl) {
     {
         let mut new_args = Vec::new();
         for &param_sym in struct_params.iter() {
-            let arg_ty = ArType::named(param_sym, &[], &checker.type_info.type_interner);
+            let arg_ty =
+                if checker.symbols.get(param_sym).kind == arandu_middle::SymbolKind::ConstParam {
+                    ArType::ConstParam(param_sym)
+                } else {
+                    ArType::named(param_sym, &[], &checker.type_info.type_interner)
+                };
             new_args.push(checker.intern(arg_ty));
         }
         recv_ty = ArType::named(struct_id, &new_args, &checker.type_info.type_interner);
@@ -56,7 +61,12 @@ fn validate_method_receiver(checker: &mut TypeChecker<'_>, decl: &FuncDecl) {
     {
         let mut new_args = Vec::new();
         for &param_sym in struct_params.iter() {
-            let arg_ty = ArType::named(param_sym, &[], &checker.type_info.type_interner);
+            let arg_ty =
+                if checker.symbols.get(param_sym).kind == arandu_middle::SymbolKind::ConstParam {
+                    ArType::ConstParam(param_sym)
+                } else {
+                    ArType::named(param_sym, &[], &checker.type_info.type_interner)
+                };
             new_args.push(checker.intern(arg_ty));
         }
         self_ty = ArType::named(struct_id, &new_args, &checker.type_info.type_interner);
@@ -120,7 +130,13 @@ pub fn check_func_body(checker: &mut TypeChecker<'_>, decl: &FuncDecl) {
         {
             let mut new_args = Vec::new();
             for &param_sym in struct_params.iter() {
-                let arg_ty = ArType::named(param_sym, &[], &checker.type_info.type_interner);
+                let arg_ty = if checker.symbols.get(param_sym).kind
+                    == arandu_middle::SymbolKind::ConstParam
+                {
+                    ArType::ConstParam(param_sym)
+                } else {
+                    ArType::named(param_sym, &[], &checker.type_info.type_interner)
+                };
                 new_args.push(checker.intern(arg_ty));
             }
             param_ty = ArType::named(struct_id, &new_args, &checker.type_info.type_interner);

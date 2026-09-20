@@ -103,7 +103,15 @@ fn emit_recursive_drops(
     }
 }
 
-/// Identifies locals that hold dynamically allocated string buffers from `ToStr` or `StringInterp`.
+/// Identifies locals whose string ownership is unambiguous for the whole function.
+///
+/// A primitive `str` currently carries no runtime ownership bit. Consequently,
+/// a local is safe to destroy only when it has exactly one root store and that
+/// store receives a freshly allocated string. Treating a local as owned merely
+/// because *one* of its stores is owned can free static string data after a
+/// later reassignment. Multiple stores are deliberately left alone until AMIR
+/// models string ownership explicitly or this pass grows path-sensitive drop
+/// flags.
 fn find_owned_string_locals(func: &AmirFunc) -> rustc_hash::FxHashSet<LocalId> {
     let mut owned_temps = rustc_hash::FxHashSet::default();
     for stmt in func.stmts.payloads.iter() {
@@ -117,22 +125,28 @@ fn find_owned_string_locals(func: &AmirFunc) -> rustc_hash::FxHashSet<LocalId> {
             owned_temps.insert(lhs);
         }
     }
-    let mut owned_locals = rustc_hash::FxHashSet::default();
+    let mut root_store_count = rustc_hash::FxHashMap::<LocalId, usize>::default();
+    let mut owned_store_count = rustc_hash::FxHashMap::<LocalId, usize>::default();
     for stmt in func.stmts.payloads.iter() {
         if let AmirStmt::Store { lhs, rhs } = stmt
             && lhs.projections.is_empty()
         {
-            match rhs {
+            *root_store_count.entry(lhs.local).or_default() += 1;
+            if matches!(
+                rhs,
                 crate::amir::AmirOperand::Copy(t) | crate::amir::AmirOperand::Move(t)
-                    if owned_temps.contains(t) =>
-                {
-                    owned_locals.insert(lhs.local);
-                }
-                _ => {}
+                    if owned_temps.contains(t)
+            ) {
+                *owned_store_count.entry(lhs.local).or_default() += 1;
             }
         }
     }
-    owned_locals
+    owned_store_count
+        .into_iter()
+        .filter_map(|(local, owned)| {
+            (owned == 1 && root_store_count.get(&local) == Some(&1)).then_some(local)
+        })
+        .collect()
 }
 
 /// Insert exactly-once root-local and nested cascade destruction before normal function returns.

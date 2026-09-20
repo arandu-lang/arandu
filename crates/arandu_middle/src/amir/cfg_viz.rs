@@ -319,6 +319,7 @@ mod tests {
             funcs: vec![func],
             literal_pool: AmirLiteralPool::default(),
             extern_funcs: rustc_hash::FxHashMap::default(),
+            debug_bindings: Vec::new(),
         };
 
         let dot = program.render_cfg_dot(&symbols, &interner);

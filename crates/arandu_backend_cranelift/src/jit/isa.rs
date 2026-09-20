@@ -22,6 +22,8 @@ pub(crate) fn cached_host_isa() -> Result<OwnedTargetIsa, Diagnostic> {
             ("is_pic", "false"),
             // Fastest compile for interactive JIT; release optimizers live elsewhere.
             ("opt_level", "none"),
+            // PAN / Invariant 5: zero-metadata runtime without stack unwinding tables.
+            ("unwind_info", "false"),
         ] {
             if let Err(e) = flag_builder.set(key, val) {
                 return Err(format!("failed to set Cranelift flag {key}={val}: {e}"));

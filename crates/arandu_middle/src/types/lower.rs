@@ -55,6 +55,9 @@ pub fn lower_type_expr_ctx(
 ) -> ArType {
     let expr = ctx.pool.type_expr(expr_id);
     match expr {
+        TypeExpr::Const { value, .. } => parse_const_u64(value)
+            .map(ArType::Const)
+            .unwrap_or(ArType::Error),
         TypeExpr::Primitive { name, .. } => {
             if name == "Err" {
                 let ty = ArType::Err;
@@ -99,11 +102,27 @@ pub fn lower_type_expr_ctx(
             let id = interner.intern(inner_ty);
             ArType::Slice(id)
         }
-        TypeExpr::Array { size, elem, .. } => {
+        TypeExpr::Array {
+            size,
+            size_span,
+            elem,
+            ..
+        } => {
             let elem_ty = lower_type_expr_ctx(*elem, ctx, interner);
             let id = interner.intern(elem_ty);
-            let n = size.parse::<u64>().unwrap_or(0);
-            ArType::Array(n, id)
+            if let Some(n) = parse_const_u64(size) {
+                ArType::Array(n, id)
+            } else if let Some(symbol) = ctx
+                .resolved
+                .type_refs
+                .get(&crate::NodeKey::from(*size_span))
+                .copied()
+                .filter(|symbol| ctx.symbols.get(*symbol).kind == crate::SymbolKind::ConstParam)
+            {
+                ArType::ConstArray(symbol, id)
+            } else {
+                ArType::Error
+            }
         }
         TypeExpr::Func { params, result, .. } => {
             let param_ids = ctx.pool.type_expr_list(*params);
@@ -185,6 +204,9 @@ pub fn lower_named_type(
     // The name resolver already resolved this name — look up the symbol ID.
     let key = crate::NodeKey::from(name.span);
     if let Some(&symbol_id) = ctx.resolved.type_refs.get(&key) {
+        if ctx.symbols.get(symbol_id).kind == crate::SymbolKind::ConstParam && args.is_empty() {
+            return ArType::ConstParam(symbol_id);
+        }
         let generic_args: Vec<super::type_interner::TypeId> = args
             .iter()
             .map(|&a| {
@@ -197,6 +219,23 @@ pub fn lower_named_type(
         // Name was not resolved — name resolver already emitted an error.
         ArType::Error
     }
+}
+
+fn parse_const_u64(text: &str) -> Option<u64> {
+    let mut value = 0u64;
+    let mut saw_digit = false;
+    for byte in text.bytes() {
+        if byte == b'_' {
+            continue;
+        }
+        let digit = byte.checked_sub(b'0')?;
+        if digit > 9 {
+            return None;
+        }
+        saw_digit = true;
+        value = value.checked_mul(10)?.checked_add(u64::from(digit))?;
+    }
+    saw_digit.then_some(value)
 }
 
 #[cfg(test)]
@@ -376,6 +415,7 @@ mod tests {
         let id = pool.alloc_type_expr(TypeExpr::Array {
             span: Span::new(0, 8, 0),
             size: "10".into(),
+            size_span: Span::new(0, 1, 0),
             elem,
         });
         let mut i = new_interner();
@@ -393,7 +433,7 @@ mod tests {
     }
 
     #[test]
-    fn lowers_array_invalid_size_defaults_to_zero() {
+    fn lowers_array_invalid_size_to_error() {
         let mut pool = new_pool();
         let elem = pool.alloc_type_expr(TypeExpr::Primitive {
             span: Span::new(0, 3, 0),
@@ -402,6 +442,7 @@ mod tests {
         let id = pool.alloc_type_expr(TypeExpr::Array {
             span: Span::new(0, 8, 0),
             size: "abc".into(),
+            size_span: Span::new(0, 3, 0),
             elem,
         });
         let mut i = new_interner();
@@ -414,8 +455,7 @@ mod tests {
             resolved: &resolved,
         };
         let result = lower_type_expr_ctx(id, &ctx, &mut i);
-        let expected_elem = i.intern(ArType::Primitive(Primitive::Int));
-        assert_eq!(result, ArType::Array(0, expected_elem));
+        assert_eq!(result, ArType::Error);
     }
 
     // ── Group ──

@@ -13,6 +13,7 @@ const ANY_ERROR_MESSAGE: &str =
 
 pub(crate) fn contains_any(pool: &AstPool, ty: TypeExprId) -> Option<Span> {
     match pool.type_expr(ty) {
+        TypeExpr::Const { .. } => None,
         TypeExpr::Primitive { span, name } => {
             if name == "any" {
                 Some(*span)
@@ -231,6 +232,11 @@ fn validate_condition(checker: &mut TypeChecker<'_>, cond: &Condition) {
     match cond {
         Condition::Expr { expr, .. } => validate_expr(checker, *expr),
         Condition::Is { expr, .. } => validate_expr(checker, *expr),
+        Condition::And { conditions, .. } => {
+            for condition in conditions {
+                validate_condition(checker, condition);
+            }
+        }
     }
 }
 
@@ -506,7 +512,7 @@ fn validate_type_expr_constraints(
                 );
             }
         }
-        TypeExpr::Primitive { .. } => {}
+        TypeExpr::Const { .. } | TypeExpr::Primitive { .. } => {}
         TypeExpr::Nullable { inner, .. }
         | TypeExpr::Pointer { inner, .. }
         | TypeExpr::Ref { inner, .. }
@@ -574,7 +580,7 @@ fn type_contains_named_without_indirection(
             }
             false
         }
-        ArType::Array(_, inner) => {
+        ArType::Array(_, inner) | ArType::ConstArray(_, inner) => {
             let inner_ty = interner.resolve(*inner);
             type_contains_named_without_indirection(
                 &inner_ty, target_id, interner, provider, visited,

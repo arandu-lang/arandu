@@ -71,6 +71,7 @@ pub enum HirCondition {
         expr: HirExprId,
         pattern: HirPatternId,
     },
+    And(Box<[HirCondition]>),
 }
 
 #[derive(Debug, Clone)]
@@ -284,6 +285,12 @@ impl HirCondition {
         match self {
             HirCondition::Expr(expr) => pool.expr(*expr).validate_invariants(pool, symbols),
             HirCondition::Is { expr, .. } => pool.expr(*expr).validate_invariants(pool, symbols),
+            HirCondition::And(conditions) => {
+                for condition in conditions {
+                    condition.validate_invariants(pool, symbols)?;
+                }
+                Ok(())
+            }
         }
     }
 }

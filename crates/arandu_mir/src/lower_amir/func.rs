@@ -16,7 +16,7 @@ pub(crate) fn lower_func(
     literal_pool: &mut AmirLiteralPool,
     func_diagnostics: &mut Vec<Diagnostic>,
     pointer_width: u64,
-) -> Result<AmirFunc, Diagnostic> {
+) -> Result<(AmirFunc, Vec<(TempId, crate::amir::LocalId)>), Diagnostic> {
     let mut ctx = LowerCtx {
         tc,
         hir,
@@ -33,6 +33,7 @@ pub(crate) fn lower_func(
         defer_frames: Vec::new(),
         temp_states: Vec::new(),
         temp_origins: Vec::new(),
+        debug_bindings: Vec::new(),
         local_states: Vec::new(),
         sealed_blocks: FxHashSet::default(),
         current_def: FxHashMap::default(),
@@ -168,6 +169,13 @@ pub(crate) fn lower_func(
     ctx.prune_eliminated_parameters();
     ctx.rewrite_all_operands();
 
+    let mut debug_bindings = std::mem::take(&mut ctx.debug_bindings)
+        .into_iter()
+        .filter_map(|(temp, local)| ctx.canonical_debug_temp(temp).map(|temp| (temp, local)))
+        .collect::<Vec<_>>();
+    debug_bindings.sort_unstable_by_key(|(temp, local)| (temp.as_usize(), local.as_usize()));
+    debug_bindings.dedup();
+
     let cfg = crate::cfg::compute_cfg_edges(&ctx.builder.blocks);
     let amir_block_params = ctx.builder.materialize_block_params();
     let mut amir_f = AmirFunc {
@@ -204,7 +212,7 @@ pub(crate) fn lower_func(
 
     promote_escaped_coroutines(&mut amir_f);
 
-    Ok(amir_f)
+    Ok((amir_f, debug_bindings))
 }
 
 fn promote_escaped_coroutines(func: &mut AmirFunc) {

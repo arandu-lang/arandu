@@ -109,6 +109,12 @@ pub enum Condition {
         expr: Expr,
         pattern: super::PatternId,
     },
+    /// Left-to-right short-circuit conjunction. Pattern bindings from a
+    /// successful clause are visible to subsequent clauses and the body.
+    And {
+        span: Span,
+        conditions: Box<[Condition]>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]

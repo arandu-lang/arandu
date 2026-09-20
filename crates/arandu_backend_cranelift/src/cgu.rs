@@ -304,6 +304,19 @@ impl HashContext<'_> {
             ArType::IntLiteral => self.hash.tag(18),
             ArType::FloatLiteral => self.hash.tag(19),
             ArType::Error => self.hash.tag(20),
+            ArType::ConstArray(param, inner) => {
+                self.hash.tag(21);
+                self.symbol(*param);
+                self.type_id(*inner);
+            }
+            ArType::Const(value) => {
+                self.hash.tag(22);
+                self.hash.u64(*value);
+            }
+            ArType::ConstParam(param) => {
+                self.hash.tag(23);
+                self.symbol(*param);
+            }
         }
     }
 

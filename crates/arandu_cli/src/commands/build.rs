@@ -12,12 +12,13 @@ use crate::pipeline::{
 };
 use crate::project::{self, ProjectFlags};
 use arandu_middle::layout::DataLayout;
+use arandu_query::ArandCompilerDb;
 
 pub fn cmd_project_build(
     start: &Path,
     flags: &ProjectFlags,
     opt: bool,
-    _debug: bool,
+    debug_info: bool,
     data_layout: DataLayout,
 ) -> CliResult {
     let backend = project::BackendChoice::from_release_flag(flags.release);
@@ -46,6 +47,15 @@ pub fn cmd_project_build(
     })?;
     let runtime_path = linker::runtime_library()?;
     let mut build_inputs = ctx.build_inputs.clone();
+    if debug_info {
+        // Line tables depend on exact byte positions. A trivia-only edit may
+        // cut off semantic queries, but it must not reuse stale native DWARF.
+        for input in &mut build_inputs {
+            if input.semantic_source {
+                input.semantic_source = false;
+            }
+        }
+    }
     build_inputs.push(crate::incremental::IncrementalInput {
         key: "toolchain/compiler".to_owned(),
         path: compiler_path.clone(),
@@ -76,6 +86,7 @@ pub fn cmd_project_build(
             data_layout.pointer_width()
         },
         opt,
+        debug_info,
         manifest_path: &ctx.manifest_path,
         extra_inputs: &build_inputs,
         target_triple: if is_wasm { Some(wasm_triple) } else { None },
@@ -122,9 +133,28 @@ pub fn cmd_project_build(
     let artifacts = pipeline_lower(&db, file, &filepath);
     eprintln!("{}", rebuild_log.status_line());
 
+    let compiler_artifact_layout = if is_wasm {
+        artifact::layout_for_target(&ctx.root, profile.directory(), wasm_triple)
+    } else {
+        artifact::layout(&ctx.root, profile.directory())
+    };
+    {
+        arandu_base::time_pass!("compiler-artifacts");
+        crate::incremental::publish_compiler_artifacts(
+            &db,
+            file,
+            &artifacts,
+            &compiler_artifact_layout.incremental,
+        )?;
+    }
+
     // Dev "build" = typecheck + lower + relocatable native object emission.
     let type_check = &artifacts.type_check;
-    let mut amir_owned = if opt || flags.release {
+    // Debug variable locations refer to the baseline AMIR temp IDs. Keep
+    // optimized non-debug builds unchanged; native `--debug` deliberately
+    // favors inspectability and stable location ranges.
+    let native_debug_info = debug_info && !is_wasm;
+    let mut amir_owned = if (opt || flags.release) && !native_debug_info {
         Some(artifacts.amir.clone())
     } else {
         None
@@ -244,6 +274,7 @@ pub fn cmd_project_build(
             ));
         };
         let optimization = match backend {
+            _ if debug_info => arandu_backend_cranelift::AotOptimization::Baseline,
             project::BackendChoice::CraneliftDev => {
                 arandu_backend_cranelift::AotOptimization::Baseline
             }
@@ -254,7 +285,7 @@ pub fn cmd_project_build(
         (target, optimization)
     };
 
-    if profile == artifact::NativeProfile::Dev {
+    if profile == artifact::NativeProfile::Dev && !debug_info {
         let layout = artifact::layout(&ctx.root, profile.directory());
         let cgu_cache_dir = layout.incremental.join("cgu");
         let result = {
@@ -413,13 +444,37 @@ pub fn cmd_project_build(
         Ok(b) => b,
         Err(diag) => print_diagnostics_and_exit(std::iter::once(diag), &filepath),
     };
+    let debug_sources = debug_info.then(|| {
+        amir.funcs
+            .iter()
+            .map(|function| function.symbol.file_id)
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .filter_map(|file_id| {
+                db.source_file_by_id(file_id)?;
+                Some(arandu_backend_cranelift::DebugSource {
+                    file_id,
+                    path: db.file_path(file_id),
+                    text: db.source_text(file_id),
+                })
+            })
+            .collect::<Vec<_>>()
+    });
     let object = {
         arandu_base::time_pass!("codegen-monolithic");
-        backend_impl.compile(
-            amir,
-            type_check.symbols.as_ref(),
-            type_check.type_info.as_ref(),
-        )
+        match &debug_sources {
+            Some(sources) => backend_impl.compile_with_debug_sources(
+                amir,
+                type_check.symbols.as_ref(),
+                type_check.type_info.as_ref(),
+                sources,
+            ),
+            None => backend_impl.compile(
+                amir,
+                type_check.symbols.as_ref(),
+                type_check.type_info.as_ref(),
+            ),
+        }
     };
     match object {
         Ok(object) => {

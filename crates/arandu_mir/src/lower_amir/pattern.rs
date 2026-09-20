@@ -1,5 +1,5 @@
 use super::LowerCtx;
-use crate::amir::{AmirConstant, AmirOperand, AmirPlace, AmirRvalue};
+use crate::amir::{AmirConstant, AmirOperand, AmirPlace, AmirRvalue, BlockId};
 use crate::diagnostics::{DiagCode, Diagnostic};
 use crate::hir::{HirCondition, HirDecl, HirPattern};
 use crate::ops::BinaryOp;
@@ -209,7 +209,41 @@ impl LowerCtx<'_> {
                 let pat = self.hir.pool.pattern(*pattern);
                 self.lower_pattern_match(scrutinee, pat, symbols)
             }
+            HirCondition::And(_) => Err(Diagnostic::ice(
+                DiagCode::ICEGEN001,
+                "compound condition reached scalar AMIR lowering",
+                self.diag_span(self.current_span),
+            )),
         }
+    }
+
+    /// Lowers a condition directly into short-circuit CFG edges.
+    pub(crate) fn lower_condition_branch(
+        &mut self,
+        cond: &HirCondition,
+        if_true: BlockId,
+        if_false: BlockId,
+        symbols: &SymbolTable,
+    ) -> Result<(), Diagnostic> {
+        if let HirCondition::And(conditions) = cond {
+            let Some((last, prefix)) = conditions.split_last() else {
+                self.emit_goto(if_true);
+                return Ok(());
+            };
+            for condition in prefix {
+                let next = self.new_block();
+                self.lower_condition_branch(condition, next, if_false, symbols)?;
+                self.seal_block(next);
+                self.builder.current_block = Some(next);
+            }
+            return self.lower_condition_branch(last, if_true, if_false, symbols);
+        }
+
+        let condition = self.lower_condition(cond, symbols)?;
+        if self.builder.current_block.is_some() {
+            self.set_bool_branch(condition, if_true, if_false);
+        }
+        Ok(())
     }
 
     /// SYN.3: `Some(v)` / `None` against `Option<T>` (tags: None=0, Some=1).

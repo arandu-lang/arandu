@@ -46,7 +46,19 @@ impl LowerCtx<'_> {
 
     pub(crate) fn write_variable(&mut self, block: BlockId, local: LocalId, value: AmirOperand) {
         let value = self.materialize_nullable_const(local, value);
+        if let AmirOperand::Copy(temp) | AmirOperand::Move(temp) = value {
+            self.debug_bindings.push((temp, local));
+        }
         self.current_def.insert((block, local), value);
+    }
+
+    pub(crate) fn canonical_debug_temp(&self, temp: TempId) -> Option<TempId> {
+        match Self::resolve_operand(&self.redirected_temps, AmirOperand::Copy(temp)) {
+            AmirOperand::Copy(temp) | AmirOperand::Move(temp) => Some(temp),
+            AmirOperand::Constant(_) | AmirOperand::FunctionRef(_) | AmirOperand::GlobalRef(_) => {
+                None
+            }
+        }
     }
 
     /// Current basic block, or ICE diagnostic if lowering lost block context.

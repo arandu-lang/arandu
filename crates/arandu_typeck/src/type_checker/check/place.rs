@@ -152,7 +152,9 @@ pub(crate) fn synth_place(checker: &mut TypeChecker<'_>, place: &arandu_parser::
                     break;
                 }
                 match &actual_base_ty {
-                    ArType::Array(_, inner) | ArType::Slice(inner) => {
+                    ArType::Array(_, inner)
+                    | ArType::ConstArray(_, inner)
+                    | ArType::Slice(inner) => {
                         current_ty_id = *inner;
                     }
                     ArType::Named(_, args)

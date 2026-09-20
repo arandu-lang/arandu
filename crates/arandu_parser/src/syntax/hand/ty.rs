@@ -135,7 +135,12 @@ pub fn parse_type(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<TypeExp
         let size_tok = cur.peek()?;
         if !matches!(
             size_tok.kind,
-            TokenKind::IntDec | TokenKind::IntHex | TokenKind::IntBin | TokenKind::IntOct
+            TokenKind::IntDec
+                | TokenKind::IntHex
+                | TokenKind::IntBin
+                | TokenKind::IntOct
+                | TokenKind::IdentValue
+                | TokenKind::IdentType
         ) {
             return None;
         }
@@ -147,6 +152,7 @@ pub fn parse_type(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<TypeExp
         return Some(ctx.pool.alloc_type_expr(TypeExpr::Array {
             span: ctx.span(start, end),
             size,
+            size_span: ctx.token_span(size_tok),
             elem,
         }));
     }
@@ -296,7 +302,16 @@ fn parse_generic_type_args(
     let mut args = Vec::new();
     if !cur.at_gt() {
         loop {
-            args.push(parse_type(ctx, cur)?);
+            if cur.peek_kind() == Some(TokenKind::IntDec) {
+                let token = cur.bump()?;
+                let value = SmolStr::new(ctx.text(token)?);
+                args.push(ctx.pool.alloc_type_expr(TypeExpr::Const {
+                    span: ctx.token_span(token),
+                    value,
+                }));
+            } else {
+                args.push(parse_type(ctx, cur)?);
+            }
             if cur.eat(TokenKind::Comma) {
                 continue;
             }

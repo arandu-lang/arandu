@@ -298,7 +298,7 @@ impl TypeInfo {
                     }
                 }
             }
-            ArType::Array(_, inner) => {
+            ArType::Array(_, inner) | ArType::ConstArray(_, inner) => {
                 prefix.push(BorrowPathSegment::ArrayElement);
                 self.collect_borrow_paths(inner, prefix, visiting, output)?;
                 prefix.pop();
@@ -331,6 +331,8 @@ impl TypeInfo {
                 output.push((BorrowPath(prefix.clone()), BorrowKind::Shared));
             }
             ArType::Primitive(_)
+            | ArType::Const(_)
+            | ArType::ConstParam(_)
             | ArType::Func(_, _)
             | ArType::Ptr(_)
             | ArType::GenRef
@@ -359,7 +361,9 @@ impl TypeInfo {
                 let elems = self.type_interner.type_args(*elems);
                 elems.iter().all(|&e| self.is_pod_component(e, visiting))
             }
-            ArType::Array(_, elem) => self.is_pod_component(*elem, visiting),
+            ArType::Array(_, elem) | ArType::ConstArray(_, elem) => {
+                self.is_pod_component(*elem, visiting)
+            }
             ArType::Option(inner) => self.is_pod_component(*inner, visiting),
             ArType::Result(ok, err) => {
                 self.is_pod_component(*ok, visiting) && self.is_pod_component(*err, visiting)
@@ -383,7 +387,7 @@ impl TypeInfo {
                         Primitive::Bool | Primitive::Char | Primitive::Byte | Primitive::Str
                     )
             }
-            ArType::IntLiteral | ArType::FloatLiteral | ArType::GenRef => true,
+            ArType::IntLiteral | ArType::FloatLiteral | ArType::GenRef | ArType::Const(_) => true,
             ArType::Named(sym, args) => {
                 let args = self.type_interner.type_args(*args);
                 self.is_named_struct_pod_copy(*sym, &args, visiting)
@@ -392,7 +396,9 @@ impl TypeInfo {
                 let elems = self.type_interner.type_args(*elems);
                 elems.iter().all(|&e| self.is_pod_component(e, visiting))
             }
-            ArType::Array(_, elem) => self.is_pod_component(*elem, visiting),
+            ArType::Array(_, elem) | ArType::ConstArray(_, elem) => {
+                self.is_pod_component(*elem, visiting)
+            }
             ArType::Option(inner) => self.is_pod_component(*inner, visiting),
             ArType::Result(ok, err) => {
                 self.is_pod_component(*ok, visiting) && self.is_pod_component(*err, visiting)
@@ -402,6 +408,7 @@ impl TypeInfo {
             // owner aggregate remain non-POD to avoid accidental double free.
             ArType::Ref(_) | ArType::Slice(_) => true,
             ArType::Ptr(_)
+            | ArType::ConstParam(_)
             | ArType::RefMut(_)
             | ArType::Nullable(_)
             | ArType::Func(_, _)
@@ -514,6 +521,14 @@ pub fn translate_type(ty: &ArType, from: &TypeInterner, to: &mut TypeInterner) -
             let new_inner = to.intern(translated);
             ArType::Array(*n, new_inner)
         }
+        ArType::ConstArray(param, inner) => {
+            let resolved = from.resolve(*inner);
+            let translated = translate_type(&resolved, from, to);
+            let new_inner = to.intern(translated);
+            ArType::ConstArray(*param, new_inner)
+        }
+        ArType::Const(value) => ArType::Const(*value),
+        ArType::ConstParam(param) => ArType::ConstParam(*param),
         ArType::Ptr(inner) => {
             let resolved = from.resolve(*inner);
             let translated = translate_type(&resolved, from, to);

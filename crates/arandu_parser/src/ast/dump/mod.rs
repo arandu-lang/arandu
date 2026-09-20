@@ -87,7 +87,14 @@ pub(super) fn dump_generic_params(pool: &AstPool, params: &[GenericParam]) -> St
     let params_str = params
         .iter()
         .map(|param| {
-            let mut s = if param.constraints.is_empty() {
+            let mut s = if let Some(const_ty) = param.const_ty {
+                format!(
+                    "{} const {}: {}",
+                    dump_span(param.span),
+                    param.name,
+                    decl::dump_type(pool.type_expr(const_ty), pool)
+                )
+            } else if param.constraints.is_empty() {
                 format!("{} {}", dump_span(param.span), param.name)
             } else {
                 let constraints = param

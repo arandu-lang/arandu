@@ -604,7 +604,8 @@ pub(super) fn contains_generic_params(
         | ArType::Coroutine(inner)
         | ArType::Poll(inner)
         | ArType::Range(inner)
-        | ArType::Array(_, inner) => {
+        | ArType::Array(_, inner)
+        | ArType::ConstArray(_, inner) => {
             contains_generic_params(&interner.resolve(*inner), gp, interner)
         }
         ArType::Result(ok, err) => {

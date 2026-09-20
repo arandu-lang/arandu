@@ -130,6 +130,7 @@ fn generates_named_interface_for_public_interface_symbols() {
         funcs: vec![add_func, ping_func],
         literal_pool: AmirLiteralPool::default(),
         extern_funcs: Default::default(),
+        debug_bindings: Vec::new(),
     };
 
     let type_info = arandu_semantics::TypeInfo::new();
@@ -289,6 +290,7 @@ fn wit_multiple_interfaces_with_scoped_types() {
         funcs: vec![draw_func, ping_func],
         literal_pool: AmirLiteralPool::default(),
         extern_funcs: Default::default(),
+        debug_bindings: Vec::new(),
     };
 
     let mut type_info = arandu_semantics::TypeInfo::new();
@@ -416,6 +418,7 @@ fn wit_receiver_is_exposed_once() {
         funcs: vec![tag_func],
         literal_pool: AmirLiteralPool::default(),
         extern_funcs: Default::default(),
+        debug_bindings: Vec::new(),
     };
 
     let type_info = arandu_semantics::TypeInfo::new();

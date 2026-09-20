@@ -102,12 +102,13 @@ pub fn clif_type_with_float(ty: &ArType, ptr_type: Type, float_type: Type) -> Cl
         | ArType::RefMut(_)
         | ArType::Nullable(_)
         | ArType::Slice(_)
-        | ArType::Array(_, _) => ClifType::Concrete(ptr_type),
+        | ArType::Array(_, _)
+        | ArType::ConstArray(_, _) => ClifType::Concrete(ptr_type),
         // Packed GenRef: always 8-byte {u32,u32} (I64 on all hosts we JIT).
         ArType::GenRef => ClifType::Concrete(I64),
         // `Err` is a message handle (pointer to UTF-8 buffer from `err.new`).
         ArType::Err => ClifType::Concrete(ptr_type),
-        ArType::Void | ArType::Error => ClifType::Void,
+        ArType::Void | ArType::Error | ArType::Const(_) | ArType::ConstParam(_) => ClifType::Void,
         ArType::IntLiteral => ClifType::Concrete(ptr_type),
         ArType::FloatLiteral => ClifType::Concrete(float_type),
         ArType::Named(_, _) => {

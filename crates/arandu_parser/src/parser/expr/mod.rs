@@ -112,7 +112,7 @@ impl<'a> Parser<'a> {
                 TokenKind::Dot => {
                     self.advance();
                     let span_start = self.pool.expr_span(left);
-                    let field = self.expect_ident_value()?;
+                    let field = self.expect_member_name()?;
                     let span = span_between(span_start, self.previous().span(self.file_id));
                     left = self
                         .pool
@@ -122,7 +122,7 @@ impl<'a> Parser<'a> {
                 TokenKind::SafeDot => {
                     self.advance();
                     let span_start = self.pool.expr_span(left);
-                    let field = self.expect_ident_value()?;
+                    let field = self.expect_member_name()?;
                     let span = span_between(span_start, self.previous().span(self.file_id));
                     left = self
                         .pool

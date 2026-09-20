@@ -940,6 +940,7 @@ fn validate_amir_rejects_inconsistent_gen_payload_and_handle_types() {
         funcs: vec![func],
         literal_pool: AmirLiteralPool::default(),
         extern_funcs: Default::default(),
+        debug_bindings: Vec::new(),
     };
 
     let issues = validate_amir_program(&program, &validation_symbols(), &interner);
@@ -1196,6 +1197,7 @@ fn validate_amir_rejects_mismatched_suspend_edge_arguments() {
         funcs: vec![func],
         literal_pool: AmirLiteralPool::default(),
         extern_funcs: Default::default(),
+        debug_bindings: Vec::new(),
     };
 
     let issues = validate_amir_program(&program, &validation_symbols(), &interner);
@@ -1217,6 +1219,7 @@ fn validate_amir_rejects_mismatched_suspend_edge_arguments() {
         funcs: vec![func_type_mismatch],
         literal_pool: AmirLiteralPool::default(),
         extern_funcs: Default::default(),
+        debug_bindings: Vec::new(),
     };
     let issues_type =
         validate_amir_program(&program_type_mismatch, &validation_symbols(), &interner);

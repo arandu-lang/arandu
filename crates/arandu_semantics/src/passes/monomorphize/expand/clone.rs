@@ -492,6 +492,20 @@ pub(super) fn clone_condition(
             expr: clone_expr(hir, *expr, subst, symbol_map, tc, name_prefix)?,
             pattern: clone_pattern_id(hir, *pattern, subst, symbol_map, tc, name_prefix)?,
         },
+        HirCondition::And(conditions) => {
+            let mut cloned = Vec::with_capacity(conditions.len());
+            for condition in conditions {
+                cloned.push(clone_condition(
+                    hir,
+                    condition,
+                    subst,
+                    symbol_map,
+                    tc,
+                    name_prefix,
+                )?);
+            }
+            HirCondition::And(cloned.into_boxed_slice())
+        }
     })
 }
 
@@ -546,7 +560,20 @@ pub(super) fn clone_expr(
 ) -> Result<HirExprId, Diagnostic> {
     let expr = hir.pool.expr(expr_id).clone();
     let new_ty = substitute_type_id(expr.ty, subst, &tc.type_info.type_interner);
-    let kind = clone_expr_kind(hir, &expr.kind, subst, symbol_map, tc, name_prefix)?;
+    let kind = match expr.kind {
+        HirExprKind::Path { symbol } if tc.symbols.get(symbol).kind == SymbolKind::ConstParam => {
+            match subst
+                .iter()
+                .find_map(|(param, value)| (*param == symbol).then_some(value))
+            {
+                Some(arandu_middle::types::ArType::Const(value)) => {
+                    HirExprKind::Int(value.to_string().into())
+                }
+                _ => HirExprKind::Path { symbol },
+            }
+        }
+        ref kind => clone_expr_kind(hir, kind, subst, symbol_map, tc, name_prefix)?,
+    };
     Ok(hir.pool.alloc_expr(HirExpr {
         kind,
         ty: new_ty,

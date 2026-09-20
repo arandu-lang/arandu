@@ -171,6 +171,7 @@ pub(super) fn parse_generic_params(
     let mut params = SmallVec::new();
     if !cur.at_gt() {
         loop {
+            let is_const = cur.eat(TokenKind::KwConst);
             let name_tok = cur.peek()?;
             if !matches!(name_tok.kind, TokenKind::IdentType | TokenKind::IdentValue) {
                 return None;
@@ -180,7 +181,15 @@ pub(super) fn parse_generic_params(
             cur.bump();
             let mut constraints = SmallVec::new();
             let mut p_end = name_tok.start + name_tok.len;
-            if cur.eat(TokenKind::Colon) {
+            let const_ty = if is_const {
+                cur.expect(TokenKind::Colon)?;
+                let ty = super::ty::parse_type(ctx, cur)?;
+                p_end = ctx.pool.type_expr_span(ty).end;
+                Some(ty)
+            } else {
+                None
+            };
+            if !is_const && cur.eat(TokenKind::Colon) {
                 loop {
                     let ty = super::ty::parse_type(ctx, cur)?;
                     p_end = ctx.pool.type_expr_span(ty).end;
@@ -192,7 +201,7 @@ pub(super) fn parse_generic_params(
                 }
             }
             // T2.1: `T = DefaultType` after optional constraints.
-            let default = if cur.eat(TokenKind::Equal) {
+            let default = if !is_const && cur.eat(TokenKind::Equal) {
                 let ty = super::ty::parse_type(ctx, cur)?;
                 p_end = ctx.pool.type_expr_span(ty).end;
                 Some(ty)
@@ -202,6 +211,7 @@ pub(super) fn parse_generic_params(
             params.push(GenericParam {
                 span: ctx.span(p_start, p_end),
                 name,
+                const_ty,
                 constraints,
                 default,
             });

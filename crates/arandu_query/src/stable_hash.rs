@@ -172,6 +172,7 @@ fn symbol_kind_discriminant(kind: SymbolKind) -> u8 {
         SymbolKind::TypeParam => 14,
         SymbolKind::NamespaceMember => 15,
         SymbolKind::AssociatedFunc => 16,
+        SymbolKind::ConstParam => 17,
     }
 }
 
@@ -819,11 +820,13 @@ mod tests {
             funcs: Vec::new(),
             literal_pool: arandu_middle::literal_pool::AmirLiteralPool::default(),
             extern_funcs: rustc_hash::FxHashMap::default(),
+            debug_bindings: Vec::new(),
         };
         let mut p2 = arandu_middle::amir::AmirProgram {
             funcs: Vec::new(),
             literal_pool: arandu_middle::literal_pool::AmirLiteralPool::default(),
             extern_funcs: rustc_hash::FxHashMap::default(),
+            debug_bindings: Vec::new(),
         };
         p1.literal_pool.intern_int("42");
         p2.literal_pool.intern_int("43");

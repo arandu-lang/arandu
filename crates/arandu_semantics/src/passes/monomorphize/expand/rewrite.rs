@@ -125,6 +125,11 @@ pub(super) fn rewrite_condition_calls<'bump>(
     match cond {
         HirCondition::Expr(e) => rewrite_expr_calls(hir, *e, specialized, tc, bump),
         HirCondition::Is { expr, .. } => rewrite_expr_calls(hir, *expr, specialized, tc, bump),
+        HirCondition::And(conditions) => {
+            for condition in conditions {
+                rewrite_condition_calls(hir, condition, specialized, tc, bump);
+            }
+        }
     }
 }
 

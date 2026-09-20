@@ -158,6 +158,14 @@ pub(super) fn dump_condition(pool: &AstPool, condition: &Condition) -> String {
                 dump_pattern(pool, pool.pattern(*pattern))
             )
         }
+        Condition::And { span, conditions } => {
+            let clauses = conditions
+                .iter()
+                .map(|condition| dump_condition(pool, condition))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("And {} ({clauses})", dump_span(*span))
+        }
     }
 }
 

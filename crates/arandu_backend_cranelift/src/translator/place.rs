@@ -129,6 +129,28 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     let elem_size = self.builder.ins().iconst(self.ptr_type, layout.size as i64);
                     let offset_val = self.builder.ins().imul(idx_val, elem_size);
                     ptr_val = self.builder.ins().iadd(ptr_val, offset_val);
+                    if matches!(
+                        current_ty,
+                        ArType::Array(_, _)
+                            | ArType::Named(_, _)
+                            | ArType::Tuple(_)
+                            | ArType::Result(_, _)
+                            | ArType::Option(_)
+                            | ArType::Coroutine(_)
+                            | ArType::Poll(_)
+                            | ArType::Range(_)
+                    ) {
+                        // Aggregate array elements are pointer-valued in the JIT.
+                        // Continue a nested projection through the pointee rather
+                        // than treating the slot that stores the pointer as inline
+                        // aggregate bytes.
+                        ptr_val = self.builder.ins().load(
+                            self.ptr_type,
+                            cranelift_codegen::ir::MemFlagsData::new(),
+                            ptr_val,
+                            0,
+                        );
+                    }
                 }
             }
         }
@@ -234,6 +256,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         if lhs.projections.is_empty() {
             if let Some(&var) = self.local_map.get(&lhs.local) {
                 self.builder.def_var(var, val);
+                self.label_local_value(lhs.local, val);
             }
             if let Some(&slot) = self.local_stack_slots.get(&lhs.local) {
                 let addr = self.builder.ins().stack_addr(self.ptr_type, slot, 0);

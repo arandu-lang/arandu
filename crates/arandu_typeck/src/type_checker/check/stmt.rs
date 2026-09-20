@@ -424,9 +424,10 @@ fn check_for_stmt(
             let iterable_ty_id = super::super::synth::synth_expr(checker, *iterable);
             let iterable_ty = checker.resolve(iterable_ty_id);
             let elem_ty = match &iterable_ty {
-                ArType::Array(_, inner) | ArType::Slice(inner) | ArType::Range(inner) => {
-                    checker.type_info.type_interner.resolve(*inner)
-                }
+                ArType::Array(_, inner)
+                | ArType::ConstArray(_, inner)
+                | ArType::Slice(inner)
+                | ArType::Range(inner) => checker.type_info.type_interner.resolve(*inner),
                 ArType::Error => ArType::Error,
                 _ => {
                     checker.diagnostics.push(crate::Diagnostic::error(

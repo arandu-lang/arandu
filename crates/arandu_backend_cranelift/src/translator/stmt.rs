@@ -29,6 +29,10 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                         self.builder.def_var(var, val);
                     }
                 }
+                if let Some(var) = self.temp_map.get(lhs).copied() {
+                    let value = self.builder.use_var(var);
+                    self.label_temp_value(*lhs, value);
+                }
             }
             AmirStmt::Store { lhs, rhs } => {
                 let place_ty = self.place_ar_ty(lhs);
@@ -92,6 +96,12 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 lhs, callee, args, ..
             } => {
                 self.translate_call(lhs, callee, args);
+                if let Some(lhs) = lhs
+                    && let Some(var) = self.temp_map.get(lhs).copied()
+                {
+                    let value = self.builder.use_var(var);
+                    self.label_temp_value(*lhs, value);
+                }
             }
             AmirStmt::Free(op) => {
                 let op_ty = self.get_operand_ar_type(op);

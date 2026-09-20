@@ -47,23 +47,33 @@ pub(crate) fn lower_pattern(
             payload,
         } => {
             let type_symbol = require_type_symbol(&type_check.resolved, type_name.span)?;
-            let variant_symbol = type_check
-                .resolved
-                .definitions
-                .get(&NodeKey::from(*span))
-                .copied();
             let mut hir_payload = Vec::new();
             for &p in pool.pattern_list(*payload) {
                 hir_payload.push(lower_pattern_to_id(type_check, pool, hir_pool, p)?);
             }
             let payload_range = hir_pool.alloc_pattern_list(&hir_payload);
-            Ok(HirPattern::Enum {
-                span: *span,
-                type_symbol,
-                variant: variant.clone(),
-                variant_symbol,
-                payload: payload_range,
-            })
+            if type_check.symbols.is_option_type(type_symbol)
+                || type_check.symbols.is_result_type(type_symbol)
+            {
+                Ok(HirPattern::TypeTuple {
+                    span: *span,
+                    name: variant.clone(),
+                    payload: payload_range,
+                })
+            } else {
+                let variant_symbol = type_check
+                    .resolved
+                    .definitions
+                    .get(&NodeKey::from(*span))
+                    .copied();
+                Ok(HirPattern::Enum {
+                    span: *span,
+                    type_symbol,
+                    variant: variant.clone(),
+                    variant_symbol,
+                    payload: payload_range,
+                })
+            }
         }
         Pattern::TypeTuple {
             span,

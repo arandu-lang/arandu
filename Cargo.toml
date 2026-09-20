@@ -36,7 +36,7 @@ authors = ["Arandu Language Contributors"]
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 salsa = "0.28.2"                                                               # Salsa's new version (salsa-2022 tracked-based macro API)
-blake3 = "1.8.5"
+blake3 = { version = "1.8.5", features = ["rayon"] }
 sha2 = "0.11.0"
 smol_str = "0.3.6"
 smallvec = "1.15.2"

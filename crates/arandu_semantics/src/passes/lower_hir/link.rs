@@ -383,6 +383,12 @@ fn remap_condition(cond: &HirCondition, offs: &PoolOffsets) -> HirCondition {
             expr: offs.expr_id(*expr),
             pattern: offs.pattern_id(*pattern),
         },
+        HirCondition::And(conditions) => HirCondition::And(
+            conditions
+                .iter()
+                .map(|condition| remap_condition(condition, offs))
+                .collect(),
+        ),
     }
 }
 

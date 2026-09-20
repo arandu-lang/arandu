@@ -112,7 +112,9 @@ pub(crate) fn lower_place(
                     other => other,
                 };
                 let elem_ty = match &actual_base_ty {
-                    ArType::Array(_, inner) | ArType::Slice(inner) => *inner,
+                    ArType::Array(_, inner)
+                    | ArType::ConstArray(_, inner)
+                    | ArType::Slice(inner) => *inner,
                     _ => error_id,
                 };
                 current_ty = elem_ty;

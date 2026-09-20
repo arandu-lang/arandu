@@ -24,6 +24,51 @@ use arandu_semantics::layout::TargetAbiClassifier;
 /// each compilation.
 pub struct AranduModule<M> {
     pub module: M,
+    pub(crate) debug: Option<DebugCompilation>,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct DebugCompilation {
+    pub source_locations: Vec<arandu_base::span::Span>,
+    pub functions: Vec<DebugFunction>,
+}
+
+#[derive(Debug)]
+pub(crate) struct DebugFunction {
+    pub func_id: FuncId,
+    pub symbol: SymbolId,
+    pub code_size: u32,
+    pub ranges: Vec<DebugCodeRange>,
+    pub locals: Vec<DebugLocal>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct DebugCodeRange {
+    pub start: u32,
+    pub end: u32,
+    pub span: arandu_base::span::Span,
+}
+
+#[derive(Debug)]
+pub(crate) struct DebugLocal {
+    pub symbol: SymbolId,
+    pub ty: arandu_semantics::types::TypeId,
+    pub span: arandu_base::span::Span,
+    pub is_parameter: bool,
+    pub ranges: Vec<DebugValueRange>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct DebugValueRange {
+    pub start: u32,
+    pub end: u32,
+    pub location: DebugValueLocation,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum DebugValueLocation {
+    Register(u16),
+    CfaOffset(i64),
 }
 
 /// Host-JIT specialization of the shared Cranelift module compiler.
@@ -37,7 +82,10 @@ impl AranduModule<JITModule> {
     pub fn try_new() -> Result<Self, Diagnostic> {
         let builder = create_jit_builder()?;
         let module = JITModule::new(builder);
-        Ok(Self { module })
+        Ok(Self {
+            module,
+            debug: None,
+        })
     }
 
     /// Compile and finalize a callable host JIT module.
@@ -212,6 +260,12 @@ impl<M: Module> AranduModule<M> {
                 continue;
             }
             let c_name = sym.name.split('.').next_back().unwrap_or(&sym.name);
+            // PAN / Invariant 5: abort intrinsics are inlined to native CPU traps without importing libc abort.
+            if arandu_semantics::IntrinsicKind::from_name(c_name)
+                == Some(arandu_semantics::IntrinsicKind::Abort)
+            {
+                continue;
+            }
             let func_id = if let Some(&existing_id) = func_ids.get(c_name) {
                 existing_id
             } else {
@@ -300,8 +354,13 @@ impl<M: Module> AranduModule<M> {
             );
             context.func.signature = sig;
 
+            if self.debug.is_some() {
+                context.func.dfg.collect_debug_info();
+            }
+
             {
                 let builder = FunctionBuilder::new(&mut context.func, &mut builder_context);
+                let debug_locations = self.debug.as_mut().map(|debug| &mut debug.source_locations);
                 let mut translator = FunctionTranslator::new(
                     builder,
                     &mut self.module,
@@ -311,6 +370,8 @@ impl<M: Module> AranduModule<M> {
                     &program.literal_pool,
                     func,
                     type_info,
+                    debug_locations,
+                    &program.debug_bindings,
                 );
                 translator.translate()?;
             }
@@ -320,6 +381,77 @@ impl<M: Module> AranduModule<M> {
                 .map_err(|err| {
                     codegen_ice(format!("failed to define function '{}': {err:?}", sym.name))
                 })?;
+            if let Some(debug) = &mut self.debug
+                && let Some(code) = context.compiled_code()
+            {
+                let ranges = code
+                    .buffer
+                    .get_srclocs_sorted()
+                    .iter()
+                    .filter_map(|range| {
+                        debug
+                            .source_locations
+                            .get(range.loc.bits() as usize)
+                            .copied()
+                            .map(|span| DebugCodeRange {
+                                start: range.start,
+                                end: range.end,
+                                span,
+                            })
+                    })
+                    .collect();
+                let locals = func
+                    .locals
+                    .iter()
+                    .filter_map(|local| {
+                        let symbol = local.symbol?;
+                        let label = u32::try_from(local.id.as_usize()).ok()?;
+                        let label = cranelift_codegen::ir::ValueLabel::from_u32(label);
+                        let value_ranges = code.value_labels_ranges.get(&label)?;
+                        let ranges = value_ranges
+                            .iter()
+                            .filter_map(|range| {
+                                let location = match range.loc {
+                                    cranelift_codegen::LabelValueLoc::Reg(register) => self
+                                        .module
+                                        .isa()
+                                        .map_regalloc_reg_to_dwarf(register)
+                                        .ok()
+                                        .map(DebugValueLocation::Register)?,
+                                    cranelift_codegen::LabelValueLoc::CFAOffset(offset) => {
+                                        DebugValueLocation::CfaOffset(offset)
+                                    }
+                                };
+                                Some(DebugValueRange {
+                                    start: range.start,
+                                    end: range.end,
+                                    location,
+                                })
+                            })
+                            .collect::<Vec<_>>();
+                        (!ranges.is_empty()).then_some(DebugLocal {
+                            symbol,
+                            ty: local.ty,
+                            span: local.span,
+                            is_parameter: func.params.iter().any(|parameter| {
+                                program.debug_bindings.iter().any(|binding| {
+                                    binding.function == func.symbol
+                                        && binding.temp == *parameter
+                                        && binding.local == local.id
+                                })
+                            }),
+                            ranges,
+                        })
+                    })
+                    .collect();
+                debug.functions.push(DebugFunction {
+                    func_id,
+                    symbol: func.symbol,
+                    code_size: code.code_info().total_size,
+                    ranges,
+                    locals,
+                });
+            }
             self.module.clear_context(&mut context);
         }
 

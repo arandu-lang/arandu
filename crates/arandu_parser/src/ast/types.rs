@@ -18,6 +18,11 @@ pub struct TypeName {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TypeExpr {
+    /// Scalar compile-time argument in a generic argument list.
+    Const {
+        span: Span,
+        value: SmolStr,
+    },
     Primitive {
         span: Span,
         name: SmolStr,
@@ -52,6 +57,7 @@ pub enum TypeExpr {
     Array {
         span: Span,
         size: SmolStr,
+        size_span: Span,
         elem: TypeExprId,
     },
     Func {
@@ -69,7 +75,8 @@ impl TypeExpr {
     #[must_use]
     pub fn span(&self) -> Span {
         match self {
-            TypeExpr::Primitive { span, .. }
+            TypeExpr::Const { span, .. }
+            | TypeExpr::Primitive { span, .. }
             | TypeExpr::Named { span, .. }
             | TypeExpr::Nullable { span, .. }
             | TypeExpr::Pointer { span, .. }

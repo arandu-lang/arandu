@@ -334,7 +334,8 @@ fn parse_place(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<Place> {
     let mut suffixes = Vec::new();
     loop {
         if cur.eat(TokenKind::Dot) {
-            let field_tok = cur.expect(TokenKind::IdentValue)?;
+            let field_tok = cur.peek().filter(|t| t.kind.is_contextual_member_name())?;
+            cur.bump();
             let name = SmolStr::new(ctx.text(field_tok)?);
             end = field_tok.start + field_tok.len;
             suffixes.push(PlaceSuffix::Field {
@@ -371,14 +372,29 @@ fn parse_condition(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<Condit
     for _ in 0..brace_at {
         cur.bump();
     }
-    let span = ctx.span(
-        cond_toks[0].start,
-        cond_toks
-            .last()
-            .map(|t| t.start + t.len)
-            .unwrap_or(cond_toks[0].start),
-    );
-    if matches!(cond_toks[0].kind, TokenKind::KwLet)
+    let clauses = split_depth0_and(cond_toks)?;
+    if clauses.len() > 1
+        && clauses
+            .iter()
+            .any(|clause| find_depth0(clause, TokenKind::KwIs).is_some())
+    {
+        let mut conditions = Vec::with_capacity(clauses.len());
+        for clause in clauses {
+            conditions.push(parse_condition_atom(ctx, clause)?);
+        }
+        let span = condition_span(ctx, cond_toks)?;
+        return Some(Condition::And {
+            span,
+            conditions: conditions.into_boxed_slice(),
+        });
+    }
+    parse_condition_atom(ctx, cond_toks)
+}
+
+fn parse_condition_atom(ctx: &mut HandCtx<'_>, cond_toks: &[&Token]) -> Option<Condition> {
+    let span = condition_span(ctx, cond_toks)?;
+    let first = cond_toks.first()?;
+    if matches!(first.kind, TokenKind::KwLet)
         && let Some(eq_idx) = cond_toks
             .iter()
             .position(|t| matches!(t.kind, TokenKind::Equal))
@@ -428,6 +444,40 @@ fn parse_condition(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<Condit
         span: ctx.pool.expr_span(expr),
         expr,
     })
+}
+
+fn condition_span(ctx: &HandCtx<'_>, toks: &[&Token]) -> Option<arandu_lexer::Span> {
+    let first = toks.first()?;
+    let last = toks.last()?;
+    Some(ctx.span(first.start, last.start + last.len))
+}
+
+fn split_depth0_and<'a>(toks: &'a [&'a Token]) -> Option<Vec<&'a [&'a Token]>> {
+    let mut clauses = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    for (index, token) in toks.iter().enumerate() {
+        if depth == 0 && token.kind == TokenKind::LogicalAnd {
+            if start == index {
+                return None;
+            }
+            clauses.push(&toks[start..index]);
+            start = index + 1;
+            continue;
+        }
+        match token.kind {
+            TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace => depth += 1,
+            TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace => {
+                depth = depth.saturating_sub(1);
+            }
+            _ => {}
+        }
+    }
+    if start == toks.len() {
+        return None;
+    }
+    clauses.push(&toks[start..]);
+    Some(clauses)
 }
 
 fn find_depth0(toks: &[&Token], target: TokenKind) -> Option<usize> {

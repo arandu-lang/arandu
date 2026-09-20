@@ -138,7 +138,7 @@ impl<'a> Parser<'a> {
             if let Ok(receiver) = self.parse_type_name()
                 && self.eat_name("DOT")
             {
-                let name = self.expect_ident_value()?;
+                let name = self.expect_member_name()?;
                 return Ok(FuncName::Method {
                     span: self.span_from_mark(start),
                     receiver,

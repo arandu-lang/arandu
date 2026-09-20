@@ -223,6 +223,25 @@ fn collect_decl_constraints(
         let Some(&param_sym) = name_to_sym.get(&gp.name) else {
             continue;
         };
+        if let Some(const_ty) = gp.const_ty {
+            let ctx = LowerCtx {
+                pool: checker.pool,
+                symbols: &checker.symbols,
+                scope,
+                resolved: &checker.resolved,
+            };
+            let declared =
+                lower_type_expr_ctx(const_ty, &ctx, &mut checker.type_info.type_interner);
+            let declared_id = checker.type_info.type_interner.intern(declared.clone());
+            checker.type_info.record_decl_type(param_sym, declared_id);
+            if !matches!(&declared, ArType::Primitive(primitive) if primitive.is_integer()) {
+                checker.diagnostics.push(crate::Diagnostic::error(
+                    crate::DiagCode::T011GenericConstraintNotSatisfied,
+                    "const generic parameters require a scalar integer type".to_string(),
+                    checker.pool.type_expr_span(const_ty),
+                ));
+            }
+        }
         // T2.1: register default type arg for this type parameter.
         if let Some(def_ty_id) = gp.default {
             let ctx = LowerCtx {
@@ -337,6 +356,29 @@ pub(crate) fn check_instantiation_constraints(
     arg_types: &[ArType],
     span: Span,
 ) {
+    for (&param_sym, arg_ty) in param_symbols.iter().zip(arg_types) {
+        let Some(parameter) = checker.symbols.try_get(param_sym) else {
+            continue;
+        };
+        let valid_kind = match parameter.kind {
+            SymbolKind::ConstParam => matches!(arg_ty, ArType::Const(_) | ArType::ConstParam(_)),
+            SymbolKind::TypeParam => !matches!(arg_ty, ArType::Const(_) | ArType::ConstParam(_)),
+            _ => true,
+        };
+        if !valid_kind {
+            let expected = if parameter.kind == SymbolKind::ConstParam {
+                "a compile-time scalar value"
+            } else {
+                "a type"
+            };
+            checker.diagnostics.push(crate::Diagnostic::error(
+                crate::DiagCode::T011GenericConstraintNotSatisfied,
+                format!("generic parameter '{}' expects {expected}", parameter.name),
+                span,
+            ));
+        }
+    }
+
     // Bounds may reference another parameter of this declaration (J: Job<R>).
     // Instantiate that obligation in the caller's type environment before
     // comparing it with the caller's declared bounds. Build only when needed.

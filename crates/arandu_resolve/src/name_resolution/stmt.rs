@@ -184,6 +184,11 @@ impl<'a> Resolver<'a> {
                 self.resolve_pattern(pattern_scope, *pattern);
                 pattern_scope
             }
+            Condition::And { conditions, .. } => {
+                conditions.iter().fold(scope, |clause_scope, c| {
+                    self.resolve_condition(clause_scope, self.pool, c)
+                })
+            }
         }
     }
 

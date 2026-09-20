@@ -212,7 +212,7 @@ pub(super) fn parse_primary_post(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) ->
             Some(TokenKind::Dot) => {
                 cur.bump();
                 let field_tok = cur.peek()?;
-                if !matches!(field_tok.kind, TokenKind::IdentValue | TokenKind::IdentType) {
+                if !field_tok.kind.is_contextual_member_name() {
                     return None;
                 }
                 let field = SmolStr::new(ctx.text(field_tok)?);
@@ -225,7 +225,8 @@ pub(super) fn parse_primary_post(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) ->
             }
             Some(TokenKind::SafeDot) => {
                 cur.bump();
-                let field_tok = cur.expect(TokenKind::IdentValue)?;
+                let field_tok = cur.peek().filter(|t| t.kind.is_contextual_member_name())?;
+                cur.bump();
                 let field = SmolStr::new(ctx.text(field_tok)?);
                 let left_span = ctx.pool.expr_span(left);
                 let span = ctx.span(left_span.start, field_tok.start + field_tok.len);

@@ -279,7 +279,7 @@ pub(crate) fn resolve_index(
     }
 
     let elem_ty_id = match &actual_base_ty {
-        ArType::Array(_, inner) | ArType::Slice(inner) => *inner,
+        ArType::Array(_, inner) | ArType::ConstArray(_, inner) | ArType::Slice(inner) => *inner,
         ArType::Named(_, args)
             if arandu_middle::types::is_vec_type(&actual_base_ty, &checker.symbols) =>
         {

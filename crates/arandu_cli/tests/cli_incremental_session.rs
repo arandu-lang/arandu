@@ -48,6 +48,17 @@ fn consecutive_builds_perform_early_cutoff_noop() {
     );
     assert!(fingerprint_files[0].is_file());
 
+    let compiler_artifacts = ["current.air", "current.amir", "current.ameta"].map(|name| {
+        let matches = files_named(&project.join("target/dev"), name);
+        assert_eq!(matches.len(), 1, "expected exactly one {name}");
+        let bytes = fs::read(&matches[0]).unwrap();
+        assert!(
+            bytes.starts_with(b"ARANCAS\0"),
+            "invalid envelope for {name}"
+        );
+        (matches[0].clone(), bytes)
+    });
+
     // 3. Second build without changes -> must be up-to-date early cutoff!
     let build2 = run_cli_in(&project, &["build"]);
     assert!(
@@ -60,6 +71,26 @@ fn consecutive_builds_perform_early_cutoff_noop() {
     assert!(
         stdout2.contains("incremental: up-to-date"),
         "expected build 2 to be up-to-date, got:\n{stdout2}"
+    );
+    for (path, expected) in &compiler_artifacts {
+        assert_eq!(&fs::read(path).unwrap(), expected);
+    }
+
+    // A compiler sidecar is part of the session closure. Corruption must fail
+    // closed, rebuild all sidecars, and never be accepted as an early cutoff.
+    let mut corrupted_sidecar = compiler_artifacts[1].1.clone();
+    *corrupted_sidecar.last_mut().unwrap() ^= 0xff;
+    fs::write(&compiler_artifacts[1].0, corrupted_sidecar).unwrap();
+    let repaired_sidecar = run_cli_in(&project, &["build", "-v"]);
+    assert!(
+        repaired_sidecar.status.success(),
+        "sidecar repair failed: {}",
+        String::from_utf8_lossy(&repaired_sidecar.stderr)
+    );
+    assert!(!String::from_utf8_lossy(&repaired_sidecar.stdout).contains("incremental: up-to-date"));
+    assert_eq!(
+        fs::read(&compiler_artifacts[1].0).unwrap(),
+        compiler_artifacts[1].1
     );
 
     // Corrupting a content-addressed executable must invalidate and repair it.

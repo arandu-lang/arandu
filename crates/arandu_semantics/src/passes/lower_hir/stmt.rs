@@ -284,6 +284,13 @@ pub(crate) fn lower_condition(
                 pattern: pat_id,
             })
         }
+        Condition::And { conditions, .. } => {
+            let mut lowered = Vec::with_capacity(conditions.len());
+            for condition in conditions {
+                lowered.push(lower_condition(type_check, pool, hir_pool, condition)?);
+            }
+            Ok(HirCondition::And(lowered.into_boxed_slice()))
+        }
     }
 }
 

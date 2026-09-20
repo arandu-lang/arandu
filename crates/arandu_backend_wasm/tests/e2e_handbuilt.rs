@@ -515,6 +515,7 @@ fn invalid_projected_nonmemory_store_is_icegen002() {
         funcs: vec![func],
         literal_pool: std::mem::take(&mut pool),
         extern_funcs: Default::default(),
+        debug_bindings: Vec::new(),
     };
     let result = emit_wasm(
         &program,

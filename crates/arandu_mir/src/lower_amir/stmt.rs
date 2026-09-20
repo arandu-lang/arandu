@@ -300,12 +300,11 @@ impl LowerCtx<'_> {
                 then_block,
                 else_block,
             } => {
-                let cond_op = self.lower_condition(condition, symbols)?;
                 let bb_then = self.new_block();
                 let bb_else = self.new_block();
                 let bb_join = self.new_block();
 
-                self.set_bool_branch(cond_op, bb_then, bb_else);
+                self.lower_condition_branch(condition, bb_then, bb_else, symbols)?;
                 self.seal_block(bb_then);
                 self.seal_block(bb_else);
 
@@ -335,8 +334,7 @@ impl LowerCtx<'_> {
                 self.emit_goto(bb_cond);
 
                 self.builder.current_block = Some(bb_cond);
-                let cond_op = self.lower_condition(condition, symbols)?;
-                self.set_bool_branch(cond_op, bb_body, bb_exit);
+                self.lower_condition_branch(condition, bb_body, bb_exit, symbols)?;
                 self.seal_block(bb_body);
                 self.seal_block(bb_exit);
 

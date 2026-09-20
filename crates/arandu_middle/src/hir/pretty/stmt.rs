@@ -168,6 +168,12 @@ impl HirCondition {
                 pattern.pretty_print_to(&mut pat_str, 0, ctx);
                 out.push_str(&format!("{pat_ind}Pattern: {pat_str}\n"));
             }
+            HirCondition::And(conditions) => {
+                out.push_str(&format!("{ind}And\n"));
+                for condition in conditions {
+                    condition.pretty_print_to(out, indent + 1, ctx);
+                }
+            }
         }
     }
 }

@@ -320,8 +320,13 @@ pub(crate) fn collect_signature_types(checker: &mut TypeChecker<'_>, program: &P
                         {
                             let mut new_args = Vec::new();
                             for &param_sym in struct_params.iter() {
-                                let arg_ty =
-                                    ArType::named(param_sym, &[], &checker.type_info.type_interner);
+                                let arg_ty = if checker.symbols.get(param_sym).kind
+                                    == arandu_middle::SymbolKind::ConstParam
+                                {
+                                    ArType::ConstParam(param_sym)
+                                } else {
+                                    ArType::named(param_sym, &[], &checker.type_info.type_interner)
+                                };
                                 new_args.push(checker.intern(arg_ty));
                             }
                             let new_first_ty = ArType::named(

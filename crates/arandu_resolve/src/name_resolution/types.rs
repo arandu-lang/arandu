@@ -18,7 +18,7 @@ impl<'a> Resolver<'a> {
 
     pub(crate) fn resolve_type_expr(&mut self, scope: ScopeId, ty: TypeExprId) {
         match self.pool.type_expr(ty) {
-            TypeExpr::Primitive { .. } => {}
+            TypeExpr::Const { .. } | TypeExpr::Primitive { .. } => {}
             TypeExpr::Named { name, args, .. } => {
                 self.resolve_type_name(scope, name);
                 for arg in self.pool.type_expr_list(*args) {
@@ -31,7 +31,21 @@ impl<'a> Resolver<'a> {
             | TypeExpr::RefMut { inner, .. }
             | TypeExpr::Slice { inner, .. }
             | TypeExpr::Group { inner, .. } => self.resolve_type_expr(scope, *inner),
-            TypeExpr::Array { elem, .. } => self.resolve_type_expr(scope, *elem),
+            TypeExpr::Array {
+                size,
+                size_span,
+                elem,
+                ..
+            } => {
+                if size.parse::<u64>().is_err() {
+                    let name = TypeName {
+                        span: *size_span,
+                        path: smallvec::smallvec![size.clone()],
+                    };
+                    self.resolve_type_name(scope, &name);
+                }
+                self.resolve_type_expr(scope, *elem);
+            }
             TypeExpr::Func { params, result, .. } => {
                 for param in self.pool.type_expr_list(*params) {
                     self.resolve_type_expr(scope, *param);

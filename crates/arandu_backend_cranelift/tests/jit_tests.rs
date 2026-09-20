@@ -1586,6 +1586,7 @@ fn jit_gen_insert_get_copy_tuple() {
         funcs: vec![func],
         literal_pool: pool,
         extern_funcs: Default::default(),
+        debug_bindings: Vec::new(),
     };
     let type_info = arandu_semantics::TypeInfo {
         type_interner: interner,
@@ -1725,6 +1726,7 @@ fn jit_vec_legacy_handle_len_abi() {
         funcs: vec![func],
         literal_pool: pool,
         extern_funcs: Default::default(),
+        debug_bindings: Vec::new(),
     };
     let type_info = arandu_semantics::TypeInfo {
         type_interner: interner,

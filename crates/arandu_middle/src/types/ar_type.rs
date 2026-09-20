@@ -30,6 +30,17 @@ pub enum ArType {
     /// Fixed-size array: `[4]float`
     Array(u64, TypeId),
 
+    /// Fixed-size array whose length is a scalar const parameter before
+    /// monomorphization (`[N]T`). Backends must only observe the substituted
+    /// [`Self::Array`] form.
+    ConstArray(SymbolId, TypeId),
+
+    /// Concrete scalar const generic argument.
+    Const(u64),
+
+    /// Reference to a scalar const generic parameter inside a generic type.
+    ConstParam(SymbolId),
+
     /// Pointer type: `ptr[Vec2]` — raw, unsafe to deref without `unsafe`
     Ptr(TypeId),
 
@@ -276,6 +287,19 @@ impl ArType {
                 let inner_str = interner.resolve(*inner).display(symbols, interner);
                 format!("[{}]{}", size, inner_str)
             }
+            ArType::ConstArray(param, inner) => {
+                let name = symbols
+                    .try_get(*param)
+                    .map(|symbol| symbol.name.as_str())
+                    .unwrap_or("?");
+                let inner = interner.resolve(*inner).display(symbols, interner);
+                format!("[{name}]{inner}")
+            }
+            ArType::Const(value) => value.to_string(),
+            ArType::ConstParam(param) => symbols
+                .try_get(*param)
+                .map(|symbol| symbol.name.to_string())
+                .unwrap_or_else(|| "?".to_string()),
             ArType::Ptr(inner) => {
                 let inner_str = interner.resolve(*inner).display(symbols, interner);
                 format!("ptr[{}]", inner_str)
@@ -370,6 +394,7 @@ impl ArType {
             }
             ArType::IntLiteral
             | ArType::FloatLiteral
+            | ArType::Const(_)
             | ArType::Ptr(_)
             | ArType::Nullable(_)
             | ArType::Ref(_)
@@ -380,6 +405,8 @@ impl ArType {
             ArType::Named(_, _)
             | ArType::Func(_, _)
             | ArType::Array(_, _)
+            | ArType::ConstArray(_, _)
+            | ArType::ConstParam(_)
             | ArType::Tuple(_)
             | ArType::Result(_, _)
             | ArType::Option(_)

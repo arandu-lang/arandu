@@ -1,5 +1,6 @@
 use arandu_middle::symbol_table::SymbolTable;
 use arandu_middle::types::{ArType, TypeInterner};
+use std::fmt::Write as _;
 
 use super::graph::InstantiationKey;
 
@@ -65,8 +66,21 @@ fn mangle_type_into(out: &mut String, ty: &ArType, symbols: &SymbolTable, intern
             mangle_type_into(out, &interner.resolve(*inner), symbols, interner);
         }
         ArType::Array(n, inner) => {
-            out.push_str(&format!("arr{n}_"));
+            let _ = write!(out, "arr{n}_");
             mangle_type_into(out, &interner.resolve(*inner), symbols, interner);
+        }
+        ArType::ConstArray(param, inner) => {
+            out.push_str("arrparam_");
+            out.push_str(&symbols.get(*param).name);
+            out.push('_');
+            mangle_type_into(out, &interner.resolve(*inner), symbols, interner);
+        }
+        ArType::Const(value) => {
+            let _ = write!(out, "const{value}");
+        }
+        ArType::ConstParam(param) => {
+            out.push_str("constparam_");
+            out.push_str(&symbols.get(*param).name);
         }
         ArType::Tuple(items) => {
             out.push_str("tup");

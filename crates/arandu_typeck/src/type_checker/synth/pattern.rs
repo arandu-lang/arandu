@@ -65,8 +65,10 @@ pub fn check_pattern(checker: &mut TypeChecker<'_>, pattern: PatternId, value_ty
             let type_key = crate::NodeKey::from(type_name.span);
             if let Some(enum_symbol_id) = checker.resolved.type_refs.get(&type_key).copied() {
                 let val_ty = checker.resolve(value_ty);
+                let qualifier_is_result = checker.symbols.is_result_type(enum_symbol_id);
+                let qualifier_is_option = checker.symbols.is_option_type(enum_symbol_id);
 
-                if let ArType::Result(ok_id, err_id) = val_ty {
+                if qualifier_is_result && let ArType::Result(ok_id, err_id) = val_ty {
                     match variant.as_str() {
                         "Ok" => {
                             if payload.len != 1 {
@@ -106,7 +108,7 @@ pub fn check_pattern(checker: &mut TypeChecker<'_>, pattern: PatternId, value_ty
                             ));
                         }
                     }
-                } else if let ArType::Option(inner_id) = val_ty {
+                } else if qualifier_is_option && let ArType::Option(inner_id) = val_ty {
                     match variant.as_str() {
                         "Some" => {
                             if payload.len != 1 {

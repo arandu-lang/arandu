@@ -199,7 +199,7 @@ pub(super) fn parse_type_led(
         && cur.eat(TokenKind::Dot)
     {
         let mem = cur.peek()?;
-        if !matches!(mem.kind, TokenKind::IdentValue | TokenKind::IdentType) {
+        if !mem.kind.is_contextual_member_name() {
             return None;
         }
         let member = SmolStr::new(ctx.text(mem)?);

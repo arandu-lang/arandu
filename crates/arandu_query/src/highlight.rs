@@ -100,7 +100,7 @@ fn symbol_kind_to_hl(kind: SymbolKind) -> HlKind {
         SymbolKind::Func | SymbolKind::ExternFunc | SymbolKind::AssociatedFunc => HlKind::Function,
         SymbolKind::Param => HlKind::Parameter,
         SymbolKind::Local | SymbolKind::ImportValue => HlKind::Variable,
-        SymbolKind::Const => HlKind::Constant,
+        SymbolKind::Const | SymbolKind::ConstParam => HlKind::Constant,
         SymbolKind::Struct => HlKind::Struct,
         SymbolKind::Enum | SymbolKind::EnumVariant => HlKind::Enum,
         SymbolKind::Interface => HlKind::Interface,

@@ -40,14 +40,21 @@ impl<'a> Parser<'a> {
         }
         let params_vec = self.parse_generic_list(1, |parser| {
             let start = parser.mark();
+            let is_const = parser.eat_name("KW_CONST");
             let name = parser.expect_ident_type()?;
-            let constraints = if parser.eat_name("COLON") {
+            let const_ty = if is_const {
+                parser.expect_name("COLON")?;
+                Some(parser.parse_type()?)
+            } else {
+                None
+            };
+            let constraints = if !is_const && parser.eat_name("COLON") {
                 parser.parse_constraint_list()?.into()
             } else {
                 SmallVec::new()
             };
             // T2.1: `T = DefaultType` after optional constraints.
-            let default = if parser.eat_name("EQUAL") {
+            let default = if !is_const && parser.eat_name("EQUAL") {
                 Some(parser.parse_type()?)
             } else {
                 None
@@ -55,6 +62,7 @@ impl<'a> Parser<'a> {
             Ok(GenericParam {
                 span: parser.span_from_mark(start),
                 name,
+                const_ty,
                 constraints,
                 default,
             })
@@ -65,7 +73,17 @@ impl<'a> Parser<'a> {
 
     pub(super) fn parse_generic_args(&mut self) -> Result<IndexRange, ParseError> {
         self.expect_name("LT")?;
-        let args = self.parse_generic_list(1, super::Parser::parse_type)?;
+        let args = self.parse_generic_list(1, |parser| {
+            if matches!(parser.current().kind, TokenKind::IntDec) {
+                let start = parser.mark();
+                let value = SmolStr::new(parser.current_text());
+                parser.advance();
+                let span = parser.span_from_mark(start);
+                Ok(parser.pool.alloc_type_expr(TypeExpr::Const { span, value }))
+            } else {
+                parser.parse_type()
+            }
+        })?;
         self.expect_gt()?;
         let range = self.pool.alloc_type_expr_list(&args);
         Ok(range)
@@ -342,8 +360,9 @@ impl<'a> Parser<'a> {
                 let span = self.span_from_mark(start);
                 return Ok(self.pool.alloc_type_expr(TypeExpr::Slice { span, inner }));
             }
+            let size_span = self.current().span(self.file_id);
             let size = match &self.current().kind {
-                TokenKind::IntDec => {
+                TokenKind::IntDec | TokenKind::IdentValue | TokenKind::IdentType => {
                     let value = SmolStr::new(self.current_text());
                     self.advance();
                     value
@@ -361,9 +380,12 @@ impl<'a> Parser<'a> {
             self.expect_name("RBRACKET")?;
             let elem = self.parse_type_primary()?;
             let span = self.span_from_mark(start);
-            return Ok(self
-                .pool
-                .alloc_type_expr(TypeExpr::Array { span, size, elem }));
+            return Ok(self.pool.alloc_type_expr(TypeExpr::Array {
+                span,
+                size,
+                size_span,
+                elem,
+            }));
         }
         if self.eat_name("KW_FUNC") {
             self.expect_name("LPAREN")?;

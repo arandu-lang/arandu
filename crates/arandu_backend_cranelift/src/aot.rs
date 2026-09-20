@@ -5,6 +5,7 @@
 //! probing the build machine, so an artifact never silently inherits host-only
 //! CPU instructions.
 
+use crate::debug::{self, DebugSource};
 use crate::jit::{AranduModule, codegen_ice};
 use arandu_semantics::amir::AmirProgram;
 use arandu_semantics::{Diagnostic, SymbolTable, TypeInfo};
@@ -127,6 +128,8 @@ impl CraneliftObjectBackend {
             ),
             ("opt_level", optimization.cranelift_value()),
             ("preserve_frame_pointers", "true"),
+            // PAN / Invariant 5: zero-metadata runtime without stack unwinding tables (.eh_frame).
+            ("unwind_info", "false"),
         ] {
             flag_builder.set(key, value).map_err(|err| {
                 codegen_ice(format!(
@@ -158,19 +161,54 @@ impl CraneliftObjectBackend {
             target,
             compiler: AranduModule {
                 module: ObjectModule::new(builder),
+                debug: None,
             },
         })
     }
 
     /// Lowers `program` and emits a relocatable native object.
     pub fn compile(
-        mut self,
+        self,
         program: &AmirProgram,
         symbols: &SymbolTable,
         type_info: &TypeInfo,
     ) -> Result<ObjectArtifact, Diagnostic> {
+        self.compile_impl(program, symbols, type_info, &[])
+    }
+
+    /// Lowers `program` and emits a DWARF v5 object using the provided source
+    /// closure. Source files are shared by `Arc`; their text is never copied.
+    pub fn compile_with_debug_sources(
+        mut self,
+        program: &AmirProgram,
+        symbols: &SymbolTable,
+        type_info: &TypeInfo,
+        sources: &[DebugSource],
+    ) -> Result<ObjectArtifact, Diagnostic> {
+        self.compiler.debug = Some(Default::default());
+        self.compile_impl(program, symbols, type_info, sources)
+    }
+
+    fn compile_impl(
+        mut self,
+        program: &AmirProgram,
+        symbols: &SymbolTable,
+        type_info: &TypeInfo,
+        sources: &[DebugSource],
+    ) -> Result<ObjectArtifact, Diagnostic> {
         self.compiler.compile_module(program, symbols, type_info)?;
-        let product = self.compiler.module.finish();
+        let debug_compilation = self.compiler.debug.take();
+        let mut product = self.compiler.module.finish();
+        if let Some(debug_compilation) = debug_compilation {
+            debug::emit_dwarf(
+                &mut product,
+                &debug_compilation,
+                sources,
+                symbols,
+                type_info,
+                self.target.endianness(),
+            )?;
+        }
         let bytes = product.emit().map_err(|err| {
             codegen_ice(format!(
                 "failed to serialize object for target '{}': {err}",

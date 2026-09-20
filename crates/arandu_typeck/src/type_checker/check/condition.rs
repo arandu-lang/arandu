@@ -31,5 +31,10 @@ pub fn check_condition(checker: &mut TypeChecker<'_>, condition: &Condition) {
             let cond_ty_id = super::super::synth::synth_expr(checker, *expr);
             super::super::synth::check_pattern(checker, *pattern, cond_ty_id);
         }
+        arandu_parser::Condition::And { conditions, .. } => {
+            for condition in conditions {
+                check_condition(checker, condition);
+            }
+        }
     }
 }

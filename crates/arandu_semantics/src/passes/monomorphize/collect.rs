@@ -72,8 +72,13 @@ impl<'a, 'bump> InstantiationAnalyzer<'a, 'bump> {
         let type_args_vec: Vec<TypeId> = params
             .iter()
             .map(|param| {
-                self.interner
-                    .intern(ArType::named(*param, &[], self.interner))
+                let ty =
+                    if self.tc.symbols.get(*param).kind == arandu_middle::SymbolKind::ConstParam {
+                        ArType::ConstParam(*param)
+                    } else {
+                        ArType::named(*param, &[], self.interner)
+                    };
+                self.interner.intern(ty)
             })
             .collect();
         let type_args = self.bump.alloc_slice_copy(&type_args_vec);
@@ -199,6 +204,11 @@ impl<'a, 'bump> InstantiationAnalyzer<'a, 'bump> {
         match condition {
             HirCondition::Expr(expr) | HirCondition::Is { expr, .. } => {
                 self.visit_expr(*expr, current);
+            }
+            HirCondition::And(conditions) => {
+                for condition in conditions {
+                    self.visit_condition(condition, current);
+                }
             }
         }
     }
@@ -505,7 +515,7 @@ fn is_identity_args(
         matches!(
             interner.resolve(tid),
             ArType::Named(id, ref args) if id == param && args.is_empty()
-        )
+        ) || matches!(interner.resolve(tid), ArType::ConstParam(id) if id == param)
     })
 }
 
@@ -707,6 +717,9 @@ fn collect_param_bindings(
     bindings: &mut rustc_hash::FxHashMap<SymbolId, arandu_middle::types::TypeId>,
 ) {
     match formal {
+        ArType::ConstParam(id) if type_params.contains(id) => {
+            bindings.entry(*id).or_insert(actual_id);
+        }
         ArType::Named(id, args) if args.is_empty() && type_params.contains(id) => {
             bindings.entry(*id).or_insert(actual_id);
         }
@@ -760,6 +773,21 @@ fn collect_param_bindings(
             if let Some(ai) = act_inner {
                 let fty = interner.resolve(*inner);
                 collect_param_bindings(interner, type_params, &fty, ai, bindings);
+            }
+        }
+        ArType::ConstArray(param, inner) => {
+            if let ArType::Array(length, actual_inner) = interner.resolve(actual_id) {
+                if type_params.contains(param) {
+                    let length_id = interner.intern(ArType::Const(length));
+                    bindings.entry(*param).or_insert(length_id);
+                }
+                collect_param_bindings(
+                    interner,
+                    type_params,
+                    &interner.resolve(*inner),
+                    actual_inner,
+                    bindings,
+                );
             }
         }
         ArType::Result(ok, err) => {

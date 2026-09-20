@@ -1,5 +1,5 @@
 use super::block::{AmirBasicBlock, BlockParam};
-use super::local::{AmirLocal, AmirReceiver, AmirTemp, TempId};
+use super::local::{AmirLocal, AmirReceiver, AmirTemp, LocalId, TempId};
 use super::stmt::{AmirStmt, AmirStmtTable, InstrId};
 use crate::SymbolId;
 use crate::cfg::ControlFlowGraph;
@@ -13,6 +13,19 @@ pub struct AmirProgram {
     pub literal_pool: AmirLiteralPool,
     pub extern_funcs:
         rustc_hash::FxHashMap<crate::SymbolId, (Vec<crate::types::ArType>, crate::types::ArType)>,
+    /// Cold source-variable metadata used by native debug-info emission.
+    ///
+    /// Kept out of [`AmirTemp`] so release codegen and the dense hot temp table
+    /// pay no per-value size cost. Entries are deterministic and use typed IDs;
+    /// backends that do not emit debug information can ignore the table.
+    pub debug_bindings: Vec<AmirDebugBinding>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct AmirDebugBinding {
+    pub function: SymbolId,
+    pub temp: TempId,
+    pub local: LocalId,
 }
 
 #[derive(Debug, Clone)]

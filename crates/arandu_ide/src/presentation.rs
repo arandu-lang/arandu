@@ -117,7 +117,7 @@ pub fn symbol_kind_name(kind: SymbolKind) -> &'static str {
         SymbolKind::NamespaceMember => "member",
         SymbolKind::ImportValue | SymbolKind::ImportType => "import",
         SymbolKind::TypeParam => "type parameter",
-        SymbolKind::Const => "const",
+        SymbolKind::Const | SymbolKind::ConstParam => "const",
         SymbolKind::Field => "field",
         SymbolKind::Param => "param",
         SymbolKind::Local => "let",

@@ -243,37 +243,10 @@ pub(crate) fn declare_runtime_imports<M: Module>(
             .map_err(|err| codegen_ice(format!("failed to declare ar_path_file_name: {err:?}")))?;
         insert_sym(func_ids, "ar_path_file_name", id);
 
-        let mut len_sig = Signature::new(default_call_conv);
-        len_sig.params.push(AbiParam::new(ptr_type));
-        len_sig.params.push(AbiParam::new(ptr_type));
-        len_sig.returns.push(AbiParam::new(ptr_type));
-        let id = module
-            .declare_function("ar_str_len", Linkage::Import, &len_sig)
-            .map_err(|err| codegen_ice(format!("failed to declare ar_str_len: {err:?}")))?;
-        insert_sym(func_ids, "ar_str_len", id);
-
         let id = module
             .declare_function("ar_str_concat", Linkage::Import, &join_sig)
             .map_err(|err| codegen_ice(format!("failed to declare ar_str_concat: {err:?}")))?;
         insert_sym(func_ids, "ar_str_concat", id);
-
-        let mut pref_sig = Signature::new(default_call_conv);
-        for _ in 0..2 {
-            pref_sig.params.push(AbiParam::new(ptr_type));
-            pref_sig.params.push(AbiParam::new(ptr_type));
-        }
-        pref_sig.returns.push(AbiParam::new(ptr_type));
-        for name in [
-            "ar_str_starts_with",
-            "ar_str_ends_with",
-            "ar_str_contains",
-            "ar_str_find",
-        ] {
-            let id = module
-                .declare_function(name, Linkage::Import, &pref_sig)
-                .map_err(|err| codegen_ice(format!("failed to declare {name}: {err:?}")))?;
-            insert_sym(func_ids, name, id);
-        }
 
         let id = module
             .declare_function("ar_str_split_last", Linkage::Import, &join_sig)

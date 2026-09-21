@@ -44,6 +44,7 @@ impl<'a> CEmitter<'a> {
                         | AmirRvalue::Alloc(op)
                         | AmirRvalue::ToStr { value: op, .. }
                         | AmirRvalue::BlackBox { value: op, .. }
+                        | AmirRvalue::StrBytes { source: op }
                         | AmirRvalue::StrView { owner: op }
                         | AmirRvalue::CoroutineReady { value: op, .. } => {
                             if let AmirOperand::Copy(t) | AmirOperand::Move(t) = op {

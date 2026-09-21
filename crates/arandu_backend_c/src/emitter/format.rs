@@ -116,6 +116,11 @@ impl<'a> CEmitter<'a> {
             // Coroutine values point to runtime state, independently of their
             // result type. LayoutEngine also models them as one target pointer.
             ArType::Coroutine(_) => Cow::Borrowed("void*"),
+            ArType::Ref(inner) | ArType::RefMut(inner)
+                if ty.slice_abi_element(self.interner).is_some() =>
+            {
+                self.format_type(&self.interner.resolve(*inner))
+            }
             ArType::Ptr(inner) | ArType::Ref(inner) | ArType::RefMut(inner) => Cow::Owned(format!(
                 "{}*",
                 self.format_type(&self.interner.resolve(*inner))
@@ -182,6 +187,7 @@ impl<'a> CEmitter<'a> {
             match proj {
                 // BC.4a: place through pointer value — lvalue is `*path`.
                 AmirProjection::Deref => {
+                    let borrowed_slice = current_ty.is_borrowed_slice_abi(self.interner);
                     current_ty = match &current_ty {
                         ArType::Ptr(inner)
                         | ArType::Ref(inner)
@@ -189,7 +195,9 @@ impl<'a> CEmitter<'a> {
                         | ArType::Nullable(inner) => self.interner.resolve(*inner),
                         other => other.clone(),
                     };
-                    path = format!("(*{})", path);
+                    if !borrowed_slice {
+                        path = format!("(*{})", path);
+                    }
                 }
                 AmirProjection::Field(field_symbol_id) => {
                     // After Deref, current_ty is the pointee; unwrap residual ptr-likes.
@@ -233,6 +241,11 @@ impl<'a> CEmitter<'a> {
                     current_ty = field_ty;
                 }
                 AmirProjection::Index(index_op) => {
+                    if current_ty.is_borrowed_slice_abi(self.interner)
+                        && let ArType::Ref(inner) | ArType::RefMut(inner) = &current_ty
+                    {
+                        current_ty = self.interner.resolve(*inner);
+                    }
                     let is_vec = arandu_middle::types::is_vec_type(&current_ty, self.symbols);
                     let elem_ty = match arandu_middle::types::index_elem_type(
                         &current_ty,

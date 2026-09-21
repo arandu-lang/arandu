@@ -301,15 +301,6 @@ fn slice_from_fat(ptr: *const u8, len: isize) -> &'static [u8] {
     unsafe { std::slice::from_raw_parts(ptr, len as usize) }
 }
 
-/// Fat-str length (bytes).
-///
-/// # Safety
-/// Fat string ABI.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn ar_str_len(_ptr: *const u8, len: isize) -> isize {
-    len.max(0)
-}
-
 /// Concatenate two fat strings (malloc-style process-lifetime buffer).
 ///
 /// # Safety
@@ -328,80 +319,6 @@ unsafe fn ar_str_concat_impl(
     let len = out.len() as isize;
     let ptr = Box::into_raw(out.into_boxed_slice()) as *mut u8;
     ArFatStr { ptr, len }
-}
-
-/// Prefix check (byte-wise).
-///
-/// # Safety
-/// Fat string ABI.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn ar_str_starts_with(
-    s_ptr: *const u8,
-    s_len: isize,
-    p_ptr: *const u8,
-    p_len: isize,
-) -> isize {
-    let s = slice_from_fat(s_ptr, s_len);
-    let p = slice_from_fat(p_ptr, p_len);
-    isize::from(s.starts_with(p))
-}
-
-/// Suffix check (byte-wise).
-///
-/// # Safety
-/// Fat string ABI.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn ar_str_ends_with(
-    s_ptr: *const u8,
-    s_len: isize,
-    p_ptr: *const u8,
-    p_len: isize,
-) -> isize {
-    let s = slice_from_fat(s_ptr, s_len);
-    let p = slice_from_fat(p_ptr, p_len);
-    isize::from(s.ends_with(p))
-}
-
-/// Contains check (byte-wise).
-///
-/// # Safety
-/// Fat string ABI.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn ar_str_contains(
-    s_ptr: *const u8,
-    s_len: isize,
-    needle_ptr: *const u8,
-    needle_len: isize,
-) -> isize {
-    let s = slice_from_fat(s_ptr, s_len);
-    let needle = slice_from_fat(needle_ptr, needle_len);
-    if needle.is_empty() {
-        return 1;
-    }
-    isize::from(s.windows(needle.len()).any(|w| w == needle))
-}
-
-/// Find index of needle (byte-wise); returns -1 if not found.
-///
-/// # Safety
-/// Fat string ABI.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn ar_str_find(
-    s_ptr: *const u8,
-    s_len: isize,
-    needle_ptr: *const u8,
-    needle_len: isize,
-) -> isize {
-    let s = slice_from_fat(s_ptr, s_len);
-    let needle = slice_from_fat(needle_ptr, needle_len);
-    if needle.is_empty() {
-        return 0;
-    }
-    if let Some(pos) = s.windows(needle.len()).position(|w| w == needle) {
-        pos as isize
-    } else {
-        -1
-    }
 }
 
 /// Bytes after the last occurrence of `sep` (byte-wise). Empty sep → full `s`.
@@ -706,19 +623,9 @@ mod tests {
     #[test]
     fn str_concat_prefix_suffix_split() {
         unsafe {
-            assert_eq!(ar_str_len(b"hi".as_ptr(), 2), 2);
             let c = ar_str_concat(b"ab".as_ptr(), 2, b"cd".as_ptr(), 2);
             let cs = std::slice::from_raw_parts(c.ptr, c.len as usize);
             assert_eq!(cs, b"abcd");
-            assert_eq!(
-                ar_str_starts_with(b"hello".as_ptr(), 5, b"he".as_ptr(), 2),
-                1
-            );
-            assert_eq!(
-                ar_str_starts_with(b"hello".as_ptr(), 5, b"x".as_ptr(), 1),
-                0
-            );
-            assert_eq!(ar_str_ends_with(b"hello".as_ptr(), 5, b"lo".as_ptr(), 2), 1);
             let tail = ar_str_split_last(b"a/b/c".as_ptr(), 5, b"/".as_ptr(), 1);
             let ts = std::slice::from_raw_parts(tail.ptr, tail.len as usize);
             assert_eq!(ts, b"c");

@@ -570,8 +570,15 @@ impl LayoutEngine {
                 TypeLayout::simple(p.size, p.abi_align)
             }
             ArType::Void | ArType::Error => TypeLayout::simple(0, 1),
+            ArType::Ref(inner) | ArType::RefMut(inner)
+                if interner.with_type(*inner, |inner| matches!(inner, ArType::Slice(_))) =>
+            {
+                // References to dynamically-sized slices carry both data and
+                // length. Borrow kind is erased after ownership validation.
+                self.fat_pointer_layout()
+            }
             ArType::Ptr(_) | ArType::Ref(_) | ArType::RefMut(_) => {
-                // Safe refs and raw pointers are single machine pointers (fat types later).
+                // References to sized values and raw pointers are one word.
                 let p = self.data_layout.pointer;
                 TypeLayout::simple(p.size, p.abi_align)
             }

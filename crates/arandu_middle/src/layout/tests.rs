@@ -295,6 +295,26 @@ fn test_slice_layout() {
 }
 
 #[test]
+fn borrowed_slice_layout_matches_the_two_word_slice_abi() {
+    for &ptr_width in &[4u64, 8] {
+        let engine = LayoutEngine::new(ptr_width);
+        let interner = TypeInterner::new();
+        let provider = MockProvider;
+        let element = interner.intern(ArType::Primitive(Primitive::U8));
+        let slice = interner.intern(ArType::Slice(element));
+
+        for borrowed in [ArType::Ref(slice), ArType::RefMut(slice)] {
+            assert_eq!(borrowed.slice_abi_element(&interner), Some(element));
+            let borrowed = interner.intern(borrowed);
+            let layout = engine.layout_of(borrowed, &interner, &provider);
+            assert_eq!(layout.field_offsets, vec![0, ptr_width]);
+            assert_eq!(layout.size, ptr_width * 2);
+            assert_eq!(layout.align, ptr_width);
+        }
+    }
+}
+
+#[test]
 fn test_array_layout() {
     let engine = LayoutEngine::new(8);
     let interner = TypeInterner::new();

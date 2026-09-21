@@ -1,14 +1,7 @@
 module std.core.str
 
-import std.core.option as option
-
-extern "C" {
-    func ar_str_len(s: str): uint
-    func ar_str_starts_with(s: str, prefix: str): int
-    func ar_str_ends_with(s: str, suffix: str): int
-    func ar_str_contains(s: str, needle: str): int
-    func ar_str_find(s: str, needle: str): int
-}
+import std.core.intrinsics as intrinsics
+import std.core.slice as slice
 
 /// Returns `true` if the string is empty (`len == 0`).
 ///
@@ -35,9 +28,8 @@ public func isEmpty(s: str): bool {
 /// # Complexity
 /// Time: O(1) | Space: O(1)
 public func lenBytes(s: str): uint {
-    unsafe {
-        return ar_str_len(s)
-    }
+    let bytes = unsafe { intrinsics.strBytes(s) }
+    return slice.len<u8>(bytes)
 }
 
 /// Returns `true` if the string `s` starts with `prefix`.
@@ -51,9 +43,21 @@ public func lenBytes(s: str): uint {
 /// # Complexity
 /// Time: O(M) where M is prefix length | Space: O(1)
 public func startsWith(s: str, prefix: str): bool {
-    unsafe {
-        return ar_str_starts_with(s, prefix) != 0
+    let source = unsafe { intrinsics.strBytes(s) }
+    let expected = unsafe { intrinsics.strBytes(prefix) }
+    let source_len = slice.len<u8>(source)
+    let expected_len = slice.len<u8>(expected)
+    if expected_len > source_len {
+        return false
     }
+    let mut i: uint = 0
+    while i < expected_len {
+        if source[i] != expected[i] {
+            return false
+        }
+        i = i + 1
+    }
+    return true
 }
 
 /// Returns `true` if the string `s` ends with `suffix`.
@@ -67,9 +71,22 @@ public func startsWith(s: str, prefix: str): bool {
 /// # Complexity
 /// Time: O(M) where M is suffix length | Space: O(1)
 public func endsWith(s: str, suffix: str): bool {
-    unsafe {
-        return ar_str_ends_with(s, suffix) != 0
+    let source = unsafe { intrinsics.strBytes(s) }
+    let expected = unsafe { intrinsics.strBytes(suffix) }
+    let source_len = slice.len<u8>(source)
+    let expected_len = slice.len<u8>(expected)
+    if expected_len > source_len {
+        return false
     }
+    let offset = source_len - expected_len
+    let mut i: uint = 0
+    while i < expected_len {
+        if source[offset + i] != expected[i] {
+            return false
+        }
+        i = i + 1
+    }
+    return true
 }
 
 /// Returns `true` if the string `s` contains the substring `needle`.
@@ -83,8 +100,13 @@ public func endsWith(s: str, suffix: str): bool {
 /// # Complexity
 /// Time: O(N * M) | Space: O(1)
 public func contains(s: str, needle: str): bool {
-    unsafe {
-        return ar_str_contains(s, needle) != 0
+    match find(s, needle) {
+        Option.Some(_) => {
+            return true
+        }
+        Option.None => {
+            return false
+        }
     }
 }
 
@@ -99,11 +121,27 @@ public func contains(s: str, needle: str): bool {
 /// # Complexity
 /// Time: O(N * M) | Space: O(1)
 public func find(s: str, needle: str): Option<uint> {
-    unsafe {
-        let idx = ar_str_find(s, needle)
-        if idx < 0 {
-            return Option.None
-        }
-        return Option.Some(idx as uint)
+    let source = unsafe { intrinsics.strBytes(s) }
+    let expected = unsafe { intrinsics.strBytes(needle) }
+    let source_len = slice.len<u8>(source)
+    let expected_len = slice.len<u8>(expected)
+    if expected_len == 0 {
+        return Option.Some(0)
     }
+    if expected_len > source_len {
+        return Option.None
+    }
+    let last = source_len - expected_len
+    let mut start: uint = 0
+    while start <= last {
+        let mut i: uint = 0
+        while i < expected_len && source[start + i] == expected[i] {
+            i = i + 1
+        }
+        if i == expected_len {
+            return Option.Some(start)
+        }
+        start = start + 1
+    }
+    return Option.None
 }

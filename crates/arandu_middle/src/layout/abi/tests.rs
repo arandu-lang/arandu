@@ -81,6 +81,34 @@ fn sysv_amd64_point_two_i64() {
 }
 
 #[test]
+fn sysv_amd64_struct_keeps_borrowed_slice_as_two_integer_words() {
+    let mut provider = TestMockProvider::default();
+    let interner = TypeInterner::new();
+    let element = interner.intern(ArType::Primitive(Primitive::U8));
+    let slice = interner.intern(ArType::Slice(element));
+    let sym = SymbolId::new(0, 109);
+    let ty = register_struct(
+        &mut provider,
+        &interner,
+        sym,
+        &[("view", ArType::RefMut(slice))],
+    );
+
+    let classifier = TargetAbiClassifier::new(TargetAbi::SystemVAmd64, 8);
+    let abi = classifier.classify_type(&ty, &interner, &provider);
+    match abi {
+        ArgAbi::Direct(direct) => {
+            assert_eq!(direct.slots.len(), 2);
+            assert_eq!(direct.slots[0].scalar, AbiScalar::I64);
+            assert_eq!(direct.slots[0].offset, 0);
+            assert_eq!(direct.slots[1].scalar, AbiScalar::I64);
+            assert_eq!(direct.slots[1].offset, 8);
+        }
+        other => panic!("expected direct borrowed-slice aggregate, got {other:?}"),
+    }
+}
+
+#[test]
 fn sysv_amd64_floats() {
     let mut provider = TestMockProvider::default();
     let interner = TypeInterner::new();

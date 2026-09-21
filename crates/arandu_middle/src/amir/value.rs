@@ -80,6 +80,10 @@ pub enum AmirRvalue {
         start: AmirOperand,
         len: AmirOperand,
     },
+    /// Borrow a string's UTF-8 storage as a `[]u8` descriptor.
+    StrBytes {
+        source: AmirOperand,
+    },
     /// Reinterpret the `String` owner prefix (`data`, `len`) as `ref str`.
     /// The owner operand is both the runtime address and borrow provenance.
     StrView {

@@ -87,7 +87,7 @@ fn public_parallel_fold_crosses_cutoff_on_the_jit_backend() {
         &source,
         r#"
 import std.alloc.vec as vec
-import std.core.parallel as parallel
+import std.parallel as parallel
 
 struct Sum { value: int }
 struct Item { a: int, b: int, c: int }

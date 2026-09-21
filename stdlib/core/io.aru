@@ -1,9 +1,6 @@
 module std.core.io
 
-import std.core.result as result
-import std.core.option as option
 import std.core.slice as slice
-import std.core.intrinsics as intrinsics
 
 /// Error kinds for freestanding in-memory I/O operations (RFC 0017 / SL_S-Core.4).
 public enum CoreIoErrorKind {
@@ -81,14 +78,99 @@ public func SliceReader.read(self: mut ref SliceReader, buf: mut ref []u8): Resu
         to_read = buf_len
     }
 
-    unsafe {
-        let src = slice.asPtr<u8>(self.data)
-        let dst = slice.asPtr<u8>(*buf)
-        intrinsics.copyNonoverlapping<u8>(src, dst, to_read)
+    let mut i: uint = 0
+    while i < to_read {
+        buf[i] = self.data[self.pos + i]
+        i = i + 1
     }
 
     self.pos = self.pos + to_read
     return Result.Ok(to_read)
+}
+
+/// An in-memory writer over a caller-owned contiguous byte buffer.
+public struct SliceWriter {
+    data: []u8
+    pos: uint
+}
+
+/// Creates a writer whose writes are bounded by `data`.
+public func newSliceWriter(data: []u8): SliceWriter {
+    return SliceWriter {
+        data: data,
+        pos: 0,
+    }
+}
+
+/// Returns the unwritten capacity of the destination buffer.
+public func SliceWriter.remaining(self: ref SliceWriter): uint {
+    let total = slice.len<u8>(self.data)
+    if self.pos >= total {
+        return 0
+    }
+    return total - self.pos
+}
+
+/// Returns the number of bytes written so far.
+public func SliceWriter.written(self: ref SliceWriter): uint {
+    return self.pos
+}
+
+/// Writes as many bytes as fit in the destination buffer.
+public func SliceWriter.write(self: mut ref SliceWriter, buf: []u8): Result<uint, CoreIoError> {
+    let available = self.remaining()
+    let source_len = slice.len<u8>(buf)
+    if source_len > 0 && available == 0 {
+        return Result.Err(newCoreIoError(CoreIoErrorKind.WriteZero))
+    }
+    let mut to_write = source_len
+    if to_write > available {
+        to_write = available
+    }
+    let mut i: uint = 0
+    while i < to_write {
+        self.data[self.pos + i] = buf[i]
+        i = i + 1
+    }
+    self.pos = self.pos + to_write
+    return Result.Ok(to_write)
+}
+
+/// Flushes an in-memory writer. No work is required.
+public func SliceWriter.flush(self: mut ref SliceWriter): Result<bool, CoreIoError> {
+    return Result.Ok(true)
+}
+
+/// Seeks to an offset in bytes in the destination buffer.
+public func SliceWriter.seek(self: mut ref SliceWriter, pos: SeekFrom): Result<uint, CoreIoError> {
+    let total = slice.len<u8>(self.data)
+    let mut new_pos: uint = 0
+
+    match pos {
+        SeekFrom.Start(offset) => {
+            new_pos = offset
+        }
+        SeekFrom.Current(delta) => {
+            let target = (self.pos as int) + delta
+            if target < 0 {
+                return Result.Err(newCoreIoError(CoreIoErrorKind.InvalidInput))
+            }
+            new_pos = target as uint
+        }
+        SeekFrom.End(delta) => {
+            let target = (total as int) + delta
+            if target < 0 {
+                return Result.Err(newCoreIoError(CoreIoErrorKind.InvalidInput))
+            }
+            new_pos = target as uint
+        }
+    }
+
+    if new_pos > total {
+        return Result.Err(newCoreIoError(CoreIoErrorKind.InvalidInput))
+    }
+    self.pos = new_pos
+    return Result.Ok(new_pos)
 }
 
 /// Seeks to an offset in bytes in the underlying slice.

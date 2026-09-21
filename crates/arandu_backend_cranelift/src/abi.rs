@@ -60,11 +60,14 @@ fn append_abi_params(
         &dyn StructLayoutProvider,
     )>,
 ) {
+    let is_slice_view =
+        classifier_ctx.is_some_and(|(_, interner, _)| ty.slice_abi_element(interner).is_some());
+    if matches!(ty, ArType::Primitive(Primitive::Str)) || is_slice_view {
+        params.push(AbiParam::new(ptr_type));
+        params.push(AbiParam::new(ptr_type));
+        return;
+    }
     match ty {
-        ArType::Primitive(Primitive::Str) | ArType::Slice(_) => {
-            params.push(AbiParam::new(ptr_type));
-            params.push(AbiParam::new(ptr_type));
-        }
         ArType::Void | ArType::Error => {}
         ArType::Named(_, _) | ArType::Tuple(_) => {
             if let Some((classifier, interner, provider)) = classifier_ctx {

@@ -7,6 +7,7 @@ module std.alloc.string
 import std.core.mem as mem
 import std.core.intrinsics as intrinsics
 import std.core.char as chars
+import std.core.str as core_str
 
 func maxBufferCapacity(): uint {
     return 2147483647
@@ -17,10 +18,6 @@ extern "C" {
     func ar_vec_buf_free(p: ptr[u8], size: uint): void
     func ar_vec_realloc(p: ptr[u8], oldSize: uint, newSize: uint): ptr[u8]
     func ar_string_push_str(s: mut ref String, value: str): bool
-    func ar_str_starts_with(s: str, prefix: str): int
-    func ar_str_ends_with(s: str, suffix: str): int
-    func ar_str_contains(s: str, needle: str): int
-    func ar_str_find(s: str, needle: str): int
 }
 
 /// Returns a shared UTF-8 string view (`str`) borrowing the String's data.
@@ -427,34 +424,22 @@ public func String.truncate(self: mut ref String, newLen: uint): void {
 
 /// Returns `true` if this String starts with `prefix`.
 public func String.startsWith(self: ref String, prefix: str): bool {
-    unsafe {
-        return ar_str_starts_with(*asStr(self), prefix) != 0
-    }
+    return core_str.startsWith(*asStr(self), prefix)
 }
 
 /// Returns `true` if this String ends with `suffix`.
 public func String.endsWith(self: ref String, suffix: str): bool {
-    unsafe {
-        return ar_str_ends_with(*asStr(self), suffix) != 0
-    }
+    return core_str.endsWith(*asStr(self), suffix)
 }
 
 /// Returns `true` if this String contains `needle`.
 public func String.contains(self: ref String, needle: str): bool {
-    unsafe {
-        return ar_str_contains(*asStr(self), needle) != 0
-    }
+    return core_str.contains(*asStr(self), needle)
 }
 
 /// Returns the byte index of the first occurrence of `needle` in this String.
 public func String.find(self: ref String, needle: str): Option<uint> {
-    unsafe {
-        let idx = ar_str_find(*asStr(self), needle)
-        if idx < 0 {
-            return Option.None
-        }
-        return Option.Some(idx as uint)
-    }
+    return core_str.find(*asStr(self), needle)
 }
 
 /// Clones this String into an independently allocated copy.

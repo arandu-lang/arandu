@@ -87,6 +87,44 @@ func main(): int {
 }
 
 #[test]
+fn surface_mut_ref_slice_preserves_data_and_length_words() {
+    let bytes = compile_source(
+        r#"
+module std.core.mut_slice_wasm
+
+extern "arandu-intrinsic" {
+    func sliceFromRaw(owner: ptr[u8], data: ptr[u8], len: uint): []u8
+    func sliceLen<T>(source: []T): uint
+}
+
+func fill(buf: mut ref []u8): uint {
+    let len = unsafe { sliceLen<u8>(*buf) }
+    if len != 4 { return 99 }
+    buf[1] = 42 as u8
+    return len
+}
+
+func observedLen(buf: ref []u8): uint {
+    return unsafe { sliceLen<u8>(*buf) }
+}
+
+func main(): int {
+    let raw = alloc(4) as ptr[u8]
+    let mut view = unsafe { sliceFromRaw(raw, raw, 4 as uint) }
+    let len = fill(mut ref view)
+    if len != 4 || observedLen(ref view) != 4 || view[1] != (42 as u8) {
+        unsafe { free(raw) }
+        return 1
+    }
+    unsafe { free(raw) }
+    return 0
+}
+"#,
+    );
+    assert_eq!(run_main_i32(&bytes), 0);
+}
+
+#[test]
 fn surface_struct_field_access_and_mutation() {
     // Exercises StructLiteral (heap cell), empty-projection Load/Store value
     // copies, projected field Store via a real cell address and field loads.

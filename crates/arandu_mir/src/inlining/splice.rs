@@ -367,6 +367,9 @@ fn remap_rvalue(rv: &AmirRvalue, temp_map: &[TempId], local_map: &[LocalId]) -> 
             start: remap_op(start, temp_map),
             len: remap_op(len, temp_map),
         },
+        AmirRvalue::StrBytes { source } => AmirRvalue::StrBytes {
+            source: remap_op(source, temp_map),
+        },
         AmirRvalue::StrView { owner } => AmirRvalue::StrView {
             owner: remap_op(owner, temp_map),
         },

@@ -336,6 +336,9 @@ impl LowerCtx<'_> {
                 (Some(arandu_middle::IntrinsicKind::SliceData), [slice]) => {
                     Some(AmirRvalue::SliceData(*slice))
                 }
+                (Some(arandu_middle::IntrinsicKind::StrBytes), [source]) => {
+                    Some(AmirRvalue::StrBytes { source: *source })
+                }
                 (Some(arandu_middle::IntrinsicKind::StrView), [owner]) => {
                     Some(AmirRvalue::StrView { owner: *owner })
                 }

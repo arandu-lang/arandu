@@ -150,6 +150,10 @@ impl<'a> FuncTranslator<'a> {
                 // Pass through the owner fat pointer (data, len).
                 self.emit_operand(owner, result_ty);
             }
+            AmirRvalue::StrBytes { source } => {
+                // `str` and `[]u8` share the target fat-pointer representation.
+                self.emit_operand(source, result_ty);
+            }
             AmirRvalue::SliceSubslice { slice, start, len } => {
                 let elem_ty = match self.interner.resolve(result_ty) {
                     ArType::Slice(inner) => inner,
@@ -452,6 +456,20 @@ impl<'a> FuncTranslator<'a> {
                 self.emit_operand(len, lhs_ty);
                 self.code.push(Instruction::LocalSet(local + 1));
             }
+            AmirRvalue::StrBytes { source } => {
+                if let AmirOperand::Copy(t) | AmirOperand::Move(t) = source
+                    && let Some(&src) = self.temp_local.get(t)
+                {
+                    self.code.push(Instruction::LocalGet(src));
+                    self.code.push(Instruction::LocalSet(local));
+                    self.code.push(Instruction::LocalGet(src + 1));
+                    self.code.push(Instruction::LocalSet(local + 1));
+                } else {
+                    self.emit_operand(source, lhs_ty);
+                    self.code.push(Instruction::LocalSet(local + 1));
+                    self.code.push(Instruction::LocalSet(local));
+                }
+            }
             AmirRvalue::SliceSubslice { slice, start, len } => {
                 let elem_ty = match self.interner.resolve(lhs_ty) {
                     ArType::Slice(inner) => inner,
@@ -519,6 +537,32 @@ impl<'a> FuncTranslator<'a> {
                     return;
                 }
                 self.emit_zero_fat(local);
+            }
+            AmirRvalue::Borrow(place) | AmirRvalue::BorrowMut(place) => {
+                if place.projections.is_empty() {
+                    let src = self.local_slot(place.local).unwrap_or(0);
+                    self.code.push(Instruction::LocalGet(src));
+                    self.code.push(Instruction::LocalSet(local));
+                    self.code.push(Instruction::LocalGet(src + 1));
+                    self.code.push(Instruction::LocalSet(local + 1));
+                } else {
+                    let place_ty = self.emit_place_address(place);
+                    self.emit_load_value_at(place_ty, 0);
+                    self.code.push(Instruction::LocalSet(local + 1));
+                    self.code.push(Instruction::LocalSet(local));
+                }
+            }
+            AmirRvalue::Unary {
+                op: arandu_middle::ops::UnaryOp::Deref,
+                operand,
+            } if self
+                .interner
+                .slice_abi_element(self.operand_arity_ty(operand))
+                .is_some() =>
+            {
+                self.emit_operand(operand, lhs_ty);
+                self.code.push(Instruction::LocalSet(local + 1));
+                self.code.push(Instruction::LocalSet(local));
             }
             AmirRvalue::GenInsert {
                 value, payload_ty, ..

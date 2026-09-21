@@ -85,6 +85,7 @@ pub fn for_each_rvalue_operand(rvalue: &AmirRvalue, mut f: impl FnMut(&AmirOpera
         | AmirRvalue::Unary { operand: op, .. }
         | AmirRvalue::Len(op)
         | AmirRvalue::SliceData(op)
+        | AmirRvalue::StrBytes { source: op }
         | AmirRvalue::StrView { owner: op }
         | AmirRvalue::Alloc(op)
         | AmirRvalue::Discriminant { value: op }

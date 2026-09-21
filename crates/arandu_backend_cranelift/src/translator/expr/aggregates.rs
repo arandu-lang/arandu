@@ -387,6 +387,13 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         let base_ty = self.get_operand_ar_type(base);
         let deref_ty = match &base_ty {
             ArType::Ptr(inner) => self.type_info.resolve_type_id(*inner),
+            ArType::Ref(inner) | ArType::RefMut(inner)
+                if base_ty
+                    .slice_abi_element(&self.type_info.type_interner)
+                    .is_some() =>
+            {
+                self.type_info.resolve_type_id(*inner)
+            }
             other => other.clone(),
         };
         let elem_ty = match &deref_ty {

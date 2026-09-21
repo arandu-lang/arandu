@@ -34,13 +34,16 @@ fn fat_slot_type() -> ValType {
 /// Number of slots a value of this type occupies.
 #[must_use]
 pub fn shape(ty: TypeId, interner: &TypeInterner, _layout: DataLayout) -> Shape {
+    if interner.slice_abi_element(ty).is_some() {
+        return Shape::Fat;
+    }
     interner.with_type(ty, |ar| match ar {
         ArType::Primitive(p) => match p {
             Primitive::Str => Shape::Fat,
             Primitive::Any => Shape::Empty,
             _ => Shape::Scalar,
         },
-        ArType::Slice(_) | ArType::Range(_) | ArType::GenRef => Shape::Fat,
+        ArType::Range(_) | ArType::GenRef => Shape::Fat,
         ArType::Void | ArType::Err | ArType::Error => Shape::Empty,
         _ => Shape::Scalar,
     })
@@ -107,13 +110,13 @@ fn primitive_scalar_valtype(p: Primitive, layout: DataLayout) -> Option<ValType>
 
 /// Compute the wasm value types for an [`ArType`].
 #[must_use]
-pub fn ar_type_valtypes(ty: &ArType, layout: DataLayout) -> Vec<ValType> {
+pub fn ar_type_valtypes(ty: &ArType, interner: &TypeInterner, layout: DataLayout) -> Vec<ValType> {
+    if ty.slice_abi_element(interner).is_some() {
+        return vec![ValType::I32, ValType::I32];
+    }
     match ty {
         ArType::Void | ArType::Err | ArType::Error | ArType::Primitive(Primitive::Any) => vec![],
-        ArType::Primitive(Primitive::Str)
-        | ArType::Slice(_)
-        | ArType::Range(_)
-        | ArType::GenRef => {
+        ArType::Primitive(Primitive::Str) | ArType::Range(_) | ArType::GenRef => {
             vec![ValType::I32, ValType::I32]
         }
         _ => match scalar_valtype(ty, layout) {

@@ -63,10 +63,7 @@ static ArStr ar_path_file_name(ArStr p) {{
     buf[n] = 0;
     return ar_str_pack(buf, n);
 }}
-/* std.core.str thin hosts */
-static {len_c_ty} ar_str_len(ArStr s) {{
-    return ({len_c_ty})(s.len < 0 ? 0 : s.len);
-}}
+/* String allocation helpers. Borrowed string algorithms live in std.core.str. */
 static ArStr ar_str_concat(ArStr a, ArStr b) {{
     {len_c_ty} al = a.len < 0 ? 0 : a.len;
     {len_c_ty} bl = b.len < 0 ? 0 : b.len;
@@ -83,32 +80,6 @@ static {len_c_ty} ar_str_eq(ArStr a, ArStr b) {{
     if (a.len <= 0) return 1;
     if (!a.ptr || !b.ptr) return a.ptr == b.ptr ? 1 : 0;
     return memcmp(a.ptr, b.ptr, (size_t)a.len) == 0 ? 1 : 0;
-}}
-static {len_c_ty} ar_str_starts_with(ArStr s, ArStr p) {{
-    if (p.len <= 0) return 1;
-    if (s.len < p.len || !s.ptr || !p.ptr) return 0;
-    return memcmp(s.ptr, p.ptr, (size_t)p.len) == 0 ? 1 : 0;
-}}
-static {len_c_ty} ar_str_ends_with(ArStr s, ArStr p) {{
-    if (p.len <= 0) return 1;
-    if (s.len < p.len || !s.ptr || !p.ptr) return 0;
-    return memcmp(s.ptr + (s.len - p.len), p.ptr, (size_t)p.len) == 0 ? 1 : 0;
-}}
-static {len_c_ty} ar_str_contains(ArStr s, ArStr needle) {{
-    if (needle.len <= 0) return 1;
-    if (s.len < needle.len || !s.ptr || !needle.ptr) return 0;
-    for (int64_t i = 0; i + needle.len <= s.len; i++) {{
-        if (memcmp(s.ptr + i, needle.ptr, (size_t)needle.len) == 0) return 1;
-    }}
-    return 0;
-}}
-static {len_c_ty} ar_str_find(ArStr s, ArStr needle) {{
-    if (needle.len <= 0) return 0;
-    if (s.len < needle.len || !s.ptr || !needle.ptr) return -1;
-    for (int64_t i = 0; i + needle.len <= s.len; i++) {{
-        if (memcmp(s.ptr + i, needle.ptr, (size_t)needle.len) == 0) return i;
-    }}
-    return -1;
 }}
 static ArStr ar_str_split_last(ArStr s, ArStr sep) {{
     if (s.len <= 0 || !s.ptr) return ar_str_pack((const uint8_t*)"", 0);

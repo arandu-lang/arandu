@@ -457,6 +457,20 @@ impl TargetAbiClassifier {
                     });
                 }
             },
+            ArType::Ref(inner) | ArType::RefMut(inner)
+                if interner.with_type(*inner, |inner| matches!(inner, ArType::Slice(_))) =>
+            {
+                leaves.push(LeafField {
+                    offset: current_offset,
+                    size: pointer_width,
+                    kind: LeafKind::Integer,
+                });
+                leaves.push(LeafField {
+                    offset: current_offset + pointer_width,
+                    size: pointer_width,
+                    kind: LeafKind::Integer,
+                });
+            }
             ArType::Ptr(_)
             | ArType::Ref(_)
             | ArType::RefMut(_)

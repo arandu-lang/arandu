@@ -249,6 +249,7 @@ fn rvalue_holder_paths(rhs: &AmirRvalue, loan: &Loan) -> BTreeSet<HolderPath> {
         AmirRvalue::SliceSubslice { slice, .. } | AmirRvalue::SliceData(slice) => {
             operand_holder_paths(*slice, loan)
         }
+        AmirRvalue::StrBytes { source } => operand_holder_paths(*source, loan),
         AmirRvalue::Load(place) => {
             let input = loan
                 .holder_local_paths

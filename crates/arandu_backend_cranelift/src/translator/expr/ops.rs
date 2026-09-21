@@ -79,6 +79,13 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         expected_ty: Option<Type>,
     ) -> Value {
         if matches!(op, UnaryOp::Deref) {
+            let operand_ty = self.get_operand_ar_type(operand);
+            if operand_ty.is_borrowed_slice_abi(&self.type_info.type_interner) {
+                // A reference to a dynamically-sized slice is already the
+                // `{ data, len }` view. Dereferencing changes the static
+                // permission, not the runtime representation.
+                return self.translate_operand(operand, Some(self.ptr_type));
+            }
             let ptr = self.translate_operand(operand, Some(self.ptr_type));
             let load_ty = expected_ty.unwrap_or(self.ptr_type);
             return self.builder.ins().load(

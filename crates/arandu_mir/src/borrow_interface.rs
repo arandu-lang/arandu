@@ -345,6 +345,7 @@ fn transfer_statement(
                 AmirRvalue::SliceSubslice { slice, .. } | AmirRvalue::SliceData(slice) => {
                     operand_origins(*slice, temps)
                 }
+                AmirRvalue::StrBytes { source } => operand_origins(*source, temps),
                 _ => Origins::new(),
             };
             if let Some(target) = temps.get_mut(lhs.as_usize()) {

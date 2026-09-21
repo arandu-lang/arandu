@@ -409,8 +409,16 @@ impl<'a, 'b, M: Module> FunctionTranslator<'a, 'b, M> {
             if block_id.as_usize() > 0 {
                 for param in self.current_func.block_params(block.params) {
                     let pty = self.resolve_ty(param.ty);
-                    for &clif_ty in &clif_types(&pty, self.ptr_type) {
-                        self.builder.append_block_param(clif_block, clif_ty);
+                    match self.fat_operand_kind(&pty) {
+                        operand::FatOperandKind::Str | operand::FatOperandKind::Slice => {
+                            self.builder.append_block_param(clif_block, self.ptr_type);
+                            self.builder.append_block_param(clif_block, self.ptr_type);
+                        }
+                        operand::FatOperandKind::None => {
+                            for &clif_ty in &clif_types(&pty, self.ptr_type) {
+                                self.builder.append_block_param(clif_block, clif_ty);
+                            }
+                        }
                     }
                 }
             }
@@ -562,7 +570,10 @@ impl<'a, 'b, M: Module> AmirVisitor for FunctionTranslator<'a, 'b, M> {
                         self.builder.def_var(var_ptr, ptr_val);
                         self.builder.def_var(var_len, len_val);
                     }
-                } else if matches!(&param_ty, ArType::Slice(_)) {
+                } else if matches!(
+                    self.fat_operand_kind(&param_ty),
+                    operand::FatOperandKind::Slice
+                ) {
                     let data = clif_params[clif_slot_idx];
                     let len = clif_params[clif_slot_idx + 1];
                     clif_slot_idx += 2;
@@ -639,7 +650,7 @@ impl<'a, 'b, M: Module> AmirVisitor for FunctionTranslator<'a, 'b, M> {
                         self.builder.def_var(var_ptr, ptr_val);
                         self.builder.def_var(var_len, len_val);
                     }
-                } else if matches!(pty, ArType::Slice(_)) {
+                } else if matches!(self.fat_operand_kind(&pty), operand::FatOperandKind::Slice) {
                     let data = clif_params[clif_slot_idx];
                     let len = clif_params[clif_slot_idx + 1];
                     clif_slot_idx += 2;

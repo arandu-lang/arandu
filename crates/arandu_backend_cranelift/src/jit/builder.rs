@@ -126,24 +126,10 @@ pub(crate) fn create_jit_builder() -> Result<JITBuilder, Diagnostic> {
         "ar_path_file_name",
         crate::rt_runtime::ar_path_file_name as *const u8,
     );
-    builder.symbol("ar_str_len", crate::rt_runtime::ar_str_len as *const u8);
     builder.symbol(
         "ar_str_concat",
         crate::rt_runtime::ar_str_concat as *const u8,
     );
-    builder.symbol(
-        "ar_str_starts_with",
-        crate::rt_runtime::ar_str_starts_with as *const u8,
-    );
-    builder.symbol(
-        "ar_str_ends_with",
-        crate::rt_runtime::ar_str_ends_with as *const u8,
-    );
-    builder.symbol(
-        "ar_str_contains",
-        crate::rt_runtime::ar_str_contains as *const u8,
-    );
-    builder.symbol("ar_str_find", crate::rt_runtime::ar_str_find as *const u8);
     builder.symbol(
         "ar_str_split_last",
         crate::rt_runtime::ar_str_split_last as *const u8,

@@ -894,7 +894,7 @@ fn stage6_structured_parallel_fold_deterministic_scaling() {
         r#"module parallel_det
 
 import std.alloc.vec as vec
-import std.core.parallel as parallel
+import std.parallel as parallel
 
 struct Sum { value: int }
 struct Item { val: int }
@@ -1198,7 +1198,7 @@ fn stage6_structured_parallel_fold_empty_collection() {
         r#"module parallel_empty
 
 import std.alloc.vec as vec
-import std.core.parallel as parallel
+import std.parallel as parallel
 
 struct Sum { value: int }
 struct Item { val: int }
@@ -1258,7 +1258,7 @@ fn stage6_structured_parallel_fold_single_element() {
         r#"module parallel_single
 
 import std.alloc.vec as vec
-import std.core.parallel as parallel
+import std.parallel as parallel
 
 struct Sum { value: int }
 struct Item { val: int }

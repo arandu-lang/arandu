@@ -9,6 +9,37 @@ mod common;
 
 use common::{compile_source, compile_source_component};
 
+#[test]
+fn string_bytes_intrinsic_loads_borrowed_descriptor() {
+    let bytes = compile_source(
+        r#"
+module std.core.str_bytes_wasm
+
+extern "arandu-intrinsic" {
+    func strBytes(source: str): []u8
+}
+
+public func main(): i32 {
+    let source = "abcd"
+    let bytes = unsafe { strBytes(source) }
+    if bytes[0] != (97 as u8) || bytes[3] != (100 as u8) {
+        return 1
+    }
+    return 0
+}
+"#,
+    );
+
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &bytes).expect("module must instantiate");
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).expect("module must link");
+    let main = instance
+        .get_typed_func::<(), i32>(&mut store, "main")
+        .expect("main must be exported");
+    assert_eq!(main.call(&mut store, ()).expect("main must run"), 0);
+}
+
 /// `cabi_realloc(0, 0, 1, 0)` must return 0 (zero-size request → no-op).
 #[test]
 fn cabi_realloc_returns_zero_for_zero_size() {

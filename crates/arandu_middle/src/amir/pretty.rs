@@ -329,6 +329,12 @@ impl AmirRvalue {
                     len.to_pretty_string(symbols, pool)
                 ));
             }
+            AmirRvalue::StrBytes { source } => {
+                out.push_str(&format!(
+                    "str_bytes({})",
+                    source.to_pretty_string(symbols, pool)
+                ));
+            }
             AmirRvalue::StrView { owner } => {
                 out.push_str(&format!(
                     "str_view({})",

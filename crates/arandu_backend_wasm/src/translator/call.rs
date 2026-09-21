@@ -282,6 +282,16 @@ impl<'a> FuncTranslator<'a> {
                 }
                 true
             }
+            IntrinsicKind::StrBytes => {
+                if let Some(arg) = args.first() {
+                    let str_ty = self.operand_arity_ty(arg);
+                    if let Some(temp) = lhs {
+                        let local = self.temp_local.get(&temp).copied().unwrap_or(0);
+                        self.emit_operand_to_local(arg, str_ty, local);
+                    }
+                }
+                true
+            }
             IntrinsicKind::StrView => {
                 if let Some(arg) = args.first() {
                     let str_ty = self.operand_arity_ty(arg);

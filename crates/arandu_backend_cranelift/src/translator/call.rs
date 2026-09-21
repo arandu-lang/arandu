@@ -145,7 +145,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                         self.builder.def_var(var_len, res1);
                     }
                 }
-            } else if matches!(&lhs_ty, ArType::Slice(_)) {
+            } else if matches!(self.fat_operand_kind(&lhs_ty), FatOperandKind::Slice) {
                 let results = self.builder.inst_results(call_inst);
                 if results.len() >= 2 {
                     let descriptor = self.materialize_slice_descriptor(results[0], results[1]);

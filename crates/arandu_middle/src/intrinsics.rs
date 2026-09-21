@@ -25,7 +25,9 @@ pub enum IntrinsicKind {
     SliceLen,
     /// Extract data pointer of slice (`sliceData` / `slicePtr`).
     SliceData,
-    /// View string as byte slice / view (`strView`).
+    /// Borrow UTF-8 storage as a byte slice (`strBytes`).
+    StrBytes,
+    /// View an owned string prefix as a borrowed string (`strView`).
     StrView,
 }
 
@@ -48,6 +50,7 @@ impl IntrinsicKind {
             s if s.starts_with("sliceSubslice") => Some(Self::SliceSubslice),
             s if s.starts_with("sliceLen") => Some(Self::SliceLen),
             s if s.starts_with("sliceData") || s.starts_with("slicePtr") => Some(Self::SliceData),
+            s if s.starts_with("strBytes") => Some(Self::StrBytes),
             s if s.starts_with("strView") => Some(Self::StrView),
             _ => None,
         }

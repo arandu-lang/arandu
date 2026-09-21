@@ -113,7 +113,10 @@ Cranelift uses host `usize` (typically I64 on 64-bit hosts) and is **not** a 32-
 
 ### Slice Layout (`[]T`)
 
-Slices (`[]T`) use the same layout structure:
+Slices (`[]T`) use the same layout structure. Borrowing the dynamically-sized
+sequence does not add an indirection: `ref []T` and `mut ref []T` retain the
+same two-word representation, while shared/exclusive access is enforced by
+type checking and OSSA before code generation.
 
 ```rust
 struct SliceLayout {

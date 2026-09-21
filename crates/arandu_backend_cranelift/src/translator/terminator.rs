@@ -30,7 +30,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                         let p = self.poison_i32();
                         self.builder.ins().return_(&[p, p]);
                     }
-                } else if matches!(&return_ty, ArType::Slice(_)) {
+                } else if matches!(self.fat_operand_kind(&return_ty), FatOperandKind::Slice) {
                     let ret_temp = arandu_semantics::amir::TempId::from_usize(0);
                     let operand = arandu_semantics::amir::AmirOperand::Copy(ret_temp);
                     let (data, len) = self.translate_slice_operand(&operand);

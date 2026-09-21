@@ -300,6 +300,9 @@ impl<'a> WasmModuleBuilder<'a> {
             let Some(sym) = self.symbols.try_get(sym_id) else {
                 continue;
             };
+            if arandu_middle::IntrinsicKind::from_name(&sym.name).is_some() {
+                continue;
+            }
             let (module, field) = match style {
                 ExportStyle::Component(_) => {
                     if let Some((m, f)) = sym.name.split_once('.') {
@@ -325,9 +328,13 @@ impl<'a> WasmModuleBuilder<'a> {
 
             let mut wasm_params = Vec::new();
             for p in params {
-                wasm_params.extend(crate::types::ar_type_valtypes(p, self.layout));
+                wasm_params.extend(crate::types::ar_type_valtypes(
+                    p,
+                    self.interner,
+                    self.layout,
+                ));
             }
-            let wasm_results = crate::types::ar_type_valtypes(ret, self.layout);
+            let wasm_results = crate::types::ar_type_valtypes(ret, self.interner, self.layout);
 
             import_infos.push(WasmImportInfo {
                 symbol: sym_id,
@@ -363,8 +370,12 @@ impl<'a> WasmModuleBuilder<'a> {
                 arandu_middle::types::ArType::Primitive(arandu_middle::types::Primitive::Str);
             let void_ty = arandu_middle::types::ArType::Void;
             let mut wasm_params = Vec::new();
-            wasm_params.extend(crate::types::ar_type_valtypes(&str_ty, self.layout));
-            let wasm_results = crate::types::ar_type_valtypes(&void_ty, self.layout);
+            wasm_params.extend(crate::types::ar_type_valtypes(
+                &str_ty,
+                self.interner,
+                self.layout,
+            ));
+            let wasm_results = crate::types::ar_type_valtypes(&void_ty, self.interner, self.layout);
 
             import_infos.push(WasmImportInfo {
                 symbol: sym_id,

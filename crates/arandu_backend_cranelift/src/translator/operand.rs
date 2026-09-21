@@ -19,7 +19,12 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
     pub(super) fn fat_operand_kind(&self, ty: &ArType) -> FatOperandKind {
         match ty {
             ArType::Primitive(Primitive::Str) => FatOperandKind::Str,
-            ArType::Slice(_) => FatOperandKind::Slice,
+            _ if ty
+                .slice_abi_element(&self.type_info.type_interner)
+                .is_some() =>
+            {
+                FatOperandKind::Slice
+            }
             _ => FatOperandKind::None,
         }
     }

@@ -163,7 +163,7 @@ e interoperabilidade nativa com o padrão Apache Arrow.
 
 | Marco | Estado | Corpo funcional e critério de saída |
 | --- | --- | --- |
-| SCI.1 — Arandu Math v1 | `completed` | `Array<T, N, A>`, `ArrayView<T, N>` e `ArrayViewMut<T, N>` com strides e layouts row-major/col-major/strided sem cópia. Separação explícita entre `StaticMatrix<T, M, N>` (100% stack) e `Matrix<T, A>` (heap com alocador explícito). APIs com destino explícito (`math.addInto`, `math.mulAddInto`) com contrato estrito verificado em teste (`allocations = 0`). Gerenciamento de scratch via `ScratchArena` reutilizável (`linalg.gemmScratch`). Kernels elementwise com autovetorização SIMD segura baseada em não-aliasing provado por `mut ref`. Microkernels nativos bloqueados para GEMM (GotoBLAS) e conector FFI modular para BLAS/MKL/Accelerate via descritor de contexto (sem estado global mutável). |
+| SCI.1 — Arandu Math v1 | `partial` | A árvore contém a fundação bidimensional atual (`ArrayView`/`ArrayViewMut`, `Matrix`, `StaticMatrix`, operações com destino e `ScratchArena`) e kernels escalares de referência. Ainda faltam o `Array<T, N, A>` N-dimensional, prova instrumentada de zero alocação, SIMD/fusão, GEMM bloqueado e conector BLAS. Esses itens permanecem gate de SCI.1; SCI.2 não deve começar sobre contratos provisórios. |
 | SCI.2 — Arandu Data v1 | `planned` | Layout colunar compatível com Apache Arrow (`RecordBatch`, validity bitmaps de 1 bit por nulo, buffers contíguos de offsets para strings UTF-8). SoA explícito (`StructArray<T>` vs `Array<T>`). Interoperabilidade zero-copy bidirecional via Arrow C Data Interface (`ArrowArray`, `ArrowSchema`) com garantia de tipos para saneamento de buffers uninit antes da exportação. Leitores e escritores em streaming para CSV, Arrow IPC e Parquet. |
 | SCI.3 — Arandu Compute | `planned` | Motor de consultas preguiçosas (*lazy query engine*). Representação de planos lógicos desacoplada com otimizador puro em pipeline: predicate pushdown, projection pushdown, slice pushdown e simplificação de expressões. Motor de execução física colunar em streaming chunked com controle estrito de RSS para datasets maiores que a memória RAM. |
 | SCI.4 — Arandu Science | `planned` | Matrizes esparsas com ciclo de vida segregado: `CooBuilder` para construção dinâmica mutável e `CsrMatrix`/`CscMatrix`/`BsrMatrix` para computação imutável de alto desempenho. Algoritmos de grafos e redes complexas implementados via álgebra linear esparsa e semirings (padrão GraphBLAS: SpMV, SpGEMM). Transformada rápida de Fourier baseada no modelo de planos reutilizáveis (FFTW: `Plan.estimate` vs `Plan.measure`). Geradores de números pseudo-aleatórios counter-based (Philox) e PCG desacoplados de distribuições, sem estado global mutável e compatíveis com paralelismo determinístico. Solvers para EDOs e processamento digital de sinais. |
@@ -403,12 +403,14 @@ Fase 3 — OSSA Avançado, Semântica e OS Runtime (v0.3) · [PARCIAL; vários m
                  · [ ] evidência nativa de pointer width 32 quando um SDK 32-bit
                    for oficialmente publicado; layout 32/64 já possui regressão
     ├─ [x] SL_S-Core.1  Fundação freestanding (`std.core` / [RFC 0017](./rfcs/0017-lean-freestanding-core-architecture.md)):
-    │                   Zero OS, Zero Heap Global, Zero Threads; fat pointers `[]T` e `str` universais
+    │                   Zero OS, Zero Heap Global, Zero Threads; `str` usa somente intrínseco do compilador e
+    │                   o paralelismo com runtime/alocação reside em `std.parallel`, fora de `std.core`
     ├─ [ ] SL_S-Core.2  Anti-Panic Bloat: emissão de traps nativos de 1 instrução (`UD2`/`BKPT`/`EBREAK`)
     │                   com `TrapCode` de 32 bits, sem metadados de string ou vtables de formatação em produção
-    ├─ [ ] SL_S-Core.3  Primitivas para hardware restrito: matemática de ponto fixo (`std.core.math.fixed` Q16.16)
-    │                   para chips sem FPU e intrínsecos de hardware (`clz`, `ctz`, `popcount`, `bswap`)
-    └─ [ ] SL_S-Core.4  I/O abstrato em memória: interfaces `Reader`/`Writer`/`Seeker` sobre fatias contíguas (`std.core.io`)
+    ├─ [→] SL_S-Core.3  Primitivas para hardware restrito: `std.core.fixed.Q16_16` usa armazenamento `i32`
+    │                   e intermediários `i64`; Q8.8/Q32.32, operações checked e intrínsecos (`clz`, `ctz`, `popcount`, `bswap`) permanecem
+    └─ [x] SL_S-Core.4  I/O abstrato em memória: interfaces `Reader`/`Writer`/`Seeker` e implementações
+                        `SliceReader`/`SliceWriter` sobre buffers fornecidos pelo chamador (`std.core.io`)
 [x] SL_S-Host   APIs de sistema: host path/rt helpers, filesystem e processos;
                  depende de A2 e de contratos nativos por plataforma
     ├─ [x] SL_S-Host.1  Primitivas básicas de leitura e diretório (`readToString`, `DirListing` em `std.fs`, runtime C/Cranelift)
@@ -424,7 +426,7 @@ Fase 3 — OSSA Avançado, Semântica e OS Runtime (v0.3) · [PARCIAL; vários m
 [x] SL_P   [Processamento paralelo estruturado](./arandu-structured-parallelism-v0.1.md):
            corpo funcional integrado; `WorkerPool` bounded e reutilizável no runtime Rust,
            WorkThunk ABI `(ptr[C], ptr[R]) -> i32`, operação pública `parallelFold`
-           em `std.core.parallel`, inlining automático no AMIR (`arandu_mir::inlining`),
+           em `std.parallel`, inlining automático no AMIR (`arandu_mir::inlining`),
            chunks fixos independentes da contagem de workers, seed/identidade separadas,
             slabs alinhados e integração Pypor acima do cutoff. O backend C usa
             worker pool nativo reutilizável com fila bounded e self-help. Promoção a Gold depende de:
@@ -458,7 +460,9 @@ Fase 5 — Otimização Global, CodeGen & Ecossistema (v0.4+) · [NÃO INICIADA]
 [ ] GEN    Adaptive Monomorphization (Witness tables para cold paths vs Lazy Monomorphization para loops)
 [ ] ABI    ABI & Layout Stability (repr(C) garantido, fat pointers, stable calling conventions)
    ├─ [x] ABI.1   Classificador de ABI System V AMD64 / Calling Conventions (BC.5): classificação de agregados (INTEGER, SSE, MEMORY) para passagem/retorno de structs <= 16 bytes em registradores no Cranelift/LLVM.
-   └─ [x] DBG     Metadados de Depuração DWARF v5: `build --debug` emite `.debug_info`, `.debug_line` e `.debug_loclists`, mapeia spans e variáveis escalares tipadas da AMIR, preserva argumentos formais e permite breakpoints/backtraces/inspeção em consumidores DWARF (validado no GDB; LLDB e VS Code usam o mesmo contrato padrão).
+   └─ [→] DBG     Metadados DWARF v5: `build --debug` emite `.debug_info`, `.debug_line` e `.debug_loclists`,
+                  com spans, argumentos e variáveis escalares validados no GDB. Agregados completos, matriz LLDB,
+                  integração VS Code e stack traces de panic ainda são gates pendentes da Fase 3.
 [ ] C_PRETTY Emissor C Idiomático e Estruturado ([RFC 0018](./rfcs/0018-pretty-idiomatic-c-codegen.md)):
    ├─ [ ] C_PRETTY.1  Reestruturação de Controle de Fluxo: algoritmo de dominância/Relooper convertendo o grafo de BasicBlocks em `if`/`else`, `while`, `for` e `switch`, eliminando >95% dos `goto bbX;`
    ├─ [ ] C_PRETTY.2  Preservação de Identificadores Reais: mapeamento de `SymbolTable` para restaurar nomes de variáveis originais e escopos `{ ... }` locais
@@ -470,11 +474,14 @@ Fase 5 — Otimização Global, CodeGen & Ecossistema (v0.4+) · [NÃO INICIADA]
    ├─ [ ] CACHE.2  Target Local Zero-Bloat: diretório `target/` do projeto estritamente restrito a binários e bibliotecas finais (`bin/`, `lib/`), banindo objetos intermediários (`.o`), `.amir` e sessões incrementais
    ├─ [ ] CACHE.3  Publicação por Cópia em Gravação (CoW/Reflinks): instanciação instantânea no `target/` via `ioctl(FICLONE)`, `clonefile` ou hardlink com zero consumo adicional de blocos físicos
    ├─ [ ] CACHE.4  Coletor de Lixo LRU Automático: política de teto de disco rígido (default: 2,0 GiB) com expurgo assíncrono em background sem necessidade de ferramentas externas ou intervenção manual
-   └─ [x] CACHE.5  Serialização Estável & Reproducível: envelopes binários v1 atômicos de IR/metadados (`.air`, `.amir`, `.ameta`), namespaces tipados, comprimentos explícitos e hashes BLAKE3 de entrada/payload; corrupção falha fechada e invalida o early-cutoff entre sessões (corte quente medido em 6–14,5 ms no fixture nativo de referência)
+   └─ [→] CACHE.5  Envelope binário v1 atômico para payloads canônicos `.air`, `.amir` e `.ameta`, com namespace,
+                   comprimentos e hashes BLAKE3 verificados fail-closed. Os payloads atuais são dumps textuais write-only:
+                   hidratação direta de AST/AMIR, compatibilidade evolutiva e cutoff real por IR desserializada permanecem pendentes.
 * Mover json e xml para arandu_ext::serialization
 [ ] EXT    Ecosystem Extensions: arandu_ext (ecs, game loop, renderer, audio, media, physics, gui — Out-of-Tree)
 [ ] SCI    Scientific & Data Stack (Out-of-Tree / Crates Externas): arandu_math, arandu_data, arandu_science (RFC 0012)
-   ├─ [x] SCI.1  Arandu Math v1 (Array/ArrayView strided sem cópia, StaticMatrix stack, *_into, ScratchArena, GEMM/BLAS)
+   ├─ [→] SCI.1  Fundação matemática parcial (views 2D, Matrix/StaticMatrix, *_into e ScratchArena);
+   │              Array N-dimensional, prova zero-allocation, SIMD, GEMM bloqueado e BLAS permanecem
    ├─ [ ] SCI.2  Arandu Data v1 (Layout colunar Arrow, RecordBatch, validity bitmaps, Arrow C Data Interface zero-copy)
    ├─ [ ] SCI.3  Arandu Compute (Motor de queries lazy, otimizador com pushdowns, executor streaming chunked)
    └─ [ ] SCI.4  Arandu Science (Esparsos COO/CSR/CSC, GraphBLAS semirings, FFTW plans, Philox RNG, ODE solvers)

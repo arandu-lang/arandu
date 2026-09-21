@@ -506,6 +506,9 @@ impl LowerCtx<'_> {
                 *start = Self::resolve_operand(redirected_temps, *start);
                 *len = Self::resolve_operand(redirected_temps, *len);
             }
+            AmirRvalue::StrBytes { source } => {
+                *source = Self::resolve_operand(redirected_temps, *source);
+            }
             AmirRvalue::StrView { owner } => {
                 *owner = Self::resolve_operand(redirected_temps, *owner);
             }

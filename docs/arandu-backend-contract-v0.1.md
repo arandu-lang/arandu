@@ -86,17 +86,11 @@ does not override language-phase status or promise a stable external ABI.
 
 ### C code quality and structuring model (RFC 0018)
 
-The C backend supports two distinct emission modes:
-1. `--c-style=pretty` (Canonical target): Restructures the AMIR control flow graph
-   into high-level nested C constructs (`if`/`else`, `while`, `for`, `switch`),
-   preserves original source identifiers from `SymbolTable`, and inlines single-use
-   SSA temporaries to generate readable, MISRA-C-friendly (Rule 15.1) code.
-2. `--c-style=raw` (Compiler debug target): Flat basic block emission with
-   explicit labels (`bb0:`, `bb1:`) and `goto` jumps, used for compiler internal
-   verification and AMIR parity testing against Cranelift.
-
-Both modes are semantically equivalent and subject to the same `validate_amir_program`
-invariants.
+The implemented C backend currently emits the flat, canonical compiler form:
+explicit basic-block labels and `goto` edges used by AMIR parity tests against
+Cranelift. The proposed `--c-style=pretty` and explicit `--c-style=raw` CLI modes
+belong to RFC 0018 and are not implemented yet. Any future pretty emitter remains
+subject to the same `validate_amir_program` invariants and parity gates.
 
 ### What is required for real cross compilation
 

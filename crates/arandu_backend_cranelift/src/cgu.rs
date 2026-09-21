@@ -661,6 +661,10 @@ impl HashContext<'_> {
                 self.hash.tag(29);
                 self.operand(operand);
             }
+            AmirRvalue::StrBytes { source } => {
+                self.hash.tag(31);
+                self.operand(source);
+            }
             AmirRvalue::StrView { owner } => {
                 self.hash.tag(14);
                 self.operand(owner);

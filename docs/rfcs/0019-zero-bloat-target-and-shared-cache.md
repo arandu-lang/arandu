@@ -26,6 +26,18 @@ A proposta substitui a herança do modelo isolado do Cargo por uma arquitetura e
 4. **Política de Depuração Leve (*Line-Tables-First & Split DWARF*)**: Em compilações de desenvolvimento (`debug`), o compilador emite apenas tabelas de linhas de execução para rastreamento de pilha (*stack traces*), eliminando 75% a 85% do inchaço tradicional de metadados DWARF. Metadados completos de depuração são emitidos em arquivos desacoplados (*Split DWARF* `.dwo`/`.dwp`).
 5. **Publicação Instantânea Zero-Copy via Reflinks (Copy-on-Write)**: A cópia do binário final do CAS para o `target/` local utiliza primitivas de clone de blocos de sistemas de arquivos modernos (`ioctl(FICLONE)` no Linux, `clonefile` no macOS APFS e `FSCTL_DUPLICATE_EXTENTS_TO_FILE` no Windows ReFS), alcançando publicação em sub-milissegundo com **zero bytes adicionais de espaço físico em disco**.
 
+### 1.1 Estado da implementação (2026-09-20)
+
+Somente a fundação de CACHE.5 está implementada: envelopes locais v1 para
+`.air`, `.amir` e `.ameta`, publicados atomicamente e validados por tipo,
+comprimento e BLAKE3. Os payloads atuais são dumps textuais canônicos usados
+para auditoria/fingerprint; o compilador ainda não hidrata AST ou AMIR a partir
+deles. CAS global, catálogo/LRU, locks multiprocesso, reflinks, target
+zero-bloat, line-tables-first e Split DWARF continuam propostas desta RFC. O
+`--debug` atual emite `.debug_info`, `.debug_line` e `.debug_loclists` no objeto
+normal e foi validado no GDB; não há medição que sustente ainda a redução de
+75–85% citada como meta.
+
 ---
 
 ## 2. Motivação (Motivation)
@@ -41,7 +53,7 @@ No ecossistema Rust, o Cargo implementou um modelo de isolamento absoluto por wo
 
 ### 2.2 O Erro Herdados nos Primeiros Rascunhos do Arandu
 
-No documento preliminar [`docs/arandu-project-package-lifecycle-gold-v0.1.md`](file:///home/bruno/Documentos/Desenvolvimento/Arandu-Lang/docs/arandu-project-package-lifecycle-gold-v0.1.md#L180-L185), o Arandu havia herdado provisoriamente o layout de pastas do Cargo:
+No documento preliminar [`docs/arandu-project-package-lifecycle-gold-v0.1.md`](../arandu-project-package-lifecycle-gold-v0.1.md), o Arandu havia herdado provisoriamente o layout de pastas do Cargo:
 ```text
 target/<profile>/<target-triple>/bin/
 target/<profile>/<target-triple>/deps/          <-- Lixo intermediário duplicado por projeto
@@ -130,13 +142,14 @@ Conforme introduzido em `crates/arandu_query/src/artifact_cache.rs`, todo artefa
 │ Offset / Tamanho        │ Conteúdo                                       │
 ├─────────────────────────┼────────────────────────────────────────────────┤
 │ 0..8 (8 bytes)          │ Magic Header: *b"ARANCAS\0"                    │
-│ 8..10 (2 bytes)         │ Schema Version: ARTIFACT_SCHEMA_VERSION (u16)  │
-│ 10..11 (1 byte)         │ Artifact Kind: Air=1, Amir=2, Ameta=3, Cgu=4   │
-│ 11..12 (1 byte)         │ Target Pointer Width: 2 (16b), 4 (32b), 8 (64b)│
-│ 12..44 (32 bytes)       │ BLAKE3 Digest do Conteúdo Útil                 │
-│ 44..52 (8 bytes)        │ Timestamp de Criação / mtime                   │
-│ 52..88 (36 bytes)       │ Metadados de Toolchain & TargetInfo Flags      │
-│ 88..EOF                 │ Payload do Artefato (Bytes da CGU / Objeto .o) │
+│ 8..9 (1 byte)           │ Artifact Kind: Air=1, Amir=2, Ameta=3          │
+│ 9..10 (1 byte)          │ Flags reservadas (zero no schema v1)           │
+│ 10..12 (2 bytes)        │ Schema Version (u16 little-endian)             │
+│ 12..16 (4 bytes)        │ Tamanho do header (u32 little-endian)          │
+│ 16..24 (8 bytes)        │ Tamanho do payload (u64 little-endian)         │
+│ 24..56 (32 bytes)       │ BLAKE3 das entradas semânticas                 │
+│ 56..88 (32 bytes)       │ BLAKE3 do payload                              │
+│ 88..EOF                 │ Payload canônico                               │
 └─────────────────────────┴────────────────────────────────────────────────┘
 ```
 
@@ -168,12 +181,12 @@ Algoritmo: EnforceCacheBudget(max_budget_bytes)
 
 ### 4.4 Política de Depuração: *Line-Tables-First & Split DWARF*
 
-Para resolver o segundo maior ofensor de espaço em disco (onde 85% dos arquivos de objeto são tabelas DWARF), o gerador de código Cranelift adota:
+Esta é a política proposta para uma etapa posterior; o gerador atual ainda não a adota:
 
 1. **Perfil `debug` (Desenvolvimento Padrão)**:
    - Emite apenas seções `.debug_line` e `.eh_frame`/`.pdata`.
    - Permite que qualquer pânico, assert ou breakpoint em depurador identifique com precisão cirúrgica o arquivo fonte e o número de linha.
-   - **Economia comprovada: 75% a 85% de redução de tamanho de arquivo**.
+   - **Meta a medir: 75% a 85% de redução de tamanho de arquivo**.
 2. **Perfil `debug-full` (Depuração Aprofundada com Variáveis)**:
    - Emite metadados DWARF completos contendo tipos e escopos de variáveis.
    - Em plataformas ELF (Linux), utiliza **Split DWARF (`-gsplit-dwarf`)**: os dados DWARF volumosos são emitidos em arquivos `.dwo` separados, impedindo que o linker de sistema perca tempo copiando megabytes de símbolos para dentro do executável.

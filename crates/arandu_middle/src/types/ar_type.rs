@@ -94,6 +94,35 @@ pub enum ArType {
 }
 
 impl ArType {
+    /// Returns the element type when this value uses the slice-view ABI.
+    ///
+    /// A shared or exclusive borrow of a slice denotes a borrow of the
+    /// dynamically-sized sequence, not a pointer to a `{ data, len }`
+    /// descriptor. Consequently `[]T`, `ref []T`, and `mut ref []T` all use
+    /// the same two-word ABI; ownership and exclusivity remain compile-time
+    /// facts.
+    #[must_use]
+    pub fn slice_abi_element(&self, interner: &TypeInterner) -> Option<TypeId> {
+        match self {
+            Self::Slice(element) => Some(*element),
+            Self::Ref(inner) | Self::RefMut(inner) => interner.with_type(*inner, |inner| {
+                if let Self::Slice(element) = inner {
+                    Some(*element)
+                } else {
+                    None
+                }
+            }),
+            _ => None,
+        }
+    }
+
+    /// Whether this is specifically a borrowed slice view (`ref []T` or
+    /// `mut ref []T`), excluding an ordinary `[]T` value.
+    #[must_use]
+    pub fn is_borrowed_slice_abi(&self, interner: &TypeInterner) -> bool {
+        matches!(self, Self::Ref(_) | Self::RefMut(_)) && self.slice_abi_element(interner).is_some()
+    }
+
     /// Construct a `Named` type, pushing generic args into the interner's pool.
     pub fn named(sym: SymbolId, args: &[TypeId], interner: &TypeInterner) -> Self {
         let range = interner.push_type_args(args);

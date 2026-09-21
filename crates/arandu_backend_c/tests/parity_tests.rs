@@ -1091,7 +1091,7 @@ fn c_emit_arstr_layout_32bit() {
     assert!(c.contains(
         "typedef struct { uint8_t *data; uint32_t len; uint32_t capacity; } ArOwnedStringRuntime;"
     ));
-    assert!(c.contains("static int32_t ar_str_len(ArStr s)"));
+    assert!(!c.contains("ar_str_len"));
 }
 
 #[test]
@@ -2050,6 +2050,71 @@ func main(): int {
     assert_eq!(c_res, 0, "C backend failed safe fmt test");
     let clif_res = execute_cranelift(&amir, &tc);
     assert_eq!(clif_res, 0, "Cranelift backend failed safe fmt test");
+}
+
+#[test]
+fn parity_string_bytes_intrinsic_preserves_fat_pointer_words() {
+    let src = r#"
+module std.core.str_bytes_parity
+
+extern "arandu-intrinsic" {
+    func strBytes(source: str): []u8
+}
+
+func main(): int {
+    let source = "abcd"
+    let bytes = unsafe { strBytes(source) }
+    if bytes[0] != (97 as u8) || bytes[1] != (98 as u8) || bytes[3] != (100 as u8) {
+        return 1
+    }
+    return 0
+}
+"#;
+    let (amir, tc) = compile_src(src);
+    let c_res = execute_c("str_bytes_parity", &amir, &tc);
+    assert_eq!(c_res, 0, "C backend failed strBytes parity test");
+    let clif_res = execute_cranelift(&amir, &tc);
+    assert_eq!(clif_res, 0, "Cranelift backend failed strBytes parity test");
+}
+
+#[test]
+fn parity_mut_ref_slice_preserves_data_and_length_words() {
+    let src = r#"
+module std.core.mut_slice_parity
+
+extern "arandu-intrinsic" {
+    func sliceFromRaw(owner: ptr[u8], data: ptr[u8], len: uint): []u8
+    func sliceLen<T>(source: []T): uint
+}
+
+func fill(buf: mut ref []u8): uint {
+    let len = unsafe { sliceLen<u8>(*buf) }
+    if len != 4 { return 99 }
+    buf[1] = 42 as u8
+    return len
+}
+
+func observedLen(buf: ref []u8): uint {
+    return unsafe { sliceLen<u8>(*buf) }
+}
+
+func main(): int {
+    let raw = alloc(4) as ptr[u8]
+    let mut bytes = unsafe { sliceFromRaw(raw, raw, 4 as uint) }
+    let len = fill(mut ref bytes)
+    if len != 4 || observedLen(ref bytes) != 4 || bytes[1] != (42 as u8) {
+        unsafe { free(raw) }
+        return 1
+    }
+    unsafe { free(raw) }
+    return 0
+}
+"#;
+    let (amir, tc) = compile_src(src);
+    let c_res = execute_c("mut_ref_slice_parity", &amir, &tc);
+    assert_eq!(c_res, 0, "C backend lost a mut-ref slice ABI word");
+    let clif_res = execute_cranelift(&amir, &tc);
+    assert_eq!(clif_res, 0, "Cranelift lost a mut-ref slice ABI word");
 }
 
 #[test]

@@ -22,6 +22,18 @@ Em alinhamento com a filosofia de compilador enxuto e de alta velocidade (seguin
 
 A proposta sintetiza e aprimora as melhores decisões arquiteturais de 14 ecossistemas de referência (**NumPy, Julia, JAX, Eigen, xtensor, nalgebra, faer, LAPACK/oneMKL, OpenBLAS, Apache Arrow, Polars, SciPy Sparse, GraphBLAS e FFTW**), eliminando deliberadamente suas dívidas técnicas históricas.
 
+### 1.1 Estado da implementação (2026-09-20)
+
+SCI.1 está **parcial**, não concluído. `stdlib/math` funciona hoje como área de
+incubação in-tree para views bidimensionais strided, `Matrix`, `StaticMatrix`,
+operações com destino e `ScratchArena`; a decisão arquitetural continua sendo
+extrair a stack pesada para pacotes out-of-tree antes da estabilização. Ainda
+não existem `Array<T, N, A>` N-dimensional, prova instrumentada de zero
+alocação, fusão/autovetorização SIMD, microkernel GEMM bloqueado nem conector
+BLAS. O GEMM atual é o kernel escalar de referência e `Matrix` usa a ABI de
+alocação do runtime. SCI.2–SCI.4 permanecem bloqueados até esses contratos e a
+representação de agregados no backend estarem assentados.
+
 A fundação baseia-se em quatro pilares inegociáveis:
 1. **Modularidade estrita em camadas**: O núcleo `arandu_core::math` permanece estritamente escalar, livre de heap e `no_std`. As camadas de alto desempenho residem em pacotes modulares externos oficiais: `arandu_math` (tensores e álgebra linear densa/esparsa), `arandu_data` (processamento colunar, Apache Arrow e DataFrames lazy) e `arandu_science` (solvers de EDOs, processamento de sinais e grafos sobre semirings).
 2. **Separação irrevogável entre Tensores (`math`) e Dados Tabulares (`data`)**: `arandu_math` opera sobre views multidimensionais leves (`ArrayView<T, N>`) com strides arbitrários e densidade homogênea (zero overhead de nulidade em hot loops). `arandu_data` opera sobre estruturas SoA colunares, validity bitmaps e chunks (`RecordBatch`), adotando a **Arrow C Data Interface** como padrão universal de interoperabilidade zero-copy.
@@ -402,6 +414,9 @@ test "gemm_zero_allocation_guarantee" {
 ## 9. Possibilidades Futuras e Marcos do Roadmap (Future Possibilities & Milestones)
 
 A implementação da stack científica será executada através de quatro marcos graduais:
+
+Os itens de SCI.1 abaixo são critérios de saída; somente a fundação descrita na
+seção 1.1 está presente na árvore atual.
 
 - **SCI.1 — Arandu Math v1**:
   - Implementação de `Array<T, N, A>`, `ArrayView<T, N>` e `ArrayViewMut<T, N>`.

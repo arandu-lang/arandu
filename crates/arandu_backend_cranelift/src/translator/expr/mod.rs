@@ -126,6 +126,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 self.translate_slice_subslice(slice, start, len, expected_ar_type)
             }
             AmirRvalue::SliceData(slice) => self.translate_slice_data(slice),
+            AmirRvalue::StrBytes { source } => self.translate_str_bytes(source),
             AmirRvalue::StrView { owner } => self.translate_operand(owner, Some(self.ptr_type)),
             AmirRvalue::BlackBox { value, .. } => {
                 let input = self.translate_operand(value, expected_ty);

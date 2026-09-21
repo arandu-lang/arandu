@@ -20,13 +20,13 @@ impl<'a> CEmitter<'a> {
                     _ => ArType::Error,
                 };
                 let source_is_pointer = matches!(
-                    source_ty,
+                    &source_ty,
                     ArType::Ptr(_) | ArType::Ref(_) | ArType::RefMut(_)
-                );
+                ) && !source_ty.is_borrowed_slice_abi(self.interner);
                 let dest_is_pointer = matches!(
                     expected_ar_type,
                     ArType::Ptr(_) | ArType::Ref(_) | ArType::RefMut(_)
-                );
+                ) && !expected_ar_type.is_borrowed_slice_abi(self.interner);
                 if dest_is_pointer {
                     if source_is_pointer {
                         let _ = write!(&mut self.output, "({expected_c_type})({op_str})");
@@ -487,7 +487,17 @@ impl<'a> CEmitter<'a> {
                         );
                     }
                     UnaryOp::Deref => {
-                        let _ = write!(&mut self.output, "*{}", op_val);
+                        let operand_ty = match operand {
+                            AmirOperand::Copy(temp) | AmirOperand::Move(temp) => {
+                                self.temp_ty(func, *temp)
+                            }
+                            _ => ArType::Error,
+                        };
+                        if operand_ty.is_borrowed_slice_abi(self.interner) {
+                            let _ = write!(&mut self.output, "{}", op_val);
+                        } else {
+                            let _ = write!(&mut self.output, "*{}", op_val);
+                        }
                     }
                     UnaryOp::Ref | UnaryOp::RefMut => {
                         self.record_codegen_ice(
@@ -507,11 +517,19 @@ impl<'a> CEmitter<'a> {
             }
             AmirRvalue::Borrow(place) => {
                 let place_str = self.format_place(place, func);
-                let _ = write!(&mut self.output, "&{}", place_str);
+                if expected_ar_type.is_borrowed_slice_abi(self.interner) {
+                    let _ = write!(&mut self.output, "{}", place_str);
+                } else {
+                    let _ = write!(&mut self.output, "&{}", place_str);
+                }
             }
             AmirRvalue::BorrowMut(place) => {
                 let place_str = self.format_place(place, func);
-                let _ = write!(&mut self.output, "&{}", place_str);
+                if expected_ar_type.is_borrowed_slice_abi(self.interner) {
+                    let _ = write!(&mut self.output, "{}", place_str);
+                } else {
+                    let _ = write!(&mut self.output, "&{}", place_str);
+                }
             }
             AmirRvalue::Array { items } => {
                 if items.is_empty() {
@@ -589,7 +607,7 @@ impl<'a> CEmitter<'a> {
                 if matches!(op_ty, ArType::Primitive(Primitive::Str)) {
                     // LayoutEngine Str fat pointer: second field is len.
                     let _ = write!(&mut self.output, "({}).len", op_str);
-                } else if matches!(op_ty, ArType::Slice(_)) {
+                } else if op_ty.slice_abi_element(self.interner).is_some() {
                     // Slice fat pointer: len offset from LayoutEngine (not magic +8).
                     let off = self.layout.fat_ptr_len_offset();
                     let len_ty = if self.layout.fat_ptr_len_size() == 4 {
@@ -651,6 +669,19 @@ impl<'a> CEmitter<'a> {
                     "({{ void* _ptr = 0; memcpy(&_ptr, (uint8_t*)&{slice} + 0, sizeof(_ptr)); ({expected_c_type})_ptr; }})"
                 );
             }
+            AmirRvalue::StrBytes { source } => {
+                let source = self.format_operand(source, func);
+                let off = self.layout.fat_ptr_len_offset();
+                let len_ty = if self.layout.fat_ptr_len_size() == 4 {
+                    "int32_t"
+                } else {
+                    "int64_t"
+                };
+                let _ = write!(
+                    &mut self.output,
+                    "({{ {expected_c_type} view = {{0}}; void* _ptr = (void*)({source}).ptr; {len_ty} _len = ({len_ty})({source}).len; memcpy((uint8_t*)&view + 0, &_ptr, sizeof(_ptr)); memcpy((uint8_t*)&view + {off}, &_len, sizeof(_len)); view; }})"
+                );
+            }
             AmirRvalue::StrView { owner } => {
                 let owner = self.format_operand(owner, func);
                 let _ = write!(&mut self.output, "({expected_c_type})({owner})");
@@ -685,7 +716,7 @@ impl<'a> CEmitter<'a> {
                         "(({}*){})[{}]",
                         elem_c_ty, base_str, index_str
                     );
-                } else if matches!(base_ty, ArType::Slice(_)) || is_vec {
+                } else if base_ty.slice_abi_element(self.interner).is_some() || is_vec {
                     let _ = write!(
                         &mut self.output,
                         "(({}*)(*(void**)((uint8_t*)&{} + 0)))[{}]",

@@ -1,16 +1,16 @@
-//! Tests for std.core.parallel exports and syntax.
+//! Tests for std.parallel exports and syntax.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use arandu_query::db::DatabaseImpl;
 use arandu_query::passes::{exported_symbols, parse};
 
-const PARALLEL_ARU: &str = include_str!("../../../stdlib/core/parallel.aru");
+const PARALLEL_ARU: &str = include_str!("../../../stdlib/std/parallel.aru");
 
 #[test]
 fn stdlib_parallel_parses_and_exports_expected_symbols() {
     let mut db = DatabaseImpl::default();
     let file = db.new_file(
-        "stdlib/core/parallel.aru".to_string(),
+        "stdlib/std/parallel.aru".to_string(),
         PARALLEL_ARU.to_string(),
     );
     match parse(&db, file).as_ref() {

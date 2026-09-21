@@ -29,7 +29,26 @@ O `arandu_core` é projetado sob o princípio da **"Física Fundamental da Lingu
 2. **Prevenção de "Panic Bloat"**: Eliminação de tabelas complexas de formatação de strings e vtables em situações de erro irrecuperável, adotando traps/aborts de uma única instrução de máquina de hardware (`UD2`, `BKPT`, `EBREAK`) com código escalar de 32 bits;
 3. **Fatias e Views como Primitivas de Primeira Classe (`[]T`, `str`)**: Todo processamento de sequências opera sobre *fat pointers* determinísticos `(ptr, len)`, garantindo zero cópias e verificação estática de limites;
 4. **Universalidade de Alvos**: Execução idêntica e sem atritos em microcontroladores de baixíssimo consumo (ARM Cortex-M0/M3/M4, RISC-V de 4 KB a 16 KB de RAM), WebAssembly puro sem WASI (`wasm32-unknown-unknown`), kernels de sistemas operacionais, engines gráficas 3D de 120 FPS e nós de computação de alta densidade;
-5. **Comptime Nativo (CTFE / RFC 0013)**: Como todo o `core` é estritamente puro, suas funções e tipos são integralmente avaliáveis em tempo de compilação.
+5. **Comptime Nativo (CTFE / RFC 0013)**: A pureza do `core` define a superfície que a VM determinística deverá avaliar em tempo de compilação quando a RFC 0013 estiver implementada.
+
+### 1.1 Estado da implementação (2026-09-20)
+
+A fronteira executável atual já contém `std.core.fixed` (Q16.16),
+`std.core.io` (`Reader`, `Writer`, `Seeker`, `SliceReader` e `SliceWriter`) e
+algoritmos de `std.core.str` sem símbolos `extern "C"`: a conversão de `str` em
+bytes é um intrínseco do compilador que preserva proveniência e não aloca. O
+módulo de paralelismo, que depende de heap e threads do runtime, reside em
+`std.parallel`; não existe wrapper legado em `std.core.parallel`.
+
+O marco ainda é parcial: somente Q16.16 está implementado; Q8.8/Q32.32,
+aritmética checked completa, intrínsecos de bits e validação em targets
+bare-metal permanecem. CTFE determinístico também continua sendo objetivo da
+RFC 0013, portanto o invariante “100% comptime-friendly” é gate futuro, não uma
+garantia da toolchain atual. `[]T`, `ref []T` e `mut ref []T` compartilham o
+ABI de duas words `(data, len)` em C, Cranelift e Wasm; `Reader` recebe
+`mut ref []u8`, e a exclusividade existe apenas nos fatos de ownership/OSSA,
+sem word adicional na ABI nem alocação na heap. O lowering pode materializar
+temporariamente o par em stack slots internos, invisíveis à semântica.
 
 ---
 
@@ -133,11 +152,10 @@ Custo total em Flash: **6 bytes** (ao invés dos 20 KB de formatadores de string
 Para processadores sem unidade de ponto flutuante por hardware (ARM Cortex-M0, microcontroladores automotivos de 8/16/32 bits), o `core` expõe tipos nativos de ponto fixo:
 
 ```arandu
-import std.core.math.fixed.Q16_16
+import std.core.fixed as fixed
 
-public func calcularTrajetoria(angulo: Q16_16, velocidade: Q16_16): Q16_16 {
-    let seno = math.sin_fixed(angulo)
-    return velocidade * seno // Multiplicação inteira de 1 ciclo com shift de precisão!
+public func aplicarEscala(valor: fixed.Q16_16, escala: fixed.Q16_16): fixed.Q16_16 {
+    return valor.mul(escala)
 }
 ```
 
@@ -170,7 +188,7 @@ Qualquer módulo que resida em `arandu_core` deve satisfazer formalmente estes 6
 3. **Invariante 3 — Zero Threading de Kernel**: Não há primitivas de criação de threads de sistema operacional (`pthread_create`, `CreateThread`). A concorrência no `core` restringe-se a operações atômicas de hardware (`std.core.atomic`), interrupções de hardware e corrotinas cooperativas.
 4. **Invariante 4 — Zero DWARF / Zero Exception Unwinding**: O modelo de erro é puramente baseado em valores escalares em registradores. Nenhum metadado de propagação de exceção é emitido no binário.
 5. **Invariante 5 — Zero Panic Text Bloat**: Asserções de integridade em código de produção compilam para traps de hardware diretos (`UD2` em x86_64, `BKPT`/`UDF` em ARM, `EBREAK` em RISC-V), com um identificador de 32 bits (`TrapCode`) repassado via registrador da ABI.
-6. **Invariante 6 — 100% Comptime-Friendly (CTFE)**: Todas as funções puras de `arandu_core` devem ser interpretáveis pela máquina virtual determinística da AMIR durante a compilação (conforme [RFC 0013](0013-deterministic-ctfe-and-comptime-metaprogramming.md)).
+6. **Invariante 6 — 100% Comptime-Friendly (CTFE)**: Todas as funções puras de `arandu_core` devem permanecer interpretáveis pela futura máquina virtual determinística da AMIR (conforme [RFC 0013](0013-deterministic-ctfe-and-comptime-metaprogramming.md)); o executor CTFE completo ainda não integra a toolchain.
 
 ### 4.2 Topologia de Módulos do `arandu_core`
 
@@ -237,7 +255,7 @@ public interface Reader {
 }
 
 public interface Writer {
-    func write(buf: ref []u8): Result<uint, u32>
+    func write(buf: []u8): Result<uint, u32>
 }
 
 // Cursor seguro sobre fatia de memória emprestada:

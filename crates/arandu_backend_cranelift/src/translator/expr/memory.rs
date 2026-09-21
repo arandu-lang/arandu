@@ -13,6 +13,11 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         self.materialize_slice_descriptor(data, len)
     }
 
+    pub(super) fn translate_str_bytes(&mut self, source: &AmirOperand) -> Value {
+        let (data, len) = self.translate_str_operand(source);
+        self.materialize_slice_descriptor(data, len)
+    }
+
     pub(super) fn translate_slice_subslice(
         &mut self,
         slice: &AmirOperand,
@@ -153,7 +158,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             if place.projections.is_empty()
                 && matches!(
                     borrowed_ty,
-                    ArType::Named(_, _) | ArType::Array(_, _) | ArType::Tuple(_)
+                    ArType::Named(_, _) | ArType::Array(_, _) | ArType::Tuple(_) | ArType::Slice(_)
                 )
             {
                 if let Some(&slot) = self.local_stack_slots.get(&place.local) {
@@ -201,7 +206,10 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 let (_, len_val) = self.translate_str_operand(op);
                 self.cast_int_width(len_val, result_ty)
             }
-            ArType::Slice(_) => {
+            _ if op_ty
+                .slice_abi_element(&self.type_info.type_interner)
+                .is_some() =>
+            {
                 // Slice fat pointer in memory: {ptr @0, len @pointer_width}.
                 let base = self.translate_operand(op, Some(self.ptr_type));
                 let len_off = self.ptr_type.bytes() as i32;

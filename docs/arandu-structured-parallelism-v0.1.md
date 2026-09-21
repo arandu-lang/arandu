@@ -1,7 +1,7 @@
 # Arandu — Processamento Paralelo Estruturado v0.1
 
 **Estado:** `done`, ainda não `gold`. O caminho funcional está integrado no
-runtime, nos backends C/Cranelift e em `std.core.parallel`; a prova atual cobre
+runtime, nos backends C/Cranelift e em `std.parallel`; a prova atual cobre
 Linux x86-64 e o consumidor Pypor. Promoção exige benchmark reproduzível e a
 matriz nativa Windows/macOS.
 

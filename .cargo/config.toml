@@ -1,4 +1,15 @@
-# Target-specific overrides to avoid passing Linux ELF linker flags (-fuse-ld=mold) to wasm-ld
+# Workspace-level cargo configuration.
+#
+# IMPORTANT: [build].rustflags from ~/.cargo/config.toml (mold linker) is concatenated
+# with [target.*.rustflags] here. Cargo does NOT allow target-specific overrides to
+# suppress [build].rustflags from a higher-level config file.
+#
+# To build the wasm release binary for the website playground, use:
+#   RUSTFLAGS="" cargo build -p arandu_web --target wasm32-unknown-unknown --release
+#
+# The [target.*] entries below still clear any workspace-level [build].rustflags
+# if ever added in this file.
+
 [target.wasm32-unknown-unknown]
 rustflags = []
 

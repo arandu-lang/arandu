@@ -20,6 +20,7 @@ mod performance;
 mod release_assets;
 mod release_contract;
 mod slt6;
+mod wasm;
 
 use std::env;
 use std::path::PathBuf;
@@ -47,6 +48,7 @@ fn main() {
         "package-archive" => cmd_package_archive(args),
         "validate-archive" => cmd_validate_archive(args),
         "prepare-release-assets" => cmd_prepare_release_assets(args),
+        "build-wasm" => wasm::run(&workspace_root(), args),
         "help" | "-h" | "--help" => {
             print_help();
             0
@@ -81,6 +83,7 @@ Commands:
   package-archive   Create canonical deterministic .tar.gz or .zip (RFC 0020)
   validate-archive  Validate archive safety, layout, and release manifest
   prepare-release-assets  Generate SHA256SUMS, BLAKE3SUMS and release manifest
+  build-wasm        Build arandu_web for wasm32-unknown-unknown (clears host linker flags)
   help              This message
 
 Examples:
@@ -96,6 +99,7 @@ Examples:
   cargo run -p xtask -- check-release-contract [vX.Y.Z[-rc.N]]
   cargo run -p xtask -- prepare-release X.Y.Z[-rc.N]
   cargo run -p xtask -- check-slt6-sdk --arandu PATH --work-dir DIR --evidence-dir DIR
+  cargo run -p xtask -- build-wasm [--release]
   ./scripts/check-diag-docs.sh
 "
     );

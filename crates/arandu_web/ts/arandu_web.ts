@@ -21,6 +21,14 @@ export interface CompileResult {
   diagnostics: WebDiagnostic[];
 }
 
+export interface CompletionItem {
+  label: string;
+  kind: string;
+  detail?: string;
+  documentation?: string;
+  insert_text?: string;
+}
+
 export class AranduCompiler {
   private instance: WebAssembly.Instance;
   private memory: WebAssembly.Memory;
@@ -117,12 +125,96 @@ export class AranduCompiler {
       diagnostics
     };
   }
+
+  /**
+   * Format Arandu source code according to official style guidelines.
+   */
+  format(sourceCode: string): string {
+    const encoder = new TextEncoder();
+    const sourceBytes = encoder.encode(sourceCode);
+    const sourceLen = sourceBytes.length;
+
+    const alloc = this.instance.exports.arandu_alloc as (size: number) => number;
+    const free = this.instance.exports.arandu_free as (ptr: number, size: number) => void;
+    const format = this.instance.exports.arandu_format as (ptr: number, len: number) => number;
+    const freeJson = this.instance.exports.arandu_free_json as (ptr: number) => void;
+
+    const sourcePtr = alloc(sourceLen);
+    new Uint8Array(this.memory.buffer, sourcePtr, sourceLen).set(sourceBytes);
+
+    const respPtr = format(sourcePtr, sourceLen);
+    if (!respPtr) {
+      free(sourcePtr, sourceLen);
+      return sourceCode;
+    }
+
+    const view = new DataView(this.memory.buffer, respPtr, 8);
+    const jsonPtr = view.getUint32(0, true);
+    const jsonLen = view.getUint32(4, true);
+
+    let formatted = sourceCode;
+    if (jsonPtr !== 0 && jsonLen > 0) {
+      const jsonBytes = new Uint8Array(this.memory.buffer, jsonPtr, jsonLen);
+      const jsonText = new TextDecoder().decode(jsonBytes);
+      try {
+        formatted = JSON.parse(jsonText);
+      } catch {
+        formatted = sourceCode;
+      }
+    }
+
+    freeJson(respPtr);
+    free(sourcePtr, sourceLen);
+    return formatted;
+  }
+
+  /**
+   * Query semantic completion items at a byte offset in source code.
+   */
+  complete(sourceCode: string, offset: number): CompletionItem[] {
+    const encoder = new TextEncoder();
+    const sourceBytes = encoder.encode(sourceCode);
+    const sourceLen = sourceBytes.length;
+
+    const alloc = this.instance.exports.arandu_alloc as (size: number) => number;
+    const free = this.instance.exports.arandu_free as (ptr: number, size: number) => void;
+    const complete = this.instance.exports.arandu_complete as (ptr: number, len: number, offset: number) => number;
+    const freeJson = this.instance.exports.arandu_free_json as (ptr: number) => void;
+
+    const sourcePtr = alloc(sourceLen);
+    new Uint8Array(this.memory.buffer, sourcePtr, sourceLen).set(sourceBytes);
+
+    const respPtr = complete(sourcePtr, sourceLen, offset);
+    if (!respPtr) {
+      free(sourcePtr, sourceLen);
+      return [];
+    }
+
+    const view = new DataView(this.memory.buffer, respPtr, 8);
+    const jsonPtr = view.getUint32(0, true);
+    const jsonLen = view.getUint32(4, true);
+
+    let items: CompletionItem[] = [];
+    if (jsonPtr !== 0 && jsonLen > 0) {
+      const jsonBytes = new Uint8Array(this.memory.buffer, jsonPtr, jsonLen);
+      const jsonText = new TextDecoder().decode(jsonBytes);
+      try {
+        items = JSON.parse(jsonText);
+      } catch {
+        items = [];
+      }
+    }
+
+    freeJson(respPtr);
+    free(sourcePtr, sourceLen);
+    return items;
+  }
 }
 
 /**
  * Execute compiled Arandu WebAssembly bytecode in the browser.
  *
- * Connects standard Arandu runtime imports (`env.print_str`, `io.println`) to an output callback.
+ * Connects standard Arandu runtime imports (`env.print_str`, `io.print`, `io.println`) to an output callback.
  */
 export async function runWasm(
   wasmBytes: Uint8Array,
@@ -141,10 +233,15 @@ export async function runWasm(
       ...((extraImports.env as Record<string, Function>) || {})
     },
     io: {
-      println: (ptr: number, len: number) => {
+      print: (ptr: number, len: number) => {
         const bytes = new Uint8Array(memory.buffer, ptr, len);
         const text = new TextDecoder().decode(bytes);
         onPrint(text);
+      },
+      println: (ptr: number, len: number) => {
+        const bytes = new Uint8Array(memory.buffer, ptr, len);
+        const text = new TextDecoder().decode(bytes);
+        onPrint(text + "\n");
       },
       ...((extraImports.io as Record<string, Function>) || {})
     },
@@ -167,4 +264,3 @@ export async function runWasm(
 
   return 0;
 }
-

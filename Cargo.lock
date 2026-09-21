@@ -372,6 +372,7 @@ version = "0.1.7"
 dependencies = [
  "arandu_backend_wasm",
  "arandu_base",
+ "arandu_fmt",
  "arandu_ide",
  "arandu_middle",
  "arandu_parser",

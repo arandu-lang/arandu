@@ -16,6 +16,7 @@ arandu_parser = { path = "../arandu_parser" }
 arandu_query = { path = "../arandu_query" }
 arandu_ide = { path = "../arandu_ide" }
 arandu_backend_wasm = { path = "../arandu_backend_wasm" }
+arandu_fmt = { path = "../arandu_fmt" }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 

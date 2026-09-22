@@ -281,11 +281,7 @@ pub fn try_hand_lower_module(
         return None;
     }
     let mut throwaway = AstPool::new();
-    let ctx = HandCtx {
-        pool: &mut throwaway,
-        source,
-        file_id,
-    };
+    let ctx = HandCtx::new(&mut throwaway, source, file_id);
     let mut cur = Cursor::new(&toks);
     cur.expect(TokenKind::KwModule)?;
     let path = parse_dotted_ident_path(&ctx, &mut cur)?;
@@ -366,11 +362,7 @@ pub fn try_hand_lower_import(
         return None;
     }
     let mut pool = AstPool::new();
-    let mut ctx = HandCtx {
-        pool: &mut pool,
-        source,
-        file_id,
-    };
+    let mut ctx = HandCtx::new(&mut pool, source, file_id);
     let mut cur = Cursor::new(&toks);
     let span = token_bounds_span(file_id, &toks)?;
 
@@ -489,11 +481,7 @@ fn try_hand_lower_const(
     file_id: u32,
 ) -> Option<ConstDecl> {
     let toks = item_tokens(tokens, item);
-    let mut ctx = HandCtx {
-        pool,
-        source,
-        file_id,
-    };
+    let mut ctx = HandCtx::new(pool, source, file_id);
     let mut cur = Cursor::new(&toks);
     skip_leading_doc_comments(&mut cur);
     let attrs = parse_attributes(&mut ctx, &mut cur)?;
@@ -533,11 +521,7 @@ fn try_hand_lower_type_alias(
     file_id: u32,
 ) -> Option<TypeAliasDecl> {
     let toks = item_tokens(tokens, item);
-    let mut ctx = HandCtx {
-        pool,
-        source,
-        file_id,
-    };
+    let mut ctx = HandCtx::new(pool, source, file_id);
     let mut cur = Cursor::new(&toks);
     skip_leading_doc_comments(&mut cur);
     let attrs = parse_attributes(&mut ctx, &mut cur)?;
@@ -573,11 +557,7 @@ fn try_hand_lower_interface(
     file_id: u32,
 ) -> Option<InterfaceDecl> {
     let toks = item_tokens(tokens, item);
-    let mut ctx = HandCtx {
-        pool,
-        source,
-        file_id,
-    };
+    let mut ctx = HandCtx::new(pool, source, file_id);
     let mut cur = Cursor::new(&toks);
     skip_leading_doc_comments(&mut cur);
     let attrs = parse_attributes(&mut ctx, &mut cur)?;
@@ -629,11 +609,7 @@ fn try_hand_lower_extern(
     file_id: u32,
 ) -> Option<ExternDecl> {
     let toks = item_tokens(tokens, item);
-    let mut ctx = HandCtx {
-        pool,
-        source,
-        file_id,
-    };
+    let mut ctx = HandCtx::new(pool, source, file_id);
     let mut cur = Cursor::new(&toks);
     skip_leading_doc_comments(&mut cur);
     let attrs = parse_attributes(&mut ctx, &mut cur)?;
@@ -659,7 +635,7 @@ fn try_hand_lower_extern(
         .find(|t| matches!(t.kind, TokenKind::KwExtern))
         .map(|t| t.start)
         .or_else(|| toks.first().map(|t| t.start))?;
-    let end = toks.last().map(|t| t.start + t.len)?;
+    let end = toks.last().map(|t| t.end())?;
     Some(ExternDecl {
         span: Span::new(file_id, start, end),
         attrs: attrs.into(),

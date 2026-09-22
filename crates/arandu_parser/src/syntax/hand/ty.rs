@@ -57,11 +57,7 @@ pub fn try_hand_lower_type(
     t: &Token,
     file_id: u32,
 ) -> Option<TypeExprId> {
-    let mut ctx = HandCtx {
-        pool,
-        source,
-        file_id,
-    };
+    let mut ctx = HandCtx::new(pool, source, file_id);
     let toks = [t];
     let mut cur = Cursor::new(&toks);
     let ty = parse_type(&mut ctx, &mut cur)?;
@@ -224,7 +220,7 @@ fn parse_named_or_primitive_type(
                 let text = ctx.text(t)?;
                 let path = smallvec![SmolStr::new(text)];
                 let name = TypeName {
-                    span: ctx.span(start, t.start + t.len),
+                    span: ctx.span(start, t.end()),
                     path,
                 };
                 let (args, args_end) = if cur.peek_kind() == Some(TokenKind::Lt) {
@@ -240,7 +236,7 @@ fn parse_named_or_primitive_type(
             }
             TokenKind::IdentValue => {
                 let mut path = smallvec![SmolStr::new(ctx.text(t)?)];
-                let mut end = t.start + t.len;
+                let mut end = t.end();
                 // module segments: value.value...
                 while cur.peek_kind() == Some(TokenKind::Dot)
                     && cur

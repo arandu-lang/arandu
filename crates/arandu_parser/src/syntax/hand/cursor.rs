@@ -101,7 +101,7 @@ pub fn token_text<'a>(source: &'a str, t: &Token) -> Option<&'a str> {
 #[inline]
 #[must_use]
 pub fn token_span(file_id: u32, t: &Token) -> Span {
-    Span::new(file_id, t.start, t.start + t.len)
+    Span::new(file_id, t.start, t.end())
 }
 
 /// Lightweight cursor over a token slice.

@@ -32,11 +32,7 @@ pub fn try_hand_lower_func_item(
         return None;
     }
 
-    let mut ctx = HandCtx {
-        pool,
-        source,
-        file_id,
-    };
+    let mut ctx = HandCtx::new(pool, source, file_id);
     let mut cur = Cursor::new(&sig_toks);
     skip_leading_doc_comments(&mut cur);
     let attrs = parse_attributes(&mut ctx, &mut cur)?;
@@ -82,7 +78,7 @@ pub fn try_hand_lower_func_item(
                     && t.start >= bs
                     && t.start < be.max(bs + 1)
             })
-            .map(|t| t.start + t.len)
+            .map(|t| t.end())
             .unwrap_or(body.span.end)
     };
     Some(FuncDecl {

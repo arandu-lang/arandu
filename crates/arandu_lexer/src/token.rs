@@ -16,9 +16,15 @@ const _: () = assert!(std::mem::size_of::<Token>() == 12);
 const _: () = assert!(std::mem::size_of::<TokenKind>() == 2);
 
 impl Token {
+    #[inline]
+    #[must_use]
+    pub fn end(&self) -> u32 {
+        self.start.saturating_add(self.len)
+    }
+
     #[must_use]
     pub fn span(&self, file_id: u32) -> Span {
-        Span::new(file_id, self.start, self.start + self.len)
+        Span::new(file_id, self.start, self.end())
     }
 
     #[must_use]
@@ -26,7 +32,9 @@ impl Token {
         if self.inserted || matches!(self.kind, TokenKind::Error(_) | TokenKind::Eof) {
             return "";
         }
-        &source[self.start as usize..(self.start + self.len) as usize]
+        let start = self.start as usize;
+        let end = self.end() as usize;
+        source.get(start..end.min(source.len())).unwrap_or("")
     }
 
     #[must_use]

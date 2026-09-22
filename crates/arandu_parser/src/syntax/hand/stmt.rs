@@ -27,11 +27,7 @@ pub fn try_hand_lower_stmt(
     if toks.is_empty() {
         return None;
     }
-    let mut ctx = HandCtx {
-        pool,
-        source,
-        file_id,
-    };
+    let mut ctx = HandCtx::new(pool, source, file_id);
     let mut cur = Cursor::new(&toks);
     let id = parse_stmt_tokens(&mut ctx, &mut cur)?;
     cur.skip_semis();
@@ -78,11 +74,7 @@ pub fn try_hand_lower_block(
     {
         toks.push(rb);
     }
-    let mut ctx = HandCtx {
-        pool,
-        source,
-        file_id,
-    };
+    let mut ctx = HandCtx::new(pool, source, file_id);
     let mut cur = Cursor::new(&toks);
     parse_block_tokens(&mut ctx, &mut cur)
 }
@@ -607,7 +599,7 @@ fn lower_for(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>, start: u32) -> Option<
         ForClause::CStyle {
             span: ctx.span(
                 head.first().map(|t| t.start).unwrap_or(start),
-                head.last().map(|t| t.start + t.len).unwrap_or(start),
+                head.last().map(|t| t.end()).unwrap_or(start),
             ),
             init,
             condition,

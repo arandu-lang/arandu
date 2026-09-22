@@ -382,6 +382,9 @@ fn validate_zip_archive(
 fn validate_path_safety(name: &str) -> Result<(), String> {
     if name.starts_with('/')
         || name.contains('\\')
+        || name.contains('\0')
+        || name.contains('\r')
+        || name.contains('\n')
         || name == ".."
         || name.starts_with("../")
         || name.contains("/../")
@@ -441,4 +444,26 @@ fn verify_manifest_data(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validate_path_safety() {
+        assert!(validate_path_safety("bin/arandu").is_ok());
+        assert!(validate_path_safety("lib/x86_64/libarandu.a").is_ok());
+
+        assert!(validate_path_safety("/bin/arandu").is_err());
+        assert!(validate_path_safety("bin\\arandu").is_err());
+        assert!(validate_path_safety("..").is_err());
+        assert!(validate_path_safety("../secret").is_err());
+        assert!(validate_path_safety("bin/../secret").is_err());
+        assert!(validate_path_safety("bin/..").is_err());
+        assert!(validate_path_safety("bin//arandu").is_err());
+        assert!(validate_path_safety("bin/arandu\0malicious").is_err());
+        assert!(validate_path_safety("bin/arandu\r\n").is_err());
+        assert!(validate_path_safety("bin/arandu\n").is_err());
+    }
 }

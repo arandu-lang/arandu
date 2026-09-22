@@ -18,3 +18,10 @@ pub const BORROW_FACTS_ITERATION_GUARD: usize = 100_000;
 
 /// Maximum fixed-point passes for local SSA temp origin resolution from loads.
 pub const TEMP_ORIGIN_SOLVER_MAX_PASSES: usize = 100;
+
+/// Maximum outer iterations for the CFG simplification fixpoint loop
+/// (jump threading + block merging + unreachable removal).
+/// Each pass can trigger further simplifications, but convergence is
+/// guaranteed in far fewer than 64 passes for any realistic function.
+/// Reaching this limit signals an IR invariant violation.
+pub const CFG_SIMPLIFY_MAX_OUTER_ITERS: u32 = 64;

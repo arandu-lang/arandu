@@ -22,7 +22,7 @@ pub fn simplify_cfg(func: &mut AmirFunc, bump: &bumpalo::Bump) -> Result<bool, D
 
     loop {
         outer_iters += 1;
-        if outer_iters > 64 {
+        if outer_iters > crate::analysis_limits::CFG_SIMPLIFY_MAX_OUTER_ITERS {
             break;
         }
 

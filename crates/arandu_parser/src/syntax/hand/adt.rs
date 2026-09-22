@@ -18,11 +18,7 @@ pub(super) fn try_hand_lower_struct(
     file_id: u32,
 ) -> Option<StructDecl> {
     let toks = item_tokens(tokens, item);
-    let mut ctx = HandCtx {
-        pool,
-        source,
-        file_id,
-    };
+    let mut ctx = HandCtx::new(pool, source, file_id);
     let mut cur = Cursor::new(&toks);
     skip_leading_doc_comments(&mut cur);
     let attrs = parse_attributes(&mut ctx, &mut cur)?;
@@ -54,7 +50,7 @@ pub(super) fn try_hand_lower_struct(
         .find(|t| matches!(t.kind, TokenKind::KwStruct))
         .map(|t| t.start)
         .or_else(|| toks.first().map(|t| t.start))?;
-    let end = toks.last().map(|t| t.start + t.len)?;
+    let end = toks.last().map(|t| t.end())?;
     Some(StructDecl {
         span: Span::new(file_id, start, end),
         attrs: attrs.into(),
@@ -102,11 +98,7 @@ pub(super) fn try_hand_lower_enum(
     file_id: u32,
 ) -> Option<EnumDecl> {
     let toks = item_tokens(tokens, item);
-    let mut ctx = HandCtx {
-        pool,
-        source,
-        file_id,
-    };
+    let mut ctx = HandCtx::new(pool, source, file_id);
     let mut cur = Cursor::new(&toks);
     skip_leading_doc_comments(&mut cur);
     let attrs = parse_attributes(&mut ctx, &mut cur)?;

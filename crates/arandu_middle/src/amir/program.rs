@@ -63,10 +63,6 @@ impl AmirFunc {
         &self.block_params[range.as_range()]
     }
 
-    pub fn block_params_mut(&mut self, range: DenseRange) -> &mut [BlockParam] {
-        &mut self.block_params[range.as_range()]
-    }
-
     #[must_use]
     pub fn try_stmt(&self, id: InstrId) -> Option<&AmirStmt> {
         self.stmts.get(id)

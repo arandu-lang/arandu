@@ -213,11 +213,6 @@ impl HirPool {
 
     /// Fallible lookup (prefer this when the id may be untrusted).
     #[must_use]
-    pub fn try_expr(&self, id: HirExprId) -> Option<&super::HirExpr> {
-        self.exprs.get(id)
-    }
-
-    #[must_use]
     pub fn expr(&self, id: HirExprId) -> &super::HirExpr {
         match self.exprs.get(id) {
             Some(e) => e,
@@ -254,11 +249,6 @@ impl HirPool {
     }
 
     #[must_use]
-    pub fn try_block(&self, id: HirBlockId) -> Option<&super::HirBlock> {
-        self.blocks.get(id)
-    }
-
-    #[must_use]
     pub fn block(&self, id: HirBlockId) -> &super::HirBlock {
         match self.blocks.get(id) {
             Some(b) => b,
@@ -268,11 +258,6 @@ impl HirPool {
 
     pub fn alloc_decl(&mut self, decl: super::HirDecl) -> HirDeclId {
         self.decls.push(decl)
-    }
-
-    #[must_use]
-    pub fn try_decl(&self, id: HirDeclId) -> Option<&super::HirDecl> {
-        self.decls.get(id)
     }
 
     #[must_use]
@@ -288,11 +273,6 @@ impl HirPool {
     }
 
     #[must_use]
-    pub fn try_pattern(&self, id: HirPatternId) -> Option<&super::HirPattern> {
-        self.patterns.get(id)
-    }
-
-    #[must_use]
     pub fn pattern(&self, id: HirPatternId) -> &super::HirPattern {
         match self.patterns.get(id) {
             Some(p) => p,
@@ -302,11 +282,6 @@ impl HirPool {
 
     pub fn alloc_field_pattern(&mut self, field: super::HirFieldPattern) -> HirFieldPatternId {
         self.field_patterns.push(field)
-    }
-
-    #[must_use]
-    pub fn try_field_pattern(&self, id: HirFieldPatternId) -> Option<&super::HirFieldPattern> {
-        self.field_patterns.get(id)
     }
 
     #[must_use]

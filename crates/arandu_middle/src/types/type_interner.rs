@@ -262,14 +262,6 @@ impl TypeInterner {
         *ID.get_or_init(|| TypeInterner::new().error_type_id())
     }
 
-    /// Pre-interned [`ArType::Void`].
-    #[must_use]
-    pub fn preinterned_void_id() -> TypeId {
-        use std::sync::OnceLock;
-        static ID: OnceLock<TypeId> = OnceLock::new();
-        *ID.get_or_init(|| TypeInterner::new().intern(ArType::Void))
-    }
-
     /// Pre-interned primitive id (same index for every [`Self::new`] interner).
     #[must_use]
     pub fn preinterned_primitive(p: Primitive) -> TypeId {

@@ -380,34 +380,6 @@ impl SymbolTable {
         }
     }
 
-    /// Extend `self` with the symbols from `other` that have index >= `base_count`.
-    ///
-    /// Used after typechecking a stdlib file whose resolver was given
-    /// `self.clone()` as the starting symbol table and then added new symbols
-    /// (e.g. TypeParams). The new symbols preserve the same `SymbolId`s they
-    /// were assigned in `other`, so all `type_info` references remain valid.
-    ///
-    /// Note: the new symbols are only added to `self.symbols` for `get(id)`
-    /// lookup. They are NOT added to any scope because they belong to specific
-    /// function/enum scopes in the stdlib files and polluting the global scope
-    /// would cause `N003RedefinedName` errors for user code with same-named
-    /// type parameters.
-    pub fn merge_from_extending(&mut self, other: &SymbolTable, base_count: usize) {
-        for symbol in other.symbols.iter().skip(base_count) {
-            // Sanity: the ID must match the current length.
-            assert_eq!(
-                symbol.id.local_id.0 as usize,
-                self.symbols.len(),
-                "symbol ID mismatch during extend: expected {} got {}",
-                self.symbols.len(),
-                symbol.id.local_id.0
-            );
-            // Only add to the symbols vector for get(id) access.
-            // Do NOT add to any scope to avoid polluting name lookup.
-            self.symbols.push(symbol.clone());
-        }
-    }
-
     pub fn setup_prelude_scope(&mut self) {
         if self.global_scope_id == ScopeId(0) {
             let new_global = self.new_scope(ScopeId(0));

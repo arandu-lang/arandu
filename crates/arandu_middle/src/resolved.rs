@@ -58,22 +58,4 @@ impl ResolvedNames {
     pub fn type_ref(&mut self, span: Span, symbol: SymbolId) {
         self.type_refs.insert(span.into(), symbol);
     }
-
-    pub fn offset_symbols(&mut self, offset: u32) {
-        if offset == 0 {
-            return;
-        }
-        for val in self.definitions.values_mut() {
-            val.local_id.0 += offset;
-        }
-        for val in self.expr_symbols.iter_mut().flatten() {
-            val.local_id.0 += offset;
-        }
-        for val in self.value_refs.values_mut() {
-            val.local_id.0 += offset;
-        }
-        for val in self.type_refs.values_mut() {
-            val.local_id.0 += offset;
-        }
-    }
 }

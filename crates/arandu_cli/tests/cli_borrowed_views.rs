@@ -83,6 +83,75 @@ func main(): int {
 }
 
 #[test]
+fn jit_formatter_writes_string_bytes_and_rejects_partial_write() {
+    let output = invoke(
+        "run",
+        r#"module tests.formatter.write_string
+import std.core.fmt as fmt
+import std.alloc.vec as vec
+
+func main(): int {
+    let mut storage = vec.new<u8>()
+    let mut i: uint = 0
+    while i < 5 {
+        vec.push<u8>(storage, 0 as u8)
+        i = i + 1
+    }
+    let view = vec.asSlice<u8>(storage)
+    let mut writer = fmt.newFormatter(view)
+    match writer.writeStr("hey") {
+        Ok(3) => {}
+        _ => { return 1 }
+    }
+    if view[0] != (104 as u8) || view[1] != (101 as u8) || view[2] != (121 as u8) {
+        return 2
+    }
+    if writer.len() != 3 { return 3 }
+    match writer.writeStr("bye") {
+        Err(_) => {}
+        _ => { return 4 }
+    }
+    if writer.len() != 3 || view[0] != (104 as u8) { return 5 }
+    return 0
+}
+"#,
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "JIT formatter string write failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn jit_string_truncate_preserves_utf8_boundaries() {
+    let output = invoke(
+        "run",
+        r#"module tests.string.truncate_utf8
+import std.alloc.string as strings
+
+func main(): int {
+    let mut value = strings.from("aéz")
+    value.truncate(2)
+    if value.len() != 4 { return 1 }
+    value.truncate(3)
+    if value.len() != 3 || *value.asStr() != "aé" { return 2 }
+    value.truncate(0)
+    if value.len() != 0 { return 3 }
+    return 0
+}
+"#,
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "JIT UTF-8 truncate failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn jit_executes_borrowed_element_and_subslice() {
     let output = invoke("run", include_str!("fixtures/borrowed_views_bv3.aru"));
     assert_eq!(

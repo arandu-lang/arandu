@@ -1,3 +1,31 @@
+//! Owned, mutable UTF-8 byte storage.
+//!
+//! ## Overview
+//!
+//! `String` owns a growable byte buffer. Borrow its contents with `asStr` or `asBytes`, reserve capacity, append data, and release it with `destroy`.
+//!
+//! ## Example
+//!
+//! ```arandu
+//! import std.alloc.string as strings
+//!
+//! let mut name = strings.from("aran")
+//! name.pushStr("du")
+//! let bytes = name.len()
+//! ```
+//!
+//! ## Safety
+//! `adoptOwned` accepts only a buffer obtained from the compatible host
+//! allocator. Borrowed views from `asStr` and `asBytes` must not outlive the
+//! `String` or a reallocation that moves its buffer.
+//!
+//! ## Allocations
+//! `new` is empty without allocating; growth may reallocate. Fallible
+//! `tryReserve` and `pushStr` report failure with `false`.
+//!
+//! ## Platform
+//! `native` · `wasm32`
+
 module std.alloc.string
 
 /// Owned, mutable UTF-8 string (`String`).
@@ -14,13 +42,19 @@ func maxBufferCapacity(): uint {
 }
 
 extern "C" {
+    /// Host allocator for a raw byte buffer.
     func ar_vec_malloc(size: uint): ptr[u8]
+    /// Host deallocator for a raw byte buffer.
     func ar_vec_buf_free(p: ptr[u8], size: uint): void
+    /// Host allocator that resizes a raw byte buffer.
     func ar_vec_realloc(p: ptr[u8], oldSize: uint, newSize: uint): ptr[u8]
+    /// Host bridge that appends bytes to an owned string.
     func ar_string_push_str(s: mut ref String, value: str): bool
 }
 
 /// Returns a shared UTF-8 string view (`str`) borrowing the String's data.
+/// The view has byte length `len` and does not copy or allocate. It becomes
+/// invalid if the owner is destroyed or its buffer moves during growth.
 ///
 /// # Examples
 /// ```arandu
@@ -37,6 +71,8 @@ public func asStr(s: ref String): ref str {
 }
 
 /// Returns a shared byte slice `[]u8` viewing the underlying UTF-8 storage.
+/// The slice covers initialized bytes only; its length is `String.len`.
+/// Destroying or reallocating the String invalidates the borrowed view.
 ///
 /// # Examples
 /// ```arandu
@@ -53,7 +89,11 @@ public func asBytes(s: ref String): []u8 {
     }
 }
 
-/// Appends a UTF-8 string slice to the back of the String, returning `false` on allocation failure.
+/// Appends the bytes of `value` and returns whether the append succeeded.
+///
+/// Growth may reallocate and invalidate borrowed views. A `false` return
+/// reports allocation failure; callers must check it before assuming the
+/// complete value was appended.
 ///
 /// # Examples
 /// ```arandu
@@ -72,18 +112,24 @@ public func pushStr(s: mut ref String, value: str): bool {
 
 /// Owned UTF-8 string buffer.
 public struct String {
+    /// Pointer to the owned byte buffer.
     data: ptr[u8]
+    /// Number of initialized UTF-8 bytes.
     len: uint
+    /// Allocated capacity in elements or bytes, as defined by this type.
     capacity: uint
 }
 
-/// Adopts a raw `ar_vec_malloc`-allocated buffer as an owned `String` without
-/// copying: `bufCap` is the allocated capacity, `bufLen` the valid bytes
+/// Adopts an `ar_vec_malloc` buffer as an owned `String` without copying.
+///
+/// `bufCap` is the allocated capacity, `bufLen` the valid bytes
 /// (`len == bufCap` for exact-size buffers, e.g. a whole-file read).
 ///
 /// # Safety
 /// `data` must be a pointer returned by `ar_vec_malloc(bufCap)` (or `nil` with
-/// `0`/`0`); freeing happens exactly once via `destroy`/`ar_vec_buf_free`.
+/// `0`/`0`). `bufLen` must not exceed `bufCap`, and the initialized bytes must
+/// be valid UTF-8 before treating the result as text. The buffer is freed
+/// exactly once via `destroy`/`ar_vec_buf_free`.
 public func adoptOwned(data: ptr[u8], bufCap: uint, bufLen: uint): String {
     return String {
         data: data,
@@ -127,6 +173,8 @@ public func withCapacity(cap: uint): String {
 }
 
 /// Creates a new owned `String` initialized with a copy of `value`.
+/// The source remains independent of the new buffer. Allocation failure
+/// aborts; use `new` followed by fallible `pushStr` to handle failure.
 ///
 /// # Examples
 /// ```arandu
@@ -138,14 +186,19 @@ public func withCapacity(cap: uint): String {
 /// Time: O(n) | Space: O(n) where n is length of `value`
 public func from(value: str): String {
     let mut s = new()
-    let _ = pushStr(s, value)
+    if !pushStr(s, value) {
+        unsafe {
+            intrinsics.abort()
+        }
+    }
     return s
 }
 
 /// Attempts to ensure capacity in bytes ≥ `minCap`.
 ///
 /// Returns `true` on success, or `false` on OOM or capacity overflow without
-/// modifying `s`.
+/// modifying `s`. The maximum accepted capacity is 2,147,483,647 bytes.
+/// Existing borrowed views remain valid only if no reallocation occurs.
 public func tryEnsureCapacity(s: mut ref String, minCap: uint): bool {
     let maxCap = maxBufferCapacity()
     if minCap > maxCap {
@@ -189,7 +242,8 @@ func ensureCapacity(s: mut ref String, minCap: uint): void {
 /// Fallible byte capacity reservation.
 ///
 /// Reserves capacity for at least `additional` more bytes beyond current `len`.
-/// Returns `true` on success, or `false` on OOM without aborting.
+/// Returns `true` on success, or `false` on allocation failure or capacity
+/// overflow without aborting. Existing content remains intact on failure.
 public func tryReserve(s: mut ref String, additional: uint): bool {
     let maxCap = maxBufferCapacity()
     if additional > maxCap - s.len {
@@ -261,6 +315,8 @@ public func reserve(s: mut ref String, additional: uint): void {
 }
 
 /// Appends a single Unicode scalar value (`char`) encoded as UTF-8 bytes (1 to 4 bytes).
+/// Growth may reallocate and invalidate views returned by `asStr` or
+/// `asBytes`. Capacity overflow or allocation failure aborts.
 ///
 /// # Examples
 /// ```arandu
@@ -323,7 +379,10 @@ public func pushScalar(s: mut ref String, c: char): void {
     s.len = s.len + clen
 }
 
-/// Clears the String, resetting length to 0 while keeping allocated capacity.
+/// Clears the String by setting its byte length to zero, retaining capacity.
+///
+/// No bytes are deallocated or overwritten. Existing borrowed views must
+/// not be used as views of the cleared content.
 ///
 /// # Examples
 /// ```arandu
@@ -340,6 +399,9 @@ public func clear(s: mut ref String): void {
 
 /// Deallocates the heap buffer and resets the String to empty.
 ///
+/// All views into the buffer become invalid. Repeating this operation on an
+/// already empty, unallocated String has no effect.
+///
 /// # Complexity
 /// Time: O(1) | Space: O(1)
 public func destroy(s: mut ref String): void {
@@ -355,7 +417,9 @@ public func destroy(s: mut ref String): void {
 
 // ── Method-style surface ───────────────────────────────────────────────────
 
-/// Creates a new owned String initialized from `value`.
+/// Copies `value` into a new owned `String`.
+///
+/// Allocation failure aborts, as with the free `from` constructor.
 public func String.from(value: str): String {
     return from(value)
 }
@@ -375,79 +439,122 @@ public func String.isEmpty(self: ref String): bool {
     return isEmpty(self)
 }
 
-/// Reserves capacity for at least `additional` more bytes.
+/// Ensures room for `additional` bytes beyond the current length.
+///
+/// Reallocation may invalidate borrowed views; allocation failure aborts.
 public func String.reserve(self: mut ref String, additional: uint): void {
     reserve(self, additional)
 }
 
-/// Appends a Unicode scalar value (`char`) to the String.
+/// Encodes `c` as one to four UTF-8 bytes and appends it.
+///
+/// Growth may reallocate; allocation failure aborts.
 public func String.pushScalar(self: mut ref String, c: char): void {
     pushScalar(self, c)
 }
 
-/// Returns a shared UTF-8 string view (`str`).
+/// Borrows the initialized bytes as a `str` view without copying.
+///
+/// Destroying or reallocating the owner invalidates the view.
 public func String.asStr(self: ref String): ref str {
     return asStr(self)
 }
 
-/// Returns a shared byte slice view `[]u8`.
+/// Borrows initialized bytes as a slice without copying.
+///
+/// Destroying or reallocating the owner invalidates the view.
 public func String.asBytes(self: ref String): []u8 {
     return asBytes(self)
 }
 
-/// Appends UTF-8 bytes to the String.
+/// Appends all bytes of `value` and returns whether it succeeded.
+///
+/// A `false` result reports allocation failure. Successful growth may
+/// reallocate and invalidate borrowed views.
 public func String.pushStr(self: mut ref String, value: str): bool {
     return pushStr(self, value)
 }
 
-/// Fallible capacity reservation returning `true` on success, `false` on OOM.
+/// Attempts to reserve room for `additional` bytes beyond the length.
+///
+/// Returns `false` on allocation failure or capacity overflow, preserving
+/// existing content.
 public func String.tryReserve(self: mut ref String, additional: uint): bool {
     return tryReserve(self, additional)
 }
 
-/// Clears the String, retaining capacity.
+/// Sets byte length to zero while retaining the allocated buffer.
+///
+/// No allocation or byte overwrite occurs.
 public func String.clear(self: mut ref String): void {
     clear(self)
 }
 
-/// Truncates the String to `newLen` bytes.
+/// Shortens the String to `newLen` bytes when that is a UTF-8 boundary.
+///
+/// A length beyond the current end or inside a multibyte character leaves
+/// the String unchanged. Capacity is retained; no allocation occurs.
 public func truncate(s: mut ref String, newLen: uint): void {
     if newLen < s.len {
+        if newLen > 0 {
+            let boundary = unsafe {
+                let p = mem.ptrOffset<u8>(s.data, newLen as i32)
+                mem.ptrRead<u8>(p)
+            }
+            if (boundary & (192 as u8)) == (128 as u8) {
+                return
+            }
+        }
         s.len = newLen
     }
 }
 
-/// Truncates this String to `newLen` bytes.
+/// Shortens this String at a UTF-8 boundary; delegates to `truncate`.
+///
+/// Invalid or out-of-range byte lengths leave the String unchanged.
 public func String.truncate(self: mut ref String, newLen: uint): void {
     truncate(self, newLen)
 }
 
-/// Returns `true` if this String starts with `prefix`.
+/// Compares initialized bytes with `prefix` without allocation.
+///
+/// An empty prefix matches every string.
 public func String.startsWith(self: ref String, prefix: str): bool {
     return core_str.startsWith(*asStr(self), prefix)
 }
 
-/// Returns `true` if this String ends with `suffix`.
+/// Compares the end of the initialized bytes with `suffix`.
+///
+/// An empty suffix matches every string; no allocation occurs.
 public func String.endsWith(self: ref String, suffix: str): bool {
     return core_str.endsWith(*asStr(self), suffix)
 }
 
-/// Returns `true` if this String contains `needle`.
+/// Searches for `needle` in the initialized bytes without allocation.
+///
+/// An empty needle matches at the beginning.
 public func String.contains(self: ref String, needle: str): bool {
     return core_str.contains(*asStr(self), needle)
 }
 
-/// Returns the byte index of the first occurrence of `needle` in this String.
+/// Returns the first byte offset of `needle`, or `None` if absent.
+///
+/// An empty needle yields `Some(0)`; offsets count UTF-8 bytes.
 public func String.find(self: ref String, needle: str): Option<uint> {
     return core_str.find(*asStr(self), needle)
 }
 
-/// Clones this String into an independently allocated copy.
+/// Copies this String into a separate owned buffer.
+///
+/// The clone can be changed or destroyed independently. Allocation failure
+/// aborts through `from`.
 public func String.clone(self: ref String): String {
     return from(*asStr(self))
 }
 
-/// Frees the heap buffer upon destruction.
+/// Consumes this String and releases its owned byte buffer.
+///
+/// Borrowed views into the buffer become invalid.
 @Destructor
 public func String.destroy(self: own String): void {
     destroy(self)

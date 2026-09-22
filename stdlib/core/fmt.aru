@@ -1,7 +1,43 @@
+//! Allocation-free text formatting with destination buffers (`Formatter`).
+//!
+//! ## Overview
+//!
+//! `std.core.fmt` offers destination-oriented zero-allocation formatting:
+//! instead of building an intermediate `String`, you write directly into a
+//! `Formatter` pointing at an existing buffer (`[]u8`). Ideal for bare-metal,
+//! microcontrollers and any context where the heap is unavailable or banned.
+//!
+//! The main interface is `Formatter`, exposing `writeStr`, `writeByte` and
+//! `writeBool` over a fixed buffer, plus `len`, `capacity` and `remaining`
+//! queries. Combine writes to compose messages without a single allocation.
+//!
+//! ## Example
+//!
+//! ```arandu
+//! import std.core.fmt as fmt
+//!
+//! func formatInto(buf: []u8): uint {
+//!     let mut f = fmt.newFormatter(buf)
+//!     let _ = f.writeStr("temp: ")
+//!     return f.len()
+//! }
+//! ```
+//!
+//! ## Platform
+//! `native` · `wasm32` · `bare-metal`
+//!
+//! Zero allocation on every supported platform; designed for the bare-metal case.
+//!
+//! ## See also
+//!
+//! - `std.core.str` — operations over immutable strings
+//! - `std.alloc.string` — heap-allocated `String`
+
 module std.core.fmt
 
 import std.core.slice as slice
 import std.core.str as strings
+import std.core.intrinsics as intrinsics
 
 /// Error encountered during buffer formatting.
 public enum FmtError {
@@ -15,11 +51,15 @@ public enum FmtError {
 ///
 /// Wraps a contiguous memory buffer slice (`[]u8`) with current length.
 public struct Formatter {
+    /// Borrowed output buffer.
     buf: []u8
+    /// Number of bytes written to the buffer.
     len: uint
 }
 
-/// Creates a new `Formatter` operating over a pre-allocated slice buffer.
+/// Borrows `buf` as a fixed-capacity destination with zero bytes written.
+///
+/// The caller owns the buffer. Writes change it in place and never allocate.
 public func newFormatter(buf: []u8): Formatter {
     return Formatter {
         buf: buf,
@@ -46,7 +86,10 @@ public func Formatter.remaining(self: ref Formatter): uint {
     return cap - self.len
 }
 
-/// Writes a single byte into the formatter buffer.
+/// Appends one byte and returns `Ok(1)`.
+///
+/// Returns `BufferFull` without changing the buffer or length when no room
+/// remains. This method performs no allocation.
 public func Formatter.writeByte(self: mut ref Formatter, b: u8): Result<uint, FmtError> {
     let cap = slice.len<u8>(self.buf)
     if self.len >= cap {
@@ -57,7 +100,10 @@ public func Formatter.writeByte(self: mut ref Formatter, b: u8): Result<uint, Fm
     return Result.Ok(1)
 }
 
-/// Writes a boolean value as "true" or "false" into the formatter buffer.
+/// Appends `"true"` or `"false"` and returns the number of bytes written.
+///
+/// If the complete word does not fit, returns `BufferFull` without writing a
+/// partial word. This method performs no allocation.
 public func Formatter.writeBool(self: mut ref Formatter, b: bool): Result<uint, FmtError> {
     if b {
         return self.writeStr("true")
@@ -65,12 +111,21 @@ public func Formatter.writeBool(self: mut ref Formatter, b: bool): Result<uint, 
     return self.writeStr("false")
 }
 
-/// Writes a string slice into the formatter buffer without allocations.
+/// Appends all UTF-8 bytes of `s` and returns their byte count.
+///
+/// If the full string does not fit, returns `BufferFull` and leaves the
+/// buffer and length unchanged. An empty string writes zero bytes.
 public func Formatter.writeStr(self: mut ref Formatter, s: str): Result<uint, FmtError> {
     let slen = strings.lenBytes(s)
     let cap = slice.len<u8>(self.buf)
     if self.len + slen > cap {
         return Result.Err(FmtError.BufferFull)
+    }
+    let bytes = intrinsics.strBytes(s)
+    let mut i: uint = 0
+    while i < slen {
+        self.buf[self.len + i] = bytes[i]
+        i = i + 1
     }
     self.len = self.len + slen
     return Result.Ok(slen)

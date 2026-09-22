@@ -197,8 +197,20 @@ public struct Matrix<T> {
 /// owns the buffer and must call `Matrix.free` after borrowed views are no
 /// longer in use. Initialization visits every element.
 public func newMatrix<T>(rows: uint, cols: uint, initial: T): Option<Matrix<T>> {
+    // Pointer offsets are represented as i32 throughout the stdlib. Keep the
+    // element count and byte allocation within that addressable range.
+    let maxElements: uint = 2147483647
+    if rows > maxElements || cols > maxElements {
+        return Option.None
+    }
+    if rows != 0 && cols > maxElements / rows {
+        return Option.None
+    }
     let total = rows * cols
     let elemSize = mem.sizeOf<T>()
+    if elemSize == 0 || elemSize > maxElements || total > maxElements / elemSize {
+        return Option.None
+    }
     let totalBytes = total * elemSize
     unsafe {
         let nullp: ptr[u8] = nil

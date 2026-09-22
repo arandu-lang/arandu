@@ -73,17 +73,21 @@ fn read_retry(file: &mut std::fs::File, buf: &mut [u8]) -> Result<usize, std::io
     }
 }
 
+/// Returns whether the stream contains bytes beyond the configured read limit.
+fn has_more_data(file: &mut std::fs::File) -> Result<bool, std::io::Error> {
+    let mut probe = [0u8; 1];
+    read_retry(file, &mut probe).map(|read| read != 0)
+}
+
 /// Reads the whole file into an owned, `ar_vec_malloc`-compatible buffer.
 ///
 /// Returns `(data, len, capacity)`; `data` is `NULL` when the content is empty.
 fn read_all_impl(ptr: *const u8, len: isize) -> Result<(*mut u8, usize, usize), isize> {
     let path = path_from_fat(ptr, len).ok_or(ERR_INVALID_INPUT)?;
     let mut file = std::fs::File::open(&path).map_err(|e| io_error_to_portable(&e))?;
-    let initial = file
-        .metadata()
-        .map(|meta| meta.len() as usize)
-        .ok()
-        .unwrap_or(0);
+    let initial = file.metadata().ok().map_or(0, |meta| {
+        usize::try_from(meta.len()).unwrap_or(MAX_BUFFER_SIZE.saturating_add(1))
+    });
     if initial > MAX_BUFFER_SIZE {
         return Err(ERR_OTHER);
     }
@@ -106,7 +110,17 @@ fn read_all_impl(ptr: *const u8, len: isize) -> Result<(*mut u8, usize, usize), 
             // Tolerates special files whose reported size is 0 or smaller than
             // the actual content (Zig readFileAlloc lesson: grow, don't truncate).
             if capacity >= MAX_BUFFER_SIZE {
-                break;
+                match has_more_data(&mut file) {
+                    Ok(false) => break,
+                    Ok(true) => {
+                        unsafe { ar_vec_buf_free(data, capacity) };
+                        return Err(ERR_OTHER);
+                    }
+                    Err(error) => {
+                        unsafe { ar_vec_buf_free(data, capacity) };
+                        return Err(io_error_to_portable(&error));
+                    }
+                }
             }
             let next_capacity = if capacity == 0 {
                 INITIAL_GROWTH_CAPACITY.min(MAX_BUFFER_SIZE)
@@ -205,6 +219,17 @@ struct HostEntry {
     is_dir: bool,
 }
 
+fn directory_blob_len(count: usize, names_len: usize) -> Option<usize> {
+    let entry_table = count.checked_mul(DIR_ENTRY_SIZE)?;
+    let descriptor_size = std::mem::size_of::<usize>().checked_mul(2)?;
+    let descriptor_table = count.checked_mul(descriptor_size)?;
+    let blob_len = DIR_BLOB_HEADER_SIZE
+        .checked_add(entry_table)?
+        .checked_add(descriptor_table)?
+        .checked_add(names_len)?;
+    (blob_len <= MAX_BUFFER_SIZE && blob_len <= u32::MAX as usize).then_some(blob_len)
+}
+
 /// Reads a directory into a single blob:
 /// `[u32 count][u32 blob_len][entry × count][descriptor × count][names]`.
 ///
@@ -220,18 +245,25 @@ fn read_dir_impl(ptr: *const u8, len: isize) -> Result<(*mut u8, usize, usize), 
     let path = path_from_fat(ptr, len).ok_or(ERR_INVALID_INPUT)?;
     let iterator = std::fs::read_dir(&path).map_err(|e| io_error_to_portable(&e))?;
     let mut entries: Vec<HostEntry> = Vec::new();
+    let mut names_len = 0usize;
     for item in iterator {
         let dir_entry = item.map_err(|e| io_error_to_portable(&e))?;
         let file_type = dir_entry
             .file_type()
             .map_err(|e| io_error_to_portable(&e))?;
+        let name = dir_entry
+            .file_name()
+            .to_string_lossy()
+            .into_owned()
+            .into_bytes();
+        names_len = names_len.checked_add(name.len()).ok_or(ERR_OTHER)?;
+        let next_count = entries.len().checked_add(1).ok_or(ERR_OTHER)?;
+        if directory_blob_len(next_count, names_len).is_none() {
+            return Err(ERR_OTHER);
+        }
         entries.push(HostEntry {
             // Lossy on purpose: never panic on non-UTF-8 names (Rust env::args lesson).
-            name: dir_entry
-                .file_name()
-                .to_string_lossy()
-                .into_owned()
-                .into_bytes(),
+            name,
             is_dir: file_type.is_dir(),
         });
     }
@@ -242,18 +274,10 @@ fn read_dir_impl(ptr: *const u8, len: isize) -> Result<(*mut u8, usize, usize), 
         return Ok((std::ptr::null_mut(), 0, 0));
     }
 
-    let names_len: usize = entries.iter().map(|e| e.name.len()).sum();
     let entry_table = count.checked_mul(DIR_ENTRY_SIZE).ok_or(ERR_OTHER)?;
     let descriptor_size = std::mem::size_of::<usize>() * 2;
     let descriptor_table = count.checked_mul(descriptor_size).ok_or(ERR_OTHER)?;
-    let blob_len = DIR_BLOB_HEADER_SIZE
-        .checked_add(entry_table)
-        .and_then(|v| v.checked_add(descriptor_table))
-        .and_then(|v| v.checked_add(names_len))
-        .ok_or(ERR_OTHER)?;
-    if blob_len > MAX_BUFFER_SIZE || blob_len > u32::MAX as usize {
-        return Err(ERR_OTHER);
-    }
+    let blob_len = directory_blob_len(count, names_len).ok_or(ERR_OTHER)?;
 
     // SAFETY: `blob_len` bytes, writable, 8-aligned by `ar_vec_malloc`.
     let data = unsafe { ar_vec_malloc(blob_len) };
@@ -404,6 +428,30 @@ mod tests {
     fn temp_dir() -> std::path::PathBuf {
         let id = NEXT.fetch_add(1, Ordering::Relaxed);
         std::env::temp_dir().join(format!("arandu_fs_runtime_{}_{id}", std::process::id()))
+    }
+
+    #[test]
+    fn bounded_read_probe_distinguishes_eof_from_trailing_data() {
+        let dir = temp_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("probe.bin");
+        std::fs::write(&path, b"ab").unwrap();
+
+        let mut file = std::fs::File::open(&path).unwrap();
+        let mut first = [0u8; 1];
+        read_retry(&mut file, &mut first).unwrap();
+        assert!(has_more_data(&mut file).unwrap());
+        let mut last = [0u8; 1];
+        read_retry(&mut file, &mut last).unwrap();
+        assert!(!has_more_data(&mut file).unwrap());
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn directory_blob_preflight_checks_overflow_and_limits() {
+        assert!(directory_blob_len(1, 3).is_some());
+        assert!(directory_blob_len(usize::MAX, usize::MAX).is_none());
     }
 
     /// Keeps the lossy string alive while calling a host with a fat-ptr pair.

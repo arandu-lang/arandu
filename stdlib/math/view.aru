@@ -63,6 +63,13 @@ public func fromRaw<T>(p: ptr[T], rows: uint, cols: uint, rowStride: int, colStr
 /// The view uses row-major strides and borrows the slice. Extra source
 /// elements after `rows * cols` are excluded from the view.
 public func fromSlice<T>(s: []T, rows: uint, cols: uint): Option<ArrayView<T>> {
+    let maxElements: uint = 2147483647
+    if rows > maxElements || cols > maxElements {
+        return Option.None
+    }
+    if rows != 0 && cols > maxElements / rows {
+        return Option.None
+    }
     let total = rows * cols
     if total > slice.len<T>(s) {
         return Option.None
@@ -143,7 +150,7 @@ public func ArrayView.get<T>(self: ref ArrayView<T>, r: uint, c: uint): Option<T
 /// success, shares the same backing storage and retains its strides. This is
 /// an O(1) metadata operation with no element copy or allocation.
 public func ArrayView.slice<T>(self: ref ArrayView<T>, rStart: uint, rCount: uint, cStart: uint, cCount: uint): Option<ArrayView<T>> {
-    if rStart + rCount > self.rows || cStart + cCount > self.cols {
+    if rStart > self.rows || cStart > self.cols || rCount > self.rows - rStart || cCount > self.cols - cStart {
         return Option.None
     }
     let offset = (rStart as int) * self.rowStride + (cStart as int) * self.colStride
@@ -206,6 +213,13 @@ public func fromRawMut<T>(p: ptr[T], rows: uint, cols: uint, rowStride: int, col
 /// Returns `None` when the requested shape exceeds the slice length. Extra
 /// source elements are not part of the view; construction does not allocate.
 public func fromSliceMut<T>(s: mut ref []T, rows: uint, cols: uint): Option<ArrayViewMut<T>> {
+    let maxElements: uint = 2147483647
+    if rows > maxElements || cols > maxElements {
+        return Option.None
+    }
+    if rows != 0 && cols > maxElements / rows {
+        return Option.None
+    }
     let total = rows * cols
     if total > slice.len<T>(*s) {
         return Option.None

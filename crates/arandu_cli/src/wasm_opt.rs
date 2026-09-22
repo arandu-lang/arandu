@@ -1,6 +1,8 @@
 //! WebAssembly Binaryen (`wasm-opt`) optimization runner.
 
 use std::fs;
+use std::io;
+use std::path::PathBuf;
 use std::process::Command;
 
 use crate::cli_error::CliFailure;
@@ -8,6 +10,42 @@ use crate::cli_error::CliFailure;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static WASM_OPT_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+struct PrivateTempDir(PathBuf);
+
+impl Drop for PrivateTempDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+fn create_private_temp_dir() -> io::Result<PrivateTempDir> {
+    let root = std::env::temp_dir();
+    let pid = std::process::id();
+    for _ in 0..128 {
+        let counter = WASM_OPT_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = root.join(format!("arandu-wasm-opt-{pid}-{counter}"));
+
+        #[cfg(unix)]
+        let result = {
+            use std::os::unix::fs::DirBuilderExt;
+            let mut builder = fs::DirBuilder::new();
+            builder.mode(0o700).create(&path)
+        };
+        #[cfg(not(unix))]
+        let result = fs::create_dir(&path);
+
+        match result {
+            Ok(()) => return Ok(PrivateTempDir(path)),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "could not allocate a unique wasm-opt temporary directory",
+    ))
+}
 
 /// Check whether `wasm-opt` is present in the system `PATH`.
 #[must_use]
@@ -46,11 +84,15 @@ pub fn optimize_wasm_if_available(
         return Ok(wasm_bytes);
     }
 
-    let temp_dir = std::env::temp_dir();
-    let pid = std::process::id();
-    let counter = WASM_OPT_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let in_path = temp_dir.join(format!("arandu-wasm-opt-in-{pid}-{counter}.wasm"));
-    let out_path = temp_dir.join(format!("arandu-wasm-opt-out-{pid}-{counter}.wasm"));
+    let temp_dir = create_private_temp_dir().map_err(|error| {
+        CliFailure::operational(
+            "create wasm-opt temporary directory",
+            None,
+            error.to_string(),
+        )
+    })?;
+    let in_path = temp_dir.0.join("input.wasm");
+    let out_path = temp_dir.0.join("output.wasm");
 
     fs::write(&in_path, &wasm_bytes).map_err(|e| {
         CliFailure::operational("write wasm-opt input", Some(in_path.clone()), e.to_string())
@@ -64,8 +106,6 @@ pub fn optimize_wasm_if_available(
         .arg(&out_path)
         .status();
 
-    let _ = fs::remove_file(&in_path);
-
     match status {
         Ok(s) if s.success() => {
             let optimized = fs::read(&out_path).map_err(|e| {
@@ -75,7 +115,6 @@ pub fn optimize_wasm_if_available(
                     e.to_string(),
                 )
             })?;
-            let _ = fs::remove_file(&out_path);
             if verbose {
                 let original_len = wasm_bytes.len();
                 let opt_len = optimized.len();
@@ -91,14 +130,34 @@ pub fn optimize_wasm_if_available(
             Ok(optimized)
         }
         Ok(s) => {
-            let _ = fs::remove_file(&out_path);
             eprintln!("[wasm-opt] wasm-opt exited with status {s}; using unoptimized bytecode");
             Ok(wasm_bytes)
         }
         Err(e) => {
-            let _ = fs::remove_file(&out_path);
             eprintln!("[wasm-opt] failed to execute wasm-opt ({e}); using unoptimized bytecode");
             Ok(wasm_bytes)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn temporary_directory_is_private_and_removed_on_drop() {
+        let dir = create_private_temp_dir().unwrap();
+        let path = dir.0.clone();
+        assert!(path.is_dir());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o077, 0);
+        }
+
+        drop(dir);
+        assert!(!path.exists());
     }
 }

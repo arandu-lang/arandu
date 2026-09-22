@@ -23,6 +23,13 @@ module std.alloc.hash_map
 
 import std.alloc.vec as vec
 import std.core.hash as hash
+import std.core.intrinsics as intrinsics
+
+const MAX_BUCKETS = 1073741824
+
+func capacityFailure(): void {
+    unsafe { intrinsics.abort() }
+}
 
 /// An entry within a `HashMap` bucket.
 public struct Entry<K, V> {
@@ -83,8 +90,14 @@ public func new<K: hash.Hash, V>(): HashMap<K, V> {
 /// # Complexity
 /// Time: O(cap) | Space: O(cap)
 public func withCapacity<K: hash.Hash, V>(minCap: uint): HashMap<K, V> {
+    if minCap > MAX_BUCKETS {
+        capacityFailure()
+    }
     let mut cap: uint = 8
     while cap < minCap {
+        if cap > MAX_BUCKETS / 2 {
+            capacityFailure()
+        }
         cap = cap * 2
     }
     let mut buckets = vec.withCapacity<Option<Entry<K, V>>>(cap)
@@ -141,6 +154,9 @@ public func resize<K: hash.Hash, V>(self: mut ref HashMap<K, V>): void {
     let oldCap = vec.len<Option<Entry<K, V>>>(self.buckets)
     let mut newCap: uint = 8
     if oldCap > 0 {
+        if oldCap >= MAX_BUCKETS {
+            capacityFailure()
+        }
         newCap = oldCap * 2
     }
     let mut newBuckets = vec.withCapacity<Option<Entry<K, V>>>(newCap)
@@ -173,7 +189,7 @@ public func resize<K: hash.Hash, V>(self: mut ref HashMap<K, V>): void {
 /// allocate before probing when the 75% load threshold would be exceeded.
 public func insertEntry<K: hash.Hash, V>(self: mut ref HashMap<K, V>, key: K, val: V, h: u64): Option<V> {
     let cap = vec.len<Option<Entry<K, V>>>(self.buckets)
-    if cap == 0 || (self.len + 1) * 4 > cap * 3 {
+    if cap == 0 || self.len >= cap - cap / 4 {
         resize(self)
     }
     let currentCap = vec.len<Option<Entry<K, V>>>(self.buckets)

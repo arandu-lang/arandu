@@ -41,6 +41,8 @@ module std.alloc.arena
 import std.core.mem as mem
 import std.core.intrinsics as intrinsics
 
+const MAX_ARENA_CAPACITY = 2147483647
+
 extern "C" {
     /// Host allocator for a raw byte buffer.
     func ar_vec_malloc(size: uint): ptr[u8]
@@ -65,6 +67,13 @@ public struct Arena {
 /// Subsequent allocations use this fixed buffer. If the host allocator
 /// returns a null pointer, `alloc` returns `None`.
 public func new(capacity: uint): Arena {
+    if capacity > MAX_ARENA_CAPACITY {
+        return Arena {
+            data: nil,
+            capacity: 0,
+            offset: 0,
+        }
+    }
     unsafe {
         let p = ar_vec_malloc(capacity)
         return Arena {
@@ -88,21 +97,26 @@ public func Arena.withCapacity(capacity: uint): Arena {
 /// `free`; there is no individual deallocation.
 public func Arena.alloc(self: mut ref Arena, size: uint, align: uint): Option<ptr[u8]> {
     let nullp: ptr[u8] = nil
-    if self.data == nullp {
+    if self.data == nullp || self.capacity > MAX_ARENA_CAPACITY || self.offset > self.capacity {
         return Option.None
     }
-    let mut aligned = self.offset
+    let mut padding: uint = 0
     if align > 1 {
-        let rem = aligned % align
+        let rem = self.offset % align
         if rem != 0 {
-            aligned = aligned + (align - rem)
+            padding = align - rem
         }
     }
-    if aligned + size > self.capacity {
+    if padding > self.capacity - self.offset {
         return Option.None
     }
+    let aligned = self.offset + padding
+    if size > self.capacity - aligned {
+        return Option.None
+    }
+    let nextOffset = aligned + size
     let res = mem.ptrOffset<u8>(self.data, aligned as i32)
-    self.offset = aligned + size
+    self.offset = nextOffset
     return Option.Some(res)
 }
 
@@ -114,6 +128,9 @@ public func Arena.alloc(self: mut ref Arena, size: uint, align: uint): Option<pt
 public func Arena.allocTyped<T>(self: mut ref Arena, count: uint): Option<ptr[T]> {
     let elemSize = mem.sizeOf<T>()
     let elemAlign = mem.alignOf<T>()
+    if elemSize > 0 && count > MAX_ARENA_CAPACITY / elemSize {
+        return Option.None
+    }
     let totalSize = elemSize * count
     let raw = self.alloc(totalSize, elemAlign)
     if raw is Option.Some(p) {
@@ -204,6 +221,14 @@ public struct ScratchArena {
 /// Allocation is limited to this buffer until `free`; `peakBytes` initially
 /// returns zero.
 public func newScratch(capacity: uint): ScratchArena {
+    if capacity > MAX_ARENA_CAPACITY {
+        return ScratchArena {
+            data: nil,
+            capacity: 0,
+            offset: 0,
+            peak: 0,
+        }
+    }
     unsafe {
         let p = ar_vec_malloc(capacity)
         return ScratchArena {
@@ -233,21 +258,26 @@ public func ScratchArena.withCapacity(capacity: uint): ScratchArena {
 /// invalidate the pointer.
 public func ScratchArena.alloc(self: mut ref ScratchArena, size: uint, align: uint): Option<ptr[u8]> {
     let nullp: ptr[u8] = nil
-    if self.data == nullp {
+    if self.data == nullp || self.capacity > MAX_ARENA_CAPACITY || self.offset > self.capacity {
         return Option.None
     }
-    let mut aligned = self.offset
+    let mut padding: uint = 0
     if align > 1 {
-        let rem = aligned % align
+        let rem = self.offset % align
         if rem != 0 {
-            aligned = aligned + (align - rem)
+            padding = align - rem
         }
     }
-    if aligned + size > self.capacity {
+    if padding > self.capacity - self.offset {
         return Option.None
     }
+    let aligned = self.offset + padding
+    if size > self.capacity - aligned {
+        return Option.None
+    }
+    let nextOffset = aligned + size
     let res = mem.ptrOffset<u8>(self.data, aligned as i32)
-    self.offset = aligned + size
+    self.offset = nextOffset
     if self.offset > self.peak {
         self.peak = self.offset
     }
@@ -260,6 +290,9 @@ public func ScratchArena.alloc(self: mut ref ScratchArena, size: uint, align: ui
 public func ScratchArena.allocTyped<T>(self: mut ref ScratchArena, count: uint): Option<ptr[T]> {
     let elemSize = mem.sizeOf<T>()
     let elemAlign = mem.alignOf<T>()
+    if elemSize > 0 && count > MAX_ARENA_CAPACITY / elemSize {
+        return Option.None
+    }
     let totalSize = elemSize * count
     let raw = self.alloc(totalSize, elemAlign)
     if raw is Option.Some(p) {

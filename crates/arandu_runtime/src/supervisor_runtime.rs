@@ -24,6 +24,11 @@ fn lock() -> std::sync::MutexGuard<'static, Vec<Option<Supervisor>>> {
     SUPERS.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+fn checked_path_len(length: i64) -> Option<usize> {
+    let length = usize::try_from(length).ok()?;
+    (length <= isize::MAX as usize).then_some(length)
+}
+
 /// Create a supervisor. Returns id >= 0.
 ///
 /// # Safety
@@ -87,10 +92,17 @@ pub unsafe extern "C" fn ar_rt_supervisor_spawn(
     if sup < 0 || path_ptr.is_null() || path_len <= 0 || max_restarts < 0 {
         return -1;
     }
-    let path_bytes = unsafe { std::slice::from_raw_parts(path_ptr, path_len as usize) };
+    let Some(path_len) = checked_path_len(path_len) else {
+        return -1;
+    };
+    let path_bytes = unsafe { std::slice::from_raw_parts(path_ptr, path_len) };
     let path = match std::str::from_utf8(path_bytes) {
         Ok(s) => s,
         Err(_) => return -1,
+    };
+    let mut g = lock();
+    let Some(Some(super_slot)) = g.get_mut(sup as usize) else {
+        return -1;
     };
     let child = match Command::new(path)
         .stdin(Stdio::null())
@@ -100,10 +112,6 @@ pub unsafe extern "C" fn ar_rt_supervisor_spawn(
     {
         Ok(c) => c,
         Err(_) => return -1,
-    };
-    let mut g = lock();
-    let Some(Some(super_slot)) = g.get_mut(sup as usize) else {
-        return -1;
     };
     let worker = Worker {
         child,
@@ -235,6 +243,19 @@ pub unsafe extern "C" fn ar_rt_supervisor_kill(sup: i64, worker: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn path_length_must_fit_rust_slice_bounds() {
+        assert_eq!(checked_path_len(1), Some(1));
+        assert_eq!(checked_path_len(0), Some(0));
+        assert_eq!(checked_path_len(-1), None);
+        assert_eq!(
+            checked_path_len(i64::MAX),
+            usize::try_from(i64::MAX)
+                .ok()
+                .filter(|len| *len <= isize::MAX as usize)
+        );
+    }
 
     #[test]
     fn create_destroy() {

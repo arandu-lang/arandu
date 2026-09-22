@@ -161,33 +161,6 @@ pub fn ar_is_64bit(ty: TypeId, interner: &TypeInterner, layout: DataLayout) -> b
     )
 }
 
-/// Whether the value is an integer (including `Bool` and `Char`).
-#[must_use]
-pub fn ar_is_int(ty: TypeId, interner: &TypeInterner) -> bool {
-    interner.with_type(ty, |ar| match ar {
-        ArType::Primitive(p) => {
-            matches!(
-                p,
-                Primitive::Bool
-                    | Primitive::I8
-                    | Primitive::U8
-                    | Primitive::I16
-                    | Primitive::U16
-                    | Primitive::I32
-                    | Primitive::U32
-                    | Primitive::I64
-                    | Primitive::U64
-                    | Primitive::Int
-                    | Primitive::Uint
-                    | Primitive::Byte
-                    | Primitive::Char
-            )
-        }
-        ArType::IntLiteral => true,
-        _ => false,
-    })
-}
-
 /// Convenience: `ValType` of the primary slot of a scalar type.
 #[must_use]
 pub fn scalar_valtype_for(

@@ -12,17 +12,6 @@ use arandu_semantics::types::TypeInterner;
 use cranelift_codegen::ir::{AbiParam, Signature, Type};
 use cranelift_codegen::isa::CallConv;
 
-/// Returns the appropriate Cranelift [`CallConv`] for the given target triple.
-///
-/// Uses `WindowsFastcall` on Windows and `SystemV` on all other platforms.
-#[must_use]
-pub fn call_conv_for_target(triple: &target_lexicon::Triple) -> CallConv {
-    match triple.operating_system {
-        target_lexicon::OperatingSystem::Windows => CallConv::WindowsFastcall,
-        _ => CallConv::SystemV,
-    }
-}
-
 /// Determines the [`TargetAbi`] from a `target_lexicon::Triple`.
 #[must_use]
 pub fn target_abi_for_triple(triple: &target_lexicon::Triple) -> TargetAbi {

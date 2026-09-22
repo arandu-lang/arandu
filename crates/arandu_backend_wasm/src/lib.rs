@@ -150,12 +150,6 @@ impl WasmEmitBackend {
             data_layout: DataLayout::ptr_width(4),
         }
     }
-
-    /// Create a backend with an explicit layout (advanced use).
-    #[must_use]
-    pub fn with_layout(data_layout: DataLayout) -> Self {
-        Self { data_layout }
-    }
 }
 
 impl Default for WasmEmitBackend {

@@ -12,8 +12,13 @@ pub fn discover_aru_files(roots: &[PathBuf]) -> Vec<(PathBuf, String)> {
     stack.sort();
     stack.reverse();
     let mut paths = std::collections::BTreeSet::new();
+    let mut visited_dirs = std::collections::HashSet::new();
 
     while let Some(dir) = stack.pop() {
+        let canonical = std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
+        if !visited_dirs.insert(canonical) {
+            continue;
+        }
         let Ok(rd) = std::fs::read_dir(&dir) else {
             continue;
         };
@@ -48,4 +53,36 @@ pub fn discover_aru_files(roots: &[PathBuf]) -> Vec<(PathBuf, String)> {
             Some((path, text))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn discover_aru_files_handles_symlink_cycles() {
+        let temp_dir = std::env::temp_dir().join("arandu_test_discovery_symlink_cycle");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let sub_dir = temp_dir.join("sub");
+        std::fs::create_dir_all(&sub_dir).unwrap();
+
+        std::fs::write(sub_dir.join("main.aru"), "func main(): int { 0 }").unwrap();
+
+        #[cfg(unix)]
+        {
+            let cycle_link = sub_dir.join("cycle_to_parent");
+            let _ = std::os::unix::fs::symlink(&temp_dir, &cycle_link);
+        }
+
+        let discovered = discover_aru_files(std::slice::from_ref(&temp_dir));
+        assert_eq!(discovered.len(), 1);
+        assert_eq!(
+            discovered[0].0.file_name().and_then(|s| s.to_str()),
+            Some("main.aru")
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
 }

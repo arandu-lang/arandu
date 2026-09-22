@@ -167,8 +167,11 @@ pub unsafe extern "C" fn ar_fs_read_all(
     if out_buf.is_null() || out_len.is_null() || out_cap.is_null() || err.is_null() {
         return;
     }
-    match read_all_impl(path_ptr, path_len) {
-        Ok((data, len, capacity)) => {
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        read_all_impl(path_ptr, path_len)
+    }));
+    match res {
+        Ok(Ok((data, len, capacity))) => {
             // SAFETY: contract mandates writable out-pointers.
             unsafe {
                 *out_buf = data;
@@ -177,7 +180,7 @@ pub unsafe extern "C" fn ar_fs_read_all(
                 *err = ERR_OK;
             }
         }
-        Err(code) => {
+        Ok(Err(code)) => {
             // Contract: any error ⇒ NULL/0/0, nothing to free.
             unsafe {
                 *out_buf = std::ptr::null_mut();
@@ -186,6 +189,12 @@ pub unsafe extern "C" fn ar_fs_read_all(
                 *err = code;
             }
         }
+        Err(_) => unsafe {
+            *out_buf = std::ptr::null_mut();
+            *out_len = 0;
+            *out_cap = 0;
+            *err = ERR_OTHER;
+        },
     }
 }
 
@@ -294,8 +303,11 @@ pub unsafe extern "C" fn ar_fs_readdir(
     if out_buf.is_null() || out_count.is_null() || out_cap.is_null() || err.is_null() {
         return;
     }
-    match read_dir_impl(path_ptr, path_len) {
-        Ok((data, count, capacity)) => {
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        read_dir_impl(path_ptr, path_len)
+    }));
+    match res {
+        Ok(Ok((data, count, capacity))) => {
             // SAFETY: contract mandates writable out-pointers.
             unsafe {
                 *out_buf = data;
@@ -304,7 +316,7 @@ pub unsafe extern "C" fn ar_fs_readdir(
                 *err = ERR_OK;
             }
         }
-        Err(code) => {
+        Ok(Err(code)) => {
             // Contract: any error ⇒ NULL/0/0, nothing to free.
             unsafe {
                 *out_buf = std::ptr::null_mut();
@@ -313,6 +325,12 @@ pub unsafe extern "C" fn ar_fs_readdir(
                 *err = code;
             }
         }
+        Err(_) => unsafe {
+            *out_buf = std::ptr::null_mut();
+            *out_count = 0;
+            *out_cap = 0;
+            *err = ERR_OTHER;
+        },
     }
 }
 
@@ -323,10 +341,13 @@ pub unsafe extern "C" fn ar_fs_readdir(
 /// `path_ptr`/`path_len` must be a valid fat-string pair from the JIT or null/empty.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn exists(path_ptr: *const u8, path_len: isize) -> isize {
-    match path_from_fat(path_ptr, path_len) {
-        Some(path) => isize::from(Path::new(&path).exists()),
-        None => 0,
-    }
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        match path_from_fat(path_ptr, path_len) {
+            Some(path) => isize::from(Path::new(&path).exists()),
+            None => 0,
+        }
+    }))
+    .unwrap_or(0)
 }
 
 /// Reserved for the (out-of-Minimal) `File` open cycle: always yields a

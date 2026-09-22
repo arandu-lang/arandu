@@ -67,7 +67,20 @@ fn analyse<'bump>(
     // RPO once – covers all statically reachable blocks.
     let rpo = crate::amir::reverse_post_order(func);
 
+    // Theoretical bound on monotone lattice changes + CFG reachability:
+    // each temp changes at most twice (Undefined -> Constant -> Overdefined)
+    // and each block changes reachability at most once (false -> true).
+    let max_iters = n_blocks
+        .saturating_mul(n_temps)
+        .saturating_mul(2)
+        .saturating_add(crate::analysis_limits::DATAFLOW_FIXPOINT_HEADROOM);
+    let mut iters = 0usize;
+
     loop {
+        iters += 1;
+        if iters > max_iters {
+            break;
+        }
         let mut changed = false;
 
         for &bid in &rpo {

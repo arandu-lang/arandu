@@ -84,6 +84,9 @@ impl LiteralTable {
     }
 
     pub fn find_root(&mut self, var: TypeVarId) -> TypeVarId {
+        if var.0 as usize >= self.vars.len() {
+            return var;
+        }
         let mut root = var;
         while self.vars[root.0 as usize].parent != root {
             root = self.vars[root.0 as usize].parent;
@@ -99,6 +102,9 @@ impl LiteralTable {
 
     #[must_use]
     pub fn find_root_imm(&self, var: TypeVarId) -> TypeVarId {
+        if var.0 as usize >= self.vars.len() {
+            return var;
+        }
         let mut root = var;
         while self.vars[root.0 as usize].parent != root {
             root = self.vars[root.0 as usize].parent;
@@ -481,5 +487,22 @@ impl TypeChecker<'_> {
             );
         }
         self.literal_table.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn find_root_handles_out_of_bounds_gracefully() {
+        let mut table = LiteralTable::new();
+        let invalid = TypeVarId(999);
+        assert_eq!(table.find_root(invalid), invalid);
+        assert_eq!(table.find_root_imm(invalid), invalid);
+
+        let valid = table.alloc(LiteralKind::Int, None);
+        assert_eq!(table.find_root(valid), valid);
+        assert_eq!(table.find_root_imm(valid), valid);
     }
 }

@@ -220,24 +220,6 @@ impl Diagnostic {
         }
     }
 
-    /// Creates an Internal Compiler Error (ICE) diagnostic with optional item context and phase note.
-    pub fn ice_with_context(
-        code: DiagCode,
-        message: impl Into<String>,
-        span: Span,
-        item_name: Option<&str>,
-        phase_note: Option<&str>,
-    ) -> Self {
-        let mut diag = Self::ice(code, message, span);
-        if let Some(item) = item_name {
-            diag = diag.with_note(format!("while compiling item `{item}`"));
-        }
-        if let Some(note) = phase_note {
-            diag = diag.with_note(format!("compiler state note: {note}"));
-        }
-        diag
-    }
-
     /// Attaches a secondary source label to this diagnostic.
     #[must_use]
     pub fn with_label(mut self, span: Span, message: impl Into<String>) -> Self {

@@ -287,7 +287,11 @@ pub(super) fn synth_call_expr(
                     checker.current_observed_effects = checker
                         .current_observed_effects
                         .union(arandu_middle::EffectFlags::FOREIGN);
-                    if !checker.ctx.is_in_unsafe() {
+                    // Intrinsics that only inspect already-valid fat-pointer descriptors
+                    // or produce compile-time constants are safe without `unsafe {}`.
+                    let is_safe_intrinsic = arandu_middle::IntrinsicKind::from_name(&sym.name)
+                        .is_some_and(|k| k.is_safe());
+                    if !is_safe_intrinsic && !checker.ctx.is_in_unsafe() {
                         checker.diagnostics.push(
                             crate::Diagnostic::error(
                                 crate::DiagCode::O013ExternRequiresUnsafe,

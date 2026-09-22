@@ -32,6 +32,30 @@ pub enum IntrinsicKind {
 }
 
 impl IntrinsicKind {
+    /// Returns `true` for intrinsics that are safe to call without an `unsafe` block.
+    ///
+    /// ## Criteria
+    ///
+    /// An intrinsic qualifies as safe when **all** of the following hold:
+    ///
+    /// 1. It only reads a fat-pointer descriptor (`ptr` + `len`) that the
+    ///    type-checker has already validated — it never dereferences the element
+    ///    data, nor does it write to or expose raw pointers.
+    /// 2. It produces no side-effects observable by the Arandu memory model
+    ///    (no I/O, no heap allocation, no mutation through a foreign pointer).
+    /// 3. It is either a **compile-time constant** (`SizeOf`, `AlignOf`) or a
+    ///    **pure fat-pointer projection** (`SliceLen`, `StrBytes`).
+    ///
+    /// `SliceSubslice`, `SliceData`, `SliceFromRaw`, `StrView`, `PtrRead`,
+    /// `PtrWrite`, `PtrOffset`, `Abort` and `BlackBox` remain `unsafe`.
+    #[must_use]
+    pub fn is_safe(self) -> bool {
+        matches!(
+            self,
+            Self::SliceLen | Self::SizeOf | Self::AlignOf | Self::StrBytes
+        )
+    }
+
     /// Classifies an identifier or qualified name into an intrinsic kind.
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {

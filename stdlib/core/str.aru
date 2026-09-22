@@ -1,3 +1,39 @@
+//! Operations over immutable borrowed UTF-8 strings (`str`).
+//!
+//! ## Overview
+//!
+//! `str` is Arandu's primitive string type: a slice of valid immutable UTF-8
+//! bytes. `std.core.str` provides the fundamental allocation-free operations
+//! over it — byte length, comparison, search, byte slicing and
+//! prefix/suffix checks.
+//!
+//! For mutable growable strings that require the heap, use
+//! `std.alloc.string.String`. For allocation-free formatting into a fixed
+//! buffer, use `std.core.fmt.Formatter`.
+//!
+//! ## Example
+//!
+//! ```arandu
+//! import std.core.str as strings
+//!
+//! let s = "hello, world"
+//! strings.isEmpty(s)              // false
+//! strings.lenBytes(s)             // 12
+//! strings.startsWith(s, "hello")  // true
+//! strings.contains(s, "world")    // true
+//! ```
+//!
+//! ## Platform
+//! `native` · `wasm32` · `bare-metal`
+//!
+//! No allocation involved on any supported platform.
+//!
+//! ## See also
+//!
+//! - `std.alloc.string` — heap-allocated mutable `String`
+//! - `std.core.fmt` — allocation-free fixed-buffer formatting
+//! - `std.core.char` — Unicode codepoint operations
+
 module std.core.str
 
 import std.core.intrinsics as intrinsics
@@ -19,6 +55,8 @@ public func isEmpty(s: str): bool {
 
 /// Returns the byte length of the string when encoded as UTF-8.
 ///
+/// Note: this counts UTF-8 **bytes**, not Unicode characters. For codepoint
+/// counting, use `std.core.char`.
 /// # Examples
 /// ```arandu
 /// str.lenBytes("abc") // 3
@@ -28,11 +66,13 @@ public func isEmpty(s: str): bool {
 /// # Complexity
 /// Time: O(1) | Space: O(1)
 public func lenBytes(s: str): uint {
-    let bytes = unsafe { intrinsics.strBytes(s) }
+    let bytes = intrinsics.strBytes(s)
     return slice.len<u8>(bytes)
 }
 
 /// Returns `true` if the string `s` starts with `prefix`.
+/// An empty prefix matches every string. Comparison is bytewise and does not
+/// allocate.
 ///
 /// # Examples
 /// ```arandu
@@ -43,8 +83,8 @@ public func lenBytes(s: str): uint {
 /// # Complexity
 /// Time: O(M) where M is prefix length | Space: O(1)
 public func startsWith(s: str, prefix: str): bool {
-    let source = unsafe { intrinsics.strBytes(s) }
-    let expected = unsafe { intrinsics.strBytes(prefix) }
+    let source = intrinsics.strBytes(s)
+    let expected = intrinsics.strBytes(prefix)
     let source_len = slice.len<u8>(source)
     let expected_len = slice.len<u8>(expected)
     if expected_len > source_len {
@@ -61,6 +101,8 @@ public func startsWith(s: str, prefix: str): bool {
 }
 
 /// Returns `true` if the string `s` ends with `suffix`.
+/// An empty suffix matches every string. Comparison is bytewise and does not
+/// allocate.
 ///
 /// # Examples
 /// ```arandu
@@ -71,8 +113,8 @@ public func startsWith(s: str, prefix: str): bool {
 /// # Complexity
 /// Time: O(M) where M is suffix length | Space: O(1)
 public func endsWith(s: str, suffix: str): bool {
-    let source = unsafe { intrinsics.strBytes(s) }
-    let expected = unsafe { intrinsics.strBytes(suffix) }
+    let source = intrinsics.strBytes(s)
+    let expected = intrinsics.strBytes(suffix)
     let source_len = slice.len<u8>(source)
     let expected_len = slice.len<u8>(expected)
     if expected_len > source_len {
@@ -90,6 +132,8 @@ public func endsWith(s: str, suffix: str): bool {
 }
 
 /// Returns `true` if the string `s` contains the substring `needle`.
+/// An empty needle is always contained, including in an empty source.
+/// This delegates to `find` and does not allocate.
 ///
 /// # Examples
 /// ```arandu
@@ -111,6 +155,8 @@ public func contains(s: str, needle: str): bool {
 }
 
 /// Returns the first byte index of `needle` in `s`, or `Option.None` if not found.
+/// An empty needle matches at index zero. The returned offset counts UTF-8
+/// bytes, not characters; use it as a byte position when slicing.
 ///
 /// # Examples
 /// ```arandu
@@ -121,8 +167,8 @@ public func contains(s: str, needle: str): bool {
 /// # Complexity
 /// Time: O(N * M) | Space: O(1)
 public func find(s: str, needle: str): Option<uint> {
-    let source = unsafe { intrinsics.strBytes(s) }
-    let expected = unsafe { intrinsics.strBytes(needle) }
+    let source = intrinsics.strBytes(s)
+    let expected = intrinsics.strBytes(needle)
     let source_len = slice.len<u8>(source)
     let expected_len = slice.len<u8>(expected)
     if expected_len == 0 {

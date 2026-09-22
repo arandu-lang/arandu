@@ -1,3 +1,36 @@
+//! Borrowed views over contiguous element sequences (`[]T`).
+//!
+//! ## Overview
+//!
+//! A slice `[]T` is a fat-pointer view (pointer + length) over a contiguous
+//! memory block. It does not own the data — it only references it. This makes
+//! slices the canonical way to pass arrays and buffer parts across functions
+//! without copying anything.
+//!
+//! `std.core.slice` provides the fundamental operations: length, subslicing,
+//! checked index access, linear search and comparison. Every checked index
+//! access validates bounds and traps on violation via `intrinsics.abort()`.
+//!
+//! ## Example
+//!
+//! ```arandu
+//! import std.core.slice as slice
+//!
+//! let arr = [10, 20, 30, 40, 50]
+//! let n = slice.len<i32>(arr)               // 5
+//! let sub = slice.subslice<i32>(arr, 1, 2)  // Some([20, 30])
+//! ```
+//!
+//! ## Platform
+//! `native` · `wasm32` · `bare-metal`
+//!
+//! Zero overhead versus a raw pointer on every supported platform.
+//!
+//! ## See also
+//!
+//! - `std.core.str` — specialized slice for UTF-8 bytes
+//! - `std.core.mem` — byte access and memory layout
+
 module std.core.slice
 
 import std.core.intrinsics as intrinsics
@@ -13,9 +46,7 @@ import std.core.intrinsics as intrinsics
 /// # Complexity
 /// Time: O(1) | Space: O(1)
 public func len<T>(s: []T): uint {
-    unsafe {
-        return intrinsics.sliceLen<T>(s)
-    }
+    return intrinsics.sliceLen<T>(s)
 }
 
 /// Returns the raw pointer to the underlying buffer of the slice `[]T`.
@@ -121,7 +152,9 @@ public func subslice<T>(s: []T, start: uint, count: uint): Option<[]T> {
 
 /// Minimal allocation-free iterator over shared element borrows.
 public struct Iterator<T> {
+    /// Borrowed slice being traversed.
     view: []T
+    /// Next slice index to return.
     index: uint
 }
 
@@ -155,7 +188,9 @@ public func Iterator.next<T>(self: mut ref Iterator<T>): Option<ref T> {
 
 /// Result of splitting a slice into two contiguous subviews.
 public struct Split<T> {
+    /// Borrowed elements before the split index.
     public left: []T
+    /// Borrowed elements from the split index onward.
     public right: []T
 }
 

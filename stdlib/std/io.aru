@@ -1,3 +1,36 @@
+//! I/O traits and error types for OS-backed operations.
+//!
+//! ## Overview
+//!
+//! `std.io` defines the highest-level I/O contracts: `IoErrorKind` to
+//! categorize OS errors without strings, `IoError` as a structured error
+//! type, and the `Read` and `Write` interfaces implemented by file handles,
+//! sockets and buffers.
+//!
+//! It is the abstraction layer between application code and OS syscalls. For
+//! filesystem access, use `std.fs`. For networking, use `std.net`. For OS-free
+//! I/O (bare-metal, Wasm), use `std.core.io`.
+//!
+//! ## Example
+//!
+//! ```arandu
+//! import std.io as io
+//!
+//! let e = io.newIoError(io.IoErrorKind.NotFound, 2)
+//! ```
+//!
+//! ## Platform
+//! `native`
+//!
+//! Linux, macOS and Windows. wasm32 works with WASI or host imports;
+//! bare-metal requires an OS — use `std.core.io` there.
+//!
+//! ## See also
+//!
+//! - `std.fs` — filesystem operations
+//! - `std.net` — TCP/UDP networking
+//! - `std.core.io` — OS-free freestanding I/O
+
 module std.io
 
 import std.core.slice as slice
@@ -5,23 +38,35 @@ import std.core.intrinsics as intrinsics
 
 /// Standard I/O error categories, avoiding stringly-typed error messages.
 public enum IoErrorKind {
+    /// The requested resource does not exist.
     NotFound,
+    /// Access was denied by the host.
     PermissionDenied,
+    /// The requested resource already exists.
     AlreadyExists,
+    /// The operation cannot complete immediately.
     WouldBlock,
+    /// The supplied input is invalid.
     InvalidInput,
+    /// The other end of a pipe or stream is closed.
     BrokenPipe,
+    /// Input ended before the requested data was available.
     UnexpectedEof,
+    /// An error outside the named categories.
     Other,
 }
 
 /// Structured I/O error carrying the category kind and the OS error code.
 public struct IoError {
+    /// Error category.
     kind: IoErrorKind
+    /// Platform error code when available.
     os_code: int
 }
 
-/// Creates a new `IoError`.
+/// Builds an error from its category and portable or host-supplied code.
+///
+/// This only stores the values; it does not query the operating system.
 public func newIoError(kind: IoErrorKind, os_code: int): IoError {
     return IoError {
         kind: kind,
@@ -79,13 +124,20 @@ public interface BufRead {
 
 /// A buffered reader wrapper providing in-memory staging for stream inputs.
 public struct BufReader<R: Read> {
+    /// Wrapped reader or writer.
     inner: R
+    /// Backing buffer.
     buf: []u8
+    /// Current byte position.
     pos: uint
+    /// Usable buffer capacity.
     cap: uint
 }
 
-/// Creates a new `BufReader` wrapping `inner` with a staging buffer `buf`.
+/// Wraps `inner` with a caller-owned staging slice, initially empty.
+///
+/// The wrapper borrows `buf` and does not allocate it. Keep the buffer valid
+/// while the reader is in use; a zero-length buffer cannot stage any bytes.
 public func newBufReader<R: Read>(inner: R, buf: []u8): BufReader<R> {
     return BufReader<R> {
         inner: inner,
@@ -103,7 +155,10 @@ public func BufReader.available<R: Read>(self: ref BufReader<R>): uint {
     return self.cap - self.pos
 }
 
-/// Marks `amt` bytes as consumed from the internal buffer.
+/// Advances past up to `amt` available bytes in the staging buffer.
+///
+/// Passing more than `available()` consumes all available bytes. It does not
+/// read from `inner` or allocate.
 public func BufReader.consume<R: Read>(self: mut ref BufReader<R>, amt: uint): void {
     let avail = self.available()
     if amt >= avail {
@@ -115,6 +170,10 @@ public func BufReader.consume<R: Read>(self: mut ref BufReader<R>, amt: uint): v
 
 /// Refills the buffer from the underlying reader if exhausted.
 /// Returns the number of bytes available in the buffer.
+///
+/// When bytes remain, no underlying read occurs. When exhausted, errors from
+/// `inner.read` are returned unchanged; a zero result indicates end of input
+/// or no progress as reported by the underlying reader.
 public func BufReader.fillBuf<R: Read>(self: mut ref BufReader<R>): Result<uint, IoError> {
     if self.pos >= self.cap {
         self.pos = 0
@@ -125,7 +184,12 @@ public func BufReader.fillBuf<R: Read>(self: mut ref BufReader<R>): Result<uint,
     return Result.Ok(self.cap - self.pos)
 }
 
-/// Reads bytes from the buffered staging into `out_buf`.
+/// Copies up to `out_buf` length from staged bytes, refilling if needed.
+///
+/// Returns `Ok(0)` for an empty destination or when a refill yields zero.
+/// A short read is possible; call again to request further bytes. Errors
+/// from the underlying reader propagate without changing the destination
+/// after the failed refill.
 public func BufReader.read<R: Read>(self: mut ref BufReader<R>, out_buf: mut ref []u8): Result<uint, IoError> {
     let target_len = slice.len<u8>(*out_buf)
     if target_len == 0 {
@@ -150,12 +214,18 @@ public func BufReader.read<R: Read>(self: mut ref BufReader<R>, out_buf: mut ref
 
 /// A buffered writer wrapper providing in-memory batching for stream outputs.
 public struct BufWriter<W: Write> {
+    /// Wrapped reader or writer.
     inner: W
+    /// Backing buffer.
     buf: []u8
+    /// Number of bytes pending in the output buffer.
     buffered_count: uint
 }
 
-/// Creates a new `BufWriter` wrapping `inner` with a staging buffer `buf`.
+/// Wraps `inner` with a caller-owned output staging slice.
+///
+/// The wrapper borrows `buf` and allocates nothing. Data may remain staged
+/// until `flush` or a later write forces a flush.
 public func newBufWriter<W: Write>(inner: W, buf: []u8): BufWriter<W> {
     return BufWriter<W> {
         inner: inner,
@@ -169,17 +239,52 @@ public func BufWriter.buffered<W: Write>(self: ref BufWriter<W>): uint {
     return self.buffered_count
 }
 
-/// Flushes the internal buffer to the underlying writer sink.
+/// Writes staged bytes to `inner`, then calls `inner.flush`.
+///
+/// Loops until every staged byte is accepted, so short writes from
+/// `inner.write` advance without discarding the remainder. A zero-length
+/// write with pending data returns `Err(Other)`, and a count beyond the
+/// pending length returns `Err(InvalidInput)`; both preserve staged bytes
+/// for retry. Errors from `inner.write` propagate with the buffer unchanged.
 public func BufWriter.flush<W: Write>(self: mut ref BufWriter<W>): Result<bool, IoError> {
-    if self.buffered_count > 0 {
-        let s = unsafe { intrinsics.sliceSubslice<u8>(self.buf, 0, self.buffered_count) }
-        let _ = self.inner.write(s)?
-        self.buffered_count = 0
+    while self.buffered_count > 0 {
+        let pending = self.buffered_count
+        let s = unsafe { intrinsics.sliceSubslice<u8>(self.buf, 0, pending) }
+        let mut n: uint = 0
+        match self.inner.write(s) {
+            Ok(count) => {
+                n = count
+            }
+            Err(e) => {
+                return Result.Err(e)
+            }
+        }
+        if n == 0 {
+            return Result.Err(newIoError(IoErrorKind.Other, 8))
+        }
+        if n > pending {
+            return Result.Err(newIoError(IoErrorKind.InvalidInput, 5))
+        }
+        if n == pending {
+            self.buffered_count = 0
+        } else {
+            let mut i: uint = 0
+            while i + n < pending {
+                self.buf[i] = self.buf[n + i]
+                i = i + 1
+            }
+            self.buffered_count = pending - n
+        }
     }
     return self.inner.flush()
 }
 
-/// Writes bytes into the buffer, flushing to the inner writer when full.
+/// Stages `data`, flushing first if it would not fit.
+///
+/// When `data.len` is at least the staging capacity, it flushes and writes
+/// directly to `inner`; the returned count can then be shorter than
+/// `data.len`. Smaller writes return their full length after staging. Errors
+/// from flushing or the underlying writer propagate.
 public func BufWriter.write<W: Write>(self: mut ref BufWriter<W>, data: []u8): Result<uint, IoError> {
     let total = slice.len<u8>(data)
     let cap = slice.len<u8>(self.buf)

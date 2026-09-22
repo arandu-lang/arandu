@@ -79,6 +79,14 @@ fn has_more_data(file: &mut std::fs::File) -> Result<bool, std::io::Error> {
     read_retry(file, &mut probe).map(|read| read != 0)
 }
 
+fn next_read_capacity(capacity: usize) -> usize {
+    if capacity == 0 {
+        INITIAL_GROWTH_CAPACITY.min(MAX_BUFFER_SIZE)
+    } else {
+        capacity.saturating_mul(2).min(MAX_BUFFER_SIZE)
+    }
+}
+
 /// Reads the whole file into an owned, `ar_vec_malloc`-compatible buffer.
 ///
 /// Returns `(data, len, capacity)`; `data` is `NULL` when the content is empty.
@@ -122,11 +130,7 @@ fn read_all_impl(ptr: *const u8, len: isize) -> Result<(*mut u8, usize, usize), 
                     }
                 }
             }
-            let next_capacity = if capacity == 0 {
-                INITIAL_GROWTH_CAPACITY.min(MAX_BUFFER_SIZE)
-            } else {
-                (capacity * 2).min(MAX_BUFFER_SIZE)
-            };
+            let next_capacity = next_read_capacity(capacity);
             let grown = unsafe { ar_vec_realloc(data, capacity, next_capacity) };
             if grown.is_null() {
                 unsafe { ar_vec_buf_free(data, capacity) };
@@ -452,6 +456,14 @@ mod tests {
     fn directory_blob_preflight_checks_overflow_and_limits() {
         assert!(directory_blob_len(1, 3).is_some());
         assert!(directory_blob_len(usize::MAX, usize::MAX).is_none());
+    }
+
+    #[test]
+    fn read_capacity_growth_saturates_at_the_abi_limit() {
+        assert_eq!(next_read_capacity(0), INITIAL_GROWTH_CAPACITY);
+        assert_eq!(next_read_capacity(MAX_BUFFER_SIZE / 2), MAX_BUFFER_SIZE - 1);
+        assert_eq!(next_read_capacity(MAX_BUFFER_SIZE / 2 + 1), MAX_BUFFER_SIZE);
+        assert_eq!(next_read_capacity(MAX_BUFFER_SIZE), MAX_BUFFER_SIZE);
     }
 
     /// Keeps the lossy string alive while calling a host with a fat-ptr pair.

@@ -326,7 +326,7 @@ public func ArrayViewMut.set<T>(self: mut ref ArrayViewMut<T>, r: uint, c: uint,
 /// Returns `None` when the region exceeds the parent shape. The result keeps
 /// the original strides and does not copy or allocate elements.
 public func ArrayViewMut.sliceMut<T>(self: mut ref ArrayViewMut<T>, rStart: uint, rCount: uint, cStart: uint, cCount: uint): Option<ArrayViewMut<T>> {
-    if rStart + rCount > self.rows || cStart + cCount > self.cols {
+    if rStart > self.rows || cStart > self.cols || rCount > self.rows - rStart || cCount > self.cols - cStart {
         return Option.None
     }
     let offset = (rStart as int) * self.rowStride + (cStart as int) * self.colStride

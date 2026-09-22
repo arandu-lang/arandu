@@ -6,8 +6,8 @@
 //!
 //! ## Safety
 //! Destination views must have compatible shapes and must not alias inputs
-//! where the kernel requires exclusive output. `gemmRequirements` exposes
-//! the current scratch-space estimate before calling `gemmInto`.
+//! where the kernel requires exclusive output. `gemmRequirements` reports the
+//! scratch space currently required by `gemmInto` (zero bytes).
 //!
 //! ## Allocations
 //! Kernels write into caller-provided storage and do not own result buffers.
@@ -160,25 +160,22 @@ public func mulAddInto(
     return true
 }
 
-/// Estimates scratch bytes for a GEMM shape `(M × K) * (K × N)`.
+/// Returns the scratch bytes required for a GEMM shape `(M × K) * (K × N)`.
 ///
-/// The current formula is `(rowsA + colsB) * 8`; `colsA` does not affect the
-/// result. It is a sizing estimate, not an exact query of `float` layout or
-/// of the space actually reserved by `gemmInto`.
+/// The current scalar kernel uses no scratch storage. The shape parameters
+/// remain in the API so callers can query requirements before execution and
+/// future kernels can add workspace without changing the call pattern.
 public func gemmRequirements(rowsA: uint, colsA: uint, colsB: uint): uint {
-    // Packing workspace: buffer for temporary tile packing (rowsA + colsB) * sizeof(float)
-    let packFloats = rowsA + colsB
-    return packFloats * 8
+    return 0
 }
 
 /// Computes general matrix multiplication: `out = a * b` (GEMM).
 ///
 /// `a` has shape M × K, `b` has shape K × N, and `out` must have shape M × N.
-/// A mismatch returns `false` before writing. The function reserves space
-/// for N `float` elements from `scratch`; if that fails, it returns `false`.
-/// The reservation is rewound before return, so earlier scratch allocations
-/// remain available. The multiplication uses nested scalar loops and writes
-/// every destination cell. It performs no heap allocation itself.
+/// A mismatch returns `false` before writing. The scalar implementation uses
+/// no scratch space; `scratch` is retained in the API for compatibility. The
+/// multiplication uses nested scalar loops and writes every destination cell
+/// without heap allocation.
 public func gemmInto(
     a: ref view.ArrayView<float>,
     b: ref view.ArrayView<float>,
@@ -190,16 +187,6 @@ public func gemmInto(
     let n = b.cols()
 
     if b.rows() != kCount || out.rows() != m || out.cols() != n {
-        return false
-    }
-
-    // Scoped scratch checkpoint for temporary workspace (DoD)
-    let mark = scratch.checkpoint()
-
-    // Workspace buffer for row accumulators or packing
-    let optBuffer = scratch.allocTyped<float>(n)
-    if optBuffer is Option.None {
-        scratch.rewind(mark)
         return false
     }
 
@@ -223,7 +210,5 @@ public func gemmInto(
         i = i + 1
     }
 
-    // Rollback scratch workspace in O(1)
-    scratch.rewind(mark)
     return true
 }

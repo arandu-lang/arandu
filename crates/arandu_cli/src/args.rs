@@ -92,8 +92,6 @@ pub struct CliInvocation {
     pub genref_report: bool,
     pub cfg: bool,
     pub ascii: bool,
-    #[allow(dead_code)]
-    pub color: ColorChoice,
     pub args: Vec<String>,
     /// Arguments following `--`, forwarded verbatim to an executed program.
     pub program_args: Vec<String>,
@@ -237,7 +235,6 @@ pub fn parse_invocation(raw_args: impl IntoIterator<Item = String>) -> CliInvoca
         genref_report,
         cfg,
         ascii,
-        color,
         args,
         program_args,
         z_flags,

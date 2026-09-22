@@ -181,30 +181,6 @@ pub fn publish_wasm_artifact(
     })
 }
 
-#[allow(dead_code)]
-pub fn current_wasm_artifact(
-    project_root: &Path,
-    profile: NativeProfile,
-    triple: &str,
-) -> Option<PublishedNativeArtifact> {
-    let layout = layout_for_target(project_root, profile.directory(), triple);
-    let state_path = layout.profile_root.join("build-state.json");
-    let bytes = fs::read(&state_path).ok()?;
-    let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-    let relative = value.get("artifact")?.as_str()?;
-    let digest = value.get("artifact_digest")?.as_str()?;
-    let artifact_path = layout.profile_root.join(relative);
-    let wasm_bytes = fs::read(&artifact_path).ok()?;
-    if !wasm_bytes.is_empty() && blake3::hash(&wasm_bytes).to_hex().as_str() == digest {
-        Some(PublishedNativeArtifact {
-            path: artifact_path,
-            digest: digest.to_string(),
-        })
-    } else {
-        None
-    }
-}
-
 pub fn publish_native_artifact(
     project_root: &Path,
     package: &str,

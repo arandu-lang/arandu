@@ -101,9 +101,12 @@ pub fn resolve_imports_and_bodies_with_poll(
     result: ResolutionResult,
     mut poll: impl FnMut(),
 ) -> ResolutionResult {
+    // The resolver mutates the seed tables. `unwrap_or_clone` keeps the
+    // single-owner case zero-copy (fresh `resolve_local` seed) and copies
+    // exactly once when the seed is still shared with a memoized query.
     let mut resolver = Resolver {
-        symbols: result.symbols,
-        resolved: result.resolved,
+        symbols: std::sync::Arc::unwrap_or_clone(result.symbols),
+        resolved: std::sync::Arc::unwrap_or_clone(result.resolved),
         docs: result.docs,
         diagnostics: result.diagnostics,
         pool: &program.pool,
@@ -505,8 +508,8 @@ pub fn resolve_imports_and_bodies_with_poll(
 
     ResolutionResult {
         is_cycle_fallback: false,
-        symbols: resolver.symbols,
-        resolved: resolver.resolved,
+        symbols: std::sync::Arc::new(resolver.symbols),
+        resolved: std::sync::Arc::new(resolver.resolved),
         docs: resolver.docs,
         diagnostics: resolver.diagnostics,
     }
@@ -677,8 +680,8 @@ pub fn resolve_with_symbols(
 
     ResolutionResult {
         is_cycle_fallback: false,
-        symbols: resolver.symbols,
-        resolved: resolver.resolved,
+        symbols: std::sync::Arc::new(resolver.symbols),
+        resolved: std::sync::Arc::new(resolver.resolved),
         docs: resolver.docs,
         diagnostics: resolver.diagnostics,
     }

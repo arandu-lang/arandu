@@ -91,8 +91,8 @@ impl<'a> Resolver<'a> {
 
         ResolutionResult {
             is_cycle_fallback: false,
-            symbols: self.symbols,
-            resolved: self.resolved,
+            symbols: std::sync::Arc::new(self.symbols),
+            resolved: std::sync::Arc::new(self.resolved),
             docs: self.docs,
             diagnostics: self.diagnostics,
         }

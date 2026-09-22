@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::method::contains_generic_params;
 use arandu_lexer::Span;
 use arandu_parser::TypeName;
@@ -396,8 +398,9 @@ pub(crate) fn synth_variant_sugar(
                 return checker.intern(ArType::Error);
             };
             // Record resolution for HIR (same as TypePath member).
-            checker.resolved.value_ref(span, variant_sym);
-            checker.resolved.expr_ref(expr, variant_sym);
+            let resolved = Arc::make_mut(&mut checker.resolved);
+            resolved.value_ref(span, variant_sym);
+            resolved.expr_ref(expr, variant_sym);
 
             // Get variant constructor signature with expected generic parameters substituted.
             let cache_key = (variant_sym, expected_args.clone());

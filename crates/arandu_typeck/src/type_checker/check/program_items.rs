@@ -138,8 +138,8 @@ pub fn check_item_body_only(
     target_info: TargetInfo,
 ) -> TypeCheckResult {
     let mut checker = TypeChecker::new(
-        Arc::unwrap_or_clone(Arc::clone(&signatures.symbols)),
-        Arc::unwrap_or_clone(Arc::clone(&signatures.resolved)),
+        Arc::clone(&signatures.symbols),
+        Arc::clone(&signatures.resolved),
         Vec::new(),
         &program.pool,
         target_info,
@@ -211,8 +211,8 @@ pub fn check_non_func_bodies_only(
     target_info: TargetInfo,
 ) -> TypeCheckResult {
     let mut checker = TypeChecker::new(
-        Arc::unwrap_or_clone(Arc::clone(&signatures.symbols)),
-        Arc::unwrap_or_clone(Arc::clone(&signatures.resolved)),
+        Arc::clone(&signatures.symbols),
+        Arc::clone(&signatures.resolved),
         Vec::new(),
         &program.pool,
         target_info,

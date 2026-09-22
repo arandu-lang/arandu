@@ -1,7 +1,7 @@
 //! Canonical, byte-deterministic `.zip` archive generator for Windows SDK (RFC 0020).
 
 use std::fs;
-use std::io::Write;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use super::ArchiveOptions;
@@ -74,10 +74,14 @@ pub fn create_zip(opts: &ArchiveOptions) -> Result<(), String> {
         zip.start_file(&arcname, options)
             .map_err(|e| format!("failed to start zip entry '{arcname}': {e}"))?;
 
-        let contents =
-            fs::read(path).map_err(|e| format!("failed to read file '{}': {e}", path.display()))?;
-        zip.write_all(&contents)
-            .map_err(|e| format!("failed to write content to zip entry '{arcname}': {e}"))?;
+        let mut input = fs::File::open(path)
+            .map_err(|e| format!("failed to open file '{}': {e}", path.display()))?;
+        io::copy(&mut input, &mut zip).map_err(|e| {
+            format!(
+                "failed to stream file '{}' into zip entry '{arcname}': {e}",
+                path.display()
+            )
+        })?;
     }
 
     zip.finish()

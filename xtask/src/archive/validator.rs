@@ -10,6 +10,22 @@ use serde_json::Value as JsonValue;
 use tar::Archive as TarArchive;
 use zip::ZipArchive;
 
+const MAX_ARCHIVE_ENTRIES: usize = 100_000;
+const MAX_ARCHIVE_UNCOMPRESSED_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+const MAX_MANIFEST_BYTES: usize = 1024 * 1024;
+
+fn read_limited(reader: &mut impl Read, limit: usize) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::with_capacity(limit.min(8192));
+    reader
+        .take(limit as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("failed to read archive metadata: {error}"))?;
+    if bytes.len() > limit {
+        return Err(format!("archive metadata exceeds the {limit}-byte limit"));
+    }
+    Ok(bytes)
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ValidationStats {
     pub files: usize,
@@ -51,8 +67,20 @@ pub fn validate_tar_gz(
         .entries()
         .map_err(|e| format!("failed to read tar entries: {e}"))?;
 
+    let mut entry_count = 0usize;
+    let mut total_size = 0u64;
     for entry in entries {
         let mut entry = entry.map_err(|e| format!("corrupted tar entry: {e}"))?;
+        entry_count += 1;
+        if entry_count > MAX_ARCHIVE_ENTRIES {
+            return Err(format!(
+                "archive exceeds the {MAX_ARCHIVE_ENTRIES}-entry limit"
+            ));
+        }
+        total_size = total_size
+            .checked_add(entry.size())
+            .filter(|size| *size <= MAX_ARCHIVE_UNCOMPRESSED_BYTES)
+            .ok_or_else(|| "archive exceeds the 4 GiB uncompressed validation limit".to_string())?;
         let name = entry
             .path()
             .map_err(|e| format!("invalid tar entry path: {e}"))?
@@ -101,11 +129,7 @@ pub fn validate_tar_gz(
         } else if entry_type.is_file() {
             file_count += 1;
             if name == format!("{root}/release-manifest.json") {
-                let mut bytes = Vec::new();
-                entry
-                    .read_to_end(&mut bytes)
-                    .map_err(|e| format!("failed to read release-manifest: {e}"))?;
-                manifest_bytes = Some(bytes);
+                manifest_bytes = Some(read_limited(&mut entry, MAX_MANIFEST_BYTES)?);
             }
         } else if !entry_type.is_dir() {
             return Err(format!(
@@ -158,6 +182,11 @@ pub fn validate_zip(
         .map_err(|e| format!("failed to open zip archive '{}': {e}", path.display()))?;
     let mut zip = ZipArchive::new(file)
         .map_err(|e| format!("failed to read zip archive '{}': {e}", path.display()))?;
+    if zip.len() > MAX_ARCHIVE_ENTRIES {
+        return Err(format!(
+            "archive exceeds the {MAX_ARCHIVE_ENTRIES}-entry limit"
+        ));
+    }
 
     let required: HashSet<String> = [
         format!("{root}/bin/arandu.exe"),
@@ -176,10 +205,15 @@ pub fn validate_zip(
     let mut manifest_bytes = None;
     let mut file_count = 0;
 
+    let mut total_size = 0u64;
     for i in 0..zip.len() {
         let mut entry = zip
             .by_index(i)
             .map_err(|e| format!("corrupted zip entry #{i}: {e}"))?;
+        total_size = total_size
+            .checked_add(entry.size())
+            .filter(|size| *size <= MAX_ARCHIVE_UNCOMPRESSED_BYTES)
+            .ok_or_else(|| "archive exceeds the 4 GiB uncompressed validation limit".to_string())?;
         let name = entry.name().to_string();
 
         validate_path_safety(&name)?;
@@ -209,11 +243,7 @@ pub fn validate_zip(
 
         file_count += 1;
         if name == format!("{root}/release-manifest.json") {
-            let mut bytes = Vec::new();
-            entry
-                .read_to_end(&mut bytes)
-                .map_err(|e| format!("failed to read release-manifest: {e}"))?;
-            manifest_bytes = Some(bytes);
+            manifest_bytes = Some(read_limited(&mut entry, MAX_MANIFEST_BYTES)?);
         }
     }
 
@@ -316,4 +346,16 @@ fn verify_manifest_json(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod bounded_read_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn rejects_archive_metadata_over_the_limit() {
+        assert_eq!(read_limited(&mut Cursor::new(b"ok"), 2).unwrap(), b"ok");
+        assert!(read_limited(&mut Cursor::new(b"too long"), 2).is_err());
+    }
 }

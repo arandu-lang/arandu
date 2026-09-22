@@ -775,14 +775,9 @@ mod tests {
         use arandu_middle::{ResolutionResult, Span, SymbolKind};
         let result = |kind| {
             let mut result = ResolutionResult::cycle_fallback();
-            result
-                .symbols
-                .define(
-                    result.symbols.global_scope(),
-                    "value",
-                    kind,
-                    Span::new(0, 0, 5),
-                )
+            let scope = result.symbols.global_scope();
+            std::sync::Arc::make_mut(&mut result.symbols)
+                .define(scope, "value", kind, Span::new(0, 0, 5))
                 .unwrap();
             result
         };

@@ -415,7 +415,7 @@ fn resolve_generic_callee_symbol(
                 && path.len() == 1
                 && let Some(sym) = checker.symbols.lookup_module_member(&path[0], field)
             {
-                checker.resolved.expr_ref(callee, sym);
+                Arc::make_mut(&mut checker.resolved).expr_ref(callee, sym);
                 return Some(sym);
             }
             let base_ty_id = checker

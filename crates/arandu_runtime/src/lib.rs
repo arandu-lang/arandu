@@ -16,6 +16,8 @@
 //! ("keep in sync" markers in `arandu_backend_c::emitter`) because generated C
 //! must link without a Rust host.
 
+mod ffi;
+
 pub mod fs_runtime;
 pub mod gen_runtime;
 pub mod gen_runtime_gold;

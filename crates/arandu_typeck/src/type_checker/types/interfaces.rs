@@ -958,7 +958,9 @@ mod tests {
             Span::new(0, 0, 0)
         ));
 
-        checker.symbols.associated_members.clear();
+        std::sync::Arc::make_mut(&mut checker.symbols)
+            .associated_members
+            .clear();
         assert!(!type_satisfies_interface(
             &mut checker,
             &concrete,

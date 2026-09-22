@@ -280,13 +280,11 @@ fn requests_awaiting_delivery_are_bounded_and_rejection_does_not_hold_discovery(
         parse_uri("file:///unused.aru").expect("URI"),
         lsp_types::Position::default(),
     );
-    for _ in 0..3 {
-        let job = job_rx
-            .recv_timeout(Duration::from_secs(5))
-            .expect("rejected response");
-        assert!(matches!(job, JobResult::Rejected { .. }));
-        handle_job_result(&connection, &mut state, &pool, &job_tx, job).expect("deliver rejection");
-    }
+    // The event loop never sends into the bounded job channel, so saturation
+    // rejections are staged on the state and drained by the loop itself.
+    assert_eq!(state.deferred_rejections.len(), 3);
+    drain_deferred_rejections(&connection, &mut state, &pool, &job_tx).expect("deliver rejection");
+    assert!(state.deferred_rejections.is_empty());
     assert_eq!(state.pending_requests.len(), MAX_PENDING_REQUESTS);
     release_tx.send(()).expect("release worker");
     for _ in 0..MAX_PENDING_REQUESTS {

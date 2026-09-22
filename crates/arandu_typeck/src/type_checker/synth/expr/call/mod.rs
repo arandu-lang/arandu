@@ -6,6 +6,8 @@ mod instantiate;
 pub(crate) use arg::check_call_arg;
 pub(crate) use instantiate::infer_and_instantiate_func;
 
+use std::sync::Arc;
+
 use arandu_lexer::Span;
 use arandu_parser::CatchHandler;
 use arandu_parser::ast_pool::{ExprId, ExprKind};
@@ -576,7 +578,7 @@ pub(super) fn synth_call_expr(
                                     .symbols
                                     .lookup_associated_member(struct_id, &field_name)
                             {
-                                checker.resolved.value_ref(field_span, sym);
+                                Arc::make_mut(&mut checker.resolved).value_ref(field_span, sym);
                             }
                             return Some(ret);
                         }
@@ -644,7 +646,8 @@ pub(super) fn synth_call_expr(
                             ) {
                                 is_direct = true;
                                 callee_func_sym = Some(sym_id);
-                                checker.resolved.expr_ref(current_callee, sym_id);
+                                Arc::make_mut(&mut checker.resolved)
+                                    .expr_ref(current_callee, sym_id);
                             }
                         }
                     }

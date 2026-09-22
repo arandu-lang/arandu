@@ -45,7 +45,7 @@ fn run(connection: Connection) -> Result<(), Box<dyn Error + Sync + Send>> {
     let initialized = capabilities::initialize_connection(&connection)?;
     let mut state = ServerState::new();
     let pool = WorkerPool::new(4)?;
-    let (job_tx, job_rx) = crossbeam_channel::unbounded::<JobResult>();
+    let (job_tx, job_rx) = crossbeam_channel::bounded::<JobResult>(dispatcher::JOB_RESULT_CAPACITY);
     if initialized.work_done_progress {
         connection.sender.send(Message::Request(Request::new(
             RequestId::from(dispatcher::WORKSPACE_PROGRESS_REQUEST_ID.to_owned()),

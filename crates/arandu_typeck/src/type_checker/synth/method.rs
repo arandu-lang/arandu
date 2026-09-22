@@ -1,5 +1,7 @@
 //! Method call synthesis, auto-ref / auto-deref, and receiver generic instantiation.
 
+use std::sync::Arc;
+
 use arandu_middle::SymbolId;
 use arandu_parser::ast_pool::{ExprId, ExprKind, IndexRange};
 
@@ -407,7 +409,7 @@ pub(crate) fn synth_method_call(
     }
 
     if let Some(sym) = method_sym_recorded {
-        checker.resolved.value_ref(field_span, sym);
+        Arc::make_mut(&mut checker.resolved).value_ref(field_span, sym);
     }
     let func_ty = ArType::func(&params, ret, &checker.type_info.type_interner);
     let func_id = checker.intern(func_ty);

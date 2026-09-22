@@ -114,11 +114,11 @@ pub fn check_bodies_only(
     program: &Program,
     target_info: TargetInfo,
 ) -> TypeCheckResult {
-    // PERF.5: Arc clone is O(1); unwrap_or_clone only deep-copies when this
-    // result is still shared with other Salsa consumers.
+    // PERF.5: Arc clone is O(1); the tables stay shared with `signatures`
+    // until the first `Arc::make_mut` mutation inside the body check.
     let mut checker = TypeChecker::new(
-        Arc::unwrap_or_clone(Arc::clone(&signatures.symbols)),
-        Arc::unwrap_or_clone(Arc::clone(&signatures.resolved)),
+        Arc::clone(&signatures.symbols),
+        Arc::clone(&signatures.resolved),
         signatures.diagnostics.clone(),
         &program.pool,
         target_info,
@@ -147,8 +147,8 @@ pub use check::program_items::{
 // ── TypeChecker state ───────────────────────────────────────────────
 
 pub struct TypeChecker<'a> {
-    pub symbols: SymbolTable,
-    pub resolved: ResolvedNames,
+    pub symbols: Arc<SymbolTable>,
+    pub resolved: Arc<ResolvedNames>,
     pub ctx: TyCtx,
     pub type_info: TypeInfo,
     pub diagnostics: Vec<Diagnostic>,
@@ -203,8 +203,8 @@ impl TargetInfo {
 impl<'a> TypeChecker<'a> {
     #[must_use]
     pub fn new(
-        symbols: SymbolTable,
-        resolved: ResolvedNames,
+        symbols: impl Into<Arc<SymbolTable>>,
+        resolved: impl Into<Arc<ResolvedNames>>,
         diagnostics: Vec<Diagnostic>,
         pool: &'a AstPool,
         target_info: TargetInfo,
@@ -221,16 +221,16 @@ impl<'a> TypeChecker<'a> {
 
     #[must_use]
     pub fn new_with_interner(
-        symbols: SymbolTable,
-        resolved: ResolvedNames,
+        symbols: impl Into<Arc<SymbolTable>>,
+        resolved: impl Into<Arc<ResolvedNames>>,
         diagnostics: Vec<Diagnostic>,
         pool: &'a AstPool,
         type_interner: TypeInterner,
         target_info: TargetInfo,
     ) -> Self {
         Self {
-            symbols,
-            resolved,
+            symbols: symbols.into(),
+            resolved: resolved.into(),
             ctx: TyCtx::new(),
             type_info: TypeInfo::with_interner(type_interner),
             diagnostics,
@@ -469,8 +469,8 @@ impl TypeChecker<'_> {
     #[must_use]
     pub fn finish(self) -> TypeCheckResult {
         TypeCheckResult {
-            symbols: Arc::new(self.symbols),
-            resolved: Arc::new(self.resolved),
+            symbols: self.symbols,
+            resolved: self.resolved,
             type_info: Arc::new(self.type_info),
             diagnostics: self.diagnostics,
         }

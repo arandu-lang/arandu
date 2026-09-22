@@ -7,6 +7,14 @@ use std::arch::aarch64::*;
 /// # Safety
 /// The caller must ensure that the CPU supports ARM Neon instructions.
 pub unsafe fn neon_movemask(cmp_mask: uint8x16_t) -> u16 {
+    // SAFETY: The caller guarantees Neon support — exactly the `# Safety`
+    // precondition documented above. `vld1q_u8` reads only the 16 bytes of the
+    // local `weights_data` array. The `std::mem::transmute` reinterprets a 128-bit
+    // NEON vector register as the 128-bit vector type expected by
+    // `vgetq_lane_u64`; both sides are 128-bit NEON vector types of identical
+    // size, so every bit is preserved and no memory outside the register is
+    // accessed. The lane indices `0` and `1` are compile-time constants within the
+    // two-lane range of `uint64x2_t`.
     unsafe {
         let weights_data: [u8; 16] = [1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, 64, 128];
         let weights = vld1q_u8(weights_data.as_ptr());
@@ -30,6 +38,13 @@ pub unsafe fn neon_movemask(cmp_mask: uint8x16_t) -> u16 {
 /// # Safety
 /// The caller must ensure that the CPU supports the Neon ARM instruction set.
 pub unsafe fn skip_whitespace(bytes: &[u8]) -> (usize, usize, Option<usize>) {
+    // SAFETY: The caller guarantees Neon support — exactly the `# Safety`
+    // precondition documented above, which `#[target_feature(enable = "neon")]`
+    // gates this body to; that guarantee also upholds the precondition of the
+    // `neon_movemask` calls below. Every 16-byte read uses `vld1q_u8` and only
+    // executes while `i + 16 <= bytes.len()`, so it never reads past the end of
+    // the slice. The tail `&bytes[i..]` handed to the scalar backend is a valid
+    // subslice because the loop maintains `i <= bytes.len()`.
     unsafe {
         let mut i = 0;
         let mut newlines = 0;
@@ -97,6 +112,13 @@ pub unsafe fn skip_whitespace(bytes: &[u8]) -> (usize, usize, Option<usize>) {
 /// # Safety
 /// The caller must ensure that the CPU supports the Neon ARM instruction set.
 pub unsafe fn scan_identifier(bytes: &[u8]) -> usize {
+    // SAFETY: The caller guarantees Neon support — exactly the `# Safety`
+    // precondition documented above, which `#[target_feature(enable = "neon")]`
+    // gates this body to; that guarantee also upholds the precondition of the
+    // `neon_movemask` calls below. Every 16-byte read uses `vld1q_u8` and only
+    // executes while `i + 16 <= bytes.len()`, so it never reads past the end of
+    // the slice. The tail `&bytes[i..]` handed to the scalar backend is a valid
+    // subslice because the loop maintains `i <= bytes.len()`.
     unsafe {
         let mut i = 0;
 

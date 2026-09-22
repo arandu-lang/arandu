@@ -74,8 +74,8 @@ pub fn local_symbols(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Resol
         }),
         Err(_) => ResolutionResult {
             is_cycle_fallback: false,
-            symbols: arandu_semantics::SymbolTable::default(),
-            resolved: arandu_semantics::ResolvedNames::default(),
+            symbols: Arc::new(arandu_semantics::SymbolTable::default()),
+            resolved: Arc::new(arandu_semantics::ResolvedNames::default()),
             docs: arandu_semantics::DocCommentMap::default(),
             diagnostics: vec![],
         },
@@ -251,10 +251,10 @@ fn signatures_from_program(
     program: &Program,
     resolved_arc: &ResolutionResult,
 ) -> TypeCheckResult {
-    // The checker owns mutable tables. Clone only its inputs, not the
-    // documentation map or other resolution-only metadata.
-    let symbols = resolved_arc.symbols.clone();
-    let resolved = resolved_arc.resolved.clone();
+    // The checker owns its tables behind Arc; share the resolution result's
+    // handles (O(1)) and let the first mutation copy once (COW).
+    let symbols = Arc::clone(&resolved_arc.symbols);
+    let resolved = Arc::clone(&resolved_arc.resolved);
     let diagnostics = resolved_arc.diagnostics.clone();
     let mut checker = arandu_semantics::TypeChecker::new(
         symbols,
@@ -290,7 +290,8 @@ fn signatures_from_program(
                             if let Some(symbol) =
                                 imported_sigs.symbols.try_get(constraint.iface_sym).cloned()
                             {
-                                checker.symbols.register_imported_symbol(symbol);
+                                Arc::make_mut(&mut checker.symbols)
+                                    .register_imported_symbol(symbol);
                             }
                         }
                     }
@@ -353,7 +354,7 @@ pub fn module_signatures(db: &dyn ArandCompilerDb, file: SourceFile) -> ModuleSi
         Ok(program) => signatures_from_program(db, file, program, resolved_arc.value.as_ref()),
         Err(_) => TypeCheckResult {
             symbols: std::sync::Arc::new(arandu_semantics::SymbolTable::default()),
-            resolved: std::sync::Arc::new(resolved_arc.resolved.clone()),
+            resolved: Arc::clone(&resolved_arc.resolved),
             type_info: std::sync::Arc::new(arandu_semantics::TypeInfo::default()),
             diagnostics: vec![],
         },

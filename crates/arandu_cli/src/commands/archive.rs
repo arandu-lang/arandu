@@ -13,6 +13,22 @@ use zip::ZipArchive;
 use crate::cli_error::{CliFailure, CliResult, CliSuccess};
 use crate::pipeline::fail_usage;
 
+const MAX_ARCHIVE_ENTRIES: usize = 100_000;
+const MAX_ARCHIVE_UNCOMPRESSED_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+const MAX_MANIFEST_BYTES: usize = 1024 * 1024;
+
+fn read_limited(reader: &mut impl Read, limit: usize, label: &str) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::with_capacity(limit.min(8192));
+    reader
+        .take(limit as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("cannot read {label}: {error}"))?;
+    if bytes.len() > limit {
+        return Err(format!("{label} exceeds the {limit}-byte validation limit"));
+    }
+    Ok(bytes)
+}
+
 pub fn cmd_archive(args: &[String]) -> CliResult {
     if args.len() < 3 {
         fail_usage(
@@ -136,8 +152,18 @@ fn validate_tar_archive(
     let entries = tar
         .entries()
         .map_err(|e| format!("cannot read tar entries: {e}"))?;
+    let mut total_size = 0u64;
     for entry in entries {
         let mut entry = entry.map_err(|e| format!("corrupted tar entry: {e}"))?;
+        if entries_data.len() >= MAX_ARCHIVE_ENTRIES {
+            return Err(format!(
+                "archive exceeds the {MAX_ARCHIVE_ENTRIES}-entry limit"
+            ));
+        }
+        total_size = total_size
+            .checked_add(entry.size())
+            .filter(|size| *size <= MAX_ARCHIVE_UNCOMPRESSED_BYTES)
+            .ok_or_else(|| "archive exceeds the 4 GiB uncompressed validation limit".to_string())?;
         let entry_path = entry
             .path()
             .map_err(|e| format!("invalid tar entry path: {e}"))?
@@ -172,10 +198,7 @@ fn validate_tar_archive(
         };
 
         if entry_path.ends_with("/release-manifest.json") {
-            let mut buf = Vec::new();
-            entry
-                .read_to_end(&mut buf)
-                .map_err(|e| format!("failed to read release manifest: {e}"))?;
+            let buf = read_limited(&mut entry, MAX_MANIFEST_BYTES, "release manifest")?;
             manifest_bytes = Some(buf);
         }
 
@@ -270,14 +293,24 @@ fn validate_zip_archive(
 ) -> Result<ArchiveStats, String> {
     let file = File::open(path).map_err(|e| format!("cannot open zip: {e}"))?;
     let mut zip = ZipArchive::new(file).map_err(|e| format!("cannot read zip: {e}"))?;
+    if zip.len() > MAX_ARCHIVE_ENTRIES {
+        return Err(format!(
+            "archive exceeds the {MAX_ARCHIVE_ENTRIES}-entry limit"
+        ));
+    }
 
     let mut manifest_bytes = None;
     let mut root_candidate = None;
+    let mut total_size = 0u64;
 
     for i in 0..zip.len() {
         let mut entry = zip
             .by_index(i)
             .map_err(|e| format!("corrupted zip entry #{i}: {e}"))?;
+        total_size = total_size
+            .checked_add(entry.size())
+            .filter(|size| *size <= MAX_ARCHIVE_UNCOMPRESSED_BYTES)
+            .ok_or_else(|| "archive exceeds the 4 GiB uncompressed validation limit".to_string())?;
         let name = entry.name().to_string();
         validate_path_safety(&name)?;
 
@@ -290,10 +323,7 @@ fn validate_zip_archive(
         }
 
         if name.ends_with("/release-manifest.json") {
-            let mut buf = Vec::new();
-            entry
-                .read_to_end(&mut buf)
-                .map_err(|e| format!("cannot read release-manifest: {e}"))?;
+            let buf = read_limited(&mut entry, MAX_MANIFEST_BYTES, "release manifest")?;
             manifest_bytes = Some(buf);
         }
     }
@@ -449,6 +479,16 @@ fn verify_manifest_data(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn bounded_manifest_reader_rejects_oversized_input() {
+        assert_eq!(
+            read_limited(&mut Cursor::new(b"small"), 5, "manifest").unwrap(),
+            b"small"
+        );
+        assert!(read_limited(&mut Cursor::new(b"larger"), 5, "manifest").is_err());
+    }
 
     #[test]
     fn test_validate_path_safety() {

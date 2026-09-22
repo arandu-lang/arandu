@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use arandu_middle::types::TypeId;
 use arandu_parser::ast_pool::{ExprId, ExprKind};
 
@@ -49,7 +51,7 @@ pub(crate) fn resolve_namespace_field(
         return None;
     }
     let symbol_id = checker.symbols.lookup_module_member(&path[0], field)?;
-    checker.resolved.expr_ref(expr, symbol_id);
+    Arc::make_mut(&mut checker.resolved).expr_ref(expr, symbol_id);
     if let Some(ty_id) = checker.ctx.lookup(symbol_id) {
         return Some(ty_id);
     }

@@ -26,6 +26,7 @@ pub fn materialize(
     let ManifestDependency::Git { origin, commit } = dependency else {
         return Err("internal error: attempted to fetch a non-Git dependency".into());
     };
+    validate_git_dependency(origin, commit)?;
     if let Some(digest) = expected_digest {
         match store.trusted_tree(digest, TreeLimits::default()) {
             Ok(root) => {
@@ -113,6 +114,46 @@ pub fn materialize(
         let _ = fs::remove_dir_all(&work);
     }
     materialized
+}
+
+/// Validate manifest-supplied Git inputs before they reach `git` argv.
+///
+/// `commit` must be a full object id (40 hex for SHA-1, 64 hex for SHA-256,
+/// upper or lower case). The existing `rev-parse FETCH_HEAD^{commit}` equality
+/// check already implicitly requires a full hash, so this rejects anything the
+/// flow could not honor anyway — including strings starting with `-` or
+/// containing `..`, whitespace or control characters (argument injection).
+///
+/// `origin` must be non-empty, free of control characters/newlines, free of
+/// leading/trailing whitespace, and must not start with `-` (which would make
+/// git treat it as an option). Protocol restrictions (`protocol.allow=never`,
+/// `protocol.https.allow=always`) are enforced separately in `run_git`.
+fn validate_git_dependency(origin: &str, commit: &str) -> Result<(), String> {
+    let hex_len_ok = commit.len() == 40 || commit.len() == 64;
+    if !hex_len_ok || !commit.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(format!(
+            "invalid Git dependency commit `{commit}`: expected a full 40-character (SHA-1) or 64-character (SHA-256) hexadecimal object id"
+        ));
+    }
+    if origin.is_empty() {
+        return Err("invalid Git dependency origin: must not be empty".into());
+    }
+    if origin.starts_with('-') {
+        return Err(format!(
+            "invalid Git dependency origin `{origin}`: must not start with `-`"
+        ));
+    }
+    if origin.chars().any(char::is_control) {
+        return Err(format!(
+            "invalid Git dependency origin `{origin}`: must not contain control characters or newlines"
+        ));
+    }
+    if origin.trim() != origin {
+        return Err(format!(
+            "invalid Git dependency origin `{origin}`: must not start or end with whitespace"
+        ));
+    }
+    Ok(())
 }
 
 fn fetch_exact(
@@ -213,6 +254,70 @@ fn nonce() -> u128 {
 mod tests {
     use super::*;
     use arandu_query::CacheLayout;
+
+    #[test]
+    fn git_dependency_validation_rejects_non_hex_commit() {
+        let error = validate_git_dependency("https://example.com/a.git", "not-a-real-hash")
+            .expect_err("non-hex commit must be rejected");
+        assert!(error.contains("full 40-character"));
+    }
+
+    #[test]
+    fn git_dependency_validation_rejects_short_commit() {
+        assert!(validate_git_dependency("https://example.com/a.git", "abc1234").is_err());
+        // 39 hex chars: correct alphabet, wrong length.
+        let shortened = "0123456789abcdef0123456789abcdef0123456";
+        assert!(validate_git_dependency("https://example.com/a.git", shortened).is_err());
+        // Leading `-` (argument injection attempt) is not a hex object id.
+        assert!(
+            validate_git_dependency(
+                "https://example.com/a.git",
+                "-e3b0c44298fc1c149afbf4c8996fb924"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn git_dependency_validation_accepts_full_hex_commit() {
+        assert!(
+            validate_git_dependency(
+                "https://example.com/a.git",
+                "0123456789abcdef0123456789abcdef01234567"
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_git_dependency(
+                "https://example.com/a.git",
+                "0123456789ABCDEF0123456789ABCDEF01234567"
+            )
+            .is_ok()
+        );
+        assert!(validate_git_dependency("https://example.com/a.git", &"a".repeat(64)).is_ok());
+    }
+
+    #[test]
+    fn git_dependency_validation_rejects_option_like_origin() {
+        let error = validate_git_dependency("--upload-pack=touch /tmp/pwn", &"a".repeat(40))
+            .expect_err("origin starting with `-` must be rejected");
+        assert!(error.contains("must not start with `-`"));
+        assert!(validate_git_dependency("", &"a".repeat(40)).is_err());
+    }
+
+    #[test]
+    fn git_dependency_validation_rejects_origin_with_newline() {
+        let error = validate_git_dependency(
+            "https://example.com/a.git\nupload-pack=evil",
+            &"a".repeat(40),
+        )
+        .expect_err("origin containing a newline must be rejected");
+        assert!(error.contains("control characters"));
+        // Control characters other than newlines, and padded whitespace.
+        assert!(validate_git_dependency("https://example.com/a.git\0", &"a".repeat(40)).is_err());
+        assert!(validate_git_dependency(" https://example.com/a.git", &"a".repeat(40)).is_err());
+        assert!(validate_git_dependency("https://example.com/a.git ", &"a".repeat(40)).is_err());
+    }
 
     #[test]
     fn git_identity_separates_origins_and_commits() {

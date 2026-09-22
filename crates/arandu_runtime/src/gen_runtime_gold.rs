@@ -64,6 +64,9 @@ fn descriptor(
 /// # Safety
 /// `source` and `drop_glue` must satisfy [`OwnedPayload::try_move_from`]. The
 /// source becomes logically uninitialized only when a non-zero handle returns.
+///
+/// Panics abort through `crate::ffi::guard`: ownership may be mid-transfer,
+/// so neither unwinding nor a failure return is sound here.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ar_gen_insert_raw(
     source: *mut u8,
@@ -71,20 +74,22 @@ pub unsafe extern "C" fn ar_gen_insert_raw(
     align: usize,
     drop_glue: Option<PayloadDropGlue>,
 ) -> u64 {
-    let Ok(descriptor) = descriptor(size, align, drop_glue) else {
-        return 0;
-    };
-    // Reserve every fallible registry resource before consuming the source.
-    // A failed return must leave ownership with the ABI caller.
-    let Ok(handle) = REGISTRY.with_borrow_mut(CompilerManagedRegistry::reserve_handle) else {
-        return 0;
-    };
-    // SAFETY: forwarded ABI contract; allocation failure leaves source intact.
-    let Ok(payload) = (unsafe { OwnedPayload::try_move_from(source, descriptor) }) else {
-        return 0;
-    };
-    REGISTRY.with_borrow_mut(|registry| registry.commit(handle, payload));
-    handle
+    crate::ffi::guard(|| {
+        let Ok(descriptor) = descriptor(size, align, drop_glue) else {
+            return 0;
+        };
+        // Reserve every fallible registry resource before consuming the source.
+        // A failed return must leave ownership with the ABI caller.
+        let Ok(handle) = REGISTRY.with_borrow_mut(CompilerManagedRegistry::reserve_handle) else {
+            return 0;
+        };
+        // SAFETY: forwarded ABI contract; allocation failure leaves source intact.
+        let Ok(payload) = (unsafe { OwnedPayload::try_move_from(source, descriptor) }) else {
+            return 0;
+        };
+        REGISTRY.with_borrow_mut(|registry| registry.commit(handle, payload));
+        handle
+    })
 }
 
 /// Copy a borrowed payload into caller storage without transferring ownership.
@@ -98,29 +103,31 @@ pub unsafe extern "C" fn ar_gen_get_raw(
     size: usize,
     align: usize,
 ) -> bool {
-    let Ok(layout) = PayloadLayout::new(size, align) else {
-        return false;
-    };
-    if destination.is_null() || (destination.addr() & (layout.align() - 1)) != 0 {
-        return false;
-    }
-    REGISTRY.with_borrow(|registry| {
-        let Some((_, payload)) = registry
-            .payloads
-            .iter()
-            .find(|(candidate, _)| *candidate == handle)
-        else {
+    crate::ffi::guard(|| {
+        let Ok(layout) = PayloadLayout::new(size, align) else {
             return false;
         };
-        if payload.descriptor().layout() != layout {
+        if destination.is_null() || (destination.addr() & (layout.align() - 1)) != 0 {
             return false;
         }
-        if size > 0 {
-            // SAFETY: layout and destination were validated; get borrows the
-            // runtime payload and copies into distinct caller storage.
-            unsafe { ptr::copy_nonoverlapping(payload.as_ptr(), destination, size) };
-        }
-        true
+        REGISTRY.with_borrow(|registry| {
+            let Some((_, payload)) = registry
+                .payloads
+                .iter()
+                .find(|(candidate, _)| *candidate == handle)
+            else {
+                return false;
+            };
+            if payload.descriptor().layout() != layout {
+                return false;
+            }
+            if size > 0 {
+                // SAFETY: layout and destination were validated; get borrows the
+                // runtime payload and copies into distinct caller storage.
+                unsafe { ptr::copy_nonoverlapping(payload.as_ptr(), destination, size) };
+            }
+            true
+        })
     })
 }
 
@@ -129,6 +136,11 @@ pub unsafe extern "C" fn ar_gen_get_raw(
 ///
 /// # Safety
 /// Same source/drop contract as [`ar_gen_insert_raw`].
+///
+/// Panics abort through `crate::ffi::guard`: the source may already be
+/// mid-transfer and the replaced payload's drop glue runs here, so neither
+/// unwinding nor a `false` return (which would make the caller drop a moved
+/// source twice) is sound.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ar_gen_set_raw(
     handle: u64,
@@ -137,38 +149,40 @@ pub unsafe extern "C" fn ar_gen_set_raw(
     align: usize,
     drop_glue: Option<PayloadDropGlue>,
 ) -> bool {
-    let Ok(descriptor) = descriptor(size, align, drop_glue) else {
-        return false;
-    };
-    // Validate every registry-owned precondition before moving from `source`.
-    // The registry is thread-local and no user callback runs between this
-    // preflight and the commit, so the matching slot cannot disappear here.
-    // This preserves the ABI rule that a false return leaves ownership with
-    // the caller.
-    let compatible_position = REGISTRY.with_borrow(|registry| {
-        registry
-            .payloads
-            .iter()
-            .enumerate()
-            .find(|(_, (candidate, _))| *candidate == handle)
-            .and_then(|(position, (_, slot))| {
-                (slot.descriptor().layout() == descriptor.layout()).then_some(position)
-            })
-    });
-    let Some(position) = compatible_position else {
-        return false;
-    };
-    // SAFETY: forwarded ABI contract; the new payload is constructed before
-    // registry mutation, so failure leaves the old value intact.
-    let Ok(payload) = (unsafe { OwnedPayload::try_move_from(source, descriptor) }) else {
-        return false;
-    };
-    let old = REGISTRY.with_borrow_mut(|registry| {
-        let slot = &mut registry.payloads[position].1;
-        std::mem::replace(slot, payload)
-    });
-    drop(old);
-    true
+    crate::ffi::guard(|| {
+        let Ok(descriptor) = descriptor(size, align, drop_glue) else {
+            return false;
+        };
+        // Validate every registry-owned precondition before moving from `source`.
+        // The registry is thread-local and no user callback runs between this
+        // preflight and the commit, so the matching slot cannot disappear here.
+        // This preserves the ABI rule that a false return leaves ownership with
+        // the caller.
+        let compatible_position = REGISTRY.with_borrow(|registry| {
+            registry
+                .payloads
+                .iter()
+                .enumerate()
+                .find(|(_, (candidate, _))| *candidate == handle)
+                .and_then(|(position, (_, slot))| {
+                    (slot.descriptor().layout() == descriptor.layout()).then_some(position)
+                })
+        });
+        let Some(position) = compatible_position else {
+            return false;
+        };
+        // SAFETY: forwarded ABI contract; the new payload is constructed before
+        // registry mutation, so failure leaves the old value intact.
+        let Ok(payload) = (unsafe { OwnedPayload::try_move_from(source, descriptor) }) else {
+            return false;
+        };
+        let old = REGISTRY.with_borrow_mut(|registry| {
+            let slot = &mut registry.payloads[position].1;
+            std::mem::replace(slot, payload)
+        });
+        drop(old);
+        true
+    })
 }
 
 /// Insert for zero, otherwise replace, returning the canonical handle or zero
@@ -176,6 +190,8 @@ pub unsafe extern "C" fn ar_gen_set_raw(
 ///
 /// # Safety
 /// Same source/drop contract as [`ar_gen_insert_raw`].
+///
+/// Panics abort through `crate::ffi::guard` (see [`ar_gen_set_raw`]).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ar_gen_upsert_raw(
     handle: u64,
@@ -198,6 +214,10 @@ pub unsafe extern "C" fn ar_gen_upsert_raw(
 ///
 /// # Safety
 /// `destination` must satisfy [`OwnedPayload::try_move_into`].
+///
+/// Panics abort through `crate::ffi::guard`: the payload is removed from
+/// the registry before the move, so a `false` return would both lose it and
+/// leave `destination` partially written.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ar_gen_remove_raw(
     handle: u64,
@@ -205,30 +225,38 @@ pub unsafe extern "C" fn ar_gen_remove_raw(
     size: usize,
     align: usize,
 ) -> bool {
-    let Ok(layout) = PayloadLayout::new(size, align) else {
-        return false;
-    };
-    if destination.is_null() || (destination.addr() & (layout.align() - 1)) != 0 {
-        return false;
-    }
-    let Some(payload) = REGISTRY.with_borrow_mut(|registry| {
-        let position = registry.position(handle)?;
-        (registry.payloads[position].1.descriptor().layout() == layout)
-            .then(|| registry.payloads.remove(position).1)
-    }) else {
-        return false;
-    };
-    // SAFETY: destination/layout were preflighted against the payload before
-    // removal; no fallible condition remains.
-    unsafe { payload.try_move_into(destination, layout) }.is_ok()
+    crate::ffi::guard(|| {
+        let Ok(layout) = PayloadLayout::new(size, align) else {
+            return false;
+        };
+        if destination.is_null() || (destination.addr() & (layout.align() - 1)) != 0 {
+            return false;
+        }
+        let Some(payload) = REGISTRY.with_borrow_mut(|registry| {
+            let position = registry.position(handle)?;
+            (registry.payloads[position].1.descriptor().layout() == layout)
+                .then(|| registry.payloads.remove(position).1)
+        }) else {
+            return false;
+        };
+        // SAFETY: destination/layout were preflighted against the payload before
+        // removal; no fallible condition remains.
+        unsafe { payload.try_move_into(destination, layout) }.is_ok()
+    })
 }
 
 /// Drop all payloads owned by this thread's compiler-managed registry.
 /// Destructors run after releasing the registry borrow.
+///
+/// Panics from a payload destructor are caught by `crate::ffi::guard` and
+/// abort: the remaining payloads would otherwise leak while the process kept
+/// running with a half-drained registry.
 #[unsafe(no_mangle)]
 pub extern "C" fn ar_gen_shutdown_raw() {
-    let payloads = REGISTRY.with_borrow_mut(|registry| std::mem::take(&mut registry.payloads));
-    drop(payloads);
+    crate::ffi::guard(|| {
+        let payloads = REGISTRY.with_borrow_mut(|registry| std::mem::take(&mut registry.payloads));
+        drop(payloads);
+    });
 }
 
 #[cfg(test)]

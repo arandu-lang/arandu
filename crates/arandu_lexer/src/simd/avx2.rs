@@ -10,6 +10,13 @@ use std::arch::x86_64::*;
 /// # Safety
 /// The caller must ensure that the CPU supports the AVX2 instruction set.
 pub unsafe fn skip_whitespace(bytes: &[u8]) -> (usize, usize, Option<usize>) {
+    // SAFETY: The caller guarantees AVX2 support — exactly the `# Safety`
+    // precondition documented above, which `#[target_feature(enable = "avx2")]`
+    // gates this body to. Every 32-byte read uses the unaligned
+    // `_mm256_loadu_si256` and only executes while `i + 32 <= bytes.len()`, so it
+    // never reads past the end of the slice. The tail `&bytes[i..]` handed to the
+    // scalar backend is a valid subslice because the loop maintains
+    // `i <= bytes.len()`.
     unsafe {
         let mut i = 0;
         let mut newlines = 0;
@@ -80,6 +87,13 @@ pub unsafe fn skip_whitespace(bytes: &[u8]) -> (usize, usize, Option<usize>) {
 /// # Safety
 /// The caller must ensure that the CPU supports the AVX2 instruction set.
 pub unsafe fn scan_identifier(bytes: &[u8]) -> usize {
+    // SAFETY: The caller guarantees AVX2 support — exactly the `# Safety`
+    // precondition documented above, which `#[target_feature(enable = "avx2")]`
+    // gates this body to. Every 32-byte read uses the unaligned
+    // `_mm256_loadu_si256` and only executes while `i + 32 <= bytes.len()`, so it
+    // never reads past the end of the slice. The tail `&bytes[i..]` handed to the
+    // scalar backend is a valid subslice because the loop maintains
+    // `i <= bytes.len()`.
     unsafe {
         let mut i = 0;
 

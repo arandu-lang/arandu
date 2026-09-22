@@ -1,5 +1,6 @@
 //! Core ServerState types, snapshot handles, and document index mappings.
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -49,6 +50,13 @@ pub struct ServerState {
     pub last_diag_fp: FxHashMap<DocumentId, ([u8; 32], Option<i32>)>,
     /// P3: last per-item IDE diag fingerprints (DocumentId, item local key).
     pub last_item_diag_fp: FxHashMap<(DocumentId, u32, u32), [u8; 32]>,
+    /// Scheduler rejections produced on the event-loop thread itself.
+    ///
+    /// The loop is the only consumer of the bounded job channel, so sending
+    /// its own rejections through that channel could deadlock it. They are
+    /// staged here and drained at the top of the next iteration (bounded in
+    /// practice by one rejection per processed protocol message).
+    pub(crate) deferred_rejections: VecDeque<lsp_server::RequestId>,
     /// Import registry keys owned by each compiler file identity. Filesystem
     /// events may arrive through a path spelling that cannot be reconstructed
     /// after rename (Windows verbatim paths, junctions), so removal uses this
@@ -74,6 +82,7 @@ impl ServerState {
             versions: FxHashMap::default(),
             last_diag_fp: FxHashMap::default(),
             last_item_diag_fp: FxHashMap::default(),
+            deferred_rejections: VecDeque::new(),
             package_aliases: FxHashMap::default(),
             package: None,
         }

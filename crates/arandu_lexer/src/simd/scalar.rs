@@ -42,8 +42,3 @@ pub fn scan_identifier(bytes: &[u8]) -> usize {
     }
     i
 }
-
-#[must_use]
-pub fn validate_utf8(bytes: &[u8]) -> bool {
-    std::str::from_utf8(bytes).is_ok()
-}

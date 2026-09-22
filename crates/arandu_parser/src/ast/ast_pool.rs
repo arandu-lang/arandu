@@ -544,10 +544,6 @@ impl AstPool {
         &self.decls[id.as_usize()]
     }
 
-    pub fn decl_mut(&mut self, id: DeclId) -> &mut TopLevelDecl {
-        &mut self.decls[id.as_usize()]
-    }
-
     #[must_use]
     pub fn decl_span(&self, id: DeclId) -> Span {
         self.decl_spans[id.as_usize()]

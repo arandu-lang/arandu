@@ -60,35 +60,6 @@ pub fn prelude_module_from_path(path: &[SmolStr]) -> Option<&'static str> {
     PRELUDE_MODULES.iter().copied().find(|&m| m == name)
 }
 
-pub fn create_symbol_table_with_prelude(
-    file_id: u32,
-) -> Result<SymbolTable, Vec<crate::Diagnostic>> {
-    let mut table = SymbolTable::new(file_id);
-    let span = arandu_lexer::Span::new(0, 0, 0);
-    tracing::debug!(target: "arandu_resolve", "Creating symbol table with prelude");
-    for (module, members) in PRELUDE_MODULE_MEMBERS {
-        for member in *members {
-            if let Err(existing) = table.define_module_member(module, member, span) {
-                return Err(vec![crate::Diagnostic::error(
-                    crate::DiagCode::N006ImportConflict,
-                    format!(
-                        "prelude module member `{module}.{member}` conflicts with existing symbol {existing:?}"
-                    ),
-                    span,
-                )]);
-            }
-        }
-    }
-    let global_scope = table.global_scope();
-    table.builtin_alloc = table
-        .define_vis(global_scope, "alloc", SymbolKind::Func, span, true)
-        .ok();
-    table.builtin_free = table
-        .define_vis(global_scope, "free", SymbolKind::Func, span, true)
-        .ok();
-    Ok(table)
-}
-
 #[must_use]
 pub fn resolve_local(file_id: u32, program: &Program) -> ResolutionResult {
     Resolver::new(file_id, &program.pool, Some(program)).resolve_local(program)

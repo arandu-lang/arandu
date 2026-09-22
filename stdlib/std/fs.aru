@@ -1,3 +1,50 @@
+//! Filesystem reads and directory listings through the host operating system.
+//!
+//! ## Overview
+//!
+//! `readToString` reads a whole file into an owned buffer; `readDir` returns a
+//! directory snapshot whose names borrow its storage. `fileExists` performs a
+//! boolean existence check. `OpenOptions`, `File`, and `Metadata` describe
+//! handles and file properties, but this module does not yet expose public
+//! functions to open, write, create, remove, or query metadata.
+//!
+//! Reading operations report host errors as `Result<T, io.IoError>`. The
+//! boolean `fileExists` does not distinguish a missing path from other host
+//! failures. The owned `String` returned by `readToString` stores bytes without
+//! checking whether they are valid UTF-8.
+//!
+//! This module requires filesystem host functions. For in-memory I/O without
+//! an operating system, use `std.core.io`.
+//!
+//! ## Example
+//!
+//! ```arandu
+//! import std.fs as fs
+//! import std.io as io
+//!
+//! let content = fs.readToString("config.toml")
+//! match content {
+//!     Ok(_) => {
+//!         io.println("config found")
+//!     }
+//!     Err(_) => {
+//!         io.println("no config file")
+//!     }
+//! }
+//! ```
+//!
+//! ## Platform
+//! `native` (executables linked to an OS-backed Arandu runtime)
+//!
+//! Linux, macOS and Windows. wasm32 works only with WASI or host imports;
+//! bare-metal is unsupported (no OS) — use `std.core.io` there.
+//!
+//! ## See also
+//!
+//! - `std.io` — `Read`/`Write` traits and error types
+//! - `std.path` — path manipulation without disk access
+//! - `std.core.io` — OS-free freestanding I/O
+
 module std.fs
 
 import std.io as io
@@ -5,16 +52,24 @@ import std.core.mem as mem
 import std.core.intrinsics as intrinsics
 import std.alloc.string as strings
 
-/// Options for opening and creating files.
+/// Describes open flags; no public `open` function consumes this type yet.
 public struct OpenOptions {
+    /// Request read access.
     read: bool
+    /// Request write access.
     write: bool
+    /// Request file creation.
     create: bool
+    /// Request truncation when opening.
     truncate: bool
+    /// Request append mode.
     append: bool
 }
 
-/// Creates default `OpenOptions` configured for reading.
+/// Creates `OpenOptions` with only `read` enabled.
+///
+/// All other flags are `false`. The current public API has no `open` method
+/// that accepts these options.
 public func readOnly(): OpenOptions {
     return OpenOptions {
         read: true,
@@ -25,7 +80,10 @@ public func readOnly(): OpenOptions {
     }
 }
 
-/// Creates default `OpenOptions` configured for writing (create and truncate).
+/// Creates `OpenOptions` with `write`, `create`, and `truncate` enabled.
+///
+/// `read` and `append` are `false`. The current public API has no `open`
+/// method that accepts these options.
 public func writeOnly(): OpenOptions {
     return OpenOptions {
         read: false,
@@ -36,16 +94,22 @@ public func writeOnly(): OpenOptions {
     }
 }
 
-/// An open file handle wrapping an OS file descriptor.
+/// Wraps an OS file descriptor; no public constructor is available yet.
 public struct File {
+    /// Host descriptor; `close` sets it to `-1`.
     fd: int
 }
 
 extern "C" {
+    /// Host existence probe used by `fileExists`; returns a boolean only.
     func exists(path: str): bool
+    /// Host file-open bridge reserved for future public file operations.
     func ar_fs_open(path: str, flags: int, mode: int): int
+    /// Host read bridge for a descriptor and caller-owned buffer.
     func ar_fs_read(fd: int, buf: ptr[u8], count: uint): int
+    /// Host write bridge for a descriptor and caller-owned buffer.
     func ar_fs_write(fd: int, buf: ptr[u8], count: uint): int
+    /// Host descriptor-close bridge used by `File.close`.
     func ar_fs_close(fd: int): int
     /// Reads the whole file; on success fills `outBuf`/`outLen`/`outCap`
     /// (owned buffer, adopt via `strings.adoptOwned`). Any error zeroes the
@@ -57,20 +121,35 @@ extern "C" {
     func ar_vec_buf_free(p: ptr[u8], size: uint): void
 }
 
-/// Returns `true` if `path` exists on the host filesystem.
+/// Returns the host's boolean existence result for `path`.
+///
+/// This API does not report why a path is unavailable. Existence can change
+/// immediately after the check, so do not use it as a permission or safety
+/// check before opening a file.
 public func fileExists(path: str): bool {
     unsafe {
         return exists(path)
     }
 }
 
-/// Reads the entire contents of `path` into an owned `String` (no copy).
+/// Reads the entire contents of `path` into an owned `String` without copying.
 ///
 /// The host allocates the exact-size buffer; the returned `String` **adopts**
-/// it (`capacity == len`), so freeing happens exactly once via `destroy`.
-/// Binary-safe: no UTF-8 validation (like Rust `fs::read`, unlike
-/// `fs::read_to_string`). The host is foreign code, so calling this function
-/// requires the `FileRead` and `Foreign` effects.
+/// it (`capacity == len`). The returned bytes are not UTF-8 validated, despite
+/// the function name. This call has `FileRead` and `Foreign` effects.
+///
+/// ## Errors
+/// Returns `Err(io.IoError)` when the host cannot open or read the path,
+/// including missing files and permission failures. Invalid UTF-8 is not
+/// reported as an error.
+///
+/// ## Allocations
+/// The host allocates a buffer for the file contents. The returned `String`
+/// takes ownership of that buffer without making a second copy.
+///
+/// ## Safety
+/// Before treating the result as text, the caller must ensure its bytes are
+/// valid UTF-8. The `String` owns the buffer and releases it on destruction.
 @Effects(FileRead, Foreign)
 public func readToString(path: str): Result<strings.String, io.IoError> {
     let mut buf: ptr[u8] = nil
@@ -86,20 +165,32 @@ public func readToString(path: str): Result<strings.String, io.IoError> {
     return Result.Ok(strings.adoptOwned(buf, cap, len))
 }
 
-/// A read-only snapshot of a directory listing in one contiguous allocation.
+/// An owned snapshot of a directory listing in one contiguous allocation.
 ///
 /// Names are **views** into the listing blob (`name(i) -> []u8`), never
 /// copies; `isDir(i)` uses the cheap type the OS provided during readdir (no
-/// per-entry stat). Ordering is the host filesystem order (unspecified, like
-/// POSIX `readdir`). Free the blob exactly once with `destroy`.
+/// per-entry stat). Each name has a stable string descriptor, so multiple
+/// borrowed name views can coexist. Ordering is the host filesystem order (unspecified, like
+/// POSIX `readdir`). The destructor releases the blob; borrowed names cannot
+/// outlive this listing.
 public struct DirListing {
-    // Scratch fat descriptor used by `nameStr`; `strView` borrows these first
-    // two words from the listing, so the name cannot outlive its owner.
-    viewData: ptr[u8]
-    viewLen: uint
+    // The first two fields form a stable empty `str` descriptor for invalid indexes.
+    /// Pointer for the empty out-of-range name view.
+    emptyData: ptr[u8]
+    /// Zero length of the empty out-of-range name view.
+    emptyLen: uint
+    /// Pointer to the owned listing blob.
     data: ptr[u8]
+    /// Number of entries in the snapshot.
     count: uint
+    /// Allocated blob capacity in bytes.
     capacity: uint
+}
+
+// Fat `str` descriptor stored once per entry inside the owned listing blob.
+struct DirNameDescriptor {
+    data: ptr[u8]
+    len: uint
 }
 
 /// Reads the directory at `path` into an owned `DirListing` (one allocation).
@@ -107,6 +198,14 @@ public struct DirListing {
 /// Directory contents are not sorted; order matches the host filesystem.
 /// The host is foreign code, so calling this function requires the `FileRead`
 /// and `Foreign` effects.
+///
+/// ## Errors
+/// Returns `Err(io.IoError)` if the host cannot read the directory, including
+/// a missing path, a non-directory path, or insufficient permissions.
+///
+/// ## Allocations
+/// The returned listing owns one blob containing entry metadata and names.
+/// `name` and `nameStr` return views into that blob without copying names.
 @Effects(FileRead, Foreign)
 public func readDir(path: str): Result<DirListing, io.IoError> {
     let mut buf: ptr[u8] = nil
@@ -120,8 +219,8 @@ public func readDir(path: str): Result<DirListing, io.IoError> {
         return Result.Err(io.errorFromPortable(errCode))
     }
     return Result.Ok(DirListing {
-        viewData: nil,
-        viewLen: 0,
+        emptyData: nil,
+        emptyLen: 0,
         data: buf,
         count: count,
         capacity: cap,
@@ -137,12 +236,18 @@ func readU32At(base: ptr[u8], byteOff: uint): u32 {
 }
 
 /// Returns the number of entries in the listing.
+///
+/// The count reflects the snapshot taken by `readDir`, not later changes to
+/// the directory. This operation takes O(1) time and does not allocate.
 public func DirListing.count(self: ref DirListing): uint {
     return self.count
 }
 
 /// Returns `true` when the entry at `index` is a directory. Out-of-range
 /// indexes return `false`.
+///
+/// The value comes from the entry type supplied during the listing; this
+/// method does not perform a separate filesystem query.
 public func DirListing.isDir(self: ref DirListing, index: uint): bool {
     if index >= self.count {
         return false
@@ -156,7 +261,8 @@ public func DirListing.isDir(self: ref DirListing, index: uint): bool {
 /// Returns the name of the entry at `index` as a borrowed byte slice,
 /// or an empty slice when `index` is out of range.
 ///
-/// The view borrows `self`; the bytes remain valid until `destroy`.
+/// The view borrows `self`; the bytes remain valid while the listing owns its
+/// blob. This method does not allocate or decode the name as text.
 public func DirListing.name(self: ref DirListing, index: uint): []u8 {
     if index >= self.count {
         unsafe {
@@ -167,7 +273,7 @@ public func DirListing.name(self: ref DirListing, index: uint): []u8 {
         let entryOff: uint = 8 + index * 16
         let nameOff = readU32At(self.data, entryOff) as uint
         let nameLen = readU32At(self.data, entryOff + 4) as uint
-        let namesBase = mem.ptrOffset<u8>(self.data, (8 + self.count * 16) as i32)
+        let namesBase = mem.ptrOffset<u8>(self.data, (8 + self.count * 16 + self.count * mem.sizeOf<DirNameDescriptor>()) as i32)
         let namePtr = mem.ptrOffset<u8>(namesBase, nameOff as i32)
         return intrinsics.sliceFromRaw<DirListing, u8>(self, namePtr, nameLen)
     }
@@ -176,26 +282,25 @@ public func DirListing.name(self: ref DirListing, index: uint): []u8 {
 /// Returns the name of the entry at `index` as a borrowed string view,
 /// or an empty string when `index` is out of range.
 ///
-/// The view borrows `self`; the string remains valid until `destroy`.
-public func DirListing.nameStr(self: mut ref DirListing, index: uint): ref str {
+/// Each entry has its own stable descriptor in the listing blob. Multiple
+/// name views may coexist; all become invalid when the listing is destroyed.
+/// This method does not allocate or mutate the listing.
+public func DirListing.nameStr(self: ref DirListing, index: uint): ref str {
     if index >= self.count {
-        self.viewData = self.data
-        self.viewLen = 0
-        return intrinsics.strView<DirListing>(self)
+        unsafe {
+            return intrinsics.strView<DirListing>(self)
+        }
     }
     unsafe {
-        let entryOff: uint = 8 + index * 16
-        let nameOff = readU32At(self.data, entryOff) as uint
-        let nameLen = readU32At(self.data, entryOff + 4) as uint
-        let namesBase = mem.ptrOffset<u8>(self.data, (8 + self.count * 16) as i32)
-        let namePtr = mem.ptrOffset<u8>(namesBase, nameOff as i32)
-        self.viewData = namePtr
-        self.viewLen = nameLen
-        return intrinsics.strView<DirListing>(self)
+        let descriptors = mem.ptrOffset<u8>(self.data, (8 + self.count * 16) as i32) as ptr[DirNameDescriptor]
+        let views = intrinsics.sliceFromRaw<DirListing, DirNameDescriptor>(self, descriptors, self.count)
+        return intrinsics.strView<DirNameDescriptor>(&views[index])
     }
 }
 
-/// Frees the listing blob.
+/// Releases the listing blob; borrowed names become invalid afterward.
+///
+/// This consumes the listing and must run exactly once for its owned buffer.
 @Destructor
 public func DirListing.destroy(self: own DirListing): void {
     destroyListing(self)
@@ -205,8 +310,8 @@ public func DirListing.destroy(self: own DirListing): void {
 func destroyListing(l: mut ref DirListing): void {
     let data = l.data
     let capacity = l.capacity
-    l.viewData = nil
-    l.viewLen = 0
+    l.emptyData = nil
+    l.emptyLen = 0
     l.data = nil
     l.capacity = 0
     l.count = 0
@@ -217,7 +322,9 @@ func destroyListing(l: mut ref DirListing): void {
     }
 }
 
-/// Closes the file descriptor.
+/// Closes the file descriptor if it is nonnegative and sets it to `-1`.
+///
+/// Calling `close` again has no effect. The host close status is discarded.
 public func File.close(self: mut ref File): void {
     if self.fd >= 0 {
         unsafe {
@@ -229,9 +336,13 @@ public func File.close(self: mut ref File): void {
 
 /// Metadata information about a file or directory.
 public struct Metadata {
+    /// File length in bytes.
     file_size: uint
+    /// Whether the entry is a directory.
     is_dir: bool
+    /// Whether the entry is a regular file.
     is_file: bool
+    /// Whether the entry is read-only.
     readonly: bool
 }
 

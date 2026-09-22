@@ -197,12 +197,14 @@ struct HostEntry {
 }
 
 /// Reads a directory into a single blob:
-/// `[u32 count][u32 blob_len][entry × count][names]`.
+/// `[u32 count][u32 blob_len][entry × count][descriptor × count][names]`.
 ///
 /// Each entry is 16 bytes: `u32 name_off` + `u32 name_len` + `u8 is_dir` +
-/// `u8 kind` (reserved, 0) + `u16 pad`. `name_off` is the byte offset from the
-/// start of the names region (no ordering, no eager stat — Go `os.ReadDir`
-/// lesson). `blob_len` is the total allocation size for `ar_vec_buf_free`.
+/// `u8 kind` (reserved, 0) + `u16 pad`. Each descriptor is a native pointer
+/// followed by a native `usize` byte length, matching a borrowed `str` view.
+/// `name_off` is the byte offset from the start of the names region (no
+/// ordering, no eager stat — Go `os.ReadDir` lesson). `blob_len` is the total
+/// allocation size for `ar_vec_buf_free`.
 ///
 /// Returns `(data, count, capacity)`; `data` is `NULL` for an empty directory.
 fn read_dir_impl(ptr: *const u8, len: isize) -> Result<(*mut u8, usize, usize), isize> {
@@ -233,8 +235,11 @@ fn read_dir_impl(ptr: *const u8, len: isize) -> Result<(*mut u8, usize, usize), 
 
     let names_len: usize = entries.iter().map(|e| e.name.len()).sum();
     let entry_table = count.checked_mul(DIR_ENTRY_SIZE).ok_or(ERR_OTHER)?;
+    let descriptor_size = std::mem::size_of::<usize>() * 2;
+    let descriptor_table = count.checked_mul(descriptor_size).ok_or(ERR_OTHER)?;
     let blob_len = DIR_BLOB_HEADER_SIZE
         .checked_add(entry_table)
+        .and_then(|v| v.checked_add(descriptor_table))
         .and_then(|v| v.checked_add(names_len))
         .ok_or(ERR_OTHER)?;
     if blob_len > MAX_BUFFER_SIZE || blob_len > u32::MAX as usize {
@@ -250,7 +255,8 @@ fn read_dir_impl(ptr: *const u8, len: isize) -> Result<(*mut u8, usize, usize), 
     let bytes = unsafe { std::slice::from_raw_parts_mut(data, blob_len) };
     bytes[0..4].copy_from_slice(&(count as u32).to_le_bytes());
     bytes[4..8].copy_from_slice(&(blob_len as u32).to_le_bytes());
-    let names_base = DIR_BLOB_HEADER_SIZE + count * DIR_ENTRY_SIZE;
+    let descriptors_base = DIR_BLOB_HEADER_SIZE + entry_table;
+    let names_base = descriptors_base + descriptor_table;
     let mut cursor = names_base;
     for (i, entry) in entries.iter().enumerate() {
         let base = DIR_BLOB_HEADER_SIZE + i * DIR_ENTRY_SIZE;
@@ -259,6 +265,12 @@ fn read_dir_impl(ptr: *const u8, len: isize) -> Result<(*mut u8, usize, usize), 
         bytes[base + 4..base + 8].copy_from_slice(&(entry.name.len() as u32).to_le_bytes());
         bytes[base + 8] = u8::from(entry.is_dir);
         bytes[base + 9..base + 16].fill(0);
+        let descriptor = descriptors_base + i * descriptor_size;
+        let name_ptr = data.wrapping_add(cursor) as usize;
+        bytes[descriptor..descriptor + std::mem::size_of::<usize>()]
+            .copy_from_slice(&name_ptr.to_ne_bytes());
+        bytes[descriptor + std::mem::size_of::<usize>()..descriptor + descriptor_size]
+            .copy_from_slice(&entry.name.len().to_ne_bytes());
         bytes[cursor..cursor + entry.name.len()].copy_from_slice(&entry.name);
         cursor += entry.name.len();
     }
@@ -477,10 +489,12 @@ mod tests {
         assert_eq!(err, ERR_OK);
         assert_eq!(count, 3, "f1.txt + f2.txt + sub");
         assert!(!buf.is_null());
-        assert!(cap >= 8 + count * 16);
+        let descriptor_size = std::mem::size_of::<usize>() * 2;
+        assert!(cap >= 8 + count * (16 + descriptor_size));
 
         let bytes = unsafe { std::slice::from_raw_parts(buf, cap) };
-        let names_base = 8 + count * 16;
+        let descriptors_base = 8 + count * 16;
+        let names_base = descriptors_base + count * descriptor_size;
         let mut names = std::collections::HashSet::new();
         let mut has_sub = false;
         for i in 0..count {
@@ -488,6 +502,19 @@ mod tests {
             let off = u32::from_le_bytes(bytes[base..base + 4].try_into().unwrap()) as usize;
             let nlen = u32::from_le_bytes(bytes[base + 4..base + 8].try_into().unwrap()) as usize;
             let is_dir = bytes[base + 8] == 1;
+            let descriptor = descriptors_base + i * descriptor_size;
+            let ptr = usize::from_ne_bytes(
+                bytes[descriptor..descriptor + std::mem::size_of::<usize>()]
+                    .try_into()
+                    .unwrap(),
+            );
+            let len = usize::from_ne_bytes(
+                bytes[descriptor + std::mem::size_of::<usize>()..descriptor + descriptor_size]
+                    .try_into()
+                    .unwrap(),
+            );
+            assert_eq!(ptr, buf.wrapping_add(names_base + off) as usize);
+            assert_eq!(len, nlen);
             let name = String::from_utf8_lossy(&bytes[names_base + off..names_base + off + nlen]);
             names.insert(name.to_string());
             if name == "sub" {

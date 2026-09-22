@@ -36,6 +36,24 @@ fn check(source: &str) -> Output {
     invoke("check", source)
 }
 
+const DIRECTORY_NAME_VIEWS_SOURCE: &str = r#"module tests.borrowed_views.directory_multiple_names
+import std.fs as fs
+
+@Effects(FileRead, Foreign)
+func main(): int {
+    match fs.readDir(".") {
+        Ok(listing) => {
+            if listing.count() < 2 { return 1 }
+            let first = listing.nameStr(0)
+            let second = listing.nameStr(1)
+            if *first == *second { return 2 }
+            return 0
+        }
+        Err(_) => { return 3 }
+    }
+}
+"#;
+
 #[test]
 fn vec_slice_is_a_zero_copy_borrowed_view() {
     let output = check(
@@ -397,6 +415,64 @@ func main(): int {
         Some(0),
         "owned path join failed: {}",
         String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn directory_name_views_coexist_without_mutating_the_listing() {
+    let output = invoke("run", DIRECTORY_NAME_VIEWS_SOURCE);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "two directory name views failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn c_backend_directory_name_views_coexist() {
+    if !Command::new("gcc")
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success())
+    {
+        return;
+    }
+    let emitted = invoke_with_args("emit-c", DIRECTORY_NAME_VIEWS_SOURCE, &["--layout=host"]);
+    assert!(
+        emitted.status.success(),
+        "C emission failed: {}",
+        String::from_utf8_lossy(&emitted.stderr)
+    );
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    let stem = std::env::temp_dir().join(format!(
+        "arandu-directory-names-{}-{id}",
+        std::process::id()
+    ));
+    let c_file = stem.with_extension("c");
+    fs::write(&c_file, &emitted.stdout).expect("write C source");
+    let compiled = Command::new("gcc")
+        .arg(&c_file)
+        .arg("-o")
+        .arg(&stem)
+        .output()
+        .expect("compile emitted C");
+    assert!(
+        compiled.status.success(),
+        "C compilation failed: {}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+    let executed = Command::new(&stem)
+        .current_dir(workspace_root())
+        .output()
+        .expect("run emitted C");
+    let _ = fs::remove_file(c_file);
+    let _ = fs::remove_file(stem);
+    assert_eq!(
+        executed.status.code(),
+        Some(0),
+        "C directory name views failed: {}",
+        String::from_utf8_lossy(&executed.stderr)
     );
 }
 

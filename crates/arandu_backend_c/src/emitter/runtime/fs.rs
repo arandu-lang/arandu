@@ -352,7 +352,17 @@ static void ar_fs_readdir(ArStr path, uint8_t **out_buf, {uint_c_ty} *out_count,
         return;
     }}
 
-    size_t blob_len = 8 + count * 16 + names_total_len;
+    size_t descriptor_size = sizeof(void *) + sizeof({uint_c_ty});
+    if (count > (SIZE_MAX - 8) / (16 + descriptor_size) ||
+        names_total_len > SIZE_MAX - 8 - count * (16 + descriptor_size)) {{
+        for (size_t j = 0; j < count; j++) free(entries[j].name);
+        free(entries);
+        *out_buf = NULL; *out_count = 0; *out_cap = 0; *err = 8;
+        return;
+    }}
+    size_t descriptor_base = 8 + count * 16;
+    size_t names_base = descriptor_base + count * descriptor_size;
+    size_t blob_len = names_base + names_total_len;
     uint8_t *blob = (uint8_t *)ar_vec_malloc(({uint_c_ty})blob_len);
     if (!blob) {{
         for (size_t j = 0; j < count; j++) free(entries[j].name);
@@ -362,7 +372,6 @@ static void ar_fs_readdir(ArStr path, uint8_t **out_buf, {uint_c_ty} *out_count,
     }}
     *(uint32_t *)blob = (uint32_t)count;
     *(uint32_t *)(blob + 4) = (uint32_t)blob_len;
-    size_t names_base = 8 + count * 16;
     size_t cursor = names_base;
     for (size_t i = 0; i < count; i++) {{
         size_t base = 8 + i * 16;
@@ -371,6 +380,11 @@ static void ar_fs_readdir(ArStr path, uint8_t **out_buf, {uint_c_ty} *out_count,
         *(uint32_t *)(blob + base + 4) = (uint32_t)entries[i].len;
         blob[base + 8] = entries[i].is_dir;
         memset(blob + base + 9, 0, 7);
+        size_t descriptor = descriptor_base + i * descriptor_size;
+        uint8_t *name_ptr = blob + cursor;
+        {uint_c_ty} name_len = ({uint_c_ty})entries[i].len;
+        memcpy(blob + descriptor, &name_ptr, sizeof(name_ptr));
+        memcpy(blob + descriptor + sizeof(name_ptr), &name_len, sizeof(name_len));
         if (entries[i].len > 0) {{
             memcpy(blob + cursor, entries[i].name, entries[i].len);
             cursor += entries[i].len;

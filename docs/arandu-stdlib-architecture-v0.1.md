@@ -397,7 +397,9 @@ só pode voltar junto de funções públicas `unsafe` no contrato da linguagem.
   suporte completo em Cranelift JIT e C backend (`emit-c`). O contrato de buffer
   de `ar_fs_read_all` transfere ownership ao Arandu (`strings.adoptOwned`) com
   zero-copy; `readDir` empacota entradas em um blob DOD contíguo compacto
-  (`[count][blob_len][entries][names]`) sem `stat` extra por entrada no Linux;
+  (`[count][blob_len][entries][name descriptors][names]`) sem `stat` extra por
+  entrada no Linux; cada descritor de nome permanece estável, permitindo
+  múltiplos `ref str` simultâneos sem mutar a listagem;
   códigos de erro são normalizados para o intervalo portável `0-8` (`IoErrorKind`).
 
 ## Futuro e Próximos Passos

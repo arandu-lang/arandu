@@ -112,16 +112,18 @@ where
     /// Drain entries whose quiet window has elapsed.
     pub fn take_due(&mut self) -> Vec<(K, V)> {
         let now = Instant::now();
-        let mut due = Vec::new();
-        let mut keep = HashMap::new();
-        for (k, p) in self.pending.drain() {
+        let mut due_keys = Vec::new();
+        for (k, p) in &self.pending {
             if p.changed_at + self.debounce <= now {
-                due.push((k, p.value));
-            } else {
-                keep.insert(k, p);
+                due_keys.push(k.clone());
             }
         }
-        self.pending = keep;
+        let mut due = Vec::with_capacity(due_keys.len());
+        for k in due_keys {
+            if let Some(p) = self.pending.remove(&k) {
+                due.push((k, p.value));
+            }
+        }
         due
     }
 
@@ -154,5 +156,18 @@ mod tests {
         let mut m = DebouncedMap::with_debounce(Duration::from_secs(10));
         m.push("x", 9);
         assert_eq!(m.take_all(), vec![("x", 9)]);
+    }
+
+    #[test]
+    fn take_due_preserves_undue_items() {
+        let mut m = DebouncedMap::with_debounce(Duration::from_millis(50));
+        m.push("early", 1);
+        thread::sleep(Duration::from_millis(30));
+        m.push("late", 2);
+        thread::sleep(Duration::from_millis(30));
+        let due = m.take_due();
+        assert_eq!(due, vec![("early", 1)]);
+        assert_eq!(m.pending_count(), 1);
+        assert_eq!(m.get(&"late"), Some(&2));
     }
 }

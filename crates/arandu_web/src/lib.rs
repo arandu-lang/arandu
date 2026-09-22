@@ -8,7 +8,7 @@ pub mod stdlib_core;
 
 use arandu_middle::layout::DataLayout;
 use arandu_query::db::DatabaseImpl;
-use diagnostics::{WebDiagnostic, convert_diagnostic};
+use diagnostics::{WebDiagnostic, WebSeverity, convert_diagnostic};
 use serde::{Deserialize, Serialize};
 
 /// High-level compilation result.
@@ -186,14 +186,34 @@ pub unsafe extern "C" fn arandu_compile(
     source_ptr: *const u8,
     source_len: usize,
 ) -> *mut RawCompileResponse {
-    let source = if source_ptr.is_null() || source_len == 0 {
-        ""
-    } else {
-        let slice = unsafe { std::slice::from_raw_parts(source_ptr, source_len) };
-        std::str::from_utf8(slice).unwrap_or("")
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let source = if source_ptr.is_null() || source_len == 0 {
+            ""
+        } else {
+            let slice = unsafe { std::slice::from_raw_parts(source_ptr, source_len) };
+            std::str::from_utf8(slice).unwrap_or("")
+        };
+
+        compile_source(source)
+    }));
+
+    let result = match result {
+        Ok(res) => res,
+        Err(_) => WebCompileResult {
+            success: false,
+            wasm_bytes: None,
+            diagnostics: vec![WebDiagnostic {
+                line: 1,
+                column: 1,
+                length: 1,
+                severity: WebSeverity::Error,
+                code: Some("ICEGEN001".to_string()),
+                message: "Internal compiler error during WebAssembly compilation".to_string(),
+                notes: Vec::new(),
+            }],
+        },
     };
 
-    let result = compile_source(source);
     let json_str = serde_json::to_string(&result.diagnostics).unwrap_or_else(|_| "[]".to_string());
     let json_boxed = json_str.into_bytes().into_boxed_slice();
     let json_len = json_boxed.len();
@@ -225,17 +245,19 @@ pub unsafe extern "C" fn arandu_compile(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn arandu_free_response(resp_ptr: *mut RawCompileResponse) {
     if !resp_ptr.is_null() {
-        let resp = unsafe { Box::from_raw(resp_ptr) };
-        if resp.wasm_ptr != 0 && resp.wasm_len != 0 {
-            unsafe {
-                arandu_free(resp.wasm_ptr as *mut u8, resp.wasm_len);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let resp = unsafe { Box::from_raw(resp_ptr) };
+            if resp.wasm_ptr != 0 && resp.wasm_len != 0 {
+                unsafe {
+                    arandu_free(resp.wasm_ptr as *mut u8, resp.wasm_len);
+                }
             }
-        }
-        if resp.json_ptr != 0 && resp.json_len != 0 {
-            unsafe {
-                arandu_free(resp.json_ptr as *mut u8, resp.json_len);
+            if resp.json_ptr != 0 && resp.json_len != 0 {
+                unsafe {
+                    arandu_free(resp.json_ptr as *mut u8, resp.json_len);
+                }
             }
-        }
+        }));
     }
 }
 
@@ -261,16 +283,20 @@ pub unsafe extern "C" fn arandu_complete(
     source_len: usize,
     offset: u32,
 ) -> *mut RawJsonResponse {
-    let source = if source_ptr.is_null() || source_len == 0 {
-        ""
-    } else {
-        let slice = unsafe { std::slice::from_raw_parts(source_ptr, source_len) };
-        std::str::from_utf8(slice).unwrap_or("")
-    };
+    let json_str = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let source = if source_ptr.is_null() || source_len == 0 {
+            ""
+        } else {
+            let slice = unsafe { std::slice::from_raw_parts(source_ptr, source_len) };
+            std::str::from_utf8(slice).unwrap_or("")
+        };
 
-    let items = completion_source(source, offset);
-    let json = serde_json::to_string(&items).unwrap_or_else(|_| "[]".to_string());
-    let json_boxed = json.into_bytes().into_boxed_slice();
+        let items = completion_source(source, offset);
+        serde_json::to_string(&items).unwrap_or_else(|_| "[]".to_string())
+    }))
+    .unwrap_or_else(|_| "[]".to_string());
+
+    let json_boxed = json_str.into_bytes().into_boxed_slice();
     let json_len = json_boxed.len();
     let json_ptr = Box::into_raw(json_boxed) as *mut u8 as usize;
 
@@ -287,12 +313,14 @@ pub unsafe extern "C" fn arandu_complete(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn arandu_free_json(resp_ptr: *mut RawJsonResponse) {
     if !resp_ptr.is_null() {
-        let resp = unsafe { Box::from_raw(resp_ptr) };
-        if resp.ptr != 0 && resp.len != 0 {
-            unsafe {
-                arandu_free(resp.ptr as *mut u8, resp.len);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let resp = unsafe { Box::from_raw(resp_ptr) };
+            if resp.ptr != 0 && resp.len != 0 {
+                unsafe {
+                    arandu_free(resp.ptr as *mut u8, resp.len);
+                }
             }
-        }
+        }));
     }
 }
 
@@ -310,16 +338,20 @@ pub unsafe extern "C" fn arandu_format(
     source_ptr: *const u8,
     source_len: usize,
 ) -> *mut RawJsonResponse {
-    let source = if source_ptr.is_null() || source_len == 0 {
-        ""
-    } else {
-        let slice = unsafe { std::slice::from_raw_parts(source_ptr, source_len) };
-        std::str::from_utf8(slice).unwrap_or("")
-    };
+    let json_str = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let source = if source_ptr.is_null() || source_len == 0 {
+            ""
+        } else {
+            let slice = unsafe { std::slice::from_raw_parts(source_ptr, source_len) };
+            std::str::from_utf8(slice).unwrap_or("")
+        };
 
-    let formatted = format_source(source);
-    let json = serde_json::to_string(&formatted).unwrap_or_else(|_| "\"\"".to_string());
-    let json_boxed = json.into_bytes().into_boxed_slice();
+        let formatted = format_source(source);
+        serde_json::to_string(&formatted).unwrap_or_else(|_| "\"\"".to_string())
+    }))
+    .unwrap_or_else(|_| "\"\"".to_string());
+
+    let json_boxed = json_str.into_bytes().into_boxed_slice();
     let json_len = json_boxed.len();
     let json_ptr = Box::into_raw(json_boxed) as *mut u8 as usize;
 

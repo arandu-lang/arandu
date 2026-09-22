@@ -6,8 +6,26 @@ mod type_led;
 use super::{BinaryOp, CatchHandler, ParseError, ParseErrorCode, Parser, TokenKind, span_between};
 use crate::ast::ast_pool::{ExprId, ExprKind};
 
+const MAX_EXPR_RECURSION_DEPTH: u32 = 105;
+
 impl<'a> Parser<'a> {
     pub(super) fn parse_expr(&mut self, min_bp: u8) -> Result<ExprId, ParseError> {
+        if self.recursion_depth >= MAX_EXPR_RECURSION_DEPTH {
+            return Err(ParseError::new(
+                ParseErrorCode::ExpectedExpression,
+                "expression recursion limit exceeded",
+                self.current(),
+                self.file_id,
+                self.source,
+            ));
+        }
+        self.recursion_depth += 1;
+        let res = self.parse_expr_inner(min_bp);
+        self.recursion_depth -= 1;
+        res
+    }
+
+    fn parse_expr_inner(&mut self, min_bp: u8) -> Result<ExprId, ParseError> {
         // Outermost expression only → one EXPR green node (event sink).
         let wrap = min_bp == 0;
         if wrap {

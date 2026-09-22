@@ -244,15 +244,20 @@ pub fn splice_call(
     let mut new_blocks = Vec::with_capacity(total_new_blocks);
     let mut new_block_params_pool = Vec::new();
 
-    for b in 0..total_new_blocks {
+    for (b, ((stmts, params), terminator)) in all_stmts
+        .into_iter()
+        .zip(all_block_params)
+        .zip(all_terminators)
+        .enumerate()
+    {
         let stmt_start = new_stmt_table.len();
-        for stmt in all_stmts.remove(0) {
+        for stmt in stmts {
             new_stmt_table.push(stmt);
         }
         let stmt_range = DenseRange::new(stmt_start, new_stmt_table.len() - stmt_start);
 
         let param_start = new_block_params_pool.len();
-        for param in all_block_params.remove(0) {
+        for param in params {
             new_block_params_pool.push(param);
         }
         let param_range = DenseRange::new(param_start, new_block_params_pool.len() - param_start);
@@ -261,7 +266,7 @@ pub fn splice_call(
             id: BlockId::from_usize(b),
             params: param_range,
             statements: stmt_range,
-            terminator: all_terminators.remove(0),
+            terminator,
         });
     }
 

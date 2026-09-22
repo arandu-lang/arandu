@@ -132,6 +132,7 @@ pub struct Parser<'a> {
     /// Optional event sink for green-tree construction (F1 event-driven CST).
     pub(crate) events: Option<Vec<crate::syntax::events::ParseEvent>>,
     pub(crate) split_gt: Option<Token>,
+    pub(crate) recursion_depth: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -156,6 +157,7 @@ impl<'a> Parser<'a> {
             suppression_window: 0,
             events: None,
             split_gt: None,
+            recursion_depth: 0,
         }
     }
 

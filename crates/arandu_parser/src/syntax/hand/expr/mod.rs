@@ -24,11 +24,7 @@ pub fn try_hand_lower_expr_all(
     if toks.is_empty() {
         return None;
     }
-    let mut ctx = HandCtx {
-        pool,
-        source,
-        file_id,
-    };
+    let mut ctx = HandCtx::new(pool, source, file_id);
     let mut cur = Cursor::new(toks);
     let expr = try_hand_lower_expr(&mut ctx, &mut cur, 0)?;
     cur.skip_semis();
@@ -38,8 +34,24 @@ pub fn try_hand_lower_expr_all(
     Some(expr)
 }
 
+const MAX_EXPR_DEPTH: u32 = 105;
+
 /// Parse expression with minimum binding power.
 pub fn try_hand_lower_expr(
+    ctx: &mut HandCtx<'_>,
+    cur: &mut Cursor<'_>,
+    min_bp: u8,
+) -> Option<ExprId> {
+    if ctx.depth >= MAX_EXPR_DEPTH {
+        return None;
+    }
+    ctx.depth += 1;
+    let res = try_hand_lower_expr_inner(ctx, cur, min_bp);
+    ctx.depth -= 1;
+    res
+}
+
+fn try_hand_lower_expr_inner(
     ctx: &mut HandCtx<'_>,
     cur: &mut Cursor<'_>,
     min_bp: u8,

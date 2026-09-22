@@ -254,8 +254,11 @@ impl<R: IdIndex, C: IdIndex> BitMatrix<R, C> {
     #[must_use]
     pub fn new(rows: usize, cols: usize) -> Self {
         let words_per_row = cols.div_ceil(64);
+        let total_words = rows
+            .checked_mul(words_per_row)
+            .expect("BitMatrix capacity overflow: rows * words_per_row exceeds usize::MAX");
         Self {
-            words: vec![0; rows * words_per_row],
+            words: vec![0; total_words],
             num_rows: rows,
             num_cols: cols,
             words_per_row,
@@ -589,5 +592,11 @@ mod tests {
         assert!(matrix.contains(1, 0));
         assert!(matrix.contains(1, 129));
         assert_eq!(matrix.num_cols, 130);
+    }
+
+    #[test]
+    #[should_panic(expected = "BitMatrix capacity overflow")]
+    fn test_bit_matrix_overflow() {
+        let _ = BitMatrix::<usize, usize>::new(usize::MAX, usize::MAX);
     }
 }

@@ -26,8 +26,9 @@ let deactivating = false;
 let runtimeState: ServerUiState = 'stopped';
 let observedCrashCount = 0;
 let testingIntegration: TestingIntegration | undefined;
+let singleFileNoticeShown = false;
 
-type ServerUiState = 'starting' | 'indexing' | 'ready' | 'restarting' | 'missing' | 'stopped';
+type ServerUiState = 'starting' | 'indexing' | 'single-file' | 'ready' | 'restarting' | 'missing' | 'stopped';
 
 interface RuntimeState {
     readonly state: ServerUiState;
@@ -81,6 +82,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<Arandu
         }),
         vscode.commands.registerCommand('arandu.restartServer', () => restartLanguageServer(context, fileWatcher))
     );
+    context.subscriptions.push(vscode.commands.registerCommand('arandu.initializePackage', () => {
+        const folder = vscode.workspace.workspaceFolders?.find(candidate => candidate.uri.scheme === 'file');
+        if (!folder) {
+            return;
+        }
+        const terminal = vscode.window.createTerminal({ name: 'Arandu: Initialize Package', cwd: folder.uri.fsPath });
+        terminal.show();
+        terminal.sendText('arandu_cli init', false);
+    }));
 
     testingIntegration = createTestingIntegration(context, fileWatcher, traceOutputChannel);
     context.subscriptions.push(testingIntegration);
@@ -197,8 +207,24 @@ async function startLanguageServer(
     nextClient.onNotification('arandu/status', (status: { state?: string; message?: string }) => {
         if (status.state === 'indexing') {
             setStatus('indexing', status.message);
+        } else if (status.state === 'single-file') {
+            setStatus('single-file', status.message);
+            if (!singleFileNoticeShown) {
+                singleFileNoticeShown = true;
+                void vscode.window.showInformationMessage(
+                    status.message ?? 'No arandu.toml found. Arandu is analyzing files individually.',
+                    'Prepare package initialization'
+                ).then(action => {
+                    if (action === 'Prepare package initialization') {
+                        void vscode.commands.executeCommand('arandu.initializePackage');
+                    }
+                });
+            }
         } else if (status.state === 'ready') {
-            setStatus('ready', status.message);
+            setStatus(status.message?.includes('stdlib unavailable') ? 'missing'
+                : status.message?.startsWith('Single-file') ? 'single-file' : 'ready', status.message);
+        } else if (status.state === 'error') {
+            setStatus('missing', status.message);
         }
         traceOutputChannel?.info(`Server status: ${status.state ?? 'unknown'}${status.message ? ` — ${status.message}` : ''}`);
     });
@@ -309,6 +335,12 @@ function setStatus(
         case 'ready':
             statusBarItem.text = '$(check) Arandu';
             statusBarItem.tooltip = detail ?? 'Arandu Language Server: Ready';
+            statusBarItem.command = 'arandu.showServerLogs';
+            break;
+        case 'single-file':
+            statusBarItem.text = '$(warning) Arandu';
+            statusBarItem.tooltip = `${detail ?? 'Single-file analysis'} Click to prepare arandu_cli init.`;
+            statusBarItem.command = 'arandu.initializePackage';
             break;
         case 'indexing':
             statusBarItem.text = '$(sync~spin) Arandu';

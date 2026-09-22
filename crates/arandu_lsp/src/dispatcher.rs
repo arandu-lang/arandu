@@ -177,6 +177,12 @@ pub(crate) fn event_loop(
                 }
             }
             Event::Workspace(event) => match event {
+                Ok(WorkspaceEvent::Stdlib(stdlib)) => {
+                    for file in stdlib.files {
+                        crate::workspace::register_workspace_file(state, file);
+                    }
+                    state.host.db().set_stdlib_root(stdlib.root);
+                }
                 Ok(WorkspaceEvent::Project(project)) => {
                     let mut project = *project;
                     for file in project.module_files.drain(..) {
@@ -189,6 +195,14 @@ pub(crate) fn event_loop(
                 Ok(WorkspaceEvent::File(file)) => {
                     crate::workspace::register_workspace_file(state, file);
                 }
+                Ok(WorkspaceEvent::NoManifest) => {
+                    let message = if state.host.db().stdlib_root().is_some() {
+                        "No arandu.toml found; analyzing files with the toolchain stdlib. Run `arandu_cli init` in a package folder to enable package imports and tests."
+                    } else {
+                        "No arandu.toml found; single-file analysis is available, but the toolchain stdlib could not be located. Set ARANDU_STDLIB to its directory."
+                    };
+                    send_server_status(connection, "single-file", message)?;
+                }
                 Ok(WorkspaceEvent::Error(error)) => {
                     send_server_status(connection, "error", &error)?;
                 }
@@ -199,7 +213,14 @@ pub(crate) fn event_loop(
                         finish_workspace_progress(connection)?;
                         workspace_progress_started = false;
                     }
-                    send_server_status(connection, "ready", "Workspace ready")?;
+                    let message = if state.host.db().stdlib_root().is_none() {
+                        "Workspace indexed; toolchain stdlib unavailable"
+                    } else if state.package.is_some() {
+                        "Workspace ready"
+                    } else {
+                        "Single-file analysis ready; no arandu.toml found"
+                    };
+                    send_server_status(connection, "ready", message)?;
                     workspace_rx = never();
                 }
                 Err(_) => workspace_rx = never(),

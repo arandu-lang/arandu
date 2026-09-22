@@ -20,6 +20,11 @@ pub(crate) struct WorkspaceFile {
     pub(crate) text: String,
 }
 
+pub(crate) struct WorkspaceStdlib {
+    pub(crate) root: PathBuf,
+    pub(crate) files: Vec<WorkspaceFile>,
+}
+
 pub(crate) struct WorkspaceProject {
     pub(crate) manifest_path: PathBuf,
     pub(crate) manifest_data: ManifestData,
@@ -32,7 +37,9 @@ pub(crate) struct WorkspaceProject {
 }
 
 pub(crate) enum WorkspaceEvent {
+    Stdlib(WorkspaceStdlib),
     Project(Box<WorkspaceProject>),
+    NoManifest,
     File(WorkspaceFile),
     Error(String),
     Done,
@@ -44,11 +51,21 @@ pub(crate) fn spawn_workspace_discovery(
 ) -> Receiver<WorkspaceEvent> {
     const DISCOVERY_BACKLOG: usize = 8;
     let (tx, rx) = bounded(DISCOVERY_BACKLOG);
-    if roots.is_empty() {
-        let _ = tx.send(WorkspaceEvent::Done);
-        return rx;
-    }
     let _ = pool.spawn(Priority::Background, None, move |cancellation| {
+        match discover_stdlib() {
+            Ok(stdlib) => {
+                if tx.send(WorkspaceEvent::Stdlib(stdlib)).is_err() {
+                    return;
+                }
+            }
+            Err(error) => {
+                let _ = tx.send(WorkspaceEvent::Error(error));
+            }
+        }
+        if cancellation.is_cancelled() {
+            let _ = tx.send(WorkspaceEvent::Done);
+            return;
+        }
         // The compiler DB currently owns one ModuleRoots input. Select the
         // first workspace package deterministically; multi-root ownership is a
         // separate protocol capability, not an order-dependent overwrite.
@@ -58,7 +75,11 @@ pub(crate) fn spawn_workspace_discovery(
                     return;
                 }
             }
-            Ok(None) => {}
+            Ok(None) => {
+                if !roots.is_empty() && tx.send(WorkspaceEvent::NoManifest).is_err() {
+                    return;
+                }
+            }
             Err(error) => {
                 let _ = tx.send(WorkspaceEvent::Error(error));
                 let _ = tx.send(WorkspaceEvent::Done);
@@ -79,6 +100,20 @@ pub(crate) fn spawn_workspace_discovery(
         let _ = tx.send(WorkspaceEvent::Done);
     });
     rx
+}
+
+fn discover_stdlib() -> Result<WorkspaceStdlib, String> {
+    let stdlib =
+        resolve_stdlib_root(StdlibResolveOpts::default()).map_err(|error| error.to_string())?;
+    let root = stdlib.path;
+    let mut files = Vec::new();
+    for relative in scan_aru_entries(&root) {
+        let path = root.join(relative);
+        let text = std::fs::read_to_string(&path)
+            .map_err(|error| format!("cannot read stdlib module {}: {error}", path.display()))?;
+        files.push(WorkspaceFile { path, text });
+    }
+    Ok(WorkspaceStdlib { root, files })
 }
 
 /// Rebuild the active package graph after a manifest notification. Discovery
@@ -174,15 +209,6 @@ fn discover_workspace_project_with_cache(
         let stdlib_root = resolve_stdlib_root(StdlibResolveOpts::default())
             .ok()
             .map(|stdlib| stdlib.path);
-        if let Some(root) = stdlib_root.as_ref() {
-            for relative in scan_aru_entries(root) {
-                let path = root.join(relative);
-                let text = std::fs::read_to_string(&path).map_err(|error| {
-                    format!("cannot read stdlib module {}: {error}", path.display())
-                })?;
-                module_files.push(WorkspaceFile { path, text });
-            }
-        }
         return Ok(Some(WorkspaceProject {
             manifest_path,
             manifest_data,

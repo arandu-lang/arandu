@@ -47,6 +47,9 @@ export function createTestingIntegration(
             if (folder.uri.scheme !== 'file') {
                 continue;
             }
+            if (!hasPackageManifest(folder.uri.fsPath)) {
+                continue;
+            }
             const cli = discoverCli(context, folder.uri.fsPath);
             if (!cli) {
                 output.warn(`Testing unavailable for ${folder.name}: could not find arandu CLI`);
@@ -176,6 +179,21 @@ export function createTestingIntegration(
         },
         onDidChangeTests: testChanges.event
     };
+}
+
+function hasPackageManifest(folder: string): boolean {
+    let current = path.resolve(folder);
+    while (true) {
+        if (fs.existsSync(path.join(current, 'arandu.toml'))
+            || fs.existsSync(path.join(current, 'Arandu.toml'))) {
+            return true;
+        }
+        const parent = path.dirname(current);
+        if (parent === current) {
+            return false;
+        }
+        current = parent;
+    }
 }
 
 interface FoundTest {

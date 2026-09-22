@@ -375,7 +375,50 @@ fn stdio_workspace_index_reports_standard_progress_and_status() {
     });
     assert_eq!(
         ready.pointer("/params/message").and_then(Value::as_str),
-        Some("Workspace ready")
+        Some("Single-file analysis ready; no arandu.toml found")
+    );
+    lsp.shutdown(2);
+}
+
+#[test]
+fn stdio_manifestless_folder_resolves_toolchain_stdlib() {
+    let fixture = FixtureDir::new();
+    let document = fixture.path().join("main.aru");
+    let source = "import std.alloc.vec as vec\nfunc size(): uint { let values = vec.new<int>(); return values.len() }\n";
+    fs::write(&document, source).expect("write standalone source");
+    let uri = file_uri(&document);
+    let mut lsp = LspProcess::spawn();
+    lsp.initialize(fixture.path(), 1);
+    let ready = lsp.wait_for(|message| {
+        message.get("method").and_then(Value::as_str) == Some("arandu/status")
+            && message.pointer("/params/state").and_then(Value::as_str) == Some("ready")
+    });
+    assert_eq!(
+        ready.pointer("/params/message").and_then(Value::as_str),
+        Some("Single-file analysis ready; no arandu.toml found")
+    );
+    lsp.send(&json!({
+        "jsonrpc": "2.0", "method": "textDocument/didOpen",
+        "params": { "textDocument": {
+            "uri": uri, "languageId": "arandu", "version": 1, "text": source
+        }}
+    }));
+    let diagnostics = lsp.wait_for(|message| {
+        message.get("method").and_then(Value::as_str) == Some("textDocument/publishDiagnostics")
+            && message.pointer("/params/uri").and_then(Value::as_str) == Some(uri.as_str())
+    });
+    let items = diagnostics
+        .pointer("/params/diagnostics")
+        .and_then(Value::as_array)
+        .expect("diagnostic array");
+    assert!(
+        items.iter().all(|item| {
+            !matches!(
+                item.pointer("/code").and_then(Value::as_str),
+                Some("M001" | "M002")
+            )
+        }),
+        "stdlib import must resolve without a manifest: {diagnostics}"
     );
     lsp.shutdown(2);
 }

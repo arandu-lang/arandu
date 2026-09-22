@@ -110,6 +110,14 @@ impl<'a> Lexer<'a> {
                 if remaining >= 3 && bytes[self.pos + 1] == b'/' && bytes[self.pos + 2] == b'/' {
                     return self.lex_line_doc_comment();
                 } else if remaining >= 3
+                    && bytes[self.pos + 1] == b'/'
+                    && bytes[self.pos + 2] == b'!'
+                {
+                    // Inner doc comment (`//!`): documents the enclosing module
+                    // instead of the following item. Stripped by
+                    // `clean_doc_line` like `///`.
+                    return self.lex_line_doc_comment();
+                } else if remaining >= 3
                     && bytes[self.pos + 1] == b'*'
                     && bytes[self.pos + 2] == b'*'
                 {

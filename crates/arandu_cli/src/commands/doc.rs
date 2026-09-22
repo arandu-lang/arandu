@@ -35,7 +35,20 @@ pub fn cmd_doc(args: &[String], _flags: &ProjectFlags, data_layout: DataLayout) 
         ));
     }
 
-    let target = target_path.unwrap_or_else(|| PathBuf::from("."));
+    let raw_target = target_path.unwrap_or_else(|| PathBuf::from("."));
+    // Resolve the path relative to cwd so that `arandu doc stdlib/` and
+    // `arandu doc /abs/stdlib/` produce identical results regardless of how
+    // the caller spells the path (fixes: relative path yields 0 overviews).
+    let target = fs::canonicalize(&raw_target).map_err(|e| {
+        CliFailure::operational(
+            "resolve documentation target path",
+            Some(raw_target.clone()),
+            format!(
+                "{e} — make sure the path exists (tried: {})",
+                raw_target.display()
+            ),
+        )
+    })?;
     fs::create_dir_all(&out_dir).map_err(|e| {
         CliFailure::operational(
             "create documentation output directory",
@@ -47,13 +60,29 @@ pub fn cmd_doc(args: &[String], _flags: &ProjectFlags, data_layout: DataLayout) 
     let mut db = DatabaseImpl::new();
     db.set_target_config(data_layout);
 
+    // Documentation signatures resolve imported stdlib types through the
+    // same registered source files as compilation. Point the DB at the root
+    // before querying any module so names such as `io.IoError` render instead
+    // of `<error>` in function signatures and struct fields.
+    let stdlib_root = target
+        .ancestors()
+        .find(|path| arandu_query::is_stdlib_root(path));
+    if let Some(root) = stdlib_root {
+        db.set_stdlib_root(root.to_path_buf());
+        if target.is_file() {
+            crate::pipeline::register_stdlib_sources(&mut db, root);
+        }
+    }
+
     let mut files_to_doc = Vec::new();
     if target.is_file() {
         let text = fs::read_to_string(&target).map_err(|e| {
             CliFailure::operational("read source file", Some(target.clone()), e.to_string())
         })?;
         let key = target.to_string_lossy().to_string();
-        let source_file = db.new_file(key, text);
+        let source_file = db
+            .source_file_by_path(&key)
+            .unwrap_or_else(|| db.new_file(key, text));
         files_to_doc.push((target.clone(), source_file));
     } else {
         let entries = arandu_query::scan_aru_entries(&target);

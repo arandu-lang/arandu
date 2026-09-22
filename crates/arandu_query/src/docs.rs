@@ -15,6 +15,16 @@ use arandu_typeck::EnumPayloadShape;
 pub static ITEM_DOC_EXEC_COUNT: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
+fn clean_overview_lines(lines: &[String]) -> String {
+    lines
+        .iter()
+        .map(|l| arandu_middle::docs::clean_doc_line(l))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
 /// Query for documenting a single language item with item-level dependency tracking.
 ///
 /// If a function body changes without modifying its signature, effects, or doc-comment,
@@ -256,24 +266,58 @@ pub fn module_doc(db: &dyn ArandCompilerDb, file: SourceFile) -> Arc<DocModule> 
         .to_string();
 
     let resolution = resolve(db, file);
-    let overview = program.module.as_ref().and_then(|m| {
-        resolution.docs.get(&NodeKey::from(m.span)).map(|lines| {
-            lines
-                .iter()
-                .map(|l| arandu_middle::docs::clean_doc_line(l))
-                .collect::<Vec<_>>()
-                .join("\n")
-                .trim()
-                .to_string()
-        })
-    });
-
     let signatures = module_signatures(db, file);
+
+    // Overview precedence: docs attached directly to `module X` win.
+    let direct_overview = program
+        .module
+        .as_ref()
+        .and_then(|m| resolution.docs.get(&NodeKey::from(m.span)))
+        .map(|lines| clean_overview_lines(lines));
+
+    // Fallback: `///` blocks written between `module X` and the first
+    // documentable item attach (via pending docs) to `import` statements,
+    // which are never rendered as doc items. Surface those orphaned lines
+    // as the module overview instead of dropping them silently.
+    let overview = direct_overview
+        .or_else(|| {
+            let global_scope = signatures.symbols.global_scope();
+            let first_item_start = signatures
+                .symbols
+                .iter()
+                .filter(|sym| {
+                    sym.scope == global_scope
+                        && sym.id.file_id == *file.file_id(db)
+                        && sym.is_public
+                        && matches!(
+                            sym.kind,
+                            SymbolKind::Func
+                                | SymbolKind::AssociatedFunc
+                                | SymbolKind::ExternFunc
+                                | SymbolKind::Struct
+                                | SymbolKind::Enum
+                                | SymbolKind::Interface
+                                | SymbolKind::TypeAlias
+                                | SymbolKind::Const
+                        )
+                })
+                .map(|sym| sym.span.start)
+                .min()?;
+            program
+                .imports
+                .iter()
+                .filter(|import| import.span().start < first_item_start)
+                .filter_map(|import| resolution.docs.get(&NodeKey::from(import.span())))
+                .next()
+                .map(|lines| clean_overview_lines(lines))
+        })
+        .filter(|s| !s.is_empty());
+
     let mut items = Vec::new();
     let global_scope = signatures.symbols.global_scope();
 
     for sym in signatures.symbols.iter() {
-        if sym.scope == global_scope && sym.is_public {
+        if sym.scope == global_scope && sym.id.file_id == *file.file_id(db) && sym.is_public {
             if let Some(doc) = item_doc(db, file, sym.id) {
                 items.push((*doc.as_ref()).clone());
             }

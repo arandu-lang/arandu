@@ -84,6 +84,16 @@ mod tests {
     }
 
     #[test]
+    fn inner_doc_comment_lexes_as_doc_comment() {
+        let dump = lex_to_string("//! Module overview.").unwrap();
+        assert!(dump.contains("DOC_COMMENT"));
+        let dump = lex_to_string("/// Item docs.").unwrap();
+        assert!(dump.contains("DOC_COMMENT"));
+        let dump = lex_to_string("// Regular comment.").unwrap();
+        assert!(!dump.contains("DOC_COMMENT"));
+    }
+
+    #[test]
     fn identifier_kind_uses_the_language_lexer_contract() {
         assert_eq!(identifier_kind("value_2"), Some(TokenKind::IdentValue));
         assert_eq!(identifier_kind("Point"), Some(TokenKind::IdentType));

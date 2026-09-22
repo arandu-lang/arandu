@@ -117,11 +117,6 @@ impl<I: IdIndex, T> IndexVec<I, T> {
     pub fn as_slice(&self) -> &[T] {
         &self.raw
     }
-
-    /// Returns a mutable slice of all elements.
-    pub fn as_mut_slice(&mut self) -> &mut [T] {
-        &mut self.raw
-    }
 }
 impl<I: IdIndex, T> Index<I> for IndexVec<I, T> {
     type Output = T;

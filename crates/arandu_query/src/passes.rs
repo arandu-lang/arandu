@@ -475,16 +475,6 @@ pub fn item_source_input(
     })
 }
 
-/// Alias for P1 name (thin wrapper; same memo as [`item_source_input`]).
-#[inline]
-pub fn func_body_input(
-    db: &dyn ArandCompilerDb,
-    file: SourceFile,
-    func_sym: arandu_middle::SymbolId,
-) -> HashEq<ItemSourceInput> {
-    item_source_input(db, file, func_sym).clone()
-}
-
 fn empty_program() -> Program {
     Program {
         span: arandu_base::Span::new(0, 0, 0),

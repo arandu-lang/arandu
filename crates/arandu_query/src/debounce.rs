@@ -129,18 +129,6 @@ where
     pub fn take_all(&mut self) -> Vec<(K, V)> {
         self.pending.drain().map(|(k, p)| (k, p.value)).collect()
     }
-
-    /// True when every pending entry is still inside its quiet window.
-    #[must_use]
-    pub fn all_quiet(&self) -> bool {
-        if self.pending.is_empty() {
-            return true;
-        }
-        let now = Instant::now();
-        self.pending
-            .values()
-            .all(|p| p.changed_at + self.debounce > now)
-    }
 }
 
 #[cfg(test)]

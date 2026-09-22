@@ -68,12 +68,6 @@ impl AnalysisSnapshot {
             db: db.clone(),
         }
     }
-
-    /// True if `other` is still the same analysis generation as this snapshot.
-    #[must_use]
-    pub fn is_current(&self, other: AnalysisRevision) -> bool {
-        self.revision == other
-    }
 }
 
 /// Symbol handle valid only for a specific [`AnalysisRevision`].
@@ -125,14 +119,6 @@ impl AnalysisHost {
     pub fn new() -> Self {
         Self {
             db: DatabaseImpl::new(),
-            revision: AnalysisRevision::new(0),
-        }
-    }
-
-    #[must_use]
-    pub fn with_db(db: DatabaseImpl) -> Self {
-        Self {
-            db,
             revision: AnalysisRevision::new(0),
         }
     }

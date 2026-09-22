@@ -59,11 +59,6 @@ impl TypeCheckResult {
     pub fn symbols_mut(&mut self) -> &mut SymbolTable {
         Arc::make_mut(&mut self.symbols)
     }
-
-    /// Unique mutable access to resolved names.
-    pub fn resolved_mut(&mut self) -> &mut ResolvedNames {
-        Arc::make_mut(&mut self.resolved)
-    }
 }
 
 // ── Entry point ─────────────────────────────────────────────────────
@@ -275,20 +270,6 @@ impl<'a> TypeChecker<'a> {
     #[must_use]
     pub fn try_ok_type(&self, ty: &ArType) -> Option<ArType> {
         types::try_ok_type(ty, &self.type_info.type_interner)
-    }
-
-    #[must_use]
-    pub fn try_ok_type_id(&self, id: TypeId) -> Option<TypeId> {
-        match self.type_info.type_interner.resolve(id) {
-            ArType::Result(ok, _) => Some(ok),
-            ArType::Option(inner) => Some(inner),
-            _ => None,
-        }
-    }
-
-    #[must_use]
-    pub fn is_result_type_id(&self, id: TypeId) -> bool {
-        self.is_result_type(&self.resolve(id))
     }
 
     #[must_use]

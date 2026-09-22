@@ -1,3 +1,24 @@
+//! TCP streams, listeners, and host socket primitives.
+//!
+//! ## Overview
+//!
+//! Typed `TcpStream` and `TcpListener` APIs use `io.IoError`. The current host
+//! bridge binds and connects on `127.0.0.1` using a port number; `SocketAddr`
+//! is a value type and is not accepted by these connection methods. Raw
+//! `tcp*` functions expose host handles and status codes.
+//!
+//! ## Errors
+//! Typed stream and listener operations return `Result<_, io.IoError>` for
+//! host failures. Raw bridge functions use integer host status codes and
+//! require callers to manage their handles explicitly.
+//!
+//! ## Safety
+//! `tcpRead` and `tcpWrite` accept raw pointers and lengths. The caller must
+//! provide a valid buffer for the entire requested range and close raw handles.
+//!
+//! ## Platform
+//! `native`
+
 module std.net
 
 /// High-level, safe TCP networking abstractions + raw host TCP bridge.
@@ -18,26 +39,39 @@ import std.core.slice as slice
 // ===========================================================================
 
 extern "C" {
+    /// Host TCP listener creation for a port.
     func ar_rt_tcp_listen(port: int): int
+    /// Host TCP accept operation on a listener handle.
     func ar_rt_tcp_accept(listener: int): int
+    /// Host TCP connection operation.
     func ar_rt_tcp_connect(port: int): int
+    /// Host TCP read into a caller-provided buffer.
     func ar_rt_tcp_read(sock: int, buf: ptr[u8], len: int): int
+    /// Host TCP write from a caller-provided buffer.
     func ar_rt_tcp_write(sock: int, buf: ptr[u8], len: int): int
+    /// Host close operation for a TCP handle.
     func ar_rt_tcp_close(sock: int): void
+    /// Host control for nonblocking TCP mode.
     func ar_rt_tcp_set_nonblocking(sock: int, flag: int): int
+    /// Host wait for TCP readiness or timeout.
     func ar_rt_tcp_wait(sock: int, events: int, timeout_ms: int): int
+    /// Host readiness wait that signals a waker.
     func ar_rt_tcp_wait_wake(sock: int, events: int, timeout_ms: int, waker_id: int): int
+    /// Host asynchronous TCP read bridge.
     func ar_rt_tcp_read_async(sock: int, buf: ptr[u8], len: int): int
+    /// Host asynchronous TCP write bridge.
     func ar_rt_tcp_write_async(sock: int, buf: ptr[u8], len: int): int
 }
 
 /// experimental — not Minimal 0.1
 public struct RawTcpListener {
+    /// Opaque host handle.
     id: int
 }
 
 /// experimental — not Minimal 0.1
 public struct RawTcpStream {
+    /// Opaque host handle.
     id: int
 }
 
@@ -46,80 +80,121 @@ public func tcpWaitReadFlag(): int {
     return 1
 }
 
+/// Returns the write-readiness bit used by `tcpWait` and `tcpWaitWake`.
 public func tcpWaitWriteFlag(): int {
     return 2
 }
 
+/// Listens on loopback (`127.0.0.1`) at `port` and returns a raw handle.
+///
+/// A negative `id` signals failure, including an invalid port or bind error.
+/// Close a successful handle with `tcpCloseListener`.
 public func tcpListen(port: int): RawTcpListener {
     unsafe {
         return RawTcpListener { id: ar_rt_tcp_listen(port) }
     }
 }
 
+/// Accepts one connection from `l` and returns a raw stream handle.
+///
+/// A negative `id` signals failure. This may block while waiting for a
+/// connection; close a successful stream with `tcpCloseStream`.
 public func tcpAccept(l: ref RawTcpListener): RawTcpStream {
     unsafe {
         return RawTcpStream { id: ar_rt_tcp_accept(l.id) }
     }
 }
 
+/// Connects to loopback (`127.0.0.1`) at `port`.
+///
+/// A negative returned `id` signals failure. The caller must close a
+/// successful stream with `tcpCloseStream`.
 public func tcpConnect(port: int): RawTcpStream {
     unsafe {
         return RawTcpStream { id: ar_rt_tcp_connect(port) }
     }
 }
 
+/// Reads up to `len` bytes into a valid writable raw buffer.
+///
+/// Returns a byte count, zero at EOF, `-2` for a nonblocking would-block
+/// result, or `-1` for another error. The current host bridge rejects a null
+/// pointer or nonpositive length.
 public func tcpRead(s: ref RawTcpStream, buf: ptr[u8], len: int): int {
     unsafe {
         return ar_rt_tcp_read(s.id, buf, len)
     }
 }
 
+/// Writes up to `len` bytes from a valid readable raw buffer.
+///
+/// A successful return may be shorter than `len`; retry the remaining bytes
+/// when needed. Returns `-2` for nonblocking would-block or `-1` on error.
 public func tcpWrite(s: ref RawTcpStream, buf: ptr[u8], len: int): int {
     unsafe {
         return ar_rt_tcp_write(s.id, buf, len)
     }
 }
 
-/// Prefer io_uring when `reactorBackend() == 2`, else blocking/host read.
+/// Reads through the host asynchronous bridge into a valid raw buffer.
+///
+/// The host may use io_uring when available or fall back to ordinary read.
+/// The return uses the same byte-count and negative-status convention as
+/// `tcpRead`.
 public func tcpReadAsync(s: ref RawTcpStream, buf: ptr[u8], len: int): int {
     unsafe {
         return ar_rt_tcp_read_async(s.id, buf, len)
     }
 }
 
+/// Writes through the host asynchronous bridge from a valid raw buffer.
+///
+/// The host may use io_uring or ordinary write. A nonnegative return is the
+/// number of bytes written and may be shorter than `len`.
 public func tcpWriteAsync(s: ref RawTcpStream, buf: ptr[u8], len: int): int {
     unsafe {
         return ar_rt_tcp_write_async(s.id, buf, len)
     }
 }
 
-/// `flag != 0` → nonblocking (WouldBlock returns -2 from read/write).
+/// Enables nonblocking mode when `flag != 0`, otherwise disables it.
+///
+/// Returns zero on success or `-1` on host failure. In nonblocking mode,
+/// raw read and write report would-block with `-2`.
 public func tcpSetNonblocking(s: ref RawTcpStream, flag: int): int {
     unsafe {
         return ar_rt_tcp_set_nonblocking(s.id, flag)
     }
 }
 
-/// Wait for readiness. Returns ready event bits, 0 timeout, -1 error.
+/// Waits for requested read/write readiness or `timeoutMs` expiration.
+///
+/// Pass flags from `tcpWaitReadFlag` and `tcpWaitWriteFlag`, combined as
+/// needed. Returns ready bits, zero on timeout, or `-1` on error.
 public func tcpWait(s: ref RawTcpStream, events: int, timeoutMs: int): int {
     unsafe {
         return ar_rt_tcp_wait(s.id, events, timeoutMs)
     }
 }
 
-/// Wait then wake `w` if ready (async + Waker bridge).
+/// Waits for socket readiness and wakes `w` when an event is ready.
+///
+/// Returns ready event bits, zero on timeout, or `-1` on error, following
+/// the same flag convention as `tcpWait`.
 public func tcpWaitWake(s: ref RawTcpStream, events: int, timeoutMs: int, w: ref waker.Waker): int {
     unsafe {
         return ar_rt_tcp_wait_wake(s.id, events, timeoutMs, w.id)
     }
 }
 
+/// Closes a raw listener host handle.
 public func tcpCloseListener(l: ref RawTcpListener): void {
     unsafe {
         ar_rt_tcp_close(l.id)
     }
 }
 
+/// Closes a raw stream host handle.
 public func tcpCloseStream(s: ref RawTcpStream): void {
     unsafe {
         ar_rt_tcp_close(s.id)
@@ -132,11 +207,16 @@ public func tcpCloseStream(s: ref RawTcpStream): void {
 
 /// Internet socket address composed of an IP or hostname string and port number.
 public struct SocketAddr {
+    /// Address or hostname text.
     ip: str
+    /// TCP port number.
     port: int
 }
 
-/// Creates a new `SocketAddr`.
+/// Stores `ip` and `port` in a value without resolving or connecting.
+///
+/// Current `TcpStream.connect` and `TcpListener.bind` accept a port only and
+/// do not use this address value.
 public func socketAddr(ip: str, port: int): SocketAddr {
     return SocketAddr {
         ip: ip,
@@ -146,15 +226,21 @@ public func socketAddr(ip: str, port: int): SocketAddr {
 
 /// A TCP stream between a local and a remote socket.
 public struct TcpStream {
+    /// Raw host stream wrapped by this typed handle.
     raw: RawTcpStream
 }
 
 /// A TCP socket server, listening for connections.
 public struct TcpListener {
+    /// Raw host listener wrapped by this typed handle.
     raw: RawTcpListener
 }
 
-/// Binds a TCP listener to a local port.
+/// Binds a listener on `127.0.0.1:port`.
+///
+/// Returns `Err(AlreadyExists)` with code `-1` for any host listen failure;
+/// this category does not distinguish address-in-use from other causes.
+/// Close the successful listener when finished.
 public func TcpListener.bind(port: int): Result<TcpListener, io.IoError> {
     let l = tcpListen(port)
     if l.id < 0 {
@@ -163,7 +249,10 @@ public func TcpListener.bind(port: int): Result<TcpListener, io.IoError> {
     return Result.Ok(TcpListener { raw: l })
 }
 
-/// Accepts a new incoming connection from this listener.
+/// Waits for and returns an incoming stream from this listener.
+///
+/// Returns `Err(Other)` with code `-1` for a host accept failure. Close each
+/// accepted stream after use.
 public func TcpListener.accept(self: ref TcpListener): Result<TcpStream, io.IoError> {
     let s = tcpAccept(self.raw)
     if s.id < 0 {
@@ -172,12 +261,18 @@ public func TcpListener.accept(self: ref TcpListener): Result<TcpStream, io.IoEr
     return Result.Ok(TcpStream { raw: s })
 }
 
-/// Closes the listener socket.
+/// Closes the listener's host handle.
+///
+/// Calls using this handle after closing may fail; this wrapper does not
+/// reset its stored raw `id`.
 public func TcpListener.close(self: ref TcpListener): void {
     tcpCloseListener(self.raw)
 }
 
-/// Opens a TCP connection to a remote host on the specified port.
+/// Connects to `127.0.0.1:port` and returns a typed stream.
+///
+/// Returns `Err(Other)` with code `-1` on any host connection failure.
+/// The current API does not accept a remote address or hostname.
 public func TcpStream.connect(port: int): Result<TcpStream, io.IoError> {
     let s = tcpConnect(port)
     if s.id < 0 {
@@ -186,7 +281,11 @@ public func TcpStream.connect(port: int): Result<TcpStream, io.IoError> {
     return Result.Ok(TcpStream { raw: s })
 }
 
-/// Reads data from the stream into the provided buffer slice.
+/// Reads up to the buffer length and returns the byte count.
+///
+/// Zero means EOF. A negative host result becomes `Err(BrokenPipe)` with
+/// code `-1`, including a nonblocking would-block result; the category is
+/// therefore not precise. The host currently rejects a zero-length read.
 public func TcpStream.read(self: mut ref TcpStream, buf: mut ref []u8): Result<uint, io.IoError> {
     let n = tcpRead(self.raw, slice.asPtr<u8>(*buf), slice.len<u8>(*buf) as int)
     if n < 0 {
@@ -195,7 +294,11 @@ public func TcpStream.read(self: mut ref TcpStream, buf: mut ref []u8): Result<u
     return Result.Ok(n as uint)
 }
 
-/// Writes data from the provided buffer slice to the stream.
+/// Writes from `buf` and returns the number of bytes accepted.
+///
+/// A successful write can be short. Any negative host result becomes
+/// `Err(BrokenPipe)` with code `-1`, including would-block; retry logic must
+/// account for the returned count.
 public func TcpStream.write(self: mut ref TcpStream, buf: []u8): Result<uint, io.IoError> {
     let n = tcpWrite(self.raw, slice.asPtr<u8>(buf), slice.len<u8>(buf) as int)
     if n < 0 {
@@ -209,7 +312,10 @@ public func TcpStream.flush(self: mut ref TcpStream): Result<bool, io.IoError> {
     return Result.Ok(true)
 }
 
-/// Closes the stream socket.
+/// Closes the stream's host handle.
+///
+/// The stored raw `id` is not reset, so later operations through the same
+/// wrapper may fail.
 public func TcpStream.close(self: ref TcpStream): void {
     tcpCloseStream(self.raw)
 }

@@ -1,3 +1,44 @@
+//! Algebraic `Result<T, E>` type for exception-free error handling.
+//!
+//! ## Overview
+//!
+//! `Result<T, E>` holds either a success value (`Ok(T)`) or a typed error
+//! (`Err(E)`). It is Arandu's primary error-propagation mechanism: functions
+//! that can fail return `Result` instead of throwing, making error paths
+//! visible in the signature and mandatory for the caller to handle.
+//!
+//! The `isOk`/`isErr` tests, `ok`/`err` converters and
+//! `unwrapOr`/`expectOrAbort` recoveries cover inspection without matching
+//! everywhere; `match` handles the rest.
+//!
+//! ## Example
+//!
+//! ```arandu
+//! import std.core.result as result
+//!
+//! func divide(a: i32, b: i32): Result<i32, str> {
+//!     if b == 0 {
+//!         return Result.Err("division by zero")
+//!     }
+//!     return Result.Ok(a / b)
+//! }
+//!
+//! let r = divide(10, 2)
+//! if r.isOk() {
+//!     io.println("result ok")
+//! }
+//! ```
+//!
+//! ## Platform
+//! `native` · `wasm32` · `bare-metal`
+//!
+//! No allocation involved on any supported platform.
+//!
+//! ## See also
+//!
+//! - `std.core.option` — optional value without an associated error
+//! - `std.core.intrinsics` — `abort` for unrecoverable failures
+
 module std.core.result
 
 import std.core.intrinsics as intrinsics

@@ -1,7 +1,35 @@
-// std.core.intrinsics — zero-heap compiler-mapped traps and builtins.
-//
-// Layer rule: this module must never allocate on the heap. Fatal failures use
-// native hardware traps (UD2 on x86, BRK on ARM, abort on C/Wasm).
+//! Compiler-mapped builtins: fatal traps, memory access and conversions.
+//!
+//! ## Overview
+//!
+//! `std.core.intrinsics` exposes operations with no Arandu implementation —
+//! they are emitted directly as native instructions by the compiler through
+//! the `extern "arandu-intrinsic"` mechanism. No heap allocation happens here.
+//!
+//! ## Safety
+//!
+//! Most functions in this module require `unsafe {}`. Misuse causes
+//! undefined behavior or an immediate trap. Do not use directly in application
+//! code — prefer the safe abstractions in `std.core.mem`, `std.core.slice`
+//! and `std.core.str`.
+//!
+//! The following intrinsics are **safe** (no `unsafe {}` required):
+//! - `sliceLen` — reads the `len` field of an already-validated fat-pointer.
+//! - `strBytes` — reinterprets a `str` fat-pointer as `[]u8`; no deref occurs.
+//! - `sizeOf` — compile-time constant; no runtime memory access.
+//! - `alignOf` — compile-time constant; no runtime memory access.
+//!
+//! ## Platform
+//! `native` · `wasm32` · `bare-metal`
+//!
+//! Mapped per target: UD2, LOCK and SSE on x86-64; BRK and LDAXR on aarch64;
+//! `unreachable` and `memory.*` on wasm32.
+//!
+//! ## See also
+//!
+//! - `std.core.mem` — safe wrapper over memory intrinsics
+//! - `std.core.pointer` — raw-pointer utilities
+//! - `std.core.slice` — bounds-checked slices
 
 module std.core.intrinsics
 
@@ -12,11 +40,23 @@ extern "arandu-intrinsic" {
     /// Generational ref mismatch trap: slot was recycled (use-after-free detected).
     /// Used by `std.alloc.gen_arena` verification paths and compiler-lowered `GenGet` nodes.
     func abortGenerationalMismatch() : void
+    /// Builds a slice view from a raw pointer and length. The memory must
+    /// stay valid for as long as the slice is used.
     func sliceFromRaw<Owner, T>(owner: ref Owner, data: ptr[T], len: uint): []T
+    /// Returns the element count of a slice without reading its contents.
+    ///
+    /// **Safe**: only reads the `len` field of the fat-pointer descriptor;
+    /// the element data is never dereferenced.
     func sliceLen<T>(source: []T): uint
+    /// Returns the raw pointer to a slice's first element, if any.
     func sliceData<T>(source: []T): ptr[T]
+    /// Builds a sub-view over a slice range. Out-of-range bounds trap.
     func sliceSubslice<T>(source: []T, start: uint, len: uint): []T
     /// Borrows the UTF-8 storage of `source` as bytes without allocating.
+    ///
+    /// **Safe**: reinterprets the `str` fat-pointer descriptor as `[]u8`;
+    /// the byte data is not dereferenced and no invariant can be violated.
     func strBytes(source: str): []u8
+    /// Borrows `source` as an immutable `str` view tied to its owner.
     func strView<Owner>(owner: ref Owner): ref str
 }

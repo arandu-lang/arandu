@@ -1,21 +1,49 @@
+//! Allocation-free iterator adapters.
+//!
+//! ## Overview
+//!
+//! The `Iterator` interface drives pull-based iteration. `take`, `skip`, `enumerate`, and `stepBy` wrap an iterator, while `count` consumes it.
+//!
+//! ## Complexity
+//! Adapters hold their source iterator by value and use constant storage.
+//! `take` and `enumerate` add O(1) work per item; `skip` consumes up to the
+//! requested prefix on its first `next`; `stepBy` consumes skipped items.
+//!
+//! ## Safety
+//! Passing zero to `stepBy` is treated as a step of one. `count` consumes its
+//! iterator, so the source cannot be reused afterward unless it is copied.
+//!
+//! ## Allocations
+//! The adapters themselves do not allocate.
+//!
+//! ## Platform
+//! `native` · `wasm32` · `bare-metal`
+
 module std.core.iter
 
 import std.core.option as option
 
-/// Pure iterator interface over elements of type `Item`.
+/// Pull-based interface that returns one `Item` or `None` per `next` call.
 ///
-/// Implementations must be deterministic, stack-first, and allocation-free.
+/// The interface does not require an iterator to be restartable. Whether a
+/// particular implementation allocates or has side effects depends on it;
+/// the adapters in this module add no heap allocation themselves.
 public interface Iterator<Item> {
     func next(self: mut ref Self): Option<Item>
 }
 
 /// An iterator adapter that yields only the first `remaining` elements.
 public struct Take<I: Iterator<Item>, Item> {
+    /// Wrapped iterator.
     iter: I
+    /// Maximum number of elements still to return.
     remaining: uint
 }
 
-/// Creates a `Take` iterator adapter.
+/// Wraps `it` and limits it to at most `count` returned elements.
+///
+/// Creating the adapter does not call `next` on the source. A zero count
+/// leaves the source untouched when the adapter is advanced.
 public func take<I: Iterator<Item>, Item>(it: I, count: uint): Take<I, Item> {
     return Take<I, Item> {
         iter: it,
@@ -23,7 +51,10 @@ public func take<I: Iterator<Item>, Item>(it: I, count: uint): Take<I, Item> {
     }
 }
 
-/// Advances the `Take` iterator and returns the next element.
+/// Returns the next source element until the take limit reaches zero.
+///
+/// Once the limit is zero, returns `None` without advancing the source.
+/// The source may also end before the requested number of elements.
 public func Take.next<I: Iterator<Item>, Item>(self: mut ref Take<I, Item>): Option<Item> {
     if self.remaining == 0 {
         return Option.None
@@ -34,12 +65,17 @@ public func Take.next<I: Iterator<Item>, Item>(self: mut ref Take<I, Item>): Opt
 
 /// An iterator adapter that skips the first `target` elements.
 public struct Skip<I: Iterator<Item>, Item> {
+    /// Wrapped iterator.
     iter: I
+    /// Number of elements already skipped.
     skipped: uint
+    /// Number of elements to skip.
     target: uint
 }
 
-/// Creates a `Skip` iterator adapter.
+/// Wraps `it` to omit its first `count` elements.
+///
+/// No source elements are consumed until the adapter's first `next` call.
 public func skip<I: Iterator<Item>, Item>(it: I, count: uint): Skip<I, Item> {
     return Skip<I, Item> {
         iter: it,
@@ -48,7 +84,11 @@ public func skip<I: Iterator<Item>, Item>(it: I, count: uint): Skip<I, Item> {
     }
 }
 
-/// Advances the `Skip` iterator, discarding the initial elements on first iteration.
+/// Discards any remaining prefix, then returns the next source element.
+///
+/// The first call can advance the source up to `target + 1` times. If the
+/// source ends while skipping, returns `None`; later calls may retry `next`
+/// on the source because this adapter does not mark it as permanently ended.
 public func Skip.next<I: Iterator<Item>, Item>(self: mut ref Skip<I, Item>): Option<Item> {
     while self.skipped < self.target {
         match self.iter.next() {
@@ -65,17 +105,23 @@ public func Skip.next<I: Iterator<Item>, Item>(self: mut ref Skip<I, Item>): Opt
 
 /// Pair representing an indexed element in [`Enumerate`].
 public struct Indexed<Item> {
+    /// Index paired with this value.
     index: uint
+    /// Element paired with this index.
     value: Item
 }
 
 /// An iterator adapter that pairs each element with its 0-based index.
 public struct Enumerate<I: Iterator<Item>, Item> {
+    /// Wrapped iterator.
     iter: I
+    /// Index to assign to the next item.
     index: uint
 }
 
-/// Creates an `Enumerate` iterator adapter.
+/// Wraps `it` so each yielded value carries a zero-based index.
+///
+/// Constructing the adapter does not advance the source or allocate.
 public func enumerate<I: Iterator<Item>, Item>(it: I): Enumerate<I, Item> {
     return Enumerate<I, Item> {
         iter: it,
@@ -83,7 +129,10 @@ public func enumerate<I: Iterator<Item>, Item>(it: I): Enumerate<I, Item> {
     }
 }
 
-/// Advances the `Enumerate` iterator and returns `(index, value)`.
+/// Returns the next value paired with its zero-based index.
+///
+/// The index advances only when the source yields `Some`. At end of input,
+/// this returns `None` and keeps the current index.
 public func Enumerate.next<I: Iterator<Item>, Item>(self: mut ref Enumerate<I, Item>): Option<Indexed<Item> > {
     match self.iter.next() {
         Some(val) => {
@@ -102,12 +151,18 @@ public func Enumerate.next<I: Iterator<Item>, Item>(self: mut ref Enumerate<I, I
 
 /// An iterator adapter that steps by a given amount on each iteration.
 public struct StepBy<I: Iterator<Item>, Item> {
+    /// Wrapped iterator.
     iter: I
+    /// Step interval between returned elements.
     step: uint
+    /// Whether the first element has not yet been returned.
     first: bool
 }
 
-/// Creates a `StepBy` iterator adapter.
+/// Wraps `it` to return every `step`-th element, starting with the first.
+///
+/// A zero step is treated as one. Constructing the adapter does not consume
+/// the source or allocate.
 public func stepBy<I: Iterator<Item>, Item>(it: I, step: uint): StepBy<I, Item> {
     let mut s = step
     if s == 0 {
@@ -120,7 +175,11 @@ public func stepBy<I: Iterator<Item>, Item>(it: I, step: uint): StepBy<I, Item> 
     }
 }
 
-/// Advances the `StepBy` iterator by `step` items.
+/// Returns the first element, then every `step`-th source element.
+///
+/// Each later call skips `step - 1` elements. Skipped elements are consumed
+/// from the source. If the source ends during
+/// a skip or before the next return, the result is `None`.
 public func StepBy.next<I: Iterator<Item>, Item>(self: mut ref StepBy<I, Item>): Option<Item> {
     if self.first {
         self.first = false
@@ -140,7 +199,10 @@ public func StepBy.next<I: Iterator<Item>, Item>(self: mut ref StepBy<I, Item>):
     return self.iter.next()
 }
 
-/// Consumes the iterator and returns the total number of elements.
+/// Repeatedly calls `next` until it returns `None`, then returns the count.
+///
+/// This consumes the iterator by value, runs in O(number of yielded items),
+/// and adds no heap allocation beyond any work performed by the source.
 public func count<I: Iterator<Item>, Item>(mut it: I): uint {
     let mut c: uint = 0
     while true {

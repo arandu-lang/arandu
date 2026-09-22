@@ -1,3 +1,30 @@
+//! Generational slots with handles that detect reuse.
+//!
+//! ## Overview
+//!
+//! `GenArena<T>` stores values in reusable slots. A `GenRef` includes the slot generation so removed and recycled entries can be distinguished.
+//!
+//! ## Example
+//!
+//! ```arandu
+//! import std.alloc.gen_arena as arena
+//!
+//! let mut values = arena.new<int>()
+//! let handle = arena.insert(&mut values, 7)
+//! let removed = arena.remove(&mut values, handle)
+//! ```
+//!
+//! ## Safety
+//! `GenRef` records a slot and generation. After removal, using an old
+//! handle with `get` traps on a generation mismatch; use `remove` when a
+//! fallible lookup is needed.
+//!
+//! ## Allocations
+//! The empty arena allocates on first insertion and grows its slot buffers.
+//!
+//! ## Platform
+//! `native` · `wasm32`
+
 // arandu_alloc::gen_arena — generational slots.
 //
 // Minimal 0.1 — generational arena.
@@ -8,30 +35,49 @@ import std.core.mem as mem
 import std.core.intrinsics as intrinsics
 
 extern "C" {
+    /// Host allocator for a raw byte buffer.
     func ar_vec_malloc(size: uint): ptr[u8]
+    /// Host deallocator for a raw byte buffer.
     func ar_vec_buf_free(p: ptr[u8], size: uint): void
+    /// Host allocator that resizes a raw byte buffer.
     func ar_vec_realloc(p: ptr[u8], oldSize: uint, newSize: uint): ptr[u8]
 }
 
-/// Fat handle: slot index + remembered generation (8 bytes).
+/// Handle identifying a slot and the generation when it was inserted.
+///
+/// Removing and reusing a slot changes its generation, so the previous handle
+/// cannot remove the newly inserted value.
 public struct GenRef {
+    /// Position of this element or slot.
     index: u32
+    /// Generation recorded when the handle was created.
     generation: u32
 }
 
 /// Recyclable generational arena (slab free list + gen bump on recycle).
 public struct GenArena<T> {
+    /// Owned storage for slot values.
     data: ptr[T]
+    /// Generation number for each slot.
     gen: ptr[u32]
+    /// Occupancy flag for each slot.
     used: ptr[u8]
+    /// Indexes of reusable slots.
     free: ptr[u32]
+    /// Number of indexes in the free list.
     free_len: uint
+    /// Allocated capacity of the free list.
     free_cap: uint
+    /// Number of slots allocated for values.
     slots: uint
+    /// Allocated slot capacity.
     slots_cap: uint
 }
 
-/// Empty arena (no allocation until first `insert`).
+/// Creates an empty arena without allocating its slot tables.
+///
+/// Call `destroy` when the arena is no longer needed to release tables grown
+/// by `insert` or `remove`.
 public func new<T>(): GenArena<T> {
     return GenArena<T> {
         data: nil,
@@ -106,7 +152,14 @@ func growFree<T>(a: mut ref GenArena<T>, minCap: uint): void {
     }
 }
 
-/// Insert `value` into arena; returns valid generational handle.
+/// Stores `value` and returns a handle for the occupied slot.
+///
+/// A removed slot is reused before a new slot is added. Reuse increments the
+/// slot generation, invalidating handles from its previous occupant.
+///
+/// ## Allocations
+/// Growing the slot tables can allocate; reusing an available slot does not.
+/// Allocation failure aborts rather than returning an error.
 public func insert<T>(a: mut ref GenArena<T>, value: T): GenRef {
     if a.free_len > 0 {
         let lastIdx = a.free_len - 1
@@ -148,7 +201,11 @@ public func insert<T>(a: mut ref GenArena<T>, value: T): GenRef {
     }
 }
 
-/// Load payload; aborts if generation mismatches or slot is empty.
+/// Returns the value at a live handle.
+///
+/// An out-of-range index, removed slot, or stale generation aborts execution.
+/// Use `remove` when invalid handles must be handled without aborting. This
+/// reads the value without removing its slot and does not allocate.
 public func get<T>(a: ref GenArena<T>, r: GenRef): T {
     let idx = r.index as uint
     if idx >= a.slots {
@@ -172,7 +229,12 @@ public func get<T>(a: ref GenArena<T>, r: GenRef): T {
     }
 }
 
-/// Drop ownership of the slot if `r.generation` still matches; else `None`.
+/// Removes a live entry and returns its value as `Some`.
+///
+/// Returns `None` for an out-of-range, already removed, or stale handle. A
+/// successful removal makes that handle invalid and makes the slot available
+/// for a later `insert`. Growing the free-slot table can allocate and abort
+/// on allocation failure.
 public func remove<T>(a: mut ref GenArena<T>, r: GenRef): Option<T> {
     let idx = r.index as uint
     if idx >= a.slots {
@@ -203,7 +265,9 @@ public func remove<T>(a: mut ref GenArena<T>, r: GenRef): Option<T> {
     }
 }
 
-/// Number of live (occupied) slots.
+/// Returns the number of currently occupied slots in O(1) time.
+///
+/// Removed slots are excluded even though their storage remains available.
 public func len<T>(a: ref GenArena<T>): uint {
     return a.slots - a.free_len
 }
@@ -213,7 +277,10 @@ public func isEmpty<T>(a: ref GenArena<T>): bool {
     return len<T>(a) == 0
 }
 
-/// Deallocate all tables and reset to empty.
+/// Releases all slot and free-list buffers and resets the arena to empty.
+///
+/// Existing handles cannot be used with the reset arena. The stored values
+/// are not individually visited by this operation.
 public func destroy<T>(a: mut ref GenArena<T>): void {
     if a.slots_cap > 0 {
         let elem = mem.sizeOf<T>()

@@ -1,3 +1,29 @@
+//! Path composition and inspection without filesystem access.
+//!
+//! ## Overview
+//!
+//! `Path` wraps path text, while `PathBuf` stores a `str` that can be replaced
+//! by `push`. Neither type currently owns a releasable string buffer. These
+//! functions manipulate path spellings; they do not check disk state.
+//!
+//! ## Example
+//!
+//! ```arandu
+//! import std.path as path
+//!
+//! let p = path.pathFromStr("src/main.aru")
+//! let name = p.fileName()
+//! ```
+//!
+//! ## Safety
+//! A `Path` created from a string borrows its source. Neither `Path` nor
+//! `PathBuf` proves a path exists or resolves symlinks. Host join and filename
+//! operations may allocate process-lifetime strings; use `joinOwned` when an
+//! explicitly releasable result is required.
+//!
+//! ## Platform
+//! `native`
+
 module std.path
 
 import std.alloc.string as strings
@@ -5,22 +31,30 @@ import std.core.intrinsics as intrinsics
 
 /// Path manipulation utilities.
 ///
-/// Provides both borrowed zero-copy views (`Path`) and owned buffers (`PathBuf`),
-/// completely avoiding stringly-typed path manipulation.
+/// Provides path wrappers and an explicitly owned `joinOwned` result.
+///
+/// `PathBuf` currently holds `str`; it is not a heap-owning buffer with a
+/// destructor. Host string-returning operations may allocate internally.
 
 extern "C" {
     func ar_path_is_absolute(p: str): int
+    /// Host path joiner that returns a borrowed path result.
     func ar_path_join(a: str, b: str): str
+    /// Host path joiner that returns owned string storage.
     func ar_path_join_owned(a: str, b: str, outBuf: mut ref ptr[u8], outLen: mut ref uint, outCap: mut ref uint): bool
+    /// Host path parser that locates the last path component.
     func ar_path_file_name(p: str): str
 }
 
 /// Zero-copy borrowed view of a filesystem path.
 public struct Path {
+    /// Borrowed path text.
     raw: str
 }
 
-/// Creates a new borrowed `Path` view wrapping `s`.
+/// Wraps `s` as a path without copying, normalizing, or checking disk state.
+///
+/// The source string must remain valid while the path is used.
 public func pathFromStr(s: str): Path {
     return Path { raw: s }
 }
@@ -35,7 +69,9 @@ public func Path.isEmpty(self: ref Path): bool {
     return self.raw == ""
 }
 
-/// Returns `true` if `self` is an absolute path on the host OS.
+/// Returns whether this spelling is absolute under the host path rules.
+///
+/// An empty path returns `false`. This does not access the filesystem.
 public func Path.isAbsolute(self: ref Path): bool {
     if self.raw == "" {
         return false
@@ -45,14 +81,20 @@ public func Path.isAbsolute(self: ref Path): bool {
     }
 }
 
-/// Returns the final component of the path, or an empty `Path` if none.
+/// Returns the last path component, or an empty path when none exists.
+///
+/// The host constructs the returned string and may allocate. This does not
+/// check whether the path exists.
 public func Path.fileName(self: ref Path): Path {
     unsafe {
         return Path { raw: ar_path_file_name(self.raw) }
     }
 }
 
-/// Joins two path slices into a new string representation.
+/// Joins this path spelling with `other` using host path rules.
+///
+/// The host may allocate a process-lifetime string for the result. Use
+/// `joinOwned` for a result whose buffer can be explicitly destroyed.
 public func Path.joinStr(self: ref Path, other: str): str {
     unsafe {
         return ar_path_join(self.raw, other)
@@ -68,8 +110,12 @@ public func Path.joinOwned(self: ref Path, other: str): strings.String {
     return joinOwned(self.raw, other)
 }
 
-/// Owned filesystem path buffer.
+/// Mutable path descriptor storing a `str` value.
+///
+/// It currently has no buffer owner or destructor. Use `joinOwned` for an
+/// explicitly owned result.
 public struct PathBuf {
+    /// Owned mutable path text.
     raw: str
 }
 
@@ -78,7 +124,9 @@ public func newPathBuf(): PathBuf {
     return PathBuf { raw: "" }
 }
 
-/// Creates a `PathBuf` initialized with `s`.
+/// Stores `s` in a path descriptor without copying its bytes.
+///
+/// Keep the source string valid while the descriptor refers to it.
 public func pathBufFromStr(s: str): PathBuf {
     return PathBuf { raw: s }
 }
@@ -93,7 +141,10 @@ public func PathBuf.asStr(self: ref PathBuf): str {
     return self.raw
 }
 
-/// Appends a path segment to this buffer.
+/// Replaces the stored path with the host join of its current value and `segment`.
+///
+/// The host join may allocate a process-lifetime string. This method does
+/// not expose a way to release that allocation.
 public func PathBuf.push(self: mut ref PathBuf, segment: str): void {
     unsafe {
         self.raw = ar_path_join(self.raw, segment)
@@ -115,14 +166,20 @@ public func isAbsolute(p: str): bool {
     }
 }
 
-/// Join two path segments (free function for backward compatibility).
+/// Joins two path spellings using host rules.
+///
+/// The returned `str` may refer to host-allocated process-lifetime storage.
+/// Use `joinOwned` when explicit release is needed.
 public func join(a: str, b: str): str {
     unsafe {
         return ar_path_join(a, b)
     }
 }
 
-/// Joins two paths into an explicitly owned buffer.
+/// Joins two path spellings into an owned `String` buffer.
+///
+/// Destroy the returned string when finished. Host failure aborts because
+/// this function does not return a fallible result.
 public func joinOwned(a: str, b: str): strings.String {
     let mut buf: ptr[u8] = nil
     let mut len: uint = 0

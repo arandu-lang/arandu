@@ -1,3 +1,27 @@
+//! ASCII byte classification and case conversion.
+//!
+//! ## Overview
+//!
+//! Classify ASCII letters, digits, and whitespace, or change the case of ASCII letters. Functions operate on bytes and leave nonmatching bytes unchanged.
+//!
+//! ## Example
+//!
+//! ```arandu
+//! import std.core.ascii as ascii
+//!
+//! let digit = ascii.isAsciiDigit('7' as u8)
+//! let lower = ascii.toAsciiLower('A' as u8)
+//! ```
+//!
+//! ## Complexity
+//! Every operation takes O(1) time and O(1) space.
+//!
+//! ## Allocations
+//! None. Non-ASCII bytes pass through case conversion unchanged.
+//!
+//! ## Platform
+//! `native` · `wasm32` · `bare-metal`
+
 module std.core.ascii
 
 /// Returns `true` if the byte represents an ASCII alphabetic character (`a-z` or `A-Z`).

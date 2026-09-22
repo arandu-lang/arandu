@@ -1,3 +1,25 @@
+//! Test expectations and benchmark helpers.
+//!
+//! ## Overview
+//!
+//! Expectation functions record structured failures in the active test context. Benchmark and utility helpers support test execution.
+//!
+//! ## Example
+//!
+//! ```arandu
+//! import std.testing as testing
+//!
+//! testing.expect(2 + 2 == 4, "addition")
+//! ```
+//!
+//! ## Safety
+//! A failed expectation records a failure and lets the test continue.
+//! `fail` records an unconditional failure; `skip` marks the test skipped.
+//! These functions require an active test context.
+//!
+//! ## Platform
+//! `native`
+
 module std.testing
 
 /// SL_T.3 — `std.testing` and expectation diagnostics.
@@ -9,24 +31,39 @@ module std.testing
 
 extern "C" {
     func ar_test_set_span(file_id: int, start: int, end: int): void
+    /// Host recording of a boolean test expectation.
     func ar_test_expect(cond: int, expr: str, msg: str, loc: str): int
+    /// Host recording of an integer equality expectation.
     func ar_test_expect_equal_i64(expected: int, actual: int, expr: str, msg: str, loc: str): int
+    /// Host recording of a floating-point equality expectation.
     func ar_test_expect_equal_f64(expected: float, actual: float, expr: str, msg: str, loc: str): int
+    /// Host recording of a boolean equality expectation.
     func ar_test_expect_equal_bool(expected: int, actual: int, expr: str, msg: str, loc: str): int
+    /// Host recording of a string equality expectation.
     func ar_test_expect_equal_str(expected: str, actual: str, expr: str, msg: str, loc: str): int
+    /// Host recording of a test failure.
     func ar_test_fail(msg: str, loc: str): void
+    /// Host recording of a skipped test.
     func ar_test_skip(reason: str, loc: str): void
+    /// Host recording of a test log message.
     func ar_test_log(msg: str): void
+    /// Host creation of a temporary test directory.
     func ar_test_temp_dir(nonce: int): str
+    /// Host benchmark loop control.
     func ar_bench_loop(handle: int): int
 }
 
 /// Opaque benchmark context constructed by the harness.
 public struct Benchmark {
+    /// Host benchmark state handle.
     handle: int
 }
 
-/// Continue the calibrated benchmark loop while the current sample needs work.
+/// Advances the harness-controlled benchmark loop.
+///
+/// Returns `true` while the current sample requires another iteration and
+/// `false` when the harness has enough work. The `Benchmark` value must come
+/// from the active benchmark harness.
 public func Benchmark.loop(self: mut ref Benchmark): bool {
     unsafe {
         return ar_bench_loop(self.handle) != 0
@@ -41,6 +78,8 @@ public func blackBox<T>(value: T): T {
 
 /// Asserts that a boolean condition is true.
 /// Records a structured failure in the test context if it fails.
+/// This does not panic or stop the current test. The supplied message is
+/// attached to the recorded expectation.
 public func expect(condition: bool, message: str): void {
     unsafe {
         if condition {
@@ -51,21 +90,29 @@ public func expect(condition: bool, message: str): void {
     }
 }
 
-/// Asserts that two integer values are equal.
+/// Compares signed integer values and records a failure if they differ.
+///
+/// The test continues after a mismatch; `message` labels the expectation.
 public func expectEqualInt(expected: int, actual: int, message: str): void {
     unsafe {
         let _ = ar_test_expect_equal_i64(expected, actual, "expected == actual", message, "")
     }
 }
 
-/// Asserts that two floating-point values are equal.
+/// Compares floating-point values through the test host.
+///
+/// This is an equality expectation, not an approximate tolerance check.
+/// Two NaN values are considered equal by this expectation. A mismatch is
+/// recorded and the test continues.
 public func expectEqualFloat(expected: float, actual: float, message: str): void {
     unsafe {
         let _ = ar_test_expect_equal_f64(expected, actual, "expected == actual", message, "")
     }
 }
 
-/// Asserts that two boolean values are equal.
+/// Compares boolean values and records a failure when they differ.
+///
+/// The test continues after a mismatch.
 public func expectEqualBool(expected: bool, actual: bool, message: str): void {
     unsafe {
         if expected == actual {
@@ -80,28 +127,34 @@ public func expectEqualBool(expected: bool, actual: bool, message: str): void {
     }
 }
 
-/// Asserts that two string values are equal.
+/// Compares string values and records a failure when they differ.
+///
+/// The test continues after a mismatch; neither input is modified.
 public func expectEqualStr(expected: str, actual: str, message: str): void {
     unsafe {
         let _ = ar_test_expect_equal_str(expected, actual, "expected == actual", message, "")
     }
 }
 
-/// Fails the current test explicitly with a descriptive message.
+/// Records an unconditional failure in the active test context.
+///
+/// The call returns so the test body can continue if desired.
 public func fail(message: str): void {
     unsafe {
         ar_test_fail(message, "")
     }
 }
 
-/// Skips the current test explicitly with a reason.
+/// Marks the active test skipped with `reason`.
+///
+/// The host records the skip; this function itself returns to the caller.
 public func skip(reason: str): void {
     unsafe {
         ar_test_skip(reason, "")
     }
 }
 
-/// Appends an informational message to the test logs.
+/// Appends `message` to the active test's log without failing the test.
 public func log(message: str): void {
     unsafe {
         ar_test_log(message)
@@ -110,6 +163,8 @@ public func log(message: str): void {
 
 /// Allocates a safe sandboxed temporary directory for the test.
 /// Returns its absolute path, or an empty string when creation fails.
+/// The host derives a distinct directory name from `nonce`. An empty result
+/// must be handled before trying to create files beneath it.
 public func tempDir(nonce: int): str {
     unsafe {
         return ar_test_temp_dir(nonce)

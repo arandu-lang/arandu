@@ -1,3 +1,28 @@
+//! Unicode scalar inspection and digit conversion.
+//!
+//! ## Overview
+//!
+//! Inspect a `char` for ASCII membership, determine its UTF-8 encoded length, or convert a digit to a value in a chosen radix.
+//!
+//! ## Example
+//!
+//! ```arandu
+//! import std.core.char as chars
+//!
+//! let bytes = chars.lenUtf8('é')
+//! let digit = chars.toDigit('f', 16 as u32)
+//! ```
+//!
+//! ## Complexity
+//! Every operation takes O(1) time and O(1) space.
+//!
+//! ## Safety
+//! `toDigit` recognizes ASCII digits and letters only. Supply a radix in
+//! `2..=36`; the function does not validate that range for callers.
+//!
+//! ## Platform
+//! `native` · `wasm32` · `bare-metal`
+
 module std.core.char
 
 import std.core.option as option

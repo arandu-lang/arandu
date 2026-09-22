@@ -1,3 +1,30 @@
+//! Growable contiguous arrays.
+//!
+//! ## Overview
+//!
+//! `Vec<T>` owns a heap buffer with separate length and capacity. Use its fallible `try*` operations when allocation failure must be handled explicitly.
+//!
+//! ## Example
+//!
+//! ```arandu
+//! import std.alloc.vec as vec
+//!
+//! let mut values = vec.new<int>()
+//! values.push(3)
+//! let first = values.get(0)
+//! ```
+//!
+//! ## Safety
+//! A slice returned by `asSlice` borrows the vector's storage. Growth,
+//! clear, or destroy can invalidate that view.
+//!
+//! ## Allocations
+//! `new` does not allocate. `tryPush` and `tryReserve` return `false` on
+//! allocation failure; `push` and `reserve` may abort on failure.
+//!
+//! ## Platform
+//! `native` · `wasm32`
+
 module std.alloc.vec
 
 /// Minimal 0.1 — growable array (`Vec<T>`).
@@ -13,15 +40,21 @@ import std.core.mem as mem
 import std.core.intrinsics as intrinsics
 
 extern "C" {
+    /// Host allocator for a raw byte buffer.
     func ar_vec_malloc(size: uint): ptr[u8]
+    /// Host deallocator for a raw byte buffer.
     func ar_vec_buf_free(p: ptr[u8], size: uint): void
+    /// Host allocator that resizes a raw byte buffer.
     func ar_vec_realloc(p: ptr[u8], oldSize: uint, newSize: uint): ptr[u8]
 }
 
 /// Growable contiguous buffer of `T`.
 public struct Vec<T> {
+    /// Pointer to the owned element buffer.
     data: ptr[T]
+    /// Number of initialized elements.
     len: uint
+    /// Allocated capacity in elements or bytes, as defined by this type.
     capacity: uint
 }
 
@@ -352,22 +385,31 @@ public func destroy<T>(v: mut ref Vec<T>): void {
 
 // ── Method-style surface ───────────────────────────────────────────────────
 
-/// Appends `value` to the back of the vector.
+/// Appends `value`, growing the buffer when full.
+///
+/// This delegates to `push`; allocation failure aborts. Use `tryPush` when
+/// the caller must handle failure.
 public func Vec.push<T>(self: mut ref Vec<T>, value: T): void {
     push(self, value)
 }
 
-/// Removes and returns the last element, or `Option.None` if empty.
+/// Removes and returns the last element, or `None` if empty.
+///
+/// Capacity remains allocated for reuse; this operation is O(1).
 public func Vec.pop<T>(self: mut ref Vec<T>): Option<T> {
     return pop(self)
 }
 
-/// Returns the element at `index`, or `Option.None` if out of bounds.
+/// Returns a copy of the indexed element as `Some`, or `None` out of bounds.
+///
+/// The vector is unchanged and no allocation occurs.
 public func Vec.get<T>(self: ref Vec<T>, index: uint): Option<T> {
     return get(self, index)
 }
 
-/// Overwrites the element at `index`, returning `false` if out of bounds.
+/// Replaces an in-range element and returns `true`.
+///
+/// An out-of-range index returns `false` without changing the vector.
 public func Vec.put<T>(self: mut ref Vec<T>, index: uint, value: T): bool {
     return put(self, index, value)
 }
@@ -387,32 +429,46 @@ public func Vec.isEmpty<T>(self: ref Vec<T>): bool {
     return isEmpty(self)
 }
 
-/// Returns a shared borrowed slice view of the vector elements.
+/// Borrows the initialized elements as a slice without copying.
+///
+/// The view becomes invalid if the vector is destroyed or reallocated.
 public func Vec.asSlice<T>(self: ref Vec<T>): []T {
     return asSlice<T>(self)
 }
 
-/// Reserves capacity for at least `additional` more elements.
+/// Ensures room for `additional` elements beyond the current length.
+///
+/// Growth may reallocate and invalidate borrowed slices; failure aborts.
 public func Vec.reserve<T>(self: mut ref Vec<T>, additional: uint): void {
     reserve(self, additional)
 }
 
-/// Fallible capacity reservation returning `true` on success, `false` on OOM.
+/// Attempts to reserve room for `additional` elements beyond the length.
+///
+/// Returns `false` on allocation failure or capacity overflow, leaving
+/// existing contents intact.
 public func Vec.tryReserve<T>(self: mut ref Vec<T>, additional: uint): bool {
     return tryReserve(self, additional)
 }
 
-/// Fallible element append returning `true` on success, `false` on OOM.
+/// Attempts to append one element without aborting on allocation failure.
+///
+/// Returns `false` and leaves the vector intact if growth fails.
 public func Vec.tryPush<T>(self: mut ref Vec<T>, value: T): bool {
     return tryPush(self, value)
 }
 
-/// Clears the vector, keeping allocated memory.
+/// Sets the length to zero while retaining allocated capacity.
+///
+/// This does not release the buffer or visit each former element.
 public func Vec.clear<T>(self: mut ref Vec<T>): void {
     clear(self)
 }
 
-/// Frees the heap buffer upon destruction.
+/// Releases the owned buffer and resets the vector to empty.
+///
+/// Borrowed slices into that buffer become invalid. The destructor consumes
+/// this `Vec` value.
 @Destructor
 public func Vec.destroy<T>(self: own Vec<T>): void {
     destroy(self)

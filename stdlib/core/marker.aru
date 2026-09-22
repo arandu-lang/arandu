@@ -1,3 +1,28 @@
+//! Marker interfaces and phantom type ownership.
+//!
+//! ## Overview
+//!
+//! `Copy`, `Send`, and `Sync` express type capabilities. `PhantomData<T>` carries a type relationship without storing a value of `T`.
+//!
+//! ## Example
+//!
+//! ```arandu
+//! import std.core.marker as marker
+//!
+//! let tag = marker.phantom<int>()
+//! ```
+//!
+//! ## Safety
+//! `Send` and `Sync` are checked conservatively for owned storage. A marker
+//! does not make a raw pointer, borrowed view, or destructor-bearing resource
+//! safe to transfer or share across tasks.
+//!
+//! ## Allocations
+//! `PhantomData<T>` has no runtime payload and does not allocate.
+//!
+//! ## Platform
+//! `native` · `wasm32` · `bare-metal`
+
 module std.core.marker
 
 /// Zero-sized type used to mark that a struct logically owns or refers to `T`.

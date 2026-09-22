@@ -1,8 +1,37 @@
+//! Deterministic Q16.16 fixed-point arithmetic.
+//!
+//! ## Overview
+//!
+//! Use `Q16_16` for signed arithmetic without a floating-point unit. Values have 16 fractional bits; division returns `Option` when the divisor is zero.
+//!
+//! ## Example
+//!
+//! ```arandu
+//! import std.core.fixed as fixed
+//!
+//! let a = fixed.fromInt(2 as i16)
+//! let b = fixed.fromInt(3 as i16)
+//! let sum = a.add(b)
+//! let quotient = b.div(a)
+//! ```
+//!
+//! ## Safety
+//! Arithmetic clamps results to the signed 32-bit raw range on overflow.
+//! Division by zero returns `Option.None`; other division results are clamped.
+//! `toInt` shifts away the fractional bits, so it loses precision.
+//!
+//! ## Allocations
+//! None. Values are stored inline as signed 32-bit integers.
+//!
+//! ## Platform
+//! `native` · `wasm32` · `bare-metal`
+
 module std.core.fixed
 
 /// A 32-bit fixed-point number with 16 bits of integer part and 16 bits of fractional part (Q16.16).
 /// Designed for deterministic arithmetic on hardware without a floating-point unit (FPU).
 public struct Q16_16 {
+    /// Signed Q16.16 bits stored in an `i32`.
     raw: i32
 }
 
@@ -16,18 +45,26 @@ func clampRaw(value: i64): i32 {
     return value as i32
 }
 
-/// Creates a `Q16_16` directly from its raw integer representation.
+/// Wraps signed Q16.16 bits without scaling or validation.
+///
+/// The low 16 bits represent the fractional component. Use `fromInt` when
+/// starting from a whole `i16` value.
 public func fromRaw(raw: i32): Q16_16 {
     return Q16_16 { raw: raw }
 }
 
-/// Converts an integer into a `Q16_16` fixed-point value.
+/// Converts a signed 16-bit whole number by shifting it left 16 bits.
+///
+/// This conversion is exact for every `i16` input and does not allocate.
 public func fromInt(val: i16): Q16_16 {
     let scaled: i64 = (val as i64) << (16 as i64)
     return Q16_16 { raw: scaled as i32 }
 }
 
-/// Converts a `Q16_16` fixed-point value back to an integer, truncating fractional bits.
+/// Returns the arithmetic right shift of the raw value by 16 bits.
+///
+/// For negative fractional values this rounds toward negative infinity,
+/// rather than truncating toward zero. Fractional precision is discarded.
 public func Q16_16.toInt(self: ref Q16_16): i32 {
     return self.raw >> (16 as i32)
 }
@@ -37,23 +74,33 @@ public func Q16_16.toRaw(self: ref Q16_16): i32 {
     return self.raw
 }
 
-/// Adds two Q16.16 values.
+/// Adds two values and clamps the raw result to the signed 32-bit range.
+///
+/// Intermediate arithmetic uses 64 bits; no allocation occurs.
 public func Q16_16.add(self: ref Q16_16, other: Q16_16): Q16_16 {
     return Q16_16 { raw: clampRaw((self.raw as i64) + (other.raw as i64)) }
 }
 
-/// Subtracts two Q16.16 values.
+/// Subtracts `other` and clamps the raw result to signed 32-bit range.
+///
+/// Intermediate arithmetic uses 64 bits; no allocation occurs.
 public func Q16_16.sub(self: ref Q16_16, other: Q16_16): Q16_16 {
     return Q16_16 { raw: clampRaw((self.raw as i64) - (other.raw as i64)) }
 }
 
-/// Multiplies two Q16.16 values with proper 16-bit shift.
+/// Multiplies raw values, shifts right by 16, and clamps the result.
+///
+/// The shift discards fractional low bits; negative results follow an
+/// arithmetic right shift. Intermediate multiplication uses 64 bits.
 public func Q16_16.mul(self: ref Q16_16, other: Q16_16): Q16_16 {
     let wide: i64 = (self.raw as i64) * (other.raw as i64)
     return Q16_16 { raw: clampRaw(wide >> (16 as i64)) }
 }
 
-/// Divides two Q16.16 values. Returns `Option.None` on division by zero.
+/// Divides by `other`, returning `None` when its raw value is zero.
+///
+/// The numerator is shifted left by 16 before integer division. Successful
+/// results are clamped to signed 32-bit raw range and returned as `Some`.
 public func Q16_16.div(self: ref Q16_16, other: Q16_16): Option<Q16_16> {
     if other.raw == 0 {
         return Option.None
@@ -63,7 +110,9 @@ public func Q16_16.div(self: ref Q16_16, other: Q16_16): Option<Q16_16> {
     return Option.Some(Q16_16 { raw: clampRaw(quot) })
 }
 
-/// Computes the absolute value of a Q16.16 value.
+/// Returns the absolute value, clamping the minimum raw value to the maximum.
+///
+/// The minimum signed 32-bit value has no positive signed counterpart.
 public func Q16_16.abs(self: ref Q16_16): Q16_16 {
     if self.raw < 0 {
         return Q16_16 { raw: clampRaw(-(self.raw as i64)) }
@@ -76,7 +125,9 @@ public func Q16_16.isNegative(self: ref Q16_16): bool {
     return self.raw < 0
 }
 
-/// Returns the fractional part of `self` as a raw value in [0, 65535].
+/// Returns the low 16 bits of the absolute raw magnitude, in `0..=65535`.
+///
+/// This is a magnitude of the fractional part, not a signed remainder.
 public func Q16_16.fractionPart(self: ref Q16_16): i32 {
     let mask = 65535 as i64
     let mut val = self.raw as i64

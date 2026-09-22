@@ -1,3 +1,30 @@
+//! Target-aware memory and value utilities.
+//!
+//! ## Overview
+//!
+//! Use the compiler-provided size, alignment, and pointer operations for low-level work, or the value helpers `swap`, `replace`, and `take`. Raw pointer operations require their documented safety preconditions.
+//!
+//! ## Example
+//!
+//! ```arandu
+//! import std.core.mem as mem
+//!
+//! let mut first = 1
+//! let mut second = 2
+//! mem.swap(&mut first, &mut second)
+//! ```
+//!
+//! ## Safety
+//! `ptrOffset`, `ptrRead`, and `ptrWrite` require valid allocation bounds,
+//! alignment, and initialized storage. `sizeOf` and `alignOf` use the selected
+//! target layout, which may differ from the compiler host.
+//!
+//! ## Allocations
+//! The value helpers and intrinsics do not allocate.
+//!
+//! ## Platform
+//! `native` · `wasm32` · `bare-metal`
+
 module std.core.mem
 
 extern "arandu-intrinsic" {
@@ -83,5 +110,4 @@ public func replace<T>(dest: mut ref T, src: T): T {
 public func take<T>(dest: mut ref Option<T>): Option<T> {
     return replace<Option<T>>(dest, Option.None)
 }
-
 

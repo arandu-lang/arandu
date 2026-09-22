@@ -1,3 +1,20 @@
+//! Borrowed two-dimensional strided array views.
+//!
+//! ## Overview
+//!
+//! `ArrayView<T>` and `ArrayViewMut<T>` describe shape and strides without owning storage. Slicing and transpose return views over the same elements.
+//!
+//! ## Safety
+//! `fromRaw` and `fromRawMut` rely on the caller to provide valid storage,
+//! dimensions, and strides. A view does not extend the lifetime of its
+//! backing data; mutable views require exclusive access to their elements.
+//!
+//! ## Allocations
+//! Creating, slicing, and transposing views do not copy matrix elements.
+//!
+//! ## Platform
+//! `native` · `wasm32`
+
 module std.math.view
 
 /// Zero-Copy Strided Multidimensional Views (RFC 0012).
@@ -13,14 +30,23 @@ import std.core.slice as slice
 
 /// Non-owning shared 2D view over contiguous or strided memory.
 public struct ArrayView<T> {
+    /// Pointer to borrowed matrix elements.
     data: ptr[T]
+    /// Number of rows.
     rows: uint
+    /// Number of columns.
     cols: uint
+    /// Element stride between adjacent rows.
     rowStride: int
+    /// Element stride between adjacent columns.
     colStride: int
 }
 
-/// Creates an `ArrayView<T>` directly from raw pointer, dimensions, and strides.
+/// Builds a shared view from raw storage and element strides without checks.
+///
+/// The caller must ensure every indexed `(row, column)` points to a valid
+/// initialized `T` for as long as the view is used. Strides are measured in
+/// elements, not bytes; no buffer is owned or allocated.
 public func fromRaw<T>(p: ptr[T], rows: uint, cols: uint, rowStride: int, colStride: int): ArrayView<T> {
     return ArrayView<T> {
         data: p,
@@ -34,6 +60,8 @@ public func fromRaw<T>(p: ptr[T], rows: uint, cols: uint, rowStride: int, colStr
 /// Creates a row-major `ArrayView<T>` from a borrowed slice `[]T` with given dimensions.
 ///
 /// Returns `Option.Some(view)` if `rows * cols <= slice.len(s)`, or `Option.None` otherwise.
+/// The view uses row-major strides and borrows the slice. Extra source
+/// elements after `rows * cols` are excluded from the view.
 public func fromSlice<T>(s: []T, rows: uint, cols: uint): Option<ArrayView<T>> {
     let total = rows * cols
     if total > slice.len<T>(s) {
@@ -84,7 +112,10 @@ public func ArrayView.isContiguous<T>(self: ref ArrayView<T>): bool {
     return self.colStride == 1 && self.rowStride == (self.cols as int)
 }
 
-/// Returns the pointer to the element at (r, c), or null pointer if out of bounds.
+/// Returns a pointer to `(r, c)`, or null for an out-of-range coordinate.
+///
+/// The pointer is computed from the stored strides and does not extend the
+/// backing allocation's lifetime. Do not dereference it after storage moves.
 public func ArrayView.ptrAt<T>(self: ref ArrayView<T>, r: uint, c: uint): ptr[T] {
     let nullp: ptr[T] = nil
     if r >= self.rows || c >= self.cols {
@@ -94,7 +125,10 @@ public func ArrayView.ptrAt<T>(self: ref ArrayView<T>, r: uint, c: uint): ptr[T]
     return mem.ptrOffset<T>(self.data, offset as i32)
 }
 
-/// Returns a copy of the element at (r, c) if within bounds.
+/// Reads `(r, c)` into `Some(value)`, or returns `None` out of bounds.
+///
+/// The backing data must remain initialized and valid; this method does not
+/// allocate or change the view.
 public func ArrayView.get<T>(self: ref ArrayView<T>, r: uint, c: uint): Option<T> {
     let nullp: ptr[T] = nil
     let p = self.ptrAt<T>(r, c)
@@ -105,7 +139,9 @@ public func ArrayView.get<T>(self: ref ArrayView<T>, r: uint, c: uint): Option<T
 }
 
 /// Creates a subview starting at (rStart, cStart) with shape (rCount, cCount).
-/// Pure O(1) operation without copying underlying memory.
+/// Returns `None` when the requested region exceeds the parent shape. On
+/// success, shares the same backing storage and retains its strides. This is
+/// an O(1) metadata operation with no element copy or allocation.
 public func ArrayView.slice<T>(self: ref ArrayView<T>, rStart: uint, rCount: uint, cStart: uint, cCount: uint): Option<ArrayView<T>> {
     if rStart + rCount > self.rows || cStart + cCount > self.cols {
         return Option.None
@@ -122,7 +158,8 @@ public func ArrayView.slice<T>(self: ref ArrayView<T>, rStart: uint, rCount: uin
 }
 
 /// Transposes the view in O(1) time by swapping rows/cols and their strides.
-/// Zero-copy, zero-allocation transformation.
+/// The returned view shares all elements with the original; no data is moved
+/// or allocated.
 public func ArrayView.transpose<T>(self: ref ArrayView<T>): ArrayView<T> {
     return ArrayView<T> {
         data: self.data,
@@ -137,14 +174,23 @@ public func ArrayView.transpose<T>(self: ref ArrayView<T>): ArrayView<T> {
 
 /// Non-owning exclusive mutable 2D view over contiguous or strided memory.
 public struct ArrayViewMut<T> {
+    /// Pointer to exclusively borrowed matrix elements.
     data: ptr[T]
+    /// Number of rows.
     rows: uint
+    /// Number of columns.
     cols: uint
+    /// Element stride between adjacent rows.
     rowStride: int
+    /// Element stride between adjacent columns.
     colStride: int
 }
 
-/// Creates an `ArrayViewMut<T>` directly from raw pointer, dimensions, and strides.
+/// Builds a mutable view from raw storage and element strides without checks.
+///
+/// The caller must ensure every indexed element is valid and that no
+/// overlapping mutable access exists while this view is used. No allocation
+/// or copy occurs.
 public func fromRawMut<T>(p: ptr[T], rows: uint, cols: uint, rowStride: int, colStride: int): ArrayViewMut<T> {
     return ArrayViewMut<T> {
         data: p,
@@ -155,7 +201,10 @@ public func fromRawMut<T>(p: ptr[T], rows: uint, cols: uint, rowStride: int, col
     }
 }
 
-/// Creates a row-major `ArrayViewMut<T>` from a slice with given dimensions.
+/// Borrows a mutable slice as a row-major view of `rows × cols` elements.
+///
+/// Returns `None` when the requested shape exceeds the slice length. Extra
+/// source elements are not part of the view; construction does not allocate.
 public func fromSliceMut<T>(s: mut ref []T, rows: uint, cols: uint): Option<ArrayViewMut<T>> {
     let total = rows * cols
     if total > slice.len<T>(*s) {
@@ -176,7 +225,10 @@ public func ArrayViewMut.fromSlice<T>(s: mut ref []T, rows: uint, cols: uint): O
     return fromSliceMut<T>(s, rows, cols)
 }
 
-/// Downcasts exclusive view to shared `ArrayView<T>`.
+/// Returns a shared view with the same pointer, shape, and strides.
+///
+/// No elements are copied. The backing storage must outlive the returned
+/// view, and it must not be freed while that view remains in use.
 public func ArrayViewMut.asView<T>(self: ref ArrayViewMut<T>): ArrayView<T> {
     return ArrayView<T> {
         data: self.data,
@@ -217,7 +269,10 @@ public func ArrayViewMut.isContiguous<T>(self: ref ArrayViewMut<T>): bool {
     return self.colStride == 1 && self.rowStride == (self.cols as int)
 }
 
-/// Pointer to element at (r, c).
+/// Returns a pointer to `(r, c)`, or null if either coordinate is out of range.
+///
+/// The pointer follows the view's element strides and remains tied to the
+/// validity of its backing storage.
 public func ArrayViewMut.ptrAt<T>(self: ref ArrayViewMut<T>, r: uint, c: uint): ptr[T] {
     let nullp: ptr[T] = nil
     if r >= self.rows || c >= self.cols {
@@ -227,7 +282,9 @@ public func ArrayViewMut.ptrAt<T>(self: ref ArrayViewMut<T>, r: uint, c: uint): 
     return mem.ptrOffset<T>(self.data, offset as i32)
 }
 
-/// Reads the element at (r, c).
+/// Returns `Some(value)` for an in-range element, or `None` otherwise.
+///
+/// The backing element must be initialized; this read does not allocate.
 public func ArrayViewMut.get<T>(self: ref ArrayViewMut<T>, r: uint, c: uint): Option<T> {
     let nullp: ptr[T] = nil
     let p = self.ptrAt<T>(r, c)
@@ -237,7 +294,9 @@ public func ArrayViewMut.get<T>(self: ref ArrayViewMut<T>, r: uint, c: uint): Op
     return Option.Some(mem.ptrRead<T>(p))
 }
 
-/// Writes `val` into element at (r, c). Returns true if written, false if out of bounds.
+/// Writes `val` at `(r, c)` and returns `true` when in range.
+///
+/// Out-of-range coordinates return `false` without modifying storage.
 public func ArrayViewMut.set<T>(self: mut ref ArrayViewMut<T>, r: uint, c: uint, val: T): bool {
     if r >= self.rows || c >= self.cols {
         return false
@@ -248,7 +307,10 @@ public func ArrayViewMut.set<T>(self: mut ref ArrayViewMut<T>, r: uint, c: uint,
     return true
 }
 
-/// Mutable subview slicing in O(1).
+/// Returns a mutable subview sharing a requested rectangular region.
+///
+/// Returns `None` when the region exceeds the parent shape. The result keeps
+/// the original strides and does not copy or allocate elements.
 public func ArrayViewMut.sliceMut<T>(self: mut ref ArrayViewMut<T>, rStart: uint, rCount: uint, cStart: uint, cCount: uint): Option<ArrayViewMut<T>> {
     if rStart + rCount > self.rows || cStart + cCount > self.cols {
         return Option.None
@@ -264,7 +326,10 @@ public func ArrayViewMut.sliceMut<T>(self: mut ref ArrayViewMut<T>, rStart: uint
     })
 }
 
-/// Mutable transpose in O(1).
+/// Returns a mutable transposed view by swapping shape and strides.
+///
+/// The result shares the original elements; ensure exclusive access to them.
+/// No element copy or allocation occurs.
 public func ArrayViewMut.transpose<T>(self: mut ref ArrayViewMut<T>): ArrayViewMut<T> {
     return ArrayViewMut<T> {
         data: self.data,

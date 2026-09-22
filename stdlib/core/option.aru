@@ -1,3 +1,28 @@
+//! Optional values without null sentinels.
+//!
+//! ## Overview
+//!
+//! `Option<T>` represents `Some(T)` or `None`. Its methods inspect presence and choose a fallback; `expectOrAbort` terminates on `None`.
+//!
+//! ## Example
+//!
+//! ```arandu
+//! import std.core.option as option
+//!
+//! let value = option.Option.Some(42)
+//! let fallback = value.unwrapOr(0)
+//! ```
+//!
+//! ## Safety
+//! `expectOrAbort` traps when called on `None`. `unwrapOr` consumes the option
+//! and returns the provided default for `None`.
+//!
+//! ## Allocations
+//! `Option` itself has no heap allocation requirement.
+//!
+//! ## Platform
+//! `native` · `wasm32` · `bare-metal`
+
 module std.core.option
 
 import std.core.intrinsics as intrinsics

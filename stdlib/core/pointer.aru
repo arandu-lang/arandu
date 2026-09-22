@@ -1,6 +1,45 @@
-// arandu_core::pointer — Minimal 0.1 canonical pointer helpers.
-//
-// Layer: thin wrappers over `std.core.mem` intrinsics (no heap).
+//! Canonical typed raw-pointer (`ptr<T>`) utilities.
+//!
+//! ## Overview
+//!
+//! `std.core.pointer` provides the most basic safe operations over raw
+//! pointers: creating a null pointer, checking nullness, reinterpreting bits
+//! across types and computing offsets by index.
+//!
+//! These functions are thin wrappers over `std.core.mem` intrinsics and
+//! perform no allocation. Every raw-pointer use requires `unsafe {}`.
+//!
+//! Use raw pointers only when strictly necessary — FFI boundaries, allocators
+//! and low-level data structures. For safe references, use `ref T` or
+//! `mut ref T` in the Arandu type system.
+//!
+//! ## Example
+//!
+//! ```arandu
+//! import std.core.pointer as pointer
+//!
+//! unsafe {
+//!     let p = pointer.null<i32>()
+//!     pointer.isNull(p)  // true
+//! }
+//! ```
+//!
+//! ## Safety
+//!
+//! - Dereferencing a null pointer traps via `intrinsics.abort()`.
+//! - Pointer arithmetic is bounds-unchecked — the caller guarantees validity.
+//! - Raw pointers carry no compiler-tracked lifetime.
+//!
+//! ## Platform
+//! `native` · `wasm32` · `bare-metal`
+//!
+//! wasm32 lowers to linear-memory arithmetic; bare-metal gets direct MMIO
+//! and register access.
+//!
+//! ## See also
+//!
+//! - `std.core.mem` — `size_of`, `align_of` and memory intrinsics
+//! - `std.core.intrinsics` — traps and low-level builtins
 
 module std.core.pointer
 

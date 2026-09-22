@@ -1,3 +1,17 @@
+//! Host-backed wake tokens for cooperative tasks.
+//!
+//! ## Overview
+//!
+//! `Waker` lets asynchronous operations notify a waiting task. `Context` packages a waker for runtime use.
+//!
+//! ## Safety
+//! A waker owns a host token. Release it with `destroyWaker` after all
+//! operations using its id have completed. `wakerWait` reports wake, timeout,
+//! or host failure with integer status codes.
+//!
+//! ## Platform
+//! `native`
+
 module std.runtime.waker
 
 /// experimental — not Minimal 0.1 — Waker / Context.
@@ -7,47 +21,69 @@ module std.runtime.waker
 /// former `std.runtime` monolith.
 
 extern "C" {
+    /// Host wake token creation.
     func ar_rt_waker_create(): int
+    /// Host signal for a wake token.
     func ar_rt_waker_wake(id: int): void
+    /// Host wait for a wake token or timeout.
     func ar_rt_waker_wait(id: int, timeout_ms: int): int
+    /// Host wake token destruction.
     func ar_rt_waker_destroy(id: int): void
 }
 
 /// experimental — not Minimal 0.1
 public struct Waker {
+    /// Opaque host handle.
     id: int
 }
 
 /// experimental — not Minimal 0.1
 public struct Context {
+    /// Wake token carried by this context.
     waker: Waker
 }
 
+/// Creates a host wake token and stores its integer ID.
+///
+/// A negative ID signals creation failure. Release a valid token with
+/// `destroyWaker` when no operation can still signal it.
 public func newWaker(): Waker {
     unsafe {
         return Waker { id: ar_rt_waker_create() }
     }
 }
 
+/// Signals the host token so a waiting operation can resume.
+///
+/// Calling this does not itself wait for or run the task.
 public func wakerWake(w: ref Waker): void {
     unsafe {
         ar_rt_waker_wake(w.id)
     }
 }
 
-/// Wait until woken or timeout. 1 = woken, 0 = timeout, -1 = error.
+/// Waits for a wake signal or for `timeoutMs` milliseconds.
+///
+/// Returns `1` when woken, `0` on timeout, and `-1` on host error. A timeout
+/// of `-1` requests an indefinite wait from the host.
 public func wakerWait(w: ref Waker, timeoutMs: int): int {
     unsafe {
         return ar_rt_waker_wait(w.id, timeoutMs)
     }
 }
 
+/// Releases the host wake token.
+///
+/// The wrapper retains its old ID; do not wait or wake through it again.
 public func destroyWaker(w: ref Waker): void {
     unsafe {
         ar_rt_waker_destroy(w.id)
     }
 }
 
+/// Stores `w` in a context value without creating another host token.
+///
+/// The caller remains responsible for arranging exactly one token release.
 public func newContext(w: Waker): Context {
     return Context { waker: w }
 }

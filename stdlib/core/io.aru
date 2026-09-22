@@ -1,17 +1,56 @@
+//! Freestanding I/O error types and traits with no OS dependency.
+//!
+//! ## Overview
+//!
+//! `std.core.io` defines the I/O contracts that work on any platform,
+//! including bare-metal and WebAssembly: `CoreIoError`, `CoreIoErrorKind`,
+//! and the `Read` and `Write` interfaces for reading and writing memory slices.
+//!
+//! This module is deliberately minimal and OS-free. For filesystem, sockets
+//! and process handles, use `std.io` (which requires an OS). For buffered
+//! formatting, use `std.core.fmt`.
+//!
+//! ## Example
+//!
+//! ```arandu
+//! import std.core.io as coreio
+//!
+//! func writeInto(buf: []u8, source: []u8): uint {
+//!     let mut w = coreio.newSliceWriter(buf)
+//!     let _ = w.write(source)
+//!     return w.written()
+//! }
+//! ```
+//!
+//! ## Platform
+//! `native` · `wasm32` · `bare-metal`
+//!
+//! No syscalls involved on any supported platform.
+//!
+//! ## See also
+//!
+//! - `std.io` — full OS-backed I/O (files, sockets)
+//! - `std.core.fmt` — allocation-free fixed-buffer formatting
+
 module std.core.io
 
 import std.core.slice as slice
 
 /// Error kinds for freestanding in-memory I/O operations (RFC 0017 / SL_S-Core.4).
 public enum CoreIoErrorKind {
+    /// Input ended before the requested data was available.
     UnexpectedEof,
+    /// The writer could not make progress.
     WriteZero,
+    /// The supplied input is invalid.
     InvalidInput,
+    /// An error outside the named categories.
     Other,
 }
 
 /// Structured error for core I/O operations without OS dependencies.
 public struct CoreIoError {
+    /// Category of this in-memory I/O error.
     kind: CoreIoErrorKind
 }
 
@@ -22,8 +61,11 @@ public func newCoreIoError(kind: CoreIoErrorKind): CoreIoError {
 
 /// Enumeration of possible methods to seek within an I/O stream.
 public enum SeekFrom {
+    /// Offset measured from the beginning of the stream.
     Start(uint),
+    /// Offset measured from the current position.
     Current(int),
+    /// Offset measured from the end of the stream.
     End(int),
 }
 
@@ -45,11 +87,16 @@ public interface Seeker {
 
 /// An in-memory reader over a contiguous slice of bytes (`[]u8`).
 public struct SliceReader {
+    /// Borrowed source byte slice.
     data: []u8
+    /// Current byte position.
     pos: uint
 }
 
-/// Creates a new `SliceReader` over `data`.
+/// Borrows `data` and creates a reader positioned at byte zero.
+///
+/// Reading or seeking does not copy the source slice or allocate. The source
+/// must remain valid for the lifetime of the reader.
 public func newSliceReader(data: []u8): SliceReader {
     return SliceReader {
         data: data,
@@ -57,7 +104,9 @@ public func newSliceReader(data: []u8): SliceReader {
     }
 }
 
-/// Returns the remaining unread bytes count.
+/// Returns the number of bytes from the current position to the slice's end.
+///
+/// Reaching the end yields zero; this query does not change the position.
 public func SliceReader.remaining(self: ref SliceReader): uint {
     let total = slice.len<u8>(self.data)
     if self.pos >= total {
@@ -66,7 +115,11 @@ public func SliceReader.remaining(self: ref SliceReader): uint {
     return total - self.pos
 }
 
-/// Reads up to `buf.len` bytes from the internal slice.
+/// Copies at most `buf.len` bytes from the current position into `buf`.
+///
+/// Returns `Ok(bytesRead)` and advances by that count. At end of input, it
+/// returns `Ok(0)`; an empty destination also reads zero bytes. A short read
+/// means fewer bytes remained than the destination could hold.
 public func SliceReader.read(self: mut ref SliceReader, buf: mut ref []u8): Result<uint, CoreIoError> {
     let avail = self.remaining()
     if avail == 0 {
@@ -90,11 +143,15 @@ public func SliceReader.read(self: mut ref SliceReader, buf: mut ref []u8): Resu
 
 /// An in-memory writer over a caller-owned contiguous byte buffer.
 public struct SliceWriter {
+    /// Caller-owned destination byte slice.
     data: []u8
+    /// Current byte position.
     pos: uint
 }
 
-/// Creates a writer whose writes are bounded by `data`.
+/// Borrows `data` as a fixed-capacity destination, positioned at byte zero.
+///
+/// Writes change the caller's buffer in place and never grow or allocate it.
 public func newSliceWriter(data: []u8): SliceWriter {
     return SliceWriter {
         data: data,
@@ -116,7 +173,11 @@ public func SliceWriter.written(self: ref SliceWriter): uint {
     return self.pos
 }
 
-/// Writes as many bytes as fit in the destination buffer.
+/// Copies as many source bytes as fit, then advances the writer position.
+///
+/// A nonempty source with no remaining capacity returns `WriteZero` and
+/// writes nothing. Otherwise the result is `Ok(bytesWritten)`, which may be
+/// smaller than the source length. An empty source returns `Ok(0)`.
 public func SliceWriter.write(self: mut ref SliceWriter, buf: []u8): Result<uint, CoreIoError> {
     let available = self.remaining()
     let source_len = slice.len<u8>(buf)
@@ -136,12 +197,18 @@ public func SliceWriter.write(self: mut ref SliceWriter, buf: []u8): Result<uint
     return Result.Ok(to_write)
 }
 
-/// Flushes an in-memory writer. No work is required.
+/// Returns `Ok(true)` without changing the writer or its buffer.
+///
+/// An in-memory slice has no pending output to flush.
 public func SliceWriter.flush(self: mut ref SliceWriter): Result<bool, CoreIoError> {
     return Result.Ok(true)
 }
 
-/// Seeks to an offset in bytes in the destination buffer.
+/// Sets the write position relative to start, current position, or end.
+///
+/// Returns `InvalidInput` if the target falls outside `0..=buffer length`;
+/// otherwise returns the new byte position. Seeking changes where the next
+/// write lands but does not clear bytes already written.
 public func SliceWriter.seek(self: mut ref SliceWriter, pos: SeekFrom): Result<uint, CoreIoError> {
     let total = slice.len<u8>(self.data)
     let mut new_pos: uint = 0
@@ -173,7 +240,11 @@ public func SliceWriter.seek(self: mut ref SliceWriter, pos: SeekFrom): Result<u
     return Result.Ok(new_pos)
 }
 
-/// Seeks to an offset in bytes in the underlying slice.
+/// Sets the read position relative to start, current position, or end.
+///
+/// Returns `InvalidInput` for a target outside `0..=slice length` and leaves
+/// the position unchanged. Seeking to the end is valid; the next read then
+/// returns `Ok(0)`.
 public func SliceReader.seek(self: mut ref SliceReader, pos: SeekFrom): Result<uint, CoreIoError> {
     let total = slice.len<u8>(self.data)
     let mut new_pos: uint = 0

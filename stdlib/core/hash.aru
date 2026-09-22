@@ -1,3 +1,30 @@
+//! Streaming hashing contracts and an FNV hasher.
+//!
+//! ## Overview
+//!
+//! Implement `Hash` and `Hasher` for keys or use `FnvHasher` to process bytes and integers incrementally. FNV is a fast noncryptographic hash.
+//!
+//! ## Example
+//!
+//! ```arandu
+//! import std.core.hash as hash
+//!
+//! let mut h = hash.fnvNew()
+//! h.writeU8(42 as u8)
+//! let digest = h.finish()
+//! ```
+//!
+//! ## Safety
+//! FNV-1a is not suitable for passwords, signatures, or adversarial collision
+//! resistance. Integer helpers feed bytes in little-endian order; `writeInt`
+//! first converts the target-sized integer to `u64`.
+//!
+//! ## Allocations
+//! `FnvHasher` is an inline state value and does not allocate.
+//!
+//! ## Platform
+//! `native` · `wasm32` · `bare-metal`
+
 module std.core.hash
 
 import std.core.slice as slice
@@ -23,22 +50,31 @@ public interface Hash {
 ///
 /// Pure stack-allocated struct (8 bytes), zero heap allocations.
 public struct FnvHasher {
+    /// Current streaming hash state.
     state: u64
 }
 
-/// Creates a new `FnvHasher` initialized with the FNV-1a 64-bit offset basis.
+/// Creates an inline FNV-1a hasher at its 64-bit offset basis.
+///
+/// Reuse the state across writes to hash a sequence of values. Construction
+/// does not allocate.
 public func fnvNew(): FnvHasher {
     return FnvHasher {
         state: 14695981039346656037 as u64,
     }
 }
 
-/// Returns the final 64-bit hash value.
+/// Returns the current 64-bit hash state without consuming the hasher.
+///
+/// Further writes can still update the state after `finish`.
 public func FnvHasher.finish(self: ref FnvHasher): u64 {
     return self.state
 }
 
-/// Feeds a slice of bytes into the hash state.
+/// Feeds bytes in order through the FNV-1a update step.
+///
+/// The operation takes O(bytes.len) time, does not modify the source, and
+/// adds no heap allocation.
 public func FnvHasher.write(self: mut ref FnvHasher, bytes: []u8): void {
     let mut i: uint = 0
     let total = slice.len<u8>(bytes)
@@ -50,7 +86,7 @@ public func FnvHasher.write(self: mut ref FnvHasher, bytes: []u8): void {
     }
 }
 
-/// Hashes a single `u8`.
+/// Feeds one byte into the current FNV-1a state without allocation.
 public func FnvHasher.writeU8(self: mut ref FnvHasher, i: u8): void {
     let prime: u64 = 1099511628211 as u64
     self.state = (self.state ^ (i as u64)) * prime
@@ -82,7 +118,9 @@ public func FnvHasher.writeU64(self: mut ref FnvHasher, i: u64): void {
     self.writeU8((i >> 56) as u8)
 }
 
-/// Hashes a platform-sized `int`.
+/// Converts `int` to `u64` and feeds its eight little-endian bytes.
+///
+/// This is the same byte sequence used by `writeU64(i as u64)`.
 public func FnvHasher.writeInt(self: mut ref FnvHasher, i: int): void {
     self.writeU64(i as u64)
 }

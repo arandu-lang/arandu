@@ -1,3 +1,21 @@
+//! Chunked parallel folds over shared slices.
+//!
+//! ## Overview
+//!
+//! A `ParallelJob` processes a chunk, `Combine` merges results, and optional accumulator initialization supplies each worker state. The fold APIs report `ParallelError`.
+//!
+//! ## Complexity
+//! Work is divided into chunks controlled by the requested grain size.
+//! Combining chunk results still requires the caller's `Combine<R>` logic.
+//!
+//! ## Safety
+//! The input element type must satisfy `Sync`; worker jobs and result values
+//! must satisfy their declared `Copy` and `Send` bounds. A canceled worker
+//! reports `ParallelError.Canceled` instead of a partial result.
+//!
+//! ## Platform
+//! `native`
+
 module std.parallel
 
 import std.core.intrinsics as intrinsics
@@ -26,16 +44,22 @@ public interface AccumulatorInit<R> {
 
 /// Identity factory for `Copy` types that clones the identity value.
 public struct CopyIdentity<R> {
+    /// Identity value copied into each fold accumulator.
     public value: R
 }
 
+/// Copies the stored identity value for an independent chunk accumulator.
+///
+/// No heap allocation is added by this factory itself.
 public func CopyIdentity.init<R: marker.Copy>(self: ref CopyIdentity<R>): R {
     return self.value
 }
 
 /// Completion status when a parallel operation does not produce a value.
 public enum ParallelError {
+    /// A parallel worker failed.
     Failed(int)
+    /// The parallel operation was canceled.
     Canceled
 }
 
@@ -47,8 +71,11 @@ public func granularityCutoff(): uint {
 
 /// Transport context for one chunk folding operation across the worker boundary.
 public struct ChunkContext<T, J> {
+    /// Input assigned to this chunk.
     public subslice: []T
+    /// Job that processes this chunk.
     public job: J
+    /// Shared cancellation flag observed by the worker.
     public stop_flag: ptr[int]
 }
 
@@ -81,13 +108,20 @@ public func dispatchChunk<T: marker.Sync, R: marker.Copy + marker.Send, J: marke
 
 /// Transport context for one chunk folding operation with an accumulator factory.
 public struct ChunkContextWithInit<T, J, I> {
+    /// Input assigned to this chunk.
     public subslice: []T
+    /// Job that processes this chunk.
     public job: J
+    /// Factory for the chunk's initial accumulator.
     public init: I
+    /// Shared cancellation flag observed by the worker.
     public stop_flag: ptr[int]
 }
 
-/// WorkThunk for folding one chunk into an independent accumulator initialized via `init`.
+/// Folds one chunk into an accumulator created by `init`.
+///
+/// Returns `0` after writing a completed result or `2` if the cancellation
+/// flag is observed. A canceled result buffer is not initialized.
 public func dispatchChunkWithInit<T: marker.Sync, R: marker.Send, J: marker.Copy + marker.Send + ParallelJob<T, R>, I: marker.Copy + marker.Send + AccumulatorInit<R>>(
     context: ptr[ChunkContextWithInit<T, J, I>],
     result_dest: ptr[R]
@@ -111,7 +145,10 @@ public func dispatchChunkWithInit<T: marker.Sync, R: marker.Send, J: marker.Copy
     return 0
 }
 
-/// Sequentially fold `data` into `seed` using `job`.
+/// Calls `job.run` once per element in order, starting from `seed`.
+///
+/// Returns the final accumulator. This function does not create chunks or
+/// schedule workers; any allocation depends on the caller's `job`.
 public func foldSequential<T, R, J: ParallelJob<T, R>>(
     data: []T,
     seed: R,
@@ -128,9 +165,13 @@ public func foldSequential<T, R, J: ParallelJob<T, R>>(
 }
 
 extern "C" {
+    /// Host copy bridge for initializing a worker result buffer.
     func ar_rt_copy_value<T>(dest: ptr[T], source: ref T, size: uint): void
+    /// Host allocator for an aligned worker buffer.
     func ar_rt_alloc_aligned(size: uint, align: uint): ptr[u8]
+    /// Host deallocator for an aligned worker buffer.
     func ar_rt_free_aligned(pointer: ptr[u8], size: uint, align: uint): void
+    /// Host dispatcher for parallel fold workers.
     func ar_rt_parallel_fold_run(
         num_chunks: uint,
         contexts: ptr[ptr[u8]],
@@ -141,7 +182,11 @@ extern "C" {
     ): i32
 }
 
-/// Folds `data` with the default deterministic partition policy.
+/// Folds `data` using fixed partition bounds and up to `workers` workers.
+///
+/// Delegates to `parallelFoldWithGrain` with target chunk size `64` and
+/// maximum `1024` chunks. Inputs at or below the granularity cutoff use a
+/// sequential fold. Worker failure or cancellation returns `ParallelError`.
 public func parallelFold<T: marker.Sync, R: marker.Copy + marker.Send, J: marker.Copy + marker.Send + ParallelJob<T, R>, C: Combine<R>>(
     data: []T,
     seed: R,

@@ -1,10 +1,36 @@
+//! Vectors with four inline element slots.
+//!
+//! ## Overview
+//!
+//! `SmallVec4<T>` keeps up to four elements in its value and moves to heap storage when it grows beyond that capacity.
+//!
+//! ## Example
+//!
+//! ```arandu
+//! import std.alloc.smallvec as smallvec
+//!
+//! let mut values = smallvec.new<int>()
+//! values.push(1)
+//! let heap = values.isHeap()
+//! ```
+//!
+//! ## Allocations
+//! The first four elements stay inline. A fifth element moves storage to
+//! the heap; later growth may reallocate. `destroy` releases heap storage.
+//!
+//! ## Platform
+//! `native` · `wasm32`
+
 module std.alloc.smallvec
 
 import std.core.mem as mem
 
 extern "C" {
+    /// Host allocator for a raw byte buffer.
     func ar_vec_malloc(size: uint): ptr[u8]
+    /// Host deallocator for a raw byte buffer.
     func ar_vec_buf_free(p: ptr[u8], size: uint): void
+    /// Host allocator that resizes a raw byte buffer.
     func ar_vec_realloc(p: ptr[u8], oldSize: uint, newSize: uint): ptr[u8]
 }
 
@@ -14,14 +40,22 @@ extern "C" {
 /// - Uses inline buffer for <= 4 elements.
 /// - Spills to heap memory only when exceeding 4 elements.
 public struct SmallVec4<T> {
+    /// Pointer to heap elements when the vector has spilled.
     data: ptr[Option<T>]
+    /// Number of stored elements or valid bytes.
     len: uint
+    /// Current element capacity; initially four inline slots.
     capacity: uint
+    /// Whether the elements reside in heap storage.
     is_heap: bool
+    /// Four inline element slots.
     inline_buf: [4]Option<T>
 }
 
-/// Creates a new empty `SmallVec4<T>` with inline storage ready (capacity = 4).
+/// Creates an empty vector with capacity for four inline elements.
+///
+/// Construction does not allocate. Call `destroy` to release heap storage if
+/// a later `push` makes the vector spill.
 public func new<T>(): SmallVec4<T> {
     return SmallVec4<T> {
         data: nil,
@@ -56,6 +90,8 @@ public func SmallVec4.isHeap<T>(self: ref SmallVec4<T>): bool {
 ///
 /// If `len < 4`, writes into inline storage without heap allocation.
 /// If `len == capacity`, spills to or reallocates on the heap.
+/// The first spill gives capacity for eight elements; later growth doubles
+/// capacity. This operation returns no allocation error.
 public func SmallVec4.push<T>(self: mut ref SmallVec4<T>, val: T): void {
     if !self.is_heap {
         if self.len == 0 {
@@ -120,7 +156,9 @@ public func SmallVec4.push<T>(self: mut ref SmallVec4<T>, val: T): void {
     self.len = self.len + 1
 }
 
-/// Retrieves an element at `index`, or `Option.None` if out of bounds.
+/// Returns the element at `index`, or `None` when `index >= len`.
+///
+/// Reading an inline or heap element does not allocate or change the vector.
 public func SmallVec4.get<T>(self: ref SmallVec4<T>, index: uint): Option<T> {
     if index >= self.len {
         return Option.None
@@ -143,7 +181,10 @@ public func SmallVec4.get<T>(self: ref SmallVec4<T>, index: uint): Option<T> {
     }
 }
 
-/// Removes and returns the last element, or `Option.None` if empty.
+/// Decreases the length and returns the former last element, or `None` if empty.
+///
+/// Heap storage remains allocated after popping, even when the length drops
+/// below four. Call `destroy` to release it.
 public func SmallVec4.pop<T>(self: mut ref SmallVec4<T>): Option<T> {
     if self.len == 0 {
         return Option.None
@@ -154,12 +195,15 @@ public func SmallVec4.pop<T>(self: mut ref SmallVec4<T>): Option<T> {
     return val
 }
 
-/// Clears all elements from the small vector.
+/// Sets the length to zero while retaining the current storage and capacity.
+///
+/// In particular, a spilled vector stays on the heap. No deallocation occurs.
 public func SmallVec4.clear<T>(self: mut ref SmallVec4<T>): void {
     self.len = 0
 }
 
-/// Releases any allocated heap memory.
+/// Releases heap storage when present and resets a spilled vector to empty
+/// inline storage with capacity four. An inline vector needs no heap release.
 public func SmallVec4.destroy<T>(self: mut ref SmallVec4<T>): void {
     if self.is_heap {
         let elem_size = mem.sizeOf<Option<T>>()

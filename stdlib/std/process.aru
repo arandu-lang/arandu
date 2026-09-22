@@ -1,3 +1,17 @@
+//! Process exit and lightweight process descriptors.
+//!
+//! ## Overview
+//!
+//! `exit` terminates the current process. `ExitStatus`, `Command`, and `Child` hold process-related values; no public spawn operation is currently exposed here.
+//!
+//! ## Safety
+//! `exit` terminates the current process and does not return. `Command` and
+//! `Child` currently hold descriptors; this module exposes no public spawn
+//! method, so constructing a command does not start a process.
+//!
+//! ## Platform
+//! `native`
+
 module std.process
 
 /// Minimal 0.1 — **IN optional** process control (thin).
@@ -17,7 +31,10 @@ extern "C" {
     func ar_process_exit(code: int): void
 }
 
-/// Terminate the process with status `code` (OS may mask to 8 bits).
+/// Terminates the entire process with status `code` and does not return.
+///
+/// The operating system may expose only part of the integer status to a
+/// parent process. Returning from `main` follows the normal exit path.
 public func exit(code: int): void {
     unsafe {
         ar_process_exit(code)
@@ -26,10 +43,11 @@ public func exit(code: int): void {
 
 /// Process termination status.
 public struct ExitStatus {
+    /// Exit or status code.
     code: int
 }
 
-/// Creates a new `ExitStatus`.
+/// Wraps `code` in an `ExitStatus` value without launching a process.
 public func exitStatus(code: int): ExitStatus {
     return ExitStatus { code: code }
 }
@@ -44,12 +62,18 @@ public func ExitStatus.code(self: ref ExitStatus): int {
     return self.code
 }
 
-/// Command builder for configuring and spawning child processes.
+/// Descriptor holding a program name for a possible child command.
+///
+/// This module currently has no public spawn operation.
 public struct Command {
+    /// Executable path or name.
     program: str
 }
 
-/// Creates a new `Command` builder for executing `program`.
+/// Stores `program` in a `Command` descriptor without starting it.
+///
+/// The descriptor borrows the supplied string and currently has no public
+/// method to add arguments or launch a child.
 public func newCommand(program: str): Command {
     return Command { program: program }
 }
@@ -59,12 +83,16 @@ public func Command.program(self: ref Command): str {
     return self.program
 }
 
-/// Handle to a running or finished child process.
+/// Descriptor containing a process identifier.
+///
+/// This type alone does not verify that the process exists or own an OS
+/// process handle.
 public struct Child {
+    /// Host process identifier.
     pid: int
 }
 
-/// Creates a `Child` handle from a process identifier.
+/// Wraps `pid` in a `Child` descriptor without querying the OS.
 public func childFromPid(pid: int): Child {
     return Child { pid: pid }
 }

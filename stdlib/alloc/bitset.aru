@@ -1,3 +1,29 @@
+//! Dense, growable sets of nonnegative bit indexes.
+//!
+//! ## Overview
+//!
+//! `BitSet` stores bits in 64-bit words. Insert, remove, membership, and set operations work on the owned word buffer.
+//!
+//! ## Example
+//!
+//! ```arandu
+//! import std.alloc.bitset as bitset
+//!
+//! let mut flags = bitset.bitsetNew()
+//! flags.insert(3)
+//! let present = flags.contains(3)
+//! ```
+//!
+//! ## Complexity
+//! Membership and bit updates index a word in O(1) time; set operations
+//! traverse the occupied words. Growing to a higher bit may reallocate.
+//!
+//! ## Allocations
+//! `bitsetNew` starts empty; storage grows as bits beyond capacity are added.
+//!
+//! ## Platform
+//! `native` · `wasm32`
+
 module std.alloc.bitset
 
 import std.alloc.vec as vec
@@ -7,11 +33,15 @@ import std.core.option as option
 ///
 /// Designed for high cache locality and word-parallel set operations (DoD/SoA).
 public struct BitSet {
+    /// Owned vector of 64-bit bit words.
     words: vec.Vec<u64>
+    /// Number of bit positions represented by the word buffer.
     nbits: uint
 }
 
-/// Creates a new empty `BitSet`.
+/// Creates an empty set without allocating a word buffer.
+///
+/// A later `insert` grows the buffer to include the requested bit.
 public func bitsetNew(): BitSet {
     return BitSet {
         words: vec.new<u64>(),
@@ -19,7 +49,11 @@ public func bitsetNew(): BitSet {
     }
 }
 
-/// Creates an empty `BitSet` with preallocated capacity for at least `bits` bits.
+/// Creates an empty set with storage for at least `bits` bit positions.
+///
+/// All words start cleared. `contains` is therefore false for every bit,
+/// including indexes below `bits`. This allocates and initializes
+/// `(bits + 63) / 64` words; `bits` is a storage request, not a set-bit count.
 public func bitsetWithCapacity(bits: uint): BitSet {
     let wordCount = (bits + 63) / 64
     let mut words = vec.withCapacity<u64>(wordCount)
@@ -34,7 +68,9 @@ public func bitsetWithCapacity(bits: uint): BitSet {
     }
 }
 
-/// Returns `true` if the bit at `bit` is set.
+/// Returns whether `bit` is set. Bits beyond the current word buffer are unset.
+///
+/// This lookup does not grow the set or allocate.
 public func BitSet.contains(self: ref BitSet, bit: uint): bool {
     let wordIdx = bit / 64
     let bitIdx = bit % 64
@@ -52,7 +88,10 @@ public func BitSet.contains(self: ref BitSet, bit: uint): bool {
     }
 }
 
-/// Inserts `bit` into the set, returning `true` if it was not already present.
+/// Sets `bit` and returns `true` only when it changed from unset to set.
+///
+/// Inserting a higher index extends the word buffer with zeroed words and may
+/// allocate. Inserting a bit that is already set leaves the set unchanged.
 public func BitSet.insert(self: mut ref BitSet, bit: uint): bool {
     let wordIdx = bit / 64
     let bitIdx = bit % 64
@@ -77,7 +116,10 @@ public func BitSet.insert(self: mut ref BitSet, bit: uint): bool {
     }
 }
 
-/// Removes `bit` from the set, returning `true` if it was present.
+/// Clears `bit` and returns `true` only when it was previously set.
+///
+/// Out-of-range bits return `false`. Removing a bit does not shrink the word
+/// buffer or reduce the recorded bit range.
 public func BitSet.remove(self: mut ref BitSet, bit: uint): bool {
     let wordIdx = bit / 64
     let bitIdx = bit % 64
@@ -99,7 +141,10 @@ public func BitSet.remove(self: mut ref BitSet, bit: uint): bool {
     }
 }
 
-/// Clears all bits in the bitset.
+/// Clears every bit while retaining the allocated word buffer for reuse.
+///
+/// The recorded bit range becomes zero. This visits each allocated word and
+/// does not deallocate storage.
 public func BitSet.clear(self: mut ref BitSet): void {
     let total = vec.len<u64>(self.words)
     let mut i: uint = 0
@@ -110,7 +155,10 @@ public func BitSet.clear(self: mut ref BitSet): void {
     self.nbits = 0
 }
 
-/// Computes the union in-place (`self = self | other`).
+/// Replaces this set with its union with `other`.
+///
+/// The buffer grows if `other` has more words; existing bits outside
+/// `other`'s range remain set. Runs in O(other word count), plus any growth.
 public func BitSet.unionWith(self: mut ref BitSet, other: ref BitSet): void {
     let otherLen = vec.len<u64>(other.words)
     while vec.len<u64>(self.words) < otherLen {
@@ -128,7 +176,10 @@ public func BitSet.unionWith(self: mut ref BitSet, other: ref BitSet): void {
     }
 }
 
-/// Computes the intersection in-place (`self = self & other`).
+/// Keeps only bits present in both sets.
+///
+/// Words beyond `other`'s range are cleared. The operation visits every word
+/// in `self` and retains its storage and recorded bit range.
 public func BitSet.intersectWith(self: mut ref BitSet, other: ref BitSet): void {
     let selfLen = vec.len<u64>(self.words)
     let otherLen = vec.len<u64>(other.words)
@@ -145,7 +196,10 @@ public func BitSet.intersectWith(self: mut ref BitSet, other: ref BitSet): void 
     }
 }
 
-/// Computes the difference in-place (`self = self & ~other`).
+/// Removes from this set every bit that is set in `other`.
+///
+/// Bits beyond `other`'s range are unchanged. The operation visits every
+/// word in `self` and retains its storage and recorded bit range.
 public func BitSet.differenceWith(self: mut ref BitSet, other: ref BitSet): void {
     let selfLen = vec.len<u64>(self.words)
     let otherLen = vec.len<u64>(other.words)
@@ -160,7 +214,9 @@ public func BitSet.differenceWith(self: mut ref BitSet, other: ref BitSet): void
     }
 }
 
-/// Returns the total number of set bits (population count).
+/// Counts the set bits across the entire allocated word buffer.
+///
+/// Runs in O(words + set bits) time and does not allocate.
 public func BitSet.countOnes(self: ref BitSet): uint {
     let total = vec.len<u64>(self.words)
     let mut count: uint = 0

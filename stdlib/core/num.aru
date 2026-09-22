@@ -1,3 +1,35 @@
+//! Checked and saturating integer arithmetic.
+//!
+//! ## Overview
+//!
+//! `std.core.num` exposes arithmetic operations that detect overflow instead of
+//! silencing it. Every `checked*` function returns `Option<T>` — `Some(value)`
+//! on success and `None` on overflow — enabling explicit handling without
+//! resorting to undefined behavior. The `saturating*` variants clamp to the
+//! type bounds instead.
+//!
+//! ## Example
+//!
+//! ```arandu
+//! import std.core.num as num
+//!
+//! let r = num.checkedAdd(2147483647, 1)
+//! // r == Option.None  (overflow detected)
+//!
+//! let s = num.saturatingAdd(2147483647, 1)
+//! // s == 2147483647  (saturated at the bound)
+//! ```
+//!
+//! ## Platform
+//! `native` · `wasm32` · `bare-metal`
+//!
+//! Behaves identically on 32- and 64-bit targets.
+//!
+//! ## See also
+//!
+//! - `std.core.fixed` — FPU-free fixed-point arithmetic
+//! - `std.core.cmp` — comparison and ordering
+
 module std.core.num
 
 import std.core.option as option

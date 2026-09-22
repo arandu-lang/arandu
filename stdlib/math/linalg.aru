@@ -1,3 +1,20 @@
+//! Destination-passing linear algebra kernels.
+//!
+//! ## Overview
+//!
+//! These kernels write into caller-owned matrix views. The caller provides destination storage and, for matrix multiplication, any required scratch buffer.
+//!
+//! ## Safety
+//! Destination views must have compatible shapes and must not alias inputs
+//! where the kernel requires exclusive output. `gemmRequirements` exposes
+//! the current scratch-space estimate before calling `gemmInto`.
+//!
+//! ## Allocations
+//! Kernels write into caller-provided storage and do not own result buffers.
+//!
+//! ## Platform
+//! `native` · `wasm32`
+
 module std.math.linalg
 
 /// Destination-Passing Style (DPS) Linear Algebra Kernels (RFC 0012).
@@ -13,8 +30,9 @@ import std.alloc.arena as arena
 
 /// Computes elementwise matrix addition: `out = a + b`.
 ///
-/// Returns `true` on success, or `false` if dimensions mismatch.
-/// Allocations: 0 (verified).
+/// Returns `false` without writing when the three shapes differ. On a match,
+/// writes each destination element and returns `true`. This kernel performs
+/// no heap allocation; its work is O(rows × columns).
 public func addInto(
     a: ref view.ArrayView<float>,
     b: ref view.ArrayView<float>,
@@ -44,8 +62,9 @@ public func addInto(
 
 /// Computes elementwise matrix subtraction: `out = a - b`.
 ///
-/// Returns `true` on success, or `false` if dimensions mismatch.
-/// Allocations: 0 (verified).
+/// Returns `false` without writing when the three shapes differ. On a match,
+/// writes each destination element and returns `true`. This kernel performs
+/// no heap allocation; its work is O(rows × columns).
 public func subInto(
     a: ref view.ArrayView<float>,
     b: ref view.ArrayView<float>,
@@ -75,8 +94,9 @@ public func subInto(
 
 /// Computes elementwise matrix scaling: `out = a * alpha`.
 ///
-/// Returns `true` on success, or `false` if dimensions mismatch.
-/// Allocations: 0 (verified).
+/// Returns `false` without writing when `out` has a different shape from `a`.
+/// On a match, writes each destination element and returns `true`. This
+/// kernel performs no heap allocation; its work is O(rows × columns).
 public func scaleInto(
     a: ref view.ArrayView<float>,
     alpha: float,
@@ -103,10 +123,11 @@ public func scaleInto(
     return true
 }
 
-/// Computes fused elementwise multiply-add: `out = a * b + c`.
+/// Computes elementwise multiply then add: `out = a * b + c`.
 ///
-/// Returns `true` on success, or `false` if dimensions mismatch.
-/// Allocations: 0 (verified).
+/// The implementation uses ordinary multiplication and addition; it does
+/// not promise a fused floating-point operation. A shape mismatch returns
+/// `false` before writing. Work is O(rows × columns), with no heap allocation.
 public func mulAddInto(
     a: ref view.ArrayView<float>,
     b: ref view.ArrayView<float>,
@@ -139,7 +160,11 @@ public func mulAddInto(
     return true
 }
 
-/// Returns the scratch memory in bytes required for a GEMM computation of shape (M x K) * (K x N).
+/// Estimates scratch bytes for a GEMM shape `(M × K) * (K × N)`.
+///
+/// The current formula is `(rowsA + colsB) * 8`; `colsA` does not affect the
+/// result. It is a sizing estimate, not an exact query of `float` layout or
+/// of the space actually reserved by `gemmInto`.
 public func gemmRequirements(rowsA: uint, colsA: uint, colsB: uint): uint {
     // Packing workspace: buffer for temporary tile packing (rowsA + colsB) * sizeof(float)
     let packFloats = rowsA + colsB
@@ -148,13 +173,12 @@ public func gemmRequirements(rowsA: uint, colsA: uint, colsB: uint): uint {
 
 /// Computes general matrix multiplication: `out = a * b` (GEMM).
 ///
-/// Arguments:
-/// - `a`: (M x K) input matrix view.
-/// - `b`: (K x N) input matrix view.
-/// - `out`: (M x N) destination matrix mutable view.
-/// - `scratch`: Transient workspace arena for packing blocks with zero heap allocations.
-///
-/// Returns `true` on success, or `false` on dimension mismatch or scratch exhaustion.
+/// `a` has shape M × K, `b` has shape K × N, and `out` must have shape M × N.
+/// A mismatch returns `false` before writing. The function reserves space
+/// for N `float` elements from `scratch`; if that fails, it returns `false`.
+/// The reservation is rewound before return, so earlier scratch allocations
+/// remain available. The multiplication uses nested scalar loops and writes
+/// every destination cell. It performs no heap allocation itself.
 public func gemmInto(
     a: ref view.ArrayView<float>,
     b: ref view.ArrayView<float>,

@@ -1,14 +1,47 @@
-// arandu_core::future — Poll surface for A3 + Minimal 0.1.
-//
-// Minimal 0.1 **IN**: `Poll<T>` only.
-// Experimental: Waker/Context live in `std.runtime` (not this module).
-// Full `Future.poll` trait: post-Minimal.
+//! Polling surface for async tasks (`Poll<T>`).
+//!
+//! ## Overview
+//!
+//! `std.core.future` defines the minimal contract for Arandu coroutines and
+//! async tasks. It exposes `Poll<T>` — the result of a single poll step — and
+//! `Context`, the execution token passed by the executor.
+//!
+//! The full `Future` interface (with `poll`) and `Waker` integration build on
+//! top of this. The cooperative executor lives in `std.runtime.executor`.
+//!
+//! `Poll<T>` has two variants:
+//! - `Poll.Ready(T)` — the task finished with value `T`
+//! - `Poll.Pending` — the task is not done; the executor must reschedule
+//!
+//! ## Example
+//!
+//! ```arandu
+//! import std.core.future as future
+//!
+//! func pollStep(): future.Poll<i32> {
+//!     // remaining work:
+//!     return future.Poll.Pending
+//! }
+//! ```
+//!
+//! ## Platform
+//! `native` · `wasm32`
+//!
+//! wasm32 runs a single-threaded executor. On bare-metal only `Poll<T>` is
+//! available — there is no executor.
+//!
+//! ## See also
+//!
+//! - `std.runtime.executor` — cooperative async task executor
+//! - `std.runtime.waker` — `Waker` and `Context` (experimental)
 
 module std.core.future
 
 /// Result of one poll step on a coroutine / future.
 public enum Poll<T> {
+    /// The asynchronous value is available.
     Ready(T)
+    /// The asynchronous operation has not completed.
     Pending
 }
 

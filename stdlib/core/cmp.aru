@@ -1,3 +1,28 @@
+//! Ordering and comparison contracts.
+//!
+//! ## Overview
+//!
+//! Use `Ordering` to represent a comparison result, comparison interfaces for generic values, and minimum, maximum, and clamp helpers for integers or ordered types.
+//!
+//! ## Example
+//!
+//! ```arandu
+//! import std.core.cmp as cmp
+//!
+//! let bounded = cmp.clamp(12, 0, 10)
+//! let smaller = cmp.min(-2, 3)
+//! ```
+//!
+//! ## Complexity
+//! Integer helpers take O(1) time. Generic helpers perform one comparison.
+//!
+//! ## Safety
+//! `clamp` and `clampBy` expect the lower bound to precede the upper bound;
+//! they do not report reversed bounds.
+//!
+//! ## Platform
+//! `native` · `wasm32` · `bare-metal`
+
 module std.core.cmp
 
 /// Comparison ordering result between two values.
@@ -46,7 +71,10 @@ public func Ordering.isGreater(self: Ordering): bool {
     }
 }
 
-/// Returns `self` unless it is `Equal`, in which case it returns `other`.
+/// Uses `other` only when the first comparison was `Equal`.
+///
+/// This supports lexicographic comparison: a decisive first ordering is
+/// preserved, while a tie is resolved by the next ordering.
 public func Ordering.then(self: Ordering, other: Ordering): Ordering {
     match self {
         Equal => {
@@ -134,7 +162,10 @@ public func clamp(val: int, minVal: int, maxVal: int): int {
     return val
 }
 
-/// Returns the minimum of two values according to their [`Ord`] implementation.
+/// Compares `a` with `b` and returns the smaller value.
+///
+/// A tie returns `b`. Exactly one `Ord.cmp` call is made; no allocation is
+/// introduced by the helper itself.
 public func minBy<T: Ord>(a: T, b: T): T {
     if (ref a).cmp(ref b).isLess() {
         return a
@@ -142,7 +173,10 @@ public func minBy<T: Ord>(a: T, b: T): T {
     return b
 }
 
-/// Returns the maximum of two values according to their [`Ord`] implementation.
+/// Compares `a` with `b` and returns the larger value.
+///
+/// A tie returns `b`. Exactly one `Ord.cmp` call is made; no allocation is
+/// introduced by the helper itself.
 public func maxBy<T: Ord>(a: T, b: T): T {
     if (ref a).cmp(ref b).isGreater() {
         return a
@@ -150,7 +184,11 @@ public func maxBy<T: Ord>(a: T, b: T): T {
     return b
 }
 
-/// Restricts a value to the closed interval `[minVal, maxVal]` according to its [`Ord`] implementation.
+/// Clamps `val` to `[minVal, maxVal]` using `Ord.cmp`.
+///
+/// It compares to the lower bound first and returns that bound when smaller;
+/// otherwise it compares to the upper bound. Reversed bounds are not checked
+/// or reported.
 public func clampBy<T: Ord>(val: T, minVal: T, maxVal: T): T {
     if (ref val).cmp(ref minVal).isLess() {
         return minVal

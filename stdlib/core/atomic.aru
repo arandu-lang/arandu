@@ -1,18 +1,60 @@
+//! Atomic-style value wrappers with a reserved memory-ordering API.
+//!
+//! ## Overview
+//!
+//! The current implementation provides `AtomicBool`, `AtomicInt`,
+//! `AtomicUint`, and `AtomicPtr<T>`. Their methods access an ordinary stored
+//! field. `MemoryOrder` arguments are accepted but ignored; these methods do
+//! not provide atomic instructions or cross-thread synchronization. Use them
+//! only where access is already serialized. No heap allocation occurs.
+//!
+//! ## Example
+//!
+//! ```arandu
+//! import std.core.atomic as atomic
+//!
+//! let mut flag = atomic.atomicBoolNew(false)
+//! flag.store(true, atomic.MemoryOrder.Release)
+//! let v = flag.load(atomic.MemoryOrder.Acquire)
+//! ```
+//!
+//! ## Platform
+//! `native` · `wasm32` · `bare-metal`
+//!
+//! The current implementation uses ordinary field reads and writes on all
+//! targets; target-specific atomic instruction support is not yet wired in.
+//!
+//! ## See also
+//!
+//! - `std.core.cell` — interior mutability without atomicity
+//! - `std.runtime.mutex` — high-level async mutex
+
 module std.core.atomic
 
 import std.core.result as result
 
-/// Memory ordering semantics for atomic operations.
+/// Ordering names reserved for a future atomic implementation.
+///
+/// Current load, store, swap, and fetch methods ignore this argument. These
+/// variants do not currently select a memory barrier or synchronization mode.
 public enum MemoryOrder {
+    /// Reserved relaxed ordering name; currently ignored by methods.
     Relaxed,
+    /// Reserved acquire ordering name; currently ignored by methods.
     Acquire,
+    /// Reserved release ordering name; currently ignored by methods.
     Release,
+    /// Reserved acquire-release ordering name; currently ignored by methods.
     AcqRel,
+    /// Reserved sequential-consistency name; currently ignored by methods.
     SeqCst,
 }
 
-/// A boolean type which can be safely shared and mutated atomically.
+/// Boolean wrapper with atomic-style methods but ordinary field access.
+///
+/// Sharing it across concurrent writers is not made safe by these methods.
 public struct AtomicBool {
+    /// Stored ordinary boolean value.
     val: bool
 }
 
@@ -23,25 +65,30 @@ public func atomicBoolNew(val: bool): AtomicBool {
     }
 }
 
-/// Loads a value from the atomic boolean.
+/// Reads the stored boolean. `order` is currently ignored.
 public func AtomicBool.load(self: ref AtomicBool, order: MemoryOrder): bool {
     return self.val
 }
 
-/// Stores a value into the atomic boolean.
+/// Writes the stored boolean. `order` is currently ignored.
 public func AtomicBool.store(self: mut ref AtomicBool, val: bool, order: MemoryOrder): void {
     self.val = val
 }
 
-/// Stores a value into the atomic boolean, returning the previous value.
+/// Replaces the boolean and returns its previous value.
+///
+/// This is an ordinary read followed by a write; `order` is ignored.
 public func AtomicBool.swap(self: mut ref AtomicBool, val: bool, order: MemoryOrder): bool {
     let old = self.val
     self.val = val
     return old
 }
 
-/// An integer type which can be safely shared and mutated atomically.
+/// Signed integer wrapper with atomic-style methods but ordinary field access.
+///
+/// Operations on this value do not synchronize concurrent threads.
 public struct AtomicInt {
+    /// Stored ordinary signed integer value.
     val: int
 }
 
@@ -52,38 +99,47 @@ public func atomicIntNew(val: int): AtomicInt {
     }
 }
 
-/// Loads a value from the atomic integer.
+/// Reads the stored signed integer. `order` is currently ignored.
 public func AtomicInt.load(self: ref AtomicInt, order: MemoryOrder): int {
     return self.val
 }
 
-/// Stores a value into the atomic integer.
+/// Writes the stored signed integer. `order` is currently ignored.
 public func AtomicInt.store(self: mut ref AtomicInt, val: int, order: MemoryOrder): void {
     self.val = val
 }
 
-/// Stores a value into the atomic integer, returning the previous value.
+/// Replaces the signed integer and returns its previous value.
+///
+/// This is an ordinary read followed by a write; `order` is ignored.
 public func AtomicInt.swap(self: mut ref AtomicInt, val: int, order: MemoryOrder): int {
     let old = self.val
     self.val = val
     return old
 }
 
-/// Adds to the current value, returning the previous value.
+/// Adds `val` and returns the previous signed value.
+///
+/// This is not an atomic read-modify-write operation; `order` is ignored.
 public func AtomicInt.fetchAdd(self: mut ref AtomicInt, val: int, order: MemoryOrder): int {
     let old = self.val
     self.val = self.val + val
     return old
 }
 
-/// Subtracts from the current value, returning the previous value.
+/// Subtracts `val` and returns the previous signed value.
+///
+/// This is not an atomic read-modify-write operation; `order` is ignored.
 public func AtomicInt.fetchSub(self: mut ref AtomicInt, val: int, order: MemoryOrder): int {
     let old = self.val
     self.val = self.val - val
     return old
 }
 
-/// Compares and exchanges the value if it matches `expected`.
+/// Compares the stored value with `expected` and conditionally writes `desired`.
+///
+/// Returns `Ok(expected)` on a match or `Err(currentValue)` otherwise.
+/// This is not a hardware CAS; `success` and `failure` are both ignored.
 public func AtomicInt.compareExchange(self: mut ref AtomicInt, expected: int, desired: int, success: MemoryOrder, failure: MemoryOrder): Result<int, int> {
     if self.val == expected {
         self.val = desired
@@ -92,8 +148,11 @@ public func AtomicInt.compareExchange(self: mut ref AtomicInt, expected: int, de
     return Result.Err(self.val)
 }
 
-/// An unsigned integer type which can be safely shared and mutated atomically.
+/// Unsigned integer wrapper with atomic-style methods but ordinary field access.
+///
+/// Operations on this value do not synchronize concurrent threads.
 public struct AtomicUint {
+    /// Stored ordinary unsigned integer value.
     val: uint
 }
 
@@ -104,32 +163,39 @@ public func atomicUintNew(val: uint): AtomicUint {
     }
 }
 
-/// Loads a value from the atomic unsigned integer.
+/// Reads the stored unsigned integer. `order` is currently ignored.
 public func AtomicUint.load(self: ref AtomicUint, order: MemoryOrder): uint {
     return self.val
 }
 
-/// Stores a value into the atomic unsigned integer.
+/// Writes the stored unsigned integer. `order` is currently ignored.
 public func AtomicUint.store(self: mut ref AtomicUint, val: uint, order: MemoryOrder): void {
     self.val = val
 }
 
-/// Adds to the current value, returning the previous value.
+/// Adds `val` and returns the previous unsigned value.
+///
+/// This is not an atomic read-modify-write operation; `order` is ignored.
 public func AtomicUint.fetchAdd(self: mut ref AtomicUint, val: uint, order: MemoryOrder): uint {
     let old = self.val
     self.val = self.val + val
     return old
 }
 
-/// Subtracts from the current value, returning the previous value.
+/// Subtracts `val` and returns the previous unsigned value.
+///
+/// This is not an atomic read-modify-write operation; `order` is ignored.
 public func AtomicUint.fetchSub(self: mut ref AtomicUint, val: uint, order: MemoryOrder): uint {
     let old = self.val
     self.val = self.val - val
     return old
 }
 
-/// An atomic pointer type.
+/// Pointer wrapper with atomic-style methods but ordinary field access.
+///
+/// It does not manage the pointee's lifetime or synchronize concurrent use.
 public struct AtomicPtr<T> {
+    /// Stored ordinary pointer value.
     val: ptr[T]
 }
 
@@ -140,12 +206,12 @@ public func atomicPtrNew<T>(val: ptr[T]): AtomicPtr<T> {
     }
 }
 
-/// Loads a pointer from the atomic pointer.
+/// Reads the stored pointer. `order` is currently ignored.
 public func AtomicPtr.load<T>(self: ref AtomicPtr<T>, order: MemoryOrder): ptr[T] {
     return self.val
 }
 
-/// Stores a pointer into the atomic pointer.
+/// Writes the stored pointer. `order` is currently ignored.
 public func AtomicPtr.store<T>(self: mut ref AtomicPtr<T>, val: ptr[T], order: MemoryOrder): void {
     self.val = val
 }

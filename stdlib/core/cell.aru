@@ -1,7 +1,40 @@
+//! Simple value cells with explicit mutable access.
+//!
+//! ## Overview
+//!
+//! `Cell<T>` and `UnsafeCell<T>` store a value inline. The current public
+//! methods read, replace, or consume that value; mutation requires a mutable
+//! reference. Neither type provides mutual exclusion or atomic operations.
+//! Use an appropriate synchronization mechanism when values are shared
+//! between concurrent tasks.
+//!
+//! ## Example
+//!
+//! ```arandu
+//! import std.core.cell as cell
+//!
+//! let c = cell.unsafeCellNew(42)
+//! let v = cell.UnsafeCell.intoInner(c)  // 42, consumes c
+//! ```
+//!
+//! ## Platform
+//! `native` · `wasm32` · `bare-metal`
+//!
+//! Zero overhead on every supported platform.
+//!
+//! ## See also
+//!
+//! - `std.core.atomic` — atomic-style API; current operations are not atomic
+//! - `std.runtime.mutex` — async mutex
+
 module std.core.cell
 
-/// Core primitive for interior mutability.
+/// Inline value wrapper without synchronization.
+///
+/// The current public API only exposes construction and consuming extraction.
+/// Concurrent access requires external synchronization.
 public struct UnsafeCell<T> {
+    /// Stored value.
     value: T
 }
 
@@ -19,6 +52,7 @@ public func UnsafeCell.intoInner<T>(self: own UnsafeCell<T>): T {
 
 /// A mutable memory location for copyable types.
 public struct Cell<T> {
+    /// Stored value.
     value: T
 }
 

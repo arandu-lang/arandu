@@ -1,3 +1,17 @@
+//! Experimental worker process supervision.
+//!
+//! ## Overview
+//!
+//! `Supervisor` starts workers and exposes poll, wait, and kill operations through `WorkerHandle` values.
+//!
+//! ## Safety
+//! Workers are identified by opaque `WorkerHandle` values returned by
+//! `supervisorSpawn`. Poll, wait, and kill require the supervisor that owns
+//! the handle. Release the supervisor when work is complete.
+//!
+//! ## Platform
+//! `native`
+
 module std.runtime.supervisor
 
 /// experimental — not Minimal 0.1 — SL_R.1 process supervisor.
@@ -6,21 +20,29 @@ module std.runtime.supervisor
 /// isolation and restart; has no dependency on the executor.
 
 extern "C" {
+    /// Host worker supervisor creation.
     func ar_rt_supervisor_create(): int
+    /// Host worker supervisor destruction.
     func ar_rt_supervisor_destroy(id: int): void
+    /// Host worker spawn using a pointer and length path.
     func ar_rt_supervisor_spawn(sup: int, path_ptr: ptr[u8], path_len: int, max_restarts: int): int
+    /// Host query for a worker status.
     func ar_rt_supervisor_poll(sup: int, worker: int): int
+    /// Host wait for a worker to finish.
     func ar_rt_supervisor_wait(sup: int, worker: int): int
+    /// Host request to terminate a worker.
     func ar_rt_supervisor_kill(sup: int, worker: int): int
 }
 
 // Host wrapper that accepts language `str` (fat) — declared with str ABI.
 extern "C" {
+    /// Host worker spawn using an Arandu string path.
     func ar_rt_supervisor_spawn_str(sup: int, path: str, max_restarts: int): int
 }
 
 /// experimental — not Minimal 0.1
 public struct Supervisor {
+    /// Opaque host handle.
     id: int
 }
 
@@ -28,15 +50,24 @@ public struct Supervisor {
 ///
 /// POD auto-copy (`id: int`).
 public struct WorkerHandle {
+    /// Opaque host handle.
     id: int
 }
 
+/// Creates a host worker supervisor and stores its integer handle.
+///
+/// A negative `id` signals creation failure. Release a valid supervisor
+/// with `destroySupervisor`.
 public func newSupervisor(): Supervisor {
     unsafe {
         return Supervisor { id: ar_rt_supervisor_create() }
     }
 }
 
+/// Releases the supervisor's host resources.
+///
+/// Its wrapper retains the old ID; subsequent operations through it may
+/// fail. Do not use existing worker handles after destruction.
 public func destroySupervisor(s: ref Supervisor): void {
     unsafe {
         ar_rt_supervisor_destroy(s.id)
@@ -45,24 +76,38 @@ public func destroySupervisor(s: ref Supervisor): void {
 
 /// Spawn `path` as a worker. `maxRestarts` allows automatic restart on exit.
 /// Path is a fat `str` (ptr+len ABI).
+/// The host runs the executable with no added arguments. A negative returned
+/// worker `id` signals failure; the wrapper does not return `Result`.
 public func supervisorSpawn(s: ref Supervisor, path: str, maxRestarts: int): WorkerHandle {
     unsafe {
         return WorkerHandle { id: ar_rt_supervisor_spawn_str(s.id, path, maxRestarts) }
     }
 }
 
+/// Polls worker `w` without blocking, optionally applying restart policy.
+///
+/// Returns `0` while running, `1` after exit without restart, `2` after a
+/// restart, or `-1` on error. The worker must belong to this supervisor.
 public func supervisorPoll(s: ref Supervisor, w: WorkerHandle): int {
     unsafe {
         return ar_rt_supervisor_poll(s.id, w.id)
     }
 }
 
+/// Blocks until worker `w` exits and returns its exit code.
+///
+/// Returns `-1` on host failure or if no exit code is available. This wait
+/// does not apply the automatic restart action used by `supervisorPoll`.
 public func supervisorWait(s: ref Supervisor, w: WorkerHandle): int {
     unsafe {
         return ar_rt_supervisor_wait(s.id, w.id)
     }
 }
 
+/// Requests termination of worker `w` and waits for host cleanup.
+///
+/// Returns zero on success or `-1` on failure. The worker handle must belong
+/// to this supervisor.
 public func supervisorKill(s: ref Supervisor, w: WorkerHandle): int {
     unsafe {
         return ar_rt_supervisor_kill(s.id, w.id)

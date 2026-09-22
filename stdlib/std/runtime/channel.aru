@@ -1,3 +1,23 @@
+//! Bounded channel for cooperative communication.
+//!
+//! ## Overview
+//!
+//! `Channel<T>` stores values in a ring buffer. `trySend` and `tryRecv` are
+//! immediate operations; close stops further sends. The fields and methods
+//! use ordinary memory accesses, so concurrent threads need external
+//! synchronization.
+//!
+//! ## Safety
+//! `trySend` returns `false` when the buffer is full or closed. `tryRecv`
+//! returns `None` when no value is available. These are immediate operations,
+//! not blocking waits.
+//!
+//! ## Allocations
+//! `newChannel` allocates its bounded ring buffer; `destroy` releases it.
+//!
+//! ## Platform
+//! `native` · `wasm32`
+
 module std.runtime.channel
 
 /// SL_R — Concurrency: Bounded Ring-Buffer `Channel<T>` (DoD Zero-Alloc).
@@ -7,7 +27,9 @@ module std.runtime.channel
 import std.core.mem as mem
 
 extern "C" {
+    /// Host allocator for a raw byte buffer.
     func ar_vec_malloc(size: uint): ptr[u8]
+    /// Host deallocator for a raw byte buffer.
     func ar_vec_buf_free(p: ptr[u8], size: uint): void
 }
 
@@ -15,15 +37,24 @@ extern "C" {
 ///
 /// Pre-allocates buffer storage for `cap` elements; zero allocations during send/recv.
 public struct Channel<T> {
+    /// Ring buffer storage for channel values.
     buf: ptr[Option<T>]
+    /// Maximum number of buffered values.
     cap: uint
+    /// Index of the next element to receive.
     head: uint
+    /// Index of the next slot to send into.
     tail: uint
+    /// Current number of buffered values.
     len: uint
+    /// Whether the channel has been closed.
     is_closed: bool
 }
 
-/// Creates a new bounded channel with contiguous storage for `cap` items.
+/// Allocates a ring buffer for `capacity` values, initially empty.
+///
+/// A requested capacity of zero is treated as one. The current constructor
+/// does not return an allocation error. Release the buffer with `destroy`.
 public func newChannel<T>(capacity: uint): Channel<T> {
     let cap = if capacity == 0 { 1 as uint } else { capacity }
     let byte_size = cap * (mem.sizeOf<Option<T>>() as uint)
@@ -72,12 +103,18 @@ public func Channel.isClosed<T>(self: ref Channel<T>): bool {
     return self.is_closed
 }
 
-/// Closes the channel. Subsequent sends will fail; remaining buffered items can still be received.
+/// Marks the channel closed without discarding buffered values.
+///
+/// Later `trySend` calls return `false`; `tryRecv` can still drain existing
+/// items. Calling `close` again leaves it closed.
 public func Channel.close<T>(self: mut ref Channel<T>): void {
     self.is_closed = true
 }
 
-/// Non-blocking send. Returns `true` on success, or `false` if full or closed.
+/// Adds `val` to the ring and returns `true` when space is available.
+///
+/// Returns `false` immediately when full or closed. No allocation occurs
+/// during a successful send; the caller must handle a rejected value.
 public func Channel.trySend<T>(self: mut ref Channel<T>, val: T): bool {
     if self.is_closed || self.len == self.cap {
         return false
@@ -91,7 +128,10 @@ public func Channel.trySend<T>(self: mut ref Channel<T>, val: T): bool {
     return true
 }
 
-/// Non-blocking receive. Returns `Option.Some(item)` or `Option.None` if empty.
+/// Removes and returns the oldest buffered item as `Some`.
+///
+/// Returns `None` immediately when empty, whether open or closed. A receive
+/// frees one ring slot for a future send while the channel remains open.
 public func Channel.tryRecv<T>(self: mut ref Channel<T>): Option<T> {
     if self.len == 0 {
         return Option.None
@@ -107,7 +147,10 @@ public func Channel.tryRecv<T>(self: mut ref Channel<T>): Option<T> {
     return opt
 }
 
-/// Destroys the channel buffer and cleans up any remaining items.
+/// Frees the ring buffer and resets its length to zero.
+///
+/// Remaining values are not individually visited by this method. The handle
+/// must not be used for send or receive after destruction.
 public func Channel.destroy<T>(self: mut ref Channel<T>): void {
     unsafe {
         let nullp: ptr[Option<T>] = nil

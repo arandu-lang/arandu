@@ -1,3 +1,17 @@
+//! Cooperative coroutine execution.
+//!
+//! ## Overview
+//!
+//! `SyncExecutor` drives coroutines through `blockOn`, `spawn`, `join`, and `cancel`. Task handles identify spawned work.
+//!
+//! ## Safety
+//! The current host bridge carries coroutine results through an `i64` value.
+//! `blockOn` and `join` cast that payload to `T`; callers should use result
+//! types supported by the current host ABI.
+//!
+//! ## Platform
+//! `native`
+
 module std.runtime.executor
 
 /// SL_R.0 — cooperative async **executor** (moved out of the former
@@ -17,9 +31,13 @@ module std.runtime.executor
 
 // -- Host: SyncExecutor queue ------------------------------------------------
 extern "C" {
+    /// Host executor bridge that drives a coroutine to completion.
     func ar_rt_block_on_i64(state: ptr[u8]): int
+    /// Host executor bridge that queues a coroutine.
     func ar_rt_spawn_i64(state: ptr[u8]): int
+    /// Host executor bridge that joins a queued task.
     func ar_rt_join_i64(handle: int): int
+    /// Host executor bridge that cancels a queued task.
     func ar_rt_cancel_i64(handle: int): void
 }
 
@@ -27,7 +45,9 @@ extern "C" {
 // SL_R.0 — SyncExecutor + generic Coroutine surface
 // ===========================================================================
 
+/// Handle used to drive cooperative coroutines.
 public struct SyncExecutor {
+    /// Executor configuration flags.
     flags: int
 }
 
@@ -36,9 +56,13 @@ public struct SyncExecutor {
 ///
 /// POD auto-copy (`id: int`): pass/reuse by value without move consumption.
 public struct TaskHandle<T> {
+    /// Opaque host handle.
     id: int
 }
 
+/// Creates a value used to call the synchronous host executor bridge.
+///
+/// Construction sets its flags to zero and does not spawn a task.
 public func newSyncExecutor(): SyncExecutor {
     return SyncExecutor { flags: 0 }
 }
@@ -46,7 +70,10 @@ public func newSyncExecutor(): SyncExecutor {
 // -- Generic spawn / join / block_on (infers T from Coroutine[T]) ------------
 // Host payload is i64 bits; `as T` is the ABI bridge for type params.
 
-/// Drive `job` to completion; returns payload as `T` (i64-sized host MVP).
+/// Drives `job` to completion and casts the host's integer result to `T`.
+///
+/// This blocks the caller. The bridge carries an `i64`-sized payload; use
+/// result types compatible with that ABI.
 public func blockOn<T>(ex: ref SyncExecutor, job: Coroutine<T>): T {
     unsafe {
         let v = ar_rt_block_on_i64(job as ptr[u8])
@@ -54,7 +81,10 @@ public func blockOn<T>(ex: ref SyncExecutor, job: Coroutine<T>): T {
     }
 }
 
-/// Spawn `job`; join with `join<T>`.
+/// Queues `job` on the host executor and returns a typed task handle.
+///
+/// The handle stores the host task ID. Join with `join` or request
+/// cancellation with `cancel`.
 public func spawn<T>(ex: ref SyncExecutor, job: Coroutine<T>): TaskHandle<T> {
     unsafe {
         let id = ar_rt_spawn_i64(job as ptr[u8])
@@ -62,7 +92,10 @@ public func spawn<T>(ex: ref SyncExecutor, job: Coroutine<T>): TaskHandle<T> {
     }
 }
 
-/// Join handle from `spawn`; returns payload as `T`.
+/// Waits for a spawned task and casts its host integer payload to `T`.
+///
+/// The bridge carries an `i64`-sized result. This function does not return
+/// a separate error variant for an invalid or canceled handle.
 public func join<T>(ex: ref SyncExecutor, handle: TaskHandle<T>): T {
     unsafe {
         let v = ar_rt_join_i64(handle.id)
@@ -70,6 +103,10 @@ public func join<T>(ex: ref SyncExecutor, handle: TaskHandle<T>): T {
     }
 }
 
+/// Requests cancellation for a spawned task through the host bridge.
+///
+/// The call returns no confirmation that the task stopped; it should not be
+/// treated as a completed join.
 public func cancel<T>(ex: ref SyncExecutor, handle: TaskHandle<T>): void {
     unsafe {
         ar_rt_cancel_i64(handle.id)

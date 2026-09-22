@@ -1,3 +1,24 @@
+//! Heap-backed hash map for keys implementing `Hash`.
+//!
+//! ## Overview
+//!
+//! `HashMap<K, V>` stores key-value entries and supports insertion, lookup, removal, and capacity inspection. Hashes are derived through `std.core.hash`.
+//!
+//! ## Complexity
+//! Lookup, insertion, and removal probe buckets; normal performance depends
+//! on a well-distributed `Hash` implementation. Resizing visits existing
+//! entries and allocates a larger bucket array.
+//!
+//! ## Safety
+//! Keys must produce equal hashes whenever `Hash.eq` considers them equal.
+//! Mutating a key in storage can make it unreachable by lookup.
+//!
+//! ## Allocations
+//! `new` starts without buckets; insertion or `withCapacity` obtains storage.
+//!
+//! ## Platform
+//! `native` · `wasm32`
+
 module std.alloc.hash_map
 
 import std.alloc.vec as vec
@@ -5,9 +26,13 @@ import std.core.hash as hash
 
 /// An entry within a `HashMap` bucket.
 public struct Entry<K, V> {
+    /// Cached hash of the key.
     hash: u64
+    /// Stored map key.
     key: K
+    /// Stored value.
     value: V
+    /// Probe distance from the ideal bucket.
     distance: uint
 }
 
@@ -19,12 +44,18 @@ public struct Entry<K, V> {
 /// - Deletion uses backward-shift without tombstones, preserving optimal cache density.
 /// - Load factor threshold is 75% with power-of-two growth.
 public struct HashMap<K, V> {
+    /// Owned bucket array.
     buckets: vec.Vec<Option<Entry<K, V>>>
+    /// Number of stored elements or valid bytes.
     len: uint
+    /// Bit mask used to index the bucket array.
     mask: uint
 }
 
-/// Computes the 64-bit FNV-1a hash of `key`.
+/// Computes the 64-bit FNV-1a hash supplied by `key`'s `Hash` implementation.
+///
+/// Keys considered equal by `Hash.eq` must yield the same hash for lookups to
+/// find them. This function does not access or modify a map.
 public func hashKey<K: hash.Hash>(k: ref K): u64 {
     let mut h = hash.fnvNew()
     k.hash(mut ref h)
@@ -43,9 +74,11 @@ public func new<K: hash.Hash, V>(): HashMap<K, V> {
     }
 }
 
-/// Creates a new `HashMap` with preallocated capacity for at least `minCap` entries.
+/// Creates an empty map with at least `minCap` buckets allocated.
 ///
-/// Capacity is rounded up to the nearest power of two (minimum 8).
+/// Bucket count is rounded up to a power of two, with a minimum of eight.
+/// `capacity()` reports bucket count, not the number of entries that fit
+/// before growth: insertion resizes when occupancy would exceed 75%.
 ///
 /// # Complexity
 /// Time: O(cap) | Space: O(cap)
@@ -77,12 +110,18 @@ public func isEmpty<K, V>(self: ref HashMap<K, V>): bool {
     return self.len == 0
 }
 
-/// Returns the current total bucket capacity of the map.
+/// Returns the current number of buckets, including empty buckets.
+///
+/// The map can store fewer entries than this before its 75% growth threshold
+/// triggers a resize. A map from `new()` reports zero until first insertion.
 public func capacity<K, V>(self: ref HashMap<K, V>): uint {
     return vec.len<Option<Entry<K, V>>>(self.buckets)
 }
 
-/// Clears the map, removing all key-value pairs while retaining bucket capacity.
+/// Removes all entries while retaining the allocated bucket array.
+///
+/// The next insertion can reuse that storage. This visits every bucket in
+/// O(bucket count) time and does not allocate.
 public func clear<K, V>(self: mut ref HashMap<K, V>): void {
     let cap = vec.len<Option<Entry<K, V>>>(self.buckets)
     let mut i: uint = 0
@@ -93,7 +132,11 @@ public func clear<K, V>(self: mut ref HashMap<K, V>): void {
     self.len = 0
 }
 
-/// Internal function to resize and rehash all elements when load factor exceeds 75%.
+/// Doubles the bucket array and reinserts all existing entries.
+///
+/// An empty map receives eight buckets. This allocates a new array and takes
+/// O(old bucket count + new bucket count) time; ordinary `insert` calls resize
+/// automatically when the load threshold is crossed.
 public func resize<K: hash.Hash, V>(self: mut ref HashMap<K, V>): void {
     let oldCap = vec.len<Option<Entry<K, V>>>(self.buckets)
     let mut newCap: uint = 8
@@ -123,7 +166,11 @@ public func resize<K: hash.Hash, V>(self: mut ref HashMap<K, V>): void {
     }
 }
 
-/// Internal insertion helper implementing Robin Hood probing.
+/// Inserts a pair using the supplied precomputed hash and Robin Hood probing.
+///
+/// The hash must match `hashKey(key)`, or later lookups may fail. Returns the
+/// previous value for an equal key, or `None` for a new key. May resize and
+/// allocate before probing when the 75% load threshold would be exceeded.
 public func insertEntry<K: hash.Hash, V>(self: mut ref HashMap<K, V>, key: K, val: V, h: u64): Option<V> {
     let cap = vec.len<Option<Entry<K, V>>>(self.buckets)
     if cap == 0 || (self.len + 1) * 4 > cap * 3 {
@@ -190,6 +237,8 @@ public func insertEntry<K: hash.Hash, V>(self: mut ref HashMap<K, V>, key: K, va
 ///
 /// If the map did not have this key present, `Option.None` is returned.
 /// If the map did have this key present, the value is updated and the old value is returned.
+/// The key is hashed with `hashKey`; insertion may allocate when the map
+/// crosses its load threshold. Equal keys must have equal hashes.
 ///
 /// # Complexity
 /// Time: O(1) amortized | Space: O(1) amortized
@@ -199,6 +248,7 @@ public func insert<K: hash.Hash, V>(self: mut ref HashMap<K, V>, key: K, val: V)
 }
 
 /// Returns `true` if the map contains a value for the specified key.
+/// An empty map returns `false`; lookup does not allocate or modify entries.
 ///
 /// # Complexity
 /// Time: O(1) average | Space: O(1)
@@ -231,6 +281,8 @@ public func contains<K: hash.Hash, V>(self: ref HashMap<K, V>, key: ref K): bool
 }
 
 /// Returns a copy of the value corresponding to the key if present.
+/// An absent key yields `None`; this does not remove the stored entry or
+/// allocate a new bucket array.
 ///
 /// # Complexity
 /// Time: O(1) average | Space: O(1)
@@ -262,7 +314,11 @@ public func get<K: hash.Hash, V>(self: ref HashMap<K, V>, key: ref K): Option<V>
     return Option.None
 }
 
-/// Removes a key from the map using Backward-Shift deletion, returning the value at the key if present.
+/// Removes a matching key and returns its value, or `None` if absent.
+///
+/// Later entries in the probe sequence shift to close the gap. The bucket
+/// array is retained and no tombstone is left behind; this does not shrink
+/// the map or allocate.
 ///
 /// # Complexity
 /// Time: O(1) average | Space: O(1)

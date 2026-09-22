@@ -177,6 +177,10 @@ fn symbol_kind_discriminant(kind: SymbolKind) -> u8 {
 }
 
 fn hash_symbol_table(hasher: &mut Hasher, table: &SymbolTable, include_spans: bool) {
+    hasher.update(&u64_le(table.unresolved_module_aliases.len() as u64));
+    for alias in &table.unresolved_module_aliases {
+        hash_str(hasher, alias);
+    }
     let mut symbols: Vec<_> = table.iter().collect();
     symbols.sort_by_key(|symbol| (symbol.id.file_id, symbol.id.local_id.0));
     hasher.update(&u64_le(symbols.len() as u64));

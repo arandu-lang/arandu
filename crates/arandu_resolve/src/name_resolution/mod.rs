@@ -137,6 +137,7 @@ pub fn resolve_imports_and_bodies_with_poll(
         diagnostics: result.diagnostics,
         pool: &program.pool,
         import_aliases: rustc_hash::FxHashMap::default(),
+        failed_import_aliases: rustc_hash::FxHashSet::default(),
         current_module: program.module.as_ref().map(|m| m.path.join(".")),
         imported_symbols: rustc_hash::FxHashMap::default(),
         used_symbols: rustc_hash::FxHashSet::default(),
@@ -480,6 +481,11 @@ pub fn resolve_imports_and_bodies_with_poll(
                     }
                 }
             } else if db.missing_import_is_error() {
+                if let arandu_parser::ImportDecl::ModuleAlias { alias, .. }
+                | arandu_parser::ImportDecl::ExternalAlias { alias, .. } = import
+                {
+                    resolver.failed_import_aliases.insert(alias.clone());
+                }
                 let import_name = match import {
                     arandu_parser::ImportDecl::ModuleAlias { path, .. }
                     | arandu_parser::ImportDecl::Named { path, .. } => path.join("."),
@@ -493,6 +499,11 @@ pub fn resolve_imports_and_bodies_with_poll(
                 ));
             }
         } else if db.missing_import_is_error() {
+            if let arandu_parser::ImportDecl::ModuleAlias { alias, .. }
+            | arandu_parser::ImportDecl::ExternalAlias { alias, .. } = import
+            {
+                resolver.failed_import_aliases.insert(alias.clone());
+            }
             let import_name = match import {
                 arandu_parser::ImportDecl::ModuleAlias { path, .. }
                 | arandu_parser::ImportDecl::Named { path, .. } => path.join("."),
@@ -517,6 +528,9 @@ pub fn resolve_imports_and_bodies_with_poll(
     }
 
     resolver.check_unused_imports();
+
+    resolver.symbols.unresolved_module_aliases =
+        resolver.failed_import_aliases.into_iter().collect();
 
     ResolutionResult {
         is_cycle_fallback: false,
@@ -564,6 +578,7 @@ pub fn collect_symbols(
         diagnostics: Vec::new(),
         pool: &program.pool,
         import_aliases: rustc_hash::FxHashMap::default(),
+        failed_import_aliases: rustc_hash::FxHashSet::default(),
         current_module: program.module.as_ref().map(|m| m.path.join(".")),
         imported_symbols: rustc_hash::FxHashMap::default(),
         used_symbols: rustc_hash::FxHashSet::default(),
@@ -667,6 +682,7 @@ pub fn resolve_with_symbols(
         diagnostics,
         pool: &program.pool,
         import_aliases: rustc_hash::FxHashMap::default(),
+        failed_import_aliases: rustc_hash::FxHashSet::default(),
         current_module: program.module.as_ref().map(|m| m.path.join(".")),
         imported_symbols: rustc_hash::FxHashMap::default(),
         used_symbols: rustc_hash::FxHashSet::default(),
@@ -704,6 +720,7 @@ struct Resolver<'a> {
     diagnostics: Vec<crate::Diagnostic>,
     pool: &'a arandu_parser::ast_pool::AstPool,
     import_aliases: rustc_hash::FxHashMap<SmolStr, SmolStr>,
+    failed_import_aliases: rustc_hash::FxHashSet<SmolStr>,
     current_module: Option<String>,
     imported_symbols: rustc_hash::FxHashMap<crate::SymbolId, (SmolStr, arandu_lexer::Span)>,
     used_symbols: rustc_hash::FxHashSet<crate::SymbolId>,

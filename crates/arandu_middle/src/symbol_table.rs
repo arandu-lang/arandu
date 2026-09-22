@@ -144,6 +144,9 @@ pub struct SymbolTable {
     symbols: Vec<Symbol>,
     pub imported_symbols: FxHashMap<SymbolId, Symbol>,
     pub module_members: FxHashMap<(SmolStr, SmolStr), SymbolId>,
+    /// Module aliases whose source import failed. Semantic passes use this
+    /// error state to avoid diagnosing members of the same failed import.
+    pub unresolved_module_aliases: std::collections::BTreeSet<SmolStr>,
     pub associated_members: FxHashMap<(SymbolId, SmolStr), SymbolId>,
     /// Canonical flat backend names, computed once from defining module paths.
     pub host_function_names: FxHashMap<SymbolId, SmolStr>,
@@ -174,6 +177,7 @@ impl SymbolTable {
             symbols: Vec::new(),
             imported_symbols: FxHashMap::default(),
             module_members: FxHashMap::default(),
+            unresolved_module_aliases: std::collections::BTreeSet::new(),
             associated_members: FxHashMap::default(),
             host_function_names: FxHashMap::default(),
             type_params: FxHashMap::default(),
@@ -190,6 +194,8 @@ impl SymbolTable {
     /// IDs in scopes, module members, and associated members to match the new
     /// table.
     pub fn merge_from(&mut self, other: SymbolTable) {
+        self.unresolved_module_aliases
+            .extend(other.unresolved_module_aliases.iter().cloned());
         let self_symbols_len = self.symbols.len() as u32;
         let self_scopes_len = self.scopes.len() as u32;
 

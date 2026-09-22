@@ -62,6 +62,13 @@ impl<'a> Resolver<'a> {
             return false;
         };
         if name.path.len() > 1 && self.is_namespace(scope, root) {
+            if self.failed_import_aliases.contains(root) {
+                // The module import failed (M001 reports it); keep the alias
+                // marked as used and skip the member lookup so the diagnostic
+                // surface stays at the root failure instead of cascading.
+                let _ = self.lookup_and_record_module(scope, root);
+                return false;
+            }
             let _ = self.lookup_and_record_module(scope, root);
             let namespace_parts = &name.path[0..name.path.len() - 1];
             let namespace = namespace_parts.join(".");

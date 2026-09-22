@@ -20,6 +20,7 @@ impl<'a> Resolver<'a> {
             diagnostics: Vec::new(),
             pool,
             import_aliases: rustc_hash::FxHashMap::default(),
+            failed_import_aliases: rustc_hash::FxHashSet::default(),
             current_module,
             imported_symbols: rustc_hash::FxHashMap::default(),
             used_symbols: rustc_hash::FxHashSet::default(),

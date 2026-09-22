@@ -23,6 +23,7 @@ fn make_resolver(pool: &arandu_parser::ast_pool::AstPool) -> Resolver<'_> {
         diagnostics: Vec::new(),
         pool,
         import_aliases: rustc_hash::FxHashMap::default(),
+        failed_import_aliases: rustc_hash::FxHashSet::default(),
         current_module: None,
         imported_symbols: rustc_hash::FxHashMap::default(),
         used_symbols: rustc_hash::FxHashSet::default(),

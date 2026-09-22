@@ -313,11 +313,22 @@ fn resolve_interface_constraint(
     };
     let key = crate::NodeKey::from(name.span);
     let Some(sym) = checker.resolved.type_refs.get(&key).copied() else {
-        checker.diagnostics.push(crate::Diagnostic::error(
-            crate::DiagCode::N002UndefinedType,
-            format!("unknown constraint type '{}'", name.path.join(".")),
-            name.span,
-        ));
+        let unresolved_import = name
+            .path
+            .first()
+            .is_some_and(|root| checker.symbols.unresolved_module_aliases.contains(root));
+        if !unresolved_import
+            && !checker.diagnostics.iter().any(|diagnostic| {
+                diagnostic.code == crate::DiagCode::M002UndefinedNamespaceMember
+                    && diagnostic.span == name.span
+            })
+        {
+            checker.diagnostics.push(crate::Diagnostic::error(
+                crate::DiagCode::N002UndefinedType,
+                format!("unknown constraint type '{}'", name.path.join(".")),
+                name.span,
+            ));
+        }
         return None;
     };
     if checker.symbols.get(sym).kind != SymbolKind::Interface {

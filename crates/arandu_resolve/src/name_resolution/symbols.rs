@@ -116,6 +116,16 @@ impl<'a> Resolver<'a> {
         if !self.is_namespace(scope, namespace) {
             return false;
         }
+        if let Some(root) = namespace.split('.').next()
+            && self.failed_import_aliases.contains(root)
+        {
+            // The import failed to resolve (M001 already reports that), but
+            // the alias is still referenced by this member path. Mark it used
+            // so the unused-import pass does not double-report W007, then
+            // short-circuit the member lookup to avoid an M002 cascade.
+            let _ = self.lookup_and_record_module(scope, root);
+            return true;
+        }
         let _ = self.lookup_and_record_module(scope, namespace);
         let expanded = self.expand_namespace_alias(namespace);
         if let Some(symbol) = self.symbols.lookup_module_member(&expanded, member) {

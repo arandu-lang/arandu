@@ -134,20 +134,6 @@ impl FuncBorrowFacts {
             .is_some_and(|s| s.maybe_shared(local))
     }
 
-    #[must_use]
-    pub fn maybe_exclusive_at_entry(&self, block: BlockId, local: LocalId) -> bool {
-        self.block_in
-            .get(block.as_usize())
-            .is_some_and(|s| s.maybe_exclusive(local))
-    }
-
-    #[must_use]
-    pub fn maybe_borrowed_at_entry(&self, block: BlockId, local: LocalId) -> bool {
-        self.block_in
-            .get(block.as_usize())
-            .is_some_and(|s| s.maybe_borrowed(local))
-    }
-
     /// F2.2: is `local` under any loan whose reference holder is live at `point`?
     ///
     /// Statement-level precision walks the block from entry, tracking which
@@ -157,16 +143,6 @@ impl FuncBorrowFacts {
     #[must_use]
     pub fn is_borrowed_at(&self, local: LocalId, point: ProgramPoint) -> bool {
         self.is_borrowed_kind_at(local, point, None)
-    }
-
-    #[must_use]
-    pub fn is_shared_borrowed_at(&self, local: LocalId, point: ProgramPoint) -> bool {
-        self.is_borrowed_kind_at(local, point, Some(LoanKind::Shared))
-    }
-
-    #[must_use]
-    pub fn is_exclusive_borrowed_at(&self, local: LocalId, point: ProgramPoint) -> bool {
-        self.is_borrowed_kind_at(local, point, Some(LoanKind::Exclusive))
     }
 
     fn is_borrowed_kind_at(

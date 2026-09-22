@@ -69,26 +69,6 @@ pub fn is_borrowed_at(facts: &FuncBorrowFacts, local: LocalId, point: ProgramPoi
     facts.is_borrowed_at(local, point)
 }
 
-/// Shared-loan cardinality at each block entry (for Salsa / HashEq).
-#[must_use]
-pub fn shared_in_counts(func: &AmirFunc) -> Vec<u32> {
-    analyze_borrow_facts(func)
-        .block_in
-        .iter()
-        .map(|s| s.shared.len() as u32)
-        .collect()
-}
-
-/// Exclusive-loan cardinality at each block entry.
-#[must_use]
-pub fn exclusive_in_counts(func: &AmirFunc) -> Vec<u32> {
-    analyze_borrow_facts(func)
-        .block_in
-        .iter()
-        .map(|s| s.exclusive.len() as u32)
-        .collect()
-}
-
 /// Compact per-block borrow summary for memoization.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BlockBorrowSummary {

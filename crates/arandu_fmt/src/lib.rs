@@ -4,6 +4,12 @@
 
 use arandu_parser::{lower_syntax_to_program, parse_syntax, SyntaxTree};
 
+/// Maximum source size that the formatter parses and rewrites.
+///
+/// Larger files are left unchanged so a single formatting request cannot
+/// monopolize an IDE worker or allocate multiple file-sized buffers.
+pub const MAX_FORMAT_SOURCE_BYTES: usize = 16 * 1024 * 1024;
+
 /// UTF-8 byte range edit (for LSP full-document replace helpers).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TextEdit {
@@ -21,6 +27,9 @@ pub struct TextEdit {
 /// - Fallback: whitespace hygiene only
 #[must_use]
 pub fn format_source(source: &str) -> String {
+    if source.len() > MAX_FORMAT_SOURCE_BYTES {
+        return source.to_owned();
+    }
     let tree = parse_syntax(source);
     if tree.lex_diagnostics().is_empty() {
         if let Ok(_prog) = lower_syntax_to_program(&tree, 0) {
@@ -41,6 +50,9 @@ pub fn format_source(source: &str) -> String {
 /// region stable instead of replacing the entire document.
 #[must_use]
 pub fn format_edits(source: &str) -> Vec<TextEdit> {
+    if source.len() > MAX_FORMAT_SOURCE_BYTES {
+        return Vec::new();
+    }
     let formatted = format_source(source);
     if formatted == source {
         return Vec::new();
@@ -53,6 +65,9 @@ pub fn format_edits(source: &str) -> Vec<TextEdit> {
 /// those items.
 #[must_use]
 pub fn format_edits_in_range(source: &str, start: u32, end: u32) -> Vec<TextEdit> {
+    if source.len() > MAX_FORMAT_SOURCE_BYTES {
+        return Vec::new();
+    }
     let tree = parse_syntax(source);
     if !tree.lex_diagnostics().is_empty() {
         return Vec::new();
@@ -481,6 +496,14 @@ pub fn actions_for_expected_semicolon(start: u32, end: u32, message: &str) -> Op
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oversized_sources_are_not_parsed_or_rewritten() {
+        let source = " ".repeat(MAX_FORMAT_SOURCE_BYTES + 1);
+        assert_eq!(format_source(&source), source);
+        assert!(format_edits(&source).is_empty());
+        assert!(format_edits_in_range(&source, 0, 1).is_empty());
+    }
 
     #[test]
     fn pretty_indents_func_body() {

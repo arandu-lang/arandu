@@ -192,6 +192,16 @@ pub fn cmd_single_file_dispatch(
                     fail_operational("failed to read", Some(p.clone()), err.to_string());
                 }
             };
+            if src.len() > arandu_fmt::MAX_FORMAT_SOURCE_BYTES {
+                fail_operational(
+                    "format source",
+                    Some(p.clone()),
+                    format!(
+                        "source exceeds the formatter limit of {} bytes",
+                        arandu_fmt::MAX_FORMAT_SOURCE_BYTES
+                    ),
+                );
+            }
             let formatted = arandu_fmt::format_source(&src);
             if formatted != src {
                 if let Err(err) = fs::write(p, &formatted) {

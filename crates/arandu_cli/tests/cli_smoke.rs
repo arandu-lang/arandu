@@ -85,6 +85,37 @@ func main(): int {
 }
 
 #[test]
+fn hash_map_with_user_hash_implementation_passes_amir_validation() {
+    let file = std::env::temp_dir().join("arandu_cli_hash_map_check.aru");
+    fs::write(
+        &file,
+        r#"import std.alloc.hash_map as hash_map
+import std.core.hash as hash
+
+struct Key { id: int }
+public func Key.eq(self: ref Key, other: ref Key): bool { return self.id == other.id }
+public func Key.hash<H: hash.Hasher>(self: ref Key, state: mut ref H): void {}
+
+func main(): int {
+    let mut map = hash_map.new<Key, int>()
+    hash_map.insert(mut ref map, Key { id: 1 }, 10)
+    return 0
+}
+"#,
+    )
+    .expect("HashMap fixture should be writable");
+
+    let path = file.to_string_lossy();
+    let output = run_cli(&["check", &path]);
+    let _ = fs::remove_file(&file);
+    assert!(
+        output.status.success(),
+        "HashMap's generic resize path must produce valid AMIR: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn logical_operators_short_circuit_rhs_effects_with_and_without_opt() {
     let file = std::env::temp_dir().join("arandu_cli_short_circuit.aru");
     fs::write(

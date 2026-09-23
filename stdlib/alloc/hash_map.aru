@@ -154,7 +154,7 @@ public func resize<K: hash.Hash, V>(self: mut ref HashMap<K, V>): void {
     let oldCap = vec.len<Option<Entry<K, V>>>(self.buckets)
     let mut newCap: uint = 8
     if oldCap > 0 {
-        if oldCap >= MAX_BUCKETS {
+        if oldCap >= MAX_BUCKETS as uint {
             capacityFailure()
         }
         newCap = oldCap * 2
@@ -359,8 +359,9 @@ public func remove<K: hash.Hash, V>(self: mut ref HashMap<K, V>, key: ref K): Op
                     let mut curr = idx
                     let mut next = (idx + 1) & self.mask
                     let mut shifting = true
+                    let mut shifted: uint = 0
 
-                    while shifting {
+                    while shifting && shifted < cap {
                         let mut shouldShift = false
                         match vec.get<Option<Entry<K, V>>>(self.buckets, next) {
                             Some(Some(nextEntry)) => {
@@ -385,10 +386,17 @@ public func remove<K: hash.Hash, V>(self: mut ref HashMap<K, V>, key: ref K): Op
                             }
                             curr = next
                             next = (next + 1) & self.mask
+                            shifted = shifted + 1
                         } else {
                             vec.put<Option<Entry<K, V>>>(self.buckets, curr, Option.None);
                             shifting = false
                         }
+                    }
+                    if shifting {
+                        // A valid table is at most 75% full, so backward-shift
+                        // deletion must reach an empty bucket within one scan.
+                        // Fail closed if corrupted bucket metadata violates it.
+                        capacityFailure()
                     }
 
                     self.len = self.len - 1

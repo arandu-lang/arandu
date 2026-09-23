@@ -164,7 +164,16 @@ impl<'a> CEmitter<'a> {
                     other => other,
                 };
                 let layout = self.checked_layout(&struct_ty);
-                let offset = layout.field_offsets.get(*field).copied().unwrap_or(0);
+                let Some(offset) = layout.field_offsets.get(*field).copied() else {
+                    self.record_codegen_ice(
+                        func,
+                        format!(
+                            "FieldAccess index {field} is outside the layout for {struct_ty:?}"
+                        ),
+                    );
+                    let _ = write!(&mut self.output, "/* invalid FieldAccess index */ 0");
+                    return;
+                };
 
                 let base_temp = match base {
                     AmirOperand::Copy(t) | AmirOperand::Move(t) => t.as_usize(),
@@ -418,14 +427,26 @@ impl<'a> CEmitter<'a> {
                 let layout = self.checked_layout(&struct_ty);
                 let field_defs = self.provider.get_struct_fields(*struct_symbol);
                 let mut resolved_fields = Vec::new();
-                for (i, (name, op)) in fields.iter().enumerate() {
-                    let field_idx = self
-                        .provider
-                        .get_struct_fields(*struct_symbol)
-                        .and_then(|m| m.get(name.as_str()))
-                        .map(|f| f.index)
-                        .unwrap_or(i);
-                    let offset = layout.field_offsets.get(field_idx).copied().unwrap_or(0);
+                for (name, op) in fields {
+                    let Some(field_idx) = field_defs
+                        .and_then(|fields| fields.get(name.as_str()))
+                        .map(|field| field.index)
+                    else {
+                        self.record_codegen_ice(
+                            func,
+                            format!("StructLiteral references unknown field `{name}`"),
+                        );
+                        continue;
+                    };
+                    let Some(offset) = layout.field_offsets.get(field_idx).copied() else {
+                        self.record_codegen_ice(
+                            func,
+                            format!(
+                                "StructLiteral field `{name}` index {field_idx} is outside the layout"
+                            ),
+                        );
+                        continue;
+                    };
                     let field_ty = if field_defs.is_some() {
                         self.instantiated_field_ty(&struct_ty, name)
                     } else {

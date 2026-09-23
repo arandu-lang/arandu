@@ -269,9 +269,11 @@ static BOOL CALLBACK ar_c_pool_init_routine(PINIT_ONCE InitOnce, PVOID Parameter
     uint64_t num_procs = sysinfo.dwNumberOfProcessors;
     if (num_procs < 1) num_procs = 1;
     if (num_procs > AR_PARALLEL_MAX_WORKERS) num_procs = AR_PARALLEL_MAX_WORKERS;
-    ar_global_c_pool.worker_count = num_procs;
+    ar_global_c_pool.worker_count = 0;
     for (uint64_t i = 0; i < num_procs; i++) {{
-        ar_global_c_pool.threads[i] = CreateThread(NULL, 0, ar_parallel_pool_worker_entry, NULL, 0, NULL);
+        HANDLE thread = CreateThread(NULL, 0, ar_parallel_pool_worker_entry, NULL, 0, NULL);
+        if (!thread) break;
+        ar_global_c_pool.threads[ar_global_c_pool.worker_count++] = thread;
     }}
     ar_global_c_pool.initialized = 1;
     return TRUE;
@@ -350,9 +352,14 @@ static void ar_c_pool_init_routine(void) {{
     uint64_t num_procs = procs > 0 ? (uint64_t)procs : 1;
     if (num_procs < 1) num_procs = 1;
     if (num_procs > AR_PARALLEL_MAX_WORKERS) num_procs = AR_PARALLEL_MAX_WORKERS;
-    ar_global_c_pool.worker_count = num_procs;
+    ar_global_c_pool.worker_count = 0;
     for (uint64_t i = 0; i < num_procs; i++) {{
-        pthread_create(&ar_global_c_pool.threads[i], NULL, ar_parallel_pool_worker_entry, NULL);
+        if (pthread_create(
+                &ar_global_c_pool.threads[ar_global_c_pool.worker_count],
+                NULL,
+                ar_parallel_pool_worker_entry,
+                NULL) != 0) break;
+        ar_global_c_pool.worker_count++;
     }}
     ar_global_c_pool.initialized = 1;
 }}
@@ -401,6 +408,14 @@ static int32_t ar_rt_parallel_fold_run(
 
     /* Nested execution inside an existing pool worker runs inline (self-help) to prevent deadlock.
        Single-worker requests also execute inline directly without queue overhead. */
+    if (worker_count > 1 && !ar_c_in_worker) {{
+        ar_c_pool_ensure_init();
+        /* The requested parallelism includes this calling thread. Clamp to the
+           workers that actually started, so partial thread-creation failure
+           can never leave queued batches with no worker to claim them. */
+        uint64_t available_workers = ar_global_c_pool.worker_count + 1;
+        if (worker_count > available_workers) worker_count = available_workers;
+    }}
     if (worker_count == 1 || ar_c_in_worker) {{
         ar_parallel_batch batch = {{
             0, num_chunks, contexts, results, thunk, atomic_stop, UINT64_MAX, 0, 0, NULL
@@ -412,8 +427,6 @@ static int32_t ar_rt_parallel_fold_run(
         }}
         return batch.canceled ? 2 : 0;
     }}
-
-    ar_c_pool_ensure_init();
 
     ar_parallel_group group;
     group.pending = worker_count;

@@ -625,6 +625,100 @@ fn c_backend_rejects_unsupported_len_without_partial_success() {
 }
 
 #[test]
+fn c_backend_rejects_out_of_range_field_access_with_ice() {
+    let src = "struct Pair { left: int; right: int }\nfunc main(): int { let pair = Pair { left: 20, right: 22 }; return pair.left }";
+    let (mut amir, tc) = compile_src(src);
+    let field = amir
+        .funcs
+        .iter_mut()
+        .flat_map(|func| func.stmts.payloads.raw.iter_mut())
+        .find_map(|stmt| match stmt {
+            AmirStmt::Assign {
+                rhs: AmirRvalue::FieldAccess { field, .. },
+                ..
+            } => Some(field),
+            _ => None,
+        })
+        .expect("fixture must lower a field access rvalue");
+    *field = usize::MAX;
+
+    let error = arandu_backend_c::emit_c(
+        &amir,
+        tc.symbols.as_ref(),
+        tc.type_info.as_ref(),
+        &tc.type_info.type_interner,
+        DataLayout::host(),
+    )
+    .unwrap_err();
+    assert_eq!(error.code, arandu_middle::DiagCode::ICEGEN001);
+    assert!(error.message.contains("FieldAccess index"));
+}
+
+#[test]
+fn c_backend_rejects_unknown_struct_literal_field_with_ice() {
+    let src = "struct Pair { left: int; right: int }\nfunc main(): int { let pair = Pair { left: 20, right: 22 }; return pair.left }";
+    let (mut amir, tc) = compile_src(src);
+    let field_name = amir
+        .funcs
+        .iter_mut()
+        .flat_map(|func| func.stmts.payloads.raw.iter_mut())
+        .find_map(|stmt| match stmt {
+            AmirStmt::Assign {
+                rhs: AmirRvalue::StructLiteral { fields, .. },
+                ..
+            } => fields.first_mut().map(|(name, _)| name),
+            _ => None,
+        })
+        .expect("fixture must lower a struct literal");
+    *field_name = "missing".into();
+
+    let error = arandu_backend_c::emit_c(
+        &amir,
+        tc.symbols.as_ref(),
+        tc.type_info.as_ref(),
+        &tc.type_info.type_interner,
+        DataLayout::host(),
+    )
+    .unwrap_err();
+    assert_eq!(error.code, arandu_middle::DiagCode::ICEGEN001);
+    assert!(error.message.contains("unknown field `missing`"));
+}
+
+#[test]
+fn c_backend_rejects_unknown_place_field_symbol_with_ice() {
+    let src = "struct Pair { left: int; right: int }\nfunc main(): int { let mut pair = Pair { left: 20, right: 22 }; pair.left = 1; return pair.left }";
+    let (mut amir, tc) = compile_src(src);
+    let field = amir
+        .funcs
+        .iter_mut()
+        .flat_map(|func| func.stmts.payloads.raw.iter_mut())
+        .find_map(|stmt| match stmt {
+            AmirStmt::Store { lhs, .. } => {
+                lhs.projections
+                    .iter_mut()
+                    .find_map(|projection| match projection {
+                        arandu_middle::amir::AmirProjection::Field(field) => Some(field),
+                        _ => None,
+                    })
+            }
+            _ => None,
+        })
+        .expect("fixture must lower a projected field store");
+    *field = arandu_middle::SymbolId::DUMMY;
+
+    let error = arandu_backend_c::emit_c(
+        &amir,
+        tc.symbols.as_ref(),
+        tc.type_info.as_ref(),
+        &tc.type_info.type_interner,
+        DataLayout::host(),
+    )
+    .unwrap_err();
+    assert_eq!(error.code, arandu_middle::DiagCode::ICEGEN001);
+    assert!(error.message.contains("unknown field symbol"));
+}
+
+#[test]
 fn both_backends_reject_the_same_invalid_ssa_edge() {
     let (mut amir, tc) = compile_src("func main(): int { let x = 1; return x }");
     amir.funcs[0].blocks[0].terminator = arandu_middle::amir::AmirTerminator::Goto {
@@ -1955,6 +2049,77 @@ int main(void) {
         "Worker pool suite failed with exit code: {:?}, stderr: {}",
         run_status.status.code(),
         String::from_utf8_lossy(&run_status.stderr)
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn c_backend_worker_pool_falls_back_when_thread_creation_is_partial() {
+    let (amir, tc) = compile_src("func main(): int { return 0 }");
+    let c_code = emit_c(&amir, &tc);
+    let harness = r#"
+#define main arandu_main
+__GENERATED_C__
+#undef main
+#include <errno.h>
+#include <unistd.h>
+
+static unsigned create_attempts = 0;
+int __real_pthread_create(pthread_t*, const pthread_attr_t*, void *(*)(void*), void*);
+int __wrap_pthread_create(pthread_t *thread, const pthread_attr_t *attr,
+                          void *(*start)(void*), void *arg) {
+    if (create_attempts++ != 0) return EAGAIN;
+    return __real_pthread_create(thread, attr, start, arg);
+}
+
+static int32_t thunk_add_one(uint8_t *ctx, uint8_t *res) {
+    *(int64_t*)res = *(int64_t*)ctx + 1;
+    return 0;
+}
+
+int main(void) {
+    alarm(5); /* a regression must fail instead of hanging the test suite */
+    int64_t input[8] = {0, 1, 2, 3, 4, 5, 6, 7};
+    int64_t output[8] = {0};
+    uint8_t *contexts[8];
+    uint8_t *results[8];
+    for (int i = 0; i < 8; i++) {
+        contexts[i] = (uint8_t*)&input[i];
+        results[i] = (uint8_t*)&output[i];
+    }
+    if (ar_rt_parallel_fold_run(8, contexts, thunk_add_one, results, 4, NULL) != 0) return 1;
+    for (int i = 0; i < 8; i++) if (output[i] != input[i] + 1) return 2;
+    return 0;
+}
+"#;
+    let full_src = harness.replace("__GENERATED_C__", &c_code);
+    let out_dir = env::temp_dir().join("arandu_c_tests");
+    fs::create_dir_all(&out_dir).unwrap();
+    let c_file = out_dir.join("pool_partial_failure.c");
+    let exe_file = out_dir.join("pool_partial_failure.exe");
+    fs::write(&c_file, full_src).unwrap();
+
+    let cc = env::var("CC").unwrap_or_else(|_| "gcc".to_string());
+    let compile = c_compiler(&cc)
+        .arg(&c_file)
+        .arg("-o")
+        .arg(&exe_file)
+        .arg("-pthread")
+        .arg("-Wl,--wrap=pthread_create")
+        .arg("-lm")
+        .output()
+        .expect("compile partial worker creation harness");
+    assert!(
+        compile.status.success(),
+        "partial worker creation harness must compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let run = Command::new(&exe_file)
+        .status()
+        .expect("run partial worker creation harness");
+    assert!(
+        run.success(),
+        "partial worker creation fallback failed: {run}"
     );
 }
 

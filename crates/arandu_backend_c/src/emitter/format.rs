@@ -213,18 +213,35 @@ impl<'a> CEmitter<'a> {
                         _ => arandu_middle::SymbolId::DUMMY,
                     };
                     let layout = self.checked_layout(&struct_ty);
-                    let field_name = self
-                        .symbols
-                        .get(*field_symbol_id)
-                        .name
-                        .rsplit('.')
-                        .next()
-                        .unwrap_or("");
-                    let field_idx = match self.provider.get_struct_fields(struct_id) {
-                        Some(fields) => fields.get(field_name).map(|f| f.index).unwrap_or(0),
-                        None => 0,
+                    let Some(field_symbol) = self.symbols.try_get(*field_symbol_id) else {
+                        self.record_codegen_ice(
+                            func,
+                            format!("place projection references unknown field symbol {field_symbol_id:?}"),
+                        );
+                        return "/* invalid field symbol */ 0".to_string();
                     };
-                    let offset = layout.field_offsets.get(field_idx).copied().unwrap_or(0);
+                    let field_name = field_symbol.name.rsplit('.').next().unwrap_or("");
+                    let Some(field_idx) = self
+                        .provider
+                        .get_struct_fields(struct_id)
+                        .and_then(|fields| fields.get(field_name))
+                        .map(|field| field.index)
+                    else {
+                        self.record_codegen_ice(
+                            func,
+                            format!("place projection references unknown field `{field_name}`"),
+                        );
+                        return "/* invalid field projection */ 0".to_string();
+                    };
+                    let Some(offset) = layout.field_offsets.get(field_idx).copied() else {
+                        self.record_codegen_ice(
+                            func,
+                            format!(
+                                "place field `{field_name}` index {field_idx} is outside the layout"
+                            ),
+                        );
+                        return "/* invalid field layout */ 0".to_string();
+                    };
 
                     let field_ty = self.instantiated_field_ty(&struct_ty, field_name);
                     let field_c_ty = self.format_type(&field_ty);

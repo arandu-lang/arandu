@@ -22,6 +22,7 @@ typedef struct ar_gen_entry {{
 static ar_gen_entry *ar_gen_head = NULL;
 static ar_gen_entry *ar_gen_tail = NULL;
 static uint64_t ar_gen_next_token = 0;
+static uint64_t ar_gen_len = 0;
 static int ar_gen_valid_layout(size_t size, size_t align) {{
     return align != 0 && (align & (align - 1)) == 0 && size <= SIZE_MAX - (align - 1);
 }}
@@ -37,12 +38,14 @@ static void *ar_gen_alloc_aligned(size_t size, size_t align, void **allocation) 
     return (void *)aligned;
 }}
 static ar_gen_entry *ar_gen_find(uint64_t token) {{
-    for (ar_gen_entry *entry = ar_gen_head; entry; entry = entry->next)
+    uint64_t visited = 0;
+    for (ar_gen_entry *entry = ar_gen_head; entry && visited < ar_gen_len;
+         entry = entry->next, visited++)
         if (entry->token == token) return entry;
     return NULL;
 }}
 static uint64_t ar_gen_insert_raw(void *source, size_t size, size_t align, ar_gen_drop_fn drop) {{
-    if (!source || ar_gen_next_token == UINT64_MAX) return 0;
+    if (!source || ar_gen_next_token == UINT64_MAX || ar_gen_len == UINT64_MAX) return 0;
     ar_gen_entry *entry = (ar_gen_entry *)malloc(sizeof(ar_gen_entry));
     if (!entry) return 0;
     entry->data = ar_gen_alloc_aligned(size, align, &entry->allocation);
@@ -52,6 +55,7 @@ static uint64_t ar_gen_insert_raw(void *source, size_t size, size_t align, ar_ge
     entry->size = size; entry->align = align; entry->drop = drop; entry->next = NULL;
     if (ar_gen_tail) ar_gen_tail->next = entry; else ar_gen_head = entry;
     ar_gen_tail = entry;
+    ar_gen_len++;
     return entry->token;
 }}
 static int ar_gen_get_raw(uint64_t token, void *destination, size_t size, size_t align) {{
@@ -80,26 +84,46 @@ static uint64_t ar_gen_upsert_raw(uint64_t token, void *source, size_t size, siz
 }}
 static int ar_gen_remove_raw(uint64_t token, void *destination, size_t size, size_t align) {{
     ar_gen_entry **link = &ar_gen_head;
-    while (*link && (*link)->token != token) link = &(*link)->next;
+    uint64_t visited = 0;
+    while (*link && (*link)->token != token && visited < ar_gen_len) {{
+        link = &(*link)->next;
+        visited++;
+    }}
+    if (*link && visited == ar_gen_len) return 0; /* malformed/cyclic chain */
     ar_gen_entry *entry = *link;
     if (!entry || !destination || entry->size != size || entry->align != align) return 0;
     *link = entry->next;
+    ar_gen_len--;
     if (ar_gen_tail == entry) {{
         ar_gen_tail = NULL;
-        for (ar_gen_entry *cursor = ar_gen_head; cursor; cursor = cursor->next) ar_gen_tail = cursor;
+        uint64_t remaining = ar_gen_len;
+        for (ar_gen_entry *cursor = ar_gen_head; cursor && remaining > 0;
+             cursor = cursor->next, remaining--) ar_gen_tail = cursor;
     }}
     if (size != 0) memcpy(destination, entry->data, size);
     free(entry->allocation); free(entry);
     return 1;
 }}
 static void ar_gen_shutdown_raw(void) {{
+    /* Corruption can form a cycle. Refuse to chase or double-free a malformed
+       chain during teardown; normal insertion only ever creates a list. */
+    ar_gen_entry *slow = ar_gen_head;
+    ar_gen_entry *fast = ar_gen_head;
+    while (fast && fast->next) {{
+        slow = slow->next;
+        fast = fast->next->next;
+        if (slow == fast) return;
+    }}
     ar_gen_entry *entries = ar_gen_head;
     ar_gen_head = NULL; ar_gen_tail = NULL;
-    while (entries) {{
+    uint64_t remaining = ar_gen_len;
+    ar_gen_len = 0;
+    while (entries && remaining > 0) {{
         ar_gen_entry *next = entries->next;
         if (entries->drop) entries->drop(entries->data);
         free(entries->allocation); free(entries);
         entries = next;
+        remaining--;
     }}
 }}"#
         );

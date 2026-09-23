@@ -218,18 +218,35 @@ public func SliceWriter.seek(self: mut ref SliceWriter, pos: SeekFrom): Result<u
             new_pos = offset
         }
         SeekFrom.Current(delta) => {
-            let target = (self.pos as int) + delta
-            if target < 0 {
+            if self.pos > total {
                 return Result.Err(newCoreIoError(CoreIoErrorKind.InvalidInput))
             }
-            new_pos = target as uint
+            if delta >= 0 {
+                let forward = delta as uint
+                if forward > total - self.pos {
+                    return Result.Err(newCoreIoError(CoreIoErrorKind.InvalidInput))
+                }
+                new_pos = self.pos + forward
+            } else {
+                let backward = (-(delta + 1)) as uint + 1
+                if backward > self.pos {
+                    return Result.Err(newCoreIoError(CoreIoErrorKind.InvalidInput))
+                }
+                new_pos = self.pos - backward
+            }
         }
         SeekFrom.End(delta) => {
-            let target = (total as int) + delta
-            if target < 0 {
+            if delta > 0 {
                 return Result.Err(newCoreIoError(CoreIoErrorKind.InvalidInput))
+            } else if delta == 0 {
+                new_pos = total
+            } else {
+                let backward = (-(delta + 1)) as uint + 1
+                if backward > total {
+                    return Result.Err(newCoreIoError(CoreIoErrorKind.InvalidInput))
+                }
+                new_pos = total - backward
             }
-            new_pos = target as uint
         }
     }
 
@@ -254,20 +271,35 @@ public func SliceReader.seek(self: mut ref SliceReader, pos: SeekFrom): Result<u
             new_pos = offset
         }
         SeekFrom.Current(delta) => {
-            let cur = self.pos as int
-            let target = cur + delta
-            if target < 0 {
+            if self.pos > total {
                 return Result.Err(newCoreIoError(CoreIoErrorKind.InvalidInput))
             }
-            new_pos = target as uint
+            if delta >= 0 {
+                let forward = delta as uint
+                if forward > total - self.pos {
+                    return Result.Err(newCoreIoError(CoreIoErrorKind.InvalidInput))
+                }
+                new_pos = self.pos + forward
+            } else {
+                let backward = (-(delta + 1)) as uint + 1
+                if backward > self.pos {
+                    return Result.Err(newCoreIoError(CoreIoErrorKind.InvalidInput))
+                }
+                new_pos = self.pos - backward
+            }
         }
         SeekFrom.End(delta) => {
-            let end = total as int
-            let target = end + delta
-            if target < 0 {
+            if delta > 0 {
                 return Result.Err(newCoreIoError(CoreIoErrorKind.InvalidInput))
+            } else if delta == 0 {
+                new_pos = total
+            } else {
+                let backward = (-(delta + 1)) as uint + 1
+                if backward > total {
+                    return Result.Err(newCoreIoError(CoreIoErrorKind.InvalidInput))
+                }
+                new_pos = total - backward
             }
-            new_pos = target as uint
         }
     }
 

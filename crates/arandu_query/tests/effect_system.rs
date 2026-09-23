@@ -260,3 +260,74 @@ func make_heap(): int {
         .expect("T039 for heap allocation in Pure function");
     assert!(unsatisfied.message.contains("Heap"));
 }
+
+#[test]
+fn unsafe_function_requires_an_explicit_unsafe_block() {
+    let mut db = DatabaseImpl::new();
+    let file = db.new_file(
+        "unsafe_api.aru".into(),
+        r#"
+@Unsafe
+public func rawOperation(pointer: ptr[u8]): int {
+    return 0
+}
+
+func safeCaller(): int {
+    let pointer: ptr[u8] = nil
+    return rawOperation(pointer)
+}
+"#
+        .into(),
+    );
+
+    let checked = type_check(&db, file);
+    assert!(
+        checked
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == DiagCode::O013ExternRequiresUnsafe),
+        "calling an @Unsafe API outside unsafe must report O013: {:?}; unsafe symbols: {:?}",
+        checked.diagnostics,
+        checked.type_info.unsafe_functions
+    );
+}
+
+#[test]
+fn imported_unsafe_function_requires_an_explicit_unsafe_block() {
+    let mut db = DatabaseImpl::new();
+    let _ = db.new_file(
+        "stdlib/std/unsafe_api.aru".into(),
+        r#"
+module std.unsafe_api
+
+@Unsafe
+public func rawOperation(pointer: ptr[u8]): int {
+    return 0
+}
+"#
+        .into(),
+    );
+    let caller = db.new_file(
+        "main.aru".into(),
+        r#"
+import std.unsafe_api as raw
+
+func main(): int {
+    let pointer: ptr[u8] = nil
+    return raw.rawOperation(pointer)
+}
+"#
+        .into(),
+    );
+
+    let checked = type_check(&db, caller);
+    assert!(
+        checked
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == DiagCode::O013ExternRequiresUnsafe),
+        "an imported @Unsafe call outside unsafe must be rejected: {:?}; symbols: {:?}",
+        checked.diagnostics,
+        checked.type_info.unsafe_functions
+    );
+}

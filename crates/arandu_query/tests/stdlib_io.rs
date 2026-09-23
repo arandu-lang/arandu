@@ -48,13 +48,13 @@ fn stdlib_io_parses_and_exports_expected_symbols() {
 fn stdlib_io_bufreader_and_bufwriter_usage() {
     let mut db = DatabaseImpl::default();
     let _ = db.new_file(
-        "std/core/intrinsics.aru".to_string(),
+        "stdlib/core/intrinsics.aru".to_string(),
         INTRINSICS_ARU.to_string(),
     );
-    let _ = db.new_file("std/core/option.aru".to_string(), OPTION_ARU.to_string());
-    let _ = db.new_file("std/core/result.aru".to_string(), RESULT_ARU.to_string());
-    let _ = db.new_file("std/core/slice.aru".to_string(), SLICE_ARU.to_string());
-    let io_file = db.new_file("std/io.aru".to_string(), IO_ARU.to_string());
+    let _ = db.new_file("stdlib/core/option.aru".to_string(), OPTION_ARU.to_string());
+    let _ = db.new_file("stdlib/core/result.aru".to_string(), RESULT_ARU.to_string());
+    let _ = db.new_file("stdlib/core/slice.aru".to_string(), SLICE_ARU.to_string());
+    let io_file = db.new_file("stdlib/std/io.aru".to_string(), IO_ARU.to_string());
 
     let main_src = r#"
 import std.io as io
@@ -93,8 +93,8 @@ func main(): int {
     let diags_io = file_ide_diagnostics(&db, io_file);
     let diags_main = file_ide_diagnostics(&db, main_file);
 
-    let error_diags_io: Vec<_> = diags_io.iter().filter(|d| d.severity == 1).collect();
-    let error_diags_main: Vec<_> = diags_main.iter().filter(|d| d.severity == 1).collect();
+    let error_diags_io: Vec<_> = diags_io.iter().filter(|d| d.severity == 0).collect();
+    let error_diags_main: Vec<_> = diags_main.iter().filter(|d| d.severity == 0).collect();
 
     assert!(
         error_diags_io.is_empty(),

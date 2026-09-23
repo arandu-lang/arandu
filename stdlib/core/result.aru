@@ -42,7 +42,6 @@
 module std.core.result
 
 import std.core.intrinsics as intrinsics
-import std.core.option as option
 
 /// Algebraic data type representing either success (`Ok`) or failure (`Err`).
 ///

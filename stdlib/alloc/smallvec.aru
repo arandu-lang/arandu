@@ -24,6 +24,13 @@
 module std.alloc.smallvec
 
 import std.core.mem as mem
+import std.core.intrinsics as intrinsics
+
+const MAX_SMALLVEC_CAPACITY = 2147483647 as uint
+
+func allocationFailure(): void {
+    unsafe { intrinsics.abort() }
+}
 
 extern "C" {
     /// Host allocator for a raw byte buffer.
@@ -91,7 +98,8 @@ public func SmallVec4.isHeap<T>(self: ref SmallVec4<T>): bool {
 /// If `len < 4`, writes into inline storage without heap allocation.
 /// If `len == capacity`, spills to or reallocates on the heap.
 /// The first spill gives capacity for eight elements; later growth doubles
-/// capacity. This operation returns no allocation error.
+/// capacity. Capacity overflow or allocation failure aborts before any pointer
+/// write; this infallible API does not return an allocation error.
 public func SmallVec4.push<T>(self: mut ref SmallVec4<T>, val: T): void {
     if !self.is_heap {
         if self.len == 0 {
@@ -116,8 +124,15 @@ public func SmallVec4.push<T>(self: mut ref SmallVec4<T>, val: T): void {
         }
         let new_cap: uint = 8
         let elem_size = mem.sizeOf<Option<T>>()
+        if elem_size == 0 || elem_size > MAX_SMALLVEC_CAPACITY / new_cap {
+            allocationFailure()
+        }
         unsafe {
             let raw = ar_vec_malloc(new_cap * elem_size)
+            let nullp: ptr[u8] = nil
+            if raw == nullp {
+                allocationFailure()
+            }
             let heap_ptr = raw as ptr[Option<T>]
 
             let p0 = mem.ptrOffset<Option<T>>(heap_ptr, 0)
@@ -140,10 +155,20 @@ public func SmallVec4.push<T>(self: mut ref SmallVec4<T>, val: T): void {
     }
 
     if self.len >= self.capacity {
+        if self.capacity >= MAX_SMALLVEC_CAPACITY / 2 {
+            allocationFailure()
+        }
         let new_cap = self.capacity * 2
         let elem_size = mem.sizeOf<Option<T>>()
+        if elem_size == 0 || new_cap > MAX_SMALLVEC_CAPACITY / elem_size {
+            allocationFailure()
+        }
         unsafe {
             let raw = ar_vec_realloc(self.data as ptr[u8], self.capacity * elem_size, new_cap * elem_size)
+            let nullp: ptr[u8] = nil
+            if raw == nullp {
+                allocationFailure()
+            }
             self.data = raw as ptr[Option<T>]
         }
         self.capacity = new_cap

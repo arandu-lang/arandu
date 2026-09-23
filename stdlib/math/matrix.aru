@@ -256,7 +256,7 @@ public func Matrix.cols<T>(self: ref Matrix<T>): uint {
 ///
 /// This does not copy or allocate. The view becomes invalid after `free`.
 public func Matrix.asView<T>(self: ref Matrix<T>): view.ArrayView<T> {
-    return view.fromRaw<T>(self.data, self.rows, self.cols, self.cols as int, 1)
+    return unsafe { view.fromRaw<T>(self.data, self.rows, self.cols, self.cols as int, 1) }
 }
 
 /// Borrows all elements as an exclusive row-major `ArrayViewMut<T>`.
@@ -264,7 +264,7 @@ public func Matrix.asView<T>(self: ref Matrix<T>): view.ArrayView<T> {
 /// This does not copy or allocate. Do not free the matrix while the view is
 /// in use.
 public func Matrix.asViewMut<T>(self: mut ref Matrix<T>): view.ArrayViewMut<T> {
-    return view.fromRawMut<T>(self.data, self.rows, self.cols, self.cols as int, 1)
+    return unsafe { view.fromRawMut<T>(self.data, self.rows, self.cols, self.cols as int, 1) }
 }
 
 /// Releases the owned buffer and resets shape and capacity to zero.

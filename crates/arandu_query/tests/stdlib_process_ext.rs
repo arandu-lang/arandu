@@ -40,7 +40,10 @@ fn stdlib_process_parses_and_exports_expected_symbols() {
 #[test]
 fn stdlib_process_usage_in_program() {
     let mut db = DatabaseImpl::default();
-    let proc_file = db.new_file("std/process.aru".to_string(), PROCESS_ARU.to_string());
+    let proc_file = db.new_file(
+        "stdlib/std/process.aru".to_string(),
+        PROCESS_ARU.to_string(),
+    );
     let main_src = r#"
 import std.process as process
 
@@ -72,8 +75,8 @@ func main(): int {
     let diags_proc = file_ide_diagnostics(&db, proc_file);
     let diags_main = file_ide_diagnostics(&db, main_file);
 
-    let error_diags_proc: Vec<_> = diags_proc.iter().filter(|d| d.severity == 1).collect();
-    let error_diags_main: Vec<_> = diags_main.iter().filter(|d| d.severity == 1).collect();
+    let error_diags_proc: Vec<_> = diags_proc.iter().filter(|d| d.severity == 0).collect();
+    let error_diags_main: Vec<_> = diags_main.iter().filter(|d| d.severity == 0).collect();
 
     assert!(
         error_diags_proc.is_empty(),

@@ -136,6 +136,16 @@ impl MoveState {
         self.field_fact_state(place) == LocalMoveState::Available
     }
 
+    fn has_moved_descendant(&self, place: &AmirPlace) -> bool {
+        let is_descendant = |moved: &AmirPlace| {
+            moved.local == place.local
+                && moved.projections.len() > place.projections.len()
+                && place_is_prefix(place, moved)
+        };
+        self.moved_fields.iter().any(is_descendant)
+            || self.maybe_moved_fields.iter().any(is_descendant)
+    }
+
     fn place_state(&self, place: &AmirPlace) -> LocalMoveState {
         let root = self.root_state(place.local);
         if root != LocalMoveState::Available {
@@ -512,7 +522,18 @@ fn apply_block(
                 consume_operand(op, func, temp_origins, state, &mut diagnostics, true);
             }
             AmirStmt::Destroy(place) => {
-                check_consume_place(place, func, state, &mut diagnostics, true);
+                // Drop elaboration destroys owned fields before emitting a
+                // final root Destroy for heap-backed aggregate storage. The
+                // root cleanup must not be diagnosed as a second destruction
+                // of an already-dropped field. Explicit destructors reject
+                // partial field moves during lowering, so this exception is
+                // limited to a root with descendant cleanup facts.
+                let recursive_root_cleanup = place.projections.is_empty()
+                    && state.root_state(place.local) == LocalMoveState::Available
+                    && state.has_moved_descendant(place);
+                if !recursive_root_cleanup {
+                    check_consume_place(place, func, state, &mut diagnostics, true);
+                }
                 state.move_place(place);
             }
             AmirStmt::StorageLive(_) | AmirStmt::StorageDead(_) | AmirStmt::Nop => {}

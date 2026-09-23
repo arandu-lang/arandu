@@ -12,6 +12,7 @@ const ARENA_ARU: &str = include_str!("../../../stdlib/alloc/arena.aru");
 const SLICE_ARU: &str = include_str!("../../../stdlib/core/slice.aru");
 const MEM_ARU: &str = include_str!("../../../stdlib/core/mem.aru");
 const INTRINSICS_ARU: &str = include_str!("../../../stdlib/core/intrinsics.aru");
+const NUM_ARU: &str = include_str!("../../../stdlib/core/num.aru");
 
 #[test]
 fn stdlib_math_view_parses_and_exports_expected_symbols() {
@@ -114,15 +115,16 @@ fn stdlib_math_linalg_parses_and_exports_expected_symbols() {
 fn stdlib_math_usage_in_program() {
     let mut db = DatabaseImpl::default();
     let _ = db.new_file(
-        "std/core/intrinsics.aru".to_string(),
+        "stdlib/core/intrinsics.aru".to_string(),
         INTRINSICS_ARU.to_string(),
     );
-    let _ = db.new_file("std/core/mem.aru".to_string(), MEM_ARU.to_string());
-    let _ = db.new_file("std/core/slice.aru".to_string(), SLICE_ARU.to_string());
-    let _ = db.new_file("std/alloc/arena.aru".to_string(), ARENA_ARU.to_string());
-    let view_file = db.new_file("std/math/view.aru".to_string(), VIEW_ARU.to_string());
-    let matrix_file = db.new_file("std/math/matrix.aru".to_string(), MATRIX_ARU.to_string());
-    let linalg_file = db.new_file("std/math/linalg.aru".to_string(), LINALG_ARU.to_string());
+    let _ = db.new_file("stdlib/core/mem.aru".to_string(), MEM_ARU.to_string());
+    let _ = db.new_file("stdlib/core/num.aru".to_string(), NUM_ARU.to_string());
+    let _ = db.new_file("stdlib/core/slice.aru".to_string(), SLICE_ARU.to_string());
+    let _ = db.new_file("stdlib/alloc/arena.aru".to_string(), ARENA_ARU.to_string());
+    let view_file = db.new_file("stdlib/math/view.aru".to_string(), VIEW_ARU.to_string());
+    let matrix_file = db.new_file("stdlib/math/matrix.aru".to_string(), MATRIX_ARU.to_string());
+    let linalg_file = db.new_file("stdlib/math/linalg.aru".to_string(), LINALG_ARU.to_string());
 
     let main_src = r#"
 import std.math.matrix as matrix
@@ -141,7 +143,10 @@ func testStaticMatrices(): int {
         data: [[0.0, 0.0], [0.0, 0.0]],
     }
     matrix.staticMulInto(left, right, product)
-    if product.get(0, 0) != 58.0 || product.get(1, 1) != 154.0 {
+    if product.get(0, 0) != 58.0 {
+        return 1
+    }
+    if product.get(1, 1) != 154.0 {
         return 1
     }
 
@@ -154,7 +159,13 @@ func testStaticMatrices(): int {
     }
 
     matrix.staticIdentityInto(product)
-    if product.rows() != 2 || product.cols() != 2 || product.get(1, 1) != 1.0 {
+    if product.rows() != 2 {
+        return 3
+    }
+    if product.cols() != 2 {
+        return 3
+    }
+    if product.get(1, 1) != 1.0 {
         return 3
     }
 
@@ -181,7 +192,13 @@ func testLinalgKernels(): int {
     let optB = matrix.newMatrix<float>(2, 2, 2.0)
     let optC = matrix.newMatrix<float>(2, 2, 0.0)
 
-    if optA is Option.None || optB is Option.None || optC is Option.None {
+    if optA is Option.None {
+        return 20
+    }
+    if optB is Option.None {
+        return 20
+    }
+    if optC is Option.None {
         return 20
     }
 
@@ -236,10 +253,10 @@ func main(): int {
     let diags_linalg = file_ide_diagnostics(&db, linalg_file);
     let diags_main = file_ide_diagnostics(&db, main_file);
 
-    let error_view: Vec<_> = diags_view.iter().filter(|d| d.severity == 1).collect();
-    let error_matrix: Vec<_> = diags_matrix.iter().filter(|d| d.severity == 1).collect();
-    let error_linalg: Vec<_> = diags_linalg.iter().filter(|d| d.severity == 1).collect();
-    let error_main: Vec<_> = diags_main.iter().filter(|d| d.severity == 1).collect();
+    let error_view: Vec<_> = diags_view.iter().filter(|d| d.severity == 0).collect();
+    let error_matrix: Vec<_> = diags_matrix.iter().filter(|d| d.severity == 0).collect();
+    let error_linalg: Vec<_> = diags_linalg.iter().filter(|d| d.severity == 0).collect();
+    let error_main: Vec<_> = diags_main.iter().filter(|d| d.severity == 0).collect();
 
     assert!(error_view.is_empty(), "errors in view.aru: {error_view:?}");
     assert!(

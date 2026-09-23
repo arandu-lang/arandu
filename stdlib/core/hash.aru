@@ -60,7 +60,7 @@ public struct FnvHasher {
 /// does not allocate.
 public func fnvNew(): FnvHasher {
     return FnvHasher {
-        state: 14695981039346656037 as u64,
+        state: (-3750763034362895579) as u64,
     }
 }
 

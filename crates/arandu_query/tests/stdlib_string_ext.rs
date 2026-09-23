@@ -5,6 +5,8 @@ use arandu_query::db::DatabaseImpl;
 use arandu_query::file_ide_diagnostics;
 use arandu_query::passes::{exported_symbols, parse};
 
+mod common;
+
 const STRING_ARU: &str = include_str!("../../../stdlib/alloc/string.aru");
 
 #[test]
@@ -34,7 +36,14 @@ fn stdlib_string_parses_and_exports_expected_symbols() {
 #[test]
 fn stdlib_string_methods_usage() {
     let mut db = DatabaseImpl::default();
-    let str_file = db.new_file("std/alloc/string.aru".to_string(), STRING_ARU.to_string());
+    let mut str_file = None;
+    for (path, source) in common::STDLIB_MODULES {
+        let file = db.new_file((*path).to_string(), (*source).to_string());
+        if *path == "stdlib/alloc/string.aru" {
+            str_file = Some(file);
+        }
+    }
+    let str_file = str_file.expect("string module is in the canonical stdlib graph");
     let main_src = r#"
 import std.alloc.string as string
 
@@ -69,8 +78,8 @@ func main(): int {
     let diags_str = file_ide_diagnostics(&db, str_file);
     let diags_main = file_ide_diagnostics(&db, main_file);
 
-    let error_diags_str: Vec<_> = diags_str.iter().filter(|d| d.severity == 1).collect();
-    let error_diags_main: Vec<_> = diags_main.iter().filter(|d| d.severity == 1).collect();
+    let error_diags_str: Vec<_> = diags_str.iter().filter(|d| d.severity == 0).collect();
+    let error_diags_main: Vec<_> = diags_main.iter().filter(|d| d.severity == 0).collect();
 
     assert!(
         error_diags_str.is_empty(),

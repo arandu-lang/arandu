@@ -40,8 +40,8 @@ fn stdlib_mem_parses_and_exports_expected_symbols() {
 #[test]
 fn stdlib_mem_usage_in_program() {
     let mut db = DatabaseImpl::default();
-    let _ = db.new_file("std/core/option.aru".to_string(), OPTION_ARU.to_string());
-    let mem_file = db.new_file("std/core/mem.aru".to_string(), MEM_ARU.to_string());
+    let _ = db.new_file("stdlib/core/option.aru".to_string(), OPTION_ARU.to_string());
+    let mem_file = db.new_file("stdlib/core/mem.aru".to_string(), MEM_ARU.to_string());
     let main_src = r#"
 import std.core.mem as mem
 
@@ -68,8 +68,8 @@ func main(): int {
     let diags_mem = file_ide_diagnostics(&db, mem_file);
     let diags_main = file_ide_diagnostics(&db, main_file);
 
-    let error_diags_mem: Vec<_> = diags_mem.iter().filter(|d| d.severity == 1).collect();
-    let error_diags_main: Vec<_> = diags_main.iter().filter(|d| d.severity == 1).collect();
+    let error_diags_mem: Vec<_> = diags_mem.iter().filter(|d| d.severity == 0).collect();
+    let error_diags_main: Vec<_> = diags_main.iter().filter(|d| d.severity == 0).collect();
 
     assert!(
         error_diags_mem.is_empty(),

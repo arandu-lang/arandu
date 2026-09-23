@@ -27,7 +27,7 @@
 module std.alloc.bitset
 
 import std.alloc.vec as vec
-import std.core.option as option
+import std.core.intrinsics as intrinsics
 
 /// Dense bitset stored as an array of 64-bit words.
 ///
@@ -37,6 +37,13 @@ public struct BitSet {
     words: vec.Vec<u64>
     /// Number of bit positions represented by the word buffer.
     nbits: uint
+}
+
+func wordAt(words: ref vec.Vec<u64>, index: uint): u64 {
+    match vec.get<u64>(*words, index) {
+        Some(value) => { return value }
+        None => { return 0 as u64 }
+    }
 }
 
 /// Creates an empty set without allocating a word buffer.
@@ -52,10 +59,20 @@ public func bitsetNew(): BitSet {
 /// Creates an empty set with storage for at least `bits` bit positions.
 ///
 /// All words start cleared. `contains` is therefore false for every bit,
-/// including indexes below `bits`. This allocates and initializes
-/// `(bits + 63) / 64` words; `bits` is a storage request, not a set-bit count.
+/// including indexes below `bits`. This allocates and initializes the
+/// ceiling of `bits / 64` words; `bits` is a storage request, not a set-bit
+/// count. Requests above the representable bit range abort.
 public func bitsetWithCapacity(bits: uint): BitSet {
-    let wordCount = (bits + 63) / 64
+    let maxWords: uint = 134217728
+    let wordBits: uint = 64
+    let maxBits = maxWords * wordBits
+    if bits > maxBits {
+        unsafe { intrinsics.abort() }
+    }
+    let mut wordCount = bits / 64
+    if bits % 64 != 0 {
+        wordCount = wordCount + 1
+    }
     let mut words = vec.withCapacity<u64>(wordCount)
     let mut i: uint = 0
     while i < wordCount {
@@ -91,8 +108,15 @@ public func BitSet.contains(self: ref BitSet, bit: uint): bool {
 /// Sets `bit` and returns `true` only when it changed from unset to set.
 ///
 /// Inserting a higher index extends the word buffer with zeroed words and may
-/// allocate. Inserting a bit that is already set leaves the set unchanged.
+/// allocate. An index beyond the representable range returns `false`; an
+/// already-set bit leaves the set unchanged.
 public func BitSet.insert(self: mut ref BitSet, bit: uint): bool {
+    let maxWords: uint = 134217728
+    let wordBits: uint = 64
+    let maxBits = maxWords * wordBits
+    if bit >= maxBits {
+        return false
+    }
     let wordIdx = bit / 64
     let bitIdx = bit % 64
     while wordIdx >= vec.len<u64>(self.words) {
@@ -166,8 +190,16 @@ public func BitSet.unionWith(self: mut ref BitSet, other: ref BitSet): void {
     }
     let mut i: uint = 0
     while i < otherLen {
-        let wSelf = vec.get<u64>(self.words, i).unwrapOr(0 as u64)
-        let wOther = vec.get<u64>(other.words, i).unwrapOr(0 as u64)
+        let mut wSelf: u64 = 0
+        match vec.get<u64>(self.words, i) {
+            Some(value) => { wSelf = value }
+            None => {}
+        }
+        let mut wOther: u64 = 0
+        match vec.get<u64>(other.words, i) {
+            Some(value) => { wOther = value }
+            None => {}
+        }
         vec.put<u64>(self.words, i, wSelf | wOther)
         i = i + 1
     }
@@ -186,8 +218,8 @@ public func BitSet.intersectWith(self: mut ref BitSet, other: ref BitSet): void 
     let mut i: uint = 0
     while i < selfLen {
         if i < otherLen {
-            let wSelf = vec.get<u64>(self.words, i).unwrapOr(0 as u64)
-            let wOther = vec.get<u64>(other.words, i).unwrapOr(0 as u64)
+            let wSelf = wordAt(ref self.words, i)
+            let wOther = wordAt(ref other.words, i)
             vec.put<u64>(self.words, i, wSelf & wOther)
         } else {
             vec.put<u64>(self.words, i, 0 as u64)
@@ -206,8 +238,8 @@ public func BitSet.differenceWith(self: mut ref BitSet, other: ref BitSet): void
     let mut i: uint = 0
     while i < selfLen {
         if i < otherLen {
-            let wSelf = vec.get<u64>(self.words, i).unwrapOr(0 as u64)
-            let wOther = vec.get<u64>(other.words, i).unwrapOr(0 as u64)
+            let wSelf = wordAt(ref self.words, i)
+            let wOther = wordAt(ref other.words, i)
             vec.put<u64>(self.words, i, wSelf & (~wOther))
         }
         i = i + 1
@@ -222,7 +254,7 @@ public func BitSet.countOnes(self: ref BitSet): uint {
     let mut count: uint = 0
     let mut i: uint = 0
     while i < total {
-        let mut w = vec.get<u64>(self.words, i).unwrapOr(0 as u64)
+        let mut w = wordAt(ref self.words, i)
         while w != (0 as u64) {
             w = w & (w - (1 as u64))
             count = count + 1

@@ -34,6 +34,10 @@ module std.alloc.gen_arena
 import std.core.mem as mem
 import std.core.intrinsics as intrinsics
 
+func allocationFailure(): void {
+    unsafe { intrinsics.abort() }
+}
+
 extern "C" {
     /// Host allocator for a raw byte buffer.
     func ar_vec_malloc(size: uint): ptr[u8]
@@ -95,16 +99,31 @@ func growSlots<T>(a: mut ref GenArena<T>, minCap: uint): void {
     if a.slots_cap >= minCap {
         return
     }
+    let maxBytes: uint = 2147483647
+    let elem = mem.sizeOf<T>()
+    let genElem = mem.sizeOf<u32>()
+    let usedElem = mem.sizeOf<u8>()
+    if elem == 0 || genElem == 0 || usedElem == 0 {
+        allocationFailure()
+    }
+    let mut maxCap = maxBytes / elem
+    if maxCap > maxBytes / genElem {
+        maxCap = maxBytes / genElem
+    }
+    if maxCap < 8 || minCap > maxCap {
+        allocationFailure()
+    }
     let mut newCap: uint = a.slots_cap
     if newCap == 0 {
         newCap = 8
     }
     while newCap < minCap {
-        newCap = newCap * 2
+        if newCap > maxCap / 2 {
+            newCap = maxCap
+        } else {
+            newCap = newCap * 2
+        }
     }
-    let elem = mem.sizeOf<T>()
-    let genElem = mem.sizeOf<u32>()
-    let usedElem = mem.sizeOf<u8>()
     let oldSlots = a.slots_cap
     unsafe {
         let nullp: ptr[u8] = nil
@@ -131,14 +150,23 @@ func growFree<T>(a: mut ref GenArena<T>, minCap: uint): void {
     if a.free_cap >= minCap {
         return
     }
+    let maxBytes: uint = 2147483647
+    let genElem = mem.sizeOf<u32>()
+    let maxCap = maxBytes / genElem
+    if minCap > maxCap {
+        allocationFailure()
+    }
     let mut newCap: uint = a.free_cap
     if newCap == 0 {
         newCap = 8
     }
     while newCap < minCap {
-        newCap = newCap * 2
+        if newCap > maxCap / 2 {
+            newCap = maxCap
+        } else {
+            newCap = newCap * 2
+        }
     }
-    let genElem = mem.sizeOf<u32>()
     let oldBytes = a.free_cap * genElem
     let newBytes = newCap * genElem
     unsafe {
@@ -166,12 +194,16 @@ public func insert<T>(a: mut ref GenArena<T>, value: T): GenRef {
         unsafe {
             let freePtr = mem.ptrOffset<u32>(a.free, lastIdx as i32)
             let slot = mem.ptrRead<u32>(freePtr)
-            a.free_len = lastIdx
             let usedPtr = mem.ptrOffset<u8>(a.used, slot as i32)
-            mem.ptrWrite<u8>(usedPtr, 1 as u8)
             let genPtr = mem.ptrOffset<u32>(a.gen, slot as i32)
             let g = mem.ptrRead<u32>(genPtr)
+            let maxGeneration: u32 = 4294967295 as u32
+            if g == maxGeneration {
+                intrinsics.abort()
+            }
             let nextG = g + 1 as u32
+            a.free_len = lastIdx
+            mem.ptrWrite<u8>(usedPtr, 1 as u8)
             mem.ptrWrite<u32>(genPtr, nextG)
             let dataPtr = mem.ptrOffset<T>(a.data, slot as i32)
             mem.ptrWrite<T>(dataPtr, value)
@@ -180,6 +212,18 @@ public func insert<T>(a: mut ref GenArena<T>, value: T): GenRef {
                 generation: nextG,
             }
         }
+    }
+    let maxBytes: uint = 2147483647
+    let elem = mem.sizeOf<T>()
+    if elem == 0 {
+        allocationFailure()
+    }
+    let mut maxSlots = maxBytes / elem
+    if maxSlots > maxBytes / mem.sizeOf<u32>() {
+        maxSlots = maxBytes / mem.sizeOf<u32>()
+    }
+    if a.slots >= maxSlots {
+        allocationFailure()
     }
     let need = a.slots + 1
     if a.slots_cap < need {

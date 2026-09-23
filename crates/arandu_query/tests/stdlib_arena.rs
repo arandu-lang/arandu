@@ -32,11 +32,11 @@ fn stdlib_arena_parses_and_exports_expected_symbols() {
 fn stdlib_arena_usage_in_program() {
     let mut db = DatabaseImpl::default();
     let _ = db.new_file(
-        "std/core/intrinsics.aru".to_string(),
+        "stdlib/core/intrinsics.aru".to_string(),
         INTRINSICS_ARU.to_string(),
     );
-    let _ = db.new_file("std/core/mem.aru".to_string(), MEM_ARU.to_string());
-    let arena_file = db.new_file("std/alloc/arena.aru".to_string(), ARENA_ARU.to_string());
+    let _ = db.new_file("stdlib/core/mem.aru".to_string(), MEM_ARU.to_string());
+    let arena_file = db.new_file("stdlib/alloc/arena.aru".to_string(), ARENA_ARU.to_string());
     let main_src = r#"
 import std.alloc.arena as arena
 
@@ -137,8 +137,8 @@ func main(): int {
     let diags_arena = file_ide_diagnostics(&db, arena_file);
     let diags_main = file_ide_diagnostics(&db, main_file);
 
-    let error_diags_arena: Vec<_> = diags_arena.iter().filter(|d| d.severity == 1).collect();
-    let error_diags_main: Vec<_> = diags_main.iter().filter(|d| d.severity == 1).collect();
+    let error_diags_arena: Vec<_> = diags_arena.iter().filter(|d| d.severity == 0).collect();
+    let error_diags_main: Vec<_> = diags_main.iter().filter(|d| d.severity == 0).collect();
 
     assert!(
         error_diags_arena.is_empty(),

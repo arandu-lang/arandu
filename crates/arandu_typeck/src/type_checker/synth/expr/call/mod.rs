@@ -378,6 +378,25 @@ pub(super) fn synth_call_expr(
                 if let Some(ns_ty_id) =
                     resolve_namespace_field(checker, base_id, callee_id, &field_str, field_span)
                 {
+                    if let ExprKind::Path { path } = checker.pool.expr(base_id)
+                        && path.len() == 1
+                        && let Some(sym_id) =
+                            checker.symbols.lookup_module_member(&path[0], &field_str)
+                        && checker.type_info.unsafe_functions.contains(&sym_id)
+                        && !checker.ctx.is_in_unsafe()
+                    {
+                        checker.diagnostics.push(
+                            arandu_middle::Diagnostic::error(
+                                arandu_middle::DiagCode::O013ExternRequiresUnsafe,
+                                "call to an `@Unsafe` function requires an `unsafe` block",
+                                span,
+                            )
+                            .with_label(
+                                field_span,
+                                "the function's documented preconditions must be upheld by its caller",
+                            ),
+                        );
+                    }
                     let arg_ids = checker.pool.expr_list(args_range).to_vec();
                     let ns_ty = checker.resolve(ns_ty_id);
                     if let ArType::Func(params, ret) = ns_ty {
@@ -607,6 +626,7 @@ pub(super) fn synth_call_expr(
                 let mut callee_func_sym = None;
                 match checker.pool.expr(current_callee) {
                     ExprKind::Path { .. } => {
+                        let mut found_direct = false;
                         if let Some(sym_id) = checker.resolved.expr_symbol(current_callee) {
                             let sym = checker.symbols.get(sym_id);
                             if matches!(
@@ -618,7 +638,17 @@ pub(super) fn synth_call_expr(
                             ) {
                                 is_direct = true;
                                 callee_func_sym = Some(sym_id);
+                                found_direct = true;
                             }
+                        }
+                        if !found_direct
+                            && let ExprKind::Path { path } = checker.pool.expr(current_callee)
+                            && let [module, member] = path.as_slice()
+                            && let Some(sym_id) =
+                                checker.symbols.lookup_module_member(module, member)
+                        {
+                            is_direct = true;
+                            callee_func_sym = Some(sym_id);
                         }
                     }
                     ExprKind::TypePath { .. } => {
@@ -634,8 +664,10 @@ pub(super) fn synth_call_expr(
                     ExprKind::Field { base, field } => {
                         if let ExprKind::Path { path } = checker.pool.expr(*base)
                             && path.len() == 1
-                            && let Some(sym_id) =
-                                checker.symbols.lookup_module_member(&path[0], field)
+                            && let Some(sym_id) = checker
+                                .resolved
+                                .expr_symbol(current_callee)
+                                .or_else(|| checker.symbols.lookup_module_member(&path[0], field))
                         {
                             let kind = checker.symbols.get(sym_id).kind;
                             if matches!(
@@ -654,10 +686,26 @@ pub(super) fn synth_call_expr(
                     _ => {}
                 }
 
-                if let Some(sym_id) = callee_func_sym
-                    && let Some(&eff) = checker.type_info.function_effects.get(&sym_id)
-                {
-                    checker.current_observed_effects = checker.current_observed_effects.union(eff);
+                if let Some(sym_id) = callee_func_sym {
+                    if checker.type_info.unsafe_functions.contains(&sym_id)
+                        && !checker.ctx.is_in_unsafe()
+                    {
+                        checker.diagnostics.push(
+                            arandu_middle::Diagnostic::error(
+                                arandu_middle::DiagCode::O013ExternRequiresUnsafe,
+                                "call to an `@Unsafe` function requires an `unsafe` block",
+                                span,
+                            )
+                            .with_label(
+                                span,
+                                "the function's documented preconditions must be upheld by its caller",
+                            ),
+                        );
+                    }
+                    if let Some(&eff) = checker.type_info.function_effects.get(&sym_id) {
+                        checker.current_observed_effects =
+                            checker.current_observed_effects.union(eff);
+                    }
                 }
 
                 // Infer type args for bare `id(x)` (no `id<T>`): instantiate formal params

@@ -5,6 +5,8 @@ use arandu_query::db::DatabaseImpl;
 use arandu_query::file_ide_diagnostics;
 use arandu_query::passes::{exported_symbols, parse};
 
+mod common;
+
 const FS_ARU: &str = include_str!("../../../stdlib/std/fs.aru");
 
 #[test]
@@ -36,7 +38,10 @@ fn stdlib_fs_parses_and_exports_expected_symbols() {
 #[test]
 fn stdlib_fs_metadata_usage() {
     let mut db = DatabaseImpl::default();
-    let fs_file = db.new_file("std/fs.aru".to_string(), FS_ARU.to_string());
+    for (path, source) in common::STDLIB_MODULES {
+        let _ = db.new_file((*path).to_string(), (*source).to_string());
+    }
+    let fs_file = db.new_file("stdlib/std/fs.aru".to_string(), FS_ARU.to_string());
     let main_src = r#"
 import std.fs as fs
 
@@ -71,8 +76,8 @@ func main(): int {
     let diags_fs = file_ide_diagnostics(&db, fs_file);
     let diags_main = file_ide_diagnostics(&db, main_file);
 
-    let error_diags_fs: Vec<_> = diags_fs.iter().filter(|d| d.severity == 1).collect();
-    let error_diags_main: Vec<_> = diags_main.iter().filter(|d| d.severity == 1).collect();
+    let error_diags_fs: Vec<_> = diags_fs.iter().filter(|d| d.severity == 0).collect();
+    let error_diags_main: Vec<_> = diags_main.iter().filter(|d| d.severity == 0).collect();
 
     assert!(
         error_diags_fs.is_empty(),

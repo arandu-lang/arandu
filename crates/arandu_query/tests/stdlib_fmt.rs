@@ -36,15 +36,15 @@ fn stdlib_fmt_parses_and_exports_expected_symbols() {
 fn stdlib_fmt_usage_in_program() {
     let mut db = DatabaseImpl::default();
     let _ = db.new_file(
-        "std/core/intrinsics.aru".to_string(),
+        "stdlib/core/intrinsics.aru".to_string(),
         INTRINSICS_ARU.to_string(),
     );
-    let _ = db.new_file("std/core/slice.aru".to_string(), SLICE_ARU.to_string());
-    let _ = db.new_file("std/core/mem.aru".to_string(), MEM_ARU.to_string());
-    let _ = db.new_file("std/core/option.aru".to_string(), OPTION_ARU.to_string());
-    let _ = db.new_file("std/core/result.aru".to_string(), RESULT_ARU.to_string());
-    let _ = db.new_file("std/core/str.aru".to_string(), STR_ARU.to_string());
-    let fmt_file = db.new_file("std/core/fmt.aru".to_string(), FMT_ARU.to_string());
+    let _ = db.new_file("stdlib/core/slice.aru".to_string(), SLICE_ARU.to_string());
+    let _ = db.new_file("stdlib/core/mem.aru".to_string(), MEM_ARU.to_string());
+    let _ = db.new_file("stdlib/core/option.aru".to_string(), OPTION_ARU.to_string());
+    let _ = db.new_file("stdlib/core/result.aru".to_string(), RESULT_ARU.to_string());
+    let _ = db.new_file("stdlib/core/str.aru".to_string(), STR_ARU.to_string());
+    let fmt_file = db.new_file("stdlib/core/fmt.aru".to_string(), FMT_ARU.to_string());
 
     let main_src = r#"
 import std.core.fmt as fmt
@@ -52,7 +52,15 @@ import std.core.fmt as fmt
 func testFormatter(f: mut ref fmt.Formatter): bool {
     let res = f.writeBool(true)
     let b = f.writeByte(10 as u8)
-    return res.isOk() && b.isOk()
+    match res {
+        Ok(_) => {}
+        Err(_) => { return false }
+    }
+    match b {
+        Ok(_) => {}
+        Err(_) => { return false }
+    }
+    return true
 }
 
 func testNew(buf: []u8): fmt.Formatter {
@@ -68,8 +76,8 @@ func main(): int {
     let diags_fmt = file_ide_diagnostics(&db, fmt_file);
     let diags_main = file_ide_diagnostics(&db, main_file);
 
-    let error_diags_fmt: Vec<_> = diags_fmt.iter().filter(|d| d.severity == 1).collect();
-    let error_diags_main: Vec<_> = diags_main.iter().filter(|d| d.severity == 1).collect();
+    let error_diags_fmt: Vec<_> = diags_fmt.iter().filter(|d| d.severity == 0).collect();
+    let error_diags_main: Vec<_> = diags_main.iter().filter(|d| d.severity == 0).collect();
 
     assert!(
         error_diags_fmt.is_empty(),

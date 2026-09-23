@@ -21,8 +21,6 @@ module std.parallel
 import std.core.intrinsics as intrinsics
 import std.core.marker as marker
 import std.core.mem as mem
-import std.core.option as option
-import std.core.result as result
 import std.core.slice as slice
 
 /// A job that processes elements of type `T` into an accumulator of type `R`.

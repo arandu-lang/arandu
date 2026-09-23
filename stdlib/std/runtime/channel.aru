@@ -25,6 +25,7 @@ module std.runtime.channel
 /// Moved out of the former `std.runtime` monolith.
 
 import std.core.mem as mem
+import std.core.intrinsics as intrinsics
 
 extern "C" {
     /// Host allocator for a raw byte buffer.
@@ -54,11 +55,21 @@ public struct Channel<T> {
 /// Allocates a ring buffer for `capacity` values, initially empty.
 ///
 /// A requested capacity of zero is treated as one. The current constructor
-/// does not return an allocation error. Release the buffer with `destroy`.
+/// does not return an allocation error; invalid sizes and allocation failure
+/// abort before the buffer is accessed. Release the buffer with `destroy`.
 public func newChannel<T>(capacity: uint): Channel<T> {
     let cap = if capacity == 0 { 1 as uint } else { capacity }
-    let byte_size = cap * (mem.sizeOf<Option<T>>() as uint)
+    let elem_size = mem.sizeOf<Option<T>>()
+    let max_bytes: uint = 2147483647
+    if elem_size == 0 || cap > max_bytes || cap > max_bytes / elem_size {
+        unsafe { intrinsics.abort() }
+    }
+    let byte_size = cap * elem_size
     let raw = unsafe { ar_vec_malloc(byte_size) }
+    let nullp: ptr[u8] = nil
+    if raw == nullp {
+        unsafe { intrinsics.abort() }
+    }
     let p = raw as ptr[Option<T>]
     let mut i = 0 as uint
     while i < cap {

@@ -118,9 +118,18 @@ public func tcpConnect(port: int): RawTcpStream {
 /// Reads up to `len` bytes into a valid writable raw buffer.
 ///
 /// Returns a byte count, zero at EOF, `-2` for a nonblocking would-block
-/// result, or `-1` for another error. The current host bridge rejects a null
-/// pointer or nonpositive length.
+/// result, or `-1` for another error. A zero-length request returns zero
+/// without calling the host; a negative length or null nonempty buffer returns
+/// `-1`.
+@Unsafe
 public func tcpRead(s: ref RawTcpStream, buf: ptr[u8], len: int): int {
+    let nullp: ptr[u8] = nil
+    if len < 0 || (len > 0 && buf == nullp) {
+        return -1
+    }
+    if len == 0 {
+        return 0
+    }
     unsafe {
         return ar_rt_tcp_read(s.id, buf, len)
     }
@@ -130,7 +139,15 @@ public func tcpRead(s: ref RawTcpStream, buf: ptr[u8], len: int): int {
 ///
 /// A successful return may be shorter than `len`; retry the remaining bytes
 /// when needed. Returns `-2` for nonblocking would-block or `-1` on error.
+@Unsafe
 public func tcpWrite(s: ref RawTcpStream, buf: ptr[u8], len: int): int {
+    let nullp: ptr[u8] = nil
+    if len < 0 || (len > 0 && buf == nullp) {
+        return -1
+    }
+    if len == 0 {
+        return 0
+    }
     unsafe {
         return ar_rt_tcp_write(s.id, buf, len)
     }
@@ -141,7 +158,15 @@ public func tcpWrite(s: ref RawTcpStream, buf: ptr[u8], len: int): int {
 /// The host may use io_uring when available or fall back to ordinary read.
 /// The return uses the same byte-count and negative-status convention as
 /// `tcpRead`.
+@Unsafe
 public func tcpReadAsync(s: ref RawTcpStream, buf: ptr[u8], len: int): int {
+    let nullp: ptr[u8] = nil
+    if len < 0 || (len > 0 && buf == nullp) {
+        return -1
+    }
+    if len == 0 {
+        return 0
+    }
     unsafe {
         return ar_rt_tcp_read_async(s.id, buf, len)
     }
@@ -151,7 +176,15 @@ public func tcpReadAsync(s: ref RawTcpStream, buf: ptr[u8], len: int): int {
 ///
 /// The host may use io_uring or ordinary write. A nonnegative return is the
 /// number of bytes written and may be shorter than `len`.
+@Unsafe
 public func tcpWriteAsync(s: ref RawTcpStream, buf: ptr[u8], len: int): int {
+    let nullp: ptr[u8] = nil
+    if len < 0 || (len > 0 && buf == nullp) {
+        return -1
+    }
+    if len == 0 {
+        return 0
+    }
     unsafe {
         return ar_rt_tcp_write_async(s.id, buf, len)
     }
@@ -261,12 +294,13 @@ public func TcpListener.accept(self: ref TcpListener): Result<TcpStream, io.IoEr
     return Result.Ok(TcpStream { raw: s })
 }
 
-/// Closes the listener's host handle.
+/// Closes the listener's host handle and invalidates this wrapper.
 ///
-/// Calls using this handle after closing may fail; this wrapper does not
-/// reset its stored raw `id`.
-public func TcpListener.close(self: ref TcpListener): void {
+/// Repeating `close` is harmless. Calls after closing fail with an invalid
+/// handle instead of risking access to a later socket that reused the slot.
+public func TcpListener.close(self: mut ref TcpListener): void {
     tcpCloseListener(self.raw)
+    self.raw.id = -1
 }
 
 /// Connects to `127.0.0.1:port` and returns a typed stream.
@@ -285,9 +319,17 @@ public func TcpStream.connect(port: int): Result<TcpStream, io.IoError> {
 ///
 /// Zero means EOF. A negative host result becomes `Err(BrokenPipe)` with
 /// code `-1`, including a nonblocking would-block result; the category is
-/// therefore not precise. The host currently rejects a zero-length read.
+/// therefore not precise. An empty buffer returns `Ok(0)` without calling the
+/// host.
 public func TcpStream.read(self: mut ref TcpStream, buf: mut ref []u8): Result<uint, io.IoError> {
-    let n = tcpRead(self.raw, slice.asPtr<u8>(*buf), slice.len<u8>(*buf) as int)
+    let len = slice.len<u8>(*buf)
+    if len == 0 {
+        return Result.Ok(0 as uint)
+    }
+    if len > ((-1 as uint) >> 1) {
+        return Result.Err(io.newIoError(io.IoErrorKind.InvalidInput, 5))
+    }
+    let n = unsafe { tcpRead(self.raw, slice.asPtr<u8>(*buf), len as int) }
     if n < 0 {
         return Result.Err(io.newIoError(io.IoErrorKind.BrokenPipe, -1))
     }
@@ -300,7 +342,14 @@ public func TcpStream.read(self: mut ref TcpStream, buf: mut ref []u8): Result<u
 /// `Err(BrokenPipe)` with code `-1`, including would-block; retry logic must
 /// account for the returned count.
 public func TcpStream.write(self: mut ref TcpStream, buf: []u8): Result<uint, io.IoError> {
-    let n = tcpWrite(self.raw, slice.asPtr<u8>(buf), slice.len<u8>(buf) as int)
+    let len = slice.len<u8>(buf)
+    if len == 0 {
+        return Result.Ok(0 as uint)
+    }
+    if len > ((-1 as uint) >> 1) {
+        return Result.Err(io.newIoError(io.IoErrorKind.InvalidInput, 5))
+    }
+    let n = unsafe { tcpWrite(self.raw, slice.asPtr<u8>(buf), len as int) }
     if n < 0 {
         return Result.Err(io.newIoError(io.IoErrorKind.BrokenPipe, -1))
     }
@@ -312,10 +361,11 @@ public func TcpStream.flush(self: mut ref TcpStream): Result<bool, io.IoError> {
     return Result.Ok(true)
 }
 
-/// Closes the stream's host handle.
+/// Closes the stream's host handle and invalidates this wrapper.
 ///
-/// The stored raw `id` is not reset, so later operations through the same
-/// wrapper may fail.
-public func TcpStream.close(self: ref TcpStream): void {
+/// Repeating `close` is harmless. Calls after closing fail with an invalid
+/// handle instead of risking access to a later socket that reused the slot.
+public func TcpStream.close(self: mut ref TcpStream): void {
     tcpCloseStream(self.raw)
+    self.raw.id = -1
 }

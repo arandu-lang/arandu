@@ -26,7 +26,9 @@
 //!
 //! ## Safety
 //!
-//! - Dereferencing a null pointer traps via `intrinsics.abort()`.
+//! - A raw pointer may be null. Dereferencing it has no guaranteed trap
+//!   behavior and violates the `ptrRead`/`ptrWrite` preconditions in
+//!   `std.core.mem`; the result depends on the selected backend/platform.
 //! - Pointer arithmetic is bounds-unchecked — the caller guarantees validity.
 //! - Raw pointers carry no compiler-tracked lifetime.
 //!

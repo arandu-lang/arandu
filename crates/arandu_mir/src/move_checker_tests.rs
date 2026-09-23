@@ -108,6 +108,29 @@ fn duplicate_destroy_reports_double_free() {
 }
 
 #[test]
+fn recursive_field_drop_then_root_storage_cleanup_is_not_double_free() {
+    let mut field = place(0);
+    field
+        .projections
+        .push(crate::amir::AmirProjection::Field(crate::SymbolId::new(
+            0, 1,
+        )));
+    let mut stmts = AmirStmtTable::new();
+    let func = make_func(
+        vec![block(
+            vec![AmirStmt::Destroy(field), AmirStmt::Destroy(place(0))],
+            &mut stmts,
+        )],
+        vec![local(0, non_copy_ty())],
+        Vec::new(),
+        stmts,
+    );
+    let symbols = SymbolTable::new(0);
+
+    assert!(check_moves(&func, &symbols).is_empty());
+}
+
+#[test]
 fn local_diag_span_prefers_use_over_decl() {
     let symbols = SymbolTable::new(0);
     let mut stmts = AmirStmtTable::new();

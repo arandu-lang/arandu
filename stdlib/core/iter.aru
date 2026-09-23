@@ -21,7 +21,6 @@
 
 module std.core.iter
 
-import std.core.option as option
 
 /// Pull-based interface that returns one `Item` or `None` per `next` call.
 ///

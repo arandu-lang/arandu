@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 
 use crate::SymbolId;
@@ -58,6 +58,9 @@ pub struct TypeInfo {
     pub variant_instantiations: FxHashMap<(SymbolId, Vec<TypeId>), (Vec<TypeId>, TypeId)>,
     /// Declared and inferred effects per function symbol.
     pub function_effects: FxHashMap<SymbolId, arandu_middle::EffectFlags>,
+    /// Functions whose API contract requires callers to establish unsafe
+    /// preconditions in an explicit `unsafe` block (`@Unsafe`).
+    pub unsafe_functions: FxHashSet<SymbolId>,
     /// Struct symbols that explicitly declare `@Repr("C")` / `#[repr(C)]`.
     pub struct_repr_c: rustc_hash::FxHashSet<SymbolId>,
 }
@@ -92,6 +95,7 @@ impl TypeInfo {
             interfaces: FxHashMap::default(),
             variant_instantiations: FxHashMap::default(),
             function_effects: FxHashMap::default(),
+            unsafe_functions: FxHashSet::default(),
             struct_repr_c: rustc_hash::FxHashSet::default(),
         }
     }
@@ -578,6 +582,10 @@ pub fn translate_type(ty: &ArType, from: &TypeInterner, to: &mut TypeInterner) -
 
 impl TypeInfo {
     pub fn merge_from(&mut self, other: &TypeInfo) {
+        // Symbol safety contracts are independent of expression-type shards.
+        self.unsafe_functions
+            .extend(other.unsafe_functions.iter().copied());
+
         // Fast path: empty body shards / empty import stubs.
         if other.decl_types.is_empty()
             && other.return_borrow_summaries.is_empty()
@@ -587,6 +595,7 @@ impl TypeInfo {
             && other.destructors.is_empty()
             && other.destructor_instances.is_empty()
             && other.generic_params.is_empty()
+            && other.unsafe_functions.is_empty()
             && other.generic_defaults.is_empty()
             && other.param_constraints.is_empty()
             && other.interfaces.is_empty()

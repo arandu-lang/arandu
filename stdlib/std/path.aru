@@ -189,7 +189,7 @@ public func joinOwned(a: str, b: str): strings.String {
             intrinsics.abort()
         }
     }
-    return strings.adoptOwned(buf, cap, len)
+    return unsafe { strings.adoptOwned(buf, cap, len) }
 }
 
 /// Final path component, or empty string when none (free function for backward compatibility).

@@ -25,7 +25,6 @@
 
 module std.core.char
 
-import std.core.option as option
 
 /// Returns `true` if the character is within the ASCII range (`U+0000` to `U+007F`).
 ///

@@ -71,18 +71,18 @@ fn foundation_modules_are_freestanding_and_type_check_together() {
     let mut db = DatabaseImpl::default();
     let mut foundations = Vec::new();
     for (path, source) in [
-        ("std/core/intrinsics.aru", INTRINSICS_ARU),
-        ("std/core/option.aru", OPTION_ARU),
-        ("std/core/result.aru", RESULT_ARU),
-        ("std/core/slice.aru", SLICE_ARU),
-        ("std/core/fixed.aru", FIXED_ARU),
-        ("std/core/io.aru", IO_ARU),
-        ("std/core/str.aru", STR_ARU),
+        ("stdlib/core/intrinsics.aru", INTRINSICS_ARU),
+        ("stdlib/core/option.aru", OPTION_ARU),
+        ("stdlib/core/result.aru", RESULT_ARU),
+        ("stdlib/core/slice.aru", SLICE_ARU),
+        ("stdlib/core/fixed.aru", FIXED_ARU),
+        ("stdlib/core/io.aru", IO_ARU),
+        ("stdlib/core/str.aru", STR_ARU),
     ] {
         let file = db.new_file(path.to_string(), source.to_string());
         if matches!(
             path,
-            "std/core/fixed.aru" | "std/core/io.aru" | "std/core/str.aru"
+            "stdlib/core/fixed.aru" | "stdlib/core/io.aru" | "stdlib/core/str.aru"
         ) {
             foundations.push((path, file));
         }
@@ -90,7 +90,7 @@ fn foundation_modules_are_freestanding_and_type_check_together() {
     for (path, file) in foundations {
         let errors: Vec<_> = file_ide_diagnostics(&db, file)
             .iter()
-            .filter(|diagnostic| diagnostic.severity == 1)
+            .filter(|diagnostic| diagnostic.severity == 0)
             .cloned()
             .collect();
         assert!(errors.is_empty(), "unexpected errors in {path}: {errors:?}");

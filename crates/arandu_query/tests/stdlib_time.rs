@@ -38,7 +38,7 @@ fn stdlib_time_parses_and_exports_expected_symbols() {
 #[test]
 fn stdlib_time_usage_in_program() {
     let mut db = DatabaseImpl::default();
-    let time_file = db.new_file("std/time.aru".to_string(), TIME_ARU.to_string());
+    let time_file = db.new_file("stdlib/std/time.aru".to_string(), TIME_ARU.to_string());
     let main_src = r#"
 import std.time as time
 
@@ -68,8 +68,8 @@ func main(): int {
     let diags_time = file_ide_diagnostics(&db, time_file);
     let diags_main = file_ide_diagnostics(&db, main_file);
 
-    let error_diags_time: Vec<_> = diags_time.iter().filter(|d| d.severity == 1).collect();
-    let error_diags_main: Vec<_> = diags_main.iter().filter(|d| d.severity == 1).collect();
+    let error_diags_time: Vec<_> = diags_time.iter().filter(|d| d.severity == 0).collect();
+    let error_diags_main: Vec<_> = diags_main.iter().filter(|d| d.severity == 0).collect();
 
     assert!(
         error_diags_time.is_empty(),

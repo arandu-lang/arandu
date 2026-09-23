@@ -31,7 +31,6 @@
 
 module std.core.atomic
 
-import std.core.result as result
 
 /// Ordering names reserved for a future atomic implementation.
 ///

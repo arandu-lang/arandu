@@ -65,11 +65,13 @@ public func global(): GlobalAllocator {
 
 /// Allocates `size` bytes from the process-global heap.
 ///
-/// Returns `InvalidLayout` for zero bytes and `OutOfMemory` if the host
-/// allocator cannot satisfy the request. On success, the caller owns the
-/// returned buffer and must pass it to `globalDealloc` or `globalRealloc`.
+/// Returns `InvalidLayout` for zero bytes or sizes above the pointer-offset
+/// limit, and `OutOfMemory` if the host allocator cannot satisfy the request.
+/// On success, the caller owns the returned buffer and must pass it to
+/// `globalDealloc` or `globalRealloc`.
 public func globalAlloc(size: uint): Result<ptr[u8], AllocError> {
-    if size == 0 {
+    let maxSize: uint = 2147483647
+    if size == 0 || size > maxSize {
         return Result.Err(AllocError.InvalidLayout)
     }
     unsafe {
@@ -86,6 +88,7 @@ public func globalAlloc(size: uint): Result<ptr[u8], AllocError> {
 ///
 /// `size` must be the allocation's current size. The pointer must not be used
 /// again after this call.
+@Unsafe
 public func globalDealloc(p: ptr[u8], size: uint): void {
     unsafe {
         ar_vec_buf_free(p, size)
@@ -94,11 +97,14 @@ public func globalDealloc(p: ptr[u8], size: uint): void {
 
 /// Resizes a buffer previously obtained from the global allocator.
 ///
-/// `oldSize` must describe the current allocation. `newSize == 0` returns
-/// `InvalidLayout`; host allocation failure returns `OutOfMemory`. On
-/// success, use the returned pointer and new size for later access or release.
+/// `oldSize` must describe the current allocation. Zero sizes or sizes above
+/// the pointer-offset limit return `InvalidLayout`; host allocation failure
+/// returns `OutOfMemory`. On success, use the returned pointer and new size
+/// for later access or release.
+@Unsafe
 public func globalRealloc(p: ptr[u8], oldSize: uint, newSize: uint): Result<ptr[u8], AllocError> {
-    if newSize == 0 {
+    let maxSize: uint = 2147483647
+    if newSize == 0 || newSize > maxSize || oldSize > maxSize {
         return Result.Err(AllocError.InvalidLayout)
     }
     unsafe {
@@ -129,7 +135,8 @@ public struct BumpArena {
 /// cannot allocate the buffer. A successful arena must be released with
 /// `bumpDestroy` after all pointers into it are no longer used.
 public func bumpNew(capacity: uint): Result<BumpArena, AllocError> {
-    if capacity == 0 {
+    let maxCapacity: uint = 2147483647
+    if capacity == 0 || capacity > maxCapacity {
         return Result.Err(AllocError.InvalidLayout)
     }
     unsafe {
@@ -153,16 +160,27 @@ public func bumpNew(capacity: uint): Result<BumpArena, AllocError> {
 /// pointer remains valid until `bumpReset` or `bumpDestroy`. Individual
 /// allocations cannot be freed.
 public func bumpAlloc(a: mut ref BumpArena, size: uint, align: uint): Result<ptr[u8], AllocError> {
-    let mut al: uint = align
-    if al == 0 {
-        al = 1
-    }
-    let off = a.offset
-    let aligned = ((off + al - 1) / al) * al
-    if aligned + size > a.capacity {
+    let maxCapacity: uint = 2147483647
+    let nullp: ptr[u8] = nil
+    if a.buffer == nullp || a.capacity == 0 || a.offset > a.capacity || a.capacity > maxCapacity {
         return Result.Err(AllocError.OutOfMemory)
     }
-    a.offset = aligned + size
+    let mut padding: uint = 0
+    if align > 1 {
+        let rem = a.offset % align
+        if rem != 0 {
+            padding = align - rem
+        }
+    }
+    if padding > a.capacity - a.offset {
+        return Result.Err(AllocError.OutOfMemory)
+    }
+    let aligned = a.offset + padding
+    if size > a.capacity - aligned {
+        return Result.Err(AllocError.OutOfMemory)
+    }
+    let nextOffset = aligned + size
+    a.offset = nextOffset
     unsafe {
         let p = mem.ptrOffset<u8>(a.buffer, aligned as i32)
         return Result.Ok(p)

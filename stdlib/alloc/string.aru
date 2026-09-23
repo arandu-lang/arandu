@@ -15,8 +15,9 @@
 //! ```
 //!
 //! ## Safety
-//! `adoptOwned` accepts only a buffer obtained from the compatible host
-//! allocator. Borrowed views from `asStr` and `asBytes` must not outlive the
+//! `adoptOwned` requires an explicit `unsafe` block: the caller must prove
+//! pointer provenance, allocation capacity, UTF-8 validity, and ownership.
+//! Borrowed views from `asStr` and `asBytes` must not outlive the
 //! `String` or a reallocation that moves its buffer.
 //!
 //! ## Allocations
@@ -130,6 +131,7 @@ public struct String {
 /// `0`/`0`). `bufLen` must not exceed `bufCap`, and the initialized bytes must
 /// be valid UTF-8 before treating the result as text. The buffer is freed
 /// exactly once via `destroy`/`ar_vec_buf_free`.
+@Unsafe
 public func adoptOwned(data: ptr[u8], bufCap: uint, bufLen: uint): String {
     return String {
         data: data,

@@ -400,6 +400,14 @@ pub(crate) fn collect_signature_types(checker: &mut TypeChecker<'_>, program: &P
                     let func_id = checker.intern(func_ty);
                     checker.record_decl_type(symbol_id, func_id);
 
+                    if func_decl
+                        .attrs
+                        .iter()
+                        .any(|attr| attr.name == "Unsafe" || attr.name == "unsafe")
+                    {
+                        checker.type_info.unsafe_functions.insert(symbol_id);
+                    }
+
                     // Drop Elaboration: Check for @Destructor attribute
                     let has_destructor_attr = func_decl
                         .attrs

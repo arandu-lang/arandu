@@ -27,6 +27,44 @@ module std.math.view
 
 import std.core.mem as mem
 import std.core.slice as slice
+import std.core.num as num
+
+func elementOffset(row: uint, col: uint, rowStride: int, colStride: int): Option<i32> {
+    let maxOffset: uint = 2147483647
+    if row > maxOffset || col > maxOffset {
+        return Option.None
+    }
+    let rowPart = num.checkedMul(row as int, rowStride)
+    let colPart = num.checkedMul(col as int, colStride)
+    let mut rowOffset: int = 0
+    let mut colOffset: int = 0
+    match rowPart {
+        Some(value) => { rowOffset = value }
+        None => { return Option.None }
+    }
+    match colPart {
+        Some(value) => { colOffset = value }
+        None => { return Option.None }
+    }
+    let total = num.checkedAdd(rowOffset, colOffset)
+    match total {
+        Some(value) => {
+            if value < -2147483648 || value > 2147483647 {
+                return Option.None
+            }
+            return Option.Some(value as i32)
+        }
+        None => { return Option.None }
+    }
+}
+
+func saturatedElementCount(rows: uint, cols: uint): uint {
+    let max: uint = -1 as uint
+    if rows != 0 && cols > max / rows {
+        return max
+    }
+    return rows * cols
+}
 
 /// Non-owning shared 2D view over contiguous or strided memory.
 public struct ArrayView<T> {
@@ -46,7 +84,10 @@ public struct ArrayView<T> {
 ///
 /// The caller must ensure every indexed `(row, column)` points to a valid
 /// initialized `T` for as long as the view is used. Strides are measured in
-/// elements, not bytes; no buffer is owned or allocated.
+/// elements, not bytes; no buffer is owned or allocated. Operations reject
+/// computed offsets outside the signed 32-bit range accepted by `ptrOffset`;
+/// this does not validate that an in-range offset belongs to the allocation.
+@Unsafe
 public func fromRaw<T>(p: ptr[T], rows: uint, cols: uint, rowStride: int, colStride: int): ArrayView<T> {
     return ArrayView<T> {
         data: p,
@@ -111,15 +152,19 @@ public func ArrayView.colStride<T>(self: ref ArrayView<T>): int {
 
 /// Returns the total number of elements in the view (rows * cols).
 public func ArrayView.len<T>(self: ref ArrayView<T>): uint {
-    return self.rows * self.cols
+    return saturatedElementCount(self.rows, self.cols)
 }
 
 /// Returns true if the view is contiguous in row-major layout (rowStride == cols, colStride == 1).
 public func ArrayView.isContiguous<T>(self: ref ArrayView<T>): bool {
+    if self.cols > 2147483647 {
+        return false
+    }
     return self.colStride == 1 && self.rowStride == (self.cols as int)
 }
 
-/// Returns a pointer to `(r, c)`, or null for an out-of-range coordinate.
+/// Returns a pointer to `(r, c)`, or null when the coordinate is out of range
+/// or its computed offset cannot be represented by `ptrOffset`.
 ///
 /// The pointer is computed from the stored strides and does not extend the
 /// backing allocation's lifetime. Do not dereference it after storage moves.
@@ -128,8 +173,10 @@ public func ArrayView.ptrAt<T>(self: ref ArrayView<T>, r: uint, c: uint): ptr[T]
     if r >= self.rows || c >= self.cols {
         return nullp
     }
-    let offset = (r as int) * self.rowStride + (c as int) * self.colStride
-    return mem.ptrOffset<T>(self.data, offset as i32)
+    match elementOffset(r, c, self.rowStride, self.colStride) {
+        Some(offset) => { return mem.ptrOffset<T>(self.data, offset) }
+        None => { return nullp }
+    }
 }
 
 /// Reads `(r, c)` into `Some(value)`, or returns `None` out of bounds.
@@ -146,15 +193,19 @@ public func ArrayView.get<T>(self: ref ArrayView<T>, r: uint, c: uint): Option<T
 }
 
 /// Creates a subview starting at (rStart, cStart) with shape (rCount, cCount).
-/// Returns `None` when the requested region exceeds the parent shape. On
-/// success, shares the same backing storage and retains its strides. This is
-/// an O(1) metadata operation with no element copy or allocation.
+/// Returns `None` when the requested region exceeds the parent shape or its
+/// starting offset cannot be represented by `ptrOffset`. On success, shares
+/// the same backing storage and retains its strides. This is an O(1) metadata
+/// operation with no element copy or allocation.
 public func ArrayView.slice<T>(self: ref ArrayView<T>, rStart: uint, rCount: uint, cStart: uint, cCount: uint): Option<ArrayView<T>> {
     if rStart > self.rows || cStart > self.cols || rCount > self.rows - rStart || cCount > self.cols - cStart {
         return Option.None
     }
-    let offset = (rStart as int) * self.rowStride + (cStart as int) * self.colStride
-    let subData = mem.ptrOffset<T>(self.data, offset as i32)
+    let mut subData: ptr[T] = self.data
+    match elementOffset(rStart, cStart, self.rowStride, self.colStride) {
+        Some(offset) => { subData = mem.ptrOffset<T>(self.data, offset) }
+        None => { return Option.None }
+    }
     return Option.Some(ArrayView<T> {
         data: subData,
         rows: rCount,
@@ -196,8 +247,11 @@ public struct ArrayViewMut<T> {
 /// Builds a mutable view from raw storage and element strides without checks.
 ///
 /// The caller must ensure every indexed element is valid and that no
-/// overlapping mutable access exists while this view is used. No allocation
-/// or copy occurs.
+/// overlapping mutable access exists while this view is used. Operations
+/// reject computed offsets outside the signed 32-bit range accepted by
+/// `ptrOffset`; this does not validate that an in-range offset belongs to the
+/// allocation. No allocation or copy occurs.
+@Unsafe
 public func fromRawMut<T>(p: ptr[T], rows: uint, cols: uint, rowStride: int, colStride: int): ArrayViewMut<T> {
     return ArrayViewMut<T> {
         data: p,
@@ -275,11 +329,14 @@ public func ArrayViewMut.colStride<T>(self: ref ArrayViewMut<T>): int {
 
 /// Returns the total number of elements.
 public func ArrayViewMut.len<T>(self: ref ArrayViewMut<T>): uint {
-    return self.rows * self.cols
+    return saturatedElementCount(self.rows, self.cols)
 }
 
 /// Returns true if contiguous row-major.
 public func ArrayViewMut.isContiguous<T>(self: ref ArrayViewMut<T>): bool {
+    if self.cols > 2147483647 {
+        return false
+    }
     return self.colStride == 1 && self.rowStride == (self.cols as int)
 }
 
@@ -292,8 +349,10 @@ public func ArrayViewMut.ptrAt<T>(self: ref ArrayViewMut<T>, r: uint, c: uint): 
     if r >= self.rows || c >= self.cols {
         return nullp
     }
-    let offset = (r as int) * self.rowStride + (c as int) * self.colStride
-    return mem.ptrOffset<T>(self.data, offset as i32)
+    match elementOffset(r, c, self.rowStride, self.colStride) {
+        Some(offset) => { return mem.ptrOffset<T>(self.data, offset) }
+        None => { return nullp }
+    }
 }
 
 /// Returns `Some(value)` for an in-range element, or `None` otherwise.
@@ -315,8 +374,11 @@ public func ArrayViewMut.set<T>(self: mut ref ArrayViewMut<T>, r: uint, c: uint,
     if r >= self.rows || c >= self.cols {
         return false
     }
-    let offset = (r as int) * self.rowStride + (c as int) * self.colStride
-    let p = mem.ptrOffset<T>(self.data, offset as i32)
+    let mut p: ptr[T] = self.data
+    match elementOffset(r, c, self.rowStride, self.colStride) {
+        Some(offset) => { p = mem.ptrOffset<T>(self.data, offset) }
+        None => { return false }
+    }
     mem.ptrWrite<T>(p, val)
     return true
 }
@@ -329,8 +391,11 @@ public func ArrayViewMut.sliceMut<T>(self: mut ref ArrayViewMut<T>, rStart: uint
     if rStart > self.rows || cStart > self.cols || rCount > self.rows - rStart || cCount > self.cols - cStart {
         return Option.None
     }
-    let offset = (rStart as int) * self.rowStride + (cStart as int) * self.colStride
-    let subData = mem.ptrOffset<T>(self.data, offset as i32)
+    let mut subData: ptr[T] = self.data
+    match elementOffset(rStart, cStart, self.rowStride, self.colStride) {
+        Some(offset) => { subData = mem.ptrOffset<T>(self.data, offset) }
+        None => { return Option.None }
+    }
     return Option.Some(ArrayViewMut<T> {
         data: subData,
         rows: rCount,

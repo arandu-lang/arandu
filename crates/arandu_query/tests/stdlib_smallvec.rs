@@ -36,13 +36,13 @@ fn stdlib_smallvec_parses_and_exports_expected_symbols() {
 fn stdlib_smallvec_usage_in_program() {
     let mut db = DatabaseImpl::default();
     let _ = db.new_file(
-        "std/core/intrinsics.aru".to_string(),
+        "stdlib/core/intrinsics.aru".to_string(),
         INTRINSICS_ARU.to_string(),
     );
-    let _ = db.new_file("std/core/mem.aru".to_string(), MEM_ARU.to_string());
-    let _ = db.new_file("std/core/option.aru".to_string(), OPTION_ARU.to_string());
+    let _ = db.new_file("stdlib/core/mem.aru".to_string(), MEM_ARU.to_string());
+    let _ = db.new_file("stdlib/core/option.aru".to_string(), OPTION_ARU.to_string());
     let smallvec_file = db.new_file(
-        "std/alloc/smallvec.aru".to_string(),
+        "stdlib/alloc/smallvec.aru".to_string(),
         SMALLVEC_ARU.to_string(),
     );
 
@@ -70,8 +70,8 @@ func main(): int {
     let diags_sv = file_ide_diagnostics(&db, smallvec_file);
     let diags_main = file_ide_diagnostics(&db, main_file);
 
-    let error_diags_sv: Vec<_> = diags_sv.iter().filter(|d| d.severity == 1).collect();
-    let error_diags_main: Vec<_> = diags_main.iter().filter(|d| d.severity == 1).collect();
+    let error_diags_sv: Vec<_> = diags_sv.iter().filter(|d| d.severity == 0).collect();
+    let error_diags_main: Vec<_> = diags_main.iter().filter(|d| d.severity == 0).collect();
 
     assert!(
         error_diags_sv.is_empty(),

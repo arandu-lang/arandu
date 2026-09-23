@@ -32,7 +32,6 @@
 
 module std.core.num
 
-import std.core.option as option
 
 func intMax(): int {
     return ((-1 as uint) >> 1) as int

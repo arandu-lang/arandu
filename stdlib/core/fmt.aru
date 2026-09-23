@@ -118,7 +118,7 @@ public func Formatter.writeBool(self: mut ref Formatter, b: bool): Result<uint, 
 public func Formatter.writeStr(self: mut ref Formatter, s: str): Result<uint, FmtError> {
     let slen = strings.lenBytes(s)
     let cap = slice.len<u8>(self.buf)
-    if self.len + slen > cap {
+    if self.len > cap || slen > cap - self.len {
         return Result.Err(FmtError.BufferFull)
     }
     let bytes = intrinsics.strBytes(s)

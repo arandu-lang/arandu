@@ -299,7 +299,7 @@ Abaixo estão listados todos os diagnósticos mapeados para o compilador Arandu.
 | **O010** | `escape of borrowed value: returning reference to local variable '{name}'` | Error | `0.1.0` | Retorno de uma referência para um objeto alocado na pilha local da função corrente, o que causaria memória corrompida. |
 | **O011** | `free requires pointer type: cannot free expression of type '{type}'` | Error | `0.1.0` | O comando de desalocação explícita `free` foi chamado em uma variável que não é um ponteiro bruto (`*mut` ou `*const`). (Antigo `T023`). |
 | **O012** | `` `alloc` requires an `unsafe` block `` | Error | `0.1.0` | Alocação direta de memória bruta na heap via `alloc` exige contexto explícito `unsafe`. |
-| **O013** | `` call to extern function requires an `unsafe` block `` | Error | `0.1.0` | Chamadas para funções externas de FFI (`extern "C"`) exigem bloco `unsafe`. |
+| **O013** | `` call to extern function requires an `unsafe` block `` | Error | `0.1.0` | Chamadas para funções `extern` e funções anotadas com `@Unsafe` exigem bloco `unsafe`. |
 | **O014** | `` `free` requires an `unsafe` block `` | Error | `0.1.0` | Desalocação manual de memória via `free` é operação insegura e exige bloco `unsafe`. |
 
 

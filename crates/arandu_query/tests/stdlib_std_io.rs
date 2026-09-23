@@ -5,6 +5,8 @@ use arandu_query::db::DatabaseImpl;
 use arandu_query::file_ide_diagnostics;
 use arandu_query::passes::{exported_symbols, parse};
 
+mod common;
+
 const PATH_ARU: &str = include_str!("../../../stdlib/std/path.aru");
 const IO_ARU: &str = include_str!("../../../stdlib/std/io.aru");
 const FS_ARU: &str = include_str!("../../../stdlib/std/fs.aru");
@@ -70,9 +72,14 @@ fn stdlib_io_fs_parses_and_exports_expected_symbols() {
 #[test]
 fn stdlib_io_usage_in_program() {
     let mut db = DatabaseImpl::default();
-    let _ = db.new_file("std/io.aru".to_string(), IO_ARU.to_string());
-    let _ = db.new_file("std/path.aru".to_string(), PATH_ARU.to_string());
-    let fs_file = db.new_file("std/fs.aru".to_string(), FS_ARU.to_string());
+    let mut fs_file = None;
+    for (path, source) in common::STDLIB_MODULES {
+        let file = db.new_file((*path).to_string(), (*source).to_string());
+        if *path == "stdlib/std/fs.aru" {
+            fs_file = Some(file);
+        }
+    }
+    let fs_file = fs_file.expect("fs module is in the canonical stdlib graph");
 
     let main_src = r#"
 import std.path as path
@@ -99,8 +106,8 @@ func main(): int {
     let diags_fs = file_ide_diagnostics(&db, fs_file);
     let diags_main = file_ide_diagnostics(&db, main_file);
 
-    let error_diags_fs: Vec<_> = diags_fs.iter().filter(|d| d.severity == 1).collect();
-    let error_diags_main: Vec<_> = diags_main.iter().filter(|d| d.severity == 1).collect();
+    let error_diags_fs: Vec<_> = diags_fs.iter().filter(|d| d.severity == 0).collect();
+    let error_diags_main: Vec<_> = diags_main.iter().filter(|d| d.severity == 0).collect();
 
     assert!(
         error_diags_fs.is_empty(),

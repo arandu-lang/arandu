@@ -67,20 +67,19 @@ public struct Arena {
 /// Subsequent allocations use this fixed buffer. If the host allocator
 /// returns a null pointer, `alloc` returns `None`.
 public func new(capacity: uint): Arena {
+    let mut actualCapacity = capacity
+    let mut data: ptr[u8] = nil
     if capacity > MAX_ARENA_CAPACITY {
-        return Arena {
-            data: nil,
-            capacity: 0,
-            offset: 0,
+        actualCapacity = 0
+    } else {
+        unsafe {
+            data = ar_vec_malloc(capacity)
         }
     }
-    unsafe {
-        let p = ar_vec_malloc(capacity)
-        return Arena {
-            data: p,
-            capacity: capacity,
-            offset: 0,
-        }
+    return Arena {
+        data: data,
+        capacity: actualCapacity,
+        offset: 0,
     }
 }
 
@@ -97,7 +96,8 @@ public func Arena.withCapacity(capacity: uint): Arena {
 /// `free`; there is no individual deallocation.
 public func Arena.alloc(self: mut ref Arena, size: uint, align: uint): Option<ptr[u8]> {
     let nullp: ptr[u8] = nil
-    if self.data == nullp || self.capacity > MAX_ARENA_CAPACITY || self.offset > self.capacity {
+    let data = self.data
+    if data == nullp || self.capacity > MAX_ARENA_CAPACITY || self.offset > self.capacity {
         return Option.None
     }
     let mut padding: uint = 0
@@ -221,22 +221,20 @@ public struct ScratchArena {
 /// Allocation is limited to this buffer until `free`; `peakBytes` initially
 /// returns zero.
 public func newScratch(capacity: uint): ScratchArena {
+    let mut actualCapacity = capacity
+    let mut data: ptr[u8] = nil
     if capacity > MAX_ARENA_CAPACITY {
-        return ScratchArena {
-            data: nil,
-            capacity: 0,
-            offset: 0,
-            peak: 0,
+        actualCapacity = 0
+    } else {
+        unsafe {
+            data = ar_vec_malloc(capacity)
         }
     }
-    unsafe {
-        let p = ar_vec_malloc(capacity)
-        return ScratchArena {
-            data: p,
-            capacity: capacity,
-            offset: 0,
-            peak: 0,
-        }
+    return ScratchArena {
+        data: data,
+        capacity: actualCapacity,
+        offset: 0,
+        peak: 0,
     }
 }
 
@@ -258,7 +256,8 @@ public func ScratchArena.withCapacity(capacity: uint): ScratchArena {
 /// invalidate the pointer.
 public func ScratchArena.alloc(self: mut ref ScratchArena, size: uint, align: uint): Option<ptr[u8]> {
     let nullp: ptr[u8] = nil
-    if self.data == nullp || self.capacity > MAX_ARENA_CAPACITY || self.offset > self.capacity {
+    let data = self.data
+    if data == nullp || self.capacity > MAX_ARENA_CAPACITY || self.offset > self.capacity {
         return Option.None
     }
     let mut padding: uint = 0

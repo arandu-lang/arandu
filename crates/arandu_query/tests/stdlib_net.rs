@@ -5,13 +5,9 @@ use arandu_query::db::DatabaseImpl;
 use arandu_query::file_ide_diagnostics;
 use arandu_query::passes::{exported_symbols, parse};
 
+mod common;
+
 const NET_ARU: &str = include_str!("../../../stdlib/std/net.aru");
-const IO_ARU: &str = include_str!("../../../stdlib/std/io.aru");
-const WAKER_ARU: &str = include_str!("../../../stdlib/std/runtime/waker.aru");
-const SLICE_ARU: &str = include_str!("../../../stdlib/core/slice.aru");
-const INTRINSICS_ARU: &str = include_str!("../../../stdlib/core/intrinsics.aru");
-const OPTION_ARU: &str = include_str!("../../../stdlib/core/option.aru");
-const RESULT_ARU: &str = include_str!("../../../stdlib/core/result.aru");
 
 #[test]
 fn stdlib_net_parses_and_exports_expected_symbols() {
@@ -35,7 +31,7 @@ fn stdlib_net_parses_and_exports_expected_symbols() {
 #[test]
 fn stdlib_net_usage_in_program() {
     let mut db = DatabaseImpl::default();
-    let net_file = db.new_file("std/net.aru".to_string(), NET_ARU.to_string());
+    let net_file = load_stdlib(&mut db);
     let main_src = r#"
 import std.net as net
 
@@ -56,8 +52,8 @@ func main(): int {
     let diags_net = file_ide_diagnostics(&db, net_file);
     let diags_main = file_ide_diagnostics(&db, main_file);
 
-    let error_diags_net: Vec<_> = diags_net.iter().filter(|d| d.severity == 1).collect();
-    let error_diags_main: Vec<_> = diags_main.iter().filter(|d| d.severity == 1).collect();
+    let error_diags_net: Vec<_> = diags_net.iter().filter(|d| d.severity == 0).collect();
+    let error_diags_main: Vec<_> = diags_main.iter().filter(|d| d.severity == 0).collect();
 
     assert!(
         error_diags_net.is_empty(),
@@ -72,16 +68,7 @@ func main(): int {
 #[test]
 fn stdlib_net_tcp_stream_slice_read_write_safe() {
     let mut db = DatabaseImpl::default();
-    let _ = db.new_file(
-        "std/core/intrinsics.aru".to_string(),
-        INTRINSICS_ARU.to_string(),
-    );
-    let _ = db.new_file("std/core/option.aru".to_string(), OPTION_ARU.to_string());
-    let _ = db.new_file("std/core/result.aru".to_string(), RESULT_ARU.to_string());
-    let _ = db.new_file("std/core/slice.aru".to_string(), SLICE_ARU.to_string());
-    let _ = db.new_file("std/io.aru".to_string(), IO_ARU.to_string());
-    let _ = db.new_file("std/runtime/waker.aru".to_string(), WAKER_ARU.to_string());
-    let net_file = db.new_file("std/net.aru".to_string(), NET_ARU.to_string());
+    let net_file = load_stdlib(&mut db);
 
     let main_src = r#"
 import std.net as net
@@ -98,12 +85,18 @@ func writeGeneric<W: io.Write>(writer: mut ref W, buf: []u8): Result<uint, io.Io
 
 func sendData(stream: mut ref net.TcpStream, data: []u8): bool {
     let res: Result<uint, io.IoError> = writeGeneric<net.TcpStream>(stream, data)
-    return res.isOk()
+    match res {
+        Result.Ok(_) => { return true }
+        Result.Err(_) => { return false }
+    }
 }
 
 func recvData(stream: mut ref net.TcpStream, buf: mut ref []u8): bool {
     let res: Result<uint, io.IoError> = readGeneric<net.TcpStream>(stream, buf)
-    return res.isOk()
+    match res {
+        Result.Ok(_) => { return true }
+        Result.Err(_) => { return false }
+    }
 }
 
 func main(): int {
@@ -115,8 +108,8 @@ func main(): int {
     let diags_net = file_ide_diagnostics(&db, net_file);
     let diags_main = file_ide_diagnostics(&db, main_file);
 
-    let error_diags_net: Vec<_> = diags_net.iter().filter(|d| d.severity == 1).collect();
-    let error_diags_main: Vec<_> = diags_main.iter().filter(|d| d.severity == 1).collect();
+    let error_diags_net: Vec<_> = diags_net.iter().filter(|d| d.severity == 0).collect();
+    let error_diags_main: Vec<_> = diags_main.iter().filter(|d| d.severity == 0).collect();
 
     assert!(
         error_diags_net.is_empty(),
@@ -126,4 +119,15 @@ func main(): int {
         error_diags_main.is_empty(),
         "unexpected errors in main.aru: {error_diags_main:?}"
     );
+}
+
+fn load_stdlib(db: &mut DatabaseImpl) -> arandu_query::db::SourceFile {
+    let mut net_file = None;
+    for (path, source) in common::STDLIB_MODULES {
+        let file = db.new_file((*path).to_string(), (*source).to_string());
+        if *path == "stdlib/std/net.aru" {
+            net_file = Some(file);
+        }
+    }
+    net_file.expect("net module is in the canonical stdlib graph")
 }

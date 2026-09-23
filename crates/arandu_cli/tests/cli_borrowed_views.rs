@@ -101,6 +101,40 @@ func main(): int {
 }
 
 #[test]
+fn tcp_zero_length_raw_io_does_not_call_the_host() {
+    let output = invoke(
+        "run",
+        r#"module tests.borrowed_views.tcp_zero_length
+import std.net as net
+
+func main(): int {
+    let mut stream = net.tcpConnect(0)
+    let nilbuf: ptr[u8] = nil
+    unsafe { net.tcpRead(ref stream, nilbuf, 0) }
+    unsafe { net.tcpWrite(ref stream, nilbuf, 0) }
+    unsafe { net.tcpReadAsync(ref stream, nilbuf, 0) }
+    unsafe { net.tcpWriteAsync(ref stream, nilbuf, 0) }
+    net.tcpCloseStream(ref stream)
+    match net.TcpListener.bind(0) {
+        Ok(mut listener) => {
+            listener.close()
+            listener.close()
+            return 0
+        }
+        Err(_) => { return 5 }
+    }
+}
+"#,
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "zero-length TCP I/O should not consult the invalid host handle: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn jit_formatter_writes_string_bytes_and_rejects_partial_write() {
     let output = invoke(
         "run",
@@ -176,6 +210,42 @@ fn jit_executes_borrowed_element_and_subslice() {
         output.status.code(),
         Some(8),
         "JIT borrowed element/subslice failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn jit_strided_view_rejects_offsets_outside_ptr_offset_range() {
+    let output = invoke(
+        "run",
+        r#"module tests.borrowed_views.stride_overflow
+import std.alloc.vec as vec
+import std.core.slice as slice
+import std.math.view as view
+
+func main(): int {
+    let mut backing = vec.new<int>()
+    vec.push<int>(backing, 1)
+    let raw = slice.asPtr<int>(vec.asSlice<int>(backing))
+    let matrix = unsafe { view.fromRaw<int>(raw, 2, 2, 2147483647, 1) }
+    let result = matrix.ptrAt(1, 1)
+    let nullp: ptr[int] = nil
+    if result == nullp { return 0 }
+    if matrix.get(1, 1) is Option.Some(_) { return 2 }
+    if matrix.slice(1, 1, 1, 1) is Option.Some(_) { return 3 }
+    let huge = unsafe { view.fromRaw<int>(raw, -1 as uint, 2, 1, 1) }
+    if huge.len() != (-1 as uint) { return 4 }
+    let mut writable = unsafe { view.fromRawMut<int>(raw, 2, 2, 2147483647, 1) }
+    if writable.set(1, 1, 9) { return 5 }
+    if writable.sliceMut(1, 1, 1, 1) is Option.Some(_) { return 6 }
+    return 1
+}
+"#,
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "JIT strided view overflow check failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
 }
@@ -443,6 +513,16 @@ fn c_backend_directory_name_views_coexist() {
         emitted.status.success(),
         "C emission failed: {}",
         String::from_utf8_lossy(&emitted.stderr)
+    );
+    let generated_c = String::from_utf8_lossy(&emitted.stdout);
+    assert!(
+        generated_c.contains("names_total_len > SIZE_MAX - nlen")
+            && generated_c.contains("blob_len > INT32_MAX")
+            && generated_c.contains("entries_cap * 2 > SIZE_MAX / sizeof(ArHostDirEntry)")
+            && generated_c.contains("readdir_error = errno")
+            && generated_c.contains("if (ferror(f))")
+            && generated_c.contains("int extra = fgetc(f)"),
+        "C std.fs host runtime must guard buffer bounds and report read failures"
     );
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     let stem = std::env::temp_dir().join(format!(

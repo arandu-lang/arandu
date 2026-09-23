@@ -139,6 +139,30 @@ func main(): int {
     if output[0] != 10 as u8 || output[1] != 20 as u8 || output[2] != 30 as u8 {
         return 5
     }
+    match reader.seek(io.SeekFrom.Current(-2147483647 - 1)) {
+        Result.Err(_) => {}
+        Result.Ok(_) => { return 6 }
+    }
+    match reader.seek(io.SeekFrom.Current(0)) {
+        Result.Ok(position) => { if position != 3 { return 7 } }
+        Result.Err(_) => { return 7 }
+    }
+    match reader.seek(io.SeekFrom.End(1)) {
+        Result.Err(_) => {}
+        Result.Ok(_) => { return 8 }
+    }
+    match reader.seek(io.SeekFrom.End(-1)) {
+        Result.Ok(position) => { if position != 3 { return 9 } }
+        Result.Err(_) => { return 10 }
+    }
+    match writer.seek(io.SeekFrom.Current(2147483647)) {
+        Result.Err(_) => {}
+        Result.Ok(_) => { return 11 }
+    }
+    match writer.seek(io.SeekFrom.Current(-1)) {
+        Result.Ok(position) => { if position != 2 { return 12 } }
+        Result.Err(_) => { return 12 }
+    }
     return 0
 }
 "#,

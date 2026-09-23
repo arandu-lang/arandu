@@ -162,7 +162,7 @@ public func readToString(path: str): Result<strings.String, io.IoError> {
     if errCode != 0 {
         return Result.Err(io.errorFromPortable(errCode))
     }
-    return Result.Ok(strings.adoptOwned(buf, cap, len))
+    return Result.Ok(unsafe { strings.adoptOwned(buf, cap, len) })
 }
 
 /// An owned snapshot of a directory listing in one contiguous allocation.

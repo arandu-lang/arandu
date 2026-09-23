@@ -6,8 +6,9 @@ import std.alloc.allocator_api as aapi
 
 func work(): Result<int, aapi.AllocError> {
     let p = aapi.globalAlloc(16)?
-    let q = aapi.globalRealloc(p, 16, 32)?
-    aapi.globalDealloc(q, 32)
+    let resized = unsafe { aapi.globalRealloc(p, 16, 32) }
+    let q = resized?
+    unsafe { aapi.globalDealloc(q, 32) }
 
     let mut arena = aapi.bumpNew(64)?
     let _a = aapi.bumpAlloc(arena, 8, 8)?

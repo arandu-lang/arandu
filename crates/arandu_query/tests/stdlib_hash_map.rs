@@ -5,12 +5,9 @@ use arandu_query::db::DatabaseImpl;
 use arandu_query::file_ide_diagnostics;
 use arandu_query::passes::{exported_symbols, parse};
 
+mod common;
+
 const HASH_MAP_ARU: &str = include_str!("../../../stdlib/alloc/hash_map.aru");
-const VEC_ARU: &str = include_str!("../../../stdlib/alloc/vec.aru");
-const MEM_ARU: &str = include_str!("../../../stdlib/core/mem.aru");
-const HASH_ARU: &str = include_str!("../../../stdlib/core/hash.aru");
-const CMP_ARU: &str = include_str!("../../../stdlib/core/cmp.aru");
-const OPTION_ARU: &str = include_str!("../../../stdlib/core/option.aru");
 
 #[test]
 fn stdlib_hash_map_parses_and_exports_expected_symbols() {
@@ -50,15 +47,14 @@ fn stdlib_hash_map_parses_and_exports_expected_symbols() {
 #[test]
 fn stdlib_hash_map_usage_in_program() {
     let mut db = DatabaseImpl::default();
-    db.new_file("std/core/mem.aru".to_string(), MEM_ARU.to_string());
-    db.new_file("std/core/option.aru".to_string(), OPTION_ARU.to_string());
-    db.new_file("std/core/cmp.aru".to_string(), CMP_ARU.to_string());
-    db.new_file("std/core/hash.aru".to_string(), HASH_ARU.to_string());
-    db.new_file("std/alloc/vec.aru".to_string(), VEC_ARU.to_string());
-    let map_file = db.new_file(
-        "std/alloc/hash_map.aru".to_string(),
-        HASH_MAP_ARU.to_string(),
-    );
+    let mut map_file = None;
+    for (path, source) in common::STDLIB_MODULES {
+        let file = db.new_file((*path).to_string(), (*source).to_string());
+        if *path == "stdlib/alloc/hash_map.aru" {
+            map_file = Some(file);
+        }
+    }
+    let map_file = map_file.expect("hash_map module is in the canonical stdlib graph");
 
     let main_src = r#"
 import std.alloc.hash_map as hash_map
@@ -78,7 +74,7 @@ public func Key.hash<H: hash.Hasher>(self: ref Key, state: mut ref H): void {
 
 func main(): int {
     let mut map = hash_map.new<Key, int>()
-    if !map.isEmpty() || map.len() != 0 {
+    if !hash_map.isEmpty(ref map) || hash_map.len(ref map) != 0 {
         return 1
     }
 
@@ -86,25 +82,25 @@ func main(): int {
     let k2 = Key { id: 20 }
     let k3 = Key { id: 30 }
 
-    map.insert(k1, 100)
-    map.insert(k2, 200)
-    map.insert(k3, 300)
+    hash_map.insert(mut ref map, k1, 100)
+    hash_map.insert(mut ref map, k2, 200)
+    hash_map.insert(mut ref map, k3, 300)
 
-    if map.len() != 3 {
+    if hash_map.len(ref map) != 3 {
         return 2
     }
 
-    if !map.contains(ref k1) || !map.contains(ref k2) || !map.contains(ref k3) {
+    if !hash_map.contains(ref map, ref k1) || !hash_map.contains(ref map, ref k2) || !hash_map.contains(ref map, ref k3) {
         return 3
     }
 
     let k_missing = Key { id: 999 }
-    if map.contains(ref k_missing) {
+    if hash_map.contains(ref map, ref k_missing) {
         return 4
     }
 
     // Update existing key
-    match map.insert(Key { id: 10 }, 105) {
+    match hash_map.insert(mut ref map, Key { id: 10 }, 105) {
         Some(oldVal) => {
             if oldVal != 100 {
                 return 5
@@ -116,7 +112,7 @@ func main(): int {
     }
 
     // Remove key
-    match map.remove(ref k2) {
+    match hash_map.remove(mut ref map, ref k2) {
         Some(val) => {
             if val != 200 {
                 return 7
@@ -127,7 +123,7 @@ func main(): int {
         }
     }
 
-    if map.len() != 2 || map.contains(ref k2) {
+    if hash_map.len(ref map) != 2 || hash_map.contains(ref map, ref k2) {
         return 9
     }
 
@@ -139,8 +135,8 @@ func main(): int {
     let diags_map = file_ide_diagnostics(&db, map_file);
     let diags_main = file_ide_diagnostics(&db, main_file);
 
-    let error_diags_map: Vec<_> = diags_map.iter().filter(|d| d.severity == 1).collect();
-    let error_diags_main: Vec<_> = diags_main.iter().filter(|d| d.severity == 1).collect();
+    let error_diags_map: Vec<_> = diags_map.iter().filter(|d| d.severity == 0).collect();
+    let error_diags_main: Vec<_> = diags_main.iter().filter(|d| d.severity == 0).collect();
 
     assert!(
         error_diags_map.is_empty(),

@@ -293,6 +293,37 @@ func safeCaller(): int {
 }
 
 #[test]
+fn unsafe_function_cannot_be_called_through_a_local_function_value() {
+    let mut db = DatabaseImpl::new();
+    let file = db.new_file(
+        "unsafe_function_value.aru".into(),
+        r#"
+@Unsafe
+public func rawOperation(pointer: ptr[u8]): int {
+    return 0
+}
+
+func safeCaller(): int {
+    let pointer: ptr[u8] = nil
+    let operation = rawOperation
+    return operation(pointer)
+}
+"#
+        .into(),
+    );
+
+    let checked = type_check(&db, file);
+    assert!(
+        checked.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == DiagCode::O013ExternRequiresUnsafe
+                || diagnostic.code == DiagCode::T033IndirectCallNotSupported
+        }),
+        "an indirect call must be rejected (unsafe or unsupported): {:?}",
+        checked.diagnostics
+    );
+}
+
+#[test]
 fn imported_unsafe_function_requires_an_explicit_unsafe_block() {
     let mut db = DatabaseImpl::new();
     let _ = db.new_file(
@@ -304,6 +335,7 @@ module std.unsafe_api
 public func rawOperation(pointer: ptr[u8]): int {
     return 0
 }
+
 "#
         .into(),
     );

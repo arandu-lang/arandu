@@ -72,11 +72,37 @@ fn parse_func_no_params_void_return() {
 #[test]
 fn parse_func_with_params_and_return() {
     let source = "module test\nfunc add(a: int, b: int): int {\n    return a + b\n}\n";
-    let result = parse_to_string(source).unwrap();
-    let s = strip_spans(&result);
-    assert!(s.contains("add") || s.contains("add"));
-    assert!(s.contains("a: int") || (s.contains("a") && s.contains("int")));
-    assert!(s.contains("Return"));
+    let program = parse(source).unwrap();
+    let crate::TopLevelDecl::Func(function) = program.pool.decl(program.decls[0]) else {
+        panic!("expected function declaration");
+    };
+    let crate::FuncName::Free { name, .. } = &function.name else {
+        panic!("expected free function");
+    };
+    assert_eq!(name.as_str(), "add");
+    assert_eq!(function.params.len(), 2);
+    assert_eq!(function.params[0].name.as_str(), "a");
+    assert_eq!(function.params[1].name.as_str(), "b");
+    for parameter in &function.params {
+        assert!(matches!(
+            program.pool.type_expr(parameter.ty),
+            crate::TypeExpr::Primitive { name, .. } if name == "int"
+        ));
+    }
+    let Some(crate::ResultType::Single { ty, .. }) = &function.result else {
+        panic!("expected single int return type");
+    };
+    assert!(matches!(
+        program.pool.type_expr(*ty),
+        crate::TypeExpr::Primitive { name, .. } if name == "int"
+    ));
+    let statements = program.pool.stmt_list(function.body.statements);
+    assert!(matches!(
+        statements
+            .first()
+            .map(|statement| program.pool.stmt(*statement)),
+        Some(crate::Stmt::Return { .. })
+    ));
 }
 
 #[test]

@@ -41,6 +41,18 @@ fn create_n_passing_tests(root: &std::path::Path, name: &str, n: usize) {
     create_project(root, name, &src);
 }
 
+#[allow(clippy::panic)]
+fn json_report(output: &std::process::Output) -> serde_json::Value {
+    serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+        panic!(
+            "CLI must emit a valid JSON report (exit={:?}, stdout={:?}, stderr={:?}): {error}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )
+    })
+}
+
 // ─── SL_T.2C ─────────────────────────────────────────────────────────────────
 
 /// Mesma seed produz exatamente o mesmo plano de execução.
@@ -68,12 +80,13 @@ fn same_seed_produces_same_execution_plan() {
             ])
             .output()
             .expect("run test");
-        let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
+        assert!(out.status.success(), "test CLI failed: {:?}", out.status);
+        let report = json_report(&out);
         report["cases"]
             .as_array()
-            .unwrap_or(&vec![])
+            .expect("cases array")
             .iter()
-            .map(|c| c["id"].as_str().unwrap_or("").to_string())
+            .map(|case| case["id"].as_str().expect("case id string").to_string())
             .collect()
     };
 
@@ -113,7 +126,8 @@ fn different_seeds_same_final_canonical_order() {
             ])
             .output()
             .expect("run test");
-        serde_json::from_slice(&out.stdout).unwrap_or_default()
+        assert!(out.status.success(), "test CLI failed: {:?}", out.status);
+        json_report(&out)
     };
 
     let r1 = run_json("111");
@@ -174,12 +188,13 @@ fn jobs_1_and_n_produce_same_canonical_results() {
             ])
             .output()
             .expect("run test");
-        let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
+        assert!(out.status.success(), "test CLI failed: {:?}", out.status);
+        let report = json_report(&out);
         report["cases"]
             .as_array()
-            .unwrap_or(&vec![])
+            .expect("cases array")
             .iter()
-            .map(|c| c["id"].as_str().unwrap_or("").to_string())
+            .map(|case| case["id"].as_str().expect("case id string").to_string())
             .collect()
     };
 
@@ -221,7 +236,7 @@ fn fail_fast_drains_started_children() {
     // Deve sair com falha (exit code != 0)
     assert_ne!(out.status.code(), Some(0));
 
-    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
+    let report = json_report(&out);
     let cases = report["cases"].as_array().expect("cases array");
 
     // O caso que falhou deve aparecer no relatório
@@ -230,7 +245,10 @@ fn fail_fast_drains_started_children() {
 
     // O resumo deve ter pelo menos 1 falhou
     assert!(
-        report["summary"]["failed"].as_u64().unwrap_or(0) >= 1,
+        report["summary"]["failed"]
+            .as_u64()
+            .expect("summary.failed must be an integer")
+            >= 1,
         "summary.failed must be >= 1"
     );
 
@@ -409,9 +427,15 @@ fn zero_tests_reports_empty_success() {
 
     // Saída pode ser vazia (não há casos) ou JSON com array vazio
     if !out.stdout.is_empty() {
-        let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
-        let total = report["summary"]["total"].as_u64().unwrap_or(0);
+        let report = json_report(&out);
+        let total = report["summary"]["total"]
+            .as_u64()
+            .expect("summary.total must be an unsigned integer");
         assert_eq!(total, 0, "summary.total must be 0 with no tests");
+        assert!(
+            report["cases"].as_array().expect("cases array").is_empty(),
+            "cases must be empty when there are no tests"
+        );
     }
 
     let _ = fs::remove_dir_all(tmp);
@@ -473,8 +497,10 @@ fn multiple_failures_with_parallel_jobs_all_reported() {
         .expect("run test");
 
     assert_ne!(out.status.code(), Some(0));
-    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
-    let failed = report["summary"]["failed"].as_u64().unwrap_or(0);
+    let report = json_report(&out);
+    let failed = report["summary"]["failed"]
+        .as_u64()
+        .expect("summary.failed must be an integer");
     assert_eq!(failed, 3, "all 3 failures must be reported, got {failed}");
 
     let _ = fs::remove_dir_all(tmp);
@@ -487,8 +513,8 @@ fn stdout_mimicking_frame_magic_does_not_fool_runner() {
     let proj = tmp.join("magic_stdout");
     // O teste imprime os bytes mágicos do frame ARND para stdout — não deve confundir o runner
     // (usamos um programa que escreve bytes para stdout via código Arandu)
-    let src = "module magic_stdout\n\n\
-        @Test\nfunc writes_frame_bytes(): void {}\n\n\
+    let src = "module magic_stdout\n\nimport io\n\n\
+        @Test\nfunc writes_frame_bytes(): void { io.println(\"ARND\") }\n\n\
         func main(): int { return 0 }\n";
     create_project(&tmp, "magic_stdout", src);
 
@@ -503,8 +529,16 @@ fn stdout_mimicking_frame_magic_does_not_fool_runner() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
-    assert_eq!(report["summary"]["passed"].as_u64().unwrap_or(0), 1);
+    let report = json_report(&out);
+    assert_eq!(
+        report["summary"]["passed"]
+            .as_u64()
+            .expect("summary.passed must be an integer"),
+        1
+    );
+    let cases = report["cases"].as_array().expect("cases array");
+    assert_eq!(cases.len(), 1, "the stdout fixture must run exactly once");
+    assert_eq!(cases[0]["stdout"].as_str(), Some("ARND\n"));
 
     let _ = fs::remove_dir_all(tmp);
 }
@@ -534,7 +568,7 @@ fn timeout_classified_as_timed_out_not_crashed() {
         .expect("run test");
 
     assert_ne!(out.status.code(), Some(0));
-    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
+    let report = json_report(&out);
     let cases = report["cases"].as_array().expect("cases array");
     assert!(!cases.is_empty());
     assert_eq!(
@@ -568,7 +602,7 @@ fn result_err_classified_as_failed_with_structured_failure() {
         .expect("run test");
 
     assert_ne!(out.status.code(), Some(0));
-    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
+    let report = json_report(&out);
     let cases = report["cases"].as_array().expect("cases array");
     assert!(!cases.is_empty());
     assert_eq!(cases[0]["status"], "failed");
@@ -615,8 +649,10 @@ fn benchmark_coordinator_overhead_informative() {
             String::from_utf8_lossy(&out.stderr)
         );
 
-        let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
-        let total = report["summary"]["total"].as_u64().unwrap_or(0);
+        let report = json_report(&out);
+        let total = report["summary"]["total"]
+            .as_u64()
+            .expect("summary.total must be an integer");
         assert_eq!(total as usize, n, "all {n} tests must be reported");
 
         // Benchmark informativo — apenas exibe, não impõe limite
@@ -665,7 +701,7 @@ fn json_cases_always_in_canonical_order() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
+    let report = json_report(&out);
     let ids: Vec<&str> = report["cases"]
         .as_array()
         .unwrap()
@@ -699,15 +735,20 @@ fn json_report_status_values_are_from_contract() {
         .output()
         .expect("run test");
 
-    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
+    let report = json_report(&out);
     let allowed: std::collections::HashSet<&str> =
         ["passed", "failed", "skipped", "timed_out", "crashed"]
             .iter()
             .copied()
             .collect();
 
-    for case in report["cases"].as_array().unwrap_or(&vec![]) {
-        let status = case["status"].as_str().unwrap_or("");
+    assert!(out.status.success(), "CLI test run must succeed");
+    let cases = report["cases"].as_array().expect("cases array");
+    assert!(!cases.is_empty(), "status contract needs at least one case");
+    for case in cases {
+        let status = case["status"]
+            .as_str()
+            .expect("case.status must be a string");
         assert!(
             allowed.contains(status),
             "unexpected status value `{status}` — not in contract"

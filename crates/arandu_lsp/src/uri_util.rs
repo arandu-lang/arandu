@@ -134,7 +134,11 @@ mod tests {
         let p = std::env::temp_dir().join("hello world.aru");
         let uri = uri_from_path(&p).expect("uri");
         assert!(uri.as_str().starts_with("file://"));
-        assert!(uri.as_str().contains("%20") || uri.as_str().contains("hello"));
+        assert!(
+            uri.as_str().contains("hello%20world.aru"),
+            "spaces in filesystem paths must be URI-escaped: {}",
+            uri.as_str()
+        );
         let back = path_from_uri(&uri);
         assert_eq!(back, p);
     }

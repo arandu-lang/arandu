@@ -1,0 +1,22 @@
+import std.core.option as option
+
+func main(): int {
+    let present: option.Option<int> = Option.Some(17)
+    if !present.isSome() {
+        return 1
+    }
+    let present_value = present.unwrapOr(0)
+    if present_value != 17 {
+        return 2
+    }
+
+    let absent: option.Option<int> = Option.None
+    if !absent.isNone() {
+        return 3
+    }
+    let fallback = absent.unwrapOr(23)
+    if fallback != 23 {
+        return 4
+    }
+    return 0
+}

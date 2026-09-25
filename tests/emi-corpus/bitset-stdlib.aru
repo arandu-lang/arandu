@@ -1,0 +1,64 @@
+import std.alloc.bitset as bitset
+
+func main(): int {
+    let mut left = bitset.bitsetNew()
+    let mut right = bitset.bitsetNew()
+
+    if !left.insert(0 as uint) {
+        return 1
+    }
+    if !left.insert(63 as uint) {
+        return 2
+    }
+    if !left.insert(64 as uint) {
+        return 3
+    }
+    if !left.insert(127 as uint) {
+        return 4
+    }
+    if left.insert(64 as uint) || left.countOnes() != 4 as uint {
+        return 5
+    }
+    if !left.contains(0 as uint) || !left.contains(63 as uint) || !left.contains(64 as uint) || !left.contains(127 as uint) || left.contains(128 as uint) {
+        return 6
+    }
+    if !left.remove(63 as uint) || left.remove(63 as uint) || left.contains(63 as uint) {
+        return 7
+    }
+
+    if !right.insert(64 as uint) {
+        return 8
+    }
+    if !right.insert(65 as uint) {
+        return 9
+    }
+    if !right.insert(127 as uint) {
+        return 10
+    }
+    left.unionWith(ref right)
+    if left.countOnes() != 4 as uint || !left.contains(0 as uint) || !left.contains(64 as uint) || !left.contains(65 as uint) || !left.contains(127 as uint) {
+        return 11
+    }
+
+    left.intersectWith(ref right)
+    if left.countOnes() != 3 as uint || left.contains(0 as uint) || !left.contains(64 as uint) || !left.contains(65 as uint) || !left.contains(127 as uint) {
+        return 12
+    }
+    left.differenceWith(ref right)
+    if left.countOnes() != 0 as uint {
+        return 13
+    }
+
+    let mut capacity = bitset.bitsetWithCapacity(65 as uint)
+    if capacity.contains(0 as uint) || capacity.contains(64 as uint) || capacity.contains(65 as uint) {
+        return 14
+    }
+    if !capacity.insert(64 as uint) || capacity.countOnes() != 1 as uint {
+        return 15
+    }
+    capacity.clear()
+    if capacity.countOnes() != 0 as uint || capacity.contains(64 as uint) {
+        return 16
+    }
+    return 0
+}

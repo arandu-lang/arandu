@@ -1,0 +1,12 @@
+enum Choice {
+    Left(int),
+    Right(int),
+}
+
+func main(): int {
+    let selected = if true { Choice.Left(11) } else { Choice.Right(22) }
+    return match selected {
+        Choice.Left(value) => value
+        Choice.Right(value) => value
+    }
+}

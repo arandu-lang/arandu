@@ -1,0 +1,14 @@
+import std.alloc.vec as vec
+import std.core.slice as slice
+
+func main(): int {
+    let mut values = vec.new<int>()
+    if !vec.tryPush<int>(values, 17) {
+        vec.destroy<int>(values)
+        return -1
+    }
+    let vector_len = vec.len<int>(values)
+    let slice_len = slice.len<int>(vec.asSlice<int>(values))
+    vec.destroy<int>(values)
+    return (vector_len + slice_len) as int
+}

@@ -13,22 +13,30 @@ env:
 
 jobs:
   fuzz:
-    name: Fuzz / ${{ matrix.target }}
+    name: Fuzz / ${{ matrix.target.name }}
     runs-on: ubuntu-latest
-    continue-on-error: true
+    timeout-minutes: 45
     strategy:
       fail-fast: false
+      max-parallel: 2
       matrix:
         target:
-          - fuzz_lex
-          - fuzz_parse
-          - fuzz_lex_simd
-          - fuzz_parse_structured
-          - fuzz_pipeline
-          - fuzz_cycles
-          - fuzz_genref
-          - fuzz_incremental
-          - fuzz_module_graph
+          - { name: fuzz_lex, seconds: 1800, timeout: 2 }
+          - { name: fuzz_parse, seconds: 1800, timeout: 2 }
+          - { name: fuzz_lex_simd, seconds: 1800, timeout: 2 }
+          - { name: fuzz_parse_structured, seconds: 1800, timeout: 2 }
+          - { name: fuzz_pipeline, seconds: 1800, timeout: 2 }
+          - { name: fuzz_cycles, seconds: 1800, timeout: 2 }
+          - { name: fuzz_genref, seconds: 1800, timeout: 2 }
+          - { name: fuzz_incremental, seconds: 1800, timeout: 5 }
+          - { name: fuzz_incremental_cutoff, seconds: 900, timeout: 5 }
+          - { name: fuzz_module_graph, seconds: 1800, timeout: 5 }
+          - { name: fuzz_lsp_session, seconds: 900, timeout: 10 }
+          - { name: fuzz_synthesized, seconds: 900, timeout: 15 }
+          - { name: fuzz_synthesized_c, seconds: 300, timeout: 30 }
+          - { name: fuzz_synthesized_wasm, seconds: 300, timeout: 30 }
+          - { name: fuzz_synthesized_all, seconds: 300, timeout: 30 }
+          - { name: fuzz_emi_corpus, seconds: 300, timeout: 30 }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -38,19 +46,22 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: arandu_fuzz/corpus/${{ matrix.target }}
-          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
-          restore-keys: fuzz-corpus-${{ matrix.target }}-
+          path: arandu_fuzz/corpus/${{ matrix.target.name }}
+          key: fuzz-corpus-${{ matrix.target.name }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-${{ matrix.target.name }}-
       - name: Run bounded libFuzzer campaign
+        id: campaign
+        env:
+          ARANDU_FUZZ_ARTIFACT_DIR: ${{ github.workspace }}/arandu_fuzz/artifacts/${{ matrix.target.name }}
         run: >-
-          cargo +nightly fuzz run --fuzz-dir arandu_fuzz ${{ matrix.target }} --
-          -max_total_time=1800
+          cargo +nightly fuzz run --fuzz-dir arandu_fuzz ${{ matrix.target.name }} --
+          -max_total_time=${{ matrix.target.seconds }}
           -max_len=65536
-          -timeout=2
+          -timeout=${{ matrix.target.timeout }}
           -rss_limit_mb=1024
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: failure()
+        if: ${{ failure() && steps.campaign.outcome == 'failure' }}
         with:
-          name: fuzz-${{ matrix.target }}-artifacts
-          path: arandu_fuzz/artifacts/${{ matrix.target }}/
+          name: fuzz-${{ matrix.target.name }}-artifacts
+          path: arandu_fuzz/artifacts/${{ matrix.target.name }}/
           if-no-files-found: ignore

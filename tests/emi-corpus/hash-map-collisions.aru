@@ -1,0 +1,115 @@
+import std.alloc.hash_map as hash_map
+import std.core.hash as hash
+
+struct CollisionKey {
+    value: int
+}
+
+func CollisionKey.eq(self: ref CollisionKey, other: ref CollisionKey): bool {
+    return self.value == other.value
+}
+
+func CollisionKey.hash<H: hash.Hasher>(self: ref CollisionKey, state: mut ref H): void {
+    state.writeInt(self.value)
+}
+
+func getOrMinusOne(table: ref hash_map.HashMap<CollisionKey, int>, key: ref CollisionKey): int {
+    match hash_map.get<CollisionKey, int>(table, key) {
+        Some(value) => { return value }
+        None => { return -1 }
+    }
+}
+
+func main(): int {
+    let key0 = CollisionKey { value: 0 }
+    let key8 = CollisionKey { value: 8 }
+    let key16 = CollisionKey { value: 16 }
+    let key24 = CollisionKey { value: 24 }
+    let key32 = CollisionKey { value: 32 }
+    let key40 = CollisionKey { value: 40 }
+    let key48 = CollisionKey { value: 48 }
+    let key56 = CollisionKey { value: 56 }
+    let key64 = CollisionKey { value: 64 }
+
+    let mut table = hash_map.new<CollisionKey, int>()
+    if !hash_map.isEmpty<CollisionKey, int>(table) || hash_map.capacity<CollisionKey, int>(table) != 0 as uint {
+        table.destroy()
+        return -1
+    }
+    if (hash_map.hashKey<CollisionKey>(ref key0) as uint) & 7 != (hash_map.hashKey<CollisionKey>(ref key40) as uint) & 7 {
+        table.destroy()
+        return -2
+    }
+
+    hash_map.insert<CollisionKey, int>(table, key0, 100)
+    hash_map.insert<CollisionKey, int>(table, key8, 101)
+    hash_map.insert<CollisionKey, int>(table, key16, 102)
+    hash_map.insert<CollisionKey, int>(table, key24, 103)
+    hash_map.insert<CollisionKey, int>(table, key32, 104)
+    hash_map.insert<CollisionKey, int>(table, key40, 105)
+    let actual_capacity = hash_map.capacity<CollisionKey, int>(table)
+    let actual_len = hash_map.len<CollisionKey, int>(table)
+    if actual_capacity != 8 as uint {
+        table.destroy()
+        return -30 - actual_capacity as int
+    }
+    if actual_len != 6 as uint {
+        table.destroy()
+        return -40 - actual_len as int
+    }
+
+    let old_value = hash_map.insert<CollisionKey, int>(table, key16, 999)
+    let replaced = match old_value {
+        Some(value) => value
+        None => -1
+    }
+    if replaced != 102 || getOrMinusOne(ref table, ref key16) != 999 {
+        table.destroy()
+        return -4
+    }
+
+    let removed_head = hash_map.remove<CollisionKey, int>(table, ref key0)
+    let head_value = match removed_head {
+        Some(value) => value
+        None => -1
+    }
+    if head_value != 100 || getOrMinusOne(ref table, ref key8) != 101 || getOrMinusOne(ref table, ref key16) != 999 || getOrMinusOne(ref table, ref key40) != 105 {
+        table.destroy()
+        return -5
+    }
+
+    let removed_middle = hash_map.remove<CollisionKey, int>(table, ref key24)
+    let middle_value = match removed_middle {
+        Some(value) => value
+        None => -1
+    }
+    if middle_value != 103 || getOrMinusOne(ref table, ref key32) != 104 {
+        table.destroy()
+        return -6
+    }
+
+    hash_map.insert<CollisionKey, int>(table, key48, 106)
+    hash_map.insert<CollisionKey, int>(table, key56, 107)
+    hash_map.insert<CollisionKey, int>(table, key64, 108)
+    if hash_map.capacity<CollisionKey, int>(table) != 16 as uint || hash_map.len<CollisionKey, int>(table) != 7 as uint {
+        table.destroy()
+        return -7
+    }
+    if !hash_map.contains<CollisionKey, int>(table, ref key56) || getOrMinusOne(ref table, ref key64) != 108 {
+        table.destroy()
+        return -8
+    }
+
+    hash_map.clear<CollisionKey, int>(table)
+    if !hash_map.isEmpty<CollisionKey, int>(table) || getOrMinusOne(ref table, ref key56) != -1 {
+        table.destroy()
+        return -9
+    }
+    hash_map.insert<CollisionKey, int>(table, key16, 77)
+    if getOrMinusOne(ref table, ref key16) != 77 {
+        table.destroy()
+        return -10
+    }
+    table.destroy()
+    return 0
+}

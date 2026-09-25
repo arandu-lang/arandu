@@ -6,7 +6,11 @@
 use arandu_query::{AnalysisHost, DatabaseImpl};
 
 mod incremental;
+mod lsp_session;
 mod module_graph;
+pub mod process_job;
+pub mod shrinker;
+mod smith;
 
 pub const MAX_INPUT_BYTES: usize = 64 * 1024;
 
@@ -21,10 +25,17 @@ pub enum Target {
     GenRef,
     Incremental,
     ModuleGraph,
+    Synthesized,
+    SynthesizedC,
+    IncrementalCutoff,
+    SynthesizedWasm,
+    EmiCorpus,
+    SynthesizedAll,
+    LspSession,
 }
 
 impl Target {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 16] = [
         Self::Lex,
         Self::Syntax,
         Self::Pipeline,
@@ -34,6 +45,13 @@ impl Target {
         Self::GenRef,
         Self::Incremental,
         Self::ModuleGraph,
+        Self::Synthesized,
+        Self::SynthesizedC,
+        Self::IncrementalCutoff,
+        Self::SynthesizedWasm,
+        Self::EmiCorpus,
+        Self::SynthesizedAll,
+        Self::LspSession,
     ];
 
     pub const fn name(self) -> &'static str {
@@ -47,11 +65,40 @@ impl Target {
             Self::GenRef => "genref",
             Self::Incremental => "incremental",
             Self::ModuleGraph => "module-graph",
+            Self::Synthesized => "synthesized",
+            Self::SynthesizedC => "synthesized-c",
+            Self::IncrementalCutoff => "incremental-cutoff",
+            Self::SynthesizedWasm => "synthesized-wasm",
+            Self::EmiCorpus => "emi-corpus",
+            Self::SynthesizedAll => "synthesized-all",
+            Self::LspSession => "lsp-session",
         }
     }
 
     pub fn parse(name: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|target| target.name() == name)
+    }
+
+    /// Cargo-fuzz binary wired to this shared target implementation.
+    pub const fn fuzz_binary_name(self) -> &'static str {
+        match self {
+            Self::Lex => "fuzz_lex",
+            Self::Syntax => "fuzz_parse",
+            Self::Pipeline => "fuzz_pipeline",
+            Self::Cycles => "fuzz_cycles",
+            Self::LexSimd => "fuzz_lex_simd",
+            Self::Structured => "fuzz_parse_structured",
+            Self::GenRef => "fuzz_genref",
+            Self::Incremental => "fuzz_incremental",
+            Self::ModuleGraph => "fuzz_module_graph",
+            Self::Synthesized => "fuzz_synthesized",
+            Self::SynthesizedC => "fuzz_synthesized_c",
+            Self::IncrementalCutoff => "fuzz_incremental_cutoff",
+            Self::SynthesizedWasm => "fuzz_synthesized_wasm",
+            Self::EmiCorpus => "fuzz_emi_corpus",
+            Self::SynthesizedAll => "fuzz_synthesized_all",
+            Self::LspSession => "fuzz_lsp_session",
+        }
     }
 }
 
@@ -69,7 +116,21 @@ pub fn run(target: Target, data: &[u8]) {
         Target::GenRef => run_genref(data),
         Target::Incremental => incremental::run(data),
         Target::ModuleGraph => module_graph::run(data),
+        Target::Synthesized => smith::run(data),
+        Target::SynthesizedC => smith::run_c(data),
+        Target::IncrementalCutoff => incremental::run_private_cutoff(data),
+        Target::SynthesizedWasm => smith::run_wasm(data),
+        Target::EmiCorpus => smith::run_emi_corpus(data),
+        Target::SynthesizedAll => smith::run_all_backends(data),
+        Target::LspSession => lsp_session::run(data),
     }
+}
+
+/// Verify that a source fixture and a deterministic dead-code mutation agree
+/// across Cranelift, C, and Wasm before the fixture is promoted to the EMI corpus.
+#[must_use = "check the cross-backend regression result"]
+pub fn verify_emi_regression_source(source: &str, seed: u64) -> Result<(), String> {
+    smith::verify_emi_regression_source(source, seed)
 }
 
 fn source(data: &[u8]) -> std::borrow::Cow<'_, str> {

@@ -58,3 +58,45 @@ name = "fuzz_genref"
 path = "fuzz_targets/fuzz_genref.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "fuzz_synthesized"
+path = "fuzz_targets/fuzz_synthesized.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_synthesized_c"
+path = "fuzz_targets/fuzz_synthesized_c.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_incremental_cutoff"
+path = "fuzz_targets/fuzz_incremental_cutoff.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_synthesized_wasm"
+path = "fuzz_targets/fuzz_synthesized_wasm.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_emi_corpus"
+path = "fuzz_targets/fuzz_emi_corpus.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_synthesized_all"
+path = "fuzz_targets/fuzz_synthesized_all.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_lsp_session"
+path = "fuzz_targets/fuzz_lsp_session.rs"
+test = false
+doc = false

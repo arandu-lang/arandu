@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 arandu_diagnostics = { path = "../crates/arandu_diagnostics" }
+arandu_fmt = { path = "../crates/arandu_fmt" }
 arandu_middle = { path = "../crates/arandu_middle" }
 arandu_query = { path = "../crates/arandu_query" }
 arandu_fuzz_support = { path = "../crates/arandu_fuzz_support" }
@@ -23,3 +24,11 @@ blake3 = { workspace = true }
 tar = { workspace = true }
 flate2 = { workspace = true }
 zip = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }

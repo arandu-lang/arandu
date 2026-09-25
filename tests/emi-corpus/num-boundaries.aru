@@ -1,0 +1,93 @@
+import std.core.num as num
+
+func main(): int {
+    let max = ((-1 as uint) >> 1) as int
+    let min = -max - 1
+
+    let positive_overflow = num.checkedAdd(max, 1)
+    let positive_add_succeeded = match positive_overflow {
+        Some(_) => true
+        None => false
+    }
+    if positive_add_succeeded {
+        return -1
+    }
+
+    let negative_overflow = num.checkedAdd(min, -1)
+    let negative_add_succeeded = match negative_overflow {
+        Some(_) => true
+        None => false
+    }
+    if negative_add_succeeded {
+        return -2
+    }
+
+    let subtract_positive_overflow = num.checkedSub(max, -1)
+    let positive_subtract_succeeded = match subtract_positive_overflow {
+        Some(_) => true
+        None => false
+    }
+    if positive_subtract_succeeded {
+        return -3
+    }
+
+    let subtract_negative_overflow = num.checkedSub(min, 1)
+    let negative_subtract_succeeded = match subtract_negative_overflow {
+        Some(_) => true
+        None => false
+    }
+    if negative_subtract_succeeded {
+        return -4
+    }
+
+    let multiply_positive_overflow = num.checkedMul(max, 2)
+    let positive_multiply_succeeded = match multiply_positive_overflow {
+        Some(_) => true
+        None => false
+    }
+    if positive_multiply_succeeded {
+        return -5
+    }
+
+    let multiply_min_by_negative_one = num.checkedMul(min, -1)
+    let min_multiply_succeeded = match multiply_min_by_negative_one {
+        Some(_) => true
+        None => false
+    }
+    if min_multiply_succeeded {
+        return -6
+    }
+
+    let near_limit = num.checkedAdd(max, -1)
+    let near_limit_value = match near_limit {
+        Some(value) => value
+        None => 0
+    }
+    if near_limit_value != max - 1 {
+        return -7
+    }
+
+    let negative_product = num.checkedMul(-123, 7)
+    let negative_product_value = match negative_product {
+        Some(value) => value
+        None => 0
+    }
+    if negative_product_value != -861 {
+        return -8
+    }
+
+    if num.saturatingAdd(max, 1) != max {
+        return -9
+    }
+    if num.saturatingAdd(min, -1) != min {
+        return -10
+    }
+    if num.saturatingSub(max, -1) != max {
+        return -11
+    }
+    if num.saturatingSub(min, 1) != min {
+        return -12
+    }
+
+    return 0
+}

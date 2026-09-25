@@ -8,7 +8,26 @@ authors.workspace = true
 description = "Shared deterministic fuzz targets for Arandu"
 
 [dependencies]
+arandu_ide = { path = "../arandu_ide" }
+arandu_backend_cranelift = { path = "../arandu_backend_cranelift" }
+arandu_backend_c = { path = "../arandu_backend_c" }
+arandu_backend_wasm = { path = "../arandu_backend_wasm" }
+arandu_codegen = { path = "../arandu_codegen" }
+arandu_middle = { path = "../arandu_middle" }
+arandu_mir = { path = "../arandu_mir" }
 arandu_lexer = { path = "../arandu_lexer" }
 arandu_parser = { path = "../arandu_parser" }
 arandu_query = { path = "../arandu_query" }
+arandu_lsp = { path = "../arandu_lsp" }
 arandu_runtime = { path = "../arandu_runtime", features = ["fuzzing"] }
+arandu_semantics = { path = "../arandu_semantics" }
+lsp-server = { workspace = true }
+serde_json = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }

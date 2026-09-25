@@ -13,6 +13,7 @@ mod archive;
 mod churn;
 mod corpus;
 mod docs_taxonomy;
+mod fuzz_artifact;
 mod fuzz_regressions;
 mod incremental;
 mod line_endings;
@@ -20,6 +21,7 @@ mod performance;
 mod release_assets;
 mod release_contract;
 mod slt6;
+mod smith;
 mod wasm;
 
 use std::env;
@@ -38,10 +40,15 @@ fn main() {
             performance::cmd_check_project_performance(&workspace_root())
         }
         "check-fuzz-regressions" => fuzz_regressions::check(&workspace_root()),
+        "promote-fuzz-sequence" => fuzz_regressions::promote_sequence(&workspace_root(), args),
+        "promote-fuzz-artifact" => fuzz_artifact::promote(&workspace_root(), args),
         "check-architecture" => architecture::check(&workspace_root()),
         "check-line-endings" => line_endings::check(&workspace_root()),
         "bench-incremental" => incremental::run(&workspace_root(), args),
         "run-fuzz-seed" => fuzz_regressions::run_one(args),
+        "smith" => smith::run(args),
+        "smith-worker" => smith::run_worker(args),
+        "verify-fuzz-source" => fuzz_artifact::verify_source(args),
         "check-release-contract" => release_contract::check(&workspace_root(), args.next()),
         "prepare-release" => release_contract::prepare(&workspace_root(), args.next()),
         "check-slt6-sdk" => slt6::check(&workspace_root(), args),
@@ -74,6 +81,9 @@ Commands:
   check-project-churn   Run deterministic S2 module and identity churn
   check-project-performance  Measure S2 cold/noop/edit and retention budgets
   check-fuzz-regressions  Run the versioned adversarial corpus with isolation
+  smith                   Run a deterministic AranduSmith seed campaign
+  promote-fuzz-artifact  Verify and add a minimized failure to the EMI regression corpus
+  promote-fuzz-sequence  Verify and add an incremental/LSP byte sequence to the regression corpus
   check-architecture  Enforce compiler crate and effect boundaries
   check-line-endings  Reject CRLF or mixed text stored in the Git index
   bench-incremental  Measure five edit classes and prove native binary determinism
@@ -93,6 +103,9 @@ Examples:
   cargo run -p xtask -- check-project-churn
   cargo run -p xtask -- check-project-performance
   cargo run -p xtask -- check-fuzz-regressions
+  cargo run -p xtask -- smith --iterations 100 --seed 0 --target synthesized-all
+  cargo run -p xtask -- promote-fuzz-artifact /tmp/arandu-smith-artifacts/ARTIFACT c-backend-regression
+  cargo run -p xtask -- promote-fuzz-sequence incremental 01020304 incremental-case incremental-public-edit-invalidation
   cargo run -p xtask -- check-architecture
   cargo run -p xtask -- check-line-endings
   cargo run -p xtask -- bench-incremental

@@ -1,0 +1,109 @@
+import std.alloc.arena as arena
+import std.core.mem as mem
+
+func main(): int {
+    let mut region = arena.new(32 as uint)
+    if region.capacity() != 32 as uint || region.allocatedBytes() != 0 as uint {
+        region.free()
+        return -1
+    }
+
+    let first = region.alloc(3 as uint, 1 as uint)
+    let first_ok = match first {
+        Some(_) => true
+        None => false
+    }
+    if !first_ok || region.allocatedBytes() != 3 as uint {
+        region.free()
+        return -2
+    }
+
+    let aligned = region.alloc(2 as uint, 8 as uint)
+    let aligned_ok = match aligned {
+        Some(_) => true
+        None => false
+    }
+    if !aligned_ok || region.allocatedBytes() != 10 as uint || region.remainingBytes() != 22 as uint {
+        region.free()
+        return -3
+    }
+
+    let exhausted = region.alloc(23 as uint, 1 as uint)
+    let exhausted_ok = match exhausted {
+        Some(_) => false
+        None => true
+    }
+    if !exhausted_ok || region.allocatedBytes() != 10 as uint {
+        region.free()
+        return -4
+    }
+
+    region.reset()
+    let typed = region.allocTyped<int>(2 as uint)
+    let typed_ok = match typed {
+        Some(_) => true
+        None => false
+    }
+    let expected_typed_bytes = mem.sizeOf<int>() * (2 as uint)
+    if !typed_ok || region.allocatedBytes() != expected_typed_bytes {
+        region.free()
+        return -5
+    }
+    region.free()
+    if region.capacity() != 0 as uint || region.allocatedBytes() != 0 as uint {
+        return -6
+    }
+
+    let mut scratch = arena.newScratch(32 as uint)
+    let mark = scratch.checkpoint()
+    let before_rewind = scratch.alloc(3 as uint, 4 as uint)
+    let before_ok = match before_rewind {
+        Some(_) => true
+        None => false
+    }
+    if !before_ok || scratch.allocatedBytes() != 3 as uint || scratch.peakBytes() != 3 as uint {
+        scratch.free()
+        return -7
+    }
+    let after_rewind = scratch.alloc(2 as uint, 8 as uint)
+    let after_ok = match after_rewind {
+        Some(_) => true
+        None => false
+    }
+    if !after_ok || scratch.allocatedBytes() != 10 as uint || scratch.peakBytes() != 10 as uint {
+        scratch.free()
+        return -8
+    }
+
+    scratch.rewind(mark)
+    scratch.rewind(99 as uint)
+    if scratch.allocatedBytes() != 0 as uint || scratch.peakBytes() != 10 as uint {
+        scratch.free()
+        return -9
+    }
+    scratch.resetPeak()
+    if scratch.peakBytes() != 0 as uint {
+        scratch.free()
+        return -10
+    }
+    let reused = scratch.alloc(4 as uint, 1 as uint)
+    let reused_ok = match reused {
+        Some(_) => true
+        None => false
+    }
+    if !reused_ok || scratch.allocatedBytes() != 4 as uint || scratch.peakBytes() != 4 as uint {
+        scratch.free()
+        return -11
+    }
+    scratch.reset()
+    if scratch.allocatedBytes() != 0 as uint || scratch.peakBytes() != 4 as uint {
+        scratch.free()
+        return -12
+    }
+    scratch.free()
+    if scratch.capacity() != 0 as uint || scratch.peakBytes() != 0 as uint {
+        return -13
+    }
+
+    return 0
+}

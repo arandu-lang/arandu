@@ -1,3 +1,6 @@
 target/
 artifacts/
-corpus/
+/corpus/*
+!/corpus/fuzz_*/
+/corpus/fuzz_*/*
+!/corpus/fuzz_*/seed-*

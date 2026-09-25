@@ -1,6 +1,11 @@
 # path<TAB>targets<TAB>origin<TAB>covered bug or risk
 module-item-split.seed	module-graph	differential:rc5	adding an import during an item edit hid a function from incremental AST lowering
-incremental-edits.seed	incremental	manual:rc5	incremental diagnostics disagreeing with cold analysis after dependency and syntax edits
+cyclic-registration-order.seed	module-graph	rfc:0022	cyclic imports must produce stable diagnostics and completions when independent databases register files in opposite orders
+cyclic-three-module-order.seed	module-graph	rfc:0022	three-module import cycle must produce stable diagnostics and completions under opposite file registration orders
+incremental-edits.seed	incremental,incremental-cutoff	manual:rc5	incremental diagnostics disagreeing with cold analysis after dependency and syntax edits; private body preserves importer cutoff and public type/name edits recheck importers; failing edit sequences are reduced under the same failure class with a 48-oracle budget
+incremental-public-return.seed	incremental-cutoff	rfc:0022	public return-type change must invalidate the importer signature and produce a type diagnostic
+incremental-public-rename.seed	incremental-cutoff	rfc:0022	public function rename must invalidate importer resolution and produce an unresolved-name diagnostic
+incremental-public-arity.seed	incremental-cutoff	rfc:0022	public parameter-list change must invalidate the importer signature and diagnose the stale zero-argument call
 truncated-utf8.seed	lex,syntax,pipeline	manual:S2-D	truncated four-byte UTF-8 sequence
 open-string.seed	lex,syntax,pipeline	manual:S2-D	unterminated string recovery
 open-comment.seed	lex,syntax,pipeline	manual:S2-D	unterminated nested block comment recovery
@@ -8,3 +13,23 @@ deep-nesting.seed	syntax,pipeline	manual:S2-D	bounded deep expression nesting
 recursive-types.seed	pipeline	manual:S2-D	recursive aliases and aggregate types
 adversarial-cfg.seed	pipeline	manual:S2-D	nested loop and branch CFG recovery
 cyclic-modules.seed	cycles	manual:S2-D	cyclic module graph in variable registration order
+synthesized-scalar.seed	synthesized,synthesized-c,synthesized-wasm,synthesized-all	rfc:0022	seeded type-directed synthesis, AMIR validation, optimization drift and pairwise plus three-backend Cranelift/C/Wasm execution parity
+emi-corpus.seed	emi-corpus	rfc:0022	seeded dead-code EMI over compiler regressions, a terminating loop, stdlib Vec operations and free-function/method-style Vec examples with Cranelift/C/Wasm parity
+emi-example-option.seed	emi-corpus	rfc:0022	dead-code EMI over std.core.option Some/None construction, matching and fallback behavior with known Cranelift/C/Wasm result
+emi-example-vec-free.seed	emi-corpus	rfc:0022	dead-code EMI over the repository's free-function Vec example with Cranelift/C/Wasm result parity
+emi-example-vec-methods.seed	emi-corpus	rfc:0022	dead-code EMI over the repository's method-style Vec example with Cranelift/C/Wasm result parity
+emi-example-core-str.seed	emi-corpus	rfc:0022	dead-code EMI over std.core.str operations with known-result Cranelift/C/Wasm parity
+emi-example-gen-arena.seed	emi-corpus	rfc:0022	dead-code EMI over std.alloc.gen_arena generation, stale-handle, and removal operations with known-result Cranelift/C/Wasm parity
+emi-example-struct-enum.seed	emi-corpus	rfc:0022	dead-code EMI over struct field access and enum matching from examples/minimal/m02_structs_enums.aru
+emi-example-result-option.seed	emi-corpus	rfc:0022	dead-code EMI over Result propagation and Option lowering from examples/minimal/m03_result_option.aru with known return value
+emi-example-interpolation.seed	emi-corpus	rfc:0022	dead-code EMI over string interpolation and observable stdout from examples/minimal/m09_interp_tostr.aru
+emi-example-match-result.seed	emi-corpus	rfc:0022	dead-code EMI over Result.Ok/Err construction and call-scrutinee matching from examples/minimal/m23_match_result.aru with known return value
+emi-example-vec-capacity.seed	emi-corpus	rfc:0022	dead-code EMI over vector capacity, reservation, growth and clear behavior from examples/minimal/m15_vec_capacity.aru
+emi-example-result-stdlib.seed	emi-corpus	rfc:0022	dead-code EMI over std.core.result isOk/isErr and unwrapOr methods with Cranelift/C/Wasm parity
+emi-hash-map-collisions.seed	emi-corpus	rfc:0022	dead-code EMI over std.alloc.hash_map collision probing, Robin Hood displacement, backward-shift removal, resize, clear and destruction with a known result across Cranelift/C/Wasm
+lsp-session.seed	lsp-session	rfc:0022	in-memory package workspace with a three-module import graph, cycle and package-manifest rename edits, all 20 seeded edits, close/reopen, cancellation and current-revision completion/diagnostic checks
+emi-bitset-stdlib.seed	emi-corpus	rfc:0022	dead-code EMI over std.alloc.bitset boundary indexes, duplicate insertion, removal, union, intersection, difference and clear with a known result across Cranelift/C/Wasm
+emi-smallvec-spill.seed	emi-corpus	rfc:0022	dead-code EMI over std.alloc.smallvec inline-to-heap spill, capacity growth, indexed reads, pop and destruction with a known result across Cranelift/C/Wasm
+emi-arena-lifecycle.seed	emi-corpus	rfc:0022	dead-code EMI over std.alloc.arena alignment, exhaustion, reset, and ScratchArena checkpoint/rewind/peak lifecycle with a known result across Cranelift/C/Wasm
+emi-string-lifecycle.seed	emi-corpus	rfc:0022	dead-code EMI over std.alloc.string append/growth, borrowed str and byte views, UTF-8 prefix/substring/suffix checks, byte lengths, boundary-safe truncation, capacity failure, clearing, and destruction with a known result across Cranelift/C/Wasm
+emi-num-boundaries.seed	emi-corpus	rfc:0022	dead-code EMI over std.core.num checked and saturating add/sub/mul at signed integer boundaries with target-width-aware oracle across Cranelift/C/Wasm and O0/O1/O2

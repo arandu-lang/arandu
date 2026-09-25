@@ -1,0 +1,21 @@
+struct Sample {
+    left: int
+    right: int
+}
+
+enum Choice {
+    Left(int),
+    Right(int),
+}
+
+func main(): int {
+    let base: int = 0
+    let values = [((((((base % 5) + (base * 1)) / 6) / 5) / 2) + (((4 / 1) - (((9 * 3) * 3) * 1)) - ((((17 - 28) / 7) % 5) + (((2 - 11) - (7 + base)) + ((base - base) + (16 / 6)))))), ((((((20 * 3) % 6) % 2) % 3) / 3) / 4), base]
+    let sample = Sample { left: values[0], right: values[1] }
+    let selected_value = if (((((31 - base) + 15) * 2) % 6) > 1) { sample.left } else { sample.right }
+    let selected = Choice.Left(selected_value)
+    return match selected {
+        Choice.Left(value) => value
+        Choice.Right(value) => value
+    }
+}

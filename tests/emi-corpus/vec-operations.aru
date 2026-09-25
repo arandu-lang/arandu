@@ -1,0 +1,35 @@
+import std.alloc.vec as vec
+
+func main(): int {
+    let mut values = vec.new<int>()
+    if !vec.tryReserve<int>(values, 9 as uint) {
+        vec.destroy<int>(values)
+        return -1
+    }
+    let mut next: int = 0
+    while next < 9 {
+        if !vec.tryPush<int>(values, next) {
+            vec.destroy<int>(values)
+            return -2
+        }
+        next = next + 1
+    }
+    if !vec.put<int>(values, 8 as uint, 42) {
+        vec.destroy<int>(values)
+        return -3
+    }
+    let last = vec.pop<int>(values)
+    let result = match last {
+        Some(value) => value
+        None => -4
+    }
+    let length = vec.len<int>(values) as int
+    vec.clear<int>(values)
+    let empty_pop = vec.pop<int>(values)
+    let empty_result = match empty_pop {
+        Some(_) => -5
+        None => 0
+    }
+    vec.destroy<int>(values)
+    return result + length + empty_result
+}

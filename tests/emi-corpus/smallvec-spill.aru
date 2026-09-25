@@ -1,0 +1,49 @@
+import std.alloc.smallvec as smallvec
+
+func main(): int {
+    let mut values = smallvec.new<int>()
+    values.push(10)
+    values.push(20)
+    values.push(30)
+    values.push(40)
+    if values.isHeap() || values.len() != 4 as uint || values.capacity() != 4 as uint {
+        values.destroy()
+        return -1
+    }
+
+    values.push(50)
+    if !values.isHeap() || values.len() != 5 as uint || values.capacity() != 8 as uint {
+        values.destroy()
+        return -2
+    }
+
+    values.push(60)
+    values.push(70)
+    values.push(80)
+    values.push(90)
+    if values.len() != 9 as uint || values.capacity() != 16 as uint {
+        values.destroy()
+        return -7
+    }
+
+    let fifth = match values.get(4 as uint) {
+        Some(value) => value
+        None => -3
+    }
+    let tail = match values.get(8 as uint) {
+        Some(value) => value
+        None => -8
+    }
+    let popped = match values.pop() {
+        Some(value) => value
+        None => -4
+    }
+    let first = match values.get(0 as uint) {
+        Some(value) => value
+        None => -5
+    }
+    let valid = fifth == 50 && popped == 90 && first == 10 && tail == 90 && values.len() == 8 as uint
+    values.destroy()
+    if valid { return 0 }
+    return -6
+}

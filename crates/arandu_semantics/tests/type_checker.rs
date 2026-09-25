@@ -1237,9 +1237,9 @@ fn test_result_ok_custom_error_enum() {
         func err(): Result<int, E> {
             return Result.Err(E.A)
         }
-        func main(): int {
+        func main(): Result<int, E> {
             let x = ok()?
-            return x
+            return Result.Ok(x)
         }
         ",
         []

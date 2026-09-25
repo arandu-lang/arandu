@@ -923,6 +923,10 @@ fn constraint_origin_debug() {
             target_span: dummy_span(),
         },
         ConstraintOrigin::TryInvalid { span: dummy_span() },
+        ConstraintOrigin::TryReturnInvalid {
+            span: dummy_span(),
+            return_span: dummy_span(),
+        },
         ConstraintOrigin::AwaitInvalid { span: dummy_span() },
         ConstraintOrigin::InvalidIndex {
             base_span: dummy_span(),
@@ -1066,6 +1070,10 @@ fn all_constraint_origins() -> Vec<ConstraintOrigin> {
             target_span: s,
         },
         ConstraintOrigin::TryInvalid { span: s },
+        ConstraintOrigin::TryReturnInvalid {
+            span: s,
+            return_span: s,
+        },
         ConstraintOrigin::AwaitInvalid { span: s },
         ConstraintOrigin::InvalidIndex {
             base_span: s,
@@ -1422,6 +1430,45 @@ fn test_option_try_and_null_coalesce_typecheck() {
         "Option `?` and `??` should typecheck cleanly: {:?}",
         check_res.diagnostics
     );
+}
+
+#[test]
+fn result_try_requires_a_compatible_enclosing_return_type() {
+    let source = r#"
+    module test;
+    func source(): Result<int, int> {
+        return Result.Ok(1);
+    }
+    func valid_wrapper(): Result<int, int> {
+        let value = source()?;
+        return Result.Ok(value);
+    }
+    func invalid_wrapper(): int {
+        let value = source()?;
+        return value;
+    }
+    func incompatible_error(): Result<int, str> {
+        let value = source()?;
+        return Result.Ok(value);
+    }
+    "#;
+    let program = arandu_parser::parse(source).unwrap();
+    let res = arandu_resolve::resolve_for_test(0, &program);
+    let check_res = crate::type_check(res, &program, TargetInfo { pointer_width: 64 });
+
+    let try_diags: Vec<_> = check_res
+        .diagnostics
+        .iter()
+        .filter(|diag| diag.code == DiagCode::T016TryInvalid)
+        .collect();
+    assert_eq!(
+        try_diags.len(),
+        2,
+        "diagnostics: {:?}",
+        check_res.diagnostics
+    );
+    assert_eq!(check_res.diagnostics.len(), 2);
+    assert!(try_diags[0].message.contains("cannot propagate"));
 }
 
 #[test]

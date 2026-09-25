@@ -6,16 +6,17 @@ Func load() -> Result<int, Err>
     _0 = enumConstruct(0, 0)
     return
 
-Func testTry() -> int
+Func testTry() -> Result<int, Err>
   locals:
-    _0: int // return
+    _0: Result<int, Err> // return
     _1: Result<int, Err>
     _2: Err
     _3: int
     _4: bool
-    _5: int
+    _5: Result<int, Err>
     _6: int
     _7: int
+    _8: int
     s0: int // x
 
   bb0:
@@ -30,7 +31,8 @@ Func testTry() -> int
     return
   bb2:
     _6 = _1.1
-    _0 = mul _6, 2
+    _8 = mul _6, 2
+    _0 = enumConstruct(0, _8)
     return
 
 Func testSafeField(p: Point?) -> int

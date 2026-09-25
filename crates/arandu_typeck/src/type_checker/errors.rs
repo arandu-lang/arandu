@@ -256,6 +256,15 @@ pub fn constraint_to_diagnostic(
         .with_label(*span, format!("this has type '{found_str}'"))
         .with_hint("use a `Result<T, E>` or `Option<T>` value here"),
 
+        ConstraintOrigin::TryReturnInvalid { span, return_span } => Diagnostic::error(
+            DiagCode::T016TryInvalid,
+            format!("the '?' operator cannot propagate into function return type '{found_str}'"),
+            *span,
+        )
+        .with_label(*span, "this may propagate an error or None")
+        .with_label(*return_span, format!("function returns '{found_str}'"))
+        .with_hint("return a compatible Result/Option or handle the value with match or catch"),
+
         ConstraintOrigin::AwaitInvalid { span } => Diagnostic::error(
             DiagCode::T032AwaitInvalid,
             format!(

@@ -116,8 +116,22 @@ pub fn find_func_export(bytes: &[u8], want: &str) -> Option<String> {
     found
 }
 
+#[allow(clippy::panic)] // Test helper includes exported names to diagnose malformed output.
 pub fn run_main_i32(bytes: &[u8]) -> i32 {
-    let name = find_func_export(bytes, "main").expect("module must export `main`");
+    let name = find_func_export(bytes, "main").unwrap_or_else(|| {
+        let exports = wasmparser::Parser::new(0)
+            .parse_all(bytes)
+            .filter_map(Result::ok)
+            .filter_map(|payload| match payload {
+                wasmparser::Payload::ExportSection(section) => Some(section),
+                _ => None,
+            })
+            .flat_map(|section| section.into_iter().filter_map(Result::ok))
+            .filter(|entry| entry.kind == wasmparser::ExternalKind::Func)
+            .map(|entry| entry.name.to_owned())
+            .collect::<Vec<_>>();
+        panic!("module must export `main`; function exports: {exports:?}");
+    });
     let engine = wasmtime::Engine::default();
     let module = wasmtime::Module::new(&engine, bytes).expect("emitted module must instantiate");
     let mut store = wasmtime::Store::new(&engine, ());
@@ -177,6 +191,7 @@ pub fn emit_one(func: AmirFunc, interner: &TypeInterner, pool: &mut AmirLiteralP
         literal_pool: std::mem::take(pool),
         extern_funcs: Default::default(),
         debug_bindings: Vec::new(),
+        debug_blocks: Vec::new(),
     };
     emit_wasm(
         &program,
@@ -204,6 +219,7 @@ pub fn emit_with_imported_symbols(
         literal_pool: std::mem::take(pool),
         extern_funcs: Default::default(),
         debug_bindings: Vec::new(),
+        debug_blocks: Vec::new(),
     };
     emit_wasm(
         &program,

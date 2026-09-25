@@ -121,10 +121,12 @@ struct StackFrame {
 /// The method never fails on well-formed AMIR; an internal invariant violation
 /// (empty entry block, broken dominance/scoping) is reported as an ICE.
 pub fn stackify(func: &AmirFunc) -> Result<Vec<Op>, Diagnostic> {
-    let rpo = reverse_post_order_body_first(func);
+    let mut rpo = reverse_post_order_body_first(func);
     if rpo.is_empty() {
         return Ok(Vec::new());
     }
+
+    hoist_unreachable_blocks_before_joins(func, &mut rpo);
 
     let doms = Dominators::new(func);
 
@@ -278,6 +280,67 @@ pub fn stackify(func: &AmirFunc) -> Result<Vec<Op>, Diagnostic> {
     }
 
     Ok(ops)
+}
+
+/// Keep terminal trap arms before a merge reached by their sibling arm.
+///
+/// A plain RPO can put the merge before an `Unreachable` default arm. That
+/// makes the Wasm label scopes cross: the trap arm's landing block encloses
+/// the merge body, so a branch to the merge lands after it. Moving the trap
+/// immediately before the earliest sibling-reachable merge keeps the scopes
+/// properly nested without changing CFG edges.
+fn hoist_unreachable_blocks_before_joins(func: &AmirFunc, rpo: &mut Vec<BlockId>) {
+    let mut cursor = 0;
+    while cursor < rpo.len() {
+        let unreachable = rpo[cursor];
+        if !matches!(
+            func.blocks[unreachable.as_usize()].terminator,
+            AmirTerminator::Unreachable
+        ) {
+            cursor += 1;
+            continue;
+        }
+
+        let mut candidate = None;
+        for &pred in func.predecessors(unreachable) {
+            let Some(pred_index) = rpo.iter().position(|&item| item == pred) else {
+                continue;
+            };
+            let successors = func.successors(pred);
+            if successors.len() < 2 {
+                continue;
+            }
+            for &sibling in successors
+                .iter()
+                .filter(|&&successor| successor != unreachable)
+            {
+                let mut seen = FxHashSet::default();
+                let mut worklist = vec![sibling];
+                while let Some(block) = worklist.pop() {
+                    if !seen.insert(block) {
+                        continue;
+                    }
+                    if block != unreachable
+                        && func.predecessors(block).len() > 1
+                        && let Some(index) = rpo.iter().position(|&item| item == block)
+                        && index > pred_index
+                        && index <= cursor
+                    {
+                        candidate =
+                            Some(candidate.map_or(index, |current: usize| current.min(index)));
+                    }
+                    worklist.extend(func.successors(block).iter().copied());
+                }
+            }
+        }
+
+        if let Some(index) = candidate {
+            let block = rpo.remove(cursor);
+            rpo.insert(index, block);
+        } else {
+            cursor += 1;
+        }
+    }
 }
 
 /// Emit terminator-related branch ops.

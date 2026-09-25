@@ -182,10 +182,22 @@ dependencies = [
 name = "arandu_fuzz_support"
 version = "0.1.7"
 dependencies = [
+ "arandu_backend_c",
+ "arandu_backend_cranelift",
+ "arandu_backend_wasm",
+ "arandu_codegen",
+ "arandu_ide",
  "arandu_lexer",
+ "arandu_lsp",
+ "arandu_middle",
+ "arandu_mir",
  "arandu_parser",
  "arandu_query",
  "arandu_runtime",
+ "arandu_semantics",
+ "lsp-server",
+ "serde_json",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3384,6 +3396,7 @@ name = "xtask"
 version = "0.1.7"
 dependencies = [
  "arandu_diagnostics",
+ "arandu_fmt",
  "arandu_fuzz_support",
  "arandu_middle",
  "arandu_query",
@@ -3393,6 +3406,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "tar",
+ "windows-sys 0.60.2",
  "zip",
 ]
 

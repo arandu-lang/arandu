@@ -392,6 +392,22 @@ impl SymbolTable {
         self.global_scope_id
     }
 
+    /// Iterate scopes in stable ID order with their parent and ordered members.
+    ///
+    /// This narrow view supports deterministic fingerprints without exposing
+    /// the mutable scope arena or its internal lookup operations.
+    pub fn scope_layout(
+        &self,
+    ) -> impl Iterator<Item = (ScopeId, Option<ScopeId>, &[SymbolId])> + '_ {
+        self.scopes.iter().enumerate().map(|(index, scope)| {
+            (
+                ScopeId(u32::try_from(index).unwrap_or(u32::MAX)),
+                scope.parent,
+                scope.symbols.as_slice(),
+            )
+        })
+    }
+
     pub fn new_scope(&mut self, parent: ScopeId) -> ScopeId {
         let Ok(n) = u32::try_from(self.scopes.len()) else {
             crate::ice::bug("scope count overflow (u32::MAX scopes)");

@@ -203,9 +203,11 @@ impl<'a> CEmitter<'a> {
                     }
                 };
                 let base_ty = self.interner.resolve(func.temps[base_temp].ty);
-                let enum_ty = match base_ty {
-                    ArType::Ptr(inner) => self.interner.resolve(inner),
-                    other => other,
+                let (enum_ty, address) = match base_ty {
+                    ArType::Ptr(inner) | ArType::Ref(inner) | ArType::RefMut(inner) => {
+                        (self.interner.resolve(inner), format!("t{base_temp}"))
+                    }
+                    other => (other, format!("&t{base_temp}")),
                 };
                 let layout = self.checked_layout(&enum_ty);
                 if let Some(arandu_middle::layout::TagEncoding::PointerTag {
@@ -216,8 +218,8 @@ impl<'a> CEmitter<'a> {
                 {
                     let _ = write!(
                         &mut self.output,
-                        "({{ uintptr_t _raw = 0; memcpy(&_raw, (uint8_t*)&t{} + {}, sizeof(_raw)); (int64_t)(_raw & 0x{:x}ULL); }})",
-                        base_temp, pointer_offset, tag_mask
+                        "({{ uintptr_t _raw = 0; memcpy(&_raw, (uint8_t*){} + {}, sizeof(_raw)); (int64_t)(_raw & 0x{:x}ULL); }})",
+                        address, pointer_offset, tag_mask
                     );
                 } else if let Some(arandu_middle::layout::TagEncoding::Niche {
                     niche_offset,
@@ -229,14 +231,14 @@ impl<'a> CEmitter<'a> {
                 {
                     let _ = write!(
                         &mut self.output,
-                        "({{ uintptr_t _niche = 0; memcpy(&_niche, (uint8_t*)&t{} + {}, sizeof(_niche)); (_niche == {}) ? (int64_t){} : (int64_t){}; }})",
-                        base_temp, niche_offset, niche_value, tagged_variant, untagged_variant
+                        "({{ uintptr_t _niche = 0; memcpy(&_niche, (uint8_t*){} + {}, sizeof(_niche)); (_niche == {}) ? (int64_t){} : (int64_t){}; }})",
+                        address, niche_offset, niche_value, tagged_variant, untagged_variant
                     );
                 } else {
                     let _ = write!(
                         &mut self.output,
-                        "({{ int64_t _tag = 0; memcpy(&_tag, (uint8_t*)&t{} + 0, sizeof(_tag)); _tag; }})",
-                        base_temp
+                        "({{ int64_t _tag = 0; memcpy(&_tag, (uint8_t*){} + 0, sizeof(_tag)); _tag; }})",
+                        address
                     );
                 }
             }
@@ -258,9 +260,11 @@ impl<'a> CEmitter<'a> {
                 };
 
                 let base_ty = self.interner.resolve(func.temps[base_temp].ty);
-                let enum_ty = match base_ty {
-                    ArType::Ptr(inner) => self.interner.resolve(inner),
-                    other => other,
+                let (enum_ty, address) = match base_ty {
+                    ArType::Ptr(inner) | ArType::Ref(inner) | ArType::RefMut(inner) => {
+                        (self.interner.resolve(inner), format!("t{base_temp}"))
+                    }
+                    other => (other, format!("&t{base_temp}")),
                 };
                 let layout = self.checked_layout(&enum_ty);
                 if let Some(arandu_middle::layout::TagEncoding::PointerTag {
@@ -271,8 +275,8 @@ impl<'a> CEmitter<'a> {
                 {
                     let _ = write!(
                         &mut self.output,
-                        "({{ uintptr_t _raw = 0; memcpy(&_raw, (uint8_t*)&t{} + {}, sizeof(_raw)); ({expected_c_type})(_raw & ~0x{:x}ULL); }})",
-                        base_temp, pointer_offset, tag_mask
+                        "({{ uintptr_t _raw = 0; memcpy(&_raw, (uint8_t*){} + {}, sizeof(_raw)); ({expected_c_type})(_raw & ~0x{:x}ULL); }})",
+                        address, pointer_offset, tag_mask
                     );
                     return;
                 }
@@ -303,8 +307,8 @@ impl<'a> CEmitter<'a> {
                 }
                 let _ = write!(
                     &mut self.output,
-                    "({{ {expected_c_type} _payload = {{0}}; memcpy(&_payload, (uint8_t*)&t{} + {}, sizeof(_payload)); _payload; }})",
-                    base_temp, payload_offset
+                    "({{ {expected_c_type} _payload = {{0}}; memcpy(&_payload, (uint8_t*){} + {}, sizeof(_payload)); _payload; }})",
+                    address, payload_offset
                 );
             }
             AmirRvalue::EnumConstruct {

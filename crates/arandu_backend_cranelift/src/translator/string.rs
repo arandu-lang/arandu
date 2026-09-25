@@ -5,6 +5,20 @@ use cranelift_codegen::ir::{InstBuilder, Value};
 use super::FunctionTranslator;
 
 impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
+    /// Add string byte lengths without allowing a wrapped allocation size.
+    fn checked_string_size_add(&mut self, lhs: Value, rhs: Value) -> Value {
+        let sum = self.builder.ins().iadd(lhs, rhs);
+        let overflow = self.builder.ins().icmp(
+            cranelift_codegen::ir::condcodes::IntCC::UnsignedLessThan,
+            sum,
+            lhs,
+        );
+        self.builder
+            .ins()
+            .trapnz(overflow, cranelift_codegen::ir::TrapCode::unwrap_user(1));
+        sum
+    }
+
     pub(super) fn translate_str_rvalue(&mut self, rvalue: &AmirRvalue) -> (Value, Value) {
         if self.error.is_some() {
             return (self.poison_i32(), self.poison_i32());
@@ -332,7 +346,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
     }
 
     /// Compare two `str` fat pointers for equality (`==` / `!=`).
-    /// Equal when lengths match and `memcmp` reports zero (empty strings included).
+    /// Equal when lengths match and either both are empty or `memcmp` reports zero.
     pub(super) fn translate_str_eq(
         &mut self,
         left: &AmirOperand,
@@ -341,25 +355,51 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
     ) -> Value {
         let (l_ptr, l_len) = self.translate_str_operand(left);
         let (r_ptr, r_len) = self.translate_str_operand(right);
-        let i8_ty = cranelift_codegen::ir::types::I8;
-        let i32_ty = cranelift_codegen::ir::types::I32;
+        let Some(memcmp_id) = self.memcmp_func_id() else {
+            return self.poison_i32();
+        };
+
         let len_eq =
             self.builder
                 .ins()
                 .icmp(cranelift_codegen::ir::condcodes::IntCC::Equal, l_len, r_len);
+        let bool_ty = self.builder.func.dfg.value_type(len_eq);
+        let different_lengths = self.builder.create_block();
+        let same_length = self.builder.create_block();
+        let empty_strings = self.builder.create_block();
+        let compare_bytes = self.builder.create_block();
+        let join = self.builder.create_block();
+        self.builder.append_block_param(join, bool_ty);
+        self.builder
+            .ins()
+            .brif(len_eq, same_length, &[], different_lengths, &[]);
 
-        // If lengths differ → not equal. If both zero-length → equal.
-        // Else memcmp(l_ptr, r_ptr, len) == 0.
+        self.builder.switch_to_block(different_lengths);
+        self.builder.seal_block(different_lengths);
+        self.builder
+            .ins()
+            .jump(join, &[cranelift_codegen::ir::BlockArg::Value(len_eq)]);
+
+        self.builder.switch_to_block(same_length);
+        self.builder.seal_block(same_length);
         let zero_len = self.builder.ins().iconst(self.ptr_type, 0);
-        let len_nonzero = self.builder.ins().icmp(
-            cranelift_codegen::ir::condcodes::IntCC::NotEqual,
+        let is_empty = self.builder.ins().icmp(
+            cranelift_codegen::ir::condcodes::IntCC::Equal,
             l_len,
             zero_len,
         );
+        self.builder
+            .ins()
+            .brif(is_empty, empty_strings, &[], compare_bytes, &[]);
 
-        let Some(memcmp_id) = self.memcmp_func_id() else {
-            return self.poison_i32();
-        };
+        self.builder.switch_to_block(empty_strings);
+        self.builder.seal_block(empty_strings);
+        self.builder
+            .ins()
+            .jump(join, &[cranelift_codegen::ir::BlockArg::Value(len_eq)]);
+
+        self.builder.switch_to_block(compare_bytes);
+        self.builder.seal_block(compare_bytes);
         let memcmp_ref = self
             .module
             .declare_func_in_func(memcmp_id, self.builder.func);
@@ -368,18 +408,22 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
 
         let call = self.builder.ins().call(memcmp_ref, &[l_ptr, r_ptr, size]);
         let cmp = self.builder.inst_results(call)[0];
-        let zero_i32 = self.builder.ins().iconst(i32_ty, 0);
+        let zero_i32 = self
+            .builder
+            .ins()
+            .iconst(cranelift_codegen::ir::types::I32, 0);
         let bytes_eq = self.builder.ins().icmp(
             cranelift_codegen::ir::condcodes::IntCC::Equal,
             cmp,
             zero_i32,
         );
+        self.builder
+            .ins()
+            .jump(join, &[cranelift_codegen::ir::BlockArg::Value(bytes_eq)]);
 
-        // content_eq = !len_nonzero || bytes_eq  (icmp results are already i8 bools)
-        let not_nonzero = self.builder.ins().bxor_imm_u(len_nonzero, 1);
-        let content_eq = self.builder.ins().bor(not_nonzero, bytes_eq);
-        let eq = self.builder.ins().band(len_eq, content_eq);
-        let _ = i8_ty;
+        self.builder.switch_to_block(join);
+        self.builder.seal_block(join);
+        let eq = self.builder.block_params(join)[0];
 
         match op {
             arandu_semantics::ops::BinaryOp::Equal => eq,
@@ -389,6 +433,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
     }
 
     /// Concatenate `str` fat-pointer parts via `malloc` + `memcpy`.
+    /// Zero-length parts skip the copy so a null data pointer never reaches libc.
     /// Returns `(ptr, len)` for the newly allocated buffer (not freed; debug/JIT lifetime).
     fn translate_string_interp(&mut self, parts: &[AmirOperand]) -> (Value, Value) {
         if parts.is_empty() {
@@ -403,15 +448,16 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             part_vals.push(self.translate_str_operand(part));
         }
 
-        // total = sum of lengths (ptr_type)
+        // total = sum of lengths (ptr_type), trapping instead of wrapping to
+        // an allocation smaller than the bytes copied below.
         let mut total = self.builder.ins().iconst(self.ptr_type, 0);
         for &(_, len) in &part_vals {
-            total = self.builder.ins().iadd(total, len);
+            total = self.checked_string_size_add(total, len);
         }
 
         // malloc(total + 1) for trailing NUL safety
         let one = self.builder.ins().iconst(self.ptr_type, 1);
-        let alloc_size = self.builder.ins().iadd(total, one);
+        let alloc_size = self.checked_string_size_add(total, one);
 
         let Some(malloc_id) = self.malloc_func_id() else {
             return (self.poison_i32(), self.poison_i32());
@@ -421,6 +467,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             .declare_func_in_func(malloc_id, self.builder.func);
         let call = self.builder.ins().call(malloc_ref, &[alloc_size]);
         let buf = self.builder.inst_results(call)[0];
+        self.trap_if_null(buf);
 
         let Some(memcpy_id) = self.memcpy_func_id() else {
             return (self.poison_i32(), self.poison_i32());
@@ -432,10 +479,28 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         // Copy each part into the buffer.
         let mut offset_ptr = self.builder.ins().iconst(self.ptr_type, 0);
         for &(src_ptr, src_len) in &part_vals {
+            let zero_len = self.builder.ins().iconst(self.ptr_type, 0);
+            let is_empty = self.builder.ins().icmp(
+                cranelift_codegen::ir::condcodes::IntCC::Equal,
+                src_len,
+                zero_len,
+            );
+            let copy_part = self.builder.create_block();
+            let next_part = self.builder.create_block();
+            self.builder
+                .ins()
+                .brif(is_empty, next_part, &[], copy_part, &[]);
+
+            self.builder.switch_to_block(copy_part);
+            self.builder.seal_block(copy_part);
             let dest = self.builder.ins().iadd(buf, offset_ptr);
             self.builder
                 .ins()
                 .call(memcpy_ref, &[dest, src_ptr, src_len]);
+            self.builder.ins().jump(next_part, &[]);
+
+            self.builder.switch_to_block(next_part);
+            self.builder.seal_block(next_part);
             offset_ptr = self.builder.ins().iadd(offset_ptr, src_len);
         }
 

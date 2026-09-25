@@ -36,17 +36,14 @@ impl<'a> FuncTranslator<'a> {
     /// `Destroy` is produced by drop elaboration for an owned composite place,
     /// and recurses into fields only when the type has no explicit destructor —
     /// so the places seen here have at most `Field` projections, all of them
-    /// memory-backed aggregates. The destructor receives the *value* of the
-    /// place, which for a heap-backed aggregate is its cell pointer: the root
-    /// local already holds it, while a projected field stores its own cell
-    /// pointer inline (fields are boxed), so it must be loaded from the field
-    /// address.
+    /// memory-backed aggregates. The destructor receives the address of the
+    /// value: the root local stores its heap-cell pointer, while projected
+    /// fields are stored inline and use the projected address directly.
     ///
-    /// Releasing the cell is what makes `Destroy` the storage cleanup for the
-    /// whole value, not just its user-defined resource: types without a
-    /// registered destructor still free their cell. `__arandu_free` validates
-    /// the block magic, so a pointer that was never allocated here (rodata,
-    /// null) degrades to a safe no-op.
+    /// Only a root place owns a heap cell that can be released here. A
+    /// projected field borrows storage from its containing cell, which is
+    /// released when the root is destroyed. `__arandu_free` validates the
+    /// block magic, so an unknown pointer degrades to a safe no-op.
     pub(super) fn emit_destroy(&mut self, place: &AmirPlace) {
         let Some(ty_id) = self.place_resolved_ty(place) else {
             return;
@@ -54,9 +51,8 @@ impl<'a> FuncTranslator<'a> {
         if !matches!(self.interner.resolve(ty_id), ArType::Named(..)) {
             return;
         }
-        // Materialize the cell pointer once and stash it: it is both the
-        // destructor receiver and the block released afterwards. `scratch` is
-        // not touched by the call instruction, so it survives the destructor.
+        // Materialize the value address once. `scratch` is not touched by the
+        // call instruction, so it survives the destructor.
         if place.projections.is_empty() {
             let Some(slot) = self.local_slot(place.local) else {
                 return;
@@ -64,11 +60,6 @@ impl<'a> FuncTranslator<'a> {
             self.code.push(Instruction::LocalGet(slot));
         } else {
             self.emit_place_address(place);
-            self.code.push(Instruction::I32Load(wasm_encoder::MemArg {
-                offset: 0,
-                align: 2,
-                memory_index: 0,
-            }));
         }
         self.code.push(Instruction::LocalSet(self.scratch));
         // Defensive: an unregistered destructor would make the call target
@@ -80,8 +71,10 @@ impl<'a> FuncTranslator<'a> {
             self.code.push(Instruction::LocalGet(self.scratch));
             self.code.push(Instruction::Call(func_idx));
         }
-        self.code.push(Instruction::LocalGet(self.scratch));
-        self.code.push(Instruction::Call(self.free_func_idx));
+        if place.projections.is_empty() {
+            self.code.push(Instruction::LocalGet(self.scratch));
+            self.code.push(Instruction::Call(self.free_func_idx));
+        }
     }
 
     /// Resolve the type of a place without emitting code.
@@ -138,7 +131,12 @@ impl<'a> FuncTranslator<'a> {
         self.interner.with_type(ty, |ar| {
             matches!(
                 ar,
-                ArType::Named(..) | ArType::Array(..) | ArType::Tuple(..)
+                ArType::Named(..)
+                    | ArType::Array(..)
+                    | ArType::Tuple(..)
+                    | ArType::Option(..)
+                    | ArType::Result(..)
+                    | ArType::Poll(..)
             )
         })
     }
@@ -204,6 +202,34 @@ impl<'a> FuncTranslator<'a> {
         }
 
         let store_ty = self.emit_place_address(lhs);
+        if self.is_owned_aggregate(store_ty) {
+            let size = self.layout_of_id(store_ty).size as i32;
+            if size > 0 {
+                // Named aggregates are represented by pointers in locals, but
+                // struct fields contain their complete inline layout. Copying
+                // only the pointer-sized first word corrupts multi-word fields
+                // such as Vec { data, len, capacity }.
+                self.code.push(Instruction::LocalSet(self.scratch_b));
+                self.emit_operand(rhs, store_ty);
+                self.code.push(Instruction::LocalSet(self.scratch));
+                self.code.push(Instruction::LocalGet(self.scratch_b));
+                self.code.push(Instruction::LocalGet(self.scratch));
+                self.code.push(Instruction::I32Const(size));
+                self.code.push(Instruction::MemoryCopy {
+                    src_mem: 0,
+                    dst_mem: 0,
+                });
+                // Moving an owned aggregate into an inline field transfers
+                // its contents, not its heap cell. Reclaim that temporary
+                // source cell after copying; the destination belongs to the
+                // containing aggregate.
+                if matches!(rhs, AmirOperand::Move(_)) {
+                    self.code.push(Instruction::LocalGet(self.scratch));
+                    self.code.push(Instruction::Call(self.free_func_idx));
+                }
+                return;
+            }
+        }
         self.emit_operand(rhs, store_ty);
         self.emit_store_value_at(store_ty, 0);
     }
@@ -319,7 +345,23 @@ impl<'a> FuncTranslator<'a> {
             return;
         }
         let elem_ty = self.emit_place_address(place);
-        self.emit_load_value_at(elem_ty, 0);
+        if self.is_owned_aggregate(elem_ty) {
+            let size = self.layout_of_id(elem_ty).size as i32;
+            self.code.push(Instruction::LocalSet(self.scratch_c));
+            self.alloc_cell(size);
+            self.code.push(Instruction::LocalGet(self.scratch));
+            self.code.push(Instruction::LocalSet(self.scratch_b));
+            self.code.push(Instruction::LocalGet(self.scratch_b));
+            self.code.push(Instruction::LocalGet(self.scratch_c));
+            self.code.push(Instruction::I32Const(size));
+            self.code.push(Instruction::MemoryCopy {
+                src_mem: 0,
+                dst_mem: 0,
+            });
+            self.code.push(Instruction::LocalGet(self.scratch_b));
+        } else {
+            self.emit_load_value_at(elem_ty, 0);
+        }
     }
 
     /// Compute the real cell address of a place and return its element type.
@@ -479,8 +521,24 @@ impl<'a> FuncTranslator<'a> {
         if let Some(op) = payload {
             let payload_ty = self.operand_arity_ty(&op);
             self.push_cell_addr();
-            self.emit_operand(&op, payload_ty);
-            self.emit_store_value_at(payload_ty, payload_offset);
+            if self.is_owned_aggregate(payload_ty) {
+                let size = self.layout_of_id(payload_ty).size as i32;
+                self.code.push(Instruction::LocalSet(self.scratch_b));
+                self.emit_operand(&op, payload_ty);
+                self.code.push(Instruction::LocalSet(self.scratch));
+                self.code.push(Instruction::LocalGet(self.scratch_b));
+                self.code.push(Instruction::I32Const(payload_offset as i32));
+                self.code.push(Instruction::I32Add);
+                self.code.push(Instruction::LocalGet(self.scratch));
+                self.code.push(Instruction::I32Const(size));
+                self.code.push(Instruction::MemoryCopy {
+                    src_mem: 0,
+                    dst_mem: 0,
+                });
+            } else {
+                self.emit_operand(&op, payload_ty);
+                self.emit_store_value_at(payload_ty, payload_offset);
+            }
         }
         // Return the cell address (from the backup, since nested allocations
         // may have overwritten self.scratch).

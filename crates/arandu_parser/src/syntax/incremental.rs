@@ -126,20 +126,36 @@ pub fn splice_tokens_for_item_edit(
             break;
         }
     }
-    // New item tokens (absolute). Drop leading tokens that start before content_s
-    // when re-lexed item text included leading whitespace of the green range.
+    // New item tokens (absolute). Their offsets are relative to the edited
+    // item's new start, so comparing them to `content_s` (an old-source offset)
+    // would discard valid tokens when an edit shifts the item left.
     for t in item_tokens {
         if matches!(t.kind, TokenKind::Eof) {
-            continue;
-        }
-        if t.start < content_s {
             continue;
         }
         out.push(*t);
     }
     // Suffix: shift by delta.
+    let replacement_end = (old_e as i64).checked_add(delta);
+    let edited_item_has_boundary_asi = replacement_end.is_some_and(|end| {
+        item_tokens.iter().any(|token| {
+            token.kind == TokenKind::Semicolon && token.inserted && token.start as i64 == end
+        })
+    });
     while i < old_tokens.len() {
         let mut t = old_tokens[i];
+        // The green item range ends before its zero-width ASI terminator. The
+        // edited item's re-lex already supplies the replacement terminator;
+        // retaining the old one here duplicates it at the same boundary.
+        if edited_item_has_boundary_asi
+            && t.start == old_e
+            && t.len == 0
+            && t.kind == TokenKind::Semicolon
+            && t.inserted
+        {
+            i += 1;
+            continue;
+        }
         if !matches!(t.kind, TokenKind::Eof) {
             let new_start = (t.start as i64) + delta;
             if new_start >= 0 {
@@ -149,10 +165,15 @@ pub fn splice_tokens_for_item_edit(
         }
         i += 1;
     }
-    let eof_start = out
-        .last()
-        .map(|t| t.start.saturating_add(t.len))
-        .unwrap_or(0);
+    let eof_start = old_tokens
+        .iter()
+        .find(|token| matches!(token.kind, TokenKind::Eof))
+        .map(|token| (token.start as i64 + delta).max(0) as u32)
+        .unwrap_or_else(|| {
+            out.last()
+                .map(|token| token.start.saturating_add(token.len))
+                .unwrap_or(0)
+        });
     out.push(Token {
         start: eof_start,
         len: 0,

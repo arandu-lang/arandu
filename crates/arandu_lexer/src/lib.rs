@@ -9,7 +9,7 @@ pub mod simd;
 
 pub use error::{LexError, LexErrorCode};
 pub use lexer::Lexer;
-pub use token::{Span, Token, TokenKind};
+pub use token::{Span, Token, TokenKind, char_literal, decode_char_content};
 
 /// Classify a complete source spelling as an identifier token.
 ///
@@ -142,5 +142,24 @@ mod tests {
     fn reports_invalid_unicode_escape_in_char() {
         let err = lex("'\\u{}'").unwrap_err();
         assert_eq!(err.code, LexErrorCode::InvalidUnicodeEscape);
+    }
+
+    #[test]
+    fn character_literal_encoder_and_decoder_round_trip_scalars() {
+        for value in ['a', 'é', '中', '🦀', '\n', '\t', '\0', '\'', '\\', '"', '$'] {
+            let source = char_literal(value);
+            let token = lex(&source).expect("encoded char literal must lex").tokens[0];
+            assert_eq!(token.char_value(&source), Some(value), "{source:?}");
+        }
+        let token = lex("'\\u{1F980}'").expect("unicode escape must lex").tokens[0];
+        assert_eq!(token.char_value("'\\u{1F980}'"), Some('🦀'));
+    }
+
+    #[test]
+    fn rejects_surrogate_unicode_escapes_as_non_scalars() {
+        let error = lex("'\\u{D800}'").unwrap_err();
+        assert_eq!(error.code, LexErrorCode::InvalidUnicodeEscape);
+        let error = lex("\"\\u{D800}\"").unwrap_err();
+        assert_eq!(error.code, LexErrorCode::InvalidUnicodeEscape);
     }
 }

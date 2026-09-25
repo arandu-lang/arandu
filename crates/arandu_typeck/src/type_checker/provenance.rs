@@ -148,6 +148,10 @@ pub fn causal_chain(constraint: &Constraint) -> Vec<ProvenanceStep> {
         ConstraintOrigin::TryInvalid { span } => {
             vec![ProvenanceStep::new(FoundOrigin, *span, "'?' operand")]
         }
+        ConstraintOrigin::TryReturnInvalid { span, return_span } => vec![
+            ProvenanceStep::new(ExpectedOrigin, *return_span, "function return type"),
+            ProvenanceStep::new(FoundOrigin, *span, "'?' propagation"),
+        ],
         ConstraintOrigin::AwaitInvalid { span } => {
             vec![ProvenanceStep::new(FoundOrigin, *span, "'await' operand")]
         }

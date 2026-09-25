@@ -211,6 +211,9 @@ impl LowerCtx<'_> {
                         | SymbolKind::ExternFunc
                         | SymbolKind::AssociatedFunc
                         | SymbolKind::NamespaceMember => AmirOperand::FunctionRef(*symbol),
+                        SymbolKind::Const => self
+                            .lower_const_operand(*symbol)
+                            .unwrap_or(AmirOperand::GlobalRef(*symbol)),
                         _ => AmirOperand::GlobalRef(*symbol),
                     })
                 }?;

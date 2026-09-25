@@ -3,9 +3,9 @@ use super::super::types::{ArType, Primitive};
 use arandu_parser::Program;
 
 pub(crate) fn register_prelude(checker: &mut TypeChecker<'_>, _program: &Program) {
-    // RC-ANY-PRELUDE: `io.println` stays `(str) -> void`. ToStr v0.1 coerces
-    // formatable primitives at the call site; user Display is later. Do not use
-    // `Any` as a silent universal sink.
+    // RC-ANY-PRELUDE: I/O prelude calls stay `(str) -> void`. ToStr v0.1
+    // coerces formatable primitives at the call site; user Display is later.
+    // Do not use `Any` as a silent universal sink.
     let void_id = checker.intern(ArType::Void);
     let str_id = checker.intern(ArType::Primitive(Primitive::Str));
     let err_literal_id = checker.intern(ArType::Err);
@@ -22,9 +22,10 @@ pub(crate) fn register_prelude(checker: &mut TypeChecker<'_>, _program: &Program
         (
             "io",
             vec![
-                ("println", println_ty),
+                ("println", println_ty.clone()),
                 ("create", create_ty),
                 ("remove", remove_ty),
+                ("eprint", println_ty),
             ],
         ),
         ("err", vec![("new", err_new_ty)]),

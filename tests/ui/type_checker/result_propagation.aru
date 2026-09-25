@@ -2,6 +2,7 @@ func load(): Result<int, Err> {
     return Result.Ok(10)
 }
 
-func main(): int {
-    return load()? * 2
+func main(): Result<int, Err> {
+    let value = load()?
+    return Result.Ok(value * 2)
 }

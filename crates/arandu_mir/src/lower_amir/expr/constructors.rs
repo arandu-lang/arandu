@@ -106,7 +106,12 @@ impl LowerCtx<'_> {
         let fields_slice = self.hir.pool.field_inits_list(fields);
         let mut field_ops = Vec::with_capacity(fields_slice.len());
         for f in fields_slice {
-            field_ops.push((f.name.clone(), self.lower_expr(f.value, None, symbols)?));
+            let value = self.lower_expr(f.value, None, symbols)?;
+            // A struct literal takes ownership of each non-Copy field value.
+            // Record that move before drop elaboration so the source local is
+            // not destroyed after its value has been installed in the result.
+            let value = self.consume_operand(value)?;
+            field_ops.push((f.name.clone(), value));
         }
         if let Some(struct_fields) = self.tc.type_info.struct_fields.get(&struct_symbol) {
             field_ops.sort_by_key(|(name, _)| {

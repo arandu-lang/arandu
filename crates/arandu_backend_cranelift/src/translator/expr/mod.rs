@@ -28,6 +28,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             .iconst(self.ptr_type, layout.size.max(1) as i64);
         let call = self.builder.ins().call(malloc_ref, &[size]);
         let ptr = self.builder.inst_results(call)[0];
+        self.trap_if_null(ptr);
         self.builder
             .ins()
             .store(cranelift_codegen::ir::MemFlagsData::new(), val, ptr, 0);
@@ -116,7 +117,9 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             AmirRvalue::Use(op) => {
                 let val = self.translate_operand(op, expected_ty);
                 let op_ty = self.get_operand_ar_type(op);
-                if matches!(op, AmirOperand::Copy(_)) && self.is_named_struct_ty(&op_ty) {
+                if matches!(op, AmirOperand::Copy(_) | AmirOperand::Move(_))
+                    && self.is_inline_aggregate_ty(&op_ty)
+                {
                     return self.materialize_ptr_read_copy(val, &op_ty).unwrap_or(val);
                 }
                 val

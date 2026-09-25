@@ -253,6 +253,26 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             }
         } else {
             let (base_ptr, offset) = self.translate_place_address_for_load(lhs);
+            let place_ty = self.place_ar_ty(lhs);
+            if self.is_inline_aggregate_ty(&place_ty) {
+                let dest = if offset == 0 {
+                    base_ptr
+                } else {
+                    self.builder.ins().iadd_imm_s(base_ptr, i64::from(offset))
+                };
+                let layout = self.checked_layout(&place_ty);
+                if layout.size > 0 {
+                    let Some(memmove_id) = self.memmove_func_id() else {
+                        return;
+                    };
+                    let memmove_ref = self
+                        .module
+                        .declare_func_in_func(memmove_id, self.builder.func);
+                    let size = self.builder.ins().iconst(self.ptr_type, layout.size as i64);
+                    self.builder.ins().call(memmove_ref, &[dest, val, size]);
+                }
+                return;
+            }
             self.builder.ins().store(
                 cranelift_codegen::ir::MemFlagsData::new(),
                 val,
@@ -293,7 +313,6 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
 
         let layout = self.checked_layout(&struct_ty);
         let offset = layout.field_offsets.get(field_idx).copied().unwrap_or(0) as i32;
-
         // Update current_ty to the field type for nested projections.
         if let Some(field) = arandu_semantics::layout::instantiated_field_type(
             &struct_ty,

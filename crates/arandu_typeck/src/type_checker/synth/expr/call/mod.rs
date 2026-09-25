@@ -209,6 +209,26 @@ pub(super) fn synth_call_expr(
             let inner_ty_id = synth_expr(checker, inner_id);
             let inner_ty = checker.resolve(inner_ty_id);
             Some(if let Some(ok_ty) = checker.try_ok_type(&inner_ty) {
+                let return_ty_id = checker.ctx.current_return();
+                let return_ty = return_ty_id.map(|id| checker.resolve(id));
+                let can_propagate = match (&inner_ty, return_ty.as_ref()) {
+                    (ArType::Result(_, inner_err), Some(ArType::Result(_, outer_err))) => {
+                        let inner_err = checker.resolve(*inner_err);
+                        let outer_err = checker.resolve(*outer_err);
+                        checker.is_assignable_return_type(&outer_err, &inner_err)
+                    }
+                    (ArType::Option(_), Some(ArType::Option(_))) => true,
+                    _ => false,
+                };
+                if !can_propagate {
+                    let found = return_ty_id.unwrap_or_else(|| checker.intern(ArType::Void));
+                    let return_span = checker.ctx.current_return_decl_span().unwrap_or(span);
+                    checker.add_constraint(
+                        ArType::Error,
+                        found,
+                        ConstraintOrigin::TryReturnInvalid { span, return_span },
+                    );
+                }
                 checker.intern(ok_ty)
             } else if inner_ty.is_error() {
                 checker.intern(ArType::Error)

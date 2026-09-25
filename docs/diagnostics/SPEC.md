@@ -255,7 +255,7 @@ Abaixo estão listados todos os diagnósticos mapeados para o compilador Arandu.
 | **T013** | `unknown named argument: '{name}'` | Error | `0.1.0` | Passagem de parâmetro nomeado que não corresponde a nenhum argumento na assinatura do método. |
 | **T014** | `invalid variadic type: expected '{expected}', found '{found}'` | Error | `0.1.0` | Passagem incorreta de argumentos para uma assinatura de função variádica. |
 | **T015** | `implicit widening of '{from_ty}' to '{to_ty}' is not allowed` | Warning | `0.1.0` | Tentativa de realizar coerção implícita que pode causar perda de precisão ou overflow (ex: `i32` para `i16`). |
-| **T016** | `try operator '?' cannot be used on type '{type}'` | Error | `0.1.0` | O operador de desempacotamento seguro `?` foi aplicado a um tipo que não é `Result` ou `Option`. |
+| **T016** | `the '?' operator can only be applied to Result<T,E> or Option<T>` / `the '?' operator cannot propagate into function return type '{type}'` | Error | `0.1.0` | O operador `?` exige um operando `Result`/`Option` e um tipo de retorno de função capaz de propagar o erro ou a ausência. |
 | **T017** | `cannot index type '{type}' with index of type '{index_ty}'` | Error | `0.1.0` | Tentativa de indexar um array ou coleção com um tipo não inteiro. |
 | **T018** | `no field '{field}' on type '{type}'` | Error | `0.1.0` | Acesso a um campo inexistente em uma instância de struct ou união. **Diferença de N010**: Ocorre na verificação de tipos após o receptor ser resolvido para um tipo concreto específico. |
 | **T019** | *[Movido → W006]* | - | `0.1.0` | *Código de resultado não tratado movido para a categoria de warnings e lints.* |

@@ -320,6 +320,7 @@ mod tests {
             literal_pool: AmirLiteralPool::default(),
             extern_funcs: rustc_hash::FxHashMap::default(),
             debug_bindings: Vec::new(),
+            debug_blocks: Vec::new(),
         };
 
         let dot = program.render_cfg_dot(&symbols, &interner);

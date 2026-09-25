@@ -47,8 +47,10 @@ pub const PRELUDE_MODULES: &[&str] = &["io", "err"];
 
 /// Members registered for each prelude module (must stay in sync with
 /// [`super::program::Resolver::define_prelude`]).
-const PRELUDE_MODULE_MEMBERS: &[(&str, &[&str])] =
-    &[("io", &["println", "create", "remove"]), ("err", &["new"])];
+const PRELUDE_MODULE_MEMBERS: &[(&str, &[&str])] = &[
+    ("io", &["println", "create", "remove", "eprint"]),
+    ("err", &["new"]),
+];
 
 /// Returns the prelude module name if `path` is a single-segment prelude path.
 #[must_use]

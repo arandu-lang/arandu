@@ -6,9 +6,50 @@ use cranelift_jit::JITBuilder;
 use super::isa::cached_host_isa;
 
 pub(crate) fn create_jit_builder() -> Result<JITBuilder, Diagnostic> {
+    create_jit_builder_with_io_println(crate::to_str_runtime::ar_jit_println as *const u8)
+}
+
+pub(crate) fn create_jit_builder_with_io_println(
+    io_println: *const u8,
+) -> Result<JITBuilder, Diagnostic> {
+    create_jit_builder_with_io_println_and_args_len(
+        io_println,
+        crate::os_runtime::ar_env_args_len as *const u8,
+    )
+}
+
+pub(crate) fn create_jit_builder_with_io_println_and_args_len(
+    io_println: *const u8,
+    args_len: *const u8,
+) -> Result<JITBuilder, Diagnostic> {
+    create_jit_builder_with_process_args(
+        io_println,
+        args_len,
+        crate::os_runtime::ar_env_arg as *const u8,
+    )
+}
+
+pub(crate) fn create_jit_builder_with_process_args(
+    io_println: *const u8,
+    args_len: *const u8,
+    args_arg: *const u8,
+) -> Result<JITBuilder, Diagnostic> {
+    create_jit_builder_with_io_and_process_args(
+        io_println,
+        crate::to_str_runtime::ar_jit_eprint as *const u8,
+        args_len,
+        args_arg,
+    )
+}
+
+pub(crate) fn create_jit_builder_with_io_and_process_args(
+    io_println: *const u8,
+    io_eprint: *const u8,
+    args_len: *const u8,
+    args_arg: *const u8,
+) -> Result<JITBuilder, Diagnostic> {
     let isa = cached_host_isa()?;
     let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
-
     // ToStr v0.1 host helpers (malloc-backed fat strings).
     builder.symbol(
         "ar_jit_i64_to_str",
@@ -31,12 +72,10 @@ pub(crate) fn create_jit_builder() -> Result<JITBuilder, Diagnostic> {
         crate::to_str_runtime::ar_jit_char_to_str as *const u8,
     );
 
-    // Prelude `io.println` (fat-pointer ABI: ptr + i64 len).
+    // Prelude string output uses the fat-pointer ABI: ptr + i64 len.
     builder.symbol("abort", std::process::abort as *const u8);
-    builder.symbol(
-        "io.println",
-        crate::to_str_runtime::ar_jit_println as *const u8,
-    );
+    builder.symbol("io.println", io_println);
+    builder.symbol("eprint", io_eprint);
     // Prelude `err.new(str) -> Err` (message handle = non-null ptr; fat-pointer str arg).
     builder.symbol(
         "err.new",
@@ -144,11 +183,8 @@ pub(crate) fn create_jit_builder() -> Result<JITBuilder, Diagnostic> {
         "ar_time_monotonic_ns",
         crate::os_runtime::ar_time_monotonic_ns as *const u8,
     );
-    builder.symbol(
-        "ar_env_args_len",
-        crate::os_runtime::ar_env_args_len as *const u8,
-    );
-    builder.symbol("ar_env_arg", crate::os_runtime::ar_env_arg as *const u8);
+    builder.symbol("ar_env_args_len", args_len);
+    builder.symbol("ar_env_arg", args_arg);
     builder.symbol(
         "ar_env_var_is_set",
         crate::os_runtime::ar_env_var_is_set as *const u8,
@@ -402,4 +438,11 @@ pub(crate) fn create_jit_builder() -> Result<JITBuilder, Diagnostic> {
     );
 
     Ok(builder)
+}
+
+pub(crate) fn register_block_coverage_symbol(builder: &mut JITBuilder) {
+    builder.symbol(
+        "arandu_smith_record_block_hit",
+        super::block_coverage::record_block_hit as *const u8,
+    );
 }

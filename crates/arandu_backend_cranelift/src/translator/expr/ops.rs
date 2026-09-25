@@ -55,14 +55,8 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             | arandu_semantics::ops::BinaryOp::LtEqual
             | arandu_semantics::ops::BinaryOp::Gt
             | arandu_semantics::ops::BinaryOp::GtEqual => {
-                let left_ty = match left {
-                    AmirOperand::Copy(t) | AmirOperand::Move(t) => self.get_temp_clif_type(*t),
-                    _ => None,
-                };
-                let right_ty = match right {
-                    AmirOperand::Copy(t) | AmirOperand::Move(t) => self.get_temp_clif_type(*t),
-                    _ => None,
-                };
+                let left_ty = self.get_operand_clif_type(left);
+                let right_ty = self.get_operand_clif_type(right);
                 left_ty.or(right_ty).or(expected_ty)
             }
             _ => None,

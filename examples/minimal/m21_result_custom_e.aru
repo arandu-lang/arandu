@@ -15,8 +15,11 @@ func err_a(): Result<int, E> {
 }
 
 func main(): int {
-    let x = ok_seven()?
+    let result = ok_seven()
     // err path is constructed; not forced at runtime
     let _ = err_a
-    return x
+    return match result {
+        Ok(value) => value
+        Err(_) => -1
+    }
 }

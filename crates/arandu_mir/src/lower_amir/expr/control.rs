@@ -18,8 +18,8 @@ impl LowerCtx<'_> {
         target: Option<TempId>,
         symbols: &SymbolTable,
     ) -> Result<AmirOperand, Diagnostic> {
-        let bb_then = self.new_block();
-        let bb_else = self.new_block();
+        let bb_then = self.new_block_at(self.hir.pool.block(then_block).span);
+        let bb_else = self.new_block_at(self.hir.pool.block(else_block).span);
         let bb_join = self.new_block();
 
         let dest = target.unwrap_or_else(|| self.new_temp_id(expr.ty));

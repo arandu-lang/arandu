@@ -21,20 +21,46 @@ impl<'a> FuncTranslator<'a> {
         self.code.push(Instruction::LocalSet(self.scratch_b));
         // Store each field.
         if let Some(fields_def) = self.layout_provider.get_struct_fields(struct_symbol) {
+            let owner_ty = self.interner.resolve(result_ty);
             for (name, operand) in fields {
                 let Some(field_info) = fields_def.get(name) else {
                     continue;
                 };
-                let field_ty = field_info.ty;
+                let field_ty = arandu_middle::layout::instantiated_field_type(
+                    &owner_ty,
+                    name.as_str(),
+                    self.interner,
+                    self.layout_provider,
+                )
+                .unwrap_or(field_info.ty);
                 let offset = layout
                     .field_offsets
                     .get(field_info.index)
                     .copied()
                     .unwrap_or(0);
-                // Push addr (scratch_b), then value, then store.
                 self.push_cell_addr();
-                self.emit_operand(operand, field_ty);
-                self.emit_store_value_at(field_ty, offset);
+                if self.is_owned_aggregate(field_ty) {
+                    let size = self.layout_of_id(field_ty).size as i32;
+                    self.code.push(Instruction::I32Const(offset as i32));
+                    self.code.push(Instruction::I32Add);
+                    self.code.push(Instruction::LocalSet(self.scratch_d));
+                    self.emit_operand(operand, field_ty);
+                    self.code.push(Instruction::LocalSet(self.scratch));
+                    self.code.push(Instruction::LocalGet(self.scratch_d));
+                    self.code.push(Instruction::LocalGet(self.scratch));
+                    self.code.push(Instruction::I32Const(size));
+                    self.code.push(Instruction::MemoryCopy {
+                        src_mem: 0,
+                        dst_mem: 0,
+                    });
+                    if matches!(operand, AmirOperand::Move(_)) {
+                        self.code.push(Instruction::LocalGet(self.scratch));
+                        self.code.push(Instruction::Call(self.free_func_idx));
+                    }
+                } else {
+                    self.emit_operand(operand, field_ty);
+                    self.emit_store_value_at(field_ty, offset);
+                }
             }
         }
         self.push_cell_addr();
@@ -51,8 +77,28 @@ impl<'a> FuncTranslator<'a> {
             let item_ty = self.operand_arity_ty(item);
             let offset = layout.field_offsets.get(i).copied().unwrap_or(0);
             self.push_cell_addr();
-            self.emit_operand(item, item_ty);
-            self.emit_store_value_at(item_ty, offset);
+            if self.is_owned_aggregate(item_ty) {
+                let size = self.layout_of_id(item_ty).size as i32;
+                self.code.push(Instruction::I32Const(offset as i32));
+                self.code.push(Instruction::I32Add);
+                self.code.push(Instruction::LocalSet(self.scratch_d));
+                self.emit_operand(item, item_ty);
+                self.code.push(Instruction::LocalSet(self.scratch));
+                self.code.push(Instruction::LocalGet(self.scratch_d));
+                self.code.push(Instruction::LocalGet(self.scratch));
+                self.code.push(Instruction::I32Const(size));
+                self.code.push(Instruction::MemoryCopy {
+                    src_mem: 0,
+                    dst_mem: 0,
+                });
+                if matches!(item, AmirOperand::Move(_)) {
+                    self.code.push(Instruction::LocalGet(self.scratch));
+                    self.code.push(Instruction::Call(self.free_func_idx));
+                }
+            } else {
+                self.emit_operand(item, item_ty);
+                self.emit_store_value_at(item_ty, offset);
+            }
         }
         self.push_cell_addr();
     }
@@ -73,8 +119,28 @@ impl<'a> FuncTranslator<'a> {
         for (i, item) in items.iter().enumerate() {
             let offset = (i as u64) * elem_layout.size;
             self.push_cell_addr();
-            self.emit_operand(item, elem_ty);
-            self.emit_store_value_at(elem_ty, offset);
+            if self.is_owned_aggregate(elem_ty) {
+                let size = elem_layout.size as i32;
+                self.code.push(Instruction::I32Const(offset as i32));
+                self.code.push(Instruction::I32Add);
+                self.code.push(Instruction::LocalSet(self.scratch_d));
+                self.emit_operand(item, elem_ty);
+                self.code.push(Instruction::LocalSet(self.scratch));
+                self.code.push(Instruction::LocalGet(self.scratch_d));
+                self.code.push(Instruction::LocalGet(self.scratch));
+                self.code.push(Instruction::I32Const(size));
+                self.code.push(Instruction::MemoryCopy {
+                    src_mem: 0,
+                    dst_mem: 0,
+                });
+                if matches!(item, AmirOperand::Move(_)) {
+                    self.code.push(Instruction::LocalGet(self.scratch));
+                    self.code.push(Instruction::Call(self.free_func_idx));
+                }
+            } else {
+                self.emit_operand(item, elem_ty);
+                self.emit_store_value_at(elem_ty, offset);
+            }
         }
         self.push_cell_addr();
     }
@@ -88,11 +154,29 @@ impl<'a> FuncTranslator<'a> {
     ) {
         let base_ty = self.operand_arity_ty(base);
         let owner_ty = self.strip_ref(base_ty).unwrap_or(base_ty);
-        self.emit_operand(base, base_ty);
         let owner = self.interner.resolve(owner_ty);
         let layout = self.layout_of(&owner);
         let offset = layout.field_offsets.get(field_index).copied().unwrap_or(0);
-        self.emit_load_value_at(result_ty, offset);
+        self.emit_operand(base, base_ty);
+        if self.is_owned_aggregate(result_ty) {
+            let size = self.layout_of_id(result_ty).size as i32;
+            self.code.push(Instruction::I32Const(offset as i32));
+            self.code.push(Instruction::I32Add);
+            self.code.push(Instruction::LocalSet(self.scratch_c));
+            self.alloc_cell(size);
+            self.code.push(Instruction::LocalGet(self.scratch));
+            self.code.push(Instruction::LocalSet(self.scratch_b));
+            self.code.push(Instruction::LocalGet(self.scratch_b));
+            self.code.push(Instruction::LocalGet(self.scratch_c));
+            self.code.push(Instruction::I32Const(size));
+            self.code.push(Instruction::MemoryCopy {
+                src_mem: 0,
+                dst_mem: 0,
+            });
+            self.code.push(Instruction::LocalGet(self.scratch_b));
+        } else {
+            self.emit_load_value_at(result_ty, offset);
+        }
     }
 
     /// Emit an index access: bounds-check then load the element.

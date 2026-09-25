@@ -55,7 +55,7 @@ pub(super) fn handle(
             let id = state.open_or_commit(&uri, params.text_document.text);
             state.mark_open(&uri);
             state.set_version(id, version);
-            spawn_diagnostics(state, pool, job_tx, uri, id);
+            spawn_open_diagnostics(state, pool, job_tx);
         }
         DidChangeTextDocument::METHOD => {
             let params: lsp_types::DidChangeTextDocumentParams =
@@ -95,17 +95,20 @@ pub(super) fn handle(
                     spawn_diagnostics(state, pool, job_tx, params.text_document.uri, id);
                 }
             } else {
-                for (uri, doc_id) in committed {
-                    spawn_diagnostics(state, pool, job_tx, uri, doc_id);
-                }
+                spawn_open_diagnostics(state, pool, job_tx);
             }
         }
         DidCloseTextDocument::METHOD => {
             let params: lsp_types::DidCloseTextDocumentParams =
                 not.extract(DidCloseTextDocument::METHOD)?;
             let uri = params.text_document.uri;
+            // Closing restores disk contents or unregisters the source, both
+            // of which mutate Salsa state. Retire snapshot-based requests
+            // before that write so stale workers cannot hold the writer barrier.
+            pool.cancel_requests();
             state.close_uri(&uri);
             publish_diagnostics(connection, uri, Vec::new(), None)?;
+            spawn_open_diagnostics(state, pool, job_tx);
         }
         DidCreateFiles::METHOD => {
             let params: lsp_types::CreateFilesParams = not.extract(DidCreateFiles::METHOD)?;

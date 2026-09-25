@@ -8,13 +8,14 @@ use crate::amir::{
     AmirFunc, AmirOperand, AmirRvalue, AmirStmt, BlockId, Dominators, InstrId, TempId,
 };
 use crate::ops::{BinaryOp, UnaryOp};
+use crate::types::TypeId;
 use rustc_hash::FxHashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum ValueExpr {
-    Unary(UnaryOp, TempId),
-    Binary(BinaryOp, TempId, TempId),
-    FieldAccess(TempId, usize),
+    Unary(UnaryOp, TempId, TypeId),
+    Binary(BinaryOp, TempId, TempId, TypeId),
+    FieldAccess(TempId, usize, TypeId),
 }
 
 /// Applies Global Value Numbering to `func`.
@@ -41,12 +42,15 @@ pub fn gvn(func: &mut AmirFunc) -> bool {
         for stmt_id in func.block_stmt_ids(bid) {
             if let AmirStmt::Assign { lhs, rhs } = func.stmt(stmt_id) {
                 let lhs = *lhs;
+                let Some(result_ty) = func.temps.get(lhs.as_usize()).map(|temp| temp.ty) else {
+                    continue;
+                };
                 if let AmirRvalue::Use(op) = rhs
                     && let Some(t) = canonicalize_temp(op, &temp_leader)
                 {
                     temp_leader[lhs.as_usize()] = t;
                 }
-                let expr = match to_value_expr(rhs, &temp_leader) {
+                let expr = match to_value_expr(rhs, &temp_leader, result_ty) {
                     Some(e) => e,
                     None => continue,
                 };
@@ -109,14 +113,18 @@ fn canonicalize_temp(op: &AmirOperand, temp_leader: &[TempId]) -> Option<TempId>
     }
 }
 
-fn to_value_expr(rvalue: &AmirRvalue, temp_leader: &[TempId]) -> Option<ValueExpr> {
+fn to_value_expr(
+    rvalue: &AmirRvalue,
+    temp_leader: &[TempId],
+    result_ty: TypeId,
+) -> Option<ValueExpr> {
     match rvalue {
         AmirRvalue::Use(_) => None,
         AmirRvalue::Unary { op, operand } => {
             // Only pure unary operators (deref and await are impure)
             if matches!(op, UnaryOp::Neg | UnaryOp::Not) {
                 let t = canonicalize_temp(operand, temp_leader)?;
-                Some(ValueExpr::Unary(*op, t))
+                Some(ValueExpr::Unary(*op, t, result_ty))
             } else {
                 None
             }
@@ -160,14 +168,14 @@ fn to_value_expr(rvalue: &AmirRvalue, temp_leader: &[TempId]) -> Option<ValueExp
                     std::mem::swap(&mut t_left, &mut t_right);
                 }
 
-                Some(ValueExpr::Binary(*op, t_left, t_right))
+                Some(ValueExpr::Binary(*op, t_left, t_right, result_ty))
             } else {
                 None
             }
         }
         AmirRvalue::FieldAccess { base, field } => {
             let t = canonicalize_temp(base, temp_leader)?;
-            Some(ValueExpr::FieldAccess(t, *field))
+            Some(ValueExpr::FieldAccess(t, *field, result_ty))
         }
         _ => None,
     }

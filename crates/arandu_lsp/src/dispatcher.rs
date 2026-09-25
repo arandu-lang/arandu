@@ -11,7 +11,7 @@
 //! cancel via `$/cancelRequest`, and saturation is answered with
 //! `ServerCancelled` instead of unbounded backlog.
 
-use crate::diagnostics::{publish_diagnostics, spawn_diagnostics, spawn_open_diagnostics};
+use crate::diagnostics::{publish_diagnostics, spawn_open_diagnostics};
 use crate::handlers;
 use crate::pool::{CancellationToken, JobKey, Priority, WorkerPool};
 use crate::state::{DocInfo, ServerState};
@@ -239,8 +239,8 @@ pub(crate) fn event_loop(
                     pool.cancel_requests();
                 }
                 let committed = state.flush_due();
-                for (uri, doc_id) in committed {
-                    spawn_diagnostics(state, pool, &job_tx, uri, doc_id);
+                if !committed.is_empty() {
+                    spawn_open_diagnostics(state, pool, &job_tx);
                 }
             }
         }
@@ -303,8 +303,8 @@ pub(crate) fn flush_for_request(
         pool.cancel_requests();
     }
     let committed = state.flush_all();
-    for (uri, doc_id) in committed {
-        spawn_diagnostics(state, pool, job_tx, uri, doc_id);
+    if !committed.is_empty() {
+        spawn_open_diagnostics(state, pool, job_tx);
     }
 }
 

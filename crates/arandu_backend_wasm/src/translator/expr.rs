@@ -141,10 +141,31 @@ impl<'a> FuncTranslator<'a> {
                 index: _,
             } => {
                 // Load the payload field from an enum cell at its layout offset.
-                self.emit_operand(value, result_ty);
-                let layout = self.layout_of_id(result_ty);
+                let operand_ty = self.operand_arity_ty(value);
+                let enum_ty = self.strip_ref(operand_ty).unwrap_or(operand_ty);
+                let layout = self.layout_of_id(enum_ty);
                 let payload_offset = layout.field_offsets.get(1).copied().unwrap_or(4);
-                self.emit_load_value_at(result_ty, payload_offset);
+                if self.is_owned_aggregate(result_ty) {
+                    let size = self.layout_of_id(result_ty).size as i32;
+                    self.emit_operand(value, operand_ty);
+                    self.code.push(Instruction::LocalSet(self.scratch_c));
+                    self.alloc_cell(size);
+                    self.code.push(Instruction::LocalGet(self.scratch));
+                    self.code.push(Instruction::LocalSet(self.scratch_b));
+                    self.code.push(Instruction::LocalGet(self.scratch_b));
+                    self.code.push(Instruction::LocalGet(self.scratch_c));
+                    self.code.push(Instruction::I32Const(payload_offset as i32));
+                    self.code.push(Instruction::I32Add);
+                    self.code.push(Instruction::I32Const(size));
+                    self.code.push(Instruction::MemoryCopy {
+                        src_mem: 0,
+                        dst_mem: 0,
+                    });
+                    self.code.push(Instruction::LocalGet(self.scratch_b));
+                } else {
+                    self.emit_operand(value, operand_ty);
+                    self.emit_load_value_at(result_ty, payload_offset);
+                }
             }
             AmirRvalue::StrView { owner } => {
                 // Pass through the owner fat pointer (data, len).
@@ -558,9 +579,19 @@ impl<'a> FuncTranslator<'a> {
             } if self
                 .interner
                 .slice_abi_element(self.operand_arity_ty(operand))
-                .is_some() =>
+                .is_some()
+                || self.is_str_reference(self.operand_arity_ty(operand)) =>
             {
-                self.emit_operand(operand, lhs_ty);
+                let operand_ty = self.operand_arity_ty(operand);
+                if self.is_str_reference(operand_ty) {
+                    // `ref str` is a thin pointer to a `(data, len)` descriptor,
+                    // unlike a reference to a slice, whose ABI is already fat.
+                    let str_ty = self.interner.intern(ArType::Primitive(Primitive::Str));
+                    self.emit_operand(operand, operand_ty);
+                    self.emit_load_value_at(str_ty, 0);
+                } else {
+                    self.emit_operand(operand, lhs_ty);
+                }
                 self.code.push(Instruction::LocalSet(local + 1));
                 self.code.push(Instruction::LocalSet(local));
             }
@@ -730,5 +761,16 @@ impl<'a> FuncTranslator<'a> {
             }
             _ => self.emit_zero_fat(local),
         }
+    }
+
+    fn is_str_reference(&self, ty: TypeId) -> bool {
+        let pointee = match self.interner.resolve(ty) {
+            ArType::Ref(inner) | ArType::RefMut(inner) => inner,
+            _ => return false,
+        };
+        matches!(
+            self.interner.resolve(pointee),
+            ArType::Primitive(Primitive::Str)
+        )
     }
 }

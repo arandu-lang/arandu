@@ -64,6 +64,7 @@ pub struct FunctionTranslator<'a, 'b, M: Module> {
     pub literal_pool: &'b arandu_semantics::literal_pool::AmirLiteralPool,
     pub current_func: &'b AmirFunc,
     pub type_info: &'b arandu_semantics::TypeInfo,
+    block_coverage: Option<(FuncId, u32, i64)>,
     pub(crate) debug_locations: Option<&'b mut Vec<Span>>,
     debug_temp_locals: Option<FxHashMap<TempId, Vec<LocalId>>>,
     current_debug_location: Option<u32>,
@@ -100,6 +101,7 @@ impl<'a, 'b, M: Module> FunctionTranslator<'a, 'b, M> {
         type_info: &'b arandu_semantics::TypeInfo,
         debug_locations: Option<&'b mut Vec<Span>>,
         debug_bindings: &'b [AmirDebugBinding],
+        block_coverage: Option<(FuncId, u32, i64)>,
     ) -> Self {
         let debug_temp_locals = debug_locations.as_ref().map(|_| {
             let mut by_temp = FxHashMap::<TempId, Vec<LocalId>>::default();
@@ -128,6 +130,7 @@ impl<'a, 'b, M: Module> FunctionTranslator<'a, 'b, M> {
             literal_pool,
             current_func,
             type_info,
+            block_coverage,
             debug_locations,
             debug_temp_locals,
             current_debug_location: None,
@@ -256,6 +259,18 @@ impl<'a, 'b, M: Module> FunctionTranslator<'a, 'b, M> {
                     ClifType::Void => None,
                 }
             })
+    }
+
+    pub(crate) fn get_operand_clif_type(&self, operand: &AmirOperand) -> Option<Type> {
+        match operand {
+            AmirOperand::Copy(temp_id) | AmirOperand::Move(temp_id) => {
+                self.get_temp_clif_type(*temp_id)
+            }
+            _ => match clif_type(&self.get_operand_ar_type(operand), self.ptr_type) {
+                ClifType::Concrete(ty) => Some(ty),
+                ClifType::Void => None,
+            },
+        }
     }
 
     pub(crate) fn func_span(&self) -> Span {
@@ -518,6 +533,33 @@ impl<'a, 'b, M: Module> AmirVisitor for FunctionTranslator<'a, 'b, M> {
         }
         let clif_block = self.block_map[&block.id];
         self.builder.switch_to_block(clif_block);
+        if let Some((coverage_func, function_index, session_id)) = self.block_coverage {
+            let Ok(block_index) = i64::try_from(block.id.as_usize()) else {
+                self.record_ice(
+                    "AMIR block index exceeds the JIT coverage ABI",
+                    self.func_span(),
+                );
+                return;
+            };
+            let func_ref = self
+                .module
+                .declare_func_in_func(coverage_func, self.builder.func);
+            let session_id = self
+                .builder
+                .ins()
+                .iconst(cranelift_codegen::ir::types::I64, session_id);
+            let function_index = self
+                .builder
+                .ins()
+                .iconst(cranelift_codegen::ir::types::I64, i64::from(function_index));
+            let block_index = self
+                .builder
+                .ins()
+                .iconst(cranelift_codegen::ir::types::I64, block_index);
+            self.builder
+                .ins()
+                .call(func_ref, &[session_id, function_index, block_index]);
+        }
 
         if block.id.as_usize() == 0 {
             for local in &self.current_func.locals {

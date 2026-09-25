@@ -307,10 +307,14 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 let local_ref = self.module.declare_func_in_func(func_id, self.builder.func);
                 self.builder.ins().func_addr(self.ptr_type, local_ref)
             }
-            AmirOperand::GlobalRef(_) => {
+            AmirOperand::GlobalRef(symbol) => {
+                let symbol = self.symbol_table.get(*symbol);
                 self.record_ice(
-                    "GlobalRef as operand should not appear after BC.2.2 zero-payload tuple fix.",
-                    self.func_span(),
+                    format!(
+                        "global reference '{}' reached Cranelift value translation; global operands are unsupported",
+                        symbol.name
+                    ),
+                    symbol.span,
                 );
                 self.poison_i32()
             }

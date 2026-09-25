@@ -90,6 +90,9 @@ pub enum ConstraintOrigin {
     /// `expr?` applied to a type that is neither `Result` nor `Option`.
     TryInvalid { span: Span },
 
+    /// `expr?` cannot propagate into the enclosing function's return type.
+    TryReturnInvalid { span: Span, return_span: Span },
+
     /// `await expr` applied to a type that is not a `Coroutine`.
     AwaitInvalid { span: Span },
 
@@ -151,6 +154,7 @@ impl ConstraintOrigin {
             ConstraintOrigin::LiteralPromotion { target_span, .. } => *target_span,
             ConstraintOrigin::Condition { span }
             | ConstraintOrigin::TryInvalid { span }
+            | ConstraintOrigin::TryReturnInvalid { span, .. }
             | ConstraintOrigin::AwaitInvalid { span }
             | ConstraintOrigin::InvalidIndex {
                 index_span: span, ..

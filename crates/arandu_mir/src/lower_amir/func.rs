@@ -6,20 +6,28 @@ use crate::hir::{HirBlockId, HirFunc, HirProgram};
 use crate::literal_pool::AmirLiteralPool;
 use rustc_hash::{FxHashMap, FxHashSet};
 
+type LoweredFunction = (
+    AmirFunc,
+    Vec<(TempId, crate::amir::LocalId)>,
+    Vec<arandu_lexer::Span>,
+);
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn lower_func(
     f: &HirFunc,
     body: HirBlockId,
     tc: &TypeCheckResult,
     hir: &HirProgram,
+    const_values: &FxHashMap<crate::SymbolId, crate::hir::HirExprId>,
     arg_modes: &CalleeArgModes,
     literal_pool: &mut AmirLiteralPool,
     func_diagnostics: &mut Vec<Diagnostic>,
     pointer_width: u64,
-) -> Result<(AmirFunc, Vec<(TempId, crate::amir::LocalId)>), Diagnostic> {
+) -> Result<LoweredFunction, Diagnostic> {
     let mut ctx = LowerCtx {
         tc,
         hir,
+        const_values,
         arg_modes,
         func_return_type: f.return_type,
         func_is_async: f.is_async,
@@ -64,7 +72,8 @@ pub(crate) fn lower_func(
     let mut params = Vec::new();
     let mut receiver = None;
 
-    // Start with bb0 so we can emit parameter store instructions there
+    // Start with bb0 so we can emit parameter store instructions there.
+    ctx.current_span = f.span;
     let bb0 = ctx.new_block();
     ctx.sealed_blocks.insert(bb0);
     ctx.builder.current_block = Some(bb0);
@@ -212,7 +221,8 @@ pub(crate) fn lower_func(
 
     promote_escaped_coroutines(&mut amir_f);
 
-    Ok((amir_f, debug_bindings))
+    let debug_block_spans = std::mem::take(&mut ctx.builder.debug_block_spans);
+    Ok((amir_f, debug_bindings, debug_block_spans))
 }
 
 fn promote_escaped_coroutines(func: &mut AmirFunc) {

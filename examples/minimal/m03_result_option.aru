@@ -4,7 +4,14 @@ func ok_seven(): Result<int, Err> {
     return .Ok(7)
 }
 
+func extract_seven(): Result<int, Err> {
+    let value = ok_seven()?
+    return .Ok(value)
+}
+
 func main(): int {
-    let v = ok_seven()?
-    return v
+    return match extract_seven() {
+        Ok(value) => value
+        Err(_) => 0
+    }
 }

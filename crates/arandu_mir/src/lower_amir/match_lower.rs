@@ -179,7 +179,7 @@ impl LowerCtx<'_> {
             .into_iter()
             .map(|(tag, arm_index)| SwitchArm {
                 value: tag as i128,
-                block: self.new_block(),
+                block: self.new_block_at(arms[arm_index].span),
                 arm_index,
             })
             .collect();
@@ -222,7 +222,7 @@ impl LowerCtx<'_> {
             .into_iter()
             .map(|(value, arm_index)| SwitchArm {
                 value,
-                block: self.new_block(),
+                block: self.new_block_at(arms[arm_index].span),
                 arm_index,
             })
             .collect();
@@ -359,7 +359,7 @@ impl LowerCtx<'_> {
     ) -> Result<(), Diagnostic> {
         for (i, &idx) in indices.iter().enumerate() {
             let arm = &arms[idx];
-            let bb_match = self.new_block();
+            let bb_match = self.new_block_at(arm.span);
             let bb_next = self.new_block();
             let pattern = self.hir.pool.pattern(arm.pattern);
             let is_match = self.lower_pattern_match(scrutinee, pattern, symbols)?;
@@ -417,7 +417,7 @@ impl LowerCtx<'_> {
     ) -> Result<(), Diagnostic> {
         for (i, &idx) in indices.iter().enumerate() {
             let arm = &arms[idx];
-            let bb_match = self.new_block();
+            let bb_match = self.new_block_at(arm.span);
             let bb_next = self.new_block();
 
             let pattern = self.hir.pool.pattern(arm.pattern);

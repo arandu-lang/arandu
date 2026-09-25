@@ -145,6 +145,16 @@ public func clear<K, V>(self: mut ref HashMap<K, V>): void {
     self.len = 0
 }
 
+/// Releases the bucket buffer owned by the map.
+///
+/// All entries are cleared before the backing vector is destroyed. The map
+/// value is consumed and cannot be used after this call.
+@Destructor
+public func HashMap.destroy<K, V>(self: own HashMap<K, V>): void {
+    clear(self)
+    vec.destroy<Option<Entry<K, V>>>(self.buckets)
+}
+
 /// Doubles the bucket array and reinserts all existing entries.
 ///
 /// An empty map receives eight buckets. This allocates a new array and takes

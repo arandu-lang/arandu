@@ -105,6 +105,14 @@ curadas e descrições curtas). Nunca misture os dois idiomas no mesmo bloco.
 - `//!` em itens ou `///` solto no topo: funciona por fallback, mas esconde
   a intenção. Posição canônica sempre.
 
+## PONTOS DE MELHORIA (O que não está no roadmap)
+
+O formato atual documenta convenções, mas ainda não valida automaticamente a
+posição de `//!`, títulos H1 redundantes ou exemplos de documentação. A extração
+de metadados de plataforma para selos estruturados também não faz parte do
+contrato atual. Essas ideias permanecem melhorias exploratórias: não são
+pré-requisitos para hover, `arandu doc` ou renderização dos comentários atuais.
+
 ## Futuro e Próximos Passos
 
 - Parse do micro-formato de plataforma em selos estruturados (site + JSON).

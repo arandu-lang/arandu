@@ -191,7 +191,12 @@ impl LowerCtx<'_> {
             },
         );
 
-        let bb_err = self.new_block();
+        let bb_err = match handler {
+            HirCatchHandler::Block { block, .. } => {
+                self.new_block_at(self.hir.pool.block(*block).span)
+            }
+            HirCatchHandler::Expr(_) => self.new_block(),
+        };
         let bb_ok = self.new_block();
         let bb_join = self.new_block();
 

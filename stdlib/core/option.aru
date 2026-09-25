@@ -57,7 +57,7 @@ public enum Option<T> {
 ///
 /// # Complexity
 /// Time: O(1) | Space: O(1)
-public func Option.isSome<T>(self: ref Option): bool {
+public func Option.isSome<T>(self: ref Option<T>): bool {
     match self {
         Some(_) => {
             return true
@@ -78,7 +78,7 @@ public func Option.isSome<T>(self: ref Option): bool {
 ///
 /// # Complexity
 /// Time: O(1) | Space: O(1)
-public func Option.isNone<T>(self: ref Option): bool {
+public func Option.isNone<T>(self: ref Option<T>): bool {
     match self {
         Some(_) => {
             return false
@@ -101,7 +101,7 @@ public func Option.isNone<T>(self: ref Option): bool {
 ///
 /// # Complexity
 /// Time: O(1) | Space: O(1)
-public func Option.unwrapOr<T>(self: own Option, defaultVal: T): T {
+public func Option.unwrapOr<T>(self: own Option<T>, defaultVal: T): T {
     match self {
         Some(v) => {
             return v
@@ -124,7 +124,7 @@ public func Option.unwrapOr<T>(self: own Option, defaultVal: T): T {
 ///
 /// # Complexity
 /// Time: O(1) | Space: O(1)
-public func Option.expectOrAbort<T>(self: own Option, reason: str): T {
+public func Option.expectOrAbort<T>(self: own Option<T>, reason: str): T {
     match self {
         Some(v) => {
             return v

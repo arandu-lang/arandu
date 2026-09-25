@@ -203,7 +203,18 @@ pub(crate) fn collect_type_shapes(checker: &mut TypeChecker<'_>, program: &Progr
                 }
             }
             TopLevelDecl::Const(const_decl) => {
-                if let Some(ty_expr) = const_decl.ty {
+                // A cast gives an unannotated constant a statically knowable
+                // type. Publish it with signatures so sibling function bodies
+                // can type-check references before the constant's body shard is
+                // merged (e.g. a `uint` capacity bound used in a condition).
+                let declared_ty =
+                    const_decl
+                        .ty
+                        .or_else(|| match checker.pool.expr(const_decl.value) {
+                            arandu_parser::ExprKind::Cast { ty, .. } => Some(*ty),
+                            _ => None,
+                        });
+                if let Some(ty_expr) = declared_ty {
                     let const_ty = checker.lower_type_expr(ty_expr, checker.symbols.global_scope());
                     let const_key = crate::NodeKey::from(const_decl.span);
                     if let Some(symbol_id) = checker.resolved.definitions.get(&const_key).copied() {

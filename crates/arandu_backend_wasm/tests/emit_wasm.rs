@@ -55,6 +55,7 @@ fn make_empty_program() -> (AmirProgram, SymbolTable, TypeInterner) {
         literal_pool: AmirLiteralPool::default(),
         extern_funcs: Default::default(),
         debug_bindings: Vec::new(),
+        debug_blocks: Vec::new(),
     };
     let symbols = SymbolTable::new(0);
     (program, symbols, interner)
@@ -129,6 +130,7 @@ fn single_void_func_produces_valid_wasm() {
         literal_pool: AmirLiteralPool::default(),
         extern_funcs: Default::default(),
         debug_bindings: Vec::new(),
+        debug_blocks: Vec::new(),
     };
 
     let provider = empty_provider();
@@ -154,6 +156,7 @@ fn single_void_func_passes_wasmparser() {
         literal_pool: AmirLiteralPool::default(),
         extern_funcs: Default::default(),
         debug_bindings: Vec::new(),
+        debug_blocks: Vec::new(),
     };
 
     let provider = empty_provider();
@@ -183,6 +186,7 @@ fn wasm_emit_backend_roundtrip() {
         literal_pool: AmirLiteralPool::default(),
         extern_funcs: Default::default(),
         debug_bindings: Vec::new(),
+        debug_blocks: Vec::new(),
     };
 
     let type_info = arandu_semantics::TypeInfo::new();
@@ -235,6 +239,7 @@ fn func_with_i32_param_passes_wasmparser() {
         literal_pool: AmirLiteralPool::default(),
         extern_funcs: Default::default(),
         debug_bindings: Vec::new(),
+        debug_blocks: Vec::new(),
     };
 
     let provider = empty_provider();

@@ -5,8 +5,8 @@
 //! SSA-like AMIR basic blocks. Aborts early if type-checking already failed.
 
 use crate::amir::{
-    AmirBasicBlock, AmirDebugBinding, AmirFunc, AmirLocal, AmirOperand, AmirProgram, AmirRvalue,
-    AmirStmt, AmirStmtTable, AmirTemp, BlockId, LocalId, TempId,
+    AmirBasicBlock, AmirDebugBinding, AmirDebugBlock, AmirFunc, AmirLocal, AmirOperand,
+    AmirProgram, AmirRvalue, AmirStmt, AmirStmtTable, AmirTemp, BlockId, LocalId, TempId,
 };
 use crate::diagnostics::{DiagCode, Diagnostic, Severity};
 use crate::hir::{HirBlock, HirDecl, HirFunc, HirProgram};
@@ -76,7 +76,16 @@ pub fn lower_to_amir_with_interfaces(
     let mut diagnostics = Vec::new();
     let mut literal_pool = AmirLiteralPool::default();
     let mut debug_bindings = Vec::new();
+    let mut debug_blocks = Vec::new();
     let mut no_fallback = FxHashMap::default();
+    let const_values: FxHashMap<SymbolId, crate::hir::HirExprId> = hir
+        .decls
+        .iter()
+        .filter_map(|&decl_id| match hir.pool.decl(decl_id) {
+            HirDecl::Const(decl) => Some((decl.symbol, decl.value)),
+            _ => None,
+        })
+        .collect();
     // Single post-mono table: receiver Shared/Mut/Own → Copy vs Move at call sites.
     let arg_modes = CalleeArgModes::from_hir(hir, &tc.type_info.type_interner);
 
@@ -98,12 +107,13 @@ pub fn lower_to_amir_with_interfaces(
                 *body,
                 tc,
                 hir,
+                &const_values,
                 &arg_modes,
                 &mut literal_pool,
                 &mut diagnostics,
                 pointer_width,
             ) {
-                Ok((amir_f, local_debug_bindings)) => {
+                Ok((amir_f, local_debug_bindings, block_spans)) => {
                     debug_bindings.extend(local_debug_bindings.into_iter().map(|(temp, local)| {
                         AmirDebugBinding {
                             function: f.symbol,
@@ -111,6 +121,13 @@ pub fn lower_to_amir_with_interfaces(
                             local,
                         }
                     }));
+                    debug_blocks.extend(block_spans.into_iter().enumerate().map(
+                        |(index, span)| AmirDebugBlock {
+                            function: f.symbol,
+                            block: BlockId::from_usize(index),
+                            span,
+                        },
+                    ));
                     funcs.push(amir_f);
                 }
                 Err(diag) => diagnostics.push(diag),
@@ -144,6 +161,7 @@ pub fn lower_to_amir_with_interfaces(
             literal_pool,
             extern_funcs,
             debug_bindings,
+            debug_blocks,
         };
 
         let solution =
@@ -308,6 +326,7 @@ pub(crate) struct DeferFrame {
 pub(crate) struct LowerCtx<'a> {
     tc: &'a TypeCheckResult,
     hir: &'a HirProgram,
+    const_values: &'a FxHashMap<SymbolId, crate::hir::HirExprId>,
     /// Shared/mut/own modes for every callable (incl. mono specializations).
     arg_modes: &'a CalleeArgModes,
     func_return_type: crate::types::TypeId,

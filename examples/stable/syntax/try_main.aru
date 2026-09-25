@@ -9,12 +9,16 @@ func loadFail(): Result<int, Err> {
     return Result.Err(err.new("missingPath"))
 }
 
-func doubleOk(): int {
-    return loadOk()? * 2
+func doubleOk(): Result<int, Err> {
+    let value = loadOk()?
+    return Result.Ok(value * 2)
 }
 
 func main(): int {
-    let v = doubleOk()
+    let v = match doubleOk() {
+        Ok(value) => value
+        Err(_) => 0
+    }
     let _, e = loadFail()
     if e != nil {
         // Err handle is non-nil when loadFail builds err.new(...)

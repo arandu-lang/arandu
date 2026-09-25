@@ -1481,7 +1481,8 @@ fn compile_generic_work_thunk() -> (AmirProgram, TypeCheckResult, String) {
         .iter()
         .filter_map(|f| {
             let name = tc.symbols.host_func_name(tc.symbols.get(f.symbol));
-            name.contains("_A$dispatch$I_").then(|| name.to_string())
+            name.contains("_A$std.core.workthunk.dispatch$I_")
+                .then(|| name.to_string())
         })
         .next()
         .expect("monomorphized dispatch instance missing");

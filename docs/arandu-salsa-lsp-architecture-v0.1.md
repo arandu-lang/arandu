@@ -74,6 +74,11 @@ impedem o LSP de publicar resultados de buffers/revisões obsoletos.
    antes da fila ampla, coalesce diagnósticos por `DocumentId` e cancela
    requests obsoletos antes de uma revisão nova. `$/cancelRequest` responde
    com `RequestCancelled`, inclusive quando o job ainda não começou.
+   Cada commit de fonte avança a revisão compartilhada da análise; por isso,
+   diagnósticos pendentes de todos os documentos abertos são coalescidos e
+   reagendados após commits, saves, opens e closes. Resultados da revisão
+   anterior continuam descartados, mas não deixam um importador aberto sem
+   diagnóstico da revisão atual.
 8. O servidor negocia UTF-16 explicitamente e todas as conversões entre bytes
    UTF-8 e posições LSP passam pelo mesmo `LineIndex`; semantic tokens usam
    comprimentos UTF-16 e são divididos por linha.

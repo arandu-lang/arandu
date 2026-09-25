@@ -152,6 +152,31 @@ pub fn ar_is_float(ty: TypeId, interner: &TypeInterner) -> bool {
     })
 }
 
+/// Whether a type has an integer scalar representation suitable for integer
+/// width conversion. Aggregates and pointers are intentionally excluded.
+#[must_use]
+pub fn ar_is_integer(ty: TypeId, interner: &TypeInterner) -> bool {
+    interner.with_type(ty, |ar| match ar {
+        ArType::IntLiteral => true,
+        ArType::Primitive(p) => matches!(
+            p,
+            Primitive::I8
+                | Primitive::U8
+                | Primitive::I16
+                | Primitive::U16
+                | Primitive::I32
+                | Primitive::U32
+                | Primitive::I64
+                | Primitive::U64
+                | Primitive::Int
+                | Primitive::Uint
+                | Primitive::Byte
+                | Primitive::Char
+        ),
+        _ => false,
+    })
+}
+
 /// Whether the value is stored in a 64-bit wasm slot.
 #[must_use]
 pub fn ar_is_64bit(ty: TypeId, interner: &TypeInterner, layout: DataLayout) -> bool {

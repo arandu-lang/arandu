@@ -98,6 +98,7 @@ import io
 
 func main() {
     io.println("done")
+    io.eprint("error")
 }
 "#,
     );
@@ -142,6 +143,10 @@ func main() {
     assert!(
         tc.symbols.lookup_module_member("io", "println").is_some(),
         "expected prelude member `io.println`"
+    );
+    assert!(
+        tc.symbols.lookup_module_member("io", "eprint").is_some(),
+        "expected prelude member `io.eprint`"
     );
     assert!(
         tc.symbols.lookup_module_member("err", "new").is_some(),

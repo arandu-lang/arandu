@@ -232,15 +232,12 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     .and_then(|temp| self.get_temp_clif_type(temp))
                     .unwrap_or(self.ptr_type);
                 let pointee = self.ptr_pointee_ty(&args[0]);
-                // Named-struct presents a raw-memory value at `*p`. The JIT
-                // stores aggregates behind object pointers, so reading a struct
-                // by value must copy the payload bytes into a fresh blob and
-                // return its address; otherwise the load would leak the value
-                // bits into the pointer slot (WorkThunk ABI divergence).
-                if matches!(
-                    pointee,
-                    ArType::Named(_, _) if self.is_named_struct_ty(&pointee)
-                ) && let Some(value) = self.materialize_ptr_read_copy(ptr_val, &pointee)
+                // Named aggregates present raw-memory values at `*p`. The JIT
+                // represents them as pointers, so read the full payload into a
+                // fresh blob rather than loading only the first pointer-sized
+                // word (which truncates enums and larger aggregates).
+                if self.is_inline_aggregate_ty(&pointee)
+                    && let Some(value) = self.materialize_ptr_read_copy(ptr_val, &pointee)
                 {
                     if let Some(lhs_temp) = lhs
                         && let Some(&var) = self.temp_map.get(lhs_temp)
@@ -272,17 +269,17 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 // object bytes from the value's blob into `*p` instead of
                 // storing the 8-byte object pointer.
                 let val_ty = self.get_operand_ar_type(&args[1]);
-                if self.is_named_struct_ty(&val_ty)
-                    && let Some(memcpy_id) = self.memcpy_func_id()
+                if self.is_inline_aggregate_ty(&val_ty)
+                    && let Some(memmove_id) = self.memmove_func_id()
                 {
                     let layout = self.checked_layout(&val_ty);
-                    let memcpy_ref = self
+                    let memmove_ref = self
                         .module
-                        .declare_func_in_func(memcpy_id, self.builder.func);
+                        .declare_func_in_func(memmove_id, self.builder.func);
                     let size_val = self.builder.ins().iconst(self.ptr_type, layout.size as i64);
                     self.builder
                         .ins()
-                        .call(memcpy_ref, &[ptr_val, val_to_store, size_val]);
+                        .call(memmove_ref, &[ptr_val, val_to_store, size_val]);
                     return true;
                 }
                 self.builder.ins().store(
@@ -382,9 +379,21 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         )
     }
 
-    /// Whether `ty` is stored inline as an aggregate (struct, tuple, array, slice).
+    /// Whether `ty` is stored inline as an aggregate (struct, enum, tuple, array, slice).
     pub(super) fn is_inline_aggregate_ty(&self, ty: &ArType) -> bool {
         self.is_named_struct_ty(ty)
+            || matches!(
+                ty,
+                ArType::Named(sym_id, _)
+                    if matches!(
+                        self.symbol_table.get(*sym_id).kind,
+                        arandu_semantics::SymbolKind::Enum
+                    )
+            )
+            || matches!(
+                ty,
+                ArType::Option(_) | ArType::Result(_, _) | ArType::Poll(_)
+            )
             || matches!(
                 ty,
                 ArType::Tuple(_)

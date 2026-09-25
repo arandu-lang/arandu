@@ -40,7 +40,9 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 .declare_func_in_func(malloc_id, self.builder.func);
             let size_val = self.builder.ins().iconst(self.ptr_type, size as i64);
             let call = self.builder.ins().call(malloc_ref, &[size_val]);
-            self.builder.inst_results(call)[0]
+            let ptr = self.builder.inst_results(call)[0];
+            self.trap_if_null(ptr);
+            ptr
         };
 
         // disc = 0 (Ready)

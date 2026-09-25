@@ -10,7 +10,7 @@
 //!
 //! Import it explicitly — nothing here is injected implicitly. The only names
 //! the compiler provides without `import` are the `io` and `err` builtins
-//! (`io.println`, `err.new`).
+//! (`io.println`, `io.eprint`, `err.new`).
 //!
 //! ## Platform
 //! `native` · `wasm32` · `bare-metal`

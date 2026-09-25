@@ -93,8 +93,24 @@ impl<'a> FuncTranslator<'a> {
                     self.emit_operand(arg, int_ty);
                     if let Some(temp) = lhs {
                         let temp_ty = self.func.temps[temp.as_usize()].ty;
-                        self.emit_load_value_at(temp_ty, 0);
                         let local = self.temp_local.get(&temp).copied().unwrap_or(0);
+                        if self.is_owned_aggregate(temp_ty) {
+                            let size = self.layout_of_id(temp_ty).size as i32;
+                            self.code.push(Instruction::LocalSet(self.scratch_c));
+                            self.alloc_cell(size);
+                            self.code.push(Instruction::LocalGet(self.scratch));
+                            self.code.push(Instruction::LocalSet(self.scratch_b));
+                            self.code.push(Instruction::LocalGet(self.scratch_b));
+                            self.code.push(Instruction::LocalGet(self.scratch_c));
+                            self.code.push(Instruction::I32Const(size));
+                            self.code.push(Instruction::MemoryCopy {
+                                src_mem: 0,
+                                dst_mem: 0,
+                            });
+                            self.code.push(Instruction::LocalGet(self.scratch_b));
+                        } else {
+                            self.emit_load_value_at(temp_ty, 0);
+                        }
                         let shape =
                             types::shape(temp_ty, self.interner, self.layout_engine.data_layout);
                         match shape {
@@ -118,8 +134,22 @@ impl<'a> FuncTranslator<'a> {
                     let int_ty = self.interner.intern(ArType::Primitive(Primitive::Int));
                     let val_ty = self.operand_arity_ty(&args[1]);
                     self.emit_operand(&args[0], int_ty);
-                    self.emit_operand(&args[1], val_ty);
-                    self.emit_store_value_at(val_ty, 0);
+                    if self.is_owned_aggregate(val_ty) {
+                        let size = self.layout_of_id(val_ty).size as i32;
+                        self.code.push(Instruction::LocalSet(self.scratch_b));
+                        self.emit_operand(&args[1], val_ty);
+                        self.code.push(Instruction::LocalSet(self.scratch));
+                        self.code.push(Instruction::LocalGet(self.scratch_b));
+                        self.code.push(Instruction::LocalGet(self.scratch));
+                        self.code.push(Instruction::I32Const(size));
+                        self.code.push(Instruction::MemoryCopy {
+                            src_mem: 0,
+                            dst_mem: 0,
+                        });
+                    } else {
+                        self.emit_operand(&args[1], val_ty);
+                        self.emit_store_value_at(val_ty, 0);
+                    }
                 }
                 true
             }
@@ -293,12 +323,15 @@ impl<'a> FuncTranslator<'a> {
                 true
             }
             IntrinsicKind::StrView => {
-                if let Some(arg) = args.first() {
+                if let Some(arg) = args.first()
+                    && let Some(temp) = lhs
+                {
+                    let local = self.temp_local.get(&temp).copied().unwrap_or(0);
                     let str_ty = self.operand_arity_ty(arg);
-                    if let Some(temp) = lhs {
-                        let local = self.temp_local.get(&temp).copied().unwrap_or(0);
-                        self.emit_operand_to_local(arg, str_ty, local);
-                    }
+                    // Owned strings begin with their borrowed `(data, len)`
+                    // descriptor, so a reference to the owner also points
+                    // at the corresponding `str` view.
+                    self.emit_operand_to_local(arg, str_ty, local);
                 }
                 true
             }

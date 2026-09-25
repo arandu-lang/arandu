@@ -1311,7 +1311,7 @@ fn jit_err_new_is_non_nil_handle() {
         }
 
         func main(): int {
-            let v = ok()?
+            let v = ok() catch 0
             let _, e = fail()
             if e != nil {
                 return v
@@ -1587,6 +1587,7 @@ fn jit_gen_insert_get_copy_tuple() {
         literal_pool: pool,
         extern_funcs: Default::default(),
         debug_bindings: Vec::new(),
+        debug_blocks: Vec::new(),
     };
     let type_info = arandu_semantics::TypeInfo {
         type_interner: interner,
@@ -1727,6 +1728,7 @@ fn jit_vec_legacy_handle_len_abi() {
         literal_pool: pool,
         extern_funcs: Default::default(),
         debug_bindings: Vec::new(),
+        debug_blocks: Vec::new(),
     };
     let type_info = arandu_semantics::TypeInfo {
         type_interner: interner,

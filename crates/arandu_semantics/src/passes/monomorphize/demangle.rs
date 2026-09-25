@@ -9,7 +9,10 @@ pub fn mangle_symbol(
     interner: &TypeInterner,
     symbols: &SymbolTable,
 ) -> String {
-    let name = &symbols.get(key.symbol).name;
+    // A function's source name is only unique inside its module. Generic
+    // instances from different modules must remain distinct in the shared HIR
+    // and in emitted backends even when both declarations are named `len`.
+    let name = symbols.host_func_name(symbols.get(key.symbol));
     let mut mangled = format!("_A${name}$I_");
     for (i, &tid) in key.type_args.iter().enumerate() {
         if i > 0 {

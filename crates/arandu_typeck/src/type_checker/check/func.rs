@@ -54,6 +54,26 @@ fn validate_method_receiver(checker: &mut TypeChecker<'_>, decl: &FuncDecl) {
         ArType::Ref(inner) | ArType::RefMut(inner) => checker.resolve(inner),
         other => other,
     };
+    // The core algebraic types have intrinsic ArType variants even when their
+    // stdlib methods are declared in a module as `Option<T>` / `Result<T, E>`.
+    // The method owner (`Option.isSome`) lowers as a nominal, uninstantiated
+    // name, while the receiver type lowers to ArType::Option<T>. Once the
+    // owner symbol has been validated against the receiver kind, compare the
+    // intrinsic receiver with itself instead of reporting a false mismatch.
+    if let ArType::Named(owner, _) = recv_ty {
+        let intrinsic_receiver = match &self_ty {
+            ArType::Option(_) if checker.symbols.is_option_type(owner) => Some(self_ty.clone()),
+            ArType::Result(_, _) if checker.symbols.is_result_type(owner) => Some(self_ty.clone()),
+            ArType::Poll(_) if checker.symbols.is_poll_type(owner) => Some(self_ty.clone()),
+            ArType::Coroutine(_) if checker.symbols.is_coroutine_type(owner) => {
+                Some(self_ty.clone())
+            }
+            _ => None,
+        };
+        if let Some(intrinsic_receiver) = intrinsic_receiver {
+            recv_ty = intrinsic_receiver;
+        }
+    }
     if let ArType::Named(struct_id, ref args) = self_ty
         && args.is_empty()
         && let Some(struct_params) = checker.type_info.generic_params.get(&struct_id).cloned()

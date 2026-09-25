@@ -57,7 +57,7 @@ func main(): int { return left.leftValue() + right.rightValue() }
         .symbols
         .iter()
         .filter(|symbol| {
-            symbol.kind == SymbolKind::Func && symbol.name.starts_with("_A$identity$I_")
+            symbol.kind == SymbolKind::Func && symbol.name.starts_with("_A$generic.identity$I_int_")
         })
         .map(|symbol| symbol.id)
         .collect();

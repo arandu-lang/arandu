@@ -73,7 +73,7 @@ public enum Result<T, E> {
 ///
 /// # Complexity
 /// Time: O(1) | Space: O(1)
-public func Result.isOk<T, E>(self: ref Result): bool {
+public func Result.isOk<T, E>(self: ref Result<T, E>): bool {
     match self {
         Ok(_) => {
             return true
@@ -94,7 +94,7 @@ public func Result.isOk<T, E>(self: ref Result): bool {
 ///
 /// # Complexity
 /// Time: O(1) | Space: O(1)
-public func Result.isErr<T, E>(self: ref Result): bool {
+public func Result.isErr<T, E>(self: ref Result<T, E>): bool {
     match self {
         Ok(_) => {
             return false
@@ -117,7 +117,7 @@ public func Result.isErr<T, E>(self: ref Result): bool {
 ///
 /// # Complexity
 /// Time: O(1) | Space: O(1)
-public func Result.ok<T, E>(self: own Result): Option<T> {
+public func Result.ok<T, E>(self: own Result<T, E>): Option<T> {
     match self {
         Ok(v) => {
             return Option.Some(v)
@@ -140,7 +140,7 @@ public func Result.ok<T, E>(self: own Result): Option<T> {
 ///
 /// # Complexity
 /// Time: O(1) | Space: O(1)
-public func Result.err<T, E>(self: own Result): Option<E> {
+public func Result.err<T, E>(self: own Result<T, E>): Option<E> {
     match self {
         Ok(_) => {
             return Option.None
@@ -163,7 +163,7 @@ public func Result.err<T, E>(self: own Result): Option<E> {
 ///
 /// # Complexity
 /// Time: O(1) | Space: O(1)
-public func Result.unwrapOr<T, E>(self: own Result, defaultVal: T): T {
+public func Result.unwrapOr<T, E>(self: own Result<T, E>, defaultVal: T): T {
     match self {
         Ok(v) => {
             return v
@@ -186,7 +186,7 @@ public func Result.unwrapOr<T, E>(self: own Result, defaultVal: T): T {
 ///
 /// # Complexity
 /// Time: O(1) | Space: O(1)
-public func Result.expectOrAbort<T, E>(self: own Result, reason: str): T {
+public func Result.expectOrAbort<T, E>(self: own Result<T, E>, reason: str): T {
     match self {
         Ok(v) => {
             return v

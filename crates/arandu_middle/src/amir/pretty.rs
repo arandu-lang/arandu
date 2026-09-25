@@ -491,7 +491,13 @@ impl AmirConstant {
                 AmirLiteralEntry::Int(v) => out.push_str(v),
                 AmirLiteralEntry::Float(v) => out.push_str(v),
                 AmirLiteralEntry::Str(v) => out.push_str(&format!("\"{v}\"")),
-                AmirLiteralEntry::Char(v) => out.push_str(&format!("'{v}'")),
+                AmirLiteralEntry::Char(v) => {
+                    if let Some(value) = v.chars().next() {
+                        out.push_str(&arandu_lexer::char_literal(value));
+                    } else {
+                        out.push_str("''");
+                    }
+                }
             },
             AmirConstant::Bool(v) => out.push_str(&v.to_string()),
             AmirConstant::Nil => out.push_str("nil"),

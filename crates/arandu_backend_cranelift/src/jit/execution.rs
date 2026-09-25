@@ -3,6 +3,9 @@
 use cranelift_jit::JITModule;
 use cranelift_module::{FuncId, Module};
 use rustc_hash::FxHashMap;
+use std::sync::Arc;
+
+use super::block_coverage::{BlockCoverage, BlockCoverageSession};
 
 /// The result of a successful JIT compilation.
 ///
@@ -12,11 +15,26 @@ use rustc_hash::FxHashMap;
 pub struct CompiledModule {
     pub(crate) module: JITModule,
     pub(crate) func_ids: FxHashMap<String, FuncId>,
+    block_coverage: Option<Arc<BlockCoverageSession>>,
 }
 
 impl CompiledModule {
-    pub(crate) fn new(module: JITModule, func_ids: FxHashMap<String, FuncId>) -> Self {
-        Self { module, func_ids }
+    pub(crate) fn new(
+        module: JITModule,
+        func_ids: FxHashMap<String, FuncId>,
+        block_coverage: Option<Arc<BlockCoverageSession>>,
+    ) -> Self {
+        Self {
+            module,
+            func_ids,
+            block_coverage,
+        }
+    }
+
+    /// Takes the bounded block trace collected by this module, if coverage was enabled.
+    #[must_use]
+    pub fn take_block_coverage(&self) -> Option<BlockCoverage> {
+        self.block_coverage.as_ref().map(|session| session.take())
     }
 
     /// Returns a callable function pointer for the named function.

@@ -300,8 +300,12 @@ impl LowerCtx<'_> {
                 then_block,
                 else_block,
             } => {
-                let bb_then = self.new_block();
-                let bb_else = self.new_block();
+                let bb_then = self.new_block_at(self.hir.pool.block(*then_block).span);
+                let bb_else = if let Some(block) = else_block {
+                    self.new_block_at(self.hir.pool.block(*block).span)
+                } else {
+                    self.new_block()
+                };
                 let bb_join = self.new_block();
 
                 self.lower_condition_branch(condition, bb_then, bb_else, symbols)?;
@@ -328,7 +332,7 @@ impl LowerCtx<'_> {
             }
             HirStmtKind::While { condition, body } => {
                 let bb_cond = self.new_block();
-                let bb_body = self.new_block();
+                let bb_body = self.new_block_at(self.hir.pool.block(*body).span);
                 let bb_exit = self.new_block();
 
                 self.emit_goto(bb_cond);
@@ -380,7 +384,7 @@ impl LowerCtx<'_> {
                     )?;
 
                     let bb_cond = self.new_block();
-                    let bb_body = self.new_block();
+                    let bb_body = self.new_block_at(self.hir.pool.block(*body).span);
                     let bb_step = self.new_block();
                     let bb_exit = self.new_block();
 
@@ -498,7 +502,7 @@ impl LowerCtx<'_> {
                     }
 
                     let bb_cond = self.new_block();
-                    let bb_body = self.new_block();
+                    let bb_body = self.new_block_at(self.hir.pool.block(*body).span);
                     let bb_step = self.new_block();
                     let bb_exit = self.new_block();
 

@@ -9,6 +9,7 @@ use super::LowerCtx;
 use crate::amir::program::extend_block_range;
 use crate::amir::{AmirBasicBlock, AmirStmtTable, AmirTerminator, BlockId, BlockParam};
 use crate::layout::DenseRange;
+use arandu_lexer::Span;
 use rustc_hash::FxHashMap;
 
 pub(super) struct AmirBuilder {
@@ -22,6 +23,8 @@ pub(super) struct AmirBuilder {
     /// here and linearized into the dense `block_params` pool only when a
     /// [`crate::amir::AmirFunc`] snapshot is materialized.
     pub(super) params_scratch: Vec<Vec<BlockParam>>,
+    /// Source origin for each block, kept out of the hot AMIR block layout.
+    pub(super) debug_block_spans: Vec<Span>,
 }
 
 impl AmirBuilder {
@@ -32,12 +35,13 @@ impl AmirBuilder {
             current_block: None,
             predecessors: FxHashMap::default(),
             params_scratch: Vec::new(),
+            debug_block_spans: Vec::new(),
         }
     }
 
     /// Allocates an empty block terminated in [`AmirTerminator::Unreachable`]
     /// (CFG-5 exempt until filled).
-    pub(super) fn new_block(&mut self) -> BlockId {
+    pub(super) fn new_block(&mut self, span: Span) -> BlockId {
         let id = BlockId::from_usize(self.blocks.len());
         self.blocks.push(AmirBasicBlock {
             id,
@@ -46,6 +50,7 @@ impl AmirBuilder {
             terminator: AmirTerminator::Unreachable,
         });
         self.params_scratch.push(Vec::new());
+        self.debug_block_spans.push(span);
         id
     }
 
@@ -144,7 +149,17 @@ impl AmirBuilder {
 impl LowerCtx<'_> {
     #[inline]
     pub(crate) fn new_block(&mut self) -> BlockId {
-        self.builder.new_block()
+        let span = if Self::span_is_usable(self.current_span) {
+            self.current_span
+        } else {
+            arandu_lexer::Span::new(0, 0, 0)
+        };
+        self.builder.new_block(span)
+    }
+
+    #[inline]
+    pub(crate) fn new_block_at(&mut self, span: arandu_lexer::Span) -> BlockId {
+        self.builder.new_block(span)
     }
 
     /// Seal a join/exit block and resume after it **only if** some arm fell

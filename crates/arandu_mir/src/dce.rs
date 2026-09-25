@@ -24,15 +24,17 @@ pub fn mark_sweep_dce(func: &mut AmirFunc) -> Result<bool, Diagnostic> {
         return Ok(false);
     }
 
-    // --- def map: TempId → InstrId (last def; used for use→def chain) ------
-    // NOTE: return slot `_0` is *not* SSA — many paths Assign to temp 0.
-    // `def_of[0]` alone is insufficient; we seed *all* defs of temp 0 below.
-    let mut def_of = vec![None; n_temps];
+    // --- def map: TempId → all defining instructions ----------------------
+    // AMIR temps are usually SSA, but branch results (including `_0`) may
+    // currently have one definition per incoming path before phi materializes
+    // them as block parameters. A single last-def map can select a definition
+    // on an unreachable arm and delete the one that reaches a live use.
+    let mut defs_of = vec![SmallVec::<[crate::amir::InstrId; 2]>::new(); n_temps];
     for bi in 0..func.blocks.len() {
         let bid = BlockId::from_usize(bi);
         for stmt_id in func.block_stmt_ids(bid) {
             if let AmirStmt::Assign { lhs, .. } = func.stmt(stmt_id) {
-                def_of[lhs.as_usize()] = Some(stmt_id);
+                defs_of[lhs.as_usize()].push(stmt_id);
             }
         }
     }
@@ -52,32 +54,28 @@ pub fn mark_sweep_dce(func: &mut AmirFunc) -> Result<bool, Diagnostic> {
     let mut live = vec![false; n_stmts];
     let mut queue: VecDeque<usize> = VecDeque::new();
 
-    // Seed: return register `_0` is live on *every* defining path (not SSA).
-    // Using only `def_of[0]` (last assign in block order) incorrectly DCE'd
-    // earlier `_0 = …` on other branches → bare `return` with undef exit code.
+    // Seed: return register `_0` is live on every defining path.
     for bi in 0..func.blocks.len() {
         let bid = BlockId::from_usize(bi);
         for stmt_id in func.block_stmt_ids(bid) {
-            match func.stmt(stmt_id) {
-                AmirStmt::Assign { lhs, .. } if lhs.as_usize() == 0 => {
-                    let idx = stmt_id.as_usize();
-                    if !live[idx] {
-                        live[idx] = true;
-                        queue.push_back(idx);
-                    }
+            if matches!(func.stmt(stmt_id), AmirStmt::Store {
+                lhs: crate::amir::AmirPlace { local, projections },
+                ..
+            } if local.as_usize() == 0 && projections.is_empty())
+            {
+                let idx = stmt_id.as_usize();
+                if !live[idx] {
+                    live[idx] = true;
+                    queue.push_back(idx);
                 }
-                AmirStmt::Store {
-                    lhs: crate::amir::AmirPlace { local, projections },
-                    ..
-                } if local.as_usize() == 0 && projections.is_empty() => {
-                    let idx = stmt_id.as_usize();
-                    if !live[idx] {
-                        live[idx] = true;
-                        queue.push_back(idx);
-                    }
-                }
-                _ => {}
             }
+        }
+    }
+    for &definition in &defs_of[0] {
+        let idx = definition.as_usize();
+        if !live[idx] {
+            live[idx] = true;
+            queue.push_back(idx);
         }
     }
 
@@ -86,7 +84,7 @@ pub fn mark_sweep_dce(func: &mut AmirFunc) -> Result<bool, Diagnostic> {
         let bid = BlockId::from_usize(bi);
 
         for temp in collect_terminator_temps(&func.block(bid).terminator) {
-            if let Some(def) = def_of[temp.as_usize()] {
+            for &def in &defs_of[temp.as_usize()] {
                 let idx = def.as_usize();
                 if !live[idx] {
                     live[idx] = true;
@@ -110,7 +108,7 @@ pub fn mark_sweep_dce(func: &mut AmirFunc) -> Result<bool, Diagnostic> {
     while let Some(idx) = queue.pop_front() {
         let stmt = func.stmt(crate::amir::InstrId::from_usize(idx));
         for temp in collect_stmt_temps(stmt) {
-            if let Some(def) = def_of[temp.as_usize()] {
+            for &def in &defs_of[temp.as_usize()] {
                 let didx = def.as_usize();
                 if !live[didx] {
                     live[didx] = true;
@@ -540,6 +538,91 @@ mod tests {
         assert!(!mark_sweep_dce(&mut f).unwrap());
         assert_eq!(f.blocks[1].statements.len, 1);
         assert_eq!(f.blocks[2].statements.len, 1);
+    }
+
+    /// A result temp can have one def per branch before it is consumed at the
+    /// join. DCE must retain both reaching defs; keeping only the last textual
+    /// def leaves the live join use undefined after SCCP removes one arm.
+    #[test]
+    fn keeps_all_branch_defs_for_a_live_join_use() {
+        let mut stmts = AmirStmtTable::new();
+        let then_def = stmts.push(AmirStmt::Assign {
+            lhs: TempId::from_usize(1),
+            rhs: AmirRvalue::Use(AmirOperand::Constant(AmirConstant::Bool(true))),
+        });
+        let else_def = stmts.push(AmirStmt::Assign {
+            lhs: TempId::from_usize(1),
+            rhs: AmirRvalue::Use(AmirOperand::Constant(AmirConstant::Bool(false))),
+        });
+        let join_store = stmts.push(AmirStmt::Store {
+            lhs: AmirPlace {
+                local: LocalId::from_usize(0),
+                projections: smallvec::smallvec![],
+            },
+            rhs: AmirOperand::Move(TempId::from_usize(1)),
+        });
+        let mut then_range = DenseRange::empty();
+        extend_block_range(&mut then_range, then_def);
+        let mut else_range = DenseRange::empty();
+        extend_block_range(&mut else_range, else_def);
+        let mut join_range = DenseRange::empty();
+        extend_block_range(&mut join_range, join_store);
+        let blocks = vec![
+            AmirBasicBlock {
+                id: BlockId::from_usize(0),
+                statements: DenseRange::empty(),
+                params: DenseRange::empty(),
+                terminator: AmirTerminator::Branch {
+                    condition: AmirOperand::Constant(AmirConstant::Bool(true)),
+                    if_true: BlockId::from_usize(1),
+                    true_args: Vec::new(),
+                    if_false: BlockId::from_usize(2),
+                    false_args: Vec::new(),
+                },
+            },
+            AmirBasicBlock {
+                id: BlockId::from_usize(1),
+                statements: then_range,
+                params: DenseRange::empty(),
+                terminator: AmirTerminator::Goto {
+                    target: BlockId::from_usize(3),
+                    args: Vec::new(),
+                },
+            },
+            AmirBasicBlock {
+                id: BlockId::from_usize(2),
+                statements: else_range,
+                params: DenseRange::empty(),
+                terminator: AmirTerminator::Goto {
+                    target: BlockId::from_usize(3),
+                    args: Vec::new(),
+                },
+            },
+            AmirBasicBlock {
+                id: BlockId::from_usize(3),
+                statements: join_range,
+                params: DenseRange::empty(),
+                terminator: AmirTerminator::Return,
+            },
+        ];
+        let cfg = crate::cfg::compute_cfg_edges(&blocks);
+        let mut f = AmirFunc {
+            symbol: crate::SymbolId::new(0, 0),
+            return_type: intern_ty(ArType::Void),
+            receiver: None,
+            params: Vec::new(),
+            locals: Vec::new(),
+            temps: vec![bool_temp(0), bool_temp(1)],
+            blocks,
+            block_params: Vec::new(),
+            stmts,
+            cfg,
+        };
+
+        assert!(!mark_sweep_dce(&mut f).unwrap());
+        assert_eq!(f.blocks[1].statements.len, 1);
+        assert_eq!(f.blocks[2].statements.len, 1);
+        assert_eq!(f.blocks[3].statements.len, 1);
     }
 
     /// Regression: values only used as `Goto` jump args must stay live.

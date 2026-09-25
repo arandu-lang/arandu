@@ -2,9 +2,9 @@ func load(): Result<int, Err> {
     return Result.Ok(0)
 }
 
-func testTry(): int {
+func testTry(): Result<int, Err> {
     let x = load()?
-    return x * 2
+    return Result.Ok(x * 2)
 }
 
 struct Point {

@@ -214,6 +214,7 @@ fn test_leaf_inlining_and_sccp_folding() {
         literal_pool: pool,
         extern_funcs: rustc_hash::FxHashMap::default(),
         debug_bindings: Vec::new(),
+        debug_blocks: Vec::new(),
     };
 
     // Run leaf inlining

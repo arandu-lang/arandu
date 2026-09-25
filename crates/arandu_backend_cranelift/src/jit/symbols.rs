@@ -582,7 +582,7 @@ pub(crate) fn declare_runtime_imports<M: Module>(
         }
     }
 
-    // Libc imports: fmod, memcpy, memcmp
+    // Libc imports: fmod, memcpy, memmove, memcmp
     let mut fmod_sig = Signature::new(default_call_conv);
     fmod_sig.params.push(AbiParam::new(F64));
     fmod_sig.params.push(AbiParam::new(F64));
@@ -601,6 +601,11 @@ pub(crate) fn declare_runtime_imports<M: Module>(
         .declare_function("memcpy", Linkage::Import, &memcpy_sig)
         .map_err(|err| codegen_ice(format!("failed to declare memcpy: {err:?}")))?;
     insert_sym(func_ids, "memcpy", memcpy_id);
+
+    let memmove_id = module
+        .declare_function("memmove", Linkage::Import, &memcpy_sig)
+        .map_err(|err| codegen_ice(format!("failed to declare memmove: {err:?}")))?;
+    insert_sym(func_ids, "memmove", memmove_id);
 
     let mut memcmp_sig = Signature::new(default_call_conv);
     memcmp_sig.params.push(AbiParam::new(ptr_type));

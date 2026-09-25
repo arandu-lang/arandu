@@ -639,6 +639,49 @@ mod tests {
     }
 
     #[test]
+    fn gvn_keeps_same_field_access_when_result_types_differ() {
+        let interner = crate::types::TypeInterner::new();
+        let int_ty = interner.intern(ArType::Primitive(Primitive::Int));
+        let err_ty = interner.intern(ArType::Err);
+        let result_ty = interner.intern(ArType::Result(int_ty, err_ty));
+        let temp = |id, ty| AmirTemp {
+            id: TempId::from_usize(id),
+            ty,
+            is_copy: true,
+            is_nullable: false,
+            span: arandu_lexer::Span::new(0, 0, 0),
+        };
+        let mut f = func(
+            vec![
+                AmirStmt::Assign {
+                    lhs: TempId::from_usize(0),
+                    rhs: AmirRvalue::FieldAccess {
+                        base: AmirOperand::Copy(TempId::from_usize(2)),
+                        field: arandu_middle::amir::ENUM_PAYLOAD_FIELD,
+                    },
+                },
+                AmirStmt::Assign {
+                    lhs: TempId::from_usize(1),
+                    rhs: AmirRvalue::FieldAccess {
+                        base: AmirOperand::Copy(TempId::from_usize(2)),
+                        field: arandu_middle::amir::ENUM_PAYLOAD_FIELD,
+                    },
+                },
+            ],
+            vec![temp(0, err_ty), temp(1, int_ty), temp(2, result_ty)],
+        );
+
+        assert!(!crate::gvn::gvn(&mut f));
+        assert!(matches!(
+            f.stmt(crate::amir::InstrId::from_usize(1)),
+            AmirStmt::Assign {
+                rhs: AmirRvalue::FieldAccess { .. },
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn sroa_resolves_field_access_from_struct_literal() {
         let mut f = func(
             vec![

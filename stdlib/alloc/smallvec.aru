@@ -26,10 +26,20 @@ module std.alloc.smallvec
 import std.core.mem as mem
 import std.core.intrinsics as intrinsics
 
-const MAX_SMALLVEC_CAPACITY = 2147483647 as uint
+const MAX_SMALLVEC_CAPACITY = 2147483647
 
 func allocationFailure(): void {
     unsafe { intrinsics.abort() }
+}
+
+func allocationFits(capacity: uint, element_size: uint): bool {
+    if element_size == 0 {
+        return false
+    }
+    // Keep the casted bound in a typed local before division. Lowering a casted
+    // const directly inside this arithmetic currently loses its AMIR type.
+    let max_bytes: uint = MAX_SMALLVEC_CAPACITY as uint
+    return capacity <= max_bytes / element_size
 }
 
 extern "C" {
@@ -124,7 +134,7 @@ public func SmallVec4.push<T>(self: mut ref SmallVec4<T>, val: T): void {
         }
         let new_cap: uint = 8
         let elem_size = mem.sizeOf<Option<T>>()
-        if elem_size == 0 || elem_size > MAX_SMALLVEC_CAPACITY / new_cap {
+        if !allocationFits(new_cap, elem_size) {
             allocationFailure()
         }
         unsafe {
@@ -155,12 +165,12 @@ public func SmallVec4.push<T>(self: mut ref SmallVec4<T>, val: T): void {
     }
 
     if self.len >= self.capacity {
-        if self.capacity >= MAX_SMALLVEC_CAPACITY / 2 {
+        if self.capacity > 1073741823 as uint {
             allocationFailure()
         }
         let new_cap = self.capacity * 2
         let elem_size = mem.sizeOf<Option<T>>()
-        if elem_size == 0 || new_cap > MAX_SMALLVEC_CAPACITY / elem_size {
+        if !allocationFits(new_cap, elem_size) {
             allocationFailure()
         }
         unsafe {

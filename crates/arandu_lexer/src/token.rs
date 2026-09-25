@@ -58,6 +58,12 @@ impl Token {
             .unwrap_or("")
     }
 
+    /// Decode the scalar value of a lexed character literal.
+    #[must_use]
+    pub fn char_value(&self, source: &str) -> Option<char> {
+        decode_char_content(self.char_content(source))
+    }
+
     #[must_use]
     pub fn dump(&self, source: &str) -> String {
         if self.kind == TokenKind::Semicolon && self.inserted {
@@ -66,6 +72,54 @@ impl Token {
             self.kind.display_with(self, source)
         }
     }
+}
+
+/// Decode the contents between the quotes of a character literal.
+#[must_use]
+pub fn decode_char_content(content: &str) -> Option<char> {
+    if let Some(escaped) = content.strip_prefix('\\') {
+        return match escaped {
+            "n" => Some('\n'),
+            "t" => Some('\t'),
+            "r" => Some('\r'),
+            "0" => Some('\0'),
+            "\\" => Some('\\'),
+            "\"" => Some('"'),
+            "'" => Some('\''),
+            "$" => Some('$'),
+            unicode if unicode.starts_with("u{") && unicode.ends_with('}') => {
+                let digits = &unicode[2..unicode.len() - 1];
+                if digits.is_empty() {
+                    return None;
+                }
+                u32::from_str_radix(digits, 16)
+                    .ok()
+                    .and_then(char::from_u32)
+            }
+            _ => None,
+        };
+    }
+
+    let mut chars = content.chars();
+    let value = chars.next()?;
+    chars.next().is_none().then_some(value)
+}
+
+/// Encode a Unicode scalar as a valid Arandu character literal.
+#[must_use]
+pub fn char_literal(value: char) -> String {
+    let escaped = match value {
+        '\n' => "\\n",
+        '\t' => "\\t",
+        '\r' => "\\r",
+        '\0' => "\\0",
+        '\\' => "\\\\",
+        '\'' => "\\'",
+        '"' => "\\\"",
+        '$' => "\\$",
+        value => return format!("'{value}'"),
+    };
+    format!("'{escaped}'")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

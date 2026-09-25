@@ -41,7 +41,7 @@ module std.alloc.arena
 import std.core.mem as mem
 import std.core.intrinsics as intrinsics
 
-const MAX_ARENA_CAPACITY = 2147483647
+const MAX_ARENA_CAPACITY = 2147483647 as uint
 
 extern "C" {
     /// Host allocator for a raw byte buffer.

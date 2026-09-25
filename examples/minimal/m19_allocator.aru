@@ -22,7 +22,8 @@ func work(): Result<int, aapi.AllocError> {
 }
 
 func main(): int {
-    // `?` requires Result return; unwrap Ok into int exit code.
-    let v = work()?
-    return v
+    return match work() {
+        Ok(value) => value
+        Err(_) => -1
+    }
 }

@@ -190,14 +190,18 @@ impl<'a> CEmitter<'a> {
     pub fn emit(mut self) -> Result<String, Diagnostic> {
         let needs_str = self.program_uses_str();
         let needs_println = self.program_uses_println();
-        // println requires ArStr runtime even if no string literals.
-        let needs_str = needs_str || needs_println;
+        let needs_eprint = self.program_uses_eprint();
+        // I/O prelude functions require the ArStr runtime even without literals.
+        let needs_str = needs_str || needs_println || needs_eprint;
         self.emit_headers(needs_str);
         if needs_str {
             self.emit_str_literals();
         }
         if needs_println {
             self.emit_prelude_println();
+        }
+        if needs_eprint {
+            self.emit_prelude_eprint();
         }
 
         for func in &self.program.funcs {
@@ -244,6 +248,7 @@ impl<'a> CEmitter<'a> {
                     | "ar_rt_join_i64"
                     | "ar_rt_cancel_i64"
                     | "ar_rt_parallel_fold_run"
+                    | "io__eprint"
             ) {
                 continue;
             }

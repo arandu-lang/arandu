@@ -271,11 +271,11 @@ impl<'a> Lexer<'a> {
                 let code_str = self.slice_from(start.pos);
                 let hex = &code_str[3..code_str.len() - 1];
                 let value = u32::from_str_radix(hex, 16).unwrap_or(u32::MAX);
-                if value > 0x10FFFF {
+                if char::from_u32(value).is_none() {
                     return Err(self.error_from(
                         start,
                         LexErrorCode::InvalidUnicodeEscape,
-                        "unicode escape must be a valid scalar value (<= 0x10FFFF)",
+                        "unicode escape must be a valid Unicode scalar value",
                     ));
                 }
             }
@@ -298,7 +298,8 @@ impl<'a> Lexer<'a> {
         }
         let mut count = 0;
         if self.peek() == Some('\\') {
-            self.consume_escape_sequence(start)?;
+            let escape_start = self.mark();
+            self.consume_escape_sequence(escape_start)?;
             count = 1;
         } else {
             while !self.is_at_end() && self.peek() != Some('\'') {

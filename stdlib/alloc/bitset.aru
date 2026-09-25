@@ -64,14 +64,12 @@ public func bitsetNew(): BitSet {
 /// count. Requests above the representable bit range abort.
 public func bitsetWithCapacity(bits: uint): BitSet {
     let maxWords: uint = 134217728
-    let wordBits: uint = 64
-    let maxBits = maxWords * wordBits
-    if bits > maxBits {
-        unsafe { intrinsics.abort() }
-    }
     let mut wordCount = bits / 64
     if bits % 64 != 0 {
         wordCount = wordCount + 1
+    }
+    if wordCount > maxWords {
+        unsafe { intrinsics.abort() }
     }
     let mut words = vec.withCapacity<u64>(wordCount)
     let mut i: uint = 0
@@ -112,9 +110,7 @@ public func BitSet.contains(self: ref BitSet, bit: uint): bool {
 /// already-set bit leaves the set unchanged.
 public func BitSet.insert(self: mut ref BitSet, bit: uint): bool {
     let maxWords: uint = 134217728
-    let wordBits: uint = 64
-    let maxBits = maxWords * wordBits
-    if bit >= maxBits {
+    if bit / 64 >= maxWords {
         return false
     }
     let wordIdx = bit / 64

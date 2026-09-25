@@ -21,7 +21,10 @@ enum Tag {
 
 func main(): int {
     let base = id<int>(10)
-    let v = loadOk()?
+    let v = match loadOk() {
+        Ok(value) => value
+        Err(_) => 0
+    }
     let recovered = loadFail() catch 2
     let ok_val, e = loadOk()
     if e != nil {

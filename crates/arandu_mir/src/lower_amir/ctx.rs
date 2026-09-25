@@ -10,6 +10,37 @@ use crate::{SymbolId, SymbolTable};
 use arandu_lexer::Span;
 
 impl LowerCtx<'_> {
+    pub(crate) fn lower_const_operand(&mut self, symbol: SymbolId) -> Option<AmirOperand> {
+        let expr = *self.const_values.get(&symbol)?;
+        let hir_expr = self.hir.pool.expr(expr);
+        // Preserve integer consts through a compile-time cast. Returning the
+        // literal directly drops its inferred target type in AMIR; materializing
+        // it in a typed temp keeps comparisons (e.g. `uint > CONST`) well typed.
+        let value = match &hir_expr.kind {
+            crate::hir::HirExprKind::Int(value) => value.clone(),
+            crate::hir::HirExprKind::Cast { expr, .. } => {
+                let inner = self.hir.pool.expr(*expr);
+                let crate::hir::HirExprKind::Int(value) = &inner.kind else {
+                    return None;
+                };
+                value.clone()
+            }
+            _ => return None,
+        };
+        let ty = self
+            .tc
+            .type_info
+            .decl_type_id(symbol)
+            .unwrap_or(hir_expr.ty);
+        let temp = self.new_temp_id(ty);
+        let value = self.intern_literal_int(value);
+        self.emit_assign_temp(
+            temp,
+            crate::amir::AmirRvalue::Use(AmirOperand::Constant(value)),
+        );
+        Some(AmirOperand::Copy(temp))
+    }
+
     pub(crate) fn next_local_id(&self) -> LocalId {
         LocalId::from_usize(self.locals.len())
     }
@@ -35,7 +66,14 @@ impl LowerCtx<'_> {
 
     #[inline]
     pub(crate) fn intern_literal_char(&mut self, s: impl Into<smol_str::SmolStr>) -> AmirConstant {
-        AmirConstant::Pool(self.literal_pool.intern_char(s))
+        let source = s.into();
+        let value = if let Some(value) = arandu_lexer::decode_char_content(&source) {
+            let mut encoded = [0; 4];
+            smol_str::SmolStr::new(value.encode_utf8(&mut encoded))
+        } else {
+            source
+        };
+        AmirConstant::Pool(self.literal_pool.intern_char(value))
     }
 
     pub(crate) fn intern_ty(&self, ty: ArType) -> crate::types::TypeId {

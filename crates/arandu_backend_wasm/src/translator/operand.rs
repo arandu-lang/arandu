@@ -21,6 +21,7 @@ impl<'a> FuncTranslator<'a> {
                         }
                         _ => self.code.push(Instruction::LocalGet(local)),
                     }
+                    self.emit_integer_width_cast(ty, expected_ty);
                 } else {
                     self.emit_zero(expected_ty);
                 }
@@ -37,6 +38,35 @@ impl<'a> FuncTranslator<'a> {
                 // Global references not supported in MVP.
                 self.code.push(Instruction::I32Const(0));
             }
+        }
+    }
+
+    /// Convert integer operands when AMIR's consumer type has a different
+    /// WebAssembly slot width. The source type determines sign extension.
+    fn emit_integer_width_cast(&mut self, source_ty: TypeId, target_ty: TypeId) {
+        if !types::ar_is_integer(source_ty, self.interner)
+            || !types::ar_is_integer(target_ty, self.interner)
+        {
+            return;
+        }
+
+        let source =
+            types::scalar_valtype_for(source_ty, self.interner, self.layout_engine.data_layout);
+        let target =
+            types::scalar_valtype_for(target_ty, self.interner, self.layout_engine.data_layout);
+        match (source, target) {
+            (Some(ValType::I64), Some(ValType::I32)) => {
+                self.code.push(Instruction::I32WrapI64);
+            }
+            (Some(ValType::I32), Some(ValType::I64)) => {
+                self.code
+                    .push(if types::ar_is_unsigned(source_ty, self.interner) {
+                        Instruction::I64ExtendI32U
+                    } else {
+                        Instruction::I64ExtendI32S
+                    });
+            }
+            _ => {}
         }
     }
 

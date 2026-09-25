@@ -218,6 +218,30 @@ mod tests {
     }
 
     #[test]
+    fn subtree_reparse_keeps_tokens_in_sync_after_left_shift_and_repeated_edits() {
+        let sources = [
+            "// ação 🦀\nmodule consumer\nimport dependency\nfunc main(): int { return dependency.value() }\n",
+            "module consumer\nimport dependency\nfunc main(): int { return dependency.value() }\n",
+            "module consumer\nimport dependency\nfunc main(): int { return dependency.value() + 1 }\n",
+        ];
+        let mut tree = parse_syntax(sources[0]);
+
+        for source in &sources[1..] {
+            let (start, end, replacement) =
+                single_contiguous_edit(tree.text(), source).expect("source changed");
+            let (updated_source, updated_tree) = reparse_subtree(&tree, start, end, &replacement);
+            let cold = parse_syntax(source);
+            assert_eq!(updated_source, *source);
+            assert_eq!(
+                updated_tree.tokens(),
+                cold.tokens(),
+                "incremental token stream diverged for {source:?}"
+            );
+            tree = updated_tree;
+        }
+    }
+
+    #[test]
     fn flat_syntax_covers_full_source() {
         let src = main_func();
         let tree = parse_syntax(src);

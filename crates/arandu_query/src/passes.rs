@@ -341,12 +341,85 @@ pub fn cycle_recover_module_signatures(
     ModuleSignatures::new(res)
 }
 
+/// Canonical direct import edges. The query deliberately exposes only the
+/// dependency shape, so a private body edit can early-cut off unchanged edges.
+#[salsa::tracked]
+fn module_import_edges(
+    db: &dyn ArandCompilerDb,
+    file: SourceFile,
+) -> Vec<(String, Option<crate::db::FileId>)> {
+    if let Some(roots) = db.as_db_impl().and_then(crate::DatabaseImpl::module_roots) {
+        let _ = roots.package_listing(db).entries(db);
+    }
+    if let Some(database) = db.as_db_impl() {
+        if let Some(map) = database.package_module_map() {
+            let _ = map.bindings(db);
+        }
+    }
+
+    let program_res = parse(db, file);
+    let Ok(program) = &**program_res else {
+        return Vec::new();
+    };
+    program
+        .imports
+        .iter()
+        .filter_map(|import| {
+            let path = arandu_resolve::canonicalize_import_path(import)?;
+            let file_id = db
+                .as_source_db()
+                .resolve_module_path(&path)
+                .map(|imported| *imported.file_id(db));
+            Some((path, file_id))
+        })
+        .collect()
+}
+
+/// Fingerprint import topology across the reachable module graph without
+/// recursing through semantic queries. This provides a cycle-safe Salsa edge
+/// for consumers whose recursive `module_signatures` dependencies were
+/// recovered while the import graph had a different cycle shape.
+#[salsa::tracked]
+fn module_graph_fingerprint(db: &dyn ArandCompilerDb, file: SourceFile) -> blake3::Hash {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"module-graph/v1");
+    let mut pending = std::collections::VecDeque::from([file]);
+    let mut visited = std::collections::HashSet::new();
+    while let Some(file) = pending.pop_front() {
+        let file_id = *file.file_id(db);
+        if !visited.insert(file_id) {
+            continue;
+        }
+        hasher.update(&file_id.to_le_bytes());
+        let edges = module_import_edges(db, file);
+        hasher.update(&(edges.len() as u64).to_le_bytes());
+        for (path, imported_id) in edges {
+            hasher.update(&(path.len() as u64).to_le_bytes());
+            hasher.update(path.as_bytes());
+            match imported_id {
+                Some(imported_id) => {
+                    hasher.update(&[1]);
+                    hasher.update(&imported_id.to_le_bytes());
+                    if let Some(imported_file) = db.source_file_by_id(*imported_id) {
+                        pending.push_back(imported_file);
+                    }
+                }
+                None => {
+                    hasher.update(&[0]);
+                }
+            }
+        }
+    }
+    hasher.finalize()
+}
+
 #[salsa::tracked(cycle_result = cycle_recover_module_signatures)]
 #[tracing::instrument(level = "trace", target = "arandu_query", skip(db), fields(
     query = "module_signatures",
     file = ?file.file_id(db),
 ))]
 pub fn module_signatures(db: &dyn ArandCompilerDb, file: SourceFile) -> ModuleSignatures {
+    let _ = module_graph_fingerprint(db, file);
     let program_res = parse(db, file);
     let resolved_arc = resolve(db, file);
 
@@ -811,6 +884,7 @@ pub fn lower_amir(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<LowerAmi
         literal_pool: arandu_middle::literal_pool::AmirLiteralPool::default(),
         extern_funcs: Default::default(),
         debug_bindings: Vec::new(),
+        debug_blocks: Vec::new(),
     };
 
     let mut hir = {

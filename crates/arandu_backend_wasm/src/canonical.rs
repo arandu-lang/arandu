@@ -104,9 +104,11 @@ impl CabiSupport {
     ///
     /// # `__arandu_alloc(size: i32) -> i32`
     ///
-    /// First-fit scan of the LIFO free list for a block whose recorded size is at
-    /// least `size`; otherwise bump the frontier (growing memory as needed) and
-    /// write the block header. Returns the payload pointer (`base + 12`).
+    /// Best-fit scan of the LIFO free list for the smallest block whose recorded
+    /// size is at least `size`; otherwise bump the frontier (growing memory as
+    /// needed) and write the block header. Best-fit preserves larger reusable
+    /// blocks when smaller fields are allocated before their containing object.
+    /// Returns the payload pointer (`base + 12`).
     ///
     /// # `__arandu_free(ptr: i32)`
     ///
@@ -117,7 +119,7 @@ impl CabiSupport {
         self.funcs.push(CabiFunc {
             export_name: None,
             ty: (vec![ValType::I32], vec![ValType::I32]),
-            extra_locals: vec![(6, ValType::I32)],
+            extra_locals: vec![(8, ValType::I32)],
             body: Self::alloc_body(),
         });
         self.funcs.push(CabiFunc {
@@ -130,13 +132,14 @@ impl CabiSupport {
 
     /// Body of `__arandu_alloc(size: i32) -> i32`.
     ///
-    /// First-fit scan of the LIFO free list for a block whose recorded size is at
-    /// least `size`; otherwise bump the frontier (growing memory as needed) and
-    /// write the block header. Returns the payload pointer (`base + 12`).
+    /// Best-fit scan of the LIFO free list for the smallest block whose recorded
+    /// size is at least `size`; otherwise bump the frontier (growing memory as
+    /// needed) and write the block header. Locals 7 and 8 retain the selected
+    /// block and its predecessor while locals 2/6 walk the current list node.
     ///
-    /// Locals beyond the `size` parameter: `1` aligned size, `2` node/base,
-    /// `3` node size, `4` new heap pointer, `5` memory size in bytes,
-    /// `6` previous free node.
+    /// Locals beyond the `size` parameter: `1` aligned size, `2` current node,
+    /// `3` current node size, `4` new heap pointer, `5` memory size in bytes,
+    /// `6` current predecessor, `7` selected best-fit node, `8` its predecessor.
     fn alloc_body() -> Vec<Instruction<'static>> {
         vec![
             // size = (size + 3) & !3
@@ -150,10 +153,15 @@ impl CabiSupport {
             Instruction::GlobalGet(GLOBAL_FREE_LIST_HEAD),
             Instruction::LocalSet(2),
             Instruction::I32Const(0),
-            Instruction::LocalSet(6),             // prev = 0
-            Instruction::Block(BlockType::Empty), // label 0: bump fallback
-            Instruction::Loop(BlockType::Empty),  // label 1: free-list scan
-            // if node == 0 → bump
+            Instruction::LocalSet(6), // prev = 0
+            Instruction::I32Const(0),
+            Instruction::LocalSet(7), // best = 0
+            Instruction::I32Const(0),
+            Instruction::LocalSet(8),             // best_prev = 0
+            Instruction::Block(BlockType::Empty), // outer block: bump fallback
+            Instruction::Block(BlockType::Empty), // scan-exit target
+            Instruction::Loop(BlockType::Empty),  // free-list scan
+            // if node == 0 → leave the scan loop and evaluate the best fit
             Instruction::LocalGet(2),
             Instruction::I32Eqz,
             Instruction::BrIf(1),
@@ -163,48 +171,75 @@ impl CabiSupport {
             Instruction::I32Add,
             Instruction::I32Load(crate::memory::noffset_memarg()),
             Instruction::LocalSet(3),
-            // if node_size >= size → reuse this block
+            // if node_size >= size and (no best yet or node_size < best_size)
             Instruction::LocalGet(3),
             Instruction::LocalGet(1),
             Instruction::I32GeU,
             Instruction::If(BlockType::Empty),
-            // if prev == 0 { __freelist_head = *(node + 8) } else { *(prev + 8) = *(node + 8) }
-            Instruction::LocalGet(6),
+            Instruction::LocalGet(7),
             Instruction::I32Eqz,
             Instruction::If(BlockType::Empty),
             Instruction::LocalGet(2),
-            Instruction::I32Const(8),
-            Instruction::I32Add,
-            Instruction::I32Load(crate::memory::noffset_memarg()),
-            Instruction::GlobalSet(GLOBAL_FREE_LIST_HEAD),
-            Instruction::Else,
+            Instruction::LocalSet(7),
             Instruction::LocalGet(6),
-            Instruction::I32Const(8),
-            Instruction::I32Add,
-            Instruction::LocalGet(2),
-            Instruction::I32Const(8),
+            Instruction::LocalSet(8),
+            Instruction::Else,
+            Instruction::LocalGet(3),
+            Instruction::LocalGet(7),
+            Instruction::I32Const(4),
             Instruction::I32Add,
             Instruction::I32Load(crate::memory::noffset_memarg()),
-            Instruction::I32Store(crate::memory::noffset_memarg()),
-            Instruction::End,
-            // return node + CELL_HEADER_SIZE
+            Instruction::I32LtU,
+            Instruction::If(BlockType::Empty),
             Instruction::LocalGet(2),
-            Instruction::I32Const(CELL_HEADER_SIZE),
-            Instruction::I32Add,
-            Instruction::Return,
+            Instruction::LocalSet(7),
+            Instruction::LocalGet(6),
+            Instruction::LocalSet(8),
             Instruction::End,
-            // prev = node
+            Instruction::End,
+            Instruction::End,
+            // Advance to the next free-list node.
             Instruction::LocalGet(2),
             Instruction::LocalSet(6),
-            // node = *(node + 8)
             Instruction::LocalGet(2),
             Instruction::I32Const(8),
             Instruction::I32Add,
             Instruction::I32Load(crate::memory::noffset_memarg()),
             Instruction::LocalSet(2),
             Instruction::Br(0),
-            Instruction::End, // loop
-            Instruction::End, // block
+            Instruction::End, // scan loop
+            Instruction::End, // scan-exit block
+            // If a suitable block was selected, unlink and return it.
+            Instruction::LocalGet(7),
+            Instruction::I32Eqz,
+            Instruction::If(BlockType::Empty),
+            Instruction::Else,
+            // if best_prev == 0 { __freelist_head = *(best + 8) } else { *(best_prev + 8) = *(best + 8) }
+            Instruction::LocalGet(8),
+            Instruction::I32Eqz,
+            Instruction::If(BlockType::Empty),
+            Instruction::LocalGet(7),
+            Instruction::I32Const(8),
+            Instruction::I32Add,
+            Instruction::I32Load(crate::memory::noffset_memarg()),
+            Instruction::GlobalSet(GLOBAL_FREE_LIST_HEAD),
+            Instruction::Else,
+            Instruction::LocalGet(8),
+            Instruction::I32Const(8),
+            Instruction::I32Add,
+            Instruction::LocalGet(7),
+            Instruction::I32Const(8),
+            Instruction::I32Add,
+            Instruction::I32Load(crate::memory::noffset_memarg()),
+            Instruction::I32Store(crate::memory::noffset_memarg()),
+            Instruction::End,
+            // return best + CELL_HEADER_SIZE
+            Instruction::LocalGet(7),
+            Instruction::I32Const(CELL_HEADER_SIZE),
+            Instruction::I32Add,
+            Instruction::Return,
+            Instruction::End,
+            Instruction::End,
             // ── bump path ──────────────────────────────────────────────────
             // base = __heap_ptr
             Instruction::GlobalGet(GLOBAL_HEAP_PTR),

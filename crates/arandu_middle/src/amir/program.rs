@@ -1,4 +1,4 @@
-use super::block::{AmirBasicBlock, BlockParam};
+use super::block::{AmirBasicBlock, BlockId, BlockParam};
 use super::local::{AmirLocal, AmirReceiver, AmirTemp, LocalId, TempId};
 use super::stmt::{AmirStmt, AmirStmtTable, InstrId};
 use crate::SymbolId;
@@ -6,6 +6,7 @@ use crate::cfg::ControlFlowGraph;
 use crate::layout::DenseRange;
 use crate::literal_pool::AmirLiteralPool;
 use crate::types::TypeId;
+use arandu_lexer::Span;
 
 #[derive(Debug, Clone)]
 pub struct AmirProgram {
@@ -19,6 +20,10 @@ pub struct AmirProgram {
     /// pay no per-value size cost. Entries are deterministic and use typed IDs;
     /// backends that do not emit debug information can ignore the table.
     pub debug_bindings: Vec<AmirDebugBinding>,
+    /// Cold source locations for AMIR block entries, used by coverage-guided
+    /// tooling. Optimized programs may invalidate this table; consumers must
+    /// only use it while block IDs still refer to the lowered O0 program.
+    pub debug_blocks: Vec<AmirDebugBlock>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -26,6 +31,13 @@ pub struct AmirDebugBinding {
     pub function: SymbolId,
     pub temp: TempId,
     pub local: LocalId,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct AmirDebugBlock {
+    pub function: SymbolId,
+    pub block: BlockId,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]

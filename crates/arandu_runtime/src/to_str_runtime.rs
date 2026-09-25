@@ -144,6 +144,27 @@ pub unsafe extern "C" fn ar_jit_println(ptr: *const u8, len: i64) {
     });
 }
 
+/// Prelude `io.eprint(str)` — write `len` bytes at `ptr` to stderr.
+///
+/// Linked as the JIT symbol `eprint` (dual fat-pointer ABI: ptr + i64 len).
+///
+/// # Safety
+/// `ptr` must be valid for `len` bytes if `len > 0`. `len` must be non-negative.
+#[unsafe(export_name = "io.eprint")]
+pub unsafe extern "C" fn ar_jit_eprint(ptr: *const u8, len: i64) {
+    crate::ffi::guard(|| {
+        use std::io::{self, Write};
+        let stderr = io::stderr();
+        let mut handle = stderr.lock();
+        if len > 0 && !ptr.is_null() {
+            // SAFETY: caller contract: `ptr` is valid for `len` bytes.
+            let slice = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
+            let _ = handle.write_all(slice);
+        }
+        let _ = handle.flush();
+    });
+}
+
 /// Prelude `err.new(str) -> Err`.
 ///
 /// `Err` is a non-null message handle: a `malloc`'d NUL-terminated copy of the

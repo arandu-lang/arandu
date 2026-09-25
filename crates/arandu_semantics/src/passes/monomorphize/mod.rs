@@ -308,6 +308,38 @@ mod tests {
     }
 
     #[test]
+    fn generic_instances_with_same_function_name_in_different_modules_do_not_collide() {
+        let interner = TypeInterner::new();
+        let int_id = interner.intern(ArType::Primitive(Primitive::Int));
+        let (mut vec_symbols, _) = setup();
+        let vec_len = define_symbol(&mut vec_symbols, "len");
+        vec_symbols
+            .host_function_names
+            .insert(vec_len, "std.alloc.vec.len".into());
+        let (mut slice_symbols, _) = setup();
+        let slice_len = define_symbol(&mut slice_symbols, "len");
+        slice_symbols
+            .host_function_names
+            .insert(slice_len, "std.core.slice.len".into());
+
+        let bump = bumpalo::Bump::new();
+        let vec_key = InstantiationKey {
+            symbol: vec_len,
+            type_args: bump.alloc_slice_copy(&[int_id]),
+        };
+        let slice_key = InstantiationKey {
+            symbol: slice_len,
+            type_args: bump.alloc_slice_copy(&[int_id]),
+        };
+
+        assert_ne!(
+            mangle_symbol(&vec_key, &interner, &vec_symbols),
+            mangle_symbol(&slice_key, &interner, &slice_symbols),
+            "module-qualified function identities must distinguish generic instances"
+        );
+    }
+
+    #[test]
     fn test_analyze_instantiations_collects_hir_generic_call() {
         let src = r#"
 func identity<T>(value: T): T {

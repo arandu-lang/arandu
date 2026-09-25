@@ -27,6 +27,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         let size_val = self.builder.ins().iconst(self.ptr_type, layout.size as i64);
         let call_inst = self.builder.ins().call(local_ref, &[size_val]);
         let ptr_val = self.builder.inst_results(call_inst)[0];
+        self.trap_if_null(ptr_val);
 
         if let Some(arandu_semantics::layout::TagEncoding::PointerTag {
             tag_mask,

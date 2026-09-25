@@ -2288,6 +2288,188 @@ fn stdio_l3_stress_has_no_crash_deadlock_or_stale_publication() {
     lsp.shutdown(20_001);
 }
 
+fn run_stdio_seeded_incremental_edits(mut seed: u64) {
+    const EDIT_COUNT: usize = 24;
+    const FIRST_REQUEST_ID: i64 = 30_000;
+
+    let fixture = FixtureDir::new();
+    let uri = file_uri(&fixture.path().join("seeded.aru"));
+    let mut lsp = LspProcess::spawn();
+    lsp.initialize(fixture.path(), 1);
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": {
+            "textDocument": {
+                "uri": uri,
+                "languageId": "arandu",
+                "version": 1,
+                "text": "func main(): int { return 0 }\n"
+            }
+        }
+    }));
+    let _ = lsp.wait_for(|message| {
+        message.get("method").and_then(Value::as_str) == Some("textDocument/publishDiagnostics")
+            && message.pointer("/params/uri").and_then(Value::as_str) == Some(uri.as_str())
+    });
+
+    let mut version = 1i32;
+    let mut next_id = FIRST_REQUEST_ID;
+    let mut request_ids = BTreeSet::new();
+    let mut seen_choices = BTreeSet::new();
+    for _ in 0..EDIT_COUNT {
+        seed ^= seed >> 12;
+        seed ^= seed << 25;
+        seed ^= seed >> 27;
+        let choice = (seed.wrapping_mul(0x2545_f491_4f6c_dd1d) % 6) as u8;
+        seen_choices.insert(choice);
+        version += 1;
+        let text = match choice {
+            0 => format!("func main(): int {{ return {version} }}\n"),
+            1 => "func main(): int { return unresolved }\n".to_owned(),
+            2 => "func main(): int { return\n".to_owned(),
+            3 => format!("// ação 🦀 {version}\nfunc main(): int {{ return {version} }}\n"),
+            4 => format!(
+                "func main(): int {{\n    let mut remaining: int = {}\n    while remaining > 0 {{ remaining = remaining - 1 }}\n    return {version}\n}}\n",
+                version % 5
+            ),
+            _ => "func main(): int { let 1 = 2; return 0 }\n".to_owned(),
+        };
+        lsp.send(&json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didChange",
+            "params": {
+                "textDocument": { "uri": uri, "version": version },
+                "contentChanges": [{ "text": text }]
+            }
+        }));
+
+        if choice.is_multiple_of(2) {
+            let id = next_id;
+            next_id += 1;
+            request_ids.insert(id);
+            lsp.send(&json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "textDocument/completion",
+                "params": {
+                    "textDocument": { "uri": uri },
+                    "position": { "line": 0, "character": 4 }
+                }
+            }));
+            if choice == 0 {
+                lsp.send(&json!({
+                    "jsonrpc": "2.0",
+                    "method": "$/cancelRequest",
+                    "params": { "id": id }
+                }));
+            }
+        }
+    }
+    assert_eq!(seen_choices, (0..6).collect());
+    assert!(
+        !request_ids.is_empty(),
+        "seed must exercise interactive requests"
+    );
+
+    for (id, response) in lsp.wait_for_responses(request_ids.iter().copied()) {
+        if let Some(error) = response.get("error") {
+            let code = error.get("code").and_then(Value::as_i64);
+            assert!(
+                matches!(code, Some(-32802..=-32800)),
+                "seeded request {id} returned an unexpected/internal error: {response}"
+            );
+        } else {
+            assert!(
+                response.get("result").is_some(),
+                "seeded request {id} returned no result: {response}"
+            );
+        }
+    }
+
+    version += 1;
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didChange",
+        "params": {
+            "textDocument": { "uri": uri, "version": version },
+            "contentChanges": [{ "text": "func main(): int { return 42 }\n" }]
+        }
+    }));
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didSave",
+        "params": { "textDocument": { "uri": uri } }
+    }));
+    let final_diagnostics = lsp.wait_for(|message| {
+        message.get("method").and_then(Value::as_str) == Some("textDocument/publishDiagnostics")
+            && message.pointer("/params/uri").and_then(Value::as_str) == Some(uri.as_str())
+            && message.pointer("/params/version").and_then(Value::as_i64)
+                == Some(i64::from(version))
+    });
+    assert_eq!(
+        final_diagnostics
+            .pointer("/params/diagnostics")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(0),
+        "final seeded revision must clear diagnostics: {final_diagnostics}"
+    );
+
+    let assert_no_ice = |message: &Value| {
+        if message.get("method").and_then(Value::as_str) == Some("textDocument/publishDiagnostics")
+            && message.pointer("/params/uri").and_then(Value::as_str) == Some(uri.as_str())
+        {
+            let diagnostics = message
+                .pointer("/params/diagnostics")
+                .and_then(Value::as_array)
+                .map_or(&[][..], Vec::as_slice);
+            assert!(
+                diagnostics.iter().all(|diagnostic| !diagnostic
+                    .get("code")
+                    .and_then(Value::as_str)
+                    .is_some_and(|code| code.starts_with("ICE"))),
+                "seeded malformed edits published an ICE: {message}"
+            );
+        }
+    };
+    for message in lsp.pending.borrow().iter() {
+        assert_no_ice(message);
+    }
+
+    let quiet_until = Instant::now() + Duration::from_millis(250);
+    while let Ok(message) = lsp
+        .messages
+        .recv_timeout(quiet_until.saturating_duration_since(Instant::now()))
+    {
+        assert_no_ice(&message);
+        if message.get("method").and_then(Value::as_str) == Some("textDocument/publishDiagnostics")
+            && message.pointer("/params/uri").and_then(Value::as_str) == Some(uri.as_str())
+        {
+            assert_eq!(
+                message.pointer("/params/version").and_then(Value::as_i64),
+                Some(i64::from(version)),
+                "seeded sequence published stale diagnostics after final revision: {message}"
+            );
+        }
+        if Instant::now() >= quiet_until {
+            break;
+        }
+    }
+    lsp.shutdown(30_001);
+}
+
+#[test]
+fn stdio_seeded_incremental_edits_preserve_final_revision() {
+    for seed in [
+        0x0002_25ee_dd15_ca11,
+        0x1234_5678_9abc_def0,
+        0x9e37_79b9_7f4a_7c15,
+    ] {
+        run_stdio_seeded_incremental_edits(seed);
+    }
+}
+
 #[test]
 fn stdio_interleaved_edits_preserve_responses_and_final_diagnostics() {
     const FINAL_REVISION: i32 = 41;

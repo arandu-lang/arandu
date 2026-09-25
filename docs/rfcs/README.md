@@ -54,6 +54,8 @@ Uma RFC evolui através dos seguintes estados formais:
 | [0019](0019-zero-bloat-target-and-shared-cache.md) | Arquitetura de Cache Global Compartilhado e Prevenção de Inchaço de Build (*Zero-Bloat Target*) | Tooling / Build / Storage | `Draft` | 2026-09-19 |
 | [0020](0020-native-packaging-and-python-eradication.md) | Empacotamento Nativo, Validação de Arquivos e Erradicação de Python via `xtask` e CLI | Tooling / Distribution / CI | `Draft` | 2026-09-20 |
 | [0021](0021-visibility-and-module-surface.md) | Visibilidade Granular e Superfície de Módulo (`internal`, `sealed`, re-exports) | Frontend / Middle-end / Tooling | `Draft` | 2026-09-21 |
+| [0022](0022-holistic-synthesis-differential-fuzzing.md) | Síntese Holística de Programas, Testes Diferenciais Multi-Backend e Fuzzing Incremental (`AranduSmith`) | Tooling / Middle-end / Backend | `Draft` | 2026-09-22 |
+| [0023](0023-portable-default-integer-model.md) | Modelo Portável de Inteiros Padrão e Tipos de Largura do Alvo | Frontend / Middle-end / Backend / Stdlib | `Draft` | 2026-09-24 |
 
 ---
 

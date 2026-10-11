@@ -190,9 +190,14 @@ func trigger(cond: bool): int {
     let file = object::File::parse(artifact.bytes()).expect("valid native object");
 
     // PAN: abort lowers to native CPU trap instruction (UD2/BRK), NOT to an external function call to libc `abort`.
+    let abort_name = if file.format() == object::BinaryFormat::MachO {
+        "_abort"
+    } else {
+        "abort"
+    };
     let has_undefined_abort = file
         .symbols()
-        .any(|sym| sym.name() == Ok("abort") && !sym.is_definition());
+        .any(|sym| sym.name() == Ok(abort_name) && !sym.is_definition());
     assert!(
         !has_undefined_abort,
         "object must not import an external libc 'abort' symbol; it must inline the CPU trap"

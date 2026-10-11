@@ -9,6 +9,17 @@ use target_lexicon::Triple;
 
 const TEST_TOOLCHAIN: &str = "test-toolchain-v1";
 
+fn has_undefined_symbol(object: &object::File<'_>, name: &str) -> bool {
+    let name = if object.format() == object::BinaryFormat::MachO {
+        format!("_{name}")
+    } else {
+        name.to_owned()
+    };
+    object
+        .symbols()
+        .any(|symbol| symbol.name() == Ok(name.as_str()) && symbol.is_undefined())
+}
+
 fn compile_amir(
     src: &str,
 ) -> (
@@ -172,13 +183,16 @@ fn removing_an_unreferenced_declaration_preserves_hash_and_object_bytes() {
 }
 
 fn main_object(source: &str) -> (String, Vec<u8>) {
+    main_object_for_target(source, &Triple::host())
+}
+
+fn main_object_for_target(source: &str, target: &Triple) -> (String, Vec<u8>) {
     let (program, symbols, types) = compile_amir(source);
-    let target = Triple::host();
     let units = partition_program(
         &program,
         &symbols,
         &types,
-        &target,
+        target,
         AotOptimization::Baseline,
         TEST_TOOLCHAIN,
     );
@@ -193,7 +207,7 @@ fn main_object(source: &str) -> (String, Vec<u8>) {
             &program,
             &symbols,
             &types,
-            &target,
+            target,
             AotOptimization::Baseline,
         )
         .expect("object"),
@@ -319,27 +333,32 @@ fn referenced_struct_layout_changes_invalidate_the_caller() {
 
 #[test]
 fn function_references_outside_calls_keep_their_declaration() {
-    let (_, bytes) = main_object(
-        "extern \"C\" { func sink(callback: ptr[u8]): void }\nfunc callback(): int { return 42 }\nfunc main(): int { unsafe { sink(callback as ptr[u8]) } return 42 }",
-    );
-    let object = object::File::parse(bytes.as_slice()).expect("object");
-    assert!(
-        object
-            .symbols()
-            .any(|symbol| symbol.name() == Ok("callback") && symbol.is_undefined())
-    );
+    let source = "extern \"C\" { func sink(callback: ptr[u8]): void }\nfunc callback(): int { return 42 }\nfunc main(): int { unsafe { sink(callback as ptr[u8]) } return 42 }";
+    for target in [
+        Triple::host(),
+        format!("{}-apple-darwin", Triple::host().architecture)
+            .parse()
+            .expect("Darwin target"),
+    ] {
+        let (_, bytes) = main_object_for_target(source, &target);
+        let object = object::File::parse(bytes.as_slice()).expect("object");
+        assert!(has_undefined_symbol(&object, "callback"), "{target}");
+    }
 }
 
 #[test]
 fn implicit_destructor_is_declared_without_a_source_call() {
     let source = "struct Owner { value: int }\n@Destructor\nfunc Owner.destroy(own self: Owner): void {}\nfunc main(): int { let owner = Owner { value: 42 } return owner.value }";
-    let (_, bytes) = main_object(source);
-    let object = object::File::parse(bytes.as_slice()).expect("object");
-    assert!(
-        object
-            .symbols()
-            .any(|symbol| symbol.name() == Ok("Owner.destroy") && symbol.is_undefined())
-    );
+    for target in [
+        Triple::host(),
+        format!("{}-apple-darwin", Triple::host().architecture)
+            .parse()
+            .expect("Darwin target"),
+    ] {
+        let (_, bytes) = main_object_for_target(source, &target);
+        let object = object::File::parse(bytes.as_slice()).expect("object");
+        assert!(has_undefined_symbol(&object, "Owner.destroy"), "{target}");
+    }
 }
 
 #[test]

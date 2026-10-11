@@ -3397,11 +3397,14 @@ fn stdio_signature_help_does_not_guess_an_unresolved_namespace_member() {
 #[test]
 fn stdio_initialize_ctfe_limits_apply_to_document_diagnostics() {
     let fixture = FixtureDir::new();
-    let uri = file_uri(&fixture.path().join("limits.aru"));
+    let document = fixture.path().join("limits.aru");
+    fs::write(&document, "func disk(): int { return 0 }\n").expect("disk fixture");
+    let uri = file_uri(&document).replace("limits.aru", "%6Cimits.aru");
     let mut lsp = LspProcess::spawn();
     lsp.send(&json!({
         "jsonrpc": "2.0", "id": 1, "method": "initialize",
-        "params": { "processId": null, "capabilities": {}, "initializationOptions": { "ctfe": { "fuel": 1 } } }
+        "params": { "processId": null, "capabilities": {}, "initializationOptions": { "ctfe": { "fuel": 1 } },
+            "workspaceFolders": [{ "uri": file_uri(fixture.path()), "name": "uri-overlay" }] }
     }));
     assert!(lsp.wait_for_response(1).get("error").is_none());
     lsp.send(&json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }));
@@ -3422,7 +3425,25 @@ fn stdio_initialize_ctfe_limits_apply_to_document_diagnostics() {
             .any(|diagnostic| diagnostic["code"] == "T045"),
         "{publication}"
     );
-    lsp.shutdown(2);
+    lsp.wait_for(|message| {
+        message.get("method").and_then(Value::as_str) == Some("arandu/status")
+            && message.pointer("/params/state").and_then(Value::as_str) == Some("ready")
+    });
+    lsp.send(&json!({
+        "jsonrpc": "2.0", "id": 2, "method": "textDocument/documentSymbol",
+        "params": { "textDocument": { "uri": uri } }
+    }));
+    let symbols = lsp.wait_for_response(2);
+    let symbols = symbols["result"].as_array().expect("document symbols");
+    assert!(
+        symbols.iter().any(|symbol| symbol["name"] == "main"),
+        "the overlay must survive discovery: {symbols:?}"
+    );
+    assert!(
+        !symbols.iter().any(|symbol| symbol["name"] == "disk"),
+        "stale disk symbols replaced the overlay: {symbols:?}"
+    );
+    lsp.shutdown(3);
 }
 
 #[test]

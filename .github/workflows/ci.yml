@@ -137,7 +137,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' }}
       - name: Run the native differential reproducer first
         if: needs.scope.outputs.host_sensitive == 'true'
-        run: cargo test --locked -p arandu_fuzz_support synthesized_generic_tuples_match_all_backends
+        run: cargo test --locked -p arandu_fuzz_support synthesized_wasm_seed_eight_matches_all_optimization_levels
       - name: Test full workspace (host-sensitive changes)
         if: needs.scope.outputs.host_sensitive == 'true'
         run: cargo test --workspace --locked

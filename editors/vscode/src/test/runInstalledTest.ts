@@ -50,7 +50,8 @@ async function main(): Promise<void> {
     fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
     fs.writeFileSync(settingsPath, JSON.stringify({
         'arandu.server.path': serverPath,
-        'arandu.cli.path': aranduCliPath
+        'arandu.cli.path': aranduCliPath,
+        'arandu.trace.server': 'verbose'
     }, null, 2));
 
     const vscodeExecutablePath = await downloadAndUnzipVSCode(VSCODE_VERSION);

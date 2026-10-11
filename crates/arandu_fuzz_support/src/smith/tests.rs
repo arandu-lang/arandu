@@ -2470,3 +2470,14 @@ fn __smith_jit_worker() {
         }
     }
 }
+
+#[test]
+fn synthesized_wasm_seed_eight_matches_all_optimization_levels() {
+    let generated = synthesize_with_oracle(8);
+    let observation =
+        check_source(&generated.source, false, true).expect("seed-eight JIT/Wasm differential");
+    let expected = ExpectedObservation::synthesized(generated.expected_result);
+    assert_eq!(observation.result, expected.result);
+    assert_eq!(observation.stdout, expected.stdout);
+    assert_eq!(observation.stderr, expected.stderr);
+}

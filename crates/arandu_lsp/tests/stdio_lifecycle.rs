@@ -54,7 +54,7 @@ impl Drop for FixtureDir {
 
 struct LspProcess {
     child: Child,
-    stdin: ChildStdin,
+    stdin: Option<ChildStdin>,
     messages: Receiver<Value>,
     pending: RefCell<VecDeque<Value>>,
 }
@@ -80,7 +80,7 @@ impl LspProcess {
         });
         Self {
             child,
-            stdin,
+            stdin: Some(stdin),
             messages,
             pending: RefCell::new(VecDeque::new()),
         }
@@ -88,9 +88,10 @@ impl LspProcess {
 
     fn send(&mut self, message: &Value) {
         let payload = serde_json::to_vec(message).expect("serialize LSP message");
-        write!(self.stdin, "Content-Length: {}\r\n\r\n", payload.len()).expect("write LSP header");
-        self.stdin.write_all(&payload).expect("write LSP payload");
-        self.stdin.flush().expect("flush LSP payload");
+        let stdin = self.stdin.as_mut().expect("LSP input is open");
+        write!(stdin, "Content-Length: {}\r\n\r\n", payload.len()).expect("write LSP header");
+        stdin.write_all(&payload).expect("write LSP payload");
+        stdin.flush().expect("flush LSP payload");
     }
 
     fn wait_for(&self, mut predicate: impl FnMut(&Value) -> bool) -> Value {
@@ -3426,19 +3427,39 @@ fn stdio_initialize_ctfe_limits_apply_to_document_diagnostics() {
 
 #[test]
 fn stdio_initialize_rejects_invalid_ctfe_limits_with_invalid_params() {
-    for ctfe in [
-        json!({"fuel": 0}),
-        json!({"frames": 4294967296u64}),
-        json!({"values": -1}),
-        json!({"typo": 10}),
-        json!(true),
-    ] {
-        let mut lsp = LspProcess::spawn();
-        lsp.send(&json!({
+    for close_before_response in [false, true] {
+        for ctfe in [
+            json!({"fuel": 0}),
+            json!({"frames": 4294967296u64}),
+            json!({"values": -1}),
+            json!({"typo": 10}),
+            json!(true),
+        ] {
+            let mut lsp = LspProcess::spawn();
+            lsp.send(&json!({
             "jsonrpc": "2.0", "id": 1, "method": "initialize",
             "params": { "processId": null, "capabilities": {}, "initializationOptions": { "ctfe": ctfe } }
         }));
-        let response = lsp.wait_for_response(1);
-        assert_eq!(response["error"]["code"], -32602, "{response}");
+            if close_before_response {
+                drop(lsp.stdin.take());
+            }
+            let response = lsp.wait_for_response(1);
+            assert_eq!(response["error"]["code"], -32602, "{response}");
+            // A client may close input before rejection or after receiving it.
+            // Both orderings must drain the response and let the server exit.
+            drop(lsp.stdin.take());
+            let deadline = Instant::now() + MESSAGE_TIMEOUT;
+            let status = loop {
+                if let Some(status) = lsp.child.try_wait().expect("poll rejected initialization") {
+                    break status;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "server did not exit after rejected initialization"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            };
+            assert!(!status.success(), "invalid initialization must fail");
+        }
     }
 }

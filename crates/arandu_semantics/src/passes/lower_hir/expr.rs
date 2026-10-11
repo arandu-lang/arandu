@@ -200,6 +200,42 @@ pub(crate) fn lower_expr_raw(
             )
         });
     }
+    // Recursive binary/unary/group lowering uses a small coordinator frame;
+    // Keep the other forms' diagnostic locals off those ancestor frames.
+    let kind = match pool.expr(expr) {
+        ExprKind::Group { expr: inner, .. } => {
+            return lower_expr_raw(type_check, pool, hir_pool, *inner);
+        }
+        ExprKind::Binary { op, left, right } => {
+            let left = lower_expr(type_check, pool, hir_pool, *left)?;
+            let right = lower_expr(type_check, pool, hir_pool, *right)?;
+            HirExprKind::Binary {
+                op: (*op).into(),
+                left,
+                right,
+            }
+        }
+        ExprKind::Unary { op, expr: inner } => {
+            let inner = lower_expr(type_check, pool, hir_pool, *inner)?;
+            HirExprKind::Unary {
+                op: (*op).into(),
+                expr: inner,
+            }
+        }
+        _ => return lower_expr_dispatch(type_check, pool, hir_pool, expr, span, fallback_ty),
+    };
+    let ty = expr_type_for_kind(type_check, hir_pool, &kind, fallback_ty);
+    Ok(HirExpr { kind, ty, span })
+}
+
+fn lower_expr_dispatch(
+    type_check: &mut TypeCheckResult,
+    pool: &AstPool,
+    hir_pool: &mut crate::hir::HirPool,
+    expr: ExprId,
+    span: arandu_middle::Span,
+    fallback_ty: crate::types::TypeId,
+) -> Result<HirExpr, Diagnostic> {
     let kind = match pool.expr(expr) {
         ExprKind::Layout { query, ty } => match query {
             arandu_parser::LayoutQuery::TargetOS => {

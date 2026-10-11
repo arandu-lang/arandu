@@ -117,6 +117,10 @@ fn synth_expr_inner(
     if let Some(id) = synth_call_expr(checker, expr, kind, span, expected) {
         return id;
     }
+    if let ExprKind::Binary { op, left, right } = kind {
+        return binary::synth_binary_expr(checker, expr, op, (*left, *right), span, expected)
+            .unwrap_or_else(|| checker.intern(ArType::Error));
+    }
     if let Some(id) = synth_binary_unary_expr(checker, expr, kind, span, expected) {
         return id;
     }

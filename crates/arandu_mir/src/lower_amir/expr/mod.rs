@@ -61,7 +61,26 @@ impl LowerCtx<'_> {
         symbols: &SymbolTable,
     ) -> Result<AmirOperand, Diagnostic> {
         self.charge_static_expansion(self.hir.pool.expr(expr_id).span)?;
-        let expr = self.hir.pool.expr(expr_id).clone();
+        let hir = self.hir;
+        let expr = hir.pool.expr(expr_id);
+        match &expr.kind {
+            HirExprKind::Binary { op, left, right } => {
+                self.lower_binary(*op, *left, *right, expr.ty, target, symbols)
+            }
+            HirExprKind::Unary { op, expr: inner } => {
+                self.lower_unary(*op, *inner, expr.ty, target, symbols)
+            }
+            _ => self.lower_expr_dispatch(expr, target, symbols),
+        }
+    }
+
+    // Keep diagnostic and aggregate locals off recursive operator frames.
+    fn lower_expr_dispatch(
+        &mut self,
+        expr: &crate::hir::HirExpr,
+        target: Option<TempId>,
+        symbols: &SymbolTable,
+    ) -> Result<AmirOperand, Diagnostic> {
         match &expr.kind {
             HirExprKind::Layout { query, operand_ty } => {
                 self.lower_layout_query(*query, *operand_ty, expr.ty, target, expr.span)
@@ -368,7 +387,7 @@ impl LowerCtx<'_> {
             HirExprKind::TypePath {
                 type_symbol,
                 member_symbol,
-            } => self.lower_type_path(*type_symbol, *member_symbol, &expr, target, symbols),
+            } => self.lower_type_path(*type_symbol, *member_symbol, expr, target, symbols),
             HirExprKind::Generic { callee, args } => {
                 // mem.sizeOf<T>() / mem.alignOf<T>() — fold to target layout constants so
                 // the JIT never needs a runtime `fn@sizeOf` symbol (L6.1 mem intrinsics).
@@ -408,7 +427,7 @@ impl LowerCtx<'_> {
                 Ok(AmirOperand::Copy(dest))
             }
             HirExprKind::ArrayRepeat { value } => {
-                self.lower_array_repeat(*value, &expr, target, symbols)
+                self.lower_array_repeat(*value, expr, target, symbols)
             }
             HirExprKind::Tuple { items } => {
                 let items_slice = self.hir.pool.expr_list(*items);
@@ -433,17 +452,17 @@ impl LowerCtx<'_> {
                         "v0.3 LAMBDA: trailing block closure lowering",
                     ));
                 }
-                self.lower_call(*callee, *args, &expr, target, symbols)
+                self.lower_call(*callee, *args, expr, target, symbols)
             }
             HirExprKind::StructLiteral {
                 struct_symbol,
                 fields,
-            } => self.lower_struct_literal(*struct_symbol, *fields, &expr, target, symbols),
+            } => self.lower_struct_literal(*struct_symbol, *fields, expr, target, symbols),
             HirExprKind::If {
                 condition,
                 then_block,
                 else_block,
-            } => self.lower_if(condition, *then_block, *else_block, &expr, target, symbols),
+            } => self.lower_if(condition, *then_block, *else_block, expr, target, symbols),
             HirExprKind::Cast { expr: sub_expr, .. } => {
                 let sub_op = self.lower_expr(*sub_expr, None, symbols)?;
                 let dest = target.unwrap_or_else(|| self.new_temp_id(expr.ty));
@@ -455,17 +474,17 @@ impl LowerCtx<'_> {
                 self.lower_match(*value, arms, target, expr.ty, symbols)
             }
             HirExprKind::ResultCtor { variant, value } => {
-                self.lower_result_ctor(*variant, *value, &expr, target, symbols)
+                self.lower_result_ctor(*variant, *value, expr, target, symbols)
             }
-            HirExprKind::Try { expr: inner } => self.lower_try(*inner, &expr, target, symbols),
+            HirExprKind::Try { expr: inner } => self.lower_try(*inner, expr, target, symbols),
             HirExprKind::SafeField { base, field } => {
-                self.lower_safe_field(*base, field.as_str(), &expr, target, symbols)
+                self.lower_safe_field(*base, field.as_str(), expr, target, symbols)
             }
             HirExprKind::SafeIndex { base, index } => {
-                self.lower_safe_index(*base, *index, &expr, target, symbols)
+                self.lower_safe_index(*base, *index, expr, target, symbols)
             }
             HirExprKind::NullCoalesce { left, right } => {
-                self.lower_null_coalesce(*left, *right, &expr, target, symbols)
+                self.lower_null_coalesce(*left, *right, expr, target, symbols)
             }
             HirExprKind::Catch {
                 expr: inner,
@@ -479,7 +498,7 @@ impl LowerCtx<'_> {
             // A3.0/A3.1/A3.3: evaluate block as coroutine body (Suspend on nested await),
             // wrap payload as Coroutine[T]. Stack-first when not the function return slot.
             HirExprKind::AsyncBlock { block } => {
-                self.lower_async_block(*block, &expr, target, symbols)
+                self.lower_async_block(*block, expr, target, symbols)
             }
             HirExprKind::ValueBlock { block } => {
                 let dest = target.unwrap_or_else(|| self.new_temp_id(expr.ty));

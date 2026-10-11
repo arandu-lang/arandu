@@ -44,7 +44,9 @@ func main(): int {
     );
     let (status, output) = execute_c_output("print_without_newline", &amir, &tc);
     assert_eq!(status, 0);
-    assert_eq!(output.as_bytes(), b"hello\0world\n0\n");
+    let newline = if cfg!(windows) { "\r\n" } else { "\n" };
+    let expected = format!("hello\0world{newline}0{newline}");
+    assert_eq!(output.as_bytes(), expected.as_bytes());
 }
 
 #[test]
@@ -987,13 +989,22 @@ fn parity_index_addressing_combined_with_shift() {
 
 #[test]
 fn generated_integer_programs_match_independent_oracle() {
-    let (source, expected) = generated_integer_fixture();
-    let (jit, c) = test_execution_result("generated_integer_oracle", &source);
-    assert_eq!(
-        jit, expected,
-        "Cranelift disagreed with the independent oracle"
-    );
-    assert_eq!(c, expected, "C disagreed with the independent oracle");
+    // Keep the original left-associated 64-call expression and exercise all
+    // compiler phases with a bounded stack on every host, including macOS.
+    std::thread::Builder::new()
+        .stack_size(512 * 1024)
+        .spawn(|| {
+            let (source, expected) = generated_integer_fixture();
+            let (jit, c) = test_execution_result("generated_integer_oracle", &source);
+            assert_eq!(
+                jit, expected,
+                "Cranelift disagreed with the independent oracle"
+            );
+            assert_eq!(c, expected, "C disagreed with the independent oracle");
+        })
+        .expect("spawn bounded compiler worker")
+        .join()
+        .expect("bounded compiler worker failed");
 }
 
 #[test]

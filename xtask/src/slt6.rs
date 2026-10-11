@@ -192,6 +192,9 @@ fn run(root: &Path, config: &Config) -> Result<(), String> {
         BENCH_SCHEMA,
         "compare benchmark baseline",
     )?;
+    // Preserve the failing comparison too; it is essential for separating
+    // benchmark/environment noise from protocol and SDK failures.
+    write_json(config, "bench-compare.json", &compared)?;
     if compared
         .pointer("/comparison/regressions")
         .and_then(Value::as_u64)
@@ -199,7 +202,6 @@ fn run(root: &Path, config: &Config) -> Result<(), String> {
     {
         return Err("A/A benchmark exceeded the 100% Gold smoke threshold".into());
     }
-    write_json(config, "bench-compare.json", &compared)?;
 
     let manifest = json!({
         "schema": "arandu.slt6-evidence/v1",
@@ -248,9 +250,11 @@ fn benchmark_args(id: &str) -> Vec<&str> {
         "--format",
         "json",
         "--warmup",
-        "0.001",
+        // Millisecond-scale samples were dominated by hosted-runner noise.
+        // Give both identical-binary runs the same substantial warmup/window.
+        "0.05",
         "--measurement-time",
-        "0.005",
+        "0.1",
         "--samples",
         "10",
     ]

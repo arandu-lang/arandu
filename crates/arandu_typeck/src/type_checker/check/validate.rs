@@ -90,11 +90,14 @@ fn report_unstaged_argument(checker: &mut TypeChecker<'_>, span: Span) {
             .iter()
             .any(|d| d.span == span && d.code == crate::DiagCode::T042UnsupportedComptime)
     {
-        checker.diagnostics.push(crate::Diagnostic::error(
-            crate::DiagCode::T042UnsupportedComptime,
-            "this computed generic argument requires a supported function-body staging context; declaration headers and defaults are not supported",
-            span,
-        ).with_primary_label("this argument has not been staged"));
+        checker.diagnostics.push(
+            crate::Diagnostic::error(
+                crate::DiagCode::T042UnsupportedComptime,
+                "this computed generic argument has not been evaluated in its staging context",
+                span,
+            )
+            .with_primary_label("this argument has not been staged"),
+        );
     }
 }
 

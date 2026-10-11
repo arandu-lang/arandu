@@ -138,6 +138,35 @@ jobs:
       - name: Run the native differential reproducer first
         if: needs.scope.outputs.host_sensitive == 'true'
         run: cargo test --locked -p arandu_fuzz_support synthesized_wasm_seed_eight_matches_all_optimization_levels
+      - name: Replay preserved Wasm independently of the Rust harness
+        if: failure()
+        shell: bash
+        run: |
+          node <<'JS'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const { spawnSync } = require('node:child_process');
+          const root = path.resolve('target/smith-failures');
+          if (!fs.existsSync(root)) process.exit(0);
+          for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+            if (!entry.isDirectory()) continue;
+            const cwd = path.join(root, entry.name);
+            if (!fs.existsSync(path.join(cwd, 'runner.js'))) continue;
+            const phase = path.join(cwd, 'replay-phase.txt');
+            const result = spawnSync(process.execPath, ['runner.js', 'program.wasm'], {
+              cwd, encoding: 'utf8', timeout: 30000, maxBuffer: 1048576,
+              env: { ...process.env, ARANDU_SMITH_PHASE_PATH: phase }
+            });
+            const evidence = {
+              node: process.version, v8: process.versions.v8, platform: process.platform,
+              status: result.status, signal: result.signal, error: result.error?.message,
+              phase: fs.existsSync(phase) ? fs.readFileSync(phase, 'utf8') : null,
+              stdout: result.stdout, stderr: result.stderr
+            };
+            fs.writeFileSync(path.join(cwd, 'independent-replay.json'), JSON.stringify(evidence, null, 2));
+            console.log(JSON.stringify(evidence));
+          }
+          JS
       - name: Test full workspace (host-sensitive changes)
         if: needs.scope.outputs.host_sensitive == 'true'
         run: cargo test --workspace --locked

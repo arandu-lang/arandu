@@ -92,6 +92,7 @@ async function main(): Promise<void> {
             extensionTestsPath,
             launchArgs: [
                 workspacePath,
+                '--log=trace',
                 `--user-data-dir=${userDataPath}`,
                 `--extensions-dir=${extensionsPath}`
             ],

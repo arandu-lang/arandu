@@ -437,18 +437,29 @@ mod tests {
         temps: Vec<AmirTemp>,
         stmts: impl Fn(SymbolId) -> Vec<AmirStmt>,
     ) -> (AmirFunc, SymbolTable) {
+        shape_with_callee_kind(
+            return_type,
+            extern_name,
+            SymbolKind::ExternFunc,
+            temps,
+            stmts,
+        )
+    }
+
+    fn shape_with_callee_kind(
+        return_type: TypeId,
+        callee_name: &str,
+        callee_kind: SymbolKind,
+        temps: Vec<AmirTemp>,
+        stmts: impl Fn(SymbolId) -> Vec<AmirStmt>,
+    ) -> (AmirFunc, SymbolTable) {
         let mut symbols = SymbolTable::new(0);
         let scope = symbols.global_scope();
         let caller = symbols
             .define(scope, "caller", SymbolKind::Func, Span::new(0, 0, 0))
             .expect("define caller");
         let opaque = symbols
-            .define(
-                scope,
-                extern_name,
-                SymbolKind::ExternFunc,
-                Span::new(0, 0, 0),
-            )
+            .define(scope, callee_name, callee_kind, Span::new(0, 0, 0))
             .expect("define extern");
         let mut table = AmirStmtTable::new();
         let built = stmts(opaque);
@@ -647,6 +658,44 @@ mod tests {
                 assert!(!function_scratch_safe(&function, &symbols, &interner, abi));
             }
             function.return_type = byte;
+        }
+    }
+
+    #[test]
+    fn called_coroutines_with_borrowed_or_aggregate_payloads_disable_scratch() {
+        let interner = TypeInterner::new();
+        let byte = interner.intern(ArType::Primitive(Primitive::U8));
+        let string = interner.intern(ArType::Primitive(Primitive::Str));
+        let array = interner.intern(ArType::Array(4, byte));
+        let slice = interner.intern(ArType::Slice(byte));
+        let reference = interner.intern(ArType::Ref(byte));
+        for payload in [byte, array, string, slice, reference] {
+            let coroutine = interner.intern(ArType::Coroutine(payload));
+            let (function, symbols) = shape_with_callee_kind(
+                coroutine,
+                "async_helper",
+                SymbolKind::Func,
+                vec![temp(0, coroutine)],
+                |callee| {
+                    vec![AmirStmt::Call {
+                        lhs: Some(TempId::from_usize(0)),
+                        callee: AmirOperand::FunctionRef(callee),
+                        args: smallvec![],
+                        return_borrow: None,
+                    }]
+                },
+            );
+            for abi in [
+                ScratchResultAbi::ScalarsOnly,
+                ScratchResultAbi::CallerOwnedAggregates,
+                ScratchResultAbi::TransferredAggregates,
+            ] {
+                assert_eq!(
+                    function_scratch_safe(&function, &symbols, &interner, abi),
+                    payload == byte && abi == ScratchResultAbi::CallerOwnedAggregates,
+                    "only scalar caller-owned coroutine results qualify for scratch"
+                );
+            }
         }
     }
 

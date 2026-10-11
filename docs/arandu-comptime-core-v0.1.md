@@ -263,9 +263,10 @@ overflow use T047; recursive by-value source definitions retain T029. Physical
 layout and niche walks share the existing structural ceilings of 128 levels
 and 4,096 visits, rather than resetting limits in recursive calls.
 
-Expression-sized array-type grammar remains outside this cut. Concrete generic
-instances can use layout queries in dependent pre-body selection without
-requesting final runtime AMIR.
+`[comptime (expr)]T` freezes fixed array dimensions in local annotations and
+supported declaration headers. Concrete generic instances can use layout
+queries in dimensions and dependent pre-body selection without requesting
+final runtime AMIR.
 
 ## Architecture
 
@@ -417,7 +418,7 @@ a sibling edit, so this cut does not promise zero work for every source edit.
 
 Closed computed declaration headers/aliases, plain expression conditions and
 nested arguments are staged before their pure consumers. Pattern/loop headers
-remain outside the supported argument continuation. Match arms
+use the same continuation with lexical scope and runtime-capture checks. Match arms
 use the same lexical continuation and capture checks. Lambda scopes are prepared
 likewise but remain subject to the U001 closure boundary described above. The
 source-symbol helper API remains distinct from the concrete-instance API;
@@ -662,8 +663,8 @@ observes structured T045, restores the default and checks clean diagnostics.
 The Wasm compiler was rebuilt and tested through its JavaScript C-ABI: the
 installed corpus compiles to a module whose `main` executes successfully.
 The website's local playground artifact was updated from that validated build;
-removing custom debug sections preserves executable sections and brings the
-artifact to 6,263,557 bytes. Its Astro/search build passes. These are local
+removing custom debug sections preserves executable sections. Its Astro/search
+build passes. These are local
 integration results, not a claim that a release or public website was deployed.
 
 Shared scratch admission now instantiates nominal generic enum payloads before
@@ -681,7 +682,7 @@ with `cargo build --locked -p arandu_cli` in the dev profile, the same stdlib
 and runtime archive, isolated project copies, one warm-up and seven measured
 checks. These small workloads do not establish a general performance gain.
 
-| Workload | Check median before / after | Check peak RSS before / after | Compiler malloc/calloc calls before / after |
+| Workload | Check median before / after | Check resident memory at exit before / after | Compiler malloc/calloc calls before / after |
 | --- | --- | --- | --- |
 | `language_mix` | 28.47 / 26.33 ms | 26,724 / 26,844 KiB | 17,329 / 17,326 |
 | Fibonacci CTFE table (external scenario 05) | 32.80 / 33.54 ms | 27,104 / 27,232 KiB | 28,305 / 28,312 |
@@ -695,8 +696,11 @@ are calls, not live allocation counts or leak evidence. Exit resident memory
 from `/proc/self/smaps_rollup` is 2,620 / 2,628 KiB and 2,788 / 2,872 KiB,
 respectively; these are exit samples, not peak RSS. Child `wait4` runtime peak
 RSS includes the harness's pre-exec footprint and is unsuitable for interpreting
-these tiny executables. The raw temporary samples are recorded in
-`/tmp/arandu-controlled-workloads/results.json` for this development run.
+these tiny executables. The compiler resident-memory figures above are likewise
+exit samples, not peak RSS. These measurements describe the earlier driver
+integration, not a fresh benchmark of the subsequent parser and portability
+fixes. The temporary raw samples from that run are no longer available; do not
+use this historical table as a reproducible benchmark for release promotion.
 
 Pypor, Katu and Ita sources available on this host fail checking against both
 the baseline and this stdlib because their API assumptions have diverged.

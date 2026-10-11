@@ -816,13 +816,43 @@ fn deeply_nested_expression_does_not_stack_overflow_and_recovers() {
 
 #[test]
 fn deeply_nested_type_does_not_stack_overflow_and_recovers() {
-    let mut source = String::from("func main() {\n    let x: ");
-    for _ in 0..115 {
-        source.push_str("ref ");
-    }
-    source.push_str("i32 = 42;\n}\n");
-
-    let tree = crate::syntax::parse_syntax(&source);
-    let output = crate::syntax::lower_syntax_to_program_recovering(&tree, 0);
-    assert!(!output.diagnostics.is_empty());
+    std::thread::Builder::new()
+        .stack_size(512 * 1024)
+        .spawn(|| {
+            for (prefix, suffix) in [
+                ("ref ", ""),
+                ("mut ref ", ""),
+                ("own ", ""),
+                ("[]", ""),
+                ("[1]", ""),
+                ("ptr[", "]"),
+                ("(", ")"),
+            ] {
+                for (nesting, expected_error) in [(100, false), (115, true)] {
+                    let source = format!(
+                        "func main() {{ let x: {}i32{} = 42;\n}}\nfunc after(): int {{ return 1 }}\n",
+                        prefix.repeat(nesting),
+                        suffix.repeat(nesting),
+                    );
+                    let tree = crate::syntax::parse_syntax(&source);
+                    let output = crate::syntax::lower_syntax_to_program_recovering(&tree, 0);
+                    assert_eq!(
+                        !output.diagnostics.is_empty(),
+                        expected_error,
+                        "{prefix} depth {nesting}",
+                    );
+                    assert!(
+                        output.program.decls.iter().any(|decl| matches!(
+                            output.program.pool.decl(*decl),
+                            crate::TopLevelDecl::Func(function)
+                                if matches!(&function.name, crate::FuncName::Free { name, .. } if name == "after")
+                        )),
+                        "recovery must preserve the following declaration",
+                    );
+                }
+            }
+        })
+        .expect("spawn bounded type parser worker")
+        .join()
+        .expect("bounded type parser worker failed");
 }

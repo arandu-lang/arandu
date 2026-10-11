@@ -132,6 +132,15 @@ fn parse_type_inner(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<TypeE
         }));
     }
 
+    parse_type_dispatch(ctx, cur, start)
+}
+
+// Do not retain aggregate/function-type locals across recursive references.
+fn parse_type_dispatch(
+    ctx: &mut HandCtx<'_>,
+    cur: &mut Cursor<'_>,
+    start: u32,
+) -> Option<TypeExprId> {
     // `[]T` slice or `[N]T` array
     if cur.eat(TokenKind::LBracket) {
         if cur.eat(TokenKind::RBracket) {

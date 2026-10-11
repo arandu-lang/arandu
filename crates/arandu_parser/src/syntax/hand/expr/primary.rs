@@ -13,6 +13,13 @@ use smallvec::smallvec;
 use smol_str::SmolStr;
 
 pub(super) fn parse_primary(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<ExprId> {
+    if cur.peek_kind() == Some(TokenKind::LParen) {
+        return parse_group_or_lambda(ctx, cur);
+    }
+    parse_primary_dispatch(ctx, cur)
+}
+
+fn parse_primary_dispatch(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<ExprId> {
     let t = cur.peek()?;
     let start = t.start;
     match t.kind {
@@ -134,18 +141,7 @@ pub(super) fn parse_primary(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Opti
         TokenKind::IdentType => parse_type_led(ctx, cur, start),
         // type token as type-led (int is TypeInt etc.)
         k if primitive_type_token_name(k).is_some() => parse_type_led(ctx, cur, start),
-        TokenKind::LParen => {
-            cur.bump();
-            if looks_like_lambda(cur) {
-                return parse_lambda(ctx, cur, start);
-            }
-            let inner = try_hand_lower_expr(ctx, cur, 0)?;
-            let close = cur.expect(TokenKind::RParen)?;
-            Some(ctx.pool.alloc_expr(
-                ExprKind::Group { expr: inner },
-                ctx.span(start, close.start + close.len),
-            ))
-        }
+        TokenKind::LParen => parse_group_or_lambda(ctx, cur),
         TokenKind::StringStart => parse_string(ctx, cur, start, TokenKind::StringEnd),
         TokenKind::MultilineStringStart => {
             parse_string(ctx, cur, start, TokenKind::MultilineStringEnd)
@@ -357,4 +353,18 @@ pub(super) fn parse_string(
             }
         }
     }
+}
+
+fn parse_group_or_lambda(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<ExprId> {
+    let token = cur.bump()?;
+    let start = token.start;
+    if looks_like_lambda(cur) {
+        return parse_lambda(ctx, cur, start);
+    }
+    let inner = try_hand_lower_expr(ctx, cur, 0)?;
+    let close = cur.expect(TokenKind::RParen)?;
+    Some(ctx.pool.alloc_expr(
+        ExprKind::Group { expr: inner },
+        ctx.span(start, close.start + close.len),
+    ))
 }

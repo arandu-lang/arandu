@@ -789,19 +789,29 @@ fn parse_recovering_with_file_id_error_carries_file_id() {
 
 #[test]
 fn deeply_nested_expression_does_not_stack_overflow_and_recovers() {
-    let mut source = String::from("func main() {\n    let x = ");
-    for _ in 0..115 {
-        source.push('(');
-    }
-    source.push_str("42");
-    for _ in 0..115 {
-        source.push(')');
-    }
-    source.push_str("\n}\n");
-
-    let tree = crate::syntax::parse_syntax(&source);
-    let output = crate::syntax::lower_syntax_to_program_recovering(&tree, 0);
-    assert!(!output.diagnostics.is_empty());
+    std::thread::Builder::new()
+        .stack_size(512 * 1024)
+        .spawn(|| {
+            for (prefix, suffix) in [("(", ")"), ("!", "")] {
+              for (nesting, expected_error) in [(100, false), (115, true)] {
+                let mut source = String::from("func main() {\n    let x = ");
+                source.push_str(&prefix.repeat(nesting));
+                source.push_str("42");
+                source.push_str(&suffix.repeat(nesting));
+                source.push_str("\n}\nfunc after(): int { return 1 }\n");
+                let tree = crate::syntax::parse_syntax(&source);
+                let output = crate::syntax::lower_syntax_to_program_recovering(&tree, 0);
+                assert_eq!(!output.diagnostics.is_empty(), expected_error, "depth {nesting}");
+                assert!(output.program.decls.iter().any(|decl| matches!(output.program.pool.decl(*decl),
+                    crate::TopLevelDecl::Func(function)
+                        if matches!(&function.name, crate::FuncName::Free { name, .. } if name == "after")
+                )), "recovery must preserve the following declaration");
+            }
+            }
+        })
+        .expect("spawn bounded parser worker")
+        .join()
+        .expect("bounded parser worker failed");
 }
 
 #[test]

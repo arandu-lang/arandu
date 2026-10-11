@@ -49,7 +49,12 @@ impl<'a> Parser<'a> {
     }
 
     pub(super) fn try_parse_expr(&mut self, min_bp: u8) -> Result<ExprId, ParseError> {
-        let mut left = self.parse_prefix()?;
+        let left = self.parse_prefix()?;
+        self.parse_postfix_binary(left, min_bp)
+    }
+
+    // Prefix recursion must not retain the postfix/infix dispatch's locals.
+    fn parse_postfix_binary(&mut self, mut left: ExprId, min_bp: u8) -> Result<ExprId, ParseError> {
         loop {
             let next_kind = self.current().kind;
             match next_kind {

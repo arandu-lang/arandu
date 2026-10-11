@@ -31,113 +31,56 @@ impl<'a> Parser<'a> {
 
     pub(in crate::parser) fn parse_prefix(&mut self) -> Result<ExprId, ParseError> {
         let start = self.mark();
-        match &self.current().kind {
-            TokenKind::At => self.parse_layout_expression(),
-            TokenKind::Minus => {
-                self.advance();
-                let expr = self.parse_expr(150)?;
-                let span = self.span_from_mark(start);
-                Ok(self.pool.alloc_expr(
-                    ExprKind::Unary {
-                        op: UnaryOp::Neg,
-                        expr,
-                    },
-                    span,
-                ))
-            }
-            TokenKind::Bang => {
-                self.advance();
-                let expr = self.parse_expr(150)?;
-                let span = self.span_from_mark(start);
-                Ok(self.pool.alloc_expr(
-                    ExprKind::Unary {
-                        op: UnaryOp::Not,
-                        expr,
-                    },
-                    span,
-                ))
-            }
-            TokenKind::Tilde => {
-                self.advance();
-                let expr = self.parse_expr(150)?;
-                let span = self.span_from_mark(start);
-                Ok(self.pool.alloc_expr(
-                    ExprKind::Unary {
-                        op: UnaryOp::BitNot,
-                        expr,
-                    },
-                    span,
-                ))
-            }
-            TokenKind::KwAwait => {
-                self.advance();
-                let expr = self.parse_expr(150)?;
-                let span = self.span_from_mark(start);
-                Ok(self.pool.alloc_expr(
-                    ExprKind::Unary {
-                        op: UnaryOp::Await,
-                        expr,
-                    },
-                    span,
-                ))
-            }
-            TokenKind::Amp => {
-                self.advance();
-                let is_mut = self.eat_name("KW_MUT");
-                let expr = self.parse_expr(150)?;
-                let span = self.span_from_mark(start);
-                Ok(self.pool.alloc_expr(
-                    ExprKind::Unary {
-                        op: if is_mut {
-                            UnaryOp::RefMut
-                        } else {
-                            UnaryOp::Ref
-                        },
-                        expr,
-                    },
-                    span,
-                ))
-            }
-            TokenKind::KwRef => {
-                self.advance();
-                let expr = self.parse_expr(150)?;
-                let span = self.span_from_mark(start);
-                Ok(self.pool.alloc_expr(
-                    ExprKind::Unary {
-                        op: UnaryOp::Ref,
-                        expr,
-                    },
-                    span,
-                ))
-            }
+        if self.current().kind == TokenKind::LParen {
+            return self.parse_group_or_lambda(start);
+        }
+        self.parse_prefix_dispatch(start)
+    }
+
+    fn parse_prefix_dispatch(&mut self, start: usize) -> Result<ExprId, ParseError> {
+        let op = match self.current().kind {
+            TokenKind::Minus => Some(UnaryOp::Neg),
+            TokenKind::Bang => Some(UnaryOp::Not),
+            TokenKind::Tilde => Some(UnaryOp::BitNot),
+            TokenKind::KwAwait => Some(UnaryOp::Await),
+            TokenKind::KwRef => Some(UnaryOp::Ref),
+            TokenKind::Star => Some(UnaryOp::Deref),
             TokenKind::KwMut
                 if self.tokens.get(self.pos + 1).map(|token| token.kind)
                     == Some(TokenKind::KwRef) =>
             {
                 self.advance();
-                self.advance();
-                let expr = self.parse_expr(150)?;
-                let span = self.span_from_mark(start);
-                Ok(self.pool.alloc_expr(
-                    ExprKind::Unary {
-                        op: UnaryOp::RefMut,
-                        expr,
-                    },
-                    span,
-                ))
+                Some(UnaryOp::RefMut)
             }
-            TokenKind::Star => {
+            TokenKind::Amp => {
                 self.advance();
-                let expr = self.parse_expr(150)?;
-                let span = self.span_from_mark(start);
-                Ok(self.pool.alloc_expr(
-                    ExprKind::Unary {
-                        op: UnaryOp::Deref,
-                        expr,
-                    },
-                    span,
-                ))
+                let op = if self.eat_name("KW_MUT") {
+                    UnaryOp::RefMut
+                } else {
+                    UnaryOp::Ref
+                };
+                return self.parse_unary_operand(start, op);
             }
+            _ => None,
+        };
+        if let Some(op) = op {
+            self.advance();
+            self.parse_unary_operand(start, op)
+        } else {
+            self.parse_primary_dispatch(start)
+        }
+    }
+
+    fn parse_unary_operand(&mut self, start: usize, op: UnaryOp) -> Result<ExprId, ParseError> {
+        let expr = self.parse_expr(150)?;
+        let span = self.span_from_mark(start);
+        Ok(self.pool.alloc_expr(ExprKind::Unary { op, expr }, span))
+    }
+
+    // Keep large primary-form locals off recursive prefix frames.
+    fn parse_primary_dispatch(&mut self, start: usize) -> Result<ExprId, ParseError> {
+        match &self.current().kind {
+            TokenKind::At => self.parse_layout_expression(),
             TokenKind::KwAsync => {
                 self.advance();
                 let block = self.parse_block()?;
@@ -278,48 +221,7 @@ impl<'a> Parser<'a> {
                     .pool
                     .alloc_expr(ExprKind::InterpolatedString { parts: range }, span))
             }
-            TokenKind::LParen => {
-                let mut is_lambda = false;
-                {
-                    let checkpoint = self.checkpoint();
-                    if self.eat_name("LPAREN") {
-                        let mut params_ok = true;
-                        if !self.at_kind_name("RPAREN") {
-                            loop {
-                                if !matches!(self.current().kind, TokenKind::IdentValue) {
-                                    params_ok = false;
-                                    break;
-                                }
-                                self.advance();
-                                if self.can_start_type() && self.parse_type().is_err() {
-                                    params_ok = false;
-                                    break;
-                                }
-                                if !self.eat_name("COMMA") {
-                                    break;
-                                }
-                                if self.at_kind_name("RPAREN") {
-                                    break;
-                                }
-                            }
-                        }
-                        if params_ok && self.eat_name("RPAREN") && self.at_kind_name("FAT_ARROW") {
-                            is_lambda = true;
-                        }
-                    }
-                    checkpoint.rollback(self);
-                }
-
-                if is_lambda {
-                    self.parse_lambda()
-                } else {
-                    self.advance();
-                    let expr = self.parse_expr(0)?;
-                    self.expect_name("RPAREN")?;
-                    let span = self.span_from_mark(start);
-                    Ok(self.pool.alloc_expr(ExprKind::Group { expr }, span))
-                }
-            }
+            TokenKind::LParen => self.parse_group_or_lambda(start),
             TokenKind::Pipe => self.parse_pipe_lambda(),
             TokenKind::LBracket => self.parse_array(),
             _ => Err(ParseError::new(
@@ -329,6 +231,49 @@ impl<'a> Parser<'a> {
                 self.file_id,
                 self.source,
             )),
+        }
+    }
+
+    fn parse_group_or_lambda(&mut self, start: usize) -> Result<ExprId, ParseError> {
+        let mut is_lambda = false;
+        {
+            let checkpoint = self.checkpoint();
+            if self.eat_name("LPAREN") {
+                let mut params_ok = true;
+                if !self.at_kind_name("RPAREN") {
+                    loop {
+                        if !matches!(self.current().kind, TokenKind::IdentValue) {
+                            params_ok = false;
+                            break;
+                        }
+                        self.advance();
+                        if self.can_start_type() && self.parse_type().is_err() {
+                            params_ok = false;
+                            break;
+                        }
+                        if !self.eat_name("COMMA") {
+                            break;
+                        }
+                        if self.at_kind_name("RPAREN") {
+                            break;
+                        }
+                    }
+                }
+                if params_ok && self.eat_name("RPAREN") && self.at_kind_name("FAT_ARROW") {
+                    is_lambda = true;
+                }
+            }
+            checkpoint.rollback(self);
+        }
+
+        if is_lambda {
+            self.parse_lambda()
+        } else {
+            self.advance();
+            let expr = self.parse_expr(0)?;
+            self.expect_name("RPAREN")?;
+            let span = self.span_from_mark(start);
+            Ok(self.pool.alloc_expr(ExprKind::Group { expr }, span))
         }
     }
 

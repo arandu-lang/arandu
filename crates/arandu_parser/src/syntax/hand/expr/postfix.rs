@@ -15,6 +15,13 @@ pub(super) fn parse_unary_primary_post(
     ctx: &mut HandCtx<'_>,
     cur: &mut Cursor<'_>,
 ) -> Option<ExprId> {
+    if cur.peek_kind() == Some(TokenKind::LParen) {
+        return parse_primary_post(ctx, cur);
+    }
+    parse_unary_dispatch(ctx, cur)
+}
+
+fn parse_unary_dispatch(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<ExprId> {
     let t = cur.peek()?;
     match t.kind {
         TokenKind::Minus | TokenKind::Bang | TokenKind::Tilde | TokenKind::KwAwait => {
@@ -110,8 +117,15 @@ pub(super) fn parse_unary_primary_post(
 }
 
 pub(super) fn parse_primary_post(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<ExprId> {
-    let mut left = parse_primary(ctx, cur)?;
+    let left = parse_primary(ctx, cur)?;
+    parse_postfix_tail(ctx, cur, left)
+}
 
+fn parse_postfix_tail(
+    ctx: &mut HandCtx<'_>,
+    cur: &mut Cursor<'_>,
+    mut left: ExprId,
+) -> Option<ExprId> {
     loop {
         match cur.peek_kind() {
             Some(TokenKind::LParen) => {

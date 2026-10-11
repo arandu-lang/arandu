@@ -7,8 +7,10 @@ use super::synth::{int_hash_bucket, seeded_hash_collision_key};
 use super::types::*;
 
 use arandu_query::AnalysisHost;
+#[cfg(unix)]
 use std::process::Command;
 use std::sync::atomic::Ordering;
+#[cfg(unix)]
 use std::time::{Duration, Instant};
 
 fn assert_synthesized_seed_matches_all_backends(seed: u64) {

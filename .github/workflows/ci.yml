@@ -152,19 +152,28 @@ jobs:
             if (!entry.isDirectory()) continue;
             const cwd = path.join(root, entry.name);
             if (!fs.existsSync(path.join(cwd, 'runner.js'))) continue;
-            const phase = path.join(cwd, 'replay-phase.txt');
-            const result = spawnSync(process.execPath, ['runner.js', 'program.wasm'], {
-              cwd, encoding: 'utf8', timeout: 30000, maxBuffer: 1048576,
-              env: { ...process.env, ARANDU_SMITH_PHASE_PATH: phase }
-            });
-            const evidence = {
-              node: process.version, v8: process.versions.v8, platform: process.platform,
-              status: result.status, signal: result.signal, error: result.error?.message,
-              phase: fs.existsSync(phase) ? fs.readFileSync(phase, 'utf8') : null,
-              stdout: result.stdout, stderr: result.stderr
-            };
-            fs.writeFileSync(path.join(cwd, 'independent-replay.json'), JSON.stringify(evidence, null, 2));
-            console.log(JSON.stringify(evidence));
+            // Isolate baseline/optimizing engine behavior without changing the
+            // differential test's runner, timeout, or success criterion.
+            const modes = [
+              ['default', []],
+              ['optimizing', ['--no-liftoff', '--no-wasm-tier-up']],
+              ['baseline', ['--liftoff', '--no-wasm-tier-up']]
+            ];
+            for (const [mode, flags] of modes) {
+              const phase = path.join(cwd, `replay-${mode}-phase.txt`);
+              const result = spawnSync(process.execPath, [...flags, 'runner.js', 'program.wasm'], {
+                cwd, encoding: 'utf8', timeout: 30000, maxBuffer: 1048576,
+                env: { ...process.env, ARANDU_SMITH_PHASE_PATH: phase }
+              });
+              const evidence = {
+                mode, flags, node: process.version, v8: process.versions.v8, platform: process.platform,
+                status: result.status, signal: result.signal, error: result.error?.message,
+                phase: fs.existsSync(phase) ? fs.readFileSync(phase, 'utf8') : null,
+                stdout: result.stdout, stderr: result.stderr
+              };
+              fs.writeFileSync(path.join(cwd, `independent-replay-${mode}.json`), JSON.stringify(evidence, null, 2));
+              console.log(JSON.stringify(evidence));
+            }
           }
           JS
       - name: Test full workspace (host-sensitive changes)

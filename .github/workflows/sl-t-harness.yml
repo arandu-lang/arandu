@@ -261,6 +261,15 @@ jobs:
           ARANDU_CLI_TEST_PATH: ${{ runner.temp }}/arandu-sdk/arandu-${{ env.VERSION }}/bin/arandu.exe
         run: node ./out/test/runInstalledTest.js
 
+      - name: Preserve installed Extension Host failure logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: extension-host-failure-${{ matrix.target }}-${{ github.sha }}
+          path: editors/vscode/.vscode-test/failure-logs
+          if-no-files-found: ignore
+          retention-days: 14
+
   harness:
     name: SL_T / Harness
     if: always()

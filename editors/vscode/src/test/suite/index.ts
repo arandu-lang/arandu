@@ -176,7 +176,13 @@ export async function run(): Promise<void> {
 
         await configuration.update('comptime.fuel', 1, vscode.ConfigurationTarget.Global);
         await vscode.commands.executeCommand('arandu.restartServer');
-        await poll(() => vscode.languages.getDiagnostics(comptimeUri).some(diagnostic => diagnosticCode(diagnostic) === 'T045') ? true : undefined);
+        await poll(() => vscode.languages.getDiagnostics(comptimeUri).some(diagnostic => diagnosticCode(diagnostic) === 'T045') ? true : undefined).catch((error: unknown) => {
+            const message = error instanceof Error ? error.message : String(error);
+            const diagnostics = vscode.languages.getDiagnostics(comptimeUri).map(diagnostic => ({
+                code: diagnosticCode(diagnostic), message: diagnostic.message
+            }));
+            throw new Error(`${message}; expected T045 after restart; fuel=${String(vscode.workspace.getConfiguration('arandu').get('comptime.fuel'))}; runtime=${JSON.stringify(api.getRuntimeState())}; diagnostics=${JSON.stringify(diagnostics)}`);
+        });
         await configuration.update('comptime.fuel', undefined, vscode.ConfigurationTarget.Global);
         await vscode.commands.executeCommand('arandu.restartServer');
         const afterRestart = await poll(() =>

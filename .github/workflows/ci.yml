@@ -125,6 +125,7 @@ jobs:
     # changing their execution timeout or reducing the corpus.
     env:
       RUST_TEST_THREADS: 2
+      ARANDU_FUZZ_ARTIFACT_DIR: ${{ github.workspace }}/target/smith-failures
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -134,12 +135,24 @@ jobs:
           cache-key: windows-portability-rust-1.97.1
           shared-key: core-rust-1.97.1
           save-if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' }}
+      - name: Run the native differential reproducer first
+        if: needs.scope.outputs.host_sensitive == 'true'
+        run: cargo test --locked -p arandu_fuzz_support synthesized_generic_tuples_match_all_backends
       - name: Test full workspace (host-sensitive changes)
         if: needs.scope.outputs.host_sensitive == 'true'
         run: cargo test --workspace --locked
       - name: Test essential smoke (pure compiler changes)
         if: needs.scope.outputs.host_sensitive != 'true'
         run: cargo test --locked -p arandu_cli -p arandu_runtime -p arandu_parser
+
+      - name: Preserve native differential reproducers
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: smith-reproducers-${{ runner.os }}-${{ github.sha }}
+          path: target/smith-failures
+          if-no-files-found: ignore
+          retention-days: 14
 
   macos-portability:
     name: macOS portability
@@ -150,6 +163,7 @@ jobs:
     # changing their execution timeout or reducing the corpus.
     env:
       RUST_TEST_THREADS: 2
+      ARANDU_FUZZ_ARTIFACT_DIR: ${{ github.workspace }}/target/smith-failures
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -165,6 +179,15 @@ jobs:
       - name: Test essential smoke (pure compiler changes)
         if: needs.scope.outputs.host_sensitive != 'true'
         run: cargo test --locked -p arandu_cli -p arandu_runtime -p arandu_parser
+
+      - name: Preserve native differential reproducers
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: smith-reproducers-${{ runner.os }}-${{ github.sha }}
+          path: target/smith-failures
+          if-no-files-found: ignore
+          retention-days: 14
 
   diag-determinism:
     name: Diagnostic determinism

@@ -339,3 +339,51 @@ fn ctfe_values_replace_calls_without_losing_bits_in_c_cranelift_or_wasm() {
         }
     }
 }
+
+#[test]
+fn saved_wasm_reproducer_runs_without_the_rust_harness() {
+    let mut db = DatabaseImpl::new();
+    db.set_target_config(DataLayout::ptr_width(4));
+    let file = db.new_file(
+        "reproducer.aru".into(),
+        "func main(): int { return 42 }".into(),
+    );
+    let artifacts = arandu_query::passes::lower_amir(&db, file);
+    let tc = &artifacts.type_check;
+    let bytes = arandu_backend_wasm::emit_wasm(
+        &artifacts.amir,
+        &tc.symbols,
+        &tc.type_info.type_interner,
+        tc.type_info.as_ref(),
+        DataLayout::ptr_width(4),
+    )
+    .expect("emit replay fixture");
+    let id = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
+    let wasm_path =
+        std::env::temp_dir().join(format!("arandu_replay_{}_{}.wasm", std::process::id(), id));
+    let _cleanup = TemporaryArtifacts(vec![wasm_path.clone()]);
+    std::fs::write(&wasm_path, bytes).expect("write replay fixture");
+    let runner = r#"(async()=>{
+const fs=require('node:fs');
+const {instance}=await WebAssembly.instantiate(fs.readFileSync(process.argv[1]),{});
+fs.writeFileSync(process.env.ARANDU_SMITH_RESULT_PATH,JSON.stringify({result:instance.exports.main(),args:process.argv.slice(2)}));
+})().catch(error=>{console.error(error);process.exitCode=1})"#;
+    let directory = preserve_wasm_reproducer(&wasm_path, runner, "main").expect("preserve replay");
+    let node = std::env::var_os("ARANDU_NODE").unwrap_or_else(|| "node".into());
+    let mut command = Command::new(node);
+    command
+        .current_dir(&directory)
+        .args(["runner.js", "program.wasm"])
+        .env_remove("ARANDU_SMITH_RESULT_PATH")
+        .env_remove("ARANDU_SMITH_PHASE_PATH");
+    let output =
+        run_with_timeout(&mut command, BACKEND_PROCESS_TIMEOUT).expect("run independent replay");
+    assert!(output.status.success(), "{}", captured_stderr(&output));
+    let result: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(directory.join("result.txt")).expect("replay result"),
+    )
+    .expect("parse replay result");
+    assert_eq!(result["result"], 42);
+    assert_eq!(result["args"], serde_json::json!(SYNTHESIZED_PROGRAM_ARGS));
+    std::fs::remove_dir_all(directory).expect("remove owned replay fixture");
+}

@@ -1375,12 +1375,16 @@ fn execute_wasm(
     let id = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
     let wasm_path =
         std::env::temp_dir().join(format!("arandu_smith_{}_{}.wasm", std::process::id(), id));
-    let _cleanup = TemporaryArtifacts(vec![wasm_path.clone()]);
+    let phase_path = wasm_path.with_extension("phase");
+    let _cleanup = TemporaryArtifacts(vec![wasm_path.clone(), phase_path.clone()]);
     std::fs::write(&wasm_path, bytes)
         .map_err(|error| format!("write {}: {error}", wasm_path.display()))?;
 
     const RUNNER: &str = r#"(async()=>{
 const fs=require('fs');
+const phasePath=process.env.ARANDU_SMITH_PHASE_PATH;
+const phase=value=>{if(phasePath)fs.writeFileSync(phasePath,value)};
+phase('read');
 const bytes=fs.readFileSync(process.argv[1]);
 const programArgs=['arandu-smith',...process.argv.slice(2)];
 let instance;
@@ -1451,14 +1455,18 @@ const io={
     process.stderr.write(new Uint8Array(memory.buffer,start,size));
   }
 };
+phase('instantiate');
 ({instance}=await WebAssembly.instantiate(bytes,{env,io}));
 const main=instance.exports.main;
 if(typeof main!=='function')throw new Error('Wasm module does not export main');
+phase('main');
 const result=main();
+phase('result');
 if(typeof result!=='number')throw new Error('Wasm main did not return i32');
 const resultPath=process.env.ARANDU_SMITH_RESULT_PATH;
 if(!resultPath)throw new Error('missing result channel path');
 fs.writeFileSync(resultPath,String(result)+'\n');
+phase('done');
 })().catch(e=>{console.error(e&&e.stack||e);process.exitCode=1})"#;
     let node = std::env::var_os("ARANDU_NODE").unwrap_or_else(|| "node".into());
     let mut execution_command = Command::new(&node);
@@ -1467,8 +1475,20 @@ fs.writeFileSync(resultPath,String(result)+'\n');
     let result_path = wasm_path.with_extension("result");
     let _result_cleanup = TemporaryArtifacts(vec![result_path.clone()]);
     execution_command.env("ARANDU_SMITH_RESULT_PATH", &result_path);
-    let execution = run_with_timeout(&mut execution_command, BACKEND_PROCESS_TIMEOUT)
-        .map_err(|error| format!("Wasm runner {:?}: {error}", node))?;
+    execution_command.env("ARANDU_SMITH_PHASE_PATH", &phase_path);
+    let execution = match run_with_timeout(&mut execution_command, BACKEND_PROCESS_TIMEOUT) {
+        Ok(execution) => execution,
+        Err(error) => {
+            let phase =
+                std::fs::read_to_string(&phase_path).unwrap_or_else(|_| "not started".into());
+            let evidence = preserve_wasm_reproducer(&wasm_path, RUNNER, &phase)
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|error| format!("could not preserve reproducer: {error}"));
+            return Err(format!(
+                "Wasm runner {node:?}: {error}; phase={phase}; evidence={evidence}"
+            ));
+        }
+    };
     if !execution.status.success() {
         return Err(format!(
             "Wasm runner {:?} exited with {}: {}",
@@ -1490,4 +1510,29 @@ fs.writeFileSync(resultPath,String(result)+'\n');
         stdout: execution.stdout,
         stderr: execution.stderr,
     })
+}
+
+/// Keep the emitted module and an independent Node runner before temporary
+/// cleanup. Native-only failures must be replayable outside the Rust harness.
+fn preserve_wasm_reproducer(
+    wasm_path: &Path,
+    runner: &str,
+    phase: &str,
+) -> Result<PathBuf, String> {
+    let name = wasm_path.file_stem().ok_or("Wasm path has no filename")?;
+    let directory = artifact_root().join(name);
+    std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    std::fs::copy(wasm_path, directory.join("program.wasm")).map_err(|error| error.to_string())?;
+    // `node -e` and `node runner.js` expose different argv layouts.
+    let arguments =
+        serde_json::to_string(&SYNTHESIZED_PROGRAM_ARGS).map_err(|error| error.to_string())?;
+    std::fs::write(directory.join("runner.js"), format!(
+        "process.argv=[process.argv[0],process.argv[2],...{arguments}];\nprocess.env.ARANDU_SMITH_RESULT_PATH ||= 'result.txt';\n{runner}"
+    ))
+        .map_err(|error| error.to_string())?;
+    std::fs::write(directory.join("phase.txt"), phase).map_err(|error| error.to_string())?;
+    std::fs::write(directory.join("replay.txt"),
+        "Run from this directory: node runner.js program.wasm\nThe result is written to result.txt. Arguments match the Rust harness.\n")
+        .map_err(|error| error.to_string())?;
+    Ok(directory)
 }

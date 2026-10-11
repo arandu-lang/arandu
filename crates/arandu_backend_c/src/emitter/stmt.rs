@@ -157,7 +157,12 @@ impl<'a> CEmitter<'a> {
                 }
                 let p = self.format_operand(&args[0], func);
                 if let Some(dest) = lhs {
-                    let _ = writeln!(&mut self.output, "    t{} = *({});", dest.as_usize(), p);
+                    let _ = writeln!(
+                        &mut self.output,
+                        "    t{} = *({});",
+                        self.temp_slots[dest.as_usize()],
+                        p
+                    );
                 }
                 true
             }
@@ -181,7 +186,7 @@ impl<'a> CEmitter<'a> {
                     let _ = writeln!(
                         &mut self.output,
                         "    t{} = ({}) + ({});",
-                        dest.as_usize(),
+                        self.temp_slots[dest.as_usize()],
                         p,
                         i
                     );
@@ -310,7 +315,7 @@ impl<'a> CEmitter<'a> {
                     let _ = writeln!(
                         &mut self.output,
                         "    t{} = (void*)__ar_co_{slot};",
-                        lhs.as_usize()
+                        self.temp_slots[lhs.as_usize()]
                     );
                     return;
                 }
@@ -321,12 +326,16 @@ impl<'a> CEmitter<'a> {
                     let _ = writeln!(
                         self.output,
                         "    memcpy(&t{}, __ar_static_{source}, sizeof(t{}));",
-                        lhs.as_usize(),
-                        lhs.as_usize()
+                        self.temp_slots[lhs.as_usize()],
+                        self.temp_slots[lhs.as_usize()]
                     );
                     return;
                 }
-                let _ = write!(&mut self.output, "    t{} = ", lhs.as_usize());
+                let _ = write!(
+                    &mut self.output,
+                    "    t{} = ",
+                    self.temp_slots[lhs.as_usize()]
+                );
                 self.emit_rvalue(rhs, func, &lhs_ty, &lhs_c_ty);
                 let _ = writeln!(&mut self.output, ";");
             }
@@ -357,7 +366,7 @@ impl<'a> CEmitter<'a> {
                         let _ = writeln!(
                             &mut self.output,
                             "    t{} = ar_string_push_str({}, ({}).ptr, ({}).len);",
-                            dest.as_usize(),
+                            self.temp_slots[dest.as_usize()],
                             owner,
                             value,
                             value
@@ -400,7 +409,11 @@ impl<'a> CEmitter<'a> {
                 let callee_str = self.format_operand(callee, func);
                 let args_str: Vec<_> = args.iter().map(|a| self.format_operand(a, func)).collect();
                 if let Some(dest) = lhs {
-                    let _ = write!(&mut self.output, "    t{} = ", dest.as_usize());
+                    let _ = write!(
+                        &mut self.output,
+                        "    t{} = ",
+                        self.temp_slots[dest.as_usize()]
+                    );
                 } else {
                     let _ = write!(&mut self.output, "    ");
                 }
@@ -533,7 +546,11 @@ impl<'a> CEmitter<'a> {
                 func,
                 "non-Copy GenRef payload has no explicit @Destructor contract",
             );
-            let _ = writeln!(&mut self.output, "    t{} = 0;", lhs.as_usize());
+            let _ = writeln!(
+                &mut self.output,
+                "    t{} = 0;",
+                self.temp_slots[lhs.as_usize()]
+            );
             return;
         }
         let payload_c = self.format_type(&payload_ar);
@@ -550,7 +567,7 @@ impl<'a> CEmitter<'a> {
                 let _ = writeln!(
                     &mut self.output,
                     "    t{} = (int64_t)ar_gen_insert_raw(&__ar_gen_payload_{slot}, {}, {}, {glue});",
-                    lhs.as_usize(),
+                    self.temp_slots[lhs.as_usize()],
                     layout.size,
                     layout.align
                 );
@@ -560,7 +577,7 @@ impl<'a> CEmitter<'a> {
                 let _ = writeln!(
                     &mut self.output,
                     "    t{} = (int64_t)ar_gen_upsert_raw((uint64_t)({handle}), &__ar_gen_payload_{slot}, {}, {}, {glue});",
-                    lhs.as_usize(),
+                    self.temp_slots[lhs.as_usize()],
                     layout.size,
                     layout.align
                 );
@@ -575,14 +592,14 @@ impl<'a> CEmitter<'a> {
                 let _ = writeln!(
                     &mut self.output,
                     "    t{} = (int64_t)({handle});",
-                    lhs.as_usize()
+                    self.temp_slots[lhs.as_usize()]
                 );
             }
         }
         let _ = writeln!(
             &mut self.output,
             "    if (t{} == 0) abort();",
-            lhs.as_usize()
+            self.temp_slots[lhs.as_usize()]
         );
     }
 
@@ -612,7 +629,7 @@ impl<'a> CEmitter<'a> {
         let _ = writeln!(
             &mut self.output,
             "    if (!{name}((uint64_t)({handle}), &t{}, {}, {})) abort();",
-            lhs.as_usize(),
+            self.temp_slots[lhs.as_usize()],
             layout.size,
             layout.align
         );
@@ -732,7 +749,7 @@ impl<'a> CEmitter<'a> {
             let _ = writeln!(
                 &mut self.output,
                 "{indent}    t{} = ar_edge_{index};",
-                param.id.as_usize()
+                self.temp_slots[param.id.as_usize()]
             );
         }
         let _ = writeln!(&mut self.output, "{indent}}}");

@@ -5,10 +5,15 @@
 //! AMIR temps, and AMIR locals. A final block of scratch locals backs the bump
 //! allocator, fat-cell stores, logical i64 normalization, and float ops.
 
+use arandu_base::bitset::BitSet;
 use arandu_middle::amir::local::TempId;
+use arandu_middle::amir::reachability::terminator_targets;
+use arandu_middle::amir::stmt::AmirStmt;
+use arandu_middle::amir::value::AmirOperand;
+use arandu_middle::amir::visit::{for_each_stmt_operand, for_each_terminator_operand};
 use arandu_middle::layout::DataLayout;
 use arandu_middle::types::{TypeId, TypeInterner};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 use wasm_encoder::ValType;
 
@@ -69,21 +74,28 @@ impl<'a> FuncTranslator<'a> {
                 );
             }
 
-            // Non-param temps
-            for temp in &self.func.temps {
-                if self.temp_local.contains_key(&temp.id) {
-                    continue;
-                }
+            let ret_temp = TempId::from_usize(0);
+            if !self.func.temps.is_empty()
+                && !self.temp_local.contains_key(&ret_temp)
+                && types::shape(
+                    self.func.return_type,
+                    self.interner,
+                    self.layout_engine.data_layout,
+                ) != crate::types::Shape::Empty
+            {
                 Self::assign_slots(
                     self.interner,
                     self.layout_engine.data_layout,
                     &mut self.temp_local,
                     &mut next,
                     &mut slot_types,
-                    temp.id,
-                    temp.ty,
+                    ret_temp,
+                    self.func.temps[0].ty,
                 );
             }
+
+            // Non-param temps reuse slots via interference-graph coloring.
+            self.assign_colored_temps(&mut next, &mut slot_types);
 
             // AMIR locals
             for local in &self.func.locals {
@@ -169,23 +181,30 @@ impl<'a> FuncTranslator<'a> {
             }
             let param_slots = next as usize;
 
-            // Non-param temps (including block-parameter temps, which are ordinary
-            // temp slots in this scheme — the block arguments are written into them
-            // before the jump by `emit_block_args`).
-            for temp in &self.func.temps {
-                if self.temp_local.contains_key(&temp.id) {
-                    continue;
-                }
+            // Dedicated return slot if the function produces a value and it is not
+            // already mapped as a parameter.
+            let ret_temp = TempId::from_usize(0);
+            if !self.func.temps.is_empty()
+                && !self.temp_local.contains_key(&ret_temp)
+                && types::shape(
+                    self.func.return_type,
+                    self.interner,
+                    self.layout_engine.data_layout,
+                ) != crate::types::Shape::Empty
+            {
                 Self::assign_slots(
                     self.interner,
                     self.layout_engine.data_layout,
                     &mut self.temp_local,
                     &mut next,
                     &mut slot_types,
-                    temp.id,
-                    temp.ty,
+                    ret_temp,
+                    self.func.temps[0].ty,
                 );
             }
+
+            // Non-param temps reuse slots via interference-graph coloring.
+            self.assign_colored_temps(&mut next, &mut slot_types);
 
             // AMIR locals. They live in a separate index space from temps, so they
             // get their own wasm slots; sharing them (the previous behaviour) made a
@@ -362,4 +381,286 @@ impl<'a> FuncTranslator<'a> {
         }
         *next += slots;
     }
+
+    /// Assign slots to non-parameter temps by coloring an interference graph,
+    /// so disjoint-lifetime SSA temps share the same Wasm local index.
+    fn assign_colored_temps(&mut self, next: &mut u32, slot_types: &mut Vec<ValType>) {
+        let interference = build_interference_graph(self.func);
+
+        let mut fat_temps = Vec::new();
+        let mut i32_temps = Vec::new();
+        let mut i64_temps = Vec::new();
+        let mut f32_temps = Vec::new();
+        let mut f64_temps = Vec::new();
+
+        for temp in &self.func.temps {
+            if self.temp_local.contains_key(&temp.id) {
+                continue;
+            }
+            let shape = types::shape(temp.ty, self.interner, self.layout_engine.data_layout);
+            match shape {
+                crate::types::Shape::Empty => {
+                    self.temp_local.insert(temp.id, 0);
+                }
+                crate::types::Shape::Fat => {
+                    fat_temps.push(temp.id);
+                }
+                crate::types::Shape::Scalar => {
+                    let vt = types::slot_valtype(
+                        temp.ty,
+                        0,
+                        self.interner,
+                        self.layout_engine.data_layout,
+                    )
+                    .unwrap_or(ValType::I32);
+                    match vt {
+                        ValType::I32 => i32_temps.push(temp.id),
+                        ValType::I64 => i64_temps.push(temp.id),
+                        ValType::F32 => f32_temps.push(temp.id),
+                        ValType::F64 => f64_temps.push(temp.id),
+                        _ => i32_temps.push(temp.id),
+                    }
+                }
+            }
+        }
+
+        Self::color_class_and_assign(
+            &fat_temps,
+            &interference,
+            &mut self.temp_local,
+            next,
+            slot_types,
+            2,
+            ValType::I32,
+        );
+
+        Self::color_class_and_assign(
+            &i32_temps,
+            &interference,
+            &mut self.temp_local,
+            next,
+            slot_types,
+            1,
+            ValType::I32,
+        );
+
+        Self::color_class_and_assign(
+            &i64_temps,
+            &interference,
+            &mut self.temp_local,
+            next,
+            slot_types,
+            1,
+            ValType::I64,
+        );
+
+        Self::color_class_and_assign(
+            &f32_temps,
+            &interference,
+            &mut self.temp_local,
+            next,
+            slot_types,
+            1,
+            ValType::F32,
+        );
+
+        Self::color_class_and_assign(
+            &f64_temps,
+            &interference,
+            &mut self.temp_local,
+            next,
+            slot_types,
+            1,
+            ValType::F64,
+        );
+    }
+
+    fn color_class_and_assign(
+        temps: &[TempId],
+        interference: &[BitSet<TempId>],
+        temp_local: &mut FxHashMap<TempId, u32>,
+        next: &mut u32,
+        slot_types: &mut Vec<ValType>,
+        slots_per_color: u32,
+        val_type: ValType,
+    ) {
+        if temps.is_empty() {
+            return;
+        }
+
+        let mut assigned_colors: FxHashMap<TempId, u32> = FxHashMap::default();
+        let mut max_color: u32 = 0;
+
+        for &temp in temps {
+            let mut used_colors = FxHashSet::default();
+            let temp_idx = temp.as_usize();
+            if temp_idx < interference.len() {
+                for neighbor in interference[temp_idx].iter() {
+                    if let Some(&color) = assigned_colors.get(&neighbor) {
+                        used_colors.insert(color);
+                    }
+                }
+            }
+
+            let mut color = 0u32;
+            while used_colors.contains(&color) {
+                color += 1;
+            }
+
+            assigned_colors.insert(temp, color);
+            max_color = max_color.max(color);
+        }
+
+        let num_colors = max_color + 1;
+        let base_slot = *next;
+
+        for &temp in temps {
+            let color = assigned_colors.get(&temp).copied().unwrap_or(0);
+            temp_local.insert(temp, base_slot + color * slots_per_color);
+        }
+
+        let total_slots = num_colors * slots_per_color;
+        for _ in 0..total_slots {
+            slot_types.push(val_type);
+        }
+        *next += total_slots;
+    }
+}
+
+fn build_interference_graph(func: &arandu_middle::amir::AmirFunc) -> Vec<BitSet<TempId>> {
+    let num_temps = func.temps.len();
+    let mut interference = vec![BitSet::<TempId>::with_capacity(num_temps); num_temps];
+    if num_temps == 0 {
+        return interference;
+    }
+
+    let temp_liveness = arandu_semantics::passes::liveness::analyze_temp_liveness(func);
+
+    for block in &func.blocks {
+        let mut live = temp_liveness.live_out(block.id).clone();
+
+        // 1. All variables live at block exit interfere with one another.
+        let live_vec: Vec<TempId> = live.iter().collect();
+        for i in 0..live_vec.len() {
+            let u = live_vec[i];
+            let u_idx = u.as_usize();
+            if u_idx >= num_temps {
+                continue;
+            }
+            for &v in &live_vec[(i + 1)..] {
+                let v_idx = v.as_usize();
+                if v_idx < num_temps {
+                    interference[u_idx].insert(v);
+                    interference[v_idx].insert(u);
+                }
+            }
+        }
+
+        // 2. Successor block parameters are materialized before jumping; they
+        // interfere with all values surviving across the edge.
+        for succ in terminator_targets(&block.terminator) {
+            let succ_params = func.block_params(func.blocks[succ.as_usize()].params);
+            for p in succ_params {
+                let p_idx = p.id.as_usize();
+                if p_idx < num_temps {
+                    for u in live.iter() {
+                        let u_idx = u.as_usize();
+                        if u_idx != p_idx && u_idx < num_temps {
+                            interference[p_idx].insert(u);
+                            interference[u_idx].insert(p.id);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Terminator operands are live uses at the terminator point.
+        for_each_terminator_operand(&block.terminator, |op| {
+            if let AmirOperand::Copy(t) | AmirOperand::Move(t) = op {
+                let t_idx = t.as_usize();
+                if t_idx < num_temps {
+                    for u in live.iter() {
+                        let u_idx = u.as_usize();
+                        if u_idx != t_idx && u_idx < num_temps {
+                            interference[t_idx].insert(u);
+                            interference[u_idx].insert(*t);
+                        }
+                    }
+                    live.insert(*t);
+                }
+            }
+        });
+
+        // 4. Traverse statements in reverse order.
+        let stmts: Vec<&AmirStmt> = func.block_stmts(block.id).collect();
+        for stmt in stmts.into_iter().rev() {
+            let def = match stmt {
+                AmirStmt::Assign { lhs, .. } => Some(*lhs),
+                AmirStmt::Call { lhs: Some(t), .. } => Some(*t),
+                _ => None,
+            };
+
+            if let Some(def_temp) = def {
+                let def_idx = def_temp.as_usize();
+                if def_idx < num_temps {
+                    for u in live.iter() {
+                        let u_idx = u.as_usize();
+                        if u_idx != def_idx && u_idx < num_temps {
+                            interference[def_idx].insert(u);
+                            interference[u_idx].insert(def_temp);
+                        }
+                    }
+                    live.remove(def_temp);
+                }
+            }
+
+            for_each_stmt_operand(stmt, |op| {
+                if let AmirOperand::Copy(t) | AmirOperand::Move(t) = op {
+                    let t_idx = t.as_usize();
+                    if t_idx < num_temps {
+                        for u in live.iter() {
+                            let u_idx = u.as_usize();
+                            if u_idx != t_idx && u_idx < num_temps {
+                                interference[t_idx].insert(u);
+                                interference[u_idx].insert(*t);
+                            }
+                        }
+                        live.insert(*t);
+                    }
+                }
+            });
+        }
+
+        // 5. Block parameters are defined at block entry; they interfere with
+        // one another and with any value that remains live across the entry.
+        let block_params: Vec<TempId> = func
+            .block_params(block.params)
+            .iter()
+            .map(|p| p.id)
+            .collect();
+        for i in 0..block_params.len() {
+            let p = block_params[i];
+            let p_idx = p.as_usize();
+            if p_idx >= num_temps {
+                continue;
+            }
+            for u in live.iter() {
+                let u_idx = u.as_usize();
+                if u_idx != p_idx && u_idx < num_temps {
+                    interference[p_idx].insert(u);
+                    interference[u_idx].insert(p);
+                }
+            }
+            for &q in &block_params[(i + 1)..] {
+                let q_idx = q.as_usize();
+                if q_idx < num_temps {
+                    interference[p_idx].insert(q);
+                    interference[q_idx].insert(p);
+                }
+            }
+            live.remove(p);
+        }
+    }
+
+    interference
 }

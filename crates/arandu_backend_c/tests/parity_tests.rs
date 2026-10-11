@@ -68,6 +68,31 @@ func main(): int {
     );
 }
 
+#[test]
+fn parity_scalar_slot_reuse_preserves_long_expression_chains() {
+    let mut source = String::from("func main(): int { let mut value: int = 0\n");
+    for _ in 0..256 {
+        source.push_str("value = ((value + 1) * 2) / 2\n");
+    }
+    source.push_str("return value }\n");
+    let (amir, tc) = compile_src(&source);
+    let emitted = emit_c(&amir, &tc);
+    let declared = emitted
+        .lines()
+        .filter(|line| {
+            let line = line.trim();
+            line.starts_with("int64_t t") && line.ends_with(';') && !line.contains('=')
+        })
+        .count();
+    let temps: usize = amir.funcs.iter().map(|func| func.temps.len()).sum();
+    assert!(
+        declared < temps / 4,
+        "declared {declared} locals for {temps} AMIR temps"
+    );
+    assert_eq!(execute_cranelift(&amir, &tc), 256);
+    assert_eq!(execute_c("scalar_slot_reuse_chain", &amir, &tc), 256);
+}
+
 fn compile_src(src: &str) -> (AmirProgram, TypeCheckResult) {
     let program = arandu_parser::parse(src).expect("parse failed");
     let resolution = resolve_for_test(0, &program);

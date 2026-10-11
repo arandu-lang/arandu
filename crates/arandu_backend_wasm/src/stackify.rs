@@ -205,8 +205,28 @@ pub fn stackify(func: &AmirFunc) -> Result<Vec<Op>, Diagnostic> {
     }
 
     // ── Emission ────────────────────────────────────────────────────────
+    let num_returns = func
+        .blocks
+        .iter()
+        .filter(|b| matches!(b.terminator, AmirTerminator::Return))
+        .count();
+    let epilogue_target = if num_returns > 1 {
+        let epilogue = BlockId::from_usize(func.blocks.len());
+        Some(epilogue)
+    } else {
+        None
+    };
+
     let mut ops: Vec<Op> = Vec::with_capacity(func.blocks.len() * 3);
     let mut scope_stack: Vec<StackFrame> = Vec::new();
+
+    if let Some(epilogue) = epilogue_target {
+        ops.push(Op::BlockBegin { label: epilogue });
+        scope_stack.push(StackFrame {
+            label: epilogue,
+            kind: ScopeKind::Block,
+        });
+    }
 
     for (i, &b) in rpo.iter().enumerate() {
         // 1. Close dead scopes, innermost first:
@@ -218,7 +238,7 @@ pub fn stackify(func: &AmirFunc) -> Result<Vec<Op>, Diagnostic> {
                 Some(StackFrame {
                     label,
                     kind: ScopeKind::Block,
-                }) => *label == b || rank.get(label).copied().unwrap_or(0) < i,
+                }) => *label == b || rank.get(label).copied().unwrap_or(usize::MAX) < i,
                 Some(StackFrame {
                     kind: ScopeKind::Loop { max_rank },
                     ..
@@ -268,7 +288,7 @@ pub fn stackify(func: &AmirFunc) -> Result<Vec<Op>, Diagnostic> {
 
         // 5. Emit terminator as branch ops.
         let block = &func.blocks[b.as_usize()];
-        emit_terminator(block, &rank, &rpo, &scope_stack, &mut ops);
+        emit_terminator(block, &rank, &rpo, &scope_stack, epilogue_target, &mut ops);
     }
 
     // Close any remaining scopes.
@@ -277,6 +297,10 @@ pub fn stackify(func: &AmirFunc) -> Result<Vec<Op>, Diagnostic> {
             ScopeKind::Loop { .. } => ops.push(Op::LoopEnd),
             ScopeKind::Block => ops.push(Op::BlockEnd { label: frame.label }),
         }
+    }
+
+    if epilogue_target.is_some() {
+        ops.push(Op::Return);
     }
 
     Ok(ops)
@@ -349,10 +373,22 @@ fn emit_terminator(
     rank: &FxHashMap<BlockId, usize>,
     rpo: &[BlockId],
     scope_stack: &[StackFrame],
+    epilogue_target: Option<BlockId>,
     ops: &mut Vec<Op>,
 ) {
     match &block.terminator {
-        AmirTerminator::Return => ops.push(Op::Return),
+        AmirTerminator::Return => {
+            if let Some(epilogue) = epilogue_target {
+                let depth = compute_depth(scope_stack, epilogue);
+                ops.push(Op::Br {
+                    depth,
+                    target: epilogue,
+                    args: Vec::new(),
+                });
+            } else {
+                ops.push(Op::Return);
+            }
+        }
         AmirTerminator::Unreachable => ops.push(Op::Trap),
         AmirTerminator::Goto { target, args } => {
             let next = next_rpo(*target, block.id, rpo, rank);

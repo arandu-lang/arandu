@@ -101,7 +101,7 @@ impl FuncTranslator<'_> {
             let Some(end) = offset.checked_add(size) else {
                 continue;
             };
-            if end > 1024 {
+            if end > 16384 {
                 let Some(next_local) = self.next_local.checked_add(1) else {
                     continue;
                 };

@@ -33,6 +33,41 @@ All profiles reject objects at or above the positive `isize` bound of the
 modeled address space. Layout arithmetic is checked and a failure returns a
 typed diagnostic before a successful artifact is exposed.
 
+### Temporary storage and bounded inlining
+
+C and Cranelift share a conservative block-local temporary storage plan in
+`arandu_codegen::temp_slots`. Only numeric, boolean and character values with
+one definition and all uses strictly after that definition in the same block
+can reuse storage. Exact AMIR types remain separate. Function/receiver
+parameters, the return register, block parameters, cross-block values and
+redefined values retain dedicated storage; addressable and aggregate
+representations are excluded by the backends. Interval endpoints overlap:
+an instruction's inputs cannot alias its output through this plan.
+
+The plan reuses C declarations and Cranelift frontend variables, not AMIR
+identities or native register-allocation spill slots. Mutable source locals
+remain independent. Operand collection uses the shared AMIR visitors,
+including projections and all terminator arguments. This plan does not
+require a global interference graph or change SSA/control-flow semantics.
+
+Inlining retains its cumulative pristine-size relative budget, but rejects
+sites whose cost exceeds the remaining budget. A separate ceiling of 32768
+combined statements, blocks, temporaries and locals bounds the expanded
+caller, including parameter assignments and continuation blocks introduced
+by splicing. Functions already larger than this ceiling remain valid and
+are not expanded by this pass. The ceiling is a compiler resource heuristic,
+not a language limit or a claim that this number is optimal for every workload.
+
+The manual `profile_seed_eight_codegen` test records C declaration/source size
+and JIT/C timings for the representative seed-eight O1 corpus. Timings are
+not test thresholds; execution must still agree in result and output.
+
+The ceiling retains headroom for the measured SHA-256 compression kernel;
+a smaller 4096-unit prototype reintroduced helper calls into its hot loop and
+was rejected. Storage reuse measurements must keep the inliner and other
+backend changes identical; fewer declared variables alone do not establish
+a JIT throughput improvement.
+
 ### Backend and platform matrix
 
 | Capability | C backend | Cranelift backend |

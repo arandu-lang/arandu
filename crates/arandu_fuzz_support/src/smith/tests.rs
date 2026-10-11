@@ -2483,3 +2483,73 @@ fn synthesized_wasm_seed_eight_matches_all_optimization_levels() {
     assert_eq!(observation.stdout, expected.stdout);
     assert_eq!(observation.stderr, expected.stderr);
 }
+
+/// Manual profile of the same expanded program that exposed native Wasm
+/// compilation pressure. Timings are evidence, never correctness thresholds.
+#[test]
+#[ignore = "manual seed-eight codegen profile"]
+fn profile_seed_eight_codegen() {
+    let generated = synthesize_with_oracle(8);
+    let mut host = AnalysisHost::new();
+    register_fuzz_stdlib(&mut host).unwrap();
+    let file = host.new_file("profile-seed-eight.aru".into(), generated.source);
+    let lowered = arandu_query::lower_amir(host.db(), file);
+    assert!(lowered.type_check.diagnostics.is_empty());
+    let mut program = lowered.amir.clone();
+    arandu_mir::optimize_amir_checked_with_level(
+        &mut program,
+        &lowered.type_check.symbols,
+        &lowered.type_check.type_info.type_interner,
+        arandu_mir::OptLevel::O1,
+    )
+    .unwrap();
+    let temps: usize = program.funcs.iter().map(|func| func.temps.len()).sum();
+    for sample in 0..3 {
+        let start = std::time::Instant::now();
+        let jit = execute_cranelift(
+            &program,
+            &lowered.type_check.symbols,
+            &lowered.type_check.type_info,
+        )
+        .unwrap();
+        let jit_ms = start.elapsed().as_secs_f64() * 1000.0;
+        let start = std::time::Instant::now();
+        let source = arandu_backend_c::emit_c(
+            &program,
+            &lowered.type_check.symbols,
+            lowered.type_check.type_info.as_ref(),
+            &lowered.type_check.type_info.type_interner,
+            arandu_middle::layout::DataLayout::host(),
+        )
+        .unwrap();
+        let emit_ms = start.elapsed().as_secs_f64() * 1000.0;
+        let declarations = source
+            .lines()
+            .filter(|line| {
+                let line = line.trim();
+                line.ends_with(';')
+                    && !line.contains('=')
+                    && line.split_whitespace().last().is_some_and(|name| {
+                        name.strip_prefix('t')
+                            .and_then(|name| name.strip_suffix(';'))
+                            .is_some_and(|index| {
+                                !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit())
+                            })
+                    })
+            })
+            .count();
+        let start = std::time::Instant::now();
+        let c = execute_c(
+            &program,
+            &lowered.type_check.symbols,
+            &lowered.type_check.type_info,
+        )
+        .unwrap();
+        let c_ms = start.elapsed().as_secs_f64() * 1000.0;
+        assert_eq!(jit.result, generated.expected_result);
+        assert_eq!(c.result, jit.result);
+        assert_eq!(c.stdout, jit.stdout);
+        assert_eq!(c.stderr, jit.stderr);
+        eprintln!("sample={sample} temps={temps} declarations={declarations} c_bytes={} jit_ms={jit_ms:.2} emit_ms={emit_ms:.2} c_ms={c_ms:.2}", source.len());
+    }
+}

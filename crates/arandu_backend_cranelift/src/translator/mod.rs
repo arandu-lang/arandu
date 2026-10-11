@@ -535,6 +535,14 @@ impl<'a, 'b, M: Module> FunctionTranslator<'a, 'b, M> {
             }
         }
 
+        let temp_slots = arandu_codegen::temp_slots::block_local_temp_slots(
+            self.current_func,
+            |temp| {
+                matches!(self.resolve_ty(self.current_func.temps[temp.as_usize()].ty),
+                ArType::Primitive(primitive) if primitive.is_numeric() || matches!(primitive, Primitive::Bool | Primitive::Char))
+            },
+        );
+        let mut slot_vars = FxHashMap::default();
         for temp in &self.current_func.temps {
             let tty = self.resolve_ty(temp.ty);
             if matches!(tty, ArType::Primitive(Primitive::Str)) {
@@ -542,7 +550,11 @@ impl<'a, 'b, M: Module> FunctionTranslator<'a, 'b, M> {
                 let var_len = self.builder.declare_var(self.ptr_type);
                 self.str_temp_map.insert(temp.id, (var_ptr, var_len));
             } else if let ClifType::Concrete(clif_ty) = clif_type(&tty, self.ptr_type) {
-                let var = self.builder.declare_var(clif_ty);
+                // Reused values have one dominating definition and all uses
+                // in that same block; SSABuilder never merges their states.
+                let var = *slot_vars
+                    .entry(temp_slots[temp.id.as_usize()])
+                    .or_insert_with(|| self.builder.declare_var(clif_ty));
                 self.temp_map.insert(temp.id, var);
             }
         }

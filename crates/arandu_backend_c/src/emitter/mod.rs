@@ -66,6 +66,7 @@ pub struct CEmitter<'a> {
     /// A3.3: unique id for `__ar_co_N` stack payload locals (multi-stmt).
     pub(super) co_stack_slot: u32,
     pub(super) integer_concat_temps: Vec<Option<arandu_codegen::string_interp::IntegerStringKind>>,
+    pub(super) temp_slots: Vec<usize>,
     pub(super) static_sources:
         rustc_hash::FxHashMap<(arandu_middle::SymbolId, arandu_middle::amir::InstrId), usize>,
     pub(super) current_initializer: Option<arandu_middle::amir::InstrId>,
@@ -91,6 +92,7 @@ impl<'a> CEmitter<'a> {
             emitted_types: rustc_hash::FxHashSet::default(),
             co_stack_slot: 0,
             integer_concat_temps: Vec::new(),
+            temp_slots: Vec::new(),
             static_sources: rustc_hash::FxHashMap::default(),
             current_initializer: None,
             error: None,

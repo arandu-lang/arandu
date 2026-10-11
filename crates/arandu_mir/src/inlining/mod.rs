@@ -42,6 +42,38 @@ struct InlinableCall {
 /// current size would authorise unbounded growth.
 const MAX_GROWTH_FACTOR: usize = 8;
 
+/// Bound the expanded IR, including terminators and storage identities. A
+/// statement-only ceiling misses wrappers with many blocks or unused temps.
+/// This limits growth introduced by this pass; larger source functions remain
+/// valid and are left intact. The existing relative budget still applies.
+// The SHA-256 compression kernel already needs more than 16384 combined
+// identities/operations after useful helper inlining. Keep headroom for that
+// measured workload instead of reintroducing calls in its inner loop.
+const MAX_CALLER_IR_SIZE: usize = 32 * 1024;
+
+fn expanded_caller_size(
+    caller: &crate::amir::AmirFunc,
+    callee: &crate::amir::AmirFunc,
+    has_lhs: bool,
+) -> usize {
+    // splice_call removes one call, adds parameter assignments, appends the
+    // callee blocks and a continuation, and maps the callee's return temp.
+    caller
+        .stmts
+        .len()
+        .saturating_sub(1)
+        .saturating_add(callee.stmts.len())
+        .saturating_add(callee.params.len())
+        .saturating_add(caller.blocks.len())
+        .saturating_add(callee.blocks.len())
+        .saturating_add(1)
+        .saturating_add(caller.temps.len())
+        .saturating_add(callee.temps.len().saturating_sub(1))
+        .saturating_add(usize::from(!has_lhs))
+        .saturating_add(caller.locals.len())
+        .saturating_add(callee.locals.len())
+}
+
 /// Optimizes `program` by inlining eligible small leaf functions into their callers.
 ///
 /// Within a round each caller inlines the *cheapest* eligible callee available
@@ -57,7 +89,9 @@ pub fn inline_leaf_functions(program: &mut AmirProgram) -> usize {
     let budgets: Vec<usize> = program
         .funcs
         .iter()
-        .map(|f| MIN_INLINES_PER_CALLER + MAX_GROWTH_FACTOR * f.stmts.len())
+        .map(|f| {
+            MIN_INLINES_PER_CALLER.saturating_add(MAX_GROWTH_FACTOR.saturating_mul(f.stmts.len()))
+        })
         .collect();
     for _ in 0..MAX_INLINING_ROUNDS {
         // 1. Identify all eligible callees and map SymbolId -> (index, cost).
@@ -131,7 +165,13 @@ pub fn inline_leaf_functions(program: &mut AmirProgram) -> usize {
                             ..
                         }) = caller.try_stmt(instr_id)
                             && *callee_sym != caller_sym
-                            && let Some(&(_, cost)) = eligible.get(callee_sym)
+                            && let Some(&(callee_idx, cost)) = eligible.get(callee_sym)
+                            && cost.max(1) <= budget.saturating_sub(spent)
+                            && expanded_caller_size(
+                                caller,
+                                &program.funcs[callee_idx],
+                                lhs.is_some(),
+                            ) <= MAX_CALLER_IR_SIZE
                             && cost < best_cost
                         {
                             best_cost = cost;

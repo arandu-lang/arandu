@@ -16,6 +16,79 @@ fn intern_int() -> crate::types::TypeId {
     TypeInterner::new().intern(ArType::Primitive(Primitive::Int))
 }
 
+#[test]
+fn inlining_respects_remaining_budget_and_structural_ceiling() {
+    let ty = intern_int();
+    let temp = AmirTemp {
+        id: TempId(0),
+        ty,
+        is_copy: true,
+        is_nullable: false,
+        span: arandu_lexer::Span::new(0, 0, 0),
+    };
+    let mut pool = AmirLiteralPool::default();
+    let value = pool.intern_int("42");
+    let leaf = make_func(
+        1,
+        vec![(
+            vec![
+                AmirStmt::Assign {
+                    lhs: TempId(0),
+                    rhs: AmirRvalue::Use(AmirOperand::Constant(AmirConstant::Pool(value))),
+                };
+                24
+            ],
+            AmirTerminator::Return,
+        )],
+        vec![temp.clone()],
+        vec![],
+    );
+    let call = AmirStmt::Call {
+        lhs: Some(TempId(0)),
+        callee: AmirOperand::FunctionRef(SymbolId::new(0, 1)),
+        args: smallvec::smallvec![],
+        return_borrow: None,
+    };
+    let mut program = AmirProgram {
+        funcs: vec![
+            make_func(
+                2,
+                vec![(vec![call.clone(); 3], AmirTerminator::Return)],
+                vec![temp.clone()],
+                vec![],
+            ),
+            leaf.clone(),
+        ],
+        literal_pool: pool,
+        extern_funcs: FxHashMap::default(),
+        debug_bindings: vec![],
+        debug_blocks: vec![],
+    };
+    assert_eq!(inline_leaf_functions(&mut program), 2);
+    assert_eq!(
+        program.funcs[0]
+            .stmts
+            .payloads
+            .iter()
+            .filter(|stmt| matches!(stmt, AmirStmt::Call { .. }))
+            .count(),
+        1
+    );
+
+    let mut statements = vec![AmirStmt::Nop; MAX_CALLER_IR_SIZE - 4];
+    statements.push(call);
+    let caller = make_func(
+        2,
+        vec![(statements, AmirTerminator::Return)],
+        vec![temp],
+        vec![],
+    );
+    program.funcs = vec![caller, leaf];
+    let pristine_size = program.funcs[0].stmts.len();
+    assert_eq!(inline_leaf_functions(&mut program), 0);
+    assert_eq!(program.funcs[0].stmts.len(), pristine_size);
+}
+
 fn make_func(
     sym_id: usize,
     blocks: Vec<(Vec<AmirStmt>, AmirTerminator)>,

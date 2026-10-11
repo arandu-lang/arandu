@@ -1246,7 +1246,7 @@ fn execute_cranelift_isolated(
     }
 }
 
-fn execute_c(
+pub(super) fn execute_c(
     program: &arandu_semantics::amir::AmirProgram,
     symbols: &arandu_semantics::SymbolTable,
     type_info: &arandu_semantics::TypeInfo,
@@ -1470,6 +1470,7 @@ phase('done');
 })().catch(e=>{console.error(e&&e.stack||e);process.exitCode=1})"#;
     let node = std::env::var_os("ARANDU_NODE").unwrap_or_else(|| "node".into());
     let mut execution_command = Command::new(&node);
+    execution_command.arg("--no-liftoff");
     execution_command.arg("-e").arg(RUNNER).arg(&wasm_path);
     execution_command.args(SYNTHESIZED_PROGRAM_ARGS);
     let result_path = wasm_path.with_extension("result");
@@ -1532,7 +1533,7 @@ fn preserve_wasm_reproducer(
         .map_err(|error| error.to_string())?;
     std::fs::write(directory.join("phase.txt"), phase).map_err(|error| error.to_string())?;
     std::fs::write(directory.join("replay.txt"),
-        "Run from this directory: node runner.js program.wasm\nThe result is written to result.txt. Arguments match the Rust harness.\n")
+        "Run from this directory: node --no-liftoff runner.js program.wasm\nThe result is written to result.txt. Arguments match the Rust harness.\n")
         .map_err(|error| error.to_string())?;
     Ok(directory)
 }

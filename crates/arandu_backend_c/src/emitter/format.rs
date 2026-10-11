@@ -10,6 +10,12 @@ const C_FALSE: &str = "false";
 const C_NULL: &str = "0";
 
 impl<'a> CEmitter<'a> {
+    pub(super) fn temp_slot(&self, temp: arandu_middle::amir::TempId) -> usize {
+        self.temp_slots
+            .get(temp.as_usize())
+            .copied()
+            .unwrap_or(temp.as_usize())
+    }
     #[inline]
     pub(super) fn is_64bit_target(&self) -> bool {
         self.layout.pointer_width() == 8
@@ -17,7 +23,7 @@ impl<'a> CEmitter<'a> {
 
     pub(super) fn format_operand_str(&self, op: &AmirOperand) -> String {
         match op {
-            AmirOperand::Copy(t) | AmirOperand::Move(t) => format!("t{}", t.as_usize()),
+            AmirOperand::Copy(t) | AmirOperand::Move(t) => format!("t{}", self.temp_slot(*t)),
             AmirOperand::FunctionRef(id) | AmirOperand::GlobalRef(id) => {
                 let sym = self.symbols.get(*id);
                 sanitize_c_ident(self.symbols.host_func_name(sym))

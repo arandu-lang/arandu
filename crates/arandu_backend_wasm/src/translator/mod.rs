@@ -368,7 +368,6 @@ impl<'a> FuncTranslator<'a> {
                     self.code.push(Instruction::Return);
                 }
                 Op::Trap => {
-                    self.leave_frame();
                     self.code.push(Instruction::Unreachable);
                 }
             }

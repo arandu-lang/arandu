@@ -68,6 +68,9 @@ impl FuncTranslator<'_> {
 
     /// Materialize block arguments before a branch.
     pub(super) fn emit_block_args(&mut self, target: BlockId, args: &[AmirOperand]) {
+        if args.is_empty() {
+            return;
+        }
         let target_block = &self.func.blocks[target.as_usize()];
         let block_params = self.func.block_params(target_block.params);
         // A back-edge can permute the destination parameters themselves.

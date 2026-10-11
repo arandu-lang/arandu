@@ -1418,3 +1418,27 @@ func main(): int {
     }
     assert_eq!(memory.data_size(&store), before);
 }
+
+#[test]
+fn non_param_temps_reuse_wasm_locals_via_coloring() {
+    let bytes = compile_source(
+        r#"
+public func main(): i32 {
+    let a = 1 + 2
+    let b = a + 3
+    let c = b + 4
+    let d = c + 5
+    let e = d + 6
+    let f = e + 7
+    let g = f + 8
+    let h = g + 9
+    let i = h + 10
+    let j = i + 11
+    let k = j + 12
+    let l = k + 13
+    return l
+}
+"#,
+    );
+    assert_eq!(run_main_i32(&bytes), 91);
+}

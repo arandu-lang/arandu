@@ -121,6 +121,10 @@ jobs:
     if: needs.scope.outputs.code == 'true'
     needs: scope
     runs-on: windows-latest
+    # Differential tests spawn compilers/runners; bound contention without
+    # changing their execution timeout or reducing the corpus.
+    env:
+      RUST_TEST_THREADS: 2
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -142,6 +146,10 @@ jobs:
     if: needs.scope.outputs.code == 'true'
     needs: scope
     runs-on: macos-latest
+    # Differential tests spawn compilers/runners; bound contention without
+    # changing their execution timeout or reducing the corpus.
+    env:
+      RUST_TEST_THREADS: 2
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

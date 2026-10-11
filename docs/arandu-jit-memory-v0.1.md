@@ -121,6 +121,23 @@ Cranelift x64 0.136.1 sizes integer spills by register class in eight-byte units
 and spills using the canonical I64 type. Frame/cache effects require measurement;
 no local change to upstream spill-slot sizing is made here.
 
+### Strings independent of invocation scratch
+
+The shared MIR storage policy admits a `str` result only when all its producers
+forward static literal-pool data or a caller parameter. An unprojected local
+load also qualifies when every store has such provenance and its descriptor
+address is never exposed. The proof uses a fixed depth bound of 64 and rejects
+cycles, block parameters, missing definitions, projected stores, destruction,
+opaque calls and locally derived views. A successful proof allows invocation
+scratch to be reclaimed without reclaiming the returned string's backing.
+
+Native regressions cover literal early/normal returns and a forwarded caller
+string at O0/O1/O2, including aggregates larger than the frame budget. They
+require balanced scratch allocations/frees independent of loop iterations.
+The corresponding Wasmtime regression checks repeated calls and stable linear
+memory size. This is a narrow backing proof; unknown retention, borrowed views,
+cyclic aggregate phis and suspended aggregate payloads retain their guards.
+
 ### C backend
 
 Generated C mirrors the formatting/concat ownership contract and emits its own

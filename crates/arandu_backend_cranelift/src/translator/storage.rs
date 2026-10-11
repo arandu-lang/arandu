@@ -493,6 +493,46 @@ func main(): int {
 
     #[test]
     #[cfg(target_pointer_width = "64")]
+    fn independent_string_results_allow_bounded_reclaimed_aggregate_scratch() {
+        let source = r#"
+func label(seed: int): str {
+    let mut index = 0
+    let mut sum = 0
+    while index < 1000 {
+        let row: [2048]u8 = [seed as u8; 2048]
+        sum = sum + row[2047] as int
+        index = index + 1
+    }
+    if sum > 0 { return "positive" }
+    return "zero"
+}
+func forward(value: str, seed: int): str {
+    let mut index = 0
+    while index < 1000 {
+        let row: [2048]u8 = [seed as u8; 2048]
+        if row[2047] != seed as u8 { return "bad" }
+        index = index + 1
+    }
+    return value
+}
+func main(): int {
+    if label(1) == "positive" && label(0) == "zero" && forward("caller", 7) == "caller" { return 0 }
+    return 1
+}
+"#;
+        for level in [OptLevel::O0, OptLevel::O1, OptLevel::O2] {
+            let (result, allocations, frees) = run_counted_lifetimes(source, level);
+            assert_eq!(result, 0, "{level:?}");
+            assert!(
+                allocations < 12,
+                "{level:?}: allocations scale with iterations: {allocations}"
+            );
+            assert_eq!(allocations, frees, "{level:?}: unreclaimed private backing");
+        }
+    }
+
+    #[test]
+    #[cfg(target_pointer_width = "64")]
     fn oversized_copy_scratch_is_independent_reused_and_freed() {
         let source = r#"
 func main(): int {

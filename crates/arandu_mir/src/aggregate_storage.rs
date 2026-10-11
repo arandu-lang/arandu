@@ -208,6 +208,9 @@ fn block_param_safe(ty: TypeId, interner: &TypeInterner, in_cycle: bool, depth: 
     }
 }
 
+mod string_origin;
+use string_origin::independent_string_result;
+
 #[must_use]
 pub fn function_scratch_safe(
     function: &AmirFunc,
@@ -257,9 +260,12 @@ pub fn function_scratch_safe(
         return false;
     }
     // Pointer-returning carriers still use their legacy backing-pointer ABI.
-    // Only scalars and the aggregates with caller-owned/direct returns qualify.
+    // Scalars, strings proved independent of this invocation, and aggregates
+    // with caller-owned/direct returns qualify.
     match interner.resolve(function.return_type) {
-        ArType::Primitive(Primitive::Str) => return false,
+        ArType::Primitive(Primitive::Str) if !independent_string_result(function, interner) => {
+            return false;
+        }
         ArType::Primitive(_) | ArType::Void | ArType::IntLiteral | ArType::FloatLiteral => {}
         ArType::Coroutine(_) if scalar_ready_result => {}
         ArType::Named(..)
@@ -664,6 +670,153 @@ mod tests {
         let pointer = interner.intern(ArType::Ptr(byte));
         let array = interner.intern(ArType::Array(4, pointer));
         assert!(scratch_type_safe(array, &interner, &info));
+    }
+
+    #[test]
+    fn string_results_require_every_definition_to_have_external_backing() {
+        use arandu_middle::amir::{AmirConstant, LocalId};
+        use arandu_middle::literal_pool::LiteralId;
+        let interner = TypeInterner::new();
+        let string = interner.intern(ArType::Primitive(Primitive::Str));
+        let literal = AmirOperand::Constant(AmirConstant::Pool(LiteralId(0)));
+        let (mut function, symbols) = shape(string, vec![temp(0, string), temp(1, string)], |_| {
+            vec![
+                AmirStmt::Assign {
+                    lhs: TempId::from_usize(1),
+                    rhs: AmirRvalue::Use(literal),
+                },
+                AmirStmt::Assign {
+                    lhs: TempId::from_usize(0),
+                    rhs: AmirRvalue::Use(AmirOperand::Copy(TempId::from_usize(1))),
+                },
+            ]
+        });
+        assert!(safe(&function, &symbols, &interner));
+        function.stmts.push(AmirStmt::Assign {
+            lhs: TempId::from_usize(0),
+            rhs: AmirRvalue::Load(arandu_middle::amir::AmirPlace {
+                local: LocalId::from_usize(0),
+                projections: smallvec::SmallVec::new(),
+            }),
+        });
+        // An additional definition with unknown provenance invalidates the
+        // whole proof, even if another return path is a literal.
+        assert!(!safe(&function, &symbols, &interner));
+        let (mut forwarded, symbols) =
+            shape(string, vec![temp(0, string), temp(1, string)], |_| {
+                vec![AmirStmt::Assign {
+                    lhs: TempId::from_usize(0),
+                    rhs: AmirRvalue::Use(AmirOperand::Copy(TempId::from_usize(1))),
+                }]
+            });
+        assert!(!safe(&forwarded, &symbols, &interner));
+        forwarded.params.push(TempId::from_usize(1));
+        assert!(safe(&forwarded, &symbols, &interner));
+        forwarded.params.clear();
+        forwarded.stmts.push(AmirStmt::Assign {
+            lhs: TempId::from_usize(1),
+            rhs: AmirRvalue::Use(AmirOperand::Copy(TempId::from_usize(0))),
+        });
+        assert!(!safe(&forwarded, &symbols, &interner));
+        let (called, symbols) = shape(string, vec![temp(0, string)], |callee| {
+            vec![AmirStmt::Call {
+                lhs: Some(TempId::from_usize(0)),
+                callee: AmirOperand::FunctionRef(callee),
+                args: smallvec::SmallVec::new(),
+                return_borrow: None,
+            }]
+        });
+        assert!(!safe(&called, &symbols, &interner));
+    }
+
+    #[test]
+    fn string_backing_proof_has_a_fixed_depth_bound() {
+        use arandu_middle::amir::AmirConstant;
+        use arandu_middle::literal_pool::LiteralId;
+        let interner = TypeInterner::new();
+        let string = interner.intern(ArType::Primitive(Primitive::Str));
+        for (length, admitted) in [(64, true), (65, false)] {
+            let (function, _) = shape(
+                string,
+                (0..length).map(|id| temp(id, string)).collect(),
+                |_| {
+                    (0..length)
+                        .map(|id| AmirStmt::Assign {
+                            lhs: TempId::from_usize(id),
+                            rhs: AmirRvalue::Use(if id + 1 < length {
+                                AmirOperand::Copy(TempId::from_usize(id + 1))
+                            } else {
+                                AmirOperand::Constant(AmirConstant::Pool(LiteralId(0)))
+                            }),
+                        })
+                        .collect()
+                },
+            );
+            assert_eq!(independent_string_result(&function, &interner), admitted);
+        }
+    }
+
+    #[test]
+    fn local_string_backing_rejects_mutable_aliases_and_unproved_stores() {
+        use arandu_middle::amir::{AmirLocal, AmirPlace, LocalId};
+        let interner = TypeInterner::new();
+        let string = interner.intern(ArType::Primitive(Primitive::Str));
+        let local = LocalId::from_usize(0);
+        let place = AmirPlace {
+            local,
+            projections: smallvec::SmallVec::new(),
+        };
+        let (mut function, _symbols) = shape(
+            string,
+            vec![temp(0, string), temp(1, string), temp(2, string)],
+            |_| {
+                vec![
+                    AmirStmt::Store {
+                        lhs: place.clone(),
+                        rhs: AmirOperand::Copy(TempId::from_usize(1)),
+                    },
+                    AmirStmt::Assign {
+                        lhs: TempId::from_usize(0),
+                        rhs: AmirRvalue::Load(place.clone()),
+                    },
+                ]
+            },
+        );
+        function.params.push(TempId::from_usize(1));
+        function.locals.push(AmirLocal {
+            id: local,
+            ty: string,
+            is_memory: true,
+            symbol: None,
+            span: Span::new(0, 0, 0),
+            use_span: None,
+        });
+        assert!(independent_string_result(&function, &interner));
+        let mut aliased = function.clone();
+        aliased.stmts.push(AmirStmt::Assign {
+            lhs: TempId::from_usize(2),
+            rhs: AmirRvalue::BorrowMut(place.clone()),
+        });
+        assert!(!independent_string_result(&aliased, &interner));
+        let mut overwritten = function.clone();
+        overwritten.stmts.push(AmirStmt::Store {
+            lhs: place.clone(),
+            rhs: AmirOperand::Copy(TempId::from_usize(2)),
+        });
+        assert!(!independent_string_result(&overwritten, &interner));
+        let mut destroyed = function.clone();
+        destroyed.stmts.push(AmirStmt::Destroy(place));
+        assert!(!independent_string_result(&destroyed, &interner));
+        function.stmts.push(AmirStmt::Store {
+            lhs: AmirPlace {
+                local,
+                projections: smallvec::smallvec![arandu_middle::amir::AmirProjection::Index(
+                    AmirOperand::Copy(TempId::from_usize(1))
+                )],
+            },
+            rhs: AmirOperand::Copy(TempId::from_usize(1)),
+        });
+        assert!(!independent_string_result(&function, &interner));
     }
 
     #[test]

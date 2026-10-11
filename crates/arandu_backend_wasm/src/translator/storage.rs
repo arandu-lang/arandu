@@ -1,7 +1,6 @@
 //! Checked invocation storage for aggregates without safe-borrow leaves.
 use super::FuncTranslator;
 use arandu_middle::amir::{AmirRvalue, AmirStmt};
-use arandu_middle::types::{ArType, Primitive};
 use wasm_encoder::{BlockType, Instruction, ValType};
 
 impl FuncTranslator<'_> {
@@ -19,12 +18,7 @@ impl FuncTranslator<'_> {
         } else {
             ScratchResultAbi::ScalarsOnly
         };
-        if !function_scratch_safe(self.func, self.symbols, self.interner, result_abi)
-            || matches!(
-                self.interner.resolve(self.func.return_type),
-                ArType::Primitive(Primitive::Str)
-            )
-        {
+        if !function_scratch_safe(self.func, self.symbols, self.interner, result_abi) {
             return;
         }
         for id in self.func.stmts.iter_ids() {

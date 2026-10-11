@@ -1371,3 +1371,50 @@ func main(): int {
     );
     assert_eq!(run_main_i32(&bytes), 0);
 }
+
+#[test]
+fn independent_string_results_restore_frames_and_reclaim_large_scratch() {
+    let bytes = compile_source(
+        r#"
+func label(seed: int): str {
+    let mut index = 0
+    let mut sum = 0
+    while index < 1000 {
+        let row: [2048]u8 = [seed as u8; 2048]
+        sum = sum + row[2047] as int
+        index = index + 1
+    }
+    if sum > 0 { return "positive" }
+    return "zero"
+}
+func forward(value: str, seed: int): str {
+    let mut index = 0
+    while index < 1000 {
+        let row: [2048]u8 = [seed as u8; 2048]
+        if row[2047] != seed as u8 { return "bad" }
+        index = index + 1
+    }
+    return value
+}
+func main(): int {
+    if label(1) == "positive" && label(0) == "zero" && forward("caller", 7) == "caller" { return 0 }
+    return 1
+}
+"#,
+    );
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &bytes).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+    let main = instance
+        .get_typed_func::<(), i32>(&mut store, "main")
+        .unwrap();
+    let memory = instance.get_memory(&mut store, "memory").unwrap();
+    // Warm allocator buckets once, then compare repeated invocations.
+    assert_eq!(main.call(&mut store, ()).unwrap(), 0);
+    let before = memory.data_size(&store);
+    for _ in 0..50 {
+        assert_eq!(main.call(&mut store, ()).unwrap(), 0);
+    }
+    assert_eq!(memory.data_size(&store), before);
+}

@@ -431,7 +431,34 @@ pub fn for_each_rvalue_place(rvalue: &AmirRvalue, mut f: impl FnMut(&AmirPlace))
         AmirRvalue::Load(place) | AmirRvalue::Borrow(place) | AmirRvalue::BorrowMut(place) => {
             f(place);
         }
-        _ => {}
+        AmirRvalue::Use(_)
+        | AmirRvalue::Binary { .. }
+        | AmirRvalue::Unary { .. }
+        | AmirRvalue::FieldAccess { .. }
+        | AmirRvalue::IndexAccess { .. }
+        | AmirRvalue::StructLiteral { .. }
+        | AmirRvalue::Array { .. }
+        | AmirRvalue::Tuple { .. }
+        | AmirRvalue::Discriminant { .. }
+        | AmirRvalue::EnumPayload { .. }
+        | AmirRvalue::EnumConstruct { .. }
+        | AmirRvalue::Len(_)
+        | AmirRvalue::SliceData(_)
+        | AmirRvalue::SliceView { .. }
+        | AmirRvalue::SliceSubslice { .. }
+        | AmirRvalue::StrBytes { .. }
+        | AmirRvalue::StrView { .. }
+        | AmirRvalue::Alloc(_)
+        | AmirRvalue::ToStr { .. }
+        | AmirRvalue::BlackBox { .. }
+        | AmirRvalue::StringInterp { .. }
+        | AmirRvalue::RelativeBorrow { .. }
+        | AmirRvalue::CoroutineReady { .. }
+        | AmirRvalue::GenInsert { .. }
+        | AmirRvalue::GenGet { .. }
+        | AmirRvalue::GenSet { .. }
+        | AmirRvalue::GenUpsert { .. }
+        | AmirRvalue::GenRemove { .. } => {}
     }
 }
 

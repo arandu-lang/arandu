@@ -618,95 +618,38 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), CliFailure> {
 
 pub(crate) fn atomic_replace(path: &Path, bytes: &[u8]) -> Result<(), CliFailure> {
     let staging = write_staging(path, bytes)?;
-    if fs::symlink_metadata(path).is_err() {
-        return fs::rename(&staging, path).map_err(|error| {
-            let _ = fs::remove_file(&staging);
-            failure("publish build state", path, error)
-        });
-    }
     atomic_platform_replace(path, &staging)
 }
 
 #[cfg(not(windows))]
 fn atomic_platform_replace(path: &Path, staging: &Path) -> Result<(), CliFailure> {
-    fs::rename(staging, path).map_err(|error| failure("publish build state", path, error))
+    fs::rename(staging, path).map_err(|error| {
+        let _ = fs::remove_file(staging);
+        failure("publish build state", path, error)
+    })
 }
 
 #[cfg(windows)]
 fn atomic_platform_replace(path: &Path, staging: &Path) -> Result<(), CliFailure> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::{REPLACEFILE_WRITE_THROUGH, ReplaceFileW};
-
-    let replaced = path
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let replacement = staging
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let candidate =
-        fs::read(staging).map_err(|error| failure("read staged build state", staging, error))?;
+    let candidate = fs::read(staging).map_err(|error| {
+        let _ = fs::remove_file(staging);
+        failure("read staged build state", staging, error)
+    })?;
     for attempt in 0..8 {
-        // SAFETY: both paths are owned, NUL-terminated UTF-16 buffers that
-        // remain alive for the duration of the Win32 call; optional pointers
-        // are null.
-        let result = unsafe {
-            ReplaceFileW(
-                replaced.as_ptr(),
-                replacement.as_ptr(),
-                std::ptr::null(),
-                REPLACEFILE_WRITE_THROUGH,
-                std::ptr::null(),
-                std::ptr::null(),
-            )
+        // Staging is a sibling on the same filesystem. std's Windows rename
+        // uses MoveFileExW(REPLACE_EXISTING), avoiding ReplaceFileW's partial
+        // backup/delete states when competing publishers race.
+        let error = match fs::rename(staging, path) {
+            Ok(()) => return Ok(()),
+            Err(error) => error,
         };
-        if result != 0 {
-            return Ok(());
-        }
-
-        let error = std::io::Error::last_os_error();
-        // Concurrent builds can publish identical state simultaneously. One
-        // ReplaceFileW wins; treat the loser's failure as success if the
-        // winner has already installed exactly our staged bytes.
-        let already_published = fs::read(path).is_ok_and(|published| published == candidate);
-        if already_published {
+        if fs::read(path).is_ok_and(|published| published == candidate) {
             let _ = fs::remove_file(staging);
             return Ok(());
         }
-
-        // ReplaceFileW can report 1176 after removing the old destination but
-        // before moving the staged replacement. Restore the complete candidate
-        // into the now-empty destination instead of retrying against a missing
-        // path. If another writer wins this race, the next iteration compares
-        // the installed bytes and converges idempotently.
-        if error.raw_os_error() == Some(1176)
-            && fs::symlink_metadata(path)
-                .is_err_and(|metadata_error| metadata_error.kind() == std::io::ErrorKind::NotFound)
-        {
-            match fs::rename(staging, path) {
-                Ok(()) => return Ok(()),
-                Err(rename_error) if rename_error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    if fs::read(path).is_ok_and(|published| published == candidate) {
-                        let _ = fs::remove_file(staging);
-                        return Ok(());
-                    }
-                }
-                Err(rename_error) if attempt == 7 => {
-                    let _ = fs::remove_file(staging);
-                    return Err(failure("publish build state", path, rename_error));
-                }
-                Err(_) => {}
-            }
-        }
-
-        // Windows may temporarily refuse replacement while another build has
-        // the state file open or while ReplaceFileW resolves a concurrent
-        // replacement. Retry only those bounded cases; surface other errors.
-        let retryable = matches!(error.raw_os_error(), Some(32 | 33 | 1175 | 1176));
-        if !retryable || attempt == 7 {
+        // Sharing/locking violations can be transient. Other failures remain
+        // operational errors; never delete the destination to force publication.
+        if !matches!(error.raw_os_error(), Some(32 | 33)) || attempt == 7 {
             let _ = fs::remove_file(staging);
             return Err(failure("publish build state", path, error));
         }
@@ -783,6 +726,33 @@ mod atomic_replace_tests {
     use std::thread;
 
     #[test]
+    fn failed_publication_preserves_destination_and_removes_staging() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "arandu-publication-failure-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir(&directory).expect("isolated directory");
+        let destination = directory.join("current.amir");
+        fs::create_dir(&destination).expect("conflicting directory");
+        fs::write(destination.join("keep"), b"original content").expect("original data");
+        assert!(atomic_replace(&destination, b"new content").is_err());
+        assert_eq!(
+            fs::read(destination.join("keep")).unwrap(),
+            b"original content"
+        );
+        assert_eq!(
+            fs::read_dir(&directory).unwrap().count(),
+            1,
+            "failed staging must be removed"
+        );
+        fs::remove_dir_all(directory).expect("cleanup");
+    }
+
+    #[test]
     fn concurrent_identical_replacements_are_idempotent() {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -816,6 +786,11 @@ mod atomic_replace_tests {
                 .expect("identical concurrent replacements should succeed");
         }
         assert_eq!(fs::read(&destination).unwrap(), b"complete new state");
+        assert_eq!(
+            fs::read_dir(&directory).unwrap().count(),
+            1,
+            "all staging files must be consumed"
+        );
         fs::remove_dir_all(directory).expect("remove isolated test directory");
     }
 }

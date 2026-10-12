@@ -16,6 +16,8 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
+  CARGO_PROFILE_TEST_DEBUG: "line-tables-only"
 
 jobs:
   # Keep this classifier inside the required workflow. Workflow-level path
@@ -95,7 +97,7 @@ jobs:
         with:
           cache-key: core-rust-1.97.1-${{ matrix.shard }}
           shared-key: core-rust-1.97.1
-          save-if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' }}
+          save-if: "true"
       - name: Test ${{ matrix.shard }} shard
         run: cargo test --locked ${{ matrix.crates }}
       - name: SL_T portable JUnit contract
@@ -126,6 +128,7 @@ jobs:
     env:
       RUST_TEST_THREADS: 2
       ARANDU_FUZZ_ARTIFACT_DIR: ${{ github.workspace }}/target/smith-failures
+      RUSTFLAGS: "-C linker=lld-link"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -134,51 +137,13 @@ jobs:
         with:
           cache-key: windows-portability-rust-1.97.1
           shared-key: core-rust-1.97.1
-          save-if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' }}
-      - name: Run the native differential reproducer first
+          save-if: "true"
+      - name: Test compiler workspace (host-sensitive changes)
         if: needs.scope.outputs.host_sensitive == 'true'
-        run: cargo test --locked -p arandu_fuzz_support synthesized_wasm_seed_eight_matches_all_optimization_levels
-      - name: Replay preserved Wasm independently of the Rust harness
-        if: failure()
-        shell: bash
-        run: |
-          node <<'JS'
-          const fs = require('node:fs');
-          const path = require('node:path');
-          const { spawnSync } = require('node:child_process');
-          const root = path.resolve('target/smith-failures');
-          if (!fs.existsSync(root)) process.exit(0);
-          for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
-            if (!entry.isDirectory()) continue;
-            const cwd = path.join(root, entry.name);
-            if (!fs.existsSync(path.join(cwd, 'runner.js'))) continue;
-            // Isolate baseline/optimizing engine behavior without changing the
-            // differential test's runner, timeout, or success criterion.
-            const modes = [
-              ['default', []],
-              ['optimizing', ['--no-liftoff', '--no-wasm-tier-up']],
-              ['baseline', ['--liftoff', '--no-wasm-tier-up']]
-            ];
-            for (const [mode, flags] of modes) {
-              const phase = path.join(cwd, `replay-${mode}-phase.txt`);
-              const result = spawnSync(process.execPath, [...flags, 'runner.js', 'program.wasm'], {
-                cwd, encoding: 'utf8', timeout: 30000, maxBuffer: 1048576,
-                env: { ...process.env, ARANDU_SMITH_PHASE_PATH: phase }
-              });
-              const evidence = {
-                mode, flags, node: process.version, v8: process.versions.v8, platform: process.platform,
-                status: result.status, signal: result.signal, error: result.error?.message,
-                phase: fs.existsSync(phase) ? fs.readFileSync(phase, 'utf8') : null,
-                stdout: result.stdout, stderr: result.stderr
-              };
-              fs.writeFileSync(path.join(cwd, `independent-replay-${mode}.json`), JSON.stringify(evidence, null, 2));
-              console.log(JSON.stringify(evidence));
-            }
-          }
-          JS
-      - name: Test full workspace (host-sensitive changes)
+        run: cargo test --workspace --exclude arandu_fuzz_support --locked
+      - name: Test differential fuzz regressions (host-sensitive changes)
         if: needs.scope.outputs.host_sensitive == 'true'
-        run: cargo test --workspace --locked
+        run: cargo test --locked -p arandu_fuzz_support
       - name: Test essential smoke (pure compiler changes)
         if: needs.scope.outputs.host_sensitive != 'true'
         run: cargo test --locked -p arandu_cli -p arandu_runtime -p arandu_parser
@@ -210,10 +175,13 @@ jobs:
         with:
           cache-key: macos-portability-rust-1.97.1
           shared-key: core-rust-1.97.1
-          save-if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' }}
-      - name: Test full workspace (host-sensitive changes)
+          save-if: "true"
+      - name: Test compiler workspace (host-sensitive changes)
         if: needs.scope.outputs.host_sensitive == 'true'
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --exclude arandu_fuzz_support --locked
+      - name: Test differential fuzz regressions (host-sensitive changes)
+        if: needs.scope.outputs.host_sensitive == 'true'
+        run: cargo test --locked -p arandu_fuzz_support
       - name: Test essential smoke (pure compiler changes)
         if: needs.scope.outputs.host_sensitive != 'true'
         run: cargo test --locked -p arandu_cli -p arandu_runtime -p arandu_parser
@@ -240,7 +208,7 @@ jobs:
         with:
           cache-key: determinism-rust-1.97.1
           shared-key: core-rust-1.97.1
-          save-if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' }}
+          save-if: "true"
       - name: Typeck library (1 vs 8 threads)
         run: bash scripts/check-diag-determinism.sh arandu_typeck 8
       - name: Semantics type checker (1 vs 8 threads)
@@ -284,7 +252,7 @@ jobs:
         with:
           cache-key: editor-rust-1.97.1
           shared-key: core-rust-1.97.1
-          save-if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' }}
+          save-if: "true"
       - name: Build Extension Host server binary
         run: cargo build --locked -p arandu_lsp -p arandu_cli
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -313,7 +281,7 @@ jobs:
         with:
           cache-key: distribution-rust-1.97.1
           shared-key: core-rust-1.97.1
-          save-if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' }}
+          save-if: "true"
       - name: Reproducible release archive
         run: bash scripts/check-package-reproducibility.sh
       - name: Install outside the checkout and reject tampering

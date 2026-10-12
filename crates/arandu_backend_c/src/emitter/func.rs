@@ -10,7 +10,7 @@ impl<'a> CEmitter<'a> {
     pub(super) fn emit_func(&mut self, func: &AmirFunc) {
         self.integer_concat_temps =
             arandu_codegen::string_interp::integer_concat_temps(func, self.interner);
-        self.temp_slots = arandu_codegen::temp_slots::block_local_temp_slots(func, |temp| {
+        self.temp_slots = super::temp_slots::scalar_slots(func, |temp| {
             matches!(self.interner.resolve(func.temps[temp.as_usize()].ty),
                 arandu_middle::types::ArType::Primitive(primitive)
                     if primitive.is_numeric() || matches!(primitive,
@@ -23,6 +23,8 @@ impl<'a> CEmitter<'a> {
                     arandu_middle::types::Primitive::Bool | arandu_middle::types::Primitive::Char))
         });
         self.temp_expressions = vec![None; func.temps.len()];
+        (self.rotations, self.rotation_elided) =
+            super::rotations::plan(func, &self.program.literal_pool, self.interner);
         let sym = self.symbols.get(func.symbol);
         let name = sanitize_c_ident(self.symbols.host_func_name(sym));
         let ret_ty = self.c_func_return_type(func);
@@ -98,7 +100,7 @@ impl<'a> CEmitter<'a> {
         }
         let used_slots: rustc_hash::FxHashSet<_> = used_temps
             .iter()
-            .filter(|&&index| !self.expression_candidates[index])
+            .filter(|&&index| !self.expression_candidates[index] && !self.rotation_elided[index])
             .map(|&index| self.temp_slots[index])
             .collect();
         for (i, temp) in func.temps.iter().enumerate() {

@@ -184,6 +184,61 @@ Cranelift, with adjacent expression reconstruction inside blocks. The proposed `
 belong to RFC 0018 and are not implemented yet. Any future pretty emitter remains
 subject to the same `validate_amir_program` invariants and parity gates.
 
+### C emission size and bounded optimization
+
+The C emitter selects runtime families from operands and rvalues in retained
+functions, including their dependencies. Formatting helpers are selected by
+primitive type; string equality does not require the path or allocator runtime.
+This is a hosted-runtime optimization, not a freestanding ABI guarantee.
+
+Executable emission retains `main`, public/internal linkage, referenced
+functions and callbacks, explicit `@Test`/`@Benchmark` tooling entrypoints, and
+conservatively roots implicit destructors. Module
+and private functions unreachable from these roots are omitted. Without `main`,
+library inspection retains all functions. The string literal pool is still
+conservative and is not a complete garbage collector for static data.
+
+Non-addressable, uniquely defined scalar temporaries share C slots only when
+their exact AMIR types agree and the shared liveness interference graph proves
+their lifetimes disjoint. Return storage, parameters and block parameters stay
+dedicated. User locals retain their own storage. Above 16,384 temporaries the
+emitter uses the linear block-local fallback instead of allocating a dense
+graph larger than approximately 32 MiB. Wasm uses the same canonical interference
+analysis, with its existing allocation policy.
+
+Address simplification tracks place projections structurally. Rotation
+recognition requires complementary, nonzero constant shifts of the same
+unsigned 32- or 64-bit value, unique shift uses and no intervening effects.
+Signed, dynamic, shared or otherwise unproven forms retain ordinary emission.
+The portable helper evaluates its input once. Fixed-width float `black_box`
+preserves the input type; the Cranelift f32 barrier transports raw bits through
+the integer runtime helper.
+
+`tests/perf/sha256-array.aru` provides a SHA-256 corpus with a fixed 64-byte
+buffer, a comptime K table and a 16-word circular schedule in a 64-round loop.
+The K value is materialized once before the loop; this preserves value semantics
+and does not promise zero-copy access to global aggregates. Eight padding and
+message vectors are checked across C, Cranelift and Wasm at O0/O1/O2.
+
+Linux measurements with GCC 16.2.1 compare the original unrolled SHA source
+against the same source with the new emitter, then against the array/loop
+algorithm with the same `abc` entrypoint:
+
+| Measurement | Previous emitter | New emitter, same source | Array/loop source |
+| --- | ---: | ---: | ---: |
+| Generated C bytes | 225,682 | 111,818 | 28,493 |
+| Generated C lines | 8,343 | 4,494 | 938 |
+| Compression function machine-code bytes, GCC O2 | 10,745 | 10,519 | 1,150 |
+| GCC O2 compilation median, three runs | 828 ms | 646 ms | 176 ms |
+
+These are workload measurements, not general performance guarantees. A separate
+identical streaming entrypoint verified the digest of 1 MiB of zero bytes:
+seven-run process medians were 33.3 ms for the unrolled version and 16.9 ms for
+the array/loop version, both using the new emitter and GCC O2. These times include
+process startup. Indexed loads still have addressing and bounds-check costs;
+C line counts do not prove instruction-cache occupancy, and source-size
+reductions do not imply proportional execution-time reductions.
+
 ### What is required for real cross compilation
 
 Adding a new Gold target requires one named target specification containing at

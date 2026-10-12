@@ -1139,6 +1139,9 @@ fn specialize_func(
     tc.symbols_mut()
         .host_function_names
         .insert(new_func_sym, instance_host_name);
+    if tc.symbols.tooling_entrypoints.contains(&key.symbol) {
+        tc.symbols_mut().tooling_entrypoints.insert(new_func_sym);
+    }
 
     // Subst and specialized return type
     let subst = build_subst_ids(&params_list, key.type_args, &tc.type_info.type_interner);

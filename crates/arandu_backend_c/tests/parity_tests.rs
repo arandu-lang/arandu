@@ -95,6 +95,72 @@ fn parity_scalar_slot_reuse_preserves_long_expression_chains() {
     assert_eq!(execute_c("scalar_slot_reuse_chain", &amir, &tc), 256);
 }
 
+#[test]
+fn c_runtime_and_private_bodies_follow_live_dependencies() {
+    let (amir, tc) = compile_src(
+        "func unused_leaf(): int { return 12 } func unused_parent(): int { return unused_leaf() } public func exported(x: int): int { return x + 1 } func used(x: int): int { return x + 2 } func main(): int { return used(40) - 42 }",
+    );
+    let c = emit_c(&amir, &tc);
+    assert!(!c.contains("unused_leaf(") && !c.contains("unused_parent("));
+    assert!(c.contains("exported(") && c.contains("used("));
+    for absent in [
+        "ar_gen_entry",
+        "ar_gen_shutdown_raw",
+        "ar_rt_slots",
+        "ar_co_poll",
+        "ar_env_c_argc",
+        "ar_fs_read",
+        "ar_f64_to_str",
+        "pthread.h",
+        "dirent.h",
+        "windows.h",
+    ] {
+        assert!(!c.contains(absent), "unexpected runtime group {absent}");
+    }
+    assert_eq!(execute_c("live_private_bodies", &amir, &tc), 0);
+}
+
+#[test]
+fn c_retains_empty_tooling_entrypoints_without_source_calls() {
+    let (amir, tc) = compile_src(
+        "struct Benchmark { handle: int } @Test func empty_case(): void {} @Benchmark func measure(mut bench: Benchmark): void {} func main(): int { return 0 }",
+    );
+    let c = emit_c(&amir, &tc);
+    assert!(c.contains("empty_case("));
+    assert!(c.contains("measure("));
+    assert_eq!(execute_c("empty_tooling_roots", &amir, &tc), 0);
+}
+
+#[test]
+fn c_constant_rotations_preserve_unsigned_widths_and_shared_values() {
+    let source = r#"
+public func rotate32(x: u32): u32 { return (x >> 17) | (x << 15) }
+public func rotate64(x: u64): u64 { return (x << 63) | (x >> 1) }
+public func signedRotate(x: i32): i32 { return (x >> 17) | (x << 15) }
+public func dynamic(x: u32, n: u32): u32 { return (x >> n) | (x << (32 - n)) }
+func main(): int {
+    if rotate32(0x12345678) != 0x2b3c091a { return 1 }
+    if rotate64(0x8000000000000001) != 0xc000000000000000 { return 2 }
+    let x: u32 = 0x12345678
+    let a = x >> 17
+    let b = x << 15
+    if (a | b) != 0x2b3c091a || a != 0x91a { return 3 }
+    return 0
+}
+"#;
+    let (mut amir, tc) = compile_src(source);
+    optimize_amir_checked_with_level(
+        &mut amir,
+        &tc.symbols,
+        &tc.type_info.type_interner,
+        OptLevel::O1,
+    )
+    .unwrap();
+    let c = emit_c(&amir, &tc);
+    assert!(c.contains("ar_rotr32(") && c.contains("ar_rotr64("));
+    test_zero_result_all_opt_levels("constant_rotations", source);
+}
+
 fn compile_src(src: &str) -> (AmirProgram, TypeCheckResult) {
     let program = arandu_parser::parse(src).expect("parse failed");
     let resolution = resolve_for_test(0, &program);
@@ -162,7 +228,35 @@ func main(): int {
 
 #[test]
 fn c_float_encoding_helpers_preserve_all_ieee_categories() {
-    let (amir, tc) = compile_src("func main(): int { return 0 }");
+    let (mut amir, tc) = compile_src(
+        "public func single(): f32 { return 0.0 } public func wide(): f64 { return 0.0 } func main(): int { return 0 }",
+    );
+    for (name, ty) in [
+        ("single", arandu_middle::types::Primitive::F32),
+        ("wide", arandu_middle::types::Primitive::F64),
+    ] {
+        let id = amir.literal_pool.intern_float_bits(
+            arandu_middle::ctfe::ConstFloat::new(
+                arandu_middle::ctfe::FloatType::new(ty, DataLayout::host()).unwrap(),
+                0,
+            )
+            .unwrap(),
+        );
+        let function = amir
+            .funcs
+            .iter_mut()
+            .find(|f| tc.symbols.get(f.symbol).name == name)
+            .unwrap();
+        for statement in function.stmts.payloads.iter_mut() {
+            if let AmirStmt::Assign {
+                lhs: arandu_middle::amir::TempId(0),
+                rhs,
+            } = statement
+            {
+                *rhs = AmirRvalue::Use(AmirOperand::Constant(AmirConstant::Pool(id)));
+            }
+        }
+    }
     let emitted = emit_c(&amir, &tc);
     let source = format!(
         "#define main arandu_unused_main\n{emitted}\n#undef main\n{}",
@@ -288,7 +382,9 @@ fn static_sources_require_known_byte_order_and_support_windows_macros() {
 
 #[test]
 fn c_backend_genref_runtime_has_monotonic_type_erased_storage() {
-    let (amir, tc) = compile_src("func main(): int { return 0 }");
+    let (amir, tc) = compile_src(
+        "extern \"C\" { func ar_gen_shutdown_raw(): void }\nfunc main(): int { unsafe { ar_gen_shutdown_raw() }; return 0 }",
+    );
     let emitted = emit_c(&amir, &tc);
 
     assert!(emitted.contains("typedef struct ar_gen_entry"));
@@ -321,6 +417,14 @@ fn c_backend_emits_opaque_black_box_barrier() {
 }
 
 #[test]
+fn parity_black_box_preserves_fixed_float_types() {
+    test_zero_result_all_opt_levels(
+        "fixed_float_black_box",
+        "func blackBox<T>(value: T): T { return value } func main(): int { if blackBox<f32>(2.5 as f32) != 2.5 { return 1 }; if blackBox<f64>(3.75 as f64) != 3.75 { return 2 }; return 0 }",
+    );
+}
+
+#[test]
 fn explicit_destructor_runs_through_both_backend_pipelines() {
     test_execution_parity(
         "destructor_epilogue",
@@ -341,7 +445,9 @@ func main(): int {
 
 #[test]
 fn c_backend_genref_runtime_executes_beyond_legacy_capacity() {
-    let (amir, tc) = compile_src("func main(): int { return 0 }");
+    let (amir, tc) = compile_src(
+        "extern \"C\" { func ar_gen_shutdown_raw(): void }\nfunc main(): int { unsafe { ar_gen_shutdown_raw() }; return 0 }",
+    );
     let emitted = emit_c(&amir, &tc);
     let source = format!(
         "#define main arandu_unused_main\n{emitted}\n#undef main\n{}",
@@ -1621,8 +1727,10 @@ fn c_emit_arstr_is_fat_pointer() {
 fn c_emit_arstr_layout_32bit() {
     // S-C-32BIT: emit-only with W=4 (no Cranelift). ArStr.len is int32_t.
     let src = r#"
+    extern "C" { func ar_vec_malloc(size: usize): ptr[u8] }
     func main(): int {
         let s = "hi"
+        let buffer = unsafe { ar_vec_malloc(1) }
         return 0
     }
     "#;
@@ -2374,7 +2482,9 @@ fn parallel_dispatch_chunk_executes_in_worker_pool_and_honors_cancellation() {
 
 #[test]
 fn c_backend_worker_pool_reuses_threads_and_handles_self_help_and_errors() {
-    let (amir, tc) = compile_src("func main(): int { return 0 }");
+    let (amir, tc) = compile_src(
+        "extern \"C\" { func ar_rt_spawn_i64(state: ptr[u8]): i64 }\npublic func probe(state: ptr[u8]): i64 { return unsafe { ar_rt_spawn_i64(state) } }\nfunc main(): int { return 0 }",
+    );
     let c_code = emit_c(&amir, &tc);
 
     let test_harness = r#"
@@ -2544,7 +2654,9 @@ int main(void) {
 #[cfg(target_os = "linux")]
 #[test]
 fn c_backend_worker_pool_falls_back_when_thread_creation_is_partial() {
-    let (amir, tc) = compile_src("func main(): int { return 0 }");
+    let (amir, tc) = compile_src(
+        "extern \"C\" { func ar_rt_spawn_i64(state: ptr[u8]): i64 }\npublic func probe(state: ptr[u8]): i64 { return unsafe { ar_rt_spawn_i64(state) } }\nfunc main(): int { return 0 }",
+    );
     let c_code = emit_c(&amir, &tc);
     let harness = r#"
 #define main arandu_main

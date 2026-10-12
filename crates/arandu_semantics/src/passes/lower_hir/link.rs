@@ -311,6 +311,10 @@ pub fn link_hir_module(
             .host_function_names
             .insert(*symbol, name.clone());
     }
+    dest_tc
+        .symbols_mut()
+        .tooling_entrypoints
+        .extend(src_tc.symbols.tooling_entrypoints.iter().copied());
     for (type_id, params) in &src_tc.symbols.type_params {
         dest_tc
             .symbols_mut()

@@ -122,6 +122,16 @@ impl<'a> Resolver<'a> {
                 else {
                     continue;
                 };
+                // Preserve source-declared external runner roots without
+                // performing annotation validation in name resolution.
+                if let TopLevelDecl::Func(decl) = self.pool.decl(decl_id)
+                    && decl
+                        .attrs
+                        .iter()
+                        .any(|attr| matches!(attr.name.as_str(), "Test" | "Benchmark"))
+                {
+                    self.symbols.tooling_entrypoints.insert(symbol_id);
+                }
                 let symbol = self.symbols.get(symbol_id);
                 if module_name.is_empty()
                     || symbol.name == "main"

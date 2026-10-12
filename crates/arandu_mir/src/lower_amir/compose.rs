@@ -64,6 +64,17 @@ pub fn compose_function_units(
                     .host_function_names
                     .insert(source.id, name.clone());
             }
+            if input
+                .context
+                .symbols
+                .tooling_entrypoints
+                .contains(&source.id)
+            {
+                aggregate
+                    .symbols_mut()
+                    .tooling_entrypoints
+                    .insert(source.id);
+            }
         }
         aggregate.symbols_mut().module_members.extend(
             input
@@ -128,6 +139,9 @@ pub fn compose_function_units(
                     .insert(mapped, name.clone());
             }
             canonical.insert(key.clone(), mapped);
+            if input.context.symbols.tooling_entrypoints.contains(symbol) {
+                aggregate.symbols_mut().tooling_entrypoints.insert(mapped);
+            }
         }
     }
     let mut program = AmirProgram {

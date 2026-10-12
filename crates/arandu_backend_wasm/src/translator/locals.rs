@@ -7,10 +7,6 @@
 
 use arandu_base::bitset::BitSet;
 use arandu_middle::amir::local::TempId;
-use arandu_middle::amir::reachability::terminator_targets;
-use arandu_middle::amir::stmt::AmirStmt;
-use arandu_middle::amir::value::AmirOperand;
-use arandu_middle::amir::visit::{for_each_stmt_operand, for_each_terminator_operand};
 use arandu_middle::layout::DataLayout;
 use arandu_middle::types::{TypeId, TypeInterner};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -385,7 +381,7 @@ impl<'a> FuncTranslator<'a> {
     /// Assign slots to non-parameter temps by coloring an interference graph,
     /// so disjoint-lifetime SSA temps share the same Wasm local index.
     fn assign_colored_temps(&mut self, next: &mut u32, slot_types: &mut Vec<ValType>) {
-        let interference = build_interference_graph(self.func);
+        let interference = arandu_semantics::passes::liveness::temp_interference_graph(self.func);
 
         let mut fat_temps = Vec::new();
         let mut i32_temps = Vec::new();
@@ -525,142 +521,4 @@ impl<'a> FuncTranslator<'a> {
         }
         *next += total_slots;
     }
-}
-
-fn build_interference_graph(func: &arandu_middle::amir::AmirFunc) -> Vec<BitSet<TempId>> {
-    let num_temps = func.temps.len();
-    let mut interference = vec![BitSet::<TempId>::with_capacity(num_temps); num_temps];
-    if num_temps == 0 {
-        return interference;
-    }
-
-    let temp_liveness = arandu_semantics::passes::liveness::analyze_temp_liveness(func);
-
-    for block in &func.blocks {
-        let mut live = temp_liveness.live_out(block.id).clone();
-
-        // 1. All variables live at block exit interfere with one another.
-        let live_vec: Vec<TempId> = live.iter().collect();
-        for i in 0..live_vec.len() {
-            let u = live_vec[i];
-            let u_idx = u.as_usize();
-            if u_idx >= num_temps {
-                continue;
-            }
-            for &v in &live_vec[(i + 1)..] {
-                let v_idx = v.as_usize();
-                if v_idx < num_temps {
-                    interference[u_idx].insert(v);
-                    interference[v_idx].insert(u);
-                }
-            }
-        }
-
-        // 2. Successor block parameters are materialized before jumping; they
-        // interfere with all values surviving across the edge.
-        for succ in terminator_targets(&block.terminator) {
-            let succ_params = func.block_params(func.blocks[succ.as_usize()].params);
-            for p in succ_params {
-                let p_idx = p.id.as_usize();
-                if p_idx < num_temps {
-                    for u in live.iter() {
-                        let u_idx = u.as_usize();
-                        if u_idx != p_idx && u_idx < num_temps {
-                            interference[p_idx].insert(u);
-                            interference[u_idx].insert(p.id);
-                        }
-                    }
-                }
-            }
-        }
-
-        // 3. Terminator operands are live uses at the terminator point.
-        for_each_terminator_operand(&block.terminator, |op| {
-            if let AmirOperand::Copy(t) | AmirOperand::Move(t) = op {
-                let t_idx = t.as_usize();
-                if t_idx < num_temps {
-                    for u in live.iter() {
-                        let u_idx = u.as_usize();
-                        if u_idx != t_idx && u_idx < num_temps {
-                            interference[t_idx].insert(u);
-                            interference[u_idx].insert(*t);
-                        }
-                    }
-                    live.insert(*t);
-                }
-            }
-        });
-
-        // 4. Traverse statements in reverse order.
-        let stmts: Vec<&AmirStmt> = func.block_stmts(block.id).collect();
-        for stmt in stmts.into_iter().rev() {
-            let def = match stmt {
-                AmirStmt::Assign { lhs, .. } => Some(*lhs),
-                AmirStmt::Call { lhs: Some(t), .. } => Some(*t),
-                _ => None,
-            };
-
-            if let Some(def_temp) = def {
-                let def_idx = def_temp.as_usize();
-                if def_idx < num_temps {
-                    for u in live.iter() {
-                        let u_idx = u.as_usize();
-                        if u_idx != def_idx && u_idx < num_temps {
-                            interference[def_idx].insert(u);
-                            interference[u_idx].insert(def_temp);
-                        }
-                    }
-                    live.remove(def_temp);
-                }
-            }
-
-            for_each_stmt_operand(stmt, |op| {
-                if let AmirOperand::Copy(t) | AmirOperand::Move(t) = op {
-                    let t_idx = t.as_usize();
-                    if t_idx < num_temps {
-                        for u in live.iter() {
-                            let u_idx = u.as_usize();
-                            if u_idx != t_idx && u_idx < num_temps {
-                                interference[t_idx].insert(u);
-                                interference[u_idx].insert(*t);
-                            }
-                        }
-                        live.insert(*t);
-                    }
-                }
-            });
-        }
-
-        // 5. Block parameters are defined at block entry; they interfere with
-        // one another and with any value that remains live across the entry.
-        let block_params: Vec<TempId> = func
-            .block_params(block.params)
-            .iter()
-            .map(|p| p.id)
-            .collect();
-        for i in 0..block_params.len() {
-            let p = block_params[i];
-            let p_idx = p.as_usize();
-            if p_idx >= num_temps {
-                continue;
-            }
-            for u in live.iter() {
-                let u_idx = u.as_usize();
-                if u_idx != p_idx && u_idx < num_temps {
-                    interference[p_idx].insert(u);
-                    interference[u_idx].insert(p);
-                }
-            }
-            for &q in &block_params[(i + 1)..] {
-                let q_idx = q.as_usize();
-                if q_idx < num_temps {
-                    interference[p_idx].insert(q);
-                    interference[q_idx].insert(p);
-                }
-            }
-            live.remove(p);
-        }
-    }
-
-    interference
 }

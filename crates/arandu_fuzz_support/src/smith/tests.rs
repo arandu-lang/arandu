@@ -2505,6 +2505,14 @@ fn scalar_optimizations_preserve_mutation_recursion_and_narrowing_in_every_backe
     assert!(cleanup.stderr.is_empty());
 }
 
+#[test]
+fn array_sha256_padding_vectors_match_every_backend_and_optimization_level() {
+    let source = include_str!("../../../../tests/perf/sha256-array.aru");
+    let observation = check_source(source, true, true).expect("SHA-256 array/loop differential");
+    assert_eq!(observation.result, 0);
+    assert!(observation.stdout.is_empty() && observation.stderr.is_empty());
+}
+
 /// Manual profile of the same expanded program that exposed native Wasm
 /// compilation pressure. Timings are evidence, never correctness thresholds.
 #[test]

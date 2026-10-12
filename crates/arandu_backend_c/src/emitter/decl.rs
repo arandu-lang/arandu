@@ -28,6 +28,9 @@ impl<'a> CEmitter<'a> {
     pub(super) fn emit_gen_drop_glues(&mut self) {
         let mut payloads = std::collections::BTreeMap::<String, (ArType, SymbolId)>::new();
         for func in &self.program.funcs {
+            if !self.live_functions.contains(&func.symbol) {
+                continue;
+            }
             for stmt in func.stmts.payloads.iter() {
                 let AmirStmt::Assign { rhs, .. } = stmt else {
                     continue;

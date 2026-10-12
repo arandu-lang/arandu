@@ -211,6 +211,24 @@ impl<'a> CEmitter<'a> {
     pub(super) fn emit_stmt(&mut self, stmt: &AmirStmt, func: &AmirFunc) {
         match stmt {
             AmirStmt::Assign { lhs, rhs } => {
+                if self.rotation_elided[lhs.as_usize()] {
+                    return;
+                }
+                if let Some(rotation) = self.rotations[lhs.as_usize()] {
+                    let value = self.format_operand(&rotation.value, func);
+                    let expression =
+                        format!("ar_rotr{}({value}, {})", rotation.width, rotation.count);
+                    if self.expression_candidates[lhs.as_usize()] {
+                        self.temp_expressions[lhs.as_usize()] = Some(expression);
+                    } else {
+                        let _ = writeln!(
+                            self.output,
+                            "    t{} = {expression};",
+                            self.temp_slots[lhs.as_usize()]
+                        );
+                    }
+                    return;
+                }
                 if self.emit_integer_concat_statement(*lhs, rhs, func) {
                     return;
                 }
@@ -651,7 +669,9 @@ impl<'a> CEmitter<'a> {
                 let name = super::sanitize_c_ident(&self.symbols.get(func.symbol).name);
                 let ret = self.interner.resolve(func.return_type);
                 if name == "main" {
-                    let _ = writeln!(&mut self.output, "    ar_gen_shutdown_raw();");
+                    if self.arena_runtime {
+                        let _ = writeln!(&mut self.output, "    ar_gen_shutdown_raw();");
+                    }
                     // ISO C requires `int main`; void Arandu main becomes `return 0`.
                     if matches!(ret, ArType::Void) {
                         let _ = writeln!(&mut self.output, "    return 0;");

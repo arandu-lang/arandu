@@ -19,8 +19,11 @@ pub mod expr;
 mod expression_plan;
 pub mod format;
 pub mod func;
+mod reachability;
+mod rotations;
 pub mod runtime;
 pub mod stmt;
+mod temp_slots;
 
 pub(super) fn sanitize_c_ident(name: &str) -> String {
     match name {
@@ -68,6 +71,10 @@ pub struct CEmitter<'a> {
     pub(super) co_stack_slot: u32,
     pub(super) integer_concat_temps: Vec<Option<arandu_codegen::string_interp::IntegerStringKind>>,
     pub(super) temp_slots: Vec<usize>,
+    pub(super) live_functions: rustc_hash::FxHashSet<arandu_middle::SymbolId>,
+    pub(super) rotations: Vec<Option<rotations::Rotation>>,
+    pub(super) rotation_elided: Vec<bool>,
+    pub(super) arena_runtime: bool,
     pub(super) expression_candidates: Vec<bool>,
     pub(super) temp_expressions: Vec<Option<String>>,
     pub(super) static_sources:
@@ -96,6 +103,10 @@ impl<'a> CEmitter<'a> {
             co_stack_slot: 0,
             integer_concat_temps: Vec::new(),
             temp_slots: Vec::new(),
+            live_functions: reachability::live_functions(program, symbols, provider),
+            rotations: Vec::new(),
+            rotation_elided: Vec::new(),
+            arena_runtime: false,
             expression_candidates: Vec::new(),
             temp_expressions: Vec::new(),
             static_sources: rustc_hash::FxHashMap::default(),
@@ -240,6 +251,9 @@ impl<'a> CEmitter<'a> {
         }
 
         for func in &self.program.funcs {
+            if !self.live_functions.contains(&func.symbol) {
+                continue;
+            }
             let ret = self.interner.resolve(func.return_type);
             self.ensure_type_emitted(&ret);
             for local in &func.locals {
@@ -265,6 +279,9 @@ impl<'a> CEmitter<'a> {
             }
         };
         for function in &self.program.funcs {
+            if !self.live_functions.contains(&function.symbol) {
+                continue;
+            }
             for statement in function.stmts.payloads.iter() {
                 arandu_middle::amir::visit::for_each_stmt_operand(statement, &mut remember);
             }
@@ -352,6 +369,9 @@ impl<'a> CEmitter<'a> {
         }
         self.emit_gen_drop_glues();
         for func in &self.program.funcs {
+            if !self.live_functions.contains(&func.symbol) {
+                continue;
+            }
             self.emit_func(func);
         }
         match self.error {

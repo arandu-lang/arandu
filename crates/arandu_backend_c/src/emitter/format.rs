@@ -211,6 +211,7 @@ impl<'a> CEmitter<'a> {
         let local_idx = place.local.as_usize();
         let mut current_ty = self.local_ty(func, place.local);
         let mut path = format!("l{}", local_idx);
+        let mut address = format!("&{path}");
 
         for proj in &place.projections {
             match proj {
@@ -225,6 +226,7 @@ impl<'a> CEmitter<'a> {
                         other => other.clone(),
                     };
                     if !borrowed_slice {
+                        address = path.clone();
                         path = format!("(*{})", path);
                     }
                 }
@@ -272,14 +274,16 @@ impl<'a> CEmitter<'a> {
                     let field_c_ty = self.format_type(&field_ty);
                     // If path is already a pointer (heap/ptr local without Deref), GEP from
                     // the pointer value; otherwise take address of the stack lvalue.
-                    if matches!(
+                    let base = if matches!(
                         current_ty,
                         ArType::Ptr(_) | ArType::Ref(_) | ArType::RefMut(_) | ArType::Nullable(_)
                     ) {
-                        path = format!("*({}*)((uint8_t*){} + {})", field_c_ty, path, offset);
+                        path.clone()
                     } else {
-                        path = format!("*({}*)((uint8_t*)&{} + {})", field_c_ty, path, offset);
-                    }
+                        address.clone()
+                    };
+                    address = format!("({field_c_ty}*)((uint8_t*)({base}) + {offset})");
+                    path = format!("*({address})");
                     current_ty = field_ty;
                 }
                 AmirProjection::Variant(_) => {}
@@ -443,6 +447,9 @@ impl<'a> CEmitter<'a> {
                     }
                     current_ty = elem_ty;
                 }
+            }
+            if !matches!(proj, AmirProjection::Deref | AmirProjection::Field(_)) {
+                address = format!("&({path})");
             }
         }
         path

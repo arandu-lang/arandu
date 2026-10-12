@@ -53,7 +53,19 @@ impl<'a> CEmitter<'a> {
                             "({{ volatile {expected_c_type} opaque = ({operand}); opaque; }})"
                         );
                     }
-                    ArType::Primitive(Primitive::Float) | ArType::FloatLiteral => {
+                    ArType::Primitive(Primitive::F32) => {
+                        let _ = write!(
+                            &mut self.output,
+                            "ar_bench_black_box_f32((float)({operand}))"
+                        );
+                    }
+                    ArType::Primitive(p) if p.is_float() => {
+                        let _ = write!(
+                            &mut self.output,
+                            "ar_bench_black_box_f64((double)({operand}))"
+                        );
+                    }
+                    ArType::FloatLiteral => {
                         let _ = write!(
                             &mut self.output,
                             "ar_bench_black_box_f64((double)({operand}))"

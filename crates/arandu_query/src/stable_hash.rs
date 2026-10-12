@@ -363,6 +363,12 @@ fn hash_symbol_table(hasher: &mut Hasher, table: &SymbolTable, include_spans: bo
         hash_symbol_id(hasher, *symbol);
         hash_str(hasher, name);
     }
+    let mut tooling_roots: Vec<_> = table.tooling_entrypoints.iter().copied().collect();
+    tooling_roots.sort_by_key(|symbol| (symbol.file_id, symbol.local_id.0));
+    hasher.update(&u64_le(tooling_roots.len() as u64));
+    for symbol in tooling_roots {
+        hash_symbol_id(hasher, symbol);
+    }
 
     if include_spans {
         hasher.update(&u32_le(table.file_id));

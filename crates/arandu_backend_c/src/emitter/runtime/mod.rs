@@ -2,6 +2,7 @@
 
 pub(super) mod coroutine;
 pub(super) mod env;
+mod features;
 pub(super) mod fs;
 pub(super) mod memory;
 pub(super) mod prelude;
@@ -13,51 +14,95 @@ use super::CEmitter;
 
 impl<'a> CEmitter<'a> {
     pub(super) fn emit_headers(&mut self, needs_str: bool) {
+        let features = self.runtime_features();
+        self.arena_runtime = features.arena;
+        let mut rotate_widths = [false; 2];
+        for function in &self.program.funcs {
+            if !self.live_functions.contains(&function.symbol) {
+                continue;
+            }
+            let (rotations, _) =
+                super::rotations::plan(function, &self.program.literal_pool, self.interner);
+            for rotation in rotations.into_iter().flatten() {
+                rotate_widths[usize::from(rotation.width == 64)] = true;
+            }
+        }
         let _ = writeln!(
             &mut self.output,
             "#if defined(__APPLE__) && !defined(_DARWIN_C_SOURCE)\n#define _DARWIN_C_SOURCE\n#endif\n#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)\n#define _POSIX_C_SOURCE 200112L\n#endif"
         );
         let _ = writeln!(&mut self.output, "#include <stdint.h>");
         let _ = writeln!(&mut self.output, "#include <stdbool.h>");
+        for (index, needed) in rotate_widths.into_iter().enumerate() {
+            if needed {
+                let width = if index == 0 { 32 } else { 64 };
+                let _ = writeln!(
+                    self.output,
+                    "static inline uint{width}_t ar_rotr{width}(uint{width}_t x, unsigned n) {{ return (x >> n) | (x << ({width} - n)); }}"
+                );
+            }
+        }
         let _ = writeln!(&mut self.output, "#include <stdlib.h>");
         let _ = writeln!(&mut self.output, "#include <string.h>");
         let _ = writeln!(&mut self.output, "#include <stdio.h>");
         let _ = writeln!(&mut self.output, "#include <errno.h>");
         // memcpy preserves IEEE encodings without strict-aliasing violations,
         // decimal round trips, or arithmetic that could quiet/canonicalize NaN.
-        let _ = writeln!(
-            &mut self.output,
-            "static inline float ar_f32_from_bits(uint32_t bits) {{ float value; memcpy(&value, &bits, sizeof(value)); return value; }}"
-        );
-        let _ = writeln!(
-            &mut self.output,
-            "static inline double ar_f64_from_bits(uint64_t bits) {{ double value; memcpy(&value, &bits, sizeof(value)); return value; }}"
-        );
-        let _ = writeln!(&mut self.output, "#include <stdatomic.h>");
-        let _ = writeln!(&mut self.output, "#include <sys/types.h>");
-        let _ = writeln!(
-            &mut self.output,
-            "#if defined(_WIN32)\n#include <malloc.h>\n#include <windows.h>\n#endif\n#if !defined(_WIN32) || defined(__MINGW32__)\n#include <pthread.h>\n#include <unistd.h>\n#endif"
-        );
-        let _ = writeln!(
-            &mut self.output,
-            "#if defined(__APPLE__)\n#include <sys/sysctl.h>\n#endif"
-        );
-        let _ = writeln!(&mut self.output, "#include <sys/stat.h>");
-        let _ = writeln!(
-            &mut self.output,
-            "#ifndef S_ISDIR\n#define S_ISDIR(mode) (((mode) & S_IFMT) == S_IFDIR)\n#endif"
-        );
-        let _ = writeln!(
-            &mut self.output,
-            "#if !defined(_WIN32) || defined(__MINGW32__)\n#include <dirent.h>\n#endif"
-        );
+        if features.float_bits[0] {
+            let _ = writeln!(
+                &mut self.output,
+                "static inline float ar_f32_from_bits(uint32_t bits) {{ float value; memcpy(&value, &bits, sizeof(value)); return value; }}"
+            );
+        }
+        if features.float_bits[1] {
+            let _ = writeln!(
+                &mut self.output,
+                "static inline double ar_f64_from_bits(uint64_t bits) {{ double value; memcpy(&value, &bits, sizeof(value)); return value; }}"
+            );
+        }
+        if features.tasks {
+            let _ = writeln!(&mut self.output, "#include <stdatomic.h>");
+        }
+        if features.tasks || features.fs || features.buffers {
+            let _ = writeln!(
+                &mut self.output,
+                "#if defined(_WIN32)\n#include <malloc.h>\n#include <windows.h>\n#endif"
+            );
+        }
+        if features.tasks {
+            let _ = writeln!(
+                self.output,
+                "#if !defined(_WIN32) || defined(__MINGW32__)\n#include <pthread.h>\n#include <unistd.h>\n#endif"
+            );
+            let _ = writeln!(
+                &mut self.output,
+                "#if defined(__APPLE__)\n#include <sys/sysctl.h>\n#endif"
+            );
+        }
+        if features.fs {
+            let _ = writeln!(self.output, "#include <sys/types.h>");
+            let _ = writeln!(
+                self.output,
+                "#if !defined(_WIN32) || defined(__MINGW32__)\n#include <unistd.h>\n#endif"
+            );
+            let _ = writeln!(&mut self.output, "#include <sys/stat.h>");
+            let _ = writeln!(
+                &mut self.output,
+                "#ifndef S_ISDIR\n#define S_ISDIR(mode) (((mode) & S_IFMT) == S_IFDIR)\n#endif"
+            );
+            let _ = writeln!(
+                &mut self.output,
+                "#if !defined(_WIN32) || defined(__MINGW32__)\n#include <dirent.h>\n#endif"
+            );
+        }
         let _ = writeln!(
             &mut self.output,
             "#if defined(__GNUC__) || defined(__clang__)\n#define AR_MAY_ALIAS __attribute__((__may_alias__))\n#else\n#define AR_MAY_ALIAS\n#endif"
         );
-        if needs_str {
+        if features.concat {
             let _ = writeln!(&mut self.output, "#include <stdarg.h>");
+        }
+        if features.formats[2] {
             let _ = writeln!(&mut self.output, "#include <math.h>");
         }
         let _ = writeln!(
@@ -72,22 +117,32 @@ impl<'a> CEmitter<'a> {
             &mut self.output,
             "#if defined(__GNUC__) || defined(__clang__)\n#define AR_BENCH_NOINLINE __attribute__((noinline))\n#elif defined(_MSC_VER)\n#define AR_BENCH_NOINLINE __declspec(noinline)\n#else\n#define AR_BENCH_NOINLINE\n#endif"
         );
-        let _ = writeln!(
-            &mut self.output,
-            "static AR_BENCH_NOINLINE int64_t ar_bench_black_box_i64(int64_t value) {{ volatile int64_t opaque = value; return opaque; }}"
-        );
-        let _ = writeln!(
-            &mut self.output,
-            "static AR_BENCH_NOINLINE double ar_bench_black_box_f64(double value) {{ volatile double opaque = value; return opaque; }}"
-        );
-        let _ = writeln!(
-            &mut self.output,
-            "static AR_BENCH_NOINLINE void *ar_bench_black_box_ptr(void *value) {{ void * volatile opaque = value; return opaque; }}"
-        );
-        // `ArStr` is also part of the owned-string runtime ABI.  Keep the
-        // two-word descriptor available even when the user program contains
-        // no `str` value: `String.pushStr` is emitted with this ABI and the
-        // allocation runtime below is unconditional.
+        if features.black_box[0] {
+            let _ = writeln!(
+                &mut self.output,
+                "static AR_BENCH_NOINLINE int64_t ar_bench_black_box_i64(int64_t value) {{ volatile int64_t opaque = value; return opaque; }}"
+            );
+        }
+        if features.black_box[1] {
+            let _ = writeln!(
+                &mut self.output,
+                "static AR_BENCH_NOINLINE double ar_bench_black_box_f64(double value) {{ volatile double opaque = value; return opaque; }}"
+            );
+        }
+        if features.black_box[3] {
+            let _ = writeln!(
+                self.output,
+                "static AR_BENCH_NOINLINE float ar_bench_black_box_f32(float value) {{ volatile float opaque = value; return opaque; }}"
+            );
+        }
+        if features.black_box[2] {
+            let _ = writeln!(
+                &mut self.output,
+                "static AR_BENCH_NOINLINE void *ar_bench_black_box_ptr(void *value) {{ void * volatile opaque = value; return opaque; }}"
+            );
+        }
+        // Keep the shared descriptor ABI available to nested type declarations.
+        // Runtime helpers below are selected independently from that ABI type.
         let len_c_ty = if self.layout.pointer_width() == 4 {
             "int32_t"
         } else {
@@ -116,27 +171,47 @@ impl<'a> CEmitter<'a> {
         );
         let _ = writeln!(&mut self.output, "}}");
         // F2.3.runtime: process-lifetime gen arena (i64 payload MVP; mirrors JIT host).
-        self.emit_gen_arena_runtime();
+        if features.arena {
+            self.emit_gen_arena_runtime();
+        }
         // Pure-buffer host used by std.alloc.vec / gen_arena product surface.
         let uint_c_ty = if self.layout.pointer_width() == 4 {
             "uint32_t"
         } else {
             "uint64_t"
         };
-        self.emit_vec_buf_runtime(uint_c_ty);
+        if features.buffers {
+            self.emit_vec_buf_runtime(uint_c_ty);
+        }
         // A3.6: poll / block_on for coroutine state blobs (disc@0, payload@8).
-        self.emit_co_poll_runtime();
+        if features.coroutine {
+            self.emit_co_poll_runtime();
+        }
         // SL_R.0: cooperative task table mirror (SyncExecutor host surface).
-        self.emit_task_runtime();
+        if features.tasks {
+            self.emit_task_runtime();
+        }
         // std.fs / std.env runtime hosts.
-        self.emit_fs_runtime(uint_c_ty, len_c_ty);
-        self.emit_env_runtime(len_c_ty);
+        if features.fs || features.env {
+            self.emit_c_string_runtime();
+        }
+        if features.fs {
+            self.emit_fs_runtime(uint_c_ty, len_c_ty);
+        }
+        if features.env {
+            self.emit_env_runtime(len_c_ty);
+        }
         let _ = writeln!(&mut self.output);
         if !needs_str {
             return;
         }
         // PROMOTE-L4 path hosts (need ArStr + ar_str_pack).
-        self.emit_path_runtime(len_c_ty);
-        self.emit_str_converters(len_c_ty);
+        if features.path {
+            self.emit_path_runtime(len_c_ty);
+        }
+        if features.string_eq {
+            self.emit_str_eq_runtime(len_c_ty);
+        }
+        self.emit_str_converters(len_c_ty, features.concat, features.formats);
     }
 }

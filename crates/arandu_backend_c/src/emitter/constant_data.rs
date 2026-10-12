@@ -7,6 +7,9 @@ impl CEmitter<'_> {
         let mut sources = rustc_hash::FxHashMap::default();
         let mut blobs = Vec::new();
         for function in &self.program.funcs {
+            if !self.live_functions.contains(&function.symbol) {
+                continue;
+            }
             let mut little = arandu_semantics::static_data::static_initializers(
                 function,
                 self.interner,

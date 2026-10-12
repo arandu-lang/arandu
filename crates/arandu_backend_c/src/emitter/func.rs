@@ -16,6 +16,13 @@ impl<'a> CEmitter<'a> {
                     if primitive.is_numeric() || matches!(primitive,
                         arandu_middle::types::Primitive::Bool | arandu_middle::types::Primitive::Char))
         });
+        self.expression_candidates = super::expression_plan::candidates(func, |index| {
+            matches!(self.interner.resolve(func.temps[index].ty),
+                arandu_middle::types::ArType::Primitive(primitive)
+                if primitive.is_numeric() || matches!(primitive,
+                    arandu_middle::types::Primitive::Bool | arandu_middle::types::Primitive::Char))
+        });
+        self.temp_expressions = vec![None; func.temps.len()];
         let sym = self.symbols.get(func.symbol);
         let name = sanitize_c_ident(self.symbols.host_func_name(sym));
         let ret_ty = self.c_func_return_type(func);
@@ -89,8 +96,13 @@ impl<'a> CEmitter<'a> {
                 let _ = writeln!(&mut self.output, "    {} l{};", ty_str, i);
             }
         }
+        let used_slots: rustc_hash::FxHashSet<_> = used_temps
+            .iter()
+            .filter(|&&index| !self.expression_candidates[index])
+            .map(|&index| self.temp_slots[index])
+            .collect();
         for (i, temp) in func.temps.iter().enumerate() {
-            if self.temp_slots[i] == i && used_temps.contains(&i) {
+            if self.temp_slots[i] == i && used_slots.contains(&i) {
                 let ty = self.interner.resolve(temp.ty);
                 if matches!(ty, arandu_middle::types::ArType::Void) {
                     continue;

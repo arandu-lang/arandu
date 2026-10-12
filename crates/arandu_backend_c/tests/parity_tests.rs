@@ -81,7 +81,9 @@ fn parity_scalar_slot_reuse_preserves_long_expression_chains() {
         .lines()
         .filter(|line| {
             let line = line.trim();
-            line.starts_with("int64_t t") && line.ends_with(';') && !line.contains('=')
+            (line.starts_with("int32_t t") || line.starts_with("int64_t t"))
+                && line.ends_with(';')
+                && !line.contains('=')
         })
         .count();
     let temps: usize = amir.funcs.iter().map(|func| func.temps.len()).sum();

@@ -2484,6 +2484,27 @@ fn synthesized_wasm_seed_eight_matches_all_optimization_levels() {
     assert_eq!(observation.stderr, expected.stderr);
 }
 
+#[test]
+fn scalar_optimizations_preserve_mutation_recursion_and_narrowing_in_every_backend() {
+    for (source, expected) in [
+        ("func numeric(a: int): int { let x = a + 1; return x / 2 } func main(): int { return numeric(2147483647) }", -1073741824),
+        ("struct Pair { x: int; y: int } func keep(n: int): Pair { let mut pair = Pair { x: n, y: n + 1 }; pair.x = pair.x + 1; return pair } func main(): int { let pair = keep(20); return pair.x + pair.y }", 42),
+        ("func rotate(n: int, a: int, b: int): int { if n == 0 { return a }; return rotate(n - 1, b, a) } func main(): int { return rotate(199, 17, 42) }", 42),
+        ("struct Pair { x: int; y: int } func fields(flag: bool, n: int): int { let mut pair = Pair { x: n, y: n + 1 }; if flag { pair.x = n + 2 }; return pair.x + pair.y } func main(): int { return fields(true, 10) + fields(false, 10) }", 44),
+        ("struct Pair { x: int; y: int } func main(): int { let mut pair = Pair { x: 17, y: 25 }; let p = &mut pair; p.x = 18; return p.x + p.y }", 43),
+        ("func compute(a: u8, b: u8): u8 { let x: u8 = a + b; return x * (2 as u8) } func main(): int { return compute(250 as u8, 10 as u8) as int }", 8),
+        ("func fib(n: int): int { if n < 2 { return n }; return fib(n - 1) + fib(n - 2) } func main(): int { return fib(10) }", 55),
+    ] {
+        let observation = check_source(source, true, true).unwrap_or_else(|failure| panic!("{failure:?}\n{source}"));
+        assert_eq!(observation.result, expected, "{source}");
+        assert!(observation.stdout.is_empty() && observation.stderr.is_empty());
+    }
+    let cleanup = check_source("import io\nfunc choose(flag: bool): int { defer { io.print(\"x\") }; if flag { return 17 }; return 25 } func main(): int { return choose(true) + choose(false) }", true, true).unwrap();
+    assert_eq!(cleanup.result, 42);
+    assert_eq!(cleanup.stdout, b"xx");
+    assert!(cleanup.stderr.is_empty());
+}
+
 /// Manual profile of the same expanded program that exposed native Wasm
 /// compilation pressure. Timings are evidence, never correctness thresholds.
 #[test]

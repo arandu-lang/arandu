@@ -68,6 +68,62 @@ was rejected. Storage reuse measurements must keep the inliner and other
 backend changes identical; fewer declared variables alone do not establish
 a JIT throughput improvement.
 
+### Expression flow and checked O2 transforms
+
+The C emitter reconstructs adjacent, single-use scalar expressions using the
+canonical rvalue emitter. Each substituted node retains its assignment cast,
+including integer narrowing and f32 rounding. Calls, memory reads, ownership
+moves, trapping operations and cross-block values stay materialized. Chains
+are bounded to eight substitutions to avoid unbounded expression depth.
+
+Wasm emission removes an immediately adjacent `local.set`/`local.get` pair
+when that local has no other accesses; shared locals retain their write via
+`local.tee`. Neither transform moves instructions across effects or control
+boundaries. Structured bodies explicitly reject implicit fallthrough, including
+functions whose only return occurs inside a tail-recursion loop.
+
+The checked O2 entrypoint scalarizes nonescaping Copy record/tuple locals with
+scalar fields. Partial stores and joins remain ordinary scalar place operations;
+aggregate loads capture the fields at the original load point, preserving Copy
+snapshots across mutations. Borrows, whole-value escapes, destructors, nested
+projections and unsupported field types retain their original representation.
+This is not unrestricted SROA for ownership-bearing or escaping aggregates.
+
+O2 also eliminates proven self-tail calls in scalar destructor-free functions.
+The ABI entry jumps to a separate loop header; arguments are transferred as
+block arguments, preserving simultaneous assignment. Non-tail calls, borrowed
+locals, suspension and cleanup obligations keep their calls. Os/O2 share only
+identical cleanup suffixes of parameter-free return blocks, in original order.
+
+LICM discovers natural loops from dominators, rejects irreducible regions,
+processes inner loops first and requires unique Copy definitions and operands
+available at the preheader. Header parameters are not available before their
+incoming edge. Divisions, modulo, shifts, loads, addresses and ownership moves
+are not speculated. Loop analysis caching remains a future infrastructure task.
+
+SCCP uses the canonical type domain to normalize fixed-width integer constants
+after every assignment. Default int/uint remain 32-bit; widths come from the
+shared CTFE integer contract. Folding fails closed for pointer-sized integers,
+floating conversions or numeric values without type context. Typed compiler
+entrypoints validate each transformation; untyped pass-manager clients can
+provide their domain through `run_program_with_types`.
+
+A Linux SHA-256 smoke corpus emitted at O1 with GCC 16.2.1 and Node 24.20.0
+gave the following local before/after observations against d1f76f20:
+
+| Metric | Before | After |
+| --- | ---: | ---: |
+| C source bytes | 231639 | 225682 |
+| C temporary assignments | 7059 | 4349 |
+| Wasm module bytes | 48331 | 46453 |
+| C compilation O0, median of three | 518 ms | 439 ms |
+| C compilation O2, median of three | 823 ms | 803 ms |
+
+Both C optimization levels and both Wasm modules returned the expected digest
+check result. These are corpus-specific observations; the O2 timing difference
+does not establish a general throughput improvement. No 30–50% Wasm reduction
+or 15–30% runtime speedup is promised.
+
 ### Backend and platform matrix
 
 | Capability | C backend | Cranelift backend |
@@ -124,7 +180,7 @@ does not override language-phase status or promise a stable external ABI.
 
 The implemented C backend currently emits the flat, canonical compiler form:
 explicit basic-block labels and `goto` edges used by AMIR parity tests against
-Cranelift. The proposed `--c-style=pretty` and explicit `--c-style=raw` CLI modes
+Cranelift, with adjacent expression reconstruction inside blocks. The proposed `--c-style=pretty` and explicit `--c-style=raw` CLI modes
 belong to RFC 0018 and are not implemented yet. Any future pretty emitter remains
 subject to the same `validate_amir_program` invariants and parity gates.
 

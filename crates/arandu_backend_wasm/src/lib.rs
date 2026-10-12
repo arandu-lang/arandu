@@ -28,6 +28,7 @@
 pub mod canonical;
 pub mod emit;
 pub mod memory;
+mod stack_peephole;
 pub mod stackify;
 pub mod translator;
 pub mod types;

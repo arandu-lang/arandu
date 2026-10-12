@@ -23,7 +23,12 @@ impl<'a> CEmitter<'a> {
 
     pub(super) fn format_operand_str(&self, op: &AmirOperand) -> String {
         match op {
-            AmirOperand::Copy(t) | AmirOperand::Move(t) => format!("t{}", self.temp_slot(*t)),
+            AmirOperand::Copy(t) | AmirOperand::Move(t) => self
+                .temp_expressions
+                .get(t.as_usize())
+                .and_then(Option::as_ref)
+                .cloned()
+                .unwrap_or_else(|| format!("t{}", self.temp_slot(*t))),
             AmirOperand::FunctionRef(id) | AmirOperand::GlobalRef(id) => {
                 let sym = self.symbols.get(*id);
                 sanitize_c_ident(self.symbols.host_func_name(sym))

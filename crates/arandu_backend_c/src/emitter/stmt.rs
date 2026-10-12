@@ -219,6 +219,16 @@ impl<'a> CEmitter<'a> {
                     return;
                 }
                 let lhs_c_ty = self.format_type(&lhs_ty);
+                if self.expression_candidates[lhs.as_usize()] {
+                    // Reuse the canonical expression emitter and retain the
+                    // assignment conversion (notably fixed-width narrowing).
+                    let surrounding = std::mem::take(&mut self.output);
+                    self.emit_rvalue(rhs, func, &lhs_ty, &lhs_c_ty);
+                    let expression = std::mem::replace(&mut self.output, surrounding);
+                    self.temp_expressions[lhs.as_usize()] =
+                        Some(format!("(({lhs_c_ty})({expression}))"));
+                    return;
+                }
                 match rhs {
                     arandu_middle::amir::AmirRvalue::GenInsert {
                         value, payload_ty, ..

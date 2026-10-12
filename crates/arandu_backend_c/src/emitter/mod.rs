@@ -16,6 +16,7 @@ use arandu_semantics::SymbolTable;
 mod constant_data;
 pub mod decl;
 pub mod expr;
+mod expression_plan;
 pub mod format;
 pub mod func;
 pub mod runtime;
@@ -67,6 +68,8 @@ pub struct CEmitter<'a> {
     pub(super) co_stack_slot: u32,
     pub(super) integer_concat_temps: Vec<Option<arandu_codegen::string_interp::IntegerStringKind>>,
     pub(super) temp_slots: Vec<usize>,
+    pub(super) expression_candidates: Vec<bool>,
+    pub(super) temp_expressions: Vec<Option<String>>,
     pub(super) static_sources:
         rustc_hash::FxHashMap<(arandu_middle::SymbolId, arandu_middle::amir::InstrId), usize>,
     pub(super) current_initializer: Option<arandu_middle::amir::InstrId>,
@@ -93,6 +96,8 @@ impl<'a> CEmitter<'a> {
             co_stack_slot: 0,
             integer_concat_temps: Vec::new(),
             temp_slots: Vec::new(),
+            expression_candidates: Vec::new(),
+            temp_expressions: Vec::new(),
             static_sources: rustc_hash::FxHashMap::default(),
             current_initializer: None,
             error: None,

@@ -327,7 +327,7 @@ Legenda: `[x]` feito · `[/]` em andamento · `[ ]` não iniciado
 | AMIR CFG | `[x]` | Dominadores, SSA registers vs stack slots |
 | Definite init | `[x]` | lattices, InitBits flow, O008 diagnostic |
 | Move checker | `[x]` | OSSA intraprocedural, O001/O005/O007, spans reais |
-| Middle-end opt | `[/]` | O1 estável: SCCP + DCE + SimplifyCFG; O2 experimental: field forwarding (SROA limitado) + GVN; LICM/TCO fora do pipeline até cumprir os gates de 3.2 |
+| Middle-end opt | `[/]` | O1: SCCP tipado + DCE + SimplifyCFG; O2 experimental com scalar replacement Copy, self-tail calls escalares, GVN, LICM seguro e tail merging; restrições e gates restantes em 3.2 |
 | Backend Cranelift | `[x]` | v0.2 Dev/Debug |
 | Backend C | `[x]` | Portabilidade fallback |
 | Backend LLVM | `[ ]` | v0.4+ Release Optimizer |
@@ -1055,16 +1055,16 @@ alteram a superfície exportada de módulos.
 | --- | --- | --- |
 | O0 | `done` | AMIR já nasce em SSA; O0 não executa transformações e não significa, por si só, que todo valor será materializado na stack |
 | O1 | `done` | fixpoint limitado de SCCP → mark-sweep DCE → SimplifyCFG, preservando argumentos de terminadores e parâmetros de bloco |
-| O2 | `experimental` | field forwarding (`SROA` limitado) → GVN → núcleo O1; não promete SROA completo, ausência de spills nem registradores físicos específicos |
-| LICM | `planned` | só entra após existir `LoopInfo`, inserção correta em `DenseRange`, agrupamento determinístico de loops, prova de dominância e exclusão de operações que podem trap ou não são seguras para especulação; protótipos desconectados não permanecem no produto |
-| TCO | `planned` | só entra após modelar parâmetros de entrada/loop corretamente, manter `AmirStmt`/`AmirStmtKind` sincronizados e provar tail position, ABI, drop e ownership; protótipos desconectados não permanecem no produto |
+| O2 | `experimental` | entrada checked faz scalar replacement de campos escalares Copy sem escapes e self-tail calls escalares; fixpoint com field forwarding → GVN → SCCP → LICM → DCE → tail merging → SimplifyCFG; não promete SROA irrestrito, ausência de spills nem registradores físicos específicos |
+| LICM | `experimental` | conectado em O2: loops naturais por dominância, reconstrução de ranges, definições únicas Copy, operands disponíveis no preheader e exclusão de trap/efeitos/Move; análise reutilizável com nesting/cache continua na OPT.2 |
+| TCO | `experimental` | conectado na entrada checked O2 para self tail calls escalares sem cleanup/borrows/suspend, com entrada ABI separada do header e argumentos de bloco simultâneos; chamadas mútuas e ownership continuam fora do recorte |
 | Tree-shaking | `planned` | alcançabilidade interprocedural determinística, raízes públicas/FFI/runtime explícitas e teste de paridade entre backends |
 | Stack promotion | `planned` | depende de escape/ownership; “SSA” não equivale a stack promotion e promoção não garante registrador físico |
 
-O nome SROA, enquanto o passe apenas encaminhar campos de
-`StructLiteral`/tupla para `FieldAccess`, designa um subconjunto conservador. A
-promoção para SROA completo exige stores parciais, escapes, projeções, layout por
-alvo e ownership de campos não-`Copy` cobertos por testes.
+O SROA agora também divide locais Copy com campos escalares, incluindo stores
+parciais, joins e snapshots de leitura. Escapes, projeções aninhadas e ownership
+de campos não-Copy continuam conservadores. O contrato e as medições estão em
+`arandu-backend-contract-v0.1.md`; nenhuma melhora percentual é garantia geral.
 
 ##### OPT.1 — Infraestrutura de análises cooperativas
 

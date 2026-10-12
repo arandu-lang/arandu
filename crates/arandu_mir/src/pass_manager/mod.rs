@@ -48,6 +48,8 @@ pub enum OptLevel {
 
 /// Shared per-function resources handed to every pass invocation.
 pub struct PassResources<'a> {
+    /// Canonical type domain. Without it numeric conversions fail closed.
+    pub interner: Option<&'a TypeInterner>,
     /// Literal pool shared by the whole program; interning must stay stable.
     pub literal_pool: &'a mut AmirLiteralPool,
     /// Per-function scratch arena, reset between mutating fixpoint rounds.
@@ -123,6 +125,7 @@ impl PassManager {
             &self.passes,
             func,
             literal_pool,
+            None,
             fixpoint::DEFAULT_MAX_FIXPOINT_ITERATIONS,
             &mut |_, _| Ok(()),
         )
@@ -146,6 +149,7 @@ impl PassManager {
             &self.passes,
             func,
             literal_pool,
+            Some(interner),
             fixpoint::DEFAULT_MAX_FIXPOINT_ITERATIONS,
             &mut |func, pass| match crate::amir_validate::validate_amir_func(
                 func, symbols, interner,
@@ -162,10 +166,37 @@ impl PassManager {
     }
 
     /// Optimizes every function in `program`, merging per-function stats.
+    /// Numeric folding requires canonical types; use `run_program_with_types`
+    /// or `run_program_checked` when that domain is available.
     pub fn run_program(&self, program: &mut AmirProgram) -> Result<PassStats, Diagnostic> {
         let mut total = PassStats::default();
         for func in &mut program.funcs {
             let stats = self.run_function(func, &mut program.literal_pool)?;
+            total.merge(stats);
+        }
+        Ok(total)
+    }
+
+    /// Optimizes valid AMIR using its canonical type domain, without running
+    /// the validator. Compiler entrypoints should prefer `run_program_checked`.
+    pub fn run_program_with_types(
+        &self,
+        program: &mut AmirProgram,
+        interner: &TypeInterner,
+    ) -> Result<PassStats, Diagnostic> {
+        let mut total = PassStats::default();
+        for func in &mut program.funcs {
+            if self.passes.is_empty() {
+                continue;
+            }
+            let stats = fixpoint::run_pipeline_to_fixpoint(
+                &self.passes,
+                func,
+                &mut program.literal_pool,
+                Some(interner),
+                fixpoint::DEFAULT_MAX_FIXPOINT_ITERATIONS,
+                &mut |_, _| Ok(()),
+            )?;
             total.merge(stats);
         }
         Ok(total)
@@ -435,7 +466,7 @@ mod tests {
         );
         assert_eq!(
             PassManager::for_level(OptLevel::Os).pass_names(),
-            vec!["sccp", "mark_sweep_dce", "simplify_cfg"]
+            vec!["sccp", "mark_sweep_dce", "tail_merge", "simplify_cfg"]
         );
         assert_eq!(
             PassManager::for_level(OptLevel::O2).pass_names(),
@@ -445,6 +476,7 @@ mod tests {
                 "sccp",
                 "licm",
                 "mark_sweep_dce",
+                "tail_merge",
                 "simplify_cfg"
             ]
         );

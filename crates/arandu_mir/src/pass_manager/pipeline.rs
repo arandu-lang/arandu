@@ -23,7 +23,12 @@ impl FunctionPass for SccpPass {
         func: &mut AmirFunc,
         resources: &mut PassResources<'_>,
     ) -> Result<bool, Diagnostic> {
-        Ok(sccp(func, resources.literal_pool, resources.bump))
+        Ok(sccp(
+            func,
+            resources.literal_pool,
+            resources.bump,
+            resources.interner,
+        ))
     }
 }
 
@@ -105,6 +110,20 @@ impl FunctionPass for LicmPass {
 /// CFG simplification: block merging, unreachable removal, jump threading.
 struct SimplifyCfgPass;
 
+struct TailMergePass;
+impl FunctionPass for TailMergePass {
+    fn name(&self) -> &'static str {
+        "tail_merge"
+    }
+    fn run(
+        &self,
+        func: &mut AmirFunc,
+        _resources: &mut PassResources<'_>,
+    ) -> Result<bool, Diagnostic> {
+        Ok(crate::tail_merge::merge_return_tails(func))
+    }
+}
+
 impl FunctionPass for SimplifyCfgPass {
     fn name(&self) -> &'static str {
         "simplify_cfg"
@@ -128,14 +147,20 @@ impl FunctionPass for SimplifyCfgPass {
 /// analysis, and before DCE so hoisted copies that turn out dead are collected
 /// in the same round.
 ///
-/// TCO remains **not wired**: parameter comparison uses `func.params` instead
-/// of `block[0].params`, and `AmirStmtKind` must be kept in sync first.
+/// The checked O2 entrypoint also scalarizes nonescaping Copy local fields and
+/// eliminates scalar self-tail recursion before this type-independent fixpoint.
 pub fn pipeline_for_level(level: OptLevel) -> Vec<Box<dyn FunctionPass>> {
     match level {
         OptLevel::O0 => Vec::new(),
-        OptLevel::O1 | OptLevel::Os => vec![
+        OptLevel::O1 => vec![
             Box::new(SccpPass),
             Box::new(MarkSweepDcePass),
+            Box::new(SimplifyCfgPass),
+        ],
+        OptLevel::Os => vec![
+            Box::new(SccpPass),
+            Box::new(MarkSweepDcePass),
+            Box::new(TailMergePass),
             Box::new(SimplifyCfgPass),
         ],
         OptLevel::O2 => vec![
@@ -144,6 +169,7 @@ pub fn pipeline_for_level(level: OptLevel) -> Vec<Box<dyn FunctionPass>> {
             Box::new(SccpPass),
             Box::new(LicmPass),
             Box::new(MarkSweepDcePass),
+            Box::new(TailMergePass),
             Box::new(SimplifyCfgPass),
         ],
     }

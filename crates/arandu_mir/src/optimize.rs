@@ -41,6 +41,26 @@ pub fn optimize_amir_checked_with_level(
             return Err(issue);
         }
     }
+    if level == OptLevel::O2 {
+        for func in &mut program.funcs {
+            if crate::scalarize_locals::scalarize(func, symbols, interner)
+                && let Some(issue) =
+                    crate::amir_validate::validate_amir_func(func, symbols, interner)
+                        .into_iter()
+                        .next()
+            {
+                return Err(issue.with_note("AMIR invariant failed after `scalarize_locals`"));
+            }
+            if crate::tail_calls::eliminate_self_tail_calls(func, interner)
+                && let Some(issue) =
+                    crate::amir_validate::validate_amir_func(func, symbols, interner)
+                        .into_iter()
+                        .next()
+            {
+                return Err(issue.with_note("AMIR invariant failed after `self_tail_calls`"));
+            }
+        }
+    }
     PassManager::for_level(level).run_program_checked(program, symbols, interner)?;
     if let Some(issue) = crate::amir_validate::validate_amir_program(program, symbols, interner)
         .into_iter()
@@ -91,7 +111,7 @@ mod tests {
 
     fn sccp(func: &mut AmirFunc, pool: &mut AmirLiteralPool) -> bool {
         let bump = bumpalo::Bump::new();
-        crate::sccp::sccp(func, pool, &bump)
+        crate::sccp::sccp(func, pool, &bump, Some(&TypeInterner::new()))
     }
 
     fn intern_ty(ty: crate::types::ArType) -> crate::types::TypeId {

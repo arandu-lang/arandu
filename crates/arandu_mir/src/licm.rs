@@ -6,20 +6,11 @@
 //!
 //! ## Speculation safety
 //!
-//! Hoisting is only sound if the instruction would have executed on every path
-//! that reaches the loop header. Two guards enforce that here:
-//!
-//! 1. Only *pure* rvalues move: binary/unary arithmetic and plain use. Loads,
-//!    calls, allocations and anything that can trap stay put, because hoisting
-//!    a trapping load into a preheader can introduce a fault on a path that
-//!    never executed it.
-//! 2. The defining block must **dominate the loop header**. That guarantees the
-//!    computation already happened before the loop is entered, so running it
-//!    once in the preheader performs no extra work and cannot fault.
-//!
-//! Together these make the transform semantics-preserving even for partially
-//! executed loops: we never speculate a computation earlier than the original
-//! program evaluated it.
+//! Only nontrapping operations on Copy values move, and their operands must
+//! already be available at the preheader. Divisions, shifts, loads, addresses,
+//! ownership moves and calls remain in place. Each result has one definition;
+//! natural-loop headers dominate their whole body. These conditions also cover
+//! zero iterations and paths that do not execute a candidate's original block.
 
 use crate::amir::{
     AmirBasicBlock, AmirFunc, AmirOperand, AmirRvalue, AmirStmt, AmirStmtTable, BlockId,
@@ -30,7 +21,6 @@ use rustc_hash::FxHashSet;
 /// A natural loop reduced to what LICM needs.
 #[derive(Debug, Clone)]
 struct LoopInfo {
-    header: BlockId,
     /// The single predecessor outside the loop, where hoisted code is placed.
     preheader: BlockId,
     /// Blocks in the loop, header included.
@@ -49,10 +39,10 @@ pub fn licm(func: &mut AmirFunc) -> bool {
     let order = crate::amir::reverse_post_order(func);
     let loops = discover_loops(func, &doms);
 
-    // Bigger loops first so deep nesting is scheduled before the loops that
+    // Smaller loops first so deep nesting is scheduled before the loops that
     // contain it; an outer pass then sees inner-hoisted values as invariant.
     let mut worklist = loops;
-    worklist.sort_by_key(|l| std::cmp::Reverse(l.body.len()));
+    worklist.sort_by_key(|l| l.body.len());
 
     let mut changed = false;
     for lp in &worklist {
@@ -115,6 +105,11 @@ fn discover_loops(func: &AmirFunc, doms: &Dominators) -> Vec<LoopInfo> {
         }
 
         let mut outside = Vec::new();
+        // An irreducible region can contain paths entering the body without
+        // passing the header. Hoisting would then remove their definitions.
+        if body.iter().any(|&block| !doms.dominates(header, block)) {
+            continue;
+        }
         for &p in func.predecessors(header) {
             if !body.contains(&p) {
                 outside.push(p);
@@ -127,7 +122,6 @@ fn discover_loops(func: &AmirFunc, doms: &Dominators) -> Vec<LoopInfo> {
             continue;
         }
         loops.push(LoopInfo {
-            header,
             preheader: outside[0],
             body,
         });
@@ -145,145 +139,64 @@ fn successors_of(func: &AmirFunc) -> Vec<(BlockId, Vec<BlockId>)> {
         .collect()
 }
 
-/// Temps that hold the same value on every iteration of `lp` **and** are
-/// already available at the preheader.
-///
-/// Availability matters separately from invariance: a value can be invariant
-/// yet defined in a sibling block that does not reach the preheader. Hoisting a
-/// use of it upward would then read an undefined temp, so we require the
-/// definition to dominate the preheader.
-///
-/// Included: function params, the receiver, preheader block params, header
-/// block params whose incoming values are themselves available, and temps whose
-/// every definition dominates the preheader.
+/// Values available at the preheader with exactly one definition outside the loop.
+/// Header parameters are not available before their incoming edge executes.
 fn compute_invariant(func: &AmirFunc, lp: &LoopInfo, doms: &Dominators) -> FxHashSet<TempId> {
-    let mut invariant: FxHashSet<TempId> = FxHashSet::default();
-
-    for &p in &func.params {
-        invariant.insert(p);
-    }
-    if let Some(receiver) = &func.receiver {
-        invariant.insert(receiver.temp);
-    }
-    for bp in func.block_params(func.block(lp.preheader).params) {
-        invariant.insert(bp.id);
-    }
-
-    // Header params take their value from the incoming jump args. A param is
-    // only invariant when **every** incoming edge supplies an available value:
-    // with several predecessors, one loop-variant argument is enough to make it
-    // change per iteration.
-    let header_params: Vec<TempId> = func
-        .block_params(func.block(lp.header).params)
-        .iter()
-        .map(|p| p.id)
-        .collect();
-    let mut all_available = vec![true; header_params.len()];
-    for &pred in func.predecessors(lp.header) {
-        let incoming = incoming_args(func, lp.header, pred);
-        // A short argument list leaves the remaining params undefined on this
-        // edge, which disqualifies them just like an unavailable operand.
-        if incoming.len() < header_params.len() {
-            all_available.iter_mut().for_each(|slot| *slot = false);
+    let mut definitions = vec![Vec::new(); func.temps.len()];
+    for block in &func.blocks {
+        for param in func.block_params(block.params) {
+            definitions[param.id.as_usize()].push(block.id);
         }
-        for (slot, (_param, arg)) in incoming.iter().enumerate() {
-            let available = match *arg {
-                AmirOperand::Copy(t) | AmirOperand::Move(t) => invariant.contains(&t),
-                AmirOperand::Constant(_)
-                | AmirOperand::FunctionRef(_)
-                | AmirOperand::GlobalRef(_) => true,
-            };
-            if !available && slot < all_available.len() {
-                all_available[slot] = false;
+        for stmt in func.block_stmts(block.id) {
+            if let AmirStmt::Assign { lhs, .. } | AmirStmt::Call { lhs: Some(lhs), .. } = stmt {
+                definitions[lhs.as_usize()].push(block.id);
             }
         }
     }
-    for (slot, &param) in header_params.iter().enumerate() {
-        if all_available[slot] {
+    let mut invariant = FxHashSet::default();
+    for &param in func
+        .params
+        .iter()
+        .chain(func.receiver.iter().map(|r| &r.temp))
+    {
+        if definitions[param.as_usize()].is_empty() {
             invariant.insert(param);
         }
     }
-
-    // A temp is loop-invariant-and-available when it is never assigned inside
-    // the loop and at least one of its definitions dominates the preheader.
-    for temp in 0..func.temps.len() {
-        let t = TempId::from_usize(temp);
-        if invariant.contains(&t) {
-            continue;
-        }
-        let mut defined_in_loop = false;
-        let mut dominates_preheader = false;
-        for bid in 0..func.blocks.len() {
-            let bid = BlockId::from_usize(bid);
-            for stmt_id in func.block_stmt_ids(bid) {
-                if let Some(AmirStmt::Assign { lhs, .. }) = func.try_stmt(stmt_id)
-                    && *lhs == t
-                {
-                    if lp.body.contains(&bid) {
-                        defined_in_loop = true;
-                    } else if doms.dominates(bid, lp.preheader) {
-                        dominates_preheader = true;
-                    }
-                }
-            }
-        }
-        if !defined_in_loop && dominates_preheader {
-            invariant.insert(t);
+    for (index, defs) in definitions.iter().enumerate() {
+        if let [block] = defs.as_slice()
+            && !lp.body.contains(block)
+            && doms.dominates(*block, lp.preheader)
+        {
+            invariant.insert(TempId::from_usize(index));
         }
     }
-
     invariant
-}
-
-/// Yields `(header param, incoming operand)` for each edge `pred -> header`.
-fn incoming_args(func: &AmirFunc, header: BlockId, pred: BlockId) -> Vec<(TempId, AmirOperand)> {
-    let params: Vec<TempId> = func
-        .block_params(func.block(header).params)
-        .iter()
-        .map(|p| p.id)
-        .collect();
-    let args: Vec<AmirOperand> = match &func.block(pred).terminator {
-        crate::amir::AmirTerminator::Goto { args, .. } => args.clone(),
-        crate::amir::AmirTerminator::Branch {
-            if_true,
-            true_args,
-            if_false,
-            false_args,
-            ..
-        } => {
-            if *if_true == header {
-                true_args.clone()
-            } else if *if_false == header {
-                false_args.clone()
-            } else {
-                Vec::new()
-            }
-        }
-        crate::amir::AmirTerminator::SwitchInt {
-            targets, otherwise, ..
-        } => {
-            let mut out = Vec::new();
-            for (_, t, a) in targets {
-                if *t == header {
-                    out.extend(a.iter().copied());
-                }
-            }
-            if otherwise.0 == header {
-                out.extend(otherwise.1.iter().copied());
-            }
-            out
-        }
-        crate::amir::AmirTerminator::Return
-        | crate::amir::AmirTerminator::Unreachable
-        | crate::amir::AmirTerminator::Suspend { .. } => Vec::new(),
-    };
-    params.into_iter().zip(args).collect()
 }
 
 /// Whether `rv` is safe to execute earlier than it appears.
 fn is_speculatable(rv: &AmirRvalue) -> bool {
     match rv {
-        AmirRvalue::Use(_) | AmirRvalue::Binary { .. } | AmirRvalue::Unary { .. } => true,
+        AmirRvalue::Use(AmirOperand::Move(_)) => false,
+        AmirRvalue::Use(_) => true,
+        AmirRvalue::Binary { op, .. } => matches!(
+            op,
+            crate::ops::BinaryOp::Add
+                | crate::ops::BinaryOp::Sub
+                | crate::ops::BinaryOp::Mul
+                | crate::ops::BinaryOp::Equal
+                | crate::ops::BinaryOp::NotEqual
+                | crate::ops::BinaryOp::Lt
+                | crate::ops::BinaryOp::Gt
+                | crate::ops::BinaryOp::LtEqual
+                | crate::ops::BinaryOp::GtEqual
+                | crate::ops::BinaryOp::BitAnd
+                | crate::ops::BinaryOp::BitOr
+                | crate::ops::BinaryOp::BitXor
+        ),
+        AmirRvalue::Unary { op, .. } => {
+            matches!(op, crate::ops::UnaryOp::Not | crate::ops::UnaryOp::BitNot)
+        }
         // Loads, calls, allocations and projections may trap or have effects.
         _ => false,
     }
@@ -300,13 +213,32 @@ fn operands(rv: &AmirRvalue) -> Vec<AmirOperand> {
 
 fn operand_is_invariant(op: &AmirOperand, invariant: &FxHashSet<TempId>) -> bool {
     match op {
-        AmirOperand::Copy(t) | AmirOperand::Move(t) => invariant.contains(t),
+        AmirOperand::Copy(t) => invariant.contains(t),
+        AmirOperand::Move(_) => false,
         AmirOperand::Constant(_) | AmirOperand::FunctionRef(_) | AmirOperand::GlobalRef(_) => true,
     }
 }
 
 fn hoist_loop(func: &mut AmirFunc, lp: &LoopInfo, doms: &Dominators, order: &[BlockId]) -> bool {
     let invariant = compute_invariant(func, lp, doms);
+    let mut definitions = vec![0usize; func.temps.len()];
+    for &param in func
+        .params
+        .iter()
+        .chain(func.receiver.iter().map(|r| &r.temp))
+    {
+        definitions[param.as_usize()] += 1;
+    }
+    for block in &func.blocks {
+        for param in func.block_params(block.params) {
+            definitions[param.id.as_usize()] += 1;
+        }
+        for stmt in func.block_stmts(block.id) {
+            if let AmirStmt::Assign { lhs, .. } | AmirStmt::Call { lhs: Some(lhs), .. } = stmt {
+                definitions[lhs.as_usize()] += 1;
+            }
+        }
+    }
 
     let mut candidates: Vec<(BlockId, InstrId, TempId)> = Vec::new();
     for &bid in &lp.body {
@@ -316,7 +248,11 @@ fn hoist_loop(func: &mut AmirFunc, lp: &LoopInfo, doms: &Dominators, order: &[Bl
             };
             // The result must not already be available at the preheader, and
             // the computation must be safe to run earlier than written.
-            if invariant.contains(lhs) || !is_speculatable(rhs) {
+            if invariant.contains(lhs)
+                || definitions[lhs.as_usize()] != 1
+                || !func.temps[lhs.as_usize()].is_copy
+                || !is_speculatable(rhs)
+            {
                 continue;
             }
             // Every operand must already hold its loop-invariant value in the

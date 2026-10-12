@@ -19,11 +19,14 @@ pub mod move_checker;
 pub mod optimize;
 pub mod pass_manager;
 pub mod pin_free;
+mod scalarize_locals;
 pub(crate) mod sccp;
 pub(crate) mod simplify_cfg;
 pub(crate) mod sroa;
 pub mod static_data;
 pub mod suspend_check;
+mod tail_calls;
+mod tail_merge;
 
 pub use borrow_check::check_borrows;
 pub use inlining::inline_leaf_functions;

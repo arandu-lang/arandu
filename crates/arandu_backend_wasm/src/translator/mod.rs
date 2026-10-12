@@ -374,6 +374,16 @@ impl<'a> FuncTranslator<'a> {
         }
 
         // Build the wasm Function.
+        // Structured blocks do not propagate an inner return's unreachable
+        // state to their enclosing scope. AMIR has no implicit fallthrough;
+        // make that explicit for functions ending in an enclosing loop/block.
+        if !matches!(
+            self.code.last(),
+            Some(Instruction::Return | Instruction::Unreachable)
+        ) {
+            self.code.push(Instruction::Unreachable);
+        }
+        crate::stack_peephole::stackify_locals(&mut self.code);
         let mut wasm_func = Function::new(extra_locals);
         for insn in &self.code {
             wasm_func.instruction(insn);

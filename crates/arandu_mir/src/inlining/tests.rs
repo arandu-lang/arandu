@@ -509,7 +509,7 @@ fn build_loop_ir(ty: crate::types::TypeId, body_extra: Vec<AmirStmt>) -> AmirFun
         terminator: AmirTerminator::Return,
     });
 
-    let temps: Vec<AmirTemp> = (0..6)
+    let temps: Vec<AmirTemp> = (0..12)
         .map(|i| AmirTemp {
             id: TempId::from_usize(i),
             ty,
@@ -662,6 +662,109 @@ fn load_is_never_hoisted() {
         !hoisted_load,
         "a load may trap and must not be speculated into the preheader"
     );
+}
+
+#[test]
+fn trapping_and_address_operations_are_never_speculated() {
+    for op in [
+        BinaryOp::Div,
+        BinaryOp::Mod,
+        BinaryOp::ShiftLeft,
+        BinaryOp::ShiftRight,
+    ] {
+        let mut function = build_loop_ir(
+            intern_int(),
+            vec![AmirStmt::Assign {
+                lhs: TempId(3),
+                rhs: AmirRvalue::Binary {
+                    op,
+                    left: AmirOperand::Copy(TempId(1)),
+                    right: AmirOperand::Copy(TempId(0)),
+                },
+            }],
+        );
+        assert!(!crate::licm::licm(&mut function), "{op:?}");
+    }
+    let mut function = build_loop_ir(
+        intern_int(),
+        vec![AmirStmt::Assign {
+            lhs: TempId(3),
+            rhs: AmirRvalue::Unary {
+                op: crate::ops::UnaryOp::Deref,
+                operand: AmirOperand::Copy(TempId(1)),
+            },
+        }],
+    );
+    assert!(!crate::licm::licm(&mut function));
+}
+
+#[test]
+fn invariant_header_parameter_is_not_available_in_preheader() {
+    let mut function = build_loop_ir(
+        intern_int(),
+        vec![AmirStmt::Assign {
+            lhs: TempId(3),
+            rhs: AmirRvalue::Binary {
+                op: BinaryOp::Mul,
+                left: AmirOperand::Copy(TempId(10)),
+                right: AmirOperand::Copy(TempId(1)),
+            },
+        }],
+    );
+    assert!(!crate::licm::licm(&mut function));
+}
+
+#[test]
+fn identical_return_cleanup_is_shared_without_reordering_it() {
+    let ty = intern_int();
+    let temp = AmirTemp {
+        id: TempId(0),
+        ty,
+        is_copy: true,
+        is_nullable: false,
+        span: arandu_lexer::Span::new(0, 0, 0),
+    };
+    let cleanup = vec![
+        AmirStmt::Free(AmirOperand::Copy(TempId(0))),
+        AmirStmt::Free(AmirOperand::Copy(TempId(1))),
+    ];
+    let mut parameter = temp.clone();
+    parameter.id = TempId(1);
+    let mut function = make_func(
+        1,
+        vec![
+            (
+                Vec::new(),
+                AmirTerminator::Branch {
+                    condition: AmirOperand::Constant(AmirConstant::Bool(true)),
+                    if_true: BlockId(1),
+                    true_args: Vec::new(),
+                    if_false: BlockId(2),
+                    false_args: Vec::new(),
+                },
+            ),
+            (cleanup.clone(), AmirTerminator::Return),
+            (cleanup, AmirTerminator::Return),
+        ],
+        vec![temp, parameter],
+        vec![TempId(1)],
+    );
+    assert!(crate::tail_merge::merge_return_tails(&mut function));
+    assert_eq!(function.stmts.len(), 2);
+    assert_eq!(
+        function
+            .blocks
+            .iter()
+            .filter(|block| matches!(block.terminator, AmirTerminator::Return))
+            .count(),
+        1
+    );
+    assert_eq!(function.predecessors(BlockId(3)), &[BlockId(1), BlockId(2)]);
+    assert!(!crate::tail_merge::merge_return_tails(&mut function));
+    assert!(matches!(
+        function.block_stmts(BlockId(3)).next(),
+        Some(AmirStmt::Free(AmirOperand::Copy(TempId(0))))
+    ));
 }
 
 /// A function without loops is untouched.
@@ -1033,7 +1136,7 @@ fn test_leaf_inlining_and_sccp_folding() {
 
     // Now run PassManager at O1 to verify SCCP + DCE + CFG simplification clean it up completely
     PassManager::for_level(OptLevel::O1)
-        .run_program(&mut program)
+        .run_program_with_types(&mut program, &TypeInterner::new())
         .unwrap();
 
     // Verify caller returns constant 15!

@@ -1,6 +1,7 @@
 //! AMIR expression lowering coordinator.
 
 pub(super) mod calls;
+mod constant_strings;
 pub(super) mod constructors;
 pub(super) mod control;
 
@@ -202,6 +203,13 @@ impl LowerCtx<'_> {
                 Ok(op)
             }
             HirExprKind::StringInterp { parts } => {
+                if let Some(text) = self.constant_interpolation(parts) {
+                    let op = AmirOperand::Constant(self.intern_literal_str(text));
+                    if let Some(dest) = target {
+                        self.emit_assign_temp(dest, AmirRvalue::Use(op));
+                    }
+                    return Ok(op);
+                }
                 let mut part_ops = Vec::with_capacity(parts.len());
                 let mut intermediate_to_free = Vec::new();
                 for part in parts {

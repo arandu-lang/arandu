@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use crate::cli_error::{CliFailure, CliResult, CliSuccess};
 use crate::pipeline::{
     attach_stdlib, ensure_host_jit_layout, fail_operational, fail_usage, find_aru_files, finish,
-    open_entry_file, optimize_amir_or_exit, parse_and_check, pipeline_lower,
-    pipeline_lower_checked, print_diagnostics_and_exit, print_genref_report,
+    open_entry_file, optimize_amir_or_exit, optimize_amir_with_level_or_exit, parse_and_check,
+    pipeline_lower, pipeline_lower_checked, print_diagnostics_and_exit, print_genref_report,
     render_nonfatal_diagnostics, render_pipeline_failure, validate_hir_and_monomorphize,
 };
 use crate::project::{self, ProjectFlags};
@@ -23,9 +23,9 @@ pub fn cmd_project_run(
     data_layout: DataLayout,
     program_args: &[String],
 ) -> CliResult {
-    if flags.release {
+    if flags.release || flags.size {
         return Err(CliFailure::usage(
-            "`--release` is supported by `build`; `run` remains the interactive Cranelift JIT path",
+            "`--release` and `--size` are supported by `build`; `run` remains the interactive Cranelift JIT path",
         ));
     }
     ensure_host_jit_layout(data_layout)?;
@@ -167,6 +167,16 @@ pub fn cmd_single_file_dispatch(
     target_path: &Path,
     inv: &crate::args::CliInvocation,
 ) -> CliResult {
+    if inv.project_flags.size && inv.debug {
+        return Err(CliFailure::usage(
+            "`--size` cannot be combined with `--debug`",
+        ));
+    }
+    if inv.project_flags.size && !matches!(command, "emit-c" | "emit-wasm" | "emit-component") {
+        return Err(CliFailure::usage(
+            "`--size` requires build, emit-c, emit-wasm or emit-component",
+        ));
+    }
     let parallel = inv.parallel;
     let debug = inv.debug;
     let opt = inv.opt;
@@ -494,14 +504,23 @@ pub fn cmd_single_file_dispatch(
                     print_genref_report(&filepath, &artifacts);
                 }
                 let type_check = &artifacts.type_check;
-                let mut amir_owned = if opt {
+                let mut amir_owned = if opt || project_flags.size {
                     Some(artifacts.amir.clone())
                 } else {
                     None
                 };
                 if let Some(ref mut amir) = amir_owned {
                     arandu_base::time_pass!("optimize-amir");
-                    optimize_amir_or_exit(amir, type_check, &filepath);
+                    if project_flags.size {
+                        optimize_amir_with_level_or_exit(
+                            amir,
+                            type_check,
+                            arandu_semantics::OptLevel::Os,
+                            &filepath,
+                        );
+                    } else {
+                        optimize_amir_or_exit(amir, type_check, &filepath);
+                    }
                 }
                 let amir = match &amir_owned {
                     Some(a) => a,
@@ -527,14 +546,23 @@ pub fn cmd_single_file_dispatch(
                     print_genref_report(&filepath, &artifacts);
                 }
                 let type_check = &artifacts.type_check;
-                let mut amir_owned = if opt {
+                let mut amir_owned = if opt || project_flags.size {
                     Some(artifacts.amir.clone())
                 } else {
                     None
                 };
                 if let Some(ref mut amir) = amir_owned {
                     arandu_base::time_pass!("optimize-amir");
-                    optimize_amir_or_exit(amir, type_check, &filepath);
+                    if project_flags.size {
+                        optimize_amir_with_level_or_exit(
+                            amir,
+                            type_check,
+                            arandu_semantics::OptLevel::Os,
+                            &filepath,
+                        );
+                    } else {
+                        optimize_amir_or_exit(amir, type_check, &filepath);
+                    }
                 }
                 let amir = match &amir_owned {
                     Some(a) => a,
@@ -555,7 +583,12 @@ pub fn cmd_single_file_dispatch(
                 };
 
                 arandu_base::time_pass!("emit-wasm");
-                let wasm_bytes = arandu_backend_wasm::emit_wasm(
+                let emit = if project_flags.size {
+                    arandu_backend_wasm::emit_wasm_for_size
+                } else {
+                    arandu_backend_wasm::emit_wasm
+                };
+                let wasm_bytes = emit(
                     amir,
                     type_check.symbols.as_ref(),
                     &type_check.type_info.type_interner,
@@ -580,14 +613,23 @@ pub fn cmd_single_file_dispatch(
                     print_genref_report(&filepath, &artifacts);
                 }
                 let type_check = &artifacts.type_check;
-                let mut amir_owned = if opt {
+                let mut amir_owned = if opt || project_flags.size {
                     Some(artifacts.amir.clone())
                 } else {
                     None
                 };
                 if let Some(ref mut amir) = amir_owned {
                     arandu_base::time_pass!("optimize-amir");
-                    optimize_amir_or_exit(amir, type_check, &filepath);
+                    if project_flags.size {
+                        optimize_amir_with_level_or_exit(
+                            amir,
+                            type_check,
+                            arandu_semantics::OptLevel::Os,
+                            &filepath,
+                        );
+                    } else {
+                        optimize_amir_or_exit(amir, type_check, &filepath);
+                    }
                 }
                 let amir = match &amir_owned {
                     Some(a) => a,
@@ -614,7 +656,12 @@ pub fn cmd_single_file_dispatch(
                     .unwrap_or_else(|| "module".to_owned());
 
                 arandu_base::time_pass!("emit-component");
-                let component_bytes = arandu_backend_wasm::emit_component(
+                let emit = if project_flags.size {
+                    arandu_backend_wasm::emit_component_for_size
+                } else {
+                    arandu_backend_wasm::emit_component
+                };
+                let component_bytes = emit(
                     amir,
                     type_check.symbols.as_ref(),
                     &type_check.type_info.type_interner,

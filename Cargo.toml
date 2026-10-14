@@ -18,6 +18,7 @@ members = [
     "crates/arandu_backend_wasm",
     "crates/arandu_runtime",
     "crates/arandu_codegen",
+    "crates/arandu_testing_contract",
     "crates/arandu_query",
     "crates/arandu_lsp",
     "crates/arandu_ide",

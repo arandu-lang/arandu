@@ -103,10 +103,7 @@ impl<'a> CEmitter<'a> {
                 } else {
                     let left_str = self.format_operand(left, func);
                     let right_str = self.format_operand(right, func);
-                    let left_ty = match left {
-                        AmirOperand::Copy(t) | AmirOperand::Move(t) => self.temp_ty(func, *t),
-                        _ => ArType::Error,
-                    };
+                    let left_ty = self.operand_ty(func, left);
                     if matches!(left_ty, ArType::Primitive(Primitive::Str)) {
                         if matches!(op, BinaryOp::Equal) {
                             let _ =

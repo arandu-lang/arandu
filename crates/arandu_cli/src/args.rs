@@ -249,6 +249,8 @@ pub fn parse_invocation(raw_args: impl IntoIterator<Item = String>) -> CliInvoca
                 || s.starts_with("--cache-dir")
                 || s.starts_with("--target")
                 || s == "--release"
+                || s == "--size"
+                || s == "-Oz"
                 || s == "-v"
                 || s == "--verbose"
                 || s == "--locked"
@@ -416,6 +418,7 @@ pub fn global_help() -> &'static str {
         "  archive    Validate a package archive\n\n",
         "Target & Toolchain Options:\n",
         "  --release                  Build with speed optimizations (Cranelift + AMIR O2)\n",
+        "  --size, -Oz                Build for size (AMIR Os, stripped native output)\n",
         "  --stdlib-path <dir>        Override path to standard library\n",
         "  --cache-dir <dir>          Override compiler cache directory\n",
         "  --ctfe-fuel N / --ctfe-frames N / --ctfe-values N\n",
@@ -448,7 +451,7 @@ pub fn global_help() -> &'static str {
         "  -Zexplain-rebuild          Explain reason for Salsa incremental rebuild\n",
         "  -Zno-generational-fallback Synonym for --no-generational-fallback\n\n",
         "Environment & Defaults:\n",
-        "  backend: build → Cranelift baseline; build --release → Cranelift speed + AMIR O2\n",
+        "  backend: build → Cranelift baseline; build --release → Cranelift speed + AMIR O2; --size → speed_and_size + AMIR Os\n",
         "  stdlib:  --stdlib-path > ARANDU_STDLIB > relative to binary (never cwd)\n",
         "  cache:   --cache-dir > ARANDU_CACHE_DIR > platform-native user cache"
     )
@@ -462,7 +465,7 @@ pub fn command_help(command: &str) -> Option<&'static str> {
             "Usage: arandu run [path] [-- program-args...]\n\nCompile and execute a package or .aru file with the Cranelift JIT.\n\nOptions:\n  --opt             Optimize AMIR before execution\n  --stdlib-path DIR Override the standard library path\n  -v, --verbose     Show progress and incremental status\n  -q, --quiet       Suppress non-error status output\n\nExamples:\n  arandu run\n  arandu run src/main.aru -- hello\n",
         ),
         "build" => Some(
-            "Usage: arandu build [path] [options]\n\nCompile a package to a native executable or library.\n\nOptions:\n  --release            Build with speed optimizations\n  --target TRIPLE      Select a compilation target\n  --layout LAYOUT      Select host, ptr4, ptr8, or i686 layout\n  --locked             Require the lockfile to be current\n  --offline            Resolve from the local cache only\n  -v, --verbose        Show detailed build progress\n  -q, --quiet          Suppress non-error status output\n",
+            "Usage: arandu build [path] [options]\n\nCompile a package to a native executable or library.\n\nOptions:\n  --release            Build with speed optimizations\n  --size, -Oz          Optimize for size and strip native symbols\n  --target TRIPLE      Select a compilation target\n  --layout LAYOUT      Select host, ptr4, ptr8, or i686 layout\n  --locked             Require the lockfile to be current\n  --offline            Resolve from the local cache only\n  -v, --verbose        Show detailed build progress\n  -q, --quiet          Suppress non-error status output\n",
         ),
         "check" => Some(
             "Usage: arandu check [path] [options]\n\nType-check a package or source file without code generation.\n\nOptions:\n  --parallel       Check source files in parallel\n  --target TRIPLE  Select a compilation target\n  --watch          Repeat checks after source changes\n  -v, --verbose    Show progress and incremental status\n  -q, --quiet      Suppress success and status output\n",
@@ -531,13 +534,13 @@ pub fn command_help(command: &str) -> Option<&'static str> {
             "Usage: arandu graph <file.aru>\n\nEmit a Graphviz dependency graph (compiler inspection tool).\n",
         ),
         "emit-c" => Some(
-            "Usage: arandu emit-c <file.aru> [--opt]\n\nEmit portable C source (compiler inspection tool).\n",
+            "Usage: arandu emit-c <file.aru> [--opt | --size]\n\nEmit portable C source (compiler inspection tool).\n",
         ),
         "emit-wasm" => Some(
-            "Usage: arandu emit-wasm <file.aru> [--layout ptr4] [--opt]\n\nEmit a WebAssembly module (compiler inspection tool).\n",
+            "Usage: arandu emit-wasm <file.aru> [--layout ptr4] [--opt | --size]\n\nEmit a WebAssembly module (compiler inspection tool).\n",
         ),
         "emit-component" => Some(
-            "Usage: arandu emit-component <file.aru> [--opt]\n\nEmit a WebAssembly Component (compiler inspection tool).\n",
+            "Usage: arandu emit-component <file.aru> [--opt | --size]\n\nEmit a WebAssembly Component (compiler inspection tool).\n",
         ),
         "hash-file" => {
             Some("Usage: arandu hash-file <path>\n\nCompute a BLAKE3 checksum for packaging.\n")

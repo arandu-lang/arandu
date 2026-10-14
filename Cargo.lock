@@ -49,7 +49,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "arandu_backend_c"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "arandu_backend_cranelift",
  "arandu_base",
@@ -63,7 +63,7 @@ dependencies = [
 
 [[package]]
 name = "arandu_backend_cranelift"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "arandu_base",
  "arandu_codegen",
@@ -85,7 +85,7 @@ dependencies = [
 
 [[package]]
 name = "arandu_backend_wasm"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "arandu_base",
  "arandu_codegen",
@@ -104,7 +104,7 @@ dependencies = [
 
 [[package]]
 name = "arandu_base"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "rustc-hash 2.1.3",
  "tracing",
@@ -113,7 +113,7 @@ dependencies = [
 
 [[package]]
 name = "arandu_cli"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "arandu_backend_c",
  "arandu_backend_cranelift",
@@ -147,16 +147,17 @@ dependencies = [
 
 [[package]]
 name = "arandu_codegen"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "arandu_middle",
+ "arandu_testing_contract",
  "serde",
  "serde_json",
 ]
 
 [[package]]
 name = "arandu_diagnostics"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "arandu_base",
  "miette",
@@ -164,7 +165,7 @@ dependencies = [
 
 [[package]]
 name = "arandu_doc"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "arandu_middle",
  "serde",
@@ -173,14 +174,14 @@ dependencies = [
 
 [[package]]
 name = "arandu_fmt"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "arandu_parser",
 ]
 
 [[package]]
 name = "arandu_fuzz_support"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "arandu_backend_c",
  "arandu_backend_cranelift",
@@ -202,7 +203,7 @@ dependencies = [
 
 [[package]]
 name = "arandu_ide"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "arandu_lexer",
  "arandu_middle",
@@ -215,7 +216,7 @@ dependencies = [
 
 [[package]]
 name = "arandu_lexer"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "arandu_base",
  "arandu_test_support",
@@ -224,7 +225,7 @@ dependencies = [
 
 [[package]]
 name = "arandu_lsp"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "arandu_base",
  "arandu_cli",
@@ -244,7 +245,7 @@ dependencies = [
 
 [[package]]
 name = "arandu_middle"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "arandu_base",
  "arandu_diagnostics",
@@ -261,7 +262,7 @@ dependencies = [
 
 [[package]]
 name = "arandu_mir"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "arandu_lexer",
  "arandu_middle",
@@ -275,7 +276,7 @@ dependencies = [
 
 [[package]]
 name = "arandu_parser"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "arandu_base",
  "arandu_diagnostics",
@@ -289,7 +290,7 @@ dependencies = [
 
 [[package]]
 name = "arandu_query"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "arandu_base",
  "arandu_diagnostics",
@@ -314,7 +315,7 @@ dependencies = [
 
 [[package]]
 name = "arandu_resolve"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "arandu_lexer",
  "arandu_middle",
@@ -328,9 +329,9 @@ dependencies = [
 
 [[package]]
 name = "arandu_runtime"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
- "arandu_codegen",
+ "arandu_testing_contract",
  "blake3",
  "io-uring",
  "libc",
@@ -339,7 +340,7 @@ dependencies = [
 
 [[package]]
 name = "arandu_semantics"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "arandu_base",
  "arandu_codegen",
@@ -359,15 +360,23 @@ dependencies = [
 
 [[package]]
 name = "arandu_test_support"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "arandu_base",
  "arandu_diagnostics",
 ]
 
 [[package]]
+name = "arandu_testing_contract"
+version = "0.1.9"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "arandu_typeck"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "arandu_base",
  "arandu_lexer",
@@ -383,7 +392,7 @@ dependencies = [
 
 [[package]]
 name = "arandu_web"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "arandu_backend_wasm",
  "arandu_base",
@@ -3447,7 +3456,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "arandu_diagnostics",
  "arandu_fmt",
@@ -3460,6 +3469,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "tar",
+ "toml 0.8.23",
  "windows-sys 0.60.2",
  "zip",
 ]

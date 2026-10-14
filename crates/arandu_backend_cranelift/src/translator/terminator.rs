@@ -11,8 +11,9 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
     pub(super) fn translate_terminator(&mut self, terminator: &AmirTerminator) {
         match terminator {
             AmirTerminator::Return => {
-                if self.symbol_table.get(self.current_func.symbol).name == "main"
-                    && let Some(&shutdown_id) = self.func_ids.get("ar_gen_shutdown_raw")
+                if self.gen_shutdown
+                    && self.symbol_table.get(self.current_func.symbol).name == "main"
+                    && let Some(shutdown_id) = self.resolve_function("ar_gen_shutdown_raw")
                 {
                     let shutdown = self
                         .module

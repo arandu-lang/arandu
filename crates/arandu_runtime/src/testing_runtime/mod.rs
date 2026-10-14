@@ -53,12 +53,12 @@ mod tests {
     use super::context::with_active_context;
     use super::sandbox::safe_cleanup_temp_dir;
     use super::*;
-    use arandu_codegen::testing::{TestFailure, TestStatus};
+    use arandu_testing_contract::{TestFailure, TestStatus};
     use std::path::PathBuf;
     use std::sync::atomic::Ordering;
 
-    fn bench_config() -> arandu_codegen::testing::BenchmarkConfigV1 {
-        arandu_codegen::testing::BenchmarkConfigV1 {
+    fn bench_config() -> arandu_testing_contract::BenchmarkConfigV1 {
+        arandu_testing_contract::BenchmarkConfigV1 {
             warmup_ns: 10,
             measurement_ns: 60,
             samples: 3,
@@ -99,7 +99,7 @@ mod tests {
 
     #[test]
     fn benchmark_engine_retries_samples_below_clock_resolution() {
-        let mut engine = BenchmarkEngine::new(arandu_codegen::testing::BenchmarkConfigV1 {
+        let mut engine = BenchmarkEngine::new(arandu_testing_contract::BenchmarkConfigV1 {
             warmup_ns: 1,
             measurement_ns: 1,
             samples: 1,
@@ -119,7 +119,7 @@ mod tests {
 
     #[test]
     fn benchmark_engine_rejects_invalid_internal_configuration() {
-        let mut engine = BenchmarkEngine::new(arandu_codegen::testing::BenchmarkConfigV1 {
+        let mut engine = BenchmarkEngine::new(arandu_testing_contract::BenchmarkConfigV1 {
             warmup_ns: 0,
             measurement_ns: 1,
             samples: 1,

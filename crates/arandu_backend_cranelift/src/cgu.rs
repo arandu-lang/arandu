@@ -21,7 +21,7 @@ use crate::jit::isa::codegen_ice;
 
 pub(crate) mod dependencies;
 
-const CGU_HASH_SCHEMA: &[u8] = b"arandu-cgu-input-v4\0";
+const CGU_HASH_SCHEMA: &[u8] = b"arandu-cgu-input-v5\0";
 const CRANELIFT_IDENTITY: &[u8] = b"cranelift-0.136.1\0";
 
 /// A discrete compilation unit corresponding to one function or item.
@@ -88,6 +88,7 @@ pub fn compute_cgu_hash(
     hash.tag(match optimization {
         AotOptimization::Baseline => 0,
         AotOptimization::Speed => 1,
+        AotOptimization::Size => 2,
     });
 
     let mut context = HashContext {
@@ -99,6 +100,16 @@ pub fn compute_cgu_hash(
     };
     context.func(func);
     context.direct_callee_signatures(func);
+    if symbols
+        .try_get(func.symbol)
+        .is_some_and(|symbol| symbol.name == "main")
+    {
+        context
+            .hash
+            .bool(crate::jit::symbols::gen_shutdown_required(
+                program, symbols, type_info,
+            ));
+    }
     // Object emission uses this same function-local declaration closure.
     // ABI/layout and implicit destructor dependencies remain in the digest;
     // unrelated declarations no longer affect object metadata or the key.

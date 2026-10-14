@@ -103,7 +103,7 @@ impl<'a> CEmitter<'a> {
             co_stack_slot: 0,
             integer_concat_temps: Vec::new(),
             temp_slots: Vec::new(),
-            live_functions: reachability::live_functions(program, symbols, provider),
+            live_functions: reachability::live_functions(program, symbols, interner, provider),
             rotations: Vec::new(),
             rotation_elided: Vec::new(),
             arena_runtime: false,

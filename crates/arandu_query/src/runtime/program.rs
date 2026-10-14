@@ -162,7 +162,9 @@ pub fn runtime_program(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Run
                 }
                 callees.sort_by_key(|key| {
                     (
-                        key.definition.file_id,
+                        db.source_file_by_id(key.definition.file_id)
+                            .map(|sf| sf.path(db).clone())
+                            .unwrap_or_else(|| std::sync::Arc::new(std::path::PathBuf::new())),
                         key.definition.local_id.0,
                         *key.stable_hash().as_bytes(),
                     )
@@ -195,9 +197,14 @@ pub fn runtime_program(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Run
         }
         units.push((key, HashEq::share(checked)));
     }
+    let file_path_key = |file_id: arandu_middle::db::FileId| {
+        db.source_file_by_id(file_id)
+            .map(|sf| sf.path(db).clone())
+            .unwrap_or_else(|| std::sync::Arc::new(std::path::PathBuf::new()))
+    };
     units.sort_by_key(|(key, _)| {
         (
-            key.definition.file_id,
+            file_path_key(key.definition.file_id),
             key.definition.local_id.0,
             *key.stable_hash().as_bytes(),
         )

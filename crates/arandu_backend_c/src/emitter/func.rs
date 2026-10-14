@@ -2,7 +2,8 @@
 
 use std::fmt::Write;
 
-use arandu_middle::amir::{AmirFunc, AmirOperand, AmirRvalue, AmirStmt, AmirTerminator};
+use arandu_middle::amir::reachability::terminator_targets;
+use arandu_middle::amir::{AmirFunc, AmirOperand, AmirRvalue, AmirStmt};
 
 use super::{CEmitter, sanitize_c_ident};
 
@@ -135,28 +136,8 @@ impl<'a> CEmitter<'a> {
         // Labels only for blocks that are jump targets (avoids -Wunused-label).
         let mut jump_targets = rustc_hash::FxHashSet::default();
         for block in &func.blocks {
-            match &block.terminator {
-                AmirTerminator::Goto { target, .. } => {
-                    jump_targets.insert(target.as_usize());
-                }
-                AmirTerminator::Suspend { resume, .. } => {
-                    jump_targets.insert(resume.as_usize());
-                }
-                AmirTerminator::Branch {
-                    if_true, if_false, ..
-                } => {
-                    jump_targets.insert(if_true.as_usize());
-                    jump_targets.insert(if_false.as_usize());
-                }
-                AmirTerminator::SwitchInt {
-                    targets, otherwise, ..
-                } => {
-                    for (_, t, _) in targets {
-                        jump_targets.insert(t.as_usize());
-                    }
-                    jump_targets.insert(otherwise.0.as_usize());
-                }
-                AmirTerminator::Return | AmirTerminator::Unreachable => {}
+            for target in terminator_targets(&block.terminator) {
+                jump_targets.insert(target.as_usize());
             }
         }
 

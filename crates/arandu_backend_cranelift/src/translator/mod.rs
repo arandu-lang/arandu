@@ -54,6 +54,8 @@ pub struct FunctionTranslator<'a, 'b, M: Module> {
     pub module: &'b mut M,
     pub symbol_table: &'b SymbolTable,
     pub func_ids: &'b FxHashMap<String, FuncId>,
+    runtime_imports: &'b crate::jit::symbols::RuntimeImports,
+    pub(crate) gen_shutdown: bool,
     pub block_map: FxHashMap<BlockId, Block>,
     pub temp_map: FxHashMap<TempId, Variable>,
     pub local_map: FxHashMap<LocalId, Variable>,
@@ -86,6 +88,21 @@ pub struct FunctionTranslator<'a, 'b, M: Module> {
 }
 
 impl<'a, 'b, M: Module> FunctionTranslator<'a, 'b, M> {
+    /// Declare host helpers at their actual use, rather than retaining every
+    /// runtime archive member through unused undefined object symbols.
+    pub(super) fn resolve_function(&mut self, name: &str) -> Option<FuncId> {
+        if let Some(&id) = self.func_ids.get(name) {
+            return Some(id);
+        }
+        match self.runtime_imports.resolve(self.module, name) {
+            Ok(id) => id,
+            Err(error) => {
+                self.error.get_or_insert(error);
+                None
+            }
+        }
+    }
+
     pub(super) fn materialize_slice_descriptor(&mut self, data: Value, len: Value) -> Value {
         let pointer_bytes = self.ptr_type.bytes();
         let slot = self
@@ -109,6 +126,8 @@ impl<'a, 'b, M: Module> FunctionTranslator<'a, 'b, M> {
         module: &'b mut M,
         symbol_table: &'b SymbolTable,
         func_ids: &'b FxHashMap<String, FuncId>,
+        runtime_imports: &'b crate::jit::symbols::RuntimeImports,
+        gen_shutdown: bool,
         ptr_type: Type,
         literal_pool: &'b arandu_semantics::literal_pool::AmirLiteralPool,
         current_func: &'b AmirFunc,
@@ -135,6 +154,8 @@ impl<'a, 'b, M: Module> FunctionTranslator<'a, 'b, M> {
             module,
             symbol_table,
             func_ids,
+            runtime_imports,
+            gen_shutdown,
             block_map: FxHashMap::default(),
             temp_map: FxHashMap::default(),
             local_map: FxHashMap::default(),

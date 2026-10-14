@@ -6,6 +6,7 @@ use wasm_encoder::{BlockType, Instruction, ValType};
 impl FuncTranslator<'_> {
     pub(super) fn plan_frame(&mut self, locals: &mut Vec<(u32, ValType)>) {
         use arandu_semantics::aggregate_storage::{ScratchResultAbi, function_scratch_safe};
+        self.plan_static_initializer_temps();
         self.transfer_owned_result = self.component_sig.is_none()
             && self.is_owned_aggregate(self.func.return_type)
             && arandu_semantics::aggregate_storage::scratch_type_safe(
@@ -22,6 +23,9 @@ impl FuncTranslator<'_> {
             return;
         }
         for id in self.func.stmts.iter_ids() {
+            if self.static_initializer_temps.contains(&id) {
+                continue;
+            }
             if let Some(AmirStmt::Call {
                 lhs: Some(temp),
                 callee: arandu_middle::amir::AmirOperand::FunctionRef(symbol),

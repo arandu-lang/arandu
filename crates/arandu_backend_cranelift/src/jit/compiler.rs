@@ -16,7 +16,7 @@ use super::builder::{
 };
 use super::execution::CompiledModule;
 use super::isa::codegen_ice;
-use super::symbols::declare_runtime_imports;
+use super::symbols::{gen_shutdown_required, runtime_imports};
 use crate::abi::{
     build_internal_signature, build_signature, build_signature_with_classifier,
     target_abi_for_triple,
@@ -417,7 +417,11 @@ impl<M: Module> AranduModule<M> {
         let pointer_width = ptr_type.bytes() as u64;
         let classifier = TargetAbiClassifier::new(target_abi, pointer_width);
 
-        declare_runtime_imports(&mut self.module, &mut func_ids, default_call_conv, ptr_type)?;
+        let mut runtime_imports = runtime_imports(default_call_conv, ptr_type)?;
+        let eager_runtime = unit_func_symbols.is_none();
+        if eager_runtime {
+            runtime_imports.declare_all(&mut self.module, &mut func_ids)?;
+        }
         if block_coverage.is_some() {
             let mut signature = cranelift_codegen::ir::Signature::new(default_call_conv);
             signature.params.push(cranelift_codegen::ir::AbiParam::new(
@@ -554,6 +558,22 @@ impl<M: Module> AranduModule<M> {
             {
                 continue;
             }
+            if !eager_runtime {
+                if !runtime_imports.alias(&sym.name, c_name) {
+                    let sig = build_signature_with_classifier(
+                        param_types,
+                        return_type,
+                        default_call_conv,
+                        ptr_type,
+                        &classifier,
+                        &type_info.type_interner,
+                        type_info,
+                    );
+                    runtime_imports.insert(&sym.name, c_name, sig);
+                    runtime_imports.alias(c_name, &sym.name);
+                }
+                continue;
+            }
             let func_id = if let Some(&existing_id) = func_ids.get(c_name) {
                 existing_id
             } else {
@@ -585,7 +605,7 @@ impl<M: Module> AranduModule<M> {
         let str_ty = ArType::Primitive(Primitive::Str);
         let void_ty = ArType::Void;
         let err_ty = ArType::Err;
-        if !func_ids.contains_key("io.print") {
+        if !func_ids.contains_key("io.print") && !runtime_imports.contains("io.print") {
             let sig = build_signature_with_classifier(
                 std::slice::from_ref(&str_ty),
                 &void_ty,
@@ -595,53 +615,46 @@ impl<M: Module> AranduModule<M> {
                 &type_info.type_interner,
                 type_info,
             );
-            let id = self
-                .module
-                .declare_function("io.print", Linkage::Import, &sig)
-                .map_err(|err| codegen_ice(format!("failed to declare io.print: {err:?}")))?;
-            func_ids.insert("io.print".to_string(), id);
+            runtime_imports.insert("io.print", "io.print", sig);
         }
-        if !func_ids.contains_key("io.println") {
+        if !func_ids.contains_key("io.println") && !runtime_imports.contains("io.println") {
             let sig = build_signature(
                 std::slice::from_ref(&str_ty),
                 &void_ty,
                 default_call_conv,
                 ptr_type,
             );
-            let id = self
-                .module
-                .declare_function("io.println", Linkage::Import, &sig)
-                .map_err(|err| codegen_ice(format!("failed to declare io.println: {err:?}")))?;
-            func_ids.insert("io.println".to_string(), id);
+            runtime_imports.insert("io.println", "io.println", sig);
         }
-        if !func_ids.contains_key("eprint") && !func_ids.contains_key("io.eprint") {
+        if !func_ids.contains_key("eprint")
+            && !func_ids.contains_key("io.eprint")
+            && !runtime_imports.contains("eprint")
+            && !runtime_imports.contains("io.eprint")
+        {
             let sig = build_signature(
                 std::slice::from_ref(&str_ty),
                 &void_ty,
                 default_call_conv,
                 ptr_type,
             );
-            let id = self
-                .module
-                .declare_function("eprint", Linkage::Import, &sig)
-                .map_err(|err| codegen_ice(format!("failed to declare eprint: {err:?}")))?;
-            func_ids.insert("io.eprint".to_string(), id);
-            func_ids.insert("eprint".to_string(), id);
+            runtime_imports.insert("io.eprint", "eprint", sig.clone());
+            runtime_imports.insert("eprint", "eprint", sig);
         }
         // `err.new(str) -> Err` (Err = message pointer handle).
-        if !func_ids.contains_key("err.new") {
+        if !func_ids.contains_key("err.new") && !runtime_imports.contains("err.new") {
             let sig = build_signature(
                 std::slice::from_ref(&str_ty),
                 &err_ty,
                 default_call_conv,
                 ptr_type,
             );
-            let id = self
-                .module
-                .declare_function("err.new", Linkage::Import, &sig)
-                .map_err(|err| codegen_ice(format!("failed to declare err.new: {err:?}")))?;
-            func_ids.insert("err.new".to_string(), id);
+            runtime_imports.insert("err.new", "err.new", sig);
         }
+
+        if eager_runtime {
+            runtime_imports.declare_all(&mut self.module, &mut func_ids)?;
+        }
+        let gen_shutdown = eager_runtime || gen_shutdown_required(program, symbols, type_info);
 
         // 2. Define/compile each function
         let mut context = self.module.make_context();
@@ -684,6 +697,8 @@ impl<M: Module> AranduModule<M> {
                     &mut self.module,
                     symbols,
                     &func_ids,
+                    &runtime_imports,
+                    gen_shutdown,
                     ptr_type,
                     &program.literal_pool,
                     func,

@@ -12,7 +12,7 @@ use crate::process_job::terminate_process_group;
 use crate::process_job::ProcessJob as BackendProcessJob;
 
 pub const BACKEND_PROCESS_TIMEOUT: Duration = if cfg!(debug_assertions) {
-    Duration::from_secs(30)
+    Duration::from_secs(60)
 } else {
     Duration::from_secs(10)
 };

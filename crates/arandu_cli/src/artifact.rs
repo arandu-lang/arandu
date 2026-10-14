@@ -16,6 +16,7 @@ const TARGET_MARKER: &str = ".arandu-target-v1";
 pub enum NativeProfile {
     Dev,
     Release,
+    Size,
 }
 
 impl NativeProfile {
@@ -23,6 +24,7 @@ impl NativeProfile {
         match self {
             Self::Dev => "dev",
             Self::Release => "release",
+            Self::Size => "size",
         }
     }
 
@@ -30,6 +32,7 @@ impl NativeProfile {
         match self {
             Self::Dev => "cranelift-aot",
             Self::Release => "cranelift-aot-speed",
+            Self::Size => "cranelift-aot-size",
         }
     }
 }

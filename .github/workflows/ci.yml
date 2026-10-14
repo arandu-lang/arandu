@@ -86,7 +86,7 @@ jobs:
           - shard: middle-end
             crates: -p arandu_middle -p arandu_mir -p arandu_semantics -p arandu_query
           - shard: backend-runtime
-            crates: -p arandu_codegen -p arandu_backend_c -p arandu_backend_cranelift -p arandu_runtime
+            crates: -p arandu_codegen -p arandu_testing_contract -p arandu_backend_c -p arandu_backend_cranelift -p arandu_runtime
           - shard: tooling
             crates: -p arandu_cli -p arandu_lsp -p arandu_fmt -p arandu_doc -p arandu_test_support -p arandu_fuzz_support -p xtask
     steps:

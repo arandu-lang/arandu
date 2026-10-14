@@ -196,7 +196,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             if let Some(destructor) = self.type_info.destructor_instances.get(&ty_id) {
                 let symbol = self.symbol_table.get(*destructor);
                 let host_name = self.symbol_table.host_func_name(symbol);
-                if let Some(&id) = self.func_ids.get(host_name) {
+                if let Some(id) = self.resolve_function(host_name) {
                     let function = self.module.declare_func_in_func(id, self.builder.func);
                     let arg_abi = self.classify_arg_abi(ty);
                     match arg_abi {

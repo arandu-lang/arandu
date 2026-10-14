@@ -49,7 +49,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
     }
 
     fn call_integer_writer(&mut self, helper: &str, value: Value, destination: Value) -> Value {
-        let Some(id) = self.func_ids.get(helper).copied() else {
+        let Some(id) = self.resolve_function(helper) else {
             self.record_ice(
                 format!("missing integer interpolation helper {helper}"),
                 self.func_span(),
@@ -254,11 +254,11 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             AmirRvalue::ToStr { value, src_ty } => self.translate_to_str(value, *src_ty),
             AmirRvalue::BlackBox { value, .. } => {
                 let (ptr, len) = self.translate_str_operand(value);
-                let Some(ptr_id) = self.func_ids.get("ar_bench_black_box_ptr").copied() else {
+                let Some(ptr_id) = self.resolve_function("ar_bench_black_box_ptr") else {
                     self.record_ice("missing pointer black-box runtime import", self.func_span());
                     return (self.poison_i32(), self.poison_i32());
                 };
-                let Some(len_id) = self.func_ids.get("ar_bench_black_box_i64").copied() else {
+                let Some(len_id) = self.resolve_function("ar_bench_black_box_i64") else {
                     self.record_ice("missing integer black-box runtime import", self.func_span());
                     return (self.poison_i32(), self.poison_i32());
                 };
@@ -390,7 +390,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             _ => unreachable!(),
         };
 
-        let Some(func_id) = self.func_ids.get(helper_name).copied() else {
+        let Some(func_id) = self.resolve_function(helper_name) else {
             self.record_ice(
                 format!("{helper_name} was not declared in the JIT module"),
                 self.func_span(),

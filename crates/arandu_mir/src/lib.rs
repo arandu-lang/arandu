@@ -19,6 +19,7 @@ pub mod move_checker;
 pub mod optimize;
 pub mod pass_manager;
 pub mod pin_free;
+pub mod reachability;
 mod scalarize_locals;
 pub(crate) mod sccp;
 pub(crate) mod simplify_cfg;

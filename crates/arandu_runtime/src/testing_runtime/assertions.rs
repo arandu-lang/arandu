@@ -1,6 +1,6 @@
 //! C-ABI expectation and assertion evaluation hooks.
 
-use arandu_codegen::testing::TestFailure;
+use arandu_testing_contract::TestFailure;
 
 use super::context::{effective_location, with_active_context};
 

@@ -114,3 +114,39 @@ fn component_manifest_declares_wasm_target() {
         artifact_path.display()
     );
 }
+
+#[test]
+fn size_wasm_build_uses_a_separate_profile_and_alias_cache() {
+    let tmp = common::temp_dir("arandu_size_wasm_cli_test").unwrap();
+    let project = tmp.join("size_app");
+    assert!(
+        run_cli_in(&tmp, &["new", "size_app", "--vcs=none"])
+            .status
+            .success()
+    );
+    fs::write(
+        project.join("src/main.aru"),
+        "func main(): int { return 42 }\n",
+    )
+    .unwrap();
+    let size = run_cli_in(
+        &project,
+        &["build", "--target=wasm32-unknown-unknown", "--size"],
+    );
+    assert!(
+        size.status.success(),
+        "{}",
+        String::from_utf8_lossy(&size.stderr)
+    );
+    let artifact = project.join("target/size/wasm32-unknown-unknown/bin/size_app.wasm");
+    let bytes = fs::read(&artifact).unwrap();
+    assert!(arandu_backend_wasm::is_core_module(&bytes));
+    let repeated = run_cli_in(
+        &project,
+        &["build", "--target=wasm32-unknown-unknown", "-Oz"],
+    );
+    assert!(repeated.status.success());
+    assert!(String::from_utf8_lossy(&repeated.stdout).contains("incremental: up-to-date"));
+    assert_eq!(fs::read(&artifact).unwrap(), bytes);
+    assert!(!project.join("target/dev").exists());
+}

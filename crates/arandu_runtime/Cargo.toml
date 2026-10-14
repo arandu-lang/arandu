@@ -1,6 +1,6 @@
 [package]
 name = "arandu_runtime"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2024"
 license.workspace = true
 authors.workspace = true
@@ -11,7 +11,7 @@ fuzzing = []
 [dependencies]
 # SL_R.2 reactor (epoll + timerfd on Linux); portable fallback elsewhere
 libc = "0.2.189"
-arandu_codegen = { path = "../arandu_codegen" }
+arandu_testing_contract = { path = "../arandu_testing_contract" }
 blake3.workspace = true
 
 # SL_R.3 io_uring is Linux-only (MAP_POPULATE / SYS_io_uring_*). Do not pull

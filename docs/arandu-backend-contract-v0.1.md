@@ -239,6 +239,49 @@ process startup. Indexed loads still have addressing and bounds-check costs;
 C line counts do not prove instruction-cache occupancy, and source-size
 reductions do not imply proportional execution-time reductions.
 
+### Size profile and emission reachability (RFC 0027)
+
+C and Cranelift AOT share the pure MIR function closure. Executable roots retain
+main, public/internal linkage, tooling entrypoints, transitive function
+references in statements and terminators, and implicit destructors of reachable
+types. With no main all definitions remain available; the JIT also keeps all
+definitions for private host lookup.
+
+`--size` / `-Oz` selects AMIR Os without the speed inliner, Cranelift
+`speed_and_size`, and a distinct `target/size` build/cache profile. Linux native
+linking collects unused sections and strips symbols. Explicit Wasm size APIs
+prune the same function closure, associated imports/WIT metadata and unused
+literals. They omit allocator helpers only when translated core code does not
+need them. Components and default inspection APIs retain canonical reallocation
+and post-return contracts. Optional Binaryen `-Oz` applies to core project
+builds, not components.
+
+Literal string interpolation folds before ownership lowering when every part
+has a proven string, integer, bool or char value. UTF-8, embedded NUL and
+target-width integer validation are preserved. Dynamic expressions and floats
+retain their runtime behavior. Existing target-layout static serialization
+retains copies for mutable aggregates; size optimization does not weaken value
+semantics, bounds checks or string lifetimes.
+
+Native object emission declares runtime imports at actual call/address use.
+GenRef shutdown in `main` follows the reachable program, retaining conservative
+cleanup for unknown foreign code and indirect calls. JIT lookup remains eager.
+The main CGU hash includes this cleanup policy. Runtime testing DTOs live in the
+leaf `arandu_testing_contract`; compiler IR and Salsa must not enter the runtime
+dependency closure.
+
+Wasm may omit storage for a serialized Copy aggregate with a unique definition
+and one proven initializer consumer. The consumer still owns independent mutable
+storage; references, returns, jump arguments and unproven uses keep ordinary
+materialization. Bounded stack forwarding crosses only balanced independent
+scalar expressions, with calls, memory, control, traps and overwrites as barriers.
+Heap payloads are aligned to 16 bytes, including reused blocks, and canonical
+reallocation validates supported alignment and arithmetic before writing.
+
+The [RFC](./rfcs/0027-zero-bloat-binary-diet-and-on-demand-runtime.md) defines
+the scope and validation. No absolute executable size or freestanding support
+is inferred from the profile.
+
 ### What is required for real cross compilation
 
 Adding a new Gold target requires one named target specification containing at

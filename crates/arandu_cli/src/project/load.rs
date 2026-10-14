@@ -69,6 +69,7 @@ pub struct ProjectFlags {
     pub stdlib_path: Option<PathBuf>,
     pub cache_dir: Option<PathBuf>,
     pub release: bool,
+    pub size: bool,
     pub verbose: bool,
     pub locked: bool,
     pub offline: bool,
@@ -109,6 +110,8 @@ pub fn parse_project_flags(args: &[String]) -> Result<(ProjectFlags, Vec<String>
             }
         } else if a == "--release" {
             flags.release = true;
+        } else if a == "--size" || a == "-Oz" {
+            flags.size = true;
         } else if a == "-v" || a == "--verbose" {
             flags.verbose = true;
         } else if a == "--locked" {
@@ -164,6 +167,9 @@ pub fn parse_project_flags(args: &[String]) -> Result<(ProjectFlags, Vec<String>
             rest.push(a.clone());
         }
         i += 1;
+    }
+    if flags.release && flags.size {
+        return Err("--release and --size select different profiles; choose one".to_owned());
     }
     Ok((flags, rest))
 }

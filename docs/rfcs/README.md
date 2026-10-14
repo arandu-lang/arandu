@@ -59,6 +59,7 @@ Uma RFC evolui através dos seguintes estados formais:
 | [0024](0024-unified-attribute-system.md) | Sistema Unificado de Atributos — `@` como mecanismo comptime de primeira classe | Frontend / Middle-end / Stdlib | `Draft` | 2026-10-03 |
 | [0025](0025-optimization-oracle-and-testing-aot.md) | Arandu Optimization Oracle & Testing (`AOT`): Diagnóstico Estruturado, Testes de Codegen e Fuzzing Metamórfico | Middle-end / Backend / Tooling | `Draft` | 2026-10-04 |
 | [0026](0026-standard-library-naming-and-resource-conventions.md) | Convenções Canônicas de Nomenclatura e Gerenciamento de Recursos da Stdlib | Stdlib / Frontend / Runtime | `Draft` | 2026-10-06 |
+| [0027](0027-zero-bloat-binary-diet-and-on-demand-runtime.md) | Redução de Código e Runtime Sob Demanda | Backend / Runtime / Tooling | `Implemented` | 2026-10-12 |
 
 
 ---

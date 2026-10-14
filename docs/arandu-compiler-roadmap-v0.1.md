@@ -92,6 +92,7 @@ quando cumprir seu contrato atual.
 | Paralelismo Estruturado | `done` | [RFC 0003](./rfcs/0003-structured-parallelism.md); funcional em Linux, aguardando benchmark reproduzível e matriz nativa para `gold` |
 | **v0.1.7** | **`released`** | Tag `v0.1.7` publicada; PR #29 verde; 71 commits, 609 arquivos. Inclui RFC 0023 (inteiros portáveis), RFC 0021 (visibilidade/módulos), RFC 0022 (AranduSmith), RFC 0020 (empacotamento nativo), correções de ownership e backends, expansão do corpus. |
 | **Preparação v0.1.8** | **`done`; tag publicada** | PR #30 mergeada com todos os checks verdes; contrato de release validado para 26 manifests; tag `v0.1.8` no commit `17d8936`. Diagnósticos, CLI, LSP, extensão e documentação consolidados. Evidência de instalação/publicação pertence à release. |
+| Redução de código — v0.1.9 | `done` no host Linux | [RFC 0027](./rfcs/0027-zero-bloat-binary-diet-and-on-demand-runtime.md): `--size` / `-Oz`, alcance compartilhado de funções e drops, AOT e Wasm sob demanda, interpolação literal estática, cache por perfil e medições reproduzíveis. Matriz nativa e publicação permanecem condições separadas de release. |
 
 ### Fila de execução
 

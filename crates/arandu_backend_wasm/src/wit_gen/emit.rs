@@ -98,6 +98,17 @@ pub fn generate_wit(
     layout_provider: &dyn StructLayoutProvider,
     pkg_name: &str,
 ) -> Option<String> {
+    generate_wit_filtered(program, symbols, interner, layout_provider, pkg_name, None)
+}
+
+pub(crate) fn generate_wit_filtered(
+    program: &AmirProgram,
+    symbols: &SymbolTable,
+    interner: &TypeInterner,
+    layout_provider: &dyn StructLayoutProvider,
+    pkg_name: &str,
+    live: Option<&FxHashSet<SymbolId>>,
+) -> Option<String> {
     let public_funcs: Vec<_> = program
         .funcs
         .iter()
@@ -377,7 +388,11 @@ pub fn generate_wit(
     }
 
     // Collect imported extern functions deterministically
-    let mut extern_list: Vec<_> = program.extern_funcs.iter().collect();
+    let mut extern_list: Vec<_> = program
+        .extern_funcs
+        .iter()
+        .filter(|(symbol, _)| live.is_none_or(|live| live.contains(symbol)))
+        .collect();
     extern_list.sort_by_key(|(sym, _)| (sym.file_id, sym.local_id.0));
 
     let mut extern_sigs = Vec::with_capacity(extern_list.len());

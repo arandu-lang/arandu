@@ -75,6 +75,8 @@ pub enum AotOptimization {
     Baseline,
     /// Ask Cranelift to optimize generated machine code for execution speed.
     Speed,
+    /// Balance execution speed against machine-code size.
+    Size,
 }
 
 impl AotOptimization {
@@ -82,6 +84,7 @@ impl AotOptimization {
         match self {
             Self::Baseline => "none",
             Self::Speed => "speed",
+            Self::Size => "speed_and_size",
         }
     }
 }
@@ -196,7 +199,20 @@ impl CraneliftObjectBackend {
         type_info: &TypeInfo,
         sources: &[DebugSource],
     ) -> Result<ObjectArtifact, Diagnostic> {
-        self.compiler.compile_module(program, symbols, type_info)?;
+        let live = arandu_semantics::passes::reachability::live_functions(
+            program,
+            symbols,
+            &type_info.type_interner,
+            type_info,
+        );
+        let definitions: Vec<_> = program
+            .funcs
+            .iter()
+            .filter(|function| live.contains(&function.symbol))
+            .map(|function| function.symbol)
+            .collect();
+        self.compiler
+            .compile_filtered_module(program, symbols, type_info, Some(&definitions))?;
         let debug_compilation = self.compiler.debug.take();
         let mut product = self.compiler.module.finish();
         if let Some(debug_compilation) = debug_compilation {

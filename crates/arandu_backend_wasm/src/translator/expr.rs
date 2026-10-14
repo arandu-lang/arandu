@@ -794,9 +794,9 @@ impl<'a> FuncTranslator<'a> {
     /// write the odd generation tag `(gen << 1) | 1` into `*(cell_ptr_local - 4)`,
     /// and leave the new generation number in `self.scratch`.
     ///
-    /// Because `__arandu_free` overwrites `*(ptr - 4)` with `__freelist_head`
-    /// (always 4-byte aligned, so bit 0 is `0`), any freed cell automatically
-    /// fails the odd-tag check in [`Self::emit_validate_gen_ref`], and any
+    /// `__arandu_free` clears the reserved generation word independently of
+    /// the free-list link. A freed cell therefore always fails the odd-tag
+    /// check in [`Self::emit_validate_gen_ref`], and any
     /// recycled cell receives a strictly greater generation number.
     fn emit_alloc_gen_tag(&mut self, cell_ptr_local: u32) {
         let counter_memarg = wasm_encoder::MemArg {
@@ -822,7 +822,9 @@ impl<'a> FuncTranslator<'a> {
             Instruction::LocalTee(self.scratch),
             Instruction::I32Store(counter_memarg),
             Instruction::LocalGet(cell_ptr_local),
-            Instruction::I32Const(4),
+            Instruction::I32Const(
+                crate::memory::CELL_HEADER_SIZE - crate::memory::CELL_GENERATION_OFFSET,
+            ),
             Instruction::I32Sub,
             Instruction::LocalGet(self.scratch),
             Instruction::I32Const(1),
@@ -853,7 +855,9 @@ impl<'a> FuncTranslator<'a> {
             Instruction::Unreachable,
             Instruction::End,
             Instruction::LocalGet(ptr_local),
-            Instruction::I32Const(4),
+            Instruction::I32Const(
+                crate::memory::CELL_HEADER_SIZE - crate::memory::CELL_GENERATION_OFFSET,
+            ),
             Instruction::I32Sub,
             Instruction::I32Load(crate::memory::noffset_memarg()),
             Instruction::LocalGet(gen_local),
@@ -873,7 +877,9 @@ impl<'a> FuncTranslator<'a> {
     fn emit_invalidate_gen_cell(&mut self, ptr_local: u32) {
         self.code.extend([
             Instruction::LocalGet(ptr_local),
-            Instruction::I32Const(4),
+            Instruction::I32Const(
+                crate::memory::CELL_HEADER_SIZE - crate::memory::CELL_GENERATION_OFFSET,
+            ),
             Instruction::I32Sub,
             Instruction::I32Const(0),
             Instruction::I32Store(crate::memory::noffset_memarg()),

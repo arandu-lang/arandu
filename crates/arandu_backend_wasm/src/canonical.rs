@@ -9,7 +9,8 @@
 //!   operator and the `@Destructor` methods invoked by `Destroy`) actually
 //!   reclaims memory instead of leaking it. Every allocated block carries a
 //!   `[magic: u32][block_size: u32][next: u32]` header (see
-//!   [`crate::memory::CELL_HEADER_SIZE`]); the payload lives at `base + 12`.
+//!   [`crate::memory::CELL_HEADER_SIZE`]); padding keeps every payload aligned
+//!   to [`crate::memory::CELL_ALIGNMENT`].
 //! * **`cabi_realloc`** – called by the host to allocate or resize a memory
 //!   region in the guest's linear memory (used for lowering strings and lists
 //!   passed *into* the module from the host). It delegates to the same
@@ -54,7 +55,10 @@ use wasm_encoder::{
 
 // Indices of the heap-allocator globals inside the emitted module (must match
 // the order in which `WasmModuleBuilder::build` appends globals).
-use crate::memory::{CELL_HEADER_SIZE, CELL_MAGIC, GLOBAL_FREE_LIST_HEAD, GLOBAL_HEAP_PTR};
+use crate::memory::{
+    CELL_ALIGNMENT, CELL_GENERATION_OFFSET, CELL_HEADER_SIZE, CELL_MAGIC, GLOBAL_FREE_LIST_HEAD,
+    GLOBAL_HEAP_PTR,
+};
 const MEMORY_IDX: u32 = 0;
 
 /// Descriptor for one Wasm function entry to be injected into the module.
@@ -108,11 +112,11 @@ impl CabiSupport {
     /// size is at least `size`; otherwise bump the frontier (growing memory as
     /// needed) and write the block header. Best-fit preserves larger reusable
     /// blocks when smaller fields are allocated before their containing object.
-    /// Returns the payload pointer (`base + 12`).
+    /// Returns the payload pointer (`base + CELL_HEADER_SIZE`).
     ///
     /// # `__arandu_free(ptr: i32)`
     ///
-    /// Validates the block magic at `ptr - 12` and, when it matches, links the
+    /// Validates the block magic at `ptr - CELL_HEADER_SIZE` and, when it matches, links the
     /// block at the head of the free list. `0` and untracked pointers are a safe
     /// no-op.
     pub fn add_allocator(&mut self) {
@@ -138,15 +142,22 @@ impl CabiSupport {
     /// block and its predecessor while locals 2/6 walk the current list node.
     ///
     /// Locals beyond the `size` parameter: `1` aligned size, `2` current node,
-    /// `3` current node size, `4` new heap pointer, `5` memory size in bytes,
+    /// `3` current node size, `4` new heap pointer, `5` required memory pages,
     /// `6` current predecessor, `7` selected best-fit node, `8` its predecessor.
     fn alloc_body() -> Vec<Instruction<'static>> {
-        vec![
-            // size = (size + 3) & !3
+        let mut body = vec![
+            // Reject overflow before rounding the requested payload size.
             Instruction::LocalGet(0),
-            Instruction::I32Const(3),
+            Instruction::I32Const(-CELL_ALIGNMENT),
+            Instruction::I32GtU,
+            Instruction::If(BlockType::Empty),
+            Instruction::Unreachable,
+            Instruction::End,
+            // size = (size + alignment - 1) & !(alignment - 1)
+            Instruction::LocalGet(0),
+            Instruction::I32Const(CELL_ALIGNMENT - 1),
             Instruction::I32Add,
-            Instruction::I32Const(!3),
+            Instruction::I32Const(!(CELL_ALIGNMENT - 1)),
             Instruction::I32And,
             Instruction::LocalSet(1),
             // node = __freelist_head
@@ -248,34 +259,24 @@ impl CabiSupport {
             Instruction::LocalGet(2),
             Instruction::I32Const(CELL_HEADER_SIZE),
             Instruction::I32Add,
+            Instruction::LocalTee(4),
+            Instruction::LocalGet(2),
+            Instruction::I32LeU,
+            Instruction::If(BlockType::Empty),
+            Instruction::Unreachable,
+            Instruction::End,
+            Instruction::LocalGet(4),
             Instruction::LocalGet(1),
             Instruction::I32Add,
-            Instruction::LocalSet(4),
-            // mem_bytes = memory.size << 16
-            Instruction::MemorySize(MEMORY_IDX),
-            Instruction::I32Const(16),
-            Instruction::I32Shl,
-            Instruction::LocalSet(5),
-            // if new_heap_ptr > mem_bytes → grow
-            Instruction::LocalGet(4),
-            Instruction::LocalGet(5),
-            Instruction::I32GtU,
+            Instruction::LocalTee(4),
+            Instruction::LocalGet(2),
+            Instruction::I32LeU,
             Instruction::If(BlockType::Empty),
-            // pages = (new_heap_ptr - mem_bytes + 0xFFFF) >> 16
-            Instruction::LocalGet(4),
-            Instruction::LocalGet(5),
-            Instruction::I32Sub,
-            Instruction::I32Const(0xFFFF),
-            Instruction::I32Add,
-            Instruction::I32Const(16),
-            Instruction::I32ShrU,
-            Instruction::MemoryGrow(MEMORY_IDX),
-            Instruction::I32Const(-1),
-            Instruction::I32Eq,
-            Instruction::If(BlockType::Empty),
-            Instruction::Unreachable, // OOM trap
+            Instruction::Unreachable,
             Instruction::End,
-            Instruction::End,
+        ];
+        body.extend(Self::grow_memory_for_end(4, 5));
+        body.extend([
             // __heap_ptr = new_heap_ptr
             Instruction::LocalGet(4),
             Instruction::GlobalSet(GLOBAL_HEAP_PTR),
@@ -289,10 +290,47 @@ impl CabiSupport {
             Instruction::I32Add,
             Instruction::LocalGet(1),
             Instruction::I32Store(crate::memory::noffset_memarg()),
+            // New ordinary cells have no live generational identity.
+            Instruction::LocalGet(2),
+            Instruction::I32Const(CELL_GENERATION_OFFSET),
+            Instruction::I32Add,
+            Instruction::I32Const(0),
+            Instruction::I32Store(crate::memory::noffset_memarg()),
             // return base + CELL_HEADER_SIZE
             Instruction::LocalGet(2),
             Instruction::I32Const(CELL_HEADER_SIZE),
             Instruction::I32Add,
+        ]);
+        body
+    }
+
+    /// `end` is the nonzero, checked exclusive end of the allocation. Compare
+    /// pages directly: converting 65,536 pages to bytes would wrap to zero in
+    /// memory32. Subtracting one before rounding also avoids `end + 65,535`.
+    fn grow_memory_for_end(end: u32, required_pages: u32) -> Vec<Instruction<'static>> {
+        vec![
+            Instruction::LocalGet(end),
+            Instruction::I32Const(1),
+            Instruction::I32Sub,
+            Instruction::I32Const(16),
+            Instruction::I32ShrU,
+            Instruction::I32Const(1),
+            Instruction::I32Add,
+            Instruction::LocalSet(required_pages),
+            Instruction::LocalGet(required_pages),
+            Instruction::MemorySize(MEMORY_IDX),
+            Instruction::I32GtU,
+            Instruction::If(BlockType::Empty),
+            Instruction::LocalGet(required_pages),
+            Instruction::MemorySize(MEMORY_IDX),
+            Instruction::I32Sub,
+            Instruction::MemoryGrow(MEMORY_IDX),
+            Instruction::I32Const(-1),
+            Instruction::I32Eq,
+            Instruction::If(BlockType::Empty),
+            Instruction::Unreachable,
+            Instruction::End,
+            Instruction::End,
         ]
     }
 
@@ -332,6 +370,13 @@ impl CabiSupport {
             Instruction::If(BlockType::Empty),
             Instruction::Return,
             Instruction::End,
+            // Invalidate GenRef handles before making the backing reusable.
+            // The generation word is distinct from the free-list next word.
+            Instruction::LocalGet(1),
+            Instruction::I32Const(CELL_GENERATION_OFFSET),
+            Instruction::I32Add,
+            Instruction::I32Const(0),
+            Instruction::I32Store(crate::memory::noffset_memarg()),
             // *(base + 8) = __freelist_head
             Instruction::LocalGet(1),
             Instruction::I32Const(8),
@@ -380,6 +425,23 @@ impl CabiSupport {
             Instruction::Call(free_func_idx),
             Instruction::I32Const(0),
             Instruction::Return,
+            Instruction::End,
+            // Canonical layouts supported here require power-of-two alignment
+            // no greater than the shared allocator's guaranteed alignment.
+            Instruction::LocalGet(2),
+            Instruction::I32Eqz,
+            Instruction::LocalGet(2),
+            Instruction::I32Const(CELL_ALIGNMENT),
+            Instruction::I32GtU,
+            Instruction::I32Or,
+            Instruction::LocalGet(2),
+            Instruction::LocalGet(2),
+            Instruction::I32Const(1),
+            Instruction::I32Sub,
+            Instruction::I32And,
+            Instruction::I32Or,
+            Instruction::If(BlockType::Empty),
+            Instruction::Unreachable,
             Instruction::End,
             // 2. new_ptr = __arandu_alloc(new_size)
             Instruction::LocalGet(3), // new_size
@@ -523,6 +585,72 @@ impl CabiSupport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn allocator_page_growth_handles_full_memory32_without_byte_overflow() {
+        // Execute the exact production growth fragment, replacing only its
+        // memory.size/grow boundary with scalar mocks. No 4 GiB reservation or
+        // second implementation of the page-rounding formula is involved.
+        let mut function = Function::new([(2, ValType::I32)]);
+        for instruction in CabiSupport::grow_memory_for_end(0, 2) {
+            match instruction {
+                Instruction::MemorySize(_) => {
+                    function.instruction(&Instruction::LocalGet(1));
+                }
+                Instruction::MemoryGrow(_) => {
+                    function.instruction(&Instruction::LocalSet(3));
+                    function.instruction(&Instruction::LocalGet(1));
+                }
+                instruction => {
+                    function.instruction(&instruction);
+                }
+            }
+        }
+        function.instruction(&Instruction::LocalGet(3));
+        function.instruction(&Instruction::End);
+        let mut module = wasm_encoder::Module::new();
+        let mut types = TypeSection::new();
+        types
+            .ty()
+            .function([ValType::I32, ValType::I32], [ValType::I32]);
+        let mut functions = FunctionSection::new();
+        functions.function(0);
+        let mut exports = ExportSection::new();
+        exports.export("growth", ExportKind::Func, 0);
+        let mut code = CodeSection::new();
+        code.function(&function);
+        module
+            .section(&types)
+            .section(&functions)
+            .section(&exports)
+            .section(&code);
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, module.finish()).unwrap();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+        let growth = instance
+            .get_typed_func::<(i32, i32), i32>(&mut store, "growth")
+            .unwrap();
+        for (end, current_pages, expected_delta) in [
+            (1u32, 0, 1),
+            (65_535, 1, 0),
+            (65_536, 0, 1),
+            (65_536, 1, 0),
+            (65_537, 1, 1),
+            (0xffff_0000, 65_535, 0),
+            (0xffff_0001, 65_535, 1),
+            (u32::MAX, 65_535, 1),
+            (u32::MAX, 65_536, 0),
+            (u32::MAX, 0, 65_536),
+        ] {
+            let end = i32::from_le_bytes(end.to_le_bytes());
+            assert_eq!(
+                growth.call(&mut store, (end, current_pages)).unwrap(),
+                expected_delta
+            );
+        }
+    }
 
     #[test]
     fn cabi_support_allocator_and_realloc_added() {

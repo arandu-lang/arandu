@@ -1,6 +1,7 @@
 //! Deterministic checks for workspace boundaries that are easy to erode in a
 //! seemingly local refactor.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -14,6 +15,7 @@ const PURE_CRATES: &[&str] = &[
     "arandu_mir",
     "arandu_semantics",
     "arandu_codegen",
+    "arandu_testing_contract",
     "arandu_backend_c",
     "arandu_backend_cranelift",
     "arandu_backend_wasm",
@@ -58,7 +60,7 @@ pub fn check(root: &Path) -> i32 {
 
 fn violations(root: &Path) -> Result<Vec<String>, String> {
     let crates = root.join("crates");
-    let mut violations = Vec::new();
+    let mut violations = runtime_dependency_violations(&read_utf8(&root.join("Cargo.lock"))?)?;
 
     for entry in sorted_entries(&crates)? {
         let crate_root = entry.path();
@@ -118,6 +120,62 @@ fn violations(root: &Path) -> Result<Vec<String>, String> {
     Ok(violations)
 }
 
+/// The lock includes target-specific and dev dependencies. Check them all
+/// conservatively so joint workspace builds cannot reintroduce compiler
+/// initializers into the runtime through Cargo feature unification.
+fn runtime_dependency_violations(lock: &str) -> Result<Vec<String>, String> {
+    let document: toml::Value =
+        toml::from_str(lock).map_err(|error| format!("parse Cargo.lock: {error}"))?;
+    let packages = document
+        .get("package")
+        .and_then(toml::Value::as_array)
+        .ok_or("Cargo.lock has no package array")?;
+    let mut graph = BTreeMap::<String, BTreeSet<String>>::new();
+    for package in packages {
+        let name = package
+            .get("name")
+            .and_then(toml::Value::as_str)
+            .ok_or("Cargo.lock package has no name")?;
+        let edges = graph.entry(name.to_owned()).or_default();
+        if let Some(dependencies) = package.get("dependencies") {
+            let dependencies = dependencies
+                .as_array()
+                .ok_or("Cargo.lock dependencies must be an array")?;
+            for dependency in dependencies {
+                let name = dependency
+                    .as_str()
+                    .and_then(|dependency| dependency.split_whitespace().next())
+                    .ok_or("Cargo.lock dependency must name a package")?;
+                edges.insert(name.to_owned());
+            }
+        }
+    }
+    if !graph.contains_key("arandu_runtime") {
+        return Err("Cargo.lock has no arandu_runtime package".into());
+    }
+    let mut pending = BTreeSet::from(["arandu_runtime".to_owned()]);
+    let mut visited = BTreeSet::new();
+    let mut violations = Vec::new();
+    while let Some(name) = pending.pop_first() {
+        if !visited.insert(name.clone()) {
+            continue;
+        }
+        if (name.starts_with("arandu_")
+            && !matches!(name.as_str(), "arandu_runtime" | "arandu_testing_contract"))
+            || matches!(name.as_str(), "salsa" | "inventory")
+        {
+            violations.push(format!(
+                "Cargo.lock: arandu_runtime transitively depends on compiler package {name}; runtime contracts must remain independent of compiler IR and Salsa"
+            ));
+        }
+        let dependencies = graph
+            .get(&name)
+            .ok_or_else(|| format!("Cargo.lock dependency has no package entry: {name}"))?;
+        pending.extend(dependencies.iter().cloned());
+    }
+    Ok(violations)
+}
+
 fn sorted_entries(path: &Path) -> Result<Vec<fs::DirEntry>, String> {
     let mut entries = fs::read_dir(path)
         .map_err(|error| format!("read {}: {error}", path.display()))?
@@ -165,5 +223,61 @@ mod tests {
         assert!(FS_EFFECT_MARKERS.contains(&"fs::read_to_string("));
         assert!(FS_EFFECT_MARKERS.contains(&"fs::write("));
         assert!("#[salsa::tracked]".contains("#[salsa"));
+    }
+
+    #[test]
+    fn runtime_contract_accepts_leaf_dependencies() {
+        let lock = r#"
+[[package]]
+name = "arandu_runtime"
+dependencies = ["arandu_testing_contract"]
+[[package]]
+name = "arandu_testing_contract"
+dependencies = ["serde 1.0.0"]
+[[package]]
+name = "serde"
+"#;
+        assert!(runtime_dependency_violations(lock).unwrap().is_empty());
+    }
+
+    #[test]
+    fn runtime_contract_rejects_indirect_compiler_dependencies() {
+        let lock = r#"
+[[package]]
+name = "arandu_runtime"
+dependencies = ["bridge"]
+[[package]]
+name = "bridge"
+version = "1.0.0"
+dependencies = ["arandu_middle"]
+[[package]]
+name = "bridge"
+version = "2.0.0"
+dependencies = ["salsa 1.0.0"]
+[[package]]
+name = "arandu_middle"
+[[package]]
+name = "salsa"
+dependencies = ["inventory"]
+[[package]]
+name = "inventory"
+"#;
+        let violations = runtime_dependency_violations(lock).unwrap();
+        assert_eq!(violations.len(), 3);
+        assert!(violations[0].contains("arandu_middle"));
+        assert!(violations[1].contains("salsa"));
+        assert!(violations[2].contains("inventory"));
+    }
+
+    #[test]
+    fn runtime_contract_fails_closed_on_invalid_lock() {
+        for lock in [
+            "invalid = [",
+            "",
+            "[[package]]\nname = 'other'",
+            "[[package]]\nname = 'arandu_runtime'\ndependencies = ['missing']",
+        ] {
+            assert!(runtime_dependency_violations(lock).is_err());
+        }
     }
 }

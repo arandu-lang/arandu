@@ -7,6 +7,94 @@ use super::FuncTranslator;
 use crate::types;
 
 impl<'a> FuncTranslator<'a> {
+    /// A serialized aggregate used exactly once need not be materialized before
+    /// another initializer copies its bytes. The readonly pointer is internal:
+    /// a `Copy` still creates independent mutable storage, while a serialized
+    /// enclosing constructor never evaluates its already-proven operands.
+    pub(super) fn plan_static_initializer_temps(&mut self) {
+        use arandu_middle::amir::visit::{for_each_stmt_operand, for_each_terminator_operand};
+        use arandu_middle::amir::{AmirRvalue, AmirStmt, TempId};
+        use rustc_hash::FxHashMap;
+
+        let mut definitions = FxHashMap::default();
+        let mut uses = FxHashMap::<TempId, (usize, bool)>::default();
+        for id in self.func.stmts.iter_ids() {
+            let Some(statement) = self.func.stmts.get(id) else {
+                continue;
+            };
+            if let AmirStmt::Assign { lhs, .. } = statement {
+                definitions
+                    .entry(*lhs)
+                    .and_modify(|definition| *definition = None)
+                    .or_insert(Some(id));
+            }
+            for_each_stmt_operand(statement, |operand| {
+                let (AmirOperand::Copy(temp) | AmirOperand::Move(temp)) = operand else {
+                    return;
+                };
+                let entry = uses.entry(*temp).or_insert((0, true));
+                entry.0 = entry.0.saturating_add(1);
+                entry.1 &= match statement {
+                    AmirStmt::Assign {
+                        lhs,
+                        rhs: AmirRvalue::Use(AmirOperand::Copy(source)),
+                    } if source == temp => {
+                        self.func.temps.get(lhs.as_usize()).map(|t| t.ty)
+                            == self.func.temps.get(temp.as_usize()).map(|t| t.ty)
+                    }
+                    AmirStmt::Assign {
+                        rhs:
+                            AmirRvalue::Array { .. }
+                            | AmirRvalue::Tuple { .. }
+                            | AmirRvalue::StructLiteral { .. },
+                        ..
+                    } => self.static_offsets.contains_key(&(self.func.symbol, id)),
+                    _ => false,
+                };
+            });
+        }
+        for block in &self.func.blocks {
+            for_each_terminator_operand(&block.terminator, |operand| {
+                if let AmirOperand::Copy(temp) | AmirOperand::Move(temp) = operand {
+                    uses.entry(*temp).or_insert((0, true)).1 = false;
+                }
+            });
+        }
+        for (temp, definition) in definitions {
+            let Some(id) = definition else {
+                continue;
+            };
+            // Temp zero is the implicit return operand, absent from visitors.
+            if temp == TempId::from_usize(0)
+                || uses.get(&temp) != Some(&(1, true))
+                || !self.static_offsets.contains_key(&(self.func.symbol, id))
+                || !matches!(
+                    self.func.stmts.get(id),
+                    Some(AmirStmt::Assign {
+                        rhs: AmirRvalue::Array { .. }
+                            | AmirRvalue::Tuple { .. }
+                            | AmirRvalue::StructLiteral { .. },
+                        ..
+                    })
+                )
+            {
+                continue;
+            }
+            let Some(ty) = self.func.temps.get(temp.as_usize()).map(|t| t.ty) else {
+                continue;
+            };
+            if self.is_owned_aggregate(ty)
+                && self.layout_provider.is_copy_type(ty) == Some(true)
+                && self
+                    .static_offsets
+                    .get(&(self.func.symbol, id))
+                    .is_some_and(|&(offset, _)| i32::try_from(offset).is_ok())
+            {
+                self.static_initializer_temps.insert(id);
+            }
+        }
+    }
+
     fn emit_static_initializer(&mut self) -> bool {
         let Some(statement) = self.current_initializer else {
             return false;

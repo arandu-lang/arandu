@@ -174,7 +174,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 } else {
                     "ar_bench_black_box_i64"
                 };
-                let Some(id) = self.func_ids.get(helper).copied() else {
+                let Some(id) = self.resolve_function(helper) else {
                     self.record_ice(format!("missing {helper} runtime import"), self.func_span());
                     return self.poison_i32();
                 };

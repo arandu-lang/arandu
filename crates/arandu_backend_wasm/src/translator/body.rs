@@ -28,6 +28,17 @@ impl FuncTranslator<'_> {
             .iter_ids::<arandu_middle::amir::stmt::InstrId>()
         {
             if let Some(stmt) = self.func.stmts.get(stmt_id) {
+                if self.static_initializer_temps.contains(&stmt_id)
+                    && let AmirStmt::Assign { lhs, .. } = stmt
+                    && let Some(&(offset, _)) =
+                        self.static_offsets.get(&(self.func.symbol, stmt_id))
+                    && let Ok(offset) = i32::try_from(offset)
+                    && let Some(&local) = self.temp_local.get(lhs)
+                {
+                    self.code.push(Instruction::I32Const(offset));
+                    self.code.push(Instruction::LocalSet(local));
+                    continue;
+                }
                 self.current_cell_home = self.frame_homes.get(&stmt_id).copied();
                 self.current_initializer = Some(stmt_id);
                 self.current_returned_home = self.returned_homes.get(&stmt_id).copied();

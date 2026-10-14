@@ -45,10 +45,18 @@ remote graphs do not use this local recovery path.
 | `emit-c` | emit GNU C source | C | experimental; see backend contract | `0` |
 | `build` | publish a host-native package executable | Cranelift AOT object + native linker | stable project workflow | `0` |
 | `build --release` | publish a speed-oriented host executable | AMIR O2 + Cranelift AOT `speed` | stable project workflow | `0` |
+| `build --size`, `build -Oz` | publish an executable optimized for size | AMIR Os + Cranelift AOT `speed_and_size`, or selected Wasm emission | experimental size profile | `0` |
 | `new`, `doctor`, `watch`, `hash-file` | project/tooling operations | varies | partial | `0` |
 
 Backend and cross-target details are defined in
 [`arandu-backend-contract-v0.1.md`](arandu-backend-contract-v0.1.md).
+
+The size profile uses `target/size` and its own incremental cache identity.
+`--size` and `-Oz` are aliases; combining them with `--release` or `--debug`
+is a usage failure. `run` rejects build profiles. Inspection commands
+`emit-c`, `emit-wasm`, and `emit-component` accept `--size` for the AMIR Os
+pipeline. Linux native size builds strip symbols, so use a separate debug
+build when those symbols are required.
 
 ### LSP request and snapshot rules
 

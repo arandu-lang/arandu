@@ -93,6 +93,95 @@ fn run_main_traps(bytes: &[u8]) -> bool {
 }
 
 #[test]
+fn generic_free_invalidates_genref_before_ordinary_or_generational_reuse() {
+    for (recycle, read_fresh) in [(0, false), (1, false), (2, false), (2, true)] {
+        let interner = TypeInterner::new();
+        let i32_ty = interner.intern(ArType::Primitive(Primitive::I32));
+        let gen_ty = interner.intern(ArType::GenRef);
+        let byte_ty = interner.intern(ArType::Primitive(Primitive::U8));
+        let ptr_ty = interner.intern(ArType::Ptr(byte_ty));
+        let mut pool = AmirLiteralPool::default();
+        let original = AmirOperand::Constant(AmirConstant::Pool(pool.intern_int("7")));
+        let fresh = AmirOperand::Constant(AmirConstant::Pool(pool.intern_int("99")));
+        let size = AmirOperand::Constant(AmirConstant::Pool(pool.intern_int("4")));
+        let old_gen = TempId::from_usize(1);
+        let new_gen = TempId::from_usize(3);
+        let mut statements = AmirStmtTable::new();
+        statements.push(AmirStmt::Assign {
+            lhs: old_gen,
+            rhs: AmirRvalue::GenInsert {
+                value: original,
+                payload_ty: i32_ty,
+                arena: GenArenaDomain::CompilerManaged,
+                origin: arandu_base::Span::new(0, 0, 0),
+            },
+        });
+        statements.push(AmirStmt::Free(AmirOperand::Copy(old_gen)));
+        if recycle == 1 {
+            statements.push(AmirStmt::Assign {
+                lhs: TempId::from_usize(2),
+                rhs: AmirRvalue::Alloc(size),
+            });
+        } else if recycle == 2 {
+            statements.push(AmirStmt::Assign {
+                lhs: new_gen,
+                rhs: AmirRvalue::GenInsert {
+                    value: fresh,
+                    payload_ty: i32_ty,
+                    arena: GenArenaDomain::CompilerManaged,
+                    origin: arandu_base::Span::new(0, 0, 0),
+                },
+            });
+        }
+        statements.push(AmirStmt::Assign {
+            lhs: TempId::from_usize(0),
+            rhs: AmirRvalue::GenGet {
+                gen_ref: AmirOperand::Copy(if read_fresh { new_gen } else { old_gen }),
+                payload_ty: i32_ty,
+                arena: GenArenaDomain::CompilerManaged,
+                origin: arandu_base::Span::new(0, 0, 0),
+            },
+        });
+        let blocks = vec![AmirBasicBlock {
+            id: BlockId::from_usize(0),
+            params: DenseRange::empty(),
+            statements: DenseRange::new(0, statements.len()),
+            terminator: AmirTerminator::Return,
+        }];
+        let func = AmirFunc {
+            symbol: foreign_sym(1),
+            return_type: i32_ty,
+            receiver: None,
+            params: vec![],
+            locals: vec![],
+            temps: vec![
+                temp(0, i32_ty),
+                temp(1, gen_ty),
+                temp(2, ptr_ty),
+                temp(3, gen_ty),
+            ],
+            cfg: compute_cfg_edges(&blocks),
+            blocks,
+            block_params: vec![],
+            stmts: statements,
+        };
+        let bytes = emit_one(func, &interner, &mut pool);
+        if read_fresh {
+            assert_eq!(
+                run_main_i32(&bytes),
+                99,
+                "a new generation has a valid odd tag"
+            );
+        } else {
+            assert!(
+                run_main_traps(&bytes),
+                "generic Free must invalidate stale handle, recycle={recycle}"
+            );
+        }
+    }
+}
+
+#[test]
 fn genref_insert_and_get_scalar() {
     let interner = TypeInterner::new();
     let i32_ty = interner.intern(ArType::Primitive(Primitive::I32));

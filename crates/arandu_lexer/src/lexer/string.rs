@@ -1,6 +1,5 @@
 use super::{Lexer, Mark};
 use crate::ident::is_bidi_control;
-use crate::ident::is_digit;
 use crate::ident::is_ident_start;
 use crate::{LexError, LexErrorCode, Span, TokenKind};
 
@@ -202,21 +201,17 @@ impl<'a> Lexer<'a> {
             if self.pos > prev_pos {
                 continue;
             }
-            if self.peek() == Some('"') {
-                self.lex_string(true)?;
-            } else if self.peek().is_some_and(is_digit) {
-                self.lex_number()?;
-            } else if self.peek().is_some_and(is_ident_start) {
-                self.lex_ident_or_keyword();
-            } else if self.starts_with("//") {
+            if self.starts_with("//") {
                 self.skip_line_comment()?;
             } else if self.starts_with("/*") {
                 self.skip_block_comment()?;
+            } else if self.peek() == Some('"') && !self.starts_with("\"\"\"") {
+                self.lex_string(true)?;
             } else {
                 if self.peek() == Some('{') {
                     brace_depth += 1;
                 }
-                self.lex_operator_or_punctuation()?;
+                self.lex_next_token()?;
             }
         }
         if self.is_at_end() {

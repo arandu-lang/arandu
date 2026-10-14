@@ -840,7 +840,7 @@ fn test_execution_parity(name: &str, src: &str) {
 }
 
 fn test_zero_result_all_opt_levels(name: &str, source: &str) {
-    for level in [OptLevel::O0, OptLevel::O1, OptLevel::O2] {
+    for level in [OptLevel::O0, OptLevel::O1, OptLevel::O2, OptLevel::Os] {
         let (mut amir, tc) = compile_src(source);
         optimize_amir_checked_with_level(
             &mut amir,
@@ -855,6 +855,35 @@ fn test_zero_result_all_opt_levels(name: &str, source: &str) {
             0,
             "{name}: {level:?}"
         );
+    }
+}
+
+#[test]
+fn size_optimization_retains_helper_calls_and_matches_speed_execution() {
+    let source =
+        "func add(a: int, b: int): int { return a + b } func main(): int { return add(19, 23) }";
+    for level in [OptLevel::O1, OptLevel::Os] {
+        let (mut amir, tc) = compile_src(source);
+        optimize_amir_checked_with_level(
+            &mut amir,
+            &tc.symbols,
+            &tc.type_info.type_interner,
+            level,
+        )
+        .unwrap();
+        let main = amir
+            .funcs
+            .iter()
+            .find(|func| tc.symbols.host_func_name(tc.symbols.get(func.symbol)) == "main")
+            .unwrap();
+        let has_call = main
+            .blocks
+            .iter()
+            .flat_map(|block| main.block_stmts(block.id))
+            .any(|stmt| matches!(stmt, AmirStmt::Call { .. }));
+        assert_eq!(has_call, level == OptLevel::Os);
+        assert_eq!(execute_cranelift(&amir, &tc), 42);
+        assert_eq!(execute_c(&format!("size_call_{level:?}"), &amir, &tc), 42);
     }
 }
 
@@ -1302,6 +1331,54 @@ fn parity_string_interpolation() {
 }
 
 #[test]
+fn constant_interpolation_needs_no_runtime_conversion_or_owned_string_drop() {
+    let source = r#"
+func main(): int {
+    if "é\0:${-42}:${0xff}:${true}:${'λ'}" != "é\0:-42:255:true:λ" { return 1 }
+    if "before:${"n=${42}"}:after" != "before:n=42:after" { return 2 }
+    if "${/** } ignored */ 42 /* { ignored */}:${/// } ignored
+42 //! { ignored
+}" != "42:42" { return 3 }
+    return 0
+}
+"#;
+    let (amir, tc) = compile_src(source);
+    for function in &amir.funcs {
+        for statement in function.stmts.payloads.iter() {
+            assert!(!matches!(
+                statement,
+                AmirStmt::Free(_)
+                    | AmirStmt::Assign {
+                        rhs: AmirRvalue::ToStr { .. } | AmirRvalue::StringInterp { .. },
+                        ..
+                    }
+            ));
+        }
+    }
+    let c = emit_c(&amir, &tc);
+    assert!(!c.contains("ar_i64_to_str(") && !c.contains("ar_bool_to_str("));
+    test_zero_result_all_opt_levels("literal_interpolation", source);
+}
+
+#[test]
+fn interpolation_with_calls_preserves_evaluation_order_and_effects() {
+    let source = r#"
+struct Counter { public value: int }
+func next(counter: mut ref Counter): int {
+    counter.value += 1
+    return counter.value
+}
+func main(): int {
+    let mut counter = Counter { value: 0 }
+    let text = "${next(mut ref counter)}:${next(mut ref counter)}"
+    if text != "1:2" || counter.value != 2 { return 1 }
+    return 0
+}
+"#;
+    test_zero_result_all_opt_levels("interpolation_effects", source);
+}
+
+#[test]
 fn parity_enum_layout() {
     let src = r#"
     enum Status {
@@ -1655,8 +1732,11 @@ fn parity_io_println_to_str() {
 fn parity_io_eprint_emits_the_runtime_alias() {
     let src = r#"
     import io
+    func print_err(msg: str): void {
+        io.eprint(msg)
+    }
     func main(): int {
-        io.eprint("stderr")
+        print_err("stderr")
         return 0
     }
     "#;
@@ -3822,4 +3902,308 @@ fn cyclic_phi_swaps_match_native_parallel_copy_semantics() {
             expected
         );
     }
+}
+
+#[test]
+fn c_literal_io_keeps_length_aware_helpers_and_flushes() {
+    let (amir, tc) = compile_src(
+        r#"
+import io
+
+func main(): int {
+    let message = "hello\0 literal"
+    let alias = message
+    io.println(alias)
+    io.print("freestanding io")
+    io.eprint("stderr direct\n")
+    io.println("")
+    return 0
+}
+"#,
+    );
+    let emitted = emit_c(&amir, &tc);
+    for helper in [
+        "static void io__println",
+        "static void io__print",
+        "static void io__eprint",
+    ] {
+        assert!(
+            emitted.contains(helper),
+            "missing length-aware I/O helper {helper}"
+        );
+    }
+    assert!(emitted.contains("fflush(stdout)") && emitted.contains("fflush(stderr)"));
+    let (status, output) = execute_c_output("static_println_zero_alloc", &amir, &tc);
+    assert_eq!(status, 0);
+    let newline = if cfg!(windows) { "\r\n" } else { "\n" };
+    let expected = format!("hello\0 literal{newline}freestanding io{newline}0{newline}");
+    assert_eq!(output.as_bytes(), expected.as_bytes());
+}
+
+#[test]
+fn c_loop_cfg_preserves_explicit_edges() {
+    let (amir, tc) = compile_src(
+        r#"
+func main(): int {
+    let mut i = 0
+    let mut sum = 0
+    while i < 10 {
+        sum = sum + i
+        i = i + 1
+    }
+    return sum
+}
+"#,
+    );
+    let emitted = emit_c(&amir, &tc);
+    assert!(
+        emitted.contains("goto bb") && !emitted.contains("while (1) {"),
+        "CFG edges must remain explicit until loop reconstruction is proven: {emitted}"
+    );
+    assert_eq!(execute_cranelift(&amir, &tc), 45);
+    assert_eq!(execute_c("structured_while_loop", &amir, &tc), 45);
+}
+
+#[test]
+fn c_user_print_names_preserve_return_values_and_side_effects() {
+    let (amir, tc) = compile_src(
+        r#"
+import io
+struct User {}
+func print(value: str): int { io.print(value) return 7 }
+func User.println(value: str): int { io.print(value) return 9 }
+func main(): int {
+    let left = print("left")
+    let right = User.println("right")
+    io.println("")
+    return left + right
+}
+"#,
+    );
+    let emitted = emit_c(&amir, &tc);
+    assert!(emitted.contains("= print(") && emitted.contains("= User__println("));
+    assert_eq!(execute_cranelift(&amir, &tc), 16);
+    let (result, output) = execute_c_output("user_print_returns_and_effects", &amir, &tc);
+    assert_eq!(result, 16);
+    let newline = if cfg!(windows) { "\r\n" } else { "\n" };
+    assert_eq!(output, format!("leftright{newline}16{newline}"));
+}
+
+#[test]
+fn c_latch_exit_and_noncontiguous_exit_follow_the_cfg() {
+    use arandu_middle::amir::{
+        AmirBasicBlock, AmirFunc, AmirStmtTable, AmirTemp, AmirTerminator, BlockId, BlockParam,
+        LocalId, TempId,
+    };
+    use arandu_middle::cfg::compute_cfg_edges;
+    use arandu_middle::layout::DenseRange;
+    use arandu_middle::types::{ArType, Primitive};
+    for early_exit in [false, true] {
+        let (mut program, tc) = compile_src("func main(): int { return 0 }");
+        let int = tc
+            .type_info
+            .type_interner
+            .intern(ArType::Primitive(Primitive::Int));
+        let boolean = tc
+            .type_info
+            .type_interner
+            .intern(ArType::Primitive(Primitive::Bool));
+        let mut pool = arandu_middle::literal_pool::AmirLiteralPool::default();
+        let zero = AmirOperand::Constant(AmirConstant::Pool(pool.intern_int("0")));
+        let one = AmirOperand::Constant(AmirConstant::Pool(pool.intern_int("1")));
+        let guard = AmirOperand::Constant(AmirConstant::Pool(pool.intern_int(if early_exit {
+            "1"
+        } else {
+            "6"
+        })));
+        let error = AmirOperand::Constant(AmirConstant::Pool(pool.intern_int("99")));
+        let mut stmts = AmirStmtTable::new();
+        stmts.push(AmirStmt::Assign {
+            lhs: TempId::from_usize(2),
+            rhs: AmirRvalue::Binary {
+                op: BinaryOp::Add,
+                left: AmirOperand::Copy(TempId::from_usize(1)),
+                right: one,
+            },
+        });
+        stmts.push(AmirStmt::Assign {
+            lhs: TempId::from_usize(3),
+            rhs: AmirRvalue::Binary {
+                op: BinaryOp::GtEqual,
+                left: AmirOperand::Copy(TempId::from_usize(2)),
+                right: guard,
+            },
+        });
+        stmts.push(AmirStmt::Assign {
+            lhs: TempId::from_usize(0),
+            rhs: AmirRvalue::Use(AmirOperand::Copy(TempId::from_usize(2))),
+        });
+        stmts.push(AmirStmt::Assign {
+            lhs: TempId::from_usize(0),
+            rhs: AmirRvalue::Use(error),
+        });
+        let block = |id, range, terminator| AmirBasicBlock {
+            id: BlockId::from_usize(id),
+            params: if id == 1 {
+                DenseRange::new(0, 1)
+            } else {
+                DenseRange::empty()
+            },
+            statements: range,
+            terminator,
+        };
+        let blocks = vec![
+            block(
+                0,
+                DenseRange::empty(),
+                AmirTerminator::Goto {
+                    target: BlockId::from_usize(1),
+                    args: vec![zero],
+                },
+            ),
+            block(
+                1,
+                DenseRange::new(0, 2),
+                AmirTerminator::Branch {
+                    condition: AmirOperand::Copy(TempId::from_usize(3)),
+                    if_true: BlockId::from_usize(4),
+                    true_args: vec![],
+                    if_false: BlockId::from_usize(2),
+                    false_args: vec![],
+                },
+            ),
+            block(
+                2,
+                DenseRange::empty(),
+                AmirTerminator::Branch {
+                    condition: AmirOperand::Constant(AmirConstant::Bool(false)),
+                    if_true: BlockId::from_usize(1),
+                    true_args: vec![AmirOperand::Copy(TempId::from_usize(2))],
+                    if_false: BlockId::from_usize(3),
+                    false_args: vec![],
+                },
+            ),
+            block(3, DenseRange::new(2, 1), AmirTerminator::Return),
+            block(4, DenseRange::new(3, 1), AmirTerminator::Return),
+        ];
+        program.funcs[0] = AmirFunc {
+            symbol: program.funcs[0].symbol,
+            return_type: int,
+            receiver: None,
+            params: vec![],
+            locals: vec![],
+            temps: (0..4)
+                .map(|id| AmirTemp {
+                    id: TempId::from_usize(id),
+                    ty: if id == 3 { boolean } else { int },
+                    is_copy: true,
+                    is_nullable: false,
+                    span: arandu_middle::Span::new(0, 0, 0),
+                })
+                .collect(),
+            block_params: vec![BlockParam {
+                id: TempId::from_usize(1),
+                local: LocalId::from_usize(0),
+                ty: int,
+                from: None,
+                moved: false,
+            }],
+            cfg: compute_cfg_edges(&blocks),
+            blocks,
+            stmts,
+        };
+        program.literal_pool = pool;
+        let expected = if early_exit { 99 } else { 1 };
+        assert_eq!(execute_cranelift(&program, &tc), expected);
+        assert_eq!(
+            execute_c(
+                if early_exit {
+                    "loop_noncontiguous_exit"
+                } else {
+                    "loop_latch_fallthrough_exit"
+                },
+                &program,
+                &tc
+            ),
+            expected
+        );
+    }
+}
+
+#[test]
+fn c_adjacent_true_target_with_arguments_keeps_its_label() {
+    use arandu_middle::amir::{
+        AmirBasicBlock, AmirStmtTable, AmirTemp, AmirTerminator, BlockId, BlockParam, LocalId,
+        TempId,
+    };
+    use arandu_middle::cfg::compute_cfg_edges;
+    use arandu_middle::layout::DenseRange;
+    let (mut program, tc) = compile_src("func main(): int { return 0 }");
+    let function = &mut program.funcs[0];
+    let int = function.return_type;
+    let mut pool = arandu_middle::literal_pool::AmirLiteralPool::default();
+    let seven = AmirOperand::Constant(AmirConstant::Pool(pool.intern_int("7")));
+    let nine = AmirOperand::Constant(AmirConstant::Pool(pool.intern_int("9")));
+    let mut stmts = AmirStmtTable::new();
+    for id in [1, 2] {
+        stmts.push(AmirStmt::Assign {
+            lhs: TempId::from_usize(0),
+            rhs: AmirRvalue::Use(AmirOperand::Copy(TempId::from_usize(id))),
+        });
+    }
+    let blocks = vec![
+        AmirBasicBlock {
+            id: BlockId::from_usize(0),
+            params: DenseRange::empty(),
+            statements: DenseRange::empty(),
+            terminator: AmirTerminator::Branch {
+                condition: AmirOperand::Constant(AmirConstant::Bool(true)),
+                if_true: BlockId::from_usize(1),
+                true_args: vec![seven],
+                if_false: BlockId::from_usize(2),
+                false_args: vec![nine],
+            },
+        },
+        AmirBasicBlock {
+            id: BlockId::from_usize(1),
+            params: DenseRange::new(0, 1),
+            statements: DenseRange::new(0, 1),
+            terminator: AmirTerminator::Return,
+        },
+        AmirBasicBlock {
+            id: BlockId::from_usize(2),
+            params: DenseRange::new(1, 1),
+            statements: DenseRange::new(1, 1),
+            terminator: AmirTerminator::Return,
+        },
+    ];
+    function.temps = (0..3)
+        .map(|id| AmirTemp {
+            id: TempId::from_usize(id),
+            ty: int,
+            is_copy: true,
+            is_nullable: false,
+            span: arandu_middle::Span::new(0, 0, 0),
+        })
+        .collect();
+    function.block_params = (0..2)
+        .map(|index| BlockParam {
+            id: TempId::from_usize(index + 1),
+            local: LocalId::from_usize(index),
+            ty: int,
+            from: None,
+            moved: false,
+        })
+        .collect();
+    function.cfg = compute_cfg_edges(&blocks);
+    function.blocks = blocks;
+    function.stmts = stmts;
+    program.literal_pool = pool;
+    let emitted = emit_c(&program, &tc);
+    assert!(emitted.contains("bb1:") && emitted.contains("goto bb1;"));
+    assert_eq!(execute_cranelift(&program, &tc), 7);
+    assert_eq!(
+        execute_c("adjacent_true_target_arguments", &program, &tc),
+        7
+    );
 }

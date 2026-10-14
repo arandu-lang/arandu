@@ -22,7 +22,17 @@ pub fn cmd_project_build(
     genref_report: bool,
     data_layout: DataLayout,
 ) -> CliResult {
+    if flags.size && debug_info {
+        return Err(CliFailure::usage(
+            "`--size` cannot be combined with `--debug`: size builds strip debug information",
+        ));
+    }
     let backend = project::BackendChoice::from_release_flag(flags.release);
+    let backend_label = if flags.size {
+        "cranelift-size"
+    } else {
+        backend.label()
+    };
     let explain_rebuild = arandu_base::EXPLAIN_REBUILD.load(std::sync::atomic::Ordering::Relaxed);
     let (mut db, rebuild_log) = if flags.verbose || explain_rebuild {
         let (db, log) = arandu_query::DatabaseImpl::with_rebuild_log();
@@ -44,7 +54,9 @@ pub fn cmd_project_build(
             }
         }
     };
-    let profile = if flags.release {
+    let profile = if flags.size {
+        artifact::NativeProfile::Size
+    } else if flags.release {
         artifact::NativeProfile::Release
     } else {
         artifact::NativeProfile::Dev
@@ -121,7 +133,7 @@ pub fn cmd_project_build(
                     "wasm-core"
                 }
             } else {
-                backend.label()
+                backend_label
             };
             if !flags.quiet {
                 println!(
@@ -184,13 +196,20 @@ pub fn cmd_project_build(
     // optimized non-debug builds unchanged; native `--debug` deliberately
     // favors inspectability and stable location ranges.
     let native_debug_info = debug_info && !is_wasm;
-    let mut amir_owned = if (opt || flags.release) && !native_debug_info {
+    let mut amir_owned = if (opt || flags.release || flags.size) && !native_debug_info {
         Some(artifacts.amir.clone())
     } else {
         None
     };
     if let Some(ref mut amir) = amir_owned {
-        if flags.release {
+        if flags.size {
+            optimize_amir_with_level_or_exit(
+                amir,
+                type_check,
+                arandu_semantics::OptLevel::Os,
+                &filepath,
+            );
+        } else if flags.release {
             optimize_amir_with_level_or_exit(
                 amir,
                 type_check,
@@ -213,7 +232,12 @@ pub fn cmd_project_build(
         let wasm_layout = arandu_middle::layout::DataLayout::ptr_width(4);
         let wasm_bytes = if is_component {
             let pkg_name = arandu_backend_wasm::wit_gen::to_wit_ident(&ctx.name);
-            arandu_backend_wasm::emit_component(
+            let emit = if flags.size {
+                arandu_backend_wasm::emit_component_for_size
+            } else {
+                arandu_backend_wasm::emit_component
+            };
+            emit(
                 amir,
                 type_check.symbols.as_ref(),
                 &type_check.type_info.type_interner,
@@ -223,7 +247,12 @@ pub fn cmd_project_build(
             )
             .unwrap_or_else(|diag| print_diagnostics_and_exit(std::iter::once(diag), &filepath))
         } else {
-            arandu_backend_wasm::emit_wasm(
+            let emit = if flags.size {
+                arandu_backend_wasm::emit_wasm_for_size
+            } else {
+                arandu_backend_wasm::emit_wasm
+            };
+            emit(
                 amir,
                 type_check.symbols.as_ref(),
                 &type_check.type_info.type_interner,
@@ -235,8 +264,9 @@ pub fn cmd_project_build(
 
         let optimized_wasm = crate::wasm_opt::optimize_wasm_if_available(
             wasm_bytes,
-            opt,
-            flags.release,
+            opt && !is_component,
+            flags.release && !is_component,
+            flags.size && !is_component,
             flags.verbose,
         )?;
 
@@ -307,6 +337,7 @@ pub fn cmd_project_build(
         };
         let optimization = match backend {
             _ if debug_info => arandu_backend_cranelift::AotOptimization::Baseline,
+            _ if flags.size => arandu_backend_cranelift::AotOptimization::Size,
             project::BackendChoice::CraneliftDev => {
                 arandu_backend_cranelift::AotOptimization::Baseline
             }
@@ -364,7 +395,7 @@ pub fn cmd_project_build(
                     &result.object_files,
                     &elf_layout_file,
                 )?;
-                Ok((published, backend.label()))
+                Ok((published, backend_label))
             };
 
             if result.recompiled_units.is_empty()
@@ -520,7 +551,14 @@ pub fn cmd_project_build(
                     &ctx.version,
                     profile,
                     object.bytes(),
-                    |object, output| linker::link(object, output).map(|kind| kind.label()),
+                    |object, output| {
+                        let link = if flags.size {
+                            linker::link_size
+                        } else {
+                            linker::link
+                        };
+                        link(object, output).map(|kind| kind.label())
+                    },
                 )?
             };
             {
@@ -537,7 +575,7 @@ pub fn cmd_project_build(
                     "built {} v{} (backend={}, entry={}, artifact={})",
                     ctx.name,
                     ctx.version,
-                    backend.label(),
+                    backend_label,
                     ctx.entry_rel,
                     artifact.path.display()
                 );

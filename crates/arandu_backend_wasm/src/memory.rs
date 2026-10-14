@@ -63,10 +63,14 @@ pub const GLOBAL_STACK_BASE: u32 = 3;
 pub const GLOBAL_FREE_LIST_HEAD: u32 = 4;
 
 /// Size in bytes of the per-block header stored by the runtime heap allocator
-/// (`[magic: u32][block_size: u32][next: u32]`). Every allocation payload
-/// starts `CELL_HEADER_SIZE` bytes past the block base, keeping payloads
-/// 4-byte aligned (12 % 4 == 0).
-pub const CELL_HEADER_SIZE: i32 = 12;
+/// (`[magic: u32][block_size: u32][next: u32][generation: u32]`). Both block
+/// sizes and the header are aligned to [`CELL_ALIGNMENT`], so every payload
+/// satisfies the alignment of layouts accepted by the aggregate frame planner.
+pub const CELL_HEADER_SIZE: i32 = 16;
+pub const CELL_ALIGNMENT: i32 = 16;
+/// Reserved header word holding the odd live GenRef generation tag. Ordinary
+/// allocations and all released cells hold zero here.
+pub const CELL_GENERATION_OFFSET: i32 = CELL_HEADER_SIZE - 4;
 
 /// Magic cookie stored in the header of every block handed out by the heap
 /// allocator. `__arandu_free` validates the magic before linking a block into
@@ -112,10 +116,29 @@ impl RodataTable {
     /// aligned at [`RODATA_BASE`].
     #[must_use]
     pub fn from_literal_pool(pool: &arandu_middle::literal_pool::AmirLiteralPool) -> Self {
+        Self::collect_literals(pool, |_| true)
+    }
+
+    /// Keep original LiteralIds while packing only strings used by live code.
+    #[must_use]
+    pub fn from_used_literals(
+        pool: &arandu_middle::literal_pool::AmirLiteralPool,
+        used: &rustc_hash::FxHashSet<arandu_middle::literal_pool::LiteralId>,
+    ) -> Self {
+        Self::collect_literals(pool, |id| used.contains(&id))
+    }
+
+    fn collect_literals(
+        pool: &arandu_middle::literal_pool::AmirLiteralPool,
+        include: impl Fn(arandu_middle::literal_pool::LiteralId) -> bool,
+    ) -> Self {
         let mut table = Self::default();
         let mut current_offset = RODATA_BASE as u32;
 
         for (idx, entry) in pool.entries.iter().enumerate() {
+            if !include(arandu_middle::literal_pool::LiteralId(idx as u32)) {
+                continue;
+            }
             if let arandu_middle::literal_pool::AmirLiteralEntry::Str(s) = entry {
                 let bytes = s.as_bytes();
                 // 4-byte align the start of each string

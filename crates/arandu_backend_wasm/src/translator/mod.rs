@@ -105,6 +105,9 @@ pub(super) struct FuncTranslator<'a> {
     pub current_cell_home: Option<u32>,
     pub current_heap_home: Option<u32>,
     pub current_initializer: Option<arandu_middle::amir::InstrId>,
+    /// Static aggregate sources whose only use copies into independent storage
+    /// or is already covered by a serialized enclosing initializer.
+    pub static_initializer_temps: rustc_hash::FxHashSet<arandu_middle::amir::InstrId>,
     pub static_offsets: &'a FxHashMap<(SymbolId, arandu_middle::amir::InstrId), (u32, u32)>,
 }
 
@@ -177,6 +180,7 @@ impl<'a> FuncTranslator<'a> {
             current_cell_home: None,
             current_heap_home: None,
             current_initializer: None,
+            static_initializer_temps: rustc_hash::FxHashSet::default(),
             static_offsets: ctx.static_offsets,
         }
     }

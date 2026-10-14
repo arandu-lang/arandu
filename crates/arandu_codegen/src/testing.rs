@@ -12,85 +12,9 @@ pub const BENCH_BASELINE_PROTOCOL_V1: &str = "arandu.bench-baseline/v1";
 pub const FRAME_MAGIC: &[u8; 4] = b"ARND";
 pub const MAX_FRAME_PAYLOAD_SIZE: usize = 2 * 1024 * 1024; // 2MB
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TestStatus {
-    Passed,
-    Failed,
-    Skipped,
-    TimedOut,
-    Crashed,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CapturedOutput {
-    pub bytes: Vec<u8>,
-    pub truncated: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TestFailure {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub operation: Option<String>,
-    pub message: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub location: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expression: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expected: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub actual: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub type_name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cause: Option<String>,
-}
-
-impl TestFailure {
-    #[must_use]
-    pub fn simple(message: impl Into<String>) -> Self {
-        Self {
-            operation: None,
-            message: message.into(),
-            location: None,
-            expression: None,
-            expected: None,
-            actual: None,
-            type_name: None,
-            cause: None,
-        }
-    }
-
-    #[must_use]
-    pub fn expectation(
-        operation: impl Into<String>,
-        expression: Option<String>,
-        expected: Option<String>,
-        actual: Option<String>,
-        type_name: Option<String>,
-        message: Option<String>,
-        location: Option<String>,
-    ) -> Self {
-        let op_str = operation.into();
-        let default_msg = match (&expected, &actual) {
-            (Some(exp), Some(act)) => {
-                format!("expectation `{op_str}` failed: expected `{exp}`, got `{act}`")
-            }
-            _ => format!("expectation `{op_str}` failed"),
-        };
-        Self {
-            operation: Some(op_str),
-            message: message.unwrap_or(default_msg),
-            location,
-            expression,
-            expected,
-            actual,
-            type_name,
-            cause: None,
-        }
-    }
-}
+pub use arandu_testing_contract::{
+    BenchmarkConfigV1, BenchmarkEventV1, BenchmarkSampleV1, CapturedOutput, TestFailure, TestStatus,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TestEventV1 {
@@ -123,36 +47,6 @@ pub struct TestFramePayloadRef<'a> {
     pub schema: &'a str,
     pub sequence: u64,
     pub event: &'a TestEventV1,
-}
-
-/// Effective benchmark configuration recorded with every result.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BenchmarkConfigV1 {
-    pub warmup_ns: u64,
-    pub measurement_ns: u64,
-    pub samples: u32,
-}
-
-/// One measured batch. Raw integer values are preserved for auditing.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BenchmarkSampleV1 {
-    pub iterations: u64,
-    pub elapsed_ns: u64,
-}
-
-/// Terminal benchmark result emitted by a harness child.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BenchmarkEventV1 {
-    pub sequence: u64,
-    pub id: String,
-    pub config: BenchmarkConfigV1,
-    pub samples: Vec<BenchmarkSampleV1>,
-    #[serde(default)]
-    pub stdout: CapturedOutput,
-    #[serde(default)]
-    pub stderr: CapturedOutput,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub failure: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

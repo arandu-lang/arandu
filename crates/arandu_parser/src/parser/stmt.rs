@@ -9,6 +9,12 @@ impl<'a> Parser<'a> {
     pub(super) fn parse_block(&mut self) -> Result<Block, ParseError> {
         use crate::syntax::SyntaxKind;
         self.start_node(SyntaxKind::BLOCK);
+        let result = self.parse_block_inner();
+        self.finish_node();
+        result
+    }
+
+    fn parse_block_inner(&mut self) -> Result<Block, ParseError> {
         let start = self.mark();
         self.expect_name("LBRACE")?;
         let mut statements = Vec::new();
@@ -30,8 +36,9 @@ impl<'a> Parser<'a> {
             }
             statements.push(self.parse_stmt()?);
         }
-        self.expect_name("RBRACE")?;
-        self.finish_node();
+        if !self.at_kind_name("EOF") {
+            self.expect_name("RBRACE")?;
+        }
         let statements = self.pool.alloc_stmt_list(&statements);
         Ok(Block {
             span: self.span_from_mark(start),

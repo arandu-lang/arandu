@@ -238,27 +238,36 @@ choose colors.
 
 ## Public target layout expressions
 
-`@sizeOf(Type)` and `@alignOf(Type)` inspect the selected target ABI and return
-`usize`. They are type-operand expressions, not declaration annotations or
-ordinary functions recognized by spelling. They use the same `LayoutEngine`
-as the legacy intrinsic `mem.sizeOf<T>()` / `mem.alignOf<T>()` APIs.
+Use `mem.sizeOf<T>()` and `mem.alignOf<T>()`, importing `std.core.mem as mem`,
+to inspect the selected target ABI. Both return `usize`, allocate no memory,
+and use the shared `LayoutEngine`. The resolved `extern "arandu-intrinsic"`
+declarations identify these operations; ordinary functions named `sizeOf` or
+`alignOf` retain their bodies.
 
 ```arandu
+import std.core.mem as mem
+
 func size<T>(): usize {
-    return @sizeOf(T)
+    return mem.sizeOf<T>()
 }
 
 func main(): usize {
-    let bytes = comptime (@sizeOf([3]u16))
-    return bytes + @alignOf(i64) + size<int>()
+    let bytes = comptime (mem.sizeOf<[3]u16>())
+    return bytes + mem.alignOf<i64>() + size<int>()
 }
 ```
+
+The 0.1.9 type-operand expressions `@sizeOf(Type)` and `@alignOf(Type)` remain
+supported for compatibility. They are not declaration annotations and receive
+neither PascalCase aliases nor a new deprecation warning in 0.1.10. The formatter
+does not rewrite them. New examples prefer the module API; any future removal
+requires an announced migration and parity coverage for global constants,
+computed generic arguments and declaration headers as well as function bodies.
 
 Size and alignment are different: i686 System V gives `i64` size 8 and alignment
 4. Generic operand types are substituted before AMIR lowering; pre-body scalar
 conditions and computed generic arguments can inspect concrete operand types
-without requesting runtime AMIR. Ordinary functions named `sizeOf` or `alignOf`
-retain their bodies. Unsupported/open nominal layouts and target object-size
+without requesting runtime AMIR. Unsupported/open nominal layouts and target object-size
 overflow use T047; recursive by-value source definitions retain T029. Physical
 layout and niche walks share the existing structural ceilings of 128 levels
 and 4,096 visits, rather than resetting limits in recursive calls.
@@ -267,6 +276,22 @@ and 4,096 visits, rather than resetting limits in recursive calls.
 supported declaration headers. Concrete generic instances can use layout
 queries in dimensions and dependent pre-body selection without requesting
 final runtime AMIR.
+
+### Proposed expression APIs
+
+`embed.bytes(path)`, `embed.str(path)` and `types.info<T>()` are design directions,
+not implemented standard-library APIs. They do not introduce `std.embed`,
+`std.types`, expression forms `@EmbedBytes`/`@TypeInfo`, or an array type
+`[comptime]u8`. Fixed arrays still require a concrete, checked length.
+
+Asset inclusion needs explicit path/root, result ownership/type, UTF-8, size
+budget and error contracts. Files must be registered as compiler inputs by the
+input-owning layer; neither tracked queries nor the CTFE VM may read them.
+Dependency changes, missing files and equal-content edits need incremental
+invalidation/cutoff tests. Reflection needs bounded frozen descriptors with
+defined type identity, visibility and target dependence before it can be
+exposed through a module API. See the
+[naming contract](arandu-attribute-naming-v0.1.md#operações-em-expressões).
 
 ## Architecture
 

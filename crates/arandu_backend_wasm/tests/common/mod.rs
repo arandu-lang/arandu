@@ -59,6 +59,12 @@ pub fn compile_source(source: &str) -> Vec<u8> {
     let mut db = DatabaseImpl::new();
     db.set_target_config(wasm32());
     let file = db.new_file("e2e.aru".into(), source.into());
+    let parsed = arandu_query::passes::parse(&db, file);
+    assert!(
+        parsed.is_ok(),
+        "invalid test source: {:?}",
+        parsed.as_ref().err()
+    );
     let lowered = lower_amir(&db, file);
     assert!(
         lowered.type_check.diagnostics.is_empty(),

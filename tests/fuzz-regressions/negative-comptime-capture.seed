@@ -1,0 +1,6 @@
+encoding=utf8
+// negative-family: runtime-capture
+func main(): int {
+    let outside: int = 7
+    return comptime (3 + 4)
+}

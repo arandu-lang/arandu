@@ -1,0 +1,9 @@
+encoding=utf8
+// negative-family: assignment-type
+func helper(x: int): int {
+    let values = [x, x + 1]
+    if x > 0 { let selected: int = values[0]; return selected }
+    let fallback: int = values[1]
+    return fallback
+}
+func main(): int { return helper(3) }

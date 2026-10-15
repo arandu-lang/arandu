@@ -501,12 +501,12 @@ pub(super) fn synth_literal_expr(
             let element = super::synth_expr_expected(checker, *value, expected_element);
             let length = checker.lower_type_expr(*count, checker.type_scope());
             let array =
-                match length {
-                    ArType::Const(n) if n <= arandu_middle::types::MAX_ARRAY_REPEAT_ELEMENTS => {
+                match (length.as_const_u64(), length) {
+                    (Some(n), _) if n <= arandu_middle::types::MAX_ARRAY_REPEAT_ELEMENTS => {
                         ArType::Array(n, element)
                     }
-                    ArType::ConstParam(parameter) => ArType::ConstArray(parameter, element),
-                    ArType::Error
+                    (_, ArType::ConstParam(parameter)) => ArType::ConstArray(parameter, element),
+                    (_, ArType::Error)
                         if !matches!(
                             checker.pool.type_expr(*count),
                             arandu_parser::TypeExpr::Const { .. }

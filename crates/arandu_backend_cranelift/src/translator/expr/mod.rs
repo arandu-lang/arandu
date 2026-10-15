@@ -133,7 +133,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
 
         match rvalue {
             AmirRvalue::Use(op) => {
-                let val = self.translate_operand(op, expected_ty);
+                let val = self.translate_typed_operand(op, expected_ty, expected_ar_type);
                 let op_ty = self.get_operand_ar_type(op);
                 if matches!(op, AmirOperand::Copy(_) | AmirOperand::Move(_))
                     && self.is_inline_aggregate_ty(&op_ty)
@@ -216,7 +216,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 }
             }
             AmirRvalue::Binary { op, left, right } => {
-                self.translate_binary(*op, left, right, expected_ty)
+                self.translate_binary(*op, left, right, expected_ty, expected_ar_type)
             }
             AmirRvalue::Unary { op, operand } => self.translate_unary(*op, operand, expected_ty),
             AmirRvalue::Load(place) => self.translate_load(place, expected_ty, expected_ar_type),

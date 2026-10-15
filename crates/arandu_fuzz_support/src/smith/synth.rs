@@ -493,6 +493,15 @@ pub fn synthesize_with_oracle(seed: u64) -> SynthesizedProgram {
     let source = add_seeded_slice_iter_case(source, seed, base_value);
     let source = add_seeded_option_result_cmp_case(source, seed, base_value);
     let source = add_seeded_str_mem_case(source, seed, base_value);
+    let staged = synthesize_staged_arrays_and_casts(seed);
+    let source = replace_once(
+        source,
+        "func main(): int {",
+        &format!(
+            "{}\nfunc main(): int {{\n    if smith_staged_case() != {} {{ return -1000061 }}",
+            staged.source, staged.expected_result
+        ),
+    );
     // Keep the normal independent result/stdout oracle unchanged. A bounded
     // static tree checks parent-first exclusion in real Smith runs, not only
     // in a separate hand-picked unit fixture.
@@ -502,6 +511,41 @@ pub fn synthesize_with_oracle(seed: u64) -> SynthesizedProgram {
     ));
     SynthesizedProgram {
         source,
+        expected_result,
+    }
+}
+
+/// Bounded staging and conversion coverage with an independent integer oracle.
+/// All floating conversions stay in range and use exactly representable values;
+/// NaNs and out-of-range float-to-integer behavior are deliberately excluded.
+pub fn synthesize_staged_arrays_and_casts(seed: u64) -> SynthesizedProgram {
+    let bytes = seed.to_le_bytes();
+    let value = i32::from(bytes[0]) - 128;
+    let count = i32::from(bytes[1] % 8 + 1);
+    let expected_result = (value * 2 + 1) * count;
+    let conversion = match seed % 8 {
+        0 => "let wide: u64 = 9223372036854775808; let real = wide as f64; if real != 9223372036854775808.0 || real as u64 != wide { return -1000062 }",
+        1 => "let wide: u64 = 18446744073709549568; let real = wide as f64; if real != 18446744073709549568.0 || real as u64 != wide { return -1000063 }",
+        2 => "let wide: i64 = -9223372036854775808; let real = wide as f64; if real != -9223372036854775808.0 || real as i64 != wide { return -1000064 }",
+        3 => "let wide: u32 = 2147483648; let real = wide as f32; if real != 2147483648.0 || real as u32 != wide { return -1000065 }",
+        4 => "let wide: i32 = -2147483648; let real = wide as f32; if real != -2147483648.0 || real as i32 != wide { return -1000066 }",
+        5 => "let real: f64 = 255.75; let narrow = real as u8; if narrow != 255 { return -1000067 }",
+        6 => "let narrow: u8 = 255; let real = narrow as f32; if real != 255.0 { return -1000068 }",
+        _ => "let narrow: i8 = -128; let real = narrow as f64; if real != -128.0 { return -1000069 }",
+    };
+    SynthesizedProgram {
+        source: format!(
+            "func smith_stage_value(value: int): int {{ return value * 2 + 1 }}\n\
+             func smith_staged_case(): int {{\n\
+                 let frozen = comptime smith_stage_value({value})\n\
+                 let repeated = [frozen; comptime ({count} + 0)]\n\
+                 let mut total: int = 0\n\
+                 let mut index: int = 0\n\
+                 while index < {count} {{ total += repeated[index]; index += 1 }}\n\
+                 {conversion}\n\
+                 return total\n\
+             }}\n"
+        ),
         expected_result,
     }
 }

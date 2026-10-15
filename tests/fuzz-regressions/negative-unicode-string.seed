@@ -1,0 +1,5 @@
+encoding=utf8
+// negative-family: unterminated-string
+func main(): void {
+    let text: str = "ação_界_🦀"
+}

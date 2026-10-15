@@ -97,6 +97,9 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                         .and_then(|tys| tys.get(arg_idx))
                         .cloned()
                         .unwrap_or_else(|| self.get_operand_ar_type(arg));
+                    if matches!(arg_ty, ArType::Void) {
+                        continue;
+                    }
                     match self.fat_operand_kind(&arg_ty) {
                         FatOperandKind::Str => {
                             let (ptr_val, len_val) = self.translate_str_operand(arg);
@@ -137,7 +140,8 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                                 }
                             } else {
                                 let expected = expected_tys.get(clif_param_idx).copied();
-                                let val = self.translate_operand(arg, expected);
+                                let val =
+                                    self.translate_typed_operand(arg, expected, Some(&arg_ty));
                                 clif_args.push(val);
                                 clif_param_idx += 1;
                             }

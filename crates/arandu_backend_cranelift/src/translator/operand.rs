@@ -169,6 +169,15 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         operand: &AmirOperand,
         expected_ty: Option<Type>,
     ) -> Value {
+        self.translate_typed_operand(operand, expected_ty, None)
+    }
+
+    pub(super) fn translate_typed_operand(
+        &mut self,
+        operand: &AmirOperand,
+        expected_ty: Option<Type>,
+        expected_ar_type: Option<&arandu_semantics::types::ArType>,
+    ) -> Value {
         if self.error.is_some() {
             return self.poison_i32();
         }
@@ -361,23 +370,39 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                         }
                         _ => false,
                     };
+                    // Native scalar float conversions take at least i32.
+                    // Extend using the source's signedness before converting.
+                    if val_ty.bits() < 32 {
+                        val = if is_unsigned {
+                            self.builder
+                                .ins()
+                                .uextend(cranelift_codegen::ir::types::I32, val)
+                        } else {
+                            self.builder
+                                .ins()
+                                .sextend(cranelift_codegen::ir::types::I32, val)
+                        };
+                    }
                     if is_unsigned {
                         val = self.builder.ins().fcvt_from_uint(target_ty, val);
                     } else {
                         val = self.builder.ins().fcvt_from_sint(target_ty, val);
                     }
                 } else if val_ty.is_float() && target_ty.is_int() {
-                    let is_unsigned = match operand {
-                        AmirOperand::Copy(t) | AmirOperand::Move(t) => {
-                            let ar_ty = self.temp_ar_ty(*t);
-                            crate::types::ar_type_is_unsigned_integer(&ar_ty)
-                        }
-                        _ => false,
+                    let is_unsigned =
+                        expected_ar_type.is_some_and(crate::types::ar_type_is_unsigned_integer);
+                    let conversion_ty = if target_ty.bits() < 32 {
+                        cranelift_codegen::ir::types::I32
+                    } else {
+                        target_ty
                     };
                     if is_unsigned {
-                        val = self.builder.ins().fcvt_to_uint(target_ty, val);
+                        val = self.builder.ins().fcvt_to_uint(conversion_ty, val);
                     } else {
-                        val = self.builder.ins().fcvt_to_sint(target_ty, val);
+                        val = self.builder.ins().fcvt_to_sint(conversion_ty, val);
+                    }
+                    if conversion_ty != target_ty {
+                        val = self.builder.ins().ireduce(target_ty, val);
                     }
                 } else if val_ty.is_float() && target_ty.is_float() {
                     if val_ty.bits() < target_ty.bits() {

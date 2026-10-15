@@ -106,6 +106,31 @@ jobs:
       - name: RFC 0011 native determinism and incremental benchmark
         if: matrix.shard == 'tooling'
         run: cargo run --locked -p xtask -- bench-incremental --verify-determinism
+      - name: Project corpus analysis and incremental versus cold equivalence
+        if: matrix.shard == 'tooling'
+        run: cargo run --locked -p xtask -- check-project-corpus
+      - name: Node for CLI core-Wasm differential checks
+        if: matrix.shard == 'tooling'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+      - name: Build CLI and native runtime for black-box differential checks
+        if: matrix.shard == 'tooling'
+        run: cargo build --locked -p arandu_cli -p arandu_runtime -p xtask
+      - name: CLI JIT, linked native, GCC, Clang and core-Wasm differential matrix
+        if: matrix.shard == 'tooling'
+        run: target/debug/xtask smith-cli --arandu target/debug/arandu_cli --evidence-dir target/smith-cli-${{ github.run_id }}-${{ github.run_attempt }} --seed 256 --iterations 8
+      - name: Smith bisect orchestration regressions
+        if: matrix.shard == 'tooling'
+        run: python3 -m unittest discover -s scripts -p test_bisect_smith.py
+      - name: Preserve CLI differential evidence
+        if: matrix.shard == 'tooling' && always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: smith-cli-${{ runner.os }}-${{ github.sha }}
+          path: target/smith-cli-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Publish SL_T JUnit evidence
         if: matrix.shard == 'tooling'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -148,6 +173,21 @@ jobs:
         if: needs.scope.outputs.host_sensitive != 'true'
         run: cargo test --locked -p arandu_cli -p arandu_runtime -p arandu_parser
 
+      - name: Build Windows CLI and runtime for differential linker checks
+        if: needs.scope.outputs.host_sensitive == 'true'
+        run: cargo build --locked -p arandu_cli -p arandu_runtime -p xtask
+      - name: Windows CLI JIT and linked native differential matrix
+        if: needs.scope.outputs.host_sensitive == 'true'
+        run: target/debug/xtask.exe smith-cli --arandu target/debug/arandu_cli.exe --evidence-dir target/smith-cli-${{ github.run_id }}-${{ github.run_attempt }} --seed 256 --iterations 8 --native-only
+      - name: Preserve Windows CLI differential evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: smith-cli-${{ runner.os }}-${{ github.sha }}
+          path: target/smith-cli-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Preserve native differential reproducers
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -185,6 +225,21 @@ jobs:
       - name: Test essential smoke (pure compiler changes)
         if: needs.scope.outputs.host_sensitive != 'true'
         run: cargo test --locked -p arandu_cli -p arandu_runtime -p arandu_parser
+
+      - name: Build macOS CLI and runtime for differential linker checks
+        if: needs.scope.outputs.host_sensitive == 'true'
+        run: cargo build --locked -p arandu_cli -p arandu_runtime -p xtask
+      - name: macOS CLI JIT and linked native differential matrix
+        if: needs.scope.outputs.host_sensitive == 'true'
+        run: target/debug/xtask smith-cli --arandu target/debug/arandu_cli --evidence-dir target/smith-cli-${{ github.run_id }}-${{ github.run_attempt }} --seed 256 --iterations 8 --native-only
+      - name: Preserve macOS CLI differential evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: smith-cli-${{ runner.os }}-${{ github.sha }}
+          path: target/smith-cli-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Preserve native differential reproducers
         if: failure()

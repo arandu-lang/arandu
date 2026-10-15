@@ -4,6 +4,44 @@ use std::path::PathBuf;
 
 use arandu_lexer::lex_to_string;
 
+#[test]
+fn shorthand_interpolation_decodes_unicode_identifier_starts() {
+    use arandu_lexer::{Lexer, TokenKind};
+    for name in ["name", "variável", "é", "世界", "_valor"] {
+        let source = format!("\"${name}\"");
+        let tokens = Lexer::new(&source)
+            .lex()
+            .expect("valid interpolation")
+            .tokens;
+        let identifiers: Vec<_> = tokens
+            .iter()
+            .filter(|token| matches!(token.kind, TokenKind::IdentValue | TokenKind::IdentType))
+            .map(|token| token.lexeme(&source))
+            .collect();
+        assert_eq!(identifiers, [name]);
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|token| token.kind == TokenKind::InterpStart)
+                .count(),
+            1
+        );
+        for token in &tokens {
+            assert!(source.is_char_boundary(token.start as usize));
+            assert!(source.is_char_boundary(token.end() as usize));
+        }
+    }
+    for literal in ["$🦀", "$1", "$", "$\u{301}"] {
+        let source = format!("\"{literal}\"");
+        let tokens = Lexer::new(&source).lex().expect("literal string").tokens;
+        assert!(
+            !tokens
+                .iter()
+                .any(|token| token.kind == TokenKind::InterpStart)
+        );
+    }
+}
+
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()

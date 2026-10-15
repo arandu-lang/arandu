@@ -7,6 +7,7 @@
 
 pub mod artifact;
 pub mod emi;
+pub(crate) mod negative;
 pub mod oracle;
 pub mod process;
 pub mod synth;

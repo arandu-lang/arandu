@@ -163,6 +163,19 @@ exists, this contract does not claim Windows backend Gold.
 “Supported” here means covered at the backend boundary for well-typed AMIR. It
 does not override language-phase status or promise a stable external ABI.
 
+`void` has no parameter or result slot. Erasing a unit argument from a call's
+ABI must preserve evaluation of the statements that produced it. A nullable
+pointer still occupies one slot when its value is `nil`; the declared parameter
+type determines that distinction for local and external calls. `Err` is also a
+pointer-sized message handle, including in `Result` payloads; the Wasm32 core ABI
+represents it with one `i32` slot.
+
+The C emitter represents nullable thin pointers and references with their
+underlying pointer type. Nullable scalar boxing and nullable fat slice borrows
+are not covered by that correction. Generic `ConstArray` dimensions must become
+concrete `Array` lengths before executable code generation; backends do not
+guess a layout for an unresolved value parameter.
+
 ### Rejection and artifact rules
 
 1. Both backends run `validate_amir_program` before backend work.

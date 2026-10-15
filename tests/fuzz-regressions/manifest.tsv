@@ -35,3 +35,10 @@ emi-string-lifecycle.seed	emi-corpus	rfc:0022	dead-code EMI over std.alloc.strin
 emi-num-boundaries.seed	emi-corpus	rfc:0022	dead-code EMI over std.core.num checked and saturating add/sub/mul at signed integer boundaries with target-width-aware oracle across Cranelift/C/Wasm and O0/O1/O2
 rfc23-hash-fixed-int.seed	synthesized-all	rfc:0023	fixed-width int hash must produce a genuine collision case and preserve optimization plus backend parity
 rfc22-smith-stdlib.seed	synthesized-all	rfc:0022	seeded AranduSmith expanded stdlib differential suite across Cranelift, C, and WebAssembly
+negative-guard-wildcard.seed	pipeline	regression:0.1.10	valid-to-invalid wildcard guard mutation must report T024 without ICE and with deterministic diagnostics
+negative-guard-binding.seed	pipeline	regression:0.1.10	valid-to-invalid binding guard mutation must report T024 without ICE and with deterministic diagnostics
+negative-block-eof.seed	pipeline	regression:0.1.10	missing final brace mutation must report P001 without ICE and with deterministic diagnostics
+negative-unicode-string.seed	pipeline	regression:0.1.10	unterminated Unicode string mutation must report LX001 without ICE and with deterministic diagnostics
+negative-comptime-capture.seed	pipeline	regression:0.1.10	runtime capture mutation must report T043 without ICE and with deterministic diagnostics
+negative-assignment-type.seed	pipeline	regression:0.1.10	incompatible assignment mutation must report T002 without ICE and with deterministic diagnostics
+negative-zero-divisor.seed	pipeline	regression:0.1.10	grouped zero divisor mutation must report T040 without ICE and with deterministic diagnostics

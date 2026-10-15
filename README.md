@@ -36,7 +36,7 @@ Arandu introduces a **hybrid memory safety model**: static linear ownership (`ow
 - **Zero-Cost Safety Without a Garbage Collector**: Values have clear owners and borrowed references. Where lifetimes cannot be proven strictly at compile time, the generational fallback model provides safe, typed handles with deterministic cleanup.
 - **Incremental by Design**: Built from the ground up on Rowan concrete syntax trees (CST) and Salsa tracked queries. Modifying a function body re-analyzes only the affected item, keeping IDE response times under 10ms.
 - **Empathetic Developer Experience**: Compiler diagnostics (via Miette and LSP) explain *what* failed, *why* it failed with precise source labels, and *how* to resolve it, linked to documented explanation pages for every error code.
-- **Dual Native Backends**: Fast JIT execution with Cranelift for instant feedback cycles (`arandu run`), native binary compilation (`arandu build`), and clean, portable GNU C emission (`arandu emit-c`).
+- **Three Code Generation Backends**: Cranelift JIT and native compilation (`arandu run`, `arandu build`), portable GNU C emission (`arandu emit-c`), and WebAssembly modules and components (`arandu emit-wasm`, `arandu emit-component`).
 
 ---
 
@@ -47,7 +47,8 @@ Arandu introduces a **hybrid memory safety model**: static linear ownership (`ow
 | **Memory Safety Without GC** | Single-owner linear types (OSSA), borrowed references (`ref T`), and thread-confined generational references (**GenRef**). |
 | **Incremental Salsa Queries** | CST-first incremental re-parsing and fine-grained Salsa caching preserve query early-cutoff across edits. |
 | **Human-Centric Diagnostics** | Structured error codes (`LX*`, `P*`, `N*`, `T*`, `O*`, `W*`), secondary context labels, and suggested quick fixes. |
-| **Dual Native Code Generation** | Instant JIT compilation and native object linking via Cranelift, plus portable GNU C99/C11 code generation. |
+| **Native, C and WebAssembly** | Cranelift JIT/native objects, portable GNU C99/C11, and WebAssembly with a Component Model adapter; supported surfaces are defined in the [backend contract](docs/arandu-backend-contract-v0.1.md). |
+| **Deterministic Compile-Time Evaluation** | Bounded `comptime` expressions and blocks, frozen Copy aggregates, static array repetition, and target-aware `mem.sizeOf<T>()` / `mem.alignOf<T>()`; see the [comptime contract](docs/arandu-comptime-core-v0.1.md). |
 | **Batteries-Included Tooling** | Integrated package management (`arandu new`), dependency verification, code formatter (`arandu fmt`), and system doctor. |
 | **First-Class Editor Support** | Full-featured Language Server Protocol (LSP) with type-aware semantic tokens, hover, completions, and code actions. |
 
@@ -143,6 +144,9 @@ arandu check
 
 # 4. Compile an optimized native executable
 arandu build --release
+
+# Or optimize for size and strip native symbols
+arandu build --size
 ```
 
 ---
@@ -186,6 +190,8 @@ Plumbing & Inspection:
   amir       Dump Arandu Mid-Level IR (SSA/OSSA)
   graph      Emit module dependency or control flow graph
   emit-c     Emit portable C source code
+  emit-wasm  Emit a WebAssembly module
+  emit-component  Emit a WebAssembly component
   fmt        Format source files according to style rules
   doctor     Inspect toolchain, environment, and stdlib paths
   cache      Inspect, prune, and verify compiler cache
@@ -193,6 +199,7 @@ Plumbing & Inspection:
 
 Target & Toolchain Options:
   --release              Enable speed optimizations (Cranelift + AMIR O2)
+  --size, -Oz            Optimize for size (AMIR Os; strip native symbols)
   --stdlib-path <DIR>    Override path to standard library
   --cache-dir <DIR>      Override compiler cache directory
   --layout <MODEL>       Data layout model: host, ptr4, ptr8, i686 (default: host)
@@ -215,6 +222,31 @@ Developer & Debug Flags (-Z):
   -Zdebug-all            Enable all compiler debug traces
 ```
 
+`--release` and `--size` select different optimization profiles. Size builds use
+an isolated `target/size` cache; a smaller result depends on the workload. See
+[RFC 0027](docs/rfcs/0027-zero-bloat-binary-diet-and-on-demand-runtime.md).
+
+Compile-time values can initialize fixed arrays without a runtime calculation:
+
+```arandu
+import std.core.mem as mem
+
+func main(): int {
+    let count = comptime (2 + 2)
+    let flags = [false; comptime (2 + 2)]
+    let width = mem.sizeOf<u32>()
+    let alignment = mem.alignOf<u32>()
+    return 0
+}
+```
+
+Array repetition evaluates its initializer once and requires Copy elements when
+the length exceeds one. Layout intrinsics use the selected compilation target.
+The earlier `@sizeOf(Type)` / `@alignOf(Type)` expressions remain supported for
+compatibility; new code should use `std.core.mem`. CTFE rejects runtime captures
+and effects, and enforces resource limits rather than silently falling back to
+runtime evaluation.
+
 ---
 
 ## Compiler Architecture
@@ -235,6 +267,7 @@ flowchart TD
     MIR --> AMIR["AMIR<br/>(Mid-Level IR / CFG)"]
     AMIR --> Cranelift["arandu_backend_cranelift<br/>(Cranelift JIT & Native)"]
     AMIR --> CBackend["arandu_backend_c<br/>(Portable GNU C)"]
+    AMIR --> WasmBackend["arandu_backend_wasm<br/>(WebAssembly & Components)"]
 ```
 
 ### Workspace Structure
@@ -244,7 +277,7 @@ flowchart TD
 | **Frontend** | [`arandu_base`](crates/arandu_base)<br>[`arandu_lexer`](crates/arandu_lexer)<br>[`arandu_parser`](crates/arandu_parser)<br>[`arandu_diagnostics`](crates/arandu_diagnostics) | Lexer, Rowan CST-first parsing, token streams, diagnostic definitions (`DiagCode`), and Miette report rendering. |
 | **Middle-end** | [`arandu_middle`](crates/arandu_middle)<br>[`arandu_resolve`](crates/arandu_resolve)<br>[`arandu_typeck`](crates/arandu_typeck)<br>[`arandu_mir`](crates/arandu_mir) | Name resolution, bidirectional type inference, generic monomorphization, OSSA, borrow checking, and AMIR optimizations. |
 | **Incremental** | [`arandu_query`](crates/arandu_query) | Sole owner of Salsa database state, tracking query inputs, item-level hashes, and early-cutoff caching. |
-| **Backends** | [`arandu_backend_cranelift`](crates/arandu_backend_cranelift)<br>[`arandu_backend_c`](crates/arandu_backend_c)<br>[`arandu_codegen`](crates/arandu_codegen)<br>[`arandu_runtime`](crates/arandu_runtime) | Cranelift JIT engine and native object emission, portable GNU C translation, and language runtime support. |
+| **Backends** | [`arandu_backend_cranelift`](crates/arandu_backend_cranelift)<br>[`arandu_backend_c`](crates/arandu_backend_c)<br>[`arandu_backend_wasm`](crates/arandu_backend_wasm)<br>[`arandu_codegen`](crates/arandu_codegen)<br>[`arandu_runtime`](crates/arandu_runtime) | Cranelift JIT/native emission, portable GNU C, WebAssembly modules/components, and runtime support. |
 | **Tooling & IDE** | [`arandu_cli`](crates/arandu_cli)<br>[`arandu_lsp`](crates/arandu_lsp)<br>[`arandu_fmt`](crates/arandu_fmt)<br>[`arandu_doc`](crates/arandu_doc) | Compiler CLI, Language Server (`arandu-lsp`), pure CST formatter, and documentation extractor. |
 | **Test & Infra** | [`arandu_test_support`](crates/arandu_test_support)<br>[`arandu_fuzz_support`](crates/arandu_fuzz_support)<br>[`xtask`](xtask) | Golden test runners, grammar fuzzing harness, release contract verification, and architecture invariants. |
 

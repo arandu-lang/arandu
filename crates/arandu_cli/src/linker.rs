@@ -7,6 +7,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+#[cfg(any(windows, test))]
+mod msvc_workspace;
+
 /// Linker provenance recorded alongside the final artifact.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LinkerKind {
@@ -142,8 +145,49 @@ fn link_objects_with_mode(
         ));
     }
     let runtime = runtime_library()?;
+    // MSVC opens fully qualified paths even for relative command-line inputs.
+    // Keep all our inputs/output short, including discovery scripts and rustc's
+    // fallback stub; the artifact layer still owns final atomic publication.
+    #[cfg(windows)]
+    {
+        let workspace = msvc_workspace::MsvcWorkspace::new(objects, &runtime)
+            .map_err(|error| link_failure(output, error.to_string()))?;
+        let object_refs: Vec<_> = workspace.objects.iter().map(PathBuf::as_path).collect();
+        let kind = link_prepared_objects(
+            &object_refs,
+            &workspace.runtime,
+            &workspace.output,
+            patchable_elf,
+            size,
+        )
+        .map_err(|mut failure| {
+            if let CliFailure::Operational { context, .. } = &mut failure {
+                *context = Some(output.to_path_buf());
+            }
+            failure
+        })?;
+        workspace
+            .copy_output(output)
+            .map_err(|error| link_failure(output, error.to_string()))?;
+        Ok(kind)
+    }
+    #[cfg(not(windows))]
+    link_prepared_objects(objects, &runtime, output, patchable_elf, size)
+}
+
+fn link_prepared_objects(
+    objects: &[&Path],
+    runtime: &Path,
+    output: &Path,
+    patchable_elf: bool,
+    size: bool,
+) -> Result<LinkerKind, CliFailure> {
     if let Some(explicit) = std::env::var_os("ARANDU_LINKER") {
-        return match run_system_linker(&explicit, objects, &runtime, output, patchable_elf, size) {
+        // A configured relative executable belongs to the caller, not to the
+        // temporary linking directory. Bare names continue to use PATH.
+        let explicit = resolve_linker_executable(explicit)
+            .map_err(|error| link_failure(output, format!("resolve ARANDU_LINKER: {error}")))?;
+        return match run_system_linker(&explicit, objects, runtime, output, patchable_elf, size) {
             Ok(()) => Ok(LinkerKind::System),
             Err(LinkAttempt::NotFound) => Err(link_failure(
                 output,
@@ -157,7 +201,7 @@ fn link_objects_with_mode(
     }
 
     for candidate in system_linker_candidates() {
-        match run_system_linker(&candidate, objects, &runtime, output, patchable_elf, size) {
+        match run_system_linker(&candidate, objects, runtime, output, patchable_elf, size) {
             Ok(()) => return Ok(LinkerKind::System),
             Err(LinkAttempt::NotFound) => {}
             Err(LinkAttempt::Failed(message)) => {
@@ -167,7 +211,7 @@ fn link_objects_with_mode(
     }
 
     #[cfg(windows)]
-    match run_discovered_msvc(objects, &runtime, output, size) {
+    match run_discovered_msvc(objects, runtime, output, size) {
         Ok(()) => return Ok(LinkerKind::System),
         Err(LinkAttempt::NotFound) => {}
         Err(LinkAttempt::Failed(message)) => return Err(link_failure(output, message)),
@@ -176,8 +220,23 @@ fn link_objects_with_mode(
     // This fallback keeps compiler-development checkouts testable without a
     // separately configured native linker. Public SDKs do not contain rustc;
     // their native release smoke must exercise the system path above.
-    link_with_rustc(objects, &runtime, output, patchable_elf, size)?;
+    link_with_rustc(objects, runtime, output, patchable_elf, size)?;
     Ok(LinkerKind::RustcDevelopmentFallback)
+}
+
+fn resolve_linker_executable(linker: OsString) -> std::io::Result<OsString> {
+    let path = Path::new(&linker);
+    if !path.is_absolute()
+        && path
+            .parent()
+            .is_some_and(|parent| !parent.as_os_str().is_empty())
+    {
+        // Preserve the final name: lld-link/clang-cl can be symlinks whose
+        // names select driver behavior. Canonicalization would change it.
+        Ok(std::path::absolute(path)?.into_os_string())
+    } else {
+        Ok(linker)
+    }
 }
 
 /// Links a single Cranelift object with the target-matched Arandu runtime.
@@ -241,14 +300,16 @@ fn run_discovered_msvc(
     if installation.is_empty() {
         return Err(LinkAttempt::NotFound);
     }
-    let dev_command = PathBuf::from(installation)
-        .join("Common7")
-        .join("Tools")
-        .join("VsDevCmd.bat");
+    let dev_command = strip_verbatim_prefix(
+        &PathBuf::from(installation)
+            .join("Common7")
+            .join("Tools")
+            .join("VsDevCmd.bat"),
+    );
     if !dev_command.is_file() {
         return Err(LinkAttempt::NotFound);
     }
-    let environment_script = output.with_extension("msvc-env.cmd");
+    let environment_script = strip_verbatim_prefix(&output.with_extension("msvc-env.cmd"));
     fs::write(
         &environment_script,
         format!(
@@ -295,6 +356,7 @@ fn run_discovered_msvc(
         return Err(LinkAttempt::NotFound);
     };
 
+    let linker = strip_verbatim_prefix(&linker);
     run_system_linker_with_environment(&linker, objects, runtime, output, &variables, size)
 }
 
@@ -307,28 +369,9 @@ fn run_system_linker_with_environment(
     environment: &std::collections::HashMap<String, String>,
     size: bool,
 ) -> Result<(), LinkAttempt> {
-    let mut command = Command::new(linker);
-    command
-        .envs(environment)
-        .arg("/NOLOGO")
-        .arg("/INCREMENTAL:NO")
-        .arg("/Brepro")
-        .arg("/SUBSYSTEM:CONSOLE")
-        .arg(format!("/OUT:{}", output.display()));
-    if size {
-        command.args(["/OPT:REF", "/OPT:ICF"]);
-    }
-    for obj in objects {
-        command.arg(obj);
-    }
-    command.arg(runtime).args([
-        "kernel32.lib",
-        "ntdll.lib",
-        "userenv.lib",
-        "ws2_32.lib",
-        "dbghelp.lib",
-        "msvcrt.lib",
-    ]);
+    let mut command =
+        build_system_linker_command(linker.as_os_str(), objects, runtime, output, false, size);
+    command.envs(environment);
     let result = command
         .output()
         .map_err(|error| LinkAttempt::Failed(format!("could not start MSVC linker: {error}")))?;
@@ -352,22 +395,27 @@ fn build_system_linker_command(
     #[cfg(not(any(target_os = "linux", windows)))]
     let _ = size;
     let mut command = Command::new(linker);
-    let work_dir = objects.first().and_then(|obj| obj.parent());
+    let work_dir = linker_work_dir(objects, runtime, output);
     let object_args: Vec<PathBuf> = objects
         .iter()
         .map(|obj| {
             if let Some(dir) = work_dir {
                 make_relative(obj, dir)
             } else {
-                obj.to_path_buf()
+                strip_verbatim_prefix(obj)
             }
         })
         .collect();
     let output_arg = if let Some(dir) = work_dir {
-        command.current_dir(dir);
+        command.current_dir(strip_verbatim_prefix(dir));
         make_relative(output, dir)
     } else {
-        output.to_path_buf()
+        strip_verbatim_prefix(output)
+    };
+    let runtime_arg = if let Some(dir) = work_dir {
+        make_relative(runtime, dir)
+    } else {
+        strip_verbatim_prefix(runtime)
     };
     if cfg!(windows) {
         command
@@ -382,7 +430,7 @@ fn build_system_linker_command(
         for obj in &object_args {
             command.arg(obj);
         }
-        command.arg(runtime).args([
+        command.arg(&runtime_arg).args([
             "kernel32.lib",
             "ntdll.lib",
             "userenv.lib",
@@ -394,7 +442,7 @@ fn build_system_linker_command(
         for obj in &object_args {
             command.arg(obj);
         }
-        command.arg(runtime).arg("-o").arg(&output_arg);
+        command.arg(&runtime_arg).arg("-o").arg(&output_arg);
         #[cfg(target_os = "linux")]
         {
             command.arg("-Wl,--gc-sections").arg(if patchable_elf {
@@ -571,25 +619,30 @@ fn link_with_rustc(
             error.to_string(),
         )
     })?;
-    let work_dir = objects.first().and_then(|obj| obj.parent());
+    let work_dir = linker_work_dir(objects, runtime, output);
     let object_args: Vec<PathBuf> = objects
         .iter()
         .map(|obj| {
             if let Some(dir) = work_dir {
                 make_relative(obj, dir)
             } else {
-                obj.to_path_buf()
+                strip_verbatim_prefix(obj)
             }
         })
         .collect();
     let (stub_arg, output_arg) = if let Some(dir) = work_dir {
         (make_relative(&stub, dir), make_relative(output, dir))
     } else {
-        (stub.clone(), output.to_path_buf())
+        (strip_verbatim_prefix(&stub), strip_verbatim_prefix(output))
+    };
+    let runtime_arg = if let Some(dir) = work_dir {
+        make_relative(runtime, dir)
+    } else {
+        strip_verbatim_prefix(runtime)
     };
     let mut command = Command::new("rustc");
     if let Some(dir) = work_dir {
-        command.current_dir(dir);
+        command.current_dir(strip_verbatim_prefix(dir));
     }
     command
         .args(["--crate-name", "arandu_link", "--edition", "2024"])
@@ -603,7 +656,7 @@ fn link_with_rustc(
     }
     command
         .arg("-C")
-        .arg(format!("link-arg={}", runtime.display()))
+        .arg(format!("link-arg={}", runtime_arg.display()))
         .args(rustc_reproducible_link_args(patchable_elf));
     if size {
         command.args(["-C", "strip=symbols"]);
@@ -653,7 +706,37 @@ fn rustc_reproducible_link_args(patchable_elf: bool) -> Vec<&'static str> {
     }
 }
 
+// Only rebase absolute inputs. Relative paths (including an explicit runtime
+// override) belong to the caller's directory and must keep that meaning.
+fn linker_work_dir<'a>(objects: &[&'a Path], runtime: &Path, output: &Path) -> Option<&'a Path> {
+    if !runtime.is_absolute()
+        || !output.is_absolute()
+        || objects.iter().any(|obj| !obj.is_absolute())
+    {
+        return None;
+    }
+    objects
+        .first()
+        .and_then(|obj| obj.parent())
+        .filter(|dir| !dir.as_os_str().is_empty())
+}
+
+fn strip_verbatim_prefix(path: &Path) -> PathBuf {
+    let Some(text) = path.to_str() else {
+        return path.to_path_buf();
+    };
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{rest}"))
+    } else if let Some(rest) = text.strip_prefix(r"\\?\") {
+        PathBuf::from(rest)
+    } else {
+        path.to_path_buf()
+    }
+}
+
 fn make_relative(target: &Path, base: &Path) -> PathBuf {
+    let target = strip_verbatim_prefix(target);
+    let base = strip_verbatim_prefix(base);
     let target_components: Vec<_> = target.components().collect();
     let base_components: Vec<_> = base.components().collect();
     let mut common = 0;
@@ -664,7 +747,7 @@ fn make_relative(target: &Path, base: &Path) -> PathBuf {
         common += 1;
     }
     if common == 0 {
-        return target.to_path_buf();
+        return target;
     }
     let mut result = PathBuf::new();
     for _ in common..base_components.len() {
@@ -692,9 +775,142 @@ fn link_failure(output: &Path, message: String) -> CliFailure {
     CliFailure::operational("link native artifact", Some(output.to_path_buf()), message)
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(unix)]
+    fn relative_linker_preserves_its_symlink_driver_name() {
+        let workspace = msvc_workspace::MsvcWorkspace::new(
+            &[],
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"),
+        )
+        .unwrap();
+        let driver = workspace.output.with_file_name("lld-link");
+        fs::write(driver.with_file_name("lld"), b"driver").unwrap();
+        std::os::unix::fs::symlink("lld", &driver).unwrap();
+        let relative = make_relative(&driver, &std::env::current_dir().unwrap());
+        let resolved = resolve_linker_executable(relative.into_os_string()).unwrap();
+        assert!(Path::new(&resolved).is_absolute());
+        assert_eq!(Path::new(&resolved).file_name(), driver.file_name());
+        assert_eq!(fs::read(resolved).unwrap(), b"driver");
+        assert_eq!(
+            resolve_linker_executable("link.exe".into()).unwrap(),
+            "link.exe"
+        );
+    }
+
+    #[test]
+    fn verbatim_prefix_stripping() {
+        assert_eq!(
+            strip_verbatim_prefix(Path::new(r"\\?\C:\project\bin")),
+            PathBuf::from(r"C:\project\bin")
+        );
+        assert_eq!(
+            strip_verbatim_prefix(Path::new(r"\\?\UNC\server\share\file.exe")),
+            PathBuf::from(r"\\server\share\file.exe")
+        );
+        assert_eq!(
+            strip_verbatim_prefix(Path::new(r"C:\project\bin")),
+            PathBuf::from(r"C:\project\bin")
+        );
+        assert_eq!(
+            strip_verbatim_prefix(Path::new("relative/path")),
+            PathBuf::from("relative/path")
+        );
+    }
+
+    #[test]
+    fn make_relative_handles_normal_paths() {
+        let base = Path::new("/project/target/dev/cgu");
+        let target = Path::new("/project/target/dev/cgu/main-1234.o");
+        assert_eq!(make_relative(target, base), PathBuf::from("main-1234.o"));
+
+        let out = Path::new("/project/target/dev/bin/.staging/app");
+        assert_eq!(
+            make_relative(out, base),
+            PathBuf::from("../bin/.staging/app")
+        );
+    }
+
+    #[test]
+    fn bare_object_keeps_the_callers_working_directory() {
+        let command = build_system_linker_command(
+            std::ffi::OsStr::new("linker"),
+            &[Path::new("artifact.o")],
+            Path::new("runtime.a"),
+            Path::new("artifact"),
+            false,
+            false,
+        );
+        assert_eq!(command.get_current_dir(), None);
+        let args: Vec<_> = command.get_args().collect();
+        assert!(args.contains(&std::ffi::OsStr::new("artifact.o")));
+        assert!(args.contains(&std::ffi::OsStr::new("runtime.a")));
+    }
+
+    #[test]
+    fn relative_runtime_override_keeps_the_callers_working_directory() {
+        let object = std::env::current_dir().unwrap().join("artifact.o");
+        let output = object.with_extension("exe");
+        let command = build_system_linker_command(
+            std::ffi::OsStr::new("linker"),
+            &[&object],
+            Path::new("sdk/runtime.a"),
+            &output,
+            false,
+            false,
+        );
+        assert_eq!(command.get_current_dir(), None);
+        assert!(command.get_args().any(|arg| arg == "sdk/runtime.a"));
+    }
+
+    #[test]
+    fn linker_relativizes_objects_output_and_runtime() {
+        let project = std::env::temp_dir().join("project");
+        let objects = project.join("target/dev/incremental/cgu");
+        let object = objects.join("main.o");
+        let runtime = project.join("sdk/runtime.a");
+        let output = project.join("target/dev/bin/.staging/app.exe");
+        let command = build_system_linker_command(
+            std::ffi::OsStr::new("linker"),
+            &[&object],
+            &runtime,
+            &output,
+            false,
+            false,
+        );
+        assert_eq!(command.get_current_dir(), Some(objects.as_path()));
+        let args: Vec<_> = command.get_args().collect();
+        assert!(args.contains(&std::ffi::OsStr::new("main.o")));
+        assert!(args.contains(&make_relative(&runtime, &objects).as_os_str()));
+        let relative_output = make_relative(&output, &objects);
+        let output_arg = if cfg!(windows) {
+            OsString::from(format!("/OUT:{}", relative_output.display()))
+        } else {
+            relative_output.into_os_string()
+        };
+        assert!(args.contains(&output_arg.as_os_str()));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn make_relative_handles_verbatim_windows_paths() {
+        let base = Path::new(r"\\?\C:\project\target\dev\cgu");
+        let target = Path::new(r"\\?\C:\project\target\dev\cgu\main-1234.obj");
+        assert_eq!(make_relative(target, base), PathBuf::from("main-1234.obj"));
+
+        let out = Path::new(r"\\?\C:\project\target\dev\bin\.staging\app.exe");
+        assert_eq!(
+            make_relative(out, base),
+            PathBuf::from(r"..\bin\.staging\app.exe")
+        );
+        assert_eq!(
+            make_relative(Path::new(r"\\?\D:\sdk\runtime.lib"), base),
+            PathBuf::from(r"D:\sdk\runtime.lib")
+        );
+    }
 
     #[test]
     #[cfg(target_os = "linux")]

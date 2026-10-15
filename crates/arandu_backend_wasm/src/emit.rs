@@ -337,6 +337,8 @@ impl<'a> WasmModuleBuilder<'a> {
 
         // ── 9. Code section ───────────────────────────────────────────────
         let ctx = crate::translator::TranslationContext {
+            functions: &self.program.funcs,
+            extern_functions: &self.program.extern_funcs,
             symbols: self.symbols,
             interner: self.interner,
             layout_provider: self.layout_provider,

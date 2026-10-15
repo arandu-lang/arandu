@@ -230,13 +230,14 @@ fn check_source_internal(
 
     let mut expected: Option<BackendObservation> = None;
     let mut reference_coverage = arandu_backend_cranelift::BlockCoverage::default();
-    let mut optimized_programs = Vec::with_capacity(3);
-    let mut cranelift_outputs = Vec::with_capacity(3);
+    let mut optimized_programs = Vec::with_capacity(4);
+    let mut cranelift_outputs = Vec::with_capacity(4);
 
     for level in [
         arandu_mir::OptLevel::O0,
         arandu_mir::OptLevel::O1,
         arandu_mir::OptLevel::O2,
+        arandu_mir::OptLevel::Os,
     ] {
         let mut program = lowered.amir.clone();
         let optimization = catch_unwind(AssertUnwindSafe(|| {
@@ -400,6 +401,7 @@ fn lower_validated_source_inner(
         "import std.alloc.smallvec",
         "import std.alloc.string",
         "import std.core.slice",
+        "import std.core.mem",
         "import std.core.iter",
         "import std.core.str",
         "import std.core.hash",
@@ -943,6 +945,7 @@ pub fn run_jit_worker(
         "O0" => arandu_mir::OptLevel::O0,
         "O1" => arandu_mir::OptLevel::O1,
         "O2" => arandu_mir::OptLevel::O2,
+        "Os" => arandu_mir::OptLevel::Os,
         _ => {
             eprintln!("invalid opt_level: {opt_level_str}");
             return 2;
@@ -1359,27 +1362,10 @@ pub(super) fn normalize_captured_output(bytes: Vec<u8>) -> Vec<u8> {
     normalized
 }
 
-fn execute_wasm(
-    program: &arandu_semantics::amir::AmirProgram,
-    symbols: &arandu_semantics::SymbolTable,
-    type_info: &arandu_semantics::TypeInfo,
-) -> Result<BackendObservation, String> {
-    let bytes = arandu_backend_wasm::emit_wasm(
-        program,
-        symbols,
-        &type_info.type_interner,
-        type_info,
-        arandu_middle::layout::DataLayout::ptr_width(4),
-    )
-    .map_err(|diagnostic| format!("emission diagnostic: {diagnostic:?}"))?;
-    let id = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
-    let wasm_path =
-        std::env::temp_dir().join(format!("arandu_smith_{}_{}.wasm", std::process::id(), id));
-    let phase_path = wasm_path.with_extension("phase");
-    let _cleanup = TemporaryArtifacts(vec![wasm_path.clone(), phase_path.clone()]);
-    std::fs::write(&wasm_path, bytes)
-        .map_err(|error| format!("write {}: {error}", wasm_path.display()))?;
-
+/// Node adapter for Arandu's core-Wasm host imports, shared by CLI and IR tests.
+/// The returned i32 uses a file channel so OS exit-code truncation cannot hide errors.
+#[must_use]
+pub fn node_runner_script() -> &'static str {
     const RUNNER: &str = r#"(async()=>{
 const fs=require('fs');
 const phasePath=process.env.ARANDU_SMITH_PHASE_PATH;
@@ -1468,10 +1454,34 @@ if(!resultPath)throw new Error('missing result channel path');
 fs.writeFileSync(resultPath,String(result)+'\n');
 phase('done');
 })().catch(e=>{console.error(e&&e.stack||e);process.exitCode=1})"#;
+    RUNNER
+}
+
+fn execute_wasm(
+    program: &arandu_semantics::amir::AmirProgram,
+    symbols: &arandu_semantics::SymbolTable,
+    type_info: &arandu_semantics::TypeInfo,
+) -> Result<BackendObservation, String> {
+    let bytes = arandu_backend_wasm::emit_wasm(
+        program,
+        symbols,
+        &type_info.type_interner,
+        type_info,
+        arandu_middle::layout::DataLayout::ptr_width(4),
+    )
+    .map_err(|diagnostic| format!("emission diagnostic: {diagnostic:?}"))?;
+    let id = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
+    let wasm_path =
+        std::env::temp_dir().join(format!("arandu_smith_{}_{}.wasm", std::process::id(), id));
+    let phase_path = wasm_path.with_extension("phase");
+    let _cleanup = TemporaryArtifacts(vec![wasm_path.clone(), phase_path.clone()]);
+    std::fs::write(&wasm_path, bytes)
+        .map_err(|error| format!("write {}: {error}", wasm_path.display()))?;
+    let runner = node_runner_script();
     let node = std::env::var_os("ARANDU_NODE").unwrap_or_else(|| "node".into());
     let mut execution_command = Command::new(&node);
     execution_command.arg("--no-liftoff");
-    execution_command.arg("-e").arg(RUNNER).arg(&wasm_path);
+    execution_command.arg("-e").arg(runner).arg(&wasm_path);
     execution_command.args(SYNTHESIZED_PROGRAM_ARGS);
     let result_path = wasm_path.with_extension("result");
     let _result_cleanup = TemporaryArtifacts(vec![result_path.clone()]);
@@ -1482,7 +1492,7 @@ phase('done');
         Err(error) => {
             let phase =
                 std::fs::read_to_string(&phase_path).unwrap_or_else(|_| "not started".into());
-            let evidence = preserve_wasm_reproducer(&wasm_path, RUNNER, &phase)
+            let evidence = preserve_wasm_reproducer(&wasm_path, runner, &phase)
                 .map(|path| path.display().to_string())
                 .unwrap_or_else(|error| format!("could not preserve reproducer: {error}"));
             return Err(format!(

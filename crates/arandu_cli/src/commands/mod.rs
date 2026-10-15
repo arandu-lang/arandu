@@ -138,14 +138,14 @@ pub fn run(raw_args: Vec<String>) -> CliResult {
         "init" => return project::cmd_init(&inv.args, inv.quiet),
         "doctor" => {
             if inv.args.len() != 2 {
-                fail_usage("usage: arandu_cli doctor [--stdlib-path=<dir>] [-v]");
+                fail_usage("usage: arandu doctor [--stdlib-path=<dir>] [-v]");
             }
             return doctor::cmd_doctor(&inv.project_flags);
         }
         "cache" => return project::cmd_cache(&inv.args, &inv.project_flags),
         "hash-file" => {
             if inv.args.len() != 3 {
-                fail_usage("usage: arandu_cli hash-file <path>");
+                fail_usage("usage: arandu hash-file <path>");
             }
             return hash::cmd_hash_file(Path::new(&inv.args[2]));
         }
@@ -232,7 +232,7 @@ pub fn run(raw_args: Vec<String>) -> CliResult {
                 } else if argument == "--exact" {
                     exact = arguments.next().cloned();
                     if exact.is_none() {
-                        fail_usage("usage: arandu_cli test [package-path] --list [--exact <id>]");
+                        fail_usage("usage: arandu test [package-path] --list [--exact <id>]");
                     }
                 } else if argument == "--fail-fast" {
                     runner.fail_fast = true;
@@ -276,7 +276,7 @@ pub fn run(raw_args: Vec<String>) -> CliResult {
                         fail_usage("--output requires a file path");
                     }
                 } else if argument.starts_with('-') || start.is_some() {
-                    fail_usage("usage: arandu_cli test [package-path] --list [--exact <id>]");
+                    fail_usage("usage: arandu test [package-path] --list [--exact <id>]");
                 } else {
                     start = Some(PathBuf::from(argument));
                 }
@@ -414,7 +414,7 @@ pub fn run(raw_args: Vec<String>) -> CliResult {
                         );
                     }
                     _ if argument.starts_with('-') || start.is_some() => {
-                        fail_usage("usage: arandu_cli bench [package-path] [flags]");
+                        fail_usage("usage: arandu bench [package-path] [flags]");
                     }
                     _ => start = Some(PathBuf::from(argument)),
                 }

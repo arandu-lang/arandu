@@ -35,12 +35,13 @@ de metaprogramação:
    valores conhecidos em compilação.
 3. Integração de parâmetros de valor com os const generics escalares já
    existentes, evitando mecanismos independentes e preservando compatibilidade.
-4. Intrínsecos de layout como `@sizeOf` e `@alignOf`, calculados para o layout
-   configurado do alvo suportado.
+4. Intrínsecos de layout `mem.sizeOf<T>()` e `mem.alignOf<T>()`, calculados para o
+   layout configurado do alvo suportado. As formas `@sizeOf(Type)` e
+   `@alignOf(Type)` da 0.1.9 permanecem compatíveis.
 5. Memoização no Salsa, orçamento de execução, cancelamento cooperativo e
    diagnósticos estruturados.
 
-`@typeInfo` estrutural amplo, introspecção de OS/arquitetura/capabilities,
+Reflexão estrutural ampla (API proposta `types.info<T>()`), introspecção de OS/arquitetura/capabilities,
 modelo de memória virtual geral, `quote`, splicing, `@Derive`, geração de items,
 inclusão de arquivos e JIT não fazem parte do primeiro núcleo. Cada um depende
 de contratos adicionais e deve ser avaliado em etapa ou RFC própria.
@@ -177,9 +178,17 @@ argumentos constantes. Mudanças à sintaxe atual exigem plano de compatibilidad
 ### 3.4. Layout do alvo
 
 ```arandu
-const bytes = @sizeOf(MyStruct)
-const alignment = @alignOf(MyStruct)
+import std.core.mem as mem
+
+func bytes<T>(): usize { return mem.sizeOf<T>() }
+func alignment<T>(): usize { return mem.alignOf<T>() }
 ```
+
+A revisão de contrato da 0.1.10 prefere a API de módulo. As expressões
+`@sizeOf(Type)`/`@alignOf(Type)` continuam aceitas por compatibilidade; não se
+adicionam aliases `@SizeOf`/`@AlignOf`. A convenção `@PascalCase` da RFC 0002
+se aplica às anotações declarativas. Remoção de sintaxe anterior exige migração
+explícita e prova de paridade em todas as posições suportadas.
 
 Esses intrínsecos usam somente o layout do alvo selecionado e suportado pelo
 backend. A sintaxe `target.os`, `target.arch`, `target.abi` ou
@@ -335,9 +344,10 @@ proposta eram exemplos, não contrato.
 
 ### 4.6. CT.5 — reflexão mínima e critérios de saída do núcleo
 
-A superfície de layout `@sizeOf`/`@alignOf` reutiliza as operações canônicas
-de `LayoutEngine` e a classificação compartilhada dos intrínsecos; preservar
-`mem.sizeOf<T>()`/`mem.alignOf<T>()`. Um `@typeInfo` amplo com campos, métodos,
+A superfície preferida `mem.sizeOf<T>()`/`mem.alignOf<T>()` e as expressões
+compatíveis `@sizeOf`/`@alignOf` reutilizam as operações canônicas de
+`LayoutEngine` e a classificação compartilhada dos intrínsecos. A API proposta
+`types.info<T>()`, com campos, métodos,
 atributos ou acesso dinâmico por nome fica para etapa posterior, com contrato
 próprio para identidade e visibilidade de tipos.
 
@@ -362,7 +372,8 @@ Os itens seguintes permanecem possibilidades futuras e exigem desenho separado:
 - `quote`, `${...}`, geração de declarações, `@Derive` e DSLs;
 - reflexão estrutural completa e `val.@field(name)`;
 - APIs de target OS/arch/ABI/capabilities além do descritor suportado;
-- inclusão de assets, `embedBytes`/`embedString` ou acesso indireto a arquivos;
+- inclusão de assets (APIs propostas `embed.bytes`/`embed.str`) ou acesso
+  indireto a arquivos;
 - interpretação geral de ponteiros, memória virtual completa ou equivalência
   integral com Miri;
 - execução JIT de CTFE.
@@ -413,8 +424,8 @@ macros; comparações futuras precisam de workloads e critérios reproduzíveis.
 4. Qual formato representa o triple e quais alvos têm codegen real suportado?
 5. Quais consultas devem depender do resultado CTFE e como provar cutoff sem
    supor que a query não será reexecutada?
-6. Quais intrínsecos mínimos oferecem valor sem comprometer estabilidade de
-   `@typeInfo`?
+6. Quais intrínsecos mínimos oferecem valor sem comprometer o contrato de uma
+   futura API de reflexão `types.info<T>()`?
 
 ## 10. Possibilidades futuras
 
@@ -433,7 +444,7 @@ cinco horizontes:
 
 | Fase | Versão | Nome | O que habilita |
 |---|---|---|---|
-| **C1** | `0.1.9` | Núcleo escalar (atual) | `comptime (expr)`, `comptime { block }`, `comptime if`, `comptime for`, const generics escalares, `@sizeOf`, `@alignOf` |
+| **C1** | `0.1.9` | Núcleo escalar (atual) | `comptime (expr)`, `comptime { block }`, `comptime if`, `comptime for`, const generics escalares, `mem.sizeOf<T>()`, `mem.alignOf<T>()` (grafia preferida na revisão 0.1.10; expressões `@sizeOf`/`@alignOf` compatíveis) |
 | **C2** | `0.2` | Tipos como valores | `comptime T: type`, tipos como `ConstValue::TypeDesc(TypeId)`, introspecção básica (`T.name`, `T.size`, `T.align`), type aliases calculados |
 | **C3** | `0.3` | Reflection e tipos gerados | `comptime func` retornando `type`, `T.fields()`, structs com campos calculados, primeiro recorte de `SymbolId::Generated` |
 | **C4** | `0.4` | Geração de declarações e atributos | `@Foo` via `Foo.apply(target)` (ver [RFC 0024](0024-unified-attribute-system.md)), `@Derive(Debug, Eq)`, injeção de métodos `impl`, `comptime stmt` no módulo |

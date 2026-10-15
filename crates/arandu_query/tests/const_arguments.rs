@@ -6,6 +6,34 @@ use salsa::Setter;
 
 const COUNT: &str = "func count<comptime N: uint>(): uint { return N }\n";
 
+#[test]
+fn typed_comptime_integers_are_valid_array_lengths() {
+    for (length, valid) in [
+        ("2 as u8", true),
+        ("0 as i64", true),
+        ("2 as i64", true),
+        ("-1 as i64", false),
+        ("true", false),
+        ("65537 as u64", false),
+    ] {
+        let mut db = DatabaseImpl::new();
+        let source = format!(
+            "func main(): int {{ let values: [comptime ({length})]u8 = [7; comptime ({length})]; return 0 }}"
+        );
+        let file = db.new_file("typed-length.aru".into(), source);
+        let diagnostics = errors(&db, file);
+        assert_eq!(diagnostics.is_empty(), valid, "{length}: {diagnostics:?}");
+        if valid {
+            let output = runtime::runtime_program(&db, file);
+            assert!(
+                output.diagnostics.is_empty(),
+                "{length}: {:?}",
+                output.diagnostics
+            );
+        }
+    }
+}
+
 fn symbol(db: &DatabaseImpl, file: SourceFile, name: &str) -> SymbolId {
     passes::resolved_headers(db, file)
         .declarations
@@ -173,7 +201,9 @@ fn forwarded_constant_parameters_must_fit_the_complete_destination_domain() {
     for (source_type, destination_type, width, valid) in [
         ("u8", "u16", 8, true),
         ("u16", "u8", 8, false),
-        ("i8", "u8", 8, true),
+        ("i8", "u8", 8, false),
+        ("i8", "i16", 8, true),
+        ("u8", "i16", 8, true),
         ("u8", "i8", 8, false),
         ("uint", "usize", 4, true),
         ("usize", "uint", 4, true),
@@ -512,10 +542,22 @@ fn computed_arguments_in_loop_and_pattern_headers_preserve_lexical_scope() {
     ] {
         let mut db = DatabaseImpl::new();
         let file = db.new_file("header-arguments.aru".into(), format!("{COUNT}{owner}"));
-        assert!(passes::parse(&db, file).is_ok(), "{owner}: {:?}", passes::parse(&db, file).as_ref().err());
-        assert!(errors(&db, file).is_empty(), "{owner}: {:?}", errors(&db, file));
+        assert!(
+            passes::parse(&db, file).is_ok(),
+            "{owner}: {:?}",
+            passes::parse(&db, file).as_ref().err()
+        );
+        assert!(
+            errors(&db, file).is_empty(),
+            "{owner}: {:?}",
+            errors(&db, file)
+        );
         let output = runtime::runtime_program(&db, file);
-        assert!(output.diagnostics.is_empty(), "{owner}: {:?}", output.diagnostics);
+        assert!(
+            output.diagnostics.is_empty(),
+            "{owner}: {:?}",
+            output.diagnostics
+        );
     }
     for owner in [
         "func main(): uint { for value in 0..count<comptime (value)>() { return value } return 0 }",
@@ -524,8 +566,15 @@ fn computed_arguments_in_loop_and_pattern_headers_preserve_lexical_scope() {
         "func main(): uint { while Option.Some(1) is Option.Some(value) && count<comptime (value)>() > 0 { return 1 } return 0 }",
     ] {
         let mut db = DatabaseImpl::new();
-        let file = db.new_file("capture-header-arguments.aru".into(), format!("{COUNT}const value uint = 42\n{owner}"));
-        assert!(passes::parse(&db, file).is_ok(), "{owner}: {:?}", passes::parse(&db, file).as_ref().err());
+        let file = db.new_file(
+            "capture-header-arguments.aru".into(),
+            format!("{COUNT}const value uint = 42\n{owner}"),
+        );
+        assert!(
+            passes::parse(&db, file).is_ok(),
+            "{owner}: {:?}",
+            passes::parse(&db, file).as_ref().err()
+        );
         let diagnostics = errors(&db, file);
         // The incoming range expression sees the global; the new range binding
         // enters scope only in the body. C-style and pattern later clauses see
@@ -533,7 +582,12 @@ fn computed_arguments_in_loop_and_pattern_headers_preserve_lexical_scope() {
         if owner.contains("for value in") {
             assert!(diagnostics.is_empty(), "{owner}: {diagnostics:?}");
         } else {
-            assert!(diagnostics.iter().any(|d| d.code == DiagCode::T043ComptimeRuntimeCapture), "{owner}: {diagnostics:?}");
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.code == DiagCode::T043ComptimeRuntimeCapture),
+                "{owner}: {diagnostics:?}"
+            );
         }
     }
 }

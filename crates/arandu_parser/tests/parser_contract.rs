@@ -5,6 +5,85 @@ use std::path::PathBuf;
 use arandu_parser::ast_pool::ExprKind;
 use arandu_parser::{ParseErrorCode, parse, parse_to_string};
 
+#[test]
+fn interpolation_closing_braces_do_not_insert_statement_terminators() {
+    for expression in [
+        "42\n",
+        "/// } ignored\n42 //! { ignored\n",
+        "/** } ignored */ 42 /* { ignored */\n",
+        "42\n/* outer /* nested } */ comment */\n",
+        "comptime {\nlet value = 42\nvalue\n}\n",
+    ] {
+        let source = format!("func main(): str {{ return \"${{{expression}}}\" }}");
+        let program = parse(&source).expect("multiline interpolation expression");
+        assert_eq!(
+            program
+                .pool
+                .exprs
+                .iter()
+                .filter(|expr| matches!(expr, ExprKind::InterpolatedString { .. }))
+                .count(),
+            1
+        );
+        let tree = arandu_parser::parse_syntax(&source);
+        assert_eq!(tree.root().text().to_string(), source);
+        let rd = arandu_parser::parse_token_stream(
+            &source,
+            std::sync::Arc::clone(tree.tokens_arc()),
+            0,
+            Vec::new(),
+        );
+        assert!(
+            rd.diagnostics.is_empty(),
+            "{expression:?}: {:?}",
+            rd.diagnostics
+        );
+    }
+}
+
+#[test]
+fn incomplete_blocks_preserve_balanced_lossless_cst_and_one_error_per_closer() {
+    for (source, missing) in [
+        ("func main(): void {", 1),
+        ("func main(): void { let value = 42", 1),
+        ("func main(): void { if true { let value = 42", 2),
+    ] {
+        let tokens = arandu_lexer::Lexer::new(source)
+            .lex()
+            .expect("tokens")
+            .tokens;
+        let mut parser =
+            arandu_parser::Parser::new(source, std::sync::Arc::new(tokens)).with_events();
+        parser.parse_program().expect("recover partial function");
+        let recovered = arandu_parser::parse_recovering(source);
+        assert_eq!(recovered.diagnostics.len(), missing, "{source}");
+        assert!(
+            recovered
+                .diagnostics
+                .iter()
+                .all(|error| error.message.as_ref() == "expected '}'")
+        );
+        let events = parser.take_events();
+        assert!(
+            arandu_parser::events_balanced(&events),
+            "{source}: {events:?}"
+        );
+        let green = arandu_parser::build_green_from_events(source, &events).expect("balanced CST");
+        let root = arandu_parser::SyntaxNode::new_root(green);
+        assert_eq!(root.text().to_string(), source);
+        assert_eq!(
+            root.descendants()
+                .filter(|node| node.kind() == arandu_parser::SyntaxKind::BLOCK)
+                .count(),
+            missing
+        );
+        assert!(
+            parse(source).is_err(),
+            "recovery must not accept invalid source"
+        );
+    }
+}
+
 fn contains(outer_start: usize, outer_end: usize, inner_start: usize, inner_end: usize) -> bool {
     outer_start <= inner_start && inner_end <= outer_end
 }

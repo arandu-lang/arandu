@@ -9,6 +9,19 @@
 - **PR da RFC:** [Em criação]
 - **Issue de Acompanhamento:** [Em criação]
 
+> **Limite de implementação:** esta RFC continua `Draft`. Os comandos
+> `arandu opt-test`, `arandu opt-fuzz` e `-Zremarks=opt`, as diretivas e as
+> políticas abaixo são propostas. O AranduSmith existente já executa
+> triangulação Cranelift/C/Wasm, EMI e redução limitada. A revisão 0.1.10
+> amplia a matriz O0/O1/O2 com Os (`--size`) e a síntese com CTFE,
+> repetição de arrays e casts de fronteira,
+> acrescenta mutações negativas com `DiagCode` e cobertura nativa de CI; esse
+> recorte está documentado na
+> [RFC 0022](0022-holistic-synthesis-differential-fuzzing.md#11-contrato-integrado-na-revisão-0110).
+> Esses testes não implementam o framework completo desta RFC nem provam
+> equivalência geral das otimizações. A fila ativa permanece no
+> [roadmap mestre](../arandu-compiler-roadmap-v0.1.md#fila-de-execução).
+
 ---
 
 ## 1. Resumo (Summary)

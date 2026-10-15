@@ -138,8 +138,7 @@ public func mulAddInto(
     let cCount = a.cols()
     if b.rows() != rCount || b.cols() != cCount
         || c.rows() != rCount || c.cols() != cCount
-        || out.rows() != rCount || out.cols() != cCount
-    {
+        || out.rows() != rCount || out.cols() != cCount {
         return false
     }
 

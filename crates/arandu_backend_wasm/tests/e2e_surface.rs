@@ -21,6 +21,133 @@ use common::{
 };
 
 #[test]
+fn scalar_float_integer_casts_preserve_width_and_signedness() {
+    let bytes = compile_source(
+        r#"
+func convert(x: f64, y: f32, a: u64, b: i32): int {
+    if x as u64 != 9223372036854775808 as u64 { return 1 }
+    if y as i64 != -42 { return 2 }
+    if a as f64 != 9223372036854775808.0 { return 3 }
+    if b as f32 != -42.0 as f32 { return 4 }
+    return 0
+}
+
+func main(): int {
+    let a: f64 = 9223372036854775808.0
+    let b: f32 = -42.75
+    // Separate positive input for unsigned truncation.
+    let positive: f32 = 42.75
+    if positive as u32 != 42 { return 5 }
+    if 42.75 as u64 != 42 { return 6 }
+    if 42 as f64 != 42.0 { return 7 }
+    return convert(a, b, 9223372036854775808 as u64, -42)
+}
+"#,
+    );
+    assert_eq!(run_main_i32(&bytes), 0);
+}
+
+#[test]
+fn literal_numeric_casts_do_not_narrow_before_float_conversion() {
+    let bytes = compile_source(
+        "func main(): int { if (4294967296 as f64) != 4294967296.0 { return 1 }; if (4294967296 as f32) != (4294967296.0 as f32) { return 2 }; if (42.75 as u32) != 42 { return 3 }; return 0 }",
+    );
+    assert_eq!(run_main_i32(&bytes), 0);
+}
+
+#[test]
+fn unit_arguments_do_not_leave_wasm_stack_values() {
+    let bytes = compile_source(
+        "func unit(): void {} func consume(a: void, x: int, b: void, y: int): int { return x + y } func main(): int { let value = unit(); return consume(value, 19, unit(), 23) }",
+    );
+    assert_eq!(run_main_i32(&bytes), 42);
+}
+
+#[test]
+fn nullable_nil_argument_is_not_confused_with_unit() {
+    let bytes = compile_source(
+        "func missing(value: int?, marker: int): int { if value == nil { return marker }; return 1 } func main(): int { return missing(nil, 42) }",
+    );
+    assert_eq!(run_main_i32(&bytes), 42);
+}
+
+#[test]
+fn result_error_storage_is_preserved_when_unit_call_arguments_are_erased() {
+    let bytes = compile_source(
+        "func ok_seven(): Result<int, Err> { return .Ok(7) }\nfunc extract_seven(): Result<int, Err> { let value = ok_seven()?; return .Ok(value) }\nfunc main(): int { return match extract_seven() {\nOk(value) => value\nErr(_) => 0\n} }\n",
+    );
+    assert_eq!(run_main_i32(&bytes), 7);
+}
+
+#[test]
+fn foreign_calls_use_declared_unit_and_nullable_parameter_types() {
+    let bytes = compile_source(
+        "extern \"C\" { func inspect(unit: void, value: ptr[int]?, marker: int): int }\nfunc unit(): void {}\nfunc main(): int { return unsafe { inspect(unit(), nil, 42) } }\n",
+    );
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &bytes).expect("valid foreign-call ABI");
+    let mut linker = wasmtime::Linker::new(&engine);
+    linker
+        .func_wrap("env", "inspect", |value: i32, marker: i32| {
+            assert_eq!(value, 0);
+            marker
+        })
+        .unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = linker.instantiate(&mut store, &module).unwrap();
+    let main = instance
+        .get_typed_func::<(), i32>(&mut store, &find_func_export(&bytes, "main").unwrap())
+        .unwrap();
+    assert_eq!(main.call(&mut store, ()).unwrap(), 42);
+}
+
+#[test]
+fn scalar_float_integer_casts_cover_all_wasm_widths_and_signs() {
+    macro_rules! check {
+        ($from:literal, $to:literal, $input:expr, $expected:expr, $rust_from:ty, $rust_to:ty) => {{
+            let bytes = compile_source(&format!(
+                "public func main(value: {}): {} {{ return value as {} }}",
+                $from, $to, $to
+            ));
+            let engine = wasmtime::Engine::default();
+            let module = wasmtime::Module::new(&engine, &bytes).unwrap();
+            let mut store = wasmtime::Store::new(&engine, ());
+            let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+            let function = instance
+                .get_typed_func::<$rust_from, $rust_to>(
+                    &mut store,
+                    &find_func_export(&bytes, "main").unwrap(),
+                )
+                .unwrap();
+            assert_eq!(
+                function.call(&mut store, $input).unwrap(),
+                $expected,
+                "{} -> {}",
+                $from,
+                $to
+            );
+        }};
+    }
+    check!("f32", "i32", -42.75, -42, f32, i32);
+    check!("f32", "u32", 2147483648.0, i32::MIN, f32, i32);
+    check!("f32", "i64", -42.75, -42, f32, i64);
+    check!("f32", "u64", 9223372036854775808.0, i64::MIN, f32, i64);
+    check!("f64", "i32", -42.75, -42, f64, i32);
+    check!("f64", "u32", 2147483648.0, i32::MIN, f64, i32);
+    check!("f64", "i64", -42.75, -42, f64, i64);
+    check!("f64", "u64", 9223372036854775808.0, i64::MIN, f64, i64);
+    check!("i32", "f32", -42, -42.0, i32, f32);
+    check!("u32", "f32", i32::MIN, 2147483648.0, i32, f32);
+    check!("i64", "f32", -42, -42.0, i64, f32);
+    check!("u64", "f32", i64::MIN, 9223372036854775808.0, i64, f32);
+    check!("i32", "f64", -42, -42.0, i32, f64);
+    check!("u32", "f64", i32::MIN, 2147483648.0, i32, f64);
+    check!("i64", "f64", -42, -42.0, i64, f64);
+    check!("u64", "f64", i64::MIN, 9223372036854775808.0, i64, f64);
+    check!("f64", "u8", 300.75, 44, f64, i32);
+}
+
+#[test]
 fn copy_frames_reuse_loop_storage_and_restore_normal_and_early_returns() {
     let bytes = compile_source(
         r#"

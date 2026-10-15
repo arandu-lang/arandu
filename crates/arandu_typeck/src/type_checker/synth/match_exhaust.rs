@@ -128,7 +128,7 @@ pub fn check_match_exhaustiveness(
     // Any wildcard / bind arm covers everything — short-circuit.
     if arms
         .iter()
-        .any(|arm| pattern_covers_all(checker.pool, arm.pattern))
+        .any(|arm| arm.guard.is_none() && pattern_covers_all(checker.pool, arm.pattern))
     {
         return;
     }

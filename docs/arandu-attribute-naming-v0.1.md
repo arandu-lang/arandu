@@ -1,7 +1,7 @@
 # Arandu — Contrato de nomes de anotações v0.1
 
 **Status:** implementado; aliases legados mantidos durante a janela de migração
-**Escopo:** sintaxe pública iniciada por `@`; nomes internos e CLI não mudam  
+**Escopo:** anotações declarativas públicas iniciadas por `@`; nomes internos e CLI não mudam
 **Dono:** lexer/parser preservam a grafia, semântica reconhece anotações e o
 formatter apenas mantém a apresentação
 
@@ -43,7 +43,8 @@ mesma grafia:
 
 | Superfície | Convenção | Exemplo |
 | --- | --- | --- |
-| Código Arandu | `@PascalCase` | `@NoFallback` |
+| Anotação declarativa Arandu | `@PascalCase` | `@NoFallback` |
+| Chamada de módulo Arandu | `camelCase` | `mem.sizeOf<T>()` |
 | AST/HIR e Rust | `snake_case` | `no_fallback` |
 | CLI | `--kebab-case` | `--no-generational-fallback` |
 | Manifesto/configuração | `snake_case` | `no_fallback = true` |
@@ -52,6 +53,38 @@ mesma grafia:
 O conteúdo de uma string não participa da regra do identificador da anotação.
 Argumentos que são tipos, valores ou símbolos continuam seguindo a convenção
 da categoria correspondente.
+
+### Operações em expressões
+
+A partir da revisão de contrato da 0.1.10, a superfície preferida para layout é
+`mem.sizeOf<T>()` e `mem.alignOf<T>()`, com `import std.core.mem as mem`.
+São intrínsecos resolvidos pela declaração `extern "arandu-intrinsic"` da stdlib;
+uma função comum chamada `sizeOf` não passa a ser intrínseca por sua grafia.
+
+`@sizeOf(Type)` e `@alignOf(Type)`, introduzidos na 0.1.9, são expressões de
+layout distintas das anotações declarativas no CST/AST. Continuam aceitos por
+compatibilidade, sem renomeação automática pelo formatter e sem novo aviso de
+depreciação nesta revisão. Não se introduzem aliases `@SizeOf`/`@AlignOf`.
+Novos exemplos usam `mem.*`; testes da sintaxe anterior continuam cobrindo-a.
+Uma remoção futura exige política de migração anunciada e paridade comprovada
+em CTFE, constantes globais e headers/dimensões dependentes.
+
+Para operações futuras em expressões, a direção de design é uma API de módulo,
+reservando novas formas `@PascalCase` para anotações declarativas. Os nomes
+`embed.bytes(path)`, `embed.str(path)` e `types.info<T>()` são **propostas**, não
+APIs disponíveis. Sua definição depende de contratos próprios:
+
+- Inclusão de assets: caminhos e raiz permitidos, representação e comprimento
+  do resultado, UTF-8 para texto, limites de recursos e diagnósticos. Leitura
+  pertence à camada que registra inputs; queries Salsa e a VM não fazem I/O.
+  Conteúdo e dependências precisam ser inputs explícitos, com invalidação e
+  cutoff testados quando o arquivo muda ou desaparece.
+- Reflexão: identidade estrutural, visibilidade, domínio congelado retornado,
+  orçamento e layout do alvo. A grafia proposta não habilita reflexão ou
+  geração de declarações da RFC 0024.
+
+Esta decisão não acrescenta módulos `std.embed`/`std.types`, inclusão de arquivos
+ou a sintaxe de array `[comptime]u8` à linguagem.
 
 ### Registro canônico
 

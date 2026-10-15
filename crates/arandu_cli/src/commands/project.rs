@@ -12,7 +12,7 @@ use arandu_middle::layout::DataLayout;
 
 pub fn cmd_new(args: &[String], quiet: bool) -> CliResult {
     if args.len() < 3 {
-        fail_usage("usage: arandu_cli new <project-name> [--bin|--lib] [--vcs=auto|git|none]");
+        fail_usage("usage: arandu new <project-name> [--bin|--lib] [--vcs=auto|git|none]");
     }
     let options = project::parse_scaffold_options(&args[3..])
         .unwrap_or_else(|error| fail_usage(format!("error: {error}")));
@@ -170,13 +170,13 @@ pub fn cmd_inspect(start: &Path, flags: &ProjectFlags, verify: bool) -> CliResul
 pub fn cmd_cache(args: &[String], project_flags: &ProjectFlags) -> CliResult {
     use arandu_package::cache;
     if args.len() < 3 {
-        fail_usage("usage: arandu_cli cache <dir|inspect|verify|verify-tree|prune> [options]");
+        fail_usage("usage: arandu cache <dir|inspect|verify|verify-tree|prune> [options]");
     }
     let layout = cache::resolve_cache_layout(project_flags.cache_dir.as_deref())
         .unwrap_or_else(|error| fail_usage(format!("error: {error}")));
     if args[2] == "dir" {
         if args.len() != 3 {
-            fail_usage("usage: arandu_cli cache dir [--cache-dir=<absolute-dir>]");
+            fail_usage("usage: arandu cache dir [--cache-dir=<absolute-dir>]");
         }
         println!("{}", layout.root().display());
         return Ok(CliSuccess::Done);
@@ -184,7 +184,7 @@ pub fn cmd_cache(args: &[String], project_flags: &ProjectFlags) -> CliResult {
     let allow_dry_run = args[2] == "prune";
     if args[2] == "verify-tree" {
         if args.len() != 5 {
-            fail_usage("usage: arandu_cli cache verify-tree <archive-digest> <tree-digest>");
+            fail_usage("usage: arandu cache verify-tree <archive-digest> <tree-digest>");
         }
         let archive: arandu_query::CacheDigest = args[3]
             .parse()
@@ -242,7 +242,7 @@ pub fn cmd_cache(args: &[String], project_flags: &ProjectFlags) -> CliResult {
             );
             Ok(CliSuccess::Done)
         }
-        _ => fail_usage("usage: arandu_cli cache <dir|inspect|verify|verify-tree|prune> [options]"),
+        _ => fail_usage("usage: arandu cache <dir|inspect|verify|verify-tree|prune> [options]"),
     }
 }
 

@@ -24,6 +24,45 @@ fn assert_synthesized_seed_matches_all_backends(seed: u64) {
 }
 
 #[test]
+fn synthesized_staging_arrays_and_boundary_casts_match_all_backends() {
+    // Cover every conversion family and both endpoints of the generated
+    // integer domain, including negative and positive repeated values.
+    for seed in [0, 1, 2, 3, 4, 5, 6, 7, 255, 2047, u64::MAX] {
+        let generated = synthesize_staged_arrays_and_casts(seed);
+        assert_eq!(
+            generated.source,
+            synthesize_staged_arrays_and_casts(seed).source
+        );
+        let source = format!(
+            "{}\nfunc main(): int {{ return smith_staged_case() }}",
+            generated.source
+        );
+        let observed = check_source(&source, true, true)
+            .unwrap_or_else(|failure| panic!("staged seed {seed}: {failure:?}\n{source}"));
+        assert_eq!(observed.result, generated.expected_result, "seed {seed}");
+        assert!(observed.stdout.is_empty() && observed.stderr.is_empty());
+    }
+}
+
+#[test]
+fn preferred_mem_layout_calls_match_across_backends_and_staging_contexts() {
+    let source = "import std.core.mem as mem\n\
+        const WIDTH usize = comptime mem.sizeOf<int>()\n\
+        func width<T>(): usize { return mem.sizeOf<T>() }\n\
+        func count<comptime N: uint>(): uint { return N }\n\
+        func main(): int {\n\
+            let values: [comptime (mem.sizeOf<int>())]u8 = [1 as u8; comptime (mem.sizeOf<int>())]\n\
+            comptime if mem.alignOf<int>() == 4 {\n\
+                return (WIDTH + width<int>() + count<comptime (mem.sizeOf<int>())>() as usize + values[3] as usize) as int\n\
+            } else { return absent() }\n\
+        }";
+    let observed = check_source(source, true, true)
+        .unwrap_or_else(|failure| panic!("preferred layout calls: {failure:?}"));
+    assert_eq!(observed.result, 13);
+    assert!(observed.stdout.is_empty() && observed.stderr.is_empty());
+}
+
+#[test]
 fn scalar_ctfe_matches_defined_runtime_in_every_backend_and_optimization_level() {
     use arandu_middle::ctfe::ConstValue;
     use arandu_mir::ctfe::Budget;
@@ -123,7 +162,7 @@ fn static_if_scopes_match_every_backend_and_optimization_level() {
 #[test]
 fn finite_static_loops_execute_identically_in_all_backends_and_optimization_levels() {
     // The independent results include normal/empty/reversed domains, fresh
-    // iteration locals and scope exits. `check_source` exercises O0/O1/O2;
+    // iteration locals and scope exits. `check_source` exercises O0/O1/O2/Os;
     // these are execution oracles, not merely successful lowering checks.
     let cases = [
         (

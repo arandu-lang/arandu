@@ -201,7 +201,7 @@ pub fn cmd_doctor(flags: &ProjectFlags) -> i32 {
             details: vec![
                 DoctorDetail::Info(format!("no package found from {}", cwd.display())),
                 DoctorDetail::Info("not an error outside a project directory".into()),
-                DoctorDetail::Hint("run `arandu_cli new <name>` to scaffold a package".into()),
+                DoctorDetail::Hint("run `arandu new <name>` to scaffold a package".into()),
             ],
         },
         Err(error) => DoctorCategory {
@@ -228,7 +228,7 @@ pub fn cmd_doctor(flags: &ProjectFlags) -> i32 {
                 details: vec![
                     DoctorDetail::Error(format!("failed to initialize ISA ({})", diag.message)),
                     DoctorDetail::Hint(
-                        "run `arandu_cli run <file.aru> -Zdebug-backend` for more detail".into(),
+                        "run `arandu run <file.aru> -Zdebug-backend` for more detail".into(),
                     ),
                 ],
             },
@@ -272,7 +272,7 @@ pub fn cmd_doctor(flags: &ProjectFlags) -> i32 {
     if flags.verbose {
         println!("Doctor summary (verbose):");
     } else {
-        println!("Doctor summary (to see all details, run arandu_cli doctor -v):");
+        println!("Doctor summary (to see all details, run arandu doctor -v):");
     }
     println!();
 

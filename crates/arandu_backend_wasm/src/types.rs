@@ -3,7 +3,7 @@
 //! Arandu values occupy one or more wasm stack slots — the wasm32 ABI
 //! represents every Arandu value as a fixed number of slots:
 //!
-//! * `Empty` — no wasm value (`Void`, `Err`, `Error`, `Any`).
+//! * `Empty` — no wasm value (`Void`, `Error`, `Any`).
 //! * `Scalar` — a single value. Scalar primitives map onto `i32`/`i64`/`f32`/
 //!   `f64`; aggregates, references, pointers and handles are represented by
 //!   the *address* of their backing memory cell, which is one `i32` slot.
@@ -44,7 +44,8 @@ pub fn shape(ty: TypeId, interner: &TypeInterner, _layout: DataLayout) -> Shape 
             _ => Shape::Scalar,
         },
         ArType::Range(_) | ArType::GenRef => Shape::Fat,
-        ArType::Void | ArType::Err | ArType::Error => Shape::Empty,
+        // Err is an opaque pointer-sized handle, including inside Result.
+        ArType::Void | ArType::Error => Shape::Empty,
         _ => Shape::Scalar,
     })
 }
@@ -116,7 +117,7 @@ pub fn ar_type_valtypes(ty: &ArType, interner: &TypeInterner, layout: DataLayout
         return vec![ValType::I32, ValType::I32];
     }
     match ty {
-        ArType::Void | ArType::Err | ArType::Error | ArType::Primitive(Primitive::Any) => vec![],
+        ArType::Void | ArType::Error | ArType::Primitive(Primitive::Any) => vec![],
         ArType::Primitive(Primitive::Str) | ArType::Range(_) | ArType::GenRef => {
             vec![ValType::I32, ValType::I32]
         }

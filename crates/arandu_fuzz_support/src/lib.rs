@@ -150,6 +150,7 @@ fn run_syntax(data: &[u8]) {
 }
 
 fn run_pipeline(data: &[u8]) {
+    smith::negative::run(data);
     let mut db = DatabaseImpl::default();
     let file = db.new_file("fuzz/input.aru".into(), source(data).into_owned());
     let _ = arandu_query::syntax_tree(&db, file);

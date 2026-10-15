@@ -14,6 +14,13 @@
 
 Esta RFC estabelece a convenção oficial e imutável para anotações públicas na linguagem Arandu: toda anotação declarada pelo usuário ou fornecida pelo compilador utiliza estritamente a grafia **`@PascalCase`** (ex: `@NoFallback`, `@Test`, `@Benchmark`, `@Link`, `@Suppress`, `@Destructor`, `@Effects`).
 
+A revisão de contrato da 0.1.10 delimita essa convenção às anotações
+declarativas. Operações em expressões preferem APIs de módulo, como
+`mem.sizeOf<T>()` e `mem.alignOf<T>()`. As expressões anteriores `@sizeOf(Type)`
+e `@alignOf(Type)` permanecem compatíveis; não são anotações declarativas nem
+ganham aliases PascalCase. Consulte a política e os limites no
+[contrato de nomes](../arandu-attribute-naming-v0.1.md#operações-em-expressões).
+
 Fica formalizado o encerramento definitivo da tolerância a aliases legados em `snake_case` (`@no_fallback`, `@nosuspend`, `@specialize`, etc.), consolidando diagnósticos estruturados com sugestões imediatas de substituição.
 
 ---
@@ -32,7 +39,7 @@ Cada camada do ecossistema segue a convenção natural e idiomática de seu dom�
 
 | Superfície | Convenção | Exemplo Canônico |
 | :--- | :--- | :--- |
-| **Código Arandu** | `@PascalCase` | `@NoFallback`, `@Test`, `@Effects` |
+| **Anotação declarativa Arandu** | `@PascalCase` | `@NoFallback`, `@Test`, `@Effects` |
 | **AST / HIR e Rust Interno** | `snake_case` | `no_fallback`, `effects` |
 | **Linha de Comando (CLI)** | `--kebab-case` | `--no-generational-fallback` |
 | **Manifesto (`Arandu.toml`)** | `snake_case` | `no_fallback = true` |

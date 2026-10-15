@@ -29,6 +29,49 @@ fn c_compiler(cc: &str) -> Command {
 }
 
 #[test]
+fn parity_unit_arguments_and_locals_have_no_c_storage() {
+    let (amir, tc) = compile_src(
+        "func unit(): void {} func consume(a: void, x: int, b: void, y: int): int { return x + y } func main(): int { let value = unit(); return consume(value, 19, unit(), 23) }",
+    );
+    let emitted = emit_c(&amir, &tc);
+    assert!(!emitted.contains("void p") && !emitted.contains("void l"));
+    assert_eq!(execute_c("unit_arguments_and_locals", &amir, &tc), 42);
+    assert_eq!(execute_cranelift(&amir, &tc), 42);
+}
+
+#[test]
+fn parity_null_pointer_argument_is_not_confused_with_unit() {
+    let (amir, tc) = compile_src(
+        "func missing(value: ptr[int]?, marker: int): int { if value == nil { return marker }; return 1 } func main(): int { return missing(nil, 42) }",
+    );
+    assert_eq!(execute_c("null_pointer_argument", &amir, &tc), 42);
+    assert_eq!(execute_cranelift(&amir, &tc), 42);
+}
+
+#[test]
+fn foreign_unit_parameters_are_erased_in_c_declarations_and_calls() {
+    let (amir, tc) = compile_src(
+        "extern \"C\" { func abs(unit: void, value: i32): i32 }\nfunc unit(): void {}\nfunc main(): int { return unsafe { abs(unit(), -42) } as int }\n",
+    );
+    assert_eq!(execute_c("foreign_unit_parameter", &amir, &tc), 42);
+}
+
+#[test]
+fn parity_generic_array_return_is_concrete_before_codegen() {
+    let (amir, tc) = compile_src_mono(
+        "func values<comptime N: uint>(): [N]i32 { return [7; N] } func main(): int { let values = values<4>(); return values[3] as int - 7 }",
+    );
+    for function in &amir.funcs {
+        assert!(!matches!(
+            tc.type_info.type_interner.resolve(function.return_type),
+            arandu_middle::types::ArType::ConstArray(..)
+        ));
+    }
+    assert_eq!(execute_c("generic_array_return", &amir, &tc), 0);
+    assert_eq!(execute_cranelift(&amir, &tc), 0);
+}
+
+#[test]
 fn parity_print_does_not_append_a_newline() {
     let (amir, tc) = compile_src(
         r#"

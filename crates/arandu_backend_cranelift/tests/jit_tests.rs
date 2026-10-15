@@ -61,6 +61,54 @@ fn backend_for_test() -> CraneliftBackend {
 }
 
 #[test]
+fn jit_float_to_unsigned_uses_destination_signedness() {
+    let (amir, symbols, info) = compile_src("func convert(x: f64): u64 { return x as u64 }");
+    let module = backend_for_test().compile(&amir, &symbols, &info).unwrap();
+    // SAFETY: matches the source function's scalar C ABI; module stays alive.
+    let convert: unsafe extern "C" fn(f64) -> u64 = unsafe { module.get_fn("convert").unwrap() };
+    assert_eq!(unsafe { convert(9223372036854775808.0) }, 1_u64 << 63);
+    assert_eq!(unsafe { convert(42.75) }, 42);
+}
+
+#[test]
+fn jit_literal_shifts_preserve_left_context_signedness() {
+    for level in [
+        arandu_semantics::OptLevel::O0,
+        arandu_semantics::OptLevel::O1,
+        arandu_semantics::OptLevel::O2,
+    ] {
+        let (mut amir, symbols, info) = compile_src(
+            "func unsigned(count: u32): u32 { return 2147483648 >> count } func signed(count: i32): i32 { return -8 >> count }",
+        );
+        arandu_semantics::optimize_amir_checked_with_level(
+            &mut amir,
+            &symbols,
+            &info.type_interner,
+            level,
+        )
+        .unwrap();
+        let module = backend_for_test().compile(&amir, &symbols, &info).unwrap();
+        // SAFETY: matches each source function's scalar C ABI; module stays alive.
+        let unsigned: unsafe extern "C" fn(u32) -> u32 =
+            unsafe { module.get_fn("unsigned").unwrap() };
+        let signed: unsafe extern "C" fn(i32) -> i32 = unsafe { module.get_fn("signed").unwrap() };
+        assert_eq!(unsafe { unsigned(1) }, 1073741824, "{level:?}");
+        assert_eq!(unsafe { signed(1) }, -4, "{level:?}");
+    }
+}
+
+#[test]
+fn jit_unit_arguments_preserve_scalar_argument_positions() {
+    let (amir, symbols, info) = compile_src(
+        "func unit(): void {} func consume(a: void, x: int, b: void, y: int): int { return x + y } func main(): int { let value = unit(); return consume(value, 19, unit(), 23) }",
+    );
+    let module = backend_for_test().compile(&amir, &symbols, &info).unwrap();
+    // SAFETY: matches the source function's scalar C ABI; module stays alive.
+    let main: unsafe extern "C" fn() -> i32 = unsafe { module.get_fn("main").unwrap() };
+    assert_eq!(unsafe { main() }, 42);
+}
+
+#[test]
 fn jit_float_literals_preserve_ieee_encodings_after_optimization() {
     for (primitive, cases) in [
         (

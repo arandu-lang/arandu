@@ -29,7 +29,7 @@ use arandu_middle::amir::AmirFunc;
 use arandu_middle::amir::local::{LocalId, TempId};
 use arandu_middle::layout::{DataLayout, LayoutEngine, StructLayoutProvider, TypeLayout};
 use arandu_middle::literal_pool::AmirLiteralPool;
-use arandu_middle::types::{TypeId, TypeInterner};
+use arandu_middle::types::{ArType, TypeId, TypeInterner};
 use rustc_hash::FxHashMap;
 use wasm_encoder::{BlockType, Function, Instruction, ValType};
 
@@ -47,6 +47,8 @@ pub(super) struct FuncTranslator<'a> {
     pub literal_pool: &'a AmirLiteralPool,
     pub rodata_offsets: &'a FxHashMap<arandu_middle::literal_pool::LiteralId, u32>,
     pub func_index_map: &'a FxHashMap<SymbolId, u32>,
+    pub functions: &'a [AmirFunc],
+    pub extern_functions: &'a FxHashMap<SymbolId, (Vec<ArType>, ArType)>,
 
     /// Maps each AMIR temp to its first wasm local index.
     pub temp_local: FxHashMap<TempId, u32>,
@@ -123,6 +125,8 @@ pub fn shape_slots(shape: Shape) -> u32 {
 
 /// Global module-level translation context passed to each function translator.
 pub struct TranslationContext<'a> {
+    pub functions: &'a [AmirFunc],
+    pub extern_functions: &'a FxHashMap<SymbolId, (Vec<ArType>, ArType)>,
     pub static_offsets: &'a FxHashMap<(SymbolId, arandu_middle::amir::InstrId), (u32, u32)>,
     pub symbols: &'a SymbolTable,
     pub interner: &'a TypeInterner,
@@ -153,6 +157,8 @@ impl<'a> FuncTranslator<'a> {
             literal_pool: ctx.literal_pool,
             rodata_offsets: ctx.rodata_offsets,
             func_index_map: ctx.func_index_map,
+            functions: ctx.functions,
+            extern_functions: ctx.extern_functions,
             temp_local: FxHashMap::default(),
             local_wasm: FxHashMap::default(),
             next_local: 0,

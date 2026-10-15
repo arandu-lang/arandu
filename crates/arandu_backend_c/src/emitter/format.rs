@@ -169,7 +169,17 @@ impl<'a> CEmitter<'a> {
                 ))
             }
             ArType::Nullable(inner) => {
-                let inner_name = self.format_type(&self.interner.resolve(*inner));
+                let inner_ty = self.interner.resolve(*inner);
+                // Nullable thin references retain their null-or-pointer ABI.
+                // Fat slice borrows need a separate descriptor representation.
+                if matches!(
+                    inner_ty,
+                    ArType::Ptr(_) | ArType::Ref(_) | ArType::RefMut(_)
+                ) && inner_ty.slice_abi_element(self.interner).is_none()
+                {
+                    return self.format_type(&inner_ty);
+                }
+                let inner_name = self.format_type(&inner_ty);
                 Cow::Owned(format!("ArType_Nullable_{}", sanitize_c_ident(&inner_name)))
             }
             ArType::Option(inner) => {

@@ -536,6 +536,12 @@ func add(a int, b int) int {
 
 The lexer inserts `SEMICOLON(inserted=true)` after `b` and before `}`.
 
+The outer closing brace of `${expression}` is an exception: it terminates an
+expression interpolation, so a preceding newline does not insert a semicolon.
+Lookahead skips line comments and nested block comments before that delimiter.
+Braces belonging to blocks nested inside the interpolation retain ordinary
+statement-ending rules.
+
 `KW_ELSE` is intentionally present in the prevention list. This keeps both same-line and next-line `else` forms valid:
 
 ```arandu

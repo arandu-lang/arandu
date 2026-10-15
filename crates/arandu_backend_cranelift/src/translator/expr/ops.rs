@@ -14,6 +14,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         left: &AmirOperand,
         right: &AmirOperand,
         expected_ty: Option<Type>,
+        expected_ar_type: Option<&ArType>,
     ) -> Value {
         // `str` equality uses fat pointers + memcmp (not scalar icmp).
         let left_is_str = matches!(
@@ -73,7 +74,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         };
         let lhs = self.translate_operand(left, opt_ty);
         let rhs = self.translate_operand(right, opt_ty);
-        self.translate_binary_op(op, lhs, rhs, Some(left), Some(right))
+        self.translate_binary_op(op, lhs, rhs, Some(left), Some(right), expected_ar_type)
     }
 
     pub(super) fn translate_unary(

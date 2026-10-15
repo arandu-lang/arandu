@@ -23,8 +23,32 @@ impl<'a> FuncTranslator<'a> {
                 return;
             }
             if let Some(&func_idx) = self.func_index_map.get(sym) {
-                for arg in args {
-                    let arg_ty = self.operand_arity_ty(arg);
+                let callee = self
+                    .functions
+                    .iter()
+                    .find(|function| function.symbol == *sym);
+                for (index, arg) in args.iter().enumerate() {
+                    // Nil can stand for either unit or a nullable value. Its
+                    // ABI shape comes from the declared parameter, not Nil.
+                    let arg_ty = callee
+                        .and_then(|function| {
+                            function
+                                .params
+                                .get(index)
+                                .map(|temp| function.temps[temp.as_usize()].ty)
+                        })
+                        .or_else(|| {
+                            self.extern_functions
+                                .get(sym)
+                                .and_then(|(params, _)| params.get(index))
+                                .map(|ty| self.interner.intern(ty.clone()))
+                        })
+                        .unwrap_or_else(|| self.operand_arity_ty(arg));
+                    if types::shape(arg_ty, self.interner, self.layout_engine.data_layout)
+                        == Shape::Empty
+                    {
+                        continue;
+                    }
                     self.emit_operand(arg, arg_ty);
                 }
                 self.code.push(Instruction::Call(func_idx));

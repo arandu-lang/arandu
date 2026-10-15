@@ -12,7 +12,7 @@ Esta pasta tem uma única fila de planejamento: o [roadmap mestre](arandu-compil
 | arquitetura | fronteiras, invariantes e ownership | apenas dívida/futuro explícitos |
 | decisão concluída | motivação e escolha estabilizada | não |
 | diagnóstico | explicação e correção de um `DiagCode` | não |
-| release | evidência imutável de versão publicada | não |
+| release | evidência de candidata, promoção ou versão publicada | não |
 
 Uma campanha pode criar temporariamente um plano de pesquisa e implementação.
 Planos ativos vivem em `docs/campaigns/`, fora do catálogo permanente validado
@@ -37,6 +37,20 @@ dívidas e futuro são classificados, e o plano paralelo é removido.
 - [RFC 0011: Pipeline AOT incremental e linker in-process](rfcs/0011-incremental-partitioned-aot-and-in-process-linker.md) — codegen particionado e link in-process.
 - [RFC 0012: Stack de computação científica e dados](rfcs/0012-scientific-computing-and-data-architecture.md) — tensores, Arrow, lazy query engine e GraphBLAS.
 - [RFC 0013: CTFE determinístico e `comptime` core](rfcs/0013-deterministic-ctfe-and-comptime-metaprogramming.md) — proposta de execução limitada sobre AMIR; reflexão ampla e geração de código ficam para etapas futuras.
+- [RFC 0014: WebAssembly e Component Model](rfcs/0014-native-wasm-component-model-and-runtime.md) — backend Wasm, WIT e runtime.
+- [RFC 0015: Mobile e interoperabilidade](rfcs/0015-native-mobile-architecture-and-zero-copy-interop.md) — bindings e arquitetura mobile nativa.
+- [RFC 0016: Filesystem por capacidades](rfcs/0016-capability-safe-filesystem-and-path-resolution.md) — acesso a arquivos e resolução segura de caminhos.
+- [RFC 0017: Core freestanding](rfcs/0017-lean-freestanding-core-architecture.md) — camada fundamental sem heap.
+- [RFC 0018: Emissão C idiomática](rfcs/0018-pretty-idiomatic-c-codegen.md) — legibilidade e estrutura do C gerado.
+- [RFC 0019: Cache compartilhado](rfcs/0019-zero-bloat-target-and-shared-cache.md) — armazenamento de builds e prevenção de inchaço do target.
+- [RFC 0020: Empacotamento nativo](rfcs/0020-native-packaging-and-python-eradication.md) — integridade de arquivos e automação via xtask/CLI.
+- [RFC 0021: Visibilidade e módulos](rfcs/0021-visibility-and-module-surface.md) — internal, sealed e re-exports.
+- [RFC 0022: AranduSmith](rfcs/0022-holistic-synthesis-differential-fuzzing.md) — síntese e testes diferenciais entre backends.
+- [RFC 0023: Inteiros portáveis](rfcs/0023-portable-default-integer-model.md) — inteiros padrão e larguras dependentes do alvo.
+- [RFC 0024: Atributos unificados](rfcs/0024-unified-attribute-system.md) — mecanismo comptime de atributos.
+- [RFC 0025: Oráculo de otimização](rfcs/0025-optimization-oracle-and-testing-aot.md) — diagnósticos de codegen e testes metamórficos.
+- [RFC 0026: Convenções da stdlib](rfcs/0026-standard-library-naming-and-resource-conventions.md) — nomenclatura e gerenciamento de recursos.
+- [RFC 0027: Redução de código](rfcs/0027-zero-bloat-binary-diet-and-on-demand-runtime.md) — perfil de tamanho e runtime sob demanda.
 - [Guia de migração](arandu-project-package-migration-v0.1.md) — uso do contrato de projeto e dependências.
 - [Testes e benchmarks](arandu-testing-benchmark-harness-v0.1.md) — contrato consolidado.
 - [Contrato de ferramentas e scripts](tooling-scripts-contract.md) — dono e plataforma de cada automação.
@@ -57,7 +71,8 @@ dívidas e futuro são classificados, e o plano paralelo é removido.
 ## Diagnósticos e releases
 
 - [Especificação de diagnósticos](diagnostics/SPEC.md) e [catálogo por código](errors/).
-- [Notas de release](releases/) são evidências imutáveis das versões publicadas.
+- [Notas de release](releases/) registram candidatas, falhas de promoção e provas
+  das versões publicadas; a existência de uma tag não comprova distribuição validada.
 - [OSSÀ virtual anchoring](ossa-virtual-anchoring.md) registra a decisão de estabilidade de IDs.
 
 ## Regras de manutenção

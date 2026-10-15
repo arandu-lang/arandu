@@ -130,9 +130,9 @@ pub fn lower_type_expr_ctx(
             let elem_ty = lower_type_expr_ctx(*elem, ctx, interner);
             let id = interner.intern(elem_ty);
             if let Some(expression) = size_expression {
-                match lower_type_expr_ctx(*expression, ctx, interner) {
-                    ArType::Const(n) => ArType::Array(n, id),
-                    _ => ArType::Error,
+                match lower_type_expr_ctx(*expression, ctx, interner).as_const_u64() {
+                    Some(n) => ArType::Array(n, id),
+                    None => ArType::Error,
                 }
             } else if let Some(n) = parse_const_u64(size) {
                 ArType::Array(n, id)

@@ -15,11 +15,63 @@
 
 Esta RFC propõe o **`AranduSmith`**: um framework de engenharia de confiabilidade de compiladores de ponta a ponta (*end-to-end*), baseado em **Síntese Dirigida por Tipos (Type-Directed Program Synthesis)**, **Testes Diferenciais Multi-Backend (Differential Testing)**, **Mutações por Equivalência de Entradas (EMI — Equivalence Modulo Inputs)** e **Fuzzing de Sessão Incremental Salsa**.
 
-Em vez de limitar o fuzzing à injeção cega de bytes aleatórios no lexer — que em 99,9% dos casos é rejeitada nas primeiras linhas do parser sem jamais exercitar as camadas profundas do compilador —, o `AranduSmith` sintetiza programas Arandu sintática e semanticamente válidos por construção. Esses programas são paralelamente submetidos a todo o pipeline:
+Além da mutação de bytes para recuperação do frontend, o `AranduSmith`
+sintetiza programas de uma gramática limitada e dirigida por tipos para
+exercitar as camadas profundas do compilador. Esses programas percorrem o
+pipeline:
 
 $$\text{CST} \longrightarrow \text{AST} \longrightarrow \text{Resolve} \longrightarrow \text{Typeck} \longrightarrow \text{AMIR} \longrightarrow \text{Otimizações (O0 / O1 / O2)} \longrightarrow \text{Backends (Cranelift, C, WASM)}$$
 
-O framework compara a execução entre os 3 backends nativos e entre níveis de otimização, identifica automaticamente desvios semânticos (*miscompilations*), quebras de invariantes de dados, panics/ICEs, e aciona um **Redutor Hierárquico de AST (*AST Shrinker*)** para isolar o defeito em uma fixture de teste mínima e reproduzível.
+O framework compara a execução entre Cranelift, C e Wasm e entre níveis de
+otimização, detecta divergências observadas e aciona redução estrutural limitada
+para produzir um candidato menor e reproduzível. Concordância entre backends
+é evidência para o caso executado; não prova ausência de bugs compartilhados.
+
+### 1.1. Contrato integrado na revisão 0.1.10
+
+A implementação canônica fica em `crates/arandu_fuzz_support/src/smith/`.
+O estado descrito abaixo distingue os mecanismos existentes das extensões
+desta revisão; os comandos ilustrativos posteriores não substituem esse corte.
+
+| Camada | Cobertura |
+| --- | --- |
+| Síntese e triangulação | Retorno, stdout e stderr comparados em Cranelift/C/Wasm com valores esperados independentes para a gramática sintetizada; esta revisão amplia a matriz O0/O1/O2 com Os (`--size`). |
+| EMI e redução existentes | Mutações limitadas a regiões não executadas para a entrada observada, oráculo por classe de falha, orçamento de redução e confirmação do candidato. |
+| Nova síntese de staging | Helper puro chamado por `comptime`, repetição `[value; comptime (expr)]`, soma por índice limitado e resultado independente derivado da seed. |
+| Novos casts de fronteira | Valores exatamente representáveis, incluindo `2^63` e `2^64 - 2048` em `u64`/`f64`, `i64::MIN`, `2^31` em `u32`/`f32`, `i32::MIN`, truncamento `255.75 as u8` para 255, `u8` 255 para `f32` e `i8` −128 para `f64`. |
+| Novo oráculo negativo | Uma mutação conhecida por programa válido; exige o `DiagCode` esperado como erro, ausência de ICE e igualdade dos diagnósticos em duas análises frias. |
+| Paridade CTFE/runtime | Casos escalares de soma, laços, recursão limitada, divisão/resto assinados, shifts e comparação unsigned acima de `i64::MAX`; compara apenas operações definidas nos dois modos. |
+
+As seeds variam valores e comprimentos mantendo índices válidos e laços
+limitados. A nova gramática participa do programa sintetizado completo e tem
+teste diferencial isolado para facilitar a reprodução. A matriz geral executa
+os três backends em O0/O1/O2/Os; o worker JIT isolado também aceita Os e preserva
+esse nível na reprodução e redução de falhas. Conversões float→inteiro
+fora da faixa, NaN e infinity não são incluídos nessa equivalência: requerem
+seu próprio contrato de conversão e resultados esperados.
+
+As mutações negativas cobrem catchalls de match com guard, ausência de `}`,
+string Unicode não terminada, captura runtime por `comptime`, atribuição de
+tipo incompatível e divisor zero entre parênteses. Guards continuam válidos;
+o erro exigido é a falta de cobertura incondicional no caso não exaustivo.
+Parênteses também continuam válidos; o teste de divisor verifica o valor zero.
+O caminho negativo complementa a recuperação com texto arbitrário do target
+`pipeline`, sem tentar executar ou gerar código para a fonte inválida.
+
+Os gates nativos existentes executam a cobertura aplicável no Windows com os
+compiladores/runners necessários presentes e preservam reproduções quando
+falham. O teste de CLI
+`long_generic_cgu_paths_link_execute_and_relink_outside_checkout` cobre build,
+execução e relink de especializações genéricas em um projeto fora do checkout.
+O smoke do SDK instalado usa `scripts/smoke_distribution.py`; é uma evidência
+separada da suíte do código-fonte e continua sujeito aos gates de distribuição.
+Esta extensão não cria outro workflow. Um resultado Linux não valida ABI,
+linker ou caminhos Windows, nem substitui a execução nativa desses gates.
+
+O número de combinações backend/nível não representa implementações
+independentes: os backends compartilham frontend e AMIR, e O1/O2 compartilham
+parte do núcleo de simplificação. Não há garantia de rejeição universal,
+taxa fixa de casos por segundo ou prova SMT geral das otimizações.
 
 ---
 
@@ -35,9 +87,13 @@ Compiladores modernos são sistemas complexos onde cada camada (Rowan CST, banco
 3. **Paridade entre Múltiplos Backends:**
    O Arandu oferece 3 backends de primeira classe (`arandu_backend_cranelift`, `arandu_backend_c` e `arandu_backend_wasm`). Garantir manualmente que a semântica de estruturas complexas (layouts de structs, GenRef, alinhamento de fatias, match joins) é idêntica nos três alvos é humanamente inviável.
 4. **Fragilidade de Sessão Incremental:**
-   O Salsa depende de *early-cutoff*. Nenhuma ferramenta industrial existente testa se uma sequência de edições incrementais randômicas (simulando um usuário digitando no VS Code) causa corrupção de cache, ciclo de query ilegítimo ou diagnósticos fantasmas.
+   O Salsa depende de *early-cutoff*. Sequências de edição precisam comparar
+   análise aquecida e fria para encontrar invalidação incorreta, ciclos
+   ilegítimos e diagnósticos stale no pipeline específico do Arandu.
 
-A implementação desta RFC transforma o processo de descoberta de bugs: em vez de auditorias manuais exaustivas à procura de `.unwrap()`, o sistema sintetiza milhões de cenários adversariais por hora de forma autônoma.
+A síntese reproduzível complementa testes manuais e auditorias do código. A
+taxa de execução depende do target, seed, ferramentas e host e precisa ser
+medida por campanha; este contrato não define vazão mínima.
 
 ---
 
@@ -154,7 +210,9 @@ A arquitetura do `AranduSmith` é dividida em 5 subsistemas fundamentais localiz
 
 ### 4.1. Gerador Sintético Dirigido por Tipos (`Type-Directed AST Synthesizer`)
 
-Para ultrapassar a barreira de 99,9% de rejeição pelo `type_check` e `borrow_checker`, o gerador constrói a árvore de cima para baixo (*top-down*) utilizando uma tabela de símbolos abstrata de geração:
+O desenho ampliado propõe construir a árvore de cima para baixo (*top-down*)
+utilizando uma tabela de símbolos abstrata de geração. A implementação limitada
+é delimitada ao fim desta seção:
 
 1. **Geração de Tipos e Definições:**
    - Primitivos: `int`, `uint`, `float`, `bool`, `str`, `char`.
@@ -199,7 +257,7 @@ Baseado nas pesquisas pioneiras de Le, Afshari e Su (PLDI 2014):
 O estágio atual implementa sondagem dinâmica limitada para ramos `if`
 aninhados, braços de `match` e handlers de bloco de `catch`, inclusive como
 expressões em `main`: insere
-temporariamente um `return` sentinela no bloco e executa Cranelift em O0/O1/O2.
+temporariamente um `return` sentinela no bloco e executa Cranelift em O0/O1/O2/Os.
 Para corpos de `while` e `for`, a sonda declara uma flag antes do laço, marca a
 entrada no corpo e verifica a flag depois dele. Isso evita inserir um retorno
 inalcançável dentro de um CFG de laço, forma que já provocou ICE durante o
@@ -357,14 +415,14 @@ sem executar I/O dentro de queries Salsa.
 
 ### Etapa 2 — Oráculo de otimização e triangulação de backends
 
-- Executar o mesmo programa e entrada em O0/O1/O2; comparar status, stdout,
+- Executar o mesmo programa e entrada em O0/O1/O2/Os; comparar status, stdout,
   stderr observável e resultado, com timeout e captura de crash por processo.
   O preflight de promoção usa grupo de processos no Unix e Job Object no Windows
   para encerrar descendentes quando o prazo global de 30 segundos expira.
 - O pipeline atual documenta O1 e O2 como compartilhando o mesmo núcleo de
   simplificação. O Smith deve registrar essa cobertura comum sem apresentá-la
   como duas implementações independentes de otimização.
-- Executar Cranelift, C e Wasm em cada nível O0/O1/O2. C é compilado a partir
+- Executar Cranelift, C e Wasm em cada nível O0/O1/O2/Os. C é compilado a partir
   do AMIR já otimizado daquele nível; Wasm usa o executor Node configurável por
   `ARANDU_NODE`. Ausência de compilador C ou runner Wasm deve ser reportada,
   nunca contada como paridade aprovada.
@@ -460,7 +518,7 @@ sem executar I/O dentro de queries Salsa.
 
 ### Estado atual da implementação
 
-Em `crates/arandu_fuzz_support/src/smith.rs`, o target `synthesized` gera
+Em `crates/arandu_fuzz_support/src/smith/`, o target `synthesized` gera
 programas determinísticos com expressões escalares `int`/`uint`/`bool`/`float`,
 chamadas com parâmetros `int`/`bool` e uma função genérica `identity<T>` usada
 com os quatro tipos escalares,

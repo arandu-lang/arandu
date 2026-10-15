@@ -12,7 +12,10 @@ import tempfile
 
 def isolated_environment(tool_bin: Path, home: Path, cache: Path) -> dict[str, str]:
     env = os.environ.copy()
-    for name in ("ARANDU_STDLIB", "CARGO", "CARGO_HOME", "RUSTUP_HOME"):
+    for name in (
+        "ARANDU_STDLIB", "ARANDU_RUNTIME_LIB", "ARANDU_LINKER",
+        "CARGO", "CARGO_HOME", "RUSTUP_HOME",
+    ):
         env.pop(name, None)
     if os.name == "nt":
         system_root = env.get("SystemRoot", r"C:\Windows")
@@ -167,7 +170,10 @@ def main() -> None:
         run([command, "run"], corpus / "small/hello", env, expected=42)
         run([command, "check"], corpus / "medium/language_mix", env)
         run([command, "run"], corpus / "medium/language_mix", env, expected=42)
-        comptime_project = corpus / "medium/comptime_core"
+        # Exercise SDK-owned MSVC discovery with both spaces and absolute CGU
+        # object paths above MAX_PATH, without making source paths that long.
+        comptime_project = work / ("native path with spaces " + "x" * 48) / "comptime_core"
+        shutil.copytree(corpus / "medium/comptime_core", comptime_project)
         run([command, "check"], comptime_project, env)
         run([command, "run"], comptime_project, env)
         run([command, "build"], comptime_project, env)
@@ -175,6 +181,12 @@ def main() -> None:
         if len(states) != 1:
             raise SystemExit(f"expected one installed CTFE build state, found {states!r}")
         state = json.loads(states[0].read_text(encoding="utf-8"))
+        if os.name == "nt":
+            objects = list((states[0].parent / "incremental/cgu").glob("*.obj"))
+            if not any(len(str(path).encode("utf-16-le")) // 2 > 260 for path in objects):
+                raise SystemExit("installed CTFE smoke did not exercise a long CGU object path")
+            if state.get("linker") != "system":
+                raise SystemExit("installed CTFE smoke did not exercise the native MSVC linker")
         run([str(states[0].parent / state["artifact"])], comptime_project, env)
         cached = run([command, "build"], comptime_project, env)
         if "incremental: up-to-date" not in cached.stdout:

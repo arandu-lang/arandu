@@ -368,6 +368,11 @@ impl<'a> CEmitter<'a> {
                 let _ = writeln!(&mut self.output, ";");
             }
             AmirStmt::Store { lhs, rhs } => {
+                if lhs.projections.is_empty()
+                    && matches!(self.local_ty(func, lhs.local), ArType::Void)
+                {
+                    return;
+                }
                 let lhs_str = self.format_place(lhs, func);
                 let rhs_str = self.format_operand(rhs, func);
                 let _ = writeln!(&mut self.output, "    {} = {};", lhs_str, rhs_str);
@@ -435,8 +440,51 @@ impl<'a> CEmitter<'a> {
                     return;
                 }
                 let callee_str = self.format_operand(callee, func);
-                let args_str: Vec<_> = args.iter().map(|a| self.format_operand(a, func)).collect();
-                if let Some(dest) = lhs {
+                let callee_func = if let AmirOperand::FunctionRef(symbol) = callee {
+                    self.program
+                        .funcs
+                        .iter()
+                        .find(|candidate| candidate.symbol == *symbol)
+                } else {
+                    None
+                };
+                let external_params = if let AmirOperand::FunctionRef(symbol) = callee {
+                    self.program
+                        .extern_funcs
+                        .get(symbol)
+                        .map(|(params, _)| params)
+                } else {
+                    None
+                };
+                let args_str: Vec<_> = args
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, arg)| {
+                        let ty = callee_func
+                            .and_then(|callee| {
+                                callee
+                                    .params
+                                    .get(index)
+                                    .map(|param| self.temp_ty(callee, *param))
+                            })
+                            .or_else(|| {
+                                external_params
+                                    .and_then(|params| params.get(index))
+                                    .cloned()
+                            })
+                            .unwrap_or_else(|| self.operand_ty(func, arg));
+                        // Nil also represents nullable values; only omit a bare nil
+                        // when the callee's declared parameter is actually void.
+                        let empty = matches!(ty, ArType::Void)
+                            && (callee_func.is_some()
+                                || external_params.is_some()
+                                || matches!(arg, AmirOperand::Copy(_) | AmirOperand::Move(_)));
+                        (!empty).then(|| self.format_operand(arg, func))
+                    })
+                    .collect();
+                if let Some(dest) =
+                    lhs.filter(|dest| !matches!(self.temp_ty(func, *dest), ArType::Void))
+                {
                     let _ = write!(
                         &mut self.output,
                         "    t{} = ",

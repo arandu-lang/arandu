@@ -34,8 +34,18 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         rhs: Value,
         left_operand: Option<&AmirOperand>,
         right_operand: Option<&AmirOperand>,
+        expected_ar_type: Option<&arandu_semantics::types::ArType>,
     ) -> Value {
-        let is_unsigned = self.operands_are_unsigned(left_operand, right_operand);
+        // A shift count has its own integer type; it cannot determine the
+        // signedness (or extension) of the value being shifted.
+        let is_unsigned = if matches!(op, BinaryOp::ShiftLeft | BinaryOp::ShiftRight) {
+            left_operand
+                .and_then(|operand| self.operand_is_unsigned_integer(operand))
+                .or_else(|| expected_ar_type.map(crate::types::ar_type_is_unsigned_integer))
+                .unwrap_or(false)
+        } else {
+            self.operands_are_unsigned(left_operand, right_operand)
+        };
         let mut lhs = lhs;
         let mut rhs = rhs;
         let lhs_ty = self.builder.func.dfg.value_type(lhs);

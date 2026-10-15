@@ -92,6 +92,17 @@ impl<'a> CEmitter<'a> {
     }
 
     pub(super) fn ensure_type_emitted(&mut self, ty: &ArType) {
+        if let ArType::Nullable(inner) = ty {
+            let inner_ty = self.interner.resolve(*inner);
+            if matches!(
+                inner_ty,
+                ArType::Ptr(_) | ArType::Ref(_) | ArType::RefMut(_)
+            ) && inner_ty.slice_abi_element(self.interner).is_none()
+            {
+                self.ensure_type_emitted(&inner_ty);
+                return;
+            }
+        }
         if let ArType::Ptr(inner) | ArType::Ref(inner) | ArType::RefMut(inner) = ty {
             let inner_ty = self.interner.resolve(*inner);
             self.ensure_type_emitted(&inner_ty);
@@ -127,6 +138,9 @@ impl<'a> CEmitter<'a> {
             let mut params_c_tys = Vec::new();
             for &p in self.interner.type_args(*params).iter() {
                 let p_ty = self.interner.resolve(p);
+                if matches!(p_ty, ArType::Void) {
+                    continue;
+                }
                 self.ensure_type_emitted(&p_ty);
                 params_c_tys.push(self.format_type(&p_ty));
             }
@@ -230,17 +244,26 @@ impl<'a> CEmitter<'a> {
         let name = sanitize_c_ident(self.symbols.host_func_name(sym));
         let ret_ty = self.c_func_return_type(func);
         let _ = write!(&mut self.output, "{} {}(", ret_ty, name);
-        for (i, param) in func.params.iter().enumerate() {
-            if i > 0 {
+        self.emit_func_parameters(func);
+        let _ = writeln!(&mut self.output, ");");
+    }
+
+    pub(super) fn emit_func_parameters(&mut self, func: &AmirFunc) {
+        let mut emitted = false;
+        for param in &func.params {
+            let ty = self.temp_ty(func, *param);
+            if matches!(ty, ArType::Void) {
+                continue;
+            }
+            if emitted {
                 let _ = write!(&mut self.output, ", ");
             }
-            let ty = self.temp_ty(func, *param);
             let ty_str = self.format_type(&ty);
             let _ = write!(&mut self.output, "{} p{}", ty_str, param.as_usize());
+            emitted = true;
         }
-        if func.params.is_empty() {
+        if !emitted {
             let _ = write!(&mut self.output, "void");
         }
-        let _ = writeln!(&mut self.output, ");");
     }
 }

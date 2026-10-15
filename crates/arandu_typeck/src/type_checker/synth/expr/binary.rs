@@ -654,7 +654,11 @@ fn synth_binary_result(
                 return Some(checker.intern(ArType::Error));
             }
             if matches!(op, BinaryOp::Div | BinaryOp::Mod) && right_ty.is_integer() {
-                let is_zero = match checker.pool.expr(right_id) {
+                let mut divisor = right_id;
+                while let ExprKind::Group { expr } = checker.pool.expr(divisor) {
+                    divisor = *expr;
+                }
+                let is_zero = match checker.pool.expr(divisor) {
                     ExprKind::Int { value, .. } => {
                         arandu_middle::literal_pool::parse_int_literal(value) == Some(0)
                     }

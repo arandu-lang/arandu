@@ -190,7 +190,7 @@ pub fn load_project(
         .map_err(|error| error.to_string())?
         .ok_or_else(|| {
             format!(
-                "no {MANIFEST_FILENAME} found from {} — run `arandu_cli new <name>` or pass a path to a package",
+                "no {MANIFEST_FILENAME} found from {} — run `arandu new <name>` or pass a path to a package",
                 start.display()
             )
         })?;

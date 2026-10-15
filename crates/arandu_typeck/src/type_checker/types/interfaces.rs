@@ -517,16 +517,17 @@ pub(crate) fn check_instantiation_constraints(
             && let ArType::ConstParam(source) = arg_ty
             && let Some(source_domain) = constant_parameter_domain(checker, *source)
             && let Some(destination_domain) = constant_parameter_domain(checker, param_sym)
-            && source_domain.max() > destination_domain.max()
+            && (source_domain.min() < destination_domain.min()
+                || source_domain.max() > destination_domain.max())
             && let Some(source_parameter) = checker.symbols.try_get(*source)
         {
-            // Keys are non-negative u64 values. The source's entire admitted
-            // domain, not a particular caller's lucky value, must fit the callee.
+            // The source's entire admitted domain, not a particular caller's
+            // lucky value, must fit the callee, including negative values.
             checker.diagnostics.push(
                 crate::Diagnostic::error(
                     crate::DiagCode::T011GenericConstraintNotSatisfied,
                     format!(
-                        "constant parameter '{}' may exceed the range of parameter '{}'",
+                        "constant parameter '{}' has values outside the range of parameter '{}'",
                         source_parameter.name, parameter.name
                     ),
                     span,

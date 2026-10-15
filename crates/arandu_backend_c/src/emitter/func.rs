@@ -30,17 +30,7 @@ impl<'a> CEmitter<'a> {
         let name = sanitize_c_ident(self.symbols.host_func_name(sym));
         let ret_ty = self.c_func_return_type(func);
         let _ = write!(&mut self.output, "{} {}(", ret_ty, name);
-        for (i, param) in func.params.iter().enumerate() {
-            if i > 0 {
-                let _ = write!(&mut self.output, ", ");
-            }
-            let ty = self.temp_ty(func, *param);
-            let ty_str = self.format_type(&ty);
-            let _ = write!(&mut self.output, "{} p{}", ty_str, param.as_usize());
-        }
-        if func.params.is_empty() {
-            let _ = write!(&mut self.output, "void");
-        }
+        self.emit_func_parameters(func);
         let _ = writeln!(&mut self.output, ") {{");
 
         // Declare locals and temps strictly at the top
@@ -95,6 +85,9 @@ impl<'a> CEmitter<'a> {
         for (i, local) in func.locals.iter().enumerate() {
             if used_locals.contains(&i) {
                 let ty = self.interner.resolve(local.ty);
+                if matches!(ty, arandu_middle::types::ArType::Void) {
+                    continue;
+                }
                 let ty_str = self.format_type(&ty);
                 let _ = writeln!(&mut self.output, "    {} l{};", ty_str, i);
             }
@@ -129,6 +122,12 @@ impl<'a> CEmitter<'a> {
         // Initialize temps from params
         for (i, _) in func.temps.iter().enumerate() {
             if func.params.iter().any(|&p| p.as_usize() == i) {
+                if matches!(
+                    self.interner.resolve(func.temps[i].ty),
+                    arandu_middle::types::ArType::Void
+                ) {
+                    continue;
+                }
                 let _ = writeln!(&mut self.output, "    t{} = p{};", i, i);
             }
         }

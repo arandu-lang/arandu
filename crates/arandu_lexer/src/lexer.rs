@@ -92,7 +92,7 @@ impl<'a> Lexer<'a> {
 
     fn lex_next_token(&mut self) -> Result<(), LexError> {
         let prev_pos = self.pos;
-        self.skip_whitespace();
+        self.skip_whitespace(false);
         if self.pos > prev_pos {
             return Ok(());
         }
@@ -175,7 +175,7 @@ impl<'a> Lexer<'a> {
         self.lex_operator_or_punctuation()
     }
 
-    fn skip_whitespace(&mut self) {
+    fn skip_whitespace(&mut self, interpolation_boundary: bool) {
         let (newlines, skipped, last_nl) = match self.backend {
             #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
             SimdBackendKind::Avx2 => unsafe {
@@ -246,14 +246,14 @@ impl<'a> Lexer<'a> {
                 self.col += skipped;
             }
 
-            self.maybe_insert_semicolon_at(first_nl_span);
+            self.maybe_insert_semicolon_at(first_nl_span, interpolation_boundary);
         } else {
             self.pos += skipped;
             self.col += skipped;
         }
     }
 
-    fn maybe_insert_semicolon_at(&mut self, span: Span) {
+    fn maybe_insert_semicolon_at(&mut self, span: Span, interpolation_boundary: bool) {
         let can_insert = self
             .prev_significant
             .is_some_and(TokenKind::can_end_statement);
@@ -261,10 +261,12 @@ impl<'a> Lexer<'a> {
             return;
         }
 
-        if self
-            .peek_next_significant_kind()
-            .is_some_and(|kind| kind.prevents_semicolon_before())
-        {
+        if self.peek_next_significant_kind().is_some_and(|kind| {
+            kind.prevents_semicolon_before()
+                    // At depth zero this closes an expression interpolation,
+                    // rather than a statement block. Nested blocks retain ASI.
+                    || (interpolation_boundary && kind == TokenKind::RBrace)
+        }) {
             return;
         }
 
@@ -380,12 +382,17 @@ impl<'a> Lexer<'a> {
                     continue;
                 } else if bytes[i + 1] == b'*' {
                     i += 2;
-                    while i + 1 < bytes.len() {
-                        if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                    let mut depth = 1usize;
+                    while i + 1 < bytes.len() && depth > 0 {
+                        if bytes[i] == b'/' && bytes[i + 1] == b'*' {
+                            depth += 1;
                             i += 2;
-                            break;
+                        } else if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                            depth -= 1;
+                            i += 2;
+                        } else {
+                            i += 1;
                         }
-                        i += 1;
                     }
                     continue;
                 }

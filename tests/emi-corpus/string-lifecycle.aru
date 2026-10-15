@@ -42,8 +42,7 @@ func main(): int {
         return -13
     }
     if core_str.len(text.asStr()) != 12 as usize
-        || !core_str.endsWith(text.asStr(), "🦀")
-    {
+        || !core_str.endsWith(text.asStr(), "🦀") {
         return -14
     }
 

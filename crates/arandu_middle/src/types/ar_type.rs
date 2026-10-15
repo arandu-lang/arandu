@@ -95,6 +95,19 @@ pub enum ArType {
 }
 
 impl ArType {
+    /// Read a non-negative integer constant without erasing its typed identity.
+    #[must_use]
+    pub fn as_const_u64(&self) -> Option<u64> {
+        match self {
+            Self::Const(value) => Some(*value),
+            Self::FrozenConst(value) => match value.as_ref() {
+                crate::ctfe::ConstValue::Integer(value) => u64::try_from(value.value()).ok(),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// Returns the element type when this value uses the slice-view ABI.
     ///
     /// A shared or exclusive borrow of a slice denotes a borrow of the
@@ -533,6 +546,34 @@ mod tests {
 
     fn new_interner() -> TypeInterner {
         TypeInterner::new()
+    }
+
+    #[test]
+    fn constant_u64_projection_is_checked_and_preserves_typed_identity() {
+        use crate::ctfe::{ConstInt, ConstValue, IntegerType};
+        let layout = crate::DataLayout::ptr_width(8);
+        for (primitive, value, expected) in [
+            (Primitive::I64, -1, None),
+            (Primitive::I64, 0, Some(0)),
+            (Primitive::U8, 2, Some(2)),
+            (Primitive::U64, i128::from(u64::MAX), Some(u64::MAX)),
+        ] {
+            let integer =
+                ConstInt::new(IntegerType::new(primitive, layout).unwrap(), value).unwrap();
+            let constant = std::sync::Arc::new(ConstValue::Integer(integer));
+            let ty = ArType::FrozenConst(std::sync::Arc::clone(&constant));
+            assert_eq!(ty.as_const_u64(), expected);
+            assert_eq!(
+                constant.type_shape(),
+                super::super::shape::TypeShape::Primitive(primitive)
+            );
+        }
+        assert_eq!(ArType::Const(4).as_const_u64(), Some(4));
+        assert_eq!(
+            ArType::FrozenConst(std::sync::Arc::new(ConstValue::Bool(true))).as_const_u64(),
+            None
+        );
+        assert_eq!(ArType::Void.as_const_u64(), None);
     }
 
     // ── is_error ──

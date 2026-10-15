@@ -1,0 +1,2 @@
+encoding=utf8
+4 unterminated Unicode string must produce a lexical diagnostic

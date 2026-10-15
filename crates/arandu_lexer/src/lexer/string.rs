@@ -138,12 +138,10 @@ impl<'a> Lexer<'a> {
                 continue;
             }
             if self.peek() == Some('$')
-                && self
-                    .source
-                    .as_bytes()
-                    .get(self.pos + 1)
-                    .copied()
-                    .is_some_and(|b| is_ident_start(b as char))
+                && self.source[self.pos + 1..]
+                    .chars()
+                    .next()
+                    .is_some_and(is_ident_start)
             {
                 self.flush_text(text_start, self.pos);
                 // Emit a synthetic InterpStart at the `$` position.
@@ -197,7 +195,7 @@ impl<'a> Lexer<'a> {
                 continue;
             }
             let prev_pos = self.pos;
-            self.skip_whitespace();
+            self.skip_whitespace(brace_depth == 0);
             if self.pos > prev_pos {
                 continue;
             }

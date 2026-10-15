@@ -35,6 +35,95 @@ fn files_in_dir(dir: &Path) -> Vec<PathBuf> {
 }
 
 #[test]
+fn long_generic_cgu_paths_link_execute_and_relink_outside_checkout() {
+    let tmp = common::temp_dir("arandu_cgu_long_path").unwrap();
+    // Keep the directory itself below MAX_PATH while making the absolute
+    // monomorphized object path exceed it. Spaces also exercise MSVC quoting.
+    let parent = tmp.join(format!("project with spaces {}", "x".repeat(48)));
+    fs::create_dir(&parent).unwrap();
+    let project = parent.join("long_cgu");
+    let init = run_cli_in(&parent, &["new", "long_cgu", "--bin", "--vcs=none"]);
+    assert!(
+        init.status.success(),
+        "{}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+    let function = format!("choose_{}", "typed_comptime_argument_".repeat(4));
+    let source = format!(
+        "func {function}<comptime Enabled: bool, comptime Adjustment: i64>(): int {{\n\
+         comptime if Enabled {{ return Adjustment as int }} else {{ return 0 }}\n}}\n\
+         func main(): int {{ return {function}<comptime (true), comptime (42)>() }}\n"
+    );
+    fs::write(project.join("src/main.aru"), &source).unwrap();
+    let build = || {
+        let mut command = common::cli_command();
+        // The Windows test must exercise vswhere + link.exe discovery, even
+        // when the developer/runner selected a different linker for Cargo.
+        command.env_remove("ARANDU_LINKER");
+        command
+            .args(["build", "-v"])
+            .current_dir(&project)
+            .output()
+            .unwrap()
+    };
+    let cold = build();
+    assert!(
+        cold.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cold.stderr)
+    );
+    let states = files_named(&project.join("target/dev"), "build-state.json");
+    assert_eq!(states.len(), 1);
+    let state: serde_json::Value = serde_json::from_slice(&fs::read(&states[0]).unwrap()).unwrap();
+    #[cfg(windows)]
+    assert_eq!(
+        state["linker"], "system",
+        "must use native MSVC, not rustc fallback"
+    );
+    let objects = files_in_dir(&states[0].parent().unwrap().join("incremental/cgu"));
+    assert!(
+        objects
+            .iter()
+            .any(|path| path.to_string_lossy().encode_utf16().count() > 260),
+        "fixture must exercise an absolute object path longer than MAX_PATH: {objects:?}"
+    );
+    let executable = states[0]
+        .parent()
+        .unwrap()
+        .join(state["artifact"].as_str().unwrap());
+    assert_eq!(Command::new(&executable).status().unwrap().code(), Some(42));
+    let cached = build();
+    assert!(
+        cached.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cached.stderr)
+    );
+    assert!(String::from_utf8_lossy(&cached.stdout).contains("incremental: up-to-date"));
+    fs::write(
+        project.join("src/main.aru"),
+        source.replace("comptime (42)", "comptime (43)"),
+    )
+    .unwrap();
+    let changed = build();
+    assert!(
+        changed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&changed.stderr)
+    );
+    let changed_state: serde_json::Value =
+        serde_json::from_slice(&fs::read(&states[0]).unwrap()).unwrap();
+    let changed_executable = states[0]
+        .parent()
+        .unwrap()
+        .join(changed_state["artifact"].as_str().unwrap());
+    assert_eq!(
+        Command::new(changed_executable).status().unwrap().code(),
+        Some(43)
+    );
+    let _ = fs::remove_dir_all(tmp);
+}
+
+#[test]
 fn corrupted_cgu_object_is_recompiled_instead_of_reused() {
     let tmp = common::temp_dir("arandu_cgu_corruption_test").unwrap();
     let project = tmp.join("cgu_corruption");

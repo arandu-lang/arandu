@@ -230,13 +230,14 @@ fn check_source_internal(
 
     let mut expected: Option<BackendObservation> = None;
     let mut reference_coverage = arandu_backend_cranelift::BlockCoverage::default();
-    let mut optimized_programs = Vec::with_capacity(3);
-    let mut cranelift_outputs = Vec::with_capacity(3);
+    let mut optimized_programs = Vec::with_capacity(4);
+    let mut cranelift_outputs = Vec::with_capacity(4);
 
     for level in [
         arandu_mir::OptLevel::O0,
         arandu_mir::OptLevel::O1,
         arandu_mir::OptLevel::O2,
+        arandu_mir::OptLevel::Os,
     ] {
         let mut program = lowered.amir.clone();
         let optimization = catch_unwind(AssertUnwindSafe(|| {
@@ -400,6 +401,7 @@ fn lower_validated_source_inner(
         "import std.alloc.smallvec",
         "import std.alloc.string",
         "import std.core.slice",
+        "import std.core.mem",
         "import std.core.iter",
         "import std.core.str",
         "import std.core.hash",
@@ -943,6 +945,7 @@ pub fn run_jit_worker(
         "O0" => arandu_mir::OptLevel::O0,
         "O1" => arandu_mir::OptLevel::O1,
         "O2" => arandu_mir::OptLevel::O2,
+        "Os" => arandu_mir::OptLevel::Os,
         _ => {
             eprintln!("invalid opt_level: {opt_level_str}");
             return 2;

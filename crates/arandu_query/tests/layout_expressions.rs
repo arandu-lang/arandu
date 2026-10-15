@@ -44,6 +44,52 @@ fn layout_uses_the_full_target_abi_not_the_compiler_host() {
 }
 
 #[test]
+fn preferred_mem_calls_match_expression_intrinsics_in_staged_contexts() {
+    const MEM: &str = "module std.core.mem\nextern \"arandu-intrinsic\" { func sizeOf<T>(): usize; func alignOf<T>(): usize }";
+    let cases = [
+        "func main(): usize { return comptime (@sizeOf(usize) + @alignOf(i64)) }",
+        "const WIDTH usize = comptime (@sizeOf(usize))\nfunc main(): usize { return comptime WIDTH }",
+        "func count<comptime N: uint>(): uint { return N }\nfunc main(): usize { comptime if @alignOf(i64) == 4 { return count<comptime (@sizeOf(usize))>() as usize } else { return count<comptime (@sizeOf([3]u16))>() as usize } }",
+        "func main(): usize { let values: [comptime (@sizeOf(usize))]u8 = [1 as u8; comptime (@sizeOf(usize))]; return values[0] as usize }",
+        "func width<T>(): usize { return mem.sizeOf<T>() }\nfunc main(): usize { return width<int>() + width<[3]u16>() }",
+    ];
+    for source in cases {
+        let preferred = source
+            .replace("@sizeOf(usize)", "mem.sizeOf<usize>()")
+            .replace("@sizeOf([3]u16)", "mem.sizeOf<[3]u16>()")
+            .replace("@alignOf(i64)", "mem.alignOf<i64>()");
+        for layout in [DataLayout::ptr_width(8), DataLayout::i686_sysv()] {
+            for spelling in [source, preferred.as_str()] {
+                let mut db = DatabaseImpl::new();
+                db.new_file("stdlib/core/mem.aru".into(), MEM.into());
+                db.set_target_config(layout);
+                let file = db.new_file(
+                    "layout.aru".into(),
+                    format!("import std.core.mem as mem\n{spelling}"),
+                );
+                let output = runtime::runtime_program(&db, file);
+                assert!(
+                    output.diagnostics.is_empty(),
+                    "{spelling}: {:?}",
+                    output.diagnostics
+                );
+                if source.contains("return comptime") {
+                    let values = frozen(&db, file);
+                    let expected = if source.starts_with("const") {
+                        layout.pointer_width()
+                    } else if layout.pointer_width() == 8 {
+                        16
+                    } else {
+                        8
+                    };
+                    assert_eq!(values, [expected]);
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn layout_materializes_generic_operands_before_amir() {
     let mut db = DatabaseImpl::new();
     let file = db.new_file("layout.aru".into(), "func size<T>(): usize { return @sizeOf(T) }\nfunc main(): usize { return size<int>() + size<[3]u16>() }".into());
@@ -120,6 +166,40 @@ fn invalid_layout_is_a_user_diagnostic_not_an_ice() {
         let output = runtime::runtime_program(&db, file);
         assert!(output.diagnostics.iter().any(|d| d.code == expected), "{:?}", output.diagnostics);
         assert!(!output.diagnostics.iter().any(|d| d.code.as_str().starts_with("ICE")), "{:?}", output.diagnostics);
+    }
+}
+
+#[test]
+fn preferred_mem_calls_report_invalid_layout_without_an_ice() {
+    for (ty, expected) in [
+        ("[18446744073709551615]u64", DiagCode::T047InvalidTypeLayout),
+        ("Recursive", DiagCode::T029RecursiveStructInfiniteSize),
+    ] {
+        let mut db = DatabaseImpl::new();
+        db.new_file(
+            "stdlib/core/mem.aru".into(),
+            "module std.core.mem\nextern \"arandu-intrinsic\" { func sizeOf<T>(): usize }".into(),
+        );
+        let recursive = if ty == "Recursive" {
+            "struct Recursive { child: Recursive }"
+        } else {
+            ""
+        };
+        let file = db.new_file(
+            "layout.aru".into(),
+            format!("import std.core.mem as mem\n{recursive}\nfunc main(): usize {{ return mem.sizeOf<{ty}>() }}"),
+        );
+        let output = runtime::runtime_program(&db, file);
+        assert!(
+            output.diagnostics.iter().any(|d| d.code == expected),
+            "{:?}",
+            output.diagnostics
+        );
+        assert!(
+            !output.diagnostics.iter().any(|d| d.is_ice()),
+            "{:?}",
+            output.diagnostics
+        );
     }
 }
 

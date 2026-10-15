@@ -49,12 +49,13 @@ Este documento consolida as decisões arquiteturais sobre Data-Oriented Design (
 > Este é o único roadmap executivo; contratos técnicos vivos permanecem em
 > documentos próprios e campanhas concluídas permanecem recuperáveis no Git.
 
-> **Campanha ativa: 0.1.9 — CTFE & Comptime Core, começando por CT.0.**
-> A preparação da 0.1.8 foi integrada pela PR #30 e a tag `v0.1.8` aponta para
-> `17d893624534d74701124338d022e4c11ce2fc00`, com `S0 / Gate` e matriz nativa verdes.
-> A publicação dos artefatos tem evidência própria no workflow de release.
-> A RFC 0013 continua `Draft`: contrato, staging e compatibilidade precisam estar
-> fechados antes de habilitar a nova superfície de linguagem.
+> **Campanha ativa: 0.1.10 — estabilidade e documentação.**
+> A preparação da 0.1.9 foi integrada pela PR #32, com `S0 / Gate` aprovado,
+> e a tag `v0.1.9` aponta para `ab717953`. O smoke do SDK no Windows falhou
+> na linkedição; a distribuição não está validada. A tag permanece imutável.
+> A 0.1.10 concentra correções reproduzíveis e regressões, sem ampliar o escopo
+> da linguagem. A RFC 0013 ampla continua `Draft`; seu núcleo implementado tem
+> contrato público próprio.
 
 ### Semântica de status
 
@@ -93,21 +94,50 @@ quando cumprir seu contrato atual.
 | **v0.1.7** | **`released`** | Tag `v0.1.7` publicada; PR #29 verde; 71 commits, 609 arquivos. Inclui RFC 0023 (inteiros portáveis), RFC 0021 (visibilidade/módulos), RFC 0022 (AranduSmith), RFC 0020 (empacotamento nativo), correções de ownership e backends, expansão do corpus. |
 | **Preparação v0.1.8** | **`done`; tag publicada** | PR #30 mergeada com todos os checks verdes; contrato de release validado para 26 manifests; tag `v0.1.8` no commit `17d8936`. Diagnósticos, CLI, LSP, extensão e documentação consolidados. Evidência de instalação/publicação pertence à release. |
 | Redução de código — v0.1.9 | `done` no host Linux | [RFC 0027](./rfcs/0027-zero-bloat-binary-diet-and-on-demand-runtime.md): `--size` / `-Oz`, alcance compartilhado de funções e drops, AOT e Wasm sob demanda, interpolação literal estática, cache por perfil e medições reproduzíveis. Matriz nativa e publicação permanecem condições separadas de release. |
+| Preparação v0.1.9 | `done`; distribuição bloqueada | PR #32 integrada e tag `v0.1.9` em `ab717953`; smoke Windows falhou com LNK1181. [Evidência da candidata](./releases/0.1.9.md); não promove suporte multiplataforma. |
 
 ### Fila de execução
 
-**Agora:** `0.1.9 — CTFE & Comptime Core`, com VM limitada, valores escalares,
+**Agora:** `0.1.10 — estabilidade e documentação`.
+
+1. Corrigir a linkedição do SDK no Windows e cobrir caminhos relativos,
+   verbatim e nomes de CGU; repetir o smoke nativo com o pacote fora do checkout.
+2. Confirmar e corrigir os bugs pontuais da auditoria: casts/shift e valores
+   vazios nos backends, guards de match, recuperação do parser, Unicode e
+   constantes tipadas. Cada correção exige regressão; não habilitar tipos
+   dependentes ainda não especializados diretamente no codegen.
+3. Sincronizar README, índice de RFCs e diagnósticos com o contrato existente.
+4. Preferir `mem.sizeOf<T>()`/`mem.alignOf<T>()` nos contratos e exemplos,
+   preservando as expressões `@sizeOf`/`@alignOf` da 0.1.9. APIs `embed.bytes`,
+   `embed.str` e `types.info<T>()` permanecem propostas que exigem contratos
+   próprios de inputs, tipos e visibilidade.
+5. Ampliar o AranduSmith com staging/repetição de arrays, casts de fronteira
+   definidos, paridade CTFE/runtime e mutações negativas determinísticas por
+   `DiagCode`, incluindo Os (`--size`) na matriz Cranelift/C/Wasm
+   O0/O1/O2/Os; executar a cobertura de portabilidade em Windows nativo e
+   preservar reproduções. O
+   [contrato integrado da RFC 0022](./rfcs/0022-holistic-synthesis-differential-fuzzing.md#11-contrato-integrado-na-revisão-0110)
+   delimita a cobertura. O framework de remarks, diretivas de codegen e
+   políticas especializadas da RFC 0025 continua proposto; avançar por recortes
+   com workloads e resultados reproduzíveis, sem equiparar paridade a prova
+   formal ou acrescentar blacklists sintáticas de guards/parênteses.
+6. Promover a nova versão somente após gate do PR, contrato de release e
+   provas de distribuição. Preservar OSSA e os seis invariantes incrementais.
+
+### Núcleo CTFE integrado na 0.1.9 e evolução futura
+
+O recorte `0.1.9 — CTFE & Comptime Core` integrou VM limitada, valores escalares,
 agregados Copy, strings imutáveis, floats determinísticos, argumentos calculados,
 seleção por instância, expansão estática e repetição de arrays implementados.
 Enums congelados, constantes globais, argumentos tipados, identidade explícita
 de alvo e contratos concretos de cabeçalhos também estão implementados; a
 validação integrada permanece registrada por corte no host Linux. Matriz nativa, playground e promoção de release continuam
 separados; as provas locais estão no [contrato público](./arandu-comptime-core-v0.1.md#integrated-development-host-evidence).
-O desenho permanece na
+O desenho amplo permanece na
 [RFC 0013](./rfcs/0013-deterministic-ctfe-and-comptime-metaprogramming.md);
-o [plano temporário da campanha](./campaigns/0.1.9-comptime-core.md) detalha
-entregas, caminhos de código, decisões propostas e provas. Esta fila permanece
-a única autoridade para ordem e status.
+o [contrato público](./arandu-comptime-core-v0.1.md) descreve a implementação.
+Os gates abaixo registram maturidade e evolução futura, não uma campanha ativa
+de implementação da 0.1.9.
 
 | Gate | Estado | Entrega e condição para avançar |
 | --- | --- | --- |
@@ -124,10 +154,10 @@ C/Cranelift/Wasm e sem passar pelo `lower_amir` final durante o type checking.
 CT.3 e CT.4 avançam em cortes verticais: nenhuma superfície é habilitada no LSP
 antes de suas provas de fuel, cancelamento e invalidation.
 
-**Próxima passagem:** exercitar corpus real e comprovar a matriz nativa e o
-playground antes da promoção de release. Ciclos/cutoff das instâncias e os seis
-gates locais passaram em 2026-10-03, junto do Extension Host. O [plano auditado da campanha](./campaigns/0.1.9-comptime-core.md#plano-auditado-para-os-cinco-cortes-seguintes--2026-10-02)
-registra os contratos, donos, riscos e critérios de aceitação. Implementação
+**Provas ainda necessárias:** ampliar o corpus real, comprovar a matriz nativa
+e o playground antes da promoção do recurso. Ciclos/cutoff das instâncias e os
+seis gates locais passaram em 2026-10-03, junto do Extension Host. O contrato
+público registra os limites e provas do núcleo. Implementação
 local não equivale a promoção de release; closures permanecem no marco 0.3.
 Defeito atual de staging em membros de módulos inline foi corrigido com busca
 recursiva e fingerprint do membro, preservando cutoff de siblings.
@@ -953,9 +983,10 @@ O frontend textual evita alocações individuais de tokens e strings, tratando o
 
 #### CTFE & Comptime — proposta separada (RFC 0013)
 
-CTFE não pertence à fase histórica A5–A11 nem está especificado normativamente.
-A RFC 0013 permanece `Draft`; o recorte candidato à 0.1.9, dependências e gates
-estão descritos na [fila de execução](#fila-de-execução) e na
+CTFE não pertence à fase histórica A5–A11. O núcleo integrado na 0.1.9 está
+especificado no [contrato público](./arandu-comptime-core-v0.1.md).
+A RFC 0013 ampla permanece `Draft`; maturidade e evolução futura estão
+descritas na [fila de execução](#fila-de-execução) e na
 [RFC 0013](./rfcs/0013-deterministic-ctfe-and-comptime-metaprogramming.md).
 
 ---

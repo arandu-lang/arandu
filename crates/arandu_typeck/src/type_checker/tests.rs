@@ -41,6 +41,112 @@ fn dummy_span() -> Span {
     Span::new(0, 0, 0)
 }
 
+#[test]
+fn guarded_enum_catchalls_do_not_prove_exhaustiveness() {
+    for (arms, exhaustive) in [
+        ("_ if flag => 1", false),
+        ("value if flag => 1", false),
+        ("Color.Red => 1\n_ if flag => 2", false),
+        ("_ if flag => 1\n_ => 2", true),
+        (
+            "Color.Red if flag => 1\nColor.Red => 2\nColor.Blue => 3",
+            true,
+        ),
+    ] {
+        let source = format!(
+            "enum Color {{ Red, Blue }}\nfunc pick(c: Color, flag: bool): int {{ return match c {{ {arms} }} }}"
+        );
+        let program = arandu_parser::parse(&source).unwrap();
+        let resolved = arandu_resolve::resolve_for_test(0, &program);
+        let result = crate::type_check(resolved, &program, TargetInfo { pointer_width: 64 });
+        assert_eq!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == DiagCode::T024NonExhaustiveMatch),
+            !exhaustive,
+            "{source}: {:?}",
+            result.diagnostics
+        );
+        if exhaustive {
+            assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        }
+    }
+}
+
+#[test]
+fn grouped_literal_zero_divisors_keep_integer_diagnostic_and_float_semantics() {
+    for (ty, expr, rejected) in [
+        ("int", "10 / (0)", true),
+        ("int", "10 % ((0))", true),
+        ("int", "10 / (((0x0)))", true),
+        ("byte", "b'a' / (b'\\0')", true),
+        ("int", "10 / ((2))", false),
+        ("float", "10.0 / ((0.0))", false),
+    ] {
+        let source = format!("func value(): {ty} {{ return {expr} }}");
+        let program = arandu_parser::parse(&source).unwrap();
+        let resolved = arandu_resolve::resolve_for_test(0, &program);
+        let result = crate::type_check(resolved, &program, TargetInfo { pointer_width: 64 });
+        assert_eq!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == DiagCode::T040DivisionByZero),
+            rejected,
+            "{source}: {:?}",
+            result.diagnostics
+        );
+        if !rejected {
+            assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        }
+    }
+}
+
+#[test]
+fn frozen_integer_lengths_lower_in_array_types_and_repetitions() {
+    use arandu_middle::ctfe::{ConstInt, ConstValue, IntegerType};
+    for (value, valid) in [(0, true), (2, true), (-1, false), (65_537, false)] {
+        let source = "func make(): void { let a: [comptime (2)]u8 = [7; comptime (2)] }";
+        let program = arandu_parser::parse(source).unwrap();
+        let mut resolved = arandu_resolve::resolve_for_test(0, &program);
+        let integer = ConstValue::Integer(
+            ConstInt::new(
+                IntegerType::new(Primitive::I64, arandu_middle::DataLayout::ptr_width(8)).unwrap(),
+                value,
+            )
+            .unwrap(),
+        );
+        for ty in &program.pool.type_exprs {
+            if let arandu_parser::TypeExpr::ConstExpression { span, .. } = ty {
+                Arc::make_mut(&mut resolved.resolved)
+                    .comptime_arguments
+                    .insert((*span).into(), None);
+                Arc::make_mut(&mut resolved.resolved)
+                    .typed_comptime_arguments
+                    .insert((*span).into(), integer.clone());
+            }
+        }
+        let result = crate::type_check(resolved, &program, TargetInfo { pointer_width: 64 });
+        assert_eq!(
+            result.diagnostics.is_empty(),
+            valid,
+            "length {value}: {:?}",
+            result.diagnostics
+        );
+        if !valid {
+            assert!(
+                result
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.code == DiagCode::T048InvalidArrayRepeat),
+                "{:?}",
+                result.diagnostics
+            );
+        }
+    }
+}
+
 // ── TyCtx ──
 
 #[test]

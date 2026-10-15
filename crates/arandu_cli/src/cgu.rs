@@ -154,18 +154,26 @@ pub fn compile_partitioned(
 }
 
 fn object_path(cache_dir: &Path, unit: &CodegenUnit) -> PathBuf {
-    let safe_name: String = unit
+    let mut safe_name: String = unit
         .name
         .chars()
         .take(80)
         .map(|character| {
-            if character.is_alphanumeric() || character == '_' || character == '-' {
+            // Cache filenames must have the same bound in bytes and UTF-16
+            // units, even when a source symbol contains Unicode.
+            if character.is_ascii_alphanumeric() || character == '_' || character == '-' {
                 character
             } else {
                 '_'
             }
         })
         .collect();
+    while safe_name.starts_with('-') {
+        safe_name.remove(0);
+    }
+    if safe_name.is_empty() {
+        safe_name = "cgu".to_owned();
+    }
     let extension = if cfg!(windows) { "obj" } else { "o" };
     cache_dir.join(format!("{safe_name}-{}.{extension}", unit.hash))
 }
@@ -325,6 +333,42 @@ mod tests {
         let path = object_path(Path::new("cache"), &unit);
         assert!(path.to_string_lossy().contains(&"a".repeat(64)));
         assert!(path.to_string_lossy().contains("hello_world"));
+    }
+
+    #[test]
+    fn object_path_sanitizes_leading_dashes_and_empty_names() {
+        let unit_dash = CodegenUnit {
+            name: "-flag/test".to_owned(),
+            symbol: arandu_middle::SymbolId::new(0, 0),
+            hash: "b".repeat(64),
+        };
+        let path = object_path(Path::new("cache"), &unit_dash);
+        let file_name = path.file_name().unwrap().to_str().unwrap();
+        assert!(!file_name.starts_with('-'));
+        assert!(file_name.starts_with("flag_test-"));
+
+        let unit_empty = CodegenUnit {
+            name: "---".to_owned(),
+            symbol: arandu_middle::SymbolId::new(0, 0),
+            hash: "c".repeat(64),
+        };
+        let path_empty = object_path(Path::new("cache"), &unit_empty);
+        let file_name_empty = path_empty.file_name().unwrap().to_str().unwrap();
+        assert!(file_name_empty.starts_with("cgu-"));
+    }
+
+    #[test]
+    fn object_path_bounds_unicode_names_without_shortening_the_digest() {
+        let unit = CodegenUnit {
+            name: "変数".repeat(80),
+            symbol: arandu_middle::SymbolId::new(0, 0),
+            hash: "d".repeat(64),
+        };
+        let path = object_path(Path::new("cache"), &unit);
+        let name = path.file_name().unwrap().to_str().unwrap();
+        assert!(name.is_ascii());
+        assert_eq!(name.len(), if cfg!(windows) { 149 } else { 147 });
+        assert!(name.contains(&unit.hash));
     }
 
     #[test]

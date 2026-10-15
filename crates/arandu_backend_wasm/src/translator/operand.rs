@@ -19,7 +19,8 @@ impl<'a> FuncTranslator<'a> {
                             self.code.push(Instruction::LocalGet(local));
                             self.code.push(Instruction::LocalGet(local + 1));
                         }
-                        _ => self.code.push(Instruction::LocalGet(local)),
+                        Shape::Scalar => self.code.push(Instruction::LocalGet(local)),
+                        Shape::Empty => self.emit_zero(expected_ty),
                     }
                     self.emit_scalar_width_cast(ty, expected_ty);
                 } else {
@@ -45,6 +46,46 @@ impl<'a> FuncTranslator<'a> {
     /// width. Integer extension uses source signedness; float formats use
     /// the canonical target slot, not the backend host's default float.
     fn emit_scalar_width_cast(&mut self, source_ty: TypeId, target_ty: TypeId) {
+        let source =
+            types::scalar_valtype_for(source_ty, self.interner, self.layout_engine.data_layout);
+        let target =
+            types::scalar_valtype_for(target_ty, self.interner, self.layout_engine.data_layout);
+        if types::ar_is_float(source_ty, self.interner)
+            && types::ar_is_integer(target_ty, self.interner)
+        {
+            let unsigned = types::ar_is_unsigned(target_ty, self.interner);
+            let instruction = match (source, target, unsigned) {
+                (Some(ValType::F32), Some(ValType::I32), false) => Instruction::I32TruncF32S,
+                (Some(ValType::F32), Some(ValType::I32), true) => Instruction::I32TruncF32U,
+                (Some(ValType::F64), Some(ValType::I32), false) => Instruction::I32TruncF64S,
+                (Some(ValType::F64), Some(ValType::I32), true) => Instruction::I32TruncF64U,
+                (Some(ValType::F32), Some(ValType::I64), false) => Instruction::I64TruncF32S,
+                (Some(ValType::F32), Some(ValType::I64), true) => Instruction::I64TruncF32U,
+                (Some(ValType::F64), Some(ValType::I64), false) => Instruction::I64TruncF64S,
+                (Some(ValType::F64), Some(ValType::I64), true) => Instruction::I64TruncF64U,
+                _ => return,
+            };
+            self.code.push(instruction);
+            return;
+        }
+        if types::ar_is_integer(source_ty, self.interner)
+            && types::ar_is_float(target_ty, self.interner)
+        {
+            let unsigned = types::ar_is_unsigned(source_ty, self.interner);
+            let instruction = match (source, target, unsigned) {
+                (Some(ValType::I32), Some(ValType::F32), false) => Instruction::F32ConvertI32S,
+                (Some(ValType::I32), Some(ValType::F32), true) => Instruction::F32ConvertI32U,
+                (Some(ValType::I64), Some(ValType::F32), false) => Instruction::F32ConvertI64S,
+                (Some(ValType::I64), Some(ValType::F32), true) => Instruction::F32ConvertI64U,
+                (Some(ValType::I32), Some(ValType::F64), false) => Instruction::F64ConvertI32S,
+                (Some(ValType::I32), Some(ValType::F64), true) => Instruction::F64ConvertI32U,
+                (Some(ValType::I64), Some(ValType::F64), false) => Instruction::F64ConvertI64S,
+                (Some(ValType::I64), Some(ValType::F64), true) => Instruction::F64ConvertI64U,
+                _ => return,
+            };
+            self.code.push(instruction);
+            return;
+        }
         if types::ar_is_float(source_ty, self.interner)
             && types::ar_is_float(target_ty, self.interner)
         {
@@ -91,8 +132,11 @@ impl<'a> FuncTranslator<'a> {
 
     /// Store an operand into a wasm local.
     pub(super) fn emit_operand_to_local(&mut self, op: &AmirOperand, ty: TypeId, local: u32) {
-        self.emit_operand(op, ty);
         let shape = types::shape(ty, self.interner, self.layout_engine.data_layout);
+        if shape == Shape::Empty {
+            return;
+        }
+        self.emit_operand(op, ty);
         match shape {
             Shape::Empty => {}
             Shape::Scalar => {
@@ -116,7 +160,21 @@ impl<'a> FuncTranslator<'a> {
                         let parsed = arandu_middle::literal_pool::parse_int_literal(lexeme);
                         match parsed {
                             Some(v) => {
-                                if types::ar_is_64bit(
+                                if types::ar_is_float(ty, self.interner) {
+                                    match types::scalar_valtype_for(
+                                        ty,
+                                        self.interner,
+                                        self.layout_engine.data_layout,
+                                    ) {
+                                        Some(ValType::F32) => {
+                                            self.code.push(Instruction::F32Const((v as f32).into()))
+                                        }
+                                        Some(ValType::F64) => {
+                                            self.code.push(Instruction::F64Const((v as f64).into()))
+                                        }
+                                        _ => self.emit_zero(ty),
+                                    }
+                                } else if types::ar_is_64bit(
                                     ty,
                                     self.interner,
                                     self.layout_engine.data_layout,
@@ -145,6 +203,10 @@ impl<'a> FuncTranslator<'a> {
                                     self.code.push(Instruction::F32Const((v as f32).into()));
                                 } else {
                                     self.code.push(Instruction::F64Const(v.into()));
+                                }
+                                if types::ar_is_integer(ty, self.interner) {
+                                    let source_ty = self.interner.intern(ArType::FloatLiteral);
+                                    self.emit_scalar_width_cast(source_ty, ty);
                                 }
                             }
                             None => self.emit_zero(ty),

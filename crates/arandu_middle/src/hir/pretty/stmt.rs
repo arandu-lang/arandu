@@ -106,10 +106,29 @@ impl HirStmt {
                 condition.pretty_print_to(out, indent + 1, ctx);
                 ctx.pool.block(*body).pretty_print_to(out, indent + 1, ctx);
             }
-            HirStmtKind::For { clause, body } => {
+            HirStmtKind::For {
+                clause,
+                body,
+                comptime_bounds,
+                comptime_bodies,
+            } => {
+                if let Some((lower, upper)) = comptime_bounds {
+                    out.push_str(&format!(
+                        "{ind}Comptime domain {}..{}\n",
+                        lower.value(),
+                        upper.value()
+                    ));
+                }
                 out.push_str(&format!("{ind}For\n"));
                 clause.pretty_print_to(out, indent + 1, ctx);
-                ctx.pool.block(*body).pretty_print_to(out, indent + 1, ctx);
+                if let Some(bodies) = comptime_bodies {
+                    for (index, body) in bodies.iter().enumerate() {
+                        out.push_str(&format!("{ind}  Iteration {index}\n"));
+                        ctx.pool.block(*body).pretty_print_to(out, indent + 2, ctx);
+                    }
+                } else {
+                    ctx.pool.block(*body).pretty_print_to(out, indent + 1, ctx);
+                }
             }
             HirStmtKind::Match { value, arms } => {
                 out.push_str(&format!("{ind}Match\n"));
@@ -144,6 +163,10 @@ impl HirStmt {
             }
             HirStmtKind::Unsafe(block) => {
                 out.push_str(&format!("{ind}Unsafe\n"));
+                ctx.pool.block(*block).pretty_print_to(out, indent + 1, ctx);
+            }
+            HirStmtKind::Scope(block) => {
+                out.push_str(&format!("{ind}Scope\n"));
                 ctx.pool.block(*block).pretty_print_to(out, indent + 1, ctx);
             }
             HirStmtKind::Error => {

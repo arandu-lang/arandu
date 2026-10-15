@@ -92,6 +92,10 @@ const KEYWORDS: &[(&str, &str)] = &[
     ("enum", "declare an enum type"),
     ("interface", "declare an interface (method set)"),
     ("const", "declare a compile-time constant"),
+    (
+        "comptime",
+        "evaluate an admitted expression or block at compile time",
+    ),
     ("type", "declare a type alias"),
     ("module", "declare the module identity"),
     ("import", "import another module"),

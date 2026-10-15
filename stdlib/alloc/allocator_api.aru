@@ -9,14 +9,14 @@
 //! ```arandu
 //! import std.alloc.allocator_api as alloc
 //!
-//! let arena = alloc.bumpNew(4096)
+//! let arena = alloc.BumpArena.tryNew(4096)
 //! // Handle `Result.Err` before using the arena.
 //! ```
 //!
 //! ## Safety
 //! Raw pointers returned by global and bump allocation must be used with
 //! correct bounds and alignment. A bump pointer becomes invalid after reset
-//! or destroy; individual bump allocations cannot be freed separately.
+//! or drop; individual bump allocations cannot be freed separately.
 //!
 //! ## Errors
 //! Allocation and layout failures return `AllocError` through `Result`.
@@ -28,9 +28,8 @@ module std.alloc.allocator_api
 
 /// Minimal 0.1 — thin allocator surface.
 ///
-/// Free-function API:
 /// - Global heap via pure-buffer hosts (`ar_vec_*`)
-/// - `BumpArena` — contiguous bump; power-of-two align; `bumpReset` / `bumpDestroy`
+/// - `BumpArena` — contiguous bump; power-of-two align; `reset` and automatic drop
 ///
 /// Fallible paths return `Result<_, AllocError>`.
 
@@ -119,7 +118,7 @@ public func globalRealloc(p: ptr[u8], oldSize: usize, newSize: usize): Result<pt
 
 // ── Bump arena ────────────────────────────────────────────────────────────
 
-/// Contiguous bump region (allocate-only until `bumpReset` / `bumpDestroy`).
+/// Contiguous bump region (allocate-only until `reset` or drop).
 public struct BumpArena {
     /// Pointer to the arena-owned allocation.
     buffer: ptr[u8]
@@ -132,9 +131,8 @@ public struct BumpArena {
 /// Creates a bump arena backed by one allocation of `capacity` bytes.
 ///
 /// Returns `InvalidLayout` for zero capacity and `OutOfMemory` when the host
-/// cannot allocate the buffer. A successful arena must be released with
-/// `bumpDestroy` after all pointers into it are no longer used.
-public func bumpNew(capacity: usize): Result<BumpArena, AllocError> {
+/// cannot allocate the buffer. Backing memory is released automatically on drop.
+public func BumpArena.tryNew(capacity: usize): Result<BumpArena, AllocError> {
     let maxCapacity: usize = 2147483647 as usize
     if capacity == (0 as usize) || capacity > maxCapacity {
         return Result.Err(AllocError.InvalidLayout)
@@ -153,13 +151,7 @@ public func bumpNew(capacity: usize): Result<BumpArena, AllocError> {
     }
 }
 
-/// Reserves `size` bytes at the next offset rounded up to `align`.
-///
-/// An alignment of zero is treated as one. Returns `OutOfMemory` when the
-/// aligned allocation does not fit; this does not grow the arena. A successful
-/// pointer remains valid until `bumpReset` or `bumpDestroy`. Individual
-/// allocations cannot be freed.
-public func bumpAlloc(a: mut ref BumpArena, size: usize, align: usize): Result<ptr[u8], AllocError> {
+func bumpAlloc(a: mut ref BumpArena, size: usize, align: usize): Result<ptr[u8], AllocError> {
     let maxCapacity: usize = 2147483647 as usize
     let nullp: ptr[u8] = nil
     if a.buffer == nullp || a.capacity == (0 as usize) || a.offset > a.capacity || a.capacity > maxCapacity {
@@ -187,27 +179,42 @@ public func bumpAlloc(a: mut ref BumpArena, size: usize, align: usize): Result<p
     }
 }
 
+/// Reserves `size` bytes at the next offset rounded up to `align`.
+///
+/// An alignment of zero is treated as one. Returns `OutOfMemory` when the
+/// aligned allocation does not fit; this does not grow the arena. A successful
+/// pointer remains valid until `reset` or drop. Individual allocations cannot
+/// be freed.
+public func BumpArena.alloc(self: mut ref BumpArena, size: usize, align: usize): Result<ptr[u8], AllocError> {
+    return bumpAlloc(self, size, align)
+}
+
+func bumpReset(a: mut ref BumpArena): void {
+    a.offset = 0 as usize
+}
+
 /// Makes the full backing buffer available for allocation again.
 ///
 /// This does not free memory or visit previous allocations. All pointers
-/// returned by earlier `bumpAlloc` calls become invalid.
-public func bumpReset(a: mut ref BumpArena): void {
-    a.offset = 0 as usize
+/// returned by earlier `alloc` calls become invalid.
+public func BumpArena.reset(self: mut ref BumpArena): void {
+    bumpReset(self)
+}
+
+func bumpRemaining(a: ref BumpArena): usize {
+    return a.capacity - a.offset
 }
 
 /// Returns the bytes between the current offset and the buffer's end.
 ///
 /// Alignment padding may prevent an allocation of this exact size from
 /// fitting. This query does not allocate or change the arena.
-public func bumpRemaining(a: ref BumpArena): usize {
-    return a.capacity - a.offset
+public func BumpArena.remaining(self: ref BumpArena): usize {
+    return bumpRemaining(self)
 }
 
-/// Releases the arena's backing buffer and resets its capacity and offset.
-///
-/// All pointers into the arena become invalid. Calling this again after the
-/// capacity has been reset does nothing.
-public func bumpDestroy(a: mut ref BumpArena): void {
+/// Internal helper that releases the arena's backing buffer and resets its capacity and offset.
+func destroyBumpArena(a: mut ref BumpArena): void {
     if a.capacity > (0 as usize) {
         unsafe {
             ar_vec_buf_free(a.buffer, a.capacity)
@@ -216,4 +223,10 @@ public func bumpDestroy(a: mut ref BumpArena): void {
         a.capacity = 0 as usize
         a.offset = 0 as usize
     }
+}
+
+/// Automatic destructor invoked when an owned `BumpArena` leaves scope.
+@Destructor
+func BumpArena.destroy(self: own BumpArena): void {
+    destroyBumpArena(self)
 }

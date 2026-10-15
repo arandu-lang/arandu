@@ -16,6 +16,8 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
+  CARGO_PROFILE_TEST_DEBUG: "line-tables-only"
 
 jobs:
   # Keep this classifier inside the required workflow. Workflow-level path
@@ -84,7 +86,7 @@ jobs:
           - shard: middle-end
             crates: -p arandu_middle -p arandu_mir -p arandu_semantics -p arandu_query
           - shard: backend-runtime
-            crates: -p arandu_codegen -p arandu_backend_c -p arandu_backend_cranelift -p arandu_runtime
+            crates: -p arandu_codegen -p arandu_testing_contract -p arandu_backend_c -p arandu_backend_cranelift -p arandu_runtime
           - shard: tooling
             crates: -p arandu_cli -p arandu_lsp -p arandu_fmt -p arandu_doc -p arandu_test_support -p arandu_fuzz_support -p xtask
     steps:
@@ -95,7 +97,7 @@ jobs:
         with:
           cache-key: core-rust-1.97.1-${{ matrix.shard }}
           shared-key: core-rust-1.97.1
-          save-if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' }}
+          save-if: "true"
       - name: Test ${{ matrix.shard }} shard
         run: cargo test --locked ${{ matrix.crates }}
       - name: SL_T portable JUnit contract
@@ -121,6 +123,12 @@ jobs:
     if: needs.scope.outputs.code == 'true'
     needs: scope
     runs-on: windows-latest
+    # Differential tests spawn compilers/runners; bound contention without
+    # changing their execution timeout or reducing the corpus.
+    env:
+      RUST_TEST_THREADS: 2
+      ARANDU_FUZZ_ARTIFACT_DIR: ${{ github.workspace }}/target/smith-failures
+      RUSTFLAGS: "-C linker=lld-link"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -129,19 +137,36 @@ jobs:
         with:
           cache-key: windows-portability-rust-1.97.1
           shared-key: core-rust-1.97.1
-          save-if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' }}
-      - name: Test full workspace (host-sensitive changes)
+          save-if: "true"
+      - name: Test compiler workspace (host-sensitive changes)
         if: needs.scope.outputs.host_sensitive == 'true'
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --exclude arandu_fuzz_support --locked
+      - name: Test differential fuzz regressions (host-sensitive changes)
+        if: needs.scope.outputs.host_sensitive == 'true'
+        run: cargo test --locked -p arandu_fuzz_support
       - name: Test essential smoke (pure compiler changes)
         if: needs.scope.outputs.host_sensitive != 'true'
         run: cargo test --locked -p arandu_cli -p arandu_runtime -p arandu_parser
+
+      - name: Preserve native differential reproducers
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: smith-reproducers-${{ runner.os }}-${{ github.sha }}
+          path: target/smith-failures
+          if-no-files-found: ignore
+          retention-days: 14
 
   macos-portability:
     name: macOS portability
     if: needs.scope.outputs.code == 'true'
     needs: scope
     runs-on: macos-latest
+    # Differential tests spawn compilers/runners; bound contention without
+    # changing their execution timeout or reducing the corpus.
+    env:
+      RUST_TEST_THREADS: 2
+      ARANDU_FUZZ_ARTIFACT_DIR: ${{ github.workspace }}/target/smith-failures
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -150,13 +175,25 @@ jobs:
         with:
           cache-key: macos-portability-rust-1.97.1
           shared-key: core-rust-1.97.1
-          save-if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' }}
-      - name: Test full workspace (host-sensitive changes)
+          save-if: "true"
+      - name: Test compiler workspace (host-sensitive changes)
         if: needs.scope.outputs.host_sensitive == 'true'
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --exclude arandu_fuzz_support --locked
+      - name: Test differential fuzz regressions (host-sensitive changes)
+        if: needs.scope.outputs.host_sensitive == 'true'
+        run: cargo test --locked -p arandu_fuzz_support
       - name: Test essential smoke (pure compiler changes)
         if: needs.scope.outputs.host_sensitive != 'true'
         run: cargo test --locked -p arandu_cli -p arandu_runtime -p arandu_parser
+
+      - name: Preserve native differential reproducers
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: smith-reproducers-${{ runner.os }}-${{ github.sha }}
+          path: target/smith-failures
+          if-no-files-found: ignore
+          retention-days: 14
 
   diag-determinism:
     name: Diagnostic determinism
@@ -171,7 +208,7 @@ jobs:
         with:
           cache-key: determinism-rust-1.97.1
           shared-key: core-rust-1.97.1
-          save-if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' }}
+          save-if: "true"
       - name: Typeck library (1 vs 8 threads)
         run: bash scripts/check-diag-determinism.sh arandu_typeck 8
       - name: Semantics type checker (1 vs 8 threads)
@@ -215,7 +252,7 @@ jobs:
         with:
           cache-key: editor-rust-1.97.1
           shared-key: core-rust-1.97.1
-          save-if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' }}
+          save-if: "true"
       - name: Build Extension Host server binary
         run: cargo build --locked -p arandu_lsp -p arandu_cli
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -244,7 +281,7 @@ jobs:
         with:
           cache-key: distribution-rust-1.97.1
           shared-key: core-rust-1.97.1
-          save-if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' }}
+          save-if: "true"
       - name: Reproducible release archive
         run: bash scripts/check-package-reproducibility.sh
       - name: Install outside the checkout and reject tampering

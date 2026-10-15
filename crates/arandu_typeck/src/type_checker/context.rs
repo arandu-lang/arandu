@@ -5,6 +5,24 @@ use crate::SymbolId;
 
 use super::types::TypeId;
 
+/// A return belongs to the nearest function or isolated evaluation root, not
+/// to the function that happens to contain its source text.
+#[derive(Debug)]
+struct ReturnScope {
+    expected: Option<TypeId>,
+    span: Span,
+    ctfe_values: Option<Vec<ReturnValue>>,
+    ctfe_propagations: Vec<ReturnValue>,
+    outer_loop_depth: Option<u32>,
+}
+
+#[derive(Debug)]
+pub(super) struct ReturnValue {
+    pub ty: TypeId,
+    pub span: Span,
+    pub expression: Option<arandu_parser::ast_pool::ExprId>,
+}
+
 // ── TyCtx — typing context ─────────────────────────────────────────
 
 /// Typing context that accumulates bindings as we walk the AST.
@@ -25,11 +43,8 @@ pub struct TyCtx {
     /// Map from full `SymbolId` → inferred/declared `TypeId`.
     bindings: FxHashMap<SymbolId, TypeId>,
 
-    /// Stack of expected return types for nested functions/lambdas.
-    return_stack: Vec<TypeId>,
-
-    /// Span of the return type in each nested function declaration.
-    return_decl_span_stack: Vec<Span>,
+    /// Return targets, including isolated roots whose type is being inferred.
+    return_stack: Vec<ReturnScope>,
 
     /// Depth of loop nesting (for validating break/continue).
     loop_depth: u32,
@@ -50,7 +65,6 @@ impl TyCtx {
         Self {
             bindings: FxHashMap::default(),
             return_stack: Vec::new(),
-            return_decl_span_stack: Vec::new(),
             loop_depth: 0,
             unsafe_depth: 0,
         }
@@ -64,43 +78,88 @@ impl TyCtx {
     }
 
     /// Look up the type for a symbol.
-    ///
-    /// Reports to the global perf counters when `-Zprofile-queries` is active.
     #[must_use]
     pub fn lookup(&self, symbol: SymbolId) -> Option<TypeId> {
-        let result = self.bindings.get(&symbol).copied();
-        if result.is_some() {
-            arandu_base::perf::track_query_hit();
-        } else {
-            arandu_base::perf::track_query_miss();
-        }
-        result
+        self.bindings.get(&symbol).copied()
     }
 
     // ── Return type stack ───────────────────────────────────────────
 
     /// Push an expected return type when entering a function body.
     pub fn push_return(&mut self, ty: TypeId, decl_span: Span) {
-        self.return_stack.push(ty);
-        self.return_decl_span_stack.push(decl_span);
+        self.return_stack.push(ReturnScope {
+            expected: Some(ty),
+            span: decl_span,
+            ctfe_values: None,
+            ctfe_propagations: Vec::new(),
+            outer_loop_depth: None,
+        });
     }
 
     /// Pop the return type when leaving a function body.
     pub fn pop_return(&mut self) {
-        self.return_stack.pop();
-        self.return_decl_span_stack.pop();
+        self.pop_return_scope();
     }
 
     /// Get the return type expected by the current function.
     #[must_use]
     pub fn current_return(&self) -> Option<TypeId> {
-        self.return_stack.last().copied()
+        self.return_stack.last().and_then(|scope| scope.expected)
     }
 
     /// Span of the declared return type for the current function.
     #[must_use]
     pub fn current_return_decl_span(&self) -> Option<Span> {
-        self.return_decl_span_stack.last().copied()
+        self.return_stack.last().map(|scope| scope.span)
+    }
+
+    pub(super) fn push_ctfe_return(&mut self, expected: Option<TypeId>, span: Span) {
+        self.return_stack.push(ReturnScope {
+            expected,
+            span,
+            ctfe_values: Some(Vec::new()),
+            ctfe_propagations: Vec::new(),
+            outer_loop_depth: Some(self.loop_depth),
+        });
+        // A control-flow exit cannot jump from CTFE into a runtime loop.
+        self.loop_depth = 0;
+    }
+
+    pub(super) fn is_ctfe_return(&self) -> bool {
+        self.return_stack
+            .last()
+            .is_some_and(|scope| scope.ctfe_values.is_some())
+    }
+
+    pub(super) fn record_ctfe_return(&mut self, value: ReturnValue) {
+        if let Some(values) = self
+            .return_stack
+            .last_mut()
+            .and_then(|scope| scope.ctfe_values.as_mut())
+        {
+            values.push(value);
+        }
+    }
+
+    pub(super) fn record_ctfe_propagation(&mut self, value: ReturnValue) {
+        if let Some(scope) = self.return_stack.last_mut()
+            && scope.ctfe_values.is_some()
+        {
+            scope.ctfe_propagations.push(value);
+        }
+    }
+
+    pub(super) fn pop_ctfe_return(&mut self) -> Option<(Vec<ReturnValue>, Vec<ReturnValue>)> {
+        let scope = self.pop_return_scope()?;
+        Some((scope.ctfe_values?, scope.ctfe_propagations))
+    }
+
+    fn pop_return_scope(&mut self) -> Option<ReturnScope> {
+        let scope = self.return_stack.pop()?;
+        if let Some(depth) = scope.outer_loop_depth {
+            self.loop_depth = depth;
+        }
+        Some(scope)
     }
 
     // ── Loop tracking ───────────────────────────────────────────────

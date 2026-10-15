@@ -35,12 +35,23 @@ pub fn check_stmt(checker: &mut TypeChecker<'_>, pool: &AstPool, stmt: &Stmt) {
             super::super::synth::synth_expr(checker, *expr);
         }
         Stmt::If {
-            span: _,
+            span,
+            is_comptime,
             condition,
             then_block,
             else_block,
         } => {
-            check_if_stmt(checker, pool, condition, then_block, else_block.as_ref());
+            if *is_comptime {
+                if let Some(&selected) = checker.resolved.comptime_branches.get(&(*span).into()) {
+                    if selected {
+                        check_block(checker, pool, then_block);
+                    } else if let Some(block) = else_block {
+                        check_block(checker, pool, block);
+                    }
+                }
+            } else {
+                check_if_stmt(checker, pool, condition, then_block, else_block.as_ref());
+            }
         }
         Stmt::While {
             span: _,
@@ -50,11 +61,32 @@ pub fn check_stmt(checker: &mut TypeChecker<'_>, pool: &AstPool, stmt: &Stmt) {
             check_while_stmt(checker, pool, condition, body);
         }
         Stmt::For {
-            span: _,
+            span,
+            is_comptime,
             clause,
             body,
         } => {
-            check_for_stmt(checker, pool, clause, body);
+            if *is_comptime
+                && !checker
+                    .resolved
+                    .comptime_loops
+                    .contains_key(&(*span).into())
+            {
+                return;
+            }
+            if checker
+                .resolved
+                .deferred_loop_bodies
+                .contains(&(*span).into())
+            {
+                let empty = arandu_parser::Block {
+                    span: body.span,
+                    statements: arandu_parser::ast_pool::IndexRange::empty(),
+                };
+                check_for_stmt(checker, pool, clause, &empty);
+            } else {
+                check_for_stmt(checker, pool, clause, body);
+            }
         }
         Stmt::Match { span: _, expr } => {
             super::super::synth::synth_expr(checker, *expr);
@@ -323,6 +355,34 @@ fn check_return_stmt(
     span: arandu_base::Span,
     values: &[arandu_parser::ast_pool::ExprId],
 ) {
+    if checker.ctx.is_ctfe_return() {
+        // Do not default an inferred CTFE target to the enclosing function's
+        // return type (or to void). All exits are unified with the root tail.
+        let expected = checker.ctx.current_return();
+        let ty = match values {
+            [] => checker.intern(ArType::Void),
+            [value] => super::super::synth::synth_expr_expected(checker, *value, expected),
+            values => {
+                let types = values
+                    .iter()
+                    .map(|&value| super::super::synth::synth_expr(checker, value))
+                    .collect::<Vec<_>>();
+                checker.intern(ArType::tuple(&types, &checker.type_info.type_interner))
+            }
+        };
+        checker
+            .ctx
+            .record_ctfe_return(super::super::context::ReturnValue {
+                ty,
+                span,
+                expression: if values.len() == 1 {
+                    values.first().copied()
+                } else {
+                    None
+                },
+            });
+        return;
+    }
     let current_ret_id = checker
         .ctx
         .current_return()

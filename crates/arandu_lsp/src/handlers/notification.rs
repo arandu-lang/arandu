@@ -13,8 +13,9 @@ use lsp_server::Notification;
 use lsp_types::notification::{
     Cancel, DidChangeTextDocument, DidChangeWatchedFiles, DidCloseTextDocument, DidCreateFiles,
     DidDeleteFiles, DidOpenTextDocument, DidRenameFiles, DidSaveTextDocument, Notification as _,
+    SetTrace,
 };
-use lsp_types::{CancelParams, FileChangeType, NumberOrString};
+use lsp_types::{CancelParams, FileChangeType, NumberOrString, SetTraceParams};
 
 pub(super) fn handle(
     ctx: &mut HandlerCtx<'_>,
@@ -28,6 +29,11 @@ pub(super) fn handle(
     match not.method.as_str() {
         "arandu/testCrash" if std::env::var_os("ARANDU_LSP_TEST_ALLOW_CRASH").is_some() => {
             std::process::exit(86);
+        }
+        SetTrace::METHOD => {
+            let params: SetTraceParams = not.extract(SetTrace::METHOD)?;
+            state.trace_value = params.value;
+            crate::logging::set_trace(params.value);
         }
         Cancel::METHOD => {
             let params: CancelParams = not.extract(Cancel::METHOD)?;
@@ -208,5 +214,35 @@ fn refresh_workspace_after_file_event(
     } else {
         state.refresh_package_listing();
         spawn_open_diagnostics(state, pool, job_tx);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pool::WorkerPool;
+    use crate::state::ServerState;
+    use lsp_server::Connection;
+    use lsp_types::TraceValue;
+
+    #[test]
+    fn set_trace_notification_updates_server_and_logging_trace_level() {
+        let (server, _client) = Connection::memory();
+        let mut state = ServerState::new();
+        let pool = WorkerPool::new(1).expect("worker pool");
+        let (job_tx, _job_rx) = crossbeam_channel::bounded(4);
+        let mut ctx = HandlerCtx {
+            connection: &server,
+            state: &mut state,
+            pool: &pool,
+            job_tx: &job_tx,
+        };
+        let not = Notification::new(
+            SetTrace::METHOD.into(),
+            serde_json::json!({ "value": "verbose" }),
+        );
+        handle(&mut ctx, not).expect("handle $/setTrace");
+        assert_eq!(ctx.state.trace_value, TraceValue::Verbose);
+        assert_eq!(crate::logging::current_trace(), TraceValue::Verbose);
     }
 }

@@ -5,7 +5,9 @@ use crate::amir::{
     TempId,
 };
 use crate::diagnostics::Diagnostic;
-use crate::hir::{HirForClause, HirPlace, HirPlaceSuffix, HirSimpleStmt, HirStmt, HirStmtKind};
+use crate::hir::{
+    HirExprKind, HirForClause, HirPlace, HirPlaceSuffix, HirSimpleStmt, HirStmt, HirStmtKind,
+};
 use crate::ops::{BinaryOp, SetOp};
 use crate::passes::type_checker::types::{ArType, Primitive, result_ok_err_id};
 
@@ -98,6 +100,7 @@ impl LowerCtx<'_> {
         stmt: &HirStmt,
         symbols: &SymbolTable,
     ) -> Result<(), Diagnostic> {
+        self.charge_static_expansion(stmt.span)?;
         match &stmt.kind {
             HirStmtKind::VarDecl { bindings, value } => {
                 let bindings_slice = self.hir.pool.bindings_list(*bindings);
@@ -159,6 +162,35 @@ impl LowerCtx<'_> {
                 self.lower_set_places(self.hir.pool.places_list(*places), op, &val_op, symbols)?;
             }
             HirStmtKind::Return { values } => {
+                if let Some((dest, exit, defer_depth, scope_depth)) =
+                    self.value_returns.last().copied()
+                {
+                    let values = self.hir.pool.expr_list(*values);
+                    match values {
+                        [value] => {
+                            self.lower_expr(*value, Some(dest), symbols)?;
+                        }
+                        [] => self.emit_assign_temp(
+                            dest,
+                            AmirRvalue::Use(AmirOperand::Constant(AmirConstant::Nil)),
+                        ),
+                        values => {
+                            let mut items = Vec::new();
+                            for &value in values {
+                                items.push(self.lower_expr(value, None, symbols)?);
+                            }
+                            self.emit_assign_temp(dest, AmirRvalue::Tuple { items });
+                        }
+                    }
+                    self.exit_defer_frames_from(defer_depth, false, symbols)?;
+                    self.emit_local_scope_exit_from(scope_depth);
+                    self.set_terminator(AmirTerminator::Goto {
+                        target: exit,
+                        args: Vec::new(),
+                    });
+                    self.builder.current_block = None;
+                    return Ok(());
+                }
                 let values_slice = self.hir.pool.expr_list(*values);
                 if values_slice.len() == 1 {
                     // A3: async body returns bare `T`; wrap as `CoroutineReady` into `_0`.
@@ -260,12 +292,10 @@ impl LowerCtx<'_> {
 
                     // BB Err: runs errdefers AND defers
                     self.builder.current_block = Some(bb_err);
-                    let saved_frames = self.defer_frames.clone();
                     self.exit_all_defer_frames(true, symbols)?;
                     self.set_terminator(AmirTerminator::Return);
 
                     // BB Ok: runs ONLY defers
-                    self.defer_frames = saved_frames;
                     self.builder.current_block = Some(bb_ok);
                     self.exit_all_defer_frames(false, symbols)?;
                     self.set_terminator(AmirTerminator::Return);
@@ -362,33 +392,90 @@ impl LowerCtx<'_> {
 
                 self.builder.current_block = Some(bb_exit);
             }
-            HirStmtKind::For { clause, body } => match clause {
+            HirStmtKind::For {
+                comptime_bounds: Some(bounds),
+                clause,
+                body,
+                comptime_bodies,
+            } => {
+                self.lower_static_for(
+                    *bounds,
+                    clause,
+                    *body,
+                    comptime_bodies.as_deref(),
+                    stmt.span,
+                    symbols,
+                )?;
+            }
+            HirStmtKind::For {
+                comptime_bounds: None,
+                clause,
+                body,
+                ..
+            } => match clause {
                 HirForClause::In {
                     span: _,
                     bindings,
                     iterable,
                 } => {
-                    let iter_op = self.lower_expr(*iterable, None, symbols)?;
-
-                    let idx_local = self.new_compiler_local(ArType::Primitive(Primitive::Int));
-                    let zero_lit = self.intern_literal_int("0");
+                    // Ranges are loop domains, not indexable array values. Evaluate
+                    // both endpoints once in source order, preserving their type.
+                    let range = match self.hir.pool.expr(*iterable).kind {
+                        HirExprKind::Binary {
+                            op: op @ (BinaryOp::RangeExclusive | BinaryOp::RangeInclusive),
+                            left,
+                            right,
+                        } => Some((left, right, op == BinaryOp::RangeInclusive)),
+                        _ => None,
+                    };
+                    let (iter_op, start, bound, index_ty, inclusive) =
+                        if let Some((left, right, inclusive)) = range {
+                            let ty = self.hir.pool.expr(left).ty;
+                            let start = self.lower_expr(left, None, symbols)?;
+                            let bound = self.lower_expr(right, None, symbols)?;
+                            (None, start, Some(bound), ty, inclusive)
+                        } else {
+                            let iter_op = self.lower_expr(*iterable, None, symbols)?;
+                            let zero = self.intern_literal_int("0");
+                            (
+                                Some(iter_op),
+                                AmirOperand::Constant(zero),
+                                None,
+                                arandu_middle::types::TypeInterner::preinterned_primitive(
+                                    Primitive::Int,
+                                ),
+                                false,
+                            )
+                        };
+                    let idx_local = self.new_compiler_local_id(index_ty, stmt.span);
                     self.emit_store_place(
                         AmirPlace {
                             local: idx_local,
                             projections: smallvec::SmallVec::new(),
                         },
-                        AmirOperand::Constant(zero_lit),
+                        start,
                     )?;
 
-                    let len_local = self.new_compiler_local(ArType::Primitive(Primitive::Int));
-                    let len_temp = self.new_temp(ArType::Primitive(Primitive::Int));
-                    self.emit_assign_temp(len_temp, AmirRvalue::Len(iter_op));
+                    let len_local = self.new_compiler_local_id(index_ty, stmt.span);
+                    let bound = if let Some(bound) = bound {
+                        bound
+                    } else if let Some(iter_op) = iter_op {
+                        let len_temp = self.new_temp_id(index_ty);
+                        self.emit_assign_temp(len_temp, AmirRvalue::Len(iter_op));
+                        AmirOperand::Copy(len_temp)
+                    } else {
+                        return Err(Diagnostic::ice(
+                            crate::diagnostics::DiagCode::ICEL001,
+                            "loop domain has neither endpoints nor iterable",
+                            stmt.span,
+                        ));
+                    };
                     self.emit_store_place(
                         AmirPlace {
                             local: len_local,
                             projections: smallvec::SmallVec::new(),
                         },
-                        AmirOperand::Copy(len_temp),
+                        bound,
                     )?;
 
                     let bb_cond = self.new_block();
@@ -399,34 +486,23 @@ impl LowerCtx<'_> {
                     self.emit_goto(bb_cond);
 
                     self.builder.current_block = Some(bb_cond);
-                    let int_ty =
-                        arandu_middle::types::TypeInterner::preinterned_primitive(Primitive::Int);
-                    let idx_op = self.load_place(
-                        &AmirPlace {
-                            local: idx_local,
-                            projections: smallvec::SmallVec::new(),
-                        },
-                        int_ty,
-                    )?;
-                    let len_op = self.load_place(
-                        &AmirPlace {
-                            local: len_local,
-                            projections: smallvec::SmallVec::new(),
-                        },
-                        int_ty,
-                    )?;
+                    let idx_op = self.read_variable_source(idx_local)?;
+                    let len_op = self.read_variable_source(len_local)?;
                     let cond_tmp = self.new_temp(ArType::Primitive(Primitive::Bool));
                     self.emit_assign_temp(
                         cond_tmp,
                         AmirRvalue::Binary {
-                            op: BinaryOp::Lt,
+                            op: if inclusive {
+                                BinaryOp::LtEqual
+                            } else {
+                                BinaryOp::Lt
+                            },
                             left: idx_op,
                             right: len_op,
                         },
                     );
                     self.set_bool_branch(AmirOperand::Copy(cond_tmp), bb_body, bb_exit);
                     self.seal_block(bb_body);
-                    self.seal_block(bb_exit);
 
                     let defer_depth = self.defer_frames.len();
                     let scope_depth = self.local_scopes.len();
@@ -444,21 +520,17 @@ impl LowerCtx<'_> {
                             .unwrap_or_else(|| {
                                 self.new_local_id(binding.ty, binding.symbol, binding.span)
                             });
-                        let idx_op2 = self.load_place(
-                            &AmirPlace {
-                                local: idx_local,
-                                projections: smallvec::SmallVec::new(),
-                            },
-                            arandu_middle::types::TypeInterner::preinterned_primitive(
-                                Primitive::Int,
-                            ),
-                        )?;
+                        let idx_op2 = self.read_variable_source(idx_local)?;
                         let elem_temp = self.new_temp_id(binding.ty);
                         self.emit_assign_temp(
                             elem_temp,
-                            AmirRvalue::IndexAccess {
-                                base: iter_op,
-                                index: idx_op2,
+                            if let Some(base) = iter_op {
+                                AmirRvalue::IndexAccess {
+                                    base,
+                                    index: idx_op2,
+                                }
+                            } else {
+                                AmirRvalue::Use(idx_op2)
                             },
                         );
                         let consumed = self.consume_operand(AmirOperand::Copy(elem_temp))?;
@@ -472,34 +544,50 @@ impl LowerCtx<'_> {
                     }
                     self.loop_stack.pop();
 
-                    self.builder.current_block = Some(bb_step);
-                    self.seal_block(bb_step);
-                    let idx_op3 = self.load_place(
-                        &AmirPlace {
-                            local: idx_local,
-                            projections: smallvec::SmallVec::new(),
-                        },
-                        arandu_middle::types::TypeInterner::preinterned_primitive(Primitive::Int),
-                    )?;
-                    let one_lit = self.intern_literal_int("1");
-                    let next_idx = self.new_temp(ArType::Primitive(Primitive::Int));
-                    self.emit_assign_temp(
-                        next_idx,
-                        AmirRvalue::Binary {
-                            op: BinaryOp::Add,
-                            left: idx_op3,
-                            right: AmirOperand::Constant(one_lit),
-                        },
-                    );
-                    self.emit_store_place(
-                        AmirPlace {
-                            local: idx_local,
-                            projections: smallvec::SmallVec::new(),
-                        },
-                        AmirOperand::Copy(next_idx),
-                    )?;
-                    self.emit_goto(bb_cond);
+                    // A returning/breaking body may leave no step predecessor.
+                    // Do not materialize loads or a back edge in that orphan.
+                    self.finish_join(bb_step);
+                    if self.builder.current_block.is_some() {
+                        let idx_op3 = self.read_variable_source(idx_local)?;
+                        // Inclusive MAX is a valid final value. Exit before
+                        // incrementing it instead of overflowing or wrapping.
+                        if inclusive {
+                            let end = self.read_variable_source(len_local)?;
+                            let done = self.new_temp(ArType::Primitive(Primitive::Bool));
+                            self.emit_assign_temp(
+                                done,
+                                AmirRvalue::Binary {
+                                    op: BinaryOp::Equal,
+                                    left: idx_op3,
+                                    right: end,
+                                },
+                            );
+                            let increment = self.new_block();
+                            self.set_bool_branch(AmirOperand::Copy(done), bb_exit, increment);
+                            self.seal_block(increment);
+                            self.builder.current_block = Some(increment);
+                        }
+                        let one_lit = self.intern_literal_int("1");
+                        let next_idx = self.new_temp_id(index_ty);
+                        self.emit_assign_temp(
+                            next_idx,
+                            AmirRvalue::Binary {
+                                op: BinaryOp::Add,
+                                left: idx_op3,
+                                right: AmirOperand::Constant(one_lit),
+                            },
+                        );
+                        self.emit_store_place(
+                            AmirPlace {
+                                local: idx_local,
+                                projections: smallvec::SmallVec::new(),
+                            },
+                            AmirOperand::Copy(next_idx),
+                        )?;
+                        self.emit_goto(bb_cond);
+                    }
                     self.seal_block(bb_cond);
+                    self.seal_block(bb_exit);
 
                     self.builder.current_block = Some(bb_exit);
                 }
@@ -541,8 +629,9 @@ impl LowerCtx<'_> {
                     }
                     self.loop_stack.pop();
 
-                    self.builder.current_block = Some(bb_step);
-                    self.seal_block(bb_step);
+                    // A returning/breaking body may leave no step predecessor.
+                    // Do not materialize loads or a back edge in that orphan.
+                    self.finish_join(bb_step);
                     if let Some(s) = step {
                         self.lower_simple_stmt(s, symbols)?;
                     }
@@ -558,7 +647,7 @@ impl LowerCtx<'_> {
                 let bb_end = self.new_block();
                 self.lower_match_stmt(*value, arms, bb_end, symbols)?;
             }
-            HirStmtKind::Unsafe(b) => {
+            HirStmtKind::Unsafe(b) | HirStmtKind::Scope(b) => {
                 self.lower_block(*b, symbols)?;
             }
             HirStmtKind::Defer(block) => {
@@ -871,6 +960,8 @@ impl LowerCtx<'_> {
         }
         if self.builder.current_block.is_some() {
             self.exit_current_defer_frame(false, symbols)?;
+        } else {
+            self.defer_frames.pop(); // Lexical exit; this edge emitted cleanup already.
         }
         self.end_local_scope();
         Ok(())
@@ -931,6 +1022,8 @@ impl LowerCtx<'_> {
             }
             if self.builder.current_block.is_some() {
                 self.exit_current_defer_frame(false, symbols)?;
+            } else {
+                self.defer_frames.pop();
             }
             self.end_local_scope();
             return Ok(());
@@ -1005,6 +1098,8 @@ impl LowerCtx<'_> {
         }
         if self.builder.current_block.is_some() {
             self.exit_current_defer_frame(false, symbols)?;
+        } else {
+            self.defer_frames.pop();
         }
         self.end_local_scope();
         Ok(())

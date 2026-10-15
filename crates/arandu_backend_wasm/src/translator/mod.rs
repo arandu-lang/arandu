@@ -19,6 +19,7 @@ pub mod expr;
 mod locals;
 mod operand;
 mod place;
+mod storage;
 mod string;
 
 pub use locals::{FlatFieldStore, ParamUnpack};
@@ -93,6 +94,21 @@ pub(super) struct FuncTranslator<'a> {
     pub alloc_func_idx: u32,
     /// Wasm function index of the internal `__arandu_free(ptr)`.
     pub free_func_idx: u32,
+    pub frame_homes: FxHashMap<arandu_middle::amir::InstrId, u32>,
+    pub heap_homes: FxHashMap<arandu_middle::amir::InstrId, u32>,
+    pub returned_homes: FxHashMap<arandu_middle::amir::InstrId, u32>,
+    pub transfer_owned_result: bool,
+    pub current_returned_home: Option<u32>,
+    pub frame_size: u32,
+    pub frame_base: u32,
+    pub frame_saved: u32,
+    pub current_cell_home: Option<u32>,
+    pub current_heap_home: Option<u32>,
+    pub current_initializer: Option<arandu_middle::amir::InstrId>,
+    /// Static aggregate sources whose only use copies into independent storage
+    /// or is already covered by a serialized enclosing initializer.
+    pub static_initializer_temps: rustc_hash::FxHashSet<arandu_middle::amir::InstrId>,
+    pub static_offsets: &'a FxHashMap<(SymbolId, arandu_middle::amir::InstrId), (u32, u32)>,
 }
 
 /// Number of wasm locals a shape occupies.
@@ -107,6 +123,7 @@ pub fn shape_slots(shape: Shape) -> u32 {
 
 /// Global module-level translation context passed to each function translator.
 pub struct TranslationContext<'a> {
+    pub static_offsets: &'a FxHashMap<(SymbolId, arandu_middle::amir::InstrId), (u32, u32)>,
     pub symbols: &'a SymbolTable,
     pub interner: &'a TypeInterner,
     pub layout_provider: &'a dyn StructLayoutProvider,
@@ -152,6 +169,19 @@ impl<'a> FuncTranslator<'a> {
             code: Vec::new(),
             alloc_func_idx: ctx.alloc_func_idx,
             free_func_idx: ctx.free_func_idx,
+            frame_homes: FxHashMap::default(),
+            heap_homes: FxHashMap::default(),
+            returned_homes: FxHashMap::default(),
+            transfer_owned_result: false,
+            current_returned_home: None,
+            frame_size: 0,
+            frame_base: 0,
+            frame_saved: 0,
+            current_cell_home: None,
+            current_heap_home: None,
+            current_initializer: None,
+            static_initializer_temps: rustc_hash::FxHashSet::default(),
+            static_offsets: ctx.static_offsets,
         }
     }
 
@@ -181,7 +211,9 @@ impl<'a> FuncTranslator<'a> {
         use crate::stackify::Op;
 
         // Pre-pass: assign locals.
-        let extra_locals = self.allocate_locals();
+        let mut extra_locals = self.allocate_locals();
+        self.plan_frame(&mut extra_locals);
+        self.enter_frame();
 
         // Emit prologue: unpack flattened parameters into memory cells if needed
         let param_unpacks = std::mem::take(&mut self.param_unpacks);
@@ -336,6 +368,7 @@ impl<'a> FuncTranslator<'a> {
                 }
                 Op::Return => {
                     self.emit_return();
+                    self.leave_frame();
                     self.code.push(Instruction::Return);
                 }
                 Op::Trap => {
@@ -345,6 +378,16 @@ impl<'a> FuncTranslator<'a> {
         }
 
         // Build the wasm Function.
+        // Structured blocks do not propagate an inner return's unreachable
+        // state to their enclosing scope. AMIR has no implicit fallthrough;
+        // make that explicit for functions ending in an enclosing loop/block.
+        if !matches!(
+            self.code.last(),
+            Some(Instruction::Return | Instruction::Unreachable)
+        ) {
+            self.code.push(Instruction::Unreachable);
+        }
+        crate::stack_peephole::stackify_locals(&mut self.code);
         let mut wasm_func = Function::new(extra_locals);
         for insn in &self.code {
             wasm_func.instruction(insn);

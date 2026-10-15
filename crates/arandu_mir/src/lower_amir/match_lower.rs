@@ -613,7 +613,12 @@ impl LowerCtx<'_> {
                             }
                             _ => Vec::new(),
                         };
-                        self.instantiate_enum_payload_types(*type_symbol, &enum_args, types)
+                        self.instantiate_enum_payload_types(
+                            *type_symbol,
+                            variant_id,
+                            &enum_args,
+                            types,
+                        )
                     }
                 };
                 if payload_types.len() == payload_patterns.len() {
@@ -1121,8 +1126,12 @@ impl LowerCtx<'_> {
                     }
                     _ => Vec::new(),
                 };
-                let payload_tys =
-                    self.instantiate_enum_payload_types(*type_symbol, &enum_args, payload_tys);
+                let payload_tys = self.instantiate_enum_payload_types(
+                    *type_symbol,
+                    variant_id,
+                    &enum_args,
+                    payload_tys,
+                );
                 let tuple_ty = if payload_tys.len() > 1 {
                     let tuple = ArType::tuple(&payload_tys, &self.tc.type_info.type_interner);
                     Some(self.tc.type_info.type_interner.intern(tuple))

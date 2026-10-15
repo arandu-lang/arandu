@@ -57,7 +57,7 @@ fn stdlib_hash_parses_and_exports_expected_symbols() {
         "Hasher",
         "Hash",
         "FnvHasher",
-        "fnvNew",
+        "FnvHasher.new",
         "FnvHasher.finish",
         "FnvHasher.write",
         "FnvHasher.writeU8",
@@ -124,7 +124,7 @@ fn stdlib_cmp_and_hash_usage_in_program() {
             }
 
             public func testHash(): u64 {
-                let mut h = hash.fnvNew()
+                let mut h = hash.FnvHasher.new()
                 let p = Point { x: 42, y: 100 }
                 p.hash(ref h)
                 return h.finish()

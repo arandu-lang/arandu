@@ -9,7 +9,7 @@
 //! ```arandu
 //! import std.core.hash as hash
 //!
-//! let mut h = hash.fnvNew()
+//! let mut h = hash.FnvHasher.new()
 //! h.writeU8(42 as u8)
 //! let digest = h.finish()
 //! ```
@@ -58,7 +58,7 @@ public struct FnvHasher {
 ///
 /// Reuse the state across writes to hash a sequence of values. Construction
 /// does not allocate.
-public func fnvNew(): FnvHasher {
+public func FnvHasher.new(): FnvHasher {
     return FnvHasher {
         state: 14695981039346656037 as u64,
     }

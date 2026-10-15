@@ -98,12 +98,33 @@ pub(super) fn references(
 ) {
     let uri = params.text_document_position.text_document.uri;
     let pos = params.text_document_position.position;
+    let include_declaration = params.context.include_declaration;
     dispatcher::spawn_json(ctx.state, ctx.pool, ctx.job_tx, id, move |snap, docs| {
         let Some(info) = docs.get(uri.as_str()) else {
             return serde_json::Value::Null;
         };
         let text = info.source.text(&snap.db);
-        let locs = ide::references(snap, info.source, text, pos, &uri);
+        let documents = docs
+            .iter()
+            .filter_map(|(doc_uri, info)| {
+                let parsed = crate::uri_util::parse_uri(doc_uri)
+                    .or_else(|| crate::uri_util::uri_from_path(&info.path))?;
+                Some(ide::DocSnap {
+                    source: info.source,
+                    path: Arc::clone(&info.path),
+                    uri: parsed,
+                })
+            })
+            .collect::<Vec<_>>();
+        let locs = ide::references(
+            snap,
+            info.source,
+            text,
+            pos,
+            &uri,
+            &documents,
+            include_declaration,
+        );
         serde_json::to_value(locs).unwrap_or(serde_json::Value::Null)
     });
 }

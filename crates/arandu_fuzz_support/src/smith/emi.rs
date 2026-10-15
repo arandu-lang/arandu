@@ -524,7 +524,9 @@ fn main_control_flow_insertions(source: &str, program: &arandu_parser::Program) 
         .filter(|(_, expr)| {
             matches!(
                 expr,
-                arandu_parser::ExprKind::Lambda { .. } | arandu_parser::ExprKind::AsyncBlock { .. }
+                arandu_parser::ExprKind::Lambda { .. }
+                    | arandu_parser::ExprKind::AsyncBlock { .. }
+                    | arandu_parser::ExprKind::Comptime { .. }
             )
         })
         .map(|(index, _)| program.pool.expr_spans[index])
@@ -675,7 +677,9 @@ fn main_loop_probes(source: &str, program: &arandu_parser::Program) -> Vec<LoopP
         .filter(|(_, expr)| {
             matches!(
                 expr,
-                arandu_parser::ExprKind::Lambda { .. } | arandu_parser::ExprKind::AsyncBlock { .. }
+                arandu_parser::ExprKind::Lambda { .. }
+                    | arandu_parser::ExprKind::AsyncBlock { .. }
+                    | arandu_parser::ExprKind::Comptime { .. }
             )
         })
         .map(|(index, _)| program.pool.expr_spans[index])
@@ -870,5 +874,32 @@ fn gen_pure_int(rng: &mut Rng, depth: u8) -> String {
         2 => format!("({left} * {})", 1 + rng.below(2)),
         3 => format!("({left} / {})", 1 + rng.below(3)),
         _ => format!("({left} % {})", 1 + rng.below(3)),
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod staging_tests {
+    #[test]
+    fn runtime_emi_does_not_instrument_compiletime_branches_or_loops() {
+        let source = "func main(): int { let folded = comptime { let mut i = 0; while i < 2 { set i = i + 1 }; if true { return 42 } else { return 1 } }; if true { let runtime = folded }; while false {}; return folded }";
+        let program = arandu_parser::parse(source).expect("parse staging fixture");
+        let root = program
+            .pool
+            .exprs
+            .iter()
+            .position(|kind| matches!(kind, arandu_parser::ExprKind::Comptime { .. }))
+            .expect("CTFE root");
+        let span = program.pool.expr_spans[root];
+        let positions = super::main_control_flow_insertions(source, &program);
+        assert_eq!(positions.len(), 1, "only the runtime if can be profiled");
+        assert!(positions
+            .iter()
+            .all(|&pos| pos < span.start as usize || pos > span.end as usize));
+        let loops = super::main_loop_probes(source, &program);
+        assert_eq!(loops.len(), 1, "only the runtime loop can be profiled");
+        assert!(loops
+            .iter()
+            .all(|probe| probe.body_insertion > span.end as usize));
     }
 }

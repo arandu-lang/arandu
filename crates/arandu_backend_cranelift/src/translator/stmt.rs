@@ -1,6 +1,6 @@
 use arandu_semantics::amir::{AmirStmt, LocalId};
 use arandu_semantics::passes::type_checker::types::{ArType, Primitive};
-use cranelift_codegen::ir::{InstBuilder, Value};
+use cranelift_codegen::ir::{InstBuilder, MemFlagsData, Value};
 
 use super::FunctionTranslator;
 use crate::types::{ClifType, clif_type};
@@ -13,6 +13,9 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         }
         match stmt {
             AmirStmt::Assign { lhs, rhs } => {
+                if self.capture_integer_concat_part(*lhs, rhs) {
+                    return;
+                }
                 let lhs_ty = self.temp_ar_ty(*lhs);
                 if matches!(&lhs_ty, ArType::Primitive(Primitive::Str)) {
                     let (ptr_val, len_val) = self.translate_str_rvalue(rhs);
@@ -27,7 +30,11 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     let expected_ty = self.get_temp_clif_type(*lhs);
                     let lhs_ar = self.temp_ar_ty(*lhs);
                     let expected_ar_type = Some(&lhs_ar);
+                    if lhs.as_usize() == 0 {
+                        self.aggregate_destination = self.indirect_return_destination;
+                    }
                     let val = self.translate_rvalue(rhs, expected_ty, expected_ar_type);
+                    self.aggregate_destination = None;
                     if self.error.is_some() {
                         return;
                     }
@@ -110,6 +117,12 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 }
             }
             AmirStmt::Free(op) => {
+                if let arandu_semantics::amir::AmirOperand::Copy(temp)
+                | arandu_semantics::amir::AmirOperand::Move(temp) = op
+                    && self.integer_concat_temps[temp.as_usize()].is_some()
+                {
+                    return;
+                }
                 let op_ty = self.get_operand_ar_type(op);
                 let ptr_val = if matches!(op_ty, ArType::Primitive(Primitive::Str)) {
                     self.translate_str_operand(op).0
@@ -122,9 +135,38 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             AmirStmt::Destroy(place) => {
                 let ty = self.place_ar_ty(place);
                 if matches!(ty, ArType::Primitive(Primitive::Str)) {
-                    if let Some(&(var_ptr, _)) = self.str_local_map.get(&place.local) {
-                        let ptr_val = self.builder.use_var(var_ptr);
+                    let zero = self.builder.ins().iconst(self.ptr_type, 0);
+                    if place.projections.is_empty() {
+                        if let Some(&slot) = self.local_stack_slots.get(&place.local) {
+                            let addr = self.builder.ins().stack_addr(self.ptr_type, slot, 0);
+                            let ptr_val = self.builder.ins().load(
+                                self.ptr_type,
+                                MemFlagsData::new(),
+                                addr,
+                                0,
+                            );
+                            self.emit_free_ptr(ptr_val);
+                            self.builder.ins().store(MemFlagsData::new(), zero, addr, 0);
+                            if let Some(&(var_ptr, _)) = self.str_local_map.get(&place.local) {
+                                self.builder.def_var(var_ptr, zero);
+                            }
+                        } else if let Some(&(var_ptr, _)) = self.str_local_map.get(&place.local) {
+                            let ptr_val = self.builder.use_var(var_ptr);
+                            self.emit_free_ptr(ptr_val);
+                            self.builder.def_var(var_ptr, zero);
+                        }
+                    } else {
+                        let (base_ptr, offset) = self.translate_place_address_for_load(place);
+                        let ptr_val = self.builder.ins().load(
+                            self.ptr_type,
+                            MemFlagsData::new(),
+                            base_ptr,
+                            offset,
+                        );
                         self.emit_free_ptr(ptr_val);
+                        self.builder
+                            .ins()
+                            .store(MemFlagsData::new(), zero, base_ptr, offset);
                     }
                 } else {
                     let ptr_val = if place.projections.is_empty() {
@@ -154,7 +196,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             if let Some(destructor) = self.type_info.destructor_instances.get(&ty_id) {
                 let symbol = self.symbol_table.get(*destructor);
                 let host_name = self.symbol_table.host_func_name(symbol);
-                if let Some(&id) = self.func_ids.get(host_name) {
+                if let Some(id) = self.resolve_function(host_name) {
                     let function = self.module.declare_func_in_func(id, self.builder.func);
                     let arg_abi = self.classify_arg_abi(ty);
                     match arg_abi {
@@ -163,14 +205,9 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                         }
                         arandu_semantics::layout::ArgAbi::Direct(direct) => {
                             let mut args = Vec::with_capacity(direct.slots.len());
+                            let layout = self.checked_layout(ty);
                             for abi_slot in &direct.slots {
-                                let chunk_ty = crate::abi::abi_scalar_to_clif(abi_slot.scalar);
-                                let chunk_val = self.builder.ins().load(
-                                    chunk_ty,
-                                    cranelift_codegen::ir::MemFlagsData::new(),
-                                    ptr_val,
-                                    abi_slot.offset as i32,
-                                );
+                                let chunk_val = self.load_abi_slot(ptr_val, abi_slot, layout.size);
                                 args.push(chunk_val);
                             }
                             self.builder.ins().call(function, &args);

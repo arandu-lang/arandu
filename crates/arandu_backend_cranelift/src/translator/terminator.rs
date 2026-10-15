@@ -11,8 +11,9 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
     pub(super) fn translate_terminator(&mut self, terminator: &AmirTerminator) {
         match terminator {
             AmirTerminator::Return => {
-                if self.symbol_table.get(self.current_func.symbol).name == "main"
-                    && let Some(&shutdown_id) = self.func_ids.get("ar_gen_shutdown_raw")
+                if self.gen_shutdown
+                    && self.symbol_table.get(self.current_func.symbol).name == "main"
+                    && let Some(shutdown_id) = self.resolve_function("ar_gen_shutdown_raw")
                 {
                     let shutdown = self
                         .module
@@ -20,6 +21,18 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     self.builder.ins().call(shutdown, &[]);
                 }
                 let return_ty = self.resolve_ty(self.current_func.return_type);
+                if let Some(destination) = self.indirect_return_destination {
+                    let ret_temp = arandu_semantics::amir::TempId::from_usize(0);
+                    let Some(&var) = self.temp_map.get(&ret_temp) else {
+                        self.record_ice("missing indirect result value", self.func_span());
+                        return;
+                    };
+                    let source = self.builder.use_var(var);
+                    let layout = self.checked_layout(&return_ty);
+                    self.copy_aggregate_bytes(destination, source, layout.size);
+                    self.builder.ins().return_(&[]);
+                    return;
+                }
                 if matches!(&return_ty, ArType::Primitive(Primitive::Str)) {
                     let ret_temp = arandu_semantics::amir::TempId::from_usize(0);
                     if let Some(&(var_ptr, var_len)) = self.str_temp_map.get(&ret_temp) {
@@ -35,7 +48,10 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     let operand = arandu_semantics::amir::AmirOperand::Copy(ret_temp);
                     let (data, len) = self.translate_slice_operand(&operand);
                     self.builder.ins().return_(&[data, len]);
-                } else if matches!(&return_ty, ArType::Named(_, _) | ArType::Tuple(_)) {
+                } else if matches!(
+                    &return_ty,
+                    ArType::Named(_, _) | ArType::Tuple(_) | ArType::Array(_, _)
+                ) {
                     let arg_abi = self.classify_arg_abi(&return_ty);
                     match arg_abi {
                         arandu_semantics::layout::ArgAbi::ZeroSized => {
@@ -49,14 +65,9 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                                 self.poison_value(self.ptr_type)
                             };
                             let mut chunks = Vec::with_capacity(direct.slots.len());
+                            let layout = self.checked_layout(&return_ty);
                             for abi_slot in &direct.slots {
-                                let chunk_ty = crate::abi::abi_scalar_to_clif(abi_slot.scalar);
-                                let chunk_val = self.builder.ins().load(
-                                    chunk_ty,
-                                    cranelift_codegen::ir::MemFlagsData::new(),
-                                    base_ptr,
-                                    abi_slot.offset as i32,
-                                );
+                                let chunk_val = self.load_abi_slot(base_ptr, abi_slot, layout.size);
                                 chunks.push(chunk_val);
                             }
                             self.builder.ins().return_(&chunks);
@@ -65,7 +76,13 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                             let ret_temp = arandu_semantics::amir::TempId::from_usize(0);
                             if let Some(&var) = self.temp_map.get(&ret_temp) {
                                 let ret_val = self.builder.use_var(var);
-                                self.builder.ins().return_(&[ret_val]);
+                                if let Some(destination) = self.indirect_return_destination {
+                                    let layout = self.checked_layout(&return_ty);
+                                    self.copy_aggregate_bytes(destination, ret_val, layout.size);
+                                    self.builder.ins().return_(&[]);
+                                } else {
+                                    self.builder.ins().return_(&[ret_val]);
+                                }
                             } else {
                                 let poison = self.poison_value(self.ptr_type);
                                 self.builder.ins().return_(&[poison]);

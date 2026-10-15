@@ -172,7 +172,22 @@ pub fn item_doc(
                     .get(&NodeKey::from(v_sym.span))
                     .and_then(|lines| parse_doc_comment_lines(lines).0);
 
-                let payload_str =
+                let payload_str = if let Some(fields) =
+                    signatures.type_info.struct_fields.get(&var_sym)
+                {
+                    let parts: Vec<String> = fields
+                        .iter()
+                        .map(|f| {
+                            let ty_str = signatures
+                                .type_info
+                                .type_interner
+                                .resolve(f.ty)
+                                .display(&signatures.symbols, &signatures.type_info.type_interner);
+                            format!("{}: {}", f.name, ty_str)
+                        })
+                        .collect();
+                    Some(format!("{{ {} }}", parts.join(", ")))
+                } else {
                     signatures
                         .type_info
                         .enum_variants
@@ -191,7 +206,8 @@ pub fn item_doc(
                                     .collect();
                                 Some(format!("({})", parts.join(", ")))
                             }
-                        });
+                        })
+                };
 
                 variants.push(DocVariant {
                     name: var_name,

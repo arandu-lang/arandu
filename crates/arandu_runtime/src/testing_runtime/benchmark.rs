@@ -23,15 +23,15 @@ pub(crate) enum BenchmarkPhase {
 /// nanoseconds so rollback, resolution and overflow paths are unit-testable.
 #[derive(Debug)]
 pub struct BenchmarkEngine {
-    pub(crate) config: arandu_codegen::testing::BenchmarkConfigV1,
+    pub(crate) config: arandu_testing_contract::BenchmarkConfigV1,
     pub(crate) phase: BenchmarkPhase,
-    pub(crate) samples: Vec<arandu_codegen::testing::BenchmarkSampleV1>,
+    pub(crate) samples: Vec<arandu_testing_contract::BenchmarkSampleV1>,
     pub(crate) failure: Option<String>,
 }
 
 impl BenchmarkEngine {
     #[must_use]
-    pub fn new(config: arandu_codegen::testing::BenchmarkConfigV1) -> Self {
+    pub fn new(config: arandu_testing_contract::BenchmarkConfigV1) -> Self {
         let failure = if config.warmup_ns == 0 {
             Some("benchmark warmup must be greater than zero".to_string())
         } else if config.measurement_ns == 0 {
@@ -133,7 +133,7 @@ impl BenchmarkEngine {
                     return true;
                 }
                 self.samples
-                    .push(arandu_codegen::testing::BenchmarkSampleV1 {
+                    .push(arandu_testing_contract::BenchmarkSampleV1 {
                         iterations,
                         elapsed_ns,
                     });
@@ -173,7 +173,7 @@ thread_local! {
 pub fn init_benchmark_context(
     id: &str,
     sequence: u64,
-    config: arandu_codegen::testing::BenchmarkConfigV1,
+    config: arandu_testing_contract::BenchmarkConfigV1,
 ) {
     ACTIVE_BENCHMARK.with(|cell| {
         *cell.borrow_mut() = Some(ActiveBenchmark {
@@ -186,17 +186,17 @@ pub fn init_benchmark_context(
 }
 
 #[must_use]
-pub fn finish_benchmark_context() -> Option<arandu_codegen::testing::BenchmarkEventV1> {
+pub fn finish_benchmark_context() -> Option<arandu_testing_contract::BenchmarkEventV1> {
     ACTIVE_BENCHMARK.with(|cell| {
         cell.borrow_mut()
             .take()
-            .map(|active| arandu_codegen::testing::BenchmarkEventV1 {
+            .map(|active| arandu_testing_contract::BenchmarkEventV1 {
                 sequence: active.sequence,
                 id: active.id,
                 config: active.engine.config,
                 samples: active.engine.samples,
-                stdout: arandu_codegen::testing::CapturedOutput::default(),
-                stderr: arandu_codegen::testing::CapturedOutput::default(),
+                stdout: arandu_testing_contract::CapturedOutput::default(),
+                stderr: arandu_testing_contract::CapturedOutput::default(),
                 failure: active.engine.failure,
             })
     })

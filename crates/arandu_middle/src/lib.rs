@@ -16,6 +16,7 @@
 pub mod amir;
 pub mod amir_validate;
 pub mod cfg;
+pub mod ctfe;
 pub mod db;
 pub mod diagnostics;
 pub mod docs;

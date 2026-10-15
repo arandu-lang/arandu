@@ -405,14 +405,29 @@ impl LowerCtx<'_> {
             return Ok(None);
         }
         let callee_expr = self.hir.pool.expr(callee);
-        let name = match &callee_expr.kind {
-            HirExprKind::Path { symbol } => symbols.get(*symbol).name.as_str(),
-            HirExprKind::Field { field, .. } => field.as_str(),
-            HirExprKind::TypePath { member_symbol, .. } => {
-                symbols.get(*member_symbol).name.as_str()
-            }
+        let symbol = match &callee_expr.kind {
+            HirExprKind::Path { symbol } => *symbol,
+            HirExprKind::TypePath { member_symbol, .. } => *member_symbol,
             _ => return Ok(None),
         };
+        // Identity comes from the retained intrinsic declaration, never merely
+        // from spelling. Ordinary generic functions may legally share the name.
+        let intrinsic_declared = self.hir.decls.iter().any(|&id| {
+            let crate::hir::HirDecl::Extern(declaration) = self.hir.pool.decl(id) else {
+                return false;
+            };
+            declaration.is_intrinsic()
+                && self
+                    .hir
+                    .pool
+                    .func_signatures_list(declaration.members)
+                    .iter()
+                    .any(|member| member.symbol == symbol)
+        });
+        if !intrinsic_declared {
+            return Ok(None);
+        }
+        let name = symbols.get(symbol).name.as_str();
         let kind = arandu_middle::IntrinsicKind::from_name(name);
         let bare = match kind {
             Some(arandu_middle::IntrinsicKind::SizeOf) => "sizeOf",
@@ -420,8 +435,25 @@ impl LowerCtx<'_> {
             _ => return Ok(None),
         };
 
-        let ty = self.resolve_ty(type_args[0]);
-        let engine = arandu_middle::layout::LayoutEngine::new(self.pointer_width);
+        let query = if bare == "sizeOf" {
+            crate::hir::LayoutQuery::Size
+        } else {
+            crate::hir::LayoutQuery::Align
+        };
+        self.lower_layout_query(query, type_args[0], result_ty, target, callee_expr.span)
+            .map(Some)
+    }
+
+    pub(crate) fn lower_layout_query(
+        &mut self,
+        query: crate::hir::LayoutQuery,
+        operand_ty: crate::types::TypeId,
+        result_ty: crate::types::TypeId,
+        target: Option<TempId>,
+        span: arandu_lexer::Span,
+    ) -> Result<AmirOperand, Diagnostic> {
+        let ty = self.resolve_ty(operand_ty);
+        let engine = arandu_middle::layout::LayoutEngine::from_data_layout(self.layout);
         let layout = engine
             .layout_of_type(
                 &ty,
@@ -429,13 +461,14 @@ impl LowerCtx<'_> {
                 self.tc.type_info.as_ref(),
             )
             .map_err(|error| {
-                Diagnostic::ice(
-                    DiagCode::ICEGEN002,
-                    format!("failed to compute layout for mem.{bare}: {error}"),
-                    callee_expr.span,
+                Diagnostic::error(
+                    DiagCode::T047InvalidTypeLayout,
+                    format!("cannot compute @{} for this type: {error}", query.name()),
+                    span,
                 )
+                .with_primary_label("type has no concrete target layout")
             })?;
-        let value = if kind == Some(arandu_middle::IntrinsicKind::SizeOf) {
+        let value = if query == crate::hir::LayoutQuery::Size {
             layout.size
         } else {
             layout.align
@@ -444,6 +477,6 @@ impl LowerCtx<'_> {
         let lit = self.intern_literal_int(value.to_string());
         let dest = target.unwrap_or_else(|| self.new_temp_id(result_ty));
         self.emit_assign_temp(dest, AmirRvalue::Use(AmirOperand::Constant(lit)));
-        Ok(Some(AmirOperand::Copy(dest)))
+        Ok(AmirOperand::Copy(dest))
     }
 }

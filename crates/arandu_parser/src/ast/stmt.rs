@@ -42,12 +42,14 @@ pub enum Stmt {
     },
     If {
         span: Span,
+        is_comptime: bool,
         condition: Condition,
         then_block: Block,
         else_block: Option<Block>,
     },
     For {
         span: Span,
+        is_comptime: bool,
         clause: ForClause,
         body: Block,
     },

@@ -12,7 +12,7 @@ use crate::process_job::terminate_process_group;
 use crate::process_job::ProcessJob as BackendProcessJob;
 
 pub const BACKEND_PROCESS_TIMEOUT: Duration = if cfg!(debug_assertions) {
-    Duration::from_secs(30)
+    Duration::from_secs(60)
 } else {
     Duration::from_secs(10)
 };
@@ -45,27 +45,36 @@ thread_local! {
 }
 
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn capture_jit_print(ptr: *const u8, len: i64) {
+    JIT_STDOUT_CAPTURE.with(|capture| capture_jit_bytes(capture, ptr, len));
+}
+
+fn capture_jit_bytes(capture: &RefCell<CapturedJitOutput>, ptr: *const u8, len: i64) {
+    let mut capture = capture.borrow_mut();
+    let Ok(len) = usize::try_from(len) else {
+        capture.invalid = true;
+        return;
+    };
+    if len > 0 && ptr.is_null() {
+        capture.invalid = true;
+        return;
+    }
+    let remaining = MAX_CAPTURED_PROCESS_OUTPUT.saturating_sub(capture.bytes.len());
+    let copied = len.min(remaining);
+    if copied > 0 {
+        // SAFETY: JIT host callbacks receive `len` readable bytes from the runtime.
+        let bytes = unsafe { std::slice::from_raw_parts(ptr, copied) };
+        capture.bytes.extend_from_slice(bytes);
+    }
+    capture.truncated |= copied < len;
+}
+
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn capture_jit_println(ptr: *const u8, len: i64) {
     JIT_STDOUT_CAPTURE.with(|capture| {
+        capture_jit_bytes(capture, ptr, len);
         let mut capture = capture.borrow_mut();
-        let Ok(len) = usize::try_from(len) else {
-            capture.invalid = true;
-            return;
-        };
-        if len > 0 && ptr.is_null() {
-            capture.invalid = true;
-            return;
-        }
-
-        let remaining = MAX_CAPTURED_PROCESS_OUTPUT.saturating_sub(capture.bytes.len());
-        let copied = len.min(remaining);
-        if copied > 0 {
-            // SAFETY: Caller guarantees `ptr` addresses `len` readable bytes.
-            let bytes = unsafe { std::slice::from_raw_parts(ptr, copied) };
-            capture.bytes.extend_from_slice(bytes);
-        }
-        if copied < len {
-            capture.truncated = true;
+        if capture.invalid || capture.truncated {
             return;
         }
         if capture.bytes.len() < MAX_CAPTURED_PROCESS_OUTPUT {
@@ -78,26 +87,7 @@ pub extern "C" fn capture_jit_println(ptr: *const u8, len: i64) {
 
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn capture_jit_eprint(ptr: *const u8, len: i64) {
-    JIT_STDERR_CAPTURE.with(|capture| {
-        let mut capture = capture.borrow_mut();
-        let Ok(len) = usize::try_from(len) else {
-            capture.invalid = true;
-            return;
-        };
-        if len > 0 && ptr.is_null() {
-            capture.invalid = true;
-            return;
-        }
-
-        let remaining = MAX_CAPTURED_PROCESS_OUTPUT.saturating_sub(capture.bytes.len());
-        let copied = len.min(remaining);
-        if copied > 0 {
-            // SAFETY: Caller guarantees `ptr` addresses `len` readable bytes.
-            let bytes = unsafe { std::slice::from_raw_parts(ptr, copied) };
-            capture.bytes.extend_from_slice(bytes);
-        }
-        capture.truncated |= copied < len;
-    });
+    JIT_STDERR_CAPTURE.with(|capture| capture_jit_bytes(capture, ptr, len));
 }
 
 pub extern "C" fn synthesized_args_len() -> i64 {

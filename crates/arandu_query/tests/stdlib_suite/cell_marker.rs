@@ -18,12 +18,12 @@ fn stdlib_cell_parses_and_exports_expected_symbols() {
     let exports = exported_symbols(&db, file);
     let expected = [
         "UnsafeCell",
-        "unsafeCellNew",
+        "UnsafeCell.new",
         "UnsafeCell.intoInner",
         "Cell",
-        "cellNew",
+        "Cell.new",
         "Cell.get",
-        "Cell.put",
+        "Cell.set",
         "Cell.replace",
         "Cell.intoInner",
     ];
@@ -45,7 +45,14 @@ fn stdlib_marker_parses_and_exports_expected_symbols() {
         Err(e) => panic!("marker.aru must parse; got {e}"),
     }
     let exports = exported_symbols(&db, file);
-    let expected = ["PhantomData", "phantom", "Copy", "Send", "Sync"];
+    let expected = [
+        "PhantomData",
+        "PhantomData.new",
+        "phantom",
+        "Copy",
+        "Send",
+        "Sync",
+    ];
     for key in expected {
         assert!(
             exports.symbols.contains_key(key),
@@ -74,12 +81,12 @@ fn stdlib_cell_marker_usage_in_program() {
             public func newHandle<T>(id: int): TypedHandle<T> {
                 return TypedHandle<T> {
                     id: id,
-                    marker: marker.phantom<T>(),
+                    marker: marker.PhantomData.new<T>(),
                 }
             }
 
             public func testCell(): int {
-                let mut c = cell.cellNew(10)
+                let mut c = cell.Cell.new(10)
                 let old = c.replace(20)
                 return old + c.get()
             }

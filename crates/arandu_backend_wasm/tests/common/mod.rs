@@ -57,6 +57,7 @@ pub fn temp(id: usize, ty: TypeId) -> AmirTemp {
 /// return the emitted wasm bytes.
 pub fn compile_source(source: &str) -> Vec<u8> {
     let mut db = DatabaseImpl::new();
+    db.set_target_config(wasm32());
     let file = db.new_file("e2e.aru".into(), source.into());
     let lowered = lower_amir(&db, file);
     assert!(
@@ -78,6 +79,7 @@ pub fn compile_source(source: &str) -> Vec<u8> {
 /// bytes.
 pub fn compile_source_component(source: &str, pkg_name: &str) -> Vec<u8> {
     let mut db = DatabaseImpl::new();
+    db.set_target_config(wasm32());
     let file = db.new_file("e2e.aru".into(), source.into());
     let lowered = lower_amir(&db, file);
     assert!(

@@ -40,7 +40,7 @@ impl SizeAlign {
 /// Canonical data-layout rules for one compilation target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DataLayout {
-    /// Pointer / `usize` / platform `int` / `uint` (size and abi_align).
+    /// Pointer / `usize` / `isize` (size and ABI alignment).
     pub pointer: SizeAlign,
     /// Language `float` and `FloatLiteral` (always f64 semantics).
     pub float: SizeAlign,
@@ -50,7 +50,36 @@ pub struct DataLayout {
     pub f64: SizeAlign,
 }
 
+/// Invalid target data is rejected before layout arithmetic or CTFE admission.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DataLayoutError {
+    PointerWidth,
+    ScalarWidth,
+    Alignment,
+    FloatLayout,
+}
+
 impl DataLayout {
+    /// Validate the layouts supported by the current scalar ABI contract.
+    /// An alignment may be smaller than its size (notably i686 SysV), but
+    /// cannot be zero, non-power-of-two, or larger than the scalar itself.
+    pub fn validate(self) -> Result<(), DataLayoutError> {
+        if !matches!(self.pointer.size, 4 | 8) {
+            return Err(DataLayoutError::PointerWidth);
+        }
+        if self.float.size != 8 || self.i64.size != 8 || self.f64.size != 8 {
+            return Err(DataLayoutError::ScalarWidth);
+        }
+        for class in [self.pointer, self.float, self.i64, self.f64] {
+            if !class.abi_align.is_power_of_two() || class.abi_align > class.size {
+                return Err(DataLayoutError::Alignment);
+            }
+        }
+        if self.float != self.f64 {
+            return Err(DataLayoutError::FloatLayout);
+        }
+        Ok(())
+    }
     /// Standard LP64 / ILP32-style layout for pointer width `w` (4 or 8).
     ///
     /// - `int`/`uint`/`ptr` = `w`
@@ -119,6 +148,56 @@ mod tests {
     fn host_matches_usize() {
         let dl = DataLayout::host();
         assert_eq!(dl.pointer_width(), std::mem::size_of::<usize>() as u64);
+    }
+
+    #[test]
+    fn validation_accepts_supported_abis_without_equating_size_and_alignment() {
+        for layout in [
+            DataLayout::ptr_width(4),
+            DataLayout::ptr_width(8),
+            DataLayout::i686_sysv(),
+        ] {
+            assert_eq!(layout.validate(), Ok(()));
+        }
+    }
+
+    #[test]
+    fn validation_rejects_inconsistent_or_unsafe_scalar_layouts() {
+        let valid = DataLayout::ptr_width(8);
+        assert_eq!(
+            DataLayout {
+                pointer: SizeAlign::natural(2),
+                ..valid
+            }
+            .validate(),
+            Err(DataLayoutError::PointerWidth)
+        );
+        assert_eq!(
+            DataLayout {
+                i64: SizeAlign::new(4, 4),
+                ..valid
+            }
+            .validate(),
+            Err(DataLayoutError::ScalarWidth)
+        );
+        for alignment in [0, 3, 16] {
+            assert_eq!(
+                DataLayout {
+                    i64: SizeAlign::new(8, alignment),
+                    ..valid
+                }
+                .validate(),
+                Err(DataLayoutError::Alignment)
+            );
+        }
+        assert_eq!(
+            DataLayout {
+                float: SizeAlign::new(8, 4),
+                ..valid
+            }
+            .validate(),
+            Err(DataLayoutError::FloatLayout)
+        );
     }
 
     #[test]

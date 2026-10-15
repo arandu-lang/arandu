@@ -158,6 +158,52 @@ mod tests {
     }
 
     #[test]
+    fn interpolation_uses_canonical_character_and_raw_string_tokens() {
+        let source = r#""${'λ'}:${'}'}:${b'{'}:${r"raw}"}:end""#;
+        let lexed = lex(source).expect("literal braces must not close interpolation");
+        let kinds: Vec<_> = lexed.tokens.iter().map(|token| token.kind).collect();
+        assert_eq!(
+            kinds
+                .iter()
+                .filter(|&&kind| kind == TokenKind::InterpEnd)
+                .count(),
+            4
+        );
+        assert_eq!(
+            kinds
+                .iter()
+                .filter(|&&kind| kind == TokenKind::Char)
+                .count(),
+            2
+        );
+        assert!(kinds.contains(&TokenKind::ByteChar));
+        assert!(kinds.contains(&TokenKind::RawString));
+    }
+
+    #[test]
+    fn interpolation_discards_documentation_comments_and_their_braces() {
+        let source =
+            "\"${/** } ignored */ 42 /* { ignored */}:${/// } ignored\n42 //! { ignored\n}\"";
+        let lexed = lex(source).expect("comments must not close interpolation");
+        let kinds: Vec<_> = lexed.tokens.iter().map(|token| token.kind).collect();
+        assert!(!kinds.contains(&TokenKind::DocComment));
+        assert_eq!(
+            kinds
+                .iter()
+                .filter(|&&kind| kind == TokenKind::InterpEnd)
+                .count(),
+            2
+        );
+        assert_eq!(
+            kinds
+                .iter()
+                .filter(|&&kind| kind == TokenKind::IntDec)
+                .count(),
+            2
+        );
+    }
+
+    #[test]
     fn rejects_surrogate_unicode_escapes_as_non_scalars() {
         let error = lex("'\\u{D800}'").unwrap_err();
         assert_eq!(error.code, LexErrorCode::InvalidUnicodeEscape);

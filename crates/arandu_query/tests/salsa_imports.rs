@@ -233,9 +233,9 @@ fn test_import_generic_spawn_infer_from_coroutine() {
         import std.runtime.executor as rt
         async func answer(): int { return 42 }
         func main(): int {
-            let ex = rt.newSyncExecutor()
-            let h = rt.spawn(ex, answer())
-            return rt.join(ex, h)
+            let ex = rt.SyncExecutor.new()
+            let h = ex.spawn(answer())
+            return ex.join(h)
         }
     "#;
     let file = db.new_file("tests_import_spawn_infer.aru".to_string(), src.to_string());

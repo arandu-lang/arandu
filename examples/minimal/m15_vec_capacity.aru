@@ -5,64 +5,57 @@ import std.alloc.vec as vec
 
 func main(): int {
     // withCapacity pre-allocates (may round up geometrically).
-    let mut v = vec.withCapacity<int>(4)
-    let c0 = vec.capacity(v)
+    let mut v = vec.Vec<int>.withCapacity(4)
+    let c0 = v.capacity()
     if c0 < 4 {
-        vec.destroy(v)
         return 10
     }
-    if !vec.isEmpty(v) {
-        vec.destroy(v)
+    if !v.isEmpty() {
         return 11
     }
 
     // Empty pop is None → use 0.
-    let pe = vec.pop(v)
+    let pe = v.pop()
     match pe {
         Some(_) => {
-            vec.destroy(v)
             return 12
         }
         None => {}
     }
 
-    vec.push(v, 1)
-    vec.push(v, 2)
+    v.push(1)
+    v.push(2)
     // reserve(6) from len=2 → need capacity ≥ 8
-    vec.reserve(v, 6)
-    if vec.capacity(v) < 8 {
-        vec.destroy(v)
+    v.reserve(6)
+    if v.capacity() < 8 {
         return 13
     }
 
     // Grow past 8 elements to force realloc.
-    vec.push(v, 3)
-    vec.push(v, 4)
-    vec.push(v, 5)
-    vec.push(v, 6)
-    vec.push(v, 7)
-    vec.push(v, 8)
-    vec.push(v, 9)
-    vec.push(v, 10)
-    let n = vec.len(v) as int
-    let last = vec.getCopy(v, 9)
+    v.push(3)
+    v.push(4)
+    v.push(5)
+    v.push(6)
+    v.push(7)
+    v.push(8)
+    v.push(9)
+    v.push(10)
+    let n = v.len() as int
+    let last = v.getCopy(9)
     match last {
         Some(x) => {
-            vec.clear(v)
-            if !vec.isEmpty(v) {
-                vec.destroy(v)
+            v.clear()
+            if !v.isEmpty() {
                 return 14
             }
             // capacity retained after clear
-            let cap = vec.capacity(v) as int
-            vec.destroy(v)
+            let cap = v.capacity() as int
             if cap < 8 {
                 return 15
             }
             return n + x + 1
         }
         None => {
-            vec.destroy(v)
             return 16
         }
     }

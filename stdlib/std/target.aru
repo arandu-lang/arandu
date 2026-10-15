@@ -1,0 +1,9 @@
+//! Compile-time identity of the selected compilation target.
+//!
+//! These values come from the compilation driver's explicit target input.
+//! `pointer_width` is in bits and follows the target ABI layout.
+module std.target
+
+public const os = comptime @targetOS()
+public const arch = comptime @targetArch()
+public const pointer_width = comptime @targetPointerWidth()

@@ -23,7 +23,7 @@ fn stdlib_runtime_exports_channel_and_async_mutex() {
         Err(e) => panic!("channel.aru must parse; got {e}"),
     }
     let channel_exports = exported_symbols(&db, channel_file);
-    let channel_expected = ["Channel", "newChannel"];
+    let channel_expected = ["Channel", "Channel.new"];
     for key in channel_expected {
         assert!(
             channel_exports.symbols.contains_key(key),
@@ -41,7 +41,7 @@ fn stdlib_runtime_exports_channel_and_async_mutex() {
         Err(e) => panic!("mutex.aru must parse; got {e}"),
     }
     let mutex_exports = exported_symbols(&db, mutex_file);
-    let mutex_expected = ["AsyncMutex", "newAsyncMutex"];
+    let mutex_expected = ["AsyncMutex", "AsyncMutex.new"];
     for key in mutex_expected {
         assert!(
             mutex_exports.symbols.contains_key(key),
@@ -72,7 +72,7 @@ import std.runtime.channel as rch
 import std.runtime.mutex as rmut
 
 func testChannel(): int {
-    let mut ch = rch.newChannel<int>(4)
+    let mut ch = rch.Channel.new<int>(4)
     if !ch.isEmpty() || ch.len() != 0 || ch.capacity() != 4 {
         return 1
     }
@@ -98,12 +98,11 @@ func testChannel(): int {
     if !ch.isEmpty() {
         return 7
     }
-    ch.destroy()
     return 0
 }
 
 func testAsyncMutex(): int {
-    let mut m = rmut.newAsyncMutex<int>(42)
+    let mut m = rmut.AsyncMutex.new<int>(42)
     if m.isLocked() {
         return 10
     }

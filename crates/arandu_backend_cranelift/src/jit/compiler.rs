@@ -16,8 +16,11 @@ use super::builder::{
 };
 use super::execution::CompiledModule;
 use super::isa::codegen_ice;
-use super::symbols::declare_runtime_imports;
-use crate::abi::{build_signature, build_signature_with_classifier, target_abi_for_triple};
+use super::symbols::{gen_shutdown_required, runtime_imports};
+use crate::abi::{
+    build_internal_signature, build_signature, build_signature_with_classifier,
+    target_abi_for_triple,
+};
 use crate::translator::FunctionTranslator;
 use arandu_semantics::layout::TargetAbiClassifier;
 
@@ -145,12 +148,14 @@ impl AranduModule<JITModule> {
     /// host callbacks.
     pub fn try_new_with_io_and_process_args(
         io_println: extern "C" fn(*const u8, i64),
+        io_print: extern "C" fn(*const u8, i64),
         io_eprint: extern "C" fn(*const u8, i64),
         args_len: extern "C" fn() -> i64,
         arg: crate::EnvArgHandler,
     ) -> Result<Self, Diagnostic> {
         let builder = create_jit_builder_with_io_and_process_args(
             io_println as *const u8,
+            io_print as *const u8,
             io_eprint as *const u8,
             args_len as *const u8,
             arg as *const u8,
@@ -165,12 +170,14 @@ impl AranduModule<JITModule> {
     /// Creates a JIT with caller-provided I/O and opt-in block profiling.
     pub fn try_new_with_block_coverage_and_io_and_process_args(
         io_println: extern "C" fn(*const u8, i64),
+        io_print: extern "C" fn(*const u8, i64),
         io_eprint: extern "C" fn(*const u8, i64),
         args_len: extern "C" fn() -> i64,
         arg: crate::EnvArgHandler,
     ) -> Result<Self, Diagnostic> {
         let mut builder = create_jit_builder_with_io_and_process_args(
             io_println as *const u8,
+            io_print as *const u8,
             io_eprint as *const u8,
             args_len as *const u8,
             arg as *const u8,
@@ -190,7 +197,8 @@ impl AranduModule<JITModule> {
         symbols: &SymbolTable,
         type_info: &arandu_semantics::TypeInfo,
     ) -> Result<CompiledModule, Diagnostic> {
-        let func_ids = self.compile_module(program, symbols, type_info)?;
+        let mut func_ids = self.compile_module(program, symbols, type_info)?;
+        self.adapt_host_results(program, symbols, type_info, &mut func_ids)?;
         self.module
             .finalize_definitions()
             .map_err(|err| codegen_ice(format!("failed to finalize JIT definitions: {err:?}")))?;
@@ -206,12 +214,124 @@ impl AranduModule<JITModule> {
     ) -> Result<CompiledModule, Diagnostic> {
         let coverage = BlockCoverageSession::new(program)
             .ok_or_else(|| codegen_ice("AMIR block coverage session ID space exhausted"))?;
-        let func_ids =
+        let mut func_ids =
             self.compile_module_with_block_coverage(program, symbols, type_info, &coverage)?;
+        self.adapt_host_results(program, symbols, type_info, &mut func_ids)?;
         self.module
             .finalize_definitions()
             .map_err(|err| codegen_ice(format!("failed to finalize JIT definitions: {err:?}")))?;
         Ok(CompiledModule::new(self.module, func_ids, Some(coverage)))
+    }
+
+    /// JIT lookups retain the host ABI. Internal calls have already been
+    /// compiled against caller-owned result destinations and must not be
+    /// redirected through these allocating adapters.
+    fn adapt_host_results(
+        &mut self,
+        program: &AmirProgram,
+        symbols: &SymbolTable,
+        info: &arandu_semantics::TypeInfo,
+        functions: &mut FxHashMap<String, FuncId>,
+    ) -> Result<(), Diagnostic> {
+        use cranelift_codegen::ir::InstBuilder;
+        let pointer = self.module.target_config().pointer_type();
+        let convention = self.module.isa().default_call_conv();
+        let classifier = TargetAbiClassifier::new(
+            target_abi_for_triple(self.module.isa().triple()),
+            u64::from(pointer.bytes()),
+        );
+        let layout = arandu_semantics::layout::LayoutEngine::new(u64::from(pointer.bytes()));
+        let mut context = self.module.make_context();
+        for function in &program.funcs {
+            let symbol = symbols.get(function.symbol);
+            let name = symbols.host_func_name(symbol);
+            let result = info.resolve_type_id(function.return_type);
+            let parameters: Vec<_> = function
+                .params
+                .iter()
+                .map(|parameter| info.resolve_type_id(function.temps[parameter.as_usize()].ty))
+                .collect();
+            let host = build_signature_with_classifier(
+                &parameters,
+                &result,
+                convention,
+                pointer,
+                &classifier,
+                &info.type_interner,
+                info,
+            );
+            let internal = build_internal_signature(
+                &parameters,
+                &result,
+                convention,
+                pointer,
+                &classifier,
+                &info.type_interner,
+                info,
+            );
+            if host == internal {
+                continue;
+            }
+            // The only differing contract is an indirect aggregate result.
+            if host.returns.len() != 1 || host.returns[0].value_type != pointer {
+                return Err(codegen_ice("unsupported JIT host result adapter"));
+            }
+            let size = layout
+                .layout_of_type(&result, &info.type_interner, info)
+                .map_err(|error| codegen_ice(format!("JIT host result layout: {error:?}")))?
+                .size
+                .max(1);
+            let size = i64::try_from(size)
+                .map_err(|_| codegen_ice("JIT host result exceeds allocator range"))?;
+            let implementation = functions
+                .get(name)
+                .copied()
+                .ok_or_else(|| codegen_ice("missing JIT host result implementation"))?;
+            let malloc = functions
+                .get("malloc")
+                .copied()
+                .ok_or_else(|| codegen_ice("missing JIT host result allocator"))?;
+            let adapter = self
+                .module
+                .declare_anonymous_function(&host)
+                .map_err(|error| {
+                    codegen_ice(format!("declare JIT host result adapter: {error:?}"))
+                })?;
+            context.func.signature = host;
+            let mut builder_context = FunctionBuilderContext::new();
+            {
+                let mut builder = FunctionBuilder::new(&mut context.func, &mut builder_context);
+                let entry = builder.create_block();
+                builder.append_block_params_for_function_params(entry);
+                builder.switch_to_block(entry);
+                let arguments = builder.block_params(entry).to_vec();
+                let allocator = self.module.declare_func_in_func(malloc, builder.func);
+                let bytes = builder.ins().iconst(pointer, size);
+                let allocation = builder.ins().call(allocator, &[bytes]);
+                let destination = builder.inst_results(allocation)[0];
+                let mut arguments = arguments;
+                arguments.insert(0, destination);
+                let target = self
+                    .module
+                    .declare_func_in_func(implementation, builder.func);
+                builder.ins().call(target, &arguments);
+                builder.ins().return_(&[destination]);
+                builder.seal_all_blocks();
+                builder.finalize(self.module.target_config());
+            }
+            self.module
+                .define_function(adapter, &mut context)
+                .map_err(|error| {
+                    codegen_ice(format!("define JIT host result adapter: {error:?}"))
+                })?;
+            self.module.clear_context(&mut context);
+            for id in functions.values_mut() {
+                if *id == implementation {
+                    *id = adapter;
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -278,6 +398,18 @@ impl<M: Module> AranduModule<M> {
             return Err(issue);
         }
         let is_unit_func = |sym: SymbolId| unit_func_symbols.is_none_or(|set| set.contains(&sym));
+        let declarations = unit_func_symbols
+            .map(|definitions| {
+                crate::cgu::dependencies::declaration_closure(
+                    program,
+                    symbols,
+                    type_info,
+                    definitions,
+                )
+            })
+            .transpose()?;
+        let needs_declaration =
+            |sym: SymbolId| declarations.as_ref().is_none_or(|set| set.contains(&sym));
         let mut func_ids = FxHashMap::default();
         let default_call_conv = self.module.isa().default_call_conv();
         let ptr_type = self.module.target_config().pointer_type();
@@ -285,7 +417,11 @@ impl<M: Module> AranduModule<M> {
         let pointer_width = ptr_type.bytes() as u64;
         let classifier = TargetAbiClassifier::new(target_abi, pointer_width);
 
-        declare_runtime_imports(&mut self.module, &mut func_ids, default_call_conv, ptr_type)?;
+        let mut runtime_imports = runtime_imports(default_call_conv, ptr_type)?;
+        let eager_runtime = unit_func_symbols.is_none();
+        if eager_runtime {
+            runtime_imports.declare_all(&mut self.module, &mut func_ids)?;
+        }
         if block_coverage.is_some() {
             let mut signature = cranelift_codegen::ir::Signature::new(default_call_conv);
             signature.params.push(cranelift_codegen::ir::AbiParam::new(
@@ -308,6 +444,9 @@ impl<M: Module> AranduModule<M> {
 
         // 1. Declare all functions first to support cross-calls
         for func in &program.funcs {
+            if !needs_declaration(func.symbol) {
+                continue;
+            }
             let sym = symbols.get(func.symbol);
             let host_name = symbols.host_func_name(sym);
             let param_types: Vec<_> = func
@@ -316,7 +455,7 @@ impl<M: Module> AranduModule<M> {
                 .map(|&p| type_info.type_interner.resolve(func.temps[p.as_usize()].ty))
                 .collect();
             let ret_ty = type_info.type_interner.resolve(func.return_type);
-            let sig = build_signature_with_classifier(
+            let sig = build_internal_signature(
                 &param_types,
                 &ret_ty,
                 default_call_conv,
@@ -383,10 +522,8 @@ impl<M: Module> AranduModule<M> {
                 else {
                     continue;
                 };
-                let name = format!(
-                    "__ar_drop_{}_{}",
-                    destructor_symbol.file_id, destructor_symbol.local_id.0
-                );
+                let name = crate::cgu::dependencies::drop_shim_name(symbols, destructor_symbol)
+                    .ok_or_else(|| codegen_ice("drop shim destructor has no symbol"))?;
                 if drop_shims.contains_key(&name) {
                     continue;
                 }
@@ -407,6 +544,9 @@ impl<M: Module> AranduModule<M> {
 
         // Declare all extern functions as imports
         for (&symbol_id, (param_types, return_type)) in &program.extern_funcs {
+            if !needs_declaration(symbol_id) {
+                continue;
+            }
             let sym = symbols.get(symbol_id);
             if func_ids.contains_key(sym.name.as_str()) {
                 continue;
@@ -416,6 +556,22 @@ impl<M: Module> AranduModule<M> {
             if arandu_semantics::IntrinsicKind::from_name(c_name)
                 == Some(arandu_semantics::IntrinsicKind::Abort)
             {
+                continue;
+            }
+            if !eager_runtime {
+                if !runtime_imports.alias(&sym.name, c_name) {
+                    let sig = build_signature_with_classifier(
+                        param_types,
+                        return_type,
+                        default_call_conv,
+                        ptr_type,
+                        &classifier,
+                        &type_info.type_interner,
+                        type_info,
+                    );
+                    runtime_imports.insert(&sym.name, c_name, sig);
+                    runtime_imports.alias(c_name, &sym.name);
+                }
                 continue;
             }
             let func_id = if let Some(&existing_id) = func_ids.get(c_name) {
@@ -449,47 +605,56 @@ impl<M: Module> AranduModule<M> {
         let str_ty = ArType::Primitive(Primitive::Str);
         let void_ty = ArType::Void;
         let err_ty = ArType::Err;
-        if !func_ids.contains_key("io.println") {
-            let sig = build_signature(
+        if !func_ids.contains_key("io.print") && !runtime_imports.contains("io.print") {
+            let sig = build_signature_with_classifier(
                 std::slice::from_ref(&str_ty),
                 &void_ty,
                 default_call_conv,
                 ptr_type,
+                &classifier,
+                &type_info.type_interner,
+                type_info,
             );
-            let id = self
-                .module
-                .declare_function("io.println", Linkage::Import, &sig)
-                .map_err(|err| codegen_ice(format!("failed to declare io.println: {err:?}")))?;
-            func_ids.insert("io.println".to_string(), id);
+            runtime_imports.insert("io.print", "io.print", sig);
         }
-        if !func_ids.contains_key("eprint") && !func_ids.contains_key("io.eprint") {
+        if !func_ids.contains_key("io.println") && !runtime_imports.contains("io.println") {
             let sig = build_signature(
                 std::slice::from_ref(&str_ty),
                 &void_ty,
                 default_call_conv,
                 ptr_type,
             );
-            let id = self
-                .module
-                .declare_function("eprint", Linkage::Import, &sig)
-                .map_err(|err| codegen_ice(format!("failed to declare eprint: {err:?}")))?;
-            func_ids.insert("io.eprint".to_string(), id);
-            func_ids.insert("eprint".to_string(), id);
+            runtime_imports.insert("io.println", "io.println", sig);
+        }
+        if !func_ids.contains_key("eprint")
+            && !func_ids.contains_key("io.eprint")
+            && !runtime_imports.contains("eprint")
+            && !runtime_imports.contains("io.eprint")
+        {
+            let sig = build_signature(
+                std::slice::from_ref(&str_ty),
+                &void_ty,
+                default_call_conv,
+                ptr_type,
+            );
+            runtime_imports.insert("io.eprint", "eprint", sig.clone());
+            runtime_imports.insert("eprint", "eprint", sig);
         }
         // `err.new(str) -> Err` (Err = message pointer handle).
-        if !func_ids.contains_key("err.new") {
+        if !func_ids.contains_key("err.new") && !runtime_imports.contains("err.new") {
             let sig = build_signature(
                 std::slice::from_ref(&str_ty),
                 &err_ty,
                 default_call_conv,
                 ptr_type,
             );
-            let id = self
-                .module
-                .declare_function("err.new", Linkage::Import, &sig)
-                .map_err(|err| codegen_ice(format!("failed to declare err.new: {err:?}")))?;
-            func_ids.insert("err.new".to_string(), id);
+            runtime_imports.insert("err.new", "err.new", sig);
         }
+
+        if eager_runtime {
+            runtime_imports.declare_all(&mut self.module, &mut func_ids)?;
+        }
+        let gen_shutdown = eager_runtime || gen_shutdown_required(program, symbols, type_info);
 
         // 2. Define/compile each function
         let mut context = self.module.make_context();
@@ -509,7 +674,7 @@ impl<M: Module> AranduModule<M> {
                 .map(|&p| type_info.type_interner.resolve(func.temps[p.as_usize()].ty))
                 .collect();
             let ret_ty = type_info.type_interner.resolve(func.return_type);
-            let sig = build_signature_with_classifier(
+            let sig = build_internal_signature(
                 &param_types,
                 &ret_ty,
                 default_call_conv,
@@ -532,6 +697,8 @@ impl<M: Module> AranduModule<M> {
                     &mut self.module,
                     symbols,
                     &func_ids,
+                    &runtime_imports,
+                    gen_shutdown,
                     ptr_type,
                     &program.literal_pool,
                     func,
@@ -666,14 +833,27 @@ impl<M: Module> AranduModule<M> {
                     }
                     arandu_semantics::layout::ArgAbi::Direct(direct) => {
                         let mut call_args = Vec::with_capacity(direct.slots.len());
+                        let payload = type_info.type_interner.resolve(payload_ty);
+                        let layout = arandu_semantics::layout::LayoutEngine::new(u64::from(
+                            ptr_type.bytes(),
+                        ))
+                        .layout_of_type(&payload, &type_info.type_interner, type_info)
+                        .map_err(|error| {
+                            codegen_ice(format!("invalid drop shim layout: {error}"))
+                        })?;
+                        let little = self.module.isa().endianness()
+                            == cranelift_codegen::ir::Endianness::Little;
                         for abi_slot in &direct.slots {
-                            let chunk_ty = crate::abi::abi_scalar_to_clif(abi_slot.scalar);
-                            let chunk_val = builder.ins().load(
-                                chunk_ty,
-                                cranelift_codegen::ir::MemFlagsData::new(),
+                            let chunk_val = crate::abi::load_aggregate_slot(
+                                &mut builder,
                                 raw,
-                                abi_slot.offset as i32,
-                            );
+                                abi_slot,
+                                layout.size,
+                                little,
+                            )
+                            .map_err(|message| {
+                                codegen_ice(format!("invalid drop shim '{name}': {message}"))
+                            })?;
                             call_args.push(chunk_val);
                         }
                         builder.ins().call(destructor, &call_args);

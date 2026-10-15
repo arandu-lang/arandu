@@ -1,0 +1,237 @@
+import std.core.slice as slice
+
+// SHA-256 array/loop corpus: constants are compile-time data.
+const K = comptime [0x428a2f98 as u32, 0x71374491 as u32, 0xb5c0fbcf as u32, 0xe9b5dba5 as u32, 0x3956c25b as u32, 0x59f111f1 as u32, 0x923f82a4 as u32, 0xab1c5ed5 as u32, 0xd807aa98 as u32, 0x12835b01 as u32, 0x243185be as u32, 0x550c7dc3 as u32, 0x72be5d74 as u32, 0x80deb1fe as u32, 0x9bdc06a7 as u32, 0xc19bf174 as u32, 0xe49b69c1 as u32, 0xefbe4786 as u32, 0x0fc19dc6 as u32, 0x240ca1cc as u32, 0x2de92c6f as u32, 0x4a7484aa as u32, 0x5cb0a9dc as u32, 0x76f988da as u32, 0x983e5152 as u32, 0xa831c66d as u32, 0xb00327c8 as u32, 0xbf597fc7 as u32, 0xc6e00bf3 as u32, 0xd5a79147 as u32, 0x06ca6351 as u32, 0x14292967 as u32, 0x27b70a85 as u32, 0x2e1b2138 as u32, 0x4d2c6dfc as u32, 0x53380d13 as u32, 0x650a7354 as u32, 0x766a0abb as u32, 0x81c2c92e as u32, 0x92722c85 as u32, 0xa2bfe8a1 as u32, 0xa81a664b as u32, 0xc24b8b70 as u32, 0xc76c51a3 as u32, 0xd192e819 as u32, 0xd6990624 as u32, 0xf40e3585 as u32, 0x106aa070 as u32, 0x19a4c116 as u32, 0x1e376c08 as u32, 0x2748774c as u32, 0x34b0bcb5 as u32, 0x391c0cb3 as u32, 0x4ed8aa4a as u32, 0x5b9cca4f as u32, 0x682e6ff3 as u32, 0x748f82ee as u32, 0x78a5636f as u32, 0x84c87814 as u32, 0x8cc70208 as u32, 0x90befffa as u32, 0xa4506ceb as u32, 0xbef9a3f7 as u32, 0xc67178f2 as u32]
+
+// ─── Bit-rotation helpers ─────────────────────────────────────────────────────
+// Inlining and target instruction selection are measured, not assumed.
+
+func rotr32(x: u32, n: u32): u32 {
+    return (x >> n) | (x << ((32 as u32) - n))
+}
+
+func ch(e: u32, f: u32, g: u32): u32 {
+    return (e & f) ^ ((~e) & g)
+}
+
+func maj(a: u32, b: u32, c: u32): u32 {
+    return (a & b) ^ (a & c) ^ (b & c)
+}
+
+func sigma0(a: u32): u32 {
+    return rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22)
+}
+
+func sigma1(e: u32): u32 {
+    return rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25)
+}
+
+func gamma0(x: u32): u32 {
+    return rotr32(x, 7) ^ rotr32(x, 18) ^ (x >> 3)
+}
+
+func gamma1(x: u32): u32 {
+    return rotr32(x, 17) ^ rotr32(x, 19) ^ (x >> 10)
+}
+
+// ─── Big-endian u32 load from byte slice ─────────────────────────────────────
+func beU32(b: []u8, off: usize): u32 {
+    let b0 = b[off]     as u32
+    let b1 = b[off + 1] as u32
+    let b2 = b[off + 2] as u32
+    let b3 = b[off + 3] as u32
+    return (b0 << 24) | (b1 << 16) | (b2 << 8) | b3
+}
+
+// ─── SHA-256 state ────────────────────────────────────────────────────────────
+
+/// SHA-256 incremental hash state. Lives entirely on the stack — no heap
+/// allocation. Layout and code generation remain target-dependent.
+public struct Sha256State {
+    /// Hash chaining values (a..h).
+    public h0: u32
+    public h1: u32
+    public h2: u32
+    public h3: u32
+    public h4: u32
+    public h5: u32
+    public h6: u32
+    public h7: u32
+    /// Partial block buffer (< 64 bytes).
+    public buf: [64]u8
+    /// How many bytes are in the partial buffer.
+    public buf_len: usize
+    /// Total bytes processed so far.
+    public total_bytes: u64
+}
+
+/// Returns the initial SHA-256 state with the standard IV.
+public func sha256Init(): Sha256State {
+    return Sha256State {
+        h0: 0x6a09e667, h1: 0xbb67ae85,
+        h2: 0x3c6ef372, h3: 0xa54ff53a,
+        h4: 0x510e527f, h5: 0x9b05688c,
+        h6: 0x1f83d9ab, h7: 0x5be0cd19,
+        buf: [0; 64],
+        buf_len: 0,
+        total_bytes: 0,
+    }
+}
+
+func bufGet(state: ref Sha256State, i: usize): u8 { return state.buf[i] }
+func bufSet(state: mut ref Sha256State, i: usize, value: u8): void { state.buf[i] = value }
+func beU32Buf(state: ref Sha256State, off: usize): u32 {
+    return ((state.buf[off] as u32) << 24) | ((state.buf[off + 1] as u32) << 16) | ((state.buf[off + 2] as u32) << 8) | (state.buf[off + 3] as u32)
+}
+
+// A 16-word circular schedule retains only the live SHA-256 window.
+public func sha256Compress(state: mut ref Sha256State): void {
+    let mut schedule: [16]u32 = [0; 16]
+    let mut a = state.h0
+    let mut b = state.h1
+    let mut c = state.h2
+    let mut d = state.h3
+    let mut e = state.h4
+    let mut f = state.h5
+    let mut g = state.h6
+    let mut h = state.h7
+    let mut round: usize = 0
+    // Freeze once before the loop; preserve a global source of truth.
+    let constants = K
+    while round < 64 {
+        let slot = round % 16
+        if round < 16 {
+            schedule[slot] = beU32Buf(state, round * 4)
+        } else {
+            schedule[slot] = gamma1(schedule[(round - 2) % 16]) + schedule[(round - 7) % 16] + gamma0(schedule[(round - 15) % 16]) + schedule[slot]
+        }
+        let t1 = h + sigma1(e) + ch(e, f, g) + constants[round] + schedule[slot]
+        let t2 = sigma0(a) + maj(a, b, c)
+        h = g
+        g = f
+        f = e
+        e = d + t1
+        d = c
+        c = b
+        b = a
+        a = t1 + t2
+        round = round + 1
+    }
+    state.h0 = state.h0 + a
+    state.h1 = state.h1 + b
+    state.h2 = state.h2 + c
+    state.h3 = state.h3 + d
+    state.h4 = state.h4 + e
+    state.h5 = state.h5 + f
+    state.h6 = state.h6 + g
+    state.h7 = state.h7 + h
+}
+
+/// Update the hash state with an arbitrary number of bytes.
+/// Buffers partial 64-byte blocks; calls `sha256Compress` for each complete block.
+public func sha256Update(state: mut ref Sha256State, data: []u8): void {
+    let dlen = slice.len<u8>(data)
+    let mut di: usize = 0
+    while di < dlen {
+        bufSet(state, state.buf_len, data[di])
+        state.buf_len = state.buf_len + 1
+        state.total_bytes = state.total_bytes + 1
+        di = di + 1
+        if state.buf_len == 64 {
+            sha256Compress(state)
+            state.buf_len = 0
+        }
+    }
+}
+
+/// Finalize the hash: pad the message, compress the final block(s), return 32-byte digest.
+public func sha256Finalize(state: mut ref Sha256State): [32]u8 {
+    let bit_len: u64 = state.total_bytes * 8
+
+    // Append 0x80 byte.
+    bufSet(state, state.buf_len, 0x80)
+    state.buf_len = state.buf_len + 1
+
+    // Pad with zeros until 56 bytes used (8 bytes reserved for length).
+    while state.buf_len < 56 {
+        bufSet(state, state.buf_len, 0)
+        state.buf_len = state.buf_len + 1
+    }
+
+    // If we already passed 56 bytes, flush and do a second pad block.
+    if state.buf_len > 56 {
+        while state.buf_len < 64 {
+            bufSet(state, state.buf_len, 0)
+            state.buf_len = state.buf_len + 1
+        }
+        sha256Compress(state)
+        state.buf_len = 0
+        while state.buf_len < 56 {
+            bufSet(state, state.buf_len, 0)
+            state.buf_len = state.buf_len + 1
+        }
+    }
+
+    // Append 64-bit big-endian bit length.
+    bufSet(state, 56, ((bit_len >> 56) & 0xff) as u8)
+    bufSet(state, 57, ((bit_len >> 48) & 0xff) as u8)
+    bufSet(state, 58, ((bit_len >> 40) & 0xff) as u8)
+    bufSet(state, 59, ((bit_len >> 32) & 0xff) as u8)
+    bufSet(state, 60, ((bit_len >> 24) & 0xff) as u8)
+    bufSet(state, 61, ((bit_len >> 16) & 0xff) as u8)
+    bufSet(state, 62, ((bit_len >> 8)  & 0xff) as u8)
+    bufSet(state, 63, ( bit_len        & 0xff) as u8)
+    state.buf_len = 64
+
+    sha256Compress(state)
+
+    // Build the 32-byte digest in big-endian.
+    let digest: [32]u8 = [
+        ((state.h0 >> 24) & 0xff) as u8, ((state.h0 >> 16) & 0xff) as u8,
+        ((state.h0 >>  8) & 0xff) as u8, ( state.h0        & 0xff) as u8,
+        ((state.h1 >> 24) & 0xff) as u8, ((state.h1 >> 16) & 0xff) as u8,
+        ((state.h1 >>  8) & 0xff) as u8, ( state.h1        & 0xff) as u8,
+        ((state.h2 >> 24) & 0xff) as u8, ((state.h2 >> 16) & 0xff) as u8,
+        ((state.h2 >>  8) & 0xff) as u8, ( state.h2        & 0xff) as u8,
+        ((state.h3 >> 24) & 0xff) as u8, ((state.h3 >> 16) & 0xff) as u8,
+        ((state.h3 >>  8) & 0xff) as u8, ( state.h3        & 0xff) as u8,
+        ((state.h4 >> 24) & 0xff) as u8, ((state.h4 >> 16) & 0xff) as u8,
+        ((state.h4 >>  8) & 0xff) as u8, ( state.h4        & 0xff) as u8,
+        ((state.h5 >> 24) & 0xff) as u8, ((state.h5 >> 16) & 0xff) as u8,
+        ((state.h5 >>  8) & 0xff) as u8, ( state.h5        & 0xff) as u8,
+        ((state.h6 >> 24) & 0xff) as u8, ((state.h6 >> 16) & 0xff) as u8,
+        ((state.h6 >>  8) & 0xff) as u8, ( state.h6        & 0xff) as u8,
+        ((state.h7 >> 24) & 0xff) as u8, ((state.h7 >> 16) & 0xff) as u8,
+        ((state.h7 >>  8) & 0xff) as u8, ( state.h7        & 0xff) as u8,
+    ]
+    return digest
+}
+
+/// Hash a complete byte slice in one shot. Convenience wrapper.
+public func sha256Bytes(data: []u8): [32]u8 {
+    let mut state = sha256Init()
+    sha256Update(mut ref state, data)
+    return sha256Finalize(mut ref state)
+}
+
+import std.core.str as strings
+func matchesDigest(input: str, expected: [32]u8): bool {
+    let digest = sha256Bytes(strings.asBytes(ref input))
+    let mut index: int = 0
+    while index < 32 {
+        if digest[index] != expected[index] { return false }
+        index = index + 1
+    }
+    return true
+}
+func main(): int {
+    if !matchesDigest("", [0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14, 0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f, 0xb9, 0x24, 0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c, 0xa4, 0x95, 0x99, 0x1b, 0x78, 0x52, 0xb8, 0x55]) { return 1 }
+    if !matchesDigest("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", [0x9f, 0x43, 0x90, 0xf8, 0xd3, 0x0c, 0x2d, 0xd9, 0x2e, 0xc9, 0xf0, 0x95, 0xb6, 0x5e, 0x2b, 0x9a, 0xe9, 0xb0, 0xa9, 0x25, 0xa5, 0x25, 0x8e, 0x24, 0x1c, 0x9f, 0x1e, 0x91, 0x0f, 0x73, 0x43, 0x18]) { return 2 }
+    if !matchesDigest("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", [0xb3, 0x54, 0x39, 0xa4, 0xac, 0x6f, 0x09, 0x48, 0xb6, 0xd6, 0xf9, 0xe3, 0xc6, 0xaf, 0x0f, 0x5f, 0x59, 0x0c, 0xe2, 0x0f, 0x1b, 0xde, 0x70, 0x90, 0xef, 0x79, 0x70, 0x68, 0x6e, 0xc6, 0x73, 0x8a]) { return 3 }
+    if !matchesDigest("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", [0x7d, 0x3e, 0x74, 0xa0, 0x5d, 0x7d, 0xb1, 0x5b, 0xce, 0x4a, 0xd9, 0xec, 0x06, 0x58, 0xea, 0x98, 0xe3, 0xf0, 0x6e, 0xee, 0xcf, 0x16, 0xb4, 0xc6, 0xff, 0xf2, 0xda, 0x45, 0x7d, 0xdc, 0x2f, 0x34]) { return 4 }
+    if !matchesDigest("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", [0xff, 0xe0, 0x54, 0xfe, 0x7a, 0xe0, 0xcb, 0x6d, 0xc6, 0x5c, 0x3a, 0xf9, 0xb6, 0x1d, 0x52, 0x09, 0xf4, 0x39, 0x85, 0x1d, 0xb4, 0x3d, 0x0b, 0xa5, 0x99, 0x73, 0x37, 0xdf, 0x15, 0x46, 0x68, 0xeb]) { return 5 }
+    if !matchesDigest("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", [0x63, 0x53, 0x61, 0xc4, 0x8b, 0xb9, 0xea, 0xb1, 0x41, 0x98, 0xe7, 0x6e, 0xa8, 0xab, 0x7f, 0x1a, 0x41, 0x68, 0x5d, 0x6a, 0xd6, 0x2a, 0xa9, 0x14, 0x6d, 0x30, 0x1d, 0x4f, 0x17, 0xeb, 0x0a, 0xe0]) { return 6 }
+    if !matchesDigest("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", [0x41, 0xed, 0xec, 0xe4, 0x2d, 0x63, 0xe8, 0xd9, 0xbf, 0x51, 0x5a, 0x9b, 0xa6, 0x93, 0x2e, 0x1c, 0x20, 0xcb, 0xc9, 0xf5, 0xa5, 0xd1, 0x34, 0x64, 0x5a, 0xdb, 0x5d, 0xb1, 0xb9, 0x73, 0x7e, 0xa3]) { return 7 }
+    if !matchesDigest("abc", [0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde, 0x5d, 0xae, 0x22, 0x23, 0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c, 0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad]) { return 8 }
+    return 0
+}

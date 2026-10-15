@@ -62,12 +62,12 @@ runs:
                 ;;
             esac
             case "$file" in
-              Cargo.toml|Cargo.lock|rust-toolchain.toml|crates/arandu_cli/*|crates/arandu_lsp/*|crates/arandu_runtime/*|editors/vscode/*|stdlib/*|scripts/package-release.*|scripts/install-from-*|scripts/smoke-install.*|scripts/smoke_distribution.py|scripts/check-package-reproducibility.sh|xtask/*|.github/actions/*|.github/workflows/ci.yml|.github/workflows/sl-t-harness.yml|.github/workflows/release.yml)
+              Cargo.toml|Cargo.lock|rust-toolchain.toml|crates/arandu_cli/*|crates/arandu_lsp/*|crates/arandu_runtime/*|crates/arandu_testing_contract/*|editors/vscode/*|stdlib/*|scripts/package-release.*|scripts/install-from-*|scripts/smoke-install.*|scripts/smoke_distribution.py|scripts/check-package-reproducibility.sh|xtask/*|.github/actions/*|.github/workflows/ci.yml|.github/workflows/sl-t-harness.yml|.github/workflows/release.yml)
                 distribution=true
                 ;;
             esac
             case "$file" in
-              Cargo.toml|Cargo.lock|rust-toolchain.toml|crates/arandu_cli/*|crates/arandu_lsp/*|crates/arandu_runtime/*|crates/arandu_backend_c/*|crates/arandu_backend_cranelift/*|stdlib/*|scripts/*|xtask/*|.github/*)
+              Cargo.toml|Cargo.lock|rust-toolchain.toml|crates/arandu_cli/*|crates/arandu_lsp/*|crates/arandu_runtime/*|crates/arandu_testing_contract/*|crates/arandu_backend_c/*|crates/arandu_backend_cranelift/*|stdlib/*|scripts/*|xtask/*|.github/*)
                 host_sensitive=true
                 ;;
             esac

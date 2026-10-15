@@ -19,6 +19,7 @@ on:
       - "scripts/smoke_distribution.py"
       - "stdlib/**"
       - "tests/projects/slt6_*/**"
+      - "tests/projects/medium/comptime_core/**"
       - "xtask/**"
   schedule:
     - cron: "41 6 * * 2"
@@ -34,6 +35,8 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
+  CARGO_PROFILE_TEST_DEBUG: "line-tables-only"
 
 jobs:
   vsix:
@@ -259,6 +262,15 @@ jobs:
           ARANDU_LSP_TEST_PATH: ${{ runner.temp }}/arandu-sdk/arandu-${{ env.VERSION }}/bin/arandu-lsp.exe
           ARANDU_CLI_TEST_PATH: ${{ runner.temp }}/arandu-sdk/arandu-${{ env.VERSION }}/bin/arandu.exe
         run: node ./out/test/runInstalledTest.js
+
+      - name: Preserve installed Extension Host failure logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: extension-host-failure-${{ matrix.target }}-${{ github.sha }}
+          path: editors/vscode/.vscode-test/failure-logs
+          if-no-files-found: ignore
+          retention-days: 14
 
   harness:
     name: SL_T / Harness

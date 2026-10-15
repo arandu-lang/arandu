@@ -1,0 +1,13 @@
+schema = 1
+
+[package]
+name = "comptime_core"
+version = "0.1.0"
+edition = "2026"
+
+[toolchain]
+arandu = ">=0.1.0-rc.4, <0.2.0"
+
+[targets.bin]
+name = "comptime_core"
+root = "src/main.aru"

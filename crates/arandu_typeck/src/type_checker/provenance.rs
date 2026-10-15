@@ -79,6 +79,13 @@ pub fn causal_chain(constraint: &Constraint) -> Vec<ProvenanceStep> {
             ProvenanceStep::new(ExpectedOrigin, *declared_span, "return type declaration"),
             ProvenanceStep::new(FoundOrigin, *return_span, "return expression"),
         ],
+        ConstraintOrigin::CtfeResult {
+            value_span,
+            block_span,
+        } => vec![
+            ProvenanceStep::new(ExpectedOrigin, *block_span, "comptime block result"),
+            ProvenanceStep::new(FoundOrigin, *value_span, "block exit value"),
+        ],
         ConstraintOrigin::IfBranches {
             then_span,
             else_span,

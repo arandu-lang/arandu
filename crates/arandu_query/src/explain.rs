@@ -123,18 +123,34 @@ impl RebuildLog {
         header
     }
 
-    /// Salsa event callback: maps runtime events into [`RebuildEvent`].
+    /// Salsa event callback: maps runtime events into [`RebuildEvent`] and updates `-Zprofile-queries`.
     pub fn salsa_callback(this: Arc<Self>) -> Box<dyn Fn(Event) + Send + Sync + 'static> {
         Box::new(move |event| match event.kind {
             EventKind::WillExecute { database_key } => {
+                arandu_base::perf::track_query_miss();
                 this.push(RebuildEvent::Execute {
                     key: format!("{database_key:?}"),
                 });
             }
             EventKind::DidValidateMemoizedValue { database_key } => {
+                arandu_base::perf::track_query_hit();
                 this.push(RebuildEvent::Validate {
                     key: format!("{database_key:?}"),
                 });
+            }
+            _ => {}
+        })
+    }
+
+    /// Lightweight Salsa callback for `-Zprofile-queries` when `-Zexplain-rebuild` is off.
+    #[must_use]
+    pub fn profile_queries_callback() -> Box<dyn Fn(Event) + Send + Sync + 'static> {
+        Box::new(|event| match event.kind {
+            EventKind::WillExecute { .. } => {
+                arandu_base::perf::track_query_miss();
+            }
+            EventKind::DidValidateMemoizedValue { .. } => {
+                arandu_base::perf::track_query_hit();
             }
             _ => {}
         })

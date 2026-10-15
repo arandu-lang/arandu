@@ -59,17 +59,17 @@ pub fn is_wasm_opt_available() -> bool {
 
 /// Optimize Wasm bytecode using `wasm-opt` if available.
 ///
-/// If `wasm-opt` is found and either `release` or `opt` is true, runs `wasm-opt -O3`
-/// on `wasm_bytes` and returns the optimized bytecode.
+/// Uses `-Oz` for size, `-O3` for release and `-O2` for ordinary optimization.
 /// If `wasm-opt` is not found, logs an informational notice and returns the input
 /// unchanged (graceful fallback per RFC 0014 §4.6 and §5.2).
 pub fn optimize_wasm_if_available(
     wasm_bytes: Vec<u8>,
     opt: bool,
     release: bool,
+    size: bool,
     verbose: bool,
 ) -> Result<Vec<u8>, CliFailure> {
-    if !opt && !release {
+    if !opt && !release && !size {
         return Ok(wasm_bytes);
     }
 
@@ -98,7 +98,13 @@ pub fn optimize_wasm_if_available(
         CliFailure::operational("write wasm-opt input", Some(in_path.clone()), e.to_string())
     })?;
 
-    let opt_flag = if release { "-O3" } else { "-O2" };
+    let opt_flag = if size {
+        "-Oz"
+    } else if release {
+        "-O3"
+    } else {
+        "-O2"
+    };
     let status = Command::new("wasm-opt")
         .arg(opt_flag)
         .arg(&in_path)

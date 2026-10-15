@@ -22,11 +22,11 @@ fn stdlib_process_parses_and_exports_expected_symbols() {
     let expected = [
         "exit",
         "ExitStatus",
-        "exitStatus",
+        "ExitStatus.new",
         "Command",
-        "newCommand",
+        "Command.new",
         "Child",
-        "childFromPid",
+        "Child.fromPid",
     ];
     for key in expected {
         assert!(
@@ -48,18 +48,18 @@ fn stdlib_process_usage_in_program() {
 import std.process as process
 
 func testProcess(): int {
-    let status = process.exitStatus(0)
+    let status = process.ExitStatus.new(0)
     if !status.success() {
         return 1
     }
     if status.code() != 0 {
         return 2
     }
-    let cmd = process.newCommand("echo")
+    let cmd = process.Command.new("echo")
     if cmd.program() != "echo" {
         return 3
     }
-    let child = process.childFromPid(1234)
+    let child = process.Child.fromPid(1234)
     if child.id() != 1234 {
         return 4
     }

@@ -27,6 +27,8 @@ use std::error::Error;
 pub fn run(connection: Connection) -> Result<(), Box<dyn Error + Sync + Send>> {
     let initialized = capabilities::initialize_connection(&connection)?;
     let mut state = ServerState::new();
+    state.host.set_ctfe_limits(initialized.ctfe_limits);
+    state.trace_value = initialized.trace_value;
     let pool = WorkerPool::new(4)?;
     let (job_tx, job_rx) = crossbeam_channel::bounded::<JobResult>(dispatcher::JOB_RESULT_CAPACITY);
     if initialized.work_done_progress {

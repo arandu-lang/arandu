@@ -1011,6 +1011,7 @@ pub(crate) struct Checkpoint {
     events_len: usize,
     diagnostics_len: usize,
     pending_docs_len: usize,
+    pool: crate::ast::ast_pool::PoolCheckpoint,
 }
 
 impl Checkpoint {
@@ -1024,6 +1025,7 @@ impl Checkpoint {
             events_len,
             diagnostics_len,
             pending_docs_len,
+            pool: parser.pool.checkpoint(),
         }
     }
 
@@ -1034,5 +1036,6 @@ impl Checkpoint {
         }
         parser.diagnostics.truncate(self.diagnostics_len);
         parser.pending_docs.truncate(self.pending_docs_len);
+        self.pool.rollback(&mut parser.pool);
     }
 }

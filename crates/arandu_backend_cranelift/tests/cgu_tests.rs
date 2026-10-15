@@ -9,6 +9,17 @@ use target_lexicon::Triple;
 
 const TEST_TOOLCHAIN: &str = "test-toolchain-v1";
 
+fn has_undefined_symbol(object: &object::File<'_>, name: &str) -> bool {
+    let name = if object.format() == object::BinaryFormat::MachO {
+        format!("_{name}")
+    } else {
+        name.to_owned()
+    };
+    object
+        .symbols()
+        .any(|symbol| symbol.name() == Ok(name.as_str()) && symbol.is_undefined())
+}
+
 fn compile_amir(
     src: &str,
 ) -> (
@@ -23,8 +34,10 @@ fn compile_amir(
         &program,
         arandu_semantics::TargetInfo { pointer_width: 64 },
     );
-    let hir = lower_to_hir(&mut tc, &program).expect("HIR lowering failed");
-    let amir = lower_to_amir(&tc, &hir, 64).expect("AMIR lowering failed");
+    let mut hir = lower_to_hir(&mut tc, &program).expect("HIR lowering failed");
+    arandu_semantics::passes::monomorphize::monomorphize_program(&mut tc, &mut hir)
+        .expect("specialization failed");
+    let amir = lower_to_amir(&tc, &hir, 8).expect("AMIR lowering failed");
     let symbols = Arc::unwrap_or_clone(tc.symbols);
     let type_info = Arc::unwrap_or_clone(tc.type_info);
     (amir, symbols, type_info)
@@ -122,7 +135,7 @@ func calculate(): int {
 }
 
 #[test]
-fn removing_a_module_declaration_invalidates_remaining_cgus() {
+fn removing_an_unreferenced_declaration_preserves_hash_and_object_bytes() {
     let with_unused = "func main(): int { return 1; }\nfunc unused(): int { return 9; }\n";
     let without_unused = "func main(): int { return 1; }\n";
     let (first_program, first_symbols, first_types) = compile_amir(with_unused);
@@ -148,10 +161,204 @@ fn removing_a_module_declaration_invalidates_remaining_cgus() {
     let first_main = first.iter().find(|unit| unit.name == "main").unwrap();
     let second_main = second.iter().find(|unit| unit.name == "main").unwrap();
 
-    assert_ne!(
+    assert_eq!(
         first_main.hash, second_main.hash,
-        "the object cache key must include the declaration closure used by ObjectModule"
+        "an unrelated declaration is not part of this object's closure"
     );
+    let emit = |unit, program, symbols, types| {
+        compile_cgu(
+            unit,
+            program,
+            symbols,
+            types,
+            &target,
+            AotOptimization::Baseline,
+        )
+        .expect("object")
+    };
+    assert_eq!(
+        emit(first_main, &first_program, &first_symbols, &first_types),
+        emit(second_main, &second_program, &second_symbols, &second_types)
+    );
+}
+
+fn main_object(source: &str) -> (String, Vec<u8>) {
+    main_object_for_target(source, &Triple::host())
+}
+
+fn main_object_for_target(source: &str, target: &Triple) -> (String, Vec<u8>) {
+    let (program, symbols, types) = compile_amir(source);
+    let units = partition_program(
+        &program,
+        &symbols,
+        &types,
+        target,
+        AotOptimization::Baseline,
+        TEST_TOOLCHAIN,
+    );
+    let main = units
+        .iter()
+        .find(|unit| unit.name == "main")
+        .expect("main CGU");
+    (
+        main.hash.clone(),
+        compile_cgu(
+            main,
+            &program,
+            &symbols,
+            &types,
+            target,
+            AotOptimization::Baseline,
+        )
+        .expect("object"),
+    )
+}
+
+#[test]
+fn sibling_literals_and_source_symbol_reallocation_do_not_change_an_object() {
+    let first =
+        main_object("func helper(): int { return 1 }\nfunc main(): int { return helper() + 42 }");
+    let second = main_object(
+        "func unrelated(): int { return 3 + 4 + 5 }\nfunc helper(): int { return 6 + 7 }\nfunc main(): int { return helper() + 42 }",
+    );
+    assert_eq!(
+        first, second,
+        "only callee signature, not body/pool/synthetic offsets, belongs to the caller"
+    );
+}
+
+#[test]
+fn unreferenced_signature_and_nominal_layout_do_not_change_an_object() {
+    let first = main_object(
+        "struct Unused { x: int }\nfunc unused(x: int): int { return x }\nfunc main(): int { return 42 }",
+    );
+    let second = main_object(
+        "struct Unused { x: int, y: int }\nfunc unused(x: bool): bool { return x }\nfunc main(): int { return 42 }",
+    );
+    assert_eq!(first, second);
+}
+
+#[test]
+fn referenced_signature_changes_invalidate_the_caller() {
+    let (mut program, symbols, types) =
+        compile_amir("func helper(): int { return 1 }\nfunc main(): int { return helper() }");
+    let target = Triple::host();
+    let first = partition_program(
+        &program,
+        &symbols,
+        &types,
+        &target,
+        AotOptimization::Baseline,
+        TEST_TOOLCHAIN,
+    );
+    let integer = program.funcs[0].return_type;
+    let boolean = types
+        .type_interner
+        .intern(arandu_semantics::types::ArType::Primitive(
+            arandu_semantics::types::Primitive::Bool,
+        ));
+    assert_ne!(integer, boolean);
+    program.funcs[0].return_type = boolean;
+    let second = partition_program(
+        &program,
+        &symbols,
+        &types,
+        &target,
+        AotOptimization::Baseline,
+        TEST_TOOLCHAIN,
+    );
+    assert_ne!(first[1].hash, second[1].hash);
+}
+
+#[test]
+fn enum_payload_metadata_is_part_of_the_cgu_key() {
+    use arandu_semantics::amir::{AmirRvalue, AmirStmt};
+
+    let (mut program, symbols, types) = compile_amir(
+        "func main(): int { let value: Option<int> = Option.Some(42); match value { Option.Some(x) => { return x; } Option.None => { return 0; } } }",
+    );
+    let target = Triple::host();
+    let hash = |program: &arandu_semantics::amir::AmirProgram| {
+        partition_program(
+            program,
+            &symbols,
+            &types,
+            &target,
+            AotOptimization::Baseline,
+            TEST_TOOLCHAIN,
+        )[0]
+        .hash
+        .clone()
+    };
+    let original = hash(&program);
+    let function = &mut program.funcs[0];
+    let statement = function
+        .stmts
+        .iter_ids()
+        .find(|&id| {
+            matches!(
+                function.stmts.get(id),
+                Some(AmirStmt::Assign {
+                    rhs: AmirRvalue::EnumPayload { .. },
+                    ..
+                })
+            )
+        })
+        .expect("payload extraction");
+    let Some(AmirStmt::Assign {
+        rhs: AmirRvalue::EnumPayload { variant_tag, .. },
+        ..
+    }) = function.stmts.get_mut(statement)
+    else {
+        panic!("payload extraction changed");
+    };
+    *variant_tag += 1;
+    assert_ne!(
+        original,
+        hash(&program),
+        "a changed payload tag invalidates the object"
+    );
+}
+
+#[test]
+fn referenced_struct_layout_changes_invalidate_the_caller() {
+    let first = main_object(
+        "struct Point { x: int }\nfunc read(p: Point): int { return p.x }\nfunc main(): int { return read(Point { x: 42 }) }",
+    );
+    let second = main_object(
+        "struct Point { x: int, y: int }\nfunc read(p: Point): int { return p.x }\nfunc main(): int { return read(Point { x: 42, y: 0 }) }",
+    );
+    assert_ne!(first.0, second.0);
+}
+
+#[test]
+fn function_references_outside_calls_keep_their_declaration() {
+    let source = "extern \"C\" { func sink(callback: ptr[u8]): void }\nfunc callback(): int { return 42 }\nfunc main(): int { unsafe { sink(callback as ptr[u8]) } return 42 }";
+    for target in [
+        Triple::host(),
+        format!("{}-apple-darwin", Triple::host().architecture)
+            .parse()
+            .expect("Darwin target"),
+    ] {
+        let (_, bytes) = main_object_for_target(source, &target);
+        let object = object::File::parse(bytes.as_slice()).expect("object");
+        assert!(has_undefined_symbol(&object, "callback"), "{target}");
+    }
+}
+
+#[test]
+fn implicit_destructor_is_declared_without_a_source_call() {
+    let source = "struct Owner { value: int }\n@Destructor\nfunc Owner.destroy(own self: Owner): void {}\nfunc main(): int { let owner = Owner { value: 42 } return owner.value }";
+    for target in [
+        Triple::host(),
+        format!("{}-apple-darwin", Triple::host().architecture)
+            .parse()
+            .expect("Darwin target"),
+    ] {
+        let (_, bytes) = main_object_for_target(source, &target);
+        let object = object::File::parse(bytes.as_slice()).expect("object");
+        assert!(has_undefined_symbol(&object, "Owner.destroy"), "{target}");
+    }
 }
 
 #[test]

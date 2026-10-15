@@ -1,8 +1,8 @@
 import std.alloc.bitset as bitset
 
 func main(): int {
-    let mut left = bitset.bitsetNew()
-    let mut right = bitset.bitsetNew()
+    let mut left = bitset.BitSet.new()
+    let mut right = bitset.BitSet.new()
 
     if !left.insert(0 as usize) {
         return 1
@@ -49,7 +49,7 @@ func main(): int {
         return 13
     }
 
-    let mut capacity = bitset.bitsetWithCapacity(65 as usize)
+    let mut capacity = bitset.BitSet.withCapacity(65 as usize)
     if capacity.contains(0 as usize) || capacity.contains(64 as usize) || capacity.contains(65 as usize) {
         return 14
     }

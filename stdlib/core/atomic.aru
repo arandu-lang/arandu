@@ -13,7 +13,7 @@
 //! ```arandu
 //! import std.core.atomic as atomic
 //!
-//! let mut flag = atomic.atomicBoolNew(false)
+//! let mut flag = atomic.AtomicBool.new(false)
 //! flag.store(true, atomic.MemoryOrder.Release)
 //! let v = flag.load(atomic.MemoryOrder.Acquire)
 //! ```
@@ -58,7 +58,7 @@ public struct AtomicBool {
 }
 
 /// Creates a new `AtomicBool`.
-public func atomicBoolNew(val: bool): AtomicBool {
+public func AtomicBool.new(val: bool): AtomicBool {
     return AtomicBool {
         val: val,
     }
@@ -92,7 +92,7 @@ public struct AtomicInt {
 }
 
 /// Creates a new `AtomicInt`.
-public func atomicIntNew(val: int): AtomicInt {
+public func AtomicInt.new(val: int): AtomicInt {
     return AtomicInt {
         val: val,
     }
@@ -156,7 +156,7 @@ public struct AtomicUint {
 }
 
 /// Creates a new `AtomicUint`.
-public func atomicUintNew(val: uint): AtomicUint {
+public func AtomicUint.new(val: uint): AtomicUint {
     return AtomicUint {
         val: val,
     }
@@ -199,7 +199,7 @@ public struct AtomicPtr<T> {
 }
 
 /// Creates a new `AtomicPtr`.
-public func atomicPtrNew<T>(val: ptr[T]): AtomicPtr<T> {
+public func AtomicPtr.new<T>(val: ptr[T]): AtomicPtr<T> {
     return AtomicPtr<T> {
         val: val,
     }

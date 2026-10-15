@@ -70,8 +70,8 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 .get(&payload_ty)
                 .and_then(|destructor| {
                     let name =
-                        format!("__ar_drop_{}_{}", destructor.file_id, destructor.local_id.0);
-                    self.func_ids.get(&name).copied()
+                        crate::cgu::dependencies::drop_shim_name(self.symbol_table, *destructor)?;
+                    self.resolve_function(&name)
                 })
                 .map(|id| {
                     let function = self.module.declare_func_in_func(id, self.builder.func);
@@ -105,7 +105,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             self.builder.ins().stack_addr(self.ptr_type, slot, 0)
         };
         let (size, align, drop_glue) = self.gen_layout_args(payload_ty, size, align);
-        let Some(&id) = self.func_ids.get("ar_gen_insert_raw") else {
+        let Some(id) = self.resolve_function("ar_gen_insert_raw") else {
             self.record_ice("missing ar_gen_insert_raw runtime import", self.func_span());
             return self.poison_i32();
         };
@@ -130,7 +130,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         let handle = self.translate_operand(gen_ref, Some(I64));
         let address = self.builder.ins().stack_addr(self.ptr_type, slot, 0);
         let (size, align, _) = self.gen_layout_args(payload_ty, size, align);
-        let Some(&id) = self.func_ids.get(name) else {
+        let Some(id) = self.resolve_function(name) else {
             self.record_ice(format!("missing {name} runtime import"), self.func_span());
             return self.poison_i32();
         };
@@ -175,7 +175,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             self.builder.ins().stack_addr(self.ptr_type, slot, 0)
         };
         let (size, align, drop_glue) = self.gen_layout_args(payload_ty, size, align);
-        let Some(&id) = self.func_ids.get(name) else {
+        let Some(id) = self.resolve_function(name) else {
             self.record_ice(format!("missing {name} runtime import"), self.func_span());
             return self.poison_i32();
         };

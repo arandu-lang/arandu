@@ -1,0 +1,32 @@
+struct Row<comptime N: uint> { data: [comptime (N * 2)]int }
+const ROW Row<1> = comptime Row<1> { data: [20, 22] }
+const TABLE [2]int = comptime [20, 22]
+const OPTIONAL Option<int> = comptime optional()
+
+func optional(): Option<int> { return Option.Some(42) }
+func choose<comptime Enabled: bool, comptime Adjustment: i64>(): int {
+    comptime if Enabled { return Adjustment as int } else { return 0 }
+}
+func produce(): [2][2]int { return [[20, 0], [21, 1]] }
+
+func main(): int {
+    if ROW.data[0] + ROW.data[1] != 42 { return 1 }
+    if choose<comptime (true), comptime (-1)>() != -1 { return 2 }
+    let nested = comptime { comptime (1) }
+    if nested != 1 { return 3 }
+    let mut sum = 0
+    comptime for value in TABLE { sum += value }
+    if sum != 42 { return 4 }
+    sum = 0
+    comptime for row in produce() { comptime for value in row { sum += value } }
+    if sum != 42 { return 5 }
+    match OPTIONAL {
+        Option.Some(value) => { if value != 42 { return 6 } }
+        Option.None => { return 7 }
+    }
+    comptime if @targetPointerWidth() == 32 || @targetPointerWidth() == 64 {
+        return 0
+    } else {
+        return unsupportedPointerWidth
+    }
+}

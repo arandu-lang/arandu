@@ -49,6 +49,7 @@ dívidas e futuro são classificados, e o plano paralelo é removido.
 | --- | --- |
 | Frontend | [lexer](arandu-lexer-v0.1.md), [parser](arandu-parser-v0.1.md), [AST](arandu-ast-v0.1.md) |
 | IR e execução | [AHIR](arandu-ahir-v0.1.md), [AMIR](arandu-amir-v0.1.md), [IR/SSA](arandu-ir-architecture-v0.1.md), [backends](arandu-backend-contract-v0.1.md) |
+| Compile-time | [núcleo público de comptime](arandu-comptime-core-v0.1.md) |
 | ABI e memória | [modelo semântico de memória](arandu-semantic-memory-model-v0.1.md), [ABI/layout](arandu-abi-layout-v0.1.md), [JIT/memória](arandu-jit-memory-v0.1.md), [stdlib](arandu-stdlib-architecture-v0.1.md) |
 | Incrementalidade e IDE | [Salsa/LSP](arandu-salsa-lsp-architecture-v0.1.md), [LSP/editor](arandu-lsp-capabilities-v0.1.md), [CLI/LSP](arandu-cli-lsp-contract-v0.1.md) |
 | Runtime e distribuição | [async runtime](arandu-async-runtime-design-v0.1.md), [paralelismo estruturado](arandu-structured-parallelism-v0.1.md), [instrumentação](arandu-compiler-instrumentation-v0.1.md), [distribuição](arandu-distribution-contract-v0.1.md) |

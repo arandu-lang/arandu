@@ -367,8 +367,45 @@ definidos antes de se tornarem gate.
 
 O primeiro corte de `SL_S-Core` estabelece os seguintes contratos concretos:
 
-- nomes públicos de funções e métodos usam `camelCase`;
+- **Convenções Canônicas de Nomenclatura e Design de API (RFC 0026):**
+  - **Casing:** Tipos/interfaces em `PascalCase`, callables/métodos em `camelCase`, módulos/arquivos em `snake_case`, constantes em `SCREAMING_SNAKE_CASE`;
+  - **Construtores e Genéricos no Tipo:** Forma canônica única `Type.new(...)` / `Type<T>.new(...)` (apenas args essenciais), `Type.withX(...)` / `Type<T>.withX(...)` para configurações (`Vec<int>.withCapacity(16)`, `HashMap<str, User>.withCapacity(32)`), `Type.from(x)` para conversão inequívoca de tipo (`String.from("olá")`) e `Type.fromX(x)` quando a escala/semântica for indispensável (`Duration.fromMillis(50)`, `String.fromUtf8(bytes)`). Operações associadas sem instância existente permanecem no tipo (`Instant.now()`), enquanto operações sobre uma instância existente são métodos (`inicio.elapsed()`). Padrões legados `*New`, `new*` ou funções livres duplicadas (`bitsetNew`, `atomicBoolNew`, `newChannel`, `vec.new`) são removidos da API pública;
+  - **Receptores:** "Se a operação pertence a um valor, ela é método" (`vec.push(x)`, `slice.len()`, `inicio.elapsed()`). Funções livres são reservadas para operações sem dono semântico único (`math.min(a, b)`, `mem.swap(a, b)`, `hash.combine(a, b)`);
+  - **Conversões:** `asX()` (view/empréstimo de custo zero), `toX()` (produz valor com cópia/alocação), `intoX()` (move e consome `self`);
+  - **Métricas de Tamanho:** `len()` retorna a contagem de elementos para coleções e a quantidade de **bytes UTF-8** em O(1) para `str`/`String` (ex.: `String.from("olá").len()` == `4`). `charCount()` retorna a contagem de Unicode scalar values em O(n) (ex.: `String.from("olá").charCount()` == `3`). `lenBytes` é descontinuado;
+  - **Sequências vs. Mapas:** `put` é restrito a dicionários/mapas chave-valor (`map.put(k, v)`). Em sequências (`Vec`), usa-se `push(v)` para append e `set(i, v)` / `get(i)` para acesso indexado;
+  - **Operações Falíveis:** O prefixo `tryX()` é reservado para variantes não-panicking de operações que possuem uma contraparte normal (`push` vs `tryPush`, `reserve` vs `tryReserve`). Operações primariamente falíveis (`File.open`) não utilizam prefixo `try`;
+  - **Abreviações Públicas:** Abreviações consagradas do domínio de sistemas são aceitas (`ptr`, `ref`, `len`, `cap`, `io`, `fs`, `os`, `cpu`, `gpu`, `utf8`, `tcp`, `udp`, `http`). Abreviações de detalhes de implementação (`newCoreIoError`, `mkPortErr`) são expressamente proibidas;
+  - **Regra do Espelho:** Tipos análogos compartilham o mesmo vocabulário e assinaturas (`len()`, `isEmpty()`, `clear()`, `withCapacity()`).
+
+- **Gerenciamento de Recursos e Eliminação de Double-Free (RFC 0026):**
+  1. *Memória Pura (`Vec`, `String`, `HashMap`):* O gerenciamento de ciclo de vida é exclusivo do compilador via destruição automática (`drop` em OSSA). Métodos manuais `destroy()` são banidos da API pública normal;
+  2. *Recursos Externos de I/O (`File`, sockets, `DirListing`):* Expõem método explícito `close(mut self): Result<void, IoError>` para tratamento de erros de flush/close do sistema operacional. O `drop` atua como salvaguarda silenciosa/best-effort caso `close()` não seja chamado;
+  3. *Idempotência:* Após `close()`, o `drop` subsequente ao sair de escopo torna-se um *no-op* garantido, eliminando double-free por construção.
+
+- **Checklist de PR para Módulos da Stdlib:**
+  1. *Construtor:* O tipo expõe `Type.new(...)` / `Type<T>.new(...)`, `Type.withX(...)` / `Type<T>.withX(...)` ou `Type.from[X](...)` em vez de funções livres?
+  2. *Receiver:* Toda operação pertencente conceitualmente à entidade está modelada como método (`value.method(...)`)?
+  3. *Tamanho:* A medição segue `len()` (elementos/bytes UTF-8 em O(1)) e `charCount()` (Unicode scalars em O(n)), sem inventar `lenBytes` ou variantes ad-hoc?
+  4. *Abreviações:* Os nomes públicos evitam acrônimos de implementação interna, admitindo apenas jargões consolidados do domínio?
+  5. *Liberação:* O tipo delega liberação de memória estritamente ao `drop` (sem `destroy()` público) ou implementa `close(): Result<void, E>` idempotente para recursos de I/O?
+
+- `io.print(str)` escreve bytes em stdout sem newline; `io.println` continua
+  acrescentando newline. Ambos usam o ABI de string existente, sem montar uma
+  `String` intermediária. No core Wasm o host fornece `io.print(ptr, len)`;
+- `std.core.str.asBytes(ref str)` expõe a view compartilhada de bytes UTF-8 sem
+  importar intrínsecos na aplicação. O parâmetro de referência preserva a origem;
+  literais podem ser passados diretamente, como `strings.asBytes("hello")`;
+  um wrapper que recebe `str` por valor e retorna `[]u8` ainda não demonstra
+  essa origem no contrato atual e é rejeitado, não liberado por exceção;
+- `std.fs.readToBytes(path)` retorna `Result<Vec<u8>, IoError>`, adotando o buffer
+  do host sem conversão textual. `vec.adoptBytes` é uma API `@Unsafe` de
+  implementação, não uma obrigação imposta ao usuário de `readToBytes`;
+- `Vec.get(index)` retorna `Option<ref T>` sem exigir `Copy`; uma referência
+  ainda em uso bloqueia crescimento, substituição e destruição do vetor;
 - `char` representa um Unicode scalar em 32 bits em layout, C e Cranelift;
+- o cast `u8`/`byte` para `char` mapeia U+0000..U+00FF e não decodifica UTF-8;
+  valores inteiros mais largos continuam exigindo conversão validada;
 - `Option`/`Result` consomem `self` ao retirar payloads possuídos;
 - `[]T` é uma borrowed view segura, copiável localmente e não escapável; seu ABI
   é `ptr + len`, enquanto a origem fica em summaries/holders compile-time.

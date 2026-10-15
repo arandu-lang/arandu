@@ -72,6 +72,18 @@ pub fn constraint_to_diagnostic(
             expected_str,
         )),
 
+        ConstraintOrigin::CtfeResult { value_span, block_span } => Diagnostic::error(
+            DiagCode::T004IncompatibleReturnType,
+            format!("incompatible comptime block result: expected '{expected_str}', found '{found_str}'"),
+            *value_span,
+        )
+        .with_primary_label(format!("this exit yields '{found_str}'"))
+        .with_label(*block_span, format!("this block must yield '{expected_str}'"))
+        .with_hint(if matches!(constraint.found, super::types::ArType::Void) {
+            "a return without a value is only valid in a block yielding void"
+        } else {
+            "make the explicit returns and the final expression yield the same type"
+        }),
         ConstraintOrigin::ReturnType {
             return_span,
             declared_span,

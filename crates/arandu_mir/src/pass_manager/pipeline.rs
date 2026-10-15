@@ -6,7 +6,8 @@
 use super::{FunctionPass, OptLevel, PassResources};
 use crate::amir::AmirFunc;
 use crate::{
-    Diagnostic, dce::mark_sweep_dce, gvn::gvn, sccp::sccp, simplify_cfg::simplify_cfg, sroa::sroa,
+    Diagnostic, dce::mark_sweep_dce, gvn::gvn, licm::licm, sccp::sccp, simplify_cfg::simplify_cfg,
+    sroa::sroa,
 };
 
 /// Sparse conditional constant propagation + branch folding.
@@ -22,7 +23,12 @@ impl FunctionPass for SccpPass {
         func: &mut AmirFunc,
         resources: &mut PassResources<'_>,
     ) -> Result<bool, Diagnostic> {
-        Ok(sccp(func, resources.literal_pool, resources.bump))
+        Ok(sccp(
+            func,
+            resources.literal_pool,
+            resources.bump,
+            resources.interner,
+        ))
     }
 }
 
@@ -81,8 +87,42 @@ impl FunctionPass for MarkSweepDcePass {
     }
 }
 
+/// Loop-Invariant Code Motion.
+///
+/// Hoists pure, dominating computations out of natural loops so the register
+/// allocator can keep them in registers across iterations.
+struct LicmPass;
+
+impl FunctionPass for LicmPass {
+    fn name(&self) -> &'static str {
+        "licm"
+    }
+
+    fn run(
+        &self,
+        func: &mut AmirFunc,
+        _resources: &mut PassResources<'_>,
+    ) -> Result<bool, Diagnostic> {
+        Ok(licm(func))
+    }
+}
+
 /// CFG simplification: block merging, unreachable removal, jump threading.
 struct SimplifyCfgPass;
+
+struct TailMergePass;
+impl FunctionPass for TailMergePass {
+    fn name(&self) -> &'static str {
+        "tail_merge"
+    }
+    fn run(
+        &self,
+        func: &mut AmirFunc,
+        _resources: &mut PassResources<'_>,
+    ) -> Result<bool, Diagnostic> {
+        Ok(crate::tail_merge::merge_return_tails(func))
+    }
+}
 
 impl FunctionPass for SimplifyCfgPass {
     fn name(&self) -> &'static str {
@@ -101,26 +141,35 @@ impl FunctionPass for SimplifyCfgPass {
 /// Builds the standard pass sequence for `level`.
 ///
 /// O1 runs baseline simplification (SCCP → DCE → SimplifyCFG).
-/// O2 adds SROA and GVN before the O1 core.
+/// O2 adds SROA, GVN and LICM before the O1 core.
 ///
-/// LICM and TCO exist as modules but are **not wired** until:
-/// - LICM: DenseRange insertion is corrected, trapping ops are excluded from
-///   hoisting, and iteration order is deterministic.
-/// - TCO: parameter comparison uses `func.params` instead of
-///   `block[0].params`, and `AmirStmtKind` is kept in sync.
+/// LICM runs after SCCP so folded constants are visible to the invariance
+/// analysis, and before DCE so hoisted copies that turn out dead are collected
+/// in the same round.
+///
+/// The checked O2 entrypoint also scalarizes nonescaping Copy local fields and
+/// eliminates scalar self-tail recursion before this type-independent fixpoint.
 pub fn pipeline_for_level(level: OptLevel) -> Vec<Box<dyn FunctionPass>> {
     match level {
         OptLevel::O0 => Vec::new(),
-        OptLevel::O1 | OptLevel::Os => vec![
+        OptLevel::O1 => vec![
             Box::new(SccpPass),
             Box::new(MarkSweepDcePass),
+            Box::new(SimplifyCfgPass),
+        ],
+        OptLevel::Os => vec![
+            Box::new(SccpPass),
+            Box::new(MarkSweepDcePass),
+            Box::new(TailMergePass),
             Box::new(SimplifyCfgPass),
         ],
         OptLevel::O2 => vec![
             Box::new(SroaPass),
             Box::new(GvnPass),
             Box::new(SccpPass),
+            Box::new(LicmPass),
             Box::new(MarkSweepDcePass),
+            Box::new(TailMergePass),
             Box::new(SimplifyCfgPass),
         ],
     }

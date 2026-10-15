@@ -17,10 +17,10 @@ func sum(items: []int): int {
 }
 
 func main(): int {
-    let mut values = vec.new<int>()
-    vec.push<int>(values, 1)
-    vec.push<int>(values, 2)
-    vec.push<int>(values, 4)
-    let view = vec.asSlice<int>(values)
+    let mut values = vec.Vec<int>.new()
+    values.push(1)
+    values.push(2)
+    values.push(4)
+    let view = values.asSlice()
     return sum(view)
 }

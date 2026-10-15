@@ -10,6 +10,7 @@ const SLICE_ARU: &str = include_str!("../../../../stdlib/core/slice.aru");
 const INTRINSICS_ARU: &str = include_str!("../../../../stdlib/core/intrinsics.aru");
 const MEM_ARU: &str = include_str!("../../../../stdlib/core/mem.aru");
 const VEC_ARU: &str = include_str!("../../../../stdlib/alloc/vec.aru");
+const MARKER_ARU: &str = include_str!("../../../../stdlib/core/marker.aru");
 
 #[test]
 fn stdlib_io_parses_and_exports_expected_symbols() {
@@ -23,13 +24,14 @@ fn stdlib_io_parses_and_exports_expected_symbols() {
     let expected = [
         "IoErrorKind",
         "IoError",
+        "IoError.new",
         "Read",
         "Write",
         "BufRead",
         "BufReader",
-        "newBufReader",
+        "BufReader.new",
         "BufWriter",
-        "newBufWriter",
+        "BufWriter.new",
     ];
     for key in expected {
         assert!(
@@ -50,6 +52,7 @@ fn stdlib_buf_io_usage_in_program() {
     db.new_file("stdlib/core/slice.aru".to_string(), SLICE_ARU.to_string());
     db.new_file("stdlib/core/mem.aru".to_string(), MEM_ARU.to_string());
     db.new_file("stdlib/alloc/vec.aru".to_string(), VEC_ARU.to_string());
+    db.new_file("stdlib/core/marker.aru".to_string(), MARKER_ARU.to_string());
     let io_file = db.new_file("stdlib/std/io.aru".to_string(), IO_ARU.to_string());
     let main_src = r#"
 import std.io as io
@@ -74,11 +77,11 @@ public func MockStream.flush(self: mut ref MockStream): Result<bool, io.IoError>
 
 func testBufReader(): int {
     let s = MockStream { count: 10 }
-    let mut bytes = vec.new<u8>()
+    let mut bytes = vec.Vec<u8>.new()
     bytes.push(0 as u8)
     let buf = bytes.asSlice()
-    let br = io.newBufReader<MockStream>(s, buf)
-    let bw = io.newBufWriter<MockStream>(s, buf)
+    let br = io.BufReader<MockStream>.new(s, buf)
+    let bw = io.BufWriter<MockStream>.new(s, buf)
     if br.pos != 0 || bw.buffered_count != 0 {
         return 1
     }

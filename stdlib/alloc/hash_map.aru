@@ -66,20 +66,48 @@ public struct HashMap<K: hash.Hash, V> {
 /// Keys considered equal by `Hash.eq` must yield the same hash for lookups to
 /// find them. This function does not access or modify a map.
 public func hashKey<K: hash.Hash>(k: ref K): u64 {
-    let mut h = hash.fnvNew()
+    let mut h = hash.FnvHasher.new()
     k.hash(mut ref h)
     return h.finish()
+}
+
+func new<K: hash.Hash, V>(): HashMap<K, V> {
+    return HashMap<K, V> {
+        buckets: vec.Vec<Option<Entry<K, V>>>.new(),
+        len: 0 as usize,
+        mask: 0 as usize,
+    }
 }
 
 /// Creates a new empty `HashMap` with zero heap allocation until first insertion.
 ///
 /// # Complexity
 /// Time: O(1) | Space: O(1)
-public func new<K: hash.Hash, V>(): HashMap<K, V> {
+public func HashMap.new<K: hash.Hash, V>(): HashMap<K, V> {
+    return new<K, V>()
+}
+
+func withCapacity<K: hash.Hash, V>(minCap: usize): HashMap<K, V> {
+    if minCap > MAX_BUCKETS {
+        capacityFailure()
+    }
+    let mut cap: usize = 8 as usize
+    while cap < minCap {
+        if cap > MAX_BUCKETS / (2 as usize) {
+            capacityFailure()
+        }
+        cap = cap * (2 as usize)
+    }
+    let mut buckets = vec.Vec<Option<Entry<K, V>>>.withCapacity(cap)
+    let mut i: usize = 0 as usize
+    while i < cap {
+        buckets.push(Option.None)
+        i = i + (1 as usize)
+    }
     return HashMap<K, V> {
-        buckets: vec.new<Option<Entry<K, V>>>(),
+        buckets: buckets,
         len: 0 as usize,
-        mask: 0 as usize,
+        mask: cap - (1 as usize),
     }
 }
 
@@ -91,70 +119,63 @@ public func new<K: hash.Hash, V>(): HashMap<K, V> {
 ///
 /// # Complexity
 /// Time: O(cap) | Space: O(cap)
-public func withCapacity<K: hash.Hash, V>(minCap: usize): HashMap<K, V> {
-    if minCap > MAX_BUCKETS {
-        capacityFailure()
-    }
-    let mut cap: usize = 8 as usize
-    while cap < minCap {
-        if cap > MAX_BUCKETS / (2 as usize) {
-            capacityFailure()
-        }
-        cap = cap * (2 as usize)
-    }
-    let mut buckets = vec.withCapacity<Option<Entry<K, V>>>(cap)
-    let mut i: usize = 0 as usize
-    while i < cap {
-        vec.push<Option<Entry<K, V>>>(buckets, Option.None)
-        i = i + (1 as usize)
-    }
-    return HashMap<K, V> {
-        buckets: buckets,
-        len: 0 as usize,
-        mask: cap - (1 as usize),
-    }
+public func HashMap.withCapacity<K: hash.Hash, V>(minCap: usize): HashMap<K, V> {
+    return withCapacity<K, V>(minCap)
 }
 
-/// Returns the number of key-value pairs in the map.
-public func len<K: hash.Hash, V>(self: ref HashMap<K, V>): usize {
+func len<K: hash.Hash, V>(self: ref HashMap<K, V>): usize {
     return self.len
 }
 
-/// Returns `true` if the map contains no elements.
-public func isEmpty<K: hash.Hash, V>(self: ref HashMap<K, V>): bool {
+/// Returns the number of key-value pairs in the map.
+public func HashMap.len<K: hash.Hash, V>(self: ref HashMap<K, V>): usize {
+    return self.len
+}
+
+func isEmpty<K: hash.Hash, V>(self: ref HashMap<K, V>): bool {
     return self.len == (0 as usize)
+}
+
+/// Returns `true` if the map contains no elements.
+public func HashMap.isEmpty<K: hash.Hash, V>(self: ref HashMap<K, V>): bool {
+    return self.len == (0 as usize)
+}
+
+func capacity<K: hash.Hash, V>(self: ref HashMap<K, V>): usize {
+    return self.buckets.len()
 }
 
 /// Returns the current number of buckets, including empty buckets.
 ///
 /// The map can store fewer entries than this before its 75% growth threshold
-/// triggers a resize. A map from `new()` reports zero until first insertion.
-public func capacity<K: hash.Hash, V>(self: ref HashMap<K, V>): usize {
-    return vec.len<Option<Entry<K, V>>>(self.buckets)
+/// triggers a resize. A map from `HashMap.new()` reports zero until first insertion.
+public func HashMap.capacity<K: hash.Hash, V>(self: ref HashMap<K, V>): usize {
+    return capacity(self)
+}
+
+func clear<K: hash.Hash, V>(self: mut ref HashMap<K, V>): void {
+    let cap = self.buckets.len()
+    let mut i: usize = 0 as usize
+    while i < cap {
+        self.buckets.set(i, Option.None);
+        i = i + (1 as usize)
+    }
+    self.len = 0 as usize
 }
 
 /// Removes all entries while retaining the allocated bucket array.
 ///
 /// The next insertion can reuse that storage. This visits every bucket in
 /// O(bucket count) time and does not allocate.
-public func clear<K: hash.Hash, V>(self: mut ref HashMap<K, V>): void {
-    let cap = vec.len<Option<Entry<K, V>>>(self.buckets)
-    let mut i: usize = 0 as usize
-    while i < cap {
-        vec.put<Option<Entry<K, V>>>(self.buckets, i, Option.None);
-        i = i + (1 as usize)
-    }
-    self.len = 0 as usize
+public func HashMap.clear<K: hash.Hash, V>(self: mut ref HashMap<K, V>): void {
+    clear(self)
 }
 
-/// Releases the bucket buffer owned by the map.
-///
-/// All entries are cleared before the backing vector is destroyed. The map
-/// value is consumed and cannot be used after this call.
+/// Releases the entries owned by the map; the backing bucket vector is dropped
+/// automatically by field-drop elaboration.
 @Destructor
-public func HashMap.destroy<K: hash.Hash, V>(self: own HashMap<K, V>): void {
+func HashMap.destroy<K: hash.Hash, V>(self: own HashMap<K, V>): void {
     clear(self)
-    vec.destroy<Option<Entry<K, V>>>(self.buckets)
 }
 
 /// Doubles the bucket array and reinserts all existing entries.
@@ -162,8 +183,8 @@ public func HashMap.destroy<K: hash.Hash, V>(self: own HashMap<K, V>): void {
 /// An empty map receives eight buckets. This allocates a new array and takes
 /// O(old bucket count + new bucket count) time; ordinary `insert` calls resize
 /// automatically when the load threshold is crossed.
-public func resize<K: hash.Hash, V>(self: mut ref HashMap<K, V>): void {
-    let oldCap = vec.len<Option<Entry<K, V>>>(self.buckets)
+func resize<K: hash.Hash, V>(self: mut ref HashMap<K, V>): void {
+    let oldCap = self.buckets.len()
     let mut newCap: usize = 8 as usize
     if oldCap > (0 as usize) {
         if oldCap >= MAX_BUCKETS {
@@ -171,10 +192,10 @@ public func resize<K: hash.Hash, V>(self: mut ref HashMap<K, V>): void {
         }
         newCap = oldCap * (2 as usize)
     }
-    let mut newBuckets = vec.withCapacity<Option<Entry<K, V>>>(newCap)
+    let mut newBuckets = vec.Vec<Option<Entry<K, V>>>.withCapacity(newCap)
     let mut i: usize = 0 as usize
     while i < newCap {
-        vec.push<Option<Entry<K, V>>>(newBuckets, Option.None)
+        newBuckets.push(Option.None)
         i = i + (1 as usize)
     }
     let mut oldBuckets = self.buckets
@@ -184,7 +205,7 @@ public func resize<K: hash.Hash, V>(self: mut ref HashMap<K, V>): void {
 
     let mut j: usize = 0 as usize
     while j < oldCap {
-        match vec.takeSome<Entry<K, V>>(oldBuckets, j) {
+        match oldBuckets.takeSome(j) {
             Some(entry) => {
                 insertEntry(self, entry.key, entry.value, entry.hash);
             }
@@ -199,12 +220,12 @@ public func resize<K: hash.Hash, V>(self: mut ref HashMap<K, V>): void {
 /// The hash must match `hashKey(key)`, or later lookups may fail. Returns the
 /// previous value for an equal key, or `None` for a new key. May resize and
 /// allocate before probing when the 75% load threshold would be exceeded.
-public func insertEntry<K: hash.Hash, V>(self: mut ref HashMap<K, V>, key: K, val: V, h: u64): Option<V> {
-    let cap = vec.len<Option<Entry<K, V>>>(self.buckets)
+func insertEntry<K: hash.Hash, V>(self: mut ref HashMap<K, V>, key: K, val: V, h: u64): Option<V> {
+    let cap = self.buckets.len()
     if cap == (0 as usize) || self.len >= cap - cap / (4 as usize) {
         resize(self)
     }
-    let currentCap = vec.len<Option<Entry<K, V>>>(self.buckets)
+    let currentCap = self.buckets.len()
     let mut idx = (h as usize) & self.mask
     let mut dist: usize = 0 as usize
     let curHash = h
@@ -212,9 +233,9 @@ public func insertEntry<K: hash.Hash, V>(self: mut ref HashMap<K, V>, key: K, va
     while dist < currentCap {
         let mut is_empty = false
         let mut same_key = false
-        let bucket = vec.get<Option<Entry<K, V>>>(self.buckets, idx)
+        let bucket = self.buckets.get(idx)
         match bucket {
-            Some(slot) => match option.asRef(slot) {
+            Some(slot) => match slot.asRef() {
                 Some(entry) => {
                     same_key = entry.hash == curHash && entry.key.eq(ref key)
                 }
@@ -223,7 +244,7 @@ public func insertEntry<K: hash.Hash, V>(self: mut ref HashMap<K, V>, key: K, va
             None => {}
         }
         if is_empty {
-            vec.put<Option<Entry<K, V>>>(self.buckets, idx, Option.Some(Entry<K, V> {
+            self.buckets.set(idx, Option.Some(Entry<K, V> {
                 hash: curHash,
                 key: key,
                 value: val,
@@ -233,11 +254,11 @@ public func insertEntry<K: hash.Hash, V>(self: mut ref HashMap<K, V>, key: K, va
             return Option.None
         }
         if same_key {
-            let old = vec.takeSome<Entry<K, V>>(self.buckets, idx)
+            let old = self.buckets.takeSome(idx)
             match old {
                 Some(previous) => {
                     let old_value = previous.value
-                    vec.put<Option<Entry<K, V>>>(self.buckets, idx, Option.Some(Entry<K, V> {
+                    self.buckets.set(idx, Option.Some(Entry<K, V> {
                         hash: curHash,
                         key: key,
                         value: val,
@@ -254,6 +275,11 @@ public func insertEntry<K: hash.Hash, V>(self: mut ref HashMap<K, V>, key: K, va
     return Option.None
 }
 
+func insert<K: hash.Hash, V>(self: mut ref HashMap<K, V>, key: K, val: V): Option<V> {
+    let h = hashKey(ref key)
+    return insertEntry(self, key, val, h)
+}
+
 /// Inserts a key-value pair into the map.
 ///
 /// If the map did not have this key present, `Option.None` is returned.
@@ -263,18 +289,17 @@ public func insertEntry<K: hash.Hash, V>(self: mut ref HashMap<K, V>, key: K, va
 ///
 /// # Complexity
 /// Time: O(1) amortized | Space: O(1) amortized
-public func insert<K: hash.Hash, V>(self: mut ref HashMap<K, V>, key: K, val: V): Option<V> {
-    let h = hashKey(ref key)
-    return insertEntry(self, key, val, h)
+public func HashMap.insert<K: hash.Hash, V>(self: mut ref HashMap<K, V>, key: K, val: V): Option<V> {
+    return insert(self, key, val)
 }
 
-/// Returns `true` if the map contains a value for the specified key.
-/// An empty map returns `false`; lookup does not allocate or modify entries.
-///
-/// # Complexity
-/// Time: O(1) average | Space: O(1)
-public func contains<K: hash.Hash, V>(self: ref HashMap<K, V>, key: ref K): bool {
-    let cap = vec.len<Option<Entry<K, V>>>(self.buckets)
+/// Associates `key` with `val` in the map, returning the previous value if present.
+public func HashMap.put<K: hash.Hash, V>(self: mut ref HashMap<K, V>, key: K, val: V): Option<V> {
+    return insert(self, key, val)
+}
+
+func contains<K: hash.Hash, V>(self: ref HashMap<K, V>, key: ref K): bool {
+    let cap = self.buckets.len()
     if cap == (0 as usize) {
         return false
     }
@@ -282,9 +307,9 @@ public func contains<K: hash.Hash, V>(self: ref HashMap<K, V>, key: ref K): bool
     let mut idx = (h as usize) & self.mask
     let mut dist: usize = 0 as usize
     while dist < cap {
-        let bucket = vec.get<Option<Entry<K, V>>>(self.buckets, idx)
+        let bucket = self.buckets.get(idx)
         match bucket {
-            Some(slot) => match option.asRef(slot) {
+            Some(slot) => match slot.asRef() {
                 Some(entry) => {
                     if entry.hash == h && entry.key.eq(key) {
                         return true
@@ -300,12 +325,17 @@ public func contains<K: hash.Hash, V>(self: ref HashMap<K, V>, key: ref K): bool
     return false
 }
 
-/// Returns a copy of the matching value when `V` is `Copy`.
+/// Returns `true` if the map contains a value for the specified key.
+/// An empty map returns `false`; lookup does not allocate or modify entries.
 ///
 /// # Complexity
 /// Time: O(1) average | Space: O(1)
-public func get<K: hash.Hash + marker.Copy, V: marker.Copy>(self: ref HashMap<K, V>, key: ref K): Option<V> {
-    let cap = vec.len<Option<Entry<K, V>>>(self.buckets)
+public func HashMap.contains<K: hash.Hash, V>(self: ref HashMap<K, V>, key: ref K): bool {
+    return contains(self, key)
+}
+
+func get<K: hash.Hash + marker.Copy, V: marker.Copy>(self: ref HashMap<K, V>, key: ref K): Option<V> {
+    let cap = self.buckets.len()
     if cap == (0 as usize) {
         return Option.None
     }
@@ -313,9 +343,9 @@ public func get<K: hash.Hash + marker.Copy, V: marker.Copy>(self: ref HashMap<K,
     let mut idx = (h as usize) & self.mask
     let mut dist: usize = 0 as usize
     while dist < cap {
-        let bucket = vec.get<Option<Entry<K, V>>>(self.buckets, idx)
+        let bucket = self.buckets.get(idx)
         match bucket {
-            Some(slot) => match option.asRef(slot) {
+            Some(slot) => match slot.asRef() {
                 Some(entry) => {
                     if entry.hash == h && entry.key.eq(key) {
                         return Option.Some(entry.value)
@@ -331,13 +361,16 @@ public func get<K: hash.Hash + marker.Copy, V: marker.Copy>(self: ref HashMap<K,
     return Option.None
 }
 
-/// Returns a shared reference to the matching value without copying it.
+/// Returns a copy of the matching value when `V` is `Copy`.
 ///
-/// The returned reference borrows the map and becomes invalid if the map is
-/// cleared, resized, or destroyed. Use this for values that own resources or
-/// otherwise do not implement `Copy`.
-public func getRef<K: hash.Hash, V>(self: ref HashMap<K, V>, key: ref K): Option<ref V> {
-    let cap = vec.len<Option<Entry<K, V>>>(self.buckets)
+/// # Complexity
+/// Time: O(1) average | Space: O(1)
+public func HashMap.get<K: hash.Hash + marker.Copy, V: marker.Copy>(self: ref HashMap<K, V>, key: ref K): Option<V> {
+    return get(self, key)
+}
+
+func getRef<K: hash.Hash, V>(self: ref HashMap<K, V>, key: ref K): Option<ref V> {
+    let cap = self.buckets.len()
     if cap == (0 as usize) {
         return Option.None
     }
@@ -345,9 +378,9 @@ public func getRef<K: hash.Hash, V>(self: ref HashMap<K, V>, key: ref K): Option
     let mut idx = (h as usize) & self.mask
     let mut dist: usize = 0 as usize
     while dist < cap {
-        let bucket = vec.get<Option<Entry<K, V>>>(self.buckets, idx)
+        let bucket = self.buckets.get(idx)
         match bucket {
-            Some(slot) => match option.asRef(slot) {
+            Some(slot) => match slot.asRef() {
                 Some(entry) => {
                     if entry.hash == h && entry.key.eq(key) {
                         return Option.Some(ref entry.value)
@@ -363,16 +396,17 @@ public func getRef<K: hash.Hash, V>(self: ref HashMap<K, V>, key: ref K): Option
     return Option.None
 }
 
-/// Removes a matching key and returns its value, or `None` if absent.
+/// Returns a shared reference to the matching value without copying it.
 ///
-/// Later entries in the probe sequence shift to close the gap. The bucket
-/// array is retained and no tombstone is left behind; this does not shrink
-/// the map or allocate.
-///
-/// # Complexity
-/// Time: O(1) average | Space: O(1)
-public func remove<K: hash.Hash, V>(self: mut ref HashMap<K, V>, key: ref K): Option<V> {
-    let cap = vec.len<Option<Entry<K, V>>>(self.buckets)
+/// The returned reference borrows the map and becomes invalid if the map is
+/// cleared, resized, or dropped. Use this for values that own resources or
+/// otherwise do not implement `Copy`.
+public func HashMap.getRef<K: hash.Hash, V>(self: ref HashMap<K, V>, key: ref K): Option<ref V> {
+    return getRef(self, key)
+}
+
+func remove<K: hash.Hash, V>(self: mut ref HashMap<K, V>, key: ref K): Option<V> {
+    let cap = self.buckets.len()
     if cap == (0 as usize) {
         return Option.None
     }
@@ -381,9 +415,9 @@ public func remove<K: hash.Hash, V>(self: mut ref HashMap<K, V>, key: ref K): Op
     let mut dist: usize = 0 as usize
     while dist < cap {
         let mut found = false
-        let bucket = vec.get<Option<Entry<K, V>>>(self.buckets, idx)
+        let bucket = self.buckets.get(idx)
         match bucket {
-            Some(slot) => match option.asRef(slot) {
+            Some(slot) => match slot.asRef() {
                 Some(entry) => {
                     found = entry.hash == h && entry.key.eq(key)
                 }
@@ -392,7 +426,7 @@ public func remove<K: hash.Hash, V>(self: mut ref HashMap<K, V>, key: ref K): Op
             None => { return Option.None }
         }
         if found {
-            let removed = vec.takeSome<Entry<K, V>>(self.buckets, idx)
+            let removed = self.buckets.takeSome(idx)
             let mut removed_value: Option<V> = Option.None
             match removed {
                 Some(entry) => { removed_value = Option.Some(entry.value) }
@@ -405,8 +439,8 @@ public func remove<K: hash.Hash, V>(self: mut ref HashMap<K, V>, key: ref K): Op
             let mut shifted: usize = 0 as usize
             while shifting && shifted < cap {
                 let mut next_distance: Option<usize> = Option.None
-                match vec.get<Option<Entry<K, V>>>(self.buckets, next) {
-                    Some(slot) => match option.asRef(slot) {
+                match self.buckets.get(next) {
+                    Some(slot) => match slot.asRef() {
                         Some(entry) => { next_distance = Option.Some(entry.distance) }
                         None => {}
                     }
@@ -415,12 +449,12 @@ public func remove<K: hash.Hash, V>(self: mut ref HashMap<K, V>, key: ref K): Op
                 match next_distance {
                     Some(distance) => {
                         if distance == (0 as usize) {
-                            vec.put<Option<Entry<K, V>>>(self.buckets, curr, Option.None);
+                            self.buckets.set(curr, Option.None);
                             shifting = false
                         } else {
-                            match vec.takeSome<Entry<K, V>>(self.buckets, next) {
+                            match self.buckets.takeSome(next) {
                                 Some(entry) => {
-                                    vec.put<Option<Entry<K, V>>>(self.buckets, curr, Option.Some(Entry<K, V> {
+                                    self.buckets.set(curr, Option.Some(Entry<K, V> {
                                         hash: entry.hash,
                                         key: entry.key,
                                         value: entry.value,
@@ -435,7 +469,7 @@ public func remove<K: hash.Hash, V>(self: mut ref HashMap<K, V>, key: ref K): Op
                         }
                     }
                     None => {
-                        vec.put<Option<Entry<K, V>>>(self.buckets, curr, Option.None);
+                        self.buckets.set(curr, Option.None);
                         shifting = false
                     }
                 }
@@ -450,4 +484,16 @@ public func remove<K: hash.Hash, V>(self: mut ref HashMap<K, V>, key: ref K): Op
         dist = dist + (1 as usize)
     }
     return Option.None
+}
+
+/// Removes a matching key and returns its value, or `None` if absent.
+///
+/// Later entries in the probe sequence shift to close the gap. The bucket
+/// array is retained and no tombstone is left behind; this does not shrink
+/// the map or allocate.
+///
+/// # Complexity
+/// Time: O(1) average | Space: O(1)
+public func HashMap.remove<K: hash.Hash, V>(self: mut ref HashMap<K, V>, key: ref K): Option<V> {
+    return remove(self, key)
 }

@@ -7,6 +7,7 @@ use crate::ops::{BinaryOp, UnaryOp};
 use crate::types::TypeId;
 use crate::{SymbolId, SymbolTable};
 use arandu_lexer::Span;
+pub use arandu_parser::LayoutQuery;
 use smol_str::SmolStr;
 
 #[derive(Debug, Clone)]
@@ -48,6 +49,17 @@ impl ResultCtorVariant {
 
 #[derive(Debug, Clone)]
 pub enum HirExprKind {
+    /// Remains typed until AMIR lowering, where the complete target ABI is
+    /// available. Monomorphization substitutes the operand type, not its name.
+    Layout {
+        query: LayoutQuery,
+        operand_ty: TypeId,
+    },
+    /// Exact frozen IEEE encoding produced by CTFE, not a source lexeme.
+    FloatBits(crate::ctfe::ConstFloat),
+    /// Frozen byte view over owned immutable UTF-8 literal storage. Lowering
+    /// re-interns the backing in the destination; no VM pointer can escape.
+    FrozenBytes(crate::ctfe::ConstBytes),
     Path {
         symbol: SymbolId,
     },
@@ -94,6 +106,14 @@ pub enum HirExprKind {
     Array {
         items: IndexRange,
     },
+    /// Evaluate the initializer once. The concrete/symbolic length is in `ty`.
+    ArrayRepeat {
+        value: HirExprId,
+    },
+    /// Semantic product value (including frozen multiple-return CTFE values).
+    Tuple {
+        items: IndexRange,
+    },
     Lambda {
         params: IndexRange,
         body: HirLambdaBody,
@@ -102,6 +122,10 @@ pub enum HirExprKind {
         expr: HirExprId,
     },
     AsyncBlock {
+        block: HirBlockId,
+    },
+    /// An isolated compile-time block with a local return target.
+    ValueBlock {
         block: HirBlockId,
     },
     UnsafeBlock {
@@ -279,10 +303,13 @@ impl HirExpr {
                     pool.expr(f.value).validate_invariants(pool, symbols)?;
                 }
             }
-            HirExprKind::Array { items } => {
+            HirExprKind::Array { items } | HirExprKind::Tuple { items } => {
                 for &item in pool.expr_list(*items) {
                     pool.expr(item).validate_invariants(pool, symbols)?;
                 }
+            }
+            HirExprKind::ArrayRepeat { value } => {
+                pool.expr(*value).validate_invariants(pool, symbols)?;
             }
             HirExprKind::Lambda { params, body } => {
                 for p in pool.lambda_params_list(*params) {
@@ -297,7 +324,9 @@ impl HirExpr {
             HirExprKind::Alloc { expr } => {
                 pool.expr(*expr).validate_invariants(pool, symbols)?;
             }
-            HirExprKind::AsyncBlock { block } | HirExprKind::UnsafeBlock { block } => {
+            HirExprKind::AsyncBlock { block }
+            | HirExprKind::UnsafeBlock { block }
+            | HirExprKind::ValueBlock { block } => {
                 pool.block(*block).validate_invariants(pool, symbols)?;
             }
             HirExprKind::If {
@@ -359,8 +388,11 @@ impl HirExpr {
             HirExprKind::ToStr { value } => {
                 pool.expr(*value).validate_invariants(pool, symbols)?;
             }
-            HirExprKind::Int(_)
+            HirExprKind::Layout { .. }
+            | HirExprKind::Int(_)
             | HirExprKind::Float(_)
+            | HirExprKind::FloatBits(_)
+            | HirExprKind::FrozenBytes(_)
             | HirExprKind::Bool(_)
             | HirExprKind::Char(_)
             | HirExprKind::Str(_)

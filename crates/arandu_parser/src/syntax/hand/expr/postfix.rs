@@ -2,7 +2,7 @@
 
 use super::super::cursor::{Cursor, HandCtx};
 use super::super::stmt::parse_block_tokens;
-use super::super::ty::parse_type;
+use super::super::ty::parse_generic_type_args;
 use super::primary::parse_primary;
 use super::struct_lit::{looks_like_struct_lit_after_type_path, try_struct_lit_from_type_path};
 use super::try_hand_lower_expr;
@@ -15,6 +15,13 @@ pub(super) fn parse_unary_primary_post(
     ctx: &mut HandCtx<'_>,
     cur: &mut Cursor<'_>,
 ) -> Option<ExprId> {
+    if cur.peek_kind() == Some(TokenKind::LParen) {
+        return parse_primary_post(ctx, cur);
+    }
+    parse_unary_dispatch(ctx, cur)
+}
+
+fn parse_unary_dispatch(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<ExprId> {
     let t = cur.peek()?;
     match t.kind {
         TokenKind::Minus | TokenKind::Bang | TokenKind::Tilde | TokenKind::KwAwait => {
@@ -110,8 +117,15 @@ pub(super) fn parse_unary_primary_post(
 }
 
 pub(super) fn parse_primary_post(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<ExprId> {
-    let mut left = parse_primary(ctx, cur)?;
+    let left = parse_primary(ctx, cur)?;
+    parse_postfix_tail(ctx, cur, left)
+}
 
+fn parse_postfix_tail(
+    ctx: &mut HandCtx<'_>,
+    cur: &mut Cursor<'_>,
+    mut left: ExprId,
+) -> Option<ExprId> {
     loop {
         match cur.peek_kind() {
             Some(TokenKind::LParen) => {
@@ -179,23 +193,11 @@ pub(super) fn parse_primary_post(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) ->
                 );
             }
             Some(TokenKind::Lt) if looks_like_generic_args(cur) => {
-                cur.bump();
-                let mut type_args = Vec::new();
-                if !cur.at_gt() {
-                    loop {
-                        type_args.push(parse_type(ctx, cur)?);
-                        if cur.eat(TokenKind::Comma) {
-                            continue;
-                        }
-                        break;
-                    }
-                }
-                let (gt_start, gt_len) = cur.expect_gt()?;
-                let args = ctx.pool.alloc_type_expr_list(&type_args);
+                let (args, end) = parse_generic_type_args(ctx, cur)?;
                 let left_span = ctx.pool.expr_span(left);
                 left = ctx.pool.alloc_expr(
                     ExprKind::Generic { callee: left, args },
-                    ctx.span(left_span.start, gt_start + gt_len),
+                    ctx.span(left_span.start, end),
                 );
                 // generic must be followed by call, trailing block, or `as` cast
                 if cur.peek_kind() == Some(TokenKind::LParen) {
@@ -279,14 +281,17 @@ fn allows_trailing_block(ctx: &HandCtx<'_>, left: ExprId) -> bool {
 
 fn looks_like_generic_args(cur: &Cursor<'_>) -> bool {
     // scan for matching `>` then `( ` or `{`
-    let mut depth = 0i32;
+    let mut openers = smallvec::SmallVec::<[usize; 8]>::new();
+    let mut delimiters = 0usize;
     let mut i = 0usize;
     while let Some(t) = cur.peek_at(i) {
         match t.kind {
-            TokenKind::Lt => depth += 1,
+            TokenKind::Lt => openers.push(delimiters),
             TokenKind::Gt => {
-                depth -= 1;
-                if depth == 0 {
+                if openers.last() == Some(&delimiters) {
+                    openers.pop();
+                }
+                if openers.is_empty() {
                     return cur.peek_at(i + 1).is_some_and(|n| {
                         matches!(
                             n.kind,
@@ -296,14 +301,28 @@ fn looks_like_generic_args(cur: &Cursor<'_>) -> bool {
                 }
             }
             TokenKind::ShiftRight => {
-                depth -= 2;
-                if depth == 0 {
+                for _ in 0..2 {
+                    if openers.last() == Some(&delimiters) {
+                        openers.pop();
+                    }
+                }
+                if openers.is_empty() {
                     return cur.peek_at(i + 1).is_some_and(|n| {
                         matches!(
                             n.kind,
                             TokenKind::LParen | TokenKind::LBrace | TokenKind::KwAs
                         )
                     });
+                }
+            }
+            TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace => delimiters += 1,
+            TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace => {
+                let Some(depth) = delimiters.checked_sub(1) else {
+                    return false;
+                };
+                delimiters = depth;
+                while openers.last().is_some_and(|depth| *depth > delimiters) {
+                    openers.pop();
                 }
             }
             TokenKind::Eof => return false,

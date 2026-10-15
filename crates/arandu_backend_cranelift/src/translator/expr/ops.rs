@@ -57,7 +57,17 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             | arandu_semantics::ops::BinaryOp::GtEqual => {
                 let left_ty = self.get_operand_clif_type(left);
                 let right_ty = self.get_operand_clif_type(right);
-                left_ty.or(right_ty).or(expected_ty)
+                let typed_ty = [left, right].into_iter().find_map(|operand| match operand {
+                    AmirOperand::Copy(_) | AmirOperand::Move(_) => {
+                        self.get_operand_clif_type(operand)
+                    }
+                    AmirOperand::Constant(_)
+                    | AmirOperand::FunctionRef(_)
+                    | AmirOperand::GlobalRef(_) => None,
+                });
+                // A pool literal's default int width must not truncate a typed
+                // u64/i64/usize operand on the other side of the comparison.
+                typed_ty.or(left_ty).or(right_ty).or(expected_ty)
             }
             _ => None,
         };

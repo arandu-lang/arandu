@@ -107,7 +107,7 @@
                 },
                 {
                     "name": "keyword.declaration.arandu",
-                    "match": "\\b(func|async|await|struct|enum|interface|const|type|module|import|from|as|public|internal|private|extern|unsafe|impl|let|mut|set|own|shared|ref|ptr|alloc|free)\\b"
+                    "match": "\\b(func|async|await|struct|enum|interface|const|comptime|type|module|import|from|as|public|internal|private|extern|unsafe|impl|let|mut|set|own|shared|ref|ptr|alloc|free)\\b"
                 }
             ]
         },
@@ -161,6 +161,10 @@
         },
         "decorators": {
             "patterns": [
+                {
+                    "name": "support.function.builtin.arandu",
+                    "match": "@(?:sizeOf|alignOf)\\b(?=\\s*\\()"
+                },
                 {
                     "name": "meta.annotation.arandu",
                     "match": "(@)([a-zA-Z_][a-zA-Z0-9_]*)",

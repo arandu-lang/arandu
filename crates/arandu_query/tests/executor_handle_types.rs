@@ -15,10 +15,10 @@ fn check_join(statement: &str, rejection: Option<DiagCode>) {
 import std.runtime.executor as rt
 async func answer(): int {{ return 42 }}
 func main(): int {{
-    let ex = rt.newSyncExecutor()
-    let handle = rt.spawn(ex, answer())
+    let ex = rt.SyncExecutor.new()
+    let handle = ex.spawn(answer())
     {statement}
-    rt.cancel(ex, handle)
+    ex.cancel(handle)
     return 0
 }}
 "#
@@ -46,7 +46,7 @@ func main(): int {{
 #[test]
 fn join_rejects_explicit_wrong_result_type() {
     check_join(
-        "let result = rt.join<bool>(ex, handle)",
+        "let result = ex.join<bool>(handle)",
         Some(DiagCode::T003IncompatibleCallArg),
     );
 }
@@ -54,7 +54,7 @@ fn join_rejects_explicit_wrong_result_type() {
 #[test]
 fn join_rejects_wrong_expected_result_type() {
     check_join(
-        "let result: bool = rt.join(ex, handle)",
+        "let result: bool = ex.join(handle)",
         Some(DiagCode::T002IncompatibleAssignment),
     );
 }
@@ -62,7 +62,7 @@ fn join_rejects_wrong_expected_result_type() {
 #[test]
 fn join_infers_result_from_handle_without_expected_type() {
     check_join(
-        "let result = rt.join(ex, handle)\nlet value: int = result",
+        "let result = ex.join(handle)\nlet value: int = result",
         None,
     );
 }

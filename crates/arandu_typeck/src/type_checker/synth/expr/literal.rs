@@ -277,6 +277,12 @@ pub(super) fn synth_literal_expr(
                 _ => None,
             };
             if let Some((symbol_id, generic_args)) = struct_info {
+                let enum_parent = checker
+                    .type_info
+                    .enum_variants
+                    .get(&symbol_id)
+                    .map(|&(enum_id, _)| enum_id);
+                let result_type_sym = enum_parent.unwrap_or(symbol_id);
                 let mut generic_args = checker.type_info.type_interner.type_args(generic_args);
                 let field_ids = checker.pool.field_init_list(fields_range).to_vec();
 
@@ -284,18 +290,33 @@ pub(super) fn synth_literal_expr(
                 if generic_args.is_empty()
                     && let Some(params) = checker.type_info.generic_params.get(&symbol_id).cloned()
                     && !params.is_empty()
-                    && let Some(template_fields) =
-                        checker.type_info.struct_fields.get(&symbol_id).cloned()
-                    && let Some(inferred) = infer_struct_type_args(
-                        checker,
-                        &params,
-                        template_fields.as_ref(),
-                        &field_ids,
-                    )
                 {
-                    generic_args = inferred;
-                    let concrete =
-                        ArType::named(symbol_id, &generic_args, &checker.type_info.type_interner);
+                    if let Some(template_fields) =
+                        checker.type_info.struct_fields.get(&symbol_id).cloned()
+                        && let Some(inferred) = infer_struct_type_args(
+                            checker,
+                            &params,
+                            template_fields.as_ref(),
+                            &field_ids,
+                        )
+                    {
+                        generic_args = inferred;
+                    } else if let Some(exp_id) = expected
+                        && let ArType::Named(exp_sym, exp_args) = checker.resolve(exp_id)
+                        && exp_sym == result_type_sym
+                    {
+                        let exp_vec = checker.type_info.type_interner.type_args(exp_args);
+                        if !exp_vec.is_empty() {
+                            generic_args = exp_vec;
+                        }
+                    }
+                }
+                if enum_parent.is_some() || !generic_args.is_empty() {
+                    let concrete = ArType::named(
+                        result_type_sym,
+                        &generic_args,
+                        &checker.type_info.type_interner,
+                    );
                     struct_ty_id = checker.intern(concrete);
                 }
 
@@ -469,6 +490,63 @@ pub(super) fn synth_literal_expr(
                 }
             }
             Some(struct_ty_id)
+        }
+        ExprKind::ArrayRepeat { value, count } => {
+            let expected_element = expected.and_then(|ty| match checker.resolve(ty) {
+                ArType::Array(_, element)
+                | ArType::ConstArray(_, element)
+                | ArType::Slice(element) => Some(element),
+                _ => None,
+            });
+            let element = super::synth_expr_expected(checker, *value, expected_element);
+            let length = checker.lower_type_expr(*count, checker.type_scope());
+            let array =
+                match length {
+                    ArType::Const(n) if n <= arandu_middle::types::MAX_ARRAY_REPEAT_ELEMENTS => {
+                        ArType::Array(n, element)
+                    }
+                    ArType::ConstParam(parameter) => ArType::ConstArray(parameter, element),
+                    ArType::Error
+                        if !matches!(
+                            checker.pool.type_expr(*count),
+                            arandu_parser::TypeExpr::Const { .. }
+                        ) =>
+                    {
+                        ArType::Error
+                    }
+                    _ => {
+                        checker.diagnostics.push(crate::Diagnostic::error(
+                        crate::DiagCode::T048InvalidArrayRepeat,
+                        "array repetition requires a static integer length of at most 65536",
+                        checker.pool.type_expr_span(*count),
+                    ).with_primary_label("invalid repetition length"));
+                        ArType::Error
+                    }
+                };
+            if matches!(array, ArType::Array(n, _) if n > 1)
+                && !checker.resolve(element).is_error()
+                && !checker.resolve(element).is_literal()
+                && !checker.type_info.is_copy(element)
+            {
+                let element_ty = checker.resolve(element);
+                let depends_on_parameter =
+                    checker.type_info.generic_params.values().any(|parameters| {
+                        super::super::method::contains_generic_params(
+                            &element_ty,
+                            parameters,
+                            &checker.type_info.type_interner,
+                        )
+                    });
+                if !depends_on_parameter {
+                    checker.diagnostics.push(crate::Diagnostic::error(
+                        crate::DiagCode::T048InvalidArrayRepeat,
+                        "repeating this value would duplicate ownership",
+                        span,
+                    ).with_primary_label("this element is not Copy")
+                      .with_note("Construct each owning element independently; no implicit clone is performed."));
+                }
+            }
+            Some(checker.intern(array))
         }
         ExprKind::Array { items } => {
             let items_range = *items;

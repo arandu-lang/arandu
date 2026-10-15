@@ -9,16 +9,15 @@
 //! ```arandu
 //! import std.alloc.arena as arena
 //!
-//! let mut scratch = arena.newScratch(4096)
+//! let mut scratch = arena.ScratchArena.withCapacity(4096)
 //! let mark = scratch.checkpoint()
 //! scratch.rewind(mark)
-//! scratch.free()
 //! ```
 //!
 //! ## Safety
 //! Pointers and slices allocated from an arena are invalidated by reset,
-//! rewind past their allocation, or free. Do not retain them beyond the
-//! owning arena's lifetime.
+//! rewind past their allocation, or when the arena is dropped. Do not retain
+//! them beyond the owning arena's lifetime.
 //!
 //! ## Allocations
 //! Creating an arena obtains one backing buffer. Bump allocations inside
@@ -62,11 +61,7 @@ public struct Arena {
     offset: usize
 }
 
-/// Obtains one backing buffer with `capacity` bytes for a new arena.
-///
-/// Subsequent allocations use this fixed buffer. If the host allocator
-/// returns a null pointer, `alloc` returns `None`.
-public func new(capacity: usize): Arena {
+func new(capacity: usize): Arena {
     let mut actualCapacity = capacity
     let mut data: ptr[u8] = nil
     if capacity > MAX_ARENA_CAPACITY {
@@ -83,7 +78,15 @@ public func new(capacity: usize): Arena {
     }
 }
 
-/// Creates an `Arena` with `capacity` bytes; equivalent to `new(capacity)`.
+/// Obtains one backing buffer with `capacity` bytes for a new arena.
+///
+/// Subsequent allocations use this fixed buffer. If the host allocator
+/// returns a null pointer, `alloc` returns `None`.
+public func Arena.new(capacity: usize): Arena {
+    return new(capacity)
+}
+
+/// Creates an `Arena` with `capacity` bytes; equivalent to `Arena.new(capacity)`.
 public func Arena.withCapacity(capacity: usize): Arena {
     return new(capacity)
 }
@@ -93,7 +96,7 @@ public func Arena.withCapacity(capacity: usize): Arena {
 /// Returns `Some(pointer)` if the aligned region fits, or `None` if the
 /// backing buffer is unavailable or exhausted. An alignment of zero or one
 /// applies no padding. Successful pointers remain valid until `reset` or
-/// `free`; there is no individual deallocation.
+/// drop; there is no individual deallocation.
 public func Arena.alloc(self: mut ref Arena, size: usize, align: usize): Option<ptr[u8]> {
     let nullp: ptr[u8] = nil
     let data = self.data
@@ -124,7 +127,7 @@ public func Arena.alloc(self: mut ref Arena, size: usize, align: usize): Option<
 ///
 /// Returns an aligned pointer on success or `None` when the region cannot fit.
 /// The returned storage is raw; callers must initialize elements before
-/// reading them. Resetting or freeing the arena invalidates the pointer.
+/// reading them. Resetting or dropping the arena invalidates the pointer.
 public func Arena.allocTyped<T>(self: mut ref Arena, count: usize): Option<ptr[T]> {
     let elemSize = mem.sizeOf<T>()
     let elemAlign = mem.alignOf<T>()
@@ -142,7 +145,7 @@ public func Arena.allocTyped<T>(self: mut ref Arena, count: usize): Option<ptr[T
 /// Allocates a contiguous slice `[]T` of `count` elements from the arena.
 ///
 /// Returns `Some(slice)` backed by arena memory, or `None` if it cannot fit.
-/// The slice borrows the arena, so it must not be used after `reset` or `free`.
+/// The slice borrows the arena, so it must not be used after `reset` or drop.
 public func Arena.allocSlice<T>(self: mut ref Arena, count: usize): Option<[]T> {
     let optPtr = self.allocTyped<T>(count)
     if optPtr is Option.Some(p) {
@@ -179,20 +182,23 @@ public func Arena.capacity(self: ref Arena): usize {
     return self.capacity
 }
 
-/// Releases the backing buffer and resets capacity and offset to zero.
-///
-/// Every pointer and slice returned by this arena becomes invalid. Repeating
-/// `free` after the buffer has been released has no effect.
-public func Arena.free(self: mut ref Arena): void {
+/// Internal helper that releases the backing buffer and resets capacity and offset to zero.
+func destroyArena(a: mut ref Arena): void {
     let nullp: ptr[u8] = nil
-    if self.data != nullp {
+    if a.data != nullp {
         unsafe {
-            ar_vec_buf_free(self.data, self.capacity)
-            self.data = nullp
-            self.capacity = 0 as usize
-            self.offset = 0 as usize
+            ar_vec_buf_free(a.data, a.capacity)
+            a.data = nullp
+            a.capacity = 0 as usize
+            a.offset = 0 as usize
         }
     }
+}
+
+/// Automatic destructor invoked when an owned `Arena` leaves scope.
+@Destructor
+func Arena.destroy(self: own Arena): void {
+    destroyArena(self)
 }
 
 // ── Scratch Arena (RFC 0012) ─────────────────────────────────────────────────
@@ -218,9 +224,9 @@ public struct ScratchArena {
 
 /// Obtains one backing buffer with `capacity` bytes for temporary allocations.
 ///
-/// Allocation is limited to this buffer until `free`; `peakBytes` initially
+/// Allocation is limited to this buffer until drop; `peakBytes` initially
 /// returns zero.
-public func newScratch(capacity: usize): ScratchArena {
+public func ScratchArena.new(capacity: usize): ScratchArena {
     let mut actualCapacity = capacity
     let mut data: ptr[u8] = nil
     if capacity > MAX_ARENA_CAPACITY {
@@ -238,21 +244,16 @@ public func newScratch(capacity: usize): ScratchArena {
     }
 }
 
-/// Creates a scratch arena; equivalent to `newScratch(capacity)`.
-public func withCapacity(capacity: usize): ScratchArena {
-    return newScratch(capacity)
-}
-
-/// Creates a scratch arena; equivalent to `newScratch(capacity)`.
+/// Creates a scratch arena; equivalent to `ScratchArena.new(capacity)`.
 public func ScratchArena.withCapacity(capacity: usize): ScratchArena {
-    return newScratch(capacity)
+    return ScratchArena.new(capacity)
 }
 
 /// Allocates `size` bytes from the scratch arena aligned to `align` boundary.
 ///
 /// Returns `Some(pointer)` when the aligned region fits, or `None` otherwise.
 /// An alignment of zero or one applies no padding. Success advances the
-/// offset and may raise the peak; a later `rewind`, `reset`, or `free` can
+/// offset and may raise the peak; a later `rewind`, `reset`, or drop can
 /// invalidate the pointer.
 public func ScratchArena.alloc(self: mut ref ScratchArena, size: usize, align: usize): Option<ptr[u8]> {
     let nullp: ptr[u8] = nil
@@ -316,7 +317,7 @@ public func ScratchArena.allocSlice<T>(self: mut ref ScratchArena, count: usize)
 /// Returns the current byte offset as a mark for a later `rewind`.
 ///
 /// A mark belongs to this arena and is meaningful only while allocations
-/// made since the checkpoint have not been reset or the arena freed.
+/// made since the checkpoint have not been reset or the arena dropped.
 public func ScratchArena.checkpoint(self: ref ScratchArena): usize {
     return self.offset
 }
@@ -370,18 +371,22 @@ public func ScratchArena.capacity(self: ref ScratchArena): usize {
     return self.capacity
 }
 
-/// Releases the backing buffer and resets offset, capacity, and peak to zero.
-///
-/// Every pointer and slice from this scratch arena becomes invalid.
-public func ScratchArena.free(self: mut ref ScratchArena): void {
+/// Internal helper that releases the backing buffer and resets offset, capacity, and peak to zero.
+func destroyScratchArena(a: mut ref ScratchArena): void {
     let nullp: ptr[u8] = nil
-    if self.data != nullp {
+    if a.data != nullp {
         unsafe {
-            ar_vec_buf_free(self.data, self.capacity)
-            self.data = nullp
-            self.capacity = 0 as usize
-            self.offset = 0 as usize
-            self.peak = 0 as usize
+            ar_vec_buf_free(a.data, a.capacity)
+            a.data = nullp
+            a.capacity = 0 as usize
+            a.offset = 0 as usize
+            a.peak = 0 as usize
         }
     }
+}
+
+/// Automatic destructor invoked when an owned `ScratchArena` leaves scope.
+@Destructor
+func ScratchArena.destroy(self: own ScratchArena): void {
+    destroyScratchArena(self)
 }

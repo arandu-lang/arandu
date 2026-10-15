@@ -2,7 +2,7 @@ use super::{CalleeArgModes, LowerCtx, MoveState};
 use crate::TypeCheckResult;
 use crate::amir::{AmirFunc, AmirOperand, AmirTemp, AmirTerminator, TempId};
 use crate::diagnostics::Diagnostic;
-use crate::hir::{HirBlockId, HirFunc, HirProgram};
+use crate::hir::{HirBlockId, HirExprId, HirFunc, HirProgram};
 use crate::literal_pool::AmirLiteralPool;
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -12,17 +12,24 @@ type LoweredFunction = (
     Vec<arandu_lexer::Span>,
 );
 
+#[derive(Clone, Copy)]
+pub(crate) enum BodyRoot {
+    Block(HirBlockId),
+    Expression(HirExprId),
+    IsolatedBlock { block: HirBlockId, value_tail: bool },
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn lower_func(
     f: &HirFunc,
-    body: HirBlockId,
+    body: BodyRoot,
     tc: &TypeCheckResult,
     hir: &HirProgram,
     const_values: &FxHashMap<crate::SymbolId, crate::hir::HirExprId>,
     arg_modes: &CalleeArgModes,
     literal_pool: &mut AmirLiteralPool,
     func_diagnostics: &mut Vec<Diagnostic>,
-    pointer_width: u64,
+    layout: arandu_middle::DataLayout,
 ) -> Result<LoweredFunction, Diagnostic> {
     let mut ctx = LowerCtx {
         tc,
@@ -38,6 +45,10 @@ pub(crate) fn lower_func(
         symbol_map: FxHashMap::default(),
         guard_borrows: FxHashMap::default(),
         loop_stack: Vec::new(),
+        value_returns: Vec::new(),
+        static_expansion_remaining: 200_000,
+        static_expansion_product: 1,
+        static_expansion_depth: 0,
         local_scopes: Vec::new(),
         literal_pool,
         defer_frames: Vec::new(),
@@ -51,7 +62,7 @@ pub(crate) fn lower_func(
         incomplete_phis: FxHashMap::default(),
         redirected_temps: FxHashMap::default(),
         current_span: arandu_lexer::Span::new(0, 0, 0),
-        pointer_width,
+        layout,
         owned_string_temps: FxHashSet::default(),
     };
 
@@ -99,30 +110,45 @@ pub(crate) fn lower_func(
     }
 
     ctx.current_span = f.span;
-    // SYN.1: only when the last statement is an expression (implicit return).
-    // Empty bodies / last=`return`/`if`/… keep ordinary `lower_block` so we do
-    // not invent a `Nil` store into a `void` return temp (breaks C backend).
-    let last_is_expr = {
-        let stmts = hir.pool.stmt_list(hir.pool.block(body).statements);
-        stmts
-            .last()
-            .is_some_and(|&sid| matches!(hir.pool.stmt(sid).kind, crate::hir::HirStmtKind::Expr(_)))
-    };
-    if last_is_expr {
-        // Async bodies return bare `T` in source; wrap as `CoroutineReady` (A3).
-        if f.is_async {
-            if let crate::types::ArType::Coroutine(payload_ty) =
-                tc.type_info.type_interner.resolve(ret_ty)
-            {
-                ctx.lower_block_as_expr_async_tail(body, payload_ty, &tc.symbols)?;
+    match body {
+        BodyRoot::IsolatedBlock { block, value_tail } => {
+            if value_tail {
+                ctx.lower_block_as_expr(block, Some(TempId(0)), &tc.symbols)?;
             } else {
-                ctx.lower_block_as_expr(body, Some(TempId(0)), &tc.symbols)?;
+                ctx.lower_block(block, &tc.symbols)?;
             }
-        } else {
-            ctx.lower_block_as_expr(body, Some(TempId(0)), &tc.symbols)?;
         }
-    } else {
-        ctx.lower_block(body, &tc.symbols)?;
+        BodyRoot::Expression(expression) => {
+            ctx.current_span = hir.pool.expr(expression).span;
+            ctx.lower_expr(expression, Some(TempId(0)), &tc.symbols)?;
+        }
+        BodyRoot::Block(body) => {
+            // SYN.1: only when the last statement is an expression (implicit return).
+            // Empty bodies / last=`return`/`if`/… keep ordinary `lower_block` so we do
+            // not invent a `Nil` store into a `void` return temp (breaks C backend).
+            let last_is_expr = {
+                let stmts = hir.pool.stmt_list(hir.pool.block(body).statements);
+                stmts.last().is_some_and(|&sid| {
+                    matches!(hir.pool.stmt(sid).kind, crate::hir::HirStmtKind::Expr(_))
+                })
+            };
+            if last_is_expr {
+                // Async bodies return bare `T` in source; wrap as `CoroutineReady` (A3).
+                if f.is_async {
+                    if let crate::types::ArType::Coroutine(payload_ty) =
+                        tc.type_info.type_interner.resolve(ret_ty)
+                    {
+                        ctx.lower_block_as_expr_async_tail(body, payload_ty, &tc.symbols)?;
+                    } else {
+                        ctx.lower_block_as_expr(body, Some(TempId(0)), &tc.symbols)?;
+                    }
+                } else {
+                    ctx.lower_block_as_expr(body, Some(TempId(0)), &tc.symbols)?;
+                }
+            } else {
+                ctx.lower_block(body, &tc.symbols)?;
+            }
+        }
     }
 
     // If last block does not have a terminator, implicitly return

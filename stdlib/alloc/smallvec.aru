@@ -9,14 +9,14 @@
 //! ```arandu
 //! import std.alloc.smallvec as smallvec
 //!
-//! let mut values = smallvec.new<int>()
+//! let mut values = smallvec.SmallVec4<int>.new()
 //! values.push(1)
 //! let heap = values.isHeap()
 //! ```
 //!
 //! ## Allocations
 //! The first four elements stay inline. A fifth element moves storage to
-//! the heap; later growth may reallocate. `destroy` releases heap storage.
+//! the heap; later growth may reallocate. Heap storage is released automatically on drop.
 //!
 //! ## Platform
 //! `native` · `wasm32`
@@ -70,11 +70,7 @@ public struct SmallVec4<T> {
     inline_buf: [4]Option<T>
 }
 
-/// Creates an empty vector with capacity for four inline elements.
-///
-/// Construction does not allocate. Call `destroy` to release heap storage if
-/// a later `push` makes the vector spill.
-public func new<T>(): SmallVec4<T> {
+func new<T>(): SmallVec4<T> {
     return SmallVec4<T> {
         data: nil,
         len: 0 as usize,
@@ -82,6 +78,14 @@ public func new<T>(): SmallVec4<T> {
         is_heap: false,
         inline_buf: [Option.None, Option.None, Option.None, Option.None],
     }
+}
+
+/// Creates an empty vector with capacity for four inline elements.
+///
+/// Construction does not allocate. Heap storage is released automatically on drop if
+/// a later `push` makes the vector spill.
+public func SmallVec4.new<T>(): SmallVec4<T> {
+    return new<T>()
 }
 
 /// Returns the number of elements in the small vector.
@@ -204,10 +208,7 @@ public func SmallVec4.push<T>(self: mut ref SmallVec4<T>, val: T): void {
     self.len = self.len + (1 as usize)
 }
 
-/// Returns a copy of the `Copy` element at `index`, or `None` when out of bounds.
-///
-/// Reading an inline or heap element does not allocate or change the vector.
-public func get<Element: marker.Copy>(self: ref SmallVec4<Element>, index: usize): Option<Element> {
+func get<Element: marker.Copy>(self: ref SmallVec4<Element>, index: usize): Option<Element> {
     if index >= self.len {
         return Option.None
     }
@@ -229,11 +230,19 @@ public func get<Element: marker.Copy>(self: ref SmallVec4<Element>, index: usize
     }
 }
 
-/// Returns a shared reference to an element without copying it.
+/// Returns a copy of the `Copy` element at `index`, or `None` when out of bounds.
 ///
-/// The reference borrows the small vector and becomes invalid if it spills,
-/// is cleared, or is destroyed. This works for both inline and heap storage.
-public func getRef<T>(self: ref SmallVec4<T>, index: usize): Option<ref T> {
+/// Reading an inline or heap element does not allocate or change the vector.
+public func SmallVec4.get<Element: marker.Copy>(self: ref SmallVec4<Element>, index: usize): Option<Element> {
+    return get<Element>(self, index)
+}
+
+/// Returns a copy of the `Copy` element at `index`, or `None` when out of bounds.
+public func SmallVec4.getCopy<Element: marker.Copy>(self: ref SmallVec4<Element>, index: usize): Option<Element> {
+    return get<Element>(self, index)
+}
+
+func getRef<T>(self: ref SmallVec4<T>, index: usize): Option<ref T> {
     if index >= self.len {
         return Option.None
     }
@@ -245,27 +254,35 @@ public func getRef<T>(self: ref SmallVec4<T>, index: usize): Option<ref T> {
                 self.len,
             )
             match slice.get<Option<T>>(slots, index) {
-                Some(slot) => { return option.asRef(slot) }
+                Some(slot) => { return slot.asRef() }
                 None => { return Option.None }
             }
         }
     }
     if index == (0 as usize) {
-        return option.asRef(ref self.inline_buf[0])
+        return self.inline_buf[0].asRef()
     }
     if index == (1 as usize) {
-        return option.asRef(ref self.inline_buf[1])
+        return self.inline_buf[1].asRef()
     }
     if index == (2 as usize) {
-        return option.asRef(ref self.inline_buf[2])
+        return self.inline_buf[2].asRef()
     }
-    return option.asRef(ref self.inline_buf[3])
+    return self.inline_buf[3].asRef()
+}
+
+/// Returns a shared reference to an element without copying it.
+///
+/// The reference borrows the small vector and becomes invalid if it spills,
+/// is cleared, or is dropped. This works for both inline and heap storage.
+public func SmallVec4.getRef<T>(self: ref SmallVec4<T>, index: usize): Option<ref T> {
+    return getRef<T>(self, index)
 }
 
 /// Decreases the length and returns the former last element, or `None` if empty.
 ///
 /// Heap storage remains allocated after popping, even when the length drops
-/// below four. Call `destroy` to release it.
+/// below four, and is released automatically on drop.
 public func SmallVec4.pop<T>(self: mut ref SmallVec4<T>): Option<T> {
     if self.len == (0 as usize) {
         return Option.None
@@ -322,18 +339,23 @@ public func SmallVec4.clear<T>(self: mut ref SmallVec4<T>): void {
     self.len = 0 as usize
 }
 
-/// Releases heap storage when present and resets a spilled vector to empty
-/// inline storage with capacity four. An inline vector needs no heap release.
-public func SmallVec4.destroy<T>(self: mut ref SmallVec4<T>): void {
-    self.clear()
-    if self.is_heap {
+/// Internal helper that releases heap storage when present and resets a spilled vector.
+func destroySmallVec<T>(v: mut ref SmallVec4<T>): void {
+    v.clear()
+    if v.is_heap {
         let elem_size = mem.sizeOf<Option<T>>()
         unsafe {
-            ar_vec_buf_free(self.data as ptr[u8], self.capacity * elem_size)
+            ar_vec_buf_free(v.data as ptr[u8], v.capacity * elem_size)
         }
-        self.data = nil
-        self.is_heap = false
-        self.capacity = 4 as usize
-        self.len = 0 as usize
+        v.data = nil
+        v.is_heap = false
+        v.capacity = 4 as usize
+        v.len = 0 as usize
     }
+}
+
+/// Automatic destructor invoked when an owned `SmallVec4<T>` leaves scope.
+@Destructor
+func SmallVec4.destroy<T>(self: own SmallVec4<T>): void {
+    destroySmallVec<T>(self)
 }

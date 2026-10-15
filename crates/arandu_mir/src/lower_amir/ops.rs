@@ -58,7 +58,27 @@ impl LowerCtx<'_> {
             return Ok(AmirOperand::Copy(dest));
         }
         let r_op = self.lower_expr(right, None, symbols)?;
+        let l_op = self.typed_integer_constant(left, l_op);
+        let r_op = self.typed_integer_constant(right, r_op);
         let dest = target.unwrap_or_else(|| self.new_temp_id(expr_ty));
+        if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual)
+            && matches!(
+                self.resolve_ty(self.hir.pool.expr(left).ty),
+                ArType::Option(_) | ArType::Result(_, _)
+            )
+        {
+            let equal = self.lower_value_equality(l_op, r_op, self.hir.pool.expr(left).ty)?;
+            let value = if op == BinaryOp::NotEqual {
+                AmirRvalue::Unary {
+                    op: UnaryOp::Not,
+                    operand: equal,
+                }
+            } else {
+                AmirRvalue::Use(equal)
+            };
+            self.emit_assign_temp(dest, value);
+            return Ok(AmirOperand::Copy(dest));
+        }
         self.emit_assign_temp(
             dest,
             AmirRvalue::Binary {
@@ -70,6 +90,23 @@ impl LowerCtx<'_> {
         Ok(AmirOperand::Copy(dest))
     }
 
+    /// Pool literals have spelling but no type. A bool destination cannot
+    /// supply the operand width/sign of a comparison, and a shift count may
+    /// have a different integer type from the result. Retain explicit integer
+    /// types in SSA instead of making each consumer guess from the magnitude.
+    fn typed_integer_constant(&mut self, expr: HirExprId, operand: AmirOperand) -> AmirOperand {
+        let source = self.hir.pool.expr(expr);
+        let ty = source.ty;
+        let span = source.span;
+        if self.integer_constant_needs_type(ty, operand) {
+            let temp = self.with_span(span, |this| this.new_temp_id(ty));
+            self.emit_assign_temp(temp, AmirRvalue::Use(operand));
+            AmirOperand::Copy(temp)
+        } else {
+            operand
+        }
+    }
+
     pub(crate) fn lower_unary(
         &mut self,
         op: UnaryOp,
@@ -78,6 +115,23 @@ impl LowerCtx<'_> {
         target: Option<TempId>,
         symbols: &SymbolTable,
     ) -> Result<AmirOperand, Diagnostic> {
+        // The checker validates a signed minimum as one negative literal.
+        // Its positive magnitude is not a representable value of that type;
+        // do not manufacture it as a VM/runtime intermediate before Neg. This
+        // is literal normalization only, not wrapping a computed negation.
+        if op == UnaryOp::Neg
+            && let HirExprKind::Int(text) = &self.hir.pool.expr(sub_expr).kind
+            && let ArType::Primitive(primitive) = self.resolve_ty(expr_ty)
+            && primitive.is_signed()
+            && let Ok(ty) = arandu_middle::ctfe::IntegerType::new(primitive, self.layout)
+            && crate::literal_pool::parse_int_literal(text).and_then(i128::checked_neg)
+                == Some(ty.min())
+        {
+            let operand = AmirOperand::Constant(self.intern_literal_int(ty.min().to_string()));
+            let dest = target.unwrap_or_else(|| self.new_temp_id(expr_ty));
+            self.emit_assign_temp(dest, AmirRvalue::Use(operand));
+            return Ok(AmirOperand::Copy(dest));
+        }
         // F2.0: `&`/`&mut` lower to place borrows; `*` on a ref loads through the pointer.
         match op {
             UnaryOp::Ref | UnaryOp::RefMut => {

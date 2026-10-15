@@ -21,8 +21,10 @@ use std::error::Error;
 use std::path::PathBuf;
 
 pub(crate) struct InitializedContext {
+    pub(crate) ctfe_limits: arandu_query::ctfe::CtfeLimits,
     pub(crate) workspace_roots: Vec<PathBuf>,
     pub(crate) work_done_progress: bool,
+    pub(crate) trace_value: lsp_types::TraceValue,
 }
 
 pub(crate) fn initialize_connection(
@@ -30,6 +32,21 @@ pub(crate) fn initialize_connection(
 ) -> Result<InitializedContext, Box<dyn Error + Sync + Send>> {
     let (initialize_id, initialize_params) = connection.initialize_start()?;
     let init: lsp_types::InitializeParams = serde_json::from_value(initialize_params)?;
+    let ctfe_limits = match parse_ctfe_limits(init.initialization_options.as_ref()) {
+        Ok(limits) => limits,
+        Err(message) => {
+            connection.sender.send(lsp_server::Message::Response(
+                lsp_server::Response::new_err(
+                    initialize_id,
+                    lsp_server::ErrorCode::InvalidParams as i32,
+                    message.clone(),
+                ),
+            ))?;
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, message).into());
+        }
+    };
+    let trace_value = init.trace.unwrap_or(lsp_types::TraceValue::Off);
+    crate::logging::set_trace(trace_value);
     let mut workspace_roots = Vec::new();
     if let Some(folders) = init.workspace_folders.as_ref() {
         workspace_roots.extend(folders.iter().filter_map(|folder| {
@@ -139,9 +156,45 @@ pub(crate) fn initialize_connection(
         .unwrap_or(false);
     connection.initialize_finish(initialize_id, serde_json::to_value(init_result)?)?;
     Ok(InitializedContext {
+        ctfe_limits,
         workspace_roots,
         work_done_progress,
+        trace_value,
     })
+}
+
+/// Optional initializationOptions.ctfe fields inherit the shared defaults.
+fn parse_ctfe_limits(
+    options: Option<&serde_json::Value>,
+) -> Result<arandu_query::ctfe::CtfeLimits, String> {
+    let defaults = arandu_query::ctfe::CtfeLimits::default().budget();
+    let Some(value) = options.and_then(|options| options.get("ctfe")) else {
+        return Ok(arandu_query::ctfe::CtfeLimits::default());
+    };
+    let object = value
+        .as_object()
+        .ok_or("initializationOptions.ctfe must be an object")?;
+    for key in object.keys() {
+        if !matches!(key.as_str(), "fuel" | "frames" | "values") {
+            return Err(format!("unknown initializationOptions.ctfe field: {key}"));
+        }
+    }
+    let ceiling = |name: &str, default: u64| -> Result<u64, String> {
+        match object.get(name) {
+            None => Ok(default),
+            Some(value) => value.as_u64().filter(|value| *value > 0).ok_or_else(|| {
+                format!("initializationOptions.ctfe.{name} must be a positive integer")
+            }),
+        }
+    };
+    let frames = u32::try_from(ceiling("frames", u64::from(defaults.frames))?)
+        .map_err(|_| "initializationOptions.ctfe.frames exceeds the supported integer range")?;
+    arandu_query::ctfe::CtfeLimits::new(
+        ceiling("fuel", defaults.fuel)?,
+        frames,
+        ceiling("values", defaults.values)?,
+    )
+    .map_err(str::to_owned)
 }
 
 #[cfg(test)]

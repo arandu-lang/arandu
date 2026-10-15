@@ -111,6 +111,20 @@ pub enum DiagCode {
     T040DivisionByZero,
     /// Access to a private struct field outside its defining struct.
     T041PrivateFieldAccess,
+    /// Type or staging construct outside the public scalar CTFE subset.
+    T042UnsupportedComptime,
+    /// A compile-time root reads or writes a runtime local/parameter.
+    T043ComptimeRuntimeCapture,
+    /// CTFE cannot admit or evaluate the retained operations/call closure.
+    T044ComptimeEvaluationFailed,
+    /// CTFE exhausted its fuel, frame or value budget.
+    T045ComptimeLimitExceeded,
+    /// Checked compile-time arithmetic overflow or invalid shift.
+    T046ComptimeArithmetic,
+    /// A requested type has no finite, concrete layout on the selected target.
+    T047InvalidTypeLayout,
+    /// Array repetition requires a static length and safely duplicable elements.
+    T048InvalidArrayRepeat,
 
     // ── Lowering (L) ──
     L001LoweringUnresolvedSymbol,
@@ -243,6 +257,13 @@ impl DiagCode {
             T039UnsatisfiedEffect,
             T040DivisionByZero,
             T041PrivateFieldAccess,
+            T042UnsupportedComptime,
+            T043ComptimeRuntimeCapture,
+            T044ComptimeEvaluationFailed,
+            T045ComptimeLimitExceeded,
+            T046ComptimeArithmetic,
+            T047InvalidTypeLayout,
+            T048InvalidArrayRepeat,
             L001LoweringUnresolvedSymbol,
             G001GenericInstantiationCycle,
             G002GenericInstantiationLimit,
@@ -382,6 +403,13 @@ impl DiagCode {
             DiagCode::T039UnsatisfiedEffect => "T039",
             DiagCode::T040DivisionByZero => "T040",
             DiagCode::T041PrivateFieldAccess => "T041",
+            DiagCode::T042UnsupportedComptime => "T042",
+            DiagCode::T043ComptimeRuntimeCapture => "T043",
+            DiagCode::T044ComptimeEvaluationFailed => "T044",
+            DiagCode::T045ComptimeLimitExceeded => "T045",
+            DiagCode::T046ComptimeArithmetic => "T046",
+            DiagCode::T047InvalidTypeLayout => "T047",
+            DiagCode::T048InvalidArrayRepeat => "T048",
             DiagCode::L001LoweringUnresolvedSymbol => "L001",
             DiagCode::G001GenericInstantiationCycle => "G001",
             DiagCode::G002GenericInstantiationLimit => "G002",

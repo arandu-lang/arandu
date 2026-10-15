@@ -167,6 +167,21 @@ def main() -> None:
         run([command, "run"], corpus / "small/hello", env, expected=42)
         run([command, "check"], corpus / "medium/language_mix", env)
         run([command, "run"], corpus / "medium/language_mix", env, expected=42)
+        comptime_project = corpus / "medium/comptime_core"
+        run([command, "check"], comptime_project, env)
+        run([command, "run"], comptime_project, env)
+        run([command, "build"], comptime_project, env)
+        states = list((comptime_project / "target").rglob("build-state.json"))
+        if len(states) != 1:
+            raise SystemExit(f"expected one installed CTFE build state, found {states!r}")
+        state = json.loads(states[0].read_text(encoding="utf-8"))
+        run([str(states[0].parent / state["artifact"])], comptime_project, env)
+        cached = run([command, "build"], comptime_project, env)
+        if "incremental: up-to-date" not in cached.stdout:
+            raise SystemExit("installed CTFE build did not reuse its successful session")
+        limited = run([command, "build", "--ctfe-fuel=1"], comptime_project, env, expected=1)
+        if "T045" not in limited.stderr:
+            raise SystemExit("installed CTFE build bypassed its configured resource limit")
         cycle = run([command, "check"], corpus / "adversarial/import_cycle", env, expected=1)
         if "N006" not in cycle.stderr:
             raise SystemExit("installed corpus diagnostic lost expected N006")

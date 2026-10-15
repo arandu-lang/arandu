@@ -5,12 +5,12 @@ func drop_vec(own v: vec.Vec<int>): void {
 }
 
 func main(): int {
-    let mut v = vec.new<int>()
-    vec.push<int>(v, 100)
-    vec.push<int>(v, 200)
-    vec.push<int>(v, 300)
-    vec.push<int>(v, 400)
-    let s = vec.asSlice<int>(v)
+    let mut v = vec.Vec<int>.new()
+    v.push(100)
+    v.push(200)
+    v.push(300)
+    v.push(400)
+    let s = v.asSlice()
     let split_check = match slice.splitAt<int>(s, 2 as usize) {
         Some(sp) => slice.len<int>(sp.left) == (2 as usize) && slice.len<int>(sp.right) == (2 as usize) && sp.left[0] == 100 && sp.right[1] == 400
         None => false

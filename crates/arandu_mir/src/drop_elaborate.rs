@@ -632,7 +632,9 @@ fn enum_variant_payload_types(
             let mut variants: Vec<_> = type_info
                 .enum_variants
                 .iter()
-                .filter_map(|(variant, (parent, shape))| {
+                .filter_map(|(variant, (parent, _))| {
+                    let shape = type_info
+                        .variant_payload_for(*variant, &type_info.type_interner.type_args(*args))?;
                     (*parent == *enum_symbol).then_some((
                         type_info
                             .enum_variant_tags

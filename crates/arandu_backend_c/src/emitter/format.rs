@@ -10,6 +10,12 @@ const C_FALSE: &str = "false";
 const C_NULL: &str = "0";
 
 impl<'a> CEmitter<'a> {
+    pub(super) fn temp_slot(&self, temp: arandu_middle::amir::TempId) -> usize {
+        self.temp_slots
+            .get(temp.as_usize())
+            .copied()
+            .unwrap_or(temp.as_usize())
+    }
     #[inline]
     pub(super) fn is_64bit_target(&self) -> bool {
         self.layout.pointer_width() == 8
@@ -17,7 +23,12 @@ impl<'a> CEmitter<'a> {
 
     pub(super) fn format_operand_str(&self, op: &AmirOperand) -> String {
         match op {
-            AmirOperand::Copy(t) | AmirOperand::Move(t) => format!("t{}", t.as_usize()),
+            AmirOperand::Copy(t) | AmirOperand::Move(t) => self
+                .temp_expressions
+                .get(t.as_usize())
+                .and_then(Option::as_ref)
+                .cloned()
+                .unwrap_or_else(|| format!("t{}", self.temp_slot(*t))),
             AmirOperand::FunctionRef(id) | AmirOperand::GlobalRef(id) => {
                 let sym = self.symbols.get(*id);
                 sanitize_c_ident(self.symbols.host_func_name(sym))
@@ -31,6 +42,13 @@ impl<'a> CEmitter<'a> {
                     AmirLiteralEntry::Float(v) => {
                         arandu_middle::literal_pool::float_literal_c_source(v)
                             .unwrap_or_else(|| v.to_string())
+                    }
+                    AmirLiteralEntry::FloatBits(value) => {
+                        if value.ty().bit_width() == 32 {
+                            format!("ar_f32_from_bits(UINT32_C({}))", value.bits())
+                        } else {
+                            format!("ar_f64_from_bits(UINT64_C({}))", value.bits())
+                        }
                     }
                     AmirLiteralEntry::Str(_) => {
                         // Prefer named constant when available; compound literal fallback
@@ -122,7 +140,22 @@ impl<'a> CEmitter<'a> {
                 self.format_type(&self.interner.resolve(*inner))
             )),
             ArType::GenRef => Cow::Borrowed("int64_t"),
-            ArType::Named(id, _) => Cow::Owned(sanitize_c_ident(&self.symbols.get(*id).name)),
+            ArType::Named(id, args) => {
+                let arguments = self.interner.type_args(*args);
+                let name = if arguments.is_empty() {
+                    self.symbols.get(*id).name.to_string()
+                } else {
+                    arandu_semantics::passes::monomorphize::mangle_symbol(
+                        &arandu_semantics::passes::monomorphize::InstantiationKey {
+                            symbol: *id,
+                            type_args: &arguments,
+                        },
+                        self.interner,
+                        self.symbols,
+                    )
+                };
+                Cow::Owned(sanitize_c_ident(&name))
+            }
             ArType::Slice(inner) => {
                 let inner_name = self.format_type(&self.interner.resolve(*inner));
                 Cow::Owned(format!("ArType_Slice_{}", sanitize_c_ident(&inner_name)))
@@ -178,6 +211,7 @@ impl<'a> CEmitter<'a> {
         let local_idx = place.local.as_usize();
         let mut current_ty = self.local_ty(func, place.local);
         let mut path = format!("l{}", local_idx);
+        let mut address = format!("&{path}");
 
         for proj in &place.projections {
             match proj {
@@ -192,6 +226,7 @@ impl<'a> CEmitter<'a> {
                         other => other.clone(),
                     };
                     if !borrowed_slice {
+                        address = path.clone();
                         path = format!("(*{})", path);
                     }
                 }
@@ -204,10 +239,6 @@ impl<'a> CEmitter<'a> {
                         | ArType::Nullable(inner) => self.interner.resolve(*inner),
                         other => other.clone(),
                     };
-                    let struct_id = match &struct_ty {
-                        ArType::Named(id, _) => *id,
-                        _ => arandu_middle::SymbolId::DUMMY,
-                    };
                     let layout = self.checked_layout(&struct_ty);
                     let Some(field_symbol) = self.symbols.try_get(*field_symbol_id) else {
                         self.record_codegen_ice(
@@ -219,7 +250,7 @@ impl<'a> CEmitter<'a> {
                     let field_name = field_symbol.name.rsplit('.').next().unwrap_or("");
                     let Some(field_idx) = self
                         .provider
-                        .get_struct_fields(struct_id)
+                        .get_struct_fields_for_type(&struct_ty, self.interner)
                         .and_then(|fields| fields.get(field_name))
                         .map(|field| field.index)
                     else {
@@ -243,14 +274,16 @@ impl<'a> CEmitter<'a> {
                     let field_c_ty = self.format_type(&field_ty);
                     // If path is already a pointer (heap/ptr local without Deref), GEP from
                     // the pointer value; otherwise take address of the stack lvalue.
-                    if matches!(
+                    let base = if matches!(
                         current_ty,
                         ArType::Ptr(_) | ArType::Ref(_) | ArType::RefMut(_) | ArType::Nullable(_)
                     ) {
-                        path = format!("*({}*)((uint8_t*){} + {})", field_c_ty, path, offset);
+                        path.clone()
                     } else {
-                        path = format!("*({}*)((uint8_t*)&{} + {})", field_c_ty, path, offset);
-                    }
+                        address.clone()
+                    };
+                    address = format!("({field_c_ty}*)((uint8_t*)({base}) + {offset})");
+                    path = format!("*({address})");
                     current_ty = field_ty;
                 }
                 AmirProjection::Variant(_) => {}
@@ -312,19 +345,41 @@ impl<'a> CEmitter<'a> {
                     {
                         current_ty = self.interner.resolve(*inner);
                     }
+                    let pointee_array = match &current_ty {
+                        ArType::Ptr(inner) | ArType::Ref(inner) | ArType::RefMut(inner) => {
+                            match self.interner.resolve(*inner) {
+                                ArType::Array(len, elem) => Some((len, elem)),
+                                _ => None,
+                            }
+                        }
+                        _ => None,
+                    };
                     let is_vec = arandu_middle::types::is_vec_type(&current_ty, self.symbols);
-                    let elem_ty = match arandu_middle::types::index_elem_type(
-                        &current_ty,
-                        self.symbols,
-                        self.interner,
-                    ) {
-                        Some(id) => self.interner.resolve(id),
-                        None => ArType::Error,
+                    let elem_ty = if let Some((_, elem_id)) = pointee_array {
+                        self.interner.resolve(elem_id)
+                    } else {
+                        match arandu_middle::types::index_elem_type(
+                            &current_ty,
+                            self.symbols,
+                            self.interner,
+                        ) {
+                            Some(id) => self.interner.resolve(id),
+                            None => ArType::Error,
+                        }
                     };
                     let elem_c_ty = self.format_type(&elem_ty);
                     let index_str = self.format_operand(index_op, func);
 
-                    if matches!(
+                    if let Some((len, elem_id)) = pointee_array
+                        && len > 0
+                        && self.checked_layout(&ArType::Array(len, elem_id)).size > 0
+                    {
+                        path = format!("({})->data[{}]", path, index_str);
+                    } else if matches!(&current_ty, ArType::Array(len, _) if *len > 0)
+                        && self.checked_layout(&current_ty).size > 0
+                    {
+                        path = format!("({}).data[{}]", path, index_str);
+                    } else if matches!(
                         current_ty,
                         ArType::Ptr(_) | ArType::Ref(_) | ArType::RefMut(_)
                     ) {
@@ -345,17 +400,39 @@ impl<'a> CEmitter<'a> {
                     {
                         current_ty = self.interner.resolve(*inner);
                     }
+                    let pointee_array = match &current_ty {
+                        ArType::Ptr(inner) | ArType::Ref(inner) | ArType::RefMut(inner) => {
+                            match self.interner.resolve(*inner) {
+                                ArType::Array(len, elem) => Some((len, elem)),
+                                _ => None,
+                            }
+                        }
+                        _ => None,
+                    };
                     let is_vec = arandu_middle::types::is_vec_type(&current_ty, self.symbols);
-                    let elem_ty = match arandu_middle::types::index_elem_type(
-                        &current_ty,
-                        self.symbols,
-                        self.interner,
-                    ) {
-                        Some(id) => self.interner.resolve(id),
-                        None => ArType::Error,
+                    let elem_ty = if let Some((_, elem_id)) = pointee_array {
+                        self.interner.resolve(elem_id)
+                    } else {
+                        match arandu_middle::types::index_elem_type(
+                            &current_ty,
+                            self.symbols,
+                            self.interner,
+                        ) {
+                            Some(id) => self.interner.resolve(id),
+                            None => ArType::Error,
+                        }
                     };
                     let elem_c_ty = self.format_type(&elem_ty);
-                    if matches!(
+                    if let Some((len, elem_id)) = pointee_array
+                        && len > 0
+                        && self.checked_layout(&ArType::Array(len, elem_id)).size > 0
+                    {
+                        path = format!("({})->data[{}]", path, index);
+                    } else if matches!(&current_ty, ArType::Array(len, _) if *len > 0)
+                        && self.checked_layout(&current_ty).size > 0
+                    {
+                        path = format!("({}).data[{}]", path, index);
+                    } else if matches!(
                         current_ty,
                         ArType::Ptr(_) | ArType::Ref(_) | ArType::RefMut(_)
                     ) {
@@ -370,6 +447,9 @@ impl<'a> CEmitter<'a> {
                     }
                     current_ty = elem_ty;
                 }
+            }
+            if !matches!(proj, AmirProjection::Deref | AmirProjection::Field(_)) {
+                address = format!("&({path})");
             }
         }
         path

@@ -29,6 +29,11 @@ module std.core.marker
 public struct PhantomData<T> {}
 
 /// Creates a new `PhantomData` instance.
+public func PhantomData.new<T>(): PhantomData<T> {
+    return PhantomData<T> {}
+}
+
+/// Creates a new `PhantomData` instance.
 public func phantom<T>(): PhantomData<T> {
     return PhantomData<T> {}
 }

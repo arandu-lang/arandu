@@ -27,7 +27,6 @@ func main(): int {
             if content.len == 0 {
                 code1 = 5
             }
-            content.destroy()
         }
         Err(_) => {
             code1 = 6
@@ -39,8 +38,7 @@ func main(): int {
 
     let mut code2 = 0
     match fs.readToString("missing_test_file_abc.tmp") {
-        Ok(c) => {
-            c.destroy()
+        Ok(_) => {
             code2 = 7
         }
         Err(e) => {
@@ -55,11 +53,11 @@ func main(): int {
 
     let mut code3 = 0
     match fs.readDir("crates") {
-        Ok(listing) => {
+        Ok(mut listing) => {
             if listing.count() == 0 {
                 code3 = 9
             }
-            listing.destroy()
+            listing.close()
         }
         Err(_) => {
             code3 = 10

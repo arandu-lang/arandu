@@ -175,13 +175,13 @@ pub(super) fn parse_generic_params(
     let mut params = SmallVec::new();
     if !cur.at_gt() {
         loop {
-            let is_const = cur.eat(TokenKind::KwConst);
+            let p_start = cur.peek()?.start;
+            let is_const = cur.eat(TokenKind::KwConst) || cur.eat(TokenKind::KwComptime);
             let name_tok = cur.peek()?;
             if !matches!(name_tok.kind, TokenKind::IdentType | TokenKind::IdentValue) {
                 return None;
             }
             let name = SmolStr::new(ctx.text(name_tok)?);
-            let p_start = name_tok.start;
             cur.bump();
             let mut constraints = SmallVec::new();
             let mut p_end = name_tok.start + name_tok.len;

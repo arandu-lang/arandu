@@ -41,7 +41,7 @@ fn import_std_runtime_scaffold_checks() {
 module tests.cli.std_runtime
 import std.runtime.executor as rt
 func main(): int {
-    let ex = rt.newSyncExecutor()
+    let ex = rt.SyncExecutor.new()
     return ex.flags
 }
 "#,
@@ -67,13 +67,16 @@ fn run_path_absolute_and_empty() {
 module tests.cli.path_abs
 import std.path as path
 func main(): int {
-    if !path.isEmpty("") {
+    let empty = path.Path.from("")
+    if !empty.isEmpty() {
         return 1
     }
-    if !path.isAbsolute("__ABSOLUTE_PATH__") {
+    let abs = path.Path.from("__ABSOLUTE_PATH__")
+    if !abs.isAbsolute() {
         return 2
     }
-    if path.isAbsolute("rel") {
+    let rel = path.Path.from("rel")
+    if rel.isAbsolute() {
         return 3
     }
     return 0
@@ -102,7 +105,7 @@ fn run_sync_executor_new() {
 module tests.cli.sync_ex
 import std.runtime.executor as rt
 func main(): int {
-    let ex = rt.newSyncExecutor()
+    let ex = rt.SyncExecutor.new()
     return ex.flags
 }
 "#,
@@ -134,9 +137,9 @@ async func answer(): int {
 }
 
 func main(): int {
-    let ex = rt.newSyncExecutor()
-    let h = rt.spawn(ex, answer())
-    return rt.join(ex, h)
+    let ex = rt.SyncExecutor.new()
+    let h = ex.spawn(answer())
+    return ex.join(h)
 }
 "#,
     )
@@ -222,10 +225,10 @@ async func answer(): int {
 }
 
 func main(): int {
-    let ex = rt.newSyncExecutor()
-    let h = rt.spawn(ex, answer())
-    let result = rt.join(ex, h)
-    rt.cancel(ex, h)
+    let ex = rt.SyncExecutor.new()
+    let h = ex.spawn(answer())
+    let result = ex.join(h)
+    ex.cancel(h)
     if mem.sizeOf<rt.TaskHandle<int>>() != mem.sizeOf<int>() { return 1 }
     return result
 }
@@ -307,10 +310,10 @@ module tests.cli.waker
 import std.runtime.waker as waker
 
 func main(): int {
-    let w = waker.newWaker()
-    waker.wakerWake(w)
-    let rc = waker.wakerWait(w, 100)
-    waker.destroyWaker(w)
+    let mut w = waker.Waker.new()
+    w.wake()
+    let rc = w.wait(100)
+    w.close()
     if rc != 1 {
         return 1
     }
@@ -375,25 +378,25 @@ import std.net as net
 import std.runtime.waker as waker
 
 func main(): int {
-    let lis = net.tcpListen(18770)
+    let lis = net.RawTcpListener.listen(18770)
     if lis.id < 0 {
         return 1
     }
-    let client = net.tcpConnect(18770)
+    let client = net.RawTcpStream.connect(18770)
     if client.id < 0 {
         return 2
     }
-    let server = net.tcpAccept(lis)
+    let server = lis.accept()
     if server.id < 0 {
         return 3
     }
-    let nb = net.tcpSetNonblocking(server, 1)
+    let nb = server.setNonblocking(1)
     if nb != 0 {
         return 4
     }
-    let w = waker.newWaker()
+    let mut w = waker.Waker.new()
     // Timeout with no data
-    let t0 = net.tcpWaitWake(server, net.tcpWaitReadFlag(), 5, w)
+    let t0 = server.waitWake(net.tcpWaitReadFlag(), 5, w)
     if t0 != 0 {
         return 5
     }
@@ -401,14 +404,14 @@ func main(): int {
     // Use write_async (io_uring when available)
     // We cannot easily pass string buffers without alloc; skip payload e2e here.
     // Wait writable on client should succeed.
-    let wr = net.tcpWait(client, net.tcpWaitWriteFlag(), 100)
+    let wr = client.wait(net.tcpWaitWriteFlag(), 100)
     if wr < 1 {
         return 6
     }
-    waker.destroyWaker(w)
-    net.tcpCloseStream(client)
-    net.tcpCloseStream(server)
-    net.tcpCloseListener(lis)
+    w.close()
+    client.close()
+    server.close()
+    lis.close()
     return 0
 }
 "#,
@@ -445,16 +448,16 @@ module tests.cli.supervisor
 import std.runtime.supervisor as sup
 
 func main(): int {
-    let s = sup.newSupervisor()
+    let mut s = sup.Supervisor.new()
     if s.id < 0 {
         return 1
     }
-    let w = sup.supervisorSpawn(s, "__WORKER_PATH__", 0)
+    let w = s.spawn("__WORKER_PATH__", 0)
     if w.id < 0 {
         return 2
     }
-    let code = sup.supervisorWait(s, w)
-    sup.destroySupervisor(s)
+    let code = s.wait(w)
+    s.close()
     return code
 }
 "#
@@ -487,8 +490,8 @@ async func answer(): int {
 }
 
 func main(): int {
-    let ex = rt.newSyncExecutor()
-    return rt.blockOn(ex, answer())
+    let ex = rt.SyncExecutor.new()
+    return ex.blockOn(answer())
 }
 "#,
     )
@@ -515,12 +518,12 @@ module tests.cli.reactor_sleep
 import std.runtime.reactor as reactor
 
 func main(): int {
-    let r = reactor.newEpollReactor()
+    let mut r = reactor.EpollReactor.new()
     if r.id < 0 {
         return 1
     }
-    let rc = reactor.reactorSleepMs(r, 5)
-    reactor.destroyReactor(r)
+    let rc = r.sleepMs(5)
+    r.close()
     if rc != 0 {
         return 2
     }
@@ -556,22 +559,22 @@ async func ready(): int {
 }
 
 func main(): int {
-    let r = reactor.newEpollReactor()
-    let ex = rt.newSyncExecutor()
+    let mut r = reactor.EpollReactor.new()
+    let ex = rt.SyncExecutor.new()
     if r.id < 0 {
         return 1
     }
-    let h = rt.spawn(ex, ready())
-    let arm = reactor.reactorArmTimerMs(r, 5)
+    let h = ex.spawn(ready())
+    let arm = r.armTimerMs(5)
     if arm != 0 {
         return 2
     }
-    let fired = reactor.reactorPollMs(r, 200)
+    let fired = r.pollMs(200)
     if fired != 1 {
         return 3
     }
-    let v: int = rt.join(ex, h)
-    reactor.destroyReactor(r)
+    let v: int = ex.join(h)
+    r.close()
     return v
 }
 "#,
@@ -599,28 +602,28 @@ import std.alloc.vec as vec
 import std.alloc.string as string
 
 func main(): int {
-    let mut v = vec.new<int>()
-    if !vec.tryReserve<int>(v, 16) {
+    let mut v = vec.Vec<int>.new()
+    if !v.tryReserve(16) {
         return 1
     }
-    if !vec.tryPush<int>(v, 42) {
+    if !v.tryPush(42) {
         return 2
     }
-    if !vec.tryPush<int>(v, 84) {
+    if !v.tryPush(84) {
         return 3
     }
-    if vec.len<int>(v) != 2 {
+    if v.len() != 2 {
         return 4
     }
 
-    let mut s = string.new()
-    if !string.tryReserve(s, 32) {
+    let mut s = string.String.new()
+    if !s.tryReserve(32) {
         return 5
     }
-    if !string.pushStr(s, "hello") {
+    if !s.pushStr("hello") {
         return 6
     }
-    if string.len(s) != 5 {
+    if s.len() != 5 {
         return 7
     }
 

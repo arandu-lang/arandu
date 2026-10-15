@@ -5,6 +5,22 @@
  * directly within the browser (no backend server required).
  */
 
+export interface WebDiagnosticReplacement {
+  fileId: number;
+  start: number;
+  end: number;
+  line: number | null;
+  column: number | null;
+  endLine: number | null;
+  endColumn: number | null;
+  newText: string;
+}
+
+export interface WebDiagnosticHint {
+  message: string;
+  replacement?: WebDiagnosticReplacement | null;
+}
+
 export interface WebDiagnostic {
   line: number;
   column: number;
@@ -18,6 +34,8 @@ export interface WebDiagnostic {
   primaryLabel?: string | null;
   labels: WebDiagnosticLabel[];
   notes: string[];
+  hints?: WebDiagnosticHint[];
+  replacements?: WebDiagnosticReplacement[];
 }
 
 export interface WebDiagnosticLabel {
@@ -43,6 +61,35 @@ export interface CompletionItem {
   detail?: string;
   documentation?: string;
   insert_text?: string;
+}
+
+export interface WebHover {
+  contents: string;
+  signature?: string | null;
+  documentation?: string | null;
+  start: number;
+  end: number;
+  line: number;
+  column: number;
+  endLine: number;
+  endColumn: number;
+}
+
+export interface WebParameterInformation {
+  label: string;
+}
+
+export interface WebSignatureInformation {
+  label: string;
+  documentation?: string | null;
+  parameters: WebParameterInformation[];
+  activeParameter?: number | null;
+}
+
+export interface WebSignatureHelp {
+  signatures: WebSignatureInformation[];
+  activeSignature?: number | null;
+  activeParameter?: number | null;
 }
 
 export class AranduCompiler {
@@ -229,6 +276,90 @@ export class AranduCompiler {
     freeJson(respPtr);
     free(sourcePtr, sourceLen);
     return items;
+  }
+
+  /**
+   * Query semantic hover information at a byte offset in source code.
+   */
+  hover(sourceCode: string, offset: number): WebHover | null {
+    const encoder = new TextEncoder();
+    const sourceBytes = encoder.encode(sourceCode);
+    const sourceLen = sourceBytes.length;
+
+    const alloc = this.instance.exports.arandu_alloc as (size: number) => number;
+    const free = this.instance.exports.arandu_free as (ptr: number, size: number) => void;
+    const hover = this.instance.exports.arandu_hover as (ptr: number, len: number, offset: number) => number;
+    const freeJson = this.instance.exports.arandu_free_json as (ptr: number) => void;
+
+    const sourcePtr = alloc(sourceLen);
+    new Uint8Array(this.memory.buffer, sourcePtr, sourceLen).set(sourceBytes);
+
+    const respPtr = hover(sourcePtr, sourceLen, offset);
+    if (!respPtr) {
+      free(sourcePtr, sourceLen);
+      return null;
+    }
+
+    const view = new DataView(this.memory.buffer, respPtr, 8);
+    const jsonPtr = view.getUint32(0, true);
+    const jsonLen = view.getUint32(4, true);
+
+    let result: WebHover | null = null;
+    if (jsonPtr !== 0 && jsonLen > 0) {
+      const jsonBytes = new Uint8Array(this.memory.buffer, jsonPtr, jsonLen);
+      const jsonText = new TextDecoder().decode(jsonBytes);
+      try {
+        result = JSON.parse(jsonText);
+      } catch {
+        result = null;
+      }
+    }
+
+    freeJson(respPtr);
+    free(sourcePtr, sourceLen);
+    return result;
+  }
+
+  /**
+   * Query interactive signature help at a byte offset in source code.
+   */
+  signatureHelp(sourceCode: string, offset: number): WebSignatureHelp | null {
+    const encoder = new TextEncoder();
+    const sourceBytes = encoder.encode(sourceCode);
+    const sourceLen = sourceBytes.length;
+
+    const alloc = this.instance.exports.arandu_alloc as (size: number) => number;
+    const free = this.instance.exports.arandu_free as (ptr: number, size: number) => void;
+    const sigHelp = this.instance.exports.arandu_signature_help as (ptr: number, len: number, offset: number) => number;
+    const freeJson = this.instance.exports.arandu_free_json as (ptr: number) => void;
+
+    const sourcePtr = alloc(sourceLen);
+    new Uint8Array(this.memory.buffer, sourcePtr, sourceLen).set(sourceBytes);
+
+    const respPtr = sigHelp(sourcePtr, sourceLen, offset);
+    if (!respPtr) {
+      free(sourcePtr, sourceLen);
+      return null;
+    }
+
+    const view = new DataView(this.memory.buffer, respPtr, 8);
+    const jsonPtr = view.getUint32(0, true);
+    const jsonLen = view.getUint32(4, true);
+
+    let result: WebSignatureHelp | null = null;
+    if (jsonPtr !== 0 && jsonLen > 0) {
+      const jsonBytes = new Uint8Array(this.memory.buffer, jsonPtr, jsonLen);
+      const jsonText = new TextDecoder().decode(jsonBytes);
+      try {
+        result = JSON.parse(jsonText);
+      } catch {
+        result = null;
+      }
+    }
+
+    freeJson(respPtr);
+    free(sourcePtr, sourceLen);
+    return result;
   }
 }
 

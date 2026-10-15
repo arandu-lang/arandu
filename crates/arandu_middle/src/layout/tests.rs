@@ -628,17 +628,90 @@ fn test_struct_layout_and_padding() {
 }
 
 #[test]
-fn test_struct_missing_fields_fallback() {
+fn unresolved_nominal_type_has_no_layout_instead_of_a_fabricated_zst() {
     let engine = LayoutEngine::new(8);
     let interner = TypeInterner::new();
     let struct_sym = SymbolId::new(0, 9999);
     let struct_ty = ArType::Named(struct_sym, IndexRange::empty());
     let struct_id = interner.intern(struct_ty);
     let provider = MockProvider;
-    let layout = engine.layout_of(struct_id, &interner, &provider);
-    assert_eq!(layout.size, 0);
-    assert_eq!(layout.align, 1);
-    assert!(layout.field_offsets.is_empty());
+    assert_eq!(
+        engine.try_layout_of(struct_id, &interner, &provider),
+        Err(LayoutError::UnknownType)
+    );
+}
+
+#[test]
+fn recursive_nominal_layout_and_shared_dag_work_are_bounded() {
+    let engine = LayoutEngine::new(8);
+    let interner = TypeInterner::new();
+    let symbol = SymbolId::new(0, 42);
+    let recursive = interner.intern(ArType::Named(symbol, IndexRange::empty()));
+    let mut provider = StructMockProvider::default();
+    provider.fields.insert(
+        symbol,
+        StructFields::from_entries([StructFieldInfo {
+            name: "next".into(),
+            symbol: None,
+            ty: recursive,
+            index: 0,
+        }]),
+    );
+    assert_eq!(
+        engine.try_layout_of(recursive, &interner, &provider),
+        Err(LayoutError::StructuralLimit)
+    );
+    // Pointer indirection terminates physical layout; it must not be rejected
+    // just because the logical definition is recursive.
+    let indirect = interner.intern(ArType::Ref(recursive));
+    provider.fields.insert(
+        symbol,
+        StructFields::from_entries([StructFieldInfo {
+            name: "next".into(),
+            symbol: None,
+            ty: indirect,
+            index: 0,
+        }]),
+    );
+    assert_eq!(
+        engine
+            .try_layout_of(recursive, &interner, &provider)
+            .expect("indirected layout")
+            .size,
+        8
+    );
+    let mut shared = interner.intern(ArType::Void);
+    for _ in 0..13 {
+        shared = interner.intern(ArType::Tuple(interner.push_type_args(&[shared, shared])));
+    }
+    assert_eq!(
+        engine.try_layout_of(shared, &interner, &MockProvider),
+        Err(LayoutError::StructuralLimit)
+    );
+}
+
+#[test]
+fn recursive_enum_pointer_payload_does_not_require_an_unbounded_tagging_proof() {
+    let engine = LayoutEngine::new(8);
+    let interner = TypeInterner::new();
+    let symbol = SymbolId::new(0, 42);
+    let recursive = interner.intern(ArType::Named(symbol, IndexRange::empty()));
+    let pointer = interner.intern(ArType::Ref(recursive));
+    let mut provider = StructMockProvider::default();
+    provider.enum_variants.insert(
+        symbol,
+        vec![
+            EnumPayloadShape {
+                payload_ty: Some(pointer),
+            },
+            EnumPayloadShape { payload_ty: None },
+        ],
+    );
+    assert!(
+        engine
+            .try_layout_of(recursive, &interner, &provider)
+            .is_ok()
+    );
 }
 
 #[test]

@@ -18,7 +18,8 @@
 //!
 //! let s = "hello, world"
 //! strings.isEmpty(s)              // false
-//! strings.lenBytes(s)             // 12
+//! strings.len(s)                  // 12
+//! strings.charCount(s)            // 12
 //! strings.startsWith(s, "hello")  // true
 //! strings.contains(s, "world")    // true
 //! ```
@@ -39,6 +40,13 @@ module std.core.str
 import std.core.intrinsics as intrinsics
 import std.core.slice as slice
 
+/// Returns a shared view of the UTF-8 bytes without allocating or copying.
+/// The view borrows the input storage and cannot outlive it. Lengths and
+/// indices in this view count bytes, not Unicode characters.
+public func asBytes(s: ref str): []u8 {
+    return intrinsics.strBytes(s)
+}
+
 /// Returns `true` if the string is empty (`len == 0`).
 ///
 /// # Examples
@@ -55,19 +63,45 @@ public func isEmpty(s: str): bool {
 
 /// Returns the byte length of the string when encoded as UTF-8.
 ///
-/// Note: this counts UTF-8 **bytes**, not Unicode characters. For codepoint
-/// counting, use `std.core.char`.
+/// Note: this counts UTF-8 **bytes**, not Unicode scalar values. Use
+/// `charCount` to count Unicode scalar values.
 /// # Examples
 /// ```arandu
-/// str.lenBytes("abc") // 3
-/// str.lenBytes("olá") // 4 ('á' occupies 2 bytes in UTF-8)
+/// str.len("abc") // 3
+/// str.len("olá") // 4 ('á' occupies 2 bytes in UTF-8)
 /// ```
 ///
 /// # Complexity
 /// Time: O(1) | Space: O(1)
-public func lenBytes(s: str): usize {
+public func len(s: str): usize {
     let bytes = intrinsics.strBytes(s)
     return slice.len<u8>(bytes)
+}
+
+/// Returns the number of Unicode scalar values (`char`s) in `s`.
+///
+/// Scans the UTF-8 byte sequence and counts leading bytes (any byte whose top
+/// two bits are not `10`).
+/// # Examples
+/// ```arandu
+/// str.charCount("abc") // 3
+/// str.charCount("olá") // 3
+/// ```
+///
+/// # Complexity
+/// Time: O(N) | Space: O(1)
+public func charCount(s: str): usize {
+    let bytes = intrinsics.strBytes(s)
+    let total = slice.len<u8>(bytes)
+    let mut i: usize = 0
+    let mut count: usize = 0
+    while i < total {
+        if (bytes[i] & (0xC0 as u8)) != (0x80 as u8) {
+            count = count + 1
+        }
+        i = i + 1
+    }
+    return count
 }
 
 /// Returns `true` if the string `s` starts with `prefix`.

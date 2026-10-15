@@ -14,11 +14,14 @@ use crate::literal_pool::AmirLiteralPool;
 use crate::passes::type_checker::types::{ArType, Primitive};
 use crate::{SymbolId, TypeCheckResult};
 use arandu_lexer::Span;
+use arandu_middle::DataLayout;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 mod arg_modes;
 mod builder;
+mod compose;
 mod ctx;
+mod equality;
 mod expr;
 mod flow;
 mod func;
@@ -27,7 +30,15 @@ mod ops;
 mod pattern;
 mod place;
 mod ssa;
+mod static_for;
 mod stmt;
+mod unit;
+pub use compose::{ComposedUnits, ContextualFunctionUnit, compose_function_units};
+
+pub use unit::{
+    FunctionUnit, append_function_unit, finalize_function_unit, lower_block_unit,
+    lower_expression_unit, lower_function_unit,
+};
 
 pub(crate) use arg_modes::CalleeArgModes;
 pub(crate) use func::lower_func;
@@ -68,15 +79,86 @@ pub fn lower_to_amir_with_interfaces(
     hir: &HirProgram,
     pointer_width: u64,
 ) -> Result<(AmirProgram, Vec<Diagnostic>), Vec<Diagnostic>> {
+    let layout = natural_layout(pointer_width, hir)?;
+    lower_to_amir_with_layout(tc, hir, layout)
+}
+
+/// Lower against the complete target layout, preserving ABI alignments that
+/// cannot be reconstructed from pointer width (for example i686 SysV).
+pub fn lower_to_amir_with_layout(
+    tc: &mut TypeCheckResult,
+    hir: &HirProgram,
+    layout: DataLayout,
+) -> Result<(AmirProgram, Vec<Diagnostic>), Vec<Diagnostic>> {
+    let (mut program, mut diagnostics, no_fallback) =
+        lower_program(tc, hir, layout, LoweringPurpose::Runtime)?;
+    let solution = crate::borrow_interface::solve_borrow_interfaces(&mut program, &tc.type_info);
+    tc.type_info_mut().return_borrow_summaries = solution.summaries.clone();
+
+    validate_borrowed_program(tc, &mut program, &solution, &no_fallback, &mut diagnostics);
+    if diagnostics.iter().any(|d| d.severity == Severity::Error) {
+        Err(diagnostics)
+    } else {
+        Ok((program, diagnostics))
+    }
+}
+
+/// Project flow contracts from typed, monomorphized HIR before final borrow
+/// validation/promotion. Only functions with borrow-bearing returns contribute
+/// to this fixpoint; other bodies cannot introduce a return dependency.
+///
+/// This is not a certificate that the program is safe to execute. Runtime
+/// lowering still validates every function with the converged call contracts.
+pub fn lower_borrow_interfaces(
+    tc: &TypeCheckResult,
+    hir: &HirProgram,
+    pointer_width: u64,
+) -> Result<crate::borrow_interface::BorrowInterfaceSolution, Vec<Diagnostic>> {
+    let layout = natural_layout(pointer_width, hir)?;
+    let (mut program, _, _) = lower_program(tc, hir, layout, LoweringPurpose::ReturnInterfaces)?;
+    Ok(crate::borrow_interface::solve_borrow_interfaces(
+        &mut program,
+        &tc.type_info,
+    ))
+}
+
+fn natural_layout(pointer_width: u64, hir: &HirProgram) -> Result<DataLayout, Vec<Diagnostic>> {
+    if !matches!(pointer_width, 4 | 8) {
+        return Err(vec![Diagnostic::ice(
+            DiagCode::ICEL001,
+            "AMIR lowering requires a pointer width of 4 or 8 bytes",
+            hir.span,
+        )]);
+    }
+    Ok(DataLayout::ptr_width(pointer_width))
+}
+
+type LoweredProgram = (AmirProgram, Vec<Diagnostic>, FxHashMap<SymbolId, bool>);
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LoweringPurpose {
+    Runtime,
+    ReturnInterfaces,
+}
+
+fn lower_program(
+    tc: &TypeCheckResult,
+    hir: &HirProgram,
+    layout: DataLayout,
+    purpose: LoweringPurpose,
+) -> Result<LoweredProgram, Vec<Diagnostic>> {
     if tc.diagnostics.iter().any(|d| d.severity == Severity::Error) {
         return Err(tc.diagnostics.clone());
     }
 
-    let mut funcs = Vec::new();
     let mut diagnostics = Vec::new();
-    let mut literal_pool = AmirLiteralPool::default();
-    let mut debug_bindings = Vec::new();
-    let mut debug_blocks = Vec::new();
+    let mut program = AmirProgram {
+        funcs: Vec::new(),
+        literal_pool: AmirLiteralPool::default(),
+        extern_funcs: FxHashMap::default(),
+        debug_bindings: Vec::new(),
+        debug_blocks: Vec::new(),
+    };
     let mut no_fallback = FxHashMap::default();
     let const_values: FxHashMap<SymbolId, crate::hir::HirExprId> = hir
         .decls
@@ -90,47 +172,34 @@ pub fn lower_to_amir_with_interfaces(
     let arg_modes = CalleeArgModes::from_hir(hir, &tc.type_info.type_interner);
 
     for &decl_id in &hir.decls {
-        if let HirDecl::Func(
-            f @ HirFunc {
-                body: Some(body), ..
-            },
-        ) = hir.pool.decl(decl_id)
-        {
+        if let HirDecl::Func(f @ HirFunc { body: Some(_), .. }) = hir.pool.decl(decl_id) {
             no_fallback.insert(f.symbol, f.no_fallback);
             // Skip generic templates — only monomorphized specializations (and
             // non-generic functions) are lowered to AMIR.
             if tc.type_info.generic_params.contains_key(&f.symbol) {
                 continue;
             }
-            match lower_func(
-                f,
-                *body,
+            if purpose == LoweringPurpose::ReturnInterfaces
+                && tc
+                    .type_info
+                    .borrow_paths(f.return_type)
+                    .is_ok_and(|paths| paths.is_empty())
+            {
+                continue;
+            }
+            match unit::lower_function_unit_with_context(
                 tc,
                 hir,
+                f,
                 &const_values,
                 &arg_modes,
-                &mut literal_pool,
-                &mut diagnostics,
-                pointer_width,
+                layout,
             ) {
-                Ok((amir_f, local_debug_bindings, block_spans)) => {
-                    debug_bindings.extend(local_debug_bindings.into_iter().map(|(temp, local)| {
-                        AmirDebugBinding {
-                            function: f.symbol,
-                            temp,
-                            local,
-                        }
-                    }));
-                    debug_blocks.extend(block_spans.into_iter().enumerate().map(
-                        |(index, span)| AmirDebugBlock {
-                            function: f.symbol,
-                            block: BlockId::from_usize(index),
-                            span,
-                        },
-                    ));
-                    funcs.push(amir_f);
-                }
-                Err(diag) => diagnostics.push(diag),
+                Ok(unit) => match append_function_unit(&mut program, unit) {
+                    Ok(unit_diagnostics) => diagnostics.extend(unit_diagnostics),
+                    Err(diagnostic) => diagnostics.push(diagnostic),
+                },
+                Err(unit_diagnostics) => diagnostics.extend(unit_diagnostics),
             }
         }
     }
@@ -156,50 +225,67 @@ pub fn lower_to_amir_with_interfaces(
                 }
             }
         }
-        let mut program = AmirProgram {
-            funcs,
-            literal_pool,
-            extern_funcs,
-            debug_bindings,
-            debug_blocks,
-        };
+        program.extern_funcs = extern_funcs;
 
-        let solution =
-            crate::borrow_interface::solve_borrow_interfaces(&mut program, &tc.type_info);
-        {
-            let info = tc.type_info_mut();
-            info.return_borrow_summaries = solution.summaries.clone();
-        }
+        Ok((program, diagnostics, no_fallback))
+    } else {
+        Err(diagnostics)
+    }
+}
 
-        for function in &mut program.funcs {
-            // M2 and escape validation intentionally run only after calls carry
-            // the converged interprocedural interface.
-            diagnostics.extend(crate::borrow_check::check_borrows(function, &tc.symbols));
-            let options = crate::escape_analysis::EscapeCheckOptions {
-                no_fallback: no_fallback.get(&function.symbol).copied().unwrap_or(false),
-                return_borrow: solution.summaries.get(&function.symbol).cloned(),
-            };
-            let escape_diagnostics = crate::escape_analysis::check_escapes_with_type_info(
-                function,
-                &tc.symbols,
-                &tc.type_info,
-                options.clone(),
-            );
-            let already_reports_return = escape_diagnostics
+fn validate_borrowed_program(
+    tc: &TypeCheckResult,
+    program: &mut AmirProgram,
+    solution: &crate::borrow_interface::BorrowInterfaceSolution,
+    no_fallback: &FxHashMap<SymbolId, bool>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for function in &mut program.funcs {
+        validate_borrowed_function(
+            tc,
+            function,
+            solution.summaries.get(&function.symbol).cloned(),
+            solution
+                .unproven
                 .iter()
-                .any(|diagnostic| diagnostic.code == DiagCode::O010EscapeOfBorrowedValue);
-            diagnostics.extend(escape_diagnostics);
-            if !already_reports_return
-                && solution
-                    .unproven
-                    .iter()
-                    .any(|failure| failure.function == function.symbol)
-            {
-                let span = function
-                    .temps
-                    .first()
-                    .map_or(Span::new(0, 0, 0), |temp| temp.span);
-                diagnostics.push(
+                .any(|failure| failure.function == function.symbol),
+            no_fallback.get(&function.symbol).copied().unwrap_or(false),
+            diagnostics,
+        );
+    }
+}
+
+fn validate_borrowed_function(
+    tc: &TypeCheckResult,
+    function: &mut AmirFunc,
+    return_borrow: Option<arandu_middle::types::ReturnBorrowSummary>,
+    unproven: bool,
+    no_fallback: bool,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    // M2 and escape validation intentionally run only after calls carry
+    // the converged interprocedural interface.
+    diagnostics.extend(crate::borrow_check::check_borrows(function, &tc.symbols));
+    let options = crate::escape_analysis::EscapeCheckOptions {
+        no_fallback,
+        return_borrow,
+    };
+    let escape_diagnostics = crate::escape_analysis::check_escapes_with_type_info(
+        function,
+        &tc.symbols,
+        &tc.type_info,
+        options.clone(),
+    );
+    let already_reports_return = escape_diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == DiagCode::O010EscapeOfBorrowedValue);
+    diagnostics.extend(escape_diagnostics);
+    if !already_reports_return && unproven {
+        let span = function
+            .temps
+            .first()
+            .map_or(Span::new(0, 0, 0), |temp| temp.span);
+        diagnostics.push(
                     Diagnostic::error(
                         DiagCode::O010EscapeOfBorrowedValue,
                         "borrowed return has no demonstrable formal origin".to_string(),
@@ -211,23 +297,8 @@ pub fn lower_to_amir_with_interfaces(
                     )
                     .with_hint("return owned data or forward a borrow derived from a formal `ref` input"),
                 );
-            }
-            crate::gen_promote::apply_gen_promotion_with_type_info(
-                function,
-                &tc.type_info,
-                options,
-            );
-        }
-
-        let has_errors = diagnostics.iter().any(|d| d.severity == Severity::Error);
-        if !has_errors {
-            Ok((program, diagnostics))
-        } else {
-            Err(diagnostics)
-        }
-    } else {
-        Err(diagnostics)
     }
+    crate::gen_promote::apply_gen_promotion_with_type_info(function, &tc.type_info, options);
 }
 
 pub(crate) fn is_memory_type(ty: &ArType) -> bool {
@@ -235,6 +306,7 @@ pub(crate) fn is_memory_type(ty: &ArType) -> bool {
         ArType::Primitive(p) => matches!(p, Primitive::Str | Primitive::Any),
         ArType::IntLiteral
         | ArType::FloatLiteral
+        | ArType::FrozenConst(_)
         | ArType::Const(_)
         | ArType::ConstParam(_)
         | ArType::Void
@@ -345,6 +417,12 @@ pub(crate) struct LowerCtx<'a> {
     guard_borrows: FxHashMap<SymbolId, (LocalId, crate::types::TypeId)>,
     /// (`continue_block`, `exit_block`, `defer_frame_depth`, `local_scope_depth`)
     loop_stack: Vec<(BlockId, BlockId, usize, usize)>,
+    /// Destination/exit and cleanup boundaries of isolated value blocks.
+    value_returns: Vec<(TempId, BlockId, usize, usize)>,
+    /// Shared ceilings for residual generation; nested loops cannot reset them.
+    static_expansion_remaining: usize,
+    static_expansion_product: usize,
+    static_expansion_depth: usize,
     /// Lexical local scopes used to emit StorageDead on block exits and loop
     /// control-flow edges. Drop elaboration turns these markers into cleanup.
     local_scopes: Vec<Vec<LocalId>>,
@@ -366,8 +444,8 @@ pub(crate) struct LowerCtx<'a> {
     redirected_temps: FxHashMap<TempId, AmirOperand>,
     /// Span of the HIR construct currently being lowered (for `use_span` / diags).
     current_span: Span,
-    /// Target pointer width in bytes (drives `mem.sizeOf`/`alignOf` folding).
-    pointer_width: u64,
+    /// Complete target ABI layout for intrinsic folding, never the host layout.
+    layout: DataLayout,
     /// Temporaries that hold freshly allocated heap string buffers (`ToStr` or `StringInterp`).
     owned_string_temps: FxHashSet<TempId>,
 }

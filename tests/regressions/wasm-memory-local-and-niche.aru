@@ -11,8 +11,8 @@ func read_ref(value: ref int): int {
 }
 
 func make_pack(value: int, marker: int): Pack {
-    let mut items = vec.new<int>()
-    vec.push<int>(items, value)
+    let mut items = vec.Vec<int>.new()
+    items.push(value)
     return Pack { items: items, marker: marker }
 }
 
@@ -24,30 +24,26 @@ func main(): int {
 
     // 2. Struct containing Vec with address taken (must not double-wrap cell)
     let pack = make_pack(100, 200)
-    if pack.marker != 200 || vec.len<int>(pack.items) != (1 as usize) {
-        pack.items.destroy()
+    if pack.marker != 200 || pack.items.len() != (1 as usize) {
         return 2
     }
 
     // 3. String stored in is_memory local
     let text: str = "arandu-smith"
     if text != "arandu-smith" {
-        pack.items.destroy()
         return 3
     }
 
     // 4. Slice subslice and splitAt on Vec slice
-    let mut v = vec.new<int>()
-    vec.push<int>(v, 10)
-    vec.push<int>(v, 20)
-    vec.push<int>(v, 30)
-    let s = vec.asSlice<int>(v)
+    let mut v = vec.Vec<int>.new()
+    v.push(10)
+    v.push(20)
+    v.push(30)
+    let s = v.asSlice()
     let sub_ok = match slice.subslice<int>(s, 1 as usize, 2 as usize) {
         Some(sub) => slice.len<int>(sub) == (2 as usize) && sub[0] == 20 && sub[1] == 30
         None => false
     }
-    vec.destroy<int>(v)
-    pack.items.destroy()
 
     if !sub_ok { return 4 }
 

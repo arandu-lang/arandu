@@ -9,6 +9,57 @@ fn contains(outer_start: usize, outer_end: usize, inner_start: usize, inner_end:
     outer_start <= inner_start && inner_end <= outer_end
 }
 
+#[test]
+fn string_escapes_decode_once_in_canonical_and_token_stream_ast() {
+    let source = r##"func main(): void {
+    let escaped = "\n\t\r\0\\\"\'\$\u{1F980}"
+    let raw = r"\n\u{1F980}"
+    let interpolated = "prefix\n${42}\tend"
+}"##;
+    let tree = arandu_parser::parse_syntax(source);
+    let canonical = arandu_parser::lower_syntax_to_program(&tree, 7).expect("canonical AST");
+    let rd = arandu_parser::parse_token_stream(
+        tree.text(),
+        std::sync::Arc::clone(tree.tokens_arc()),
+        7,
+        Vec::new(),
+    );
+    assert!(rd.diagnostics.is_empty(), "{:?}", rd.diagnostics);
+    for program in [&canonical, &rd.program] {
+        let mut strings = Vec::new();
+        for expr in &program.pool.exprs {
+            let ExprKind::InterpolatedString { parts } = expr else {
+                continue;
+            };
+            let mut text = String::new();
+            let mut interpolations = 0;
+            for &id in program.pool.string_part_list(*parts) {
+                match program.pool.string_part(id) {
+                    arandu_parser::StringPart::Text { span, text: part } => {
+                        assert_eq!(span.file_id, 7);
+                        assert!(source.is_char_boundary(span.start as usize));
+                        assert!(source.is_char_boundary(span.end as usize));
+                        assert!(span.start <= span.end && span.end as usize <= source.len());
+                        text.push_str(part);
+                    }
+                    arandu_parser::StringPart::Expr { .. } => interpolations += 1,
+                }
+            }
+            strings.push((text, interpolations));
+        }
+        assert_eq!(
+            strings,
+            [
+                ("\n\t\r\0\\\"'$🦀".to_owned(), 0),
+                (r"\n\u{1F980}".to_owned(), 0),
+                ("prefix\n\tend".to_owned(), 1),
+            ]
+        );
+    }
+    assert_eq!(tree.text(), source, "CST retains exact source spelling");
+    assert!(parse(r#"func main(): str { return "\q" }"#).is_err());
+}
+
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()

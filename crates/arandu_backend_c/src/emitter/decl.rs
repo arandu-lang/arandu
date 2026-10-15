@@ -28,6 +28,9 @@ impl<'a> CEmitter<'a> {
     pub(super) fn emit_gen_drop_glues(&mut self) {
         let mut payloads = std::collections::BTreeMap::<String, (ArType, SymbolId)>::new();
         for func in &self.program.funcs {
+            if !self.live_functions.contains(&func.symbol) {
+                continue;
+            }
             for stmt in func.stmts.payloads.iter() {
                 let AmirStmt::Assign { rhs, .. } = stmt else {
                     continue;
@@ -142,6 +145,31 @@ impl<'a> CEmitter<'a> {
             return;
         }
 
+        if let ArType::Array(len, inner) = ty {
+            let inner_ty = self.interner.resolve(*inner);
+            self.ensure_type_emitted(&inner_ty);
+            if self.emitted_types.contains(name.as_ref()) {
+                return;
+            }
+            let layout = self.checked_layout(ty);
+            if layout.size > 0 && *len > 0 {
+                let elem_c_ty = self.format_type(&inner_ty);
+                let _ = writeln!(
+                    &mut self.output,
+                    "typedef struct AR_MAY_ALIAS {{ _Alignas({}) {} data[{}]; }} {};",
+                    layout.align, elem_c_ty, len, name
+                );
+            } else {
+                let _ = writeln!(
+                    &mut self.output,
+                    "typedef struct AR_MAY_ALIAS {{ uint8_t empty; }} {};",
+                    name
+                );
+            }
+            self.emitted_types.insert(name.into_owned());
+            return;
+        }
+
         let layout = self.checked_layout(ty);
         if layout.size > 0 {
             let _ = writeln!(
@@ -157,6 +185,44 @@ impl<'a> CEmitter<'a> {
             ); // C doesn't like zero sized structs sometimes
         }
         self.emitted_types.insert(name.into_owned());
+
+        match ty {
+            ArType::Tuple(tys) => {
+                for &t in self.interner.type_args(*tys).iter() {
+                    let field_ty = self.interner.resolve(t);
+                    self.ensure_type_emitted(&field_ty);
+                }
+            }
+            ArType::Option(inner) | ArType::Nullable(inner) | ArType::Slice(inner) => {
+                let inner_ty = self.interner.resolve(*inner);
+                self.ensure_type_emitted(&inner_ty);
+            }
+            ArType::Result(ok, err) => {
+                let ok_ty = self.interner.resolve(*ok);
+                let err_ty = self.interner.resolve(*err);
+                self.ensure_type_emitted(&ok_ty);
+                self.ensure_type_emitted(&err_ty);
+            }
+            ArType::Named(_, _) => {
+                let field_names: Vec<_> = self
+                    .provider
+                    .get_struct_fields_for_type(ty, self.interner)
+                    .map(|fields| fields.fields.iter().map(|f| f.name.clone()).collect())
+                    .unwrap_or_default();
+                for field_name in field_names {
+                    let field_ty = self.instantiated_field_ty(ty, &field_name);
+                    if !matches!(field_ty, ArType::Error)
+                        && self
+                            .layout
+                            .layout_of_type(&field_ty, self.interner, self.provider)
+                            .is_ok()
+                    {
+                        self.ensure_type_emitted(&field_ty);
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 
     pub(super) fn emit_func_decl(&mut self, func: &AmirFunc) {

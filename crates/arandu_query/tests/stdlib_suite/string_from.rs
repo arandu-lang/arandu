@@ -19,7 +19,7 @@ fn stdlib_string_exports_from_and_string_from() {
         Err(e) => panic!("string.aru must parse; got {e}"),
     }
     let exports = exported_symbols(&db, file);
-    for key in ["from", "String.from"] {
+    for key in ["String.new", "String.withCapacity", "String.from"] {
         assert!(
             exports.symbols.contains_key(key),
             "expected exported symbol `{key}`, got {:?}",

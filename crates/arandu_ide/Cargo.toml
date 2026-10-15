@@ -1,12 +1,13 @@
 [package]
 name = "arandu_ide"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2024"
 license.workspace = true
 authors.workspace = true
 description = "Editor-agnostic IDE analysis helpers (completion, presentation) shared by arandu_lsp and arandu_web"
 
 [dependencies]
+arandu_lexer = { path = "../arandu_lexer" }
 arandu_middle = { path = "../arandu_middle" }
 arandu_parser = { path = "../arandu_parser" }
 arandu_query = { path = "../arandu_query" }

@@ -12,6 +12,7 @@ camadas é uma regressão arquitetural.
 | Área | Responsabilidade |
 | --- | --- |
 | `arandu_base` | Utilitários e dados fundamentais. Mantenha-o deliberadamente leve; não adicione dependências sem justificativa arquitetural. |
+| `arandu_testing_contract` | DTOs puros compartilhados pelo runtime e pelo harness de testes; sem IR, Salsa ou dependências de compilação. |
 | `arandu_lexer` / `arandu_parser` | Lexer e CST-first com Rowan; `syntax_tree(file)` é canônico e `parse(file)` apenas baixa CST para AST. |
 | `arandu_diagnostics` | `DiagCode`, diagnósticos e documentação longa em `docs/errors/`. |
 | `arandu_middle` | Contratos entre fases, HIR/AMIR, `SourceDatabase`, IDs e layout. `src/db.rs` declara apenas os tipos Salsa compartilhados; não executa queries. |

@@ -28,7 +28,26 @@ impl FuncTranslator<'_> {
             .iter_ids::<arandu_middle::amir::stmt::InstrId>()
         {
             if let Some(stmt) = self.func.stmts.get(stmt_id) {
+                if self.static_initializer_temps.contains(&stmt_id)
+                    && let AmirStmt::Assign { lhs, .. } = stmt
+                    && let Some(&(offset, _)) =
+                        self.static_offsets.get(&(self.func.symbol, stmt_id))
+                    && let Ok(offset) = i32::try_from(offset)
+                    && let Some(&local) = self.temp_local.get(lhs)
+                {
+                    self.code.push(Instruction::I32Const(offset));
+                    self.code.push(Instruction::LocalSet(local));
+                    continue;
+                }
+                self.current_cell_home = self.frame_homes.get(&stmt_id).copied();
+                self.current_initializer = Some(stmt_id);
+                self.current_returned_home = self.returned_homes.get(&stmt_id).copied();
+                self.current_heap_home = self.heap_homes.get(&stmt_id).copied();
                 self.emit_stmt(stmt);
+                self.current_cell_home = None;
+                self.current_heap_home = None;
+                self.current_initializer = None;
+                self.current_returned_home = None;
             }
         }
     }
@@ -60,17 +79,29 @@ impl FuncTranslator<'_> {
 
     /// Materialize block arguments before a branch.
     pub(super) fn emit_block_args(&mut self, target: BlockId, args: &[AmirOperand]) {
+        if args.is_empty() {
+            return;
+        }
         let target_block = &self.func.blocks[target.as_usize()];
         let block_params = self.func.block_params(target_block.params);
-        for (j, arg) in args.iter().enumerate() {
-            if j >= block_params.len() {
-                break;
+        // A back-edge can permute the destination parameters themselves.
+        // Keep every incoming value on the operand stack before writing any
+        // local, then consume the values in reverse order (parallel SSA copy).
+        for (arg, param) in args.iter().zip(block_params) {
+            if self.temp_local.contains_key(&param.id) {
+                self.emit_operand(arg, param.ty);
             }
-            let param = &block_params[j];
-            // Block params are ordinary temps; write the incoming value into the
-            // parameter temp's wasm local, where the target block reads it.
+        }
+        for param in block_params.iter().take(args.len()).rev() {
             if let Some(&local) = self.temp_local.get(&param.id) {
-                self.emit_operand_to_local(arg, param.ty, local);
+                match types::shape(param.ty, self.interner, self.layout_engine.data_layout) {
+                    Shape::Empty => {}
+                    Shape::Scalar => self.code.push(Instruction::LocalSet(local)),
+                    Shape::Fat => {
+                        self.code.push(Instruction::LocalSet(local + 1));
+                        self.code.push(Instruction::LocalSet(local));
+                    }
+                }
             }
         }
     }
@@ -80,6 +111,28 @@ impl FuncTranslator<'_> {
         let ret_ty = self.func.return_type;
         let shape = types::shape(ret_ty, self.interner, self.layout_engine.data_layout);
         let ret_temp = TempId::from_usize(0);
+        if self.transfer_owned_result {
+            let Some(&source) = self.temp_local.get(&ret_temp) else {
+                self.code.push(Instruction::Unreachable);
+                return;
+            };
+            let Ok(size) = i32::try_from(self.layout_of_id(ret_ty).size) else {
+                self.code.push(Instruction::Unreachable);
+                return;
+            };
+            self.alloc_cell(size.max(1));
+            self.code.extend([
+                Instruction::LocalGet(self.scratch),
+                Instruction::LocalGet(source),
+                Instruction::I32Const(size),
+                Instruction::MemoryCopy {
+                    src_mem: 0,
+                    dst_mem: 0,
+                },
+                Instruction::LocalGet(self.scratch),
+            ]);
+            return;
+        }
         match shape {
             Shape::Empty => {}
             Shape::Fat if self.retptr_return => {

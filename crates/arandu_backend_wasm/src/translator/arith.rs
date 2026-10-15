@@ -64,17 +64,38 @@ impl<'a> FuncTranslator<'a> {
         self.emit_operand(right, operation_ty);
 
         if is_float {
-            match op {
-                BinaryOp::Add => self.code.push(Instruction::F64Add),
-                BinaryOp::Sub => self.code.push(Instruction::F64Sub),
-                BinaryOp::Mul => self.code.push(Instruction::F64Mul),
-                BinaryOp::Div => self.code.push(Instruction::F64Div),
-                BinaryOp::Equal => self.code.push(Instruction::F64Eq),
-                BinaryOp::NotEqual => self.code.push(Instruction::F64Ne),
-                BinaryOp::Lt => self.code.push(Instruction::F64Lt),
-                BinaryOp::Gt => self.code.push(Instruction::F64Gt),
-                BinaryOp::LtEqual => self.code.push(Instruction::F64Le),
-                BinaryOp::GtEqual => self.code.push(Instruction::F64Ge),
+            // The AMIR operand type determines the stack format. A bool
+            // result does not change an f32 comparison into an f64 operation.
+            let is_f32 = matches!(
+                types::slot_valtype(
+                    operation_ty,
+                    0,
+                    self.interner,
+                    self.layout_engine.data_layout
+                ),
+                Some(ValType::F32)
+            );
+            match (is_f32, op) {
+                (true, BinaryOp::Add) => self.code.push(Instruction::F32Add),
+                (true, BinaryOp::Sub) => self.code.push(Instruction::F32Sub),
+                (true, BinaryOp::Mul) => self.code.push(Instruction::F32Mul),
+                (true, BinaryOp::Div) => self.code.push(Instruction::F32Div),
+                (true, BinaryOp::Equal) => self.code.push(Instruction::F32Eq),
+                (true, BinaryOp::NotEqual) => self.code.push(Instruction::F32Ne),
+                (true, BinaryOp::Lt) => self.code.push(Instruction::F32Lt),
+                (true, BinaryOp::Gt) => self.code.push(Instruction::F32Gt),
+                (true, BinaryOp::LtEqual) => self.code.push(Instruction::F32Le),
+                (true, BinaryOp::GtEqual) => self.code.push(Instruction::F32Ge),
+                (false, BinaryOp::Add) => self.code.push(Instruction::F64Add),
+                (false, BinaryOp::Sub) => self.code.push(Instruction::F64Sub),
+                (false, BinaryOp::Mul) => self.code.push(Instruction::F64Mul),
+                (false, BinaryOp::Div) => self.code.push(Instruction::F64Div),
+                (false, BinaryOp::Equal) => self.code.push(Instruction::F64Eq),
+                (false, BinaryOp::NotEqual) => self.code.push(Instruction::F64Ne),
+                (false, BinaryOp::Lt) => self.code.push(Instruction::F64Lt),
+                (false, BinaryOp::Gt) => self.code.push(Instruction::F64Gt),
+                (false, BinaryOp::LtEqual) => self.code.push(Instruction::F64Le),
+                (false, BinaryOp::GtEqual) => self.code.push(Instruction::F64Ge),
                 _ => self.emit_zero(result_ty),
             }
             return;
@@ -280,7 +301,16 @@ impl<'a> FuncTranslator<'a> {
             UnaryOp::Neg => {
                 if types::ar_is_float(result_ty, self.interner) {
                     self.emit_operand(operand, result_ty);
-                    self.code.push(Instruction::F64Neg);
+                    let instruction = match types::slot_valtype(
+                        result_ty,
+                        0,
+                        self.interner,
+                        self.layout_engine.data_layout,
+                    ) {
+                        Some(ValType::F32) => Instruction::F32Neg,
+                        _ => Instruction::F64Neg,
+                    };
+                    self.code.push(instruction);
                 } else if types::ar_is_64bit(
                     result_ty,
                     self.interner,

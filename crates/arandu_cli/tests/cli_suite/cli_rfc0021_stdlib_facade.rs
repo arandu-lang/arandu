@@ -28,7 +28,7 @@ fn prelude_public_use_facade_check_ok() {
         r#"
 module tests.rfc0021.prelude
 
-from std.core.prelude import { Option, Result, Poll, checkedAdd, Iterator, PhantomData, phantom, Cell, UnsafeCell, cellNew, Copy, Send, Sync }
+from std.core.prelude import { Option, Result, Poll, checkedAdd, Iterator, PhantomData, phantom, Cell, UnsafeCell, Copy, Send, Sync }
 from std.core.prelude import { Option as Maybe }
 
 func checked_value(): Option<int> {
@@ -53,7 +53,7 @@ func poll_value(): Poll<int> {
 }
 
 func test_cell(): int {
-    let c = cellNew(42)
+    let c = Cell.new(42)
     return c.value
 }
 
@@ -96,10 +96,10 @@ fn prelude_facade_program_runs_successfully() {
         r#"
 module tests.rfc0021.run
 
-from std.core.prelude import { cellNew }
+from std.core.prelude import { Cell }
 
 func main(): int {
-    let c = cellNew(84)
+    let c = Cell.new(84)
     if c.value / 2 == 42 {
         return 0
     }

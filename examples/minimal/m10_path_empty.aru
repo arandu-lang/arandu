@@ -5,49 +5,59 @@ import std.path as path
 
 func main(): int {
     // isEmpty
-    if !path.isEmpty("") {
+    let empty = path.Path.from("")
+    if !empty.isEmpty() {
         return 1
     }
-    if path.isEmpty("x") {
+    let nonEmpty = path.Path.from("x")
+    if nonEmpty.isEmpty() {
         return 2
     }
 
     // isAbsolute
-    if !path.isAbsolute("/tmp") {
+    let tmp = path.Path.from("/tmp")
+    if !tmp.isAbsolute() {
         return 3
     }
-    if !path.isAbsolute("/") {
+    let root = path.Path.from("/")
+    if !root.isAbsolute() {
         return 4
     }
-    if path.isAbsolute("rel") {
+    let rel = path.Path.from("rel")
+    if rel.isAbsolute() {
         return 5
     }
-    if path.isAbsolute("./x") {
+    let dotRel = path.Path.from("./x")
+    if dotRel.isAbsolute() {
         return 6
     }
-    if path.isAbsolute("") {
+    if empty.isAbsolute() {
         return 7
     }
 
-    // join
-    if path.join("a", "b") != "a/b" {
+    // joinStr
+    let baseA = path.Path.from("a")
+    if baseA.joinStr("b") != "a/b" {
         return 8
     }
-    if path.join("/tmp", "x") != "/tmp/x" {
+    if tmp.joinStr("x") != "/tmp/x" {
         return 9
     }
-    if path.join("/tmp", "/abs") != "/abs" {
+    if tmp.joinStr("/abs") != "/abs" {
         return 10
     }
 
     // fileName
-    if path.fileName("leaf") != "leaf" {
+    let leaf = path.Path.from("leaf").fileName()
+    if leaf.asStr() != "leaf" {
         return 11
     }
-    if path.fileName("/tmp/leaf") != "leaf" {
+    let tmpLeaf = path.Path.from("/tmp/leaf").fileName()
+    if tmpLeaf.asStr() != "leaf" {
         return 12
     }
-    if path.fileName("/tmp/x/y") != "y" {
+    let nested = path.Path.from("/tmp/x/y").fileName()
+    if nested.asStr() != "y" {
         return 13
     }
 

@@ -141,7 +141,8 @@ module tests.cli.sls_path
 import std.path as path
 
 func main(): int {
-    let _ = path.isAbsolute("/tmp")
+    let p = path.Path.from("/tmp")
+    let _ = p.isAbsolute()
     return 0
 }
 "#,
@@ -175,15 +176,17 @@ module tests.cli.sls_path_run
 import std.path as path
 
 func main(): int {
-    let empty = path.isEmpty("")
-    let nonempty = path.isEmpty("/tmp")
+    let emptyPath = path.Path.from("")
+    let nonEmptyPath = path.Path.from("/tmp")
+    let empty = emptyPath.isEmpty()
+    let nonempty = nonEmptyPath.isEmpty()
     if !empty {
         return 1
     }
     if nonempty {
         return 2
     }
-    let _ = path.isAbsolute("/tmp")
+    let _ = nonEmptyPath.isAbsolute()
     return 0
 }
 "#,

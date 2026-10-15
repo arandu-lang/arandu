@@ -17,7 +17,7 @@ use crate::artifact::{self, NativeProfile};
 use crate::cli_error::CliFailure;
 use crate::incremental::compiler_artifacts::compiler_artifact_path;
 
-const SCHEMA_VERSION: u32 = 4;
+const SCHEMA_VERSION: u32 = 5;
 const FINGERPRINT_FILENAME: &str = "session-fingerprint.json";
 
 /// One external input participating in the end-to-end build closure.
@@ -75,6 +75,7 @@ pub struct SessionFingerprint {
     pub profile: String,
     pub target: String,
     pub pointer_width: u64,
+    pub ctfe_limits: [u64; 3],
     pub opt: bool,
     pub debug_info: bool,
     pub artifact_relative: String,
@@ -128,11 +129,17 @@ pub struct SessionConfig<'a> {
     pub version: &'a str,
     pub profile: NativeProfile,
     pub pointer_width: u64,
+    pub ctfe_limits: arandu_query::ctfe::CtfeLimits,
     pub opt: bool,
     pub debug_info: bool,
     pub manifest_path: &'a Path,
     pub extra_inputs: &'a [IncrementalInput],
     pub target_triple: Option<&'a str>,
+}
+
+fn budget_key(limits: arandu_query::ctfe::CtfeLimits) -> [u64; 3] {
+    let budget = limits.budget();
+    [budget.fuel, u64::from(budget.frames), budget.values]
 }
 
 /// Check if an incremental build can be skipped entirely (early cutoff).
@@ -160,6 +167,7 @@ pub fn check_incremental(config: &SessionConfig<'_>) -> IncrementalCheck {
         || session.profile != config.profile.directory()
         || session.target != layout.triple
         || session.pointer_width != config.pointer_width
+        || session.ctfe_limits != budget_key(config.ctfe_limits)
         || session.opt != config.opt
         || session.debug_info != config.debug_info
     {
@@ -318,6 +326,7 @@ pub fn record_session(
         profile: config.profile.directory().to_owned(),
         target: layout.triple,
         pointer_width: config.pointer_width,
+        ctfe_limits: budget_key(config.ctfe_limits),
         opt: config.opt,
         debug_info: config.debug_info,
         artifact_relative,

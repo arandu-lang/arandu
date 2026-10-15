@@ -14,15 +14,91 @@
 //! ```
 //!
 //! ## Complexity
-//! Every operation takes O(1) time and O(1) space.
+//! Every classification and membership operation takes O(1) time and O(1) space.
+//! Byte-set construction takes O(text bytes) time and can run at compile time.
 //!
 //! ## Allocations
-//! None. Non-ASCII bytes pass through case conversion unchanged.
+//! Scalar operations allocate nothing. ByteSet and byteTable use fixed-size
+//! values and no explicit allocation API; aggregate backing in the current
+//! Cranelift backend can still allocate at materialization. `comptime` removes
+//! the construction loop, not necessarily that backing allocation.
+//! Non-ASCII bytes pass through case conversion unchanged.
 //!
 //! ## Platform
 //! `native` · `wasm32` · `bare-metal`
-
 module std.core.ascii
+
+import std.core.intrinsics as intrinsics
+
+/// A fixed set of byte values, stored in four words (32 bytes).
+/// UTF-8 text contributes its encoded bytes, not Unicode scalar values.
+/// No explicit pointers or runtime construction loop are required when built
+/// with `comptime ByteSet.from("...")`. Duplicate bytes are harmless. Physical
+/// backing storage is backend-dependent; see the module's allocation contract.
+public struct ByteSet {
+    words: [4]u64
+}
+
+/// Creates an empty `ByteSet` with no bytes set.
+public func ByteSet.new(): ByteSet {
+    return ByteSet { words: [0; 4] }
+}
+
+/// Builds a byte set from UTF-8 text. Empty text produces an empty set.
+///
+/// ```arandu
+/// let horizontal = comptime ascii.ByteSet.from(" \t\r")
+/// let isSpace = horizontal.contains(b' ')
+/// ```
+///
+/// Construction: O(text bytes), O(1) storage. With `comptime`, construction is
+/// evaluated by the compiler; the residual program only receives four words.
+/// This function also permits runtime text with the same semantics.
+public func ByteSet.from(text: str): ByteSet {
+    let bytes = intrinsics.strBytes(text)
+    let mut words: [4]u64 = [0; 4]
+    let mut i: usize = 0
+    while i < intrinsics.sliceLen<u8>(bytes) {
+        let value = bytes[i]
+        let word = (value as usize) / 64
+        let bit = (value as u64) % 64
+        words[word] = words[word] | ((1 as u64) << bit)
+        i = i + 1
+    }
+    return ByteSet { words: words }
+}
+
+/// Tests membership in O(1) time without allocating or changing the set.
+/// Every u8 is valid, including NUL and bytes outside ASCII.
+public func ByteSet.contains(self: ref ByteSet, value: u8): bool {
+    let word = (value as usize) / 64
+    let bit = (value as u64) % 64
+    return (self.words[word] & ((1 as u64) << bit)) != 0
+}
+
+/// Builds a direct byte-membership lookup table as a fixed-size value.
+/// Empty text clears all 256 entries; duplicates and NUL bytes are supported.
+/// UTF-8 contributes encoded bytes, as with `ByteSet.from`.
+///
+/// ```arandu
+/// let horizontal = comptime ascii.byteTable(" \t\r")
+/// let isSpace = horizontal[b' ' as usize]
+/// ```
+///
+/// Construction takes O(256 + text bytes) time and 256 bytes of storage.
+/// `comptime` evaluates construction during compilation, but does not yet
+/// guarantee static backing storage in Cranelift. A table trades more
+/// storage for simpler membership indexing; benchmark it against `ByteSet`.
+public func byteTable(text: str): [256]bool {
+    let mut table = [false; 256]
+    let bytes = intrinsics.strBytes(text)
+    let mut i: usize = 0
+    while i < intrinsics.sliceLen<u8>(bytes) {
+        table[bytes[i] as usize] = true
+        i += 1
+    }
+    return table
+}
 
 /// Returns `true` if the byte represents an ASCII alphabetic character (`a-z` or `A-Z`).
 ///

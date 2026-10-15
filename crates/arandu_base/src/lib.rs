@@ -11,8 +11,9 @@ pub use bitset::{BitMatrix, BitSet};
 pub use index_vec::IndexVec;
 pub use line_index::LineIndex;
 pub use perf::{
-    EXPLAIN_REBUILD, NO_GENERATIONAL_FALLBACK, any_debug_flag_active, build_tracing_config,
-    init_z_flags, print_perf_summary, track_alloc, track_query_hit, track_query_miss,
+    DUMP_MIR, EXPLAIN_REBUILD, NO_GENERATIONAL_FALLBACK, PROFILE_QUERIES, any_debug_flag_active,
+    build_tracing_config, init_z_flags, print_perf_summary, track_alloc, track_query_hit,
+    track_query_miss,
 };
 pub use source_registry::{SourceFile, SourceRegistry};
 pub use span::Span;

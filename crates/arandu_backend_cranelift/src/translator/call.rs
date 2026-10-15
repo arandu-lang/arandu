@@ -21,12 +21,13 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             }
         }
 
+        let mut indirect_result = None;
         let call_inst = match callee {
             AmirOperand::FunctionRef(sym_id) => {
                 let sym = self.symbol_table.get(*sym_id);
                 let host_name = self.symbol_table.host_func_name(sym);
-                let func_id = match self.func_ids.get(host_name) {
-                    Some(func_id) => *func_id,
+                let func_id = match self.resolve_function(host_name) {
+                    Some(func_id) => func_id,
                     None => {
                         self.record_ice(
                             format!("function '{}' was not declared in the JIT module", sym.name),
@@ -67,6 +68,29 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
 
                 let mut clif_args = Vec::new();
                 let mut clif_param_idx = 0;
+                if self.builder.func.dfg.signatures[sig_id]
+                    .params
+                    .first()
+                    .is_some_and(|param| {
+                        param.purpose == cranelift_codegen::ir::ArgumentPurpose::StructReturn
+                    })
+                {
+                    let result_ty =
+                        self.type_info.decl_types.get(sym_id).and_then(|id| {
+                            match self.resolve_ty(*id) {
+                                ArType::Func(_, result) => Some(self.resolve_ty(result)),
+                                _ => None,
+                            }
+                        });
+                    let Some(result_ty) = result_ty else {
+                        self.record_ice("missing type for indirect aggregate result", sym.span);
+                        return;
+                    };
+                    let destination = self.allocate_independent_aggregate(&result_ty);
+                    indirect_result = Some(destination);
+                    clif_args.push(destination);
+                    clif_param_idx = 1;
+                }
                 for (arg_idx, arg) in args.iter().enumerate() {
                     let arg_ty = callee_param_types
                         .as_ref()
@@ -87,22 +111,20 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                             clif_param_idx += 2;
                         }
                         FatOperandKind::None => {
-                            if matches!(arg_ty, ArType::Named(_, _) | ArType::Tuple(_)) {
+                            if matches!(
+                                arg_ty,
+                                ArType::Named(_, _) | ArType::Tuple(_) | ArType::Array(_, _)
+                            ) {
                                 let arg_abi = self.classify_arg_abi(&arg_ty);
                                 match arg_abi {
                                     arandu_semantics::layout::ArgAbi::ZeroSized => {}
                                     arandu_semantics::layout::ArgAbi::Direct(direct) => {
                                         let base_ptr =
                                             self.translate_operand(arg, Some(self.ptr_type));
+                                        let layout = self.checked_layout(&arg_ty);
                                         for abi_slot in &direct.slots {
-                                            let chunk_ty =
-                                                crate::abi::abi_scalar_to_clif(abi_slot.scalar);
-                                            let chunk_val = self.builder.ins().load(
-                                                chunk_ty,
-                                                cranelift_codegen::ir::MemFlagsData::new(),
-                                                base_ptr,
-                                                abi_slot.offset as i32,
-                                            );
+                                            let chunk_val =
+                                                self.load_abi_slot(base_ptr, abi_slot, layout.size);
                                             clif_args.push(chunk_val);
                                             clif_param_idx += 1;
                                         }
@@ -134,6 +156,12 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             }
         };
         if let Some(lhs_temp) = lhs {
+            if let Some(destination) = indirect_result {
+                if let Some(&var) = self.temp_map.get(lhs_temp) {
+                    self.builder.def_var(var, destination);
+                }
+                return;
+            }
             let lhs_ty = self.temp_ar_ty(*lhs_temp);
             if matches!(&lhs_ty, ArType::Primitive(Primitive::Str)) {
                 let results = self.builder.inst_results(call_inst);
@@ -153,7 +181,10 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                         self.builder.def_var(var, descriptor);
                     }
                 }
-            } else if matches!(&lhs_ty, ArType::Named(_, _) | ArType::Tuple(_)) {
+            } else if matches!(
+                &lhs_ty,
+                ArType::Named(_, _) | ArType::Tuple(_) | ArType::Array(_, _)
+            ) {
                 let arg_abi = self.classify_arg_abi(&lhs_ty);
                 match arg_abi {
                     arandu_semantics::layout::ArgAbi::ZeroSized => {
@@ -178,12 +209,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                         let addr = self.builder.ins().stack_addr(self.ptr_type, slot, 0);
                         for (i, abi_slot) in direct.slots.iter().enumerate() {
                             if let Some(&res_val) = results.get(i) {
-                                self.builder.ins().store(
-                                    cranelift_codegen::ir::MemFlagsData::new(),
-                                    res_val,
-                                    addr,
-                                    abi_slot.offset as i32,
-                                );
+                                self.store_abi_slot(res_val, addr, abi_slot, layout.size);
                             }
                         }
                         if let Some(&var) = self.temp_map.get(lhs_temp) {
@@ -191,6 +217,12 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                         }
                     }
                     arandu_semantics::layout::ArgAbi::Indirect => {
+                        if let Some(destination) = indirect_result {
+                            if let Some(&var) = self.temp_map.get(lhs_temp) {
+                                self.builder.def_var(var, destination);
+                            }
+                            return;
+                        }
                         let results = self.builder.inst_results(call_inst);
                         if let (Some(&var), Some(&res0)) =
                             (self.temp_map.get(lhs_temp), results.first())
@@ -425,21 +457,13 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             )
     }
 
-    /// Copies `layout.size` payload bytes at `src` into a fresh stack slot
-    /// and returns its address, fed into the aggregate pointer-repr
+    /// Copies `layout.size` payload bytes into independent storage (or the
+    /// caller's result destination), fed into the aggregate pointer-repr
     /// value slot used by every other path (`StructLiteral` etc.).
     pub(super) fn materialize_ptr_read_copy(&mut self, src: Value, ty: &ArType) -> Option<Value> {
         let layout = self.checked_layout(ty);
-        let dest = self.call_malloc(layout.size as u32);
-        if layout.size > 0
-            && let Some(memcpy_id) = self.memcpy_func_id()
-        {
-            let memcpy_ref = self
-                .module
-                .declare_func_in_func(memcpy_id, self.builder.func);
-            let size_val = self.builder.ins().iconst(self.ptr_type, layout.size as i64);
-            self.builder.ins().call(memcpy_ref, &[dest, src, size_val]);
-        }
+        let dest = self.allocate_aggregate(ty);
+        self.copy_aggregate_bytes(dest, src, layout.size);
         Some(dest)
     }
 }

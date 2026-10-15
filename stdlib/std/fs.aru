@@ -51,6 +51,7 @@ import std.io as io
 import std.core.mem as mem
 import std.core.intrinsics as intrinsics
 import std.alloc.string as strings
+import std.alloc.vec as vec
 
 /// Describes open flags; no public `open` function consumes this type yet.
 public struct OpenOptions {
@@ -66,11 +67,18 @@ public struct OpenOptions {
     append: bool
 }
 
-/// Creates `OpenOptions` with only `read` enabled.
-///
-/// All other flags are `false`. The current public API has no `open` method
-/// that accepts these options.
-public func readOnly(): OpenOptions {
+/// Creates `OpenOptions` with all flags disabled.
+public func OpenOptions.new(): OpenOptions {
+    return OpenOptions {
+        read: false,
+        write: false,
+        create: false,
+        truncate: false,
+        append: false,
+    }
+}
+
+func readOnly(): OpenOptions {
     return OpenOptions {
         read: true,
         write: false,
@@ -80,11 +88,15 @@ public func readOnly(): OpenOptions {
     }
 }
 
-/// Creates `OpenOptions` with `write`, `create`, and `truncate` enabled.
+/// Creates `OpenOptions` with only `read` enabled.
 ///
-/// `read` and `append` are `false`. The current public API has no `open`
-/// method that accepts these options.
-public func writeOnly(): OpenOptions {
+/// All other flags are `false`. The current public API has no `open` method
+/// that accepts these options.
+public func OpenOptions.readOnly(): OpenOptions {
+    return readOnly()
+}
+
+func writeOnly(): OpenOptions {
     return OpenOptions {
         read: false,
         write: true,
@@ -92,6 +104,14 @@ public func writeOnly(): OpenOptions {
         truncate: true,
         append: false,
     }
+}
+
+/// Creates `OpenOptions` with `write`, `create`, and `truncate` enabled.
+///
+/// `read` and `append` are `false`. The current public API has no `open`
+/// method that accepts these options.
+public func OpenOptions.writeOnly(): OpenOptions {
+    return writeOnly()
 }
 
 /// Wraps an OS file descriptor; no public constructor is available yet.
@@ -160,9 +180,29 @@ public func readToString(path: str): Result<strings.String, io.IoError> {
         ar_fs_read_all(path, buf, len, cap, errCode)
     }
     if errCode != 0 {
-        return Result.Err(io.errorFromPortable(errCode as int))
+        return Result.Err(io.IoError.fromPlatform(errCode as int))
     }
     return Result.Ok(unsafe { strings.adoptOwned(buf, cap, len) })
+}
+
+/// Reads a whole file into an owned byte vector without UTF-8 interpretation.
+///
+/// The vector adopts the host buffer without an intermediate String or a
+/// second byte allocation. Empty files return an empty vector; read failures
+/// return the same portable error categories as `readToString`.
+@Effects(FileRead, Foreign)
+public func readToBytes(path: str): Result<vec.Vec<u8>, io.IoError> {
+    let mut buf: ptr[u8] = nil
+    let mut len: usize = 0
+    let mut cap: usize = 0
+    let mut errCode: isize = 0
+    unsafe {
+        ar_fs_read_all(path, buf, len, cap, errCode)
+    }
+    if errCode != 0 {
+        return Result.Err(io.IoError.fromPlatform(errCode as int))
+    }
+    return Result.Ok(unsafe { vec.adoptBytes(buf, cap, len) })
 }
 
 /// An owned snapshot of a directory listing in one contiguous allocation.
@@ -216,7 +256,7 @@ public func readDir(path: str): Result<DirListing, io.IoError> {
         ar_fs_readdir(path, buf, count, cap, errCode)
     }
     if errCode != 0 {
-        return Result.Err(io.errorFromPortable(errCode as int))
+        return Result.Err(io.IoError.fromPlatform(errCode as int))
     }
     return Result.Ok(DirListing {
         emptyData: nil,
@@ -240,6 +280,11 @@ func readU32At(base: ptr[u8], byteOff: usize): u32 {
 /// The count reflects the snapshot taken by `readDir`, not later changes to
 /// the directory. This operation takes O(1) time and does not allocate.
 public func DirListing.count(self: ref DirListing): usize {
+    return self.count
+}
+
+/// Returns the number of entries in the listing.
+public func DirListing.len(self: ref DirListing): usize {
     return self.count
 }
 
@@ -283,7 +328,7 @@ public func DirListing.name(self: ref DirListing, index: usize): []u8 {
 /// or an empty string when `index` is out of range.
 ///
 /// Each entry has its own stable descriptor in the listing blob. Multiple
-/// name views may coexist; all become invalid when the listing is destroyed.
+/// name views may coexist; all become invalid when the listing is closed or dropped.
 /// This method does not allocate or mutate the listing.
 public func DirListing.nameStr(self: ref DirListing, index: usize): ref str {
     if index >= self.count {
@@ -298,11 +343,14 @@ public func DirListing.nameStr(self: ref DirListing, index: usize): ref str {
     }
 }
 
-/// Releases the listing blob; borrowed names become invalid afterward.
-///
-/// This consumes the listing and must run exactly once for its owned buffer.
+/// Idempotently closes and releases the directory listing snapshot.
+public func DirListing.close(self: mut ref DirListing): void {
+    destroyListing(self)
+}
+
+/// Automatic destructor invoked when an owned `DirListing` leaves scope.
 @Destructor
-public func DirListing.destroy(self: own DirListing): void {
+func DirListing.destroy(self: own DirListing): void {
     destroyListing(self)
 }
 
@@ -331,6 +379,16 @@ public func File.close(self: mut ref File): void {
             ar_fs_close(self.fd)
         }
         self.fd = -1
+    }
+}
+
+/// Automatic best-effort destructor invoked when an owned `File` leaves scope.
+@Destructor
+func File.destroy(self: own File): void {
+    if self.fd >= 0 {
+        unsafe {
+            ar_fs_close(self.fd)
+        }
     }
 }
 

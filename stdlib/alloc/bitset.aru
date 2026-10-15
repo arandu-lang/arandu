@@ -9,7 +9,7 @@
 //! ```arandu
 //! import std.alloc.bitset as bitset
 //!
-//! let mut flags = bitset.bitsetNew()
+//! let mut flags = bitset.BitSet.new()
 //! flags.insert(3)
 //! let present = flags.contains(3)
 //! ```
@@ -19,7 +19,7 @@
 //! traverse the occupied words. Growing to a higher bit may reallocate.
 //!
 //! ## Allocations
-//! `bitsetNew` starts empty; storage grows as bits beyond capacity are added.
+//! `BitSet.new` starts empty; storage grows as bits beyond capacity are added.
 //!
 //! ## Platform
 //! `native` · `wasm32`
@@ -40,7 +40,7 @@ public struct BitSet {
 }
 
 func wordAt(words: ref vec.Vec<u64>, index: usize): u64 {
-    match vec.getCopy<u64>(*words, index) {
+    match (*words).getCopy(index) {
         Some(value) => { return value }
         None => { return 0 as u64 }
     }
@@ -49,9 +49,9 @@ func wordAt(words: ref vec.Vec<u64>, index: usize): u64 {
 /// Creates an empty set without allocating a word buffer.
 ///
 /// A later `insert` grows the buffer to include the requested bit.
-public func bitsetNew(): BitSet {
+public func BitSet.new(): BitSet {
     return BitSet {
-        words: vec.new<u64>(),
+        words: vec.Vec<u64>.new(),
         nbits: 0 as usize,
     }
 }
@@ -62,7 +62,7 @@ public func bitsetNew(): BitSet {
 /// including indexes below `bits`. This allocates and initializes the
 /// ceiling of `bits / 64` words; `bits` is a storage request, not a set-bit
 /// count. Requests above the representable bit range abort.
-public func bitsetWithCapacity(bits: usize): BitSet {
+public func BitSet.withCapacity(bits: usize): BitSet {
     let maxWords: usize = 134217728 as usize
     let mut wordCount = bits / (64 as usize)
     if bits % (64 as usize) != (0 as usize) {
@@ -71,10 +71,10 @@ public func bitsetWithCapacity(bits: usize): BitSet {
     if wordCount > maxWords {
         unsafe { intrinsics.abort() }
     }
-    let mut words = vec.withCapacity<u64>(wordCount)
+    let mut words = vec.Vec<u64>.withCapacity(wordCount)
     let mut i: usize = 0 as usize
     while i < wordCount {
-        vec.push<u64>(words, 0 as u64)
+        words.push(0 as u64)
         i = i + (1 as usize)
     }
     return BitSet {
@@ -89,10 +89,10 @@ public func bitsetWithCapacity(bits: usize): BitSet {
 public func BitSet.contains(self: ref BitSet, bit: usize): bool {
     let wordIdx = bit / (64 as usize)
     let bitIdx = bit % (64 as usize)
-    if wordIdx >= vec.len<u64>(self.words) {
+    if wordIdx >= self.words.len() {
         return false
     }
-    match vec.getCopy<u64>(self.words, wordIdx) {
+    match self.words.getCopy(wordIdx) {
         Some(w) => {
             let mask: u64 = (1 as u64) << (bitIdx as u64)
             return (w & mask) != (0 as u64)
@@ -115,16 +115,16 @@ public func BitSet.insert(self: mut ref BitSet, bit: usize): bool {
     }
     let wordIdx = bit / (64 as usize)
     let bitIdx = bit % (64 as usize)
-    while wordIdx >= vec.len<u64>(self.words) {
-        vec.push<u64>(self.words, 0 as u64)
+    while wordIdx >= self.words.len() {
+        self.words.push(0 as u64)
     }
-    match vec.getCopy<u64>(self.words, wordIdx) {
+    match self.words.getCopy(wordIdx) {
         Some(w) => {
             let mask: u64 = (1 as u64) << (bitIdx as u64)
             if (w & mask) != (0 as u64) {
                 return false
             }
-            vec.put<u64>(self.words, wordIdx, w | mask)
+            self.words.set(wordIdx, w | mask)
             if bit >= self.nbits {
                 self.nbits = bit + (1 as usize)
             }
@@ -143,16 +143,16 @@ public func BitSet.insert(self: mut ref BitSet, bit: usize): bool {
 public func BitSet.remove(self: mut ref BitSet, bit: usize): bool {
     let wordIdx = bit / (64 as usize)
     let bitIdx = bit % (64 as usize)
-    if wordIdx >= vec.len<u64>(self.words) {
+    if wordIdx >= self.words.len() {
         return false
     }
-    match vec.getCopy<u64>(self.words, wordIdx) {
+    match self.words.getCopy(wordIdx) {
         Some(w) => {
             let mask: u64 = (1 as u64) << (bitIdx as u64)
             if (w & mask) == (0 as u64) {
                 return false
             }
-            vec.put<u64>(self.words, wordIdx, w & (~mask))
+            self.words.set(wordIdx, w & (~mask))
             return true
         }
         None => {
@@ -166,10 +166,10 @@ public func BitSet.remove(self: mut ref BitSet, bit: usize): bool {
 /// The recorded bit range becomes zero. This visits each allocated word and
 /// does not deallocate storage.
 public func BitSet.clear(self: mut ref BitSet): void {
-    let total = vec.len<u64>(self.words)
+    let total = self.words.len()
     let mut i: usize = 0 as usize
     while i < total {
-        vec.put<u64>(self.words, i, 0 as u64)
+        self.words.set(i, 0 as u64)
         i = i + (1 as usize)
     }
     self.nbits = 0 as usize
@@ -180,23 +180,23 @@ public func BitSet.clear(self: mut ref BitSet): void {
 /// The buffer grows if `other` has more words; existing bits outside
 /// `other`'s range remain set. Runs in O(other word count), plus any growth.
 public func BitSet.unionWith(self: mut ref BitSet, other: ref BitSet): void {
-    let otherLen = vec.len<u64>(other.words)
-    while vec.len<u64>(self.words) < otherLen {
-        vec.push<u64>(self.words, 0 as u64)
+    let otherLen = other.words.len()
+    while self.words.len() < otherLen {
+        self.words.push(0 as u64)
     }
     let mut i: usize = 0 as usize
     while i < otherLen {
         let mut wSelf: u64 = 0 as u64
-        match vec.getCopy<u64>(self.words, i) {
+        match self.words.getCopy(i) {
             Some(value) => { wSelf = value }
             None => {}
         }
         let mut wOther: u64 = 0 as u64
-        match vec.getCopy<u64>(other.words, i) {
+        match other.words.getCopy(i) {
             Some(value) => { wOther = value }
             None => {}
         }
-        vec.put<u64>(self.words, i, wSelf | wOther)
+        self.words.set(i, wSelf | wOther)
         i = i + (1 as usize)
     }
     if other.nbits > self.nbits {
@@ -209,16 +209,16 @@ public func BitSet.unionWith(self: mut ref BitSet, other: ref BitSet): void {
 /// Words beyond `other`'s range are cleared. The operation visits every word
 /// in `self` and retains its storage and recorded bit range.
 public func BitSet.intersectWith(self: mut ref BitSet, other: ref BitSet): void {
-    let selfLen = vec.len<u64>(self.words)
-    let otherLen = vec.len<u64>(other.words)
+    let selfLen = self.words.len()
+    let otherLen = other.words.len()
     let mut i: usize = 0 as usize
     while i < selfLen {
         if i < otherLen {
             let wSelf = wordAt(ref self.words, i)
             let wOther = wordAt(ref other.words, i)
-            vec.put<u64>(self.words, i, wSelf & wOther)
+            self.words.set(i, wSelf & wOther)
         } else {
-            vec.put<u64>(self.words, i, 0 as u64)
+            self.words.set(i, 0 as u64)
         }
         i = i + (1 as usize)
     }
@@ -229,14 +229,14 @@ public func BitSet.intersectWith(self: mut ref BitSet, other: ref BitSet): void 
 /// Bits beyond `other`'s range are unchanged. The operation visits every
 /// word in `self` and retains its storage and recorded bit range.
 public func BitSet.differenceWith(self: mut ref BitSet, other: ref BitSet): void {
-    let selfLen = vec.len<u64>(self.words)
-    let otherLen = vec.len<u64>(other.words)
+    let selfLen = self.words.len()
+    let otherLen = other.words.len()
     let mut i: usize = 0 as usize
     while i < selfLen {
         if i < otherLen {
             let wSelf = wordAt(ref self.words, i)
             let wOther = wordAt(ref other.words, i)
-            vec.put<u64>(self.words, i, wSelf & (~wOther))
+            self.words.set(i, wSelf & (~wOther))
         }
         i = i + (1 as usize)
     }
@@ -246,7 +246,7 @@ public func BitSet.differenceWith(self: mut ref BitSet, other: ref BitSet): void
 ///
 /// Runs in O(words + set bits) time and does not allocate.
 public func BitSet.countOnes(self: ref BitSet): uint {
-    let total = vec.len<u64>(self.words)
+    let total = self.words.len()
     let mut count: uint = 0 as uint
     let mut i: usize = 0 as usize
     while i < total {

@@ -213,6 +213,7 @@ pub enum TokenKind {
     KwContinue,
     KwFunc,
     KwAsync,
+    KwComptime,
     KwAwait,
     KwStruct,
     KwEnum,
@@ -333,7 +334,7 @@ impl fmt::Display for TokenKind {
 }
 
 impl TokenKind {
-    pub const COUNT: usize = 138;
+    pub const COUNT: usize = 139;
 
     /// Returns `true` if this token kind represents a language keyword.
     #[must_use]
@@ -351,6 +352,7 @@ impl TokenKind {
                 | TokenKind::KwContinue
                 | TokenKind::KwFunc
                 | TokenKind::KwAsync
+                | TokenKind::KwComptime
                 | TokenKind::KwAwait
                 | TokenKind::KwStruct
                 | TokenKind::KwEnum
@@ -534,6 +536,7 @@ impl TokenKind {
             TokenKind::TypeIsize => 133,
             TokenKind::TypeUsize => 134,
             TokenKind::ByteChar => 137,
+            TokenKind::KwComptime => 138,
             TokenKind::Error(_) => 132,
         }
     }
@@ -678,6 +681,7 @@ impl TokenKind {
             133 => TokenKind::TypeIsize,
             134 => TokenKind::TypeUsize,
             137 => TokenKind::ByteChar,
+            138 => TokenKind::KwComptime,
             _ => TokenKind::Error(crate::LexErrorCode::InvalidChar),
         }
     }
@@ -792,6 +796,7 @@ impl TokenKind {
             TokenKind::KwContinue => "KW_CONTINUE",
             TokenKind::KwFunc => "KW_FUNC",
             TokenKind::KwAsync => "KW_ASYNC",
+            TokenKind::KwComptime => "KW_COMPTIME",
             TokenKind::KwAwait => "KW_AWAIT",
             TokenKind::KwStruct => "KW_STRUCT",
             TokenKind::KwEnum => "KW_ENUM",

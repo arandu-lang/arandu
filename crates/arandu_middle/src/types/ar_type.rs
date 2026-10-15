@@ -37,6 +37,7 @@ pub enum ArType {
 
     /// Concrete scalar const generic argument.
     Const(u64),
+    FrozenConst(std::sync::Arc<crate::ctfe::ConstValue>),
 
     /// Reference to a scalar const generic parameter inside a generic type.
     ConstParam(SymbolId),
@@ -293,6 +294,7 @@ impl ArType {
             | ArType::IntLiteral
             | ArType::FloatLiteral
             | ArType::Error
+            | ArType::FrozenConst(_)
             | ArType::Const(_)
             | ArType::ConstParam(_) => {}
             ArType::Named(_, args) => {
@@ -384,6 +386,17 @@ impl ArType {
                 let inner = interner.resolve(*inner).display(symbols, interner);
                 format!("[{name}]{inner}")
             }
+            ArType::FrozenConst(value) => match value.as_ref() {
+                crate::ctfe::ConstValue::Bool(value) => value.to_string(),
+                crate::ctfe::ConstValue::Integer(value) => value.value().to_string(),
+                crate::ctfe::ConstValue::Aggregate(value) => value
+                    .shape()
+                    .intern(interner)
+                    .ok()
+                    .map(|id| interner.resolve(id).display(symbols, interner))
+                    .unwrap_or_else(|| "constant".into()),
+                _ => "constant".into(),
+            },
             ArType::Const(value) => value.to_string(),
             ArType::ConstParam(param) => symbols
                 .try_get(*param)
@@ -483,6 +496,7 @@ impl ArType {
             }
             ArType::IntLiteral
             | ArType::FloatLiteral
+            | ArType::FrozenConst(_)
             | ArType::Const(_)
             | ArType::Ptr(_)
             | ArType::Nullable(_)

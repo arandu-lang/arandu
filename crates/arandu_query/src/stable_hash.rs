@@ -32,6 +32,26 @@ fn hash_str(hasher: &mut Hasher, value: &str) {
     hasher.update(value.as_bytes());
 }
 
+pub(crate) fn hash_literal_entry(
+    hasher: &mut Hasher,
+    entry: &arandu_middle::literal_pool::AmirLiteralEntry,
+) {
+    use arandu_middle::literal_pool::AmirLiteralEntry;
+    let (tag, text) = match entry {
+        AmirLiteralEntry::Int(text) => (0, text),
+        AmirLiteralEntry::Float(text) => (1, text),
+        AmirLiteralEntry::Str(text) => (2, text),
+        AmirLiteralEntry::Char(text) => (3, text),
+        AmirLiteralEntry::FloatBits(value) => {
+            hasher.update(&[4]);
+            hasher.update(&value.canonical_bytes());
+            return;
+        }
+    };
+    hasher.update(&[tag]);
+    hash_str(hasher, text);
+}
+
 fn hash_borrow_path(hasher: &mut Hasher, path: &arandu_middle::types::BorrowPath) {
     use arandu_middle::types::BorrowPathSegment;
 
@@ -82,7 +102,7 @@ fn hash_borrow_path(hasher: &mut Hasher, path: &arandu_middle::types::BorrowPath
     }
 }
 
-fn hash_return_borrow_summary(
+pub(crate) fn hash_return_borrow_summary(
     hasher: &mut Hasher,
     summary: &arandu_middle::types::ReturnBorrowSummary,
 ) {
@@ -159,6 +179,59 @@ fn hash_symbol_id(hasher: &mut Hasher, id: SymbolId) {
 }
 
 fn hash_resolved_names(hasher: &mut Hasher, resolved: &arandu_middle::ResolvedNames) {
+    let mut loops: Vec<_> = resolved.comptime_loops.iter().collect();
+    loops.sort_by_key(|(key, _)| (key.start, key.end));
+    hasher.update(&u64_le(u64::try_from(loops.len()).unwrap_or(u64::MAX)));
+    for (key, (lower, upper)) in loops {
+        hasher.update(&u32_le(key.start));
+        hasher.update(&u32_le(key.end));
+        hasher.update(&arandu_middle::ctfe::ConstValue::Integer(*lower).canonical_bytes());
+        hasher.update(&arandu_middle::ctfe::ConstValue::Integer(*upper).canonical_bytes());
+    }
+    let mut typed: Vec<_> = resolved.typed_comptime_arguments.iter().collect();
+    typed.sort_by_key(|(key, _)| (key.start, key.end));
+    hasher.update(&u64_le(u64::try_from(typed.len()).unwrap_or(u64::MAX)));
+    for (key, value) in typed {
+        hasher.update(&key.start.to_le_bytes());
+        hasher.update(&key.end.to_le_bytes());
+        hasher.update(&value.canonical_bytes());
+    }
+    let mut arguments: Vec<_> = resolved.comptime_arguments.iter().collect();
+    arguments.sort_by_key(|(key, _)| (key.start, key.end));
+    hasher.update(&u64_le(u64::try_from(arguments.len()).unwrap_or(u64::MAX)));
+    for (key, value) in arguments {
+        hasher.update(&u32_le(key.start));
+        hasher.update(&u32_le(key.end));
+        hasher.update(&[u8::from(value.is_some())]);
+        if let Some(value) = value {
+            hasher.update(&u64_le(*value));
+        }
+    }
+    let mut deferred: Vec<_> = resolved
+        .deferred_comptime_functions
+        .iter()
+        .copied()
+        .collect();
+    deferred.sort_unstable_by_key(|symbol| (symbol.file_id, symbol.local_id.0));
+    hasher.update(&u64_le(u64::try_from(deferred.len()).unwrap_or(u64::MAX)));
+    for symbol in deferred {
+        hash_symbol_id(hasher, symbol);
+    }
+    let mut loops: Vec<_> = resolved.deferred_loop_bodies.iter().collect();
+    loops.sort_unstable_by_key(|key| (key.start, key.end));
+    hasher.update(&u64_le(u64::try_from(loops.len()).unwrap_or(u64::MAX)));
+    for key in loops {
+        hasher.update(&u32_le(key.start));
+        hasher.update(&u32_le(key.end));
+    }
+    let mut branches: Vec<_> = resolved.comptime_branches.iter().collect();
+    branches.sort_by_key(|(key, _)| (key.start, key.end));
+    hasher.update(&u64_le(u64::try_from(branches.len()).unwrap_or(u64::MAX)));
+    for (key, selected) in branches {
+        hasher.update(&u32_le(key.start));
+        hasher.update(&u32_le(key.end));
+        hasher.update(&[u8::from(*selected)]);
+    }
     for entries in [
         &resolved.definitions,
         &resolved.value_refs,
@@ -290,6 +363,12 @@ fn hash_symbol_table(hasher: &mut Hasher, table: &SymbolTable, include_spans: bo
         hash_symbol_id(hasher, *symbol);
         hash_str(hasher, name);
     }
+    let mut tooling_roots: Vec<_> = table.tooling_entrypoints.iter().copied().collect();
+    tooling_roots.sort_by_key(|symbol| (symbol.file_id, symbol.local_id.0));
+    hasher.update(&u64_le(tooling_roots.len() as u64));
+    for symbol in tooling_roots {
+        hash_symbol_id(hasher, symbol);
+    }
 
     if include_spans {
         hasher.update(&u32_le(table.file_id));
@@ -388,6 +467,55 @@ impl StableHash for ResolutionResult {
     }
 }
 
+impl StableHash for arandu_resolve::HeaderResolution {
+    fn stable_hash(&self) -> blake3::Hash {
+        let mut h = Hasher::new();
+        h.update(b"HeaderResolution/v1");
+        h.update(self.declarations.stable_hash().as_bytes());
+        let mut scopes: Vec<_> = self.body_scopes.iter().collect();
+        scopes.sort_by_key(|(key, _)| (key.start, key.end));
+        h.update(&u64_le(scopes.len() as u64));
+        for (key, scope) in scopes {
+            h.update(&u32_le(key.start));
+            h.update(&u32_le(key.end));
+            h.update(&u32_le(scope.0));
+        }
+        let mut aliases: Vec<_> = self.import_aliases.iter().collect();
+        aliases.sort_by(|a, b| a.0.cmp(b.0));
+        h.update(&u64_le(aliases.len() as u64));
+        for (alias, module) in aliases {
+            hash_str(&mut h, alias);
+            hash_str(&mut h, module);
+        }
+        match &self.current_module {
+            Some(module) => {
+                h.update(&[1]);
+                hash_str(&mut h, module);
+            }
+            None => {
+                h.update(&[0]);
+            }
+        }
+        let mut imports: Vec<_> = self.imported_symbols.iter().collect();
+        imports.sort_by_key(|(symbol, _)| (symbol.file_id, symbol.local_id.0));
+        h.update(&u64_le(imports.len() as u64));
+        for (symbol, (name, span)) in imports {
+            hash_symbol_id(&mut h, *symbol);
+            hash_str(&mut h, name);
+            h.update(&u32_le(span.file_id));
+            h.update(&u32_le(span.start));
+            h.update(&u32_le(span.end));
+        }
+        let mut used: Vec<_> = self.used_symbols.iter().copied().collect();
+        used.sort_by_key(|symbol| (symbol.file_id, symbol.local_id.0));
+        h.update(&u64_le(used.len() as u64));
+        for symbol in used {
+            hash_symbol_id(&mut h, symbol);
+        }
+        finish(h)
+    }
+}
+
 impl StableHash for TypeCheckResult {
     fn stable_hash(&self) -> blake3::Hash {
         hash_type_check_result(self, true)
@@ -398,9 +526,51 @@ pub(crate) fn type_signature_hash(result: &TypeCheckResult) -> blake3::Hash {
     hash_type_check_result(result, false)
 }
 
+/// Presentation intentionally hides frozen aggregate contents. Memo equality
+/// must instead retain the full structural type and canonical constant values.
+fn semantic_type_bytes(
+    ty: arandu_middle::types::TypeId,
+    interner: &arandu_middle::types::TypeInterner,
+    symbols: &SymbolTable,
+) -> Vec<u8> {
+    let canonical = arandu_middle::types::TypeShape::from_id(ty, interner)
+        .ok()
+        .and_then(|shape| arandu_middle::ctfe::canonical_type_bytes(&shape).ok());
+    if let Some(bytes) = canonical {
+        let mut identity = vec![0];
+        identity.extend(bytes);
+        return identity;
+    }
+    // Preserve recovery for types beyond the admitted structural limits.
+    // Such types are diagnosed before lowering; never hash incidental TypeIds.
+    let mut identity = vec![1];
+    identity.extend(interner.display(ty, symbols).bytes());
+    identity
+}
+
+fn hash_semantic_type(
+    hash: &mut Hasher,
+    ty: arandu_middle::types::TypeId,
+    interner: &arandu_middle::types::TypeInterner,
+    symbols: &SymbolTable,
+) {
+    let bytes = semantic_type_bytes(ty, interner, symbols);
+    hash.update(&u64_le(u64::try_from(bytes.len()).unwrap_or(u64::MAX)));
+    hash.update(&bytes);
+}
+
 fn hash_type_check_result(result: &TypeCheckResult, include_spans: bool) -> blake3::Hash {
     let mut h = Hasher::new();
-    h.update(b"TypeCheckResult/v2");
+    h.update(b"TypeCheckResult/v5");
+    h.update(result.type_info.target_identity.os.as_bytes());
+    h.update(&[0]);
+    h.update(result.type_info.target_identity.arch.as_bytes());
+    h.update(&[0, result.type_info.target_pointer_width]);
+    let layout = result.type_info.target_layout;
+    for class in [layout.pointer, layout.float, layout.i64, layout.f64] {
+        h.update(&class.size.to_le_bytes());
+        h.update(&class.abi_align.to_le_bytes());
+    }
     hash_symbol_table(&mut h, &result.symbols, include_spans);
     // `ModuleSignatures` deliberately excludes body references so a private or
     // implementation-only edit does not invalidate importing files.
@@ -417,15 +587,40 @@ fn hash_type_check_result(result: &TypeCheckResult, include_spans: bool) -> blak
             match slot {
                 Some(tid) => {
                     h.update(&[1]);
-                    let ty = result.type_info.type_interner.resolve(*tid);
-                    hash_str(
+                    hash_semantic_type(
                         &mut h,
-                        &ty.display(&result.symbols, &result.type_info.type_interner),
+                        *tid,
+                        &result.type_info.type_interner,
+                        &result.symbols,
                     );
                 }
                 None => {
                     h.update(&[0]);
                 }
+            }
+        }
+        let mut globals: Vec<_> = result.type_info.ctfe_global_values.iter().collect();
+        globals.sort_unstable_by_key(|(symbol, _)| (symbol.file_id, symbol.local_id.0));
+        h.update(b"CtfeGlobals/v1");
+        h.update(&u64_le(globals.len() as u64));
+        for (symbol, value) in globals {
+            hash_symbol_id(&mut h, *symbol);
+            h.update(&value.canonical_bytes());
+        }
+        let mut values: Vec<_> = result.type_info.ctfe_values.iter().collect();
+        values.sort_unstable_by_key(|(span, _)| (span.file_id, span.start, span.end));
+        h.update(b"CtfeResidual/v2");
+        h.update(&u64_le(result.type_info.ctfe_roots.len() as u64));
+        for expr in &result.type_info.ctfe_roots {
+            hash_id(&mut h, expr.as_usize());
+        }
+        h.update(&u64_le(values.len() as u64));
+        for (span, (value, layout)) in values {
+            hash_span(&mut h, *span);
+            h.update(&value.canonical_bytes());
+            for class in [layout.pointer, layout.float, layout.i64, layout.f64] {
+                h.update(&class.size.to_le_bytes());
+                h.update(&class.abi_align.to_le_bytes());
             }
         }
     }
@@ -434,10 +629,11 @@ fn hash_type_check_result(result: &TypeCheckResult, include_spans: bool) -> blak
     decls.sort_by_key(|(id, _)| (id.file_id, id.local_id.0));
     for (sid, tid) in decls {
         hash_symbol_id(&mut h, *sid);
-        let ty = result.type_info.type_interner.resolve(*tid);
-        hash_str(
+        hash_semantic_type(
             &mut h,
-            &ty.display(&result.symbols, &result.type_info.type_interner),
+            *tid,
+            &result.type_info.type_interner,
+            &result.symbols,
         );
     }
     let mut borrow_summaries: Vec<_> = result.type_info.return_borrow_summaries.iter().collect();
@@ -456,6 +652,59 @@ fn hash_type_check_result(result: &TypeCheckResult, include_spans: bool) -> blak
     let symbols = &result.symbols;
     let interner = &info.type_interner;
 
+    let mut deferred: Vec<_> = info.deferred_headers.iter().copied().collect();
+    deferred.sort_by_key(|symbol| (symbol.file_id, symbol.local_id.0));
+    h.update(&u64_le(u64::try_from(deferred.len()).unwrap_or(u64::MAX)));
+    for symbol in deferred {
+        hash_symbol_id(&mut h, symbol);
+    }
+    let mut headers: Vec<_> = info.concrete_headers.iter().collect();
+    headers.sort_by_key(|(key, _)| key.stable_hash().as_bytes().to_owned());
+    h.update(&u64_le(u64::try_from(headers.len()).unwrap_or(u64::MAX)));
+    for (key, header) in headers {
+        h.update(key.stable_hash().as_bytes());
+        hash_semantic_type(&mut h, header.signature, interner, symbols);
+        h.update(&[u8::from(header.fields.is_some())]);
+        if let Some(fields) = &header.fields {
+            h.update(&u64_le(u64::try_from(fields.len()).unwrap_or(u64::MAX)));
+            for field in fields.iter() {
+                hash_str(&mut h, &field.name);
+                h.update(&[u8::from(field.symbol.is_some())]);
+                if let Some(symbol) = field.symbol {
+                    hash_symbol_id(&mut h, symbol);
+                }
+                h.update(&u64_le(u64::try_from(field.index).unwrap_or(u64::MAX)));
+                hash_semantic_type(&mut h, field.ty, interner, symbols);
+            }
+        }
+        h.update(&u64_le(
+            u64::try_from(header.variants.len()).unwrap_or(u64::MAX),
+        ));
+        for (symbol, tag, payload) in &header.variants {
+            hash_symbol_id(&mut h, *symbol);
+            h.update(&u64_le(u64::try_from(*tag).unwrap_or(u64::MAX)));
+            match payload {
+                arandu_typeck::type_checker::info::EnumPayloadShape::Unit => {
+                    h.update(&[0]);
+                }
+                arandu_typeck::type_checker::info::EnumPayloadShape::Tuple(items) => {
+                    h.update(&[1]);
+                    h.update(&u64_le(u64::try_from(items.len()).unwrap_or(u64::MAX)));
+                    for &ty in items {
+                        hash_semantic_type(&mut h, ty, interner, symbols);
+                    }
+                }
+            }
+        }
+    }
+    let mut requests: Vec<_> = info.header_requests.iter().collect();
+    requests.sort_by_key(|(key, _)| key.stable_hash().as_bytes().to_owned());
+    h.update(&u64_le(u64::try_from(requests.len()).unwrap_or(u64::MAX)));
+    for (key, span) in requests {
+        h.update(key.stable_hash().as_bytes());
+        hash_span(&mut h, *span);
+    }
+
     let mut struct_fields: Vec<_> = info.struct_fields.iter().collect();
     struct_fields.sort_by_key(|(symbol, _)| (symbol.file_id, symbol.local_id.0));
     h.update(&u64_le(struct_fields.len() as u64));
@@ -470,7 +719,7 @@ fn hash_type_check_result(result: &TypeCheckResult, include_spans: bool) -> blak
             } else {
                 h.update(&[0]);
             }
-            hash_str(&mut h, &interner.display(field.ty, symbols));
+            hash_semantic_type(&mut h, field.ty, interner, symbols);
             h.update(&u64_le(field.index as u64));
         }
     }
@@ -489,7 +738,7 @@ fn hash_type_check_result(result: &TypeCheckResult, include_spans: bool) -> blak
                 h.update(&[1]);
                 h.update(&u64_le(types.len() as u64));
                 for ty in types {
-                    hash_str(&mut h, &interner.display(*ty, symbols));
+                    hash_semantic_type(&mut h, *ty, interner, symbols);
                 }
             }
         };
@@ -513,10 +762,11 @@ fn hash_type_check_result(result: &TypeCheckResult, include_spans: bool) -> blak
 
     if include_spans {
         let mut destructor_instances: Vec<_> = info.destructor_instances.iter().collect();
-        destructor_instances.sort_by_key(|(ty, _)| ty.as_usize());
+        destructor_instances
+            .sort_by_cached_key(|(ty, _)| semantic_type_bytes(**ty, interner, symbols));
         h.update(&u64_le(destructor_instances.len() as u64));
         for (ty, destructor) in destructor_instances {
-            hash_str(&mut h, &interner.display(*ty, symbols));
+            hash_semantic_type(&mut h, *ty, interner, symbols);
             hash_symbol_id(&mut h, *destructor);
         }
     }
@@ -537,7 +787,7 @@ fn hash_type_check_result(result: &TypeCheckResult, include_spans: bool) -> blak
     h.update(&u64_le(generic_defaults.len() as u64));
     for (symbol, ty) in generic_defaults {
         hash_symbol_id(&mut h, *symbol);
-        hash_str(&mut h, &interner.display(*ty, symbols));
+        hash_semantic_type(&mut h, *ty, interner, symbols);
     }
 
     let mut constraints: Vec<_> = info.param_constraints.iter().collect();
@@ -550,7 +800,7 @@ fn hash_type_check_result(result: &TypeCheckResult, include_spans: bool) -> blak
             hash_symbol_id(&mut h, constraint.iface_sym);
             h.update(&u64_le(constraint.type_args.len() as u64));
             for ty in &constraint.type_args {
-                hash_str(&mut h, &interner.display(*ty, symbols));
+                hash_semantic_type(&mut h, *ty, interner, symbols);
             }
         }
     }
@@ -569,7 +819,7 @@ fn hash_type_check_result(result: &TypeCheckResult, include_spans: bool) -> blak
         h.update(&u64_le(interface.methods.len() as u64));
         for method in &interface.methods {
             hash_str(&mut h, &method.name);
-            hash_str(&mut h, &interner.display(method.sig_id, symbols));
+            hash_semantic_type(&mut h, method.sig_id, interner, symbols);
             h.update(&u64_le(method.generic_params.len() as u64));
             for param in &method.generic_params {
                 hash_symbol_id(&mut h, *param);
@@ -579,11 +829,13 @@ fn hash_type_check_result(result: &TypeCheckResult, include_spans: bool) -> blak
 
     if include_spans {
         let mut variant_instantiations: Vec<_> = info.variant_instantiations.iter().collect();
-        variant_instantiations.sort_by_key(|((symbol, args), _)| {
+        variant_instantiations.sort_by_cached_key(|((symbol, args), _)| {
             (
                 symbol.file_id,
                 symbol.local_id.0,
-                args.iter().map(|arg| arg.as_usize()).collect::<Vec<_>>(),
+                args.iter()
+                    .map(|arg| semantic_type_bytes(*arg, interner, symbols))
+                    .collect::<Vec<_>>(),
             )
         });
         h.update(&u64_le(variant_instantiations.len() as u64));
@@ -591,13 +843,13 @@ fn hash_type_check_result(result: &TypeCheckResult, include_spans: bool) -> blak
             hash_symbol_id(&mut h, *symbol);
             h.update(&u64_le(args.len() as u64));
             for ty in args {
-                hash_str(&mut h, &interner.display(*ty, symbols));
+                hash_semantic_type(&mut h, *ty, interner, symbols);
             }
             h.update(&u64_le(params.len() as u64));
             for ty in params {
-                hash_str(&mut h, &interner.display(*ty, symbols));
+                hash_semantic_type(&mut h, *ty, interner, symbols);
             }
-            hash_str(&mut h, &interner.display(*result_ty, symbols));
+            hash_semantic_type(&mut h, *result_ty, interner, symbols);
         }
     }
 
@@ -685,31 +937,14 @@ fn hash_parse_err(err: &ParseError) -> blake3::Hash {
 impl StableHash for AmirProgram {
     fn stable_hash(&self) -> blake3::Hash {
         let mut h = Hasher::new();
-        h.update(b"AmirProgram/v3");
+        h.update(b"AmirProgram/v4");
         h.update(&u64_le(self.funcs.len() as u64));
         for f in &self.funcs {
             h.update(f.stable_hash().as_bytes());
         }
         h.update(&u64_le(self.literal_pool.entries.len() as u64));
         for entry in &self.literal_pool.entries {
-            match entry {
-                arandu_middle::literal_pool::AmirLiteralEntry::Int(s) => {
-                    h.update(&[0]);
-                    hash_str(&mut h, s);
-                }
-                arandu_middle::literal_pool::AmirLiteralEntry::Float(s) => {
-                    h.update(&[1]);
-                    hash_str(&mut h, s);
-                }
-                arandu_middle::literal_pool::AmirLiteralEntry::Str(s) => {
-                    h.update(&[2]);
-                    hash_str(&mut h, s);
-                }
-                arandu_middle::literal_pool::AmirLiteralEntry::Char(s) => {
-                    h.update(&[3]);
-                    hash_str(&mut h, s);
-                }
-            }
+            hash_literal_entry(&mut h, entry);
         }
         // HashMap iteration order must not influence the content hash.
         let mut externs: Vec<_> = self.extern_funcs.iter().collect();
@@ -750,12 +985,192 @@ impl StableHash for crate::passes::LowerAmirArtifacts {
     }
 }
 
+impl StableHash for crate::passes::PreparedHir {
+    fn stable_hash(&self) -> blake3::Hash {
+        let mut hash = Hasher::new();
+        hash.update(b"PreparedHir/v1");
+        hash.update(self.source_fingerprint.as_bytes());
+        hash.update(self.type_check.stable_hash().as_bytes());
+        hash.update(self.diagnostics.stable_hash().as_bytes());
+        hash.update(&[u8::from(self.hir.is_some())]);
+        hash.finalize()
+    }
+}
+
+impl StableHash for crate::ctfe::CtfeLowering {
+    fn stable_hash(&self) -> blake3::Hash {
+        use crate::ctfe::BuildFailure;
+        let mut hash = Hasher::new();
+        hash.update(b"CtfeLowering/v3");
+        match &self.result {
+            Ok(unit) => {
+                hash.update(&[0]);
+                hash.update(unit.identity().stable_hash().as_bytes());
+                for (symbol, key) in unit.call_identities() {
+                    hash_symbol_id(&mut hash, *symbol);
+                    hash.update(key.stable_hash().as_bytes());
+                }
+                hash.update(unit.function().stable_hash().as_bytes());
+                for bytes in unit.scalar_type_bytes() {
+                    hash.update(&bytes);
+                }
+                // All literal spellings/kinds belong to this function's pool.
+                for entry in &unit.literals().entries {
+                    hash_literal_entry(&mut hash, entry);
+                }
+                // The whole explicit layout is part of the unit, even when no
+                // pointer-sized integer happens to occur in this function.
+                for class in [
+                    unit.layout().pointer,
+                    unit.layout().float,
+                    unit.layout().i64,
+                    unit.layout().f64,
+                ] {
+                    hash.update(&class.size.to_le_bytes());
+                    hash.update(&class.abi_align.to_le_bytes());
+                }
+            }
+            Err(BuildFailure::MissingFunction) => {
+                hash.update(&[1]);
+            }
+            Err(BuildFailure::GenericFunction) => {
+                hash.update(&[2]);
+            }
+            Err(BuildFailure::Diagnostics(diagnostics)) => {
+                hash.update(&[3]);
+                hash.update(diagnostics.stable_hash().as_bytes());
+            }
+            Err(BuildFailure::Evaluation(error)) => {
+                hash.update(&[4]);
+                hash_ctfe_error(&mut hash, error);
+            }
+            Err(BuildFailure::InvalidRoot) => {
+                hash.update(&[5]);
+            }
+            Err(BuildFailure::RuntimeCapture(capture)) => {
+                hash.update(&[6]);
+                hash_symbol_id(&mut hash, capture.symbol);
+                hash_str(&mut hash, &capture.name);
+                for span in [capture.use_span, capture.declaration_span] {
+                    hash.update(&span.file_id.to_le_bytes());
+                    hash.update(&span.start.to_le_bytes());
+                    hash.update(&span.end.to_le_bytes());
+                }
+            }
+        }
+        finish(hash)
+    }
+}
+
+fn hash_ctfe_error(hash: &mut Hasher, error: &arandu_mir::ctfe::EvalErrorKind) {
+    use arandu_middle::ctfe::ConstValueError as V;
+    use arandu_mir::ctfe::{EvalErrorKind as E, ScalarEvalError as S};
+    let tag = match error {
+        E::Cancelled => 0,
+        E::FuelExhausted => 1,
+        E::FrameLimit => 2,
+        E::ValueLimit => 3,
+        E::AllocationFailed => 4,
+        E::MissingFunction(_) => 5,
+        E::UnavailableFunction(_) => 6,
+        E::UnsupportedType(_) => 7,
+        E::UnsupportedOperation => 8,
+        E::InvalidIr => 9,
+        E::Uninitialized => 10,
+        E::TypeMismatch => 11,
+        E::InvalidLiteral => 12,
+        E::TargetMismatch => 13,
+        E::Arithmetic(_) => 14,
+        E::Value(_) => 15,
+        E::InvalidLayout(_) => 16,
+    };
+    hash.update(&[tag]);
+    match error {
+        E::InvalidLayout(error) => {
+            use arandu_middle::layout::DataLayoutError;
+            hash.update(&[match error {
+                DataLayoutError::PointerWidth => 0,
+                DataLayoutError::ScalarWidth => 1,
+                DataLayoutError::Alignment => 2,
+                DataLayoutError::FloatLayout => 3,
+            }]);
+        }
+        E::MissingFunction(symbol) | E::UnavailableFunction(symbol) => {
+            hash_symbol_id(hash, *symbol)
+        }
+        E::UnsupportedType(id) => hash_id(hash, id.as_usize()),
+        E::Arithmetic(error) => match error {
+            S::TypeMismatch => {
+                hash.update(&[0]);
+            }
+            S::Overflow(ty) => {
+                hash.update(&[1]);
+                hash.update(&ty.canonical_bytes());
+            }
+            S::DivisionByZero => {
+                hash.update(&[2]);
+            }
+            S::InvalidShift { amount, bit_width } => {
+                hash.update(&[3, *bit_width]);
+                hash.update(&amount.to_le_bytes());
+            }
+            S::UnsupportedBinary(op) => {
+                hash.update(&[4, op.stable_tag()]);
+            }
+            S::UnsupportedUnary(op) => {
+                hash.update(&[5, op.stable_tag()]);
+            }
+        },
+        E::Value(error) => match error {
+            V::UnsupportedIntegerType(primitive) => {
+                hash.update(&[0]);
+                hash_ar_type(hash, &arandu_middle::types::ArType::Primitive(*primitive));
+            }
+            V::UnsupportedPointerWidth(width) => {
+                hash.update(&[1]);
+                hash.update(&width.to_le_bytes());
+            }
+            V::OutOfRange { ty, value } => {
+                hash.update(&[2]);
+                hash.update(&ty.canonical_bytes());
+                hash.update(&value.to_le_bytes());
+            }
+            V::NegativeConstGeneric(value) => {
+                hash.update(&[3]);
+                hash.update(&value.to_le_bytes());
+            }
+            V::StructuralLimit => {
+                hash.update(&[4]);
+            }
+            V::InvalidAggregateShape => {
+                hash.update(&[5]);
+            }
+        },
+        E::Cancelled
+        | E::FuelExhausted
+        | E::FrameLimit
+        | E::ValueLimit
+        | E::AllocationFailed
+        | E::UnsupportedOperation
+        | E::InvalidIr
+        | E::Uninitialized
+        | E::TypeMismatch
+        | E::InvalidLiteral
+        | E::TargetMismatch => {}
+    }
+}
+
 impl StableHash for crate::passes::BorrowInterfaces {
     fn stable_hash(&self) -> blake3::Hash {
         let mut hasher = Hasher::new();
         hasher.update(&u64_le(self.entries.len() as u64));
         for (symbol, summary) in &self.entries {
             hash_symbol_id(&mut hasher, *symbol);
+            hash_return_borrow_summary(&mut hasher, summary);
+        }
+        hasher.update(&u64_le(self.instances.len() as u64));
+        for (key, summary) in &self.instances {
+            hasher.update(key.stable_hash().as_bytes());
             hash_return_borrow_summary(&mut hasher, summary);
         }
         finish(hasher)
@@ -961,6 +1376,10 @@ fn hash_ar_type(hasher: &mut Hasher, ty: &arandu_middle::types::ArType) {
             hasher.update(&[6]);
             hash_symbol_id(hasher, *symbol);
             hash_id(hasher, inner.as_usize());
+        }
+        ArType::FrozenConst(value) => {
+            hasher.update(&[24]);
+            hasher.update(&value.canonical_bytes());
         }
         ArType::Const(value) => {
             hasher.update(&[7]);
@@ -1879,6 +2298,82 @@ mod tests {
         assert_ne!(
             make_program(false, Primitive::Bool).stable_hash(),
             make_program(false, Primitive::Char).stable_hash()
+        );
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn type_signatures_distinguish_frozen_aggregate_arguments_with_equal_display() {
+        use arandu_middle::ctfe::{ConstAggregate, ConstValue};
+        use arandu_middle::types::{ArType, Primitive, TypeShape};
+        use arandu_middle::SymbolId;
+        use arandu_semantics::TypeCheckResult;
+        use std::sync::Arc;
+
+        let make = |flag| {
+            let mut checked = TypeCheckResult::empty();
+            let info = Arc::make_mut(&mut checked.type_info);
+            let frozen = ConstAggregate::new(
+                TypeShape::Tuple(vec![TypeShape::Primitive(Primitive::Bool)]),
+                vec![ConstValue::Bool(flag)],
+            )
+            .expect("closed constant tuple");
+            let argument = info
+                .type_interner
+                .intern(ArType::FrozenConst(Arc::new(ConstValue::Aggregate(frozen))));
+            let signature = info.type_interner.intern(ArType::named(
+                SymbolId::new(100, 8),
+                &[argument],
+                &info.type_interner,
+            ));
+            info.record_decl_type(SymbolId::new(100, 7), signature);
+            checked
+        };
+        let a = make(false);
+        let b = make(true);
+        let presentation = |checked: &TypeCheckResult| {
+            checked.type_info.type_interner.display(
+                checked
+                    .type_info
+                    .decl_type_id(SymbolId::new(100, 7))
+                    .expect("signature"),
+                &checked.symbols,
+            )
+        };
+        assert_eq!(presentation(&a), presentation(&b));
+        assert_ne!(type_signature_hash(&a), type_signature_hash(&b));
+        assert_ne!(a.stable_hash(), b.stable_hash());
+        assert_eq!(type_signature_hash(&a), type_signature_hash(&make(false)));
+    }
+
+    #[test]
+    fn cached_instance_hashes_do_not_depend_on_interner_allocation_order() {
+        use arandu_middle::types::{ArType, Primitive};
+        use arandu_middle::SymbolId;
+        use arandu_semantics::TypeCheckResult;
+        use std::sync::Arc;
+
+        let make = |reverse| {
+            let mut checked = TypeCheckResult::empty();
+            let info = Arc::make_mut(&mut checked.type_info);
+            let interner = &info.type_interner;
+            let int = interner.intern(ArType::Primitive(Primitive::Int));
+            let flag = interner.intern(ArType::Primitive(Primitive::Bool));
+            let choices = [(ArType::Array(2, int), 1), (ArType::Array(3, flag), 2)];
+            for index in if reverse { [1, 0] } else { [0, 1] } {
+                let (ty, identity) = &choices[index];
+                let tid = interner.intern(ty.clone());
+                info.destructor_instances
+                    .insert(tid, SymbolId::new(100, *identity));
+                info.variant_instantiations
+                    .insert((SymbolId::new(100, 0), vec![tid]), (vec![tid], tid));
+            }
+            checked
+        };
+        assert_eq!(make(false).stable_hash(), make(true).stable_hash());
+        assert_eq!(
+            type_signature_hash(&make(false)),
+            type_signature_hash(&make(true))
         );
     }
 

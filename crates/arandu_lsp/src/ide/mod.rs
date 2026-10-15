@@ -546,4 +546,129 @@ mod tests {
             )
         );
     }
+
+    #[test]
+    fn comptime_hover_displays_evaluated_value_for_blocks_and_generic_arguments() {
+        let text = concat!(
+            "func count<comptime N: uint>(): uint { return N }\n",
+            "func main(): int {\n",
+            "    let calculated = count<comptime (20 + 22)>()\n",
+            "    let block_val = comptime {\n",
+            "        let half = 21\n",
+            "        return half * 2\n",
+            "    }\n",
+            "    return (calculated + block_val) as int\n",
+            "}\n",
+        );
+        let mut host = AnalysisHost::new();
+        let file = host.new_file("comptime_hover.aru".into(), text.into());
+        let snap = host.snapshot();
+        let index = LineIndex::new(text);
+
+        // 1. Hover on `comptime (20 + 22)`
+        let arg_offset = text.find("comptime (20 + 22)").expect("comptime arg");
+        let arg_hover = hover(
+            &snap,
+            file,
+            text,
+            offset_to_position(&index, arg_offset as u32),
+        )
+        .expect("hover for comptime arg");
+        let HoverContents::Markup(arg_content) = arg_hover.contents else {
+            panic!("markdown hover expected");
+        };
+        assert!(arg_content.value.contains("= 42"), "{arg_content:?}");
+        assert!(
+            arg_content.value.contains("evaluated at compile time"),
+            "{arg_content:?}"
+        );
+
+        // 2. Hover on `count` in the generic call `count<comptime (20 + 22)>()`
+        let call_offset = text.rfind("count<").expect("count call");
+        let call_hover = hover(
+            &snap,
+            file,
+            text,
+            offset_to_position(&index, call_offset as u32),
+        )
+        .expect("hover for count call");
+        let HoverContents::Markup(call_content) = call_hover.contents else {
+            panic!("markdown hover expected");
+        };
+        assert!(
+            call_content.value.contains("func count"),
+            "{call_content:?}"
+        );
+        assert!(call_content.value.contains("= 42"), "{call_content:?}");
+        assert!(
+            call_content.value.contains("evaluated at compile time"),
+            "{call_content:?}"
+        );
+
+        // 3. Hover on `comptime {`
+        let block_offset = text.find("comptime {").expect("comptime block");
+        let block_hover = hover(
+            &snap,
+            file,
+            text,
+            offset_to_position(&index, block_offset as u32),
+        )
+        .expect("hover for comptime block");
+        let HoverContents::Markup(block_content) = block_hover.contents else {
+            panic!("markdown hover expected");
+        };
+        assert!(block_content.value.contains("= 42"), "{block_content:?}");
+        assert!(
+            block_content.value.contains("evaluated at compile time"),
+            "{block_content:?}"
+        );
+    }
+
+    #[test]
+    fn references_respects_include_declaration_expr_fallback_and_multi_file_docs() {
+        let util_text = "public func helper(): int {\n    return 1\n}\n";
+        let main_text = "import util\nfunc main(): int {\n    return util.helper()\n}\n";
+        let mut host = AnalysisHost::new();
+        let util_file = host.new_file("util.aru".into(), util_text.into());
+        let main_file = host.new_file("main.aru".into(), main_text.into());
+        let snap = host.snapshot();
+
+        let util_uri = crate::uri_util::parse_uri("file:///util.aru").expect("util uri");
+        let main_uri = crate::uri_util::parse_uri("file:///main.aru").expect("main uri");
+        let docs = vec![
+            DocSnap {
+                source: util_file,
+                path: std::sync::Arc::new(std::path::PathBuf::from("/util.aru")),
+                uri: util_uri.clone(),
+            },
+            DocSnap {
+                source: main_file,
+                path: std::sync::Arc::new(std::path::PathBuf::from("/main.aru")),
+                uri: main_uri.clone(),
+            },
+        ];
+
+        // Position on `util.helper` call in main.aru (requires expr_symbol_at fallback)
+        let call_offset = main_text.find("helper").expect("helper call") as u32;
+        let call_pos = offset_to_position(&LineIndex::new(main_text), call_offset);
+
+        let with_decl = references(
+            &snap, main_file, main_text, call_pos, &main_uri, &docs, true,
+        );
+        assert_eq!(with_decl.len(), 2, "expected decl + call: {with_decl:?}");
+        assert!(with_decl.iter().any(|loc| loc.uri == util_uri));
+        assert!(with_decl.iter().any(|loc| loc.uri == main_uri));
+
+        let without_decl = references(
+            &snap, main_file, main_text, call_pos, &main_uri, &docs, false,
+        );
+        assert_eq!(
+            without_decl.len(),
+            1,
+            "expected only call: {without_decl:?}"
+        );
+        assert_eq!(without_decl[0].uri, main_uri);
+        assert_eq!(without_decl[0].range.start, call_pos);
+        assert_eq!(without_decl[0].range.end.character, call_pos.character + 6);
+    }
 }

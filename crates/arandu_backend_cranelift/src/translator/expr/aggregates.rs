@@ -1,6 +1,7 @@
 //! Aggregate construction and member/index access for structs, tuples, and arrays.
 
 use arandu_semantics::amir::AmirOperand;
+use arandu_semantics::layout::StructLayoutProvider;
 use arandu_semantics::passes::type_checker::types::{ArType, Primitive, is_vec_type};
 use cranelift_codegen::ir::{InstBuilder, Type, Value};
 
@@ -23,13 +24,15 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         });
         let layout = self.checked_layout(&struct_ty);
 
-        let ptr_val = self.call_malloc(layout.size as u32);
+        let ptr_val = self.allocate_aggregate(&struct_ty);
+        if self.initialize_aggregate_from_rodata(ptr_val) {
+            return ptr_val;
+        }
 
         for (i, (name, op)) in fields.iter().enumerate() {
             let field_idx = self
                 .type_info
-                .struct_fields
-                .get(struct_symbol)
+                .get_struct_fields_for_type(&struct_ty, &self.type_info.type_interner)
                 .and_then(|m| m.get(name.as_str()))
                 .map(|f| f.index)
                 .unwrap_or(i);
@@ -72,7 +75,9 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 )
                 .map(|id| self.type_info.type_interner.resolve(id))
                 .unwrap_or_else(|| {
-                    let field_defs = self.type_info.struct_fields.get(struct_symbol);
+                    let field_defs = self
+                        .type_info
+                        .get_struct_fields_for_type(&struct_ty, &self.type_info.type_interner);
                     field_defs
                         .and_then(|m| m.get(name.as_str()))
                         .map(|f| self.type_info.type_interner.resolve(f.ty))
@@ -133,7 +138,10 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         let tuple_ty = expected_ar_type.cloned().unwrap_or(ArType::Error);
         let layout = self.checked_layout(&tuple_ty);
 
-        let ptr_val = self.call_malloc(layout.size as u32);
+        let ptr_val = self.allocate_aggregate(&tuple_ty);
+        if self.initialize_aggregate_from_rodata(ptr_val) {
+            return ptr_val;
+        }
 
         for (i, op) in items.iter().enumerate() {
             let offset = layout.field_offsets.get(i).copied().unwrap_or(0) as i32;
@@ -171,6 +179,9 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                         | ArType::Tuple(..)
                 );
                 let elem_layout = self.checked_layout(&elem_ty);
+                if elem_layout.size == 0 {
+                    continue;
+                }
                 if is_aggregate
                     && elem_layout.size > 0
                     && let Some(memcpy_id) = self.memcpy_func_id()
@@ -216,17 +227,43 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
     ) -> Value {
         let pointer_width = self.ptr_type.bytes() as u64;
         let array_ty = expected_ar_type.cloned().unwrap_or(ArType::Error);
-        let _ = self.checked_layout(&array_ty);
+        if !matches!(&array_ty, ArType::Array(count, _) if usize::try_from(*count).ok() == Some(items.len()))
+        {
+            self.record_ice(
+                "array initializer length does not match its type",
+                self.func_span(),
+            );
+            return self.poison_value(self.ptr_type);
+        }
+        let array_layout = self.checked_layout(&array_ty);
 
         let item_ar_ty = match &array_ty {
             ArType::Array(_, inner) => self.type_info.resolve_type_id(*inner),
             _ => ArType::Error,
         };
         let item_layout = self.checked_layout(&item_ar_ty);
+        if u64::try_from(items.len())
+            .ok()
+            .and_then(|count| item_layout.size.checked_mul(count))
+            != Some(array_layout.size)
+        {
+            self.record_ice(
+                "array initializer exceeds its storage layout",
+                self.func_span(),
+            );
+            return self.poison_value(self.ptr_type);
+        }
         let item_size = item_layout.size as i32;
 
-        let total_bytes = items.len() * item_size as usize;
-        let ptr_val = self.call_malloc(total_bytes as u32);
+        let ptr_val = self.allocate_aggregate(&array_ty);
+        // Operands have already been evaluated in AMIR. A zero-sized element
+        // has no bytes to store, including no pointer-sized representation.
+        if item_layout.size == 0 {
+            return ptr_val;
+        }
+        if self.initialize_aggregate_from_rodata(ptr_val) {
+            return ptr_val;
+        }
 
         for (i, op) in items.iter().enumerate() {
             let offset = i as i32 * item_size;
@@ -334,10 +371,9 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     .get(field)
                     .map(|tid| self.is_inline_aggregate_ty(&self.type_info.resolve_type_id(*tid)))
                     .unwrap_or(false),
-                ArType::Named(sym_id, _) => self
+                ArType::Named(_, _) => self
                     .type_info
-                    .struct_fields
-                    .get(sym_id)
+                    .get_struct_fields_for_type(&struct_ty, &self.type_info.type_interner)
                     .and_then(|fields| fields.fields.iter().find(|f| f.index == field))
                     .map(|f| self.is_inline_aggregate_ty(&self.type_info.resolve_type_id(f.ty)))
                     .unwrap_or(false),
@@ -374,6 +410,25 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         index: &AmirOperand,
         expected_ty: Option<Type>,
     ) -> Value {
+        let (target_ptr, elem_ty) = self.translate_index_address(base, index);
+        if self.is_inline_aggregate_ty(&elem_ty) {
+            return target_ptr;
+        }
+        self.builder.ins().load(
+            expected_ty.unwrap_or(self.ptr_type),
+            cranelift_codegen::ir::MemFlagsData::new(),
+            target_ptr,
+            0,
+        )
+    }
+
+    /// Shared bounds-checked address calculation for scalar, aggregate and
+    /// fat-string element loads. The latter needs both target ABI words.
+    pub(in crate::translator) fn translate_index_address(
+        &mut self,
+        base: &AmirOperand,
+        index: &AmirOperand,
+    ) -> (Value, ArType) {
         let mut ptr_val = self.translate_operand(base, Some(self.ptr_type));
         let mut idx_val = self.translate_operand(index, Some(self.ptr_type));
         let idx_ty = self.builder.func.dfg.value_type(idx_val);
@@ -471,16 +526,6 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         let offset_val = self.builder.ins().imul(idx_val, elem_size);
         let target_ptr = self.builder.ins().iadd(ptr_val, offset_val);
 
-        if self.is_inline_aggregate_ty(&elem_ty) {
-            return target_ptr;
-        }
-
-        let clif_ty = expected_ty.unwrap_or(self.ptr_type);
-        self.builder.ins().load(
-            clif_ty,
-            cranelift_codegen::ir::MemFlagsData::new(),
-            target_ptr,
-            0,
-        )
+        (target_ptr, elem_ty)
     }
 }

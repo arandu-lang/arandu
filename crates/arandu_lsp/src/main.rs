@@ -9,7 +9,11 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         return Ok(());
     }
     let (connection, io_threads) = Connection::stdio();
-    arandu_lsp::run(connection)?;
-    io_threads.join()?;
+    let result = arandu_lsp::run(connection);
+    // Drain protocol output even when initialization fails. Returning early
+    // can terminate the writer before it flushes the InvalidParams response.
+    let io_result = io_threads.join();
+    result?;
+    io_result?;
     Ok(())
 }

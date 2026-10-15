@@ -11,6 +11,11 @@ impl<'a> Resolver<'a> {
     pub(crate) fn resolve_expr(&mut self, scope: ScopeId, expr: ExprId) {
         let span = self.pool.expr_span(expr);
         match self.pool.expr(expr) {
+            ExprKind::Layout { ty, .. } => {
+                if let Some(ty) = ty {
+                    self.resolve_type_expr(scope, *ty);
+                }
+            }
             ExprKind::Path { path } => {
                 if let Some(root) = path.first() {
                     if path.len() > 1
@@ -28,6 +33,17 @@ impl<'a> Resolver<'a> {
                 }
             }
             ExprKind::TypePath { type_name, member } => {
+                if type_name.path.len() == 1
+                    && let Some(symbol) = self.symbols.lookup_value(scope, &type_name.path[0])
+                    && matches!(
+                        self.symbols.get(symbol).kind,
+                        crate::SymbolKind::ConstParam | crate::SymbolKind::Const
+                    )
+                {
+                    self.record_expr_ref(expr, symbol);
+                    self.record_value_ref(type_name.span, symbol);
+                    return;
+                }
                 let type_resolved = self.resolve_type_name(scope, type_name);
                 let type_sym = self.resolved.type_refs.get(&type_name.span.into()).copied();
                 let is_builtin_variant = type_sym.is_some_and(|symbol| {
@@ -136,6 +152,10 @@ impl<'a> Resolver<'a> {
                     self.resolve_expr(scope, *item);
                 }
             }
+            ExprKind::ArrayRepeat { value, count } => {
+                self.resolve_expr(scope, *value);
+                self.resolve_type_expr(scope, *count);
+            }
             ExprKind::Lambda { params, body, .. } => {
                 let param_ids = self.pool.lambda_param_list(*params);
                 let mut params_vec = Vec::new();
@@ -150,6 +170,14 @@ impl<'a> Resolver<'a> {
             ExprKind::AsyncBlock { block, .. } | ExprKind::UnsafeBlock { block, .. } => {
                 self.resolve_block_child(scope, self.pool, self.pool.block(*block));
             }
+            ExprKind::Comptime { body } => match body {
+                arandu_parser::ast_pool::ComptimeBody::Expression(expr) => {
+                    self.resolve_expr(scope, *expr)
+                }
+                arandu_parser::ast_pool::ComptimeBody::Block(block) => {
+                    self.resolve_block_child(scope, self.pool, self.pool.block(*block))
+                }
+            },
             ExprKind::If {
                 condition,
                 then_block,

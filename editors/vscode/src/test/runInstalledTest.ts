@@ -50,7 +50,8 @@ async function main(): Promise<void> {
     fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
     fs.writeFileSync(settingsPath, JSON.stringify({
         'arandu.server.path': serverPath,
-        'arandu.cli.path': aranduCliPath
+        'arandu.cli.path': aranduCliPath,
+        'arandu.trace.server': 'verbose'
     }, null, 2));
 
     const vscodeExecutablePath = await downloadAndUnzipVSCode(VSCODE_VERSION);
@@ -91,6 +92,7 @@ async function main(): Promise<void> {
             extensionTestsPath,
             launchArgs: [
                 workspacePath,
+                '--log=trace',
                 `--user-data-dir=${userDataPath}`,
                 `--extensions-dir=${extensionsPath}`
             ],
@@ -102,6 +104,14 @@ async function main(): Promise<void> {
                 ARANDU_INSTALLED_EXTENSIONS_ROOT: extensionsPath
             }
         });
+    } catch (error: unknown) {
+        // Keep controlled test-profile logs before cleanup so native-only
+        // failures retain the LSP/Extension Host evidence needed for diagnosis.
+        const logsPath = path.join(userDataPath, 'logs');
+        if (fs.existsSync(logsPath)) {
+            fs.cpSync(logsPath, path.join(extensionRoot, '.vscode-test', 'failure-logs'), { recursive: true });
+        }
+        throw error;
     } finally {
         if (process.env.ARANDU_KEEP_VSCODE_TEST_PROFILE === '1') {
             console.error(`Preserved Extension Host profile at ${profileRoot}`);

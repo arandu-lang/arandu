@@ -24,7 +24,7 @@ module std.runtime.executor
 ///   `std.runtime.supervisor`
 ///
 /// ## Arandu Minimal 0.1 — **IN** surface
-/// `SyncExecutor`, `TaskHandle`, `newSyncExecutor`, `spawn`/`join`/`blockOn`/
+/// `SyncExecutor`, `TaskHandle`, `SyncExecutor.new`, `spawn`/`join`/`blockOn`/
 /// `cancel`. Default templates may use only this surface.
 ///
 /// Host symbols (`ar_rt_*`) are linked by the Cranelift JIT.
@@ -63,7 +63,7 @@ public struct TaskHandle<T> {
 /// Creates a value used to call the synchronous host executor bridge.
 ///
 /// Construction sets its flags to zero and does not spawn a task.
-public func newSyncExecutor(): SyncExecutor {
+public func SyncExecutor.new(): SyncExecutor {
     return SyncExecutor { flags: 0 }
 }
 
@@ -74,7 +74,7 @@ public func newSyncExecutor(): SyncExecutor {
 ///
 /// This blocks the caller. The bridge carries an `i64`-sized payload; use
 /// result types compatible with that ABI.
-public func blockOn<T>(ex: ref SyncExecutor, job: Coroutine<T>): T {
+public func SyncExecutor.blockOn<T>(self: ref SyncExecutor, job: Coroutine<T>): T {
     unsafe {
         let v = ar_rt_block_on_i64(job as ptr[u8])
         return v as T
@@ -83,9 +83,9 @@ public func blockOn<T>(ex: ref SyncExecutor, job: Coroutine<T>): T {
 
 /// Queues `job` on the host executor and returns a typed task handle.
 ///
-/// The handle stores the host task ID. Join with `join` or request
-/// cancellation with `cancel`.
-public func spawn<T>(ex: ref SyncExecutor, job: Coroutine<T>): TaskHandle<T> {
+/// The handle stores the host task ID. Join with `SyncExecutor.join` or request
+/// cancellation with `SyncExecutor.cancel`.
+public func SyncExecutor.spawn<T>(self: ref SyncExecutor, job: Coroutine<T>): TaskHandle<T> {
     unsafe {
         let id = ar_rt_spawn_i64(job as ptr[u8])
         return TaskHandle<T> { id: id }
@@ -96,7 +96,7 @@ public func spawn<T>(ex: ref SyncExecutor, job: Coroutine<T>): TaskHandle<T> {
 ///
 /// The bridge carries an `i64`-sized result. This function does not return
 /// a separate error variant for an invalid or canceled handle.
-public func join<T>(ex: ref SyncExecutor, handle: TaskHandle<T>): T {
+public func SyncExecutor.join<T>(self: ref SyncExecutor, handle: TaskHandle<T>): T {
     unsafe {
         let v = ar_rt_join_i64(handle.id)
         return v as T
@@ -107,7 +107,7 @@ public func join<T>(ex: ref SyncExecutor, handle: TaskHandle<T>): T {
 ///
 /// The call returns no confirmation that the task stopped; it should not be
 /// treated as a completed join.
-public func cancel<T>(ex: ref SyncExecutor, handle: TaskHandle<T>): void {
+public func SyncExecutor.cancel<T>(self: ref SyncExecutor, handle: TaskHandle<T>): void {
     unsafe {
         ar_rt_cancel_i64(handle.id)
     }

@@ -55,6 +55,51 @@ fn json_report(output: &std::process::Output) -> serde_json::Value {
 
 // ─── SL_T.2C ─────────────────────────────────────────────────────────────────
 
+#[test]
+fn lowering_diagnostics_are_reported_instead_of_missing_ipc_frames() {
+    let tmp = temp_dir("lowering_diagnostic");
+    let proj = tmp.join("lowering_diagnostic");
+    create_project(
+        &tmp,
+        "lowering_diagnostic",
+        r#"module lowering_diagnostic
+import std.core.intrinsics as intrinsics
+func toBytes(s: str): []u8 { return intrinsics.strBytes(s) }
+@Test
+func rejectedBorrow(): void { let bytes = toBytes("hello") }
+func main(): int { return 0 }
+"#,
+    );
+    let output = common::cli_command()
+        .args([
+            "test",
+            proj.to_str().unwrap(),
+            "--format",
+            "json",
+            "--jobs",
+            "1",
+        ])
+        .output()
+        .expect("run rejected test");
+    assert!(!output.status.success());
+    let report = json_report(&output);
+    assert_eq!(report["summary"]["failed"], 1, "{report}");
+    assert_eq!(report["summary"]["crashed"], 0, "{report}");
+    let message = report["cases"][0]["failure"]["message"]
+        .as_str()
+        .expect("compilation failure message");
+    assert!(message.contains("O010"), "{message}");
+    assert!(!message.contains("protocol failure"), "{message}");
+    assert!(!message.contains("Diagnostic {"), "{message}");
+    assert!(
+        report["cases"][0]["stderr"]
+            .as_str()
+            .expect("captured diagnostics")
+            .contains("borrowed return")
+    );
+    let _ = fs::remove_dir_all(tmp);
+}
+
 /// Mesma seed produz exatamente o mesmo plano de execução.
 #[test]
 fn same_seed_produces_same_execution_plan() {

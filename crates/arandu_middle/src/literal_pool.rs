@@ -17,6 +17,8 @@ pub struct LiteralId(pub u32);
 pub enum AmirLiteralEntry {
     Int(SmolStr),
     Float(SmolStr),
+    /// Frozen IEEE value: residual CTFE must not reparse a decimal display.
+    FloatBits(crate::ctfe::ConstFloat),
     Str(SmolStr),
     Char(SmolStr),
 }
@@ -48,6 +50,11 @@ impl AmirLiteralPool {
     #[inline]
     pub fn intern_float(&mut self, s: impl Into<SmolStr>) -> LiteralId {
         self.intern(AmirLiteralEntry::Float(s.into()))
+    }
+
+    #[inline]
+    pub fn intern_float_bits(&mut self, value: crate::ctfe::ConstFloat) -> LiteralId {
+        self.intern(AmirLiteralEntry::FloatBits(value))
     }
 
     /// Intern a string literal body.
@@ -111,6 +118,11 @@ pub fn int_literal_c_source(s: &str) -> Option<String> {
     parse_int_literal(s).map(|v| {
         if v > i64::MAX as i128 {
             format!("{v}ULL")
+        } else if v == i128::from(i64::MIN) {
+            // C lexes the positive magnitude before unary minus. Spell the
+            // minimum using signed representable operands, not an oversized
+            // decimal token with implementation-dependent unsigned semantics.
+            "(-9223372036854775807LL - 1LL)".to_owned()
         } else if v < i64::MIN as i128 {
             format!("{v}LL")
         } else {
@@ -135,6 +147,22 @@ pub fn float_literal_c_source(s: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn c_signed_minimum_has_no_unrepresentable_positive_token() {
+        assert_eq!(
+            int_literal_c_source("-9223372036854775808").as_deref(),
+            Some("(-9223372036854775807LL - 1LL)")
+        );
+        assert_eq!(
+            int_literal_c_source("-0x8000_0000_0000_0000").as_deref(),
+            Some("(-9223372036854775807LL - 1LL)")
+        );
+        assert_eq!(
+            int_literal_c_source("18446744073709551615").as_deref(),
+            Some("18446744073709551615ULL")
+        );
+    }
 
     #[test]
     fn test_literal_deduplication() {

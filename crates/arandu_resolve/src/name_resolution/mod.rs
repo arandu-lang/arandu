@@ -7,6 +7,7 @@ mod collect;
 mod decls;
 mod expr;
 mod program;
+mod staging;
 mod stmt;
 mod symbols;
 mod types;
@@ -54,7 +55,7 @@ pub const PRELUDE_MODULES: &[&str] = &["io", "err"];
 /// Members registered for each prelude module (must stay in sync with
 /// [`super::program::Resolver::define_prelude`]).
 const PRELUDE_MODULE_MEMBERS: &[(&str, &[&str])] = &[
-    ("io", &["println", "create", "remove", "eprint"]),
+    ("io", &["println", "print", "create", "remove", "eprint"]),
     ("err", &["new"]),
 ];
 
@@ -109,10 +110,35 @@ pub fn resolve_imports_and_bodies_with_poll(
     result: ResolutionResult,
     mut poll: impl FnMut(),
 ) -> ResolutionResult {
+    let headers = resolve_headers_with_poll(db, program, result, &mut poll);
+    resolve_bodies_with_poll(program, headers, poll)
+}
+
+/// Declaration/import state that can be consumed without resolving function
+/// bodies. Continuation maps refer only to this AST revision and are retained
+/// so finishing resolution does not reallocate headers or redo imports.
+#[derive(Debug, Clone)]
+pub struct HeaderResolution {
+    pub declarations: ResolutionResult,
+    pub body_scopes: rustc_hash::FxHashMap<crate::NodeKey, crate::ScopeId>,
+    pub import_aliases: rustc_hash::FxHashMap<SmolStr, SmolStr>,
+    pub current_module: Option<String>,
+    pub imported_symbols: rustc_hash::FxHashMap<crate::SymbolId, (SmolStr, arandu_lexer::Span)>,
+    pub used_symbols: rustc_hash::FxHashSet<crate::SymbolId>,
+}
+
+#[must_use]
+pub fn resolve_headers_with_poll(
+    db: &dyn crate::ModuleLoader,
+    program: &Program,
+    result: ResolutionResult,
+    mut poll: impl FnMut(),
+) -> HeaderResolution {
     // The resolver mutates the seed tables. `unwrap_or_clone` keeps the
     // single-owner case zero-copy (fresh `resolve_local` seed) and copies
     // exactly once when the seed is still shared with a memoized query.
     let mut resolver = Resolver {
+        reusable_definitions: rustc_hash::FxHashSet::default(),
         symbols: std::sync::Arc::unwrap_or_clone(result.symbols),
         resolved: std::sync::Arc::unwrap_or_clone(result.resolved),
         docs: result.docs,
@@ -512,6 +538,47 @@ pub fn resolve_imports_and_bodies_with_poll(
                                             .associated_members
                                             .insert((type_sym, smol_str::SmolStr::new(method)), id);
                                     }
+                                } else if matches!(
+                                    kind,
+                                    arandu_middle::SymbolKind::Struct
+                                        | arandu_middle::SymbolKind::Enum
+                                        | arandu_middle::SymbolKind::TypeAlias
+                                ) {
+                                    let prefix = format!("{}.", item.name);
+                                    for (assoc_name, &(assoc_id, assoc_kind)) in
+                                        exports.symbols.iter().chain(
+                                            internal
+                                                .iter()
+                                                .flat_map(|table| table.internal_symbols.iter()),
+                                        )
+                                    {
+                                        if matches!(
+                                            assoc_kind,
+                                            arandu_middle::SymbolKind::AssociatedFunc
+                                        ) && let Some(method) = assoc_name.strip_prefix(&prefix)
+                                        {
+                                            let exported_assoc_name =
+                                                format!("{import_name}.{method}");
+                                            let assoc_lang = core_lang_item(path, assoc_name);
+                                            let assoc_sym = arandu_middle::Symbol {
+                                                id: assoc_id,
+                                                name: exported_assoc_name.into(),
+                                                kind: assoc_kind,
+                                                span: item.span,
+                                                scope: global,
+                                                visibility: sym_visibility,
+                                                lang_item: assoc_lang,
+                                            };
+                                            resolver.symbols.register_imported_symbol(assoc_sym);
+                                            if let Some(lang) = assoc_lang {
+                                                resolver.symbols.set_lang_item(assoc_id, lang);
+                                            }
+                                            resolver.symbols.associated_members.insert(
+                                                (id, smol_str::SmolStr::new(method)),
+                                                assoc_id,
+                                            );
+                                        }
+                                    }
                                 }
                             } else if !db.same_package(resolver.symbols.file_id, imported_file)
                                 && db
@@ -647,19 +714,172 @@ pub fn resolve_imports_and_bodies_with_poll(
         }
     }
 
+    let mut body_scopes = rustc_hash::FxHashMap::default();
     for decl_id in &program.decls {
         poll();
         let decl = resolver.pool.decl(*decl_id);
-        resolver.resolve_top_level(global, decl);
+        resolver.resolve_top_level_headers(global, decl, &mut body_scopes);
     }
-
-    resolver.check_unused_imports();
 
     resolver.symbols.unresolved_module_aliases =
         resolver.failed_import_aliases.into_iter().collect();
 
+    HeaderResolution {
+        declarations: ResolutionResult {
+            is_cycle_fallback: false,
+            symbols: std::sync::Arc::new(resolver.symbols),
+            resolved: std::sync::Arc::new(resolver.resolved),
+            docs: resolver.docs,
+            diagnostics: resolver.diagnostics,
+        },
+        body_scopes,
+        import_aliases: resolver.import_aliases,
+        current_module: resolver.current_module,
+        imported_symbols: resolver.imported_symbols,
+        used_symbols: resolver.used_symbols,
+    }
+}
+
+#[must_use]
+pub fn resolve_bodies_with_poll(
+    program: &Program,
+    headers: HeaderResolution,
+    poll: impl FnMut(),
+) -> ResolutionResult {
+    resolve_selected_body_with_poll(program, headers, BodySelection::All, poll)
+}
+
+/// A revision-local selection borrowed from the same AST as the header state.
+/// Expression staging sees declaration/parameter scope, not surrounding runtime
+/// locals. The orchestration layer must select parents before nested conditions.
+#[derive(Debug, Clone, Copy)]
+pub enum BodySelection {
+    All,
+    Function(crate::SymbolId),
+    Expression {
+        owner: crate::SymbolId,
+        expression: arandu_parser::ast_pool::ExprId,
+    },
+    /// Establish the lexical scope of an enclosing ordinary statement without
+    /// resolving its runtime expressions. Shared by conditions and arguments.
+    LexicalExpression {
+        owner: crate::SymbolId,
+        expression: arandu_parser::ast_pool::ExprId,
+        statement: arandu_middle::Span,
+    },
+    LexicalBlock {
+        owner: crate::SymbolId,
+        block: arandu_parser::ast_pool::BlockId,
+        statement: arandu_middle::Span,
+    },
+    LexicalLoopBody {
+        owner: crate::SymbolId,
+        statement: arandu_middle::Span,
+    },
+}
+
+/// Continue the canonical resolver for one body/root without visiting siblings.
+/// Unused-import warnings are meaningful only for complete resolution.
+#[must_use]
+pub fn resolve_selected_body_with_poll(
+    program: &Program,
+    headers: HeaderResolution,
+    selection: BodySelection,
+    mut poll: impl FnMut(),
+) -> ResolutionResult {
+    let HeaderResolution {
+        declarations,
+        body_scopes,
+        import_aliases,
+        current_module,
+        imported_symbols,
+        used_symbols,
+    } = headers;
+    let failed_import_aliases = declarations
+        .symbols
+        .unresolved_module_aliases
+        .iter()
+        .cloned()
+        .collect();
+    let mut resolver = Resolver {
+        reusable_definitions: declarations.resolved.definitions.keys().copied().collect(),
+        symbols: std::sync::Arc::unwrap_or_clone(declarations.symbols),
+        resolved: std::sync::Arc::unwrap_or_clone(declarations.resolved),
+        docs: declarations.docs,
+        diagnostics: declarations.diagnostics,
+        pool: &program.pool,
+        import_aliases,
+        failed_import_aliases,
+        current_module,
+        imported_symbols,
+        used_symbols,
+    };
+    program.for_each_decl_recursive(|_, declaration| {
+        poll();
+        if let TopLevelDecl::Func(function) = declaration {
+            let key = match &function.name {
+                FuncName::Free { span, .. } | FuncName::Method { span, .. } => (*span).into(),
+            };
+            let symbol = resolver.resolved.definitions.get(&key).copied();
+            let selected = match selection {
+                BodySelection::All => true,
+                BodySelection::Function(owner) | BodySelection::Expression { owner, .. } | BodySelection::LexicalExpression { owner, .. } | BodySelection::LexicalBlock { owner, .. } | BodySelection::LexicalLoopBody { owner, .. } => {
+                    symbol == Some(owner)
+                }
+            };
+            if !selected {
+                return;
+            }
+            if symbol.is_some_and(|symbol| resolver.resolved.deferred_comptime_functions.contains(&symbol))
+                && matches!(selection, BodySelection::All)
+            {
+                return;
+            }
+            if let Some(&scope) = body_scopes.get(&key) {
+                match selection {
+                    BodySelection::All | BodySelection::Function(_) => {
+                        resolver.resolve_block_in_scope(scope, &program.pool, &function.body);
+                    }
+                    BodySelection::Expression { expression, .. } => {
+                        resolver.resolve_expr(scope, expression);
+                    }
+                    BodySelection::LexicalExpression { expression, statement, .. } => {
+                        if let Some(scope) = resolver.staging_context(scope, &program.pool, &function.body, statement, 0) {
+                            resolver.resolve_expr(scope, expression);
+                        } else {
+                            resolver.diagnostics.push(crate::Diagnostic::error(
+                                crate::DiagCode::T042UnsupportedComptime,
+                                "compile-time staging could not establish this expression's lexical scope",
+                                statement,
+                            ));
+                        }
+                    }
+                    BodySelection::LexicalBlock { block, statement, .. } => {
+                        if let Some(scope) = resolver.staging_context(scope, &program.pool, &function.body, statement, 0) {
+                            resolver.resolve_block_in_scope(scope, &program.pool, program.pool.block(block));
+                        }
+                    }
+                    BodySelection::LexicalLoopBody { statement, .. } => {
+                        if let Some(arandu_parser::Stmt::For { body, .. }) = program.pool.stmts.iter().find(|stmt| stmt.span() == statement)
+                            && let Some(scope) = resolver.staging_context(scope, &program.pool, &function.body, body.span, 0) {
+                            resolver.resolve_block_in_scope(scope, &program.pool, body);
+                        }
+                    }
+                }
+            } else {
+                resolver.diagnostics.push(crate::Diagnostic::ice(
+                    crate::DiagCode::ICET001,
+                    "function body has no declaration resolution scope",
+                    function.span,
+                ));
+            }
+        }
+    });
+    if matches!(selection, BodySelection::All) {
+        resolver.check_unused_imports();
+    }
     ResolutionResult {
-        is_cycle_fallback: false,
+        is_cycle_fallback: declarations.is_cycle_fallback,
         symbols: std::sync::Arc::new(resolver.symbols),
         resolved: std::sync::Arc::new(resolver.resolved),
         docs: resolver.docs,
@@ -711,6 +931,7 @@ pub fn collect_symbols(
     Vec<crate::Diagnostic>,
 ) {
     let mut resolver = Resolver {
+        reusable_definitions: rustc_hash::FxHashSet::default(),
         symbols: SymbolTable::new(0),
         resolved: ResolvedNames::default(),
         docs: crate::DocCommentMap::default(),
@@ -816,6 +1037,7 @@ pub fn resolve_with_symbols(
     program: &Program,
 ) -> ResolutionResult {
     let mut resolver = Resolver {
+        reusable_definitions: rustc_hash::FxHashSet::default(),
         symbols: global_symbols,
         resolved,
         docs,
@@ -854,6 +1076,9 @@ pub fn resolve_with_symbols(
 }
 
 struct Resolver<'a> {
+    /// Seed identities may be rebound once by a selected lexical continuation.
+    /// Definitions created during this traversal are never eligible for reuse.
+    reusable_definitions: rustc_hash::FxHashSet<crate::NodeKey>,
     symbols: SymbolTable,
     resolved: ResolvedNames,
     docs: crate::DocCommentMap,

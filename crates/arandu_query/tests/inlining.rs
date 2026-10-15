@@ -48,6 +48,98 @@ func test_finish(stats: mut ref Stats): void {
 "#;
 
 #[test]
+fn o2_self_tail_recursion_uses_a_separate_loop_header() {
+    let mut db = DatabaseImpl::new();
+    let file = db.new_file("tail.aru".into(), "func rotate(n: int, a: int, b: int): int { if n == 0 { return a }; return rotate(n - 1, b, a) }".into());
+    let artifacts = lower_amir(&db, file);
+    assert!(
+        artifacts.type_check.diagnostics.is_empty(),
+        "{:?}",
+        artifacts.type_check.diagnostics
+    );
+    let mut program = artifacts.amir.clone();
+    let symbols = &artifacts.type_check.symbols;
+    let interner = &artifacts.type_check.type_info.type_interner;
+    optimize_amir_checked_with_level(&mut program, symbols, interner, OptLevel::O2).unwrap();
+    let function = program
+        .funcs
+        .iter()
+        .find(|f| symbols.get(f.symbol).name == "rotate")
+        .unwrap();
+    assert!(!function.stmts.payloads.iter().any(|stmt| matches!(stmt, AmirStmt::Call { callee: AmirOperand::FunctionRef(symbol), .. } if *symbol == function.symbol)));
+    assert!(function
+        .blocks
+        .iter()
+        .any(|block| function.block_params(block.params).len() == 3));
+    assert!(function
+        .stmts
+        .iter_ids()
+        .all(|id| function.stmts.kinds[id] == function.stmt(id).kind()));
+}
+
+#[test]
+fn o2_scalarizes_mutable_copy_fields_across_a_join() {
+    let mut db = DatabaseImpl::new();
+    let file = db.new_file("fields.aru".into(), "struct Pair { x: int; y: int } func fields(flag: bool, n: int): int { let mut pair = Pair { x: n, y: n + 1 }; if flag { pair.x = n + 2 }; return pair.x + pair.y }".into());
+    let artifacts = lower_amir(&db, file);
+    assert!(
+        artifacts.type_check.diagnostics.is_empty(),
+        "{:?}",
+        artifacts.type_check.diagnostics
+    );
+    let mut program = artifacts.amir.clone();
+    let symbols = &artifacts.type_check.symbols;
+    let function = program
+        .funcs
+        .iter()
+        .find(|f| symbols.get(f.symbol).name == "fields")
+        .unwrap();
+    let local = function
+        .locals
+        .iter()
+        .find(|local| {
+            local
+                .symbol
+                .is_some_and(|symbol| symbols.get(symbol).name == "pair")
+        })
+        .unwrap()
+        .id;
+    assert!(function.stmts.payloads.iter().any(|stmt| matches!(stmt, AmirStmt::Assign { rhs: AmirRvalue::Load(place), .. } if place.local == local)));
+    let original_temps = function.temps.len();
+    let field_reads = function
+        .stmts
+        .payloads
+        .iter()
+        .filter(|stmt| {
+            matches!(
+                stmt,
+                AmirStmt::Assign {
+                    rhs: AmirRvalue::FieldAccess { .. },
+                    ..
+                }
+            )
+        })
+        .count();
+    optimize_amir_checked_with_level(
+        &mut program,
+        symbols,
+        &artifacts.type_check.type_info.type_interner,
+        OptLevel::O2,
+    )
+    .unwrap();
+    let function = program
+        .funcs
+        .iter()
+        .find(|f| symbols.get(f.symbol).name == "fields")
+        .unwrap();
+    assert!(!function.stmts.payloads.iter().any(|stmt| matches!(stmt, AmirStmt::Assign { rhs: AmirRvalue::Load(place), .. } if place.local == local)));
+    assert!(
+        function.temps.len() <= original_temps + field_reads,
+        "snapshot capture must grow with actual field reads"
+    );
+}
+
+#[test]
 fn leaf_function_is_inlined_at_o1() {
     let mut db = DatabaseImpl::new();
     let file = db.new_file("inlining_test.aru".into(), SOURCE.into());

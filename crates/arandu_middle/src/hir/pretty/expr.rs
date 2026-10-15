@@ -11,6 +11,8 @@ impl HirExpr {
         match &self.kind {
             HirExprKind::Int(v) => v.to_string(),
             HirExprKind::Float(v) => v.to_string(),
+            HirExprKind::FloatBits(v) => v.display(),
+            HirExprKind::FrozenBytes(v) => format!("bytes({:?})", v.as_bytes()),
             HirExprKind::Bool(v) => v.to_string(),
             HirExprKind::Char(v) => format!("'{v}'"),
             HirExprKind::Str(v) => format!("\"{v}\""),
@@ -176,6 +178,20 @@ impl HirExpr {
                     item.pretty_print_to(out, indent + 1, ctx);
                 }
             }
+            HirExprKind::ArrayRepeat { value } => {
+                out.push_str(&format!(
+                    "{}ArrayRepeat: {}\n",
+                    ind,
+                    display_type(self.ty, ctx)
+                ));
+                value.pretty_print_to(out, indent + 1, ctx);
+            }
+            HirExprKind::Tuple { items } => {
+                out.push_str(&format!("{}Tuple: {}\n", ind, display_type(self.ty, ctx)));
+                for &item in ctx.pool.expr_list(*items) {
+                    item.pretty_print_to(out, indent + 1, ctx);
+                }
+            }
             HirExprKind::Lambda { params, body } => {
                 let params_str: Vec<String> = ctx
                     .pool
@@ -216,7 +232,7 @@ impl HirExpr {
                 ));
                 ctx.pool.block(*block).pretty_print_to(out, indent + 1, ctx);
             }
-            HirExprKind::UnsafeBlock { block } => {
+            HirExprKind::ValueBlock { block } | HirExprKind::UnsafeBlock { block } => {
                 out.push_str(&format!(
                     "{}UnsafeBlock: {}\n",
                     ind,
@@ -291,6 +307,15 @@ impl HirExpr {
                 left.pretty_print_to(out, indent + 1, ctx);
                 right.pretty_print_to(out, indent + 1, ctx);
             }
+            HirExprKind::Layout { query, operand_ty } => {
+                out.push_str(&format!(
+                    "{}@{}({}): {}\n",
+                    ind,
+                    query.name(),
+                    display_type(*operand_ty, ctx),
+                    display_type(self.ty, ctx)
+                ));
+            }
             HirExprKind::Cast { expr, target_ty } => {
                 out.push_str(&format!(
                     "{}Cast({}): {}\n",
@@ -332,6 +357,22 @@ impl HirExpr {
                     "{}Float({}): {}\n",
                     ind,
                     v,
+                    display_type(self.ty, ctx)
+                ));
+            }
+            HirExprKind::FloatBits(v) => {
+                out.push_str(&format!(
+                    "{}Float({}): {}\n",
+                    ind,
+                    v.display(),
+                    display_type(self.ty, ctx)
+                ));
+            }
+            HirExprKind::FrozenBytes(v) => {
+                out.push_str(&format!(
+                    "{}Bytes({:?}): {}\n",
+                    ind,
+                    v.as_bytes(),
                     display_type(self.ty, ctx)
                 ));
             }

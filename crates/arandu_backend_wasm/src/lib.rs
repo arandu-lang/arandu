@@ -28,6 +28,7 @@
 pub mod canonical;
 pub mod emit;
 pub mod memory;
+mod stack_peephole;
 pub mod stackify;
 pub mod translator;
 pub mod types;
@@ -109,6 +110,47 @@ pub fn emit_component(
         return Err(issue);
     }
     WasmModuleBuilder::new(program, symbols, interner, provider, data_layout)
+        .build_component(pkg_name)
+}
+
+/// Emit a size-oriented core module. Executable roots, callbacks and drops
+/// remain reachable; unused allocation and Canonical ABI helpers are omitted.
+/// Unlike [`emit_wasm`], this entry point does not promise `cabi_realloc`.
+///
+/// # Errors
+/// Returns a diagnostic for invalid or unsupported AMIR.
+pub fn emit_wasm_for_size(
+    program: &AmirProgram,
+    symbols: &SymbolTable,
+    interner: &TypeInterner,
+    provider: &dyn StructLayoutProvider,
+    data_layout: DataLayout,
+) -> Result<Vec<u8>, Diagnostic> {
+    if let Some(issue) = first_validation_error(program, symbols, interner) {
+        return Err(issue);
+    }
+    WasmModuleBuilder::new(program, symbols, interner, provider, data_layout)
+        .optimize_for_size()
+        .build()
+}
+
+/// Emit a size-oriented component while retaining its Canonical ABI helpers.
+///
+/// # Errors
+/// Returns a diagnostic for invalid AMIR or a component encoding failure.
+pub fn emit_component_for_size(
+    program: &AmirProgram,
+    symbols: &SymbolTable,
+    interner: &TypeInterner,
+    provider: &dyn StructLayoutProvider,
+    data_layout: DataLayout,
+    pkg_name: &str,
+) -> Result<Vec<u8>, Diagnostic> {
+    if let Some(issue) = first_validation_error(program, symbols, interner) {
+        return Err(issue);
+    }
+    WasmModuleBuilder::new(program, symbols, interner, provider, data_layout)
+        .optimize_for_size()
         .build_component(pkg_name)
 }
 

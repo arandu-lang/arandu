@@ -47,7 +47,24 @@ pub(super) fn type_path_segments_from_expr_module(
     }
 }
 
-/// After a type-shaped path, `{` starts a struct lit if empty or `ident:`.
+/// Peek inside `{` without consuming to see if it looks like a struct literal.
+pub(super) fn looks_like_struct_lit_brace(cur: &Cursor<'_>) -> bool {
+    if cur.peek_kind() != Some(TokenKind::LBrace) {
+        return false;
+    }
+    match cur.peek_at(1).map(|t| t.kind) {
+        Some(TokenKind::RBrace | TokenKind::RangeExclusive) => true,
+        Some(TokenKind::IdentValue | TokenKind::IdentType) => cur.peek_at(2).is_some_and(|t| {
+            matches!(
+                t.kind,
+                TokenKind::Colon | TokenKind::Comma | TokenKind::RBrace
+            )
+        }),
+        _ => false,
+    }
+}
+
+/// After a type-shaped path, `{` starts a struct lit if empty or `ident:` / shorthand.
 pub(super) fn looks_like_struct_lit_after_type_path(
     ctx: &HandCtx<'_>,
     cur: &Cursor<'_>,
@@ -56,39 +73,13 @@ pub(super) fn looks_like_struct_lit_after_type_path(
     if type_path_segments_from_expr(ctx, left).is_none() {
         return false;
     }
-    // Peek inside `{` without consuming.
-    if cur.peek_kind() != Some(TokenKind::LBrace) {
-        return false;
-    }
-    match cur.peek_at(1).map(|t| t.kind) {
-        Some(TokenKind::RBrace) => true, // `Type {}`
-        Some(TokenKind::IdentValue | TokenKind::IdentType) => {
-            // `Type { field: ... }`
-            cur.peek_at(2).is_some_and(|t| t.kind == TokenKind::Colon)
-        }
-        _ => false,
-    }
+    looks_like_struct_lit_brace(cur)
 }
 
-/// Parse `{ field: expr, ... }` after a type-shaped Path/Field into StructLiteral.
-pub(super) fn try_struct_lit_from_type_path(
+fn parse_struct_lit_fields_brace(
     ctx: &mut HandCtx<'_>,
     cur: &mut Cursor<'_>,
-    left: ExprId,
-) -> Option<ExprId> {
-    let segs = type_path_segments_from_expr(ctx, left)?;
-    let left_span = ctx.pool.expr_span(left);
-    let name = TypeName {
-        span: left_span,
-        path: segs,
-    };
-    let empty_args = ctx.pool.alloc_type_expr_list(&[]);
-    let ty = ctx.pool.alloc_type_expr(TypeExpr::Named {
-        span: left_span,
-        name,
-        args: empty_args,
-    });
-
+) -> Option<(crate::ast::IndexRange, u32)> {
     cur.expect(TokenKind::LBrace)?;
     let mut fields = Vec::new();
     if cur.peek_kind() != Some(TokenKind::RBrace) {
@@ -143,9 +134,32 @@ pub(super) fn try_struct_lit_from_type_path(
     }
     let close = cur.expect(TokenKind::RBrace)?;
     let range = ctx.pool.alloc_field_init_list(&fields);
+    Some((range, close.start + close.len))
+}
+
+/// Parse `{ field: expr, ... }` after a type-shaped Path/Field into StructLiteral.
+pub(super) fn try_struct_lit_from_type_path(
+    ctx: &mut HandCtx<'_>,
+    cur: &mut Cursor<'_>,
+    left: ExprId,
+) -> Option<ExprId> {
+    let segs = type_path_segments_from_expr(ctx, left)?;
+    let left_span = ctx.pool.expr_span(left);
+    let name = TypeName {
+        span: left_span,
+        path: segs,
+    };
+    let empty_args = ctx.pool.alloc_type_expr_list(&[]);
+    let ty = ctx.pool.alloc_type_expr(TypeExpr::Named {
+        span: left_span,
+        name,
+        args: empty_args,
+    });
+
+    let (range, end) = parse_struct_lit_fields_brace(ctx, cur)?;
     Some(ctx.pool.alloc_expr(
         ExprKind::StructLiteral { ty, fields: range },
-        ctx.span(left_span.start, close.start + close.len),
+        ctx.span(left_span.start, end),
     ))
 }
 
@@ -155,47 +169,26 @@ pub(super) fn parse_type_led(
     start: u32,
 ) -> Option<ExprId> {
     let ty = parse_type(ctx, cur)?;
-    if cur.eat(TokenKind::LBrace) {
-        let mut fields = Vec::new();
-        if cur.peek_kind() != Some(TokenKind::RBrace) {
-            loop {
-                let name_tok = cur.expect(TokenKind::IdentValue)?;
-                let name = SmolStr::new(ctx.text(name_tok)?);
-                let fstart = name_tok.start;
-                cur.expect(TokenKind::Colon)?;
-                let value = try_hand_lower_expr(ctx, cur, 0)?;
-                let fend = ctx.pool.expr_span(value).end;
-                let init_id = ctx.pool.alloc_field_init(FieldInit {
-                    span: ctx.span(fstart, fend),
-                    name,
-                    value,
-                });
-                fields.push(init_id);
-                if !cur.eat(TokenKind::Comma) {
-                    break;
-                }
-                if cur.peek_kind() == Some(TokenKind::RBrace) {
-                    break;
-                }
-            }
-        }
-        let close = cur.expect(TokenKind::RBrace)?;
-        let range = ctx.pool.alloc_field_init_list(&fields);
+    if cur.peek_kind() == Some(TokenKind::LBrace) {
+        let (range, end) = parse_struct_lit_fields_brace(ctx, cur)?;
         return Some(ctx.pool.alloc_expr(
             ExprKind::StructLiteral { ty, fields: range },
-            ctx.span(start, close.start + close.len),
+            ctx.span(start, end),
         ));
     }
-    // Type.member
+    // Type.member / Type<T>.member
     let named_info = match ctx.pool.type_expr(ty) {
-        TypeExpr::Named { name, args, .. } if args.is_empty() => Some(name.clone()),
-        TypeExpr::Primitive { span, name } => Some(TypeName {
-            span: *span,
-            path: smallvec::smallvec![name.clone()],
-        }),
+        TypeExpr::Named { name, args, .. } => Some((name.clone(), *args)),
+        TypeExpr::Primitive { span, name } => Some((
+            TypeName {
+                span: *span,
+                path: smallvec::smallvec![name.clone()],
+            },
+            crate::ast::IndexRange::empty(),
+        )),
         _ => None,
     };
-    if let Some(type_name) = named_info
+    if let Some((mut type_name, args)) = named_info.clone()
         && cur.eat(TokenKind::Dot)
     {
         let mem = cur.peek()?;
@@ -204,10 +197,44 @@ pub(super) fn parse_type_led(
         }
         let member = SmolStr::new(ctx.text(mem)?);
         cur.bump();
-        return Some(ctx.pool.alloc_expr(
-            ExprKind::TypePath { type_name, member },
-            ctx.span(start, mem.start + mem.len),
-        ));
+        let member_span = ctx.span(start, mem.start + mem.len);
+        if looks_like_struct_lit_brace(cur) {
+            type_name.path.push(member);
+            type_name.span = member_span;
+            let variant_ty = ctx.pool.alloc_type_expr(TypeExpr::Named {
+                span: member_span,
+                name: type_name,
+                args,
+            });
+            let (range, end) = parse_struct_lit_fields_brace(ctx, cur)?;
+            return Some(ctx.pool.alloc_expr(
+                ExprKind::StructLiteral {
+                    ty: variant_ty,
+                    fields: range,
+                },
+                ctx.span(start, end),
+            ));
+        }
+        let tp = ctx
+            .pool
+            .alloc_expr(ExprKind::TypePath { type_name, member }, member_span);
+        if args.is_empty() {
+            return Some(tp);
+        }
+        return Some(
+            ctx.pool
+                .alloc_expr(ExprKind::Generic { callee: tp, args }, member_span),
+        );
+    }
+    if let Some((name, args)) = named_info
+        && args.is_empty()
+        && name.path.len() > 1
+    {
+        let span = name.span;
+        return Some(
+            ctx.pool
+                .alloc_expr(ExprKind::Path { path: name.path }, span),
+        );
     }
     None
 }

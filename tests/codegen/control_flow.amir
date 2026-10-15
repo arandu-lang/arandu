@@ -28,12 +28,14 @@ Func testForIn(items: []int) -> void
     _3: int
     _4: int
     _5: int
-    _6: bool
+    _6: int
     _7: int
-    _8: int
+    _8: bool
     _9: int
     _10: int
     _11: int
+    _12: int
+    _13: int
     s0: []int // items
     s1: int
     s2: int
@@ -42,15 +44,15 @@ Func testForIn(items: []int) -> void
 
   bb0:
     _3 = len(_1)
-    goto bb1
-  bb1:
-    _6 = lt _4, _5
-    branch _6 => bb2, else bb4
+    goto bb1(0)
+  bb1(_4: int):
+    _8 = lt _4, _3
+    branch _8 => bb2, else bb4
   bb2:
-    _8 = _1[_7]
+    _10 = _1[_4]
     goto bb3
   bb3:
-    _11 = add _10, 1
-    goto bb1
+    _13 = add _4, 1
+    goto bb1(_13)
   bb4:
     return

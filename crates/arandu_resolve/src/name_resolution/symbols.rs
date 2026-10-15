@@ -152,6 +152,15 @@ impl<'a> Resolver<'a> {
         kind: SymbolKind,
         span: Span,
     ) -> Option<crate::SymbolId> {
+        if self.reusable_definitions.remove(&span.into())
+            && let Some(&symbol) = self.resolved.definitions.get(&span.into())
+            && self.symbols.try_get(symbol).is_some_and(|existing| {
+                existing.kind == kind && existing.name == name && existing.span == span
+            })
+        {
+            self.symbols.bind_existing(scope, symbol);
+            return Some(symbol);
+        }
         self.define_with_visibility(scope, name, kind, span, arandu_parser::Visibility::Module)
     }
 

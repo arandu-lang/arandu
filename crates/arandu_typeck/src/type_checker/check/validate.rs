@@ -13,7 +13,7 @@ const ANY_ERROR_MESSAGE: &str =
 
 pub(crate) fn contains_any(pool: &AstPool, ty: TypeExprId) -> Option<Span> {
     match pool.type_expr(ty) {
-        TypeExpr::Const { .. } => None,
+        TypeExpr::Const { .. } | TypeExpr::ConstExpression { .. } => None,
         TypeExpr::Primitive { span, name } => {
             if name == "any" {
                 Some(*span)
@@ -74,8 +74,83 @@ fn report_any_error(checker: &mut TypeChecker<'_>, span: Span) {
 }
 
 fn validate_type_no_any(checker: &mut TypeChecker<'_>, ty: TypeExprId) {
+    validate_const_arguments(checker, ty);
     if let Some(span) = contains_any(checker.pool, ty) {
         report_any_error(checker, span);
+    }
+}
+
+fn report_unstaged_argument(checker: &mut TypeChecker<'_>, span: Span) {
+    if !checker
+        .resolved
+        .comptime_arguments
+        .contains_key(&span.into())
+        && !checker
+            .diagnostics
+            .iter()
+            .any(|d| d.span == span && d.code == crate::DiagCode::T042UnsupportedComptime)
+    {
+        checker.diagnostics.push(
+            crate::Diagnostic::error(
+                crate::DiagCode::T042UnsupportedComptime,
+                "this computed generic argument has not been evaluated in its staging context",
+                span,
+            )
+            .with_primary_label("this argument has not been staged"),
+        );
+    }
+}
+
+pub(crate) fn validate_const_arguments(checker: &mut TypeChecker<'_>, ty: TypeExprId) {
+    match checker.pool.type_expr(ty) {
+        TypeExpr::ConstExpression { span, .. } => report_unstaged_argument(checker, *span),
+        TypeExpr::Const { .. } | TypeExpr::Primitive { .. } => {}
+        TypeExpr::Named { args, .. } => {
+            for &arg in checker.pool.type_expr_list(*args) {
+                validate_const_arguments(checker, arg);
+            }
+        }
+        TypeExpr::Nullable { inner, .. }
+        | TypeExpr::Pointer { inner, .. }
+        | TypeExpr::Ref { inner, .. }
+        | TypeExpr::RefMut { inner, .. }
+        | TypeExpr::Slice { inner, .. }
+        | TypeExpr::Group { inner, .. } => validate_const_arguments(checker, *inner),
+        TypeExpr::Array {
+            size_expression,
+            elem,
+            ..
+        } => {
+            if let Some(expression) = size_expression {
+                validate_const_arguments(checker, *expression);
+            }
+            validate_const_arguments(checker, *elem);
+        }
+        TypeExpr::Func { params, result, .. } => {
+            for &param in checker.pool.type_expr_list(*params) {
+                validate_const_arguments(checker, param);
+            }
+            match result {
+                Some(ResultType::Single { ty, .. }) => validate_const_arguments(checker, *ty),
+                Some(ResultType::Multi { types, .. }) => {
+                    for &ty in checker.pool.type_expr_list(*types) {
+                        validate_const_arguments(checker, ty);
+                    }
+                }
+                None => {}
+            }
+        }
+    }
+}
+
+pub(crate) fn validate_const_result(checker: &mut TypeChecker<'_>, result: &ResultType) {
+    match result {
+        ResultType::Single { ty, .. } => validate_const_arguments(checker, *ty),
+        ResultType::Multi { types, .. } => {
+            for &ty in checker.pool.type_expr_list(*types) {
+                validate_const_arguments(checker, ty);
+            }
+        }
     }
 }
 
@@ -92,6 +167,8 @@ fn validate_result_type_no_any(checker: &mut TypeChecker<'_>, result: &ResultTyp
 
 fn validate_expr(checker: &mut TypeChecker<'_>, expr: ExprId) {
     match checker.pool.expr(expr) {
+        ExprKind::Layout { ty: Some(ty), .. } => validate_type_no_any(checker, *ty),
+        ExprKind::Layout { ty: None, .. } => {}
         ExprKind::Generic { callee, args } => {
             validate_expr(checker, *callee);
             let arg_ids = checker.pool.type_expr_list(*args).to_vec();
@@ -154,6 +231,10 @@ fn validate_expr(checker: &mut TypeChecker<'_>, expr: ExprId) {
                 validate_expr(checker, item_id);
             }
         }
+        ExprKind::ArrayRepeat { value, count } => {
+            validate_const_arguments(checker, *count);
+            validate_expr(checker, *value);
+        }
         ExprKind::Lambda { params, body, .. } => {
             let param_ids = checker.pool.lambda_param_list(*params).to_vec();
             for param_id in param_ids {
@@ -172,6 +253,14 @@ fn validate_expr(checker: &mut TypeChecker<'_>, expr: ExprId) {
         ExprKind::AsyncBlock { block, .. } | ExprKind::UnsafeBlock { block, .. } => {
             validate_block(checker, checker.pool, checker.pool.block(*block));
         }
+        ExprKind::Comptime { body } => match body {
+            arandu_parser::ast_pool::ComptimeBody::Expression(expr) => {
+                validate_expr(checker, *expr)
+            }
+            arandu_parser::ast_pool::ComptimeBody::Block(block) => {
+                validate_block(checker, checker.pool, checker.pool.block(*block))
+            }
+        },
         ExprKind::If {
             condition,
             then_block,
@@ -290,18 +379,33 @@ fn validate_block(checker: &mut TypeChecker<'_>, pool: &AstPool, block: &Block) 
                 validate_expr(checker, *expr);
             }
             Stmt::If {
+                span,
+                is_comptime,
                 condition,
                 then_block,
                 else_block,
                 ..
             } => {
+                if *is_comptime {
+                    if let Some(&selected) = checker.resolved.comptime_branches.get(&(*span).into())
+                    {
+                        if selected {
+                            validate_block(checker, pool, then_block);
+                        } else if let Some(block) = else_block {
+                            validate_block(checker, pool, block);
+                        }
+                    }
+                    continue;
+                }
                 validate_condition(checker, condition);
                 validate_block(checker, pool, then_block);
                 if let Some(block) = else_block {
                     validate_block(checker, pool, block);
                 }
             }
-            Stmt::For { clause, body, .. } => {
+            Stmt::For {
+                span, clause, body, ..
+            } => {
                 match clause {
                     ForClause::In { iterable, .. } => {
                         validate_expr(checker, *iterable);
@@ -323,7 +427,13 @@ fn validate_block(checker: &mut TypeChecker<'_>, pool: &AstPool, block: &Block) 
                         }
                     }
                 }
-                validate_block(checker, pool, body);
+                if !checker
+                    .resolved
+                    .deferred_loop_bodies
+                    .contains(&(*span).into())
+                {
+                    validate_block(checker, pool, body);
+                }
             }
             Stmt::While {
                 condition, body, ..
@@ -512,6 +622,7 @@ fn validate_type_expr_constraints(
             }
         }
         TypeExpr::Const { .. } | TypeExpr::Primitive { .. } => {}
+        TypeExpr::ConstExpression { span, .. } => report_unstaged_argument(checker, *span),
         TypeExpr::Nullable { inner, .. }
         | TypeExpr::Pointer { inner, .. }
         | TypeExpr::Ref { inner, .. }
@@ -554,7 +665,7 @@ fn type_contains_named_without_indirection(
                 return true;
             }
             if visited.insert(*id) {
-                if let Some(fields) = provider.get_struct_fields(*id) {
+                if let Some(fields) = provider.get_struct_fields_for_type(ty, interner) {
                     for f in fields.iter() {
                         let field_ty = interner.resolve(f.ty);
                         if type_contains_named_without_indirection(

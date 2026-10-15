@@ -47,6 +47,11 @@ pub enum HirStmtKind {
         else_block: Option<HirBlockId>,
     },
     For {
+        /// Frozen finite domain. None is an ordinary runtime loop.
+        comptime_bounds: Option<(crate::ctfe::ConstInt, crate::ctfe::ConstInt)>,
+        /// Selected, typed residual bodies in iteration order. None shares the
+        /// source body when staging does not depend on an iteration binding.
+        comptime_bodies: Option<Vec<HirBlockId>>,
         clause: HirForClause,
         body: HirBlockId,
     },
@@ -61,6 +66,8 @@ pub enum HirStmtKind {
     Defer(HirBlockId),
     ErrDefer(HirBlockId),
     Unsafe(HirBlockId),
+    /// Lexical block retained after static selection, with no unsafe privilege.
+    Scope(HirBlockId),
     Error,
 }
 
@@ -221,7 +228,12 @@ impl HirStmt {
                     pool.block(*eb).validate_invariants(pool, symbols)?;
                 }
             }
-            HirStmtKind::For { clause, body } => {
+            HirStmtKind::For {
+                clause,
+                body,
+                comptime_bounds,
+                comptime_bodies,
+            } => {
                 match clause {
                     HirForClause::In {
                         bindings, iterable, ..
@@ -248,7 +260,23 @@ impl HirStmt {
                         }
                     }
                 }
-                pool.block(*body).validate_invariants(pool, symbols)?;
+                if let Some(bodies) = comptime_bodies {
+                    let Some((lower, upper)) = comptime_bounds else {
+                        return Err("iteration bodies require a frozen static domain".into());
+                    };
+                    let count = upper
+                        .value()
+                        .checked_sub(lower.value())
+                        .and_then(|n| usize::try_from(n.max(0)).ok());
+                    if count != Some(bodies.len()) {
+                        return Err("static iteration body count does not match its domain".into());
+                    }
+                    for body in bodies {
+                        pool.block(*body).validate_invariants(pool, symbols)?;
+                    }
+                } else {
+                    pool.block(*body).validate_invariants(pool, symbols)?;
+                }
             }
             HirStmtKind::While { condition, body } => {
                 condition.validate_invariants(pool, symbols)?;
@@ -271,7 +299,10 @@ impl HirStmt {
                     }
                 }
             }
-            HirStmtKind::Defer(b) | HirStmtKind::ErrDefer(b) | HirStmtKind::Unsafe(b) => {
+            HirStmtKind::Defer(b)
+            | HirStmtKind::ErrDefer(b)
+            | HirStmtKind::Unsafe(b)
+            | HirStmtKind::Scope(b) => {
                 pool.block(*b).validate_invariants(pool, symbols)?;
             }
             HirStmtKind::Error => {}

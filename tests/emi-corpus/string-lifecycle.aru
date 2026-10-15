@@ -4,82 +4,66 @@ import std.core.slice as slice
 import std.core.str as core_str
 
 func main(): int {
-    let mut text = strings.new()
+    let mut text = strings.String.new()
     if !text.pushStr("Arandu") {
-        text.destroy()
         return -1
     }
     if text.len() != 6 as usize {
-        text.destroy()
         return -2
     }
     let bytes = text.asBytes()
     let first_byte = unsafe { mem.ptrRead<u8>(slice.asPtr<u8>(bytes)) }
     if first_byte != 65 as u8 {
-        text.destroy()
         return 100 as int + first_byte as int
     }
-    if core_str.lenBytes(text.asStr()) != 6 as usize {
-        text.destroy()
+    if core_str.len(text.asStr()) != 6 as usize {
         return -9
     }
     if !core_str.startsWith(text.asStr(), "Aran") {
-        text.destroy()
         return -10
     }
     if !core_str.contains(text.asStr(), "and") {
-        text.destroy()
         return -11
     }
     if !core_str.endsWith(text.asStr(), "du") {
-        text.destroy()
         return -12
     }
 
     text.pushScalar('é')
     if text.len() != 8 as usize {
-        text.destroy()
         return -3
     }
     text.pushScalar('🦀')
     if text.len() != 12 as usize {
-        text.destroy()
         return -4
     }
     let grown_bytes = text.asBytes()
     if slice.len<u8>(grown_bytes) != 12 as usize {
-        text.destroy()
         return -13
     }
-    if core_str.lenBytes(text.asStr()) != 12 as usize
+    if core_str.len(text.asStr()) != 12 as usize
         || !core_str.endsWith(text.asStr(), "🦀")
     {
-        text.destroy()
         return -14
     }
 
     text.truncate(7 as usize)
     if text.len() != 12 as usize {
-        text.destroy()
         return -5
     }
     text.truncate(8 as usize)
     if text.len() != 8 as usize {
-        text.destroy()
         return -6
     }
 
     let old_capacity = text.capacity()
     if text.tryReserve(2147483647 as usize) || text.capacity() != old_capacity {
-        text.destroy()
         return -7
     }
     text.clear()
     if !text.isEmpty() || text.len() != 0 as usize || text.capacity() != old_capacity {
-        text.destroy()
         return -8
     }
 
-    text.destroy()
     return 0
 }

@@ -170,6 +170,7 @@ pub fn lower_from_green_recovering(tree: &SyntaxTree, file_id: u32) -> ParseOutp
             | SyntaxKind::IMPL_ITEM
             | SyntaxKind::SUBMODULE_ITEM
             | SyntaxKind::ITEM => {
+                let checkpoint = parser.pool.checkpoint();
                 if let Some(decl) = hand::try_hand_lower_top_level(
                     &mut parser.pool,
                     tree.text(),
@@ -183,6 +184,9 @@ pub fn lower_from_green_recovering(tree: &SyntaxTree, file_id: u32) -> ParseOutp
                     let decl_id = parser.pool.alloc_decl(decl);
                     decls.push(decl_id);
                 } else {
+                    // Failed hand lowering may have allocated a partial body.
+                    // Discard it before RD retries the same canonical tokens.
+                    checkpoint.rollback(&mut parser.pool);
                     match parser.parse_top_level_decls() {
                         Ok(parsed_decls) => {
                             for decl in parsed_decls {

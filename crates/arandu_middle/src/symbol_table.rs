@@ -160,8 +160,11 @@ pub struct SymbolTable {
     pub sealed_interfaces: FxHashSet<SymbolId>,
     /// Explicit type/interface implementation declarations.
     pub interface_implementations: FxHashSet<(SymbolId, SymbolId)>,
-    /// Canonical flat backend names, computed once from defining module paths.
+    /// Canonical backend identities of functions and nominal type arguments,
+    /// computed once from defining module paths, never from import aliases.
     pub host_function_names: FxHashMap<SymbolId, SmolStr>,
+    /// Functions invoked by tooling rather than source calls (`@Test`, `@Benchmark`).
+    pub tooling_entrypoints: FxHashSet<SymbolId>,
     pub module_scopes: FxHashMap<SymbolId, ScopeId>,
     /// Type-parameter symbols for named types (`struct` / `enum` / …), in declaration order.
     /// Used so methods on `Box<T>` can import `T` into their type scope.
@@ -195,6 +198,7 @@ impl SymbolTable {
             sealed_interfaces: FxHashSet::default(),
             interface_implementations: FxHashSet::default(),
             host_function_names: FxHashMap::default(),
+            tooling_entrypoints: FxHashSet::default(),
             module_scopes: FxHashMap::default(),
             type_params: FxHashMap::default(),
             global_scope_id: ScopeId(0),
@@ -292,6 +296,8 @@ impl SymbolTable {
             self.host_function_names
                 .insert(map_symbol(old_symbol_id), name);
         }
+        self.tooling_entrypoints
+            .extend(other.tooling_entrypoints.into_iter().map(map_symbol));
 
         for (old_symbol_id, scope) in other.module_scopes {
             self.module_scopes

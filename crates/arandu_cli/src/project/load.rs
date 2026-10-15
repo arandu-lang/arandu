@@ -65,9 +65,11 @@ pub struct ProjectContext {
 /// Shared flags for project / doctor commands.
 #[derive(Debug, Clone, Default)]
 pub struct ProjectFlags {
+    pub ctfe_limits: arandu_query::ctfe::CtfeLimits,
     pub stdlib_path: Option<PathBuf>,
     pub cache_dir: Option<PathBuf>,
     pub release: bool,
+    pub size: bool,
     pub verbose: bool,
     pub locked: bool,
     pub offline: bool,
@@ -108,6 +110,8 @@ pub fn parse_project_flags(args: &[String]) -> Result<(ProjectFlags, Vec<String>
             }
         } else if a == "--release" {
             flags.release = true;
+        } else if a == "--size" || a == "-Oz" {
+            flags.size = true;
         } else if a == "-v" || a == "--verbose" {
             flags.verbose = true;
         } else if a == "--locked" {
@@ -164,6 +168,9 @@ pub fn parse_project_flags(args: &[String]) -> Result<(ProjectFlags, Vec<String>
         }
         i += 1;
     }
+    if flags.release && flags.size {
+        return Err("--release and --size select different profiles; choose one".to_owned());
+    }
     Ok((flags, rest))
 }
 
@@ -173,6 +180,12 @@ pub fn load_project(
     start: &Path,
     flags: &ProjectFlags,
 ) -> Result<ProjectContext, String> {
+    db.set_ctfe_limits(flags.ctfe_limits);
+    if let Some(triple) = &flags.target {
+        let identity =
+            arandu_middle::db::TargetIdentity::from_triple(triple).map_err(str::to_owned)?;
+        db.set_target_identity(identity);
+    }
     let discovery = find_manifest(start)
         .map_err(|error| error.to_string())?
         .ok_or_else(|| {

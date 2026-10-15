@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.9
+
+- Release candidate promotion preparation.
+
 ## 0.1.8
 
 - Release candidate promotion preparation.

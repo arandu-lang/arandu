@@ -170,6 +170,36 @@ static bool ar_string_push_str(void *raw, const uint8_t *value_ptr, int64_t valu
     if (n > 0) memcpy(s->data + s->len, value_ptr, (size_t)n);
     s->len = required;
     return true;
+}}
+
+static void ar_rt_copy_value(void *dest, const void *source, size_t size) {{
+    if (size != 0 && dest != NULL && source != NULL && dest != source) {{
+        memcpy(dest, source, size);
+    }}
+}}
+
+static uint8_t *ar_rt_alloc_aligned(size_t size, size_t align) {{
+    if (size == 0 || align == 0 || (align & (align - 1)) != 0) {{
+        return NULL;
+    }}
+    size_t extra = align - 1 + sizeof(void*);
+    if (size > SIZE_MAX - extra) {{
+        return NULL;
+    }}
+    void *raw = malloc(size + extra);
+    if (!raw) {{
+        return NULL;
+    }}
+    uintptr_t aligned = ((uintptr_t)raw + sizeof(void*) + (align - 1)) & ~(uintptr_t)(align - 1);
+    ((void**)aligned)[-1] = raw;
+    return (uint8_t*)aligned;
+}}
+
+static void ar_rt_free_aligned(uint8_t *pointer, size_t size, size_t align) {{
+    if (!pointer || size == 0 || align == 0 || (align & (align - 1)) != 0) {{
+        return;
+    }}
+    free(((void**)pointer)[-1]);
 }}"#
         );
     }

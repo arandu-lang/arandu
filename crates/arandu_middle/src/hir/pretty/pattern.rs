@@ -1,115 +1,91 @@
-//! Pattern and field pattern formatting implementation.
+//! Semantic pattern formatting, independent of incidental pool/symbol IDs.
 
 use super::types::HirPrettyCtx;
 use crate::hir::HirPattern;
 
 pub(super) fn format_pattern_ref(pat: &HirPattern, ctx: &HirPrettyCtx<'_>) -> String {
-    match pat {
-        HirPattern::Wildcard { span } => {
-            format!("Wildcard {{ span: {:?} }}", span)
-        }
-        HirPattern::Bind { span, name, symbol } => {
-            format!(
-                "Bind {{ span: {:?}, name: {:?}, symbol: {:?} }}",
-                span, name, symbol
-            )
-        }
-        HirPattern::Literal { span, expr } => {
-            format!("Literal {{ span: {:?}, expr: {:?} }}", span, expr)
-        }
+    let symbol_name = |symbol| {
+        ctx.symbols
+            .try_get(symbol)
+            .map_or("<unresolved>", |symbol| symbol.name.as_str())
+    };
+    let pattern_list = |range, separator: &str| {
+        ctx.pool
+            .pattern_list(range)
+            .iter()
+            .map(|&id| format_pattern_ref(ctx.pool.pattern(id), ctx))
+            .collect::<Vec<_>>()
+            .join(separator)
+    };
+    let text = match pat {
+        HirPattern::Wildcard { .. } => "_".to_string(),
+        HirPattern::Bind { name, .. } => name.to_string(),
+        HirPattern::Literal { expr, .. } => expr.pretty_print_inline(ctx),
         HirPattern::Enum {
-            span,
             type_symbol,
             variant,
-            variant_symbol,
             payload,
+            ..
         } => {
-            let mut payload_strs = Vec::new();
-            for &pid in ctx.pool.pattern_list(*payload) {
-                payload_strs.push(format_pattern_ref(ctx.pool.pattern(pid), ctx));
+            let name = format!("{}.{}", symbol_name(*type_symbol), variant);
+            if ctx.pool.pattern_list(*payload).is_empty() {
+                name
+            } else {
+                format!("{name}({})", pattern_list(*payload, ", "))
             }
-            format!(
-                "Enum {{ span: {:?}, type_symbol: {:?}, variant: {:?}, variant_symbol: {:?}, payload: [{}] }}",
-                span,
-                type_symbol,
-                variant,
-                variant_symbol,
-                payload_strs.join(", ")
-            )
         }
-        HirPattern::TypeTuple {
-            span,
-            name,
-            payload,
-        } => {
-            let mut payload_strs = Vec::new();
-            for &pid in ctx.pool.pattern_list(*payload) {
-                payload_strs.push(format_pattern_ref(ctx.pool.pattern(pid), ctx));
-            }
-            format!(
-                "TypeTuple {{ span: {:?}, name: {:?}, payload: [{}] }}",
-                span,
-                name,
-                payload_strs.join(", ")
-            )
+        HirPattern::TypeTuple { name, payload, .. } => {
+            format!("{name}({})", pattern_list(*payload, ", "))
         }
         HirPattern::Struct {
-            span,
             struct_symbol,
             fields,
+            ..
         } => {
-            let mut field_strs = Vec::new();
-            for &fid in ctx.pool.field_pattern_list(*fields) {
-                let f = ctx.pool.field_pattern(fid);
-                let pat_str = f.pattern.map_or_else(
-                    || "None".to_string(),
-                    |pid| format!("Some({})", format_pattern_ref(ctx.pool.pattern(pid), ctx)),
-                );
-                field_strs.push(format!(
-                    "HirFieldPattern {{ span: {:?}, name: {:?}, pattern: {} }}",
-                    f.span, f.name, pat_str
-                ));
-            }
-            format!(
-                "Struct {{ span: {:?}, struct_symbol: {:?}, fields: [{}] }}",
-                span,
-                struct_symbol,
-                field_strs.join(", ")
-            )
+            let fields = ctx
+                .pool
+                .field_pattern_list(*fields)
+                .iter()
+                .map(|&id| {
+                    let field = ctx.pool.field_pattern(id);
+                    match field.pattern {
+                        Some(pattern) => format!(
+                            "{}: {}",
+                            field.name,
+                            format_pattern_ref(ctx.pool.pattern(pattern), ctx)
+                        ),
+                        None => field.name.to_string(),
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{} {{ {fields} }}", symbol_name(*struct_symbol))
         }
-        HirPattern::Tuple { span, items } => {
-            let mut item_strs = Vec::new();
-            for &pid in ctx.pool.pattern_list(*items) {
-                item_strs.push(format_pattern_ref(ctx.pool.pattern(pid), ctx));
-            }
-            format!(
-                "Tuple {{ span: {:?}, items: [{}] }}",
-                span,
-                item_strs.join(", ")
-            )
+        HirPattern::Tuple { items, .. } => {
+            let suffix = if ctx.pool.pattern_list(*items).len() == 1 {
+                ","
+            } else {
+                ""
+            };
+            format!("({}{suffix})", pattern_list(*items, ", "))
         }
         HirPattern::Range {
-            span,
             start,
             inclusive,
             end,
-        } => {
-            format!(
-                "Range {{ span: {:?}, start: {:?}, inclusive: {:?}, end: {:?} }}",
-                span, start, inclusive, end
-            )
-        }
-        HirPattern::Or { span, alts } => {
-            let mut alt_strs = Vec::new();
-            for &pid in ctx.pool.pattern_list(*alts) {
-                alt_strs.push(format_pattern_ref(ctx.pool.pattern(pid), ctx));
-            }
-            format!(
-                "Or {{ span: {:?}, alts: [{}] }}",
-                span,
-                alt_strs.join(" | ")
-            )
-        }
+            ..
+        } => format!(
+            "{}{}{}",
+            start.pretty_print_inline(ctx),
+            if *inclusive { "..=" } else { ".." },
+            end.pretty_print_inline(ctx)
+        ),
+        HirPattern::Or { alts, .. } => pattern_list(*alts, " | "),
+    };
+    if ctx.show_spans {
+        format!("{text} @ {:?}", pat.span())
+    } else {
+        text
     }
 }
 

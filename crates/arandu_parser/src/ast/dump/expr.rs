@@ -116,6 +116,12 @@ pub(super) fn dump_expr(pool: &AstPool, expr: ExprId) -> String {
                 .join(", ");
             format!("Array {}([{items_str}])", dump_span(span))
         }
+        ExprKind::ArrayRepeat { value, count } => format!(
+            "ArrayRepeat {}({}, {})",
+            dump_span(span),
+            dump_expr(pool, *value),
+            dump_type(pool.type_expr(*count), pool)
+        ),
         ExprKind::Lambda { params, body } => {
             let param_ids = pool.lambda_param_list(*params);
             let params_str = param_ids
@@ -148,6 +154,14 @@ pub(super) fn dump_expr(pool: &AstPool, expr: ExprId) -> String {
         ExprKind::AsyncBlock { block } => {
             dump_inline_block(pool, "AsyncBlock", span, pool.block(*block))
         }
+        ExprKind::Comptime { body } => match body {
+            crate::ast::ast_pool::ComptimeBody::Expression(expr) => {
+                format!("Comptime {}({})", dump_span(span), dump_expr(pool, *expr))
+            }
+            crate::ast::ast_pool::ComptimeBody::Block(block) => {
+                dump_inline_block(pool, "Comptime", span, pool.block(*block))
+            }
+        },
         ExprKind::UnsafeBlock { block } => {
             dump_inline_block(pool, "UnsafeBlock", span, pool.block(*block))
         }
@@ -191,6 +205,15 @@ pub(super) fn dump_expr(pool: &AstPool, expr: ExprId) -> String {
                 dump_span(span),
                 dump_expr(pool, *left),
                 dump_expr(pool, *right)
+            )
+        }
+        ExprKind::Layout { query, ty } => {
+            format!(
+                "@{} {}({})",
+                query.name(),
+                dump_span(span),
+                ty.map(|ty| dump_type(pool.type_expr(ty), pool))
+                    .unwrap_or_default()
             )
         }
         ExprKind::Cast { expr, ty } => {

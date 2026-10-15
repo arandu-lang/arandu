@@ -108,6 +108,44 @@ fn duplicate_destroy_reports_double_free() {
 }
 
 #[test]
+fn dereferenced_field_move_and_restore_share_the_same_ownership_path() {
+    let field = crate::SymbolId::new(1, 7);
+    let sibling = crate::SymbolId::new(1, 8);
+    let mut moved = place(0);
+    moved.projections = smallvec![AmirProjection::Deref, AmirProjection::Field(field)];
+    let mut other = place(0);
+    other.projections = smallvec![AmirProjection::Deref, AmirProjection::Field(sibling)];
+    let mut state = MoveState::new(1);
+    state.move_place(&moved);
+    assert!(!state.place_itself_is_available(&moved));
+    assert_eq!(state.place_state(&moved), LocalMoveState::Moved);
+    assert!(state.place_itself_is_available(&other));
+    assert_eq!(state.place_base_state(&moved), LocalMoveState::Available);
+    state.restore_place(&moved);
+    assert!(state.place_itself_is_available(&moved));
+    assert!(state.place_itself_is_available(&other));
+}
+
+#[test]
+fn moved_descendants_restore_the_addressable_dereference_route() {
+    let mut parent = place(0);
+    parent.projections = smallvec![
+        AmirProjection::Deref,
+        AmirProjection::Field(crate::SymbolId::new(1, 7))
+    ];
+    let mut child = parent.clone();
+    child.projections.push(AmirProjection::TupleField(0));
+    let mut state = MoveState::new(1);
+    state.move_place(&child);
+    assert!(state.place_itself_is_available(&parent));
+    assert!(state.has_moved_descendant(&parent));
+    assert_eq!(
+        state.moved_descendant_paths(&parent).collect::<Vec<_>>(),
+        vec![child]
+    );
+}
+
+#[test]
 fn recursive_field_drop_then_root_storage_cleanup_is_not_double_free() {
     let mut field = place(0);
     field

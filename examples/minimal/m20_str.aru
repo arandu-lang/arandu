@@ -1,6 +1,6 @@
 module examples.minimal.m20_str
 
-// Minimal 0.1 — std.core.str pure heapless (isEmpty / lenBytes / startsWith / endsWith / contains / find).
+// Minimal 0.1 — std.core.str pure heapless (isEmpty / len / startsWith / endsWith / contains / find).
 import std.core.str as s
 
 func main(): int {
@@ -10,7 +10,7 @@ func main(): int {
     if s.isEmpty("x") {
         return 2
     }
-    if s.lenBytes("hi") != 2 {
+    if s.len("hi") != 2 {
         return 3
     }
     if !s.startsWith("hello", "he") {

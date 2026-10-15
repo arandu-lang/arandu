@@ -199,7 +199,11 @@ pub struct ArFatStr {
 
 pub(crate) fn fat_str_from_string(s: String) -> ArFatStr {
     let len = s.len() as isize;
-    // Process-lifetime leak (same policy as ToStr / string interp).
+    // Boxed and never freed *here*: the pointer crosses a host boundary with
+    // no language-visible owner at this frame, so its lifetime must be
+    // analyzed on its own. Different policy from ToStr / interpolation
+    // buffers, which the caller owns and drop elaboration pairs with
+    // `Free(str)`.
     let boxed = s.into_boxed_str();
     let ptr = Box::into_raw(boxed) as *mut u8;
     ArFatStr { ptr, len }

@@ -22,7 +22,7 @@ fn stdlib_fmt_parses_and_exports_expected_symbols() {
         Err(e) => panic!("fmt.aru must parse; got {e}"),
     }
     let exports = exported_symbols(&db, file);
-    let expected = ["FmtError", "Formatter", "newFormatter", "Display", "Debug"];
+    let expected = ["FmtError", "Formatter", "Formatter.new", "Display", "Debug"];
     for key in expected {
         assert!(
             exports.symbols.contains_key(key),
@@ -64,7 +64,7 @@ func testFormatter(f: mut ref fmt.Formatter): bool {
 }
 
 func testNew(buf: []u8): fmt.Formatter {
-    return fmt.newFormatter(buf)
+    return fmt.Formatter.new(buf)
 }
 
 func main(): int {

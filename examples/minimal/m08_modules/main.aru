@@ -8,9 +8,10 @@ import std.path as path
 import std.runtime.executor as rt
 
 func main(): int {
-    if !path.isEmpty("") {
+    let empty = path.Path.from("")
+    if !empty.isEmpty() {
         return 1
     }
-    let ex = rt.newSyncExecutor()
+    let ex = rt.SyncExecutor.new()
     return ex.flags + 9
 }

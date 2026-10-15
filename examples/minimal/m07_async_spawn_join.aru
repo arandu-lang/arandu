@@ -7,7 +7,7 @@ async func answer(): int {
 }
 
 func main(): int {
-    let ex = rt.newSyncExecutor()
-    let h = rt.spawn(ex, answer())
-    return rt.join(ex, h)
+    let ex = rt.SyncExecutor.new()
+    let h = ex.spawn(answer())
+    return ex.join(h)
 }

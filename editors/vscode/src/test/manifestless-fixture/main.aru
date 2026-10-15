@@ -1,6 +1,6 @@
 import std.alloc.vec as vec
 
 func size(): usize {
-    let values = vec.new<int>()
+    let values = vec.Vec<int>.new()
     return values.len()
 }

@@ -22,11 +22,15 @@ fn stdlib_path_parses_and_exports_expected_symbols() {
     let exports = exported_symbols(&db, file);
     let expected = [
         "Path",
+        "Path.from",
+        "Path.isEmpty",
+        "Path.isAbsolute",
+        "Path.fileName",
+        "Path.joinStr",
+        "Path.joinOwned",
         "PathBuf",
-        "pathFromStr",
-        "newPathBuf",
-        "isAbsolute",
-        "join",
+        "PathBuf.new",
+        "PathBuf.from",
     ];
     for key in expected {
         assert!(
@@ -60,7 +64,14 @@ fn stdlib_io_fs_parses_and_exports_expected_symbols() {
         Err(e) => panic!("fs.aru must parse; got {e}"),
     }
     let exports_fs = exported_symbols(&db, file_fs);
-    for key in ["OpenOptions", "File", "readOnly", "writeOnly", "fileExists"] {
+    for key in [
+        "OpenOptions",
+        "OpenOptions.new",
+        "OpenOptions.readOnly",
+        "OpenOptions.writeOnly",
+        "File",
+        "fileExists",
+    ] {
         assert!(
             exports_fs.symbols.contains_key(key),
             "expected exported symbol `{key}` in fs.aru, got {:?}",
@@ -86,12 +97,12 @@ import std.path as path
 import std.fs as fs
 
 func testPath(): bool {
-    let p = path.pathFromStr("/home/user/file.txt")
+    let p = path.Path.from("/home/user/file.txt")
     return p.isAbsolute()
 }
 
 func testFs(): fs.OpenOptions {
-    return fs.readOnly()
+    return fs.OpenOptions.readOnly()
 }
 
 func main(): int {

@@ -12,6 +12,19 @@ fn instantiate_enum_payload(
     enum_args: &[TypeId],
     payload: &[TypeId],
 ) -> Vec<TypeId> {
+    let span = checker.symbols.try_get(variant_id).map_or(
+        arandu_middle::Span::new(variant_id.file_id, 0, 0),
+        |symbol| symbol.span,
+    );
+    checker.type_info.demand_header(enum_id, enum_args, span);
+    let frozen = checker
+        .type_info
+        .variant_payload_for(variant_id, enum_args)
+        .cloned();
+    let payload = match &frozen {
+        Some(super::super::EnumPayloadShape::Tuple(items)) => items.as_slice(),
+        _ => payload,
+    };
     let params = checker
         .type_info
         .generic_params
@@ -645,17 +658,36 @@ pub fn check_pattern(checker: &mut TypeChecker<'_>, pattern: PatternId, value_ty
             span: _,
         } => {
             let type_key = crate::NodeKey::from(type_name.span);
-            if let Some(struct_symbol_id) = checker.resolved.type_refs.get(&type_key).copied() {
+            let val_ty = checker.resolve(value_ty);
+            let mut resolved_sym = checker.resolved.type_refs.get(&type_key).copied();
+            if let ArType::Named(val_sym, _) = val_ty
+                && type_name.path.len() == 1
+                && let Some(assoc_sym) = checker
+                    .symbols
+                    .lookup_associated_member(val_sym, &type_name.path[0])
+                && checker.type_info.struct_fields.contains_key(&assoc_sym)
+            {
+                resolved_sym = Some(assoc_sym);
+                std::sync::Arc::make_mut(&mut checker.resolved)
+                    .type_refs
+                    .insert(type_key, assoc_sym);
+            }
+            if let Some(struct_symbol_id) = resolved_sym {
+                let enum_parent = checker
+                    .type_info
+                    .enum_variants
+                    .get(&struct_symbol_id)
+                    .map(|&(enum_id, _)| enum_id);
+                let expected_type_sym = enum_parent.unwrap_or(struct_symbol_id);
                 let expected_struct_ty =
-                    ArType::named(struct_symbol_id, &[], &checker.type_info.type_interner);
-                let val_ty = checker.resolve(value_ty);
+                    ArType::named(expected_type_sym, &[], &checker.type_info.type_interner);
                 // Struct patterns match by *symbol*: the pattern syntax cannot
                 // carry generic arguments (`BoxG { v }`), so a generic struct
                 // pattern must accept any instantiation of the same struct. An
                 // arity-exact `unify` against `Named(struct, [])` made every
                 // generic struct pattern fail with a spurious T002.
                 let same_struct = match val_ty {
-                    ArType::Named(vid, _) => vid == struct_symbol_id,
+                    ArType::Named(vid, _) => vid == expected_type_sym,
                     _ => false,
                 };
                 if !same_struct {
@@ -704,31 +736,39 @@ pub fn check_pattern(checker: &mut TypeChecker<'_>, pattern: PatternId, value_ty
                             .map(|f| f.ty)
                     });
                     if let Some(field_ty_id) = field_ty_id_opt {
-                        if borrowed_scrutinee
-                            && !checker.type_info.is_copy(field_ty_id)
-                            && field.pattern.is_none_or(|nested| {
-                                !matches!(checker.pool.pattern(nested), Pattern::Wildcard { .. })
-                            })
-                        {
-                            checker.diagnostics.push(
-                                crate::Diagnostic::error(
-                                    crate::DiagCode::O002MoveWhileBorrowed,
-                                    "cannot bind a non-Copy field by value from a borrowed struct",
-                                    field.span,
-                                )
-                                .with_note(
-                                    "match the owner by value or use a borrowing field operation",
-                                ),
-                            );
-                        }
+                        let effective_field_ty_id = if enum_parent.is_some() {
+                            borrowed_payload_type(checker, pattern_source_ty, field_ty_id)
+                        } else {
+                            if borrowed_scrutinee
+                                && !checker.type_info.is_copy(field_ty_id)
+                                && field.pattern.is_none_or(|nested| {
+                                    !matches!(
+                                        checker.pool.pattern(nested),
+                                        Pattern::Wildcard { .. }
+                                    )
+                                })
+                            {
+                                checker.diagnostics.push(
+                                    crate::Diagnostic::error(
+                                        crate::DiagCode::O002MoveWhileBorrowed,
+                                        "cannot bind a non-Copy field by value from a borrowed struct",
+                                        field.span,
+                                    )
+                                    .with_note(
+                                        "match the owner by value or use a borrowing field operation",
+                                    ),
+                                );
+                            }
+                            field_ty_id
+                        };
                         if let Some(pat_id) = field.pattern {
-                            check_pattern(checker, pat_id, field_ty_id);
+                            check_pattern(checker, pat_id, effective_field_ty_id);
                         } else {
                             let key = crate::NodeKey::from(field.span);
                             if let Some(symbol_id) = checker.resolved.definitions.get(&key).copied()
                             {
-                                checker.ctx.bind(symbol_id, field_ty_id);
-                                checker.record_decl_type(symbol_id, field_ty_id);
+                                checker.ctx.bind(symbol_id, effective_field_ty_id);
+                                checker.record_decl_type(symbol_id, effective_field_ty_id);
                             }
                         }
                     } else {

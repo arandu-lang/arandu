@@ -72,3 +72,92 @@ fn every_stdlib_module_parses_and_type_checks_with_the_full_graph() {
         failures.join("\n")
     );
 }
+
+#[test]
+fn stdlib_naming_and_resource_conventions_are_enforced() {
+    use arandu_query::passes::exported_symbols;
+
+    let stdlib_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../stdlib");
+    let stdlib_root = stdlib_root
+        .canonicalize()
+        .expect("workspace stdlib directory must exist");
+    let mut sources = Vec::new();
+    collect_stdlib_files(&stdlib_root, &stdlib_root, &mut sources);
+
+    let mut db = DatabaseImpl::default();
+    let files: Vec<_> = sources
+        .iter()
+        .map(|(path, source)| {
+            let file = db.new_file(path.clone(), source.clone());
+            (path.as_str(), file)
+        })
+        .collect();
+
+    let mut violations = Vec::new();
+    for (path, file) in files {
+        let exports = exported_symbols(&db, file);
+        for name in exports.symbols.keys() {
+            let member = name.rsplit('.').next().unwrap_or(name.as_str());
+
+            // 1. Forbidden constructor patterns (`*New` except `tryNew`, `new*` with uppercase suffix,
+            //    or bare free-function `new` / `withCapacity` / `tryNew` without `Type.`).
+            if !name.contains('.') && matches!(member, "new" | "withCapacity" | "tryNew") {
+                violations.push(format!(
+                    "{path}: `{name}` is a bare free-function constructor; use `Type.{member}`"
+                ));
+            }
+            if member.ends_with("New") && member != "tryNew" {
+                violations.push(format!(
+                    "{path}: `{name}` uses forbidden `*New` constructor naming; use `Type.new` or `Type.tryNew`"
+                ));
+            }
+            if member
+                .strip_prefix("new")
+                .is_some_and(|rest| rest.chars().next().is_some_and(|c| c.is_ascii_uppercase()))
+            {
+                violations.push(format!(
+                    "{path}: `{name}` uses forbidden `new*` constructor naming; use `Type.new`"
+                ));
+            }
+
+            // 2. Forbidden `lenBytes` (`len()` is canonical for byte length on `str`/`String`).
+            if member == "lenBytes" {
+                violations.push(format!(
+                    "{path}: `{name}` uses forbidden `lenBytes`; use `len()` and `charCount()`"
+                ));
+            }
+
+            // 3. `put` is reserved for key-value maps (`HashMap.put`).
+            if member == "put" && name != "HashMap.put" {
+                violations.push(format!(
+                    "{path}: `{name}` uses `put` outside a key-value map; use `set`, `push`, or `insert`"
+                ));
+            }
+
+            // 4. Memory-owning types must use automatic `@Destructor` drop, never public `destroy` or `free`.
+            if member == "destroy"
+                || member == "free"
+                || (member.starts_with("destroy")
+                    && member["destroy".len()..]
+                        .chars()
+                        .next()
+                        .is_some_and(|c| c.is_ascii_uppercase()))
+                || (member.starts_with("free")
+                    && member["free".len()..]
+                        .chars()
+                        .next()
+                        .is_some_and(|c| c.is_ascii_uppercase()))
+            {
+                violations.push(format!(
+                    "{path}: `{name}` exposes manual `destroy`/`free` in public API; use automatic `@Destructor` drop or `close()` for external resources"
+                ));
+            }
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "stdlib naming/resource convention violations:\n{}",
+        violations.join("\n")
+    );
+}

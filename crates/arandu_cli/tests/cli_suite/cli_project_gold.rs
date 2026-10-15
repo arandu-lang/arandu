@@ -23,6 +23,20 @@ fn run_cli_in(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
 }
 
 #[test]
+fn size_inspection_rejects_debug_before_reading_the_source() {
+    for command in ["emit-c", "emit-wasm", "emit-component"] {
+        let out = run_cli(&[command, "missing.aru", "--size", "--debug"]);
+        assert!(!out.status.success());
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("--size") && stderr.contains("--debug"),
+            "{stderr}"
+        );
+        assert!(out.stdout.is_empty());
+    }
+}
+
+#[test]
 fn cache_dir_reports_the_absolute_override_without_creating_it() {
     let tmp = tempfile_dir("arandu_cache_dir");
     let cache = tmp.join("global-cache");
@@ -248,6 +262,48 @@ fn new_scaffolds_package_and_check_run() {
         serde_json::from_str(&fs::read_to_string(&release_states[0]).unwrap()).unwrap();
     assert_eq!(release_state["profile"], "release");
     assert_eq!(release_state["backend"], "cranelift-aot-speed");
+    let release_bytes = fs::read(&release_states[0]).unwrap();
+
+    let size = run_cli_in(&project, &["build", "--size"]);
+    assert!(
+        size.status.success(),
+        "size build failed: {}",
+        String::from_utf8_lossy(&size.stderr)
+    );
+    assert!(String::from_utf8_lossy(&size.stdout).contains("backend=cranelift-size"));
+    let size_states = files_named(&project.join("target/size"), "build-state.json");
+    assert_eq!(size_states.len(), 1);
+    let size_state: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&size_states[0]).unwrap()).unwrap();
+    assert_eq!(size_state["profile"], "size");
+    assert_eq!(size_state["backend"], "cranelift-aot-size");
+    let size_artifact = size_states[0]
+        .parent()
+        .unwrap()
+        .join(size_state["artifact"].as_str().unwrap());
+    assert_eq!(
+        Command::new(&size_artifact).status().unwrap().code(),
+        Some(2)
+    );
+    let size_bytes = fs::read(&size_artifact).unwrap();
+    let repeated_size = run_cli_in(&project, &["build", "-Oz"]);
+    assert!(repeated_size.status.success());
+    assert!(String::from_utf8_lossy(&repeated_size.stdout).contains("incremental: up-to-date"));
+    assert_eq!(fs::read(&size_artifact).unwrap(), size_bytes);
+    assert_eq!(fs::read(&release_states[0]).unwrap(), release_bytes);
+
+    for args in [
+        &["build", "--size", "--release"][..],
+        &["build", "--size", "--debug"][..],
+        &["run", "--size"][..],
+    ] {
+        let invalid = run_cli_in(&project, args);
+        assert!(
+            !invalid.status.success(),
+            "accepted incompatible flags: {args:?}"
+        );
+        assert!(String::from_utf8_lossy(&invalid.stderr).contains("--size"));
+    }
 
     let clean = run_cli_in(&project, &["clean"]);
     assert!(clean.status.success());

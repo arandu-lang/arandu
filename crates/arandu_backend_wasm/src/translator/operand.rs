@@ -21,7 +21,7 @@ impl<'a> FuncTranslator<'a> {
                         }
                         _ => self.code.push(Instruction::LocalGet(local)),
                     }
-                    self.emit_integer_width_cast(ty, expected_ty);
+                    self.emit_scalar_width_cast(ty, expected_ty);
                 } else {
                     self.emit_zero(expected_ty);
                 }
@@ -41,9 +41,28 @@ impl<'a> FuncTranslator<'a> {
         }
     }
 
-    /// Convert integer operands when AMIR's consumer type has a different
-    /// WebAssembly slot width. The source type determines sign extension.
-    fn emit_integer_width_cast(&mut self, source_ty: TypeId, target_ty: TypeId) {
+    /// Convert scalar operands when AMIR's consumer has a different slot
+    /// width. Integer extension uses source signedness; float formats use
+    /// the canonical target slot, not the backend host's default float.
+    fn emit_scalar_width_cast(&mut self, source_ty: TypeId, target_ty: TypeId) {
+        if types::ar_is_float(source_ty, self.interner)
+            && types::ar_is_float(target_ty, self.interner)
+        {
+            let source =
+                types::scalar_valtype_for(source_ty, self.interner, self.layout_engine.data_layout);
+            let target =
+                types::scalar_valtype_for(target_ty, self.interner, self.layout_engine.data_layout);
+            match (source, target) {
+                (Some(ValType::F32), Some(ValType::F64)) => {
+                    self.code.push(Instruction::F64PromoteF32)
+                }
+                (Some(ValType::F64), Some(ValType::F32)) => {
+                    self.code.push(Instruction::F32DemoteF64)
+                }
+                _ => {}
+            }
+            return;
+        }
         if !types::ar_is_integer(source_ty, self.interner)
             || !types::ar_is_integer(target_ty, self.interner)
         {
@@ -130,6 +149,19 @@ impl<'a> FuncTranslator<'a> {
                             }
                             None => self.emit_zero(ty),
                         }
+                    }
+                    AmirLiteralEntry::FloatBits(value) => {
+                        if let Some(bits) = value.bits32() {
+                            self.code
+                                .push(Instruction::F32Const(f32::from_bits(bits).into()));
+                        } else {
+                            self.code
+                                .push(Instruction::F64Const(f64::from_bits(value.bits()).into()));
+                        }
+                        let source_ty = self
+                            .interner
+                            .intern(ArType::Primitive(value.ty().primitive()));
+                        self.emit_scalar_width_cast(source_ty, ty);
                     }
                     AmirLiteralEntry::Str(lexeme) => {
                         let len = lexeme.len() as i32;
@@ -257,6 +289,9 @@ impl<'a> FuncTranslator<'a> {
                 AmirConstant::Pool(lit_id) => match self.literal_pool.get(*lit_id) {
                     AmirLiteralEntry::Int(_) => self.interner.intern(ArType::IntLiteral),
                     AmirLiteralEntry::Float(_) => self.interner.intern(ArType::FloatLiteral),
+                    AmirLiteralEntry::FloatBits(value) => self
+                        .interner
+                        .intern(ArType::Primitive(value.ty().primitive())),
                     AmirLiteralEntry::Str(_) => {
                         self.interner.intern(ArType::Primitive(Primitive::Str))
                     }

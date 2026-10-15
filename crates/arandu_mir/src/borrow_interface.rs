@@ -114,23 +114,7 @@ pub fn solve_borrow_interfaces(
     unproven.dedup();
 
     for function in &mut program.funcs {
-        let statement_ids = function.stmts.iter_ids().collect::<Vec<_>>();
-        for statement_id in statement_ids {
-            let Some(statement) = function.stmts.get_mut(statement_id) else {
-                continue;
-            };
-            if let AmirStmt::Call {
-                callee: AmirOperand::FunctionRef(symbol),
-                return_borrow,
-                ..
-            } = statement
-            {
-                *return_borrow = summaries
-                    .get(symbol)
-                    .filter(|summary| !summary.dependencies.is_empty())
-                    .cloned();
-            }
-        }
+        apply_call_interfaces(function, &summaries);
     }
 
     summaries.retain(|_, summary| !summary.dependencies.is_empty());
@@ -140,7 +124,9 @@ pub fn solve_borrow_interfaces(
     }
 }
 
-fn infer_function_interface(
+/// One transfer in the canonical interprocedural solver. The caller owns
+/// convergence; this function reads only this body and the supplied contracts.
+pub fn infer_function_interface(
     function: &AmirFunc,
     type_info: &TypeInfo,
     summaries: &FxHashMap<crate::SymbolId, ReturnBorrowSummary>,
@@ -232,6 +218,27 @@ fn infer_function_interface(
     }
     summary.canonicalize();
     (summary, missing)
+}
+
+/// Attach converged contracts without reading any callee body.
+pub fn apply_call_interfaces(
+    function: &mut AmirFunc,
+    summaries: &FxHashMap<crate::SymbolId, ReturnBorrowSummary>,
+) {
+    let ids = function.stmts.iter_ids().collect::<Vec<_>>();
+    for id in ids {
+        if let Some(AmirStmt::Call {
+            callee: AmirOperand::FunctionRef(symbol),
+            return_borrow,
+            ..
+        }) = function.stmts.get_mut(id)
+        {
+            *return_borrow = summaries
+                .get(symbol)
+                .filter(|summary| !summary.dependencies.is_empty())
+                .cloned();
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

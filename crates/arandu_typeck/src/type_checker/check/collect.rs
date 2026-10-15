@@ -108,14 +108,21 @@ pub(crate) fn collect_type_shapes(checker: &mut TypeChecker<'_>, program: &Progr
                     checker,
                     &enum_decl.generic_params,
                 );
-                if !params.is_empty() {
+                let params_arc = if !params.is_empty() {
+                    let arc = std::sync::Arc::new(params);
                     checker
                         .type_info
                         .generic_params
-                        .insert(enum_symbol_id, std::sync::Arc::new(params));
-                }
+                        .insert(enum_symbol_id, arc.clone());
+                    Some(arc)
+                } else {
+                    None
+                };
 
                 for (tag, variant) in enum_decl.variants.iter().enumerate() {
+                    let mut struct_field_entries: Option<
+                        Vec<arandu_middle::layout::StructFieldInfo>,
+                    > = None;
                     let shape = match &variant.payload {
                         None => super::super::EnumPayloadShape::Unit,
                         Some(arandu_parser::EnumPayload::Tuple { types, .. }) => {
@@ -136,7 +143,44 @@ pub(crate) fn collect_type_shapes(checker: &mut TypeChecker<'_>, program: &Progr
                             }
                             super::super::EnumPayloadShape::Tuple(tids)
                         }
-                        _ => super::super::EnumPayloadShape::Unit,
+                        Some(arandu_parser::EnumPayload::Struct { fields, .. }) => {
+                            let mut field_entries: Vec<arandu_middle::layout::StructFieldInfo> =
+                                Vec::with_capacity(fields.len());
+                            let mut tids: Vec<arandu_middle::types::TypeId> =
+                                Vec::with_capacity(fields.len());
+                            for (idx, field) in fields.iter().enumerate() {
+                                let field_ty = checker
+                                    .lower_type_expr(field.ty, checker.symbols.global_scope());
+                                let field_tid = checker.intern(field_ty);
+                                let field_key = crate::NodeKey::from(field.span);
+                                let field_symbol =
+                                    checker.resolved.definitions.get(&field_key).copied();
+                                if field.visibility == arandu_parser::Visibility::Private
+                                    && let Some(field_symbol) = field_symbol
+                                {
+                                    checker.type_info.private_fields.insert(field_symbol);
+                                }
+                                field_entries.push(arandu_middle::layout::StructFieldInfo {
+                                    name: field.name.clone(),
+                                    symbol: field_symbol,
+                                    ty: field_tid,
+                                    index: idx,
+                                });
+                                tids.push(field_tid);
+                            }
+                            struct_field_entries = Some(field_entries);
+                            if tids.is_empty() {
+                                super::super::EnumPayloadShape::Unit
+                            } else {
+                                if tids.len() > 1 {
+                                    checker.intern(super::super::ArType::tuple(
+                                        &tids,
+                                        &checker.type_info.type_interner,
+                                    ));
+                                }
+                                super::super::EnumPayloadShape::Tuple(tids)
+                            }
+                        }
                     };
                     let variant_key = crate::NodeKey::from(variant.span);
                     if let Some(variant_symbol_id) =
@@ -189,6 +233,24 @@ pub(crate) fn collect_type_shapes(checker: &mut TypeChecker<'_>, program: &Progr
                             .type_info
                             .record_enum_variant_tag(variant_symbol_id, tag);
 
+                        let fields_arc = struct_field_entries.map(|entries| {
+                            std::sync::Arc::new(arandu_middle::layout::StructFields::from_entries(
+                                entries,
+                            ))
+                        });
+                        if let Some(ref f_arc) = fields_arc {
+                            checker
+                                .type_info
+                                .struct_fields
+                                .insert(variant_symbol_id, f_arc.clone());
+                            if let Some(ref p_arc) = params_arc {
+                                checker
+                                    .type_info
+                                    .generic_params
+                                    .insert(variant_symbol_id, p_arc.clone());
+                            }
+                        }
+
                         // Also register the *associated-member* SymbolId that the resolver
                         // creates for qualified uses like `Color.Red`.
                         // `define_associated_member` stores that symbol under the enum's
@@ -207,6 +269,15 @@ pub(crate) fn collect_type_shapes(checker: &mut TypeChecker<'_>, program: &Progr
                                 .enum_variants
                                 .insert(assoc_id, (enum_symbol_id, shape.clone()));
                             checker.type_info.record_enum_variant_tag(assoc_id, tag);
+                            if let Some(f_arc) = fields_arc {
+                                checker.type_info.struct_fields.insert(assoc_id, f_arc);
+                                if let Some(ref p_arc) = params_arc {
+                                    checker
+                                        .type_info
+                                        .generic_params
+                                        .insert(assoc_id, p_arc.clone());
+                                }
+                            }
                         }
                     }
                 }

@@ -33,6 +33,9 @@ mod cli_cgu_incremental;
 #[path = "cli_suite/cli_color_handling.rs"]
 mod cli_color_handling;
 
+#[path = "cli_suite/cli_comptime.rs"]
+mod cli_comptime;
+
 #[path = "cli_suite/cli_core_foundation.rs"]
 mod cli_core_foundation;
 

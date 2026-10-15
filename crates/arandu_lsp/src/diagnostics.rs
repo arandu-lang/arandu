@@ -29,6 +29,11 @@ pub(crate) fn spawn_diagnostics(
     uri: Uri,
     doc_id: DocumentId,
 ) {
+    // The latest client version advances before its debounced text reaches
+    // Salsa. A workspace refresh must not label the old snapshot with it.
+    if state.vfs.pending_text(uri.as_str()).is_some() {
+        return;
+    }
     let Some(doc) = state.docs.get(doc_id) else {
         return;
     };

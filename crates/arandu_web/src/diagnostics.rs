@@ -33,6 +33,34 @@ pub struct WebDiagnostic {
     pub labels: Vec<WebLabel>,
     /// Supplementary notes and help text.
     pub notes: Vec<String>,
+    /// Structured hints attached to the diagnostic, including optional replacements.
+    #[serde(default)]
+    pub hints: Vec<WebHint>,
+    /// Structured source replacements extracted from diagnostic hints.
+    #[serde(default)]
+    pub replacements: Vec<WebReplacement>,
+}
+
+/// A structured replacement edit associated with a diagnostic hint.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WebReplacement {
+    pub file_id: u32,
+    pub start: u32,
+    pub end: u32,
+    pub line: Option<u32>,
+    pub column: Option<u32>,
+    pub end_line: Option<u32>,
+    pub end_column: Option<u32>,
+    pub new_text: String,
+}
+
+/// A diagnostic hint with an optional structured replacement.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WebHint {
+    pub message: String,
+    pub replacement: Option<WebReplacement>,
 }
 
 /// A secondary annotated source span. Coordinates are present when the label
@@ -60,6 +88,33 @@ pub enum WebSeverity {
     Info,
 }
 
+fn build_web_replacement(
+    primary_file_id: u32,
+    file_id: u32,
+    start: u32,
+    end: u32,
+    new_text: String,
+    line_index: &LineIndex,
+) -> WebReplacement {
+    let (line, column, end_line, end_column) = if file_id == primary_file_id {
+        let (line, column) = line_index.line_col(start);
+        let (end_line, end_column) = line_index.line_col(end);
+        (Some(line), Some(column), Some(end_line), Some(end_column))
+    } else {
+        (None, None, None, None)
+    };
+    WebReplacement {
+        file_id,
+        start,
+        end,
+        line,
+        column,
+        end_line,
+        end_column,
+        new_text,
+    }
+}
+
 /// Convert an internal compiler diagnostic into a web-friendly diagnostic using `LineIndex`.
 #[must_use]
 pub fn convert_diagnostic(
@@ -79,8 +134,26 @@ pub fn convert_diagnostic(
 
     let code = Some(diag.code.as_str().to_string());
     let mut notes = diag.notes.clone();
+    let mut hints = Vec::with_capacity(diag.hints.len());
+    let mut replacements = Vec::new();
     for hint in &diag.hints {
         notes.push(format!("Hint: {}", hint.message));
+        let replacement = hint.replacement.as_ref().map(|rep| {
+            let web_rep = build_web_replacement(
+                span.file_id,
+                rep.span.file_id,
+                rep.span.start,
+                rep.span.end,
+                rep.new_text.clone(),
+                line_index,
+            );
+            replacements.push(web_rep.clone());
+            web_rep
+        });
+        hints.push(WebHint {
+            message: hint.message.clone(),
+            replacement,
+        });
     }
     let labels = diag
         .labels
@@ -119,6 +192,89 @@ pub fn convert_diagnostic(
         primary_label: diag.primary_label.as_deref().cloned(),
         labels,
         notes,
+        hints,
+        replacements,
+    }
+}
+
+/// Convert a tracked IDE diagnostic into a web-friendly diagnostic using `LineIndex`.
+#[must_use]
+pub fn convert_ide_diagnostic(
+    diag: &arandu_query::IdeDiagnostic,
+    line_index: &LineIndex,
+) -> WebDiagnostic {
+    let (line, column) = line_index.line_col(diag.start);
+    let (end_line, end_column) = line_index.line_col(diag.end);
+    let length = diag.end.saturating_sub(diag.start).max(1);
+
+    let severity = match diag.severity {
+        0 => WebSeverity::Error,
+        1 => WebSeverity::Warning,
+        _ => WebSeverity::Info,
+    };
+
+    let mut notes = diag.notes.clone();
+    let mut hints = Vec::with_capacity(diag.hints.len());
+    let mut replacements = Vec::new();
+    for hint in &diag.hints {
+        notes.push(format!("Hint: {}", hint.message));
+        let replacement = hint.replacement.as_ref().map(|rep| {
+            let web_rep = build_web_replacement(
+                diag.file_id,
+                rep.file_id,
+                rep.start,
+                rep.end,
+                rep.new_text.clone(),
+                line_index,
+            );
+            replacements.push(web_rep.clone());
+            web_rep
+        });
+        hints.push(WebHint {
+            message: hint.message.clone(),
+            replacement,
+        });
+    }
+
+    let labels = diag
+        .labels
+        .iter()
+        .map(|label| {
+            let (line, column, end_line, end_column) = if label.file_id == diag.file_id {
+                let (line, column) = line_index.line_col(label.start);
+                let (end_line, end_column) = line_index.line_col(label.end);
+                (Some(line), Some(column), Some(end_line), Some(end_column))
+            } else {
+                (None, None, None, None)
+            };
+            WebLabel {
+                file_id: label.file_id,
+                start: label.start,
+                end: label.end,
+                line,
+                column,
+                end_line,
+                end_column,
+                message: label.message.clone(),
+            }
+        })
+        .collect();
+
+    WebDiagnostic {
+        line,
+        column,
+        end_line,
+        end_column,
+        length,
+        file_id: diag.file_id,
+        severity,
+        code: Some(diag.code.clone()),
+        message: diag.message.clone(),
+        primary_label: diag.primary_label.clone(),
+        labels,
+        notes,
+        hints,
+        replacements,
     }
 }
 
@@ -154,7 +310,14 @@ mod tests {
         )
         .with_primary_label("unexpected token")
         .with_label(arandu_middle::Span::new(7, 0, 2), "declared here")
-        .with_label(arandu_middle::Span::new(9, 3, 8), "in another file");
+        .with_label(arandu_middle::Span::new(9, 3, 8), "in another file")
+        .with_hint_replacement(arandu_middle::Hint {
+            message: "replace with valid identifier".into(),
+            replacement: Some(arandu_middle::CodeReplacement {
+                span: arandu_middle::Span::new(7, 5, 7),
+                new_text: "ok".into(),
+            }),
+        });
         let converted = convert_diagnostic(&diagnostic, &LineIndex::new("😀 bad\n"));
 
         assert_eq!((converted.line, converted.column), (1, 4));
@@ -166,6 +329,11 @@ mod tests {
         assert_eq!(converted.labels[0].message, "declared here");
         assert_eq!(converted.labels[1].file_id, 9);
         assert_eq!(converted.labels[1].line, None);
+        assert_eq!(converted.hints.len(), 1);
+        assert_eq!(converted.replacements.len(), 1);
+        assert_eq!(converted.replacements[0].new_text, "ok");
+        assert_eq!(converted.replacements[0].line, Some(1));
+        assert_eq!(converted.replacements[0].column, Some(4));
 
         let json = serde_json::to_value(&converted).expect("diagnostic should serialize");
         assert_eq!(json["endLine"], 1);
@@ -174,5 +342,6 @@ mod tests {
         assert_eq!(json["labels"][0]["message"], "declared here");
         assert_eq!(json["primaryLabel"], "unexpected token");
         assert_eq!(json["labels"][1]["line"], serde_json::Value::Null);
+        assert_eq!(json["replacements"][0]["newText"], "ok");
     }
 }

@@ -2,7 +2,7 @@
 
 use arandu_base::LineIndex;
 use arandu_middle::types::ArType;
-use arandu_middle::{NodeKey, SymbolId};
+use arandu_middle::SymbolId;
 use arandu_query::{AnalysisSnapshot, SourceFile};
 use arandu_semantics::TypeCheckResult;
 use lsp_types::{
@@ -58,38 +58,63 @@ pub fn references(
     text: &str,
     position: Position,
     uri: &Uri,
+    documents: &[super::types::DocSnap],
+    include_declaration: bool,
 ) -> Vec<Location> {
     let index = LineIndex::new(text);
     let offset = position_to_offset(&index, position, text);
     let tc = typecheck(snap, source);
-    let Some(sym) = symbol_at(&tc, offset) else {
+    let program = arandu_query::passes::parse(&snap.db, source);
+    let Some(sym) = symbol_at(&tc, offset).or_else(|| {
+        program
+            .as_ref()
+            .as_ref()
+            .ok()
+            .and_then(|program| super::presentation::expr_symbol_at(program, &tc, offset))
+    }) else {
         return Vec::new();
     };
     let mut locs = Vec::new();
-    let push_key = |key: &NodeKey, locs: &mut Vec<Location>| {
-        let span = arandu_base::Span::new(sym.file_id, key.start, key.end);
-        locs.push(Location {
-            uri: uri.clone(),
-            range: span_to_range(&index, span),
-        });
+    let collect_in_doc = |doc_source: SourceFile, doc_uri: &Uri, locs: &mut Vec<Location>| {
+        let doc_text = doc_source.text(&snap.db);
+        let doc_index = LineIndex::new(doc_text);
+        let doc_tc = typecheck(snap, doc_source);
+        for span in arandu_query::rename_occurrences(&snap.db, doc_source, sym) {
+            let is_declaration = doc_tc.resolved.definitions.iter().any(|(key, symbol)| {
+                *symbol == sym && key.start <= span.start && span.end <= key.end
+            });
+            if include_declaration || !is_declaration {
+                locs.push(Location {
+                    uri: doc_uri.clone(),
+                    range: span_to_range(&doc_index, span),
+                });
+            }
+        }
     };
-    for (key, &s) in &tc.resolved.definitions {
-        if s == sym {
-            push_key(key, &mut locs);
+    if documents.is_empty() {
+        collect_in_doc(source, uri, &mut locs);
+    } else {
+        let mut saw_current = false;
+        for doc in documents {
+            if doc.source == source {
+                saw_current = true;
+            }
+            collect_in_doc(doc.source, &doc.uri, &mut locs);
+        }
+        if !saw_current {
+            collect_in_doc(source, uri, &mut locs);
         }
     }
-    for (key, &s) in &tc.resolved.value_refs {
-        if s == sym {
-            push_key(key, &mut locs);
-        }
-    }
-    for (key, &s) in &tc.resolved.type_refs {
-        if s == sym {
-            push_key(key, &mut locs);
-        }
-    }
-    locs.sort_by_key(|l| (l.range.start.line, l.range.start.character));
-    locs.dedup_by(|a, b| a.range == b.range);
+    locs.sort_by(|a, b| {
+        a.uri
+            .as_str()
+            .cmp(b.uri.as_str())
+            .then_with(|| a.range.start.line.cmp(&b.range.start.line))
+            .then_with(|| a.range.start.character.cmp(&b.range.start.character))
+            .then_with(|| a.range.end.line.cmp(&b.range.end.line))
+            .then_with(|| a.range.end.character.cmp(&b.range.end.character))
+    });
+    locs.dedup_by(|a, b| a.uri == b.uri && a.range == b.range);
     locs
 }
 

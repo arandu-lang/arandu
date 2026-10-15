@@ -13,8 +13,8 @@
 //! ```arandu
 //! import std.core.cell as cell
 //!
-//! let c = cell.unsafeCellNew(42)
-//! let v = cell.UnsafeCell.intoInner(c)  // 42, consumes c
+//! let c = cell.UnsafeCell.new(42)
+//! let v = c.intoInner()  // 42, consumes c
 //! ```
 //!
 //! ## Platform
@@ -39,7 +39,7 @@ public struct UnsafeCell<T> {
 }
 
 /// Creates a new `UnsafeCell` containing `val`.
-public func unsafeCellNew<T>(val: T): UnsafeCell<T> {
+public func UnsafeCell.new<T>(val: T): UnsafeCell<T> {
     return UnsafeCell<T> {
         value: val,
     }
@@ -57,7 +57,7 @@ public struct Cell<T> {
 }
 
 /// Creates a new `Cell` containing `val`.
-public func cellNew<T>(val: T): Cell<T> {
+public func Cell.new<T>(val: T): Cell<T> {
     return Cell<T> {
         value: val,
     }
@@ -69,7 +69,7 @@ public func Cell.get<T>(self: ref Cell<T>): T {
 }
 
 /// Sets the contained value.
-public func Cell.put<T>(self: mut ref Cell<T>, val: T): void {
+public func Cell.set<T>(self: mut ref Cell<T>, val: T): void {
     self.value = val
 }
 

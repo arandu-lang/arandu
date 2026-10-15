@@ -1,0 +1,32 @@
+func main(): int {
+    let answer: int = comptime {
+        return 42
+    }
+    let layout: usize = comptime (@sizeOf([3]u16))
+    let alignment: usize = @alignOf(i64)
+    let values = comptime [20, 22]
+    let point = comptime Point { x: 20, y: 22 }
+    let rounded: f32 = comptime 16777217.0
+    let message = comptime "Olá 🦀"
+    let mut sum = 0
+    comptime for i in 0..4 {
+        sum += i
+    }
+    if values[0] + values[1] != 42 || point.x + point.y != 42 || rounded != 16777216.0 || message != "Olá 🦀" || sum != 6 {
+        return 1
+    }
+    comptime if true {
+        return answer + (count<comptime (0 + 0)>() as int)
+    } else {
+        return unavailableOnThisTarget()
+    }
+}
+
+struct Point {
+    x: int
+    y: int
+}
+
+func count<comptime N: uint>(): uint {
+    return N
+}

@@ -143,7 +143,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
 
     pub(super) fn call_co_block_on(&mut self, state_ptr: Value) -> Value {
         use cranelift_codegen::ir::types::I64;
-        let Some(&func_id) = self.func_ids.get("ar_co_block_on_i64") else {
+        let Some(func_id) = self.resolve_function("ar_co_block_on_i64") else {
             self.record_ice("ar_co_block_on_i64 not declared", self.func_span());
             return self.builder.ins().iconst(I64, 0);
         };

@@ -97,8 +97,8 @@ public func Key.eq(self: ref Key, other: ref Key): bool { return self.id == othe
 public func Key.hash<H: hash.Hasher>(self: ref Key, state: mut ref H): void {}
 
 func main(): int {
-    let mut map = hash_map.new<Key, int>()
-    hash_map.insert(mut ref map, Key { id: 1 }, 10)
+    let mut map = hash_map.HashMap<Key, int>.new()
+    map.put(Key { id: 1 }, 10)
     return 0
 }
 "#,

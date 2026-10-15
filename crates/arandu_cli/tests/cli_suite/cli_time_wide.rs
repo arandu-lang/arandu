@@ -14,13 +14,13 @@ fn monotonic_clock_and_duration_keep_more_than_signed_32_bit_nanoseconds() {
 import std.time as time
 
 func main(): int {
-    let fiveSeconds = time.durationFromSecs(5)
+    let fiveSeconds = time.Duration.fromSecs(5)
     if fiveSeconds.asNanos() != 5000000000 as i64 { return 1 }
     if fiveSeconds.asMillis() != 5000 as i64 { return 3 }
 
-    let start = time.now()
-    while time.now().durationSince(start).asNanos() < 2200000000 as i64 {}
-    let elapsed = time.now().durationSince(start).asNanos()
+    let start = time.Instant.now()
+    while time.Instant.now().durationSince(start).asNanos() < 2200000000 as i64 {}
+    let elapsed = time.Instant.now().durationSince(start).asNanos()
     if elapsed < 2200000000 as i64 { return 2 }
     return 0
 }

@@ -23,7 +23,7 @@ fn compile_src(
         arandu_semantics::TargetInfo { pointer_width: 64 },
     );
     let hir = lower_to_hir(&mut tc, &program).expect("HIR lowering failed");
-    let (amir, _) = lower_to_amir_with_interfaces(&mut tc, &hir, 64).expect("AMIR lowering failed");
+    let (amir, _) = lower_to_amir_with_interfaces(&mut tc, &hir, 8).expect("AMIR lowering failed");
     (
         amir,
         Arc::unwrap_or_clone(tc.symbols),
@@ -48,7 +48,7 @@ fn compile_src_mono(
     let mut hir = lower_to_hir(&mut tc, &program).expect("HIR lowering failed");
     let _ =
         arandu_semantics::monomorphize_program(&mut tc, &mut hir).expect("monomorphization failed");
-    let (amir, _) = lower_to_amir_with_interfaces(&mut tc, &hir, 64).expect("AMIR lowering failed");
+    let (amir, _) = lower_to_amir_with_interfaces(&mut tc, &hir, 8).expect("AMIR lowering failed");
     (
         amir,
         Arc::unwrap_or_clone(tc.symbols),
@@ -58,6 +58,76 @@ fn compile_src_mono(
 
 fn backend_for_test() -> CraneliftBackend {
     CraneliftBackend::try_new().expect("JIT setup should not fail in test environment")
+}
+
+#[test]
+fn jit_float_literals_preserve_ieee_encodings_after_optimization() {
+    for (primitive, cases) in [
+        (
+            arandu_semantics::types::Primitive::F32,
+            &[0_u64, 0x80000000, 1, 0x7f800000, 0xff800000, 0x7fc01234][..],
+        ),
+        (
+            arandu_semantics::types::Primitive::F64,
+            &[
+                0_u64,
+                0x8000000000000000,
+                1,
+                0x7ff0000000000000,
+                0xfff0000000000000,
+                0x7ff8000000001234,
+            ][..],
+        ),
+    ] {
+        for &bits in cases {
+            for level in [
+                arandu_semantics::OptLevel::O0,
+                arandu_semantics::OptLevel::O1,
+                arandu_semantics::OptLevel::O2,
+            ] {
+                let spelling = if primitive == arandu_semantics::types::Primitive::F32 {
+                    "f32"
+                } else {
+                    "f64"
+                };
+                let (mut amir, symbols, info) =
+                    compile_src(&format!("func value(): {spelling} {{ return 1.0 }}"));
+                let ty = arandu_semantics::ctfe::FloatType::new(
+                    primitive,
+                    arandu_semantics::layout::DataLayout::ptr_width(8),
+                )
+                .unwrap();
+                let value = arandu_semantics::ctfe::ConstFloat::new(ty, bits).unwrap();
+                for entry in &mut amir.literal_pool.entries {
+                    if matches!(entry, AmirLiteralEntry::FloatBits(_)) {
+                        *entry = AmirLiteralEntry::FloatBits(value);
+                    }
+                }
+                arandu_semantics::optimize_amir_checked_with_level(
+                    &mut amir,
+                    &symbols,
+                    &info.type_interner,
+                    level,
+                )
+                .unwrap();
+                let module = backend_for_test().compile(&amir, &symbols, &info).unwrap();
+                // SAFETY: the source signature above has exactly this C ABI and
+                // the compiled module remains alive while the function runs.
+                let actual = unsafe {
+                    if primitive == arandu_semantics::types::Primitive::F32 {
+                        let function: unsafe extern "C" fn() -> f32 =
+                            module.get_fn("value").unwrap();
+                        u64::from(function().to_bits())
+                    } else {
+                        let function: unsafe extern "C" fn() -> f64 =
+                            module.get_fn("value").unwrap();
+                        function().to_bits()
+                    }
+                };
+                assert_eq!(actual, bits, "{spelling} {level:?}");
+            }
+        }
+    }
 }
 
 #[test]
@@ -1219,6 +1289,58 @@ fn jit_returns_ice_on_invalid_literal_pool() {
     );
 }
 
+#[test]
+fn jit_rejects_invalid_enum_payload_projection_offsets() {
+    use arandu_semantics::amir::{AmirRvalue, AmirStmt};
+    use arandu_semantics::types::{ArType, Primitive};
+
+    let source = "enum Pair { Values(int, int) } func main(): int { return match Pair.Values(20, 22) { Pair.Values(a, b) => a + b } }";
+    for oversized in [false, true] {
+        let (mut amir, symbols, info) = compile_src(source);
+        let byte = info.type_interner.intern(ArType::Primitive(Primitive::U8));
+        let int = info.type_interner.intern(ArType::Primitive(Primitive::Int));
+        let large = info
+            .type_interner
+            .intern(ArType::Array(u64::try_from(i32::MAX).unwrap() + 1, byte));
+        let tuple = info.type_interner.intern(ArType::Tuple(
+            info.type_interner.push_type_args(&[large, int]),
+        ));
+        let mut changed = false;
+        for function in &mut amir.funcs {
+            for statement in function.stmts.payloads.iter_mut() {
+                if let AmirStmt::Assign {
+                    rhs:
+                        AmirRvalue::EnumPayload {
+                            index, tuple_ty, ..
+                        },
+                    ..
+                } = statement
+                {
+                    if oversized {
+                        *tuple_ty = Some(tuple);
+                        *index = 1;
+                    } else {
+                        *index = usize::MAX;
+                    }
+                    changed = true;
+                }
+            }
+        }
+        assert!(changed, "fixture must contain tuple payload projections");
+        let error = match backend_for_test().compile(&amir, &symbols, &info) {
+            Err(error) => error,
+            Ok(_) => panic!("invalid payload projection must not produce executable code"),
+        };
+        assert_eq!(error.code, DiagCode::ICEGEN001);
+        let expected = if oversized {
+            "offset limit"
+        } else {
+            "EnumPayload field"
+        };
+        assert!(error.message.contains(expected), "{}", error.message);
+    }
+}
+
 /// Regression test: two enums sharing a variant name must not collide
 /// on their discriminant tags.
 ///
@@ -2275,4 +2397,41 @@ fn jit_user_defined_generic_option_executes_successfully() {
         f()
     };
     assert_eq!(result, 65);
+}
+
+#[test]
+fn jit_enum_struct_variants_execute_end_to_end() {
+    let src = r#"
+    enum Shape<T> {
+        Circle { radius: T }
+        Rect { width: T, height: T }
+        Empty
+    }
+
+    func area(s: Shape<int>): int {
+        return match s {
+            Shape.Circle { radius } => radius * radius * 3
+            Shape.Rect { height: h, width } => width * h
+            Shape.Empty => 0
+        }
+    }
+
+    func main(): int {
+        let radius = 4
+        let c = Shape.Circle { radius }
+        let r = Shape<int>.Rect { height: 7, width: 6 }
+        let e: Shape<int> = Shape.Empty
+        return area(c) + area(r) + area(e)
+    }
+    "#;
+    let (amir, symbols, type_info) = compile_src_mono(src);
+    let backend = backend_for_test();
+    let module = backend.compile(&amir, &symbols, &type_info).unwrap();
+
+    let result: i64 = unsafe {
+        let f: unsafe extern "C" fn() -> i64 = module.get_fn("main").unwrap();
+        f()
+    };
+    // Circle: 4 * 4 * 3 = 48; Rect: 6 * 7 = 42; Empty: 0 => 90
+    assert_eq!(result, 90);
 }

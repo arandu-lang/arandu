@@ -5,6 +5,12 @@ use std::fmt::Write;
 use super::super::CEmitter;
 
 impl<'a> CEmitter<'a> {
+    pub(super) fn emit_str_eq_runtime(&mut self, len_c_ty: &str) {
+        let _ = writeln!(
+            self.output,
+            "static {len_c_ty} ar_str_eq(ArStr a, ArStr b) {{\n    if (a.len != b.len) return 0;\n    if (a.len <= 0) return 1;\n    if (!a.ptr || !b.ptr) return a.ptr == b.ptr ? 1 : 0;\n    return memcmp(a.ptr, b.ptr, (size_t)a.len) == 0 ? 1 : 0;\n}}"
+        );
+    }
     pub(super) fn emit_path_runtime(&mut self, len_c_ty: &str) {
         let _ = writeln!(
             &mut self.output,
@@ -75,12 +81,6 @@ static ArStr ar_str_concat(ArStr a, ArStr b) {{
     buf[total] = 0;
     return ar_str_pack(buf, total);
 }}
-static {len_c_ty} ar_str_eq(ArStr a, ArStr b) {{
-    if (a.len != b.len) return 0;
-    if (a.len <= 0) return 1;
-    if (!a.ptr || !b.ptr) return a.ptr == b.ptr ? 1 : 0;
-    return memcmp(a.ptr, b.ptr, (size_t)a.len) == 0 ? 1 : 0;
-}}
 static ArStr ar_str_split_last(ArStr s, ArStr sep) {{
     if (s.len <= 0 || !s.ptr) return ar_str_pack((const uint8_t*)"", 0);
     if (sep.len <= 0 || !sep.ptr) {{
@@ -105,10 +105,10 @@ static ArStr ar_str_split_last(ArStr s, ArStr sep) {{
         );
     }
 
-    pub(super) fn emit_fs_runtime(&mut self, uint_c_ty: &str, int_c_ty: &str) {
+    pub(super) fn emit_c_string_runtime(&mut self) {
         let _ = writeln!(
             &mut self.output,
-            r#"/* std.fs host helpers (mirrors JIT ar_fs_* runtime). */
+            r#"/* NUL-terminated names shared by filesystem and environment hosts. */
 static inline char *ar_str_to_c_path(ArStr s, char *stack_buf, size_t stack_sz) {{
     if (s.len < 0 || (!s.ptr && s.len > 0)) return NULL;
     size_t len = (size_t)s.len;
@@ -123,7 +123,14 @@ static inline char *ar_str_to_c_path(ArStr s, char *stack_buf, size_t stack_sz) 
     heap[len] = '\0';
     return heap;
 }}
+"#
+        );
+    }
 
+    pub(super) fn emit_fs_runtime(&mut self, uint_c_ty: &str, int_c_ty: &str) {
+        let _ = writeln!(
+            &mut self.output,
+            r#"/* std.fs host helpers (mirrors JIT ar_fs_* runtime). */
 static inline {int_c_ty} ar_map_errno(int err) {{
     switch (err) {{
         case 0: return 0;

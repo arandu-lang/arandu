@@ -9,8 +9,8 @@
 //! ```arandu
 //! import std.core.fixed as fixed
 //!
-//! let a = fixed.fromInt(2 as i16)
-//! let b = fixed.fromInt(3 as i16)
+//! let a = fixed.Q16_16.fromInt(2 as i16)
+//! let b = fixed.Q16_16.fromInt(3 as i16)
 //! let sum = a.add(b)
 //! let quotient = b.div(a)
 //! ```
@@ -47,16 +47,16 @@ func clampRaw(value: i64): i32 {
 
 /// Wraps signed Q16.16 bits without scaling or validation.
 ///
-/// The low 16 bits represent the fractional component. Use `fromInt` when
+/// The low 16 bits represent the fractional component. Use `Q16_16.fromInt` when
 /// starting from a whole `i16` value.
-public func fromRaw(raw: i32): Q16_16 {
+public func Q16_16.fromRaw(raw: i32): Q16_16 {
     return Q16_16 { raw: raw }
 }
 
 /// Converts a signed 16-bit whole number by shifting it left 16 bits.
 ///
 /// This conversion is exact for every `i16` input and does not allocate.
-public func fromInt(val: i16): Q16_16 {
+public func Q16_16.fromInt(val: i16): Q16_16 {
     let scaled: i64 = (val as i64) << (16 as i64)
     return Q16_16 { raw: scaled as i32 }
 }

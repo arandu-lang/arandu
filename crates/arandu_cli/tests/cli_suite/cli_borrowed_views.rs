@@ -62,9 +62,9 @@ import std.alloc.vec as vec
 import std.core.slice as slice
 
 func main(): int {
-    let mut values = vec.new<int>()
-    vec.push<int>(values, 7)
-    let view = vec.asSlice<int>(values)
+    let mut values = vec.Vec<int>.new()
+    values.push(7)
+    let view = values.asSlice()
     return slice.len<int>(view) as int
 }
 "#,
@@ -85,9 +85,9 @@ import std.alloc.vec as vec
 import std.core.slice as slice
 
 func main(): int {
-    let mut values = vec.new<int>()
-    vec.push<int>(values, 7)
-    let view = vec.asSlice<int>(values)
+    let mut values = vec.Vec<int>.new()
+    values.push(7)
+    let view = values.asSlice()
     return slice.len<int>(view) as int
 }
 "#,
@@ -108,13 +108,13 @@ fn tcp_zero_length_raw_io_does_not_call_the_host() {
 import std.net as net
 
 func main(): int {
-    let mut stream = net.tcpConnect(0)
+    let mut stream = net.RawTcpStream.connect(0)
     let nilbuf: ptr[u8] = nil
-    unsafe { net.tcpRead(ref stream, nilbuf, 0) }
-    unsafe { net.tcpWrite(ref stream, nilbuf, 0) }
-    unsafe { net.tcpReadAsync(ref stream, nilbuf, 0) }
-    unsafe { net.tcpWriteAsync(ref stream, nilbuf, 0) }
-    net.tcpCloseStream(ref stream)
+    unsafe { stream.read(nilbuf, 0) }
+    unsafe { stream.write(nilbuf, 0) }
+    unsafe { stream.readAsync(nilbuf, 0) }
+    unsafe { stream.writeAsync(nilbuf, 0) }
+    stream.close()
     match net.TcpListener.bind(0) {
         Ok(mut listener) => {
             listener.close()
@@ -143,14 +143,14 @@ import std.core.fmt as fmt
 import std.alloc.vec as vec
 
 func main(): int {
-    let mut storage = vec.new<u8>()
+    let mut storage = vec.Vec<u8>.new()
     let mut i: uint = 0
     while i < 5 {
-        vec.push<u8>(storage, 0 as u8)
+        storage.push(0 as u8)
         i = i + 1
     }
-    let view = vec.asSlice<u8>(storage)
-    let mut writer = fmt.newFormatter(view)
+    let view = storage.asSlice()
+    let mut writer = fmt.Formatter.new(view)
     match writer.writeStr("hey") {
         Ok(3) => {}
         _ => { return 1 }
@@ -184,7 +184,7 @@ fn jit_string_truncate_preserves_utf8_boundaries() {
 import std.alloc.string as strings
 
 func main(): int {
-    let mut value = strings.from("aéz")
+    let mut value = strings.String.from("aéz")
     value.truncate(2)
     if value.len() != 4 { return 1 }
     value.truncate(3)
@@ -212,10 +212,9 @@ import std.alloc.string as strings
 import std.core.io as io
 
 func main(): int {
-    let mut owner = strings.from("borrowed-view")
+    let owner = strings.String.from("borrowed-view")
     let view = owner.asStr()
     io.println("value=${view}")
-    owner.destroy()
     return 0
 }
 "#,
@@ -254,18 +253,18 @@ import std.core.slice as slice
 import std.math.view as view
 
 func main(): int {
-    let mut backing = vec.new<int>()
-    vec.push<int>(backing, 1)
-    let raw = slice.asPtr<int>(vec.asSlice<int>(backing))
-    let matrix = unsafe { view.fromRaw<int>(raw, 2, 2, 2147483647, 1) }
+    let mut backing = vec.Vec<int>.new()
+    backing.push(1)
+    let raw = slice.asPtr<int>(backing.asSlice())
+    let matrix = unsafe { view.ArrayView.fromRaw<int>(raw, 2, 2, 2147483647, 1) }
     let result = matrix.ptrAt(1, 1)
     let nullp: ptr[int] = nil
     if result == nullp { return 0 }
     if matrix.get(1, 1) is Option.Some(_) { return 2 }
     if matrix.slice(1, 1, 1, 1) is Option.Some(_) { return 3 }
-    let huge = unsafe { view.fromRaw<int>(raw, 4294967295 as uint, 2, 1, 1) }
+    let huge = unsafe { view.ArrayView.fromRaw<int>(raw, 4294967295 as uint, 2, 1, 1) }
     if huge.len() != (4294967295 as uint) { return 4 }
-    let mut writable = unsafe { view.fromRawMut<int>(raw, 2, 2, 2147483647, 1) }
+    let mut writable = unsafe { view.ArrayViewMut.fromRaw<int>(raw, 2, 2, 2147483647, 1) }
     if writable.set(1, 1, 9) { return 5 }
     if writable.sliceMut(1, 1, 1, 1) is Option.Some(_) { return 6 }
     return 1
@@ -306,10 +305,10 @@ import std.alloc.vec as vec
 import std.core.slice as slice
 
 func main(): int {
-    let mut values = vec.new<int>()
-    vec.push<int>(values, 1)
-    let view = vec.asSlice<int>(values)
-    vec.push<int>(values, 2)
+    let mut values = vec.Vec<int>.new()
+    values.push(1)
+    let view = values.asSlice()
+    values.push(2)
     return slice.len<int>(view) as int
 }
 "#,
@@ -332,9 +331,9 @@ fn slice_of_local_owner_cannot_escape() {
 import std.alloc.vec as vec
 
 func escape(): []int {
-    let mut values = vec.new<int>()
-    vec.push<int>(values, 1)
-    return vec.asSlice<int>(values)
+    let mut values = vec.Vec<int>.new()
+    values.push(1)
+    return values.asSlice()
 }
 "#,
     );
@@ -345,18 +344,22 @@ func escape(): []int {
 
 #[test]
 fn jit_consumes_string_from_free_and_associated_ctor() {
-    // `from` is a soft keyword: it must work as both the stdlib free function
-    // (`strings.from`) and the associated constructor (`strings.String.from`).
+    // `from` is a soft keyword: it must work as both a local free function
+    // and the associated constructor (`strings.String.from`).
     let output = invoke(
         "run",
         r#"module tests.borrowed_views.string_from
 import std.alloc.string as strings
 
+func from(s: str): strings.String {
+    return strings.String.from(s)
+}
+
 func main(): int {
-    let a = strings.from("free")
+    let a = from("free")
     let b = strings.String.from("associated")
-    let lenA = strings.len(a)
-    let lenB = strings.len(b)
+    let lenA = a.len()
+    let lenB = b.len()
     if lenA != 4 {
         return 10
     }
@@ -384,9 +387,9 @@ import std.alloc.string as strings
 import std.core.slice as slice
 
 func main(): int {
-    let mut text = strings.new()
-    let bytes = strings.asBytes(text)
-    strings.pushScalar(text, 'a')
+    let mut text = strings.String.new()
+    let bytes = text.asBytes()
+    text.pushScalar('a')
     return slice.len<u8>(bytes) as int
 }
 "#,
@@ -409,7 +412,7 @@ fn method_autoref_rejects_an_immutable_value_receiver() {
 import std.alloc.string as strings
 
 func main(): int {
-    let text = strings.new()
+    let text = strings.String.new()
     text.pushScalar('a')
     return 0
 }
@@ -433,7 +436,7 @@ fn generic_method_autoref_rejects_an_immutable_value_receiver() {
 import std.alloc.vec as vec
 
 func main(): int {
-    let values = vec.new<int>()
+    let values = vec.Vec<int>.new()
     values.push<int>(1)
     return 0
 }
@@ -457,7 +460,7 @@ fn method_autoref_accepts_a_mutable_value_receiver() {
 import std.alloc.string as strings
 
 func main(): int {
-    let mut text = strings.new()
+    let mut text = strings.String.new()
     text.pushScalar('a')
     return 0
 }
@@ -477,7 +480,7 @@ fn method_receiver_accepts_an_immutable_exclusive_reference_binding() {
 import std.alloc.string as strings
 
 func main(): int {
-    let mut text = strings.new()
+    let mut text = strings.String.new()
     let alias = &mut text
     alias.pushScalar('a')
     return 0
@@ -500,12 +503,13 @@ import std.path as path
 import std.alloc.string as strings
 
 func main(): int {
-    let joined: strings.String = path.joinOwned("/tmp", "owned")
+    let base = path.Path.from("/tmp")
+    let joined: strings.String = base.joinOwned("owned")
     let s: str = joined.asStr()
-    if path.fileName(s) != "owned" {
+    let leaf = path.Path.from(s).fileName()
+    if leaf.asStr() != "owned" {
         return 1
     }
-    joined.destroy()
     return 0
 }
 "#,
@@ -598,7 +602,7 @@ func main(): int {
     match fs.readDir(".") {
         Ok(mut listing) => {
             let name = listing.nameStr(0)
-            listing.destroy()
+            listing.close()
             io.println(*name)
         }
         Err(_) => {}
@@ -626,13 +630,13 @@ fn jit_appends_utf8_and_reads_string_view() {
 import std.alloc.string as strings
 
 func main(): int {
-    let mut value = strings.new()
-    if !strings.pushStr(value, "olá") {
+    let mut value = strings.String.new()
+    if !value.pushStr("olá") {
         return 1
     }
-    let view = strings.asStr(value)
+    let view = value.asStr()
     if view == "olá" {
-        return strings.len(value) as int
+        return value.len() as int
     }
     return 2
 }
@@ -655,9 +659,9 @@ import std.alloc.vec as vec
 import std.core.slice as slice
 
 func main(): int {
-    let mut values = vec.new<int>()
-    vec.push<int>(values, 5)
-    let view = vec.asSlice<int>(values)
+    let mut values = vec.Vec<int>.new()
+    values.push(5)
+    let view = values.asSlice()
     return slice.len<int>(view) as int
 }
 "#,

@@ -7,6 +7,27 @@ use crate::ops::BinaryOp;
 use crate::passes::type_checker::types::{ArType, Primitive, result_ok_err_id};
 
 impl LowerCtx<'_> {
+    fn emit_propagated_return(
+        &mut self,
+        value: AmirOperand,
+        symbols: &SymbolTable,
+    ) -> Result<(), Diagnostic> {
+        if let Some((dest, exit, defer_depth, scope_depth)) = self.value_returns.last().copied() {
+            self.emit_assign_temp(dest, AmirRvalue::Use(value));
+            self.exit_defer_frames_from(defer_depth, true, symbols)?;
+            self.emit_local_scope_exit_from(scope_depth);
+            self.set_terminator(AmirTerminator::Goto {
+                target: exit,
+                args: Vec::new(),
+            });
+        } else {
+            self.emit_assign_temp(TempId(0), AmirRvalue::Use(value));
+            self.exit_all_defer_frames(true, symbols)?;
+            self.set_terminator(AmirTerminator::Return);
+        }
+        Ok(())
+    }
+
     pub(crate) fn expr_is_nil(expr: &HirExpr) -> bool {
         matches!(expr.kind, HirExprKind::Nil)
     }
@@ -94,9 +115,6 @@ impl LowerCtx<'_> {
             return Ok(AmirOperand::Copy(dest));
         }
 
-        let err_tmp = self.new_temp_ref(&err_ty);
-        self.lower_result_err_field(base, err_tmp);
-
         let tag_tmp = self.new_temp(ArType::Primitive(Primitive::Int));
         self.emit_assign_temp(tag_tmp, AmirRvalue::Discriminant { value: base });
 
@@ -119,7 +137,8 @@ impl LowerCtx<'_> {
         self.seal_block(bb_continue);
 
         self.builder.current_block = Some(bb_return_err);
-        self.exit_all_defer_frames(true, symbols)?;
+        let err_tmp = self.new_temp_ref(&err_ty);
+        self.lower_result_err_field(base, err_tmp);
         // Clone once: new_temp_ref needs &mut self + &ArType simultaneously.
         let err_ctor_tmp = self.new_temp_id(self.func_return_type);
         self.emit_assign_temp(
@@ -129,8 +148,7 @@ impl LowerCtx<'_> {
                 payload: Some(AmirOperand::Copy(err_tmp)),
             },
         );
-        self.emit_assign_temp(TempId(0), AmirRvalue::Use(AmirOperand::Copy(err_ctor_tmp)));
-        self.set_terminator(AmirTerminator::Return);
+        self.emit_propagated_return(AmirOperand::Copy(err_ctor_tmp), symbols)?;
 
         self.builder.current_block = None;
 
@@ -270,12 +288,7 @@ impl LowerCtx<'_> {
         self.seal_block(bb_continue);
 
         self.builder.current_block = Some(bb_return_nil);
-        self.exit_all_defer_frames(true, symbols)?;
-        self.emit_assign_temp(
-            TempId(0),
-            AmirRvalue::Use(AmirOperand::Constant(AmirConstant::Nil)),
-        );
-        self.set_terminator(AmirTerminator::Return);
+        self.emit_propagated_return(AmirOperand::Constant(AmirConstant::Nil), symbols)?;
         self.builder.current_block = None;
 
         self.builder.current_block = Some(bb_continue);
@@ -320,7 +333,6 @@ impl LowerCtx<'_> {
 
         // None branch (tag == 0): return Option.None
         self.builder.current_block = Some(bb_return_none);
-        self.exit_all_defer_frames(true, symbols)?;
         let none_tmp = self.new_temp_id(self.func_return_type);
         self.emit_assign_temp(
             none_tmp,
@@ -329,8 +341,7 @@ impl LowerCtx<'_> {
                 payload: None,
             },
         );
-        self.emit_assign_temp(TempId(0), AmirRvalue::Use(AmirOperand::Copy(none_tmp)));
-        self.set_terminator(AmirTerminator::Return);
+        self.emit_propagated_return(AmirOperand::Copy(none_tmp), symbols)?;
         self.builder.current_block = None;
 
         // Some branch (tag == 1): extract payload

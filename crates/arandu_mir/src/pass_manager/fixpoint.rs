@@ -16,6 +16,7 @@ pub(super) fn run_pipeline_to_fixpoint<F>(
     passes: &[Box<dyn FunctionPass>],
     func: &mut AmirFunc,
     literal_pool: &mut AmirLiteralPool,
+    interner: Option<&crate::types::TypeInterner>,
     max_iterations: usize,
     validate: &mut F,
 ) -> Result<PassStats, Diagnostic>
@@ -31,6 +32,7 @@ where
         let mut changed = false;
         {
             let mut resources = PassResources {
+                interner,
                 literal_pool: &mut *literal_pool,
                 bump: &mut bump,
             };

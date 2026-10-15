@@ -77,10 +77,22 @@ impl<'a> Parser<'a> {
                 span: self.span_from_mark(start),
             }));
         }
-        if self.at_kind_name("KW_IF") {
+        if self.at_kind_name("KW_IF")
+            || (self.at_kind_name("KW_COMPTIME")
+                && self
+                    .tokens
+                    .get(self.pos + 1)
+                    .is_some_and(|t| t.kind == TokenKind::KwIf))
+        {
             return self.parse_if();
         }
-        if self.at_kind_name("KW_FOR") {
+        if self.at_kind_name("KW_FOR")
+            || (self.at_kind_name("KW_COMPTIME")
+                && self
+                    .tokens
+                    .get(self.pos + 1)
+                    .is_some_and(|t| t.kind == TokenKind::KwFor))
+        {
             return self.parse_for();
         }
         if self.at_kind_name("KW_WHILE") {
@@ -298,14 +310,30 @@ impl<'a> Parser<'a> {
 
     pub(super) fn parse_if(&mut self) -> Result<crate::ast_pool::StmtId, ParseError> {
         let start = self.mark();
+        let is_comptime = self.eat_name("KW_COMPTIME");
         self.expect_name("KW_IF")?;
-        let condition = self.parse_condition()?;
+        let condition = if is_comptime {
+            let mark = self.mark();
+            let expr = self.parse_expr_without_block_calls(0)?;
+            Condition::Expr {
+                span: self.span_from_mark(mark),
+                expr,
+            }
+        } else {
+            self.parse_condition()?
+        };
         let then_block = self.parse_block()?;
         let else_block = if self.eat_name("KW_ELSE") {
-            if self.at_kind_name("KW_IF") {
+            if self.at_kind_name("KW_IF")
+                || (self.at_kind_name("KW_COMPTIME")
+                    && self
+                        .tokens
+                        .get(self.pos + 1)
+                        .is_some_and(|t| t.kind == TokenKind::KwIf))
+            {
                 let nested = self.parse_if()?;
                 Some(Block {
-                    span: self.span_from_mark(start),
+                    span: self.pool.stmt_span(nested),
                     statements: self.pool.alloc_stmt_list(&[nested]),
                 })
             } else {
@@ -316,6 +344,7 @@ impl<'a> Parser<'a> {
         };
         Ok(self.pool.alloc_stmt(Stmt::If {
             span: self.span_from_mark(start),
+            is_comptime,
             condition,
             then_block,
             else_block,
@@ -417,6 +446,7 @@ impl<'a> Parser<'a> {
 
     pub(super) fn parse_for(&mut self) -> Result<crate::ast_pool::StmtId, ParseError> {
         let start = self.mark();
+        let is_comptime = self.eat_name("KW_COMPTIME");
         self.expect_name("KW_FOR")?;
         let clause = if self.looks_like_for_in_clause() {
             let clause_start = self.mark();
@@ -460,6 +490,7 @@ impl<'a> Parser<'a> {
         let body = self.parse_block()?;
         Ok(self.pool.alloc_stmt(Stmt::For {
             span: self.span_from_mark(start),
+            is_comptime,
             clause,
             body,
         }))

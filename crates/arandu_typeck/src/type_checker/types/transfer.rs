@@ -37,7 +37,11 @@ fn scalar(ty: &ArType) -> Option<bool> {
         }),
         // Literal inference can still be pending at bound checking; every
         // numeric representation it can select has scalar storage.
-        ArType::Void | ArType::IntLiteral | ArType::FloatLiteral | ArType::Const(_) => Some(true),
+        ArType::Void
+        | ArType::IntLiteral
+        | ArType::FloatLiteral
+        | ArType::FrozenConst(_)
+        | ArType::Const(_) => Some(true),
         _ => None,
     }
 }
@@ -135,7 +139,7 @@ pub(super) fn satisfies(
                 };
                 match declaration.kind {
                     SymbolKind::Struct => {
-                        let Some(fields) = info.struct_fields.get(&symbol) else {
+                        let Some(fields) = info.fields_for(symbol, &arguments) else {
                             return false;
                         };
                         pending.extend(
@@ -146,9 +150,10 @@ pub(super) fn satisfies(
                         );
                     }
                     SymbolKind::Enum => {
-                        for (owner, payload) in info.enum_variants.values() {
+                        for (variant, (owner, _)) in &info.enum_variants {
                             if *owner == symbol
-                                && let EnumPayloadShape::Tuple(fields) = payload
+                                && let Some(EnumPayloadShape::Tuple(fields)) =
+                                    info.variant_payload_for(*variant, &arguments)
                             {
                                 pending.extend(
                                     fields.iter().map(|&field| (instantiate(field), depth + 1)),
@@ -191,7 +196,7 @@ pub(super) fn satisfies(
             | ArType::Error
             | ArType::IntLiteral
             | ArType::FloatLiteral => return false,
-            ArType::Primitive(_) | ArType::Void | ArType::Const(_) => {} // handled by scalar above
+            ArType::Primitive(_) | ArType::Void | ArType::FrozenConst(_) | ArType::Const(_) => {} // handled by scalar above
         }
     }
     true

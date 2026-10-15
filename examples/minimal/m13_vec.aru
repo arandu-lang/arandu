@@ -1,62 +1,56 @@
 module examples.minimal.m13_vec
 
 // Minimal 0.1 — PROMOTE-L6 complete (Vec thin, pure-buffer).
-// Free-function API: new/with_capacity, push/get/put/pop, len/capacity/is_empty,
-// reserve, clear, destroy.
+// Canonical method API: Vec<T>.new/withCapacity, push/get/getCopy/set/pop, len/capacity/isEmpty,
+// reserve, clear, automatic drop.
 import std.alloc.vec as vec
 
 func main(): int {
-    let mut v = vec.new<int>()
-    if !vec.isEmpty(v) {
+    let mut v = vec.Vec<int>.new()
+    if !v.isEmpty() {
         return 90
     }
-    vec.push(v, 10)
-    vec.push(v, 20)
-    vec.push(v, 30)
+    v.push(10)
+    v.push(20)
+    v.push(30)
 
-    let ok = vec.put(v, 1, 5)
+    let ok = v.set(1, 5)
     if !ok {
-        vec.destroy(v)
         return 1
     }
 
-    let g0 = vec.getCopy(v, 0)
-    let g1 = vec.getCopy(v, 1)
-    let g2 = vec.getCopy(v, 2)
+    let g0 = v.getCopy(0)
+    let g1 = v.getCopy(1)
+    let g2 = v.getCopy(2)
     match g0 {
         Some(a) => {
             match g1 {
                 Some(b) => {
                     match g2 {
                         Some(c) => {
-                            let n = vec.len(v) as int
-                            let gp = vec.pop(v)
+                            let n = v.len() as int
+                            let gp = v.pop()
                             match gp {
                                 Some(p) => {
                                     // 10 + 5 + 30 + 3 + 30 = 78
-                                    vec.destroy(v)
                                     return a + b + c + n + p
                                 }
                                 None => {
-                                    vec.destroy(v)
                                     return 2
                                 }
                             }
                         }
                         None => {
-                            vec.destroy(v)
                             return 3
                         }
                     }
                 }
                 None => {
-                    vec.destroy(v)
                     return 4
                 }
             }
         }
         None => {
-            vec.destroy(v)
             return 5
         }
     }

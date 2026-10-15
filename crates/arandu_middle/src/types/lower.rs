@@ -58,6 +58,24 @@ pub fn lower_type_expr_ctx(
         TypeExpr::Const { value, .. } => parse_const_u64(value)
             .map(ArType::Const)
             .unwrap_or(ArType::Error),
+        TypeExpr::ConstExpression { span, .. }
+            if ctx
+                .resolved
+                .typed_comptime_arguments
+                .contains_key(&(*span).into()) =>
+        {
+            ArType::FrozenConst(std::sync::Arc::new(
+                ctx.resolved.typed_comptime_arguments[&(*span).into()].clone(),
+            ))
+        }
+        TypeExpr::ConstExpression { span, .. } => ctx
+            .resolved
+            .comptime_arguments
+            .get(&(*span).into())
+            .copied()
+            .flatten()
+            .map(ArType::Const)
+            .unwrap_or(ArType::Error),
         TypeExpr::Primitive { name, .. } => {
             if name == "Err" {
                 let ty = ArType::Err;
@@ -105,12 +123,18 @@ pub fn lower_type_expr_ctx(
         TypeExpr::Array {
             size,
             size_span,
+            size_expression,
             elem,
             ..
         } => {
             let elem_ty = lower_type_expr_ctx(*elem, ctx, interner);
             let id = interner.intern(elem_ty);
-            if let Some(n) = parse_const_u64(size) {
+            if let Some(expression) = size_expression {
+                match lower_type_expr_ctx(*expression, ctx, interner) {
+                    ArType::Const(n) => ArType::Array(n, id),
+                    _ => ArType::Error,
+                }
+            } else if let Some(n) = parse_const_u64(size) {
                 ArType::Array(n, id)
             } else if let Some(symbol) = ctx
                 .resolved
@@ -416,6 +440,7 @@ mod tests {
             span: Span::new(0, 8, 0),
             size: "10".into(),
             size_span: Span::new(0, 1, 0),
+            size_expression: None,
             elem,
         });
         let mut i = new_interner();
@@ -443,6 +468,7 @@ mod tests {
             span: Span::new(0, 8, 0),
             size: "abc".into(),
             size_span: Span::new(0, 3, 0),
+            size_expression: None,
             elem,
         });
         let mut i = new_interner();

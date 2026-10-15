@@ -32,7 +32,7 @@ void test('TextMate grammar highlights current Arandu keywords and primitive typ
     const keywordRegex = keywordPatterns.map(pattern => pattern.match ?? '').join('|');
     const typeRegex = primitivePatterns.map(pattern => pattern.match ?? '').join('|');
 
-    for (const keyword of ['impl', 'internal', 'private', 'ptr', 'alloc', 'free']) {
+    for (const keyword of ['impl', 'internal', 'private', 'ptr', 'alloc', 'free', 'comptime']) {
         assert.match(keywordRegex, new RegExp(`\\b${keyword}\\b`, 'u'));
     }
     for (const type of ['void', 'isize', 'usize']) {
@@ -47,8 +47,24 @@ void test('block indentation includes impl, defer, and unsafe bodies', () => {
     };
     const increase = new RegExp(config.indentationRules?.increaseIndentPattern ?? '', 'u');
 
-    for (const line of ['impl Printable for Item {', 'defer {', 'unsafe {']) {
+    for (const line of ['impl Printable for Item {', 'defer {', 'unsafe {', 'comptime {', 'let answer = comptime {', 'return comptime {']) {
         assert.match(line, increase, `Enter after '${line}' should indent the next line`);
+    }
+});
+
+void test('layout expressions use the builtin function scope before annotation fallback', () => {
+    const grammarPath = path.resolve(__dirname, '..', '..', '..', 'syntaxes', 'arandu.tmLanguage.json');
+    const grammar = JSON.parse(fs.readFileSync(grammarPath, 'utf8')) as {
+        repository: Record<string, { patterns: Array<{ name: string; match: string }> }>;
+    };
+    const patterns = grammar.repository.decorators.patterns;
+    assert.equal(patterns[0].name, 'support.function.builtin.arandu');
+    const intrinsic = new RegExp(patterns[0].match, 'u');
+    for (const expression of ['@sizeOf(int)', '@alignOf([3]u16)']) {
+        assert.match(expression, intrinsic);
+    }
+    for (const annotation of ['@test', '@Test', '@sizeOfSomething(int)']) {
+        assert.doesNotMatch(annotation, intrinsic);
     }
 });
 

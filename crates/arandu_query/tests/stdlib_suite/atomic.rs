@@ -18,12 +18,12 @@ fn stdlib_atomic_parses_and_exports_expected_symbols() {
     let expected = [
         "MemoryOrder",
         "AtomicBool",
-        "atomicBoolNew",
+        "AtomicBool.new",
         "AtomicBool.load",
         "AtomicBool.store",
         "AtomicBool.swap",
         "AtomicInt",
-        "atomicIntNew",
+        "AtomicInt.new",
         "AtomicInt.load",
         "AtomicInt.store",
         "AtomicInt.swap",
@@ -31,13 +31,13 @@ fn stdlib_atomic_parses_and_exports_expected_symbols() {
         "AtomicInt.fetchSub",
         "AtomicInt.compareExchange",
         "AtomicUint",
-        "atomicUintNew",
+        "AtomicUint.new",
         "AtomicUint.load",
         "AtomicUint.store",
         "AtomicUint.fetchAdd",
         "AtomicUint.fetchSub",
         "AtomicPtr",
-        "atomicPtrNew",
+        "AtomicPtr.new",
         "AtomicPtr.load",
         "AtomicPtr.store",
     ];
@@ -66,7 +66,7 @@ fn stdlib_atomic_usage_in_program() {
 
             public func newCounter(): Counter {
                 return Counter {
-                    count: atomic.atomicIntNew(0),
+                    count: atomic.AtomicInt.new(0),
                 }
             }
 

@@ -78,27 +78,28 @@ func main(): int {
 }
 
 #[test]
-fn stage1_const_eval_division_by_zero_float_is_rejected_with_t040() {
+fn stage1_literal_float_division_preserves_ieee754_special_values() {
     let fixture = temp_fixture(
         "div_zero_float.aru",
         r#"module div_zero_float
 func main(): int {
-    let x: float = 1.0 / 0.0
+    let infinity: float = 1.0 / 0.0
+    let frozen: float = comptime (1.0 / 0.0)
+    let nan: float = comptime (0.0 / 0.0)
+    if infinity != frozen { return 1 }
+    if nan == nan { return 2 }
     return 0
 }
 "#,
     );
-    let output = check_fixture(&fixture);
+    let output = run_fixture(&fixture);
     cleanup_fixture(&fixture);
 
-    assert!(
-        !output.status.success(),
-        "float division by 0.0 literal must fail"
-    );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("T040"),
-        "expected T040DivisionByZero, got: {stderr}"
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "literal and frozen float division must agree with IEEE 754: {stderr}"
     );
 }
 
@@ -257,7 +258,7 @@ func main(): int {
     }
     let ws = "   \t\r\n   "
     let concat = "${empty}${ws}${empty}"
-    if s.lenBytes(concat) != s.lenBytes(ws) {
+    if s.len(concat) != s.len(ws) {
         return 2
     }
     return 0
@@ -286,10 +287,10 @@ import std.core.str as s
 func main(): int {
     let str_val = "abc\0def"
     // Must NOT truncate at \0 like C strlen
-    if s.lenBytes(str_val) == 3 {
+    if s.len(str_val) == 3 {
         return 1
     }
-    if s.lenBytes(str_val) != 8 {
+    if s.len(str_val) != 7 {
         return 2
     }
     return 0
@@ -320,7 +321,7 @@ func main(): int {
     let cjk = "日本語・中文・한국어"
     let combining = "e\u{0301}"
     let combined = "${emojis} ${cjk} ${combining}"
-    if s.lenBytes(combined) == 0 {
+    if s.len(combined) == 0 {
         return 1
     }
     return 0
@@ -866,9 +867,9 @@ async func compute(val: int): int {
 }
 
 func main(): int {
-    let ex = rt.newSyncExecutor()
-    let h = rt.spawn(ex, compute(21))
-    let result = rt.join(ex, h)
+    let ex = rt.SyncExecutor.new()
+    let h = ex.spawn(compute(21))
+    let result = ex.join(h)
     if result != 42 {
         return 1
     }
@@ -926,16 +927,15 @@ func runFold(items: []Item, workers: uint): int {
 }
 
 func main(): int {
-    let mut values = vec.new<Item>()
+    let mut values = vec.Vec<Item>.new()
     let mut i = 0
     while i < 100 {
-        vec.push<Item>(values, Item { val: 1 })
+        values.push(Item { val: 1 })
         i = i + 1
     }
-    let items = vec.asSlice<Item>(values)
+    let items = values.asSlice()
     let res1 = runFold(items, 1)
     let res4 = runFold(items, 4)
-    vec.destroy<Item>(values)
 
     if res1 != 100 { return 1 }
     if res4 != 100 { return 2 }
@@ -1215,8 +1215,8 @@ func SumCombine.combine(self: ref SumCombine, dest: mut ref Sum, partial: ref Su
 }
 
 func main(): int {
-    let values = vec.new<Item>()
-    let items = vec.asSlice<Item>(values)
+    let values = vec.Vec<Item>.new()
+    let items = values.asSlice()
     let identity = Sum { value: 0 }
     let seed = Sum { value: 42 }
 
@@ -1231,7 +1231,6 @@ func main(): int {
         Ok(res) => { res.value }
         Err(_) => { -1 }
     }
-    vec.destroy<Item>(values)
 
     if result != 42 {
         return 1
@@ -1275,9 +1274,9 @@ func SumCombine.combine(self: ref SumCombine, dest: mut ref Sum, partial: ref Su
 }
 
 func main(): int {
-    let mut values = vec.new<Item>()
-    vec.push<Item>(values, Item { val: 58 })
-    let items = vec.asSlice<Item>(values)
+    let mut values = vec.Vec<Item>.new()
+    values.push(Item { val: 58 })
+    let items = values.asSlice()
     let identity = Sum { value: 0 }
     let seed = Sum { value: 42 }
 
@@ -1292,7 +1291,6 @@ func main(): int {
         Ok(res) => { res.value }
         Err(_) => { -1 }
     }
-    vec.destroy<Item>(values)
 
     // 42 + 58 = 100
     if result != 100 {

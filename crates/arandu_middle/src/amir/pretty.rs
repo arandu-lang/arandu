@@ -509,6 +509,7 @@ impl AmirConstant {
             AmirConstant::Pool(id) => match pool.get(*id) {
                 AmirLiteralEntry::Int(v) => out.push_str(v),
                 AmirLiteralEntry::Float(v) => out.push_str(v),
+                AmirLiteralEntry::FloatBits(v) => out.push_str(&v.display()),
                 AmirLiteralEntry::Str(v) => out.push_str(&format!("\"{v}\"")),
                 AmirLiteralEntry::Char(v) => {
                     if let Some(value) = v.chars().next() {

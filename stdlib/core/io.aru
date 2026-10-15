@@ -16,7 +16,7 @@
 //! import std.core.io as coreio
 //!
 //! func writeInto(buf: []u8, source: []u8): uint {
-//!     let mut w = coreio.newSliceWriter(buf)
+//!     let mut w = coreio.SliceWriter.new(buf)
 //!     let _ = w.write(source)
 //!     return w.written()
 //! }
@@ -55,7 +55,7 @@ public struct CoreIoError {
 }
 
 /// Creates a new `CoreIoError`.
-public func newCoreIoError(kind: CoreIoErrorKind): CoreIoError {
+public func CoreIoError.new(kind: CoreIoErrorKind): CoreIoError {
     return CoreIoError { kind: kind }
 }
 
@@ -97,7 +97,7 @@ public struct SliceReader {
 ///
 /// Reading or seeking does not copy the source slice or allocate. The source
 /// must remain valid for the lifetime of the reader.
-public func newSliceReader(data: []u8): SliceReader {
+public func SliceReader.new(data: []u8): SliceReader {
     return SliceReader {
         data: data,
         pos: 0,
@@ -152,7 +152,7 @@ public struct SliceWriter {
 /// Borrows `data` as a fixed-capacity destination, positioned at byte zero.
 ///
 /// Writes change the caller's buffer in place and never grow or allocate it.
-public func newSliceWriter(data: []u8): SliceWriter {
+public func SliceWriter.new(data: []u8): SliceWriter {
     return SliceWriter {
         data: data,
         pos: 0,
@@ -182,7 +182,7 @@ public func SliceWriter.write(self: mut ref SliceWriter, buf: []u8): Result<usiz
     let available = self.remaining()
     let source_len = slice.len<u8>(buf)
     if source_len > 0 && available == 0 {
-        return Result.Err(newCoreIoError(CoreIoErrorKind.WriteZero))
+        return Result.Err(CoreIoError.new(CoreIoErrorKind.WriteZero))
     }
     let mut to_write = source_len
     if to_write > available {
@@ -219,31 +219,31 @@ public func SliceWriter.seek(self: mut ref SliceWriter, pos: SeekFrom): Result<u
         }
         SeekFrom.Current(delta) => {
             if self.pos > total {
-                return Result.Err(newCoreIoError(CoreIoErrorKind.InvalidInput))
+                return Result.Err(CoreIoError.new(CoreIoErrorKind.InvalidInput))
             }
             if delta >= 0 {
                 let forward = delta as usize
                 if forward > total - self.pos {
-                    return Result.Err(newCoreIoError(CoreIoErrorKind.InvalidInput))
+                    return Result.Err(CoreIoError.new(CoreIoErrorKind.InvalidInput))
                 }
                 new_pos = self.pos + forward
             } else {
                 let backward = (-(delta + 1)) as usize + 1
                 if backward > self.pos {
-                    return Result.Err(newCoreIoError(CoreIoErrorKind.InvalidInput))
+                    return Result.Err(CoreIoError.new(CoreIoErrorKind.InvalidInput))
                 }
                 new_pos = self.pos - backward
             }
         }
         SeekFrom.End(delta) => {
             if delta > 0 {
-                return Result.Err(newCoreIoError(CoreIoErrorKind.InvalidInput))
+                return Result.Err(CoreIoError.new(CoreIoErrorKind.InvalidInput))
             } else if delta == 0 {
                 new_pos = total
             } else {
                 let backward = (-(delta + 1)) as usize + 1
                 if backward > total {
-                    return Result.Err(newCoreIoError(CoreIoErrorKind.InvalidInput))
+                    return Result.Err(CoreIoError.new(CoreIoErrorKind.InvalidInput))
                 }
                 new_pos = total - backward
             }
@@ -251,7 +251,7 @@ public func SliceWriter.seek(self: mut ref SliceWriter, pos: SeekFrom): Result<u
     }
 
     if new_pos > total {
-        return Result.Err(newCoreIoError(CoreIoErrorKind.InvalidInput))
+        return Result.Err(CoreIoError.new(CoreIoErrorKind.InvalidInput))
     }
     self.pos = new_pos
     return Result.Ok(new_pos)
@@ -272,31 +272,31 @@ public func SliceReader.seek(self: mut ref SliceReader, pos: SeekFrom): Result<u
         }
         SeekFrom.Current(delta) => {
             if self.pos > total {
-                return Result.Err(newCoreIoError(CoreIoErrorKind.InvalidInput))
+                return Result.Err(CoreIoError.new(CoreIoErrorKind.InvalidInput))
             }
             if delta >= 0 {
                 let forward = delta as usize
                 if forward > total - self.pos {
-                    return Result.Err(newCoreIoError(CoreIoErrorKind.InvalidInput))
+                    return Result.Err(CoreIoError.new(CoreIoErrorKind.InvalidInput))
                 }
                 new_pos = self.pos + forward
             } else {
                 let backward = (-(delta + 1)) as usize + 1
                 if backward > self.pos {
-                    return Result.Err(newCoreIoError(CoreIoErrorKind.InvalidInput))
+                    return Result.Err(CoreIoError.new(CoreIoErrorKind.InvalidInput))
                 }
                 new_pos = self.pos - backward
             }
         }
         SeekFrom.End(delta) => {
             if delta > 0 {
-                return Result.Err(newCoreIoError(CoreIoErrorKind.InvalidInput))
+                return Result.Err(CoreIoError.new(CoreIoErrorKind.InvalidInput))
             } else if delta == 0 {
                 new_pos = total
             } else {
                 let backward = (-(delta + 1)) as usize + 1
                 if backward > total {
-                    return Result.Err(newCoreIoError(CoreIoErrorKind.InvalidInput))
+                    return Result.Err(CoreIoError.new(CoreIoErrorKind.InvalidInput))
                 }
                 new_pos = total - backward
             }
@@ -304,7 +304,7 @@ public func SliceReader.seek(self: mut ref SliceReader, pos: SeekFrom): Result<u
     }
 
     if new_pos > total {
-        return Result.Err(newCoreIoError(CoreIoErrorKind.InvalidInput))
+        return Result.Err(CoreIoError.new(CoreIoErrorKind.InvalidInput))
     }
 
     self.pos = new_pos

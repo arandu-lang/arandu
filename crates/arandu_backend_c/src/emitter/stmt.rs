@@ -4,6 +4,129 @@ use arandu_middle::types::{ArType, Primitive};
 use std::fmt::Write;
 
 impl<'a> CEmitter<'a> {
+    /// Emit admitted integer parts directly into the materialized result.
+    fn emit_integer_concat_statement(
+        &mut self,
+        lhs: TempId,
+        rhs: &arandu_middle::amir::AmirRvalue,
+        func: &AmirFunc,
+    ) -> bool {
+        use arandu_codegen::string_interp::IntegerStringKind;
+        use arandu_middle::amir::AmirRvalue;
+        if let Some(kind) = self.integer_concat_temps[lhs.as_usize()]
+            && let AmirRvalue::ToStr { value, .. } = rhs
+        {
+            let value = self.format_operand(value, func);
+            let (ty, helper) = match kind {
+                IntegerStringKind::Signed => ("int64_t", "ar_i64_write_digits"),
+                IntegerStringKind::Unsigned => ("uint64_t", "ar_u64_write_digits"),
+            };
+            let index = lhs.as_usize();
+            let _ = writeln!(self.output, "    ar_integer_{index} = ({ty})({value});");
+            let _ = writeln!(
+                self.output,
+                "    ar_integer_len_{index} = {helper}(ar_integer_{index}, NULL);"
+            );
+            return true;
+        }
+        let AmirRvalue::StringInterp { parts } = rhs else {
+            return false;
+        };
+        let integer_parts: Vec<_> = parts
+            .iter()
+            .map(|part| match part {
+                AmirOperand::Copy(temp) | AmirOperand::Move(temp) => {
+                    self.integer_concat_temps[temp.as_usize()].map(|kind| (*temp, kind))
+                }
+                _ => None,
+            })
+            .collect();
+        if integer_parts.iter().all(Option::is_none) {
+            return false;
+        }
+        let index = lhs.as_usize();
+        let max_len = if self.layout.pointer_width() == 4 {
+            "INT32_MAX"
+        } else {
+            "INT64_MAX"
+        };
+        let _ = writeln!(self.output, "    {{");
+        let _ = writeln!(self.output, "        size_t ar_total = 0;");
+        for (part_index, (part, integer)) in parts.iter().zip(&integer_parts).enumerate() {
+            let length = if let Some((temp, _)) = integer {
+                format!("ar_integer_len_{}", temp.as_usize())
+            } else {
+                let value = self.format_operand(part, func);
+                let _ = writeln!(self.output, "        ArStr ar_part_{part_index} = {value};");
+                format!("(size_t)ar_part_{part_index}.len")
+            };
+            let _ = writeln!(
+                self.output,
+                "        if ({length} > (size_t){max_len} - ar_total) abort();"
+            );
+            let _ = writeln!(self.output, "        ar_total += {length};");
+        }
+        let _ = writeln!(
+            self.output,
+            "        uint8_t *ar_buffer = (uint8_t*)malloc(ar_total + 1);"
+        );
+        let _ = writeln!(self.output, "        if (!ar_buffer) abort();");
+        let _ = writeln!(self.output, "        size_t ar_offset = 0;");
+        for (part_index, integer) in integer_parts.iter().enumerate() {
+            if let Some((temp, kind)) = integer {
+                let helper = match kind {
+                    IntegerStringKind::Signed => "ar_i64_write_digits",
+                    IntegerStringKind::Unsigned => "ar_u64_write_digits",
+                };
+                let temp = temp.as_usize();
+                let _ = writeln!(
+                    self.output,
+                    "        {helper}(ar_integer_{temp}, ar_buffer + ar_offset);"
+                );
+                let _ = writeln!(self.output, "        ar_offset += ar_integer_len_{temp};");
+            } else {
+                let _ = writeln!(
+                    self.output,
+                    "        if (ar_part_{part_index}.len > 0) memcpy(ar_buffer + ar_offset, ar_part_{part_index}.ptr, (size_t)ar_part_{part_index}.len);"
+                );
+                let _ = writeln!(
+                    self.output,
+                    "        ar_offset += (size_t)ar_part_{part_index}.len;"
+                );
+            }
+        }
+        let _ = writeln!(self.output, "        ar_buffer[ar_total] = 0;");
+        let _ = writeln!(
+            self.output,
+            "        t{index} = ar_str_pack(ar_buffer, ar_total);"
+        );
+        let _ = writeln!(self.output, "    }}");
+        true
+    }
+
+    /// These external operations are expanded locally and have no C linkage
+    /// declaration. Keep declaration filtering and call emission in agreement.
+    pub(super) fn inlined_mem_intrinsic(
+        &self,
+        symbol: arandu_middle::SymbolId,
+    ) -> Option<arandu_middle::IntrinsicKind> {
+        let symbol = self.symbols.get(symbol);
+        if symbol.kind != arandu_middle::SymbolKind::ExternFunc {
+            return None;
+        }
+        let kind = arandu_middle::IntrinsicKind::from_name(&symbol.name)?;
+        matches!(
+            kind,
+            arandu_middle::IntrinsicKind::Abort
+                | arandu_middle::IntrinsicKind::PtrRead
+                | arandu_middle::IntrinsicKind::PtrWrite
+                | arandu_middle::IntrinsicKind::PtrOffset
+                | arandu_middle::IntrinsicKind::SizeOf
+                | arandu_middle::IntrinsicKind::AlignOf
+        )
+        .then_some(kind)
+    }
+
     /// Emit `std.core.mem` intrinsics as C loads/stores/pointer arithmetic.
     ///
     /// Parity with Cranelift JIT: `sizeOf` is normally folded in AMIR lower;
@@ -16,13 +139,12 @@ impl<'a> CEmitter<'a> {
         args: &[AmirOperand],
         func: &AmirFunc,
     ) -> bool {
-        let name = match callee {
+        let kind = match callee {
             AmirOperand::FunctionRef(id) | AmirOperand::GlobalRef(id) => {
-                self.symbols.get(*id).name.as_str()
+                self.inlined_mem_intrinsic(*id)
             }
             _ => return false,
         };
-        let kind = arandu_middle::IntrinsicKind::from_name(name);
 
         match kind {
             Some(arandu_middle::IntrinsicKind::Abort) => {
@@ -35,7 +157,12 @@ impl<'a> CEmitter<'a> {
                 }
                 let p = self.format_operand(&args[0], func);
                 if let Some(dest) = lhs {
-                    let _ = writeln!(&mut self.output, "    t{} = *({});", dest.as_usize(), p);
+                    let _ = writeln!(
+                        &mut self.output,
+                        "    t{} = *({});",
+                        self.temp_slots[dest.as_usize()],
+                        p
+                    );
                 }
                 true
             }
@@ -59,7 +186,7 @@ impl<'a> CEmitter<'a> {
                     let _ = writeln!(
                         &mut self.output,
                         "    t{} = ({}) + ({});",
-                        dest.as_usize(),
+                        self.temp_slots[dest.as_usize()],
                         p,
                         i
                     );
@@ -67,15 +194,13 @@ impl<'a> CEmitter<'a> {
                 true
             }
             Some(arandu_middle::IntrinsicKind::SizeOf | arandu_middle::IntrinsicKind::AlignOf) => {
-                // Residual only — prefer AMIR fold. Host pointer width for `int`.
-                let n = if kind == Some(arandu_middle::IntrinsicKind::SizeOf) {
-                    self.layout.pointer_width()
-                } else {
-                    self.layout.pointer_width().min(8)
-                };
-                if let Some(dest) = lhs {
-                    let _ = writeln!(&mut self.output, "    t{} = {}ULL;", dest.as_usize(), n);
-                }
+                // The type operand is no longer present in a runtime call.
+                // Guessing pointer width here silently miscompiles non-pointer
+                // types: the canonical MIR layout fold must have removed it.
+                self.record_codegen_ice(
+                    func,
+                    "layout intrinsic reached C emission without canonical AMIR folding",
+                );
                 true
             }
             Some(arandu_middle::IntrinsicKind::DropInPlace) => false,
@@ -86,11 +211,42 @@ impl<'a> CEmitter<'a> {
     pub(super) fn emit_stmt(&mut self, stmt: &AmirStmt, func: &AmirFunc) {
         match stmt {
             AmirStmt::Assign { lhs, rhs } => {
+                if self.rotation_elided[lhs.as_usize()] {
+                    return;
+                }
+                if let Some(rotation) = self.rotations[lhs.as_usize()] {
+                    let value = self.format_operand(&rotation.value, func);
+                    let expression =
+                        format!("ar_rotr{}({value}, {})", rotation.width, rotation.count);
+                    if self.expression_candidates[lhs.as_usize()] {
+                        self.temp_expressions[lhs.as_usize()] = Some(expression);
+                    } else {
+                        let _ = writeln!(
+                            self.output,
+                            "    t{} = {expression};",
+                            self.temp_slots[lhs.as_usize()]
+                        );
+                    }
+                    return;
+                }
+                if self.emit_integer_concat_statement(*lhs, rhs, func) {
+                    return;
+                }
                 let lhs_ty = self.temp_ty(func, *lhs);
                 if matches!(lhs_ty, ArType::Void) {
                     return;
                 }
                 let lhs_c_ty = self.format_type(&lhs_ty);
+                if self.expression_candidates[lhs.as_usize()] {
+                    // Reuse the canonical expression emitter and retain the
+                    // assignment conversion (notably fixed-width narrowing).
+                    let surrounding = std::mem::take(&mut self.output);
+                    self.emit_rvalue(rhs, func, &lhs_ty, &lhs_c_ty);
+                    let expression = std::mem::replace(&mut self.output, surrounding);
+                    self.temp_expressions[lhs.as_usize()] =
+                        Some(format!("(({lhs_c_ty})({expression}))"));
+                    return;
+                }
                 match rhs {
                     arandu_middle::amir::AmirRvalue::GenInsert {
                         value, payload_ty, ..
@@ -187,11 +343,27 @@ impl<'a> CEmitter<'a> {
                     let _ = writeln!(
                         &mut self.output,
                         "    t{} = (void*)__ar_co_{slot};",
-                        lhs.as_usize()
+                        self.temp_slots[lhs.as_usize()]
                     );
                     return;
                 }
-                let _ = write!(&mut self.output, "    t{} = ", lhs.as_usize());
+                if let Some(source) = self
+                    .current_initializer
+                    .and_then(|id| self.static_sources.get(&(func.symbol, id)))
+                {
+                    let _ = writeln!(
+                        self.output,
+                        "    memcpy(&t{}, __ar_static_{source}, sizeof(t{}));",
+                        self.temp_slots[lhs.as_usize()],
+                        self.temp_slots[lhs.as_usize()]
+                    );
+                    return;
+                }
+                let _ = write!(
+                    &mut self.output,
+                    "    t{} = ",
+                    self.temp_slots[lhs.as_usize()]
+                );
                 self.emit_rvalue(rhs, func, &lhs_ty, &lhs_c_ty);
                 let _ = writeln!(&mut self.output, ";");
             }
@@ -207,6 +379,8 @@ impl<'a> CEmitter<'a> {
                     return;
                 }
                 if let AmirOperand::FunctionRef(symbol) = callee
+                    && self.symbols.get(*symbol).kind
+                        == arandu_middle::symbol_table::SymbolKind::ExternFunc
                     && self
                         .symbols
                         .get(*symbol)
@@ -220,7 +394,7 @@ impl<'a> CEmitter<'a> {
                         let _ = writeln!(
                             &mut self.output,
                             "    t{} = ar_string_push_str({}, ({}).ptr, ({}).len);",
-                            dest.as_usize(),
+                            self.temp_slots[dest.as_usize()],
                             owner,
                             value,
                             value
@@ -234,10 +408,40 @@ impl<'a> CEmitter<'a> {
                     }
                     return;
                 }
+                if let AmirOperand::FunctionRef(symbol) = callee
+                    && self.symbols.get(*symbol).kind == arandu_middle::SymbolKind::ExternFunc
+                    && self
+                        .symbols
+                        .get(*symbol)
+                        .name
+                        .rsplit('.')
+                        .next()
+                        .is_some_and(|bare| bare == "ar_rt_copy_value")
+                    && let [dest, source, size] = args.as_slice()
+                {
+                    let dest_str = self.format_operand(dest, func);
+                    let source_str = self.format_operand(source, func);
+                    let size_str = self.format_operand(size, func);
+                    let source_ty = self.operand_ty(func, source);
+                    let source_ptr = if source_ty.is_borrowed_slice_abi(self.interner) {
+                        format!("(const void*)&({source_str})")
+                    } else {
+                        format!("(const void*)({source_str})")
+                    };
+                    let _ = writeln!(
+                        &mut self.output,
+                        "    ar_rt_copy_value((void*)({dest_str}), {source_ptr}, (size_t)({size_str}));"
+                    );
+                    return;
+                }
                 let callee_str = self.format_operand(callee, func);
                 let args_str: Vec<_> = args.iter().map(|a| self.format_operand(a, func)).collect();
                 if let Some(dest) = lhs {
-                    let _ = write!(&mut self.output, "    t{} = ", dest.as_usize());
+                    let _ = write!(
+                        &mut self.output,
+                        "    t{} = ",
+                        self.temp_slots[dest.as_usize()]
+                    );
                 } else {
                     let _ = write!(&mut self.output, "    ");
                 }
@@ -251,6 +455,11 @@ impl<'a> CEmitter<'a> {
                 let _ = writeln!(&mut self.output, ");");
             }
             AmirStmt::Free(op) => {
+                if let AmirOperand::Copy(temp) | AmirOperand::Move(temp) = op
+                    && self.integer_concat_temps[temp.as_usize()].is_some()
+                {
+                    return;
+                }
                 let op_ty = self.operand_ty(func, op);
                 let op_str = self.format_operand(op, func);
                 if matches!(op_ty, ArType::Primitive(Primitive::Str)) {
@@ -365,7 +574,11 @@ impl<'a> CEmitter<'a> {
                 func,
                 "non-Copy GenRef payload has no explicit @Destructor contract",
             );
-            let _ = writeln!(&mut self.output, "    t{} = 0;", lhs.as_usize());
+            let _ = writeln!(
+                &mut self.output,
+                "    t{} = 0;",
+                self.temp_slots[lhs.as_usize()]
+            );
             return;
         }
         let payload_c = self.format_type(&payload_ar);
@@ -382,7 +595,7 @@ impl<'a> CEmitter<'a> {
                 let _ = writeln!(
                     &mut self.output,
                     "    t{} = (int64_t)ar_gen_insert_raw(&__ar_gen_payload_{slot}, {}, {}, {glue});",
-                    lhs.as_usize(),
+                    self.temp_slots[lhs.as_usize()],
                     layout.size,
                     layout.align
                 );
@@ -392,7 +605,7 @@ impl<'a> CEmitter<'a> {
                 let _ = writeln!(
                     &mut self.output,
                     "    t{} = (int64_t)ar_gen_upsert_raw((uint64_t)({handle}), &__ar_gen_payload_{slot}, {}, {}, {glue});",
-                    lhs.as_usize(),
+                    self.temp_slots[lhs.as_usize()],
                     layout.size,
                     layout.align
                 );
@@ -407,14 +620,14 @@ impl<'a> CEmitter<'a> {
                 let _ = writeln!(
                     &mut self.output,
                     "    t{} = (int64_t)({handle});",
-                    lhs.as_usize()
+                    self.temp_slots[lhs.as_usize()]
                 );
             }
         }
         let _ = writeln!(
             &mut self.output,
             "    if (t{} == 0) abort();",
-            lhs.as_usize()
+            self.temp_slots[lhs.as_usize()]
         );
     }
 
@@ -444,7 +657,7 @@ impl<'a> CEmitter<'a> {
         let _ = writeln!(
             &mut self.output,
             "    if (!{name}((uint64_t)({handle}), &t{}, {}, {})) abort();",
-            lhs.as_usize(),
+            self.temp_slots[lhs.as_usize()],
             layout.size,
             layout.align
         );
@@ -456,7 +669,9 @@ impl<'a> CEmitter<'a> {
                 let name = super::sanitize_c_ident(&self.symbols.get(func.symbol).name);
                 let ret = self.interner.resolve(func.return_type);
                 if name == "main" {
-                    let _ = writeln!(&mut self.output, "    ar_gen_shutdown_raw();");
+                    if self.arena_runtime {
+                        let _ = writeln!(&mut self.output, "    ar_gen_shutdown_raw();");
+                    }
                     // ISO C requires `int main`; void Arandu main becomes `return 0`.
                     if matches!(ret, ArType::Void) {
                         let _ = writeln!(&mut self.output, "    return 0;");
@@ -538,15 +753,35 @@ impl<'a> CEmitter<'a> {
     ) {
         let target_block = &func.blocks[target.as_usize()];
         let target_params = func.block_params(target_block.params);
-        for (param, arg) in target_params.iter().zip(args.iter()) {
+        if args.is_empty() {
+            return;
+        }
+        // SSA edges perform simultaneous assignments. Snapshot every input
+        // before writing any destination, including fat values and structs.
+        // The edge-local scope makes names unique across different branches.
+        let _ = writeln!(&mut self.output, "{indent}{{");
+        for (index, (param, arg)) in target_params.iter().zip(args).enumerate() {
+            let ty = self.interner.resolve(param.ty);
+            if matches!(ty, ArType::Void) {
+                continue;
+            }
+            let c_ty = self.format_type(&ty);
             let arg_str = self.format_operand(arg, func);
             let _ = writeln!(
                 &mut self.output,
-                "{}t{} = {};",
-                indent,
-                param.id.as_usize(),
-                arg_str
+                "{indent}    {c_ty} ar_edge_{index} = {arg_str};"
             );
         }
+        for (index, param) in target_params.iter().take(args.len()).enumerate() {
+            if matches!(self.interner.resolve(param.ty), ArType::Void) {
+                continue;
+            }
+            let _ = writeln!(
+                &mut self.output,
+                "{indent}    t{} = ar_edge_{index};",
+                self.temp_slots[param.id.as_usize()]
+            );
+        }
+        let _ = writeln!(&mut self.output, "{indent}}}");
     }
 }

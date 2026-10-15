@@ -24,16 +24,18 @@ fn stdlib_hash_map_parses_and_exports_expected_symbols() {
     let expected = [
         "Entry",
         "HashMap",
-        "new",
-        "withCapacity",
-        "len",
-        "isEmpty",
-        "capacity",
-        "clear",
-        "insert",
-        "contains",
-        "get",
-        "remove",
+        "HashMap.new",
+        "HashMap.withCapacity",
+        "HashMap.len",
+        "HashMap.isEmpty",
+        "HashMap.capacity",
+        "HashMap.clear",
+        "HashMap.insert",
+        "HashMap.put",
+        "HashMap.contains",
+        "HashMap.get",
+        "HashMap.getRef",
+        "HashMap.remove",
     ];
     for key in expected {
         assert!(
@@ -73,8 +75,8 @@ public func Key.hash<H: hash.Hasher>(self: ref Key, state: mut ref H): void {
 }
 
 func main(): int {
-    let mut map = hash_map.new<Key, int>()
-    if !hash_map.isEmpty(ref map) || hash_map.len(ref map) != 0 {
+    let mut map = hash_map.HashMap<Key, int>.new()
+    if !map.isEmpty() || map.len() != 0 {
         return 1
     }
 
@@ -82,25 +84,25 @@ func main(): int {
     let k2 = Key { id: 20 }
     let k3 = Key { id: 30 }
 
-    hash_map.insert(mut ref map, k1, 100)
-    hash_map.insert(mut ref map, k2, 200)
-    hash_map.insert(mut ref map, k3, 300)
+    map.put(k1, 100)
+    map.put(k2, 200)
+    map.put(k3, 300)
 
-    if hash_map.len(ref map) != 3 {
+    if map.len() != 3 {
         return 2
     }
 
-    if !hash_map.contains(ref map, ref k1) || !hash_map.contains(ref map, ref k2) || !hash_map.contains(ref map, ref k3) {
+    if !map.contains(ref k1) || !map.contains(ref k2) || !map.contains(ref k3) {
         return 3
     }
 
     let k_missing = Key { id: 999 }
-    if hash_map.contains(ref map, ref k_missing) {
+    if map.contains(ref k_missing) {
         return 4
     }
 
     // Update existing key
-    match hash_map.insert(mut ref map, Key { id: 10 }, 105) {
+    match map.put(Key { id: 10 }, 105) {
         Some(oldVal) => {
             if oldVal != 100 {
                 return 5
@@ -112,7 +114,7 @@ func main(): int {
     }
 
     // Remove key
-    match hash_map.remove(mut ref map, ref k2) {
+    match map.remove(ref k2) {
         Some(val) => {
             if val != 200 {
                 return 7
@@ -123,7 +125,7 @@ func main(): int {
         }
     }
 
-    if hash_map.len(ref map) != 2 || hash_map.contains(ref map, ref k2) {
+    if map.len() != 2 || map.contains(ref k2) {
         return 9
     }
 

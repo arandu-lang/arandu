@@ -1,7 +1,7 @@
 ---
 version: 0.0.1
 last_revised: 2026-06
-compiler_version: arandu 0.1.8
+compiler_version: arandu 0.1.9
 ---
 
 # Especificação e Catálogo de Diagnósticos de Erro do Arandu
@@ -246,15 +246,15 @@ Abaixo estão listados todos os diagnósticos mapeados para o compilador Arandu.
 | :--- | :--- | :--- | :--- | :--- |
 | **T001** | `cannot infer type: type annotation needed for '{name}'` | Error | `0.1.0` | O compilador não possui informações suficientes para deduzir o tipo de uma variável e exige declaração explícita. |
 | **T002** | `incompatible assignment: expected '{expected}', found '{found}'` | Error | `0.1.0` | Tentativa de atribuir um tipo incompatível a uma variável já tipada. |
-| **T003** | `incompatible argument: expected '{expected}', found '{found}'` | Error | `0.1.0` | Passagem de um argumento com tipo incorreto para uma chamada de função. |
-| **T004** | `incompatible return type: expected '{expected}', found '{found}'` | Error | `0.1.0` | O tipo da expressão de retorno dentro da função não condiz com a assinatura declarada. |
+| **T003** | `incompatible argument: expected '{expected}', found '{found}'` | Error | `0.1.0` | Argumento incompatível; inclui argumento genérico calculado não inteiro, negativo ou fora do domínio de chaves `u64`. |
+| **T004** | `incompatible return type: expected '{expected}', found '{found}'` | Error | `0.1.0` | Valor incompatível com seu destino de retorno. Na função, a assinatura declarada; na API interna de bloco CTFE, retornos/cauda devem concordar e todo caminho de saída deve produzir o valor exigido. Gramática pública `comptime` ainda pendente. |
 | **T005** | `operator '{op}' is not applicable to type '{type}'` | Error | `0.1.0` | Tentativa de usar operador matemático ou lógico em tipos não suportados. |
 | **T006** | `type '{type}' is not nullable` | Error | `0.1.0` | Atribuição de `null` ou uso de operador de navegação segura em um tipo que não é explicitamente opcional/nulo. |
 | **T007** | `type mismatch: 'if' and 'else' branches have incompatible types: '{then_ty}' and '{else_ty}'` | Error | `0.1.0` | As ramificações de uma expressão condicional `if/else` avaliam para tipos diferentes (Type Mismatch). |
 | **T008** | `type mismatch: match arm has type '{arm_ty}', expected '{expected_ty}'` | Error | `0.1.0` | Um braço do bloco `match` retorna um tipo inconsistente com a expressão esperada (Type Mismatch). |
 | **T009** | `condition is not a boolean: expected 'bool', found '{type}'` | Error | `0.1.0` | A expressão condicional de um `if` ou `while` não avalia para o tipo booleano primário. |
 | **T010** | `invalid cast: cannot cast type '{from_ty}' to '{to_ty}'` | Error | `0.1.0` | Conversão explícita de tipos (`as`) inválida ou não suportada pelas regras de coerção da linguagem. |
-| **T011** | `generic constraint not satisfied: '{type}' does not satisfy constraint '{constraint}'` | Error | `0.1.0` | Um parâmetro genérico passado não atende às restrições da cláusula `where` declarada. |
+| **T011** | `generic constraint not satisfied: '{type}' does not satisfy constraint '{constraint}'` | Error | `0.1.0` | Restrição genérica não satisfeita, incluindo chave constante fora do domínio inteiro declarado ou domínio encaminhado mais amplo que o destino; dependente do alvo para `usize`/`isize`. |
 | **T012** | `wrong argument count: expected {expected}, found {found}` | Error | `0.1.0` | A chamada de função ou método recebeu um número incorreto de parâmetros. |
 | **T013** | `unknown named argument: '{name}'` | Error | `0.1.0` | Passagem de parâmetro nomeado que não corresponde a nenhum argumento na assinatura do método. |
 | **T014** | `invalid variadic type: expected '{expected}', found '{found}'` | Error | `0.1.0` | Passagem incorreta de argumentos para uma assinatura de função variádica. |
@@ -285,6 +285,13 @@ Abaixo estão listados todos os diagnósticos mapeados para o compilador Arandu.
 | **T039** | `function performs undeclared or denied effect '{effect}'` | Error | `0.1.0` | A função executa um efeito não declarado em `@Effects(...)` ou proibido pela política de efeitos do manifesto. |
 | **T040** | `attempt to divide by zero` | Error | `0.1.0` | Tentativa de realizar divisão ou cálculo de resto (`%`) com divisor zero em tempo de compilação. |
 | **T041** | `field '{name}' is private to its struct` | Error | `0.1.0` | Acesso a campo `private` fora de um método declarado no tipo proprietário. |
+| **T042** | `unsupported compile-time construct` | Error | `0.1.9` | Tipo, operação ou contexto fora dos cortes públicos escalares e de seleção `comptime if`. |
+| **T043** | `comptime cannot capture runtime value '{name}'` | Error | `0.1.9` | Leitura ou escrita de local/parâmetro runtime fora da raiz CTFE. |
+| **T044** | `compile-time evaluation could not evaluate this expression or one of its helpers` | Error | `0.1.9` | A raiz ou closure de chamadas não pode ser admitida/avaliada pela VM escalar. |
+| **T045** | `compile-time evaluation exceeded its resource limit` | Error | `0.1.9` | Limites determinísticos de fuel, frames, valores ou quantidade de raízes excedidos. |
+| **T046** | `compile-time arithmetic overflows or uses an invalid shift` | Error | `0.1.9` | Operação inteira fora da faixa ou deslocamento inválido durante CTFE. |
+| **T047** | `type has no concrete target layout` | Error | `0.1.9` | Layout indefinido ou excessivo no alvo de compilação. |
+| **T048** | `invalid array repetition` | Error | `0.1.9` | Repetição exige tamanho estático limitado e elementos Copy quando há duplicação. |
 
 ---
 

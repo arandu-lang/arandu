@@ -159,6 +159,31 @@ export async function run(): Promise<void> {
 
         await verifyHighlightingAcrossBuiltInThemes(uri);
 
+        const comptimeUri = vscode.Uri.joinPath(workspace.uri, 'comptime.aru');
+        const comptimeDiagnosticsChanged = waitForDiagnosticsChange(comptimeUri);
+        await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(comptimeUri));
+        assert.deepEqual(await comptimeDiagnosticsChanged, [], 'valid comptime values, static loops and selected branches must not report false editor errors');
+        await verifyHighlightingAcrossBuiltInThemes(comptimeUri);
+        const comptimeDocument = await vscode.workspace.openTextDocument(comptimeUri);
+        const argumentOffset = comptimeDocument.getText().indexOf('comptime (0 + 0)');
+        assert.ok(argumentOffset >= 0, 'computed argument fixture');
+        const argumentHovers = await vscode.commands.executeCommand<vscode.Hover[]>(
+            'vscode.executeHoverProvider', comptimeUri, comptimeDocument.positionAt(argumentOffset)
+        );
+        assert.ok(argumentHovers?.some(hover => hover.contents.some(content =>
+            typeof content !== 'string' && content.value.includes('= 0') && content.value.includes('evaluated at compile time')
+        )), 'hover must display the computed generic value');
+
+        await configuration.update('comptime.fuel', 1, vscode.ConfigurationTarget.Global);
+        await vscode.commands.executeCommand('arandu.restartServer');
+        await poll(() => vscode.languages.getDiagnostics(comptimeUri).some(diagnostic => diagnosticCode(diagnostic) === 'T045') ? true : undefined).catch((error: unknown) => {
+            const message = error instanceof Error ? error.message : String(error);
+            const diagnostics = vscode.languages.getDiagnostics(comptimeUri).map(diagnostic => ({
+                code: diagnosticCode(diagnostic), message: diagnostic.message
+            }));
+            throw new Error(`${message}; expected T045 after restart; fuel=${String(vscode.workspace.getConfiguration('arandu').get('comptime.fuel'))}; runtime=${JSON.stringify(api.getRuntimeState())}; diagnostics=${JSON.stringify(diagnostics)}`);
+        });
+        await configuration.update('comptime.fuel', undefined, vscode.ConfigurationTarget.Global);
         await vscode.commands.executeCommand('arandu.restartServer');
         const afterRestart = await poll(() =>
             vscode.commands.executeCommand<vscode.CompletionList>(
@@ -175,6 +200,7 @@ export async function run(): Promise<void> {
         await withTimeout(api.testCrashServer(), 'language server crash hook');
         await poll(() => api.getRuntimeState().observedCrashCount > crashesBefore ? true : undefined);
         await poll(() => api.getRuntimeState().state === 'ready' ? true : undefined);
+        await poll(() => vscode.languages.getDiagnostics(comptimeUri).length === 0 ? true : undefined);
         const afterCrashRecovery = await poll(() =>
             vscode.commands.executeCommand<vscode.CompletionList>(
                 'vscode.executeCompletionItemProvider',
@@ -189,6 +215,7 @@ export async function run(): Promise<void> {
             'Arandu completion must recover after a real server crash'
         );
     } finally {
+        await configuration.update('comptime.fuel', undefined, vscode.ConfigurationTarget.Global);
         await configuration.update('server.path', undefined, vscode.ConfigurationTarget.Global);
         await configuration.update('cli.path', undefined, vscode.ConfigurationTarget.Global);
         await vscode.commands.executeCommand('workbench.action.closeAllEditors');

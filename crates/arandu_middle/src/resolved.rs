@@ -24,6 +24,22 @@ impl From<Span> for NodeKey {
 
 #[derive(Debug, Clone, Default)]
 pub struct ResolvedNames {
+    /// Templates with staging are resolved and checked only after their
+    /// structural arguments are known. Source IDs remain their identity.
+    pub deferred_comptime_functions: FxHashSet<SymbolId>,
+    /// Static loop bodies are checked and lowered in separate occurrence domains.
+    pub deferred_loop_bodies: FxHashSet<NodeKey>,
+    /// Revision-local static branch decisions. Missing means failed/not staged,
+    /// never permission to resolve or type either branch.
+    pub comptime_branches: FxHashMap<NodeKey, bool>,
+    /// Finite half-open domains frozen before body lowering. Absence is never
+    /// permission for a static loop to fall back to runtime iteration.
+    pub comptime_loops: FxHashMap<NodeKey, (crate::ctfe::ConstInt, crate::ctfe::ConstInt)>,
+    /// Revision-local values frozen by pre-body staging. `None` records a
+    /// failed obligation whose diagnostic is already reported by the producer.
+    /// Pure consumers must not evaluate expressions or fall back to runtime.
+    pub comptime_arguments: FxHashMap<NodeKey, Option<u64>>,
+    pub typed_comptime_arguments: FxHashMap<NodeKey, crate::ctfe::ConstValue>,
     pub definitions: FxHashMap<NodeKey, SymbolId>,
     pub expr_symbols: Vec<Option<SymbolId>>,
     pub value_refs: FxHashMap<NodeKey, SymbolId>,

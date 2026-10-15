@@ -103,7 +103,7 @@ fn ownership_diagnostics(src: &str) -> Vec<Diagnostic> {
         .collect();
     assert!(type_errors.is_empty(), "typeck errors: {type_errors:?}");
     let hir = lower_to_hir(&mut tc, &program).expect("hir");
-    match lower_to_amir_with_interfaces(&mut tc, &hir, 64) {
+    match lower_to_amir_with_interfaces(&mut tc, &hir, 8) {
         Ok((_, diagnostics)) | Err(diagnostics) => diagnostics,
     }
 }
@@ -380,7 +380,7 @@ func main(): int {
         .collect();
     assert!(errors.is_empty(), "typeck errors: {errors:?}");
     let hir = lower_to_hir(&mut tc, &program).expect("hir");
-    let result = lower_to_amir(&tc, &hir, 64);
+    let result = lower_to_amir(&tc, &hir, 8);
     match result {
         Ok(_) => panic!("expected O003 from lower_to_amir"),
         Err(diags) => {
@@ -416,7 +416,7 @@ func bad(): &int {
         .collect();
     assert!(errors.is_empty(), "typeck errors: {errors:?}");
     let hir = lower_to_hir(&mut tc, &program).expect("hir");
-    let result = lower_to_amir(&tc, &hir, 64);
+    let result = lower_to_amir(&tc, &hir, 8);
     match result {
         Ok(_) => panic!("expected O010 from lower_to_amir"),
         Err(diags) => {
@@ -463,7 +463,7 @@ func main(): int {
         tc.diagnostics
     );
     let hir = lower_to_hir(&mut tc, &program).expect("hir");
-    let amir = lower_to_amir(&tc, &hir, 64).expect("sequential borrows should lower");
+    let amir = lower_to_amir(&tc, &hir, 8).expect("sequential borrows should lower");
     assert!(!amir.funcs.is_empty());
 }
 

@@ -20,19 +20,21 @@ fn foundation_modules_parse_and_export_their_contracts() {
         (
             "stdlib/core/fixed.aru",
             FIXED_ARU,
-            &["Q16_16", "fromRaw", "fromInt"][..],
+            &["Q16_16", "Q16_16.fromRaw", "Q16_16.fromInt"][..],
         ),
         (
             "stdlib/core/io.aru",
             IO_ARU,
             &[
+                "CoreIoError",
+                "CoreIoError.new",
                 "Reader",
                 "Writer",
                 "Seeker",
                 "SliceReader",
-                "newSliceReader",
+                "SliceReader.new",
                 "SliceWriter",
-                "newSliceWriter",
+                "SliceWriter.new",
             ][..],
         ),
         (
@@ -40,7 +42,8 @@ fn foundation_modules_parse_and_export_their_contracts() {
             STR_ARU,
             &[
                 "isEmpty",
-                "lenBytes",
+                "len",
+                "charCount",
                 "startsWith",
                 "endsWith",
                 "contains",

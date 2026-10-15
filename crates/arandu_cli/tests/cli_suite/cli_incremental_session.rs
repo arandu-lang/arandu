@@ -302,3 +302,31 @@ fn collect_files(root: &Path, predicate: &dyn Fn(&Path) -> bool) -> Vec<std::pat
     }
     result
 }
+
+#[test]
+fn lowering_ctfe_budget_cannot_reuse_a_successful_build_session() {
+    let tmp = common::temp_dir("arandu_incremental_ctfe_policy").unwrap();
+    assert!(
+        run_cli_in(&tmp, &["new", "project", "--bin", "--vcs=none"])
+            .status
+            .success()
+    );
+    let project = tmp.join("project");
+    fs::write(
+        project.join("src/main.aru"),
+        "func main(): int { return comptime (20 + 22) }",
+    )
+    .unwrap();
+    let first = run_cli_in(&project, &["build"]);
+    assert!(first.status.success(), "{first:?}");
+    let cached = run_cli_in(&project, &["build"]);
+    assert!(cached.status.success());
+    assert!(String::from_utf8_lossy(&cached.stdout).contains("incremental: up-to-date"));
+    let limited = run_cli_in(&project, &["build", "--ctfe-fuel=1"]);
+    assert!(!limited.status.success(), "{limited:?}");
+    assert!(
+        String::from_utf8_lossy(&limited.stderr).contains("T045"),
+        "{limited:?}"
+    );
+    fs::remove_dir_all(tmp).unwrap();
+}

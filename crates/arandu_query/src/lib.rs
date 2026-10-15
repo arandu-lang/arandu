@@ -1,6 +1,7 @@
 pub mod analysis;
 pub mod artifact_cache;
 pub mod cache;
+pub mod ctfe;
 pub mod dataflow;
 pub mod db;
 pub mod debounce;
@@ -14,6 +15,7 @@ pub mod manifest;
 pub mod package_graph;
 pub mod passes;
 pub mod rename;
+pub mod runtime;
 pub mod stable_hash;
 pub mod stdlib;
 pub mod testing;

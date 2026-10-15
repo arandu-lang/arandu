@@ -14,6 +14,7 @@ impl<'a> Resolver<'a> {
     ) -> Self {
         let current_module = program.and_then(|p| p.module.as_ref().map(|m| m.path.join(".")));
         let mut resolver = Self {
+            reusable_definitions: rustc_hash::FxHashSet::default(),
             symbols: SymbolTable::new(file_id),
             resolved: ResolvedNames::default(),
             docs: DocCommentMap::default(),
@@ -83,22 +84,57 @@ impl<'a> Resolver<'a> {
             }
         }
 
-        if let Some(module) = &program.module {
-            let module_name = module.path.join(".");
-            for decl_id in &program.decls {
+        {
+            let module_name = program
+                .module
+                .as_ref()
+                .map_or_else(String::new, |module| module.path.join("."));
+            let mut pending = program
+                .decls
+                .iter()
+                .rev()
+                .map(|&id| (id, module_name.clone()))
+                .collect::<Vec<_>>();
+            while let Some((decl_id, module_name)) = pending.pop() {
                 poll();
-                let TopLevelDecl::Func(decl) = self.pool.decl(*decl_id) else {
-                    continue;
-                };
-                let name_span = match &decl.name {
-                    FuncName::Free { span, .. } | FuncName::Method { span, .. } => *span,
+                let name_span = match self.pool.decl(decl_id) {
+                    TopLevelDecl::Func(decl) => match &decl.name {
+                        FuncName::Free { span, .. } | FuncName::Method { span, .. } => *span,
+                    },
+                    TopLevelDecl::Struct(decl) => decl.span,
+                    TopLevelDecl::Enum(decl) => decl.span,
+                    TopLevelDecl::Submodule(decl) => {
+                        let prefix = if module_name.is_empty() {
+                            decl.name.to_string()
+                        } else {
+                            format!("{module_name}.{}", decl.name)
+                        };
+                        pending.extend(decl.decls.iter().rev().map(|&id| (id, prefix.clone())));
+                        continue;
+                    }
+                    TopLevelDecl::Const(_)
+                    | TopLevelDecl::TypeAlias(_)
+                    | TopLevelDecl::Interface(_)
+                    | TopLevelDecl::Extern(_)
+                    | TopLevelDecl::Error(_) => continue,
                 };
                 let Some(symbol_id) = self.resolved.definitions.get(&name_span.into()).copied()
                 else {
                     continue;
                 };
+                // Preserve source-declared external runner roots without
+                // performing annotation validation in name resolution.
+                if let TopLevelDecl::Func(decl) = self.pool.decl(decl_id)
+                    && decl
+                        .attrs
+                        .iter()
+                        .any(|attr| matches!(attr.name.as_str(), "Test" | "Benchmark"))
+                {
+                    self.symbols.tooling_entrypoints.insert(symbol_id);
+                }
                 let symbol = self.symbols.get(symbol_id);
-                if symbol.name == "main"
+                if module_name.is_empty()
+                    || symbol.name == "main"
                     || symbol.name.starts_with("_A$")
                     || matches!(symbol.kind, SymbolKind::ExternFunc)
                 {

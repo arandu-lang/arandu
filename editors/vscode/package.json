@@ -2,7 +2,7 @@
     "name": "arandu-lang",
     "displayName": "Arandu Language Support",
     "description": "VS Code support for the Arandu Programming Language",
-    "version": "0.1.8",
+    "version": "0.1.9",
     "publisher": "arandu",
     "license": "MIT",
     "preview": true,
@@ -89,6 +89,30 @@
                     ],
                     "default": null,
                     "description": "Absolute path to the arandu executable used by the Testing view and benchmark commands. If null, the extension discovers it beside arandu-lsp, in the workspace target directory, or in PATH."
+                },
+                "arandu.comptime.fuel": {
+                    "type": "integer",
+                    "scope": "window",
+                    "default": 1000000,
+                    "minimum": 1,
+                    "maximum": 9007199254740991,
+                    "description": "Maximum evaluation work per compile-time staging family. Restart the Arandu Language Server after changing this setting."
+                },
+                "arandu.comptime.frames": {
+                    "type": "integer",
+                    "scope": "window",
+                    "default": 128,
+                    "minimum": 1,
+                    "maximum": 4294967295,
+                    "description": "Maximum simultaneous compile-time call frames. Restart the Arandu Language Server after changing this setting."
+                },
+                "arandu.comptime.values": {
+                    "type": "integer",
+                    "scope": "window",
+                    "default": 1000000,
+                    "minimum": 1,
+                    "maximum": 9007199254740991,
+                    "description": "Maximum live compile-time value slots per evaluation. Restart the Arandu Language Server after changing this setting."
                 },
                 "arandu.trace.server": {
                     "type": "string",
@@ -217,7 +241,7 @@
         "@types/node": "^20.14.9",
         "@types/vscode": "1.92.0",
         "@vscode/test-electron": "3.1.0",
-        "@vscode/vsce": "3.9.2",
+        "@vscode/vsce": "4.0.0",
         "esbuild": "0.28.2",
         "eslint": "10.9.0",
         "typescript": "5.9.3",

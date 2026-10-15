@@ -74,11 +74,13 @@ fn dependency_body_edit_preserves_summary_and_cuts_off_caller_body() {
     assert_eq!(after.type_info.return_borrow_summaries.len(), 1);
     let events = log.snapshot();
     assert_eq!(
-        execute_count(&events, "item_body_typeck"),
+        execute_count(&events, "item_typing"),
         1,
         "only the edited dependency body may re-execute when its public summary is unchanged:\n{}",
         log.format_chain(true)
     );
+    assert_eq!(execute_count(&events, "item_body_typeck"), 0);
+    assert_eq!(execute_count(&events, "lower_amir"), 0);
 }
 
 #[test]
@@ -115,10 +117,12 @@ public func borrowValue(value: ref int, marker: ref int): ref int {
     let changed_caller = type_check(&db, caller);
     assert_eq!(changed_caller.type_info.return_borrow_summaries.len(), 1);
     assert!(
-        execute_count(&log.snapshot(), "item_body_typeck") >= 2,
-        "dependency and caller bodies must re-execute after the imported contract changes:\n{}",
+        execute_count(&log.snapshot(), "item_typing") >= 2,
+        "dependency and caller typing must re-execute after the imported declaration changes:\n{}",
         log.format_chain(true)
     );
+    assert_eq!(execute_count(&log.snapshot(), "item_body_typeck"), 1);
+    assert_eq!(execute_count(&log.snapshot(), "lower_amir"), 0);
 }
 
 fn mutation_source(with_conflict: bool) -> String {

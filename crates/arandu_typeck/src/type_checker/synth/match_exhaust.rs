@@ -50,25 +50,45 @@ fn enum_variant_symbol_ids(
 ///
 /// Returns `None` for wildcards, binds, and any non-variant pattern (those are
 /// handled separately via `pattern_covers_all`).
-fn pattern_to_variant_symbol_id(
+fn collect_pattern_variant_symbols(
     checker: &TypeChecker<'_>,
     enum_id: crate::SymbolId,
     pat: PatternId,
-) -> Option<crate::SymbolId> {
+    covered: &mut FxHashSet<crate::SymbolId>,
+) {
     match checker.pool.pattern(pat) {
         // `Variant` or `EnumName.Variant`
         Pattern::Enum { variant, .. } => {
             let short = variant
                 .rsplit_once('.')
                 .map_or(variant.as_str(), |(_, s)| s);
-            checker.symbols.lookup_associated_member(enum_id, short)
+            if let Some(sym) = checker.symbols.lookup_associated_member(enum_id, short) {
+                covered.insert(sym);
+            }
         }
         // `EnumName.Variant(...)` style
         Pattern::TypeTuple { name, .. } => {
             let short = name.rsplit_once('.').map_or(name.as_str(), |(_, s)| s);
-            checker.symbols.lookup_associated_member(enum_id, short)
+            if let Some(sym) = checker.symbols.lookup_associated_member(enum_id, short) {
+                covered.insert(sym);
+            }
         }
-        _ => None,
+        // `EnumName.Variant { ... }` or `Variant { ... }`
+        Pattern::Struct { type_name, .. } => {
+            if let Some(short) = type_name.path.last()
+                && let Some(sym) = checker
+                    .symbols
+                    .lookup_associated_member(enum_id, short.as_str())
+            {
+                covered.insert(sym);
+            }
+        }
+        Pattern::Or { alts, .. } => {
+            for &alt in checker.pool.pattern_list(*alts) {
+                collect_pattern_variant_symbols(checker, enum_id, alt, covered);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -117,9 +137,7 @@ pub fn check_match_exhaustiveness(
     // no heap allocations on the hot path).
     let mut covered: FxHashSet<crate::SymbolId> = FxHashSet::default();
     for arm in arms.iter().filter(|arm| arm.guard.is_none()) {
-        if let Some(sym) = pattern_to_variant_symbol_id(checker, enum_id, arm.pattern) {
-            covered.insert(sym);
-        }
+        collect_pattern_variant_symbols(checker, enum_id, arm.pattern, &mut covered);
     }
 
     // Compute missing variants. String names are only materialised here,

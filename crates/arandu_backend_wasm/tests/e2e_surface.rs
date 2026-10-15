@@ -21,6 +21,353 @@ use common::{
 };
 
 #[test]
+fn copy_frames_reuse_loop_storage_and_restore_normal_and_early_returns() {
+    let bytes = compile_source(
+        r#"
+public func main(early: bool): int {
+    let mut i = 0
+    while i < 1000 {
+        let original: [64]i32 = [7; 64]
+        let mut copy = original
+        copy[63] = 9
+        if original[63] != 7 || copy[63] != 9 { return 1 }
+        if early { return original[0] as int + 35 }
+        i = i + 1
+    }
+    return 0
+}
+"#,
+    );
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &bytes).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+    let main = instance
+        .get_typed_func::<i32, i32>(&mut store, &find_func_export(&bytes, "main").unwrap())
+        .unwrap();
+    let memory = instance.get_memory(&mut store, "memory").unwrap();
+    let before = memory.data_size(&store);
+    for _ in 0..200 {
+        assert_eq!(main.call(&mut store, 0).unwrap(), 0);
+        assert_eq!(main.call(&mut store, 1).unwrap(), 42);
+    }
+    assert_eq!(memory.data_size(&store), before);
+}
+
+#[test]
+fn contextual_nominal_variant_payload_keeps_its_narrow_array_type() {
+    let bytes = compile_source(
+        r#"
+enum Packet { Data([64]u8), Empty }
+func packet(): Packet { return .Data([42; 64]) }
+func main(): int {
+    match packet() {
+        Packet.Data(bytes) => { return bytes[63] as int - 42 }
+        Packet.Empty => { return 1 }
+    }
+}
+"#,
+    );
+    assert_eq!(run_main_i32(&bytes), 0);
+}
+
+#[test]
+fn copy_frames_do_not_overlap_large_rodata_or_callee_frames() {
+    let literal = "x".repeat(180_000);
+    let source = format!(
+        r#"
+import io
+func recurse(depth: int): int {{
+    let a: [64]i32 = [3; 64]
+    if depth == 0 {{ return a[63] as int }}
+    return recurse(depth - 1) + a[0] as int
+}}
+public func main(): int {{
+    io.print("{literal}")
+    return recurse(40)
+}}
+"#
+    );
+    let bytes = compile_source(&source);
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &bytes).unwrap();
+    let mut linker = wasmtime::Linker::<()>::new(&engine);
+    linker
+        .func_wrap(
+            "io",
+            "print",
+            |mut caller: wasmtime::Caller<'_, ()>, ptr: i32, len: i32| {
+                let memory = caller.get_export("memory").unwrap().into_memory().unwrap();
+                let start = usize::try_from(ptr).unwrap();
+                let end = start + usize::try_from(len).unwrap();
+                assert_eq!(end - start, 180_000);
+                assert!(
+                    memory.data(&caller)[start..end]
+                        .iter()
+                        .all(|&byte| byte == b'x')
+                );
+            },
+        )
+        .unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = linker.instantiate(&mut store, &module).unwrap();
+    let main = instance
+        .get_typed_func::<(), i32>(&mut store, &find_func_export(&bytes, "main").unwrap())
+        .unwrap();
+    for _ in 0..100 {
+        assert_eq!(main.call(&mut store, ()).unwrap(), 123);
+    }
+}
+
+#[test]
+fn large_and_affine_scratch_backing_is_reused_and_released_per_invocation() {
+    let bytes = compile_source(
+        r#"
+struct Owned { bytes: [2048]u8 }
+@Destructor
+func Owned.close(own self): void {}
+public func main(early: bool): int {
+    let mut i = 0
+    while i < 100 {
+        let original: [2048]u8 = [7; 2048]
+        let mut independent = original
+        independent[2047] = 42
+        let owned = Owned { bytes: [9; 2048] }
+        if owned.bytes[2047] != 9 || original[2047] != 7 || independent[2047] != 42 { return 1 }
+        if early { return 0 }
+        i += 1
+    }
+    return 0
+}
+"#,
+    );
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &bytes).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+    let main = instance
+        .get_typed_func::<i32, i32>(&mut store, &find_func_export(&bytes, "main").unwrap())
+        .unwrap();
+    let memory = instance.get_memory(&mut store, "memory").unwrap();
+    let before = memory.data_size(&store);
+    for _ in 0..1000 {
+        assert_eq!(main.call(&mut store, 0).unwrap(), 0);
+        assert_eq!(main.call(&mut store, 1).unwrap(), 0);
+    }
+    assert_eq!(memory.data_size(&store), before);
+}
+
+#[test]
+fn copy_results_outlive_callee_frames_without_growing_caller_memory() {
+    let bytes = compile_source(
+        r#"
+func make(depth: int): [2048]u8 {
+    if depth == 0 { return [42; 2048] }
+    return make(depth - 1)
+}
+public func main(): int {
+    let mut i = 0
+    while i < 100 {
+        let result = make(4)
+        if result[0] != 42 || result[2047] != 42 { return 1 }
+        i += 1
+    }
+    return 0
+}
+"#,
+    );
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &bytes).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+    let main = instance
+        .get_typed_func::<(), i32>(&mut store, &find_func_export(&bytes, "main").unwrap())
+        .unwrap();
+    let memory = instance.get_memory(&mut store, "memory").unwrap();
+    let before = memory.data_size(&store);
+    for _ in 0..100 {
+        assert_eq!(main.call(&mut store, ()).unwrap(), 0);
+    }
+    assert_eq!(memory.data_size(&store), before);
+}
+
+#[test]
+fn affine_results_transfer_resources_once_and_reclaim_backing() {
+    let bytes = compile_source(
+        r#"
+import io
+struct Owned { data: ptr[u8], bytes: [2048]u8 }
+func release(data: ptr[u8]): void {
+    unsafe { free(data) }
+    io.print(".")
+}
+@Destructor
+func Owned.close(own self): void { release(self.data) }
+func make(depth: int): Owned {
+    if depth == 0 {
+        let data = alloc(80) as ptr[u8]
+        return Owned { data: data, bytes: [42; 2048] }
+    }
+    return make(depth - 1)
+}
+public func main(early: bool): int {
+    let mut i = 0
+    while i < 100 {
+        let result = make(4)
+        if result.bytes[0] != 42 || result.bytes[2047] != 42 { return 1 }
+        if early { return 0 }
+        i += 1
+    }
+    return 0
+}
+"#,
+    );
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &bytes).unwrap();
+    let mut linker = wasmtime::Linker::<usize>::new(&engine);
+    linker
+        .func_wrap(
+            "io",
+            "print",
+            |mut caller: wasmtime::Caller<'_, usize>, ptr: i32, len: i32| {
+                let memory = caller.get_export("memory").unwrap().into_memory().unwrap();
+                let start = usize::try_from(ptr).unwrap();
+                assert_eq!(len, 1);
+                assert_eq!(memory.data(&caller)[start], b'.');
+                *caller.data_mut() += 1;
+            },
+        )
+        .unwrap();
+    let mut store = wasmtime::Store::new(&engine, 0);
+    let instance = linker.instantiate(&mut store, &module).unwrap();
+    let main = instance
+        .get_typed_func::<i32, i32>(&mut store, &find_func_export(&bytes, "main").unwrap())
+        .unwrap();
+    let memory = instance.get_memory(&mut store, "memory").unwrap();
+    let before = memory.data_size(&store);
+    for iteration in 1..=100 {
+        assert_eq!(main.call(&mut store, 0).unwrap(), 0);
+        assert_eq!(main.call(&mut store, 1).unwrap(), 0);
+        assert_eq!(*store.data(), iteration * 101);
+    }
+    assert_eq!(memory.data_size(&store), before);
+}
+
+#[test]
+fn print_import_writes_exact_bytes_without_a_newline() {
+    let bytes = compile_source(
+        r#"
+import io
+func main(): int {
+    io.print("hello")
+    io.print("")
+    io.print("\0world")
+    return 0
+}
+"#,
+    );
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &bytes).expect("valid module");
+    let mut linker = wasmtime::Linker::<Vec<u8>>::new(&engine);
+    linker
+        .func_wrap(
+            "io",
+            "print",
+            |mut caller: wasmtime::Caller<'_, Vec<u8>>, pointer: i32, length: i32| {
+                let memory = caller
+                    .get_export("memory")
+                    .and_then(|export| export.into_memory())
+                    .expect("guest memory");
+                let start = usize::try_from(pointer).expect("nonnegative address");
+                let len = usize::try_from(length).expect("nonnegative length");
+                let mut bytes = vec![0; len];
+                memory
+                    .read(&caller, start, &mut bytes)
+                    .expect("valid string storage");
+                caller.data_mut().extend(bytes);
+            },
+        )
+        .expect("register print");
+    let mut store = wasmtime::Store::new(&engine, Vec::new());
+    let instance = linker
+        .instantiate(&mut store, &module)
+        .expect("link print import");
+    let name = find_func_export(&bytes, "main").expect("main export");
+    let main = instance
+        .get_typed_func::<(), i32>(&mut store, &name)
+        .expect("main signature");
+    assert_eq!(main.call(&mut store, ()).expect("run main"), 0);
+    assert_eq!(store.data(), b"hello\0world");
+}
+
+#[test]
+fn byte_to_char_preserves_every_unsigned_codepoint() {
+    let bytes = compile_source(
+        r#"
+func main(): int {
+    let mut value: u32 = 0
+    while value < 256 {
+        let character = (value as u8) as char
+        if character as u32 != value { return 1 }
+        value = value + 1
+    }
+    return 0
+}
+"#,
+    );
+    assert_eq!(run_main_i32(&bytes), 0);
+}
+
+#[test]
+fn option_result_equality_inspects_only_active_payload_values() {
+    let bytes = compile_source(
+        r#"
+func main(): int {
+    let a: Option<int> = Option.Some(7)
+    let b: Option<int> = Option.Some(7)
+    let c: Option<int> = Option.Some(8)
+    let n: Option<int> = Option.None
+    let m: Option<int> = Option.None
+    if a != b || a == c || a == n || n != m { return 1 }
+    let x: Option<Option<int>> = Option.Some(a)
+    let y: Option<Option<int>> = Option.Some(b)
+    let z: Option<Option<int>> = Option.Some(c)
+    if x != y || x == z { return 2 }
+    let ok: Result<int, int> = Result.Ok(42)
+    let same: Result<int, int> = Result.Ok(42)
+    let bad: Result<int, int> = Result.Err(42)
+    if ok != same || ok == bad { return 3 }
+    let plus: Option<f64> = Option.Some(0.0)
+    let minus: Option<f64> = Option.Some(-0.0)
+    if plus != minus { return 4 }
+    let nan: f64 = 0.0 / 0.0
+    let wrapped: Option<f64> = Option.Some(nan)
+    if wrapped == wrapped { return 5 }
+    return 0
+}
+"#,
+    );
+    assert_eq!(run_main_i32(&bytes), 0);
+}
+
+#[test]
+fn repeated_arrays_execute_in_wasm_with_ctfe_and_generic_lengths() {
+    let bytes = compile_source(
+        r#"
+func flags<comptime N: uint>(): [N]bool { return [false; N] }
+func main(): int {
+    let flags = flags<256>()
+    let frozen = comptime { let mut table = [false; 256]; table[32] = true; table }
+    let nested = comptime [[7; 2]; 3]
+    if flags[255] || !frozen[32] || frozen[33] { return 1 }
+    return nested[2][1] - 7
+}
+"#,
+    );
+    assert_eq!(run_main_i32(&bytes), 0);
+}
+
+#[test]
 fn surface_arithmetic_returns_5() {
     let bytes = compile_source(
         r#"
@@ -30,6 +377,99 @@ func main(): int {
 "#,
     );
     assert_eq!(run_main_i32(&bytes), 5);
+}
+
+#[test]
+fn static_loop_residuals_execute_with_nested_and_structured_exits() {
+    for (source, expected) in [
+        (
+            "func main(): int { let mut sum = 0\ncomptime for i in 0..3 { comptime for j in 0..2 { sum += i + j } } return sum }",
+            9,
+        ),
+        (
+            "func main(): int { let mut sum = 0\ncomptime for i in 0..4 { if i == 1 { continue } if i == 3 { break } sum += i } return sum }",
+            2,
+        ),
+        (
+            "func main(): int { comptime for i in 0..4 { return i + 7 } return 99 }",
+            7,
+        ),
+    ] {
+        assert_eq!(run_main_i32(&compile_source(source)), expected);
+    }
+}
+
+#[test]
+fn public_frozen_float_and_string_values_execute_in_wasm() {
+    let bytes = compile_source(
+        r#"
+func text(): str { return "Olá\0🦀" }
+func main(): int {
+    let negative: f64 = comptime (-0.0)
+    if 1.0 / negative >= 0.0 { return 1 }
+    let tiny: f64 = comptime (5e-324 + 5e-324)
+    if tiny != 1e-323 { return 2 }
+    let nan: f64 = comptime (0.0 / 0.0)
+    if nan == nan { return 3 }
+    let frozen = comptime text()
+    if frozen != "Olá\0🦀" { return 4 }
+    return 0
+}
+"#,
+    );
+    assert_eq!(run_main_i32(&bytes), 0);
+}
+
+#[test]
+fn frozen_float_literals_keep_nan_payloads_and_signed_zero_in_wasm() {
+    let interner = TypeInterner::new();
+    let ty = interner.intern(ArType::Primitive(Primitive::F64));
+    let format = arandu_middle::ctfe::FloatType::new(Primitive::F64, common::wasm32()).unwrap();
+    for bits in [
+        0_u64,
+        0x8000000000000000,
+        1,
+        0x7ff0000000000000,
+        0xfff0000000000000,
+        0x7ff8000000001234,
+    ] {
+        let mut literals = AmirLiteralPool::default();
+        let literal =
+            literals.intern_float_bits(arandu_middle::ctfe::ConstFloat::new(format, bits).unwrap());
+        let mut statements = AmirStmtTable::new();
+        statements.push(AmirStmt::Assign {
+            lhs: TempId::from_usize(0),
+            rhs: AmirRvalue::Use(AmirOperand::Constant(AmirConstant::Pool(literal))),
+        });
+        let blocks = vec![AmirBasicBlock {
+            id: BlockId::from_usize(0),
+            params: DenseRange::empty(),
+            statements: DenseRange::new(0, 1),
+            terminator: AmirTerminator::Return,
+        }];
+        let function = AmirFunc {
+            symbol: foreign_sym(1),
+            return_type: ty,
+            receiver: None,
+            params: vec![],
+            locals: vec![],
+            temps: vec![temp(0, ty)],
+            cfg: compute_cfg_edges(&blocks),
+            blocks,
+            block_params: vec![],
+            stmts: statements,
+        };
+        let bytes = emit_one(function, &interner, &mut literals);
+        assert_eq!(common::run_main_f64(&bytes).to_bits(), bits);
+    }
+}
+
+#[test]
+fn public_layout_expressions_are_evaluated_for_wasm32_before_emission() {
+    let bytes = compile_source(
+        "func size<T>(): usize { return @sizeOf(T) }\nfunc main(): int { let word = comptime (@sizeOf(usize)); return (word + @alignOf(i64) + size<[3]u16>()) as int }",
+    );
+    assert_eq!(run_main_i32(&bytes), 18);
 }
 
 #[test]
@@ -895,4 +1335,110 @@ fn to_str_and_string_interp_with_f64_executes() {
     let bytes = emit_one(func, &interner, &mut pool);
     // "3.14159" has length 7
     assert_eq!(run_main_i32(&bytes), 7);
+}
+
+#[test]
+fn installed_comptime_corpus_executes_in_wasm() {
+    let bytes = compile_source(include_str!(
+        "../../../tests/projects/medium/comptime_core/src/main.aru"
+    ));
+    assert_eq!(run_main_i32(&bytes), 0);
+}
+
+#[test]
+fn runtime_range_loops_keep_ssa_values_and_exit_before_inclusive_overflow() {
+    let bytes = compile_source(
+        r#"
+func first(): int { for value in 0..2 { return value }; return 99 }
+func main(): int {
+    if first() != 0 { return 1 }
+    let max: u64 = 18446744073709551615
+    let mut visits = 0
+    for value in max..=max { if value != max { return 2 }; visits += 1 }
+    if visits != 1 { return 3 }
+    for value in 2..1 { return 4 }
+    visits = 0
+    for value in 1..=3 { if value == 2 { continue }; visits += value }
+    if visits != 4 { return 5 }
+    let mut sum = 0
+    for value in [20, 22] { sum += value }
+    if sum != 42 { return 6 }
+    sum = 0
+    for label in ["a", "b"] { if label == "a" { sum += 20 } else { sum += 22 } }
+    return sum - 42
+}
+"#,
+    );
+    assert_eq!(run_main_i32(&bytes), 0);
+}
+
+#[test]
+fn independent_string_results_restore_frames_and_reclaim_large_scratch() {
+    let bytes = compile_source(
+        r#"
+func label(seed: int): str {
+    let mut index = 0
+    let mut sum = 0
+    while index < 1000 {
+        let row: [2048]u8 = [seed as u8; 2048]
+        sum = sum + row[2047] as int
+        index = index + 1
+    }
+    if sum > 0 { return "positive" }
+    return "zero"
+}
+func forward(value: str, seed: int): str {
+    let mut index = 0
+    while index < 1000 {
+        let row: [2048]u8 = [seed as u8; 2048]
+        if row[2047] != seed as u8 { return "bad" }
+        index = index + 1
+    }
+    return value
+}
+func main(): int {
+    if label(1) == "positive" && label(0) == "zero" && forward("caller", 7) == "caller" { return 0 }
+    return 1
+}
+"#,
+    );
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &bytes).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+    let main = instance
+        .get_typed_func::<(), i32>(&mut store, "main")
+        .unwrap();
+    let memory = instance.get_memory(&mut store, "memory").unwrap();
+    // Warm allocator buckets once, then compare repeated invocations.
+    assert_eq!(main.call(&mut store, ()).unwrap(), 0);
+    let before = memory.data_size(&store);
+    for _ in 0..50 {
+        assert_eq!(main.call(&mut store, ()).unwrap(), 0);
+    }
+    assert_eq!(memory.data_size(&store), before);
+}
+
+#[test]
+fn non_param_temps_reuse_wasm_locals_via_coloring() {
+    let bytes = compile_source(
+        r#"
+public func main(): i32 {
+    let a = 1 + 2
+    let b = a + 3
+    let c = b + 4
+    let d = c + 5
+    let e = d + 6
+    let f = e + 7
+    let g = f + 8
+    let h = g + 9
+    let i = h + 10
+    let j = i + 11
+    let k = j + 12
+    let l = k + 13
+    return l
+}
+"#,
+    );
+    assert_eq!(run_main_i32(&bytes), 91);
 }

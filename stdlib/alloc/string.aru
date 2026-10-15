@@ -2,16 +2,16 @@
 //!
 //! ## Overview
 //!
-//! `String` owns a growable byte buffer. Borrow its contents with `asStr` or `asBytes`, reserve capacity, append data, and release it with `destroy`.
+//! `String` owns a growable UTF-8 byte buffer. Borrow its contents with `asStr` or `asBytes`, reserve capacity, and append data. Memory is released automatically when the `String` is dropped.
 //!
-//! ## Example
+//! `String.len()` returns the O(1) UTF-8 byte length, whereas `String.charCount()` counts Unicode scalar values in O(n) time:
 //!
 //! ```arandu
 //! import std.alloc.string as strings
 //!
-//! let mut name = strings.from("aran")
-//! name.pushStr("du")
-//! let bytes = name.len()
+//! let s = strings.String.from("olá")
+//! s.len()       // 4 bytes
+//! s.charCount() // 3 Unicode scalars
 //! ```
 //!
 //! ## Safety
@@ -21,8 +21,9 @@
 //! `String` or a reallocation that moves its buffer.
 //!
 //! ## Allocations
-//! `new` is empty without allocating; growth may reallocate. Fallible
-//! `tryReserve` and `pushStr` report failure with `false`.
+//! `String.new` is empty without allocating; `String.withCapacity` pre-allocates
+//! capacity; growth may reallocate. Fallible `tryReserve` and `pushStr` report
+//! failure with `false`.
 //!
 //! ## Platform
 //! `native` · `wasm32`
@@ -54,59 +55,19 @@ extern "C" {
     func ar_string_push_str(s: mut ref String, value: str): bool
 }
 
-/// Returns a shared UTF-8 string view (`str`) borrowing the String's data.
-/// The view has byte length `len` and does not copy or allocate. It becomes
-/// invalid if the owner is destroyed or its buffer moves during growth.
-///
-/// # Examples
-/// ```arandu
-/// let s = strings.from("hello")
-/// strings.asStr(s) // "hello"
-/// ```
-///
-/// # Complexity
-/// Time: O(1) | Space: O(1)
-public func asStr(s: ref String): ref str {
+func asStr(s: ref String): ref str {
     unsafe {
         return intrinsics.strView<String>(s)
     }
 }
 
-/// Returns a shared byte slice `[]u8` viewing the underlying UTF-8 storage.
-/// The slice covers initialized bytes only; its length is `String.len`.
-/// Destroying or reallocating the String invalidates the borrowed view.
-///
-/// # Examples
-/// ```arandu
-/// let s = strings.from("abc")
-/// let bytes = strings.asBytes(s)
-/// slice.len<u8>(bytes) // 3
-/// ```
-///
-/// # Complexity
-/// Time: O(1) | Space: O(1)
-public func asBytes(s: ref String): []u8 {
+func asBytes(s: ref String): []u8 {
     unsafe {
         return intrinsics.sliceFromRaw<String, u8>(s, s.data, s.len)
     }
 }
 
-/// Appends the bytes of `value` and returns whether the append succeeded.
-///
-/// Growth may reallocate and invalidate borrowed views. A `false` return
-/// reports allocation failure; callers must check it before assuming the
-/// complete value was appended.
-///
-/// # Examples
-/// ```arandu
-/// let mut s = strings.new()
-/// strings.pushStr(s, "arandu")
-/// s.len() // 6
-/// ```
-///
-/// # Complexity
-/// Time: O(m) where m is length of `value` | Space: O(m)
-public func pushStr(s: mut ref String, value: str): bool {
+func pushStr(s: mut ref String, value: str): bool {
     unsafe {
         return ar_string_push_str(s, value)
     }
@@ -131,7 +92,7 @@ public struct String {
 /// `data` must be a pointer returned by `ar_vec_malloc(bufCap)` (or `nil` with
 /// `0`/`0`). `bufLen` must not exceed `bufCap`, and the initialized bytes must
 /// be valid UTF-8 before treating the result as text. The buffer is freed
-/// exactly once via `destroy`/`ar_vec_buf_free`.
+/// automatically on drop via `ar_vec_buf_free`.
 @Unsafe
 public func adoptOwned(data: ptr[u8], bufCap: usize, bufLen: usize): String {
     return String {
@@ -141,17 +102,7 @@ public func adoptOwned(data: ptr[u8], bufCap: usize, bufLen: usize): String {
     }
 }
 
-/// Creates a new empty `String` without heap allocation.
-///
-/// # Examples
-/// ```arandu
-/// let s = strings.new()
-/// strings.len(s) // 0
-/// ```
-///
-/// # Complexity
-/// Time: O(1) | Space: O(1)
-public func new(): String {
+func new(): String {
     return String {
         data: nil,
         len: 0,
@@ -159,35 +110,13 @@ public func new(): String {
     }
 }
 
-/// Creates a new empty `String` with preallocated byte capacity.
-///
-/// # Examples
-/// ```arandu
-/// let s = strings.withCapacity(32)
-/// strings.capacity(s) // >= 32
-/// ```
-///
-/// # Complexity
-/// Time: O(1) | Space: O(cap)
-public func withCapacity(cap: usize): String {
+func withCapacity(cap: usize): String {
     let mut s = new()
     ensureCapacity(s, cap)
     return s
 }
 
-/// Creates a new owned `String` initialized with a copy of `value`.
-/// The source remains independent of the new buffer. Allocation failure
-/// aborts; use `new` followed by fallible `pushStr` to handle failure.
-///
-/// # Examples
-/// ```arandu
-/// let s = strings.from("arandu")
-/// strings.len(s) // 6
-/// ```
-///
-/// # Complexity
-/// Time: O(n) | Space: O(n) where n is length of `value`
-public func from(value: str): String {
+func from(value: str): String {
     let mut s = new()
     if !pushStr(s, value) {
         unsafe {
@@ -202,7 +131,7 @@ public func from(value: str): String {
 /// Returns `true` on success, or `false` on OOM or capacity overflow without
 /// modifying `s`. The maximum accepted capacity is 2,147,483,647 bytes.
 /// Existing borrowed views remain valid only if no reallocation occurs.
-public func tryEnsureCapacity(s: mut ref String, minCap: usize): bool {
+func tryEnsureCapacity(s: mut ref String, minCap: usize): bool {
     let maxCap = maxBufferCapacity()
     if minCap > maxCap {
         return false
@@ -242,12 +171,7 @@ func ensureCapacity(s: mut ref String, minCap: usize): void {
     }
 }
 
-/// Fallible byte capacity reservation.
-///
-/// Reserves capacity for at least `additional` more bytes beyond current `len`.
-/// Returns `true` on success, or `false` on allocation failure or capacity
-/// overflow without aborting. Existing content remains intact on failure.
-public func tryReserve(s: mut ref String, additional: usize): bool {
+func tryReserve(s: mut ref String, additional: usize): bool {
     let maxCap = maxBufferCapacity()
     if additional > maxCap - s.len {
         return false
@@ -256,60 +180,19 @@ public func tryReserve(s: mut ref String, additional: usize): bool {
     return tryEnsureCapacity(s, need)
 }
 
-/// Returns the byte length of the String.
-///
-/// # Examples
-/// ```arandu
-/// let s = strings.from("arandu")
-/// strings.len(s) // 6
-/// ```
-///
-/// # Complexity
-/// Time: O(1) | Space: O(1)
-public func len(s: ref String): usize {
+func len(s: ref String): usize {
     return s.len
 }
 
-/// Returns the total byte capacity allocated for the String.
-///
-/// # Examples
-/// ```arandu
-/// let s = strings.withCapacity(64)
-/// strings.capacity(s) // >= 64
-/// ```
-///
-/// # Complexity
-/// Time: O(1) | Space: O(1)
-public func capacity(s: ref String): usize {
+func capacity(s: ref String): usize {
     return s.capacity
 }
 
-/// Returns `true` if the String contains no bytes (`len == 0`).
-///
-/// # Examples
-/// ```arandu
-/// strings.isEmpty(strings.new())          // true
-/// strings.isEmpty(strings.from("text"))   // false
-/// ```
-///
-/// # Complexity
-/// Time: O(1) | Space: O(1)
-public func isEmpty(s: ref String): bool {
+func isEmpty(s: ref String): bool {
     return s.len == 0
 }
 
-/// Reserves capacity for at least `additional` more bytes beyond `len`.
-///
-/// # Examples
-/// ```arandu
-/// let mut s = strings.new()
-/// strings.reserve(s, 16)
-/// strings.capacity(s) // >= 16
-/// ```
-///
-/// # Complexity
-/// Time: O(n) reallocation | Space: O(capacity)
-public func reserve(s: mut ref String, additional: usize): void {
+func reserve(s: mut ref String, additional: usize): void {
     if !tryReserve(s, additional) {
         unsafe {
             intrinsics.abort()
@@ -317,21 +200,7 @@ public func reserve(s: mut ref String, additional: usize): void {
     }
 }
 
-/// Appends a single Unicode scalar value (`char`) encoded as UTF-8 bytes (1 to 4 bytes).
-/// Growth may reallocate and invalidate views returned by `asStr` or
-/// `asBytes`. Capacity overflow or allocation failure aborts.
-///
-/// # Examples
-/// ```arandu
-/// let mut s = strings.new()
-/// strings.pushScalar(s, 'a')
-/// strings.pushScalar(s, 'é')
-/// strings.len(s) // 3 bytes ('a'=1, 'é'=2)
-/// ```
-///
-/// # Complexity
-/// Time: Amortized O(1) | Space: O(1)
-public func pushScalar(s: mut ref String, c: char): void {
+func pushScalar(s: mut ref String, c: char): void {
     let clen = chars.lenUtf8(c) as usize
     if clen > maxBufferCapacity() - s.len {
         unsafe {
@@ -382,32 +251,12 @@ public func pushScalar(s: mut ref String, c: char): void {
     s.len = s.len + clen
 }
 
-/// Clears the String by setting its byte length to zero, retaining capacity.
-///
-/// No bytes are deallocated or overwritten. Existing borrowed views must
-/// not be used as views of the cleared content.
-///
-/// # Examples
-/// ```arandu
-/// let mut s = strings.from("hello")
-/// strings.clear(s)
-/// strings.len(s) // 0
-/// ```
-///
-/// # Complexity
-/// Time: O(1) | Space: O(1)
-public func clear(s: mut ref String): void {
+func clear(s: mut ref String): void {
     s.len = 0
 }
 
 /// Deallocates the heap buffer and resets the String to empty.
-///
-/// All views into the buffer become invalid. Repeating this operation on an
-/// already empty, unallocated String has no effect.
-///
-/// # Complexity
-/// Time: O(1) | Space: O(1)
-public func destroy(s: mut ref String): void {
+func destroyString(s: mut ref String): void {
     if s.capacity > 0 {
         unsafe {
             ar_vec_buf_free(s.data, s.capacity)
@@ -418,18 +267,91 @@ public func destroy(s: mut ref String): void {
     }
 }
 
+func charCount(s: ref String): usize {
+    return core_str.charCount(asStr(s))
+}
+
 // ── Method-style surface ───────────────────────────────────────────────────
 
-/// Copies `value` into a new owned `String`.
+/// Creates a new empty `String` without heap allocation.
 ///
-/// Allocation failure aborts, as with the free `from` constructor.
+/// # Examples
+/// ```arandu
+/// let s = strings.String.new()
+/// s.len() // 0
+/// ```
+///
+/// # Complexity
+/// Time: O(1) | Space: O(1)
+public func String.new(): String {
+    return new()
+}
+
+/// Creates a new empty `String` with preallocated byte capacity.
+///
+/// # Examples
+/// ```arandu
+/// let s = strings.String.withCapacity(32)
+/// s.capacity() // >= 32
+/// ```
+///
+/// # Complexity
+/// Time: O(1) | Space: O(cap)
+public func String.withCapacity(cap: usize): String {
+    return withCapacity(cap)
+}
+
+/// Creates a new owned `String` initialized with a copy of `value`.
+///
+/// The source remains independent of the new buffer. Allocation failure
+/// aborts; use `String.new` followed by fallible `pushStr` to handle failure.
+///
+/// # Examples
+/// ```arandu
+/// let s = strings.String.from("arandu")
+/// s.len() // 6
+/// ```
+///
+/// # Complexity
+/// Time: O(n) | Space: O(n) where n is length of `value`
 public func String.from(value: str): String {
     return from(value)
 }
 
-/// Returns the byte length of the String.
+/// Returns the UTF-8 byte length of the `String` in O(1) time.
+///
+/// Note that this counts UTF-8 bytes, not Unicode scalar values (`char`s).
+/// Use `charCount()` when you need the O(n) Unicode scalar count.
+///
+/// # Examples
+/// ```arandu
+/// let s = strings.String.from("olá")
+/// s.len()       // 4 bytes
+/// s.charCount() // 3 Unicode scalars
+/// ```
+///
+/// # Complexity
+/// Time: O(1) | Space: O(1)
 public func String.len(self: ref String): usize {
     return len(self)
+}
+
+/// Returns the number of Unicode scalar values (`char`s) in the `String`.
+///
+/// Because UTF-8 is variable-width, this scans the initialized bytes in O(n) time.
+/// Use `len()` for the O(1) UTF-8 byte length.
+///
+/// # Examples
+/// ```arandu
+/// let s = strings.String.from("olá")
+/// s.len()       // 4 bytes
+/// s.charCount() // 3 Unicode scalars
+/// ```
+///
+/// # Complexity
+/// Time: O(n) | Space: O(1)
+public func String.charCount(self: ref String): usize {
+    return charCount(self)
 }
 
 /// Returns the allocated byte capacity.
@@ -437,7 +359,7 @@ public func String.capacity(self: ref String): usize {
     return capacity(self)
 }
 
-/// Returns `true` if the String is empty.
+/// Returns `true` if the String is empty (`len == 0`).
 public func String.isEmpty(self: ref String): bool {
     return isEmpty(self)
 }
@@ -458,14 +380,14 @@ public func String.pushScalar(self: mut ref String, c: char): void {
 
 /// Borrows the initialized bytes as a `str` view without copying.
 ///
-/// Destroying or reallocating the owner invalidates the view.
+/// Dropping or reallocating the owner invalidates the view.
 public func String.asStr(self: ref String): ref str {
     return asStr(self)
 }
 
 /// Borrows initialized bytes as a slice without copying.
 ///
-/// Destroying or reallocating the owner invalidates the view.
+/// Dropping or reallocating the owner invalidates the view.
 public func String.asBytes(self: ref String): []u8 {
     return asBytes(self)
 }
@@ -516,11 +438,7 @@ public func String.clear(self: mut ref String): void {
     clear(self)
 }
 
-/// Shortens the String to `newLen` bytes when that is a UTF-8 boundary.
-///
-/// A length beyond the current end or inside a multibyte character leaves
-/// the String unchanged. Capacity is retained; no allocation occurs.
-public func truncate(s: mut ref String, newLen: usize): void {
+func truncate(s: mut ref String, newLen: usize): void {
     if newLen < s.len {
         if newLen > 0 {
             let boundary = unsafe {
@@ -535,7 +453,7 @@ public func truncate(s: mut ref String, newLen: usize): void {
     }
 }
 
-/// Shortens this String at a UTF-8 boundary; delegates to `truncate`.
+/// Shortens this String to `newLen` bytes when that is a UTF-8 boundary.
 ///
 /// Invalid or out-of-range byte lengths leave the String unchanged.
 public func String.truncate(self: mut ref String, newLen: usize): void {
@@ -572,16 +490,16 @@ public func String.find(self: ref String, needle: str): Option<usize> {
 
 /// Copies this String into a separate owned buffer.
 ///
-/// The clone can be changed or destroyed independently. Allocation failure
-/// aborts through `from`.
+/// The clone can be changed or dropped independently. Allocation failure
+/// aborts through `String.from`.
 public func String.clone(self: ref String): String {
     return from(asStr(self))
 }
 
-/// Consumes this String and releases its owned byte buffer.
+/// Consumes this String and releases its owned byte buffer automatically at scope exit.
 ///
 /// Borrowed views into the buffer become invalid.
 @Destructor
-public func String.destroy(self: own String): void {
-    destroy(self)
+func String.destroy(self: own String): void {
+    destroyString(self)
 }

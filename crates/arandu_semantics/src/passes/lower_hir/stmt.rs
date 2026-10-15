@@ -163,6 +163,39 @@ fn lower_stmt_raw(
             }
         }
         Stmt::If {
+            span,
+            is_comptime: true,
+            then_block,
+            else_block,
+            ..
+        } => {
+            let selected = type_check
+                .resolved
+                .comptime_branches
+                .get(&(*span).into())
+                .copied()
+                .ok_or_else(|| {
+                    Diagnostic::ice(
+                        crate::DiagCode::ICET001,
+                        "static branch has no staged decision",
+                        *span,
+                    )
+                })?;
+            let block = if selected {
+                Some(then_block)
+            } else {
+                else_block.as_ref()
+            };
+            let block = match block {
+                Some(block) => lower_block(type_check, pool, hir_pool, block)?,
+                None => hir_pool.alloc_block(HirBlock {
+                    span: *span,
+                    statements: crate::hir::IndexRange::empty(),
+                }),
+            };
+            HirStmtKind::Scope(block)
+        }
+        Stmt::If {
             condition,
             then_block,
             else_block,
@@ -175,9 +208,43 @@ fn lower_stmt_raw(
                 .map(|b| super::stmt::lower_block(type_check, pool, hir_pool, b))
                 .transpose()?,
         },
-        Stmt::For { clause, body, .. } => HirStmtKind::For {
+        Stmt::For {
+            span,
+            is_comptime,
+            clause,
+            body,
+        } => HirStmtKind::For {
+            comptime_bodies: None,
+            comptime_bounds: if *is_comptime {
+                Some(
+                    *type_check
+                        .resolved
+                        .comptime_loops
+                        .get(&(*span).into())
+                        .ok_or_else(|| {
+                            Diagnostic::error(
+                                arandu_middle::DiagCode::T042UnsupportedComptime,
+                                "static loop domain was not evaluated",
+                                *span,
+                            )
+                        })?,
+                )
+            } else {
+                None
+            },
             clause: lower_for_clause(type_check, pool, hir_pool, clause)?,
-            body: super::stmt::lower_block(type_check, pool, hir_pool, body)?,
+            body: if type_check
+                .resolved
+                .deferred_loop_bodies
+                .contains(&(*span).into())
+            {
+                hir_pool.alloc_block(HirBlock {
+                    span: body.span,
+                    statements: crate::hir::IndexRange::empty(),
+                })
+            } else {
+                super::stmt::lower_block(type_check, pool, hir_pool, body)?
+            },
         },
         Stmt::While {
             condition, body, ..

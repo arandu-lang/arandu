@@ -26,6 +26,7 @@ async function main(): Promise<void> {
                 launchArgs: [
                     workspacePath,
                     '--disable-extensions',
+                    '--disable-gpu',
                     `--user-data-dir=${userDataPath}`,
                     `--extensions-dir=${extensionsPath}`
                 ],

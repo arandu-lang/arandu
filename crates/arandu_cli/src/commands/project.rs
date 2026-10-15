@@ -170,7 +170,7 @@ pub fn cmd_inspect(start: &Path, flags: &ProjectFlags, verify: bool) -> CliResul
 pub fn cmd_cache(args: &[String], project_flags: &ProjectFlags) -> CliResult {
     use arandu_package::cache;
     if args.len() < 3 {
-        fail_usage("usage: arandu_cli cache <dir|inspect|verify|prune> [options]");
+        fail_usage("usage: arandu_cli cache <dir|inspect|verify|verify-tree|prune> [options]");
     }
     let layout = cache::resolve_cache_layout(project_flags.cache_dir.as_deref())
         .unwrap_or_else(|error| fail_usage(format!("error: {error}")));
@@ -242,7 +242,7 @@ pub fn cmd_cache(args: &[String], project_flags: &ProjectFlags) -> CliResult {
             );
             Ok(CliSuccess::Done)
         }
-        _ => fail_usage("usage: arandu_cli cache <dir|inspect|verify|prune> [options]"),
+        _ => fail_usage("usage: arandu_cli cache <dir|inspect|verify|verify-tree|prune> [options]"),
     }
 }
 

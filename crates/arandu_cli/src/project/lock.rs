@@ -37,18 +37,58 @@ pub fn synchronize_lockfile(
             let text = std::str::from_utf8(&bytes).map_err(|error| {
                 format!("invalid {}: file is not UTF-8: {error}", path.display())
             })?;
-            let current =
-                arandu_query::Lockfile::parse(&path, text).map_err(|error| error.to_string())?;
-            if current == expected && bytes == expected_bytes {
-                return Ok(());
+            let current = match arandu_query::Lockfile::parse(&path, text) {
+                Ok(current) => Some(current),
+                Err(error)
+                    if flags.accept_lock
+                        && !flags.locked
+                        && !expected.contains_remote_packages() =>
+                {
+                    // Explicit recovery is restricted to a locally resolved graph.
+                    // Retain the original bytes; never silently discard trust data
+                    // or overwrite an earlier, different recovery copy.
+                    let backup = lock_dir.join("invalid-arandu.lock");
+                    match fs::read(&backup) {
+                        Ok(previous) if previous != bytes => {
+                            return Err(format!(
+                                "{error}; recovery backup {} already contains a different lockfile",
+                                backup.display()
+                            ));
+                        }
+                        Ok(_) => {}
+                        Err(error) if error.kind() == ErrorKind::NotFound => {
+                            crate::artifact::atomic_replace(&backup, &bytes).map_err(|error| {
+                                format!("cannot preserve invalid lockfile: {error:?}")
+                            })?;
+                        }
+                        Err(error) => {
+                            return Err(format!("cannot read {}: {error}", backup.display()));
+                        }
+                    }
+                    eprintln!(
+                        "recovering invalid local lockfile; original retained at {}",
+                        backup.display()
+                    );
+                    None
+                }
+                Err(error) => {
+                    return Err(format!(
+                        "{error}; invalid lockfiles are never accepted as integrity evidence. For a local-only graph, run 'arandu update --accept' to regenerate it while preserving the original"
+                    ));
+                }
+            };
+            if let Some(current) = current {
+                if current == expected && bytes == expected_bytes {
+                    return Ok(());
+                }
+                if flags.locked {
+                    return Err(format!(
+                        "{} is stale or noncanonical and --locked forbids updating it",
+                        path.display()
+                    ));
+                }
+                previous = Some(current);
             }
-            if flags.locked {
-                return Err(format!(
-                    "{} is stale or noncanonical and --locked forbids updating it",
-                    path.display()
-                ));
-            }
-            previous = Some(current);
         }
         Err(error) if error.kind() == ErrorKind::NotFound => {
             if flags.locked {
@@ -99,6 +139,60 @@ mod tests {
     use super::*;
     use arandu_query::{LockedPackage, Lockfile};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn invalid_local_lock_requires_explicit_recovery_and_preserves_original() {
+        let root = std::env::temp_dir().join(format!(
+            "arandu-lock-recovery-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("temporary project");
+        let path = root.join(arandu_query::LOCK_FILENAME);
+        let invalid = b"manifest_fingerprint = 'blake3:placeholder'\n";
+        fs::write(&path, invalid).expect("invalid lock");
+        let expected = Lockfile {
+            manifest_fingerprint: format!("blake3:{}", "0".repeat(64)),
+            packages: Vec::new(),
+        };
+        let error = synchronize_lockfile(&root, expected.clone(), &ProjectFlags::default())
+            .expect_err("must reject invalid hashes");
+        assert!(error.contains("arandu update --accept"));
+        assert_eq!(fs::read(&path).expect("retained lock"), invalid);
+        assert!(
+            synchronize_lockfile(
+                &root,
+                expected.clone(),
+                &ProjectFlags {
+                    locked: true,
+                    accept_lock: true,
+                    ..ProjectFlags::default()
+                }
+            )
+            .is_err()
+        );
+        synchronize_lockfile(
+            &root,
+            expected.clone(),
+            &ProjectFlags {
+                accept_lock: true,
+                ..ProjectFlags::default()
+            },
+        )
+        .expect("explicit local recovery");
+        assert_eq!(
+            fs::read(&path).expect("new lock"),
+            expected.to_canonical_bytes()
+        );
+        assert_eq!(
+            fs::read(root.join(".arandu/locks/invalid-arandu.lock")).expect("backup"),
+            invalid
+        );
+        fs::remove_dir_all(root).expect("cleanup");
+    }
 
     fn remote_lock(commit: &str, digest: &str) -> Lockfile {
         let source = format!("git+https://example.com/math.git#{commit}");

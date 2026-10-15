@@ -36,6 +36,15 @@ pub(super) fn synth_call_expr(
                 if let Some(var_id) = checker.literal_table.var_for_symbol(symbol_id) {
                     checker.literal_table.bind_expr(expr, var_id);
                 }
+                if !checker
+                    .type_info
+                    .generic_params
+                    .get(&symbol_id)
+                    .is_some_and(|parameters| !parameters.is_empty())
+                    && let Some(ty_id) = checker.type_info.demand_header(symbol_id, &[], span)
+                {
+                    return Some(ty_id);
+                }
                 if let Some(ty_id) = checker.ctx.lookup(symbol_id) {
                     return Some(ty_id);
                 }
@@ -46,6 +55,24 @@ pub(super) fn synth_call_expr(
             Some(checker.intern(ArType::Error))
         }
         ExprKind::TypePath { type_name, member } => {
+            if let Some(symbol) = checker.resolved.expr_symbol(expr)
+                && checker.symbols.try_get(symbol).is_some_and(|entry| {
+                    matches!(
+                        entry.kind,
+                        arandu_middle::SymbolKind::ConstParam | arandu_middle::SymbolKind::Const
+                    )
+                })
+                && let Some(base_ty) = checker.decl_type_id(symbol)
+            {
+                return Some(crate::type_checker::synth::resolve_field_type(
+                    checker,
+                    base_ty,
+                    type_name.span,
+                    member,
+                    span,
+                    false,
+                ));
+            }
             // Bare `Result.Ok` / `Result.Err` as paths (not calls): build a
             // polymorphic-looking Func using expected `Result<T,E>` when present.
             // Actual calls are handled by `synth_result_ctor` (bidirectional).
@@ -225,15 +252,23 @@ pub(super) fn synth_call_expr(
             Some(if let Some(ok_ty) = checker.try_ok_type(&inner_ty) {
                 let return_ty_id = checker.ctx.current_return();
                 let return_ty = return_ty_id.map(|id| checker.resolve(id));
-                let can_propagate = match (&inner_ty, return_ty.as_ref()) {
-                    (ArType::Result(_, inner_err), Some(ArType::Result(_, outer_err))) => {
-                        let inner_err = checker.resolve(*inner_err);
-                        let outer_err = checker.resolve(*outer_err);
-                        checker.is_assignable_return_type(&outer_err, &inner_err)
-                    }
-                    (ArType::Option(_), Some(ArType::Option(_))) => true,
-                    _ => false,
-                };
+                // An unannotated isolated block learns its result from its
+                // explicit returns/tail. Validate `?` after that inference;
+                // using void here rejects valid nested helpers prematurely.
+                let deferred = return_ty_id.is_none() && checker.ctx.is_ctfe_return();
+                if deferred {
+                    checker.ctx.record_ctfe_propagation(
+                        crate::type_checker::context::ReturnValue {
+                            ty: inner_ty_id,
+                            span,
+                            expression: None,
+                        },
+                    );
+                }
+                let can_propagate = deferred
+                    || return_ty
+                        .as_ref()
+                        .is_some_and(|target| checker.can_propagate_try(&inner_ty, target));
                 if !can_propagate {
                     let found = return_ty_id.unwrap_or_else(|| checker.intern(ArType::Void));
                     let return_span = checker.ctx.current_return_decl_span().unwrap_or(span);
@@ -310,8 +345,12 @@ pub(super) fn synth_call_expr(
         ExprKind::Call {
             callee,
             args,
-            trailing_block: _,
+            trailing_block,
         } => {
+            if let Some(block_id) = trailing_block {
+                let block = checker.pool.block(*block_id);
+                let _ = crate::type_checker::check::check_block(checker, checker.pool, block);
+            }
             let callee_id = *callee;
             let args_range = *args;
             // Enum variant constructors inherit their generic parameters from
@@ -333,7 +372,7 @@ pub(super) fn synth_call_expr(
                     .collect();
                 if let Some((params, ret)) = infer_and_instantiate_func(
                     checker,
-                    &type_params,
+                    (Some(variant_id), &type_params),
                     &formals,
                     ret,
                     &arg_tys,
@@ -443,7 +482,7 @@ pub(super) fn synth_call_expr(
             {
                 return Some(checker.intern(option_ty));
             }
-            if let Some(poll_ty) = synth_poll_ctor(checker, callee_id, args_range, span) {
+            if let Some(poll_ty) = synth_poll_ctor(checker, callee_id, args_range, span, expected) {
                 return Some(checker.intern(poll_ty));
             }
             if let ExprKind::Field { base, field } = checker.pool.expr(callee_id) {
@@ -502,7 +541,13 @@ pub(super) fn synth_call_expr(
                                 .map(|aid| synth_expr(checker, aid))
                                 .collect();
                             if let Some((ip, ir)) = infer_and_instantiate_func(
-                                checker, &gp, &params, ret, &arg_tys, expected, span,
+                                checker,
+                                (Some(sym_id), &gp),
+                                &params,
+                                ret,
+                                &arg_tys,
+                                expected,
+                                span,
                             ) {
                                 params = ip;
                                 ret = ir;
@@ -803,7 +848,13 @@ pub(super) fn synth_call_expr(
                         .map(|aid| synth_expr(checker, aid))
                         .collect();
                     if let Some((ip, ir)) = infer_and_instantiate_func(
-                        checker, &gp, &params, ret, &arg_tys, expected, span,
+                        checker,
+                        (Some(sym_id), &gp),
+                        &params,
+                        ret,
+                        &arg_tys,
+                        expected,
+                        span,
                     ) {
                         params = ip;
                         ret = ir;

@@ -135,19 +135,18 @@ func checkWithGrain(items: []Item, workers: uint, grain: uint, maxChunks: uint):
 }
 
 func main(): int {
-    let mut values = vec.new<Item>()
+    let mut values = vec.Vec<Item>.new()
     let mut i: int = 0
     while i < 1025 {
-        vec.push<Item>(values, Item { a: 1, b: 2, c: 3 })
+        values.push(Item { a: 1, b: 2, c: 3 })
         i = i + 1
     }
-    let items = vec.asSlice<Item>(values)
+    let items = values.asSlice()
     let one = check(items, 1)
     let four = check(items, 4)
     let fineOne = checkWithGrain(items, 1, 1, 2048)
     let fineFour = checkWithGrain(items, 4, 1, 2048)
     let invalidPolicy = checkWithGrain(items, 4, 0, 2048)
-    vec.destroy<Item>(values)
     if one != 1032 { return 1 }
     if four != one { return 2 }
     if fineOne != one { return 3 }

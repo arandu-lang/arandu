@@ -2,14 +2,30 @@
 
 use std::fmt::Write;
 
-use arandu_middle::amir::{
-    AmirFunc, AmirOperand, AmirProjection, AmirRvalue, AmirStmt, AmirTerminator,
-};
+use arandu_middle::amir::reachability::terminator_targets;
+use arandu_middle::amir::{AmirFunc, AmirOperand, AmirRvalue, AmirStmt};
 
 use super::{CEmitter, sanitize_c_ident};
 
 impl<'a> CEmitter<'a> {
     pub(super) fn emit_func(&mut self, func: &AmirFunc) {
+        self.integer_concat_temps =
+            arandu_codegen::string_interp::integer_concat_temps(func, self.interner);
+        self.temp_slots = super::temp_slots::scalar_slots(func, |temp| {
+            matches!(self.interner.resolve(func.temps[temp.as_usize()].ty),
+                arandu_middle::types::ArType::Primitive(primitive)
+                    if primitive.is_numeric() || matches!(primitive,
+                        arandu_middle::types::Primitive::Bool | arandu_middle::types::Primitive::Char))
+        });
+        self.expression_candidates = super::expression_plan::candidates(func, |index| {
+            matches!(self.interner.resolve(func.temps[index].ty),
+                arandu_middle::types::ArType::Primitive(primitive)
+                if primitive.is_numeric() || matches!(primitive,
+                    arandu_middle::types::Primitive::Bool | arandu_middle::types::Primitive::Char))
+        });
+        self.temp_expressions = vec![None; func.temps.len()];
+        (self.rotations, self.rotation_elided) =
+            super::rotations::plan(func, &self.program.literal_pool, self.interner);
         let sym = self.symbols.get(func.symbol);
         let name = sanitize_c_ident(self.symbols.host_func_name(sym));
         let ret_ty = self.c_func_return_type(func);
@@ -32,171 +48,33 @@ impl<'a> CEmitter<'a> {
         let mut used_temps = rustc_hash::FxHashSet::default();
 
         for stmt in func.stmts.payloads.iter() {
+            arandu_middle::amir::visit::for_each_stmt_operand(stmt, |op| {
+                if let AmirOperand::Copy(temp) | AmirOperand::Move(temp) = op {
+                    used_temps.insert(temp.as_usize());
+                }
+            });
             match stmt {
                 AmirStmt::Assign { lhs, rhs } => {
                     used_temps.insert(lhs.as_usize());
-                    match rhs {
-                        AmirRvalue::Use(op)
-                        | AmirRvalue::Unary { operand: op, .. }
-                        | AmirRvalue::Discriminant { value: op }
-                        | AmirRvalue::EnumPayload { value: op, .. }
-                        | AmirRvalue::Len(op)
-                        | AmirRvalue::Alloc(op)
-                        | AmirRvalue::ToStr { value: op, .. }
-                        | AmirRvalue::BlackBox { value: op, .. }
-                        | AmirRvalue::StrBytes { source: op }
-                        | AmirRvalue::StrView { owner: op }
-                        | AmirRvalue::CoroutineReady { value: op, .. } => {
-                            if let AmirOperand::Copy(t) | AmirOperand::Move(t) = op {
-                                used_temps.insert(t.as_usize());
-                            }
-                        }
-                        AmirRvalue::Binary { left, right, .. } => {
-                            if let AmirOperand::Copy(t) | AmirOperand::Move(t) = left {
-                                used_temps.insert(t.as_usize());
-                            }
-                            if let AmirOperand::Copy(t) | AmirOperand::Move(t) = right {
-                                used_temps.insert(t.as_usize());
-                            }
-                        }
-                        AmirRvalue::SliceView { owner, data, len } => {
-                            for operand in [owner, data, len] {
-                                if let AmirOperand::Copy(t) | AmirOperand::Move(t) = operand {
-                                    used_temps.insert(t.as_usize());
-                                }
-                            }
-                        }
-                        AmirRvalue::SliceSubslice { slice, start, len } => {
-                            for operand in [slice, start, len] {
-                                if let AmirOperand::Copy(t) | AmirOperand::Move(t) = operand {
-                                    used_temps.insert(t.as_usize());
-                                }
-                            }
-                        }
-                        AmirRvalue::SliceData(operand) => {
-                            if let AmirOperand::Copy(t) | AmirOperand::Move(t) = operand {
-                                used_temps.insert(t.as_usize());
-                            }
-                        }
-                        AmirRvalue::FieldAccess { base, .. } => {
-                            if let AmirOperand::Copy(t) | AmirOperand::Move(t) = base {
-                                used_temps.insert(t.as_usize());
-                            }
-                        }
-                        AmirRvalue::StructLiteral { fields, .. } => {
-                            for (_, op) in fields {
-                                if let AmirOperand::Copy(t) | AmirOperand::Move(t) = op {
-                                    used_temps.insert(t.as_usize());
-                                }
-                            }
-                        }
-                        AmirRvalue::IndexAccess { base, index } => {
-                            if let AmirOperand::Copy(t) | AmirOperand::Move(t) = base {
-                                used_temps.insert(t.as_usize());
-                            }
-                            if let AmirOperand::Copy(t) | AmirOperand::Move(t) = index {
-                                used_temps.insert(t.as_usize());
-                            }
-                        }
-                        AmirRvalue::Array { items } | AmirRvalue::Tuple { items } => {
-                            for op in items {
-                                if let AmirOperand::Copy(t) | AmirOperand::Move(t) = op {
-                                    used_temps.insert(t.as_usize());
-                                }
-                            }
-                        }
-                        AmirRvalue::EnumConstruct { payload, .. } => {
-                            if let Some(AmirOperand::Copy(t) | AmirOperand::Move(t)) = payload {
-                                used_temps.insert(t.as_usize());
-                            }
-                        }
-                        AmirRvalue::Load(place)
-                        | AmirRvalue::Borrow(place)
-                        | AmirRvalue::BorrowMut(place) => {
-                            used_locals.insert(place.local.as_usize());
-                            for proj in &place.projections {
-                                if let AmirProjection::Index(
-                                    AmirOperand::Copy(t) | AmirOperand::Move(t),
-                                ) = proj
-                                {
-                                    used_temps.insert(t.as_usize());
-                                }
-                            }
-                        }
-                        AmirRvalue::RelativeBorrow { local, .. } => {
-                            used_locals.insert(local.as_usize());
-                        }
-                        AmirRvalue::GenInsert { value, .. }
-                        | AmirRvalue::GenGet { gen_ref: value, .. }
-                        | AmirRvalue::GenRemove { gen_ref: value, .. } => {
-                            if let AmirOperand::Copy(t) | AmirOperand::Move(t) = value {
-                                used_temps.insert(t.as_usize());
-                            }
-                        }
-                        AmirRvalue::GenSet { gen_ref, value, .. }
-                        | AmirRvalue::GenUpsert { gen_ref, value, .. } => {
-                            for operand in [gen_ref, value] {
-                                if let AmirOperand::Copy(t) | AmirOperand::Move(t) = operand {
-                                    used_temps.insert(t.as_usize());
-                                }
-                            }
-                        }
-                        AmirRvalue::StringInterp { parts } => {
-                            for op in parts {
-                                if let AmirOperand::Copy(t) | AmirOperand::Move(t) = op {
-                                    used_temps.insert(t.as_usize());
-                                }
-                            }
-                        }
+                    arandu_middle::amir::visit::for_each_rvalue_place(rhs, |place| {
+                        used_locals.insert(place.local.as_usize());
+                    });
+                    if let AmirRvalue::RelativeBorrow { local, .. } = rhs {
+                        used_locals.insert(local.as_usize());
                     }
                 }
-                AmirStmt::Store { lhs, rhs } => {
+                AmirStmt::Call { lhs, .. } => {
+                    if let Some(temp) = lhs {
+                        used_temps.insert(temp.as_usize());
+                    }
+                }
+                AmirStmt::Store { lhs, .. } | AmirStmt::Destroy(lhs) => {
                     used_locals.insert(lhs.local.as_usize());
-                    for proj in &lhs.projections {
-                        if let AmirProjection::Index(AmirOperand::Copy(t) | AmirOperand::Move(t)) =
-                            proj
-                        {
-                            used_temps.insert(t.as_usize());
-                        }
-                    }
-                    if let AmirOperand::Copy(t) | AmirOperand::Move(t) = rhs {
-                        used_temps.insert(t.as_usize());
-                    }
-                }
-                AmirStmt::Call {
-                    lhs, callee, args, ..
-                } => {
-                    if let Some(t) = lhs {
-                        used_temps.insert(t.as_usize());
-                    }
-                    if let AmirOperand::Copy(t) | AmirOperand::Move(t) = callee {
-                        used_temps.insert(t.as_usize());
-                    }
-                    for arg in args {
-                        if let AmirOperand::Copy(t) | AmirOperand::Move(t) = arg {
-                            used_temps.insert(t.as_usize());
-                        }
-                    }
-                }
-                AmirStmt::Free(op) => {
-                    if let AmirOperand::Copy(t) | AmirOperand::Move(t) = op {
-                        used_temps.insert(t.as_usize());
-                    }
                 }
                 AmirStmt::StorageLive(local) | AmirStmt::StorageDead(local) => {
                     used_locals.insert(local.as_usize());
                 }
-                AmirStmt::Destroy(place) => {
-                    used_locals.insert(place.local.as_usize());
-                    for proj in &place.projections {
-                        if let AmirProjection::Index(AmirOperand::Copy(t) | AmirOperand::Move(t)) =
-                            proj
-                        {
-                            used_temps.insert(t.as_usize());
-                        }
-                    }
-                }
-                AmirStmt::Nop => {}
+                AmirStmt::Free(_) | AmirStmt::Nop => {}
             }
         }
         for block in &func.blocks {
@@ -204,68 +82,11 @@ impl<'a> CEmitter<'a> {
                 used_temps.insert(param.id.as_usize());
                 used_locals.insert(param.local.as_usize());
             }
-            match &block.terminator {
-                AmirTerminator::Goto { args, .. } => {
-                    for arg in args {
-                        if let AmirOperand::Copy(t) | AmirOperand::Move(t) = arg {
-                            used_temps.insert(t.as_usize());
-                        }
-                    }
+            arandu_middle::amir::visit::for_each_terminator_operand(&block.terminator, |op| {
+                if let AmirOperand::Copy(temp) | AmirOperand::Move(temp) = op {
+                    used_temps.insert(temp.as_usize());
                 }
-                AmirTerminator::Suspend { future, args, .. } => {
-                    if let AmirOperand::Copy(t) | AmirOperand::Move(t) = future {
-                        used_temps.insert(t.as_usize());
-                    }
-                    for arg in args {
-                        if let AmirOperand::Copy(t) | AmirOperand::Move(t) = arg {
-                            used_temps.insert(t.as_usize());
-                        }
-                    }
-                }
-                AmirTerminator::Branch {
-                    condition,
-                    true_args,
-                    false_args,
-                    ..
-                } => {
-                    if let AmirOperand::Copy(t) | AmirOperand::Move(t) = condition {
-                        used_temps.insert(t.as_usize());
-                    }
-                    for arg in true_args {
-                        if let AmirOperand::Copy(t) | AmirOperand::Move(t) = arg {
-                            used_temps.insert(t.as_usize());
-                        }
-                    }
-                    for arg in false_args {
-                        if let AmirOperand::Copy(t) | AmirOperand::Move(t) = arg {
-                            used_temps.insert(t.as_usize());
-                        }
-                    }
-                }
-                AmirTerminator::SwitchInt {
-                    discriminant,
-                    targets,
-                    otherwise,
-                    ..
-                } => {
-                    if let AmirOperand::Copy(t) | AmirOperand::Move(t) = discriminant {
-                        used_temps.insert(t.as_usize());
-                    }
-                    for (_, _, args) in targets {
-                        for arg in args {
-                            if let AmirOperand::Copy(t) | AmirOperand::Move(t) = arg {
-                                used_temps.insert(t.as_usize());
-                            }
-                        }
-                    }
-                    for arg in &otherwise.1 {
-                        if let AmirOperand::Copy(t) | AmirOperand::Move(t) = arg {
-                            used_temps.insert(t.as_usize());
-                        }
-                    }
-                }
-                _ => {}
-            }
+            });
         }
         for param in &func.params {
             used_temps.insert(param.as_usize());
@@ -278,14 +99,28 @@ impl<'a> CEmitter<'a> {
                 let _ = writeln!(&mut self.output, "    {} l{};", ty_str, i);
             }
         }
+        let used_slots: rustc_hash::FxHashSet<_> = used_temps
+            .iter()
+            .filter(|&&index| !self.expression_candidates[index] && !self.rotation_elided[index])
+            .map(|&index| self.temp_slots[index])
+            .collect();
         for (i, temp) in func.temps.iter().enumerate() {
-            if used_temps.contains(&i) {
+            if self.temp_slots[i] == i && used_slots.contains(&i) {
                 let ty = self.interner.resolve(temp.ty);
                 if matches!(ty, arandu_middle::types::ArType::Void) {
                     continue;
                 }
-                let ty_str = self.format_type(&ty);
-                let _ = writeln!(&mut self.output, "    {} t{};", ty_str, i);
+                if let Some(kind) = self.integer_concat_temps[i] {
+                    let numeric_type = match kind {
+                        arandu_codegen::string_interp::IntegerStringKind::Signed => "int64_t",
+                        arandu_codegen::string_interp::IntegerStringKind::Unsigned => "uint64_t",
+                    };
+                    let _ = writeln!(&mut self.output, "    {numeric_type} ar_integer_{i};");
+                    let _ = writeln!(&mut self.output, "    size_t ar_integer_len_{i};");
+                } else {
+                    let ty_str = self.format_type(&ty);
+                    let _ = writeln!(&mut self.output, "    {} t{};", ty_str, i);
+                }
             }
         }
 
@@ -301,28 +136,8 @@ impl<'a> CEmitter<'a> {
         // Labels only for blocks that are jump targets (avoids -Wunused-label).
         let mut jump_targets = rustc_hash::FxHashSet::default();
         for block in &func.blocks {
-            match &block.terminator {
-                AmirTerminator::Goto { target, .. } => {
-                    jump_targets.insert(target.as_usize());
-                }
-                AmirTerminator::Suspend { resume, .. } => {
-                    jump_targets.insert(resume.as_usize());
-                }
-                AmirTerminator::Branch {
-                    if_true, if_false, ..
-                } => {
-                    jump_targets.insert(if_true.as_usize());
-                    jump_targets.insert(if_false.as_usize());
-                }
-                AmirTerminator::SwitchInt {
-                    targets, otherwise, ..
-                } => {
-                    for (_, t, _) in targets {
-                        jump_targets.insert(t.as_usize());
-                    }
-                    jump_targets.insert(otherwise.0.as_usize());
-                }
-                AmirTerminator::Return | AmirTerminator::Unreachable => {}
+            for target in terminator_targets(&block.terminator) {
+                jump_targets.insert(target.as_usize());
             }
         }
 
@@ -332,9 +147,11 @@ impl<'a> CEmitter<'a> {
             if jump_targets.contains(&bid) {
                 let _ = writeln!(&mut self.output, "bb{bid}:");
             }
-            for stmt in func.block_stmts(block.id) {
-                self.emit_stmt(stmt, func);
+            for id in block.statements.iter_ids::<arandu_middle::amir::InstrId>() {
+                self.current_initializer = Some(id);
+                self.emit_stmt(func.stmt(id), func);
             }
+            self.current_initializer = None;
             self.emit_terminator(&block.terminator, func);
         }
 

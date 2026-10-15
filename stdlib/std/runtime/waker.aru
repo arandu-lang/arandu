@@ -45,9 +45,9 @@ public struct Context {
 
 /// Creates a host wake token and stores its integer ID.
 ///
-/// A negative ID signals creation failure. Release a valid token with
-/// `destroyWaker` when no operation can still signal it.
-public func newWaker(): Waker {
+/// A negative ID signals creation failure. Close a valid token with
+/// `Waker.close` when no operation can still signal it.
+public func Waker.new(): Waker {
     unsafe {
         return Waker { id: ar_rt_waker_create() }
     }
@@ -56,9 +56,9 @@ public func newWaker(): Waker {
 /// Signals the host token so a waiting operation can resume.
 ///
 /// Calling this does not itself wait for or run the task.
-public func wakerWake(w: ref Waker): void {
+public func Waker.wake(self: ref Waker): void {
     unsafe {
-        ar_rt_waker_wake(w.id)
+        ar_rt_waker_wake(self.id)
     }
 }
 
@@ -66,24 +66,25 @@ public func wakerWake(w: ref Waker): void {
 ///
 /// Returns `1` when woken, `0` on timeout, and `-1` on host error. A timeout
 /// of `-1` requests an indefinite wait from the host.
-public func wakerWait(w: ref Waker, timeoutMs: int): int {
+public func Waker.wait(self: ref Waker, timeoutMs: int): int {
     unsafe {
-        return ar_rt_waker_wait(w.id, timeoutMs)
+        return ar_rt_waker_wait(self.id, timeoutMs)
     }
 }
 
-/// Releases the host wake token.
-///
-/// The wrapper retains its old ID; do not wait or wake through it again.
-public func destroyWaker(w: ref Waker): void {
-    unsafe {
-        ar_rt_waker_destroy(w.id)
+/// Idempotently closes the host wake token and invalidates this wrapper.
+public func Waker.close(self: mut ref Waker): void {
+    if self.id >= 0 {
+        unsafe {
+            ar_rt_waker_destroy(self.id)
+        }
+        self.id = -1
     }
 }
 
 /// Stores `w` in a context value without creating another host token.
 ///
-/// The caller remains responsible for arranging exactly one token release.
-public func newContext(w: Waker): Context {
+/// The caller remains responsible for arranging token closure.
+public func Context.new(w: Waker): Context {
     return Context { waker: w }
 }

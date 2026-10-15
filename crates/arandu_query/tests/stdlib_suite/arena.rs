@@ -18,7 +18,14 @@ fn stdlib_arena_parses_and_exports_expected_symbols() {
         Err(e) => panic!("arena.aru must parse; got {e}"),
     }
     let exports = exported_symbols(&db, file);
-    let expected = ["Arena", "new", "ScratchArena", "newScratch", "withCapacity"];
+    let expected = [
+        "Arena",
+        "Arena.new",
+        "Arena.withCapacity",
+        "ScratchArena",
+        "ScratchArena.new",
+        "ScratchArena.withCapacity",
+    ];
     for key in expected {
         assert!(
             exports.symbols.contains_key(key),
@@ -41,7 +48,7 @@ fn stdlib_arena_usage_in_program() {
 import std.alloc.arena as arena
 
 func testArena(): int {
-    let mut a = arena.new(1024)
+    let mut a = arena.Arena.new(1024)
     let p1 = a.alloc(32, 8)
     if p1 is Option.None {
         return 1
@@ -70,12 +77,11 @@ func testArena(): int {
     if a.allocatedBytes() != 0 {
         return 7
     }
-    a.free()
     return 0
 }
 
 func testScratchArena(): int {
-    let mut s = arena.withCapacity(2048)
+    let mut s = arena.ScratchArena.withCapacity(2048)
     if s.capacity() != 2048 {
         return 10
     }
@@ -120,7 +126,6 @@ func testScratchArena(): int {
         return 19
     }
 
-    s.free()
     return 0
 }
 

@@ -7,8 +7,10 @@ use super::synth::{int_hash_bucket, seeded_hash_collision_key};
 use super::types::*;
 
 use arandu_query::AnalysisHost;
+#[cfg(unix)]
 use std::process::Command;
 use std::sync::atomic::Ordering;
+#[cfg(unix)]
 use std::time::{Duration, Instant};
 
 fn assert_synthesized_seed_matches_all_backends(seed: u64) {
@@ -19,6 +21,323 @@ fn assert_synthesized_seed_matches_all_backends(seed: u64) {
     let expected = ExpectedObservation::synthesized(generated.expected_result);
     assert_eq!(observation.stdout, expected.stdout, "seed {seed}");
     assert_eq!(observation.stderr, expected.stderr, "seed {seed}");
+}
+
+#[test]
+fn scalar_ctfe_matches_defined_runtime_in_every_backend_and_optimization_level() {
+    use arandu_middle::ctfe::ConstValue;
+    use arandu_mir::ctfe::Budget;
+    use arandu_query::ctfe::{ctfe_eval, CtfeRequest};
+    use arandu_query::{passes::declaration_signatures, DatabaseImpl};
+    // Checked CTFE arithmetic and runtime wrapping are compared only where
+    // both are defined. Large unsigned values are compared before returning
+    // int so the result channel, not the process exit byte, is the oracle.
+    let cases = [
+        (
+            "func add(a: int, b: int): int { return a + b }\nfunc main(): int { return add(20, 22) }",
+            42,
+        ),
+        (
+            "func main(): int { let mut i = 0\n let mut total = 0\n while i < 10 { total = total + i\n i = i + 1 }\n return total }",
+            45,
+        ),
+        (
+            "func sum(n: int): int { if n == 0 { return 0 }\n return n + sum(n - 1) }\nfunc main(): int { return sum(10) }",
+            55,
+        ),
+        (
+            "func main(): int { let a: int = -27\n let b: int = 4\n return (a / b) * 10 + a % b }",
+            -63,
+        ),
+        (
+            "func main(): int { let a: int = -32\n let b: uint = 32\n return (a >> 3) + ((b >> 2) as int) + (3 << 2) }",
+            16,
+        ),
+        (
+            "func main(): int { let high: u64 = 18446744073709551615\n if high > 9223372036854775807 { return 42 }\n return 1 }",
+            42,
+        ),
+    ];
+    for (source, expected) in cases {
+        let mut db = DatabaseImpl::new();
+        let file = db.new_file("ctfe-parity.aru".into(), source.into());
+        let main = declaration_signatures(&db, file)
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name == "main")
+            .expect("main")
+            .id;
+        let request = CtfeRequest::new(
+            &db,
+            file,
+            main,
+            vec![],
+            Budget {
+                fuel: 100_000,
+                frames: 64,
+                values: 10_000,
+            },
+        );
+        let value = ctfe_eval(&db, request)
+            .as_ref()
+            .unwrap_or_else(|error| panic!("CTFE failed: {error:?}\n{source}"));
+        let ConstValue::Integer(value) = value else {
+            panic!("integer result expected")
+        };
+        assert_eq!(value.value(), i128::from(expected), "CTFE: {source}");
+        let runtime = check_source(source, true, true)
+            .unwrap_or_else(|error| panic!("runtime failed: {error:?}\n{source}"));
+        assert_eq!(runtime.result, expected, "runtime: {source}");
+        assert!(runtime.stdout.is_empty() && runtime.stderr.is_empty());
+    }
+}
+
+#[test]
+fn static_if_scopes_match_every_backend_and_optimization_level() {
+    let cases = [
+        (
+            "func choose(): bool { comptime if true { return true } else { return missing } }\nfunc main(): int { comptime if choose() { return 42 } else { return absent() } }",
+            42,
+        ),
+        (
+            "func id<T>(x: T): T { return x }\nfunc main(): int { comptime if false { return absent() } else comptime if true && !false { let answer = comptime 42; return id(answer) } else { return missing } }",
+            42,
+        ),
+        (
+            "func main(): int { let mut i = 0; let mut total = 0; while i < 4 { comptime if true { defer { total = total + 1 }; i = i + 1; if i == 1 { continue }; if i == 3 { break } } else { missing() } }; return total }",
+            3,
+        ),
+        (
+            "func main(): int { let mut i = 0; let mut total = 0; while i < 4 { if true { defer { total = total + 1 }; i = i + 1; if i == 1 { continue }; if i == 3 { break } } }; return total }",
+            3,
+        ),
+    ];
+    for (source, expected) in cases {
+        let observation = check_source(source, true, true)
+            .unwrap_or_else(|failure| panic!("static selection failed: {failure:?}\n{source}"));
+        assert_eq!(observation.result, expected, "{source}");
+        assert!(observation.stdout.is_empty() && observation.stderr.is_empty());
+    }
+}
+
+#[test]
+fn finite_static_loops_execute_identically_in_all_backends_and_optimization_levels() {
+    // The independent results include normal/empty/reversed domains, fresh
+    // iteration locals and scope exits. `check_source` exercises O0/O1/O2;
+    // these are execution oracles, not merely successful lowering checks.
+    let cases = [
+        (
+            "func main(): int { let mut sum = 0; comptime for i in 0..4 { let value = i * 2; sum += value }; return sum }",
+            12,
+        ),
+        (
+            "func main(): int { let mut sum = 42; comptime for i in 4..4 { sum += i }; comptime for i in 5..2 { sum += i }; return sum }",
+            42,
+        ),
+        (
+            "func main(): int { let mut sum = 0; comptime for i in 0..4 { if i == 1 { continue }; if i == 3 { break }; sum += i }; return sum }",
+            2,
+        ),
+        (
+            "func main(): int { let mut sum = 0; comptime for i in 0..4 { defer { sum += 10 }; if i == 1 { continue }; if i == 3 { break }; sum += i }; return sum }",
+            42,
+        ),
+        (
+            "func main(): int { comptime for i in 0..4 { return i + 42 }; return 99 }",
+            42,
+        ),
+        (
+            "func main(): int { let mut sum = 0; comptime for i in 0..3 { comptime for j in 0..2 { sum += i + j } }; return sum }",
+            9,
+        ),
+        (
+            "func end(): uint { return 4 }\nfunc main(): int { let mut sum = 0; comptime for i in 0..end() { sum += i as int }; return sum }",
+            6,
+        ),
+        (
+            "func main(): int { let mut sum = 0; comptime for i in -2..2 { sum += i }; return sum }",
+            -2,
+        ),
+        (
+            "func main(): int { return comptime { let mut sum = 0; comptime for i in 0..4 { sum += i }; sum } }",
+            6,
+        ),
+        (
+            "func main(): int { let mut sum: usize = 0; comptime for i in 0..(@sizeOf([3]u16)) { sum += i }; return sum as int }",
+            15,
+        ),
+        (
+            "func main(): int { let mut sum = 0; comptime for i in 0..4 { comptime if i == 2 { sum += 42 } else { sum += i } }; return sum }",
+            46,
+        ),
+        (
+            "func count<comptime N: uint>(): uint { return N }\nfunc main(): int { let mut sum = 0; comptime for i in 0..4 { sum += count<comptime (i + 1)>() as int }; return sum }",
+            10,
+        ),
+        (
+            "func main(): int { let mut sum = 0; comptime for i in 0..4 { let value = comptime (i + 1); sum += value }; return sum }",
+            10,
+        ),
+        (
+            "func main(): int { let mut sum = 0; comptime for i in 0..4 { comptime for j in 0..i { sum += j } }; return sum }",
+            4,
+        ),
+    ];
+    for (source, expected) in cases {
+        let observation = check_source(source, true, true).unwrap_or_else(|failure| {
+            panic!("static loop execution failed: {failure:?}\n{source}")
+        });
+        assert_eq!(observation.result, expected, "{source}");
+        assert!(observation.stdout.is_empty() && observation.stderr.is_empty());
+    }
+}
+
+#[test]
+fn synthesized_nested_comptime_if_matches_oracle_across_backends() {
+    use super::synthesize_nested_comptime_if;
+    for seed in [0, 7, 42, 99, 1337] {
+        let synthesized = synthesize_nested_comptime_if(seed, 3);
+        let observation = check_source(&synthesized.source, true, true).unwrap_or_else(|failure| {
+            panic!("seed {seed} failed: {failure:?}\n{}", synthesized.source)
+        });
+        assert_eq!(
+            observation.result, synthesized.expected_result,
+            "seed {seed}:\n{}",
+            synthesized.source
+        );
+        assert!(observation.stdout.is_empty() && observation.stderr.is_empty());
+    }
+}
+
+#[test]
+fn synthesized_nested_comptime_if_salsa_cache_invalidation_is_clean() {
+    use super::synthesize_nested_comptime_if;
+    use arandu_query::{passes, DatabaseImpl};
+
+    for seed in [0, 42, 128] {
+        super::oracle::check_static_cache(seed).unwrap_or_else(|error| panic!("{error:?}"));
+        let synthesized = synthesize_nested_comptime_if(seed, 3);
+        let (mut db, log) = DatabaseImpl::with_rebuild_log();
+        let file = db.new_file("static.aru".into(), synthesized.source.clone());
+
+        // First pass: type checking must pass with zero errors because discarded
+        // branches are never resolved or typed.
+        let checked = passes::type_check(&db, file);
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .all(|d| d.severity != arandu_middle::Severity::Error),
+            "seed {seed} had unexpected errors: {:?}",
+            checked.diagnostics
+        );
+
+        let branches_initial = passes::resolve(&db, file)
+            .resolved
+            .comptime_branches
+            .clone();
+        assert!(
+            !branches_initial.is_empty(),
+            "seed {seed} should have static branch decisions"
+        );
+
+        // Append outside the owner: leading text would move every real span
+        // and must revalidate diagnostic locations, not preserve stale keys.
+        log.clear();
+        db.update_file_text(
+            file,
+            format!("{}\n// trailing comment\n", synthesized.source),
+        );
+        let branches_after_comment = passes::resolve(&db, file)
+            .resolved
+            .comptime_branches
+            .clone();
+        assert_eq!(branches_initial, branches_after_comment);
+        assert_eq!(
+            log.count_executions_matching("item_static_branches"),
+            0,
+            "seed {seed}: item_static_branches re-executed spuriously on comment edit"
+        );
+
+        // 2. Editing discarded code in unselected branches: must NOT invalidate
+        // the selected branch typing or report errors.
+        log.clear();
+        let modified_discarded = synthesized
+            .source
+            .replace("missing", "unknown")
+            .replace("nonexistent", "unavailable")
+            .replace("absent", "unseen");
+        db.update_file_text(file, modified_discarded);
+        let checked_after_discarded = passes::type_check(&db, file);
+        assert!(
+            checked_after_discarded
+                .diagnostics
+                .iter()
+                .all(|d| d.severity != arandu_middle::Severity::Error),
+            "seed {seed} had errors after modifying discarded branch: {:?}",
+            checked_after_discarded.diagnostics
+        );
+        let branches_after_discarded = passes::resolve(&db, file)
+            .resolved
+            .comptime_branches
+            .clone();
+        assert_eq!(branches_initial, branches_after_discarded);
+        assert_eq!(
+            log.count_executions_matching("ctfe_eval_root"),
+            0,
+            "seed {seed}: unchanged conditions must cut off before the VM"
+        );
+
+        // A source displacement must publish current spans and converge to a
+        // fresh DB. This is legitimate revalidation, not spurious invalidation.
+        let displaced = format!("// 😀 shifted source\n{}", synthesized.source);
+        db.update_file_text(file, displaced.clone());
+        let incremental = passes::type_check(&db, file);
+        let mut clean = DatabaseImpl::new();
+        let clean_file = clean.new_file("static.aru".into(), displaced);
+        let clean_result = passes::type_check(&clean, clean_file);
+        assert_eq!(incremental.diagnostics, clean_result.diagnostics);
+        assert_eq!(
+            incremental.resolved.comptime_branches,
+            clean_result.resolved.comptime_branches
+        );
+    }
+}
+
+#[test]
+fn comptime_value_parameters_match_const_parameters_across_all_backends() {
+    for marker in ["const", "comptime"] {
+        for source in [
+            format!(
+                "func count<{marker} N: uint>(): uint {{ return N }}\nfunc main(): int {{ return (count<20>() + count<22>()) as int }}"
+            ),
+            format!(
+                "func total<{marker} N: uint>(values: [N]int): int {{ return (N as int) + values[0] + values[1] }}\nfunc main(): int {{ return total<3>([19, 20, 0]) }}"
+            ),
+        ] {
+            let observation = check_source(&source, true, true)
+                .unwrap_or_else(|failure| panic!("{marker}: {failure:?}\n{source}"));
+            assert_eq!(observation.result, 42);
+            assert!(observation.stdout.is_empty() && observation.stderr.is_empty());
+        }
+    }
+}
+
+#[test]
+fn computed_const_arguments_match_every_backend_and_optimization_level() {
+    for source in [
+        "func count<comptime N: uint>(): uint { return N }\nfunc wrapper<T>(x: T): uint { return count<comptime (20 + 22)>() }\nfunc main(): int { if wrapper<int>(0) != 42 || wrapper<bool>(false) != 42 { return 1 }; return 42 }",
+        "func leaf<comptime N: u16>(): int { return N as int }\nfunc wrapper<comptime M: u8>(): int { return leaf<M>() }\nfunc main(): int { return wrapper<42>() }",
+        "func add(a: int, b: int): int { return a + b }\nfunc count<comptime N: uint>(): uint { return N }\nfunc main(): int { return count<comptime (add(20, 22))>() as int }",
+        "func total<comptime N: uint>(values: [N]int): int { return (N as int) + values[0] + values[1] }\nfunc main(): int { return total<comptime (1 + 2)>([19, 20, 0]) }",
+        "func count<comptime N: uint>(): uint { return N }\nfunc main(): int { comptime if true { return count<comptime (42)>() as int } else { return count<comptime (missing / 0)>() as int } }",
+        "func count<comptime N: uint>(): uint { return N }\nfunc main(): int { return count<comptime (if 1 < 2 { 42 } else { 0 })>() as int }",
+    ] {
+        let observation = check_source(source, true, true)
+            .unwrap_or_else(|failure| panic!("computed constant failed: {failure:?}\n{source}"));
+        assert_eq!(observation.result, 42, "{source}");
+        assert!(observation.stdout.is_empty() && observation.stderr.is_empty());
+    }
 }
 
 #[test]
@@ -396,12 +715,12 @@ fn synthesized_seeded_collection_cases_match_every_backend_and_level() {
     let first_map_insert = generated[0]
         .source
         .lines()
-        .find(|line| line.contains("hash_map.insert<GeneratedKey, int>"))
+        .find(|line| line.contains("generated_map.put("))
         .expect("seeded HashMap source has an insertion");
     let second_map_insert = generated[1]
         .source
         .lines()
-        .find(|line| line.contains("hash_map.insert<GeneratedKey, int>"))
+        .find(|line| line.contains("generated_map.put("))
         .expect("seeded HashMap source has an insertion");
     assert_ne!(first_map_insert, second_map_insert);
     assert!(generated[0]
@@ -415,8 +734,10 @@ fn synthesized_seeded_collection_cases_match_every_backend_and_level() {
         .contains("bs_union.unionWith(ref bs_cap)"));
     assert!(generated[0]
         .source
-        .contains("generated_map_pre = hash_map.withCapacity"));
-    assert!(generated[0].source.contains("cap_vec = vec.withCapacity"));
+        .contains("generated_map_pre = hash_map.HashMap<GeneratedKey, int>.withCapacity"));
+    assert!(generated[0]
+        .source
+        .contains("cap_vec = vec.Vec<int>.withCapacity"));
 
     for generated in generated {
         assert!(generated.source.contains("GeneratedKey.hash"));
@@ -905,6 +1226,58 @@ fn synthesized_generic_tuples_match_all_backends() {
 }
 
 #[test]
+fn nominal_enum_payload_equality_matches_all_backends_and_optimization_levels() {
+    let source = r#"
+enum Choice { Empty, Value(int), Pair(int, str), Nested(Option<int>) }
+enum GenericChoice<T> { Empty, Value(T) }
+func main(): int {
+    let left = Option.Some(Choice.Value(7))
+    let right = Option.Some(Choice.Value(7))
+    if left != right { return 1 }
+    if left == Option.Some(Choice.Value(8)) { return 2 }
+    if left == Option.Some(Choice.Empty) { return 3 }
+    let empty = Option.Some(Choice.Empty)
+    if empty != Option.Some(Choice.Empty) { return 4 }
+    let pair = Option.Some(Choice.Pair(7, "text"))
+    if pair != Option.Some(Choice.Pair(7, "text")) { return 5 }
+    if pair == Option.Some(Choice.Pair(8, "text")) { return 6 }
+    if pair == Option.Some(Choice.Pair(7, "other")) { return 7 }
+    let nested = Option.Some(Choice.Nested(Option.Some(9)))
+    if nested != Option.Some(Choice.Nested(Option.Some(9))) { return 8 }
+    if nested == Option.Some(Choice.Nested(Option.None)) { return 9 }
+    let ok: Result<Choice, bool> = Result.Ok(Choice.Pair(3, "ok"))
+    let sameOk: Result<Choice, bool> = Result.Ok(Choice.Pair(3, "ok"))
+    let error: Result<Choice, bool> = Result.Err(false)
+    if ok != sameOk { return 10 }
+    if ok == error { return 11 }
+    let generic: Option<GenericChoice<int>> = Option.Some(GenericChoice.Value(42))
+    let sameGeneric: Option<GenericChoice<int>> = Option.Some(GenericChoice.Value(42))
+    let differentGeneric: Option<GenericChoice<int>> = Option.Some(GenericChoice.Value(43))
+    if generic != sameGeneric { return 12 }
+    if generic == differentGeneric { return 13 }
+    return 0
+}
+"#;
+    let observation = check_source(source, true, true)
+        .unwrap_or_else(|failure| panic!("nominal equality failed: {failure:?}"));
+    assert_eq!(observation.result, 0);
+}
+
+#[test]
+fn io_print_output_matches_all_backends_at_every_optimization_level() {
+    let observation = check_source(
+        "import io\nfunc main(): int { io.print(\"hello\"); io.print(\"\"); io.print(\"\\0world\"); return 17 }\n",
+        true,
+        true,
+    )
+    .unwrap_or_else(|failure| panic!("partial-output differential failed: {failure:?}"));
+
+    assert_eq!(observation.result, 17);
+    assert_eq!(observation.stdout, b"hello\0world");
+    assert!(observation.stderr.is_empty());
+}
+
+#[test]
 fn io_println_output_matches_all_backends_at_every_optimization_level() {
     let observation = check_source(
         "import io\nfunc main(): int { io.println(\"smith-output\"); return 17 }\n",
@@ -956,11 +1329,11 @@ fn fixed_width_int_hash_matches_all_backends_and_optimization_levels() {
 import std.core.hash as hash
 
 func main(): int {
-    let mut hasher = hash.fnvNew()
+    let mut hasher = hash.FnvHasher.new()
     hasher.writeInt(240)
     if hasher.finish() as int != -490752091 { return 1 }
 
-    hasher = hash.fnvNew()
+    hasher = hash.FnvHasher.new()
     hasher.writeInt(-1)
     if hasher.finish() as int != 1042954577 { return 2 }
     return 0
@@ -1054,13 +1427,11 @@ func transfer<T>(own value: T): T {
 }
 
 func main(): int {
-    let mut values = transfer<vec.Vec<int>>(vec.new<int>())
-    if !vec.tryPush<int>(values, 42) {
-        vec.destroy<int>(values)
+    let mut values = transfer<vec.Vec<int>>(vec.Vec<int>.new())
+    if !values.tryPush(42) {
         return -1
     }
-    let length = vec.len<int>(values) as int
-    values.destroy()
+    let length = values.len() as int
     return length
 }
 "#;
@@ -1308,7 +1679,7 @@ fn synthesis_exercises_array_aggregate_enum_and_control_flow() {
     assert!(source.contains("func make_owned_pack(value: int, marker: int): OwnedPack"));
     assert!(source.contains("return OwnedPack { items: items, marker: marker }"));
     assert!(source.contains("transfer<OwnedPack>(make_owned_pack(sample.left, sample.right))"));
-    assert!(source.contains("vec.len<int>(owned_pack.items) != 1 as usize"));
+    assert!(source.contains("owned_pack.items.len() != 1 as usize"));
     assert!(source.contains("func identity<T>(value: T): T"));
     assert!(source.contains("func make_pair<T, U>(left: T, enabled: U): (T, U)"));
     assert!(source.contains("let pair_value, pair_enabled = make_pair<"));
@@ -1322,13 +1693,13 @@ fn synthesis_exercises_array_aggregate_enum_and_control_flow() {
     assert!(source.contains("func make_vec<T>(): vec.Vec<T>"));
     assert!(source.contains("vec.Vec<uint>"));
     assert!(source.contains("relay<vec.Vec<uint>>(make_vec<uint>())"));
-    assert!(source.contains("vec.tryPush<uint>(unsigned_values, uint_result)"));
+    assert!(source.contains("unsigned_values.tryPush(uint_result)"));
     assert!(source.contains("vec.Vec<core_result.Result<int, bool>>"));
     assert!(source.contains("relay<vec.Vec<core_result.Result<int, bool>>>("));
     assert!(source.contains("Result.Err(sample.enabled)"));
     assert!(source.contains("relay<vec.Vec<int>>(make_vec<int>())"));
     assert!(source.contains("transfer<vec.Vec<int>>(relay<vec.Vec<int>>(make_vec<int>()))"));
-    assert!(source.contains("return vec.new<T>()"));
+    assert!(source.contains("return vec.Vec<T>.new()"));
     assert!(source.contains("identity<int>("));
     assert!(source.contains("identity<bool>("));
     assert!(source.contains("env.arg(0) != \"arandu-smith\""));
@@ -1361,42 +1732,36 @@ fn synthesis_exercises_array_aggregate_enum_and_control_flow() {
     assert!(source.contains("io.println(\"result-odd\")"));
     assert!(source.contains("io.eprint(\"result-even\")"));
     assert!(source.contains("io.eprint(\"result-odd\")"));
-    assert!(source.contains("vec.tryReserve<int>(dynamic, 1 as usize)"));
-    assert!(source.contains("slice.len<int>(vec.asSlice<int>(dynamic))"));
-    assert!(source.contains("vec.getCopy<int>(dynamic, dynamic_len as usize)"));
+    assert!(source.contains("dynamic.tryReserve(1 as usize)"));
+    assert!(source.contains("slice.len<int>(dynamic.asSlice())"));
+    assert!(source.contains("dynamic.getCopy(dynamic_len as usize)"));
     assert!(source.contains("while dynamic_count < 9"));
-    assert!(source.contains("vec.tryPush<int>(dynamic, sample.left + dynamic_count)"));
+    assert!(source.contains("dynamic.tryPush(sample.left + dynamic_count)"));
     assert!(source.contains("transfer<vec.Vec<bool>>(make_vec<bool>())"));
-    assert!(source.contains("vec.tryPush<bool>(flags, sample.enabled)"));
-    assert!(source.contains("slice.len<bool>(vec.asSlice<bool>(flags))"));
+    assert!(source.contains("flags.tryPush(sample.enabled)"));
+    assert!(source.contains("slice.len<bool>(flags.asSlice())"));
     assert!(source.contains("transfer<vec.Vec<Choice>>(make_vec<Choice>())"));
-    assert!(source.contains("vec.tryPush<Choice>(choices, Choice.Flag(sample.enabled))"));
-    assert!(source.contains("vec.pop<Choice>(choices)"));
+    assert!(source.contains("choices.tryPush(Choice.Flag(sample.enabled))"));
+    assert!(source.contains("choices.pop()"));
     assert!(source.contains("Some(Choice.Flag(value)) => value"));
     assert!(source.contains("Choice.Letter(sample.character)"));
     assert!(source.contains("Some(Choice.Letter(value)) => value"));
     assert!(source.contains("recovered_character != sample.character"));
-    assert!(source.contains("choices.destroy()"));
     assert!(source.contains("transfer<vec.Vec<char>>(make_vec<char>())"));
-    assert!(source.contains("vec.tryPush<char>(characters, sample.character)"));
-    assert!(source.contains("slice.len<char>(vec.asSlice<char>(characters))"));
-    assert!(source.contains("vec.getCopy<char>(characters, 0 as usize)"));
+    assert!(source.contains("characters.tryPush(sample.character)"));
+    assert!(source.contains("slice.len<char>(characters.asSlice())"));
+    assert!(source.contains("characters.getCopy(0 as usize)"));
     assert!(source.contains("recovered_vector_character != sample.character"));
-    assert!(source.contains("characters.destroy()"));
     assert!(source.contains("transfer<vec.Vec<float>>(make_vec<float>())"));
-    assert!(source.contains("vec.tryPush<float>(floats, float_result)"));
-    assert!(source.contains("vec.getCopy<float>(floats, 0 as usize)"));
+    assert!(source.contains("floats.tryPush(float_result)"));
+    assert!(source.contains("floats.getCopy(0 as usize)"));
     assert!(source.contains("recovered_vector_float != float_result"));
-    assert!(source.contains("floats.destroy()"));
-    assert!(source.contains("vec.destroy<int>(dynamic)"));
-    assert!(source.contains("dynamic.destroy()"));
-    assert!(source.contains("flags.destroy()"));
-    assert!(source.contains("vec.getCopy<int>(dynamic, dynamic_index)"));
+    assert!(source.contains("dynamic.getCopy(dynamic_index)"));
     assert!(source.contains("if dynamic_len != 9"));
     assert!(source.contains("if dynamic_tail != sample.left + 8"));
-    assert!(source.contains("vec.put<int>(dynamic, 8 as usize, sample.right)"));
-    assert!(source.contains("vec.pop<int>(dynamic)"));
-    assert!(source.contains("vec.clear<int>(dynamic)"));
+    assert!(source.contains("dynamic.set(8 as usize, sample.right)"));
+    assert!(source.contains("dynamic.pop()"));
+    assert!(source.contains("dynamic.clear()"));
     assert!(source.contains("Some(_) => true"));
     assert!(source.contains("func adjust(value: int, enabled: bool): int"));
     assert!(source.contains(
@@ -1623,19 +1988,19 @@ fn test_iter_slice_chain_across_all_backends() {
         "    return VecIter { items: v, index: 0 as usize }\n",
         "}\n\n",
         "func VecIter.next(self: mut ref VecIter): Option<int> {\n",
-        "    let item = vec.getCopy<int>(self.items, self.index)\n",
-        "    if self.index < vec.len<int>(self.items) {\n",
+        "    let item = self.items.getCopy(self.index)\n",
+        "    if self.index < self.items.len() {\n",
         "        self.index = self.index + (1 as usize)\n",
         "    }\n",
         "    return item\n",
         "}\n\n",
         "func main(): int {\n",
-        "    let mut v = vec.new<int>()\n",
-        "    vec.push<int>(v, 10)\n",
-        "    vec.push<int>(v, 20)\n",
-        "    vec.push<int>(v, 30)\n",
-        "    vec.push<int>(v, 40)\n",
-        "    vec.push<int>(v, 50)\n",
+        "    let mut v = vec.Vec<int>.new()\n",
+        "    v.push(10)\n",
+        "    v.push(20)\n",
+        "    v.push(30)\n",
+        "    v.push(40)\n",
+        "    v.push(50)\n",
         "    let it = make_vec_iter(v)\n",
         "    let taken = iter.take(it, 4 as uint)\n",
         "    let skipped = iter.skip(taken, 1 as uint)\n",
@@ -1666,19 +2031,19 @@ fn test_slice_split_and_cuts_across_all_backends() {
         "    return VecIter { items: v, index: 0 as usize }\n",
         "}\n\n",
         "func VecIter.next(self: mut ref VecIter): Option<int> {\n",
-        "    let item = vec.getCopy<int>(self.items, self.index)\n",
-        "    if self.index < vec.len<int>(self.items) {\n",
+        "    let item = self.items.getCopy(self.index)\n",
+        "    if self.index < self.items.len() {\n",
         "        self.index = self.index + (1 as usize)\n",
         "    }\n",
         "    return item\n",
         "}\n\n",
         "func main(): int {\n",
-        "    let mut v = vec.new<int>()\n",
-        "    vec.push<int>(v, 100)\n",
-        "    vec.push<int>(v, 200)\n",
-        "    vec.push<int>(v, 300)\n",
-        "    vec.push<int>(v, 400)\n",
-        "    let s = vec.asSlice<int>(v)\n",
+        "    let mut v = vec.Vec<int>.new()\n",
+        "    v.push(100)\n",
+        "    v.push(200)\n",
+        "    v.push(300)\n",
+        "    v.push(400)\n",
+        "    let s = v.asSlice()\n",
         "    let empty_start = match slice.subslice<int>(s, 0 as usize, 0 as usize) {\n",
         "        Some(sub) => slice.len<int>(sub) == (0 as usize)\n",
         "        None => false\n",
@@ -1880,7 +2245,7 @@ fn test_str_mem_across_all_backends() {
         "func main(): int {\n",
         "    // 1. String operations\n",
         "    if !core_str.isEmpty(\"\") || core_str.isEmpty(\"hello\") { return -1 }\n",
-        "    if core_str.lenBytes(\"\") != 0 as usize || core_str.lenBytes(\"hello\") != 5 as usize || core_str.lenBytes(\"olá\") != 4 as usize { return -2 }\n",
+        "    if core_str.len(\"\") != 0 as usize || core_str.len(\"hello\") != 5 as usize || core_str.len(\"olá\") != 4 as usize { return -2 }\n",
         "    if !core_str.startsWith(\"hello world\", \"hello\") || core_str.startsWith(\"hello\", \"world\") || !core_str.startsWith(\"hello\", \"\") { return -3 }\n",
         "    if !core_str.endsWith(\"main.aru\", \".aru\") || core_str.endsWith(\"main.c\", \".aru\") || !core_str.endsWith(\"main.aru\", \"\") { return -4 }\n",
         "    if !core_str.contains(\"arandu compiler\", \"compiler\") || core_str.contains(\"arandu\", \"rust\") || !core_str.contains(\"arandu\", \"\") { return -5 }\n",
@@ -1922,23 +2287,21 @@ fn test_str_mem_across_all_backends() {
         "    if ref_target != 333 { return -16 }\n",
         "\n",
         "    // 4. Raw pointer operations\n",
-        "    let mut v = vec.new<int>()\n",
-        "    if !vec.tryPush<int>(v, 10) || !vec.tryPush<int>(v, 20) {\n",
-        "        vec.destroy<int>(v)\n",
+        "    let mut v = vec.Vec<int>.new()\n",
+        "    if !v.tryPush(10) || !v.tryPush(20) {\n",
         "        return -17\n",
         "    }\n",
-        "    let v_slice = vec.asSlice<int>(v)\n",
+        "    let v_slice = v.asSlice()\n",
         "    let raw_ptr = slice.asPtr<int>(v_slice)\n",
         "    let val0 = unsafe { mem.ptrRead<int>(raw_ptr) }\n",
         "    let ptr1 = unsafe { mem.ptrOffset<int>(raw_ptr, 1 as isize) }\n",
         "    let val1 = unsafe { mem.ptrRead<int>(ptr1) }\n",
         "    unsafe { mem.ptrWrite<int>(ptr1, 999) }\n",
         "    let val1_up = unsafe { mem.ptrRead<int>(ptr1) }\n",
-        "    let elem1 = match vec.getCopy<int>(v, 1 as usize) {\n",
+        "    let elem1 = match v.getCopy(1 as usize) {\n",
         "        Some(val) => val\n",
         "        None => 0\n",
         "    }\n",
-        "    vec.destroy<int>(v)\n",
         "    if val0 != 10 || val1 != 20 || val1_up != 999 || elem1 != 999 { return -18 }\n",
         "\n",
         "    return 42\n",
@@ -1984,57 +2347,55 @@ fn test_collections_across_all_backends() {
         "\n",
         "func main(): int {\n",
         "    // 1. Vec withCapacity, isEmpty, push, pop, clear\n",
-        "    let mut v = vec.withCapacity<int>(16 as usize)\n",
-        "    if !vec.isEmpty<int>(v) || vec.len<int>(v) != 0 as usize || vec.capacity<int>(v) < 16 as usize { return -1 }\n",
-        "    vec.push<int>(v, 100)\n",
-        "    vec.push<int>(v, 200)\n",
-        "    if vec.isEmpty<int>(v) || vec.len<int>(v) != 2 as usize { return -2 }\n",
-        "    let popped = match vec.pop<int>(v) {\n",
+        "    let mut v = vec.Vec<int>.withCapacity(16 as usize)\n",
+        "    if !v.isEmpty() || v.len() != 0 as usize || v.capacity() < 16 as usize { return -1 }\n",
+        "    v.push(100)\n",
+        "    v.push(200)\n",
+        "    if v.isEmpty() || v.len() != 2 as usize { return -2 }\n",
+        "    let popped = match v.pop() {\n",
         "        Some(val) => val == 200\n",
         "        None => false\n",
         "    }\n",
-        "    if !popped || vec.len<int>(v) != 1 as usize { return -3 }\n",
-        "    vec.clear<int>(v)\n",
-        "    if !vec.isEmpty<int>(v) || vec.len<int>(v) != 0 as usize || vec.capacity<int>(v) < 16 as usize { return -4 }\n",
-        "    v.destroy()\n",
+        "    if !popped || v.len() != 1 as usize { return -3 }\n",
+        "    v.clear()\n",
+        "    if !v.isEmpty() || v.len() != 0 as usize || v.capacity() < 16 as usize { return -4 }\n",
         "\n",
-        "    // 2. HashMap withCapacity, insert, contains, remove, clear\n",
-        "    let mut map = hash_map.withCapacity<MapKey, int>(16 as usize)\n",
-        "    if !hash_map.isEmpty<MapKey, int>(map) || hash_map.capacity<MapKey, int>(map) != 16 as usize { return -5 }\n",
+        "    // 2. HashMap withCapacity, put, contains, remove, clear\n",
+        "    let mut map = hash_map.HashMap<MapKey, int>.withCapacity(16 as usize)\n",
+        "    if !map.isEmpty() || map.capacity() != 16 as usize { return -5 }\n",
         "    let k1 = MapKey { id: 1 }\n",
         "    let k2 = MapKey { id: 2 }\n",
-        "    hash_map.insert<MapKey, int>(map, k1, 10)\n",
-        "    hash_map.insert<MapKey, int>(map, k2, 20)\n",
-        "    if hash_map.isEmpty<MapKey, int>(map) || hash_map.len<MapKey, int>(map) != 2 as usize { return -6 }\n",
-        "    if !hash_map.contains<MapKey, int>(map, ref k1) || !hash_map.contains<MapKey, int>(map, ref k2) { return -7 }\n",
+        "    map.put(k1, 10)\n",
+        "    map.put(k2, 20)\n",
+        "    if map.isEmpty() || map.len() != 2 as usize { return -6 }\n",
+        "    if !map.contains(ref k1) || !map.contains(ref k2) { return -7 }\n",
         "    let k3 = MapKey { id: 3 }\n",
-        "    if hash_map.contains<MapKey, int>(map, ref k3) { return -8 }\n",
-        "    let rem1 = match hash_map.remove<MapKey, int>(map, ref k1) {\n",
+        "    if map.contains(ref k3) { return -8 }\n",
+        "    let rem1 = match map.remove(ref k1) {\n",
         "        Some(val) => val == 10\n",
         "        None => false\n",
         "    }\n",
-        "    if !rem1 || hash_map.contains<MapKey, int>(map, ref k1) || hash_map.len<MapKey, int>(map) != 1 as usize { return -9 }\n",
-        "    hash_map.clear<MapKey, int>(map)\n",
-        "    if !hash_map.isEmpty<MapKey, int>(map) || hash_map.len<MapKey, int>(map) != 0 as usize { return -10 }\n",
-        "    map.destroy()\n",
+        "    if !rem1 || map.contains(ref k1) || map.len() != 1 as usize { return -9 }\n",
+        "    map.clear()\n",
+        "    if !map.isEmpty() || map.len() != 0 as usize { return -10 }\n",
         "\n",
-        "    // 3. BitSet bitsetWithCapacity, set ops (union, intersect, diff)\n",
-        "    let mut bs1 = bitset.bitsetWithCapacity(128 as usize)\n",
+        "    // 3. BitSet BitSet.withCapacity, set ops (union, intersect, diff)\n",
+        "    let mut bs1 = bitset.BitSet.withCapacity(128 as usize)\n",
         "    if bs1.countOnes() != 0 as uint || bs1.contains(0 as usize) || bs1.contains(64 as usize) { return -11 }\n",
         "    bs1.insert(1 as usize)\n",
         "    bs1.insert(70 as usize)\n",
-        "    let mut bs2 = bitset.bitsetNew()\n",
+        "    let mut bs2 = bitset.BitSet.new()\n",
         "    bs2.insert(70 as usize)\n",
         "    bs2.insert(100 as usize)\n",
-        "    let mut bs_u = bitset.bitsetNew()\n",
+        "    let mut bs_u = bitset.BitSet.new()\n",
         "    bs_u.unionWith(ref bs1)\n",
         "    bs_u.unionWith(ref bs2)\n",
         "    if bs_u.countOnes() != 3 as uint || !bs_u.contains(1 as usize) || !bs_u.contains(70 as usize) || !bs_u.contains(100 as usize) { return -12 }\n",
-        "    let mut bs_i = bitset.bitsetNew()\n",
+        "    let mut bs_i = bitset.BitSet.new()\n",
         "    bs_i.unionWith(ref bs1)\n",
         "    bs_i.intersectWith(ref bs2)\n",
         "    if bs_i.countOnes() != 1 as uint || !bs_i.contains(70 as usize) || bs_i.contains(1 as usize) || bs_i.contains(100 as usize) { return -13 }\n",
-        "    let mut bs_d = bitset.bitsetNew()\n",
+        "    let mut bs_d = bitset.BitSet.new()\n",
         "    bs_d.unionWith(ref bs1)\n",
         "    bs_d.differenceWith(ref bs2)\n",
         "    if bs_d.countOnes() != 1 as uint || !bs_d.contains(1 as usize) || bs_d.contains(70 as usize) { return -14 }\n",
@@ -2109,5 +2470,115 @@ fn __smith_jit_worker() {
             );
             std::process::exit(code);
         }
+    }
+}
+
+#[test]
+fn synthesized_wasm_seed_eight_matches_all_optimization_levels() {
+    let generated = synthesize_with_oracle(8);
+    let observation =
+        check_source(&generated.source, false, true).expect("seed-eight JIT/Wasm differential");
+    let expected = ExpectedObservation::synthesized(generated.expected_result);
+    assert_eq!(observation.result, expected.result);
+    assert_eq!(observation.stdout, expected.stdout);
+    assert_eq!(observation.stderr, expected.stderr);
+}
+
+#[test]
+fn scalar_optimizations_preserve_mutation_recursion_and_narrowing_in_every_backend() {
+    for (source, expected) in [
+        ("func numeric(a: int): int { let x = a + 1; return x / 2 } func main(): int { return numeric(2147483647) }", -1073741824),
+        ("struct Pair { x: int; y: int } func keep(n: int): Pair { let mut pair = Pair { x: n, y: n + 1 }; pair.x = pair.x + 1; return pair } func main(): int { let pair = keep(20); return pair.x + pair.y }", 42),
+        ("func rotate(n: int, a: int, b: int): int { if n == 0 { return a }; return rotate(n - 1, b, a) } func main(): int { return rotate(199, 17, 42) }", 42),
+        ("struct Pair { x: int; y: int } func fields(flag: bool, n: int): int { let mut pair = Pair { x: n, y: n + 1 }; if flag { pair.x = n + 2 }; return pair.x + pair.y } func main(): int { return fields(true, 10) + fields(false, 10) }", 44),
+        ("struct Pair { x: int; y: int } func main(): int { let mut pair = Pair { x: 17, y: 25 }; let p = &mut pair; p.x = 18; return p.x + p.y }", 43),
+        ("func compute(a: u8, b: u8): u8 { let x: u8 = a + b; return x * (2 as u8) } func main(): int { return compute(250 as u8, 10 as u8) as int }", 8),
+        ("func fib(n: int): int { if n < 2 { return n }; return fib(n - 1) + fib(n - 2) } func main(): int { return fib(10) }", 55),
+    ] {
+        let observation = check_source(source, true, true).unwrap_or_else(|failure| panic!("{failure:?}\n{source}"));
+        assert_eq!(observation.result, expected, "{source}");
+        assert!(observation.stdout.is_empty() && observation.stderr.is_empty());
+    }
+    let cleanup = check_source("import io\nfunc choose(flag: bool): int { defer { io.print(\"x\") }; if flag { return 17 }; return 25 } func main(): int { return choose(true) + choose(false) }", true, true).unwrap();
+    assert_eq!(cleanup.result, 42);
+    assert_eq!(cleanup.stdout, b"xx");
+    assert!(cleanup.stderr.is_empty());
+}
+
+#[test]
+fn array_sha256_padding_vectors_match_every_backend_and_optimization_level() {
+    let source = include_str!("../../../../tests/perf/sha256-array.aru");
+    let observation = check_source(source, true, true).expect("SHA-256 array/loop differential");
+    assert_eq!(observation.result, 0);
+    assert!(observation.stdout.is_empty() && observation.stderr.is_empty());
+}
+
+/// Manual profile of the same expanded program that exposed native Wasm
+/// compilation pressure. Timings are evidence, never correctness thresholds.
+#[test]
+#[ignore = "manual seed-eight codegen profile"]
+fn profile_seed_eight_codegen() {
+    let generated = synthesize_with_oracle(8);
+    let mut host = AnalysisHost::new();
+    register_fuzz_stdlib(&mut host).unwrap();
+    let file = host.new_file("profile-seed-eight.aru".into(), generated.source);
+    let lowered = arandu_query::lower_amir(host.db(), file);
+    assert!(lowered.type_check.diagnostics.is_empty());
+    let mut program = lowered.amir.clone();
+    arandu_mir::optimize_amir_checked_with_level(
+        &mut program,
+        &lowered.type_check.symbols,
+        &lowered.type_check.type_info.type_interner,
+        arandu_mir::OptLevel::O1,
+    )
+    .unwrap();
+    let temps: usize = program.funcs.iter().map(|func| func.temps.len()).sum();
+    for sample in 0..3 {
+        let start = std::time::Instant::now();
+        let jit = execute_cranelift(
+            &program,
+            &lowered.type_check.symbols,
+            &lowered.type_check.type_info,
+        )
+        .unwrap();
+        let jit_ms = start.elapsed().as_secs_f64() * 1000.0;
+        let start = std::time::Instant::now();
+        let source = arandu_backend_c::emit_c(
+            &program,
+            &lowered.type_check.symbols,
+            lowered.type_check.type_info.as_ref(),
+            &lowered.type_check.type_info.type_interner,
+            arandu_middle::layout::DataLayout::host(),
+        )
+        .unwrap();
+        let emit_ms = start.elapsed().as_secs_f64() * 1000.0;
+        let declarations = source
+            .lines()
+            .filter(|line| {
+                let line = line.trim();
+                line.ends_with(';')
+                    && !line.contains('=')
+                    && line.split_whitespace().last().is_some_and(|name| {
+                        name.strip_prefix('t')
+                            .and_then(|name| name.strip_suffix(';'))
+                            .is_some_and(|index| {
+                                !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit())
+                            })
+                    })
+            })
+            .count();
+        let start = std::time::Instant::now();
+        let c = execute_c(
+            &program,
+            &lowered.type_check.symbols,
+            &lowered.type_check.type_info,
+        )
+        .unwrap();
+        let c_ms = start.elapsed().as_secs_f64() * 1000.0;
+        assert_eq!(jit.result, generated.expected_result);
+        assert_eq!(c.result, jit.result);
+        assert_eq!(c.stdout, jit.stdout);
+        assert_eq!(c.stderr, jit.stderr);
+        eprintln!("sample={sample} temps={temps} declarations={declarations} c_bytes={} jit_ms={jit_ms:.2} emit_ms={emit_ms:.2} c_ms={c_ms:.2}", source.len());
     }
 }

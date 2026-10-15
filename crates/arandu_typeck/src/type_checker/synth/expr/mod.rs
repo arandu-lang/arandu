@@ -45,6 +45,68 @@ fn synth_expr_inner(
     let pool = checker.pool;
     let kind = pool.expr(expr);
 
+    if let ExprKind::Layout { query, ty } = kind {
+        let result = match query {
+            arandu_parser::LayoutQuery::Size | arandu_parser::LayoutQuery::Align => {
+                let Some(ty) = ty else {
+                    return checker.intern(ArType::Error);
+                };
+                if checker.lower_type_expr(*ty, checker.type_scope()) == ArType::Error {
+                    return checker.intern(ArType::Error);
+                }
+                super::super::types::Primitive::USize
+            }
+            arandu_parser::LayoutQuery::TargetOS | arandu_parser::LayoutQuery::TargetArch => {
+                super::super::types::Primitive::Str
+            }
+            arandu_parser::LayoutQuery::TargetPointerWidth => super::super::types::Primitive::USize,
+        };
+        return checker.intern(ArType::Primitive(result));
+    }
+
+    if let ExprKind::Comptime { body } = kind {
+        if !checker.type_info.ctfe_roots.contains(&expr) {
+            checker.type_info.ctfe_roots.push(expr);
+        }
+        // Initial typing only. Evaluation and residualization are owned by the
+        // query staging boundary, never by this pure checker.
+        let ty = match body {
+            arandu_parser::ast_pool::ComptimeBody::Expression(inner) => {
+                synth_expr_expected(checker, *inner, expected)
+            }
+            arandu_parser::ast_pool::ComptimeBody::Block(block) => {
+                crate::type_checker::check::check_ctfe_block(checker, pool.block(*block), expected)
+                    .return_type
+            }
+        };
+        // A staged value is a typed scalar result, not an unbound literal
+        // variable escaping into runtime inference. Explicit context is fed
+        // to the inner checker; absent context uses the ordinary default.
+        // Freeze numeric leaves of aggregates too. Otherwise a local can keep
+        // `[N][M]IntLiteral` while materialization produces `[N][M]int`, making
+        // SSA join parameters disagree with their incoming values.
+        let interner = &checker.type_info.type_interner;
+        let normalized =
+            arandu_middle::types::TypeShape::from_id(ty, interner).and_then(|mut shape| {
+                shape.default_numeric_literals()?;
+                shape.intern(interner)
+            });
+        return match normalized {
+            Ok(ty) => ty,
+            Err(_) => {
+                checker.diagnostics.push(
+                    crate::Diagnostic::error(
+                        crate::DiagCode::T042UnsupportedComptime,
+                        "compile-time result exceeds the structural type limits",
+                        span,
+                    )
+                    .with_primary_label("result type is too deeply nested or too large"),
+                );
+                checker.intern(ArType::Error)
+            }
+        };
+    }
+
     if let ExprKind::VariantSugar { name, args } = kind {
         return synth_variant_sugar(checker, expr, name, *args, expected, span);
     }
@@ -54,6 +116,10 @@ fn synth_expr_inner(
     }
     if let Some(id) = synth_call_expr(checker, expr, kind, span, expected) {
         return id;
+    }
+    if let ExprKind::Binary { op, left, right } = kind {
+        return binary::synth_binary_expr(checker, expr, op, (*left, *right), span, expected)
+            .unwrap_or_else(|| checker.intern(ArType::Error));
     }
     if let Some(id) = synth_binary_unary_expr(checker, expr, kind, span, expected) {
         return id;

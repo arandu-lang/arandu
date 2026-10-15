@@ -223,10 +223,11 @@ fn print_check(
     tag: &str,
     flags: &ProjectFlags,
 ) {
-    let _ = arandu_query::passes::type_check(db, entry);
-    let diags = arandu_query::passes::type_check::accumulated::<
-        arandu_middle::db::DiagnosticsAccumulator,
-    >(db, entry);
+    let filepath = entry.path(db).to_string_lossy().into_owned();
+    let diags = match crate::pipeline::pipeline_lower_checked(db, entry) {
+        Ok(outcome) => outcome.diagnostics,
+        Err(diagnostics) => diagnostics,
+    };
 
     if !flags.quiet
         && (flags.verbose
@@ -234,14 +235,11 @@ fn print_check(
     {
         eprintln!("{}", rebuild_log.status_line());
     }
-    let mut errors = 0usize;
-    for d in &diags {
-        let severity = d.0.severity;
-        if matches!(severity, arandu_middle::Severity::Error) {
-            errors += 1;
-        }
-        eprintln!("  {}: {}", d.0.code, d.0.message);
-    }
+    let errors = diags
+        .iter()
+        .filter(|d| matches!(d.severity, arandu_middle::Severity::Error))
+        .count();
+    crate::pipeline::render_nonfatal_diagnostics(db, &diags, &filepath);
     if errors == 0 {
         if !flags.quiet {
             eprintln!("ok ({tag}) — no errors");

@@ -5,6 +5,65 @@ use cranelift_codegen::ir::{InstBuilder, Value};
 use super::FunctionTranslator;
 
 impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
+    /// Capture at the original ToStr position; only its proven-private buffer
+    /// is removed. Formatting into the result happens at the concat position.
+    pub(super) fn capture_integer_concat_part(
+        &mut self,
+        temp: arandu_semantics::amir::TempId,
+        rvalue: &AmirRvalue,
+    ) -> bool {
+        use arandu_codegen::string_interp::IntegerStringKind;
+        let Some(kind) = self.integer_concat_temps[temp.as_usize()] else {
+            return false;
+        };
+        let AmirRvalue::ToStr { value, .. } = rvalue else {
+            return false;
+        };
+        let i64_type = cranelift_codegen::ir::types::I64;
+        let value = self.translate_operand(value, Some(i64_type));
+        let value_type = self.builder.func.dfg.value_type(value);
+        let value = if value_type.bits() < 64 {
+            match kind {
+                IntegerStringKind::Signed => self.builder.ins().sextend(i64_type, value),
+                IntegerStringKind::Unsigned => self.builder.ins().uextend(i64_type, value),
+            }
+        } else if value_type.bits() > 64 {
+            self.builder.ins().ireduce(i64_type, value)
+        } else {
+            value
+        };
+        let helper = match kind {
+            IntegerStringKind::Signed => "ar_rt_i64_write_digits",
+            IntegerStringKind::Unsigned => "ar_rt_u64_write_digits",
+        };
+        let null = self.builder.ins().iconst(self.ptr_type, 0);
+        let len = self.call_integer_writer(helper, value, null);
+        let len = if self.ptr_type.bits() < 64 {
+            self.builder.ins().ireduce(self.ptr_type, len)
+        } else {
+            len
+        };
+        self.integer_concat_values
+            .insert(temp, (value, len, helper));
+        true
+    }
+
+    fn call_integer_writer(&mut self, helper: &str, value: Value, destination: Value) -> Value {
+        let Some(id) = self.resolve_function(helper) else {
+            self.record_ice(
+                format!("missing integer interpolation helper {helper}"),
+                self.func_span(),
+            );
+            return self
+                .builder
+                .ins()
+                .iconst(cranelift_codegen::ir::types::I64, 0);
+        };
+        let reference = self.module.declare_func_in_func(id, self.builder.func);
+        let call = self.builder.ins().call(reference, &[value, destination]);
+        self.builder.inst_results(call)[0]
+    }
+
     /// Add string byte lengths without allowing a wrapped allocation size.
     fn checked_string_size_add(&mut self, lhs: Value, rhs: Value) -> Value {
         let sum = self.builder.ins().iadd(lhs, rhs);
@@ -84,6 +143,18 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     (loaded_ptr, loaded_len)
                 }
             }
+            AmirRvalue::IndexAccess { base, index } => {
+                let (address, _) = self.translate_index_address(base, index);
+                let flags = cranelift_codegen::ir::MemFlagsData::new();
+                let ptr = self.builder.ins().load(self.ptr_type, flags, address, 0);
+                let len = self.builder.ins().load(
+                    self.ptr_type,
+                    flags,
+                    address,
+                    self.ptr_type.bytes() as i32,
+                );
+                (ptr, len)
+            }
             AmirRvalue::FieldAccess { base, field } => {
                 let ptr_val = self.translate_operand(base, Some(self.ptr_type));
                 let base_ty = match base {
@@ -123,6 +194,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 value,
                 variant,
                 index,
+                tuple_ty,
                 ..
             } => {
                 let ptr_val = self.translate_operand(value, Some(self.ptr_type));
@@ -140,32 +212,26 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     }
                     other => other,
                 };
-                let enum_id = match enum_ty {
-                    ArType::Named(enum_id, _) => enum_id,
-                    _ => arandu_semantics::SymbolId::DUMMY,
-                };
+                let tag = self
+                    .type_info
+                    .enum_variant_tags
+                    .get(variant)
+                    .copied()
+                    .unwrap_or(0);
 
                 let mut payload_offset = 0;
-                if let Some(variants) =
-                    arandu_semantics::layout::StructLayoutProvider::get_enum_variants(
+                if let Some(payload_ty_id) = (*tuple_ty).or_else(|| {
+                    arandu_semantics::layout::instantiated_enum_variant_payload_type(
+                        &enum_ty,
+                        tag,
+                        &self.type_info.type_interner,
                         self.type_info,
-                        enum_id,
                     )
-                {
-                    let tag = self
-                        .type_info
-                        .enum_variant_tags
-                        .get(variant)
-                        .copied()
-                        .unwrap_or(0);
-                    if let Some(variant_shape) = variants.get(tag)
-                        && let Some(payload_ty_id) = variant_shape.payload_ty
-                    {
-                        let payload_ty = self.type_info.resolve_type_id(payload_ty_id);
-                        let payload_layout = self.checked_layout(&payload_ty);
-                        if *index < payload_layout.field_offsets.len() {
-                            payload_offset = payload_layout.field_offsets[*index] as i32;
-                        }
+                }) {
+                    let payload_ty = self.type_info.resolve_type_id(payload_ty_id);
+                    let payload_layout = self.checked_layout(&payload_ty);
+                    if *index < payload_layout.field_offsets.len() {
+                        payload_offset = payload_layout.field_offsets[*index] as i32;
                     }
                 }
 
@@ -188,11 +254,11 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             AmirRvalue::ToStr { value, src_ty } => self.translate_to_str(value, *src_ty),
             AmirRvalue::BlackBox { value, .. } => {
                 let (ptr, len) = self.translate_str_operand(value);
-                let Some(ptr_id) = self.func_ids.get("ar_bench_black_box_ptr").copied() else {
+                let Some(ptr_id) = self.resolve_function("ar_bench_black_box_ptr") else {
                     self.record_ice("missing pointer black-box runtime import", self.func_span());
                     return (self.poison_i32(), self.poison_i32());
                 };
-                let Some(len_id) = self.func_ids.get("ar_bench_black_box_i64").copied() else {
+                let Some(len_id) = self.resolve_function("ar_bench_black_box_i64") else {
                     self.record_ice("missing integer black-box runtime import", self.func_span());
                     return (self.poison_i32(), self.poison_i32());
                 };
@@ -324,7 +390,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             _ => unreachable!(),
         };
 
-        let Some(func_id) = self.func_ids.get(helper_name).copied() else {
+        let Some(func_id) = self.resolve_function(helper_name) else {
             self.record_ice(
                 format!("{helper_name} was not declared in the JIT module"),
                 self.func_span(),
@@ -435,7 +501,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
 
     /// Concatenate `str` fat-pointer parts via `malloc` + `memcpy`.
     /// Zero-length parts skip the copy so a null data pointer never reaches libc.
-    /// Returns `(ptr, len)` for the newly allocated buffer (not freed; debug/JIT lifetime).
+    /// Returns caller-owned `(ptr, len)`, paired with the existing string drop.
     fn translate_string_interp(&mut self, parts: &[AmirOperand]) -> (Value, Value) {
         if parts.is_empty() {
             let empty_ptr = self.builder.ins().iconst(self.ptr_type, 0);
@@ -444,15 +510,26 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         }
 
         // Materialize each part as (ptr, len).
-        let mut part_vals: Vec<(Value, Value)> = Vec::with_capacity(parts.len());
+        let mut part_vals = Vec::with_capacity(parts.len());
         for part in parts {
-            part_vals.push(self.translate_str_operand(part));
+            let integer = match part {
+                AmirOperand::Copy(temp) | AmirOperand::Move(temp) => {
+                    self.integer_concat_values.get(temp).copied()
+                }
+                _ => None,
+            };
+            if let Some((value, len, helper)) = integer {
+                part_vals.push((value, len, Some(helper)));
+            } else {
+                let (pointer, len) = self.translate_str_operand(part);
+                part_vals.push((pointer, len, None));
+            }
         }
 
         // total = sum of lengths (ptr_type), trapping instead of wrapping to
         // an allocation smaller than the bytes copied below.
         let mut total = self.builder.ins().iconst(self.ptr_type, 0);
-        for &(_, len) in &part_vals {
+        for &(_, len, _) in &part_vals {
             total = self.checked_string_size_add(total, len);
         }
 
@@ -479,7 +556,13 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
 
         // Copy each part into the buffer.
         let mut offset_ptr = self.builder.ins().iconst(self.ptr_type, 0);
-        for &(src_ptr, src_len) in &part_vals {
+        for &(src_ptr, src_len, integer_helper) in &part_vals {
+            if let Some(helper) = integer_helper {
+                let destination = self.builder.ins().iadd(buf, offset_ptr);
+                self.call_integer_writer(helper, src_ptr, destination);
+                offset_ptr = self.builder.ins().iadd(offset_ptr, src_len);
+                continue;
+            }
             let zero_len = self.builder.ins().iconst(self.ptr_type, 0);
             let is_empty = self.builder.ins().icmp(
                 cranelift_codegen::ir::condcodes::IntCC::Equal,

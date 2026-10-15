@@ -49,7 +49,47 @@ impl<'a> FuncTranslator<'a> {
         let Some(ty_id) = self.place_resolved_ty(place) else {
             return;
         };
-        if !matches!(self.interner.resolve(ty_id), ArType::Named(..)) {
+        let resolved_ty = self.interner.resolve(ty_id);
+        if matches!(resolved_ty, ArType::Primitive(Primitive::Str)) {
+            if place.projections.is_empty() {
+                let Some(slot) = self.local_slot(place.local) else {
+                    return;
+                };
+                let is_memory = self
+                    .func
+                    .locals
+                    .get(place.local.as_usize())
+                    .is_some_and(|local| local.is_memory);
+                if is_memory {
+                    self.code.push(Instruction::LocalGet(slot));
+                    self.code
+                        .push(Instruction::I32Load(crate::memory::noffset_memarg()));
+                    self.code.push(Instruction::Call(self.free_func_idx));
+                    self.code.push(Instruction::LocalGet(slot));
+                    self.code.push(Instruction::I32Const(0));
+                    self.code
+                        .push(Instruction::I32Store(crate::memory::noffset_memarg()));
+                } else {
+                    self.code.push(Instruction::LocalGet(slot));
+                    self.code.push(Instruction::Call(self.free_func_idx));
+                    self.code.push(Instruction::I32Const(0));
+                    self.code.push(Instruction::LocalSet(slot));
+                }
+            } else {
+                self.emit_place_address(place);
+                self.code.push(Instruction::LocalSet(self.scratch));
+                self.code.push(Instruction::LocalGet(self.scratch));
+                self.code
+                    .push(Instruction::I32Load(crate::memory::noffset_memarg()));
+                self.code.push(Instruction::Call(self.free_func_idx));
+                self.code.push(Instruction::LocalGet(self.scratch));
+                self.code.push(Instruction::I32Const(0));
+                self.code
+                    .push(Instruction::I32Store(crate::memory::noffset_memarg()));
+            }
+            return;
+        }
+        if !matches!(resolved_ty, ArType::Named(..)) {
             return;
         }
         // Materialize the value address once. `scratch` is not touched by the
@@ -453,14 +493,17 @@ impl<'a> FuncTranslator<'a> {
                 *from_memory = true;
                 let owner_ty = self.strip_ref(cur_ty).unwrap_or(cur_ty);
                 let owner = self.interner.resolve(owner_ty);
-                let ArType::Named(struct_id, _) = owner else {
+                let ArType::Named(_, _) = owner else {
                     return cur_ty;
                 };
                 let Some(sym) = self.symbols.try_get(*symbol_id) else {
                     return cur_ty;
                 };
                 let name = &sym.name;
-                let Some(fields) = self.layout_provider.get_struct_fields(struct_id) else {
+                let Some(fields) = self
+                    .layout_provider
+                    .get_struct_fields_for_type(&owner, self.interner)
+                else {
                     return cur_ty;
                 };
                 let Some(field_info) = fields.get(name) else {
@@ -641,6 +684,21 @@ impl<'a> FuncTranslator<'a> {
     /// every cell shares the `{magic, size, next}` block format that
     /// `__arandu_free` understands — `free`/`Destroy` can actually reclaim it.
     pub(super) fn alloc_cell(&mut self, size: i32) {
+        if let Some(slot) = self.current_heap_home.take() {
+            self.alloc_heap_home(slot, size);
+            return;
+        }
+        if let Some(offset) = self.current_cell_home.take() {
+            let Ok(offset) = i32::try_from(offset) else {
+                self.code.push(Instruction::Unreachable);
+                return;
+            };
+            self.code.push(Instruction::LocalGet(self.frame_base));
+            self.code.push(Instruction::I32Const(offset));
+            self.code.push(Instruction::I32Add);
+            self.code.push(Instruction::LocalSet(self.scratch));
+            return;
+        }
         self.code.push(Instruction::I32Const(size.max(0)));
         self.code.push(Instruction::Call(self.alloc_func_idx));
         self.code.push(Instruction::LocalSet(self.scratch));

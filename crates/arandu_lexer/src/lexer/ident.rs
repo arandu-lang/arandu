@@ -76,6 +76,7 @@ pub(crate) fn keyword_kind(text: &str) -> Option<TokenKind> {
         "continue" => TokenKind::KwContinue,
         "func" => TokenKind::KwFunc,
         "async" => TokenKind::KwAsync,
+        "comptime" => TokenKind::KwComptime,
         "await" => TokenKind::KwAwait,
         "struct" => TokenKind::KwStruct,
         "enum" => TokenKind::KwEnum,

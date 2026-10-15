@@ -165,18 +165,15 @@ fn literal_int_mod_by_zero_rejected() {
 }
 
 #[test]
-fn literal_float_div_by_zero_rejected() {
-    assert_has_diag(
-        "func f(): float { return 42.0 / 0.0 }",
-        DiagCode::T040DivisionByZero,
-    );
+fn literal_float_div_by_zero_preserves_ieee754_semantics() {
+    assert_ok("func f(): float { return 42.0 / 0.0 }");
 }
 
 #[test]
 fn literal_float_mod_by_zero_rejected() {
     assert_has_diag(
         "func f(): float { return 42.0 % 0.0 }",
-        DiagCode::T040DivisionByZero,
+        DiagCode::T005OperatorNotApplicable,
     );
 }
 

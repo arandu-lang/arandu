@@ -47,13 +47,25 @@ impl<'a> Parser<'a> {
         self.expect_name("LBRACKET")?;
         let mut items = Vec::new();
         if !self.at_kind_name("RBRACKET") {
-            loop {
-                items.push(self.parse_expr(0)?);
-                if !self.eat_name("COMMA") {
-                    break;
-                }
-                if self.at_kind_name("RBRACKET") {
-                    break;
+            let value = self.parse_expr(0)?;
+            if self.eat_name("SEMICOLON") {
+                let count = self.parse_generic_argument()?;
+                self.expect_name("RBRACKET")?;
+                let span = self.span_from_mark(start);
+                return Ok(self
+                    .pool
+                    .alloc_expr(ExprKind::ArrayRepeat { value, count }, span));
+            }
+            items.push(value);
+            if self.eat_name("COMMA") && !self.at_kind_name("RBRACKET") {
+                loop {
+                    items.push(self.parse_expr(0)?);
+                    if !self.eat_name("COMMA") {
+                        break;
+                    }
+                    if self.at_kind_name("RBRACKET") {
+                        break;
+                    }
                 }
             }
         }
@@ -205,9 +217,27 @@ impl<'a> Parser<'a> {
         let mut parts = Vec::new();
         while !self.at_kind_name(end_name) {
             match &self.current().kind {
-                TokenKind::StringText | TokenKind::StringEscape => {
+                TokenKind::StringText => {
                     let span = self.current().span(self.file_id);
                     let text = SmolStr::new(self.current_text());
+                    self.advance();
+                    parts.push(StringPart::Text { span, text });
+                }
+                TokenKind::StringEscape => {
+                    let span = self.current().span(self.file_id);
+                    let value = arandu_lexer::decode_char_content(self.current_text()).ok_or_else(
+                        || {
+                            ParseError::new(
+                                ParseErrorCode::ExpectedExpression,
+                                "expected a valid string escape",
+                                self.current(),
+                                self.file_id,
+                                self.source,
+                            )
+                        },
+                    )?;
+                    let mut utf8 = [0; 4];
+                    let text = SmolStr::new(value.encode_utf8(&mut utf8));
                     self.advance();
                     parts.push(StringPart::Text { span, text });
                 }

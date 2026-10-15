@@ -92,8 +92,8 @@ const coreProgram = `
 import std.core.fixed as fixed
 
 public func main(): i32 {
-    let one = fixed.fromInt(1 as i16)
-    let two = fixed.fromInt(2 as i16)
+    let one = fixed.Q16_16.fromInt(1 as i16)
+    let two = fixed.Q16_16.fromInt(2 as i16)
     let sum = one.add(two)
     return sum.toInt()
 }

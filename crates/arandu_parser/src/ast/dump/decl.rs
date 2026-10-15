@@ -340,6 +340,13 @@ pub(super) fn dump_type(ty: &TypeExpr, pool: &AstPool) -> String {
         TypeExpr::Const { span, value } => {
             format!("Const {} {value}", dump_span(*span))
         }
+        TypeExpr::ConstExpression { span, expression } => {
+            format!(
+                "ConstExpression {} {}",
+                dump_span(*span),
+                dump_expr(pool, *expression)
+            )
+        }
         TypeExpr::Primitive { span, name } => format!("Type {} {name}", dump_span(*span)),
         TypeExpr::Named { span, name, args } => {
             let mut out = format!("Type {} {}", dump_span(*span), dump_type_name(name));
@@ -390,8 +397,15 @@ pub(super) fn dump_type(ty: &TypeExpr, pool: &AstPool) -> String {
             )
         }
         TypeExpr::Array {
-            span, size, elem, ..
+            span,
+            size,
+            elem,
+            size_expression,
+            ..
         } => {
+            let size = size_expression
+                .map(|id| dump_type(pool.type_expr(id), pool))
+                .unwrap_or_else(|| size.to_string());
             format!(
                 "ArrayType {} [{size}]{}",
                 dump_span(*span),

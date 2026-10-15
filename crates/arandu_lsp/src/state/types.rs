@@ -65,6 +65,8 @@ pub struct ServerState {
     /// Active package metadata. It is installed after the initialize handshake
     /// and its directory listing is the watched Salsa input for local imports.
     pub package: Option<PackageState>,
+    /// Current protocol trace level configured via `initialize` or `$/setTrace`.
+    pub trace_value: lsp_types::TraceValue,
 }
 
 impl ServerState {
@@ -85,6 +87,7 @@ impl ServerState {
             deferred_rejections: VecDeque::new(),
             package_aliases: FxHashMap::default(),
             package: None,
+            trace_value: lsp_types::TraceValue::Off,
         }
     }
 

@@ -73,6 +73,7 @@ pub fn run_cases(
         let stdlib_root = stdlib_root.to_path_buf();
         let timeout = options.timeout;
         let fail_fast = options.fail_fast;
+        let doc_tests = options.doc_tests;
 
         match thread::Builder::new()
             .name("arandu-test-worker".to_string())
@@ -88,7 +89,7 @@ pub fn run_cases(
                     let sequence = u64::try_from(index).unwrap_or(u64::MAX);
                     let started = Instant::now();
                     let event = run_case_guarded(sequence, id, started, || {
-                        run_case(&project, &stdlib_root, id, timeout, sequence)
+                        run_case(&project, &stdlib_root, id, timeout, sequence, doc_tests)
                     });
                     if !matches!(event.status, TestStatus::Passed | TestStatus::Skipped) {
                         stop.store(true, Ordering::Release);
@@ -159,6 +160,7 @@ fn run_case(
     id: &str,
     timeout: Duration,
     sequence: u64,
+    doc_tests: bool,
 ) -> TestEventV1 {
     let started = Instant::now();
     let nonce = SystemTime::now()
@@ -206,14 +208,17 @@ fn run_case(
     };
 
     let mut command = Command::new(executable);
+    command.args([
+        "test",
+        project.to_string_lossy().as_ref(),
+        "--exact",
+        id,
+        "--harness-child",
+    ]);
+    if doc_tests {
+        command.arg("--doc");
+    }
     command
-        .args([
-            "test",
-            project.to_string_lossy().as_ref(),
-            "--exact",
-            id,
-            "--harness-child",
-        ])
         .env("ARANDU_TEST_SEQUENCE", sequence.to_string())
         .env("ARANDU_TEST_TEMP_ROOT", &temp_root)
         .env("ARANDU_STDLIB", stdlib_root)

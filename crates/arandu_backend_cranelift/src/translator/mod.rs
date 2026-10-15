@@ -6,12 +6,14 @@
 
 mod call;
 mod compare;
+mod constant_data;
 mod coroutine;
 mod expr;
 mod memory;
 mod operand;
 mod place;
 mod stmt;
+mod storage;
 mod string;
 mod terminator;
 
@@ -52,15 +54,29 @@ pub struct FunctionTranslator<'a, 'b, M: Module> {
     pub module: &'b mut M,
     pub symbol_table: &'b SymbolTable,
     pub func_ids: &'b FxHashMap<String, FuncId>,
+    runtime_imports: &'b crate::jit::symbols::RuntimeImports,
+    pub(crate) gen_shutdown: bool,
     pub block_map: FxHashMap<BlockId, Block>,
     pub temp_map: FxHashMap<TempId, Variable>,
     pub local_map: FxHashMap<LocalId, Variable>,
     /// Stack homes for address-taken scalar locals (F2.0 `&`/`&mut`).
     /// Aggregate/heap locals keep their address in `local_map` (pointer SSA).
     pub local_stack_slots: FxHashMap<LocalId, StackSlot>,
+    pub(crate) integer_concat_temps: Vec<Option<arandu_codegen::string_interp::IntegerStringKind>>,
+    pub(crate) integer_concat_values: FxHashMap<TempId, (Value, Value, &'static str)>,
     pub str_temp_map: FxHashMap<TempId, (Variable, Variable)>,
     pub str_local_map: FxHashMap<LocalId, (Variable, Variable)>,
     pub ptr_type: Type,
+    /// Hidden destination owned by the caller, never a callee-frame address.
+    pub(crate) indirect_return_destination: Option<Value>,
+    /// Destination-passing for the current top-level result construction.
+    pub(crate) aggregate_destination: Option<Value>,
+    pub(crate) frame_promotion_safe: bool,
+    /// Lazily allocated Copy scratch buffers, owned by this invocation only.
+    pub(crate) heap_scratch_slots: Vec<StackSlot>,
+    pub(crate) static_initializers:
+        FxHashMap<InstrId, arandu_semantics::static_data::StaticInitializer>,
+    pub(crate) current_initializer: Option<InstrId>,
     pub literal_pool: &'b arandu_semantics::literal_pool::AmirLiteralPool,
     pub current_func: &'b AmirFunc,
     pub type_info: &'b arandu_semantics::TypeInfo,
@@ -72,6 +88,21 @@ pub struct FunctionTranslator<'a, 'b, M: Module> {
 }
 
 impl<'a, 'b, M: Module> FunctionTranslator<'a, 'b, M> {
+    /// Declare host helpers at their actual use, rather than retaining every
+    /// runtime archive member through unused undefined object symbols.
+    pub(super) fn resolve_function(&mut self, name: &str) -> Option<FuncId> {
+        if let Some(&id) = self.func_ids.get(name) {
+            return Some(id);
+        }
+        match self.runtime_imports.resolve(self.module, name) {
+            Ok(id) => id,
+            Err(error) => {
+                self.error.get_or_insert(error);
+                None
+            }
+        }
+    }
+
     pub(super) fn materialize_slice_descriptor(&mut self, data: Value, len: Value) -> Value {
         let pointer_bytes = self.ptr_type.bytes();
         let slot = self
@@ -95,6 +126,8 @@ impl<'a, 'b, M: Module> FunctionTranslator<'a, 'b, M> {
         module: &'b mut M,
         symbol_table: &'b SymbolTable,
         func_ids: &'b FxHashMap<String, FuncId>,
+        runtime_imports: &'b crate::jit::symbols::RuntimeImports,
+        gen_shutdown: bool,
         ptr_type: Type,
         literal_pool: &'b arandu_semantics::literal_pool::AmirLiteralPool,
         current_func: &'b AmirFunc,
@@ -115,18 +148,43 @@ impl<'a, 'b, M: Module> FunctionTranslator<'a, 'b, M> {
             }
             by_temp
         });
+        let little_endian = module.isa().endianness() == cranelift_codegen::ir::Endianness::Little;
         Self {
             builder,
             module,
             symbol_table,
             func_ids,
+            runtime_imports,
+            gen_shutdown,
             block_map: FxHashMap::default(),
             temp_map: FxHashMap::default(),
             local_map: FxHashMap::default(),
             local_stack_slots: FxHashMap::default(),
+            integer_concat_temps: arandu_codegen::string_interp::integer_concat_temps(
+                current_func,
+                &type_info.type_interner,
+            ),
+            integer_concat_values: FxHashMap::default(),
             str_temp_map: FxHashMap::default(),
             str_local_map: FxHashMap::default(),
             ptr_type,
+            indirect_return_destination: None,
+            aggregate_destination: None,
+            frame_promotion_safe: storage::frame_promotion_safe(
+                current_func,
+                symbol_table,
+                type_info,
+            ),
+            heap_scratch_slots: Vec::new(),
+            static_initializers: arandu_semantics::static_data::static_initializers(
+                current_func,
+                &type_info.type_interner,
+                type_info,
+                literal_pool,
+                arandu_semantics::layout::DataLayout::ptr_width(u64::from(ptr_type.bytes())),
+                little_endian,
+            ),
+            current_initializer: None,
             literal_pool,
             current_func,
             type_info,
@@ -314,7 +372,10 @@ impl<'a, 'b, M: Module> FunctionTranslator<'a, 'b, M> {
             }
             Err(error) => {
                 self.record_ice(
-                    format!("Cranelift rejected an invalid type layout: {error}"),
+                    format!(
+                        "Cranelift rejected the layout of '{}': {error}",
+                        ty.display(self.symbol_table, &self.type_info.type_interner)
+                    ),
                     self.func_span(),
                 );
                 arandu_semantics::layout::TypeLayout::simple(0, 1)
@@ -390,6 +451,9 @@ impl<'a, 'b, M: Module> FunctionTranslator<'a, 'b, M> {
                     arandu_semantics::literal_pool::AmirLiteralEntry::Int(_) => ArType::IntLiteral,
                     arandu_semantics::literal_pool::AmirLiteralEntry::Float(_) => {
                         ArType::FloatLiteral
+                    }
+                    arandu_semantics::literal_pool::AmirLiteralEntry::FloatBits(value) => {
+                        ArType::Primitive(value.ty().primitive())
                     }
                     arandu_semantics::literal_pool::AmirLiteralEntry::Str(_) => {
                         ArType::Primitive(Primitive::Str)
@@ -492,6 +556,14 @@ impl<'a, 'b, M: Module> FunctionTranslator<'a, 'b, M> {
             }
         }
 
+        let temp_slots = arandu_codegen::temp_slots::block_local_temp_slots(
+            self.current_func,
+            |temp| {
+                matches!(self.resolve_ty(self.current_func.temps[temp.as_usize()].ty),
+                ArType::Primitive(primitive) if primitive.is_numeric() || matches!(primitive, Primitive::Bool | Primitive::Char))
+            },
+        );
+        let mut slot_vars = FxHashMap::default();
         for temp in &self.current_func.temps {
             let tty = self.resolve_ty(temp.ty);
             if matches!(tty, ArType::Primitive(Primitive::Str)) {
@@ -499,7 +571,11 @@ impl<'a, 'b, M: Module> FunctionTranslator<'a, 'b, M> {
                 let var_len = self.builder.declare_var(self.ptr_type);
                 self.str_temp_map.insert(temp.id, (var_ptr, var_len));
             } else if let ClifType::Concrete(clif_ty) = clif_type(&tty, self.ptr_type) {
-                let var = self.builder.declare_var(clif_ty);
+                // Reused values have one dominating definition and all uses
+                // in that same block; SSABuilder never merges their states.
+                let var = *slot_vars
+                    .entry(temp_slots[temp.id.as_usize()])
+                    .or_insert_with(|| self.builder.declare_var(clif_ty));
                 self.temp_map.insert(temp.id, var);
             }
         }
@@ -510,6 +586,7 @@ impl<'a, 'b, M: Module> FunctionTranslator<'a, 'b, M> {
             self.visit_block(block);
         }
 
+        self.finish_heap_scratch();
         self.builder.seal_all_blocks();
 
         if let Some(error) = self.error.take() {
@@ -604,6 +681,19 @@ impl<'a, 'b, M: Module> AmirVisitor for FunctionTranslator<'a, 'b, M> {
 
             let clif_params = self.builder.block_params(clif_block).to_vec();
             let mut clif_slot_idx = 0;
+            if self
+                .builder
+                .func
+                .signature
+                .params
+                .first()
+                .is_some_and(|param| {
+                    param.purpose == cranelift_codegen::ir::ArgumentPurpose::StructReturn
+                })
+            {
+                self.indirect_return_destination = clif_params.first().copied();
+                clif_slot_idx = 1;
+            }
             for &param_temp_id in &self.current_func.params {
                 let param_ty = self.temp_ar_ty(param_temp_id);
                 if matches!(&param_ty, ArType::Primitive(Primitive::Str)) {
@@ -625,7 +715,22 @@ impl<'a, 'b, M: Module> AmirVisitor for FunctionTranslator<'a, 'b, M> {
                     if let Some(&var) = self.temp_map.get(&param_temp_id) {
                         self.builder.def_var(var, descriptor);
                     }
-                } else if matches!(&param_ty, ArType::Named(_, _) | ArType::Tuple(_)) {
+                } else if matches!(
+                    param_ty,
+                    ArType::Option(_) | ArType::Result(..) | ArType::Poll(_)
+                ) {
+                    let source = clif_params[clif_slot_idx];
+                    clif_slot_idx += 1;
+                    let destination = self.allocate_independent_aggregate(&param_ty);
+                    let layout = self.checked_layout(&param_ty);
+                    self.copy_aggregate_bytes(destination, source, layout.size);
+                    if let Some(&var) = self.temp_map.get(&param_temp_id) {
+                        self.builder.def_var(var, destination);
+                    }
+                } else if matches!(
+                    &param_ty,
+                    ArType::Named(_, _) | ArType::Tuple(_) | ArType::Array(_, _)
+                ) {
                     let arg_abi = self.classify_arg_abi(&param_ty);
                     match arg_abi {
                         arandu_semantics::layout::ArgAbi::ZeroSized => {
@@ -636,26 +741,11 @@ impl<'a, 'b, M: Module> AmirVisitor for FunctionTranslator<'a, 'b, M> {
                         }
                         arandu_semantics::layout::ArgAbi::Direct(direct) => {
                             let layout = self.checked_layout(&param_ty);
-                            let size = u32::try_from(layout.size.max(1)).unwrap_or(1);
-                            let align_shift = layout.align.max(1).trailing_zeros() as u8;
-                            let slot = self.builder.create_sized_stack_slot(
-                                cranelift_codegen::ir::StackSlotData {
-                                    kind: cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
-                                    size,
-                                    align_shift,
-                                    key: None,
-                                },
-                            );
-                            let addr = self.builder.ins().stack_addr(self.ptr_type, slot, 0);
+                            let addr = self.allocate_independent_aggregate(&param_ty);
                             for abi_slot in &direct.slots {
                                 let chunk_val = clif_params[clif_slot_idx];
                                 clif_slot_idx += 1;
-                                self.builder.ins().store(
-                                    cranelift_codegen::ir::MemFlagsData::new(),
-                                    chunk_val,
-                                    addr,
-                                    abi_slot.offset as i32,
-                                );
+                                self.store_abi_slot(chunk_val, addr, abi_slot, layout.size);
                             }
                             if let Some(&var) = self.temp_map.get(&param_temp_id) {
                                 self.builder.def_var(var, addr);
@@ -664,8 +754,15 @@ impl<'a, 'b, M: Module> AmirVisitor for FunctionTranslator<'a, 'b, M> {
                         arandu_semantics::layout::ArgAbi::Indirect => {
                             let ptr_val = clif_params[clif_slot_idx];
                             clif_slot_idx += 1;
+                            // A by-value parameter is not a borrow of the
+                            // caller's backing object. In particular a callee
+                            // constructing an escaping coroutine needs its own
+                            // storage, not the caller's transient frame slot.
+                            let destination = self.allocate_independent_aggregate(&param_ty);
+                            let layout = self.checked_layout(&param_ty);
+                            self.copy_aggregate_bytes(destination, ptr_val, layout.size);
                             if let Some(&var) = self.temp_map.get(&param_temp_id) {
-                                self.builder.def_var(var, ptr_val);
+                                self.builder.def_var(var, destination);
                             }
                         }
                     }
@@ -718,7 +815,9 @@ impl<'a, 'b, M: Module> AmirVisitor for FunctionTranslator<'a, 'b, M> {
 
         for stmt_id in block.statements.iter_ids::<InstrId>() {
             let stmt = self.current_func.stmt(stmt_id);
+            self.current_initializer = Some(stmt_id);
             self.visit_stmt(stmt);
+            self.current_initializer = None;
             if self.is_current_block_terminated() {
                 break;
             }

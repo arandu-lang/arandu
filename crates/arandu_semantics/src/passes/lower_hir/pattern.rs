@@ -97,6 +97,57 @@ pub(crate) fn lower_pattern(
             fields,
         } => {
             let struct_symbol = require_type_symbol(&type_check.resolved, type_name.span)?;
+            if let Some(&(enum_symbol, _)) = type_check.type_info.enum_variants.get(&struct_symbol)
+                && let Some(variant_fields) = type_check
+                    .type_info
+                    .struct_fields
+                    .get(&struct_symbol)
+                    .cloned()
+            {
+                let field_list = pool.field_pattern_list(*fields);
+                let mut hir_payload = Vec::with_capacity(variant_fields.len());
+                for vf in variant_fields.iter() {
+                    if let Some(&f_id) = field_list
+                        .iter()
+                        .find(|&&f_id| pool.field_pattern(f_id).name == vf.name)
+                    {
+                        let f = pool.field_pattern(f_id);
+                        let pat_id = match f.pattern {
+                            Some(p) => lower_pattern_to_id(type_check, pool, hir_pool, p)?,
+                            None => {
+                                let symbol = require_def_symbol(&type_check.resolved, f.span)?;
+                                hir_pool.alloc_pattern(HirPattern::Bind {
+                                    span: f.span,
+                                    name: f.name.clone(),
+                                    symbol,
+                                })
+                            }
+                        };
+                        hir_payload.push(pat_id);
+                    } else {
+                        hir_payload
+                            .push(hir_pool.alloc_pattern(HirPattern::Wildcard { span: *span }));
+                    }
+                }
+                let payload_range = hir_pool.alloc_pattern_list(&hir_payload);
+                let variant_name = type_name.path.last().cloned().unwrap_or_else(|| {
+                    type_check
+                        .symbols
+                        .get(struct_symbol)
+                        .name
+                        .rsplit('.')
+                        .next()
+                        .unwrap_or("")
+                        .into()
+                });
+                return Ok(HirPattern::Enum {
+                    span: *span,
+                    type_symbol: enum_symbol,
+                    variant: variant_name,
+                    variant_symbol: Some(struct_symbol),
+                    payload: payload_range,
+                });
+            }
             let mut hir_fields = Vec::new();
             for &f_id in pool.field_pattern_list(*fields) {
                 let f = pool.field_pattern(f_id);

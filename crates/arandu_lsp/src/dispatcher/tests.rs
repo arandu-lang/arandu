@@ -4,6 +4,101 @@ use crate::workspace::WorkspaceFile;
 use crossbeam_channel::{bounded, unbounded};
 
 #[test]
+fn diagnostics_are_not_scheduled_for_uncommitted_document_text() {
+    let mut state = ServerState::new();
+    let uri = parse_uri("file:///pending-static.aru").expect("fixture URI");
+    let id = state.open_or_commit(&uri, "func main(): int { return 42 }".into());
+    state.set_version(id, 1);
+    state.queue_change(&uri, "func main(): int { return missing }".into());
+    state.set_version(id, 2);
+
+    let pool = WorkerPool::new(1).expect("worker");
+    let (started_tx, started_rx) = bounded(1);
+    let (release_tx, release_rx) = bounded(1);
+    pool.spawn(Priority::Interactive, None, move |_| {
+        started_tx.send(()).expect("signal worker barrier");
+        release_rx.recv().expect("release worker barrier");
+    })
+    .expect("enqueue worker barrier");
+    started_rx.recv().expect("worker entered barrier");
+    let (job_tx, _) = unbounded();
+    crate::diagnostics::spawn_diagnostics(&state, &pool, &job_tx, uri, id);
+    // Probe the queued key while the worker is blocked, without timing sleeps.
+    let scheduled = pool.cancel(&JobKey::Diagnostics(id));
+    release_tx.send(()).expect("release worker even on failure");
+    assert!(!scheduled, "pending text must not be analyzed as version 2");
+}
+
+#[test]
+fn pending_document_edits_block_diagnostic_publication_until_commit() {
+    let (connection, client) = Connection::memory();
+    let mut state = ServerState::new();
+    let uri = parse_uri("file:///pending-result.aru").expect("fixture URI");
+    let id = state.open_or_commit(&uri, "func main(): int { return 42 }".into());
+    state.set_version(id, 1);
+    state.queue_change(&uri, "func main(): int { return missing }".into());
+    state.set_version(id, 2);
+    let revision = state.revision();
+    let pool = WorkerPool::new(1).expect("worker");
+    let (job_tx, _) = unbounded();
+    // A discovery refresh during debounce could previously label committed
+    // version-1 text with the latest client version, passing both stale checks.
+    handle_job_result(
+        &connection,
+        &mut state,
+        &pool,
+        &job_tx,
+        JobResult::Diagnostics {
+            uri: uri.clone(),
+            doc_id: id,
+            version: Some(2),
+            revision,
+            fingerprint: [3; 32],
+            diags: Vec::new(),
+        },
+    )
+    .expect("handle uncommitted result");
+    assert!(
+        client.receiver.try_recv().is_err(),
+        "stale result published"
+    );
+    assert!(!state.last_diag_fp.contains_key(&id));
+
+    assert_eq!(state.flush_all(), vec![(uri.clone(), id)]);
+    let (diags, fingerprint) = {
+        let snapshot = state.snapshot();
+        let source = state.docs.get(id).expect("live document").source;
+        crate::diagnostics::compute_diagnostics(&snapshot, source)
+    };
+    let revision = state.revision();
+    handle_job_result(
+        &connection,
+        &mut state,
+        &pool,
+        &job_tx,
+        JobResult::Diagnostics {
+            uri,
+            doc_id: id,
+            version: Some(2),
+            revision,
+            fingerprint,
+            diags,
+        },
+    )
+    .expect("handle committed result");
+    let Message::Notification(message) = client.receiver.try_recv().expect("current diagnostics")
+    else {
+        panic!("expected diagnostic notification");
+    };
+    assert_eq!(message.params["version"], serde_json::json!(2));
+    assert!(message.params["diagnostics"]
+        .as_array()
+        .expect("diagnostic array")
+        .iter()
+        .any(|diagnostic| diagnostic["code"] == "N001"));
+}
+
+#[test]
 fn discovery_waits_for_interactive_response_delivery() {
     let (connection, client) = Connection::memory();
     let mut state = ServerState::new();

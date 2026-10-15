@@ -20,7 +20,21 @@ pub fn hover(
         return Some(hover);
     }
     let tc = typecheck(snap, source);
-    let sym = symbol_at(&tc, offset)?;
+    let parsed = arandu_query::passes::parse(&snap.db, source);
+    let program = (**parsed).as_ref().ok();
+    if let Some(value) =
+        program.and_then(|program| arandu_ide::comptime::value_at(program, &tc, offset))
+    {
+        return Some(Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: comptime_markdown(&value),
+            }),
+            range: Some(span_to_range(&index, value.span)),
+        });
+    }
+    let sym = symbol_at(&tc, offset)
+        .or_else(|| super::presentation::expr_symbol_at(program?, &tc, offset))?;
     let symbol = tc.symbols.try_get(sym)?;
     let presentation = symbol_presentation(snap, source, &tc, symbol);
     let mut md = format!("```arandu\n{}\n```", presentation.signature);
@@ -28,7 +42,16 @@ pub fn hover(
         md.push_str("\n\n");
         md.push_str(&documentation);
     }
-    let range = span_to_range(&index, symbol.span);
+    let extra =
+        program.and_then(|program| arandu_ide::comptime::arguments_at(program, &tc, offset));
+    if let Some(extra) = &extra {
+        md.push_str("\n\n");
+        md.push_str(&comptime_markdown(extra));
+    }
+    let range = span_to_range(
+        &index,
+        extra.as_ref().map_or(symbol.span, |extra| extra.span),
+    );
     Some(Hover {
         contents: HoverContents::Markup(MarkupContent {
             kind: MarkupKind::Markdown,
@@ -36,6 +59,16 @@ pub fn hover(
         }),
         range: Some(range),
     })
+}
+
+fn comptime_markdown(value: &arandu_ide::comptime::ComptimePresentation) -> String {
+    let values = value
+        .values
+        .iter()
+        .map(|value| format!("= {value}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("```arandu\n{values}\n```\n\n*(evaluated at compile time)*")
 }
 
 pub(crate) fn annotation_hover(text: &str, offset: u32, index: &LineIndex) -> Option<Hover> {

@@ -219,7 +219,7 @@ module tests.cli.ownership.string_view
 import std.alloc.string as strings
 import std.core.io as io
 func main(): int {
-    let mut owner = strings.from("before")
+    let mut owner = strings.String.from("before")
     let view: str = owner.asStr()
     owner.pushStr("-may-reallocate")
     io.println(view)
@@ -242,7 +242,7 @@ module tests.cli.ownership.string_view_nll
 import std.alloc.string as strings
 import std.core.io as io
 func main(): int {
-    let mut owner = strings.from("before")
+    let mut owner = strings.String.from("before")
     let view: str = owner.asStr()
     io.println(view)
     owner.pushStr("-after-last-use")
@@ -262,7 +262,7 @@ import std.alloc.string as strings
 struct Resource { value: strings.String }
 func consume(resource: own Resource): int { return 1 }
 func main(): int {
-    let resource = Resource { value: strings.new() }
+    let resource = Resource { value: strings.String.new() }
     return consume(&resource)
 }
 "#,
@@ -281,11 +281,12 @@ fn moved_noncopy_field_cannot_be_destroyed_again() {
 module tests.cli.ownership.field_move
 import std.alloc.string as strings
 struct Pair { first: strings.String, second: strings.String }
+func consume(s: strings.String): void {}
 func main(): int {
-    let mut pair = Pair { first: strings.new(), second: strings.new() }
+    let mut pair = Pair { first: strings.String.new(), second: strings.String.new() }
     let moved = pair.first
-    moved.destroy()
-    pair.first.destroy()
+    consume(moved)
+    consume(pair.first)
     return 0
 }
 
@@ -320,7 +321,7 @@ func main(): int {
     let mut index = 0
     while index < 4 {
         if index % 2 == 0 {
-            io.println(classify(Option.Some(strings.from("payload-abc"))))
+            io.println(classify(Option.Some(strings.String.from("payload-abc"))))
         } else {
             io.println(classify(Option.None))
         }
@@ -376,7 +377,7 @@ func classify(value: Option<strings.String>): int {
     }
 }
 func main(): int {
-    io.println(classify(Option.Some(strings.from("still-owned"))))
+    io.println(classify(Option.Some(strings.String.from("still-owned"))))
     io.println(classify(Option.None))
     return 0
 }
@@ -403,7 +404,7 @@ func classify(value: Option<Option<strings.String>>): int {
     }
 }
 func main(): int {
-    io.println(classify(Option.Some(Option.Some(strings.from("guarded")))))
+    io.println(classify(Option.Some(Option.Some(strings.String.from("guarded")))))
     io.println(classify(Option.Some(noneString())))
     io.println(classify(Option.None))
     return 0
@@ -457,7 +458,6 @@ func classify(value: Outer): int {
         Outer.Wrapped(Inner.Data(payload, 9)) if false => 1
         Outer.Wrapped(Inner.Data(payload, _)) => {
             let length = payload.len()
-            payload.destroy()
             length as int
         }
         Outer.Wrapped(_) => 3
@@ -465,8 +465,8 @@ func classify(value: Outer): int {
     }
 }
 func main(): int {
-    io.println(classify(Outer.Wrapped(Inner.Data(strings.from("retained"), 9))))
-    io.println(classify(Outer.Wrapped(Inner.Data(strings.from("different"), 8))))
+    io.println(classify(Outer.Wrapped(Inner.Data(strings.String.from("retained"), 9))))
+    io.println(classify(Outer.Wrapped(Inner.Data(strings.String.from("different"), 8))))
     io.println(classify(Outer.Wrapped(Inner.Empty)))
     return 0
 }
@@ -485,7 +485,7 @@ import std.alloc.string as strings
 enum Resource { Open(strings.String, strings.String), Closed }
 func consume(value: Resource): int { return 0 }
 func main(): int {
-    let open = Resource.Open(strings.from("first"), strings.from("second"))
+    let open = Resource.Open(strings.String.from("first"), strings.String.from("second"))
     let closed = Resource.Closed
     consume(open)
     consume(closed)
@@ -511,8 +511,8 @@ func classify(value: Result<strings.String, strings.String>): int {
     }
 }
 func main(): int {
-    io.println(classify(Result.Ok(strings.from("ok"))))
-    io.println(classify(Result.Err(strings.from("err"))))
+    io.println(classify(Result.Ok(strings.String.from("ok"))))
+    io.println(classify(Result.Err(strings.String.from("err"))))
     return 0
 }
 "#;
@@ -534,12 +534,11 @@ func main(): int {
     match fs.readToString("missing") {
         Result.Ok(content) => {
             if content.len == 0 { code = 5 }
-            content.destroy()
         }
         Result.Err(_) => { code = 6 }
     }
-    match Result.Ok(strings.from("owned")) {
-        Result.Ok(content) => { content.destroy() }
+    match Result.Ok(strings.String.from("owned")) {
+        Result.Ok(_) => {}
         Result.Err(_) => { code = 7 }
     }
     io.println(code)
@@ -562,10 +561,9 @@ func main(): int {
     let mut index = 0
     while index < 4 {
         index = index + 1
-        let owned = strings.from("iteration-owned")
+        let owned = strings.String.from("iteration-owned")
         if index == 1 { continue }
         if index == 3 { break }
-        owned.destroy()
     }
     return 0
 }
@@ -573,6 +571,49 @@ func main(): int {
         "loop_scope_drops",
     );
     run_emitted_c_with_asan(&c_source, "loop_scope_drops");
+}
+
+#[test]
+fn static_branch_owned_locals_drop_at_scope_exit_and_loop_jumps() {
+    let source = r#"
+import std.alloc.string as strings
+func main(): int {
+    let mut index = 0
+    while index < 4 {
+        comptime if true {
+            let owned = strings.String.from("static-scope-owned")
+            index = index + 1
+            if index == 1 { continue }
+            if index == 3 { break }
+        } else { unavailable() }
+    }
+    comptime if true { let owned = strings.String.from("end-of-scope") } else { missing() }
+    return 0
+}
+"#;
+    check_passes(source, "static_scope_drops_check");
+    run(source, "static_scope_drops_run");
+    let c_source = emit_c(source, "static_scope_drops_c");
+    run_emitted_c_with_asan(&c_source, "static_scope_drops_asan");
+}
+
+#[test]
+fn static_iteration_owned_locals_drop_once_on_each_structured_exit() {
+    let source = r#"
+import std.alloc.string as strings
+func main(): int {
+    comptime for index in 0..4 {
+        let owned = strings.String.from("static-iteration-owned")
+        if index == 1 { continue }
+        if index == 3 { break }
+    }
+    return 0
+}
+"#;
+    check_passes(source, "static_iteration_drops_check");
+    run(source, "static_iteration_drops_run");
+    let emitted = emit_c(source, "static_iteration_drops_c");
+    run_emitted_c_with_asan(&emitted, "static_iteration_drops_asan");
 }
 
 #[test]
@@ -584,19 +625,45 @@ import std.alloc.string as strings
 import std.alloc.vec as vec
 struct FileItem { path: strings.String, size: usize }
 func main(): int {
-    let mut files = vec.new<FileItem>()
-    vec.push<FileItem>(files, FileItem { path: strings.from("payload"), size: 7 })
-    vec.destroy<FileItem>(files)
-    let mut optional = vec.new<Option<strings.String>>()
-    vec.push<Option<strings.String>>(optional, Option.Some(strings.from("optional")))
-    vec.push<Option<strings.String>>(optional, Option.None)
-    vec.destroy<Option<strings.String>>(optional)
+    let mut files = vec.Vec<FileItem>.new()
+    files.push(FileItem { path: strings.String.from("payload"), size: 7 })
+    let mut optional = vec.Vec<Option<strings.String>>.new()
+    optional.push(Option.Some(strings.String.from("optional")))
+    optional.push(Option.None)
     return 0
 }
 "#,
         "c_drop_opaque",
     );
     run_emitted_c_with_asan(&c_source, "c_drop_opaque");
+}
+
+#[test]
+fn vec_get_method_preserves_the_element_borrow_until_its_last_use() {
+    let stderr = check(
+        r#"
+module tests.cli.ownership.vec_get_method
+import std.alloc.string as strings
+import std.alloc.vec as vec
+import std.core.io as io
+func main(): int {
+    let mut values = vec.Vec<strings.String>.new()
+    values.push(strings.String.from("held"))
+    let item = values.get(0)
+    values.push(strings.String.from("reallocate"))
+    match item {
+        Some(value) => { io.println(value.asStr()) }
+        None => {}
+    }
+    return 0
+}
+"#,
+        "vec_get_method",
+    );
+    assert!(
+        stderr.contains("O003"),
+        "expected reallocation conflict with method element borrow, got: {stderr}"
+    );
 }
 
 #[test]
@@ -608,10 +675,10 @@ import std.alloc.string as strings
 import std.alloc.vec as vec
 import std.core.io as io
 func main(): int {
-    let mut values = vec.new<strings.String>()
-    vec.push<strings.String>(values, strings.from("held"))
-    let item = vec.get<strings.String>(ref values, 0)
-    vec.push<strings.String>(values, strings.from("reallocate"))
+    let mut values = vec.Vec<strings.String>.new()
+    values.push(strings.String.from("held"))
+    let item = values.get(0)
+    values.push(strings.String.from("reallocate"))
     match item {
         Some(value) => { io.println(value.asStr()) }
         None => {}
@@ -636,10 +703,10 @@ import std.alloc.string as strings
 import std.alloc.vec as vec
 import std.core.io as io
 func main(): int {
-    let mut values = vec.new<strings.String>()
-    vec.push<strings.String>(values, strings.from("held"))
-    let item = vec.get<strings.String>(ref values, 0)
-    let _ = vec.put<strings.String>(values, 0, strings.from("replacement"))
+    let mut values = vec.Vec<strings.String>.new()
+    values.push(strings.String.from("held"))
+    let item = values.get(0)
+    let _ = values.set(0, strings.String.from("replacement"))
     match item {
         Some(value) => { io.println(value.asStr()) }
         None => {}
@@ -651,7 +718,7 @@ func main(): int {
     );
     assert!(
         stderr.contains("O003"),
-        "expected put to conflict with a live element reference, got: {stderr}"
+        "expected set to conflict with a live element reference, got: {stderr}"
     );
 }
 
@@ -663,10 +730,9 @@ module tests.cli.ownership.vec_put_drop
 import std.alloc.string as strings
 import std.alloc.vec as vec
 func main(): int {
-    let mut values = vec.new<strings.String>()
-    vec.push<strings.String>(values, strings.from("old"))
-    let _ = vec.put<strings.String>(values, 0, strings.from("new"))
-    vec.destroy<strings.String>(values)
+    let mut values = vec.Vec<strings.String>.new()
+    values.push(strings.String.from("old"))
+    let _ = values.set(0, strings.String.from("new"))
     return 0
 }
 "#,
@@ -683,14 +749,13 @@ import std.alloc.string as strings
 import std.alloc.vec as vec
 import std.core.io as io
 func main(): int {
-    let mut values = vec.new<Option<strings.String>>()
-    vec.push<Option<strings.String>>(values, Option.Some(strings.from("moved")))
-    let taken = vec.takeSome<strings.String>(values, 0)
+    let mut values = vec.Vec<Option<strings.String>>.new()
+    values.push(Option.Some(strings.String.from("moved")))
+    let taken = values.takeSome(0)
     match taken {
         Some(value) => { io.println(value.asStr()) }
         None => { return 1 }
     }
-    vec.destroy<Option<strings.String>>(values)
     return 0
 }
 
@@ -708,20 +773,19 @@ module tests.cli.ownership.smallvec_owned_lifecycle
 import std.alloc.smallvec as smallvec
 import std.alloc.string as strings
 func main(): int {
-    let mut values = smallvec.new<strings.String>()
-    values.push(strings.from("inline-0"))
-    values.push(strings.from("inline-1"))
-    values.push(strings.from("inline-2"))
-    values.push(strings.from("inline-3"))
-    values.push(strings.from("spill-4"))
-    values.push(strings.from("spill-5"))
+    let mut values = smallvec.SmallVec4<strings.String>.new()
+    values.push(strings.String.from("inline-0"))
+    values.push(strings.String.from("inline-1"))
+    values.push(strings.String.from("inline-2"))
+    values.push(strings.String.from("inline-3"))
+    values.push(strings.String.from("spill-4"))
+    values.push(strings.String.from("spill-5"))
     values.clear()
-    values.push(strings.from("again-0"))
-    values.push(strings.from("again-1"))
-    values.push(strings.from("again-2"))
-    values.push(strings.from("again-3"))
-    values.push(strings.from("again-4"))
-    values.destroy()
+    values.push(strings.String.from("again-0"))
+    values.push(strings.String.from("again-1"))
+    values.push(strings.String.from("again-2"))
+    values.push(strings.String.from("again-3"))
+    values.push(strings.String.from("again-4"))
     return 0
 }
 
@@ -738,11 +802,10 @@ module tests.cli.ownership.vec_owned_string_drop
 import std.alloc.string as strings
 import std.alloc.vec as vec
 func main(): int {
-    let mut values = vec.new<Option<strings.String>>()
-    vec.push<Option<strings.String>>(values, Option.Some(strings.from("owned-0")))
-    vec.push<Option<strings.String>>(values, Option.Some(strings.from("owned-1")))
-    vec.push<Option<strings.String>>(values, Option.None)
-    vec.destroy<Option<strings.String>>(values)
+    let mut values = vec.Vec<Option<strings.String>>.new()
+    values.push(Option.Some(strings.String.from("owned-0")))
+    values.push(Option.Some(strings.String.from("owned-1")))
+    values.push(Option.None)
     return 0
 }
 "#;
@@ -758,9 +821,9 @@ module tests.cli.ownership.option_array_drops
 import std.alloc.string as strings
 func main(): int {
     let values = [
-        Option.Some(strings.from("first")),
+        Option.Some(strings.String.from("first")),
         Option.None,
-        Option.Some(strings.from("third")),
+        Option.Some(strings.String.from("third")),
         Option.None,
     ]
     return 0
@@ -778,8 +841,8 @@ module tests.cli.ownership.field_reassignment_drop
 import std.alloc.string as strings
 struct Holder { value: strings.String, marker: int }
 func main(): int {
-    let mut holder = Holder { value: strings.from("old"), marker: 7 }
-    holder.value = strings.from("new")
+    let mut holder = Holder { value: strings.String.from("old"), marker: 7 }
+    holder.value = strings.String.from("new")
     return 0
 }
 "#;
@@ -795,7 +858,7 @@ fn owned_array_elements_are_dropped_by_amir_element_places() {
 module tests.cli.ownership.array_element_drops
 import std.alloc.string as strings
 func main(): int {
-    let values = [strings.from("first"), strings.from("second")]
+    let values = [strings.String.from("first"), strings.String.from("second")]
     return 0
 }
 "#;
@@ -816,8 +879,7 @@ func rebind(value: strings.String): strings.String {
     return current
 }
 func main(): int {
-    let result = rebind(strings.from("value"))
-    result.destroy()
+    let result = rebind(strings.String.from("value"))
     return 0
 }
 "#,
@@ -834,8 +896,8 @@ import std.alloc.string as strings
 import std.alloc.smallvec as smallvec
 import std.core.io as io
 func main(): int {
-    let values = smallvec.new<strings.String>()
-    let copied = smallvec.get<strings.String>(ref values, 0)
+    let values = smallvec.SmallVec4<strings.String>.new()
+    let copied = values.get(0)
     return 0
 }
 "#,
@@ -854,13 +916,12 @@ module tests.cli.ownership.smallvec_push_noncopy
 import std.alloc.string as strings
 import std.alloc.smallvec as smallvec
 func main(): int {
-    let mut values = smallvec.new<strings.String>()
-    values.push(strings.from("one"))
-    values.push(strings.from("two"))
-    values.push(strings.from("three"))
-    values.push(strings.from("four"))
-    values.push(strings.from("spill"))
-    values.destroy()
+    let mut values = smallvec.SmallVec4<strings.String>.new()
+    values.push(strings.String.from("one"))
+    values.push(strings.String.from("two"))
+    values.push(strings.String.from("three"))
+    values.push(strings.String.from("four"))
+    values.push(strings.String.from("spill"))
     return 0
 }
 "#;
@@ -875,24 +936,30 @@ module tests.cli.ownership.hashmap_noncopy_value
 import std.alloc.string as strings
 import std.alloc.hash_map as maps
 func main(): int {
-    let mut map = maps.new<strings.String, strings.String>()
-    let first = maps.insert(map, strings.from("first-key"), strings.from("first-value"))
-    let second = maps.insert(map, strings.from("second-key"), strings.from("second-value"))
-    let third = maps.insert(map, strings.from("third-key"), strings.from("third-value"))
-    let fourth = maps.insert(map, strings.from("fourth-key"), strings.from("fourth-value"))
-    let fifth = maps.insert(map, strings.from("fifth-key"), strings.from("fifth-value"))
-    let query = strings.from("third-key")
-    if !maps.contains(map, ref query) {
+    let mut map = maps.HashMap<strings.String, strings.String>.new()
+    let first = map.put(strings.String.from("first-key"), strings.String.from("first-value"))
+    let second = map.put(strings.String.from("second-key"), strings.String.from("second-value"))
+    let third = map.put(strings.String.from("third-key"), strings.String.from("third-value"))
+    let fourth = map.put(strings.String.from("fourth-key"), strings.String.from("fourth-value"))
+    let fifth = map.put(strings.String.from("fifth-key"), strings.String.from("fifth-value"))
+    let sixth = map.put(strings.String.from("sixth-key"), strings.String.from("sixth-value"))
+    // The seventh insertion crosses the 75% threshold of eight buckets.
+    // Unlike initial allocation, rehash must move a live nonempty buffer
+    // through `mut ref self` without dropping it on field replacement.
+    let seventh = map.put(strings.String.from("seventh-key"), strings.String.from("seventh-value"))
+    if map.capacity() != 16 as usize || map.len() != 7 as usize {
+        return 3
+    }
+    let query = strings.String.from("third-key")
+    if !map.contains(ref query) {
         return 1
     }
-    match maps.remove(map, ref query) {
-        Some(value) => { value.destroy() }
+    match map.remove(ref query) {
+        Some(_) => {}
         None => { return 2 }
     }
-    let replacement = maps.insert(map, strings.from("replacement-key"), strings.from("replacement-value"))
-    maps.clear(map)
-    map.destroy()
-    query.destroy()
+    let replacement = map.put(strings.String.from("replacement-key"), strings.String.from("replacement-value"))
+    map.clear()
     return 0
 }
 "#;
@@ -903,22 +970,37 @@ func main(): int {
 }
 
 #[test]
+fn bitset_returned_from_a_callee_drops_its_nested_generic_buffer() {
+    let source = r#"
+import std.alloc.bitset as bitset
+func make(): bitset.BitSet { return bitset.BitSet.withCapacity(512 as usize) }
+func main(): int {
+    let mut flags = make()
+    flags.insert(129)
+    if !flags.contains(129) { return 1 }
+    return 0
+}
+"#;
+    let stdout = run(source, "bitset_nested_drop");
+    assert!(stdout.is_empty());
+    let c_source = emit_c(source, "bitset_nested_drop_c");
+    run_emitted_c_with_asan(&c_source, "bitset_nested_drop_asan");
+}
+
+#[test]
 fn hashmap_get_ref_borrows_a_noncopy_value_without_cloning() {
     let source = r#"
 module tests.cli.ownership.hashmap_get_ref
 import std.alloc.string as strings
 import std.alloc.hash_map as maps
 func main(): int {
-    let mut map = maps.new<strings.String, strings.String>()
-    let _ = maps.insert(map, strings.from("key"), strings.from("value"))
-    let key = strings.from("key")
-    let expected = strings.from("value")
-    match maps.getRef(map, ref key) {
+    let mut map = maps.HashMap<strings.String, strings.String>.new()
+    let _ = map.put(strings.String.from("key"), strings.String.from("value"))
+    let key = strings.String.from("key")
+    let expected = strings.String.from("value")
+    match map.getRef(ref key) {
         Some(value) => {
             if value.eq(ref expected) {
-                map.destroy()
-                key.destroy()
-                expected.destroy()
                 return 0
             }
             return 1
@@ -942,11 +1024,11 @@ import std.alloc.string as strings
 import std.alloc.hash_map as maps
 import std.core.io as io
 func main(): int {
-    let mut map = maps.new<strings.String, strings.String>()
-    let _ = maps.insert(map, strings.from("key"), strings.from("value"))
-    let key = strings.from("key")
-    let found = maps.getRef(map, ref key)
-    maps.clear(map)
+    let mut map = maps.HashMap<strings.String, strings.String>.new()
+    let _ = map.put(strings.String.from("key"), strings.String.from("value"))
+    let key = strings.String.from("key")
+    let found = map.getRef(ref key)
+    map.clear()
     match found {
         Some(value) => { io.println(value.asStr()) }
         None => {}
@@ -969,25 +1051,22 @@ module tests.cli.ownership.smallvec_get_ref
 import std.alloc.smallvec as smallvec
 import std.alloc.string as strings
 func main(): int {
-    let mut values = smallvec.new<strings.String>()
-    values.push(strings.from("inline"))
-    let expected_inline = strings.from("inline")
-    match smallvec.getRef(values, 0 as usize) {
+    let mut values = smallvec.SmallVec4<strings.String>.new()
+    values.push(strings.String.from("inline"))
+    let expected_inline = strings.String.from("inline")
+    match values.getRef(0 as usize) {
         Some(value) => { if !value.eq(ref expected_inline) { return 1 } }
         None => { return 2 }
     }
-    values.push(strings.from("two"))
-    values.push(strings.from("three"))
-    values.push(strings.from("four"))
-    values.push(strings.from("heap"))
-    let expected_heap = strings.from("heap")
-    match smallvec.getRef(values, 4 as usize) {
+    values.push(strings.String.from("two"))
+    values.push(strings.String.from("three"))
+    values.push(strings.String.from("four"))
+    values.push(strings.String.from("heap"))
+    let expected_heap = strings.String.from("heap")
+    match values.getRef(4 as usize) {
         Some(value) => { if !value.eq(ref expected_heap) { return 3 } }
         None => { return 4 }
     }
-    values.destroy()
-    expected_inline.destroy()
-    expected_heap.destroy()
     return 0
 }
 "#;
@@ -1006,13 +1085,13 @@ import std.alloc.smallvec as smallvec
 import std.alloc.string as strings
 import std.core.io as io
 func main(): int {
-    let mut values = smallvec.new<strings.String>()
-    values.push(strings.from("one"))
-    let held = smallvec.getRef(values, 0 as usize)
-    values.push(strings.from("two"))
-    values.push(strings.from("three"))
-    values.push(strings.from("four"))
-    values.push(strings.from("fifth"))
+    let mut values = smallvec.SmallVec4<strings.String>.new()
+    values.push(strings.String.from("one"))
+    let held = values.getRef(0 as usize)
+    values.push(strings.String.from("two"))
+    values.push(strings.String.from("three"))
+    values.push(strings.String.from("four"))
+    values.push(strings.String.from("fifth"))
     match held {
         Some(value) => { io.println(value.asStr()) }
         None => {}
@@ -1044,10 +1123,10 @@ public func Key.hash<H: hash.Hasher>(self: ref Key, state: mut ref H): void {
     state.writeInt(self.value)
 }
 func main(): int {
-    let mut values = maps.new<Key, int>()
+    let mut values = maps.HashMap<Key, int>.new()
     let key = Key { value: 7 }
-    let _ = maps.insert(values, Key { value: 7 }, 42)
-    match maps.get(values, ref key) {
+    let _ = values.put(Key { value: 7 }, 42)
+    match values.get(ref key) {
         Some(value) => { if value == 42 { return 0 } }
         None => {}
     }
@@ -1066,11 +1145,11 @@ module tests.cli.ownership.hash_string
 import std.alloc.string as strings
 import std.core.hash as hash
 func main(): int {
-    let left = strings.from("same")
-    let right = strings.from("same")
-    let different = strings.from("different")
-    let mut left_hash = hash.fnvNew()
-    let mut right_hash = hash.fnvNew()
+    let left = strings.String.from("same")
+    let right = strings.String.from("same")
+    let different = strings.String.from("different")
+    let mut left_hash = hash.FnvHasher.new()
+    let mut right_hash = hash.FnvHasher.new()
     left.hash(mut ref left_hash)
     right.hash(mut ref right_hash)
     if !left.eq(ref right) { return 1 }

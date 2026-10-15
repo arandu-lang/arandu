@@ -174,6 +174,12 @@ fn collect_interface(checker: &mut TypeChecker, decl: &arandu_parser::InterfaceD
 }
 
 fn lower_func_signature(checker: &mut TypeChecker, sig: &FuncSignature, scope: ScopeId) -> ArType {
+    for param in &sig.params {
+        crate::type_checker::check::validate_const_arguments(checker, param.ty);
+    }
+    if let Some(result) = &sig.result {
+        crate::type_checker::check::validate_const_result(checker, result);
+    }
     let ctx = LowerCtx {
         pool: checker.pool,
         symbols: &checker.symbols,
@@ -231,6 +237,17 @@ fn collect_decl_constraints(
         .collect();
 
     for gp in generic_params {
+        // Header defaults/constraints are not pre-body staging environments.
+        // Report computed arguments before an Error type can masquerade as an
+        // accepted default. This validator is pure and never calls the VM.
+        for ty in gp
+            .const_ty
+            .iter()
+            .chain(gp.default.iter())
+            .chain(gp.constraints.iter())
+        {
+            crate::type_checker::check::validate_const_arguments(checker, *ty);
+        }
         let Some(&param_sym) = name_to_sym.get(&gp.name) else {
             continue;
         };
@@ -245,10 +262,20 @@ fn collect_decl_constraints(
                 lower_type_expr_ctx(const_ty, &ctx, &mut checker.type_info.type_interner);
             let declared_id = checker.type_info.type_interner.intern(declared.clone());
             checker.type_info.record_decl_type(param_sym, declared_id);
-            if !matches!(&declared, ArType::Primitive(primitive) if primitive.is_integer()) {
+            if !matches!(&declared, ArType::Primitive(primitive) if primitive.is_integer() || *primitive == super::Primitive::Bool)
+                && !matches!(
+                    &declared,
+                    ArType::Named(..)
+                        | ArType::Tuple(_)
+                        | ArType::Array(..)
+                        | ArType::Option(_)
+                        | ArType::Result(..)
+                )
+            {
                 checker.diagnostics.push(crate::Diagnostic::error(
                     crate::DiagCode::T011GenericConstraintNotSatisfied,
-                    "const generic parameters require a scalar integer type".to_string(),
+                    "const generic parameters require an integer, bool, or closed Copy aggregate"
+                        .to_string(),
                     checker.pool.type_expr_span(const_ty),
                 ));
             }
@@ -354,6 +381,9 @@ fn resolve_interface_constraint(
         return None;
     }
     let arg_expr_ids = checker.pool.type_expr_list(args).to_vec();
+    for &arg in &arg_expr_ids {
+        crate::type_checker::check::validate_const_arguments(checker, arg);
+    }
     let ctx = LowerCtx {
         pool: checker.pool,
         symbols: &checker.symbols,
@@ -379,12 +409,21 @@ pub(crate) fn check_instantiation_constraints(
     span: Span,
 ) {
     for (&param_sym, arg_ty) in param_symbols.iter().zip(arg_types) {
+        if matches!(arg_ty, ArType::Error) {
+            continue;
+        }
         let Some(parameter) = checker.symbols.try_get(param_sym) else {
             continue;
         };
         let valid_kind = match parameter.kind {
-            SymbolKind::ConstParam => matches!(arg_ty, ArType::Const(_) | ArType::ConstParam(_)),
-            SymbolKind::TypeParam => !matches!(arg_ty, ArType::Const(_) | ArType::ConstParam(_)),
+            SymbolKind::ConstParam => matches!(
+                arg_ty,
+                ArType::Const(_) | ArType::FrozenConst(_) | ArType::ConstParam(_)
+            ),
+            SymbolKind::TypeParam => !matches!(
+                arg_ty,
+                ArType::Const(_) | ArType::FrozenConst(_) | ArType::ConstParam(_)
+            ),
             _ => true,
         };
         if !valid_kind {
@@ -399,6 +438,113 @@ pub(crate) fn check_instantiation_constraints(
                 span,
             ));
         }
+        if parameter.kind == SymbolKind::ConstParam
+            && let ArType::FrozenConst(value) = arg_ty
+            && let Some(expected) = checker.type_info.decl_type_id(param_sym)
+        {
+            let valid = match (value.as_ref(), checker.resolve(expected)) {
+                (
+                    arandu_middle::ctfe::ConstValue::Bool(_),
+                    ArType::Primitive(super::Primitive::Bool),
+                ) => true,
+                (arandu_middle::ctfe::ConstValue::Integer(value), ArType::Primitive(primitive))
+                    if primitive.is_integer() =>
+                {
+                    arandu_middle::ctfe::IntegerType::new(
+                        primitive,
+                        checker.type_info.target_layout,
+                    )
+                    .ok()
+                    .is_some_and(|ty| value.cast(ty).is_ok())
+                }
+                (arandu_middle::ctfe::ConstValue::Aggregate(value), _) => {
+                    arandu_middle::types::TypeShape::from_id(
+                        expected,
+                        &checker.type_info.type_interner,
+                    )
+                    .ok()
+                    .as_ref()
+                        == Some(value.shape())
+                }
+                _ => false,
+            };
+            if !valid {
+                checker.diagnostics.push(crate::Diagnostic::error(
+                    crate::DiagCode::T011GenericConstraintNotSatisfied,
+                    format!(
+                        "constant argument does not match the type of parameter '{}'",
+                        parameter.name
+                    ),
+                    span,
+                ));
+            }
+        }
+        if parameter.kind == SymbolKind::ConstParam
+            && let ArType::Const(value) = arg_ty
+            && let Some(ArType::Primitive(primitive)) = checker
+                .type_info
+                .decl_types
+                .get(&param_sym)
+                .map(|&id| checker.resolve(id))
+        {
+            // Use the same checked mathematical integer domain as CTFE. The
+            // instance key's u64 storage is not the parameter's declared range.
+            // Only integer range is queried here, not aggregate size or ABI.
+            let width = match checker.target_info.pointer_width {
+                32 => Some(4),
+                64 => Some(8),
+                _ => None,
+            };
+            let fits = width
+                .and_then(|width| {
+                    arandu_middle::ctfe::IntegerType::new(
+                        primitive,
+                        arandu_middle::DataLayout::ptr_width(width),
+                    )
+                    .ok()
+                })
+                .is_some_and(|ty| i128::from(*value) <= ty.max());
+            if !fits {
+                checker.diagnostics.push(crate::Diagnostic::error(
+                    crate::DiagCode::T011GenericConstraintNotSatisfied,
+                    format!("constant argument {value} is outside the range of '{}' for parameter '{}'", primitive.as_str(), parameter.name),
+                    span,
+                ).with_primary_label("constant does not fit the declared parameter type")
+                 .with_label(parameter.span, "constant parameter declared here"));
+            }
+        }
+        if parameter.kind == SymbolKind::ConstParam
+            && let ArType::ConstParam(source) = arg_ty
+            && let Some(source_domain) = constant_parameter_domain(checker, *source)
+            && let Some(destination_domain) = constant_parameter_domain(checker, param_sym)
+            && source_domain.max() > destination_domain.max()
+            && let Some(source_parameter) = checker.symbols.try_get(*source)
+        {
+            // Keys are non-negative u64 values. The source's entire admitted
+            // domain, not a particular caller's lucky value, must fit the callee.
+            checker.diagnostics.push(
+                crate::Diagnostic::error(
+                    crate::DiagCode::T011GenericConstraintNotSatisfied,
+                    format!(
+                        "constant parameter '{}' may exceed the range of parameter '{}'",
+                        source_parameter.name, parameter.name
+                    ),
+                    span,
+                )
+                .with_primary_label("forwarded constant range is too wide")
+                .with_label(
+                    source_parameter.span,
+                    "source constant parameter declared here",
+                )
+                .with_label(
+                    parameter.span,
+                    "destination constant parameter declared here",
+                )
+                .with_hint(
+                    "declare the source parameter with an integer range that fits the destination",
+                ),
+            );
+        }
     }
 
     // Bounds may reference another parameter of this declaration (J: Job<R>).
@@ -406,6 +552,9 @@ pub(crate) fn check_instantiation_constraints(
     // comparing it with the caller's declared bounds. Build only when needed.
     let mut substitution = None;
     for (param_sym, arg_ty) in param_symbols.iter().zip(arg_types) {
+        if matches!(arg_ty, ArType::Error) {
+            continue;
+        }
         let constraints = checker.type_info.param_constraints.get(param_sym).cloned();
         let Some(constraints) = constraints else {
             continue;
@@ -463,6 +612,23 @@ pub(crate) fn check_instantiation_constraints(
             }
         }
     }
+}
+
+fn constant_parameter_domain(
+    checker: &TypeChecker<'_>,
+    symbol: SymbolId,
+) -> Option<arandu_middle::ctfe::IntegerType> {
+    let ArType::Primitive(primitive) = checker.resolve(*checker.type_info.decl_types.get(&symbol)?)
+    else {
+        return None;
+    };
+    let width = match checker.target_info.pointer_width {
+        32 => 4,
+        64 => 8,
+        _ => return None,
+    };
+    arandu_middle::ctfe::IntegerType::new(primitive, arandu_middle::DataLayout::ptr_width(width))
+        .ok()
 }
 
 fn missing_methods_note(

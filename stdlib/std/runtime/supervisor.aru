@@ -56,21 +56,23 @@ public struct WorkerHandle {
 
 /// Creates a host worker supervisor and stores its integer handle.
 ///
-/// A negative `id` signals creation failure. Release a valid supervisor
-/// with `destroySupervisor`.
-public func newSupervisor(): Supervisor {
+/// A negative `id` signals creation failure. Close a valid supervisor
+/// with `Supervisor.close`.
+public func Supervisor.new(): Supervisor {
     unsafe {
         return Supervisor { id: ar_rt_supervisor_create() }
     }
 }
 
-/// Releases the supervisor's host resources.
+/// Idempotently closes the supervisor's host resources.
 ///
-/// Its wrapper retains the old ID; subsequent operations through it may
-/// fail. Do not use existing worker handles after destruction.
-public func destroySupervisor(s: ref Supervisor): void {
-    unsafe {
-        ar_rt_supervisor_destroy(s.id)
+/// Do not use existing worker handles after closing.
+public func Supervisor.close(self: mut ref Supervisor): void {
+    if self.id >= 0 {
+        unsafe {
+            ar_rt_supervisor_destroy(self.id)
+        }
+        self.id = -1
     }
 }
 
@@ -78,9 +80,9 @@ public func destroySupervisor(s: ref Supervisor): void {
 /// Path is a fat `str` (ptr+len ABI).
 /// The host runs the executable with no added arguments. A negative returned
 /// worker `id` signals failure; the wrapper does not return `Result`.
-public func supervisorSpawn(s: ref Supervisor, path: str, maxRestarts: int): WorkerHandle {
+public func Supervisor.spawn(self: ref Supervisor, path: str, maxRestarts: int): WorkerHandle {
     unsafe {
-        return WorkerHandle { id: ar_rt_supervisor_spawn_str(s.id, path, maxRestarts) }
+        return WorkerHandle { id: ar_rt_supervisor_spawn_str(self.id, path, maxRestarts) }
     }
 }
 
@@ -88,19 +90,19 @@ public func supervisorSpawn(s: ref Supervisor, path: str, maxRestarts: int): Wor
 ///
 /// Returns `0` while running, `1` after exit without restart, `2` after a
 /// restart, or `-1` on error. The worker must belong to this supervisor.
-public func supervisorPoll(s: ref Supervisor, w: WorkerHandle): int {
+public func Supervisor.poll(self: ref Supervisor, w: WorkerHandle): int {
     unsafe {
-        return ar_rt_supervisor_poll(s.id, w.id)
+        return ar_rt_supervisor_poll(self.id, w.id)
     }
 }
 
 /// Blocks until worker `w` exits and returns its exit code.
 ///
 /// Returns `-1` on host failure or if no exit code is available. This wait
-/// does not apply the automatic restart action used by `supervisorPoll`.
-public func supervisorWait(s: ref Supervisor, w: WorkerHandle): int {
+/// does not apply the automatic restart action used by `Supervisor.poll`.
+public func Supervisor.wait(self: ref Supervisor, w: WorkerHandle): int {
     unsafe {
-        return ar_rt_supervisor_wait(s.id, w.id)
+        return ar_rt_supervisor_wait(self.id, w.id)
     }
 }
 
@@ -108,8 +110,8 @@ public func supervisorWait(s: ref Supervisor, w: WorkerHandle): int {
 ///
 /// Returns zero on success or `-1` on failure. The worker handle must belong
 /// to this supervisor.
-public func supervisorKill(s: ref Supervisor, w: WorkerHandle): int {
+public func Supervisor.kill(self: ref Supervisor, w: WorkerHandle): int {
     unsafe {
-        return ar_rt_supervisor_kill(s.id, w.id)
+        return ar_rt_supervisor_kill(self.id, w.id)
     }
 }

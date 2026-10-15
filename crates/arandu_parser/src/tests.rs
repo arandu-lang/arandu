@@ -2,6 +2,213 @@ use crate::ParseErrorCode;
 use crate::{parse, parse_recovering, parse_to_string};
 
 #[test]
+fn array_repetition_retains_one_initializer_in_both_parser_paths() {
+    for source in [
+        "func main(): void { let table = [false; 256] }",
+        "func flags<comptime N: uint>(): [N]bool { return [false; N] }",
+        "func main(): void { let table = [false; comptime (128 + 128)] }",
+        "func main(): void { let table = comptime [false; 256] }",
+        "func main(): void { let table = [[false; 2]; 3] }",
+    ] {
+        let direct = parse(source).expect("direct parse");
+        let canonical =
+            crate::lower_syntax_to_program(&crate::parse_syntax(source), 0).expect("CST parse");
+        assert_eq!(direct, canonical, "{source}");
+        assert!(
+            canonical
+                .pool
+                .exprs
+                .iter()
+                .any(|kind| matches!(kind, crate::ExprKind::ArrayRepeat { .. }))
+        );
+        assert!(
+            canonical.pool.exprs.len() < 12,
+            "repetition must not expand AST"
+        );
+    }
+    for source in [
+        "func main(): void { let x = [false;] }",
+        "func main(): void { let x = [false; 2, 3] }",
+        "func main(): void { let x = [; 2] }",
+    ] {
+        assert!(parse(source).is_err(), "{source}");
+    }
+}
+
+#[test]
+fn static_for_shares_the_canonical_ast_without_changing_runtime_for() {
+    for source in [
+        "func main(): void { comptime for i in 0..4 {} }",
+        "func main(): void { for i in 0..4 {} }",
+        "func main(): void { comptime for let i = 0; i < 4; i += 1 {} }",
+    ] {
+        let direct = parse(source).expect("RD parse");
+        let canonical =
+            crate::lower_syntax_to_program(&crate::parse_syntax(source), 0).expect("CST AST");
+        assert_eq!(direct, canonical);
+        assert!(canonical.pool.stmts.iter().any(|s| matches!(s, crate::Stmt::For { is_comptime, .. } if *is_comptime == source.contains("comptime"))));
+    }
+}
+
+#[test]
+fn layout_expressions_share_canonical_cst_ast_and_are_not_attributes() {
+    for source in [
+        "func main(): usize { return @sizeOf(int) + @alignOf(i64) }",
+        "func size<T>(): usize { return @sizeOf(T) }",
+        "func main(): usize { return comptime (@sizeOf([3]u16)) }",
+        "@test func sample(): void { let n = @alignOf([3]u16); }",
+    ] {
+        let direct = parse(source).expect("direct parse");
+        let canonical =
+            crate::lower_syntax_to_program(&crate::parse_syntax(source), 0).expect("CST AST");
+        assert_eq!(direct, canonical, "{source}");
+        assert!(
+            canonical
+                .pool
+                .exprs
+                .iter()
+                .any(|e| matches!(e, crate::ExprKind::Layout { .. }))
+        );
+    }
+    for source in [
+        "func main(): usize { return @sizeOf() }",
+        "func main(): usize { return @sizeOf(int, byte) }",
+        "func main(): usize { return @sizeOf(3) }",
+        "func main(): usize { return @unknown(int) }",
+    ] {
+        assert!(parse(source).is_err(), "{source}");
+        assert!(
+            crate::lower_syntax_to_program(&crate::parse_syntax(source), 0).is_err(),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn computed_generic_arguments_share_the_canonical_ast() {
+    for source in [
+        "func main(): uint { return count<comptime (add(20, 22))>() }",
+        "func main(): uint { return count<comptime (if 1 < 2 { 42 } else { 0 })>() }",
+        "func main(): uint { return count<comptime (if 2 > 1 { 42 } else { 0 })>() }",
+        "func main(): void { let x: Box<Box<comptime (3)>> = missing }",
+        "func main(): uint { return count<comptime (identity<int>(42))>() }",
+    ] {
+        let direct = parse(source).expect("direct parse");
+        let canonical =
+            crate::lower_syntax_to_program(&crate::parse_syntax(source), 0).expect("CST AST");
+        assert_eq!(direct, canonical, "{source}");
+        assert_eq!(
+            canonical
+                .pool
+                .type_exprs
+                .iter()
+                .filter(|ty| matches!(ty, crate::TypeExpr::ConstExpression { .. }))
+                .count(),
+            1
+        );
+        assert!(
+            !canonical
+                .pool
+                .exprs
+                .iter()
+                .any(|expr| matches!(expr, crate::ExprKind::Comptime { .. }))
+        );
+    }
+    for source in [
+        "func main(): uint { return count<comptime 42>() }",
+        "func main(): uint { return count<comptime ()>() }",
+    ] {
+        assert!(parse(source).is_err());
+        assert!(crate::lower_syntax_to_program(&crate::parse_syntax(source), 0).is_err());
+    }
+}
+
+#[test]
+fn comptime_has_canonical_cst_ast_and_prefix_scope() {
+    let source = "func main(): int { let x = comptime (20 + 22); let y = comptime { return 42 }; return comptime 20 + 22 }";
+    let direct = parse(source).expect("direct parse");
+    let tree = crate::parse_syntax(source);
+    let canonical = crate::lower_syntax_to_program(&tree, 0).expect("CST AST");
+    assert_eq!(direct, canonical);
+    let roots: Vec<_> = canonical
+        .pool
+        .exprs
+        .iter()
+        .filter(|kind| matches!(kind, crate::ExprKind::Comptime { .. }))
+        .collect();
+    assert_eq!(roots.len(), 3);
+    assert!(
+        crate::highlight_spans(&tree)
+            .iter()
+            .any(|&(start, end, class)| {
+                &source[start as usize..end as usize] == "comptime" && class == "keyword"
+            })
+    );
+    assert!(canonical.pool.exprs.iter().any(|kind| matches!(kind,
+        crate::ExprKind::Binary { op: crate::BinaryOp::Add, left, .. }
+        if matches!(canonical.pool.expr(*left), crate::ExprKind::Comptime { .. }))));
+}
+
+#[test]
+fn static_if_preserves_both_branches_and_matches_canonical_cst_lowering() {
+    for source in [
+        "func main(): int { comptime if true { return 1 } else { return absent } }",
+        "func main(): int { comptime if true && false { return 1 } else comptime if true { return 2 } else { return 3 } }",
+        "func main(): int { if true { return 1 } else if false { return 2 } else { return 3 } }",
+    ] {
+        let direct = parse(source).expect("direct parse");
+        let canonical =
+            crate::lower_syntax_to_program(&crate::parse_syntax(source), 0).expect("CST AST");
+        assert_eq!(direct, canonical, "{source}");
+    }
+    let source = "func main(): int { comptime if value is Some(x) { return x } return 0 }";
+    assert!(parse(source).is_err());
+    assert!(crate::lower_syntax_to_program(&crate::parse_syntax(source), 0).is_err());
+}
+
+#[test]
+fn speculative_parsing_does_not_leave_duplicate_comptime_nodes() {
+    for source in [
+        "func main(): int { let x = comptime { return 42 }; return x + count<0>() }\nfunc count<comptime N: uint>(): int { return N as int }",
+        "func main(): void { let values = [1]; values[comptime 0] }",
+        "func main(): void { let mut values = [1]; values[comptime 0] = 2 }",
+    ] {
+        let direct = parse(source).expect("RD parse");
+        let canonical =
+            crate::lower_syntax_to_program(&crate::parse_syntax(source), 0).expect("CST AST");
+        for program in [direct, canonical] {
+            let roots = program
+                .pool
+                .exprs
+                .iter()
+                .filter(|kind| matches!(kind, crate::ExprKind::Comptime { .. }))
+                .count();
+            assert_eq!(
+                roots, 1,
+                "speculative allocations leaked into AST: {source}"
+            );
+            assert_eq!(program.pool.exprs.len(), program.pool.expr_spans.len());
+            assert_eq!(program.pool.stmts.len(), program.pool.stmt_spans.len());
+            assert_eq!(
+                program.pool.type_exprs.len(),
+                program.pool.type_expr_spans.len()
+            );
+        }
+    }
+}
+
+#[test]
+fn reserved_expression_staging_does_not_acquire_runtime_branch_semantics() {
+    for source in [
+        "func main(): int { return comptime if true { 1 } else { 2 } }",
+        "func main(): void { comptime while true {} }",
+    ] {
+        assert!(parse(source).is_err());
+        assert!(crate::lower_syntax_to_program(&crate::parse_syntax(source), 0).is_err());
+    }
+}
+
+#[test]
 fn annotation_name_span_excludes_at_and_arguments_in_both_lowering_paths() {
     let source = "@Link(\"m\")\nextern \"C\" {}\n";
     let direct = parse(source).expect("direct parse");
@@ -505,6 +712,29 @@ fn program_dump_empty_source_starts_with_program() {
 // ── parse_recovering_with_file_id ─────────────────────────────────────────────
 
 #[test]
+fn comptime_value_parameters_use_the_const_parameter_ast_in_both_parsers() {
+    for marker in ["const", "comptime"] {
+        let source = format!("func count<T, {marker} N: uint>(): uint {{ return N }}");
+        let direct = parse(&source).expect("RD generic parameter");
+        let tree = crate::syntax::parse_syntax(&source);
+        let canonical =
+            crate::syntax::lower_syntax_to_program(&tree, 0).expect("CST generic parameter");
+        assert_eq!(direct, canonical, "{source}");
+        let crate::TopLevelDecl::Func(function) = canonical.pool.decl(canonical.decls[0]) else {
+            panic!("function");
+        };
+        assert!(function.generic_params[0].const_ty.is_none());
+        assert!(function.generic_params[1].const_ty.is_some());
+        let span = function.generic_params[1].span;
+        assert_eq!(
+            &source[usize::try_from(span.start).expect("start")
+                ..usize::try_from(span.end).expect("end")],
+            format!("{marker} N: uint")
+        );
+    }
+}
+
+#[test]
 fn parse_recovering_with_file_id_propagates_to_program_span() {
     use crate::parse_recovering_with_file_id;
 
@@ -518,6 +748,24 @@ fn parse_recovering_with_file_id_propagates_to_program_span() {
         output.program.span.file_id, 42,
         "program span should carry the supplied file_id"
     );
+}
+
+#[test]
+fn static_statement_in_expression_reports_the_supported_value_form() {
+    for construct in ["if true { 1 } else { 2 }", "for i in 0..2 { i }"] {
+        let source = format!("func main(): int {{ return comptime {construct} }}");
+        let output = crate::parse_recovering_with_file_id(&source, 7);
+        assert!(
+            output.diagnostics.iter().any(|diagnostic| {
+                diagnostic
+                    .message
+                    .contains("are statements, not expressions")
+                    && diagnostic.message.contains("comptime { ... }")
+            }),
+            "{:?}",
+            output.diagnostics
+        );
+    }
 }
 
 #[test]
@@ -541,17 +789,70 @@ fn parse_recovering_with_file_id_error_carries_file_id() {
 
 #[test]
 fn deeply_nested_expression_does_not_stack_overflow_and_recovers() {
-    let mut source = String::from("func main() {\n    let x = ");
-    for _ in 0..115 {
-        source.push('(');
-    }
-    source.push_str("42");
-    for _ in 0..115 {
-        source.push(')');
-    }
-    source.push_str("\n}\n");
+    std::thread::Builder::new()
+        .stack_size(512 * 1024)
+        .spawn(|| {
+            for (prefix, suffix) in [("(", ")"), ("!", "")] {
+              for (nesting, expected_error) in [(100, false), (115, true)] {
+                let mut source = String::from("func main() {\n    let x = ");
+                source.push_str(&prefix.repeat(nesting));
+                source.push_str("42");
+                source.push_str(&suffix.repeat(nesting));
+                source.push_str("\n}\nfunc after(): int { return 1 }\n");
+                let tree = crate::syntax::parse_syntax(&source);
+                let output = crate::syntax::lower_syntax_to_program_recovering(&tree, 0);
+                assert_eq!(!output.diagnostics.is_empty(), expected_error, "depth {nesting}");
+                assert!(output.program.decls.iter().any(|decl| matches!(output.program.pool.decl(*decl),
+                    crate::TopLevelDecl::Func(function)
+                        if matches!(&function.name, crate::FuncName::Free { name, .. } if name == "after")
+                )), "recovery must preserve the following declaration");
+            }
+            }
+        })
+        .expect("spawn bounded parser worker")
+        .join()
+        .expect("bounded parser worker failed");
+}
 
-    let tree = crate::syntax::parse_syntax(&source);
-    let output = crate::syntax::lower_syntax_to_program_recovering(&tree, 0);
-    assert!(!output.diagnostics.is_empty());
+#[test]
+fn deeply_nested_type_does_not_stack_overflow_and_recovers() {
+    std::thread::Builder::new()
+        .stack_size(512 * 1024)
+        .spawn(|| {
+            for (prefix, suffix) in [
+                ("ref ", ""),
+                ("mut ref ", ""),
+                ("own ", ""),
+                ("[]", ""),
+                ("[1]", ""),
+                ("ptr[", "]"),
+                ("(", ")"),
+            ] {
+                for (nesting, expected_error) in [(100, false), (115, true)] {
+                    let source = format!(
+                        "func main() {{ let x: {}i32{} = 42;\n}}\nfunc after(): int {{ return 1 }}\n",
+                        prefix.repeat(nesting),
+                        suffix.repeat(nesting),
+                    );
+                    let tree = crate::syntax::parse_syntax(&source);
+                    let output = crate::syntax::lower_syntax_to_program_recovering(&tree, 0);
+                    assert_eq!(
+                        !output.diagnostics.is_empty(),
+                        expected_error,
+                        "{prefix} depth {nesting}",
+                    );
+                    assert!(
+                        output.program.decls.iter().any(|decl| matches!(
+                            output.program.pool.decl(*decl),
+                            crate::TopLevelDecl::Func(function)
+                                if matches!(&function.name, crate::FuncName::Free { name, .. } if name == "after")
+                        )),
+                        "recovery must preserve the following declaration",
+                    );
+                }
+            }
+        })
+        .expect("spawn bounded type parser worker")
+        .join()
+        .expect("bounded type parser worker failed");
 }

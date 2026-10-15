@@ -176,6 +176,8 @@ impl IndexRange {
 /// A compact, index-backed storage for HIR nodes.
 #[derive(Debug, Default)]
 pub struct HirPool {
+    /// Lowering context only; runtime producers must materialize explicit roots.
+    pub ctfe_lowering: bool,
     pub exprs: IndexVec<HirExprId, super::HirExpr>,
     pub stmts: IndexVec<HirStmtId, super::HirStmt>,
     pub blocks: IndexVec<HirBlockId, super::HirBlock>,

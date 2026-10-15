@@ -48,7 +48,12 @@ public struct ExitStatus {
 }
 
 /// Wraps `code` in an `ExitStatus` value without launching a process.
-public func exitStatus(code: int): ExitStatus {
+public func ExitStatus.new(code: int): ExitStatus {
+    return ExitStatus { code: code }
+}
+
+/// Wraps `code` in an `ExitStatus` value without launching a process.
+public func ExitStatus.from(code: int): ExitStatus {
     return ExitStatus { code: code }
 }
 
@@ -74,7 +79,7 @@ public struct Command {
 ///
 /// The descriptor borrows the supplied string and currently has no public
 /// method to add arguments or launch a child.
-public func newCommand(program: str): Command {
+public func Command.new(program: str): Command {
     return Command { program: program }
 }
 
@@ -93,7 +98,7 @@ public struct Child {
 }
 
 /// Wraps `pid` in a `Child` descriptor without querying the OS.
-public func childFromPid(pid: int): Child {
+public func Child.fromPid(pid: int): Child {
     return Child { pid: pid }
 }
 

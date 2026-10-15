@@ -17,6 +17,7 @@ fn new_pool() -> arandu_parser::ast_pool::AstPool {
 
 fn make_resolver(pool: &arandu_parser::ast_pool::AstPool) -> Resolver<'_> {
     Resolver {
+        reusable_definitions: rustc_hash::FxHashSet::default(),
         symbols: SymbolTable::new(0),
         resolved: ResolvedNames::default(),
         docs: crate::DocCommentMap::default(),

@@ -87,12 +87,14 @@ pub(super) fn dump_stmt(
         }
         Stmt::If {
             span,
+            is_comptime,
             condition,
             then_block,
             else_block,
         } => {
             out.push(format!(
-                "{pad}If {} {}",
+                "{pad}{} {} {}",
+                if *is_comptime { "ComptimeIf" } else { "If" },
                 dump_span(*span),
                 dump_condition(pool, condition)
             ));
@@ -102,9 +104,15 @@ pub(super) fn dump_stmt(
                 dump_block_body(pool, else_block, out, indent + 2);
             }
         }
-        Stmt::For { span, clause, body } => {
+        Stmt::For {
+            span,
+            is_comptime,
+            clause,
+            body,
+        } => {
             out.push(format!(
-                "{pad}For {}{}",
+                "{pad}{}For {}{}",
+                if *is_comptime { "Comptime " } else { "" },
                 dump_span(*span),
                 dump_for_clause(pool, clause)
             ));

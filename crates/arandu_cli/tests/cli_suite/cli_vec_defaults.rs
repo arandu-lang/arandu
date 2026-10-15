@@ -31,7 +31,7 @@ module tests.cli.vec_defaults
 import std.alloc.vec as vec
 
 func main(): int {
-    let v: vec.Vec<int> = vec.new<int>()
+    let v: vec.Vec<int> = vec.Vec<int>.new()
     return 0
 }
 "#,
@@ -115,26 +115,24 @@ module tests.cli.vec_grow
 import std.alloc.vec as vec
 
 func main(): int {
-    let mut v = vec.new<int>()
-    vec.push(v, 1)
-    vec.push(v, 2)
-    vec.push(v, 3)
-    vec.push(v, 4)
-    vec.push(v, 5)
-    vec.push(v, 6)
-    vec.push(v, 7)
-    vec.push(v, 8)
-    vec.push(v, 9)
-    vec.push(v, 10)
-    let n = vec.len(v) as int
-    let last = vec.getCopy(v, 9)
+    let mut v = vec.Vec<int>.new()
+    v.push(1)
+    v.push(2)
+    v.push(3)
+    v.push(4)
+    v.push(5)
+    v.push(6)
+    v.push(7)
+    v.push(8)
+    v.push(9)
+    v.push(10)
+    let n = v.len() as int
+    let last = v.getCopy(9)
     match last {
         Some(x) => {
-            vec.destroy(v)
             return n + x
         }
         None => {
-            vec.destroy(v)
             return 1
         }
     }

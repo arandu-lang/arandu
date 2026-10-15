@@ -11,6 +11,134 @@ para que middle, runtime e backends concordem byte a byte.
 
 ## Detalhes Técnicos da Implementação
 
+### Aggregate equality and register transport
+
+`Option<T>` and `Result<T, E>` equality is lowered in `arandu_mir`, not
+implemented separately in the emitters. The CFG first compares discriminants;
+different variants compare unequal without reading either payload. Equal
+variants select only their active payload, recursively comparing scalars,
+strings, nested built-in sum types, nominal enums, tuples, arrays and closed structs.
+Nominal enum variants are ordered by their canonical tags, and multi-field
+payloads use the same instantiated `EnumPayload` projections as pattern lowering.
+Neither a tag mismatch nor an empty variant reads inactive payload bytes.
+`!=` negates that result. Struct padding and inactive payload bytes never
+participate; floating-point leaves retain ordinary IEEE comparison semantics
+(signed zeros compare equal and NaN does not compare equal to itself).
+The recursive expansion has a depth and work bound, including when nested
+inside a static loop. Reference leaves retain reference identity semantics.
+
+Concrete arrays now use the same target-aware aggregate classifier as tuples
+at every Cranelift boundary: declaration, argument packing, entry unpacking,
+result packing and caller result materialization. The classifier walks array
+elements, including nested arrays, only after checking the total layout size.
+SysV integer/SSE classes are not substituted for Windows x64 rules: Windows
+uses integer slots only for the supported exact aggregate sizes. Shared
+Cranelift slot packing/unpacking handles partial final slots byte by byte
+according to target endianness; an array with three bytes therefore cannot
+cause an eight-byte load or store past its allocation, without changing its
+SysV register class to an incorrect indirect convention.
+This describes Arandu's value-array transport, not C's array-to-pointer decay.
+
+### Residual aggregate storage: safety boundary
+
+Cranelift promotes admitted constructors, value copies and caller result
+buffers to independent frame slots. The pure admission policy belongs to MIR
+and is shared with Wasm: safe borrowed leaves, pointer-returning views,
+suspension, unknown foreign calls and aggregate back-edge phi values fail
+closed. Raw ownership handles inside affine containers are distinct from the
+container's backing bytes. Non-Copy moves and user destruction remain governed
+by shared ownership/drop elaboration, not by backend storage reclamation.
+Ready-only coroutine creators with scalar payloads may reclaim their private
+aggregate scratch; suspended states and aggregate coroutine payloads do not
+qualify.
+
+Promoted scratch plus existing native explicit slots has a 1 KiB admission
+budget (including alignment allowance); this does not bound register spills
+or implement stack coloring. Admitted values beyond that budget use private
+heap scratch, allocated lazily per static materialization site, reused in
+loops, and reclaimed on normal returns after packing/copying the result.
+Entry-backedge shapes are excluded from native heap-handle initialization.
+This releases backing bytes only, never a second owner of nested resources.
+
+Arandu-to-Arandu indirect aggregate results use a target-aware hidden
+`StructReturn` destination supplied by the caller. Constructors and value
+copies into the return temporary may write directly to it; other return paths
+copy before the callee exits. This includes `Option`, `Result` and `Poll`
+carriers, while host imports keep their separate ABI. By-value parameters
+materialize private callee backing, including pointer-transported carriers.
+JIT host lookups preserve their pointer-returning ABI through narrow adapters
+that allocate a transferable result cell and call the internal destination ABI.
+Internal calls do not traverse these adapters. Host callers own the returned
+backing and must release it according to the runtime allocation contract.
+Unit-success `nil` in `Result<void, E>` lowers to an ordinary tagged constructor,
+not a null backing pointer, consistently across backends.
+Contextual constructors, including nominal variant sugar, propagate expected
+payload types into nested array literals; native payload copies additionally
+check instantiated storage bounds.
+
+Frozen initialization sources are immutable, but runtime values retain
+independent writable storage. One bounded MIR serializer handles relocation-free
+scalar arrays, tuples and closed Copy structs, including eligible nested
+literal temporaries. It follows target layout and endianness, zeroes padding,
+and uses software float conversion or frozen IEEE bits. Alias-bearing,
+multiply-used aggregate temporaries, dynamic inputs and pointer relocations
+fall back to ordinary evaluation. Serialization is bounded by 65,536 operand
+visits, depth 64 and 1 MiB of admitted bytes per function; objects below 32
+bytes retain immediate stores. Native object data and Wasm data segments consume
+the same serialized bytes. This is not global-constant CTFE or enum reflection.
+
+Linux validation used an AOT workload with 100,000 struct/array constructions
+and independent mutable copies. Interposed native malloc calls fell from
+500,000 (18,400,000 requested bytes) to zero; peak RSS in the measured run fell
+from 25,768 KiB to 2,204 KiB. This is workload-specific evidence, not a general
+speed guarantee. The real `ita` SHA-256 workload retained the reference digest;
+its malloc calls fell from 33 to 30, without a demonstrated timing improvement.
+Regression tests count runtime allocations independently of compiler/JIT
+allocations, cover all three AMIR optimization levels, inspect read-only native
+object data, and verify mutable-copy isolation and conservative fallbacks.
+
+A separate native workload constructs independent 2 KiB arrays in 10,000 loop
+iterations. Before heap-scratch reuse it made 30,000 malloc calls requesting
+61,440,000 bytes, with peak RSS 62,520 KiB. Afterwards it made three malloc calls
+requesting 6,144 bytes, with peak RSS 2,104 KiB. Test-local malloc/free accounting
+also verifies balanced releases at O0/O1/O2, unentered branches, early returns
+and recursive caller-owned results. The Linux interposition figures are
+workload-specific and do not establish behavior on Windows or macOS.
+
+The Pypor kernel workload (Linux, 2026-10-04) retained exactly 65,479 files and
+37,995,166 total lines. Five alternating warm-cache runs with eight workers on
+eight physical cores measured median external wall time of 1.31 s before and
+1.28 s after; user CPU was 6.90 s versus 6.84 s. This small timing difference
+does not establish a large speedup. Median peak RSS fell from 233,648 KiB to
+202,528 KiB (about 13%). Separate malloc interposition measured 4,780,729 versus
+3,826,624 calls; requested bytes remained about 6.2 GB over the whole execution.
+These counts include traversal, runtime and process teardown, not only scanner
+aggregates, and are not a proof of balanced resource ownership in every fallback.
+
+Wasm reserves a checked, aligned 64 KiB shadow-stack region after rodata and
+before the allocator heap, moving the entire region upward for large static
+data. Reservation traps before changing the stack pointer on overflow; normal
+returns restore it. Admitted scratch exceeds neither a 1 KiB frame budget nor
+its invocation lifetime: larger objects use lazily allocated allocator cells
+with a private scratch marker, ignored by ordinary move/drop frees and released
+by the owning invocation. Closed owned core results are transferred into
+heap cells before private backing is reclaimed; admitted callers reclaim those
+cells after their final use. Affine payloads follow the existing AMIR moves and
+drops; reclaiming a backing cell never invokes a second destructor. Regressions
+exercise recursive affine returns, early returns and exactly-once destruction
+of real allocated resources without linear-memory growth.
+Component signatures keep their canonical ABI.
+This shadow stack is separate from WebAssembly's operand/call stacks. Traps do
+not provide stack or resource unwinding; a trapped guest instance must be
+discarded rather than treated as a normal reusable invocation.
+
+Residual exclusions remain explicit: unknown foreign retention, aggregate
+back-edge phi lifetimes, borrowed carriers, general suspension/aggregate
+coroutine payloads and view-bearing pointer-returning Wasm results still require
+escape/liveness proofs and compatible ownership transfer. Legacy backing in
+those paths may retain the existing cleanup gap. They are not evidence that
+all aggregates are stack allocated or every program is allocation-free.
+
 ### 1. Type Layout Calculation Algorithm
 
 Memory layout in Arandu follows the standard C ABI layout rules (`#[repr(C)]`). Each type is represented by a `TypeLayout` structure:
@@ -41,7 +169,8 @@ The size and alignment of primitive types are defined below (under a target poin
 
 | Primitive Type | Size (Bytes) | Alignment (Bytes) | Notes |
 | :--- | :--- | :--- | :--- |
-| `bool`, `byte`, `char`, `i8`, `u8` | 1 | 1 | |
+| `bool`, `byte`, `i8`, `u8` | 1 | 1 | |
+| `char` | 4 | 4 | Unicode scalar value, not a UTF-8 byte |
 | `i16`, `u16` | 2 | 2 | |
 | `i32`, `u32`, `f32` | 4 | 4 | |
 | `i64`, `u64`, `f64` | 8 | 8 | Fixed-width types |

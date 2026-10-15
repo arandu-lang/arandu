@@ -68,12 +68,24 @@ fn parse_pattern_atom(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<Pat
             let variant_tok = cur.peek().filter(|t| t.kind.is_contextual_member_name())?;
             let variant = SmolStr::new(ctx.text(variant_tok)?);
             cur.bump();
+            let variant_end = variant_tok.start + variant_tok.len;
+            if looks_like_field_pattern_brace(cur) && cur.eat(TokenKind::LBrace) {
+                let (range, close_end) = parse_field_pattern_list(ctx, cur)?;
+                return Some(ctx.pool.alloc_pattern(Pattern::Struct {
+                    span: ctx.span(start, close_end),
+                    type_name: TypeName {
+                        span: ctx.span(start, variant_end),
+                        path: smallvec![name, variant],
+                    },
+                    fields: range,
+                }));
+            }
             let (payload, end) = if cur.eat(TokenKind::LParen) {
                 let list = parse_pattern_list(ctx, cur, TokenKind::RParen)?;
                 let close = cur.expect(TokenKind::RParen)?;
                 (ctx.pool.alloc_pattern_list(&list), close.start + close.len)
             } else {
-                (IndexRange::empty(), variant_tok.start + variant_tok.len)
+                (IndexRange::empty(), variant_end)
             };
             return Some(ctx.pool.alloc_pattern(Pattern::Enum {
                 span: ctx.span(start, end),
@@ -85,38 +97,10 @@ fn parse_pattern_atom(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<Pat
                 payload,
             }));
         }
-        if cur.eat(TokenKind::LBrace) {
-            let mut fields = Vec::new();
-            if cur.peek_kind() != Some(TokenKind::RBrace) {
-                loop {
-                    let fname_tok = cur.expect(TokenKind::IdentValue)?;
-                    let fname = SmolStr::new(ctx.text(fname_tok)?);
-                    let fstart = fname_tok.start;
-                    let pattern = if cur.eat(TokenKind::Colon) {
-                        Some(parse_pattern(ctx, cur)?)
-                    } else {
-                        None
-                    };
-                    let fend = pattern
-                        .map(|p| ctx.pool.pattern(p).span().end)
-                        .unwrap_or(fname_tok.start + fname_tok.len);
-                    fields.push(ctx.pool.alloc_field_pattern(FieldPattern {
-                        span: ctx.span(fstart, fend),
-                        name: fname,
-                        pattern,
-                    }));
-                    if !cur.eat(TokenKind::Comma) {
-                        break;
-                    }
-                    if cur.peek_kind() == Some(TokenKind::RBrace) {
-                        break;
-                    }
-                }
-            }
-            let close = cur.expect(TokenKind::RBrace)?;
-            let range = ctx.pool.alloc_field_pattern_list(&fields);
+        if looks_like_field_pattern_brace(cur) && cur.eat(TokenKind::LBrace) {
+            let (range, close_end) = parse_field_pattern_list(ctx, cur)?;
             return Some(ctx.pool.alloc_pattern(Pattern::Struct {
-                span: ctx.span(start, close.start + close.len),
+                span: ctx.span(start, close_end),
                 type_name: TypeName {
                     span: type_span,
                     path: smallvec![name],
@@ -178,6 +162,63 @@ fn parse_pattern_atom(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<Pat
         span: ctx.pool.expr_span(lit),
         expr: lit,
     }))
+}
+
+fn looks_like_field_pattern_brace(cur: &Cursor<'_>) -> bool {
+    if cur.peek_kind() != Some(TokenKind::LBrace) {
+        return false;
+    }
+    match cur.peek_at(1).map(|t| t.kind) {
+        Some(TokenKind::RBrace) => cur.peek_at(2).is_some_and(|after| {
+            matches!(
+                after.kind,
+                TokenKind::FatArrow | TokenKind::Pipe | TokenKind::KwIf | TokenKind::LBrace
+            )
+        }),
+        Some(TokenKind::IdentValue) => cur.peek_at(2).is_some_and(|after| {
+            matches!(
+                after.kind,
+                TokenKind::Colon | TokenKind::Comma | TokenKind::RBrace
+            )
+        }),
+        _ => false,
+    }
+}
+
+fn parse_field_pattern_list(
+    ctx: &mut HandCtx<'_>,
+    cur: &mut Cursor<'_>,
+) -> Option<(IndexRange, u32)> {
+    let mut fields = Vec::new();
+    if cur.peek_kind() != Some(TokenKind::RBrace) {
+        loop {
+            let fname_tok = cur.expect(TokenKind::IdentValue)?;
+            let fname = SmolStr::new(ctx.text(fname_tok)?);
+            let fstart = fname_tok.start;
+            let pattern = if cur.eat(TokenKind::Colon) {
+                Some(parse_pattern(ctx, cur)?)
+            } else {
+                None
+            };
+            let fend = pattern
+                .map(|p| ctx.pool.pattern(p).span().end)
+                .unwrap_or(fname_tok.start + fname_tok.len);
+            fields.push(ctx.pool.alloc_field_pattern(FieldPattern {
+                span: ctx.span(fstart, fend),
+                name: fname,
+                pattern,
+            }));
+            if !cur.eat(TokenKind::Comma) {
+                break;
+            }
+            if cur.peek_kind() == Some(TokenKind::RBrace) {
+                break;
+            }
+        }
+    }
+    let close = cur.expect(TokenKind::RBrace)?;
+    let range = ctx.pool.alloc_field_pattern_list(&fields);
+    Some((range, close.start + close.len))
 }
 
 fn parse_pattern_list(

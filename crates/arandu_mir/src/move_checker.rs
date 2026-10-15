@@ -163,10 +163,11 @@ impl MoveState {
     }
 
     fn has_moved_descendant(&self, place: &AmirPlace) -> bool {
+        let tracked = tracked_move_place(place);
         let is_descendant = |moved: &AmirPlace| {
-            moved.local == place.local
-                && moved.projections.len() > place.projections.len()
-                && place_is_prefix(place, moved)
+            moved.local == tracked.local
+                && moved.projections.len() > tracked.projections.len()
+                && place_is_prefix(&tracked, moved)
         };
         self.moved_fields.iter().any(is_descendant)
             || self.maybe_moved_fields.iter().any(is_descendant)
@@ -175,23 +176,37 @@ impl MoveState {
     pub(crate) fn moved_descendant_paths<'a>(
         &'a self,
         place: &'a AmirPlace,
-    ) -> impl Iterator<Item = &'a AmirPlace> + 'a {
-        self.moved_fields.iter().filter(move |moved| {
-            moved.local == place.local
-                && moved.projections.len() > place.projections.len()
-                && place_is_prefix(place, moved)
+    ) -> impl Iterator<Item = AmirPlace> + 'a {
+        let tracked = tracked_move_place(place);
+        self.moved_fields.iter().filter_map(move |moved| {
+            if moved.local != tracked.local
+                || moved.projections.len() <= tracked.projections.len()
+                || !place_is_prefix(&tracked, moved)
+            {
+                return None;
+            }
+            // Drop elaboration needs an addressable AMIR place, not our
+            // canonical ownership path: restore the caller's dereferences.
+            let mut projected = place.clone();
+            projected
+                .projections
+                .extend_from_slice(&moved.projections[tracked.projections.len()..]);
+            Some(projected)
         })
     }
 
     pub(crate) fn has_maybe_moved_descendant(&self, place: &AmirPlace) -> bool {
+        let tracked = tracked_move_place(place);
         self.maybe_moved_fields.iter().any(|moved| {
-            moved.local == place.local
-                && moved.projections.len() > place.projections.len()
-                && place_is_prefix(place, moved)
+            moved.local == tracked.local
+                && moved.projections.len() > tracked.projections.len()
+                && place_is_prefix(&tracked, moved)
         })
     }
 
     fn place_state(&self, place: &AmirPlace) -> LocalMoveState {
+        let tracked = tracked_move_place(place);
+        let place = &tracked;
         let root = self.root_state(place.local);
         if root != LocalMoveState::Available {
             return root;
@@ -214,6 +229,12 @@ impl MoveState {
     }
 
     fn field_fact_state(&self, place: &AmirPlace) -> LocalMoveState {
+        // Writes and moves store canonical paths. Reads (including the
+        // drop-on-assignment query) must use exactly the same representation.
+        // Comparing `Deref.Field` against a stored `Field` loses the move and
+        // destroys the old owner twice during e.g. HashMap rehashing.
+        let tracked = tracked_move_place(place);
+        let place = &tracked;
         let root = self.root_state(place.local);
         if root != LocalMoveState::Available {
             return root;
@@ -236,6 +257,8 @@ impl MoveState {
     }
 
     fn place_base_state(&self, place: &AmirPlace) -> LocalMoveState {
+        let tracked = tracked_move_place(place);
+        let place = &tracked;
         let root = self.root_state(place.local);
         if root != LocalMoveState::Available {
             return root;

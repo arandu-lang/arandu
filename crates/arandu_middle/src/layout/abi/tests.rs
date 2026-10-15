@@ -6,6 +6,75 @@ use crate::SymbolId;
 use crate::hir::pool::IndexRange;
 use crate::layout::{EnumPayloadShape, StructFieldInfo, StructFields};
 
+#[test]
+fn arrays_follow_target_classes_without_partial_slot_overreads() {
+    let interner = TypeInterner::new();
+    let provider = TestMockProvider::default();
+    let i64_ty = interner.intern(ArType::Primitive(Primitive::I64));
+    let f64_ty = interner.intern(ArType::Primitive(Primitive::F64));
+    let byte_ty = interner.intern(ArType::Primitive(Primitive::U8));
+    let sysv = TargetAbiClassifier::new(TargetAbi::SystemVAmd64, 8);
+    let windows = TargetAbiClassifier::new(TargetAbi::WindowsX64, 8);
+    assert_eq!(
+        sysv.classify_type(&ArType::Array(0, i64_ty), &interner, &provider),
+        ArgAbi::ZeroSized
+    );
+    for (element, scalar) in [(i64_ty, AbiScalar::I64), (f64_ty, AbiScalar::F64)] {
+        assert_eq!(
+            sysv.classify_type(&ArType::Array(2, element), &interner, &provider),
+            ArgAbi::Direct(DirectAbi {
+                slots: smallvec![AbiSlot { scalar, offset: 0 }, AbiSlot { scalar, offset: 8 }],
+            })
+        );
+        assert_eq!(
+            windows.classify_type(&ArType::Array(2, element), &interner, &provider),
+            ArgAbi::Indirect
+        );
+    }
+    for count in [3u64, 5, 7, 11, 15] {
+        let mut slots = smallvec![AbiSlot {
+            scalar: AbiScalar::I64,
+            offset: 0
+        }];
+        if count > 8 {
+            slots.push(AbiSlot {
+                scalar: AbiScalar::I64,
+                offset: 8,
+            });
+        }
+        assert_eq!(
+            sysv.classify_type(&ArType::Array(count, byte_ty), &interner, &provider),
+            ArgAbi::Direct(DirectAbi { slots })
+        );
+    }
+    assert_eq!(
+        sysv.classify_type(&ArType::Array(65536, byte_ty), &interner, &provider),
+        ArgAbi::Indirect
+    );
+    let row = interner.intern(ArType::Array(2, byte_ty));
+    assert_eq!(
+        sysv.classify_type(&ArType::Array(2, row), &interner, &provider),
+        ArgAbi::Direct(DirectAbi {
+            slots: smallvec![AbiSlot {
+                scalar: AbiScalar::I32,
+                offset: 0
+            }],
+        })
+    );
+    let unit = interner.intern(ArType::Void);
+    let huge_zst = interner.intern(ArType::Array(u64::MAX, unit));
+    let tuple = ArType::tuple(&[huge_zst, i64_ty], &interner);
+    assert_eq!(
+        sysv.classify_type(&tuple, &interner, &provider),
+        ArgAbi::Direct(DirectAbi {
+            slots: smallvec![AbiSlot {
+                scalar: AbiScalar::I64,
+                offset: 0
+            }],
+        })
+    );
+}
+
 #[derive(Default)]
 struct TestMockProvider {
     fields: FxHashMap<SymbolId, StructFields>,

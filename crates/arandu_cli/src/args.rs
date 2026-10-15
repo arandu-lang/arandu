@@ -116,6 +116,7 @@ pub fn parse_invocation(raw_args: impl IntoIterator<Item = String>) -> CliInvoca
     let mut args = Vec::new();
     let mut program_args = Vec::new();
     let mut z_flags: Vec<String> = Vec::new();
+    let mut ctfe_budget = arandu_query::ctfe::CtfeLimits::default().budget();
     let mut layout_flags: Vec<String> = Vec::new();
     let mut raw_project_flags: Vec<String> = Vec::new();
 
@@ -134,6 +135,38 @@ pub fn parse_invocation(raw_args: impl IntoIterator<Item = String>) -> CliInvoca
             continue;
         }
         match arg.as_str() {
+            s if s == "--ctfe-fuel"
+                || s.starts_with("--ctfe-fuel=")
+                || s == "--ctfe-frames"
+                || s.starts_with("--ctfe-frames=")
+                || s == "--ctfe-values"
+                || s.starts_with("--ctfe-values=") =>
+            {
+                let (name, value) = if let Some(parts) = s.split_once('=') {
+                    parts
+                } else {
+                    i += 1;
+                    let value = raw_args_vec
+                        .get(i)
+                        .unwrap_or_else(|| fail_usage(format!("{s} requires a positive integer")));
+                    (s, value.as_str())
+                };
+                let value = value
+                    .parse::<u64>()
+                    .ok()
+                    .filter(|value| *value > 0)
+                    .unwrap_or_else(|| fail_usage(format!("{name} requires a positive integer")));
+                match name {
+                    "--ctfe-fuel" => ctfe_budget.fuel = value,
+                    "--ctfe-values" => ctfe_budget.values = value,
+                    "--ctfe-frames" => {
+                        ctfe_budget.frames = u32::try_from(value).unwrap_or_else(|_| {
+                            fail_usage("--ctfe-frames exceeds the supported integer range")
+                        })
+                    }
+                    _ => fail_usage("unknown CTFE limit option"),
+                }
+            }
             "--debug" => debug = true,
             "--opt" => opt = true,
             "--parallel" => parallel = true,
@@ -216,6 +249,8 @@ pub fn parse_invocation(raw_args: impl IntoIterator<Item = String>) -> CliInvoca
                 || s.starts_with("--cache-dir")
                 || s.starts_with("--target")
                 || s == "--release"
+                || s == "--size"
+                || s == "-Oz"
                 || s == "-v"
                 || s == "--verbose"
                 || s == "--locked"
@@ -242,6 +277,12 @@ pub fn parse_invocation(raw_args: impl IntoIterator<Item = String>) -> CliInvoca
     let (mut project_flags, extra_positional) = project::parse_project_flags(&raw_project_flags)
         .unwrap_or_else(|message| fail_usage(format!("error: {message}")));
     let _ = extra_positional;
+    project_flags.ctfe_limits = arandu_query::ctfe::CtfeLimits::new(
+        ctfe_budget.fuel,
+        ctfe_budget.frames,
+        ctfe_budget.values,
+    )
+    .unwrap_or_else(|message| fail_usage(message));
     project_flags.color = color;
     project_flags.quiet = quiet;
     if layout_flags.is_empty()
@@ -377,8 +418,11 @@ pub fn global_help() -> &'static str {
         "  archive    Validate a package archive\n\n",
         "Target & Toolchain Options:\n",
         "  --release                  Build with speed optimizations (Cranelift + AMIR O2)\n",
+        "  --size, -Oz                Build for size (AMIR Os, stripped native output)\n",
         "  --stdlib-path <dir>        Override path to standard library\n",
         "  --cache-dir <dir>          Override compiler cache directory\n",
+        "  --ctfe-fuel N / --ctfe-frames N / --ctfe-values N\n",
+        "                             compile-time evaluation ceilings (positive integers)\n",
         "  --layout=host|ptr4|ptr8|i686  (default: host)\n",
         "                             layout model only; cross compiler/sysroot are external\n",
         "  --color=auto|always|never  Control ANSI color output (default: auto)\n",
@@ -407,7 +451,7 @@ pub fn global_help() -> &'static str {
         "  -Zexplain-rebuild          Explain reason for Salsa incremental rebuild\n",
         "  -Zno-generational-fallback Synonym for --no-generational-fallback\n\n",
         "Environment & Defaults:\n",
-        "  backend: build → Cranelift baseline; build --release → Cranelift speed + AMIR O2\n",
+        "  backend: build → Cranelift baseline; build --release → Cranelift speed + AMIR O2; --size → speed_and_size + AMIR Os\n",
         "  stdlib:  --stdlib-path > ARANDU_STDLIB > relative to binary (never cwd)\n",
         "  cache:   --cache-dir > ARANDU_CACHE_DIR > platform-native user cache"
     )
@@ -418,10 +462,10 @@ pub fn global_help() -> &'static str {
 pub fn command_help(command: &str) -> Option<&'static str> {
     match command {
         "run" => Some(
-            "Usage: arandu run [path] [-- program-args...]\n\nCompile and execute a package or .aru file with the Cranelift JIT.\n\nOptions:\n  --opt             Optimize AMIR before execution\n  --parallel        Check multiple source files where supported\n  --stdlib-path DIR Override the standard library path\n  -v, --verbose     Show progress and incremental status\n  -q, --quiet       Suppress non-error status output\n\nExamples:\n  arandu run\n  arandu run src/main.aru -- hello\n",
+            "Usage: arandu run [path] [-- program-args...]\n\nCompile and execute a package or .aru file with the Cranelift JIT.\n\nOptions:\n  --opt             Optimize AMIR before execution\n  --stdlib-path DIR Override the standard library path\n  -v, --verbose     Show progress and incremental status\n  -q, --quiet       Suppress non-error status output\n\nExamples:\n  arandu run\n  arandu run src/main.aru -- hello\n",
         ),
         "build" => Some(
-            "Usage: arandu build [path] [options]\n\nCompile a package to a native executable or library.\n\nOptions:\n  --release            Build with speed optimizations\n  --target TRIPLE      Select a compilation target\n  --layout LAYOUT      Select host, ptr4, ptr8, or i686 layout\n  --locked             Require the lockfile to be current\n  --offline            Resolve from the local cache only\n  -v, --verbose        Show detailed build progress\n  -q, --quiet          Suppress non-error status output\n",
+            "Usage: arandu build [path] [options]\n\nCompile a package to a native executable or library.\n\nOptions:\n  --release            Build with speed optimizations\n  --size, -Oz          Optimize for size and strip native symbols\n  --target TRIPLE      Select a compilation target\n  --layout LAYOUT      Select host, ptr4, ptr8, or i686 layout\n  --locked             Require the lockfile to be current\n  --offline            Resolve from the local cache only\n  -v, --verbose        Show detailed build progress\n  -q, --quiet          Suppress non-error status output\n",
         ),
         "check" => Some(
             "Usage: arandu check [path] [options]\n\nType-check a package or source file without code generation.\n\nOptions:\n  --parallel       Check source files in parallel\n  --target TRIPLE  Select a compilation target\n  --watch          Repeat checks after source changes\n  -v, --verbose    Show progress and incremental status\n  -q, --quiet      Suppress success and status output\n",
@@ -472,7 +516,7 @@ pub fn command_help(command: &str) -> Option<&'static str> {
             "Usage: arandu doctor [--stdlib-path DIR] [-v]\n\nInspect the compiler toolchain, runtime, and standard library.\n",
         ),
         "cache" => Some(
-            "Usage: arandu cache <dir|inspect|verify|prune> [options]\n\nInspect or maintain the compiler cache.\n",
+            "Usage: arandu cache <dir|inspect|verify|verify-tree|prune> [options]\n\nInspect or maintain the compiler cache.\n",
         ),
         "lex" => Some(
             "Usage: arandu lex <file.aru>\n\nPrint the source token stream (compiler inspection tool).\n",
@@ -490,13 +534,13 @@ pub fn command_help(command: &str) -> Option<&'static str> {
             "Usage: arandu graph <file.aru>\n\nEmit a Graphviz dependency graph (compiler inspection tool).\n",
         ),
         "emit-c" => Some(
-            "Usage: arandu emit-c <file.aru> [--opt]\n\nEmit portable C source (compiler inspection tool).\n",
+            "Usage: arandu emit-c <file.aru> [--opt | --size]\n\nEmit portable C source (compiler inspection tool).\n",
         ),
         "emit-wasm" => Some(
-            "Usage: arandu emit-wasm <file.aru> [--layout ptr4] [--opt]\n\nEmit a WebAssembly module (compiler inspection tool).\n",
+            "Usage: arandu emit-wasm <file.aru> [--layout ptr4] [--opt | --size]\n\nEmit a WebAssembly module (compiler inspection tool).\n",
         ),
         "emit-component" => Some(
-            "Usage: arandu emit-component <file.aru> [--opt]\n\nEmit a WebAssembly Component (compiler inspection tool).\n",
+            "Usage: arandu emit-component <file.aru> [--opt | --size]\n\nEmit a WebAssembly Component (compiler inspection tool).\n",
         ),
         "hash-file" => {
             Some("Usage: arandu hash-file <path>\n\nCompute a BLAKE3 checksum for packaging.\n")

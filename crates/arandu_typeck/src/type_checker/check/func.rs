@@ -91,6 +91,13 @@ fn validate_method_receiver(checker: &mut TypeChecker<'_>, decl: &FuncDecl) {
         }
         self_ty = ArType::named(struct_id, &new_args, &checker.type_info.type_interner);
     }
+    if let (ArType::Named(owner, recv_args), ArType::Named(self_owner, self_args)) =
+        (&recv_ty, &self_ty)
+        && owner == self_owner
+        && recv_args.len == self_args.len
+    {
+        recv_ty = self_ty.clone();
+    }
     if !super::super::types::unify(&recv_ty, &self_ty, &checker.type_info.type_interner) {
         // `lhs_span` points at the declared `self: T` type and `rhs_span` at
         // the receiver name in `Type.method`, so `self_ty` is the declared
@@ -107,7 +114,7 @@ fn validate_method_receiver(checker: &mut TypeChecker<'_>, decl: &FuncDecl) {
     }
 }
 
-fn func_type_scope(checker: &TypeChecker<'_>, decl: &FuncDecl) -> crate::ScopeId {
+pub(super) fn func_type_scope(checker: &TypeChecker<'_>, decl: &FuncDecl) -> crate::ScopeId {
     if let Some(param) = decl.params.first() {
         let param_key = crate::NodeKey::from(param.span);
         if let Some(symbol_id) = checker.resolved.definitions.get(&param_key) {

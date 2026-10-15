@@ -3,10 +3,10 @@ import std.alloc.vec as vec
 import std.core.slice as slice
 
 func main(): int {
-    let mut values = vec.new<int>()
-    vec.push<int>(values, 5)
-    vec.push<int>(values, 8)
-    let view = vec.asSlice<int>(values)
+    let mut values = vec.Vec<int>.new()
+    values.push(5)
+    values.push(8)
+    let view = values.asSlice()
     match slice.subslice<int>(view, 1, 1) {
         Some(tail) => {
             match slice.first<int>(tail) {

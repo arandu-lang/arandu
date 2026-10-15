@@ -42,7 +42,7 @@ public struct AsyncMutex<T> {
 }
 
 /// Creates a new `AsyncMutex<T>` protecting `initial`.
-public func newAsyncMutex<T>(initial: T): AsyncMutex<T> {
+public func AsyncMutex.new<T>(initial: T): AsyncMutex<T> {
     return AsyncMutex<T> {
         value: initial,
         is_locked: false,

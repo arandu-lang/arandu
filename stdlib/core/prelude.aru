@@ -50,4 +50,4 @@ public use std.core.num.{ checkedAdd, checkedSub, checkedMul, saturatingAdd, sat
 public use std.core.cmp.{ Ordering }
 public use std.core.iter.{ Iterator }
 public use std.core.marker.{ Copy, Send, Sync, PhantomData, phantom }
-public use std.core.cell.{ Cell, UnsafeCell, cellNew, unsafeCellNew }
+public use std.core.cell.{ Cell, UnsafeCell }

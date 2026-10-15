@@ -23,6 +23,16 @@ Exit `101` belongs to Cargo when Cargo itself fails; it is not an Arandu CLI
 exit-code contract. Shells and operating systems may restrict the observable
 range of a program return value.
 
+Test harness children return parse/type/AMIR compilation failures through the
+terminal IPC event, rather than exiting inside the compiler pipeline. A missing
+control frame denotes a process/protocol failure, not an ordinary source error.
+
+Invalid lockfile hashes are never integrity evidence. For a local-only graph,
+`arandu update --accept` explicitly regenerates a malformed UTF-8-encoded lockfile and
+retains the original bytes in `.arandu/locks/invalid-arandu.lock`. An existing,
+different recovery copy is not overwritten. `--locked` forbids recovery, and
+remote graphs do not use this local recovery path.
+
 ### Command matrix
 
 | Command | Purpose | Backend | Stability | Success |
@@ -35,10 +45,18 @@ range of a program return value.
 | `emit-c` | emit GNU C source | C | experimental; see backend contract | `0` |
 | `build` | publish a host-native package executable | Cranelift AOT object + native linker | stable project workflow | `0` |
 | `build --release` | publish a speed-oriented host executable | AMIR O2 + Cranelift AOT `speed` | stable project workflow | `0` |
+| `build --size`, `build -Oz` | publish an executable optimized for size | AMIR Os + Cranelift AOT `speed_and_size`, or selected Wasm emission | experimental size profile | `0` |
 | `new`, `doctor`, `watch`, `hash-file` | project/tooling operations | varies | partial | `0` |
 
 Backend and cross-target details are defined in
 [`arandu-backend-contract-v0.1.md`](arandu-backend-contract-v0.1.md).
+
+The size profile uses `target/size` and its own incremental cache identity.
+`--size` and `-Oz` are aliases; combining them with `--release` or `--debug`
+is a usage failure. `run` rejects build profiles. Inspection commands
+`emit-c`, `emit-wasm`, and `emit-component` accept `--size` for the AMIR Os
+pipeline. Linux native size builds strip symbols, so use a separate debug
+build when those symbols are required.
 
 ### LSP request and snapshot rules
 
@@ -86,3 +104,15 @@ de diagnóstico.
 
 Extrair contratos compartilhados somente quando houver segundo consumidor e
 preservar testes de erro, stale revision e worker survival.
+
+### Compile-time resource configuration
+
+The global CLI flags `--ctfe-fuel`, `--ctfe-frames`, and `--ctfe-values` accept
+positive integers; missing, zero, negative, malformed or overflowing values are
+usage failures (exit 2). They apply before analysis, including project and
+manifestless commands, and participate in incremental build fingerprints.
+LSP reads `initializationOptions.ctfe` with optional `fuel`, `frames`, and
+`values` fields. Invalid options return InvalidParams during initialization,
+without starting workspace discovery. VS Code supplies these through
+`arandu.comptime.*` settings on server start. Resource exhaustion in valid
+source configuration remains a structured T045 source diagnostic.

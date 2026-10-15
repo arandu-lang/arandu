@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use crate::cli_error::{CliFailure, CliResult, CliSuccess};
 use crate::pipeline::{
     attach_stdlib, ensure_host_jit_layout, fail_operational, fail_usage, find_aru_files, finish,
-    open_entry_file, optimize_amir_or_exit, parse_and_check, pipeline_lower,
-    pipeline_lower_checked, print_diagnostics_and_exit, print_genref_report,
+    open_entry_file, optimize_amir_or_exit, optimize_amir_with_level_or_exit, parse_and_check,
+    pipeline_lower, pipeline_lower_checked, print_diagnostics_and_exit, print_genref_report,
     render_nonfatal_diagnostics, render_pipeline_failure, validate_hir_and_monomorphize,
 };
 use crate::project::{self, ProjectFlags};
@@ -19,12 +19,13 @@ pub fn cmd_project_run(
     flags: &ProjectFlags,
     opt: bool,
     _debug: bool,
+    genref_report: bool,
     data_layout: DataLayout,
     program_args: &[String],
 ) -> CliResult {
-    if flags.release {
+    if flags.release || flags.size {
         return Err(CliFailure::usage(
-            "`--release` is supported by `build`; `run` remains the interactive Cranelift JIT path",
+            "`--release` and `--size` are supported by `build`; `run` remains the interactive Cranelift JIT path",
         ));
     }
     ensure_host_jit_layout(data_layout)?;
@@ -49,6 +50,9 @@ pub fn cmd_project_run(
     let mut registry = arandu_base::SourceRegistry::default();
     let (file, filepath) = open_entry_file(&db, &mut registry, &ctx.entry_path);
     let artifacts = pipeline_lower(&db, file, &filepath);
+    if genref_report {
+        print_genref_report(&filepath, &artifacts);
+    }
     if !flags.quiet
         && let Some(log) = &rebuild_log
     {
@@ -163,6 +167,16 @@ pub fn cmd_single_file_dispatch(
     target_path: &Path,
     inv: &crate::args::CliInvocation,
 ) -> CliResult {
+    if inv.project_flags.size && inv.debug {
+        return Err(CliFailure::usage(
+            "`--size` cannot be combined with `--debug`",
+        ));
+    }
+    if inv.project_flags.size && !matches!(command, "emit-c" | "emit-wasm" | "emit-component") {
+        return Err(CliFailure::usage(
+            "`--size` requires build, emit-c, emit-wasm or emit-component",
+        ));
+    }
     let parallel = inv.parallel;
     let debug = inv.debug;
     let opt = inv.opt;
@@ -213,7 +227,32 @@ pub fn cmd_single_file_dispatch(
     } else {
         (arandu_query::db::DatabaseImpl::new(), None)
     };
+    db.set_ctfe_limits(project_flags.ctfe_limits);
     attach_stdlib(&mut db, project_flags.stdlib_path.clone());
+    let data_layout = if matches!(command, "emit-wasm" | "emit-component") {
+        let identity = if let Some(triple) = &project_flags.target {
+            let identity = arandu_middle::db::TargetIdentity::from_triple(triple)
+                .unwrap_or_else(|error| fail_usage(error));
+            if identity.arch != "wasm32" {
+                fail_usage("WebAssembly emission requires a wasm32 target");
+            }
+            identity
+        } else {
+            arandu_middle::db::TargetIdentity {
+                os: "wasi".into(),
+                arch: "wasm32".into(),
+            }
+        };
+        db.set_target_identity(identity);
+        arandu_middle::layout::DataLayout::ptr_width(4)
+    } else {
+        if let Some(triple) = &project_flags.target {
+            let identity = arandu_middle::db::TargetIdentity::from_triple(triple)
+                .unwrap_or_else(|error| fail_usage(error));
+            db.set_target_identity(identity);
+        }
+        data_layout
+    };
     db.set_target_config(data_layout);
     let mut registry = arandu_base::SourceRegistry::default();
 
@@ -465,14 +504,23 @@ pub fn cmd_single_file_dispatch(
                     print_genref_report(&filepath, &artifacts);
                 }
                 let type_check = &artifacts.type_check;
-                let mut amir_owned = if opt {
+                let mut amir_owned = if opt || project_flags.size {
                     Some(artifacts.amir.clone())
                 } else {
                     None
                 };
                 if let Some(ref mut amir) = amir_owned {
                     arandu_base::time_pass!("optimize-amir");
-                    optimize_amir_or_exit(amir, type_check, &filepath);
+                    if project_flags.size {
+                        optimize_amir_with_level_or_exit(
+                            amir,
+                            type_check,
+                            arandu_semantics::OptLevel::Os,
+                            &filepath,
+                        );
+                    } else {
+                        optimize_amir_or_exit(amir, type_check, &filepath);
+                    }
                 }
                 let amir = match &amir_owned {
                     Some(a) => a,
@@ -498,14 +546,23 @@ pub fn cmd_single_file_dispatch(
                     print_genref_report(&filepath, &artifacts);
                 }
                 let type_check = &artifacts.type_check;
-                let mut amir_owned = if opt {
+                let mut amir_owned = if opt || project_flags.size {
                     Some(artifacts.amir.clone())
                 } else {
                     None
                 };
                 if let Some(ref mut amir) = amir_owned {
                     arandu_base::time_pass!("optimize-amir");
-                    optimize_amir_or_exit(amir, type_check, &filepath);
+                    if project_flags.size {
+                        optimize_amir_with_level_or_exit(
+                            amir,
+                            type_check,
+                            arandu_semantics::OptLevel::Os,
+                            &filepath,
+                        );
+                    } else {
+                        optimize_amir_or_exit(amir, type_check, &filepath);
+                    }
                 }
                 let amir = match &amir_owned {
                     Some(a) => a,
@@ -526,7 +583,12 @@ pub fn cmd_single_file_dispatch(
                 };
 
                 arandu_base::time_pass!("emit-wasm");
-                let wasm_bytes = arandu_backend_wasm::emit_wasm(
+                let emit = if project_flags.size {
+                    arandu_backend_wasm::emit_wasm_for_size
+                } else {
+                    arandu_backend_wasm::emit_wasm
+                };
+                let wasm_bytes = emit(
                     amir,
                     type_check.symbols.as_ref(),
                     &type_check.type_info.type_interner,
@@ -551,14 +613,23 @@ pub fn cmd_single_file_dispatch(
                     print_genref_report(&filepath, &artifacts);
                 }
                 let type_check = &artifacts.type_check;
-                let mut amir_owned = if opt {
+                let mut amir_owned = if opt || project_flags.size {
                     Some(artifacts.amir.clone())
                 } else {
                     None
                 };
                 if let Some(ref mut amir) = amir_owned {
                     arandu_base::time_pass!("optimize-amir");
-                    optimize_amir_or_exit(amir, type_check, &filepath);
+                    if project_flags.size {
+                        optimize_amir_with_level_or_exit(
+                            amir,
+                            type_check,
+                            arandu_semantics::OptLevel::Os,
+                            &filepath,
+                        );
+                    } else {
+                        optimize_amir_or_exit(amir, type_check, &filepath);
+                    }
                 }
                 let amir = match &amir_owned {
                     Some(a) => a,
@@ -585,7 +656,12 @@ pub fn cmd_single_file_dispatch(
                     .unwrap_or_else(|| "module".to_owned());
 
                 arandu_base::time_pass!("emit-component");
-                let component_bytes = arandu_backend_wasm::emit_component(
+                let emit = if project_flags.size {
+                    arandu_backend_wasm::emit_component_for_size
+                } else {
+                    arandu_backend_wasm::emit_component
+                };
+                let component_bytes = emit(
                     amir,
                     type_check.symbols.as_ref(),
                     &type_check.type_info.type_interner,
@@ -649,6 +725,8 @@ pub fn cmd_project_check(
     flags: &ProjectFlags,
     _opt: bool,
     _debug: bool,
+    parallel: bool,
+    genref_report: bool,
     data_layout: DataLayout,
 ) -> CliResult {
     let explain_rebuild = arandu_base::EXPLAIN_REBUILD.load(std::sync::atomic::Ordering::Relaxed);
@@ -671,7 +749,55 @@ pub fn cmd_project_check(
     };
     let mut registry = arandu_base::SourceRegistry::default();
     let (file, filepath) = open_entry_file(&db, &mut registry, &ctx.entry_path);
-    let _ = pipeline_lower(&db, file, &filepath);
+    if parallel {
+        let package_src = ctx
+            .entry_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| ctx.root.clone());
+        let mut module_files = vec![(file, filepath.clone())];
+        for rel in arandu_query::scan_aru_entries(&package_src) {
+            let full_path = package_src.join(&rel);
+            let key = full_path.to_string_lossy().into_owned();
+            if key == filepath {
+                continue;
+            }
+            if let Some(sf) = db.source_file_by_path(&key) {
+                module_files.push((sf, key));
+            }
+        }
+        let db_mutex = std::sync::Mutex::new(db);
+        let outcomes = module_files
+            .into_par_iter()
+            .map(|(sf, path_str)| {
+                let thread_db = match db_mutex.lock() {
+                    Ok(guard) => guard.clone(),
+                    Err(poisoned) => poisoned.into_inner().clone(),
+                };
+                let outcome = pipeline_lower_checked(&thread_db, sf);
+                (path_str, outcome)
+            })
+            .collect::<Vec<_>>();
+        let db = match db_mutex.into_inner() {
+            Ok(db) => db,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        for (path_str, outcome) in outcomes {
+            let outcome = match outcome {
+                Ok(outcome) => outcome,
+                Err(diagnostics) => render_pipeline_failure(&db, diagnostics, &path_str),
+            };
+            render_nonfatal_diagnostics(&db, &outcome.diagnostics, &path_str);
+            if genref_report && path_str == filepath {
+                print_genref_report(&filepath, &outcome.artifacts);
+            }
+        }
+    } else {
+        let artifacts = pipeline_lower(&db, file, &filepath);
+        if genref_report {
+            print_genref_report(&filepath, &artifacts);
+        }
+    }
     if !flags.quiet
         && let Some(log) = &rebuild_log
     {

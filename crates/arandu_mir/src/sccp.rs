@@ -22,7 +22,12 @@ enum LatticeVal {
 /// corresponding jump-arg operands from **reachable** predecessors. Without
 /// this, loop headers and join blocks stay `Undefined` forever and never
 /// refine conditions on block-param values.
-pub(super) fn sccp(func: &mut AmirFunc, pool: &mut AmirLiteralPool, bump: &bumpalo::Bump) -> bool {
+pub(super) fn sccp(
+    func: &mut AmirFunc,
+    pool: &mut AmirLiteralPool,
+    bump: &bumpalo::Bump,
+    interner: Option<&crate::types::TypeInterner>,
+) -> bool {
     let n_temps = func.temps.len();
     let n_blocks = func.blocks.len();
     if n_temps == 0 || n_blocks == 0 {
@@ -30,7 +35,7 @@ pub(super) fn sccp(func: &mut AmirFunc, pool: &mut AmirLiteralPool, bump: &bumpa
     }
 
     // Phase 1 – analyse lattice + reachability to fixpoint
-    let (lattice, sccp_reachable) = analyse(func, pool, bump);
+    let (lattice, sccp_reachable) = analyse(func, pool, bump, interner);
 
     // Phase 2 – apply results to the function
     apply(func, pool, &lattice, &sccp_reachable, bump)
@@ -44,6 +49,7 @@ fn analyse<'bump>(
     func: &AmirFunc,
     pool: &mut AmirLiteralPool,
     bump: &'bump bumpalo::Bump,
+    interner: Option<&crate::types::TypeInterner>,
 ) -> (
     bumpalo::collections::Vec<'bump, LatticeVal>,
     bumpalo::collections::Vec<'bump, bool>,
@@ -89,7 +95,7 @@ fn analyse<'bump>(
             }
 
             // --- φ / block params from jump args of reachable preds ----------
-            changed |= meet_block_params(func, bid, &mut lattice, &reachable);
+            changed |= meet_block_params(func, bid, &mut lattice, &reachable, pool, interner);
 
             // --- statements -------------------------------------------------
             for stmt_id in func.block_stmt_ids(bid) {
@@ -108,7 +114,25 @@ fn analyse<'bump>(
                             _ => LatticeVal::Overdefined,
                         }
                     } else {
-                        eval_rvalue(rhs, &lattice, pool)
+                        if evaluation_safe(
+                            rhs,
+                            func.temps[lhs.as_usize()].ty,
+                            interner,
+                            &lattice,
+                            pool,
+                        ) {
+                            eval_rvalue(rhs, &lattice, pool)
+                        } else {
+                            LatticeVal::Overdefined
+                        }
+                    };
+                    let new = match new {
+                        LatticeVal::Constant(value) => {
+                            normalize_constant(value, func.temps[lhs.as_usize()].ty, interner, pool)
+                                .map(LatticeVal::Constant)
+                                .unwrap_or(LatticeVal::Overdefined)
+                        }
+                        other => other,
                     };
                     let merged = meet(old, new);
                     if merged != old {
@@ -226,6 +250,8 @@ fn meet_block_params(
     bid: BlockId,
     lattice: &mut [LatticeVal],
     reachable: &[bool],
+    pool: &mut AmirLiteralPool,
+    interner: Option<&crate::types::TypeInterner>,
 ) -> bool {
     let params = func.block_params(func.block(bid).params);
     if params.is_empty() {
@@ -267,6 +293,14 @@ fn meet_block_params(
             } else {
                 arg_lat
             };
+            let contrib = match contrib {
+                LatticeVal::Constant(value) => {
+                    normalize_constant(value, params[i].ty, interner, pool)
+                        .map(LatticeVal::Constant)
+                        .unwrap_or(LatticeVal::Overdefined)
+                }
+                other => other,
+            };
             acc[i] = meet(acc[i], contrib);
         }
     }
@@ -302,6 +336,9 @@ fn jump_args_to(term: &AmirTerminator, target: BlockId) -> Option<&[AmirOperand]
             false_args,
             ..
         } => {
+            if *if_true == target && *if_false == target && true_args != false_args {
+                return None;
+            }
             if *if_true == target {
                 Some(true_args.as_slice())
             } else if *if_false == target {
@@ -313,15 +350,23 @@ fn jump_args_to(term: &AmirTerminator, target: BlockId) -> Option<&[AmirOperand]
         AmirTerminator::SwitchInt {
             targets, otherwise, ..
         } => {
+            let mut incoming: Option<&[AmirOperand]> = None;
             for (_, dest, args) in targets {
                 if *dest == target {
-                    return Some(args.as_slice());
+                    if incoming.is_some_and(|previous| previous != args.as_slice()) {
+                        return None;
+                    }
+                    incoming = Some(args.as_slice());
                 }
             }
             if otherwise.0 == target {
-                Some(otherwise.1.as_slice())
+                if incoming.is_some_and(|previous| previous != otherwise.1.as_slice()) {
+                    None
+                } else {
+                    Some(otherwise.1.as_slice())
+                }
             } else {
-                None
+                incoming
             }
         }
         _ => None,
@@ -531,7 +576,7 @@ fn fold_unary(
         (UnaryOp::Not, AmirConstant::Bool(b)) => Some(AmirConstant::Bool(!b)),
         (UnaryOp::Neg, v) => {
             let val = const_as_i128(&v, pool)?;
-            Some(AmirConstant::Pool(pool.intern_int((-val).to_string())))
+            checked_int(val.checked_neg(), pool)
         }
         (UnaryOp::BitNot, v) => {
             let val = const_as_i128(&v, pool)?;
@@ -593,12 +638,109 @@ fn const_as_i128(c: &AmirConstant, pool: &AmirLiteralPool) -> Option<i128> {
     match c {
         AmirConstant::Pool(id) => match pool.get(*id) {
             AmirLiteralEntry::Int(val) => arandu_middle::literal_pool::parse_int_literal(val),
-            AmirLiteralEntry::Float(_) | AmirLiteralEntry::Str(_) | AmirLiteralEntry::Char(_) => {
-                None
-            }
+            AmirLiteralEntry::Float(_)
+            | AmirLiteralEntry::FloatBits(_)
+            | AmirLiteralEntry::Str(_)
+            | AmirLiteralEntry::Char(_) => None,
         },
         AmirConstant::Bool(_) | AmirConstant::Nil => None,
     }
+}
+
+fn integer_shape(
+    ty: crate::types::TypeId,
+    interner: &crate::types::TypeInterner,
+) -> Option<(u32, bool)> {
+    use crate::types::{ArType, Primitive};
+    let primitive = match interner.resolve(ty) {
+        ArType::IntLiteral => Primitive::Int,
+        ArType::Primitive(Primitive::Char) => return Some((32, false)),
+        ArType::Primitive(Primitive::ISize | Primitive::USize) => return None,
+        ArType::Primitive(primitive) => primitive,
+        _ => return None,
+    };
+    // Pointer-sized integers were excluded above. For these fixed-width types,
+    // IntegerType's canonical width is independent of this explicit layout.
+    let integer =
+        arandu_middle::ctfe::IntegerType::new(primitive, crate::layout::DataLayout::ptr_width(4))
+            .ok()?;
+    Some((u32::from(integer.bit_width()), integer.is_signed()))
+}
+
+fn normalize_constant(
+    value: AmirConstant,
+    ty: crate::types::TypeId,
+    interner: Option<&crate::types::TypeInterner>,
+    pool: &mut AmirLiteralPool,
+) -> Option<AmirConstant> {
+    use crate::types::{ArType, Primitive};
+    if let Some(interner) = interner {
+        if matches!(interner.resolve(ty), ArType::Primitive(Primitive::Bool)) {
+            return match value {
+                AmirConstant::Bool(_) => Some(value),
+                _ => const_as_i128(&value, pool).map(|number| AmirConstant::Bool(number != 0)),
+            };
+        }
+        if let Some((width, signed)) = integer_shape(ty, interner) {
+            let number = match value {
+                AmirConstant::Bool(boolean) => i128::from(boolean),
+                _ => const_as_i128(&value, pool)?,
+            };
+            let modulus = 1i128 << width;
+            let bits = number.rem_euclid(modulus);
+            let normalized = if signed && bits >= modulus / 2 {
+                bits - modulus
+            } else {
+                bits
+            };
+            if normalized == number && matches!(value, AmirConstant::Pool(_)) {
+                return Some(value);
+            }
+            return Some(int_const(normalized, pool));
+        }
+    }
+    match value {
+        AmirConstant::Pool(id) => match pool.get(id) {
+            AmirLiteralEntry::Int(_)
+            | AmirLiteralEntry::Float(_)
+            | AmirLiteralEntry::FloatBits(_) => None,
+            // These constants have no arithmetic-width-dependent conversion.
+            AmirLiteralEntry::Str(_) | AmirLiteralEntry::Char(_) => Some(value),
+        },
+        AmirConstant::Bool(_) | AmirConstant::Nil => Some(value),
+    }
+}
+
+fn evaluation_safe(
+    rhs: &AmirRvalue,
+    ty: crate::types::TypeId,
+    interner: Option<&crate::types::TypeInterner>,
+    lattice: &[LatticeVal],
+    pool: &AmirLiteralPool,
+) -> bool {
+    if let AmirRvalue::Binary { op, left, right } = rhs
+        && matches!(
+            op,
+            BinaryOp::Div | BinaryOp::Mod | BinaryOp::ShiftLeft | BinaryOp::ShiftRight
+        )
+    {
+        let Some((width, signed)) = interner.and_then(|interner| integer_shape(ty, interner))
+        else {
+            return false;
+        };
+        if let (LatticeVal::Constant(left), LatticeVal::Constant(right)) = (
+            operand_lattice(left, lattice),
+            operand_lattice(right, lattice),
+        ) && let (Some(left), Some(right)) =
+            (const_as_i128(&left, pool), const_as_i128(&right, pool))
+        {
+            if matches!(op, BinaryOp::Div | BinaryOp::Mod) {
+                return right != 0 && !(signed && left == -(1i128 << (width - 1)) && right == -1);
+            }
+            return right >= 0 && right < i128::from(width);
+        }
+    }
+    true
 }
 
 fn int_const(val: i128, pool: &mut AmirLiteralPool) -> AmirConstant {
@@ -655,6 +797,57 @@ mod tests {
             fold_binary(BinaryOp::ShiftRight, minus_one, one, &mut pool),
             None
         );
+    }
+
+    #[test]
+    fn fixed_width_constants_keep_assignment_conversion_and_unknown_layout_fails_closed() {
+        let interner = crate::types::TypeInterner::new();
+        let mut pool = AmirLiteralPool::default();
+        for (primitive, input, expected) in [
+            (crate::types::Primitive::U8, "260", 4),
+            (crate::types::Primitive::I8, "255", -1),
+            (crate::types::Primitive::Int, "2147483648", -2147483648),
+        ] {
+            let value = AmirConstant::Pool(pool.intern_int(input));
+            let ty = interner.intern(crate::types::ArType::Primitive(primitive));
+            let normalized = normalize_constant(value, ty, Some(&interner), &mut pool).unwrap();
+            assert_eq!(const_as_i128(&normalized, &pool), Some(expected));
+            assert!(normalize_constant(value, ty, None, &mut pool).is_none());
+        }
+        let value = AmirConstant::Pool(pool.intern_int("1"));
+        let pointer_sized = interner.intern(crate::types::ArType::Primitive(
+            crate::types::Primitive::USize,
+        ));
+        assert!(normalize_constant(value, pointer_sized, Some(&interner), &mut pool).is_none());
+    }
+
+    #[test]
+    fn duplicate_edges_with_different_arguments_never_select_just_the_first() {
+        let target = BlockId(1);
+        let yes = vec![AmirOperand::Constant(AmirConstant::Bool(true))];
+        let no = vec![AmirOperand::Constant(AmirConstant::Bool(false))];
+        let branch = AmirTerminator::Branch {
+            condition: AmirOperand::Copy(TempId(0)),
+            if_true: target,
+            true_args: yes.clone(),
+            if_false: target,
+            false_args: no.clone(),
+        };
+        assert!(jump_args_to(&branch, target).is_none());
+        let switch = AmirTerminator::SwitchInt {
+            discriminant: AmirOperand::Copy(TempId(0)),
+            targets: vec![(0, target, yes.clone())],
+            otherwise: (target, no),
+        };
+        assert!(jump_args_to(&switch, target).is_none());
+        let equal = AmirTerminator::Branch {
+            condition: AmirOperand::Copy(TempId(0)),
+            if_true: target,
+            true_args: yes.clone(),
+            if_false: target,
+            false_args: yes.clone(),
+        };
+        assert_eq!(jump_args_to(&equal, target), Some(yes.as_slice()));
     }
 
     #[test]
@@ -755,7 +948,12 @@ mod tests {
         };
 
         let bump = bumpalo::Bump::new();
-        let _ = sccp(&mut func, &mut pool, &bump);
+        let _ = sccp(
+            &mut func,
+            &mut pool,
+            &bump,
+            Some(&crate::types::TypeInterner::new()),
+        );
         assert!(matches!(
             func.block(BlockId::from_usize(3)).terminator,
             AmirTerminator::Branch { .. }
@@ -837,7 +1035,12 @@ mod tests {
         };
 
         let bump = bumpalo::Bump::new();
-        assert!(sccp(&mut func, &mut pool, &bump));
+        assert!(sccp(
+            &mut func,
+            &mut pool,
+            &bump,
+            Some(&crate::types::TypeInterner::new())
+        ));
         let stmt = func.block_stmts(BlockId::from_usize(2)).next().unwrap();
         match stmt {
             AmirStmt::Assign {
@@ -942,7 +1145,12 @@ mod tests {
             cfg,
         };
         let bump = bumpalo::Bump::new();
-        let _ = sccp(&mut func, &mut pool, &bump);
+        let _ = sccp(
+            &mut func,
+            &mut pool,
+            &bump,
+            Some(&crate::types::TypeInterner::new()),
+        );
         let stmt = func.block_stmts(BlockId::from_usize(3)).next().unwrap();
         match stmt {
             AmirStmt::Assign {

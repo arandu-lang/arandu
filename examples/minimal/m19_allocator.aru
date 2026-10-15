@@ -10,13 +10,12 @@ func work(): Result<int, aapi.AllocError> {
     let q = resized?
     unsafe { aapi.globalDealloc(q, 32) }
 
-    let mut arena = aapi.bumpNew(64)?
-    let _a = aapi.bumpAlloc(arena, 8, 8)?
-    let _b = aapi.bumpAlloc(arena, 8, 8)?
-    let rem = aapi.bumpRemaining(arena) as int
-    aapi.bumpReset(arena)
-    let rem2 = aapi.bumpRemaining(arena) as int
-    aapi.bumpDestroy(arena)
+    let mut arena = aapi.BumpArena.tryNew(64)?
+    let _a = arena.alloc(8, 8)?
+    let _b = arena.alloc(8, 8)?
+    let rem = arena.remaining() as int
+    arena.reset()
+    let rem2 = arena.remaining() as int
     // 48 + 64 = 112
     return Result.Ok(rem + rem2)
 }

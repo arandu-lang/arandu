@@ -120,7 +120,22 @@ pub(super) fn clone_stmt_kind(
                 .map(|b| clone_block(hir, b, subst, symbol_map, tc, name_prefix))
                 .transpose()?,
         },
-        HirStmtKind::For { clause, body } => HirStmtKind::For {
+        HirStmtKind::For {
+            clause,
+            body,
+            comptime_bounds,
+            comptime_bodies,
+        } => HirStmtKind::For {
+            comptime_bounds: *comptime_bounds,
+            comptime_bodies: comptime_bodies
+                .as_ref()
+                .map(|bodies| {
+                    bodies
+                        .iter()
+                        .map(|&body| clone_block(hir, body, subst, symbol_map, tc, name_prefix))
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .transpose()?,
             clause: clone_for_clause(hir, clause, subst, symbol_map, tc, name_prefix)?,
             body: clone_block(hir, *body, subst, symbol_map, tc, name_prefix)?,
         },
@@ -157,6 +172,9 @@ pub(super) fn clone_stmt_kind(
             HirStmtKind::Unsafe(clone_block(hir, *b, subst, symbol_map, tc, name_prefix)?)
         }
         HirStmtKind::Error => HirStmtKind::Error,
+        HirStmtKind::Scope(b) => {
+            HirStmtKind::Scope(clone_block(hir, *b, subst, symbol_map, tc, name_prefix)?)
+        }
     })
 }
 
@@ -566,6 +584,45 @@ pub(super) fn clone_expr(
                 .iter()
                 .find_map(|(param, value)| (*param == symbol).then_some(value))
             {
+                Some(arandu_middle::types::ArType::FrozenConst(value)) => {
+                    let mut value = value.as_ref().clone();
+                    if let arandu_middle::ctfe::ConstValue::Integer(integer) = value
+                        && let arandu_middle::types::ArType::Primitive(primitive) =
+                            tc.type_info.type_interner.resolve(new_ty)
+                    {
+                        value = arandu_middle::ctfe::ConstValue::Integer(
+                            arandu_middle::ctfe::IntegerType::new(
+                                primitive,
+                                tc.type_info.target_layout,
+                            )
+                            .ok()
+                            .and_then(|ty| integer.cast(ty).ok())
+                            .ok_or_else(|| {
+                                Diagnostic::ice(
+                                    arandu_middle::DiagCode::ICET001,
+                                    "constant parameter exceeds its declared integer type",
+                                    expr.span,
+                                )
+                            })?,
+                        );
+                    }
+                    crate::passes::lower_hir::materialize_ctfe_value(
+                        &value,
+                        new_ty,
+                        &tc.type_info,
+                        &mut hir.pool,
+                        tc.type_info.target_layout,
+                        expr.span,
+                    )
+                    .map_err(|_| {
+                        Diagnostic::ice(
+                            arandu_middle::DiagCode::ICET001,
+                            "constant parameter disagrees with its declared type",
+                            expr.span,
+                        )
+                    })?
+                    .kind
+                }
                 Some(arandu_middle::types::ArType::Const(value)) => {
                     HirExprKind::Int(value.to_string().into())
                 }
@@ -591,6 +648,8 @@ pub(super) fn clone_expr_kind(
 ) -> Result<HirExprKind, Diagnostic> {
     use HirExprKind::*;
     Ok(match kind {
+        FloatBits(value) => FloatBits(*value),
+        FrozenBytes(value) => FrozenBytes(value.clone()),
         Path { symbol } => Path {
             symbol: *symbol_map.get(symbol).unwrap_or(symbol),
         },
@@ -670,6 +729,26 @@ pub(super) fn clone_expr_kind(
                 items: hir.pool.alloc_expr_list(&new_items),
             }
         }
+        ArrayRepeat { value } => ArrayRepeat {
+            value: clone_expr(hir, *value, subst, symbol_map, tc, name_prefix)?,
+        },
+        Tuple { items } => {
+            let old = hir.pool.expr_list(*items).to_vec();
+            let mut new_items = Vec::with_capacity(old.len());
+            for expression in old {
+                new_items.push(clone_expr(
+                    hir,
+                    expression,
+                    subst,
+                    symbol_map,
+                    tc,
+                    name_prefix,
+                )?);
+            }
+            Tuple {
+                items: hir.pool.alloc_expr_list(&new_items),
+            }
+        }
         Lambda { params, body } => {
             let old_p: Vec<_> = hir.pool.lambda_params_list(*params).to_vec();
             let mut new_p = Vec::with_capacity(old_p.len());
@@ -706,6 +785,9 @@ pub(super) fn clone_expr_kind(
             expr: clone_expr(hir, *expr, subst, symbol_map, tc, name_prefix)?,
         },
         AsyncBlock { block } => AsyncBlock {
+            block: clone_block(hir, *block, subst, symbol_map, tc, name_prefix)?,
+        },
+        ValueBlock { block } => ValueBlock {
             block: clone_block(hir, *block, subst, symbol_map, tc, name_prefix)?,
         },
         UnsafeBlock { block } => UnsafeBlock {
@@ -746,6 +828,10 @@ pub(super) fn clone_expr_kind(
         NullCoalesce { left, right } => NullCoalesce {
             left: clone_expr(hir, *left, subst, symbol_map, tc, name_prefix)?,
             right: clone_expr(hir, *right, subst, symbol_map, tc, name_prefix)?,
+        },
+        Layout { query, operand_ty } => Layout {
+            query: *query,
+            operand_ty: substitute_type_id(*operand_ty, subst, &tc.type_info.type_interner),
         },
         Cast { expr, target_ty } => Cast {
             expr: clone_expr(hir, *expr, subst, symbol_map, tc, name_prefix)?,

@@ -92,7 +92,20 @@ fn expr_type_for_kind(
                 interner.intern(ArType::IntLiteral)
             }
         }
-        HirExprKind::Float(_) => interner.intern(ArType::FloatLiteral),
+        HirExprKind::Float(_) => {
+            if matches!(
+                interner.resolve(fallback),
+                ArType::Primitive(Primitive::Float | Primitive::F32 | Primitive::F64)
+            ) {
+                fallback
+            } else {
+                interner.intern(ArType::FloatLiteral)
+            }
+        }
+        HirExprKind::FloatBits(value) => {
+            TypeInterner::preinterned_primitive(value.ty().primitive())
+        }
+        HirExprKind::FrozenBytes(_) => fallback,
         HirExprKind::Bool(_) => TypeInterner::preinterned_primitive(Primitive::Bool),
         HirExprKind::Char(_) => TypeInterner::preinterned_primitive(Primitive::Char),
         HirExprKind::Nil => {
@@ -107,7 +120,11 @@ fn expr_type_for_kind(
         // generic free funcs typeck specializes `join_g` → `Func(..., int)` on
         // the Path expr; `decl_type` stays the template `Func(..., T)`. Using
         // decl_type here made mono see identity `T` and skip specialization.
-        HirExprKind::Path { symbol } => {
+        HirExprKind::Path { symbol }
+        | HirExprKind::TypePath {
+            member_symbol: symbol,
+            ..
+        } => {
             if fallback != error_ty() {
                 return fallback;
             }
@@ -132,7 +149,11 @@ fn expr_type_for_kind(
                 };
             }
             match &callee_expr.kind {
-                HirExprKind::Path { symbol } => type_check
+                HirExprKind::Path { symbol }
+                | HirExprKind::TypePath {
+                    member_symbol: symbol,
+                    ..
+                } => type_check
                     .type_info
                     .decl_type_id(*symbol)
                     .and_then(|id| match interner.resolve(id) {
@@ -160,7 +181,149 @@ pub(crate) fn lower_expr_raw(
         .expr_type_id(expr)
         .unwrap_or_else(error_ty);
 
+    if !hir_pool.ctfe_lowering
+        && let Some((value, layout)) = type_check.type_info.ctfe_values.get(&span)
+    {
+        return super::materialize::materialize_ctfe_value(
+            value,
+            fallback_ty,
+            &type_check.type_info,
+            hir_pool,
+            *layout,
+            span,
+        )
+        .map_err(|_| {
+            Diagnostic::ice(
+                crate::DiagCode::ICET001,
+                "frozen initializer disagrees with its checked type",
+                span,
+            )
+        });
+    }
+    // Recursive binary/unary/group lowering uses a small coordinator frame;
+    // Keep the other forms' diagnostic locals off those ancestor frames.
     let kind = match pool.expr(expr) {
+        ExprKind::Group { expr: inner, .. } => {
+            return lower_expr_raw(type_check, pool, hir_pool, *inner);
+        }
+        ExprKind::Binary { op, left, right } => {
+            let left = lower_expr(type_check, pool, hir_pool, *left)?;
+            let right = lower_expr(type_check, pool, hir_pool, *right)?;
+            HirExprKind::Binary {
+                op: (*op).into(),
+                left,
+                right,
+            }
+        }
+        ExprKind::Unary { op, expr: inner } => {
+            let inner = lower_expr(type_check, pool, hir_pool, *inner)?;
+            HirExprKind::Unary {
+                op: (*op).into(),
+                expr: inner,
+            }
+        }
+        _ => return lower_expr_dispatch(type_check, pool, hir_pool, expr, span, fallback_ty),
+    };
+    let ty = expr_type_for_kind(type_check, hir_pool, &kind, fallback_ty);
+    Ok(HirExpr { kind, ty, span })
+}
+
+fn lower_expr_dispatch(
+    type_check: &mut TypeCheckResult,
+    pool: &AstPool,
+    hir_pool: &mut crate::hir::HirPool,
+    expr: ExprId,
+    span: arandu_middle::Span,
+    fallback_ty: crate::types::TypeId,
+) -> Result<HirExpr, Diagnostic> {
+    let kind = match pool.expr(expr) {
+        ExprKind::Layout { query, ty } => match query {
+            arandu_parser::LayoutQuery::TargetOS => {
+                HirExprKind::Str(type_check.type_info.target_identity.os.clone().into())
+            }
+            arandu_parser::LayoutQuery::TargetArch => {
+                HirExprKind::Str(type_check.type_info.target_identity.arch.clone().into())
+            }
+            arandu_parser::LayoutQuery::TargetPointerWidth => {
+                HirExprKind::Int(type_check.type_info.target_pointer_width.to_string().into())
+            }
+            arandu_parser::LayoutQuery::Size | arandu_parser::LayoutQuery::Align => {
+                let Some(ty) = ty else {
+                    return Err(Diagnostic::ice(
+                        crate::DiagCode::ICET001,
+                        "layout intrinsic has no type operand",
+                        span,
+                    ));
+                };
+                let interner =
+                    &mut std::sync::Arc::make_mut(&mut type_check.type_info).type_interner;
+                let operand = crate::passes::type_checker::types::lower_type_expr(
+                    *ty,
+                    pool,
+                    &type_check.symbols,
+                    crate::ScopeId(0),
+                    &type_check.resolved,
+                    interner,
+                );
+                HirExprKind::Layout {
+                    query: *query,
+                    operand_ty: interner.intern(operand),
+                }
+            }
+        },
+        ExprKind::Comptime { body } if hir_pool.ctfe_lowering => match body {
+            arandu_parser::ast_pool::ComptimeBody::Expression(inner) => {
+                return lower_expr_raw(type_check, pool, hir_pool, *inner);
+            }
+            arandu_parser::ast_pool::ComptimeBody::Block(block) => {
+                let source = pool.block(*block);
+                let mut lowered = super::stmt::lower_block_raw(type_check, pool, hir_pool, source)?;
+                if pool.stmt_list(source.statements).last().is_some_and(|&id| {
+                    matches!(
+                        pool.stmt(id),
+                        arandu_parser::Stmt::Expr { has_semi: true, .. }
+                    )
+                }) {
+                    let nil = hir_pool.alloc_expr(HirExpr {
+                        kind: HirExprKind::Nil,
+                        ty: type_check.type_info.type_interner.intern(ArType::Void),
+                        span,
+                    });
+                    let stmt = hir_pool.alloc_stmt(crate::hir::HirStmt {
+                        kind: crate::hir::HirStmtKind::Expr(nil),
+                        span,
+                    });
+                    let mut statements = hir_pool.stmt_list(lowered.statements).to_vec();
+                    statements.push(stmt);
+                    lowered.statements = hir_pool.alloc_stmt_list(&statements);
+                }
+                HirExprKind::ValueBlock {
+                    block: hir_pool.alloc_block(lowered),
+                }
+            }
+        },
+        ExprKind::Comptime { .. } => {
+            let Some((value, layout)) = type_check.type_info.ctfe_values.get(&span) else {
+                return Err(Diagnostic::error(crate::DiagCode::T042UnsupportedComptime,
+                    "this comptime root has not been evaluated; nested staging in CTFE helpers is not supported yet", span)
+                    .with_primary_label("compile-time evaluation required"));
+            };
+            return super::materialize::materialize_ctfe_value(
+                value,
+                fallback_ty,
+                &type_check.type_info,
+                hir_pool,
+                *layout,
+                span,
+            )
+            .map_err(|_| {
+                Diagnostic::ice(
+                    crate::DiagCode::ICET001,
+                    "evaluated scalar does not match its checked residual type",
+                    span,
+                )
+            });
+        }
         ExprKind::Path { .. } => {
             let symbol = require_value_symbol(&type_check.resolved, expr, span)?;
             HirExprKind::Path { symbol }
@@ -268,6 +431,32 @@ pub(crate) fn lower_expr_raw(
         ExprKind::TypePath {
             type_name, member, ..
         } => {
+            if let Some(symbol) = type_check.resolved.expr_symbol(expr)
+                && type_check.symbols.try_get(symbol).is_some_and(|entry| {
+                    matches!(
+                        entry.kind,
+                        arandu_middle::SymbolKind::ConstParam | arandu_middle::SymbolKind::Const
+                    )
+                })
+            {
+                let base_ty = type_check
+                    .type_info
+                    .decl_type_id(symbol)
+                    .unwrap_or_else(error_ty);
+                let base = hir_pool.alloc_expr(HirExpr {
+                    kind: HirExprKind::Path { symbol },
+                    ty: base_ty,
+                    span: type_name.span,
+                });
+                return Ok(HirExpr {
+                    kind: HirExprKind::Field {
+                        base,
+                        field: member.clone(),
+                    },
+                    ty: fallback_ty,
+                    span,
+                });
+            }
             // Builtin unit ctors as bare TypePath (not Call): `Option.None`, `Poll.Pending`.
             let variant = builtin_ctor_variant_for_type_path(type_check, type_name, member);
             if let Some(variant) = variant.filter(|variant| {
@@ -471,15 +660,28 @@ pub(crate) fn lower_expr_raw(
                 trailing_block: hir_trailing,
             }
         }
-        ExprKind::StructLiteral { ty: _, fields, .. } => {
-            let struct_symbol = match type_check.type_info.type_interner.resolve(fallback_ty) {
-                ArType::Named(id, _) => id,
-                _ => {
-                    return Err(Diagnostic::error(
-                        crate::diagnostics::DiagCode::L001LoweringUnresolvedSymbol,
-                        "cannot lower struct literal: type is not a named struct",
-                        span,
-                    ));
+        ExprKind::StructLiteral { ty, fields, .. } => {
+            let resolved_variant_sym = match pool.type_expr(*ty) {
+                arandu_parser::TypeExpr::Named { name, .. } => type_check
+                    .resolved
+                    .type_refs
+                    .get(&crate::NodeKey::from(name.span))
+                    .copied()
+                    .filter(|sym| type_check.type_info.enum_variants.contains_key(sym)),
+                _ => None,
+            };
+            let struct_symbol = if let Some(variant_sym) = resolved_variant_sym {
+                variant_sym
+            } else {
+                match type_check.type_info.type_interner.resolve(fallback_ty) {
+                    ArType::Named(id, _) => id,
+                    _ => {
+                        return Err(Diagnostic::error(
+                            crate::diagnostics::DiagCode::L001LoweringUnresolvedSymbol,
+                            "cannot lower struct literal: type is not a named struct",
+                            span,
+                        ));
+                    }
                 }
             };
             let field_ids = pool.field_init_list(*fields);
@@ -544,6 +746,9 @@ pub(crate) fn lower_expr_raw(
             let items_range = hir_pool.alloc_expr_list(&hir_items);
             HirExprKind::Array { items: items_range }
         }
+        ExprKind::ArrayRepeat { value, .. } => HirExprKind::ArrayRepeat {
+            value: lower_expr(type_check, pool, hir_pool, *value)?,
+        },
         ExprKind::Lambda { params, body, .. } => {
             let mut hir_params = Vec::new();
             let param_ids = pool.lambda_param_list(*params);

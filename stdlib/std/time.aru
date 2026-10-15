@@ -9,7 +9,7 @@
 //! ```arandu
 //! import std.time as time
 //!
-//! let delay = time.durationFromMillis(250)
+//! let delay = time.Duration.fromMillis(250)
 //! let nanos = delay.asNanos()
 //! ```
 //!
@@ -52,28 +52,33 @@ public struct Duration {
 /// Wraps a signed nanosecond count without changing its value.
 ///
 /// Negative durations are representable.
-public func durationFromNanos(ns: i64): Duration {
+public func Duration.fromNanos(ns: i64): Duration {
     return Duration { nanos: ns }
 }
 
 /// Converts signed microseconds to nanoseconds by multiplying by 1,000.
 ///
 /// The multiplication is widened to nanoseconds before it is performed.
-public func durationFromMicros(us: int): Duration {
+public func Duration.fromMicros(us: int): Duration {
     return Duration { nanos: (us as i64) * 1000 }
 }
 
 /// Converts signed milliseconds to nanoseconds by multiplying by 1,000,000.
 ///
 /// The multiplication is widened to nanoseconds before it is performed.
-public func durationFromMillis(ms: int): Duration {
+public func Duration.fromMillis(ms: int): Duration {
     return Duration { nanos: (ms as i64) * 1000000 }
 }
 
 /// Converts signed seconds to nanoseconds by multiplying by 1,000,000,000.
 ///
 /// The multiplication is widened to nanoseconds before it is performed.
-public func durationFromSecs(s: int): Duration {
+public func Duration.fromSecs(s: int): Duration {
+    return Duration { nanos: (s as i64) * 1000000000 }
+}
+
+/// Converts signed seconds to nanoseconds by multiplying by 1,000,000,000.
+public func Duration.fromSeconds(s: int): Duration {
     return Duration { nanos: (s as i64) * 1000000000 }
 }
 
@@ -137,12 +142,16 @@ public struct Instant {
     nanos: i64
 }
 
+func now(): Instant {
+    return Instant { nanos: monotonicNs() }
+}
+
 /// Captures the current monotonic clock reading as an `Instant`.
 ///
 /// Its numeric value has no calendar meaning. Use `elapsed` or
 /// `durationSince` to obtain a duration.
-public func now(): Instant {
-    return Instant { nanos: monotonicNs() }
+public func Instant.now(): Instant {
+    return now()
 }
 
 /// Reads the clock and returns the nonnegative time since this instant.

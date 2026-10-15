@@ -56,8 +56,16 @@ fn try_hand_lower_expr_inner(
     cur: &mut Cursor<'_>,
     min_bp: u8,
 ) -> Option<ExprId> {
-    let mut left = parse_unary_primary_post(ctx, cur)?;
+    let left = parse_unary_primary_post(ctx, cur)?;
+    parse_binary_tail(ctx, cur, min_bp, left)
+}
 
+fn parse_binary_tail(
+    ctx: &mut HandCtx<'_>,
+    cur: &mut Cursor<'_>,
+    min_bp: u8,
+    mut left: ExprId,
+) -> Option<ExprId> {
     loop {
         // catch / as as postfix-infix
         match cur.peek_kind() {

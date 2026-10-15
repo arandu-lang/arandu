@@ -19,7 +19,7 @@ Func testSuccess() -> Result<void, Err>
     _2: bool
 
   bb0:
-    _0 = nil
+    _0 = enumConstruct(0)
     _1 = discriminant(_0)
     _2 = eq _1, 1
     branch _2 => bb1, else bb2

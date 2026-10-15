@@ -5,9 +5,9 @@
 //! `ArrayView<T>` and `ArrayViewMut<T>` describe shape and strides without owning storage. Slicing and transpose return views over the same elements.
 //!
 //! ## Safety
-//! `fromRaw` and `fromRawMut` rely on the caller to provide valid storage,
-//! dimensions, and strides. A view does not extend the lifetime of its
-//! backing data; mutable views require exclusive access to their elements.
+//! `ArrayView.fromRaw` and `ArrayViewMut.fromRaw` rely on the caller to provide
+//! valid storage, dimensions, and strides. A view does not extend the lifetime
+//! of its backing data; mutable views require exclusive access to their elements.
 //!
 //! ## Allocations
 //! Creating, slicing, and transposing views do not copy matrix elements.
@@ -88,7 +88,7 @@ public struct ArrayView<T> {
 /// computed offsets outside the signed 32-bit range accepted by `ptrOffset`;
 /// this does not validate that an in-range offset belongs to the allocation.
 @Unsafe
-public func fromRaw<T>(p: ptr[T], rows: uint, cols: uint, rowStride: int, colStride: int): ArrayView<T> {
+public func ArrayView.fromRaw<T>(p: ptr[T], rows: uint, cols: uint, rowStride: int, colStride: int): ArrayView<T> {
     return ArrayView<T> {
         data: p,
         rows: rows,
@@ -100,10 +100,10 @@ public func fromRaw<T>(p: ptr[T], rows: uint, cols: uint, rowStride: int, colStr
 
 /// Creates a row-major `ArrayView<T>` from a borrowed slice `[]T` with given dimensions.
 ///
-/// Returns `Option.Some(view)` if `rows * cols <= slice.len(s)`, or `Option.None` otherwise.
+/// Returns `Option.Some(view)` if `rows * cols <= s.len()`, or `Option.None` otherwise.
 /// The view uses row-major strides and borrows the slice. Extra source
 /// elements after `rows * cols` are excluded from the view.
-public func fromSlice<T>(s: []T, rows: uint, cols: uint): Option<ArrayView<T>> {
+public func ArrayView.fromSlice<T>(s: []T, rows: uint, cols: uint): Option<ArrayView<T>> {
     let maxElements: uint = 2147483647
     if rows > maxElements || cols > maxElements {
         return Option.None
@@ -123,11 +123,6 @@ public func fromSlice<T>(s: []T, rows: uint, cols: uint): Option<ArrayView<T>> {
         rowStride: cols as int,
         colStride: 1,
     })
-}
-
-/// Associated constructor for row-major `ArrayView<T>` from slice.
-public func ArrayView.fromSlice<T>(s: []T, rows: uint, cols: uint): Option<ArrayView<T>> {
-    return fromSlice<T>(s, rows, cols)
 }
 
 /// Returns the number of rows in the view.
@@ -252,7 +247,7 @@ public struct ArrayViewMut<T> {
 /// `ptrOffset`; this does not validate that an in-range offset belongs to the
 /// allocation. No allocation or copy occurs.
 @Unsafe
-public func fromRawMut<T>(p: ptr[T], rows: uint, cols: uint, rowStride: int, colStride: int): ArrayViewMut<T> {
+public func ArrayViewMut.fromRaw<T>(p: ptr[T], rows: uint, cols: uint, rowStride: int, colStride: int): ArrayViewMut<T> {
     return ArrayViewMut<T> {
         data: p,
         rows: rows,
@@ -266,7 +261,7 @@ public func fromRawMut<T>(p: ptr[T], rows: uint, cols: uint, rowStride: int, col
 ///
 /// Returns `None` when the requested shape exceeds the slice length. Extra
 /// source elements are not part of the view; construction does not allocate.
-public func fromSliceMut<T>(s: mut ref []T, rows: uint, cols: uint): Option<ArrayViewMut<T>> {
+public func ArrayViewMut.fromSlice<T>(s: mut ref []T, rows: uint, cols: uint): Option<ArrayViewMut<T>> {
     let maxElements: uint = 2147483647
     if rows > maxElements || cols > maxElements {
         return Option.None
@@ -286,11 +281,6 @@ public func fromSliceMut<T>(s: mut ref []T, rows: uint, cols: uint): Option<Arra
         rowStride: cols as int,
         colStride: 1,
     })
-}
-
-/// Associated constructor for row-major `ArrayViewMut<T>` from slice.
-public func ArrayViewMut.fromSlice<T>(s: mut ref []T, rows: uint, cols: uint): Option<ArrayViewMut<T>> {
-    return fromSliceMut<T>(s, rows, cols)
 }
 
 /// Returns a shared view with the same pointer, shape, and strides.

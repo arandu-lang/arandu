@@ -4,34 +4,45 @@ module examples.minimal.m10_path_empty_windows
 import std.path as path
 
 func main(): int {
-    if !path.isEmpty("") {
+    let empty = path.Path.from("")
+    if !empty.isEmpty() {
         return 1
     }
-    if path.isEmpty("x") {
+    let nonEmpty = path.Path.from("x")
+    if nonEmpty.isEmpty() {
         return 2
     }
 
-    if !path.isAbsolute("C:\\") {
+    let driveRoot = path.Path.from("C:\\")
+    if !driveRoot.isAbsolute() {
         return 3
     }
-    if path.isAbsolute("rel") {
+    let rel = path.Path.from("rel")
+    if rel.isAbsolute() {
         return 4
     }
-    if path.isAbsolute(".\\x") {
+    let dotRel = path.Path.from(".\\x")
+    if dotRel.isAbsolute() {
         return 5
     }
 
-    if path.fileName(path.join("a", "b")) != "b" {
+    let baseA = path.Path.from("a")
+    let joinedAb = path.Path.from(baseA.joinStr("b")).fileName()
+    if joinedAb.asStr() != "b" {
         return 6
     }
-    if path.fileName(path.join("C:\\tmp", "x")) != "x" {
+    let winTmp = path.Path.from("C:\\tmp")
+    let joinedTmp = path.Path.from(winTmp.joinStr("x")).fileName()
+    if joinedTmp.asStr() != "x" {
         return 7
     }
-    if path.fileName(path.join("C:\\tmp", "C:\\abs")) != "abs" {
+    let joinedAbs = path.Path.from(winTmp.joinStr("C:\\abs")).fileName()
+    if joinedAbs.asStr() != "abs" {
         return 8
     }
 
-    if path.fileName("C:\\tmp\\leaf") != "leaf" {
+    let winLeaf = path.Path.from("C:\\tmp\\leaf").fileName()
+    if winLeaf.asStr() != "leaf" {
         return 9
     }
     return 0

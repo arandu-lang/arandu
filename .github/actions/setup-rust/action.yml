@@ -17,6 +17,17 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Configure Defender exclusion (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        try {
+          Add-MpPreference -ExclusionPath "${{ github.workspace }}" -ErrorAction SilentlyContinue
+          Add-MpPreference -ExclusionPath "$env:USERPROFILE\.cargo" -ErrorAction SilentlyContinue
+          Add-MpPreference -ExclusionProcess "cargo.exe", "rustc.exe" -ErrorAction SilentlyContinue
+        } catch {
+          # Ignore if permissions or Defender service is unavailable
+        }
     - name: Repository toolchain
       shell: bash
       run: rustup show active-toolchain

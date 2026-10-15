@@ -1,0 +1,18 @@
+[package]
+name = "arandu_testing_contract"
+version = "0.1.9"
+edition = "2024"
+license.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lib]
+path = "src/lib.rs"

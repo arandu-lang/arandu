@@ -22,7 +22,14 @@ fn stdlib_string_parses_and_exports_expected_symbols() {
     }
     let exports = exported_symbols(&db, file);
     let expected = [
-        "String", "new", "from", "asStr", "asBytes", "pushStr", "truncate",
+        "String",
+        "String.new",
+        "String.withCapacity",
+        "String.from",
+        "String.asStr",
+        "String.asBytes",
+        "String.pushStr",
+        "String.truncate",
     ];
     for key in expected {
         assert!(
@@ -48,7 +55,7 @@ fn stdlib_string_methods_usage() {
 import std.alloc.string as string
 
 func testString(): int {
-    let mut s = string.from("hello world")
+    let mut s = string.String.from("hello world")
     if !s.startsWith("hello") {
         return 1
     }

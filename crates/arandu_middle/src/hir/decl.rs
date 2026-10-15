@@ -118,6 +118,13 @@ pub struct HirExtern {
     pub span: Span,
 }
 
+impl HirExtern {
+    #[must_use]
+    pub fn is_intrinsic(&self) -> bool {
+        self.abi == arandu_parser::AbiKind::AranduIntrinsic
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct HirFuncSignature {
     pub symbol: SymbolId,

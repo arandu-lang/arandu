@@ -7,10 +7,120 @@ use super::FuncTranslator;
 use crate::types;
 
 impl<'a> FuncTranslator<'a> {
+    /// A serialized aggregate used exactly once need not be materialized before
+    /// another initializer copies its bytes. The readonly pointer is internal:
+    /// a `Copy` still creates independent mutable storage, while a serialized
+    /// enclosing constructor never evaluates its already-proven operands.
+    pub(super) fn plan_static_initializer_temps(&mut self) {
+        use arandu_middle::amir::visit::{for_each_stmt_operand, for_each_terminator_operand};
+        use arandu_middle::amir::{AmirRvalue, AmirStmt, TempId};
+        use rustc_hash::FxHashMap;
+
+        let mut definitions = FxHashMap::default();
+        let mut uses = FxHashMap::<TempId, (usize, bool)>::default();
+        for id in self.func.stmts.iter_ids() {
+            let Some(statement) = self.func.stmts.get(id) else {
+                continue;
+            };
+            if let AmirStmt::Assign { lhs, .. } = statement {
+                definitions
+                    .entry(*lhs)
+                    .and_modify(|definition| *definition = None)
+                    .or_insert(Some(id));
+            }
+            for_each_stmt_operand(statement, |operand| {
+                let (AmirOperand::Copy(temp) | AmirOperand::Move(temp)) = operand else {
+                    return;
+                };
+                let entry = uses.entry(*temp).or_insert((0, true));
+                entry.0 = entry.0.saturating_add(1);
+                entry.1 &= match statement {
+                    AmirStmt::Assign {
+                        lhs,
+                        rhs: AmirRvalue::Use(AmirOperand::Copy(source)),
+                    } if source == temp => {
+                        self.func.temps.get(lhs.as_usize()).map(|t| t.ty)
+                            == self.func.temps.get(temp.as_usize()).map(|t| t.ty)
+                    }
+                    AmirStmt::Assign {
+                        rhs:
+                            AmirRvalue::Array { .. }
+                            | AmirRvalue::Tuple { .. }
+                            | AmirRvalue::StructLiteral { .. },
+                        ..
+                    } => self.static_offsets.contains_key(&(self.func.symbol, id)),
+                    _ => false,
+                };
+            });
+        }
+        for block in &self.func.blocks {
+            for_each_terminator_operand(&block.terminator, |operand| {
+                if let AmirOperand::Copy(temp) | AmirOperand::Move(temp) = operand {
+                    uses.entry(*temp).or_insert((0, true)).1 = false;
+                }
+            });
+        }
+        for (temp, definition) in definitions {
+            let Some(id) = definition else {
+                continue;
+            };
+            // Temp zero is the implicit return operand, absent from visitors.
+            if temp == TempId::from_usize(0)
+                || uses.get(&temp) != Some(&(1, true))
+                || !self.static_offsets.contains_key(&(self.func.symbol, id))
+                || !matches!(
+                    self.func.stmts.get(id),
+                    Some(AmirStmt::Assign {
+                        rhs: AmirRvalue::Array { .. }
+                            | AmirRvalue::Tuple { .. }
+                            | AmirRvalue::StructLiteral { .. },
+                        ..
+                    })
+                )
+            {
+                continue;
+            }
+            let Some(ty) = self.func.temps.get(temp.as_usize()).map(|t| t.ty) else {
+                continue;
+            };
+            if self.is_owned_aggregate(ty)
+                && self.layout_provider.is_copy_type(ty) == Some(true)
+                && self
+                    .static_offsets
+                    .get(&(self.func.symbol, id))
+                    .is_some_and(|&(offset, _)| i32::try_from(offset).is_ok())
+            {
+                self.static_initializer_temps.insert(id);
+            }
+        }
+    }
+
+    fn emit_static_initializer(&mut self) -> bool {
+        let Some(statement) = self.current_initializer else {
+            return false;
+        };
+        let Some(&(offset, size)) = self.static_offsets.get(&(self.func.symbol, statement)) else {
+            return false;
+        };
+        let (Ok(offset), Ok(size)) = (i32::try_from(offset), i32::try_from(size)) else {
+            return false;
+        };
+        self.code.extend([
+            Instruction::LocalGet(self.scratch_b),
+            Instruction::I32Const(offset),
+            Instruction::I32Const(size),
+            Instruction::MemoryCopy {
+                src_mem: 0,
+                dst_mem: 0,
+            },
+            Instruction::LocalGet(self.scratch_b),
+        ]);
+        true
+    }
     /// Heap-allocate a cell for a struct literal, store each field.
     pub(super) fn emit_struct_literal(
         &mut self,
-        struct_symbol: SymbolId,
+        _struct_symbol: SymbolId,
         fields: &[(arandu_middle::SmolStr, AmirOperand)],
         result_ty: TypeId,
     ) {
@@ -19,9 +129,15 @@ impl<'a> FuncTranslator<'a> {
         self.alloc_cell(size);
         self.code.push(Instruction::LocalGet(self.scratch));
         self.code.push(Instruction::LocalSet(self.scratch_b));
+        if self.emit_static_initializer() {
+            return;
+        }
         // Store each field.
-        if let Some(fields_def) = self.layout_provider.get_struct_fields(struct_symbol) {
-            let owner_ty = self.interner.resolve(result_ty);
+        let owner_ty = self.interner.resolve(result_ty);
+        if let Some(fields_def) = self
+            .layout_provider
+            .get_struct_fields_for_type(&owner_ty, self.interner)
+        {
             for (name, operand) in fields {
                 let Some(field_info) = fields_def.get(name) else {
                     continue;
@@ -73,6 +189,9 @@ impl<'a> FuncTranslator<'a> {
         self.alloc_cell(size);
         self.code.push(Instruction::LocalGet(self.scratch));
         self.code.push(Instruction::LocalSet(self.scratch_b));
+        if self.emit_static_initializer() {
+            return;
+        }
         for (i, item) in items.iter().enumerate() {
             let item_ty = self.operand_arity_ty(item);
             let offset = layout.field_offsets.get(i).copied().unwrap_or(0);
@@ -116,6 +235,9 @@ impl<'a> FuncTranslator<'a> {
         self.alloc_cell(size);
         self.code.push(Instruction::LocalGet(self.scratch));
         self.code.push(Instruction::LocalSet(self.scratch_b));
+        if self.emit_static_initializer() {
+            return;
+        }
         for (i, item) in items.iter().enumerate() {
             let offset = (i as u64) * elem_layout.size;
             self.push_cell_addr();

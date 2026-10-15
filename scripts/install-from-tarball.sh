@@ -182,6 +182,7 @@ fi
 ln -sfn "$VERSION_NAME" "$PREFIX/current"
 ln -sfn "../current/bin/arandu" "$PREFIX/bin/arandu"
 ln -sfn "../current/bin/arandu_cli" "$PREFIX/bin/arandu_cli"
+ln -sfn "../current/bin/arandu-lsp" "$PREFIX/bin/arandu-lsp"
 
 echo "==> doctor"
 env -u ARANDU_STDLIB PATH="$PREFIX/bin:/usr/bin:/bin" \

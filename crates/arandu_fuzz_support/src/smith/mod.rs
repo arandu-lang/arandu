@@ -23,6 +23,9 @@ pub fn synthesize(seed: u64) -> String {
     synth::synthesize(seed)
 }
 
+#[cfg(test)]
+pub use synth::synthesize_nested_comptime_if;
+
 pub(super) fn run(data: &[u8]) {
     oracle::run(data);
 }

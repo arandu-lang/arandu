@@ -32,6 +32,34 @@ pub enum CliFailure {
     },
 }
 
+impl std::fmt::Display for CliFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Usage { message } => formatter.write_str(message),
+            Self::Operational {
+                operation,
+                context,
+                source,
+            } => {
+                write!(formatter, "{operation}")?;
+                if let Some(path) = context {
+                    write!(formatter, " {}", path.display())?;
+                }
+                write!(formatter, ": {source}")
+            }
+            Self::Diagnostics { diagnostics, .. } => {
+                for (index, diagnostic) in diagnostics.iter().enumerate() {
+                    if index > 0 {
+                        formatter.write_str("\n")?;
+                    }
+                    write!(formatter, "{}: {}", diagnostic.code, diagnostic.message)?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
 impl CliFailure {
     #[must_use]
     pub const fn exit_code(&self) -> i32 {

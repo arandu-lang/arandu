@@ -5,7 +5,7 @@ use arandu_middle::types::type_interner::TypeId;
 
 pub(crate) fn infer_and_instantiate_func(
     checker: &mut TypeChecker<'_>,
-    type_params: &[arandu_middle::SymbolId],
+    (owner, type_params): (Option<arandu_middle::SymbolId>, &[arandu_middle::SymbolId]),
     formals: &[TypeId],
     ret: TypeId,
     arg_tys: &[TypeId],
@@ -38,6 +38,30 @@ pub(crate) fn infer_and_instantiate_func(
         concrete.push(checker.resolve(tid));
     }
     types::interfaces::check_instantiation_constraints(checker, type_params, &concrete, call_span);
+    if let Some(owner) = owner {
+        let ids = concrete
+            .iter()
+            .cloned()
+            .map(|ty| checker.intern(ty))
+            .collect::<Vec<_>>();
+        let signature = if let Some(&(parent, _)) = checker.type_info.enum_variants.get(&owner) {
+            checker.type_info.demand_header(parent, &ids, call_span);
+            checker.type_info.variant_type_for(owner, &ids)
+        } else {
+            checker.type_info.demand_header(owner, &ids, call_span)
+        };
+        if let Some(ty) = signature
+            && let ArType::Func(params, ret) = checker.resolve(ty)
+        {
+            let mut params = checker.type_info.type_interner.type_args(params);
+            // Method inference below receives only explicit payload formals.
+            // Its concrete declaration contract also contains the receiver.
+            if params.len() == formals.len().saturating_add(1) {
+                params.remove(0);
+            }
+            return Some((params, ret));
+        }
+    }
     let subst = types::build_subst(type_params, &concrete);
     let new_params: Vec<TypeId> = formals
         .iter()

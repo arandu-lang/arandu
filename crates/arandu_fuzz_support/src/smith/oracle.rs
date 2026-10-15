@@ -8,6 +8,10 @@ use std::sync::{LazyLock, OnceLock};
 
 use arandu_query::AnalysisHost;
 
+#[cfg(test)]
+mod materialization_tests;
+mod static_if;
+
 use super::artifact::{
     artifact_root, catch_backend_panic, oracle_target_name, panic_payload_message,
     shrink_and_confirm, write_failure_artifact, Failure, FailureArtifact, TemporaryArtifacts,
@@ -15,10 +19,10 @@ use super::artifact::{
 };
 use super::emi::{check_emi_pair_with_expected, inject_dead_pure_statement, inject_emi_mutation};
 use super::process::{
-    capture_jit_eprint, capture_jit_println, captured_stderr, describe_exit_status,
-    parse_backend_result, read_result_channel, reset_jit_stdout_capture, run_with_timeout,
-    synthesized_args_arg, synthesized_args_len, take_jit_stderr_capture, take_jit_stdout_capture,
-    BACKEND_PROCESS_TIMEOUT,
+    capture_jit_eprint, capture_jit_print, capture_jit_println, captured_stderr,
+    describe_exit_status, parse_backend_result, read_result_channel, reset_jit_stdout_capture,
+    run_with_timeout, synthesized_args_arg, synthesized_args_len, take_jit_stderr_capture,
+    take_jit_stdout_capture, BACKEND_PROCESS_TIMEOUT,
 };
 use super::synth::synthesize_with_oracle;
 use super::types::SYNTHESIZED_PROGRAM_ARGS;
@@ -82,6 +86,34 @@ pub(super) fn run_all_backends(data: &[u8]) {
 
 pub(crate) fn run_with_oracles(data: &[u8], compare_c: bool, compare_wasm: bool) {
     let seed = seed_from_data(data);
+    // Sample the real incremental/cache oracle without giving every large
+    // multi-backend seed another workspace-sized analysis workload.
+    if let Some(failure) = seed
+        .is_multiple_of(16)
+        .then(|| static_if::check_cache(seed))
+        .and_then(Result::err)
+    {
+        let generated = super::synth::synthesize_nested_comptime_if(seed, 3);
+        let target = oracle_target_name(compare_c, compare_wasm, "static-if-cache");
+        let artifact = write_failure_artifact(
+            &artifact_root(),
+            FailureArtifact {
+                target,
+                corpus_name: "static-if-cache",
+                seed,
+                failure: &failure,
+                source: &generated.source,
+                emi_candidate: &generated.source,
+                shrink_attempts: 0,
+                shrink_reductions: 0,
+                shrink_confirmed: false,
+            },
+        );
+        panic!(
+            "{}; seed={seed}; artifact={artifact:?}\n{}",
+            failure.message, generated.source
+        );
+    }
     let generated = synthesize_with_oracle(seed);
     run_source_with_expected(
         &generated.source,
@@ -91,6 +123,11 @@ pub(crate) fn run_with_oracles(data: &[u8], compare_c: bool, compare_wasm: bool)
         "synthesized",
         Some(ExpectedObservation::synthesized(generated.expected_result)),
     );
+}
+
+#[cfg(test)]
+pub(super) fn check_static_cache(seed: u64) -> Result<(), Failure> {
+    static_if::check_cache(seed)
 }
 
 pub(crate) fn seed_from_data(data: &[u8]) -> u64 {
@@ -678,6 +715,7 @@ fn execute_cranelift_internal(
         arandu_backend_cranelift::CraneliftBackend::
             try_new_with_block_coverage_and_io_and_process_args(
                 capture_jit_println,
+                capture_jit_print,
                 capture_jit_eprint,
                 synthesized_args_len,
                 synthesized_args_arg,
@@ -685,6 +723,7 @@ fn execute_cranelift_internal(
     } else {
         arandu_backend_cranelift::CraneliftBackend::try_new_with_io_and_process_args(
             capture_jit_println,
+            capture_jit_print,
             capture_jit_eprint,
             synthesized_args_len,
             synthesized_args_arg,
@@ -1207,7 +1246,7 @@ fn execute_cranelift_isolated(
     }
 }
 
-fn execute_c(
+pub(super) fn execute_c(
     program: &arandu_semantics::amir::AmirProgram,
     symbols: &arandu_semantics::SymbolTable,
     type_info: &arandu_semantics::TypeInfo,
@@ -1336,12 +1375,16 @@ fn execute_wasm(
     let id = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
     let wasm_path =
         std::env::temp_dir().join(format!("arandu_smith_{}_{}.wasm", std::process::id(), id));
-    let _cleanup = TemporaryArtifacts(vec![wasm_path.clone()]);
+    let phase_path = wasm_path.with_extension("phase");
+    let _cleanup = TemporaryArtifacts(vec![wasm_path.clone(), phase_path.clone()]);
     std::fs::write(&wasm_path, bytes)
         .map_err(|error| format!("write {}: {error}", wasm_path.display()))?;
 
     const RUNNER: &str = r#"(async()=>{
 const fs=require('fs');
+const phasePath=process.env.ARANDU_SMITH_PHASE_PATH;
+const phase=value=>{if(phasePath)fs.writeFileSync(phasePath,value)};
+phase('read');
 const bytes=fs.readFileSync(process.argv[1]);
 const programArgs=['arandu-smith',...process.argv.slice(2)];
 let instance;
@@ -1392,6 +1435,12 @@ const env={
   }
 };
 const io={
+  print: (ptr,len)=>{
+    const start=Number(ptr), size=Number(len);
+    const memory=instance.exports.memory;
+    if(!memory || !Number.isSafeInteger(start) || !Number.isSafeInteger(size) || start<0 || size<0 || start+size>memory.buffer.byteLength) throw new Error('invalid io.print memory range');
+    process.stdout.write(new Uint8Array(memory.buffer,start,size));
+  },
   println: (ptr,len)=>{
     const start=Number(ptr), size=Number(len);
     const memory=instance.exports.memory;
@@ -1406,24 +1455,41 @@ const io={
     process.stderr.write(new Uint8Array(memory.buffer,start,size));
   }
 };
+phase('instantiate');
 ({instance}=await WebAssembly.instantiate(bytes,{env,io}));
 const main=instance.exports.main;
 if(typeof main!=='function')throw new Error('Wasm module does not export main');
+phase('main');
 const result=main();
+phase('result');
 if(typeof result!=='number')throw new Error('Wasm main did not return i32');
 const resultPath=process.env.ARANDU_SMITH_RESULT_PATH;
 if(!resultPath)throw new Error('missing result channel path');
 fs.writeFileSync(resultPath,String(result)+'\n');
+phase('done');
 })().catch(e=>{console.error(e&&e.stack||e);process.exitCode=1})"#;
     let node = std::env::var_os("ARANDU_NODE").unwrap_or_else(|| "node".into());
     let mut execution_command = Command::new(&node);
+    execution_command.arg("--no-liftoff");
     execution_command.arg("-e").arg(RUNNER).arg(&wasm_path);
     execution_command.args(SYNTHESIZED_PROGRAM_ARGS);
     let result_path = wasm_path.with_extension("result");
     let _result_cleanup = TemporaryArtifacts(vec![result_path.clone()]);
     execution_command.env("ARANDU_SMITH_RESULT_PATH", &result_path);
-    let execution = run_with_timeout(&mut execution_command, BACKEND_PROCESS_TIMEOUT)
-        .map_err(|error| format!("Wasm runner {:?}: {error}", node))?;
+    execution_command.env("ARANDU_SMITH_PHASE_PATH", &phase_path);
+    let execution = match run_with_timeout(&mut execution_command, BACKEND_PROCESS_TIMEOUT) {
+        Ok(execution) => execution,
+        Err(error) => {
+            let phase =
+                std::fs::read_to_string(&phase_path).unwrap_or_else(|_| "not started".into());
+            let evidence = preserve_wasm_reproducer(&wasm_path, RUNNER, &phase)
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|error| format!("could not preserve reproducer: {error}"));
+            return Err(format!(
+                "Wasm runner {node:?}: {error}; phase={phase}; evidence={evidence}"
+            ));
+        }
+    };
     if !execution.status.success() {
         return Err(format!(
             "Wasm runner {:?} exited with {}: {}",
@@ -1445,4 +1511,29 @@ fs.writeFileSync(resultPath,String(result)+'\n');
         stdout: execution.stdout,
         stderr: execution.stderr,
     })
+}
+
+/// Keep the emitted module and an independent Node runner before temporary
+/// cleanup. Native-only failures must be replayable outside the Rust harness.
+fn preserve_wasm_reproducer(
+    wasm_path: &Path,
+    runner: &str,
+    phase: &str,
+) -> Result<PathBuf, String> {
+    let name = wasm_path.file_stem().ok_or("Wasm path has no filename")?;
+    let directory = artifact_root().join(name);
+    std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    std::fs::copy(wasm_path, directory.join("program.wasm")).map_err(|error| error.to_string())?;
+    // `node -e` and `node runner.js` expose different argv layouts.
+    let arguments =
+        serde_json::to_string(&SYNTHESIZED_PROGRAM_ARGS).map_err(|error| error.to_string())?;
+    std::fs::write(directory.join("runner.js"), format!(
+        "process.argv=[process.argv[0],process.argv[2],...{arguments}];\nprocess.env.ARANDU_SMITH_RESULT_PATH ||= 'result.txt';\n{runner}"
+    ))
+        .map_err(|error| error.to_string())?;
+    std::fs::write(directory.join("phase.txt"), phase).map_err(|error| error.to_string())?;
+    std::fs::write(directory.join("replay.txt"),
+        "Run from this directory: node --no-liftoff runner.js program.wasm\nThe result is written to result.txt. Arguments match the Rust harness.\n")
+        .map_err(|error| error.to_string())?;
+    Ok(directory)
 }

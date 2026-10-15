@@ -43,6 +43,7 @@ mod model;
 mod naming;
 
 pub use emit::generate_wit;
+pub(crate) use emit::generate_wit_filtered;
 pub use model::{WitPrimitive, WitTypeDef, WitTypeDefKind, WitTypeId, WitTypeKind, WitTypePool};
 pub use naming::{extract_method_name, to_wit_ident};
 

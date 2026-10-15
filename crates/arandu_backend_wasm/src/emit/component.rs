@@ -25,12 +25,13 @@ impl<'a> WasmModuleBuilder<'a> {
         use wit_parser::Resolve;
 
         // Generate WIT text from public functions.
-        let maybe_wit = crate::wit_gen::generate_wit(
+        let maybe_wit = crate::wit_gen::generate_wit_filtered(
             self.program,
             self.symbols,
             self.interner,
             self.layout_provider,
             pkg_name,
+            self.live.as_ref(),
         );
 
         let Some(wit_text) = maybe_wit else {

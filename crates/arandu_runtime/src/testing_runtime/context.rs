@@ -3,7 +3,7 @@
 use std::cell::RefCell;
 use std::path::PathBuf;
 
-use arandu_codegen::testing::{TestFailure, TestStatus};
+use arandu_testing_contract::{TestFailure, TestStatus};
 
 use super::sandbox::safe_cleanup_temp_dir;
 use super::types::{MAX_LOG_ENTRIES, MAX_LOG_TOTAL_BYTES, TestContextResult};

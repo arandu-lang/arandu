@@ -50,7 +50,7 @@ public enum Option<T> {
 /// Borrows the payload when the option is `Some`, without copying or consuming it.
 ///
 /// The returned reference remains tied to the borrow of `self` by the compiler.
-public func asRef<T>(value: ref Option<T>): Option<ref T> {
+func asRef<T>(value: ref Option<T>): Option<ref T> {
     match value {
         Some(value) => {
             return Option.Some(value)
@@ -59,6 +59,13 @@ public func asRef<T>(value: ref Option<T>): Option<ref T> {
             return Option.None
         }
     }
+}
+
+/// Borrows the payload when the option is `Some`, without copying or consuming it.
+///
+/// The returned reference remains tied to the borrow of `self` by the compiler.
+public func Option.asRef<T>(self: ref Option<T>): Option<ref T> {
+    return asRef<T>(self)
 }
 
 /// Returns `true` if the option is the `Some` variant.

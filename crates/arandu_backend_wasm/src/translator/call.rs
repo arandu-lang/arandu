@@ -39,6 +39,9 @@ impl<'a> FuncTranslator<'a> {
                     match shape {
                         Shape::Scalar => {
                             self.code.push(Instruction::LocalSet(local));
+                            if let Some(slot) = self.current_returned_home {
+                                self.adopt_returned_home(slot, local);
+                            }
                         }
                         Shape::Fat => {
                             self.code.push(Instruction::LocalSet(local + 1));
@@ -68,13 +71,19 @@ impl<'a> FuncTranslator<'a> {
             IntrinsicKind::BlackBox => {
                 if let Some(arg) = args.first() {
                     let arg_ty = self.operand_arity_ty(arg);
+                    self.emit_black_box_value(arg, arg_ty);
+                    let shape = types::shape(arg_ty, self.interner, self.layout_engine.data_layout);
                     if let Some(temp) = lhs {
                         let local = self.temp_local.get(&temp).copied().unwrap_or(0);
-                        self.emit_operand_to_local(arg, arg_ty, local);
+                        match shape {
+                            Shape::Scalar => self.code.push(Instruction::LocalSet(local)),
+                            Shape::Fat => {
+                                self.code.push(Instruction::LocalSet(local + 1));
+                                self.code.push(Instruction::LocalSet(local));
+                            }
+                            Shape::Empty => {}
+                        }
                     } else {
-                        self.emit_operand(arg, arg_ty);
-                        let shape =
-                            types::shape(arg_ty, self.interner, self.layout_engine.data_layout);
                         match shape {
                             Shape::Scalar => self.code.push(Instruction::Drop),
                             Shape::Fat => {

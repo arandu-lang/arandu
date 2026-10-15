@@ -27,6 +27,34 @@ fn int_ty() -> arandu_middle::types::TypeId {
 }
 
 #[test]
+fn pattern_presentation_uses_names_and_only_explicitly_requested_spans() {
+    let source = "enum State { Empty, Value(int) }\nfunc main(): int { let state = State.Value(7); return match state {\nState.Empty => 0\nState.Value(value) => value\n} }\n";
+    let render = |source: &str, show_spans| {
+        let program = arandu_parser::parse(source).expect("parse");
+        let resolution = resolve_for_test(0, &program);
+        let mut tc = type_check(
+            resolution,
+            &program,
+            arandu_semantics::TargetInfo { pointer_width: 64 },
+        );
+        assert!(tc.diagnostics.is_empty(), "{:?}", tc.diagnostics);
+        let hir = lower_to_hir(&mut tc, &program).expect("HIR");
+        hir.pretty_print(&HirPrettyCtx {
+            pool: &hir.pool,
+            symbols: &tc.symbols,
+            show_spans,
+            type_interner: Some(&tc.type_info.type_interner),
+        })
+    };
+    let presentation = render(source, false);
+    assert!(presentation.contains("Arm(State.Value(value))"));
+    assert!(!presentation.contains("SymbolId"));
+    assert!(!presentation.contains("Span {"));
+    assert_eq!(presentation, render(&format!("\n\n{source}"), false));
+    assert!(render(source, true).contains(" @ Span {"));
+}
+
+#[test]
 fn canonical_and_legacy_no_fallback_lower_to_the_same_hir_flag() {
     for annotation in ["NoFallback", "no_fallback", "no_generational_fallback"] {
         let source = format!("@{annotation}\nfunc critical() {{}}\n");

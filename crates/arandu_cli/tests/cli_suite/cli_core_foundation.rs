@@ -26,6 +26,128 @@ fn run_source(name: &str, source: &str) -> std::process::Output {
 }
 
 #[test]
+fn noncopy_element_slices_remain_usable_after_length_queries() {
+    let output = run_source(
+        "noncopySlice.aru",
+        r#"module noncopySlice
+import std.alloc.vec as vec
+import std.alloc.string as strings
+import std.core.slice as slice
+struct Step { name: strings.String }
+func main(): int {
+    let mut steps = vec.Vec<Step>.new()
+    steps.push(Step { name: strings.String.from("field") })
+    let view = steps.asSlice()
+    if slice.len<Step>(view) != 1 { return 1 }
+    if slice.len<Step>(view) != 1 { return 2 }
+    match slice.get<Step>(view, 0) {
+        Option.Some(item) => {
+            if item.name.len() != 5 { return 3 }
+        }
+        Option.None => { return 4 }
+    }
+    if slice.len<Step>(view) != 1 { return 5 }
+    match steps.get(0) {
+        Option.Some(item) => {
+            if item.name.len() != 5 { return 6 }
+        }
+        Option.None => { return 7 }
+    }
+    match steps.get(1) {
+        Option.Some(_) => { return 8 }
+        Option.None => {}
+    }
+    return 0
+}
+"#,
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn filesystem_reads_owned_binary_bytes_without_text_conversion() {
+    let directory = crate::common::temp_dir("arandu-read-bytes").expect("temporary directory");
+    let binary = directory.join("binary.dat");
+    let empty = directory.join("empty.dat");
+    let missing = directory.join("missing.dat");
+    fs::write(&binary, [0, 128, 255]).expect("binary file");
+    fs::write(&empty, []).expect("empty file");
+    // JSON escaping also produces valid Arandu string literals for native paths.
+    let binary_path = serde_json::to_string(&binary.to_string_lossy()).expect("binary path");
+    let empty_path = serde_json::to_string(&empty.to_string_lossy()).expect("empty path");
+    let missing_path = serde_json::to_string(&missing.to_string_lossy()).expect("missing path");
+    let source = format!(
+        r#"module readBytes
+import std.fs as fs
+func main(): int {{
+    match fs.readToBytes({binary_path}) {{
+        Ok(bytes) => {{
+            if bytes.len() != 3 {{ return 1 }}
+            let view = bytes.asSlice()
+            if view[0] != 0 || view[1] != 128 || view[2] != 255 {{ return 2 }}
+        }}
+        Err(_) => {{ return 3 }}
+    }}
+    match fs.readToBytes({empty_path}) {{
+        Ok(bytes) => {{ if !bytes.isEmpty() {{ return 4 }} }}
+        Err(_) => {{ return 5 }}
+    }}
+    match fs.readToBytes({missing_path}) {{
+        Ok(_) => {{ return 6 }}
+        Err(_) => {{}}
+    }}
+    return 0
+}}
+"#
+    );
+    let output = run_source("readBytes.aru", &source);
+    let _ = fs::remove_dir_all(directory);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn borrowed_string_bytes_and_partial_stdout_are_public_helpers() {
+    let output = run_source(
+        "public_text_helpers.aru",
+        r#"module public_text_helpers
+import std.io as io
+import std.core.str as strings
+import std.core.slice as slice
+func main(): int {
+    let text = "olá"
+    let bytes = strings.asBytes(ref text)
+    if slice.len<u8>(bytes) != 4 { return 1 }
+    if bytes[0] != 111 { return 2 }
+    let emptyText = ""
+    let empty = strings.asBytes(ref emptyText)
+    if slice.len<u8>(empty) != 0 { return 3 }
+    io.print("hello")
+    io.print("")
+    io.print("\0world")
+    return 0
+}
+"#,
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, b"hello\0world");
+}
+
+#[test]
 fn core_string_algorithms_run_without_runtime_string_symbols() {
     let output = run_source(
         "core_str.aru",
@@ -71,8 +193,8 @@ fn q16_16_uses_widened_intermediates() {
 import std.core.fixed as fixed
 
 func main(): int {
-    let five = fixed.fromInt(5 as i16)
-    let two = fixed.fromInt(2 as i16)
+    let five = fixed.Q16_16.fromInt(5 as i16)
+    let two = fixed.Q16_16.fromInt(2 as i16)
     if five.mul(two).toRaw() != 655360 as i32 { return 1 }
     match five.div(two) {
         Option.Some(value) => {
@@ -80,7 +202,7 @@ func main(): int {
         }
         Option.None => { return 3 }
     }
-    match five.div(fixed.fromRaw(0 as i32)) {
+    match five.div(fixed.Q16_16.fromRaw(0 as i32)) {
         Option.Some(_) => { return 4 }
         Option.None => {}
     }
@@ -106,18 +228,18 @@ import std.core.io as io
 import std.alloc.vec as vec
 
 func main(): int {
-    let mut storage = vec.new<u8>()
+    let mut storage = vec.Vec<u8>.new()
     storage.push(0 as u8)
     storage.push(0 as u8)
     storage.push(0 as u8)
     storage.push(0 as u8)
-    let mut input = vec.new<u8>()
+    let mut input = vec.Vec<u8>.new()
     input.push(10 as u8)
     input.push(20 as u8)
     input.push(30 as u8)
     let storageSlice = storage.asSlice()
     let inputSlice = input.asSlice()
-    let mut writer = io.newSliceWriter(storageSlice)
+    let mut writer = io.SliceWriter.new(storageSlice)
     if writer.remaining() != 4 { return 10 }
     match writer.write(inputSlice) {
         Result.Ok(count) => { if count != 3 { return 1 } }
@@ -125,9 +247,9 @@ func main(): int {
     }
     if writer.written() != 3 { return 11 }
     if storageSlice[0] != 10 as u8 { return 12 }
-    let mut reader = io.newSliceReader(storageSlice)
+    let mut reader = io.SliceReader.new(storageSlice)
     if reader.remaining() != 4 { return 13 }
-    let mut output = vec.new<u8>()
+    let mut output = vec.Vec<u8>.new()
     output.push(0 as u8)
     output.push(0 as u8)
     output.push(0 as u8)

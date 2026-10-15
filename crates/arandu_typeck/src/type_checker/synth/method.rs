@@ -223,20 +223,6 @@ pub(crate) fn synth_method_call(
                 break;
             }
         }
-    } else if let Some(sym) = method_sym
-        && let Some(gp) = checker.type_info.generic_params.get(&sym)
-    {
-        if let Some(sid) = struct_id
-            && let Some(struct_gp) = checker.type_info.generic_params.get(&sid)
-        {
-            if gp.len() >= struct_gp.len() {
-                method_generic_params = gp[struct_gp.len()..].to_vec();
-            } else {
-                method_generic_params = gp.to_vec();
-            }
-        } else {
-            method_generic_params = gp.to_vec();
-        }
     }
 
     let (params, ret, method_sym_recorded) = if let Some(method_sig) = resolved_method {
@@ -266,6 +252,19 @@ pub(crate) fn synth_method_call(
             ArType::Func(params, ret) => (checker.type_info.type_interner.type_args(*params), *ret),
             _ => return None,
         };
+        if let Some(gp) = checker.type_info.generic_params.get(&sym) {
+            if let Some(&first_param) = params.first() {
+                let first_ty = checker.resolve(first_param);
+                let interner = &checker.type_info.type_interner;
+                method_generic_params = gp
+                    .iter()
+                    .copied()
+                    .filter(|&p| !contains_generic_params(&first_ty, &[p], interner))
+                    .collect();
+            } else {
+                method_generic_params = gp.to_vec();
+            }
+        }
         (params, ret, Some(sym))
     } else {
         // Root fix: missing method (including private methods not present in
@@ -302,6 +301,7 @@ pub(crate) fn synth_method_call(
             params,
             ret,
             method_sym_recorded,
+            call_span,
         )
     } else {
         instantiate_method_sig_for_result_option(
@@ -372,7 +372,7 @@ pub(crate) fn synth_method_call(
             .collect();
         if let Some((ip, ir)) = super::expr::infer_and_instantiate_func(
             checker,
-            &method_generic_params,
+            (method_sym_recorded, &method_generic_params),
             &explicit_params,
             ret,
             &arg_tys,
@@ -458,11 +458,7 @@ fn instantiate_method_sig_for_result_option(
     let subst = build_subst(&gp[..n], &concrete_args[..n]);
     let new_params: Vec<TypeId> = params
         .iter()
-        .enumerate()
-        .map(|(i, &p)| {
-            if i == 0 {
-                return actual_base_ty_id;
-            }
+        .map(|&p| {
             let ty = checker.resolve(p);
             let inst = substitute_type(&ty, &subst, &checker.type_info.type_interner);
             checker.intern(inst)
@@ -477,6 +473,68 @@ fn instantiate_method_sig_for_result_option(
     (new_params, new_ret)
 }
 
+fn bind_receiver_type_arg(
+    checker: &TypeChecker<'_>,
+    formal_id: TypeId,
+    actual_id: TypeId,
+    candidate_gp: &[arandu_middle::SymbolId],
+    param_syms: &mut Vec<arandu_middle::SymbolId>,
+    bound_args: &mut Vec<ArType>,
+) {
+    let formal_ty = checker.resolve(formal_id);
+    let actual_ty = checker.resolve(actual_id);
+    match (&formal_ty, &actual_ty) {
+        (ArType::Named(sym, a), _) if a.is_empty() && candidate_gp.contains(sym) => {
+            if !param_syms.contains(sym) {
+                param_syms.push(*sym);
+                bound_args.push(actual_ty);
+            }
+        }
+        (ArType::ConstParam(sym), _) if candidate_gp.contains(sym) => {
+            if !param_syms.contains(sym) {
+                param_syms.push(*sym);
+                bound_args.push(actual_ty);
+            }
+        }
+        (ArType::Option(f_inner), ArType::Option(a_inner))
+        | (ArType::Slice(f_inner), ArType::Slice(a_inner))
+        | (ArType::Ref(f_inner), ArType::Ref(a_inner))
+        | (ArType::RefMut(f_inner), ArType::RefMut(a_inner))
+        | (ArType::Ptr(f_inner), ArType::Ptr(a_inner))
+        | (ArType::Nullable(f_inner), ArType::Nullable(a_inner)) => {
+            bind_receiver_type_arg(
+                checker,
+                *f_inner,
+                *a_inner,
+                candidate_gp,
+                param_syms,
+                bound_args,
+            );
+        }
+        (ArType::Result(f_ok, f_err), ArType::Result(a_ok, a_err)) => {
+            bind_receiver_type_arg(checker, *f_ok, *a_ok, candidate_gp, param_syms, bound_args);
+            bind_receiver_type_arg(
+                checker,
+                *f_err,
+                *a_err,
+                candidate_gp,
+                param_syms,
+                bound_args,
+            );
+        }
+        (ArType::Named(f_sym, f_args), ArType::Named(a_sym, a_args))
+            if f_sym == a_sym && f_args.len == a_args.len =>
+        {
+            let f_ids = checker.type_info.type_interner.type_args(*f_args);
+            let a_ids = checker.type_info.type_interner.type_args(*a_args);
+            for (&f, &a) in f_ids.iter().zip(a_ids.iter()) {
+                bind_receiver_type_arg(checker, f, a, candidate_gp, param_syms, bound_args);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Substitute struct type parameters in a method signature using the concrete
 /// receiver type (`BoxG<int>` → replace `T` with `int` in params/return).
 fn instantiate_method_sig_for_receiver(
@@ -486,6 +544,7 @@ fn instantiate_method_sig_for_receiver(
     params: Vec<TypeId>,
     ret: TypeId,
     method_sym: Option<arandu_middle::SymbolId>,
+    call_span: arandu_lexer::Span,
 ) -> (Vec<TypeId>, TypeId) {
     use crate::type_checker::types::{build_subst, substitute_type};
 
@@ -517,28 +576,95 @@ fn instantiate_method_sig_for_receiver(
         return (params, ret);
     }
 
+    // Match the formal receiver parameter's type arguments against `recv_args`
+    // so both unspecialized (`StaticMatrix<T, M, N>`) and specialized
+    // (`StaticMatrix<float, M, N>`, `StaticMatrix<float, N, N>`, `Vec<Option<T>>`)
+    // receivers bind their generic parameters from the corresponding positions.
+    let mut param_syms: Vec<arandu_middle::SymbolId> = Vec::new();
+    let mut bound_args: Vec<ArType> = Vec::new();
+    let mut matched_formal = false;
+    if let Some(&first_param) = params.first() {
+        let mut formal_base = first_param;
+        for _ in 0..4 {
+            match checker.resolve(formal_base) {
+                ArType::Ptr(inner) | ArType::Ref(inner) | ArType::RefMut(inner) => {
+                    formal_base = inner;
+                }
+                _ => break,
+            }
+        }
+        if let ArType::Named(fid, fargs) = checker.resolve(formal_base)
+            && fid == struct_id
+            && fargs.len as usize == recv_args_ids.len()
+        {
+            matched_formal = true;
+            let mut candidate_gp: Vec<arandu_middle::SymbolId> = Vec::new();
+            if let Some(sym) = method_sym
+                && let Some(gp) = checker.type_info.generic_params.get(&sym)
+            {
+                candidate_gp.extend(gp.iter().copied());
+            }
+            if let Some(gp) = checker.type_info.generic_params.get(&struct_id) {
+                for &p in gp.iter() {
+                    if !candidate_gp.contains(&p) {
+                        candidate_gp.push(p);
+                    }
+                }
+            }
+            let formal_arg_ids = checker.type_info.type_interner.type_args(fargs);
+            for (&f_id, &actual_id) in formal_arg_ids.iter().zip(recv_args_ids.iter()) {
+                bind_receiver_type_arg(
+                    checker,
+                    f_id,
+                    actual_id,
+                    &candidate_gp,
+                    &mut param_syms,
+                    &mut bound_args,
+                );
+            }
+        }
+    }
+    if !matched_formal {
+        param_syms = if let Some(sym) = method_sym
+            && let Some(gp) = checker.type_info.generic_params.get(&sym)
+        {
+            let n = recv_args.len().min(gp.len());
+            gp.iter().copied().take(n).collect()
+        } else if let Some(gp) = checker.type_info.generic_params.get(&struct_id) {
+            gp.iter().copied().take(recv_args.len()).collect()
+        } else {
+            return (params, ret);
+        };
+        if param_syms.len() != recv_args.len() {
+            return (params, ret);
+        }
+        bound_args = recv_args;
+    }
+    if param_syms.is_empty() {
+        return (params, ret);
+    }
+
+    let has_method_specific_bounds = checker
+        .type_info
+        .generic_params
+        .get(&struct_id)
+        .is_some_and(|struct_gp| param_syms.iter().any(|p| !struct_gp.contains(p)));
+    if has_method_specific_bounds {
+        crate::type_checker::types::interfaces::check_instantiation_constraints(
+            checker,
+            &param_syms,
+            &bound_args,
+            call_span,
+        );
+    }
+
     let key_sym = method_sym.unwrap_or(struct_id);
     let cache_key = (key_sym, recv_args_ids);
     if let Some(cached) = checker.type_info.variant_instantiations.get(&cache_key) {
         return cached.clone();
     }
 
-    // Prefer method-level generic_params prefix (struct params first), else struct params.
-    let param_syms: Vec<arandu_middle::SymbolId> = if let Some(sym) = method_sym
-        && let Some(gp) = checker.type_info.generic_params.get(&sym)
-    {
-        let n = recv_args.len().min(gp.len());
-        gp.iter().copied().take(n).collect()
-    } else if let Some(gp) = checker.type_info.generic_params.get(&struct_id) {
-        gp.iter().copied().take(recv_args.len()).collect()
-    } else {
-        return (params, ret);
-    };
-    if param_syms.len() != recv_args.len() {
-        return (params, ret);
-    }
-
-    let subst = build_subst(&param_syms, &recv_args);
+    let subst = build_subst(&param_syms, &bound_args);
     let new_params: Vec<TypeId> = params
         .iter()
         .map(|&pid| {
@@ -578,6 +704,7 @@ pub(super) fn contains_generic_params(
 ) -> bool {
     use arandu_middle::types::ArType;
     match ty {
+        ArType::ConstParam(id) => gp.contains(id),
         ArType::Named(id, args) => {
             if gp.contains(id) {
                 return true;

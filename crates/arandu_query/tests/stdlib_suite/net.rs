@@ -18,7 +18,7 @@ fn stdlib_net_parses_and_exports_expected_symbols() {
         Err(e) => panic!("net.aru must parse; got {e}"),
     }
     let exports = exported_symbols(&db, file);
-    let expected = ["SocketAddr", "socketAddr", "TcpStream", "TcpListener"];
+    let expected = ["SocketAddr", "SocketAddr.new", "TcpStream", "TcpListener"];
     for key in expected {
         assert!(
             exports.symbols.contains_key(key),
@@ -36,7 +36,7 @@ fn stdlib_net_usage_in_program() {
 import std.net as net
 
 func testAddr(): net.SocketAddr {
-    return net.socketAddr("127.0.0.1", 8080)
+    return net.SocketAddr.new("127.0.0.1", 8080)
 }
 
 func main(): int {

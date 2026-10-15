@@ -55,12 +55,17 @@ impl<'a> Resolver<'a> {
     }
 
     pub(crate) fn resolve_func(&mut self, scope: ScopeId, decl: &FuncDecl) {
+        let func_scope = self.resolve_func_header(scope, decl);
+        self.resolve_block_in_scope(func_scope, self.pool, &decl.body);
+    }
+
+    pub(crate) fn resolve_func_header(&mut self, scope: ScopeId, decl: &FuncDecl) -> ScopeId {
         self.resolve_attrs(scope, &decl.attrs);
         let func_scope = self.symbols.new_scope(scope);
         // Methods on generic types must see the receiver type's type params
         // (`func Box.get(): T` needs `T` from `struct Box<T>`).
         if let FuncName::Method { receiver, .. } = &decl.name {
-            self.import_receiver_type_params(scope, func_scope, receiver);
+            self.import_receiver_type_params(scope, func_scope, receiver, decl);
             self.resolve_type_name(func_scope, receiver);
         }
         self.define_generics(func_scope, &decl.generic_params);
@@ -73,15 +78,54 @@ impl<'a> Resolver<'a> {
         if let Some(result) = &decl.result {
             self.resolve_result_type(func_scope, result);
         }
-        self.resolve_block_in_scope(func_scope, self.pool, &decl.body);
+        func_scope
     }
 
-    /// Bind parent type parameters into a method scope (same `SymbolId`s as the type).
+    /// Allocate declaration scopes before any function body. Body scopes are
+    /// revision-local continuations, not new persistent symbol identities.
+    pub(crate) fn resolve_top_level_headers(
+        &mut self,
+        scope: ScopeId,
+        decl: &TopLevelDecl,
+        bodies: &mut rustc_hash::FxHashMap<crate::NodeKey, ScopeId>,
+    ) {
+        match decl {
+            TopLevelDecl::Func(function) => {
+                let func_scope = self.resolve_func_header(scope, function);
+                let key = match &function.name {
+                    FuncName::Free { span, .. } | FuncName::Method { span, .. } => (*span).into(),
+                };
+                bodies.insert(key, func_scope);
+            }
+            TopLevelDecl::Submodule(module) => {
+                self.resolve_attrs(scope, &module.attrs);
+                let sub_scope = self
+                    .symbols
+                    .lookup_module(scope, &module.name)
+                    .and_then(|id| self.symbols.module_scopes.get(&id).copied())
+                    .unwrap_or(scope);
+                for &id in &module.decls {
+                    self.resolve_top_level_headers(sub_scope, self.pool.decl(id), bodies);
+                }
+            }
+            TopLevelDecl::Const(_)
+            | TopLevelDecl::TypeAlias(_)
+            | TopLevelDecl::Struct(_)
+            | TopLevelDecl::Enum(_)
+            | TopLevelDecl::Interface(_)
+            | TopLevelDecl::Extern(_)
+            | TopLevelDecl::Error(_) => self.resolve_top_level(scope, decl),
+        }
+    }
+
+    /// Bind parent type parameters into a method scope (same `SymbolId`s as the type),
+    /// unless the method explicitly redeclares that parameter with its own constraints.
     fn import_receiver_type_params(
         &mut self,
         scope: ScopeId,
         func_scope: ScopeId,
         receiver: &TypeName,
+        decl: &FuncDecl,
     ) {
         let Some(root) = receiver.path.first() else {
             return;
@@ -96,7 +140,18 @@ impl<'a> Resolver<'a> {
             .copied()
             .collect();
         for param in params {
-            self.symbols.bind_existing(func_scope, param);
+            let param_name = self.symbols.get(param).name.clone();
+            let has_method_constraints = decl
+                .generic_params
+                .iter()
+                .any(|gp| gp.name == param_name && !gp.constraints.is_empty())
+                || decl
+                    .where_clause
+                    .iter()
+                    .any(|w| w.name == param_name && !w.constraints.is_empty());
+            if !has_method_constraints {
+                self.symbols.bind_existing(func_scope, param);
+            }
         }
     }
 
@@ -297,8 +352,27 @@ impl<'a> Resolver<'a> {
             }
             Some(EnumPayload::Struct { fields, .. }) => {
                 let variant_scope = self.symbols.new_scope(scope);
+                let mut seen_fields = smallvec::SmallVec::<[(&str, arandu_lexer::Span); 8]>::new();
                 for field in fields {
-                    self.resolve_field(variant_scope, field);
+                    if let Some((_, prev_span)) =
+                        seen_fields.iter().find(|(name, _)| *name == field.name)
+                    {
+                        self.diagnostics.push(
+                            crate::Diagnostic::error(
+                                crate::DiagCode::T030DuplicateFieldDecl,
+                                format!(
+                                    "field '{}' is already declared in enum variant '{}'",
+                                    field.name, variant.name
+                                ),
+                                field.span,
+                            )
+                            .with_label(*prev_span, "first declaration here")
+                            .with_label(field.span, "duplicate field"),
+                        );
+                    } else {
+                        seen_fields.push((&field.name, field.span));
+                        self.resolve_field(variant_scope, field);
+                    }
                 }
             }
             None => {}

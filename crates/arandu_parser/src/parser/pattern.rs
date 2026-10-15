@@ -87,6 +87,18 @@ impl<'a> Parser<'a> {
             let name = self.expect_ident_type()?;
             if self.eat_name("DOT") {
                 let variant = self.expect_member_name()?;
+                let variant_span = self.span_from_mark(start);
+                if self.looks_like_field_pattern_brace() && self.eat_name("LBRACE") {
+                    let range = self.parse_field_pattern_list()?;
+                    return Ok(self.pool.alloc_pattern(Pattern::Struct {
+                        span: self.span_from_mark(start),
+                        type_name: TypeName {
+                            span: variant_span,
+                            path: vec![name, variant].into(),
+                        },
+                        fields: range,
+                    }));
+                }
                 let payload = if self.eat_name("LPAREN") {
                     let payload = self.parse_pattern_list_until("RPAREN")?;
                     self.expect_name("RPAREN")?;
@@ -104,33 +116,8 @@ impl<'a> Parser<'a> {
                     payload,
                 }));
             }
-            if self.eat_name("LBRACE") {
-                let mut fields = Vec::new();
-                if !self.at_kind_name("RBRACE") {
-                    loop {
-                        let field_start = self.mark();
-                        let name = self.expect_ident_value()?;
-                        let pattern = if self.eat_name("COLON") {
-                            Some(self.parse_pattern()?)
-                        } else {
-                            None
-                        };
-                        let field_pat_id = self.pool.alloc_field_pattern(FieldPattern {
-                            span: self.span_from_mark(field_start),
-                            name,
-                            pattern,
-                        });
-                        fields.push(field_pat_id);
-                        if !self.eat_name("COMMA") {
-                            break;
-                        }
-                        if self.at_kind_name("RBRACE") {
-                            break;
-                        }
-                    }
-                }
-                self.expect_name("RBRACE")?;
-                let range = self.pool.alloc_field_pattern_list(&fields);
+            if self.looks_like_field_pattern_brace() && self.eat_name("LBRACE") {
+                let range = self.parse_field_pattern_list()?;
                 return Ok(self.pool.alloc_pattern(Pattern::Struct {
                     span: self.span_from_mark(start),
                     type_name: TypeName {
@@ -180,6 +167,59 @@ impl<'a> Parser<'a> {
             span: self.span_from_mark(start),
             expr: literal,
         }))
+    }
+
+    fn looks_like_field_pattern_brace(&self) -> bool {
+        if !self.at_kind_name("LBRACE") {
+            return false;
+        }
+        let Some(next) = self.tokens.get(self.pos + 1) else {
+            return false;
+        };
+        match next.kind {
+            TokenKind::RBrace => self.tokens.get(self.pos + 2).is_some_and(|after| {
+                matches!(
+                    after.kind,
+                    TokenKind::FatArrow | TokenKind::Pipe | TokenKind::KwIf | TokenKind::LBrace
+                )
+            }),
+            TokenKind::IdentValue => self.tokens.get(self.pos + 2).is_some_and(|after| {
+                matches!(
+                    after.kind,
+                    TokenKind::Colon | TokenKind::Comma | TokenKind::RBrace
+                )
+            }),
+            _ => false,
+        }
+    }
+
+    fn parse_field_pattern_list(&mut self) -> Result<IndexRange, ParseError> {
+        let mut fields = Vec::new();
+        if !self.at_kind_name("RBRACE") {
+            loop {
+                let field_start = self.mark();
+                let name = self.expect_ident_value()?;
+                let pattern = if self.eat_name("COLON") {
+                    Some(self.parse_pattern()?)
+                } else {
+                    None
+                };
+                let field_pat_id = self.pool.alloc_field_pattern(FieldPattern {
+                    span: self.span_from_mark(field_start),
+                    name,
+                    pattern,
+                });
+                fields.push(field_pat_id);
+                if !self.eat_name("COMMA") {
+                    break;
+                }
+                if self.at_kind_name("RBRACE") {
+                    break;
+                }
+            }
+        }
+        self.expect_name("RBRACE")?;
+        Ok(self.pool.alloc_field_pattern_list(&fields))
     }
 
     pub(super) fn parse_pattern_list_until(

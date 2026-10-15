@@ -1,4 +1,5 @@
 use arandu_semantics::amir::{AmirPlace, AmirProjection};
+use arandu_semantics::layout::StructLayoutProvider;
 use arandu_semantics::passes::type_checker::types::{ArType, is_vec_type};
 use cranelift_codegen::ir::{InstBuilder, Value};
 
@@ -358,14 +359,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         let field_name = &self.symbol_table.get(symbol_id).name;
         let field_idx = self
             .type_info
-            .struct_fields
-            .get(&match &struct_ty {
-                ArType::Named(id, _) => *id,
-                _ => {
-                    *current_ty = ArType::Error;
-                    return 0;
-                }
-            })
+            .get_struct_fields_for_type(&struct_ty, &self.type_info.type_interner)
             .and_then(|m| m.get(field_name.as_str()))
             .map(|f| f.index)
             .unwrap_or(0);

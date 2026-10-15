@@ -4,11 +4,22 @@ use crate::amir::{
     AmirTerminator, BlockId, BlockParam, LocalId, TempId,
 };
 use crate::diagnostics::Diagnostic;
-use crate::passes::type_checker::types::ArType;
+use crate::passes::type_checker::types::{ArType, Primitive};
 use arandu_lexer::Span;
 use rustc_hash::FxHashMap;
 
 impl LowerCtx<'_> {
+    /// Untyped pool operands cannot replace typed integer SSA values:
+    /// comparison results carry bool, not operand width or signedness.
+    pub(super) fn integer_constant_needs_type(
+        &self,
+        ty: crate::types::TypeId,
+        operand: AmirOperand,
+    ) -> bool {
+        matches!(operand, AmirOperand::Constant(AmirConstant::Pool(_)))
+            && self.with_ty(ty, |ty| matches!(ty,
+                ArType::Primitive(primitive) if primitive.is_integer() && *primitive != Primitive::Int))
+    }
     // --- SSA / OSSA Block Arguments & Braun et al. Helpers ---
 
     pub(crate) fn seal_block(&mut self, block: BlockId) {
@@ -137,14 +148,19 @@ impl LowerCtx<'_> {
             local,
             projections: smallvec::SmallVec::new(),
         }));
+        // For non-default integer types, keep the typed SSA register instead
+        // of substituting an untyped pool literal. Address-taken locals must
+        // still load their stack home; their initial SSA value can be stale.
         // For `T?`, never redirect a non-Nil constant into the use site: bare
         // `0` would collapse with `nil` under `ne 0, nil`. Materialize via
         // Assign so codegen can box the scalar into a handle.
-        let keep_materialized = is_nullable
-            && matches!(
-                &val,
-                AmirOperand::Constant(c) if !matches!(c, AmirConstant::Nil)
-            );
+        let keep_materialized = !is_mem
+            && (self.integer_constant_needs_type(ty_id, val)
+                || (is_nullable
+                    && matches!(
+                        &val,
+                        AmirOperand::Constant(c) if !matches!(c, AmirConstant::Nil)
+                    )));
 
         if keep_materialized {
             self.push_stmt(AmirStmt::Assign {
@@ -276,11 +292,12 @@ impl LowerCtx<'_> {
         let val = unique_val.unwrap_or(AmirOperand::Constant(AmirConstant::Nil));
         // Keep `T?` temps that hold a non-Nil constant materialized — bare
         // integer constants must not replace a nullable handle (0 ≠ nil).
-        if self.temps[temp_id.as_usize()].is_nullable
-            && matches!(
-                &val,
-                AmirOperand::Constant(c) if !matches!(c, AmirConstant::Nil)
-            )
+        if self.integer_constant_needs_type(self.temps[temp_id.as_usize()].ty, val)
+            || (self.temps[temp_id.as_usize()].is_nullable
+                && matches!(
+                    &val,
+                    AmirOperand::Constant(c) if !matches!(c, AmirConstant::Nil)
+                ))
         {
             return AmirOperand::Copy(temp_id);
         }
@@ -354,13 +371,15 @@ impl LowerCtx<'_> {
 
                     if is_trivial {
                         let val = unique_val.unwrap_or(AmirOperand::Constant(AmirConstant::Nil));
-                        if self.temps[p.id.as_usize()].is_nullable
-                            && matches!(
-                                &val,
-                                AmirOperand::Constant(c) if !matches!(c, AmirConstant::Nil)
-                            )
+                        if self.integer_constant_needs_type(self.temps[p.id.as_usize()].ty, val)
+                            || (self.temps[p.id.as_usize()].is_nullable
+                                && matches!(
+                                    &val,
+                                    AmirOperand::Constant(c) if !matches!(c, AmirConstant::Nil)
+                                ))
                         {
-                            // leave block param in place; codegen boxes the constant
+                            // Keep the destination type: literals lack an integer
+                            // type, and nullable scalars require boxing in codegen.
                             continue;
                         }
                         self.redirected_temps.insert(p.id, val);

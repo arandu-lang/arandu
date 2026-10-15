@@ -49,10 +49,12 @@ Este documento consolida as decisões arquiteturais sobre Data-Oriented Design (
 > Este é o único roadmap executivo; contratos técnicos vivos permanecem em
 > documentos próprios e campanhas concluídas permanecem recuperáveis no Git.
 
-> **Campanha ativa: 0.1.8 — estabilização e consolidação.** Nenhuma nova superfície
-> de linguagem entra antes de concluir as notas de migração do RFC 0023, classificar
-> as limitações conhecidas (O2, lower_amir, fila LSP) e preparar a release com CI
-> nativo verde em Linux, macOS e Windows. Async e effects permanecem infra interna.
+> **Campanha ativa: 0.1.9 — CTFE & Comptime Core, começando por CT.0.**
+> A preparação da 0.1.8 foi integrada pela PR #30 e a tag `v0.1.8` aponta para
+> `17d893624534d74701124338d022e4c11ce2fc00`, com `S0 / Gate` e matriz nativa verdes.
+> A publicação dos artefatos tem evidência própria no workflow de release.
+> A RFC 0013 continua `Draft`: contrato, staging e compatibilidade precisam estar
+> fechados antes de habilitar a nova superfície de linguagem.
 
 ### Semântica de status
 
@@ -89,84 +91,134 @@ quando cumprir seu contrato atual.
 | SL_T — testes e benchmarks | `done`; soak para `gold` | [contrato consolidado](./arandu-testing-benchmark-harness-v0.1.md), SDK/VSIX e matriz nativa `SL_T / Harness` |
 | Paralelismo Estruturado | `done` | [RFC 0003](./rfcs/0003-structured-parallelism.md); funcional em Linux, aguardando benchmark reproduzível e matriz nativa para `gold` |
 | **v0.1.7** | **`released`** | Tag `v0.1.7` publicada; PR #29 verde; 71 commits, 609 arquivos. Inclui RFC 0023 (inteiros portáveis), RFC 0021 (visibilidade/módulos), RFC 0022 (AranduSmith), RFC 0020 (empacotamento nativo), correções de ownership e backends, expansão do corpus. |
+| **Preparação v0.1.8** | **`done`; tag publicada** | PR #30 mergeada com todos os checks verdes; contrato de release validado para 26 manifests; tag `v0.1.8` no commit `17d8936`. Diagnósticos, CLI, LSP, extensão e documentação consolidados. Evidência de instalação/publicação pertence à release. |
+| Redução de código — v0.1.9 | `done` no host Linux | [RFC 0027](./rfcs/0027-zero-bloat-binary-diet-and-on-demand-runtime.md): `--size` / `-Oz`, alcance compartilhado de funções e drops, AOT e Wasm sob demanda, interpolação literal estática, cache por perfil e medições reproduzíveis. Matriz nativa e publicação permanecem condições separadas de release. |
 
 ### Fila de execução
 
-**Próximo:** `0.1.8 — estabilização e consolidação`
+**Agora:** `0.1.9 — CTFE & Comptime Core`, com VM limitada, valores escalares,
+agregados Copy, strings imutáveis, floats determinísticos, argumentos calculados,
+seleção por instância, expansão estática e repetição de arrays implementados.
+Enums congelados, constantes globais, argumentos tipados, identidade explícita
+de alvo e contratos concretos de cabeçalhos também estão implementados; a
+validação integrada permanece registrada por corte no host Linux. Matriz nativa, playground e promoção de release continuam
+separados; as provas locais estão no [contrato público](./arandu-comptime-core-v0.1.md#integrated-development-host-evidence).
+O desenho permanece na
+[RFC 0013](./rfcs/0013-deterministic-ctfe-and-comptime-metaprogramming.md);
+o [plano temporário da campanha](./campaigns/0.1.9-comptime-core.md) detalha
+entregas, caminhos de código, decisões propostas e provas. Esta fila permanece
+a única autoridade para ordem e status.
 
-A 0.1.8 é uma versão de estabilização sem abertura de nova superfície grande de linguagem.
-O volume da 0.1.7 (71 commits, 609 arquivos) torna a consolidação obrigatória antes de avançar.
+| Gate | Estado | Entrega e condição para avançar |
+| --- | --- | --- |
+| CT.0 — contrato e staging | `in progress`; recorte escalar aprovado, desenho amplo aberto | O mantenedor aprovou expressões/blocos escalares e retornos locais; gramática e limites desse corte estão no contrato de comptime core. Fechar efeitos ampliados, metaprogramação geral e o restante da RFC antes de ampliar a superfície. A aprovação parcial não aceita a RFC inteira. |
+| CT.1 — alvo e layout | `in progress`; validação e intrínsecos com layout completo | CTFE rejeita tamanhos/alinhamentos inconsistentes em `DataLayout`; unidades runtime/CTFE compartilham `LayoutEngine` com o layout completo, incluindo i686. OS/arquitetura e largura do ponteiro são inputs explícitos, expostos por intrínsecos públicos e configurados pelos drivers. Preservar validação de alvos nas bordas, sem equiparar layout conhecido a codegen nativo suportado. |
+| CT.2 — VM AMIR pura | `done` no recorte de valores; gates locais verdes | CFG, chamadas diretas, locais, fuel, limites de frames/slots/handles e cancelamento. Tuplas, structs Copy fechadas e arrays usam valores limitados; strings/views imutáveis contabilizam backing. Floats IEEE usam software e bits tipados, sem aritmética do host. Oráculos residuais comparam C/Cranelift/Wasm em O0/O1/O2. Recursos de runtime e closures permanecem fora da admissão. |
+| CT.3 — superfície e especialização | `done` no recorte CT.3a/b/c/d; gates locais verdes | Expressões/blocos públicos, retornos locais e argumentos de valor calculados usam raízes isoladas e identidade estrutural existente. Instâncias concretas selecionam condições dependentes e congelam argumentos antes do corpo residual. Match arms preservam escopo; `comptime for` expande domínios inteiros finitos, com locais frescos, drops e saídas estruturadas. Lambdas têm seleção/capturas preparadas, mas execução continua U001 até closures em 0.3. Raízes aninhadas, dimensões calculadas e cabeçalhos dependentes de funções, structs, enums e aliases têm continuação por contrato concreto. Headers de padrões/loops preservam escopo e capturas; arrays Copy fechados são domínios de expansão estática. CLI/LSP expõem limites CTFE validados, compartilhados com snapshots e chaves de cache. |
+| CT.4 — Salsa e editor | `in progress`; primeiro corte público conectado | `item_staged_typing` conecta tipagem inicial e queries de raiz sem AMIR runtime nem ciclos; itens sem staging compartilham memo inicial. Valores/layout participam do hash de corpo e preservam cutoff de exports. T042–T046 contextualizam falhas/limites; fmt, completion, keyword semântico e TextMate acompanham, com regressões LSP UTF-16/diagnóstico atual e temas no Extension Host. Demais cortes e budgets interativos de campanha permanecem abertos. |
+| CT.5 — layout público e release | `in progress`; layout validado nos gates locais, release pendente | `@sizeOf(T)`/`@alignOf(T)` usam o `LayoutEngine` completo, inclusive i686, e substituem operandos genéricos no lowering canônico. A API legada valida identidade intrínseca; layouts inválidos usam T047 e walks estruturais são limitados. Dimensões calculadas usam a VM e contratos concretos compartilhados por tipagem/layout. Faltam ampliar o corpus real, matriz nativa, playground e release. |
 
-**Escopo confirmado para 0.1.8:**
+**Primeira entrega executável:** uma chamada pura com argumentos constantes,
+avaliada na VM e materializada como constante no programa residual, com testes
+C/Cranelift/Wasm e sem passar pelo `lower_amir` final durante o type checking.
+CT.3 e CT.4 avançam em cortes verticais: nenhuma superfície é habilitada no LSP
+antes de suas provas de fuel, cancelamento e invalidation.
 
-1. **Documentação e verdade dos contratos:** alinhar notas de migração do RFC 0023
-   (`int = i32`, `uint = u32`, `isize`/`usize` para endereços; diagnóstico T038 para
-   literais acima de 32 bits sem sufixo). Async (`A3`) e effects (`A2`) permanecem
-   infra interna não anunciada: o AMIR coroutine splitting, frame allocation e codegen
-   completos pertencem ao marco futuro SL_R; a superfície pública não muda.
-2. **Rodada de estabilização:** medir e classificar limitações conhecidas antes de
-   decidir quais bloqueiam a release. Itens monitorados:
-   - O2 permanece `experimental` sem promoção precipitada;
-   - `lower_amir` monolítico documentado como débito técnico aberto (RFC 0011, marco `0.3`);
-   - validação incremental em corpus de 50 módulos (`check-project-corpus` / `check-project-performance`);
-   - pressão da fila de resultados LSP (coalescência preservada, sem limite formal ainda).
-3. **SL_T soak:** o critério para promoção a `gold` (10 execuções verdes em ≥7 dias)
-   continua como limitação documentada, sem bloquear a entrega da 0.1.8.
-4. **CI e cache:** consolidar `shared-key` e `save-if` em todos os workflows;
-   pinagem universal em `ubuntu-24.04`; `CARGO_INCREMENTAL: 0`.
-5. **Preparação da release:** `cargo run --locked -p xtask -- prepare-release 0.1.8`,
-   validação do workspace completa e CI nativo verde em Linux, macOS e Windows.
+**Próxima passagem:** exercitar corpus real e comprovar a matriz nativa e o
+playground antes da promoção de release. Ciclos/cutoff das instâncias e os seis
+gates locais passaram em 2026-10-03, junto do Extension Host. O [plano auditado da campanha](./campaigns/0.1.9-comptime-core.md#plano-auditado-para-os-cinco-cortes-seguintes--2026-10-02)
+registra os contratos, donos, riscos e critérios de aceitação. Implementação
+local não equivale a promoção de release; closures permanecem no marco 0.3.
+Defeito atual de staging em membros de módulos inline foi corrigido com busca
+recursiva e fingerprint do membro, preservando cutoff de siblings.
 
-**Não entra na 0.1.8:** async runtime real (SL_R), effect system público, LLVM,
-closures, cache remoto, self-hosting nem qualquer nova superfície de linguagem.
+**Integração com a stdlib e corpus real (2026-10-03):** `[value; N]` preserva um
+único inicializador no AST/HIR, avalia uma vez inclusive para N=0 e exige Copy
+para N>1 após especialização. T048 cobre comprimentos/ownership inválidos; a
+expansão AMIR tem teto de 65.536 elementos e participa do orçamento de expansão
+estática. `ascii.byteSet` e `ascii.byteTable` exercitam construção e mutação CTFE.
+O Pypor usa perfis inteiros especializados, com fallback para configurações
+personalizadas; seus 13 testes passaram e a saída no kernel Linux permaneceu
+idêntica à do executável anterior. Isso não prova equivalência de classificação
+com Tokei, nem armazenamento global em `.rodata`.
 
-### Proposta de sequência após 0.1.8
+**Próximas lacunas do workload, na ordem de dependência:**
 
-**Candidata a 0.1.9: CTFE & Comptime Core (RFC 0013, ainda Draft).** Esta é uma
-direção de planejamento, não um escopo aprovado: a RFC precisa ser revisada e
-aceita antes de iniciar implementação. A 0.1.8 continua sendo a campanha ativa.
+1. Representação residual de agregados: o Cranelift agora promove casos
+   admitidos a frames independentes, com orçamento de 1 KiB, retornos em destino
+   do chamador e parâmetros por valor materializados no callee. Arrays de
+   literais, tuplas e structs Copy fechadas usam um serializador limitado no MIR,
+   compartilhado com Wasm, incluindo floats e padding determinístico; valores
+   mutáveis recebem cópias próprias. Containers afins admitidos também têm backing
+   privado, sem duplicar os drops de seus recursos. Casos além do orçamento usam buffers
+   heap privados por ponto de materialização, alocados sob demanda, reutilizados
+   nos loops e liberados após copiar/empacotar retornos. Option/Result/Poll nativos
+   têm retorno em destino do chamador. Wasm tem shadow stack separado de rodata/heap,
+   scratch maior liberado por invocação e transferência de resultados owned fechados,
+   incluindo payloads afins com destruição única dos recursos.
+   Ainda faltam provas para retenção externa desconhecida, phis de agregados em
+   back-edges, views emprestadas, suspensão/payloads agregados de corrotinas e
+   retornos Wasm com views por ponteiro; os fallbacks conservam gaps legados. O
+   experimento com LUT no Pypor confirmou aumento de RSS e chamadas de malloc
+   no assembly. Corrigir armazenamento/lifetimes e cópias por valor na AMIR/ABI
+   antes de prometer tabelas sem alocação; drops incondicionais causariam aliases
+   pendurados. Comparar alocações/liberações e RSS em loops e nos três backends.
+Os cortes de constantes globais CTFE, enums congelados, argumentos `comptime`
+tipados e identidade pública do alvo estão implementados. Os contratos
+concretos de cabeçalhos integram a descoberta do chamador, a inferência existente,
+a VM AMIR, aliases transitivos e o layout por instância. Não alteram os metadados
+do template ao especializar outra instância. Ciclos e profundidade de queries
+usam um caminho causal imutável e diagnósticos T044/T045; limites de VM continuam
+independentes. Detalhes e regressões estão no
+[contrato técnico](./arandu-comptime-core-v0.1.md#dependent-declaration-contracts).
 
-O núcleo deve ser implementado como uma sequência de gates, e não como uma
-promessa de entregar toda a metaprogramação de uma vez:
+Budgets públicos estão conectados à CLI, LSP, extensão e API web como inputs
+Salsa; alterações invalidam também o cache de build. Argumentos calculados em
+headers de padrões/loops preservam escopo e capturas. Iteração estática sobre
+arrays Copy fixos, inclusive aninhados, congela o produtor e usa chaves estruturais
+por ocorrência; domínios vazios descartam o corpo. O playground usa identidade
+explícita wasm32, independente do host. O corpus instalado inclui esses caminhos.
 
-1. **CT.0 — fechar o contrato:** definir domínio de `ConstValue`, operações e
-   efeitos permitidos, integração com os const generics escalares existentes,
-   semântica de erros e limites de execução. Preservar a sintaxe existente até
-   haver uma migração explícita; evitar dois mecanismos independentes para
-   valores conhecidos em compilação.
-2. **CT.1 — alvo e layout:** tornar explícita a identidade/layout do alvo na
-   configuração semântica. `@sizeOf` e `@alignOf` só podem refletir layouts
-   realmente suportados pelo backend. Não expor `target.os`, `target.arch`, ABI
-   ou capabilities enquanto o compilador não tiver um descritor canônico e
-   validado para esses alvos.
-3. **CT.2 — avaliação determinística:** implementar o interpretador sobre AMIR
-   para um subconjunto puro, documentado e testado; começar por valores escalares
-   e agregados suportados. Sem I/O, acesso ambiental ao filesystem, ponteiros
-   arbitrários ou efeitos de runtime nesta etapa.
-4. **CT.3 — superfície inicial:** `comptime` em expressão/bloco, `comptime if`,
-   parâmetros de valor compatíveis com os const generics atuais e `comptime for`
-   apenas sobre domínios finitos e conhecidos estaticamente. Sintaxe e conversões
-   permanecem sujeitas à aceitação da RFC.
-5. **CT.4 — editor e incrementalidade:** avaliação memoizada em Salsa, fuel,
-   cancelamento cooperativo e diagnósticos estruturados. A garantia inicial é
-   determinismo, correção e cutoff do resultado; não prometer que uma mudança na
-   implementação nunca reexecutará a avaliação. `func_amir` ainda projeta sobre
-   `lower_amir` program-wide; granularidade real por instância continua no marco
-   de lowering incremental correspondente.
-6. **CT.5 — reflexão mínima e gate de release:** começar por operações de layout
-   como `@sizeOf`/`@alignOf`. Ampliar `@typeInfo` somente com contrato estável para
-   tipos e campos. Exigir paridade incremental/clean, determinismo entre hosts,
-   testes de fuel/cancelamento e equivalência com execução de runtime no
-   subconjunto compartilhado.
+**Lacunas restantes:** provas dos casos de armazenamento acima e validação da
+matriz nativa/release. Contextos fora das formas documentadas exigem desenho e
+regressões próprios. Ampliar a superfície exige preservar os contratos de
+query, ownership, alvo e paridade; remover diagnósticos não substitui essas provas.
 
-**Depois do núcleo:** reflexão estrutural mais ampla e capabilities por alvo
-precisam de RFC/etapa própria. `quote`, splicing, `@Derive`, geração de items,
-DSLs, inclusão de arquivos e JIT ficam fora da primeira entrega; só devem avançar
-com decisões específicas para higiene, resolução, re-typecheck e invalidação.
+**Escopo de produto proposto:** expressões/blocos `comptime`, parâmetros de valor
+inteiros compatíveis com os const generics atuais, decisões/iterações estáticas
+finitas e introspecção de layout. A RFC fecha a diferença entre executar um bloco
+em compilação e selecionar/expandir instruções que rodarão em runtime.
 
-**Outras trilhas:** manter o gate de `gold` do Paralelismo Estruturado e a
-estabilização de runtime como trabalho independente. Não os encadear como
-pré-requisitos de CTFE nem deslocar a estabilização da 0.1.8.
+**Após a 0.1.9:** `@typeInfo` estrutural, ABI/capabilities públicos,
+`quote`, splicing, `@Derive`, geração de items, inclusão de arquivos e JIT
+continuam fora deste núcleo, com desenho próprio.
+
+**Dívida preservada:** O2 continua `experimental`; granularidade completa do
+lowering permanece no marco `0.3` da RFC 0011. CTFE exige um caminho tipado sem
+ciclos para suas unidades, não a reescrita de todo o pipeline incremental AOT.
+`ctfe_func_amir` adianta um recorte escalar não genérico do lowering por função;
+o runtime também produz corpos por instância, mas isso não comprova o gate
+completo de CGU/latência do marco 0.3.
+`declaration_signatures` separa a consulta declarativa dos contratos derivados
+de corpos: consultar imports nessa fronteira não pede MIR final. A visão
+`module_signatures` preserva a composição usada pelo ownership. O produtor
+`borrow_interfaces` agora consulta contratos de unidades com retorno emprestado
+antes da validação final, sem solicitar HIR/MIR global. Há produtores
+`function_hir`, `instance_hir`,
+`runtime_raw_unit`, `instance_contracts` e `runtime_unit`, com um corpo por
+instância e contratos convergidos sem HIR/MIR global. `runtime_program` descobre
+dependências e remapeia tipos/símbolos/pools para o caminho ativo de
+`lower_amir`/CLI. `func_amir` e diagnósticos de uma definição fonte ordinária
+usam seu contexto próprio; instâncias concretas usam `instance_amir`, sem
+fallback por IDs sintéticos agregados. Headers transitivos são compartilhados
+e a composição traduz contextos sem clonar interners. CGUs agora declaram e
+hasheiam somente suas dependências reais, incluindo callbacks/destruidores;
+regressões provam cutoff de nova instância e igualdade de objetos incremental/clean.
+A entrega final agregada, retenção de metadata concreta, gates p95/CPU/RSS e
+matriz nativa permanecem limitações explícitas.
+A pressão de resultados LSP e o soak SL_T (10 execuções verdes em ≥7 dias)
+continuam classificados em suas trilhas; async/effects públicos, LLVM,
+closures, cache remoto e self-hosting não são pré-requisitos desta campanha.
 
 
 ### Trilha incremental nativa — RFC 0011
@@ -179,9 +231,9 @@ ou aceitação de estado não verificado.
 
 | Marco | Estado | Corpo funcional e critério de saída |
 | --- | --- | --- |
-| Fundação atual (`0.1`) | `done` | O CLI verifica a closure de inputs e o BLAKE3 do executável antes de aceitar cutoff; mudanças apenas documentais cortam antes das queries; fingerprints atuais são movidos para a sessão substituta sem reler inputs imutáveis; CGUs têm chaves canônicas e sidecars verificados. No Linux x86-64, se todas as CGUs forem hits e o layout provar igualdade exata da closure, o executável verificado é reutilizado sem link; caso contrário, o CLI tenta patch ELF fail-closed e sempre pode voltar ao linker completo. O oráculo compara SHA-256 entre paths e `RAYON_NUM_THREADS=1/16`, e o relatório schema 2 separa tempo de parede de custos por fase. Limite conhecido: cada `build` ainda nasce com uma DB nova e `lower_amir` continua program-wide. |
+| Fundação atual (`0.1`) | `done` | O CLI verifica a closure de inputs e o BLAKE3 do executável antes de aceitar cutoff; mudanças apenas documentais cortam antes das queries; fingerprints atuais são movidos para a sessão substituta sem reler inputs imutáveis; CGUs têm chaves canônicas e sidecars verificados. No Linux x86-64, se todas as CGUs forem hits e o layout provar igualdade exata da closure, o executável verificado é reutilizado sem link; caso contrário, o CLI tenta patch ELF fail-closed e sempre pode voltar ao linker completo. O oráculo compara SHA-256 entre paths e `RAYON_NUM_THREADS=1/16`, e o relatório schema 2 separa tempo de parede de custos por fase. Limite conhecido: cada `build` ainda nasce com uma DB nova; `lower_amir` compõe unidades memoizadas para entrega agregada, enquanto hashes/emissão CGU compartilham a closure de dependências por função. |
 | Motor quente e imagem dev (`0.2`) | `planned` | Manter uma `DatabaseImpl` viva em um serviço local supervisionado, com protocolo versionado, fila limitada/coalescida, prioridade para o build solicitado e fallback transparente ao CLI batch após crash ou incompatibilidade. A DB Salsa não é serializada e queries continuam sem filesystem. Em paralelo, definir uma publicação de imagem dev recuperável que sincronize somente ranges/páginas alterados ou use clone CoW quando disponível, sem mutar artefatos CAS publicados; ausência de suporte sempre cai no protocolo atômico atual. O gate exige equivalência byte a byte com clean build, testes de kill/recovery, corpus de edições repetidas e `p95 ≤ 100 ms` para edição de corpo no host de referência documentado; CI compartilhada observa, mas não impõe a latência. |
-| Granularidade por instância (`0.3`) | `planned` | Fazer `item_source_input → typeck por item → AMIR por instância → CGU` ser a cadeia real de demanda. A projeção atual `func_amir` sobre `lower_amir` monolítico não satisfaz este marco. Persistência em disco, se necessária, cobre apenas saídas canônicas e versionadas fora do grafo Salsa, com CAS BLAKE3, dependências explícitas, GC limitado e validação fail-closed. O gate exige que uma edição privada não rebaixe importadores nem CGUs irmãs, equivalência incremental/clean e `p95 ≤ 10 ms` no workload e host de referência. |
+| Granularidade por instância (`0.3`) | `in progress`; produtor/compositor e closure CGU ativos | `item_source_input → item_typing → AMIR por instância` é real no runtime; `func_amir` fonte e `instance_amir` concreto não projetam o programa global. Headers são compartilhados, composição não clona interners e hashes/emissão CGU usam a mesma closure de assinatura/layout/callback/drop. Cutoff ao adicionar instância e equivalência de objetos incremental/clean têm regressões; completar retenção/latência e matriz nativa sem remover guardrails de ABI. Persistência em disco, se necessária, cobre apenas saídas canônicas e versionadas fora do grafo Salsa, com CAS BLAKE3, dependências explícitas, GC limitado e validação fail-closed. O gate exige que uma edição privada não rebaixe importadores nem CGUs irmãs, equivalência incremental/clean e `p95 ≤ 10 ms` no workload e host de referência. |
 
 Antes de otimizar estruturas por contagem de `.clone()`, `String` ou alocações,
 o relatório por fase deve localizar o custo dominante e um perfil antes/depois
@@ -276,7 +328,7 @@ Legenda: `[x]` feito · `[/]` em andamento · `[ ]` não iniciado
 | AMIR CFG | `[x]` | Dominadores, SSA registers vs stack slots |
 | Definite init | `[x]` | lattices, InitBits flow, O008 diagnostic |
 | Move checker | `[x]` | OSSA intraprocedural, O001/O005/O007, spans reais |
-| Middle-end opt | `[/]` | O1 estável: SCCP + DCE + SimplifyCFG; O2 experimental: field forwarding (SROA limitado) + GVN; LICM/TCO fora do pipeline até cumprir os gates de 3.2 |
+| Middle-end opt | `[/]` | O1: SCCP tipado + DCE + SimplifyCFG; O2 experimental com scalar replacement Copy, self-tail calls escalares, GVN, LICM seguro e tail merging; restrições e gates restantes em 3.2 |
 | Backend Cranelift | `[x]` | v0.2 Dev/Debug |
 | Backend C | `[x]` | Portabilidade fallback |
 | Backend LLVM | `[ ]` | v0.4+ Release Optimizer |
@@ -1004,16 +1056,16 @@ alteram a superfície exportada de módulos.
 | --- | --- | --- |
 | O0 | `done` | AMIR já nasce em SSA; O0 não executa transformações e não significa, por si só, que todo valor será materializado na stack |
 | O1 | `done` | fixpoint limitado de SCCP → mark-sweep DCE → SimplifyCFG, preservando argumentos de terminadores e parâmetros de bloco |
-| O2 | `experimental` | field forwarding (`SROA` limitado) → GVN → núcleo O1; não promete SROA completo, ausência de spills nem registradores físicos específicos |
-| LICM | `planned` | só entra após existir `LoopInfo`, inserção correta em `DenseRange`, agrupamento determinístico de loops, prova de dominância e exclusão de operações que podem trap ou não são seguras para especulação; protótipos desconectados não permanecem no produto |
-| TCO | `planned` | só entra após modelar parâmetros de entrada/loop corretamente, manter `AmirStmt`/`AmirStmtKind` sincronizados e provar tail position, ABI, drop e ownership; protótipos desconectados não permanecem no produto |
+| O2 | `experimental` | entrada checked faz scalar replacement de campos escalares Copy sem escapes e self-tail calls escalares; fixpoint com field forwarding → GVN → SCCP → LICM → DCE → tail merging → SimplifyCFG; não promete SROA irrestrito, ausência de spills nem registradores físicos específicos |
+| LICM | `experimental` | conectado em O2: loops naturais por dominância, reconstrução de ranges, definições únicas Copy, operands disponíveis no preheader e exclusão de trap/efeitos/Move; análise reutilizável com nesting/cache continua na OPT.2 |
+| TCO | `experimental` | conectado na entrada checked O2 para self tail calls escalares sem cleanup/borrows/suspend, com entrada ABI separada do header e argumentos de bloco simultâneos; chamadas mútuas e ownership continuam fora do recorte |
 | Tree-shaking | `planned` | alcançabilidade interprocedural determinística, raízes públicas/FFI/runtime explícitas e teste de paridade entre backends |
 | Stack promotion | `planned` | depende de escape/ownership; “SSA” não equivale a stack promotion e promoção não garante registrador físico |
 
-O nome SROA, enquanto o passe apenas encaminhar campos de
-`StructLiteral`/tupla para `FieldAccess`, designa um subconjunto conservador. A
-promoção para SROA completo exige stores parciais, escapes, projeções, layout por
-alvo e ownership de campos não-`Copy` cobertos por testes.
+O SROA agora também divide locais Copy com campos escalares, incluindo stores
+parciais, joins e snapshots de leitura. Escapes, projeções aninhadas e ownership
+de campos não-Copy continuam conservadores. O contrato e as medições estão em
+`arandu-backend-contract-v0.1.md`; nenhuma melhora percentual é garantia geral.
 
 ##### OPT.1 — Infraestrutura de análises cooperativas
 

@@ -7,7 +7,9 @@
 //! drifting apart.
 
 pub mod completion;
+pub mod comptime;
 pub mod presentation;
+pub mod signature_help;
 
 pub use completion::{
     CompletionItem, CompletionKind, MAX_COMPLETION_ITEMS, completions, import_path_completions,

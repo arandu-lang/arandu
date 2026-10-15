@@ -88,28 +88,45 @@ public func tcpWaitWriteFlag(): int {
 /// Listens on loopback (`127.0.0.1`) at `port` and returns a raw handle.
 ///
 /// A negative `id` signals failure, including an invalid port or bind error.
-/// Close a successful handle with `tcpCloseListener`.
-public func tcpListen(port: int): RawTcpListener {
+/// Close a successful handle with `RawTcpListener.close`.
+public func RawTcpListener.listen(port: int): RawTcpListener {
+    return tcpListen(port)
+}
+
+func tcpListen(port: int): RawTcpListener {
     unsafe {
         return RawTcpListener { id: ar_rt_tcp_listen(port) }
     }
 }
 
-/// Accepts one connection from `l` and returns a raw stream handle.
+/// Accepts one connection from `self` and returns a raw stream handle.
 ///
 /// A negative `id` signals failure. This may block while waiting for a
-/// connection; close a successful stream with `tcpCloseStream`.
-public func tcpAccept(l: ref RawTcpListener): RawTcpStream {
+/// connection; close a successful stream with `RawTcpStream.close`.
+public func RawTcpListener.accept(self: ref RawTcpListener): RawTcpStream {
+    return tcpAccept(self)
+}
+
+func tcpAccept(l: ref RawTcpListener): RawTcpStream {
     unsafe {
         return RawTcpStream { id: ar_rt_tcp_accept(l.id) }
     }
 }
 
+/// Closes a raw listener host handle.
+public func RawTcpListener.close(self: ref RawTcpListener): void {
+    tcpCloseListener(self)
+}
+
 /// Connects to loopback (`127.0.0.1`) at `port`.
 ///
 /// A negative returned `id` signals failure. The caller must close a
-/// successful stream with `tcpCloseStream`.
-public func tcpConnect(port: int): RawTcpStream {
+/// successful stream with `RawTcpStream.close`.
+public func RawTcpStream.connect(port: int): RawTcpStream {
+    return tcpConnect(port)
+}
+
+func tcpConnect(port: int): RawTcpStream {
     unsafe {
         return RawTcpStream { id: ar_rt_tcp_connect(port) }
     }
@@ -122,7 +139,12 @@ public func tcpConnect(port: int): RawTcpStream {
 /// without calling the host; a negative length or null nonempty buffer returns
 /// `-1`.
 @Unsafe
-public func tcpRead(s: ref RawTcpStream, buf: ptr[u8], len: int): int {
+public func RawTcpStream.read(self: ref RawTcpStream, buf: ptr[u8], len: int): int {
+    return unsafe { tcpRead(self, buf, len) }
+}
+
+@Unsafe
+func tcpRead(s: ref RawTcpStream, buf: ptr[u8], len: int): int {
     let nullp: ptr[u8] = nil
     if len < 0 || (len > 0 && buf == nullp) {
         return -1
@@ -140,7 +162,12 @@ public func tcpRead(s: ref RawTcpStream, buf: ptr[u8], len: int): int {
 /// A successful return may be shorter than `len`; retry the remaining bytes
 /// when needed. Returns `-2` for nonblocking would-block or `-1` on error.
 @Unsafe
-public func tcpWrite(s: ref RawTcpStream, buf: ptr[u8], len: int): int {
+public func RawTcpStream.write(self: ref RawTcpStream, buf: ptr[u8], len: int): int {
+    return unsafe { tcpWrite(self, buf, len) }
+}
+
+@Unsafe
+func tcpWrite(s: ref RawTcpStream, buf: ptr[u8], len: int): int {
     let nullp: ptr[u8] = nil
     if len < 0 || (len > 0 && buf == nullp) {
         return -1
@@ -157,9 +184,14 @@ public func tcpWrite(s: ref RawTcpStream, buf: ptr[u8], len: int): int {
 ///
 /// The host may use io_uring when available or fall back to ordinary read.
 /// The return uses the same byte-count and negative-status convention as
-/// `tcpRead`.
+/// `RawTcpStream.read`.
 @Unsafe
-public func tcpReadAsync(s: ref RawTcpStream, buf: ptr[u8], len: int): int {
+public func RawTcpStream.readAsync(self: ref RawTcpStream, buf: ptr[u8], len: int): int {
+    return unsafe { tcpReadAsync(self, buf, len) }
+}
+
+@Unsafe
+func tcpReadAsync(s: ref RawTcpStream, buf: ptr[u8], len: int): int {
     let nullp: ptr[u8] = nil
     if len < 0 || (len > 0 && buf == nullp) {
         return -1
@@ -177,7 +209,12 @@ public func tcpReadAsync(s: ref RawTcpStream, buf: ptr[u8], len: int): int {
 /// The host may use io_uring or ordinary write. A nonnegative return is the
 /// number of bytes written and may be shorter than `len`.
 @Unsafe
-public func tcpWriteAsync(s: ref RawTcpStream, buf: ptr[u8], len: int): int {
+public func RawTcpStream.writeAsync(self: ref RawTcpStream, buf: ptr[u8], len: int): int {
+    return unsafe { tcpWriteAsync(self, buf, len) }
+}
+
+@Unsafe
+func tcpWriteAsync(s: ref RawTcpStream, buf: ptr[u8], len: int): int {
     let nullp: ptr[u8] = nil
     if len < 0 || (len > 0 && buf == nullp) {
         return -1
@@ -194,7 +231,11 @@ public func tcpWriteAsync(s: ref RawTcpStream, buf: ptr[u8], len: int): int {
 ///
 /// Returns zero on success or `-1` on host failure. In nonblocking mode,
 /// raw read and write report would-block with `-2`.
-public func tcpSetNonblocking(s: ref RawTcpStream, flag: int): int {
+public func RawTcpStream.setNonblocking(self: ref RawTcpStream, flag: int): int {
+    return tcpSetNonblocking(self, flag)
+}
+
+func tcpSetNonblocking(s: ref RawTcpStream, flag: int): int {
     unsafe {
         return ar_rt_tcp_set_nonblocking(s.id, flag)
     }
@@ -204,7 +245,11 @@ public func tcpSetNonblocking(s: ref RawTcpStream, flag: int): int {
 ///
 /// Pass flags from `tcpWaitReadFlag` and `tcpWaitWriteFlag`, combined as
 /// needed. Returns ready bits, zero on timeout, or `-1` on error.
-public func tcpWait(s: ref RawTcpStream, events: int, timeoutMs: int): int {
+public func RawTcpStream.wait(self: ref RawTcpStream, events: int, timeoutMs: int): int {
+    return tcpWait(self, events, timeoutMs)
+}
+
+func tcpWait(s: ref RawTcpStream, events: int, timeoutMs: int): int {
     unsafe {
         return ar_rt_tcp_wait(s.id, events, timeoutMs)
     }
@@ -213,22 +258,29 @@ public func tcpWait(s: ref RawTcpStream, events: int, timeoutMs: int): int {
 /// Waits for socket readiness and wakes `w` when an event is ready.
 ///
 /// Returns ready event bits, zero on timeout, or `-1` on error, following
-/// the same flag convention as `tcpWait`.
-public func tcpWaitWake(s: ref RawTcpStream, events: int, timeoutMs: int, w: ref waker.Waker): int {
+/// the same flag convention as `RawTcpStream.wait`.
+public func RawTcpStream.waitWake(self: ref RawTcpStream, events: int, timeoutMs: int, w: ref waker.Waker): int {
+    return tcpWaitWake(self, events, timeoutMs, w)
+}
+
+func tcpWaitWake(s: ref RawTcpStream, events: int, timeoutMs: int, w: ref waker.Waker): int {
     unsafe {
         return ar_rt_tcp_wait_wake(s.id, events, timeoutMs, w.id)
     }
 }
 
-/// Closes a raw listener host handle.
-public func tcpCloseListener(l: ref RawTcpListener): void {
+func tcpCloseListener(l: ref RawTcpListener): void {
     unsafe {
         ar_rt_tcp_close(l.id)
     }
 }
 
 /// Closes a raw stream host handle.
-public func tcpCloseStream(s: ref RawTcpStream): void {
+public func RawTcpStream.close(self: ref RawTcpStream): void {
+    tcpCloseStream(self)
+}
+
+func tcpCloseStream(s: ref RawTcpStream): void {
     unsafe {
         ar_rt_tcp_close(s.id)
     }
@@ -250,7 +302,7 @@ public struct SocketAddr {
 ///
 /// Current `TcpStream.connect` and `TcpListener.bind` accept a port only and
 /// do not use this address value.
-public func socketAddr(ip: str, port: int): SocketAddr {
+public func SocketAddr.new(ip: str, port: int): SocketAddr {
     return SocketAddr {
         ip: ip,
         port: port,
@@ -277,7 +329,7 @@ public struct TcpListener {
 public func TcpListener.bind(port: int): Result<TcpListener, io.IoError> {
     let l = tcpListen(port)
     if l.id < 0 {
-        return Result.Err(io.newIoError(io.IoErrorKind.AlreadyExists, -1))
+        return Result.Err(io.IoError.new(io.IoErrorKind.AlreadyExists, -1))
     }
     return Result.Ok(TcpListener { raw: l })
 }
@@ -289,7 +341,7 @@ public func TcpListener.bind(port: int): Result<TcpListener, io.IoError> {
 public func TcpListener.accept(self: ref TcpListener): Result<TcpStream, io.IoError> {
     let s = tcpAccept(self.raw)
     if s.id < 0 {
-        return Result.Err(io.newIoError(io.IoErrorKind.Other, -1))
+        return Result.Err(io.IoError.new(io.IoErrorKind.Other, -1))
     }
     return Result.Ok(TcpStream { raw: s })
 }
@@ -299,8 +351,18 @@ public func TcpListener.accept(self: ref TcpListener): Result<TcpStream, io.IoEr
 /// Repeating `close` is harmless. Calls after closing fail with an invalid
 /// handle instead of risking access to a later socket that reused the slot.
 public func TcpListener.close(self: mut ref TcpListener): void {
-    tcpCloseListener(self.raw)
-    self.raw.id = -1
+    if self.raw.id >= 0 {
+        tcpCloseListener(self.raw)
+        self.raw.id = -1
+    }
+}
+
+/// Automatic best-effort destructor invoked when an owned `TcpListener` leaves scope.
+@Destructor
+func TcpListener.destroy(self: own TcpListener): void {
+    if self.raw.id >= 0 {
+        tcpCloseListener(self.raw)
+    }
 }
 
 /// Connects to `127.0.0.1:port` and returns a typed stream.
@@ -310,7 +372,7 @@ public func TcpListener.close(self: mut ref TcpListener): void {
 public func TcpStream.connect(port: int): Result<TcpStream, io.IoError> {
     let s = tcpConnect(port)
     if s.id < 0 {
-        return Result.Err(io.newIoError(io.IoErrorKind.Other, -1))
+        return Result.Err(io.IoError.new(io.IoErrorKind.Other, -1))
     }
     return Result.Ok(TcpStream { raw: s })
 }
@@ -327,11 +389,11 @@ public func TcpStream.read(self: mut ref TcpStream, buf: mut ref []u8): Result<u
         return Result.Ok(0 as usize)
     }
     if len > (2147483647 as usize) {
-        return Result.Err(io.newIoError(io.IoErrorKind.InvalidInput, 5))
+        return Result.Err(io.IoError.new(io.IoErrorKind.InvalidInput, 5))
     }
     let n = unsafe { tcpRead(self.raw, slice.asPtr<u8>(*buf), len as int) }
     if n < 0 {
-        return Result.Err(io.newIoError(io.IoErrorKind.BrokenPipe, -1))
+        return Result.Err(io.IoError.new(io.IoErrorKind.BrokenPipe, -1))
     }
     return Result.Ok(n as usize)
 }
@@ -347,11 +409,11 @@ public func TcpStream.write(self: mut ref TcpStream, buf: []u8): Result<usize, i
         return Result.Ok(0 as usize)
     }
     if len > (2147483647 as usize) {
-        return Result.Err(io.newIoError(io.IoErrorKind.InvalidInput, 5))
+        return Result.Err(io.IoError.new(io.IoErrorKind.InvalidInput, 5))
     }
     let n = unsafe { tcpWrite(self.raw, slice.asPtr<u8>(buf), len as int) }
     if n < 0 {
-        return Result.Err(io.newIoError(io.IoErrorKind.BrokenPipe, -1))
+        return Result.Err(io.IoError.new(io.IoErrorKind.BrokenPipe, -1))
     }
     return Result.Ok(n as usize)
 }
@@ -366,6 +428,16 @@ public func TcpStream.flush(self: mut ref TcpStream): Result<bool, io.IoError> {
 /// Repeating `close` is harmless. Calls after closing fail with an invalid
 /// handle instead of risking access to a later socket that reused the slot.
 public func TcpStream.close(self: mut ref TcpStream): void {
-    tcpCloseStream(self.raw)
-    self.raw.id = -1
+    if self.raw.id >= 0 {
+        tcpCloseStream(self.raw)
+        self.raw.id = -1
+    }
+}
+
+/// Automatic best-effort destructor invoked when an owned `TcpStream` leaves scope.
+@Destructor
+func TcpStream.destroy(self: own TcpStream): void {
+    if self.raw.id >= 0 {
+        tcpCloseStream(self.raw)
+    }
 }

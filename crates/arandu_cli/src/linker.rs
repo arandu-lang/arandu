@@ -125,13 +125,14 @@ fn hashed_development_runtime(profile_dir: &Path, filename: &str) -> Option<Path
 
 /// Links Cranelift objects with the target-matched Arandu runtime.
 pub fn link_objects(objects: &[&Path], output: &Path) -> Result<LinkerKind, CliFailure> {
-    link_objects_with_mode(objects, output, true)
+    link_objects_with_mode(objects, output, true, false)
 }
 
 fn link_objects_with_mode(
     objects: &[&Path],
     output: &Path,
     patchable_elf: bool,
+    size: bool,
 ) -> Result<LinkerKind, CliFailure> {
     if objects.is_empty() {
         return Err(CliFailure::operational(
@@ -142,7 +143,7 @@ fn link_objects_with_mode(
     }
     let runtime = runtime_library()?;
     if let Some(explicit) = std::env::var_os("ARANDU_LINKER") {
-        return match run_system_linker(&explicit, objects, &runtime, output, patchable_elf) {
+        return match run_system_linker(&explicit, objects, &runtime, output, patchable_elf, size) {
             Ok(()) => Ok(LinkerKind::System),
             Err(LinkAttempt::NotFound) => Err(link_failure(
                 output,
@@ -156,7 +157,7 @@ fn link_objects_with_mode(
     }
 
     for candidate in system_linker_candidates() {
-        match run_system_linker(&candidate, objects, &runtime, output, patchable_elf) {
+        match run_system_linker(&candidate, objects, &runtime, output, patchable_elf, size) {
             Ok(()) => return Ok(LinkerKind::System),
             Err(LinkAttempt::NotFound) => {}
             Err(LinkAttempt::Failed(message)) => {
@@ -166,7 +167,7 @@ fn link_objects_with_mode(
     }
 
     #[cfg(windows)]
-    match run_discovered_msvc(objects, &runtime, output) {
+    match run_discovered_msvc(objects, &runtime, output, size) {
         Ok(()) => return Ok(LinkerKind::System),
         Err(LinkAttempt::NotFound) => {}
         Err(LinkAttempt::Failed(message)) => return Err(link_failure(output, message)),
@@ -175,13 +176,18 @@ fn link_objects_with_mode(
     // This fallback keeps compiler-development checkouts testable without a
     // separately configured native linker. Public SDKs do not contain rustc;
     // their native release smoke must exercise the system path above.
-    link_with_rustc(objects, &runtime, output, patchable_elf)?;
+    link_with_rustc(objects, &runtime, output, patchable_elf, size)?;
     Ok(LinkerKind::RustcDevelopmentFallback)
 }
 
 /// Links a single Cranelift object with the target-matched Arandu runtime.
 pub fn link(object: &Path, output: &Path) -> Result<LinkerKind, CliFailure> {
-    link_objects_with_mode(&[object], output, false)
+    link_objects_with_mode(&[object], output, false, false)
+}
+
+/// Link a size-profile artifact with section GC and symbol stripping.
+pub fn link_size(object: &Path, output: &Path) -> Result<LinkerKind, CliFailure> {
+    link_objects_with_mode(&[object], output, false, true)
 }
 
 enum LinkAttempt {
@@ -202,6 +208,7 @@ fn run_discovered_msvc(
     objects: &[&Path],
     runtime: &Path,
     output: &Path,
+    size: bool,
 ) -> Result<(), LinkAttempt> {
     use std::collections::HashMap;
 
@@ -288,7 +295,7 @@ fn run_discovered_msvc(
         return Err(LinkAttempt::NotFound);
     };
 
-    run_system_linker_with_environment(&linker, objects, runtime, output, &variables)
+    run_system_linker_with_environment(&linker, objects, runtime, output, &variables, size)
 }
 
 #[cfg(windows)]
@@ -298,6 +305,7 @@ fn run_system_linker_with_environment(
     runtime: &Path,
     output: &Path,
     environment: &std::collections::HashMap<String, String>,
+    size: bool,
 ) -> Result<(), LinkAttempt> {
     let mut command = Command::new(linker);
     command
@@ -307,6 +315,9 @@ fn run_system_linker_with_environment(
         .arg("/Brepro")
         .arg("/SUBSYSTEM:CONSOLE")
         .arg(format!("/OUT:{}", output.display()));
+    if size {
+        command.args(["/OPT:REF", "/OPT:ICF"]);
+    }
     for obj in objects {
         command.arg(obj);
     }
@@ -334,9 +345,12 @@ fn build_system_linker_command(
     runtime: &Path,
     output: &Path,
     patchable_elf: bool,
+    size: bool,
 ) -> Command {
     #[cfg(not(target_os = "linux"))]
     let _ = patchable_elf;
+    #[cfg(not(any(target_os = "linux", windows)))]
+    let _ = size;
     let mut command = Command::new(linker);
     let work_dir = objects.first().and_then(|obj| obj.parent());
     let object_args: Vec<PathBuf> = objects
@@ -362,6 +376,9 @@ fn build_system_linker_command(
             .arg("/Brepro")
             .arg("/SUBSYSTEM:CONSOLE")
             .arg(format!("/OUT:{}", output_arg.display()));
+        if size {
+            command.args(["/OPT:REF", "/OPT:ICF"]);
+        }
         for obj in &object_args {
             command.arg(obj);
         }
@@ -385,6 +402,9 @@ fn build_system_linker_command(
             } else {
                 "-Wl,--build-id=sha1"
             });
+            if size {
+                command.arg("-Wl,--strip-all");
+            }
             command.args([
                 "-lgcc_s",
                 "-lutil",
@@ -506,13 +526,14 @@ fn run_system_linker(
     runtime: &Path,
     output: &Path,
     patchable_elf: bool,
+    size: bool,
 ) -> Result<(), LinkAttempt> {
     #[cfg(target_os = "linux")]
     if is_compiler_driver(linker)
         && let Some(fast_linker) = detect_fast_linker()
     {
         let mut command =
-            build_system_linker_command(linker, objects, runtime, output, patchable_elf);
+            build_system_linker_command(linker, objects, runtime, output, patchable_elf, size);
         fast_linker.apply_to(&mut command);
         match command.output() {
             Ok(result) if result.status.success() => return Ok(()),
@@ -522,7 +543,8 @@ fn run_system_linker(
         }
     }
 
-    let mut command = build_system_linker_command(linker, objects, runtime, output, patchable_elf);
+    let mut command =
+        build_system_linker_command(linker, objects, runtime, output, patchable_elf, size);
     match command.output() {
         Ok(result) if result.status.success() => Ok(()),
         Ok(result) => Err(LinkAttempt::Failed(format_output(linker, &result))),
@@ -539,6 +561,7 @@ fn link_with_rustc(
     runtime: &Path,
     output: &Path,
     patchable_elf: bool,
+    size: bool,
 ) -> Result<(), CliFailure> {
     let stub = output.with_extension("link.rs");
     fs::write(&stub, "#![no_main]\n").map_err(|error| {
@@ -582,6 +605,9 @@ fn link_with_rustc(
         .arg("-C")
         .arg(format!("link-arg={}", runtime.display()))
         .args(rustc_reproducible_link_args(patchable_elf));
+    if size {
+        command.args(["-C", "strip=symbols"]);
+    }
     #[cfg(target_os = "macos")]
     command.env("ZERO_AR_DATE", "1");
     #[cfg(target_os = "macos")]
@@ -669,6 +695,23 @@ fn link_failure(output: &Path, message: String) -> CliFailure {
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn size_link_strips_symbols_without_disabling_section_gc() {
+        let command = build_system_linker_command(
+            std::ffi::OsStr::new("cc"),
+            &[Path::new("/tmp/artifact.o")],
+            Path::new("/tmp/libarandu_runtime.a"),
+            Path::new("/tmp/artifact"),
+            false,
+            true,
+        );
+        let args: Vec<_> = command.get_args().collect();
+        assert!(args.contains(&std::ffi::OsStr::new("-Wl,--gc-sections")));
+        assert!(args.contains(&std::ffi::OsStr::new("-Wl,--strip-all")));
+        assert!(args.contains(&std::ffi::OsStr::new("-Wl,--build-id=sha1")));
+    }
 
     #[test]
     #[cfg(target_os = "linux")]

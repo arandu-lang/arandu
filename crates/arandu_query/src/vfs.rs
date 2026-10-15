@@ -12,6 +12,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use rustc_hash::FxHashSet;
+
 use arandu_middle::{ModuleId, PackageId, TargetId};
 
 use crate::SourceFile;
@@ -157,29 +159,62 @@ pub fn listing_contains(db: &dyn salsa::Database, listing: DirectoryListing, rel
     entries.iter().any(|e| e == rel)
 }
 
-/// Scan `dir` for `.aru` files (recursive). Used once at package load to seed
-/// [`DirectoryListing`]; the result is then a Salsa input.
+/// Maximum directory nesting depth to prevent runaway traversals.
+pub const MAX_DIR_DEPTH: usize = 64;
+
+/// Scan `dir` for `.aru` files using an iterative heap-allocated worklist.
+/// Protected against symlink cycles and bounded by [`MAX_DIR_DEPTH`].
 pub fn scan_aru_entries(dir: &Path) -> Vec<String> {
     let mut out = Vec::new();
-    scan_aru_entries_rec(dir, dir, &mut out);
-    out.sort();
-    out
-}
+    let mut stack = vec![(dir.to_path_buf(), 0usize)];
+    let mut visited_dirs: FxHashSet<PathBuf> = FxHashSet::default();
 
-fn scan_aru_entries_rec(root: &Path, current: &Path, out: &mut Vec<String>) {
-    let Ok(rd) = std::fs::read_dir(current) else {
-        return;
-    };
-    for entry in rd.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            scan_aru_entries_rec(root, &path, out);
-        } else if path.extension().and_then(|e| e.to_str()) == Some("aru") {
-            if let Ok(rel) = path.strip_prefix(root) {
-                out.push(rel.to_string_lossy().replace('\\', "/"));
+    let root_canonical = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    visited_dirs.insert(root_canonical);
+
+    while let Some((current_dir, depth)) = stack.pop() {
+        if depth >= MAX_DIR_DEPTH {
+            continue;
+        }
+
+        let Ok(rd) = std::fs::read_dir(&current_dir) else {
+            continue;
+        };
+
+        for entry in rd.flatten() {
+            let path = entry.path();
+            let is_dir = match entry.file_type() {
+                Ok(ft) => {
+                    if ft.is_dir() {
+                        true
+                    } else if ft.is_symlink() {
+                        std::fs::metadata(&path)
+                            .map(|m| m.is_dir())
+                            .unwrap_or(false)
+                    } else {
+                        false
+                    }
+                }
+                Err(_) => false,
+            };
+
+            if is_dir {
+                let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+                if !visited_dirs.insert(canonical) {
+                    continue;
+                }
+                stack.push((path, depth + 1));
+            } else if path.extension().and_then(|e| e.to_str()) == Some("aru") {
+                if let Ok(rel) = path.strip_prefix(dir) {
+                    out.push(rel.to_string_lossy().replace('\\', "/"));
+                }
             }
         }
     }
+
+    out.sort();
+    out.dedup();
+    out
 }
 
 /// Map a canonical import key (`my_app/util.aru`, `stdlib/std/io.aru`, `util.aru`)
@@ -265,5 +300,36 @@ mod tests {
             validate_package_name("1x"),
             Err(ReservedNameError::InvalidIdent { .. })
         ));
+    }
+
+    #[test]
+    fn scan_aru_entries_discovers_nested_and_handles_symlink_cycles() {
+        use std::fs;
+        let unique_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let tmp = std::env::temp_dir().join(format!(
+            "arandu_test_vfs_{}_{}",
+            std::process::id(),
+            unique_id
+        ));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(tmp.join("sub")).unwrap();
+
+        fs::write(tmp.join("root.aru"), "func main() {}").unwrap();
+        fs::write(tmp.join("sub/nested.aru"), "func helper() {}").unwrap();
+        fs::write(tmp.join("sub/ignored.txt"), "hello").unwrap();
+
+        #[cfg(unix)]
+        {
+            // Create a cyclic symlink: sub/cycle -> ..
+            let _ = std::os::unix::fs::symlink(&tmp, tmp.join("sub/cycle"));
+        }
+
+        let entries = scan_aru_entries(&tmp);
+        let _ = fs::remove_dir_all(&tmp);
+
+        assert_eq!(entries, vec!["root.aru", "sub/nested.aru"]);
     }
 }

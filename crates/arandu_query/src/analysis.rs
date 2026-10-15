@@ -161,6 +161,13 @@ impl AnalysisHost {
         AnalysisSnapshot::capture(&self.db, self.revision)
     }
 
+    /// Commit CTFE policy and invalidate revision-bound IDE handles.
+    /// As with text edits, workers must release snapshots before this write.
+    pub fn set_ctfe_limits(&mut self, limits: crate::ctfe::CtfeLimits) {
+        self.db.set_ctfe_limits(limits);
+        self.revision = self.revision.next();
+    }
+
     /// Commit new text for an input; advances revision.
     pub fn set_text(&mut self, source: SourceFile, text: impl Into<Arc<str>>) {
         source.set_text(&mut self.db).to(text.into());

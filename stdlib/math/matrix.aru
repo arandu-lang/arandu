@@ -73,12 +73,12 @@ public func StaticMatrix.set<T, const M: uint, const N: uint>(self: mut ref Stat
 ///
 /// The shape is fixed by the destination type. This visits M × N elements
 /// and does not allocate a result.
-public func staticFill<const M: uint, const N: uint>(out: mut ref StaticMatrix<float, M, N>, value: float): void {
+public func StaticMatrix.fill<const M: uint, const N: uint>(self: mut ref StaticMatrix<float, M, N>, value: float): void {
     let mut r: uint = 0
     while r < M {
         let mut c: uint = 0
         while c < N {
-            out.set(r, c, value)
+            self.set(r, c, value)
             c = c + 1
         }
         r = r + 1
@@ -89,15 +89,15 @@ public func staticFill<const M: uint, const N: uint>(out: mut ref StaticMatrix<f
 ///
 /// The caller provides destination storage; work is O(N²) with no result
 /// allocation.
-public func staticIdentityInto<const N: uint>(out: mut ref StaticMatrix<float, N, N>): void {
+public func StaticMatrix.identityInto<const N: uint>(self: mut ref StaticMatrix<float, N, N>): void {
     let mut r: uint = 0
     while r < N {
         let mut c: uint = 0
         while c < N {
             if r == c {
-                out.set(r, c, 1.0)
+                self.set(r, c, 1.0)
             } else {
-                out.set(r, c, 0.0)
+                self.set(r, c, 0.0)
             }
             c = c + 1
         }
@@ -109,8 +109,8 @@ public func staticIdentityInto<const N: uint>(out: mut ref StaticMatrix<float, N
 ///
 /// The shared shape is enforced by the types. This visits M × N cells and
 /// does not allocate a result.
-public func staticAddInto<const M: uint, const N: uint>(
-    left: ref StaticMatrix<float, M, N>,
+public func StaticMatrix.addInto<const M: uint, const N: uint>(
+    self: ref StaticMatrix<float, M, N>,
     right: ref StaticMatrix<float, M, N>,
     out: mut ref StaticMatrix<float, M, N>
 ): void {
@@ -118,7 +118,7 @@ public func staticAddInto<const M: uint, const N: uint>(
     while r < M {
         let mut c: uint = 0
         while c < N {
-            out.set(r, c, left.get(r, c) + right.get(r, c))
+            out.set(r, c, self.get(r, c) + right.get(r, c))
             c = c + 1
         }
         r = r + 1
@@ -129,8 +129,8 @@ public func staticAddInto<const M: uint, const N: uint>(
 ///
 /// The type parameters enforce compatible shapes. Work is O(M × K × N)
 /// using scalar loops; no result buffer is allocated internally.
-public func staticMulInto<const M: uint, const K: uint, const N: uint>(
-    left: ref StaticMatrix<float, M, K>,
+public func StaticMatrix.mulInto<const M: uint, const K: uint, const N: uint>(
+    self: ref StaticMatrix<float, M, K>,
     right: ref StaticMatrix<float, K, N>,
     out: mut ref StaticMatrix<float, M, N>
 ): void {
@@ -141,7 +141,7 @@ public func staticMulInto<const M: uint, const K: uint, const N: uint>(
             let mut sum: float = 0.0
             let mut k: uint = 0
             while k < K {
-                sum = sum + left.get(r, k) * right.get(k, c)
+                sum = sum + self.get(r, k) * right.get(k, c)
                 k = k + 1
             }
             out.set(r, c, sum)
@@ -155,15 +155,15 @@ public func staticMulInto<const M: uint, const K: uint, const N: uint>(
 ///
 /// This moves each element to `(column, row)` in O(M × N) time; it does not
 /// allocate a result buffer.
-public func staticTransposeInto<const M: uint, const N: uint>(
-    input: ref StaticMatrix<float, M, N>,
+public func StaticMatrix.transposeInto<const M: uint, const N: uint>(
+    self: ref StaticMatrix<float, M, N>,
     out: mut ref StaticMatrix<float, N, M>
 ): void {
     let mut r: uint = 0
     while r < M {
         let mut c: uint = 0
         while c < N {
-            out.set(c, r, input.get(r, c))
+            out.set(c, r, self.get(r, c))
             c = c + 1
         }
         r = r + 1
@@ -173,8 +173,8 @@ public func staticTransposeInto<const M: uint, const N: uint>(
 /// Returns `a₀₀ × a₁₁ - a₀₁ × a₁₀` for a 2 × 2 float matrix.
 ///
 /// This is constant-time scalar arithmetic without allocation.
-public func staticDet2(input: ref StaticMatrix<float, 2, 2>): float {
-    return input.get(0, 0) * input.get(1, 1) - input.get(0, 1) * input.get(1, 0)
+public func StaticMatrix.det2(self: ref StaticMatrix<float, 2, 2>): float {
+    return self.get(0, 0) * self.get(1, 1) - self.get(0, 1) * self.get(1, 0)
 }
 
 // ── Dynamic Heap Matrix<T> ───────────────────────────────────────────────────
@@ -194,9 +194,9 @@ public struct Matrix<T> {
 /// Allocates a row-major `rows × cols` matrix filled with `initial`.
 ///
 /// Returns `None` when the host allocation fails. On success, the caller
-/// owns the buffer and must call `Matrix.free` after borrowed views are no
-/// longer in use. Initialization visits every element.
-public func newMatrix<T>(rows: uint, cols: uint, initial: T): Option<Matrix<T>> {
+/// owns the buffer and its destructor releases it automatically when the
+/// `Matrix` value goes out of scope. Initialization visits every element.
+public func Matrix.tryNew<T>(rows: uint, cols: uint, initial: T): Option<Matrix<T>> {
     // Pointer offsets are represented as i32 throughout the stdlib. Keep the
     // element count and byte allocation within that addressable range.
     let maxElements: uint = 2147483647
@@ -235,12 +235,16 @@ public func newMatrix<T>(rows: uint, cols: uint, initial: T): Option<Matrix<T>> 
     }
 }
 
+/// Canonical constructor for `Matrix<T>`; delegates to `Matrix.tryNew`.
+public func Matrix.new<T>(rows: uint, cols: uint, initial: T): Option<Matrix<T>> {
+    return Matrix.tryNew<T>(rows, cols, initial)
+}
+
 /// Allocates a `float` matrix of the given shape with every element zero.
 ///
-/// Returns `None` if allocation fails; release a successful result with
-/// `Matrix.free`.
+/// Returns `None` if allocation fails.
 public func Matrix.zeros(rows: uint, cols: uint): Option<Matrix<float>> {
-    return newMatrix<float>(rows, cols, 0.0)
+    return Matrix.tryNew<float>(rows, cols, 0.0)
 }
 
 /// Returns the number of rows.
@@ -255,34 +259,27 @@ public func Matrix.cols<T>(self: ref Matrix<T>): uint {
 
 /// Borrows all elements as a shared row-major `ArrayView<T>`.
 ///
-/// This does not copy or allocate. The view becomes invalid after `free`.
+/// This does not copy or allocate. The view borrows the matrix's backing buffer.
 public func Matrix.asView<T>(self: ref Matrix<T>): view.ArrayView<T> {
-    return unsafe { view.fromRaw<T>(self.data, self.rows, self.cols, self.cols as int, 1) }
+    return unsafe { view.ArrayView.fromRaw<T>(self.data, self.rows, self.cols, self.cols as int, 1) }
 }
 
 /// Borrows all elements as an exclusive row-major `ArrayViewMut<T>`.
 ///
-/// This does not copy or allocate. Do not free the matrix while the view is
-/// in use.
+/// This does not copy or allocate. The view borrows the matrix's backing buffer.
 public func Matrix.asViewMut<T>(self: mut ref Matrix<T>): view.ArrayViewMut<T> {
-    return unsafe { view.fromRawMut<T>(self.data, self.rows, self.cols, self.cols as int, 1) }
+    return unsafe { view.ArrayViewMut.fromRaw<T>(self.data, self.rows, self.cols, self.cols as int, 1) }
 }
 
-/// Releases the owned buffer and resets shape and capacity to zero.
-///
-/// Any previously returned views or pointers become invalid. Calling `free`
-/// again after release has no effect.
-public func Matrix.free<T>(self: mut ref Matrix<T>): void {
+/// Releases the owned buffer automatically when the `Matrix` value is dropped.
+@Destructor
+func Matrix.destroy<T>(self: own Matrix<T>): void {
     let nullp: ptr[T] = nil
     if self.data != nullp {
         let elemSize = mem.sizeOf<T>()
         let totalBytes = (self.capacity as usize) * elemSize
         unsafe {
             ar_vec_buf_free(self.data as ptr[u8], totalBytes)
-            self.data = nullp
-            self.rows = 0
-            self.cols = 0
-            self.capacity = 0
         }
     }
 }

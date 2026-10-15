@@ -111,3 +111,102 @@ fn mem_sizeof_alignof_fold_with_target_pointer_width() {
         "mem.sizeOf/alignOf must fold to 64-bit layout constants"
     );
 }
+
+#[test]
+fn mem_intrinsics_preserve_non_natural_abi_alignments_in_runtime_and_ctfe() {
+    use arandu_middle::ctfe::ConstValue;
+    use arandu_middle::types::FunctionInstance;
+    use arandu_mir::ctfe::Budget;
+    use arandu_query::ctfe::{ctfe_eval, ctfe_eval_instance, CtfeInstanceRequest, CtfeRequest};
+    use arandu_query::passes::declaration_signatures;
+    use arandu_query::runtime::Instance;
+
+    let mut db = DatabaseImpl::new();
+    db.new_file("stdlib/core/mem.aru".into(), MEM_MODULE.into());
+    let source = "import std.core.mem as mem\nstruct Pair { tag: u8, value: u64 }\nfunc main(): usize { return mem.alignOf<Pair>() }\n";
+    let file = db.new_file("main.aru".into(), source.into());
+    let public_file = db.new_file("public_layout.aru".into(), "import std.core.mem as mem\nstruct Pair { tag: u8, value: u64 }\nfunc main(): usize { return comptime mem.alignOf<Pair>() }".into());
+    let definition = declaration_signatures(&db, file)
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name == "main")
+        .expect("main definition")
+        .id;
+    let budget = Budget {
+        fuel: 10_000,
+        frames: 16,
+        values: 1_000,
+    };
+    for (layout, alignment) in [
+        (DataLayout::ptr_width(4), 8),
+        (DataLayout::i686_sysv(), 4),
+        (DataLayout::ptr_width(8), 8),
+        (DataLayout::i686_sysv(), 4),
+    ] {
+        db.set_target_config(layout);
+        assert_eq!(folded_int_literals(&db, file), vec![alignment]);
+        assert_eq!(folded_int_literals(&db, public_file), vec![alignment]);
+        let source_result = ctfe_eval(&db, CtfeRequest::new(&db, file, definition, vec![], budget));
+        let instance = Instance::new(
+            &db,
+            file,
+            FunctionInstance {
+                definition,
+                arguments: vec![],
+            },
+        );
+        let concrete_result =
+            ctfe_eval_instance(&db, CtfeInstanceRequest::new(&db, instance, vec![], budget));
+        for (mode, result) in [("source", source_result), ("concrete", concrete_result)] {
+            let ConstValue::Integer(value) = result
+                .as_ref()
+                .unwrap_or_else(|error| panic!("{mode} layout CTFE: {error:?}"))
+            else {
+                panic!("expected an alignment integer");
+            };
+            assert_eq!(value.value(), alignment);
+        }
+    }
+}
+
+#[test]
+fn imported_layout_intrinsics_do_not_depend_on_sibling_bodies() {
+    use arandu_middle::ctfe::ConstValue;
+    use arandu_query::ctfe::{ctfe_eval, CtfeRequest};
+    use salsa::Setter;
+
+    let (mut db, log) = DatabaseImpl::with_rebuild_log();
+    let module = format!("{MEM_MODULE}\nfunc sibling(): int {{ return 1 }}");
+    let memory = db.new_file("stdlib/core/mem.aru".into(), module.clone());
+    let file = db.new_file(
+        "main.aru".into(),
+        "import std.core.mem as mem\nfunc main(): usize { return mem.sizeOf<u64>() }".into(),
+    );
+    let symbol = arandu_query::passes::declaration_signatures(&db, file)
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name == "main")
+        .expect("main")
+        .id;
+    let budget = arandu_mir::ctfe::Budget {
+        fuel: 10_000,
+        frames: 16,
+        values: 1_000,
+    };
+    let first = ctfe_eval(&db, CtfeRequest::new(&db, file, symbol, vec![], budget)).clone();
+    assert!(matches!(first, Ok(ConstValue::Integer(value)) if value.value() == 8));
+    log.clear();
+    memory
+        .set_text(&mut db)
+        .to(module.replace("return 1", "return 999").into());
+    let next = ctfe_eval(&db, CtfeRequest::new(&db, file, symbol, vec![], budget));
+    assert_eq!(&first, next);
+    for query in ["ctfe_func_amir", "ctfe_extern_hir", "ctfe_eval"] {
+        assert_eq!(
+            log.count_executions_matching(query),
+            0,
+            "{query}: {}",
+            log.format_chain(true)
+        );
+    }
+}

@@ -20,8 +20,9 @@ fn stdlib_fs_parses_and_exports_expected_symbols() {
     let exports = exported_symbols(&db, file);
     let expected = [
         "OpenOptions",
-        "readOnly",
-        "writeOnly",
+        "OpenOptions.new",
+        "OpenOptions.readOnly",
+        "OpenOptions.writeOnly",
         "File",
         "fileExists",
         "Metadata",

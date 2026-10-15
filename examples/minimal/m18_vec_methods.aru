@@ -1,25 +1,24 @@
 module examples.minimal.m18_vec_methods
 
 // Minimal 0.1 — method-style Vec (receiver mono; PROMOTE method thin).
-// Read copies remain explicit free-function calls guarded by the `Copy` bound.
+// Read copies use the `getCopy` method guarded by the `Copy` bound.
 import std.alloc.vec as vec
 
 func main(): int {
-    let mut v = vec.new<int>()
+    let mut v = vec.Vec<int>.new()
     if !v.isEmpty() {
         return 90
     }
     v.push(10)
     v.push(20)
     v.push(30)
-    if !v.put(1, 5) {
-        v.destroy()
+    if !v.set(1, 5) {
         return 1
     }
     let n = v.len() as int
-    let g0 = vec.getCopy<int>(ref v, 0)
-    let g1 = vec.getCopy<int>(ref v, 1)
-    let g2 = vec.getCopy<int>(ref v, 2)
+    let g0 = v.getCopy(0)
+    let g1 = v.getCopy(1)
+    let g2 = v.getCopy(2)
     match g0 {
         Some(a) => {
             match g1 {
@@ -30,29 +29,24 @@ func main(): int {
                             match p {
                                 Some(last) => {
                                     // 10+5+30+3+30 = 78 (same checksum as free-func m13)
-                                    v.destroy()
                                     return a + b + c + n + last
                                 }
                                 None => {
-                                    v.destroy()
                                     return 2
                                 }
                             }
                         }
                         None => {
-                            v.destroy()
                             return 3
                         }
                     }
                 }
                 None => {
-                    v.destroy()
                     return 4
                 }
             }
         }
         None => {
-            v.destroy()
             return 5
         }
     }

@@ -15,6 +15,7 @@ pub struct RunnerOptions {
     pub output: Option<PathBuf>,
     pub target: Option<String>,
     pub backend: Option<String>,
+    pub doc_tests: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

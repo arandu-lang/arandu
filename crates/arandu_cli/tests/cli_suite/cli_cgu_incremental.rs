@@ -67,6 +67,98 @@ fn corrupted_cgu_object_is_recompiled_instead_of_reused() {
 }
 
 #[test]
+fn new_generic_instance_reuses_unrelated_cgus_and_matches_a_clean_build() {
+    let tmp = common::temp_dir("arandu_cgu_instance_cutoff").unwrap();
+    let project = tmp.join("instance_cutoff");
+    assert!(
+        run_cli_in(&tmp, &["new", "instance_cutoff", "--bin", "--vcs=none"])
+            .status
+            .success()
+    );
+    let source = project.join("src/main.aru");
+    let original = "func identity<T>(x: T): T { return x }\nfunc untouched(): int { return identity<int>(42) }\nfunc changed(): int { return 0 }\nfunc main(): int { return untouched() + changed() }\n";
+    fs::write(&source, original).unwrap();
+    let cold = run_cli_in(&project, &["build", "-v"]);
+    assert!(
+        cold.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cold.stderr)
+    );
+    let edited = original.replace(
+        "return 0",
+        "let flag = identity<bool>(true) if flag { return 1 } return 0",
+    );
+    fs::write(&source, &edited).unwrap();
+    let incremental = run_cli_in(&project, &["build", "-v"]);
+    assert!(
+        incremental.status.success(),
+        "{}",
+        String::from_utf8_lossy(&incremental.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&incremental.stderr)
+            .contains("[cgu] 5 units: 3 cached, 2 recompiled"),
+        "{}",
+        String::from_utf8_lossy(&incremental.stderr)
+    );
+    let state_path = files_named(&project.join("target/dev"), "build-state.json")
+        .pop()
+        .expect("build state");
+    let state: serde_json::Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+    let binary = state_path
+        .parent()
+        .unwrap()
+        .join(state["artifact"].as_str().unwrap());
+    assert_eq!(Command::new(&binary).status().unwrap().code(), Some(43));
+    let cached = files_in_dir(&state_path.parent().unwrap().join("incremental/cgu"))
+        .into_iter()
+        .map(|path| {
+            (
+                path.file_name().unwrap().to_owned(),
+                fs::read(&path).unwrap(),
+            )
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let clean = tmp.join("clean_instance_cutoff");
+    assert!(
+        run_cli_in(
+            &tmp,
+            &["new", "clean_instance_cutoff", "--bin", "--vcs=none"]
+        )
+        .status
+        .success()
+    );
+    fs::write(clean.join("src/main.aru"), edited).unwrap();
+    let built = run_cli_in(&clean, &["build", "-v"]);
+    assert!(
+        built.status.success(),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let clean_state_path = files_named(&clean.join("target/dev"), "build-state.json")
+        .pop()
+        .expect("clean state");
+    let clean_state: serde_json::Value =
+        serde_json::from_slice(&fs::read(&clean_state_path).unwrap()).unwrap();
+    let clean_binary = clean_state_path
+        .parent()
+        .unwrap()
+        .join(clean_state["artifact"].as_str().unwrap());
+    assert_eq!(
+        Command::new(clean_binary).status().unwrap().code(),
+        Some(43)
+    );
+    for object in files_in_dir(&clean_state_path.parent().unwrap().join("incremental/cgu")) {
+        assert_eq!(
+            cached.get(object.file_name().unwrap()),
+            Some(&fs::read(&object).unwrap()),
+            "incremental and clean objects must match byte for byte"
+        );
+    }
+    let _ = fs::remove_dir_all(tmp);
+}
+
+#[test]
 fn partitioned_cgu_compiles_caches_and_links_multicgu_project() {
     let tmp = common::temp_dir("arandu_cgu_test").unwrap();
     let project = tmp.join("cgu_app");
@@ -268,7 +360,7 @@ fn removing_a_cached_cgu_forces_relink_instead_of_reusing_stale_executable() {
         String::from_utf8_lossy(&rebuilt.stderr)
     );
     assert!(
-        String::from_utf8_lossy(&rebuilt.stderr).contains("[cgu] 1 units: 0 cached, 1 recompiled")
+        String::from_utf8_lossy(&rebuilt.stderr).contains("[cgu] 1 units: 1 cached, 0 recompiled")
     );
     assert!(String::from_utf8_lossy(&rebuilt.stdout).contains("backend=cranelift-dev"));
 

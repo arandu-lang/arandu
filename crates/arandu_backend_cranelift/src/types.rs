@@ -110,7 +110,11 @@ pub fn clif_type_with_float(ty: &ArType, ptr_type: Type, float_type: Type) -> Cl
         ArType::GenRef => ClifType::Concrete(I64),
         // `Err` is a message handle (pointer to UTF-8 buffer from `err.new`).
         ArType::Err => ClifType::Concrete(ptr_type),
-        ArType::Void | ArType::Error | ArType::Const(_) | ArType::ConstParam(_) => ClifType::Void,
+        ArType::Void
+        | ArType::Error
+        | ArType::FrozenConst(_)
+        | ArType::Const(_)
+        | ArType::ConstParam(_) => ClifType::Void,
         ArType::IntLiteral => ClifType::Concrete(I32),
         ArType::FloatLiteral => ClifType::Concrete(float_type),
         ArType::Named(_, _) => {

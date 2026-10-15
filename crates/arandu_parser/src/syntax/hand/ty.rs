@@ -69,8 +69,20 @@ pub fn try_hand_lower_type(
     Some(ty)
 }
 
+const MAX_TYPE_DEPTH: u32 = 105;
+
 /// Parse a type expression advancing `cur`.
 pub fn parse_type(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<TypeExprId> {
+    if ctx.depth >= MAX_TYPE_DEPTH {
+        return None;
+    }
+    ctx.depth += 1;
+    let res = parse_type_inner(ctx, cur);
+    ctx.depth -= 1;
+    res
+}
+
+fn parse_type_inner(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<TypeExprId> {
     let start_tok = cur.peek()?;
     let start = start_tok.start;
 
@@ -120,6 +132,15 @@ pub fn parse_type(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<TypeExp
         }));
     }
 
+    parse_type_dispatch(ctx, cur, start)
+}
+
+// Do not retain aggregate/function-type locals across recursive references.
+fn parse_type_dispatch(
+    ctx: &mut HandCtx<'_>,
+    cur: &mut Cursor<'_>,
+    start: u32,
+) -> Option<TypeExprId> {
     // `[]T` slice or `[N]T` array
     if cur.eat(TokenKind::LBracket) {
         if cur.eat(TokenKind::RBracket) {
@@ -131,19 +152,24 @@ pub fn parse_type(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<TypeExp
             }));
         }
         let size_tok = cur.peek()?;
-        if !matches!(
-            size_tok.kind,
-            TokenKind::IntDec
-                | TokenKind::IntHex
-                | TokenKind::IntBin
-                | TokenKind::IntOct
-                | TokenKind::IdentValue
-                | TokenKind::IdentType
-        ) {
-            return None;
-        }
-        let size = SmolStr::new(ctx.text(size_tok)?);
-        cur.bump();
+        let (size, size_expression) = if size_tok.kind == TokenKind::KwComptime {
+            (SmolStr::new(""), Some(parse_generic_argument(ctx, cur)?))
+        } else {
+            if !matches!(
+                size_tok.kind,
+                TokenKind::IntDec
+                    | TokenKind::IntHex
+                    | TokenKind::IntBin
+                    | TokenKind::IntOct
+                    | TokenKind::IdentValue
+                    | TokenKind::IdentType
+            ) {
+                return None;
+            }
+            let size = SmolStr::new(ctx.text(size_tok)?);
+            cur.bump();
+            (size, None)
+        };
         cur.expect(TokenKind::RBracket)?;
         let elem = parse_type(ctx, cur)?;
         let end = ctx.pool.type_expr_span(elem).end;
@@ -151,6 +177,7 @@ pub fn parse_type(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<TypeExp
             span: ctx.span(start, end),
             size,
             size_span: ctx.token_span(size_tok),
+            size_expression,
             elem,
         }));
     }
@@ -292,7 +319,7 @@ fn parse_named_or_primitive_type(
     Some(ty)
 }
 
-fn parse_generic_type_args(
+pub(super) fn parse_generic_type_args(
     ctx: &mut HandCtx<'_>,
     cur: &mut Cursor<'_>,
 ) -> Option<(IndexRange, u32)> {
@@ -300,16 +327,7 @@ fn parse_generic_type_args(
     let mut args = Vec::new();
     if !cur.at_gt() {
         loop {
-            if cur.peek_kind() == Some(TokenKind::IntDec) {
-                let token = cur.bump()?;
-                let value = SmolStr::new(ctx.text(token)?);
-                args.push(ctx.pool.alloc_type_expr(TypeExpr::Const {
-                    span: ctx.token_span(token),
-                    value,
-                }));
-            } else {
-                args.push(parse_type(ctx, cur)?);
-            }
+            args.push(parse_generic_argument(ctx, cur)?);
             if cur.eat(TokenKind::Comma) {
                 continue;
             }
@@ -318,6 +336,31 @@ fn parse_generic_type_args(
     }
     let (gt_start, gt_len) = cur.expect_gt()?;
     Some((ctx.pool.alloc_type_expr_list(&args), gt_start + gt_len))
+}
+
+pub(crate) fn parse_generic_argument(
+    ctx: &mut HandCtx<'_>,
+    cur: &mut Cursor<'_>,
+) -> Option<TypeExprId> {
+    if cur.peek_kind() == Some(TokenKind::IntDec) {
+        let token = cur.bump()?;
+        let value = SmolStr::new(ctx.text(token)?);
+        Some(ctx.pool.alloc_type_expr(TypeExpr::Const {
+            span: ctx.token_span(token),
+            value,
+        }))
+    } else if cur.peek_kind() == Some(TokenKind::KwComptime) {
+        let token = cur.bump()?;
+        cur.expect(TokenKind::LParen)?;
+        let expression = super::expr::try_hand_lower_expr(ctx, cur, 0)?;
+        let end = cur.expect(TokenKind::RParen)?.end();
+        Some(ctx.pool.alloc_type_expr(TypeExpr::ConstExpression {
+            span: ctx.span(token.start, end),
+            expression,
+        }))
+    } else {
+        parse_type(ctx, cur)
+    }
 }
 
 /// `: T` result type (single).

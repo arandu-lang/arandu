@@ -24,7 +24,13 @@ fn stdlib_smallvec_parses_and_exports_expected_symbols() {
         Err(e) => panic!("smallvec.aru must parse; got {e}"),
     }
     let exports = exported_symbols(&db, file);
-    let expected = ["SmallVec4", "new", "get", "getRef"];
+    let expected = [
+        "SmallVec4",
+        "SmallVec4.new",
+        "SmallVec4.get",
+        "SmallVec4.getCopy",
+        "SmallVec4.getRef",
+    ];
     for key in expected {
         assert!(
             exports.symbols.contains_key(key),
@@ -54,7 +60,7 @@ fn stdlib_smallvec_usage_in_program() {
 import std.alloc.smallvec as smallvec
 
 func testSmallVec(): int {
-    let mut sv = smallvec.new<int>()
+    let mut sv = smallvec.SmallVec4<int>.new()
     sv.push(10)
     sv.push(20)
     let l = sv.len()

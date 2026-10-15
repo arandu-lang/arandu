@@ -23,10 +23,21 @@ fn stdlib_gen_arena_parses_and_exports_expected_symbols() {
     );
     let exports = exported_symbols(&db, file);
     for name in [
-        "GenArena", "GenRef", "new", "insert", "get", "remove", "destroy",
+        "GenArena",
+        "GenArena.new",
+        "GenArena.insert",
+        "GenArena.get",
+        "GenArena.remove",
+        "GenArena.len",
+        "GenArena.isEmpty",
+        "GenRef",
     ] {
         assert!(exports.symbols.contains_key(name), "missing `{name}`");
     }
+    assert!(
+        !exports.symbols.contains_key("destroy"),
+        "GenArena must not export manual `destroy`"
+    );
 }
 
 #[test]
@@ -48,16 +59,15 @@ fn stdlib_gen_arena_usage_typechecks() {
 import std.alloc.gen_arena as arena
 
 func main(): int {
-    let mut values = arena.new<int>()
-    let first = arena.insert(values, 7)
-    if arena.get(values, first) != 7 {
+    let mut values = arena.GenArena<int>.new()
+    let first = values.insert(7)
+    if values.get(first) != 7 {
         return 1
     }
-    let removed = arena.remove(values, first)
+    let removed = values.remove(first)
     if removed is Option.None {
         return 2
     }
-    arena.destroy(values)
     return 0
 }
 "#

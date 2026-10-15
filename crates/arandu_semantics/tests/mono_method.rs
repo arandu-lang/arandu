@@ -130,7 +130,7 @@ func main(): int {
     assert!(tc.diagnostics.is_empty(), "{:?}", tc.diagnostics);
     let mut hir = lower_to_hir(&mut tc, &program).expect("hir");
     monomorphize_program(&mut tc, &mut hir).expect("mono");
-    match arandu_semantics::lower_to_amir(&tc, &hir, 64) {
+    match arandu_semantics::lower_to_amir(&tc, &hir, 8) {
         Ok(amir) => {
             assert!(!amir.funcs.is_empty(), "expected AMIR funcs");
             assert!(
@@ -178,7 +178,7 @@ func main(): int {
     let mut hir = lower_to_hir(&mut tc, &program).expect("hir");
     let n = monomorphize_program(&mut tc, &mut hir).expect("mono");
     assert!(n >= 1, "expected specialization, got {n}");
-    let amir = arandu_semantics::lower_to_amir(&tc, &hir, 64).expect("amir");
+    let amir = arandu_semantics::lower_to_amir(&tc, &hir, 8).expect("amir");
     assert!(
         amir.funcs
             .iter()
@@ -256,7 +256,7 @@ func main(): int {
         n >= 2,
         "expected push_t + ensure_cap specializations, got {n}"
     );
-    let amir = arandu_semantics::lower_to_amir(&tc, &hir, 64).expect("amir");
+    let amir = arandu_semantics::lower_to_amir(&tc, &hir, 8).expect("amir");
     let names: Vec<_> = amir
         .funcs
         .iter()
@@ -305,7 +305,7 @@ func main(): int {
     let mut hir = lower_to_hir(&mut tc, &program).expect("hir");
     let n = monomorphize_program(&mut tc, &mut hir).expect("mono");
     assert!(n >= 2, "expected int+str specializations, got {n}");
-    let amir = arandu_semantics::lower_to_amir(&tc, &hir, 64).expect("amir");
+    let amir = arandu_semantics::lower_to_amir(&tc, &hir, 8).expect("amir");
     let mangled: Vec<_> = amir
         .funcs
         .iter()

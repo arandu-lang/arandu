@@ -68,7 +68,9 @@ impl TypeArgsPool {
     }
 
     fn try_get(&self, range: IndexRange) -> Option<&[TypeId]> {
-        self.args.get(range.range())
+        let start = usize::try_from(range.start).ok()?;
+        let end = start.checked_add(usize::try_from(range.len).ok()?)?;
+        self.args.get(start..end)
     }
 }
 
@@ -196,6 +198,16 @@ impl TypeInterner {
             .try_get(range)?
             .get(index)
             .copied()
+    }
+
+    /// Checked argument range for contracts crossing an interner boundary.
+    #[must_use]
+    pub fn try_type_args(&self, range: IndexRange) -> Option<Vec<TypeId>> {
+        self.type_args_pool
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .try_get(range)
+            .map(<[TypeId]>::to_vec)
     }
 
     /// Resolve a `TypeId` back to its `ArType` (clones the interned value).

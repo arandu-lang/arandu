@@ -1,92 +1,78 @@
 module examples.minimal.m16_gen_arena
 
-// Minimal 0.1 — PROMOTE GenArena thin (pure-buffer free-func, same family as Vec).
-// insert / get / remove / recycle / len / is_empty / destroy.
+// Minimal 0.1 — PROMOTE GenArena thin (pure-buffer method API, same family as Vec).
+// insert / get / remove / recycle / len / isEmpty / automatic drop.
 import std.alloc.gen_arena as arena
 
 func main(): int {
-    let mut a = arena.new<int>()
-    if !arena.isEmpty(a) {
+    let mut a = arena.GenArena<int>.new()
+    if !a.isEmpty() {
         return 90
     }
 
-    let r0 = arena.insert(a, 10)
-    let r1 = arena.insert(a, 20)
-    let r2 = arena.insert(a, 30)
+    let r0 = a.insert(10)
+    let r1 = a.insert(20)
+    let r2 = a.insert(30)
 
-    let g0 = arena.get(a, r0)
-    let g1 = arena.get(a, r1)
-    let g2 = arena.get(a, r2)
+    let g0 = a.get(r0)
+    let g1 = a.get(r1)
+    let g2 = a.get(r2)
     // 10+20+30 = 60
     if g0 + g1 + g2 != 60 {
-        arena.destroy(a)
         return 1
     }
 
-    let n = arena.len(a) as int
+    let n = a.len() as int
     if n != 3 {
-        arena.destroy(a)
         return 2
     }
 
     // remove middle; recycle index on next insert
-    let rm = arena.remove(a, r1)
+    let rm = a.remove(r1)
     match rm {
         Some(v) => {
             if v != 20 {
-                arena.destroy(a)
                 return 3
             }
         }
         None => {
-            arena.destroy(a)
             return 4
         }
     }
 
-    if arena.len(a) as int != 2 {
-        arena.destroy(a)
+    if a.len() as int != 2 {
         return 5
     }
 
-    let r3 = arena.insert(a, 40)
+    let r3 = a.insert(40)
     // recycled slot must carry bumped generation; live values: 10, 40, 30
-    let g0b = arena.get(a, r0)
-    let g3 = arena.get(a, r3)
-    let g2b = arena.get(a, r2)
+    let g0b = a.get(r0)
+    let g3 = a.get(r3)
+    let g2b = a.get(r2)
     if g0b != 10 {
-        arena.destroy(a)
         return 6
     }
     if g3 != 40 {
-        arena.destroy(a)
         return 7
     }
     if g2b != 30 {
-        arena.destroy(a)
         return 8
     }
 
     // stale remove must yield None (generation mismatch after recycle of r1)
-    let stale = arena.remove(a, r1)
+    let stale = a.remove(r1)
     match stale {
         Some(_) => {
-            arena.destroy(a)
             return 9
         }
         None => {}
     }
 
-    if arena.len(a) as int != 3 {
-        arena.destroy(a)
+    if a.len() as int != 3 {
         return 10
     }
 
     // 10+40+30+3 = 83
-    let sum = g0b + g3 + g2b + (arena.len(a) as int)
-    arena.destroy(a)
-    if !arena.isEmpty(a) {
-        return 11
-    }
+    let sum = g0b + g3 + g2b + (a.len() as int)
     return sum
 }

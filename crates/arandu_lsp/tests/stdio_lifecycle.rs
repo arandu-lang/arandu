@@ -54,7 +54,7 @@ impl Drop for FixtureDir {
 
 struct LspProcess {
     child: Child,
-    stdin: ChildStdin,
+    stdin: Option<ChildStdin>,
     messages: Receiver<Value>,
     pending: RefCell<VecDeque<Value>>,
 }
@@ -80,7 +80,7 @@ impl LspProcess {
         });
         Self {
             child,
-            stdin,
+            stdin: Some(stdin),
             messages,
             pending: RefCell::new(VecDeque::new()),
         }
@@ -88,9 +88,10 @@ impl LspProcess {
 
     fn send(&mut self, message: &Value) {
         let payload = serde_json::to_vec(message).expect("serialize LSP message");
-        write!(self.stdin, "Content-Length: {}\r\n\r\n", payload.len()).expect("write LSP header");
-        self.stdin.write_all(&payload).expect("write LSP payload");
-        self.stdin.flush().expect("flush LSP payload");
+        let stdin = self.stdin.as_mut().expect("LSP input is open");
+        write!(stdin, "Content-Length: {}\r\n\r\n", payload.len()).expect("write LSP header");
+        stdin.write_all(&payload).expect("write LSP payload");
+        stdin.flush().expect("flush LSP payload");
     }
 
     fn wait_for(&self, mut predicate: impl FnMut(&Value) -> bool) -> Value {
@@ -395,7 +396,7 @@ fn stdio_workspace_index_reports_standard_progress_and_status() {
 fn stdio_manifestless_folder_resolves_toolchain_stdlib() {
     let fixture = FixtureDir::new();
     let document = fixture.path().join("main.aru");
-    let source = "import std.alloc.vec as vec\nfunc size(): usize { let values = vec.new<int>(); return values.len() }\n";
+    let source = "import std.alloc.vec as vec\nfunc size(): usize { let values = vec.Vec<int>.new(); return values.len() }\n";
     fs::write(&document, source).expect("write standalone source");
     let uri = file_uri(&document);
     let mut lsp = LspProcess::spawn();
@@ -1020,6 +1021,309 @@ fn stdio_formatting_is_local_and_idempotent() {
 }
 
 #[test]
+fn stdio_comptime_diagnostics_and_keyword_tokens_follow_current_utf16_document() {
+    let fixture = FixtureDir::new();
+    let uri = file_uri(&fixture.path().join("comptime.aru"));
+    let prefix = "func main(): int { /* 😀 */ return ";
+    let source = format!("{prefix}comptime {{ return 42 }} }}\n");
+    let mut lsp = LspProcess::spawn();
+    lsp.initialize(fixture.path(), 1);
+    lsp.send(
+        &json!({"jsonrpc":"2.0", "method":"textDocument/didOpen", "params":{
+            "textDocument": {"uri":uri, "languageId":"arandu", "version":1, "text":source}
+        }}),
+    );
+    let valid = lsp.wait_for(|m| {
+        m.get("method") == Some(&json!("textDocument/publishDiagnostics"))
+            && m.pointer("/params/uri") == Some(&json!(uri))
+            && m.pointer("/params/version") == Some(&json!(1))
+    });
+    assert_eq!(
+        valid.pointer("/params/diagnostics"),
+        Some(&json!([])),
+        "{valid}"
+    );
+    lsp.send(
+        &json!({"jsonrpc":"2.0", "id":2, "method":"textDocument/semanticTokens/full",
+        "params":{"textDocument":{"uri":uri}}}),
+    );
+    let response = lsp.wait_for_response(2);
+    let data = response
+        .pointer("/result/data")
+        .and_then(Value::as_array)
+        .expect("semantic tokens");
+    let mut line = 0_u64;
+    let mut column = 0_u64;
+    let mut keyword = false;
+    for token in data.chunks_exact(5) {
+        let delta = token[0].as_u64().expect("delta line");
+        line += delta;
+        column = if delta == 0 {
+            column + token[1].as_u64().expect("delta column")
+        } else {
+            token[1].as_u64().expect("column")
+        };
+        if line == 0
+            && column == u64::try_from(prefix.encode_utf16().count()).expect("UTF16 column")
+        {
+            assert_eq!(token[2].as_u64(), Some(8));
+            assert_eq!(
+                token[3].as_u64(),
+                Some(0),
+                "standard keyword classification"
+            );
+            keyword = true;
+        }
+    }
+    assert!(
+        keyword,
+        "comptime keyword must retain UTF16 coordinates: {response}"
+    );
+    for (version, text) in [
+        (
+            2,
+            "func main(input: int): int { return comptime input }\n".to_owned(),
+        ),
+        (3, source),
+    ] {
+        lsp.send(
+            &json!({"jsonrpc":"2.0", "method":"textDocument/didChange", "params":{
+                "textDocument":{"uri":uri, "version":version}, "contentChanges":[{"text":text}]
+            }}),
+        );
+        let diagnostic = lsp.wait_for(|m| {
+            m.get("method") == Some(&json!("textDocument/publishDiagnostics"))
+                && m.pointer("/params/uri") == Some(&json!(uri))
+                && m.pointer("/params/version") == Some(&json!(version))
+        });
+        let items = diagnostic
+            .pointer("/params/diagnostics")
+            .and_then(Value::as_array)
+            .expect("diagnostics");
+        if version == 2 {
+            assert!(
+                items.iter().any(|d| d.get("code") == Some(&json!("T043"))),
+                "missing capture diagnostic: {diagnostic}"
+            );
+            let capture = items
+                .iter()
+                .find(|d| d.get("code") == Some(&json!("T043")))
+                .expect("capture diagnostic");
+            assert!(
+                capture
+                    .get("relatedInformation")
+                    .and_then(Value::as_array)
+                    .is_some_and(|labels| !labels.is_empty()),
+                "{capture}"
+            );
+        } else {
+            assert!(items.is_empty(), "stale capture error: {diagnostic}");
+        }
+    }
+    lsp.shutdown(3);
+}
+
+#[test]
+fn stdio_layout_expressions_preserve_utf16_function_tokens_without_false_errors() {
+    let fixture = FixtureDir::new();
+    let uri = file_uri(&fixture.path().join("layout.aru"));
+    let source = "func main(): usize { /* 😀 */ return comptime (@sizeOf([3]u16)) }\n";
+    let mut lsp = LspProcess::spawn();
+    lsp.initialize(fixture.path(), 1);
+    lsp.send(
+        &json!({"jsonrpc":"2.0", "method":"textDocument/didOpen", "params":{
+            "textDocument":{"uri":uri,"languageId":"arandu","version":1,"text":source}
+        }}),
+    );
+    let valid = lsp.wait_for(|message| {
+        message.get("method") == Some(&json!("textDocument/publishDiagnostics"))
+            && message.pointer("/params/uri") == Some(&json!(uri))
+            && message.pointer("/params/version") == Some(&json!(1))
+    });
+    assert_eq!(
+        valid.pointer("/params/diagnostics"),
+        Some(&json!([])),
+        "{valid}"
+    );
+    lsp.send(
+        &json!({"jsonrpc":"2.0","id":2,"method":"textDocument/semanticTokens/full",
+        "params":{"textDocument":{"uri":uri}}}),
+    );
+    let tokens = lsp.wait_for_response(2);
+    let data = tokens
+        .pointer("/result/data")
+        .and_then(Value::as_array)
+        .expect("tokens");
+    let start = source.find("sizeOf").expect("intrinsic name");
+    let expected_column = u64::try_from(source[..start].encode_utf16().count()).expect("column");
+    let mut line = 0;
+    let mut column = 0;
+    let mut found = false;
+    for token in data.chunks_exact(5) {
+        let delta = token[0].as_u64().expect("line");
+        line += delta;
+        column = if delta == 0 {
+            column + token[1].as_u64().expect("column")
+        } else {
+            token[1].as_u64().expect("column")
+        };
+        if line == 0 && column == expected_column {
+            assert_eq!(token[2].as_u64(), Some(6));
+            assert_eq!(token[3].as_u64(), Some(1), "standard function token");
+            found = true;
+        }
+    }
+    assert!(found, "{tokens}");
+    lsp.shutdown(3);
+}
+
+#[test]
+fn stdio_static_if_edits_select_only_current_branch_without_stale_errors() {
+    let fixture = FixtureDir::new();
+    let uri = file_uri(&fixture.path().join("static.aru"));
+    let source =
+        "/* 😀 */ func main(): int { comptime if FLAG { return 42 } else { return missing } }\n";
+    let mut lsp = LspProcess::spawn();
+    lsp.initialize(fixture.path(), 1);
+    lsp.send(&json!({"jsonrpc":"2.0", "method":"textDocument/didOpen", "params":{
+        "textDocument":{"uri":uri,"languageId":"arandu","version":1,"text":source.replace("FLAG", "true")}
+    }}));
+    for (version, flag) in [(1, "true"), (2, "false"), (3, "true")] {
+        if version > 1 {
+            lsp.send(&json!({"jsonrpc":"2.0", "method":"textDocument/didChange", "params":{
+                "textDocument":{"uri":uri,"version":version}, "contentChanges":[{"text":source.replace("FLAG", flag)}]
+            }}));
+        }
+        let message = lsp.wait_for(|m| {
+            m.get("method") == Some(&json!("textDocument/publishDiagnostics"))
+                && m.pointer("/params/uri") == Some(&json!(uri))
+                && m.pointer("/params/version") == Some(&json!(version))
+        });
+        let diagnostics = message
+            .pointer("/params/diagnostics")
+            .and_then(Value::as_array)
+            .expect("diagnostics");
+        if flag == "false" {
+            let missing = diagnostics
+                .iter()
+                .find(|d| d.get("code") == Some(&json!("N001")))
+                .unwrap_or_else(|| panic!("selected undefined value missing: {message}"));
+            let text = source.replace("FLAG", flag);
+            let offset = text.find("missing").expect("missing span");
+            assert_eq!(
+                missing.pointer("/range/start/character"),
+                Some(&json!(text[..offset].encode_utf16().count())),
+                "{message}"
+            );
+        } else {
+            assert!(
+                diagnostics.is_empty(),
+                "discarded or stale diagnostic: {message}"
+            );
+        }
+    }
+    lsp.shutdown(2);
+}
+
+#[test]
+fn stdio_computed_generic_arguments_keep_current_utf16_capture_diagnostics() {
+    let fixture = FixtureDir::new();
+    let uri = file_uri(&fixture.path().join("arguments.aru"));
+    let source = "func count<comptime N: uint>(): uint { return N }\n/* 😀 */ func main(input: int): int { return count<comptime (VALUE)>() as int }\n";
+    let mut lsp = LspProcess::spawn();
+    lsp.initialize(fixture.path(), 1);
+    lsp.send(&json!({"jsonrpc":"2.0", "method":"textDocument/didOpen", "params":{
+        "textDocument":{"uri":uri,"languageId":"arandu","version":1,"text":source.replace("VALUE", "20 + 22")}
+    }}));
+    for (version, expression) in [(1, "20 + 22"), (2, "input"), (3, "21 + 22")] {
+        let text = source.replace("VALUE", expression);
+        if version > 1 {
+            lsp.send(
+                &json!({"jsonrpc":"2.0", "method":"textDocument/didChange", "params":{
+                    "textDocument":{"uri":uri,"version":version}, "contentChanges":[{"text":text}]
+                }}),
+            );
+        }
+        let message = lsp.wait_for(|m| {
+            m.get("method") == Some(&json!("textDocument/publishDiagnostics"))
+                && m.pointer("/params/uri") == Some(&json!(uri))
+                && m.pointer("/params/version") == Some(&json!(version))
+        });
+        let diagnostics = message
+            .pointer("/params/diagnostics")
+            .and_then(Value::as_array)
+            .expect("diagnostics");
+        if version == 2 {
+            let capture = diagnostics
+                .iter()
+                .find(|d| d.get("code") == Some(&json!("T043")))
+                .expect("runtime capture");
+            assert_eq!(
+                capture.pointer("/range/start"),
+                Some(&utf16_position(
+                    &text,
+                    text.rfind("input").expect("capture span")
+                )),
+                "{message}"
+            );
+            assert!(
+                capture
+                    .get("relatedInformation")
+                    .and_then(Value::as_array)
+                    .is_some_and(|labels| !labels.is_empty()),
+                "{message}"
+            );
+            assert!(
+                capture
+                    .pointer("/data/notes")
+                    .and_then(Value::as_array)
+                    .is_some_and(|notes| notes.iter().any(|note| note
+                        .as_str()
+                        .is_some_and(|note| note.contains("do not exist during compilation")))),
+                "{message}"
+            );
+        } else {
+            assert!(
+                diagnostics
+                    .iter()
+                    .all(|d| d.get("severity") != Some(&json!(1))),
+                "stale or false error: {message}"
+            );
+        }
+        let request_id = 10 + version;
+        let call_start = text.rfind("count<").expect("generic call");
+        lsp.send(
+            &json!({"jsonrpc":"2.0", "id":request_id, "method":"textDocument/hover", "params":{
+                "textDocument":{"uri":uri}, "position":utf16_position(&text, call_start + 1)
+            }}),
+        );
+        let response = lsp.wait_for_response(request_id);
+        let markdown = response
+            .pointer("/result/contents/value")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if version == 2 {
+            assert!(
+                !markdown.contains("evaluated at compile time"),
+                "failed obligation must not retain a previous value: {response}"
+            );
+        } else {
+            let expected = if version == 1 { "= 42" } else { "= 43" };
+            assert!(
+                markdown.contains(expected) && markdown.contains("func count"),
+                "{response}"
+            );
+            assert_eq!(
+                response.pointer("/result/range/start"),
+                Some(&utf16_position(&text, call_start)),
+                "{response}"
+            );
+        }
+    }
+    lsp.shutdown(2);
+}
+
+#[test]
 fn stdio_semantic_requests_use_utf16_around_unicode() {
     let fixture = FixtureDir::new();
     let document = fixture.path().join("unicode-requests.aru");
@@ -1134,6 +1438,25 @@ fn stdio_semantic_requests_use_utf16_around_unicode() {
             "{method} returned no semantic result at a UTF-16 position: {response}"
         );
     }
+
+    lsp.send(&json!({
+        "jsonrpc": "2.0", "id": 10, "method": "textDocument/references",
+        "params": {
+            "textDocument": { "uri": uri }, "position": hover_position,
+            "context": { "includeDeclaration": false }
+        }
+    }));
+    let response = lsp.wait_for_response(10);
+    let locations = response["result"].as_array().expect("reference locations");
+    assert_eq!(locations.len(), 1, "{response}");
+    assert_eq!(
+        locations[0]["range"]["start"],
+        utf16_position(source, call_start)
+    );
+    assert_eq!(
+        locations[0]["range"]["end"],
+        utf16_position(source, call_start + 4)
+    );
 
     lsp.shutdown(9);
 }
@@ -1355,7 +1678,7 @@ fn stdio_package_imports_refresh_completion_goto_and_diagnostics() {
         "import editor_gold.util as util\n",
         "import std.path as path\n",
         "func main(): int {\n",
-        "    if path.isEmpty(\"\") { return util.answer() }\n",
+        "    if path.Path.from(\"\").isEmpty() { return util.answer() }\n",
         "    return 0\n",
         "}\n",
     );
@@ -1450,12 +1773,12 @@ fn stdio_package_imports_refresh_completion_goto_and_diagnostics() {
         "goto must target the newly created module: {goto}"
     );
 
-    let std_call = missing_source.find("path.isEmpty").expect("stdlib call");
+    let std_call = missing_source.find("path.Path.from").expect("stdlib call");
     lsp.send(&json!({
         "jsonrpc": "2.0", "id": 6, "method": "textDocument/definition",
         "params": {
             "textDocument": { "uri": main_uri },
-            "position": utf16_position(missing_source, std_call + "path.".len() + 2)
+            "position": utf16_position(missing_source, std_call + "path.Path.".len() + 2)
         }
     }));
     let std_goto = lsp.wait_for_response(6);
@@ -3044,4 +3367,120 @@ fn percentile_is_nearest_rank_and_order_independent() {
 fn file_uri_encodes_spaces_and_unicode_as_utf8() {
     let uri = file_uri(Path::new("/tmp/Arandu Gold/ação.aru"));
     assert!(uri.ends_with("/Arandu%20Gold/a%C3%A7%C3%A3o.aru"), "{uri}");
+}
+
+#[test]
+fn stdio_signature_help_does_not_guess_an_unresolved_namespace_member() {
+    let fixture = FixtureDir::new();
+    let document = fixture.path().join("signature-identity.aru");
+    let uri = file_uri(&document);
+    let source = "func helper(value: int): int { return value }\nfunc main(): int { return missing.helper(1) }\n";
+    let position = utf16_position(source, source.rfind("(1").unwrap() + 1);
+    let mut lsp = LspProcess::spawn();
+    lsp.initialize(fixture.path(), 1);
+    lsp.send(&json!({
+        "jsonrpc": "2.0", "method": "textDocument/didOpen",
+        "params": { "textDocument": {
+            "uri": uri, "languageId": "arandu", "version": 1, "text": source
+        }}
+    }));
+    lsp.send(&json!({
+        "jsonrpc": "2.0", "id": 2, "method": "textDocument/signatureHelp",
+        "params": { "textDocument": { "uri": uri }, "position": position }
+    }));
+    let response = lsp.wait_for_response(2);
+    assert!(response.get("error").is_none(), "{response}");
+    assert!(response["result"].is_null(), "{response}");
+    lsp.shutdown(3);
+}
+
+#[test]
+fn stdio_initialize_ctfe_limits_apply_to_document_diagnostics() {
+    let fixture = FixtureDir::new();
+    let document = fixture.path().join("limits.aru");
+    fs::write(&document, "func disk(): int { return 0 }\n").expect("disk fixture");
+    let uri = file_uri(&document).replace("limits.aru", "%6Cimits.aru");
+    let mut lsp = LspProcess::spawn();
+    lsp.send(&json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": { "processId": null, "capabilities": {}, "initializationOptions": { "ctfe": { "fuel": 1 } },
+            "workspaceFolders": [{ "uri": file_uri(fixture.path()), "name": "uri-overlay" }] }
+    }));
+    assert!(lsp.wait_for_response(1).get("error").is_none());
+    lsp.send(&json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }));
+    lsp.send(&json!({
+        "jsonrpc": "2.0", "method": "textDocument/didOpen",
+        "params": { "textDocument": { "uri": uri, "languageId": "arandu", "version": 1,
+            "text": "func main(): int { return comptime (20 + 22) }\n" } }
+    }));
+    let publication = lsp.wait_for(|message| {
+        message.get("method").and_then(Value::as_str) == Some("textDocument/publishDiagnostics")
+            && message.pointer("/params/uri").and_then(Value::as_str) == Some(uri.as_str())
+    });
+    assert!(
+        publication["params"]["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == "T045"),
+        "{publication}"
+    );
+    lsp.wait_for(|message| {
+        message.get("method").and_then(Value::as_str) == Some("arandu/status")
+            && message.pointer("/params/state").and_then(Value::as_str) == Some("ready")
+    });
+    lsp.send(&json!({
+        "jsonrpc": "2.0", "id": 2, "method": "textDocument/documentSymbol",
+        "params": { "textDocument": { "uri": uri } }
+    }));
+    let symbols = lsp.wait_for_response(2);
+    let symbols = symbols["result"].as_array().expect("document symbols");
+    assert!(
+        symbols.iter().any(|symbol| symbol["name"] == "main"),
+        "the overlay must survive discovery: {symbols:?}"
+    );
+    assert!(
+        !symbols.iter().any(|symbol| symbol["name"] == "disk"),
+        "stale disk symbols replaced the overlay: {symbols:?}"
+    );
+    lsp.shutdown(3);
+}
+
+#[test]
+fn stdio_initialize_rejects_invalid_ctfe_limits_with_invalid_params() {
+    for close_before_response in [false, true] {
+        for ctfe in [
+            json!({"fuel": 0}),
+            json!({"frames": 4294967296u64}),
+            json!({"values": -1}),
+            json!({"typo": 10}),
+            json!(true),
+        ] {
+            let mut lsp = LspProcess::spawn();
+            lsp.send(&json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": { "processId": null, "capabilities": {}, "initializationOptions": { "ctfe": ctfe } }
+        }));
+            if close_before_response {
+                drop(lsp.stdin.take());
+            }
+            let response = lsp.wait_for_response(1);
+            assert_eq!(response["error"]["code"], -32602, "{response}");
+            // A client may close input before rejection or after receiving it.
+            // Both orderings must drain the response and let the server exit.
+            drop(lsp.stdin.take());
+            let deadline = Instant::now() + MESSAGE_TIMEOUT;
+            let status = loop {
+                if let Some(status) = lsp.child.try_wait().expect("poll rejected initialization") {
+                    break status;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "server did not exit after rejected initialization"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            };
+            assert!(!status.success(), "invalid initialization must fail");
+        }
+    }
 }

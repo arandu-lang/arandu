@@ -55,21 +55,21 @@ public func reactorBackend(): int {
 /// Creates a reactor through the selected host backend.
 ///
 /// A negative stored `id` reports host creation failure; this constructor
-/// does not wrap that status in `Result`. Release a valid reactor with
-/// `destroyReactor`.
-public func newEpollReactor(): EpollReactor {
+/// does not wrap that status in `Result`. Close a valid reactor with
+/// `EpollReactor.close`.
+public func EpollReactor.new(): EpollReactor {
     unsafe {
         return EpollReactor { id: ar_rt_reactor_create() }
     }
 }
 
-/// Releases the reactor's host handle.
-///
-/// Operations through the wrapper after destruction may fail; its stored
-/// `id` is not reset.
-public func destroyReactor(r: ref EpollReactor): void {
-    unsafe {
-        ar_rt_reactor_destroy(r.id)
+/// Idempotently closes the reactor's host handle and invalidates this wrapper.
+public func EpollReactor.close(self: mut ref EpollReactor): void {
+    if self.id >= 0 {
+        unsafe {
+            ar_rt_reactor_destroy(self.id)
+        }
+        self.id = -1
     }
 }
 
@@ -77,19 +77,19 @@ public func destroyReactor(r: ref EpollReactor): void {
 ///
 /// Returns the host status code; a negative value signals an invalid handle,
 /// invalid duration, or another host failure.
-public func reactorSleepMs(r: ref EpollReactor, ms: int): int {
+public func EpollReactor.sleepMs(self: ref EpollReactor, ms: int): int {
     unsafe {
-        return ar_rt_reactor_sleep_ms(r.id, ms)
+        return ar_rt_reactor_sleep_ms(self.id, ms)
     }
 }
 
 /// Arms a host timer for `ms` milliseconds.
 ///
 /// Returns the host integer status. The reactor retains the timer until it
-/// fires or the reactor is destroyed.
-public func reactorArmTimerMs(r: ref EpollReactor, ms: int): int {
+/// fires or the reactor is closed.
+public func EpollReactor.armTimerMs(self: ref EpollReactor, ms: int): int {
     unsafe {
-        return ar_rt_reactor_arm_timer_ms(r.id, ms)
+        return ar_rt_reactor_arm_timer_ms(self.id, ms)
     }
 }
 
@@ -97,9 +97,9 @@ public func reactorArmTimerMs(r: ref EpollReactor, ms: int): int {
 ///
 /// Returns the host event count or status; a negative value signals failure.
 /// Polling may block for the requested duration.
-public func reactorPollMs(r: ref EpollReactor, timeoutMs: int): int {
+public func EpollReactor.pollMs(self: ref EpollReactor, timeoutMs: int): int {
     unsafe {
-        return ar_rt_reactor_poll_ms(r.id, timeoutMs)
+        return ar_rt_reactor_poll_ms(self.id, timeoutMs)
     }
 }
 

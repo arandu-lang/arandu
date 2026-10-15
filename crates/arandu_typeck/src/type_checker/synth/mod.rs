@@ -7,7 +7,8 @@ mod pattern;
 
 pub(crate) use ctor::{synth_option_ctor, synth_poll_ctor, synth_result_ctor};
 pub(crate) use field::{
-    resolve_field, resolve_index, resolve_namespace_field, resolve_namespace_member_type,
+    resolve_field, resolve_field_type, resolve_index, resolve_namespace_field,
+    resolve_namespace_member_type,
 };
 pub(crate) use method::synth_method_call;
 

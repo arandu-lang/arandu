@@ -181,7 +181,12 @@ impl LowerCtx<'_> {
                 ));
             };
 
-            let tids = self.instantiate_enum_payload_types(type_symbol, &enum_args, tids);
+            let tids = self.instantiate_enum_payload_types(
+                type_symbol,
+                variant_symbol_actual,
+                &enum_args,
+                tids,
+            );
 
             if tids.len() != payload.len() {
                 return Err(Diagnostic::error(
@@ -248,9 +253,14 @@ impl LowerCtx<'_> {
     pub(crate) fn instantiate_enum_payload_types(
         &self,
         enum_id: SymbolId,
+        variant_id: SymbolId,
         enum_args: &[crate::types::TypeId],
         payload: &[crate::types::TypeId],
     ) -> Vec<crate::types::TypeId> {
+        let payload = match self.tc.type_info.variant_payload_for(variant_id, enum_args) {
+            Some(crate::passes::type_checker::EnumPayloadShape::Tuple(items)) => items.as_slice(),
+            _ => payload,
+        };
         let Some(params) = self.tc.type_info.generic_params.get(&enum_id) else {
             return payload.to_vec();
         };

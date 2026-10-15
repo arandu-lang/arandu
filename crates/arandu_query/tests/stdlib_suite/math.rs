@@ -25,11 +25,11 @@ fn stdlib_math_view_parses_and_exports_expected_symbols() {
     let exports = exported_symbols(&db, file);
     let expected = [
         "ArrayView",
+        "ArrayView.fromRaw",
+        "ArrayView.fromSlice",
         "ArrayViewMut",
-        "fromSlice",
-        "fromRaw",
-        "fromSliceMut",
-        "fromRawMut",
+        "ArrayViewMut.fromRaw",
+        "ArrayViewMut.fromSlice",
     ];
     for key in expected {
         assert!(
@@ -51,14 +51,16 @@ fn stdlib_math_matrix_parses_and_exports_expected_symbols() {
     let exports = exported_symbols(&db, file);
     let expected = [
         "StaticMatrix",
+        "StaticMatrix.fill",
+        "StaticMatrix.identityInto",
+        "StaticMatrix.addInto",
+        "StaticMatrix.mulInto",
+        "StaticMatrix.transposeInto",
+        "StaticMatrix.det2",
         "Matrix",
-        "staticFill",
-        "staticIdentityInto",
-        "staticAddInto",
-        "staticMulInto",
-        "staticTransposeInto",
-        "staticDet2",
-        "newMatrix",
+        "Matrix.tryNew",
+        "Matrix.new",
+        "Matrix.zeros",
     ];
     for key in expected {
         assert!(
@@ -77,6 +79,9 @@ fn stdlib_math_matrix_parses_and_exports_expected_symbols() {
         "zeros3",
         "eye4",
         "zeros4",
+        "newMatrix",
+        "Matrix.free",
+        "Matrix.destroy",
     ] {
         assert!(
             !exports.symbols.contains_key(removed),
@@ -142,7 +147,7 @@ func testStaticMatrices(): int {
     let mut product: matrix.StaticMatrix<float, 2, 2> = matrix.StaticMatrix<float, 2, 2> {
         data: [[0.0, 0.0], [0.0, 0.0]],
     }
-    matrix.staticMulInto(left, right, product)
+    left.mulInto(right, product)
     if product.get(0, 0) != 58.0 {
         return 1
     }
@@ -154,11 +159,11 @@ func testStaticMatrices(): int {
     product.set(0, 1, 8.0)
     product.set(1, 0, 4.0)
     product.set(1, 1, 6.0)
-    if matrix.staticDet2(product) != -14.0 {
+    if product.det2() != -14.0 {
         return 2
     }
 
-    matrix.staticIdentityInto(product)
+    product.identityInto()
     if product.rows() != 2 {
         return 3
     }
@@ -172,7 +177,7 @@ func testStaticMatrices(): int {
     let mut transposed: matrix.StaticMatrix<float, 3, 2> = matrix.StaticMatrix<float, 3, 2> {
         data: [[0.0, 0.0], [0.0, 0.0], [0.0, 0.0]],
     }
-    matrix.staticTransposeInto(left, transposed)
+    left.transposeInto(transposed)
     if transposed.get(2, 1) != 6.0 {
         return 4
     }
@@ -180,7 +185,7 @@ func testStaticMatrices(): int {
 }
 
 func testDynamicMatrixAndViews(): int {
-    let optM = matrix.newMatrix<float>(3, 3, 0.0)
+    let optM = matrix.Matrix.tryNew<float>(3, 3, 0.0)
     if optM is Option.None {
         return 10
     }
@@ -188,50 +193,44 @@ func testDynamicMatrixAndViews(): int {
 }
 
 func testLinalgKernels(): int {
-    let optA = matrix.newMatrix<float>(2, 2, 1.0)
-    let optB = matrix.newMatrix<float>(2, 2, 2.0)
-    let optC = matrix.newMatrix<float>(2, 2, 0.0)
+    let optA = matrix.Matrix.new<float>(2, 2, 1.0)
+    if optA is Option.Some(mut a) {
+        let optB = matrix.Matrix.new<float>(2, 2, 2.0)
+        if optB is Option.Some(mut b) {
+            let optC = matrix.Matrix.new<float>(2, 2, 0.0)
+            if optC is Option.Some(mut c) {
+                let va = a.asView()
+                let vb = b.asView()
+                let mut vc = c.asViewMut()
+                let okAdd = linalg.addInto(va, vb, vc)
+                if !okAdd {
+                    return 21
+                }
+                if vc.get(0, 0) is Option.Some(val) {
+                    if val != 3.0 {
+                        return 22
+                    }
+                } else {
+                    return 23
+                }
 
-    if optA is Option.None {
-        return 20
-    }
-    if optB is Option.None {
-        return 20
-    }
-    if optC is Option.None {
-        return 20
-    }
-
-    if optA is Option.Some(mut a) && optB is Option.Some(mut b) && optC is Option.Some(mut c) {
-        let va = a.asView()
-        let vb = b.asView()
-        let mut vc = c.asViewMut()
-        let okAdd = linalg.addInto(va, vb, vc)
-        if !okAdd {
-            return 21
-        }
-        if vc.get(0, 0) is Option.Some(val) {
-            if val != 3.0 {
-                return 22
+                let mut scratch = arena.ScratchArena.withCapacity(4096)
+                let okGemm = linalg.gemmInto(va, vb, vc, scratch)
+                if !okGemm {
+                    return 24
+                }
+                if vc.get(0, 0) is Option.Some(gval) {
+                    if gval != 4.0 {
+                        return 25
+                    }
+                } else {
+                    return 26
+                }
+                return 0
             }
-        } else {
-            return 23
-        }
-
-        let mut scratch = arena.withCapacity(4096)
-        let okGemm = linalg.gemmInto(va, vb, vc, scratch)
-        if !okGemm {
-            return 24
-        }
-        if vc.get(0, 0) is Option.Some(gval) {
-            if gval != 4.0 {
-                return 25
-            }
-        } else {
-            return 26
         }
     }
-    return 0
+    return 20
 }
 
 func main(): int {

@@ -165,19 +165,32 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                             | ArType::Slice(_)
                     )
                 });
-                let helper = if input_ty.is_float() {
+                let helper = if input_ty == cranelift_codegen::ir::types::F32 {
+                    "ar_bench_black_box_i64"
+                } else if input_ty.is_float() {
                     "ar_bench_black_box_f64"
                 } else if pointer_like {
                     "ar_bench_black_box_ptr"
                 } else {
                     "ar_bench_black_box_i64"
                 };
-                let Some(id) = self.func_ids.get(helper).copied() else {
+                let Some(id) = self.resolve_function(helper) else {
                     self.record_ice(format!("missing {helper} runtime import"), self.func_span());
                     return self.poison_i32();
                 };
                 let function = self.module.declare_func_in_func(id, self.builder.func);
-                let call_input = if !pointer_like && input_ty.is_int() && input_ty.bits() < 64 {
+                let call_input = if input_ty == cranelift_codegen::ir::types::F32 {
+                    // Transfer bits through the integer barrier: promotion to
+                    // f64 would change signaling NaNs and their payloads.
+                    let bits = self.builder.ins().bitcast(
+                        cranelift_codegen::ir::types::I32,
+                        cranelift_codegen::ir::MemFlagsData::new(),
+                        input,
+                    );
+                    self.builder
+                        .ins()
+                        .uextend(cranelift_codegen::ir::types::I64, bits)
+                } else if !pointer_like && input_ty.is_int() && input_ty.bits() < 64 {
                     self.builder
                         .ins()
                         .uextend(cranelift_codegen::ir::types::I64, input)
@@ -186,7 +199,17 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 };
                 let call = self.builder.ins().call(function, &[call_input]);
                 let result = self.builder.inst_results(call)[0];
-                if !pointer_like && input_ty.is_int() && input_ty.bits() < 64 {
+                if input_ty == cranelift_codegen::ir::types::F32 {
+                    let bits = self
+                        .builder
+                        .ins()
+                        .ireduce(cranelift_codegen::ir::types::I32, result);
+                    self.builder.ins().bitcast(
+                        input_ty,
+                        cranelift_codegen::ir::MemFlagsData::new(),
+                        bits,
+                    )
+                } else if !pointer_like && input_ty.is_int() && input_ty.bits() < 64 {
                     self.builder.ins().ireduce(input_ty, result)
                 } else {
                     result
@@ -213,11 +236,11 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             AmirRvalue::Discriminant { value } => self.translate_discriminant(value),
             AmirRvalue::EnumPayload {
                 value,
-                variant,
                 index,
-                variant_tag,
+                field_ty,
+                tuple_ty,
                 ..
-            } => self.translate_enum_payload(value, variant, *variant_tag, *index, expected_ty),
+            } => self.translate_enum_payload(value, *field_ty, *tuple_ty, *index, expected_ty),
             AmirRvalue::IndexAccess { base, index } => {
                 self.translate_index_access(base, index, expected_ty)
             }

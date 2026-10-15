@@ -52,6 +52,15 @@ pub(crate) fn resolve_namespace_field(
     }
     let symbol_id = checker.symbols.lookup_module_member(&path[0], field)?;
     Arc::make_mut(&mut checker.resolved).expr_ref(expr, symbol_id);
+    if !checker
+        .type_info
+        .generic_params
+        .get(&symbol_id)
+        .is_some_and(|parameters| !parameters.is_empty())
+        && let Some(ty_id) = checker.type_info.demand_header(symbol_id, &[], _span)
+    {
+        return Some(ty_id);
+    }
     if let Some(ty_id) = checker.ctx.lookup(symbol_id) {
         return Some(ty_id);
     }
@@ -82,6 +91,24 @@ pub(crate) fn resolve_field(
     safe: bool,
 ) -> TypeId {
     let base_ty_id = synth_expr(checker, base);
+    resolve_field_type(
+        checker,
+        base_ty_id,
+        checker.pool.expr_span(base),
+        field,
+        field_span,
+        safe,
+    )
+}
+
+pub(crate) fn resolve_field_type(
+    checker: &mut TypeChecker<'_>,
+    base_ty_id: TypeId,
+    base_span: arandu_lexer::Span,
+    field: &str,
+    field_span: arandu_lexer::Span,
+    safe: bool,
+) -> TypeId {
     if checker.resolve(base_ty_id).is_error() {
         return checker.intern(ArType::Error);
     }
@@ -101,7 +128,7 @@ pub(crate) fn resolve_field(
             field_span,
         )
         .with_label(
-            checker.pool.expr_span(base),
+            base_span,
             format!(
                 "this has type '{}'",
                 base_ty.display(&checker.symbols, &checker.type_info.type_interner)
@@ -199,7 +226,7 @@ pub(crate) fn resolve_field(
                             actual_base_ty_id,
                             ArType::Error,
                             ConstraintOrigin::UndefinedField {
-                                base_span: checker.pool.expr_span(base),
+                                base_span,
                                 field_span,
                                 field_name: field.to_string(),
                             },
@@ -211,7 +238,7 @@ pub(crate) fn resolve_field(
                         actual_base_ty_id,
                         ArType::Error,
                         ConstraintOrigin::UndefinedField {
-                            base_span: checker.pool.expr_span(base),
+                            base_span,
                             field_span,
                             field_name: field.to_string(),
                         },
@@ -224,7 +251,7 @@ pub(crate) fn resolve_field(
                 actual_base_ty_id,
                 ArType::Error,
                 ConstraintOrigin::UndefinedField {
-                    base_span: checker.pool.expr_span(base),
+                    base_span,
                     field_span,
                     field_name: field.to_string(),
                 },

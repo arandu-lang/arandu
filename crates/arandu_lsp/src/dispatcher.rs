@@ -645,6 +645,11 @@ fn handle_job_result(
             if state.docs.get(doc_id).is_none() {
                 return Ok(());
             }
+            // Revision/version equality alone cannot prove text freshness
+            // while didChange/didSave text is still waiting for the VFS flush.
+            if state.vfs.pending_text(uri.as_str()).is_some() {
+                return Ok(());
+            }
             if revision != state.revision() {
                 return Ok(());
             }

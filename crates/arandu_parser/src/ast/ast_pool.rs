@@ -132,10 +132,57 @@ impl IndexRange {
     }
 }
 
+/// A staging root with its own return target when it is a block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComptimeBody {
+    Expression(ExprId),
+    Block(BlockId),
+}
+
 // ─── ExprKind ──────────────────────────────────────────────────────────────────
+
+/// Public target-layout expressions, distinct from declaration attributes and
+/// ordinary calls (a user function named `sizeOf` is not an intrinsic).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LayoutQuery {
+    Size,
+    Align,
+    TargetOS,
+    TargetArch,
+    TargetPointerWidth,
+}
+
+impl LayoutQuery {
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "sizeOf" => Some(Self::Size),
+            "alignOf" => Some(Self::Align),
+            "targetOS" => Some(Self::TargetOS),
+            "targetArch" => Some(Self::TargetArch),
+            "targetPointerWidth" => Some(Self::TargetPointerWidth),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Size => "sizeOf",
+            Self::Align => "alignOf",
+            Self::TargetOS => "targetOS",
+            Self::TargetArch => "targetArch",
+            Self::TargetPointerWidth => "targetPointerWidth",
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExprKind {
+    Layout {
+        query: LayoutQuery,
+        ty: Option<TypeExprId>,
+    },
     Path {
         path: SmallVec<[SmolStr; 3]>,
     },
@@ -184,6 +231,11 @@ pub enum ExprKind {
     Array {
         items: IndexRange,
     }, // expr_ids range
+    /// One initializer and a static length; never expands the AST per element.
+    ArrayRepeat {
+        value: ExprId,
+        count: TypeExprId,
+    },
     Lambda {
         params: IndexRange,
         body: super::LambdaBody,
@@ -193,6 +245,9 @@ pub enum ExprKind {
     },
     AsyncBlock {
         block: BlockId,
+    },
+    Comptime {
+        body: ComptimeBody,
     },
     UnsafeBlock {
         block: BlockId,
@@ -298,6 +353,55 @@ pub struct AstPool {
     pub pattern_ids: Vec<PatternId>,
     pub field_pattern_ids: Vec<FieldPatternId>,
 }
+
+// Speculative parsing is append-only. A checkpoint saves lengths, never clones
+// an arena, and must cover every vector (the exhaustive destructure enforces it).
+macro_rules! pool_checkpoint {
+    ($($field:ident),+ $(,)?) => {
+        pub(crate) struct PoolCheckpoint { $( $field: usize, )+ }
+
+        impl AstPool {
+            pub(crate) fn checkpoint(&self) -> PoolCheckpoint {
+                let AstPool { $( $field: _, )+ } = self;
+                PoolCheckpoint { $( $field: self.$field.len(), )+ }
+            }
+        }
+
+        impl PoolCheckpoint {
+            pub(crate) fn rollback(self, pool: &mut AstPool) {
+                $( pool.$field.truncate(self.$field); )+
+            }
+        }
+    };
+}
+
+pool_checkpoint!(
+    exprs,
+    expr_spans,
+    stmts,
+    stmt_spans,
+    type_exprs,
+    type_expr_spans,
+    blocks,
+    patterns,
+    field_patterns,
+    decls,
+    decl_spans,
+    field_inits,
+    lambda_params,
+    string_parts,
+    match_arms,
+    catch_handlers,
+    expr_ids,
+    stmt_ids,
+    type_expr_ids,
+    field_init_ids,
+    lambda_param_ids,
+    string_part_ids,
+    match_arm_ids,
+    pattern_ids,
+    field_pattern_ids,
+);
 
 impl AstPool {
     /// Creates an empty `AstPool`.

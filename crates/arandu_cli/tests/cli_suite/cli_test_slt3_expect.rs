@@ -270,8 +270,8 @@ fn logs_multiple_failures_and_temp_dir_reach_the_structured_report() {
     let src = "module context_report\n\nimport std.testing as testing\nimport std.path as path\n\n\
         @Test\nfunc context_case(): void {\n\
             testing.log(\"before failures\")\n\
-            let temporary = testing.tempDir(0)\n\
-            testing.expect(!path.isEmpty(temporary), \"temporary path must be usable\")\n\
+            let temporary = path.Path.from(testing.tempDir(0))\n\
+            testing.expect(!temporary.isEmpty(), \"temporary path must be usable\")\n\
             testing.fail(\"primary\")\n\
             testing.fail(\"secondary\")\n\
         }\n\n\

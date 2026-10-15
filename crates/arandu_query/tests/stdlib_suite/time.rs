@@ -19,12 +19,13 @@ fn stdlib_time_parses_and_exports_expected_symbols() {
     let expected = [
         "monotonicNs",
         "Duration",
-        "durationFromNanos",
-        "durationFromMicros",
-        "durationFromMillis",
-        "durationFromSecs",
+        "Duration.fromNanos",
+        "Duration.fromMicros",
+        "Duration.fromMillis",
+        "Duration.fromSecs",
+        "Duration.fromSeconds",
         "Instant",
-        "now",
+        "Instant.now",
     ];
     for key in expected {
         assert!(
@@ -43,14 +44,14 @@ fn stdlib_time_usage_in_program() {
 import std.time as time
 
 func testDuration(): i64 {
-    let d1 = time.durationFromSecs(2)
-    let d2 = time.durationFromMillis(500)
+    let d1 = time.Duration.fromSecs(2)
+    let d2 = time.Duration.fromMillis(500)
     let total = d1.add(d2)
     return total.asMillis()
 }
 
 func testInstant(): time.Duration {
-    let start = time.now()
+    let start = time.Instant.now()
     return start.elapsed()
 }
 

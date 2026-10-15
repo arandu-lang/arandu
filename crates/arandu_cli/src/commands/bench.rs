@@ -168,13 +168,12 @@ pub fn cmd_project_bench(
         return Ok(CliSuccess::Done);
     }
 
-    let (manifest, c_source) = artifact::publish_benchmark_harness(&ctx.root, &registry)?;
+    let manifest = artifact::publish_benchmark_harness(&ctx.root, &registry)?;
     if !runner.format_json && !flags.quiet {
         eprintln!(
-            "benchmark harness: {} cases (manifest={}, c={})",
+            "benchmark harness: {} cases (manifest={})",
             cases.len(),
             manifest.display(),
-            c_source.display()
         );
     }
     let outcome = test_runner::run_benchmarks(&ctx.root, &ctx.stdlib.path, cases, runner)

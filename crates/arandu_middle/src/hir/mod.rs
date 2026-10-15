@@ -15,7 +15,7 @@ pub use decl::{
 };
 pub use expr::{
     HirCatchHandler, HirExpr, HirExprKind, HirFieldInit, HirLambdaBody, HirLambdaParam,
-    HirMatchArm, HirMatchArmBody, HirStringPart, ResultCtorVariant,
+    HirMatchArm, HirMatchArmBody, HirStringPart, LayoutQuery, ResultCtorVariant,
 };
 pub use pattern::{HirFieldPattern, HirPattern};
 pub use pool::{

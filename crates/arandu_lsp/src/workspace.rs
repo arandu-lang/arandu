@@ -229,7 +229,11 @@ pub(crate) fn register_workspace_file(state: &mut ServerState, file: WorkspaceFi
     let Some(uri) = uri_from_path(&file.path) else {
         return;
     };
-    if !state.by_uri.contains_key(uri.as_str()) {
+    // URI spelling is not file identity: clients may percent-encode the drive
+    // colon or unreserved filename bytes. DocumentStore replaces an existing
+    // path on open, which would invalidate the editor's generational handle.
+    let path = crate::uri_util::path_from_uri(&uri);
+    if !state.by_uri.contains_key(uri.as_str()) && state.docs.by_path(&path).is_none() {
         state.open_or_commit(&uri, file.text);
     }
 }
@@ -239,6 +243,53 @@ mod tests {
     use super::*;
     use arandu_package::cache::{CacheStore, TreeLimits};
     use arandu_query::{CacheLayout, LockedPackage, Lockfile, LOCK_FILENAME};
+
+    #[test]
+    fn discovery_preserves_overlay_and_diagnostics_for_equivalent_uri_spelling() {
+        let path = std::env::temp_dir().join("overlay.aru");
+        let disk_uri = uri_from_path(&path).expect("disk URI");
+        let client_uri =
+            crate::uri_util::parse_uri(&disk_uri.as_str().replace("overlay.aru", "%6Fverlay.aru"))
+                .expect("client URI");
+        assert_ne!(client_uri, disk_uri);
+        let mut state = ServerState::new();
+        state.host.set_ctfe_limits(
+            arandu_query::ctfe::CtfeLimits::new(1, 128, 1_000_000).expect("limits"),
+        );
+        let overlay = "func main(): int { return comptime (20 + 22) }";
+        let id = state.open_or_commit(&client_uri, overlay.into());
+        state.mark_open(&client_uri);
+        state.set_version(id, 7);
+        let revision = state.revision();
+        register_workspace_file(
+            &mut state,
+            WorkspaceFile {
+                path,
+                text: "func main(): int { return missing_name }".into(),
+            },
+        );
+        assert_eq!(
+            state.revision(),
+            revision,
+            "discovery must not commit stale disk text"
+        );
+        assert_eq!(state.docs.len(), 1);
+        assert_eq!(state.by_uri.len(), 1);
+        assert_eq!(state.by_uri[client_uri.as_str()], id);
+        assert_eq!(state.version(id), Some(7));
+        let source = state
+            .docs
+            .get(id)
+            .expect("editor handle remains live")
+            .source;
+        let snapshot = state.snapshot();
+        assert_eq!(source.text(&snapshot.db).as_ref(), overlay);
+        let (diagnostics, _) = crate::diagnostics::compute_diagnostics(&snapshot, source);
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code
+                == Some(lsp_types::NumberOrString::String("T045".into()))));
+    }
 
     #[test]
     fn workspace_project_discovery_loads_manifest_and_listing() {

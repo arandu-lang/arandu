@@ -131,7 +131,13 @@ pub fn parse_stmt_tokens(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<
         }
         TokenKind::KwLet => lower_let(ctx, cur, start),
         TokenKind::KwIf => lower_if(ctx, cur, start),
+        TokenKind::KwComptime if cur.peek_at(1).is_some_and(|t| t.kind == TokenKind::KwIf) => {
+            lower_if(ctx, cur, start)
+        }
         TokenKind::KwWhile => lower_while(ctx, cur, start),
+        TokenKind::KwComptime if cur.peek_at(1).is_some_and(|t| t.kind == TokenKind::KwFor) => {
+            lower_for(ctx, cur, start)
+        }
         TokenKind::KwFor => lower_for(ctx, cur, start),
         TokenKind::KwDefer => lower_defer(ctx, cur, start, false),
         TokenKind::KwErrdefer => lower_defer(ctx, cur, start, true),
@@ -181,6 +187,8 @@ fn lower_ident_stmt(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>, start: u32) -> 
     // Lookahead: place [, place]* set_op  → assignment (incl. multi-place).
     let toks = cur.remaining();
     let mut probe = Cursor::new(toks);
+    let checkpoint = ctx.pool.checkpoint();
+    let mut is_assignment = false;
     if parse_place(ctx, &mut probe).is_some() {
         while probe.eat(TokenKind::Comma) {
             if parse_place(ctx, &mut probe).is_none() {
@@ -191,8 +199,14 @@ fn lower_ident_stmt(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>, start: u32) -> 
             .peek_kind()
             .is_some_and(|k| set_op_from_token(k).is_some())
         {
-            return try_lower_set(ctx, cur, start, false);
+            is_assignment = true;
         }
+    }
+    // Place lookahead can allocate index expressions. Neither the assignment
+    // parser nor the expression parser may retain those speculative nodes.
+    checkpoint.rollback(ctx.pool);
+    if is_assignment {
+        return try_lower_set(ctx, cur, start, false);
     }
     let expr = try_hand_lower_expr(ctx, cur, 0)?;
     let has_semi = cur.eat(TokenKind::Semicolon);
@@ -490,11 +504,18 @@ fn find_depth0(toks: &[&Token], target: TokenKind) -> Option<usize> {
 }
 
 fn lower_if(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>, start: u32) -> Option<StmtId> {
+    let is_comptime = cur.eat(TokenKind::KwComptime);
     cur.expect(TokenKind::KwIf)?;
     let condition = parse_condition(ctx, cur)?;
+    if is_comptime && !matches!(condition, Condition::Expr { .. }) {
+        return None; // The canonical parser reports unsupported pattern syntax.
+    }
     let then_block = parse_block_tokens(ctx, cur)?;
     let else_block = if cur.eat(TokenKind::KwElse) {
-        if cur.peek_kind() == Some(TokenKind::KwIf) {
+        if cur.peek_kind() == Some(TokenKind::KwIf)
+            || (cur.peek_kind() == Some(TokenKind::KwComptime)
+                && cur.peek_at(1).is_some_and(|t| t.kind == TokenKind::KwIf))
+        {
             let nested = lower_if(ctx, cur, cur.peek()?.start)?;
             Some(Block {
                 span: ctx.pool.stmt_span(nested),
@@ -512,6 +533,7 @@ fn lower_if(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>, start: u32) -> Option<S
         .unwrap_or(then_block.span.end);
     Some(ctx.pool.alloc_stmt(Stmt::If {
         span: ctx.span(start, end),
+        is_comptime,
         condition,
         then_block,
         else_block,
@@ -531,6 +553,7 @@ fn lower_while(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>, start: u32) -> Optio
 }
 
 fn lower_for(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>, start: u32) -> Option<StmtId> {
+    let is_comptime = cur.eat(TokenKind::KwComptime);
     cur.expect(TokenKind::KwFor)?;
     let toks = cur.remaining();
     let brace_at = find_depth0(toks, TokenKind::LBrace)?;
@@ -614,6 +637,7 @@ fn lower_for(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>, start: u32) -> Option<
     let end = body.span.end;
     Some(ctx.pool.alloc_stmt(Stmt::For {
         span: ctx.span(start, end),
+        is_comptime,
         clause,
         body,
     }))
@@ -642,6 +666,7 @@ fn lower_simple(ctx: &mut HandCtx<'_>, toks: &[&Token]) -> Option<SimpleStmt> {
         });
     }
     let explicit_set = matches!(cur.peek_kind(), Some(TokenKind::KwSet));
+    let checkpoint = ctx.pool.checkpoint();
     if let Some(id) = try_lower_set(ctx, &mut cur, start, explicit_set)
         && cur.at_end()
         && let Stmt::Set {
@@ -658,6 +683,7 @@ fn lower_simple(ctx: &mut HandCtx<'_>, toks: &[&Token]) -> Option<SimpleStmt> {
             value: *value,
         });
     }
+    checkpoint.rollback(ctx.pool);
     let mut cur = Cursor::new(toks);
     let expr = try_hand_lower_expr(ctx, &mut cur, 0)?;
     if !cur.at_end() {

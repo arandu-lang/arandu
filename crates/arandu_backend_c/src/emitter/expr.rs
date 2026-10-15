@@ -53,7 +53,19 @@ impl<'a> CEmitter<'a> {
                             "({{ volatile {expected_c_type} opaque = ({operand}); opaque; }})"
                         );
                     }
-                    ArType::Primitive(Primitive::Float) | ArType::FloatLiteral => {
+                    ArType::Primitive(Primitive::F32) => {
+                        let _ = write!(
+                            &mut self.output,
+                            "ar_bench_black_box_f32((float)({operand}))"
+                        );
+                    }
+                    ArType::Primitive(p) if p.is_float() => {
+                        let _ = write!(
+                            &mut self.output,
+                            "ar_bench_black_box_f64((double)({operand}))"
+                        );
+                    }
+                    ArType::FloatLiteral => {
                         let _ = write!(
                             &mut self.output,
                             "ar_bench_black_box_f64((double)({operand}))"
@@ -91,10 +103,7 @@ impl<'a> CEmitter<'a> {
                 } else {
                     let left_str = self.format_operand(left, func);
                     let right_str = self.format_operand(right, func);
-                    let left_ty = match left {
-                        AmirOperand::Copy(t) | AmirOperand::Move(t) => self.temp_ty(func, *t),
-                        _ => ArType::Error,
-                    };
+                    let left_ty = self.operand_ty(func, left);
                     if matches!(left_ty, ArType::Primitive(Primitive::Str)) {
                         if matches!(op, BinaryOp::Equal) {
                             let _ =
@@ -242,7 +251,12 @@ impl<'a> CEmitter<'a> {
                     );
                 }
             }
-            AmirRvalue::EnumPayload { value, .. } => {
+            AmirRvalue::EnumPayload {
+                value,
+                index,
+                tuple_ty,
+                ..
+            } => {
                 let base_temp = match value {
                     AmirOperand::Copy(t) | AmirOperand::Move(t) => t.as_usize(),
                     _ => {
@@ -276,31 +290,25 @@ impl<'a> CEmitter<'a> {
                     );
                     return;
                 }
-                let enum_id = match enum_ty {
-                    ArType::Named(id, _) => id,
-                    _ => arandu_middle::SymbolId::DUMMY,
+                let base_offset = layout.field_offsets.get(1).copied().unwrap_or(0);
+                let tuple_offset = if let Some(tuple) = tuple_ty {
+                    let tuple = self.interner.resolve(*tuple);
+                    let tuple_layout = self.checked_layout(&tuple);
+                    let Some(offset) = tuple_layout.field_offsets.get(*index).copied() else {
+                        self.record_codegen_ice(
+                            func,
+                            "EnumPayload field is outside its instantiated tuple layout",
+                        );
+                        return;
+                    };
+                    offset
+                } else {
+                    0
                 };
-
-                let mut payload_offset = 0;
-                if matches!(
-                    layout.tag_encoding,
-                    Some(arandu_middle::layout::TagEncoding::Niche { .. })
-                ) {
-                    payload_offset = 0;
-                } else if arandu_middle::layout::StructLayoutProvider::get_enum_variants(
-                    self.provider,
-                    enum_id,
-                )
-                .is_some()
-                    || matches!(
-                        enum_ty,
-                        ArType::Option(_) | ArType::Result(_, _) | ArType::Poll(_)
-                    )
-                {
-                    // Tag is pointer-width on the target layout (i686 → 4, host64 → 8).
-                    let tag_size = self.layout.pointer_width() as usize;
-                    payload_offset = tag_size;
-                }
+                let Some(payload_offset) = base_offset.checked_add(tuple_offset) else {
+                    self.record_codegen_ice(func, "EnumPayload offset overflow");
+                    return;
+                };
                 let _ = write!(
                     &mut self.output,
                     "({{ {expected_c_type} _payload = {{0}}; memcpy(&_payload, (uint8_t*){} + {}, sizeof(_payload)); _payload; }})",
@@ -418,7 +426,9 @@ impl<'a> CEmitter<'a> {
                     _ => arandu_middle::types::ArType::named(*struct_symbol, &[], self.interner),
                 };
                 let layout = self.checked_layout(&struct_ty);
-                let field_defs = self.provider.get_struct_fields(*struct_symbol);
+                let field_defs = self
+                    .provider
+                    .get_struct_fields_for_type(&struct_ty, self.interner);
                 let mut resolved_fields = Vec::new();
                 for (name, op) in fields {
                     let Some(field_idx) = field_defs
@@ -546,11 +556,27 @@ impl<'a> CEmitter<'a> {
                 }
             }
             AmirRvalue::Array { items } => {
-                if items.is_empty() {
+                let array_layout = self.checked_layout(expected_ar_type);
+                if items.is_empty() || array_layout.size == 0 {
                     let _ = write!(
                         &mut self.output,
                         "({{ {expected_c_type} _res = {{0}}; _res; }})"
                     );
+                } else if let ArType::Array(len, _) = expected_ar_type
+                    && *len > 0
+                {
+                    let _ = write!(
+                        &mut self.output,
+                        "({{ {expected_c_type} _res = {{ .data = {{"
+                    );
+                    for (i, op) in items.iter().take(*len as usize).enumerate() {
+                        if i > 0 {
+                            let _ = write!(&mut self.output, ", ");
+                        }
+                        let op_str = self.format_operand(op, func);
+                        let _ = write!(&mut self.output, "{}", op_str);
+                    }
+                    let _ = write!(&mut self.output, "}} }}; _res; }})");
                 } else {
                     let elem_ty = match expected_ar_type {
                         ArType::Array(_, inner) => self.interner.resolve(*inner),
@@ -724,7 +750,16 @@ impl<'a> CEmitter<'a> {
                 let base_str = self.format_operand(base, func);
                 let index_str = self.format_operand(index, func);
 
-                if matches!(base_ty, ArType::Ptr(_)) {
+                let is_nonempty_array = matches!(&deref_ty, ArType::Array(len, _) if *len > 0)
+                    && self.checked_layout(&deref_ty).size > 0;
+
+                if is_nonempty_array {
+                    if matches!(base_ty, ArType::Ptr(_) | ArType::Ref(_) | ArType::RefMut(_)) {
+                        let _ = write!(&mut self.output, "({})->data[{}]", base_str, index_str);
+                    } else {
+                        let _ = write!(&mut self.output, "({}).data[{}]", base_str, index_str);
+                    }
+                } else if matches!(base_ty, ArType::Ptr(_)) {
                     let _ = write!(
                         &mut self.output,
                         "(({}*){})[{}]",

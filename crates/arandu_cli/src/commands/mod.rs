@@ -192,6 +192,7 @@ pub fn run(raw_args: Vec<String>) -> CliResult {
                 &inv.project_flags,
                 inv.opt,
                 inv.debug,
+                inv.genref_report,
                 inv.data_layout,
             );
         }
@@ -210,8 +211,14 @@ pub fn run(raw_args: Vec<String>) -> CliResult {
                 seed: 0,
                 format: test_runner::TestOutputFormat::Human,
                 output: None,
-                target: None,
-                backend: None,
+                target: inv.project_flags.target.clone(),
+                backend: Some(
+                    // Test and benchmark children currently execute through the dev JIT.
+                    crate::project::BackendChoice::CraneliftDev
+                        .label()
+                        .to_string(),
+                ),
+                doc_tests: false,
             };
             let mut arguments = inv.args[2..].iter();
             while let Some(argument) = arguments.next() {
@@ -219,6 +226,7 @@ pub fn run(raw_args: Vec<String>) -> CliResult {
                     list = true;
                 } else if argument == "--doc" {
                     doc_tests = true;
+                    runner.doc_tests = true;
                 } else if argument == "--harness-child" {
                     harness_child = true;
                 } else if argument == "--exact" {
@@ -302,8 +310,13 @@ pub fn run(raw_args: Vec<String>) -> CliResult {
                 },
                 format_json: false,
                 output: None,
-                target: None,
-                backend: None,
+                target: inv.project_flags.target.clone(),
+                backend: Some(
+                    // Test and benchmark children currently execute through the dev JIT.
+                    crate::project::BackendChoice::CraneliftDev
+                        .label()
+                        .to_string(),
+                ),
                 baseline: None,
             };
             let mut save_baseline = None;
@@ -455,14 +468,20 @@ pub fn run(raw_args: Vec<String>) -> CliResult {
                     &inv.project_flags,
                     inv.opt,
                     inv.debug,
+                    inv.parallel,
+                    inv.genref_report,
                     inv.data_layout,
                 );
             } else {
+                if inv.parallel {
+                    fail_usage("--parallel is supported only for 'arandu check'");
+                }
                 return run::cmd_project_run(
                     &start,
                     &inv.project_flags,
                     inv.opt,
                     inv.debug,
+                    inv.genref_report,
                     inv.data_layout,
                     &inv.program_args,
                 );

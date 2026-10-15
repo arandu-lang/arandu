@@ -11,6 +11,8 @@ use arandu_middle::amir::AmirProgram;
 use arandu_middle::diagnostics::Diagnostic;
 use arandu_middle::symbol_table::SymbolTable;
 
+pub mod string_interp;
+pub mod temp_slots;
 pub mod testing;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

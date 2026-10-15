@@ -23,6 +23,7 @@ pub(crate) fn register_prelude(checker: &mut TypeChecker<'_>, _program: &Program
             "io",
             vec![
                 ("println", println_ty.clone()),
+                ("print", println_ty.clone()),
                 ("create", create_ty),
                 ("remove", remove_ty),
                 ("eprint", println_ty),

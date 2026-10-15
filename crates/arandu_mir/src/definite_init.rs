@@ -36,6 +36,56 @@ use crate::{BitSet, SymbolTable};
 
 use std::collections::VecDeque;
 
+/// Return exits reachable before the result register has been defined. Unlike
+/// local initialization, this register has no storage-dead/kill operation: walk
+/// only still-uninitialized paths, stopping at the first definition. Each block
+/// is visited at most once, including back-edges. The caller supplies validated
+/// AMIR and decides whether its result type requires a value.
+#[must_use]
+pub fn uninitialized_return_exits(func: &AmirFunc) -> Vec<BlockId> {
+    use crate::amir::TempId;
+    let mut pending = VecDeque::from([BlockId::from_usize(0)]);
+    let mut visited = vec![false; func.blocks.len()];
+    let mut exits = Vec::new();
+    while let Some(id) = pending.pop_front() {
+        let Some(seen) = visited.get_mut(id.as_usize()) else {
+            continue;
+        };
+        if *seen {
+            continue;
+        }
+        *seen = true;
+        let Some(block) = func.blocks.get(id.as_usize()) else {
+            continue;
+        };
+        let defined = func
+            .block_params(block.params)
+            .iter()
+            .any(|param| param.id == TempId(0))
+            || func.block_stmts(id).any(|statement| match statement {
+                AmirStmt::Assign { lhs, .. } => *lhs == TempId(0),
+                AmirStmt::Call { lhs, .. } => *lhs == Some(TempId(0)),
+                AmirStmt::Store { .. }
+                | AmirStmt::Free(_)
+                | AmirStmt::Destroy(_)
+                | AmirStmt::StorageLive(_)
+                | AmirStmt::StorageDead(_)
+                | AmirStmt::Nop => false,
+            });
+        if defined {
+            continue;
+        }
+        if matches!(block.terminator, AmirTerminator::Return) {
+            exits.push(id);
+        }
+        if let Some(successors) = func.cfg.successors.get(id.as_usize()) {
+            pending.extend(successors.iter().copied());
+        }
+    }
+    exits.sort_unstable_by_key(|id| id.as_usize());
+    exits
+}
+
 /// Cardinality of definitely-initialized locals at each block's entry (IN set).
 ///
 /// Used by Salsa `block_dataflow_facts` — pure, no diagnostics.
@@ -438,6 +488,64 @@ mod tests {
             stmts,
             cfg,
         }
+    }
+
+    #[test]
+    fn result_initialization_terminates_on_back_edges_and_ignores_unreachable_exits() {
+        let mut statements = AmirStmtTable::new();
+        let blocks = vec![
+            make_block(
+                0,
+                vec![],
+                AmirTerminator::Goto {
+                    target: BlockId::from_usize(1),
+                    args: vec![],
+                },
+                &[],
+                &[],
+                &mut statements,
+            ),
+            make_block(
+                1,
+                vec![],
+                AmirTerminator::Branch {
+                    condition: AmirOperand::Constant(AmirConstant::Bool(false)),
+                    if_true: BlockId::from_usize(1),
+                    if_false: BlockId::from_usize(2),
+                    true_args: vec![],
+                    false_args: vec![],
+                },
+                &[],
+                &[],
+                &mut statements,
+            ),
+            make_block(2, vec![], AmirTerminator::Return, &[], &[], &mut statements),
+            make_block(3, vec![], AmirTerminator::Return, &[], &[], &mut statements),
+        ];
+        let mut function = make_func(blocks, statements, vec![], vec![make_temp(0)]);
+        assert_eq!(
+            uninitialized_return_exits(&function),
+            vec![BlockId::from_usize(2)]
+        );
+        let instruction = function.stmts.push(AmirStmt::Assign {
+            lhs: TempId(0),
+            rhs: AmirRvalue::Use(AmirOperand::Constant(AmirConstant::Bool(true))),
+        });
+        extend_block_range(&mut function.blocks[0].statements, instruction);
+        assert!(uninitialized_return_exits(&function).is_empty());
+        *function
+            .stmts
+            .get_mut(instruction)
+            .expect("result assignment") = AmirStmt::Call {
+            lhs: Some(TempId(0)),
+            callee: AmirOperand::FunctionRef(SymbolId::new(0, 1)),
+            args: smallvec![],
+            return_borrow: None,
+        };
+        assert!(
+            uninitialized_return_exits(&function).is_empty(),
+            "call results also define the register"
+        );
     }
 
     #[test]

@@ -16,7 +16,7 @@
 //! ```arandu
 //! import std.io as io
 //!
-//! let e = io.newIoError(io.IoErrorKind.NotFound, 2)
+//! let e = io.IoError.new(io.IoErrorKind.NotFound, 2)
 //! ```
 //!
 //! ## Platform
@@ -67,7 +67,7 @@ public struct IoError {
 /// Builds an error from its category and portable or host-supplied code.
 ///
 /// This only stores the values; it does not query the operating system.
-public func newIoError(kind: IoErrorKind, os_code: int): IoError {
+public func IoError.new(kind: IoErrorKind, os_code: int): IoError {
     return IoError {
         kind: kind,
         os_code: os_code,
@@ -80,29 +80,29 @@ public func newIoError(kind: IoErrorKind, os_code: int): IoError {
 /// 0=ok, 1=NotFound, 2=PermissionDenied, 3=AlreadyExists, 4=WouldBlock,
 /// 5=InvalidInput, 6=BrokenPipe, 7=UnexpectedEof, 8=Other. Unknown codes
 /// map to `Other`; `os_code` keeps the original portable code.
-public func errorFromPortable(code: int): IoError {
+public func IoError.fromPlatform(code: int): IoError {
     if code == 1 {
-        return newIoError(IoErrorKind.NotFound, code)
+        return IoError.new(IoErrorKind.NotFound, code)
     }
     if code == 2 {
-        return newIoError(IoErrorKind.PermissionDenied, code)
+        return IoError.new(IoErrorKind.PermissionDenied, code)
     }
     if code == 3 {
-        return newIoError(IoErrorKind.AlreadyExists, code)
+        return IoError.new(IoErrorKind.AlreadyExists, code)
     }
     if code == 4 {
-        return newIoError(IoErrorKind.WouldBlock, code)
+        return IoError.new(IoErrorKind.WouldBlock, code)
     }
     if code == 5 {
-        return newIoError(IoErrorKind.InvalidInput, code)
+        return IoError.new(IoErrorKind.InvalidInput, code)
     }
     if code == 6 {
-        return newIoError(IoErrorKind.BrokenPipe, code)
+        return IoError.new(IoErrorKind.BrokenPipe, code)
     }
     if code == 7 {
-        return newIoError(IoErrorKind.UnexpectedEof, code)
+        return IoError.new(IoErrorKind.UnexpectedEof, code)
     }
-    return newIoError(IoErrorKind.Other, code)
+    return IoError.new(IoErrorKind.Other, code)
 }
 
 /// Interface for reading bytes from a stream into a borrowed buffer.
@@ -138,7 +138,7 @@ public struct BufReader<R: Read> {
 ///
 /// The wrapper borrows `buf` and does not allocate it. Keep the buffer valid
 /// while the reader is in use; a zero-length buffer cannot stage any bytes.
-public func newBufReader<R: Read>(inner: R, buf: []u8): BufReader<R> {
+public func BufReader.new<R: Read>(inner: R, buf: []u8): BufReader<R> {
     return BufReader<R> {
         inner: inner,
         buf: buf,
@@ -226,7 +226,7 @@ public struct BufWriter<W: Write> {
 ///
 /// The wrapper borrows `buf` and allocates nothing. Data may remain staged
 /// until `flush` or a later write forces a flush.
-public func newBufWriter<W: Write>(inner: W, buf: []u8): BufWriter<W> {
+public func BufWriter.new<W: Write>(inner: W, buf: []u8): BufWriter<W> {
     return BufWriter<W> {
         inner: inner,
         buf: buf,
@@ -260,10 +260,10 @@ public func BufWriter.flush<W: Write>(self: mut ref BufWriter<W>): Result<bool, 
             }
         }
         if n == 0 {
-            return Result.Err(newIoError(IoErrorKind.Other, 8))
+            return Result.Err(IoError.new(IoErrorKind.Other, 8))
         }
         if n > pending {
-            return Result.Err(newIoError(IoErrorKind.InvalidInput, 5))
+            return Result.Err(IoError.new(IoErrorKind.InvalidInput, 5))
         }
         if n == pending {
             self.buffered_count = 0
@@ -305,8 +305,6 @@ public func BufWriter.write<W: Write>(self: mut ref BufWriter<W>, data: []u8): R
 }
 
 extern "C" {
-    /// Write UTF-8 bytes to stdout (no trailing newline).
-    func write(buf: str): void
     /// Write UTF-8 bytes to stderr (no trailing newline).
     func eprint(buf: str): void
 }

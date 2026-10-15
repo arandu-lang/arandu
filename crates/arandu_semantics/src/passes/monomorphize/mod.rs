@@ -3,9 +3,12 @@ mod demangle;
 mod expand;
 mod graph;
 
-pub use collect::analyze_instantiations;
+pub use collect::{InstantiationRoot, analyze_instantiations};
 pub use demangle::{demangle_symbol, mangle_symbol};
-pub use expand::expand_specializations;
+pub use expand::{
+    InstantiatedFunction, expand_specializations, instantiate_function, specialize_root_block,
+    specialize_root_callees, specialize_root_expression,
+};
 pub use graph::{
     InstantiationGraph, InstantiationKey, InstantiationNode, InstantiationNodeId, MonoError,
 };
@@ -283,6 +286,37 @@ mod tests {
         assert!(demangled.is_some());
         let s = demangled.unwrap();
         assert_eq!(s, "identity<my_struct, other_struct>");
+    }
+
+    #[test]
+    fn mangling_preserves_nominal_identity_and_nested_tuple_arity() {
+        let (mut symbols, interner) = setup();
+        let function = define_symbol(&mut symbols, "identity");
+        let nominal = define_symbol(&mut symbols, "ptr_int");
+        let int = interner.intern(ArType::Primitive(Primitive::Int));
+        let pointer = interner.intern(ArType::Ptr(int));
+        let named = interner.intern(ArType::named(nominal, &[], &interner));
+        let pair = interner.intern(ArType::tuple(&[int, int], &interner));
+        let left = interner.intern(ArType::tuple(&[pair, int], &interner));
+        let right = interner.intern(ArType::tuple(&[pair, int, int], &interner));
+        let bump = bumpalo::Bump::new();
+        let encode = |ty| {
+            mangle_symbol(
+                &InstantiationKey {
+                    symbol: function,
+                    type_args: bump.alloc_slice_copy(&[ty]),
+                },
+                &interner,
+                &symbols,
+            )
+        };
+        assert_ne!(encode(pointer), encode(named));
+        assert_ne!(encode(left), encode(right));
+        let nested_left = interner.intern(ArType::tuple(
+            &[interner.intern(ArType::tuple(&[int], &interner)), int],
+            &interner,
+        ));
+        assert_ne!(encode(nested_left), encode(pair));
     }
 
     #[test]

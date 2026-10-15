@@ -200,12 +200,19 @@ async function startLanguageServer(
     };
     const clientOptions: LanguageClientOptions = {
         documentSelector: [{ scheme: 'file', language: 'arandu' }],
+        initializationOptions: {
+            ctfe: {
+                fuel: configuration.get<number>('comptime.fuel', 1_000_000),
+                frames: configuration.get<number>('comptime.frames', 128),
+                values: configuration.get<number>('comptime.values', 1_000_000)
+            }
+        },
         synchronize: { fileEvents: fileWatcher },
         traceOutputChannel,
         errorHandler
     };
     const nextClient = new LanguageClient(
-        'aranduLanguageServer',
+        'arandu',
         'Arandu Language Server',
         serverOptions,
         clientOptions

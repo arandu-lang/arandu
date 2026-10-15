@@ -2,13 +2,11 @@ import std.alloc.vec as vec
 import std.core.slice as slice
 
 func main(): int {
-    let mut values = vec.new<int>()
-    if !vec.tryPush<int>(values, 17) {
-        vec.destroy<int>(values)
+    let mut values = vec.Vec<int>.new()
+    if !values.tryPush(17) {
         return -1
     }
-    let vector_len = vec.len<int>(values)
-    let slice_len = slice.len<int>(vec.asSlice<int>(values))
-    vec.destroy<int>(values)
+    let vector_len = values.len()
+    let slice_len = slice.len<int>(values.asSlice())
     return (vector_len + slice_len) as int
 }

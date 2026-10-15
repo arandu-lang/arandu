@@ -1,6 +1,6 @@
 //! Types, constants, and outcome DTOs for test runtime execution.
 
-use arandu_codegen::testing::{TestFailure, TestStatus};
+use arandu_testing_contract::{TestFailure, TestStatus};
 
 pub const MAX_LOG_ENTRIES: usize = 1000;
 pub const MAX_LOG_TOTAL_BYTES: usize = 64 * 1024; // 64 KB

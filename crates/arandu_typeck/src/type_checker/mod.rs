@@ -160,6 +160,9 @@ pub struct TypeChecker<'a> {
     pub target_info: TargetInfo,
     pub current_observed_effects: arandu_middle::EffectFlags,
     pub literal_table: solver::LiteralTable,
+    /// Concrete owner arguments during isolated instance checking. Source
+    /// templates keep this empty; it never becomes exported declaration data.
+    pub(crate) generic_substitution: arandu_middle::types::GenericSubst,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -249,7 +252,17 @@ impl<'a> TypeChecker<'a> {
             symbols: symbols.into(),
             resolved: resolved.into(),
             ctx: TyCtx::new(),
-            type_info: TypeInfo::with_interner(type_interner),
+            type_info: {
+                let mut info = TypeInfo::with_interner(type_interner);
+                info.target_pointer_width = target_info.pointer_width;
+                info.target_layout =
+                    arandu_middle::DataLayout::ptr_width(if target_info.pointer_width == 32 {
+                        4
+                    } else {
+                        8
+                    });
+                info
+            },
             diagnostics,
             solved_constraints: Vec::new(),
             type_scope_id: None,
@@ -258,6 +271,7 @@ impl<'a> TypeChecker<'a> {
             target_info,
             current_observed_effects: arandu_middle::EffectFlags::NONE,
             literal_table: solver::LiteralTable::new(),
+            generic_substitution: arandu_middle::types::GenericSubst::new(),
         }
     }
 
@@ -290,6 +304,18 @@ impl<'a> TypeChecker<'a> {
         types::try_ok_type(ty, &self.type_info.type_interner)
     }
 
+    /// Propagation validates the error channel, independently of the success
+    /// type inferred for the nearest function or isolated comptime block.
+    fn can_propagate_try(&self, inner: &ArType, target: &ArType) -> bool {
+        match (inner, target) {
+            (ArType::Result(_, inner_err), ArType::Result(_, outer_err)) => {
+                self.is_assignable_return_type(&self.resolve(*outer_err), &self.resolve(*inner_err))
+            }
+            (ArType::Option(_), ArType::Option(_)) => true,
+            _ => false,
+        }
+    }
+
     #[must_use]
     pub fn is_err_type(&self, ty: &ArType) -> bool {
         types::is_err_type(ty, &self.type_info.type_interner)
@@ -305,6 +331,7 @@ impl<'a> TypeChecker<'a> {
         expr_id: arandu_parser::TypeExprId,
         scope: ScopeId,
     ) -> ArType {
+        check::validate_const_arguments(self, expr_id);
         let ctx = types::LowerCtx {
             pool: self.pool,
             symbols: &self.symbols,
@@ -317,6 +344,15 @@ impl<'a> TypeChecker<'a> {
             &mut self.type_info.type_interner,
         );
         // T2.1: `Vec<int>` expands to `Vec<int, GlobalAllocator>` when A has a default.
+        let ty = if self.generic_substitution.is_empty() {
+            ty
+        } else {
+            arandu_middle::types::substitute_type(
+                &ty,
+                &self.generic_substitution,
+                &self.type_info.type_interner,
+            )
+        };
         let ty = types::expand_named_with_defaults(self, ty);
         types::expand_aliases(self, ty)
     }
@@ -326,6 +362,7 @@ impl<'a> TypeChecker<'a> {
         result: &arandu_parser::ResultType,
         scope: ScopeId,
     ) -> ArType {
+        check::validate_const_result(self, result);
         let ctx = types::LowerCtx {
             pool: self.pool,
             symbols: &self.symbols,
@@ -338,6 +375,15 @@ impl<'a> TypeChecker<'a> {
             &mut self.type_info.type_interner,
         );
         // T2.1: expand trailing defaults on Named return types (`Vec<T>` → `Vec<T, Adef>`).
+        let ty = if self.generic_substitution.is_empty() {
+            ty
+        } else {
+            arandu_middle::types::substitute_type(
+                &ty,
+                &self.generic_substitution,
+                &self.type_info.type_interner,
+            )
+        };
         let ty = types::expand_named_with_defaults(self, ty);
         types::expand_aliases(self, ty)
     }
@@ -356,6 +402,15 @@ impl<'a> TypeChecker<'a> {
             resolved: &self.resolved,
         };
         let ty = types::lower_named_type(span, name, args, &ctx, &mut self.type_info.type_interner);
+        let ty = if self.generic_substitution.is_empty() {
+            ty
+        } else {
+            arandu_middle::types::substitute_type(
+                &ty,
+                &self.generic_substitution,
+                &self.type_info.type_interner,
+            )
+        };
         let ty = types::expand_named_with_defaults(self, ty);
         types::expand_aliases(self, ty)
     }
@@ -489,6 +544,7 @@ impl TypeChecker<'_> {
     }
 
     pub(crate) fn record_expr_type(&mut self, expr: ExprId, id: TypeId) {
+        self.type_info.demand_type(id, self.pool.expr_span(expr));
         self.type_info.record_expr_type(expr, id);
     }
 

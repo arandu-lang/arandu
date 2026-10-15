@@ -83,6 +83,11 @@ pub trait ArandCompilerDb: salsa::Database {
     fn as_db_impl(&self) -> Option<&DatabaseImpl> {
         None
     }
+    /// Registered driver policy; missing registration is a reportable invariant failure.
+    fn ctfe_config(&self) -> Option<crate::ctfe::CtfeConfig> {
+        self.as_db_impl().and_then(DatabaseImpl::ctfe_config)
+    }
+
     /// Salsa input for the compilation target. Defaults to the host layout;
     /// the CLI sets it from `--layout=` before any query runs.
     fn target_config(&self) -> TargetConfig {
@@ -166,6 +171,7 @@ pub struct DatabaseImpl {
     package_modules: Arc<RwLock<Option<PackageModuleMap>>>,
     /// Compilation target Salsa input (default: host layout). See [`Self::set_target_config`].
     target_config: Arc<RwLock<Option<TargetConfig>>>,
+    ctfe_config: Arc<RwLock<Option<crate::ctfe::CtfeConfig>>>,
 }
 
 // Manual Clone: Storage is cloneable; share Arc file registry + log + CST cache.
@@ -181,6 +187,7 @@ impl Clone for DatabaseImpl {
             module_roots: Arc::clone(&self.module_roots),
             package_modules: Arc::clone(&self.package_modules),
             target_config: Arc::clone(&self.target_config),
+            ctfe_config: Arc::clone(&self.ctfe_config),
         }
     }
 }
@@ -202,11 +209,14 @@ impl DatabaseImpl {
         QueryCancellationToken(self.cancellation_token())
     }
 
-    /// Database without rebuild event overhead.
+    /// Database without rebuild event overhead (installs lightweight counter callback only if `-Zprofile-queries` is enabled).
     #[must_use]
     pub fn new() -> Self {
+        let callback = arandu_base::perf::PROFILE_QUERIES
+            .load(std::sync::atomic::Ordering::Relaxed)
+            .then(RebuildLog::profile_queries_callback);
         let mut db = Self {
-            storage: Storage::new(None),
+            storage: Storage::new(callback),
             files: Arc::new(RwLock::new(FileRegistry::default())),
             cst_cache: Arc::new(Mutex::new(CstCache::default())),
             rebuild_log: None,
@@ -215,8 +225,10 @@ impl DatabaseImpl {
             module_roots: Arc::new(RwLock::new(None)),
             package_modules: Arc::new(RwLock::new(None)),
             target_config: Arc::new(RwLock::new(None)),
+            ctfe_config: Arc::new(RwLock::new(None)),
         };
         db.set_target_config(DataLayout::host());
+        db.set_ctfe_limits(crate::ctfe::CtfeLimits::default());
         db
     }
 
@@ -235,8 +247,10 @@ impl DatabaseImpl {
             module_roots: Arc::new(RwLock::new(None)),
             package_modules: Arc::new(RwLock::new(None)),
             target_config: Arc::new(RwLock::new(None)),
+            ctfe_config: Arc::new(RwLock::new(None)),
         };
         db.set_target_config(DataLayout::host());
+        db.set_ctfe_limits(crate::ctfe::CtfeLimits::default());
         (db, log)
     }
 
@@ -322,7 +336,8 @@ impl DatabaseImpl {
                 input.set_data_layout(self).to(data_layout);
             }
             None => {
-                let input = TargetConfig::new(self, data_layout);
+                let input =
+                    TargetConfig::new(self, data_layout, arandu_middle::db::TargetIdentity::host());
                 let mut slot = self
                     .target_config
                     .write()
@@ -330,6 +345,40 @@ impl DatabaseImpl {
                 *slot = Some(input);
             }
         }
+    }
+
+    /// Change public CTFE policy before querying (drop snapshots before writes).
+    pub fn set_ctfe_limits(&mut self, limits: crate::ctfe::CtfeLimits) {
+        let existing = *self
+            .ctfe_config
+            .read()
+            .unwrap_or_else(|error| error.into_inner());
+        match existing {
+            Some(input) => {
+                input.set_limits(self).to(limits);
+            }
+            None => {
+                let input = crate::ctfe::CtfeConfig::new(self, limits);
+                *self
+                    .ctfe_config
+                    .write()
+                    .unwrap_or_else(|error| error.into_inner()) = Some(input);
+            }
+        }
+    }
+
+    /// Registered public CTFE policy input, shared by snapshots.
+    #[must_use]
+    pub fn ctfe_config(&self) -> Option<crate::ctfe::CtfeConfig> {
+        *self
+            .ctfe_config
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+    }
+
+    /// Supply platform identity explicitly before requesting semantic queries.
+    pub fn set_target_identity(&mut self, identity: arandu_middle::db::TargetIdentity) {
+        self.target_config().set_identity(self).to(identity);
     }
 
     /// Registered Salsa input for the compilation target.
@@ -380,6 +429,15 @@ impl DatabaseImpl {
         );
         reg.insert(path, file_id, file);
         file
+    }
+
+    /// Update the text of an already-registered source file and notify Salsa.
+    ///
+    /// This is the preferred API for tests and fuzz targets that depend on
+    /// `arandu_query` but do not (and should not) take a direct `salsa` dep.
+    pub fn update_file_text(&mut self, file: SourceFile, text: impl Into<Arc<str>>) {
+        use salsa::Setter as _;
+        file.set_text(self).to(text.into());
     }
 
     pub fn register_source_file(&self, path: String, file: SourceFile) {

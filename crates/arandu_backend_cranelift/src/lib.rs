@@ -104,29 +104,33 @@ impl CraneliftBackend {
         })
     }
 
-    /// Creates a JIT with caller-provided `io.println`, `io.eprint`,
+    /// Creates a JIT with caller-provided `io.println`, `io.print`, `io.eprint`,
     /// `std.env.argsLen`, and `std.env.arg` host imports.
     pub fn try_new_with_io_and_process_args(
         io_println: extern "C" fn(*const u8, i64),
+        io_print: extern "C" fn(*const u8, i64),
         io_eprint: extern "C" fn(*const u8, i64),
         args_len: extern "C" fn() -> i64,
         arg: EnvArgHandler,
     ) -> Result<Self, Diagnostic> {
         Ok(Self {
-            jit: AranduJit::try_new_with_io_and_process_args(io_println, io_eprint, args_len, arg)?,
+            jit: AranduJit::try_new_with_io_and_process_args(
+                io_println, io_print, io_eprint, args_len, arg,
+            )?,
         })
     }
 
     /// Creates a JIT with caller-provided I/O and block coverage enabled.
     pub fn try_new_with_block_coverage_and_io_and_process_args(
         io_println: extern "C" fn(*const u8, i64),
+        io_print: extern "C" fn(*const u8, i64),
         io_eprint: extern "C" fn(*const u8, i64),
         args_len: extern "C" fn() -> i64,
         arg: EnvArgHandler,
     ) -> Result<Self, Diagnostic> {
         Ok(Self {
             jit: AranduJit::try_new_with_block_coverage_and_io_and_process_args(
-                io_println, io_eprint, args_len, arg,
+                io_println, io_print, io_eprint, args_len, arg,
             )?,
         })
     }

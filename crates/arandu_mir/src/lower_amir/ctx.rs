@@ -10,9 +10,26 @@ use crate::{SymbolId, SymbolTable};
 use arandu_lexer::Span;
 
 impl LowerCtx<'_> {
-    pub(crate) fn lower_const_operand(&mut self, symbol: SymbolId) -> Option<AmirOperand> {
-        let expr = *self.const_values.get(&symbol)?;
+    pub(crate) fn lower_const_operand(
+        &mut self,
+        symbol: SymbolId,
+    ) -> Result<Option<AmirOperand>, Diagnostic> {
+        let Some(&expr) = self.const_values.get(&symbol) else {
+            return Ok(None);
+        };
         let hir_expr = self.hir.pool.expr(expr);
+        if let crate::hir::HirExprKind::Layout { query, operand_ty } = hir_expr.kind {
+            return self
+                .lower_layout_query(query, operand_ty, hir_expr.ty, None, hir_expr.span)
+                .map(Some);
+        }
+        if self.tc.type_info.ctfe_global_values.contains_key(&symbol) {
+            // Frozen declarations contain only admitted materialized values.
+            // Interpret that value in this unit's literal pool instead of
+            // leaving a runtime GlobalRef in a CTFE expression/helper.
+            let symbols = std::sync::Arc::clone(&self.tc.symbols);
+            return self.lower_expr(expr, None, &symbols).map(Some);
+        }
         // Preserve integer consts through a compile-time cast. Returning the
         // literal directly drops its inferred target type in AMIR; materializing
         // it in a typed temp keeps comparisons (e.g. `uint > CONST`) well typed.
@@ -21,11 +38,11 @@ impl LowerCtx<'_> {
             crate::hir::HirExprKind::Cast { expr, .. } => {
                 let inner = self.hir.pool.expr(*expr);
                 let crate::hir::HirExprKind::Int(value) = &inner.kind else {
-                    return None;
+                    return Ok(None);
                 };
                 value.clone()
             }
-            _ => return None,
+            _ => return Ok(None),
         };
         let ty = self
             .tc
@@ -38,7 +55,7 @@ impl LowerCtx<'_> {
             temp,
             crate::amir::AmirRvalue::Use(AmirOperand::Constant(value)),
         );
-        Some(AmirOperand::Copy(temp))
+        Ok(Some(AmirOperand::Copy(temp)))
     }
 
     pub(crate) fn next_local_id(&self) -> LocalId {
@@ -52,11 +69,6 @@ impl LowerCtx<'_> {
     #[inline]
     pub(crate) fn intern_literal_int(&mut self, s: impl Into<smol_str::SmolStr>) -> AmirConstant {
         AmirConstant::Pool(self.literal_pool.intern_int(s))
-    }
-
-    #[inline]
-    pub(crate) fn intern_literal_float(&mut self, s: impl Into<smol_str::SmolStr>) -> AmirConstant {
-        AmirConstant::Pool(self.literal_pool.intern_float(s))
     }
 
     #[inline]
@@ -467,9 +479,15 @@ impl LowerCtx<'_> {
         include_errdefer: bool,
         symbols: &SymbolTable,
     ) -> Result<(), Diagnostic> {
+        // Emit cleanup for this CFG edge without consuming lexical schedules
+        // needed by sibling paths. Frames contain only block ranges/kinds, not
+        // copies of HIR arenas. Pop while emitting to prevent a defer's own
+        // control flow from recursively executing that same frame.
+        let lexical_frames = self.defer_frames.clone();
         while self.defer_frames.len() > target_depth {
             self.exit_current_defer_frame(include_errdefer, symbols)?;
         }
+        self.defer_frames = lexical_frames;
         Ok(())
     }
 

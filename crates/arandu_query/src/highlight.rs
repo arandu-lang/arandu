@@ -295,7 +295,11 @@ fn compute_highlights_with(
                 .and_then(|start| start.checked_sub(1))
                 .is_some_and(|at| source.as_bytes().get(at) == Some(&b'@'));
         let kind = if is_annotation_name {
-            HlKind::Decorator
+            if arandu_parser::LayoutQuery::from_name(tok.text()).is_some() {
+                HlKind::Function
+            } else {
+                HlKind::Decorator
+            }
         } else if matches!(tok.kind(), SyntaxKind::IDENT | SyntaxKind::TYPE_IDENT) {
             if let Some(sid) = symbol_for_span(start, end, &maps, &lookup) {
                 // Definition site?

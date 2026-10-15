@@ -17,7 +17,7 @@
 //! import std.core.fmt as fmt
 //!
 //! func formatInto(buf: []u8): uint {
-//!     let mut f = fmt.newFormatter(buf)
+//!     let mut f = fmt.Formatter.new(buf)
 //!     let _ = f.writeStr("temp: ")
 //!     return f.len()
 //! }
@@ -60,7 +60,7 @@ public struct Formatter {
 /// Borrows `buf` as a fixed-capacity destination with zero bytes written.
 ///
 /// The caller owns the buffer. Writes change it in place and never allocate.
-public func newFormatter(buf: []u8): Formatter {
+public func Formatter.new(buf: []u8): Formatter {
     return Formatter {
         buf: buf,
         len: 0,
@@ -116,7 +116,7 @@ public func Formatter.writeBool(self: mut ref Formatter, b: bool): Result<usize,
 /// If the full string does not fit, returns `BufferFull` and leaves the
 /// buffer and length unchanged. An empty string writes zero bytes.
 public func Formatter.writeStr(self: mut ref Formatter, s: str): Result<usize, FmtError> {
-    let slen = strings.lenBytes(s)
+    let slen = strings.len(s)
     let cap = slice.len<u8>(self.buf)
     if self.len > cap || slen > cap - self.len {
         return Result.Err(FmtError.BufferFull)

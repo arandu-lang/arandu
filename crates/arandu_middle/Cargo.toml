@@ -1,6 +1,6 @@
 [package]
 name = "arandu_middle"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2024"
 license.workspace = true
 authors.workspace = true
@@ -19,6 +19,7 @@ tracing.workspace = true
 salsa = { workspace = true }
 smol_str.workspace = true
 serde = { workspace = true }
+rustc_apfloat.workspace = true
 
 [lib]
 path = "src/lib.rs"

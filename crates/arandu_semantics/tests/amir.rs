@@ -66,7 +66,7 @@ fn test_amir_golden_files() {
         let hir = lower_to_hir(&mut tc, &program).expect("HIR lowering failed");
         hir.validate_invariants(&hir.pool, &tc.symbols)
             .unwrap_or_else(|err| panic!("HIR invariant validation failed for {name}: {err:?}"));
-        let amir = lower_to_amir(&tc, &hir, 64).expect("AMIR lowering failed");
+        let amir = lower_to_amir(&tc, &hir, 8).expect("AMIR lowering failed");
         let amir_issues = validate_amir_program(&amir, &tc.symbols, &tc.type_info.type_interner);
         assert!(
             amir_issues.is_empty(),
@@ -105,7 +105,7 @@ func main() {
         .map(|symbol| symbol.id)
         .expect("missing field symbol");
     let hir = lower_to_hir(&mut tc, &program).expect("HIR lowering failed");
-    let amir = lower_to_amir(&tc, &hir, 64).expect("AMIR lowering failed");
+    let amir = lower_to_amir(&tc, &hir, 8).expect("AMIR lowering failed");
 
     let func = &amir.funcs[0];
     let has_symbol_projection = func.blocks.iter().any(|block| {
@@ -144,7 +144,7 @@ func main() {
     );
     assert!(tc.diagnostics.is_empty(), "{:?}", tc.diagnostics);
     let hir = lower_to_hir(&mut tc, &program).expect("HIR");
-    let amir = lower_to_amir(&tc, &hir, 64).expect("AMIR");
+    let amir = lower_to_amir(&tc, &hir, 8).expect("AMIR");
 
     let destructor = tc.type_info.destructors.values().copied().next().unwrap();
     for func in &amir.funcs {
@@ -194,7 +194,7 @@ func main() {
     );
     assert!(tc.diagnostics.is_empty(), "{:?}", tc.diagnostics);
     let hir = lower_to_hir(&mut tc, &program).expect("HIR");
-    let amir = lower_to_amir(&tc, &hir, 64).expect("AMIR");
+    let amir = lower_to_amir(&tc, &hir, 8).expect("AMIR");
 
     for func in &amir.funcs {
         if tc.symbols.get(func.symbol).name == "main" {
@@ -255,7 +255,7 @@ func main() {
     );
     assert!(tc.diagnostics.is_empty(), "{:?}", tc.diagnostics);
     let hir = lower_to_hir(&mut tc, &program).expect("HIR");
-    let amir = lower_to_amir(&tc, &hir, 64).expect("AMIR");
+    let amir = lower_to_amir(&tc, &hir, 8).expect("AMIR");
 
     let main = amir
         .funcs
@@ -309,7 +309,7 @@ func main() {
     );
     assert!(tc.diagnostics.is_empty(), "{:?}", tc.diagnostics);
     let hir = lower_to_hir(&mut tc, &program).expect("HIR");
-    let diagnostics = lower_to_amir(&tc, &hir, 64).expect_err("partial move must be rejected");
+    let diagnostics = lower_to_amir(&tc, &hir, 8).expect_err("partial move must be rejected");
     assert!(
         diagnostics
             .iter()
@@ -339,7 +339,7 @@ func main() {
         arandu_semantics::TargetInfo { pointer_width: 64 },
     );
     let hir = lower_to_hir(&mut tc, &program).expect("HIR lowering failed");
-    let diagnostics = lower_to_amir(&tc, &hir, 64).expect_err("expected use after move diagnostic");
+    let diagnostics = lower_to_amir(&tc, &hir, 8).expect_err("expected use after move diagnostic");
 
     assert!(
         diagnostics
@@ -366,7 +366,7 @@ func main() {
         arandu_semantics::TargetInfo { pointer_width: 64 },
     );
     let hir = lower_to_hir(&mut tc, &program).expect("HIR lowering failed");
-    let amir = lower_to_amir(&tc, &hir, 64).expect("AMIR lowering failed");
+    let amir = lower_to_amir(&tc, &hir, 8).expect("AMIR lowering failed");
     let pretty = amir.pretty_print(&tc.symbols, &tc.type_info.type_interner);
     assert!(
         !pretty.contains("move _"),
@@ -397,7 +397,7 @@ func main(cond: bool) {
         arandu_semantics::TargetInfo { pointer_width: 64 },
     );
     let hir = lower_to_hir(&mut tc, &program).expect("HIR lowering failed");
-    let diagnostics = lower_to_amir(&tc, &hir, 64).expect_err("expected branch move diagnostic");
+    let diagnostics = lower_to_amir(&tc, &hir, 8).expect_err("expected branch move diagnostic");
 
     assert!(
         diagnostics
@@ -427,7 +427,7 @@ func main(cond: bool) {
         arandu_semantics::TargetInfo { pointer_width: 64 },
     );
     let hir = lower_to_hir(&mut tc, &program).expect("HIR lowering failed");
-    let amir = lower_to_amir(&tc, &hir, 64).expect("OSSA lowering failed");
+    let amir = lower_to_amir(&tc, &hir, 8).expect("OSSA lowering failed");
 
     assert!(!amir.funcs.is_empty());
     let func = &amir.funcs[0];
@@ -1066,7 +1066,7 @@ fn temp_ids_are_dense_and_positional() {
                 arandu_semantics::TargetInfo { pointer_width: 64 },
             );
             let hir = lower_to_hir(&mut tc, &program).expect("HIR lowering failed");
-            let amir = lower_to_amir(&tc, &hir, 64).expect("AMIR lowering failed");
+            let amir = lower_to_amir(&tc, &hir, 8).expect("AMIR lowering failed");
 
             for func in &amir.funcs {
                 for (i, temp) in func.temps.iter().enumerate() {
@@ -1116,7 +1116,7 @@ func main(): int {
         tc.diagnostics
     );
     let hir = lower_to_hir(&mut tc, &program).expect("hir");
-    let amir = lower_to_amir(&tc, &hir, 64).expect("amir");
+    let amir = lower_to_amir(&tc, &hir, 8).expect("amir");
     let func = &amir.funcs[0];
     let x = func
         .locals
@@ -1231,5 +1231,149 @@ fn validate_amir_rejects_mismatched_suspend_edge_arguments() {
             .iter()
             .any(|issue| issue.code == DiagCode::ICEGEN002 && issue.message.contains("SSA-TYPE")),
         "expected SSA-TYPE validation error for incompatible Suspend argument type: {issues_type:?}"
+    );
+}
+
+#[test]
+fn enum_struct_variants_lower_to_valid_amir_end_to_end() {
+    let src = r#"
+enum Shape {
+    Point,
+    Circle { radius: int },
+    Rect { width: int, height: int },
+    Segment(int, int)
+}
+
+func area(s: Shape): int {
+    return match s {
+        Shape.Point => 0
+        Shape.Circle { radius: r } => r * r
+        Shape.Rect { height, width } => width * height
+        Shape.Segment(a, b) => b - a
+    }
+}
+
+func partial_width(s: Shape): int {
+    if s is Shape.Rect { width } {
+        return width
+    }
+    return match s {
+        Circle { radius } => radius
+        _ => 0
+    }
+}
+
+func main(): int {
+    let r = 5
+    let c = Shape.Circle { radius: r }
+    let rect = Shape.Rect { height: 10, width: 4 }
+    let c2 = Circle { radius: 3 }
+    let pos = Shape.Rect(6, 7)
+    return area(c) + area(rect) + partial_width(c2) + partial_width(pos)
+}
+"#;
+    let program = arandu_parser::parse(src).expect("parse ADT program");
+    let resolution = resolve_for_test(0, &program);
+    assert!(
+        resolution
+            .diagnostics
+            .iter()
+            .all(|d| d.severity != arandu_semantics::Severity::Error),
+        "resolve diagnostics: {:?}",
+        resolution.diagnostics
+    );
+    let mut tc = type_check(
+        resolution,
+        &program,
+        arandu_semantics::TargetInfo { pointer_width: 64 },
+    );
+    assert!(
+        tc.diagnostics
+            .iter()
+            .all(|d| d.severity != arandu_semantics::Severity::Error),
+        "typeck diagnostics: {:?}",
+        tc.diagnostics
+    );
+    let hir = lower_to_hir(&mut tc, &program).expect("HIR lowering for ADT program");
+    let amir = lower_to_amir(&tc, &hir, 8).expect("AMIR lowering for ADT program");
+    let issues = validate_amir_program(&amir, &tc.symbols, &tc.type_info.type_interner);
+    assert!(
+        issues.is_empty(),
+        "expected valid AMIR for ADT program, got: {issues:?}"
+    );
+}
+
+#[test]
+fn generic_enum_struct_variants_and_exhaustiveness_work() {
+    let src = r#"
+enum Packet<T> {
+    Empty,
+    Data { id: int, payload: T }
+}
+
+func extract(p: Packet<int>): int {
+    return match p {
+        Packet.Empty => 0
+        Packet.Data { id, payload } => id + payload
+    }
+}
+
+func main(): int {
+    let p1 = Packet.Data { payload: 40, id: 2 }
+    let p2: Packet<int> = Packet.Empty
+    return extract(p1) + extract(p2)
+}
+"#;
+    let program = arandu_parser::parse(src).expect("parse generic ADT program");
+    let resolution = resolve_for_test(0, &program);
+    let mut tc = type_check(
+        resolution,
+        &program,
+        arandu_semantics::TargetInfo { pointer_width: 64 },
+    );
+    assert!(
+        tc.diagnostics
+            .iter()
+            .all(|d| d.severity != arandu_semantics::Severity::Error),
+        "typeck diagnostics: {:?}",
+        tc.diagnostics
+    );
+    let mut hir = lower_to_hir(&mut tc, &program).expect("HIR lowering for generic ADT");
+    arandu_semantics::passes::monomorphize::monomorphize_program(&mut tc, &mut hir)
+        .expect("monomorphize generic ADT");
+    let amir = lower_to_amir(&tc, &hir, 8).expect("AMIR lowering for generic ADT");
+    let issues = validate_amir_program(&amir, &tc.symbols, &tc.type_info.type_interner);
+    assert!(
+        issues.is_empty(),
+        "expected valid AMIR for generic ADT program, got: {issues:?}"
+    );
+
+    // Non-exhaustive match missing struct variant must report T024NonExhaustiveMatch
+    let non_exhaust_src = r#"
+enum Msg {
+    Ping,
+    Text { body: int }
+}
+
+func bad(m: Msg): int {
+    return match m {
+        Msg.Ping => 1
+    }
+}
+"#;
+    let bad_prog = arandu_parser::parse(non_exhaust_src).expect("parse non-exhaustive ADT");
+    let bad_res = resolve_for_test(0, &bad_prog);
+    let bad_tc = type_check(
+        bad_res,
+        &bad_prog,
+        arandu_semantics::TargetInfo { pointer_width: 64 },
+    );
+    assert!(
+        bad_tc
+            .diagnostics
+            .iter()
+            .any(|d| d.code == DiagCode::T024NonExhaustiveMatch),
+        "expected T024NonExhaustiveMatch, got: {:?}",
+        bad_tc.diagnostics
     );
 }

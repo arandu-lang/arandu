@@ -13,7 +13,7 @@
 //! not blocking waits.
 //!
 //! ## Allocations
-//! `newChannel` allocates its bounded ring buffer; `destroy` releases it.
+//! `Channel.new` allocates its bounded ring buffer; heap storage is released automatically on drop.
 //!
 //! ## Platform
 //! `native` · `wasm32`
@@ -56,8 +56,8 @@ public struct Channel<T> {
 ///
 /// A requested capacity of zero is treated as one. The current constructor
 /// does not return an allocation error; invalid sizes and allocation failure
-/// abort before the buffer is accessed. Release the buffer with `destroy`.
-public func newChannel<T>(capacity: uint): Channel<T> {
+/// abort before the buffer is accessed. The ring buffer is released automatically on drop.
+public func Channel.new<T>(capacity: uint): Channel<T> {
     let cap = if capacity == 0 { 1 as uint } else { capacity }
     let elem_size = mem.sizeOf<Option<T>>()
     let max_bytes: usize = 2147483647 as usize
@@ -87,6 +87,11 @@ public func newChannel<T>(capacity: uint): Channel<T> {
         len: 0,
         is_closed: false,
     }
+}
+
+/// Allocates a ring buffer for `capacity` values; equivalent to `Channel.new`.
+public func Channel.withCapacity<T>(capacity: uint): Channel<T> {
+    return Channel.new<T>(capacity)
 }
 
 /// Returns the number of items currently buffered in the channel.
@@ -158,18 +163,27 @@ public func Channel.tryRecv<T>(self: mut ref Channel<T>): Option<T> {
     return opt
 }
 
-/// Frees the ring buffer and resets its length to zero.
-///
-/// Remaining values are not individually visited by this method. The handle
-/// must not be used for send or receive after destruction.
-public func Channel.destroy<T>(self: mut ref Channel<T>): void {
+/// Internal helper that drops remaining buffered values and frees the ring buffer.
+func destroyChannel<T>(c: mut ref Channel<T>): void {
     unsafe {
         let nullp: ptr[Option<T>] = nil
-        if self.buf != nullp {
-            let byte_size = (self.cap as usize) * mem.sizeOf<Option<T>>()
-            ar_vec_buf_free(self.buf as ptr[u8], byte_size)
-            self.buf = nullp
-            self.len = 0
+        if c.buf != nullp {
+            let mut i = 0 as uint
+            while i < c.cap {
+                let slot = mem.ptrOffset<Option<T>>(c.buf, i as isize)
+                mem.dropInPlace<Option<T>>(slot)
+                i = i + 1
+            }
+            let byte_size = (c.cap as usize) * mem.sizeOf<Option<T>>()
+            ar_vec_buf_free(c.buf as ptr[u8], byte_size)
+            c.buf = nullp
+            c.len = 0
         }
     }
+}
+
+/// Automatic destructor invoked when an owned `Channel<T>` leaves scope.
+@Destructor
+func Channel.destroy<T>(self: own Channel<T>): void {
+    destroyChannel<T>(self)
 }

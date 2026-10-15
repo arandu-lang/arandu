@@ -1,6 +1,6 @@
 [package]
 name = "arandu_semantics"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2024"
 license.workspace = true
 authors.workspace = true
@@ -21,6 +21,7 @@ arandu_base = { path = "../arandu_base" }
 
 rustc-hash = { workspace = true }
 tracing.workspace = true
+blake3.workspace = true
 bumpalo = { workspace = true, features = ["collections"] }
 
 [lib]

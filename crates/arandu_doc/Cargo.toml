@@ -1,6 +1,6 @@
 [package]
 name = "arandu_doc"
-version = "0.1.9"
+version = "0.1.10"
 edition = "2024"
 license.workspace = true
 authors.workspace = true

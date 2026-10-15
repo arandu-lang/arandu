@@ -20,7 +20,7 @@ sintetiza programas de uma gramática limitada e dirigida por tipos para
 exercitar as camadas profundas do compilador. Esses programas percorrem o
 pipeline:
 
-$$\text{CST} \longrightarrow \text{AST} \longrightarrow \text{Resolve} \longrightarrow \text{Typeck} \longrightarrow \text{AMIR} \longrightarrow \text{Otimizações (O0 / O1 / O2)} \longrightarrow \text{Backends (Cranelift, C, WASM)}$$
+$$\text{CST} \longrightarrow \text{AST} \longrightarrow \text{Resolve} \longrightarrow \text{Typeck} \longrightarrow \text{AMIR} \longrightarrow \text{Otimizações (O0 / O1 / O2 / Os)} \longrightarrow \text{Backends (Cranelift, C, WASM)}$$
 
 O framework compara a execução entre Cranelift, C e Wasm e entre níveis de
 otimização, detecta divergências observadas e aciona redução estrutural limitada
@@ -39,8 +39,10 @@ desta revisão; os comandos ilustrativos posteriores não substituem esse corte.
 | EMI e redução existentes | Mutações limitadas a regiões não executadas para a entrada observada, oráculo por classe de falha, orçamento de redução e confirmação do candidato. |
 | Nova síntese de staging | Helper puro chamado por `comptime`, repetição `[value; comptime (expr)]`, soma por índice limitado e resultado independente derivado da seed. |
 | Novos casts de fronteira | Valores exatamente representáveis, incluindo `2^63` e `2^64 - 2048` em `u64`/`f64`, `i64::MIN`, `2^31` em `u32`/`f32`, `i32::MIN`, truncamento `255.75 as u8` para 255, `u8` 255 para `f32` e `i8` −128 para `f64`. |
-| Novo oráculo negativo | Uma mutação conhecida por programa válido; exige o `DiagCode` esperado como erro, ausência de ICE e igualdade dos diagnósticos em duas análises frias. |
+| Oráculo negativo por fonte | Mutações estruturais selecionadas na AST/CST canônica de uma fonte válida, com antecedentes semânticos por família; exige `DiagCode`, ausência de ICE e igualdade dos diagnósticos em duas análises frias. Limites: 16 KiB e 32 candidatos. |
 | Paridade CTFE/runtime | Casos escalares de soma, laços, recursão limitada, divisão/resto assinados, shifts e comparação unsigned acima de `i64::MAX`; compara apenas operações definidas nos dois modos. |
+| Matriz pela CLI | `xtask smith-cli` exercita JIT, executáveis nativos, C com GCC e Clang e core-Wasm no Node; as opções públicas da CLI limitam os níveis disponíveis em cada caminho. |
+| Bisseção de regressão | `scripts/bisect_smith.py` usa um reproducer explícito, valida os extremos good/bad e busca o primeiro commit ruim numa worktree temporária, preservando resultados inconclusivos. |
 
 As seeds variam valores e comprimentos mantendo índices válidos e laços
 limitados. A nova gramática participa do programa sintetizado completo e tem
@@ -50,13 +52,15 @@ esse nível na reprodução e redução de falhas. Conversões float→inteiro
 fora da faixa, NaN e infinity não são incluídos nessa equivalência: requerem
 seu próprio contrato de conversão e resultados esperados.
 
-As mutações negativas cobrem catchalls de match com guard, ausência de `}`,
-string Unicode não terminada, captura runtime por `comptime`, atribuição de
-tipo incompatível e divisor zero entre parênteses. Guards continuam válidos;
-o erro exigido é a falta de cobertura incondicional no caso não exaustivo.
-Parênteses também continuam válidos; o teste de divisor verifica o valor zero.
-O caminho negativo complementa a recuperação com texto arbitrário do target
-`pipeline`, sem tentar executar ou gerar código para a fonte inválida.
+O target negativo admite fontes completas válidas e procura seis famílias de
+mutações na AST/CST. Os sete seeds versionados agora contêm programas Arandu
+legíveis, com comentário `negative-family`, incluindo os dois casos de catchall
+(wildcard e binding). Entradas que não fornecem uma fonte elegível alimentam um
+gerador limitado, que varia helpers, arrays, branches e laços por seed; não se
+trata de um mutador geral de toda a linguagem. Guards e parênteses continuam
+válidos: os erros exigidos são, respectivamente, falta de cobertura incondicional
+e divisor comprovadamente zero. O caminho negativo complementa a recuperação
+com texto arbitrário do target `pipeline`, sem executar a fonte inválida.
 
 Os gates nativos existentes executam a cobertura aplicável no Windows com os
 compiladores/runners necessários presentes e preservam reproduções quando
@@ -120,6 +124,161 @@ são sequenciais, param no primeiro panic e têm limite superior de iterações.
 Os targets disponíveis são os nomes retornados por
 `arandu_fuzz_support::Target::name()` (por exemplo `synthesized-all`,
 `emi-corpus`, `incremental-cutoff` e `lsp-session`).
+
+### 3.1. Matriz de integração pela CLI
+
+O shard de tooling também executa `check-project-corpus` em PRs de código,
+comparando análise incremental/fria e ordem de registro de módulos nos casos
+versionados. Esse gate verifica análise e AMIR; não afirma executar todos os
+projetos em todos os backends. A execução diferencial pertence à matriz abaixo.
+
+```bash
+cargo build --locked -p arandu_cli -p arandu_runtime
+cargo run --locked -p xtask -- smith-cli \
+  --arandu target/debug/arandu_cli \
+  --evidence-dir target/smith-cli-example \
+  --seed 0 --iterations 1
+```
+
+O diretório de evidências deve ser novo. O comando cria um projeto por seed e
+executa os comandos públicos do binário indicado, o linker nativo e os
+artefatos resultantes. O programa usa a gramática limitada de staging, arrays
+e casts; seu resultado inteiro completo em stdout, stderr e sucesso do processo
+são verificados contra o valor independente calculado pelo sintetizador Rust.
+O retorno de `main` é zero para evitar truncamento de resultados pelo código
+de saída do sistema operacional.
+
+| Caminho | Níveis efetivamente executados |
+| --- | --- |
+| CLI `run` / JIT | O0 e O1 (`--opt`) |
+| CLI `build` / executável nativo | dev, O2 (`--release`) e Os (`--size`) |
+| CLI `emit-c` / GCC e Clang | AMIR O0/O1/Os, compilador C O0/O2/Os respectivamente |
+| CLI `emit-wasm` / Node | AMIR O0/O1/Os, core-Wasm com layout ptr4 |
+
+São 14 execuções por seed na matriz completa. Isso complementa a matriz de IR
+Cranelift/C/Wasm × O0/O1/O2/Os; não significa que todos esses níveis estejam
+expostos em todos os comandos da CLI. GCC, Clang e Node são requisitos da matriz
+completa; uma ferramenta ausente falha explicitamente. `--native-only` executa
+os cinco caminhos JIT/nativos e registra os demais como excluídos; esse modo
+permite exercitar o linker nas plataformas nativas sem exigir GCC/Clang.
+`ARANDU_NODE` pode selecionar o executável Node.
+
+Cada subprocesso tem limite de 120 segundos e captura limitada a 1 MiB por
+canal, usando o isolamento de processos do Smith. A seed e `input.aru` são
+gravados antes do scaffold, e o relatório inclui o BLAKE3 da fonte. C e Wasm
+emitidos, comandos/argumentos, overrides explícitos de ambiente necessários
+aos canais de resultado/fase, diretórios de trabalho, status, stdout/stderr de
+processos concluídos e relatório JSON ficam no diretório informado, inclusive
+após uma falha. Em timeout, a evidência conserva a invocação e o erro, mas o
+helper atual não retorna a captura parcial dos dois canais. A matriz não
+executa Wasmtime nem Component Model: essas exclusões aparecem no relatório.
+Concordância entre GCC e Clang também não torna seus frontends Arandu
+independentes, pois recebem o mesmo C emitido.
+
+### 3.2. Identificação do commit de regressão
+
+No Linux e em outros hosts POSIX, a ferramenta isolada requer Python 3.11 ou
+superior e aceita um arquivo de reprodução, dois commits e comandos explícitos
+de build e replay:
+
+```bash
+python3 scripts/bisect_smith.py \
+  --good <commit-validado> --bad <commit-com-a-falha> \
+  --artifact /caminho/absoluto/candidate.aru \
+  --output target/smith-bisect-caso \
+  --build-command '["cargo", "build", "--locked", "-p", "arandu_cli"]' \
+  --repro-command '["python3", "/caminho/absoluto/replay_caso.py"]'
+```
+
+Os comandos são arrays JSON de argumentos, sem shell. O replay é fornecido pelo
+desenvolvedor e deve reconhecer a falha específica: retorna 0 quando ela está
+ausente, 1 quando se reproduz e 125 quando a revisão é inconclusiva. Outros
+códigos abortam a investigação. Não se deve usar um comando que retorne 1 para
+qualquer erro de infraestrutura, pois isso confundiria outra falha com o bug
+alvo. O script não executa comandos extraídos dos metadados do artefato.
+
+O replay recebe `ARANDU_BISECT_ARTIFACT` com uma cópia do arquivo e
+`ARANDU_BISECT_COMMIT` com o commit em avaliação; seu diretório de trabalho é o
+checkout histórico. `CARGO_TARGET_DIR` fica dentro dessa worktree temporária.
+Comandos de replay externos devem usar caminhos absolutos para não depender da
+presença do próprio harness em commits antigos. A busca exige que good seja
+ancestral de bad, ambos diferentes, e executa os dois extremos antes de iniciar
+`git bisect`. Pressupõe uma regressão reproduzível no intervalo; não identifica
+automaticamente introduções e correções alternadas de um mesmo bug.
+
+Falha ou timeout no build e timeout no replay são classificados como skip,
+preservando a diferença entre revisão não testável e bug reproduzido. Se os
+skips impedirem uma conclusão única, o relatório é inconclusivo e não atribui
+um culpado. Os limites padrão são 600 segundos por build, 30 por replay e
+3.600 no conjunto, configuráveis pelas opções `--build-timeout`,
+`--repro-timeout` e `--total-timeout`. Grupos de processos POSIX encerram também
+os descendentes após cada fase. O runner não oferece suporte Windows sem um
+mecanismo equivalente de Job Object.
+
+A ferramenta conserva o arquivo original copiado, seu SHA-256, good/bad,
+classificação e logs por tentativa, histórico de bisseção e `report.json` no
+diretório novo solicitado. Remove somente a worktree criada por ela; o checkout
+principal e suas alterações locais permanecem intactos. Não cria commits,
+issues, PRs nem publica artefatos. Os testes com históricos Git temporários
+cobrem identificação, endpoints adjacentes, checkout sujo, revisão não
+compilável/ambígua, falha alheia ao protocolo e encerramento de descendentes:
+
+```bash
+python3 -m unittest discover -s scripts -p test_bisect_smith.py
+```
+
+### 3.3. Mutações negativas sobre programas válidos
+
+O mutador estrutural usa as queries canônicas de parse e typecheck; os spans
+da AST/CST delimitam cada edição. A fonte precisa passar sem erro nem ICE antes
+da seleção. As mutações não dependem de um match textual global e não tratam
+todo guard, parêntese ou `.parent()` como erro.
+
+| Família | Antecedente e edição | Diagnóstico esperado |
+| --- | --- | --- |
+| `assignment-type` | Binding único com tipo numérico explícito e inicializador numérico tipado; substitui o inicializador por `false`. | T002 |
+| `zero-divisor` | Divisão ou resto cujo operando esquerdo é inteiro tipado; substitui o divisor por `(0)`. | T040 |
+| `guarded-catchall` | Match de enum com um único braço wildcard ou binding, sem guard; insere `if false`. | T024 |
+| `runtime-capture` | Local imutável inicializado por literal inteiro, anterior a uma raiz `comptime expr` no bloco externo de uma função não genérica; substitui a expressão avaliada pelo nome do local. | T043 |
+| `missing-brace` | Chave de fechamento de bloco no fim da fonte, seguida somente de whitespace; remove essa chave. | P001 |
+| `unterminated-string` | Token string entre aspas, sem outra aspa depois do fechamento; remove a aspa final. | LX001 |
+
+As três primeiras famílias semânticas ficam restritas ao subconjunto de
+funções/enums sem imports, parâmetros genéricos, expressões genéricas, layout
+ou staging. Assim, o mutador não presume que a identidade de uma expressão de
+origem sobreviveu a especialização ou descarte por `comptime if`. A captura
+runtime tem os antecedentes próprios descritos na tabela; raízes em blocos
+aninhados não são inferidas. As edições sintáticas independem de alcance após
+staging, pois o parser precisa inspecionar também os ramos descartados.
+
+As fontes têm limite de 16 KiB. Os candidatos são ordenados por posição e
+família, deduplicados e limitados aos primeiros 32. O target de fuzz escolhe
+uma edição elegível por seed; o replay explícito verifica todos os candidatos
+admitidos, opcionalmente filtrados por família:
+
+```bash
+cargo run --locked -p xtask -- check-negative-source /caminho/caso.aru
+cargo run --locked -p xtask -- check-negative-source /caminho/caso.aru zero-divisor
+```
+
+Esse comando retorna 0 quando todos os candidatos verificados satisfazem o
+contrato, 1 quando encontra um contraexemplo do oráculo e 2 para fonte inválida,
+família sem candidato elegível ou erro de invocação. Portanto, uma entrada
+vazia de cobertura não é contada como sucesso. Para cada mutante, exige o
+diagnóstico estruturado esperado como erro, ausência de ICE e igualdade
+completa dos diagnósticos em duas análises frias, incluindo sua ordenação.
+
+Quando o target encontra um contraexemplo, a redução tem até 12 consultas de
+candidatos e uma confirmação final. Só aceita reduções cuja baseline continue
+válida e cuja edição preserve família, diagnóstico e identidade da falha.
+Se a confirmação não se repetir, conserva o caso original. O pacote inclui
+`original-valid.aru`, `original-mutant.aru`, `valid.aru`, `mutant.aru` e
+`negative.json`, com código
+esperado, classe/escopo, orçamento e argumentos explícitos de replay pelo
+comando acima. Isso torna os casos revisáveis sem precisar decodificar um
+seletor binário. As restrições de admissão, orçamento e tipos ainda deixam
+combinações da linguagem fora dessa cobertura; não há promessa de rejeição
+universal ou de mutação arbitrária.
 
 ### O Fluxo de Diagnóstico e Redução:
 
@@ -652,7 +811,7 @@ compara os três resultados em uma única invocação. O `xtask smith` executa c
 seed em um worker isolado; um JIT que não termina encerra somente o worker ao
 vencer o orçamento da seed, sem prender a campanha. C usa `CC` (ou `cc`) e Wasm
 usa Node (`ARANDU_NODE` para selecionar outro executável). A execução JIT
-também compara O0/O1/O2. O1/O2 compartilham hoje o núcleo de simplificação,
+também compara O0/O1/O2/Os. O1/O2 compartilham hoje o núcleo de simplificação,
 portanto essa verificação compara níveis expostos pela API, não pipelines
 independentes. O timeout de execução isolada do corpus protege o runner de
 regressões que travem. O runner de regressões e o workflow de fuzz usam o mesmo
@@ -735,9 +894,13 @@ protegidos, enquanto statements sem uso do contador podem ser reduzidos. Laços
 com condição, fluxo de controle ou progresso não reconhecidos ficam protegidos
 por inteiro. Isso evita que um falso positivo no reconhecimento de progresso
 transforme um candidato em loop infinito executado pelo JIT no mesmo processo.
-O isolamento do JIT em subprocesso
-continua necessário para impor timeout por tentativa e permanece trabalho
-futuro.
+O isolamento do JIT em subprocesso impõe o timeout por tentativa quando há
+worker configurado. O `xtask` encontra seu subcomando `smith-jit-worker`
+automaticamente; outros executáveis podem indicar `ARANDU_JIT_WORKER_BIN` ou
+ativar a descoberta com `ARANDU_SMITH_ISOLATE_JIT`. Sem um worker disponível, o
+oráculo conserva a execução em processo, que não pode interromper um JIT
+travado por tentativa. `ARANDU_SMITH_NO_JIT_SUBPROCESS` desativa o worker
+explicitamente para os caminhos que necessitam execução em processo.
 Chunks e seus complementos também são visitados sob demanda: na granularidade
 mais fina, isso evita materializar O(n²) ranges antes de consultar o orçamento
 do oráculo.
@@ -747,12 +910,13 @@ preservam a classe e o nível de otimização da falha e reexecutam o candidato
 final antes de incluí-lo no panic do fuzz target. Isso impede que uma falha em
 O2 seja considerada reduzida por outra discrepância do mesmo backend em O0.
 Panics Rust durante frontend/lowering, otimização ou execução de backend são
-convertidos em falhas com classe própria e escopo O0/O1/O2 antes de chegar ao
+convertidos em falhas com classe própria e escopo O0/O1/O2/Os antes de chegar ao
 redutor; uma regressão confirma a captura e a elegibilidade para shrink. Falhas
 de processos C/Node também são observadas pelo status de saída e timeout. Um
 segfault no processo do próprio fuzz target ainda encerra esse worker e não
 passa pelo redutor em processo; a fixture bruta continua sendo responsabilidade
-do libFuzzer, e isolamento do JIT em subprocesso permanece trabalho futuro.
+do libFuzzer. Com o worker JIT configurado, saída por sinal, falha de processo e
+timeout são convertidos em classes de falha do oráculo e podem chegar à redução.
 Depois de uma falha reduzível, o runner grava `candidate.aru`, a mutação EMI,
 `reproducer.seed`, a entrada binária e `metadata.txt` com target, classe,
 escopo, orçamento e comando de replay. Localmente o

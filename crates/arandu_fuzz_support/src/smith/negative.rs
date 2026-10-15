@@ -4,17 +4,17 @@
 //! code. This is separate from arbitrary-source recovery: accepting an invalid
 //! mutation is a failure even when the compiler does not panic.
 
-use std::panic::{catch_unwind, AssertUnwindSafe};
-
 use arandu_middle::{DiagCode, Diagnostic, Severity};
 use arandu_query::AnalysisHost;
 
-use super::artifact::{panic_payload_message, Failure};
-use super::oracle::seed_from_data;
+use super::artifact::Failure;
+
+pub(crate) mod structural;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Mutation {
     GuardedWildcard,
+    #[cfg(test)]
     GuardedBinding,
     MissingBrace,
     UnterminatedUnicodeString,
@@ -24,6 +24,7 @@ enum Mutation {
 }
 
 impl Mutation {
+    #[cfg(test)]
     const ALL: [Self; 7] = [
         Self::GuardedWildcard,
         Self::GuardedBinding,
@@ -34,6 +35,7 @@ impl Mutation {
         Self::ZeroDivisor,
     ];
 
+    #[cfg(test)]
     fn case(self, seed: u64) -> Case {
         let value = seed % 127 + 1;
         let (valid, from, to, expected) = match self {
@@ -107,24 +109,33 @@ fn diagnostics(source: &str) -> Vec<Diagnostic> {
         .to_vec()
 }
 
+#[cfg(test)]
 fn verify(case: &Case) -> Result<(), Failure> {
-    let failure = |kind, message: String| {
-        Failure::new(
-            kind,
-            format!("{:?}: {message}\nsource:\n{}", case.mutation, case.invalid),
-            false,
-        )
-    };
     let baseline = diagnostics(&case.valid);
     if baseline
         .iter()
-        .any(|diagnostic| diagnostic.severity == Severity::Error || diagnostic.is_ice())
+        .any(|d| d.severity == Severity::Error || d.is_ice())
     {
-        return Err(failure(
+        return Err(Failure::new(
             "invalid-negative-baseline",
-            format!("valid source was rejected: {baseline:?}"),
+            format!("{baseline:?}"),
+            false,
         ));
     }
+    verify_rejection(case)
+}
+
+fn verify_rejection(case: &Case) -> Result<(), Failure> {
+    let failure = |kind, message: String| {
+        Failure::new(
+            kind,
+            format!(
+                "{:?}: {message}\nbaseline:\n{}\nmutant:\n{}",
+                case.mutation, case.valid, case.invalid
+            ),
+            false,
+        )
+    };
     let rejected = diagnostics(&case.invalid);
     if rejected.iter().any(Diagnostic::is_ice) {
         return Err(failure("negative-mutation-ice", format!("{rejected:?}")));
@@ -150,25 +161,7 @@ fn verify(case: &Case) -> Result<(), Failure> {
 
 /// Run alongside arbitrary-source pipeline recovery in the existing fuzz target.
 pub(crate) fn run(data: &[u8]) {
-    let mutation =
-        Mutation::ALL[usize::from(data.first().copied().unwrap_or_default()) % Mutation::ALL.len()];
-    let seed = seed_from_data(data);
-    let case = mutation.case(seed);
-    let result = catch_unwind(AssertUnwindSafe(|| verify(&case))).unwrap_or_else(|payload| {
-        Err(Failure::new(
-            "negative-mutation-panicked",
-            format!(
-                "{:?}, seed={seed}: {}\nsource:\n{}",
-                mutation,
-                panic_payload_message(payload),
-                case.invalid
-            ),
-            false,
-        ))
-    });
-    if let Err(failure) = result {
-        panic!("negative mutation oracle: {failure:?}");
-    }
+    structural::run(data);
 }
 
 #[cfg(test)]
@@ -187,7 +180,7 @@ mod tests {
     }
 
     #[test]
-    fn pipeline_negative_mutations_cover_every_selector() {
+    fn pipeline_negative_mutations_accept_arbitrary_generator_bytes() {
         for selector in 0..7 {
             crate::run(crate::Target::Pipeline, &[selector]);
         }

@@ -1,2 +1,8 @@
 encoding=utf8
-7 grouped integer zero divisor must be rejected
+// negative-family: zero-divisor
+func helper(x: int): int {
+    let values = [x, x + 1]
+    if x > 0 { return values[0] / (2 + 1) }
+    return values[1] % 3
+}
+func main(): int { return helper(7) }

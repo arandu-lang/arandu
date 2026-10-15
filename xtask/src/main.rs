@@ -17,11 +17,13 @@ mod fuzz_artifact;
 mod fuzz_regressions;
 mod incremental;
 mod line_endings;
+mod negative_source;
 mod performance;
 mod release_assets;
 mod release_contract;
 mod slt6;
 mod smith;
+mod smith_cli;
 mod wasm;
 
 use std::env;
@@ -40,6 +42,7 @@ fn main() {
             performance::cmd_check_project_performance(&workspace_root())
         }
         "check-fuzz-regressions" => fuzz_regressions::check(&workspace_root()),
+        "check-negative-source" => negative_source::run(args),
         "promote-fuzz-sequence" => fuzz_regressions::promote_sequence(&workspace_root(), args),
         "promote-fuzz-artifact" => fuzz_artifact::promote(&workspace_root(), args),
         "check-architecture" => architecture::check(&workspace_root()),
@@ -47,6 +50,7 @@ fn main() {
         "bench-incremental" => incremental::run(&workspace_root(), args),
         "run-fuzz-seed" => fuzz_regressions::run_one(args),
         "smith" => smith::run(args),
+        "smith-cli" => smith_cli::run(args),
         "smith-worker" => smith::run_worker(args),
         "smith-jit-worker" => smith::run_jit_worker(args),
         "verify-fuzz-source" => fuzz_artifact::verify_source(args),
@@ -82,7 +86,9 @@ Commands:
   check-project-churn   Run deterministic S2 module and identity churn
   check-project-performance  Measure S2 cold/noop/edit and retention budgets
   check-fuzz-regressions  Run the versioned adversarial corpus with isolation
+  check-negative-source  Replay structural rejection mutations on a valid source
   smith                   Run a deterministic AranduSmith seed campaign
+  smith-cli               Check real CLI JIT/native/GCC/Clang/core-Wasm paths
   promote-fuzz-artifact  Verify and add a minimized failure to the EMI regression corpus
   promote-fuzz-sequence  Verify and add an incremental/LSP byte sequence to the regression corpus
   check-architecture  Enforce compiler crate and effect boundaries
@@ -104,7 +110,9 @@ Examples:
   cargo run -p xtask -- check-project-churn
   cargo run -p xtask -- check-project-performance
   cargo run -p xtask -- check-fuzz-regressions
+  cargo run -p xtask -- check-negative-source /tmp/source.aru [mutation-name]
   cargo run -p xtask -- smith --iterations 100 --seed 0 --target synthesized-all
+  cargo run -p xtask -- smith-cli --arandu target/debug/arandu_cli --evidence-dir target/smith-cli --seed 0 --iterations 8
   cargo run -p xtask -- promote-fuzz-artifact /tmp/arandu-smith-artifacts/ARTIFACT c-backend-regression
   cargo run -p xtask -- promote-fuzz-sequence incremental 01020304 incremental-case incremental-public-edit-invalidation
   cargo run -p xtask -- check-architecture

@@ -1,2 +1,7 @@
 encoding=utf8
-3 incomplete outer block must recover with a parser diagnostic
+// negative-family: missing-brace
+func helper(x: int): int {
+    if x > 0 { return x }
+    return 0
+}
+func main(): int { return helper(3) }

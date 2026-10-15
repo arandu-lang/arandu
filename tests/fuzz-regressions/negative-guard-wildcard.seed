@@ -1,2 +1,5 @@
 encoding=utf8
-1 guarded wildcard cannot prove enum exhaustiveness
+// negative-family: guarded-catchall
+enum Color { Red, Blue }
+func pick(c: Color): int { return match c { _ => 42 } }
+func main(): int { return pick(Color.Red) }

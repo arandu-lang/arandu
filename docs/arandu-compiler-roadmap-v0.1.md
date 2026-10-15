@@ -115,7 +115,11 @@ quando cumprir seu contrato atual.
    definidos, paridade CTFE/runtime e mutações negativas determinísticas por
    `DiagCode`, incluindo Os (`--size`) na matriz Cranelift/C/Wasm
    O0/O1/O2/Os; executar a cobertura de portabilidade em Windows nativo e
-   preservar reproduções. O
+   preservar reproduções. A integração inclui `smith-cli` nos caminhos reais
+   JIT/nativo/GCC/Clang/core-Wasm, mutações AST/CST de fontes válidas com replay
+   explícito e bisseção POSIX isolada de reproduções. O corpus de projetos
+   compara análise incremental/fria no PR; isso não equivale à execução de
+   todos os projetos em todos os backends. O
    [contrato integrado da RFC 0022](./rfcs/0022-holistic-synthesis-differential-fuzzing.md#11-contrato-integrado-na-revisão-0110)
    delimita a cobertura. O framework de remarks, diretivas de codegen e
    políticas especializadas da RFC 0025 continua proposto; avançar por recortes

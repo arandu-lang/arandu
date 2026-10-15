@@ -1,2 +1,5 @@
 encoding=utf8
-4 unterminated Unicode string must produce a lexical diagnostic
+// negative-family: unterminated-string
+func main(): void {
+    let text: str = "ação_界_🦀"
+}

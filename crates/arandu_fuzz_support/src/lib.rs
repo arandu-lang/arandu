@@ -14,6 +14,17 @@ pub mod process_job;
 pub mod shrinker;
 pub mod smith;
 
+pub use smith::negative::structural::NegativeSourceError;
+
+/// Validate a source, then check bounded AST-directed negative mutations.
+/// Invalid baselines and unsupported families are reported separately from bugs.
+pub fn verify_negative_source(
+    source: &str,
+    mutation: Option<&str>,
+) -> Result<usize, NegativeSourceError> {
+    smith::negative::structural::verify_source(source, mutation)
+}
+
 pub const MAX_INPUT_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

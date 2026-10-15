@@ -72,6 +72,15 @@ GCC/Clang. Isso não impede `check`, `run` JIT ou o LSP numa instalação binár
 mas `build` falha de forma operacional e preserva o último artefato válido.
 O SDK inclui a biblioteca estática do runtime correspondente ao target.
 
+No Windows, a CLI prepara objetos, runtime e saída do linker em um diretório
+temporário com caminhos completos abaixo de `MAX_PATH`. Argumentos relativos
+isoladamente não removem esse limite do MSVC. Os nomes e hashes do cache de CGU
+permanecem intactos; somente o executável ligado com sucesso volta ao staging
+da publicação atômica. O diretório temporário é removido em sucesso ou erro.
+Se o próprio diretório temporário for longo demais, `build` solicita um `TEMP`
+mais curto e gravável. Essa preparação também abrange o linker configurado
+explicitamente e o fallback `rustc` exclusivo dos checkouts de desenvolvimento.
+
 ### Limites explícitos de v0.1
 
 - `run` é host-JIT; `build` gera executável AOT apenas para o host. Não há

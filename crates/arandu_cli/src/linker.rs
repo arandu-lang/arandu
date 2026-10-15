@@ -7,6 +7,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+#[cfg(any(windows, test))]
+mod msvc_workspace;
+
 /// Linker provenance recorded alongside the final artifact.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LinkerKind {
@@ -142,8 +145,49 @@ fn link_objects_with_mode(
         ));
     }
     let runtime = runtime_library()?;
+    // MSVC opens fully qualified paths even for relative command-line inputs.
+    // Keep all our inputs/output short, including discovery scripts and rustc's
+    // fallback stub; the artifact layer still owns final atomic publication.
+    #[cfg(windows)]
+    {
+        let workspace = msvc_workspace::MsvcWorkspace::new(objects, &runtime)
+            .map_err(|error| link_failure(output, error.to_string()))?;
+        let object_refs: Vec<_> = workspace.objects.iter().map(PathBuf::as_path).collect();
+        let kind = link_prepared_objects(
+            &object_refs,
+            &workspace.runtime,
+            &workspace.output,
+            patchable_elf,
+            size,
+        )
+        .map_err(|mut failure| {
+            if let CliFailure::Operational { context, .. } = &mut failure {
+                *context = Some(output.to_path_buf());
+            }
+            failure
+        })?;
+        workspace
+            .copy_output(output)
+            .map_err(|error| link_failure(output, error.to_string()))?;
+        Ok(kind)
+    }
+    #[cfg(not(windows))]
+    link_prepared_objects(objects, &runtime, output, patchable_elf, size)
+}
+
+fn link_prepared_objects(
+    objects: &[&Path],
+    runtime: &Path,
+    output: &Path,
+    patchable_elf: bool,
+    size: bool,
+) -> Result<LinkerKind, CliFailure> {
     if let Some(explicit) = std::env::var_os("ARANDU_LINKER") {
-        return match run_system_linker(&explicit, objects, &runtime, output, patchable_elf, size) {
+        // A configured relative executable belongs to the caller, not to the
+        // temporary linking directory. Bare names continue to use PATH.
+        let explicit = resolve_linker_executable(explicit)
+            .map_err(|error| link_failure(output, format!("resolve ARANDU_LINKER: {error}")))?;
+        return match run_system_linker(&explicit, objects, runtime, output, patchable_elf, size) {
             Ok(()) => Ok(LinkerKind::System),
             Err(LinkAttempt::NotFound) => Err(link_failure(
                 output,
@@ -157,7 +201,7 @@ fn link_objects_with_mode(
     }
 
     for candidate in system_linker_candidates() {
-        match run_system_linker(&candidate, objects, &runtime, output, patchable_elf, size) {
+        match run_system_linker(&candidate, objects, runtime, output, patchable_elf, size) {
             Ok(()) => return Ok(LinkerKind::System),
             Err(LinkAttempt::NotFound) => {}
             Err(LinkAttempt::Failed(message)) => {
@@ -167,7 +211,7 @@ fn link_objects_with_mode(
     }
 
     #[cfg(windows)]
-    match run_discovered_msvc(objects, &runtime, output, size) {
+    match run_discovered_msvc(objects, runtime, output, size) {
         Ok(()) => return Ok(LinkerKind::System),
         Err(LinkAttempt::NotFound) => {}
         Err(LinkAttempt::Failed(message)) => return Err(link_failure(output, message)),
@@ -176,8 +220,23 @@ fn link_objects_with_mode(
     // This fallback keeps compiler-development checkouts testable without a
     // separately configured native linker. Public SDKs do not contain rustc;
     // their native release smoke must exercise the system path above.
-    link_with_rustc(objects, &runtime, output, patchable_elf, size)?;
+    link_with_rustc(objects, runtime, output, patchable_elf, size)?;
     Ok(LinkerKind::RustcDevelopmentFallback)
+}
+
+fn resolve_linker_executable(linker: OsString) -> std::io::Result<OsString> {
+    let path = Path::new(&linker);
+    if !path.is_absolute()
+        && path
+            .parent()
+            .is_some_and(|parent| !parent.as_os_str().is_empty())
+    {
+        // Preserve the final name: lld-link/clang-cl can be symlinks whose
+        // names select driver behavior. Canonicalization would change it.
+        Ok(std::path::absolute(path)?.into_os_string())
+    } else {
+        Ok(linker)
+    }
 }
 
 /// Links a single Cranelift object with the target-matched Arandu runtime.
@@ -719,6 +778,28 @@ fn link_failure(output: &Path, message: String) -> CliFailure {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(unix)]
+    fn relative_linker_preserves_its_symlink_driver_name() {
+        let workspace = msvc_workspace::MsvcWorkspace::new(
+            &[],
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"),
+        )
+        .unwrap();
+        let driver = workspace.output.with_file_name("lld-link");
+        fs::write(driver.with_file_name("lld"), b"driver").unwrap();
+        std::os::unix::fs::symlink("lld", &driver).unwrap();
+        let relative = make_relative(&driver, &std::env::current_dir().unwrap());
+        let resolved = resolve_linker_executable(relative.into_os_string()).unwrap();
+        assert!(Path::new(&resolved).is_absolute());
+        assert_eq!(Path::new(&resolved).file_name(), driver.file_name());
+        assert_eq!(fs::read(resolved).unwrap(), b"driver");
+        assert_eq!(
+            resolve_linker_executable("link.exe".into()).unwrap(),
+            "link.exe"
+        );
+    }
 
     #[test]
     fn verbatim_prefix_stripping() {

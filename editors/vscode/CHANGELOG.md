@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.10
+
+- Align the extension, language server and SDK release version to 0.1.10.
+
 ## 0.1.9
 
 - Release candidate promotion preparation.

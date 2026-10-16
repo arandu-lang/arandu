@@ -9,6 +9,7 @@ import {
     parseDiscoveryReport,
     parseTestReport
 } from './testingProtocol';
+import { expandConfiguredPath } from './serverDiscovery';
 
 interface DiscoveredCase {
     readonly canonicalId: string;
@@ -360,14 +361,18 @@ async function runBenchmark(
 
 export function discoverCli(context: vscode.ExtensionContext, workspaceRoot: string): string | undefined {
     const configured = vscode.workspace.getConfiguration('arandu').get<string | null>('cli.path')?.trim();
-    if (configured && path.isAbsolute(configured) && executable(configured)) {
-        return configured;
+    if (configured) {
+        const expanded = expandConfiguredPath(configured, [workspaceRoot], process.env);
+        if (path.isAbsolute(expanded) && executable(expanded)) {
+            return expanded;
+        }
     }
     const suffix = process.platform === 'win32' ? '.exe' : '';
     const server = vscode.workspace.getConfiguration('arandu').get<string | null>('server.path')?.trim();
+    const serverDir = server ? path.dirname(expandConfiguredPath(server, [workspaceRoot], process.env)) : undefined;
     const candidates = [
-        server ? path.join(path.dirname(server), `arandu${suffix}`) : undefined,
-        server ? path.join(path.dirname(server), `arandu_cli${suffix}`) : undefined,
+        serverDir ? path.join(serverDir, `arandu${suffix}`) : undefined,
+        serverDir ? path.join(serverDir, `arandu_cli${suffix}`) : undefined,
         path.join(workspaceRoot, 'target', 'release', `arandu_cli${suffix}`),
         path.join(workspaceRoot, 'target', 'debug', `arandu_cli${suffix}`),
         path.resolve(context.extensionPath, '..', '..', 'target', 'release', `arandu_cli${suffix}`),

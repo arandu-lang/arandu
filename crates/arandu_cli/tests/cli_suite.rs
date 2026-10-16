@@ -36,6 +36,9 @@ mod cli_color_handling;
 #[path = "cli_suite/cli_comptime.rs"]
 mod cli_comptime;
 
+#[path = "cli_suite/cli_decimal.rs"]
+mod cli_decimal;
+
 #[path = "cli_suite/cli_core_foundation.rs"]
 mod cli_core_foundation;
 

@@ -296,3 +296,252 @@ func main(): int {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[test]
+fn decimal_128_exact_financial_arithmetic() {
+    let output = run_source(
+        "core_decimal.aru",
+        r#"module core_decimal
+
+import std.core.decimal as dec
+
+func parseOrZero(s: str): dec.Decimal {
+    match dec.Decimal.fromStr(s) {
+        Option.Some(v) => { return v }
+        Option.None => { return dec.Decimal.zero() }
+    }
+}
+
+func main(): int {
+    // 1. Exact 0.1 + 0.2 == 0.3
+    let a = parseOrZero("0.1")
+    let b = parseOrZero("0.2")
+    let c = parseOrZero("0.3")
+    let sum = a.add(b)
+    if !sum.eq(c) { return 1 }
+
+    // 2. Scale normalization: 1.5 == 1.500
+    let d1 = parseOrZero("1.5")
+    let d2 = parseOrZero("1.500")
+    if !d1.eq(d2) { return 2 }
+
+    // 3. Banker's rounding (HalfEven): 2.5 -> 2, 3.5 -> 4
+    let r25 = parseOrZero("2.5").round(0 as u32, dec.RoundingMode.HalfEven)
+    let r35 = parseOrZero("3.5").round(0 as u32, dec.RoundingMode.HalfEven)
+    if r25.toInt() != 2 { return 3 }
+    if r35.toInt() != 4 { return 4 }
+
+    // 4. Commercial rounding (HalfUp): 2.5 -> 3
+    let r25Up = parseOrZero("2.5").round(0 as u32, dec.RoundingMode.HalfUp)
+    if r25Up.toInt() != 3 { return 5 }
+
+    // 5. Financial multiplication and cents: 19.99 * 3 == 59.97 (5997 cents)
+    let price = dec.Decimal.fromCents(1999)
+    let qty = dec.Decimal.fromInt(3)
+    let total = price.mul(qty)
+    if total.toCents() != 5997 { return 6 }
+
+    // 6. Division: 10.50 / 2 == 5.25 (525 cents)
+    let ten50 = dec.Decimal.fromCents(1050)
+    let two = dec.Decimal.fromInt(2)
+    match ten50.div(two) {
+        Option.Some(half) => {
+            if half.toCents() != 525 { return 7 }
+        }
+        Option.None => { return 8 }
+    }
+
+    // 7. Division by zero returns None
+    match ten50.div(dec.Decimal.zero()) {
+        Option.Some(_) => { return 9 }
+        Option.None => {}
+    }
+
+    return 0
+}
+"#,
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "Decimal 128 program failed (code {:?}): {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn bit_methods_and_checked_abs_are_available_without_imports() {
+    let output = run_source(
+        "bits.aru",
+        r#"module bits
+func main(): int {
+    let zero: u32 = 0
+    let high: u64 = 9223372036854775808
+    if zero.countOnes() != 0 { return 1 }
+    if zero.leadingZeros() != 32 { return 2 }
+    if zero.trailingZeros() != 32 { return 3 }
+    if high.countOnes() != 1 { return 4 }
+    if high.leadingZeros() != 0 { return 5 }
+    if high.trailingZeros() != 63 { return 6 }
+    if high.reverseBits() != (1 as u64) { return 7 }
+    let min: int = -2147483647 - 1
+    match min.checkedAbs() { Option.Some(_) => { return 8 } Option.None => {} }
+    if (-123).abs() != 123 { return 9 }
+    return 0
+}
+"#,
+    );
+    assert!(
+        output.status.success(),
+        "{:?} {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn absolute_value_traps_instead_of_returning_negative_minimum() {
+    let output = run_source(
+        "absMinimum.aru",
+        r#"module absMinimum
+func main(): int {
+    let minimum: int = -2147483647 - 1
+    let result = minimum.abs()
+    if result < 0 { return 0 }
+    return 0
+}
+"#,
+    );
+    assert!(
+        !output.status.success(),
+        "abs(MIN) must not return normally"
+    );
+    assert!(
+        output.stderr.is_empty(),
+        "expected execution trap, not a compile error: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn ordinary_functions_named_like_bit_intrinsics_keep_their_body() {
+    let output = run_source(
+        "bitNames.aru",
+        r#"module bitNames
+func bitCountOnes32(value: u32): u32 { return value + 7 }
+func main(): int { if bitCountOnes32(5) != 12 { return 1 }; return 0 }
+"#,
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn foreign_bit_names_still_require_unsafe() {
+    let output = run_source(
+        "foreignBits.aru",
+        r#"module foreignBits
+extern "C" { func bitCountOnes32(value: u32): u32 }
+func main(): int { return bitCountOnes32(5) as int }
+"#,
+    );
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("O013"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn bit_intrinsics_reject_unsupported_machine_signatures() {
+    for declaration in [
+        "func bitCountOnes32(): u32",
+        "func bitCountOnes32(value: u64): u32",
+        "func bitCountOnes64(value: u64): u64",
+        "func bitReverse64(value: u64): u32",
+        "func bitReverse32(value: ref u32): u32",
+        "func bitLeadingZeros32<T>(value: u32): u32",
+        "func bitTrailingZeros64(a: u64, b: u64): u32",
+    ] {
+        let source = format!(
+            "module std.core.invalidBits\nextern \"arandu-intrinsic\" {{ {declaration} }}\nfunc main(): int {{ return 0 }}"
+        );
+        let output = run_source("invalidBits.aru", &source);
+        assert!(!output.status.success(), "accepted {declaration}");
+        let errors = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            errors.contains("U001") && errors.contains("unsupported signature"),
+            "{declaration}: {errors}"
+        );
+        assert!(!errors.contains("ICE"), "{declaration}: {errors}");
+    }
+}
+
+#[test]
+fn arena_get_cannot_duplicate_a_noncopy_owner() {
+    let output = run_source(
+        "arenaCopy.aru",
+        r#"module arenaCopy
+import std.alloc.gen_arena as arena
+import std.alloc.string as strings
+func main(): int {
+    let mut values = arena.GenArena<strings.String>.new()
+    let handle = values.insert(strings.String.from("owned"))
+    let duplicate = values.get(handle)
+    return duplicate.len() as int
+}
+"#,
+    );
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Copy"),
+        "expected Copy-bound diagnostic: {stderr}"
+    );
+}
+
+#[test]
+fn arena_borrow_keeps_noncopy_storage_owned_until_removal() {
+    let output = run_source(
+        "arenaBorrow.aru",
+        r#"module arenaBorrow
+import std.alloc.gen_arena as arena
+import std.alloc.string as strings
+func main(): int {
+    let mut values = arena.GenArena<strings.String>.new()
+    let handle = values.insert(strings.String.from("owned"))
+    let borrowed = values.getRef(handle)
+    if borrowed.len() != 5 { return 1 }
+    match values.remove(handle) {
+        Option.Some(value) => { if value.len() != 5 { return 2 } }
+        Option.None => { return 3 }
+    }
+    return 0
+}
+"#,
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn borrowed_projections_do_not_copy_payloads_or_repeat_side_effects() {
+    let output = run_source(
+        "borrowedProjections.aru",
+        include_str!("../../../../tests/corpus/borrowed_projections.aru"),
+    );
+    assert!(
+        output.status.success(),
+        "{:?} {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

@@ -119,3 +119,12 @@ mod cli_byte_literal;
 
 #[path = "cli_suite/cli_time_wide.rs"]
 mod cli_time_wide;
+
+#[path = "cli_suite/cli_math.rs"]
+mod cli_math;
+
+#[path = "cli_suite/cli_alloc_structures.rs"]
+mod cli_alloc_structures;
+
+#[path = "cli_suite/cli_big_simd.rs"]
+mod cli_big_simd;

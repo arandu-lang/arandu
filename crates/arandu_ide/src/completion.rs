@@ -9,7 +9,7 @@
 //! the receiver's declared type (struct fields, enum variants, methods and
 //! interface methods), and declaration positions only suggest types.
 
-use arandu_middle::types::ArType;
+use arandu_middle::types::{ArType, Primitive};
 use arandu_middle::{SymbolId, SymbolKind};
 use arandu_query::{AnalysisSnapshot, SourceFile};
 use arandu_semantics::TypeCheckResult;
@@ -695,12 +695,25 @@ fn parent_type_symbol(tc: &TypeCheckResult, symbol: SymbolId) -> Option<SymbolId
 fn named_symbol_of(tc: &TypeCheckResult, ty: &ArType) -> Option<SymbolId> {
     match ty {
         ArType::Named(symbol, _) => Some(*symbol),
-        ArType::Ref(inner)
-        | ArType::RefMut(inner)
-        | ArType::Ptr(inner)
-        | ArType::Nullable(inner) => {
+        ArType::Ptr(_) => tc.symbols.builtins.ptr_type,
+        ArType::Nullable(inner) => match tc.type_info.type_interner.resolve(*inner) {
+            ArType::Ptr(_) => tc.symbols.builtins.ptr_type,
+            other => named_symbol_of(tc, &other),
+        },
+        ArType::Ref(inner) | ArType::RefMut(inner) => {
             named_symbol_of(tc, &tc.type_info.type_interner.resolve(*inner))
         }
+        ArType::Result(_, _) => tc.symbols.builtins.result,
+        ArType::Option(_) => tc.symbols.builtins.option,
+        ArType::Primitive(Primitive::Str) => tc.symbols.builtins.str_type,
+        ArType::Primitive(Primitive::Char) => tc.symbols.builtins.char_type,
+        ArType::Primitive(Primitive::U32) => tc.symbols.builtins.u32_type,
+        ArType::Primitive(Primitive::U64) => tc.symbols.builtins.u64_type,
+        ArType::Primitive(Primitive::Int) | ArType::IntLiteral => tc.symbols.builtins.int_type,
+        ArType::Primitive(Primitive::Float) | ArType::FloatLiteral => {
+            tc.symbols.builtins.float_type
+        }
+        ArType::Slice(_) => tc.symbols.builtins.slice_type,
         _ => None,
     }
 }

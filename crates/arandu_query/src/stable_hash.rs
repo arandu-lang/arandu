@@ -308,6 +308,15 @@ fn lang_item_discriminant(item: arandu_middle::symbol_table::LangItem) -> u8 {
         LangItem::TaskHandle => 15,
         LangItem::Alloc => 16,
         LangItem::Free => 17,
+        LangItem::Str => 18,
+        LangItem::Slice => 19,
+        LangItem::Char => 20,
+        LangItem::Int => 21,
+        LangItem::Float => 22,
+        LangItem::Ptr => 23,
+        LangItem::U32 => 24,
+        LangItem::U64 => 25,
+        LangItem::BitIntrinsic => 26,
     }
 }
 
@@ -436,6 +445,14 @@ fn hash_symbol_table(hasher: &mut Hasher, table: &SymbolTable, include_spans: bo
             table.builtins.coroutine,
             table.builtins.string,
             table.builtins.vec,
+            table.builtins.str_type,
+            table.builtins.slice_type,
+            table.builtins.char_type,
+            table.builtins.int_type,
+            table.builtins.float_type,
+            table.builtins.ptr_type,
+            table.builtins.u32_type,
+            table.builtins.u64_type,
             table.builtin_alloc,
             table.builtin_free,
         ] {

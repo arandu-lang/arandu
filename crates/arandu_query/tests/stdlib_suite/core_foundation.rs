@@ -5,6 +5,7 @@ use arandu_query::db::DatabaseImpl;
 use arandu_query::file_ide_diagnostics;
 use arandu_query::passes::{exported_symbols, parse};
 
+const DECIMAL_ARU: &str = include_str!("../../../../stdlib/core/decimal.aru");
 const FIXED_ARU: &str = include_str!("../../../../stdlib/core/fixed.aru");
 const IO_ARU: &str = include_str!("../../../../stdlib/core/io.aru");
 const STR_ARU: &str = include_str!("../../../../stdlib/core/str.aru");
@@ -18,9 +19,44 @@ fn foundation_modules_parse_and_export_their_contracts() {
     let mut db = DatabaseImpl::default();
     for (path, source, expected) in [
         (
+            "stdlib/core/decimal.aru",
+            DECIMAL_ARU,
+            &[
+                "Decimal",
+                "RoundingMode",
+                "Decimal.zero",
+                "Decimal.one",
+                "Decimal.fromInt",
+                "Decimal.fromI64",
+                "Decimal.fromCents",
+                "Decimal.fromStr",
+                "Decimal.add",
+                "Decimal.sub",
+                "Decimal.mul",
+                "Decimal.div",
+                "Decimal.round",
+                "Decimal.eq",
+                "Decimal.cmp",
+            ][..],
+        ),
+        (
             "stdlib/core/fixed.aru",
             FIXED_ARU,
-            &["Q16_16", "Q16_16.fromRaw", "Q16_16.fromInt"][..],
+            &[
+                "Q8_8",
+                "Q8_8.fromRaw",
+                "Q8_8.fromInt",
+                "Q8_8.mul",
+                "Q8_8.div",
+                "Q16_16",
+                "Q16_16.fromRaw",
+                "Q16_16.fromInt",
+                "Q32_32",
+                "Q32_32.fromRaw",
+                "Q32_32.fromInt",
+                "Q32_32.mul",
+                "Q32_32.div",
+            ][..],
         ),
         (
             "stdlib/core/io.aru",
@@ -67,6 +103,7 @@ fn foundation_modules_parse_and_export_their_contracts() {
 
 #[test]
 fn foundation_modules_are_freestanding_and_type_check_together() {
+    assert!(!DECIMAL_ARU.contains("extern \"C\""));
     assert!(!FIXED_ARU.contains("extern \"C\""));
     assert!(!IO_ARU.contains("extern \"C\""));
     assert!(!STR_ARU.contains("extern \"C\""));
@@ -78,6 +115,7 @@ fn foundation_modules_are_freestanding_and_type_check_together() {
         ("stdlib/core/option.aru", OPTION_ARU),
         ("stdlib/core/result.aru", RESULT_ARU),
         ("stdlib/core/slice.aru", SLICE_ARU),
+        ("stdlib/core/decimal.aru", DECIMAL_ARU),
         ("stdlib/core/fixed.aru", FIXED_ARU),
         ("stdlib/core/io.aru", IO_ARU),
         ("stdlib/core/str.aru", STR_ARU),
@@ -85,7 +123,10 @@ fn foundation_modules_are_freestanding_and_type_check_together() {
         let file = db.new_file(path.to_string(), source.to_string());
         if matches!(
             path,
-            "stdlib/core/fixed.aru" | "stdlib/core/io.aru" | "stdlib/core/str.aru"
+            "stdlib/core/decimal.aru"
+                | "stdlib/core/fixed.aru"
+                | "stdlib/core/io.aru"
+                | "stdlib/core/str.aru"
         ) {
             foundations.push((path, file));
         }

@@ -57,6 +57,9 @@ pub struct ServerState {
     /// staged here and drained at the top of the next iteration (bounded in
     /// practice by one rejection per processed protocol message).
     pub(crate) deferred_rejections: VecDeque<lsp_server::RequestId>,
+    /// Terminal cancellations claimed by the writer, never sent into its own
+    /// bounded result channel. At most one entry per admitted request.
+    pub(crate) deferred_cancellations: VecDeque<lsp_server::RequestId>,
     /// Import registry keys owned by each compiler file identity. Filesystem
     /// events may arrive through a path spelling that cannot be reconstructed
     /// after rename (Windows verbatim paths, junctions), so removal uses this
@@ -85,6 +88,7 @@ impl ServerState {
             last_diag_fp: FxHashMap::default(),
             last_item_diag_fp: FxHashMap::default(),
             deferred_rejections: VecDeque::new(),
+            deferred_cancellations: VecDeque::new(),
             package_aliases: FxHashMap::default(),
             package: None,
             trace_value: lsp_types::TraceValue::Off,

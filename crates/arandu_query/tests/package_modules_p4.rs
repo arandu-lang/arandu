@@ -17,7 +17,7 @@ fn ids() -> (PackageId, TargetId, ModuleId) {
     )
 }
 
-fn enable_package_mode(db: &DatabaseImpl) {
+fn enable_package_mode(db: &mut DatabaseImpl) {
     let manifest = register_manifest(
         db,
         "arandu.toml".into(),
@@ -411,7 +411,7 @@ fn dependency_body_edit_keeps_the_same_export_contract() {
 #[test]
 fn package_mode_migrates_implicit_local_import_with_structured_replacement() {
     let mut db = DatabaseImpl::new();
-    enable_package_mode(&db);
+    enable_package_mode(&mut db);
     db.new_file(
         "util.aru".into(),
         "public func answer(): int { return 42 }".into(),
@@ -438,7 +438,7 @@ fn package_mode_migrates_implicit_local_import_with_structured_replacement() {
 #[test]
 fn package_mode_rejects_quoted_filesystem_import_before_alias_collection() {
     let mut db = DatabaseImpl::new();
-    enable_package_mode(&db);
+    enable_package_mode(&mut db);
     db.new_file(
         "vendor/util.aru".into(),
         "public func answer(): int { return 42 }".into(),
@@ -461,7 +461,7 @@ fn package_mode_rejects_quoted_filesystem_import_before_alias_collection() {
 #[test]
 fn reexport_facade_public_exports() {
     let mut db = DatabaseImpl::new();
-    enable_package_mode(&db);
+    enable_package_mode(&mut db);
     let inner = db.new_file(
         "inner.aru".into(),
         "public func compute(): int { return 42 }\npublic struct Item { public value: int }".into(),
@@ -525,7 +525,7 @@ fn reexport_facade_public_exports() {
 #[test]
 fn reexport_internal_package_scoped() {
     let mut db = DatabaseImpl::new();
-    enable_package_mode(&db);
+    enable_package_mode(&mut db);
     let inner = db.new_file(
         "inner.aru".into(),
         "internal func secret(): int { return 99 }".into(),
@@ -591,7 +591,7 @@ fn reexport_internal_package_scoped() {
 #[test]
 fn reexport_narrowing_diagnostic_n018() {
     let mut db = DatabaseImpl::new();
-    enable_package_mode(&db);
+    enable_package_mode(&mut db);
     let inner = db.new_file(
         "inner.aru".into(),
         "internal func secret(): int { return 99 }".into(),
@@ -643,7 +643,7 @@ fn reexport_narrowing_diagnostic_n018() {
 #[test]
 fn reexport_cycle_diagnostic_n019() {
     let mut db = DatabaseImpl::new();
-    enable_package_mode(&db);
+    enable_package_mode(&mut db);
     let a = db.new_file("mod_a.aru".into(), "public use self.mod_b.{ Item }".into());
     let b = db.new_file("mod_b.aru".into(), "public use self.mod_a.{ Item }".into());
 
@@ -752,7 +752,7 @@ fn inline_submodule_methods_keep_their_own_type_namespace() {
 #[test]
 fn prelude_facade_reexports_enum_and_struct_types_accessible_to_consumer() {
     let mut db = DatabaseImpl::new();
-    enable_package_mode(&db);
+    enable_package_mode(&mut db);
     let opt_file = db.new_file(
         "status.aru".into(),
         r#"
@@ -828,7 +828,7 @@ func check(x: Status): int {
 #[test]
 fn internal_func_rejected_for_foreign_package_consumer() {
     let mut db = DatabaseImpl::new();
-    enable_package_mode(&db);
+    enable_package_mode(&mut db);
 
     let reactor_file = db.new_file(
         "reactor.aru".into(),

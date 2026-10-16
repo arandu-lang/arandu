@@ -699,105 +699,138 @@ fn signatures_with_imports(
 
     // Merge imported type info (path rewrite shared with resolve).
     // Each `declaration_signatures` is Salsa-memoized; merge_from is the cold cost.
+    let mut merged_files = rustc_hash::FxHashSet::default();
+    let mut merge_imported_module = |imported_file: SourceFile, path: &str| {
+        if !merged_files.insert(imported_file) || exported_symbols(db, imported_file).is_cycle {
+            return;
+        }
+        let imported_sigs = if headers_only {
+            seed_header_signatures(db, imported_file)
+        } else {
+            header_signatures(db, imported_file)
+        };
+        tracing::debug!(
+            target: "arandu_query",
+            %path,
+            file = ?file.file_id(db),
+            diags = ?imported_sigs.diagnostics,
+            "merged imported module signatures"
+        );
+        checker
+            .type_info
+            .merge_from(imported_sigs.type_info.as_ref());
+        // Import aliases carry names/IDs, not the original extern ABI. Retain
+        // this declaration metadata from the canonical header instead of
+        // deciding intrinsic identity from an imported function's spelling.
+        for symbol in imported_sigs.symbols.iter().filter(|symbol| {
+            symbol.lang_item == Some(arandu_middle::symbol_table::LangItem::BitIntrinsic)
+        }) {
+            let symbols = Arc::make_mut(&mut checker.symbols);
+            if symbols.try_get(symbol.id).is_none() {
+                symbols.register_imported_symbol(symbol.clone());
+            } else {
+                symbols.set_lang_item(
+                    symbol.id,
+                    arandu_middle::symbol_table::LangItem::BitIntrinsic,
+                );
+            }
+        }
+        // Generic exports may mention an interface imported by
+        // their defining module (for example `T: marker.Sync`).
+        // Preserve those contract identities by SymbolId without
+        // adding their names to this module's visible scope.
+        for constraints in imported_sigs.type_info.param_constraints.values() {
+            for constraint in constraints.iter() {
+                if checker.symbols.try_get(constraint.iface_sym).is_none() {
+                    if let Some(symbol) =
+                        imported_sigs.symbols.try_get(constraint.iface_sym).cloned()
+                    {
+                        Arc::make_mut(&mut checker.symbols).register_imported_symbol(symbol);
+                    }
+                }
+            }
+        }
+        for (&var_id, &(parent_id, _)) in &imported_sigs.type_info.enum_variants {
+            if checker.symbols.try_get(var_id).is_none() {
+                if let Some(symbol) = imported_sigs.symbols.try_get(var_id).cloned() {
+                    Arc::make_mut(&mut checker.symbols).register_imported_symbol(symbol);
+                }
+            }
+            if checker.symbols.try_get(parent_id).is_none() {
+                if let Some(symbol) = imported_sigs.symbols.try_get(parent_id).cloned() {
+                    Arc::make_mut(&mut checker.symbols).register_imported_symbol(symbol);
+                }
+            }
+        }
+        for &struct_id in imported_sigs.type_info.struct_fields.keys() {
+            if checker.symbols.try_get(struct_id).is_none() {
+                if let Some(symbol) = imported_sigs.symbols.try_get(struct_id).cloned() {
+                    Arc::make_mut(&mut checker.symbols).register_imported_symbol(symbol);
+                }
+            }
+        }
+        for &destructor_id in imported_sigs.type_info.destructors.values() {
+            if checker.symbols.try_get(destructor_id).is_none() {
+                if let Some(symbol) = imported_sigs.symbols.try_get(destructor_id).cloned() {
+                    Arc::make_mut(&mut checker.symbols).register_imported_symbol(symbol);
+                }
+            }
+        }
+        for ((type_id, member_name), member_sym) in &imported_sigs.symbols.associated_members {
+            if let Some(symbol) = imported_sigs.symbols.try_get(*member_sym) {
+                let is_accessible = match symbol.visibility {
+                    arandu_parser::Visibility::Public => true,
+                    arandu_parser::Visibility::Internal => db
+                        .as_source_db()
+                        .same_package(*file.file_id(db), imported_file),
+                    arandu_parser::Visibility::Private | arandu_parser::Visibility::Module => false,
+                };
+                if !is_accessible {
+                    continue;
+                }
+                if !checker
+                    .symbols
+                    .associated_members
+                    .contains_key(&(*type_id, member_name.clone()))
+                {
+                    Arc::make_mut(&mut checker.symbols)
+                        .associated_members
+                        .insert((*type_id, member_name.clone()), *member_sym);
+                }
+                if checker.symbols.try_get(*member_sym).is_none() {
+                    Arc::make_mut(&mut checker.symbols).register_imported_symbol(symbol.clone());
+                }
+            }
+        }
+
+        for diag in &imported_sigs.diagnostics {
+            if diag.message.contains("cyclic") {
+                checker.diagnostics.push(diag.clone());
+            }
+        }
+    };
+
     for import in program.imports.iter().filter(|_| include_imports) {
         if let Some(path) = arandu_resolve::canonicalize_import_path(import) {
             if let Some(imported_file) = db.as_source_db().resolve_module_path(&path) {
-                if exported_symbols(db, imported_file).is_cycle {
-                    continue;
-                }
-                let imported_sigs = if headers_only {
-                    seed_header_signatures(db, imported_file)
-                } else {
-                    header_signatures(db, imported_file)
-                };
-                tracing::debug!(
-                    target: "arandu_query",
-                    %path,
-                    file = ?file.file_id(db),
-                    diags = ?imported_sigs.diagnostics,
-                    "merged imported module signatures"
-                );
-                checker
-                    .type_info
-                    .merge_from(imported_sigs.type_info.as_ref());
-                // Generic exports may mention an interface imported by
-                // their defining module (for example `T: marker.Sync`).
-                // Preserve those contract identities by SymbolId without
-                // adding their names to this module's visible scope.
-                for constraints in imported_sigs.type_info.param_constraints.values() {
-                    for constraint in constraints.iter() {
-                        if checker.symbols.try_get(constraint.iface_sym).is_none() {
-                            if let Some(symbol) =
-                                imported_sigs.symbols.try_get(constraint.iface_sym).cloned()
-                            {
-                                Arc::make_mut(&mut checker.symbols)
-                                    .register_imported_symbol(symbol);
-                            }
-                        }
-                    }
-                }
-                for (&var_id, &(parent_id, _)) in &imported_sigs.type_info.enum_variants {
-                    if checker.symbols.try_get(var_id).is_none() {
-                        if let Some(symbol) = imported_sigs.symbols.try_get(var_id).cloned() {
-                            Arc::make_mut(&mut checker.symbols).register_imported_symbol(symbol);
-                        }
-                    }
-                    if checker.symbols.try_get(parent_id).is_none() {
-                        if let Some(symbol) = imported_sigs.symbols.try_get(parent_id).cloned() {
-                            Arc::make_mut(&mut checker.symbols).register_imported_symbol(symbol);
-                        }
-                    }
-                }
-                for &struct_id in imported_sigs.type_info.struct_fields.keys() {
-                    if checker.symbols.try_get(struct_id).is_none() {
-                        if let Some(symbol) = imported_sigs.symbols.try_get(struct_id).cloned() {
-                            Arc::make_mut(&mut checker.symbols).register_imported_symbol(symbol);
-                        }
-                    }
-                }
-                for &destructor_id in imported_sigs.type_info.destructors.values() {
-                    if checker.symbols.try_get(destructor_id).is_none() {
-                        if let Some(symbol) = imported_sigs.symbols.try_get(destructor_id).cloned()
-                        {
-                            Arc::make_mut(&mut checker.symbols).register_imported_symbol(symbol);
-                        }
-                    }
-                }
-                for ((type_id, member_name), member_sym) in
-                    &imported_sigs.symbols.associated_members
-                {
-                    if let Some(symbol) = imported_sigs.symbols.try_get(*member_sym) {
-                        let is_accessible = match symbol.visibility {
-                            arandu_parser::Visibility::Public => true,
-                            arandu_parser::Visibility::Internal => db
-                                .as_source_db()
-                                .same_package(*file.file_id(db), imported_file),
-                            arandu_parser::Visibility::Private
-                            | arandu_parser::Visibility::Module => false,
-                        };
-                        if !is_accessible {
-                            continue;
-                        }
-                        if !checker
-                            .symbols
-                            .associated_members
-                            .contains_key(&(*type_id, member_name.clone()))
-                        {
-                            Arc::make_mut(&mut checker.symbols)
-                                .associated_members
-                                .insert((*type_id, member_name.clone()), *member_sym);
-                        }
-                        if checker.symbols.try_get(*member_sym).is_none() {
-                            Arc::make_mut(&mut checker.symbols)
-                                .register_imported_symbol(symbol.clone());
-                        }
-                    }
-                }
+                merge_imported_module(imported_file, &path);
+            }
+        }
+    }
 
-                for diag in &imported_sigs.diagnostics {
-                    if diag.message.contains("cyclic") {
-                        checker.diagnostics.push(diag.clone());
-                    }
+    let current_mod = program.module.as_ref().map(|m| m.path.join("."));
+    if include_imports
+        && !current_mod
+            .as_deref()
+            .is_some_and(|m| m.starts_with("std.core."))
+    {
+        for &(path, mod_name) in arandu_resolve::AMBIENT_PRIMITIVE_MODULES {
+            if current_mod.as_deref() == Some(mod_name) {
+                continue;
+            }
+            if let Some(imported_file) = db.as_source_db().resolve_module_path(path) {
+                if imported_file != file {
+                    merge_imported_module(imported_file, path);
                 }
             }
         }
@@ -880,7 +913,7 @@ pub(crate) fn module_import_edges(
     let Ok(program) = &**program_res else {
         return Vec::new();
     };
-    program
+    let mut edges: Vec<_> = program
         .imports
         .iter()
         .filter_map(|import| {
@@ -891,7 +924,25 @@ pub(crate) fn module_import_edges(
                 .map(|imported| *imported.file_id(db));
             Some((path, file_id))
         })
-        .collect()
+        .collect();
+
+    let current_mod = program.module.as_ref().map(|m| m.path.join("."));
+    if !current_mod
+        .as_deref()
+        .is_some_and(|m| m.starts_with("std.core."))
+    {
+        for &(path, mod_name) in arandu_resolve::AMBIENT_PRIMITIVE_MODULES {
+            if current_mod.as_deref() == Some(mod_name) {
+                continue;
+            }
+            if let Some(imported) = db.as_source_db().resolve_module_path(path) {
+                if imported != file && !edges.iter().any(|(p, _)| p == path) {
+                    edges.push((path.to_string(), Some(*imported.file_id(db))));
+                }
+            }
+        }
+    }
+    edges
 }
 
 /// Fingerprint import topology across the reachable module graph without

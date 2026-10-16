@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use crate::explain::RebuildLog;
 use crate::manifest::ProjectManifest;
-use crate::vfs::{ModuleRoots, PackageModuleMap};
+use crate::vfs::{ModuleRoots, PackageModuleMap, ResolutionEpoch};
 use arandu_middle::DataLayout;
 use salsa::{Database as _, Setter, Storage};
 
@@ -172,6 +172,9 @@ pub struct DatabaseImpl {
     /// Compilation target Salsa input (default: host layout). See [`Self::set_target_config`].
     target_config: Arc<RwLock<Option<TargetConfig>>>,
     ctfe_config: Arc<RwLock<Option<crate::ctfe::CtfeConfig>>>,
+    /// Stable Salsa input bumped on every resolution-config change so queries
+    /// that ran before configuration invalidate. See [`ResolutionEpoch`].
+    resolution_epoch: Arc<RwLock<Option<ResolutionEpoch>>>,
 }
 
 // Manual Clone: Storage is cloneable; share Arc file registry + log + CST cache.
@@ -188,6 +191,7 @@ impl Clone for DatabaseImpl {
             package_modules: Arc::clone(&self.package_modules),
             target_config: Arc::clone(&self.target_config),
             ctfe_config: Arc::clone(&self.ctfe_config),
+            resolution_epoch: Arc::clone(&self.resolution_epoch),
         }
     }
 }
@@ -226,9 +230,11 @@ impl DatabaseImpl {
             package_modules: Arc::new(RwLock::new(None)),
             target_config: Arc::new(RwLock::new(None)),
             ctfe_config: Arc::new(RwLock::new(None)),
+            resolution_epoch: Arc::new(RwLock::new(None)),
         };
         db.set_target_config(DataLayout::host());
         db.set_ctfe_limits(crate::ctfe::CtfeLimits::default());
+        db.ensure_resolution_epoch();
         db
     }
 
@@ -248,9 +254,11 @@ impl DatabaseImpl {
             package_modules: Arc::new(RwLock::new(None)),
             target_config: Arc::new(RwLock::new(None)),
             ctfe_config: Arc::new(RwLock::new(None)),
+            resolution_epoch: Arc::new(RwLock::new(None)),
         };
         db.set_target_config(DataLayout::host());
         db.set_ctfe_limits(crate::ctfe::CtfeLimits::default());
+        db.ensure_resolution_epoch();
         (db, log)
     }
 
@@ -271,10 +279,59 @@ impl DatabaseImpl {
         }
     }
 
+    /// Create the resolution epoch input (idempotent). Called by the
+    /// constructors so queries running before any configuration still register
+    /// a dependency on the epoch and invalidate once configuration lands.
+    fn ensure_resolution_epoch(&mut self) {
+        if self
+            .resolution_epoch
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
+        {
+            return;
+        }
+        let epoch = ResolutionEpoch::new(self, 0);
+        *self
+            .resolution_epoch
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = Some(epoch);
+    }
+
+    /// Advance the resolution epoch so that cached resolution queries recompute.
+    ///
+    /// Mutates the *same* Salsa input (rather than swapping in a fresh one) so
+    /// queries that already read it are invalidated.
+    fn bump_resolution_epoch(&mut self) {
+        let epoch = *self
+            .resolution_epoch
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        let Some(epoch) = epoch else {
+            return;
+        };
+        let next = epoch.generation(self).wrapping_add(1);
+        epoch.set_generation(self).to(next);
+    }
+
+    /// Read the resolution epoch inside a tracked query, registering the
+    /// dependency that [`Self::bump_resolution_epoch`] later invalidates.
+    pub fn resolution_epoch(&self) {
+        let epoch = *self
+            .resolution_epoch
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(epoch) = epoch {
+            let _ = epoch.generation(self);
+        }
+    }
+
     /// Pin the stdlib root used by [`arandu_middle::db::SourceDatabase::resolve_module_path`].
-    pub fn set_stdlib_root(&self, root: PathBuf) {
+    pub fn set_stdlib_root(&mut self, root: PathBuf) {
         let mut g = self.stdlib_root.write().unwrap_or_else(|e| e.into_inner());
         *g = Some(root);
+        drop(g);
+        self.bump_resolution_epoch();
     }
 
     #[must_use]
@@ -286,12 +343,14 @@ impl DatabaseImpl {
     }
 
     /// Store the project manifest Salsa input (invalidation key for package mode).
-    pub fn set_project_manifest(&self, manifest: ProjectManifest) {
+    pub fn set_project_manifest(&mut self, manifest: ProjectManifest) {
         let mut g = self
             .project_manifest
             .write()
             .unwrap_or_else(|e| e.into_inner());
         *g = Some(manifest);
+        drop(g);
+        self.bump_resolution_epoch();
     }
 
     #[must_use]
@@ -303,7 +362,7 @@ impl DatabaseImpl {
     }
 
     /// Register dual module roots (package + stdlib) for `resolve_module_path`.
-    pub fn set_module_roots(&self, roots: ModuleRoots) {
+    pub fn set_module_roots(&mut self, roots: ModuleRoots) {
         let std = roots.stdlib_root(self);
         {
             let mut g = self.module_roots.write().unwrap_or_else(|e| e.into_inner());
@@ -313,6 +372,7 @@ impl DatabaseImpl {
         if let Some(std) = std {
             self.set_stdlib_root(std.as_ref().clone());
         }
+        self.bump_resolution_epoch();
     }
 
     #[must_use]
@@ -392,20 +452,24 @@ impl DatabaseImpl {
             .expect("TargetConfig input is initialized by DatabaseImpl::new/with_rebuild_log")
     }
 
-    pub fn set_package_module_map(&self, map: PackageModuleMap) {
+    pub fn set_package_module_map(&mut self, map: PackageModuleMap) {
         let mut current = self
             .package_modules
             .write()
             .unwrap_or_else(|error| error.into_inner());
         *current = Some(map);
+        drop(current);
+        self.bump_resolution_epoch();
     }
 
-    pub fn clear_package_module_map(&self) {
+    pub fn clear_package_module_map(&mut self) {
         let mut current = self
             .package_modules
             .write()
             .unwrap_or_else(|error| error.into_inner());
         *current = None;
+        drop(current);
+        self.bump_resolution_epoch();
     }
 
     #[must_use]
@@ -557,6 +621,7 @@ impl arandu_middle::db::SourceDatabase for DatabaseImpl {
     }
 
     fn same_package(&self, current_file: FileId, imported_file: SourceFile) -> bool {
+        self.resolution_epoch();
         let Some(map) = self.package_module_map() else {
             return false;
         };
@@ -592,6 +657,9 @@ impl arandu_middle::db::SourceDatabase for DatabaseImpl {
     }
 
     fn resolve_module_path(&self, path: &str) -> Option<SourceFile> {
+        // Depend on the resolution epoch so a query that ran before the
+        // package/stdlib configuration existed recomputes once it lands.
+        self.resolution_epoch();
         if let Some(map) = self.package_module_map() {
             if let Some(binding) = crate::vfs::package_module(self, map, path) {
                 return Some(binding.file);
@@ -635,6 +703,7 @@ impl arandu_middle::db::SourceDatabase for DatabaseImpl {
     }
 
     fn package_mode(&self) -> bool {
+        self.resolution_epoch();
         self.project_manifest().is_some()
     }
 }

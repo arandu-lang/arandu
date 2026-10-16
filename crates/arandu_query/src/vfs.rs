@@ -140,6 +140,19 @@ pub struct PackageModuleMap {
     pub bindings: Arc<Vec<(String, ModuleBinding)>>,
 }
 
+/// Monotonic generation bumped whenever the resolution configuration changes.
+///
+/// The package/stdlib configuration handles ([`ModuleRoots`],
+/// [`PackageModuleMap`], the project manifest, the legacy stdlib root) live
+/// behind untracked locks on the database, so a query that ran *before* the
+/// configuration existed registered no dependency on them and would keep a
+/// stale memoized result. Reading this input inside the resolution path forces
+/// such queries to recompute as soon as the configuration lands.
+#[salsa::input]
+pub struct ResolutionEpoch {
+    pub generation: u64,
+}
+
 #[must_use]
 pub fn package_module(
     db: &dyn salsa::Database,

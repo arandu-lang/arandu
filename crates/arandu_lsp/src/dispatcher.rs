@@ -190,7 +190,7 @@ pub(crate) fn event_loop(
                     for file in stdlib.files {
                         crate::workspace::register_workspace_file(state, file);
                     }
-                    state.host.db().set_stdlib_root(stdlib.root);
+                    state.host.db_mut().set_stdlib_root(stdlib.root);
                 }
                 Ok(WorkspaceEvent::Project(project)) => {
                     let mut project = *project;
@@ -236,7 +236,7 @@ pub(crate) fn event_loop(
             },
             Event::Timeout => {
                 if state.vfs.has_pending() {
-                    pool.cancel_requests();
+                    cancel_analysis(state, pool);
                 }
                 let committed = state.flush_due();
                 if !committed.is_empty() {
@@ -300,7 +300,7 @@ pub(crate) fn flush_for_request(
     job_tx: &Sender<JobResult>,
 ) {
     if state.vfs.has_pending() {
-        pool.cancel_requests();
+        cancel_analysis(state, pool);
     }
     let committed = state.flush_all();
     if !committed.is_empty() {
@@ -337,10 +337,12 @@ pub(crate) fn spawn_goto(
             Some(request_key),
             move |cancellation| {
                 cancellation.link_query(snap.db.query_cancellation_token());
-                if send_cancelled_if_needed(&tx, &req_id, &cancellation) {
+                if cancellation.is_cancelled() {
+                    drop(snap);
+                    let _ = send_cancelled_if_needed(&tx, &req_id, &cancellation);
                     return;
                 }
-                match catch_unwind(AssertUnwindSafe(|| {
+                let outcome = catch_unwind(AssertUnwindSafe(|| {
                     arandu_query::catch_query_cancellation(|| {
                         let location = handlers::goto_on_snapshot(
                             &snap,
@@ -358,7 +360,11 @@ pub(crate) fn spawn_goto(
                             None => serde_json::Value::Null,
                         }
                     })
-                })) {
+                }));
+                // The writer may be waiting for this Salsa snapshot while the
+                // bounded result queue is full. Release it before backpressure.
+                drop(snap);
+                match outcome {
                     Ok(Ok(value)) => {
                         if send_cancelled_if_needed(&tx, &req_id, &cancellation) {
                             return;
@@ -417,12 +423,16 @@ pub(crate) fn spawn_json<F>(
             Some(request_key),
             move |cancellation| {
                 cancellation.link_query(snap.db.query_cancellation_token());
-                if send_cancelled_if_needed(&tx, &req_id, &cancellation) {
+                if cancellation.is_cancelled() {
+                    drop(snap);
+                    let _ = send_cancelled_if_needed(&tx, &req_id, &cancellation);
                     return;
                 }
-                match catch_unwind(AssertUnwindSafe(|| {
+                let outcome = catch_unwind(AssertUnwindSafe(|| {
                     arandu_query::catch_query_cancellation(|| f(&snap, &docs))
-                })) {
+                }));
+                drop(snap);
+                match outcome {
                     Ok(Ok(value)) => {
                         if send_cancelled_if_needed(&tx, &req_id, &cancellation) {
                             return;
@@ -484,12 +494,16 @@ pub(crate) fn spawn_json_result<F>(
             Some(request_key),
             move |cancellation| {
                 cancellation.link_query(snap.db.query_cancellation_token());
-                if send_cancelled_if_needed(&tx, &req_id, &cancellation) {
+                if cancellation.is_cancelled() {
+                    drop(snap);
+                    let _ = send_cancelled_if_needed(&tx, &req_id, &cancellation);
                     return;
                 }
-                match catch_unwind(AssertUnwindSafe(|| {
+                let outcome = catch_unwind(AssertUnwindSafe(|| {
                     arandu_query::catch_query_cancellation(|| f(&snap, &docs))
-                })) {
+                }));
+                drop(snap);
+                match outcome {
                     Ok(Ok(Ok(value))) => {
                         if send_cancelled_if_needed(&tx, &req_id, &cancellation) {
                             return;
@@ -563,10 +577,18 @@ pub(crate) fn drain_deferred_rejections(
     pool: &WorkerPool,
     job_tx: &Sender<JobResult>,
 ) -> Result<(), Box<dyn Error + Sync + Send>> {
+    while let Some(id) = state.deferred_cancellations.pop_front() {
+        handle_job_result(connection, state, pool, job_tx, JobResult::Cancelled { id })?;
+    }
     while let Some(id) = state.deferred_rejections.pop_front() {
         handle_job_result(connection, state, pool, job_tx, JobResult::Rejected { id })?;
     }
     Ok(())
+}
+
+/// Drop queued snapshots before a Salsa write and defer protocol responses.
+pub(crate) fn cancel_analysis(state: &mut ServerState, pool: &WorkerPool) {
+    state.deferred_cancellations.extend(pool.cancel_analysis());
 }
 
 fn apply_deferred_reload(

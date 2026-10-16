@@ -222,6 +222,7 @@ impl WorkerPool {
         Ok(cancellation)
     }
 
+    #[cfg(test)]
     pub fn cancel(&self, key: &JobKey) -> bool {
         let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
         let Some(token) = state.active.get(key).cloned() else {
@@ -257,19 +258,28 @@ impl WorkerPool {
         token.claim_cancelled()
     }
 
-    pub fn cancel_requests(&self) {
+    /// Retire snapshot jobs before the event-loop writer mutates Salsa.
+    /// Queued closures are dropped, never run on the writer thread: their
+    /// cancellation response could block on the channel that writer drains.
+    pub fn cancel_analysis(&self) -> Vec<RequestId> {
         let keys: Vec<JobKey> = {
             let state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
             state
                 .active
                 .keys()
-                .filter(|key| matches!(key, JobKey::Request(_)))
+                .filter(|key| matches!(key, JobKey::Request(_) | JobKey::Diagnostics(_)))
                 .cloned()
                 .collect()
         };
-        for key in keys {
-            let _ = self.cancel(&key);
-        }
+        keys.into_iter()
+            .filter_map(|key| {
+                let claimed = self.cancel_for_response(&key);
+                match key {
+                    JobKey::Request(id) if claimed => Some(id),
+                    _ => None,
+                }
+            })
+            .collect()
     }
 }
 

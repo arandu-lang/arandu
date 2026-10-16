@@ -50,9 +50,13 @@ pub(crate) fn spawn_diagnostics(
             if cancellation.is_cancelled() {
                 return;
             }
-            match catch_unwind(AssertUnwindSafe(|| {
+            let outcome = catch_unwind(AssertUnwindSafe(|| {
                 arandu_query::catch_query_cancellation(|| compute_diagnostics(&snap, source))
-            })) {
+            }));
+            // Never hold a Salsa snapshot while the bounded result channel
+            // waits for a writer that may itself be committing an edit.
+            drop(snap);
+            match outcome {
                 Ok(Ok((diags, fingerprint))) => {
                     if cancellation.is_cancelled() {
                         return;

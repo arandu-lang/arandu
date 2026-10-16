@@ -101,6 +101,45 @@ public func BigInt.isZero(self: ref BigInt): bool {
     return true
 }
 
+/// Returns `true` if this number is negative.
+public func BigInt.isNegative(self: ref BigInt): bool {
+    return self.is_neg
+}
+
+/// Returns a clone of this `BigInt`.
+public func BigInt.clone(self: ref BigInt): BigInt {
+    let mut limbs = vec.Vec<u64>.withCapacity(self.limbs.len())
+    let s = self.limbs.asSlice()
+    let mut i: usize = 0
+    while i < s.len() {
+        limbs.push(s[i])
+        i = i + (1 as usize)
+    }
+    return BigInt {
+        is_neg: self.is_neg,
+        limbs: limbs,
+    }
+}
+
+/// Compares two `BigInt`s taking signs into account.
+public func BigInt.cmp(self: ref BigInt, other: ref BigInt): cmp.Ordering {
+    if self.isZero() && other.isZero() {
+        return cmp.Ordering.Equal
+    }
+    if self.is_neg && !other.is_neg { return cmp.Ordering.Less }
+    if !self.is_neg && other.is_neg { return cmp.Ordering.Greater }
+
+    let ord = cmpMagnitude(self, other)
+    if self.is_neg {
+        match ord {
+            cmp.Ordering.Less => { return cmp.Ordering.Greater }
+            cmp.Ordering.Greater => { return cmp.Ordering.Less }
+            cmp.Ordering.Equal => { return cmp.Ordering.Equal }
+        }
+    }
+    return ord
+}
+
 func BigInt.trim(self: mut ref BigInt): void {
     let mut i = self.limbs.len()
     while i > (0 as usize) {
@@ -317,4 +356,54 @@ public func BigDecimal.mantissa(self: ref BigDecimal): ref BigInt {
 /// Returns the decimal scale.
 public func BigDecimal.scale(self: ref BigDecimal): i64 {
     return self.scale
+}
+
+/// Zero constant.
+public func BigDecimal.zero(): BigDecimal {
+    return BigDecimal.new(BigInt.zero(), 0 as i64)
+}
+
+/// Returns `true` if this decimal is negative.
+public func BigDecimal.isNegative(self: ref BigDecimal): bool {
+    return self.mantissa.isNegative()
+}
+
+/// Returns a clone of this `BigDecimal`.
+public func BigDecimal.clone(self: ref BigDecimal): BigDecimal {
+    return BigDecimal.new(self.mantissa.clone(), self.scale)
+}
+
+/// Adds two decimals with automatic decimal scale alignment.
+public func BigDecimal.add(self: ref BigDecimal, other: ref BigDecimal): BigDecimal {
+    if self.scale == other.scale {
+        return BigDecimal.new(self.mantissa.add(ref other.mantissa), self.scale)
+    }
+    if self.scale > other.scale {
+        let diff = (self.scale - other.scale) as u32
+        let mut scaledOther = other.mantissa.clone()
+        let mut step: u32 = 0u32
+        let ten = BigInt.fromInt(10)
+        while step < diff {
+            scaledOther = scaledOther.mul(ref ten)
+            step = step + 1u32
+        }
+        return BigDecimal.new(self.mantissa.add(ref scaledOther), self.scale)
+    } else {
+        let diff = (other.scale - self.scale) as u32
+        let mut scaledSelf = self.mantissa.clone()
+        let mut step: u32 = 0u32
+        let ten = BigInt.fromInt(10)
+        while step < diff {
+            scaledSelf = scaledSelf.mul(ref ten)
+            step = step + 1u32
+        }
+        return BigDecimal.new(scaledSelf.add(ref other.mantissa), other.scale)
+    }
+}
+
+/// Subtracts `other` from `self` with automatic decimal scale alignment.
+public func BigDecimal.sub(self: ref BigDecimal, other: ref BigDecimal): BigDecimal {
+    let mut negOther = other.clone()
+    negOther.mantissa.is_neg = !negOther.mantissa.is_neg
+    return self.add(ref negOther)
 }

@@ -138,6 +138,24 @@ public func Q16_16.fractionPart(self: ref Q16_16): i32 {
     return (val & mask) as i32
 }
 
+/// Converts a floating-point number to Q16.16 format with saturation.
+public func Q16_16.fromFloat(f: float): Q16_16 {
+    let scaled: i64 = (f * 65536.0) as i64
+    return Q16_16 { raw: clampRaw(scaled) }
+}
+
+/// Converts this Q16.16 number to a 64-bit float.
+public func Q16_16.toFloat(self: ref Q16_16): float {
+    return (self.raw as float) / 65536.0
+}
+
+/// Compares two Q16.16 values, returning -1 if self < other, 1 if self > other, or 0 if equal.
+public func Q16_16.cmp(self: ref Q16_16, other: Q16_16): int {
+    if self.raw < other.raw { return -1 }
+    if self.raw > other.raw { return 1 }
+    return 0
+}
+
 /// Signed Q8.8 value, stored inline in 16 bits.
 public struct Q8_8 {
     /// Signed raw bits; the low eight bits are fractional.
@@ -203,6 +221,24 @@ public func Q8_8.fractionPart(self: ref Q8_8): i16 {
     let mut magnitude = self.raw as i32
     if magnitude < 0 { magnitude = -magnitude }
     return (magnitude & 255) as i16
+}
+
+/// Converts a floating-point number to Q8.8 format with saturation.
+public func Q8_8.fromFloat(f: float): Q8_8 {
+    let scaled: i32 = (f * 256.0) as i32
+    return Q8_8 { raw: clampRaw8(scaled) }
+}
+
+/// Converts this Q8.8 number to a 64-bit float.
+public func Q8_8.toFloat(self: ref Q8_8): float {
+    return (self.raw as float) / 256.0
+}
+
+/// Compares two Q8.8 values, returning -1 if self < other, 1 if self > other, or 0 if equal.
+public func Q8_8.cmp(self: ref Q8_8, other: Q8_8): int {
+    if self.raw < other.raw { return -1 }
+    if self.raw > other.raw { return 1 }
+    return 0
 }
 
 /// Signed Q32.32 value, stored inline in 64 bits.
@@ -345,4 +381,28 @@ public func Q32_32.isNegative(self: ref Q32_32): bool { return self.raw < (0 as 
 /// Returns the fractional magnitude in `0..=4294967295`.
 public func Q32_32.fractionPart(self: ref Q32_32): u32 {
     return (magnitude32(self.raw) & (4294967295 as u64)) as u32
+}
+
+/// Converts a floating-point number to Q32.32 format with saturation.
+public func Q32_32.fromFloat(f: float): Q32_32 {
+    let scaled = f * 4294967296.0
+    if scaled > 9223372036854775807.0 {
+        return Q32_32 { raw: raw32Max() }
+    }
+    if scaled < -9223372036854775808.0 {
+        return Q32_32 { raw: raw32Min() }
+    }
+    return Q32_32 { raw: scaled as i64 }
+}
+
+/// Converts this Q32.32 number to a 64-bit float.
+public func Q32_32.toFloat(self: ref Q32_32): float {
+    return (self.raw as float) / 4294967296.0
+}
+
+/// Compares two Q32.32 values, returning -1 if self < other, 1 if self > other, or 0 if equal.
+public func Q32_32.cmp(self: ref Q32_32, other: Q32_32): int {
+    if self.raw < other.raw { return -1 }
+    if self.raw > other.raw { return 1 }
+    return 0
 }

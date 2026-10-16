@@ -359,6 +359,82 @@ public func tan(x: float): float {
     return sin(x) / c
 }
 
+func atanSeries(x: float): float {
+    let x2 = x * x
+    return x * (1.0 + x2 * (-0.3333314528 + x2 * (0.1999355085 + x2 * (-0.1420889944 + x2 * (0.1065626393 + x2 * (-0.0752896400 + x2 * (0.0429096138 - x2 * 0.0161657367)))))))
+}
+
+/// Computes the arctangent of `x` (in radians, range `[-π/2, π/2]`).
+public func atan(x: float): float {
+    if isNan(x) { return x }
+    if x == 0.0 { return x }
+    if x == infinity() { return fracPi2() }
+    if x == negInfinity() { return -fracPi2() }
+
+    if x < 0.0 {
+        return -atan(-x)
+    }
+
+    if x > 1.0 {
+        return fracPi2() - atanSeries(1.0 / x)
+    }
+    return atanSeries(x)
+}
+
+/// Computes the four-quadrant arctangent of `y` and `x` (in radians, range `[-π, π]`).
+public func atan2(y: float, x: float): float {
+    if isNan(x) || isNan(y) { return nan() }
+    if x > 0.0 {
+        return atan(y / x)
+    }
+    if x < 0.0 {
+        if y >= 0.0 {
+            return atan(y / x) + pi()
+        }
+        return atan(y / x) - pi()
+    }
+    if y > 0.0 {
+        return fracPi2()
+    }
+    if y < 0.0 {
+        return -fracPi2()
+    }
+    return 0.0
+}
+
+/// Computes the arcsine of `x` (in radians, range `[-π/2, π/2]`).
+public func asin(x: float): float {
+    if isNan(x) { return x }
+    if x < -1.0 || x > 1.0 { return nan() }
+    if x == 0.0 { return 0.0 }
+    if x == 1.0 { return fracPi2() }
+    if x == -1.0 { return -fracPi2() }
+    return atan2(x, sqrt(1.0 - x * x))
+}
+
+/// Computes the arccosine of `x` (in radians, range `[0, π]`).
+public func acos(x: float): float {
+    if isNan(x) { return x }
+    if x < -1.0 || x > 1.0 { return nan() }
+    return fracPi2() - asin(x)
+}
+
+/// Computes the cube root of `x` (∛x).
+public func cbrt(x: float): float {
+    if isNan(x) { return x }
+    if x == 0.0 { return 0.0 }
+    if isInfinite(x) { return x }
+    if x < 0.0 {
+        return -cbrt(-x)
+    }
+    let mut y = exp(ln(x) / 3.0)
+    let y3 = y * y * y
+    y = y * (2.0 * x + y3) / (x + 2.0 * y3)
+    let y3_2 = y * y * y
+    y = y * (2.0 * x + y3_2) / (x + 2.0 * y3_2)
+    return y
+}
+
 // ── Exponential & Logarithm ─────────────────────────────────────────────────
 
 func expSeries(r: float): float {
@@ -612,4 +688,24 @@ public func float.max(self: float, other: float): float {
 /// Clamps value within `[minVal, maxVal]`.
 public func float.clamp(self: float, minVal: float, maxVal: float): float {
     return clamp(self, minVal, maxVal)
+}
+
+/// Arctangent (in radians).
+public func float.atan(self: float): float {
+    return atan(self)
+}
+
+/// Arcsine (in radians).
+public func float.asin(self: float): float {
+    return asin(self)
+}
+
+/// Arccosine (in radians).
+public func float.acos(self: float): float {
+    return acos(self)
+}
+
+/// Cube root.
+public func float.cbrt(self: float): float {
+    return cbrt(self)
 }

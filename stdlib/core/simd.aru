@@ -83,12 +83,70 @@ public func f32x4.mul(self: f32x4, other: f32x4): f32x4 {
     }
 }
 
+/// Lane-wise division: `self / other`.
+public func f32x4.div(self: f32x4, other: f32x4): f32x4 {
+    return f32x4 {
+        lane0: self.lane0 / other.lane0,
+        lane1: self.lane1 / other.lane1,
+        lane2: self.lane2 / other.lane2,
+        lane3: self.lane3 / other.lane3,
+    }
+}
+
+/// Lane-wise negation: `-self`.
+public func f32x4.neg(self: f32x4): f32x4 {
+    return f32x4 {
+        lane0: -self.lane0,
+        lane1: -self.lane1,
+        lane2: -self.lane2,
+        lane3: -self.lane3,
+    }
+}
+
+/// Lane-wise minimum.
+public func f32x4.min(self: f32x4, other: f32x4): f32x4 {
+    return f32x4 {
+        lane0: if self.lane0 < other.lane0 { self.lane0 } else { other.lane0 },
+        lane1: if self.lane1 < other.lane1 { self.lane1 } else { other.lane1 },
+        lane2: if self.lane2 < other.lane2 { self.lane2 } else { other.lane2 },
+        lane3: if self.lane3 < other.lane3 { self.lane3 } else { other.lane3 },
+    }
+}
+
+/// Lane-wise maximum.
+public func f32x4.max(self: f32x4, other: f32x4): f32x4 {
+    return f32x4 {
+        lane0: if self.lane0 > other.lane0 { self.lane0 } else { other.lane0 },
+        lane1: if self.lane1 > other.lane1 { self.lane1 } else { other.lane1 },
+        lane2: if self.lane2 > other.lane2 { self.lane2 } else { other.lane2 },
+        lane3: if self.lane3 > other.lane3 { self.lane3 } else { other.lane3 },
+    }
+}
+
+/// Computes the 4-dimensional dot product of two vectors: `x0*y0 + x1*y1 + x2*y2 + x3*y3`.
+public func f32x4.dot(self: f32x4, other: f32x4): float {
+    return self.lane0 * other.lane0 +
+           self.lane1 * other.lane1 +
+           self.lane2 * other.lane2 +
+           self.lane3 * other.lane3
+}
+
 /// Extracts a single lane by index (0..3).
 public func f32x4.extractLane(self: f32x4, index: int): float {
     if index == 0 { return self.lane0 }
     if index == 1 { return self.lane1 }
     if index == 2 { return self.lane2 }
     return self.lane3
+}
+
+/// Returns a copy of `self` with lane at `index` replaced by `val`.
+public func f32x4.replaceLane(self: f32x4, index: int, val: float): f32x4 {
+    return f32x4 {
+        lane0: if index == 0 { val } else { self.lane0 },
+        lane1: if index == 1 { val } else { self.lane1 },
+        lane2: if index == 2 { val } else { self.lane2 },
+        lane3: if index == 3 { val } else { self.lane3 },
+    }
 }
 
 // ── u8x16 (16 x 8-bit unsigned integers) ───────────────────────────────────
@@ -122,5 +180,61 @@ public func u8x16.add(self: u8x16, other: u8x16): u8x16 {
         b10: self.b10 + other.b10, b11: self.b11 + other.b11,
         b12: self.b12 + other.b12, b13: self.b13 + other.b13,
         b14: self.b14 + other.b14, b15: self.b15 + other.b15,
+    }
+}
+
+/// Lane-wise subtraction with 8-bit wrapping.
+public func u8x16.sub(self: u8x16, other: u8x16): u8x16 {
+    return u8x16 {
+        b0: self.b0 - other.b0, b1: self.b1 - other.b1,
+        b2: self.b2 - other.b2, b3: self.b3 - other.b3,
+        b4: self.b4 - other.b4, b5: self.b5 - other.b5,
+        b6: self.b6 - other.b6, b7: self.b7 - other.b7,
+        b8: self.b8 - other.b8, b9: self.b9 - other.b9,
+        b10: self.b10 - other.b10, b11: self.b11 - other.b11,
+        b12: self.b12 - other.b12, b13: self.b13 - other.b13,
+        b14: self.b14 - other.b14, b15: self.b15 - other.b15,
+    }
+}
+
+/// Extracts a single byte lane by index (0..15).
+public func u8x16.extractLane(self: u8x16, index: int): u8 {
+    if index == 0 { return self.b0 }
+    if index == 1 { return self.b1 }
+    if index == 2 { return self.b2 }
+    if index == 3 { return self.b3 }
+    if index == 4 { return self.b4 }
+    if index == 5 { return self.b5 }
+    if index == 6 { return self.b6 }
+    if index == 7 { return self.b7 }
+    if index == 8 { return self.b8 }
+    if index == 9 { return self.b9 }
+    if index == 10 { return self.b10 }
+    if index == 11 { return self.b11 }
+    if index == 12 { return self.b12 }
+    if index == 13 { return self.b13 }
+    if index == 14 { return self.b14 }
+    return self.b15
+}
+
+/// Returns a copy of `self` with lane at `index` replaced by `val`.
+public func u8x16.replaceLane(self: u8x16, index: int, val: u8): u8x16 {
+    return u8x16 {
+        b0: if index == 0 { val } else { self.b0 },
+        b1: if index == 1 { val } else { self.b1 },
+        b2: if index == 2 { val } else { self.b2 },
+        b3: if index == 3 { val } else { self.b3 },
+        b4: if index == 4 { val } else { self.b4 },
+        b5: if index == 5 { val } else { self.b5 },
+        b6: if index == 6 { val } else { self.b6 },
+        b7: if index == 7 { val } else { self.b7 },
+        b8: if index == 8 { val } else { self.b8 },
+        b9: if index == 9 { val } else { self.b9 },
+        b10: if index == 10 { val } else { self.b10 },
+        b11: if index == 11 { val } else { self.b11 },
+        b12: if index == 12 { val } else { self.b12 },
+        b13: if index == 13 { val } else { self.b13 },
+        b14: if index == 14 { val } else { self.b14 },
+        b15: if index == 15 { val } else { self.b15 },
     }
 }

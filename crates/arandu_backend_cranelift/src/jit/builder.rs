@@ -223,6 +223,22 @@ pub(crate) fn create_jit_builder_with_io_and_process_args(
     builder.symbol("ar_fs_write", crate::fs_runtime::ar_fs_write as *const u8);
     builder.symbol("ar_fs_close", crate::fs_runtime::ar_fs_close as *const u8);
     builder.symbol("exists", crate::fs_runtime::exists as *const u8);
+    builder.symbol(
+        "ar_fs_dir_open",
+        crate::fs_runtime::ar_fs_dir_open as *const u8,
+    );
+    builder.symbol(
+        "ar_fs_openat",
+        crate::fs_runtime::ar_fs_openat as *const u8,
+    );
+    builder.symbol(
+        "ar_fs_mkdirat",
+        crate::fs_runtime::ar_fs_mkdirat as *const u8,
+    );
+    builder.symbol(
+        "ar_fs_unlinkat",
+        crate::fs_runtime::ar_fs_unlinkat as *const u8,
+    );
 
     // SL_T.3: std.testing expectation and runner symbols
     builder.symbol(
@@ -463,6 +479,62 @@ pub(crate) fn create_jit_builder_with_io_and_process_args(
     builder.symbol(
         "ar_rt_supervisor_kill",
         crate::supervisor_runtime::ar_rt_supervisor_kill as *const u8,
+    );
+
+    // Threads, Condvars, and Entropy
+    builder.symbol(
+        "ar_rt_thread_sleep_ms",
+        crate::rt_runtime::ar_rt_thread_sleep_ms as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_thread_yield",
+        crate::rt_runtime::ar_rt_thread_yield as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_thread_park",
+        crate::rt_runtime::ar_rt_thread_park as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_thread_unpark",
+        crate::rt_runtime::ar_rt_thread_unpark as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_condvar_wait",
+        crate::rt_runtime::ar_rt_condvar_wait as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_condvar_notify_one",
+        crate::rt_runtime::ar_rt_condvar_notify_one as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_condvar_notify_all",
+        crate::rt_runtime::ar_rt_condvar_notify_all as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_get_entropy",
+        crate::rt_runtime::ar_rt_get_entropy as *const u8,
+    );
+
+    // UDP and DNS
+    builder.symbol(
+        "ar_net_udp_bind",
+        crate::socket_runtime::ar_net_udp_bind as *const u8,
+    );
+    builder.symbol(
+        "ar_net_udp_send_to",
+        crate::socket_runtime::ar_net_udp_send_to as *const u8,
+    );
+    builder.symbol(
+        "ar_net_udp_recv_from",
+        crate::socket_runtime::ar_net_udp_recv_from as *const u8,
+    );
+    builder.symbol(
+        "ar_net_udp_close",
+        crate::socket_runtime::ar_net_udp_close as *const u8,
+    );
+    builder.symbol(
+        "ar_net_dns_resolve",
+        crate::socket_runtime::ar_net_dns_resolve as *const u8,
     );
 
     Ok(builder)

@@ -16,3 +16,9 @@ status-level = "all"
 final-status-level = "flaky"
 failure-output = "immediate-final"
 retries = 1
+
+# Local verification includes deterministic compiler corpora and native linkers.
+# This watchdog detects hangs; performance budgets remain inside their tests.
+[profile.verification]
+slow-timeout = { period = "60s", terminate-after = 10 }
+retries = 0

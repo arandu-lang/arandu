@@ -413,13 +413,194 @@ pub unsafe extern "C" fn ar_fs_write(_fd: i32, _buf: *const u8, _count: usize) -
     -1
 }
 
-/// Frees nothing (fds are never handed out in Minimal 0.1); returns 0.
+/// Closes an open file or directory descriptor; returns 0.
 ///
 /// # Safety
-/// No pointer args; always safe to call from JIT.
+/// Safe to call with any descriptor; closes valid fds >= 0.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn ar_fs_close(_fd: i32) -> isize {
+pub unsafe extern "C" fn ar_fs_close(fd: i32) -> isize {
+    #[cfg(unix)]
+    {
+        if fd >= 0 {
+            unsafe { libc::close(fd) };
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = fd;
+    }
     0
+}
+
+/// Opens an ambient directory path as a capability token (RFC 0016).
+///
+/// # Safety
+/// `path_ptr` and `path_len` must define a valid memory range.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ar_fs_dir_open(path_ptr: *const u8, path_len: usize) -> i64 {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let path = path_from_fat(path_ptr, path_len as isize)?;
+        #[cfg(unix)]
+        {
+            use std::ffi::CString;
+            use std::os::unix::ffi::OsStrExt;
+            let c_path = CString::new(path.as_os_str().as_bytes()).ok()?;
+            let fd = unsafe {
+                libc::open(
+                    c_path.as_ptr(),
+                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+                )
+            };
+            if fd >= 0 {
+                Some(fd as i64)
+            } else {
+                None
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            if std::path::Path::new(&path).is_dir() {
+                Some(1000)
+            } else {
+                None
+            }
+        }
+    }))
+    .ok()
+    .flatten()
+    .unwrap_or(-1)
+}
+
+/// Opens a file relative to a pinned directory capability descriptor (RFC 0016).
+///
+/// # Safety
+/// `path_ptr` and `path_len` must define a valid memory range.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ar_fs_openat(
+    dir_fd: i64,
+    path_ptr: *const u8,
+    path_len: usize,
+    read: bool,
+    write: bool,
+    create: bool,
+    truncate: bool,
+) -> i64 {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let path = path_from_fat(path_ptr, path_len as isize)?;
+        #[cfg(unix)]
+        {
+            use std::ffi::CString;
+            use std::os::unix::ffi::OsStrExt;
+            let c_path = CString::new(path.as_os_str().as_bytes()).ok()?;
+            let mut flags = if read && write {
+                libc::O_RDWR
+            } else if write {
+                libc::O_WRONLY
+            } else {
+                libc::O_RDONLY
+            };
+            if create {
+                flags |= libc::O_CREAT;
+            }
+            if truncate {
+                flags |= libc::O_TRUNC;
+            }
+            flags |= libc::O_CLOEXEC;
+            let fd = unsafe { libc::openat(dir_fd as i32, c_path.as_ptr(), flags, 0o666) };
+            if fd >= 0 {
+                Some(fd as i64)
+            } else {
+                None
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (dir_fd, path, read, write, create, truncate);
+            None
+        }
+    }))
+    .ok()
+    .flatten()
+    .unwrap_or(-1)
+}
+
+/// Creates a subdirectory relative to a pinned directory descriptor (RFC 0016).
+///
+/// # Safety
+/// `path_ptr` and `path_len` must define a valid memory range.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ar_fs_mkdirat(dir_fd: i64, path_ptr: *const u8, path_len: usize) -> i64 {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let path = path_from_fat(path_ptr, path_len as isize)?;
+        #[cfg(unix)]
+        {
+            use std::ffi::CString;
+            use std::os::unix::ffi::OsStrExt;
+            let c_path = CString::new(path.as_os_str().as_bytes()).ok()?;
+            let ret = unsafe { libc::mkdirat(dir_fd as i32, c_path.as_ptr(), 0o777) };
+            if ret == 0 {
+                let fd = unsafe {
+                    libc::openat(
+                        dir_fd as i32,
+                        c_path.as_ptr(),
+                        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+                    )
+                };
+                if fd >= 0 {
+                    Some(fd as i64)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (dir_fd, path);
+            None
+        }
+    }))
+    .ok()
+    .flatten()
+    .unwrap_or(-1)
+}
+
+/// Unlinks a file or directory relative to a pinned directory descriptor (RFC 0016).
+///
+/// # Safety
+/// `path_ptr` and `path_len` must define a valid memory range.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ar_fs_unlinkat(
+    dir_fd: i64,
+    path_ptr: *const u8,
+    path_len: usize,
+    is_dir: bool,
+) -> i64 {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let path = path_from_fat(path_ptr, path_len as isize)?;
+        #[cfg(unix)]
+        {
+            use std::ffi::CString;
+            use std::os::unix::ffi::OsStrExt;
+            let c_path = CString::new(path.as_os_str().as_bytes()).ok()?;
+            let flags = if is_dir { libc::AT_REMOVEDIR } else { 0 };
+            let ret = unsafe { libc::unlinkat(dir_fd as i32, c_path.as_ptr(), flags) };
+            if ret == 0 {
+                Some(0i64)
+            } else {
+                None
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (dir_fd, path, is_dir);
+            None
+        }
+    }))
+    .ok()
+    .flatten()
+    .unwrap_or(-1)
 }
 
 #[cfg(test)]

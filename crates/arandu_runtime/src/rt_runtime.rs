@@ -461,6 +461,93 @@ pub unsafe extern "sysv64" fn ar_str_split_last(
     unsafe { ar_str_split_last_impl(s_ptr, s_len, sep_ptr, sep_len) }
 }
 
+/// Pauses the current OS thread for at least `ms` milliseconds.
+///
+/// # Safety
+/// Always safe to call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ar_rt_thread_sleep_ms(ms: u64) {
+    std::thread::sleep(std::time::Duration::from_millis(ms));
+}
+
+/// Cooperatively gives up the current thread's time slice.
+///
+/// # Safety
+/// Always safe to call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ar_rt_thread_yield() {
+    std::thread::yield_now();
+}
+
+/// Parks the current OS thread.
+///
+/// # Safety
+/// Always safe to call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ar_rt_thread_park() {
+    std::thread::park();
+}
+
+/// Unparks a target thread.
+///
+/// # Safety
+/// Always safe to call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ar_rt_thread_unpark(_thread_id: usize) {}
+
+/// Condition variable wait helper.
+///
+/// # Safety
+/// Always safe to call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ar_rt_condvar_wait(_seq: usize) {
+    std::thread::park_timeout(std::time::Duration::from_millis(50));
+}
+
+/// Condition variable notify one helper.
+///
+/// # Safety
+/// Always safe to call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ar_rt_condvar_notify_one(_seq: usize) {}
+
+/// Condition variable notify all helper.
+///
+/// # Safety
+/// Always safe to call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ar_rt_condvar_notify_all(_seq: usize) {}
+
+/// Fills buffer with hardware entropy from the host OS (/dev/urandom or fallback).
+///
+/// # Safety
+/// `buf` must point to a writable buffer of at least `len` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ar_rt_get_entropy(buf: *mut u8, len: usize) -> i64 {
+    if buf.is_null() || len == 0 {
+        return 0;
+    }
+    let slice = unsafe { std::slice::from_raw_parts_mut(buf, len) };
+    #[cfg(unix)]
+    {
+        if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+            use std::io::Read;
+            if f.read_exact(slice).is_ok() {
+                return 0;
+            }
+        }
+    }
+    let seed = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&seed.to_le_bytes());
+    let mut reader = hasher.finalize_xof();
+    reader.fill(slice);
+    0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

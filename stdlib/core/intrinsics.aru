@@ -14,6 +14,7 @@
 //! and `std.core.str`.
 //!
 //! The following intrinsics are **safe** (no `unsafe {}` required):
+//! - `bitCountOnes*`, `bitLeadingZeros*`, `bitTrailingZeros*`, `bitReverse*` — pure integer operations.
 //! - `sliceLen` — reads the `len` field of an already-validated fat-pointer.
 //! - `strBytes` — reinterprets a `str` fat-pointer as `[]u8`; no deref occurs.
 //! - `sizeOf` — compile-time constant; no runtime memory access.
@@ -30,16 +31,28 @@
 //! - `std.core.mem` — safe wrapper over memory intrinsics
 //! - `std.core.pointer` — raw-pointer utilities
 //! - `std.core.slice` — bounds-checked slices
-
 module std.core.intrinsics
 
 extern "arandu-intrinsic" {
+    /// Number of set bits; pure, safe, allocation-free.
+    func bitCountOnes32(value: u32): u32
+    func bitCountOnes64(value: u64): u32
+    /// Leading zeros; zero returns 32 or 64.
+    func bitLeadingZeros32(value: u32): u32
+    func bitLeadingZeros64(value: u64): u32
+    /// Trailing zeros; zero returns 32 or 64.
+    func bitTrailingZeros32(value: u32): u32
+    func bitTrailingZeros64(value: u64): u32
+    /// Reverses every bit, including leading zeros.
+    func bitReverse32(value: u32): u32
+    func bitReverse64(value: u64): u64
+
     /// Unconditional fatal trap (out-of-bounds, failed assertions, etc.).
-    func abort() : void
+    func abort(): void
 
     /// Generational ref mismatch trap: slot was recycled (use-after-free detected).
     /// Used by `std.alloc.gen_arena` verification paths and compiler-lowered `GenGet` nodes.
-    func abortGenerationalMismatch() : void
+    func abortGenerationalMismatch(): void
     /// Builds a slice view from a raw pointer and length. The memory must
     /// stay valid for as long as the slice is used.
     func sliceFromRaw<Owner, T>(owner: ref Owner, data: ptr[T], len: usize): []T

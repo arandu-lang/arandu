@@ -4,8 +4,11 @@
 
 **Status:** scalar/aggregate values, enums, global constants, computed headers,
 composed staging, typed specialization and explicit target identity are
-implemented in the 0.1.9 campaign. Complete campaign validation, RFC acceptance and release
-readiness are tracked separately; this document does not certify those gates.
+implemented during the 0.1.9 core campaign and included in the published
+[0.1.10 release](https://github.com/arandu-lang/arandu/releases/tag/v0.1.10).
+The campaign's implementation and remaining boundaries are consolidated here;
+the master roadmap owns the remaining work. Publication of this core does not
+accept the broader metaprogramming RFC or certify every CT.0–CT.5 ambition.
 
 ## Detalhes Técnicos da Implementação
 
@@ -358,7 +361,8 @@ Concrete generic instances select dependent conditions before resolving/typing
 their residual body. Match arms retain their lexical scopes: runtime pattern
 bindings cannot become CTFE inputs, although the selected runtime body can use
 them. Lambda staging preserves lexical selection and capture checks, but general
-closure typing and execution remain unsupported (U001), scheduled for 0.3;
+closure typing and execution remain unsupported (U001), planned separately
+for the 0.3.x closure contract;
 this preparation does not enable executable lambdas in 0.1.9. Nested explicit
 roots and helper-local roots execute as value scopes within the enclosing VM
 evaluation; local returns and propagation leave that value scope. They share
@@ -536,8 +540,9 @@ cardinalities, including jagged nested arrays. Fuel and values never round up,
 so sibling evaluations cannot multiply the public envelope. Expansion still
 allows at most 4,096 occurrences, with at most 16 nested staging contexts;
 these limits remain separate from VM frames and host RSS.
-Native Windows/macOS validation and release readiness are separate gates from
-development-host tests.
+Native installed validation and release readiness are separate gates from
+development-host tests; the release evidence below records the published smoke
+coverage without extending it to every CTFE or editor scenario.
 
 ### Integrated development-host evidence
 
@@ -697,8 +702,49 @@ checking their lifetime shapes. Closed payloads qualify; nested strings, safe
 references, slices and coroutine states remain excluded. Unknown retention,
 cyclic aggregate joins and borrowed result backing still require their separate
 proofs before any broader reuse or reclamation is enabled. Native Windows/macOS
-installed checks are wired to the same corpus in the existing CI matrix; their
-actual runner results remain required for release readiness.
+installed checks are wired to the same corpus in the existing CI matrix.
+
+### Published distribution evidence and remaining boundaries
+
+The [0.1.10 release workflow](https://github.com/arandu-lang/arandu/actions/runs/38779239029)
+for commit `7df12f7a36ed872ea6c04287cb4e536525bc5291` completed the native installed
+CTFE smoke on Linux, Windows and macOS. Together with the published release,
+this supersedes the campaign's earlier statement that publication and the
+three-platform installed smoke were wholly pending. It does not turn the
+historical Linux-only measurements above into cross-platform benchmarks or
+prove all editor cancellation, performance and extended staging cases.
+
+The core campaign is closed as an implementation campaign. Its enduring
+contracts are the feature sections above, the shared
+[ABI storage boundary](arandu-abi-layout-v0.1.md#residual-aggregate-storage-safety-boundary)
+and the following acceptance boundaries; scheduling belongs only to the master
+roadmap:
+
+- CT.0 distinguishes the delivered value/staging contract from the still-Draft
+  RFC. Broader effects, reflection and item generation require separate accepted
+  contracts; type values and third-party attributes are not mandatory 0.2 gates.
+- CT.1 keeps target identity and layout explicit, validates configurations at
+  driver boundaries and never equates a synthetic layout with supported native
+  code generation.
+- CT.2/CT.3 preserve the admitted domain, structural frozen identities, bounded
+  expansion, local returns and deterministic errors. Executable closures remain
+  a separate contract; lambda preparation does not enable their execution.
+- CT.4 requires measured interactive workloads and preserved cutoff, clean
+  equivalence, error/success transitions and span updates. LSP/client evidence
+  must cover UTF-16, cancellation without an edit, stale results, manifestless
+  files and shutdown; a native SDK smoke does not certify that entire matrix.
+- CT.5 retains a reproducible corpus for dimensions, tables and specialization.
+  Record cold and warm builds, irrelevant edits, helpers with equal/different
+  values, exceeded budgets, query executions, RSS and expansion size before
+  choosing performance thresholds. Broader corpus, playground delivery and
+  future release candidates need their own evidence.
+
+The existing cutoff regressions include `arandu_query/tests/ctfe_roots.rs`
+(irrelevant edits and equal-value helper edits), `comptime_public.rs` (public
+staging and changed budgets), `comptime_if.rs` (imported selection), and
+`comptime_aggregates.rs` (imported constants, cycles and target identity).
+They are regression coverage to preserve, not evidence that the entire RFC is
+accepted or that interactive latency targets have already been measured.
 
 ### Controlled workload comparison
 

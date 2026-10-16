@@ -14,6 +14,22 @@
 
 ---
 
+## Estado auditado em 15/10/2026
+
+Esta RFC é uma proposta. `std.fs.Dir`, contenção por descritor, `openat2`,
+efeitos de autoridade ambiente e a seção `[capabilities]` ilustrada abaixo não
+são superfícies implementadas pelo simples fato de constarem deste documento.
+As APIs atuais de [`std.fs`](../../stdlib/std/fs.aru) usam caminhos e incluem
+`File`, `DirListing`, leitura e metadata; `File.close` e `DirListing.close`
+ainda retornam `void`, não o contrato uniforme `Result` proposto aqui.
+
+O [`VFS`](../../crates/arandu_query/src/vfs.rs) usa worklist iterativa, limite
+de profundidade e detecção de ciclos. Ainda segue symlinks de diretório e não
+prova confinamento por raiz ou resistência geral a TOCTOU. Não é uma sandbox.
+Validação de pacote/import e bootstrap de SDK têm contratos separados;
+nenhuma garantia de autoridade por capacidade é promovida nesta revisão.
+A fila executiva permanece no [roadmap mestre](../arandu-compiler-roadmap-v0.1.md).
+
 ## 1. Resumo (Summary)
 
 Esta RFC especifica o modelo arquitetural de interação com o sistema de arquivos para o ecossistema Arandu, eliminando vulnerabilidades de **TOCTOU (*Time-of-Check to Time-of-Use*)**, **corridas de links simbólicos (*Symlink Races*)** e **fuga de limites de diretório (*Path Traversal / Sandbox Escape*)**.
@@ -65,7 +81,9 @@ Se o Arandu adotar uma biblioteca padrão ingênua baseada apenas em funções g
 
 ### 3.1 O Conceito: Diretórios como Capacidades (`Dir`)
 
-No Arandu, manipulações estruturais do sistema de arquivos não utilizam autoridade global oculta (*ambient authority*). Para trabalhar dentro de um diretório, o desenvolvedor obtém um handle do tipo `std.fs.Dir`:
+No modelo proposto, operações via capacidade evitariam autoridade ambiente
+para os caminhos controlados. O handle `std.fs.Dir` abaixo é API ilustrativa
+ainda não implementada, não substituto disponível para o filesystem atual:
 
 ```arandu
 import std.fs as fs
@@ -105,11 +123,15 @@ let tentativa = dir.openFile("../arquivo_privado.txt")
 // tentativa == Result.Err(io.IoError.EscapeDenied)
 ```
 
-Mesmo que um processo externo crie concorrentemente um link simbólico dentro de `meu_sandbox/link -> /etc`, operações executadas via `dir` **não seguirão o link simbólico para fora de `meu_sandbox`**.
+O critério pretendido é impedir que operações via `dir` escapem da raiz,
+inclusive sob troca concorrente de symlinks. A implementação por plataforma
+precisará demonstrar esse critério; o exemplo não constitui uma prova.
 
 ### 3.3 Tratamento Explícito de Erros de I/O
 
-O Arandu não lança exceções nem entra em pânico em operações de arquivo. Todas as chamadas retornam `Result<T, io.IoError>` com variantes semânticas portáteis:
+A API proposta deve retornar `Result<T, io.IoError>` nas operações falíveis,
+com erros portáteis. Isso não descreve todas as assinaturas do `std.fs` atual
+nem prova ausência de panic em toda operação de arquivo:
 
 ```arandu
 match dir.openFile("config.json") {
@@ -168,7 +190,9 @@ Seguindo estritamente a filosofia de camadas do Arandu definida em `docs/arandu-
 
 ### 4.2 Motor de Execução Nativo no Runtime (`arandu_runtime::fs_runtime`)
 
-O runtime em Rust que serve de base para o backend Cranelift (JIT/AOT) e os emissores C implementa contenção nativa adaptada por plataforma:
+O motor proposto para Rust e C precisará implementar contenção adaptada por
+plataforma. As estratégias abaixo são requisitos de design a validar, não
+implementações de capacidade já presentes no runtime:
 
 #### 4.2.1 Linux (Kernel ≥ 5.6): `openat2` com `RESOLVE_BENEATH`
 
@@ -236,44 +260,31 @@ Algoritmo: SafeRemoveTree(dir_fd)
 
 O compilador Arandu precisa de proteção equivalente durante a fase de descoberta de arquivos de pacotes (`arandu_query::vfs`).
 
-#### 4.4.1 Correção em `scan_aru_entries_rec`
-Em `crates/arandu_query/src/vfs.rs`, a implementação atual:
-```rust
-// Código atual vulnerável a symlink loops e fugas:
-for entry in rd.flatten() {
-    let path = entry.path();
-    if path.is_dir() { // <-- segue symlinks via stat!
-        scan_aru_entries_rec(root, &path, out);
-    }
-}
-```
-Será substituída por:
-```rust
-// Implementação segura:
-for entry in rd.flatten() {
-    let Ok(ft) = entry.file_type() else { continue };
-    if ft.is_symlink() {
-        // Symlinks não são seguidos cegamente durante discovery de pacotes.
-        // Se o destino estiver fora de 'root', emitir diagnóstico de integridade.
-        continue;
-    }
-    let path = entry.path();
-    if ft.is_dir() {
-        scan_aru_entries_rec(root, &path, out);
-    } else if ft.is_file() && path.extension().and_then(|e| e.to_str()) == Some("aru") {
-        if let Ok(rel) = path.strip_prefix(root) {
-            out.push(rel.to_string_lossy().replace('\\', "/"));
-        }
-    }
-}
-```
+#### 4.4.1 Estado de `scan_aru_entries`
+
+A versão atual usa `scan_aru_entries`, com worklist iterativa e `visited_dirs`;
+o snippet recursivo de versões anteriores desta RFC descrevia uma implementação
+histórica. A proteção contra ciclos já existe, mas o ramo de symlink consulta
+`metadata` e pode seguir o destino. Detectar ciclos e impor profundidade não
+comprovam que o destino permaneça dentro da raiz.
+
+A mudança futura deve definir política de symlinks e containment, incluindo
+races entre descoberta e abertura. Apenas trocar `is_dir` por `file_type` ou
+canonicalizar o caminho não constitui prova completa de segurança.
 
 #### 4.4.2 Confinamento em `map_import_key`
-O resolvedor de chaves de importação em Salsa continua validando que nenhuma chave contenha `..` e que todo caminho físico resolvido comece estritamente com `roots.package_src` ou `roots.stdlib_root`.
+
+A implementação atual combina listagens registradas e resolução de chaves;
+o ramo de stdlib junta o sufixo ao root e consulta o candidato. Não se deve
+inferir daí uma garantia universal de rejeição de `..`, contenção física e
+resistência a symlink races. O contrato proposto deverá explicitar e testar
+essas condições no registro/leitura de módulos, preservando inputs Salsa e
+sem introduzir I/O em queries semânticas.
 
 ### 4.5 Integração com o Sistema de Efeitos (`@Effects`)
 
-O Arandu distingue operações com o sistema de arquivos entre **autoridade ambiente** e **autoridade de capacidade**:
+A proposta distingue **autoridade ambiente** e **autoridade de capacidade**.
+Os nomes de efeitos abaixo ainda dependem de aprovação e implementação:
 
 | Efeito | Descrição | Escopo Permitido |
 | :--- | :--- | :--- |
@@ -282,12 +293,15 @@ O Arandu distingue operações com o sistema de arquivos entre **autoridade ambi
 | `@Effects(AmbientFsRead)` | Abertura arbitrária de caminhos globais do host | Restrito (raiz da aplicação) |
 | `@Effects(AmbientFsWrite)` | Criação arbitrária de caminhos globais do host | Altamente restrito / auditável |
 
-No arquivo `arandu.toml` (política de pacotes, RFC 0004), projetos dependentes podem ser configurados para negar autoridade ambiente:
+A configuração abaixo ilustra uma política futura; o manifesto atual não
+entrega esse confinamento apenas com essa seção:
 ```toml
 [capabilities]
 deny = ["AmbientFsRead", "AmbientFsWrite"]
 ```
-Quando negado, uma biblioteca dependente **só pode acessar os diretórios que o binário principal passar explicitamente como argumento `Dir`**, garantindo confinamento em tempo de compilação.
+A política pretendida permitiria somente capacidades passadas pela aplicação.
+Sua efetividade exige checagem, runtime e fronteiras FFI compatíveis; não é
+uma garantia atual de confinamento em tempo de compilação.
 
 ---
 

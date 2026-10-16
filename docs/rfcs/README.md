@@ -22,11 +22,36 @@ Uma RFC evolui através dos seguintes estados formais:
 
 1. **`Draft`**: Proposta em discussão aberta. O design detalhado, trade-offs e impactos ainda estão sendo refinados.
 2. **`Accepted`**: A proposta foi revisada, está alinhada aos Invariantes de Arquitetura do Arandu e foi aprovada pelos mantenedores para implementação.
-3. **`Implemented`**: O recurso foi completamente implementado no frontend/middle-end/backends, acompanhado por testes e documentação de diagnósticos.
-4. **`Frozen-R0`**: O contrato público e semântico foi **congelado cirurgicamente** como baseline de medição empírica (pesquisa acadêmica / TCC). Nenhuma quebra de ABI ou semântica é permitida durante o período de coleta de métricas.
-5. **`Superseded`**: Uma RFC posterior substituiu ou reformulou o design anterior.
+3. **`Implemented`**: O recorte explicitamente declarado está implementado nas camadas aplicáveis, com testes e diagnósticos. Não aprova automaticamente as expansões futuras da RFC nem comprova paridade em todos os alvos.
+4. **`Planned`**: Investigação ou desenho registrado, ainda sem aprovação/implementação integral; pode ter precursores implementados descritos no texto.
+5. **`Frozen-R0`**: O contrato público e semântico foi **congelado cirurgicamente** como baseline de medição empírica (pesquisa acadêmica / TCC). Nenhuma quebra de ABI ou semântica é permitida durante o período de coleta de métricas.
+6. **`Superseded`**: Uma RFC posterior substituiu ou reformulou o design anterior.
 
 ---
+
+O item 0000 é um template `Living`; o campo `Draft` dentro dele é preenchido
+ao criar uma proposta, não o status do próprio catálogo.
+
+## Relação com o produto
+
+A única ordem executiva é o [roadmap mestre](../arandu-compiler-roadmap-v0.1.md#plano-de-longo-prazo-por-série).
+Status de governança, maturidade da implementação e publicação são dimensões
+separadas. O número da RFC e as fases de seu desenho não definem uma versão.
+Tabelas de fases futuras em RFCs são propostas condicionais; a distribuição
+suportada é definida pelos contratos e pela evidência de release.
+
+| Grupo | Leitura correta do estado atual |
+| --- | --- |
+| 0001 | GenRef R0 congelado, com fronteira host/thread-confined |
+| 0002–0005, 0007–0010 | recortes integrados; async, borrow e infra conservam limites nos contratos técnicos |
+| 0006 | proposta de organização HIR; pools/IndexVec já são precursores implementados, não a arena por função inteira |
+| 0011 / 0013 | `Draft` amplas com fundação incremental/núcleo CTFE existentes; motor quente e metaprogramação ampla continuam separados |
+| 0012 / 0014–0019 | propostas com bases parciais quando documentadas; não implicam stack científica, mobile, sandbox ou CAS completo |
+| 0020–0023 / 0027 | recortes integrados; packaging ainda conserva dívida de bootstrap e Python residual |
+| 0024–0026 | propostas com intrínsecos, testes e convenções existentes; não implicam atributos executáveis, remarks ou auditoria integral de recursos |
+| 0028–0031 | propostas novas de eBPF, GPU, FFI e LLVM/MLIR; sem backends/exportador universais implementados |
+| 0032–0036 | propostas arquiteturais das trilhas `LAMBDA`, `OPT.1–7`, `TYP.NEXT`/`GEN`, `A2` (efeitos/capacidades) e `IDE.5`/`E1, E3, E5` |
+| 0037 | Decimal local em validação, BigInt/BigDecimal autorizados no fechamento da stdlib; ainda não publicados |
 
 ## Índice Oficial de RFCs
 
@@ -60,6 +85,16 @@ Uma RFC evolui através dos seguintes estados formais:
 | [0025](0025-optimization-oracle-and-testing-aot.md) | Arandu Optimization Oracle & Testing (`AOT`): Diagnóstico Estruturado, Testes de Codegen e Fuzzing Metamórfico | Middle-end / Backend / Tooling | `Draft` | 2026-10-04 |
 | [0026](0026-standard-library-naming-and-resource-conventions.md) | Convenções Canônicas de Nomenclatura e Gerenciamento de Recursos da Stdlib | Stdlib / Frontend / Runtime | `Draft` | 2026-10-06 |
 | [0027](0027-zero-bloat-binary-diet-and-on-demand-runtime.md) | Redução de Código e Runtime Sob Demanda | Backend / Runtime / Tooling | `Implemented` | 2026-10-12 |
+| [0028](0028-native-ebpf-backend-and-cooperative-verification.md) | Backend eBPF Nativo e Verificação Cooperativa de Kernel | Backend / Kernel / Tooling | `Draft` | 2026-10-15 |
+| [0029](0029-gpu-heterogeneous-compute-and-spirv-backend.md) | Computação Heterogênea em GPU e Backend SPIR-V | Backend / GPU / Heterogeneous | `Draft` | 2026-10-15 |
+| [0030](0030-universal-ffi-zero-copy-and-polyglot-export.md) | FFI Universal, Vistas Zero-Copy e Exportação Poliglota | Frontend / Middle-end / Tooling / ABI | `Draft` | 2026-10-15 |
+| [0031](0031-llvm-mlir-backend-and-scoped-noalias-vectorization.md) | Backend LLVM/MLIR, Escopos Noalias e Otimização Extrema de Produção | Backend / Codegen / Optimization | `Draft` | 2026-10-15 |
+| [0032](0032-closures-ossa-capture-modes-and-first-class-functions.md) | Closures, Modos de Captura OSSA e Funções de Primeira Classe (`LAMBDA`) | Frontend / Middle-end / Backend | `Draft` | 2026-10-15 |
+| [0033](0033-amir-cooperative-optimization-place-provenance-and-memoryssa.md) | Otimização Cooperativa na AMIR, Proveniência de Places (`AmirPlace`) e `MemorySSA` Virtual (`OPT.1–7`) | Middle-end / Optimization | `Draft` | 2026-10-15 |
+| [0034](0034-adaptive-hybrid-polymorphism-and-witness-tables.md) | Polimorfismo Híbrido Adaptativo, *Witness Tables* e *Existential Containers* sem Heap Implícito (`TYP.NEXT` / `GEN`) | Frontend / Middle-end / ABI | `Draft` | 2026-10-15 |
+| [0035](0035-effect-system-polymorphism-and-capability-authority.md) | Sistema de Efeitos Tridimensional, Polimorfismo Contextual e Autoridade por Capacidades (`A2`) | Frontend / Middle-end / Stdlib | `Draft` | 2026-10-15 |
+| [0036](0036-typed-holes-and-integrated-semantic-tooling.md) | *Typed Holes* (`todo`) com Contexto OSSA e Ferramental Semântico Integrado (`REPL`, `Bindgen`, `Lint`) | Frontend / IDE / Tooling | `Draft` | 2026-10-15 |
+| [0037](0037-decimal-arithmetic-and-arbitrary-precision-big-numbers.md) | Aritmética Decimal de Valor Fixo (128 bits) e Números de Precisão Arbitrária (`Decimal`, `BigInt`, `BigDecimal`) | Stdlib / Middle-end / Runtime | `Draft` | 2026-10-16 |
 
 
 ---

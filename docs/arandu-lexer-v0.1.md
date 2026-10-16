@@ -1,6 +1,6 @@
 # Arandu Lexer Contract v0.1
 
-Status: specification draft
+Status: implemented lexer; token schemas below are conceptual projections
 Grammar source: `arandu-grammar-v0.6.ebnf`
 Depends on: `docs/arandu-ast-v0.1.md`
 
@@ -13,7 +13,7 @@ sequência de tokens consumida pelo parser e pelos testes dourados.
 
 ### Goal
 
-Define the token stream that the parser will consume. This document is the contract for the future lexer implementation and for lexer tests.
+Define the token stream that the parser will consume. The lexer is implemented in `arandu_lexer`; this document describes its lexical contract and explanatory token projections. Physical token packing, compact byte spans and exact output are defined by the Rust types and golden tests, not by these JSON examples.
 
 The lexer must:
 

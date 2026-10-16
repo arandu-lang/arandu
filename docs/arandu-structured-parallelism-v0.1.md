@@ -2,8 +2,11 @@
 
 **Estado:** `done`, ainda não `gold`. O caminho funcional está integrado no
 runtime, nos backends C/Cranelift e em `std.parallel`; a prova atual cobre
-Linux x86-64 e o consumidor Pypor. Promoção exige benchmark reproduzível e a
-matriz nativa Windows/macOS.
+Linux x86-64 e o consumidor Pypor. O harness reproduzível já é versionado;
+promoção exige resultados representativos e a matriz específica de paralelismo
+nativo Windows/macOS. O smoke público do SDK v0.1.10 nos três alvos, aprovado
+no [run 38779239029](https://github.com/arandu-lang/arandu/actions/runs/38779239029)
+e verificado em 15/10/2026, não substitui essa matriz.
 
 ## Visão Geral e Contexto
 
@@ -20,7 +23,9 @@ As decisões arquiteturais foram confrontadas diretamente com as abordagens de m
 - **Go `errgroup`:** Limite de admissão estrito para proteger o sistema contra sobrecarga de concorrência. Evitou-se o erro da estrutura padrão do Go (`Group{}` ilimitado que acumula memória sem controle).
 - **.NET `Task.WhenAll`:** Agrupamento determinístico de resultados. Evitou-se a armadilha do .NET de re-lançar apenas a primeira exceção por corrida não determinística; o Arandu registra e consolida resultados em ordem estável.
 - **Rayon / C++26 `std::execution`:** Redução paralela e particionamento contíguo de fatias sem alocação por item. Evitou-se a cerimônia excessiva de montagem de *senders/receivers*.
-- **Inlining Automático Orçado no AMIR:** Evitou-se o *code bloat* descontrolado de compilers C++/LLVM e a fragilidade *mid-stack* do Go através de um modelo estrito de funções-folha (*leaf functions*) com teto de 32 operações e 12 blocos básicos, sem loops, corrotinas ou chamadas aninhadas.
+- **Inlining orçado no AMIR:** funções-folha e wrappers pequenos possuem
+  limites de custo, prova transitiva e teto de crescimento; ciclos no CFG e
+  suspensão impedem a transformação.
 
 ```text
 Entrada (fatia []T ou coleção)
@@ -77,8 +82,12 @@ Entrada (fatia []T ou coleção)
 
 3. **Inlining Automático de Funções-Folha (AMIR):**
    Pequenas funções utilitárias (como testes de caracteres e predicados) são automaticamente inlinadas nos callers antes do laço de fixpoint do otimizador:
-   - **Elegibilidade:** Apenas funções-folha (sem chamadas a outras funções), sem terminadores `Suspend` e sem ciclos no CFG (detectados via DFS de 3 cores).
-   - **Orçamento:** Custo de instruções $\le 32$, blocos básicos $\le 12$, máximo de 32 inlines por função chamadora. Os limites acomodam predicados com curto-circuito e pequenos classificadores branch-only; funções com loops, chamadas ou `Suspend` continuam inelegíveis.
+   - **Elegibilidade:** funções-folha ou wrappers pequenos com alvos
+     transitivamente elegíveis, sem `Suspend` ou ciclos no CFG.
+   - **Orçamento:** folhas têm custo até 32 operações e 12 blocos; wrappers
+     não-folha admitem até 24 blocos e 4 chamadas com custo adicional. O
+     orçamento cumulativo de statements depende do tamanho original do caller
+     e do teto de IR expandida; não existe limite fixo de 32 sites por caller.
    - **Splicing SSA:** O registrador de retorno `TempId(0)` da callee é mapeado diretamente para o registrador SSA de destino do caller (`call.lhs`), os blocos intermediários são inseridos e as tabelas de statements e parâmetros de bloco são reconstruídas de forma contígua e densa.
    - **Sinergia com Passos Existentes:** Após o splice, `simplify_cfg` funde os blocos sequenciais e `sccp` dobra constantes diretamente nos locais de uso.
 
@@ -173,7 +182,8 @@ A ABI de agregados `Copy` por valor ainda depende de simplificação no backend 
 
 ## Futuro e Próximos Passos
 
-1. Executar a matriz nativa completa em runners Windows e macOS dedicados no CI.
-2. Manter resultados de granularidade específicos de consumidores nos artefatos de benchmark e preservar o default até existir evidência em mais de um workload.
-3. Substituir a ABI Cranelift de retorno de agregados `Copy` por `sret` ou retorno multi-slot medido. Hoje um `Stats` de 24 bytes ainda provoca alocações em caminhos com retorno agregado sem sret.
-4. Projetar transporte com drop glue automático integrado ao type checker quando o sistema de tipos expandir recursos com destrutores explícitos.
+A fila permanece no roadmap mestre. Os limites deste contrato são a promoção
+nativa específica, resultados reproduzíveis em mais de um workload, ABI medida
+de retorno agregado e eventual transporte com drop glue automático. A fábrica
+`AccumulatorInit` já admite acumuladores não-`Copy`; isso não comprova destruição
+automática de recursos arbitrários em todos os caminhos de falha/cancelamento.

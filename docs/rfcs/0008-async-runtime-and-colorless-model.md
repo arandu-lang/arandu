@@ -4,7 +4,7 @@
 - **Título:** Runtime Assíncrono Cooperativo e Modelo Colorless de Corrotinas
 - **Autor(es):** Equipe do Compilador Arandu
 - **Data de Início:** 2026-08-20
-- **Status:** `Implemented` (Fases SL_R.0 a SL_R.3 na stdlib e compilador)
+- **Status:** `Implemented` no recorte SL_R.0–SL_R.3, com limites de payload, backend e plataforma descritos abaixo
 - **Área Principal:** `Runtime` / `Frontend` / `Compiler Infrastructure` (`A3`, `SL_R`)
 - **Documento Relacionado:** `docs/arandu-async-runtime-design-v0.1.md`
 
@@ -14,7 +14,9 @@
 
 Esta RFC especifica a infraestrutura de computação assíncrona do Arandu, composta pelo modelo semântico no compilador (**Fase A3**) e pela biblioteca de runtime cooperativa na stdlib (**Fase SL_R**).
 
-A proposta isola rigidamente a semântica da linguagem (`async`/`await`, `Coroutine[T]`, `Poll[T]`, suspensão de CFG) dos detalhes do sistema operacional (threads, `epoll`, `io_uring`, sockets), permitindo que código assíncrono seja portável entre ambientes nativos e WebAssembly sem poluição cromática de funções (*What Color is Your Function*).
+A proposta isola rigidamente a semântica da linguagem (`async`/`await`, `Coroutine[T]`, `Poll[T]`, suspensão de CFG) dos detalhes do sistema operacional (threads, `epoll`, `io_uring`, sockets), mantendo uma fronteira própria para a semântica de suspensão. Isso não promete
+que os hosts do executor e de I/O sejam portáveis integralmente entre ambientes
+nativos e WebAssembly.
 
 ---
 
@@ -26,32 +28,51 @@ A proposta isola rigidamente a semântica da linguagem (`async`/`await`, `Corout
 | **`std.core.future`** | Enum `Poll[T]` (Ready / Pending) | Reator do SO |
 | **`std.runtime.executor`** | Executor cooperativo (`SyncExecutor`, `TaskHandle<T>`, `spawn`, `join`, `blockOn`, `cancel`) | Reator do SO, wakers, sockets |
 | **`std.runtime.waker`** | `Waker` / `Context` (token de notificação) | Sockets de rede |
-| **`std.runtime.reactor`** | Reator do SO (Linux `epoll` / `io_uring`, macOS `kqueue`) | Executor, sockets |
+| **`std.runtime.reactor`** | Linux `epoll`/`io_uring`; timers portáveis nos demais hosts | Executor, sockets |
 | **`std.net`** | Sockets TCP e abstrações de I/O de rede | Reator, wakers |
 
 ---
 
 ## 3. Explicação em Nível de Guia (Guide-Level Explanation)
 
-No código Arandu, funções que realizam operações assíncronas são definidas e consumidas de maneira direta:
+A superfície existente de `stdlib/std/runtime/executor.aru` recebe uma
+`Coroutine<T>` produzida por `async func`. `spawn` devolve `TaskHandle<T>` e
+`join` espera esse handle; `blockOn` recebe a própria corrotina. O exemplo usa
+o mesmo recorte de `examples/minimal/m07_async_spawn_join.aru`:
 
 ```arandu
-import std.net as net
-import std.runtime.executor as exec
+import std.runtime.executor as rt
 
-func fetch_data(addr: str): int {
-    let sock = net.connect(addr);
-    let bytes = sock.read();
-    return bytes.len();
+async func answer(): int {
+    return 42
 }
 
 func main(): int {
-    // Execução síncrona/bloqueante via executor cooperativo
-    let handle = exec.spawn(fetch_data("127.0.0.1:8080"));
-    let result = exec.blockOn(handle);
-    return result;
+    let ex = rt.SyncExecutor.new()
+    let handle = ex.spawn(answer())
+    return ex.join(handle)
 }
 ```
+
+### Limites auditados em 15/10/2026
+
+O transporte do executor cooperativo ainda usa bits i64; o parâmetro `T`
+retém a checagem estática, mas não oferece transporte genérico de agregados.
+O backend C standalone não fornece todos os hosts `ar_rt_spawn_i64`,
+`ar_rt_join_i64`, `ar_rt_cancel_i64` e `ar_rt_block_on_i64` desse módulo.
+
+O reactor Linux integra epoll/timerfd, wakers e o caminho opcional io_uring.
+Windows/macOS usam deadline portável para timers e espera TCP direta
+(WSAPoll/poll); registrar sockets no reactor retorna `-1` nesses dois hosts.
+Não há backend kqueue/IOCP implementado com esse contrato. A interface `Future`
+completa para `Coroutine` permanece aberta.
+
+A instalação pública do SDK v0.1.10 passou nos três alvos no
+[run 38779239029](https://github.com/arandu-lang/arandu/actions/runs/38779239029),
+verificado em 15/10/2026. O smoke cobre fluxos selecionados, incluindo CTFE;
+não comprova paridade completa do runtime. O contrato técnico
+[async](../arandu-async-runtime-design-v0.1.md) detalha as restrições; a fila
+executiva permanece no roadmap mestre.
 
 ---
 

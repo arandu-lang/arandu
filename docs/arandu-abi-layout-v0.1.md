@@ -118,7 +118,7 @@ aggregates, and are not a proof of balanced resource ownership in every fallback
 Wasm reserves a checked, aligned 64 KiB shadow-stack region after rodata and
 before the allocator heap, moving the entire region upward for large static
 data. Reservation traps before changing the stack pointer on overflow; normal
-returns restore it. Admitted scratch exceeds neither a 1 KiB frame budget nor
+returns restore it. Admitted scratch exceeds neither a 16 KiB frame budget nor
 its invocation lifetime: larger objects use lazily allocated allocator cells
 with a private scratch marker, ignored by ordinary move/drop frees and released
 by the owning invocation. Closed owned core results are transferred into
@@ -128,6 +128,8 @@ drops; reclaiming a backing cell never invokes a second destructor. Regressions
 exercise recursive affine returns, early returns and exactly-once destruction
 of real allocated resources without linear-memory growth.
 Component signatures keep their canonical ABI.
+The Wasm budget is distinct from Cranelift's 1 KiB admission budget; neither
+budget is a complete bound on the program's stack or memory consumption.
 This shadow stack is separate from WebAssembly's operand/call stacks. Traps do
 not provide stack or resource unwinding; a trapped guest instance must be
 discarded rather than treated as a normal reusable invocation.
@@ -141,7 +143,10 @@ all aggregates are stack allocated or every program is allocation-free.
 
 ### 1. Type Layout Calculation Algorithm
 
-Memory layout in Arandu follows the standard C ABI layout rules (`#[repr(C)]`). Each type is represented by a `TypeLayout` structure:
+`LayoutEngine` calculates target-dependent sizes, alignment and padding.
+`@Repr("C")` structs preserve declaration field order; eligible ordinary structs
+may reorder fields deterministically. A `TypeLayout` describes the resulting
+physical layout, rather than assuming every Arandu type has a C-compatible ABI:
 
 - **Size**: Total size of the type in bytes, including internal and trailing padding.
 - **Alignment**: Required boundary alignment in bytes (must be a power of two).
@@ -282,6 +287,31 @@ Mismatch on use → `std.core.intrinsics.abortGenerationalMismatch` (trap, not U
 ---
 
 ### 4. Enums and Sum Types (`Result<T, E>` and `Option<T>`)
+
+### Null-niche eligibility
+
+The current bounded `LayoutEngine::has_null_niche` walk admits safe references
+(`ref T`, `mut ref T`), function values and `Err` handles because their valid
+representation excludes a null pointer. A closed struct also qualifies when
+its field at physical offset zero qualifies after generic substitution. The
+physical offset comes from the computed target layout, not declaration order.
+Unsupported shapes, failed layout and exhausted traversal bounds do not establish
+a niche.
+
+Raw `ptr[T]` is ineligible: null is a valid raw pointer value. `GenRef` is also
+ineligible in the current classifier; a reserved-looking generation/index does
+not establish a null niche. Extending eligibility requires a validity contract
+and regression coverage, not only a smaller size calculation.
+
+An eligible `Option<T>` can encode `None` with the null pattern and `Some`
+with the payload, without a separate tag. The regression
+`test_niche_layout_option_ref_vs_val` in
+[`arandu_middle/src/layout/tests.rs`](../crates/arandu_middle/src/layout/tests.rs)
+checks pointer-sized `Option<ref i32>` and a reference wrapper against a directly
+tagged `Option<i32>` on the tested 64-bit layout. This is not a guarantee of
+arbitrary pointer tagging or identical layout across targets. The schematic
+tagged layouts below describe direct-tag carriers; the computed `TypeLayout`
+and `TagEncoding` remain authoritative.
 
 ### `Result<T, E>` Layout
 

@@ -246,8 +246,8 @@ Abaixo estão listados todos os diagnósticos mapeados para o compilador Arandu.
 | :--- | :--- | :--- | :--- | :--- |
 | **T001** | `cannot infer type: type annotation needed for '{name}'` | Error | `0.1.0` | O compilador não possui informações suficientes para deduzir o tipo de uma variável e exige declaração explícita. |
 | **T002** | `incompatible assignment: expected '{expected}', found '{found}'` | Error | `0.1.0` | Tentativa de atribuir um tipo incompatível a uma variável já tipada. |
-| **T003** | `incompatible argument: expected '{expected}', found '{found}'` | Error | `0.1.0` | Argumento incompatível; inclui argumento genérico calculado não inteiro, negativo ou fora do domínio de chaves `u64`. |
-| **T004** | `incompatible return type: expected '{expected}', found '{found}'` | Error | `0.1.0` | Valor incompatível com seu destino de retorno. Na função, a assinatura declarada; na API interna de bloco CTFE, retornos/cauda devem concordar e todo caminho de saída deve produzir o valor exigido. Gramática pública `comptime` ainda pendente. |
+| **T003** | `incompatible argument: expected '{expected}', found '{found}'` | Error | `0.1.0` | Argumento incompatível; argumentos comptime exigem valor congelável admitido e tipo compatível. Inteiros assinados, bool e agregados Copy admitidos têm chaves estruturais; negativos não são rejeitados universalmente. |
+| **T004** | `incompatible return type: expected '{expected}', found '{found}'` | Error | `0.1.0` | Valor incompatível com seu destino de retorno. Na função, a assinatura declarada; no bloco público `comptime`, retornos/cauda devem concordar com o destino local e todo caminho de saída deve produzir o valor exigido. |
 | **T005** | `operator '{op}' is not applicable to type '{type}'` | Error | `0.1.0` | Tentativa de usar operador matemático ou lógico em tipos não suportados. |
 | **T006** | `type '{type}' is not nullable` | Error | `0.1.0` | Atribuição de `null` ou uso de operador de navegação segura em um tipo que não é explicitamente opcional/nulo. |
 | **T007** | `type mismatch: 'if' and 'else' branches have incompatible types: '{then_ty}' and '{else_ty}'` | Error | `0.1.0` | As ramificações de uma expressão condicional `if/else` avaliam para tipos diferentes (Type Mismatch). |
@@ -350,7 +350,7 @@ Esta categoria agrupa recursos previstos pela sintaxe da linguagem ou sua especi
 
 | Código | Mensagem Principal no Compilador | Severidade Padrão | Introduzido em | Descrição e Contexto |
 | :--- | :--- | :--- | :--- | :--- |
-| **U001** | `feature not yet supported: '{feature}'` | Error | `0.1.0` | Tentativa de utilizar um recurso de sintaxe válido, mas que a versão atual do compilador não suporta ou não gera código correspondente. (Antigo `L002`). |
+| **U001** | `feature not yet supported: '{feature}'` | Error | `0.1.0` | Recurso sintático ou contrato de lowering não admitido, incluindo assinatura incompatível de intrínseco de bits (aridade, largura, retorno ou generics). (Antigo `L002`). |
 
 ---
 

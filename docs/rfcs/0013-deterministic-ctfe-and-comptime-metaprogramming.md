@@ -26,8 +26,8 @@ incremental. O objetivo é permitir que código puro e explicitamente requerido
 em compilação produza valores constantes, sem introduzir uma linguagem de macro
 separada nem efeitos ocultos no compilador.
 
-O candidato a escopo da 0.1.9 é deliberadamente menor que uma plataforma completa
-de metaprogramação:
+O núcleo iniciado na 0.1.9 e distribuído na 0.1.10 é deliberadamente menor
+que uma plataforma completa de metaprogramação:
 
 1. Um domínio canônico de valores CTFE e um interpretador determinístico de um
    subconjunto documentado da AMIR.
@@ -41,9 +41,10 @@ de metaprogramação:
 5. Memoização no Salsa, orçamento de execução, cancelamento cooperativo e
    diagnósticos estruturados.
 
-Reflexão estrutural ampla (API proposta `types.info<T>()`), introspecção de OS/arquitetura/capabilities,
-modelo de memória virtual geral, `quote`, splicing, `@Derive`, geração de items,
-inclusão de arquivos e JIT não fazem parte do primeiro núcleo. Cada um depende
+Reflexão estrutural ampla (API proposta `types.info<T>()`), capabilities além
+da identidade explícita de OS/arquitetura já entregue, memória virtual geral,
+`quote`, splicing, `@Derive`, geração de items, inclusão de arquivos e JIT não
+fazem parte do primeiro núcleo. Cada um depende
 de contratos adicionais e deve ser avaliado em etapa ou RFC própria.
 
 ## 2. Motivação
@@ -54,21 +55,22 @@ arquitetural está em reutilizar a semântica tipada da linguagem e não em comp
 um valor isolado antes do backend.
 
 O projeto já tem componentes que ajudam — AMIR, queries Salsa, `DataLayout` e
-const generics escalares. A campanha atual acrescentou uma VM limitada com
+const generics. A implementação do núcleo acrescentou uma VM limitada com
 valores escalares, agregados Copy fechados, strings imutáveis e floats IEEE
 determinísticos. Expressões/blocos públicos, `comptime if`, argumentos
 `count<comptime (expression)>()`, staging em instâncias concretas e expansão
 finita de `comptime for` estão conectados. Intrínsecos públicos de layout
 compartilham o `LayoutEngine`;
 isso não constitui metaprogramação completa nem um modelo completo de alvo.
-O [plano da campanha](../campaigns/0.1.9-comptime-core.md) delimita o contrato
-efetivamente implementado. Em particular:
+O [contrato público](../arandu-comptime-core-v0.1.md) consolida a campanha
+encerrada e delimita a implementação. Em particular:
 
 - `TargetInfo` do type checker atualmente expressa apenas a largura de ponteiro;
-- `TargetConfig` no middle-end guarda `DataLayout`, não um triple canônico com
-  OS, arquitetura, ABI e capabilities;
-- const generics atualmente aceitam tipos inteiros escalares, com verificação
-  de domínio declarado e argumentos calculados em corpos concretos;
+- `TargetConfig` fornece layout e identidade explícita de OS/arquitetura; isso
+  não constitui um modelo completo de ABI/capabilities nem suporte a todo triple;
+- argumentos constantes tipados incluem valores Copy admitidos, com domínio
+  declarado e identidade estrutural verificados; dimensões e cabeçalhos
+  calculados são congelados por contratos concretos antes de tipar o consumidor;
 - `func_amir` fonte e `instance_amir` concreto já consultam unidades independentes;
   o programa agregado é um compositor final, não seu produtor.
 - `ctfe_func_amir` baixa apenas o corpo selecionado, sem lowering global,
@@ -78,7 +80,8 @@ efetivamente implementado. Em particular:
   reutiliza `instance_hir`/monomorphização e traduz IDs sintéticos locais para
   `FunctionInstance`. O spelling público de parâmetros já reutiliza const
   generics; templates selecionam staging após substituição concreta.
-  Headers/defaults e dependências gerais entre parâmetros permanecem fora do corte.
+  Cabeçalhos dependentes usam `concrete_header_contract`; ampliação de defaults
+  ou dependências não admitidas exige o contrato correspondente.
 - `declaration_signatures` já permite consultar imports sem baixar corpos;
   a visão compatível `module_signatures` compõe contratos de empréstimo
   projetados antes da validação final. Contratos usam unidades por instância;
@@ -160,8 +163,9 @@ runtime avalia a condição para selecionar código residual; um `comptime for`
 nesse contexto avalia o domínio para especializar instruções em ordem. O corpo
 residual pode usar valores/efeitos runtime e não é executado pela VM. Dentro de
 um bloco inteiramente CTFE, os corpos selecionados também executam em compilação.
-A política de resolução/tipagem do ramo descartado e de desvios na expansão
-precisa ser fechada em CT.0; ambos os ramos continuam sujeitos ao parser.
+A política entregue resolve/tipa somente o ramo estático selecionado; ambos
+continuam sujeitos ao parser. Desvios e saídas da expansão finita preservam os
+scopes e drops definidos no contrato público. Ampliações exigem contrato próprio.
 
 ### 3.3. Parâmetros de valor
 
@@ -199,8 +203,9 @@ validada, além do layout.
 
 Os IDs CT.0–CT.5 seguem a ordem canônica do
 [roadmap mestre](../arandu-compiler-roadmap-v0.1.md#fila-de-execução).
-O [plano temporário da campanha](../campaigns/0.1.9-comptime-core.md) mapeia
-dependências reais, caminhos de código e decisões propostas para fechar CT.0.
+O [contrato público](../arandu-comptime-core-v0.1.md#published-distribution-evidence-and-remaining-boundaries)
+consolida implementação, evidência publicada e limites da campanha encerrada.
+CT.0 continua distinguindo aprovação do núcleo e aceitação da proposta ampla.
 
 ### 4.1. CT.0 — decisões necessárias antes da implementação
 
@@ -222,7 +227,8 @@ Tipos fora do recorte devem produzir diagnóstico semântico determinístico,
 registrado em `DiagCode`, nunca ICE ou execução de fallback. As regressões do
 corte público precisam incluir overflow, divisão por zero e resultado unitário.
 O contrato público documenta a gramática, os limites fixos e os diagnósticos
-entregues; configuração pública de orçamento permanece futura.
+entregues; a configuração pública de orçamento foi posteriormente conectada
+à CLI/LSP/web, conforme o contrato público.
 
 Para cada ampliação do núcleo, a RFC precisa fechar ou preservar:
 
@@ -303,10 +309,14 @@ possam ser avaliadas com segurança, sem depender de falha tardia no backend.
 Parâmetros `comptime` reutilizam a representação dos const generics atuais para
 inteiros escalares no primeiro passo. Ampliação para tipos como argumentos,
 valores arbitrários ou políticas é uma decisão futura, não implícita nesta RFC.
-O domínio concreto atual é `ArType::Const(u64)`: conversões do domínio tipado
-da VM para argumentos genéricos precisam ser verificadas, sem truncamento ou
-segunda chave de monomorphização. Preservar a sintaxe `<const N: uint>` e
-`[N]T` faz parte da compatibilidade.
+Inteiros não negativos mantêm a representação compatível `ArType::Const(u64)`;
+inteiros assinados, booleanos e valores Copy fechados admitidos usam chaves
+congeladas estruturais. O valor completo participa da igualdade; o digest usado
+no nome emitido não substitui essa identidade. Conversões e domínio declarado
+são verificados sem truncamento, reutilizando o mesmo monomorphizer. Preservar
+a sintaxe `<const N: uint>` e `[N]T` faz parte da compatibilidade. O
+[contrato de argumentos calculados](../arandu-comptime-core-v0.1.md#computed-generic-arguments)
+e `arandu_query/tests/comptime_aggregates.rs` registram essas fronteiras.
 
 Expressões no corpo podem usar um tipo esperado já conhecido; constantes que
 determinam tipos, assinaturas ou ramos exigem tipagem/lowering das unidades de
@@ -351,7 +361,10 @@ compatíveis `@sizeOf`/`@alignOf` reutilizam as operações canônicas de
 atributos ou acesso dinâmico por nome fica para etapa posterior, com contrato
 próprio para identidade e visibilidade de tipos.
 
-O núcleo não está pronto para release até que haja testes que demonstrem:
+Cada release que amplia o núcleo precisa preservar testes que demonstrem
+os contratos abaixo. A 0.1.10 já publicou o núcleo e executou smoke CTFE
+instalado nos três sistemas; isso não aceita toda a RFC nem substitui os gates
+de uma nova candidata:
 
 1. Semântica e diagnósticos estáveis para todos os casos suportados e rejeitados.
 2. Equivalência entre análise incremental e clean para os valores CTFE.
@@ -416,16 +429,15 @@ macros; comparações futuras precisam de workloads e critérios reproduzíveis.
 
 ## 9. Questões em aberto
 
-1. Qual é o conjunto inicial exato de tipos e operações de `ConstValue`?
-2. `comptime` marca expressão/bloco/param, ou os const generics existentes
-   continuam com sintaxe própria e apenas compartilham semântica?
-3. Quais loops e chamadas são aceitos no primeiro interpretador e como o fuel é
-   contabilizado de forma previsível?
-4. Qual formato representa o triple e quais alvos têm codegen real suportado?
-5. Quais consultas devem depender do resultado CTFE e como provar cutoff sem
-   supor que a query não será reexecutada?
-6. Quais intrínsecos mínimos oferecem valor sem comprometer o contrato de uma
-   futura API de reflexão `types.info<T>()`?
+O domínio entregue, a gramática pública, os limites e as regressões de cutoff
+estão no contrato público; não são decisões inteiramente pendentes. A proposta
+ampla ainda precisa definir:
+
+1. O domínio de tipos como valores e sua identidade independente de pools.
+2. Visibilidade, higiene e diagnósticos da reflexão e da geração de itens.
+3. Contratos de efeitos e de inputs explícitos para recursos externos.
+4. ABI/capabilities e alvos de codegen além da identidade de alvo já exposta.
+5. Workloads e budgets de responsividade para novas formas de staging.
 
 ## 10. Possibilidades futuras
 
@@ -433,27 +445,28 @@ Após o núcleo demonstrar semântica, segurança e incrementalidade, podem ser
 propostas RFCs para reflexão estrutural, capabilities por alvo, inclusão
 determinística de recursos e geração higiênica de itens. O avanço de cada etapa
 depende de casos de uso concretos e de contratos específicos; nada disso é
-prometido pela candidata 0.1.9.
+prometido pelo núcleo publicado ou como gate obrigatório da 0.2.
 
-## 10.1. Roadmap de expansão — comptime como plataforma de metaprogramação
+## 10.1. Dependências propostas para expansão
 
-O comptime do Arandu não deve ser visto apenas como uma calculadora de
-constantes em compilação, mas como a fundação de um sistema completo de
-metaprogramação sem macros separadas. A evolução do sistema é organizada em
-cinco horizontes:
+A fila permanente e os horizontes de versão pertencem ao
+[roadmap mestre](../arandu-compiler-roadmap-v0.1.md). Esta seção descreve
+somente dependências técnicas propostas; não cria compromissos paralelos.
+A 0.2 concentra-se no motor incremental quente. Tipos como valores, reflexão
+e atributos de terceiros não são seus gates obrigatórios.
 
-| Fase | Versão | Nome | O que habilita |
-|---|---|---|---|
-| **C1** | `0.1.9` | Núcleo escalar (atual) | `comptime (expr)`, `comptime { block }`, `comptime if`, `comptime for`, const generics escalares, `mem.sizeOf<T>()`, `mem.alignOf<T>()` (grafia preferida na revisão 0.1.10; expressões `@sizeOf`/`@alignOf` compatíveis) |
-| **C2** | `0.2` | Tipos como valores | `comptime T: type`, tipos como `ConstValue::TypeDesc(TypeId)`, introspecção básica (`T.name`, `T.size`, `T.align`), type aliases calculados |
-| **C3** | `0.3` | Reflection e tipos gerados | `comptime func` retornando `type`, `T.fields()`, structs com campos calculados, primeiro recorte de `SymbolId::Generated` |
-| **C4** | `0.4` | Geração de declarações e atributos | `@Foo` via `Foo.apply(target)` (ver [RFC 0024](0024-unified-attribute-system.md)), `@Derive(Debug, Eq)`, injeção de métodos `impl`, `comptime stmt` no módulo |
-| **C5** | `0.5+` | Staging completo | Quoting/splicing higiênico, verificação estática de efeitos em compilação, macros de módulo com ponto fixo Salsa |
+O núcleo entregue é a base C1. Um recorte incremental de introspecção/tipos
+como valores (C2) pode ser avaliado em 0.3.x se aceito com contrato próprio,
+separadamente do contrato de closures. Geração estrutural (C3) e derivação/
+atributos (C4) dependem de identidade, higiene, visibilidade, limites e cutoff
+comprovados; são possibilidades de 0.4+ condicionais, sem promessa de entrega.
+Quoting/splicing e staging de módulos continuam propostas sem versão fixada.
 
-### 10.1.1. Fase C2 — Tipos como valores de primeira classe (`0.2`)
+### 10.1.1. Proposta C2 — Tipos como valores de primeira classe
 
-Em C2, tipos deixam de ser entidades puramente semânticas do compilador e passam
-a ter representação como valores manipuláveis dentro do interpretador CTFE:
+Se C2 for aceita, tipos poderão ter representação como valores manipuláveis
+no interpretador CTFE. O exemplo de formato abaixo é ilustrativo; um `TypeId`
+local de pool não pode ser a identidade canônica persistente dessa descrição:
 
 ```rust
 // Extensão em ConstValue:
@@ -484,10 +497,11 @@ comptime func MinInt<comptime Bits: uint>: type {
 type PacketId = MinInt<12>   // PacketId é i16
 ```
 
-### 10.1.2. Fase C3 — Geração estrutural e reflection API (`0.3`)
+### 10.1.2. Proposta C3 — Geração estrutural e reflection API
 
-Em C3, `comptime func` pode retornar a descrição completa de um novo tipo
-estrutural (`struct`), e tipos existentes expõem seus membros via reflection:
+C3 propõe que `comptime func` retorne descrições de novos tipos estruturais
+e que tipos existentes exponham membros por reflexão. Os exemplos seguintes
+não são sintaxe executável do núcleo atual:
 
 ```arandu
 // Geração de struct de vetor com dimensão calculada:
@@ -521,9 +535,9 @@ comptime func printFields<comptime T: type>(): void {
 }
 ```
 
-### 10.1.3. Fase C4 — Geração de declarações e atributos (`0.4`)
+### 10.1.3. Proposta C4 — Geração de declarações e atributos
 
-A fase C4 conecta a geração de código à sintaxe de atributos declarativos
+A proposta C4 conectaria a geração de código à sintaxe de atributos declarativos
 estabelecida pela [RFC 0024](0024-unified-attribute-system.md). Um atributo
 `@Foo(args...)` aplicado a uma declaração D executa `Foo.apply(D, args...)` em
 comptime, e pode injetar métodos, implementações de interface ou metadata
@@ -555,17 +569,16 @@ comptime Sql.table(Point, tableName: "points")
 Para que a geração de AST em comptime não comprometa a arquitetura do Arandu,
 três garantias são obrigatórias:
 
-1. **Identidades estáveis para código gerado**: nós e símbolos gerados por
-   comptime recebem identidades estruturadas:
-   `SymbolId::Generated { origin: ExprId, index: u32 }`. IDs gerados são
-   monotônicos e reproduzíveis entre compilações com os mesmos inputs.
+1. **Identidades estáveis para código gerado**: a origem estrutural da expansão
+   precisa mapear para o `SymbolId { file_id, local_id }` existente, sem reutilizar
+   IDs ou persistir offsets/IDs de pools como identidade. Uma variante de ID
+   gerado exigiria discussão arquitetural explícita; não está aprovada aqui.
 2. **Higiene e precedência ("manual vence")**: quando um atributo gera um método
    ou membro cujo nome já foi definido explicitamente pelo usuário, a
    implementação manual tem precedência estrita e o gerador omite
    silenciosamente o membro conflitante. Não há substituição silenciosa de código
    do usuário.
 3. **Pureza e isolamento de efeitos**: metaprogramação em comptime é pura por
-   padrão (`@Effects(reflection)`). Qualquer acesso a filesystem ou ambiente
-   deve ser explicitamente declarado (ex: `@Effects(fsRead)`), garantindo que
-   queries Salsa continuem puras e que o compilador mantenha determinismo
-   estrito.
+   padrão. Uma anotação de efeito não autoriza I/O dentro de queries: qualquer
+   recurso externo exigiria contrato próprio, leitura na borda do driver e
+   inputs Salsa explícitos. A avaliação continua pura e determinística.

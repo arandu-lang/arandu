@@ -288,6 +288,15 @@ o hash CGU de `main` acompanha a alteração transitiva dessa necessidade.
 
 ## 6. Futuro
 
+O núcleo de traps já existe: o intrínseco de abort emite trap no Cranelift,
+`unreachable` no Wasm e `AR_ABORT` no C (`__builtin_trap` em GCC/Clang,
+com fallback para `abort` nos demais compiladores). Testes de objetos nativos
+cobrem ausência de import externo de `abort` e de seções de unwinding.
+Isso não prova o contrato completo de anti-panic da RFC 0017: identificador
+público de 32 bits, mapa externo de diagnóstico, opcode/tamanho por alvo e
+eliminação de todo texto de panic do runtime exigem desenho e evidência próprios.
+O perfil `--size` não oferece essa garantia ampla.
+
 Coleta mais precisa de literais C, políticas compartilhadas de formatação de
 floats, LTO configurável e runtime freestanding são trabalhos separados.
 Especializações por instruções criptográficas do alvo exigem perfil e corpus

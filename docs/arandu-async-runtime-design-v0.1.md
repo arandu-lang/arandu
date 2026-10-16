@@ -1,6 +1,8 @@
 # Arandu — Async Runtime Design (SL_R) v0.1
 
-**Status:** SL_R.0–.3 + SL_R.1 host surfaces implemented. Consumes A3 compiler semantics.
+**Status:** SL_R.0–.3 + SL_R.1 host surfaces implemented, with the payload,
+backend and platform limits below. Consumes A3 compiler semantics. Full runtime
+parity and the complete Future interface remain open.
 
 | Layer | Owns | Does not own |
 |-------|------|----------------|
@@ -90,8 +92,11 @@ timer fires, 0 otherwise); socket notification is observed through the waker.
 The portable reactor supports timers, not socket registration. Direct TCP
 wait remains available on Windows/macOS; it is a distinct operation.
 
-Native SDK/VSIX tests exercise selected installed-product flows on all three
-platforms. They do not imply complete runtime parity or replace the entire
+The v0.1.10 Release run
+[38779239029](https://github.com/arandu-lang/arandu/actions/runs/38779239029),
+verified on 2026-10-15, passed native SDK/VSIX and public archive install/smoke
+on Linux x86-64, macOS ARM64 and Windows x86-64, including the CTFE smoke corpus.
+These tests exercise selected installed-product flows on all three platforms. They do not imply complete runtime parity or replace the entire
 Rust workspace suite. Socket tests allocate ephemeral loopback ports and
 fail if networking is unavailable instead of reporting success without
 exercising their assertions.
@@ -138,5 +143,6 @@ paridade em todos os targets. Esse limite deve continuar explícito.
 
 ## Futuro e Próximos Passos
 
-Ordenar a ampliação pelo roadmap SL_R/SL_S e validar scheduler, cancelamento,
-I/O e shutdown por sistema operacional antes de promoção Gold.
+A fila de ampliação pertence ao roadmap mestre. Promoção Gold exige evidência
+específica de scheduler, cancelamento, I/O e shutdown por sistema operacional;
+o smoke da distribuição não substitui essa prova.

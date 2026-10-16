@@ -1,11 +1,13 @@
-# Guia de Migração de Inteiros — RFC 0023 (v0.1.8)
+# Guia de Migração de Inteiros — RFC 0023 (série 0.1.x)
 
 ## Visão Geral e Contexto
 
-A partir da **v0.1.8**, `int` e `uint` são inteiros de **32 bits fixos** em
-todos os alvos suportados (x86_64, AArch64, Wasm32, Cortex-M, RISC-V).
-Antes da v0.1.8, `int` era de largura de ponteiro: 32 bits em `ptr4` e
-64 bits em `ptr8`.
+Na série **0.1.x atual**, `int` e `uint` são inteiros de **32 bits fixos**
+no modelo de tipos/layout, inclusive em perfis de ponteiro 32/64 bits.
+Isso não publica SDK Cortex-M/RISC-V: a matriz nativa suportada continua a do
+[contrato de distribuição](arandu-distribution-contract-v0.1.md).
+Antes da migração da RFC 0023, `int` seguia a largura do ponteiro: 32 bits em
+`ptr4` e 64 bits em `ptr8`.
 
 | Tipo | Tamanho | Faixa | Papel |
 | :--- | :--- | :--- | :--- |
@@ -20,8 +22,8 @@ Motivação da mudança:
 
 - **ABI portável.** `int` que cruza uma fronteira de componente ou FFI agora
   tem o mesmo tamanho em todos os alvos — sem diferença oculta.
-- **Sem overflow silencioso.** Um valor que transborda em 32 bits produz o
-  diagnóstico T038 em todos os alvos, não apenas no menor.
+- **Literais validados.** Um literal fora da faixa produz T038 em qualquer
+  perfil; isso não promete trap para todo overflow aritmético em runtime.
 - **Alinhamento com o Wasm Component Model.** O WIT define `s32`/`u32` para
   inteiros genéricos; o antigo `int` de 64 bits em hosts de 64 bits era
   incompatível sem anotação explícita.
@@ -73,7 +75,7 @@ truncar em alocações grandes.
 **Literais grandes em contexto `int`:**
 
 ```arandu
-// Antes (T038 na v0.1.8):
+// Literal fora da faixa de int:
 let big: int = 5_000_000_000
 
 // Depois:

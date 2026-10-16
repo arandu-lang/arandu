@@ -14,6 +14,24 @@
 
 ---
 
+## Estado auditado em 15/10/2026
+
+`Implemented` descreve o motor Rust de TAR/ZIP, validação nativa e preparação
+de assets: `xtask package-archive`, `validate-archive`, `prepare-release-assets`
+e `arandu archive validate` são usados pelo pipeline atual. A release v0.1.10
+foi publicada em 15/10/2026 às 18:08:32 UTC; o
+[run 38779239029](https://github.com/arandu-lang/arandu/actions/runs/38779239029)
+aprovou packages, SDK/VSIX e Public RC install/smoke nos três alvos nativos,
+incluindo o corpus CTFE instalado.
+
+O título expressa também o objetivo de erradicação, ainda incompleto. Python
+permanece em testes/smokes e como fallback SHA-256 nos instaladores.
+Na campanha local 0.1.11, `scripts/install.sh` passou a falhar sem verificador,
+a admitir OpenSSL, a validar archive/BLAKE3 em staging e a restaurar a versão
+anterior em publicação interrompida. `scripts/test_install.py` cobre as falhas
+com fixtures herméticas; a promoção instalada continua na fila do roadmap.
+A erradicação completa de Python em testes/smokes permanece fora dessa prova.
+
 ## 1. Resumo (Summary)
 
 Esta RFC estabelece a arquitetura e o plano de migração definitiva para eliminar todas as dependências de interpretadores externos (especificamente **Python 3**) dos pipelines de compilação, empacotamento, validação de distribuição, testes e instalação do compilador Arandu.
@@ -30,17 +48,19 @@ A proposta transfere a responsabilidade de empacotamento determinístico e valid
 
 ### 2.1 O Modelo Autocontido vs Dependências Ocultas de Runtime
 
-O [Contrato de Distribuição Arandu v0.1](file:///home/bruno/Documentos/Desenvolvimento/Arandu-Lang/docs/arandu-distribution-contract-v0.1.md) estipula formalmente:
+O [Contrato de Distribuição Arandu v0.1](../arandu-distribution-contract-v0.1.md) estipula formalmente:
 > *"Modelo: SDK autocontido, semelhante ao Flutter: CLI, servidor de linguagem e biblioteca padrão formam uma unidade versionada; a extensão do editor é um cliente separado."*
 
-No entanto, o pipeline atual de desenvolvimento e distribuição acumulou dependências circunstanciais de Python:
+Na motivação original de 20/09/2026, o pipeline acumulava as dependências
+Python abaixo. Os caminhos, contagens e bloqueios descrevem esse estado
+histórico; o motor atual está registrado na seção de auditoria acima:
 - **`scripts/reproducible_tar.py`** (185 linhas): Gera `.tar.gz` canônicos com mtime fixado, ordenação lexicográfica e uid/gid zerados;
 - **`scripts/reproducible_zip.py`** (88 linhas): Gera `.zip` canônicos para Windows;
 - **`scripts/prepare_release_assets.py`** (113 linhas): Valida hashes cruzados, gera `release-manifest.json`, `SHA256SUMS` e `BLAKE3SUMS`;
 - **`scripts/smoke_distribution.py`** (183 linhas): Descompacta e roda smoke tests de SDK fora do checkout;
 - **Snippets inline em Bash e PowerShell**: `install-from-tarball.sh` falha fatalmente se `python3` não estiver no `PATH` (linhas 52 e 93); `package-release.sh` usa Python para ler `Cargo.toml` e gerar JSON.
 
-### 2.2 Por Que Isso é um Débito Técnico Crítico?
+### 2.2 Motivação histórica da migração
 
 1. **Falha em Ambientes Mínimos e Contêineres de CI**:
    - Imagens Docker enxutas (como Alpine Linux, Ubuntu Core ou contêineres de compilação sem pacotes extras) **não trazem Python instalado por padrão**. Um desenvolvedor ou pipeline que baixa o tarball do Arandu para instalar em um servidor é forçado a instalar 50+ MB de interpretador Python apenas para rodar o script de instalação.
@@ -211,7 +231,7 @@ compute_sha256() {
 
 ---
 
-## 6. Plano de Rollout em 4 Fases
+## 6. Critérios históricos de rollout em 4 fases
 
 | Fase | Ações Principais | Critério de Aceite |
 | :--- | :--- | :--- |
@@ -221,6 +241,11 @@ compute_sha256() {
 | **Fase 4: CLI Nativo** | Implementar `arandu archive validate` em `arandu_cli` e mover scripts Python para `scripts/oracles/`. | Marco `DIST` concluído; Python completamente erradicado do fluxo de produção. |
 
 ---
+
+Os critérios acima preservam o desenho de rollout original. As fases nativas
+estão implementadas; o objetivo absoluto de não invocar Python e o hardening
+uniforme de instaladores não estão integralmente satisfeitos. A tabela não é
+uma segunda fila executiva.
 
 ## 7. Arte Prévia e Referências
 

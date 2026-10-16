@@ -4,109 +4,114 @@
 - **Título:** Sistema de Queries Incrementais (Salsa) e o 6º Invariante de Identidade Única
 - **Autor(es):** Equipe do Compilador Arandu
 - **Data de Início:** 2026-07-05
-- **Status:** `Implemented` (Crate `arandu_query`)
-- **Área Principal:** `Incrementalidade` / `Compiler Infrastructure` (`A1`)
-- **Substitui:** `docs/arandu-salsa-architecture-rfc.md` (resgatada do histórico de commits)
+- **Status:** `Implemented` no recorte de análise incremental
+- **Área Principal:** Incrementalidade / Compiler Infrastructure (`A1`)
+- **Substitui:** o desenho anterior preservado no histórico Git
 
----
+## 1. Resumo
 
-## 1. Resumo (Summary)
+Salsa memoiza análise orientada a demanda e preserva early-cutoff quando uma
+saída relevante permanece igual após edição. `arandu_query` possui a execução
+Salsa; resolução, tipagem, análises MIR e backends mantêm seus algoritmos puros.
+LSP usa snapshots e inputs versionados; cada build CLI batch ainda cria DB nova.
+Motor quente e granularidade de produto pertencem aos marcos 0.2/0.3 do
+[roadmap mestre](../arandu-compiler-roadmap-v0.1.md).
 
-Esta RFC estabelece a arquitetura do motor incremental orientado a demanda do Arandu utilizando a biblioteca **Salsa**. O compilador substitui caches pontuais ad-hoc de arquivos (`ParseCache`) por um grafo acíclico dirigido (DAG) de dependências reativas, garantindo early-cutoff e recomputação mínima durante edições no editor de código (LSP) e compilação contínua (`arandu watch`).
+Implementação e testes de um recorte não provam invalidação O(1), latência
+universal ou avaliação mínima de todos os blocos. Essas propriedades exigem
+workload, instrumentação e contrato próprios.
 
-A RFC formaliza o **6º Invariante Arquitetural do Arandu**: o Salsa nunca introduz um sistema paralelo de identificadores; ele opera estritamente sobre os IDs canônicos do compilador (`FileId`, `SymbolId`, `BlockId`, `TypeId`).
+## 2. Identidades e ownership
 
----
+`FileId`, `SymbolId { file_id, local_id }`, IDs de blocos/tipos e chaves
+estruturais de instância/CTFE conservam suas identidades semânticas. IDs
+internos de memoização Salsa não as substituem por offsets ou hashes efêmeros.
+`DocumentId` geracional e `AnalysisRevision` são identidades de buffers/handles
+LSP distintas de `FileId`/`SymbolId`.
 
-## 2. Motivação (Motivation)
+A exceção declarativa é [`arandu_middle/src/db.rs`](../../crates/arandu_middle/src/db.rs):
+inputs/accumulator compartilhados e `SourceDatabase`, sem providers. Os
+providers e `DatabaseImpl` pertencem a `arandu_query`. Nenhum consumidor deve
+recriar uma segunda DB ou um alocador paralelo de IDs para evitar essa fronteira.
 
-Sistemas tradicionais de compilação em lote (*batch compilation*) não escalam para a experiência interativa moderna exigida por IDEs:
-1. **Multi-módulo real**: Editar uma única linha em um módulo forçava a reanálise completa de todo o grafo de dependências transitivas.
-2. **Latência de IDE sub-100ms**: Sem invalidação fina orientada a query, cada digitação (*keystroke*) exigia reparse e re-checagem de tipos integral do arquivo, causando engasgos na UI do editor.
-3. **Duplicação de Análise de Fluxo**: Cálculos de *liveness* e análise de empréstimos eram historicamente recomputados de forma independente pelo borrow checker e pelo backend gerador de código.
+## 3. Inputs, queries e cutoff
 
----
+`SourceFile` declara identidade, `Arc<str>` e caminho. Alvo/layout, limites
+CTFE, configuração de módulos/pacotes e listagens de diretório são entradas
+explícitas; a análise não obtém esse estado lendo filesystem ou ambiente.
+Registro, leitura e mutação pertencem a CLI/LSP/host.
 
-## 3. O 6º Invariante Arquitetural: Identidade Única sob Incrementalidade
+`local_symbols`, `exported_symbols`, `internal_symbols`, declarações e corpos
+por item são fronteiras deliberadas. Editar um corpo deve preservar o cutoff
+do importador quando a superfície exportada permanece igual. Separar assinaturas,
+efeitos/contratos observáveis e spans evita invalidar consumidores por dados
+incidentais, sem omitir dependências reais.
 
-> **Invariante 6**: O Salsa nunca introduz um sistema de identidade paralelo ao já existente no compilador. Toda query `#[salsa::input]` e `#[salsa::tracked]` utiliza como chave diretamente os IDs nativos do Arandu (`FileId`, `SymbolId`, `BlockId`, `TypeId`). O Salsa atua puramente como uma camada transparente de memoização e corte de invalidação sobre estruturas existentes — jamais como dono de uma nova identidade que exigiria tabelas de tradução bidirecionais.
+O texto anterior atribuía `salsa::Durability::HIGH` automaticamente à stdlib e
+vendor. Esse comportamento não é uma garantia implementada neste workspace;
+o cutoff atual decorre dos inputs e resultados efetivamente rastreados. Uma
+política de durability futura precisa de fontes, teste e benchmark próprios.
 
----
+## 4. Granularidade de dataflow e ciclos
 
-## 4. Camada de Input e Grafo de Dependências
+[`dataflow.rs`](../../crates/arandu_query/src/dataflow.rs) publica
+`liveness_facts` por função e `block_dataflow_facts` por bloco. As saídas Salsa
+são resumos compactos/hash-estáveis, como cardinalidades live-in/live-out,
+definite-init/move e quantidade de statements. Não são todos os bitsets ou uma
+prova semântica baseada apenas em contagens.
 
-O único ponto de entrada de texto no motor incremental é o input Salsa do arquivo-fonte:
+Os algoritmos completos vivem em `arandu_mir`: worklists resolvem os ciclos do
+CFG até fixpoint. A query de bloco projeta/combina resultados dessas análises;
+não chama recursivamente uma query para cada predecessor. Recursão Salsa ingênua
+sobre backedges não substitui uma análise cíclica convergente.
 
-```rust
-#[salsa::db]
-pub trait ArandCompilerDb: salsa::Database {
-    fn source_text(&self, file: FileId) -> Arc<str>;
-    fn file_path(&self, file: FileId) -> Arc<PathBuf>;
-}
-
-#[salsa::input]
-pub struct SourceFile {
-    pub file_id: FileId,
-    #[return_ref]
-    pub text: Arc<str>,
-}
+```text
+AMIR da função
+    → análise MIR pura por worklist/fixpoint
+    → resumo por função/bloco
+    → memoização/cutoff e consumidores IDE
 ```
 
-### Durabilidade
+Uma edição pode executar novamente uma análise por função mesmo quando o
+resumo de um bloco irmão permanece igual e corta consumidores posteriores.
+Não se promete que editar bb3 executará somente bb3. Os testes
+[`block_delta`](../../crates/arandu_query/tests/block_delta.rs) e
+[`item_body_cutoff`](../../crates/arandu_query/tests/item_body_cutoff.rs)
+congelam recortes observados de recomputação e equivalência.
 
-Arquivos da biblioteca padrão (`stdlib`) e dependências travadas em `vendor` recebem `salsa::Durability::HIGH`, garantindo que edições corriqueiras no código do usuário (`Durability::LOW`) não invalidem a árvore tipada da biblioteca padrão.
+## 5. Liveness, ownership e backends
 
----
+Borrow/move checking e transformações MIR compartilham algoritmos de liveness
+e visitors canônicos. A query Salsa `liveness_facts` contém cardinalidades e
+não entrega os registradores físicos ao Cranelift. O backend possui suas
+próprias análises/alocador; não há garantia de um único bitset memoizado
+compartilhado entre Salsa e a alocação física de registradores.
 
-## 5. Granularidade Fina por Bloco Básico na AMIR
+O manager de análises cooperativas mais amplo é proposta da
+[RFC 0033](0033-amir-cooperative-optimization-place-provenance-and-memoryssa.md),
+separada da memoização entre revisões Salsa.
 
-Enquanto ferramentas como *rust-analyzer* tradicionalmente memoizam no nível de função ou item, o Arandu estende o early-cutoff até o nível de **Bloco Básico (`BlockId`)** no fluxo de dados da AMIR:
+## 6. Determinismo e snapshots
 
-```rust
-#[salsa::tracked]
-fn block_dataflow_facts(
-    db: &dyn ArandCompilerDb,
-    file: SourceFile,
-    func_sym: SymbolId,
-    block: BlockId,
-) -> DataflowFacts {
-    let func = func_amir(db, file, func_sym);
-    let bb = func.block(block);
+Queries preservam entradas/dependências, ordenação canônica e saída hash-estável.
+Ordenar somente file/start/code não basta para provar determinismo de todos os
+labels, notes e replacements; a cadeia inteira deve preservar essas informações
+e ser exercitada com contagens diferentes de threads.
 
-    let pred_facts: Vec<DataflowFacts> = predecessors(&func, block)
-        .map(|pred_id| block_dataflow_facts(db, file, func_sym, pred_id))
-        .collect();
+Workers analisam snapshots. A thread de mutação não pode conservar snapshot da
+mesma DB durante `set_text`; revisões e DocumentId condicionam publicação. Limites
+de jobs e canal de resultados têm contratos distintos, com pressão/cancelamento
+e shutdown exercitados separadamente. O detalhe vivo está na
+[arquitetura Salsa/LSP](../arandu-salsa-lsp-architecture-v0.1.md).
 
-    compute_transfer(bb, &pred_facts)
-}
-```
+## 7. Evidência e evolução
 
-* **Impacto Prático**: Se o programador alterar uma instrução no bloco `bb3` de uma função contendo 12 blocos, apenas `bb3` e os blocos dependentes alcançáveis em RPO (*Reverse Post-Order*) recomputam o dataflow. Os blocos predecessores e irmãos disjuntos permanecem intactos.
+As regressões de [arquitetura](../../crates/arandu_query/tests/architecture_invariants.rs),
+[imports](../../crates/arandu_query/tests/salsa_imports.rs) e
+[diagnósticos por item](../../crates/arandu_query/tests/ide_diag_delta.rs)
+acompanham essas fronteiras. O gate de determinismo compara diagnósticos com
+uma e oito threads; resultado histórico não valida mudanças posteriores.
 
----
-
-## 6. Liveness Compartilhada entre Borrow Checker e Backend
-
-A mesma query de *liveness* (`liveness_facts`) atende simultaneamente dois consumidores vitais:
-1. **Borrow Checker**: Determina com precisão a janela de empréstimo (*loan window*) de uma referência a partir da *live range* do valor SSA.
-2. **Backend Cranelift**: Alimenta o alocador de registradores.
-
-Ambos os subsistemas consomem exatamente o mesmo resultado memoizado em memória, eliminando divergências de estado e trabalho computacional redundante.
-
----
-
-## 7. Determinismo de Diagnósticos sob Paralelismo
-
-Como o motor Salsa pode avaliar queries puras concorrentemente em threads distintas, a ordem de emissão de diagnósticos deve ser formalmente estabilizada antes de qualquer apresentação ao usuário:
-
-```rust
-pub fn finalize_diagnostics(mut diags: Vec<Diagnostic>) -> Vec<Diagnostic> {
-    diags.sort_by(|a, b| {
-        a.span.file_id.cmp(&b.span.file_id)
-            .then(a.span.start.cmp(&b.span.start))
-            .then(a.code.cmp(&b.code))
-    });
-    diags
-}
-```
-Isso garante a propriedade `DET` do compilador: saídas e relatórios idênticos bit a bit independentemente do número de núcleos de CPU utilizados no host de compilação.
+Esta RFC implementada não entrega persistência do grafo Salsa, daemon, hidratação
+binária de IR ou todos os gates p95. A fila permanente e as dependências ficam
+no roadmap; este documento registra arquitetura e limites atuais.

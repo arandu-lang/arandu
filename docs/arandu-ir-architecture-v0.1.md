@@ -22,7 +22,7 @@ Source Code (.aru)
        ↓
      Lexer       (Tokenizes source code)
        ↓
-    Parser       (Constructs AST)
+    Parser       (Canonical Rowan CST → AST)
        ↓
    Resolver      (Name resolution, symbol definitions)
        ↓
@@ -38,14 +38,14 @@ Borrow Checker   (Ownership, lifetimes, and generational checks)
        ↓
   Backend IR     (Lowered instructions for code generation)
        ↓
- Code Gen Targets (C / Cranelift / LLVM)
+ Code Gen Targets (C / Cranelift / Wasm; LLVM is proposed)
 ```
 
 ---
 
 ### 2. AST vs AHIR vs AMIR
 
-> **Implementation note (C5):** In the `arandu_semantics` crate, **AHIR** is implemented as the Rust module `hir` (`HirProgram`, `lower_to_hir`, CLI `arandu hir`). Documentation and CLI may say “AHIR” or “HIR”; they refer to the same IR.
+> **Implementation note (C5):** In `arandu_middle::hir`, **AHIR** is represented by pooled HIR nodes; lowering lives in `arandu_semantics::passes::lower_hir` (`HirProgram`, `lower_to_hir`, CLI `arandu hir`). Documentation and CLI may say “AHIR” or “HIR”; they refer to the same IR. This table describes logical shape, not recursive heap ownership.
 
 The intermediate representations serve distinct purposes at different stages of the compiler:
 
@@ -90,18 +90,19 @@ AMIR represents the program as a Control Flow Graph (CFG) with explicit control-
 - **Place Projections**: Supports nested field and index mutations via `AmirPlace` with projections.
 - **Basic Expressions**: Literals, binary/unary ops, field access, index access, array literals, struct literals, calls.
 - **Lowered in AMIR:** `match`, `if is`, `defer`/`errdefer`, `?`, `?.`, `?[]`, `??`, `for in`, `alloc`, and `free`.
-- **Result/Option Representation:** Source-level `Result<T,E>` and `Option<T>` lower through `ResultCtor`/tuple ok-err layout without legacy source-level tuple fallback rules.
-- **Definite Initialization:** `passes/definite_init.rs` runs a CFG dataflow analysis and reports O008 for possibly uninitialized local reads.
-- **OSSA ownership:** AMIR models `copy`, `move`, `borrow`, `borrow_mut`, `destroy`, `StorageLive`, and `StorageDead`. BV.1 derives a stable structural `ReturnBorrowSummary` from typed AMIR flow, unions only origins that reach each result path, solves recursive calls to fixpoint and carries the converged contract on calls. The narrow `borrow_interfaces` Salsa query cuts off body-only changes while changed contracts invalidate importers. AUD.4 keeps IDE analysis aligned and implicit `Destroy` is elaborated before M2 so O006 observes semantic AMIR. The system remains partial until BV.2 propagates every aggregate holder and BV.3 publishes safe `Slice`/`String` views.
-- **Still unsupported in AMIR lowering:** `catch` (roadmap v0.2 CATCH), unsafe block expressions (v0.2 UNSAFE), lambdas (v0.3 LAMBDA), and async blocks/`await` (v0.3 ASYNC).
+- **Result/Option Representation:** HIR uses `ResultCtor`; AMIR materializes the concrete variant through `EnumConstruct` and target-derived layout. Source-level `Result<T,E>`/`Option<T>` do not expose the internal representation as tuple fallback syntax.
+- **Definite Initialization:** `arandu_mir/src/definite_init.rs` runs a CFG dataflow analysis and reports O008 for possibly uninitialized local reads.
+- **OSSA ownership:** AMIR models `copy`, `move`, `borrow`, `borrow_mut`, `destroy`, `StorageLive`, and `StorageDead`. BV.1 derives a stable structural `ReturnBorrowSummary` from typed AMIR flow, unions only origins that reach each result path, solves recursive calls to fixpoint and carries the converged contract on calls. The narrow `borrow_interfaces` Salsa query cuts off body-only changes while changed contracts invalidate importers. AUD.4 keeps IDE analysis aligned and implicit `Destroy` is elaborated before M2 so O006 observes semantic AMIR. BV.2/BV.3 carriers and safe slice/String APIs are integrated in their admitted scope. Full stdlib promotion still depends on allocator, drops, aggregate backing and target proofs; see the memory/stdlib contracts.
+- **Also lowered today:** `catch`, unsafe blocks, async blocks and `await` through the existing coroutine model. The current type checker and lowering reject lambda/closure execution with U001; AST/HIR preparation does not establish an executable closure ABI.
 
-### AMIR v0.2+ (Future)
+### Implemented analyses and remaining boundaries
 
-- **Move Checker Pass**: Promotes the current move/copy annotations into O001/O005/O007 diagnostics over the CFG.
-- **Borrow OSSA extensions**: extend the direct AUD.3 return summary to conditional non-escapable carriers such as `Option<ref T>`, `Slice` and string views; the existing direct shared/mutable return and conflict checks are active.
-- **Catch Lowering**: Desugars catch-handlers into explicit CFG branches.
-- **Generational Fallback**: Inserts transparent runtime checks where the static ownership model intentionally falls back.
-- **Unsafe Lowering**: Validates unsafe-only operations and lowers unsafe block expressions.
+Move/borrow checking, catch/unsafe lowering and GenRef insertion are existing
+paths, not a future 0.2 IR. `SymbolId` remains `{file_id, local_id}`; document
+handles and analysis revisions are distinct identities. Borrowed carriers and
+coroutine-relative references do not prove arbitrary FFI or suspension safety.
+The [master roadmap](arandu-compiler-roadmap-v0.1.md) owns the remaining gates;
+internal IR schema revisions are not language release versions.
 
 ---
 
@@ -109,14 +110,14 @@ AMIR represents the program as a Control Flow Graph (CFG) with explicit control-
 
 To ensure steady progress and prevent overengineering, several advanced compiler design patterns are deferred to later versions:
 
-1. **Kotlin-style Query System / Incremental IDE Backend**:
-   - *Strategy*: Perform linear batch processing (whole-program or file-by-file). Query architectures and incremental compilation are deferred to `v0.3+`.
-2. **Zig-style Comptime**:
-   - *Strategy*: Evaluation of compile-time expressions is deferred to `v0.4/v0.5`. Comptime requires a stable type checker and lowering backend before implementation.
+1. **Warm CLI service and complete instance granularity**:
+   - Salsa queries and IDE snapshots already exist. The CLI service and complete instance-level product gates belong to 0.2/0.3 respectively.
+2. **Broader compile-time metaprogramming**:
+   - Bounded scalar/aggregate CTFE is implemented. Reflection, generated declarations and executable attributes require separate contracts; see the public comptime contract.
 3. **GHC-style Core Rewrite Rules**:
    - *Strategy*: We avoid high-level algebraic optimization rules in favor of direct lowering and backend-level optimizations.
 4. **Stable Public AHIR/AMIR API**:
-   - *Strategy*: All internal representations are unstable and can be changed without warning until the compiler can check and compile small, end-to-end programs.
+   - *Strategy*: Internal representations remain versioned implementation details even though end-to-end programs already compile. Public compatibility is defined separately from Rust crate/IR internals.
 
 ---
 

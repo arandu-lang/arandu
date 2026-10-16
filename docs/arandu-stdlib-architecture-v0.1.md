@@ -2,14 +2,47 @@
 
 > Documento de especificação de design e layout de pacotes do ecossistema de bibliotecas oficiais da linguagem Arandu.
 >
-> Objetivo: Garantir modularidade extrema, tempo de compilação previsível, suporte a ambientes bare-metal/embedded, compatibilidade nativa com *no_std* e preparidade para a auto-hospedagem (self-hosting) na versão 1.0.
+> Objetivo de design: modularidade, tempo de compilação previsível e separação
+> das camadas. Bare-metal, `no_std` geral e self-hosting dependem de contratos
+> e provas próprios; não são garantias do SDK v0.1.10 nem requisitos aprovados
+> automaticamente para a versão 1.0.
 
 ---
 
 ## Visão Geral e Contexto
 
-Este é o desenho arquitetural futuro das camadas oficiais `core`, `alloc`,
-`std` e extensões, com foco em previsibilidade, embedded e self-hosting.
+Este é o desenho arquitetural das camadas `core`, `alloc`, `std` e extensões.
+As árvores conceituais abaixo incluem módulos e APIs futuros; nomes como
+`arandu_core` representam camadas, não crates Rust já publicados com esse contrato.
+O inventário implementado vem do código em `stdlib/` e dos contratos técnicos.
+
+### Estado auditado em 15/10/2026
+
+O SDK v0.1.10 foi publicado e aprovado em Linux x86-64, macOS ARM64 e Windows
+x86-64 no [run 38779239029](https://github.com/arandu-lang/arandu/actions/runs/38779239029),
+com integração SDK/VSIX e Public RC install/smoke, incluindo o corpus CTFE.
+Essa prova não cobre toda a stdlib nem estabelece paridade async/paralelismo.
+
+O reactor Linux epoll/io_uring, wakers, TCP e `SyncExecutor` já existem. O
+executor ainda transporta resultados em bits i64 e seu host standalone C é
+incompleto; registro de sockets no reactor não é suportado em Windows/macOS.
+O contrato [async](./arandu-async-runtime-design-v0.1.md) detalha esses limites.
+O [paralelismo estruturado](./arandu-structured-parallelism-v0.1.md) já admite
+`AccumulatorInit` não-`Copy` e possui harness de escala versionado; drop glue
+automático e promoção da matriz específica continuam limites distintos.
+
+`std.fs` ainda é baseado em caminhos e não implementa a capacidade `Dir` da
+RFC 0016. A campanha local 0.1.11 acrescenta Q8.8/Q32.32, intrínsecos
+u32/u64 de contagem/reversão de bits, operações checadas de Decimal e protótipos
+de Box e hashes SHA-256/BLAKE3. O corpus de hashes e Decimal executou em
+Cranelift, C com UBSan e Wasmtime; Box passou em Cranelift e C, incluindo drops
+exatos e rejeição de escapes/aliases. Box depende do host de alocação alinhada
+nativo; essa API ainda não possui wiring Wasm. Essas alterações exigem os gates finais e
+a matriz instalada; não pertencem à prova publicada da 0.1.10. `core.atomic`
+continua com acessos ordinários e MemoryOrder ignorado; Arc e threads não podem
+assumir sincronização hardware a partir desses wrappers. Traps de abort já são emitidos diretamente, mas isso
+não fecha sozinho o contrato integral anti-panic-bloat. As convenções da RFC
+0026 não comprovam `close(): Result` e drop uniforme para todos os recursos.
 
 ## Detalhes Técnicos da Implementação
 
@@ -18,7 +51,7 @@ Este é o desenho arquitetural futuro das camadas oficiais `core`, `alloc`,
 O Arandu prioriza acima de tudo:
 1. **Previsibilidade semântica**: Sem mágica implícita de compilador ou runtime;
 2. **Locality de memória**: Acesso linear a dados e otimização agressiva de cache;
-3. **Throughput de compilação**: Tempos de ciclo edit-compile-run ultra-rápidos (<100ms);
+3. **Throughput de compilação**: perseguir o gate p95 ≤100 ms do build quente em host/workload definidos, sem promessa atual para todo edit-run;
 4. **Baixo overhead**: Binários finais extremamente compactos e com zero overhead desnecessário;
 5. **Tooling de alta qualidade**: Diagnósticos bonitos, ricos e integrados;
 6. **Incrementalidade**: Grafo de queries fins do compilador para evitar retrabalho;
@@ -36,15 +69,15 @@ Isso define a identidade e direção de engenharia inteira da linguagem.
 
 ### 💎 Core Invariants (Bússola do Ecossistema)
 
-O design de todas as APIs oficiais da linguagem Arandu (desde o compilador até a stdlib) deve seguir estritamente estes 8 invariantes fundamentais para evitar degradação de performance e arquitetura:
+As diretrizes abaixo orientam aceitação de APIs e otimizações. Não são certificação integral da stdlib atual: scratch/agregados, runtime, efeitos e alocadores têm exclusões documentadas. Ganhos exigem medição e a fronteira implementada é a declarada nos contratos:
 
 1. **No hidden allocation**: Alocações dinâmicas na heap nunca acontecem de forma implícita ou escondida. Se uma função aloca, ela deve receber um alocador explícito ou ser semanticamente óbvia (ex: retornar um tipo contido em `arandu_alloc`).
 2. **No implicit runtime**: O usuário não paga por um runtime assíncrono ou modelo de concorrência global se não o utilizar.
 3. **ID-based compiler architecture**: Grafos, nós sintáticos e entidades de IR evitam ponteiros puros de 64 bits em prol de compactos IDs de 32 bits indexando arenas densas.
-4. **Stack-first execution**: Objetos pequenos e corrotinas utilizam alocação em stack por padrão. Alocações em heap são reservadas para escape real.
+4. **Stack-first execution**: promover storage quando lifetime/layout e budgets provarem segurança. O fallback pode usar heap por limite de representação mesmo sem escape semântico; não prometer toda coroutine/agregado na stack.
 5. **Zero-cost abstractions**: Abstrações de alto nível (iteradores, enums, colorless async) devem compilar no mesmo código assembly gerado por implementações equivalentes de baixo nível escritas manualmente.
 6. **Async is semantic, runtime is optional**: O suporte a `await` e corrotinas é resolvido semanticamente pelo compilador. Executores e reatores de I/O são modulares e substituíveis.
-7. **no_std compatibility first**: Toda estrutura fundamental (no `arandu_core`) é nativamente independente de sistema operacional e heap.
+7. **no_std compatibility first**: a fronteira pretendida do core exclui host/heap globais; comprovar fechamento de símbolos, startup e runtime em cada alvo antes de publicar suporte freestanding.
 8. **Cache locality over abstraction purity**: Prioriza-se layouts contíguos de memória (SoA, small vectors, bitsets) mesmo que isso exija quebrar paradigmas clássicos orientados a objetos.
 
 ---
@@ -99,12 +132,15 @@ arandu_core
  ├─ panic        # Handlers básicos de pânico e asserções estáticas
  ├─ intrinsics   # abort, abortGenerationalMismatch (traps; zero heap)
  ├─ simd         # Tipos vetoriais e primitivas portáveis de SIMD (Fase A7)
- ├─ atomic       # Tipos atômicos puros suportados pelo hardware
+ ├─ atomic       # API atual ordinária; atomics hardware ainda pendentes
  └─ arch         # Especificações arquiteturais específicas (x86_64, AArch64, RISC-V)
 ```
 
 > [!IMPORTANT]
-> **A Semântica de Async no Core**: Os blocos de controle de tarefas assíncronas (`Future`, `Waker` e `Poll`) e o tipo embutido `Coroutine[T]` pertencem ao ecossistema do `arandu_core`. O compilador gera corrotinas (`Coroutine[T]`) debaixo do capô e implementa automaticamente o interface `Future[T]` para elas. O runtime de execução assíncrona (threads, syscalls) vive em camadas superiores, mas a semântica abstrata e as máquinas de estado geradas pelo compilador para o `await` dependem do `arandu_core`.
+> **Semântica async atual:** o compilador possui `Coroutine[T]`, `Poll[T]` e
+> lowering de suspensão. A interface `Future` completa continua aberta;
+> `Waker`/`Context` atuais pertencem a `std.runtime.waker`. A árvore conceitual
+> de `core` não implica que a integração automática futura já esteja pronta.
 
 ---
 
@@ -135,15 +171,12 @@ arandu_alloc
 > Compiler ABI: `docs/arandu-genref-gold-rfc-v0.1.md`.
 
 ### Filosofia de Alocadores Customizados
-Diferente de linguagens tradicionais onde todas as coleções apontam implicitamente para um único alocador global, todas as estruturas em `arandu_alloc` suportam um parâmetro genérico opcional de alocador:
-```arandu
-// Por padrão usa o GlobalAllocator da plataforma:
-list: Vec<i32> = Vec::new()
-
-// Alocação focada em performance local (Zero Heap Global):
-local_arena = BumpArena::new(64 * 1024) // 64KB
-list: Vec<i32, &BumpArena> = Vec::new_in(&local_arena)
-```
+A API `allocator_api` e os alocadores por arena existem. O parâmetro de alocador
+por coleção é uma direção arquitetural; não está integrado uniformemente em
+`Vec`, `String`, `HashMap` e `Box`. O `Box<T>` local usa o host de alocação
+alinhada e ainda não aceita um alocador fornecido pelo chamador. Exemplos de
+coleções com alocador genérico dependem de uma futura API e não representam
+assinaturas disponíveis.
 
 ---
 
@@ -188,7 +221,7 @@ arandu_std
  │   └─ parking  # Interface low-level de thread parking (para custom mutexes)
  └─ runtime      # O motor de concorrência assíncrona da linguagem
      ├─ scheduler# Agendamento cooperativo/work-stealing de tarefas com afinidade NUMA
-     ├─ executor # Thread-pool pool global e spawning de tasks assíncronas
+     ├─ executor # Executor explícito; pool global não é contrato atual
      ├─ reactor  # Despachante de eventos de I/O do SO
      ├─ epoll    # Reactor backend para Linux
      ├─ kqueue   # Reactor backend para macOS/BSD
@@ -200,7 +233,9 @@ arandu_std
 
 ### 4. `arandu_ext` (Extensões Opcionais de Aplicação)
 
-Para manter o núcleo da linguagem focado e evitar a obsolescência acelerada da API, frameworks de nicho que tradicionalmente são embutidos em stdlibs monolíticas são movidos para `arandu_ext`. Eles são distribuídos junto com a SDK do Arandu, mas importados separadamente e não poluem o binário final se não forem explicitamente referenciados.
+`arandu_ext` é uma proposta de organização de extensões opcionais. A árvore
+abaixo não corresponde a frameworks já implementados ou distribuídos no SDK.
+Cada extensão exige pacote, contrato de dependências e validação próprios.
 
 ### Estrutura de Módulos
 ```text
@@ -221,11 +256,11 @@ arandu_ext
 
 Conforme formalizado na [RFC 0012](rfcs/0012-scientific-computing-and-data-architecture.md), o Arandu rejeita transformar a stdlib básica em um monólito numérico pesado:
 
-* **In-Tree (`stdlib/core/math` e `stdlib/core/simd`)**: Apenas operações escalares puras (IEEE-754, trigonometria elementar, constantes `PI`/`TAU`/`E`) e tipos primitivos de registradores SIMD (`f32x4`, `u8x16`) pertencem à biblioteca padrão do compilador. São estritamente livres de heap (`no_std`) e mapeadas diretamente para instruções de CPU ou `libm`.
+* **In-Tree (`stdlib/core/math` e `stdlib/core/simd`)**: Apenas operações escalares puras (IEEE-754, trigonometria elementar, constantes `PI`/`TAU`/`E`) e tipos primitivos de registradores SIMD (`f32x4`, `u8x16`) pertencem à biblioteca padrão do compilador. São entregas autorizadas, ainda pendentes. O requisito de ausência de heap/OS exige implementação interna ou intrínsecos com fechamento de símbolos comprovado; chamadas à `libm` do host não satisfazem esse contrato automaticamente.
 * **Out-of-Tree / Ecossistema Externo (`arandu_math`, `arandu_data`, `arandu_science`)**: Todo o ferramental pesado de tensores N-dimensionais, matrizes esparsas, BLAS/LAPACK, processamento colunar Apache Arrow, DataFrames e solvers de EDOs reside em pacotes modulares externos do ecossistema, completamente fora da árvore de código do compilador v0.1.
 
 ```text
-stdlib (In-Tree)    ──► core::math (escalar, IEEE-754, libm) e core::simd (tipos primitivos)
+stdlib (In-Tree)    ──► core::math (escalar, contrato numérico puro) e core::simd (tipos primitivos)
        │ (fronteira desacoplada)
 arandu_math (Crate) ──► Array/ArrayView (strides), StaticMatrix, GEMM/BLAS, ScratchArena, Sparse, FFT
 arandu_data (Crate) ──► Apache Arrow, RecordBatch, Validity Bitmaps, DataFrames, Lazy Engine
@@ -240,7 +275,11 @@ arandu_science (Crate) Solvers (ODE), Sinais, Otimização, GraphBLAS (Grafos so
 
 ### 🎯 Modularidade Criptográfica (`crypto`)
 
-Para mitigar o aumento do tempo de compilação e do tamanho do executável gerado, o módulo `arandu_std::crypto` é estruturado em sub-módulos independentes de forma estrita.
+A implementação local de `std.crypto.hash` contém SHA-256 e BLAKE3 unkeyed de
+32 bytes, com estado incremental e `finish()` que preserva o estado. Os vetores
+independentes cobrem padding, blocos, chunks, árvore e atualizações após
+snapshots. SHA-3, cifras, assinaturas, certificados e TLS continuam propostas
+de módulos independentes:
 
 ```text
 crypto
@@ -251,8 +290,11 @@ crypto
  ├─ tls     # Interface de sockets seguros com TLS 1.3
  └─ x509    # Validação de certificados digitais
 ```
-* **Tree-shaking estrito**: Se o usuário importar apenas `crypto::hash::sha256`, o linker do compilador descarta fisicamente todo o suporte a RSA, curvas elípticas e TLS.
-* **Sem dependência de OpenSSL**: O Arandu implementa seus primitivos criptográficos principais em código gerenciado ou expõe APIs nativas da plataforma (como Windows CNG ou macOS Security framework) para manter o tamanho do binário próximo a zero e evitar dores de cabeça com cross-compilation.
+Os hashes locais são escalares e não importam OpenSSL, entropia ou bibliotecas
+do SO. Não fornecem autenticação, keyed hashing, XOF, criptografia de mensagens
+ou certificação FIPS. O isolamento de dependências dos demais módulos precisa
+ser demonstrado quando eles forem implementados; não há tamanho de binário ou
+aceleração por hardware garantidos por esta árvore conceitual.
 
 ---
 
@@ -272,23 +314,20 @@ Todos estes componentes residem estritamente nas extensões de ecossistema (`ara
 
 ---
 
-### 🛠️ O Caminho para a Versão 1.0 (Self-Hosting)
+### Self-hosting como possibilidade de evolução
 
-O marco definitivo de maturidade da linguagem Arandu é o **Self-Hosting**: a capacidade de compilar o próprio compilador `arandu` escrito em Arandu.
+Self-hosting é uma possibilidade de longo prazo. A versão 1.0 deve representar
+um contrato estável e uma matriz suportada comprovada; reescrever o compilador
+ou abandonar Rust não é condição já aprovada para isso. Uma proposta de
+self-hosting precisaria definir bootstrap, equivalência e recuperação de forma
+própria. A antiga meta de cold-build inferior a três segundos não possui corpus,
+host e metodologia que a tornem um gate vigente.
 
-### Critérios de Sucesso para a 1.0
-
-1. **Auto-Hospedagem Estável**:
-   O compilador original (escrito em Rust) compila o compilador Arandu escrito em Arandu. O binário gerado (Arandu-Compiler-V1) deve então compilar o código fonte do compilador Arandu de forma 100% equivalente, gerando binários idênticos byte a byte (verificação de convergência em 3 passos).
-
-2. **Bootstrapping com Zero Dependências de Rust**:
-   Ao atingir a 1.0, o compilador Rust é descartado da árvore de compilação oficial. Novas releases do Arandu utilizam o binário estável anterior do Arandu para compilar as próximas modificações.
-
-3. **Stdlib Completa até `arandu_std::runtime`**:
-   O compilador do Arandu utiliza compilação paralela maciça baseada no `arandu_std::runtime` (scheduler work-stealing A8) e consultas memoizadas (`arandu_core::hash` e `arandu_std::collections`).
-
-4. **Desempenho Paritário ou Superior**:
-   O tempo de compilação do compilador Arandu compilado por ele mesmo deve ser inferior a 3 segundos para cold-builds inteiros do próprio compilador, validando a arquitetura linear e orientada a dados (A5–A11).
+O planejamento por versões, condicionado à aprovação de escopo e evidência,
+fica no roadmap mestre: 0.2 motor quente; 0.3 granularidade por instância e
+closures em contrato próprio; 0.4 release optimizer; 0.5 ABI/interop/runtime;
+0.6 tooling/cache; 0.7–0.9 estabilização; 1.0 contrato estável. Essa direção não
+aprova automaticamente todos os módulos conceituais deste documento.
 
 ## Relatório final AUD.5 — segurança de borrowed views
 
@@ -300,7 +339,8 @@ O ABI continua sendo somente `ptr + len` e não leva lifetime para o runtime.
 
 Essa decisão promove o componente de borrowed views, não toda a campanha
 `SL_S-Core`: allocator genérico, drop de payloads não triviais e evidência
-nativa de todos os targets distribuídos continuam sendo gates independentes.
+nativa específica dessas operações continuam sendo gates independentes do
+smoke já aprovado da distribuição.
 
 ### Matriz de capacidade
 
@@ -365,7 +405,9 @@ Grande parte deste documento ainda é design, não promessa implementada. Metas
 numéricas de self-hosting precisam de corpus, hardware e protocolo de benchmark
 definidos antes de se tornarem gate.
 
-O primeiro corte de `SL_S-Core` estabelece os seguintes contratos concretos:
+O primeiro corte de `SL_S-Core` combina implementação e convenções de design.
+As regras de nomenclatura abaixo orientam a API; as promessas uniformes de
+recursos da RFC 0026 ainda são propostas, conforme a auditoria acima:
 
 - **Convenções Canônicas de Nomenclatura e Design de API (RFC 0026):**
   - **Casing:** Tipos/interfaces em `PascalCase`, callables/métodos em `camelCase`, módulos/arquivos em `snake_case`, constantes em `SCREAMING_SNAKE_CASE`;
@@ -380,8 +422,8 @@ O primeiro corte de `SL_S-Core` estabelece os seguintes contratos concretos:
 
 - **Gerenciamento de Recursos e Eliminação de Double-Free (RFC 0026):**
   1. *Memória Pura (`Vec`, `String`, `HashMap`):* O gerenciamento de ciclo de vida é exclusivo do compilador via destruição automática (`drop` em OSSA). Métodos manuais `destroy()` são banidos da API pública normal;
-  2. *Recursos Externos de I/O (`File`, sockets, `DirListing`):* Expõem método explícito `close(mut self): Result<void, IoError>` para tratamento de erros de flush/close do sistema operacional. O `drop` atua como salvaguarda silenciosa/best-effort caso `close()` não seja chamado;
-  3. *Idempotência:* Após `close()`, o `drop` subsequente ao sair de escopo torna-se um *no-op* garantido, eliminando double-free por construção.
+  2. *Recursos Externos de I/O (`File`, sockets, `DirListing`):* A convenção proposta é `close(): Result<void, IoError>` com `drop` best-effort. `File.close` e `DirListing.close` ainda retornam `void`; não se promete essa uniformidade como implementada;
+  3. *Idempotência:* A proposta exige que o `drop` após `close()` seja um no-op; essa garantia precisa de prova por tipo e não decorre apenas da convenção de nomes.
 
 - **Checklist de PR para Módulos da Stdlib:**
   1. *Construtor:* O tipo expõe `Type.new(...)` / `Type<T>.new(...)`, `Type.withX(...)` / `Type<T>.withX(...)` ou `Type.from[X](...)` em vez de funções livres?
@@ -424,7 +466,8 @@ O primeiro corte de `SL_S-Core` estabelece os seguintes contratos concretos:
 
 Ainda impedem a promoção de toda `SL_S-Core` para Gold: allocator genérico real,
 política uniforme de OOM nas coleções, drop de payloads não triviais e cobertura
-nativa dos targets oficialmente publicados. `String.pushStr` já é fallible e
+nativa específica dessas operações. Os targets publicados já possuem smoke
+de distribuição; isso não substitui essa cobertura. `String.pushStr` já é fallible e
 mantém o valor original em overflow/OOM.
 O alias histórico `std.core.ptr` foi removido porque oferecia aritmética de
 ponteiro através de uma função aparentemente segura; uma compatibilidade futura

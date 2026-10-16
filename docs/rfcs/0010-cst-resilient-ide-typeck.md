@@ -18,7 +18,7 @@ Esta RFC formaliza a arquitetura do frontend do compilador Arandu baseada em **�
 
 ## 2. Motivação (Motivation)
 
-Servidores de linguagem (LSP) operam sobre código em edição ativa, o qual passa 90% do tempo sintaticamente incompleto (ex: um bloco `func` aberto sem fechar chaves, ou uma expressão interrompida enquanto o usuário digita).
+Servidores de linguagem (LSP) operam sobre código em edição ativa, que frequentemente está sintaticamente incompleto (ex: um bloco `func` aberto sem fechar chaves, ou uma expressão interrompida enquanto o usuário digita).
 * Parsers tradicionais em lote abortam ou geram árvores incompletas, desativando recursos como realce de sintaxe (*semantic tokens*), completion e hover no editor.
 * Re-executar o lexer e parser do arquivo completo a cada caractere digitado desperdiça ciclos de CPU e degrada a bateria em notebooks.
 
@@ -38,7 +38,7 @@ SourceFile.text
 syntax_tree(file)      // CST Rowan canônico; cache e reparse_subtree em edits contíguos
     │
     ▼
-parse(file)            // Lower sintático para AST tipada sem re-lex
+parse(file)            // Lower sintático para AST sintática sem re-lex (tipagem ocorre depois)
     │
     ▼
 resolve(file)
@@ -60,7 +60,7 @@ Quando uma edição ocorre no buffer do editor:
    * O compilador executa a análise léxica **apenas sobre o texto daquele item**.
    * Constrói o novo nó verde (*green node*) do item.
    * Aplica `replace_child` na raiz da árvore.
-   * Todos os itens irmãos reutilizam seus nós verdes anteriores via identidade de ponteiro `Arc::ptr_eq`, com custo de alocação próximo de zero.
+   * Todos os itens irmãos reutilizam seus nós verdes anteriores via identidade de ponteiro `Arc::ptr_eq`, com compartilhamento dos nós não alterados; o custo de alocação precisa de medição.
 3. Se a edição quebrar a estrutura externa (ex: inserir uma chave que desalinha múltiplos itens), o compilador executa um full parse de recuperação.
 
 ---
@@ -69,4 +69,10 @@ Quando uma edição ocorre no buffer do editor:
 
 1. **Ausência de Dualidade Independente**: O CST é a única fonte da verdade sintática. Não existe um parser independente que opere sobre texto bruto sem passar pelo CST.
 2. **Ponto e Vírgula Opcional em Linha Única**: Corpos de funções ou blocos de uma linha (`func ping(): int { return 0 }`) dispensam ponto e vírgula antes da chave de fechamento, garantindo ergonomia sem ambiguidades gramaticais.
-3. **Pureza e Ausência de Efeitos no LSP**: A análise do CST e cálculo de tokens semânticos são queries Salsa puras executadas sobre snapshots imutáveis em workers de background, sem nunca segurar locks de escrita na thread principal do LSP.
+3. **Fronteiras de análise e protocolo**: parsing/análise consultam estado registrado e snapshots, sem leitura ambiental de arquivos nas queries. Classificação e adaptação LSP podem ser funções puras sobre snapshots, não necessariamente queries tracked. Registro/mutação pertence à thread principal; não conservar snapshot da mesma DB durante `set_text`.
+
+Reparse é uma otimização admissível, não uma garantia para toda edição dentro
+de um item. O caminho em `DatabaseImpl::syntax_tree_for_arc` detecta edição
+contígua, tenta o reparse e verifica o texto reconstruído; alterações não
+admitidas usam full parse. Efeitos sobre latência e alocação pertencem aos
+benchmarks, não à existência do compartilhamento Rowan.

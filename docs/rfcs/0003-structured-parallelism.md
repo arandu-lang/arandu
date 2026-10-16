@@ -4,7 +4,7 @@
 - **Título:** Concorrência e Processamento Paralelo Estruturado via Worker Pool Bounded
 - **Autor(es):** Equipe do Compilador Arandu
 - **Data de Início:** 2026-09-11
-- **Status:** `Implemented`
+- **Status:** `Implemented` no recorte funcional; promoção `gold` ainda exige evidência específica
 - **Área Principal:** `Runtime` / `Middle-end` (`arandu_mir` / `arandu_runtime`)
 
 ---
@@ -60,11 +60,15 @@ int32_t (*ar_work_thunk)(void *context, void *result);
 
 ### Inlining de Funções-Folha na AMIR
 
-Para evitar a sobrecarga de chamadas indiretas no laço quente de processamento paralelo, o compilador introduz um passador de inlining na AMIR (`arandu_mir::inlining`) com orçamento estrito:
-* Apenas funções-folha (*leaf functions* sem chamadas aninhadas);
-* Máximo de 25 instruções e 6 blocos básicos;
-* Ausência de loops e corrotinas;
-* Preservação garantida da forma SSA/OSSA.
+O passe `arandu_mir::inlining` preserva SSA/OSSA e usa custos limitados:
+* Funções-folha têm orçamento de 32 operações e até 12 blocos;
+* Wrappers não-folha pequenos admitem até 24 blocos e 4 chamadas, com prova
+  transitiva dos alvos e custo adicional por chamada;
+* Ciclos no CFG e terminadores `Suspend` impedem a transformação;
+* O orçamento cumulativo mede statements do callee, cresce com o tamanho
+  original do caller e tem teto de IR expandida; não é limite fixo de 32 sites.
+
+Os detalhes canônicos estão em `arandu_mir::inlining::{cost,splice}`.
 
 ---
 
@@ -75,6 +79,25 @@ Para evitar a sobrecarga de chamadas indiretas no laço quente de processamento 
 3. **Contrato Algébrico Explícito**: `Combine` deve ser associativo, possuir a identidade fornecida como elemento neutro e ser estável sob o reagrupamento. Isso não implica igualdade com fold linear para aritmética IEEE-754 comum.
 4. **Limitação de Admissão (*Bounded Admission*)**: A fila possui capacidade finita. Chamadas externas aguardam admissão; submissões aninhadas feitas por workers executam inline para impedir deadlock e crescimento ilimitado.
 
-O runtime Rust usa workers persistentes. O backend C mantém o mesmo escopo e
-critério de falha, mas ainda cria e junta threads nativas em cada chamada; a
-reutilização equivalente permanece requisito de promoção a `gold`.
+O runtime Rust usa workers persistentes. O backend C também possui worker
+pool reutilizável, com pthreads em POSIX e primitivas Win32 em Windows, fila
+bounded, participação da thread chamadora e execução inline aninhada.
+
+## 6. Estado auditado em 15/10/2026
+
+`parallelFoldWithInit` e a interface `AccumulatorInit<R>` já permitem
+acumuladores não-`Copy` com o bound `Send` correspondente. Isso não entrega
+automaticamente drop glue de recursos arbitrários em falha/cancelamento; a ABI
+de retorno agregado também mantém cópias/alocações residuais em certos casos.
+
+O harness `scripts/bench_parallel_scaling.py` já é versionado e mede tempo,
+RSS e determinismo com 1/2/4/8/16 workers. Sua existência não equivale a
+resultados de promoção em workloads representativos e hosts documentados.
+O corpus Pypor e os testes de paridade cobrem o recorte Linux atual.
+
+O SDK v0.1.10 passou instalação e smoke público nos três alvos no
+[run 38779239029](https://github.com/arandu-lang/arandu/actions/runs/38779239029).
+Essa evidência não substitui a matriz completa específica de paralelismo em
+Windows/macOS. Os limites ficam no
+[contrato técnico](../arandu-structured-parallelism-v0.1.md); a fila de execução
+permanece exclusivamente no roadmap mestre.

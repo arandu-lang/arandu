@@ -1,8 +1,7 @@
 # Arandu backend contract v0.1
 
 **Status:** S1-C contract; audited 2026-08-20.
-**Scope:** the public boundary from validated AMIR to C source, host JIT code,
-or a host-native AOT object.
+**Scope:** the boundary from validated AMIR to C source, host JIT/native AOT or core-Wasm/component emission; each surface has its own support limits. LLVM/eBPF/SPIR-V are proposals, not current backends.
 
 This document is intentionally conservative. A green frontend test means that a
 program reaches AMIR; it does not automatically promote every runtime facility,
@@ -22,12 +21,18 @@ require ABI, CPU, object format, system headers, libraries, and linker choices.
 Arandu v0.1 models only the layout subset below. Consequently, `ptr4` and `ptr8`
 are layout profiles, not target triples and not cross-toolchain configurations.
 
-| Profile | Pointer / `int` | `float` | `i64` / `f64` ABI alignment | Contract |
+| Profile | Pointer / `isize` / `usize` | `float` | `i64` / `f64` ABI alignment | Contract |
 |---|---:|---:|---:|---|
 | `host` | host width | IEEE f64 | host profile | Required for C ↔ Cranelift parity. |
 | `ptr4` | 4 bytes | IEEE f64 | 8 bytes | Generic ILP32-style layout model; emit-only and experimental. |
 | `ptr8` | 8 bytes | IEEE f64 | 8 bytes | Generic LP64-style layout model; emit-only unless it equals the host. |
 | `i686` | 4 bytes | IEEE f64 | 4 bytes | i686 SysV data-layout model; emit-only and tested structurally. |
+
+`int`/`uint` are fixed i32/u32 in every profile; pointer-sized integers are
+`isize`/`usize`. `float` follows TargetInfo/DataLayout; the table describes the
+currently listed profiles, not a universal f64 assumption for future targets.
+Explicit target identity and layout validation exist, but a layout profile is
+not a complete native cross-toolchain or a published SDK.
 
 All profiles reject objects at or above the positive `isize` bound of the
 modeled address space. Layout arithmetic is checked and a failure returns a
@@ -81,6 +86,16 @@ when that local has no other accesses; shared locals retain their write via
 `local.tee`. Neither transform moves instructions across effects or control
 boundaries. Structured bodies explicitly reject implicit fallthrough, including
 functions whose only return occurs inside a tail-recursion loop.
+
+Wasm landing scopes must nest even when forward edges form overlapping
+diamonds. Openings are hoisted across crossing intervals and loop exits;
+emission reports an ICE if a landing would skip its CFG block or a successor
+has no active label. Conditional edge arguments are copied only on their own
+edge, after testing the condition. A dereferenced aggregate reference copies
+the complete inline value into independent storage, including nested arrays;
+its first field is never treated as a pointer to the value. Decimal parsing,
+streaming hash snapshots and the shared projection corpus exercise these
+contracts in a real Wasm runtime.
 
 The checked O2 entrypoint scalarizes nonescaping Copy record/tuple locals with
 scalar fields. Partial stores and joins remain ordinary scalar place operations;
@@ -137,9 +152,17 @@ or 15–30% runtime speedup is promised.
 | Invalid AMIR | Shared validator runs before emission | Shared validator runs before JIT mutation |
 | Backend failure | `Err(Diagnostic)`; no successful partial source | `Err(Diagnostic)`; no successful partial module |
 
-Windows builds are locally supported by the Rust workspace, but Windows backend
-Gold requires a dedicated mandatory CI runner and runtime campaign. Until that
-exists, this contract does not claim Windows backend Gold.
+The published 0.1.10 SDK was installed and exercised by native release jobs on
+Windows x86-64 MSVC, Linux x86-64 and macOS ARM64; see the
+[release evidence](releases/0.1.10.md). This covers the executed SDK/VSIX and
+native-build flows. It does not establish complete C dialect, async, parallel,
+FFI or freestanding parity on every host. MSVC native linking is distinct from
+compiling GNU C backend output with MSVC.
+
+Wasm is an implemented third backend. Core emission, WIT/component adapters
+and execution have their own corpus and Canonical ABI limits in
+[RFC 0014](rfcs/0014-native-wasm-component-model-and-runtime.md). The two native
+columns above are not an inventory excluding Wasm.
 
 ### Type and representation matrix
 
@@ -148,11 +171,11 @@ exists, this contract does not claim Windows backend Gold.
 | `bool`, bytes, chars, fixed integers | fixed-width scalar | Supported | Supported |
 | `int`, `uint` | fixed 32-bit scalar | Supported by selected layout | `I32` |
 | `isize`, `usize` | target pointer-width scalar | Supported by selected layout | Supported at host width |
-| `float`, `f32`, `f64` | IEEE scalar; language `float` is f64 | Supported | Supported |
+| `float`, `f32`, `f64` | IEEE scalar; `float` uses TargetInfo.float_size, explicit types retain their widths | Supported | Supported |
 | pointers, references, borrows | pointer plus AMIR ownership rules | Supported after borrow lowering | Supported after borrow lowering |
 | arrays, slices, `str` | inline array or `{ptr,len}` fat pointer | Supported; target layout applies | Supported on host layout |
 | tuples and structs | ordered fields plus ABI padding | Supported | Supported |
-| enums, `Option`, `Result` | pointer-width tag plus payload | Supported | Supported |
+| enums, `Option`, `Result` | target-derived discriminant/payload or admitted niche representation | Supported | Supported |
 | functions and `extern "C"` | declared ABI boundary | Partial: caller must provide compatible symbols | Partial: only registered host/runtime symbols are linkable |
 | allocation and `free` | libc/runtime calls | Hosted runtime only | Host runtime only |
 | string interpolation / primitive `ToStr` | runtime helpers | Supported for primitives and `str` | Supported for primitives and `str` |

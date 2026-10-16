@@ -1,0 +1,136 @@
+//! Fast pseudorandom number generation and operating system entropy.
+//!
+//! ## Overview
+//!
+//! `std.std.random` provides:
+//! - `Xoshiro256PlusPlus`: High-speed, high-quality, state-of-the-art PRNG
+//!   (Blackman & Vigna, 2021). Passes all BigCrush statistical tests with a period of $2^{256} - 1$.
+//! - Unbiased integer range sampling using Lemire's method (eliminates modulo bias).
+//! - Direct, non-blocking interface to operating system hardware entropy (`fillEntropy`).
+//!
+//! ## Security
+//!
+//! `Xoshiro256PlusPlus` is designed for simulations, games, algorithms, and fuzzing;
+//! it is **not** a cryptographically secure PRNG (CSPRNG). For cryptographic key
+//! generation, use OS entropy directly via `fillEntropy`.
+//!
+//! ## Examples
+//!
+//! ```arandu
+//! import std.std.random as random
+//!
+//! let mut rng = random.Xoshiro256PlusPlus.fromSeed(42u64)
+//! let n = rng.nextU64()
+//! let dice = rng.genRange(1, 6) // [1, 6] inclusive without bias
+//! let f = rng.nextFloat()       // [0.0, 1.0)
+//! ```
+//!
+//! ## Platform
+//! `native` · `wasm32`
+module std.std.random
+
+import std.core.intrinsics as intrinsics
+
+extern "C" {
+    /// Fills buffer with hardware entropy from the host OS (/dev/urandom or BCryptGenRandom).
+    func ar_rt_get_entropy(buf: ptr[u8], len: usize): int
+}
+
+func rotl64(x: u64, k: u32): u64 {
+    return (x << k) | (x >> (64u32 - k))
+}
+
+func splitmix64(state: mut ref u64): u64 {
+    state.* = state.* + 0x9e3779b97f4a7c15u64
+    let mut z = state.*
+    z = (z ^ (z >> 30u32)) * 0xbf58476d1ce4e5b9u64
+    z = (z ^ (z >> 27u32)) * 0x94d049bb133111ebu64
+    return z ^ (z >> 31u32)
+}
+
+/// A high-speed, general-purpose pseudorandom generator (xoshiro256**).
+public struct Xoshiro256PlusPlus {
+    s0: u64,
+    s1: u64,
+    s2: u64,
+    s3: u64,
+}
+
+/// Creates a generator initialized with a 64-bit seed expanded via SplitMix64.
+public func Xoshiro256PlusPlus.fromSeed(seed: u64): Xoshiro256PlusPlus {
+    let mut s = if seed == 0u64 { 0x853c49e6748fea9bu64 } else { seed }
+    let s0 = splitmix64(mut ref s)
+    let s1 = splitmix64(mut ref s)
+    let s2 = splitmix64(mut ref s)
+    let s3 = splitmix64(mut ref s)
+    return Xoshiro256PlusPlus {
+        s0: s0,
+        s1: s1,
+        s2: s2,
+        s3: s3,
+    }
+}
+
+/// Returns the next pseudorandom 64-bit unsigned integer.
+public func Xoshiro256PlusPlus.nextU64(self: mut ref Xoshiro256PlusPlus): u64 {
+    let result = rotl64(self.s1 * 5u64, 7u32) * 9u64
+
+    let t = self.s1 << 17u32
+
+    self.s2 = self.s2 ^ self.s0
+    self.s3 = self.s3 ^ self.s1
+    self.s1 = self.s1 ^ self.s2
+    self.s0 = self.s0 ^ self.s3
+
+    self.s2 = self.s2 ^ t
+    self.s3 = rotl64(self.s3, 45u32)
+
+    return result
+}
+
+/// Returns the next pseudorandom 32-bit unsigned integer.
+public func Xoshiro256PlusPlus.nextU32(self: mut ref Xoshiro256PlusPlus): u32 {
+    return (self.nextU64() >> 32u32) as u32
+}
+
+/// Returns a float uniformly distributed in `[0.0, 1.0)`.
+public func Xoshiro256PlusPlus.nextFloat(self: mut ref Xoshiro256PlusPlus): float {
+    // Take the 53 most significant bits of u64 and scale by 2^-53
+    let bits = self.nextU64() >> 11u32
+    return (bits as float) * (1.0 / 9007199254740992.0)
+}
+
+/// Returns a random integer in `[minVal, maxVal]` inclusive, free of modulo bias.
+public func Xoshiro256PlusPlus.genRange(self: mut ref Xoshiro256PlusPlus, minVal: int, maxVal: int): int {
+    if minVal >= maxVal {
+        return minVal
+    }
+    let range = (maxVal - minVal + 1) as uint
+    // Lemire's nearly division-free unbiased sampling
+    let mut x = self.nextU32()
+    let mut m = (x as u64) * (range as u64)
+    let mut l = (m as u32)
+    if l < range {
+        let threshold = (0u32 - range) % range
+        while l < threshold {
+            x = self.nextU32()
+            m = (x as u64) * (range as u64)
+            l = m as u32
+        }
+    }
+    let offset = (m >> 32u32) as int
+    return minVal + offset
+}
+
+/// Fills `dest` with secure hardware entropy from the operating system.
+///
+/// Returns `true` on success, or `false` if the system entropy source fails.
+public func fillEntropy(dest: mut ref []u8): bool {
+    let len = dest.len()
+    if len == (0 as usize) { return true }
+    unsafe {
+        let p = dest.asPtr()
+        let ret = ar_rt_get_entropy(p, len)
+        return ret == 0
+    }
+}

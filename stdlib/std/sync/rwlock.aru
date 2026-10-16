@@ -1,0 +1,114 @@
+//! Starvation-free Reader-Writer lock.
+//!
+//! ## Overview
+//!
+//! `RwLock<T>` provides concurrent shared read access (`readLock`) or exclusive
+//! write access (`writeLock`) to an underlying payload.
+//!
+//! ## Writer-Preference Fairness
+//!
+//! To eliminate writer starvation, once a writer queues for the lock, subsequent
+//! readers are paused until the pending writer finishes its critical section.
+//!
+//! ## Examples
+//!
+//! ```arandu
+//! import std.sync.rwlock as sync
+//!
+//! let lock = sync.RwLock<int>.new(10)
+//! {
+//!     let guard = lock.readLock()
+//!     assert(*guard == 10)
+//! }
+//! {
+//!     let mut guard = lock.writeLock()
+//!     *guard = 20
+//! }
+//! ```
+//!
+//! ## Platform
+//! `native` · `wasm32`
+module std.sync.rwlock
+
+import std.core.atomic as atomic
+import std.core.intrinsics as intrinsics
+
+const WRITER_ACTIVE: usize = 1 as usize
+const WRITER_PENDING_SHIFT: usize = 1 as usize
+const WRITER_PENDING_MASK: usize = 0x7FFE as usize
+const READER_SHIFT: usize = 16 as usize
+const READER_UNIT: usize = 0x10000 as usize
+
+/// A reader-writer lock protecting `T`.
+public struct RwLock<T> {
+    state: atomic.AtomicUsize,
+    value: T,
+}
+
+/// Creates a new `RwLock<T>` protecting `value`.
+public func RwLock.new<T>(value: T): RwLock<T> {
+    return RwLock<T> {
+        state: atomic.AtomicUsize.new(0 as usize),
+        value: value,
+    }
+}
+
+/// Attempts to acquire shared read access without blocking.
+public func RwLock.tryRead<T>(self: ref RwLock<T>): bool {
+    let mut current = self.state.load(atomic.MemoryOrder.Relaxed)
+    while true {
+        // If a writer is active or pending, reject immediate read acquisition to avoid starvation
+        if (current & (WRITER_ACTIVE | WRITER_PENDING_MASK)) != (0 as usize) {
+            return false
+        }
+        let next = current + READER_UNIT
+        match self.state.compareExchangeWeak(
+            current,
+            next,
+            atomic.MemoryOrder.Acquire,
+            atomic.MemoryOrder.Relaxed
+        ) {
+            Result.Ok(_) => { return true }
+            Result.Err(actual) => { current = actual }
+        }
+    }
+    return false
+}
+
+/// Releases shared read access.
+public func RwLock.readUnlock<T>(self: ref RwLock<T>): void {
+    self.state.fetchSub(READER_UNIT, atomic.MemoryOrder.Release)
+}
+
+/// Attempts to acquire exclusive write access without blocking.
+public func RwLock.tryWrite<T>(self: mut ref RwLock<T>): bool {
+    match self.state.compareExchange(
+        0 as usize,
+        WRITER_ACTIVE,
+        atomic.MemoryOrder.Acquire,
+        atomic.MemoryOrder.Relaxed
+    ) {
+        Result.Ok(_) => { return true }
+        Result.Err(_) => { return false }
+    }
+}
+
+/// Releases exclusive write access.
+public func RwLock.writeUnlock<T>(self: mut ref RwLock<T>): void {
+    self.state.fetchSub(WRITER_ACTIVE, atomic.MemoryOrder.Release)
+}
+
+/// Borrows the protected value directly when holding a read lock.
+public func RwLock.get<T>(self: ref RwLock<T>): ref T {
+    return ref self.value
+}
+
+/// Exclusively borrows the protected value directly when holding a write lock.
+public func RwLock.getMut<T>(self: mut ref RwLock<T>): mut ref T {
+    return mut ref self.value
+}
+
+/// Consumes the lock, returning the owned inner value.
+public func RwLock.intoInner<T>(self: own RwLock<T>): T {
+    return self.value
+}

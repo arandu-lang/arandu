@@ -423,3 +423,109 @@ public func Metadata.isFile(self: ref Metadata): bool {
 public func Metadata.isReadonly(self: ref Metadata): bool {
     return self.readonly
 }
+
+// ── Capability-Safe Directory Abstraction (RFC 0016) ────────────────────────
+
+extern "C" {
+    func ar_fs_dir_open(pathData: ptr[u8], pathLen: usize): int
+    func ar_fs_openat(dirFd: int, pathData: ptr[u8], pathLen: usize, read: bool, write: bool, create: bool, truncate: bool): int
+    func ar_fs_mkdirat(dirFd: int, pathData: ptr[u8], pathLen: usize): int
+    func ar_fs_unlinkat(dirFd: int, pathData: ptr[u8], pathLen: usize, isDir: bool): int
+}
+
+/// A capability token representing an open directory handle (RFC 0016).
+///
+/// All filesystem traversals and mutations performed through a `Dir` operate
+/// strictly relative to this pinned descriptor, protecting against Time-of-Check
+/// to Time-of-Use (TOCTOU) races and symlink traversal escapes.
+public struct Dir {
+    fd: int
+}
+
+/// Opens an ambient directory path as a capability token.
+public func openDir(path: str): Result<Dir, io.IoError> {
+    let bytes = intrinsics.strBytes(path)
+    unsafe {
+        let fd = ar_fs_dir_open(bytes.asPtr(), bytes.len())
+        if fd < 0 {
+            return Result.Err(io.IoError.NotFound)
+        }
+        return Result.Ok(Dir { fd: fd })
+    }
+}
+
+/// Opens a file relative to this directory descriptor.
+public func Dir.openFile(self: ref Dir, subpath: str, options: OpenOptions): Result<File, io.IoError> {
+    let bytes = intrinsics.strBytes(subpath)
+    unsafe {
+        let fd = ar_fs_openat(
+            self.fd,
+            bytes.asPtr(),
+            bytes.len(),
+            options.read,
+            options.write,
+            options.create,
+            options.truncate
+        )
+        if fd < 0 {
+            return Result.Err(io.IoError.NotFound)
+        }
+        return Result.Ok(File { fd: fd })
+    }
+}
+
+/// Creates a new subdirectory relative to this directory descriptor.
+public func Dir.createDir(self: ref Dir, subpath: str): Result<Dir, io.IoError> {
+    let bytes = intrinsics.strBytes(subpath)
+    unsafe {
+        let fd = ar_fs_mkdirat(self.fd, bytes.asPtr(), bytes.len())
+        if fd < 0 {
+            return Result.Err(io.IoError.PermissionDenied)
+        }
+        return Result.Ok(Dir { fd: fd })
+    }
+}
+
+/// Removes a regular file relative to this directory descriptor.
+public func Dir.removeFile(self: ref Dir, subpath: str): Result<void, io.IoError> {
+    let bytes = intrinsics.strBytes(subpath)
+    unsafe {
+        let ret = ar_fs_unlinkat(self.fd, bytes.asPtr(), bytes.len(), false)
+        if ret < 0 {
+            return Result.Err(io.IoError.NotFound)
+        }
+        return Result.Ok()
+    }
+}
+
+/// Removes a subdirectory relative to this directory descriptor.
+public func Dir.removeDir(self: ref Dir, subpath: str): Result<void, io.IoError> {
+    let bytes = intrinsics.strBytes(subpath)
+    unsafe {
+        let ret = ar_fs_unlinkat(self.fd, bytes.asPtr(), bytes.len(), true)
+        if ret < 0 {
+            return Result.Err(io.IoError.NotFound)
+        }
+        return Result.Ok()
+    }
+}
+
+/// Closes this directory capability handle.
+public func Dir.close(self: mut ref Dir): void {
+    if self.fd >= 0 {
+        unsafe {
+            ar_fs_close(self.fd)
+        }
+        self.fd = -1
+    }
+}
+
+/// Automatic destructor ensuring the directory descriptor is closed on scope exit.
+@Destructor
+func Dir.destroy(self: own Dir): void {
+    if self.fd >= 0 {
+        unsafe {
+            ar_fs_close(self.fd)
+        }
+    }
+}

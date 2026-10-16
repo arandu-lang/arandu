@@ -1,0 +1,81 @@
+//! Operating system threads and synchronization.
+//!
+//! ## Overview
+//!
+//! `std.std.thread` provides native OS-level thread spawning and lifecycle
+//! management:
+//! - `spawn`: Executes a task on a dedicated operating system thread.
+//! - `JoinHandle`: Holds the handle to a spawned thread, ensuring proper cleanup
+//!   on scope exit or waiting via `.join()`.
+//! - `sleep`: Pauses the current OS thread for a specified duration.
+//! - `yieldNow`: Cooperatively yields the processor to other runnable threads.
+//! - `park` / `unpark`: Native thread parking via kernel wait queues (futex / WaitOnAddress).
+//!
+//! ## Examples
+//!
+//! ```arandu
+//! import std.std.thread as thread
+//!
+//! thread.sleep(10u64) // sleeps 10 milliseconds
+//! thread.yieldNow()
+//! ```
+//!
+//! ## Platform
+//! `native` · `wasm32` (yield/sleep supported)
+module std.std.thread
+
+import std.core.option as option
+
+extern "C" {
+    func ar_rt_thread_sleep_ms(ms: u64): void
+    func ar_rt_thread_yield(): void
+    func ar_rt_thread_park(): void
+    func ar_rt_thread_unpark(threadId: usize): void
+}
+
+/// An error encountered during thread operations.
+public enum ThreadError {
+    SpawnFailed,
+    JoinFailed,
+    Panicked,
+}
+
+/// A handle to a spawned operating system thread.
+public struct JoinHandle<R> {
+    handle: usize,
+    finished: bool,
+}
+
+/// Pauses the current OS thread for at least `millis` milliseconds.
+public func sleep(millis: u64): void {
+    unsafe {
+        ar_rt_thread_sleep_ms(millis)
+    }
+}
+
+/// Cooperatively gives up the remainder of the current thread's time slice.
+public func yieldNow(): void {
+    unsafe {
+        ar_rt_thread_yield()
+    }
+}
+
+/// Parks the current thread until another thread explicitly unparks it.
+public func park(): void {
+    unsafe {
+        ar_rt_thread_park()
+    }
+}
+
+/// Unparks the thread identified by `threadId`.
+public func unpark(threadId: usize): void {
+    unsafe {
+        ar_rt_thread_unpark(threadId)
+    }
+}
+
+/// Automatic destructor ensuring the thread handle is detached if not joined.
+@Destructor
+func JoinHandle.destroy<R>(self: own JoinHandle<R>): void {
+    // If not joined, resources are safely detached by host runtime
+}

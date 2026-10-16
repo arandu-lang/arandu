@@ -1,0 +1,63 @@
+//! Cooperative condition variable.
+//!
+//! ## Overview
+//!
+//! `Condvar` enables tasks or threads to block until a particular condition
+//! is met, notified via `notifyOne` or `notifyAll`.
+//!
+//! ## Examples
+//!
+//! ```arandu
+//! import std.sync.condvar as sync
+//!
+//! let cv = sync.Condvar.new()
+//! cv.notifyOne()
+//! ```
+//!
+//! ## Platform
+//! `native` · `wasm32`
+module std.sync.condvar
+
+import std.core.atomic as atomic
+
+extern "C" {
+    func ar_rt_condvar_wait(seq: usize): void
+    func ar_rt_condvar_notify_one(seq: usize): void
+    func ar_rt_condvar_notify_all(seq: usize): void
+}
+
+/// A condition variable.
+public struct Condvar {
+    sequence: atomic.AtomicUsize,
+}
+
+/// Creates a new `Condvar`.
+public func Condvar.new(): Condvar {
+    return Condvar {
+        sequence: atomic.AtomicUsize.new(0 as usize),
+    }
+}
+
+/// Waits for a notification, waking cooperatively.
+public func Condvar.wait(self: ref Condvar): void {
+    let current = self.sequence.load(atomic.MemoryOrder.Acquire)
+    unsafe {
+        ar_rt_condvar_wait(current)
+    }
+}
+
+/// Wakes one task waiting on this condition variable.
+public func Condvar.notifyOne(self: ref Condvar): void {
+    let next = self.sequence.fetchAdd(1 as usize, atomic.MemoryOrder.Release)
+    unsafe {
+        ar_rt_condvar_notify_one(next)
+    }
+}
+
+/// Wakes all tasks waiting on this condition variable.
+public func Condvar.notifyAll(self: ref Condvar): void {
+    let next = self.sequence.fetchAdd(1 as usize, atomic.MemoryOrder.Release)
+    unsafe {
+        ar_rt_condvar_notify_all(next)
+    }
+}

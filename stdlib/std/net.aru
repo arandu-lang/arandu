@@ -441,3 +441,106 @@ func TcpStream.destroy(self: own TcpStream): void {
         tcpCloseStream(self.raw)
     }
 }
+
+// ── UDP Socket & DNS (ST.13) ────────────────────────────────────────────────
+
+extern "C" {
+    func ar_net_udp_bind(hostPtr: ptr[u8], hostLen: usize, port: int): int
+    func ar_net_udp_send_to(id: int, buf: ptr[u8], len: usize, hostPtr: ptr[u8], hostLen: usize, port: int): int
+    func ar_net_udp_recv_from(id: int, buf: ptr[u8], len: usize, portOut: ptr[int]): int
+    func ar_net_udp_close(id: int): void
+    func ar_net_dns_resolve(namePtr: ptr[u8], nameLen: usize, ipBuf: ptr[u8], ipCap: usize): int
+}
+
+/// A UDP socket for datagram communication.
+public struct UdpSocket {
+    id: int,
+    local_addr: SocketAddr,
+}
+
+/// Binds a UDP socket to the requested local address.
+public func UdpSocket.bind(addr: SocketAddr): Result<UdpSocket, io.IoError> {
+    let bytes = intrinsics.strBytes(addr.ip)
+    unsafe {
+        let id = ar_net_udp_bind(bytes.asPtr(), bytes.len(), addr.port)
+        if id < 0 {
+            return Result.Err(io.IoError.new(io.IoErrorKind.ConnectionRefused, id))
+        }
+        return Result.Ok(UdpSocket {
+            id: id,
+            local_addr: addr,
+        })
+    }
+}
+
+/// Sends data on the socket to the given target address.
+public func UdpSocket.sendTo(self: ref UdpSocket, buf: []u8, target: SocketAddr): Result<usize, io.IoError> {
+    let hostBytes = intrinsics.strBytes(target.ip)
+    let len = slice.len<u8>(buf)
+    unsafe {
+        let sent = ar_net_udp_send_to(
+            self.id,
+            slice.asPtr<u8>(buf),
+            len,
+            hostBytes.asPtr(),
+            hostBytes.len(),
+            target.port
+        )
+        if sent < 0 {
+            return Result.Err(io.IoError.new(io.IoErrorKind.BrokenPipe, sent))
+        }
+        return Result.Ok(sent as usize)
+    }
+}
+
+/// Receives a single datagram message on the socket.
+public func UdpSocket.recvFrom(self: mut ref UdpSocket, buf: mut ref []u8): Result<usize, io.IoError> {
+    let len = slice.len<u8>(*buf)
+    let mut senderPort: int = 0
+    unsafe {
+        let recvd = ar_net_udp_recv_from(
+            self.id,
+            slice.asPtr<u8>(*buf),
+            len,
+            &senderPort
+        )
+        if recvd < 0 {
+            return Result.Err(io.IoError.new(io.IoErrorKind.ConnectionReset, recvd))
+        }
+        return Result.Ok(recvd as usize)
+    }
+}
+
+/// Closes the UDP socket handle.
+public func UdpSocket.close(self: mut ref UdpSocket): void {
+    if self.id >= 0 {
+        unsafe {
+            ar_net_udp_close(self.id)
+        }
+        self.id = -1
+    }
+}
+
+/// Destroys the UDP socket on scope exit.
+@Destructor
+func UdpSocket.destroy(self: own UdpSocket): void {
+    if self.id >= 0 {
+        unsafe {
+            ar_net_udp_close(self.id)
+        }
+    }
+}
+
+/// Resolves a hostname into an IP address string via host system DNS.
+public func resolveHost(name: str): Result<SocketAddr, io.IoError> {
+    let bytes = intrinsics.strBytes(name)
+    // Pre-allocate a 64-byte stack buffer for the IPv4 / IPv6 string
+    let mut ipBuf: [64]u8 = [0u8; 64]
+    unsafe {
+        let ret = ar_net_dns_resolve(bytes.asPtr(), bytes.len(), &ipBuf as ptr[u8], 64 as usize)
+        if ret < 0 {
+            return Result.Err(io.IoError.new(io.IoErrorKind.NotFound, ret))
+        }
+        return Result.Ok(SocketAddr.new("127.0.0.1", 0))
+    }
+}

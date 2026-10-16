@@ -392,27 +392,7 @@ fn lower_validated_source_inner(
     source: &str,
 ) -> Result<arandu_query::db::HashEq<arandu_query::LowerAmirArtifacts>, Failure> {
     let mut host = AnalysisHost::new();
-    if [
-        "import std.alloc.vec",
-        "import std.alloc.arena",
-        "import std.alloc.bitset",
-        "import std.alloc.gen_arena",
-        "import std.alloc.hash_map",
-        "import std.alloc.smallvec",
-        "import std.alloc.string",
-        "import std.core.slice",
-        "import std.core.mem",
-        "import std.core.iter",
-        "import std.core.str",
-        "import std.core.hash",
-        "import std.core.num",
-        "import std.core.option",
-        "import std.core.result",
-        "import std.env",
-    ]
-    .iter()
-    .any(|import| source.contains(import))
-    {
+    if source.contains("import std") {
         register_fuzz_stdlib(&mut host).map_err(|error| {
             Failure::new(
                 "stdlib-setup-failed",
@@ -498,7 +478,7 @@ static STDLIB_CACHE: LazyLock<Result<StdlibFiles, String>> = LazyLock::new(|| {
         .join("../../stdlib")
         .canonicalize()
         .map_err(|error| format!("canonicalize stdlib root: {error}"))?;
-    let sources: [(&str, &str); 20] = [
+    let sources: [(&str, &str); 38] = [
         (
             "alloc/bitset.aru",
             include_str!("../../../../stdlib/alloc/bitset.aru"),
@@ -528,12 +508,44 @@ static STDLIB_CACHE: LazyLock<Result<StdlibFiles, String>> = LazyLock::new(|| {
             include_str!("../../../../stdlib/alloc/vec.aru"),
         ),
         (
+            "alloc/boxed.aru",
+            include_str!("../../../../stdlib/alloc/boxed.aru"),
+        ),
+        (
+            "alloc/rc.aru",
+            include_str!("../../../../stdlib/alloc/rc.aru"),
+        ),
+        (
+            "alloc/arc.aru",
+            include_str!("../../../../stdlib/alloc/arc.aru"),
+        ),
+        (
+            "alloc/slab.aru",
+            include_str!("../../../../stdlib/alloc/slab.aru"),
+        ),
+        (
+            "alloc/deque.aru",
+            include_str!("../../../../stdlib/alloc/deque.aru"),
+        ),
+        (
+            "core/atomic.aru",
+            include_str!("../../../../stdlib/core/atomic.aru"),
+        ),
+        (
             "core/char.aru",
             include_str!("../../../../stdlib/core/char.aru"),
         ),
         (
             "core/cmp.aru",
             include_str!("../../../../stdlib/core/cmp.aru"),
+        ),
+        (
+            "core/decimal.aru",
+            include_str!("../../../../stdlib/core/decimal.aru"),
+        ),
+        (
+            "core/fixed.aru",
+            include_str!("../../../../stdlib/core/fixed.aru"),
         ),
         (
             "core/mem.aru",
@@ -556,6 +568,14 @@ static STDLIB_CACHE: LazyLock<Result<StdlibFiles, String>> = LazyLock::new(|| {
             include_str!("../../../../stdlib/core/hash.aru"),
         ),
         (
+            "core/math.aru",
+            include_str!("../../../../stdlib/core/math.aru"),
+        ),
+        (
+            "core/simd.aru",
+            include_str!("../../../../stdlib/core/simd.aru"),
+        ),
+        (
             "core/option.aru",
             include_str!("../../../../stdlib/core/option.aru"),
         ),
@@ -576,8 +596,40 @@ static STDLIB_CACHE: LazyLock<Result<StdlibFiles, String>> = LazyLock::new(|| {
             include_str!("../../../../stdlib/core/str.aru"),
         ),
         (
+            "math/big.aru",
+            include_str!("../../../../stdlib/math/big.aru"),
+        ),
+        (
+            "std/crypto/hash.aru",
+            include_str!("../../../../stdlib/std/crypto/hash.aru"),
+        ),
+        (
             "std/env.aru",
             include_str!("../../../../stdlib/std/env.aru"),
+        ),
+        (
+            "std/random.aru",
+            include_str!("../../../../stdlib/std/random.aru"),
+        ),
+        (
+            "std/sync/rwlock.aru",
+            include_str!("../../../../stdlib/std/sync/rwlock.aru"),
+        ),
+        (
+            "std/sync/condvar.aru",
+            include_str!("../../../../stdlib/std/sync/condvar.aru"),
+        ),
+        (
+            "std/thread.aru",
+            include_str!("../../../../stdlib/std/thread.aru"),
+        ),
+        (
+            "std/fs.aru",
+            include_str!("../../../../stdlib/std/fs.aru"),
+        ),
+        (
+            "std/net.aru",
+            include_str!("../../../../stdlib/std/net.aru"),
         ),
     ];
     let file_entries = sources

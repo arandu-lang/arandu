@@ -2447,6 +2447,41 @@ fn test_collections_across_all_backends() {
 }
 
 #[test]
+fn test_stdlib_math_across_all_backends() {
+    let source = include_str!("../../../../tests/corpus/stdlib_math.aru");
+    let observation = check_source(source, true, true).expect("execution across all backends");
+    assert_eq!(observation.result, 0);
+}
+
+#[test]
+fn test_stdlib_alloc_structures_across_all_backends() {
+    let source = include_str!("../../../../tests/corpus/stdlib_alloc_structures.aru");
+    let observation = check_source(source, true, true).expect("execution across all backends");
+    assert_eq!(observation.result, 0);
+}
+
+#[test]
+fn test_stdlib_big_simd_across_all_backends() {
+    let source = include_str!("../../../../tests/corpus/stdlib_big_simd.aru");
+    let observation = check_source(source, true, true).expect("execution across all backends");
+    assert_eq!(observation.result, 0);
+}
+
+#[test]
+fn test_stdlib_decimal_across_all_backends() {
+    let source = include_str!("../../../../tests/corpus/stdlib_decimal.aru");
+    let observation = check_source(source, true, true).expect("execution across all backends");
+    assert_eq!(observation.result, 0);
+}
+
+#[test]
+fn test_stdlib_hash_across_all_backends() {
+    let source = include_str!("../../../../tests/corpus/stdlib_hash.aru");
+    let observation = check_source(source, true, true).expect("execution across all backends");
+    assert_eq!(observation.result, 0);
+}
+
+#[test]
 fn test_shrinker_early_cutoff_and_reproduction() {
     let source = concat!(
         "func helper_a(): int { return 1 }\n",

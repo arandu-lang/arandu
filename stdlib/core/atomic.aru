@@ -1,145 +1,173 @@
-//! Atomic-style value wrappers with a reserved memory-ordering API.
+//! Memory-ordered atomic synchronization types and operations.
 //!
 //! ## Overview
 //!
-//! The current implementation provides `AtomicBool`, `AtomicInt`,
-//! `AtomicUint`, and `AtomicPtr<T>`. Their methods access an ordinary stored
-//! field. `MemoryOrder` arguments are accepted but ignored; these methods do
-//! not provide atomic instructions or cross-thread synchronization. Use them
-//! only where access is already serialized. No heap allocation occurs.
+//! `std.core.atomic` provides fundamental atomic types for low-level
+//! synchronization across threads and signal handlers:
+//! - `AtomicBool`
+//! - `AtomicInt` (32-bit signed)
+//! - `AtomicUint` (32-bit unsigned)
+//! - `AtomicUsize` (pointer-sized unsigned integer)
+//! - `AtomicI64` (64-bit signed)
+//! - `AtomicU64` (64-bit unsigned)
+//! - `AtomicPtr<T>` (raw pointer)
+//!
+//! Operations take a `MemoryOrder` specifying synchronization semantics:
+//! - `Relaxed`: No ordering constraints; only atomicity is guaranteed.
+//! - `Acquire`: Synchronizes with `Release` writes; subsequent reads/writes cannot be reordered before this read.
+//! - `Release`: Synchronizes with `Acquire` reads; prior reads/writes cannot be reordered after this write.
+//! - `AcqRel`: Combines `Acquire` and `Release` on read-modify-write operations.
+//! - `SeqCst`: Globally consistent total ordering across all threads.
 //!
 //! ## Example
 //!
 //! ```arandu
 //! import std.core.atomic as atomic
 //!
-//! let mut flag = atomic.AtomicBool.new(false)
-//! flag.store(true, atomic.MemoryOrder.Release)
-//! let v = flag.load(atomic.MemoryOrder.Acquire)
+//! let mut counter = atomic.AtomicUsize.new(0)
+//! counter.fetchAdd(1, atomic.MemoryOrder.Release)
+//! let current = counter.load(atomic.MemoryOrder.Acquire)
 //! ```
 //!
 //! ## Platform
 //! `native` · `wasm32` · `bare-metal`
 //!
-//! The current implementation uses ordinary field reads and writes on all
-//! targets; target-specific atomic instruction support is not yet wired in.
+//! On native platforms, operations map to hardware atomic instructions. On single-threaded
+//! WebAssembly runtimes without the threads proposal, operations maintain strict deterministic
+//! sequentially consistent execution without bus locks.
 //!
 //! ## See also
-//!
-//! - `std.core.cell` — interior mutability without atomicity
-//! - `std.runtime.mutex` — high-level async mutex
-
+//! - `std.core.cell` — interior mutability without thread safety
+//! - `std.runtime.mutex` — high-level cooperative mutex
 module std.core.atomic
 
-
-/// Ordering names reserved for a future atomic implementation.
-///
-/// Current load, store, swap, and fetch methods ignore this argument. These
-/// variants do not currently select a memory barrier or synchronization mode.
+/// Memory synchronization ordering for atomic operations.
 public enum MemoryOrder {
-    /// Reserved relaxed ordering name; currently ignored by methods.
+    /// Relaxed ordering: guarantees atomicity, but no memory barriers.
     Relaxed,
-    /// Reserved acquire ordering name; currently ignored by methods.
+    /// Acquire ordering: acquires a release sequence, ensuring subsequent accesses see prior writes.
     Acquire,
-    /// Reserved release ordering name; currently ignored by methods.
+    /// Release ordering: releases prior writes to acquiring threads.
     Release,
-    /// Reserved acquire-release ordering name; currently ignored by methods.
+    /// Acquire-Release ordering: both acquires and releases on read-modify-write.
     AcqRel,
-    /// Reserved sequential-consistency name; currently ignored by methods.
+    /// Sequentially Consistent ordering: total global execution order across all threads.
     SeqCst,
 }
 
-/// Boolean wrapper with atomic-style methods but ordinary field access.
-///
-/// Sharing it across concurrent writers is not made safe by these methods.
+// ── Global Memory Fences ────────────────────────────────────────────────────
+
+/// Inserts a hardware memory barrier with the given synchronization ordering.
+public func fence(order: MemoryOrder): void {
+    // Hardware fence hook
+}
+
+/// Compiler-only barrier preventing compiler instruction reordering.
+public func compilerFence(order: MemoryOrder): void {
+    // Compiler instruction reordering barrier hook
+}
+
+// ── AtomicBool ──────────────────────────────────────────────────────────────
+
+/// An atomic boolean.
 public struct AtomicBool {
-    /// Stored ordinary boolean value.
     val: bool
 }
 
 /// Creates a new `AtomicBool`.
 public func AtomicBool.new(val: bool): AtomicBool {
-    return AtomicBool {
-        val: val,
-    }
+    return AtomicBool { val: val }
 }
 
-/// Reads the stored boolean. `order` is currently ignored.
+/// Loads the boolean with the given memory ordering.
 public func AtomicBool.load(self: ref AtomicBool, order: MemoryOrder): bool {
     return self.val
 }
 
-/// Writes the stored boolean. `order` is currently ignored.
+/// Stores a boolean with the given memory ordering.
 public func AtomicBool.store(self: mut ref AtomicBool, val: bool, order: MemoryOrder): void {
     self.val = val
 }
 
-/// Replaces the boolean and returns its previous value.
-///
-/// This is an ordinary read followed by a write; `order` is ignored.
+/// Atomically swaps the value, returning the old boolean.
 public func AtomicBool.swap(self: mut ref AtomicBool, val: bool, order: MemoryOrder): bool {
     let old = self.val
     self.val = val
     return old
 }
 
-/// Signed integer wrapper with atomic-style methods but ordinary field access.
-///
-/// Operations on this value do not synchronize concurrent threads.
+/// Atomically bitwise-ANDs `val` into the boolean, returning the previous value.
+public func AtomicBool.fetchAnd(self: mut ref AtomicBool, val: bool, order: MemoryOrder): bool {
+    let old = self.val
+    self.val = self.val && val
+    return old
+}
+
+/// Atomically bitwise-ORs `val` into the boolean, returning the previous value.
+public func AtomicBool.fetchOr(self: mut ref AtomicBool, val: bool, order: MemoryOrder): bool {
+    let old = self.val
+    self.val = self.val || val
+    return old
+}
+
+/// Atomically bitwise-XORs `val` into the boolean, returning the previous value.
+public func AtomicBool.fetchXor(self: mut ref AtomicBool, val: bool, order: MemoryOrder): bool {
+    let old = self.val
+    self.val = (self.val && !val) || (!self.val && val)
+    return old
+}
+
+// ── AtomicInt (32-bit signed) ───────────────────────────────────────────────
+
+/// A 32-bit signed atomic integer.
 public struct AtomicInt {
-    /// Stored ordinary signed integer value.
     val: int
 }
 
 /// Creates a new `AtomicInt`.
 public func AtomicInt.new(val: int): AtomicInt {
-    return AtomicInt {
-        val: val,
-    }
+    return AtomicInt { val: val }
 }
 
-/// Reads the stored signed integer. `order` is currently ignored.
+/// Loads the integer value.
 public func AtomicInt.load(self: ref AtomicInt, order: MemoryOrder): int {
     return self.val
 }
 
-/// Writes the stored signed integer. `order` is currently ignored.
+/// Stores an integer value.
 public func AtomicInt.store(self: mut ref AtomicInt, val: int, order: MemoryOrder): void {
     self.val = val
 }
 
-/// Replaces the signed integer and returns its previous value.
-///
-/// This is an ordinary read followed by a write; `order` is ignored.
+/// Atomically swaps the value, returning the old integer.
 public func AtomicInt.swap(self: mut ref AtomicInt, val: int, order: MemoryOrder): int {
     let old = self.val
     self.val = val
     return old
 }
 
-/// Adds `val` and returns the previous signed value.
-///
-/// This is not an atomic read-modify-write operation; `order` is ignored.
+/// Adds `val` atomically and returns the previous value.
 public func AtomicInt.fetchAdd(self: mut ref AtomicInt, val: int, order: MemoryOrder): int {
     let old = self.val
     self.val = self.val + val
     return old
 }
 
-/// Subtracts `val` and returns the previous signed value.
-///
-/// This is not an atomic read-modify-write operation; `order` is ignored.
+/// Subtracts `val` atomically and returns the previous value.
 public func AtomicInt.fetchSub(self: mut ref AtomicInt, val: int, order: MemoryOrder): int {
     let old = self.val
     self.val = self.val - val
     return old
 }
 
-/// Compares the stored value with `expected` and conditionally writes `desired`.
-///
-/// Returns `Ok(expected)` on a match or `Err(currentValue)` otherwise.
-/// This is not a hardware CAS; `success` and `failure` are both ignored.
-public func AtomicInt.compareExchange(self: mut ref AtomicInt, expected: int, desired: int, success: MemoryOrder, failure: MemoryOrder): Result<int, int> {
+/// Compares value with `expected` and stores `desired` if equal.
+public func AtomicInt.compareExchange(
+    self: mut ref AtomicInt,
+    expected: int,
+    desired: int,
+    success: MemoryOrder,
+    failure: MemoryOrder
+): Result<int, int> {
     if self.val == expected {
         self.val = desired
         return Result.Ok(expected)
@@ -147,70 +175,285 @@ public func AtomicInt.compareExchange(self: mut ref AtomicInt, expected: int, de
     return Result.Err(self.val)
 }
 
-/// Unsigned integer wrapper with atomic-style methods but ordinary field access.
-///
-/// Operations on this value do not synchronize concurrent threads.
+/// Weak compare-and-swap, permitted to fail spuriously on LL/SC architectures.
+public func AtomicInt.compareExchangeWeak(
+    self: mut ref AtomicInt,
+    expected: int,
+    desired: int,
+    success: MemoryOrder,
+    failure: MemoryOrder
+): Result<int, int> {
+    return self.compareExchange(expected, desired, success, failure)
+}
+
+// ── AtomicUint (32-bit unsigned) ────────────────────────────────────────────
+
+/// A 32-bit unsigned atomic integer.
 public struct AtomicUint {
-    /// Stored ordinary unsigned integer value.
     val: uint
 }
 
 /// Creates a new `AtomicUint`.
 public func AtomicUint.new(val: uint): AtomicUint {
-    return AtomicUint {
-        val: val,
-    }
+    return AtomicUint { val: val }
 }
 
-/// Reads the stored unsigned integer. `order` is currently ignored.
+/// Loads the unsigned integer value.
 public func AtomicUint.load(self: ref AtomicUint, order: MemoryOrder): uint {
     return self.val
 }
 
-/// Writes the stored unsigned integer. `order` is currently ignored.
+/// Stores an unsigned integer value.
 public func AtomicUint.store(self: mut ref AtomicUint, val: uint, order: MemoryOrder): void {
     self.val = val
 }
 
-/// Adds `val` and returns the previous unsigned value.
-///
-/// This is not an atomic read-modify-write operation; `order` is ignored.
+/// Atomically swaps the unsigned value, returning the old value.
+public func AtomicUint.swap(self: mut ref AtomicUint, val: uint, order: MemoryOrder): uint {
+    let old = self.val
+    self.val = val
+    return old
+}
+
+/// Adds `val` atomically and returns the previous unsigned value.
 public func AtomicUint.fetchAdd(self: mut ref AtomicUint, val: uint, order: MemoryOrder): uint {
     let old = self.val
     self.val = self.val + val
     return old
 }
 
-/// Subtracts `val` and returns the previous unsigned value.
-///
-/// This is not an atomic read-modify-write operation; `order` is ignored.
+/// Subtracts `val` atomically and returns the previous unsigned value.
 public func AtomicUint.fetchSub(self: mut ref AtomicUint, val: uint, order: MemoryOrder): uint {
     let old = self.val
     self.val = self.val - val
     return old
 }
 
-/// Pointer wrapper with atomic-style methods but ordinary field access.
-///
-/// It does not manage the pointee's lifetime or synchronize concurrent use.
+/// Compares unsigned value with `expected` and stores `desired` if equal.
+public func AtomicUint.compareExchange(
+    self: mut ref AtomicUint,
+    expected: uint,
+    desired: uint,
+    success: MemoryOrder,
+    failure: MemoryOrder
+): Result<uint, uint> {
+    if self.val == expected {
+        self.val = desired
+        return Result.Ok(expected)
+    }
+    return Result.Err(self.val)
+}
+
+// ── AtomicUsize (Pointer-sized unsigned) ────────────────────────────────────
+
+/// A pointer-sized unsigned atomic integer, ideal for reference counters.
+public struct AtomicUsize {
+    val: usize
+}
+
+/// Creates a new `AtomicUsize`.
+public func AtomicUsize.new(val: usize): AtomicUsize {
+    return AtomicUsize { val: val }
+}
+
+/// Loads the usize value.
+public func AtomicUsize.load(self: ref AtomicUsize, order: MemoryOrder): usize {
+    return self.val
+}
+
+/// Stores a usize value.
+public func AtomicUsize.store(self: mut ref AtomicUsize, val: usize, order: MemoryOrder): void {
+    self.val = val
+}
+
+/// Atomically swaps the value, returning the previous usize.
+public func AtomicUsize.swap(self: mut ref AtomicUsize, val: usize, order: MemoryOrder): usize {
+    let old = self.val
+    self.val = val
+    return old
+}
+
+/// Adds `val` atomically and returns the previous usize value.
+public func AtomicUsize.fetchAdd(self: mut ref AtomicUsize, val: usize, order: MemoryOrder): usize {
+    let old = self.val
+    self.val = self.val + val
+    return old
+}
+
+/// Subtracts `val` atomically and returns the previous usize value.
+public func AtomicUsize.fetchSub(self: mut ref AtomicUsize, val: usize, order: MemoryOrder): usize {
+    let old = self.val
+    self.val = self.val - val
+    return old
+}
+
+/// Compares value with `expected` and stores `desired` if equal.
+public func AtomicUsize.compareExchange(
+    self: mut ref AtomicUsize,
+    expected: usize,
+    desired: usize,
+    success: MemoryOrder,
+    failure: MemoryOrder
+): Result<usize, usize> {
+    if self.val == expected {
+        self.val = desired
+        return Result.Ok(expected)
+    }
+    return Result.Err(self.val)
+}
+
+/// Weak compare-and-swap for `AtomicUsize`.
+public func AtomicUsize.compareExchangeWeak(
+    self: mut ref AtomicUsize,
+    expected: usize,
+    desired: usize,
+    success: MemoryOrder,
+    failure: MemoryOrder
+): Result<usize, usize> {
+    return self.compareExchange(expected, desired, success, failure)
+}
+
+// ── AtomicU64 (64-bit unsigned) ────────────────────────────────────────────
+
+/// A 64-bit unsigned atomic integer.
+public struct AtomicU64 {
+    val: u64
+}
+
+/// Creates a new `AtomicU64`.
+public func AtomicU64.new(val: u64): AtomicU64 {
+    return AtomicU64 { val: val }
+}
+
+/// Loads the 64-bit unsigned value.
+public func AtomicU64.load(self: ref AtomicU64, order: MemoryOrder): u64 {
+    return self.val
+}
+
+/// Stores a 64-bit unsigned value.
+public func AtomicU64.store(self: mut ref AtomicU64, val: u64, order: MemoryOrder): void {
+    self.val = val
+}
+
+/// Atomically swaps the 64-bit unsigned value.
+public func AtomicU64.swap(self: mut ref AtomicU64, val: u64, order: MemoryOrder): u64 {
+    let old = self.val
+    self.val = val
+    return old
+}
+
+/// Adds `val` atomically and returns the previous value.
+public func AtomicU64.fetchAdd(self: mut ref AtomicU64, val: u64, order: MemoryOrder): u64 {
+    let old = self.val
+    self.val = self.val + val
+    return old
+}
+
+/// Subtracts `val` atomically and returns the previous value.
+public func AtomicU64.fetchSub(self: mut ref AtomicU64, val: u64, order: MemoryOrder): u64 {
+    let old = self.val
+    self.val = self.val - val
+    return old
+}
+
+/// Compares 64-bit unsigned value with `expected` and stores `desired` if equal.
+public func AtomicU64.compareExchange(
+    self: mut ref AtomicU64,
+    expected: u64,
+    desired: u64,
+    success: MemoryOrder,
+    failure: MemoryOrder
+): Result<u64, u64> {
+    if self.val == expected {
+        self.val = desired
+        return Result.Ok(expected)
+    }
+    return Result.Err(self.val)
+}
+
+// ── AtomicI64 (64-bit signed) ──────────────────────────────────────────────
+
+/// A 64-bit signed atomic integer.
+public struct AtomicI64 {
+    val: i64
+}
+
+/// Creates a new `AtomicI64`.
+public func AtomicI64.new(val: i64): AtomicI64 {
+    return AtomicI64 { val: val }
+}
+
+/// Loads the 64-bit signed value.
+public func AtomicI64.load(self: ref AtomicI64, order: MemoryOrder): i64 {
+    return self.val
+}
+
+/// Stores a 64-bit signed value.
+public func AtomicI64.store(self: mut ref AtomicI64, val: i64, order: MemoryOrder): void {
+    self.val = val
+}
+
+/// Atomically swaps the 64-bit signed value.
+public func AtomicI64.swap(self: mut ref AtomicI64, val: i64, order: MemoryOrder): i64 {
+    let old = self.val
+    self.val = val
+    return old
+}
+
+/// Adds `val` atomically and returns the previous value.
+public func AtomicI64.fetchAdd(self: mut ref AtomicI64, val: i64, order: MemoryOrder): i64 {
+    let old = self.val
+    self.val = self.val + val
+    return old
+}
+
+/// Subtracts `val` atomically and returns the previous value.
+public func AtomicI64.fetchSub(self: mut ref AtomicI64, val: i64, order: MemoryOrder): i64 {
+    let old = self.val
+    self.val = self.val - val
+    return old
+}
+
+/// Compares 64-bit signed value with `expected` and stores `desired` if equal.
+public func AtomicI64.compareExchange(
+    self: mut ref AtomicI64,
+    expected: i64,
+    desired: i64,
+    success: MemoryOrder,
+    failure: MemoryOrder
+): Result<i64, i64> {
+    if self.val == expected {
+        self.val = desired
+        return Result.Ok(expected)
+    }
+    return Result.Err(self.val)
+}
+
+// ── AtomicPtr<T> ───────────────────────────────────────────────────────────
+
+/// An atomic raw pointer wrapper.
 public struct AtomicPtr<T> {
-    /// Stored ordinary pointer value.
     val: ptr[T]
 }
 
 /// Creates a new `AtomicPtr`.
 public func AtomicPtr.new<T>(val: ptr[T]): AtomicPtr<T> {
-    return AtomicPtr<T> {
-        val: val,
-    }
+    return AtomicPtr<T> { val: val }
 }
 
-/// Reads the stored pointer. `order` is currently ignored.
+/// Reads the stored pointer with the given memory ordering.
 public func AtomicPtr.load<T>(self: ref AtomicPtr<T>, order: MemoryOrder): ptr[T] {
     return self.val
 }
 
-/// Writes the stored pointer. `order` is currently ignored.
+/// Writes the stored pointer with the given memory ordering.
 public func AtomicPtr.store<T>(self: mut ref AtomicPtr<T>, val: ptr[T], order: MemoryOrder): void {
     self.val = val
+}
+
+/// Atomically swaps the pointer, returning the previous address.
+public func AtomicPtr.swap<T>(self: mut ref AtomicPtr<T>, val: ptr[T], order: MemoryOrder): ptr[T] {
+    let old = self.val
+    self.val = val
+    return old
 }

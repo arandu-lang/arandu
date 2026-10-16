@@ -95,6 +95,10 @@ pub const STDLIB_MODULES: &[(&str, &str)] = &[
         include_str!("../../../../stdlib/core/marker.aru"),
     ),
     (
+        "stdlib/core/math.aru",
+        include_str!("../../../../stdlib/core/math.aru"),
+    ),
+    (
         "stdlib/core/mem.aru",
         include_str!("../../../../stdlib/core/mem.aru"),
     ),
@@ -121,6 +125,10 @@ pub const STDLIB_MODULES: &[(&str, &str)] = &[
     (
         "stdlib/core/slice.aru",
         include_str!("../../../../stdlib/core/slice.aru"),
+    ),
+    (
+        "stdlib/core/simd.aru",
+        include_str!("../../../../stdlib/core/simd.aru"),
     ),
     (
         "stdlib/core/str.aru",

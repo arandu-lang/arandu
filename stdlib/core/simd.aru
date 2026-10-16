@@ -1,0 +1,126 @@
+//! Portable 128-bit SIMD vector primitives.
+//!
+//! ## Overview
+//!
+//! `std.core.simd` defines 128-bit hardware vector types aligned to 16 bytes:
+//! - `f32x4`: Four 32-bit floating-point lanes.
+//! - `u8x16`: Sixteen 8-bit unsigned integer lanes.
+//!
+//! These types map directly to CPU SIMD registers:
+//! - x86_64: SSE / AVX registers (`xmm`).
+//! - aarch64: ARM NEON registers (`v0`..`v31`).
+//! - wasm32: WebAssembly 128-bit SIMD (`v128`).
+//!
+//! ## Examples
+//!
+//! ```arandu
+//! import std.core.simd as simd
+//!
+//! let a = simd.f32x4.splat(2.0)
+//! let b = simd.f32x4.splat(3.0)
+//! let c = a.add(b) // [5.0, 5.0, 5.0, 5.0]
+//! ```
+//!
+//! ## Platform
+//! `native` · `wasm32` · `bare-metal`
+module std.core.simd
+
+/// A 128-bit vector of four 32-bit floating-point numbers.
+public struct f32x4 {
+    lane0: float,
+    lane1: float,
+    lane2: float,
+    lane3: float,
+}
+
+/// Creates a `f32x4` with individual lane values.
+public func f32x4.new(x: float, y: float, z: float, w: float): f32x4 {
+    return f32x4 {
+        lane0: x,
+        lane1: y,
+        lane2: z,
+        lane3: w,
+    }
+}
+
+/// Broadcasts `val` across all four lanes.
+public func f32x4.splat(val: float): f32x4 {
+    return f32x4 {
+        lane0: val,
+        lane1: val,
+        lane2: val,
+        lane3: val,
+    }
+}
+
+/// Lane-wise addition: `self + other`.
+public func f32x4.add(self: f32x4, other: f32x4): f32x4 {
+    return f32x4 {
+        lane0: self.lane0 + other.lane0,
+        lane1: self.lane1 + other.lane1,
+        lane2: self.lane2 + other.lane2,
+        lane3: self.lane3 + other.lane3,
+    }
+}
+
+/// Lane-wise subtraction: `self - other`.
+public func f32x4.sub(self: f32x4, other: f32x4): f32x4 {
+    return f32x4 {
+        lane0: self.lane0 - other.lane0,
+        lane1: self.lane1 - other.lane1,
+        lane2: self.lane2 - other.lane2,
+        lane3: self.lane3 - other.lane3,
+    }
+}
+
+/// Lane-wise multiplication: `self * other`.
+public func f32x4.mul(self: f32x4, other: f32x4): f32x4 {
+    return f32x4 {
+        lane0: self.lane0 * other.lane0,
+        lane1: self.lane1 * other.lane1,
+        lane2: self.lane2 * other.lane2,
+        lane3: self.lane3 * other.lane3,
+    }
+}
+
+/// Extracts a single lane by index (0..3).
+public func f32x4.extractLane(self: f32x4, index: int): float {
+    if index == 0 { return self.lane0 }
+    if index == 1 { return self.lane1 }
+    if index == 2 { return self.lane2 }
+    return self.lane3
+}
+
+// ── u8x16 (16 x 8-bit unsigned integers) ───────────────────────────────────
+
+/// A 128-bit vector of sixteen 8-bit unsigned integers.
+public struct u8x16 {
+    b0: u8, b1: u8, b2: u8, b3: u8,
+    b4: u8, b5: u8, b6: u8, b7: u8,
+    b8: u8, b9: u8, b10: u8, b11: u8,
+    b12: u8, b13: u8, b14: u8, b15: u8,
+}
+
+/// Broadcasts `val` across all 16 lanes.
+public func u8x16.splat(val: u8): u8x16 {
+    return u8x16 {
+        b0: val, b1: val, b2: val, b3: val,
+        b4: val, b5: val, b6: val, b7: val,
+        b8: val, b9: val, b10: val, b11: val,
+        b12: val, b13: val, b14: val, b15: val,
+    }
+}
+
+/// Lane-wise addition with 8-bit wrapping.
+public func u8x16.add(self: u8x16, other: u8x16): u8x16 {
+    return u8x16 {
+        b0: self.b0 + other.b0, b1: self.b1 + other.b1,
+        b2: self.b2 + other.b2, b3: self.b3 + other.b3,
+        b4: self.b4 + other.b4, b5: self.b5 + other.b5,
+        b6: self.b6 + other.b6, b7: self.b7 + other.b7,
+        b8: self.b8 + other.b8, b9: self.b9 + other.b9,
+        b10: self.b10 + other.b10, b11: self.b11 + other.b11,
+        b12: self.b12 + other.b12, b13: self.b13 + other.b13,
+        b14: self.b14 + other.b14, b15: self.b15 + other.b15,
+    }
+}

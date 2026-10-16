@@ -681,6 +681,50 @@ pub fn resolve_headers_with_poll(
         }
     }
 
+    // Ambient linkage for inherent methods of primitive types (str, char, int, float, ptr).
+    // Allows methods like `s.len()` or `x.abs()` without requiring an explicit import.
+    // Core library modules (`std.core.*`) are excluded to avoid circular dependency cycles.
+    if !resolver
+        .current_module
+        .as_deref()
+        .is_some_and(|m| m.starts_with("std.core."))
+    {
+        for &(path, mod_name) in crate::AMBIENT_PRIMITIVE_MODULES {
+            poll();
+            if resolver.current_module.as_deref() == Some(mod_name) {
+                continue;
+            }
+            let Some(imported_file) = db.resolve_module_path(path) else {
+                continue;
+            };
+            if db.source_file_by_id(resolver.symbols.file_id) == Some(imported_file) {
+                continue;
+            }
+            let exports = db.exported_symbols(imported_file);
+            for (name, &(id, kind)) in &exports.symbols {
+                if matches!(kind, arandu_middle::SymbolKind::AssociatedFunc)
+                    && let Some((ty, method)) = name.rsplit_once('.')
+                    && let Some(type_sym) = resolver.symbols.lookup_type(global, ty)
+                {
+                    let sym = arandu_middle::Symbol {
+                        id,
+                        name: name.clone().into(),
+                        kind,
+                        span: arandu_lexer::Span::new(id.file_id, 0, 0),
+                        scope: global,
+                        visibility: arandu_parser::Visibility::Public,
+                        lang_item: None,
+                    };
+                    resolver.symbols.register_imported_symbol(sym);
+                    resolver
+                        .symbols
+                        .associated_members
+                        .insert((type_sym, smol_str::SmolStr::new(method)), id);
+                }
+            }
+        }
+    }
+
     poll();
     resolver.resolve_method_receivers(program);
 

@@ -7,7 +7,7 @@ use arandu_parser::ast_pool::{ExprId, ExprKind, IndexRange};
 
 use super::super::TypeChecker;
 use super::super::constraints::ConstraintOrigin;
-use super::super::types::{ArType, TypeId};
+use super::super::types::{ArType, Primitive, TypeId};
 use super::expr::synth_expr;
 
 /// Reject an implicit exclusive borrow of an immutable value receiver.
@@ -176,11 +176,24 @@ pub(crate) fn synth_method_call(
 
     let base_resolved = checker.resolve(actual_base_ty_id);
 
-    // Built-in `Result` / `Option` methods (`expectOrAbort`) live under the type
+    // Built-in `Result` / `Option` / primitive methods live under the type
     // symbol in `associated_members`. Resolve their SymbolId from the prelude.
     let builtin_id: Option<SymbolId> = match &base_resolved {
         ArType::Result(_, _) => checker.symbols.builtins.result,
         ArType::Option(_) => checker.symbols.builtins.option,
+        ArType::Primitive(Primitive::Str) => checker.symbols.builtins.str_type,
+        ArType::Primitive(Primitive::Char) => checker.symbols.builtins.char_type,
+        ArType::Primitive(Primitive::U32) => checker.symbols.builtins.u32_type,
+        ArType::Primitive(Primitive::U64) => checker.symbols.builtins.u64_type,
+        ArType::Primitive(Primitive::Int) | ArType::IntLiteral => checker.symbols.builtins.int_type,
+        ArType::Primitive(Primitive::Float) | ArType::FloatLiteral => {
+            checker.symbols.builtins.float_type
+        }
+        ArType::Slice(_) => checker.symbols.builtins.slice_type,
+        ArType::Ptr(_) => checker.symbols.builtins.ptr_type,
+        ArType::Nullable(inner) if matches!(checker.resolve(*inner), ArType::Ptr(_)) => {
+            checker.symbols.builtins.ptr_type
+        }
         _ => None,
     };
 
@@ -429,6 +442,12 @@ fn instantiate_method_sig_for_result_option(
     let concrete_args: Vec<ArType> = match checker.resolve(actual_base_ty_id) {
         ArType::Result(ok, err) => vec![checker.resolve(ok), checker.resolve(err)],
         ArType::Option(inner) => vec![checker.resolve(inner)],
+        ArType::Slice(elem) => vec![checker.resolve(elem)],
+        ArType::Ptr(inner) => vec![checker.resolve(inner)],
+        ArType::Nullable(inner) => match checker.resolve(inner) {
+            ArType::Ptr(elem) => vec![checker.resolve(elem)],
+            _ => return (params, ret),
+        },
         _ => return (params, ret),
     };
 

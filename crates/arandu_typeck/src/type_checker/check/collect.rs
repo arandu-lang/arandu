@@ -38,11 +38,6 @@ pub(crate) fn collect_type_shapes(checker: &mut TypeChecker<'_>, program: &Progr
                     {
                         checker.type_info.private_fields.insert(field_symbol);
                     }
-                    if field.visibility == arandu_parser::Visibility::Private
-                        && let Some(field_symbol) = field_symbol
-                    {
-                        checker.type_info.private_fields.insert(field_symbol);
-                    }
                     field_entries.push(arandu_middle::layout::StructFieldInfo {
                         name: field.name.clone(),
                         symbol: field_symbol,
@@ -579,7 +574,43 @@ pub(crate) fn collect_signature_types(checker: &mut TypeChecker<'_>, program: &P
                     let name_key = crate::NodeKey::from(member.span);
                     if let Some(symbol_id) = checker.resolved.definitions.get(&name_key).copied() {
                         let member_name = member.name.as_str();
-                        let mut flags = arandu_middle::EffectFlags::FOREIGN;
+                        let pure_bits = arandu_parser::AbiKind::from_abi_str(&extern_decl.abi)
+                            == arandu_parser::AbiKind::AranduIntrinsic
+                            && arandu_middle::IntrinsicKind::from_name(member_name)
+                                .is_some_and(|kind| kind.is_pure_bit_operation());
+                        if pure_bits {
+                            use arandu_middle::types::Primitive;
+                            let input = ArType::Primitive(if member_name.ends_with("64") {
+                                Primitive::U64
+                            } else {
+                                Primitive::U32
+                            });
+                            let output = if arandu_middle::IntrinsicKind::from_name(member_name)
+                                == Some(arandu_middle::IntrinsicKind::ReverseBits)
+                            {
+                                input.clone()
+                            } else {
+                                ArType::Primitive(Primitive::U32)
+                            };
+                            let input_name = if member_name.ends_with("64") { "u64" } else { "u32" };
+                            let output_name = if output == input { input_name } else { "u32" };
+                            if !member.generic_params.is_empty()
+                                || param_types.len() != 1
+                                || checker.type_info.type_interner.resolve(param_types[0]) != input
+                                || ret_ty != output
+                            {
+                                checker.diagnostics.push(arandu_middle::Diagnostic::error(
+                                    arandu_middle::DiagCode::U001FeatureNotSupported,
+                                    format!("unsupported signature for bit intrinsic '{member_name}': expected one {input_name} parameter and {output_name} result without generics"),
+                                    member.span,
+                                ));
+                            }
+                        }
+                        let mut flags = if pure_bits {
+                            arandu_middle::EffectFlags::NONE
+                        } else {
+                            arandu_middle::EffectFlags::FOREIGN
+                        };
                         if member_name.starts_with("ar_rt_tcp_")
                             || member_name.starts_with("ar_net_")
                         {

@@ -602,6 +602,11 @@ impl<'a> Parser<'a> {
                 self.advance();
                 name
             }
+            kind if kind.is_primitive_type() => {
+                let name = SmolStr::new(self.current_text());
+                self.advance();
+                name
+            }
             _ => self.expect_ident_type()?,
         };
         path.push(last);

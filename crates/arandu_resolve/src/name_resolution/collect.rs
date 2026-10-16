@@ -282,13 +282,24 @@ impl<'a> Resolver<'a> {
             TopLevelDecl::Extern(decl) => {
                 // Intrinsics / FFI block members are the module surface (exportable).
                 for member in &decl.members {
-                    self.define_with_visibility(
+                    let symbol = self.define_with_visibility(
                         scope,
                         &member.name,
                         SymbolKind::ExternFunc,
                         member.span,
                         Visibility::Public,
                     );
+                    if arandu_parser::AbiKind::from_abi_str(&decl.abi)
+                        == arandu_parser::AbiKind::AranduIntrinsic
+                        && arandu_middle::IntrinsicKind::from_name(&member.name)
+                            .is_some_and(|kind| kind.is_pure_bit_operation())
+                        && let Some(symbol) = symbol
+                    {
+                        self.symbols.set_lang_item(
+                            symbol,
+                            arandu_middle::symbol_table::LangItem::BitIntrinsic,
+                        );
+                    }
                 }
             }
             TopLevelDecl::Submodule(submod) => {

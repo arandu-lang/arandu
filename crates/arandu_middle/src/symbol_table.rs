@@ -98,6 +98,12 @@ pub enum LangItem {
     Coroutine,
     String,
     Vec,
+    Str,
+    Slice,
+    Char,
+    Int,
+    Float,
+    Ptr,
     Copy,
     Send,
     Sync,
@@ -105,6 +111,11 @@ pub enum LangItem {
     TaskHandle,
     Alloc,
     Free,
+    U32,
+    U64,
+    /// Bit intrinsic explicitly declared with the compiler intrinsic ABI.
+    /// Spelling alone must not replace an ordinary or foreign function call.
+    BitIntrinsic,
 }
 
 #[derive(Debug, Clone)]
@@ -134,7 +145,7 @@ impl Scope {
 }
 
 /// Flat, contiguous struct of canonical core type symbols.
-/// Stored inline in SymbolTable (DOD layout: zero heap indirection, single cache line).
+/// Stored inline in SymbolTable without heap indirection.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct BuiltinTypes {
     pub option: Option<SymbolId>,
@@ -143,6 +154,14 @@ pub struct BuiltinTypes {
     pub coroutine: Option<SymbolId>,
     pub string: Option<SymbolId>,
     pub vec: Option<SymbolId>,
+    pub str_type: Option<SymbolId>,
+    pub slice_type: Option<SymbolId>,
+    pub char_type: Option<SymbolId>,
+    pub int_type: Option<SymbolId>,
+    pub float_type: Option<SymbolId>,
+    pub ptr_type: Option<SymbolId>,
+    pub u32_type: Option<SymbolId>,
+    pub u64_type: Option<SymbolId>,
 }
 
 #[derive(Debug, Clone)]
@@ -336,6 +355,30 @@ impl SymbolTable {
         if self.builtins.vec.is_none() {
             self.builtins.vec = other.builtins.vec.map(map_symbol);
         }
+        if self.builtins.str_type.is_none() {
+            self.builtins.str_type = other.builtins.str_type.map(map_symbol);
+        }
+        if self.builtins.slice_type.is_none() {
+            self.builtins.slice_type = other.builtins.slice_type.map(map_symbol);
+        }
+        if self.builtins.char_type.is_none() {
+            self.builtins.char_type = other.builtins.char_type.map(map_symbol);
+        }
+        if self.builtins.int_type.is_none() {
+            self.builtins.int_type = other.builtins.int_type.map(map_symbol);
+        }
+        if self.builtins.float_type.is_none() {
+            self.builtins.float_type = other.builtins.float_type.map(map_symbol);
+        }
+        if self.builtins.u32_type.is_none() {
+            self.builtins.u32_type = other.builtins.u32_type.map(map_symbol);
+        }
+        if self.builtins.u64_type.is_none() {
+            self.builtins.u64_type = other.builtins.u64_type.map(map_symbol);
+        }
+        if self.builtins.ptr_type.is_none() {
+            self.builtins.ptr_type = other.builtins.ptr_type.map(map_symbol);
+        }
     }
 
     pub fn set_lang_item(&mut self, sym: SymbolId, item: LangItem) {
@@ -353,6 +396,14 @@ impl SymbolTable {
             LangItem::Coroutine => self.builtins.coroutine = Some(sym),
             LangItem::String => self.builtins.string = Some(sym),
             LangItem::Vec => self.builtins.vec = Some(sym),
+            LangItem::Str => self.builtins.str_type = Some(sym),
+            LangItem::Slice => self.builtins.slice_type = Some(sym),
+            LangItem::Char => self.builtins.char_type = Some(sym),
+            LangItem::Int => self.builtins.int_type = Some(sym),
+            LangItem::Float => self.builtins.float_type = Some(sym),
+            LangItem::Ptr => self.builtins.ptr_type = Some(sym),
+            LangItem::U32 => self.builtins.u32_type = Some(sym),
+            LangItem::U64 => self.builtins.u64_type = Some(sym),
             LangItem::Alloc => self.builtin_alloc = Some(sym),
             LangItem::Free => self.builtin_free = Some(sym),
             _ => {}

@@ -5,6 +5,14 @@
 pub enum IntrinsicKind {
     /// Read value from raw pointer (`ptrRead` / `ptr_read`).
     PtrRead,
+    /// Population count of a 32- or 64-bit integer.
+    CountOnes,
+    /// Leading zero count; zero returns the integer width.
+    LeadingZeros,
+    /// Trailing zero count; zero returns the integer width.
+    TrailingZeros,
+    /// Reverse all bits of a 32- or 64-bit integer.
+    ReverseBits,
     /// Write value to raw pointer (`ptrWrite` / `ptr_write`).
     PtrWrite,
     /// Erase an exclusive reference to a raw address (`addressOf`).
@@ -36,19 +44,28 @@ pub enum IntrinsicKind {
 }
 
 impl IntrinsicKind {
+    /// Integer operations with no memory, runtime or foreign-code effects.
+    #[must_use]
+    pub const fn is_pure_bit_operation(self) -> bool {
+        matches!(
+            self,
+            Self::CountOnes | Self::LeadingZeros | Self::TrailingZeros | Self::ReverseBits
+        )
+    }
+
     /// Returns `true` for intrinsics that are safe to call without an `unsafe` block.
     ///
     /// ## Criteria
     ///
     /// An intrinsic qualifies as safe when **all** of the following hold:
     ///
-    /// 1. It only reads a fat-pointer descriptor (`ptr` + `len`) that the
-    ///    type-checker has already validated — it never dereferences the element
-    ///    data, nor does it write to or expose raw pointers.
+    /// 1. It only reads plain integer values or a fat-pointer descriptor
+    ///    (`ptr` + `len`) that the type-checker has already validated — it never
+    ///    dereferences element data, nor writes to or exposes raw pointers.
     /// 2. It produces no side-effects observable by the Arandu memory model
     ///    (no I/O, no heap allocation, no mutation through a foreign pointer).
     /// 3. It is either a **compile-time constant** (`SizeOf`, `AlignOf`) or a
-    ///    **pure fat-pointer projection** (`SliceLen`, `StrBytes`).
+    ///    **pure value operation** (fat-pointer projection or integer bits).
     ///
     /// `SliceSubslice`, `SliceData`, `SliceFromRaw`, `StrView`, `PtrRead`,
     /// `PtrWrite`, `PtrOffset`, `AddressOf`, `Abort` and `BlackBox` remain `unsafe`.
@@ -56,7 +73,14 @@ impl IntrinsicKind {
     pub fn is_safe(self) -> bool {
         matches!(
             self,
-            Self::SliceLen | Self::SizeOf | Self::AlignOf | Self::StrBytes
+            Self::SliceLen
+                | Self::SizeOf
+                | Self::AlignOf
+                | Self::StrBytes
+                | Self::CountOnes
+                | Self::LeadingZeros
+                | Self::TrailingZeros
+                | Self::ReverseBits
         )
     }
 
@@ -75,6 +99,10 @@ impl IntrinsicKind {
                 Some(Self::Abort)
             }
             "blackBox" => Some(Self::BlackBox),
+            "bitCountOnes32" | "bitCountOnes64" => Some(Self::CountOnes),
+            "bitLeadingZeros32" | "bitLeadingZeros64" => Some(Self::LeadingZeros),
+            "bitTrailingZeros32" | "bitTrailingZeros64" => Some(Self::TrailingZeros),
+            "bitReverse32" | "bitReverse64" => Some(Self::ReverseBits),
             s if s.starts_with("sliceFromRaw") => Some(Self::SliceFromRaw),
             s if s.starts_with("sliceSubslice") => Some(Self::SliceSubslice),
             s if s.starts_with("sliceLen") => Some(Self::SliceLen),

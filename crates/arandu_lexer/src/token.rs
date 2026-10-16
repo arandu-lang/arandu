@@ -387,6 +387,37 @@ impl TokenKind {
         )
     }
 
+    /// Returns whether this token represents a built-in primitive type keyword
+    /// (`str`, `char`, `int`, `float`, `u8`..`u64`, `i8`..`i64`, `bool`, etc.).
+    #[must_use]
+    pub const fn is_primitive_type(self) -> bool {
+        matches!(
+            self,
+            TokenKind::TypeInt
+                | TokenKind::TypeUint
+                | TokenKind::TypeIsize
+                | TokenKind::TypeUsize
+                | TokenKind::TypeFloat
+                | TokenKind::TypeI8
+                | TokenKind::TypeI16
+                | TokenKind::TypeI32
+                | TokenKind::TypeI64
+                | TokenKind::TypeU8
+                | TokenKind::TypeU16
+                | TokenKind::TypeU32
+                | TokenKind::TypeU64
+                | TokenKind::TypeF32
+                | TokenKind::TypeF64
+                | TokenKind::TypeBool
+                | TokenKind::TypeByte
+                | TokenKind::TypeChar
+                | TokenKind::TypeStr
+                | TokenKind::TypeAny
+                | TokenKind::TypeErr
+                | TokenKind::KwPtr
+        )
+    }
+
     /// Returns whether this token can name a member after `.` or `?.`.
     ///
     /// Keywords remain reserved in ordinary identifier positions, but become

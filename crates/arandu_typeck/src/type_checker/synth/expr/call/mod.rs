@@ -406,13 +406,19 @@ pub(super) fn synth_call_expr(
                 }
                 let sym = checker.symbols.get(callee_sym);
                 if sym.kind == arandu_middle::SymbolKind::ExternFunc {
-                    checker.current_observed_effects = checker
-                        .current_observed_effects
-                        .union(arandu_middle::EffectFlags::FOREIGN);
+                    let pure_bits = arandu_middle::IntrinsicKind::from_name(&sym.name)
+                        .is_some_and(|kind| kind.is_pure_bit_operation())
+                        && checker.type_info.function_effects.get(&callee_sym)
+                            == Some(&arandu_middle::EffectFlags::NONE);
+                    if !pure_bits {
+                        checker.current_observed_effects = checker
+                            .current_observed_effects
+                            .union(arandu_middle::EffectFlags::FOREIGN);
+                    }
                     // Intrinsics that only inspect already-valid fat-pointer descriptors
                     // or produce compile-time constants are safe without `unsafe {}`.
                     let is_safe_intrinsic = arandu_middle::IntrinsicKind::from_name(&sym.name)
-                        .is_some_and(|k| k.is_safe());
+                        .is_some_and(|k| k.is_safe() && (!k.is_pure_bit_operation() || pure_bits));
                     if !is_safe_intrinsic && !checker.ctx.is_in_unsafe() {
                         checker.diagnostics.push(
                             crate::Diagnostic::error(

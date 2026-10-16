@@ -67,15 +67,19 @@ public struct Weak<T> {
     private ptr: ptr[RcBox<T>]
 }
 
-/// Allocates a new `Rc<T>` holding `value` on the heap.
-public func Rc.new<T>(value: T): Rc<T> {
+/// Attempts to allocate a new `Rc<T>` holding `value` on the heap, reporting allocation failures.
+public func Rc.tryNew<T>(value: T): Result<Rc<T>, alloc.AllocError> {
     let size = boxSize<T>()
     let align = boxAlign<T>()
+    let maximum: usize = 2147483647 as usize
+    if size > maximum || align == (0 as usize) || align > maximum {
+        return Result.Err(alloc.AllocError.InvalidLayout)
+    }
     unsafe {
         let raw = ar_rt_alloc_aligned(size, align)
         let nullp: ptr[u8] = nil
         if raw == nullp {
-            intrinsics.abort()
+            return Result.Err(alloc.AllocError.OutOfMemory)
         }
         let typed = raw as ptr[RcBox<T>]
         let initial = RcBox<T> {
@@ -84,8 +88,17 @@ public func Rc.new<T>(value: T): Rc<T> {
             value: value,
         }
         mem.ptrWrite<RcBox<T>>(typed, initial)
-        return Rc<T> { ptr: typed }
+        return Result.Ok(Rc<T> { ptr: typed })
     }
+}
+
+/// Allocates a new `Rc<T>` holding `value` on the heap, aborting if allocation fails.
+public func Rc.new<T>(value: T): Rc<T> {
+    match Rc.tryNew<T>(value) {
+        Result.Ok(rc) => { return rc }
+        Result.Err(_) => { unsafe { intrinsics.abort() } }
+    }
+    return Rc<T> { ptr: nil }
 }
 
 /// Borrows the contained value.
@@ -93,6 +106,41 @@ public func Rc.get<T>(self: ref Rc<T>): ref T {
     unsafe {
         return ref (*self.ptr).value
     }
+}
+
+/// Returns a mutable reference to the contained value if there are no other references.
+public func Rc.getMut<T>(self: mut ref Rc<T>): Option<mut ref T> {
+    if Rc.isUnique(self) {
+        unsafe {
+            return Option.Some(mut ref (*self.ptr).value)
+        }
+    }
+    return Option.None
+}
+
+/// Unwraps the inner value if this is the sole strong reference to the allocation.
+///
+/// If other references exist, returns `Result.Err(self)`.
+public func Rc.tryUnwrap<T>(self: own Rc<T>): Result<T, Rc<T>> {
+    let nullp: ptr[RcBox<T>] = nil
+    if self.ptr == nullp {
+        return Result.Err(self)
+    }
+    unsafe {
+        if (*self.ptr).strong == (1 as usize) {
+            let mut owned = self
+            let p = owned.ptr
+            let val = mem.ptrRead<T>(&(*p).value)
+            let weak = (*p).weak - (1 as usize)
+            (*p).weak = weak
+            if weak == (0 as usize) {
+                ar_rt_free_aligned(p as ptr[u8], boxSize<T>(), boxAlign<T>())
+            }
+            owned.ptr = nil
+            return Result.Ok(val)
+        }
+    }
+    return Result.Err(self)
 }
 
 /// Creates a new strong reference to the same allocation.

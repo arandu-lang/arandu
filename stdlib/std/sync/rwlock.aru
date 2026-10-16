@@ -32,6 +32,54 @@ module std.sync.rwlock
 
 import std.core.atomic as atomic
 import std.core.intrinsics as intrinsics
+import std.thread as thread
+
+/// An RAII read lock guard. Releases the read lock on scope exit.
+public struct RwLockReadGuard<T> {
+    lock: ptr[RwLock<T>],
+}
+
+/// Borrows the protected value.
+public func RwLockReadGuard.get<T>(self: ref RwLockReadGuard<T>): ref T {
+    unsafe {
+        return ref (*self.lock).value
+    }
+}
+
+/// Automatically releases the read lock when leaving scope.
+@Destructor
+func RwLockReadGuard.destroy<T>(self: own RwLockReadGuard<T>): void {
+    unsafe {
+        (*self.lock).readUnlock()
+    }
+}
+
+/// An RAII write lock guard. Releases the write lock on scope exit.
+public struct RwLockWriteGuard<T> {
+    lock: ptr[RwLock<T>],
+}
+
+/// Borrows the protected value.
+public func RwLockWriteGuard.get<T>(self: ref RwLockWriteGuard<T>): ref T {
+    unsafe {
+        return ref (*self.lock).value
+    }
+}
+
+/// Exclusively borrows the protected value.
+public func RwLockWriteGuard.getMut<T>(self: mut ref RwLockWriteGuard<T>): mut ref T {
+    unsafe {
+        return mut ref (*self.lock).value
+    }
+}
+
+/// Automatically releases the write lock when leaving scope.
+@Destructor
+func RwLockWriteGuard.destroy<T>(self: own RwLockWriteGuard<T>): void {
+    unsafe {
+        (*self.lock).writeUnlock()
+    }
+}
 
 const WRITER_ACTIVE: usize = 1 as usize
 const WRITER_PENDING_SHIFT: usize = 1 as usize
@@ -111,4 +159,30 @@ public func RwLock.getMut<T>(self: mut ref RwLock<T>): mut ref T {
 /// Consumes the lock, returning the owned inner value.
 public func RwLock.intoInner<T>(self: own RwLock<T>): T {
     return self.value
+}
+
+/// Acquires shared read access, blocking cooperatively until available.
+public func RwLock.read<T>(self: ref RwLock<T>): RwLockReadGuard<T> {
+    while !self.tryRead() {
+        thread.yieldNow()
+    }
+    return RwLockReadGuard<T> { lock: &self as ptr[RwLock<T>] }
+}
+
+/// Acquires exclusive write access, blocking cooperatively until available.
+public func RwLock.write<T>(self: mut ref RwLock<T>): RwLockWriteGuard<T> {
+    while !self.tryWrite() {
+        thread.yieldNow()
+    }
+    return RwLockWriteGuard<T> { lock: &self as ptr[RwLock<T>] }
+}
+
+/// Alias for `read()` matching the overview documentation.
+public func RwLock.readLock<T>(self: ref RwLock<T>): RwLockReadGuard<T> {
+    return self.read()
+}
+
+/// Alias for `write()` matching the overview documentation.
+public func RwLock.writeLock<T>(self: mut ref RwLock<T>): RwLockWriteGuard<T> {
+    return self.write()
 }

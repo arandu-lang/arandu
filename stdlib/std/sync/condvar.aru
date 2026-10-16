@@ -24,6 +24,7 @@ extern "C" {
     func ar_rt_condvar_wait(seq: usize): void
     func ar_rt_condvar_notify_one(seq: usize): void
     func ar_rt_condvar_notify_all(seq: usize): void
+    func ar_rt_thread_sleep_ms(ms: u64): void
 }
 
 /// A condition variable.
@@ -60,4 +61,23 @@ public func Condvar.notifyAll(self: ref Condvar): void {
     unsafe {
         ar_rt_condvar_notify_all(next)
     }
+}
+
+/// Waits for a notification or until `timeoutMs` expires.
+///
+/// Returns `true` if notified or `false` if the timeout elapsed.
+public func Condvar.waitTimeout(self: ref Condvar, timeoutMs: u64): bool {
+    let current = self.sequence.load(atomic.MemoryOrder.Acquire)
+    let mut elapsed: u64 = 0u64
+    let step: u64 = if timeoutMs < 10u64 { timeoutMs } else { 10u64 }
+    while elapsed < timeoutMs {
+        if self.sequence.load(atomic.MemoryOrder.Acquire) != current {
+            return true
+        }
+        unsafe {
+            ar_rt_thread_sleep_ms(step)
+        }
+        elapsed = elapsed + step
+    }
+    return self.sequence.load(atomic.MemoryOrder.Acquire) != current
 }

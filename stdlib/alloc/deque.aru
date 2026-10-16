@@ -229,6 +229,32 @@ public func VecDeque.getMut<T>(self: mut ref VecDeque<T>, index: usize): Option<
     }
 }
 
+/// Borrows the element at the front of the deque without removing it.
+public func VecDeque.front<T>(self: ref VecDeque<T>): Option<ref T> {
+    return self.get(0 as usize)
+}
+
+/// Exclusively borrows the element at the front of the deque without removing it.
+public func VecDeque.frontMut<T>(self: mut ref VecDeque<T>): Option<mut ref T> {
+    return self.getMut(0 as usize)
+}
+
+/// Borrows the element at the back of the deque without removing it.
+public func VecDeque.back<T>(self: ref VecDeque<T>): Option<ref T> {
+    if self.len == (0 as usize) {
+        return Option.None
+    }
+    return self.get(self.len - (1 as usize))
+}
+
+/// Exclusively borrows the element at the back of the deque without removing it.
+public func VecDeque.backMut<T>(self: mut ref VecDeque<T>): Option<mut ref T> {
+    if self.len == (0 as usize) {
+        return Option.None
+    }
+    return self.getMut(self.len - (1 as usize))
+}
+
 /// Clears all elements from the deque without releasing allocated capacity.
 public func VecDeque.clear<T>(self: mut ref VecDeque<T>): void {
     unsafe {

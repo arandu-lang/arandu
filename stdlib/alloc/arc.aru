@@ -57,15 +57,22 @@ public struct ArcWeak<T> {
     private ptr: ptr[ArcBox<T>]
 }
 
-/// Allocates an `Arc<T>` holding `value` on the heap.
-public func Arc.new<T>(value: T): Arc<T> {
+/// Symmetrical alias for `ArcWeak<T>`.
+public type Weak<T> = ArcWeak<T>;
+
+/// Attempts to allocate an `Arc<T>` holding `value` on the heap, reporting allocation failures.
+public func Arc.tryNew<T>(value: T): Result<Arc<T>, alloc.AllocError> {
     let size = boxSize<T>()
     let align = boxAlign<T>()
+    let maximum: usize = 2147483647 as usize
+    if size > maximum || align == (0 as usize) || align > maximum {
+        return Result.Err(alloc.AllocError.InvalidLayout)
+    }
     unsafe {
         let raw = ar_rt_alloc_aligned(size, align)
         let nullp: ptr[u8] = nil
         if raw == nullp {
-            intrinsics.abort()
+            return Result.Err(alloc.AllocError.OutOfMemory)
         }
         let typed = raw as ptr[ArcBox<T>]
         let initial = ArcBox<T> {
@@ -74,14 +81,75 @@ public func Arc.new<T>(value: T): Arc<T> {
             value: value,
         }
         mem.ptrWrite<ArcBox<T>>(typed, initial)
-        return Arc<T> { ptr: typed }
+        return Result.Ok(Arc<T> { ptr: typed })
     }
+}
+
+/// Allocates an `Arc<T>` holding `value` on the heap, aborting if allocation fails.
+public func Arc.new<T>(value: T): Arc<T> {
+    match Arc.tryNew<T>(value) {
+        Result.Ok(arc) => { return arc }
+        Result.Err(_) => { unsafe { intrinsics.abort() } }
+    }
+    return Arc<T> { ptr: nil }
 }
 
 /// Borrows the contained value.
 public func Arc.get<T>(self: ref Arc<T>): ref T {
     unsafe {
         return ref (*self.ptr).value
+    }
+}
+
+/// Returns `true` if this `Arc` has no other strong or weak references.
+public func Arc.isUnique<T>(self: ref Arc<T>): bool {
+    unsafe {
+        return (*self.ptr).strong.load(atomic.MemoryOrder.Acquire) == (1 as usize) &&
+               (*self.ptr).weak.load(atomic.MemoryOrder.Acquire) == (1 as usize)
+    }
+}
+
+/// Returns an exclusive mutable reference to the contained value if there are no other references.
+public func Arc.getMut<T>(self: mut ref Arc<T>): Option<mut ref T> {
+    if Arc.isUnique(self) {
+        unsafe {
+            return Option.Some(mut ref (*self.ptr).value)
+        }
+    }
+    return Option.None
+}
+
+/// Unwraps the inner value if this is the sole strong reference to the allocation.
+///
+/// If other strong references exist, returns `Result.Err(self)`.
+public func Arc.tryUnwrap<T>(self: own Arc<T>): Result<T, Arc<T>> {
+    let nullp: ptr[ArcBox<T>] = nil
+    if self.ptr == nullp {
+        return Result.Err(self)
+    }
+    unsafe {
+        match (*self.ptr).strong.compareExchange(
+            1 as usize,
+            0 as usize,
+            atomic.MemoryOrder.Acquire,
+            atomic.MemoryOrder.Relaxed
+        ) {
+            Result.Ok(_) => {
+                let mut owned = self
+                let p = owned.ptr
+                let val = mem.ptrRead<T>(&(*p).value)
+                let prevWeak = (*p).weak.fetchSub(1 as usize, atomic.MemoryOrder.Release)
+                if prevWeak == (1 as usize) {
+                    atomic.fence(atomic.MemoryOrder.Acquire)
+                    ar_rt_free_aligned(p as ptr[u8], boxSize<T>(), boxAlign<T>())
+                }
+                owned.ptr = nil
+                return Result.Ok(val)
+            }
+            Result.Err(_) => {
+                return Result.Err(self)
+            }
+        }
     }
 }
 

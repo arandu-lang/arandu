@@ -95,6 +95,26 @@ public func Box.intoInner<T>(self: own Box<T>): T {
     }
 }
 
+/// Consumes the `Box`, returning a raw pointer to the heap-allocated value without freeing it.
+///
+/// The caller assumes ownership of the allocation and is responsible for eventually
+/// dropping the inner value and freeing the memory (e.g., via `Box.fromRaw`).
+public func Box.leak<T>(self: own Box<T>): ptr[T] {
+    let mut owned = self
+    let raw = owned.data
+    owned.data = nil
+    return raw
+}
+
+/// Constructs a `Box<T>` from a raw pointer previously obtained via `Box.leak`.
+///
+/// ## Safety
+/// The pointer `p` must point to an initialized instance of `T` allocated with
+/// the layout corresponding to `Box<T>`.
+public func Box.fromRaw<T>(p: ptr[T]): Box<T> {
+    return Box<T> { data: p }
+}
+
 /// Destroys the contained value, then frees its allocation with the same layout.
 @Destructor
 func Box.destroy<T>(self: own Box<T>): void {

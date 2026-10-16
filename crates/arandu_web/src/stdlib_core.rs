@@ -28,6 +28,10 @@ pub const CORE_MODULES: &[(&str, &str)] = &[
         include_str!("../../../stdlib/core/cmp.aru"),
     ),
     (
+        "stdlib/core/decimal.aru",
+        include_str!("../../../stdlib/core/decimal.aru"),
+    ),
+    (
         "stdlib/core/fixed.aru",
         include_str!("../../../stdlib/core/fixed.aru"),
     ),

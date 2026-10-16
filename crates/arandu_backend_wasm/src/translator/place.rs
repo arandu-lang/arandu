@@ -432,22 +432,27 @@ impl<'a> FuncTranslator<'a> {
         }
         let elem_ty = self.emit_place_address(place);
         if self.is_owned_aggregate(elem_ty) {
-            let size = self.layout_of_id(elem_ty).size as i32;
-            self.code.push(Instruction::LocalSet(self.scratch_c));
-            self.alloc_cell(size);
-            self.code.push(Instruction::LocalGet(self.scratch));
-            self.code.push(Instruction::LocalSet(self.scratch_b));
-            self.code.push(Instruction::LocalGet(self.scratch_b));
-            self.code.push(Instruction::LocalGet(self.scratch_c));
-            self.code.push(Instruction::I32Const(size));
-            self.code.push(Instruction::MemoryCopy {
-                src_mem: 0,
-                dst_mem: 0,
-            });
-            self.code.push(Instruction::LocalGet(self.scratch_b));
+            self.emit_copy_aggregate_at(elem_ty);
         } else {
             self.emit_load_value_at(elem_ty, 0);
         }
+    }
+
+    /// Copy inline aggregate bytes at the address on the stack into a value cell.
+    pub(super) fn emit_copy_aggregate_at(&mut self, ty: TypeId) {
+        let size = self.layout_of_id(ty).size as i32;
+        self.code.push(Instruction::LocalSet(self.scratch_c));
+        self.alloc_cell(size);
+        self.code.push(Instruction::LocalGet(self.scratch));
+        self.code.push(Instruction::LocalSet(self.scratch_b));
+        self.code.push(Instruction::LocalGet(self.scratch_b));
+        self.code.push(Instruction::LocalGet(self.scratch_c));
+        self.code.push(Instruction::I32Const(size));
+        self.code.push(Instruction::MemoryCopy {
+            src_mem: 0,
+            dst_mem: 0,
+        });
+        self.code.push(Instruction::LocalGet(self.scratch_b));
     }
 
     /// Compute the real cell address of a place and return its element type.
@@ -485,8 +490,14 @@ impl<'a> FuncTranslator<'a> {
     ) -> TypeId {
         match proj {
             AmirProjection::Deref => {
+                // The first dereference starts with the local's pointer value.
+                // After a field/index/dereference projection the stack holds
+                // an address containing the next pointer, which must be loaded.
+                if *from_memory {
+                    self.code
+                        .push(Instruction::I32Load(crate::memory::noffset_memarg()));
+                }
                 *from_memory = true;
-                // Address unchanged; unwrap one pointer layer.
                 self.strip_ref(cur_ty).unwrap_or(cur_ty)
             }
             AmirProjection::Field(symbol_id) => {

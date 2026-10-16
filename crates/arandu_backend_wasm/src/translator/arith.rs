@@ -60,6 +60,29 @@ impl<'a> FuncTranslator<'a> {
         let is_float = types::ar_is_float(operation_ty, self.interner);
         let is_64 = types::ar_is_64bit(operation_ty, self.interner, self.layout_engine.data_layout);
 
+        // Narrow signed values occupy i32 slots, whose div_s would otherwise
+        // accept MIN_i8/i16 / -1 and silently truncate the quotient on store.
+        // Preserve the declared signed width's division-overflow trap.
+        let narrow_minimum = match self.interner.resolve(operation_ty) {
+            ArType::Primitive(Primitive::I8) => Some(i32::from(i8::MIN)),
+            ArType::Primitive(Primitive::I16) => Some(i32::from(i16::MIN)),
+            _ => None,
+        };
+        if op == BinaryOp::Div
+            && let Some(minimum) = narrow_minimum
+        {
+            self.emit_operand(left, operation_ty);
+            self.code.push(Instruction::I32Const(minimum));
+            self.code.push(Instruction::I32Eq);
+            self.emit_operand(right, operation_ty);
+            self.code.push(Instruction::I32Const(-1));
+            self.code.push(Instruction::I32Eq);
+            self.code.push(Instruction::I32And);
+            self.code.push(Instruction::If(BlockType::Empty));
+            self.code.push(Instruction::Unreachable);
+            self.code.push(Instruction::End);
+        }
+
         self.emit_operand(left, operation_ty);
         self.emit_operand(right, operation_ty);
 
@@ -352,6 +375,11 @@ impl<'a> FuncTranslator<'a> {
                 let operand_ty = self.operand_arity_ty(operand);
                 if self.interner.slice_abi_element(operand_ty).is_some() {
                     self.emit_operand(operand, result_ty);
+                } else if self.is_owned_aggregate(result_ty) {
+                    // Aggregate references point at inline bytes. Loading the
+                    // first word would interpret a field value as a cell pointer.
+                    self.emit_operand(operand, operand_ty);
+                    self.emit_copy_aggregate_at(result_ty);
                 } else {
                     let ptr_ty = self.interner.intern(ArType::Primitive(Primitive::Int));
                     self.emit_operand(operand, ptr_ty);

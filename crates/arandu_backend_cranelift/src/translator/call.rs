@@ -16,7 +16,12 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             let sym = self.symbol_table.get(*sym_id);
             let bare = sym.name.rsplit('.').next().unwrap_or(sym.name.as_str());
             // L6.1: mem intrinsics (short mono names + qualified std.core.mem.*).
-            if self.translate_mem_intrinsic(bare, &sym.name, lhs, args) {
+            let bit_intrinsic = arandu_semantics::IntrinsicKind::from_name(bare)
+                .is_some_and(|kind| kind.is_pure_bit_operation());
+            if (!bit_intrinsic
+                || sym.lang_item == Some(arandu_semantics::symbol_table::LangItem::BitIntrinsic))
+                && self.translate_mem_intrinsic(bare, &sym.name, lhs, args)
+            {
                 return;
             }
         }
@@ -280,6 +285,41 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             .or_else(|| arandu_semantics::IntrinsicKind::from_name(full_name));
 
         match kind {
+            Some(
+                arandu_semantics::IntrinsicKind::CountOnes
+                | arandu_semantics::IntrinsicKind::LeadingZeros
+                | arandu_semantics::IntrinsicKind::TrailingZeros
+                | arandu_semantics::IntrinsicKind::ReverseBits,
+            ) => {
+                if let Some(argument) = args.first() {
+                    let input_ty = if bare.ends_with("64") {
+                        cranelift_codegen::ir::types::I64
+                    } else {
+                        cranelift_codegen::ir::types::I32
+                    };
+                    let value = self.translate_operand(argument, Some(input_ty));
+                    let result = match kind {
+                        Some(arandu_semantics::IntrinsicKind::CountOnes) => {
+                            self.builder.ins().popcnt(value)
+                        }
+                        Some(arandu_semantics::IntrinsicKind::LeadingZeros) => {
+                            self.builder.ins().clz(value)
+                        }
+                        Some(arandu_semantics::IntrinsicKind::TrailingZeros) => {
+                            self.builder.ins().ctz(value)
+                        }
+                        _ => self.builder.ins().bitrev(value),
+                    };
+                    if let Some(destination) = lhs
+                        && let Some(&variable) = self.temp_map.get(destination)
+                        && let Some(result_ty) = self.get_temp_clif_type(*destination)
+                    {
+                        let result = self.cast_int_width(result, result_ty);
+                        self.builder.def_var(variable, result);
+                    }
+                }
+                true
+            }
             Some(arandu_semantics::IntrinsicKind::PtrRead) => {
                 if args.is_empty() {
                     return true;

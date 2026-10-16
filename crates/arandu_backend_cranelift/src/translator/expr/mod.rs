@@ -218,7 +218,9 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             AmirRvalue::Binary { op, left, right } => {
                 self.translate_binary(*op, left, right, expected_ty, expected_ar_type)
             }
-            AmirRvalue::Unary { op, operand } => self.translate_unary(*op, operand, expected_ty),
+            AmirRvalue::Unary { op, operand } => {
+                self.translate_unary(*op, operand, expected_ty, expected_ar_type)
+            }
             AmirRvalue::Load(place) => self.translate_load(place, expected_ty, expected_ar_type),
             AmirRvalue::StructLiteral {
                 struct_symbol,

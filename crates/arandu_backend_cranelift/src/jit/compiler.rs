@@ -553,9 +553,12 @@ impl<M: Module> AranduModule<M> {
             }
             let c_name = sym.name.split('.').next_back().unwrap_or(&sym.name);
             // PAN / Invariant 5: abort intrinsics are inlined to native CPU traps without importing libc abort.
-            if arandu_semantics::IntrinsicKind::from_name(c_name)
-                == Some(arandu_semantics::IntrinsicKind::Abort)
-            {
+            if arandu_semantics::IntrinsicKind::from_name(c_name).is_some_and(|kind| {
+                kind == arandu_semantics::IntrinsicKind::Abort
+                    || (kind.is_pure_bit_operation()
+                        && sym.lang_item
+                            == Some(arandu_semantics::symbol_table::LangItem::BitIntrinsic))
+            }) {
                 continue;
             }
             if !eager_runtime {

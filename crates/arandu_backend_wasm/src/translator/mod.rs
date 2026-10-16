@@ -330,8 +330,7 @@ impl<'a> FuncTranslator<'a> {
                     if invert {
                         self.code.push(Instruction::I32Eqz);
                     }
-                    self.emit_block_args(target, &args);
-                    self.code.push(Instruction::BrIf(depth));
+                    self.emit_conditional_branch(depth, target, &args);
                 }
                 Op::BrIfEq {
                     depth,
@@ -350,8 +349,7 @@ impl<'a> FuncTranslator<'a> {
                         self.code.push(Instruction::I32Const(value as i32));
                         self.code.push(Instruction::I32Eq);
                     }
-                    self.emit_block_args(target, &args);
-                    self.code.push(Instruction::BrIf(depth));
+                    self.emit_conditional_branch(depth, target, &args);
                 }
                 Op::BrTable {
                     depths,

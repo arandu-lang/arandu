@@ -29,6 +29,171 @@ fn c_compiler(cc: &str) -> Command {
 }
 
 #[test]
+fn parity_bit_intrinsics_cover_every_bit_position_and_zero() {
+    test_zero_result_all_opt_levels("bit_intrinsics", include_str!("bit_intrinsics.aru"));
+}
+
+#[test]
+fn parity_ordinary_bit_names_are_not_intrinsics() {
+    test_zero_result_all_opt_levels(
+        "ordinary_bit_names",
+        "func bitCountOnes32(value: u32): u32 { return value + 7 } func main(): int { if bitCountOnes32(5) != 12 { return 1 }; return 0 }",
+    );
+}
+
+#[test]
+fn parity_integer_division_and_remainder_boundaries() {
+    test_zero_result_all_opt_levels(
+        "integer_division_boundaries",
+        r#"
+func blackBox<T>(value: T): T { return value }
+func main(): int {
+    let minusOne = blackBox<int>(-1)
+    let minimum = blackBox<int>(-2147483648)
+    if minimum % minusOne != 0 { return 1 }
+    if blackBox<int>(-43) / blackBox<int>(5) != -8 { return 2 }
+    if blackBox<int>(-43) % blackBox<int>(5) != -3 { return 3 }
+    let wideMinimum = blackBox<i64>(-9223372036854775808)
+    let wideMinusOne = blackBox<i64>(-1)
+    if wideMinimum % wideMinusOne != 0 { return 4 }
+    if wideMinimum / blackBox<i64>(1) != wideMinimum { return 5 }
+    if blackBox<u32>(4294967295) / blackBox<u32>(2) != 2147483647 { return 6 }
+    if blackBox<u64>(18446744073709551615) % blackBox<u64>(2) != 1 { return 7 }
+    if blackBox<i8>(-128) % blackBox<i8>(-1) != 0 { return 8 }
+    if blackBox<i16>(-32768) % blackBox<i16>(-1) != 0 { return 9 }
+    return 0
+}
+"#,
+    );
+}
+
+#[test]
+fn parity_dynamic_shifts_mask_the_value_execution_width() {
+    test_zero_result_all_opt_levels(
+        "dynamic_shift_width",
+        r#"
+func blackBox<T>(value: T): T { return value }
+func main(): int {
+    let wideCount = blackBox<i32>(32)
+    if blackBox<i32>(1) << wideCount != 1 { return 1 }
+    if blackBox<i32>(-8) >> wideCount != -8 { return 2 }
+    if blackBox<u32>(2147483648) >> blackBox<u32>(33) != 1073741824 { return 3 }
+    if blackBox<i64>(-8) >> blackBox<i64>(65) != -4 { return 4 }
+    if blackBox<u64>(1) << blackBox<u64>(127) != (9223372036854775808 as u64) { return 5 }
+    if blackBox<i32>(1) << blackBox<i32>(31) != -2147483648 { return 6 }
+    if blackBox<i32>(-1) << blackBox<i32>(1) != -2 { return 7 }
+    if blackBox<i8>(-128) >> blackBox<i8>(8) != -1 { return 8 }
+    if blackBox<u8>(255) >> blackBox<u8>(8) != 0 { return 9 }
+    if blackBox<i16>(-32768) >> blackBox<i16>(16) != -1 { return 10 }
+    if blackBox<u16>(65535) >> blackBox<u16>(16) != 0 { return 11 }
+    if blackBox<i32>(-8) >> blackBox<i32>(-1) != -1 { return 12 }
+    return 0
+}
+"#,
+    );
+}
+
+#[test]
+fn cranelift_integer_division_traps_match_declared_width() {
+    const CASE: &str = "ARANDU_INTEGER_TRAP_CASE";
+    if let Ok(case) = env::var(CASE) {
+        let fields: Vec<_> = case.split(':').collect();
+        let ty = fields[0];
+        let operator = fields[1];
+        let left = fields[2];
+        let right = fields[3];
+        let (amir, tc) = compile_src(&format!(
+            "func blackBox<T>(value: T): T {{ return value }} func main(): int {{ return (blackBox<{ty}>({left}) {operator} blackBox<{ty}>({right})) as int }}"
+        ));
+        execute_cranelift(&amir, &tc);
+        return;
+    }
+    let executable = env::current_exe().unwrap();
+    for (ty, minimum) in [
+        ("i8", "-128"),
+        ("i16", "-32768"),
+        ("i32", "-2147483648"),
+        ("i64", "-9223372036854775808"),
+    ] {
+        for (operator, left, right) in [("/", minimum, "-1"), ("/", "7", "0"), ("%", "7", "0")] {
+            let output = Command::new(&executable)
+                .args([
+                    "--exact",
+                    "cranelift_integer_division_traps_match_declared_width",
+                ])
+                .env(CASE, format!("{ty}:{operator}:{left}:{right}"))
+                .output()
+                .unwrap();
+            assert!(
+                !output.status.success(),
+                "{ty} {left} {operator} {right}: must trap"
+            );
+            assert_ne!(
+                output.status.code(),
+                Some(101),
+                "child test panicked: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+}
+
+#[test]
+fn c_integer_division_traps_before_undefined_operations() {
+    let directory = env::temp_dir().join("arandu_c_tests");
+    fs::create_dir_all(&directory).unwrap();
+    let compiler = env::var("CC").unwrap_or_else(|_| "gcc".into());
+    for (ty, c_ty, minimum, signed) in [
+        ("i32", "int32_t", "INT32_MIN", true),
+        ("i64", "int64_t", "INT64_MIN", true),
+        ("u32", "uint32_t", "0", false),
+        ("u64", "uint64_t", "0", false),
+    ] {
+        for operation in ["/", "%"] {
+            let (amir, tc) = compile_src(&format!(
+                "public func probe(a: {ty}, b: {ty}): {ty} {{ return a {operation} b }} func main(): int {{ return 0 }}"
+            ));
+            let emitted = emit_c(&amir, &tc);
+            let source = format!(
+                "#define main arandu_unused_main\n{emitted}\n#undef main\nint main(int argc, char **argv) {{ (void)argv; volatile {c_ty} a = argc == 1 ? 7 : {minimum}; volatile {c_ty} b = argc == 1 ? 0 : ({c_ty})-1; volatile {c_ty} result = probe(a, b); return result != 0; }}\n"
+            );
+            for optimization in ["-O0", "-O1", "-O2", "-Os"] {
+                let name = format!(
+                    "integer_trap_{ty}_{}_{optimization}",
+                    if operation == "/" { "div" } else { "rem" }
+                );
+                let source_file = directory.join(format!("{name}.c"));
+                let executable = directory.join(format!("{name}.exe"));
+                fs::write(&source_file, &source).unwrap();
+                let compilation = c_compiler(&compiler)
+                    .arg(optimization)
+                    .arg(&source_file)
+                    .arg("-o")
+                    .arg(&executable)
+                    .arg("-lm")
+                    .output()
+                    .unwrap();
+                assert!(
+                    compilation.status.success(),
+                    "{name}: {}",
+                    String::from_utf8_lossy(&compilation.stderr)
+                );
+                let zero = Command::new(&executable).output().unwrap();
+                assert!(!zero.status.success(), "{name}: zero divisor must trap");
+                if signed {
+                    let overflow = Command::new(&executable).arg("minimum").output().unwrap();
+                    assert_eq!(
+                        overflow.status.success(),
+                        operation == "%",
+                        "{name}: MIN / -1 traps; MIN % -1 is zero"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn parity_unit_arguments_and_locals_have_no_c_storage() {
     let (amir, tc) = compile_src(
         "func unit(): void {} func consume(a: void, x: int, b: void, y: int): int { return x + y } func main(): int { let value = unit(); return consume(value, 19, unit(), 23) }",
@@ -4248,5 +4413,13 @@ fn c_adjacent_true_target_with_arguments_keeps_its_label() {
     assert_eq!(
         execute_c("adjacent_true_target_arguments", &program, &tc),
         7
+    );
+}
+
+#[test]
+fn parity_borrowed_projections_preserve_pointer_loads_and_single_evaluation() {
+    test_zero_result_all_opt_levels(
+        "borrowed_projections",
+        include_str!("../../../tests/corpus/borrowed_projections.aru"),
     );
 }

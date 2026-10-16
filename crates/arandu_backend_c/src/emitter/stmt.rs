@@ -115,6 +115,11 @@ impl<'a> CEmitter<'a> {
             return None;
         }
         let kind = arandu_middle::IntrinsicKind::from_name(&symbol.name)?;
+        if kind.is_pure_bit_operation()
+            && symbol.lang_item != Some(arandu_middle::symbol_table::LangItem::BitIntrinsic)
+        {
+            return None;
+        }
         matches!(
             kind,
             arandu_middle::IntrinsicKind::Abort
@@ -123,6 +128,10 @@ impl<'a> CEmitter<'a> {
                 | arandu_middle::IntrinsicKind::PtrOffset
                 | arandu_middle::IntrinsicKind::SizeOf
                 | arandu_middle::IntrinsicKind::AlignOf
+                | arandu_middle::IntrinsicKind::CountOnes
+                | arandu_middle::IntrinsicKind::LeadingZeros
+                | arandu_middle::IntrinsicKind::TrailingZeros
+                | arandu_middle::IntrinsicKind::ReverseBits
         )
         .then_some(kind)
     }
@@ -147,6 +156,45 @@ impl<'a> CEmitter<'a> {
         };
 
         match kind {
+            Some(
+                arandu_middle::IntrinsicKind::CountOnes
+                | arandu_middle::IntrinsicKind::LeadingZeros
+                | arandu_middle::IntrinsicKind::TrailingZeros
+                | arandu_middle::IntrinsicKind::ReverseBits,
+            ) => {
+                if let Some(argument) = args.first()
+                    && let Some(destination) = lhs
+                {
+                    let bits = if let AmirOperand::FunctionRef(symbol) = callee
+                        && self.symbols.get(*symbol).name.ends_with("64")
+                    {
+                        64
+                    } else {
+                        32
+                    };
+                    let value = self.format_operand(argument, func);
+                    let slot = self.temp_slots[destination.as_usize()];
+                    if kind == Some(arandu_middle::IntrinsicKind::ReverseBits) {
+                        let _ = writeln!(
+                            self.output,
+                            "    {{ uint{bits}_t ar_value = ({value}); uint{bits}_t ar_reversed = 0; for (unsigned ar_bit = 0; ar_bit < {bits}; ++ar_bit) {{ ar_reversed = (ar_reversed << 1) | (ar_value & 1); ar_value >>= 1; }} t{slot} = ar_reversed; }}"
+                        );
+                    } else {
+                        let operation = match kind {
+                            Some(arandu_middle::IntrinsicKind::CountOnes) => "popcount",
+                            Some(arandu_middle::IntrinsicKind::LeadingZeros) => "clz",
+                            _ => "ctz",
+                        };
+                        let suffix = if bits == 64 { "ll" } else { "" };
+                        let _ = writeln!(
+                            self.output,
+                            "    {{ uint{bits}_t ar_value = ({value}); t{slot} = ar_value == 0 ? {} : __builtin_{operation}{suffix}(ar_value); }}",
+                            if operation == "popcount" { 0 } else { bits }
+                        );
+                    }
+                }
+                true
+            }
             Some(arandu_middle::IntrinsicKind::Abort) => {
                 let _ = writeln!(&mut self.output, "    AR_ABORT();");
                 true

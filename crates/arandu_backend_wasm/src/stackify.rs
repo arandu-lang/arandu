@@ -12,7 +12,8 @@
 //!    branch, compute the nearest common dominator (NCD) of all forward
 //!    predecessors of T. This is the position where the landing `block`
 //!    scope begins.
-//! 3. Emit blocks in RPO order. At each block:
+//! 3. Hoist openings when landing intervals cross, including loop boundaries.
+//! 4. Emit blocks in RPO order. At each block:
 //!    - Close loop scopes whose max rank has been passed.
 //!    - Open a `loop` scope if the block is a loop header.
 //!    - Open `block` scopes for targets whose NCD is the current block.
@@ -141,13 +142,16 @@ pub fn stackify(func: &AmirFunc) -> Result<Vec<Op>, Diagnostic> {
         for &pred in func.predecessors(header) {
             // A backedge: pred is dominated by header and pred comes *after*
             // the header in RPO (in RPO the header precedes its body).
-            if doms.dominates(header, pred) && rank.get(&pred).copied().unwrap_or(0) > h_rank {
+            if doms.dominates(header, pred) && rank.get(&pred).copied().unwrap_or(0) >= h_rank {
                 let mut max = h_rank;
                 // DFS backward through predecessors to find the natural loop body.
                 let mut visited: FxHashSet<BlockId> = FxHashSet::default();
                 let mut stack = vec![pred];
                 visited.insert(pred);
                 while let Some(b) = stack.pop() {
+                    if b == header {
+                        continue;
+                    }
                     let br = rank.get(&b).copied().unwrap_or(0);
                     if br > max {
                         max = br;
@@ -194,10 +198,45 @@ pub fn stackify(func: &AmirFunc) -> Result<Vec<Op>, Diagnostic> {
         ncd_of.insert(t, ncd);
     }
 
-    // Map: NCD block → list of targets whose NCD is this block.
+    // Dominance alone does not make landing scopes nest: [A, C] and [B, D]
+    // cross when A < B < C < D. Hoist D's opening to A so its scope encloses
+    // C's. Process endings in ascending order so every earlier scope already
+    // has its final opening. Loop scopes have fixed openings and participate
+    // in the same constraint.
+    let mut scope_starts: FxHashMap<BlockId, usize> = ncd_of
+        .iter()
+        .map(|(&target, &start)| (target, rank[&start]))
+        .collect();
+    let mut endings: Vec<_> = scope_starts.keys().copied().collect();
+    endings.sort_by_key(|target| rank[target]);
+    for (index, &target) in endings.iter().enumerate() {
+        let end = rank[&target];
+        let mut start = scope_starts[&target];
+        loop {
+            let previous = start;
+            for &earlier in &endings[..index] {
+                let earlier_start = scope_starts[&earlier];
+                if earlier_start < start && start < rank[&earlier] {
+                    start = earlier_start;
+                }
+            }
+            for (&header, &last) in &loop_max_rank {
+                let loop_start = rank[&header];
+                if loop_start <= start && start <= last && last < end {
+                    start = loop_start;
+                }
+            }
+            if start == previous {
+                break;
+            }
+        }
+        scope_starts.insert(target, start);
+    }
+
+    // Map: opening block → landing targets.
     let mut ncd_targets: FxHashMap<BlockId, Vec<BlockId>> = FxHashMap::default();
-    for (&t, &ncd) in &ncd_of {
-        ncd_targets.entry(ncd).or_default().push(t);
+    for (&t, &start) in &scope_starts {
+        ncd_targets.entry(rpo[start]).or_default().push(t);
     }
     // Sort targets at each NCD by rank descending (outermost scope first).
     for targets in ncd_targets.values_mut() {
@@ -263,6 +302,30 @@ pub fn stackify(func: &AmirFunc) -> Result<Vec<Op>, Diagnostic> {
             }
         }
 
+        if scope_stack.iter().any(|frame| {
+            frame.kind == ScopeKind::Block
+                && rank.get(&frame.label).is_some_and(|&landing| landing <= i)
+        }) {
+            return Err(Diagnostic::ice(
+                diagnostics::DiagCode::ICEGEN002,
+                "stackify: crossing landing scopes would skip a CFG block".to_owned(),
+                arandu_base::Span::new(0, 0, 0),
+            ));
+        }
+
+        // Landing scopes that leave a loop must surround the loop itself.
+        if let Some(targets) = ncd_targets.get(&b) {
+            for &t in targets {
+                if loop_max_rank.get(&b).is_some_and(|&last| rank[&t] > last) {
+                    ops.push(Op::BlockBegin { label: t });
+                    scope_stack.push(StackFrame {
+                        label: t,
+                        kind: ScopeKind::Block,
+                    });
+                }
+            }
+        }
+
         // 2. Open a loop scope if this block is a loop header.
         if let Some(&max_rank) = loop_max_rank.get(&b) {
             ops.push(Op::LoopBegin { header: b });
@@ -275,6 +338,9 @@ pub fn stackify(func: &AmirFunc) -> Result<Vec<Op>, Diagnostic> {
         // 3. Open block scopes for targets whose NCD is this block.
         if let Some(targets) = ncd_targets.get(&b) {
             for &t in targets {
+                if loop_max_rank.get(&b).is_some_and(|&last| rank[&t] > last) {
+                    continue;
+                }
                 ops.push(Op::BlockBegin { label: t });
                 scope_stack.push(StackFrame {
                     label: t,
@@ -288,6 +354,17 @@ pub fn stackify(func: &AmirFunc) -> Result<Vec<Op>, Diagnostic> {
 
         // 5. Emit terminator as branch ops.
         let block = &func.blocks[b.as_usize()];
+        if func
+            .successors(b)
+            .iter()
+            .any(|target| !scope_stack.iter().any(|frame| frame.label == *target))
+        {
+            return Err(Diagnostic::ice(
+                diagnostics::DiagCode::ICEGEN002,
+                "stackify: CFG successor has no active structured label".to_owned(),
+                arandu_base::Span::new(0, 0, 0),
+            ));
+        }
         emit_terminator(block, &rank, &rpo, &scope_stack, epilogue_target, &mut ops);
     }
 
@@ -420,10 +497,6 @@ fn emit_terminator(
             match (next_true, next_false) {
                 (true, false) => {
                     // Fall through to true; br_if for false (inverted cond).
-                    ops.push(Op::ArgStore {
-                        target: *if_true,
-                        args: true_args.clone(),
-                    });
                     let depth = compute_depth(scope_stack, *if_false);
                     ops.push(Op::BrIf {
                         depth,
@@ -432,13 +505,13 @@ fn emit_terminator(
                         condition: *condition,
                         invert: true,
                     });
-                }
-                (false, true) => {
-                    // Fall through to false; br_if for true (direct cond).
                     ops.push(Op::ArgStore {
-                        target: *if_false,
-                        args: false_args.clone(),
+                        target: *if_true,
+                        args: true_args.clone(),
                     });
+                }
+                (false, true) | (true, true) => {
+                    // Fall through to false; br_if for true (direct cond).
                     let depth = compute_depth(scope_stack, *if_true);
                     ops.push(Op::BrIf {
                         depth,
@@ -446,6 +519,10 @@ fn emit_terminator(
                         args: true_args.clone(),
                         condition: *condition,
                         invert: false,
+                    });
+                    ops.push(Op::ArgStore {
+                        target: *if_false,
+                        args: false_args.clone(),
                     });
                 }
                 (false, false) => {
@@ -463,14 +540,6 @@ fn emit_terminator(
                         depth: d_f,
                         target: *if_false,
                         args: false_args.clone(),
-                    });
-                }
-                (true, true) => {
-                    // Both targets are the next block (impossible for distinct).
-                    debug_assert_eq!(if_true, if_false);
-                    ops.push(Op::ArgStore {
-                        target: *if_true,
-                        args: true_args.clone(),
                     });
                 }
             }
@@ -549,8 +618,9 @@ fn emit_switch_ops(
 /// are above it in the stack.
 ///
 /// If the target has no matching scope, branches out of every scope (depth =
-/// `stack.len()`), which is unreachable for well-formed AMIR — `validate_amir`
-/// guarantees every branch target is a labeled scope.
+/// `stack.len()`). The emission guard checks that every CFG successor has an
+/// active label before calling this helper; the synthetic epilogue is also
+/// opened before any function body.
 fn compute_depth(stack: &[StackFrame], target: BlockId) -> u32 {
     stack
         .iter()
@@ -615,6 +685,88 @@ fn ncd_pair(a: BlockId, b: BlockId, doms: &Dominators) -> BlockId {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nested_diamond_landings_resolve_to_their_cfg_targets() {
+        use arandu_middle::SymbolId;
+        use arandu_middle::amir::block::AmirBasicBlock;
+        use arandu_middle::amir::stmt::AmirStmtTable;
+        use arandu_middle::amir::value::AmirOperand;
+        use arandu_middle::cfg::compute_cfg_edges;
+        use arandu_middle::layout::DenseRange;
+        use arandu_middle::types::{ArType, TypeInterner};
+
+        for seed in 0..192usize {
+            let interner = TypeInterner::new();
+            let blocks: Vec<_> = (0..12)
+                .map(|index| AmirBasicBlock {
+                    id: BlockId::from_usize(index),
+                    statements: DenseRange::empty(),
+                    params: DenseRange::empty(),
+                    terminator: if index == 11 {
+                        match seed / 64 {
+                            0 => AmirTerminator::Return,
+                            1 => AmirTerminator::Goto {
+                                target: BlockId::from_usize(0),
+                                args: Vec::new(),
+                            },
+                            _ => AmirTerminator::Goto {
+                                target: BlockId::from_usize(11),
+                                args: Vec::new(),
+                            },
+                        }
+                    } else {
+                        AmirTerminator::Branch {
+                            condition: AmirOperand::Constant(
+                                arandu_middle::amir::value::AmirConstant::Bool(true),
+                            ),
+                            if_true: BlockId::from_usize(index + 1),
+                            true_args: Vec::new(),
+                            if_false: BlockId::from_usize(
+                                index + 1 + (seed * 17 + index * 7) % (11 - index),
+                            ),
+                            false_args: Vec::new(),
+                        }
+                    },
+                })
+                .collect();
+            let func = AmirFunc {
+                symbol: SymbolId::new(0, 0),
+                return_type: interner.intern(ArType::Void),
+                receiver: None,
+                params: Vec::new(),
+                locals: Vec::new(),
+                temps: Vec::new(),
+                cfg: compute_cfg_edges(&blocks),
+                blocks,
+                block_params: Vec::new(),
+                stmts: AmirStmtTable::new(),
+            };
+            let ops = stackify(&func).unwrap();
+            let mut labels = Vec::new();
+            for (index, op) in ops.iter().enumerate() {
+                match op {
+                    Op::BlockBegin { label } => labels.push(*label),
+                    Op::LoopBegin { header } => labels.push(*header),
+                    Op::BlockEnd { label } => {
+                        assert_eq!(labels.pop(), Some(*label));
+                        let next_body = ops[index + 1..].iter().find_map(|op| match op {
+                            Op::BlockContent { block } => Some(*block),
+                            _ => None,
+                        });
+                        assert_eq!(next_body, Some(*label), "seed={seed}, ops={ops:?}");
+                    }
+                    Op::LoopEnd => {
+                        labels.pop();
+                    }
+                    Op::Br { depth, target, .. } | Op::BrIf { depth, target, .. } => {
+                        assert_eq!(labels.iter().rev().nth(*depth as usize), Some(target));
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
 
     #[test]
     fn empty_func_produces_empty_ops() {

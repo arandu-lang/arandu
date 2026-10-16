@@ -77,6 +77,30 @@ impl FuncTranslator<'_> {
         }
     }
 
+    /// Consume a condition and copy edge arguments only on the taken edge.
+    /// Phi destinations can share colored locals with values still live on
+    /// the fallthrough path, so an unconditional copy before br_if is invalid.
+    pub(super) fn emit_conditional_branch(
+        &mut self,
+        depth: u32,
+        target: BlockId,
+        args: &[AmirOperand],
+    ) {
+        if args.is_empty() {
+            self.code.push(Instruction::BrIf(depth));
+            return;
+        }
+        let Some(nested_depth) = depth.checked_add(1) else {
+            self.code.push(Instruction::Unreachable);
+            return;
+        };
+        self.code
+            .push(Instruction::If(wasm_encoder::BlockType::Empty));
+        self.emit_block_args(target, args);
+        self.code.push(Instruction::Br(nested_depth));
+        self.code.push(Instruction::End);
+    }
+
     /// Materialize block arguments before a branch.
     pub(super) fn emit_block_args(&mut self, target: BlockId, args: &[AmirOperand]) {
         if args.is_empty() {

@@ -115,6 +115,77 @@ impl<'a> CEmitter<'a> {
                             return;
                         }
                     }
+                    let integer_result = match expected_ar_type {
+                        ArType::IntLiteral => true,
+                        ArType::Primitive(primitive) => primitive.is_integer(),
+                        _ => false,
+                    };
+                    if matches!(op, BinaryOp::ShiftLeft | BinaryOp::ShiftRight) && integer_result {
+                        let bits = self.checked_layout(expected_ar_type).size * 8;
+                        let execution_bits = bits.max(32);
+                        let signed = expected_ar_type.is_signed()
+                            || matches!(expected_ar_type, ArType::IntLiteral);
+                        let _ = write!(
+                            self.output,
+                            "({{ {expected_c_type} ar_lhs = ({left_str}); unsigned ar_count = (unsigned)((uint64_t)({right_str}) & {}); uint{bits}_t ar_bits = ",
+                            execution_bits - 1
+                        );
+                        if *op == BinaryOp::ShiftLeft {
+                            let _ =
+                                write!(self.output, "(uint{execution_bits}_t)ar_lhs << ar_count; ");
+                        } else if signed {
+                            // Complementing before and after an unsigned right
+                            // shift implements sign extension without relying
+                            // on C's implementation-defined negative >>.
+                            let _ = write!(
+                                self.output,
+                                "ar_lhs < 0 ? ~((uint{execution_bits}_t)(~ar_lhs) >> ar_count) : (uint{execution_bits}_t)ar_lhs >> ar_count; "
+                            );
+                        } else {
+                            let _ =
+                                write!(self.output, "(uint{execution_bits}_t)ar_lhs >> ar_count; ");
+                        }
+                        // Copying the result bits also avoids an out-of-range
+                        // unsigned-to-signed cast for left shifts.
+                        let _ = write!(
+                            self.output,
+                            "{expected_c_type} ar_result; memcpy(&ar_result, &ar_bits, sizeof(ar_result)); ar_result; }})"
+                        );
+                        return;
+                    }
+                    if matches!(op, BinaryOp::Div | BinaryOp::Mod) && integer_result {
+                        // C division is undefined for zero and signed MIN / -1.
+                        // Signed remainder must return zero for MIN % -1, as
+                        // Cranelift/Wasm do, without evaluating C's undefined %.
+                        let signed = expected_ar_type.is_signed()
+                            || matches!(expected_ar_type, ArType::IntLiteral);
+                        let _ = write!(
+                            self.output,
+                            "({{ {expected_c_type} ar_lhs = ({left_str}); {expected_c_type} ar_rhs = ({right_str}); if (ar_rhs == 0) {{ AR_ABORT(); }} "
+                        );
+                        let operator = if *op == BinaryOp::Div { "/" } else { "%" };
+                        if signed {
+                            if *op == BinaryOp::Div {
+                                let bits = self.checked_layout(expected_ar_type).size * 8;
+                                let _ = write!(
+                                    self.output,
+                                    "if (ar_lhs == INT{bits}_MIN && ar_rhs == -1) {{ AR_ABORT(); }} "
+                                );
+                            }
+                            if *op == BinaryOp::Mod {
+                                let _ = write!(
+                                    self.output,
+                                    "({expected_c_type})(ar_rhs == -1 ? 0 : ar_lhs % ar_rhs); }})"
+                                );
+                                return;
+                            }
+                        }
+                        let _ = write!(
+                            self.output,
+                            "({expected_c_type})(ar_lhs {operator} ar_rhs); }})"
+                        );
+                        return;
+                    }
                     let op_str = match op {
                         BinaryOp::Add => "+",
                         BinaryOp::Sub => "-",

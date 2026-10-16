@@ -106,6 +106,13 @@ public func BigInt.isNegative(self: ref BigInt): bool {
     return self.is_neg
 }
 
+/// Negates this `BigInt` in-place.
+public func BigInt.negate(self: mut ref BigInt): void {
+    if !self.isZero() {
+        self.is_neg = !self.is_neg
+    }
+}
+
 /// Returns a clone of this `BigInt`.
 public func BigInt.clone(self: ref BigInt): BigInt {
     let mut limbs = vec.Vec<u64>.withCapacity(self.limbs.len())
@@ -332,6 +339,27 @@ public func BigInt.mul(self: ref BigInt, other: ref BigInt): BigInt {
     return res
 }
 
+/// Adds `other` into `self` in-place.
+public func BigInt.addAssign(self: mut ref BigInt, other: ref BigInt): void {
+    let sum = self.add(other)
+    self.is_neg = sum.is_neg
+    self.limbs = sum.limbs
+}
+
+/// Subtracts `other` from `self` in-place.
+public func BigInt.subAssign(self: mut ref BigInt, other: ref BigInt): void {
+    let diff = self.sub(other)
+    self.is_neg = diff.is_neg
+    self.limbs = diff.limbs
+}
+
+/// Multiplies `self` by `other` in-place.
+public func BigInt.mulAssign(self: mut ref BigInt, other: ref BigInt): void {
+    let prod = self.mul(other)
+    self.is_neg = prod.is_neg
+    self.limbs = prod.limbs
+}
+
 // ── BigDecimal (RFC 0037 Layer 3) ───────────────────────────────────────────
 
 /// An arbitrary-precision decimal number with dynamic limb storage.
@@ -406,4 +434,23 @@ public func BigDecimal.sub(self: ref BigDecimal, other: ref BigDecimal): BigDeci
     let mut negOther = other.clone()
     negOther.mantissa.is_neg = !negOther.mantissa.is_neg
     return self.add(ref negOther)
+}
+
+/// Negates this `BigDecimal` in-place.
+public func BigDecimal.negate(self: mut ref BigDecimal): void {
+    self.mantissa.negate()
+}
+
+/// Adds `other` into `self` in-place with automatic scale alignment.
+public func BigDecimal.addAssign(self: mut ref BigDecimal, other: ref BigDecimal): void {
+    let sum = self.add(other)
+    self.mantissa = sum.mantissa
+    self.scale = sum.scale
+}
+
+/// Subtracts `other` from `self` in-place with automatic scale alignment.
+public func BigDecimal.subAssign(self: mut ref BigDecimal, other: ref BigDecimal): void {
+    let diff = self.sub(other)
+    self.mantissa = diff.mantissa
+    self.scale = diff.scale
 }

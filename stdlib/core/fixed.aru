@@ -77,9 +77,16 @@ public func Q16_16.toRaw(self: ref Q16_16): i32 {
 
 /// Adds two values and clamps the raw result to the signed 32-bit range.
 ///
+/// Adds two values and clamps the raw result to the signed 32-bit range.
+///
 /// Intermediate arithmetic uses 64 bits; no allocation occurs.
 public func Q16_16.add(self: ref Q16_16, other: Q16_16): Q16_16 {
     return Q16_16 { raw: clampRaw((self.raw as i64) + (other.raw as i64)) }
+}
+
+/// Adds `other` into `self` in-place with saturation.
+public func Q16_16.addAssign(self: mut ref Q16_16, other: Q16_16): void {
+    self.raw = clampRaw((self.raw as i64) + (other.raw as i64))
 }
 
 /// Subtracts `other` and clamps the raw result to signed 32-bit range.
@@ -89,6 +96,11 @@ public func Q16_16.sub(self: ref Q16_16, other: Q16_16): Q16_16 {
     return Q16_16 { raw: clampRaw((self.raw as i64) - (other.raw as i64)) }
 }
 
+/// Subtracts `other` from `self` in-place with saturation.
+public func Q16_16.subAssign(self: mut ref Q16_16, other: Q16_16): void {
+    self.raw = clampRaw((self.raw as i64) - (other.raw as i64))
+}
+
 /// Multiplies raw values, shifts right by 16, and clamps the result.
 ///
 /// The shift discards fractional low bits; negative results follow an
@@ -96,6 +108,12 @@ public func Q16_16.sub(self: ref Q16_16, other: Q16_16): Q16_16 {
 public func Q16_16.mul(self: ref Q16_16, other: Q16_16): Q16_16 {
     let wide: i64 = (self.raw as i64) * (other.raw as i64)
     return Q16_16 { raw: clampRaw(wide >> (16 as i64)) }
+}
+
+/// Multiplies `self` by `other` in-place with saturation.
+public func Q16_16.mulAssign(self: mut ref Q16_16, other: Q16_16): void {
+    let wide: i64 = (self.raw as i64) * (other.raw as i64)
+    self.raw = clampRaw(wide >> (16 as i64))
 }
 
 /// Divides by `other`, returning `None` when its raw value is zero.
@@ -118,7 +136,7 @@ public func Q16_16.abs(self: ref Q16_16): Q16_16 {
     if self.raw < 0 {
         return Q16_16 { raw: clampRaw(-(self.raw as i64)) }
     }
-    return *self
+    return Q16_16 { raw: self.raw }
 }
 
 /// Returns `true` if `self` is negative.
@@ -189,15 +207,31 @@ public func Q8_8.add(self: ref Q8_8, other: Q8_8): Q8_8 {
     return Q8_8 { raw: clampRaw8((self.raw as i32) + (other.raw as i32)) }
 }
 
+/// Adds `other` into `self` in-place with saturation.
+public func Q8_8.addAssign(self: mut ref Q8_8, other: Q8_8): void {
+    self.raw = clampRaw8((self.raw as i32) + (other.raw as i32))
+}
+
 /// Subtracts with saturation to the signed 16-bit raw range.
 public func Q8_8.sub(self: ref Q8_8, other: Q8_8): Q8_8 {
     return Q8_8 { raw: clampRaw8((self.raw as i32) - (other.raw as i32)) }
+}
+
+/// Subtracts `other` from `self` in-place with saturation.
+public func Q8_8.subAssign(self: mut ref Q8_8, other: Q8_8): void {
+    self.raw = clampRaw8((self.raw as i32) - (other.raw as i32))
 }
 
 /// Multiplies with a signed 32-bit intermediate, rounds down, and saturates.
 public func Q8_8.mul(self: ref Q8_8, other: Q8_8): Q8_8 {
     let product: i32 = (self.raw as i32) * (other.raw as i32)
     return Q8_8 { raw: clampRaw8(product >> (8 as i32)) }
+}
+
+/// Multiplies `self` by `other` in-place with saturation.
+public func Q8_8.mulAssign(self: mut ref Q8_8, other: Q8_8): void {
+    let product: i32 = (self.raw as i32) * (other.raw as i32)
+    self.raw = clampRaw8(product >> (8 as i32))
 }
 
 /// Divides, truncating toward zero and saturating; a zero divisor returns `None`.
@@ -210,7 +244,7 @@ public func Q8_8.div(self: ref Q8_8, other: Q8_8): Option<Q8_8> {
 /// Returns the absolute value, saturating the minimum raw value.
 public func Q8_8.abs(self: ref Q8_8): Q8_8 {
     if self.raw < (0 as i16) { return Q8_8 { raw: clampRaw8(-(self.raw as i32)) } }
-    return *self
+    return Q8_8 { raw: self.raw }
 }
 
 /// Returns whether the raw value is negative.
@@ -297,6 +331,19 @@ public func Q32_32.add(self: ref Q32_32, other: Q32_32): Q32_32 {
     return Q32_32 { raw: self.raw + other.raw }
 }
 
+/// Adds `other` into `self` in-place with saturation.
+public func Q32_32.addAssign(self: mut ref Q32_32, other: Q32_32): void {
+    if other.raw > (0 as i64) && self.raw > raw32Max() - other.raw {
+        self.raw = raw32Max()
+        return
+    }
+    if other.raw < (0 as i64) && self.raw < raw32Min() - other.raw {
+        self.raw = raw32Min()
+        return
+    }
+    self.raw = self.raw + other.raw
+}
+
 /// Subtracts with saturation; bounds are checked before signed subtraction.
 public func Q32_32.sub(self: ref Q32_32, other: Q32_32): Q32_32 {
     if other.raw < (0 as i64) && self.raw > raw32Max() + other.raw {
@@ -306,6 +353,19 @@ public func Q32_32.sub(self: ref Q32_32, other: Q32_32): Q32_32 {
         return Q32_32 { raw: raw32Min() }
     }
     return Q32_32 { raw: self.raw - other.raw }
+}
+
+/// Subtracts `other` from `self` in-place with saturation.
+public func Q32_32.subAssign(self: mut ref Q32_32, other: Q32_32): void {
+    if other.raw < (0 as i64) && self.raw > raw32Max() + other.raw {
+        self.raw = raw32Max()
+        return
+    }
+    if other.raw > (0 as i64) && self.raw < raw32Min() + other.raw {
+        self.raw = raw32Min()
+        return
+    }
+    self.raw = self.raw - other.raw
 }
 
 /// Multiplies with exact unsigned limb intermediates, rounds down, and saturates.

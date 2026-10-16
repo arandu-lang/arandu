@@ -40,9 +40,14 @@ func rotl64(x: u64, k: u32): u64 {
     return (x << k) | (x >> (64u32 - k))
 }
 
-func splitmix64(state: mut ref u64): u64 {
-    state.* = state.* + 0x9e3779b97f4a7c15u64
-    let mut z = state.*
+/// 64-bit generator used to expand seeds into 256-bit generator state.
+struct SplitMix64 {
+    state: u64,
+}
+
+func SplitMix64.next(self: mut ref SplitMix64): u64 {
+    self.state = self.state + 0x9e3779b97f4a7c15u64
+    let mut z = self.state
     z = (z ^ (z >> 30u32)) * 0xbf58476d1ce4e5b9u64
     z = (z ^ (z >> 27u32)) * 0x94d049bb133111ebu64
     return z ^ (z >> 31u32)
@@ -58,11 +63,13 @@ public struct Xoshiro256PlusPlus {
 
 /// Creates a generator initialized with a 64-bit seed expanded via SplitMix64.
 public func Xoshiro256PlusPlus.fromSeed(seed: u64): Xoshiro256PlusPlus {
-    let mut s = if seed == 0u64 { 0x853c49e6748fea9bu64 } else { seed }
-    let s0 = splitmix64(mut ref s)
-    let s1 = splitmix64(mut ref s)
-    let s2 = splitmix64(mut ref s)
-    let s3 = splitmix64(mut ref s)
+    let mut sm = SplitMix64 {
+        state: if seed == 0u64 { 0x853c49e6748fea9bu64 } else { seed },
+    }
+    let s0 = sm.next()
+    let s1 = sm.next()
+    let s2 = sm.next()
+    let s3 = sm.next()
     return Xoshiro256PlusPlus {
         s0: s0,
         s1: s1,
@@ -103,7 +110,7 @@ public func Xoshiro256PlusPlus.nextFloat(self: mut ref Xoshiro256PlusPlus): floa
 /// Creates a generator initialized from operating system hardware entropy.
 public func Xoshiro256PlusPlus.fromEntropy(): Xoshiro256PlusPlus {
     let mut buf: [32]u8 = [0u8; 32]
-    let ok = fillEntropy(mut ref &buf)
+    let ok = fillEntropy(&buf)
     if ok {
         let mut s0: u64 = 0u64
         let mut s1: u64 = 0u64
@@ -138,7 +145,7 @@ public func Xoshiro256PlusPlus.genRangeFloat(self: mut ref Xoshiro256PlusPlus, m
 }
 
 /// Fills `dest` with pseudorandom bytes.
-public func Xoshiro256PlusPlus.nextBytes(self: mut ref Xoshiro256PlusPlus, dest: mut ref []u8): void {
+public func Xoshiro256PlusPlus.nextBytes(self: mut ref Xoshiro256PlusPlus, dest: []u8): void {
     let len = dest.len()
     let mut i: usize = 0
     while i < len {
@@ -177,7 +184,7 @@ public func Xoshiro256PlusPlus.genRange(self: mut ref Xoshiro256PlusPlus, minVal
 /// Fills `dest` with secure hardware entropy from the operating system.
 ///
 /// Returns `true` on success, or `false` if the system entropy source fails.
-public func fillEntropy(dest: mut ref []u8): bool {
+public func fillEntropy(dest: []u8): bool {
     let len = dest.len()
     if len == (0 as usize) { return true }
     unsafe {

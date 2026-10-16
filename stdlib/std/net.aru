@@ -398,6 +398,22 @@ public func TcpStream.read(self: mut ref TcpStream, buf: mut ref []u8): Result<u
     return Result.Ok(n as usize)
 }
 
+/// Reads up to the buffer slice length without double indirection.
+public func TcpStream.readSlice(self: mut ref TcpStream, buf: []u8): Result<usize, io.IoError> {
+    let len = slice.len<u8>(buf)
+    if len == (0 as usize) {
+        return Result.Ok(0 as usize)
+    }
+    if len > (2147483647 as usize) {
+        return Result.Err(io.IoError.new(io.IoErrorKind.InvalidInput, 5))
+    }
+    let n = unsafe { tcpRead(self.raw, slice.asPtr<u8>(buf), len as int) }
+    if n < 0 {
+        return Result.Err(io.IoError.new(io.IoErrorKind.BrokenPipe, -1))
+    }
+    return Result.Ok(n as usize)
+}
+
 /// Writes from `buf` and returns the number of bytes accepted.
 ///
 /// A successful write can be short. Any negative host result becomes
@@ -456,6 +472,7 @@ extern "C" {
 public struct UdpSocket {
     id: int,
     local_addr: SocketAddr,
+    last_peer_port: int,
 }
 
 /// Binds a UDP socket to the requested local address.
@@ -469,6 +486,7 @@ public func UdpSocket.bind(addr: SocketAddr): Result<UdpSocket, io.IoError> {
         return Result.Ok(UdpSocket {
             id: id,
             local_addr: addr,
+            last_peer_port: 0,
         })
     }
 }
@@ -493,40 +511,48 @@ public func UdpSocket.sendTo(self: ref UdpSocket, buf: []u8, target: SocketAddr)
     }
 }
 
-/// Receives a single datagram message on the socket.
-public func UdpSocket.recvFrom(self: mut ref UdpSocket, buf: mut ref []u8): Result<usize, io.IoError> {
-    let len = slice.len<u8>(*buf)
+/// Metadata for a received UDP datagram.
+public struct UdpPacket {
+    bytes_received: usize,
+    peer_port: int,
+}
+
+/// Receives a single datagram message on the socket into `buf`.
+public func UdpSocket.recvFrom(self: mut ref UdpSocket, buf: []u8): Result<usize, io.IoError> {
+    let len = slice.len<u8>(buf)
     let mut senderPort: int = 0
     unsafe {
         let recvd = ar_net_udp_recv_from(
             self.id,
-            slice.asPtr<u8>(*buf),
+            slice.asPtr<u8>(buf),
             len,
             &senderPort
         )
         if recvd < 0 {
             return Result.Err(io.IoError.new(io.IoErrorKind.ConnectionReset, recvd))
         }
+        self.last_peer_port = senderPort
         return Result.Ok(recvd as usize)
     }
 }
 
-/// Receives a datagram message on the socket, returning the sender's port in `outPort`.
-public func UdpSocket.recvFromWithPort(self: mut ref UdpSocket, buf: mut ref []u8, outPort: mut ref int): Result<usize, io.IoError> {
-    let len = slice.len<u8>(*buf)
-    let mut senderPort: int = 0
-    unsafe {
-        let recvd = ar_net_udp_recv_from(
-            self.id,
-            slice.asPtr<u8>(*buf),
-            len,
-            &senderPort
-        )
-        if recvd < 0 {
-            return Result.Err(io.IoError.new(io.IoErrorKind.ConnectionReset, recvd))
+/// Returns the sender port of the most recent datagram received on this socket.
+public func UdpSocket.lastPeerPort(self: ref UdpSocket): int {
+    return self.last_peer_port
+}
+
+/// Receives a datagram into `buf`, returning a structured `UdpPacket` with bytes read and peer port.
+public func UdpSocket.recvPacket(self: mut ref UdpSocket, buf: []u8): Result<UdpPacket, io.IoError> {
+    match self.recvFrom(buf) {
+        Result.Ok(n) => {
+            return Result.Ok(UdpPacket {
+                bytes_received: n,
+                peer_port: self.last_peer_port,
+            })
         }
-        *outPort = senderPort
-        return Result.Ok(recvd as usize)
+        Result.Err(err) => {
+            return Result.Err(err)
+        }
     }
 }
 

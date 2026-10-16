@@ -122,11 +122,13 @@ func cmpMagnitude(a: ref BigInt, b: ref BigInt): cmp.Ordering {
     let lb = b.limbs.len()
     if la < lb { return cmp.Ordering.Less }
     if la > lb { return cmp.Ordering.Greater }
+    let aSlice = a.limbs.asSlice()
+    let bSlice = b.limbs.asSlice()
     let mut i = la
     while i > (0 as usize) {
         let idx = i - (1 as usize)
-        let wa = match a.limbs.get(idx) { Option.Some(w) => *w, Option.None => 0u64 }
-        let wb = match b.limbs.get(idx) { Option.Some(w) => *w, Option.None => 0u64 }
+        let wa = aSlice[idx]
+        let wb = bSlice[idx]
         if wa < wb { return cmp.Ordering.Less }
         if wa > wb { return cmp.Ordering.Greater }
         i = idx
@@ -141,11 +143,13 @@ func addLimbs(a: ref BigInt, b: ref BigInt): BigInt {
     let maxLen = if la > lb { la } else { lb }
     let mut resultLimbs = vec.Vec<u64>.withCapacity(maxLen + (1 as usize))
 
+    let aSlice = a.limbs.asSlice()
+    let bSlice = b.limbs.asSlice()
     let mut carry = 0u64
     let mut i = 0 as usize
     while i < maxLen || carry > 0u64 {
-        let wa = if i < la { match a.limbs.get(i) { Option.Some(w) => *w, Option.None => 0u64 } } else { 0u64 }
-        let wb = if i < lb { match b.limbs.get(i) { Option.Some(w) => *w, Option.None => 0u64 } } else { 0u64 }
+        let wa = if i < la { aSlice[i] } else { 0u64 }
+        let wb = if i < lb { bSlice[i] } else { 0u64 }
         let sum1 = wa + wb
         let carry1 = if sum1 < wa { 1u64 } else { 0u64 }
         let sum2 = sum1 + carry
@@ -165,12 +169,14 @@ func subLimbs(a: ref BigInt, b: ref BigInt): BigInt {
     let la = a.limbs.len()
     let lb = b.limbs.len()
     let mut resultLimbs = vec.Vec<u64>.withCapacity(la)
+    let aSlice = a.limbs.asSlice()
+    let bSlice = b.limbs.asSlice()
 
     let mut borrow = 0u64
     let mut i = 0 as usize
     while i < la {
-        let wa = match a.limbs.get(i) { Option.Some(w) => *w, Option.None => 0u64 }
-        let wb = if i < lb { match b.limbs.get(i) { Option.Some(w) => *w, Option.None => 0u64 } } else { 0u64 }
+        let wa = aSlice[i]
+        let wb = if i < lb { bSlice[i] } else { 0u64 }
         let diff1 = wa - borrow
         let borrow1 = if wa < borrow { 1u64 } else { 0u64 }
         let diff2 = diff1 - wb
@@ -239,13 +245,16 @@ public func BigInt.mul(self: ref BigInt, other: ref BigInt): BigInt {
         k = k + (1 as usize)
     }
 
+    let aSlice = self.limbs.asSlice()
+    let bSlice = other.limbs.asSlice()
+
     let mut i = 0 as usize
     while i < la {
-        let wa = match self.limbs.get(i) { Option.Some(w) => *w, Option.None => 0u64 }
+        let wa = aSlice[i]
         let mut carry = 0u64
         let mut j = 0 as usize
         while j < lb || carry > 0u64 {
-            let wb = if j < lb { match other.limbs.get(j) { Option.Some(w) => *w, Option.None => 0u64 } } else { 0u64 }
+            let wb = if j < lb { bSlice[j] } else { 0u64 }
             let idx = i + j
             let current = match resultLimbs.get(idx) { Option.Some(w) => *w, Option.None => 0u64 }
 

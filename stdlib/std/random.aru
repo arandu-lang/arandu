@@ -17,7 +17,7 @@
 //! ## Examples
 //!
 //! ```arandu
-//! import std.std.random as random
+//! import std.random as random
 //!
 //! let mut rng = random.Xoshiro256PlusPlus.fromSeed(42u64)
 //! let n = rng.nextU64()
@@ -27,7 +27,7 @@
 //!
 //! ## Platform
 //! `native` · `wasm32`
-module std.std.random
+module std.random
 
 import std.core.intrinsics as intrinsics
 

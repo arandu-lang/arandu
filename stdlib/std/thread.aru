@@ -14,7 +14,7 @@
 //! ## Examples
 //!
 //! ```arandu
-//! import std.std.thread as thread
+//! import std.thread as thread
 //!
 //! thread.sleep(10u64) // sleeps 10 milliseconds
 //! thread.yieldNow()
@@ -22,7 +22,7 @@
 //!
 //! ## Platform
 //! `native` · `wasm32` (yield/sleep supported)
-module std.std.thread
+module std.thread
 
 import std.core.option as option
 

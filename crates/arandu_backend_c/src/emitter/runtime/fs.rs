@@ -475,7 +475,107 @@ static void ar_fs_readdir(ArStr path, uint8_t **out_buf, {uint_c_ty} *out_count,
     if (c_path != stack_buf) free(c_path);
     *out_buf = NULL; *out_count = 0; *out_cap = 0; *err = 8;
 #endif
-}}"#
+}}
+
+static {int_c_ty} ar_fs_dir_open(const uint8_t *path_ptr, {uint_c_ty} path_len) {{
+#if !defined(_WIN32) || defined(__MINGW32__)
+    if (!path_ptr || path_len == 0) return -1;
+    char stack_buf[1024];
+    ArStr s = ar_str_pack(path_ptr, ({int_c_ty})path_len);
+    char *c_path = ar_str_to_c_path(s, stack_buf, sizeof(stack_buf));
+    if (!c_path) return -1;
+    int fd = open(c_path, O_RDONLY);
+    if (c_path != stack_buf) free(c_path);
+    return ({int_c_ty})fd;
+#else
+    (void)path_ptr; (void)path_len;
+    return -1;
+#endif
+}}
+
+static {int_c_ty} ar_fs_openat({int_c_ty} dir_fd, const uint8_t *path_ptr, {uint_c_ty} path_len, bool read, bool write, bool create, bool truncate) {{
+#if !defined(_WIN32) || defined(__MINGW32__)
+    if (!path_ptr || path_len == 0 || dir_fd < 0) return -1;
+    char stack_buf[1024];
+    ArStr s = ar_str_pack(path_ptr, ({int_c_ty})path_len);
+    char *c_path = ar_str_to_c_path(s, stack_buf, sizeof(stack_buf));
+    if (!c_path) return -1;
+    int flags = (read && write) ? O_RDWR : (write ? O_WRONLY : O_RDONLY);
+    if (create) flags |= O_CREAT;
+    if (truncate) flags |= O_TRUNC;
+    int fd = openat((int)dir_fd, c_path, flags, 0666);
+    if (c_path != stack_buf) free(c_path);
+    return ({int_c_ty})fd;
+#else
+    (void)dir_fd; (void)path_ptr; (void)path_len; (void)read; (void)write; (void)create; (void)truncate;
+    return -1;
+#endif
+}}
+
+static {int_c_ty} ar_fs_mkdirat({int_c_ty} dir_fd, const uint8_t *path_ptr, {uint_c_ty} path_len) {{
+#if !defined(_WIN32) || defined(__MINGW32__)
+    if (!path_ptr || path_len == 0 || dir_fd < 0) return -1;
+    char stack_buf[1024];
+    ArStr s = ar_str_pack(path_ptr, ({int_c_ty})path_len);
+    char *c_path = ar_str_to_c_path(s, stack_buf, sizeof(stack_buf));
+    if (!c_path) return -1;
+    int ret = mkdirat((int)dir_fd, c_path, 0777);
+    int res = -1;
+    if (ret == 0) {{
+        res = openat((int)dir_fd, c_path, O_RDONLY);
+    }}
+    if (c_path != stack_buf) free(c_path);
+    return ({int_c_ty})res;
+#else
+    (void)dir_fd; (void)path_ptr; (void)path_len;
+    return -1;
+#endif
+}}
+
+static {int_c_ty} ar_fs_unlinkat({int_c_ty} dir_fd, const uint8_t *path_ptr, {uint_c_ty} path_len, bool is_dir) {{
+#if !defined(_WIN32) || defined(__MINGW32__)
+    if (!path_ptr || path_len == 0 || dir_fd < 0) return -1;
+    char stack_buf[1024];
+    ArStr s = ar_str_pack(path_ptr, ({int_c_ty})path_len);
+    char *c_path = ar_str_to_c_path(s, stack_buf, sizeof(stack_buf));
+    if (!c_path) return -1;
+#ifndef AT_REMOVEDIR
+#define AT_REMOVEDIR 0x200
+#endif
+    int flags = is_dir ? AT_REMOVEDIR : 0;
+    int ret = unlinkat((int)dir_fd, c_path, flags);
+    if (c_path != stack_buf) free(c_path);
+    return ({int_c_ty})ret;
+#else
+    (void)dir_fd; (void)path_ptr; (void)path_len; (void)is_dir;
+    return -1;
+#endif
+}}
+
+static {int_c_ty} ar_net_udp_bind(const uint8_t *host_ptr, {uint_c_ty} host_len, {int_c_ty} port) {{
+    (void)host_ptr; (void)host_len; (void)port;
+    return -1;
+}}
+
+static {int_c_ty} ar_net_udp_send_to({int_c_ty} id, const uint8_t *buf, {uint_c_ty} len, const uint8_t *host_ptr, {uint_c_ty} host_len, {int_c_ty} port) {{
+    (void)id; (void)buf; (void)len; (void)host_ptr; (void)host_len; (void)port;
+    return -1;
+}}
+
+static {int_c_ty} ar_net_udp_recv_from({int_c_ty} id, uint8_t *buf, {uint_c_ty} len, {int_c_ty} *port_out) {{
+    (void)id; (void)buf; (void)len; (void)port_out;
+    return -1;
+}}
+
+static void ar_net_udp_close({int_c_ty} id) {{
+    (void)id;
+}}
+
+static {int_c_ty} ar_net_dns_resolve(const uint8_t *name_ptr, {uint_c_ty} name_len, uint8_t *ip_buf, {uint_c_ty} ip_cap) {{
+    (void)name_ptr; (void)name_len; (void)ip_buf; (void)ip_cap;
+    return -1;
+}}
+"#
         );
     }
 }

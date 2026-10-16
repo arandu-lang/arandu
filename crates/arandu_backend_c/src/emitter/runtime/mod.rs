@@ -72,7 +72,7 @@ impl<'a> CEmitter<'a> {
         if features.tasks {
             let _ = writeln!(
                 self.output,
-                "#if !defined(_WIN32) || defined(__MINGW32__)\n#include <pthread.h>\n#include <unistd.h>\n#endif"
+                "#if !defined(_WIN32) || defined(__MINGW32__)\n#include <pthread.h>\n#include <unistd.h>\n#include <sched.h>\n#endif"
             );
             let _ = writeln!(
                 &mut self.output,
@@ -92,7 +92,7 @@ impl<'a> CEmitter<'a> {
             );
             let _ = writeln!(
                 &mut self.output,
-                "#if !defined(_WIN32) || defined(__MINGW32__)\n#include <dirent.h>\n#endif"
+                "#if !defined(_WIN32) || defined(__MINGW32__)\n#include <dirent.h>\n#include <fcntl.h>\n#endif"
             );
         }
         let _ = writeln!(

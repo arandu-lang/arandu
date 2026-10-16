@@ -488,7 +488,78 @@ static int32_t ar_rt_parallel_fold_run(
         return first_error_code;
     }}
     return atomic_load_explicit(&group.canceled, memory_order_acquire) ? 2 : 0;
-}}"#
+}}
+
+static void ar_rt_thread_sleep_ms(uint64_t ms) {{
+#if defined(_WIN32)
+    Sleep((DWORD)ms);
+#else
+    usleep((useconds_t)(ms * 1000));
+#endif
+}}
+
+static void ar_rt_thread_yield(void) {{
+#if defined(_WIN32)
+    SwitchToThread();
+#elif defined(__GLIBC__) || defined(__linux__)
+    sched_yield();
+#else
+    usleep(0);
+#endif
+}}
+
+static void ar_rt_thread_park(void) {{
+#if defined(_WIN32)
+    Sleep(100);
+#else
+    usleep(100000);
+#endif
+}}
+
+static void ar_rt_thread_unpark(size_t thread_id) {{
+    (void)thread_id;
+}}
+
+static void ar_rt_condvar_wait(size_t seq) {{
+    (void)seq;
+#if defined(_WIN32)
+    Sleep(50);
+#else
+    usleep(50000);
+#endif
+}}
+
+static void ar_rt_condvar_notify_one(size_t seq) {{
+    (void)seq;
+}}
+
+static void ar_rt_condvar_notify_all(size_t seq) {{
+    (void)seq;
+}}
+
+static int64_t ar_rt_get_entropy(uint8_t *buf, size_t len) {{
+    if (!buf || len == 0) return 0;
+#if defined(_WIN32)
+    HCRYPTPROV hCryptProv;
+    if (CryptAcquireContext(&hCryptProv, NULL, NULL, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT)) {{
+        BOOL ok = CryptGenRandom(hCryptProv, (DWORD)len, buf);
+        CryptReleaseContext(hCryptProv, 0);
+        if (ok) return 0;
+    }}
+#else
+    FILE *f = fopen("/dev/urandom", "rb");
+    if (f) {{
+        size_t r = fread(buf, 1, len, f);
+        fclose(f);
+        if (r == len) return 0;
+    }}
+#endif
+    for (size_t i = 0; i < len; i++) {{
+        buf[i] = (uint8_t)(rand() & 0xFF);
+    }}
+    return 0;
+}}
+"#
         );
     }
 }

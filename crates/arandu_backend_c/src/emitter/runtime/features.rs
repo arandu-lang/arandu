@@ -143,7 +143,7 @@ impl RuntimeFeatures {
         self.string_eq |= name == "ar_str_eq";
         self.path |=
             name.starts_with("ar_path_") || (name.starts_with("ar_str_") && name != "ar_str_eq");
-        self.fs |= name.starts_with("ar_fs_") || name == "exists";
+        self.fs |= name.starts_with("ar_fs_") || name == "exists" || name.starts_with("ar_net_");
         self.env |= name.starts_with("ar_env_");
         self.arena |= name.starts_with("ar_gen_");
         self.coroutine |= name.starts_with("ar_co_");
@@ -154,6 +154,14 @@ impl RuntimeFeatures {
                 | "ar_rt_join_i64"
                 | "ar_rt_cancel_i64"
                 | "ar_rt_parallel_fold_run"
+                | "ar_rt_thread_sleep_ms"
+                | "ar_rt_thread_yield"
+                | "ar_rt_thread_park"
+                | "ar_rt_thread_unpark"
+                | "ar_rt_condvar_wait"
+                | "ar_rt_condvar_notify_one"
+                | "ar_rt_condvar_notify_all"
+                | "ar_rt_get_entropy"
         );
     }
 }

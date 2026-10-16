@@ -5,7 +5,7 @@ use arandu_middle::hir::{
     HirProgram, HirSimpleStmt, HirStmt, HirStmtKind,
 };
 use arandu_middle::symbol_table::SymbolId;
-use arandu_middle::types::{ArType, TypeId, TypeInterner};
+use arandu_middle::types::{ArType, Primitive, TypeId, TypeInterner};
 use arandu_typeck::TypeCheckResult;
 
 use super::graph::{InstantiationGraph, InstantiationKey, InstantiationNodeId, MonoError};
@@ -436,12 +436,19 @@ fn method_symbol_from_field(
         ArType::Named(id, _) => Some(id),
         ArType::Ptr(inner) => match tc.type_info.type_interner.resolve(inner) {
             ArType::Named(id, _) => Some(id),
-            _ => None,
+            _ => tc.symbols.builtins.ptr_type,
         },
-        // Builtin Result/Option methods (`expectOrAbort`) are associated to the
+        // Builtin Result/Option/primitive methods are associated to the
         // prelude type symbols after import re-index (not ArType::Named).
         ArType::Result(_, _) => tc.symbols.builtins.result,
         ArType::Option(_) => tc.symbols.builtins.option,
+        ArType::Primitive(Primitive::Str) => tc.symbols.builtins.str_type,
+        ArType::Primitive(Primitive::Char) => tc.symbols.builtins.char_type,
+        ArType::Primitive(Primitive::Int) | ArType::IntLiteral => tc.symbols.builtins.int_type,
+        ArType::Primitive(Primitive::Float) | ArType::FloatLiteral => {
+            tc.symbols.builtins.float_type
+        }
+        ArType::Slice(_) => tc.symbols.builtins.slice_type,
         _ => None,
     }?;
     tc.symbols.lookup_associated_member(type_id, field)

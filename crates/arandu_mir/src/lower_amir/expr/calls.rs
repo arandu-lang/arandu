@@ -36,17 +36,29 @@ fn resolve_method_target(
         };
         if matches!(
             base_ty,
-            ArType::Named(_, _) | ArType::Result(_, _) | ArType::Option(_)
+            ArType::Named(_, _)
+                | ArType::Result(_, _)
+                | ArType::Option(_)
+                | ArType::Primitive(_)
+                | ArType::Slice(_)
         ) {
             break;
         }
     }
-    // Named receivers use their type SymbolId; builtin Result/Option methods
+    // Named receivers use their type SymbolId; builtin Result/Option/primitive methods
     // live on the prelude type symbols (linked by import re-index).
     let type_id = match base_ty {
         ArType::Named(id, _) => Some(id),
         ArType::Result(_, _) => symbols.builtins.result,
         ArType::Option(_) => symbols.builtins.option,
+        ArType::Primitive(Primitive::Str) => symbols.builtins.str_type,
+        ArType::Primitive(Primitive::Char) => symbols.builtins.char_type,
+        ArType::Primitive(Primitive::Int) | ArType::IntLiteral => symbols.builtins.int_type,
+        ArType::Primitive(Primitive::U32) => symbols.builtins.u32_type,
+        ArType::Primitive(Primitive::U64) => symbols.builtins.u64_type,
+        ArType::Primitive(Primitive::Float) | ArType::FloatLiteral => symbols.builtins.float_type,
+        ArType::Slice(_) => symbols.builtins.slice_type,
+        ArType::Ptr(_) => symbols.builtins.ptr_type,
         _ => None,
     }?;
 

@@ -8,7 +8,7 @@ use arandu_middle::hir::{
     HirStringPart,
 };
 use arandu_middle::symbol_table::SymbolId;
-use arandu_middle::types::ArType;
+use arandu_middle::types::{ArType, Primitive};
 use arandu_typeck::TypeCheckResult;
 use rustc_hash::FxHashMap;
 
@@ -359,7 +359,11 @@ pub(super) fn try_rewrite_generic_call<'bump>(
                         };
                         if matches!(
                             actual,
-                            ArType::Named(_, _) | ArType::Result(_, _) | ArType::Option(_)
+                            ArType::Named(_, _)
+                                | ArType::Result(_, _)
+                                | ArType::Option(_)
+                                | ArType::Primitive(_)
+                                | ArType::Slice(_)
                         ) {
                             break;
                         }
@@ -368,10 +372,19 @@ pub(super) fn try_rewrite_generic_call<'bump>(
                         ArType::Named(id, _) => Some(id),
                         ArType::Ptr(inner) => match tc.type_info.type_interner.resolve(inner) {
                             ArType::Named(id, _) => Some(id),
-                            _ => None,
+                            _ => tc.symbols.builtins.ptr_type,
                         },
                         ArType::Result(_, _) => tc.symbols.builtins.result,
                         ArType::Option(_) => tc.symbols.builtins.option,
+                        ArType::Primitive(Primitive::Str) => tc.symbols.builtins.str_type,
+                        ArType::Primitive(Primitive::Char) => tc.symbols.builtins.char_type,
+                        ArType::Primitive(Primitive::Int) | ArType::IntLiteral => {
+                            tc.symbols.builtins.int_type
+                        }
+                        ArType::Primitive(Primitive::Float) | ArType::FloatLiteral => {
+                            tc.symbols.builtins.float_type
+                        }
+                        ArType::Slice(_) => tc.symbols.builtins.slice_type,
                         _ => None,
                     };
                     let Some(type_id) = type_id else {

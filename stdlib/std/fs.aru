@@ -114,10 +114,46 @@ public func OpenOptions.writeOnly(): OpenOptions {
     return writeOnly()
 }
 
-/// Wraps an OS file descriptor; no public constructor is available yet.
+/// Wraps an OS file descriptor.
 public struct File {
     /// Host descriptor; `close` sets it to `-1`.
     fd: int
+}
+
+/// Reads up to `count` bytes into `buf` from this file. Returns the number of bytes read, or negative on error.
+public func File.read(self: ref File, buf: ptr[u8], count: usize): int {
+    if self.fd < 0 { return -1 }
+    unsafe {
+        return ar_fs_read(self.fd, buf, count)
+    }
+}
+
+/// Writes up to `count` bytes from `buf` to this file. Returns the number of bytes written, or negative on error.
+public func File.write(self: ref File, buf: ptr[u8], count: usize): int {
+    if self.fd < 0 { return -1 }
+    unsafe {
+        return ar_fs_write(self.fd, buf, count)
+    }
+}
+
+/// Closes this file descriptor.
+public func File.close(self: mut ref File): void {
+    if self.fd >= 0 {
+        unsafe {
+            ar_fs_close(self.fd)
+        }
+        self.fd = -1
+    }
+}
+
+/// Destroys the file descriptor on scope exit if not already closed.
+@Destructor
+func File.destroy(self: own File): void {
+    if self.fd >= 0 {
+        unsafe {
+            ar_fs_close(self.fd)
+        }
+    }
 }
 
 extern "C" {
@@ -471,6 +507,47 @@ public func Dir.openFile(self: ref Dir, subpath: str, options: OpenOptions): Res
             return Result.Err(io.IoError.NotFound)
         }
         return Result.Ok(File { fd: fd })
+    }
+}
+
+/// Opens a subdirectory relative to this directory descriptor as a new `Dir` capability.
+public func Dir.openDir(self: ref Dir, subpath: str): Result<Dir, io.IoError> {
+    let bytes = intrinsics.strBytes(subpath)
+    unsafe {
+        let fd = ar_fs_openat(
+            self.fd,
+            bytes.asPtr(),
+            bytes.len(),
+            true,
+            false,
+            false,
+            false
+        )
+        if fd < 0 {
+            return Result.Err(io.IoError.NotFound)
+        }
+        return Result.Ok(Dir { fd: fd })
+    }
+}
+
+/// Checks if a file exists relative to this directory descriptor without ambient path leakage.
+public func Dir.fileExists(self: ref Dir, subpath: str): bool {
+    let bytes = intrinsics.strBytes(subpath)
+    unsafe {
+        let fd = ar_fs_openat(
+            self.fd,
+            bytes.asPtr(),
+            bytes.len(),
+            true,
+            false,
+            false,
+            false
+        )
+        if fd >= 0 {
+            ar_fs_close(fd)
+            return true
+        }
+        return false
     }
 }
 

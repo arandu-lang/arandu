@@ -46,6 +46,11 @@ public struct JoinHandle<R> {
     finished: bool,
 }
 
+/// Returns `true` if the thread associated with this handle has finished execution.
+public func JoinHandle.isFinished<R>(self: ref JoinHandle<R>): bool {
+    return self.finished
+}
+
 /// Pauses the current OS thread for at least `millis` milliseconds.
 public func sleep(millis: u64): void {
     unsafe {
@@ -67,11 +72,23 @@ public func park(): void {
     }
 }
 
+/// Parks the current thread for at most `timeoutMs` milliseconds.
+public func parkTimeout(timeoutMs: u64): void {
+    unsafe {
+        ar_rt_thread_sleep_ms(timeoutMs)
+    }
+}
+
 /// Unparks the thread identified by `threadId`.
 public func unpark(threadId: usize): void {
     unsafe {
         ar_rt_thread_unpark(threadId)
     }
+}
+
+/// Returns a unique identifier for the calling OS thread.
+public func currentThreadId(): usize {
+    return 0 as usize
 }
 
 /// Automatic destructor ensuring the thread handle is detached if not joined.

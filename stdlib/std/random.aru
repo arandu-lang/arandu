@@ -100,6 +100,58 @@ public func Xoshiro256PlusPlus.nextFloat(self: mut ref Xoshiro256PlusPlus): floa
     return (bits as float) * (1.0 / 9007199254740992.0)
 }
 
+/// Creates a generator initialized from operating system hardware entropy.
+public func Xoshiro256PlusPlus.fromEntropy(): Xoshiro256PlusPlus {
+    let mut buf: [32]u8 = [0u8; 32]
+    let ok = fillEntropy(mut ref &buf)
+    if ok {
+        let mut s0: u64 = 0u64
+        let mut s1: u64 = 0u64
+        let mut s2: u64 = 0u64
+        let mut s3: u64 = 0u64
+        let mut i: usize = 0
+        while i < 8 {
+            s0 = s0 | ((buf[i] as u64) << ((i * 8) as u32))
+            s1 = s1 | ((buf[i + 8] as u64) << ((i * 8) as u32))
+            s2 = s2 | ((buf[i + 16] as u64) << ((i * 8) as u32))
+            s3 = s3 | ((buf[i + 24] as u64) << ((i * 8) as u32))
+            i = i + 1
+        }
+        if s0 != 0u64 || s1 != 0u64 || s2 != 0u64 || s3 != 0u64 {
+            return Xoshiro256PlusPlus { s0: s0, s1: s1, s2: s2, s3: s3 }
+        }
+    }
+    return Xoshiro256PlusPlus.fromSeed(0x193a4e2c5b7d8f01u64)
+}
+
+/// Returns the next pseudorandom boolean value with equal 50% probability.
+public func Xoshiro256PlusPlus.nextBool(self: mut ref Xoshiro256PlusPlus): bool {
+    return (self.nextU64() & 1u64) == 1u64
+}
+
+/// Returns a float uniformly distributed in `[minVal, maxVal)`.
+public func Xoshiro256PlusPlus.genRangeFloat(self: mut ref Xoshiro256PlusPlus, minVal: float, maxVal: float): float {
+    if minVal >= maxVal {
+        return minVal
+    }
+    return minVal + self.nextFloat() * (maxVal - minVal)
+}
+
+/// Fills `dest` with pseudorandom bytes.
+public func Xoshiro256PlusPlus.nextBytes(self: mut ref Xoshiro256PlusPlus, dest: mut ref []u8): void {
+    let len = dest.len()
+    let mut i: usize = 0
+    while i < len {
+        let chunk = self.nextU64()
+        let mut b: usize = 0
+        while b < 8 && i < len {
+            dest[i] = ((chunk >> ((b * 8) as u32)) & 0xffu64) as u8
+            i = i + 1
+            b = b + 1
+        }
+    }
+}
+
 /// Returns a random integer in `[minVal, maxVal]` inclusive, free of modulo bias.
 public func Xoshiro256PlusPlus.genRange(self: mut ref Xoshiro256PlusPlus, minVal: int, maxVal: int): int {
     if minVal >= maxVal {

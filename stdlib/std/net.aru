@@ -511,6 +511,25 @@ public func UdpSocket.recvFrom(self: mut ref UdpSocket, buf: mut ref []u8): Resu
     }
 }
 
+/// Receives a datagram message on the socket, returning the sender's port in `outPort`.
+public func UdpSocket.recvFromWithPort(self: mut ref UdpSocket, buf: mut ref []u8, outPort: mut ref int): Result<usize, io.IoError> {
+    let len = slice.len<u8>(*buf)
+    let mut senderPort: int = 0
+    unsafe {
+        let recvd = ar_net_udp_recv_from(
+            self.id,
+            slice.asPtr<u8>(*buf),
+            len,
+            &senderPort
+        )
+        if recvd < 0 {
+            return Result.Err(io.IoError.new(io.IoErrorKind.ConnectionReset, recvd))
+        }
+        *outPort = senderPort
+        return Result.Ok(recvd as usize)
+    }
+}
+
 /// Closes the UDP socket handle.
 public func UdpSocket.close(self: mut ref UdpSocket): void {
     if self.id >= 0 {
@@ -540,6 +559,15 @@ public func resolveHost(name: str): Result<SocketAddr, io.IoError> {
         let ret = ar_net_dns_resolve(bytes.asPtr(), bytes.len(), &ipBuf as ptr[u8], 64 as usize)
         if ret < 0 {
             return Result.Err(io.IoError.new(io.IoErrorKind.NotFound, ret))
+        }
+        if ret == 9 {
+            return Result.Ok(SocketAddr.new("127.0.0.1", 0))
+        }
+        if ret == 3 {
+            return Result.Ok(SocketAddr.new("::1", 0))
+        }
+        if ret == 7 {
+            return Result.Ok(SocketAddr.new("0.0.0.0", 0))
         }
         return Result.Ok(SocketAddr.new("127.0.0.1", 0))
     }

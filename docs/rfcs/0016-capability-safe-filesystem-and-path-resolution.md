@@ -14,20 +14,28 @@
 
 ---
 
-## Estado auditado em 15/10/2026
+## Estado auditado em 16/10/2026
 
-Esta RFC é uma proposta. `std.fs.Dir`, contenção por descritor, `openat2`,
-efeitos de autoridade ambiente e a seção `[capabilities]` ilustrada abaixo não
-são superfícies implementadas pelo simples fato de constarem deste documento.
-As APIs atuais de [`std.fs`](../../stdlib/std/fs.aru) usam caminhos e incluem
-`File`, `DirListing`, leitura e metadata; `File.close` e `DirListing.close`
-ainda retornam `void`, não o contrato uniforme `Result` proposto aqui.
+Esta RFC continua `Draft`. A campanha 0.1.11 implementa um recorte local de
+[`std.fs.Dir`](../../stdlib/std/fs.aru): descritor privado, abertura relativa
+Linux com `openat2` e `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS |
+RESOLVE_NO_MAGICLINKS`, além de criação/remoção por pai pinado. Regressões no
+runtime, JIT e C com UBSan rejeitam caminhos absolutos, traversal e symlinks;
+uma raiz renomeada mantém a autoridade do descritor aberto. Remover uma folha
+symlink não segue seu alvo. Falhas da syscall e outros alvos falham sem
+fallback para resolução menos restritiva.
+
+Os mecanismos multiplataforma, fallback para kernels antigos, efeitos de
+autoridade ambiente e `[capabilities]` descritos adiante são propostas. O
+recorte não implementa sandbox do processo, `removeTree`, integração WASI ou
+lifecycle integral de `File`. `File.close` e `DirListing.close` ainda retornam
+`void`, não o contrato uniforme `Result` proposto aqui.
 
 O [`VFS`](../../crates/arandu_query/src/vfs.rs) usa worklist iterativa, limite
 de profundidade e detecção de ciclos. Ainda segue symlinks de diretório e não
 prova confinamento por raiz ou resistência geral a TOCTOU. Não é uma sandbox.
-Validação de pacote/import e bootstrap de SDK têm contratos separados;
-nenhuma garantia de autoridade por capacidade é promovida nesta revisão.
+Validação de pacote/import e bootstrap de SDK têm contratos separados e
+não herdam as garantias do recorte local de `Dir`.
 A fila executiva permanece no [roadmap mestre](../arandu-compiler-roadmap-v0.1.md).
 
 ## 1. Resumo (Summary)

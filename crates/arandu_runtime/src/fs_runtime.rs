@@ -395,22 +395,68 @@ pub unsafe extern "C" fn ar_fs_open(
     -1
 }
 
-/// Reserved for the (out-of-Minimal) `File` read cycle: deterministic `-1`.
+/// Reads up to `count` bytes from open descriptor `fd` into `buf`.
 ///
 /// # Safety
-/// Never dereferences pointers; always safe to call from JIT.
+/// For nonzero `count`, `buf` must reference `count` writable bytes in a live allocation.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn ar_fs_read(_fd: i32, _buf: *mut u8, _count: usize) -> isize {
-    -1
+pub unsafe extern "C" fn ar_fs_read(fd: i32, buf: *mut u8, count: usize) -> isize {
+    if fd < 0 || (count > 0 && buf.is_null()) || count > isize::MAX as usize {
+        return -1;
+    }
+    if count == 0 {
+        return 0;
+    }
+    #[cfg(unix)]
+    {
+        loop {
+            let res = unsafe { libc::read(fd, buf as *mut libc::c_void, count) };
+            if res < 0 {
+                let err = std::io::Error::last_os_error();
+                if err.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return -1;
+            }
+            return res as isize;
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        -1
+    }
 }
 
-/// Reserved for the (out-of-Minimal) `File` write cycle: deterministic `-1`.
+/// Writes up to `count` bytes to open descriptor `fd` from `buf`.
 ///
 /// # Safety
-/// Never dereferences pointers; always safe to call from JIT.
+/// For nonzero `count`, `buf` must reference `count` readable bytes in a live allocation.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn ar_fs_write(_fd: i32, _buf: *const u8, _count: usize) -> isize {
-    -1
+pub unsafe extern "C" fn ar_fs_write(fd: i32, buf: *const u8, count: usize) -> isize {
+    if fd < 0 || (count > 0 && buf.is_null()) || count > isize::MAX as usize {
+        return -1;
+    }
+    if count == 0 {
+        return 0;
+    }
+    #[cfg(unix)]
+    {
+        loop {
+            let res = unsafe { libc::write(fd, buf as *const libc::c_void, count) };
+            if res < 0 {
+                let err = std::io::Error::last_os_error();
+                if err.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return -1;
+            }
+            return res as isize;
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        -1
+    }
 }
 
 /// Closes an open file or directory descriptor; returns 0.
@@ -432,38 +478,103 @@ pub unsafe extern "C" fn ar_fs_close(fd: i32) -> isize {
     0
 }
 
-/// Opens an ambient directory path as a capability token (RFC 0016).
+// Capability paths are deliberately strict: no absolute paths, empty
+// components, '.' or '..'. Dot is used only for an already-pinned parent.
+#[cfg(target_os = "linux")]
+fn capability_path(path: &Path, allow_dot: bool) -> Option<std::ffi::CString> {
+    use std::os::unix::ffi::OsStrExt;
+    let bytes = path.as_os_str().as_bytes();
+    if bytes.is_empty() || bytes.len() >= 4096 {
+        return None;
+    }
+    if !(allow_dot && bytes == b".")
+        && bytes
+            .split(|byte| *byte == b'/')
+            .any(|part| part.is_empty() || part == b"." || part == b"..")
+    {
+        return None;
+    }
+    std::ffi::CString::new(bytes).ok()
+}
+
+#[cfg(target_os = "linux")]
+fn capability_open(
+    dir_fd: i32,
+    path: &Path,
+    flags: i32,
+    mode: u32,
+    allow_dot: bool,
+) -> Option<std::os::fd::OwnedFd> {
+    use std::os::fd::FromRawFd;
+    if dir_fd < 0 {
+        return None;
+    }
+    let path = capability_path(path, allow_dot)?;
+    // SAFETY: open_how is a UAPI integer record. Zero also initializes any
+    // reserved fields so the kernel can safely reject unsupported versions.
+    let mut how: libc::open_how = unsafe { std::mem::zeroed() };
+    how.flags = u64::try_from(flags | libc::O_CLOEXEC).ok()?;
+    how.mode = u64::from(mode);
+    how.resolve = libc::RESOLVE_BENEATH | libc::RESOLVE_NO_SYMLINKS | libc::RESOLVE_NO_MAGICLINKS;
+    // SAFETY: CString and open_how remain live throughout the syscall. The
+    // kernel resolves the entire path beneath the descriptor atomically.
+    // ENOSYS/EINVAL fail closed; there is no weaker openat fallback.
+    let raw = unsafe {
+        libc::syscall(
+            libc::SYS_openat2,
+            dir_fd,
+            path.as_ptr(),
+            &how,
+            std::mem::size_of_val(&how),
+        )
+    };
+    let fd = i32::try_from(raw).ok().filter(|fd| *fd >= 0)?;
+    // SAFETY: a successful openat2 transferred a new descriptor to this owner.
+    Some(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) })
+}
+
+#[cfg(target_os = "linux")]
+fn capability_parent(
+    dir_fd: i32,
+    path: &Path,
+) -> Option<(std::os::fd::OwnedFd, std::ffi::CString)> {
+    use std::os::unix::ffi::OsStrExt;
+    capability_path(path, false)?;
+    let leaf = std::ffi::CString::new(path.file_name()?.as_bytes()).ok()?;
+    let parent = path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let descriptor = capability_open(dir_fd, parent, libc::O_RDONLY | libc::O_DIRECTORY, 0, true)?;
+    Some((descriptor, leaf))
+}
+
+/// Opens an ambient directory capability. Currently Linux only.
 ///
 /// # Safety
-/// `path_ptr` and `path_len` must define a valid memory range.
+/// The pointer/length pair must be readable for the duration of this call.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn ar_fs_dir_open(path_ptr: *const u8, path_len: usize) -> i64 {
+pub unsafe extern "C" fn ar_fs_dir_open(path_ptr: *const u8, path_len: usize) -> i32 {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let path = path_from_fat(path_ptr, path_len as isize)?;
-        #[cfg(unix)]
+        let path = path_from_fat(path_ptr, isize::try_from(path_len).ok()?)?;
+        #[cfg(target_os = "linux")]
         {
-            use std::ffi::CString;
             use std::os::unix::ffi::OsStrExt;
-            let c_path = CString::new(path.as_os_str().as_bytes()).ok()?;
+            let path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+            // SAFETY: the path is NUL-terminated and the returned descriptor is
+            // transferred to the caller. This is explicit ambient authority.
             let fd = unsafe {
                 libc::open(
-                    c_path.as_ptr(),
+                    path.as_ptr(),
                     libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
                 )
             };
-            if fd >= 0 {
-                Some(fd as i64)
-            } else {
-                None
-            }
+            (fd >= 0).then_some(fd)
         }
-        #[cfg(not(unix))]
+        #[cfg(not(target_os = "linux"))]
         {
-            if std::path::Path::new(&path).is_dir() {
-                Some(1000)
-            } else {
-                None
-            }
+            let _ = path;
+            None
         }
     }))
     .ok()
@@ -471,33 +582,33 @@ pub unsafe extern "C" fn ar_fs_dir_open(path_ptr: *const u8, path_len: usize) ->
     .unwrap_or(-1)
 }
 
-/// Opens a file relative to a pinned directory capability descriptor (RFC 0016).
+/// Opens a file with kernel-enforced beneath/no-symlink resolution.
 ///
 /// # Safety
-/// `path_ptr` and `path_len` must define a valid memory range.
+/// The pointer/length pair must be readable; the caller owns dir_fd's lifetime.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ar_fs_openat(
-    dir_fd: i64,
+    dir_fd: i32,
     path_ptr: *const u8,
     path_len: usize,
     read: bool,
     write: bool,
     create: bool,
     truncate: bool,
-) -> i64 {
+) -> i32 {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let path = path_from_fat(path_ptr, path_len as isize)?;
-        #[cfg(unix)]
+        let path = path_from_fat(path_ptr, isize::try_from(path_len).ok()?)?;
+        #[cfg(target_os = "linux")]
         {
-            use std::ffi::CString;
-            use std::os::unix::ffi::OsStrExt;
-            let c_path = CString::new(path.as_os_str().as_bytes()).ok()?;
+            use std::os::fd::IntoRawFd;
             let mut flags = if read && write {
                 libc::O_RDWR
             } else if write {
                 libc::O_WRONLY
-            } else {
+            } else if read {
                 libc::O_RDONLY
+            } else {
+                return None;
             };
             if create {
                 flags |= libc::O_CREAT;
@@ -505,15 +616,10 @@ pub unsafe extern "C" fn ar_fs_openat(
             if truncate {
                 flags |= libc::O_TRUNC;
             }
-            flags |= libc::O_CLOEXEC;
-            let fd = unsafe { libc::openat(dir_fd as i32, c_path.as_ptr(), flags, 0o666) };
-            if fd >= 0 {
-                Some(fd as i64)
-            } else {
-                None
-            }
+            capability_open(dir_fd, &path, flags, if create { 0o666 } else { 0 }, false)
+                .map(|fd| fd.into_raw_fd())
         }
-        #[cfg(not(unix))]
+        #[cfg(not(target_os = "linux"))]
         {
             let _ = (dir_fd, path, read, write, create, truncate);
             None
@@ -524,38 +630,25 @@ pub unsafe extern "C" fn ar_fs_openat(
     .unwrap_or(-1)
 }
 
-/// Creates a subdirectory relative to a pinned directory descriptor (RFC 0016).
+/// Opens a child directory with the same capability restrictions.
 ///
 /// # Safety
-/// `path_ptr` and `path_len` must define a valid memory range.
+/// The pointer/length pair must be readable; the caller owns dir_fd's lifetime.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn ar_fs_mkdirat(dir_fd: i64, path_ptr: *const u8, path_len: usize) -> i64 {
+pub unsafe extern "C" fn ar_fs_dir_openat(
+    dir_fd: i32,
+    path_ptr: *const u8,
+    path_len: usize,
+) -> i32 {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let path = path_from_fat(path_ptr, path_len as isize)?;
-        #[cfg(unix)]
+        let path = path_from_fat(path_ptr, isize::try_from(path_len).ok()?)?;
+        #[cfg(target_os = "linux")]
         {
-            use std::ffi::CString;
-            use std::os::unix::ffi::OsStrExt;
-            let c_path = CString::new(path.as_os_str().as_bytes()).ok()?;
-            let ret = unsafe { libc::mkdirat(dir_fd as i32, c_path.as_ptr(), 0o777) };
-            if ret == 0 {
-                let fd = unsafe {
-                    libc::openat(
-                        dir_fd as i32,
-                        c_path.as_ptr(),
-                        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
-                    )
-                };
-                if fd >= 0 {
-                    Some(fd as i64)
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
+            use std::os::fd::IntoRawFd;
+            capability_open(dir_fd, &path, libc::O_RDONLY | libc::O_DIRECTORY, 0, true)
+                .map(|fd| fd.into_raw_fd())
         }
-        #[cfg(not(unix))]
+        #[cfg(not(target_os = "linux"))]
         {
             let _ = (dir_fd, path);
             None
@@ -566,33 +659,74 @@ pub unsafe extern "C" fn ar_fs_mkdirat(dir_fd: i64, path_ptr: *const u8, path_le
     .unwrap_or(-1)
 }
 
-/// Unlinks a file or directory relative to a pinned directory descriptor (RFC 0016).
+/// Creates a child in a parent obtained through confined kernel resolution.
 ///
 /// # Safety
-/// `path_ptr` and `path_len` must define a valid memory range.
+/// The pointer/length pair must be readable; the caller owns dir_fd's lifetime.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ar_fs_mkdirat(dir_fd: i32, path_ptr: *const u8, path_len: usize) -> i32 {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let path = path_from_fat(path_ptr, isize::try_from(path_len).ok()?)?;
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::fd::{AsRawFd, IntoRawFd};
+            let (parent, leaf) = capability_parent(dir_fd, &path)?;
+            // SAFETY: the parent is live and leaf has exactly one normal path
+            // component, so this mutation cannot traverse outside that handle.
+            if unsafe { libc::mkdirat(parent.as_raw_fd(), leaf.as_ptr(), 0o777) } != 0 {
+                return None;
+            }
+            let leaf_path = Path::new(std::ffi::OsStr::from_bytes(leaf.as_bytes()));
+            use std::os::unix::ffi::OsStrExt;
+            capability_open(
+                parent.as_raw_fd(),
+                leaf_path,
+                libc::O_RDONLY | libc::O_DIRECTORY,
+                0,
+                false,
+            )
+            .map(|fd| fd.into_raw_fd())
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (dir_fd, path);
+            None
+        }
+    }))
+    .ok()
+    .flatten()
+    .unwrap_or(-1)
+}
+
+/// Removes one entry in a parent obtained through confined kernel resolution.
+///
+/// # Safety
+/// The pointer/length pair must be readable; the caller owns dir_fd's lifetime.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ar_fs_unlinkat(
-    dir_fd: i64,
+    dir_fd: i32,
     path_ptr: *const u8,
     path_len: usize,
     is_dir: bool,
-) -> i64 {
+) -> i32 {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let path = path_from_fat(path_ptr, path_len as isize)?;
-        #[cfg(unix)]
+        let path = path_from_fat(path_ptr, isize::try_from(path_len).ok()?)?;
+        #[cfg(target_os = "linux")]
         {
-            use std::ffi::CString;
-            use std::os::unix::ffi::OsStrExt;
-            let c_path = CString::new(path.as_os_str().as_bytes()).ok()?;
-            let flags = if is_dir { libc::AT_REMOVEDIR } else { 0 };
-            let ret = unsafe { libc::unlinkat(dir_fd as i32, c_path.as_ptr(), flags) };
-            if ret == 0 {
-                Some(0i64)
-            } else {
-                None
-            }
+            use std::os::fd::AsRawFd;
+            let (parent, leaf) = capability_parent(dir_fd, &path)?;
+            // SAFETY: unlinkat does not follow a final symlink; leaf contains
+            // no separator and the pinned parent owns its own descriptor.
+            let result = unsafe {
+                libc::unlinkat(
+                    parent.as_raw_fd(),
+                    leaf.as_ptr(),
+                    if is_dir { libc::AT_REMOVEDIR } else { 0 },
+                )
+            };
+            (result == 0).then_some(0)
         }
-        #[cfg(not(unix))]
+        #[cfg(not(target_os = "linux"))]
         {
             let _ = (dir_fd, path, is_dir);
             None
@@ -613,6 +747,83 @@ mod tests {
     fn temp_dir() -> std::path::PathBuf {
         let id = NEXT.fetch_add(1, Ordering::Relaxed);
         std::env::temp_dir().join(format!("arandu_fs_runtime_{}_{id}", std::process::id()))
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn directory_capability_rejects_traversal_symlinks_and_absolute_paths() {
+        use std::os::fd::{FromRawFd, OwnedFd};
+        use std::os::unix::{ffi::OsStrExt, fs::symlink};
+        let base = temp_dir();
+        let root = base.join("root");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(root.join("nested")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(root.join("inside"), "inside").unwrap();
+        std::fs::write(outside.join("victim"), "outside").unwrap();
+        symlink(&outside, root.join("escape")).unwrap();
+        symlink(outside.join("victim"), root.join("link")).unwrap();
+        let root_bytes = root.as_os_str().as_bytes();
+        // SAFETY: all buffers and descriptors below are owned by this test and
+        // remain live for each host call; each successful descriptor is closed.
+        unsafe {
+            let fd = ar_fs_dir_open(root_bytes.as_ptr(), root_bytes.len());
+            assert!(fd >= 0, "Linux openat2 capability host is required");
+            for path in [
+                "../outside/victim".to_owned(),
+                outside.join("victim").to_str().unwrap().to_owned(),
+                "escape/victim".to_owned(),
+                "link".to_owned(),
+                "nested/../../outside/victim".to_owned(),
+                "nested/../inside".to_owned(),
+                "inside\0ignored".to_owned(),
+            ] {
+                assert_eq!(
+                    ar_fs_openat(fd, path.as_ptr(), path.len(), true, true, false, true),
+                    -1,
+                    "{path:?}"
+                );
+                if path != "link" {
+                    assert_eq!(
+                        ar_fs_unlinkat(fd, path.as_ptr(), path.len(), false),
+                        -1,
+                        "{path:?}"
+                    );
+                }
+                // Removing a final symlink removes only that entry, so omit
+                // that safe operation from the traversal-rejection assertion.
+            }
+            assert_eq!(
+                std::fs::read_to_string(outside.join("victim")).unwrap(),
+                "outside"
+            );
+            assert_eq!(
+                ar_fs_dir_openat(fd, b"inside".as_ptr(), 6),
+                -1,
+                "a file is not a Dir"
+            );
+            let child = ar_fs_mkdirat(fd, b"nested/created".as_ptr(), 14);
+            assert!(child >= 0);
+            ar_fs_close(child);
+            assert_eq!(ar_fs_mkdirat(fd, b"../outside/pwn".as_ptr(), 14), -1);
+            assert!(!outside.join("pwn").exists());
+            let file_fd = ar_fs_openat(fd, b"inside".as_ptr(), 6, true, false, false, false);
+            assert!(file_fd >= 0);
+            let owned = OwnedFd::from_raw_fd(file_fd);
+            let mut file = std::fs::File::from(owned);
+            let mut contents = String::new();
+            file.read_to_string(&mut contents).unwrap();
+            assert_eq!(contents, "inside");
+            std::fs::rename(&root, base.join("renamed")).unwrap();
+            let file_fd = ar_fs_openat(fd, b"inside".as_ptr(), 6, true, false, false, false);
+            assert!(
+                file_fd >= 0,
+                "renaming retains authority of the pinned handle"
+            );
+            ar_fs_close(file_fd);
+            ar_fs_close(fd);
+        }
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     #[test]

@@ -44,16 +44,21 @@
 //! - `std.io` — `Read`/`Write` traits and error types
 //! - `std.path` — path manipulation without disk access
 //! - `std.core.io` — OS-free freestanding I/O
-
 module std.fs
 
 import std.io as io
+
 import std.core.mem as mem
+
 import std.core.intrinsics as intrinsics
+
 import std.alloc.string as strings
+
 import std.alloc.vec as vec
 
-/// Describes open flags; no public `open` function consumes this type yet.
+import std.core.slice as slice
+
+/// Open flags consumed by Dir.openFile (append is not yet supported).
 public struct OpenOptions {
     /// Request read access.
     read: bool
@@ -90,8 +95,7 @@ func readOnly(): OpenOptions {
 
 /// Creates `OpenOptions` with only `read` enabled.
 ///
-/// All other flags are `false`. The current public API has no `open` method
-/// that accepts these options.
+/// All other flags are false. Accepted by Dir.openFile.
 public func OpenOptions.readOnly(): OpenOptions {
     return readOnly()
 }
@@ -108,8 +112,7 @@ func writeOnly(): OpenOptions {
 
 /// Creates `OpenOptions` with `write`, `create`, and `truncate` enabled.
 ///
-/// `read` and `append` are `false`. The current public API has no `open`
-/// method that accepts these options.
+/// read and append are false. Accepted by Dir.openFile.
 public func OpenOptions.writeOnly(): OpenOptions {
     return writeOnly()
 }
@@ -406,28 +409,6 @@ func destroyListing(l: mut ref DirListing): void {
     }
 }
 
-/// Closes the file descriptor if it is nonnegative and sets it to `-1`.
-///
-/// Calling `close` again has no effect. The host close status is discarded.
-public func File.close(self: mut ref File): void {
-    if self.fd >= 0 {
-        unsafe {
-            ar_fs_close(self.fd)
-        }
-        self.fd = -1
-    }
-}
-
-/// Automatic best-effort destructor invoked when an owned `File` leaves scope.
-@Destructor
-func File.destroy(self: own File): void {
-    if self.fd >= 0 {
-        unsafe {
-            ar_fs_close(self.fd)
-        }
-    }
-}
-
 /// Metadata information about a file or directory.
 public struct Metadata {
     /// File length in bytes.
@@ -464,6 +445,7 @@ public func Metadata.isReadonly(self: ref Metadata): bool {
 
 extern "C" {
     func ar_fs_dir_open(pathData: ptr[u8], pathLen: usize): int
+    func ar_fs_dir_openat(dirFd: int, pathData: ptr[u8], pathLen: usize): int
     func ar_fs_openat(dirFd: int, pathData: ptr[u8], pathLen: usize, read: bool, write: bool, create: bool, truncate: bool): int
     func ar_fs_mkdirat(dirFd: int, pathData: ptr[u8], pathLen: usize): int
     func ar_fs_unlinkat(dirFd: int, pathData: ptr[u8], pathLen: usize, isDir: bool): int
@@ -471,20 +453,28 @@ extern "C" {
 
 /// A capability token representing an open directory handle (RFC 0016).
 ///
-/// All filesystem traversals and mutations performed through a `Dir` operate
-/// strictly relative to this pinned descriptor, protecting against Time-of-Check
-/// to Time-of-Use (TOCTOU) races and symlink traversal escapes.
+/// Linux relative opens use openat2 with BENEATH/NO_SYMLINKS/NO_MAGICLINKS.
+/// Absolute paths, parent traversal and ambiguous components are rejected.
+/// Creation/removal use a separately pinned, confined parent and one leaf.
+/// Handles retain authority over their directory if it is renamed. Unsupported
+/// kernels/platforms fail closed; there is no ordinary openat fallback.
+/// The descriptor is private and cannot be forged by safe clients.
 public struct Dir {
-    fd: int
+    private fd: int
 }
 
 /// Opens an ambient directory path as a capability token.
 public func openDir(path: str): Result<Dir, io.IoError> {
+    return Dir.open(path)
+}
+
+/// Acquires an ambient directory handle. Relative operations require Linux openat2.
+public func Dir.open(path: str): Result<Dir, io.IoError> {
     let bytes = intrinsics.strBytes(path)
     unsafe {
-        let fd = ar_fs_dir_open(bytes.asPtr(), bytes.len())
+        let fd = ar_fs_dir_open(slice.asPtr<u8>(bytes), slice.len<u8>(bytes))
         if fd < 0 {
-            return Result.Err(io.IoError.NotFound)
+            return Result.Err(io.IoError.new(io.IoErrorKind.NotFound, fd))
         }
         return Result.Ok(Dir { fd: fd })
     }
@@ -492,19 +482,20 @@ public func openDir(path: str): Result<Dir, io.IoError> {
 
 /// Opens a file relative to this directory descriptor.
 public func Dir.openFile(self: ref Dir, subpath: str, options: OpenOptions): Result<File, io.IoError> {
+    if options.append { return Result.Err(io.IoError.new(io.IoErrorKind.InvalidInput, 5)) }
     let bytes = intrinsics.strBytes(subpath)
     unsafe {
         let fd = ar_fs_openat(
-            self.fd,
-            bytes.asPtr(),
-            bytes.len(),
-            options.read,
-            options.write,
-            options.create,
-            options.truncate
+        self.fd,
+        slice.asPtr<u8>(bytes),
+        slice.len<u8>(bytes),
+        options.read,
+        options.write,
+        options.create,
+        options.truncate
         )
         if fd < 0 {
-            return Result.Err(io.IoError.NotFound)
+            return Result.Err(io.IoError.new(io.IoErrorKind.NotFound, fd))
         }
         return Result.Ok(File { fd: fd })
     }
@@ -514,17 +505,13 @@ public func Dir.openFile(self: ref Dir, subpath: str, options: OpenOptions): Res
 public func Dir.openDir(self: ref Dir, subpath: str): Result<Dir, io.IoError> {
     let bytes = intrinsics.strBytes(subpath)
     unsafe {
-        let fd = ar_fs_openat(
-            self.fd,
-            bytes.asPtr(),
-            bytes.len(),
-            true,
-            false,
-            false,
-            false
+        let fd = ar_fs_dir_openat(
+        self.fd,
+        slice.asPtr<u8>(bytes),
+        slice.len<u8>(bytes)
         )
         if fd < 0 {
-            return Result.Err(io.IoError.NotFound)
+            return Result.Err(io.IoError.new(io.IoErrorKind.NotFound, fd))
         }
         return Result.Ok(Dir { fd: fd })
     }
@@ -535,13 +522,13 @@ public func Dir.fileExists(self: ref Dir, subpath: str): bool {
     let bytes = intrinsics.strBytes(subpath)
     unsafe {
         let fd = ar_fs_openat(
-            self.fd,
-            bytes.asPtr(),
-            bytes.len(),
-            true,
-            false,
-            false,
-            false
+        self.fd,
+        slice.asPtr<u8>(bytes),
+        slice.len<u8>(bytes),
+        true,
+        false,
+        false,
+        false
         )
         if fd >= 0 {
             ar_fs_close(fd)
@@ -555,35 +542,35 @@ public func Dir.fileExists(self: ref Dir, subpath: str): bool {
 public func Dir.createDir(self: ref Dir, subpath: str): Result<Dir, io.IoError> {
     let bytes = intrinsics.strBytes(subpath)
     unsafe {
-        let fd = ar_fs_mkdirat(self.fd, bytes.asPtr(), bytes.len())
+        let fd = ar_fs_mkdirat(self.fd, slice.asPtr<u8>(bytes), slice.len<u8>(bytes))
         if fd < 0 {
-            return Result.Err(io.IoError.PermissionDenied)
+            return Result.Err(io.IoError.new(io.IoErrorKind.PermissionDenied, fd))
         }
         return Result.Ok(Dir { fd: fd })
     }
 }
 
 /// Removes a regular file relative to this directory descriptor.
-public func Dir.removeFile(self: ref Dir, subpath: str): Result<void, io.IoError> {
+public func Dir.removeFile(self: ref Dir, subpath: str): Result<bool, io.IoError> {
     let bytes = intrinsics.strBytes(subpath)
     unsafe {
-        let ret = ar_fs_unlinkat(self.fd, bytes.asPtr(), bytes.len(), false)
+        let ret = ar_fs_unlinkat(self.fd, slice.asPtr<u8>(bytes), slice.len<u8>(bytes), false)
         if ret < 0 {
-            return Result.Err(io.IoError.NotFound)
+            return Result.Err(io.IoError.new(io.IoErrorKind.NotFound, ret))
         }
-        return Result.Ok()
+        return Result.Ok(true)
     }
 }
 
 /// Removes a subdirectory relative to this directory descriptor.
-public func Dir.removeDir(self: ref Dir, subpath: str): Result<void, io.IoError> {
+public func Dir.removeDir(self: ref Dir, subpath: str): Result<bool, io.IoError> {
     let bytes = intrinsics.strBytes(subpath)
     unsafe {
-        let ret = ar_fs_unlinkat(self.fd, bytes.asPtr(), bytes.len(), true)
+        let ret = ar_fs_unlinkat(self.fd, slice.asPtr<u8>(bytes), slice.len<u8>(bytes), true)
         if ret < 0 {
-            return Result.Err(io.IoError.NotFound)
+            return Result.Err(io.IoError.new(io.IoErrorKind.NotFound, ret))
         }
-        return Result.Ok()
+        return Result.Ok(true)
     }
 }
 

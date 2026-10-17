@@ -350,7 +350,7 @@ Esta categoria agrupa recursos previstos pela sintaxe da linguagem ou sua especi
 
 | Código | Mensagem Principal no Compilador | Severidade Padrão | Introduzido em | Descrição e Contexto |
 | :--- | :--- | :--- | :--- | :--- |
-| **U001** | `feature not yet supported: '{feature}'` | Error | `0.1.0` | Recurso sintático ou contrato de lowering não admitido, incluindo assinatura incompatível de intrínseco de bits (aridade, largura, retorno ou generics). (Antigo `L002`). |
+| **U001** | `feature not yet supported: '{feature}'` | Error | `0.1.0` | Recurso sintático ou contrato de lowering não admitido, incluindo assinatura incompatível de intrínseco de bits ou atômico (aridade, largura, referência, retorno ou generics). (Antigo `L002`). |
 
 ---
 

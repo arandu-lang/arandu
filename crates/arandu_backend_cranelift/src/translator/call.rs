@@ -16,12 +16,10 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             let sym = self.symbol_table.get(*sym_id);
             let bare = sym.name.rsplit('.').next().unwrap_or(sym.name.as_str());
             // L6.1: mem intrinsics (short mono names + qualified std.core.mem.*).
-            let bit_intrinsic = arandu_semantics::IntrinsicKind::from_name(bare)
-                .is_some_and(|kind| kind.is_pure_bit_operation());
-            if (!bit_intrinsic
-                || sym.lang_item == Some(arandu_semantics::symbol_table::LangItem::BitIntrinsic))
-                && self.translate_mem_intrinsic(bare, &sym.name, lhs, args)
-            {
+            let identity_matches = arandu_semantics::IntrinsicKind::from_name(bare)
+                .and_then(|kind| kind.declaration_marker())
+                .is_none_or(|marker| sym.lang_item == Some(marker));
+            if identity_matches && self.translate_mem_intrinsic(bare, &sym.name, lhs, args) {
                 return;
             }
         }
@@ -283,6 +281,12 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
     ) -> bool {
         let kind = arandu_semantics::IntrinsicKind::from_name(bare)
             .or_else(|| arandu_semantics::IntrinsicKind::from_name(full_name));
+
+        if let Some(kind) = kind
+            && self.translate_atomic_intrinsic(kind, lhs, args)
+        {
+            return true;
+        }
 
         match kind {
             Some(

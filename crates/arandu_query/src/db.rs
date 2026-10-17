@@ -315,7 +315,7 @@ impl DatabaseImpl {
     }
 
     /// Read the resolution epoch inside a tracked query, registering the
-    /// dependency that [`Self::bump_resolution_epoch`] later invalidates.
+    /// dependency that `bump_resolution_epoch` later invalidates.
     pub fn resolution_epoch(&self) {
         let epoch = *self
             .resolution_epoch

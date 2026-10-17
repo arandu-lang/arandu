@@ -13,6 +13,7 @@
 
 mod aggregate;
 mod arith;
+mod atomic;
 mod body;
 mod call;
 pub mod expr;

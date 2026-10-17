@@ -18,9 +18,9 @@ impl<'a> FuncTranslator<'a> {
         if let AmirOperand::FunctionRef(sym) = callee {
             if let Some(sym_def) = self.symbols.try_get(*sym)
                 && let Some(kind) = IntrinsicKind::from_name(&sym_def.name)
-                && (!kind.is_pure_bit_operation()
-                    || sym_def.lang_item
-                        == Some(arandu_middle::symbol_table::LangItem::BitIntrinsic))
+                && kind
+                    .declaration_marker()
+                    .is_none_or(|marker| sym_def.lang_item == Some(marker))
                 && self.emit_intrinsic_call(kind, sym_def.name.ends_with("64"), lhs, args)
             {
                 return;
@@ -92,6 +92,9 @@ impl<'a> FuncTranslator<'a> {
         args: &[AmirOperand],
     ) -> bool {
         match kind {
+            IntrinsicKind::Atomic(..)
+            | IntrinsicKind::AtomicFence
+            | IntrinsicKind::AtomicCompilerFence => self.emit_atomic_intrinsic(kind, lhs, args),
             IntrinsicKind::CountOnes
             | IntrinsicKind::LeadingZeros
             | IntrinsicKind::TrailingZeros

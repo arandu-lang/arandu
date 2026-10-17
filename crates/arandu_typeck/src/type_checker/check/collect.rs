@@ -611,6 +611,38 @@ pub(crate) fn collect_signature_types(checker: &mut TypeChecker<'_>, program: &P
                         } else {
                             arandu_middle::EffectFlags::FOREIGN
                         };
+                        if arandu_parser::AbiKind::from_abi_str(&extern_decl.abi)
+                            == arandu_parser::AbiKind::AranduIntrinsic
+                            && let Some(kind) = arandu_middle::IntrinsicKind::from_name(member_name)
+                        {
+                            use arandu_middle::intrinsics::{AtomicOp, IntrinsicKind};
+                            let expected = match kind {
+                                IntrinsicKind::Atomic(op, width) => {
+                                    let scalar_ty = if width == arandu_middle::intrinsics::AtomicWidth::Pointer {
+                                        let byte = checker.intern(ArType::Primitive(arandu_middle::types::Primitive::U8));
+                                        ArType::Ptr(byte)
+                                    } else { ArType::Primitive(width.primitive()) };
+                                    let scalar = checker.intern(scalar_ty.clone());
+                                    let reference = if op == AtomicOp::Load { ArType::Ref(scalar) } else { ArType::RefMut(scalar) };
+                                    let mut parameters = vec![checker.intern(reference)];
+                                    parameters.resize(op.argument_count(), scalar);
+                                    Some((parameters, if op == AtomicOp::Store { ArType::Void } else { scalar_ty }))
+                                }
+                                IntrinsicKind::AtomicFence | IntrinsicKind::AtomicCompilerFence => Some((Vec::new(), ArType::Void)),
+                                _ => None,
+                            };
+                            if let Some((parameters, result)) = expected
+                                && (!member.generic_params.is_empty() || param_types != parameters || ret_ty != result
+                                    || matches!(kind, IntrinsicKind::Atomic(op, arandu_middle::intrinsics::AtomicWidth::Pointer)
+                                        if !matches!(op, AtomicOp::Load | AtomicOp::Store | AtomicOp::Swap | AtomicOp::CompareExchange)))
+                            {
+                                checker.diagnostics.push(arandu_middle::Diagnostic::error(
+                                    arandu_middle::DiagCode::U001FeatureNotSupported,
+                                    format!("unsupported signature for atomic intrinsic '{member_name}'"),
+                                    member.span,
+                                ));
+                            }
+                        }
                         if member_name.starts_with("ar_rt_tcp_")
                             || member_name.starts_with("ar_net_")
                         {

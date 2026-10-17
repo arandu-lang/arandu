@@ -116,6 +116,8 @@ pub enum LangItem {
     /// Bit intrinsic explicitly declared with the compiler intrinsic ABI.
     /// Spelling alone must not replace an ordinary or foreign function call.
     BitIntrinsic,
+    /// Atomic operation explicitly declared with the compiler intrinsic ABI.
+    AtomicIntrinsic,
 }
 
 #[derive(Debug, Clone)]

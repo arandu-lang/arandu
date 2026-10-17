@@ -537,14 +537,25 @@ static void ar_rt_condvar_notify_all(size_t seq) {{
     (void)seq;
 }}
 
-static int64_t ar_rt_get_entropy(uint8_t *buf, size_t len) {{
-    if (!buf || len == 0) return 0;
+static int32_t ar_rt_get_entropy(uint8_t *buf, size_t len) {{
+    if (len == 0) return 0;
+    if (!buf || len > PTRDIFF_MAX) return -1;
 #if defined(_WIN32)
-    HCRYPTPROV hCryptProv;
-    if (CryptAcquireContext(&hCryptProv, NULL, NULL, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT)) {{
-        BOOL ok = CryptGenRandom(hCryptProv, (DWORD)len, buf);
-        CryptReleaseContext(hCryptProv, 0);
-        if (ok) return 0;
+    /* Load dynamically so standalone C needs no extra bcrypt linker flags. */
+    HMODULE module = LoadLibraryA("bcrypt.dll");
+    if (module) {{
+        typedef LONG (WINAPI *ar_bcrypt_gen_random)(void *, unsigned char *, ULONG, ULONG);
+        ar_bcrypt_gen_random generate = (ar_bcrypt_gen_random)GetProcAddress(module, "BCryptGenRandom");
+        size_t offset = 0;
+        if (generate) {{
+            while (offset < len) {{
+                ULONG count = len - offset > UINT32_MAX ? UINT32_MAX : (ULONG)(len - offset);
+                if (generate(NULL, buf + offset, count, 2) < 0) break;
+                offset += count;
+            }}
+        }}
+        FreeLibrary(module);
+        if (offset == len) return 0;
     }}
 #else
     FILE *f = fopen("/dev/urandom", "rb");
@@ -554,11 +565,10 @@ static int64_t ar_rt_get_entropy(uint8_t *buf, size_t len) {{
         if (r == len) return 0;
     }}
 #endif
-    for (size_t i = 0; i < len; i++) {{
-        buf[i] = (uint8_t)(rand() & 0xFF);
-    }}
-    return 0;
+    memset(buf, 0, len);
+    return -1;
 }}
+
 "#
         );
     }

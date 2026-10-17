@@ -4,6 +4,7 @@
 //! emitting Cranelift IR instructions via a [`FunctionBuilder`]. The
 //! [`AmirVisitor`] trait defines the visit callbacks used during traversal.
 
+mod atomic;
 mod call;
 mod compare;
 mod constant_data;

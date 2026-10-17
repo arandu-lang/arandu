@@ -291,14 +291,11 @@ impl<'a> Resolver<'a> {
                     );
                     if arandu_parser::AbiKind::from_abi_str(&decl.abi)
                         == arandu_parser::AbiKind::AranduIntrinsic
-                        && arandu_middle::IntrinsicKind::from_name(&member.name)
-                            .is_some_and(|kind| kind.is_pure_bit_operation())
+                        && let Some(marker) = arandu_middle::IntrinsicKind::from_name(&member.name)
+                            .and_then(|kind| kind.declaration_marker())
                         && let Some(symbol) = symbol
                     {
-                        self.symbols.set_lang_item(
-                            symbol,
-                            arandu_middle::symbol_table::LangItem::BitIntrinsic,
-                        );
+                        self.symbols.set_lang_item(symbol, marker);
                     }
                 }
             }

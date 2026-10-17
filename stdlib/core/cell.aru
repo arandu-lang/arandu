@@ -24,7 +24,7 @@
 //!
 //! ## See also
 //!
-//! - `std.core.atomic` — atomic-style API; current operations are not atomic
+//! - `std.core.atomic` — compiler-lowered scalar atomics
 //! - `std.runtime.mutex` — async mutex
 
 module std.core.cell

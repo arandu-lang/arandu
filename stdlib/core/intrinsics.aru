@@ -47,6 +47,51 @@ extern "arandu-intrinsic" {
     func bitReverse32(value: u32): u32
     func bitReverse64(value: u64): u64
 
+    /// Unsafe scalar atomics. Storage must be live, naturally aligned and
+    /// accessed only atomically during concurrent use. Lowering uses SeqCst.
+    func atomicLoad8(value: ref u8): u8
+    func atomicStore8(value: mut ref u8, replacement: u8): void
+    func atomicSwap8(value: mut ref u8, replacement: u8): u8
+    func atomicFetchAdd8(value: mut ref u8, operand: u8): u8
+    func atomicFetchSub8(value: mut ref u8, operand: u8): u8
+    func atomicFetchAnd8(value: mut ref u8, operand: u8): u8
+    func atomicFetchOr8(value: mut ref u8, operand: u8): u8
+    func atomicFetchXor8(value: mut ref u8, operand: u8): u8
+    func atomicCompareExchange8(value: mut ref u8, expected: u8, desired: u8): u8
+    func atomicLoad32(value: ref u32): u32
+    func atomicStore32(value: mut ref u32, replacement: u32): void
+    func atomicSwap32(value: mut ref u32, replacement: u32): u32
+    func atomicFetchAdd32(value: mut ref u32, operand: u32): u32
+    func atomicFetchSub32(value: mut ref u32, operand: u32): u32
+    func atomicFetchAnd32(value: mut ref u32, operand: u32): u32
+    func atomicFetchOr32(value: mut ref u32, operand: u32): u32
+    func atomicFetchXor32(value: mut ref u32, operand: u32): u32
+    func atomicCompareExchange32(value: mut ref u32, expected: u32, desired: u32): u32
+    func atomicLoad64(value: ref u64): u64
+    func atomicStore64(value: mut ref u64, replacement: u64): void
+    func atomicSwap64(value: mut ref u64, replacement: u64): u64
+    func atomicFetchAdd64(value: mut ref u64, operand: u64): u64
+    func atomicFetchSub64(value: mut ref u64, operand: u64): u64
+    func atomicFetchAnd64(value: mut ref u64, operand: u64): u64
+    func atomicFetchOr64(value: mut ref u64, operand: u64): u64
+    func atomicFetchXor64(value: mut ref u64, operand: u64): u64
+    func atomicCompareExchange64(value: mut ref u64, expected: u64, desired: u64): u64
+    func atomicLoadUsize(value: ref usize): usize
+    func atomicStoreUsize(value: mut ref usize, replacement: usize): void
+    func atomicSwapUsize(value: mut ref usize, replacement: usize): usize
+    func atomicFetchAddUsize(value: mut ref usize, operand: usize): usize
+    func atomicFetchSubUsize(value: mut ref usize, operand: usize): usize
+    func atomicFetchAndUsize(value: mut ref usize, operand: usize): usize
+    func atomicFetchOrUsize(value: mut ref usize, operand: usize): usize
+    func atomicFetchXorUsize(value: mut ref usize, operand: usize): usize
+    func atomicCompareExchangeUsize(value: mut ref usize, expected: usize, desired: usize): usize
+    func atomicLoadPtr(value: ref ptr[u8]): ptr[u8]
+    func atomicStorePtr(value: mut ref ptr[u8], replacement: ptr[u8]): void
+    func atomicSwapPtr(value: mut ref ptr[u8], replacement: ptr[u8]): ptr[u8]
+    func atomicCompareExchangePtr(value: mut ref ptr[u8], expected: ptr[u8], desired: ptr[u8]): ptr[u8]
+    func atomicFence(): void
+    func atomicCompilerFence(): void
+
     /// Unconditional fatal trap (out-of-bounds, failed assertions, etc.).
     func abort(): void
 

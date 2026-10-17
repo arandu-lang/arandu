@@ -21,7 +21,7 @@ blake3.workspace = true
 io-uring = "0.7.14"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.60.2", features = ["Win32_Networking_WinSock"] }
+windows-sys = { version = "0.60.2", features = ["Win32_Networking_WinSock", "Win32_Security_Cryptography"] }
 
 [lib]
 path = "src/lib.rs"

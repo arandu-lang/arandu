@@ -115,14 +115,18 @@ impl<'a> CEmitter<'a> {
             return None;
         }
         let kind = arandu_middle::IntrinsicKind::from_name(&symbol.name)?;
-        if kind.is_pure_bit_operation()
-            && symbol.lang_item != Some(arandu_middle::symbol_table::LangItem::BitIntrinsic)
+        if kind
+            .declaration_marker()
+            .is_some_and(|marker| symbol.lang_item != Some(marker))
         {
             return None;
         }
         matches!(
             kind,
-            arandu_middle::IntrinsicKind::Abort
+            arandu_middle::IntrinsicKind::Atomic(..)
+                | arandu_middle::IntrinsicKind::AtomicFence
+                | arandu_middle::IntrinsicKind::AtomicCompilerFence
+                | arandu_middle::IntrinsicKind::Abort
                 | arandu_middle::IntrinsicKind::PtrRead
                 | arandu_middle::IntrinsicKind::PtrWrite
                 | arandu_middle::IntrinsicKind::PtrOffset
@@ -154,6 +158,12 @@ impl<'a> CEmitter<'a> {
             }
             _ => return false,
         };
+
+        if let Some(kind) = kind
+            && self.emit_atomic_intrinsic(kind, lhs, args, func)
+        {
+            return true;
+        }
 
         match kind {
             Some(

@@ -723,16 +723,19 @@ fn signatures_with_imports(
         // this declaration metadata from the canonical header instead of
         // deciding intrinsic identity from an imported function's spelling.
         for symbol in imported_sigs.symbols.iter().filter(|symbol| {
-            symbol.lang_item == Some(arandu_middle::symbol_table::LangItem::BitIntrinsic)
+            matches!(
+                symbol.lang_item,
+                Some(
+                    arandu_middle::symbol_table::LangItem::BitIntrinsic
+                        | arandu_middle::symbol_table::LangItem::AtomicIntrinsic
+                )
+            )
         }) {
             let symbols = Arc::make_mut(&mut checker.symbols);
             if symbols.try_get(symbol.id).is_none() {
                 symbols.register_imported_symbol(symbol.clone());
-            } else {
-                symbols.set_lang_item(
-                    symbol.id,
-                    arandu_middle::symbol_table::LangItem::BitIntrinsic,
-                );
+            } else if let Some(marker) = symbol.lang_item {
+                symbols.set_lang_item(symbol.id, marker);
             }
         }
         // Generic exports may mention an interface imported by

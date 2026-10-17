@@ -317,6 +317,7 @@ fn lang_item_discriminant(item: arandu_middle::symbol_table::LangItem) -> u8 {
         LangItem::U32 => 24,
         LangItem::U64 => 25,
         LangItem::BitIntrinsic => 26,
+        LangItem::AtomicIntrinsic => 27,
     }
 }
 

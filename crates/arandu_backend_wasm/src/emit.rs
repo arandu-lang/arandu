@@ -448,8 +448,8 @@ impl<'a> WasmModuleBuilder<'a> {
                 continue;
             };
             if arandu_middle::IntrinsicKind::from_name(&sym.name).is_some_and(|kind| {
-                !kind.is_pure_bit_operation()
-                    || sym.lang_item == Some(arandu_middle::symbol_table::LangItem::BitIntrinsic)
+                kind.declaration_marker()
+                    .is_none_or(|marker| sym.lang_item == Some(marker))
             }) {
                 continue;
             }

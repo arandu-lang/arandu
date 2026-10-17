@@ -81,7 +81,7 @@ dívidas e futuro são classificados, e o plano paralelo é removido.
 - [Auditoria de arquitetura e performance](arandu-architecture-audit-v0.1.md) — achados, guardrails e dívida classificada.
 - [Contrato de texto](repository-text-contract.md) — UTF-8/LF em Git, editores e CI.
 
-- [RFC 0037: Decimal e precisão arbitrária](rfcs/0037-decimal-arithmetic-and-arbitrary-precision-big-numbers.md) — Decimal local com precisão finita; BigInt/BigDecimal autorizados, ainda pendentes.
+- [RFC 0037: Decimal e precisão arbitrária](rfcs/0037-decimal-arithmetic-and-arbitrary-precision-big-numbers.md) — Decimal local com precisão finita; protótipos BigInt/BigDecimal locais com validação ainda pendente.
 
 ## Contratos de arquitetura
 

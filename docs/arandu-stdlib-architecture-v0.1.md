@@ -16,7 +16,7 @@ As árvores conceituais abaixo incluem módulos e APIs futuros; nomes como
 `arandu_core` representam camadas, não crates Rust já publicados com esse contrato.
 O inventário implementado vem do código em `stdlib/` e dos contratos técnicos.
 
-### Estado auditado em 15/10/2026
+### Estado auditado em 16/10/2026
 
 O SDK v0.1.10 foi publicado e aprovado em Linux x86-64, macOS ARM64 e Windows
 x86-64 no [run 38779239029](https://github.com/arandu-lang/arandu/actions/runs/38779239029),
@@ -31,18 +31,128 @@ O [paralelismo estruturado](./arandu-structured-parallelism-v0.1.md) já admite
 `AccumulatorInit` não-`Copy` e possui harness de escala versionado; drop glue
 automático e promoção da matriz específica continuam limites distintos.
 
-`std.fs` ainda é baseado em caminhos e não implementa a capacidade `Dir` da
-RFC 0016. A campanha local 0.1.11 acrescenta Q8.8/Q32.32, intrínsecos
+`std.fs.Dir` agora usa `openat2` no Linux com resolução confinada e sem
+symlinks. As regressões de runtime e JIT/C com UBSan rejeitam caminhos
+absolutos, parent traversal e fugas por symlinks; rename da raiz preserva
+a autoridade do descritor aberto. Outras plataformas e kernels sem a syscall
+falham sem fallback menos restritivo. Isso não fecha toda a RFC 0016 nem
+o lifecycle de I/O. A campanha local 0.1.11 acrescenta Q8.8/Q32.32, intrínsecos
 u32/u64 de contagem/reversão de bits, operações checadas de Decimal e protótipos
 de Box e hashes SHA-256/BLAKE3. O corpus de hashes e Decimal executou em
 Cranelift, C com UBSan e Wasmtime; Box passou em Cranelift e C, incluindo drops
 exatos e rejeição de escapes/aliases. Box depende do host de alocação alinhada
-nativo; essa API ainda não possui wiring Wasm. Essas alterações exigem os gates finais e
-a matriz instalada; não pertencem à prova publicada da 0.1.10. `core.atomic`
-continua com acessos ordinários e MemoryOrder ignorado; Arc e threads não podem
-assumir sincronização hardware a partir desses wrappers. Traps de abort já são emitidos diretamente, mas isso
+nativo; essa API ainda não possui wiring Wasm. Essas alterações passaram nos gates locais e
+ainda exigem a matriz instalada; não pertencem à prova publicada da 0.1.10. `core.atomic`
+possui operações reais nos três backends. Ordens válidas são fortalecidas
+para SeqCst e ordens inválidas são rejeitadas. Passaram as regressões de
+contenção com seis threads nativas, incremento/CAS, larguras, wrap e ponteiros.
+Os gates locais do snapshot passaram; a matriz instalada da candidata segue pendente. A existência de Arc não comprova
+transporte Send/Sync ou sincronização correta de toda a biblioteca. Traps de abort já são emitidos diretamente, mas isso
 não fecha sozinho o contrato integral anti-panic-bloat. As convenções da RFC
 0026 não comprovam `close(): Result` e drop uniforme para todos os recursos.
+
+### Evidência local desta revisão
+
+O snapshot local de 16/10/2026 passou em fmt, check, Clippy com warnings como
+erros, nextest (**3.152 aprovados; sete ignorados pelo perfil**), bijeção de
+102 diagnósticos, rustdoc com warnings como erros e doctests. Passaram também
+os checks de arquitetura, taxonomia, LF e contrato dos 27 manifests, além do
+script de determinismo de typeck com uma e oito threads. A extensão passou
+em 26 testes unitários, nos dois cenários do Extension Host (projeto e
+manifestless) e em TypeScript. O instalador passou em 22 testes, 11 subtestes
+e Ruff. O corpus Rc/Arc passou ainda em JIT otimizado e C O0/O2 com ASan/UBSan.
+
+Essas evidências locais não publicam a 0.1.11 nem encerram ST.0–16. Os testes
+manuais/endurance e os pacotes exatos nos runners nativos continuam sujeitos
+aos gates da candidata. O contrato de versão ainda identifica a base 0.1.10;
+não houve preparação ou promoção de uma nova release nesta revisão.
+
+## Contratos locais de atomics e filesystem por capacidades
+
+`core.atomic` usa declarações de identidade explícita na ABI
+`arandu-intrinsic`; nomes coincidentes em funções comuns não recebem lowering
+especial. A tipagem rejeita assinaturas incompatíveis antes do AMIR. Os
+intrínsecos de memória são `unsafe`: exigem armazenamento vivo, naturalmente
+alinhado e acessado segundo o protocolo atômico durante compartilhamento.
+Os campos dos wrappers são privados; suas escritas continuam exigindo
+`mut ref self`. Não há promoção automática a mutabilidade interior compartilhada
+ou transporte `Send`/`Sync`.
+
+C usa builtins `__atomic_*` e uma asserção de suporte lock-free da largura no
+alvo. Cranelift usa instruções atômicas; Wasm usa opcodes atômicos, exigindo
+suporte do engine. A memória Wasm atual não é compartilhada: essa prova não
+habilita threads Wasm. Todos os acessos e CAS usam SeqCst, inclusive quando o
+chamador pede uma ordem mais fraca válida. `compilerFence` em Cranelift/Wasm
+é conservadoramente uma fence de hardware; em C usa signal fence.
+
+`Dir` mantém o descritor privado. A abertura da raiz é autoridade ambiente;
+operações relativas admitem componentes normais, recusando caminho absoluto,
+`..`, componentes vazios e NUL. No Linux, as aberturas usam
+`RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS`. Criação e
+remoção pinam o diretório pai e operam sobre uma única folha. Remover uma
+folha symlink remove o link, sem seguir seu alvo. Um pai já aberto conserva
+sua autoridade se for renomeado; não se promete confinamento por nome após
+esse rename. Não há fallback para `openat` comum quando `openat2` falha.
+`Dir.openDir` exige diretório; opções de append ainda são rejeitadas.
+`File` ainda expõe seu fd na API legada; privacidade/adoção de handles,
+`read`/`write` por handle e backends de capacidades em outros sistemas
+continuam incompletos. Os testes locais não promovem suporte multiplataforma.
+
+A correção local de `Rc.tryUnwrap` zera a contagem forte antes de mover o
+payload, impedindo que `Weak.upgrade` ressuscite o valor extraído. O corpus
+de lifecycle cobre unwrap e último drop de Rc/Arc com weaks vivos e payloads
+não-Copy; a contagem exata de seis drops foi observada em JIT comum/otimizado e C
+O0/O2, incluindo ASan/UBSan com detecção de vazamentos e uso de stack expirado.
+
+A etapa de compartilhamento ainda exige dois contratos adicionais. Em
+`Arc`, o teste de unicidade para `getMut` precisa excluir atomicamente
+`Weak.upgrade`, além de limitar contadores antes de overflow e provar o drop
+único de payloads não-Copy. Os marcadores `Send`/`Sync` atuais rejeitam
+conservadoramente raw pointers e recursos com destructor; atomics reais não
+removem essa fronteira. O transporte de closures/retornos para threads e a
+transferência de seus drops precisam estender o protocolo de ownership
+existente com regressões, sem liberar genericamente ponteiros ou recursos.
+
+`Condvar` ainda carece do protocolo que registra o waiter e libera o mutex
+sem perder notificações, além de reacquisição, cancelamento e integração com
+o executor. Uma sequência numérica e timeouts não constituem essa prova.
+O `RwLock` atual exige empréstimo exclusivo nos guards; sua existência não
+prova múltiplos leitores concorrentes nem justiça. Esses contratos antecedem
+a promoção das APIs de concorrência e permanecem na fila ST.7/ST.10/ST.11.
+
+## Contratos locais de matemática e aleatoriedade
+
+As regressões numéricas usam resultados independentes do host `f64`, mais
+representações IEEE exatas para potências de dois subnormais. Cobrem conversões
+acima de 32 bits, arredondamento perto de meio e de 2^52, zero com sinal,
+subnormais, extremos finitos, NaN e infinitos. `trunc` usa `i64` na faixa
+convertível; `round` compara a parte fracionária sem somar 0.5 ao operando;
+`exp` divide a escala nos extremos e `cbrt` evita formar cubos intermediários.
+Essa prova dos perfis atuais com float de 64 bits não estabelece um limite
+universal de ULP, redução trigonométrica de argumentos grandes ou suporte
+numérico equivalente para perfis float de 32 bits.
+
+`std.random.Xoshiro256PlusPlus` segue a fórmula xoshiro256++ e expande inclusive
+a seed zero por SplitMix64, conforme as
+[referências dos autores](https://prng.di.unimi.it/xoshiro256plusplus.c).
+O protótipo local anterior usava a fórmula `xoshiro256**` apesar do nome `xoshiro256++`; a correção
+altera seu fluxo determinístico antes da promoção da 0.1.11. A faixa inteira
+completa usa aritmética unsigned, sem transbordar o cálculo do intervalo.
+Vetores determinísticos e casos com rejeição são regressões de implementação;
+não constituem execução local de BigCrush nem prova criptográfica.
+
+A bridge de entropia retorna erro se a fonte do SO falhar e limpa qualquer
+saída parcial. Unix usa `/dev/urandom`; Windows usa `BCryptGenRandom` em blocos
+que respeitam o comprimento DWORD. Não há fallback para relógio, `rand()` ou
+seed fixa em uma chamada que reporte entropia do SO. `tryFromEntropy` expõe
+falhas de alocação, indisponibilidade e estado inválido; `fromEntropy` aborta
+se não puder inicializar. O PRNG continua inadequado para criptografia. Os
+imports de entropia/alocação Wasm ainda não estão integrados. O runtime passou em `cargo check -p arandu_runtime --locked --features
+blake3/pure` para Windows x86-64 e macOS ARM64/x86-64. A configuração padrão
+Windows não pôde ser checada neste host Linux porque o build de BLAKE3 exige
+`ml64.exe`. Essa checagem de Rust com a variante pura não comprova o build
+padrão, o C gerado ou a execução de BCrypt no Windows. Compilação cruzada não
+substitui os runners nativos da matriz de distribuição.
 
 ## Detalhes Técnicos da Implementação
 
@@ -131,8 +241,8 @@ arandu_core
  ├─ fmt          # Formatação e diagnostics de baixo nível (Debug, Display, formatting engines)
  ├─ panic        # Handlers básicos de pânico e asserções estáticas
  ├─ intrinsics   # abort, abortGenerationalMismatch (traps; zero heap)
- ├─ simd         # Tipos vetoriais e primitivas portáveis de SIMD (Fase A7)
- ├─ atomic       # API atual ordinária; atomics hardware ainda pendentes
+ ├─ simd         # Protótipo escalar; representação/lowering SIMD pendentes (A7)
+ ├─ atomic       # Lowering local C/Cranelift/Wasm; todos os acessos SeqCst
  └─ arch         # Especificações arquiteturais específicas (x86_64, AArch64, RISC-V)
 ```
 
@@ -156,7 +266,7 @@ arandu_alloc
  ├─ slab               # Alocadores de tamanho fixo com reciclagem rápida por Free Lists
  ├─ gen_arena          # GenSlot / GenRef / GenArena — fallback geracional F2.3 (não em core)
  ├─ rc                 # Referência compartilhada thread-local (Reference Counting)
- ├─ arc                # Referência compartilhada thread-safe (Atomic Reference Counting)
+ ├─ arc                # Protótipo com contagem atômica; Send/Sync e lifecycle pendentes
  ├─ boxed              # Ponteiro exclusivo alocado na heap (`Box<T>`)
  ├─ vec                # Vetor dinâmico contíguo reajustável (`Vec<T>`)
  ├─ smallvec           # Vetores otimizados com inline-stack storage temporário (elimina heap allocs pequenos)
@@ -193,8 +303,8 @@ arandu_std
  ├─ env          # Variáveis de ambiente, caminhos de executáveis, argumentos CLI
  ├─ path         # Manipulação e validação de caminhos de arquivos (Path, PathBuf)
  ├─ time         # Medição de tempo monotônico e absoluto, instantes, durações
- ├─ random       # Geração de números pseudo-aleatórios e criptograficamente seguros
- ├─ thread       # Threads de sistema nativas, local storage, handles de join
+ ├─ random       # PRNG xoshiro256++ e acesso falível à entropia do SO
+ ├─ thread       # Sleep/yield/park; spawn/join e identidade ainda pendentes
  ├─ ffi          # Conversão de tipos, ponteiros C, carregamento dinâmico (dlopen)
  ├─ collections  # Coleções avançadas (BTreeMap, Deque, LinkedList) dependentes de alocação e OS
  ├─ json         # Parser e serializador JSON ultra rápido, stream-based, cache-friendly
@@ -213,8 +323,8 @@ arandu_std
  │   └─ websocket# Suporte nativo a WebSocket sobre a pilha HTTP/TCP
  ├─ sync         # Primitivas de sincronização avançadas
  │   ├─ mutex    # Mutex de exclusão mútua adaptativo (Spin + Park)
- │   ├─ rwlock   # Reader-Writer Lock justo
- │   ├─ condvar  # Variáveis de condição
+ │   ├─ rwlock   # Protótipo; múltiplos leitores e justiça ainda sem prova
+ │   ├─ condvar  # Protótipo; registro/wakeup/cancelamento ainda pendentes
  │   ├─ barrier  # Barreiras de sincronização de threads
  │   ├─ once     # Inicialização lazy e thread-safe única
  │   ├─ channel  # Canais de comunicação (MPMC, SPSC, flume-style)

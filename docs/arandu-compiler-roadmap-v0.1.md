@@ -120,32 +120,40 @@ as alterações locais e os bloqueadores, e implementar a fundação abaixo ante
 da 0.2.0. A tabela registra entregas autorizadas, não funcionalidades publicadas.
 A 0.1.11 permanece em desenvolvimento enquanto houver itens não concluídos;
 a extensão do escopo não reduz as provas nem promove suporte por inferência.
+O snapshot local de 16/10 passou nos gates ordenados, em 3.152 testes nextest
+(sete ignorados), doctests, determinismo, checks documentais/arquiteturais,
+instalador e Extension Host. A [arquitetura da stdlib](arandu-stdlib-architecture-v0.1.md#evidência-local-desta-revisão)
+registra o alcance dessa prova. A matriz instalada da candidata ainda é pendente.
 
 | ID | Entrega | Estado / critério de saída |
 | --- | --- | --- |
-| ST.0 | consolidar primitivos, Decimal e alterações locais | `in_progress`; Decimal com overflow checado, comparação exata, HalfEven e conversões validadas passou no corpus C/Cranelift/Wasm e oráculo inteiro independente; métodos/imports/completion e cutoff exigem gates finais |
-| ST.1 | `core.math`: sqrt, sin/cos/tan, pow, log/exp e PI/TAU/E | `planned`; sem host/heap/OS, domínios e erro numérico definidos, vetores independentes incluindo extremos/NaN/infinito |
-| ST.2 | `core.simd`: f32x4/u8x16 | `planned`; tipos/layout/ABI/visitors e lowering nos três backends, instruções ou fallback explicitamente suportado e provas de lanes/alinhamento |
-| ST.3 | Q8.8/Q32.32 e correção de Q16.16 | implementação local; oráculo i128, JIT/C com UBSan/Wasm; revalidar corpus final de 384 pares e gates |
-| ST.4 | contagem/reversão de bits em `core.num` | implementação local u32/u64 nos três backends; zero definido; identidade ABI explícita e validação de assinatura antes do codegen; namespace/métodos e gates em validação; CTFE pendente |
-| ST.5 | atomics reais como pré-requisito de compartilhamento | `planned`; a API atual ignora MemoryOrder e não sincroniza; implementar operações/ordenação/alinhamento e rejeição explícita de alvos não admitidos |
-| ST.6 | `alloc.boxed.Box<T>` | implementação local nativa; C/Cranelift passaram em drops aninhados/ZST, movimento e mutação; rejeição de escapes/aliases/forja passou; C O0/O2 com UBSan; faltam wiring Wasm, prova de falha de alocação e gates finais |
-| ST.7 | `alloc.rc`/`alloc.arc` | `planned`; clone explícito, contagem/overflow/drop exato, restrições Send/Sync; Arc depende ST.5, sem alegar suporte a ciclos |
-| ST.8 | `alloc.slab` e deque circular | `planned`; freelist/reuso, crescimento/transbordamento, tipos não-Copy e invalidação de views testados |
-| ST.9 | `std.random` | `planned`; PRNG determinístico com vetores, amostragem sem viés e entropia nativa falível; PRNG não é CSPRNG |
-| ST.10 | `sync.rwlock`/`sync.condvar` cooperativos | `planned`; contratos de espera/cancelamento/wakeup e proteção contra lost wakeup, sem bloquear o executor |
-| ST.11 | `std.thread` e JoinHandle/parking | `planned`; API nativa por alvo, transporte/drop de capturas/resultados, join e falhas; depende de provas Send/Sync/atomics |
-| ST.12 | filesystem por capacidades `Dir` (RFC 0016) | `planned`; confinamento por handles, traversal/symlink/TOCTOU e lifecycle; normalização textual não satisfaz a prova |
-| ST.13 | DNS/UDP e reactor multiplataforma | `planned`; APIs falíveis, cancelamento e lifecycle; Linux/Windows/macOS exercitados nativamente; IOCP/kqueue não são simulados por stubs |
-| ST.14 | `crypto.hash` SHA-256/BLAKE3 | implementação escalar local; vetores independentes de streaming/padding/chunks/árvore e snapshots passaram em C/Cranelift/Wasm; sem autenticação/keyed/XOF; gates finais pendentes |
-| ST.15 | `math.big.BigInt`/`BigDecimal` (RFC 0037) | `planned`; ownership/alocador, precisão/escala/limites, divisão/arredondamento e oráculo independente |
-| ST.16 | promoção da candidata | `pending`; gates ordenados completos no mesmo snapshot, testes específicos/Extension Host e packages exatos nos runners nativos |
+| ST.0 | consolidar primitivos, Decimal e alterações locais | `in_progress`; Decimal com overflow checado, comparação exata, HalfEven e conversões validadas passou no corpus C/Cranelift/Wasm e oráculo inteiro independente; gates locais passaram; manter as provas de métodos/imports/completion e cutoff no SDK instalado |
+| ST.1 | `core.math`: sqrt, sin/cos/tan, pow, log/exp e PI/TAU/E | implementação escalar local; corrigidos trunc acima de 32 bits, round, escala extrema de exp, potências subnormais e overflow intermediário de cbrt; regressões independentes IEEE/f64 nos três backends; fechar oráculos trigonométricos, domínios/erro numérico e perfis float32 antes de promover |
+| ST.2 | `core.simd`: f32x4/u8x16 | protótipo escalar local; F32x4 ainda usa campos float, sem prova de largura/alinhamento de 128 bits ou registradores SIMD; faltam representação/layout/ABI/lowering e provas por alvo |
+| ST.3 | Q8.8/Q32.32 e correção de Q16.16 | implementação local; oráculo i128, JIT/C com UBSan/Wasm; 384 pares inteiros e gates locais passaram; conversões float e SDK instalado ainda exigem provas |
+| ST.4 | contagem/reversão de bits em `core.num` | implementação local u32/u64 nos três backends; zero definido; identidade ABI explícita e validação de assinatura antes do codegen; integração local validada pelos gates; CTFE e matriz instalada pendentes |
+| ST.5 | atomics reais como pré-requisito de compartilhamento | implementação local: ABI tipada, armazenamento privado e operações SeqCst em C/Cranelift/Wasm; nove regressões focadas de atomics/Dir passaram, incluindo contenção com seis threads, CAS e rejeição de ordens/ABI inválidas; acesso exige alinhamento natural, escritas ainda usam mut ref; Send/Sync, Arc e matriz instalada continuam pendentes |
+| ST.6 | `alloc.boxed.Box<T>` | implementação local nativa; C/Cranelift passaram em drops aninhados/ZST, movimento e mutação; rejeição de escapes/aliases/forja passou; C O0/O2 com UBSan; faltam wiring Wasm, prova de falha de alocação e matriz instalada |
+| ST.7 | `alloc.rc`/`alloc.arc` | implementações locais; corrigida ressurreição por Weak após Rc.tryUnwrap e extração de payload não-Copy em Rc/Arc; regressão de unwrap/último drop passou em JIT/C; faltam contadores/overflow, falhas de alocação e exclusividade de getMut contra upgrade de Weak; concorrência e Send/Sync dependem do contrato de transporte; Arc depende ST.5; não promover pelos nomes das APIs |
+| ST.8 | `alloc.slab` e deque circular | implementações locais; fechar freelist/reuso, crescimento/transbordamento, alinhamento, drops não-Copy e invalidação de views com regressões nos backends |
+| ST.9 | `std.random` | correções locais: fórmula xoshiro256++/seed zero, faixa int completa, entropia sem fallback fraco e tryFromEntropy falível; 136 vetores determinísticos em JIT/C/Wasm e injeção de falha C passaram; imports de host Wasm ainda exigem integração; fechar faixas float e execução por alvo; PRNG não é CSPRNG |
+| ST.10 | `sync.rwlock`/`sync.condvar` cooperativos | protótipos locais; notify do host ainda é vazio e wait usa timeout/parking; não há prova de wakeup, cancelamento, justiça ou cooperação com executor; depende ST.5 |
+| ST.11 | `std.thread` e JoinHandle/parking | sleep/yield/park locais; spawn/join não implementados, unpark do host vazio e currentThreadId retorna zero; fechar identidade, parking real e transporte/drop com Send/Sync antes de promover |
+| ST.12 | filesystem por capacidades `Dir` (RFC 0016) | implementação Linux local com openat2 BENEATH/NO_SYMLINKS/NO_MAGICLINKS e pais pinados em mkdir/unlink; regressões JIT/C com UBSan e runtime passaram para caminhos absolutos, traversal, symlinks e rename da raiz; sem fallback inseguro; faltam plataformas, privacidade/adoção dos handles File, lifecycle integral e matriz instalada |
+| ST.13 | DNS/UDP e reactor multiplataforma | bridges DNS/UDP locais; fechar lifecycle/falhas/cancelamento e testes nativos por alvo; IOCP/kqueue continuam ausentes, sem promover stubs a suporte |
+| ST.14 | `crypto.hash` SHA-256/BLAKE3 | implementação escalar local; vetores independentes de streaming/padding/chunks/árvore e snapshots passaram em C/Cranelift/Wasm; sem autenticação/keyed/XOF; matriz instalada e promoção pendentes |
+| ST.15 | `math.big.BigInt`/`BigDecimal` (RFC 0037) | implementação local com corpus inicial; fechar ownership/alocador, precisão/escala/limites, divisão/arredondamento e oráculo independente, incluindo números além de 128 bits |
+| ST.16 | promoção da candidata | `partial`; gates locais ordenados, testes específicos e Extension Host passaram; faltam packages exatos nos runners nativos e fechamento dos contratos abertos acima |
 
 A ordem de execução é: bloqueadores e ST.0 → aritmética/ST.3/ST.4 →
 fundação de memória e atomics → coleções/precisão arbitrária → serviços e
 concorrência → SIMD/math e integração final conforme dependências. Frentes
-independentes podem avançar em paralelo. Os contratos técnicos mantêm design
-e limitações; esta é a única fila permanente.
+independentes podem avançar em paralelo. ST.11 inclui fixar e implementar o
+entrypoint de thread e o transporte possuído de capturas/retornos. Qualquer
+recorte de chamadas/capturas necessário à API autorizada deve ser antecipado
+para essa campanha; LAMBDA na 0.3.x descreve a expansão geral posterior, sem
+adiar um pré-requisito da mesma API de threads. Os contratos técnicos mantêm
+design e limitações; esta é a única fila permanente.
 
 ## Plano de longo prazo por série
 

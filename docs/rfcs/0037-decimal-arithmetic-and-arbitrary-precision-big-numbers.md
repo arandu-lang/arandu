@@ -6,7 +6,7 @@
 - **Data de Início:** 2026-10-16
 - **Status:** `Draft`
 - **Área Principal:** `Stdlib` | `Middle-end` | `Runtime`
-- **Escopo:** `std.core.decimal` (implementado na fundação `std.core`), `std.math.big` (proposto para `BigInt`/`BigDecimal`) e integração `comptime`
+- **Escopo:** `std.core.decimal` (implementado na fundação `std.core`), `std.math.big` (protótipos locais de `BigInt`/`BigDecimal`, ainda em validação) e integração `comptime`
 
 ---
 
@@ -17,8 +17,9 @@ Esta RFC estabelece a arquitetura numérica de três camadas do Arandu para comp
 - **Implementado nesta revisão (2026-10-16):**
   - Camada 1: Tipos primitivos de hardware (`int`, `uint`, `i8`..`i64`, `u8`..`u64`) e ponto flutuante binário (`float`, `f32`, `f64`). A representação IEEE não certifica conformidade integral de todas as operações, conversões ou backends.
   - Camada 2 (`std.core.decimal`): Tipo de valor `Decimal` de 128 bits (mantissa inteira de 96 bits + sinal + escala decimal `0..=28`), armazenamento por valor (`Copy`), sem alocação explícita na API, construtores (`zero`, `one`, `fromInt`, `fromI64`, `fromCents`, `fromParts`, `fromStr`), comparações com normalização de escala (`eq`, `cmp`, `lt`, `le`, `gt`, `ge`), aritmética de precisão finita (`checkedAdd`/`checkedSub`/`checkedMul`, wrappers `add`/`sub`/`mul` e `div`) e arredondamento configurável (`RoundingMode`: `HalfEven`, `HalfUp`, `Truncate`, `Floor`, `Ceil`).
-- **Autorizado para implementação, ainda pendente:**
-  - Camada 3 (`std.math.big`): `BigInt` e `BigDecimal` de precisão arbitrária alocados dinamicamente (via arena ou alocador explícito) para criptografia assimétrica, teoria dos números e contabilidade com centenas de casas decimais.
+- **Implementação local inicial, ainda sem fechamento:**
+  - Camada 3 ([`std.math.big`](../../stdlib/math/big.aru)): `BigInt` com magnitude em `Vec<u64>` e sinal bool; `BigDecimal` com mantissa `BigInt` e escala `i64`. Existe corpus inicial nos backends nativos; faltam oráculos independentes além de 128 bits, falhas de alocação, ownership/drop, divisão/arredondamento e limites de escala/trabalho.
+  - O buffer usa o alocador atual de `Vec`, sem seleção uniforme de arena/alocador pela API. A implementação não comprova Karatsuba nem operações em tempo constante; comparações podem percorrer limbs. A aplicação criptográfica ilustrada na proposta exige provas próprias. A fila de fechamento é ST.15 no [roadmap mestre](../arandu-compiler-roadmap-v0.1.md).
 - **Proposta separada, fora do fechamento autorizado:**
   - Sufixos literais dedicados (como `0.10d`) caso a ergonomia de `Decimal.fromStr` em `comptime` demande açúcar sintático no léxico.
 
@@ -55,7 +56,7 @@ Por outro lado, o modelo de `decimal` de 128 bits por valor consagrado em C#/.NE
 | Contadores, índices, centavos simples | `int`, `i64` | Stack (Registrador) | Inteiro binário exato, velocidade máxima da ALU |
 | Gráficos, jogos, simulações, sensores | `float`, `f32`, `f64` | Stack (Registrador FPU) | IEEE 754-2019 binário (`0.1 + 0.2 != 0.3`) |
 | **Finanças, ERP, impostos, bancos de dados (`NUMERIC`)** | **`std.core.decimal.Decimal`** | **Valor de 16 bytes** | **Base 10 exata até 28 casas decimais (`0.1 + 0.2 == 0.3`)** |
-| Criptografia (RSA/ECC), matemática simbólica | `std.math.big.BigInt` / `BigDecimal` | Heap / Arena | Precisão arbitrária com limites de memória, escala e trabalho definidos pela API |
+| Teoria dos números, matemática simbólica | `std.math.big.BigInt` / `BigDecimal` | Heap / Arena | Precisão arbitrária com limites de memória, escala e trabalho definidos pela API |
 
 ### 3.2 Uso de `std.core.decimal`
 
@@ -87,9 +88,9 @@ func main(): int {
 }
 ```
 
-### 3.3 Visão futura: `std.math.big` (`BigInt` e `BigDecimal`)
+### 3.3 Direção arquitetural e protótipo: `std.math.big` (`BigInt` e `BigDecimal`)
 
-Para cenários que extrapolam 28 dígitos decimais ou 96 bits de mantissa, o módulo proposto `std.math.big` fornecerá estruturas baseadas em fatias de palavras de 64 bits (`[]u64` em `Vec<u64>` ou `Arena`):
+Para cenários que extrapolam 28 dígitos decimais ou 96 bits de mantissa, o protótipo `std.math.big` usa palavras de 64 bits em `Vec<u64>`. Integração com arenas, o contrato integral e a API ilustrada a seguir permanecem sujeitos ao fechamento descrito acima:
 
 ```arandu
 // Exemplo ilustrativo da futura camada 3 (std.math.big)
@@ -97,7 +98,7 @@ import std.math.big as big
 
 func exemploBig(): void {
     // Inteiro de precisão arbitrária
-    // BigDecimal = BigInt (unscaled) + scale: i32
+    // BigDecimal = BigInt (unscaled) + scale: i64
 }
 ```
 
@@ -150,7 +151,7 @@ $$\text{Valor} = (-1)^{\text{sinal}} \times \left(\text{lo} + \text{mid} \cdot 2
     - Multiplicação escolar $O(N^2)$ para até 32 limbs; Karatsuba $O(N^{1.585})$ para operandos médios.
     - Divisão longa de Knuth (Algoritmo D, TAOCP Vol. 2).
 - **`BigDecimal`**:
-  - Composto por `unscaled: BigInt` e `scale: i32`.
+  - Composto por `unscaled: BigInt` e `scale: i64`.
   - Conversão sem perda a partir de `std.core.decimal.Decimal`.
 
 ---

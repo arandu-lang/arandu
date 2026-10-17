@@ -596,7 +596,7 @@ pub unsafe extern "C" fn ar_rt_condvar_wait(key: *const u8, seq: usize) {
         return;
     }
     let addr = key as usize;
-    if addr % std::mem::align_of::<usize>() != 0 {
+    if !addr.is_multiple_of(std::mem::align_of::<usize>()) {
         return;
     }
     let current = get_or_register_current_thread();

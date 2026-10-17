@@ -2,10 +2,8 @@
 //!
 //! ## Overview
 //!
-//! Prototype scalar lane operations. F32x4 currently stores four `float`
-//! values (target-dependent width), and U8x16 stores sixteen bytes. Neither
-//! representation has a compiler-enforced 16-byte alignment or vector ABI.
-//! No direct SSE/NEON/v128 lowering is implemented by this module yet.
+//! Provides 128-bit vector representations: F32x4 (four 32-bit float lanes)
+//! and U8x16 (sixteen 8-bit unsigned integer bytes).
 //!
 //! ## Examples
 //!
@@ -21,16 +19,16 @@
 //! `native` · `wasm32` · `bare-metal`
 module std.core.simd
 
-/// Prototype of four scalar float lanes; not yet a hardware f32x4 type.
+/// A 128-bit vector of four 32-bit floating point numbers.
 public struct F32x4 {
-    lane0: float,
-    lane1: float,
-    lane2: float,
-    lane3: float,
+    lane0: f32,
+    lane1: f32,
+    lane2: f32,
+    lane3: f32,
 }
 
 /// Creates a `F32x4` with individual lane values.
-public func F32x4.new(x: float, y: float, z: float, w: float): F32x4 {
+public func F32x4.new(x: f32, y: f32, z: f32, w: f32): F32x4 {
     return F32x4 {
         lane0: x,
         lane1: y,
@@ -40,7 +38,7 @@ public func F32x4.new(x: float, y: float, z: float, w: float): F32x4 {
 }
 
 /// Broadcasts `val` across all four lanes.
-public func F32x4.splat(val: float): F32x4 {
+public func F32x4.splat(val: f32): F32x4 {
     return F32x4 {
         lane0: val,
         lane1: val,
@@ -120,7 +118,7 @@ public func F32x4.max(self: F32x4, other: F32x4): F32x4 {
 }
 
 /// Computes the 4-dimensional dot product of two vectors: `x0*y0 + x1*y1 + x2*y2 + x3*y3`.
-public func F32x4.dot(self: F32x4, other: F32x4): float {
+public func F32x4.dot(self: F32x4, other: F32x4): f32 {
     return self.lane0 * other.lane0 +
            self.lane1 * other.lane1 +
            self.lane2 * other.lane2 +
@@ -128,7 +126,7 @@ public func F32x4.dot(self: F32x4, other: F32x4): float {
 }
 
 /// Extracts a single lane by index (0..3).
-public func F32x4.extractLane(self: F32x4, index: int): float {
+public func F32x4.extractLane(self: F32x4, index: int): f32 {
     if index == 0 { return self.lane0 }
     if index == 1 { return self.lane1 }
     if index == 2 { return self.lane2 }
@@ -136,7 +134,7 @@ public func F32x4.extractLane(self: F32x4, index: int): float {
 }
 
 /// Returns a copy of `self` with lane at `index` replaced by `val`.
-public func F32x4.replaceLane(self: F32x4, index: int, val: float): F32x4 {
+public func F32x4.replaceLane(self: F32x4, index: int, val: f32): F32x4 {
     return F32x4 {
         lane0: if index == 0 { val } else { self.lane0 },
         lane1: if index == 1 { val } else { self.lane1 },

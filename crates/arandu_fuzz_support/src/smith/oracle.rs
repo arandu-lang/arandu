@@ -478,7 +478,7 @@ static STDLIB_CACHE: LazyLock<Result<StdlibFiles, String>> = LazyLock::new(|| {
         .join("../../stdlib")
         .canonicalize()
         .map_err(|error| format!("canonicalize stdlib root: {error}"))?;
-    let sources: [(&str, &str); 38] = [
+    let sources: [(&str, &str); 39] = [
         (
             "alloc/bitset.aru",
             include_str!("../../../../stdlib/alloc/bitset.aru"),
@@ -506,6 +506,10 @@ static STDLIB_CACHE: LazyLock<Result<StdlibFiles, String>> = LazyLock::new(|| {
         (
             "alloc/vec.aru",
             include_str!("../../../../stdlib/alloc/vec.aru"),
+        ),
+        (
+            "alloc/allocator_api.aru",
+            include_str!("../../../../stdlib/alloc/allocator_api.aru"),
         ),
         (
             "alloc/boxed.aru",
@@ -623,10 +627,7 @@ static STDLIB_CACHE: LazyLock<Result<StdlibFiles, String>> = LazyLock::new(|| {
             "std/thread.aru",
             include_str!("../../../../stdlib/std/thread.aru"),
         ),
-        (
-            "std/fs.aru",
-            include_str!("../../../../stdlib/std/fs.aru"),
-        ),
+        ("std/fs.aru", include_str!("../../../../stdlib/std/fs.aru")),
         (
             "std/net.aru",
             include_str!("../../../../stdlib/std/net.aru"),
@@ -1430,6 +1431,8 @@ const env={
   ar_vec_malloc: size=>instance.exports.cabi_realloc(0,0,8,size),
   ar_vec_realloc: (ptr,oldSize,newSize)=>instance.exports.cabi_realloc(ptr,oldSize,8,newSize),
   ar_vec_buf_free: (ptr,size)=>{instance.exports.cabi_realloc(ptr,size,8,0)},
+  ar_rt_alloc_aligned: (size,align)=>instance.exports.cabi_realloc(0,0,align||8,size),
+  ar_rt_free_aligned: (ptr,size,align)=>{instance.exports.cabi_realloc(ptr,size,align||8,0)},
   ar_string_push_str: (raw,valuePtr,valueLen)=>{
     const memory=instance.exports.memory;
     const owner=Number(raw), source=Number(valuePtr), count=Number(valueLen);

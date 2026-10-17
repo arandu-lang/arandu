@@ -3,11 +3,13 @@
 //! ## Overview
 //!
 //! `std.core.math` provides pure, freestanding mathematical constants and
-//! functions operating on IEEE 754 64-bit floating-point numbers (`float`).
+//! functions operating on `float` (64-bit in the current native/Wasm profiles).
 //!
 //! This module does not depend on host `libc` / `libm`, operating system syscalls,
-//! or heap allocation. Every function behaves deterministically across
-//! Cranelift, C emission, and WebAssembly.
+//! or heap allocation. The scalar algorithms are shared across Cranelift,
+//! C emission and WebAssembly; numerical error and exceptional inputs still
+//! require the cross-backend contract corpus. Bit-identical floating-point
+//! results are not promised for all targets.
 //!
 //! ## Examples
 //!
@@ -171,11 +173,14 @@ public func clamp(val: float, minVal: float, maxVal: float): float {
 /// Truncates the fractional part, returning the integer component as a float.
 public func trunc(x: float): float {
     if !isFinite(x) { return x }
+    if x == 0.0 { return x }
     // Beyond 2^52 (4503599627370496.0), floats have no fractional bits.
     if x >= 4503599627370496.0 || x <= -4503599627370496.0 {
         return x
     }
-    let asInt = x as int
+    // Every remaining finite magnitude fits i64; int is only 32 bits.
+    let asInt = x as i64
+    if asInt == (0 as i64) && x < 0.0 { return -0.0 }
     return asInt as float
 }
 
@@ -202,10 +207,16 @@ public func ceil(x: float): float {
 /// Rounds `x` to the nearest integer, rounding half away from zero.
 public func round(x: float): float {
     if !isFinite(x) { return x }
-    if x >= 0.0 {
-        return floor(x + 0.5)
+    if x == 0.0 { return x }
+    // Adding 0.5 would round an already-integral large value a second time.
+    if x >= 4503599627370496.0 || x <= -4503599627370496.0 {
+        return x
     }
-    return ceil(x - 0.5)
+    let integral = trunc(x)
+    let fraction = x - integral
+    if fraction >= 0.5 { return integral + 1.0 }
+    if fraction <= -0.5 { return integral - 1.0 }
+    return integral
 }
 
 // ── Square Root & Hypotenuse ────────────────────────────────────────────────
@@ -214,7 +225,7 @@ public func round(x: float): float {
 public func sqrt(x: float): float {
     if isNan(x) { return x }
     if x < 0.0 { return nan() }
-    if x == 0.0 { return 0.0 }
+    if x == 0.0 { return x }
     if isInfinite(x) { return x }
 
     // Range reduction: scale into [1.0, 4.0)
@@ -283,7 +294,7 @@ func sinSeries(z: float): float {
 
 func cosSeries(z: float): float {
     let z2 = z * z
-    return 1.0 + z2 * (-0.5 + z2 * (0.041666666666666664 + z2 * (-0.001388888888888889 + z2 * (0.0000248015873015873 + z2 * (-0.0000002755731922398589 + z2 * 0.00000000208767569878681))))))
+    return 1.0 + z2 * (-0.5 + z2 * (0.041666666666666664 + z2 * (-0.001388888888888889 + z2 * (0.0000248015873015873 + z2 * (-0.0000002755731922398589 + z2 * 0.00000000208767569878681)))))
 }
 
 /// Computes the sine of `x` (in radians).
@@ -422,16 +433,15 @@ public func acos(x: float): float {
 /// Computes the cube root of `x` (∛x).
 public func cbrt(x: float): float {
     if isNan(x) { return x }
-    if x == 0.0 { return 0.0 }
+    if x == 0.0 { return x }
     if isInfinite(x) { return x }
     if x < 0.0 {
         return -cbrt(-x)
     }
     let mut y = exp(ln(x) / 3.0)
-    let y3 = y * y * y
-    y = y * (2.0 * x + y3) / (x + 2.0 * y3)
-    let y3_2 = y * y * y
-    y = y * (2.0 * x + y3_2) / (x + 2.0 * y3_2)
+    // Divide successively: y^3 and 2*x can overflow for a finite cube root.
+    y = (2.0 * y + (x / y) / y) / 3.0
+    y = (2.0 * y + (x / y) / y) / 3.0
     return y
 }
 
@@ -484,6 +494,14 @@ public func exp(x: float): float {
     let k = round(x * log2EVal)
     let r = x - k * ln2Val
     let eR = expSeries(r)
+    // Keep the scale normal until the final multiplication. Computing 2^k
+    // directly overflows for k=1024 and loses all subnormals for k<-1023.
+    if k > 1023.0 {
+        return (eR * pow2Integer((k as int) - 1)) * 2.0
+    }
+    if k < -1022.0 {
+        return (eR * pow2Integer((k as int) + 1022)) * pow2Integer(-1022)
+    }
     return eR * pow2Integer(k as int)
 }
 
@@ -551,12 +569,12 @@ public func pow(base: float, exponent: float): float {
         return infinity()
     }
 
-    // Check for exact integer exponent
+    // Check for exact integer exponent (up to 2^53 where all float values are integral)
     let isIntExp = exponent == trunc(exponent)
-    if isIntExp && exponent >= -2147483647.0 && exponent <= 2147483647.0 {
-        let n = exponent as int
-        if n < 0 {
-            return 1.0 / powInt(base, -n)
+    if isIntExp && exponent >= -9007199254740992.0 && exponent <= 9007199254740992.0 {
+        let n = exponent as i64
+        if n < (0 as i64) {
+            return powInt(1.0 / base, -n)
         }
         return powInt(base, n)
     }
@@ -567,16 +585,16 @@ public func pow(base: float, exponent: float): float {
     return exp(exponent * ln(base))
 }
 
-func powInt(b: float, n: int): float {
+func powInt(b: float, n: i64): float {
     let mut base = b
     let mut exp = n
     let mut res = 1.0
-    while exp > 0 {
-        if exp % 2 != 0 {
+    while exp > (0 as i64) {
+        if exp % (2 as i64) != (0 as i64) {
             res = res * base
         }
         base = base * base
-        exp = exp / 2
+        exp = exp / (2 as i64)
     }
     return res
 }

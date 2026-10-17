@@ -813,42 +813,54 @@ pub(crate) fn runtime_imports(
         let mut dir_open_sig = Signature::new(default_call_conv);
         dir_open_sig.params.push(AbiParam::new(ptr_type));
         dir_open_sig.params.push(AbiParam::new(ptr_type));
-        dir_open_sig.returns.push(AbiParam::new(I64));
+        dir_open_sig.returns.push(AbiParam::new(I32));
         let id = module
             .declare_function("ar_fs_dir_open", Linkage::Import, &dir_open_sig)
             .map_err(|err| codegen_ice(format!("failed to declare ar_fs_dir_open: {err:?}")))?;
         insert_sym(func_ids, "ar_fs_dir_open", id);
 
         let mut openat_sig = Signature::new(default_call_conv);
-        openat_sig.params.push(AbiParam::new(I64));
+        openat_sig.params.push(AbiParam::new(I32));
         openat_sig.params.push(AbiParam::new(ptr_type));
         openat_sig.params.push(AbiParam::new(ptr_type));
         openat_sig.params.push(AbiParam::new(I8));
         openat_sig.params.push(AbiParam::new(I8));
         openat_sig.params.push(AbiParam::new(I8));
         openat_sig.params.push(AbiParam::new(I8));
-        openat_sig.returns.push(AbiParam::new(I64));
+        openat_sig.returns.push(AbiParam::new(I32));
         let id = module
             .declare_function("ar_fs_openat", Linkage::Import, &openat_sig)
             .map_err(|err| codegen_ice(format!("failed to declare ar_fs_openat: {err:?}")))?;
         insert_sym(func_ids, "ar_fs_openat", id);
 
+        let mut dir_openat_sig = Signature::new(default_call_conv);
+        dir_openat_sig.params.extend([
+            AbiParam::new(I32),
+            AbiParam::new(ptr_type),
+            AbiParam::new(ptr_type),
+        ]);
+        dir_openat_sig.returns.push(AbiParam::new(I32));
+        let id = module
+            .declare_function("ar_fs_dir_openat", Linkage::Import, &dir_openat_sig)
+            .map_err(|err| codegen_ice(format!("failed to declare ar_fs_dir_openat: {err:?}")))?;
+        insert_sym(func_ids, "ar_fs_dir_openat", id);
+
         let mut mkdirat_sig = Signature::new(default_call_conv);
-        mkdirat_sig.params.push(AbiParam::new(I64));
+        mkdirat_sig.params.push(AbiParam::new(I32));
         mkdirat_sig.params.push(AbiParam::new(ptr_type));
         mkdirat_sig.params.push(AbiParam::new(ptr_type));
-        mkdirat_sig.returns.push(AbiParam::new(I64));
+        mkdirat_sig.returns.push(AbiParam::new(I32));
         let id = module
             .declare_function("ar_fs_mkdirat", Linkage::Import, &mkdirat_sig)
             .map_err(|err| codegen_ice(format!("failed to declare ar_fs_mkdirat: {err:?}")))?;
         insert_sym(func_ids, "ar_fs_mkdirat", id);
 
         let mut unlinkat_sig = Signature::new(default_call_conv);
-        unlinkat_sig.params.push(AbiParam::new(I64));
+        unlinkat_sig.params.push(AbiParam::new(I32));
         unlinkat_sig.params.push(AbiParam::new(ptr_type));
         unlinkat_sig.params.push(AbiParam::new(ptr_type));
         unlinkat_sig.params.push(AbiParam::new(I8));
-        unlinkat_sig.returns.push(AbiParam::new(I64));
+        unlinkat_sig.returns.push(AbiParam::new(I32));
         let id = module
             .declare_function("ar_fs_unlinkat", Linkage::Import, &unlinkat_sig)
             .map_err(|err| codegen_ice(format!("failed to declare ar_fs_unlinkat: {err:?}")))?;
@@ -861,7 +873,9 @@ pub(crate) fn runtime_imports(
         sleep_sig.params.push(AbiParam::new(I64));
         let id = module
             .declare_function("ar_rt_thread_sleep_ms", Linkage::Import, &sleep_sig)
-            .map_err(|err| codegen_ice(format!("failed to declare ar_rt_thread_sleep_ms: {err:?}")))?;
+            .map_err(|err| {
+                codegen_ice(format!("failed to declare ar_rt_thread_sleep_ms: {err:?}"))
+            })?;
         insert_sym(func_ids, "ar_rt_thread_sleep_ms", id);
 
         let void_noarg = Signature::new(default_call_conv);
@@ -889,7 +903,7 @@ pub(crate) fn runtime_imports(
         let mut entropy_sig = Signature::new(default_call_conv);
         entropy_sig.params.push(AbiParam::new(ptr_type));
         entropy_sig.params.push(AbiParam::new(ptr_type));
-        entropy_sig.returns.push(AbiParam::new(I64));
+        entropy_sig.returns.push(AbiParam::new(I32));
         let id = module
             .declare_function("ar_rt_get_entropy", Linkage::Import, &entropy_sig)
             .map_err(|err| codegen_ice(format!("failed to declare ar_rt_get_entropy: {err:?}")))?;
@@ -901,39 +915,41 @@ pub(crate) fn runtime_imports(
         let mut bind_sig = Signature::new(default_call_conv);
         bind_sig.params.push(AbiParam::new(ptr_type));
         bind_sig.params.push(AbiParam::new(ptr_type));
-        bind_sig.params.push(AbiParam::new(I64));
-        bind_sig.returns.push(AbiParam::new(I64));
+        bind_sig.params.push(AbiParam::new(I32));
+        bind_sig.returns.push(AbiParam::new(I32));
         let id = module
             .declare_function("ar_net_udp_bind", Linkage::Import, &bind_sig)
             .map_err(|err| codegen_ice(format!("failed to declare ar_net_udp_bind: {err:?}")))?;
         insert_sym(func_ids, "ar_net_udp_bind", id);
 
         let mut sendto_sig = Signature::new(default_call_conv);
-        sendto_sig.params.push(AbiParam::new(I64));
+        sendto_sig.params.push(AbiParam::new(I32));
         sendto_sig.params.push(AbiParam::new(ptr_type));
         sendto_sig.params.push(AbiParam::new(ptr_type));
         sendto_sig.params.push(AbiParam::new(ptr_type));
         sendto_sig.params.push(AbiParam::new(ptr_type));
-        sendto_sig.params.push(AbiParam::new(I64));
-        sendto_sig.returns.push(AbiParam::new(I64));
+        sendto_sig.params.push(AbiParam::new(I32));
+        sendto_sig.returns.push(AbiParam::new(I32));
         let id = module
             .declare_function("ar_net_udp_send_to", Linkage::Import, &sendto_sig)
             .map_err(|err| codegen_ice(format!("failed to declare ar_net_udp_send_to: {err:?}")))?;
         insert_sym(func_ids, "ar_net_udp_send_to", id);
 
         let mut recvfrom_sig = Signature::new(default_call_conv);
-        recvfrom_sig.params.push(AbiParam::new(I64));
+        recvfrom_sig.params.push(AbiParam::new(I32));
         recvfrom_sig.params.push(AbiParam::new(ptr_type));
         recvfrom_sig.params.push(AbiParam::new(ptr_type));
         recvfrom_sig.params.push(AbiParam::new(ptr_type));
-        recvfrom_sig.returns.push(AbiParam::new(I64));
+        recvfrom_sig.returns.push(AbiParam::new(I32));
         let id = module
             .declare_function("ar_net_udp_recv_from", Linkage::Import, &recvfrom_sig)
-            .map_err(|err| codegen_ice(format!("failed to declare ar_net_udp_recv_from: {err:?}")))?;
+            .map_err(|err| {
+                codegen_ice(format!("failed to declare ar_net_udp_recv_from: {err:?}"))
+            })?;
         insert_sym(func_ids, "ar_net_udp_recv_from", id);
 
         let mut close_sig = Signature::new(default_call_conv);
-        close_sig.params.push(AbiParam::new(I64));
+        close_sig.params.push(AbiParam::new(I32));
         let id = module
             .declare_function("ar_net_udp_close", Linkage::Import, &close_sig)
             .map_err(|err| codegen_ice(format!("failed to declare ar_net_udp_close: {err:?}")))?;
@@ -944,7 +960,7 @@ pub(crate) fn runtime_imports(
         dns_sig.params.push(AbiParam::new(ptr_type));
         dns_sig.params.push(AbiParam::new(ptr_type));
         dns_sig.params.push(AbiParam::new(ptr_type));
-        dns_sig.returns.push(AbiParam::new(I64));
+        dns_sig.returns.push(AbiParam::new(I32));
         let id = module
             .declare_function("ar_net_dns_resolve", Linkage::Import, &dns_sig)
             .map_err(|err| codegen_ice(format!("failed to declare ar_net_dns_resolve: {err:?}")))?;

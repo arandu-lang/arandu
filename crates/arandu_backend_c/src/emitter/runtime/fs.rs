@@ -172,17 +172,45 @@ static {int_c_ty} ar_fs_open(ArStr path, {int_c_ty} flags, {int_c_ty} mode) {{
 }}
 
 static {int_c_ty} ar_fs_read({int_c_ty} fd, uint8_t *buf, {uint_c_ty} count) {{
-    (void)fd; (void)buf; (void)count;
+    if (fd < 0 || (count > 0 && !buf)) return -1;
+    if (count == 0) return 0;
+#if !defined(_WIN32) || defined(__MINGW32__)
+    for (;;) {{
+        ssize_t n = read((int)fd, buf, (size_t)count);
+        if (n < 0) {{
+            if (errno == EINTR) continue;
+            return -1;
+        }}
+        return ({int_c_ty})n;
+    }}
+#else
     return -1;
+#endif
 }}
 
 static {int_c_ty} ar_fs_write({int_c_ty} fd, const uint8_t *buf, {uint_c_ty} count) {{
-    (void)fd; (void)buf; (void)count;
+    if (fd < 0 || (count > 0 && !buf)) return -1;
+    if (count == 0) return 0;
+#if !defined(_WIN32) || defined(__MINGW32__)
+    for (;;) {{
+        ssize_t n = write((int)fd, buf, (size_t)count);
+        if (n < 0) {{
+            if (errno == EINTR) continue;
+            return -1;
+        }}
+        return ({int_c_ty})n;
+    }}
+#else
     return -1;
+#endif
 }}
 
 static {int_c_ty} ar_fs_close({int_c_ty} fd) {{
+#if !defined(_WIN32) || defined(__MINGW32__)
+    if (fd >= 0) return ({int_c_ty})close((int)fd);
+#else
     (void)fd;
+#endif
     return 0;
 }}
 
@@ -477,103 +505,263 @@ static void ar_fs_readdir(ArStr path, uint8_t **out_buf, {uint_c_ty} *out_count,
 #endif
 }}
 
+#if defined(__linux__)
+#include <sys/syscall.h>
+#endif
+static bool ar_cap_path_valid(const uint8_t *path, {uint_c_ty} len, bool allow_dot) {{
+    if (!path || len == 0 || len >= 4096) return false;
+    if (allow_dot && len == 1 && path[0] == '.') return true;
+    size_t begin = 0;
+    for (size_t i = 0; i <= (size_t)len; ++i) {{
+        if (i < (size_t)len && path[i] == 0) return false;
+        if (i == (size_t)len || path[i] == '/') {{
+            size_t count = i - begin;
+            if (count == 0 || (count == 1 && path[begin] == '.') ||
+                (count == 2 && path[begin] == '.' && path[begin + 1] == '.')) return false;
+            begin = i + 1;
+        }}
+    }}
+    return true;
+}}
+static int ar_cap_open_beneath(int dir_fd, const char *path, int flags, unsigned mode) {{
+#if defined(__linux__) && defined(SYS_openat2)
+    if (dir_fd < 0) return -1;
+    struct {{ uint64_t flags, mode, resolve; }} how = {{
+        (uint64_t)(flags | O_CLOEXEC), (uint64_t)mode,
+        UINT64_C(0x08) | UINT64_C(0x04) | UINT64_C(0x02)
+    }};
+    return (int)syscall(SYS_openat2, dir_fd, path, &how, sizeof(how));
+#else
+    (void)dir_fd; (void)path; (void)flags; (void)mode;
+    return -1; /* No weaker traversal fallback. */
+#endif
+}}
+static int ar_cap_parent(int dir_fd, char *path, char **leaf) {{
+    char *separator = strrchr(path, '/');
+    if (separator) {{
+        *separator = 0;
+        *leaf = separator + 1;
+    }} else {{
+        *leaf = path;
+    }}
+#if defined(__linux__)
+    return ar_cap_open_beneath(dir_fd, separator ? path : ".", O_RDONLY | O_DIRECTORY, 0);
+#else
+    (void)dir_fd;
+    return -1;
+#endif
+}}
 static {int_c_ty} ar_fs_dir_open(const uint8_t *path_ptr, {uint_c_ty} path_len) {{
-#if !defined(_WIN32) || defined(__MINGW32__)
-    if (!path_ptr || path_len == 0) return -1;
-    char stack_buf[1024];
-    ArStr s = ar_str_pack(path_ptr, ({int_c_ty})path_len);
-    char *c_path = ar_str_to_c_path(s, stack_buf, sizeof(stack_buf));
-    if (!c_path) return -1;
-    int fd = open(c_path, O_RDONLY);
-    if (c_path != stack_buf) free(c_path);
-    return ({int_c_ty})fd;
+#if defined(__linux__)
+    if (!path_ptr || path_len == 0 || path_len >= 4096 || memchr(path_ptr, 0, (size_t)path_len)) return -1;
+    char stack_buf[4096];
+    memcpy(stack_buf, path_ptr, (size_t)path_len);
+    stack_buf[path_len] = 0;
+    return ({int_c_ty})open(stack_buf, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
 #else
     (void)path_ptr; (void)path_len;
     return -1;
 #endif
 }}
-
-static {int_c_ty} ar_fs_openat({int_c_ty} dir_fd, const uint8_t *path_ptr, {uint_c_ty} path_len, bool read, bool write, bool create, bool truncate) {{
-#if !defined(_WIN32) || defined(__MINGW32__)
-    if (!path_ptr || path_len == 0 || dir_fd < 0) return -1;
-    char stack_buf[1024];
-    ArStr s = ar_str_pack(path_ptr, ({int_c_ty})path_len);
-    char *c_path = ar_str_to_c_path(s, stack_buf, sizeof(stack_buf));
-    if (!c_path) return -1;
-    int flags = (read && write) ? O_RDWR : (write ? O_WRONLY : O_RDONLY);
-    if (create) flags |= O_CREAT;
-    if (truncate) flags |= O_TRUNC;
-    int fd = openat((int)dir_fd, c_path, flags, 0666);
-    if (c_path != stack_buf) free(c_path);
-    return ({int_c_ty})fd;
-#else
-    (void)dir_fd; (void)path_ptr; (void)path_len; (void)read; (void)write; (void)create; (void)truncate;
-    return -1;
-#endif
-}}
-
-static {int_c_ty} ar_fs_mkdirat({int_c_ty} dir_fd, const uint8_t *path_ptr, {uint_c_ty} path_len) {{
-#if !defined(_WIN32) || defined(__MINGW32__)
-    if (!path_ptr || path_len == 0 || dir_fd < 0) return -1;
-    char stack_buf[1024];
-    ArStr s = ar_str_pack(path_ptr, ({int_c_ty})path_len);
-    char *c_path = ar_str_to_c_path(s, stack_buf, sizeof(stack_buf));
-    if (!c_path) return -1;
-    int ret = mkdirat((int)dir_fd, c_path, 0777);
-    int res = -1;
-    if (ret == 0) {{
-        res = openat((int)dir_fd, c_path, O_RDONLY);
-    }}
-    if (c_path != stack_buf) free(c_path);
-    return ({int_c_ty})res;
+static {int_c_ty} ar_fs_dir_openat({int_c_ty} dir_fd, const uint8_t *path_ptr, {uint_c_ty} path_len) {{
+#if defined(__linux__)
+    if (!ar_cap_path_valid(path_ptr, path_len, true)) return -1;
+    char path[4096]; memcpy(path, path_ptr, (size_t)path_len); path[path_len] = 0;
+    return ({int_c_ty})ar_cap_open_beneath((int)dir_fd, path, O_RDONLY | O_DIRECTORY, 0);
 #else
     (void)dir_fd; (void)path_ptr; (void)path_len;
     return -1;
 #endif
 }}
-
-static {int_c_ty} ar_fs_unlinkat({int_c_ty} dir_fd, const uint8_t *path_ptr, {uint_c_ty} path_len, bool is_dir) {{
-#if !defined(_WIN32) || defined(__MINGW32__)
-    if (!path_ptr || path_len == 0 || dir_fd < 0) return -1;
-    char stack_buf[1024];
-    ArStr s = ar_str_pack(path_ptr, ({int_c_ty})path_len);
-    char *c_path = ar_str_to_c_path(s, stack_buf, sizeof(stack_buf));
-    if (!c_path) return -1;
-#ifndef AT_REMOVEDIR
-#define AT_REMOVEDIR 0x200
+static {int_c_ty} ar_fs_openat({int_c_ty} dir_fd, const uint8_t *path_ptr, {uint_c_ty} path_len, bool read, bool write, bool create, bool truncate) {{
+#if defined(__linux__)
+    if (!ar_cap_path_valid(path_ptr, path_len, false) || (!read && !write) || ((create || truncate) && !write)) return -1;
+    char path[4096]; memcpy(path, path_ptr, (size_t)path_len); path[path_len] = 0;
+    int flags = (read && write) ? O_RDWR : (write ? O_WRONLY : O_RDONLY);
+    if (create) flags |= O_CREAT;
+    if (truncate) flags |= O_TRUNC;
+    return ({int_c_ty})ar_cap_open_beneath((int)dir_fd, path, flags, create ? 0666 : 0);
+#else
+    (void)dir_fd; (void)path_ptr; (void)path_len; (void)read; (void)write; (void)create; (void)truncate;
+    return -1;
 #endif
-    int flags = is_dir ? AT_REMOVEDIR : 0;
-    int ret = unlinkat((int)dir_fd, c_path, flags);
-    if (c_path != stack_buf) free(c_path);
-    return ({int_c_ty})ret;
+}}
+static {int_c_ty} ar_fs_mkdirat({int_c_ty} dir_fd, const uint8_t *path_ptr, {uint_c_ty} path_len) {{
+#if defined(__linux__)
+    if (!ar_cap_path_valid(path_ptr, path_len, false)) return -1;
+    char path[4096]; memcpy(path, path_ptr, (size_t)path_len); path[path_len] = 0;
+    char *leaf = NULL;
+    int parent = ar_cap_parent((int)dir_fd, path, &leaf);
+    if (parent < 0) return -1;
+    int result = -1;
+    if (mkdirat(parent, leaf, 0777) == 0) result = ar_cap_open_beneath(parent, leaf, O_RDONLY | O_DIRECTORY, 0);
+    close(parent);
+    return ({int_c_ty})result;
+#else
+    (void)dir_fd; (void)path_ptr; (void)path_len;
+    return -1;
+#endif
+}}
+static {int_c_ty} ar_fs_unlinkat({int_c_ty} dir_fd, const uint8_t *path_ptr, {uint_c_ty} path_len, bool is_dir) {{
+#if defined(__linux__)
+    if (!ar_cap_path_valid(path_ptr, path_len, false)) return -1;
+    char path[4096]; memcpy(path, path_ptr, (size_t)path_len); path[path_len] = 0;
+    char *leaf = NULL;
+    int parent = ar_cap_parent((int)dir_fd, path, &leaf);
+    if (parent < 0) return -1;
+    int result = unlinkat(parent, leaf, is_dir ? AT_REMOVEDIR : 0);
+    close(parent);
+    return ({int_c_ty})result;
 #else
     (void)dir_fd; (void)path_ptr; (void)path_len; (void)is_dir;
     return -1;
 #endif
 }}
 
-static {int_c_ty} ar_net_udp_bind(const uint8_t *host_ptr, {uint_c_ty} host_len, {int_c_ty} port) {{
+#define AR_MAX_UDP_SOCKETS 64
+static int ar_udp_fds[AR_MAX_UDP_SOCKETS];
+static int ar_udp_initialized = 0;
+
+static int32_t ar_net_udp_bind(const uint8_t *host_ptr, {uint_c_ty} host_len, int32_t port) {{
+#if !defined(_WIN32) || defined(__MINGW32__)
+    if (!host_ptr || host_len == 0 || port < 0 || port > 65535) return -1;
+    if (!ar_udp_initialized) {{
+        for (int i = 0; i < AR_MAX_UDP_SOCKETS; i++) ar_udp_fds[i] = -1;
+        ar_udp_initialized = 1;
+    }}
+    int slot = -1;
+    for (int i = 0; i < AR_MAX_UDP_SOCKETS; i++) {{
+        if (ar_udp_fds[i] == -1) {{ slot = i; break; }}
+    }}
+    if (slot < 0) return -1;
+
+    char host_buf[256];
+    if (host_len >= sizeof(host_buf)) return -1;
+    memcpy(host_buf, host_ptr, (size_t)host_len);
+    host_buf[host_len] = '\0';
+
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) return -1;
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons((uint16_t)port);
+    if (inet_pton(AF_INET, host_buf, &addr.sin_addr) <= 0) {{
+        close(fd);
+        return -1;
+    }}
+
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {{
+        close(fd);
+        return -1;
+    }}
+
+    ar_udp_fds[slot] = fd;
+    return (int32_t)slot;
+#else
     (void)host_ptr; (void)host_len; (void)port;
     return -1;
+#endif
 }}
 
-static {int_c_ty} ar_net_udp_send_to({int_c_ty} id, const uint8_t *buf, {uint_c_ty} len, const uint8_t *host_ptr, {uint_c_ty} host_len, {int_c_ty} port) {{
+static int32_t ar_net_udp_send_to(int32_t id, const uint8_t *buf, {uint_c_ty} len, const uint8_t *host_ptr, {uint_c_ty} host_len, int32_t port) {{
+#if !defined(_WIN32) || defined(__MINGW32__)
+    if (id < 0 || id >= AR_MAX_UDP_SOCKETS || !buf || !host_ptr || host_len == 0 || port < 0 || port > 65535) return -1;
+    int fd = ar_udp_fds[id];
+    if (fd < 0) return -1;
+
+    char host_buf[256];
+    if (host_len >= sizeof(host_buf)) return -1;
+    memcpy(host_buf, host_ptr, (size_t)host_len);
+    host_buf[host_len] = '\0';
+
+    struct sockaddr_in target;
+    memset(&target, 0, sizeof(target));
+    target.sin_family = AF_INET;
+    target.sin_port = htons((uint16_t)port);
+    if (inet_pton(AF_INET, host_buf, &target.sin_addr) <= 0) return -1;
+
+    ssize_t sent = sendto(fd, buf, (size_t)len, 0, (struct sockaddr *)&target, sizeof(target));
+    return sent < 0 ? -1 : (int32_t)sent;
+#else
     (void)id; (void)buf; (void)len; (void)host_ptr; (void)host_len; (void)port;
     return -1;
+#endif
 }}
 
-static {int_c_ty} ar_net_udp_recv_from({int_c_ty} id, uint8_t *buf, {uint_c_ty} len, {int_c_ty} *port_out) {{
+static int32_t ar_net_udp_recv_from(int32_t id, uint8_t *buf, {uint_c_ty} len, int32_t *port_out) {{
+#if !defined(_WIN32) || defined(__MINGW32__)
+    if (id < 0 || id >= AR_MAX_UDP_SOCKETS || !buf || len == 0) return -1;
+    int fd = ar_udp_fds[id];
+    if (fd < 0) return -1;
+
+    struct sockaddr_in peer;
+    socklen_t peer_len = sizeof(peer);
+    memset(&peer, 0, sizeof(peer));
+
+    ssize_t recvd = recvfrom(fd, buf, (size_t)len, 0, (struct sockaddr *)&peer, &peer_len);
+    if (recvd < 0) return -1;
+
+    if (port_out) {{
+        *port_out = (int32_t)ntohs(peer.sin_port);
+    }}
+    return (int32_t)recvd;
+#else
     (void)id; (void)buf; (void)len; (void)port_out;
     return -1;
+#endif
 }}
 
-static void ar_net_udp_close({int_c_ty} id) {{
+static void ar_net_udp_close(int32_t id) {{
+#if !defined(_WIN32) || defined(__MINGW32__)
+    if (id >= 0 && id < AR_MAX_UDP_SOCKETS) {{
+        int fd = ar_udp_fds[id];
+        if (fd >= 0) {{
+            close(fd);
+            ar_udp_fds[id] = -1;
+        }}
+    }}
+#else
     (void)id;
+#endif
 }}
 
-static {int_c_ty} ar_net_dns_resolve(const uint8_t *name_ptr, {uint_c_ty} name_len, uint8_t *ip_buf, {uint_c_ty} ip_cap) {{
+static int32_t ar_net_dns_resolve(const uint8_t *name_ptr, {uint_c_ty} name_len, uint8_t *ip_buf, {uint_c_ty} ip_cap) {{
+#if !defined(_WIN32) || defined(__MINGW32__)
+    if (!name_ptr || name_len == 0 || !ip_buf || ip_cap == 0) return -1;
+    char name_buf[256];
+    if (name_len >= sizeof(name_buf)) return -1;
+    memcpy(name_buf, name_ptr, (size_t)name_len);
+    name_buf[name_len] = '\0';
+
+    struct addrinfo hints, *res = NULL;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+
+    if (getaddrinfo(name_buf, NULL, &hints, &res) != 0 || !res) return -1;
+
+    char ip_str[INET6_ADDRSTRLEN];
+    const char *formatted = NULL;
+    if (res->ai_family == AF_INET) {{
+        struct sockaddr_in *ipv4 = (struct sockaddr_in *)res->ai_addr;
+        formatted = inet_ntop(AF_INET, &(ipv4->sin_addr), ip_str, sizeof(ip_str));
+    }} else if (res->ai_family == AF_INET6) {{
+        struct sockaddr_in6 *ipv6 = (struct sockaddr_in6 *)res->ai_addr;
+        formatted = inet_ntop(AF_INET6, &(ipv6->sin6_addr), ip_str, sizeof(ip_str));
+    }}
+    freeaddrinfo(res);
+
+    if (!formatted) return -1;
+    size_t slen = strlen(formatted);
+    if (slen > (size_t)ip_cap) return -1;
+    memcpy(ip_buf, formatted, slen);
+    return (int32_t)slen;
+#else
     (void)name_ptr; (void)name_len; (void)ip_buf; (void)ip_cap;
     return -1;
+#endif
 }}
 "#
         );

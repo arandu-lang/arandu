@@ -13,6 +13,7 @@ use arandu_middle::types::{ArType, TypeInterner};
 use arandu_middle::{DiagCode, Diagnostic, Span};
 use arandu_semantics::SymbolTable;
 
+mod atomic;
 mod constant_data;
 pub mod decl;
 pub mod expr;
@@ -322,8 +323,18 @@ impl<'a> CEmitter<'a> {
                     | "ar_fs_read"
                     | "ar_fs_write"
                     | "ar_fs_close"
+                    | "ar_fs_dir_open"
+                    | "ar_fs_dir_openat"
+                    | "ar_fs_openat"
+                    | "ar_fs_mkdirat"
+                    | "ar_fs_unlinkat"
                     | "ar_fs_read_all"
                     | "ar_fs_readdir"
+                    | "ar_net_udp_bind"
+                    | "ar_net_udp_send_to"
+                    | "ar_net_udp_recv_from"
+                    | "ar_net_udp_close"
+                    | "ar_net_dns_resolve"
                     | "ar_env_args_len"
                     | "ar_env_arg"
                     | "ar_env_var_is_set"

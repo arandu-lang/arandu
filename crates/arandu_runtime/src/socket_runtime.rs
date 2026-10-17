@@ -484,24 +484,27 @@ fn udp_lock() -> std::sync::MutexGuard<'static, Vec<Option<UdpSocket>>> {
 /// # Safety
 /// `host_ptr` and `host_len` must define a valid memory range.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn ar_net_udp_bind(host_ptr: *const u8, host_len: usize, port: i64) -> i64 {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+pub unsafe extern "C" fn ar_net_udp_bind(host_ptr: *const u8, host_len: usize, port: i32) -> i32 {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Option<i32> {
         if host_ptr.is_null() || !(0..=65535).contains(&port) {
-            return -1;
+            return None;
         }
-        let host = std::str::from_utf8(unsafe { std::slice::from_raw_parts(host_ptr, host_len) }).ok()?;
+        let host =
+            std::str::from_utf8(unsafe { std::slice::from_raw_parts(host_ptr, host_len) }).ok()?;
         let addr = format!("{host}:{port}");
         let socket = UdpSocket::bind(&addr).ok()?;
         let mut g = udp_lock();
         if let Some(idx) = g.iter().position(|s| s.is_none()) {
             g[idx] = Some(socket);
-            idx as i64
+            Some(idx as i32)
         } else {
-            let id = g.len() as i64;
+            let id = g.len() as i32;
             g.push(Some(socket));
-            id
+            Some(id)
         }
     }))
+    .ok()
+    .flatten()
     .unwrap_or(-1)
 }
 
@@ -511,24 +514,31 @@ pub unsafe extern "C" fn ar_net_udp_bind(host_ptr: *const u8, host_len: usize, p
 /// Pointers must be valid memory ranges.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ar_net_udp_send_to(
-    id: i64,
+    id: i32,
     buf: *const u8,
     len: usize,
     host_ptr: *const u8,
     host_len: usize,
-    port: i64,
-) -> i64 {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    port: i32,
+) -> i32 {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Option<i32> {
         if buf.is_null() || host_ptr.is_null() || !(0..=65535).contains(&port) {
-            return -1;
+            return None;
         }
-        let host = std::str::from_utf8(unsafe { std::slice::from_raw_parts(host_ptr, host_len) }).ok()?;
+        let host =
+            std::str::from_utf8(unsafe { std::slice::from_raw_parts(host_ptr, host_len) }).ok()?;
         let target = format!("{host}:{port}");
         let payload = unsafe { std::slice::from_raw_parts(buf, len) };
         let g = udp_lock();
         let socket = g.get(id as usize)?.as_ref()?;
-        socket.send_to(payload, &target).map(|sent| sent as i64).unwrap_or(-1)
+        Some(
+            socket
+                .send_to(payload, &target)
+                .map_or(-1, |sent| sent as i32),
+        )
     }))
+    .ok()
+    .flatten()
     .unwrap_or(-1)
 }
 
@@ -538,14 +548,14 @@ pub unsafe extern "C" fn ar_net_udp_send_to(
 /// `buf` must be writable for `len` bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ar_net_udp_recv_from(
-    id: i64,
+    id: i32,
     buf: *mut u8,
     len: usize,
-    port_out: *mut i64,
-) -> i64 {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    port_out: *mut i32,
+) -> i32 {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Option<i32> {
         if buf.is_null() || len == 0 {
-            return -1;
+            return None;
         }
         let dest = unsafe { std::slice::from_raw_parts_mut(buf, len) };
         let g = udp_lock();
@@ -553,13 +563,15 @@ pub unsafe extern "C" fn ar_net_udp_recv_from(
         match socket.recv_from(dest) {
             Ok((n, addr)) => {
                 if !port_out.is_null() {
-                    unsafe { *port_out = addr.port() as i64 };
+                    unsafe { *port_out = addr.port() as i32 };
                 }
-                n as i64
+                Some(n as i32)
             }
-            Err(_) => -1,
+            Err(_) => Some(-1),
         }
     }))
+    .ok()
+    .flatten()
     .unwrap_or(-1)
 }
 
@@ -568,7 +580,7 @@ pub unsafe extern "C" fn ar_net_udp_recv_from(
 /// # Safety
 /// Always safe to call.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn ar_net_udp_close(id: i64) {
+pub unsafe extern "C" fn ar_net_udp_close(id: i32) {
     if id >= 0 {
         let mut g = udp_lock();
         if let Some(slot) = g.get_mut(id as usize) {
@@ -587,28 +599,31 @@ pub unsafe extern "C" fn ar_net_dns_resolve(
     name_len: usize,
     ip_buf: *mut u8,
     ip_cap: usize,
-) -> i64 {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+) -> i32 {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Option<i32> {
         if name_ptr.is_null() || ip_buf.is_null() || ip_cap == 0 {
-            return -1;
+            return None;
         }
-        let host = std::str::from_utf8(unsafe { std::slice::from_raw_parts(name_ptr, name_len) }).ok()?;
+        let host =
+            std::str::from_utf8(unsafe { std::slice::from_raw_parts(name_ptr, name_len) }).ok()?;
         use std::net::ToSocketAddrs;
         let query = format!("{host}:0");
-        if let Ok(mut addrs) = query.to_socket_addrs() {
-            if let Some(addr) = addrs.next() {
-                let ip_str = addr.ip().to_string();
-                let ip_bytes = ip_str.as_bytes();
-                if ip_bytes.len() <= ip_cap {
-                    unsafe {
-                        std::ptr::copy_nonoverlapping(ip_bytes.as_ptr(), ip_buf, ip_bytes.len());
-                    }
-                    return ip_bytes.len() as i64;
+        if let Ok(mut addrs) = query.to_socket_addrs()
+            && let Some(addr) = addrs.next()
+        {
+            let ip_str = addr.ip().to_string();
+            let ip_bytes = ip_str.as_bytes();
+            if ip_bytes.len() <= ip_cap {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(ip_bytes.as_ptr(), ip_buf, ip_bytes.len());
                 }
+                return Some(ip_bytes.len() as i32);
             }
         }
-        -1
+        None
     }))
+    .ok()
+    .flatten()
     .unwrap_or(-1)
 }
 

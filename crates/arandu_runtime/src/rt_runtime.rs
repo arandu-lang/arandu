@@ -509,7 +509,8 @@ fn get_or_register_current_thread() -> Arc<ThreadRecord> {
         });
         *borrow = Some(Arc::clone(&record));
         let mut reg = THREAD_REGISTRY.write().unwrap_or_else(|e| e.into_inner());
-        reg.get_or_insert_with(HashMap::new).insert(id, Arc::clone(&record));
+        reg.get_or_insert_with(HashMap::new)
+            .insert(id, Arc::clone(&record));
         record
     })
 }
@@ -528,7 +529,11 @@ fn get_parking_lot() -> &'static [Mutex<BucketState>] {
     static LOT: OnceLock<Box<[Mutex<BucketState>]>> = OnceLock::new();
     LOT.get_or_init(|| {
         (0..PARKING_LOT_BUCKETS)
-            .map(|_| Mutex::new(BucketState { monitors: HashMap::new() }))
+            .map(|_| {
+                Mutex::new(BucketState {
+                    monitors: HashMap::new(),
+                })
+            })
             .collect::<Vec<_>>()
             .into_boxed_slice()
     })
@@ -598,7 +603,8 @@ pub unsafe extern "C" fn ar_rt_condvar_wait(key: *const u8, seq: usize) {
     let bucket = get_bucket(addr);
     {
         let mut guard = bucket.lock().unwrap_or_else(|e| e.into_inner());
-        let observed = unsafe { (*(key as *const std::sync::atomic::AtomicUsize)).load(Ordering::Acquire) };
+        let observed =
+            unsafe { (*(key as *const std::sync::atomic::AtomicUsize)).load(Ordering::Acquire) };
         if observed != seq {
             return;
         }
@@ -960,8 +966,8 @@ mod tests {
 
     #[test]
     fn thread_tracking_and_park_unpark() {
-        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
         unsafe {
             let id1 = ar_rt_thread_current_id();
@@ -1000,8 +1006,8 @@ mod tests {
 
     #[test]
     fn condvar_parking_lot_wait_and_notify() {
-        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
         unsafe {
             let seq = Arc::new(AtomicUsize::new(0));
@@ -1036,8 +1042,8 @@ mod tests {
 
     #[test]
     fn condvar_parking_lot_notify_all() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         unsafe {
             let seq = Arc::new(AtomicUsize::new(0));
@@ -1069,4 +1075,3 @@ mod tests {
         }
     }
 }
-

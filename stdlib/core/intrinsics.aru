@@ -125,4 +125,8 @@ extern "arandu-intrinsic" {
     /// container implementations. Dereferencing or retaining the pointer
     /// beyond the exclusive borrow requires `unsafe`.
     func addressOf<T>(value: mut ref T): ptr[T]
+
+    /// Exposes the address behind a shared reference. Dereferencing or
+    /// retaining the pointer beyond the borrow requires `unsafe`.
+    func addressOfShared<T>(value: ref T): ptr[T]
 }

@@ -158,6 +158,7 @@ impl RuntimeFeatures {
                 | "ar_rt_thread_yield"
                 | "ar_rt_thread_park"
                 | "ar_rt_thread_unpark"
+                | "ar_rt_thread_current_id"
                 | "ar_rt_condvar_wait"
                 | "ar_rt_condvar_notify_one"
                 | "ar_rt_condvar_notify_all"

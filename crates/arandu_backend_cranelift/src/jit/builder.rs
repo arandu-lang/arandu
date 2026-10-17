@@ -500,6 +500,10 @@ pub(crate) fn create_jit_builder_with_io_and_process_args(
         crate::rt_runtime::ar_rt_thread_unpark as *const u8,
     );
     builder.symbol(
+        "ar_rt_thread_current_id",
+        crate::rt_runtime::ar_rt_thread_current_id as *const u8,
+    );
+    builder.symbol(
         "ar_rt_condvar_wait",
         crate::rt_runtime::ar_rt_condvar_wait as *const u8,
     );

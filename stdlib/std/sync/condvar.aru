@@ -20,11 +20,12 @@
 module std.sync.condvar
 
 import std.core.atomic as atomic
+import std.core.intrinsics as intrinsics
 
 extern "C" {
-    func ar_rt_condvar_wait(seq: usize): void
-    func ar_rt_condvar_notify_one(seq: usize): void
-    func ar_rt_condvar_notify_all(seq: usize): void
+    func ar_rt_condvar_wait(key: ptr[u8], seq: usize): void
+    func ar_rt_condvar_notify_one(key: ptr[u8]): void
+    func ar_rt_condvar_notify_all(key: ptr[u8]): void
     func ar_rt_thread_sleep_ms(ms: u64): void
 }
 
@@ -44,7 +45,8 @@ public func Condvar.new(): Condvar {
 public func Condvar.wait(self: ref Condvar): void {
     let current = self.sequence.load(atomic.MemoryOrder.Acquire)
     unsafe {
-        ar_rt_condvar_wait(current)
+        let key = (intrinsics.addressOfShared(self) as ptr[u8])
+        ar_rt_condvar_wait(key, current)
     }
 }
 
@@ -52,7 +54,8 @@ public func Condvar.wait(self: ref Condvar): void {
 public func Condvar.notifyOne(self: mut ref Condvar): void {
     let next = self.sequence.fetchAdd(1 as usize, atomic.MemoryOrder.Release)
     unsafe {
-        ar_rt_condvar_notify_one(next)
+        let key = (intrinsics.addressOf(self) as ptr[u8])
+        ar_rt_condvar_notify_one(key)
     }
 }
 
@@ -60,7 +63,8 @@ public func Condvar.notifyOne(self: mut ref Condvar): void {
 public func Condvar.notifyAll(self: mut ref Condvar): void {
     let next = self.sequence.fetchAdd(1 as usize, atomic.MemoryOrder.Release)
     unsafe {
-        ar_rt_condvar_notify_all(next)
+        let key = (intrinsics.addressOf(self) as ptr[u8])
+        ar_rt_condvar_notify_all(key)
     }
 }
 

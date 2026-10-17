@@ -30,6 +30,7 @@ extern "C" {
     func ar_rt_thread_yield(): void
     func ar_rt_thread_park(): void
     func ar_rt_thread_unpark(threadId: usize): void
+    func ar_rt_thread_current_id(): usize
 }
 
 /// An error encountered during thread operations.
@@ -85,9 +86,11 @@ public func unpark(threadId: usize): void {
     }
 }
 
-/// Placeholder identity; currently returns zero and must not identify a thread.
+/// Returns the unique numeric identity of the calling OS thread.
 public func currentThreadId(): usize {
-    return 0 as usize
+    unsafe {
+        return ar_rt_thread_current_id()
+    }
 }
 
 /// Placeholder destructor; no native spawn/join handle is acquired yet.

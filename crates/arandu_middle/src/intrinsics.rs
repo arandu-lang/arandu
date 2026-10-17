@@ -189,7 +189,9 @@ impl IntrinsicKind {
         match bare {
             "ptrRead" | "ptr_read" | "refRead" | "ref_read" => Some(Self::PtrRead),
             "ptrWrite" | "ptr_write" | "refWrite" | "ref_write" => Some(Self::PtrWrite),
-            "addressOf" | "address_of" => Some(Self::AddressOf),
+            "addressOf" | "address_of" | "addressOfShared" | "address_of_shared" => {
+                Some(Self::AddressOf)
+            }
             "ptrOffset" | "ptr_offset" => Some(Self::PtrOffset),
             "sizeOf" | "size_of" => Some(Self::SizeOf),
             "alignOf" | "align_of" => Some(Self::AlignOf),

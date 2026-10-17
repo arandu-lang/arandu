@@ -508,33 +508,206 @@ static void ar_rt_thread_yield(void) {{
 #endif
 }}
 
-static void ar_rt_thread_park(void) {{
+#define AR_PARKING_LOT_BUCKETS 64
+
+typedef struct ar_cv_bucket {{
 #if defined(_WIN32)
-    Sleep(100);
+    CRITICAL_SECTION cs;
+    CONDITION_VARIABLE cv;
 #else
-    usleep(100000);
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+#endif
+    uintptr_t key;
+    size_t seq;
+    int inited;
+}} ar_cv_bucket;
+
+static ar_cv_bucket ar_cv_buckets[AR_PARKING_LOT_BUCKETS];
+
+static void ar_init_cv_bucket(ar_cv_bucket *b) {{
+    if (!b->inited) {{
+#if defined(_WIN32)
+        InitializeCriticalSection(&b->cs);
+        InitializeConditionVariable(&b->cv);
+#else
+        pthread_mutex_init(&b->mutex, NULL);
+        pthread_cond_init(&b->cond, NULL);
+#endif
+        b->inited = 1;
+    }}
+}}
+
+static ar_cv_bucket* ar_get_cv_bucket(const void *key) {{
+    uintptr_t addr = (uintptr_t)key;
+    size_t idx = ((addr * 11400714819323198485ULL) >> 58) % AR_PARKING_LOT_BUCKETS;
+    ar_cv_bucket *b = &ar_cv_buckets[idx];
+    if (!b->inited) {{
+        ar_init_cv_bucket(b);
+    }}
+    return b;
+}}
+
+static void ar_rt_condvar_wait(const void *key, size_t seq) {{
+    if (!key) return;
+    ar_cv_bucket *b = ar_get_cv_bucket(key);
+#if defined(_WIN32)
+    EnterCriticalSection(&b->cs);
+    if (b->key == (uintptr_t)key && b->seq != seq) {{
+        LeaveCriticalSection(&b->cs);
+        return;
+    }}
+    b->key = (uintptr_t)key;
+    SleepConditionVariableCS(&b->cv, &b->cs, INFINITE);
+    LeaveCriticalSection(&b->cs);
+#else
+    pthread_mutex_lock(&b->mutex);
+    if (b->key == (uintptr_t)key && b->seq != seq) {{
+        pthread_mutex_unlock(&b->mutex);
+        return;
+    }}
+    b->key = (uintptr_t)key;
+    pthread_cond_wait(&b->cond, &b->mutex);
+    pthread_mutex_unlock(&b->mutex);
+#endif
+}}
+
+static void ar_rt_condvar_notify_one(const void *key) {{
+    if (!key) return;
+    ar_cv_bucket *b = ar_get_cv_bucket(key);
+#if defined(_WIN32)
+    EnterCriticalSection(&b->cs);
+    b->key = (uintptr_t)key;
+    b->seq++;
+    WakeConditionVariable(&b->cv);
+    LeaveCriticalSection(&b->cs);
+#else
+    pthread_mutex_lock(&b->mutex);
+    b->key = (uintptr_t)key;
+    b->seq++;
+    pthread_cond_signal(&b->cond);
+    pthread_mutex_unlock(&b->mutex);
+#endif
+}}
+
+static void ar_rt_condvar_notify_all(const void *key) {{
+    if (!key) return;
+    ar_cv_bucket *b = ar_get_cv_bucket(key);
+#if defined(_WIN32)
+    EnterCriticalSection(&b->cs);
+    b->key = (uintptr_t)key;
+    b->seq++;
+    WakeAllConditionVariable(&b->cv);
+    LeaveCriticalSection(&b->cs);
+#else
+    pthread_mutex_lock(&b->mutex);
+    b->key = (uintptr_t)key;
+    b->seq++;
+    pthread_cond_broadcast(&b->cond);
+    pthread_mutex_unlock(&b->mutex);
+#endif
+}}
+
+typedef struct ar_thread_waiter {{
+    size_t id;
+    _Atomic int signaled;
+#if defined(_WIN32)
+    HANDLE event;
+#else
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+#endif
+    struct ar_thread_waiter *next;
+}} ar_thread_waiter;
+
+static _Atomic size_t ar_next_thread_id = 1;
+static AR_THREAD_LOCAL ar_thread_waiter *ar_current_waiter = NULL;
+static ar_thread_waiter *ar_waiter_list = NULL;
+#if defined(_WIN32)
+static CRITICAL_SECTION ar_waiter_cs;
+static int ar_waiter_cs_inited = 0;
+#else
+static pthread_mutex_t ar_waiter_mutex = PTHREAD_MUTEX_INITIALIZER;
+#endif
+
+static ar_thread_waiter* ar_get_or_create_thread_waiter(void) {{
+    if (ar_current_waiter) return ar_current_waiter;
+    ar_thread_waiter *w = (ar_thread_waiter*)calloc(1, sizeof(ar_thread_waiter));
+    if (!w) abort();
+    w->id = atomic_fetch_add(&ar_next_thread_id, 1);
+    atomic_init(&w->signaled, 0);
+#if defined(_WIN32)
+    w->event = CreateEvent(NULL, FALSE, FALSE, NULL);
+    if (!ar_waiter_cs_inited) {{
+        InitializeCriticalSection(&ar_waiter_cs);
+        ar_waiter_cs_inited = 1;
+    }}
+    EnterCriticalSection(&ar_waiter_cs);
+    w->next = ar_waiter_list;
+    ar_waiter_list = w;
+    LeaveCriticalSection(&ar_waiter_cs);
+#else
+    pthread_mutex_init(&w->mutex, NULL);
+    pthread_cond_init(&w->cond, NULL);
+    pthread_mutex_lock(&ar_waiter_mutex);
+    w->next = ar_waiter_list;
+    ar_waiter_list = w;
+    pthread_mutex_unlock(&ar_waiter_mutex);
+#endif
+    ar_current_waiter = w;
+    return w;
+}}
+
+static size_t ar_rt_thread_current_id(void) {{
+    return ar_get_or_create_thread_waiter()->id;
+}}
+
+static void ar_rt_thread_park(void) {{
+    ar_thread_waiter *w = ar_get_or_create_thread_waiter();
+    int expected = 1;
+    if (atomic_compare_exchange_strong(&w->signaled, &expected, 0)) {{
+        return;
+    }}
+#if defined(_WIN32)
+    WaitForSingleObject(w->event, INFINITE);
+    atomic_store(&w->signaled, 0);
+#else
+    pthread_mutex_lock(&w->mutex);
+    while (!atomic_load(&w->signaled)) {{
+        pthread_cond_wait(&w->cond, &w->mutex);
+    }}
+    atomic_store(&w->signaled, 0);
+    pthread_mutex_unlock(&w->mutex);
 #endif
 }}
 
 static void ar_rt_thread_unpark(size_t thread_id) {{
-    (void)thread_id;
-}}
-
-static void ar_rt_condvar_wait(size_t seq) {{
-    (void)seq;
+    if (thread_id == 0) return;
+    ar_thread_waiter *target = NULL;
 #if defined(_WIN32)
-    Sleep(50);
+    if (!ar_waiter_cs_inited) return;
+    EnterCriticalSection(&ar_waiter_cs);
+    for (ar_thread_waiter *cur = ar_waiter_list; cur; cur = cur->next) {{
+        if (cur->id == thread_id) {{ target = cur; break; }}
+    }}
+    LeaveCriticalSection(&ar_waiter_cs);
+    if (target) {{
+        atomic_store(&target->signaled, 1);
+        SetEvent(target->event);
+    }}
 #else
-    usleep(50000);
+    pthread_mutex_lock(&ar_waiter_mutex);
+    for (ar_thread_waiter *cur = ar_waiter_list; cur; cur = cur->next) {{
+        if (cur->id == thread_id) {{ target = cur; break; }}
+    }}
+    pthread_mutex_unlock(&ar_waiter_mutex);
+    if (target) {{
+        atomic_store(&target->signaled, 1);
+        pthread_mutex_lock(&target->mutex);
+        pthread_cond_signal(&target->cond);
+        pthread_mutex_unlock(&target->mutex);
+    }}
 #endif
-}}
-
-static void ar_rt_condvar_notify_one(size_t seq) {{
-    (void)seq;
-}}
-
-static void ar_rt_condvar_notify_all(size_t seq) {{
-    (void)seq;
 }}
 
 static int32_t ar_rt_get_entropy(uint8_t *buf, size_t len) {{

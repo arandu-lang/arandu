@@ -10,7 +10,10 @@
 //! - Cooperative only: Pending spins (no OS reactor yet — SL_R.2).
 
 use crate::poll_runtime::{ar_co_block_on_i64, ar_co_free};
-use std::sync::Mutex;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 /// Ownership of the coroutine blob changes exactly once at Pending -> Running.
 /// Running stores no pointer: only the joining thread can poll/free the blob.
@@ -479,13 +482,84 @@ pub unsafe extern "C" fn ar_rt_thread_yield() {
     std::thread::yield_now();
 }
 
+struct ThreadRecord {
+    id: usize,
+    thread: std::thread::Thread,
+    unpark_token: AtomicBool,
+}
+
+static NEXT_THREAD_ID: AtomicUsize = AtomicUsize::new(1);
+static THREAD_REGISTRY: RwLock<Option<HashMap<usize, Arc<ThreadRecord>>>> = RwLock::new(None);
+
+thread_local! {
+    static CURRENT_THREAD_RECORD: RefCell<Option<Arc<ThreadRecord>>> = const { RefCell::new(None) };
+}
+
+fn get_or_register_current_thread() -> Arc<ThreadRecord> {
+    CURRENT_THREAD_RECORD.with(|cell| {
+        let mut borrow = cell.borrow_mut();
+        if let Some(record) = borrow.as_ref() {
+            return Arc::clone(record);
+        }
+        let id = NEXT_THREAD_ID.fetch_add(1, Ordering::Relaxed);
+        let record = Arc::new(ThreadRecord {
+            id,
+            thread: std::thread::current(),
+            unpark_token: AtomicBool::new(false),
+        });
+        *borrow = Some(Arc::clone(&record));
+        let mut reg = THREAD_REGISTRY.write().unwrap_or_else(|e| e.into_inner());
+        reg.get_or_insert_with(HashMap::new).insert(id, Arc::clone(&record));
+        record
+    })
+}
+
+const PARKING_LOT_BUCKETS: usize = 64;
+
+struct MonitorState {
+    waiters: Vec<Arc<ThreadRecord>>,
+}
+
+struct BucketState {
+    monitors: HashMap<usize, MonitorState>,
+}
+
+fn get_parking_lot() -> &'static [Mutex<BucketState>] {
+    static LOT: OnceLock<Box<[Mutex<BucketState>]>> = OnceLock::new();
+    LOT.get_or_init(|| {
+        (0..PARKING_LOT_BUCKETS)
+            .map(|_| Mutex::new(BucketState { monitors: HashMap::new() }))
+            .collect::<Vec<_>>()
+            .into_boxed_slice()
+    })
+}
+
+fn get_bucket(addr: usize) -> &'static Mutex<BucketState> {
+    let idx = (addr.wrapping_mul(0x517cc1b727220a95) >> 58) % PARKING_LOT_BUCKETS;
+    &get_parking_lot()[idx]
+}
+
+/// Returns the unique numeric identity of the calling OS thread.
+///
+/// # Safety
+/// Always safe to call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ar_rt_thread_current_id() -> usize {
+    get_or_register_current_thread().id
+}
+
 /// Parks the current OS thread.
 ///
 /// # Safety
 /// Always safe to call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ar_rt_thread_park() {
+    let current = get_or_register_current_thread();
+    if current.unpark_token.swap(false, Ordering::AcqRel) {
+        return;
+    }
     std::thread::park();
+    current.unpark_token.store(false, Ordering::Release);
 }
 
 /// Unparks a target thread.
@@ -493,30 +567,109 @@ pub unsafe extern "C" fn ar_rt_thread_park() {
 /// # Safety
 /// Always safe to call.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn ar_rt_thread_unpark(_thread_id: usize) {}
-
-/// Condition variable wait helper.
-///
-/// # Safety
-/// Always safe to call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn ar_rt_condvar_wait(_seq: usize) {
-    std::thread::park_timeout(std::time::Duration::from_millis(50));
+pub unsafe extern "C" fn ar_rt_thread_unpark(thread_id: usize) {
+    if thread_id == 0 {
+        return;
+    }
+    let record = {
+        let reg = THREAD_REGISTRY.read().unwrap_or_else(|e| e.into_inner());
+        reg.as_ref().and_then(|map| map.get(&thread_id).cloned())
+    };
+    if let Some(record) = record {
+        record.unpark_token.store(true, Ordering::Release);
+        record.thread.unpark();
+    }
 }
 
-/// Condition variable notify one helper.
+/// Condition variable wait helper indexed by monitor key address.
 ///
 /// # Safety
 /// Always safe to call.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn ar_rt_condvar_notify_one(_seq: usize) {}
+pub unsafe extern "C" fn ar_rt_condvar_wait(key: *const u8, seq: usize) {
+    if key.is_null() {
+        return;
+    }
+    let addr = key as usize;
+    if addr % std::mem::align_of::<usize>() != 0 {
+        return;
+    }
+    let current = get_or_register_current_thread();
+    let bucket = get_bucket(addr);
+    {
+        let mut guard = bucket.lock().unwrap_or_else(|e| e.into_inner());
+        let observed = unsafe { (*(key as *const std::sync::atomic::AtomicUsize)).load(Ordering::Acquire) };
+        if observed != seq {
+            return;
+        }
+        let monitor = guard.monitors.entry(addr).or_insert_with(|| MonitorState {
+            waiters: Vec::new(),
+        });
+        monitor.waiters.push(Arc::clone(&current));
+    }
 
-/// Condition variable notify all helper.
+    std::thread::park();
+
+    let mut guard = bucket.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(monitor) = guard.monitors.get_mut(&addr) {
+        monitor.waiters.retain(|w| w.id != current.id);
+        if monitor.waiters.is_empty() {
+            guard.monitors.remove(&addr);
+        }
+    }
+}
+
+/// Condition variable notify one helper indexed by monitor key address.
 ///
 /// # Safety
 /// Always safe to call.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn ar_rt_condvar_notify_all(_seq: usize) {}
+pub unsafe extern "C" fn ar_rt_condvar_notify_one(key: *const u8) {
+    if key.is_null() {
+        return;
+    }
+    let addr = key as usize;
+    let bucket = get_bucket(addr);
+    let to_wake = {
+        let mut guard = bucket.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(monitor) = guard.monitors.get_mut(&addr) {
+            if !monitor.waiters.is_empty() {
+                Some(monitor.waiters.remove(0))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    };
+    if let Some(record) = to_wake {
+        record.thread.unpark();
+    }
+}
+
+/// Condition variable notify all helper indexed by monitor key address.
+///
+/// # Safety
+/// Always safe to call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ar_rt_condvar_notify_all(key: *const u8) {
+    if key.is_null() {
+        return;
+    }
+    let addr = key as usize;
+    let bucket = get_bucket(addr);
+    let to_wake = {
+        let mut guard = bucket.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(monitor) = guard.monitors.get_mut(&addr) {
+            std::mem::take(&mut monitor.waiters)
+        } else {
+            Vec::new()
+        }
+    };
+    for record in to_wake {
+        record.thread.unpark();
+    }
+}
 
 /// Fills a buffer exclusively from the operating system entropy source.
 /// Returns -1 and clears the buffer if the source fails; never substitutes PRNGs.
@@ -804,4 +957,116 @@ mod tests {
             assert_eq!(ts, b"c");
         }
     }
+
+    #[test]
+    fn thread_tracking_and_park_unpark() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        unsafe {
+            let id1 = ar_rt_thread_current_id();
+            assert_ne!(id1, 0);
+
+            let unparked = Arc::new(AtomicBool::new(false));
+            let unparked_clone = Arc::clone(&unparked);
+            let child_id = Arc::new(AtomicUsize::new(0));
+            let child_id_clone = Arc::clone(&child_id);
+
+            let handle = std::thread::spawn(move || {
+                let id2 = ar_rt_thread_current_id();
+                assert_ne!(id2, 0);
+                assert_ne!(id1, id2);
+                child_id_clone.store(id2, Ordering::SeqCst);
+
+                ar_rt_thread_park();
+                unparked_clone.store(true, Ordering::SeqCst);
+            });
+
+            while child_id.load(Ordering::SeqCst) == 0 {
+                std::thread::yield_now();
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            assert!(!unparked.load(Ordering::SeqCst));
+
+            ar_rt_thread_unpark(child_id.load(Ordering::SeqCst));
+            handle.join().unwrap();
+            assert!(unparked.load(Ordering::SeqCst));
+
+            // Test unpark-before-park token: unparking current thread before park must not block
+            ar_rt_thread_unpark(id1);
+            ar_rt_thread_park();
+        }
+    }
+
+    #[test]
+    fn condvar_parking_lot_wait_and_notify() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        unsafe {
+            let seq = Arc::new(AtomicUsize::new(0));
+            let key = seq.as_ref() as *const AtomicUsize as *const u8;
+            let notified = Arc::new(AtomicBool::new(false));
+
+            let notified_clone = Arc::clone(&notified);
+            let seq_clone = Arc::clone(&seq);
+
+            let handle = std::thread::spawn(move || {
+                let cur = seq_clone.load(Ordering::SeqCst);
+                let thread_key = seq_clone.as_ref() as *const AtomicUsize as *const u8;
+                ar_rt_condvar_wait(thread_key, cur);
+                notified_clone.store(true, Ordering::SeqCst);
+            });
+
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            assert!(!notified.load(Ordering::SeqCst));
+
+            seq.fetch_add(1, Ordering::SeqCst);
+            ar_rt_condvar_notify_one(key);
+
+            handle.join().unwrap();
+            assert!(notified.load(Ordering::SeqCst));
+
+            // Sequence mismatch: wait must not block if notification happened before wait
+            let old_seq = seq.load(Ordering::SeqCst);
+            seq.fetch_add(1, Ordering::SeqCst);
+            ar_rt_condvar_wait(key, old_seq);
+        }
+    }
+
+    #[test]
+    fn condvar_parking_lot_notify_all() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        unsafe {
+            let seq = Arc::new(AtomicUsize::new(0));
+            let key = seq.as_ref() as *const AtomicUsize as *const u8;
+            let counter = Arc::new(AtomicUsize::new(0));
+
+            let mut handles = Vec::new();
+            for _ in 0..4 {
+                let counter_clone = Arc::clone(&counter);
+                let seq_clone = Arc::clone(&seq);
+                handles.push(std::thread::spawn(move || {
+                    let cur = seq_clone.load(Ordering::SeqCst);
+                    let thread_key = seq_clone.as_ref() as *const AtomicUsize as *const u8;
+                    ar_rt_condvar_wait(thread_key, cur);
+                    counter_clone.fetch_add(1, Ordering::SeqCst);
+                }));
+            }
+
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            assert_eq!(counter.load(Ordering::SeqCst), 0);
+
+            seq.fetch_add(1, Ordering::SeqCst);
+            ar_rt_condvar_notify_all(key);
+
+            for h in handles {
+                h.join().unwrap();
+            }
+            assert_eq!(counter.load(Ordering::SeqCst), 4);
+        }
+    }
 }
+

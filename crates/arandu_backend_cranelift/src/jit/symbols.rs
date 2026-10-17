@@ -886,11 +886,29 @@ pub(crate) fn runtime_imports(
             insert_sym(func_ids, name, id);
         }
 
+        let mut get_id_sig = Signature::new(default_call_conv);
+        get_id_sig.returns.push(AbiParam::new(ptr_type));
+        let id = module
+            .declare_function("ar_rt_thread_current_id", Linkage::Import, &get_id_sig)
+            .map_err(|err| {
+                codegen_ice(format!(
+                    "failed to declare ar_rt_thread_current_id: {err:?}"
+                ))
+            })?;
+        insert_sym(func_ids, "ar_rt_thread_current_id", id);
+
+        let mut wait_sig = Signature::new(default_call_conv);
+        wait_sig.params.push(AbiParam::new(ptr_type));
+        wait_sig.params.push(AbiParam::new(ptr_type));
+        let id = module
+            .declare_function("ar_rt_condvar_wait", Linkage::Import, &wait_sig)
+            .map_err(|err| codegen_ice(format!("failed to declare ar_rt_condvar_wait: {err:?}")))?;
+        insert_sym(func_ids, "ar_rt_condvar_wait", id);
+
         let mut void_ptr = Signature::new(default_call_conv);
         void_ptr.params.push(AbiParam::new(ptr_type));
         for name in [
             "ar_rt_thread_unpark",
-            "ar_rt_condvar_wait",
             "ar_rt_condvar_notify_one",
             "ar_rt_condvar_notify_all",
         ] {

@@ -434,10 +434,29 @@ impl<'a> WasmModuleBuilder<'a> {
 
     /// Collect all imported extern functions deterministically.
     fn collect_imports(&self, style: ExportStyle<'a>) -> Vec<WasmImportInfo> {
+        let mut referenced = FxHashSet::default();
+        let mut remember = |operand: &AmirOperand| {
+            if let AmirOperand::FunctionRef(symbol) = operand {
+                referenced.insert(*symbol);
+            }
+        };
+        for function in &self.functions {
+            for statement in function.stmts.payloads.iter() {
+                arandu_middle::amir::visit::for_each_stmt_operand(statement, &mut remember);
+            }
+            for block in &function.blocks {
+                arandu_middle::amir::visit::for_each_terminator_operand(
+                    &block.terminator,
+                    &mut remember,
+                );
+            }
+        }
+
         let mut sorted_extern: Vec<_> = self
             .program
             .extern_funcs
             .iter()
+            .filter(|(symbol, _)| referenced.contains(symbol))
             .filter(|(symbol, _)| self.live.as_ref().is_none_or(|live| live.contains(symbol)))
             .collect();
         sorted_extern.sort_by_key(|(sym, _)| (sym.file_id, sym.local_id.0));

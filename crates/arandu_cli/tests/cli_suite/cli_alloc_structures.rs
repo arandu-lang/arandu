@@ -8,9 +8,21 @@ const CONTRACT: &str = include_str!("../../../../tests/corpus/stdlib_alloc_struc
 
 #[test]
 fn alloc_structures_rc_arc_slab_and_deque() {
+    run_contract(CONTRACT, None);
+}
+
+#[test]
+fn rc_arc_unwrap_and_last_drop_do_not_resurrect_payloads_through_weak() {
+    run_contract(
+        include_str!("../../../../tests/corpus/rc_lifecycle.aru"),
+        Some("11\n22\n33\n44\n55\n66\n"),
+    );
+}
+
+fn run_contract(contract: &str, expected_stdout: Option<&str>) {
     let root = common::temp_dir("arandu-alloc-contract").expect("temporary directory");
     let source = root.join("alloc_structures.aru");
-    fs::write(&source, CONTRACT).expect("write contract");
+    fs::write(&source, contract).expect("write contract");
 
     for mode in ["run", "emit-c", "emit-wasm"] {
         let output = common::cli_command()
@@ -24,6 +36,14 @@ fn alloc_structures_rc_arc_slab_and_deque() {
             output.status.code(),
             String::from_utf8_lossy(&output.stderr)
         );
+        if mode == "run"
+            && let Some(expected) = expected_stdout
+        {
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout).replace("\r\n", "\n"),
+                expected
+            );
+        }
         if mode == "emit-c"
             && Command::new("clang")
                 .arg("--version")
@@ -63,6 +83,12 @@ fn alloc_structures_rc_arc_slab_and_deque() {
                     run.status.code(),
                     String::from_utf8_lossy(&run.stderr)
                 );
+                if let Some(expected) = expected_stdout {
+                    assert_eq!(
+                        String::from_utf8_lossy(&run.stdout).replace("\r\n", "\n"),
+                        expected
+                    );
+                }
             }
         }
     }

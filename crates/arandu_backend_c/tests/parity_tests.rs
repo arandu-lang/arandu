@@ -34,6 +34,106 @@ fn parity_bit_intrinsics_cover_every_bit_position_and_zero() {
 }
 
 #[test]
+fn atomic_intrinsics_survive_real_native_thread_contention() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    let (amir, tc) = compile_src(include_str!("../../../tests/corpus/atomic_contention.aru"));
+    let module = CraneliftBackend::try_new()
+        .unwrap()
+        .compile(&amir, &tc.symbols, &tc.type_info)
+        .unwrap();
+    for name in ["increment", "incrementCas"] {
+        let symbol = tc
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name.rsplit('.').next() == Some(name))
+            .unwrap();
+        let host_name = tc.symbols.host_func_name(symbol);
+        // SAFETY: Both exports have exactly the declared pointer/i32 -> void
+        // ABI. The module stays alive until every scoped worker has joined.
+        let increment = unsafe {
+            module
+                .get_fn::<unsafe extern "C" fn(*mut u32, i32)>(host_name)
+                .unwrap()
+        };
+        let counter = AtomicU32::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..6 {
+                let shared = &counter;
+                scope.spawn(move || {
+                    // SAFETY: AtomicU32 provides aligned, live storage; every
+                    // concurrent access in the generated function is atomic.
+                    unsafe { increment(shared.as_ptr(), 50_000) };
+                });
+            }
+        });
+        assert_eq!(counter.load(Ordering::SeqCst), 300_000, "{name}");
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn generated_c_atomic_intrinsics_survive_pthread_contention() {
+    let (amir, tc) = compile_src(include_str!("../../../tests/corpus/atomic_contention.aru"));
+    let source = format!(
+        "#define main arandu_unused_main\n{}\n#undef main\n{}",
+        emit_c(&amir, &tc),
+        r#"
+#include <pthread.h>
+static uint32_t counter = 0;
+static int use_cas = 0;
+static void *worker(void *unused) {
+    (void)unused;
+    if (use_cas) std__core__atomicContention__incrementCas(&counter, 50000);
+    else std__core__atomicContention__increment(&counter, 50000);
+    return NULL;
+}
+int main(void) {
+    for (use_cas = 0; use_cas < 2; ++use_cas) {
+        __atomic_store_n(&counter, 0, __ATOMIC_SEQ_CST);
+        pthread_t workers[6];
+        for (int i = 0; i < 6; ++i) if (pthread_create(&workers[i], NULL, worker, NULL)) return 1;
+        for (int i = 0; i < 6; ++i) if (pthread_join(workers[i], NULL)) return 2;
+        if (__atomic_load_n(&counter, __ATOMIC_SEQ_CST) != 300000) return 3;
+    }
+    return 0;
+}
+"#
+    );
+    let directory = std::env::temp_dir().join(format!("arandu-atomic-c-{}", std::process::id()));
+    fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("atomic.c");
+    fs::write(&path, source).unwrap();
+    for optimization in ["-O0", "-O2"] {
+        let executable = directory.join("atomic");
+        let output = Command::new("cc")
+            .args([
+                optimization,
+                "-pthread",
+                "-fsanitize=undefined",
+                "-fno-sanitize-recover=all",
+            ])
+            .arg(&path)
+            .arg("-o")
+            .arg(&executable)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let output = Command::new(executable).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{:?}: {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn parity_ordinary_bit_names_are_not_intrinsics() {
     test_zero_result_all_opt_levels(
         "ordinary_bit_names",

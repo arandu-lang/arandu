@@ -326,6 +326,30 @@ public func Vec.get<T>(self: ref Vec<T>, index: usize): Option<ref T> {
     return get<T>(self, index)
 }
 
+/// Exclusively borrows the element at logical index `index`.
+public func Vec.getMut<T>(self: mut ref Vec<T>, index: usize): Option<mut ref T> {
+    if index >= self.len {
+        return Option.None
+    }
+    unsafe {
+        let elemPtr = mem.ptrOffset<T>(self.data, index as isize)
+        return Option.Some(mut ref *elemPtr)
+    }
+}
+
+/// Replaces the element at `index` with `value`, returning the previous element.
+public func Vec.replace<T>(self: mut ref Vec<T>, index: usize, value: T): Option<T> {
+    if index >= self.len {
+        return Option.None
+    }
+    unsafe {
+        let elemPtr = mem.ptrOffset<T>(self.data, index as isize)
+        let old = mem.ptrRead<T>(elemPtr)
+        mem.ptrWrite<T>(elemPtr, value)
+        return Option.Some(old)
+    }
+}
+
 /// Returns a copy of a `Copy` element at `index`, or `Option.None` if out of bounds.
 public func Vec.getCopy<Element: marker.Copy>(self: ref Vec<Element>, index: usize): Option<Element> {
     return getCopy<Element>(self, index)

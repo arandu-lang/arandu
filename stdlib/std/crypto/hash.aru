@@ -440,20 +440,22 @@ public func blake3(data: []u8): [32]u8 {
     return state.finish()
 }
 
+/// Lowercase hexadecimal digits, indexed by nibble value (`'0'` = 48).
+const HEX_DIGITS = comptime [
+    48 as u8, 49 as u8, 50 as u8, 51 as u8,
+    52 as u8, 53 as u8, 54 as u8, 55 as u8,
+    56 as u8, 57 as u8, 97 as u8, 98 as u8,
+    99 as u8, 100 as u8, 101 as u8, 102 as u8
+]
+
 /// Converts a 32-byte binary digest into a 64-byte lowercase hexadecimal representation.
 public func toHex(digest: [32]u8): [64]u8 {
-    let mut out: [64]u8 = [0u8; 64]
-    const hexDigits = comptime [
-        '0' as u8, '1' as u8, '2' as u8, '3' as u8,
-        '4' as u8, '5' as u8, '6' as u8, '7' as u8,
-        '8' as u8, '9' as u8, 'a' as u8, 'b' as u8,
-        'c' as u8, 'd' as u8, 'e' as u8, 'f' as u8
-    ]
+    let mut out: [64]u8 = [0 as u8; 64]
     let mut i: usize = 0
     while i < 32 {
         let b = digest[i]
-        out[i * 2] = hexDigits[(b >> 4) as usize]
-        out[i * 2 + 1] = hexDigits[(b & 0x0fu8) as usize]
+        out[i * 2] = HEX_DIGITS[(b >> 4) as usize]
+        out[i * 2 + 1] = HEX_DIGITS[(b & 0x0f as u8) as usize]
         i = i + 1
     }
     return out

@@ -105,8 +105,11 @@ public func Slab.insert<T>(self: mut ref Slab<T>, value: T): usize {
 /// Borrows the element at `key`, if it exists and is occupied.
 public func Slab.get<T>(self: ref Slab<T>, key: usize): Option<ref T> {
     if let Option.Some(slot) = self.entries.get(key) {
-        if let Slot.Occupied(ref val) = *slot {
-            return Option.Some(val)
+        match slot {
+            Slot.Occupied(val) => {
+                return Option.Some(val)
+            }
+            Slot.Vacant(_) => {}
         }
     }
     return Option.None
@@ -115,8 +118,11 @@ public func Slab.get<T>(self: ref Slab<T>, key: usize): Option<ref T> {
 /// Exclusively borrows the element at `key`, if it exists and is occupied.
 public func Slab.getMut<T>(self: mut ref Slab<T>, key: usize): Option<mut ref T> {
     if let Option.Some(slot) = self.entries.getMut(key) {
-        if let Slot.Occupied(mut ref val) = *slot {
-            return Option.Some(val)
+        match slot {
+            Slot.Occupied(val) => {
+                return Option.Some(val)
+            }
+            Slot.Vacant(_) => {}
         }
     }
     return Option.None
@@ -129,9 +135,14 @@ public func Slab.remove<T>(self: mut ref Slab<T>, key: usize): Option<T> {
         return Option.None
     }
 
-    let isOccupied = match self.entries.get(key) {
-        Option.Some(Slot.Occupied(_)) => true,
-        _ => false,
+    let mut isOccupied = false
+    if let Option.Some(slot) = self.entries.get(key) {
+        match slot {
+            Slot.Occupied(_) => {
+                isOccupied = true
+            }
+            Slot.Vacant(_) => {}
+        }
     }
 
     if !isOccupied {
@@ -139,19 +150,25 @@ public func Slab.remove<T>(self: mut ref Slab<T>, key: usize): Option<T> {
     }
 
     // Replace the slot with Vacant pointing to the current next free slot
-    let old = self.entries.set(key, Slot.Vacant(self.next))
+    let old = self.entries.replace(key, Slot.Vacant(self.next))
     self.next = key
     self.len = self.len - (1 as usize)
 
-    if let Slot.Occupied(val) = old {
-        return Option.Some(val)
+    if let Option.Some(oldSlot) = old {
+        match oldSlot {
+            Slot.Occupied(val) => {
+                return Option.Some(val)
+            }
+            Slot.Vacant(_) => {}
+        }
     }
     return Option.None
 }
 
 /// Returns `true` if `key` is occupied in the slab.
 public func Slab.contains<T>(self: ref Slab<T>, key: usize): bool {
-    return self.get(key) is Option.Some(_)
+    let opt = self.get(key)
+    return opt.isSome()
 }
 
 /// Clears all elements from the slab without releasing buffer capacity.

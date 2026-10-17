@@ -1,9 +1,10 @@
-//! Cooperative condition variable.
+//! Condition-variable prototype; registration/wakeup protocol is pending.
 //!
 //! ## Overview
 //!
-//! `Condvar` enables tasks or threads to block until a particular condition
-//! is met, notified via `notifyOne` or `notifyAll`.
+//! The current host wait uses parking/timeouts and notify is a placeholder.
+//! Mutex release/reacquisition, lost-wakeup protection, cancellation and
+//! cooperation with the executor are not implemented by this surface.
 //!
 //! ## Examples
 //!
@@ -48,7 +49,7 @@ public func Condvar.wait(self: ref Condvar): void {
 }
 
 /// Wakes one task waiting on this condition variable.
-public func Condvar.notifyOne(self: ref Condvar): void {
+public func Condvar.notifyOne(self: mut ref Condvar): void {
     let next = self.sequence.fetchAdd(1 as usize, atomic.MemoryOrder.Release)
     unsafe {
         ar_rt_condvar_notify_one(next)
@@ -56,7 +57,7 @@ public func Condvar.notifyOne(self: ref Condvar): void {
 }
 
 /// Wakes all tasks waiting on this condition variable.
-public func Condvar.notifyAll(self: ref Condvar): void {
+public func Condvar.notifyAll(self: mut ref Condvar): void {
     let next = self.sequence.fetchAdd(1 as usize, atomic.MemoryOrder.Release)
     unsafe {
         ar_rt_condvar_notify_all(next)
@@ -68,8 +69,8 @@ public func Condvar.notifyAll(self: ref Condvar): void {
 /// Returns `true` if notified or `false` if the timeout elapsed.
 public func Condvar.waitTimeout(self: ref Condvar, timeoutMs: u64): bool {
     let current = self.sequence.load(atomic.MemoryOrder.Acquire)
-    let mut elapsed: u64 = 0u64
-    let step: u64 = if timeoutMs < 10u64 { timeoutMs } else { 10u64 }
+    let mut elapsed: u64 = 0 as u64
+    let step: u64 = if timeoutMs < 10 as u64 { timeoutMs } else { 10 as u64 }
     while elapsed < timeoutMs {
         if self.sequence.load(atomic.MemoryOrder.Acquire) != current {
             return true

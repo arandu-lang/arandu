@@ -1,10 +1,10 @@
-//! Thread-safe reference-counting pointer.
+//! Atomic reference-counting prototype; cross-thread transfer is not admitted.
 //!
 //! ## Overview
 //!
-//! `Arc<T>` (Atomically Reference Counted) provides thread-safe shared ownership
-//! of a heap-allocated value. Multiple `Arc` instances can concurrently share,
-//! clone, and access the same payload across threads.
+//! `Arc<T>` stores shared ownership counts with real atomics. Cross-thread
+//! Send/Sync, count overflow, and concurrent getMut/Weak.upgrade still require
+//! proof before this API can be promoted for shared access.
 //!
 //! The inner value is destroyed when the last strong reference is dropped.
 //! To prevent reference cycles, `ArcWeak<T>` provides non-owning weak handles.
@@ -16,14 +16,20 @@
 //! - An `Acquire` barrier precedes dropping the inner value, ensuring all prior
 //!   writes by other threads are visible to the thread destroying the payload.
 //!
+//! Valid memory orders are currently strengthened to SeqCst by the compiler.
+//!
 //! ## Platform
-//! `native` · `wasm32`
+//! Native allocation hosts; Wasm allocation wiring is pending.
 module std.alloc.arc
 
 import std.alloc.allocator_api as alloc
+
 import std.core.atomic as atomic
+
 import std.core.intrinsics as intrinsics
+
 import std.core.mem as mem
+
 import std.core.option as option
 
 extern "C" {
@@ -47,14 +53,14 @@ func boxAlign<T>(): usize {
     return mem.alignOf<ArcBox<T>>()
 }
 
-/// A thread-safe reference-counting pointer.
+/// An atomic reference-counting prototype with shared-thread contracts pending.
 public struct Arc<T> {
-    private ptr: ptr[ArcBox<T>]
+    private inner: ptr[ArcBox<T>]
 }
 
 /// A non-owning weak handle to an `Arc`-managed allocation.
 public struct ArcWeak<T> {
-    private ptr: ptr[ArcBox<T>]
+    private inner: ptr[ArcBox<T>]
 }
 
 /// Symmetrical alias for `ArcWeak<T>`.
@@ -81,7 +87,7 @@ public func Arc.tryNew<T>(value: T): Result<Arc<T>, alloc.AllocError> {
             value: value,
         }
         mem.ptrWrite<ArcBox<T>>(typed, initial)
-        return Result.Ok(Arc<T> { ptr: typed })
+        return Result.Ok(Arc<T> { inner: typed })
     }
 }
 
@@ -91,21 +97,22 @@ public func Arc.new<T>(value: T): Arc<T> {
         Result.Ok(arc) => { return arc }
         Result.Err(_) => { unsafe { intrinsics.abort() } }
     }
-    return Arc<T> { ptr: nil }
+    return Arc<T> { inner: nil }
 }
 
 /// Borrows the contained value.
 public func Arc.get<T>(self: ref Arc<T>): ref T {
     unsafe {
-        return ref (*self.ptr).value
+        return ref (*self.inner).value
     }
 }
 
 /// Returns `true` if this `Arc` has no other strong or weak references.
 public func Arc.isUnique<T>(self: ref Arc<T>): bool {
     unsafe {
-        return (*self.ptr).strong.load(atomic.MemoryOrder.Acquire) == (1 as usize) &&
-               (*self.ptr).weak.load(atomic.MemoryOrder.Acquire) == (1 as usize)
+        let p = self.inner
+        return p.strong.load(atomic.MemoryOrder.Acquire) == (1 as usize) &&
+        p.weak.load(atomic.MemoryOrder.Acquire) == (1 as usize)
     }
 }
 
@@ -113,7 +120,7 @@ public func Arc.isUnique<T>(self: ref Arc<T>): bool {
 public func Arc.getMut<T>(self: mut ref Arc<T>): Option<mut ref T> {
     if Arc.isUnique(self) {
         unsafe {
-            return Option.Some(mut ref (*self.ptr).value)
+            return Option.Some(mut ref (*self.inner).value)
         }
     }
     return Option.None
@@ -124,26 +131,28 @@ public func Arc.getMut<T>(self: mut ref Arc<T>): Option<mut ref T> {
 /// If other strong references exist, returns `Result.Err(self)`.
 public func Arc.tryUnwrap<T>(self: own Arc<T>): Result<T, Arc<T>> {
     let nullp: ptr[ArcBox<T>] = nil
-    if self.ptr == nullp {
+    if self.inner == nullp {
         return Result.Err(self)
     }
     unsafe {
-        match (*self.ptr).strong.compareExchange(
-            1 as usize,
-            0 as usize,
-            atomic.MemoryOrder.Acquire,
-            atomic.MemoryOrder.Relaxed
+        let mut p0 = self.inner
+        match p0.strong.compareExchange(
+        1 as usize,
+        0 as usize,
+        atomic.MemoryOrder.Acquire,
+        atomic.MemoryOrder.Relaxed
         ) {
             Result.Ok(_) => {
                 let mut owned = self
-                let p = owned.ptr
-                let val = mem.ptrRead<T>(&(*p).value)
-                let prevWeak = (*p).weak.fetchSub(1 as usize, atomic.MemoryOrder.Release)
+                let p = owned.inner
+                let val = mem.ptrRead<T>(intrinsics.addressOf<T>(mut ref (*p).value))
+                let mut p_mut = owned.inner
+                let prevWeak = p_mut.weak.fetchSub(1 as usize, atomic.MemoryOrder.Release)
                 if prevWeak == (1 as usize) {
                     atomic.fence(atomic.MemoryOrder.Acquire)
                     ar_rt_free_aligned(p as ptr[u8], boxSize<T>(), boxAlign<T>())
                 }
-                owned.ptr = nil
+                owned.inner = nil
                 return Result.Ok(val)
             }
             Result.Err(_) => {
@@ -153,25 +162,36 @@ public func Arc.tryUnwrap<T>(self: own Arc<T>): Result<T, Arc<T>> {
     }
 }
 
+func ArcWeak.fromInner<T>(inner: ptr[ArcBox<T>]): ArcWeak<T> {
+    return ArcWeak<T> { inner: inner }
+}
+
+func Arc.fromInner<T>(inner: ptr[ArcBox<T>]): Arc<T> {
+    return Arc<T> { inner: inner }
+}
+
 /// Clones an `Arc`, atomically incrementing the strong reference count.
 public func Arc.clone<T>(self: ref Arc<T>): Arc<T> {
     unsafe {
-        (*self.ptr).strong.fetchAdd(1 as usize, atomic.MemoryOrder.Relaxed)
-        return Arc<T> { ptr: self.ptr }
+        let mut p = self.inner
+        p.strong.fetchAdd(1 as usize, atomic.MemoryOrder.Relaxed)
+        return Arc<T> { inner: self.inner }
     }
 }
 
 /// Returns the current strong reference count.
 public func Arc.strongCount<T>(self: ref Arc<T>): usize {
     unsafe {
-        return (*self.ptr).strong.load(atomic.MemoryOrder.Acquire)
+        let p = self.inner
+        return p.strong.load(atomic.MemoryOrder.Acquire)
     }
 }
 
 /// Returns the current weak reference count.
 public func Arc.weakCount<T>(self: ref Arc<T>): usize {
     unsafe {
-        let w = (*self.ptr).weak.load(atomic.MemoryOrder.Acquire)
+        let p = self.inner
+        let w = p.weak.load(atomic.MemoryOrder.Acquire)
         if w > (0 as usize) {
             return w - (1 as usize)
         }
@@ -182,8 +202,9 @@ public func Arc.weakCount<T>(self: ref Arc<T>): usize {
 /// Creates a non-owning `ArcWeak<T>` pointer to this allocation.
 public func Arc.downgrade<T>(self: ref Arc<T>): ArcWeak<T> {
     unsafe {
-        (*self.ptr).weak.fetchAdd(1 as usize, atomic.MemoryOrder.Relaxed)
-        return ArcWeak<T> { ptr: self.ptr }
+        let mut p = self.inner
+        p.weak.fetchAdd(1 as usize, atomic.MemoryOrder.Relaxed)
+        return ArcWeak.fromInner<T>(self.inner)
     }
 }
 
@@ -191,22 +212,23 @@ public func Arc.downgrade<T>(self: ref Arc<T>): ArcWeak<T> {
 @Destructor
 func Arc.destroy<T>(self: own Arc<T>): void {
     let nullp: ptr[ArcBox<T>] = nil
-    if self.ptr == nullp { return }
+    if self.inner == nullp { return }
 
     unsafe {
-        let prev = (*self.ptr).strong.fetchSub(1 as usize, atomic.MemoryOrder.Release)
+        let mut p = self.inner
+        let prev = p.strong.fetchSub(1 as usize, atomic.MemoryOrder.Release)
         if prev == (1 as usize) {
             // Synchronize with all prior decrements
             atomic.fence(atomic.MemoryOrder.Acquire)
 
-            // Destroy inner payload
-            mem.dropInPlace<T>(&(*self.ptr).value)
+            // Move payload while the implicit weak still pins its storage.
+            let _val = mem.ptrRead<T>(intrinsics.addressOf<T>(mut ref (*p).value))
 
-            // Decrement implicit weak count
-            let prevWeak = (*self.ptr).weak.fetchSub(1 as usize, atomic.MemoryOrder.Release)
+            // Touch only the counts after the payload has moved out.
+            let prevWeak = p.weak.fetchSub(1 as usize, atomic.MemoryOrder.Release)
             if prevWeak == (1 as usize) {
                 atomic.fence(atomic.MemoryOrder.Acquire)
-                ar_rt_free_aligned(self.ptr as ptr[u8], boxSize<T>(), boxAlign<T>())
+                ar_rt_free_aligned(self.inner as ptr[u8], boxSize<T>(), boxAlign<T>())
             }
         }
     }
@@ -217,27 +239,29 @@ func Arc.destroy<T>(self: own Arc<T>): void {
 /// Clones a weak handle.
 public func ArcWeak.clone<T>(self: ref ArcWeak<T>): ArcWeak<T> {
     unsafe {
-        (*self.ptr).weak.fetchAdd(1 as usize, atomic.MemoryOrder.Relaxed)
-        return ArcWeak<T> { ptr: self.ptr }
+        let mut p = self.inner
+        p.weak.fetchAdd(1 as usize, atomic.MemoryOrder.Relaxed)
+        return ArcWeak<T> { inner: self.inner }
     }
 }
 
 /// Attempts to upgrade to a strong `Arc<T>`.
 public func ArcWeak.upgrade<T>(self: ref ArcWeak<T>): Option<Arc<T>> {
     let nullp: ptr[ArcBox<T>] = nil
-    if self.ptr == nullp { return Option.None }
+    if self.inner == nullp { return Option.None }
 
     unsafe {
-        let mut count = (*self.ptr).strong.load(atomic.MemoryOrder.Relaxed)
+        let mut p = self.inner
+        let mut count = p.strong.load(atomic.MemoryOrder.Relaxed)
         while count > (0 as usize) {
-            match (*self.ptr).strong.compareExchangeWeak(
-                count,
-                count + (1 as usize),
-                atomic.MemoryOrder.Acquire,
-                atomic.MemoryOrder.Relaxed
+            match p.strong.compareExchangeWeak(
+            count,
+            count + (1 as usize),
+            atomic.MemoryOrder.Acquire,
+            atomic.MemoryOrder.Relaxed
             ) {
                 Result.Ok(_) => {
-                    return Option.Some(Arc<T> { ptr: self.ptr })
+                    return Option.Some(Arc.fromInner<T>(self.inner))
                 }
                 Result.Err(current) => {
                     count = current
@@ -252,13 +276,14 @@ public func ArcWeak.upgrade<T>(self: ref ArcWeak<T>): Option<Arc<T>> {
 @Destructor
 func ArcWeak.destroy<T>(self: own ArcWeak<T>): void {
     let nullp: ptr[ArcBox<T>] = nil
-    if self.ptr == nullp { return }
+    if self.inner == nullp { return }
 
     unsafe {
-        let prevWeak = (*self.ptr).weak.fetchSub(1 as usize, atomic.MemoryOrder.Release)
+        let mut p = self.inner
+        let prevWeak = p.weak.fetchSub(1 as usize, atomic.MemoryOrder.Release)
         if prevWeak == (1 as usize) {
             atomic.fence(atomic.MemoryOrder.Acquire)
-            ar_rt_free_aligned(self.ptr as ptr[u8], boxSize<T>(), boxAlign<T>())
+            ar_rt_free_aligned(self.inner as ptr[u8], boxSize<T>(), boxAlign<T>())
         }
     }
 }

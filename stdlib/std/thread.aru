@@ -2,14 +2,13 @@
 //!
 //! ## Overview
 //!
-//! `std.std.thread` provides native OS-level thread spawning and lifecycle
-//! management:
-//! - `spawn`: Executes a task on a dedicated operating system thread.
-//! - `JoinHandle`: Holds the handle to a spawned thread, ensuring proper cleanup
-//!   on scope exit or waiting via `.join()`.
+//! `std.thread` currently exposes sleep/yield and initial parking bridges.
+//! Native spawn/join and JoinHandle lifecycle are not implemented.
+//! currentThreadId is a placeholder; unpark does not yet notify a thread.
 //! - `sleep`: Pauses the current OS thread for a specified duration.
 //! - `yieldNow`: Cooperatively yields the processor to other runnable threads.
-//! - `park` / `unpark`: Native thread parking via kernel wait queues (futex / WaitOnAddress).
+//! - `park` can block the native thread; parkTimeout currently sleeps.
+//! These operations do not provide cooperative executor synchronization.
 //!
 //! ## Examples
 //!
@@ -86,13 +85,13 @@ public func unpark(threadId: usize): void {
     }
 }
 
-/// Returns a unique identifier for the calling OS thread.
+/// Placeholder identity; currently returns zero and must not identify a thread.
 public func currentThreadId(): usize {
     return 0 as usize
 }
 
-/// Automatic destructor ensuring the thread handle is detached if not joined.
+/// Placeholder destructor; no native spawn/join handle is acquired yet.
 @Destructor
 func JoinHandle.destroy<R>(self: own JoinHandle<R>): void {
-    // If not joined, resources are safely detached by host runtime
+    // Native lifecycle and detach must be implemented with spawn/join.
 }

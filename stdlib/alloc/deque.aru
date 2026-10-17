@@ -38,7 +38,7 @@ extern "C" {
     func ar_vec_buf_free(p: ptr[u8], size: usize): void
 }
 
-const MINIMUM_CAPACITY: usize = 8 as usize
+const MINIMUM_CAPACITY = 8 as usize
 
 /// Double-ended queue backed by a circular buffer.
 public struct VecDeque<T> {
@@ -82,7 +82,8 @@ public func VecDeque.withCapacity<T>(capacity: usize): VecDeque<T> {
     let cap = roundUpPowerOfTwo(capacity)
     unsafe {
         let raw = ar_vec_malloc(cap * elemSize<T>())
-        if raw == (nil as ptr[u8]) {
+        let nullp: ptr[u8] = nil
+        if raw == nullp {
             intrinsics.abort()
         }
         return VecDeque<T> {
@@ -118,7 +119,8 @@ func VecDeque.grow<T>(self: mut ref VecDeque<T>): void {
 
     unsafe {
         let raw = ar_vec_malloc(newCap * elemSize<T>())
-        if raw == (nil as ptr[u8]) {
+        let nullp: ptr[u8] = nil
+        if raw == nullp {
             intrinsics.abort()
         }
         let newData = raw as ptr[T]
@@ -128,8 +130,8 @@ func VecDeque.grow<T>(self: mut ref VecDeque<T>): void {
         let mask = self.capacity - (1 as usize)
         while i < self.len {
             let phys = (self.head + i) & mask
-            let src = mem.ptrOffset<T>(self.data, phys)
-            let dst = mem.ptrOffset<T>(newData, i)
+            let src = mem.ptrOffset<T>(self.data, phys as isize)
+            let dst = mem.ptrOffset<T>(newData, i as isize)
             mem.ptrWrite<T>(dst, mem.ptrRead<T>(src))
             i = i + (1 as usize)
         }
@@ -152,7 +154,7 @@ public func VecDeque.pushBack<T>(self: mut ref VecDeque<T>, value: T): void {
     unsafe {
         let mask = self.capacity - (1 as usize)
         let phys = (self.head + self.len) & mask
-        let dst = mem.ptrOffset<T>(self.data, phys)
+        let dst = mem.ptrOffset<T>(self.data, phys as isize)
         mem.ptrWrite<T>(dst, value)
         self.len = self.len + (1 as usize)
     }
@@ -166,7 +168,7 @@ public func VecDeque.pushFront<T>(self: mut ref VecDeque<T>, value: T): void {
     unsafe {
         let mask = self.capacity - (1 as usize)
         let newHead = (self.head + self.capacity - (1 as usize)) & mask
-        let dst = mem.ptrOffset<T>(self.data, newHead)
+        let dst = mem.ptrOffset<T>(self.data, newHead as isize)
         mem.ptrWrite<T>(dst, value)
         self.head = newHead
         self.len = self.len + (1 as usize)
@@ -181,7 +183,7 @@ public func VecDeque.popBack<T>(self: mut ref VecDeque<T>): Option<T> {
     unsafe {
         let mask = self.capacity - (1 as usize)
         let phys = (self.head + self.len - (1 as usize)) & mask
-        let src = mem.ptrOffset<T>(self.data, phys)
+        let src = mem.ptrOffset<T>(self.data, phys as isize)
         let val = mem.ptrRead<T>(src)
         self.len = self.len - (1 as usize)
         return Option.Some(val)
@@ -195,7 +197,7 @@ public func VecDeque.popFront<T>(self: mut ref VecDeque<T>): Option<T> {
     }
     unsafe {
         let mask = self.capacity - (1 as usize)
-        let src = mem.ptrOffset<T>(self.data, self.head)
+        let src = mem.ptrOffset<T>(self.data, self.head as isize)
         let val = mem.ptrRead<T>(src)
         self.head = (self.head + (1 as usize)) & mask
         self.len = self.len - (1 as usize)
@@ -211,7 +213,7 @@ public func VecDeque.get<T>(self: ref VecDeque<T>, index: usize): Option<ref T> 
     unsafe {
         let mask = self.capacity - (1 as usize)
         let phys = (self.head + index) & mask
-        let p = mem.ptrOffset<T>(self.data, phys)
+        let p = mem.ptrOffset<T>(self.data, phys as isize)
         return Option.Some(ref *p)
     }
 }
@@ -224,7 +226,7 @@ public func VecDeque.getMut<T>(self: mut ref VecDeque<T>, index: usize): Option<
     unsafe {
         let mask = self.capacity - (1 as usize)
         let phys = (self.head + index) & mask
-        let p = mem.ptrOffset<T>(self.data, phys)
+        let p = mem.ptrOffset<T>(self.data, phys as isize)
         return Option.Some(mut ref *p)
     }
 }
@@ -262,7 +264,7 @@ public func VecDeque.clear<T>(self: mut ref VecDeque<T>): void {
         let mut i = 0 as usize
         while i < self.len {
             let phys = (self.head + i) & mask
-            let p = mem.ptrOffset<T>(self.data, phys)
+            let p = mem.ptrOffset<T>(self.data, phys as isize)
             mem.dropInPlace<T>(p)
             i = i + (1 as usize)
         }
@@ -271,14 +273,18 @@ public func VecDeque.clear<T>(self: mut ref VecDeque<T>): void {
     self.len = 0 as usize
 }
 
+func destroyVecDeque<T>(d: mut ref VecDeque<T>): void {
+    let nullp: ptr[T] = nil
+    if d.data != nullp && d.capacity > (0 as usize) {
+        d.clear()
+        unsafe {
+            ar_vec_buf_free(d.data as ptr[u8], d.capacity * elemSize<T>())
+        }
+    }
+}
+
 /// Destroys the deque, invoking destructors on all elements and releasing storage.
 @Destructor
 func VecDeque.destroy<T>(self: own VecDeque<T>): void {
-    let nullp: ptr[T] = nil
-    if self.data != nullp && self.capacity > (0 as usize) {
-        self.clear()
-        unsafe {
-            ar_vec_buf_free(self.data as ptr[u8], self.capacity * elemSize<T>())
-        }
-    }
+    destroyVecDeque(self)
 }

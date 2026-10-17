@@ -555,9 +555,9 @@ impl<M: Module> AranduModule<M> {
             // PAN / Invariant 5: abort intrinsics are inlined to native CPU traps without importing libc abort.
             if arandu_semantics::IntrinsicKind::from_name(c_name).is_some_and(|kind| {
                 kind == arandu_semantics::IntrinsicKind::Abort
-                    || (kind.is_pure_bit_operation()
-                        && sym.lang_item
-                            == Some(arandu_semantics::symbol_table::LangItem::BitIntrinsic))
+                    || kind
+                        .declaration_marker()
+                        .is_some_and(|marker| sym.lang_item == Some(marker))
             }) {
                 continue;
             }

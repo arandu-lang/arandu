@@ -2,22 +2,18 @@
 //!
 //! ## Overview
 //!
-//! `std.core.simd` defines 128-bit hardware vector types aligned to 16 bytes:
-//! - `f32x4`: Four 32-bit floating-point lanes.
-//! - `u8x16`: Sixteen 8-bit unsigned integer lanes.
-//!
-//! These types map directly to CPU SIMD registers:
-//! - x86_64: SSE / AVX registers (`xmm`).
-//! - aarch64: ARM NEON registers (`v0`..`v31`).
-//! - wasm32: WebAssembly 128-bit SIMD (`v128`).
+//! Prototype scalar lane operations. F32x4 currently stores four `float`
+//! values (target-dependent width), and U8x16 stores sixteen bytes. Neither
+//! representation has a compiler-enforced 16-byte alignment or vector ABI.
+//! No direct SSE/NEON/v128 lowering is implemented by this module yet.
 //!
 //! ## Examples
 //!
 //! ```arandu
 //! import std.core.simd as simd
 //!
-//! let a = simd.f32x4.splat(2.0)
-//! let b = simd.f32x4.splat(3.0)
+//! let a = simd.F32x4.splat(2.0)
+//! let b = simd.F32x4.splat(3.0)
 //! let c = a.add(b) // [5.0, 5.0, 5.0, 5.0]
 //! ```
 //!
@@ -25,17 +21,17 @@
 //! `native` · `wasm32` · `bare-metal`
 module std.core.simd
 
-/// A 128-bit vector of four 32-bit floating-point numbers.
-public struct f32x4 {
+/// Prototype of four scalar float lanes; not yet a hardware f32x4 type.
+public struct F32x4 {
     lane0: float,
     lane1: float,
     lane2: float,
     lane3: float,
 }
 
-/// Creates a `f32x4` with individual lane values.
-public func f32x4.new(x: float, y: float, z: float, w: float): f32x4 {
-    return f32x4 {
+/// Creates a `F32x4` with individual lane values.
+public func F32x4.new(x: float, y: float, z: float, w: float): F32x4 {
+    return F32x4 {
         lane0: x,
         lane1: y,
         lane2: z,
@@ -44,8 +40,8 @@ public func f32x4.new(x: float, y: float, z: float, w: float): f32x4 {
 }
 
 /// Broadcasts `val` across all four lanes.
-public func f32x4.splat(val: float): f32x4 {
-    return f32x4 {
+public func F32x4.splat(val: float): F32x4 {
+    return F32x4 {
         lane0: val,
         lane1: val,
         lane2: val,
@@ -54,8 +50,8 @@ public func f32x4.splat(val: float): f32x4 {
 }
 
 /// Lane-wise addition: `self + other`.
-public func f32x4.add(self: f32x4, other: f32x4): f32x4 {
-    return f32x4 {
+public func F32x4.add(self: F32x4, other: F32x4): F32x4 {
+    return F32x4 {
         lane0: self.lane0 + other.lane0,
         lane1: self.lane1 + other.lane1,
         lane2: self.lane2 + other.lane2,
@@ -64,8 +60,8 @@ public func f32x4.add(self: f32x4, other: f32x4): f32x4 {
 }
 
 /// Lane-wise subtraction: `self - other`.
-public func f32x4.sub(self: f32x4, other: f32x4): f32x4 {
-    return f32x4 {
+public func F32x4.sub(self: F32x4, other: F32x4): F32x4 {
+    return F32x4 {
         lane0: self.lane0 - other.lane0,
         lane1: self.lane1 - other.lane1,
         lane2: self.lane2 - other.lane2,
@@ -74,8 +70,8 @@ public func f32x4.sub(self: f32x4, other: f32x4): f32x4 {
 }
 
 /// Lane-wise multiplication: `self * other`.
-public func f32x4.mul(self: f32x4, other: f32x4): f32x4 {
-    return f32x4 {
+public func F32x4.mul(self: F32x4, other: F32x4): F32x4 {
+    return F32x4 {
         lane0: self.lane0 * other.lane0,
         lane1: self.lane1 * other.lane1,
         lane2: self.lane2 * other.lane2,
@@ -84,8 +80,8 @@ public func f32x4.mul(self: f32x4, other: f32x4): f32x4 {
 }
 
 /// Lane-wise division: `self / other`.
-public func f32x4.div(self: f32x4, other: f32x4): f32x4 {
-    return f32x4 {
+public func F32x4.div(self: F32x4, other: F32x4): F32x4 {
+    return F32x4 {
         lane0: self.lane0 / other.lane0,
         lane1: self.lane1 / other.lane1,
         lane2: self.lane2 / other.lane2,
@@ -94,8 +90,8 @@ public func f32x4.div(self: f32x4, other: f32x4): f32x4 {
 }
 
 /// Lane-wise negation: `-self`.
-public func f32x4.neg(self: f32x4): f32x4 {
-    return f32x4 {
+public func F32x4.neg(self: F32x4): F32x4 {
+    return F32x4 {
         lane0: -self.lane0,
         lane1: -self.lane1,
         lane2: -self.lane2,
@@ -104,8 +100,8 @@ public func f32x4.neg(self: f32x4): f32x4 {
 }
 
 /// Lane-wise minimum.
-public func f32x4.min(self: f32x4, other: f32x4): f32x4 {
-    return f32x4 {
+public func F32x4.min(self: F32x4, other: F32x4): F32x4 {
+    return F32x4 {
         lane0: if self.lane0 < other.lane0 { self.lane0 } else { other.lane0 },
         lane1: if self.lane1 < other.lane1 { self.lane1 } else { other.lane1 },
         lane2: if self.lane2 < other.lane2 { self.lane2 } else { other.lane2 },
@@ -114,8 +110,8 @@ public func f32x4.min(self: f32x4, other: f32x4): f32x4 {
 }
 
 /// Lane-wise maximum.
-public func f32x4.max(self: f32x4, other: f32x4): f32x4 {
-    return f32x4 {
+public func F32x4.max(self: F32x4, other: F32x4): F32x4 {
+    return F32x4 {
         lane0: if self.lane0 > other.lane0 { self.lane0 } else { other.lane0 },
         lane1: if self.lane1 > other.lane1 { self.lane1 } else { other.lane1 },
         lane2: if self.lane2 > other.lane2 { self.lane2 } else { other.lane2 },
@@ -124,7 +120,7 @@ public func f32x4.max(self: f32x4, other: f32x4): f32x4 {
 }
 
 /// Computes the 4-dimensional dot product of two vectors: `x0*y0 + x1*y1 + x2*y2 + x3*y3`.
-public func f32x4.dot(self: f32x4, other: f32x4): float {
+public func F32x4.dot(self: F32x4, other: F32x4): float {
     return self.lane0 * other.lane0 +
            self.lane1 * other.lane1 +
            self.lane2 * other.lane2 +
@@ -132,7 +128,7 @@ public func f32x4.dot(self: f32x4, other: f32x4): float {
 }
 
 /// Extracts a single lane by index (0..3).
-public func f32x4.extractLane(self: f32x4, index: int): float {
+public func F32x4.extractLane(self: F32x4, index: int): float {
     if index == 0 { return self.lane0 }
     if index == 1 { return self.lane1 }
     if index == 2 { return self.lane2 }
@@ -140,8 +136,8 @@ public func f32x4.extractLane(self: f32x4, index: int): float {
 }
 
 /// Returns a copy of `self` with lane at `index` replaced by `val`.
-public func f32x4.replaceLane(self: f32x4, index: int, val: float): f32x4 {
-    return f32x4 {
+public func F32x4.replaceLane(self: F32x4, index: int, val: float): F32x4 {
+    return F32x4 {
         lane0: if index == 0 { val } else { self.lane0 },
         lane1: if index == 1 { val } else { self.lane1 },
         lane2: if index == 2 { val } else { self.lane2 },
@@ -149,10 +145,10 @@ public func f32x4.replaceLane(self: f32x4, index: int, val: float): f32x4 {
     }
 }
 
-// ── u8x16 (16 x 8-bit unsigned integers) ───────────────────────────────────
+// ── U8x16 (16 x 8-bit unsigned integers) ───────────────────────────────────
 
 /// A 128-bit vector of sixteen 8-bit unsigned integers.
-public struct u8x16 {
+public struct U8x16 {
     b0: u8, b1: u8, b2: u8, b3: u8,
     b4: u8, b5: u8, b6: u8, b7: u8,
     b8: u8, b9: u8, b10: u8, b11: u8,
@@ -160,8 +156,8 @@ public struct u8x16 {
 }
 
 /// Broadcasts `val` across all 16 lanes.
-public func u8x16.splat(val: u8): u8x16 {
-    return u8x16 {
+public func U8x16.splat(val: u8): U8x16 {
+    return U8x16 {
         b0: val, b1: val, b2: val, b3: val,
         b4: val, b5: val, b6: val, b7: val,
         b8: val, b9: val, b10: val, b11: val,
@@ -170,8 +166,8 @@ public func u8x16.splat(val: u8): u8x16 {
 }
 
 /// Lane-wise addition with 8-bit wrapping.
-public func u8x16.add(self: u8x16, other: u8x16): u8x16 {
-    return u8x16 {
+public func U8x16.add(self: U8x16, other: U8x16): U8x16 {
+    return U8x16 {
         b0: self.b0 + other.b0, b1: self.b1 + other.b1,
         b2: self.b2 + other.b2, b3: self.b3 + other.b3,
         b4: self.b4 + other.b4, b5: self.b5 + other.b5,
@@ -184,8 +180,8 @@ public func u8x16.add(self: u8x16, other: u8x16): u8x16 {
 }
 
 /// Lane-wise subtraction with 8-bit wrapping.
-public func u8x16.sub(self: u8x16, other: u8x16): u8x16 {
-    return u8x16 {
+public func U8x16.sub(self: U8x16, other: U8x16): U8x16 {
+    return U8x16 {
         b0: self.b0 - other.b0, b1: self.b1 - other.b1,
         b2: self.b2 - other.b2, b3: self.b3 - other.b3,
         b4: self.b4 - other.b4, b5: self.b5 - other.b5,
@@ -198,7 +194,7 @@ public func u8x16.sub(self: u8x16, other: u8x16): u8x16 {
 }
 
 /// Extracts a single byte lane by index (0..15).
-public func u8x16.extractLane(self: u8x16, index: int): u8 {
+public func U8x16.extractLane(self: U8x16, index: int): u8 {
     if index == 0 { return self.b0 }
     if index == 1 { return self.b1 }
     if index == 2 { return self.b2 }
@@ -218,8 +214,8 @@ public func u8x16.extractLane(self: u8x16, index: int): u8 {
 }
 
 /// Returns a copy of `self` with lane at `index` replaced by `val`.
-public func u8x16.replaceLane(self: u8x16, index: int, val: u8): u8x16 {
-    return u8x16 {
+public func U8x16.replaceLane(self: U8x16, index: int, val: u8): U8x16 {
+    return U8x16 {
         b0: if index == 0 { val } else { self.b0 },
         b1: if index == 1 { val } else { self.b1 },
         b2: if index == 2 { val } else { self.b2 },

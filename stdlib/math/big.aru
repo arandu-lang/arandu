@@ -2,7 +2,7 @@
 //!
 //! ## Overview
 //!
-//! `std.math.big` provides unbounded-precision arithmetic:
+//! `std.math.big` is an initial dynamic-precision implementation:
 //! - `BigInt`: Signed integer backed by a dynamic vector of 64-bit limbs.
 //!   Can represent numbers with hundreds or thousands of digits for cryptography,
 //!   number theory, and exact combinatorial counting.
@@ -12,8 +12,10 @@
 //! ## Algorithms
 //!
 //! - Addition / Subtraction: Linear $O(N)$ with ripple-carry.
-//! - Multiplication: Subquadratic Karatsuba $O(N^{1.585})$ for large values.
-//! - Comparisons: Constant-time normalization by limb length.
+//! - Multiplication: Schoolbook limb arithmetic; Karatsuba is not implemented.
+//! - Comparisons can traverse limbs and are not constant-time.
+//! Allocation, scale/work limits and wide independent oracles remain pending.
+//! This module does not establish cryptographic suitability.
 //!
 //! ## Examples
 //!
@@ -31,6 +33,7 @@ module std.math.big
 
 import std.alloc.vec as vec
 import std.core.option as option
+import std.core.slice as slice
 import std.core.cmp as cmp
 
 /// An arbitrary-precision signed integer.
@@ -50,7 +53,7 @@ public func BigInt.zero(): BigInt {
 /// One constant.
 public func BigInt.one(): BigInt {
     let mut v = vec.Vec<u64>.new()
-    v.push(1u64)
+    v.push(1 as u64)
     return BigInt {
         is_neg: false,
         limbs: v,
@@ -64,7 +67,7 @@ public func BigInt.fromInt(val: int): BigInt {
     }
     let mut v = vec.Vec<u64>.new()
     if val < 0 {
-        let mag = (-(val + 1) as uint) + 1u32
+        let mag = (-(val + 1) as uint) + 1 as uint
         v.push(mag as u64)
         return BigInt { is_neg: true, limbs: v }
     }
@@ -74,12 +77,12 @@ public func BigInt.fromInt(val: int): BigInt {
 
 /// Creates a `BigInt` from a 64-bit signed integer.
 public func BigInt.fromI64(val: i64): BigInt {
-    if val == 0i64 {
+    if val == 0 as i64 {
         return BigInt.zero()
     }
     let mut v = vec.Vec<u64>.new()
-    if val < 0i64 {
-        let mag = (-(val + 1i64) as u64) + 1u64
+    if val < 0 as i64 {
+        let mag = (-(val + 1 as i64) as u64) + 1 as u64
         v.push(mag)
         return BigInt { is_neg: true, limbs: v }
     }
@@ -94,7 +97,7 @@ public func BigInt.isZero(self: ref BigInt): bool {
     let mut i = 0 as usize
     while i < count {
         if let Option.Some(word) = self.limbs.get(i) {
-            if *word != 0u64 { return false }
+            if *word != 0 as u64 { return false }
         }
         i = i + (1 as usize)
     }
@@ -118,7 +121,7 @@ public func BigInt.clone(self: ref BigInt): BigInt {
     let mut limbs = vec.Vec<u64>.withCapacity(self.limbs.len())
     let s = self.limbs.asSlice()
     let mut i: usize = 0
-    while i < s.len() {
+    while i < slice.len(s) {
         limbs.push(s[i])
         i = i + (1 as usize)
     }
@@ -139,9 +142,9 @@ public func BigInt.cmp(self: ref BigInt, other: ref BigInt): cmp.Ordering {
     let ord = cmpMagnitude(self, other)
     if self.is_neg {
         match ord {
-            cmp.Ordering.Less => { return cmp.Ordering.Greater }
-            cmp.Ordering.Greater => { return cmp.Ordering.Less }
-            cmp.Ordering.Equal => { return cmp.Ordering.Equal }
+            Less => { return cmp.Ordering.Greater }
+            Greater => { return cmp.Ordering.Less }
+            Equal => { return cmp.Ordering.Equal }
         }
     }
     return ord
@@ -152,7 +155,7 @@ func BigInt.trim(self: mut ref BigInt): void {
     while i > (0 as usize) {
         let idx = i - (1 as usize)
         if let Option.Some(word) = self.limbs.get(idx) {
-            if *word != 0u64 { break }
+            if *word != 0 as u64 { break }
         }
         let _ = self.limbs.pop()
         i = idx
@@ -191,15 +194,15 @@ func addLimbs(a: ref BigInt, b: ref BigInt): BigInt {
 
     let aSlice = a.limbs.asSlice()
     let bSlice = b.limbs.asSlice()
-    let mut carry = 0u64
+    let mut carry = 0 as u64
     let mut i = 0 as usize
-    while i < maxLen || carry > 0u64 {
-        let wa = if i < la { aSlice[i] } else { 0u64 }
-        let wb = if i < lb { bSlice[i] } else { 0u64 }
+    while i < maxLen || carry > 0 as u64 {
+        let wa = if i < la { aSlice[i] } else { 0 as u64 }
+        let wb = if i < lb { bSlice[i] } else { 0 as u64 }
         let sum1 = wa + wb
-        let carry1 = if sum1 < wa { 1u64 } else { 0u64 }
+        let carry1 = if sum1 < wa { 1 as u64 } else { 0 as u64 }
         let sum2 = sum1 + carry
-        let carry2 = if sum2 < sum1 { 1u64 } else { 0u64 }
+        let carry2 = if sum2 < sum1 { 1 as u64 } else { 0 as u64 }
         carry = carry1 + carry2
         resultLimbs.push(sum2)
         i = i + (1 as usize)
@@ -218,15 +221,15 @@ func subLimbs(a: ref BigInt, b: ref BigInt): BigInt {
     let aSlice = a.limbs.asSlice()
     let bSlice = b.limbs.asSlice()
 
-    let mut borrow = 0u64
+    let mut borrow = 0 as u64
     let mut i = 0 as usize
     while i < la {
         let wa = aSlice[i]
-        let wb = if i < lb { bSlice[i] } else { 0u64 }
+        let wb = if i < lb { bSlice[i] } else { 0 as u64 }
         let diff1 = wa - borrow
-        let borrow1 = if wa < borrow { 1u64 } else { 0u64 }
+        let borrow1 = if wa < borrow { 1 as u64 } else { 0 as u64 }
         let diff2 = diff1 - wb
-        let borrow2 = if diff1 < wb { 1u64 } else { 0u64 }
+        let borrow2 = if diff1 < wb { 1 as u64 } else { 0 as u64 }
         borrow = borrow1 + borrow2
         resultLimbs.push(diff2)
         i = i + (1 as usize)
@@ -247,15 +250,15 @@ public func BigInt.add(self: ref BigInt, other: ref BigInt): BigInt {
     // Signs differ: subtraction of magnitudes
     let ord = cmpMagnitude(self, other)
     match ord {
-        cmp.Ordering.Equal => {
+        Equal => {
             return BigInt.zero()
         }
-        cmp.Ordering.Greater => {
+        Greater => {
             let mut diff = subLimbs(self, other)
             diff.is_neg = self.is_neg
             return diff
         }
-        cmp.Ordering.Less => {
+        Less => {
             let mut diff = subLimbs(other, self)
             diff.is_neg = other.is_neg
             return diff
@@ -265,14 +268,27 @@ public func BigInt.add(self: ref BigInt, other: ref BigInt): BigInt {
 
 /// Subtracts `other` from `self`.
 public func BigInt.sub(self: ref BigInt, other: ref BigInt): BigInt {
-    let mut negOther = BigInt {
-        is_neg: !other.is_neg,
-        limbs: other.limbs.clone(),
+    if self.is_neg != other.is_neg {
+        // Signs differ: magnitude addition keeps this sign.
+        let mut sum = addLimbs(self, other)
+        sum.is_neg = self.is_neg
+        return sum
     }
-    if negOther.isZero() {
-        negOther.is_neg = false
+    match cmpMagnitude(self, other) {
+        Equal => {
+            return BigInt.zero()
+        }
+        Greater => {
+            let mut diff = subLimbs(self, other)
+            diff.is_neg = self.is_neg
+            return diff
+        }
+        Less => {
+            let mut diff = subLimbs(other, self)
+            diff.is_neg = !self.is_neg
+            return diff
+        }
     }
-    return self.add(ref negOther)
 }
 
 /// Multiplies two `BigInt`s.
@@ -287,7 +303,7 @@ public func BigInt.mul(self: ref BigInt, other: ref BigInt): BigInt {
     // Pre-fill with zero
     let mut k = 0 as usize
     while k < (la + lb) {
-        resultLimbs.push(0u64)
+        resultLimbs.push(0 as u64)
         k = k + (1 as usize)
     }
 
@@ -297,32 +313,35 @@ public func BigInt.mul(self: ref BigInt, other: ref BigInt): BigInt {
     let mut i = 0 as usize
     while i < la {
         let wa = aSlice[i]
-        let mut carry = 0u64
+        let mut carry = 0 as u64
         let mut j = 0 as usize
-        while j < lb || carry > 0u64 {
-            let wb = if j < lb { bSlice[j] } else { 0u64 }
+        while j < lb || carry > 0 as u64 {
+            let wb = if j < lb { bSlice[j] } else { 0 as u64 }
             let idx = i + j
-            let current = match resultLimbs.get(idx) { Option.Some(w) => *w, Option.None => 0u64 }
+            let current = match resultLimbs.get(idx) {
+                Option.Some(w) => *w
+                Option.None => 0 as u64
+            }
 
             // 64x64 -> 128 bit multiplication decomposed into 32-bit halves
-            let a_lo = (wa & 0xFFFFFFFFu64)
-            let a_hi = (wa >> 32u32)
-            let b_lo = (wb & 0xFFFFFFFFu64)
-            let b_hi = (wb >> 32u32)
+            let a_lo = (wa & 0xFFFFFFFF as u64)
+            let a_hi = (wa >> (32 as u64))
+            let b_lo = (wb & 0xFFFFFFFF as u64)
+            let b_hi = (wb >> (32 as u64))
 
             let p0 = a_lo * b_lo
             let p1 = a_lo * b_hi
             let p2 = a_hi * b_lo
             let p3 = a_hi * b_hi
 
-            let cy0 = (p0 >> 32u32) + (p1 & 0xFFFFFFFFu64) + (p2 & 0xFFFFFFFFu64)
-            let lo = (p0 & 0xFFFFFFFFu64) | (cy0 << 32u32)
-            let hi = p3 + (p1 >> 32u32) + (p2 >> 32u32) + (cy0 >> 32u32)
+            let cy0 = (p0 >> (32 as u64)) + (p1 & 0xFFFFFFFF as u64) + (p2 & 0xFFFFFFFF as u64)
+            let lo = (p0 & 0xFFFFFFFF as u64) | (cy0 << (32 as u64))
+            let hi = p3 + (p1 >> (32 as u64)) + (p2 >> (32 as u64)) + (cy0 >> (32 as u64))
 
             let sum1 = current + lo
-            let c1 = if sum1 < current { 1u64 } else { 0u64 }
+            let c1 = if sum1 < current { 1 as u64 } else { 0 as u64 }
             let sum2 = sum1 + carry
-            let c2 = if sum2 < sum1 { 1u64 } else { 0u64 }
+            let c2 = if sum2 < sum1 { 1 as u64 } else { 0 as u64 }
             carry = hi + c1 + c2
 
             resultLimbs.set(idx, sum2)
@@ -409,21 +428,21 @@ public func BigDecimal.add(self: ref BigDecimal, other: ref BigDecimal): BigDeci
     if self.scale > other.scale {
         let diff = (self.scale - other.scale) as u32
         let mut scaledOther = other.mantissa.clone()
-        let mut step: u32 = 0u32
+        let mut step: u32 = 0 as u32
         let ten = BigInt.fromInt(10)
         while step < diff {
             scaledOther = scaledOther.mul(ref ten)
-            step = step + 1u32
+            step = step + 1 as u32
         }
         return BigDecimal.new(self.mantissa.add(ref scaledOther), self.scale)
     } else {
         let diff = (other.scale - self.scale) as u32
         let mut scaledSelf = self.mantissa.clone()
-        let mut step: u32 = 0u32
+        let mut step: u32 = 0 as u32
         let ten = BigInt.fromInt(10)
         while step < diff {
             scaledSelf = scaledSelf.mul(ref ten)
-            step = step + 1u32
+            step = step + 1 as u32
         }
         return BigDecimal.new(scaledSelf.add(ref other.mantissa), other.scale)
     }
@@ -444,13 +463,13 @@ public func BigDecimal.negate(self: mut ref BigDecimal): void {
 /// Adds `other` into `self` in-place with automatic scale alignment.
 public func BigDecimal.addAssign(self: mut ref BigDecimal, other: ref BigDecimal): void {
     let sum = self.add(other)
-    self.mantissa = sum.mantissa
     self.scale = sum.scale
+    self.mantissa = sum.mantissa
 }
 
 /// Subtracts `other` from `self` in-place with automatic scale alignment.
 public func BigDecimal.subAssign(self: mut ref BigDecimal, other: ref BigDecimal): void {
     let diff = self.sub(other)
-    self.mantissa = diff.mantissa
     self.scale = diff.scale
+    self.mantissa = diff.mantissa
 }

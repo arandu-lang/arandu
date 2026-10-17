@@ -227,9 +227,10 @@ pub(crate) fn create_jit_builder_with_io_and_process_args(
         "ar_fs_dir_open",
         crate::fs_runtime::ar_fs_dir_open as *const u8,
     );
+    builder.symbol("ar_fs_openat", crate::fs_runtime::ar_fs_openat as *const u8);
     builder.symbol(
-        "ar_fs_openat",
-        crate::fs_runtime::ar_fs_openat as *const u8,
+        "ar_fs_dir_openat",
+        crate::fs_runtime::ar_fs_dir_openat as *const u8,
     );
     builder.symbol(
         "ar_fs_mkdirat",

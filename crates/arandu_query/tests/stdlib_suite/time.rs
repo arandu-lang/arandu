@@ -10,7 +10,7 @@ const TIME_ARU: &str = include_str!("../../../../stdlib/std/time.aru");
 #[test]
 fn stdlib_time_parses_and_exports_expected_symbols() {
     let mut db = DatabaseImpl::default();
-    let file = db.new_file("stdlib/std/time.aru".to_string(), TIME_ARU.to_string());
+    let file = db.new_stdlib_file("stdlib/std/time.aru".to_string(), TIME_ARU.to_string());
     match parse(&db, file).as_ref() {
         Ok(_) => {}
         Err(e) => panic!("time.aru must parse; got {e}"),
@@ -39,7 +39,7 @@ fn stdlib_time_parses_and_exports_expected_symbols() {
 #[test]
 fn stdlib_time_usage_in_program() {
     let mut db = DatabaseImpl::default();
-    let time_file = db.new_file("stdlib/std/time.aru".to_string(), TIME_ARU.to_string());
+    let time_file = db.new_stdlib_file("stdlib/std/time.aru".to_string(), TIME_ARU.to_string());
     let main_src = r#"
 import std.time as time
 

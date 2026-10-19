@@ -81,3 +81,9 @@ mod string_from;
 
 #[path = "stdlib_suite/time.rs"]
 mod time;
+
+#[path = "stdlib_suite/rc_arc.rs"]
+mod rc_arc;
+
+#[path = "stdlib_suite/deque_slab.rs"]
+mod deque_slab;

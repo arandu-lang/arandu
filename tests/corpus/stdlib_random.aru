@@ -153,5 +153,18 @@ public func main(): int {
     if range5.genRange(3, 3) != (3 as i64) as int { return 134 }
     if range5.genRange(3, 3) != (3 as i64) as int { return 135 }
     if range5.genRange(3, 3) != (3 as i64) as int { return 136 }
+
+    let mut rf = random.Xoshiro256PlusPlus.fromSeed(42 as u64)
+    let f0 = rf.nextFloat()
+    if f0 < 0.0 || f0 >= 1.0 { return 137 }
+    let f1 = rf.nextFloat()
+    if f1 < 0.0 || f1 >= 1.0 { return 138 }
+    let f_range = rf.genRangeFloat(10.5, 20.5)
+    if f_range < 10.5 || f_range >= 20.5 { return 139 }
+    let f_same = rf.genRangeFloat(5.0, 5.0)
+    if f_same != 5.0 { return 140 }
+    let f_inverted = rf.genRangeFloat(10.0, 5.0)
+    if f_inverted != 10.0 { return 141 }
+
     return 0
 }

@@ -12,7 +12,7 @@ const FS_ARU: &str = include_str!("../../../../stdlib/std/fs.aru");
 #[test]
 fn stdlib_fs_parses_and_exports_expected_symbols() {
     let mut db = DatabaseImpl::default();
-    let file = db.new_file("stdlib/std/fs.aru".to_string(), FS_ARU.to_string());
+    let file = db.new_stdlib_file("stdlib/std/fs.aru".to_string(), FS_ARU.to_string());
     match parse(&db, file).as_ref() {
         Ok(_) => {}
         Err(e) => panic!("fs.aru must parse; got {e}"),
@@ -40,9 +40,9 @@ fn stdlib_fs_parses_and_exports_expected_symbols() {
 fn stdlib_fs_metadata_usage() {
     let mut db = DatabaseImpl::default();
     for (path, source) in common::STDLIB_MODULES {
-        let _ = db.new_file((*path).to_string(), (*source).to_string());
+        let _ = db.new_stdlib_file((*path).to_string(), (*source).to_string());
     }
-    let fs_file = db.new_file("stdlib/std/fs.aru".to_string(), FS_ARU.to_string());
+    let fs_file = db.new_stdlib_file("stdlib/std/fs.aru".to_string(), FS_ARU.to_string());
     let main_src = r#"
 import std.fs as fs
 

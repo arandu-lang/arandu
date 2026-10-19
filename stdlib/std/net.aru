@@ -384,15 +384,15 @@ public func TcpStream.connect(port: int): Result<TcpStream, io.IoError> {
 /// code `-1`, including a nonblocking would-block result; the category is
 /// therefore not precise. An empty buffer returns `Ok(0)` without calling the
 /// host.
-public func TcpStream.read(self: mut ref TcpStream, buf: mut ref []u8): Result<usize, io.IoError> {
-    let len = slice.len<u8>(*buf)
+public func TcpStream.read(self: mut ref TcpStream, buf: mut []u8): Result<usize, io.IoError> {
+    let len = slice.len<u8>(buf)
     if len == (0 as usize) {
         return Result.Ok(0 as usize)
     }
     if len > (2147483647 as usize) {
         return Result.Err(io.IoError.new(io.IoErrorKind.InvalidInput, 5))
     }
-    let n = unsafe { tcpRead(self.raw, slice.asPtr<u8>(*buf), len as int) }
+    let n = unsafe { tcpRead(self.raw, slice.asPtr<u8>(buf), len as int) }
     if n < 0 {
         return Result.Err(io.IoError.new(io.IoErrorKind.BrokenPipe, -1))
     }

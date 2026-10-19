@@ -11,9 +11,9 @@
 
 use crate::poll_runtime::{ar_co_block_on_i64, ar_co_free};
 use std::cell::RefCell;
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, RwLock};
 
 /// Ownership of the coroutine blob changes exactly once at Pending -> Running.
 /// Running stores no pointer: only the joining thread can poll/free the blob.
@@ -485,29 +485,43 @@ pub unsafe extern "C" fn ar_rt_thread_yield() {
 struct ThreadRecord {
     id: usize,
     thread: std::thread::Thread,
-    unpark_token: AtomicBool,
+}
+
+struct ThreadRegistration(Arc<ThreadRecord>);
+
+impl Drop for ThreadRegistration {
+    fn drop(&mut self) {
+        let mut registry = THREAD_REGISTRY.write().unwrap_or_else(|e| e.into_inner());
+        if let Some(registry) = registry.as_mut() {
+            registry.remove(&self.0.id);
+        }
+    }
 }
 
 static NEXT_THREAD_ID: AtomicUsize = AtomicUsize::new(1);
 static THREAD_REGISTRY: RwLock<Option<HashMap<usize, Arc<ThreadRecord>>>> = RwLock::new(None);
 
 thread_local! {
-    static CURRENT_THREAD_RECORD: RefCell<Option<Arc<ThreadRecord>>> = const { RefCell::new(None) };
+    static CURRENT_THREAD_RECORD: RefCell<Option<ThreadRegistration>> = const { RefCell::new(None) };
 }
 
 fn get_or_register_current_thread() -> Arc<ThreadRecord> {
     CURRENT_THREAD_RECORD.with(|cell| {
         let mut borrow = cell.borrow_mut();
-        if let Some(record) = borrow.as_ref() {
-            return Arc::clone(record);
+        if let Some(registration) = borrow.as_ref() {
+            return Arc::clone(&registration.0);
         }
-        let id = NEXT_THREAD_ID.fetch_add(1, Ordering::Relaxed);
+        let Ok(id) = NEXT_THREAD_ID
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+        else {
+            // Identities must never wrap or be reused while stale IDs may exist.
+            std::process::abort();
+        };
         let record = Arc::new(ThreadRecord {
             id,
             thread: std::thread::current(),
-            unpark_token: AtomicBool::new(false),
         });
-        *borrow = Some(Arc::clone(&record));
+        *borrow = Some(ThreadRegistration(Arc::clone(&record)));
         let mut reg = THREAD_REGISTRY.write().unwrap_or_else(|e| e.into_inner());
         reg.get_or_insert_with(HashMap::new)
             .insert(id, Arc::clone(&record));
@@ -517,12 +531,13 @@ fn get_or_register_current_thread() -> Arc<ThreadRecord> {
 
 const PARKING_LOT_BUCKETS: usize = 64;
 
-struct MonitorState {
-    waiters: Vec<Arc<ThreadRecord>>,
+struct MonitorWaiter {
+    notified: Mutex<bool>,
+    ready: Condvar,
 }
 
 struct BucketState {
-    monitors: HashMap<usize, MonitorState>,
+    monitors: HashMap<usize, VecDeque<Arc<MonitorWaiter>>>,
 }
 
 fn get_parking_lot() -> &'static [Mutex<BucketState>] {
@@ -540,11 +555,13 @@ fn get_parking_lot() -> &'static [Mutex<BucketState>] {
 }
 
 fn get_bucket(addr: usize) -> &'static Mutex<BucketState> {
-    let idx = (addr.wrapping_mul(0x517cc1b727220a95) >> 58) % PARKING_LOT_BUCKETS;
+    // Widen before mixing: a 58-bit shift on usize is invalid on 32-bit hosts.
+    let mixed = (addr as u64).wrapping_mul(0x517cc1b727220a95);
+    let idx = usize::try_from(mixed >> 58).unwrap_or(0);
     &get_parking_lot()[idx]
 }
 
-/// Returns the unique numeric identity of the calling OS thread.
+/// Returns a process-unique, non-recycled identity for the calling OS thread.
 ///
 /// # Safety
 /// Always safe to call.
@@ -553,128 +570,157 @@ pub unsafe extern "C" fn ar_rt_thread_current_id() -> usize {
     get_or_register_current_thread().id
 }
 
-/// Parks the current OS thread.
+/// Consumes one unpark token, blocking if none is available. May wake spuriously.
 ///
 /// # Safety
 /// Always safe to call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ar_rt_thread_park() {
-    let current = get_or_register_current_thread();
-    if current.unpark_token.swap(false, Ordering::AcqRel) {
-        return;
-    }
+    // Rust's park already owns the single token. A second atomic token would
+    // leave an extra wake pending after unpark-before-park.
     std::thread::park();
-    current.unpark_token.store(false, Ordering::Release);
 }
 
-/// Unparks a target thread.
+/// Consumes one unpark token or blocks until unparked or `timeout_ms` expires.
 ///
 /// # Safety
 /// Always safe to call.
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn ar_rt_thread_park_timeout(timeout_ms: u64) {
+    std::thread::park_timeout(std::time::Duration::from_millis(timeout_ms));
+}
+
+/// Supplies one coalescing unpark token to a live registered thread.
+///
+/// # Safety
+/// Always safe to call; exited and unknown identities are ignored.
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn ar_rt_thread_unpark(thread_id: usize) {
-    if thread_id == 0 {
-        return;
-    }
     let record = {
         let reg = THREAD_REGISTRY.read().unwrap_or_else(|e| e.into_inner());
         reg.as_ref().and_then(|map| map.get(&thread_id).cloned())
     };
     if let Some(record) = record {
-        record.unpark_token.store(true, Ordering::Release);
         record.thread.unpark();
     }
 }
 
-/// Condition variable wait helper indexed by monitor key address.
+/// Waits for a notification associated with this sequence word's exact address.
+/// This is a sequence event, not an atomic mutex-unlock/condition-wait operation.
 ///
 /// # Safety
-/// Always safe to call.
+/// `key` must point to a live, aligned AtomicUsize with no non-atomic accesses.
+/// Its address/allocation must remain stable until every waiter has returned.
+/// Notify must increment this same word before calling the notify helper.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ar_rt_condvar_wait(key: *const u8, seq: usize) {
+    // SAFETY: the caller supplies the sequence allocation for the entire wait.
+    let _ = unsafe { wait_on_monitor(key, seq, None) };
+}
+
+/// Waits without polling for notification or a monotonic timeout in milliseconds.
+/// Returns 1 for notification/changed sequence, 0 for timeout, -1 for bad alignment.
+///
+/// # Safety
+/// Same sequence allocation and notification contract as `ar_rt_condvar_wait`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ar_rt_condvar_wait_timeout(
+    key: *const u8,
+    seq: usize,
+    timeout_ms: u64,
+) -> i32 {
+    // SAFETY: the public caller supplies a stable, atomically accessed sequence.
+    unsafe { wait_on_monitor(key, seq, Some(std::time::Duration::from_millis(timeout_ms))) }
+}
+
+unsafe fn wait_on_monitor(key: *const u8, seq: usize, timeout: Option<std::time::Duration>) -> i32 {
+    let addr = key as usize;
+    if key.is_null() || !addr.is_multiple_of(std::mem::align_of::<AtomicUsize>()) {
+        return -1;
+    }
+    let waiter = Arc::new(MonitorWaiter {
+        notified: Mutex::new(false),
+        ready: Condvar::new(),
+    });
+    let bucket = get_bucket(addr);
+    {
+        let mut guard = bucket.lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: the caller guarantees this live, aligned atomic allocation.
+        let observed = unsafe { (&*key.cast::<AtomicUsize>()).load(Ordering::Acquire) };
+        if observed != seq {
+            return 1;
+        }
+        guard
+            .monitors
+            .entry(addr)
+            .or_default()
+            .push_back(Arc::clone(&waiter));
+    }
+    // This per-wait event deliberately does not consume std::thread::park's
+    // token, so notifications and explicit thread unparks cannot steal wakes.
+    let mut notified = waiter.notified.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(timeout) = timeout {
+        let (guard, _) = waiter
+            .ready
+            .wait_timeout_while(notified, timeout, |ready| !*ready)
+            .unwrap_or_else(|e| e.into_inner());
+        notified = guard;
+    } else {
+        notified = waiter
+            .ready
+            .wait_while(notified, |ready| !*ready)
+            .unwrap_or_else(|e| e.into_inner());
+    }
+    drop(notified);
+    // Bucket -> waiter is the only nested locking order. The timeout removes
+    // its registration under the same lock as notify, settling their race.
+    let mut guard = bucket.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(waiters) = guard.monitors.get_mut(&addr) {
+        waiters.retain(|entry| !Arc::ptr_eq(entry, &waiter));
+        if waiters.is_empty() {
+            guard.monitors.remove(&addr);
+        }
+    }
+    i32::from(*waiter.notified.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+fn notify_monitor(key: *const u8, all: bool) {
     if key.is_null() {
         return;
     }
     let addr = key as usize;
-    if !addr.is_multiple_of(std::mem::align_of::<usize>()) {
-        return;
-    }
-    let current = get_or_register_current_thread();
-    let bucket = get_bucket(addr);
-    {
-        let mut guard = bucket.lock().unwrap_or_else(|e| e.into_inner());
-        let observed =
-            unsafe { (*(key as *const std::sync::atomic::AtomicUsize)).load(Ordering::Acquire) };
-        if observed != seq {
-            return;
+    let mut guard = get_bucket(addr).lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(waiters) = guard.monitors.get_mut(&addr) {
+        while let Some(waiter) = waiters.pop_front() {
+            *waiter.notified.lock().unwrap_or_else(|e| e.into_inner()) = true;
+            waiter.ready.notify_one();
+            if !all {
+                break;
+            }
         }
-        let monitor = guard.monitors.entry(addr).or_insert_with(|| MonitorState {
-            waiters: Vec::new(),
-        });
-        monitor.waiters.push(Arc::clone(&current));
-    }
-
-    std::thread::park();
-
-    let mut guard = bucket.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(monitor) = guard.monitors.get_mut(&addr) {
-        monitor.waiters.retain(|w| w.id != current.id);
-        if monitor.waiters.is_empty() {
+        if waiters.is_empty() {
             guard.monitors.remove(&addr);
         }
     }
 }
 
-/// Condition variable notify one helper indexed by monitor key address.
+/// Wakes the oldest registered waiter for exactly `key`.
 ///
 /// # Safety
-/// Always safe to call.
+/// Notify must follow an atomic increment of the live sequence word. The
+/// allocation must remain stable until all concurrent wait/notify calls return.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ar_rt_condvar_notify_one(key: *const u8) {
-    if key.is_null() {
-        return;
-    }
-    let addr = key as usize;
-    let bucket = get_bucket(addr);
-    let to_wake = {
-        let mut guard = bucket.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(monitor) = guard.monitors.get_mut(&addr) {
-            if !monitor.waiters.is_empty() {
-                Some(monitor.waiters.remove(0))
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    };
-    if let Some(record) = to_wake {
-        record.thread.unpark();
-    }
+    notify_monitor(key, false);
 }
 
-/// Condition variable notify all helper indexed by monitor key address.
+/// Wakes all registered waiters for exactly `key`.
 ///
 /// # Safety
-/// Always safe to call.
+/// Same allocation and sequence-increment contract as notify_one.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ar_rt_condvar_notify_all(key: *const u8) {
-    if key.is_null() {
-        return;
-    }
-    let addr = key as usize;
-    let bucket = get_bucket(addr);
-    let to_wake = {
-        let mut guard = bucket.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(monitor) = guard.monitors.get_mut(&addr) {
-            std::mem::take(&mut monitor.waiters)
-        } else {
-            Vec::new()
-        }
-    };
-    for record in to_wake {
-        record.thread.unpark();
-    }
+    notify_monitor(key, true);
 }
 
 /// Fills a buffer exclusively from the operating system entropy source.
@@ -964,114 +1010,246 @@ mod tests {
         }
     }
 
-    #[test]
-    fn thread_tracking_and_park_unpark() {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-
-        unsafe {
-            let id1 = ar_rt_thread_current_id();
-            assert_ne!(id1, 0);
-
-            let unparked = Arc::new(AtomicBool::new(false));
-            let unparked_clone = Arc::clone(&unparked);
-            let child_id = Arc::new(AtomicUsize::new(0));
-            let child_id_clone = Arc::clone(&child_id);
-
-            let handle = std::thread::spawn(move || {
-                let id2 = ar_rt_thread_current_id();
-                assert_ne!(id2, 0);
-                assert_ne!(id1, id2);
-                child_id_clone.store(id2, Ordering::SeqCst);
-
-                ar_rt_thread_park();
-                unparked_clone.store(true, Ordering::SeqCst);
-            });
-
-            while child_id.load(Ordering::SeqCst) == 0 {
-                std::thread::yield_now();
+    fn wait_for_monitor(key: usize, count: usize) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let registered = get_bucket(key)
+                .lock()
+                .unwrap()
+                .monitors
+                .get(&key)
+                .map_or(0, VecDeque::len);
+            if registered == count {
+                return;
             }
-            std::thread::sleep(std::time::Duration::from_millis(20));
-            assert!(!unparked.load(Ordering::SeqCst));
-
-            ar_rt_thread_unpark(child_id.load(Ordering::SeqCst));
-            handle.join().unwrap();
-            assert!(unparked.load(Ordering::SeqCst));
-
-            // Test unpark-before-park token: unparking current thread before park must not block
-            ar_rt_thread_unpark(id1);
-            ar_rt_thread_park();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "waiter registration timed out"
+            );
+            std::thread::yield_now();
         }
     }
 
     #[test]
-    fn condvar_parking_lot_wait_and_notify() {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-
-        unsafe {
-            let seq = Arc::new(AtomicUsize::new(0));
-            let key = seq.as_ref() as *const AtomicUsize as *const u8;
-            let notified = Arc::new(AtomicBool::new(false));
-
-            let notified_clone = Arc::clone(&notified);
-            let seq_clone = Arc::clone(&seq);
-
-            let handle = std::thread::spawn(move || {
-                let cur = seq_clone.load(Ordering::SeqCst);
-                let thread_key = seq_clone.as_ref() as *const AtomicUsize as *const u8;
-                ar_rt_condvar_wait(thread_key, cur);
-                notified_clone.store(true, Ordering::SeqCst);
-            });
-
-            std::thread::sleep(std::time::Duration::from_millis(20));
-            assert!(!notified.load(Ordering::SeqCst));
-
-            seq.fetch_add(1, Ordering::SeqCst);
-            ar_rt_condvar_notify_one(key);
-
-            handle.join().unwrap();
-            assert!(notified.load(Ordering::SeqCst));
-
-            // Sequence mismatch: wait must not block if notification happened before wait
-            let old_seq = seq.load(Ordering::SeqCst);
-            seq.fetch_add(1, Ordering::SeqCst);
-            ar_rt_condvar_wait(key, old_seq);
+    fn thread_registry_retires_exited_threads_without_reusing_ids() {
+        let mut last = 0;
+        for _ in 0..32 {
+            let id = std::thread::spawn(|| unsafe { ar_rt_thread_current_id() })
+                .join()
+                .unwrap();
+            assert!(id > last);
+            last = id;
+            assert!(
+                !THREAD_REGISTRY
+                    .read()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .contains_key(&id)
+            );
+            // A stale unpark cannot affect another thread or recreate its record.
+            unsafe {
+                ar_rt_thread_unpark(id);
+            }
         }
     }
 
     #[test]
-    fn condvar_parking_lot_notify_all() {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
+    fn condvar_preserves_explicit_thread_unpark_token() {
+        let seq = Arc::new(AtomicUsize::new(0));
+        let address = Arc::as_ptr(&seq) as usize;
+        let child_seq = Arc::clone(&seq);
+        let (id_tx, id_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let child = std::thread::spawn(move || unsafe {
+            let id = ar_rt_thread_current_id();
+            ar_rt_thread_unpark(id);
+            id_tx.send(id).unwrap();
+            ar_rt_condvar_wait(Arc::as_ptr(&child_seq).cast(), 0);
+            ar_rt_thread_park(); // must consume the preserved explicit token
+            done_tx.send(()).unwrap();
+        });
+        id_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        wait_for_monitor(address, 1);
+        seq.fetch_add(1, Ordering::Release);
         unsafe {
-            let seq = Arc::new(AtomicUsize::new(0));
-            let key = seq.as_ref() as *const AtomicUsize as *const u8;
-            let counter = Arc::new(AtomicUsize::new(0));
-
-            let mut handles = Vec::new();
-            for _ in 0..4 {
-                let counter_clone = Arc::clone(&counter);
-                let seq_clone = Arc::clone(&seq);
-                handles.push(std::thread::spawn(move || {
-                    let cur = seq_clone.load(Ordering::SeqCst);
-                    let thread_key = seq_clone.as_ref() as *const AtomicUsize as *const u8;
-                    ar_rt_condvar_wait(thread_key, cur);
-                    counter_clone.fetch_add(1, Ordering::SeqCst);
-                }));
-            }
-
-            std::thread::sleep(std::time::Duration::from_millis(30));
-            assert_eq!(counter.load(Ordering::SeqCst), 0);
-
-            seq.fetch_add(1, Ordering::SeqCst);
-            ar_rt_condvar_notify_all(key);
-
-            for h in handles {
-                h.join().unwrap();
-            }
-            assert_eq!(counter.load(Ordering::SeqCst), 4);
+            ar_rt_condvar_notify_one(address as *const u8);
         }
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        child.join().unwrap();
+        assert!(
+            !get_bucket(address)
+                .lock()
+                .unwrap()
+                .monitors
+                .contains_key(&address)
+        );
+    }
+
+    #[test]
+    fn condvar_distinguishes_colliding_keys_and_notifies_fifo() {
+        let words: Vec<_> = (0..=PARKING_LOT_BUCKETS)
+            .map(|_| Arc::new(AtomicUsize::new(0)))
+            .collect();
+        let mut collision = None;
+        'outer: for (i, first) in words.iter().enumerate() {
+            for second in &words[i + 1..] {
+                if std::ptr::eq(
+                    get_bucket(Arc::as_ptr(first) as usize),
+                    get_bucket(Arc::as_ptr(second) as usize),
+                ) {
+                    collision = Some((Arc::clone(first), Arc::clone(second)));
+                    break 'outer;
+                }
+            }
+        }
+        let (first, second) = collision.unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut children = Vec::new();
+        // Register two waiters on the first key in a known order, one on the
+        // colliding key. notify_one must wake only the oldest first-key waiter.
+        for (index, word) in [Arc::clone(&first), Arc::clone(&second), Arc::clone(&first)]
+            .into_iter()
+            .enumerate()
+        {
+            let addr = Arc::as_ptr(&word) as usize;
+            let tx = tx.clone();
+            children.push(std::thread::spawn(move || {
+                let result =
+                    unsafe { ar_rt_condvar_wait_timeout(Arc::as_ptr(&word).cast(), 0, 5_000) };
+                tx.send((index, result)).unwrap();
+            }));
+            wait_for_monitor(addr, if index == 2 { 2 } else { 1 });
+        }
+        first.fetch_add(1, Ordering::Release);
+        unsafe {
+            ar_rt_condvar_notify_one(Arc::as_ptr(&first).cast());
+        }
+        assert_eq!(
+            rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap(),
+            (0, 1)
+        );
+        wait_for_monitor(Arc::as_ptr(&first) as usize, 1);
+        wait_for_monitor(Arc::as_ptr(&second) as usize, 1);
+        unsafe {
+            ar_rt_condvar_notify_all(Arc::as_ptr(&first).cast());
+        }
+        assert_eq!(
+            rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap(),
+            (2, 1)
+        );
+        second.fetch_add(1, Ordering::Release);
+        unsafe {
+            ar_rt_condvar_notify_all(Arc::as_ptr(&second).cast());
+        }
+        assert_eq!(
+            rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap(),
+            (1, 1)
+        );
+        for child in children {
+            child.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn condvar_timeout_and_changed_sequence_remove_registrations() {
+        let seq = AtomicUsize::new(1);
+        let key = (&seq as *const AtomicUsize).cast::<u8>();
+        unsafe {
+            assert_eq!(ar_rt_condvar_wait_timeout(key, 0, 5_000), 1);
+            assert_eq!(ar_rt_condvar_wait_timeout(key, 1, 0), 0);
+            assert_eq!(ar_rt_condvar_wait_timeout(key, 1, 1), 0);
+            assert_eq!(ar_rt_condvar_wait_timeout(std::ptr::null(), 0, 0), -1);
+            assert_eq!(ar_rt_condvar_wait_timeout(key.wrapping_add(1), 0, 0), -1);
+        }
+        assert!(
+            !get_bucket(key as usize)
+                .lock()
+                .unwrap()
+                .monitors
+                .contains_key(&(key as usize))
+        );
+    }
+
+    #[test]
+    fn park_timeout_wakes_early_on_unpark_and_consumes_preexisting_token() {
+        // 1. Pre-existing token consumed immediately without waiting for timeout:
+        unsafe {
+            let id = ar_rt_thread_current_id();
+            ar_rt_thread_unpark(id);
+            let start = std::time::Instant::now();
+            ar_rt_thread_park_timeout(10_000); // 10 seconds timeout
+            assert!(
+                start.elapsed() < std::time::Duration::from_millis(500),
+                "pre-existing unpark token must wake park_timeout immediately"
+            );
+        }
+
+        // 2. Unpark during wait interrupts park_timeout immediately:
+        let (id_tx, id_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let child = std::thread::spawn(move || unsafe {
+            let id = ar_rt_thread_current_id();
+            id_tx.send(id).unwrap();
+            let start = std::time::Instant::now();
+            ar_rt_thread_park_timeout(10_000); // 10 seconds timeout
+            let elapsed = start.elapsed();
+            done_tx.send(elapsed).unwrap();
+        });
+
+        let child_id = id_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        // Give the child thread time to enter park_timeout
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        unsafe {
+            ar_rt_thread_unpark(child_id);
+        }
+
+        let elapsed = done_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        assert!(
+            elapsed < std::time::Duration::from_millis(1_000),
+            "unpark must interrupt park_timeout well before 10s timeout, took: {elapsed:?}"
+        );
+        child.join().unwrap();
+
+        // 3. Timeout without token expires after requested duration:
+        unsafe {
+            let start = std::time::Instant::now();
+            ar_rt_thread_park_timeout(20); // 20 ms
+            let elapsed = start.elapsed();
+            assert!(
+                elapsed >= std::time::Duration::from_millis(15),
+                "park_timeout without token must wait for requested timeout, took: {elapsed:?}"
+            );
+        }
+
+        // 4. Race timeout vs unpark: completes deterministically without hanging
+        let (race_id_tx, race_id_rx) = std::sync::mpsc::channel();
+        let race_child = std::thread::spawn(move || unsafe {
+            let id = ar_rt_thread_current_id();
+            race_id_tx.send(id).unwrap();
+            ar_rt_thread_park_timeout(10); // 10 ms
+        });
+        let race_id = race_id_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        unsafe {
+            ar_rt_thread_unpark(race_id);
+        }
+        race_child.join().unwrap();
     }
 }
+
+mod phase_lock;
+pub use phase_lock::{
+    ar_rt_rwlock_read, ar_rt_rwlock_read_unlock, ar_rt_rwlock_try_read, ar_rt_rwlock_try_write,
+    ar_rt_rwlock_write, ar_rt_rwlock_write_unlock,
+};

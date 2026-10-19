@@ -4,7 +4,7 @@ use arandu_query::{passes::type_check, DatabaseImpl};
 
 fn check_join(statement: &str, rejection: Option<DiagCode>) {
     let mut db = DatabaseImpl::default();
-    db.new_file(
+    db.new_stdlib_file(
         "stdlib/std/runtime/executor.aru".into(),
         include_str!("../../../stdlib/std/runtime/executor.aru").into(),
     );

@@ -1,88 +1,105 @@
-//! Condition-variable prototype; registration/wakeup protocol is pending.
+//! Native condition variable paired with a std.sync.mutex guard.
 //!
-//! ## Overview
-//!
-//! The current host wait uses parking/timeouts and notify is a placeholder.
-//! Mutex release/reacquisition, lost-wakeup protection, cancellation and
-//! cooperation with the executor are not implemented by this surface.
-//!
-//! ## Examples
-//!
-//! ```arandu
-//! import std.sync.condvar as sync
-//!
-//! let cv = sync.Condvar.new()
-//! cv.notifyOne()
-//! ```
-//!
-//! ## Platform
-//! `native` · `wasm32`
+//! Sample the predicate while holding the mutex and wait in a loop. wait
+//! exclusively borrows the guard, releases its native admission and always
+//! reacquires it before returning. Sequence validation under the ParkingLot
+//! bucket prevents a notification between unlock and enqueue from being lost.
+//! Notifications have no persistent token; spurious wakeups remain permitted.
+//! Platform: native. Not a coroutine executor wait and not standalone Wasm.
 module std.sync.condvar
 
-import std.core.atomic as atomic
+import std.core.cell as cell
 import std.core.intrinsics as intrinsics
+import std.sync.mutex as mutex
 
 extern "C" {
     func ar_rt_condvar_wait(key: ptr[u8], seq: usize): void
     func ar_rt_condvar_notify_one(key: ptr[u8]): void
     func ar_rt_condvar_notify_all(key: ptr[u8]): void
-    func ar_rt_thread_sleep_ms(ms: u64): void
+    func ar_rt_condvar_wait_timeout(key: ptr[u8], seq: usize, timeoutMs: u64): i32
 }
 
-/// A condition variable.
+/// An atomic sequence event with safe guard-based waiting.
 public struct Condvar {
-    sequence: atomic.AtomicUsize,
+    private sequence: cell.UnsafeCell<usize>,
 }
 
-/// Creates a new `Condvar`.
+/// Creates a new condition variable. No notification is initially pending.
 public func Condvar.new(): Condvar {
-    return Condvar {
-        sequence: atomic.AtomicUsize.new(0 as usize),
-    }
+    return Condvar { sequence: cell.UnsafeCell.new(0 as usize) }
 }
 
-/// Waits for a notification, waking cooperatively.
-public func Condvar.wait(self: ref Condvar): void {
-    let current = self.sequence.load(atomic.MemoryOrder.Acquire)
+/// Waits with the native mutex released, returning with it reacquired.
+/// Always recheck the predicate after return.
+public func Condvar.wait<T>(self: ref Condvar, guard: mut ref mutex.MutexGuard<T>): void {
     unsafe {
-        let key = (intrinsics.addressOfShared(self) as ptr[u8])
-        ar_rt_condvar_wait(key, current)
+        let sequence = self.sequence.get()
+        let current = intrinsics.atomicLoadUsize(ref *sequence)
+        guard.waitOnSequence(sequence as ptr[u8], current)
     }
 }
 
-/// Wakes one task waiting on this condition variable.
-public func Condvar.notifyOne(self: mut ref Condvar): void {
-    let next = self.sequence.fetchAdd(1 as usize, atomic.MemoryOrder.Release)
+/// Waits at most timeoutMs for notification, then reacquires the mutex.
+/// The total call can take longer while waiting to reacquire the mutex.
+/// Returns true for notification/changed sequence; recheck the predicate.
+public func Condvar.waitTimeout<T>(self: ref Condvar, guard: mut ref mutex.MutexGuard<T>, timeoutMs: u64): bool {
     unsafe {
-        let key = (intrinsics.addressOf(self) as ptr[u8])
-        ar_rt_condvar_notify_one(key)
+        let sequence = self.sequence.get()
+        let current = intrinsics.atomicLoadUsize(ref *sequence)
+        return guard.waitOnSequenceTimeout(sequence as ptr[u8], current, timeoutMs)
     }
 }
 
-/// Wakes all tasks waiting on this condition variable.
-public func Condvar.notifyAll(self: mut ref Condvar): void {
-    let next = self.sequence.fetchAdd(1 as usize, atomic.MemoryOrder.Release)
+// Abort before sequence reuse instead of admitting an ABA lost notification.
+// Unsigned arithmetic is wrapping; zero detects exhaustion on every target.
+@Unsafe
+func advanceSequence(sequence: ptr[usize]): void {
     unsafe {
-        let key = (intrinsics.addressOf(self) as ptr[u8])
-        ar_rt_condvar_notify_all(key)
-    }
-}
-
-/// Waits for a notification or until `timeoutMs` expires.
-///
-/// Returns `true` if notified or `false` if the timeout elapsed.
-public func Condvar.waitTimeout(self: ref Condvar, timeoutMs: u64): bool {
-    let current = self.sequence.load(atomic.MemoryOrder.Acquire)
-    let mut elapsed: u64 = 0 as u64
-    let step: u64 = if timeoutMs < 10 as u64 { timeoutMs } else { 10 as u64 }
-    while elapsed < timeoutMs {
-        if self.sequence.load(atomic.MemoryOrder.Acquire) != current {
-            return true
+        let mut current = intrinsics.atomicLoadUsize(ref *sequence)
+        while true {
+            let next = current + (1 as usize)
+            if next == (0 as usize) { intrinsics.abort() }
+            let observed = intrinsics.atomicCompareExchangeUsize(mut ref *sequence, current, next)
+            if observed == current { return }
+            current = observed
         }
-        unsafe {
-            ar_rt_thread_sleep_ms(step)
-        }
-        elapsed = elapsed + step
     }
-    return self.sequence.load(atomic.MemoryOrder.Acquire) != current
+}
+
+/// Wakes the oldest waiter registered at exactly this condition's address.
+public func Condvar.notifyOne(self: ref Condvar): void {
+    unsafe {
+        let sequence = self.sequence.get()
+        advanceSequence(sequence)
+        ar_rt_condvar_notify_one(sequence as ptr[u8])
+    }
+}
+
+/// Wakes all waiters registered at exactly this condition's address.
+public func Condvar.notifyAll(self: ref Condvar): void {
+    unsafe {
+        let sequence = self.sequence.get()
+        advanceSequence(sequence)
+        ar_rt_condvar_notify_all(sequence as ptr[u8])
+    }
+}
+
+/// Low-level sequence-event wait without releasing a mutex.
+/// Prefer wait(guard) for predicate synchronization; notifications can be lost
+/// before this call samples the sequence, as with any condition variable.
+public func Condvar.waitNotification(self: ref Condvar): void {
+    unsafe {
+        let sequence = self.sequence.get()
+        let current = intrinsics.atomicLoadUsize(ref *sequence)
+        ar_rt_condvar_wait(sequence as ptr[u8], current)
+    }
+}
+
+/// Low-level sequence wait with a monotonic notification timeout.
+public func Condvar.waitNotificationTimeout(self: ref Condvar, timeoutMs: u64): bool {
+    unsafe {
+        let sequence = self.sequence.get()
+        let current = intrinsics.atomicLoadUsize(ref *sequence)
+        return ar_rt_condvar_wait_timeout(sequence as ptr[u8], current, timeoutMs) == (1 as i32)
+    }
 }

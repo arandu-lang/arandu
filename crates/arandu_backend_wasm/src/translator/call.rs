@@ -16,14 +16,37 @@ impl<'a> FuncTranslator<'a> {
         args: &[AmirOperand],
     ) {
         if let AmirOperand::FunctionRef(sym) = callee {
-            if let Some(sym_def) = self.symbols.try_get(*sym)
-                && let Some(kind) = IntrinsicKind::from_name(&sym_def.name)
-                && kind
-                    .declaration_marker()
-                    .is_none_or(|marker| sym_def.lang_item == Some(marker))
-                && self.emit_intrinsic_call(kind, sym_def.name.ends_with("64"), lhs, args)
-            {
-                return;
+            if let Some(sym_def) = self.symbols.try_get(*sym) {
+                if sym_def.name == "ar_rt_alloc_aligned" {
+                    if let Some(size_arg) = args.first() {
+                        let usize_ty = self.interner.intern(ArType::Primitive(Primitive::USize));
+                        self.emit_operand(size_arg, usize_ty);
+                        self.code.push(Instruction::Call(self.alloc_func_idx));
+                        if let Some(temp) = lhs {
+                            let local = self.temp_local.get(&temp).copied().unwrap_or(0);
+                            self.code.push(Instruction::LocalSet(local));
+                        } else {
+                            self.code.push(Instruction::Drop);
+                        }
+                    }
+                    return;
+                }
+                if sym_def.name == "ar_rt_free_aligned" {
+                    if let Some(ptr_arg) = args.first() {
+                        let ptr_ty = self.interner.intern(ArType::Primitive(Primitive::USize));
+                        self.emit_operand(ptr_arg, ptr_ty);
+                        self.code.push(Instruction::Call(self.free_func_idx));
+                    }
+                    return;
+                }
+                if let Some(kind) = IntrinsicKind::from_name(&sym_def.name)
+                    && kind
+                        .declaration_marker()
+                        .is_none_or(|marker| sym_def.lang_item == Some(marker))
+                    && self.emit_intrinsic_call(kind, sym_def.name.ends_with("64"), lhs, args)
+                {
+                    return;
+                }
             }
             if let Some(&func_idx) = self.func_index_map.get(sym) {
                 let callee = self
@@ -391,10 +414,10 @@ impl<'a> FuncTranslator<'a> {
                     let int_ty = self.interner.intern(ArType::Primitive(Primitive::Int));
                     let slice_ty = self.operand_arity_ty(&args[0]);
                     let elem_ty = match self.interner.resolve(slice_ty) {
-                        ArType::Slice(inner) => inner,
+                        ArType::Slice(inner) | ArType::MutSlice(inner) => inner,
                         ArType::Ref(inner) | ArType::RefMut(inner) => {
                             match self.interner.resolve(inner) {
-                                ArType::Slice(elem) => elem,
+                                ArType::Slice(elem) | ArType::MutSlice(elem) => elem,
                                 _ => slice_ty,
                             }
                         }

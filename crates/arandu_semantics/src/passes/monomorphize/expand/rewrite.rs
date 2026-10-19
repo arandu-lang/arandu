@@ -369,6 +369,7 @@ pub(super) fn try_rewrite_generic_call<'bump>(
                         }
                     }
                     let type_id = match actual {
+                        ArType::Vector(shape) => tc.symbols.vector_type_symbol(shape),
                         ArType::Named(id, _) => Some(id),
                         ArType::Ptr(inner) => match tc.type_info.type_interner.resolve(inner) {
                             ArType::Named(id, _) => Some(id),

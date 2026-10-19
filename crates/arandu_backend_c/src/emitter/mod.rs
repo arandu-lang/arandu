@@ -23,6 +23,7 @@ pub mod func;
 mod reachability;
 mod rotations;
 pub mod runtime;
+mod simd;
 pub mod stmt;
 mod temp_slots;
 
@@ -338,10 +339,21 @@ impl<'a> CEmitter<'a> {
                     | "ar_env_args_len"
                     | "ar_env_arg"
                     | "ar_env_var_is_set"
+                    | "ar_time_monotonic_ns"
+                    | "ar_process_exit"
                     | "ar_rt_block_on_i64"
                     | "ar_rt_spawn_i64"
                     | "ar_rt_join_i64"
                     | "ar_rt_cancel_i64"
+                    | "ar_rt_native_thread_spawn"
+                    | "ar_rt_native_thread_join"
+                    | "ar_rt_native_thread_panicked_sentinel"
+                    | "ar_rt_native_thread_is_finished"
+                    | "ar_rt_native_thread_drop"
+                    | "ar_rt_condvar_wait"
+                    | "ar_rt_condvar_wait_timeout"
+                    | "ar_rt_condvar_notify_one"
+                    | "ar_rt_condvar_notify_all"
                     | "ar_rt_parallel_fold_run"
                     | "ar_rt_copy_value"
                     | "ar_rt_alloc_aligned"
@@ -349,9 +361,18 @@ impl<'a> CEmitter<'a> {
                     | "io__eprint"
                     | "eprint"
             ) || name.ends_with("__ar_rt_copy_value")
+                || name.ends_with("__ar_rt_native_thread_spawn")
+                || name.ends_with("__ar_rt_native_thread_join")
+                || name.ends_with("__ar_rt_native_thread_panicked_sentinel")
+                || name.ends_with("__ar_rt_native_thread_is_finished")
+                || name.ends_with("__ar_rt_native_thread_drop")
                 || name.ends_with("__ar_rt_alloc_aligned")
                 || name.ends_with("__ar_rt_free_aligned")
                 || name.ends_with("__ar_rt_parallel_fold_run")
+                || name.ends_with("__ar_rt_condvar_wait")
+                || name.ends_with("__ar_rt_condvar_wait_timeout")
+                || name.ends_with("__ar_rt_condvar_notify_one")
+                || name.ends_with("__ar_rt_condvar_notify_all")
             {
                 continue;
             }

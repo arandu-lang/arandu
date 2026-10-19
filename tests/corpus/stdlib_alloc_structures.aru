@@ -4,6 +4,7 @@ import std.alloc.rc as rc
 import std.alloc.arc as arc
 import std.alloc.slab as slab
 import std.alloc.deque as deque
+import std.alloc.string as strings
 import std.core.option as option
 
 public func main(): int {
@@ -114,8 +115,69 @@ public func main(): int {
     }
     if q.len() != (20 as usize) { return 39 }
 
-    q.clear()
-    if !q.isEmpty() { return 40 }
+    // 5. Teste de Slab com tipo não-Copy (String)
+    let mut strSlab = slab.Slab<strings.String>.new()
+    let s0 = strSlab.insert(strings.String.from("alpha"))
+    let s1 = strSlab.insert(strings.String.from("beta"))
+    let s2 = strSlab.insert(strings.String.from("gamma"))
+    if strSlab.len() != (3 as usize) { return 41 }
+
+    match strSlab.get(s1) {
+        Option.Some(st) => {
+            if st.asStr() != "beta" { return 42 }
+        }
+        Option.None => { return 43 }
+    }
+
+    match strSlab.remove(s1) {
+        Option.Some(st) => {
+            if st.asStr() != "beta" { return 44 }
+        }
+        Option.None => { return 45 }
+    }
+    if strSlab.len() != (2 as usize) { return 46 }
+
+    let s3 = strSlab.insert(strings.String.from("delta"))
+    if s3 != s1 { return 47 } // Deve reciclar o slot s1
+    match strSlab.get(s3) {
+        Option.Some(st) => {
+            if st.asStr() != "delta" { return 48 }
+        }
+        Option.None => { return 49 }
+    }
+    strSlab.clear()
+    if !strSlab.isEmpty() { return 50 }
+
+    // 6. Teste de VecDeque com tipo não-Copy (String)
+    let mut strQ = deque.VecDeque<strings.String>.new()
+    strQ.pushBack(strings.String.from("world"))
+    strQ.pushFront(strings.String.from("hello"))
+
+    if strQ.len() != (2 as usize) { return 51 }
+
+    match strQ.popFront() {
+        Option.Some(st) => {
+            if st.asStr() != "hello" { return 52 }
+        }
+        Option.None => { return 53 }
+    }
+    match strQ.popBack() {
+        Option.Some(st) => {
+            if st.asStr() != "world" { return 54 }
+        }
+        Option.None => { return 55 }
+    }
+    if !strQ.isEmpty() { return 56 }
+
+    // Forçar crescimento com wrapping em VecDeque<String>
+    let mut j = 0 as usize
+    while j < (12 as usize) {
+        strQ.pushBack(strings.String.from("item"))
+        j = j + (1 as usize)
+    }
+    if strQ.len() != (12 as usize) { return 57 }
+    strQ.clear()
+    if !strQ.isEmpty() { return 58 }
 
     return 0
 }

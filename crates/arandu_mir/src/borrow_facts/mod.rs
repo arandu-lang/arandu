@@ -14,6 +14,44 @@ use crate::liveness::{analyze_local_liveness, analyze_temp_liveness};
 /// F2.2-aware borrow facts: block IN/OUT = loans whose holders are live there.
 #[must_use]
 pub fn analyze_borrow_facts(func: &AmirFunc) -> FuncBorrowFacts {
+    analyze_borrow_facts_impl(func, None)
+}
+
+/// Scalar reads produce independent values, not references to their source.
+/// Keep unknown/aggregate shapes conservative without copying type metadata.
+#[must_use]
+pub fn analyze_borrow_facts_with_types(
+    func: &AmirFunc,
+    interner: &crate::types::TypeInterner,
+) -> FuncBorrowFacts {
+    let carriers: Vec<bool> = func
+        .temps
+        .iter()
+        .map(|temp| type_may_carry_borrow(temp.ty, interner))
+        .collect();
+    analyze_borrow_facts_impl(func, Some(&carriers))
+}
+
+pub(crate) fn type_may_carry_borrow(
+    ty: crate::types::TypeId,
+    interner: &crate::types::TypeInterner,
+) -> bool {
+    use crate::types::{ArType, Primitive};
+    match interner.try_resolve(ty) {
+        Some(ArType::Primitive(Primitive::Str | Primitive::Any)) => true,
+        Some(
+            ArType::Primitive(_)
+            | ArType::Void
+            | ArType::Vector(_)
+            | ArType::IntLiteral
+            | ArType::FloatLiteral,
+        ) => false,
+        // Unresolved IDE and aggregate shapes remain conservative.
+        _ => true,
+    }
+}
+
+fn analyze_borrow_facts_impl(func: &AmirFunc, carriers: Option<&[bool]>) -> FuncBorrowFacts {
     let num_locals = func.locals.len();
     let num_blocks = func.blocks.len();
 
@@ -26,13 +64,15 @@ pub fn analyze_borrow_facts(func: &AmirFunc) -> FuncBorrowFacts {
             temp_live: analyze_temp_liveness(func),
             local_live: analyze_local_liveness(func),
             local_holders_at: vec![],
+            exceeded_limit: false,
         };
     }
 
-    let (loans, borrow_site_counts) = collect_loans(func);
+    let (loans, borrow_site_counts, paths_exceeded) = collect_loans(func, carriers);
     let temp_live = analyze_temp_liveness(func);
     let local_live = analyze_local_liveness(func);
-    let local_holders_at = analyze_local_holder_states(func, &loans);
+    let (local_holders_at, prop_exceeded) = analyze_local_holder_states(func, &loans);
+    let exceeded_limit = paths_exceeded || prop_exceeded;
 
     let mut block_in = Vec::with_capacity(num_blocks);
     let mut block_out = Vec::with_capacity(num_blocks);
@@ -60,6 +100,7 @@ pub fn analyze_borrow_facts(func: &AmirFunc) -> FuncBorrowFacts {
         temp_live,
         local_live,
         local_holders_at,
+        exceeded_limit,
     }
 }
 

@@ -84,6 +84,7 @@ pub fn unify(a: &ArType, b: &ArType, interner: &TypeInterner) -> bool {
     }
 
     match (a, b) {
+        (ArType::Vector(a), ArType::Vector(b)) => a == b,
         (ArType::Ref(inner) | ArType::RefMut(inner), ArType::Primitive(Primitive::Str))
         | (ArType::Primitive(Primitive::Str), ArType::Ref(inner) | ArType::RefMut(inner))
             if matches!(interner.resolve(*inner), ArType::Primitive(Primitive::Str)) =>
@@ -140,6 +141,14 @@ pub fn unify(a: &ArType, b: &ArType, interner: &TypeInterner) -> bool {
         }
 
         (ArType::Slice(inner_a), ArType::Slice(inner_b)) => {
+            *inner_a == *inner_b
+                || unify(
+                    &interner.resolve(*inner_a),
+                    &interner.resolve(*inner_b),
+                    interner,
+                )
+        }
+        (ArType::MutSlice(inner_a), ArType::MutSlice(inner_b)) => {
             *inner_a == *inner_b
                 || unify(
                     &interner.resolve(*inner_a),
@@ -381,6 +390,15 @@ pub fn is_assignable(actual: &ArType, expected: &ArType, interner: &TypeInterner
                 )
         }
         (ArType::Slice(inner_a), ArType::Slice(inner_b)) => {
+            *inner_a == *inner_b
+                || is_assignable(
+                    &interner.resolve(*inner_a),
+                    &interner.resolve(*inner_b),
+                    interner,
+                )
+        }
+        (ArType::MutSlice(inner_a), ArType::MutSlice(inner_b)) => *inner_a == *inner_b,
+        (ArType::MutSlice(inner_a), ArType::Slice(inner_b)) => {
             *inner_a == *inner_b
                 || is_assignable(
                     &interner.resolve(*inner_a),

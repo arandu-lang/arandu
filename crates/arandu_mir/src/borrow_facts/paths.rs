@@ -10,7 +10,10 @@ use crate::amir::{
 use crate::types::{BorrowPath, BorrowPathSegment};
 use std::collections::{BTreeSet, VecDeque};
 
-pub(crate) fn collect_loans(func: &AmirFunc) -> (Vec<Loan>, Vec<u32>) {
+pub(crate) fn collect_loans(
+    func: &AmirFunc,
+    carriers: Option<&[bool]>,
+) -> (Vec<Loan>, Vec<u32>, bool) {
     let num_temps = func.temps.len();
     let num_locals = func.locals.len();
     let mut deref_results_stored_in_memory = vec![false; num_temps];
@@ -97,14 +100,13 @@ pub(crate) fn collect_loans(func: &AmirFunc) -> (Vec<Loan>, Vec<u32>) {
     }
 
     let mut guard = 0;
+    let mut exceeded_limit = false;
     while let Some(block_id) = worklist.pop_front() {
         let index = block_id.as_usize();
         in_worklist[index] = false;
         guard += 1;
         if guard >= crate::analysis_limits::BORROW_FACTS_ITERATION_GUARD {
-            // The domain is finite and monotone. Reaching this defensive bound
-            // means malformed AMIR, so retain the conservative facts collected
-            // so far instead of panicking in production compiler code.
+            exceeded_limit = true;
             break;
         }
 
@@ -114,6 +116,12 @@ pub(crate) fn collect_loans(func: &AmirFunc) -> (Vec<Loan>, Vec<u32>) {
         for stmt in func.block_stmts(block.id) {
             match stmt {
                 AmirStmt::Assign { lhs, rhs } => {
+                    if carriers
+                        .and_then(|carriers| carriers.get(lhs.as_usize()))
+                        .is_some_and(|carrier| !carrier)
+                    {
+                        continue;
+                    }
                     for loan in &mut loans {
                         // A scalar value read through a reference no longer
                         // carries that reference's provenance. Memory-backed
@@ -238,7 +246,7 @@ pub(crate) fn collect_loans(func: &AmirFunc) -> (Vec<Loan>, Vec<u32>) {
         }
     }
 
-    (loans, borrow_site_counts)
+    (loans, borrow_site_counts, exceeded_limit)
 }
 
 pub(crate) fn new_loan(
@@ -275,6 +283,17 @@ pub(crate) fn new_loan(
 
 fn rvalue_holder_paths(rhs: &AmirRvalue, loan: &Loan) -> BTreeSet<HolderPath> {
     match rhs {
+        AmirRvalue::Borrow(place) | AmirRvalue::BorrowMut(place) => {
+            // A reference to a carrier keeps its contained owner loans alive.
+            // This covers both a dereferenced reference slot and borrowing an
+            // aggregate guard/view itself. Otherwise a returned element borrow
+            // could outlive the descriptor's last direct use and lose its owner.
+            loan.holder_local_paths
+                .get(place.local.as_usize())
+                .filter(|paths| !paths.is_empty())
+                .map(|_| BTreeSet::from([HolderPath::default()]))
+                .unwrap_or_default()
+        }
         AmirRvalue::Use(operand) | AmirRvalue::BlackBox { value: operand, .. } => {
             operand_holder_paths(*operand, loan)
         }
@@ -297,17 +316,17 @@ fn rvalue_holder_paths(rhs: &AmirRvalue, loan: &Loan) -> BTreeSet<HolderPath> {
                 .unwrap_or_default();
             strip_paths(&input, &place_path(place))
         }
-        AmirRvalue::Tuple { items } => aggregate_holder_paths(items, loan, HolderProjection::Slot),
+        AmirRvalue::Tuple { items } => {
+            aggregate_holder_paths(items.iter().copied(), loan, HolderProjection::Slot)
+        }
         AmirRvalue::Array { items } => {
-            aggregate_holder_paths(items, loan, |_| HolderProjection::Element)
+            aggregate_holder_paths(items.iter().copied(), loan, |_| HolderProjection::Element)
         }
-        AmirRvalue::StructLiteral { fields, .. } => {
-            let operands = fields
-                .iter()
-                .map(|(_, operand)| *operand)
-                .collect::<Vec<_>>();
-            aggregate_holder_paths(&operands, loan, HolderProjection::Slot)
-        }
+        AmirRvalue::StructLiteral { fields, .. } => aggregate_holder_paths(
+            fields.iter().map(|(_, operand)| *operand),
+            loan,
+            HolderProjection::Slot,
+        ),
         AmirRvalue::FieldAccess { base, field } => strip_paths(
             &operand_holder_paths(*base, loan),
             &HolderPath(vec![HolderProjection::Slot(
@@ -344,8 +363,13 @@ fn rvalue_holder_paths(rhs: &AmirRvalue, loan: &Loan) -> BTreeSet<HolderPath> {
             &operand_holder_paths(*value, loan),
             &HolderPath(vec![HolderProjection::CoroutinePayload]),
         ),
-        AmirRvalue::Borrow(_)
-        | AmirRvalue::BorrowMut(_)
+        AmirRvalue::VectorSelect { .. }
+        | AmirRvalue::VectorCompare { .. }
+        | AmirRvalue::VectorOp { .. }
+        | AmirRvalue::VectorSplat { .. }
+        | AmirRvalue::VectorShuffle { .. }
+        | AmirRvalue::VectorExtractLane { .. }
+        | AmirRvalue::VectorInsertLane { .. }
         | AmirRvalue::RelativeBorrow { .. }
         | AmirRvalue::Binary { .. }
         | AmirRvalue::Unary { .. }
@@ -371,17 +395,17 @@ fn operand_holder_paths(operand: AmirOperand, loan: &Loan) -> BTreeSet<HolderPat
 }
 
 fn aggregate_holder_paths(
-    operands: &[AmirOperand],
+    operands: impl IntoIterator<Item = AmirOperand>,
     loan: &Loan,
     segment: impl Fn(u32) -> HolderProjection,
 ) -> BTreeSet<HolderPath> {
     let mut output = BTreeSet::new();
-    for (index, operand) in operands.iter().enumerate() {
+    for (index, operand) in operands.into_iter().enumerate() {
         let Ok(index) = u32::try_from(index) else {
             break;
         };
         output.extend(prefix_paths(
-            &operand_holder_paths(*operand, loan),
+            &operand_holder_paths(operand, loan),
             &HolderPath(vec![segment(index)]),
         ));
     }
@@ -450,6 +474,13 @@ fn strip_variant_payload(input: &BTreeSet<HolderPath>, index: u32) -> BTreeSet<H
                 HolderProjection::Payload(found),
                 rest @ ..,
             ] if *found == index => Some(HolderPath(rest.to_vec())),
+            [
+                HolderProjection::OptionSome
+                | HolderProjection::ResultOk
+                | HolderProjection::ResultErr
+                | HolderProjection::PollReady,
+                rest @ ..,
+            ] if index == 0 => Some(HolderPath(rest.to_vec())),
             _ => None,
         })
         .collect()
@@ -517,4 +548,25 @@ fn holder_path_from_contract(path: &BorrowPath) -> HolderPath {
     )
 }
 
-pub(crate) type LocalHolderState = Vec<Vec<BTreeSet<HolderPath>>>;
+#[cfg(test)]
+mod payload_tests {
+    use super::*;
+
+    #[test]
+    fn enum_payload_preserves_both_contract_and_local_constructor_provenance() {
+        for path in [
+            vec![HolderProjection::OptionSome],
+            vec![HolderProjection::ResultOk],
+            vec![HolderProjection::ResultErr],
+            vec![HolderProjection::PollReady],
+            vec![HolderProjection::Variant(1), HolderProjection::Payload(0)],
+        ] {
+            let input = BTreeSet::from([HolderPath(path)]);
+            assert_eq!(
+                strip_variant_payload(&input, 0),
+                BTreeSet::from([HolderPath::default()])
+            );
+            assert!(strip_variant_payload(&input, 1).is_empty());
+        }
+    }
+}

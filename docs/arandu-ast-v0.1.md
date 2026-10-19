@@ -149,7 +149,7 @@ module examples.stable.syntax.hello
 Variants:
 
 - `ModuleImport`: `import io`
-- `NamedImport`: `import { println as print } from io`
+- `NamedImport`: `from io import { println as print }`
 
 Fields:
 

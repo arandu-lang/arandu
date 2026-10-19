@@ -7,13 +7,16 @@ use super::{ScalarEvalError, eval_binary, eval_unary};
 use arandu_middle::amir::visit::{for_each_rvalue_operand, for_each_terminator_operand};
 use arandu_middle::amir::*;
 use arandu_middle::ctfe::{
-    ConstAggregate, ConstFloat, ConstInt, ConstString, ConstValue, ConstValueError, FloatType,
-    IntegerType,
+    ConstAggregate, ConstFloat, ConstInt, ConstString, ConstValue, ConstValueError,
+    FloatArithmetic, FloatType, IntegerType,
 };
+use arandu_middle::intrinsics::IntrinsicKind;
 use arandu_middle::layout::{DataLayout, DataLayoutError, DenseRange};
 use arandu_middle::literal_pool::{AmirLiteralEntry, AmirLiteralPool, parse_int_literal};
 use arandu_middle::ops::{BinaryOp, UnaryOp};
-use arandu_middle::types::{FunctionInstance, Primitive, TypeId, TypeInterner};
+use arandu_middle::types::{
+    FunctionInstance, Primitive, TypeId, TypeInterner, TypeShape, VectorType,
+};
 use arandu_middle::{Span, SymbolId};
 use rustc_hash::FxHashMap;
 
@@ -254,6 +257,10 @@ pub trait FunctionProvider {
         } else {
             Err(EvalErrorKind::UnavailableFunction(key.definition))
         }
+    }
+
+    fn intrinsic(&self, _symbol: SymbolId) -> Option<IntrinsicKind> {
+        None
     }
 }
 
@@ -594,7 +601,12 @@ impl Frame {
         meter: &mut Meter<'_, C>,
     ) -> Result<(), EvalErrorKind> {
         let function = &unit.function;
-        if function.receiver.is_some() || function.blocks.is_empty() {
+        if function.blocks.is_empty() {
+            return Err(EvalErrorKind::InvalidIr);
+        }
+        if let Some(receiver) = &function.receiver
+            && function.params.first() != Some(&receiver.temp)
+        {
             return Err(EvalErrorKind::InvalidIr);
         }
         // Inspect every block before executing this function, including dead
@@ -1186,6 +1198,317 @@ impl Frame {
                     .map(ConstValue::Bytes)
                     .map_err(|_| EvalErrorKind::InvalidIr)
             }
+            AmirRvalue::VectorSplat { value } => {
+                let ValueType::Aggregate(descriptor) = &ty else {
+                    return Err(EvalErrorKind::TypeMismatch);
+                };
+                let AggregateKind::Vector(shape) = descriptor.kind else {
+                    return Err(EvalErrorKind::TypeMismatch);
+                };
+                let lanes = usize::from(shape.lanes());
+                let lane_ty = descriptor
+                    .fields
+                    .first()
+                    .cloned()
+                    .ok_or(EvalErrorKind::InvalidIr)?;
+                let lane_val = self.operand(*value, Some(lane_ty), meter)?;
+                meter.reserve(lanes)?;
+                let values = vec![lane_val; lanes];
+                meter.aggregate(&descriptor.shape, lanes)?;
+                for v in &values {
+                    meter.frozen(v)?;
+                }
+                Ok(ConstValue::Aggregate(
+                    ConstAggregate::new(descriptor.shape.clone(), values)
+                        .map_err(EvalErrorKind::Value)?,
+                ))
+            }
+            AmirRvalue::VectorExtractLane { vector, lane } => {
+                let ConstValue::Aggregate(agg) = self.operand(*vector, None, meter)? else {
+                    return Err(EvalErrorKind::TypeMismatch);
+                };
+                let index = usize::from(*lane);
+                let val = agg.values().get(index).ok_or(EvalErrorKind::InvalidIr)?;
+                meter.step()?;
+                Ok(val.clone())
+            }
+            AmirRvalue::VectorInsertLane {
+                vector,
+                lane,
+                value,
+            } => {
+                let ValueType::Aggregate(descriptor) = &ty else {
+                    return Err(EvalErrorKind::TypeMismatch);
+                };
+                let AggregateKind::Vector(shape) = descriptor.kind else {
+                    return Err(EvalErrorKind::TypeMismatch);
+                };
+                let index = usize::from(*lane);
+                if index >= usize::from(shape.lanes()) {
+                    return Err(EvalErrorKind::InvalidIr);
+                }
+                let ConstValue::Aggregate(agg) = self.operand(*vector, Some(ty.clone()), meter)?
+                else {
+                    return Err(EvalErrorKind::TypeMismatch);
+                };
+                let lane_ty = descriptor
+                    .fields
+                    .get(index)
+                    .cloned()
+                    .ok_or(EvalErrorKind::InvalidIr)?;
+                let new_lane = self.operand(*value, Some(lane_ty), meter)?;
+                let mut values = agg.values().to_vec();
+                if index >= values.len() {
+                    return Err(EvalErrorKind::InvalidIr);
+                }
+                values[index] = new_lane;
+                meter.aggregate(&descriptor.shape, values.len())?;
+                for v in &values {
+                    meter.frozen(v)?;
+                }
+                Ok(ConstValue::Aggregate(
+                    ConstAggregate::new(descriptor.shape.clone(), values)
+                        .map_err(EvalErrorKind::Value)?,
+                ))
+            }
+            AmirRvalue::VectorOp { op, left, right } => {
+                let ValueType::Aggregate(descriptor) = &ty else {
+                    return Err(EvalErrorKind::TypeMismatch);
+                };
+                let AggregateKind::Vector(shape) = descriptor.kind else {
+                    return Err(EvalErrorKind::TypeMismatch);
+                };
+                if !op.supports(shape) {
+                    return Err(EvalErrorKind::InvalidIr);
+                }
+                let a = self.operand(*left, Some(ty.clone()), meter)?;
+                let b = self.operand(*right, Some(ty.clone()), meter)?;
+                let (ConstValue::Aggregate(agg_a), ConstValue::Aggregate(agg_b)) = (a, b) else {
+                    return Err(EvalErrorKind::TypeMismatch);
+                };
+                let lanes = usize::from(shape.lanes());
+                if agg_a.values().len() != lanes || agg_b.values().len() != lanes {
+                    return Err(EvalErrorKind::TypeMismatch);
+                }
+                let mut results = Vec::new();
+                results
+                    .try_reserve_exact(lanes)
+                    .map_err(|_| EvalErrorKind::AllocationFailed)?;
+                if shape.lane().is_float() {
+                    let float_op = match op {
+                        VectorOp::Add => FloatArithmetic::Add,
+                        VectorOp::Sub => FloatArithmetic::Subtract,
+                        VectorOp::Mul => FloatArithmetic::Multiply,
+                        VectorOp::Div => FloatArithmetic::Divide,
+                        _ => return Err(EvalErrorKind::InvalidIr),
+                    };
+                    for (va, vb) in agg_a.values().iter().zip(agg_b.values()) {
+                        meter.step()?;
+                        let (ConstValue::Float(fa), ConstValue::Float(fb)) = (va, vb) else {
+                            return Err(EvalErrorKind::TypeMismatch);
+                        };
+                        let res = fa
+                            .arithmetic(float_op, *fb)
+                            .map_err(|_| EvalErrorKind::TypeMismatch)?;
+                        results.push(ConstValue::Float(res));
+                    }
+                } else {
+                    for (va, vb) in agg_a.values().iter().zip(agg_b.values()) {
+                        meter.step()?;
+                        let (ConstValue::Integer(ia), ConstValue::Integer(ib)) = (va, vb) else {
+                            return Err(EvalErrorKind::TypeMismatch);
+                        };
+                        let val_a = ia.value();
+                        let val_b = ib.value();
+                        let raw = match op {
+                            VectorOp::Add => val_a.wrapping_add(val_b),
+                            VectorOp::Sub => val_a.wrapping_sub(val_b),
+                            VectorOp::Mul => val_a.wrapping_mul(val_b),
+                            VectorOp::BitAnd => val_a & val_b,
+                            VectorOp::BitOr => val_a | val_b,
+                            VectorOp::BitXor => val_a ^ val_b,
+                            _ => return Err(EvalErrorKind::InvalidIr),
+                        };
+                        results.push(ConstValue::Integer(wrap_int(ia.ty(), raw)?));
+                    }
+                }
+                meter.aggregate(&descriptor.shape, lanes)?;
+                for v in &results {
+                    meter.frozen(v)?;
+                }
+                Ok(ConstValue::Aggregate(
+                    ConstAggregate::new(descriptor.shape.clone(), results)
+                        .map_err(EvalErrorKind::Value)?,
+                ))
+            }
+            AmirRvalue::VectorCompare { op, left, right } => {
+                let operand_ty = self.operand_type(*left)?.or(self.operand_type(*right)?);
+                let Some(ValueType::Aggregate(left_desc)) = operand_ty else {
+                    return Err(EvalErrorKind::TypeMismatch);
+                };
+                let AggregateKind::Vector(shape) = left_desc.kind else {
+                    return Err(EvalErrorKind::TypeMismatch);
+                };
+                let a = self.operand(
+                    *left,
+                    Some(ValueType::Aggregate(Arc::clone(&left_desc))),
+                    meter,
+                )?;
+                let b = self.operand(
+                    *right,
+                    Some(ValueType::Aggregate(Arc::clone(&left_desc))),
+                    meter,
+                )?;
+                let (ConstValue::Aggregate(agg_a), ConstValue::Aggregate(agg_b)) = (a, b) else {
+                    return Err(EvalErrorKind::TypeMismatch);
+                };
+                let lanes = usize::from(shape.lanes());
+                let bytes_per_lane = 16 / lanes;
+                let mut out_bytes = [0u8; 16];
+                if shape.lane().is_float() {
+                    for (l, (va, vb)) in agg_a.values().iter().zip(agg_b.values()).enumerate() {
+                        meter.step()?;
+                        let (ConstValue::Float(fa), ConstValue::Float(fb)) = (va, vb) else {
+                            return Err(EvalErrorKind::TypeMismatch);
+                        };
+                        let ord = fa.compare(*fb).map_err(|_| EvalErrorKind::TypeMismatch)?;
+                        let cond = match op {
+                            VectorCompareOp::Eq => ord == Some(std::cmp::Ordering::Equal),
+                            VectorCompareOp::Ne => ord != Some(std::cmp::Ordering::Equal),
+                            VectorCompareOp::Lt => ord == Some(std::cmp::Ordering::Less),
+                            VectorCompareOp::Le => {
+                                matches!(
+                                    ord,
+                                    Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+                                )
+                            }
+                            VectorCompareOp::Gt => ord == Some(std::cmp::Ordering::Greater),
+                            VectorCompareOp::Ge => {
+                                matches!(
+                                    ord,
+                                    Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)
+                                )
+                            }
+                        };
+                        let byte_val = if cond { 0xff } else { 0x00 };
+                        for b in 0..bytes_per_lane {
+                            out_bytes[l * bytes_per_lane + b] = byte_val;
+                        }
+                    }
+                } else {
+                    let unsigned = shape == VectorType::U8x16;
+                    for (l, (va, vb)) in agg_a.values().iter().zip(agg_b.values()).enumerate() {
+                        meter.step()?;
+                        let (ConstValue::Integer(ia), ConstValue::Integer(ib)) = (va, vb) else {
+                            return Err(EvalErrorKind::TypeMismatch);
+                        };
+                        let cond = if unsigned {
+                            let (ua, ub) = (ia.value() as u8, ib.value() as u8);
+                            match op {
+                                VectorCompareOp::Eq => ua == ub,
+                                VectorCompareOp::Ne => ua != ub,
+                                VectorCompareOp::Lt => ua < ub,
+                                VectorCompareOp::Le => ua <= ub,
+                                VectorCompareOp::Gt => ua > ub,
+                                VectorCompareOp::Ge => ua >= ub,
+                            }
+                        } else {
+                            let (sa, sb) = (ia.value(), ib.value());
+                            match op {
+                                VectorCompareOp::Eq => sa == sb,
+                                VectorCompareOp::Ne => sa != sb,
+                                VectorCompareOp::Lt => sa < sb,
+                                VectorCompareOp::Le => sa <= sb,
+                                VectorCompareOp::Gt => sa > sb,
+                                VectorCompareOp::Ge => sa >= sb,
+                            }
+                        };
+                        let byte_val = if cond { 0xff } else { 0x00 };
+                        for b in 0..bytes_per_lane {
+                            out_bytes[l * bytes_per_lane + b] = byte_val;
+                        }
+                    }
+                }
+                let agg = bytes_to_vector(VectorType::U8x16, &out_bytes, self.unit.layout)?;
+                meter.aggregate(agg.shape(), 16)?;
+                for v in agg.values() {
+                    meter.frozen(v)?;
+                }
+                Ok(ConstValue::Aggregate(agg))
+            }
+            AmirRvalue::VectorSelect {
+                mask,
+                if_true,
+                if_false,
+            } => {
+                let ValueType::Aggregate(descriptor) = &ty else {
+                    return Err(EvalErrorKind::TypeMismatch);
+                };
+                let AggregateKind::Vector(shape) = descriptor.kind else {
+                    return Err(EvalErrorKind::TypeMismatch);
+                };
+                let mask_val = self.operand(*mask, None, meter)?;
+                let true_val = self.operand(*if_true, Some(ty.clone()), meter)?;
+                let false_val = self.operand(*if_false, Some(ty.clone()), meter)?;
+                let (
+                    ConstValue::Aggregate(mask_agg),
+                    ConstValue::Aggregate(true_agg),
+                    ConstValue::Aggregate(false_agg),
+                ) = (mask_val, true_val, false_val)
+                else {
+                    return Err(EvalErrorKind::TypeMismatch);
+                };
+                let mask_bytes = vector_to_bytes(VectorType::U8x16, &mask_agg)?;
+                let true_bytes = vector_to_bytes(shape, &true_agg)?;
+                let false_bytes = vector_to_bytes(shape, &false_agg)?;
+                let mut out_bytes = [0u8; 16];
+                for (out, ((t, f), m)) in out_bytes
+                    .iter_mut()
+                    .zip(true_bytes.iter().zip(&false_bytes).zip(&mask_bytes))
+                {
+                    meter.step()?;
+                    *out = (t & m) | (f & !m);
+                }
+                let agg = bytes_to_vector(shape, &out_bytes, self.unit.layout)?;
+                meter.aggregate(&descriptor.shape, usize::from(shape.lanes()))?;
+                for v in agg.values() {
+                    meter.frozen(v)?;
+                }
+                Ok(ConstValue::Aggregate(agg))
+            }
+            AmirRvalue::VectorShuffle { left, right, mask } => {
+                let ValueType::Aggregate(descriptor) = &ty else {
+                    return Err(EvalErrorKind::TypeMismatch);
+                };
+                let AggregateKind::Vector(shape) = descriptor.kind else {
+                    return Err(EvalErrorKind::TypeMismatch);
+                };
+                let a = self.operand(*left, Some(ty.clone()), meter)?;
+                let b = self.operand(*right, Some(ty.clone()), meter)?;
+                let (ConstValue::Aggregate(agg_a), ConstValue::Aggregate(agg_b)) = (a, b) else {
+                    return Err(EvalErrorKind::TypeMismatch);
+                };
+                let left_bytes = vector_to_bytes(shape, &agg_a)?;
+                let right_bytes = vector_to_bytes(shape, &agg_b)?;
+                let mut concat = [0u8; 32];
+                concat[..16].copy_from_slice(&left_bytes);
+                concat[16..].copy_from_slice(&right_bytes);
+                let mut out_bytes = [0u8; 16];
+                for (i, &idx) in mask.iter().enumerate() {
+                    meter.step()?;
+                    let index = usize::from(idx);
+                    if index >= 32 {
+                        return Err(EvalErrorKind::InvalidIr);
+                    }
+                    out_bytes[i] = concat[index];
+                }
+                let agg = bytes_to_vector(shape, &out_bytes, self.unit.layout)?;
+                meter.aggregate(&descriptor.shape, usize::from(shape.lanes()))?;
+                for v in agg.values() {
+                    meter.frozen(v)?;
+                }
+                Ok(ConstValue::Aggregate(agg))
+            }
             _ => Err(EvalErrorKind::UnsupportedOperation),
         }
     }
@@ -1289,7 +1612,14 @@ fn admitted_rvalue(rhs: &AmirRvalue) -> Result<(), EvalErrorKind> {
         | AmirRvalue::SliceSubslice { .. }
         | AmirRvalue::Discriminant { .. }
         | AmirRvalue::EnumPayload { .. }
-        | AmirRvalue::EnumConstruct { .. } => Ok(()),
+        | AmirRvalue::EnumConstruct { .. }
+        | AmirRvalue::VectorSelect { .. }
+        | AmirRvalue::VectorCompare { .. }
+        | AmirRvalue::VectorOp { .. }
+        | AmirRvalue::VectorSplat { .. }
+        | AmirRvalue::VectorShuffle { .. }
+        | AmirRvalue::VectorExtractLane { .. }
+        | AmirRvalue::VectorInsertLane { .. } => Ok(()),
         AmirRvalue::SliceData(_)
         | AmirRvalue::SliceView { .. }
         | AmirRvalue::StrView { .. }
@@ -1471,41 +1801,99 @@ fn evaluate_root<P: FunctionProvider, C: FnMut() -> bool>(
                             args,
                             ..
                         } => {
-                            if depth >= meter.max_frames {
-                                return Err(EvalErrorKind::FrameLimit);
-                            }
-                            meter.reserve(args.len())?;
-                            let key = unit.call_identity(*callee);
-                            let callee_unit = admitted.function(&key)?;
-                            if callee_unit.identity != key {
-                                return Err(EvalErrorKind::InvalidIr);
-                            }
-                            if callee_unit.layout != layout {
-                                return Err(EvalErrorKind::TargetMismatch);
-                            }
-                            if callee_unit.function.params.len() != args.len() {
-                                return Err(EvalErrorKind::InvalidIr);
-                            }
-                            let mut values = Vec::new();
-                            values
-                                .try_reserve_exact(args.len())
-                                .map_err(|_| EvalErrorKind::AllocationFailed)?;
-                            for (&operand, &parameter) in
-                                args.iter().zip(&callee_unit.function.params)
-                            {
+                            if let Some(intrinsic) = admitted.intrinsic(*callee) {
+                                if intrinsic == IntrinsicKind::Abort {
+                                    return Err(EvalErrorKind::UnsupportedOperation);
+                                }
+                                if args.len() != 1 {
+                                    return Err(EvalErrorKind::InvalidIr);
+                                }
                                 meter.step()?;
-                                let ty = callee_unit
-                                    .temp_types
-                                    .get(parameter.as_usize())
-                                    .ok_or(EvalErrorKind::InvalidIr)?
-                                    .clone();
-                                values.push(frame.operand(operand, Some(ty), &mut meter)?);
+                                let arg_val = frame.operand(args[0], None, &mut meter)?;
+                                let ConstValue::Integer(input_int) = arg_val else {
+                                    return Err(EvalErrorKind::TypeMismatch);
+                                };
+                                let is_64 = input_int.ty().bit_width() == 64;
+                                let res_i128 = if is_64 {
+                                    let u = input_int.value() as u64;
+                                    match intrinsic {
+                                        IntrinsicKind::CountOnes => i128::from(u.count_ones()),
+                                        IntrinsicKind::LeadingZeros => {
+                                            i128::from(u.leading_zeros())
+                                        }
+                                        IntrinsicKind::TrailingZeros => {
+                                            i128::from(u.trailing_zeros())
+                                        }
+                                        IntrinsicKind::ReverseBits => i128::from(u.reverse_bits()),
+                                        _ => return Err(EvalErrorKind::UnsupportedOperation),
+                                    }
+                                } else {
+                                    let u = input_int.value() as u32;
+                                    match intrinsic {
+                                        IntrinsicKind::CountOnes => i128::from(u.count_ones()),
+                                        IntrinsicKind::LeadingZeros => {
+                                            i128::from(u.leading_zeros())
+                                        }
+                                        IntrinsicKind::TrailingZeros => {
+                                            i128::from(u.trailing_zeros())
+                                        }
+                                        IntrinsicKind::ReverseBits => i128::from(u.reverse_bits()),
+                                        _ => return Err(EvalErrorKind::UnsupportedOperation),
+                                    }
+                                };
+                                if let Some(lhs) = lhs {
+                                    let ty = frame
+                                        .unit
+                                        .temp_types
+                                        .get(lhs.as_usize())
+                                        .ok_or(EvalErrorKind::InvalidIr)?
+                                        .clone();
+                                    let ValueType::Integer(dest_int_ty) = ty else {
+                                        return Err(EvalErrorKind::TypeMismatch);
+                                    };
+                                    let result_val = ConstValue::Integer(
+                                        ConstInt::new(dest_int_ty, res_i128)
+                                            .map_err(EvalErrorKind::Value)?,
+                                    );
+                                    frame.assign(*lhs, result_val)?;
+                                }
+                            } else {
+                                if depth >= meter.max_frames {
+                                    return Err(EvalErrorKind::FrameLimit);
+                                }
+                                meter.reserve(args.len())?;
+                                let key = unit.call_identity(*callee);
+                                let callee_unit = admitted.function(&key)?;
+                                if callee_unit.identity != key {
+                                    return Err(EvalErrorKind::InvalidIr);
+                                }
+                                if callee_unit.layout != layout {
+                                    return Err(EvalErrorKind::TargetMismatch);
+                                }
+                                if callee_unit.function.params.len() != args.len() {
+                                    return Err(EvalErrorKind::InvalidIr);
+                                }
+                                let mut values = Vec::new();
+                                values
+                                    .try_reserve_exact(args.len())
+                                    .map_err(|_| EvalErrorKind::AllocationFailed)?;
+                                for (&operand, &parameter) in
+                                    args.iter().zip(&callee_unit.function.params)
+                                {
+                                    meter.step()?;
+                                    let ty = callee_unit
+                                        .temp_types
+                                        .get(parameter.as_usize())
+                                        .ok_or(EvalErrorKind::InvalidIr)?
+                                        .clone();
+                                    values.push(frame.operand(operand, Some(ty), &mut meter)?);
+                                }
+                                return Ok(Action::Call {
+                                    unit: callee_unit,
+                                    values,
+                                    destination: *lhs,
+                                });
                             }
-                            return Ok(Action::Call {
-                                unit: callee_unit,
-                                values,
-                                destination: *lhs,
-                            });
                         }
                         AmirStmt::Call { .. } | AmirStmt::Free(_) | AmirStmt::Destroy(_) => {
                             return Err(EvalErrorKind::UnsupportedOperation);
@@ -1628,4 +2016,178 @@ fn evaluate_root<P: FunctionProvider, C: FnMut() -> bool>(
         }
         error
     })
+}
+
+fn wrap_int(int_ty: IntegerType, val: i128) -> Result<ConstInt, EvalErrorKind> {
+    let w = int_ty.bit_width();
+    let mask = if w >= 128 {
+        u128::MAX
+    } else {
+        (1u128 << w) - 1
+    };
+    let unsigned = (val as u128) & mask;
+    let wrapped = if int_ty.is_signed() {
+        let sign_bit = 1u128 << (w - 1);
+        if (unsigned & sign_bit) != 0 {
+            (unsigned as i128) - (1_i128 << w)
+        } else {
+            unsigned as i128
+        }
+    } else {
+        unsigned as i128
+    };
+    ConstInt::new(int_ty, wrapped).map_err(EvalErrorKind::Value)
+}
+
+fn vector_to_bytes(
+    vector: VectorType,
+    aggregate: &ConstAggregate,
+) -> Result<[u8; 16], EvalErrorKind> {
+    let mut bytes = [0u8; 16];
+    let values = aggregate.values();
+    if values.len() != usize::from(vector.lanes()) {
+        return Err(EvalErrorKind::TypeMismatch);
+    }
+    match vector {
+        VectorType::U8x16 => {
+            for (i, v) in values.iter().enumerate() {
+                let ConstValue::Integer(int) = v else {
+                    return Err(EvalErrorKind::TypeMismatch);
+                };
+                bytes[i] = int.value() as u8;
+            }
+        }
+        VectorType::I16x8 => {
+            for (i, v) in values.iter().enumerate() {
+                let ConstValue::Integer(int) = v else {
+                    return Err(EvalErrorKind::TypeMismatch);
+                };
+                let b = (int.value() as i16).to_le_bytes();
+                bytes[2 * i..2 * i + 2].copy_from_slice(&b);
+            }
+        }
+        VectorType::I32x4 => {
+            for (i, v) in values.iter().enumerate() {
+                let ConstValue::Integer(int) = v else {
+                    return Err(EvalErrorKind::TypeMismatch);
+                };
+                let b = (int.value() as i32).to_le_bytes();
+                bytes[4 * i..4 * i + 4].copy_from_slice(&b);
+            }
+        }
+        VectorType::I64x2 => {
+            for (i, v) in values.iter().enumerate() {
+                let ConstValue::Integer(int) = v else {
+                    return Err(EvalErrorKind::TypeMismatch);
+                };
+                let b = (int.value() as i64).to_le_bytes();
+                bytes[8 * i..8 * i + 8].copy_from_slice(&b);
+            }
+        }
+        VectorType::F32x4 => {
+            for (i, v) in values.iter().enumerate() {
+                let ConstValue::Float(f) = v else {
+                    return Err(EvalErrorKind::TypeMismatch);
+                };
+                let b = (f.bits() as u32).to_le_bytes();
+                bytes[4 * i..4 * i + 4].copy_from_slice(&b);
+            }
+        }
+        VectorType::F64x2 => {
+            for (i, v) in values.iter().enumerate() {
+                let ConstValue::Float(f) = v else {
+                    return Err(EvalErrorKind::TypeMismatch);
+                };
+                let b = f.bits().to_le_bytes();
+                bytes[8 * i..8 * i + 8].copy_from_slice(&b);
+            }
+        }
+    }
+    Ok(bytes)
+}
+
+fn bytes_to_vector(
+    vector: VectorType,
+    bytes: &[u8; 16],
+    layout: DataLayout,
+) -> Result<ConstAggregate, EvalErrorKind> {
+    let lanes = usize::from(vector.lanes());
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(lanes)
+        .map_err(|_| EvalErrorKind::AllocationFailed)?;
+    match vector {
+        VectorType::U8x16 => {
+            let int_ty = IntegerType::new(Primitive::U8, layout).map_err(EvalErrorKind::Value)?;
+            for b in bytes {
+                values.push(ConstValue::Integer(
+                    ConstInt::new(int_ty, i128::from(*b)).map_err(EvalErrorKind::Value)?,
+                ));
+            }
+        }
+        VectorType::I16x8 => {
+            let int_ty = IntegerType::new(Primitive::I16, layout).map_err(EvalErrorKind::Value)?;
+            for i in 0..8 {
+                let chunk: [u8; 2] = bytes[2 * i..2 * i + 2]
+                    .try_into()
+                    .map_err(|_| EvalErrorKind::InvalidIr)?;
+                let val = i16::from_le_bytes(chunk);
+                values.push(ConstValue::Integer(
+                    ConstInt::new(int_ty, i128::from(val)).map_err(EvalErrorKind::Value)?,
+                ));
+            }
+        }
+        VectorType::I32x4 => {
+            let int_ty = IntegerType::new(Primitive::I32, layout).map_err(EvalErrorKind::Value)?;
+            for i in 0..4 {
+                let chunk: [u8; 4] = bytes[4 * i..4 * i + 4]
+                    .try_into()
+                    .map_err(|_| EvalErrorKind::InvalidIr)?;
+                let val = i32::from_le_bytes(chunk);
+                values.push(ConstValue::Integer(
+                    ConstInt::new(int_ty, i128::from(val)).map_err(EvalErrorKind::Value)?,
+                ));
+            }
+        }
+        VectorType::I64x2 => {
+            let int_ty = IntegerType::new(Primitive::I64, layout).map_err(EvalErrorKind::Value)?;
+            for i in 0..2 {
+                let chunk: [u8; 8] = bytes[8 * i..8 * i + 8]
+                    .try_into()
+                    .map_err(|_| EvalErrorKind::InvalidIr)?;
+                let val = i64::from_le_bytes(chunk);
+                values.push(ConstValue::Integer(
+                    ConstInt::new(int_ty, i128::from(val)).map_err(EvalErrorKind::Value)?,
+                ));
+            }
+        }
+        VectorType::F32x4 => {
+            let flt_ty = FloatType::new(Primitive::F32, layout)
+                .map_err(|_| EvalErrorKind::UnsupportedType(TypeId::from_usize(0)))?;
+            for i in 0..4 {
+                let chunk: [u8; 4] = bytes[4 * i..4 * i + 4]
+                    .try_into()
+                    .map_err(|_| EvalErrorKind::InvalidIr)?;
+                let bits = u32::from_le_bytes(chunk);
+                values.push(ConstValue::Float(
+                    ConstFloat::new(flt_ty, u64::from(bits))
+                        .map_err(|_| EvalErrorKind::InvalidIr)?,
+                ));
+            }
+        }
+        VectorType::F64x2 => {
+            let flt_ty = FloatType::new(Primitive::F64, layout)
+                .map_err(|_| EvalErrorKind::UnsupportedType(TypeId::from_usize(0)))?;
+            for i in 0..2 {
+                let chunk: [u8; 8] = bytes[8 * i..8 * i + 8]
+                    .try_into()
+                    .map_err(|_| EvalErrorKind::InvalidIr)?;
+                let bits = u64::from_le_bytes(chunk);
+                values.push(ConstValue::Float(
+                    ConstFloat::new(flt_ty, bits).map_err(|_| EvalErrorKind::InvalidIr)?,
+                ));
+            }
+        }
+    }
+    ConstAggregate::new(TypeShape::Vector(vector), values).map_err(EvalErrorKind::Value)
 }

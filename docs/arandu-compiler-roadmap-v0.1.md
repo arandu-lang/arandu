@@ -1,6 +1,6 @@
 # Arandu — Roadmap mestre
 
-**Revisão:** 2026-10-16. **Base publicada:** 0.1.10.
+**Revisão:** 2026-10-18. **Base publicada:** 0.1.10.
 **Próximo marco de produto:** 0.2.0 — compilador quente e imagem dev recuperável.
 
 Esta é a única fila permanente do projeto. Contratos descrevem comportamento
@@ -120,29 +120,32 @@ as alterações locais e os bloqueadores, e implementar a fundação abaixo ante
 da 0.2.0. A tabela registra entregas autorizadas, não funcionalidades publicadas.
 A 0.1.11 permanece em desenvolvimento enquanto houver itens não concluídos;
 a extensão do escopo não reduz as provas nem promove suporte por inferência.
-O snapshot local de 16/10 passou nos gates ordenados, em 3.152 testes nextest
-(sete ignorados), doctests, determinismo, checks documentais/arquiteturais,
-instalador e Extension Host. A [arquitetura da stdlib](arandu-stdlib-architecture-v0.1.md#evidência-local-desta-revisão)
-registra o alcance dessa prova. A matriz instalada da candidata ainda é pendente.
+Como evidência histórica, o snapshot de 17/10 passou nos gates ordenados, em 3.184 testes nextest
+(sete ignorados), doctests, determinismo e checks documentais/arquiteturais.
+O C SIMD passou também em ASan/UBSan; os checks Rust de Windows/macOS usaram
+`blake3/pure`. Instalador e Extension Host mantêm a evidência histórica de 16/10. A [arquitetura da stdlib](arandu-stdlib-architecture-v0.1.md#evidência-local-desta-revisão)
+registra o alcance dessa prova. A revisão de 18/10 usa validação direcionada por
+camada, conforme AGENTS.md; a prova global anterior não certifica automaticamente
+as mudanças posteriores. A matriz instalada da candidata ainda é pendente.
 
 | ID | Entrega | Estado / critério de saída |
 | --- | --- | --- |
-| ST.0 | consolidar primitivos, Decimal e alterações locais | `in_progress`; Decimal com overflow checado, comparação exata, HalfEven e conversões validadas passou no corpus C/Cranelift/Wasm e oráculo inteiro independente; gates locais passaram; manter as provas de métodos/imports/completion e cutoff no SDK instalado |
-| ST.1 | `core.math`: sqrt, sin/cos/tan, pow, log/exp e PI/TAU/E | implementação escalar local; corrigidos trunc acima de 32 bits, round, escala extrema de exp, potências subnormais e overflow intermediário de cbrt; regressões independentes IEEE/f64 nos três backends; fechar oráculos trigonométricos, domínios/erro numérico e perfis float32 antes de promover |
-| ST.2 | `core.simd`: f32x4/u8x16 | protótipo escalar local; F32x4 ainda usa campos float, sem prova de largura/alinhamento de 128 bits ou registradores SIMD; faltam representação/layout/ABI/lowering e provas por alvo |
-| ST.3 | Q8.8/Q32.32 e correção de Q16.16 | implementação local; oráculo i128, JIT/C com UBSan/Wasm; 384 pares inteiros e gates locais passaram; conversões float e SDK instalado ainda exigem provas |
-| ST.4 | contagem/reversão de bits em `core.num` | implementação local u32/u64 nos três backends; zero definido; identidade ABI explícita e validação de assinatura antes do codegen; integração local validada pelos gates; CTFE e matriz instalada pendentes |
-| ST.5 | atomics reais como pré-requisito de compartilhamento | implementação local: ABI tipada, armazenamento privado e operações SeqCst em C/Cranelift/Wasm; nove regressões focadas de atomics/Dir passaram, incluindo contenção com seis threads, CAS e rejeição de ordens/ABI inválidas; acesso exige alinhamento natural, escritas ainda usam mut ref; Send/Sync, Arc e matriz instalada continuam pendentes |
-| ST.6 | `alloc.boxed.Box<T>` | implementação local nativa; C/Cranelift passaram em drops aninhados/ZST, movimento e mutação; rejeição de escapes/aliases/forja passou; C O0/O2 com UBSan; faltam wiring Wasm, prova de falha de alocação e matriz instalada |
-| ST.7 | `alloc.rc`/`alloc.arc` | implementações locais; corrigida ressurreição por Weak após Rc.tryUnwrap e extração de payload não-Copy em Rc/Arc; regressão de unwrap/último drop passou em JIT/C; faltam contadores/overflow, falhas de alocação e exclusividade de getMut contra upgrade de Weak; concorrência e Send/Sync dependem do contrato de transporte; Arc depende ST.5; não promover pelos nomes das APIs |
+| ST.0 | consolidar primitivos, Decimal e alterações locais | `in_progress`; Decimal com overflow checado, comparação exata, HalfEven e conversões validadas no corpus contratual e no oráculo inteiro independente executados nos três backends (C/Cranelift/Wasm); gates locais passaram; manter as provas de métodos/imports/completion e cutoff no SDK instalado |
+| ST.1 | `core.math`: sqrt, sin/cos/tan, pow, log/exp e PI/TAU/E | implementação escalar local; corrigidos trunc acima de 32 bits, round, escala extrema de exp, potências subnormais e overflow intermediário de cbrt; regressões independentes IEEE/f64 nos três backends; oráculos trigonométricos (sin, cos, tan) e logarítmicos (ln) com tolerâncias ULP e bordas fechados e validados em JIT, C (Clang -O0/-O2 UBSan) e Wasm; perfis float32 e matriz instalada pendentes |
+| ST.2 | `core.simd`: seis vetores de 128 bits | implementação local de tipos canônicos, métodos/intrínsecos tipados, layout 16/16, AMIR e Cranelift/C/Wasm; máscaras/comparações/select, wrapping e slices com bounds; escrita segura usa MutableSlice afim, descritores compartilhados exigem unsafe; backing heap do compilador alinhado a 16; CTFE concluído e verificado na VM com suporte a 128-bit hardware vectors, splat, extract/insert, ops, select, shuffle e intrínseco abort; faltam provas do SDK instalado na matriz nativa por alvo (RFC 0038) |
+| ST.3 | Q8.8/Q32.32 e correção de Q16.16 | implementação local; oráculo i128, JIT/C com UBSan/Wasm; 384 pares inteiros e gates locais passaram; conversões float validadas com clamping e oráculo diferencial nos três backends; matriz instalada pendente |
+| ST.4 | contagem/reversão de bits em `core.num` | implementação local u32/u64 nos três backends e avaliação puramente escalar no CTFE (popcnt, clz, ctz, bitrev); zero definido; identidade ABI explícita e validação de assinatura antes do codegen; integração local e testes de CTFE validados; matriz instalada pendente |
+| ST.5 | atomics reais como pré-requisito de compartilhamento | implementação local SeqCst em C/Cranelift/Wasm com assinaturas e armazenamento validados; primitivas de sincronização e Arc têm bounds canônicos específicos, sem liberar ponteiros arbitrários; wrappers atômicos comuns ainda exigem mut ref para escrita; fechar matriz instalada |
+| ST.6 | `alloc.boxed.Box<T>` | implementação local nativa e Wasm; C/Cranelift passaram em drops aninhados/ZST, movimento e mutação; rejeição de escapes/aliases/forja passou; C O0/O2 com UBSan; wiring Wasm concluído via alocador interno freestanding sem imports de host e validado em wasmtime; faltam injeção de falha de alocação e matriz instalada |
+| ST.7 | `alloc.rc`/`alloc.arc` | implementações locais; Rc.tryUnwrap impede ressurreição por Weak; Arc usa CAS com limites antes de overflow e trava da contagem fraca para unicidade/getMut; Arc/ArcWeak exigem T:Send+Sync para transporte/compartilhamento; limites espelhados em Rc (`countLimit`) com abort antes de overflow; regressões de lifecycle, overflow e concorrência; faltam injeção de falhas de alocação e matriz instalada |
 | ST.8 | `alloc.slab` e deque circular | implementações locais; fechar freelist/reuso, crescimento/transbordamento, alinhamento, drops não-Copy e invalidação de views com regressões nos backends |
-| ST.9 | `std.random` | correções locais: fórmula xoshiro256++/seed zero, faixa int completa, entropia sem fallback fraco e tryFromEntropy falível; 136 vetores determinísticos em JIT/C/Wasm e injeção de falha C passaram; imports de host Wasm ainda exigem integração; fechar faixas float e execução por alvo; PRNG não é CSPRNG |
-| ST.10 | `sync.rwlock`/`sync.condvar` cooperativos | protótipos locais; notify do host ainda é vazio e wait usa timeout/parking; não há prova de wakeup, cancelamento, justiça ou cooperação com executor; depende ST.5 |
-| ST.11 | `std.thread` e JoinHandle/parking | sleep/yield/park locais; spawn/join não implementados, unpark do host vazio e currentThreadId retorna zero; fechar identidade, parking real e transporte/drop com Send/Sync antes de promover |
-| ST.12 | filesystem por capacidades `Dir` (RFC 0016) | implementação Linux local com openat2 BENEATH/NO_SYMLINKS/NO_MAGICLINKS e pais pinados em mkdir/unlink; regressões JIT/C com UBSan e runtime passaram para caminhos absolutos, traversal, symlinks e rename da raiz; sem fallback inseguro; faltam plataformas, privacidade/adoção dos handles File, lifecycle integral e matriz instalada |
+| ST.9 | `std.random` | correções locais: fórmula xoshiro256++/seed zero, faixa int completa, entropia sem fallback fraco e tryFromEntropy falível; 136 vetores determinísticos em JIT/C/Wasm e injeção de falha C passaram; PRNG determinístico Wasm executa sem imports de host (poda aplicada também ao perfil padrão); entropia continua efeito de host; faixas float (`genRangeFloat` e `nextFloat`) validadas em JIT/C/Wasm; fechar execução por alvo; PRNG não é CSPRNG |
+| ST.10 | `sync.mutex`/`sync.rwlock`/`sync.condvar` nativos | implementação local com mutabilidade interior canônica, guardas afins ligadas ao proprietário, leitores compartilhados e escritores FIFO por fases; Condvar libera/reobtém MutexGuard, timeout monotônico e notify sem wrap da sequência; sem polling; cancelamento POSIX diferido no mirror C; integração cooperativa do executor e matriz nativa instalada continuam distintas (RFC 0039) |
+| ST.11 | `std.thread` e JoinHandle/parking | implementação local de IDs/park/unpark e spawn<A,R,J> por ThreadJob tipado; closures de thread (recorte `move || ...` com 0 parâmetros, capturas próprias e Send) validadas semanticamente no typeck e rejeitadas com U001 orientando ThreadJob estático até que o lowering de ThreadJob exista no AMIR; closures sem move ou com parâmetros rejeitadas com U001; referências rejeitadas com T025; argumentos/jobs/resultados Send, buffers alinhados, join e drop que aguardam/limpam exatamente uma vez; retenção JIT inclui descendentes e join/drop concorrentes; parkTimeout interrompido por unpark com prazos monotônicos, tokens coalescentes e saturação de limites em C/Rust; rejeição em tempo de compilação em wasm32 (U001); closures gerais da RFC 0032 e unwind recuperável permanecem fora do contrato da v0.1; fechar matriz nativa instalada |
+| ST.12 | filesystem por capacidades `Dir` (RFC 0016) | implementação Linux local com openat2 BENEATH/NO_SYMLINKS/NO_MAGICLINKS e pais pinados em mkdir/unlink; regressões JIT/C com UBSan e runtime passaram para caminhos absolutos, traversal, symlinks e rename da raiz; sem fallback inseguro; macOS/BSD têm recorte de um componente com O_NOFOLLOW/O_DIRECTORY/fstat em Rust/C, ainda sem execução nativa nesses alvos; flags create/truncate sem write rejeitadas; Windows fail-closed até ABI de HANDLE; privacidade de File.fd (`private fd: int`) e lifecycle com defesa contra double close implementados; faltam testes na matriz instalada |
 | ST.13 | DNS/UDP e reactor multiplataforma | bridges DNS/UDP locais; fechar lifecycle/falhas/cancelamento e testes nativos por alvo; IOCP/kqueue continuam ausentes, sem promover stubs a suporte |
 | ST.14 | `crypto.hash` SHA-256/BLAKE3 | implementação escalar local; vetores independentes de streaming/padding/chunks/árvore e snapshots passaram em C/Cranelift/Wasm; sem autenticação/keyed/XOF; matriz instalada e promoção pendentes |
-| ST.15 | `math.big.BigInt`/`BigDecimal` (RFC 0037) | implementação local com corpus inicial; fechar ownership/alocador, precisão/escala/limites, divisão/arredondamento e oráculo independente, incluindo números além de 128 bits |
+| ST.15 | `math.big.BigInt`/`BigDecimal` (RFC 0037) | `done` localmente; camadas 1–3 ativas com adições de `divRem`, `div`, `rem`, `divAssign`, `remAssign`, `BigDecimal.mul`, operações de bit e representação de limbs; oráculo diferencial independente contra `num-bigint` (dev-dependency) com 59 casos curados cobrindo além de 128/256/512 bits executado e validado em JIT (Cranelift), C (Clang -O0 e -O2 com UBSan) e Wasm; faltam testes na matriz instalada em runners nativos |
 | ST.16 | promoção da candidata | `partial`; gates locais ordenados, testes específicos e Extension Host passaram; faltam packages exatos nos runners nativos e fechamento dos contratos abertos acima |
 
 A ordem de execução é: bloqueadores e ST.0 → aritmética/ST.3/ST.4 →
@@ -154,6 +157,27 @@ recorte de chamadas/capturas necessário à API autorizada deve ser antecipado
 para essa campanha; LAMBDA na 0.3.x descreve a expansão geral posterior, sem
 adiar um pré-requisito da mesma API de threads. Os contratos técnicos mantêm
 design e limitações; esta é a única fila permanente.
+
+### Etapas de fechamento das RFCs 0014, 0016, 0038 e 0039
+
+As etapas abaixo detalham ST.2/ST.10–12; continuam pertencendo à campanha
+0.1.11 e não são transferidas automaticamente para 0.2.x por estarem abertas.
+
+| Etapa | Estado | Próxima entrega verificável / proprietário |
+| --- | --- | --- |
+| ST.2a — representação e execução interna | implementada localmente | seis formas, layout e AMIR; JIT/C/Wasm, wrapping, memória, shuffle, ABI interna e hashes; middle/MIR/backends |
+| ST.2b — identidade e frontend | implementada localmente | autoridade stdlib explícita por arquivo, aliases/reexports por SymbolId, assinaturas exatas e métodos genéricos sem reconhecimento por nome solto; preservar cutoff e validar drivers/SDK |
+| ST.2c — API fonte e memória | implementada localmente | API nativa, índices checados, backing 16-aligned, loads escalares e stores com MutableSlice exclusiva; garantir a mesma prova nos artefatos instalados e alvos de 32 bits |
+| ST.2d — máscaras e portabilidade | parcial | comparações/select/reduções e contrato NaN/zero implementados; executar matriz instalada/ARM e medir workloads antes de anunciar desempenho |
+| ST.10a — evento de sequência | implementada localmente | filas por endereço, validação/timeout/notify e isolamento de tokens; runtime Rust/C, JIT e host Wasm explícito |
+| ST.10b — locks compartilhados seguros | implementada localmente | UnsafeCell não-Copy/não-Sync, Mutex/RwLock com bounds distintos e guardas que conservam empréstimos até dentro do mesmo bloco; validar SDK instalado |
+| ST.10c — Condvar com guarda e PFLock | implementada localmente | release/sequence-wait/reacquire, fases por filas reais e contadores checados, cancelamento POSIX diferido; sem garantia de quatro bytes ou prazo de parede; promover somente após matriz nativa |
+| ST.11a — identidade e estacionamento | implementada localmente | IDs sem reuso, park/unpark e aposentadoria TLS/FLS; parkTimeout com prazo monotônico e interrupção por unpark validado em C/Rust; wasm32 rejeita primitivas de threads com U001; validar matriz nativa instalada |
+| ST.11b — spawn e JoinHandle | implementada localmente | ThreadJob tipado e possuído transporta argumentos/capturas de structs/resultados Send; closures de thread (`move || ...`) com capturas Send próprias e 0 parâmetros validadas no typeck com rejeição U001 até que o lowering de ThreadJob em AMIR seja construído; cleanup/drop e retenção JIT; validar packages nativos, mantendo closures gerais/unwind fora do contrato atual |
+| ST.12a — confinamento Linux | implementada localmente | openat2 e pais pinados, flags destrutivas rejeitadas e provas de symlink/traversal/rename |
+| ST.12b — macOS/BSD e Windows | parcial / pendente | componente único por Dir em macOS/BSD exige runners nativos; Windows exige ponte HANDLE/posse sem truncamento, NtCreateFile relativo e rejeição de ADS/dispositivos; falhar fechado até lá |
+| ST.12c — adoção de capacidades | implementada localmente | privacidade/lifecycle integral de File (`File.fd` é `private` com construtor interno `File.fromRaw`), migração das aberturas legadas e regressões de capacidade com drop seguro; garantir testes na matriz instalada |
+| RFC 0014 — poda de imports | implementada localmente | mesma closure nos perfis padrão/size/component, incluindo WIT; efeitos vivos exigem host, indiretas gerais continuam fora do lowering atual |
 
 ## Plano de longo prazo por série
 

@@ -16,7 +16,7 @@
 //! ```arandu
 //! import std.core.fmt as fmt
 //!
-//! func formatInto(buf: []u8): uint {
+//! func formatInto(buf: mut []u8): uint {
 //!     let mut f = fmt.Formatter.new(buf)
 //!     let _ = f.writeStr("temp: ")
 //!     return f.len()
@@ -49,10 +49,10 @@ public enum FmtError {
 
 /// Zero-allocation, stream-like text buffer formatter.
 ///
-/// Wraps a contiguous memory buffer slice (`[]u8`) with current length.
+/// Wraps a contiguous memory buffer slice (`mut []u8`) with current length.
 public struct Formatter {
     /// Borrowed output buffer.
-    buf: []u8
+    buf: mut []u8
     /// Number of bytes written to the buffer.
     len: usize
 }
@@ -60,7 +60,7 @@ public struct Formatter {
 /// Borrows `buf` as a fixed-capacity destination with zero bytes written.
 ///
 /// The caller owns the buffer. Writes change it in place and never allocate.
-public func Formatter.new(buf: []u8): Formatter {
+public func Formatter.new(buf: mut []u8): Formatter {
     return Formatter {
         buf: buf,
         len: 0,
@@ -129,6 +129,16 @@ public func Formatter.writeStr(self: mut ref Formatter, s: str): Result<usize, F
     }
     self.len = self.len + slen
     return Result.Ok(slen)
+}
+
+/// Returns the formatted bytes as an immutable slice view.
+public func Formatter.asSlice(self: ref Formatter): []u8 {
+    return unsafe { intrinsics.sliceSubslice<u8>(self.buf, 0, self.len) }
+}
+
+/// Consumes the formatter and returns the underlying mutable buffer.
+public func Formatter.intoInner(self: own Formatter): mut []u8 {
+    return self.buf
 }
 
 /// Interface for user-facing, human-readable text presentation.

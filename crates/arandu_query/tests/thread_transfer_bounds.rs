@@ -5,7 +5,7 @@ use arandu_query::{passes::type_check, DatabaseImpl};
 fn check_storage(storage: &str, accepted: bool) {
     for capability in ["Send", "Sync"] {
         let mut db = DatabaseImpl::default();
-        db.new_file(
+        db.new_stdlib_file(
             "stdlib/core/marker.aru".into(),
             include_str!("../../../stdlib/core/marker.aru").into(),
         );
@@ -58,11 +58,11 @@ fn scalar_aggregates_satisfy_transfer_bounds() {
 #[test]
 fn copy_is_structural_and_rejects_owned_string_storage() {
     let mut db = DatabaseImpl::default();
-    db.new_file(
+    db.new_stdlib_file(
         "stdlib/core/marker.aru".into(),
         include_str!("../../../stdlib/core/marker.aru").into(),
     );
-    db.new_file(
+    db.new_stdlib_file(
         "stdlib/alloc/string.aru".into(),
         include_str!("../../../stdlib/alloc/string.aru").into(),
     );
@@ -116,11 +116,11 @@ fn raw_pointer_aggregates_do_not_satisfy_transfer_bounds() {
 #[test]
 fn cooperative_task_handle_requires_its_own_transfer_contract() {
     let mut db = DatabaseImpl::default();
-    db.new_file(
+    db.new_stdlib_file(
         "stdlib/core/marker.aru".into(),
         include_str!("../../../stdlib/core/marker.aru").into(),
     );
-    db.new_file(
+    db.new_stdlib_file(
         "stdlib/std/runtime/executor.aru".into(),
         include_str!("../../../stdlib/std/runtime/executor.aru").into(),
     );
@@ -149,11 +149,11 @@ func main(): int { return 0 }
 #[test]
 fn imported_wrapper_does_not_hide_a_cooperative_handle() {
     let mut db = DatabaseImpl::default();
-    db.new_file(
+    db.new_stdlib_file(
         "stdlib/core/marker.aru".into(),
         include_str!("../../../stdlib/core/marker.aru").into(),
     );
-    db.new_file(
+    db.new_stdlib_file(
         "stdlib/std/runtime/executor.aru".into(),
         include_str!("../../../stdlib/std/runtime/executor.aru").into(),
     );
@@ -197,7 +197,7 @@ fn borrowed_storage_requires_a_separate_lifetime_proof() {
 
 fn check_program(source: &str, rejected: bool) {
     let mut db = DatabaseImpl::default();
-    db.new_file(
+    db.new_stdlib_file(
         "stdlib/core/marker.aru".into(),
         include_str!("../../../stdlib/core/marker.aru").into(),
     );
@@ -315,7 +315,7 @@ func main(): int { return 0 }
 #[test]
 fn canonical_bound_identity_survives_a_transitive_module_signature() {
     let mut db = DatabaseImpl::default();
-    db.new_file(
+    db.new_stdlib_file(
         "stdlib/core/marker.aru".into(),
         include_str!("../../../stdlib/core/marker.aru").into(),
     );
@@ -358,5 +358,326 @@ func main(): int { return 0 }
             .any(|diagnostic| diagnostic.code == DiagCode::T025InterfaceNotSatisfied),
         "{:?}",
         result.diagnostics
+    );
+}
+
+#[test]
+fn thread_spawn_accepts_send_job_and_rejects_non_send() {
+    let mut db = DatabaseImpl::default();
+    db.new_stdlib_file(
+        "stdlib/core/marker.aru".into(),
+        include_str!("../../../stdlib/core/marker.aru").into(),
+    );
+    db.new_stdlib_file(
+        "stdlib/core/mem.aru".into(),
+        include_str!("../../../stdlib/core/mem.aru").into(),
+    );
+    db.new_stdlib_file(
+        "stdlib/std/thread.aru".into(),
+        include_str!("../../../stdlib/std/thread.aru").into(),
+    );
+
+    let accepted = db.new_file(
+        "accepted_spawn.aru".into(),
+        r#"
+import std.thread as thread
+
+struct CalcJob {
+    dados: int
+}
+
+func CalcJob.run(own self, arg: void): int {
+    return self.dados + 1
+}
+
+func main(): int {
+    let job = CalcJob { dados: 41 }
+    let handleRes = thread.spawn(job)
+    return 0
+}
+"#
+        .into(),
+    );
+    let result = type_check(&db, accepted);
+    assert!(
+        !result
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error),
+        "spawn(SendJob) failed: {:?}",
+        result.diagnostics
+    );
+
+    let rejected = db.new_file(
+        "rejected_spawn.aru".into(),
+        r#"
+import std.thread as thread
+
+struct BadJob {
+    pointer: ptr[u8]
+}
+
+func BadJob.run(own self, arg: void): int {
+    return 0
+}
+
+func main(): int {
+    let job = BadJob { pointer: nil }
+    let handleRes = thread.spawn(job)
+    return 0
+}
+"#
+        .into(),
+    );
+    let result = type_check(&db, rejected);
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.code == DiagCode::T025InterfaceNotSatisfied),
+        "non-Send job was not rejected: {:?}",
+        result.diagnostics
+    );
+}
+
+#[test]
+fn thread_spawn_with_closure_accepted_when_move_zero_params_and_send() {
+    let mut db = DatabaseImpl::default();
+    db.new_stdlib_file(
+        "stdlib/core/marker.aru".into(),
+        include_str!("../../../stdlib/core/marker.aru").into(),
+    );
+    db.new_stdlib_file(
+        "stdlib/core/mem.aru".into(),
+        include_str!("../../../stdlib/core/mem.aru").into(),
+    );
+    db.new_stdlib_file(
+        "stdlib/std/thread.aru".into(),
+        include_str!("../../../stdlib/std/thread.aru").into(),
+    );
+
+    let file = db.new_file(
+        "closure_spawn.aru".into(),
+        r#"
+import std.thread as thread
+
+func main(): int {
+    let dados: int = 41
+    let handleRes = thread.spawn(move || dados + 1)
+    return 0
+}
+"#
+        .into(),
+    );
+    let result = type_check(&db, file);
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.code == DiagCode::U001FeatureNotSupported && d.message.contains("require AMIR ThreadJob lowering")),
+        "valid thread closure spawn must be rejected with U001 pending AMIR ThreadJob lowering: {:?}",
+        result.diagnostics
+    );
+}
+
+#[test]
+fn thread_spawn_with_closure_rejects_non_move_and_params() {
+    let mut db = DatabaseImpl::default();
+    db.new_stdlib_file(
+        "stdlib/core/marker.aru".into(),
+        include_str!("../../../stdlib/core/marker.aru").into(),
+    );
+    db.new_stdlib_file(
+        "stdlib/core/mem.aru".into(),
+        include_str!("../../../stdlib/core/mem.aru").into(),
+    );
+    db.new_stdlib_file(
+        "stdlib/std/thread.aru".into(),
+        include_str!("../../../stdlib/std/thread.aru").into(),
+    );
+
+    // 1. Missing `move`
+    let non_move = db.new_file(
+        "non_move.aru".into(),
+        r#"
+import std.thread as thread
+
+func main(): int {
+    let dados: int = 41
+    let handleRes = thread.spawn(|| dados + 1)
+    return 0
+}
+"#
+        .into(),
+    );
+    let result_non_move = type_check(&db, non_move);
+    assert!(
+        result_non_move
+            .diagnostics
+            .iter()
+            .any(|d| d.code == DiagCode::U001FeatureNotSupported),
+        "non-move thread closure must report U001: {:?}",
+        result_non_move.diagnostics
+    );
+
+    // 2. Closure with parameters
+    let with_params = db.new_file(
+        "with_params.aru".into(),
+        r#"
+import std.thread as thread
+
+func main(): int {
+    let handleRes = thread.spawn(move |x: int| x + 1)
+    return 0
+}
+"#
+        .into(),
+    );
+    let result_with_params = type_check(&db, with_params);
+    assert!(
+        result_with_params
+            .diagnostics
+            .iter()
+            .any(|d| d.code == DiagCode::U001FeatureNotSupported),
+        "thread closure with parameters must report U001: {:?}",
+        result_with_params.diagnostics
+    );
+
+    // 3. Closure outside thread.spawn
+    let outside = db.new_file(
+        "outside.aru".into(),
+        r#"
+func main(): int {
+    let f = move || 42
+    return 0
+}
+"#
+        .into(),
+    );
+    let result_outside = type_check(&db, outside);
+    assert!(
+        result_outside
+            .diagnostics
+            .iter()
+            .any(|d| d.code == DiagCode::U001FeatureNotSupported),
+        "general closure outside thread spawn must report U001: {:?}",
+        result_outside.diagnostics
+    );
+}
+
+#[test]
+fn thread_spawn_with_closure_rejects_borrowed_and_non_send() {
+    let mut db = DatabaseImpl::default();
+    db.new_stdlib_file(
+        "stdlib/core/marker.aru".into(),
+        include_str!("../../../stdlib/core/marker.aru").into(),
+    );
+    db.new_stdlib_file(
+        "stdlib/core/mem.aru".into(),
+        include_str!("../../../stdlib/core/mem.aru").into(),
+    );
+    db.new_stdlib_file(
+        "stdlib/std/thread.aru".into(),
+        include_str!("../../../stdlib/std/thread.aru").into(),
+    );
+
+    let borrowed = db.new_file(
+        "borrowed_capture.aru".into(),
+        r#"
+import std.thread as thread
+
+func check(r: ref int): void {
+    let handleRes = thread.spawn(move || *r)
+}
+
+func main(): int {
+    return 0
+}
+"#
+        .into(),
+    );
+    let result_borrowed = type_check(&db, borrowed);
+    assert!(
+        result_borrowed
+            .diagnostics
+            .iter()
+            .any(|d| d.code == DiagCode::T025InterfaceNotSatisfied),
+        "borrowed reference capture must be rejected with T025: {:?}",
+        result_borrowed.diagnostics
+    );
+}
+
+#[test]
+fn lang_item_identity_preserved_across_imports_aliases_and_reexports() {
+    let mut db = DatabaseImpl::default();
+    db.new_stdlib_file(
+        "stdlib/core/marker.aru".into(),
+        include_str!("../../../stdlib/core/marker.aru").into(),
+    );
+    db.new_stdlib_file(
+        "stdlib/core/mem.aru".into(),
+        include_str!("../../../stdlib/core/mem.aru").into(),
+    );
+    db.new_stdlib_file(
+        "stdlib/std/thread.aru".into(),
+        include_str!("../../../stdlib/std/thread.aru").into(),
+    );
+
+    // 1. Direct module import and alias import
+    let alias_file = db.new_file(
+        "alias_client.aru".into(),
+        r#"
+from std.thread import { spawn as custom_spawn }
+
+func main(): int {
+    let handle = custom_spawn(move || 42)
+    return 0
+}
+"#
+        .into(),
+    );
+    let result_alias = type_check(&db, alias_file);
+    // Because custom_spawn preserves LangItem::ThreadSpawn, it enters synth_thread_spawn_closure
+    // and emits the U001 asking for AMIR lowering (instead of T012 wrong arg count / type mismatch)
+    assert!(
+        result_alias
+            .diagnostics
+            .iter()
+            .any(|d| d.code == DiagCode::U001FeatureNotSupported
+                && d.message.contains("require AMIR ThreadJob lowering")),
+        "alias import must preserve LangItem::ThreadSpawn identity: {:?}",
+        result_alias.diagnostics
+    );
+
+    // 2. Re-export across files
+    let reexport_file = db.new_file(
+        "reexport_lib.aru".into(),
+        r#"
+public use std.thread.{ spawn }
+"#
+        .into(),
+    );
+    let client_file = db.new_file(
+        "reexport_client.aru".into(),
+        r#"
+import reexport_lib as lib
+
+func main(): int {
+    let handle = lib.spawn(move || 42)
+    return 0
+}
+"#
+        .into(),
+    );
+    let _ = type_check(&db, reexport_file);
+    let result_client = type_check(&db, client_file);
+    assert!(
+        result_client
+            .diagnostics
+            .iter()
+            .any(|d| d.code == DiagCode::U001FeatureNotSupported
+                && d.message.contains("require AMIR ThreadJob lowering")),
+        "re-exported symbol must preserve LangItem::ThreadSpawn identity: {:?}",
+        result_client.diagnostics
     );
 }

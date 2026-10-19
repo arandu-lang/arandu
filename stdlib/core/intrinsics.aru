@@ -101,11 +101,15 @@ extern "arandu-intrinsic" {
     /// Builds a slice view from a raw pointer and length. The memory must
     /// stay valid for as long as the slice is used.
     func sliceFromRaw<Owner, T>(owner: ref Owner, data: ptr[T], len: usize): []T
+    /// Builds a mutable slice view from a raw pointer and length tied to an exclusive owner borrow.
+    func mutSliceFromRaw<Owner, T>(owner: mut ref Owner, data: ptr[T], len: usize): mut []T
     /// Returns the element count of a slice without reading its contents.
     ///
     /// **Safe**: only reads the `len` field of the fat-pointer descriptor;
     /// the element data is never dereferenced.
     func sliceLen<T>(source: []T): usize
+    /// Returns the element count of a mutable slice without reading its contents.
+    func mutSliceLen<T>(source: mut []T): usize
     /// Returns the raw pointer to a slice's first element, if any.
     func sliceData<T>(source: []T): ptr[T]
     /// Builds a sub-view over a slice range. Out-of-range bounds trap.

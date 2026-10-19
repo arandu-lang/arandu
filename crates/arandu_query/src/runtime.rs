@@ -86,6 +86,7 @@ fn hash_shape(hash: &mut blake3::Hasher, shape: &TypeShape) {
     use TypeShape::*;
     let tag = match shape {
         Primitive(_) => 0,
+        Vector(_) => 25,
         Named(_, _) => 1,
         Func(_, _) => 2,
         Nullable(_) => 3,
@@ -110,9 +111,13 @@ fn hash_shape(hash: &mut blake3::Hasher, shape: &TypeShape) {
         IntLiteral => 21,
         FloatLiteral => 22,
         Error => 23,
+        MutSlice(_) => 26,
     };
     hash.update(&[tag]);
     match shape {
+        Vector(vector) => {
+            hash.update(vector.name().as_bytes());
+        }
         Primitive(primitive) => {
             hash.update(&[*primitive as u8]);
         }
@@ -156,8 +161,10 @@ fn hash_shape(hash: &mut blake3::Hasher, shape: &TypeShape) {
             hash.update(&symbol.file_id.to_le_bytes());
             hash.update(&symbol.local_id.0.to_le_bytes());
         }
-        Nullable(inner) | Slice(inner) | Ptr(inner) | Ref(inner) | RefMut(inner)
-        | Option(inner) | Coroutine(inner) | Poll(inner) | Range(inner) => hash_shape(hash, inner),
+        Nullable(inner) | Slice(inner) | MutSlice(inner) | Ptr(inner) | Ref(inner)
+        | RefMut(inner) | Option(inner) | Coroutine(inner) | Poll(inner) | Range(inner) => {
+            hash_shape(hash, inner)
+        }
         Result(ok, error) => {
             hash_shape(hash, ok);
             hash_shape(hash, error);

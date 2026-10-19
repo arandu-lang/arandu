@@ -1,0 +1,203 @@
+(* ================================================================== *)
+(*  ARANDU LANGUAGE — FORMAL LEXICAL GRAMMAR                          *)
+(*  File: grammar/lexer.ebnf                                          *)
+(*  Notation: ISO/IEC 14977-inspired EBNF                              *)
+(* ================================================================== *)
+
+(* ------------------------------------------------------------------ *)
+(*  1. LEXICAL STRUCTURE AND WHITESPACE                                *)
+(* ------------------------------------------------------------------ *)
+
+source_text        = { whitespace | comment | token } ;
+
+whitespace         = " " | "\t" | "\v" | "\f" | newline ;
+
+newline            = "\n" | "\r\n" | "\r" ;
+
+
+(* ------------------------------------------------------------------ *)
+(*  2. COMMENTS (NESTED BLOCK AND DOC COMMENTS)                        *)
+(* ------------------------------------------------------------------ *)
+
+comment            = doc_comment | line_comment | block_comment ;
+
+line_comment       = "//" { non_newline_char } newline ;
+
+doc_comment        = line_doc_comment | block_doc_comment ;
+
+line_doc_comment   = "///" { non_newline_char } newline ;
+
+(* Block comments support arbitrary nesting (depth-counted) *)
+block_comment      = "/*" { block_comment | non_comment_star_slash } "*/" ;
+
+block_doc_comment  = "/**" { block_comment | non_comment_star_slash } "*/" ;
+
+non_newline_char   = ? any UTF-8 character except newline ? ;
+
+non_comment_star_slash = ? any character sequence not forming "/*" or "*/" ? ;
+
+
+(* ------------------------------------------------------------------ *)
+(*  3. AUTOMATIC SEMICOLON INSERTION (ASI)                             *)
+(* ------------------------------------------------------------------ *)
+
+(*
+    Deterministic Semicolon Rule:
+    When a newline or EOF is encountered, the scanner automatically emits
+    a logical semicolon token (SEMICOLON / stmt_end) IF AND ONLY IF
+    the preceding significant token belongs to the set of statement terminators:
+
+    terminator_token = IDENT_VALUE
+                     | IDENT_TYPE
+                     | primitive_type_kw
+                     | literal
+                     | ")" | "]" | "}" | "?"
+                     | "return" | "break" | "continue"
+                     ;
+
+    A semicolon is NEVER inserted if the next token continues an expression:
+    continuer_token  = ")" | "]" | "," | "." | "?." | "?[" | binary_op ;
+*)
+
+logical_semicolon  = ";" ;
+
+
+(* ------------------------------------------------------------------ *)
+(*  4. IDENTIFIERS (SYNTACTIC DISAMBIGUATION)                          *)
+(* ------------------------------------------------------------------ *)
+
+(* Value identifiers start lowercase or underscore (functions, variables, fields) *)
+IDENT_VALUE        = ( lower_letter | "_" ) { ident_continue } ;
+
+(* Type identifiers start uppercase (structs, enums, interfaces, type aliases) *)
+IDENT_TYPE         = upper_letter { ident_continue } ;
+
+ident_continue     = lower_letter | upper_letter | digit | "_" ;
+
+lower_letter       = "a" .. "z" ;
+
+upper_letter       = "A" .. "Z" ;
+
+digit              = "0" .. "9" ;
+
+nonzero_digit      = "1" .. "9" ;
+
+hex_digit          = digit | "a" .. "f" | "A" .. "F" ;
+
+bin_digit          = "0" | "1" ;
+
+oct_digit          = "0" .. "7" ;
+
+
+(* ------------------------------------------------------------------ *)
+(*  5. KEYWORDS (RESERVED TERMINALS)                                   *)
+(* ------------------------------------------------------------------ *)
+
+kw_control         = "if" | "else" | "for" | "in" | "while" | "match"
+                   | "return" | "break" | "continue" ;
+
+kw_declaration     = "let" | "const" | "type" | "func" | "async" | "await"
+                   | "struct" | "enum" | "interface" | "impl" | "sealed"
+                   | "module" | "import" | "from" | "use" | "as"
+                   | "public" | "internal" | "private" | "extern" | "unsafe" | "where" ;
+
+kw_metaprogramming = "comptime" ;
+
+kw_memory          = "own" | "mut" | "shared" | "ref" | "ptr" | "alloc" | "free"
+                   | "defer" | "errdefer" ;
+
+kw_primitive_type  = "int"  | "uint" | "isize" | "usize" | "float"
+                   | "i8"   | "i16"  | "i32"   | "i64"
+                   | "u8"   | "u16"  | "u32"   | "u64"
+                   | "f32"  | "f64"
+                   | "bool" | "byte" | "char"  | "str"
+                   | "any"  | "Err" ;
+
+kw_value           = "true" | "false" | "nil" | "self" ;
+
+KEYWORD            = kw_control | kw_declaration | kw_metaprogramming
+                   | kw_memory | kw_primitive_type | kw_value ;
+
+
+(* ------------------------------------------------------------------ *)
+(*  6. OPERATORS AND PUNCTUATION                                       *)
+(* ------------------------------------------------------------------ *)
+
+PUNCTUATION        = "("  | ")"  | "["  | "]"  | "{"  | "}"
+                   | ","  | "."  | ":"  | ";"  | "@"  | "?"
+                   | "?." | "?[" | "??" ;
+
+ARITHMETIC_OP      = "+"  | "-"  | "*"  | "/"  | "%" ;
+
+BITWISE_OP         = "&"  | "|"  | "^"  | "~"  | "<<" | ">>" ;
+
+LOGICAL_OP         = "&&" | "||" | "!" ;
+
+RELATIONAL_OP      = "==" | "!=" | "<"  | "<=" | ">"  | ">=" ;
+
+ASSIGNMENT_OP      = "="  | "+=" | "-=" | "*=" | "/=" | "%="
+                   | "&=" | "|=" | "^=" | "<<=" | ">>=" ;
+
+ARROW_OP           = "=>" | "->" ;
+
+RANGE_OP           = ".." | "..=" ;
+
+ELLIPSIS_OP        = "..." ;
+
+
+(* ------------------------------------------------------------------ *)
+(*  7. LITERALS                                                        *)
+(* ------------------------------------------------------------------ *)
+
+LITERAL            = INT_LIT
+                   | FLOAT_LIT
+                   | BOOL_LIT
+                   | CHAR_LIT
+                   | BYTE_CHAR_LIT
+                   | STRING_LIT
+                   | NIL_LIT
+                   ;
+
+BOOL_LIT           = "true" | "false" ;
+
+NIL_LIT            = "nil" ;
+
+INT_LIT            = decimal_lit | hex_lit | bin_lit | oct_lit ;
+
+decimal_lit        = nonzero_digit { digit | "_" } | "0" ;
+
+hex_lit            = "0x" hex_digit { hex_digit | "_" } ;
+
+bin_lit            = "0b" bin_digit { bin_digit | "_" } ;
+
+oct_lit            = "0o" oct_digit { oct_digit | "_" } ;
+
+FLOAT_LIT          = decimal_lit "." digit { digit | "_" } [ exponent ]
+                   | decimal_lit exponent
+                   ;
+
+exponent           = ( "e" | "E" ) [ "+" | "-" ] digit { digit | "_" } ;
+
+CHAR_LIT           = "'" ( escape_seq | ? any UTF-8 char except "'" or "\\" ? ) "'" ;
+
+BYTE_CHAR_LIT      = "b'" ( escape_seq | ? any ASCII char except "'" or "\\" ? ) "'" ;
+
+STRING_LIT         = normal_string | multiline_string | raw_string ;
+
+normal_string      = '"' { str_content | escape_seq | interpolation } '"' ;
+
+multiline_string   = '"""' { multiline_content | escape_seq | interpolation } '"""' ;
+
+raw_string         = "r" '"' { ? any character except '"' ? } '"'
+                   | "r" '"""' { ? any character sequence not ending with '"""' ? } '"""'
+                   ;
+
+interpolation      = "${" (* syntactic expression parsed within lexer state *) "}" ;
+
+escape_seq         = "\\" ( "n" | "t" | "r" | "0" | "\\" | '"' | "'" | "$"
+                          | "u{" hex_digit { hex_digit } "}"
+                          ) ;
+
+(* ================================================================== *)
+(*  END OF LEXICAL GRAMMAR                                             *)
+(* ================================================================== *)

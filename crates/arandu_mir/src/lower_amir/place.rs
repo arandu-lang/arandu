@@ -104,7 +104,10 @@ impl LowerCtx<'_> {
                 if matches!(base_ty, ArType::Ref(_) | ArType::RefMut(_) | ArType::Ptr(_)) {
                     place.projections.push(AmirProjection::Deref);
                 }
-                if !matches!(container_ty, ArType::Array(_, _) | ArType::Slice(_)) && !is_vec {
+                if !matches!(
+                    container_ty,
+                    ArType::Array(_, _) | ArType::Slice(_) | ArType::MutSlice(_)
+                ) && !is_vec {
                     return Err(self.move_diag(
                         "can only borrow an indexed place from an array, slice, or vector",
                     ));
@@ -273,7 +276,10 @@ impl LowerCtx<'_> {
                 _ => base_ty,
             };
             let is_vec = arandu_middle::types::is_vec_type(&container_ty, symbols);
-            if (matches!(container_ty, ArType::Array(_, _) | ArType::Slice(_)) || is_vec)
+            if (matches!(
+                container_ty,
+                ArType::Array(_, _) | ArType::Slice(_) | ArType::MutSlice(_)
+            ) || is_vec)
                 && (!self.tc.type_info.is_copy(expr_ty) || through_reference)
             {
                 let idx = self.lower_expr(index, None, symbols)?;

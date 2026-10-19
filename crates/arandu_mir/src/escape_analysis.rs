@@ -25,7 +25,7 @@ use crate::NO_GENERATIONAL_FALLBACK;
 use crate::amir::{
     AmirFunc, AmirOperand, AmirRvalue, AmirStmt, AmirTerminator, BlockId, LocalId, TempId,
 };
-use crate::borrow_facts::analyze_borrow_facts;
+use crate::borrow_facts::analyze_borrow_facts_with_types;
 use crate::diagnostics::{DiagCode, Diagnostic};
 use crate::types::ArType;
 use crate::{Span, SymbolTable};
@@ -216,6 +216,29 @@ fn has_projected_borrow(func: &AmirFunc, local: LocalId) -> bool {
         })
 }
 
+fn borrows_through_external_storage(
+    func: &AmirFunc,
+    interner: &crate::types::TypeInterner,
+    local: LocalId,
+    projections: &[crate::amir::AmirProjection],
+) -> bool {
+    func.locals.get(local.as_usize()).is_some_and(|local| {
+        matches!(
+            (projections.first(), interner.try_resolve(local.ty)),
+            (
+                Some(crate::amir::AmirProjection::Deref),
+                Some(ArType::Ref(_) | ArType::RefMut(_))
+            ) | (
+                Some(
+                    crate::amir::AmirProjection::Index(_)
+                        | crate::amir::AmirProjection::IndexConstant(_)
+                ),
+                Some(ArType::Slice(_) | ArType::MutSlice(_))
+            )
+        )
+    })
+}
+
 fn o004_diag(name: &str, span: Span, block: BlockId, reason: &str, as_error: bool) -> Diagnostic {
     let msg = format!("generational fallback: '{name}' escapes stack-limited borrow window");
     let d = if as_error {
@@ -258,7 +281,7 @@ fn find_escapes_impl(
     interner: &crate::types::TypeInterner,
     type_info: Option<&arandu_typeck::TypeInfo>,
 ) -> Vec<EscapeEvent> {
-    let facts = analyze_borrow_facts(func);
+    let facts = analyze_borrow_facts_with_types(func, interner);
     // Generated functions commonly reuse the same types across many stores.
     // Resolve the structural carrier question once per used store type. Keep
     // this lazy: partial IDE MIR may contain temp TypeIds from a broader
@@ -267,6 +290,18 @@ fn find_escapes_impl(
     // Temp → place_local for stack-derived refs (from loans + propagation).
     let mut temp_to_place: Vec<Option<LocalId>> = vec![None; func.temps.len()];
     for loan in &facts.loans {
+        if borrows_through_external_storage(
+            func,
+            interner,
+            loan.place_local,
+            &loan.place_projections,
+        ) {
+            // Reference slots and slice descriptors do not own their pointees. The
+            // original owner's loan, propagated by borrow_facts, remains the
+            // stack origin when there is one. Formal reference parameters
+            // instead borrow caller-owned storage and introduce no stack root.
+            continue;
+        }
         for t in loan.holder_temps.iter() {
             let i = t.as_usize();
             if i < temp_to_place.len() {
@@ -289,7 +324,15 @@ fn find_escapes_impl(
                 } = stmt
                 {
                     let i = lhs.as_usize();
-                    if i < temp_to_place.len() && temp_to_place[i].is_none() {
+                    if i < temp_to_place.len()
+                        && temp_to_place[i].is_none()
+                        && !borrows_through_external_storage(
+                            func,
+                            interner,
+                            place.local,
+                            &place.projections,
+                        )
+                    {
                         temp_to_place[i] = Some(place.local);
                         changed = true;
                     }
@@ -306,6 +349,11 @@ fn find_escapes_impl(
                     }
                 }
                 if let AmirStmt::Assign { lhs, rhs } = stmt {
+                    if func.temps.get(lhs.as_usize()).is_some_and(|temp| {
+                        !crate::borrow_facts::type_may_carry_borrow(temp.ty, interner)
+                    }) {
+                        continue;
+                    }
                     let i = lhs.as_usize();
                     match rhs {
                         AmirRvalue::Use(op) => {
@@ -372,6 +420,21 @@ fn find_escapes_impl(
             // Return value is typically stored into local/temp _0 (return slot).
             // Look for last assigns to return temp (params[0] or TempId(0)).
             for stmt in func.block_stmts(block.id) {
+                // Provenance may reach the return slot through a load or a
+                // call, not just Use/Borrow/aggregate syntax. Scalar values
+                // were removed from this map by the shared typed facts.
+                if let AmirStmt::Assign { lhs, .. } = stmt
+                    && is_return_temp(*lhs, func)
+                    && let Some(place) = temp_to_place.get(lhs.as_usize()).copied().flatten()
+                {
+                    events.push(EscapeEvent {
+                        kind: EscapeKind::Return,
+                        place_local: place,
+                        span: temp_span(*lhs, func).unwrap_or_else(|| local_span(place, func)),
+                        block: block.id,
+                        reason: "reference escapes via return of the current function",
+                    });
+                }
                 if let AmirStmt::Assign {
                     lhs,
                     rhs: AmirRvalue::Use(op),
@@ -394,13 +457,28 @@ fn find_escapes_impl(
                 } = stmt
                     && is_return_temp(*lhs, func)
                 {
-                    events.push(EscapeEvent {
-                        kind: EscapeKind::Return,
-                        place_local: place.local,
-                        span: temp_span(*lhs, func).unwrap_or_else(|| place_span(place, func)),
-                        block: block.id,
-                        reason: "reference escapes via return of the current function",
-                    });
+                    let origin = temp_to_place
+                        .get(lhs.as_usize())
+                        .copied()
+                        .flatten()
+                        .or_else(|| {
+                            (!borrows_through_external_storage(
+                                func,
+                                interner,
+                                place.local,
+                                &place.projections,
+                            ))
+                            .then_some(place.local)
+                        });
+                    if let Some(origin) = origin {
+                        events.push(EscapeEvent {
+                            kind: EscapeKind::Return,
+                            place_local: origin,
+                            span: temp_span(*lhs, func).unwrap_or_else(|| place_span(place, func)),
+                            block: block.id,
+                            reason: "reference escapes via return of the current function",
+                        });
+                    }
                 }
                 // Return of aggregate containing stack ref directly assigned to return temp
                 if let AmirStmt::Assign { lhs, rhs } = stmt
@@ -566,9 +644,9 @@ fn type_is_borrow_carrier(
                     pending.push(err);
                 }
                 ArType::Tuple(args) => pending.extend(interner.type_args(args)),
-                // A slice is a borrowed fat view, but not a hidden
-                // reference-bearing aggregate for this fallback heuristic.
-                ArType::Slice(_) => {}
+                // Slices are borrowed fat views, but not hidden
+                // reference-bearing aggregates for this fallback heuristic.
+                ArType::Slice(_) | ArType::MutSlice(_) => {}
                 _ => {}
             }
         }
@@ -1057,5 +1135,197 @@ mod tests {
             1,
             "only the store through an external indirection escapes; a stack-local aggregate does not: {diags:?}"
         );
+    }
+
+    #[test]
+    fn reborrow_return_names_original_stack_owner_not_reference_slot() {
+        let interner = TypeInterner::new();
+        let int = interner.intern(ArType::Primitive(Primitive::Int));
+        let reference = interner.intern(ArType::Ref(int));
+        let mut stmts = AmirStmtTable::new();
+        stmts.push(AmirStmt::Assign {
+            lhs: TempId::from_usize(1),
+            rhs: AmirRvalue::Borrow(place(0)),
+        });
+        stmts.push(AmirStmt::Store {
+            lhs: place(1),
+            rhs: AmirOperand::Copy(TempId::from_usize(1)),
+        });
+        let mut pointee = place(1);
+        pointee.projections.push(AmirProjection::Deref);
+        stmts.push(AmirStmt::Assign {
+            lhs: TempId::from_usize(0),
+            rhs: AmirRvalue::Borrow(pointee),
+        });
+        let blocks = vec![AmirBasicBlock {
+            id: BlockId::from_usize(0),
+            statements: DenseRange::new(0, 3),
+            params: DenseRange::empty(),
+            terminator: AmirTerminator::Return,
+        }];
+        let func = AmirFunc {
+            symbol: SymbolId::new(0, 0),
+            return_type: reference,
+            receiver: None,
+            params: vec![],
+            locals: vec![
+                AmirLocal {
+                    id: LocalId::from_usize(0),
+                    ty: int,
+                    is_memory: true,
+                    symbol: None,
+                    span: Span::new(0, 1, 2),
+                    use_span: None,
+                },
+                AmirLocal {
+                    id: LocalId::from_usize(1),
+                    ty: reference,
+                    is_memory: true,
+                    symbol: None,
+                    span: Span::new(0, 3, 4),
+                    use_span: None,
+                },
+            ],
+            temps: (0..2)
+                .map(|i| AmirTemp {
+                    id: TempId::from_usize(i),
+                    ty: reference,
+                    is_copy: true,
+                    is_nullable: false,
+                    span: Span::new(0, 5, 6),
+                })
+                .collect(),
+            cfg: compute_cfg_edges(&blocks),
+            blocks,
+            block_params: Vec::new(),
+            stmts,
+        };
+        let events = find_escapes(&func, &interner);
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0].kind, EscapeKind::Return);
+        assert_eq!(events[0].place_local, LocalId::from_usize(0));
+        let diagnostics = check_escapes(
+            &func,
+            &empty_symbols(),
+            &interner,
+            EscapeCheckOptions::default(),
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == DiagCode::O010EscapeOfBorrowedValue)
+        );
+    }
+
+    fn slice_projection_return(stack_owner: bool, indexed: bool) -> (AmirFunc, TypeInterner) {
+        let interner = TypeInterner::new();
+        let int = interner.intern(ArType::Primitive(Primitive::Int));
+        let reference = interner.intern(ArType::Ref(int));
+        let slice = interner.intern(ArType::Slice(int));
+        let owner_type = if stack_owner { int } else { reference };
+        let result_type = if indexed {
+            reference
+        } else {
+            interner.intern(ArType::Ref(slice))
+        };
+        let mut owner = place(0);
+        if !stack_owner {
+            owner.projections.push(AmirProjection::Deref);
+        }
+        let mut element = place(1);
+        if indexed {
+            element.projections.push(AmirProjection::IndexConstant(0));
+        }
+        let mut stmts = AmirStmtTable::new();
+        stmts.push(AmirStmt::Assign {
+            lhs: TempId::from_usize(1),
+            rhs: AmirRvalue::Borrow(owner),
+        });
+        stmts.push(AmirStmt::Assign {
+            lhs: TempId::from_usize(2),
+            rhs: AmirRvalue::SliceView {
+                owner: AmirOperand::Copy(TempId::from_usize(1)),
+                data: AmirOperand::Constant(crate::amir::AmirConstant::Nil),
+                len: AmirOperand::Constant(crate::amir::AmirConstant::Pool(
+                    crate::literal_pool::LiteralId(0),
+                )),
+            },
+        });
+        stmts.push(AmirStmt::Store {
+            lhs: place(1),
+            rhs: AmirOperand::Copy(TempId::from_usize(2)),
+        });
+        stmts.push(AmirStmt::Assign {
+            lhs: TempId::from_usize(3),
+            rhs: AmirRvalue::Borrow(element),
+        });
+        stmts.push(AmirStmt::Assign {
+            lhs: TempId::from_usize(0),
+            rhs: AmirRvalue::Use(AmirOperand::Copy(TempId::from_usize(3))),
+        });
+        let blocks = vec![AmirBasicBlock {
+            id: BlockId::from_usize(0),
+            statements: DenseRange::new(0, stmts.len()),
+            params: DenseRange::empty(),
+            terminator: AmirTerminator::Return,
+        }];
+        let func = AmirFunc {
+            symbol: SymbolId::new(0, 0),
+            return_type: result_type,
+            receiver: None,
+            params: vec![],
+            locals: [owner_type, slice]
+                .into_iter()
+                .enumerate()
+                .map(|(index, ty)| AmirLocal {
+                    id: LocalId::from_usize(index),
+                    ty,
+                    is_memory: true,
+                    symbol: None,
+                    span: Span::new(0, 1, 2),
+                    use_span: None,
+                })
+                .collect(),
+            temps: [result_type, reference, slice, result_type]
+                .into_iter()
+                .enumerate()
+                .map(|(index, ty)| AmirTemp {
+                    id: TempId::from_usize(index),
+                    ty,
+                    is_copy: true,
+                    is_nullable: false,
+                    span: Span::new(0, 3, 4),
+                })
+                .collect(),
+            cfg: compute_cfg_edges(&blocks),
+            blocks,
+            block_params: Vec::new(),
+            stmts,
+        };
+        (func, interner)
+    }
+
+    #[test]
+    fn returning_element_of_caller_owned_slice_does_not_escape_local_descriptor() {
+        let (func, interner) = slice_projection_return(false, true);
+        assert!(find_escapes(&func, &interner).is_empty());
+    }
+
+    #[test]
+    fn returning_slice_element_retains_original_stack_owner() {
+        let (func, interner) = slice_projection_return(true, true);
+        let events = find_escapes(&func, &interner);
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0].kind, EscapeKind::Return);
+        assert_eq!(events[0].place_local, LocalId::from_usize(0));
+    }
+
+    #[test]
+    fn returning_reference_to_slice_descriptor_still_escapes_local_storage() {
+        let (func, interner) = slice_projection_return(false, false);
+        let events = find_escapes(&func, &interner);
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0].kind, EscapeKind::Return);
+        assert_eq!(events[0].place_local, LocalId::from_usize(1));
     }
 }

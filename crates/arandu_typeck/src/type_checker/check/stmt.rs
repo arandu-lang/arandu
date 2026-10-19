@@ -488,6 +488,7 @@ fn check_for_stmt(
                 ArType::Array(_, inner)
                 | ArType::ConstArray(_, inner)
                 | ArType::Slice(inner)
+                | ArType::MutSlice(inner)
                 | ArType::Range(inner) => checker.type_info.type_interner.resolve(*inner),
                 ArType::Error => ArType::Error,
                 _ => {
@@ -750,12 +751,14 @@ fn apply_set_constraints(
 }
 
 fn validate_mutability(checker: &mut TypeChecker<'_>, place: &arandu_parser::Place) {
+    let root_key = crate::NodeKey::from(place.span);
+    let symbol_id_opt = checker.resolved.value_refs.get(&root_key).copied();
+
     if place.suffixes.is_empty() {
-        let root_key = crate::NodeKey::from(place.span);
-        if let Some(symbol_id) = checker.resolved.value_refs.get(&root_key) {
-            let symbol = checker.symbols.get(*symbol_id);
+        if let Some(symbol_id) = symbol_id_opt {
+            let symbol = checker.symbols.get(symbol_id);
             if (symbol.kind == crate::SymbolKind::Local || symbol.kind == crate::SymbolKind::Param)
-                && !checker.resolved.mutable_symbols.contains(symbol_id)
+                && !checker.resolved.mutable_symbols.contains(&symbol_id)
             {
                 let name = &symbol.name;
                 let replacement = crate::Hint {
@@ -777,6 +780,158 @@ fn validate_mutability(checker: &mut TypeChecker<'_>, place: &arandu_parser::Pla
                 .with_label(symbol.span, "variable declared here as immutable")
                 .with_hint_replacement(replacement);
                 checker.diagnostics.push(diag);
+            }
+        }
+        return;
+    }
+
+    let mut current_ty_id = if let Some(symbol_id) = symbol_id_opt {
+        if let Some(ty_id) = checker.ctx.lookup(symbol_id) {
+            ty_id
+        } else if let Some(ty_id) = checker.decl_type_id(symbol_id) {
+            ty_id
+        } else {
+            return;
+        }
+    } else {
+        return;
+    };
+
+    let is_root_mutable =
+        symbol_id_opt.is_some_and(|sym_id| checker.resolved.mutable_symbols.contains(&sym_id));
+    let mut is_mutable = is_root_mutable;
+
+    for suffix in &place.suffixes {
+        if checker.resolve(current_ty_id).is_error() {
+            return;
+        }
+
+        let (peeled_id, was_nullable) = super::place::peel_auto_deref_place(checker, current_ty_id);
+        if was_nullable {
+            return;
+        }
+
+        let mut check_id = current_ty_id;
+        while check_id != peeled_id {
+            match checker.resolve(check_id) {
+                ArType::RefMut(inner) | ArType::Ptr(inner) => {
+                    is_mutable = true;
+                    check_id = inner;
+                }
+                ArType::Ref(inner) => {
+                    is_mutable = false;
+                    check_id = inner;
+                }
+                ArType::Nullable(inner) => {
+                    check_id = inner;
+                }
+                _ => break,
+            }
+        }
+
+        let actual_base_ty = checker.resolve(peeled_id);
+
+        match suffix {
+            arandu_parser::PlaceSuffix::Index { span, .. } => {
+                match &actual_base_ty {
+                    ArType::Slice(_) => {
+                        let diag = crate::Diagnostic::error(
+                            crate::DiagCode::T026CannotAssignImmutable,
+                            "cannot assign to immutable slice element",
+                            *span,
+                        )
+                        .with_label(
+                            *span,
+                            "cannot assign to element of immutable slice view `[]T`",
+                        )
+                        .with_hint("consider using a mutable slice `mut []T`".to_string());
+                        checker.diagnostics.push(diag);
+                        return;
+                    }
+                    ArType::MutSlice(inner) => {
+                        is_mutable = true;
+                        current_ty_id = *inner;
+                    }
+                    ArType::Array(_, inner) | ArType::ConstArray(_, inner) => {
+                        if !is_mutable {
+                            let (sym_name, sym_span) = symbol_id_opt
+                                .map(|s| {
+                                    (
+                                        checker.symbols.get(s).name.as_str(),
+                                        checker.symbols.get(s).span,
+                                    )
+                                })
+                                .unwrap_or(("", place.span));
+                            let diag = crate::Diagnostic::error(
+                                crate::DiagCode::T026CannotAssignImmutable,
+                                format!("cannot mutate immutable array '{sym_name}'"),
+                                *span,
+                            )
+                            .with_label(*span, "cannot assign to element of immutable array")
+                            .with_label(sym_span, "variable declared here as immutable")
+                            .with_hint(format!("consider declaring the variable as mutable: `mut {sym_name} = ...;`"));
+                            checker.diagnostics.push(diag);
+                            return;
+                        }
+                        current_ty_id = *inner;
+                    }
+                    ArType::Named(_, args)
+                        if arandu_middle::types::is_vec_type(&actual_base_ty, &checker.symbols) =>
+                    {
+                        if !is_mutable {
+                            let (sym_name, sym_span) = symbol_id_opt
+                                .map(|s| {
+                                    (
+                                        checker.symbols.get(s).name.as_str(),
+                                        checker.symbols.get(s).span,
+                                    )
+                                })
+                                .unwrap_or(("", place.span));
+                            let diag = crate::Diagnostic::error(
+                                crate::DiagCode::T026CannotAssignImmutable,
+                                format!("cannot mutate immutable variable '{sym_name}'"),
+                                *span,
+                            )
+                            .with_label(*span, "cannot assign to element of immutable vector")
+                            .with_label(sym_span, "variable declared here as immutable")
+                            .with_hint(format!("consider declaring the variable as mutable: `mut {sym_name} = ...;`"));
+                            checker.diagnostics.push(diag);
+                            return;
+                        }
+                        current_ty_id = checker.type_info.type_interner.type_args(*args)[0];
+                    }
+                    _ => return,
+                }
+            }
+            arandu_parser::PlaceSuffix::Field { name, .. } => {
+                let interner = &checker.type_info.type_interner;
+                let struct_info_opt = match actual_base_ty {
+                    ArType::Named(id, args) => Some((id, interner.type_args(args))),
+                    _ => None,
+                };
+                if let Some((struct_id, args)) = struct_info_opt {
+                    let resolved_args: Vec<ArType> =
+                        args.iter().map(|&a| interner.resolve(a)).collect();
+                    if let Some(field_ty) = super::super::types::struct_field_instantiated(
+                        checker,
+                        struct_id,
+                        &resolved_args,
+                        name.as_str(),
+                    ) {
+                        current_ty_id = checker.intern(field_ty);
+                    } else if let Some(field) = checker
+                        .type_info
+                        .struct_fields
+                        .get(&struct_id)
+                        .and_then(|fields| fields.get(name.as_str()))
+                    {
+                        current_ty_id = field.ty;
+                    } else {
+                        return;
+                    }
+                } else {
+                    return;
+                }
             }
         }
     }

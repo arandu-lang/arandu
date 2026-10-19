@@ -829,11 +829,18 @@ fn consume_rvalue(
     state: &mut MoveState,
     diagnostics: &mut MoveDiagSink<'_>,
 ) {
-    // Shared visitor covers all operand-bearing rvalues (RC-ANALYSIS-LOAD).
-    // Load/Borrow/BorrowMut only contribute Index projection operands, not the base place.
-    for_each_rvalue_operand(rvalue, |op| {
-        consume_operand(op, func, temp_origins, state, diagnostics, false);
-    });
+    match rvalue {
+        AmirRvalue::Len(op)
+        | AmirRvalue::SliceData(op)
+        | AmirRvalue::Discriminant { value: op } => {
+            check_operand_read(op, func, temp_origins, state, diagnostics);
+        }
+        _ => {
+            for_each_rvalue_operand(rvalue, |op| {
+                consume_operand(op, func, temp_origins, state, diagnostics, false);
+            });
+        }
+    }
 }
 
 fn check_operand_read(

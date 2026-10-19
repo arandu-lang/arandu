@@ -151,6 +151,7 @@ impl<'a> FuncTranslator<'a> {
                     match owner {
                         ArType::Array(_, inner)
                         | ArType::Slice(inner)
+                        | ArType::MutSlice(inner)
                         | ArType::ConstArray(_, inner) => {
                             cur_ty = inner;
                         }
@@ -232,6 +233,7 @@ impl<'a> FuncTranslator<'a> {
                     | ArType::RefMut(_)
                     | ArType::Nullable(_)
                     | ArType::Slice(_)
+                    | ArType::MutSlice(_)
             );
             if local.is_memory && !pointer_like && !self.is_owned_aggregate(local_ty) {
                 let slot = self.local_slot(local.id).unwrap_or(0);
@@ -342,6 +344,7 @@ impl<'a> FuncTranslator<'a> {
                 Some(ValType::I64) => self.code.push(Instruction::I64Store(memarg(3))),
                 Some(ValType::F32) => self.code.push(Instruction::F32Store(memarg(2))),
                 Some(ValType::F64) => self.code.push(Instruction::F64Store(memarg(3))),
+                Some(ValType::V128) => self.code.push(Instruction::V128Store(memarg(4))),
                 _ => self.code.push(Instruction::I32Store(memarg(2))),
             },
         }
@@ -390,6 +393,7 @@ impl<'a> FuncTranslator<'a> {
                 Some(ValType::I64) => self.code.push(Instruction::I64Load(memarg(3))),
                 Some(ValType::F32) => self.code.push(Instruction::F32Load(memarg(2))),
                 Some(ValType::F64) => self.code.push(Instruction::F64Load(memarg(3))),
+                Some(ValType::V128) => self.code.push(Instruction::V128Load(memarg(4))),
                 _ => self.code.push(Instruction::I32Load(memarg(2))),
             },
         }
@@ -407,6 +411,7 @@ impl<'a> FuncTranslator<'a> {
                     | ArType::RefMut(_)
                     | ArType::Nullable(_)
                     | ArType::Slice(_)
+                    | ArType::MutSlice(_)
             );
             if local.is_memory && !pointer_like && !self.is_owned_aggregate(result_ty) {
                 let slot = self.local_slot(local.id).unwrap_or(0);
@@ -602,7 +607,9 @@ impl<'a> FuncTranslator<'a> {
                 let owner_ty = self.strip_ref(cur_ty).unwrap_or(cur_ty);
                 let owner = self.interner.resolve(owner_ty);
                 let elem_ty = match owner {
-                    ArType::Slice(inner) | ArType::Array(_, inner) => inner,
+                    ArType::Slice(inner) | ArType::MutSlice(inner) | ArType::Array(_, inner) => {
+                        inner
+                    }
                     _ => return cur_ty,
                 };
                 let elem_size = self.layout_of(&self.interner.resolve(elem_ty)).size;
@@ -622,7 +629,7 @@ impl<'a> FuncTranslator<'a> {
                         self.code.push(Instruction::I32Mul);
                         self.code.push(Instruction::I32Add);
                     }
-                    ArType::Slice(_) => {
+                    ArType::Slice(_) | ArType::MutSlice(_) => {
                         if !*from_memory && let Some(slot) = base_slot {
                             self.emit_operand(index_op, int_ty);
                             self.code.push(Instruction::LocalGet(slot + 1));

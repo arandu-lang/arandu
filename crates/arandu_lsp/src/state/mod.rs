@@ -29,6 +29,29 @@ mod tests {
             .expect("uri")
     }
 
+    #[test]
+    fn stdlib_discovery_trusts_existing_overlays_only_beneath_the_verified_root() {
+        let root =
+            std::env::temp_dir().join(format!("arandu-lsp-authority-{}", std::process::id()));
+        let trusted_uri = uri_from_path(&root.join("core/intrinsics.aru")).expect("stdlib URI");
+        let outside_uri = uri_from_path(&root.with_extension("untrusted").join("intrinsics.aru"))
+            .expect("outside URI");
+        let overlay = "module std.core.intrinsics\nfunc edited(): int { return 42 }";
+        let mut state = ServerState::new();
+        let id = state.open_or_commit(&trusted_uri, overlay.into());
+        let outside_id = state.open_or_commit(&outside_uri, overlay.into());
+        let source = state.docs.get(id).expect("stdlib overlay").source;
+        let outside = state.docs.get(outside_id).expect("outside overlay").source;
+        assert!(!state.host.db().is_trusted_stdlib_source(source));
+
+        state.configure_stdlib_root(root);
+
+        assert!(state.host.db().is_trusted_stdlib_source(source));
+        assert!(!state.host.db().is_trusted_stdlib_source(outside));
+        assert_eq!(source.text(state.host.db()).as_ref(), overlay);
+        assert!(state.docs.get(id).expect("same live overlay").source == source);
+    }
+
     #[cfg(windows)]
     #[test]
     fn missing_verbatim_path_keeps_package_relative_identity() {

@@ -317,6 +317,19 @@ fn remap_place(place: &AmirPlace, temp_map: &[TempId], local_map: &[LocalId]) ->
 
 fn remap_rvalue(rv: &AmirRvalue, temp_map: &[TempId], local_map: &[LocalId]) -> AmirRvalue {
     match rv {
+        AmirRvalue::VectorSelect { .. }
+        | AmirRvalue::VectorCompare { .. }
+        | AmirRvalue::VectorOp { .. }
+        | AmirRvalue::VectorSplat { .. }
+        | AmirRvalue::VectorShuffle { .. }
+        | AmirRvalue::VectorExtractLane { .. }
+        | AmirRvalue::VectorInsertLane { .. } => {
+            let mut mapped = rv.clone();
+            crate::amir::visit::for_each_rvalue_operand_mut(&mut mapped, |operand| {
+                *operand = remap_op(operand, temp_map);
+            });
+            mapped
+        }
         AmirRvalue::Use(op) => AmirRvalue::Use(remap_op(op, temp_map)),
         AmirRvalue::Binary { op, left, right } => AmirRvalue::Binary {
             op: *op,
@@ -512,5 +525,64 @@ fn remap_stmt(stmt: &AmirStmt, temp_map: &[TempId], local_map: &[LocalId]) -> Am
         AmirStmt::StorageDead(l) => AmirStmt::StorageDead(local_map[l.as_usize()]),
         AmirStmt::Destroy(p) => AmirStmt::Destroy(remap_place(p, temp_map, local_map)),
         AmirStmt::Nop => AmirStmt::Nop,
+    }
+}
+
+#[cfg(test)]
+mod vector_tests {
+    use super::*;
+    use crate::amir::VectorOp;
+
+    #[test]
+    fn inlining_remaps_every_vector_operand_without_changing_lanes_or_shuffle() {
+        let left = AmirOperand::Copy(TempId(0));
+        let right = AmirOperand::Move(TempId(1));
+        let mapped_left = AmirOperand::Copy(TempId(10));
+        let mapped_right = AmirOperand::Move(TempId(11));
+        let mask = [31, 0, 29, 2, 27, 4, 25, 6, 23, 8, 21, 10, 19, 12, 17, 14];
+        let cases = [
+            (
+                AmirRvalue::VectorOp {
+                    op: VectorOp::Add,
+                    left,
+                    right,
+                },
+                vec![mapped_left, mapped_right],
+            ),
+            (AmirRvalue::VectorSplat { value: left }, vec![mapped_left]),
+            (
+                AmirRvalue::VectorShuffle { left, right, mask },
+                vec![mapped_left, mapped_right],
+            ),
+            (
+                AmirRvalue::VectorExtractLane {
+                    vector: left,
+                    lane: 3,
+                },
+                vec![mapped_left],
+            ),
+            (
+                AmirRvalue::VectorInsertLane {
+                    vector: left,
+                    lane: 3,
+                    value: right,
+                },
+                vec![mapped_left, mapped_right],
+            ),
+        ];
+        for (value, expected) in cases {
+            let mapped = remap_rvalue(&value, &[TempId(10), TempId(11)], &[]);
+            let mut actual = Vec::new();
+            crate::amir::visit::for_each_rvalue_operand(&mapped, |operand| actual.push(*operand));
+            assert_eq!(actual, expected);
+            match mapped {
+                AmirRvalue::VectorShuffle { mask: actual, .. } => assert_eq!(actual, mask),
+                AmirRvalue::VectorExtractLane { lane, .. }
+                | AmirRvalue::VectorInsertLane { lane, .. } => assert_eq!(lane, 3),
+                AmirRvalue::VectorOp { op, .. } => assert_eq!(op, VectorOp::Add),
+                AmirRvalue::VectorSplat { .. } => {}
+                _ => unreachable!("vector remapping must retain its variant"),
+            }
+        }
     }
 }

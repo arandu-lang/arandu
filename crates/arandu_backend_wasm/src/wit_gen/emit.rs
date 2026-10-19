@@ -88,7 +88,9 @@ fn write_type(
 ///
 /// # Errors
 ///
-/// Returns `None` if the program has no public functions (nothing to export).
+/// Returns `None` if there are no public functions, or if a signature contains
+/// a native vector without a Canonical ABI representation. Use component
+/// emission to obtain the diagnostic for an unsupported vector boundary.
 /// The caller may choose to skip component encoding in that case.
 #[must_use]
 pub fn generate_wit(
@@ -109,6 +111,7 @@ pub(crate) fn generate_wit_filtered(
     pkg_name: &str,
     live: Option<&FxHashSet<SymbolId>>,
 ) -> Option<String> {
+    super::validate_vector_boundaries(program, symbols, interner, layout_provider, live).ok()?;
     let public_funcs: Vec<_> = program
         .funcs
         .iter()

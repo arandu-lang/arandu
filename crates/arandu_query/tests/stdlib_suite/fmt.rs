@@ -16,7 +16,7 @@ const SLICE_ARU: &str = include_str!("../../../../stdlib/core/slice.aru");
 #[test]
 fn stdlib_fmt_parses_and_exports_expected_symbols() {
     let mut db = DatabaseImpl::default();
-    let file = db.new_file("stdlib/core/fmt.aru".to_string(), FMT_ARU.to_string());
+    let file = db.new_stdlib_file("stdlib/core/fmt.aru".to_string(), FMT_ARU.to_string());
     match parse(&db, file).as_ref() {
         Ok(_) => {}
         Err(e) => panic!("fmt.aru must parse; got {e}"),
@@ -35,16 +35,20 @@ fn stdlib_fmt_parses_and_exports_expected_symbols() {
 #[test]
 fn stdlib_fmt_usage_in_program() {
     let mut db = DatabaseImpl::default();
-    let _ = db.new_file(
+    db.new_stdlib_file(
+        "stdlib/core/marker.aru".into(),
+        include_str!("../../../../stdlib/core/marker.aru").into(),
+    );
+    let _ = db.new_stdlib_file(
         "stdlib/core/intrinsics.aru".to_string(),
         INTRINSICS_ARU.to_string(),
     );
-    let _ = db.new_file("stdlib/core/slice.aru".to_string(), SLICE_ARU.to_string());
-    let _ = db.new_file("stdlib/core/mem.aru".to_string(), MEM_ARU.to_string());
-    let _ = db.new_file("stdlib/core/option.aru".to_string(), OPTION_ARU.to_string());
-    let _ = db.new_file("stdlib/core/result.aru".to_string(), RESULT_ARU.to_string());
-    let _ = db.new_file("stdlib/core/str.aru".to_string(), STR_ARU.to_string());
-    let fmt_file = db.new_file("stdlib/core/fmt.aru".to_string(), FMT_ARU.to_string());
+    let _ = db.new_stdlib_file("stdlib/core/slice.aru".to_string(), SLICE_ARU.to_string());
+    let _ = db.new_stdlib_file("stdlib/core/mem.aru".to_string(), MEM_ARU.to_string());
+    let _ = db.new_stdlib_file("stdlib/core/option.aru".to_string(), OPTION_ARU.to_string());
+    let _ = db.new_stdlib_file("stdlib/core/result.aru".to_string(), RESULT_ARU.to_string());
+    let _ = db.new_stdlib_file("stdlib/core/str.aru".to_string(), STR_ARU.to_string());
+    let fmt_file = db.new_stdlib_file("stdlib/core/fmt.aru".to_string(), FMT_ARU.to_string());
 
     let main_src = r#"
 import std.core.fmt as fmt
@@ -63,7 +67,7 @@ func testFormatter(f: mut ref fmt.Formatter): bool {
     return true
 }
 
-func testNew(buf: []u8): fmt.Formatter {
+func testNew(buf: mut []u8): fmt.Formatter {
     return fmt.Formatter.new(buf)
 }
 

@@ -471,106 +471,9 @@ impl LowerCtx<'_> {
     }
 
     fn resolve_rvalue(redirected_temps: &FxHashMap<TempId, AmirOperand>, rval: &mut AmirRvalue) {
-        match rval {
-            AmirRvalue::Use(op) => {
-                *op = Self::resolve_operand(redirected_temps, *op);
-            }
-            AmirRvalue::Binary { left, right, .. } => {
-                *left = Self::resolve_operand(redirected_temps, *left);
-                *right = Self::resolve_operand(redirected_temps, *right);
-            }
-            AmirRvalue::Unary { operand, .. } => {
-                *operand = Self::resolve_operand(redirected_temps, *operand);
-            }
-            AmirRvalue::FieldAccess { base, .. } => {
-                *base = Self::resolve_operand(redirected_temps, *base);
-            }
-            AmirRvalue::StructLiteral { fields, .. } => {
-                for (_, op) in fields {
-                    *op = Self::resolve_operand(redirected_temps, *op);
-                }
-            }
-            AmirRvalue::IndexAccess { base, index } => {
-                *base = Self::resolve_operand(redirected_temps, *base);
-                *index = Self::resolve_operand(redirected_temps, *index);
-            }
-            AmirRvalue::Array { items } => {
-                for op in items {
-                    *op = Self::resolve_operand(redirected_temps, *op);
-                }
-            }
-            AmirRvalue::Tuple { items } => {
-                for op in items {
-                    *op = Self::resolve_operand(redirected_temps, *op);
-                }
-            }
-            AmirRvalue::Discriminant { value } => {
-                *value = Self::resolve_operand(redirected_temps, *value);
-            }
-            AmirRvalue::EnumPayload { value, .. } => {
-                *value = Self::resolve_operand(redirected_temps, *value);
-            }
-            AmirRvalue::EnumConstruct { payload, .. } => {
-                if let Some(op) = payload {
-                    *op = Self::resolve_operand(redirected_temps, *op);
-                }
-            }
-
-            AmirRvalue::Len(value) | AmirRvalue::SliceData(value) => {
-                *value = Self::resolve_operand(redirected_temps, *value);
-            }
-            AmirRvalue::SliceView { owner, data, len } => {
-                *owner = Self::resolve_operand(redirected_temps, *owner);
-                *data = Self::resolve_operand(redirected_temps, *data);
-                *len = Self::resolve_operand(redirected_temps, *len);
-            }
-            AmirRvalue::SliceSubslice { slice, start, len } => {
-                *slice = Self::resolve_operand(redirected_temps, *slice);
-                *start = Self::resolve_operand(redirected_temps, *start);
-                *len = Self::resolve_operand(redirected_temps, *len);
-            }
-            AmirRvalue::StrBytes { source } => {
-                *source = Self::resolve_operand(redirected_temps, *source);
-            }
-            AmirRvalue::StrView { owner } => {
-                *owner = Self::resolve_operand(redirected_temps, *owner);
-            }
-            AmirRvalue::Alloc(value) => {
-                *value = Self::resolve_operand(redirected_temps, *value);
-            }
-            AmirRvalue::CoroutineReady { value, .. } => {
-                *value = Self::resolve_operand(redirected_temps, *value);
-            }
-            AmirRvalue::Load(place) => {
-                Self::resolve_place(redirected_temps, place);
-            }
-            AmirRvalue::Borrow(place) => {
-                Self::resolve_place(redirected_temps, place);
-            }
-            AmirRvalue::BorrowMut(place) => {
-                Self::resolve_place(redirected_temps, place);
-            }
-            AmirRvalue::RelativeBorrow { .. } => {}
-            AmirRvalue::GenInsert { value, .. } => {
-                *value = Self::resolve_operand(redirected_temps, *value);
-            }
-            AmirRvalue::GenGet { gen_ref, .. } | AmirRvalue::GenRemove { gen_ref, .. } => {
-                *gen_ref = Self::resolve_operand(redirected_temps, *gen_ref);
-            }
-            AmirRvalue::GenSet { gen_ref, value, .. }
-            | AmirRvalue::GenUpsert { gen_ref, value, .. } => {
-                *gen_ref = Self::resolve_operand(redirected_temps, *gen_ref);
-                *value = Self::resolve_operand(redirected_temps, *value);
-            }
-            AmirRvalue::StringInterp { parts } => {
-                for op in parts {
-                    *op = Self::resolve_operand(redirected_temps, *op);
-                }
-            }
-            AmirRvalue::ToStr { value, .. } | AmirRvalue::BlackBox { value, .. } => {
-                *value = Self::resolve_operand(redirected_temps, *value);
-            }
-        }
+        crate::amir::visit::for_each_rvalue_operand_mut(rval, |operand| {
+            *operand = Self::resolve_operand(redirected_temps, *operand);
+        });
     }
 
     fn resolve_place(redirected_temps: &FxHashMap<TempId, AmirOperand>, place: &mut AmirPlace) {
@@ -825,5 +728,37 @@ impl LowerCtx<'_> {
             args.push(arg);
         }
         args
+    }
+}
+
+#[cfg(test)]
+mod vector_tests {
+    use super::*;
+
+    #[test]
+    fn redirected_vector_operands_preserve_move_kind_and_follow_phi_chains() {
+        let redirected = FxHashMap::from_iter([
+            (TempId(0), AmirOperand::Copy(TempId(2))),
+            (TempId(1), AmirOperand::Copy(TempId(3))),
+            (TempId(2), AmirOperand::Copy(TempId(10))),
+            (TempId(3), AmirOperand::Copy(TempId(11))),
+        ]);
+        let mut value = AmirRvalue::VectorInsertLane {
+            vector: AmirOperand::Copy(TempId(0)),
+            lane: 2,
+            value: AmirOperand::Move(TempId(1)),
+        };
+        LowerCtx::resolve_rvalue(&redirected, &mut value);
+        let AmirRvalue::VectorInsertLane {
+            vector,
+            lane,
+            value,
+        } = value
+        else {
+            unreachable!("SSA substitution must retain the rvalue variant");
+        };
+        assert_eq!(vector, AmirOperand::Copy(TempId(10)));
+        assert_eq!(value, AmirOperand::Move(TempId(11)));
+        assert_eq!(lane, 2);
     }
 }

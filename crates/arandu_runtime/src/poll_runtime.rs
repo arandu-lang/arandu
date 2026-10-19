@@ -14,7 +14,7 @@
 //! builds a one-shot Pending for tests. Full multi-resume disc values land with
 //! generated poll functions later.
 
-use std::alloc::{Layout, alloc, dealloc};
+use crate::vec_runtime::{ar_rt_raw_free, ar_rt_raw_malloc};
 
 const DISC_READY: u32 = 0;
 const DISC_PENDING_ONCE: u32 = 1;
@@ -23,14 +23,6 @@ const PAYLOAD_OFF: usize = 8;
 const CO_MAGIC: u32 = 0x4152434f; // "ARCO"
 /// Maximum number of short spin iterations before yielding thread in cooperative block_on.
 const CO_SPIN_LIMIT: u32 = 32;
-
-const fn co_i64_layout() -> Layout {
-    match Layout::from_size_align(HEADER + 8, 8) {
-        Ok(l) => l,
-        Err(_) => unreachable!(),
-    }
-}
-const CO_I64_LAYOUT: Layout = co_i64_layout();
 
 #[repr(C)]
 struct CoHeader {
@@ -44,8 +36,7 @@ struct CoHeader {
 /// C ABI for Cranelift JIT symbol table.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ar_co_make_ready_i64(payload: i64) -> *mut u8 {
-    let layout = CO_I64_LAYOUT;
-    let p = unsafe { alloc(layout) };
+    let p = unsafe { ar_rt_raw_malloc(HEADER + 8) };
     if p.is_null() {
         std::process::abort();
     }
@@ -65,8 +56,7 @@ pub unsafe extern "C" fn ar_co_make_ready_i64(payload: i64) -> *mut u8 {
 /// C ABI for Cranelift JIT symbol table.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ar_co_pending_once_i64(payload: i64) -> *mut u8 {
-    let layout = CO_I64_LAYOUT;
-    let p = unsafe { alloc(layout) };
+    let p = unsafe { ar_rt_raw_malloc(HEADER + 8) };
     if p.is_null() {
         std::process::abort();
     }
@@ -154,9 +144,8 @@ pub unsafe extern "C" fn ar_co_free(state: *mut u8) {
     if header.magic != CO_MAGIC {
         std::process::abort();
     }
-    let layout = CO_I64_LAYOUT;
     unsafe {
-        dealloc(state, layout);
+        ar_rt_raw_free(state);
     }
 }
 

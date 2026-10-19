@@ -61,7 +61,7 @@ fn preferred_mem_calls_match_expression_intrinsics_in_staged_contexts() {
         for layout in [DataLayout::ptr_width(8), DataLayout::i686_sysv()] {
             for spelling in [source, preferred.as_str()] {
                 let mut db = DatabaseImpl::new();
-                db.new_file("stdlib/core/mem.aru".into(), MEM.into());
+                db.new_stdlib_file("stdlib/core/mem.aru".into(), MEM.into());
                 db.set_target_config(layout);
                 let file = db.new_file(
                     "layout.aru".into(),
@@ -176,7 +176,7 @@ fn preferred_mem_calls_report_invalid_layout_without_an_ice() {
         ("Recursive", DiagCode::T029RecursiveStructInfiniteSize),
     ] {
         let mut db = DatabaseImpl::new();
-        db.new_file(
+        db.new_stdlib_file(
             "stdlib/core/mem.aru".into(),
             "module std.core.mem\nextern \"arandu-intrinsic\" { func sizeOf<T>(): usize }".into(),
         );

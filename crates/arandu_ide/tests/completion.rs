@@ -293,3 +293,53 @@ fn unsigned_primitive_bit_methods_complete_from_the_stdlib() {
         drop(snapshot);
     }
 }
+
+#[test]
+fn decimal_methods_complete_from_the_stdlib() {
+    let mut host = AnalysisHost::new();
+    for (path, text) in [
+        (
+            "stdlib/core/intrinsics.aru",
+            include_str!("../../../stdlib/core/intrinsics.aru"),
+        ),
+        (
+            "stdlib/core/slice.aru",
+            include_str!("../../../stdlib/core/slice.aru"),
+        ),
+        (
+            "stdlib/core/decimal.aru",
+            include_str!("../../../stdlib/core/decimal.aru"),
+        ),
+    ] {
+        host.new_file(path.into(), text.into());
+    }
+    let text = "import std.core.decimal as decimal\nfunc main(): int { let d = decimal.Decimal.zero(); d. }";
+    let file = host.new_file("decimal_completion.aru".into(), text.to_string());
+    let offset = u32::try_from(text.find("d. ").unwrap() + "d.".len()).unwrap();
+    let snapshot = host.snapshot();
+    let items = completions(&snapshot, file, text, offset);
+    let item_labels = labels(&items);
+    for method in ["round", "add", "sub", "mul", "div"] {
+        assert!(
+            item_labels.contains(&method),
+            "Decimal missing {method}: {:?}",
+            item_labels
+        );
+    }
+}
+
+#[test]
+fn completions_surface_inherent_methods_on_primitive_types() {
+    let mut host = AnalysisHost::default();
+    let text = "public func int.double(self: int): int { return self * 2 }\nfunc main(): int {\n    let x: int = 10\n    return x.\n}\n";
+    let file = host.new_file("primitive_completion.aru".into(), text.to_string());
+    let offset = u32::try_from(text.find("return x.").unwrap() + "return x.".len()).unwrap();
+    let snapshot = host.snapshot();
+    let items = completions(&snapshot, file, text, offset);
+    let item_labels = labels(&items);
+    assert!(
+        item_labels.contains(&"double"),
+        "primitive int missing 'double': {:?}",
+        item_labels
+    );
+}

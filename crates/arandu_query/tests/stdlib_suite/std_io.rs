@@ -14,7 +14,7 @@ const FS_ARU: &str = include_str!("../../../../stdlib/std/fs.aru");
 #[test]
 fn stdlib_path_parses_and_exports_expected_symbols() {
     let mut db = DatabaseImpl::default();
-    let file = db.new_file("stdlib/std/path.aru".to_string(), PATH_ARU.to_string());
+    let file = db.new_stdlib_file("stdlib/std/path.aru".to_string(), PATH_ARU.to_string());
     match parse(&db, file).as_ref() {
         Ok(_) => {}
         Err(e) => panic!("path.aru must parse; got {e}"),
@@ -44,7 +44,7 @@ fn stdlib_path_parses_and_exports_expected_symbols() {
 #[test]
 fn stdlib_io_fs_parses_and_exports_expected_symbols() {
     let mut db = DatabaseImpl::default();
-    let file_io = db.new_file("stdlib/std/io.aru".to_string(), IO_ARU.to_string());
+    let file_io = db.new_stdlib_file("stdlib/std/io.aru".to_string(), IO_ARU.to_string());
     match parse(&db, file_io).as_ref() {
         Ok(_) => {}
         Err(e) => panic!("io.aru must parse; got {e}"),
@@ -58,7 +58,7 @@ fn stdlib_io_fs_parses_and_exports_expected_symbols() {
         );
     }
 
-    let file_fs = db.new_file("stdlib/std/fs.aru".to_string(), FS_ARU.to_string());
+    let file_fs = db.new_stdlib_file("stdlib/std/fs.aru".to_string(), FS_ARU.to_string());
     match parse(&db, file_fs).as_ref() {
         Ok(_) => {}
         Err(e) => panic!("fs.aru must parse; got {e}"),
@@ -85,7 +85,7 @@ fn stdlib_io_usage_in_program() {
     let mut db = DatabaseImpl::default();
     let mut fs_file = None;
     for (path, source) in common::STDLIB_MODULES {
-        let file = db.new_file((*path).to_string(), (*source).to_string());
+        let file = db.new_stdlib_file((*path).to_string(), (*source).to_string());
         if *path == "stdlib/std/fs.aru" {
             fs_file = Some(file);
         }

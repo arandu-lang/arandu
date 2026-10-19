@@ -666,6 +666,7 @@ impl LayoutEngine {
                     TypeLayout::simple(p.size, p.abi_align)
                 }
             },
+            ArType::Vector(_) => TypeLayout::simple(16, 16),
             ArType::IntLiteral => TypeLayout::simple(4, 4),
             ArType::FloatLiteral => {
                 let f = self.data_layout.float;
@@ -682,7 +683,9 @@ impl LayoutEngine {
             // executable lowering rejects erroneous type-check results first.
             ArType::Void | ArType::Error => TypeLayout::simple(0, 1),
             ArType::Ref(inner) | ArType::RefMut(inner)
-                if interner.with_type(*inner, |inner| matches!(inner, ArType::Slice(_))) =>
+                if interner.with_type(*inner, |inner| {
+                    matches!(inner, ArType::Slice(_) | ArType::MutSlice(_))
+                }) =>
             {
                 // References to dynamically-sized slices carry both data and
                 // length. Borrow kind is erased after ownership validation.
@@ -707,7 +710,7 @@ impl LayoutEngine {
                 let p = self.data_layout.pointer;
                 TypeLayout::simple(p.size, p.abi_align)
             }
-            ArType::Slice(_) => self.fat_pointer_layout(),
+            ArType::Slice(_) | ArType::MutSlice(_) => self.fat_pointer_layout(),
             ArType::Array(len, inner) => {
                 let inner_layout = self.layout_of_type_inner(
                     &interner.resolve(*inner),
@@ -950,8 +953,13 @@ impl LayoutEngine {
                             }
                         }
                         let max_align = max_payload_align.max(tag_size);
-                        let payload_end = self.checked_add(
+                        let payload_offset = self.align_up(
                             tag_size,
+                            max_payload_align,
+                            LayoutOperation::EnumPayload,
+                        )?;
+                        let payload_end = self.checked_add(
+                            payload_offset,
                             max_payload_size,
                             LayoutOperation::EnumPayload,
                         )?;
@@ -963,10 +971,10 @@ impl LayoutEngine {
                         TypeLayout {
                             size,
                             align: max_align,
-                            field_offsets: vec![0, tag_size],
+                            field_offsets: vec![0, payload_offset],
                             tag_encoding: Some(TagEncoding::Direct {
                                 tag_size,
-                                payload_offset: tag_size,
+                                payload_offset,
                             }),
                         }
                     }
@@ -991,12 +999,14 @@ impl LayoutEngine {
                     walk,
                     depth + 1,
                 )?;
-                let max_align = ok_layout
-                    .align
-                    .max(err_layout.align)
-                    .max(self.pointer_width());
+                let max_payload_align = ok_layout.align.max(err_layout.align);
+                let max_align = max_payload_align.max(self.pointer_width());
                 let tag_offset = 0;
-                let payload_offset = self.pointer_width();
+                let payload_offset = self.align_up(
+                    self.pointer_width(),
+                    max_payload_align,
+                    LayoutOperation::ResultPayload,
+                )?;
                 let max_payload_size = ok_layout.size.max(err_layout.size);
                 let payload_end = self.checked_add(
                     payload_offset,
@@ -1038,7 +1048,11 @@ impl LayoutEngine {
                 } else {
                     let max_align = inner_layout.align.max(self.pointer_width());
                     let tag_offset = 0;
-                    let payload_offset = self.pointer_width();
+                    let payload_offset = self.align_up(
+                        self.pointer_width(),
+                        inner_layout.align,
+                        LayoutOperation::OptionPayload,
+                    )?;
                     let payload_end = self.checked_add(
                         payload_offset,
                         inner_layout.size,
@@ -1195,6 +1209,12 @@ fn substitute(ty: &ArType, subst: &FxHashMap<SymbolId, TypeId>, interner: &TypeI
             let substituted_inner = substitute(&inner_ty, subst, interner);
             let new_inner = interner.lookup(&substituted_inner).unwrap_or(*inner);
             ArType::Slice(new_inner)
+        }
+        ArType::MutSlice(inner) => {
+            let inner_ty = interner.resolve(*inner);
+            let substituted_inner = substitute(&inner_ty, subst, interner);
+            let new_inner = interner.lookup(&substituted_inner).unwrap_or(*inner);
+            ArType::MutSlice(new_inner)
         }
         ArType::Array(len, inner) => {
             let inner_ty = interner.resolve(*inner);

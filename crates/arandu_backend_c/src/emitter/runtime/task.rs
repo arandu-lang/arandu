@@ -508,112 +508,211 @@ static void ar_rt_thread_yield(void) {{
 #endif
 }}
 
+#include <time.h>
 #define AR_PARKING_LOT_BUCKETS 64
+
+typedef struct ar_cv_waiter {{
+    const void *key;
+    int notified;
+#if defined(_WIN32)
+    CONDITION_VARIABLE cv;
+#else
+    pthread_cond_t cv;
+#endif
+    struct ar_cv_waiter *next;
+}} ar_cv_waiter;
 
 typedef struct ar_cv_bucket {{
 #if defined(_WIN32)
-    CRITICAL_SECTION cs;
-    CONDITION_VARIABLE cv;
+    SRWLOCK mutex;
 #else
     pthread_mutex_t mutex;
-    pthread_cond_t cond;
 #endif
-    uintptr_t key;
-    size_t seq;
-    int inited;
+    ar_cv_waiter *head;
+    ar_cv_waiter *tail;
 }} ar_cv_bucket;
 
 static ar_cv_bucket ar_cv_buckets[AR_PARKING_LOT_BUCKETS];
-
-static void ar_init_cv_bucket(ar_cv_bucket *b) {{
-    if (!b->inited) {{
-#if defined(_WIN32)
-        InitializeCriticalSection(&b->cs);
-        InitializeConditionVariable(&b->cv);
-#else
-        pthread_mutex_init(&b->mutex, NULL);
-        pthread_cond_init(&b->cond, NULL);
-#endif
-        b->inited = 1;
+#if !defined(_WIN32)
+static pthread_once_t ar_cv_once = PTHREAD_ONCE_INIT;
+static void ar_init_cv_buckets(void) {{
+    for (size_t i = 0; i < AR_PARKING_LOT_BUCKETS; i++) {{
+        if (pthread_mutex_init(&ar_cv_buckets[i].mutex, NULL) != 0) abort();
     }}
 }}
+#endif
 
 static ar_cv_bucket* ar_get_cv_bucket(const void *key) {{
-    uintptr_t addr = (uintptr_t)key;
-    size_t idx = ((addr * 11400714819323198485ULL) >> 58) % AR_PARKING_LOT_BUCKETS;
-    ar_cv_bucket *b = &ar_cv_buckets[idx];
-    if (!b->inited) {{
-        ar_init_cv_bucket(b);
-    }}
-    return b;
+#if !defined(_WIN32)
+    if (pthread_once(&ar_cv_once, ar_init_cv_buckets) != 0) abort();
+#endif
+    uint64_t mixed = (uint64_t)(uintptr_t)key * UINT64_C(0x517cc1b727220a95);
+    return &ar_cv_buckets[mixed >> 58];
 }}
 
-static void ar_rt_condvar_wait(const void *key, size_t seq) {{
-    if (!key) return;
-    ar_cv_bucket *b = ar_get_cv_bucket(key);
+static void ar_cv_lock(ar_cv_bucket *b) {{
 #if defined(_WIN32)
-    EnterCriticalSection(&b->cs);
-    if (b->key == (uintptr_t)key && b->seq != seq) {{
-        LeaveCriticalSection(&b->cs);
-        return;
-    }}
-    b->key = (uintptr_t)key;
-    SleepConditionVariableCS(&b->cv, &b->cs, INFINITE);
-    LeaveCriticalSection(&b->cs);
+    AcquireSRWLockExclusive(&b->mutex);
 #else
-    pthread_mutex_lock(&b->mutex);
-    if (b->key == (uintptr_t)key && b->seq != seq) {{
-        pthread_mutex_unlock(&b->mutex);
-        return;
-    }}
-    b->key = (uintptr_t)key;
-    pthread_cond_wait(&b->cond, &b->mutex);
-    pthread_mutex_unlock(&b->mutex);
+    if (pthread_mutex_lock(&b->mutex) != 0) abort();
 #endif
 }}
 
-static void ar_rt_condvar_notify_one(const void *key) {{
-    if (!key) return;
-    ar_cv_bucket *b = ar_get_cv_bucket(key);
+static void ar_cv_unlock(ar_cv_bucket *b) {{
 #if defined(_WIN32)
-    EnterCriticalSection(&b->cs);
-    b->key = (uintptr_t)key;
-    b->seq++;
-    WakeConditionVariable(&b->cv);
-    LeaveCriticalSection(&b->cs);
+    ReleaseSRWLockExclusive(&b->mutex);
 #else
-    pthread_mutex_lock(&b->mutex);
-    b->key = (uintptr_t)key;
-    b->seq++;
-    pthread_cond_signal(&b->cond);
-    pthread_mutex_unlock(&b->mutex);
+    if (pthread_mutex_unlock(&b->mutex) != 0) abort();
 #endif
 }}
 
-static void ar_rt_condvar_notify_all(const void *key) {{
+static void ar_cv_remove(ar_cv_bucket *b, ar_cv_waiter *target) {{
+    ar_cv_waiter **link = &b->head;
+    ar_cv_waiter *prev = NULL;
+    while (*link) {{
+        if (*link == target) {{
+            *link = target->next;
+            if (b->tail == target) b->tail = prev;
+            return;
+        }}
+        prev = *link;
+        link = &(*link)->next;
+    }}
+}}
+
+#if !defined(_WIN32)
+typedef struct ar_cv_cancel_context {{ ar_cv_bucket *bucket; ar_cv_waiter *waiter; }} ar_cv_cancel_context;
+static void ar_cv_cancel_wait(void *ptr) {{
+    ar_cv_cancel_context *ctx = (ar_cv_cancel_context*)ptr;
+    /* pthread_cond_wait reacquires the mutex before deferred cancellation. */
+    ar_cv_remove(ctx->bucket, ctx->waiter);
+    ar_cv_unlock(ctx->bucket);
+    pthread_cond_destroy(&ctx->waiter->cv);
+}}
+#endif
+
+/* The key points at an aligned, stable atomic size_t sequence. Registration
+   and notification serialize under the same bucket lock; unrelated keys
+   sharing a bucket still have independent waiters and wake signals. */
+static int32_t ar_cv_wait(const void *key, size_t seq, int timed, uint64_t timeout_ms) {{
+    if (!key || (uintptr_t)key % _Alignof(_Atomic size_t)) return -1;
+    ar_cv_bucket *b = ar_get_cv_bucket(key);
+    ar_cv_waiter waiter = {{0}};
+    waiter.key = key;
+#if defined(_WIN32)
+    InitializeConditionVariable(&waiter.cv);
+    ULONGLONG started = GetTickCount64();
+#else
+    pthread_condattr_t attr;
+    if (pthread_condattr_init(&attr) != 0) abort();
+#if !defined(__APPLE__)
+    if (pthread_condattr_setclock(&attr, CLOCK_MONOTONIC) != 0) abort();
+#endif
+    if (pthread_cond_init(&waiter.cv, &attr) != 0) abort();
+    pthread_condattr_destroy(&attr);
+    struct timespec deadline;
+    if (clock_gettime(CLOCK_MONOTONIC, &deadline) != 0) abort();
+    /* Saturate extremely large durations instead of overflowing time_t. */
+    uint64_t seconds = timeout_ms / 1000;
+    uint64_t max_seconds = sizeof(time_t) <= 4 ? INT32_MAX : INT64_MAX;
+    uint64_t available = max_seconds - (uint64_t)deadline.tv_sec - 1;
+    if (seconds > available) seconds = available;
+    deadline.tv_sec += (time_t)seconds;
+    deadline.tv_nsec += (long)((timeout_ms % 1000) * 1000000);
+    if (deadline.tv_nsec >= 1000000000) {{ deadline.tv_sec++; deadline.tv_nsec -= 1000000000; }}
+#endif
+    ar_cv_lock(b);
+    if (atomic_load_explicit((const _Atomic size_t*)key, memory_order_acquire) != seq) {{
+        ar_cv_unlock(b);
+#if !defined(_WIN32)
+        pthread_cond_destroy(&waiter.cv);
+#endif
+        return 1;
+    }}
+    if (b->tail) b->tail->next = &waiter; else b->head = &waiter;
+    b->tail = &waiter;
+#if !defined(_WIN32)
+    ar_cv_cancel_context cancel_context = {{b, &waiter}};
+    pthread_cleanup_push(ar_cv_cancel_wait, &cancel_context);
+#endif
+    while (!waiter.notified) {{
+#if defined(_WIN32)
+        DWORD delay = INFINITE;
+        if (timed) {{
+            ULONGLONG elapsed = GetTickCount64() - started;
+            if (elapsed >= timeout_ms) break;
+            uint64_t left = timeout_ms - elapsed;
+            delay = left >= INFINITE ? INFINITE - 1 : (DWORD)left;
+        }}
+        if (!SleepConditionVariableSRW(&waiter.cv, &b->mutex, delay, 0)
+            && GetLastError() != ERROR_TIMEOUT) abort();
+#else
+        int result;
+        if (!timed) result = pthread_cond_wait(&waiter.cv, &b->mutex);
+#if defined(__APPLE__)
+        else {{
+            struct timespec now, remaining;
+            if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) abort();
+            remaining.tv_sec = deadline.tv_sec - now.tv_sec;
+            remaining.tv_nsec = deadline.tv_nsec - now.tv_nsec;
+            if (remaining.tv_nsec < 0) {{ remaining.tv_sec--; remaining.tv_nsec += 1000000000; }}
+            if (remaining.tv_sec < 0) break;
+            result = pthread_cond_timedwait_relative_np(&waiter.cv, &b->mutex, &remaining);
+        }}
+#else
+        else result = pthread_cond_timedwait(&waiter.cv, &b->mutex, &deadline);
+#endif
+        if (result == ETIMEDOUT) break;
+        if (result != 0) abort();
+#endif
+    }}
+#if !defined(_WIN32)
+    pthread_cleanup_pop(0);
+#endif
+    int32_t notified = waiter.notified;
+    ar_cv_remove(b, &waiter);
+    ar_cv_unlock(b);
+#if !defined(_WIN32)
+    pthread_cond_destroy(&waiter.cv);
+#endif
+    return notified;
+}}
+
+static void ar_rt_condvar_wait(const void *key, size_t seq) {{ (void)ar_cv_wait(key, seq, 0, 0); }}
+static int32_t ar_rt_condvar_wait_timeout(const void *key, size_t seq, uint64_t timeout_ms) {{
+    return ar_cv_wait(key, seq, 1, timeout_ms);
+}}
+
+static void ar_cv_notify(const void *key, int all) {{
     if (!key) return;
     ar_cv_bucket *b = ar_get_cv_bucket(key);
+    ar_cv_lock(b);
+    ar_cv_waiter *cur = b->head;
+    while (cur) {{
+        ar_cv_waiter *next = cur->next;
+        if (cur->key == key) {{
+            cur->notified = 1;
+            ar_cv_remove(b, cur);
 #if defined(_WIN32)
-    EnterCriticalSection(&b->cs);
-    b->key = (uintptr_t)key;
-    b->seq++;
-    WakeAllConditionVariable(&b->cv);
-    LeaveCriticalSection(&b->cs);
+            WakeConditionVariable(&cur->cv);
 #else
-    pthread_mutex_lock(&b->mutex);
-    b->key = (uintptr_t)key;
-    b->seq++;
-    pthread_cond_broadcast(&b->cond);
-    pthread_mutex_unlock(&b->mutex);
+            pthread_cond_signal(&cur->cv);
 #endif
+            if (!all) break;
+        }}
+        cur = next;
+    }}
+    ar_cv_unlock(b);
 }}
+static void ar_rt_condvar_notify_one(const void *key) {{ ar_cv_notify(key, 0); }}
+static void ar_rt_condvar_notify_all(const void *key) {{ ar_cv_notify(key, 1); }}
 
 typedef struct ar_thread_waiter {{
     size_t id;
-    _Atomic int signaled;
 #if defined(_WIN32)
-    HANDLE event;
+    HANDLE event; /* auto-reset event is the single coalescing park token */
 #else
+    int signaled; /* protected by mutex */
     pthread_mutex_t mutex;
     pthread_cond_t cond;
 #endif
@@ -621,93 +720,191 @@ typedef struct ar_thread_waiter {{
 }} ar_thread_waiter;
 
 static _Atomic size_t ar_next_thread_id = 1;
-static AR_THREAD_LOCAL ar_thread_waiter *ar_current_waiter = NULL;
 static ar_thread_waiter *ar_waiter_list = NULL;
 #if defined(_WIN32)
-static CRITICAL_SECTION ar_waiter_cs;
-static int ar_waiter_cs_inited = 0;
+static SRWLOCK ar_waiter_mutex = SRWLOCK_INIT;
+static INIT_ONCE ar_waiter_once = INIT_ONCE_STATIC_INIT;
+static DWORD ar_waiter_tls;
 #else
 static pthread_mutex_t ar_waiter_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_once_t ar_waiter_once = PTHREAD_ONCE_INIT;
+static pthread_key_t ar_waiter_tls;
+#endif
+
+static void ar_waiter_list_lock(void) {{
+#if defined(_WIN32)
+    AcquireSRWLockExclusive(&ar_waiter_mutex);
+#else
+    if (pthread_mutex_lock(&ar_waiter_mutex) != 0) abort();
+#endif
+}}
+static void ar_waiter_list_unlock(void) {{
+#if defined(_WIN32)
+    ReleaseSRWLockExclusive(&ar_waiter_mutex);
+#else
+    if (pthread_mutex_unlock(&ar_waiter_mutex) != 0) abort();
+#endif
+}}
+
+static void ar_thread_waiter_destroy(void *ptr) {{
+    ar_thread_waiter *w = (ar_thread_waiter*)ptr;
+    if (!w) return;
+    ar_waiter_list_lock();
+    ar_thread_waiter **link = &ar_waiter_list;
+    while (*link && *link != w) link = &(*link)->next;
+    if (*link) *link = w->next;
+    ar_waiter_list_unlock();
+#if defined(_WIN32)
+    CloseHandle(w->event);
+#else
+    pthread_mutex_destroy(&w->mutex);
+    pthread_cond_destroy(&w->cond);
+#endif
+    free(w);
+}}
+
+#if defined(_WIN32)
+static VOID CALLBACK ar_thread_waiter_fls_destroy(PVOID ptr) {{ ar_thread_waiter_destroy(ptr); }}
+static BOOL CALLBACK ar_thread_waiter_init(PINIT_ONCE once, PVOID param, PVOID *context) {{
+    (void)once; (void)param; (void)context;
+    ar_waiter_tls = FlsAlloc(ar_thread_waiter_fls_destroy);
+    return ar_waiter_tls != FLS_OUT_OF_INDEXES;
+}}
+#else
+static void ar_thread_waiter_init(void) {{
+    if (pthread_key_create(&ar_waiter_tls, ar_thread_waiter_destroy) != 0) abort();
+}}
 #endif
 
 static ar_thread_waiter* ar_get_or_create_thread_waiter(void) {{
-    if (ar_current_waiter) return ar_current_waiter;
-    ar_thread_waiter *w = (ar_thread_waiter*)calloc(1, sizeof(ar_thread_waiter));
+#if defined(_WIN32)
+    if (!InitOnceExecuteOnce(&ar_waiter_once, ar_thread_waiter_init, NULL, NULL)) abort();
+    ar_thread_waiter *w = (ar_thread_waiter*)FlsGetValue(ar_waiter_tls);
+#else
+    if (pthread_once(&ar_waiter_once, ar_thread_waiter_init) != 0) abort();
+    ar_thread_waiter *w = (ar_thread_waiter*)pthread_getspecific(ar_waiter_tls);
+#endif
+    if (w) return w;
+    w = (ar_thread_waiter*)calloc(1, sizeof(ar_thread_waiter));
     if (!w) abort();
-    w->id = atomic_fetch_add(&ar_next_thread_id, 1);
-    atomic_init(&w->signaled, 0);
+    size_t id = atomic_load(&ar_next_thread_id);
+    do {{
+        if (id == 0 || id == SIZE_MAX) abort();
+    }} while (!atomic_compare_exchange_weak(&ar_next_thread_id, &id, id + 1));
+    w->id = id;
 #if defined(_WIN32)
     w->event = CreateEvent(NULL, FALSE, FALSE, NULL);
-    if (!ar_waiter_cs_inited) {{
-        InitializeCriticalSection(&ar_waiter_cs);
-        ar_waiter_cs_inited = 1;
-    }}
-    EnterCriticalSection(&ar_waiter_cs);
-    w->next = ar_waiter_list;
-    ar_waiter_list = w;
-    LeaveCriticalSection(&ar_waiter_cs);
+    if (!w->event || !FlsSetValue(ar_waiter_tls, w)) abort();
 #else
-    pthread_mutex_init(&w->mutex, NULL);
-    pthread_cond_init(&w->cond, NULL);
-    pthread_mutex_lock(&ar_waiter_mutex);
+    if (pthread_mutex_init(&w->mutex, NULL) != 0) abort();
+    pthread_condattr_t cond_attr;
+    if (pthread_condattr_init(&cond_attr) != 0) abort();
+#if !defined(__APPLE__)
+    if (pthread_condattr_setclock(&cond_attr, CLOCK_MONOTONIC) != 0) abort();
+#endif
+    if (pthread_cond_init(&w->cond, &cond_attr) != 0) abort();
+    pthread_condattr_destroy(&cond_attr);
+    if (pthread_setspecific(ar_waiter_tls, w) != 0) abort();
+#endif
+    ar_waiter_list_lock();
     w->next = ar_waiter_list;
     ar_waiter_list = w;
-    pthread_mutex_unlock(&ar_waiter_mutex);
-#endif
-    ar_current_waiter = w;
+    ar_waiter_list_unlock();
     return w;
 }}
 
-static size_t ar_rt_thread_current_id(void) {{
-    return ar_get_or_create_thread_waiter()->id;
-}}
+static size_t ar_rt_thread_current_id(void) {{ return ar_get_or_create_thread_waiter()->id; }}
+
+#if !defined(_WIN32)
+static void ar_thread_park_unlock(void *mutex) {{ pthread_mutex_unlock((pthread_mutex_t*)mutex); }}
+#endif
 
 static void ar_rt_thread_park(void) {{
     ar_thread_waiter *w = ar_get_or_create_thread_waiter();
-    int expected = 1;
-    if (atomic_compare_exchange_strong(&w->signaled, &expected, 0)) {{
-        return;
-    }}
 #if defined(_WIN32)
-    WaitForSingleObject(w->event, INFINITE);
-    atomic_store(&w->signaled, 0);
+    if (WaitForSingleObject(w->event, INFINITE) != WAIT_OBJECT_0) abort();
 #else
-    pthread_mutex_lock(&w->mutex);
-    while (!atomic_load(&w->signaled)) {{
-        pthread_cond_wait(&w->cond, &w->mutex);
+    if (pthread_mutex_lock(&w->mutex) != 0) abort();
+    pthread_cleanup_push(ar_thread_park_unlock, &w->mutex);
+    while (!w->signaled) {{
+        if (pthread_cond_wait(&w->cond, &w->mutex) != 0) abort();
     }}
-    atomic_store(&w->signaled, 0);
-    pthread_mutex_unlock(&w->mutex);
+    w->signaled = 0;
+    pthread_cleanup_pop(1);
+#endif
+}}
+
+/* Consumes the coalescing token, or returns once the monotonic deadline passes.
+   Huge durations saturate instead of overflowing time_t or DWORD. */
+static void ar_rt_thread_park_timeout(uint64_t timeout_ms) {{
+    ar_thread_waiter *w = ar_get_or_create_thread_waiter();
+#if defined(_WIN32)
+    ULONGLONG started = GetTickCount64();
+    for (;;) {{
+        ULONGLONG elapsed = GetTickCount64() - started;
+        if (elapsed >= timeout_ms) {{
+            /* Deadline passed: still consume a token that is already set. */
+            DWORD last = WaitForSingleObject(w->event, 0);
+            if (last == WAIT_FAILED) abort();
+            return;
+        }}
+        uint64_t left = timeout_ms - elapsed;
+        DWORD slice = left >= INFINITE ? INFINITE - 1 : (DWORD)left;
+        DWORD rc = WaitForSingleObject(w->event, slice);
+        if (rc == WAIT_OBJECT_0) return;
+        if (rc != WAIT_TIMEOUT) abort();
+    }}
+#else
+    struct timespec deadline;
+    if (clock_gettime(CLOCK_MONOTONIC, &deadline) != 0) abort();
+    uint64_t seconds = timeout_ms / 1000;
+    uint64_t max_seconds = sizeof(time_t) <= 4 ? INT32_MAX : INT64_MAX;
+    uint64_t available = max_seconds - (uint64_t)deadline.tv_sec - 1;
+    if (seconds > available) seconds = available;
+    deadline.tv_sec += (time_t)seconds;
+    deadline.tv_nsec += (long)((timeout_ms % 1000) * 1000000);
+    if (deadline.tv_nsec >= 1000000000) {{ deadline.tv_sec++; deadline.tv_nsec -= 1000000000; }}
+    if (pthread_mutex_lock(&w->mutex) != 0) abort();
+    pthread_cleanup_push(ar_thread_park_unlock, &w->mutex);
+    while (!w->signaled) {{
+        int rc;
+#if defined(__APPLE__)
+        struct timespec now, remaining;
+        if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) abort();
+        remaining.tv_sec = deadline.tv_sec - now.tv_sec;
+        remaining.tv_nsec = deadline.tv_nsec - now.tv_nsec;
+        if (remaining.tv_nsec < 0) {{ remaining.tv_sec--; remaining.tv_nsec += 1000000000; }}
+        if (remaining.tv_sec < 0) break;
+        rc = pthread_cond_timedwait_relative_np(&w->cond, &w->mutex, &remaining);
+#else
+        rc = pthread_cond_timedwait(&w->cond, &w->mutex, &deadline);
+#endif
+        if (rc == ETIMEDOUT) break;
+        if (rc != 0) abort();
+    }}
+    /* Token consumed whether it arrived before, during, or racing the deadline. */
+    w->signaled = 0;
+    pthread_cleanup_pop(1);
 #endif
 }}
 
 static void ar_rt_thread_unpark(size_t thread_id) {{
     if (thread_id == 0) return;
-    ar_thread_waiter *target = NULL;
+    /* Hold registry while signaling: TLS destruction cannot free this waiter. */
+    ar_waiter_list_lock();
+    for (ar_thread_waiter *target = ar_waiter_list; target; target = target->next) {{
+        if (target->id != thread_id) continue;
 #if defined(_WIN32)
-    if (!ar_waiter_cs_inited) return;
-    EnterCriticalSection(&ar_waiter_cs);
-    for (ar_thread_waiter *cur = ar_waiter_list; cur; cur = cur->next) {{
-        if (cur->id == thread_id) {{ target = cur; break; }}
-    }}
-    LeaveCriticalSection(&ar_waiter_cs);
-    if (target) {{
-        atomic_store(&target->signaled, 1);
-        SetEvent(target->event);
-    }}
+        if (!SetEvent(target->event)) abort();
 #else
-    pthread_mutex_lock(&ar_waiter_mutex);
-    for (ar_thread_waiter *cur = ar_waiter_list; cur; cur = cur->next) {{
-        if (cur->id == thread_id) {{ target = cur; break; }}
-    }}
-    pthread_mutex_unlock(&ar_waiter_mutex);
-    if (target) {{
-        atomic_store(&target->signaled, 1);
-        pthread_mutex_lock(&target->mutex);
+        if (pthread_mutex_lock(&target->mutex) != 0) abort();
+        target->signaled = 1;
         pthread_cond_signal(&target->cond);
         pthread_mutex_unlock(&target->mutex);
-    }}
 #endif
+        break;
+    }}
+    ar_waiter_list_unlock();
 }}
 
 static int32_t ar_rt_get_entropy(uint8_t *buf, size_t len) {{

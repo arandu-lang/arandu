@@ -10,6 +10,13 @@ use salsa::{Database as _, Setter, Storage};
 
 pub type FileId = u32;
 
+/// Origin is supplied by the embedding driver, never by Arandu source names.
+/// A separate input per file preserves cutoff when another file is registered.
+#[salsa::input]
+pub(crate) struct SourceAuthority {
+    pub trusted_stdlib: bool,
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct RegistryMetrics {
     pub registered_paths: usize,
@@ -155,6 +162,7 @@ impl FileRegistry {
 pub struct DatabaseImpl {
     storage: Storage<Self>,
     files: Arc<RwLock<FileRegistry>>,
+    source_authorities: Arc<RwLock<FxHashMap<SourceFile, SourceAuthority>>>,
     /// Incremental CST reuse across `syntax_tree` queries (side cache; result still pure in text).
     cst_cache: Arc<Mutex<CstCache>>,
     /// Shared with the Salsa event callback when explain mode is on.
@@ -183,6 +191,7 @@ impl Clone for DatabaseImpl {
         Self {
             storage: self.storage.clone(),
             files: Arc::clone(&self.files),
+            source_authorities: Arc::clone(&self.source_authorities),
             cst_cache: Arc::clone(&self.cst_cache),
             rebuild_log: self.rebuild_log.clone(),
             stdlib_root: Arc::clone(&self.stdlib_root),
@@ -222,6 +231,7 @@ impl DatabaseImpl {
         let mut db = Self {
             storage: Storage::new(callback),
             files: Arc::new(RwLock::new(FileRegistry::default())),
+            source_authorities: Arc::new(RwLock::new(FxHashMap::default())),
             cst_cache: Arc::new(Mutex::new(CstCache::default())),
             rebuild_log: None,
             stdlib_root: Arc::new(RwLock::new(None)),
@@ -246,6 +256,7 @@ impl DatabaseImpl {
         let mut db = Self {
             storage: Storage::new(Some(callback)),
             files: Arc::new(RwLock::new(FileRegistry::default())),
+            source_authorities: Arc::new(RwLock::new(FxHashMap::default())),
             cst_cache: Arc::new(Mutex::new(CstCache::default())),
             rebuild_log: Some(Arc::clone(&log)),
             stdlib_root: Arc::new(RwLock::new(None)),
@@ -407,6 +418,34 @@ impl DatabaseImpl {
         }
     }
 
+    /// Set both data layout and platform target identity.
+    pub fn set_target(
+        &mut self,
+        data_layout: DataLayout,
+        identity: arandu_middle::db::TargetIdentity,
+    ) {
+        let existing = self
+            .target_config
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .copied();
+        match existing {
+            Some(input) => {
+                input.set_data_layout(self).to(data_layout);
+                input.set_identity(self).to(identity);
+            }
+            None => {
+                let input = TargetConfig::new(self, data_layout, identity);
+                let mut slot = self
+                    .target_config
+                    .write()
+                    .unwrap_or_else(|error| error.into_inner());
+                *slot = Some(input);
+            }
+        }
+    }
+
     /// Change public CTFE policy before querying (drop snapshots before writes).
     pub fn set_ctfe_limits(&mut self, limits: crate::ctfe::CtfeLimits) {
         let existing = *self
@@ -480,6 +519,59 @@ impl DatabaseImpl {
             .unwrap_or_else(|error| error.into_inner())
     }
 
+    fn register_source_authority(&self, file: SourceFile) -> SourceAuthority {
+        let mut authorities = self
+            .source_authorities
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
+        *authorities
+            .entry(file)
+            .or_insert_with(|| SourceAuthority::new(self, false))
+    }
+
+    /// Grant compiler-owned stdlib identities to a driver-verified source.
+    /// Module declarations and path spellings cannot grant this authority.
+    /// Call before analysis, from the stdlib loader or an embedded stdlib fixture.
+    pub fn trust_stdlib_source(&mut self, file: SourceFile) {
+        let was_registered = self
+            .source_authorities
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(&file);
+        let authority = self.register_source_authority(file);
+        if !was_registered {
+            self.bump_resolution_epoch();
+        }
+        if !authority.trusted_stdlib(self) {
+            authority.set_trusted_stdlib(self).to(true);
+        }
+    }
+
+    #[must_use]
+    pub fn is_trusted_stdlib_source(&self, file: SourceFile) -> bool {
+        let authority = self
+            .source_authorities
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&file)
+            .copied();
+        match authority {
+            Some(authority) => *authority.trusted_stdlib(self),
+            None => {
+                self.resolution_epoch();
+                false
+            }
+        }
+    }
+
+    /// Register a source delivered by the stdlib loader. This API is an
+    /// embedding trust boundary; it is never inferred from source syntax.
+    pub fn new_stdlib_file(&mut self, path: String, text: String) -> SourceFile {
+        let file = self.new_file(path, text);
+        self.trust_stdlib_source(file);
+        file
+    }
+
     pub fn new_file(&mut self, path: String, text: String) -> SourceFile {
         // Drop previous registration first (separate lock scope — avoid deadlock).
         self.unregister_source_file(&path);
@@ -491,6 +583,7 @@ impl DatabaseImpl {
             Arc::from(text),
             Arc::new(std::path::PathBuf::from(&path)),
         );
+        self.register_source_authority(file);
         reg.insert(path, file_id, file);
         file
     }
@@ -507,6 +600,7 @@ impl DatabaseImpl {
     pub fn register_source_file(&self, path: String, file: SourceFile) {
         let mut reg = self.files.write().unwrap_or_else(|e| e.into_inner());
         let file_id = file.file_id(self.as_source_db());
+        self.register_source_authority(file);
         if *file_id >= reg.next_id {
             reg.next_id = file_id.saturating_add(1);
         }

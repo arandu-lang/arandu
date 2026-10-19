@@ -1,227 +1,171 @@
-# RFC 0038: Vetores SIMD Portáveis de Hardware, Segurança de Alinhamento e Lowering Multi-Backend
+# RFC 0038: SIMD portável de 128 bits e segurança de alinhamento
 
-- **Número da RFC:** 0038
-- **Título:** Vetores SIMD Portáveis de Hardware, Segurança de Alinhamento e Lowering Multi-Backend
-- **Autor(es):** Arquiteto da Linguagem Arandu
-- **Data de Início:** 2026-10-16
+- **Número:** 0038
 - **Status:** `Draft`
-- **Área Principal:** `Frontend` | `Middle-end` | `Backend` | `Stdlib`
-- **Escopo:** `std.core.simd`, `arandu_middle::types::ArType::Vector`, alinhamento no `DataLayout`, AMIR vector ops, lowering para Cranelift, C e WebAssembly SIMD (`v128`).
+- **Data de início:** 2026-10-16
+- **Revisão de implementação:** 2026-10-18
+- **Área:** Middle-end, backends e stdlib
+- **Fila de entrega:** ST.2 no [roadmap canônico](../arandu-compiler-roadmap-v0.1.md)
 
----
+## Estado e fronteira pública
 
-## Fronteira de implementação e evidência
+O frontend liga os seis tipos canônicos de `std.core.simd` a
+`ArType::Vector(VectorType)`. Declarações opacas são construídas por intrínsecos
+com marcador ABI e assinatura exata; uma struct homônima não ganha essa
+representação. Métodos, aliases e reexports preservam a identidade do símbolo.
+A API fonte usa splat, aritmética, extração/inserção, comparação e seleção da
+AMIR, em vez dos antigos campos escalares.
 
-Esta RFC estabelece a transição formal da biblioteca de vetores do Arandu, saindo do protótipo de emulação escalar em software ([`stdlib/core/simd.aru`](../../stdlib/core/simd.aru)) para tipos vetoriais nativos de hardware com alinhamento garantido pelo sistema de tipos e lowering direto nos três backends do compilador.
+`Mask8x16`, `Mask16x8`, `Mask32x4` e `Mask64x2` preservam máscaras de vias
+canônicas em armazenamento privado. `loadUnaligned` recebe uma fatia compartilhada.
+`storeUnaligned` recebe `MutableSlice<Owner, T>`, que mantém um empréstimo
+exclusivo de seu proprietário e não pode ser copiada. `Vec.asMutSlice` constrói
+essa vista com segurança; `MutableSlice.fromRaw` é uma fronteira unsafe para
+outros buffers. Uma `mut ref []T` isolada empresta apenas o descritor e não
+prova exclusividade dos dados: o caminho `storeUnalignedSlice` exige unsafe e
+essa exclusividade adicional explícita.
 
-- **Implementado na v0.1.11 (2026-10-16):**
-  - Módulo de protótipo [`stdlib/core/simd.aru`](../../stdlib/core/simd.aru) com structs de emulação escalar: `F32x4` (quatro campos `float`) e `U8x16` (dezesseis campos `u8`), operando sequencialmente campo a campo na ALU/FPU tradicional.
-  - Documentação e testes funcionais garantindo conformidade semântica de adições, subtrações, produtos e saturações básicas sob emulação.
-- **Proposta desta RFC (Alvo para a série 0.1.x / ST.2 e 0.2.x):**
-  - Introdução do tipo de primeira classe `ArType::Vector(lane_ty, lanes)` em `arandu_middle`.
-  - Restrição estrita a larguras de **128 bits com potência de dois** (`F32x4`, `F64x2`, `I32x4`, `I16x8`, `U8x16`, `I64x2`).
-  - Alinhamento forçado e imutável de **16 bytes** no `DataLayout`.
-  - Operações vetoriais de primeira classe na AMIR (`VectorOp`, `VectorSplat`, `VectorShuffle`, `VectorExtractLane`, `VectorInsertLane`).
-  - Lowering nativo: Cranelift (`types::F32X4`, etc.), C (`__attribute__((vector_size(16)))`) e WebAssembly (`v128`).
-  - Tipos dedicados de máscara vetorial (`Mask32x4`, etc.) e operações de redução (`all`, `any`, `select`).
+Ambos os stores verificam a faixa inteira antes de escrever. As operações usam
+alinhamento escalar e não prometem uma única instrução de memória. Bounds não
+substituem duração, proveniência ou exclusividade.
 
----
+A RFC continua Draft: CTFE vetorial, ABI FFI vetorial estável, benchmarks e
+execução dos artefatos instalados em todos os alvos não são inferidos dos testes
+locais. A fila permanente está em ST.2 do roadmap.
 
-## 1. Resumo (Summary)
+## Motivação e limites das fontes
 
-Esta RFC desenha a arquitetura de SIMD (*Single Instruction, Multiple Data*) do Arandu. Em vez de recorrer a auto-vetorizadores de laço imprevisíveis ou intrinsics proprietários específicos de arquitetura que quebram a portabilidade, o Arandu adota um conjunto fixo e seguro de tipos vetoriais portáveis de 128 bits.
+Vetores explícitos permitem expressar paralelismo sem depender exclusivamente
+do reconhecimento heurístico de loops. Sua vantagem depende do algoritmo,
+layout, tráfego de memória, alvo e custo de legalização; precisa de medição.
+Não há garantia geral de uma instrução por operação ou de ganho sobre escalares.
 
-A proposta resolve as três maiores dores históricas do SIMD na indústria:
-1. **Eliminação de Falhas de Alinhamento (Bus Error / GPF):** O compilador garante alinhamento estrito de 16 bytes na stack e no heap; cargas de ponteiros genéricos exigem verificação explícita em tempo de compilação ou funções unaligned seguras.
-2. **Previsibilidade de Silício:** Cada operação vetorial em código Arandu mapeia para **exatamente uma instrução de máquina** no alvo (SSE2/AVX em x86, NEON em ARM, `v128` em Wasm).
-3. **Imunidade ao Impasse de Monomorfização:** Ao limitar o núcleo padrão a 128 bits de potência de dois, evitam-se legalizações ineficientes e explosões de código que paralisaram propostas como o `std::simd` do Rust por quase uma década.
+[Highway](https://github.com/google/highway/blob/master/README.md) oferece vetores
+completos e `FixedTag<T, N>`; não estabelece uma superioridade universal de
+vetores fixos de 128 bits. [Rust portable SIMD](https://doc.rust-lang.org/core/simd/)
+explicita diferenças de subnormais em alguns alvos e a possibilidade de uma
+operação precisar de múltiplas instruções. Seu estado experimental não demonstra
+que uma causa única, como monomorfização, explique a estabilização. Esta RFC não
+usa cronologias ou percentuais de desempenho sem benchmark reproduzível.
 
----
+## Tipos e layout
 
-## 2. Motivação (Motivation)
+`VectorType` é uma enumeração fechada, em vez de um par arbitrário de tipo e
+comprimento que cada consumidor precisaria revalidar:
 
-A computação moderna em processamento de dados, multimídia, aprendizado de máquina, criptografia (hashing e cifras de bloco) e renderização gráfica depende da execução paralela de instruções vetoriais.
+| Forma | Tipo da via | Vias | Tamanho | Alinhamento |
+| --- | --- | --- | --- | --- |
+| F32x4 | f32 | 4 | 16 | 16 |
+| F64x2 | f64 | 2 | 16 | 16 |
+| I32x4 | i32 | 4 | 16 | 16 |
+| I16x8 | i16 | 8 | 16 | 16 |
+| U8x16 | u8 | 16 | 16 | 16 |
+| I64x2 | i64 | 2 | 16 | 16 |
 
-### As Falhas das Abordagens Existentes
-* **Intrinsics Proprietários em C/C++ (`<immintrin.h>`, `_mm_add_ps`):**
-  - Destroem a portabilidade do código, forçando bases a manterem múltiplos blocos de `#ifdef __SSE2__` e `#ifdef __ARM_NEON`.
-  - Falta de segurança de tipos: passar um ponteiro desalinhado para `_mm_load_ps` resulta em *General Protection Fault* (GPF) silencioso ou travamento imediato da aplicação.
-* **O Impasse do Rust (`std::simd` / RFC 2938):**
-  - Ao tentar criar uma abstração genérica universal `Simd<T, N>` com *const-generics* para qualquer largura arbitrária, o ecossistema esbarrou na explosão combinatória de codegen e nas sutis divergências semânticas de hardware (como tratamento de NaNs e denormais entre x86 e ARM).
-* **Legalização Degenerada em Zig (`@Vector(N, T)`):**
-  - Ao permitir comprimentos não convencionais como `@Vector(3, f32)`, o compilador gera frequentemente sequências lentas de empacotamento escalar e *stack spills* no backend LLVM.
+Não admite `float`, `int`, zero vias, larguras arbitrárias ou vetores de 256/512
+bits. O `LayoutEngine` mantém 16/16 também em alvos de ponteiro de 32 bits e
+ABI i686 com alinhamento escalar de 64 bits reduzido. Arrays e agregados devem
+propagar alinhamento e padding. `TypeShape`, nomes de instância e hashes
+incrementais/CGU conservam a identidade exata da forma.
 
-O Arandu precisa de uma API de SIMD que seja **100% segura em memória, determinística e com zero custo de abstração**.
+São valores Copy sem identidade, empréstimos internos ou destructor. Não
+concedem mutabilidade interior. CTFE rejeita operações vetoriais explicitamente
+até existir representação/admissão e semântica próprias na VM.
 
----
+## AMIR e semântica inicial
 
-## 3. Explicação em Nível de Guia (Guide-Level Explanation)
+A AMIR possui nós puros dedicados:
 
-### 3.1 Tipos Vetoriais Nativos
+- `VectorSplat { value }` difunde um escalar com tipo exato da via.
+- `VectorOp { op, left, right }` recebe dois vetores da mesma forma.
+- `VectorExtractLane { vector, lane }` produz o escalar da via.
+- `VectorInsertLane { vector, lane, value }` substitui uma via estaticamente válida.
+- `VectorCompare { op, left, right }` produz máscara `U8x16` com todos os bits
+  da via verdadeira ligados, ou todos desligados.
+- `VectorSelect { mask, if_true, if_false }` seleciona bits de vetores da mesma
+  forma usando a máscara `U8x16`, sem fluxo condicional na AMIR.
+- `VectorShuffle { left, right, mask: [u8; 16] }` seleciona bytes da concatenação
+  de dois vetores; índices válidos são 0 a 31. É um shuffle **de bytes**, não uma
+  máscara de vias. A ordem canônica dos bytes de cada via é little-endian.
 
-O módulo `std.core.simd` passa a fornecer tipos de registradores de 128 bits:
+Add/Sub existem para todas as formas. Mul existe exceto para U8x16. Div existe
+somente para floats. And/Or/Xor existem somente para inteiros. Inteiros operam
+com wrapping na largura da via; divisão inteira não faz parte deste recorte.
+Comparações inteiras respeitam sinal, exceto U8x16, que é sem sinal. Eq/Lt/Le/
+Gt/Ge são ordenadas para floats; Ne é verdadeira para pares com NaN. Zeros
+com sinais diferentes comparam iguais. Máscaras expõem `allTrue`, `anyTrue`,
+`testLane`, operações booleanas e construção a partir de bools.
+Floats não usam fast-math nem fusão implícita; NaNs
+seguem as permissões do backend, sem promessa de payload aritmético idêntico.
 
-```arandu
-module app.geometria
+O validador rejeita incompatibilidade de forma/tipo, operações não admitidas,
+lanes fora dos limites e índices de shuffle >=32 antes do codegen. Splat e
+insert usam operandos escalares tipados; literais sem identidade de tipo devem
+ser materializados em temporários antes desses nós.
 
-import std.core.simd as simd
+Visitors compartilhados percorrem todos os operandos, incluindo inserção e
+shuffle. SSA, inlining, DCE, liveness, reachability e hashes preservam seus usos.
+Não há execução Salsa, filesystem ou efeitos de runtime nessa representação.
 
-public func somarPontos(a: simd.F32x4, b: simd.F32x4): simd.F32x4 {
-    // Compila para uma única instrução 'addps' (x86), 'fadd' (ARM NEON) ou 'f32x4.add' (Wasm)
-    return a + b
-}
+## Lowering e memória
 
-public func normalizarEscalar(v: simd.F32x4, fator: float): simd.F32x4 {
-    // Difunde o escalar para todas as 4 vias em um registrador
-    let splat = simd.F32x4.splat(fator)
-    return v * splat
-}
-```
+### Cranelift
 
-### 3.2 Máscaras e Operações Condicionais
+Cada forma corresponde a `F32X4`, `F64X2`, `I32X4`, `I16X8`, `I8X16` ou `I64X2`.
+Splat, aritmética, comparação, seleção, extração/inserção e shuffle geram IR
+vetorial. Shuffle usa
+bitcast de 128 bits para bytes; não converte numericamente as vias. Locais com
+endereço tomado recebem célula real de 16 bytes alinhada a 16. `BlackBox` usa
+célula alinhada e barreira opaca de ponteiro, sem truncar para inteiro de 64 bits.
+As alocações de backing do compilador usam um par de alocação/liberação
+com alinhamento mínimo de 16, inclusive para células nullable. A legalização
+pode emitir múltiplas instruções conforme o alvo.
 
-Comparações entre vetores geram uma máscara vetorial (`Mask32x4`), que pode ser combinada logicamente ou usada para seleção vetorial (*blend*):
+O par de alocação raw usa um cabeçalho de 16 bytes para recuperar o layout na
+liberação. Isso acrescenta memória e pode custar tempo; é uma correção de
+alinhamento, não uma otimização. Um microbenchmark local comparou o par anterior
+malloc/free e o novo par com sete rodadas de 200 mil alocações/liberações por
+tamanho (1, 16, 64, 512 e 4096 bytes), além de 100 mil blocos de 64 bytes vivos.
+As medianas de pares de 16 bytes foram 10,11 ns e 12,10 ns; para 4096 bytes,
+28,56 ns e 75,03 ns. Sem pinning nem workload completo do compilador, esses
+valores descrevem somente esse processo local e não autorizam uma promessa de
+throughput, uma comparação entre backends ou uma regressão universal.
 
-```arandu
-func clamparZero(v: simd.F32x4): simd.F32x4 {
-    let zeros = simd.F32x4.splat(0.0)
-    let mask = v > zeros // Retorna Mask32x4
-    
-    // Onde 'mask' for verdadeiro, mantém 'v'; onde falso, escolhe 'zeros'
-    return mask.select(v, zeros)
-}
-```
+### C
 
-### 3.3 Cargas de Memória Seguras e Alinhamento
+Os tipos possuem membro nativo `__attribute__((vector_size(16)))` em GCC/Clang,
+com acesso às vias por união. Inteiros usam membro vetorial sem sinal para
+preservar wrapping. O fallback selecionável por `ARANDU_SCALAR_SIMD` usa vias
+escalares e `_Alignas(16)`; operações inteiras evitam overflow de promoção e
+copiam bits sem violar aliasing. Há asserts de tamanho e alinhamento.
 
-Carregar dados contíguos de fatias para vetores SIMD requer respeitar as garantias de alinhamento:
+Esse fallback evita exigir extensões vetoriais. **Não certifica MSVC/TCC**:
+o emissor C existente usa outras extensões GNU, incluindo statement expressions.
+A compatibilidade com cada compilador exige seu runner e configuração reais.
+Não se declara ABI FFI vetorial estável entre compiladores C e Cranelift.
 
-```arandu
-func processarBuffer(dados: []u8): void {
-    // Carga não alinhada explícita e segura:
-    let bloco = simd.U8x16.loadUnaligned(dados, 0)
-    
-    // Operações SIMD paralelas de 16 bytes simultâneos...
-}
-```
+### WebAssembly
 
----
+Vetores ocupam um slot `v128`, incluindo parâmetros e retornos internos.
+Operações emitem instruções SIMD, cargas/stores usam 16 bytes, e constantes zero
+usam `v128.const`. Células com endereço tomado continuam representadas por
+ponteiro `i32`. O runtime que executa o módulo precisa suportar SIMD.
 
-## 4. Explicação em Nível de Referência (Reference-Level Explanation)
+O Component Model não tem mapeamento canônico vetorial neste contrato.
+Fronteiras públicas/importadas com vetores, inclusive aninhados, são rejeitadas
+com U001. Exponha interfaces escalares/listas; não há fallback silencioso para
+`u32`. A geração WIT avulsa usa a mesma validação e retorna `None` para
+assinaturas vetoriais diretas ou aninhadas; `emit_component` fornece o diagnóstico.
+SIMD interno ao componente não implica SIMD em sua interface WIT.
 
-### 4.1 Modificações no Sistema de Tipos (`arandu_middle`)
+## Provas e próximos contratos
 
-1. **Nova Variante `ArType`:**
-   ```rust
-   pub enum ArType {
-       // ... variantes existentes
-       Vector(Box<ArType>, u32), // Tipo da via (primitivo) e número de vias
-   }
-   ```
-2. **Matriz Canônica de Tipos Suportados:**
-   - `F32x4`: 4 vias de 32 bits flutuantes (128 bits).
-   - `F64x2`: 2 vias de 64 bits flutuantes (128 bits).
-   - `I32x4` / `U32x4`: 4 vias inteiras de 32 bits (128 bits).
-   - `I16x8` / `U16x8`: 8 vias inteiras de 16 bits (128 bits).
-   - `I8x16` / `U8x16`: 16 vias inteiras de 8 bits (128 bits).
-   - `I64x2` / `U64x2`: 2 vias inteiras de 64 bits (128 bits).
-
-3. **Alinhamento no `DataLayout`:**
-   Para todo tipo `ArType::Vector(_, _)`:
-   - `size`: 16 bytes.
-   - `align`: 16 bytes obrigatórios.
-
-### 4.2 Nós Vetoriais na AMIR (`arandu_middle::amir`)
-
-Estender `AmirRvalue` para expressar semântica vetorial pura sem descer para chamadas de função C:
-```rust
-pub enum AmirRvalue {
-    // ...
-    VectorOp {
-        op: VectorOp,
-        left: AmirOperand,
-        right: AmirOperand,
-    },
-    VectorSplat {
-        value: AmirOperand,
-        lanes: u32,
-    },
-    VectorExtractLane {
-        vec: AmirOperand,
-        lane: u32,
-    },
-    VectorInsertLane {
-        vec: AmirOperand,
-        lane: u32,
-        val: AmirOperand,
-    },
-    VectorShuffle {
-        left: AmirOperand,
-        right: AmirOperand,
-        mask: Vec<u32>,
-    },
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum VectorOp {
-    Add, Sub, Mul, Div,
-    BitAnd, BitOr, BitXor,
-    Equal, NotEqual, LessThan, LessEqual, GreaterThan, GreaterEqual,
-}
-```
-
-### 4.3 Lowering nos Três Backends
-
-#### A. Cranelift Backend (`arandu_backend_cranelift`)
-- Mapeamento direto de tipos da AMIR para Cranelift IR:
-  - `F32x4` $\rightarrow$ `cranelift_codegen::ir::types::F32X4`
-  - `I32x4` $\rightarrow$ `cranelift_codegen::ir::types::I32X4`
-  - `U8x16` $\rightarrow$ `cranelift_codegen::ir::types::I8X16`
-- O Cranelift aloca registradores físicos `xmm` (x86_64) ou `v` (AArch64) e emite instruções diretas de hardware (`addps`, `fadd`, `paddb`).
-
-#### B. C Backend (`arandu_backend_c`)
-- O emissor C declara tipos vetoriais usando extensões vetorizadas padrão da indústria (suportadas por Clang, GCC, ICC e TCC com extensões):
-  ```c
-  typedef float ar_f32x4 __attribute__((vector_size(16)));
-  typedef uint8_t ar_u8x16 __attribute__((vector_size(16)));
-  ```
-- Para compatibilidade máxima com compiladores C ANSI puros (como MSVC em modo C estrito), o emissor gera shims estruturados com alinhamento forçado `alignas(16)`.
-
-#### C. WebAssembly Backend (`arandu_backend_wasm`)
-- Emite o tipo primitivo `v128` (código de tipo `0x7B` na especificação Wasm).
-- Instruções de bytecode:
-  - `VectorOp::Add` em `F32x4` $\rightarrow$ opcode `0xFD 0xE4` (`f32x4.add`).
-  - `VectorSplat` em `F32x4` $\rightarrow$ opcode `0xFD 0x13` (`f32x4.splat`).
-
----
-
-## 5. Invariantes de Arquitetura e Desvantagens (Drawbacks & Invariants)
-
-1. **Preservação de Early-Cutoff:** A introdução do tipo vetorial não altera as assinaturas de hashes de símbolos externos. Mudanças no corpo de funções vetorizadas preservam o cutoff para chamadores.
-2. **Ausência de Comportamento Indefinido (No UB):** Ao rejeitar ponteiros genéricos desalinhados em favor de construtores validados de fatias e `loadUnaligned`, o compilador Arandu previne falhas de hardware em tempo de execução.
-3. **Desvantagem Consciente:** O Arandu deliberadamente **não suporta** vetores nativos de 256 bits (AVX2) ou 512 bits (AVX-512) no núcleo fundamental desta RFC, reservando larguras escaláveis para a RFC 0031 (LLVM/MLIR). Isso garante paridade absoluta em qualquer celular ARM, máquina x86 de entrada ou ambiente WebAssembly.
-
----
-
-## 6. Racional e Alternativas (Rationale & Alternatives)
-
-- **Alternativa Rejeitada: Auto-Vetorização Automática de Laços no Cranelift:**
-  - O Cranelift é desenhado para compilação rápida em tempo linear $O(N)$ e não possui infraestrutura pesada de análise de dependência de ponteiros para vetorizar laços automaticamente.
-  - A abordagem explícita em nível de tipo coloca o poder nas mãos do programador com previsibilidade máxima de desempenho.
-- **Alternativa Rejeitada: Const-Generics Arbitrários (Estilo Rust/Zig):**
-  - Rejeitada para evitar o custo de monomorfização e a complexidade de legalização no compilador. 128 bits é a interseção universal perfeita de todo hardware moderno.
-
----
-
-## 7. Arte Prévia (Prior Art)
-
-- **Google Highway (`hwy`)**: Demonstrou que abstrações portáveis com largura fixa de 128 bits entregam até 98% da velocidade de código assembly manuscrito em x86 e ARM.
-- **Intel ISPC**: Estabeleceu o paradigma de que abstrações vetoriais explícitas superam auto-vetorizadores de compiladores C em aplicações reais.
-- **WebAssembly SIMD (W3C Standard)**: Padronização do registrador `v128` como o alicerce fundamental de computação paralela na Web.
-
----
-
-## 8. Questões em Aberto (Unresolved Questions)
-
-1. *Sintaxe de Sobrecarga de Operadores:* A sintaxe de operadores (`+`, `-`, `*`) deve ser habilitada nativamente pelo typeck para `ArType::Vector` ou exposta através de métodos inerentes nomeados (`.add()`, `.mul()`) na primeira fase de implementação?
-   - **Recomendação:** Métodos inerentes no recorte inicial ST.2; operadores estéticos introduzidos após estabilização da resolução de operadores.
+As regressões compartilham AMIR tipada entre JIT, C e Wasm: matriz de operações,
+memória alinhada, inserção/extração, shuffle de dois inputs e passagem/retorno
+entre funções. C exercita modo nativo e fallback; JIT exercita O0/O2; Wasm é
+validado e executado em Wasmtime sem imports de host nesses casos puros.
+Essas provas locais não substituem runners nativos ARM/macOS/Windows, benchmarks,
+validação do SDK instalado nem semântica CTFE. O corpus fonte cobre as seis
+formas, máscaras, NaN, zero com sinal, índices inválidos e limites de fatias;
+a origem canônica também é testada através de aliases e reexports.
+A fila e os critérios pendentes pertencem exclusivamente a ST.2 do roadmap.

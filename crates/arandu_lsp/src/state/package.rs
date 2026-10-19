@@ -9,6 +9,20 @@ use super::path::{normalize_path_soft, package_relative_path};
 use super::types::{PackageState, ServerState};
 
 impl ServerState {
+    /// Commit the loader-verified stdlib root, including editor overlays opened
+    /// before background discovery completed. Never replace their source text.
+    pub fn configure_stdlib_root(&mut self, root: PathBuf) {
+        let normalized_root = normalize_path_soft(&root);
+        for &id in self.by_uri.values() {
+            if let Some(doc) = self.docs.get(id) {
+                if normalize_path_soft(doc.path.as_ref()).starts_with(&normalized_root) {
+                    self.host.db_mut().trust_stdlib_source(doc.source);
+                }
+            }
+        }
+        self.host.db_mut().set_stdlib_root(root);
+    }
+
     pub fn configure_package(
         &mut self,
         project: crate::workspace::WorkspaceProject,
@@ -23,6 +37,7 @@ impl ServerState {
             module_plan,
             module_files: _,
         } = project;
+        let trusted_stdlib_root = stdlib_root.clone();
         let package_name = manifest_data.name.clone();
         let package_bindings = module_plan
             .as_ref()
@@ -92,6 +107,11 @@ impl ServerState {
             .map(|doc| (doc.path.as_ref().clone(), doc.source))
             .collect();
         for (path, source) in known {
+            if trusted_stdlib_root.as_ref().is_some_and(|root| {
+                normalize_path_soft(&path).starts_with(normalize_path_soft(root))
+            }) {
+                self.host.db_mut().trust_stdlib_source(source);
+            }
             self.register_package_aliases(&path, source);
         }
         Ok(())

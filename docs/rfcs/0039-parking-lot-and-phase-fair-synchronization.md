@@ -1,198 +1,173 @@
-# RFC 0039: Concorrência de Alta Performance, Infraestrutura ParkingLot e Sincronização Phase-Fair
+# RFC 0039: ParkingLot, condições de espera e sincronização por fases
 
 - **Número da RFC:** 0039
-- **Título:** Concorrência de Alta Performance, Infraestrutura ParkingLot e Sincronização Phase-Fair
-- **Autor(es):** Arquiteto da Linguagem Arandu
-- **Data de Início:** 2026-10-16
-- **Status:** `Draft`
-- **Área Principal:** `Runtime` | `Middle-end` | `Stdlib` | `Concurrency`
-- **Escopo:** `std.sync.condvar`, `std.sync.rwlock`, `std.sync.mutex`, infraestrutura `ParkingLot` em `crates/arandu_runtime`, marcadores de concorrência `Send` e `Sync` no `arandu_middle`.
+- **Data de início:** 2026-10-16
+- **Status:** `Draft` — eventos, mutex nativo, guardas compartilhadas e
+  admissão phase-fair implementados localmente; promoção multiplataforma pendente.
+- **Área:** `Runtime` | `Type System` | `Stdlib` | `Concurrency`
+- **Atualização:** 2026-10-18
+- **Fila permanente:** [roadmap, ST.10 e ST.11](../arandu-compiler-roadmap-v0.1.md).
 
----
+## 1. Problema e fronteira atual
 
-## Fronteira de implementação e evidência
+Esta RFC separa três contratos: estacionamento de threads por endereço,
+liberação/reaquisição de um mutex ao esperar e justiça entre leitores/escritores.
+Uma fila de estacionamento correta não estabelece os outros dois contratos.
 
-Esta RFC estabelece a refundação dos contratos de concorrência e sincronização de baixa latência do Arandu, eliminando travas pesadas do sistema operacional e substituindo rotinas com sleeps cooperativos por primitivas baseadas em endereçamento atômico e ausência de inanição (*starvation-free*).
+| Superfície | Estado no código |
+| --- | --- |
+| Atômicos escalares | Operações nativas; ordens válidas são conservadoramente promovidas a SeqCst. Escritas ainda exigem `mut ref`. |
+| ParkingLot Rust | 64 buckets, sequência atômica validada sob o lock do bucket, fila FIFO por endereço exato, espera sem polling e remoção de filas vazias. |
+| ParkingLot C | Buckets inicializados uma vez; waiters separados por endereço e sinal; timeout monotônico e limpeza de espera sob cancelamento POSIX diferido. |
+| Identidades de threads | IDs não reciclados, registro removido na saída via TLS/FLS e unpark de ID desconhecido/encerrado ignorado. Um único token de park, separado dos sinais de condição. |
+| `Condvar` | wait/timeout recebem empréstimo exclusivo de MutexGuard, liberam a aquisição e sempre readquirem antes de retornar; sequência validada sob bucket fecha a janela de notificação. Notify aceita ref compartilhada. |
+| `RwLock<T>` | Aquisição por ref compartilhada; filas por endereço, escritores FIFO e fases de leitores em lote, com guardas de liberação única. |
+| `Send`/`Sync` | Prova estrutural com regras canônicas de UnsafeCell, Mutex, RwLock e guardas; Copy é negado ao armazenamento com mutabilidade interior. |
+| `std.runtime.mutex` | `AsyncMutex<T>` cooperativo com flag comum; não fornece exclusão mútua entre threads nativas. `std.sync.mutex` fornece separadamente a aquisição entre threads nativas. |
 
-- **Implementado na v0.1.11 (2026-10-16):**
-  - Primitivas atômicas escalares em hardware ([`stdlib/core/atomic.aru`](../../stdlib/core/atomic.aru)): `AtomicBool`, `AtomicI32`, `AtomicUsize`, com ordenação de memória `SeqCst` e `Acquire`/`Release` validadas em teste de contenção com 6 threads concorrentes.
-  - Protótipos cooperativos de `Condvar` e `RwLock` em [`stdlib/std/sync/`](../../stdlib/std/sync/): `Condvar.wait` baseado em valor de sequência e polling de 50ms; `RwLock` requerendo `mut ref self` agindo como trava de exclusão mútua básica.
-- **Proposta desta RFC (Alvo para ST.10, ST.11 e série 0.2.x):**
-  - Implementação da tabela global e centralizada **`ParkingLot`** no `arandu_runtime` (estilo WebKit / Rust `parking_lot`), indexando suspensões de threads pelo endereço de memória do monitor (`uintptr_t`).
-  - Redução da pegada de memória de `Mutex` e `Condvar` para **1 a 4 bytes**.
-  - Adoção do algoritmo de sincronização **Phase-Fair Reader-Writer Lock (PFLock)** de Brandenburg & Anderson, eliminando inanição de escritores e garantindo latência máxima de espera limitada (*bounded worst-case blocking*).
-  - Formalização dos marcadores de tipo `Send` e `Sync` no sistema de tipos para permitir leitura compartilhada concorrente segura (`RwLock.read(&self)`).
+O antigo protótipo de bits de escritor pendente foi substituído por um
+protocolo de admissão com filas reais. A chave inline identifica armazenamento
+estacionário; contadores, filas e monitores permanecem no runtime. Não há
+promessa de um lock completo de quatro bytes nem ausência de alocações.
 
----
+## 2. Protocolo implementado de estacionamento
 
-## 1. Resumo (Summary)
+A chave é o endereço de uma palavra atômica `usize`, alinhada e viva durante
+cada chamada. O objeto deve permanecer no mesmo endereço enquanto houver espera
+ou notificação em andamento. Todos os acessos concorrentes à palavra devem ser
+atômicos; tamanho e alinhamento seguem o alvo.
 
-Travas de sincronização convencionais baseadas em chamadas do sistema operacional (como `pthread_mutex_t`, `pthread_cond_t` ou `CRITICAL_SECTION`) impõem duas penalidades severas ao desenvolvimento de software de alta performance:
-1. **Inchaço de Memória:** Cada lock de SO consome entre 40 e 64 bytes. Estruturas de dados refinadas com granularidade fina (como tabelas hash concorrentes, árvores ou caches) desperdiçam dezenas de megabytes apenas em cabeçalhos de travamento.
-2. **Inanição (*Starvation*) ou Serialização de Leitores:** RWLocks convencionais ou sofrem de inanição infinita de escritores (sob carga pesada de leitura) ou forçam uma ordenação FIFO que impede leitores consecutivos de executarem em paralelo.
+1. O waiter adquire o bucket, compara a sequência com o valor esperado e retorna
+   imediatamente quando ela mudou. Caso contrário, registra uma espera na fila
+   daquele endereço antes de soltar o bucket.
+2. Notify incrementa primeiro a mesma sequência atômica, adquire o bucket e
+   seleciona o waiter mais antigo da chave exata, ou todos daquela chave.
+3. O sinal individual continua registrado se ocorrer antes da suspensão física.
+   Wakeups espúrios da primitiva do SO não encerram a espera sem esse sinal.
+4. Timeout e notify decidem a remoção sob o mesmo lock. Ao retornar, o waiter
+   já não pertence à fila. Waiters/monitores vazios não ficam registrados.
+5. `thread.unpark` possui seu próprio token coalescente. Esperar numa condição
+   não consome nem produz esse token.
 
-Esta RFC desenha a infraestrutura de concorrência do Arandu combinando a arquitetura **`ParkingLot`** (introduzida por Filip Pizlo no WebKit) com o algoritmo matemático de justiça por fases **PFLock** (*Phase-Fair Locks*, Brandenburg & Anderson, 2010).
+A ABI adicional é:
 
----
-
-## 2. Motivação (Motivation)
-
-### O Problema do `Condvar` Atual
-Na v0.1.11, a API de `Condvar` recebe apenas o número de sequência (`Condvar.wait(current: usize)`), forçando o runtime a simular espera através de suspensão temporizada (`usleep(50000)`). Não há associação estrutural entre a variável de condição e o `Mutex` que protege o predicado. Isso abre brechas para *lost wakeups* e consome CPU desnecessariamente.
-
-### O Problema do `RwLock` Atual
-Para evitar corridas de dados no sistema de tipos atual sem a formalização do marcador `Sync`, o método `read()` foi forçado a assinar `self: mut ref RwLock<T>`. Embora isso preserve a segurança de memória, transforma o `RwLock` em um lock de exclusão mútua estrito, anulando o benefício de leituras concorrentes em código seguro.
-
-### As Falhas das Abordagens Industriais Tradicionais
-* **`pthread_rwlock` / `std::shared_mutex` de C++:** Na maioria das implementações glibc, locks que priorizam leitores bloqueiam escritores indefinidamente sob alta carga de tráfego web ou telemetria.
-* **Java `ReentrantReadWriteLock`:** Sobrecarga severa de objetos de thread e alocações de nós de fila de contenção na JVM.
-* **Go Channels:** Embora canais Go sejam convenientes, seu uso para sincronização de pequenos estados compartilhados introduz uma sobrecarga massiva de agendamento de goroutines se comparado a travas atômicas puras.
-
----
-
-## 3. Explicação em Nível de Guia (Guide-Level Explanation)
-
-### 3.1 Uso Ergonômico e Leve de `Mutex` e `Condvar`
-
-Com o novo modelo, um `Mutex` ocupa apenas 1 byte e não aloca handles do sistema operacional:
-
-```arandu
-module app.servico
-
-import std.sync.mutex as mutex
-import std.sync.condvar as cv
-
-public struct FilaSegura<T> {
-    trava: mutex.Mutex<[]T>,
-    nao_vazia: cv.Condvar,
-}
-
-public func FilaSegura.novo<T>(): FilaSegura<T> {
-    return FilaSegura {
-        trava: mutex.Mutex.novo([]),
-        nao_vazia: cv.Condvar.novo(),
-    }
-}
-
-public func FilaSegura.enfileirar<T>(self: ref FilaSegura<T>, item: T): void {
-    let mut guard = self.trava.lock()
-    guard.push(item)
-    // Acorda instantaneamente uma thread adormecida pelo endereço deste monitor
-    self.nao_vazia.notifyOne()
-}
-
-public func FilaSegura.desenfileirar<T>(self: ref FilaSegura<T>): T {
-    let mut guard = self.trava.lock()
-    while guard.isEmpty() {
-        // Libera a trava e suspende a thread atomicamente no ParkingLot
-        guard = self.nao_vazia.wait(guard)
-    }
-    return guard.pop()
-}
+```text
+ar_rt_condvar_wait_timeout(key: ptr[u8], sequence: usize, timeout_ms: u64) -> i32
+    1: waiter selecionado por notify, ou sequência já mudou antes do registro
+    0: timeout venceu a disputa com notify
+   -1: chave nula ou desalinhada
 ```
 
-### 3.2 O `RwLock` com Justiça de Fases (Phase-Fair)
+Uma chave alinhada arbitrária não é validada por esse teste: continua sendo
+obrigação do chamador unsafe fornecer armazenamento vivo e atômico. Notify não
+valida um predicado de aplicação. Aplicações devem reavaliá-lo; a API `waitNotification*` é o evento de baixo nível. A API `wait(guard)`
+associa a espera ao empréstimo da guarda do mutex do predicado.
 
-Leitores adquirem a trava simultaneamente usando referências imutáveis (`&self`). Escritores nunca sofrem inanição:
+No runtime Rust a suspensão usa `std::sync::Condvar` por espera. No runtime C,
+usa `pthread_cond_t` por espera em POSIX ou `CONDITION_VARIABLE` no Windows,
+com lock do bucket protegendo o sinal. O timeout usa relógio monotônico; POSIX
+satura durações além do horizonte representável de `time_t`. O backend Wasm
+mantém estas funções como imports de host quando alcançáveis; não oferece uma
+implementação silenciosa que ignore waits ou notificações. Wasm sem host de
+threads deve rejeitar essa capacidade ou fornecer uma implementação apropriada.
 
-```arandu
-import std.sync.rwlock as rw
+A pegada atual de `Condvar` inclui uma `AtomicUsize`: não há garantia de 1–4
+bytes em todos os alvos. Também há alocações e primitivas do SO nos waiters e
+nos buckets. Uma representação compacta e um parker reutilizável por thread
+exigem medição antes de substituir esta base de correção.
 
-public struct BancoDeMemoria {
-    tabela: rw.RwLock<TabelaDados>,
-}
+## 3. Condição de espera com guarda
 
-public func BancoDeMemoria.consultar(self: ref BancoDeMemoria, chave: str): Registro {
-    // Múltiplos leitores adquirem a trava simultaneamente em paralelo real
-    let leitura = self.tabela.read()
-    return leitura.obter(chave)
-}
+`Condvar.wait` e `waitTimeout` recebem `mut ref MutexGuard<T>`. Amostram a
+sequência enquanto o chamador detém o mutex, liberam sua admissão, esperam pela
+sequência e readquirem o mutex antes de retornar. A validação da sequência sob
+o bucket impede perder uma notificação entre liberação e registro. O CAS de
+notify recusa wrap antes de publicar zero, evitando reutilização da geração.
+O chamador sempre reavalia o predicado em um loop. O prazo de timeout cobre
+a espera da condição; a reaquisição posterior pode demorar mais.
 
-public func BancoDeMemoria.atualizar(self: ref BancoDeMemoria, chave: str, val: Registro): void {
-    // Escritor aguarda apenas a fase de leitura corrente terminar; novos leitores
-    // não podem furar a fila do escritor.
-    let mut escrita = self.tabela.write()
-    escrita.inserir(chave, val)
-}
-```
+`UnsafeCell` é armazenamento canônico não-Copy e não-Sync; sua exposição de
+ponteiro exige unsafe. Os locks encapsulam essa fronteira e não permitem
+acesso seguro direto ao payload. A guarda continua exclusivamente emprestada
+durante wait: uma referência ativa ao valor protegido impede esse empréstimo.
 
----
+Cancelamento diferido de `pthread_cond_wait` remove o waiter e libera o bucket
+antes da saída da thread. Cancelamento assíncrono e interrupção arbitrária de
+código Arandu não são admitidos. O protocolo de cancelamento do executor é
+outro contrato: uma tarefa cooperativa não deve bloquear o worker nativo
+esperando uma condição comum do SO.
 
-## 4. Explicação em Nível de Referência (Reference-Level Explanation)
+## 4. RwLock phase-fair implementado
 
-### 4.1 A Arquitetura do `ParkingLot` no Runtime (`arandu_runtime`)
+A referência de Brandenburg e Anderson distingue quatro propriedades: alternar
+fases de leitura/escrita quando ambas têm demanda; servir escritores em FIFO;
+admitir todos os leitores pendentes no início de uma fase de leitura; impedir
+que leitores novos ultrapassem escritores já pendentes. Isso não equivale a
+prometer que qualquer escritor espera apenas uma fase: pode haver escritores
+anteriores na fila. Veja o [artigo dos autores](https://people.mpi-sws.org/~bbb/papers/pdf/rtsj11.pdf).
 
-O `ParkingLot` é uma tabela hash particionada com *striping* de locks internos, mantida em nível de runtime:
+O motor mantém uma fila FIFO de escritores e uma fila de leitores em cada
+endereço. Novos leitores não ultrapassam escritores pendentes. Ao liberar um
+escritor, todos os leitores já enfileirados recebem sua admissão antes do
+próximo escritor. O último leitor acorda o escritor mais antigo. As transições
+ocorrem sob o bucket; estados sem holders nem esperas são retirados da tabela.
+Essa implementação conserva as fases sem usar tickets numéricos recicláveis.
+Overflow do contador de leitores é recusado. O mirror C retira waiters sob
+cancelamento POSIX diferido, inclusive quando o sinal venceu a disputa e
+reservou uma admissão. Cancelamento assíncrono não faz parte do contrato.
 
-```
-[ Endereço do Lock na Memória: 0x7ffd9820 ]
-                  │
-                  ▼ (Hash & Máscara de Balde)
-         ┌─────────────────┐
-         │ Balde do Bucket │ ──► Fila Intrusiva de Threads Adormecidas
-         └─────────────────┘       Thread A (parked) ──► Thread B (parked)
-```
+A ausência de starvation requer progresso dos participantes, término das
+seções críticas e hipóteses de escalonamento explícitas. Limites de bloqueio
+em modelos de tempo real não dão um prazo de relógio num SO geral, onde um
+holder pode ser suspenso indefinidamente. Benchmarks de latência e throughput
+são evidência adicional, não prova dessas propriedades.
 
-1. **Operação de `park(key, validate, timeout)`:**
-   - Adquire o lock interno do balde correspondente ao hash do endereço `key`.
-   - Executa a closure `validate()`. Se a condição atômica mudou (ex: o lock foi liberado antes de dormir), aborta o estacionamento e retorna sem dormir.
-   - Enfileira a thread corrente na lista encadeada do balde.
-   - Libera o lock interno do balde e invoca o bloqueio do kernel (`SYS_futex` no Linux, `WaitOnAddress` no Windows, `__ulock_wait` no macOS).
-2. **Operação de `unpark_one(key)` / `unpark_all(key)`:**
-   - Localiza o balde correspondente ao endereço `key`.
-   - Retira uma ou todas as threads da fila.
-   - Invoca o desbloqueio do kernel (`FUTEX_WAKE`, `WakeByAddressSingle`, etc.).
+## 5. Send, Sync e guardas
 
-### 4.2 O Algoritmo Phase-Fair Reader-Writer Lock (PFLock)
+A prova atual em `arandu_typeck` percorre o armazenamento de forma determinística,
+com limites para grafos genéricos. Rejeita ponteiros crus, referências, views,
+capturas e recursos com destrutores sem contrato específico; reconhece String
+e Vec canônicos. Ela não prova duração de empréstimos nem efeitos de tarefas.
 
-O algoritmo de Brandenburg & Anderson estrutura o estado do `RwLock` em uma única palavra atômica de 32 bits (`uint32_t`):
+Para admitir locks com mutabilidade interior, as regras são:
 
-```
-Bits [31..16]: Contador de Leitores Ativos na Fase Presente
-Bit  [15]    : Bit de Fase de Leitura Presente (0 ou 1)
-Bit  [14]    : Flag de Escritor Presente / Aguardando
-Bits [13..0] : Ingresso / Ticket da Fila de Espera
-```
+| Tipo | Transferência por posse (`Send`) | Referência compartilhada (`Sync`) |
+| --- | --- | --- |
+| `Mutex<T>` | Requer `T: Send` | Requer `T: Send`, com exclusão exclusiva comprovada |
+| `RwLock<T>` | Requer `T: Send` | Requer `T: Send + Sync`, pois leitores expõem `ref T` simultaneamente |
 
-1. **Entrada de Leitores:** Se não há escritor ativo nem pendente na fase oposta, o leitor incrementa o contador da fase correspondente e entra imediatamente em concorrência.
-2. **Entrada de Escritores:** Um escritor adquire o próximo ticket de fase. Novos leitores subsequentes são direcionados para a próxima fase e não podem furar o escritor.
-3. **Alternância de Fases:** Assim que o último leitor da fase ativa conclui (`contador == 0`), a fase de escrita é liberada atomicamente. Ao término da escrita, a fase volta para leitura, liberando todos os leitores acumulados de uma só vez.
-4. **Garantia de Tempo Limite:** O tempo de espera de qualquer escritor é limitado a no máximo uma única fase de leitura prévia, eliminando matematicamente o problema de inanição.
+A diferença de bounds do RwLock é essencial e coincide com a
+[referência de Rust](https://doc.rust-lang.org/std/sync/struct.RwLock.html#impl-Sync-for-RwLock%3CT%3E).
+A guarda precisa reter o empréstimo do lock, liberar a aquisição exatamente
+uma vez e impedir acesso ao payload depois de sua destruição. Guardas mutáveis
+não podem produzir aliases incompatíveis, e operações diretas no payload não
+podem contornar a aquisição ao se tornar compartilhado.
 
-### 4.3 Integração com o Sistema de Tipos: Marcadores `Send` e `Sync`
+Esses contratos devem depender da identidade canônica da primitiva, não do nome
+de uma struct que qualquer módulo possa imitar. Nem Arc nem um campo atômico
+conferem automaticamente Sync ao payload. Os marcadores não autorizam leitura
+concorrente de um tipo com mutabilidade interior não sincronizada.
 
-Em `arandu_middle::types`:
-1. **`Send`:** Um tipo `T` implementa `Send` se a transferência de posse entre threads de execução for segura (tipos que não dependem de estado de thread local ou referências lineares vinculadas a um frame).
-2. **`Sync`:** Um tipo `T` implementa `Sync` se uma referência imutável `&T` puder ser compartilhada com segurança entre múltiplas threads concorrentes.
-3. **Regra de Mutabilidade Interior:** `RwLock<T>` e `Mutex<T>` implementam `Sync` se e somente se `T: Send`. Isso permite que métodos que recebem `self: ref RwLock<T>` gerem guardas concorrentes sem risco de corridas de dados.
+## 6. Evidência e critérios de aceitação
 
----
+As regressões de runtime exercitam sequência já alterada, timeout zero e
+positivo, remoção de espera, colisões de bucket, ordem de notifyOne, isolamento
+do token de thread e retirada de IDs ao encerrar threads. O harness do runtime
+C exercita também cancelamento POSIX diferido, compilado em O0/O2 com UBSan;
+o mesmo trecho de runtime pode ser exercitado com ASan. A ponte JIT testa a
+assinatura real `ptr/usize/u64 -> i32`, inclusive duração ampla.
 
-## 5. Invariantes de Arquitetura e Desvantagens (Drawbacks & Invariants)
+As regressões de fases verificam escritores FIFO, leitores em lote, isolamento
+de chaves, try-lock, contenção e retirada de estados. Testes fonte verificam
+receptores compartilhados, bounds e duração de guardas; o harness C cobre
+cancelamento antes e depois da reserva de admissão. Isso não promove suporte
+nativo de Windows/macOS: esses alvos exigem compilação e execução próprias,
+incluindo seus caminhos de
+FLS, eventos e relógio relativo. As validações gerais do workspace e resultados
+atuais pertencem ao relatório de entrega, não são inferidas desta RFC.
 
-1. **Preservação de Determinismo e Early-Cutoff:** A implementação do `ParkingLot` reside no runtime e não polui as queries Salsa com efeitos colaterais de I/O.
-2. **Desvantagem Consciente (Contenção de Baldes):** Se milhares de locks distintos colidirem no mesmo balde da tabela do `ParkingLot`, haverá contenção espúria no lock interno do balde. Mitiga-se isso usando particionamento em 1024 baldes (*bucket striping*) e hashing de Fibonacci de 64 bits sobre os endereços de memória.
-
----
-
-## 6. Racional e Alternativas (Rationale & Alternatives)
-
-- **Alternativa Rejeitada: Mutexes Nativos de SO (POSIX/Win32):**
-  - Rejeitada porque consumiria 64 bytes por lock, inviabilizando estruturas de concorrência com granularidade fina.
-- **Alternativa Rejeitada: Spinlocks Puros:**
-  - Rejeitada porque o consumo de energia e a degradação de performance por inversão de prioridades (*priority inversion*) e *lock convoys* em CPUs com múltiplos núcleos é inaceitável.
-
----
-
-## 7. Arte Prévia (Prior Art)
-
-- **Filip Pizlo ("Locking in WebKit", 2016):** Demonstrou que a arquitetura `ParkingLot` com travas de 1 byte acelerou benchmarks do navegador (Speedometer, JetStream) em dois dígitos em relação aos mutexes tradicionais do SO.
-- **Brandenburg & Anderson ("Phase-Fair Reader-Writer Locks for Real-Time Multiprocessor Systems", ECRTS 2009 / Real-Time Systems 2010):** Criação canônica do algoritmo PFLock, comprovando limites rígidos de bloqueio no pior caso.
-- **Amanieu d'Antras (`parking_lot` crate):** Adoção de referência do padrão na linguagem Rust.
-
----
-
-## 8. Questões em Aberto (Unresolved Questions)
-
-1. *Suporte a WebAssembly Single-Threaded:* Em alvos Wasm sem a extensão *threads/shared-memory*, o `ParkingLot` deve degradar de forma estática para um conjunto de operações de no-op sem overhead de atomics ou futex?
-   - **Recomendação:** Sim, através de compilação condicional de features de runtime em `crates/arandu_runtime`.
+A [arquitetura ParkingLot descrita pelo WebKit](https://webkit.org/blog/6161/locking-in-webkit/)
+justifica separar estado compacto e filas por endereço. Seus números de memória
+e desempenho descrevem aquela implementação e workloads; não são resultados
+do Arandu. Não há benchmark representativo que autorize aqui prometer redução
+de memória ou ganho de latência.

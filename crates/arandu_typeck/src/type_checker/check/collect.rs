@@ -47,6 +47,35 @@ pub(crate) fn collect_type_shapes(checker: &mut TypeChecker<'_>, program: &Progr
                 }
                 let struct_key = crate::NodeKey::from(struct_decl.span);
                 if let Some(symbol_id) = checker.resolved.definitions.get(&struct_key).copied() {
+                    if checker
+                        .symbols
+                        .get(symbol_id)
+                        .lang_item
+                        .and_then(arandu_middle::symbol_table::LangItem::vector_shape)
+                        .is_some()
+                        && (!struct_decl.fields.is_empty()
+                            || !struct_decl.generic_params.is_empty())
+                    {
+                        checker.diagnostics.push(arandu_middle::Diagnostic::error(
+                            arandu_middle::DiagCode::U001FeatureNotSupported,
+                            "native SIMD declarations must be opaque and non-generic",
+                            struct_decl.span,
+                        ));
+                    }
+                    if matches!(
+                        checker.symbols.get(symbol_id).lang_item,
+                        Some(
+                            arandu_middle::symbol_table::LangItem::UnsafeCell
+                                | arandu_middle::symbol_table::LangItem::RwLock
+                                | arandu_middle::symbol_table::LangItem::Mutex
+                                | arandu_middle::symbol_table::LangItem::Condvar
+                                | arandu_middle::symbol_table::LangItem::RwLockReadGuard
+                                | arandu_middle::symbol_table::LangItem::RwLockWriteGuard
+                                | arandu_middle::symbol_table::LangItem::MutexGuard
+                        )
+                    ) {
+                        checker.type_info.interior_mutable_types.insert(symbol_id);
+                    }
                     let is_repr_c = struct_decl.attrs.iter().any(|attr| {
                         if attr.name == "Repr" || attr.name == "repr" {
                             attr.args
@@ -606,7 +635,22 @@ pub(crate) fn collect_signature_types(checker: &mut TypeChecker<'_>, program: &P
                                 ));
                             }
                         }
-                        let mut flags = if pure_bits {
+                        let simd = (arandu_parser::AbiKind::from_abi_str(&extern_decl.abi)
+                            == arandu_parser::AbiKind::AranduIntrinsic)
+                            .then(|| arandu_middle::intrinsics::SimdIntrinsic::from_name(member_name))
+                            .flatten();
+                        if let Some(simd) = simd {
+                            let (parameters, result) = simd.signature();
+                            let actual: Vec<_> = param_types.iter().map(|&ty| checker.resolve(ty)).collect();
+                            if !member.generic_params.is_empty() || actual != parameters || ret_ty != result {
+                                checker.diagnostics.push(arandu_middle::Diagnostic::error(
+                                    arandu_middle::DiagCode::U001FeatureNotSupported,
+                                    format!("unsupported signature for SIMD intrinsic '{member_name}'"),
+                                    member.span,
+                                ));
+                            }
+                        }
+                        let mut flags = if pure_bits || simd.is_some() {
                             arandu_middle::EffectFlags::NONE
                         } else {
                             arandu_middle::EffectFlags::FOREIGN

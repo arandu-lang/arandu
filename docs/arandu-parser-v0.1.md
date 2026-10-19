@@ -28,7 +28,7 @@ The parser must:
 Current implemented slice:
 
 - `module` and module imports;
-- named imports: `import { Button, Window as AppWindow } from ui`;
+- named imports: `from ui import { Button, Window as AppWindow }`;
 - attributes, `const`, `type`, `struct`, `enum`, `interface`, `extern`, and functions;
 - `public`, `async`, and type-qualified method names such as `func User.greet(...)`;
 - generic params, generic type args, where clauses, and generic calls;
@@ -209,7 +209,7 @@ Forms:
 
 ```text
 import io
-import { println as print, Reader } from io
+from io import { println as print, Reader }
 ```
 
 AST:
@@ -395,6 +395,7 @@ Type forms:
 - Named: `User`
 - Generic named: `Box<int>`
 - Slice: `[]int`
+- Mutable slice: `mut []int`
 - Array: `[4]int`
 - Pointer: `ptr[u8]`
 - Function: `func(int, int) int`
@@ -790,7 +791,7 @@ Program
 Input:
 
 ```arandu
-mut idade = 25
+let mut idade = 25
 set idade = idade + 1
 ```
 

@@ -15,6 +15,8 @@
 //! ```
 //!
 //! ## Safety
+//! The buffer pointer, initialized length and capacity are private. Raw byte
+//! adoption requires an explicit unsafe ownership transfer.
 //! A slice returned by `asSlice` borrows the vector's storage. Growth,
 //! clear, or drop can invalidate that view.
 //!
@@ -53,11 +55,11 @@ extern "C" {
 /// Growable contiguous buffer of `T`.
 public struct Vec<T> {
     /// Pointer to the owned element buffer.
-    data: ptr[T]
+    private data: ptr[T]
     /// Number of initialized elements.
-    len: usize
+    private len: usize
     /// Allocated capacity in elements or bytes, as defined by this type.
-    capacity: usize
+    private capacity: usize
 }
 
 /// Adopts an initialized byte buffer without allocating or copying.
@@ -69,10 +71,17 @@ public struct Vec<T> {
 /// and capacity. Ownership transfers to the returned vector exactly once.
 @Unsafe
 public func adoptBytes(data: ptr[u8], bufCap: usize, bufLen: usize): Vec<u8> {
+    unsafe { return Vec.adoptBytesImpl(data, bufCap, bufLen) }
+}
+
+// The associated constructor owns access to the private representation.
+// The public raw adoption boundary above transfers exactly this obligation.
+@Unsafe
+func Vec.adoptBytesImpl(data: ptr[u8], bufCap: usize, bufLen: usize): Vec<u8> {
     return Vec<u8> { data: data, len: bufLen, capacity: bufCap }
 }
 
-func new<T>(): Vec<T> {
+func Vec.newImpl<T>(): Vec<T> {
     return Vec<T> {
         data: nil,
         len: 0,
@@ -91,12 +100,12 @@ func new<T>(): Vec<T> {
 /// # Complexity
 /// Time: O(1) | Space: O(1)
 public func Vec.new<T>(): Vec<T> {
-    return new<T>()
+    return Vec.newImpl<T>()
 }
 
-func withCapacity<T>(cap: usize): Vec<T> {
-    let mut v = new<T>()
-    ensureCapacity<T>(v, cap)
+func Vec.withCapacityImpl<T>(cap: usize): Vec<T> {
+    let mut v = Vec.newImpl<T>()
+    Vec.ensureCapacityImpl<T>(v, cap)
     return v
 }
 
@@ -111,14 +120,14 @@ func withCapacity<T>(cap: usize): Vec<T> {
 /// # Complexity
 /// Time: O(1) | Space: O(cap)
 public func Vec.withCapacity<T>(cap: usize): Vec<T> {
-    return withCapacity<T>(cap)
+    return Vec.withCapacityImpl<T>(cap)
 }
 
 /// Attempts to ensure absolute capacity ≥ `minCap`.
 ///
 /// Returns `true` on success. On failure (such as capacity overflow or
 /// allocation failure), returns `false` and leaves `v` completely unmodified.
-func tryEnsureCapacity<T>(v: mut ref Vec<T>, minCap: usize): bool {
+func Vec.tryEnsureCapacityImpl<T>(v: mut ref Vec<T>, minCap: usize): bool {
     if v.capacity >= minCap {
         return true
     }
@@ -156,39 +165,39 @@ func tryEnsureCapacity<T>(v: mut ref Vec<T>, minCap: usize): bool {
 }
 
 /// Ensure absolute capacity ≥ `minCap`. Aborts if reallocation fails.
-func ensureCapacity<T>(v: mut ref Vec<T>, minCap: usize): void {
-    if !tryEnsureCapacity<T>(v, minCap) {
+func Vec.ensureCapacityImpl<T>(v: mut ref Vec<T>, minCap: usize): void {
+    if !Vec.tryEnsureCapacityImpl<T>(v, minCap) {
         unsafe {
             intrinsics.abort()
         }
     }
 }
 
-func tryReserve<T>(v: mut ref Vec<T>, additional: usize): bool {
+func Vec.tryReserveImpl<T>(v: mut ref Vec<T>, additional: usize): bool {
     let maxCap: usize = 2147483647 as usize
     if additional > maxCap - v.len {
         return false
     }
     let need = v.len + additional
-    return tryEnsureCapacity<T>(v, need)
+    return Vec.tryEnsureCapacityImpl<T>(v, need)
 }
 
-func reserve<T>(v: mut ref Vec<T>, additional: usize): void {
-    if !tryReserve<T>(v, additional) {
+func Vec.reserveImpl<T>(v: mut ref Vec<T>, additional: usize): void {
+    if !Vec.tryReserveImpl<T>(v, additional) {
         unsafe {
             intrinsics.abort()
         }
     }
 }
 
-func tryPush<T>(v: mut ref Vec<T>, value: T): bool {
+func Vec.tryPushImpl<T>(v: mut ref Vec<T>, value: T): bool {
     let maxCap: usize = 2147483647 as usize
     if v.len >= maxCap {
         return false
     }
     let need = v.len + 1
     if v.capacity < need {
-        if !tryEnsureCapacity<T>(v, need) {
+        if !Vec.tryEnsureCapacityImpl<T>(v, need) {
             return false
         }
     }
@@ -200,15 +209,15 @@ func tryPush<T>(v: mut ref Vec<T>, value: T): bool {
     return true
 }
 
-func push<T>(v: mut ref Vec<T>, value: T): void {
-    if !tryPush<T>(v, value) {
+func Vec.pushImpl<T>(v: mut ref Vec<T>, value: T): void {
+    if !Vec.tryPushImpl<T>(v, value) {
         unsafe {
             intrinsics.abort()
         }
     }
 }
 
-func pop<T>(v: mut ref Vec<T>): Option<T> {
+func Vec.popImpl<T>(v: mut ref Vec<T>): Option<T> {
     if v.len == 0 {
         return Option.None
     }
@@ -219,14 +228,14 @@ func pop<T>(v: mut ref Vec<T>): Option<T> {
     }
 }
 
-func get<T>(v: ref Vec<T>, index: usize): Option<ref T> {
+func Vec.getImpl<T>(v: ref Vec<T>, index: usize): Option<ref T> {
     if index >= v.len {
         return Option.None
     }
-    return slice.get<T>(asSlice<T>(v), index)
+    return slice.get<T>(Vec.asSliceImpl<T>(v), index)
 }
 
-func takeSome<T>(v: mut ref Vec<Option<T>>, index: usize): Option<T> {
+func Vec.takeSomeImpl<T>(v: mut ref Vec<Option<T>>, index: usize): Option<T> {
     if index >= v.len {
         return Option.None
     }
@@ -245,10 +254,10 @@ func takeSome<T>(v: mut ref Vec<Option<T>>, index: usize): Option<T> {
 /// initialized and can still be safely dropped. Returns `None` for an
 /// out-of-range index or an empty slot.
 public func Vec.takeSome<T>(self: mut ref Vec<Option<T>>, index: usize): Option<T> {
-    return takeSome<T>(self, index)
+    return Vec.takeSomeImpl<T>(self, index)
 }
 
-func getCopy<Element: marker.Copy>(v: ref Vec<Element>, index: usize): Option<Element> {
+func Vec.getCopyImpl<Element: marker.Copy>(v: ref Vec<Element>, index: usize): Option<Element> {
     let maxCap: usize = 2147483647 as usize
     if index >= v.len || index > maxCap {
         return Option.None
@@ -259,25 +268,25 @@ func getCopy<Element: marker.Copy>(v: ref Vec<Element>, index: usize): Option<El
     }
 }
 
-func len<T>(v: ref Vec<T>): usize {
+func Vec.lenImpl<T>(v: ref Vec<T>): usize {
     return v.len
 }
 
-func capacity<T>(v: ref Vec<T>): usize {
+func Vec.capacityImpl<T>(v: ref Vec<T>): usize {
     return v.capacity
 }
 
-func isEmpty<T>(v: ref Vec<T>): bool {
+func Vec.isEmptyImpl<T>(v: ref Vec<T>): bool {
     return v.len == 0
 }
 
-func asSlice<T>(v: ref Vec<T>): []T {
+func Vec.asSliceImpl<T>(v: ref Vec<T>): []T {
     unsafe {
         return intrinsics.sliceFromRaw<Vec<T>, T>(v, v.data, v.len)
     }
 }
 
-func clear<T>(v: mut ref Vec<T>): void {
+func Vec.clearImpl<T>(v: mut ref Vec<T>): void {
     let mut i: usize = 0
     while i < v.len {
         unsafe {
@@ -290,8 +299,8 @@ func clear<T>(v: mut ref Vec<T>): void {
 }
 
 /// Deallocates the heap buffer and resets the vector to empty.
-func destroyVec<T>(v: mut ref Vec<T>): void {
-    clear<T>(v)
+func Vec.destroyImpl<T>(v: mut ref Vec<T>): void {
+    Vec.clearImpl<T>(v)
     if v.capacity > 0 {
         let size = v.capacity * mem.sizeOf<T>()
         unsafe {
@@ -308,14 +317,14 @@ func destroyVec<T>(v: mut ref Vec<T>): void {
 ///
 /// Allocation failure aborts. Use `tryPush` when the caller must handle failure.
 public func Vec.push<T>(self: mut ref Vec<T>, value: T): void {
-    push(self, value)
+    Vec.pushImpl(self, value)
 }
 
 /// Removes and returns the last element, or `None` if empty.
 ///
 /// Capacity remains allocated for reuse; this operation is O(1).
 public func Vec.pop<T>(self: mut ref Vec<T>): Option<T> {
-    return pop(self)
+    return Vec.popImpl(self)
 }
 
 /// Borrows the indexed element as `Some`, or returns `None` out of bounds.
@@ -323,7 +332,7 @@ public func Vec.pop<T>(self: mut ref Vec<T>): Option<T> {
 /// No element is copied or moved. The vector cannot be changed or dropped
 /// while the returned borrow is still in use.
 public func Vec.get<T>(self: ref Vec<T>, index: usize): Option<ref T> {
-    return get<T>(self, index)
+    return Vec.getImpl<T>(self, index)
 }
 
 /// Exclusively borrows the element at logical index `index`.
@@ -352,7 +361,7 @@ public func Vec.replace<T>(self: mut ref Vec<T>, index: usize, value: T): Option
 
 /// Returns a copy of a `Copy` element at `index`, or `Option.None` if out of bounds.
 public func Vec.getCopy<Element: marker.Copy>(self: ref Vec<Element>, index: usize): Option<Element> {
-    return getCopy<Element>(self, index)
+    return Vec.getCopyImpl<Element>(self, index)
 }
 
 /// Replaces an in-range element and returns `true`.
@@ -373,31 +382,39 @@ public func Vec.set<T>(self: mut ref Vec<T>, index: usize, value: T): bool {
 
 /// Returns the number of elements in the vector.
 public func Vec.len<T>(self: ref Vec<T>): usize {
-    return len(self)
+    return Vec.lenImpl(self)
 }
 
 /// Returns the allocated capacity of the vector.
 public func Vec.capacity<T>(self: ref Vec<T>): usize {
-    return capacity(self)
+    return Vec.capacityImpl(self)
 }
 
 /// Returns `true` if the vector contains no elements.
 public func Vec.isEmpty<T>(self: ref Vec<T>): bool {
-    return isEmpty(self)
+    return Vec.isEmptyImpl(self)
 }
 
 /// Borrows the initialized elements as a slice without copying.
 ///
 /// The view becomes invalid if the vector is destroyed or reallocated.
 public func Vec.asSlice<T>(self: ref Vec<T>): []T {
-    return asSlice<T>(self)
+    return Vec.asSliceImpl<T>(self)
+}
+
+/// Exclusively borrows initialized elements without allocating. The view keeps
+/// this Vec mutably borrowed, preventing aliases, growth and destruction.
+public func Vec.asMutSlice<T>(self: mut ref Vec<T>): mut []T {
+    unsafe {
+        return intrinsics.mutSliceFromRaw<Vec<T>, T>(self, self.data, self.len)
+    }
 }
 
 /// Ensures room for `additional` elements beyond the current length.
 ///
 /// Growth may reallocate and invalidate borrowed slices; failure aborts.
 public func Vec.reserve<T>(self: mut ref Vec<T>, additional: usize): void {
-    reserve(self, additional)
+    Vec.reserveImpl(self, additional)
 }
 
 /// Attempts to reserve room for `additional` elements beyond the length.
@@ -405,21 +422,21 @@ public func Vec.reserve<T>(self: mut ref Vec<T>, additional: usize): void {
 /// Returns `false` on allocation failure or capacity overflow, leaving
 /// existing contents intact.
 public func Vec.tryReserve<T>(self: mut ref Vec<T>, additional: usize): bool {
-    return tryReserve(self, additional)
+    return Vec.tryReserveImpl(self, additional)
 }
 
 /// Attempts to append one element without aborting on allocation failure.
 ///
 /// Returns `false` and leaves the vector intact if growth fails.
 public func Vec.tryPush<T>(self: mut ref Vec<T>, value: T): bool {
-    return tryPush(self, value)
+    return Vec.tryPushImpl(self, value)
 }
 
 /// Sets the length to zero while retaining allocated capacity.
 ///
 /// This drops initialized elements in place while retaining the buffer.
 public func Vec.clear<T>(self: mut ref Vec<T>): void {
-    clear(self)
+    Vec.clearImpl(self)
 }
 
 /// Releases the owned buffer and resets the vector to empty.
@@ -428,5 +445,5 @@ public func Vec.clear<T>(self: mut ref Vec<T>): void {
 /// this `Vec` value automatically at scope exit.
 @Destructor
 func Vec.destroy<T>(self: own Vec<T>): void {
-    destroyVec(self)
+    Vec.destroyImpl(self)
 }

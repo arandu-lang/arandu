@@ -17,13 +17,14 @@ use arandu_middle::layout::DenseRange;
 use arandu_middle::literal_pool::AmirLiteralPool;
 use arandu_middle::types::{ArType, Primitive, TypeInterner};
 use common::{
-    compile_source, emit_one, find_func_export, foreign_sym, run_main_i32, run_main_traps, temp,
+    compile_source, compile_trusted_core_fixture, emit_one, find_func_export, foreign_sym,
+    run_main_i32, run_main_traps, temp,
 };
 
 #[test]
 fn bit_intrinsics_cover_every_bit_position_and_zero() {
     let source = include_str!("../../arandu_backend_c/tests/bit_intrinsics.aru");
-    assert_eq!(run_main_i32(&compile_source(source)), 0);
+    assert_eq!(run_main_i32(&compile_trusted_core_fixture(source)), 0);
 }
 
 #[test]
@@ -693,6 +694,14 @@ func main(): int {
 }
 
 #[test]
+fn surface_borrowed_string_equality_compares_contents_in_both_operand_orders() {
+    let bytes = compile_source(include_str!(
+        "../../../tests/corpus/borrowed_string_equality.aru"
+    ));
+    assert_eq!(run_main_i32(&bytes), 0);
+}
+
+#[test]
 fn surface_if_else_branch_executes() {
     let bytes = compile_source(
         r#"
@@ -748,29 +757,29 @@ func main(): int {
 
 #[test]
 fn surface_mut_ref_slice_preserves_data_and_length_words() {
-    let bytes = compile_source(
+    let bytes = compile_trusted_core_fixture(
         r#"
 module std.core.mut_slice_wasm
 
 extern "arandu-intrinsic" {
-    func sliceFromRaw(owner: ptr[u8], data: ptr[u8], len: uint): []u8
-    func sliceLen<T>(source: []T): uint
+    func mutSliceFromRaw(owner: ptr[u8], data: ptr[u8], len: uint): mut []u8
+    func mutSliceLen<T>(source: mut []T): uint
 }
 
-func fill(buf: mut ref []u8): uint {
-    let len = unsafe { sliceLen<u8>(*buf) }
+func fill(buf: mut ref mut []u8): uint {
+    let len = unsafe { mutSliceLen<u8>(*buf) }
     if len != 4 { return 99 }
     buf[1] = 42 as u8
     return len
 }
 
-func observedLen(buf: ref []u8): uint {
-    return unsafe { sliceLen<u8>(*buf) }
+func observedLen(buf: ref mut []u8): uint {
+    return unsafe { mutSliceLen<u8>(*buf) }
 }
 
 func main(): int {
     let raw = alloc(4) as ptr[u8]
-    let mut view = unsafe { sliceFromRaw(raw, raw, 4 as uint) }
+    let mut view = unsafe { mutSliceFromRaw(raw, raw, 4 as uint) }
     let len = fill(mut ref view)
     if len != 4 || observedLen(ref view) != 4 || view[1] != (42 as u8) {
         unsafe { free(raw) }
@@ -1635,7 +1644,7 @@ public func main(): i32 {
 
 #[test]
 fn borrowed_projections_preserve_pointer_loads_and_single_evaluation() {
-    let bytes = compile_source(include_str!(
+    let bytes = compile_trusted_core_fixture(include_str!(
         "../../../tests/corpus/borrowed_projections.aru"
     ));
     assert_eq!(run_main_i32(&bytes), 0);

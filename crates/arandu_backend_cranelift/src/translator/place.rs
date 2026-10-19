@@ -105,7 +105,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                         self.builder
                             .ins()
                             .trapnz(is_oob, cranelift_codegen::ir::TrapCode::unwrap_user(1));
-                    } else if matches!(current_ty, ArType::Slice(_)) {
+                    } else if matches!(current_ty, ArType::Slice(_) | ArType::MutSlice(_)) {
                         let len_val = self.builder.ins().load(
                             self.ptr_type,
                             cranelift_codegen::ir::MemFlagsData::new(),
@@ -130,6 +130,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     let inner_ty_id = match &current_ty {
                         ArType::Ptr(inner)
                         | ArType::Slice(inner)
+                        | ArType::MutSlice(inner)
                         | ArType::Array(_, inner)
                         | ArType::ConstArray(_, inner) => *inner,
                         ArType::Ref(inner) | ArType::RefMut(inner) => *inner,
@@ -226,7 +227,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     self.builder
                         .ins()
                         .trapnz(is_oob, cranelift_codegen::ir::TrapCode::unwrap_user(1));
-                } else if matches!(current_ty, ArType::Slice(_)) {
+                } else if matches!(current_ty, ArType::Slice(_) | ArType::MutSlice(_)) {
                     let len_val = self.builder.ins().load(
                         self.ptr_type,
                         cranelift_codegen::ir::MemFlagsData::new(),
@@ -258,6 +259,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 let inner_ty_id = match &current_ty {
                     ArType::Ptr(inner)
                     | ArType::Slice(inner)
+                    | ArType::MutSlice(inner)
                     | ArType::Array(_, inner)
                     | ArType::ConstArray(_, inner) => *inner,
                     ArType::Ref(inner) | ArType::RefMut(inner) => *inner,
@@ -519,6 +521,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     let inner_ty_id = match &current_ty {
                         ArType::Ptr(inner)
                         | ArType::Slice(inner)
+                        | ArType::MutSlice(inner)
                         | ArType::Array(_, inner)
                         | ArType::ConstArray(_, inner) => *inner,
                         ArType::Ref(inner) | ArType::RefMut(inner) => *inner,

@@ -16,7 +16,7 @@ As árvores conceituais abaixo incluem módulos e APIs futuros; nomes como
 `arandu_core` representam camadas, não crates Rust já publicados com esse contrato.
 O inventário implementado vem do código em `stdlib/` e dos contratos técnicos.
 
-### Estado auditado em 16/10/2026
+### Base publicada e evolução local
 
 O SDK v0.1.10 foi publicado e aprovado em Linux x86-64, macOS ARM64 e Windows
 x86-64 no [run 38779239029](https://github.com/arandu-lang/arandu/actions/runs/38779239029),
@@ -34,33 +34,60 @@ automático e promoção da matriz específica continuam limites distintos.
 `std.fs.Dir` agora usa `openat2` no Linux com resolução confinada e sem
 symlinks. As regressões de runtime e JIT/C com UBSan rejeitam caminhos
 absolutos, parent traversal e fugas por symlinks; rename da raiz preserva
-a autoridade do descritor aberto. Outras plataformas e kernels sem a syscall
-falham sem fallback menos restritivo. Isso não fecha toda a RFC 0016 nem
+a autoridade do descritor aberto. Kernels Linux sem a syscall falham sem
+fallback menos restritivo. macOS/BSD têm um recorte local de um componente por
+capacidade, ainda sem prova de execução nativa; Windows permanece fail-closed.
+Isso não fecha toda a RFC 0016 nem
 o lifecycle de I/O. A campanha local 0.1.11 acrescenta Q8.8/Q32.32, intrínsecos
 u32/u64 de contagem/reversão de bits, operações checadas de Decimal e protótipos
 de Box e hashes SHA-256/BLAKE3. O corpus de hashes e Decimal executou em
 Cranelift, C com UBSan e Wasmtime; Box passou em Cranelift e C, incluindo drops
 exatos e rejeição de escapes/aliases. Box depende do host de alocação alinhada
-nativo; essa API ainda não possui wiring Wasm. Essas alterações passaram nos gates locais e
-ainda exigem a matriz instalada; não pertencem à prova publicada da 0.1.10. `core.atomic`
+nativo; essa API ainda não possui wiring Wasm. O snapshot histórico passou nos
+gates locais; essas implementações ainda exigem a matriz instalada e não
+pertencem à prova publicada da 0.1.10. `core.atomic`
 possui operações reais nos três backends. Ordens válidas são fortalecidas
 para SeqCst e ordens inválidas são rejeitadas. Passaram as regressões de
 contenção com seis threads nativas, incremento/CAS, larguras, wrap e ponteiros.
 Os gates locais do snapshot passaram; a matriz instalada da candidata segue pendente. A existência de Arc não comprova
-transporte Send/Sync ou sincronização correta de toda a biblioteca. Traps de abort já são emitidos diretamente, mas isso
+sincronização de tipos arbitrários: os bounds canônicos exigem Send e Sync do payload. Traps de abort já são emitidos diretamente, mas isso
 não fecha sozinho o contrato integral anti-panic-bloat. As convenções da RFC
 0026 não comprovam `close(): Result` e drop uniforme para todos os recursos.
 
 ### Evidência local desta revisão
 
-O snapshot local de 16/10/2026 passou em fmt, check, Clippy com warnings como
-erros, nextest (**3.152 aprovados; sete ignorados pelo perfil**), bijeção de
-102 diagnósticos, rustdoc com warnings como erros e doctests. Passaram também
-os checks de arquitetura, taxonomia, LF e contrato dos 27 manifests, além do
-script de determinismo de typeck com uma e oito threads. A extensão passou
-em 26 testes unitários, nos dois cenários do Extension Host (projeto e
-manifestless) e em TypeScript. O instalador passou em 22 testes, 11 subtestes
-e Ruff. O corpus Rc/Arc passou ainda em JIT otimizado e C O0/O2 com ASan/UBSan.
+A revisão de 18/10/2026 valida os crates e cenários afetados com nextest e
+Clippy com warnings como erros. A rodada de integração de `arandu_middle`,
+`arandu_typeck`, `arandu_mir`, `arandu_query`, dos três backends e da CLI passou
+com **2.175 testes aprovados, zero falhas e três ignorados**, incluindo a tipagem
+do grafo completo da stdlib. Inclui autoridade por arquivo, hashes/cutoff,
+vetores fonte e acesso desalinhado, empréstimos transitivos de guardas/vistas,
+privacidade de Vec, reconstrução unsafe de Box, Arc compartilhado e retenção JIT.
+Os testes selecionados de runtime, documentação, web e LSP também passaram;
+o cenário stdio sem manifesto e overlays anteriores à descoberta preservam a
+origem confiável da stdlib e o texto aberto no editor.
+O relatório da entrega registra os resultados executados; não se reutiliza o gate
+global abaixo como prova de mudanças posteriores. Não houve publicação.
+
+Como evidência histórica, o snapshot local de 17/10/2026 passou em fmt, check, Clippy com warnings como
+erros, nextest (**3.184 aprovados; sete ignorados**, perfil `verification`, oito
+threads), bijeção de 102 diagnósticos, rustdoc com warnings como erros e doctests.
+Passaram os checks de arquitetura, taxonomia, LF e contrato dos 27 manifests,
+além do determinismo de typeck com uma e oito threads. O corpus inclui a tipagem
+do grafo completo da stdlib, regressões stdio/LSP, cutoff, SIMD nos três backends,
+poda de imports Wasm, ParkingLot/timeout e confinamento de Dir em JIT/C.
+
+Os quatro testes C SIMD também passaram com ASan/UBSan (modo nativo e fallback,
+memória/ABI/shuffle e wrapping por via). O harness C ParkingLot passou em O0/O2
+com UBSan. O runtime Rust passou em checks para Windows x86-64 e macOS ARM64/
+x86-64, com `blake3/pure` e flags de linker do host removidas. Isso verifica
+compilação Rust dessas branches, não execução nativa ou compilação dos shims C
+nesses sistemas; Windows Dir permanece fail-closed.
+
+Como evidência histórica de 16/10, a extensão passou em 26 testes unitários,
+nos cenários projeto/manifestless do Extension Host e em TypeScript; o instalador
+passou em 22 testes, 11 subtestes e Ruff. O corpus Rc/Arc daquela revisão passou
+em JIT otimizado e C O0/O2 com ASan/UBSan.
 
 Essas evidências locais não publicam a 0.1.11 nem encerram ST.0–16. Os testes
 manuais/endurance e os pacotes exatos nos runners nativos continuam sujeitos
@@ -93,10 +120,17 @@ remoção pinam o diretório pai e operam sobre uma única folha. Remover uma
 folha symlink remove o link, sem seguir seu alvo. Um pai já aberto conserva
 sua autoridade se for renomeado; não se promete confinamento por nome após
 esse rename. Não há fallback para `openat` comum quando `openat2` falha.
-`Dir.openDir` exige diretório; opções de append ainda são rejeitadas.
-`File` ainda expõe seu fd na API legada; privacidade/adoção de handles,
-`read`/`write` por handle e backends de capacidades em outros sistemas
-continuam incompletos. Os testes locais não promovem suporte multiplataforma.
+No macOS e nos BSDs suportados pelo código, cada chamada relativa aceita
+somente um componente e usa `openat` com `O_NOFOLLOW | O_CLOEXEC`;
+diretórios exigem também `O_DIRECTORY` e `fstat` no descritor aberto.
+`Dir.openDir` deriva explicitamente a próxima capacidade; caminhos com `/`
+falham nesses alvos. Não se oferece uma caminhada multiplataforma com
+verificação atômica de ancestralidade entre várias syscalls. Windows continua
+fail-closed até existir adaptador de handles compatível com a ABI.
+`Dir.openDir` exige diretório; opções de append ainda são rejeitadas, assim
+como criar/truncar sem escrita. `File` ainda expõe seu fd na API legada;
+privacidade/adoção de handles e lifecycle completo continuam pendentes.
+Os testes da lógica no Linux não promovem suporte nativo macOS/BSD.
 
 A correção local de `Rc.tryUnwrap` zera a contagem forte antes de mover o
 payload, impedindo que `Weak.upgrade` ressuscite o valor extraído. O corpus
@@ -104,21 +138,50 @@ de lifecycle cobre unwrap e último drop de Rc/Arc com weaks vivos e payloads
 não-Copy; a contagem exata de seis drops foi observada em JIT comum/otimizado e C
 O0/O2, incluindo ASan/UBSan com detecção de vazamentos e uso de stack expirado.
 
-A etapa de compartilhamento ainda exige dois contratos adicionais. Em
-`Arc`, o teste de unicidade para `getMut` precisa excluir atomicamente
-`Weak.upgrade`, além de limitar contadores antes de overflow e provar o drop
-único de payloads não-Copy. Os marcadores `Send`/`Sync` atuais rejeitam
-conservadoramente raw pointers e recursos com destructor; atomics reais não
-removem essa fronteira. O transporte de closures/retornos para threads e a
-transferência de seus drops precisam estender o protocolo de ownership
-existente com regressões, sem liberar genericamente ponteiros ou recursos.
+`Arc` usa CAS com limite de contagem antes de overflow e um sentinel da
+contagem fraca para testar unicidade com exclusão de upgrades concorrentes.
+`getMut` continua exigindo empréstimo exclusivo do handle. Arc/ArcWeak canônicos
+só são Send/Sync para T:Send+Sync. Isso não concede transporte a Rc, ponteiros
+crus, empréstimos de stack ou recursos arbitrários com destructor.
 
-`Condvar` ainda carece do protocolo que registra o waiter e libera o mutex
-sem perder notificações, além de reacquisição, cancelamento e integração com
-o executor. Uma sequência numérica e timeouts não constituem essa prova.
-O `RwLock` atual exige empréstimo exclusivo nos guards; sua existência não
-prova múltiplos leitores concorrentes nem justiça. Esses contratos antecedem
-a promoção das APIs de concorrência e permanecem na fila ST.7/ST.10/ST.11.
+`std.sync.mutex` e `std.sync.rwlock` encapsulam UnsafeCell canônica, não-Copy e
+não-Sync. Mutex exige T:Send; RwLock exige T:Send para posse e T:Send+Sync para
+compartilhamento. As guardas não são Copy nem Send e retêm o empréstimo do lock.
+Leitores entram por ref compartilhada; escritores usam uma fila FIFO, alternada
+com lotes de leitores pendentes. Estado e monitores ficam em tabelas por
+endereço, não em uma palavra mágica de quatro bytes. Fairness pressupõe término
+das seções críticas e progresso do escalonador.
+
+`Condvar.wait` e `waitTimeout` emprestam exclusivamente uma MutexGuard, liberam
+a aquisição e sempre a readquirem. A sequência validada sob o bucket fecha a
+janela entre liberação e registro; notify recusa wrap antes de publicar a nova
+geração. O timeout da condição não limita o tempo posterior de reaquisição.
+`waitNotification*` expõe separadamente o evento de sequência. Isso é nativo;
+um worker de executor cooperativo não deve bloquear esperando esse protocolo.
+
+`std.thread.spawn<A,R,J>` recebe argumentos e ThreadJob possuídos e Send, incluindo
+capturas descritas por campos do job; join devolve o resultado possuído. Drop
+aguarda e destrói resultados não reclamados. A barreira de descarregamento JIT
+espera execução, descendentes, joins e drop glue ativos antes de liberar código.
+Closures gerais não estão implementadas. Traps/abort da linguagem encerram o
+processo; ThreadError não promete recuperar unwinding que o compilador não emite.
+`park` consome o token de unpark; `parkTimeout` usa prazo monotônico e pode ser
+interrompido por unpark, consumindo o mesmo token coalescente.
+
+Os seis tipos canônicos de `std.core.simd` usam ArType::Vector desde a fonte.
+Máscaras privadas, comparações e seleção possuem nós AMIR e lowering nos três
+backends. Loads recebem []T; stores seguros usam MutableSlice<Owner,T>, afim e
+ligada a mut ref Owner. Vec.asMutSlice mantém o proprietário exclusivamente
+emprestado; raw constructors e stores por descritor compartilhado exigem unsafe.
+Isso impede tratar a cópia de uma fatia imutável como permissão de escrita.
+Bounds e acessos escalares permitem endereços sem alinhamento vetorial. Backing
+do compilador tem alinhamento mínimo 16, com par de liberação correspondente.
+
+Identidades privilegiadas e a ABI arandu-intrinsic exigem autoridade de origem
+concedida pelo loader para cada arquivo da stdlib. Um cabeçalho module std.*
+não concede sozinho Send/Sync, representação SIMD ou permissão de intrínsecos.
+O input de autoridade é por arquivo e seus marcadores entram no hash semântico
+das assinaturas, preservando cutoff entre arquivos independentes.
 
 ## Contratos locais de matemática e aleatoriedade
 
@@ -241,7 +304,7 @@ arandu_core
  ├─ fmt          # Formatação e diagnostics de baixo nível (Debug, Display, formatting engines)
  ├─ panic        # Handlers básicos de pânico e asserções estáticas
  ├─ intrinsics   # abort, abortGenerationalMismatch (traps; zero heap)
- ├─ simd         # Protótipo escalar; representação/lowering SIMD pendentes (A7)
+ ├─ simd         # Seis vetores nativos, máscaras e acesso a vistas exclusivas (RFC 0038)
  ├─ atomic       # Lowering local C/Cranelift/Wasm; todos os acessos SeqCst
  └─ arch         # Especificações arquiteturais específicas (x86_64, AArch64, RISC-V)
 ```
@@ -266,7 +329,7 @@ arandu_alloc
  ├─ slab               # Alocadores de tamanho fixo com reciclagem rápida por Free Lists
  ├─ gen_arena          # GenSlot / GenRef / GenArena — fallback geracional F2.3 (não em core)
  ├─ rc                 # Referência compartilhada thread-local (Reference Counting)
- ├─ arc                # Protótipo com contagem atômica; Send/Sync e lifecycle pendentes
+ ├─ arc                # Contagem atômica, bounds Send/Sync e lifecycle locais; promoção pendente
  ├─ boxed              # Ponteiro exclusivo alocado na heap (`Box<T>`)
  ├─ vec                # Vetor dinâmico contíguo reajustável (`Vec<T>`)
  ├─ smallvec           # Vetores otimizados com inline-stack storage temporário (elimina heap allocs pequenos)
@@ -304,7 +367,7 @@ arandu_std
  ├─ path         # Manipulação e validação de caminhos de arquivos (Path, PathBuf)
  ├─ time         # Medição de tempo monotônico e absoluto, instantes, durações
  ├─ random       # PRNG xoshiro256++ e acesso falível à entropia do SO
- ├─ thread       # Sleep/yield/park; spawn/join e identidade ainda pendentes
+ ├─ thread       # IDs/park e spawn/JoinHandle possuídos via ThreadJob tipado
  ├─ ffi          # Conversão de tipos, ponteiros C, carregamento dinâmico (dlopen)
  ├─ collections  # Coleções avançadas (BTreeMap, Deque, LinkedList) dependentes de alocação e OS
  ├─ json         # Parser e serializador JSON ultra rápido, stream-based, cache-friendly
@@ -366,7 +429,7 @@ arandu_ext
 
 Conforme formalizado na [RFC 0012](rfcs/0012-scientific-computing-and-data-architecture.md), o Arandu rejeita transformar a stdlib básica em um monólito numérico pesado:
 
-* **In-Tree (`stdlib/core/math` e `stdlib/core/simd`)**: Apenas operações escalares puras (IEEE-754, trigonometria elementar, constantes `PI`/`TAU`/`E`) e tipos primitivos de registradores SIMD (`f32x4`, `u8x16`) pertencem à biblioteca padrão do compilador. São entregas autorizadas, ainda pendentes. O requisito de ausência de heap/OS exige implementação interna ou intrínsecos com fechamento de símbolos comprovado; chamadas à `libm` do host não satisfazem esse contrato automaticamente.
+* **In-Tree (`stdlib/core/math` e `stdlib/core/simd`)**: Apenas operações escalares puras (IEEE-754, trigonometria elementar, constantes `PI`/`TAU`/`E`) e tipos primitivos de registradores SIMD (`f32x4`, `u8x16`) pertencem à biblioteca padrão do compilador. A matemática tem implementação escalar local; SIMD possui tipos fonte canônicos, representação/layout/AMIR e lowering nos três backends (RFC 0038). O requisito de ausência de heap/OS exige implementação interna ou intrínsecos com fechamento de símbolos comprovado; chamadas à `libm` do host não satisfazem esse contrato automaticamente.
 * **Out-of-Tree / Ecossistema Externo (`arandu_math`, `arandu_data`, `arandu_science`)**: Todo o ferramental pesado de tensores N-dimensionais, matrizes esparsas, BLAS/LAPACK, processamento colunar Apache Arrow, DataFrames e solvers de EDOs reside em pacotes modulares externos do ecossistema, completamente fora da árvore de código do compilador v0.1.
 
 ```text

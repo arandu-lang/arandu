@@ -5,6 +5,8 @@ pub(super) mod env;
 mod features;
 pub(super) mod fs;
 pub(super) mod memory;
+mod native_thread;
+mod phase_lock;
 pub(super) mod prelude;
 pub(super) mod task;
 
@@ -63,7 +65,7 @@ impl<'a> CEmitter<'a> {
         if features.tasks {
             let _ = writeln!(&mut self.output, "#include <stdatomic.h>");
         }
-        if features.tasks || features.fs || features.buffers {
+        if features.tasks || features.fs || features.buffers || features.env {
             let _ = writeln!(
                 &mut self.output,
                 "#if defined(_WIN32)\n#include <malloc.h>\n#include <windows.h>\n#endif"
@@ -190,6 +192,10 @@ impl<'a> CEmitter<'a> {
         // SL_R.0: cooperative task table mirror (SyncExecutor host surface).
         if features.tasks {
             self.emit_task_runtime();
+            self.emit_phase_lock_runtime();
+        }
+        if features.native_threads {
+            self.emit_native_thread_runtime();
         }
         // std.fs / std.env runtime hosts.
         if features.fs || features.env {

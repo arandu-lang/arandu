@@ -502,6 +502,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     | ArType::Array(_, _)
                     | ArType::ConstArray(_, _)
                     | ArType::Slice(_)
+                    | ArType::MutSlice(_)
             )
     }
 

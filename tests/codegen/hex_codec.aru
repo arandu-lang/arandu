@@ -1,0 +1,13 @@
+func hexDigit(val: u8): u8 {
+    if val < 10 {
+        return 48 + val;
+    } else {
+        return 87 + val;
+    }
+}
+
+func encodeByte(b: u8): [2]u8 {
+    let hi = (b >> 4) & 15;
+    let lo = b & 15;
+    return [hexDigit(hi), hexDigit(lo)];
+}

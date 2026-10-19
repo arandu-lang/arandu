@@ -338,3 +338,22 @@ struct OptionLayout {
     payload: T
 }
 ```
+
+## Valores vetoriais internos de 128 bits
+
+As seis formas fechadas de `ArType::Vector` têm tamanho/alinhamento 16/16,
+inclusive em ptr32 e i686 SysV. Agregados propagam esse alinhamento; arrays usam
+stride de 16 bytes. Locais com endereço tomado precisam de células alinhadas,
+independentemente do tamanho do ponteiro. Cranelift usa um valor vetorial e
+Wasm usa um slot `v128`, inclusive para parâmetros e retornos internos. C emite
+representação alinhada com membro nativo ou fallback escalar; isso não estabelece
+uma ABI FFI comum entre compiladores. Component Model rejeita vetores em suas
+fronteiras até existir mapeamento canônico explícito.
+
+A API fonte canônica de `std.core.simd` usa esses tipos diretamente. Structs
+homônimas de aplicação continuam nominais. As máscaras possuem payload vetorial
+privado e preservam o mesmo alinhamento. Acesso desalinhado por fatias usa
+operações escalares; a API segura de escrita exige uma vista de proprietário
+exclusivamente emprestado, não apenas um descritor compartilhado mutável.
+O alocador de backing do compilador garante no mínimo 16 bytes de alinhamento
+e usa sua função de liberação correspondente; não é intercambiável com libc free.

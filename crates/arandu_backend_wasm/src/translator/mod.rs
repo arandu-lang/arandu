@@ -20,6 +20,7 @@ pub mod expr;
 mod locals;
 mod operand;
 mod place;
+mod simd;
 mod storage;
 mod string;
 
@@ -253,6 +254,11 @@ impl<'a> FuncTranslator<'a> {
                         align: crate::memory::MEM_ALIGN,
                         memory_index: 0,
                     })),
+                    ValType::V128 => self.code.push(Instruction::V128Store(wasm_encoder::MemArg {
+                        offset: u64::from(field.offset),
+                        align: 4,
+                        memory_index: 0,
+                    })),
                     _ => self.code.push(Instruction::I32Store(wasm_encoder::MemArg {
                         offset: field.offset as u64,
                         align: crate::memory::MEM_ALIGN,
@@ -275,6 +281,7 @@ impl<'a> FuncTranslator<'a> {
                     | arandu_middle::types::ArType::RefMut(_)
                     | arandu_middle::types::ArType::Nullable(_)
                     | arandu_middle::types::ArType::Slice(_)
+                    | arandu_middle::types::ArType::MutSlice(_)
             );
             if local.is_memory && !pointer_like && !self.is_owned_aggregate(local.ty) {
                 let size = self.layout_of(&ty).size.max(1) as i32;

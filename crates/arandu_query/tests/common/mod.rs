@@ -7,6 +7,10 @@ pub const STDLIB_MODULES: &[(&str, &str)] = &[
         include_str!("../../../../stdlib/alloc/allocator_api.aru"),
     ),
     (
+        "stdlib/alloc/arc.aru",
+        include_str!("../../../../stdlib/alloc/arc.aru"),
+    ),
+    (
         "stdlib/alloc/arena.aru",
         include_str!("../../../../stdlib/alloc/arena.aru"),
     ),
@@ -19,12 +23,24 @@ pub const STDLIB_MODULES: &[(&str, &str)] = &[
         include_str!("../../../../stdlib/alloc/boxed.aru"),
     ),
     (
+        "stdlib/alloc/deque.aru",
+        include_str!("../../../../stdlib/alloc/deque.aru"),
+    ),
+    (
         "stdlib/alloc/gen_arena.aru",
         include_str!("../../../../stdlib/alloc/gen_arena.aru"),
     ),
     (
         "stdlib/alloc/hash_map.aru",
         include_str!("../../../../stdlib/alloc/hash_map.aru"),
+    ),
+    (
+        "stdlib/alloc/rc.aru",
+        include_str!("../../../../stdlib/alloc/rc.aru"),
+    ),
+    (
+        "stdlib/alloc/slab.aru",
+        include_str!("../../../../stdlib/alloc/slab.aru"),
     ),
     (
         "stdlib/alloc/smallvec.aru",

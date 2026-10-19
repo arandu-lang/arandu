@@ -856,3 +856,38 @@ fn deeply_nested_type_does_not_stack_overflow_and_recovers() {
         .join()
         .expect("bounded type parser worker failed");
 }
+
+#[test]
+fn mut_slice_type_parses_consistently_in_direct_and_cst_paths() {
+    let source = "func process(buf: mut []u8): void { }";
+    let direct = parse(source).expect("direct parse");
+    let canonical =
+        crate::lower_syntax_to_program(&crate::parse_syntax(source), 0).expect("CST parse");
+    assert_eq!(direct, canonical);
+    assert!(
+        canonical
+            .pool
+            .type_exprs
+            .iter()
+            .any(|ty| matches!(ty, crate::TypeExpr::MutSlice { .. }))
+    );
+}
+
+#[test]
+fn move_lambda_parses_with_is_move_flag() {
+    for source in [
+        "func main(): void { let f = move || 42; }",
+        "func main(): void { let f = move |x: int| x + 1; }",
+        "func main(): void { let f = own || { return 10; }; }",
+    ] {
+        let program = parse(source).expect("move lambda parse");
+        assert!(
+            program
+                .pool
+                .exprs
+                .iter()
+                .any(|e| matches!(e, crate::ExprKind::Lambda { is_move: true, .. })),
+            "expected is_move: true in {source}"
+        );
+    }
+}

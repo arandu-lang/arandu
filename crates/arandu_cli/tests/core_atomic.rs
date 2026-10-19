@@ -134,10 +134,11 @@ fn atomic_invalid_orders_trap_before_memory_access() {
 }
 
 #[test]
-fn atomic_storage_and_intrinsic_signatures_cannot_be_forged() {
+fn untrusted_intrinsic_declarations_and_private_atomic_storage_are_rejected() {
     let root = common::temp_dir("arandu-atomic-invalid").unwrap();
     let path = root.join("invalid.aru");
     for declaration in [
+        "func atomicLoad32(value: ref u32): u32",
         "func atomicFetchAdd32(value: ref u32, operand: u32): u32",
         "func atomicLoad64(value: ref u32): u64",
         "func atomicCompareExchange32(value: mut ref u32, expected: u32): u32",
@@ -154,7 +155,8 @@ fn atomic_storage_and_intrinsic_signatures_cannot_be_forged() {
         assert!(!output.status.success(), "accepted {declaration}");
         let diagnostics = String::from_utf8_lossy(&output.stderr);
         assert!(
-            diagnostics.contains("U001") && diagnostics.contains("unsupported signature"),
+            diagnostics.contains("U001")
+                && diagnostics.contains("requires a trusted standard-library source"),
             "{diagnostics}"
         );
     }

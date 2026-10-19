@@ -251,3 +251,16 @@ todos os backends. O texto não implica que toda otimização possível já exis
 
 Manter validação de dominância, argumentos de bloco e efeitos antes/depois de
 passes; novas otimizações exigem corpus e medição.
+
+## Vetores internos de 128 bits (RFC 0038)
+
+`ArType::Vector(VectorType)` admite somente F32x4/F64x2/I32x4/I16x8/U8x16/I64x2.
+A AMIR tem `VectorOp`, `VectorCompare`, `VectorSelect`, `VectorSplat`,
+`VectorShuffle`, `VectorExtractLane` e
+`VectorInsertLane`; são operações puras, Copy, sem proveniência de empréstimo.
+O visitor compartilhado percorre ambos os vetores e o valor inserido; SSA,
+inlining, liveness/DCE e hashes conservam esses operandos. Shuffle usa 16 índices
+de bytes de 0 a 31, com ordem little-endian por via. O validador exige formas e
+escalares exatos, operações admitidas e índices válidos antes dos backends.
+CTFE rejeita esses nós explicitamente. O contrato completo e as fronteiras
+identidade canônica fonte, máscaras e limites de portabilidade estão na [RFC 0038](rfcs/0038-portable-simd-hardware-vectors-and-alignment-safety.md).

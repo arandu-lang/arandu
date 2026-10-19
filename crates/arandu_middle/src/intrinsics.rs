@@ -203,14 +203,143 @@ impl IntrinsicKind {
             "bitLeadingZeros32" | "bitLeadingZeros64" => Some(Self::LeadingZeros),
             "bitTrailingZeros32" | "bitTrailingZeros64" => Some(Self::TrailingZeros),
             "bitReverse32" | "bitReverse64" => Some(Self::ReverseBits),
-            s if s.starts_with("sliceFromRaw") => Some(Self::SliceFromRaw),
+            s if s.starts_with("sliceFromRaw") || s.starts_with("mutSliceFromRaw") => {
+                Some(Self::SliceFromRaw)
+            }
             s if s.starts_with("sliceSubslice") => Some(Self::SliceSubslice),
-            s if s.starts_with("sliceLen") => Some(Self::SliceLen),
+            s if s.starts_with("sliceLen") || s.starts_with("mutSliceLen") => Some(Self::SliceLen),
             s if s.starts_with("sliceData") || s.starts_with("slicePtr") => Some(Self::SliceData),
             s if s.starts_with("strBytes") => Some(Self::StrBytes),
             s if s.starts_with("strView") => Some(Self::StrView),
             "dropInPlace" | "drop_in_place" => Some(Self::DropInPlace),
             _ => None,
+        }
+    }
+}
+
+/// Closed SIMD operation admitted by an explicit intrinsic declaration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SimdOperation {
+    Splat,
+    Binary(crate::amir::VectorOp),
+    Extract(u8),
+    Insert(u8),
+    Compare(crate::amir::VectorCompareOp),
+    Select,
+}
+
+/// A SIMD name is only an ABI selector. Callers must additionally require
+/// `LangItem::SimdIntrinsic` and validate the exact, non-generic signature.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SimdIntrinsic {
+    pub shape: crate::types::VectorType,
+    pub operation: SimdOperation,
+}
+
+impl SimdIntrinsic {
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        use crate::amir::{VectorCompareOp, VectorOp};
+        let bare = name.rsplit(['.', '$']).next().unwrap_or(name);
+        let name = bare.strip_prefix("simd")?;
+        for shape in crate::types::VectorType::ALL {
+            let Some(suffix) = name.strip_prefix(shape.name()) else {
+                continue;
+            };
+            let operation = match suffix {
+                "Splat" => SimdOperation::Splat,
+                "Add" => SimdOperation::Binary(VectorOp::Add),
+                "Sub" => SimdOperation::Binary(VectorOp::Sub),
+                "Mul" => SimdOperation::Binary(VectorOp::Mul),
+                "Div" => SimdOperation::Binary(VectorOp::Div),
+                "BitAnd" => SimdOperation::Binary(VectorOp::BitAnd),
+                "BitOr" => SimdOperation::Binary(VectorOp::BitOr),
+                "BitXor" => SimdOperation::Binary(VectorOp::BitXor),
+                "Eq" => SimdOperation::Compare(VectorCompareOp::Eq),
+                "Ne" => SimdOperation::Compare(VectorCompareOp::Ne),
+                "Lt" => SimdOperation::Compare(VectorCompareOp::Lt),
+                "Le" => SimdOperation::Compare(VectorCompareOp::Le),
+                "Gt" => SimdOperation::Compare(VectorCompareOp::Gt),
+                "Ge" => SimdOperation::Compare(VectorCompareOp::Ge),
+                "Select" => SimdOperation::Select,
+                suffix => {
+                    let (insert, lane) = if let Some(lane) = suffix.strip_prefix("Extract") {
+                        (false, lane)
+                    } else {
+                        (true, suffix.strip_prefix("Insert")?)
+                    };
+                    let index: u8 = lane.parse().ok()?;
+                    if index >= shape.lanes() || index.to_string() != lane {
+                        return None;
+                    }
+                    if insert {
+                        SimdOperation::Insert(index)
+                    } else {
+                        SimdOperation::Extract(index)
+                    }
+                }
+            };
+            if let SimdOperation::Binary(op) = operation
+                && !op.supports(shape)
+            {
+                return None;
+            }
+            return Some(Self { shape, operation });
+        }
+        None
+    }
+
+    /// Exact signature; no target-sized lane or foreign nominal substitutes.
+    #[must_use]
+    pub fn signature(self) -> (Vec<crate::types::ArType>, crate::types::ArType) {
+        use crate::types::{ArType, VectorType};
+        let vector = ArType::Vector(self.shape);
+        let lane = ArType::Primitive(self.shape.lane());
+        let mask = ArType::Vector(VectorType::U8x16);
+        match self.operation {
+            SimdOperation::Splat => (vec![lane], vector),
+            SimdOperation::Binary(_) => (vec![vector.clone(), vector.clone()], vector),
+            SimdOperation::Extract(_) => (vec![vector], lane),
+            SimdOperation::Insert(_) => (vec![vector.clone(), lane], vector),
+            SimdOperation::Compare(_) => (vec![vector.clone(), vector], mask),
+            SimdOperation::Select => (vec![mask, vector.clone(), vector.clone()], vector),
+        }
+    }
+}
+
+#[cfg(test)]
+mod simd_tests {
+    use super::*;
+
+    #[test]
+    fn closed_simd_names_reject_invalid_shapes_lanes_and_operations() {
+        for shape in crate::types::VectorType::ALL {
+            assert_eq!(
+                SimdIntrinsic::from_name(&format!("simd{}Splat", shape.name())).map(|op| op.shape),
+                Some(shape)
+            );
+            assert!(
+                SimdIntrinsic::from_name(&format!(
+                    "simd{}Extract{}",
+                    shape.name(),
+                    shape.lanes() - 1
+                ))
+                .is_some()
+            );
+            assert!(
+                SimdIntrinsic::from_name(&format!("simd{}Extract{}", shape.name(), shape.lanes()))
+                    .is_none()
+            );
+        }
+        for name in [
+            "simdF32x3Splat",
+            "simdF32x4BitAnd",
+            "simdU8x16Mul",
+            "simdI32x4Div",
+            "simdF32x4Extract01",
+            "simdF32x4Insert255",
+        ] {
+            assert!(SimdIntrinsic::from_name(name).is_none(), "{name}");
         }
     }
 }

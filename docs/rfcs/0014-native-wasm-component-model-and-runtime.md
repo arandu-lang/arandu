@@ -110,3 +110,21 @@ Capacidades WASI ampliadas, integração browser e GPU podem ser propostas
 separadas. A existência de emissão core/component não aprova essas entregas nem
 fixa automaticamente uma versão para cada uma. Prioridades e gates ficam no
 roadmap, com evidências específicas por host.
+
+
+## Alcance e imports: atualização de 2026-10-17
+
+Todos os perfis core Wasm e Component Model aplicam a mesma closure de funções
+antes de construir imports. As raízes atuais são `main`, funções públicas/internas
+e entrypoints de tooling; bibliotecas sem `main` preservam definições privadas
+para lookup do host. `@Export` não é uma sintaxe introduzida por esta mudança.
+Referências a funções e dependências de drop são conservadas; metadados
+incompletos mantêm dependências conservadoramente. Chamadas indiretas genéricas
+ainda não têm lowering Wasm e não são habilitadas por essa análise. WIT usa a
+mesma seleção de externs vivos. O perfil padrão conserva `cabi_realloc` e
+`memory`; size pode omitir helpers não usados. PRNG determinístico e operações
+puras podem instanciar sem imports; efeitos vivos continuam exigindo hosts.
+
+O núcleo SIMD de 128 bits da RFC 0038 usa `v128` em funções e memória core.
+Fronteiras vetoriais públicas/importadas de componentes são rejeitadas até haver
+um mapeamento canônico explícito; não são rebaixadas silenciosamente para `u32`.

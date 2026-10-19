@@ -55,7 +55,7 @@ fn runtime_producer_workload() {
     source.push_str("func main(): int { return worker0() }\n");
     let (mut db, log) = DatabaseImpl::with_rebuild_log();
     for &(path, text) in common::STDLIB_MODULES {
-        db.new_file(path.into(), text.into());
+        db.new_stdlib_file(path.into(), text.into());
     }
     let file = db.new_file("main.aru".into(), source.clone());
     let produce = |stage: &str| {

@@ -301,7 +301,10 @@ impl<'a, 'b, M: Module> FunctionTranslator<'a, 'b, M> {
     pub(crate) fn needs_scalar_stack_home(ty: &ArType) -> bool {
         match ty {
             ArType::Primitive(Primitive::Str) => false,
-            ArType::Primitive(_) | ArType::IntLiteral | ArType::FloatLiteral => true,
+            ArType::Vector(_)
+            | ArType::Primitive(_)
+            | ArType::IntLiteral
+            | ArType::FloatLiteral => true,
             ArType::Ptr(_) => true,
             _ => false,
         }
@@ -400,7 +403,10 @@ impl<'a, 'b, M: Module> FunctionTranslator<'a, 'b, M> {
     }
 
     pub(crate) fn poison_value(&mut self, clif_ty: cranelift_codegen::ir::Type) -> Value {
-        if clif_ty.is_int() {
+        if clif_ty.is_vector() {
+            let lane = self.poison_value(clif_ty.lane_type());
+            self.builder.ins().splat(clif_ty, lane)
+        } else if clif_ty.is_int() {
             self.builder.ins().iconst(clif_ty, 0)
         } else if clif_ty == cranelift_codegen::ir::types::F32 {
             self.builder.ins().f32const(0.0)
@@ -669,13 +675,7 @@ impl<'a, 'b, M: Module> AmirVisitor for FunctionTranslator<'a, 'b, M> {
                     let Some(clif_ty) = clif_type(&lty, self.ptr_type).concrete() else {
                         continue;
                     };
-                    let zero = if clif_ty == cranelift_codegen::ir::types::F32 {
-                        self.builder.ins().f32const(0.0)
-                    } else if clif_ty == cranelift_codegen::ir::types::F64 {
-                        self.builder.ins().f64const(0.0)
-                    } else {
-                        self.builder.ins().iconst(clif_ty, 0)
-                    };
+                    let zero = self.poison_value(clif_ty);
                     self.builder.def_var(var, zero);
                 }
             }

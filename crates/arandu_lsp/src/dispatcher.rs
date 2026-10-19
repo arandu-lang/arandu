@@ -187,10 +187,12 @@ pub(crate) fn event_loop(
             }
             Event::Workspace(event) => match event {
                 Ok(WorkspaceEvent::Stdlib(stdlib)) => {
+                    // Registration must see the verified loader root so stdlib
+                    // identities are trusted even when no package is configured.
+                    state.configure_stdlib_root(stdlib.root);
                     for file in stdlib.files {
                         crate::workspace::register_workspace_file(state, file);
                     }
-                    state.host.db_mut().set_stdlib_root(stdlib.root);
                 }
                 Ok(WorkspaceEvent::Project(project)) => {
                     let mut project = *project;

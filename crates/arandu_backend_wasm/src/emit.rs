@@ -71,7 +71,8 @@ pub struct WasmModuleBuilder<'a> {
     layout_provider: &'a dyn StructLayoutProvider,
     layout: DataLayout,
     functions: Vec<&'a AmirFunc>,
-    live: Option<FxHashSet<SymbolId>>,
+    live: FxHashSet<SymbolId>,
+    optimize_for_size: bool,
 }
 
 impl<'a> WasmModuleBuilder<'a> {
@@ -113,30 +114,36 @@ impl<'a> WasmModuleBuilder<'a> {
         layout_provider: &'a dyn StructLayoutProvider,
         layout: DataLayout,
     ) -> Self {
+        // Host imports are part of the module's linking contract even when
+        // never called. Apply the same dependency closure in every profile so
+        // an unreachable private body cannot introduce a host requirement.
+        let live = arandu_semantics::passes::reachability::live_functions(
+            program,
+            symbols,
+            interner,
+            layout_provider,
+        );
         Self {
             program,
             symbols,
             interner,
             layout_provider,
             layout,
-            functions: program.funcs.iter().collect(),
-            live: None,
+            functions: program
+                .funcs
+                .iter()
+                .filter(|function| live.contains(&function.symbol))
+                .collect(),
+            live,
+            optimize_for_size: false,
         }
     }
 
-    /// Select executable roots and omit unused core-module ABI helpers.
+    /// Omit unused core-module ABI helpers in addition to the shared pruning.
     /// Components still retain their mandatory Canonical ABI support.
     #[must_use]
     pub fn optimize_for_size(mut self) -> Self {
-        let live = arandu_semantics::passes::reachability::live_functions(
-            self.program,
-            self.symbols,
-            self.interner,
-            self.layout_provider,
-        );
-        self.functions
-            .retain(|function| live.contains(&function.symbol));
-        self.live = Some(live);
+        self.optimize_for_size = true;
         self
     }
 
@@ -153,12 +160,39 @@ impl<'a> WasmModuleBuilder<'a> {
         let mut module = Module::new();
 
         let imports = self.collect_imports(style);
+        for import in &imports {
+            if import.field == "ar_rt_thread_park_timeout" {
+                let span = self
+                    .symbols
+                    .try_get(import.symbol)
+                    .map_or(arandu_middle::Span::new(0, 0, 0), |s| s.span);
+                return Err(Diagnostic::error(
+                    arandu_middle::diagnostics::DiagCode::U001FeatureNotSupported,
+                    "`parkTimeout` requires target thread support to wake on unpark, which is unavailable on wasm32; use `std.thread.sleep` for a non-interruptible delay",
+                    span,
+                ));
+            }
+            if matches!(
+                import.field.as_str(),
+                "ar_rt_thread_park" | "ar_rt_thread_unpark" | "ar_rt_native_thread_spawn"
+            ) {
+                let span = self
+                    .symbols
+                    .try_get(import.symbol)
+                    .map_or(arandu_middle::Span::new(0, 0, 0), |s| s.span);
+                return Err(Diagnostic::error(
+                    arandu_middle::diagnostics::DiagCode::U001FeatureNotSupported,
+                    "thread synchronization and spawning are unsupported on single-threaded WebAssembly targets; use cooperative tasks or async execution instead",
+                    span,
+                ));
+            }
+        }
         let num_imported_funcs = imports.len() as u32;
 
         // Helpers follow all program definitions. Translate first so size mode
         // can decide from actual calls, including implicit heap-backed frames.
         let cabi_first_func_idx = num_imported_funcs + self.functions.len() as u32;
-        let canonical_abi = self.live.is_none() || matches!(style, ExportStyle::Component(_));
+        let canonical_abi = !self.optimize_for_size || matches!(style, ExportStyle::Component(_));
 
         // ── 1. Type section ───────────────────────────────────────────────
         let (mut type_section, import_type_indices, func_type_indices, mut next_type_idx) =
@@ -434,30 +468,11 @@ impl<'a> WasmModuleBuilder<'a> {
 
     /// Collect all imported extern functions deterministically.
     fn collect_imports(&self, style: ExportStyle<'a>) -> Vec<WasmImportInfo> {
-        let mut referenced = FxHashSet::default();
-        let mut remember = |operand: &AmirOperand| {
-            if let AmirOperand::FunctionRef(symbol) = operand {
-                referenced.insert(*symbol);
-            }
-        };
-        for function in &self.functions {
-            for statement in function.stmts.payloads.iter() {
-                arandu_middle::amir::visit::for_each_stmt_operand(statement, &mut remember);
-            }
-            for block in &function.blocks {
-                arandu_middle::amir::visit::for_each_terminator_operand(
-                    &block.terminator,
-                    &mut remember,
-                );
-            }
-        }
-
         let mut sorted_extern: Vec<_> = self
             .program
             .extern_funcs
             .iter()
-            .filter(|(symbol, _)| referenced.contains(symbol))
-            .filter(|(symbol, _)| self.live.as_ref().is_none_or(|live| live.contains(symbol)))
+            .filter(|(symbol, _)| self.live.contains(symbol))
             .collect();
         sorted_extern.sort_by_key(|(sym, _)| (sym.file_id, sym.local_id.0));
 
@@ -469,7 +484,10 @@ impl<'a> WasmModuleBuilder<'a> {
             if arandu_middle::IntrinsicKind::from_name(&sym.name).is_some_and(|kind| {
                 kind.declaration_marker()
                     .is_none_or(|marker| sym.lang_item == Some(marker))
-            }) {
+            }) || matches!(
+                sym.name.as_str(),
+                "ar_rt_alloc_aligned" | "ar_rt_free_aligned"
+            ) {
                 continue;
             }
             let (module, field) = match style {

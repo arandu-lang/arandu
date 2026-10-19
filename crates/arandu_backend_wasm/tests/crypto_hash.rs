@@ -9,6 +9,14 @@ fn compile(source: &str) -> Vec<u8> {
 fn compile_with_hash(source: &str, hash: &str) -> Vec<u8> {
     let mut db = arandu_query::db::DatabaseImpl::new();
     db.set_target_config(common::wasm32());
+    db.new_stdlib_file(
+        "stdlib/core/marker.aru".into(),
+        include_str!("../../../stdlib/core/marker.aru").into(),
+    );
+    db.new_stdlib_file(
+        "stdlib/core/mem.aru".into(),
+        include_str!("../../../stdlib/core/mem.aru").into(),
+    );
     for (path, source) in [
         (
             "stdlib/core/intrinsics.aru",
@@ -28,18 +36,18 @@ fn compile_with_hash(source: &str, hash: &str) -> Vec<u8> {
         ),
         ("stdlib/std/crypto/hash.aru", hash),
     ] {
-        db.new_file(path.into(), source.into());
+        db.new_stdlib_file(path.into(), source.into());
     }
     let file = db.new_file("hash.aru".into(), source.into());
-    let lowered = arandu_query::passes::lower_amir(&db, file);
+    let runtime = arandu_query::runtime::runtime_program(&db, file);
+    let lowered = &runtime.artifacts;
     assert!(
-        lowered
-            .type_check
+        runtime
             .diagnostics
             .iter()
             .all(|d| d.severity != arandu_middle::Severity::Error),
         "{:?}",
-        lowered.type_check.diagnostics
+        runtime.diagnostics
     );
     arandu_backend_wasm::emit_wasm(
         &lowered.amir,

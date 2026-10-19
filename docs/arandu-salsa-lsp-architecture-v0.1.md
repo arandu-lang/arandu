@@ -452,6 +452,12 @@ O teste mantém exatamente uma HIR e unidade raw/final reexecutadas na edição.
     Dependências Git remotas são materializadas fora de Salsa pela biblioteca
     compartilhada `arandu_package`; o LSP opera apenas com lock e cache
     revalidado, sem rede durante descoberta ou reload.
+    A autoridade para intrínsecos e identidades canônicas é um input separado
+    por `SourceFile`, concedido pelo driver à stdlib verificada; declarar um
+    namespace `std` não concede essa origem. A descoberta instala a raiz antes
+    de registrar fontes novas e atualiza a autoridade de overlays já abertos
+    sob essa raiz, sem substituir seu texto. Isso também vale sem manifesto.
+    Resolver e typechecker consomem os inputs, sem consultar o filesystem.
 14. Rename usa análise pura em `arandu_query`: a gramática lexical rejeita
     nomes reservados/inválidos, scopes relacionados bloqueiam conflitos e os
     spans vêm dos tokens do CST cruzados com a identidade semântica. O LSP

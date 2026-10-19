@@ -5,6 +5,7 @@ pub(super) mod enums;
 pub(super) mod gen_arena;
 pub(super) mod memory;
 pub(super) mod ops;
+mod simd;
 
 use arandu_semantics::amir::{AmirConstant, AmirOperand, AmirRvalue};
 use arandu_semantics::passes::type_checker::types::ArType;
@@ -132,6 +133,13 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         }
 
         match rvalue {
+            AmirRvalue::VectorCompare { .. }
+            | AmirRvalue::VectorSelect { .. }
+            | AmirRvalue::VectorOp { .. }
+            | AmirRvalue::VectorSplat { .. }
+            | AmirRvalue::VectorShuffle { .. }
+            | AmirRvalue::VectorExtractLane { .. }
+            | AmirRvalue::VectorInsertLane { .. } => self.translate_vector(rvalue, expected_ty),
             AmirRvalue::Use(op) => {
                 let val = self.translate_typed_operand(op, expected_ty, expected_ar_type);
                 let op_ty = self.get_operand_ar_type(op);
@@ -152,6 +160,36 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             AmirRvalue::BlackBox { value, .. } => {
                 let input = self.translate_operand(value, expected_ty);
                 let input_ty = self.builder.func.dfg.value_type(input);
+                if input_ty.is_vector() {
+                    let slot = self.builder.create_sized_stack_slot(
+                        cranelift_codegen::ir::StackSlotData {
+                            kind: cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+                            size: 16,
+                            align_shift: 4,
+                            key: None,
+                        },
+                    );
+                    self.builder
+                        .ins()
+                        .stack_store(self.ptr_type, input, slot, 0);
+                    let address = self.builder.ins().stack_addr(self.ptr_type, slot, 0);
+                    let Some(id) = self.resolve_function("ar_bench_black_box_ptr") else {
+                        self.record_ice(
+                            "missing vector black box runtime barrier",
+                            self.func_span(),
+                        );
+                        return self.poison_i32();
+                    };
+                    let callee = self.module.declare_func_in_func(id, self.builder.func);
+                    let call = self.builder.ins().call(callee, &[address]);
+                    let address = self.builder.inst_results(call)[0];
+                    return self.builder.ins().load(
+                        input_ty,
+                        cranelift_codegen::ir::MemFlagsData::new(),
+                        address,
+                        0,
+                    );
+                }
                 let pointer_like = expected_ar_type.is_some_and(|ty| {
                     matches!(
                         ty,
@@ -163,6 +201,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                             | ArType::Array(_, _)
                             | ArType::Tuple(_)
                             | ArType::Slice(_)
+                            | ArType::MutSlice(_)
                     )
                 });
                 let helper = if input_ty == cranelift_codegen::ir::types::F32 {

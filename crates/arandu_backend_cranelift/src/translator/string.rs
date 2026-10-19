@@ -235,7 +235,13 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     }
                 }
 
-                let total_offset = pointer_width as i32 + payload_offset;
+                let enum_layout = self.checked_layout(&enum_ty);
+                let base_offset = enum_layout
+                    .field_offsets
+                    .get(1)
+                    .copied()
+                    .unwrap_or(pointer_width) as i32;
+                let total_offset = base_offset + payload_offset;
                 let loaded_ptr = self.builder.ins().load(
                     self.ptr_type,
                     cranelift_codegen::ir::MemFlagsData::new(),

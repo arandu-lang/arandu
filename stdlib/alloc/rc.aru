@@ -60,6 +60,8 @@ func boxAlign<T>(): usize {
     return mem.alignOf<RcBox<T>>()
 }
 
+func countLimit(): usize { return 2147483646 as usize }
+
 /// A single-threaded reference-counting pointer.
 public struct Rc<T> {
     private inner: ptr[RcBox<T>]
@@ -155,6 +157,9 @@ public func Rc.tryUnwrap<T>(self: own Rc<T>): Result<T, Rc<T>> {
 public func Rc.clone<T>(self: ref Rc<T>): Rc<T> {
     unsafe {
         let p = self.inner
+        if p.strong == (0 as usize) || p.strong >= countLimit() {
+            intrinsics.abort()
+        }
         p.strong = p.strong + (1 as usize)
         return Rc<T> { inner: self.inner }
     }
@@ -201,6 +206,9 @@ func Rc.fromInner<T>(inner: ptr[RcBox<T>]): Rc<T> {
 public func Rc.downgrade<T>(self: ref Rc<T>): Weak<T> {
     unsafe {
         let p = self.inner
+        if p.weak >= countLimit() {
+            intrinsics.abort()
+        }
         p.weak = p.weak + (1 as usize)
         return Weak.fromInner<T>(self.inner)
     }
@@ -239,6 +247,9 @@ func Rc.destroy<T>(self: own Rc<T>): void {
 public func Weak.clone<T>(self: ref Weak<T>): Weak<T> {
     unsafe {
         let p = self.inner
+        if p.weak == (0 as usize) || p.weak >= countLimit() {
+            intrinsics.abort()
+        }
         p.weak = p.weak + (1 as usize)
         return Weak<T> { inner: self.inner }
     }
@@ -254,6 +265,9 @@ public func Weak.upgrade<T>(self: ref Weak<T>): Option<Rc<T>> {
         let strong = p.strong
         if strong == (0 as usize) {
             return Option.None
+        }
+        if strong >= countLimit() {
+            intrinsics.abort()
         }
         p.strong = strong + (1 as usize)
         return Option.Some(Rc.fromInner<T>(self.inner))

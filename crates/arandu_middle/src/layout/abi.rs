@@ -452,7 +452,9 @@ impl TargetAbiClassifier {
                 }
             },
             ArType::Ref(inner) | ArType::RefMut(inner)
-                if interner.with_type(*inner, |inner| matches!(inner, ArType::Slice(_))) =>
+                if interner.with_type(*inner, |inner| {
+                    matches!(inner, ArType::Slice(_) | ArType::MutSlice(_))
+                }) =>
             {
                 leaves.push(LeafField {
                     offset: current_offset,

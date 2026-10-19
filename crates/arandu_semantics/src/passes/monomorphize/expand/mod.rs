@@ -383,6 +383,7 @@ pub fn instantiate_function(
             }
             ArType::Nullable(inner)
             | ArType::Slice(inner)
+            | ArType::MutSlice(inner)
             | ArType::Array(_, inner)
             | ArType::ConstArray(_, inner)
             | ArType::Ptr(inner)
@@ -394,6 +395,7 @@ pub fn instantiate_function(
             | ArType::Range(inner) => observed.push(*inner),
             ArType::Result(ok, error) => observed.extend([*ok, *error]),
             ArType::Primitive(_)
+            | ArType::Vector(_)
             | ArType::FrozenConst(_)
             | ArType::Const(_)
             | ArType::ConstParam(_)
@@ -998,6 +1000,7 @@ fn instance_args_fully_concrete(tc: &TypeCheckResult, type_args: &[TypeId]) -> b
             TypeShape::Tuple(args) => args.iter().any(|arg| unresolved(tc, arg)),
             TypeShape::Nullable(inner)
             | TypeShape::Slice(inner)
+            | TypeShape::MutSlice(inner)
             | TypeShape::Array(_, inner)
             | TypeShape::Ptr(inner)
             | TypeShape::Ref(inner)
@@ -1008,6 +1011,7 @@ fn instance_args_fully_concrete(tc: &TypeCheckResult, type_args: &[TypeId]) -> b
             | TypeShape::Range(inner) => unresolved(tc, inner),
             TypeShape::Result(ok, error) => unresolved(tc, ok) || unresolved(tc, error),
             TypeShape::Primitive(_)
+            | TypeShape::Vector(_)
             | TypeShape::FrozenConst(_)
             | TypeShape::Const(_)
             | TypeShape::GenRef

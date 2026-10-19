@@ -109,8 +109,11 @@ public func Box.leak<T>(self: own Box<T>): ptr[T] {
 /// Constructs a `Box<T>` from a raw pointer previously obtained via `Box.leak`.
 ///
 /// ## Safety
-/// The pointer `p` must point to an initialized instance of `T` allocated with
-/// the layout corresponding to `Box<T>`.
+/// `p` must be the non-null aligned pointer returned by `Box.leak`, holding
+/// exactly one initialized `T` with its original Box allocation layout. This
+/// call transfers its unique ownership; reconstructing another Box from the
+/// same pointer or reading/freeing through stale aliases is invalid.
+@Unsafe
 public func Box.fromRaw<T>(p: ptr[T]): Box<T> {
     return Box<T> { data: p }
 }

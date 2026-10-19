@@ -14,7 +14,7 @@
 
 ---
 
-## Estado auditado em 16/10/2026
+## Estado auditado em 17/10/2026
 
 Esta RFC continua `Draft`. A campanha 0.1.11 implementa um recorte local de
 [`std.fs.Dir`](../../stdlib/std/fs.aru): descritor privado, abertura relativa
@@ -22,10 +22,29 @@ Linux com `openat2` e `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS |
 RESOLVE_NO_MAGICLINKS`, além de criação/remoção por pai pinado. Regressões no
 runtime, JIT e C com UBSan rejeitam caminhos absolutos, traversal e symlinks;
 uma raiz renomeada mantém a autoridade do descritor aberto. Remover uma folha
-symlink não segue seu alvo. Falhas da syscall e outros alvos falham sem
-fallback para resolução menos restritiva.
+symlink não segue seu alvo. Falhas de `openat2` não ativam fallback Linux.
+O runtime Rust e o C gerado também rejeitam `create`/`truncate` sem escrita;
+uma abertura somente de leitura não pode criar nem truncar arquivos.
 
-Os mecanismos multiplataforma, fallback para kernels antigos, efeitos de
+macOS, FreeBSD, OpenBSD, NetBSD e DragonFly possuem um recorte estrito:
+cada operação relativa aceita **um componente**, com `openat` e
+`O_NOFOLLOW | O_CLOEXEC`; aberturas de diretório também exigem `O_DIRECTORY`
+e conferem `fstat` no próprio descritor. Para descer, a aplicação deriva
+um `Dir` filho explicitamente. Caminhos com `/` falham nesses alvos. A
+caminhada automática de vários componentes não está habilitada: `fstat`
+não transforma várias syscalls em uma verificação atômica de ancestralidade
+frente a `rename`. A autoridade acompanha o diretório aberto, inclusive
+quando ele é movido para fora do nome original. Isso também vale para os
+pais pinados usados em mutações Linux.
+
+A lógica de componente único é exercitada no Linux, incluindo troca do
+nome por symlink após adquirir o filho. Compilação cruzada e testes nativos
+nos demais sistemas continuam obrigatórios antes de promover suporte.
+Windows permanece fail-closed: a ABI atual de descritores `i32` exige um
+adaptador seguro para `HANDLE`, sem truncamento. `NtCreateFile` relativo e
+as políticas de reparse points, ADS e nomes de dispositivos ainda faltam.
+
+Os mecanismos multiplataforma completos, fallback para kernels antigos, efeitos de
 autoridade ambiente e `[capabilities]` descritos adiante são propostas. O
 recorte não implementa sandbox do processo, `removeTree`, integração WASI ou
 lifecycle integral de `File`. `File.close` e `DirListing.close` ainda retornam
@@ -191,16 +210,16 @@ Seguindo estritamente a filosofia de camadas do Arandu definida em `docs/arandu-
 2. **`arandu_std::os::descriptors`**: Introduz os wrappers de baixo nível de zero custo para identificadores opacos do host:
    ```arandu
    public struct DirDescriptor {
-       fd: int // POSIX fd ou Windows HANDLE compactado
+       fd: int // descritor POSIX; HANDLE exige outro contrato de representação
    }
    ```
 3. **`arandu_std::fs::Dir`**: Expõe métodos de alto nível com tipagem forte e checagem de erros.
 
 ### 4.2 Motor de Execução Nativo no Runtime (`arandu_runtime::fs_runtime`)
 
-O motor proposto para Rust e C precisará implementar contenção adaptada por
-plataforma. As estratégias abaixo são requisitos de design a validar, não
-implementações de capacidade já presentes no runtime:
+O runtime Rust e o C gerado implementam o recorte descrito no estado auditado.
+Os contratos completos abaixo distinguem esse recorte das extensões ainda
+propostas; nenhuma delas pode ativar um fallback menos restritivo.
 
 #### 4.2.1 Linux (Kernel ≥ 5.6): `openat2` com `RESOLVE_BENEATH`
 
@@ -211,7 +230,7 @@ struct open_how how;
 memset(&how, 0, sizeof(how));
 how.flags = flags | O_CLOEXEC;
 how.mode = mode;
-how.resolve = RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS;
+how.resolve = RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS;
 
 int fd = syscall(SYS_openat2, dir_fd, rel_path, &how, sizeof(how));
 ```
@@ -219,28 +238,53 @@ int fd = syscall(SYS_openat2, dir_fd, rel_path, &how, sizeof(how));
 * **`RESOLVE_BENEATH`**: O kernel do Linux rejeita atomicamente qualquer resolução de caminho que ultrapasse o diretório `dir_fd` (inclusive via symlinks absolutos como `/etc` ou sequências de `../../`).
 * **`RESOLVE_NO_MAGICLINKS`**: Bloqueia links especiais do `/proc/[pid]/fd/*`, impedindo ataques modernos de substituição de descritores de contêiner.
 
-Em kernels Linux legados (< 5.6), o runtime executa fallback baseado em descritores sequenciais com `openat(..., O_NOFOLLOW | O_CLOEXEC)` e validação via `fstat` comparando os dispositivos e inodes (`st_dev`, `st_ino`).
+Em kernels Linux legados (< 5.6), ou quando a syscall não estiver disponível,
+a operação falha. Comparar `st_dev`/`st_ino` em syscalls separadas não prova
+ancestralidade atômica e não autoriza um fallback de travessia.
 
 #### 4.2.2 macOS / FreeBSD / Darwin
 
-Em sistemas BSD e macOS onde `openat2` não está presente:
-1. Travessias recursivas (`removeTree`) utilizam a pilha de descritores abertos com `openat(parent_fd, name, O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)`.
-2. As deleções de nós utilizam `unlinkat(parent_fd, name, AT_REMOVEDIR)` e `unlinkat(parent_fd, name, 0)`.
-3. Em nenhum momento o caminho textual completo é re-resolvido após o início da operação. No Darwin, onde disponível, utiliza-se a flag de controle `fcntl(fd, F_RESOLVE_BENEATH)`.
+O recorte atual aceita apenas um componente normal por chamada. A abertura
+usa `openat(parent_fd, name, O_NOFOLLOW | O_CLOEXEC)` e, para diretórios,
+`O_DIRECTORY` mais `fstat` no próprio descritor. `unlinkat` remove uma folha
+relativa ao pai pinado; nunca segue o alvo de um symlink final.
+
+Descer vários níveis requer adquirir capacidades filhas explicitamente. Uma
+capacidade adquirida conserva autoridade sobre o objeto após `rename`;
+ela não promete que o objeto continue sob o nome textual da raiz original.
+`removeTree` e caminhada automática com contenção equivalente a `openat2`
+continuam propostas separadas.
+
+O [header atual do XNU](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/fcntl.h)
+define `O_RESOLVE_BENEATH`, `O_NOFOLLOW_ANY` e `AT_RESOLVE_BENEATH`.
+Não se trata de uma chamada `fcntl(F_RESOLVE_BENEATH)`. Uma extensão que
+use essas flags precisa definir versões mínimas de kernel/SDK, tratar a
+indisponibilidade com erro e validar o comportamento em runners nativos.
+O recorte atual não presume que essas flags estejam disponíveis.
 
 #### 4.2.3 Windows NT
 
-No Windows, o modelo de segurança baseia-se em handles de arquivo com proteção estrita contra pontos de junção (*NTFS Junctions / Reparse Points*):
-1. Abertura do diretório base via `CreateFileW` com `FILE_FLAG_BACKUP_SEMANTICS`.
-2. Abertura de subitens com a flag **`FILE_FLAG_OPEN_REPARSE_POINT`**: garante que links simbólicos e junções do Windows sejam abertos como o próprio link, sem seguir o destino no filesystem.
-3. Operações de deleção atômica via `SetFileInformationByHandle` utilizando `FILE_DISPOSITION_INFO_EX` com as flags:
-   - `FILE_DISPOSITION_FLAG_DELETE`: Marca para deleção.
-   - `FILE_DISPOSITION_FLAG_POSIX_SEMANTICS`: Permite a deleção de arquivos abertos e remoção atômica sem travas de compartilhamento legado do Win32.
-   - `FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE`: Evita falhas silenciosas de deleção em arquivos marcados como somente leitura.
+Ainda não implementado. A ABI atual usa `i32` para descritores; um `HANDLE`
+nativo não pode ser compactado nem truncado para esse campo. Antes de habilitar
+Windows, é necessário um adaptador com ownership e fechamento consistentes
+entre Rust, JIT e C.
+
+A proposta usa [NtCreateFile relativo a RootDirectory](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-zwcreatefile)
+para abrir uma folha sob um handle já adquirido, com tratamento explícito de
+reparse points. `CreateFileW` em um caminho concatenado e a flag
+`FILE_FLAG_OPEN_REPARSE_POINT` isolada não estabelecem contenção dos
+componentes intermediários. ADS (`:`), nomes de dispositivos e prefixos de
+namespace devem ser rejeitados antes da chamada. Deleção requer operação por
+handle e validação das flags suportadas pelo sistema/volume. Até esse contrato
+estar implementado e testado, o runtime retorna erro.
 
 #### 4.2.4 WebAssembly / WASI (`arandu_backend_wasm` / RFC 0014)
 
-O struct `std.fs.Dir` mapeia **1:1** para o modelo do WASI (*WebAssembly System Interface*), especificamente `wasi:filesystem/types.descriptor`. Como o WASI é nativamente baseado em capacidades com diretórios pré-abertos, programas Arandu compilam para WebAssembly sem overhead de tradução de caminhos e com isolamento garantido pela máquina virtual WASM.
+A integração proposta mapeia `std.fs.Dir` para recursos
+`wasi:filesystem/types.descriptor`, com diretórios pré-abertos. Isso exige
+adaptador de recursos, ownership, direitos e erros; o campo POSIX atual não é
+um mapeamento implementado 1:1. O isolamento depende também do runtime e de
+quais capacidades/imports o host fornece, não apenas da máquina virtual Wasm.
 
 ### 4.3 Algoritmo de Deleção e Varredura Segura (`removeTree`)
 
@@ -324,7 +368,7 @@ uma garantia atual de confinamento em tempo de compilação.
 
 ### 5.2 Desvantagens e Custos de Complexidade
 
-* **Custo em Sistemas Legados**: Em kernels Linux anteriores a 5.6 ou sistemas sem `openat2`, o fallback exige manter um descritor de arquivo aberto para cada nível do diretório durante travessias profundas, o que consome file descriptors temporários do processo.
+* **Sistemas Legados e Portabilidade**: Linux sem `openat2` retorna erro; macOS/BSD exigem derivação explícita de capacidades para cada nível. A aplicação mantém os descritores cujo lifecycle controla. Não há fallback de travessia automática em várias syscalls.
 * **Ergonomia Cognitiva**: Desenvolvedores acostumados com APIs ingênuas de script (`fs.readFile("/caminho/completo")`) precisarão aprender o padrão de obter um `Dir` raiz (`fs.openDir`) ou usar explicitamente a função restrita com anotação de efeito ambiente.
 
 ---
@@ -340,7 +384,7 @@ uma garantia atual de confinamento em tempo de compilação.
 * **Por que foi rejeitada:** Inviável para uma biblioteca padrão de uso geral. Exige privilégios de superusuário (`root`/`CAP_SYS_ADMIN`), não funciona de maneira uniforme entre threads de um mesmo processo e não possui suporte portável em Windows ou WebAssembly.
 
 ### Alternativa 3: Adotar a Abordagem Baseada em Capacidades (Abordagem Escolhida)
-* **Por que foi escolhida:** Move a responsabilidade de atomicidade para o kernel através de descritores de arquivos já abertos. Funciona de maneira uniforme no Linux (`openat2`), BSD/macOS (`openat`/`unlinkat`), Windows (`FILE_FLAG_OPEN_REPARSE_POINT`) e WebAssembly (WASI), oferecendo a máxima segurança possível na arquitetura atual de computadores sem penalidades de desempenho.
+* **Por que foi escolhida:** Expressa autoridade por objetos abertos e permite operações relativas ao handle controlado. Os mecanismos e limites diferem por plataforma: `openat2` resolve caminhos Linux; o recorte BSD/macOS aceita uma folha por chamada; Windows e WASI ainda exigem adaptadores. Custos de desempenho dependem do workload e precisam ser medidos.
 
 ---
 

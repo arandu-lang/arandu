@@ -84,10 +84,75 @@ fn decimal_arithmetic_matches_independent_integer_oracle() {
         .expect("execute corpus");
     assert!(
         output.status.success(),
-        "{:?}\n{}",
+        "run: {:?}\n{}",
         output.status.code(),
         String::from_utf8_lossy(&output.stderr)
     );
+
+    let emit_c = common::cli_command()
+        .arg("emit-c")
+        .arg(&path)
+        .output()
+        .expect("emit C corpus");
+    assert!(
+        emit_c.status.success(),
+        "emit-c: {:?}\n{}",
+        emit_c.status.code(),
+        String::from_utf8_lossy(&emit_c.stderr)
+    );
+
+    if Command::new("clang")
+        .arg("--version")
+        .output()
+        .is_ok_and(|version| version.status.success())
+    {
+        let c = root.join("oracle.c");
+        fs::write(&c, &emit_c.stdout).expect("write C");
+        for optimization in ["-O0", "-O2"] {
+            let executable = root.join(if cfg!(windows) {
+                "oracle.exe"
+            } else {
+                "oracle"
+            });
+            let mut command = Command::new("clang");
+            command.args([optimization, "-fwrapv"]);
+            if cfg!(unix) {
+                command.args(["-fsanitize=undefined", "-fno-sanitize-recover=all"]);
+            }
+            let compile = command
+                .arg(&c)
+                .arg("-o")
+                .arg(&executable)
+                .output()
+                .expect("compile C");
+            assert!(
+                compile.status.success(),
+                "{}",
+                String::from_utf8_lossy(&compile.stderr)
+            );
+            let result = Command::new(executable).output().expect("execute C");
+            assert!(
+                result.status.success(),
+                "{optimization}: {:?}\n{}",
+                result.status.code(),
+                String::from_utf8_lossy(&result.stderr)
+            );
+        }
+    }
+
+    let emit_wasm = common::cli_command()
+        .arg("emit-wasm")
+        .arg(&path)
+        .output()
+        .expect("emit wasm corpus");
+    assert!(
+        emit_wasm.status.success(),
+        "emit-wasm: {:?}\n{}",
+        emit_wasm.status.code(),
+        String::from_utf8_lossy(&emit_wasm.stderr)
+    );
+    assert!(arandu_backend_wasm::is_core_module(&emit_wasm.stdout));
+
     let _ = fs::remove_dir_all(root);
 }
 

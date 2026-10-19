@@ -69,7 +69,7 @@ pub fn cycle_recover(
 #[salsa::tracked]
 pub fn local_symbols(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<ResolutionResult> {
     let program_res = parse(db, file);
-    let resolved = match &**program_res {
+    let mut resolved = match &**program_res {
         Ok(program) => arandu_resolve::resolve_local_with_poll(*file.file_id(db), program, || {
             db.unwind_if_revision_cancelled();
         }),
@@ -82,6 +82,27 @@ pub fn local_symbols(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Resol
         },
     };
 
+    if !db
+        .as_db_impl()
+        .is_some_and(|db| db.is_trusted_stdlib_source(file))
+    {
+        Arc::make_mut(&mut resolved.symbols).clear_source_lang_items();
+        if let Ok(program) = &**program_res {
+            program.for_each_decl_recursive(|_, declaration| {
+                if let arandu_parser::TopLevelDecl::Extern(external) = declaration {
+                    if arandu_parser::AbiKind::from_abi_str(&external.abi)
+                        == arandu_parser::AbiKind::AranduIntrinsic
+                    {
+                        resolved.diagnostics.push(Diagnostic::error(
+                            arandu_middle::DiagCode::U001FeatureNotSupported,
+                            "the 'arandu-intrinsic' ABI requires a trusted standard-library source",
+                            external.span,
+                        ));
+                    }
+                }
+            });
+        }
+    }
     HashEq::new(resolved)
 }
 
@@ -115,6 +136,7 @@ pub fn exported_symbols(
 ) -> Arc<arandu_middle::ExportedSymbolTable> {
     let locals = local_symbols(db, file);
     let mut map = std::collections::BTreeMap::new();
+    let mut lang_items = std::collections::BTreeMap::new();
     let mut sealed_symbols = std::collections::BTreeSet::new();
     let mut sealed_ids = rustc_hash::FxHashSet::default();
 
@@ -124,6 +146,9 @@ pub fn exported_symbols(
             if locals.symbols.sealed_interfaces.contains(&symbol.id) {
                 sealed_symbols.insert(symbol.name.to_string());
                 sealed_ids.insert(symbol.id);
+            }
+            if let Some(li) = symbol.lang_item {
+                lang_items.insert(symbol.id, li);
             }
             map.insert(symbol.name.to_string(), (symbol.id, symbol.kind));
         }
@@ -157,6 +182,9 @@ pub fn exported_symbols(
                             if let Some(&(id, kind)) = target_exports.symbols.get(name) {
                                 let export_name =
                                     item.alias.as_ref().unwrap_or(&item.name).to_string();
+                                if let Some(&li) = target_exports.lang_items.get(&id) {
+                                    lang_items.insert(id, li);
+                                }
                                 if target_exports.sealed_symbols.contains(name) {
                                     sealed_symbols.insert(export_name.clone());
                                     sealed_ids.insert(id);
@@ -208,6 +236,7 @@ pub fn exported_symbols(
     Arc::new(arandu_middle::ExportedSymbolTable {
         symbols: map,
         internal_symbols: std::collections::BTreeMap::new(),
+        lang_items,
         sealed_symbols,
         sealed_implementations,
         is_cycle: false,
@@ -225,6 +254,7 @@ pub fn internal_symbols(
 ) -> Arc<arandu_middle::ExportedSymbolTable> {
     let locals = local_symbols(db, file);
     let mut map = std::collections::BTreeMap::new();
+    let mut lang_items = std::collections::BTreeMap::new();
     let mut sealed_symbols = std::collections::BTreeSet::new();
     let mut sealed_ids = rustc_hash::FxHashSet::default();
     let global_scope = locals.symbols.global_scope();
@@ -234,6 +264,9 @@ pub fn internal_symbols(
             if locals.symbols.sealed_interfaces.contains(&symbol.id) {
                 sealed_symbols.insert(symbol.name.to_string());
                 sealed_ids.insert(symbol.id);
+            }
+            if let Some(li) = symbol.lang_item {
+                lang_items.insert(symbol.id, li);
             }
             map.insert(symbol.name.to_string(), (symbol.id, symbol.kind));
         }
@@ -282,6 +315,13 @@ pub fn internal_symbols(
                             {
                                 let export_name =
                                     item.alias.as_ref().unwrap_or(&item.name).to_string();
+                                if let Some(&li) =
+                                    target_exports.lang_items.get(&id).or_else(|| {
+                                        target_internal.as_ref().and_then(|t| t.lang_items.get(&id))
+                                    })
+                                {
+                                    lang_items.insert(id, li);
+                                }
                                 if target_exports.sealed_symbols.contains(name)
                                     || target_internal
                                         .as_ref()
@@ -350,6 +390,7 @@ pub fn internal_symbols(
     Arc::new(arandu_middle::ExportedSymbolTable {
         symbols: std::collections::BTreeMap::new(),
         internal_symbols: map,
+        lang_items,
         sealed_symbols,
         sealed_implementations,
         is_cycle: false,
@@ -719,18 +760,15 @@ fn signatures_with_imports(
         checker
             .type_info
             .merge_from(imported_sigs.type_info.as_ref());
-        // Import aliases carry names/IDs, not the original extern ABI. Retain
-        // this declaration metadata from the canonical header instead of
-        // deciding intrinsic identity from an imported function's spelling.
-        for symbol in imported_sigs.symbols.iter().filter(|symbol| {
-            matches!(
-                symbol.lang_item,
-                Some(
-                    arandu_middle::symbol_table::LangItem::BitIntrinsic
-                        | arandu_middle::symbol_table::LangItem::AtomicIntrinsic
-                )
-            )
-        }) {
+        // Import aliases carry names/IDs, not the original declaration identity.
+        // Retain canonical SIMD/interior-mutability and intrinsic metadata by
+        // SymbolId, including re-exports. Path suffixes and imported spellings
+        // cannot promote a user nominal type to a compiler-owned type.
+        for symbol in imported_sigs
+            .symbols
+            .iter()
+            .filter(|symbol| symbol.lang_item.is_some() && symbol.span.end > symbol.span.start)
+        {
             let symbols = Arc::make_mut(&mut checker.symbols);
             if symbols.try_get(symbol.id).is_none() {
                 symbols.register_imported_symbol(symbol.clone());

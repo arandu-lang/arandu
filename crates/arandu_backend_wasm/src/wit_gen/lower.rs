@@ -52,13 +52,16 @@ impl<'a> TypeLowerer<'a> {
     pub(super) fn lower_ar_type(&mut self, resolved: &ArType) -> Option<WitTypeId> {
         match resolved {
             ArType::Void | ArType::Err | ArType::Error => None,
+            // The shared boundary validator rejects native vectors before
+            // generation. Never use the legacy opaque-u32 fallback for them.
+            ArType::Vector(_) => None,
 
             ArType::Primitive(prim) => {
                 let p = map_primitive(*prim);
                 Some(self.pool.add(WitTypeKind::Primitive(p)))
             }
 
-            ArType::Slice(inner) => {
+            ArType::Slice(inner) | ArType::MutSlice(inner) => {
                 let inner_id = self
                     .lower_type(*inner)
                     .unwrap_or_else(|| self.pool.add(WitTypeKind::Primitive(WitPrimitive::U8)));

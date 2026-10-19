@@ -102,7 +102,10 @@ pub fn index_elem_type(
     interner: &TypeInterner,
 ) -> Option<TypeId> {
     match ty {
-        ArType::Array(_, inner) | ArType::Slice(inner) | ArType::Ptr(inner) => Some(*inner),
+        ArType::Array(_, inner)
+        | ArType::Slice(inner)
+        | ArType::MutSlice(inner)
+        | ArType::Ptr(inner) => Some(*inner),
         ArType::Named(_, args) if is_vec_type(ty, symbols) => Some(interner.type_args(*args)[0]),
         ArType::Ref(inner) | ArType::RefMut(inner) => Some(*inner),
         _ => None,

@@ -1,0 +1,52 @@
+module nativeThreadParkTimeout
+
+import std.thread as thread
+import std.time as time
+
+// Unparks the waiting thread after a short delay, from another OS thread.
+struct WakeJob {
+    target: usize,
+}
+
+public func WakeJob.run(self: own WakeJob, argument: void): void {
+    thread.sleep(20 as u64)
+    thread.unpark(self.target)
+}
+
+public func main(): int {
+    // Ten minutes: the harness deadline fails the run if unpark cannot interrupt it.
+    let longWaitMs: u64 = 600000 as u64
+    let me = thread.currentThreadId()
+
+    // 1. A token issued before the wait completes it at once, even when the
+    //    duration saturates the platform clock (no time_t/DWORD overflow).
+    thread.unpark(me)
+    thread.parkTimeout(18446744073709551615 as u64)
+
+    // 2. The token was consumed: a short wait now elapses by timeout.
+    let started = time.monotonicNs()
+    thread.parkTimeout(30 as u64)
+    let waited = time.monotonicNs() - started
+    if waited < (25000000 as i64) { return 1 }
+
+    // 3. Repeated unparks coalesce into a single token.
+    thread.unpark(me)
+    thread.unpark(me)
+    thread.parkTimeout(longWaitMs)
+    let second = time.monotonicNs()
+    thread.parkTimeout(30 as u64)
+    if time.monotonicNs() - second < (25000000 as i64) { return 2 }
+
+    // 4. An unpark from another thread interrupts an in-progress wait.
+    match thread.spawn<void, WakeJob>(WakeJob { target: me }) {
+        Result.Ok(handle) => {
+            thread.parkTimeout(longWaitMs)
+            match handle.join() {
+                Result.Ok(_) => {}
+                Result.Err(_) => { return 3 }
+            }
+        }
+        Result.Err(_) => { return 4 }
+    }
+    return 0
+}

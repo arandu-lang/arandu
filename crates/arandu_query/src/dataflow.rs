@@ -543,9 +543,11 @@ pub fn item_ide_diagnostics(
         {
             out.push(IdeDiagnostic::from_diag(&d, Some(item_sym), Some(bid)));
         }
-        for (bid, d) in
-            arandu_mir::borrow_check::check_borrows_by_block(amir, context.symbols.as_ref())
-        {
+        for (bid, d) in arandu_mir::borrow_check::check_borrows_by_block_with_types(
+            amir,
+            context.symbols.as_ref(),
+            &context.type_info.type_interner,
+        ) {
             out.push(IdeDiagnostic::from_diag(&d, Some(item_sym), Some(bid)));
         }
         // Escape / O004: global `--no-generational-fallback` applies; per-func
@@ -705,9 +707,11 @@ pub fn block_diagnostics(
                 out.push(IdeDiagnostic::from_diag(&d, Some(func_sym), Some(bid)));
             }
         }
-        for (bid, d) in
-            arandu_mir::borrow_check::check_borrows_by_block(amir, context.symbols.as_ref())
-        {
+        for (bid, d) in arandu_mir::borrow_check::check_borrows_by_block_with_types(
+            amir,
+            context.symbols.as_ref(),
+            &context.type_info.type_interner,
+        ) {
             if bid == block {
                 out.push(IdeDiagnostic::from_diag(&d, Some(func_sym), Some(bid)));
             }

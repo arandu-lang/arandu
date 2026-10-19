@@ -35,6 +35,7 @@ import std.alloc.vec as vec
 import std.core.option as option
 import std.core.slice as slice
 import std.core.cmp as cmp
+import std.core.intrinsics as intrinsics
 
 /// An arbitrary-precision signed integer.
 public struct BigInt {
@@ -89,6 +90,51 @@ public func BigInt.fromI64(val: i64): BigInt {
     v.push(val as u64)
     return BigInt { is_neg: false, limbs: v }
 }
+
+/// Creates a `BigInt` from an unsigned 64-bit integer.
+public func BigInt.fromU64(val: u64): BigInt {
+    if val == 0 as u64 {
+        return BigInt.zero()
+    }
+    let mut v = vec.Vec<u64>.new()
+    v.push(val)
+    return BigInt { is_neg: false, limbs: v }
+}
+
+/// Appends a 64-bit limb to the most significant position.
+public func BigInt.pushLimb(self: mut ref BigInt, limb: u64): void {
+    self.limbs.push(limb)
+}
+
+/// Trims leading zero limbs and normalizes zero.
+public func BigInt.trim(self: mut ref BigInt): void {
+    let mut i = self.limbs.len()
+    while i > (0 as usize) {
+        let idx = i - (1 as usize)
+        if let Option.Some(word) = self.limbs.get(idx) {
+            if *word != 0 as u64 { break }
+        }
+        let _ = self.limbs.pop()
+        i = idx
+    }
+    if self.limbs.len() == (0 as usize) {
+        self.is_neg = false
+    }
+}
+
+/// Returns the number of 64-bit limbs currently used.
+public func BigInt.limbCount(self: ref BigInt): usize {
+    return self.limbs.len()
+}
+
+/// Returns the 64-bit limb at `index` (little-endian: 0 is least significant).
+public func BigInt.getLimb(self: ref BigInt, index: usize): u64 {
+    match self.limbs.get(index) {
+        Option.Some(w) => { return *w }
+        Option.None => { return 0 as u64 }
+    }
+}
+
 
 /// Returns `true` if this number is zero.
 public func BigInt.isZero(self: ref BigInt): bool {
@@ -148,21 +194,6 @@ public func BigInt.cmp(self: ref BigInt, other: ref BigInt): cmp.Ordering {
         }
     }
     return ord
-}
-
-func BigInt.trim(self: mut ref BigInt): void {
-    let mut i = self.limbs.len()
-    while i > (0 as usize) {
-        let idx = i - (1 as usize)
-        if let Option.Some(word) = self.limbs.get(idx) {
-            if *word != 0 as u64 { break }
-        }
-        let _ = self.limbs.pop()
-        i = idx
-    }
-    if self.limbs.len() == (0 as usize) {
-        self.is_neg = false
-    }
 }
 
 /// Compares magnitudes of two `BigInt`s (ignoring signs).
@@ -379,6 +410,190 @@ public func BigInt.mulAssign(self: mut ref BigInt, other: ref BigInt): void {
     self.limbs = prod.limbs
 }
 
+func bitsInU64(val: u64): usize {
+    let mut bits: usize = 0
+    let mut v = val
+    while v > (0 as u64) {
+        bits = bits + (1 as usize)
+        v = v >> (1 as u64)
+    }
+    return bits
+}
+
+/// Returns the number of bits in the magnitude of this `BigInt`.
+public func BigInt.bitLength(self: ref BigInt): usize {
+    let count = self.limbs.len()
+    if count == (0 as usize) { return 0 as usize }
+    let topLimb = match self.limbs.get(count - (1 as usize)) {
+        Option.Some(w) => *w
+        Option.None => 0 as u64
+    }
+    if topLimb == (0 as u64) { return 0 as usize }
+    return (count - (1 as usize)) * (64 as usize) + bitsInU64(topLimb)
+}
+
+/// Returns `true` if the bit at `bitIndex` is 1 (0 is least significant bit).
+public func BigInt.testBit(self: ref BigInt, bitIndex: usize): bool {
+    let limbIndex = bitIndex / (64 as usize)
+    if limbIndex >= self.limbs.len() { return false }
+    let bitInLimb = (bitIndex % (64 as usize)) as u64
+    let word = match self.limbs.get(limbIndex) {
+        Option.Some(w) => *w
+        Option.None => 0 as u64
+    }
+    return ((word >> bitInLimb) & (1 as u64)) != (0 as u64)
+}
+
+/// Shifts the magnitude left by 1 bit in-place.
+func BigInt.shl1(self: mut ref BigInt): void {
+    if self.isZero() { return }
+    let count = self.limbs.len()
+    let mut carry = 0 as u64
+    let mut i = 0 as usize
+    while i < count {
+        let current = match self.limbs.get(i) {
+            Option.Some(w) => *w
+            Option.None => 0 as u64
+        }
+        let nextCarry = current >> (63 as u64)
+        let shifted = (current << (1 as u64)) | carry
+        self.limbs.set(i, shifted)
+        carry = nextCarry
+        i = i + (1 as usize)
+    }
+    if carry > (0 as u64) {
+        self.limbs.push(carry)
+    }
+}
+
+/// Sets bit 0 of the magnitude to 1.
+func BigInt.setBit0(self: mut ref BigInt): void {
+    if self.limbs.len() == (0 as usize) {
+        self.limbs.push(1 as u64)
+        return
+    }
+    let current = match self.limbs.get(0 as usize) {
+        Option.Some(w) => *w
+        Option.None => 0 as u64
+    }
+    let _ = self.limbs.set(0 as usize, current | (1 as u64))
+}
+
+/// Sets the bit at `bitIndex` of the magnitude to 1.
+func BigInt.setBit(self: mut ref BigInt, bitIndex: usize): void {
+    let limbIndex = bitIndex / (64 as usize)
+    let bitInLimb = (bitIndex % (64 as usize)) as u64
+    while self.limbs.len() <= limbIndex {
+        self.limbs.push(0 as u64)
+    }
+    let current = match self.limbs.get(limbIndex) {
+        Option.Some(w) => *w
+        Option.None => 0 as u64
+    }
+    let _ = self.limbs.set(limbIndex, current | ((1 as u64) << bitInLimb))
+}
+
+/// The quotient and remainder resulting from integer division.
+public struct BigIntDivResult {
+    public quotient: BigInt,
+    public remainder: BigInt,
+}
+
+/// Computes unsigned magnitude division: a / b and a % b.
+func divRemMagnitude(a: ref BigInt, b: ref BigInt): BigIntDivResult {
+    let cmpOrd = cmpMagnitude(a, b)
+    match cmpOrd {
+        Less => {
+            return BigIntDivResult {
+                quotient: BigInt.zero(),
+                remainder: a.clone(),
+            }
+        }
+        Equal => {
+            return BigIntDivResult {
+                quotient: BigInt.one(),
+                remainder: BigInt.zero(),
+            }
+        }
+        Greater => {}
+    }
+
+    let mut rem = BigInt.zero()
+    let mut quot = BigInt.zero()
+    let totalBits = a.bitLength()
+    let mut bit = totalBits
+    while bit > (0 as usize) {
+        let bitIdx = bit - (1 as usize)
+        rem.shl1()
+        if a.testBit(bitIdx) {
+            rem.setBit0()
+        }
+        match cmpMagnitude(ref rem, b) {
+            Less => {}
+            _ => {
+                rem = subLimbs(ref rem, b)
+                quot.setBit(bitIdx)
+            }
+        }
+        bit = bitIdx
+    }
+    rem.trim()
+    quot.trim()
+    return BigIntDivResult {
+        quotient: quot,
+        remainder: rem,
+    }
+}
+
+/// Divides `self` by `other`, returning both quotient and remainder.
+/// Aborts if `other` is zero.
+public func BigInt.divRem(self: ref BigInt, other: ref BigInt): BigIntDivResult {
+    if other.isZero() {
+        unsafe { intrinsics.abort() }
+    }
+    if self.isZero() {
+        return BigIntDivResult {
+            quotient: BigInt.zero(),
+            remainder: BigInt.zero(),
+        }
+    }
+    let mut res = divRemMagnitude(self, other)
+    if !res.quotient.isZero() {
+        res.quotient.is_neg = self.is_neg != other.is_neg
+    }
+    if !res.remainder.isZero() {
+        res.remainder.is_neg = self.is_neg
+    }
+    return res
+}
+
+/// Integer division: returns the quotient of `self` divided by `other`.
+public func BigInt.div(self: ref BigInt, other: ref BigInt): BigInt {
+    let res = self.divRem(other)
+    return res.quotient.clone()
+}
+
+/// Integer remainder: returns `self % other`.
+public func BigInt.rem(self: ref BigInt, other: ref BigInt): BigInt {
+    let res = self.divRem(other)
+    return res.remainder.clone()
+}
+
+/// Divides `self` by `other` in-place.
+public func BigInt.divAssign(self: mut ref BigInt, other: ref BigInt): void {
+    let q = self.div(other)
+    self.is_neg = q.is_neg
+    self.limbs = q.limbs
+}
+
+/// Replaces `self` with `self % other` in-place.
+public func BigInt.remAssign(self: mut ref BigInt, other: ref BigInt): void {
+    let r = self.rem(other)
+    self.is_neg = r.is_neg
+    self.limbs = r.limbs
+}
+
+
 // ── BigDecimal (RFC 0037 Layer 3) ───────────────────────────────────────────
 
 /// An arbitrary-precision decimal number with dynamic limb storage.
@@ -472,4 +687,17 @@ public func BigDecimal.subAssign(self: mut ref BigDecimal, other: ref BigDecimal
     let diff = self.sub(other)
     self.scale = diff.scale
     self.mantissa = diff.mantissa
+}
+
+/// Multiplies two decimals.
+public func BigDecimal.mul(self: ref BigDecimal, other: ref BigDecimal): BigDecimal {
+    let prod = self.mantissa.mul(ref other.mantissa)
+    return BigDecimal.new(prod, self.scale + other.scale)
+}
+
+/// Multiplies `self` by `other` in-place.
+public func BigDecimal.mulAssign(self: mut ref BigDecimal, other: ref BigDecimal): void {
+    let prod = self.mul(other)
+    self.scale = prod.scale
+    self.mantissa = prod.mantissa
 }

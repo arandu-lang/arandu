@@ -376,8 +376,20 @@ impl<'a> Parser<'a> {
             return self.parse_reference_type(start, false, false);
         }
         if self.eat_name("KW_MUT") {
-            self.expect_name("KW_REF")?;
-            return self.parse_reference_type(start, true, false);
+            if self.eat_name("KW_REF") {
+                return self.parse_reference_type(start, true, false);
+            }
+            if self.eat_name("LBRACKET") {
+                self.expect_name("RBRACKET")?;
+                return self.parse_mut_slice_type(start);
+            }
+            return Err(ParseError::new(
+                ParseErrorCode::ExpectedToken,
+                "expected 'ref' or '[]' after 'mut' in type",
+                self.current(),
+                self.file_id,
+                self.source,
+            ));
         }
         if self.eat_name("AMP") {
             let is_mut = self.eat_name("KW_MUT");
@@ -441,6 +453,14 @@ impl<'a> Parser<'a> {
         let inner = self.parse_type_primary()?;
         let span = self.span_from_mark(start);
         Ok(self.pool.alloc_type_expr(TypeExpr::Slice { span, inner }))
+    }
+
+    fn parse_mut_slice_type(&mut self, start: usize) -> Result<TypeExprId, ParseError> {
+        let inner = self.parse_type_primary()?;
+        let span = self.span_from_mark(start);
+        Ok(self
+            .pool
+            .alloc_type_expr(TypeExpr::MutSlice { span, inner }))
     }
 
     fn parse_array_size(

@@ -11,7 +11,7 @@ const OPTION_ARU: &str = include_str!("../../../../stdlib/core/option.aru");
 #[test]
 fn stdlib_mem_parses_and_exports_expected_symbols() {
     let mut db = DatabaseImpl::default();
-    let file = db.new_file("stdlib/core/mem.aru".to_string(), MEM_ARU.to_string());
+    let file = db.new_stdlib_file("stdlib/core/mem.aru".to_string(), MEM_ARU.to_string());
     match parse(&db, file).as_ref() {
         Ok(_) => {}
         Err(e) => panic!("mem.aru must parse; got {e}"),
@@ -40,8 +40,8 @@ fn stdlib_mem_parses_and_exports_expected_symbols() {
 #[test]
 fn stdlib_mem_usage_in_program() {
     let mut db = DatabaseImpl::default();
-    let _ = db.new_file("stdlib/core/option.aru".to_string(), OPTION_ARU.to_string());
-    let mem_file = db.new_file("stdlib/core/mem.aru".to_string(), MEM_ARU.to_string());
+    let _ = db.new_stdlib_file("stdlib/core/option.aru".to_string(), OPTION_ARU.to_string());
+    let mem_file = db.new_stdlib_file("stdlib/core/mem.aru".to_string(), MEM_ARU.to_string());
     let main_src = r#"
 import std.core.mem as mem
 

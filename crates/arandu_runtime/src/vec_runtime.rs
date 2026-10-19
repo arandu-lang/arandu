@@ -231,35 +231,58 @@ pub unsafe extern "C" fn ar_rt_free_aligned(pointer: *mut u8, size: usize, align
     }
 }
 
-/// Raw heap allocation for runtime hooks.
+// Compiler-created blobs include native vectors even on targets whose C malloc
+// promises only pointer alignment. Keep the raw allocation pair self-describing
+// so every result is 16-aligned without depending on a host ABI assumption.
+#[repr(C, align(16))]
+struct RawAllocationHeader {
+    total_size: usize,
+}
+
+/// Raw heap allocation for compiler backing storage, with 16-byte alignment.
+/// Zero-sized requests still receive one usable byte. Oversized requests fail.
 ///
 /// # Safety
-/// Returned pointer must be freed with [`ar_rt_raw_free`].
+/// Returned pointer must be freed with [`ar_rt_raw_free`], never libc free.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ar_rt_raw_malloc(size: usize) -> *mut u8 {
-    let size = size.max(1);
+    let header_size = std::mem::size_of::<RawAllocationHeader>();
+    let Some(total_size) = size.max(1).checked_add(header_size) else {
+        return std::ptr::null_mut();
+    };
+    let Ok(layout) = std::alloc::Layout::from_size_align(total_size, 16) else {
+        return std::ptr::null_mut();
+    };
+    // SAFETY: layout is valid; the header and payload fit the same allocation.
     unsafe {
-        unsafe extern "C" {
-            fn malloc(size: usize) -> *mut std::ffi::c_void;
+        let allocation = std::alloc::alloc(layout);
+        if allocation.is_null() {
+            return allocation;
         }
-        malloc(size).cast()
+        allocation
+            .cast::<RawAllocationHeader>()
+            .write(RawAllocationHeader { total_size });
+        allocation.add(header_size)
     }
 }
 
-/// Raw heap deallocation for runtime hooks.
+/// Release compiler backing storage from the matching raw allocation pair.
 ///
 /// # Safety
-/// `pointer` must be null or obtained from [`ar_rt_raw_malloc`].
+/// `pointer` must be null or a live result of [`ar_rt_raw_malloc`], freed once.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ar_rt_raw_free(pointer: *mut u8) {
     if pointer.is_null() {
         return;
     }
+    // SAFETY: the allocation contract guarantees the preceding header and its
+    // original valid layout; no value/drop callback is stored in these bytes.
     unsafe {
-        unsafe extern "C" {
-            fn free(ptr: *mut std::ffi::c_void);
+        let allocation = pointer.sub(std::mem::size_of::<RawAllocationHeader>());
+        let total_size = (*allocation.cast::<RawAllocationHeader>()).total_size;
+        if let Ok(layout) = std::alloc::Layout::from_size_align(total_size, 16) {
+            std::alloc::dealloc(allocation, layout);
         }
-        free(pointer.cast());
     }
 }
 
@@ -478,6 +501,29 @@ mod tests {
             assert!(ar_rt_alloc_aligned(0, 8).is_null());
             assert!(ar_rt_alloc_aligned(8, 0).is_null());
             assert!(ar_rt_alloc_aligned(8, 3).is_null());
+        }
+    }
+    #[test]
+    fn compiler_raw_blobs_preserve_vector_alignment_and_pairing() {
+        for size in [0, 1, 7, 16, 17, 255, 4097] {
+            // SAFETY: each buffer is accessed only inside its requested extent
+            // and freed once through the matching raw allocation ABI.
+            unsafe {
+                let pointer = ar_rt_raw_malloc(size);
+                assert!(!pointer.is_null());
+                assert!(pointer.addr().is_multiple_of(16));
+                for index in 0..size.max(1) {
+                    pointer.add(index).write(0xA5);
+                }
+                ar_rt_raw_free(pointer);
+            }
+        }
+        // SAFETY: impossible layouts are rejected before allocation; freeing
+        // null is part of the ABI.
+        unsafe {
+            assert!(ar_rt_raw_malloc(usize::MAX).is_null());
+            assert!(ar_rt_raw_malloc(isize::MAX as usize).is_null());
+            ar_rt_raw_free(std::ptr::null_mut());
         }
     }
 }

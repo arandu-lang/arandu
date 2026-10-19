@@ -1,0 +1,5 @@
+while curr > window.tail && best_len < (max_len as u16) {
+    if match_len > best_len {
+        best_off = (pos - curr) as u16;
+    }
+}

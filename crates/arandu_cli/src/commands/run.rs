@@ -262,14 +262,20 @@ pub fn cmd_single_file_dispatch(
             Ok(source) => {
                 let filepath = p.to_string_lossy().into_owned();
                 let file_id = registry.register(&filepath, &source);
-                let code = std::sync::Arc::from(source.clone());
-                let source_file = arandu_query::db::SourceFile::new(
-                    &db,
-                    file_id,
-                    code,
-                    std::sync::Arc::new(p.clone()),
-                );
-                db.register_source_file(filepath.clone(), source_file);
+                let source: std::sync::Arc<str> = std::sync::Arc::from(source);
+                let source_file = match crate::pipeline::registered_entry_source(&db, p, &source) {
+                    Some(existing) => existing,
+                    None => {
+                        let file = arandu_query::db::SourceFile::new(
+                            &db,
+                            file_id,
+                            std::sync::Arc::clone(&source),
+                            std::sync::Arc::new(p.clone()),
+                        );
+                        db.register_source_file(filepath.clone(), file);
+                        file
+                    }
+                };
                 source_files.push((source_file, filepath, source));
             }
             Err(err) => {
@@ -331,7 +337,7 @@ pub fn cmd_single_file_dispatch(
 
     let process_file = |source_file: arandu_query::db::SourceFile,
                         filepath: String,
-                        source: String,
+                        source: std::sync::Arc<str>,
                         db: arandu_query::db::DatabaseImpl| {
         match command {
             "lex" => match arandu_lexer::lex_to_string(&source) {

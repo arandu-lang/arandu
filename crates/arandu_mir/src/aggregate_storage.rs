@@ -38,7 +38,7 @@ pub fn scratch_type_safe(
         }
         match interner.resolve(ty) {
             ArType::Primitive(p) => p != Primitive::Str,
-            ArType::Void | ArType::Ptr(_) => true,
+            ArType::Void | ArType::Ptr(_) | ArType::Vector(_) => true,
             ArType::Array(_, inner) | ArType::Option(inner) | ArType::Poll(inner) => {
                 visit(inner, interner, provider, depth + 1)
             }
@@ -73,6 +73,7 @@ pub fn scratch_type_safe(
                 }
             }
             ArType::Slice(_)
+            | ArType::MutSlice(_)
             | ArType::Nullable(_)
             | ArType::Ref(_)
             | ArType::RefMut(_)
@@ -114,6 +115,7 @@ fn extern_exposes_backing(
         !matches!(
             interner.resolve(ty),
             ArType::Primitive(_)
+                | ArType::Vector(_)
                 | ArType::Ptr(_)
                 | ArType::Void
                 | ArType::IntLiteral
@@ -171,11 +173,12 @@ fn block_param_safe(ty: TypeId, interner: &TypeInterner, in_cycle: bool, depth: 
     match interner.resolve(ty) {
         ArType::Primitive(p) => p != Primitive::Str,
         ArType::Ptr(_)
+        | ArType::Vector(_)
         | ArType::Void
         | ArType::GenRef
         | ArType::IntLiteral
         | ArType::FloatLiteral => true,
-        ArType::Slice(inner) => {
+        ArType::Slice(inner) | ArType::MutSlice(inner) => {
             !in_cycle && depth == 0 && block_param_safe(inner, interner, in_cycle, depth + 1)
         }
         ArType::Array(_, inner) | ArType::Option(inner) | ArType::Poll(inner) => {
@@ -266,7 +269,11 @@ pub fn function_scratch_safe(
         ArType::Primitive(Primitive::Str) if !independent_string_result(function, interner) => {
             return false;
         }
-        ArType::Primitive(_) | ArType::Void | ArType::IntLiteral | ArType::FloatLiteral => {}
+        ArType::Primitive(_)
+        | ArType::Vector(_)
+        | ArType::Void
+        | ArType::IntLiteral
+        | ArType::FloatLiteral => {}
         ArType::Coroutine(_) if scalar_ready_result => {}
         ArType::Named(..)
         | ArType::Array(..)
@@ -279,6 +286,7 @@ pub fn function_scratch_safe(
             }
         }
         ArType::Slice(_)
+        | ArType::MutSlice(_)
         | ArType::Nullable(_)
         | ArType::Ptr(_)
         | ArType::Ref(_)
@@ -312,7 +320,14 @@ pub fn function_scratch_safe(
                     | AmirRvalue::GenSet { .. }
                     | AmirRvalue::GenUpsert { .. }
                     | AmirRvalue::GenRemove { .. } => false,
-                    AmirRvalue::Use(_)
+                    AmirRvalue::VectorSelect { .. }
+                    | AmirRvalue::VectorCompare { .. }
+                    | AmirRvalue::VectorOp { .. }
+                    | AmirRvalue::VectorSplat { .. }
+                    | AmirRvalue::VectorShuffle { .. }
+                    | AmirRvalue::VectorExtractLane { .. }
+                    | AmirRvalue::VectorInsertLane { .. }
+                    | AmirRvalue::Use(_)
                     | AmirRvalue::Binary { .. }
                     | AmirRvalue::Unary { .. }
                     | AmirRvalue::FieldAccess { .. }

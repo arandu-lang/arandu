@@ -353,6 +353,23 @@ pub(super) fn synth_call_expr(
             }
             let callee_id = *callee;
             let args_range = *args;
+            // Canonical enum families have dedicated IR types. Select them by
+            // resolved identity before nominal generic variant inference, which
+            // would otherwise return Named(Option/Poll/Result, ...) for aliases
+            // and re-exports of the same standard-library declaration.
+            if let Some(result_ty) =
+                synth_result_ctor(checker, callee_id, args_range, span, expected)
+            {
+                return Some(checker.intern(result_ty));
+            }
+            if let Some(option_ty) =
+                synth_option_ctor(checker, callee_id, args_range, span, expected)
+            {
+                return Some(checker.intern(option_ty));
+            }
+            if let Some(poll_ty) = synth_poll_ctor(checker, callee_id, args_range, span, expected) {
+                return Some(checker.intern(poll_ty));
+            }
             // Enum variant constructors inherit their generic parameters from
             // the parent enum. They are not generic functions in the symbol
             // table, so instantiate the variant signature against its parent
@@ -410,7 +427,12 @@ pub(super) fn synth_call_expr(
                         .is_some_and(|kind| kind.is_pure_bit_operation())
                         && checker.type_info.function_effects.get(&callee_sym)
                             == Some(&arandu_middle::EffectFlags::NONE);
-                    if !pure_bits {
+                    let pure_simd = sym.lang_item
+                        == Some(arandu_middle::symbol_table::LangItem::SimdIntrinsic)
+                        && arandu_middle::intrinsics::SimdIntrinsic::from_name(&sym.name).is_some()
+                        && checker.type_info.function_effects.get(&callee_sym)
+                            == Some(&arandu_middle::EffectFlags::NONE);
+                    if !pure_bits && !pure_simd {
                         checker.current_observed_effects = checker
                             .current_observed_effects
                             .union(arandu_middle::EffectFlags::FOREIGN);
@@ -418,7 +440,8 @@ pub(super) fn synth_call_expr(
                     // Intrinsics that only inspect already-valid fat-pointer descriptors
                     // or produce compile-time constants are safe without `unsafe {}`.
                     let is_safe_intrinsic = arandu_middle::IntrinsicKind::from_name(&sym.name)
-                        .is_some_and(|k| k.is_safe() && (!k.is_pure_bit_operation() || pure_bits));
+                        .is_some_and(|k| k.is_safe() && (!k.is_pure_bit_operation() || pure_bits))
+                        || pure_simd;
                     if !is_safe_intrinsic && !checker.ctx.is_in_unsafe() {
                         checker.diagnostics.push(
                             crate::Diagnostic::error(
@@ -477,19 +500,19 @@ pub(super) fn synth_call_expr(
                     checker.record_expr_type(expr, void_ty);
                     return Some(void_ty);
                 }
-            }
-            if let Some(result_ty) =
-                synth_result_ctor(checker, callee_id, args_range, span, expected)
-            {
-                return Some(checker.intern(result_ty));
-            }
-            if let Some(option_ty) =
-                synth_option_ctor(checker, callee_id, args_range, span, expected)
-            {
-                return Some(checker.intern(option_ty));
-            }
-            if let Some(poll_ty) = synth_poll_ctor(checker, callee_id, args_range, span, expected) {
-                return Some(checker.intern(poll_ty));
+                if checker.symbols.get(callee_sym).lang_item
+                    == Some(arandu_middle::symbol_table::LangItem::ThreadSpawn)
+                {
+                    check_target_thread_capabilities(checker, callee_sym, span);
+                    let arg_ids = checker.pool.expr_list(args_range).to_vec();
+                    if arg_ids.len() == 1
+                        && matches!(checker.pool.expr(arg_ids[0]), ExprKind::Lambda { .. })
+                    {
+                        return synth_thread_spawn_closure(
+                            checker, expr, callee_sym, callee_id, arg_ids[0], span,
+                        );
+                    }
+                }
             }
             if let ExprKind::Field { base, field } = checker.pool.expr(callee_id) {
                 let base_id = *base;
@@ -504,26 +527,44 @@ pub(super) fn synth_call_expr(
                 if let Some(ns_ty_id) =
                     resolve_namespace_field(checker, base_id, callee_id, &field_str, field_span)
                 {
-                    if let ExprKind::Path { path } = checker.pool.expr(base_id)
-                        && path.len() == 1
-                        && let Some(sym_id) =
+                    let member_sym = checker.resolved.expr_symbol(callee_id).or_else(|| {
+                        if let ExprKind::Path { path } = checker.pool.expr(base_id)
+                            && path.len() == 1
+                        {
                             checker.symbols.lookup_module_member(&path[0], &field_str)
-                        && checker.type_info.unsafe_functions.contains(&sym_id)
-                        && !checker.ctx.is_in_unsafe()
-                    {
-                        checker.diagnostics.push(
-                            arandu_middle::Diagnostic::error(
-                                arandu_middle::DiagCode::O013ExternRequiresUnsafe,
-                                "call to an `@Unsafe` function requires an `unsafe` block",
-                                span,
-                            )
-                            .with_label(
-                                field_span,
-                                "the function's documented preconditions must be upheld by its caller",
-                            ),
-                        );
+                        } else {
+                            None
+                        }
+                    });
+                    if let Some(sym_id) = member_sym {
+                        check_target_thread_capabilities(checker, sym_id, span);
+                        if checker.type_info.unsafe_functions.contains(&sym_id)
+                            && !checker.ctx.is_in_unsafe()
+                        {
+                            checker.diagnostics.push(
+                                arandu_middle::Diagnostic::error(
+                                    arandu_middle::DiagCode::O013ExternRequiresUnsafe,
+                                    "call to an `@Unsafe` function requires an `unsafe` block",
+                                    span,
+                                )
+                                .with_label(
+                                    field_span,
+                                    "the function's documented preconditions must be upheld by its caller",
+                                ),
+                            );
+                        }
                     }
                     let arg_ids = checker.pool.expr_list(args_range).to_vec();
+                    if let Some(sym_id) = member_sym
+                        && checker.symbols.get(sym_id).lang_item
+                            == Some(arandu_middle::symbol_table::LangItem::ThreadSpawn)
+                        && arg_ids.len() == 1
+                        && matches!(checker.pool.expr(arg_ids[0]), ExprKind::Lambda { .. })
+                    {
+                        return synth_thread_spawn_closure(
+                            checker, expr, sym_id, callee_id, arg_ids[0], span,
+                        );
+                    }
                     let ns_ty = checker.resolve(ns_ty_id);
                     if let ArType::Func(params, ret) = ns_ty {
                         let mut params = checker.type_info.type_interner.type_args(params);
@@ -718,6 +759,7 @@ pub(super) fn synth_call_expr(
                             checker.record_expr_type(callee_id, params_id);
                             // Bind method symbol for HIR (namespace Path rewrite / mono).
                             let struct_id = match checker.resolve(actual_base_ty_id) {
+                                ArType::Vector(shape) => checker.symbols.vector_type_symbol(shape),
                                 ArType::Named(id, _) => Some(id),
                                 ArType::Ptr(inner) => match checker.resolve(inner) {
                                     ArType::Named(id, _) => Some(id),
@@ -820,6 +862,7 @@ pub(super) fn synth_call_expr(
                 }
 
                 if let Some(sym_id) = callee_func_sym {
+                    check_target_thread_capabilities(checker, sym_id, span);
                     if checker.type_info.unsafe_functions.contains(&sym_id)
                         && !checker.ctx.is_in_unsafe()
                     {
@@ -839,6 +882,17 @@ pub(super) fn synth_call_expr(
                         checker.current_observed_effects =
                             checker.current_observed_effects.union(eff);
                     }
+                }
+
+                if let Some(sym_id) = callee_func_sym
+                    && checker.symbols.get(sym_id).lang_item
+                        == Some(arandu_middle::symbol_table::LangItem::ThreadSpawn)
+                    && arg_ids.len() == 1
+                    && matches!(checker.pool.expr(arg_ids[0]), ExprKind::Lambda { .. })
+                {
+                    return synth_thread_spawn_closure(
+                        checker, expr, sym_id, callee_id, arg_ids[0], span,
+                    );
                 }
 
                 // Infer type args for bare `id(x)` (no `id<T>`): instantiate formal params
@@ -1015,4 +1069,413 @@ pub(super) fn synth_call_expr(
         }
         _ => None,
     }
+}
+
+pub(crate) fn check_target_thread_capabilities(
+    checker: &mut TypeChecker<'_>,
+    sym_id: arandu_middle::SymbolId,
+    span: Span,
+) {
+    if !checker.type_info.target_identity.arch.starts_with("wasm") {
+        return;
+    }
+    let Some(lang_item) = checker.symbols.get(sym_id).lang_item else {
+        return;
+    };
+    match lang_item {
+        arandu_middle::symbol_table::LangItem::ThreadParkTimeout => {
+            checker.diagnostics.push(
+                crate::Diagnostic::error(
+                    crate::DiagCode::U001FeatureNotSupported,
+                    "`parkTimeout` requires target thread support to wake on unpark, which is unavailable on wasm32; use `std.thread.sleep` for a non-interruptible delay",
+                    span,
+                )
+                .with_label(
+                    span,
+                    "`parkTimeout` cannot be used on WebAssembly without threads",
+                ),
+            );
+        }
+        arandu_middle::symbol_table::LangItem::ThreadPark
+        | arandu_middle::symbol_table::LangItem::ThreadUnpark
+        | arandu_middle::symbol_table::LangItem::ThreadSpawn => {
+            checker.diagnostics.push(
+                crate::Diagnostic::error(
+                    crate::DiagCode::U001FeatureNotSupported,
+                    "thread synchronization and spawning are unsupported on single-threaded WebAssembly targets; use cooperative tasks or async execution instead",
+                    span,
+                )
+                .with_label(
+                    span,
+                    "thread operations are unsupported on this target",
+                ),
+            );
+        }
+        _ => {}
+    }
+}
+
+fn span_contains(outer: Span, inner: Span) -> bool {
+    outer.file_id == inner.file_id && outer.start <= inner.start && outer.end >= inner.end
+}
+
+fn walk_expr_ids(pool: &arandu_parser::ast_pool::AstPool, expr: ExprId, out: &mut Vec<ExprId>) {
+    out.push(expr);
+    match pool.expr(expr) {
+        ExprKind::Path { .. }
+        | ExprKind::TypePath { .. }
+        | ExprKind::Int { .. }
+        | ExprKind::Float { .. }
+        | ExprKind::Bool { .. }
+        | ExprKind::Char { .. }
+        | ExprKind::Byte { .. }
+        | ExprKind::Nil
+        | ExprKind::Error => {}
+        ExprKind::Field { base, .. }
+        | ExprKind::SafeField { base, .. }
+        | ExprKind::Unary { expr: base, .. }
+        | ExprKind::Alloc { expr: base, .. }
+        | ExprKind::Try { expr: base, .. }
+        | ExprKind::Cast { expr: base, .. }
+        | ExprKind::Group { expr: base }
+        | ExprKind::ArrayRepeat { value: base, .. }
+        | ExprKind::Generic { callee: base, .. } => {
+            walk_expr_ids(pool, *base, out);
+        }
+        ExprKind::Binary { left, right, .. }
+        | ExprKind::NullCoalesce { left, right, .. }
+        | ExprKind::Index {
+            base: left,
+            index: right,
+        }
+        | ExprKind::SafeIndex {
+            base: left,
+            index: right,
+        } => {
+            walk_expr_ids(pool, *left, out);
+            walk_expr_ids(pool, *right, out);
+        }
+        ExprKind::Call {
+            callee,
+            args,
+            trailing_block,
+        } => {
+            walk_expr_ids(pool, *callee, out);
+            for &arg in pool.expr_list(*args) {
+                walk_expr_ids(pool, arg, out);
+            }
+            if let Some(tb) = trailing_block {
+                walk_block(pool, pool.block(*tb), out);
+            }
+        }
+        ExprKind::Array { items } => {
+            for &item in pool.expr_list(*items) {
+                walk_expr_ids(pool, item, out);
+            }
+        }
+        ExprKind::StructLiteral { fields, .. } => {
+            for &field in pool.field_init_list(*fields) {
+                walk_expr_ids(pool, pool.field_init(field).value, out);
+            }
+        }
+        ExprKind::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            match condition {
+                arandu_parser::Condition::Expr { expr: e, .. }
+                | arandu_parser::Condition::Is { expr: e, .. } => {
+                    walk_expr_ids(pool, *e, out);
+                }
+                arandu_parser::Condition::And { conditions, .. } => {
+                    for c in conditions.iter() {
+                        if let arandu_parser::Condition::Expr { expr: e, .. }
+                        | arandu_parser::Condition::Is { expr: e, .. } = c
+                        {
+                            walk_expr_ids(pool, *e, out);
+                        }
+                    }
+                }
+            }
+            walk_block(pool, pool.block(*then_block), out);
+            walk_block(pool, pool.block(*else_block), out);
+        }
+        ExprKind::Match { value, arms } => {
+            walk_expr_ids(pool, *value, out);
+            for &arm in pool.match_arm_list(*arms) {
+                let arm_data = pool.match_arm(arm);
+                match &arm_data.body {
+                    arandu_parser::MatchArmBody::Expr { expr: e, .. } => {
+                        walk_expr_ids(pool, *e, out)
+                    }
+                    arandu_parser::MatchArmBody::Block { block: b, .. } => walk_block(pool, b, out),
+                }
+            }
+        }
+        ExprKind::Catch {
+            expr: base,
+            handler,
+        } => {
+            walk_expr_ids(pool, *base, out);
+            match pool.catch_handler(*handler) {
+                arandu_parser::CatchHandler::Expr { expr: e, .. } => walk_expr_ids(pool, *e, out),
+                arandu_parser::CatchHandler::Block { block: b, .. } => walk_block(pool, b, out),
+            }
+        }
+        ExprKind::Lambda { .. } => {}
+        _ => {}
+    }
+}
+
+fn walk_block(
+    pool: &arandu_parser::ast_pool::AstPool,
+    block: &arandu_parser::Block,
+    out: &mut Vec<ExprId>,
+) {
+    for &stmt_id in pool.stmt_list(block.statements) {
+        match pool.stmt(stmt_id) {
+            arandu_parser::Stmt::Expr { expr, .. } | arandu_parser::Stmt::Free { expr, .. } => {
+                walk_expr_ids(pool, *expr, out);
+            }
+            arandu_parser::Stmt::VarDecl { value, .. } | arandu_parser::Stmt::Set { value, .. } => {
+                walk_expr_ids(pool, *value, out);
+            }
+            arandu_parser::Stmt::Return { values, .. } => {
+                for v in values {
+                    walk_expr_ids(pool, *v, out);
+                }
+            }
+            arandu_parser::Stmt::If {
+                condition,
+                then_block,
+                else_block,
+                ..
+            } => {
+                match condition {
+                    arandu_parser::Condition::Expr { expr: e, .. }
+                    | arandu_parser::Condition::Is { expr: e, .. } => {
+                        walk_expr_ids(pool, *e, out);
+                    }
+                    arandu_parser::Condition::And { conditions, .. } => {
+                        for c in conditions.iter() {
+                            if let arandu_parser::Condition::Expr { expr: e, .. }
+                            | arandu_parser::Condition::Is { expr: e, .. } = c
+                            {
+                                walk_expr_ids(pool, *e, out);
+                            }
+                        }
+                    }
+                }
+                walk_block(pool, then_block, out);
+                if let Some(eb) = else_block {
+                    walk_block(pool, eb, out);
+                }
+            }
+            arandu_parser::Stmt::While {
+                condition, body, ..
+            } => {
+                if let arandu_parser::Condition::Expr { expr: e, .. }
+                | arandu_parser::Condition::Is { expr: e, .. } = condition
+                {
+                    walk_expr_ids(pool, *e, out);
+                }
+                walk_block(pool, body, out);
+            }
+            arandu_parser::Stmt::For { clause, body, .. } => {
+                match clause {
+                    arandu_parser::ForClause::In { iterable, .. } => {
+                        walk_expr_ids(pool, *iterable, out);
+                    }
+                    arandu_parser::ForClause::CStyle { condition, .. } => {
+                        if let Some(c) = condition {
+                            walk_expr_ids(pool, *c, out);
+                        }
+                    }
+                }
+                walk_block(pool, body, out);
+            }
+            arandu_parser::Stmt::Match { expr, .. } => {
+                walk_expr_ids(pool, *expr, out);
+            }
+            _ => {}
+        }
+    }
+}
+
+pub(crate) fn synth_thread_spawn_closure(
+    checker: &mut TypeChecker<'_>,
+    call_expr: ExprId,
+    spawn_sym: arandu_middle::SymbolId,
+    callee_id: ExprId,
+    arg_id: ExprId,
+    _span: Span,
+) -> Option<TypeId> {
+    let arg_span = checker.pool.expr_span(arg_id);
+    let (params, body, is_move) = match checker.pool.expr(arg_id) {
+        ExprKind::Lambda {
+            params,
+            body,
+            is_move,
+        } => (*params, body.clone(), *is_move),
+        _ => unreachable!(),
+    };
+
+    if !is_move {
+        checker.diagnostics.push(
+            crate::Diagnostic::error(
+                crate::DiagCode::U001FeatureNotSupported,
+                "thread closure requires explicit 'move || ...' to transfer captured values into the new thread",
+                arg_span,
+            )
+            .with_label(arg_span, "missing 'move' keyword on thread closure"),
+        );
+        return Some(checker.intern(ArType::Error));
+    }
+
+    if !params.is_empty() {
+        checker.diagnostics.push(
+            crate::Diagnostic::error(
+                crate::DiagCode::U001FeatureNotSupported,
+                "thread closure cannot take parameters; use 'move || ...'",
+                arg_span,
+            )
+            .with_label(arg_span, "thread closure must take no parameters"),
+        );
+        return Some(checker.intern(ArType::Error));
+    }
+
+    // Inspect captured symbols
+    let mut expr_ids = Vec::new();
+    match &body {
+        arandu_parser::LambdaBody::Expr {
+            expr: inner_expr, ..
+        } => {
+            walk_expr_ids(checker.pool, *inner_expr, &mut expr_ids);
+        }
+        arandu_parser::LambdaBody::Block { block, .. } => {
+            walk_block(checker.pool, block, &mut expr_ids);
+        }
+    }
+
+    for eid in expr_ids {
+        if let Some(sym_id) = checker.resolved.expr_symbol(eid) {
+            let (is_captured_var, sym_name) = {
+                let sym = checker.symbols.get(sym_id);
+                (
+                    matches!(
+                        sym.kind,
+                        arandu_middle::SymbolKind::Local | arandu_middle::SymbolKind::Param
+                    ) && !span_contains(arg_span, sym.span),
+                    sym.name.clone(),
+                )
+            };
+            if is_captured_var {
+                let expr_span = checker.pool.expr_span(eid);
+                let cap_ty_id = checker
+                    .ctx
+                    .lookup(sym_id)
+                    .or_else(|| checker.decl_type_id(sym_id))
+                    .unwrap_or_else(|| checker.intern(ArType::Error));
+                let cap_ty = checker.resolve(cap_ty_id);
+                if matches!(cap_ty, ArType::Ref(_) | ArType::RefMut(_)) {
+                    checker.diagnostics.push(
+                        crate::Diagnostic::error(
+                            crate::DiagCode::T025InterfaceNotSatisfied,
+                            "cannot move borrowed value into thread closure: references do not satisfy 'marker.Send' and cannot escape to another thread",
+                            expr_span,
+                        )
+                        .with_label(expr_span, "reference cannot cross thread boundaries"),
+                    );
+                } else if !cap_ty.is_error()
+                    && !crate::type_checker::types::transfer::satisfies(
+                        checker,
+                        &cap_ty,
+                        arandu_middle::symbol_table::LangItem::Send,
+                    )
+                {
+                    checker.diagnostics.push(
+                        crate::Diagnostic::error(
+                            crate::DiagCode::T025InterfaceNotSatisfied,
+                            format!(
+                                "captured variable '{}' of type '{}' does not satisfy 'marker.Send'",
+                                sym_name,
+                                cap_ty.display(&checker.symbols, &checker.type_info.type_interner)
+                            ),
+                            expr_span,
+                        )
+                        .with_label(expr_span, "non-Send type cannot cross thread boundaries"),
+                    );
+                }
+            }
+        }
+    }
+
+    // Synthesize the closure body to determine return type
+    let ret_ty_id = match &body {
+        arandu_parser::LambdaBody::Expr {
+            expr: inner_expr, ..
+        } => super::synth_expr(checker, *inner_expr),
+        arandu_parser::LambdaBody::Block { block, .. } => {
+            let b_ty = crate::type_checker::check::check_block(checker, checker.pool, block);
+            checker.intern(b_ty)
+        }
+    };
+    let ret_ty = checker.resolve(ret_ty_id);
+    if !ret_ty.is_error()
+        && !crate::type_checker::types::transfer::satisfies(
+            checker,
+            &ret_ty,
+            arandu_middle::symbol_table::LangItem::Send,
+        )
+    {
+        checker.diagnostics.push(
+            crate::Diagnostic::error(
+                crate::DiagCode::T025InterfaceNotSatisfied,
+                format!(
+                    "thread return type '{}' does not satisfy 'marker.Send'",
+                    ret_ty.display(&checker.symbols, &checker.type_info.type_interner)
+                ),
+                arg_span,
+            )
+            .with_label(arg_span, "thread return type must satisfy 'marker.Send'"),
+        );
+    }
+
+    let generic_params = checker
+        .type_info
+        .generic_params
+        .get(&spawn_sym)
+        .cloned()
+        .unwrap_or_default();
+    let decl_ty = checker.decl_type(spawn_sym);
+    let res_ty = if let (Some(ArType::Func(_, ret_ty)), Some(&first_gp)) =
+        (decl_ty, generic_params.first())
+    {
+        let ret = checker.resolve(ret_ty);
+        let subst = arandu_middle::types::build_subst(&[first_gp], &[checker.resolve(ret_ty_id)]);
+        let inst =
+            arandu_middle::types::substitute_type(&ret, &subst, &checker.type_info.type_interner);
+        checker.intern(inst)
+    } else {
+        checker.intern(ArType::Error)
+    };
+
+    let lambda_ty = ArType::func(&[], ret_ty_id, &checker.type_info.type_interner);
+    let lambda_ty_id = checker.intern(lambda_ty);
+    checker.record_expr_type(arg_id, lambda_ty_id);
+    let call_func_ty = ArType::func(&[lambda_ty_id], res_ty, &checker.type_info.type_interner);
+    let call_func_ty_id = checker.intern(call_func_ty);
+    checker.record_expr_type(callee_id, call_func_ty_id);
+    checker.record_expr_type(call_expr, res_ty);
+
+    checker.diagnostics.push(
+        crate::Diagnostic::error(
+            crate::DiagCode::U001FeatureNotSupported,
+            "thread closures ('move || ...') require AMIR ThreadJob lowering, which is not yet available; implement ThreadJob statically for now",
+            arg_span,
+        )
+        .with_label(arg_span, "closure lowering for thread.spawn is pending AMIR support"),
+    );
+    Some(checker.intern(ArType::Error))
 }

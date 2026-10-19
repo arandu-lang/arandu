@@ -9,7 +9,7 @@ pub use arandu_middle::types::{
 
 pub mod generic_inst;
 pub mod interfaces;
-mod transfer;
+pub(crate) mod transfer;
 
 pub use generic_inst::{
     expand_aliases, expand_named_with_defaults, expand_type_args_with_defaults,

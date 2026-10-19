@@ -28,6 +28,10 @@ func main(): int {
     if moved.text.len() != 5 { return 1 }
     let zero = boxed.Box<Empty>.new(Empty {})
     let nested = boxed.Box<boxed.Box<Tracked>>.new(boxed.Box<Tracked>.new(Tracked { tag: 44, text: strings.String.from("nested") }))
+    let rawOwner = boxed.Box<Tracked>.new(Tracked { tag: 55, text: strings.String.from("restored") })
+    let raw = rawOwner.leak()
+    let restored = unsafe { boxed.Box<Tracked>.fromRaw(raw) }
+    if restored.get().text.len() != 8 { return 3 }
     let mut pair = boxed.Box<Pair>.new(Pair { left: 1, right: 2 })
     let access = pair.getMut()
     access.left = 73
@@ -60,7 +64,7 @@ fn boxed_owns_noncopy_nested_and_zero_sized_values() {
     let output = String::from_utf8(output.stdout).unwrap();
     let mut tags = output.lines().collect::<Vec<_>>();
     tags.sort_unstable();
-    assert_eq!(tags, ["11", "22", "33", "44"]);
+    assert_eq!(tags, ["11", "22", "33", "44", "55"]);
 }
 
 #[test]
@@ -108,9 +112,23 @@ fn boxed_drops_and_mutable_borrows_in_generated_c() {
         let output = String::from_utf8(output.stdout).unwrap();
         let mut tags = output.lines().collect::<Vec<_>>();
         tags.sort_unstable();
-        assert_eq!(tags, ["11", "22", "33", "44"]);
+        assert_eq!(tags, ["11", "22", "33", "44", "55"]);
     }
     fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn boxed_drops_and_allocations_in_wasm() {
+    let emitted = execute(SOURCE, "emit-wasm");
+    assert!(
+        emitted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&emitted.stderr)
+    );
+    assert!(
+        arandu_backend_wasm::is_core_module(&emitted.stdout),
+        "emitted Wasm must be a valid core module"
+    );
 }
 
 #[test]
@@ -153,4 +171,21 @@ fn boxed_borrows_cannot_escape_the_owner() {
             "expected ownership rejection, got: {diagnostics}"
         );
     }
+}
+
+#[test]
+fn boxed_raw_reconstruction_requires_explicit_unsafe() {
+    let output = execute(
+        "module unsafe_box_factory\nimport std.alloc.boxed as boxed\nfunc main():int {let owner=boxed.Box<int>.new(42);let raw=owner.leak();let restored=boxed.Box<int>.fromRaw(raw);return *restored.get()-42}",
+        "check",
+    );
+    assert!(
+        !output.status.success(),
+        "Box.fromRaw accepted unproved raw ownership in safe code"
+    );
+    let diagnostics = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        diagnostics.contains("O013") && diagnostics.contains("unsafe"),
+        "{diagnostics}"
+    );
 }

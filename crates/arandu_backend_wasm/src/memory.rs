@@ -87,6 +87,10 @@ pub const MEM_ALIGN: u32 = 2;
 /// generation counter.
 pub const GEN_COUNTER_ADDR: u64 = 0x1FE8;
 
+/// SIMD BlackBox value (16 bytes) followed by its opaque zero offset (4 bytes).
+/// Kept separate from both the generation counter and scalar scratch storage.
+pub const VECTOR_BLACK_BOX_SCRATCH_ADDR: u64 = 0x1FD0;
+
 /// Reserved 16-byte low-memory scratch area (`< RODATA_BASE`) used to launder
 /// `BlackBox` values through exported linear memory (`[0x1FF0..0x1FF8)` holds
 /// the value and `0x1FF8` holds an opaque zero base offset).

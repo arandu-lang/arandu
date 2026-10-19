@@ -1,0 +1,21 @@
+struct WalkOpts {
+    count_only: bool,
+    files_with_matches: bool,
+}
+
+func defaultWalkOpts(): WalkOpts {
+    return WalkOpts {
+        count_only: false,
+        files_with_matches: false,
+    };
+}
+
+func shouldDescend(name: []u8, len: usize, is_root: bool): bool {
+    if len > 0 && name[0] == 46 {
+        return false;
+    }
+    if is_root && len == 6 && name[0] == 116 && name[1] == 97 && name[2] == 114 && name[3] == 103 && name[4] == 101 && name[5] == 116 {
+        return false;
+    }
+    return true;
+}

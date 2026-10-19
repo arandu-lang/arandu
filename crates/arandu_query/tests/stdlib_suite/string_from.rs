@@ -10,7 +10,7 @@ const STRING_ARU: &str = include_str!("../../../../stdlib/alloc/string.aru");
 #[test]
 fn stdlib_string_exports_from_and_string_from() {
     let mut db = DatabaseImpl::default();
-    let file = db.new_file(
+    let file = db.new_stdlib_file(
         "stdlib/alloc/string.aru".to_string(),
         STRING_ARU.to_string(),
     );

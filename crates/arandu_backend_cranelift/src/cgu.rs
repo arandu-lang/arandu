@@ -221,6 +221,10 @@ impl HashContext<'_> {
 
     fn ar_type(&mut self, ty: &ArType) {
         match ty {
+            ArType::Vector(vector) => {
+                self.hash.tag(25);
+                self.hash.str(vector.name());
+            }
             ArType::Primitive(primitive) => {
                 self.hash.tag(0);
                 self.hash.str(primitive.as_str());
@@ -242,6 +246,10 @@ impl HashContext<'_> {
             }
             ArType::Slice(inner) => {
                 self.hash.tag(4);
+                self.type_id(*inner);
+            }
+            ArType::MutSlice(inner) => {
+                self.hash.tag(25);
                 self.type_id(*inner);
             }
             ArType::Array(len, inner) => {
@@ -604,6 +612,55 @@ impl HashContext<'_> {
 
     fn rvalue(&mut self, rvalue: &AmirRvalue) {
         match rvalue {
+            AmirRvalue::VectorSelect {
+                mask,
+                if_true,
+                if_false,
+            } => {
+                self.hash.tag(34);
+                self.operand(mask);
+                self.operand(if_true);
+                self.operand(if_false);
+            }
+            AmirRvalue::VectorCompare { op, left, right } => {
+                self.hash.tag(35);
+                self.hash.tag(op.stable_tag());
+                self.operand(left);
+                self.operand(right);
+            }
+            AmirRvalue::VectorOp { op, left, right } => {
+                self.hash.tag(29);
+                self.hash.tag(op.stable_tag());
+                self.operand(left);
+                self.operand(right);
+            }
+            AmirRvalue::VectorSplat { value } => {
+                self.hash.tag(30);
+                self.operand(value);
+            }
+            AmirRvalue::VectorShuffle { left, right, mask } => {
+                self.hash.tag(31);
+                self.operand(left);
+                self.operand(right);
+                for index in mask {
+                    self.hash.tag(*index);
+                }
+            }
+            AmirRvalue::VectorExtractLane { vector, lane } => {
+                self.hash.tag(32);
+                self.operand(vector);
+                self.hash.tag(*lane);
+            }
+            AmirRvalue::VectorInsertLane {
+                vector,
+                lane,
+                value,
+            } => {
+                self.hash.tag(33);
+                self.operand(vector);
+                self.hash.tag(*lane);
+                self.operand(value);
+            }
             AmirRvalue::Use(operand) => {
                 self.hash.tag(0);
                 self.operand(operand);

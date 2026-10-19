@@ -2,10 +2,10 @@
 
 use super::*;
 use arandu_middle::amir::*;
-use arandu_middle::ctfe::ConstAggregate;
+use arandu_middle::ctfe::{ConstAggregate, ConstFloat, FloatType};
 use arandu_middle::layout::{DataLayout, DenseRange};
 use arandu_middle::literal_pool::AmirLiteralPool;
-use arandu_middle::types::{ArType, Primitive, TypeId, TypeInterner};
+use arandu_middle::types::{ArType, Primitive, TypeId, TypeInterner, VectorType};
 use arandu_middle::{Span, SymbolId};
 use std::sync::Arc;
 
@@ -1359,5 +1359,329 @@ fn retained_aggregate_constructors_charge_each_operand_before_execution() {
             .expect_err("unentered constructor is metered")
             .kind,
         EvalErrorKind::FuelExhausted
+    );
+}
+
+#[test]
+fn vector_ctfe_splat_extract_insert_op_compare_select() {
+    let root = SymbolId::new(1, 0);
+    let (mut f, types, mut pool) = function(root, 7);
+    let vec_ty = types.intern(ArType::Vector(VectorType::I32x4));
+    let mask_ty = types.intern(ArType::Vector(VectorType::U8x16));
+    let i32_ty = types.intern(ArType::Primitive(Primitive::I32));
+    f.return_type = i32_ty;
+    f.temps[0].ty = i32_ty; // return temporary
+    f.temps[1].ty = vec_ty; // splat
+    f.temps[2].ty = vec_ty; // insert
+    f.temps[3].ty = vec_ty; // splat 1
+    f.temps[4].ty = vec_ty; // add
+    f.temps[5].ty = mask_ty; // compare
+    f.temps[6].ty = vec_ty; // select
+
+    let lit_10 = AmirOperand::Constant(AmirConstant::Pool(pool.intern_int("10")));
+    let lit_99 = AmirOperand::Constant(AmirConstant::Pool(pool.intern_int("99")));
+    let lit_1 = AmirOperand::Constant(AmirConstant::Pool(pool.intern_int("1")));
+
+    // 1: splat 10 -> [10, 10, 10, 10]
+    f.append_stmt_to_block(
+        BlockId(0),
+        AmirStmt::Assign {
+            lhs: TempId(1),
+            rhs: AmirRvalue::VectorSplat { value: lit_10 },
+        },
+    );
+    // 2: insert 99 at lane 2 -> [10, 10, 99, 10]
+    f.append_stmt_to_block(
+        BlockId(0),
+        AmirStmt::Assign {
+            lhs: TempId(2),
+            rhs: AmirRvalue::VectorInsertLane {
+                vector: AmirOperand::Copy(TempId(1)),
+                lane: 2,
+                value: lit_99,
+            },
+        },
+    );
+    // 3: splat 1 -> [1, 1, 1, 1]
+    f.append_stmt_to_block(
+        BlockId(0),
+        AmirStmt::Assign {
+            lhs: TempId(3),
+            rhs: AmirRvalue::VectorSplat { value: lit_1 },
+        },
+    );
+    // 4: add TempId(2) + TempId(3) -> [11, 11, 100, 11]
+    f.append_stmt_to_block(
+        BlockId(0),
+        AmirStmt::Assign {
+            lhs: TempId(4),
+            rhs: AmirRvalue::VectorOp {
+                op: VectorOp::Add,
+                left: AmirOperand::Copy(TempId(2)),
+                right: AmirOperand::Copy(TempId(3)),
+            },
+        },
+    );
+    // 5: compare TempId(4) > TempId(1) -> [11, 11, 100, 11] > [10, 10, 10, 10] (all true)
+    f.append_stmt_to_block(
+        BlockId(0),
+        AmirStmt::Assign {
+            lhs: TempId(5),
+            rhs: AmirRvalue::VectorCompare {
+                op: VectorCompareOp::Gt,
+                left: AmirOperand::Copy(TempId(4)),
+                right: AmirOperand::Copy(TempId(1)),
+            },
+        },
+    );
+    // 6: select mask: TempId(5), if_true: TempId(4), if_false: TempId(1) -> [11, 11, 100, 11]
+    f.append_stmt_to_block(
+        BlockId(0),
+        AmirStmt::Assign {
+            lhs: TempId(6),
+            rhs: AmirRvalue::VectorSelect {
+                mask: AmirOperand::Copy(TempId(5)),
+                if_true: AmirOperand::Copy(TempId(4)),
+                if_false: AmirOperand::Copy(TempId(1)),
+            },
+        },
+    );
+    // 0: extract lane 2 of TempId(6) -> 100
+    f.append_stmt_to_block(
+        BlockId(0),
+        AmirStmt::Assign {
+            lhs: TempId(0),
+            rhs: AmirRvalue::VectorExtractLane {
+                vector: AmirOperand::Copy(TempId(6)),
+                lane: 2,
+            },
+        },
+    );
+
+    let units = Units(vec![unit(f, &types, pool)]);
+    let res = evaluate(&units, root, &[], budget(), || false).expect("vector CTFE evaluates");
+    assert_eq!(
+        res,
+        ConstValue::Integer(
+            ConstInt::new(
+                IntegerType::new(Primitive::I32, DataLayout::ptr_width(8)).unwrap(),
+                100,
+            )
+            .unwrap()
+        )
+    );
+}
+
+#[test]
+fn vector_ctfe_shuffle_and_float_ops() {
+    let root = SymbolId::new(1, 0);
+    let (mut f, types, mut pool) = function(root, 6);
+    let f32_vec_ty = types.intern(ArType::Vector(VectorType::F32x4));
+    let u8_vec_ty = types.intern(ArType::Vector(VectorType::U8x16));
+    let f32_ty = types.intern(ArType::Primitive(Primitive::F32));
+    f.return_type = f32_ty;
+    f.temps[0].ty = f32_ty; // return
+    f.temps[1].ty = f32_vec_ty; // splat 2.0
+    f.temps[2].ty = f32_vec_ty; // splat 3.0
+    f.temps[3].ty = f32_vec_ty; // mul -> 6.0
+    f.temps[4].ty = u8_vec_ty; // splat 42
+    f.temps[5].ty = u8_vec_ty; // shuffle
+
+    let lit_2 = AmirOperand::Constant(AmirConstant::Pool(pool.intern_float("2.0")));
+    let lit_3 = AmirOperand::Constant(AmirConstant::Pool(pool.intern_float("3.0")));
+    let lit_42 = AmirOperand::Constant(AmirConstant::Pool(pool.intern_int("42")));
+
+    f.append_stmt_to_block(
+        BlockId(0),
+        AmirStmt::Assign {
+            lhs: TempId(1),
+            rhs: AmirRvalue::VectorSplat { value: lit_2 },
+        },
+    );
+    f.append_stmt_to_block(
+        BlockId(0),
+        AmirStmt::Assign {
+            lhs: TempId(2),
+            rhs: AmirRvalue::VectorSplat { value: lit_3 },
+        },
+    );
+    f.append_stmt_to_block(
+        BlockId(0),
+        AmirStmt::Assign {
+            lhs: TempId(3),
+            rhs: AmirRvalue::VectorOp {
+                op: VectorOp::Mul,
+                left: AmirOperand::Copy(TempId(1)),
+                right: AmirOperand::Copy(TempId(2)),
+            },
+        },
+    );
+    f.append_stmt_to_block(
+        BlockId(0),
+        AmirStmt::Assign {
+            lhs: TempId(4),
+            rhs: AmirRvalue::VectorSplat { value: lit_42 },
+        },
+    );
+    let mask: [u8; 16] = std::array::from_fn(|i| (15 - i) as u8);
+    f.append_stmt_to_block(
+        BlockId(0),
+        AmirStmt::Assign {
+            lhs: TempId(5),
+            rhs: AmirRvalue::VectorShuffle {
+                left: AmirOperand::Copy(TempId(4)),
+                right: AmirOperand::Copy(TempId(4)),
+                mask,
+            },
+        },
+    );
+    f.append_stmt_to_block(
+        BlockId(0),
+        AmirStmt::Assign {
+            lhs: TempId(0),
+            rhs: AmirRvalue::VectorExtractLane {
+                vector: AmirOperand::Copy(TempId(3)),
+                lane: 0,
+            },
+        },
+    );
+
+    let units = Units(vec![unit(f, &types, pool)]);
+    let res =
+        evaluate(&units, root, &[], budget(), || false).expect("vector CTFE float mul evaluates");
+    let flt_ty = FloatType::new(Primitive::F32, DataLayout::ptr_width(8)).unwrap();
+    assert_eq!(
+        res,
+        ConstValue::Float(ConstFloat::parse(flt_ty, "6.0").unwrap())
+    );
+}
+
+fn assign(f: &mut AmirFunc, lhs: usize, rhs: AmirRvalue) {
+    f.append_stmt_to_block(
+        BlockId(0),
+        AmirStmt::Assign {
+            lhs: TempId::from_usize(lhs),
+            rhs,
+        },
+    );
+}
+
+#[test]
+fn vector_ctfe_shuffle_moves_bytes_across_lanes() {
+    // [7, 0, 0, 0] reversed lane-wise by a byte mask yields [0, 0, 0, 7].
+    let root = SymbolId::new(1, 0);
+    let (mut f, types, mut pool) = function(root, 4);
+    let vec_ty = types.intern(ArType::Vector(VectorType::I32x4));
+    let i32_ty = types.intern(ArType::Primitive(Primitive::I32));
+    f.return_type = i32_ty;
+    f.temps[0].ty = i32_ty;
+    for temp in &mut f.temps[1..] {
+        temp.ty = vec_ty;
+    }
+    let zero = AmirOperand::Constant(AmirConstant::Pool(pool.intern_int("0")));
+    let seven = AmirOperand::Constant(AmirConstant::Pool(pool.intern_int("7")));
+    assign(&mut f, 1, AmirRvalue::VectorSplat { value: zero });
+    assign(
+        &mut f,
+        2,
+        AmirRvalue::VectorInsertLane {
+            vector: AmirOperand::Copy(TempId(1)),
+            lane: 0,
+            value: seven,
+        },
+    );
+    // Destination lane L takes source lane 3 - L (little-endian bytes).
+    let mask: [u8; 16] = std::array::from_fn(|i| ((3 - i / 4) * 4 + i % 4) as u8);
+    assign(
+        &mut f,
+        3,
+        AmirRvalue::VectorShuffle {
+            left: AmirOperand::Copy(TempId(2)),
+            right: AmirOperand::Copy(TempId(1)),
+            mask,
+        },
+    );
+    assign(
+        &mut f,
+        0,
+        AmirRvalue::VectorExtractLane {
+            vector: AmirOperand::Copy(TempId(3)),
+            lane: 3,
+        },
+    );
+    let units = Units(vec![unit(f, &types, pool)]);
+    let i32 = IntegerType::new(Primitive::I32, DataLayout::ptr_width(8)).expect("i32");
+    assert_eq!(
+        evaluate(&units, root, &[], budget(), || false),
+        Ok(ConstValue::Integer(
+            ConstInt::new(i32, 7).expect("in range")
+        ))
+    );
+}
+
+#[test]
+fn vector_ctfe_nan_is_unordered_and_select_preserves_its_bits() {
+    // 0/0 is NaN; NaN != NaN must be true for every lane (unordered Ne),
+    // and a bitwise select must carry the NaN encoding through unchanged.
+    let root = SymbolId::new(1, 0);
+    let (mut f, types, mut pool) = function(root, 5);
+    let vec_ty = types.intern(ArType::Vector(VectorType::F32x4));
+    let mask_ty = types.intern(ArType::Vector(VectorType::U8x16));
+    let f32_ty = types.intern(ArType::Primitive(Primitive::F32));
+    f.return_type = f32_ty;
+    f.temps[0].ty = f32_ty;
+    f.temps[1].ty = vec_ty; // zeros
+    f.temps[2].ty = vec_ty; // NaN
+    f.temps[3].ty = mask_ty; // NaN != NaN
+    f.temps[4].ty = vec_ty; // selected
+    let zero = AmirOperand::Constant(AmirConstant::Pool(pool.intern_float("0.0")));
+    assign(&mut f, 1, AmirRvalue::VectorSplat { value: zero });
+    assign(
+        &mut f,
+        2,
+        AmirRvalue::VectorOp {
+            op: VectorOp::Div,
+            left: AmirOperand::Copy(TempId(1)),
+            right: AmirOperand::Copy(TempId(1)),
+        },
+    );
+    assign(
+        &mut f,
+        3,
+        AmirRvalue::VectorCompare {
+            op: VectorCompareOp::Ne,
+            left: AmirOperand::Copy(TempId(2)),
+            right: AmirOperand::Copy(TempId(2)),
+        },
+    );
+    assign(
+        &mut f,
+        4,
+        AmirRvalue::VectorSelect {
+            mask: AmirOperand::Copy(TempId(3)),
+            if_true: AmirOperand::Copy(TempId(2)),
+            if_false: AmirOperand::Copy(TempId(1)),
+        },
+    );
+    assign(
+        &mut f,
+        0,
+        AmirRvalue::VectorExtractLane {
+            vector: AmirOperand::Copy(TempId(4)),
+            lane: 1,
+        },
+    );
+    let units = Units(vec![unit(f, &types, pool)]);
+    let ConstValue::Float(result) =
+        evaluate(&units, root, &[], budget(), || false).expect("NaN select evaluates")
+    else {
+        panic!("expected a float lane");
+    };
+    let bits = result.bits32().expect("f32 lane");
+    assert_eq!(bits & 0x7f80_0000, 0x7f80_0000, "exponent all ones");
+    assert_ne!(
+        bits & 0x007f_ffff,
+        0,
+        "non-zero mantissa (NaN, not infinity)"
     );
 }

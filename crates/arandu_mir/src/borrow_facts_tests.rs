@@ -462,6 +462,55 @@ fn projected_store_and_load_preserve_holder_path() {
 }
 
 #[test]
+fn projected_reborrow_keeps_original_owner_loan_through_reference_slot() {
+    let interner = TypeInterner::new();
+    let int = interner.intern(ArType::Primitive(Primitive::Int));
+    let reference = interner.intern(ArType::Ref(int));
+    let mut stmts = AmirStmtTable::new();
+    stmts.push(AmirStmt::Assign {
+        lhs: TempId::from_usize(0),
+        rhs: AmirRvalue::Borrow(place(0)),
+    });
+    stmts.push(AmirStmt::Store {
+        lhs: place(1),
+        rhs: AmirOperand::Copy(TempId::from_usize(0)),
+    });
+    let mut pointee = place(1);
+    pointee.projections.push(crate::amir::AmirProjection::Deref);
+    stmts.push(AmirStmt::Assign {
+        lhs: TempId::from_usize(1),
+        rhs: AmirRvalue::Borrow(pointee),
+    });
+    stmts.push(AmirStmt::Store {
+        lhs: place(2),
+        rhs: AmirOperand::Copy(TempId::from_usize(1)),
+    });
+    stmts.push(AmirStmt::Destroy(place(2)));
+    let blocks = vec![AmirBasicBlock {
+        id: BlockId::from_usize(0),
+        statements: DenseRange::new(0, 5),
+        params: DenseRange::empty(),
+        terminator: AmirTerminator::Return,
+    }];
+    let func = AmirFunc {
+        symbol: crate::SymbolId::new(0, 0),
+        return_type: int,
+        receiver: None,
+        params: vec![],
+        locals: vec![local(0, int), local(1, reference), local(2, reference)],
+        temps: vec![temp(0, reference), temp(1, reference)],
+        cfg: compute_cfg_edges(&blocks),
+        blocks,
+        block_params: Vec::new(),
+        stmts,
+    };
+    let facts = analyze_borrow_facts(&func);
+    assert_eq!(facts.loans[0].place_local, LocalId::from_usize(0));
+    assert!(facts.loans[0].holder_temp_paths[1].contains(&HolderPath::default()));
+    assert!(facts.loans[0].holder_local_paths[2].contains(&HolderPath::default()));
+}
+
+#[test]
 fn enum_payload_round_trip_preserves_holder() {
     let int = intern_ty(ArType::Primitive(Primitive::Int));
     let ref_int = intern_ty(ArType::Ref(int));

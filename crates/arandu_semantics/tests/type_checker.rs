@@ -2419,3 +2419,44 @@ fn local_var_alloc_and_free_shadow_builtins() {
     ";
     assert_type_errors!(source, []);
 }
+
+#[test]
+fn test_slice_mutability_enforcement() {
+    assert_type_errors!(
+        "
+        func mutate(s: []int) {
+            set s[0] = 42
+        }
+        ",
+        [T026CannotAssignImmutable]
+    );
+
+    assert_type_errors!(
+        "
+        func mutate(s: mut []int) {
+            set s[0] = 42
+        }
+        ",
+        []
+    );
+
+    assert_type_errors!(
+        "
+        func main() {
+            let arr = [1, 2, 3]
+            set arr[0] = 42
+        }
+        ",
+        [T026CannotAssignImmutable]
+    );
+
+    assert_type_errors!(
+        "
+        func main() {
+            let mut arr = [1, 2, 3]
+            set arr[0] = 42
+        }
+        ",
+        []
+    );
+}

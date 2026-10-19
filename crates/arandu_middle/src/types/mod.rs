@@ -7,6 +7,8 @@ mod shape;
 pub mod subst;
 pub mod type_interner;
 mod unify;
+mod vector;
+pub use vector::VectorType;
 
 /// Bounds eager repeat materialization in the shared AMIR producer. The parser
 /// retains one initializer regardless of length; backends receive ordinary arrays.

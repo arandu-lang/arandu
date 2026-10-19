@@ -11,6 +11,7 @@ pub(super) struct RuntimeFeatures {
     pub buffers: bool,
     pub coroutine: bool,
     pub tasks: bool,
+    pub native_threads: bool,
     pub fs: bool,
     pub env: bool,
     pub path: bool,
@@ -75,13 +76,14 @@ impl CEmitter<'_> {
                             }
                         }
                         AmirRvalue::StringInterp { .. } => features.concat = true,
-                        AmirRvalue::Binary { op, left, .. } => {
+                        AmirRvalue::Binary { op, left, right } => {
                             features.coroutine |=
                                 matches!(op, BinaryOp::RangeExclusive | BinaryOp::RangeInclusive);
-                            features.string_eq |= matches!(
-                                self.operand_ty(function, left),
-                                ArType::Primitive(Primitive::Str)
-                            )
+                            features.string_eq |= [left, right].into_iter().any(|operand| {
+                                self.operand_ty(function, operand)
+                                    .str_reference_depth(self.interner)
+                                    .is_some()
+                            });
                         }
                         AmirRvalue::ToStr { src_ty, .. } => {
                             let index = match self.interner.resolve(*src_ty) {
@@ -119,6 +121,13 @@ impl CEmitter<'_> {
                         | AmirRvalue::Load(_)
                         | AmirRvalue::Borrow(_)
                         | AmirRvalue::BorrowMut(_)
+                        | AmirRvalue::VectorCompare { .. }
+                        | AmirRvalue::VectorSelect { .. }
+                        | AmirRvalue::VectorOp { .. }
+                        | AmirRvalue::VectorSplat { .. }
+                        | AmirRvalue::VectorShuffle { .. }
+                        | AmirRvalue::VectorExtractLane { .. }
+                        | AmirRvalue::VectorInsertLane { .. }
                         | AmirRvalue::RelativeBorrow { .. } => {}
                     }
                 }
@@ -134,7 +143,9 @@ impl CEmitter<'_> {
 impl RuntimeFeatures {
     fn host(&mut self, name: &str) {
         let name = name.rsplit('.').next().unwrap_or(name);
+        self.native_threads |= name.starts_with("ar_rt_native_thread_");
         self.buffers |= name.starts_with("ar_vec_")
+            || name.starts_with("ar_rt_native_thread_")
             || name == "ar_string_push_str"
             || matches!(
                 name,
@@ -144,7 +155,8 @@ impl RuntimeFeatures {
         self.path |=
             name.starts_with("ar_path_") || (name.starts_with("ar_str_") && name != "ar_str_eq");
         self.fs |= name.starts_with("ar_fs_") || name == "exists" || name.starts_with("ar_net_");
-        self.env |= name.starts_with("ar_env_");
+        self.env |= name.starts_with("ar_env_")
+            || matches!(name, "ar_time_monotonic_ns" | "ar_process_exit");
         self.arena |= name.starts_with("ar_gen_");
         self.coroutine |= name.starts_with("ar_co_");
         self.tasks |= matches!(
@@ -157,12 +169,15 @@ impl RuntimeFeatures {
                 | "ar_rt_thread_sleep_ms"
                 | "ar_rt_thread_yield"
                 | "ar_rt_thread_park"
+                | "ar_rt_thread_park_timeout"
                 | "ar_rt_thread_unpark"
                 | "ar_rt_thread_current_id"
                 | "ar_rt_condvar_wait"
+                | "ar_rt_condvar_wait_timeout"
                 | "ar_rt_condvar_notify_one"
                 | "ar_rt_condvar_notify_all"
                 | "ar_rt_get_entropy"
-        );
+        ) || name.starts_with("ar_rt_native_thread_")
+            || name.starts_with("ar_rt_rwlock_");
     }
 }

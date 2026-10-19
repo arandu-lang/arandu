@@ -1,0 +1,23 @@
+enum WorkerState {
+    Idle,
+    Running,
+    Terminated,
+}
+
+struct TaskJob {
+    job_id: u64,
+    priority: u8,
+}
+
+struct WorkerThread {
+    id: usize,
+    state: WorkerState,
+    processed_count: u64,
+}
+
+func isWorkerAvailable(worker: ref WorkerThread): bool {
+    match worker.state {
+        WorkerState.Idle => { return true; }
+        _ => { return false; }
+    }
+}

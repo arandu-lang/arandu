@@ -13,6 +13,15 @@ impl<'a> CEmitter<'a> {
         expected_c_type: &str,
     ) {
         match rvalue {
+            AmirRvalue::VectorCompare { .. }
+            | AmirRvalue::VectorSelect { .. }
+            | AmirRvalue::VectorOp { .. }
+            | AmirRvalue::VectorSplat { .. }
+            | AmirRvalue::VectorShuffle { .. }
+            | AmirRvalue::VectorExtractLane { .. }
+            | AmirRvalue::VectorInsertLane { .. } => {
+                self.emit_vector_rvalue(rvalue, func, expected_ar_type)
+            }
             AmirRvalue::Use(op) => {
                 let op_str = self.format_operand(op, func);
                 let source_ty = match op {
@@ -28,7 +37,10 @@ impl<'a> CEmitter<'a> {
                     ArType::Ptr(_) | ArType::Ref(_) | ArType::RefMut(_)
                 ) && !expected_ar_type.is_borrowed_slice_abi(self.interner);
                 if dest_is_pointer {
-                    if source_is_pointer {
+                    if source_is_pointer
+                        || matches!(source_ty, ArType::Func(_, _))
+                        || matches!(op, AmirOperand::FunctionRef(_))
+                    {
                         let _ = write!(&mut self.output, "({expected_c_type})({op_str})");
                     } else if matches!(source_ty, ArType::Primitive(_) | ArType::IntLiteral) {
                         let _ =
@@ -103,17 +115,25 @@ impl<'a> CEmitter<'a> {
                 } else {
                     let left_str = self.format_operand(left, func);
                     let right_str = self.format_operand(right, func);
-                    let left_ty = self.operand_ty(func, left);
-                    if matches!(left_ty, ArType::Primitive(Primitive::Str)) {
-                        if matches!(op, BinaryOp::Equal) {
-                            let _ =
-                                write!(&mut self.output, "ar_str_eq({}, {})", left_str, right_str);
-                            return;
-                        } else if matches!(op, BinaryOp::NotEqual) {
-                            let _ =
-                                write!(&mut self.output, "!ar_str_eq({}, {})", left_str, right_str);
-                            return;
-                        }
+                    if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual)
+                        && let (Some(left_depth), Some(right_depth)) = (
+                            self.operand_ty(func, left)
+                                .str_reference_depth(self.interner),
+                            self.operand_ty(func, right)
+                                .str_reference_depth(self.interner),
+                        )
+                    {
+                        let descriptor = |mut expression: String, depth| {
+                            for _ in 0..depth {
+                                expression = format!("*({expression})");
+                            }
+                            expression
+                        };
+                        let left = descriptor(left_str, left_depth);
+                        let right = descriptor(right_str, right_depth);
+                        let negate = if *op == BinaryOp::NotEqual { "!" } else { "" };
+                        let _ = write!(&mut self.output, "{negate}ar_str_eq({left}, {right})");
+                        return;
                     }
                     let integer_result = match expected_ar_type {
                         ArType::IntLiteral => true,
@@ -470,11 +490,21 @@ impl<'a> CEmitter<'a> {
                     } else {
                         "int64_t"
                     };
-                    let _ = write!(
-                        &mut self.output,
-                        "({{ {expected_c_type} _res = {{0}}; struct {{ {tag_c} tag; {payload_c_ty} payload; }} _s = {{ {}, {} }}; memcpy(&_res, &_s, sizeof(_s) < sizeof(_res) ? sizeof(_s) : sizeof(_res)); _res; }})",
-                        variant_tag, payload_str
-                    );
+                    if matches!(payload_ty, ArType::Void)
+                        || self.checked_layout(&payload_ty).size == 0
+                    {
+                        let _ = write!(
+                            &mut self.output,
+                            "({{ (void)({payload_str}); {expected_c_type} _res = {{0}}; {tag_c} _tag = {}; memcpy(&_res, &_tag, sizeof(_tag) < sizeof(_res) ? sizeof(_tag) : sizeof(_res)); _res; }})",
+                            variant_tag
+                        );
+                    } else {
+                        let _ = write!(
+                            &mut self.output,
+                            "({{ {expected_c_type} _res = {{0}}; struct {{ {tag_c} tag; {payload_c_ty} payload; }} _s = {{ {}, {} }}; memcpy(&_res, &_s, sizeof(_s) < sizeof(_res) ? sizeof(_s) : sizeof(_res)); _res; }})",
+                            variant_tag, payload_str
+                        );
+                    }
                 } else {
                     let tag_c = if self.layout.pointer_width() == 4 {
                         "int32_t"
@@ -607,6 +637,13 @@ impl<'a> CEmitter<'a> {
                 }
             }
             AmirRvalue::Load(place) => {
+                if self.checked_layout(expected_ar_type).size == 0 {
+                    // C represents a source ZST with a one-byte placeholder.
+                    // Loading a final ZST field must not read beyond its
+                    // containing allocation's target-computed layout.
+                    let _ = write!(&mut self.output, "({expected_c_type}){{0}}");
+                    return;
+                }
                 let place_str = self.format_place(place, func);
                 let _ = write!(&mut self.output, "{}", place_str);
             }
@@ -765,7 +802,9 @@ impl<'a> CEmitter<'a> {
                     "int64_t"
                 };
                 let elem_c = match expected_ar_type {
-                    ArType::Slice(inner) => self.format_type(&self.interner.resolve(*inner)),
+                    ArType::Slice(inner) | ArType::MutSlice(inner) => {
+                        self.format_type(&self.interner.resolve(*inner))
+                    }
                     _ => std::borrow::Cow::Borrowed("uint8_t"),
                 };
                 let _ = write!(

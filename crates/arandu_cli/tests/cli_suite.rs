@@ -126,5 +126,11 @@ mod cli_math;
 #[path = "cli_suite/cli_alloc_structures.rs"]
 mod cli_alloc_structures;
 
+#[path = "cli_suite/cli_native_thread.rs"]
+mod cli_native_thread;
+
 #[path = "cli_suite/cli_big_simd.rs"]
 mod cli_big_simd;
+
+#[path = "cli_suite/cli_bigint_oracle.rs"]
+mod cli_bigint_oracle;

@@ -43,10 +43,62 @@ pub fn check_borrows_by_block(
     if func.blocks.is_empty() || func.locals.is_empty() {
         return Vec::new();
     }
+    check_borrows_from_facts(func, symbols, analyze_borrow_facts(func))
+}
 
-    let facts = analyze_borrow_facts(func);
+/// Type-aware checks do not prolong a loan through an independent scalar read.
+pub fn check_borrows_with_types(
+    func: &AmirFunc,
+    symbols: &SymbolTable,
+    interner: &crate::types::TypeInterner,
+) -> Vec<Diagnostic> {
+    check_borrows_by_block_with_types(func, symbols, interner)
+        .into_iter()
+        .map(|(_, diagnostic)| diagnostic)
+        .collect()
+}
+
+#[must_use]
+pub fn check_borrows_by_block_with_types(
+    func: &AmirFunc,
+    symbols: &SymbolTable,
+    interner: &crate::types::TypeInterner,
+) -> Vec<(BlockId, Diagnostic)> {
+    if func.blocks.is_empty() || func.locals.is_empty() {
+        return Vec::new();
+    }
+    check_borrows_from_facts(
+        func,
+        symbols,
+        crate::borrow_facts::analyze_borrow_facts_with_types(func, interner),
+    )
+}
+
+fn check_borrows_from_facts(
+    func: &AmirFunc,
+    symbols: &SymbolTable,
+    facts: FuncBorrowFacts,
+) -> Vec<(BlockId, Diagnostic)> {
+    if func.blocks.is_empty() || func.locals.is_empty() {
+        return Vec::new();
+    }
+
+    let (temp_origins, origins_diverged) = temp_origins_from_loads(func);
+
+    if facts.exceeded_limit || origins_diverged {
+        let first_block = func.blocks.first().map(|b| b.id).unwrap_or(BlockId(0));
+        let span = local_span(LocalId(0), func, symbols);
+        return vec![(
+            first_block,
+            Diagnostic::ice(
+                DiagCode::ICEGEN001,
+                "borrow facts solver exceeded defensive iteration limit without reaching fixed point",
+                span,
+            ),
+        )];
+    }
+
     let temp_live_before = compute_temp_live_before(func, &facts.temp_live);
-    let temp_origins = temp_origins_from_loads(func);
 
     let mut diags = Vec::new();
 
@@ -490,15 +542,20 @@ fn loan_holders_live(
                         })
                 })
             });
-        let holder_is_live = if aggregate_carrier {
-            facts.local_live.live_in(point.block).contains(l)
-                || facts.local_live.live_out(point.block).contains(l)
-        } else {
-            facts
-                .local_live
-                .live_before(point.block, point.stmt_index)
-                .is_some_and(|live| live.contains(l))
-        };
+        // A guard/carrier can be both initialized and consumed inside one
+        // block. Such a local is absent at both block boundaries, while its
+        // embedded loan remains live between the store and the later use/drop.
+        let holder_is_live = facts
+            .local_live
+            .live_before(point.block, point.stmt_index)
+            .map_or_else(
+                || {
+                    aggregate_carrier
+                        && (facts.local_live.live_in(point.block).contains(l)
+                            || facts.local_live.live_out(point.block).contains(l))
+                },
+                |live| live.contains(l),
+            );
         if structurally_present && holder_is_live {
             return true;
         }
@@ -585,11 +642,55 @@ fn mark_place_index_uses(place: &AmirPlace, live: &mut BitSet<TempId>) {
 }
 
 /// Map each temp to a stack local origin when it is a Load of that local (move path).
-fn temp_origins_from_loads(func: &AmirFunc) -> Vec<Option<AmirPlace>> {
-    let mut origins = vec![None; func.temps.len()];
+#[derive(Clone, PartialEq, Eq)]
+enum TempOrigin {
+    Unset,
+    Unique(AmirPlace),
+    Ambiguous,
+}
+
+impl TempOrigin {
+    fn join(&mut self, place: &AmirPlace) -> bool {
+        match self {
+            Self::Unset => {
+                *self = Self::Unique(place.clone());
+                true
+            }
+            Self::Unique(current) => {
+                if current == place {
+                    false
+                } else {
+                    *self = Self::Ambiguous;
+                    true
+                }
+            }
+            Self::Ambiguous => false,
+        }
+    }
+
+    fn join_origin(&mut self, other: &Self) -> bool {
+        match other {
+            Self::Unset => false,
+            Self::Unique(place) => self.join(place),
+            Self::Ambiguous => {
+                if matches!(self, Self::Ambiguous) {
+                    false
+                } else {
+                    *self = Self::Ambiguous;
+                    true
+                }
+            }
+        }
+    }
+}
+
+fn temp_origins_from_loads(func: &AmirFunc) -> (Vec<Option<AmirPlace>>, bool) {
+    let mut origins = vec![TempOrigin::Unset; func.temps.len()];
     let mut changed = true;
     let mut iterations = 0;
-    while changed && iterations < crate::analysis_limits::TEMP_ORIGIN_SOLVER_MAX_PASSES {
+    let limit =
+        (func.temps.len() * 2 + 10).max(crate::analysis_limits::TEMP_ORIGIN_SOLVER_MAX_PASSES);
+    while changed && iterations < limit {
         changed = false;
         iterations += 1;
         for block in &func.blocks {
@@ -598,30 +699,31 @@ fn temp_origins_from_loads(func: &AmirFunc) -> Vec<Option<AmirPlace>> {
                     lhs,
                     rhs: AmirRvalue::Load(place),
                 } = stmt
+                    && origins[lhs.as_usize()].join(place)
                 {
-                    let old = &origins[lhs.as_usize()];
-                    let new = Some(place.clone());
-                    if *old != new {
-                        origins[lhs.as_usize()] = new;
-                        changed = true;
-                    }
+                    changed = true;
                 }
                 if let AmirStmt::Assign {
                     lhs,
                     rhs: AmirRvalue::Use(AmirOperand::Copy(t) | AmirOperand::Move(t)),
                 } = stmt
                 {
-                    let old = &origins[lhs.as_usize()];
-                    let new = origins[t.as_usize()].clone();
-                    if *old != new {
-                        origins[lhs.as_usize()] = new;
+                    let src = origins[t.as_usize()].clone();
+                    if origins[lhs.as_usize()].join_origin(&src) {
                         changed = true;
                     }
                 }
             }
         }
     }
-    origins
+    let result = origins
+        .into_iter()
+        .map(|origin| match origin {
+            TempOrigin::Unique(place) => Some(place),
+            _ => None,
+        })
+        .collect();
+    (result, changed)
 }
 
 fn local_name(local: LocalId, func: &AmirFunc, symbols: &SymbolTable) -> String {

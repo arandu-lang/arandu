@@ -173,6 +173,50 @@ pub(crate) fn create_jit_builder_with_io_and_process_args(
         arandu_runtime::worker_scheduler::ar_rt_parallel_fold_run as *const u8,
     );
     builder.symbol(
+        "ar_rt_native_thread_spawn",
+        arandu_runtime::native_thread::ar_rt_native_thread_spawn as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_native_thread_join",
+        arandu_runtime::native_thread::ar_rt_native_thread_join as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_native_thread_panicked_sentinel",
+        arandu_runtime::native_thread::ar_rt_native_thread_panicked_sentinel as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_native_thread_is_finished",
+        arandu_runtime::native_thread::ar_rt_native_thread_is_finished as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_native_thread_drop",
+        arandu_runtime::native_thread::ar_rt_native_thread_drop as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_rwlock_read",
+        crate::rt_runtime::ar_rt_rwlock_read as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_rwlock_write",
+        crate::rt_runtime::ar_rt_rwlock_write as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_rwlock_try_read",
+        crate::rt_runtime::ar_rt_rwlock_try_read as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_rwlock_try_write",
+        crate::rt_runtime::ar_rt_rwlock_try_write as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_rwlock_read_unlock",
+        crate::rt_runtime::ar_rt_rwlock_read_unlock as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_rwlock_write_unlock",
+        crate::rt_runtime::ar_rt_rwlock_write_unlock as *const u8,
+    );
+    builder.symbol(
         "ar_path_is_absolute",
         crate::rt_runtime::ar_path_is_absolute as *const u8,
     );
@@ -496,6 +540,10 @@ pub(crate) fn create_jit_builder_with_io_and_process_args(
         crate::rt_runtime::ar_rt_thread_park as *const u8,
     );
     builder.symbol(
+        "ar_rt_thread_park_timeout",
+        crate::rt_runtime::ar_rt_thread_park_timeout as *const u8,
+    );
+    builder.symbol(
         "ar_rt_thread_unpark",
         crate::rt_runtime::ar_rt_thread_unpark as *const u8,
     );
@@ -506,6 +554,10 @@ pub(crate) fn create_jit_builder_with_io_and_process_args(
     builder.symbol(
         "ar_rt_condvar_wait",
         crate::rt_runtime::ar_rt_condvar_wait as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_condvar_wait_timeout",
+        crate::rt_runtime::ar_rt_condvar_wait_timeout as *const u8,
     );
     builder.symbol(
         "ar_rt_condvar_notify_one",

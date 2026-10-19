@@ -120,7 +120,11 @@ public func OpenOptions.writeOnly(): OpenOptions {
 /// Wraps an OS file descriptor.
 public struct File {
     /// Host descriptor; `close` sets it to `-1`.
-    fd: int
+    private fd: int
+}
+
+func File.fromRaw(fd: int): File {
+    return File { fd: fd }
 }
 
 /// Reads up to `count` bytes into `buf` from this file. Returns the number of bytes read, or negative on error.
@@ -456,8 +460,11 @@ extern "C" {
 /// Linux relative opens use openat2 with BENEATH/NO_SYMLINKS/NO_MAGICLINKS.
 /// Absolute paths, parent traversal and ambiguous components are rejected.
 /// Creation/removal use a separately pinned, confined parent and one leaf.
-/// Handles retain authority over their directory if it is renamed. Unsupported
-/// kernels/platforms fail closed; there is no ordinary openat fallback.
+/// macOS/BSD accept only one normal component per call, using O_NOFOLLOW;
+/// derive a child Dir explicitly before accessing its files. Multi-component
+/// paths fail closed there. Handles retain authority over their directory if
+/// it is renamed. Unsupported kernels/platforms fail closed; Linux never falls
+/// back from openat2 to a weaker traversal.
 /// The descriptor is private and cannot be forged by safe clients.
 public struct Dir {
     private fd: int
@@ -468,7 +475,8 @@ public func openDir(path: str): Result<Dir, io.IoError> {
     return Dir.open(path)
 }
 
-/// Acquires an ambient directory handle. Relative operations require Linux openat2.
+/// Acquires an ambient directory handle. Linux uses openat2 for relative paths;
+/// macOS/BSD require one component per relative call. Windows is unsupported.
 public func Dir.open(path: str): Result<Dir, io.IoError> {
     let bytes = intrinsics.strBytes(path)
     unsafe {
@@ -497,7 +505,7 @@ public func Dir.openFile(self: ref Dir, subpath: str, options: OpenOptions): Res
         if fd < 0 {
             return Result.Err(io.IoError.new(io.IoErrorKind.NotFound, fd))
         }
-        return Result.Ok(File { fd: fd })
+        return Result.Ok(File.fromRaw(fd))
     }
 }
 

@@ -31,6 +31,7 @@ impl<'a> Resolver<'a> {
             | TypeExpr::Ref { inner, .. }
             | TypeExpr::RefMut { inner, .. }
             | TypeExpr::Slice { inner, .. }
+            | TypeExpr::MutSlice { inner, .. }
             | TypeExpr::Group { inner, .. } => self.resolve_type_expr(scope, *inner),
             TypeExpr::Array {
                 size,

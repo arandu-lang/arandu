@@ -58,3 +58,6 @@ windows-sys = { version = "0.60.2", features = [
     "Win32_System_JobObjects",
     "Win32_System_Console",
 ] }
+
+[dev-dependencies]
+num-bigint = "0.5.1"

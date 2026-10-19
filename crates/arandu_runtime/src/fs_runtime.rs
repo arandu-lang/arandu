@@ -480,7 +480,14 @@ pub unsafe extern "C" fn ar_fs_close(fd: i32) -> isize {
 
 // Capability paths are deliberately strict: no absolute paths, empty
 // components, '.' or '..'. Dot is used only for an already-pinned parent.
-#[cfg(target_os = "linux")]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+))]
 fn capability_path(path: &Path, allow_dot: bool) -> Option<std::ffi::CString> {
     use std::os::unix::ffi::OsStrExt;
     let bytes = path.as_os_str().as_bytes();
@@ -533,13 +540,99 @@ fn capability_open(
     Some(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) })
 }
 
-#[cfg(target_os = "linux")]
+// A single component has no intermediate directory that can be renamed
+// between validation and openat. Multi-component traversal deliberately fails
+// closed on platforms without openat2; callers derive each child Dir explicitly.
+#[cfg(any(
+    all(test, target_os = "linux"),
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+))]
+fn capability_open_component(
+    dir_fd: i32,
+    path: &Path,
+    flags: i32,
+    mode: u32,
+    allow_dot: bool,
+) -> Option<std::os::fd::OwnedFd> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    if dir_fd < 0 {
+        return None;
+    }
+    let path = capability_path(path, allow_dot)?;
+    if path.as_bytes().contains(&b'/') {
+        return None;
+    }
+    // Permission bits fit the promoted C int argument on every supported ABI;
+    // passing a 16-bit mode_t directly to a variadic call is invalid on Darwin.
+    let mode = libc::c_int::try_from(mode).ok()?;
+    // SAFETY: the name is one NUL-terminated component (or an allowed dot),
+    // and O_NOFOLLOW rejects a final symlink in the same kernel operation.
+    let raw = unsafe {
+        libc::openat(
+            dir_fd,
+            path.as_ptr(),
+            flags | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            mode,
+        )
+    };
+    if raw < 0 {
+        return None;
+    }
+    // SAFETY: successful openat transferred one new descriptor to this owner.
+    let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(raw) };
+    if flags & libc::O_DIRECTORY != 0 {
+        // SAFETY: stat is an output record, and fd remains owned and live.
+        let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+        if unsafe { libc::fstat(fd.as_raw_fd(), &mut stat) } != 0
+            || stat.st_mode & libc::S_IFMT != libc::S_IFDIR
+        {
+            return None;
+        }
+    }
+    Some(fd)
+}
+
+#[cfg(any(
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+))]
+fn capability_open(
+    dir_fd: i32,
+    path: &Path,
+    flags: i32,
+    mode: u32,
+    allow_dot: bool,
+) -> Option<std::os::fd::OwnedFd> {
+    capability_open_component(dir_fd, path, flags, mode, allow_dot)
+}
+
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+))]
 fn capability_parent(
     dir_fd: i32,
     path: &Path,
 ) -> Option<(std::os::fd::OwnedFd, std::ffi::CString)> {
     use std::os::unix::ffi::OsStrExt;
-    capability_path(path, false)?;
+    let checked = capability_path(path, false)?;
+    #[cfg(not(target_os = "linux"))]
+    if checked.as_bytes().contains(&b'/') {
+        return None;
+    }
+    #[cfg(target_os = "linux")]
+    let _ = checked;
     let leaf = std::ffi::CString::new(path.file_name()?.as_bytes()).ok()?;
     let parent = path
         .parent()
@@ -549,7 +642,7 @@ fn capability_parent(
     Some((descriptor, leaf))
 }
 
-/// Opens an ambient directory capability. Currently Linux only.
+/// Opens an ambient directory capability on Linux, macOS and BSD.
 ///
 /// # Safety
 /// The pointer/length pair must be readable for the duration of this call.
@@ -557,7 +650,14 @@ fn capability_parent(
 pub unsafe extern "C" fn ar_fs_dir_open(path_ptr: *const u8, path_len: usize) -> i32 {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let path = path_from_fat(path_ptr, isize::try_from(path_len).ok()?)?;
-        #[cfg(target_os = "linux")]
+        #[cfg(any(
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "netbsd",
+            target_os = "dragonfly"
+        ))]
         {
             use std::os::unix::ffi::OsStrExt;
             let path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
@@ -571,7 +671,14 @@ pub unsafe extern "C" fn ar_fs_dir_open(path_ptr: *const u8, path_len: usize) ->
             };
             (fd >= 0).then_some(fd)
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "netbsd",
+            target_os = "dragonfly"
+        )))]
         {
             let _ = path;
             None
@@ -582,7 +689,8 @@ pub unsafe extern "C" fn ar_fs_dir_open(path_ptr: *const u8, path_len: usize) ->
     .unwrap_or(-1)
 }
 
-/// Opens a file with kernel-enforced beneath/no-symlink resolution.
+/// Opens a file without following symlinks. Linux resolves paths beneath the
+/// descriptor atomically; macOS/BSD accept a single relative component only.
 ///
 /// # Safety
 /// The pointer/length pair must be readable; the caller owns dir_fd's lifetime.
@@ -597,8 +705,18 @@ pub unsafe extern "C" fn ar_fs_openat(
     truncate: bool,
 ) -> i32 {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if (!read && !write) || ((create || truncate) && !write) {
+            return None;
+        }
         let path = path_from_fat(path_ptr, isize::try_from(path_len).ok()?)?;
-        #[cfg(target_os = "linux")]
+        #[cfg(any(
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "netbsd",
+            target_os = "dragonfly"
+        ))]
         {
             use std::os::fd::IntoRawFd;
             let mut flags = if read && write {
@@ -619,7 +737,14 @@ pub unsafe extern "C" fn ar_fs_openat(
             capability_open(dir_fd, &path, flags, if create { 0o666 } else { 0 }, false)
                 .map(|fd| fd.into_raw_fd())
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "netbsd",
+            target_os = "dragonfly"
+        )))]
         {
             let _ = (dir_fd, path, read, write, create, truncate);
             None
@@ -642,13 +767,27 @@ pub unsafe extern "C" fn ar_fs_dir_openat(
 ) -> i32 {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let path = path_from_fat(path_ptr, isize::try_from(path_len).ok()?)?;
-        #[cfg(target_os = "linux")]
+        #[cfg(any(
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "netbsd",
+            target_os = "dragonfly"
+        ))]
         {
             use std::os::fd::IntoRawFd;
             capability_open(dir_fd, &path, libc::O_RDONLY | libc::O_DIRECTORY, 0, true)
                 .map(|fd| fd.into_raw_fd())
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "netbsd",
+            target_os = "dragonfly"
+        )))]
         {
             let _ = (dir_fd, path);
             None
@@ -667,7 +806,14 @@ pub unsafe extern "C" fn ar_fs_dir_openat(
 pub unsafe extern "C" fn ar_fs_mkdirat(dir_fd: i32, path_ptr: *const u8, path_len: usize) -> i32 {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let path = path_from_fat(path_ptr, isize::try_from(path_len).ok()?)?;
-        #[cfg(target_os = "linux")]
+        #[cfg(any(
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "netbsd",
+            target_os = "dragonfly"
+        ))]
         {
             use std::os::fd::{AsRawFd, IntoRawFd};
             let (parent, leaf) = capability_parent(dir_fd, &path)?;
@@ -687,7 +833,14 @@ pub unsafe extern "C" fn ar_fs_mkdirat(dir_fd: i32, path_ptr: *const u8, path_le
             )
             .map(|fd| fd.into_raw_fd())
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "netbsd",
+            target_os = "dragonfly"
+        )))]
         {
             let _ = (dir_fd, path);
             None
@@ -711,7 +864,14 @@ pub unsafe extern "C" fn ar_fs_unlinkat(
 ) -> i32 {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let path = path_from_fat(path_ptr, isize::try_from(path_len).ok()?)?;
-        #[cfg(target_os = "linux")]
+        #[cfg(any(
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "netbsd",
+            target_os = "dragonfly"
+        ))]
         {
             use std::os::fd::AsRawFd;
             let (parent, leaf) = capability_parent(dir_fd, &path)?;
@@ -726,7 +886,14 @@ pub unsafe extern "C" fn ar_fs_unlinkat(
             };
             (result == 0).then_some(0)
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "netbsd",
+            target_os = "dragonfly"
+        )))]
         {
             let _ = (dir_fd, path, is_dir);
             None
@@ -824,6 +991,137 @@ mod tests {
             ar_fs_close(fd);
         }
         std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly"
+    ))]
+    fn single_component_capabilities_reject_traversal_and_pin_object_authority() {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::symlink;
+        let base = temp_dir();
+        let root = base.join("root");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(root.join("child")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(root.join("child/inside"), "inside").unwrap();
+        std::fs::write(outside.join("victim"), "outside").unwrap();
+        let root_fd = std::fs::File::open(&root).unwrap();
+        for path in [
+            "",
+            "/victim",
+            "..",
+            "./child",
+            "child/inside",
+            "child/../outside",
+            "child//inside",
+        ] {
+            assert!(
+                capability_open_component(
+                    root_fd.as_raw_fd(),
+                    Path::new(path),
+                    libc::O_RDONLY,
+                    0,
+                    false
+                )
+                .is_none(),
+                "{path:?}"
+            );
+        }
+        symlink(&outside, root.join("link")).unwrap();
+        symlink(outside.join("victim"), root.join("file-link")).unwrap();
+        for (name, flags) in [
+            ("link", libc::O_RDONLY | libc::O_DIRECTORY),
+            ("file-link", libc::O_WRONLY | libc::O_TRUNC),
+        ] {
+            assert!(
+                capability_open_component(root_fd.as_raw_fd(), Path::new(name), flags, 0, false)
+                    .is_none()
+            );
+        }
+        let child = capability_open_component(
+            root_fd.as_raw_fd(),
+            Path::new("child"),
+            libc::O_RDONLY | libc::O_DIRECTORY,
+            0,
+            false,
+        )
+        .unwrap();
+        std::fs::rename(root.join("child"), base.join("moved")).unwrap();
+        symlink(&outside, root.join("child")).unwrap();
+        // A replacement name cannot redirect a previously acquired capability.
+        assert!(
+            capability_open_component(
+                root_fd.as_raw_fd(),
+                Path::new("child"),
+                libc::O_RDONLY | libc::O_DIRECTORY,
+                0,
+                false
+            )
+            .is_none()
+        );
+        let file = capability_open_component(
+            child.as_raw_fd(),
+            Path::new("inside"),
+            libc::O_RDONLY,
+            0,
+            false,
+        )
+        .unwrap();
+        let mut contents = String::new();
+        std::fs::File::from(file)
+            .read_to_string(&mut contents)
+            .unwrap();
+        assert_eq!(contents, "inside");
+        assert_eq!(
+            std::fs::read_to_string(outside.join("victim")).unwrap(),
+            "outside"
+        );
+        drop(child);
+        drop(root_fd);
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn capability_read_only_options_never_create_or_truncate() {
+        use std::os::unix::ffi::OsStrExt;
+        let root = temp_dir();
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("inside"), "preserved").unwrap();
+        let bytes = root.as_os_str().as_bytes();
+        // SAFETY: all path buffers remain live and the returned root is closed.
+        unsafe {
+            let fd = ar_fs_dir_open(bytes.as_ptr(), bytes.len());
+            assert!(fd >= 0);
+            for (create, truncate) in [(true, false), (false, true), (true, true)] {
+                assert_eq!(
+                    ar_fs_openat(fd, b"inside".as_ptr(), 6, true, false, create, truncate),
+                    -1
+                );
+                assert_eq!(
+                    ar_fs_openat(fd, b"missing".as_ptr(), 7, true, false, create, truncate),
+                    -1
+                );
+            }
+            assert_eq!(
+                ar_fs_openat(fd, b"inside".as_ptr(), 6, false, false, false, false),
+                -1
+            );
+            ar_fs_close(fd);
+        }
+        assert_eq!(
+            std::fs::read_to_string(root.join("inside")).unwrap(),
+            "preserved"
+        );
+        assert!(!root.join("missing").exists());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

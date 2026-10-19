@@ -99,13 +99,24 @@ fn parse_type_inner(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<TypeE
         }));
     }
     if cur.eat(TokenKind::KwMut) {
-        cur.expect(TokenKind::KwRef)?;
-        let inner = parse_type(ctx, cur)?;
-        let end = ctx.pool.type_expr_span(inner).end;
-        return Some(ctx.pool.alloc_type_expr(TypeExpr::RefMut {
-            span: ctx.span(start, end),
-            inner,
-        }));
+        if cur.eat(TokenKind::KwRef) {
+            let inner = parse_type(ctx, cur)?;
+            let end = ctx.pool.type_expr_span(inner).end;
+            return Some(ctx.pool.alloc_type_expr(TypeExpr::RefMut {
+                span: ctx.span(start, end),
+                inner,
+            }));
+        }
+        if cur.eat(TokenKind::LBracket) {
+            cur.expect(TokenKind::RBracket)?;
+            let inner = parse_type(ctx, cur)?;
+            let end = ctx.pool.type_expr_span(inner).end;
+            return Some(ctx.pool.alloc_type_expr(TypeExpr::MutSlice {
+                span: ctx.span(start, end),
+                inner,
+            }));
+        }
+        return None;
     }
 
     // `&mut T` / `&T` — safe reference types (F2.0). Not raw `ptr[T]`.

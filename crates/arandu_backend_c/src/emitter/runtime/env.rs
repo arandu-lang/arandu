@@ -53,6 +53,48 @@ static {int_c_ty} ar_env_var_is_set(ArStr name) {{
     char *val = getenv(c_name);
     if (c_name != stack_buf) free(c_name);
     return val != NULL ? 1 : 0;
+}}
+
+#if !defined(_WIN32)
+#include <time.h>
+#endif
+
+static int64_t ar_time_monotonic_ns(void) {{
+#if defined(_WIN32)
+    static LARGE_INTEGER ar_qpc_origin;
+    static LARGE_INTEGER ar_qpc_freq;
+    static LONG ar_qpc_init = 0;
+    while (InterlockedCompareExchange(&ar_qpc_init, 1, 0) != 0) {{
+        if (InterlockedCompareExchange(&ar_qpc_init, 2, 2) == 2) break;
+        SwitchToThread();
+    }}
+    if (ar_qpc_freq.QuadPart == 0) {{
+        QueryPerformanceFrequency(&ar_qpc_freq);
+        QueryPerformanceCounter(&ar_qpc_origin);
+        InterlockedExchange(&ar_qpc_init, 2);
+    }}
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    uint64_t ticks = (uint64_t)(now.QuadPart - ar_qpc_origin.QuadPart);
+    uint64_t freq = (uint64_t)ar_qpc_freq.QuadPart;
+    uint64_t secs = ticks / freq;
+    uint64_t rem = ticks % freq;
+    if (secs > (uint64_t)(INT64_MAX / 1000000000LL)) return INT64_MAX;
+    uint64_t ns = secs * 1000000000ULL + (rem * 1000000000ULL) / freq;
+    return ns > (uint64_t)INT64_MAX ? INT64_MAX : (int64_t)ns;
+#else
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) abort();
+    uint64_t secs = (uint64_t)ts.tv_sec;
+    if (secs > (uint64_t)(INT64_MAX / 1000000000LL)) return INT64_MAX;
+    uint64_t ns = secs * 1000000000ULL + (uint64_t)ts.tv_nsec;
+    return ns > (uint64_t)INT64_MAX ? INT64_MAX : (int64_t)ns;
+#endif
+}}
+
+static void ar_process_exit({int_c_ty} code) {{
+    int status = code < 0 ? 255 : (code > 255 ? (int)(code & 0xff) : (int)code);
+    exit(status);
 }}"#
         );
     }

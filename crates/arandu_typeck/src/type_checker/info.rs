@@ -68,6 +68,8 @@ pub struct TypeInfo {
     pub struct_fields: FxHashMap<SymbolId, Arc<StructFields>>,
     /// Field symbols declared with `private` visibility.
     pub private_fields: FxHashSet<SymbolId>,
+    /// Canonical interior-mutable owners must never gain structural Copy.
+    pub interior_mutable_types: FxHashSet<SymbolId>,
     pub enum_variants: FxHashMap<SymbolId, (SymbolId, EnumPayloadShape)>,
     /// Pre-computed discriminant tag for each enum variant symbol.
     pub enum_variant_tags: FxHashMap<SymbolId, usize>,
@@ -133,6 +135,7 @@ impl TypeInfo {
             return_borrow_summaries: FxHashMap::default(),
             struct_fields: FxHashMap::default(),
             private_fields: FxHashSet::default(),
+            interior_mutable_types: FxHashSet::default(),
             enum_variants: FxHashMap::default(),
             enum_variant_tags: FxHashMap::default(),
             destructors: FxHashMap::default(),
@@ -231,6 +234,7 @@ impl TypeInfo {
                 ArType::Array(_, inner)
                 | ArType::ConstArray(_, inner)
                 | ArType::Slice(inner)
+                | ArType::MutSlice(inner)
                 | ArType::Ref(inner)
                 | ArType::RefMut(inner)
                 | ArType::Ptr(inner)
@@ -244,6 +248,7 @@ impl TypeInfo {
                     pending.push(error);
                 }
                 ArType::Primitive(_)
+                | ArType::Vector(_)
                 | ArType::Const(_)
                 | ArType::FrozenConst(_)
                 | ArType::ConstParam(_)
@@ -466,9 +471,9 @@ impl TypeInfo {
                             }
                         })
                 }
-                // `[]T` is a view with a separate owner-lifetime contract,
+                // `[]T` and `mut []T` are views with a separate owner-lifetime contract,
                 // not an embedded explicit reference for this diagnostic.
-                ArType::Slice(_) => false,
+                ArType::Slice(_) | ArType::MutSlice(_) => false,
                 _ => false,
             };
             visiting.pop();
@@ -618,7 +623,13 @@ impl TypeInfo {
                 // compile-time structural contract.
                 output.push((BorrowPath(prefix.clone()), BorrowKind::Shared));
             }
+            ArType::MutSlice(_) => {
+                // An exclusive mutable slice view of its backing storage.
+                // Carries exclusive borrow semantics across dataflow.
+                output.push((BorrowPath(prefix.clone()), BorrowKind::Exclusive));
+            }
             ArType::Primitive(_)
+            | ArType::Vector(_)
             | ArType::FrozenConst(_)
             | ArType::Const(_)
             | ArType::ConstParam(_)
@@ -678,7 +689,8 @@ impl TypeInfo {
                         Primitive::Bool | Primitive::Char | Primitive::Byte | Primitive::Str
                     )
             }
-            ArType::IntLiteral
+            ArType::Vector(_)
+            | ArType::IntLiteral
             | ArType::FloatLiteral
             | ArType::GenRef
             | ArType::FrozenConst(_)
@@ -708,6 +720,7 @@ impl TypeInfo {
             ArType::Ptr(_)
             | ArType::ConstParam(_)
             | ArType::RefMut(_)
+            | ArType::MutSlice(_)
             | ArType::Nullable(_)
             | ArType::Func(_, _)
             | ArType::Coroutine(_)
@@ -727,7 +740,7 @@ impl TypeInfo {
     ) -> bool {
         // A destructor is an ownership obligation even for empty/scalar storage.
         // Copying such a value would duplicate that obligation.
-        if self.destructors.contains_key(&sym) {
+        if self.destructors.contains_key(&sym) || self.interior_mutable_types.contains(&sym) {
             return false;
         }
         let mut variants: Vec<_> = self
@@ -851,6 +864,12 @@ pub fn translate_type(ty: &ArType, from: &TypeInterner, to: &mut TypeInterner) -
             let new_inner = to.intern(translated);
             ArType::Slice(new_inner)
         }
+        ArType::MutSlice(inner) => {
+            let resolved = from.resolve(*inner);
+            let translated = translate_type(&resolved, from, to);
+            let new_inner = to.intern(translated);
+            ArType::MutSlice(new_inner)
+        }
         ArType::Array(n, inner) => {
             let resolved = from.resolve(*inner);
             let translated = translate_type(&resolved, from, to);
@@ -936,6 +955,7 @@ pub fn translate_type(ty: &ArType, from: &TypeInterner, to: &mut TypeInterner) -
         ArType::Void => ArType::Void,
         ArType::Error => ArType::Error,
         ArType::IntLiteral => ArType::IntLiteral,
+        ArType::Vector(vector) => ArType::Vector(*vector),
         ArType::FloatLiteral => ArType::FloatLiteral,
     }
 }
@@ -1034,6 +1054,7 @@ impl TypeInfo {
             && other.return_borrow_summaries.is_empty()
             && other.struct_fields.is_empty()
             && other.private_fields.is_empty()
+            && other.interior_mutable_types.is_empty()
             && other.enum_variants.is_empty()
             && other.enum_variant_tags.is_empty()
             && other.destructors.is_empty()
@@ -1176,6 +1197,8 @@ impl TypeInfo {
             );
         }
         self.struct_repr_c.extend(&other.struct_repr_c);
+        self.interior_mutable_types
+            .extend(other.interior_mutable_types.iter().copied().map(&remap));
 
         // Expr types (body typeck shards): re-intern TypeIds into `self`.
         if include_expressions {
@@ -1504,6 +1527,20 @@ mod borrow_shape_tests {
         );
         assert!(info.is_copy(slice));
         assert!(!info.contains_explicit_reference(slice));
+    }
+
+    #[test]
+    fn mut_slice_is_a_move_only_exclusive_borrow_at_its_root() {
+        let info = TypeInfo::new();
+        let int = info.type_interner.intern(ArType::Primitive(Primitive::Int));
+        let mut_slice = info.type_interner.intern(ArType::MutSlice(int));
+
+        assert_eq!(
+            info.borrow_paths(mut_slice).expect("mut slice shape"),
+            vec![(BorrowPath::root(), BorrowKind::Exclusive)]
+        );
+        assert!(!info.is_copy(mut_slice));
+        assert!(!info.contains_explicit_reference(mut_slice));
     }
 
     #[test]

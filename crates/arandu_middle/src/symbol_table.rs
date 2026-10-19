@@ -4,10 +4,10 @@ use smol_str::SmolStr;
 
 use arandu_lexer::Span;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct LocalSymbolId(pub u32);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct SymbolId {
     pub file_id: crate::db::FileId,
     pub local_id: LocalSymbolId,
@@ -83,7 +83,7 @@ impl SymbolKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
 pub enum LangItem {
     Option,
@@ -118,6 +118,45 @@ pub enum LangItem {
     BitIntrinsic,
     /// Atomic operation explicitly declared with the compiler intrinsic ABI.
     AtomicIntrinsic,
+    /// Closed native SIMD types from the canonical core module.
+    VectorF32x4,
+    VectorF64x2,
+    VectorI32x4,
+    VectorI16x8,
+    VectorU8x16,
+    VectorI64x2,
+    /// SIMD operations explicitly declared with the intrinsic ABI.
+    SimdIntrinsic,
+    UnsafeCell,
+    RwLock,
+    Mutex,
+    RwLockReadGuard,
+    RwLockWriteGuard,
+    MutexGuard,
+    Condvar,
+    Arc,
+    ArcWeak,
+    ThreadJob,
+    ThreadSpawn,
+    ThreadParkTimeout,
+    ThreadPark,
+    ThreadUnpark,
+}
+
+impl LangItem {
+    #[must_use]
+    pub const fn vector_shape(self) -> Option<crate::types::VectorType> {
+        use crate::types::VectorType;
+        match self {
+            Self::VectorF32x4 => Some(VectorType::F32x4),
+            Self::VectorF64x2 => Some(VectorType::F64x2),
+            Self::VectorI32x4 => Some(VectorType::I32x4),
+            Self::VectorI16x8 => Some(VectorType::I16x8),
+            Self::VectorU8x16 => Some(VectorType::U8x16),
+            Self::VectorI64x2 => Some(VectorType::I64x2),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -381,6 +420,50 @@ impl SymbolTable {
         if self.builtins.ptr_type.is_none() {
             self.builtins.ptr_type = other.builtins.ptr_type.map(map_symbol);
         }
+    }
+
+    /// Canonical owner for native vector methods. Imported aliases may provide
+    /// several identities; select a stable ID rather than hash-table order.
+    #[must_use]
+    pub fn vector_type_symbol(&self, shape: crate::types::VectorType) -> Option<SymbolId> {
+        self.iter()
+            .filter(|symbol| symbol.lang_item.and_then(LangItem::vector_shape) == Some(shape))
+            .map(|symbol| symbol.id)
+            .min_by_key(|id| (id.file_id, id.local_id.0))
+    }
+
+    /// Remove untrusted source declarations from the compiler identity set.
+    /// Builtin compatibility symbols (empty synthetic span) are unaffected.
+    pub fn clear_source_lang_items(&mut self) {
+        for symbol in &mut self.symbols {
+            if symbol.span.end > symbol.span.start {
+                symbol.lang_item = None;
+            }
+        }
+        // Canonical caches must not retain a source identity after revocation.
+        let valid = |id: Option<SymbolId>| {
+            id.filter(|id| {
+                self.symbols
+                    .get(id.local_id.0 as usize)
+                    .is_some_and(|symbol| symbol.lang_item.is_some())
+            })
+        };
+        self.builtins.option = valid(self.builtins.option);
+        self.builtins.result = valid(self.builtins.result);
+        self.builtins.poll = valid(self.builtins.poll);
+        self.builtins.coroutine = valid(self.builtins.coroutine);
+        self.builtins.string = valid(self.builtins.string);
+        self.builtins.vec = valid(self.builtins.vec);
+        self.builtins.str_type = valid(self.builtins.str_type);
+        self.builtins.slice_type = valid(self.builtins.slice_type);
+        self.builtins.char_type = valid(self.builtins.char_type);
+        self.builtins.int_type = valid(self.builtins.int_type);
+        self.builtins.float_type = valid(self.builtins.float_type);
+        self.builtins.ptr_type = valid(self.builtins.ptr_type);
+        self.builtins.u32_type = valid(self.builtins.u32_type);
+        self.builtins.u64_type = valid(self.builtins.u64_type);
+        self.builtin_alloc = valid(self.builtin_alloc);
+        self.builtin_free = valid(self.builtin_free);
     }
 
     pub fn set_lang_item(&mut self, sym: SymbolId, item: LangItem) {

@@ -18,7 +18,7 @@ pub fn source() -> String {
                 literal(1.0 / expected)
             )
         } else {
-            let absolute = (expected.abs() * tolerance).max(f64::from_bits(1));
+            let absolute = (expected.abs() * tolerance).max(1.0e-14);
             format!(
                 "math.abs(({expression}) - {}) <= {}",
                 literal(expected),
@@ -126,6 +126,53 @@ pub fn source() -> String {
             expected,
             0.0,
         );
+    }
+    for value in [
+        -10.0,
+        -std::f64::consts::PI,
+        -1.0,
+        -0.5,
+        -0.0,
+        0.0,
+        0.5,
+        1.0,
+        std::f64::consts::FRAC_PI_4,
+        std::f64::consts::FRAC_PI_2,
+        std::f64::consts::PI,
+        10.0,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NAN,
+    ] {
+        check(
+            format!("math.sin({})", literal(value)),
+            value.sin(),
+            1.0e-12,
+        );
+        check(
+            format!("math.cos({})", literal(value)),
+            value.cos(),
+            1.0e-12,
+        );
+    }
+    for value in [
+        -1.0,
+        -0.0,
+        0.0,
+        f64::from_bits(1),
+        f64::MIN_POSITIVE,
+        0.5,
+        1.0,
+        std::f64::consts::E,
+        2.0,
+        10.0,
+        100.0,
+        1.0e100,
+        f64::MAX,
+        f64::INFINITY,
+        f64::NAN,
+    ] {
+        check(format!("math.ln({})", literal(value)), value.ln(), 1.0e-12);
     }
     writeln!(
         source,

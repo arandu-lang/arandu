@@ -108,7 +108,7 @@ pub const CORE_MODULES: &[(&str, &str)] = &[
 /// Pre-register all freestanding core library modules in the Salsa database.
 pub fn register_embedded_core(db: &mut DatabaseImpl) {
     for (path, content) in CORE_MODULES {
-        let file = db.new_file((*path).to_string(), (*content).to_string());
+        let file = db.new_stdlib_file((*path).to_string(), (*content).to_string());
         if let Some(short) = path.strip_prefix("stdlib/") {
             db.register_source_file(short.to_string(), file);
             db.register_source_file(format!("std/{short}"), file);

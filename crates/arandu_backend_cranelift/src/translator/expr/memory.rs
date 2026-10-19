@@ -34,12 +34,12 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         );
         let start = self.translate_operand(start, Some(self.ptr_type));
         let elem_size = match expected_ar_type {
-            Some(ArType::Slice(inner)) => {
+            Some(ArType::Slice(inner) | ArType::MutSlice(inner)) => {
                 let element = self.type_info.type_interner.resolve(*inner);
                 self.checked_layout(&element).size
             }
             _ => match self.get_operand_ar_type(slice) {
-                ArType::Slice(inner) => {
+                ArType::Slice(inner) | ArType::MutSlice(inner) => {
                     let element = self.type_info.type_interner.resolve(inner);
                     self.checked_layout(&element).size
                 }
@@ -137,6 +137,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 ArType::Tuple(_)
                     | ArType::Array(_, _)
                     | ArType::Slice(_)
+                    | ArType::MutSlice(_)
                     | ArType::Primitive(Primitive::Str)
                     | ArType::Ref(_)
                     | ArType::RefMut(_)
@@ -158,7 +159,11 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             if place.projections.is_empty()
                 && matches!(
                     borrowed_ty,
-                    ArType::Named(_, _) | ArType::Array(_, _) | ArType::Tuple(_) | ArType::Slice(_)
+                    ArType::Named(_, _)
+                        | ArType::Array(_, _)
+                        | ArType::Tuple(_)
+                        | ArType::Slice(_)
+                        | ArType::MutSlice(_)
                 )
             {
                 if let Some(&slot) = self.local_stack_slots.get(&place.local) {

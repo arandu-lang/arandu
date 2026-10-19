@@ -291,9 +291,10 @@ fn projected_place_type(
                 *type_info.type_interner.type_args(args).get(*index)?
             }
             AmirProjection::Index(_) | AmirProjection::IndexConstant(_) => match resolved {
-                ArType::Array(_, inner) | ArType::ConstArray(_, inner) | ArType::Slice(inner) => {
-                    inner
-                }
+                ArType::Array(_, inner)
+                | ArType::ConstArray(_, inner)
+                | ArType::Slice(inner)
+                | ArType::MutSlice(inner) => inner,
                 _ => return None,
             },
         };

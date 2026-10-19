@@ -131,6 +131,24 @@ impl<'a> Parser<'a> {
                     span,
                 ))
             }
+            TokenKind::IdentValue
+                if self.current_text() == "move"
+                    && self.tokens.get(self.pos + 1).is_some_and(|t| {
+                        matches!(t.kind, TokenKind::Pipe | TokenKind::LogicalOr)
+                    }) =>
+            {
+                self.advance();
+                self.parse_pipe_lambda(true)
+            }
+            TokenKind::KwOwn
+                if self
+                    .tokens
+                    .get(self.pos + 1)
+                    .is_some_and(|t| matches!(t.kind, TokenKind::Pipe | TokenKind::LogicalOr)) =>
+            {
+                self.advance();
+                self.parse_pipe_lambda(true)
+            }
             TokenKind::IdentValue => {
                 if self
                     .tokens
@@ -222,7 +240,7 @@ impl<'a> Parser<'a> {
                     .alloc_expr(ExprKind::InterpolatedString { parts: range }, span))
             }
             TokenKind::LParen => self.parse_group_or_lambda(start),
-            TokenKind::Pipe => self.parse_pipe_lambda(),
+            TokenKind::Pipe | TokenKind::LogicalOr => self.parse_pipe_lambda(false),
             TokenKind::LBracket => self.parse_array(),
             _ => Err(ParseError::new(
                 ParseErrorCode::ExpectedExpression,

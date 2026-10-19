@@ -179,6 +179,7 @@ pub(crate) fn synth_method_call(
     // Built-in `Result` / `Option` / primitive methods live under the type
     // symbol in `associated_members`. Resolve their SymbolId from the prelude.
     let builtin_id: Option<SymbolId> = match &base_resolved {
+        ArType::Vector(shape) => checker.symbols.vector_type_symbol(*shape),
         ArType::Result(_, _) => checker.symbols.builtins.result,
         ArType::Option(_) => checker.symbols.builtins.option,
         ArType::Primitive(Primitive::Str) => checker.symbols.builtins.str_type,
@@ -189,7 +190,7 @@ pub(crate) fn synth_method_call(
         ArType::Primitive(Primitive::Float) | ArType::FloatLiteral => {
             checker.symbols.builtins.float_type
         }
-        ArType::Slice(_) => checker.symbols.builtins.slice_type,
+        ArType::Slice(_) | ArType::MutSlice(_) => checker.symbols.builtins.slice_type,
         ArType::Ptr(_) => checker.symbols.builtins.ptr_type,
         ArType::Nullable(inner) if matches!(checker.resolve(*inner), ArType::Ptr(_)) => {
             checker.symbols.builtins.ptr_type
@@ -420,6 +421,23 @@ pub(crate) fn synth_method_call(
 
     if let Some(sym) = method_sym_recorded {
         Arc::make_mut(&mut checker.resolved).value_ref(field_span, sym);
+        super::expr::check_target_thread_capabilities(checker, sym, call_span);
+        if checker.type_info.unsafe_functions.contains(&sym) && !checker.ctx.is_in_unsafe() {
+            checker.diagnostics.push(
+                crate::Diagnostic::error(
+                    crate::DiagCode::O013ExternRequiresUnsafe,
+                    "call to an `@Unsafe` function requires an `unsafe` block",
+                    call_span,
+                )
+                .with_label(
+                    field_span,
+                    "the function's documented preconditions must be upheld by its caller",
+                ),
+            );
+        }
+        if let Some(&eff) = checker.type_info.function_effects.get(&sym) {
+            checker.current_observed_effects = checker.current_observed_effects.union(eff);
+        }
     }
     let func_ty = ArType::func(&params, ret, &checker.type_info.type_interner);
     let func_id = checker.intern(func_ty);
@@ -442,7 +460,7 @@ fn instantiate_method_sig_for_result_option(
     let concrete_args: Vec<ArType> = match checker.resolve(actual_base_ty_id) {
         ArType::Result(ok, err) => vec![checker.resolve(ok), checker.resolve(err)],
         ArType::Option(inner) => vec![checker.resolve(inner)],
-        ArType::Slice(elem) => vec![checker.resolve(elem)],
+        ArType::Slice(elem) | ArType::MutSlice(elem) => vec![checker.resolve(elem)],
         ArType::Ptr(inner) => vec![checker.resolve(inner)],
         ArType::Nullable(inner) => match checker.resolve(inner) {
             ArType::Ptr(elem) => vec![checker.resolve(elem)],
@@ -517,6 +535,7 @@ fn bind_receiver_type_arg(
         }
         (ArType::Option(f_inner), ArType::Option(a_inner))
         | (ArType::Slice(f_inner), ArType::Slice(a_inner))
+        | (ArType::MutSlice(f_inner), ArType::MutSlice(a_inner))
         | (ArType::Ref(f_inner), ArType::Ref(a_inner))
         | (ArType::RefMut(f_inner), ArType::RefMut(a_inner))
         | (ArType::Ptr(f_inner), ArType::Ptr(a_inner))
@@ -742,6 +761,7 @@ pub(super) fn contains_generic_params(
         }
         ArType::Nullable(inner)
         | ArType::Slice(inner)
+        | ArType::MutSlice(inner)
         | ArType::Ptr(inner)
         | ArType::Ref(inner)
         | ArType::RefMut(inner)

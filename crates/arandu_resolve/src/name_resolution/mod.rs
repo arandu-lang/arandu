@@ -13,40 +13,6 @@ mod symbols;
 mod types;
 mod util;
 
-/// Decode canonical core identities at the import boundary; semantic consumers
-/// use LangItem/SymbolId, never the imported alias or a bare type spelling.
-fn core_lang_item(path: &str, name: &str) -> Option<arandu_middle::symbol_table::LangItem> {
-    use arandu_middle::symbol_table::LangItem;
-    let (module, file, item) = match name {
-        "Poll" => ("std.core.future", "core/future.aru", LangItem::Poll),
-        "Result" => ("std.core.result", "core/result.aru", LangItem::Result),
-        "Option" => ("std.core.option", "core/option.aru", LangItem::Option),
-        "Coroutine" => (
-            "std.core.coroutine",
-            "core/coroutine.aru",
-            LangItem::Coroutine,
-        ),
-        "Copy" => ("std.core.marker", "core/marker.aru", LangItem::Copy),
-        "Send" => ("std.core.marker", "core/marker.aru", LangItem::Send),
-        "Sync" => ("std.core.marker", "core/marker.aru", LangItem::Sync),
-        "String" => ("std.alloc.string", "alloc/string.aru", LangItem::String),
-        "Vec" => ("std.alloc.vec", "alloc/vec.aru", LangItem::Vec),
-        "TaskHandle" => (
-            "std.runtime.executor",
-            "std/runtime/executor.aru",
-            LangItem::TaskHandle,
-        ),
-        "alloc" => ("std.core.mem", "core/mem.aru", LangItem::Alloc),
-        "free" => ("std.core.mem", "core/mem.aru", LangItem::Free),
-        _ => return None,
-    };
-    (path == module
-        || std::path::Path::new(path).ends_with(file)
-        || path == "std.core.prelude"
-        || std::path::Path::new(path).ends_with("core/prelude.aru"))
-    .then_some(item)
-}
-
 /// Builtin prelude modules injected by `define_prelude` / this helper.
 /// Kept in one place so Salsa import resolution can short-circuit without
 /// requiring on-disk `io.aru` / `err.aru` files.
@@ -263,7 +229,10 @@ pub fn resolve_headers_with_poll(
                                     span: item.span,
                                     scope: global,
                                     visibility: arandu_parser::Visibility::Public,
-                                    lang_item: None,
+                                    lang_item: resolver
+                                        .symbols
+                                        .try_get(id)
+                                        .and_then(|s| s.lang_item),
                                 };
                                 match resolver.symbols.insert_imported(sym) {
                                     Ok(Some(placeholder_id)) => {
@@ -371,7 +340,11 @@ pub fn resolve_headers_with_poll(
                             {
                                 resolver.symbols.sealed_interfaces.insert(id);
                             }
-                            let item_lang = core_lang_item(path, name);
+                            let lang_item = exports.lang_items.get(&id).copied().or_else(|| {
+                                internal
+                                    .as_ref()
+                                    .and_then(|table| table.lang_items.get(&id).copied())
+                            });
                             let sym = arandu_middle::Symbol {
                                 id,
                                 name: name.clone().into(),
@@ -379,12 +352,9 @@ pub fn resolve_headers_with_poll(
                                 span: import.span(),
                                 scope: global,
                                 visibility: arandu_parser::Visibility::Public,
-                                lang_item: item_lang,
+                                lang_item,
                             };
                             resolver.symbols.register_imported_symbol(sym);
-                            if let Some(lang) = item_lang {
-                                resolver.symbols.set_lang_item(id, lang);
-                            }
                             resolver
                                 .symbols
                                 .module_members
@@ -477,7 +447,12 @@ pub fn resolve_headers_with_poll(
                                     _ => arandu_parser::Visibility::Public,
                                 };
                                 let import_name = item.alias.as_ref().unwrap_or(&item.name).clone();
-                                let item_lang = core_lang_item(path, &item.name);
+                                let lang_item =
+                                    exports.lang_items.get(&id).copied().or_else(|| {
+                                        internal
+                                            .as_ref()
+                                            .and_then(|table| table.lang_items.get(&id).copied())
+                                    });
                                 let sym = arandu_middle::Symbol {
                                     id,
                                     name: import_name.clone(),
@@ -485,11 +460,8 @@ pub fn resolve_headers_with_poll(
                                     span: item.span,
                                     scope: global,
                                     visibility: sym_visibility,
-                                    lang_item: item_lang,
+                                    lang_item,
                                 };
-                                if let Some(lang) = item_lang {
-                                    resolver.symbols.set_lang_item(id, lang);
-                                }
                                 match resolver.symbols.insert_imported(sym) {
                                     Ok(Some(placeholder_id)) => {
                                         if let Some(entry) =
@@ -559,7 +531,14 @@ pub fn resolve_headers_with_poll(
                                         {
                                             let exported_assoc_name =
                                                 format!("{import_name}.{method}");
-                                            let assoc_lang = core_lang_item(path, assoc_name);
+                                            let lang_item =
+                                                exports.lang_items.get(&assoc_id).copied().or_else(
+                                                    || {
+                                                        internal.as_ref().and_then(|table| {
+                                                            table.lang_items.get(&assoc_id).copied()
+                                                        })
+                                                    },
+                                                );
                                             let assoc_sym = arandu_middle::Symbol {
                                                 id: assoc_id,
                                                 name: exported_assoc_name.into(),
@@ -567,12 +546,9 @@ pub fn resolve_headers_with_poll(
                                                 span: item.span,
                                                 scope: global,
                                                 visibility: sym_visibility,
-                                                lang_item: assoc_lang,
+                                                lang_item,
                                             };
                                             resolver.symbols.register_imported_symbol(assoc_sym);
-                                            if let Some(lang) = assoc_lang {
-                                                resolver.symbols.set_lang_item(assoc_id, lang);
-                                            }
                                             resolver.symbols.associated_members.insert(
                                                 (id, smol_str::SmolStr::new(method)),
                                                 assoc_id,
@@ -706,6 +682,14 @@ pub fn resolve_headers_with_poll(
                     && let Some((ty, method)) = name.rsplit_once('.')
                     && let Some(type_sym) = resolver.symbols.lookup_type(global, ty)
                 {
+                    let lang_item = exports.lang_items.get(&id).copied().or_else(|| {
+                        let internal = db
+                            .same_package(resolver.symbols.file_id, imported_file)
+                            .then(|| db.internal_symbols(imported_file));
+                        internal
+                            .as_ref()
+                            .and_then(|table| table.lang_items.get(&id).copied())
+                    });
                     let sym = arandu_middle::Symbol {
                         id,
                         name: name.clone().into(),
@@ -713,7 +697,7 @@ pub fn resolve_headers_with_poll(
                         span: arandu_lexer::Span::new(id.file_id, 0, 0),
                         scope: global,
                         visibility: arandu_parser::Visibility::Public,
-                        lang_item: None,
+                        lang_item,
                     };
                     resolver.symbols.register_imported_symbol(sym);
                     resolver

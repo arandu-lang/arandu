@@ -32,6 +32,12 @@ impl ServerState {
         // DatabaseImpl is the sole FileId allocator. A second LSP-side counter
         // can collide with lazily loaded stdlib/package files and corrupt goto.
         let source = self.host.new_file(registry_path_key(&path), text);
+        if self.host.db().stdlib_root().as_ref().is_some_and(|root| {
+            super::path::normalize_path_soft(&path)
+                .starts_with(super::path::normalize_path_soft(root))
+        }) {
+            self.host.db_mut().trust_stdlib_source(source);
+        }
         let file_id = *source.file_id(self.host.db());
         self.register_package_aliases(&path, source);
         let id = self.docs.open(path, source);

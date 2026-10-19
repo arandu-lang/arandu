@@ -674,14 +674,14 @@ When implementation starts, create tests from these fixtures.
 Input:
 
 ```arandu
-mut idade = 25
+let mut idade = 25
 set idade = idade + 1
 ```
 
 Expected tokens:
 
 ```text
-KW_MUT IDENT_VALUE(idade) EQUAL INT_DEC(25) SEMICOLON(inserted)
+KW_LET KW_MUT IDENT_VALUE(idade) EQUAL INT_DEC(25) SEMICOLON(inserted)
 KW_SET IDENT_VALUE(idade) EQUAL IDENT_VALUE(idade) PLUS INT_DEC(1) SEMICOLON(inserted)
 EOF
 ```

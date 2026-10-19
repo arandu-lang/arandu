@@ -247,6 +247,7 @@ pub fn validate_amir_func(
     }
 
     validate_gen_operations(func, interner, &mut diags);
+    validate_vector_operations(func, interner, span, &mut diags);
 
     diags
 }
@@ -610,4 +611,83 @@ fn edge_types_compatible(interner: &TypeInterner, actual: TypeId, expected: Type
     let actual = interner.resolve(actual);
     let expected = interner.resolve(expected);
     actual.literal_absorbs(&expected) || expected.literal_absorbs(&actual)
+}
+
+/// Native vector IR has a closed type/operation matrix. Reject malformed IR
+/// before any backend invokes a verifier or indexes an immediate lane/mask.
+fn validate_vector_operations(
+    func: &AmirFunc,
+    interner: &TypeInterner,
+    span: arandu_lexer::Span,
+    diags: &mut Vec<Diagnostic>,
+) {
+    for stmt in func.stmts.payloads.iter() {
+        let AmirStmt::Assign { lhs, rhs } = stmt else {
+            continue;
+        };
+        let Some(result) = func
+            .temps
+            .get(lhs.as_usize())
+            .map(|temp| interner.resolve(temp.ty))
+        else {
+            continue;
+        };
+        let operand = |value: &AmirOperand| {
+            operand_type(func, value, interner).map(|id| interner.resolve(id))
+        };
+        let same = |value: &AmirOperand| operand(value).as_ref() == Some(&result);
+        let valid = match rhs {
+            AmirRvalue::VectorOp { op, left, right } => {
+                matches!(result, ArType::Vector(shape) if op.supports(shape))
+                    && same(left)
+                    && same(right)
+            }
+            AmirRvalue::VectorCompare { left, right, .. } => {
+                result == ArType::Vector(crate::types::VectorType::U8x16)
+                    && matches!(operand(left), Some(ArType::Vector(_)))
+                    && operand(left) == operand(right)
+            }
+            AmirRvalue::VectorSelect {
+                mask,
+                if_true,
+                if_false,
+            } => {
+                matches!(result, ArType::Vector(_))
+                    && operand(mask) == Some(ArType::Vector(crate::types::VectorType::U8x16))
+                    && same(if_true)
+                    && same(if_false)
+            }
+            AmirRvalue::VectorSplat { value } => {
+                matches!(result, ArType::Vector(shape) if operand(value) == Some(ArType::Primitive(shape.lane())))
+            }
+            AmirRvalue::VectorShuffle { left, right, mask } => {
+                matches!(result, ArType::Vector(_))
+                    && same(left)
+                    && same(right)
+                    && mask.iter().all(|index| *index < 32)
+            }
+            AmirRvalue::VectorExtractLane { vector, lane } => {
+                matches!(operand(vector), Some(ArType::Vector(shape)) if *lane < shape.lanes() && result == ArType::Primitive(shape.lane()))
+            }
+            AmirRvalue::VectorInsertLane {
+                vector,
+                lane,
+                value,
+            } => {
+                matches!(result, ArType::Vector(shape) if *lane < shape.lanes() && operand(value) == Some(ArType::Primitive(shape.lane())))
+                    && same(vector)
+            }
+            _ => continue,
+        };
+        if !valid {
+            diags.push(Diagnostic::ice(
+                DiagCode::ICEGEN002,
+                format!(
+                    "invalid vector operand, operation or immediate for temp _{} (SIMD-TYPE)",
+                    lhs.as_usize()
+                ),
+                span,
+            ));
+        }
+    }
 }

@@ -13,6 +13,9 @@ pub enum ArType {
     /// Primitive types: int, float, bool, str, ...\
     Primitive(Primitive),
 
+    /// One of the six fixed-width, 128-bit hardware vector shapes.
+    Vector(super::VectorType),
+
     /// Named type with optional generic arguments: `User`, `List<int>`
     /// The `IndexRange` points into `TypeInterner::type_args_pool`.
     Named(SymbolId, IndexRange),
@@ -26,6 +29,9 @@ pub enum ArType {
 
     /// Slice type: []int
     Slice(TypeId),
+
+    /// Exclusive mutable slice type: mut []int
+    MutSlice(TypeId),
 
     /// Fixed-size array: `[4]float`
     Array(u64, TypeId),
@@ -118,9 +124,9 @@ impl ArType {
     #[must_use]
     pub fn slice_abi_element(&self, interner: &TypeInterner) -> Option<TypeId> {
         match self {
-            Self::Slice(element) => Some(*element),
+            Self::Slice(element) | Self::MutSlice(element) => Some(*element),
             Self::Ref(inner) | Self::RefMut(inner) => interner.with_type(*inner, |inner| {
-                if let Self::Slice(element) = inner {
+                if let Self::Slice(element) | Self::MutSlice(element) = inner {
                     Some(*element)
                 } else {
                     None
@@ -135,6 +141,21 @@ impl ArType {
     #[must_use]
     pub fn is_borrowed_slice_abi(&self, interner: &TypeInterner) -> bool {
         matches!(self, Self::Ref(_) | Self::RefMut(_)) && self.slice_abi_element(interner).is_some()
+    }
+
+    /// Number of reference indirections before a string descriptor. A plain
+    /// `str` has depth zero; raw pointers keep pointer-comparison semantics.
+    #[must_use]
+    pub fn str_reference_depth(&self, interner: &TypeInterner) -> Option<usize> {
+        let mut ty = self.clone();
+        for depth in 0..=256 {
+            match ty {
+                Self::Primitive(Primitive::Str) => return Some(depth),
+                Self::Ref(inner) | Self::RefMut(inner) => ty = interner.resolve(inner),
+                _ => return None,
+            }
+        }
+        None
     }
 
     /// Construct a `Named` type, pushing generic args into the interner's pool.
@@ -263,24 +284,26 @@ impl ArType {
     pub fn needs_nullable_box(&self) -> bool {
         matches!(
             self,
-            ArType::Primitive(
-                Primitive::Bool
-                    | Primitive::Char
-                    | Primitive::Byte
-                    | Primitive::I8
-                    | Primitive::U8
-                    | Primitive::I16
-                    | Primitive::U16
-                    | Primitive::I32
-                    | Primitive::U32
-                    | Primitive::I64
-                    | Primitive::U64
-                    | Primitive::Int
-                    | Primitive::Uint
-                    | Primitive::F32
-                    | Primitive::F64
-                    | Primitive::Float
-            ) | ArType::IntLiteral
+            ArType::Vector(_)
+                | ArType::Primitive(
+                    Primitive::Bool
+                        | Primitive::Char
+                        | Primitive::Byte
+                        | Primitive::I8
+                        | Primitive::U8
+                        | Primitive::I16
+                        | Primitive::U16
+                        | Primitive::I32
+                        | Primitive::U32
+                        | Primitive::I64
+                        | Primitive::U64
+                        | Primitive::Int
+                        | Primitive::Uint
+                        | Primitive::F32
+                        | Primitive::F64
+                        | Primitive::Float
+                )
+                | ArType::IntLiteral
                 | ArType::FloatLiteral
         )
     }
@@ -301,6 +324,7 @@ impl ArType {
     {
         match self {
             ArType::Primitive(_)
+            | ArType::Vector(_)
             | ArType::GenRef
             | ArType::Err
             | ArType::Void
@@ -323,6 +347,7 @@ impl ArType {
             }
             ArType::Nullable(inner)
             | ArType::Slice(inner)
+            | ArType::MutSlice(inner)
             | ArType::Array(_, inner)
             | ArType::ConstArray(_, inner)
             | ArType::Ptr(inner)
@@ -351,6 +376,7 @@ impl ArType {
     pub fn display(&self, symbols: &SymbolTable, interner: &TypeInterner) -> String {
         match self {
             ArType::Primitive(p) => p.to_string(),
+            ArType::Vector(vector) => vector.name().to_string(),
             ArType::Named(id, args) => {
                 let name = symbols.try_get(*id).map(|s| s.name.as_str()).unwrap_or("?");
                 let arg_tys = interner.type_args(*args);
@@ -386,6 +412,10 @@ impl ArType {
             ArType::Slice(inner) => {
                 let inner_str = interner.resolve(*inner).display(symbols, interner);
                 format!("[]{}", inner_str)
+            }
+            ArType::MutSlice(inner) => {
+                let inner_str = interner.resolve(*inner).display(symbols, interner);
+                format!("mut []{}", inner_str)
             }
             ArType::Array(size, inner) => {
                 let inner_str = interner.resolve(*inner).display(symbols, interner);
@@ -496,6 +526,7 @@ impl ArType {
     #[must_use]
     pub fn is_copy_v01(&self) -> bool {
         match self {
+            ArType::Vector(_) => true,
             ArType::Primitive(p) => {
                 p.is_numeric()
                     || matches!(
@@ -529,6 +560,7 @@ impl ArType {
             | ArType::Coroutine(_)
             | ArType::Poll(_)
             | ArType::Range(_)
+            | ArType::MutSlice(_)
             | ArType::RefMut(_) => false,
         }
     }
@@ -793,6 +825,7 @@ mod tests {
         let int = i.intern(ArType::Primitive(Primitive::Int));
         assert!(!ArType::func(&[int], int, &i).is_copy_v01());
         assert!(ArType::Slice(int).is_copy_v01());
+        assert!(!ArType::MutSlice(int).is_copy_v01());
         assert!(!ArType::Array(3, int).is_copy_v01());
         assert!(!ArType::tuple(&[int], &i).is_copy_v01());
         assert!(!ArType::Result(int, int).is_copy_v01());
@@ -920,6 +953,7 @@ mod tests {
         let int_tid = i.intern(ArType::Named(int_sym, IndexRange::empty()));
         assert_eq!(ArType::Nullable(int_tid).display(&syms, &i), "int?");
         assert_eq!(ArType::Slice(int_tid).display(&syms, &i), "[]int");
+        assert_eq!(ArType::MutSlice(int_tid).display(&syms, &i), "mut []int");
         assert_eq!(ArType::Array(4, int_tid).display(&syms, &i), "[4]int");
         assert_eq!(ArType::Ptr(int_tid).display(&syms, &i), "ptr[int]");
     }

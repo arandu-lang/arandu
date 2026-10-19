@@ -1,0 +1,91 @@
+module nativeSimdContract
+import std.core.simd as simd
+import std.core.intrinsics as intrinsics
+import std.core.mem as mem
+import std.core.slice as slice
+
+struct AlignedStorage { anchor: simd.F32x4, values: [5]f32 }
+
+func main(): int {
+    if mem.sizeOf<simd.F32x4>() != (16 as usize) { return 1 }
+    if mem.alignOf<simd.F32x4>() != (16 as usize) { return 2 }
+    if mem.alignOf<simd.I64x2>() != (16 as usize) { return 3 }
+    let a = simd.F32x4.new(1.0, -2.0, 3.0, 4.0)
+    let b = simd.F32x4.splat(2.0)
+    let sum = a.add(b)
+    if sum.extractLane(0) != (3.0 as f32) { return 4 }
+    if sum.extractLane(1) != (0.0 as f32) { return 5 }
+    if a.dot(b) != (12.0 as f32) { return 6 }
+    let mask = a.lt(b)
+    if !mask.testLane(0) || !mask.testLane(1) || mask.testLane(2) || mask.testLane(3) { return 7 }
+    if mask.allTrue() || !mask.anyTrue() || !mask.bitOr(mask.not()).allTrue() { return 8 }
+    let selected = simd.F32x4.select(mask, a, b)
+    if selected.extractLane(1) != (-2.0 as f32) || selected.extractLane(3) != (2.0 as f32) { return 9 }
+    let manual = simd.Mask32x4.new(false, true, false, true)
+    let chosen = simd.F32x4.select(manual, a, b)
+    if chosen.extractLane(0) != (2.0 as f32) || chosen.extractLane(3) != (4.0 as f32) { return 10 }
+    let bytes = simd.U8x16.splat(255 as u8).add(simd.U8x16.splat(1 as u8))
+    if bytes.extractLane(15) != (0 as u8) { return 11 }
+    let shorts = simd.I16x8.splat(32767 as i16).add(simd.I16x8.splat(1 as i16))
+    if shorts.extractLane(7) != (-32768 as i16) { return 12 }
+    let ints = simd.I32x4.new(-7 as i32, 3 as i32, 2 as i32, 1 as i32)
+    if !ints.lt(simd.I32x4.splat(0 as i32)).testLane(0) { return 13 }
+    let longs = simd.I64x2.new(11 as i64, 13 as i64).mul(simd.I64x2.splat(3 as i64))
+    if longs.extractLane(1) != (39 as i64) { return 14 }
+    let doubles = simd.F64x2.new(1.5 as f64, 3.0 as f64).div(simd.F64x2.splat(1.5 as f64))
+    if doubles.extractLane(1) != (2.0 as f64) { return 15 }
+    // Construct a scalar-aligned view starting four bytes after a 16-byte vector.
+    let mut backing = AlignedStorage { anchor: a, values: [0.0, 8.0, 9.0, 10.0, 11.0] }
+    let source = unsafe {
+        let data = intrinsics.addressOfShared<f32>(ref backing.values[1])
+        intrinsics.sliceFromRaw<AlignedStorage, f32>(ref backing, data, 4 as usize)
+    }
+    match simd.F32x4.loadUnaligned(source) {
+        Option.Some(v) => { if v.extractLane(3) != (11.0 as f32) { return 16 } }
+        Option.None => { return 17 }
+    }
+    let mut outputArr: [4]f32 = [8.0 as f32, 9.0 as f32, 10.0 as f32, 11.0 as f32]
+    if !storeFour(a, mut ref outputArr) { return 18 }
+    if outputArr[0] != (1.0 as f32) || outputArr[3] != (4.0 as f32) { return 19 }
+    let mut misaligned = AlignedStorage { anchor: a, values: [99.0, 0.0, 0.0, 0.0, 0.0] }
+    if !storeMisaligned(a, mut ref misaligned) { return 25 }
+    if misaligned.values[0] != (99.0 as f32) || misaligned.values[1] != (1.0 as f32) || misaligned.values[4] != (4.0 as f32) { return 26 }
+    let mut shortArr: [3]f32 = [20.0 as f32, 21.0 as f32, 22.0 as f32]
+    if storeThree(a, mut ref shortArr) { return 20 }
+    match simd.F32x4.loadUnaligned(unsafe {
+        let data = intrinsics.addressOfShared<f32>(ref shortArr[0])
+        intrinsics.sliceFromRaw<[3]f32, f32>(ref shortArr, data, 3 as usize)
+    }) {
+        Option.Some(_) => { return 22 }
+        Option.None => {}
+    }
+    if shortArr[0] != (20.0 as f32) || shortArr[2] != (22.0 as f32) { return 21 }
+    // IEEE unordered comparison: != is true and ordered comparisons false.
+    let zero = simd.F32x4.splat(0.0)
+    let nan = zero.div(zero)
+    if nan.eq(nan).anyTrue() || !nan.ne(nan).allTrue() || nan.lt(a).anyTrue() || nan.ge(a).anyTrue() { return 23 }
+    let negZero = simd.F32x4.splat(-0.0)
+    if !zero.eq(negZero).allTrue() { return 24 }
+    return 0
+}
+
+// Test-only adapters certify that the raw storage belongs to the exclusively
+// borrowed array. Applications normally obtain this view through Vec.asMutSlice.
+func storeFour(vector: simd.F32x4, array: mut ref [4]f32): bool {
+    let data = unsafe { intrinsics.addressOfShared<f32>(ref array[0]) }
+    let mut view = unsafe { slice.MutableSlice.fromRaw<[4]f32, f32>(array, data, 4 as usize) }
+    return vector.storeUnaligned<[4]f32>(mut ref view)
+}
+func storeThree(vector: simd.F32x4, array: mut ref [3]f32): bool {
+    let data = unsafe { intrinsics.addressOfShared<f32>(ref array[0]) }
+    let mut view = unsafe { slice.MutableSlice.fromRaw<[3]f32, f32>(array, data, 3 as usize) }
+    return vector.storeUnaligned<[3]f32>(mut ref view)
+}
+
+// values starts at offset 16; element 1 is therefore offset 20 from a
+// 16-aligned owner, exercising a destination that is not vector-aligned.
+func storeMisaligned(vector: simd.F32x4, owner: mut ref AlignedStorage): bool {
+    let data = unsafe { intrinsics.addressOfShared<f32>(ref owner.values[1]) }
+    let mut view = unsafe { slice.MutableSlice.fromRaw<AlignedStorage, f32>(owner, data, 4 as usize) }
+    return vector.storeUnaligned<AlignedStorage>(mut ref view)
+}

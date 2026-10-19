@@ -124,6 +124,8 @@ pub struct FuncBorrowFacts {
     /// Exact structural local holders before each statement and terminator.
     /// Indexed `[block][statement_point][loan]`.
     pub local_holders_at: Vec<Vec<Vec<BitSet<LocalId>>>>,
+    /// Defensive iteration bound exceeded during borrow facts dataflow convergence.
+    pub exceeded_limit: bool,
 }
 
 impl FuncBorrowFacts {

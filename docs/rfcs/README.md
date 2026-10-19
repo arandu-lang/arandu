@@ -52,7 +52,7 @@ suportada é definida pelos contratos e pela evidência de release.
 | 0028–0031 | propostas novas de eBPF, GPU, FFI e LLVM/MLIR; sem backends/exportador universais implementados |
 | 0032–0036 | propostas arquiteturais das trilhas `LAMBDA`, `OPT.1–7`, `TYP.NEXT`/`GEN`, `A2` (efeitos/capacidades) e `IDE.5`/`E1, E3, E5` |
 | 0037 | Decimal em validação; BigInt/BigDecimal com protótipos locais e provas pendentes no fechamento da stdlib; ainda não publicados |
-| 0038 / 0039 | propostas de SIMD de hardware 128-bit e concorrência ParkingLot/PFLock; evolução de ST.2 e ST.10 |
+| 0038 / 0039 | SIMD possui API fonte canônica, máscaras e stores com vista exclusiva; locks nativos têm guardas compartilhadas, fases FIFO e Condvar com guarda; spawn usa ThreadJob/JoinHandle possuídos; prova multiplataforma instalada pendente em ST.2/ST.10/ST.11 |
 
 ## Índice Oficial de RFCs
 
@@ -96,8 +96,10 @@ suportada é definida pelos contratos e pela evidência de release.
 | [0035](0035-effect-system-polymorphism-and-capability-authority.md) | Sistema de Efeitos Tridimensional, Polimorfismo Contextual e Autoridade por Capacidades (`A2`) | Frontend / Middle-end / Stdlib | `Draft` | 2026-10-15 |
 | [0036](0036-typed-holes-and-integrated-semantic-tooling.md) | *Typed Holes* (`todo`) com Contexto OSSA e Ferramental Semântico Integrado (`REPL`, `Bindgen`, `Lint`) | Frontend / IDE / Tooling | `Draft` | 2026-10-15 |
 | [0037](0037-decimal-arithmetic-and-arbitrary-precision-big-numbers.md) | Aritmética Decimal de Valor Fixo (128 bits) e Números de Precisão Arbitrária (`Decimal`, `BigInt`, `BigDecimal`) | Stdlib / Middle-end / Runtime | `Draft` | 2026-10-16 |
-| [0038](0038-portable-simd-hardware-vectors-and-alignment-safety.md) | Vetores SIMD Portáveis de Hardware, Segurança de Alinhamento e Lowering Multi-Backend | Frontend / Middle-end / Backend / Stdlib | `Draft` | 2026-10-16 |
-| [0039](0039-parking-lot-and-phase-fair-synchronization.md) | Concorrência de Alta Performance, Infraestrutura ParkingLot e Sincronização Phase-Fair | Runtime / Middle-end / Stdlib / Concurrency | `Draft` | 2026-10-16 |
+| [0038](0038-portable-simd-hardware-vectors-and-alignment-safety.md) | SIMD portável de 128 bits e segurança de alinhamento | Frontend / Middle-end / Backend / Stdlib | `Draft` | 2026-10-16 |
+| [0039](0039-parking-lot-and-phase-fair-synchronization.md) | ParkingLot, condições de espera e sincronização por fases | Runtime / Type System / Stdlib / Concurrency | `Draft` | 2026-10-16 |
+| [0040](0040-algebraic-formatter-ir-and-cst-resilience.md) | Arquitetura de Formatação Algébrica, Formatter IR (Wadler-Leijen) e Resiliência CST (`arandu_fmt v2`) | Tooling / Frontend | `Draft` | 2026-10-18 |
+| [0041](0041-advanced-test-harness-cross-target-and-sarif.md) | Harness de Testes Avançado, Execução Cross-Target (WASI/Wasmtime), Snapshot Testing e Diagnósticos SARIF (`arandu_testing_contract v2`) | Tooling / Testing / CLI | `Draft` | 2026-10-18 |
 
 
 ---

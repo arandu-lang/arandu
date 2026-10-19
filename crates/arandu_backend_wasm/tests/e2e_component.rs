@@ -7,11 +7,11 @@
 
 mod common;
 
-use common::{compile_source, compile_source_component};
+use common::{compile_source, compile_source_component, compile_trusted_core_fixture};
 
 #[test]
 fn string_bytes_intrinsic_loads_borrowed_descriptor() {
-    let bytes = compile_source(
+    let bytes = compile_trusted_core_fixture(
         r#"
 module std.core.str_bytes_wasm
 

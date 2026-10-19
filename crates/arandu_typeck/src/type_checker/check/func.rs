@@ -98,7 +98,9 @@ fn validate_method_receiver(checker: &mut TypeChecker<'_>, decl: &FuncDecl) {
             {
                 Some(self_ty.clone())
             }
-            ArType::Slice(_) if checker.symbols.builtins.slice_type == Some(owner) => {
+            ArType::Slice(_) | ArType::MutSlice(_)
+                if checker.symbols.builtins.slice_type == Some(owner) =>
+            {
                 Some(self_ty.clone())
             }
             ArType::Ptr(_) if checker.symbols.builtins.ptr_type == Some(owner) => {

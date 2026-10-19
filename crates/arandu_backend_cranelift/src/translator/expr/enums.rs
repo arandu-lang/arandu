@@ -84,7 +84,11 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         let payload_base_offset = if tag_is_niche {
             0
         } else {
-            pointer_width as i32
+            layout
+                .field_offsets
+                .get(1)
+                .copied()
+                .unwrap_or(pointer_width) as i32
         };
 
         if let Some(op) = payload {
@@ -127,7 +131,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     ptr_val,
                     payload_base_offset + pointer_width as i32,
                 );
-            } else if matches!(op_ty, ArType::Slice(_)) {
+            } else if matches!(op_ty, ArType::Slice(_) | ArType::MutSlice(_)) {
                 let (elem_ptr, elem_len) = self.translate_slice_operand(op);
                 self.builder.ins().store(
                     cranelift_codegen::ir::MemFlagsData::new(),

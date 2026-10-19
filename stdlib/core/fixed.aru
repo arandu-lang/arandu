@@ -158,8 +158,14 @@ public func Q16_16.fractionPart(self: ref Q16_16): i32 {
 
 /// Converts a floating-point number to Q16.16 format with saturation.
 public func Q16_16.fromFloat(f: float): Q16_16 {
-    let scaled: i64 = (f * 65536.0) as i64
-    return Q16_16 { raw: clampRaw(scaled) }
+    let scaled = f * 65536.0
+    if scaled > 2147483647.0 {
+        return Q16_16 { raw: 2147483647 as i32 }
+    }
+    if scaled < -2147483648.0 {
+        return Q16_16 { raw: (-(2147483647 as i32)) - (1 as i32) }
+    }
+    return Q16_16 { raw: scaled as i32 }
 }
 
 /// Converts this Q16.16 number to a 64-bit float.
@@ -259,8 +265,14 @@ public func Q8_8.fractionPart(self: ref Q8_8): i16 {
 
 /// Converts a floating-point number to Q8.8 format with saturation.
 public func Q8_8.fromFloat(f: float): Q8_8 {
-    let scaled: i32 = (f * 256.0) as i32
-    return Q8_8 { raw: clampRaw8(scaled) }
+    let scaled = f * 256.0
+    if scaled > 32767.0 {
+        return Q8_8 { raw: 32767 as i16 }
+    }
+    if scaled < -32768.0 {
+        return Q8_8 { raw: -32768 as i16 }
+    }
+    return Q8_8 { raw: scaled as i16 }
 }
 
 /// Converts this Q8.8 number to a 64-bit float.

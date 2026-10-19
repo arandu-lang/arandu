@@ -1,0 +1,19 @@
+Program @1:1-25:2
+  Struct @1:1-6:2 RingBuffer
+    Field @2:5-2:16 head Type @2:11-2:16 usize
+    Field @3:5-3:16 tail Type @3:11-3:16 usize
+    Field @4:5-4:17 count Type @4:12-4:17 usize
+    Field @5:5-5:20 capacity Type @5:15-5:20 usize
+  Func @8:1-16:2 ringPush(@8:15-8:39 ring RefMut @8:21-8:39 Type @8:29-8:39 @8:29-8:39 RingBuffer, @8:41-8:49 val Type @8:46-8:49 int, @8:51-8:65 storage Slice @8:60-8:65 Type @8:62-8:65 int) -> Type @8:68-8:72 bool
+    If @9:5-11:6 Condition @9:8-9:35 Binary @9:8-9:35(==, Field @9:8-9:18(Path @9:8-9:12(ring), count), Field @9:22-9:35(Path @9:22-9:26(ring), capacity))
+      Return @10:9-10:21 Bool @10:16-10:21(false)
+    Set @12:5-12:29 @12:5-12:23 storage[Field @12:13-12:22(Path @12:13-12:17(ring), tail)] = Path @12:26-12:29(val)
+    Set @13:5-13:48 @13:5-13:14 ring.tail = Binary @13:17-13:48(%, Group @13:17-13:32(Binary @13:18-13:31(+, Field @13:18-13:27(Path @13:18-13:22(ring), tail), Int @13:30-13:31(1))), Field @13:35-13:48(Path @13:35-13:39(ring), capacity))
+    Set @14:5-14:32 @14:5-14:15 ring.count = Binary @14:18-14:32(+, Field @14:18-14:28(Path @14:18-14:22(ring), count), Int @14:31-14:32(1))
+    Return @15:5-15:16 Bool @15:12-15:16(true)
+  Func @18:1-25:2 ringPop(@18:14-18:38 ring RefMut @18:20-18:38 Type @18:28-18:38 @18:28-18:38 RingBuffer) -> Type @18:41-18:44 int
+    If @19:5-21:6 Condition @19:8-19:23 Binary @19:8-19:23(==, Field @19:8-19:18(Path @19:8-19:12(ring), count), Int @19:22-19:23(0))
+      Return @20:9-20:18 Unary @20:16-20:18(-, Int @20:17-20:18(1))
+    Set @22:5-22:48 @22:5-22:14 ring.head = Binary @22:17-22:48(%, Group @22:17-22:32(Binary @22:18-22:31(+, Field @22:18-22:27(Path @22:18-22:22(ring), head), Int @22:30-22:31(1))), Field @22:35-22:48(Path @22:35-22:39(ring), capacity))
+    Set @23:5-23:32 @23:5-23:15 ring.count = Binary @23:18-23:32(-, Field @23:18-23:28(Path @23:18-23:22(ring), count), Int @23:31-23:32(1))
+    Return @24:5-24:13 Int @24:12-24:13(0)

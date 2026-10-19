@@ -22,6 +22,17 @@ pub fn source() -> String {
         Option.None => {{ if b != 0 {{ return false }} }}
     }}
     return true
+}}
+func checkFloat{name}(val: float, expected_raw: {raw_type}, expected_float: float): bool {{
+    let f = fixed.{name}.fromFloat(val)
+    if f.toRaw() != expected_raw {{ return false }}
+    if f.toFloat() != expected_float {{ return false }}
+    return true
+}}
+func checkFloatSat{name}(val: float, expected_raw: {raw_type}): bool {{
+    let f = fixed.{name}.fromFloat(val)
+    if f.toRaw() != expected_raw {{ return false }}
+    return true
 }}").unwrap();
         let boundary = [min, min + 1, -scale - 1, -1, 0, 1, scale + 1, max];
         let mut pairs = Vec::new();
@@ -64,6 +75,40 @@ pub fn source() -> String {
         writeln!(calls, "    let low{name} = fixed.{name}.fromInt({})\n    if low{name}.toRaw() != {} {{ return 2 }}\n    if low{name}.abs().toRaw() != {} {{ return 3 }}\n    let negative{name} = fixed.{name}.fromRaw({})\n    if negative{name}.toInt() != -1 {{ return 4 }}\n    if negative{name}.fractionPart() != 1 {{ return 5 }}\n    if !negative{name}.isNegative() {{ return 6 }}",
             literal(-(1_i128 << (fraction - 1)), &half_type),
             literal(min, &raw_type), literal(max, &raw_type), literal(-1, &raw_type)).unwrap();
+        // ST.3: Floating-point conversion, rounding, and saturation
+        writeln!(
+            calls,
+            "    if !checkFloat{name}(0.0, 0, 0.0) {{ return 10 }}"
+        )
+        .unwrap();
+        writeln!(
+            calls,
+            "    if !checkFloat{name}(1.0, {scale}, 1.0) {{ return 11 }}"
+        )
+        .unwrap();
+        writeln!(
+            calls,
+            "    if !checkFloat{name}(-1.0, -{scale}, -1.0) {{ return 12 }}"
+        )
+        .unwrap();
+        writeln!(
+            calls,
+            "    if !checkFloat{name}(0.5, {}, 0.5) {{ return 13 }}",
+            scale / 2
+        )
+        .unwrap();
+        writeln!(
+            calls,
+            "    if !checkFloatSat{name}(1.0e12, {}) {{ return 14 }}",
+            literal(max, &raw_type)
+        )
+        .unwrap();
+        writeln!(
+            calls,
+            "    if !checkFloatSat{name}(-1.0e12, {}) {{ return 15 }}",
+            literal(min, &raw_type)
+        )
+        .unwrap();
     }
     writeln!(
         source,

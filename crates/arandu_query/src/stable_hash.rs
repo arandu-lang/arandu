@@ -318,6 +318,27 @@ fn lang_item_discriminant(item: arandu_middle::symbol_table::LangItem) -> u8 {
         LangItem::U64 => 25,
         LangItem::BitIntrinsic => 26,
         LangItem::AtomicIntrinsic => 27,
+        LangItem::VectorF32x4 => 28,
+        LangItem::VectorF64x2 => 29,
+        LangItem::VectorI32x4 => 30,
+        LangItem::VectorI16x8 => 31,
+        LangItem::VectorU8x16 => 32,
+        LangItem::VectorI64x2 => 33,
+        LangItem::SimdIntrinsic => 34,
+        LangItem::UnsafeCell => 35,
+        LangItem::RwLock => 36,
+        LangItem::Mutex => 37,
+        LangItem::RwLockReadGuard => 38,
+        LangItem::RwLockWriteGuard => 39,
+        LangItem::MutexGuard => 40,
+        LangItem::Condvar => 41,
+        LangItem::Arc => 42,
+        LangItem::ArcWeak => 43,
+        LangItem::ThreadJob => 44,
+        LangItem::ThreadSpawn => 45,
+        LangItem::ThreadParkTimeout => 46,
+        LangItem::ThreadPark => 47,
+        LangItem::ThreadUnpark => 48,
     }
 }
 
@@ -337,12 +358,12 @@ fn hash_symbol(hasher: &mut Hasher, symbol: &arandu_middle::Symbol, include_span
         arandu_parser::Visibility::Internal => 2,
         arandu_parser::Visibility::Public => 3,
     }]);
-    if include_spans {
-        if let Some(item) = symbol.lang_item {
-            hasher.update(&[1, lang_item_discriminant(item)]);
-        } else {
-            hasher.update(&[0]);
-        }
+    // Declaration identity changes typing and transfer proofs even when a
+    // signature projection deliberately omits incidental source spans.
+    if let Some(item) = symbol.lang_item {
+        hasher.update(&[1, lang_item_discriminant(item)]);
+    } else {
+        hasher.update(&[0]);
     }
 }
 
@@ -886,6 +907,13 @@ fn hash_type_check_result(result: &TypeCheckResult, include_spans: bool) -> blak
         hash_symbol_id(&mut h, symbol);
     }
 
+    let mut interior_mutable: Vec<_> = info.interior_mutable_types.iter().copied().collect();
+    interior_mutable.sort_by_key(|symbol| (symbol.file_id, symbol.local_id.0));
+    h.update(&u64_le(interior_mutable.len() as u64));
+    for symbol in interior_mutable {
+        hash_symbol_id(&mut h, symbol);
+    }
+
     let mut repr_c: Vec<_> = info.struct_repr_c.iter().copied().collect();
     repr_c.sort_by_key(|symbol| (symbol.file_id, symbol.local_id.0));
     h.update(&u64_le(repr_c.len() as u64));
@@ -1340,6 +1368,10 @@ fn hash_ar_type(hasher: &mut Hasher, ty: &arandu_middle::types::ArType) {
     use arandu_middle::types::{ArType, Primitive};
 
     match ty {
+        ArType::Vector(vector) => {
+            hasher.update(&[27]);
+            hasher.update(vector.name().as_bytes());
+        }
         ArType::Primitive(primitive) => {
             hasher.update(&[
                 0,
@@ -1383,6 +1415,10 @@ fn hash_ar_type(hasher: &mut Hasher, ty: &arandu_middle::types::ArType) {
         }
         ArType::Slice(inner) => {
             hasher.update(&[4]);
+            hash_id(hasher, inner.as_usize());
+        }
+        ArType::MutSlice(inner) => {
+            hasher.update(&[26]);
             hash_id(hasher, inner.as_usize());
         }
         ArType::Array(len, inner) => {
@@ -1683,6 +1719,49 @@ fn hash_stmt(hasher: &mut Hasher, stmt: &arandu_middle::amir::AmirStmt) {
 fn hash_rvalue(hasher: &mut Hasher, value: &arandu_middle::amir::AmirRvalue) {
     use arandu_middle::amir::AmirRvalue as R;
     match value {
+        R::VectorSelect {
+            mask,
+            if_true,
+            if_false,
+        } => {
+            hasher.update(&[36]);
+            hash_amir_operand(hasher, mask);
+            hash_amir_operand(hasher, if_true);
+            hash_amir_operand(hasher, if_false);
+        }
+        R::VectorCompare { op, left, right } => {
+            hasher.update(&[37, op.stable_tag()]);
+            hash_amir_operand(hasher, left);
+            hash_amir_operand(hasher, right);
+        }
+        R::VectorOp { op, left, right } => {
+            hasher.update(&[31, op.stable_tag()]);
+            hash_amir_operand(hasher, left);
+            hash_amir_operand(hasher, right);
+        }
+        R::VectorSplat { value } => {
+            hasher.update(&[32]);
+            hash_amir_operand(hasher, value);
+        }
+        R::VectorShuffle { left, right, mask } => {
+            hasher.update(&[33]);
+            hash_amir_operand(hasher, left);
+            hash_amir_operand(hasher, right);
+            hasher.update(mask);
+        }
+        R::VectorExtractLane { vector, lane } => {
+            hasher.update(&[34, *lane]);
+            hash_amir_operand(hasher, vector);
+        }
+        R::VectorInsertLane {
+            vector,
+            lane,
+            value,
+        } => {
+            hasher.update(&[35, *lane]);
+            hash_amir_operand(hasher, vector);
+            hash_amir_operand(hasher, value);
+        }
         R::Use(op) => {
             hasher.update(&[0]);
             hash_amir_operand(hasher, op);
@@ -2410,6 +2489,12 @@ mod tests {
             .insert(symbol, EffectFlags::FILE_READ);
         assert_ne!(baseline_hash, with_effect.stable_hash());
 
+        let mut with_interior_mutability = baseline.clone();
+        Arc::make_mut(&mut with_interior_mutability.type_info)
+            .interior_mutable_types
+            .insert(symbol);
+        assert_ne!(baseline_hash, with_interior_mutability.stable_hash());
+
         let mut with_repr_c = baseline.clone();
         Arc::make_mut(&mut with_repr_c.type_info)
             .struct_repr_c
@@ -2451,5 +2536,113 @@ mod tests {
         reverse_effects.insert(another_symbol, EffectFlags::THREAD);
         reverse_effects.insert(symbol, EffectFlags::FILE_READ);
         assert_eq!(first_order.stable_hash(), reverse_order.stable_hash());
+    }
+}
+
+#[cfg(test)]
+mod vector_hash_tests {
+    use super::*;
+    use arandu_middle::{
+        amir::{AmirOperand, AmirRvalue, TempId, VectorOp},
+        types::{ArType, VectorType},
+    };
+
+    #[test]
+    fn vector_hashes_track_shape_operation_lane_mask_and_operands() {
+        let mut shapes = std::collections::HashSet::new();
+        for shape in VectorType::ALL {
+            let mut hash = Hasher::new();
+            hash_ar_type(&mut hash, &ArType::Vector(shape));
+            assert!(shapes.insert(hash.finalize()));
+        }
+        let a = AmirOperand::Copy(TempId::from_usize(1));
+        let b = AmirOperand::Copy(TempId::from_usize(2));
+        let mut reversed = std::array::from_fn(|index| u8::try_from(index).unwrap());
+        reversed[0] = 16;
+        let cases = [
+            AmirRvalue::VectorOp {
+                op: VectorOp::Add,
+                left: a,
+                right: b,
+            },
+            AmirRvalue::VectorOp {
+                op: VectorOp::Sub,
+                left: a,
+                right: b,
+            },
+            AmirRvalue::VectorOp {
+                op: VectorOp::Add,
+                left: b,
+                right: a,
+            },
+            AmirRvalue::VectorCompare {
+                op: arandu_middle::amir::VectorCompareOp::Eq,
+                left: a,
+                right: b,
+            },
+            AmirRvalue::VectorCompare {
+                op: arandu_middle::amir::VectorCompareOp::Ne,
+                left: a,
+                right: b,
+            },
+            AmirRvalue::VectorSelect {
+                mask: a,
+                if_true: a,
+                if_false: b,
+            },
+            AmirRvalue::VectorSelect {
+                mask: b,
+                if_true: a,
+                if_false: b,
+            },
+            AmirRvalue::VectorSplat { value: a },
+            AmirRvalue::VectorShuffle {
+                left: a,
+                right: b,
+                mask: std::array::from_fn(|index| u8::try_from(index).unwrap()),
+            },
+            AmirRvalue::VectorShuffle {
+                left: a,
+                right: b,
+                mask: reversed,
+            },
+            AmirRvalue::VectorExtractLane { vector: a, lane: 0 },
+            AmirRvalue::VectorExtractLane { vector: a, lane: 1 },
+            AmirRvalue::VectorInsertLane {
+                vector: a,
+                lane: 0,
+                value: b,
+            },
+        ];
+        let mut hashes = std::collections::HashSet::new();
+        for value in cases {
+            let mut hash = Hasher::new();
+            hash_rvalue(&mut hash, &value);
+            assert!(hashes.insert(hash.finalize()));
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod authority_hash_tests {
+    use super::*;
+
+    #[test]
+    fn semantic_signature_hash_includes_lang_item_identity_without_source_spans() {
+        use arandu_middle::symbol_table::{LangItem, SymbolKind};
+        let mut plain = TypeCheckResult::empty();
+        let scope = plain.symbols.global_scope();
+        let id = std::sync::Arc::make_mut(&mut plain.symbols)
+            .define(
+                scope,
+                "Owner",
+                SymbolKind::Struct,
+                arandu_middle::Span::new(100, 105, 0),
+            )
+            .expect("fresh declaration");
+        let mut canonical = plain.clone();
+        std::sync::Arc::make_mut(&mut canonical.symbols).set_lang_item(id, LangItem::Arc);
+        assert_ne!(type_signature_hash(&plain), type_signature_hash(&canonical));
     }
 }

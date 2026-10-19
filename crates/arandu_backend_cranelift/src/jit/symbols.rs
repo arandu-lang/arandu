@@ -878,6 +878,15 @@ pub(crate) fn runtime_imports(
             })?;
         insert_sym(func_ids, "ar_rt_thread_sleep_ms", id);
 
+        let id = module
+            .declare_function("ar_rt_thread_park_timeout", Linkage::Import, &sleep_sig)
+            .map_err(|err| {
+                codegen_ice(format!(
+                    "failed to declare ar_rt_thread_park_timeout: {err:?}"
+                ))
+            })?;
+        insert_sym(func_ids, "ar_rt_thread_park_timeout", id);
+
         let void_noarg = Signature::new(default_call_conv);
         for name in ["ar_rt_thread_yield", "ar_rt_thread_park"] {
             let id = module
@@ -904,6 +913,18 @@ pub(crate) fn runtime_imports(
             .declare_function("ar_rt_condvar_wait", Linkage::Import, &wait_sig)
             .map_err(|err| codegen_ice(format!("failed to declare ar_rt_condvar_wait: {err:?}")))?;
         insert_sym(func_ids, "ar_rt_condvar_wait", id);
+
+        let mut timeout_sig = wait_sig.clone();
+        timeout_sig.params.push(AbiParam::new(I64));
+        timeout_sig.returns.push(AbiParam::new(I32));
+        let id = module
+            .declare_function("ar_rt_condvar_wait_timeout", Linkage::Import, &timeout_sig)
+            .map_err(|err| {
+                codegen_ice(format!(
+                    "failed to declare ar_rt_condvar_wait_timeout: {err:?}"
+                ))
+            })?;
+        insert_sym(func_ids, "ar_rt_condvar_wait_timeout", id);
 
         let mut void_ptr = Signature::new(default_call_conv);
         void_ptr.params.push(AbiParam::new(ptr_type));

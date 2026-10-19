@@ -6,6 +6,7 @@ use crate::SymbolTable;
 use crate::hir::ReceiverKind;
 use crate::literal_pool::{AmirLiteralEntry, AmirLiteralPool};
 use crate::ops::{BinaryOp, UnaryOp};
+use std::fmt::Write;
 
 impl AmirProgram {
     #[must_use]
@@ -232,6 +233,35 @@ impl AmirRvalue {
         match self {
             AmirRvalue::Use(op) => {
                 op.pretty_print_to(out, symbols, pool);
+            }
+            AmirRvalue::VectorOp { op, left, right } => {
+                let _ = write!(out, "vector.{op:?} {left:?}, {right:?}");
+            }
+            AmirRvalue::VectorCompare { op, left, right } => {
+                let _ = write!(out, "vector.cmp.{op:?} {left:?}, {right:?}");
+            }
+            AmirRvalue::VectorSelect {
+                mask,
+                if_true,
+                if_false,
+            } => {
+                let _ = write!(out, "vector.select {mask:?}, {if_true:?}, {if_false:?}");
+            }
+            AmirRvalue::VectorSplat { value } => {
+                let _ = write!(out, "vector.splat {value:?}");
+            }
+            AmirRvalue::VectorShuffle { left, right, mask } => {
+                let _ = write!(out, "vector.shuffle {left:?}, {right:?}, {mask:?}");
+            }
+            AmirRvalue::VectorExtractLane { vector, lane } => {
+                let _ = write!(out, "vector.extract {vector:?}, {lane}");
+            }
+            AmirRvalue::VectorInsertLane {
+                vector,
+                lane,
+                value,
+            } => {
+                let _ = write!(out, "vector.insert {vector:?}, {lane}, {value:?}");
             }
             AmirRvalue::Binary { op, left, right } => {
                 out.push_str(&format!(

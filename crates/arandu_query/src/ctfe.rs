@@ -604,6 +604,21 @@ impl FunctionProvider for QueryProvider<'_> {
         };
         self.unit(&lowered.result, symbol)
     }
+
+    fn intrinsic(&self, symbol: SymbolId) -> Option<arandu_middle::intrinsics::IntrinsicKind> {
+        let file = self.db.source_file_by_id(symbol.file_id)?;
+        let locals = crate::passes::local_symbols(self.db, file);
+        let def = locals.symbols.try_get(symbol)?;
+        if def.kind == arandu_middle::SymbolKind::ExternFunc {
+            let kind = arandu_middle::intrinsics::IntrinsicKind::from_name(&def.name)?;
+            if kind.is_pure_bit_operation()
+                || kind == arandu_middle::intrinsics::IntrinsicKind::Abort
+            {
+                return Some(kind);
+            }
+        }
+        None
+    }
 }
 
 impl QueryProvider<'_> {
@@ -658,6 +673,21 @@ impl FunctionProvider for InstanceProvider<'_> {
             Ok(unit) => Ok(Arc::clone(unit)),
             Err(_) => Err(EvalErrorKind::UnavailableFunction(key.definition)),
         }
+    }
+
+    fn intrinsic(&self, symbol: SymbolId) -> Option<arandu_middle::intrinsics::IntrinsicKind> {
+        let file = self.db.source_file_by_id(symbol.file_id)?;
+        let locals = crate::passes::local_symbols(self.db, file);
+        let def = locals.symbols.try_get(symbol)?;
+        if def.kind == arandu_middle::SymbolKind::ExternFunc {
+            let kind = arandu_middle::intrinsics::IntrinsicKind::from_name(&def.name)?;
+            if kind.is_pure_bit_operation()
+                || kind == arandu_middle::intrinsics::IntrinsicKind::Abort
+            {
+                return Some(kind);
+            }
+        }
+        None
     }
 }
 

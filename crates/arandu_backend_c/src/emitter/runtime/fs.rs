@@ -508,6 +508,15 @@ static void ar_fs_readdir(ArStr path, uint8_t **out_buf, {uint_c_ty} *out_count,
 #if defined(__linux__)
 #include <sys/syscall.h>
 #endif
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+#if (defined(__APPLE__) && TARGET_OS_OSX) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__) || defined(__DragonFly__)
+#define AR_CAP_COMPONENT_ONLY 1
+#endif
+#if defined(__linux__) || defined(AR_CAP_COMPONENT_ONLY)
+#define AR_CAP_SUPPORTED 1
+#endif
 static bool ar_cap_path_valid(const uint8_t *path, {uint_c_ty} len, bool allow_dot) {{
     if (!path || len == 0 || len >= 4096) return false;
     if (allow_dot && len == 1 && path[0] == '.') return true;
@@ -521,6 +530,9 @@ static bool ar_cap_path_valid(const uint8_t *path, {uint_c_ty} len, bool allow_d
             begin = i + 1;
         }}
     }}
+#if defined(AR_CAP_COMPONENT_ONLY)
+    if (memchr(path, '/', (size_t)len)) return false;
+#endif
     return true;
 }}
 static int ar_cap_open_beneath(int dir_fd, const char *path, int flags, unsigned mode) {{
@@ -531,6 +543,18 @@ static int ar_cap_open_beneath(int dir_fd, const char *path, int flags, unsigned
         UINT64_C(0x08) | UINT64_C(0x04) | UINT64_C(0x02)
     }};
     return (int)syscall(SYS_openat2, dir_fd, path, &how, sizeof(how));
+#elif defined(AR_CAP_COMPONENT_ONLY)
+    if (dir_fd < 0 || !path || !*path || strchr(path, '/')) return -1;
+    int fd = openat(dir_fd, path, flags | O_NOFOLLOW | O_CLOEXEC, (mode_t)mode);
+    if (fd < 0) return -1;
+    if (flags & O_DIRECTORY) {{
+        struct stat metadata;
+        if (fstat(fd, &metadata) != 0 || !S_ISDIR(metadata.st_mode)) {{
+            close(fd);
+            return -1;
+        }}
+    }}
+    return fd;
 #else
     (void)dir_fd; (void)path; (void)flags; (void)mode;
     return -1; /* No weaker traversal fallback. */
@@ -544,7 +568,7 @@ static int ar_cap_parent(int dir_fd, char *path, char **leaf) {{
     }} else {{
         *leaf = path;
     }}
-#if defined(__linux__)
+#if defined(AR_CAP_SUPPORTED)
     return ar_cap_open_beneath(dir_fd, separator ? path : ".", O_RDONLY | O_DIRECTORY, 0);
 #else
     (void)dir_fd;
@@ -552,7 +576,7 @@ static int ar_cap_parent(int dir_fd, char *path, char **leaf) {{
 #endif
 }}
 static {int_c_ty} ar_fs_dir_open(const uint8_t *path_ptr, {uint_c_ty} path_len) {{
-#if defined(__linux__)
+#if defined(AR_CAP_SUPPORTED)
     if (!path_ptr || path_len == 0 || path_len >= 4096 || memchr(path_ptr, 0, (size_t)path_len)) return -1;
     char stack_buf[4096];
     memcpy(stack_buf, path_ptr, (size_t)path_len);
@@ -564,7 +588,7 @@ static {int_c_ty} ar_fs_dir_open(const uint8_t *path_ptr, {uint_c_ty} path_len) 
 #endif
 }}
 static {int_c_ty} ar_fs_dir_openat({int_c_ty} dir_fd, const uint8_t *path_ptr, {uint_c_ty} path_len) {{
-#if defined(__linux__)
+#if defined(AR_CAP_SUPPORTED)
     if (!ar_cap_path_valid(path_ptr, path_len, true)) return -1;
     char path[4096]; memcpy(path, path_ptr, (size_t)path_len); path[path_len] = 0;
     return ({int_c_ty})ar_cap_open_beneath((int)dir_fd, path, O_RDONLY | O_DIRECTORY, 0);
@@ -574,7 +598,7 @@ static {int_c_ty} ar_fs_dir_openat({int_c_ty} dir_fd, const uint8_t *path_ptr, {
 #endif
 }}
 static {int_c_ty} ar_fs_openat({int_c_ty} dir_fd, const uint8_t *path_ptr, {uint_c_ty} path_len, bool read, bool write, bool create, bool truncate) {{
-#if defined(__linux__)
+#if defined(AR_CAP_SUPPORTED)
     if (!ar_cap_path_valid(path_ptr, path_len, false) || (!read && !write) || ((create || truncate) && !write)) return -1;
     char path[4096]; memcpy(path, path_ptr, (size_t)path_len); path[path_len] = 0;
     int flags = (read && write) ? O_RDWR : (write ? O_WRONLY : O_RDONLY);
@@ -587,7 +611,7 @@ static {int_c_ty} ar_fs_openat({int_c_ty} dir_fd, const uint8_t *path_ptr, {uint
 #endif
 }}
 static {int_c_ty} ar_fs_mkdirat({int_c_ty} dir_fd, const uint8_t *path_ptr, {uint_c_ty} path_len) {{
-#if defined(__linux__)
+#if defined(AR_CAP_SUPPORTED)
     if (!ar_cap_path_valid(path_ptr, path_len, false)) return -1;
     char path[4096]; memcpy(path, path_ptr, (size_t)path_len); path[path_len] = 0;
     char *leaf = NULL;
@@ -603,7 +627,7 @@ static {int_c_ty} ar_fs_mkdirat({int_c_ty} dir_fd, const uint8_t *path_ptr, {uin
 #endif
 }}
 static {int_c_ty} ar_fs_unlinkat({int_c_ty} dir_fd, const uint8_t *path_ptr, {uint_c_ty} path_len, bool is_dir) {{
-#if defined(__linux__)
+#if defined(AR_CAP_SUPPORTED)
     if (!ar_cap_path_valid(path_ptr, path_len, false)) return -1;
     char path[4096]; memcpy(path, path_ptr, (size_t)path_len); path[path_len] = 0;
     char *leaf = NULL;

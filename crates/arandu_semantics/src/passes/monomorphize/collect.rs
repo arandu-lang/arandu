@@ -433,6 +433,7 @@ fn method_symbol_from_field(
     let base_ty = tc.type_info.type_interner.resolve(pool.expr(base).ty);
     let actual = peel_recv_base_ty(tc, base_ty);
     let type_id = match actual {
+        ArType::Vector(shape) => tc.symbols.vector_type_symbol(shape),
         ArType::Named(id, _) => Some(id),
         ArType::Ptr(inner) => match tc.type_info.type_interner.resolve(inner) {
             ArType::Named(id, _) => Some(id),

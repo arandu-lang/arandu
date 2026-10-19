@@ -87,7 +87,7 @@ fn foundation_modules_parse_and_export_their_contracts() {
             ][..],
         ),
     ] {
-        let file = db.new_file(path.to_string(), source.to_string());
+        let file = db.new_stdlib_file(path.to_string(), source.to_string());
         parse(&db, file)
             .as_ref()
             .unwrap_or_else(|error| panic!("{path} must parse: {error}"));
@@ -111,6 +111,14 @@ fn foundation_modules_are_freestanding_and_type_check_together() {
     let mut db = DatabaseImpl::default();
     let mut foundations = Vec::new();
     for (path, source) in [
+        (
+            "stdlib/core/marker.aru",
+            include_str!("../../../../stdlib/core/marker.aru"),
+        ),
+        (
+            "stdlib/core/mem.aru",
+            include_str!("../../../../stdlib/core/mem.aru"),
+        ),
         ("stdlib/core/intrinsics.aru", INTRINSICS_ARU),
         ("stdlib/core/option.aru", OPTION_ARU),
         ("stdlib/core/result.aru", RESULT_ARU),
@@ -120,7 +128,7 @@ fn foundation_modules_are_freestanding_and_type_check_together() {
         ("stdlib/core/io.aru", IO_ARU),
         ("stdlib/core/str.aru", STR_ARU),
     ] {
-        let file = db.new_file(path.to_string(), source.to_string());
+        let file = db.new_stdlib_file(path.to_string(), source.to_string());
         if matches!(
             path,
             "stdlib/core/decimal.aru"

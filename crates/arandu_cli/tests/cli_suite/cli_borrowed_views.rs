@@ -149,12 +149,12 @@ func main(): int {
         storage.push(0 as u8)
         i = i + 1
     }
-    let view = storage.asSlice()
-    let mut writer = fmt.Formatter.new(view)
+    let mut writer = fmt.Formatter.new(storage.asMutSlice())
     match writer.writeStr("hey") {
         Ok(3) => {}
         _ => { return 1 }
     }
+    let view = writer.asSlice()
     if view[0] != (104 as u8) || view[1] != (101 as u8) || view[2] != (121 as u8) {
         return 2
     }
@@ -163,7 +163,8 @@ func main(): int {
         Err(_) => {}
         _ => { return 4 }
     }
-    if writer.len() != 3 || view[0] != (104 as u8) { return 5 }
+    let view2 = writer.asSlice()
+    if writer.len() != 3 || view2[0] != (104 as u8) { return 5 }
     return 0
 }
 "#,

@@ -96,13 +96,28 @@ impl<'a> Resolver<'a> {
             }
             TopLevelDecl::Func(decl) => match &decl.name {
                 FuncName::Free { span, name } => {
-                    self.define_with_visibility(
+                    let sym = self.define_with_visibility(
                         scope,
                         name,
                         SymbolKind::Func,
                         *span,
                         decl.visibility,
                     );
+                    if let Some(sym) = sym {
+                        use arandu_middle::symbol_table::LangItem;
+                        let item = match (self.current_module.as_deref(), name.as_str()) {
+                            (Some("std.thread"), "spawn") => Some(LangItem::ThreadSpawn),
+                            (Some("std.thread"), "parkTimeout") => {
+                                Some(LangItem::ThreadParkTimeout)
+                            }
+                            (Some("std.thread"), "park") => Some(LangItem::ThreadPark),
+                            (Some("std.thread"), "unpark") => Some(LangItem::ThreadUnpark),
+                            _ => None,
+                        };
+                        if let Some(item) = item {
+                            self.symbols.set_lang_item(sym, item);
+                        }
+                    }
                 }
                 FuncName::Method {
                     span,
@@ -124,6 +139,16 @@ impl<'a> Resolver<'a> {
                                 self.symbols
                                     .associated_members
                                     .insert((type_sym, name.clone()), symbol);
+                            }
+                            if let Some(item) =
+                                match (self.current_module.as_deref(), method_name.as_str()) {
+                                    (Some("std.thread"), "Thread.unpark") => {
+                                        Some(arandu_middle::symbol_table::LangItem::ThreadUnpark)
+                                    }
+                                    _ => None,
+                                }
+                            {
+                                self.symbols.set_lang_item(symbol, item);
                             }
                         }
                         Err(previous) => {
@@ -156,6 +181,25 @@ impl<'a> Resolver<'a> {
                         (Some("std.runtime.executor"), "TaskHandle") => Some(LangItem::TaskHandle),
                         (Some("std.alloc.string"), "String") => Some(LangItem::String),
                         (Some("std.alloc.vec"), "Vec") => Some(LangItem::Vec),
+                        (Some("std.alloc.arc"), "Arc") => Some(LangItem::Arc),
+                        (Some("std.alloc.arc"), "ArcWeak") => Some(LangItem::ArcWeak),
+                        (Some("std.core.simd"), "F32x4") => Some(LangItem::VectorF32x4),
+                        (Some("std.core.simd"), "F64x2") => Some(LangItem::VectorF64x2),
+                        (Some("std.core.simd"), "I32x4") => Some(LangItem::VectorI32x4),
+                        (Some("std.core.simd"), "I16x8") => Some(LangItem::VectorI16x8),
+                        (Some("std.core.simd"), "U8x16") => Some(LangItem::VectorU8x16),
+                        (Some("std.core.simd"), "I64x2") => Some(LangItem::VectorI64x2),
+                        (Some("std.sync.condvar"), "Condvar") => Some(LangItem::Condvar),
+                        (Some("std.core.cell"), "UnsafeCell") => Some(LangItem::UnsafeCell),
+                        (Some("std.sync.rwlock"), "RwLock") => Some(LangItem::RwLock),
+                        (Some("std.sync.rwlock"), "RwLockReadGuard") => {
+                            Some(LangItem::RwLockReadGuard)
+                        }
+                        (Some("std.sync.rwlock"), "RwLockWriteGuard") => {
+                            Some(LangItem::RwLockWriteGuard)
+                        }
+                        (Some("std.sync.mutex"), "Mutex") => Some(LangItem::Mutex),
+                        (Some("std.sync.mutex"), "MutexGuard") => Some(LangItem::MutexGuard),
                         _ => None,
                     };
                     if let Some(item) = item {
@@ -272,6 +316,7 @@ impl<'a> Resolver<'a> {
                         (Some("std.core.marker"), "Copy") => Some(LangItem::Copy),
                         (Some("std.core.marker"), "Send") => Some(LangItem::Send),
                         (Some("std.core.marker"), "Sync") => Some(LangItem::Sync),
+                        (Some("std.thread"), "ThreadJob") => Some(LangItem::ThreadJob),
                         _ => None,
                     };
                     if let Some(capability) = capability {
@@ -293,6 +338,10 @@ impl<'a> Resolver<'a> {
                         == arandu_parser::AbiKind::AranduIntrinsic
                         && let Some(marker) = arandu_middle::IntrinsicKind::from_name(&member.name)
                             .and_then(|kind| kind.declaration_marker())
+                            .or_else(|| {
+                                arandu_middle::intrinsics::SimdIntrinsic::from_name(&member.name)
+                                    .map(|_| arandu_middle::symbol_table::LangItem::SimdIntrinsic)
+                            })
                         && let Some(symbol) = symbol
                     {
                         self.symbols.set_lang_item(symbol, marker);

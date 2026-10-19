@@ -183,7 +183,7 @@ public func Xoshiro256PlusPlus.genRangeFloat(self: mut ref Xoshiro256PlusPlus, m
 }
 
 /// Fills `dest` with pseudorandom bytes.
-public func Xoshiro256PlusPlus.nextBytes(self: mut ref Xoshiro256PlusPlus, dest: []u8): void {
+public func Xoshiro256PlusPlus.nextBytes(self: mut ref Xoshiro256PlusPlus, dest: mut []u8): void {
     let len = slice.len<u8>(dest)
     let mut i: usize = 0
     while i < len {

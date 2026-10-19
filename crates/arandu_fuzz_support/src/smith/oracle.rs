@@ -647,7 +647,8 @@ pub(crate) fn register_fuzz_stdlib(host: &mut AnalysisHost) -> Result<(), String
     };
     host.db_mut().set_stdlib_root(root.clone());
     for (path, text) in files {
-        host.new_file(path.clone(), (*text).to_owned());
+        let file = host.new_file(path.clone(), (*text).to_owned());
+        host.db_mut().trust_stdlib_source(file);
     }
     Ok(())
 }

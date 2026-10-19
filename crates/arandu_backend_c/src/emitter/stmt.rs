@@ -215,12 +215,19 @@ impl<'a> CEmitter<'a> {
                 }
                 let p = self.format_operand(&args[0], func);
                 if let Some(dest) = lhs {
-                    let _ = writeln!(
-                        &mut self.output,
-                        "    t{} = *({});",
-                        self.temp_slots[dest.as_usize()],
-                        p
-                    );
+                    let dest_ty = self.temp_ty(func, *dest);
+                    if matches!(dest_ty, ArType::Void) || self.checked_layout(&dest_ty).size == 0 {
+                        let _ = writeln!(&mut self.output, "    (void)({p});");
+                    } else {
+                        let _ = writeln!(
+                            &mut self.output,
+                            "    t{} = *({});",
+                            self.temp_slots[dest.as_usize()],
+                            p
+                        );
+                    }
+                } else {
+                    let _ = writeln!(&mut self.output, "    (void)({p});");
                 }
                 true
             }
@@ -230,7 +237,12 @@ impl<'a> CEmitter<'a> {
                 }
                 let p = self.format_operand(&args[0], func);
                 let v = self.format_operand(&args[1], func);
-                let _ = writeln!(&mut self.output, "    *({}) = {};", p, v);
+                let val_ty = self.operand_ty(func, &args[1]);
+                if matches!(val_ty, ArType::Void) || self.checked_layout(&val_ty).size == 0 {
+                    let _ = writeln!(&mut self.output, "    (void)({p}); (void)({v});");
+                } else {
+                    let _ = writeln!(&mut self.output, "    *({}) = {};", p, v);
+                }
                 true
             }
             Some(arandu_middle::IntrinsicKind::PtrOffset) => {
@@ -241,9 +253,11 @@ impl<'a> CEmitter<'a> {
                 let i = self.format_operand(&args[1], func);
                 // C pointer arithmetic scales by pointee size when `p` is a typed pointer.
                 if let Some(dest) = lhs {
+                    let dest_ty = self.interner.resolve(func.temps[dest.as_usize()].ty);
+                    let c_ty = self.format_type(&dest_ty);
                     let _ = writeln!(
                         &mut self.output,
-                        "    t{} = ({}) + ({});",
+                        "    t{} = (({c_ty})({})) + ({});",
                         self.temp_slots[dest.as_usize()],
                         p,
                         i
@@ -630,6 +644,7 @@ impl<'a> CEmitter<'a> {
                             current_ty = match &current_ty {
                                 ArType::Array(_, inner)
                                 | ArType::Slice(inner)
+                                | ArType::MutSlice(inner)
                                 | ArType::ConstArray(_, inner) => self.interner.resolve(*inner),
                                 other => other.clone(),
                             };

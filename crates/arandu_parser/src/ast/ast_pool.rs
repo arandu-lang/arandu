@@ -239,6 +239,7 @@ pub enum ExprKind {
     Lambda {
         params: IndexRange,
         body: super::LambdaBody,
+        is_move: bool,
     }, // lambda_param_ids range. body is non-recursive since its inner exprs use ExprId.
     Alloc {
         expr: ExprId,

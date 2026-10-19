@@ -3160,15 +3160,15 @@ fn parity_safe_fmt_formatter() {
 module std.core.fmt_test
 
 extern "arandu-intrinsic" {
-    func sliceFromRaw(owner: ptr[u8], data: ptr[u8], len: uint): []u8
+    func mutSliceFromRaw(owner: ptr[u8], data: ptr[u8], len: uint): mut []u8
 }
 
 struct Formatter {
-    buf: []u8
+    buf: mut []u8
     len: uint
 }
 
-func newFormatter(buf: []u8): Formatter {
+func newFormatter(buf: mut []u8): Formatter {
     return Formatter {
         buf: buf,
         len: 0,
@@ -3183,11 +3183,11 @@ func Formatter.writeByte(self: mut ref Formatter, b: u8): bool {
 
 func main(): int {
     let raw = alloc(16) as ptr[u8]
-    let s = unsafe { sliceFromRaw(raw, raw, 16 as uint) }
+    let s = unsafe { mutSliceFromRaw(raw, raw, 16 as uint) }
     let mut f = newFormatter(s)
     f.writeByte(65 as u8)
     f.writeByte(66 as u8)
-    if s[0] != (65 as u8) || s[1] != (66 as u8) {
+    if f.buf[0] != (65 as u8) || f.buf[1] != (66 as u8) {
         unsafe { free(raw) }
         return 1
     }
@@ -3237,24 +3237,24 @@ fn parity_mut_ref_slice_preserves_data_and_length_words() {
 module std.core.mut_slice_parity
 
 extern "arandu-intrinsic" {
-    func sliceFromRaw(owner: ptr[u8], data: ptr[u8], len: uint): []u8
-    func sliceLen<T>(source: []T): uint
+    func mutSliceFromRaw(owner: ptr[u8], data: ptr[u8], len: uint): mut []u8
+    func mutSliceLen<T>(source: mut []T): uint
 }
 
-func fill(buf: mut ref []u8): uint {
-    let len = unsafe { sliceLen<u8>(*buf) }
+func fill(buf: mut ref mut []u8): uint {
+    let len = unsafe { mutSliceLen<u8>(*buf) }
     if len != 4 { return 99 }
     buf[1] = 42 as u8
     return len
 }
 
-func observedLen(buf: ref []u8): uint {
-    return unsafe { sliceLen<u8>(*buf) }
+func observedLen(buf: ref mut []u8): uint {
+    return unsafe { mutSliceLen<u8>(*buf) }
 }
 
 func main(): int {
     let raw = alloc(4) as ptr[u8]
-    let mut bytes = unsafe { sliceFromRaw(raw, raw, 4 as uint) }
+    let mut bytes = unsafe { mutSliceFromRaw(raw, raw, 4 as uint) }
     let len = fill(mut ref bytes)
     if len != 4 || observedLen(ref bytes) != 4 || bytes[1] != (42 as u8) {
         unsafe { free(raw) }
@@ -3292,9 +3292,11 @@ func asPtr<T>(s: []T): ptr[T] {
 
 func main(): int {
     let raw = alloc(8) as ptr[u8]
+    unsafe {
+        ptrWrite<u8>(raw, 42 as u8)
+        ptrWrite<u8>(ptrOffset<u8>(raw, 1), 99 as u8)
+    }
     let s = unsafe { sliceFromRaw(raw, raw, 8 as uint) }
-    s[0] = 42 as u8
-    s[1] = 99 as u8
     let p = asPtr<u8>(s)
     let v0 = unsafe { ptrRead<u8>(p) }
     if v0 != (42 as u8) {
@@ -3332,6 +3334,8 @@ extern "arandu-intrinsic" {
     func sliceFromRaw(owner: ptr[int], data: ptr[int], len: uint): []int
     func sliceLen(source: []int): uint
     func sliceSubslice(source: []int, start: uint, len: uint): []int
+    func ptrWrite<T>(p: ptr[T], val: T): void
+    func ptrOffset<T>(base: ptr[T], offset: i32): ptr[T]
 }
 
 struct Split {
@@ -3348,11 +3352,13 @@ func splitAt(s: []int, mid: uint): Split {
 
 func main(): int {
     let raw = alloc(32) as ptr[int]
+    unsafe {
+        ptrWrite<int>(raw, 10)
+        ptrWrite<int>(ptrOffset<int>(raw, 1), 20)
+        ptrWrite<int>(ptrOffset<int>(raw, 2), 30)
+        ptrWrite<int>(ptrOffset<int>(raw, 3), 40)
+    }
     let s = unsafe { sliceFromRaw(raw, raw, 4 as uint) }
-    s[0] = 10
-    s[1] = 20
-    s[2] = 30
-    s[3] = 40
     let parts = splitAt(s, 2 as uint)
     if parts.left[0] != 10 || parts.left[1] != 20 {
         unsafe { free(raw) }
@@ -4522,4 +4528,161 @@ fn parity_borrowed_projections_preserve_pointer_loads_and_single_evaluation() {
         "borrowed_projections",
         include_str!("../../../tests/corpus/borrowed_projections.aru"),
     );
+}
+
+#[test]
+fn parity_borrowed_string_equality_compares_contents_in_both_operand_orders() {
+    test_zero_result_all_opt_levels(
+        "borrowed_string_equality",
+        include_str!("../../../tests/corpus/borrowed_string_equality.aru"),
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn generated_c_parking_lot_preserves_instance_wakes_tokens_and_thread_lifetimes() {
+    let (amir, tc) = compile_src(
+        "extern \"C\" { func ar_rt_condvar_wait_timeout(key: ptr[u8], seq: usize, ms: u64): i32 }\npublic func probe(key: ptr[u8]): i32 { return unsafe { ar_rt_condvar_wait_timeout(key, 0 as usize, 0 as u64) } }\nfunc main(): int { return 0 }",
+    );
+    let source = format!(
+        "#define main arandu_unused_main\n{}\n#undef main\n{}",
+        emit_c(&amir, &tc),
+        include_str!("parking_lot_harness.c"),
+    );
+    let directory = env::temp_dir().join(format!("arandu-parking-c-{}", std::process::id()));
+    fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("parking.c");
+    fs::write(&path, source).unwrap();
+    let compiler = env::var("CC").unwrap_or_else(|_| "cc".into());
+    for optimization in ["-O0", "-O2"] {
+        let executable = directory.join("parking");
+        let output = Command::new(&compiler)
+            .args([
+                optimization,
+                "-pthread",
+                "-fsanitize=undefined",
+                "-fno-sanitize-recover=all",
+            ])
+            .arg(&path)
+            .arg("-o")
+            .arg(&executable)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let output = Command::new(executable).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{:?}: {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn jit_condvar_timeout_bridge_uses_pointer_sized_sequence_and_u64_duration() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let (amir, tc) = compile_src(
+        r#"
+extern "C" {
+    func ar_rt_condvar_wait_timeout(key: ptr[u8], seq: usize, ms: u64): i32
+    func ar_rt_condvar_notify_one(key: ptr[u8]): void
+}
+public func timedWait(key: ptr[u8], seq: usize, ms: u64): i32 {
+    return unsafe { ar_rt_condvar_wait_timeout(key, seq, ms) }
+}
+public func notify(key: ptr[u8]): void { unsafe { ar_rt_condvar_notify_one(key) } }
+func main(): int { return 0 }
+"#,
+    );
+    let module = CraneliftBackend::try_new()
+        .unwrap()
+        .compile(&amir, &tc.symbols, &tc.type_info)
+        .unwrap();
+    // SAFETY: the declarations above specify these exact ABI signatures; the
+    // compiled module and aligned atomic sequence outlive every call/worker.
+    let wait = unsafe {
+        module
+            .get_fn::<unsafe extern "C" fn(*const u8, usize, u64) -> i32>("timedWait")
+            .unwrap()
+    };
+    let notify = unsafe {
+        module
+            .get_fn::<unsafe extern "C" fn(*const u8)>("notify")
+            .unwrap()
+    };
+    let sequence = AtomicUsize::new(0);
+    let key = (&sequence as *const AtomicUsize).cast::<u8>();
+    // SAFETY: all accesses use the stable atomic word; no concurrent mutation
+    // exists for the timeout and mismatch cases.
+    unsafe {
+        assert_eq!(wait(key, 1, u64::MAX), 1);
+        assert_eq!(wait(key, 0, 0), 0);
+    }
+    std::thread::scope(|scope| {
+        let sequence = &sequence;
+        let worker = scope.spawn(move || {
+            // SAFETY: scope retains the atomic allocation, and no non-atomic
+            // access to it is performed while the JIT helper may read it.
+            unsafe { wait((sequence as *const AtomicUsize).cast(), 0, 5_000) }
+        });
+        sequence.fetch_add(1, Ordering::Release);
+        // SAFETY: notify follows the atomic sequence increment and shares its
+        // live allocation; it is valid before or after waiter registration.
+        unsafe {
+            notify(key);
+        }
+        assert_eq!(worker.join().unwrap(), 1);
+    });
+}
+
+#[test]
+#[cfg(unix)]
+fn generated_c_phase_lock_alternates_batches_preserves_fifo_and_cleans_cancellation() {
+    let (amir, tc) = compile_src(
+        "extern \"C\" { func ar_rt_rwlock_try_write(key: ptr[u8]): i32 }\npublic func probe(key: ptr[u8]): i32 { return unsafe { ar_rt_rwlock_try_write(key) } }\nfunc main(): int { return 0 }",
+    );
+    let source = format!(
+        "#define main arandu_unused_main\n{}\n#undef main\n{}",
+        emit_c(&amir, &tc),
+        include_str!("phase_lock_harness.c"),
+    );
+    let directory = env::temp_dir().join(format!("arandu-phase-lock-c-{}", std::process::id()));
+    fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("phase_lock.c");
+    fs::write(&path, source).unwrap();
+    let compiler = env::var("CC").unwrap_or_else(|_| "cc".into());
+    for optimization in ["-O0", "-O2"] {
+        let executable = directory.join("phase_lock");
+        let output = Command::new(&compiler)
+            .args([
+                optimization,
+                "-pthread",
+                "-fsanitize=undefined",
+                "-fno-sanitize-recover=all",
+            ])
+            .arg(&path)
+            .arg("-o")
+            .arg(&executable)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let output = Command::new(executable).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{:?}: {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    fs::remove_dir_all(directory).unwrap();
 }

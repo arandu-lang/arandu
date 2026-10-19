@@ -17,13 +17,16 @@ impl<'a> FuncTranslator<'a> {
     ) {
         let left_ty = self.operand_arity_ty(left);
         let right_ty = self.operand_arity_ty(right);
-        let is_str =
-            |ty: TypeId| matches!(self.interner.resolve(ty), ArType::Primitive(Primitive::Str));
+        let is_str = |ty: TypeId| {
+            self.interner
+                .resolve(ty)
+                .str_reference_depth(self.interner)
+                .is_some()
+        };
         if (is_str(left_ty) || is_str(right_ty))
             && matches!(op, BinaryOp::Equal | BinaryOp::NotEqual)
         {
-            let operand_ty = if is_str(left_ty) { left_ty } else { right_ty };
-            self.emit_string_equality(op, left, right, operand_ty);
+            self.emit_string_equality(op, left, right);
             return;
         }
 
@@ -242,15 +245,9 @@ impl<'a> FuncTranslator<'a> {
     /// leaves values on the operand stack and can also treat distinct strings
     /// with equal contents as unequal. Pointer locals advance together, while
     /// the left length is used as a bounded loop counter.
-    fn emit_string_equality(
-        &mut self,
-        op: BinaryOp,
-        left: &AmirOperand,
-        right: &AmirOperand,
-        operand_ty: TypeId,
-    ) {
-        self.emit_operand(left, operand_ty);
-        self.emit_operand(right, operand_ty);
+    fn emit_string_equality(&mut self, op: BinaryOp, left: &AmirOperand, right: &AmirOperand) {
+        self.emit_string_descriptor(left);
+        self.emit_string_descriptor(right);
         // Stack: left_ptr, left_len, right_ptr, right_len.
         self.code.push(Instruction::LocalSet(self.scratch_d));
         self.code.push(Instruction::LocalSet(self.scratch_c));
@@ -316,6 +313,42 @@ impl<'a> FuncTranslator<'a> {
         if op == BinaryOp::NotEqual {
             self.code.push(Instruction::I32Eqz);
         }
+    }
+
+    fn emit_string_descriptor(&mut self, operand: &AmirOperand) {
+        let ty = self.operand_arity_ty(operand);
+        let depth = self
+            .interner
+            .resolve(ty)
+            .str_reference_depth(self.interner)
+            .unwrap_or(0);
+        if depth == 0 {
+            self.emit_operand(
+                operand,
+                self.interner.intern(ArType::Primitive(Primitive::Str)),
+            );
+            return;
+        }
+        self.emit_operand(operand, ty);
+        for _ in 1..depth {
+            self.code.push(Instruction::I32Load(wasm_encoder::MemArg {
+                offset: 0,
+                align: 2,
+                memory_index: 0,
+            }));
+        }
+        self.code.push(Instruction::LocalTee(self.scratch_c));
+        self.code.push(Instruction::I32Load(wasm_encoder::MemArg {
+            offset: 0,
+            align: 2,
+            memory_index: 0,
+        }));
+        self.code.push(Instruction::LocalGet(self.scratch_c));
+        self.code.push(Instruction::I32Load(wasm_encoder::MemArg {
+            offset: 4,
+            align: 2,
+            memory_index: 0,
+        }));
     }
 
     /// Emit a unary operation.

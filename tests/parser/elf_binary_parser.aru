@@ -1,0 +1,24 @@
+struct Elf64Ehdr {
+    is_valid: bool,
+    class_type: u8,
+    elf_type: u16,
+    machine: u16,
+    entry: u64,
+}
+
+func readU16Le(bytes: []u8, off: usize): u16 {
+    return (bytes[off] as u16) | ((bytes[off + 1] as u16) << 8);
+}
+
+func readU32Le(bytes: []u8, off: usize): u32 {
+    return (bytes[off] as u32)
+        | ((bytes[off + 1] as u32) << 8)
+        | ((bytes[off + 2] as u32) << 16)
+        | ((bytes[off + 3] as u32) << 24);
+}
+
+func readU64Le(bytes: []u8, off: usize): u64 {
+    let low = readU32Le(bytes, off) as u64;
+    let high = readU32Le(bytes, off + 4) as u64;
+    return low | (high << 32);
+}

@@ -237,7 +237,7 @@ func main(): int {
     input.push(10 as u8)
     input.push(20 as u8)
     input.push(30 as u8)
-    let storageSlice = storage.asSlice()
+    let storageSlice = storage.asMutSlice()
     let inputSlice = input.asSlice()
     let mut writer = io.SliceWriter.new(storageSlice)
     if writer.remaining() != 4 { return 10 }
@@ -246,15 +246,15 @@ func main(): int {
         Result.Err(_) => { return 2 }
     }
     if writer.written() != 3 { return 11 }
-    if storageSlice[0] != 10 as u8 { return 12 }
-    let mut reader = io.SliceReader.new(storageSlice)
+    if writer.buffer()[0] != 10 as u8 { return 12 }
+    let mut reader = io.SliceReader.new(writer.buffer())
     if reader.remaining() != 4 { return 13 }
     let mut output = vec.Vec<u8>.new()
     output.push(0 as u8)
     output.push(0 as u8)
     output.push(0 as u8)
-    let mut outputSlice = output.asSlice()
-    match reader.read(mut ref outputSlice) {
+    let mut outputSlice = output.asMutSlice()
+    match reader.read(outputSlice) {
         Result.Ok(count) => { if count != 3 { return 3 } }
         Result.Err(_) => { return 4 }
     }
@@ -458,8 +458,9 @@ func main(): int { return bitCountOnes32(5) as int }
 }
 
 #[test]
-fn bit_intrinsics_reject_unsupported_machine_signatures() {
+fn bit_intrinsic_abi_requires_trusted_standard_library_source() {
     for declaration in [
+        "func bitCountOnes32(value: u32): u32",
         "func bitCountOnes32(): u32",
         "func bitCountOnes32(value: u64): u32",
         "func bitCountOnes64(value: u64): u64",
@@ -475,7 +476,8 @@ fn bit_intrinsics_reject_unsupported_machine_signatures() {
         assert!(!output.status.success(), "accepted {declaration}");
         let errors = String::from_utf8_lossy(&output.stderr);
         assert!(
-            errors.contains("U001") && errors.contains("unsupported signature"),
+            errors.contains("U001")
+                && errors.contains("requires a trusted standard-library source"),
             "{declaration}: {errors}"
         );
         assert!(!errors.contains("ICE"), "{declaration}: {errors}");
@@ -534,10 +536,14 @@ func main(): int {
 
 #[test]
 fn borrowed_projections_do_not_copy_payloads_or_repeat_side_effects() {
-    let output = run_source(
-        "borrowedProjections.aru",
-        include_str!("../../../../tests/corpus/borrowed_projections.aru"),
+    // The standalone backend fixture declares its own compiler ABI. CLI users
+    // obtain these operations from the loader-verified standard library instead.
+    let source = include_str!("../../../../tests/corpus/borrowed_projections.aru").replacen(
+        "extern \"arandu-intrinsic\" { func addressOf<T>(value: mut ref T): ptr[T]\nfunc refWrite<T>(value: mut ref T, replacement: T): void }",
+        "from std.core.intrinsics import { addressOf }\nfrom std.core.mem import { refWrite }",
+        1,
     );
+    let output = run_source("borrowedProjections.aru", &source);
     assert!(
         output.status.success(),
         "{:?} {}",

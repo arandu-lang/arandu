@@ -56,6 +56,34 @@ try {
     if ($manifest.schema -ne 1 -or $manifest.version -ne $version -or $manifest.target -ne $target -or $manifest.archive -ne 'zip') {
         throw 'release manifest does not match archive identity'
     }
+    $sumFile = Join-Path $tree 'BLAKE3SUMS'
+    $treeFull = [IO.Path]::GetFullPath($tree).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+    $verified = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $sumCount = 0
+    foreach ($line in Get-Content -LiteralPath $sumFile) {
+        if ([string]::IsNullOrWhiteSpace($line) -or $line.StartsWith('#')) { continue }
+        if ($line -notmatch '^(?<hash>[0-9a-f]{64})  (?<path>.+)$') { throw 'malformed BLAKE3SUMS entry' }
+        $expected = $Matches.hash
+        $relative = $Matches.path
+        if ($relative.Contains('\') -or $relative.StartsWith('/') -or $relative.Split('/') -contains '..' -or $relative.Split('/') -contains '.') {
+            throw "unsafe BLAKE3SUMS path: $relative"
+        }
+        if (-not $verified.Add($relative)) { throw "duplicate BLAKE3SUMS entry: $relative" }
+        $file = [IO.Path]::GetFullPath((Join-Path $tree ($relative.Replace('/', [IO.Path]::DirectorySeparatorChar))))
+        if (-not $file.StartsWith($treeFull, [StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $file -PathType Leaf)) {
+            throw "BLAKE3SUMS file is missing or outside package: $relative"
+        }
+        $actual = (& "$tree/bin/arandu.exe" hash-file $file).Trim()
+        if ($LASTEXITCODE -ne 0 -or $actual -ne $expected) { throw "BLAKE3SUMS mismatch for $relative" }
+        $sumCount++
+    }
+    if ($sumCount -eq 0) { throw 'BLAKE3SUMS is empty' }
+    $packageFiles = @(Get-ChildItem -File -Recurse -LiteralPath $tree | Where-Object { $_.FullName -ne $sumFile })
+    if ($packageFiles.Count -ne $sumCount) { throw 'BLAKE3SUMS does not cover every package file' }
+    foreach ($file in $packageFiles) {
+        $relative = $file.FullName.Substring($treeFull.Length).Replace('\', '/')
+        if (-not $verified.Contains($relative)) { throw "BLAKE3SUMS is missing $relative" }
+    }
     $reportedVersion = (& "$tree/bin/arandu.exe" --version).Trim()
     if ($LASTEXITCODE -ne 0 -or $reportedVersion -ne "arandu $version") {
         throw "binary version '$reportedVersion' does not match package version $version"

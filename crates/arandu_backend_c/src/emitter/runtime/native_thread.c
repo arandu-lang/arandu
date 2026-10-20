@@ -19,7 +19,7 @@ typedef struct ar_native_thread {
 } ar_native_thread;
 static ar_native_thread *ar_native_threads = NULL;
 static size_t ar_native_next_id = 1;
-static atomic_bool ar_native_table_lock = ATOMIC_VAR_INIT(false);
+static atomic_bool ar_native_table_lock = false;
 static void ar_native_spin_hint(void) {
 #if defined(_WIN32)
     YieldProcessor();

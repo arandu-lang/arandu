@@ -1,3 +1,12 @@
+/* Platform-width unsigned integer matching what the C emitter produces for
+   `usize` (uint64_t on LP64/LLP64, uint32_t on ILP32). Used for thread IDs
+   shared between static runtime helpers and emitted extern declarations. */
+#if UINTPTR_MAX == UINT64_MAX
+typedef uint64_t ar_usize_t;
+#else
+typedef uint32_t ar_usize_t;
+#endif
+
 /* SL_R.0 cooperative task table (mirrors JIT ar_rt_*). */
 typedef struct {
     int32_t state;          /* 0 EMPTY, 1 PENDING, 2 RUNNING, 3 COMPLETED */
@@ -495,7 +504,7 @@ static void ar_rt_thread_yield(void) {
 
 typedef struct ar_cv_waiter {
     const void *key;
-    size_t owner_id; /* phase-lock admission owner; zero for Condvar waiters */
+    ar_usize_t owner_id; /* phase-lock admission owner; zero for Condvar waiters */
     int notified;
 #if defined(_WIN32)
     CONDITION_VARIABLE cv;
@@ -691,7 +700,7 @@ static void ar_rt_condvar_notify_one(const void *key) { ar_cv_notify(key, 0); }
 static void ar_rt_condvar_notify_all(const void *key) { ar_cv_notify(key, 1); }
 
 typedef struct ar_thread_waiter {
-    size_t id;
+    ar_usize_t id;
 #if defined(_WIN32)
     HANDLE event; /* auto-reset event is the single coalescing park token */
 #else
@@ -702,7 +711,7 @@ typedef struct ar_thread_waiter {
     struct ar_thread_waiter *next;
 } ar_thread_waiter;
 
-static _Atomic size_t ar_next_thread_id = 1;
+static _Atomic ar_usize_t ar_next_thread_id = 1;
 static ar_thread_waiter *ar_waiter_list = NULL;
 #if defined(_WIN32)
 static SRWLOCK ar_waiter_mutex = SRWLOCK_INIT;
@@ -770,9 +779,9 @@ static ar_thread_waiter* ar_get_or_create_thread_waiter(void) {
     if (w) return w;
     w = (ar_thread_waiter*)calloc(1, sizeof(ar_thread_waiter));
     if (!w) abort();
-    size_t id = atomic_load(&ar_next_thread_id);
+    ar_usize_t id = atomic_load(&ar_next_thread_id);
     do {
-        if (id == 0 || id == SIZE_MAX) abort();
+        if (id == 0 || id == (ar_usize_t)-1) abort();
     } while (!atomic_compare_exchange_weak(&ar_next_thread_id, &id, id + 1));
     w->id = id;
 #if defined(_WIN32)
@@ -796,7 +805,7 @@ static ar_thread_waiter* ar_get_or_create_thread_waiter(void) {
     return w;
 }
 
-static size_t ar_rt_thread_current_id(void) { return ar_get_or_create_thread_waiter()->id; }
+static ar_usize_t ar_rt_thread_current_id(void) { return ar_get_or_create_thread_waiter()->id; }
 
 #if !defined(_WIN32)
 static void ar_thread_park_unlock(void *mutex) { pthread_mutex_unlock((pthread_mutex_t*)mutex); }
@@ -871,7 +880,7 @@ static void ar_rt_thread_park_timeout(uint64_t timeout_ms) {
 #endif
 }
 
-static void ar_rt_thread_unpark(size_t thread_id) {
+static void ar_rt_thread_unpark(ar_usize_t thread_id) {
     if (thread_id == 0) return;
     /* Hold registry while signaling: TLS destruction cannot free this waiter. */
     ar_waiter_list_lock();

@@ -2,14 +2,15 @@
    bucket serializes exact-address state and thread identities validate unlocks.
    The caller keeps the key stationary. */
 typedef struct ar_phase_reader_owner {
-    size_t thread_id, count;
+    ar_usize_t thread_id;
+    size_t count;
     struct ar_phase_reader_owner *next;
 } ar_phase_reader_owner;
 typedef struct ar_phase_state {
     const void *key;
     size_t readers;
     int writer;
-    size_t writer_owner;
+    ar_usize_t writer_owner;
     ar_phase_reader_owner *reader_owners;
     ar_cv_waiter *read_head, *read_tail, *write_head, *write_tail;
     struct ar_phase_state *next;
@@ -22,7 +23,7 @@ static ar_phase_state **ar_phase_link(ar_cv_bucket *bucket, const void *key) {
     return link;
 }
 
-static void ar_phase_add_reader(ar_phase_state *state, size_t owner_id) {
+static void ar_phase_add_reader(ar_phase_state *state, ar_usize_t owner_id) {
     if (state->readers == SIZE_MAX) abort();
     ar_phase_reader_owner *owner = state->reader_owners;
     while (owner && owner->thread_id != owner_id) owner = owner->next;
@@ -40,7 +41,7 @@ static void ar_phase_add_reader(ar_phase_state *state, size_t owner_id) {
     state->readers++;
 }
 
-static int ar_phase_remove_reader(ar_phase_state *state, size_t owner_id) {
+static int ar_phase_remove_reader(ar_phase_state *state, ar_usize_t owner_id) {
     ar_phase_reader_owner **link = &state->reader_owners;
     while (*link && (*link)->thread_id != owner_id) link = &(*link)->next;
     ar_phase_reader_owner *owner = *link;
@@ -84,7 +85,7 @@ static void ar_phase_readers(ar_phase_state *state) {
     }
 }
 
-static void ar_phase_release_state(ar_phase_state *state, int write, size_t owner_id) {
+static void ar_phase_release_state(ar_phase_state *state, int write, ar_usize_t owner_id) {
     if (write) {
         if (!state->writer || state->writer_owner != owner_id || state->readers) abort();
         state->writer = 0;
@@ -140,7 +141,7 @@ static void ar_phase_cancel_wait(void *raw) {
 
 static int32_t ar_phase_acquire(uint8_t *key, int write, int blocking) {
     if (!key) abort();
-    size_t owner_id = ar_rt_thread_current_id();
+    ar_usize_t owner_id = ar_rt_thread_current_id();
     ar_cv_bucket *bucket = ar_get_cv_bucket(key);
     ar_cv_lock(bucket);
     ar_phase_state **link = ar_phase_link(bucket, key);
@@ -201,7 +202,7 @@ static int32_t ar_phase_acquire(uint8_t *key, int write, int blocking) {
 
 static void ar_phase_release(uint8_t *key, int write) {
     if (!key) abort();
-    size_t owner_id = ar_rt_thread_current_id();
+    ar_usize_t owner_id = ar_rt_thread_current_id();
     ar_cv_bucket *bucket = ar_get_cv_bucket(key);
     ar_cv_lock(bucket);
     ar_phase_state *state = *ar_phase_link(bucket, key);

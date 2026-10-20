@@ -141,16 +141,31 @@ or 15–30% runtime speedup is promised.
 
 ### Backend and platform matrix
 
-| Capability | C backend | Cranelift backend |
-|---|---|---|
-| Product | One GNU C translation unit | JIT module or relocatable native object |
-| Execution model | External compiler and linker | Host JIT; host AOT uses a native linker and packaged static runtime |
-| Target selection | Explicit `DataLayout`; no triple | Explicit Cranelift triple; public build selects a baseline host ISA |
-| Cross-target status | Source emission only; caller supplies matching compiler, flags, sysroot, libc/runtime, and linker | Unsupported |
-| C dialect/toolchain | GCC or Clang GNU extensions; MSVC is unsupported | Not applicable |
-| Validated CI hosts | Host parity on the S0 Linux gate; install smoke on Linux and macOS | Object structure/determinism locally; installed native build smoke on release hosts |
-| Invalid AMIR | Shared validator runs before emission | Shared validator runs before JIT mutation |
-| Backend failure | `Err(Diagnostic)`; no successful partial source | `Err(Diagnostic)`; no successful partial module |
+| Capability | C backend | Cranelift backend | LLVM experimental |
+|---|---|---|---|
+| Product | One GNU C translation unit | JIT module or relocatable native object | LLVM IR text emitted directly from AMIR |
+| Execution model | External compiler and linker | Host JIT; host AOT uses a native linker and packaged static runtime | IR emission; experimental `run -b llvm` and `build -b llvm` via `clang` + packaged runtime (host only) |
+| Target selection | Explicit `DataLayout`; no triple | Explicit Cranelift triple; public build selects a baseline host ISA | Host target/layout only; no target configuration |
+| Cross-target status | Source emission only; caller supplies matching compiler, flags, sysroot, libc/runtime, and linker | Unsupported | Unsupported; only the host target/layout is accepted |
+| C dialect/toolchain | GCC or Clang GNU extensions; MSVC is unsupported | Not applicable | Pure Rust emission; external LLVM tools only to verify/execute |
+| Validated CI hosts | Host parity on the S0 Linux gate; install smoke on Linux and macOS | Object structure/determinism locally; installed native build smoke on release hosts | Local scalar/aggregate/vector/atomic/trap lowering smoke only |
+| Invalid AMIR | Shared validator runs before emission | Shared validator runs before JIT mutation | Shared validator runs before emission |
+| Backend failure | `Err(Diagnostic)`; no successful partial source | `Err(Diagnostic)`; no successful partial module | `Err(Diagnostic)`; no successful partial IR |
+
+The initial `arandu_backend_llvm` experiment is a direct AMIR-to-LLVM-IR
+lowering, not a supported production target. It covers scalars, pointers,
+structs, tuples, arrays, basic slice descriptors, 128-bit SIMD vectors,
+atomics, primitive `StringInterp`/`ToStr`, and GenRef ops (`GenInsert`/
+`GenGet`/`GenSet`/`GenUpsert`/`GenRemove`, including `std.alloc.gen_arena`).
+Some enums and unfinished Named layouts still return an explicit diagnostic.
+It emits `nonnull` on reference parameters and `nounwind` on definitions, but
+no scoped alias metadata. It is available through `arandu emit-llvm`,
+experimental `arandu run -b llvm`, and experimental `arandu build -b llvm`
+(host only; requires `clang` and the packaged runtime). Differential smith
+fuzzing covers Cranelift↔LLVM via `synthesized-llvm` and `synthesized-all`
+(clang + packaged runtime; skips known experimental emission gaps). EMI also
+exercises LLVM on the interpolation / GenArena / string-lifecycle fixtures.
+See [RFC 0031](rfcs/0031-llvm-mlir-backend-and-scoped-noalias-vectorization.md).
 
 The published 0.1.10 SDK was installed and exercised by native release jobs on
 Windows x86-64 MSVC, Linux x86-64 and macOS ARM64; see the
@@ -173,12 +188,12 @@ columns above are not an inventory excluding Wasm.
 | `isize`, `usize` | target pointer-width scalar | Supported by selected layout | Supported at host width |
 | `float`, `f32`, `f64` | IEEE scalar; `float` uses TargetInfo.float_size, explicit types retain their widths | Supported | Supported |
 | pointers, references, borrows | pointer plus AMIR ownership rules | Supported after borrow lowering | Supported after borrow lowering |
-| arrays, slices, `str` | inline array or `{ptr,len}` fat pointer | Supported; target layout applies | Supported on host layout |
+| arrays, slices, `str` | inline array or `{ptr,len}` fat pointer; host/`extern "C"` calls flatten fat `str`/slice to separate `ptr`+`len` slots (Cranelift and LLVM) | Supported; target layout applies | Supported on host layout |
 | tuples and structs | ordered fields plus ABI padding | Supported | Supported |
 | enums, `Option`, `Result` | target-derived discriminant/payload or admitted niche representation | Supported | Supported |
 | functions and `extern "C"` | declared ABI boundary | Partial: caller must provide compatible symbols | Partial: only registered host/runtime symbols are linkable |
 | allocation and `free` | libc/runtime calls | Hosted runtime only | Host runtime only |
-| string interpolation / primitive `ToStr` | runtime helpers | Supported for primitives and `str` | Supported for primitives and `str` |
+| string interpolation / primitive `ToStr` | runtime helpers | Supported for primitives and `str` | Supported for primitives and `str` (LLVM experimental matches host Cranelift on the m09 fixture) |
 | user-defined formatting | no stable ABI yet | Unsupported | Unsupported |
 | async/await | current ready/poll runtime model | Partial/experimental | Partial/experimental host runtime |
 | OS, sockets, supervisor, generational runtime | runtime-specific symbols | Partial; not a freestanding contract | Experimental host implementation |

@@ -13,14 +13,16 @@
   - `docs/rfcs/0011-incremental-partitioned-aot-and-in-process-linker.md`
   - `docs/rfcs/0025-optimization-oracle-and-testing-aot.md`
 
-> **Estado auditado em 2026-10-15:** Proposta (`Draft`), sem crate
-> `arandu_backend_llvm` na árvore atual. No plano revisável do
-> [roadmap mestre](../arandu-compiler-roadmap-v0.1.md), o tier LLVM pertence à
-> série `0.4.x` e depende previamente da estabilização de `OPT.1–7` (em especial
-> `OPT.3 — Semântica de places, alias e efeitos de memória`) e do oráculo AOT
-> (`RFC 0025`). MLIR, Linalg/StableHLO e aceleradores dedicados **não** são
-> requisitos de um primeiro backend LLVM e permanecem como extensão futura
-> separada.
+> **Estado auditado em 2026-10-20:** `Draft`, com lowering experimental
+> **direto** `arandu_backend_llvm` (AMIR → LLVM IR textual). O subconjunto
+> atual cobre escalares, ponteiros, vetores SIMD de 128 bits, atômicos,
+> estruturas/tuplas/arrays/slices, `StringInterp`/`ToStr` de primitivos e
+> GenRef/`GenArena`; parte dos enums, layouts Named incompletos, corrotinas,
+> `noalias` e ABI completa ainda não são emitidos. Exposto por `emit-llvm`,
+> `run -b llvm` e `build -b llvm` (host/`clang` + runtime empacotado). Não
+> fixa versão do LLVM. No [roadmap mestre](../arandu-compiler-roadmap-v0.1.md),
+> o tier LLVM permanece na série `0.4.x` e depende de `OPT.1–7` e do oráculo
+> AOT (`RFC 0025`). MLIR permanece extensão futura separada.
 
 ---
 
@@ -154,3 +156,38 @@ Para traduzir a exclusividade de `mut ref` sem introduzir miscompilations:
 ## 9. Possibilidades Futuras: Extensão MLIR (Fora do Escopo Inicial)
 
 Uma vez consolidado o tier básico de LLVM IR em `0.4.x+`, uma extensão futura independente poderá investigar a emissão de dialetos **MLIR (*Linalg* / *StableHLO*)** para compilar grafos de tensores da stack científica ([RFC 0012](0012-scientific-computing-and-data-architecture.md)) diretamente para aceleradores de matrizes (TPUs/NPUs). Essa extensão exigirá RFC e provas próprias e não faz parte do escopo mínimo do `arandu_backend_llvm`.
+
+## 10. Implementação experimental inicial (2026-10-19)
+
+`arandu_backend_llvm::emit_llvm_ir` faz lowering **direto** da AMIR validada
+para LLVM IR textual (`.ll`) em Rust puro, sem passar pelo backend C. O
+comando de inspeção `arandu emit-llvm <arquivo.aru>` expõe esse caminho para
+arquivos/projetos no host. Ferramentas externas (`llvm-as`, `lli` ou `clang`)
+são necessárias apenas para verificar ou executar o IR produzido, não para
+gerá-lo.
+
+O subconjunto implementado cobre tipos escalares, ponteiros opacos, `bool`,
+ponto flutuante, estruturas, tuplas, arrays, descritores básicos de slice,
+vetores SIMD de 128 bits, aritmética/comparações, `phi`, `load`/`store`,
+chamadas diretas, atômicos `seq_cst`, `llvm.trap`, intrínsecos de bits,
+`StringInterp`/`ToStr` de primitivos e operações GenRef
+(`GenInsert`/`GenGet`/`GenSet`/`GenUpsert`/`GenRemove`, exercitadas também
+via `std.alloc.gen_arena`). Parâmetros `ref`/`mut ref` recebem `nonnull` e
+definições recebem `nounwind`. Parte dos enums e layouts Named incompletos,
+além de corrotinas e metadados de alias, ainda retornam diagnóstico explícito
+`ICEGEN001` em vez de gerar IR incorreto.
+
+Os comandos experimentais `arandu run -b llvm` e `arandu build -b llvm`
+compilam/ligam o IR com `clang` e a `libarandu_runtime` empacotada (host
+apenas), encaminhando argumentos após `--` no `run`. A execução LLVM é
+opcional e não substitui o JIT Cranelift padrão. Fuzz diferencial
+(`synthesized-llvm` / `synthesized-all`) e o subconjunto EMI LLVM-ready
+(interpolação, GenArena, lifecycle de string) cobrem paridade com Cranelift.
+
+Este backend é experimental e **não** satisfaz o tier de produção descrito
+nesta RFC: não há seleção de target cruzado, ABI AOT/CGU completa, integração
+de remarks/LTO/PGO, compatibilidade entre versões LLVM ou prova de alias. Em
+particular, nenhum `!noalias` é emitido. A promoção além desta experiência
+depende da escolha explícita de empacotamento/versão do LLVM, dos
+pré-requisitos OPT/oráculo da RFC e da expansão do lowering direto com
+testes de paridade. MLIR continua fora do escopo.

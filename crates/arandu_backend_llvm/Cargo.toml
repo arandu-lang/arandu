@@ -1,0 +1,20 @@
+[package]
+name = "arandu_backend_llvm"
+version = "0.1.10"
+edition = "2024"
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+arandu_codegen = { path = "../arandu_codegen" }
+arandu_middle = { path = "../arandu_middle" }
+arandu_semantics = { path = "../arandu_semantics" }
+
+[dev-dependencies]
+arandu_backend_cranelift = { path = "../arandu_backend_cranelift" }
+arandu_base = { path = "../arandu_base" }
+arandu_parser = { path = "../arandu_parser" }
+arandu_semantics = { path = "../arandu_semantics" }
+
+[lints]
+workspace = true

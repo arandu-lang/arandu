@@ -84,10 +84,27 @@ pub fn detect_color_choice(raw_args: &[String]) -> ColorChoice {
     choice
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunBackend {
+    Cranelift,
+    Llvm,
+}
+
+impl RunBackend {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "cranelift" | "jit" => Some(Self::Cranelift),
+            "llvm" => Some(Self::Llvm),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CliInvocation {
     pub debug: bool,
     pub opt: bool,
+    pub backend: RunBackend,
     pub parallel: bool,
     pub genref_report: bool,
     pub cfg: bool,
@@ -106,6 +123,7 @@ pub fn parse_invocation(raw_args: impl IntoIterator<Item = String>) -> CliInvoca
     let raw_args_vec: Vec<String> = raw_args.into_iter().collect();
     let mut debug = false;
     let mut opt = false;
+    let mut backend = RunBackend::Cranelift;
     let mut parallel = false;
     let mut genref_report = false;
     let mut cfg = false;
@@ -169,6 +187,25 @@ pub fn parse_invocation(raw_args: impl IntoIterator<Item = String>) -> CliInvoca
             }
             "--debug" => debug = true,
             "--opt" => opt = true,
+            "-b" | "--backend" => {
+                i += 1;
+                let value = raw_args_vec
+                    .get(i)
+                    .unwrap_or_else(|| fail_usage("--backend requires a value"));
+                backend = RunBackend::parse(value).unwrap_or_else(|| {
+                    fail_usage(format!(
+                        "unknown backend '{value}'; expected cranelift or llvm"
+                    ))
+                });
+            }
+            s if s.starts_with("--backend=") => {
+                let value = &s["--backend=".len()..];
+                backend = RunBackend::parse(value).unwrap_or_else(|| {
+                    fail_usage(format!(
+                        "unknown backend '{value}'; expected cranelift or llvm"
+                    ))
+                });
+            }
             "--parallel" => parallel = true,
             "--genref-report" => genref_report = true,
             "--cfg" => cfg = true,
@@ -238,8 +275,8 @@ pub fn parse_invocation(raw_args: impl IntoIterator<Item = String>) -> CliInvoca
             "--stdlib-path" | "--cache-dir" => {
                 raw_project_flags.push(arg.clone());
                 i += 1;
-                if i < raw_args_vec.len() {
-                    raw_project_flags.push(raw_args_vec[i].clone());
+                if let Some(value) = raw_args_vec.get(i).filter(|value| !value.starts_with('-')) {
+                    raw_project_flags.push(value.clone());
                 } else {
                     fail_usage(format!("{arg} requires a path argument"));
                 }
@@ -261,8 +298,11 @@ pub fn parse_invocation(raw_args: impl IntoIterator<Item = String>) -> CliInvoca
                 if s == "--target" {
                     raw_project_flags.push(arg.clone());
                     i += 1;
-                    if i < raw_args_vec.len() {
-                        raw_project_flags.push(raw_args_vec[i].clone());
+                    if let Some(value) = raw_args_vec.get(i).filter(|value| !value.starts_with('-'))
+                    {
+                        raw_project_flags.push(value.clone());
+                    } else {
+                        fail_usage("--target requires a target triple argument");
                     }
                 } else {
                     raw_project_flags.push(arg.clone());
@@ -297,6 +337,7 @@ pub fn parse_invocation(raw_args: impl IntoIterator<Item = String>) -> CliInvoca
     CliInvocation {
         debug,
         opt,
+        backend,
         parallel,
         genref_report,
         cfg,
@@ -413,7 +454,7 @@ pub fn global_help() -> &'static str {
         "  doctor     Inspect compiler toolchain and environment\n",
         "  cache      Inspect, prune, and verify compiler caches\n\n",
         "Compiler Inspection (advanced):\n",
-        "  lex, parse, hir, amir, graph, emit-c, emit-wasm, emit-component\n",
+        "  lex, parse, hir, amir, graph, emit-c, emit-llvm, emit-wasm, emit-component\n",
         "  hash-file  Compute a BLAKE3 checksum for packaging\n",
         "  archive    Validate a package archive\n\n",
         "Target & Toolchain Options:\n",
@@ -462,10 +503,10 @@ pub fn global_help() -> &'static str {
 pub fn command_help(command: &str) -> Option<&'static str> {
     match command {
         "run" => Some(
-            "Usage: arandu run [path] [-- program-args...]\n\nCompile and execute a package or .aru file with the Cranelift JIT.\n\nOptions:\n  --opt             Optimize AMIR before execution\n  --stdlib-path DIR Override the standard library path\n  -v, --verbose     Show progress and incremental status\n  -q, --quiet       Suppress non-error status output\n\nExamples:\n  arandu run\n  arandu run src/main.aru -- hello\n",
+            "Usage: arandu run [path] [-- program-args...]\n\nCompile and execute a package or .aru file. Cranelift JIT is the default; LLVM\nIR execution is experimental and requires `lli` or `clang` on PATH.\n\nOptions:\n  --opt             Optimize AMIR before execution\n  -b, --backend B   Select cranelift (default) or llvm\n  --stdlib-path DIR Override the standard library path\n  -v, --verbose     Show progress and incremental status\n  -q, --quiet       Suppress non-error status output\n\nExamples:\n  arandu run\n  arandu run -b llvm src/main.aru -- hello\n",
         ),
         "build" => Some(
-            "Usage: arandu build [path] [options]\n\nCompile a package to a native executable or library.\n\nOptions:\n  --release            Build with speed optimizations\n  --size, -Oz          Optimize for size and strip native symbols\n  --target TRIPLE      Select a compilation target\n  --layout LAYOUT      Select host, ptr4, ptr8, or i686 layout\n  --locked             Require the lockfile to be current\n  --offline            Resolve from the local cache only\n  -v, --verbose        Show detailed build progress\n  -q, --quiet          Suppress non-error status output\n",
+            "Usage: arandu build [path] [options]\n\nCompile a package to a native executable or library.\n\nOptions:\n  --release            Build with speed optimizations\n  -b, --backend B      Select cranelift (default) or llvm (release)\n  --size, -Oz          Optimize for size and strip native symbols\n  --target TRIPLE      Select a compilation target\n  --layout LAYOUT      Select host, ptr4, ptr8, or i686 layout\n  --locked             Require the lockfile to be current\n  --offline            Resolve from the local cache only\n  -v, --verbose        Show detailed build progress\n  -q, --quiet          Suppress non-error status output\n",
         ),
         "check" => Some(
             "Usage: arandu check [path] [options]\n\nType-check a package or source file without code generation.\n\nOptions:\n  --parallel       Check source files in parallel\n  --target TRIPLE  Select a compilation target\n  --watch          Repeat checks after source changes\n  -v, --verbose    Show progress and incremental status\n  -q, --quiet      Suppress success and status output\n",
@@ -536,6 +577,9 @@ pub fn command_help(command: &str) -> Option<&'static str> {
         "emit-c" => Some(
             "Usage: arandu emit-c <file.aru> [--opt | --size]\n\nEmit portable C source (compiler inspection tool).\n",
         ),
+        "emit-llvm" => Some(
+            "Usage: arandu emit-llvm <file.aru> [--opt]\n\nEmit experimental host LLVM IR directly from AMIR (no Clang required to emit).\n",
+        ),
         "emit-wasm" => Some(
             "Usage: arandu emit-wasm <file.aru> [--layout ptr4] [--opt | --size]\n\nEmit a WebAssembly module (compiler inspection tool).\n",
         ),
@@ -582,6 +626,23 @@ mod tests {
                 "test", "--format", "json", "--filter", "parser", "--quiet", "--watch"
             ]
         );
+    }
+
+    #[test]
+    fn run_backend_accepts_separated_and_equals_forms() {
+        let separated = parse_invocation([
+            "arandu".to_string(),
+            "run".to_string(),
+            "-b".to_string(),
+            "llvm".to_string(),
+        ]);
+        assert_eq!(separated.backend, RunBackend::Llvm);
+        let equals = parse_invocation([
+            "arandu".to_string(),
+            "run".to_string(),
+            "--backend=cranelift".to_string(),
+        ]);
+        assert_eq!(equals.backend, RunBackend::Cranelift);
     }
 
     #[test]

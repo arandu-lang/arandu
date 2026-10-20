@@ -120,6 +120,9 @@ mod cli_byte_literal;
 #[path = "cli_suite/cli_time_wide.rs"]
 mod cli_time_wide;
 
+#[path = "cli_suite/cli_llvm_backend.rs"]
+mod cli_llvm_backend;
+
 #[path = "cli_suite/cli_math.rs"]
 mod cli_math;
 

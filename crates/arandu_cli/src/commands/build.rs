@@ -21,14 +21,23 @@ pub fn cmd_project_build(
     debug_info: bool,
     genref_report: bool,
     data_layout: DataLayout,
+    backend_choice: crate::args::RunBackend,
 ) -> CliResult {
+    if backend_choice == crate::args::RunBackend::Llvm && flags.target.is_some() {
+        return Err(CliFailure::usage(
+            "experimental LLVM build supports only the host target",
+        ));
+    }
     if flags.size && debug_info {
         return Err(CliFailure::usage(
             "`--size` cannot be combined with `--debug`: size builds strip debug information",
         ));
     }
+    let is_llvm = backend_choice == crate::args::RunBackend::Llvm;
     let backend = project::BackendChoice::from_release_flag(flags.release);
-    let backend_label = if flags.size {
+    let backend_label = if is_llvm {
+        "llvm-release"
+    } else if flags.size {
         "cranelift-size"
     } else {
         backend.label()
@@ -56,7 +65,7 @@ pub fn cmd_project_build(
     };
     let profile = if flags.size {
         artifact::NativeProfile::Size
-    } else if flags.release {
+    } else if flags.release || is_llvm {
         artifact::NativeProfile::Release
     } else {
         artifact::NativeProfile::Dev
@@ -196,7 +205,7 @@ pub fn cmd_project_build(
     // optimized non-debug builds unchanged; native `--debug` deliberately
     // favors inspectability and stable location ranges.
     let native_debug_info = debug_info && !is_wasm;
-    let mut amir_owned = if (opt || flags.release || flags.size) && !native_debug_info {
+    let mut amir_owned = if (opt || flags.release || flags.size || is_llvm) && !native_debug_info {
         Some(artifacts.amir.clone())
     } else {
         None
@@ -209,7 +218,7 @@ pub fn cmd_project_build(
                 arandu_semantics::OptLevel::Os,
                 &filepath,
             );
-        } else if flags.release {
+        } else if flags.release || is_llvm {
             optimize_amir_with_level_or_exit(
                 amir,
                 type_check,
@@ -294,6 +303,140 @@ pub fn cmd_project_build(
         } else {
             "wasm-core"
         };
+        if !flags.quiet {
+            println!(
+                "built {} v{} (backend={}, entry={}, artifact={})",
+                ctx.name,
+                ctx.version,
+                backend_label,
+                ctx.entry_rel,
+                artifact.path.display()
+            );
+        }
+        return Ok(CliSuccess::Done);
+    }
+
+    if is_llvm {
+        arandu_base::time_pass!("codegen-llvm");
+        let ir = arandu_backend_llvm::emit_llvm_ir(
+            amir,
+            type_check.symbols.as_ref(),
+            type_check.type_info.as_ref(),
+        )
+        .unwrap_or_else(|diag| print_diagnostics_and_exit(std::iter::once(diag), &filepath));
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        let temp_ll =
+            std::env::temp_dir().join(format!("arandu-build-{}-{unique}.ll", std::process::id()));
+        let temp_obj =
+            std::env::temp_dir().join(format!("arandu-build-{}-{unique}.o", std::process::id()));
+
+        if let Err(error) = fs::write(&temp_ll, &ir) {
+            return Err(CliFailure::operational(
+                "build native binary via clang",
+                Some(temp_ll),
+                format!("failed to write temporary LLVM IR: {error}"),
+            ));
+        }
+        // Keep a copy under the package target for inspection (`emit-llvm` is
+        // file-scoped and cannot resolve `self.*` package modules).
+        let ir_dump = ctx.root.join("target").join("llvm-ir").join(format!(
+            "{}-{}.ll",
+            ctx.name,
+            std::process::id()
+        ));
+        if let Some(parent) = ir_dump.parent() {
+            let _ = fs::create_dir_all(parent);
+            let _ = fs::write(&ir_dump, &ir);
+        }
+
+        let mut compile = std::process::Command::new("clang");
+        compile.args(["-c", "-O3"]);
+        compile.arg(&temp_ll).arg("-o").arg(&temp_obj);
+        let compile_status = compile.status().map_err(|error| {
+            let _ = fs::remove_file(&temp_ll);
+            CliFailure::operational(
+                "build native binary via clang",
+                Some(temp_ll.clone()),
+                format!("failed to start clang: {error}"),
+            )
+        })?;
+        if !compile_status.success() {
+            let _ = fs::remove_file(&temp_obj);
+            // Keep the IR next to the failure for `llvm-as` / manual inspection.
+            let dump = std::env::temp_dir().join(format!(
+                "arandu-llvm-failed-{}-{unique}.ll",
+                std::process::id()
+            ));
+            let _ = fs::rename(&temp_ll, &dump);
+            return Err(CliFailure::operational(
+                "build native binary via clang",
+                Some(filepath.into()),
+                format!(
+                    "clang failed to optimize and assemble the LLVM IR module (IR dumped to {})",
+                    dump.display()
+                ),
+            ));
+        }
+        let _ = fs::remove_file(&temp_ll);
+
+        let object_bytes = fs::read(&temp_obj).map_err(|error| {
+            let _ = fs::remove_file(&temp_obj);
+            CliFailure::operational(
+                "build native binary via clang",
+                Some(temp_obj.clone()),
+                error.to_string(),
+            )
+        })?;
+        let _ = fs::remove_file(&temp_obj);
+
+        let artifact = {
+            arandu_base::time_pass!("native-artifact");
+            artifact::publish_native_artifact(
+                &ctx.root,
+                &ctx.name,
+                &ctx.version,
+                profile,
+                &object_bytes,
+                |object, output| {
+                    let mut command = std::process::Command::new("clang");
+                    command.arg(object);
+                    let runtime = linker::runtime_library()?;
+                    command.arg(runtime);
+                    #[cfg(not(windows))]
+                    command.args(["-lpthread", "-ldl", "-lm"]);
+                    command.arg("-o").arg(output);
+                    let status = command.status().map_err(|error| {
+                        CliFailure::operational(
+                            "link native artifact",
+                            Some(output.to_path_buf()),
+                            format!("failed to start clang: {error}"),
+                        )
+                    })?;
+                    if !status.success() {
+                        return Err(CliFailure::operational(
+                            "link native artifact",
+                            Some(output.to_path_buf()),
+                            "clang failed to compile or link native executable",
+                        ));
+                    }
+                    Ok("clang-llvm-O3")
+                },
+            )?
+        };
+
+        {
+            arandu_base::time_pass!("incremental-record");
+            crate::incremental::record_session(
+                &session_config,
+                &artifact.path,
+                Some(artifact.digest),
+                reusable_input_fingerprints,
+            )?;
+        }
+
         if !flags.quiet {
             println!(
                 "built {} v{} (backend={}, entry={}, artifact={})",

@@ -3,7 +3,9 @@
 use rayon::prelude::*;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
+use crate::args::RunBackend;
 use crate::cli_error::{CliFailure, CliResult, CliSuccess};
 use crate::pipeline::{
     attach_stdlib, ensure_host_jit_layout, fail_operational, fail_usage, find_aru_files, finish,
@@ -14,6 +16,7 @@ use crate::pipeline::{
 use crate::project::{self, ProjectFlags};
 use arandu_middle::layout::DataLayout;
 
+#[allow(clippy::too_many_arguments)]
 pub fn cmd_project_run(
     start: &Path,
     flags: &ProjectFlags,
@@ -21,6 +24,7 @@ pub fn cmd_project_run(
     _debug: bool,
     genref_report: bool,
     data_layout: DataLayout,
+    backend: RunBackend,
     program_args: &[String],
 ) -> CliResult {
     if flags.release || flags.size {
@@ -29,6 +33,11 @@ pub fn cmd_project_run(
         ));
     }
     ensure_host_jit_layout(data_layout)?;
+    if backend == RunBackend::Llvm && flags.target.is_some() {
+        return Err(CliFailure::usage(
+            "experimental LLVM execution supports only the host target",
+        ));
+    }
     let explain_rebuild = arandu_base::EXPLAIN_REBUILD.load(std::sync::atomic::Ordering::Relaxed);
     let (mut db, rebuild_log) = if flags.verbose || explain_rebuild {
         let (db, log) = arandu_query::DatabaseImpl::with_rebuild_log();
@@ -72,6 +81,16 @@ pub fn cmd_project_run(
         Some(a) => a,
         None => &artifacts.amir,
     };
+
+    if backend == RunBackend::Llvm {
+        return execute_llvm_main(
+            amir,
+            type_check,
+            ctx.entry_path,
+            program_args,
+            "run project",
+        );
+    }
 
     use arandu_semantics::CodegenBackend;
     let output = {
@@ -162,6 +181,136 @@ fn execute_jit_main(
     ))
 }
 
+fn execute_llvm_main(
+    amir: &arandu_semantics::amir::AmirProgram,
+    type_check: &arandu_semantics::TypeCheckResult,
+    context_path: PathBuf,
+    program_args: &[String],
+    action: &'static str,
+) -> CliResult {
+    let has_main = amir
+        .funcs
+        .iter()
+        .any(|f| type_check.symbols.get(f.symbol).name.as_str() == "main");
+    if !has_main {
+        return Err(CliFailure::operational(
+            action,
+            Some(context_path),
+            "'main' function not found in compiled program",
+        ));
+    }
+
+    let ir = arandu_backend_llvm::emit_llvm_ir(
+        amir,
+        type_check.symbols.as_ref(),
+        type_check.type_info.as_ref(),
+    )
+    .map_err(|diag| CliFailure::diagnostics(std::iter::once(diag), Some(context_path.clone())))?;
+
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+    let ir_path =
+        std::env::temp_dir().join(format!("arandu-llvm-{}-{unique}.ll", std::process::id()));
+    if let Err(error) = fs::write(&ir_path, ir) {
+        return Err(CliFailure::operational(
+            action,
+            Some(context_path),
+            format!("failed to write temporary LLVM IR: {error}"),
+        ));
+    }
+
+    let result = run_llvm_ir(&ir_path, program_args, &context_path, action);
+    let _ = fs::remove_file(&ir_path);
+    result
+}
+
+fn run_llvm_ir(
+    ir_path: &Path,
+    program_args: &[String],
+    context_path: &Path,
+    action: &'static str,
+) -> CliResult {
+    // `llvm-as` accepts external declarations, so IR validation alone does not
+    // prove that a program is runnable. Prefer the native linker path: it is the
+    // only one that resolves Arandu runtime symbols such as `io.println`.
+    if tool_available("clang") {
+        // Native link is the only path that resolves Arandu runtime symbols
+        // (`io.println`, `ar_rt_raw_*`, ToStr helpers). Fail loudly if the
+        // packaged static library is missing instead of producing an
+        // unresolvable binary.
+        let runtime = crate::linker::runtime_library()?;
+        let binary_path = ir_path.with_extension("bin");
+        let mut command = Command::new("clang");
+        command.arg(ir_path).arg(&runtime);
+        #[cfg(not(windows))]
+        command.args(["-lpthread", "-ldl", "-lm"]);
+        let compile = command
+            .arg("-o")
+            .arg(&binary_path)
+            .status()
+            .map_err(|error| {
+                CliFailure::operational(
+                    action,
+                    Some(context_path.to_path_buf()),
+                    format!("failed to start clang: {error}"),
+                )
+            })?;
+        if !compile.success() {
+            return Err(CliFailure::operational(
+                action,
+                Some(context_path.to_path_buf()),
+                format!(
+                    "clang failed to compile or link the emitted LLVM IR (runtime {})",
+                    runtime.display()
+                ),
+            ));
+        }
+        let status = Command::new(&binary_path)
+            .args(program_args)
+            .status()
+            .map_err(|error| {
+                CliFailure::operational(
+                    action,
+                    Some(context_path.to_path_buf()),
+                    format!("failed to start LLVM program: {error}"),
+                )
+            });
+        let _ = fs::remove_file(&binary_path);
+        return Ok(CliSuccess::ProgramExit(status?.code().unwrap_or(1)));
+    }
+
+    if tool_available("lli") {
+        let status = Command::new("lli")
+            .arg(ir_path)
+            .args(program_args)
+            .status()
+            .map_err(|error| {
+                CliFailure::operational(
+                    action,
+                    Some(context_path.to_path_buf()),
+                    format!("failed to start lli: {error}"),
+                )
+            })?;
+        return Ok(CliSuccess::ProgramExit(status.code().unwrap_or(1)));
+    }
+
+    Err(CliFailure::operational(
+        action,
+        Some(context_path.to_path_buf()),
+        "LLVM execution requires `clang` (preferred, links the Arandu runtime) or `lli` on PATH",
+    ))
+}
+
+fn tool_available(name: &str) -> bool {
+    Command::new(name)
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
 pub fn cmd_single_file_dispatch(
     command: &str,
     target_path: &Path,
@@ -177,9 +326,27 @@ pub fn cmd_single_file_dispatch(
             "`--size` requires build, emit-c, emit-wasm or emit-component",
         ));
     }
+    if inv.backend != RunBackend::Cranelift && command != "run" {
+        return Err(CliFailure::usage(
+            "`--backend` is supported only by `run` and `run -b llvm`",
+        ));
+    }
+    if inv.backend == RunBackend::Llvm && inv.project_flags.target.is_some() {
+        return Err(CliFailure::usage(
+            "experimental LLVM execution supports only the host target",
+        ));
+    }
+    if command == "emit-llvm"
+        && (inv.data_layout != DataLayout::host() || inv.project_flags.target.is_some())
+    {
+        return Err(CliFailure::usage(
+            "experimental emit-llvm supports only the host target and layout",
+        ));
+    }
     let parallel = inv.parallel;
     let debug = inv.debug;
     let opt = inv.opt;
+    let backend = inv.backend;
     let genref_report = inv.genref_report;
     let cfg = inv.cfg;
     let ascii = inv.ascii;
@@ -470,6 +637,16 @@ pub fn cmd_single_file_dispatch(
                     None => &artifacts.amir,
                 };
 
+                if backend == RunBackend::Llvm {
+                    finish(execute_llvm_main(
+                        amir,
+                        type_check,
+                        PathBuf::from(&filepath),
+                        &inv.program_args,
+                        "run program",
+                    ));
+                }
+
                 use arandu_semantics::CodegenBackend;
                 let output = {
                     let backend = {
@@ -545,6 +722,37 @@ pub fn cmd_single_file_dispatch(
                     print_diagnostics_and_exit(std::iter::once(diag), &filepath)
                 });
                 print!("{c_src}");
+            }
+            "emit-llvm" => {
+                let artifacts = pipeline_lower(&db, source_file, &filepath);
+                if genref_report {
+                    print_genref_report(&filepath, &artifacts);
+                }
+                let type_check = &artifacts.type_check;
+                let mut amir_owned = if opt {
+                    Some(artifacts.amir.clone())
+                } else {
+                    None
+                };
+                if let Some(ref mut amir) = amir_owned {
+                    optimize_amir_with_level_or_exit(
+                        amir,
+                        type_check,
+                        arandu_semantics::OptLevel::O2,
+                        &filepath,
+                    );
+                }
+                let amir = amir_owned.as_ref().unwrap_or(&artifacts.amir);
+                arandu_base::time_pass!("emit-llvm");
+                let ir = arandu_backend_llvm::emit_llvm_ir(
+                    amir,
+                    type_check.symbols.as_ref(),
+                    type_check.type_info.as_ref(),
+                )
+                .unwrap_or_else(|diag| {
+                    print_diagnostics_and_exit(std::iter::once(diag), &filepath)
+                });
+                print!("{ir}");
             }
             "emit-wasm" => {
                 let artifacts = pipeline_lower(&db, source_file, &filepath);

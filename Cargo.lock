@@ -84,6 +84,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "arandu_backend_llvm"
+version = "0.1.10"
+dependencies = [
+ "arandu_backend_cranelift",
+ "arandu_base",
+ "arandu_codegen",
+ "arandu_middle",
+ "arandu_parser",
+ "arandu_semantics",
+]
+
+[[package]]
 name = "arandu_backend_wasm"
 version = "0.1.10"
 dependencies = [
@@ -117,6 +129,7 @@ version = "0.1.10"
 dependencies = [
  "arandu_backend_c",
  "arandu_backend_cranelift",
+ "arandu_backend_llvm",
  "arandu_backend_wasm",
  "arandu_base",
  "arandu_codegen",
@@ -186,6 +199,7 @@ version = "0.1.10"
 dependencies = [
  "arandu_backend_c",
  "arandu_backend_cranelift",
+ "arandu_backend_llvm",
  "arandu_backend_wasm",
  "arandu_codegen",
  "arandu_ide",

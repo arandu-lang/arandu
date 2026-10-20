@@ -45,6 +45,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "amir",
     "graph",
     "emit-c",
+    "emit-llvm",
     "emit-wasm",
     "emit-component",
     "hash-file",
@@ -194,6 +195,7 @@ pub fn run(raw_args: Vec<String>) -> CliResult {
                 inv.debug,
                 inv.genref_report,
                 inv.data_layout,
+                inv.backend,
             );
         }
         "test" => {
@@ -483,6 +485,7 @@ pub fn run(raw_args: Vec<String>) -> CliResult {
                     inv.debug,
                     inv.genref_report,
                     inv.data_layout,
+                    inv.backend,
                     &inv.program_args,
                 );
             }
@@ -519,6 +522,7 @@ pub fn run(raw_args: Vec<String>) -> CliResult {
             | "amir"
             | "run"
             | "emit-c"
+            | "emit-llvm"
             | "emit-wasm"
             | "emit-component"
             | "graph"

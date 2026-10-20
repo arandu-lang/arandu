@@ -155,6 +155,55 @@ fn build_b_llvm_interpolation_and_gen_arena_binaries() {
 }
 
 #[test]
+fn incremental_build_does_not_reuse_cranelift_artifact_for_llvm() {
+    if !clang_available() {
+        return;
+    }
+    let tmp = common::temp_dir("arandu_llvm_incremental_backend").unwrap();
+    let project = tmp.join("llvm_incremental_backend");
+    let init = run_cli_in(
+        &tmp,
+        &["new", "llvm_incremental_backend", "--bin", "--vcs=none"],
+    );
+    assert!(
+        init.status.success(),
+        "new project: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+
+    let cranelift = run_cli_in(&project, &["build", "--release"]);
+    assert!(
+        cranelift.status.success(),
+        "Cranelift build: {}",
+        String::from_utf8_lossy(&cranelift.stderr)
+    );
+
+    let llvm = run_cli_in(&project, &["build", "--backend=llvm"]);
+    assert!(
+        llvm.status.success(),
+        "LLVM build: {}",
+        String::from_utf8_lossy(&llvm.stderr)
+    );
+    let llvm_stdout = String::from_utf8_lossy(&llvm.stdout);
+    assert!(
+        llvm_stdout.contains("backend=llvm-release"),
+        "expected LLVM build, got: {llvm_stdout}"
+    );
+    assert!(
+        !llvm_stdout.contains("incremental: up-to-date"),
+        "LLVM incorrectly reused Cranelift session: {llvm_stdout}"
+    );
+
+    let repeated_llvm = run_cli_in(&project, &["build", "--backend=llvm"]);
+    assert!(
+        repeated_llvm.status.success(),
+        "repeated LLVM build: {}",
+        String::from_utf8_lossy(&repeated_llvm.stderr)
+    );
+    assert!(String::from_utf8_lossy(&repeated_llvm.stdout).contains("incremental: up-to-date"));
+}
+
+#[test]
 fn emit_llvm_includes_interp_and_gen_runtime_helpers() {
     let root = workspace_root();
     let interp = run_cli_in(

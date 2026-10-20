@@ -17,7 +17,7 @@ use crate::artifact::{self, NativeProfile};
 use crate::cli_error::CliFailure;
 use crate::incremental::compiler_artifacts::compiler_artifact_path;
 
-const SCHEMA_VERSION: u32 = 5;
+const SCHEMA_VERSION: u32 = 6;
 const FINGERPRINT_FILENAME: &str = "session-fingerprint.json";
 
 /// One external input participating in the end-to-end build closure.
@@ -73,6 +73,7 @@ pub struct SessionFingerprint {
     pub package: String,
     pub version: String,
     pub profile: String,
+    pub backend: String,
     pub target: String,
     pub pointer_width: u64,
     pub ctfe_limits: [u64; 3],
@@ -128,6 +129,7 @@ pub struct SessionConfig<'a> {
     pub package: &'a str,
     pub version: &'a str,
     pub profile: NativeProfile,
+    pub backend: &'a str,
     pub pointer_width: u64,
     pub ctfe_limits: arandu_query::ctfe::CtfeLimits,
     pub opt: bool,
@@ -165,6 +167,7 @@ pub fn check_incremental(config: &SessionConfig<'_>) -> IncrementalCheck {
         || session.package != config.package
         || session.version != config.version
         || session.profile != config.profile.directory()
+        || session.backend != config.backend
         || session.target != layout.triple
         || session.pointer_width != config.pointer_width
         || session.ctfe_limits != budget_key(config.ctfe_limits)
@@ -324,6 +327,7 @@ pub fn record_session(
         package: config.package.to_owned(),
         version: config.version.to_owned(),
         profile: config.profile.directory().to_owned(),
+        backend: config.backend.to_owned(),
         target: layout.triple,
         pointer_width: config.pointer_width,
         ctfe_limits: budget_key(config.ctfe_limits),

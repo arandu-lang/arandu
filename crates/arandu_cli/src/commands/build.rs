@@ -121,6 +121,17 @@ pub fn cmd_project_build(
         package: &ctx.name,
         version: &ctx.version,
         profile,
+        backend: if is_wasm {
+            if ctx.target_kind == project::TargetKind::Component {
+                "wasm-component"
+            } else {
+                "wasm-core"
+            }
+        } else if is_llvm {
+            "llvm"
+        } else {
+            "cranelift"
+        },
         pointer_width: if is_wasm {
             4
         } else {

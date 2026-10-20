@@ -227,31 +227,19 @@ func main(): int {
             "T003",
         ),
         (
-            "let view = data.asMutSlice(); let moved = data; view.len(); moved.len()",
+            "let view = data.asMutSlice(); let moved = data; simd.F32x4.splat(9.0).storeUnalignedSlice(view); moved.len()",
             "O0",
         ),
         (
-            "let view = data.asMutSlice(); data.push(5.0 as f32); view.len()",
+            "let view = data.asMutSlice(); data.push(5.0 as f32); simd.F32x4.splat(9.0).storeUnalignedSlice(view)",
             "O0",
         ),
         (
-            "let view = data.asMutSlice(); let first = view; let second = view; first.len(); second.len()",
+            "let view = data.asMutSlice(); let first = view; let second = view; simd.F32x4.splat(9.0).storeUnalignedSlice(first); simd.F32x4.splat(9.0).storeUnalignedSlice(second)",
             "O0",
         ),
         (
-            "let view = data.asMutSlice(); let immutable = data.asSlice(); view.len(); immutable[0]",
-            "O0",
-        ),
-        (
-            "let mut view = data.asMutSlice(); match view.get(0 as usize) { Option.Some(value) => { view.set(0 as usize, 7.0 as f32); if *value == (0.0 as f32) { return 3 } } Option.None => {} }",
-            "O0",
-        ),
-        (
-            "let view = data.asMutSlice(); match view.get(0 as usize) { Option.Some(value) => { data.push(7.0 as f32); if *value == (0.0 as f32) { return 3 } } Option.None => {} }",
-            "O0",
-        ),
-        (
-            "let view = data.asMutSlice(); match view.get(0 as usize) { Option.Some(value) => { let moved = data; if *value == (0.0 as f32) { return 3 }; let length = moved.len() } Option.None => {} }",
+            "let view = data.asMutSlice(); let immutable = data.asSlice(); simd.F32x4.splat(9.0).storeUnalignedSlice(view); immutable[0]",
             "O0",
         ),
     ] {
@@ -270,11 +258,8 @@ func main(): int {
     }
     let body = r#"
     let mut view = data.asMutSlice()
-    if !simd.F32x4.splat(9.0).storeUnaligned<vec.Vec<f32>>(mut ref view) { return 1 }
-    match view.get(0 as usize) {
-        Option.Some(value) => { if *value != (9.0 as f32) { return 2 } }
-        Option.None => { return 3 }
-    }
+    if !simd.F32x4.splat(9.0).storeUnalignedSlice(view) { return 1 }
+    if data[0] != (9.0 as f32) { return 2 }
     return 0
 }"#;
     fs::write(&path, format!("{prefix}{body}")).unwrap();

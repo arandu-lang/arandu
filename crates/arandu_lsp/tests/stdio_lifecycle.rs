@@ -12,7 +12,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 // Functional protocol tests share the host with the whole workspace suite and
 // must tolerate scheduler contention. Latency regressions are enforced by the
 // explicit initialize/interactive p95 budgets below, not by this watchdog.
-const MESSAGE_TIMEOUT: Duration = Duration::from_secs(10);
+// Several lifecycle tests run independent LSP processes concurrently. Keep
+// this as a hang guard, not a latency budget; dedicated tests assert latency.
+const MESSAGE_TIMEOUT: Duration = Duration::from_secs(30);
 const INITIALIZE_P95_BUDGET: Duration = Duration::from_millis(250);
 const INTERACTIVE_BUDGET: Duration = Duration::from_millis(250);
 const COLD_SAMPLES: usize = 7;

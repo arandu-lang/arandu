@@ -136,7 +136,7 @@ func eqBig(actual: ref big.BigInt, is_neg: bool, expected_len: usize, l0: u64, l
     let num_neg_u64_max = -num_u64_max.clone();
     let num_2_pow_64 = &num_u64_max + &num_1;
     let num_128 =
-        (NBig::from(0xDEADBEEF_CAFE_BABE_u64) << 64_usize) | NBig::from(0x1337C0DE_1234_5678_u64);
+        (NBig::from(0xDEAD_BEEF_CAFE_BABE_u64) << 64_usize) | NBig::from(0x1337_C0DE_1234_5678_u64);
     let num_128_b =
         (NBig::from(0x11223344_55667788_u64) << 64_usize) | NBig::from(0x99AABBCC_DDEEFF00_u64);
     let num_192 = (&num_128 << 64_usize) | NBig::from(0x987654321_u64);

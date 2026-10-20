@@ -2,7 +2,8 @@
 
 use super::artifact::Failure;
 use super::oracle::{
-    check_source, check_source_with_block_coverage, run_source_with_expected, seed_from_data,
+    check_source_backends, check_source_with_block_coverage,
+    check_source_with_block_coverage_backends, run_source_with_expected, seed_from_data,
     BackendObservation, ExpectedObservation,
 };
 use super::types::{Rng, MAX_DEPTH};
@@ -197,11 +198,22 @@ pub const EMI_CORPUS: &[(&str, &str, Option<ExpectedObservation>)] = &[
     ),
 ];
 
+/// EMI entries whose AMIR surface already lowers through experimental LLVM
+/// (interpolation, GenArena, and string-heavy stdlib fixtures). Other corpus
+/// members stay on Cranelift×C×Wasm until Named/enum gaps close.
+pub(super) const EMI_LLVM_READY: &[&str] = &[
+    "example-interpolation",
+    "example-gen-arena",
+    "example-core-str",
+    "string-lifecycle",
+];
+
 pub(super) fn run_emi_corpus(data: &[u8]) {
     let seed = seed_from_data(data);
     let corpus_index = (seed % EMI_CORPUS.len() as u64) as usize;
     let (name, source, expected) = EMI_CORPUS[corpus_index];
-    run_source_with_expected(source, seed, true, true, name, expected);
+    let compare_llvm = EMI_LLVM_READY.contains(&name);
+    run_source_with_expected(source, seed, true, true, compare_llvm, name, expected);
 }
 
 pub(super) fn verify_emi_regression_source(source: &str, seed: u64) -> Result<(), String> {
@@ -227,8 +239,19 @@ pub(crate) fn check_emi_pair_with_expected(
     compare_wasm: bool,
     expected: Option<ExpectedObservation>,
 ) -> Result<BackendObservation, Failure> {
+    check_emi_pair_backends(source, seed, compare_c, compare_wasm, false, expected)
+}
+
+pub(crate) fn check_emi_pair_backends(
+    source: &str,
+    seed: u64,
+    compare_c: bool,
+    compare_wasm: bool,
+    compare_llvm: bool,
+    expected: Option<ExpectedObservation>,
+) -> Result<BackendObservation, Failure> {
     let (reference, reference_coverage) =
-        check_source_with_block_coverage(source, compare_c, compare_wasm)?;
+        check_source_with_block_coverage_backends(source, compare_c, compare_wasm, compare_llvm)?;
     if let Some(expected) = expected {
         if reference.result != expected.result {
             return Err(Failure::new(
@@ -272,7 +295,7 @@ pub(crate) fn check_emi_pair_with_expected(
                     false,
                 )
             })?;
-    let mutated_result = check_source(&mutated, compare_c, compare_wasm)?;
+    let mutated_result = check_source_backends(&mutated, compare_c, compare_wasm, compare_llvm)?;
     if reference != mutated_result {
         return Err(Failure::new(
             "emi-observation-mismatch",

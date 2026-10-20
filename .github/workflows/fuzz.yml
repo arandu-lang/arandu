@@ -35,6 +35,7 @@ jobs:
           - { name: fuzz_synthesized, seconds: 900, timeout: 15 }
           - { name: fuzz_synthesized_c, seconds: 900, timeout: 120 }
           - { name: fuzz_synthesized_wasm, seconds: 900, timeout: 300 }
+          - { name: fuzz_synthesized_llvm, seconds: 900, timeout: 300 }
           - { name: fuzz_synthesized_all, seconds: 1800, timeout: 300 }
           - { name: fuzz_emi_corpus, seconds: 900, timeout: 300 }
     steps:
@@ -49,13 +50,16 @@ jobs:
           path: arandu_fuzz/corpus/${{ matrix.target.name }}
           key: fuzz-corpus-${{ matrix.target.name }}-${{ github.run_id }}
           restore-keys: fuzz-corpus-${{ matrix.target.name }}-
+      - name: Install clang for LLVM differential targets
+        if: ${{ contains(fromJSON('["fuzz_synthesized_llvm","fuzz_synthesized_all"]'), matrix.target.name) }}
+        run: sudo apt-get update && sudo apt-get install -y clang
       - name: Run bounded libFuzzer campaign
         id: campaign
         env:
           ARANDU_FUZZ_ARTIFACT_DIR: ${{ github.workspace }}/arandu_fuzz/artifacts/${{ matrix.target.name }}
         run: >-
           cargo +nightly fuzz run --fuzz-dir arandu_fuzz
-          --sanitizer=${{ contains(fromJSON('["fuzz_synthesized","fuzz_synthesized_c","fuzz_synthesized_wasm","fuzz_synthesized_all","fuzz_emi_corpus"]'), matrix.target.name) && 'none' || 'address' }}
+          --sanitizer=${{ contains(fromJSON('["fuzz_synthesized","fuzz_synthesized_c","fuzz_synthesized_wasm","fuzz_synthesized_llvm","fuzz_synthesized_all","fuzz_emi_corpus"]'), matrix.target.name) && 'none' || 'address' }}
           ${{ matrix.target.name }} --
           -max_total_time=${{ matrix.target.seconds }}
           -max_len=65536

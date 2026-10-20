@@ -15,6 +15,8 @@ use std::time::{Duration, Instant};
 
 fn assert_synthesized_seed_matches_all_backends(seed: u64) {
     let generated = synthesize_with_oracle(seed);
+    // Unit corpus stays on Cranelift×C×Wasm for wall-clock; LLVM coverage is
+    // `llvm_backend_*` plus the `synthesized-llvm` / `synthesized-all` fuzz targets.
     let observation = check_source(&generated.source, true, true)
         .unwrap_or_else(|failure| panic!("generated seed {seed} failed: {failure:?}"));
     assert_eq!(observation.result, generated.expected_result, "seed {seed}");
@@ -429,22 +431,29 @@ fn confirmed_failure_artifact_contains_source_seed_and_replay_metadata() {
 #[test]
 fn oracle_target_name_matches_the_selected_backend_matrix() {
     assert_eq!(
-        oracle_target_name(false, false, "synthesized"),
+        oracle_target_name(false, false, false, "synthesized"),
         "synthesized"
     );
     assert_eq!(
-        oracle_target_name(true, false, "synthesized"),
+        oracle_target_name(true, false, false, "synthesized"),
         "synthesized-c"
     );
     assert_eq!(
-        oracle_target_name(false, true, "synthesized"),
+        oracle_target_name(false, true, false, "synthesized"),
         "synthesized-wasm"
     );
     assert_eq!(
-        oracle_target_name(true, true, "synthesized"),
+        oracle_target_name(false, false, true, "synthesized"),
+        "synthesized-llvm"
+    );
+    assert_eq!(
+        oracle_target_name(true, true, true, "synthesized"),
         "synthesized-all"
     );
-    assert_eq!(oracle_target_name(true, true, "enum-if-join"), "emi-corpus");
+    assert_eq!(
+        oracle_target_name(true, true, false, "enum-if-join"),
+        "emi-corpus"
+    );
 }
 
 #[test]
@@ -898,6 +907,43 @@ fn differential_string_interpolation_skips_empty_null_parts() {
     let observation = check_source(source, true, true)
         .unwrap_or_else(|failure| panic!("empty-string interpolation failed: {failure:?}"));
     assert_eq!(observation.result, 0);
+    let llvm = check_source_backends(source, false, false, true)
+        .unwrap_or_else(|failure| panic!("empty-string interpolation llvm failed: {failure:?}"));
+    assert_eq!(llvm.result, 0);
+}
+
+#[test]
+fn llvm_backend_matches_cranelift_on_interpolation_fixture() {
+    let source = include_str!("../../../../examples/minimal/m09_interp_tostr.aru");
+    let observation = check_source_backends(source, false, false, true)
+        .unwrap_or_else(|failure| panic!("llvm interpolation fixture failed: {failure:?}"));
+    assert_eq!(observation.result, 0);
+    assert_eq!(observation.stdout, b"n=3\n");
+}
+
+#[test]
+fn llvm_backend_matches_cranelift_on_gen_arena_fixture() {
+    let source = include_str!("../../../../examples/minimal/m16_gen_arena.aru");
+    let observation = check_source_backends(source, false, false, true)
+        .unwrap_or_else(|failure| panic!("llvm GenArena fixture failed: {failure:?}"));
+    assert_eq!(observation.result, 83);
+}
+
+#[test]
+fn llvm_emi_ready_corpus_preserves_expected_observation() {
+    for &(name, source, expected) in EMI_CORPUS {
+        if !EMI_LLVM_READY.contains(&name) {
+            continue;
+        }
+        let Some(expected) = expected else {
+            continue;
+        };
+        let observation = check_emi_pair_backends(source, 0, false, false, true, Some(expected))
+            .unwrap_or_else(|failure| panic!("llvm EMI {name} failed: {failure:?}"));
+        assert_eq!(observation.result, expected.result, "{name}");
+        assert_eq!(observation.stdout, expected.stdout, "{name}");
+        assert_eq!(observation.stderr, expected.stderr, "{name}");
+    }
 }
 
 #[test]
@@ -1979,6 +2025,39 @@ fn c_backend_matches_cranelift_for_a_reproducible_seed() {
 fn wasm_backend_matches_cranelift_for_a_reproducible_seed() {
     for seed in [0u64, 1] {
         run_wasm(&seed.to_le_bytes());
+    }
+}
+
+#[test]
+fn llvm_backend_matches_cranelift_on_supported_scalar_io() {
+    // Seeded smith programs often hit experimental LLVM gaps (enums/named
+    // layout). Gate the unit test on a scalar+I/O fixture LLVM already emits.
+    let source = concat!(
+        "import io\n",
+        "import std.env as env\n",
+        "func main(): int {\n",
+        "    if env.argsLen() != 3 { return -1000029 }\n",
+        "    if env.arg(0) != \"arandu-smith\" { return -1000043 }\n",
+        "    if env.arg(1) != \"\" || env.arg(2) != \"argument-two\" { return -1000030 }\n",
+        "    io.println(\"result-even\")\n",
+        "    io.eprint(\"result-even\")\n",
+        "    return 2\n",
+        "}\n",
+    );
+    let observation = check_source_backends(source, false, false, true)
+        .unwrap_or_else(|failure| panic!("llvm scalar fixture failed: {failure:?}"));
+    assert_eq!(observation.result, 2);
+    assert_eq!(observation.stdout, b"result-even\n");
+    assert_eq!(observation.stderr, b"result-even");
+}
+
+#[test]
+fn llvm_backend_matches_cranelift_for_a_reproducible_seed() {
+    // Full EMI + clang is slow; run with:
+    // `cargo nextest run -p arandu_fuzz_support --profile verification --locked llvm_backend`
+    // Broaden beyond {0,1}; full campaigns stay on cargo-fuzz / verification.
+    for seed in [0u64, 1, 2, 7] {
+        run_llvm(&seed.to_le_bytes());
     }
 }
 

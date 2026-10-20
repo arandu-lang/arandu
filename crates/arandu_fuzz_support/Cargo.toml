@@ -11,6 +11,7 @@ description = "Shared deterministic fuzz targets for Arandu"
 arandu_ide = { path = "../arandu_ide" }
 arandu_backend_cranelift = { path = "../arandu_backend_cranelift" }
 arandu_backend_c = { path = "../arandu_backend_c" }
+arandu_backend_llvm = { path = "../arandu_backend_llvm" }
 arandu_backend_wasm = { path = "../arandu_backend_wasm" }
 arandu_codegen = { path = "../arandu_codegen" }
 arandu_middle = { path = "../arandu_middle" }

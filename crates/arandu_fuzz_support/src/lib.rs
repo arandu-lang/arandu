@@ -42,13 +42,14 @@ pub enum Target {
     SynthesizedC,
     IncrementalCutoff,
     SynthesizedWasm,
+    SynthesizedLlvm,
     EmiCorpus,
     SynthesizedAll,
     LspSession,
 }
 
 impl Target {
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 17] = [
         Self::Lex,
         Self::Syntax,
         Self::Pipeline,
@@ -62,6 +63,7 @@ impl Target {
         Self::SynthesizedC,
         Self::IncrementalCutoff,
         Self::SynthesizedWasm,
+        Self::SynthesizedLlvm,
         Self::EmiCorpus,
         Self::SynthesizedAll,
         Self::LspSession,
@@ -82,6 +84,7 @@ impl Target {
             Self::SynthesizedC => "synthesized-c",
             Self::IncrementalCutoff => "incremental-cutoff",
             Self::SynthesizedWasm => "synthesized-wasm",
+            Self::SynthesizedLlvm => "synthesized-llvm",
             Self::EmiCorpus => "emi-corpus",
             Self::SynthesizedAll => "synthesized-all",
             Self::LspSession => "lsp-session",
@@ -108,6 +111,7 @@ impl Target {
             Self::SynthesizedC => "fuzz_synthesized_c",
             Self::IncrementalCutoff => "fuzz_incremental_cutoff",
             Self::SynthesizedWasm => "fuzz_synthesized_wasm",
+            Self::SynthesizedLlvm => "fuzz_synthesized_llvm",
             Self::EmiCorpus => "fuzz_emi_corpus",
             Self::SynthesizedAll => "fuzz_synthesized_all",
             Self::LspSession => "fuzz_lsp_session",
@@ -133,6 +137,7 @@ pub fn run(target: Target, data: &[u8]) {
         Target::SynthesizedC => smith::run_c(data),
         Target::IncrementalCutoff => incremental::run_private_cutoff(data),
         Target::SynthesizedWasm => smith::run_wasm(data),
+        Target::SynthesizedLlvm => smith::run_llvm(data),
         Target::EmiCorpus => smith::run_emi_corpus(data),
         Target::SynthesizedAll => smith::run_all_backends(data),
         Target::LspSession => lsp_session::run(data),

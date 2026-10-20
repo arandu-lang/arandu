@@ -84,6 +84,12 @@ test = false
 doc = false
 
 [[bin]]
+name = "fuzz_synthesized_llvm"
+path = "fuzz_targets/fuzz_synthesized_llvm.rs"
+test = false
+doc = false
+
+[[bin]]
 name = "fuzz_emi_corpus"
 path = "fuzz_targets/fuzz_emi_corpus.rs"
 test = false

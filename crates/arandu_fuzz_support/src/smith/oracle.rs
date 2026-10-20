@@ -17,7 +17,7 @@ use super::artifact::{
     shrink_and_confirm, write_failure_artifact, Failure, FailureArtifact, TemporaryArtifacts,
     AUTOMATIC_SHRINK_BUDGET, NEXT_TEMP_ID,
 };
-use super::emi::{check_emi_pair_with_expected, inject_dead_pure_statement, inject_emi_mutation};
+use super::emi::{check_emi_pair_backends, inject_dead_pure_statement, inject_emi_mutation};
 use super::process::{
     capture_jit_eprint, capture_jit_print, capture_jit_println, captured_stderr,
     describe_exit_status, parse_backend_result, read_result_channel, reset_jit_stdout_capture,
@@ -69,22 +69,31 @@ impl ExpectedObservation {
 }
 
 pub(super) fn run(data: &[u8]) {
-    run_with_oracles(data, false, false);
+    run_with_oracles(data, false, false, false);
 }
 
 pub(super) fn run_c(data: &[u8]) {
-    run_with_oracles(data, true, false);
+    run_with_oracles(data, true, false, false);
 }
 
 pub(super) fn run_wasm(data: &[u8]) {
-    run_with_oracles(data, false, true);
+    run_with_oracles(data, false, true, false);
+}
+
+pub(super) fn run_llvm(data: &[u8]) {
+    run_with_oracles(data, false, false, true);
 }
 
 pub(super) fn run_all_backends(data: &[u8]) {
-    run_with_oracles(data, true, true);
+    run_with_oracles(data, true, true, true);
 }
 
-pub(crate) fn run_with_oracles(data: &[u8], compare_c: bool, compare_wasm: bool) {
+pub(crate) fn run_with_oracles(
+    data: &[u8],
+    compare_c: bool,
+    compare_wasm: bool,
+    compare_llvm: bool,
+) {
     let seed = seed_from_data(data);
     // Sample the real incremental/cache oracle without giving every large
     // multi-backend seed another workspace-sized analysis workload.
@@ -94,7 +103,7 @@ pub(crate) fn run_with_oracles(data: &[u8], compare_c: bool, compare_wasm: bool)
         .and_then(Result::err)
     {
         let generated = super::synth::synthesize_nested_comptime_if(seed, 3);
-        let target = oracle_target_name(compare_c, compare_wasm, "static-if-cache");
+        let target = oracle_target_name(compare_c, compare_wasm, compare_llvm, "static-if-cache");
         let artifact = write_failure_artifact(
             &artifact_root(),
             FailureArtifact {
@@ -120,6 +129,7 @@ pub(crate) fn run_with_oracles(data: &[u8], compare_c: bool, compare_wasm: bool)
         seed,
         compare_c,
         compare_wasm,
+        compare_llvm,
         "synthesized",
         Some(ExpectedObservation::synthesized(generated.expected_result)),
     );
@@ -151,16 +161,24 @@ pub(crate) fn run_source_with_expected(
     seed: u64,
     compare_c: bool,
     compare_wasm: bool,
+    compare_llvm: bool,
     corpus_name: &str,
     expected: Option<ExpectedObservation>,
 ) {
-    match check_emi_pair_with_expected(text, seed, compare_c, compare_wasm, expected) {
+    match check_emi_pair_backends(text, seed, compare_c, compare_wasm, compare_llvm, expected) {
         Ok(_) => {}
         Err(failure) if failure.shrinkable => {
             let (minimized, reproduced) =
                 shrink_and_confirm(text, AUTOMATIC_SHRINK_BUDGET, |candidate| {
-                    check_emi_pair_with_expected(candidate, seed, compare_c, compare_wasm, expected)
-                        .is_err_and(|candidate_failure| failure.same_identity(&candidate_failure))
+                    check_emi_pair_backends(
+                        candidate,
+                        seed,
+                        compare_c,
+                        compare_wasm,
+                        compare_llvm,
+                        expected,
+                    )
+                    .is_err_and(|candidate_failure| failure.same_identity(&candidate_failure))
                 });
             let source = if reproduced {
                 minimized.source.as_str()
@@ -173,7 +191,7 @@ pub(crate) fn run_source_with_expected(
                 .map(|(candidate, _)| candidate)
                 .or_else(|| inject_dead_pure_statement(source, seed))
                 .unwrap_or_else(|| source.to_owned());
-            let target = oracle_target_name(compare_c, compare_wasm, corpus_name);
+            let target = oracle_target_name(compare_c, compare_wasm, compare_llvm, corpus_name);
             let artifact = write_failure_artifact(
                 &artifact_root(),
                 FailureArtifact {
@@ -208,7 +226,7 @@ pub(crate) fn check_source(
     compare_c: bool,
     compare_wasm: bool,
 ) -> Result<BackendObservation, Failure> {
-    check_source_internal(source, compare_c, compare_wasm, false)
+    check_source_internal(source, compare_c, compare_wasm, false, false)
         .map(|(observation, _)| observation)
 }
 
@@ -217,13 +235,33 @@ pub(crate) fn check_source_with_block_coverage(
     compare_c: bool,
     compare_wasm: bool,
 ) -> Result<(BackendObservation, arandu_backend_cranelift::BlockCoverage), Failure> {
-    check_source_internal(source, compare_c, compare_wasm, true)
+    check_source_internal(source, compare_c, compare_wasm, false, true)
+}
+
+pub(crate) fn check_source_backends(
+    source: &str,
+    compare_c: bool,
+    compare_wasm: bool,
+    compare_llvm: bool,
+) -> Result<BackendObservation, Failure> {
+    check_source_internal(source, compare_c, compare_wasm, compare_llvm, false)
+        .map(|(observation, _)| observation)
+}
+
+pub(crate) fn check_source_with_block_coverage_backends(
+    source: &str,
+    compare_c: bool,
+    compare_wasm: bool,
+    compare_llvm: bool,
+) -> Result<(BackendObservation, arandu_backend_cranelift::BlockCoverage), Failure> {
+    check_source_internal(source, compare_c, compare_wasm, compare_llvm, true)
 }
 
 fn check_source_internal(
     source: &str,
     compare_c: bool,
     compare_wasm: bool,
+    compare_llvm: bool,
     collect_block_coverage: bool,
 ) -> Result<(BackendObservation, arandu_backend_cranelift::BlockCoverage), Failure> {
     let lowered = lower_validated_source(source)?;
@@ -304,7 +342,7 @@ fn check_source_internal(
         cranelift_outputs.push(output);
     }
 
-    if compare_c || compare_wasm {
+    if compare_c || compare_wasm || compare_llvm {
         for ((level, program), output) in optimized_programs.iter().zip(cranelift_outputs.iter()) {
             if compare_c {
                 let c_output = catch_backend_panic("C", *level, || {
@@ -356,6 +394,44 @@ fn check_source_internal(
                         format!("Cranelift/Wasm execution mismatch at {level:?}: Cranelift={output:?}, Wasm={wasm_output:?}"),
                         true,
                     ).with_scope(format!("{level:?}")));
+                }
+            }
+            if compare_llvm {
+                let llvm_result = catch_backend_panic("LLVM", *level, || {
+                    execute_llvm(
+                        program,
+                        &lowered.type_check.symbols,
+                        &lowered.type_check.type_info,
+                    )
+                })?;
+                match llvm_result {
+                    Err(error) if is_llvm_experimental_gap(&error) => {
+                        // Experimental LLVM still rejects parts of the smith
+                        // grammar (enums/named layout, some operators). Skip
+                        // differential comparison until those lowerings land;
+                        // crashes and successful mismatches remain failures.
+                    }
+                    Err(error) => {
+                        let shrinkable = is_backend_failure_reproducible(&error);
+                        let kind = backend_failure_kind("LLVM", &error);
+                        let is_timeout = error.contains("timed out after");
+                        return Err(Failure::new(kind, error, shrinkable)
+                            .with_backend("LLVM")
+                            .with_timeout(is_timeout)
+                            .with_scope(format!("{level:?}")));
+                    }
+                    Ok(llvm_output) => {
+                        if &llvm_output != output {
+                            return Err(Failure::new(
+                                "cranelift-llvm-mismatch",
+                                format!(
+                                    "Cranelift/LLVM execution mismatch at {level:?}: Cranelift={output:?}, LLVM={llvm_output:?}"
+                                ),
+                                true,
+                            )
+                            .with_scope(format!("{level:?}")));
+                        }
+                    }
                 }
             }
         }
@@ -653,6 +729,16 @@ pub(crate) fn register_fuzz_stdlib(host: &mut AnalysisHost) -> Result<(), String
     Ok(())
 }
 
+/// Known holes in the experimental AMIR→LLVM IR emitter. These are not
+/// differential failures yet; successful emission must still match Cranelift.
+pub(crate) fn is_llvm_experimental_gap(error: &str) -> bool {
+    error.starts_with("emission diagnostic:")
+        && (error.contains("does not yet lower")
+            || error.contains("type is unresolved or has no layout metadata")
+            || error.contains("LLVM layout failed for Named(")
+            || error.contains("LLVM backend does not yet"))
+}
+
 pub(crate) fn is_backend_failure_reproducible(error: &str) -> bool {
     error.starts_with("emission diagnostic:")
         || error.starts_with("C compiler ") && error.contains(" exited with ")
@@ -666,6 +752,15 @@ pub(crate) fn is_backend_failure_reproducible(error: &str) -> bool {
         || error.starts_with("Wasm program stderr exceeded the capture limit")
         || error.starts_with("Wasm result channel exceeded the 64-byte limit")
         || error.starts_with("Wasm result channel emitted invalid UTF-8")
+        || error.starts_with("clang ") && error.contains(" exited with ")
+        || error.starts_with("generated LLVM program exited with ")
+        || error.starts_with("generated LLVM program stdout exceeded the capture limit")
+        || error.starts_with("generated LLVM program stderr exceeded the capture limit")
+        || error.starts_with("generated LLVM result channel exceeded the 64-byte limit")
+        || error.starts_with("generated LLVM result channel emitted invalid UTF-8")
+        || error.starts_with("generated LLVM result channel did not terminate its result")
+        || error.starts_with("generated LLVM result channel did not emit exactly one result line")
+        || error.starts_with("parse generated LLVM result channel result ")
         || error.starts_with("Cranelift stdout exceeded the capture limit")
         || error.starts_with("Cranelift stderr exceeded the capture limit")
         || error.starts_with("Cranelift JIT program exited with ")
@@ -686,6 +781,7 @@ pub(crate) fn backend_failure_kind(backend: &str, error: &str) -> &'static str {
         return match backend {
             "C" => "c-emission-failed",
             "Wasm" => "wasm-emission-failed",
+            "LLVM" => "llvm-emission-failed",
             _ => "backend-emission-failed",
         };
     }
@@ -739,6 +835,35 @@ pub(crate) fn backend_failure_kind(backend: &str, error: &str) -> &'static str {
         }
         "Wasm" if error.starts_with("write ") => "wasm-artifact-write-failed",
         "Wasm" => "wasm-backend-failed",
+        "LLVM" if error.starts_with("clang ") => {
+            if error.contains("failed to start process") {
+                "llvm-clang-unavailable"
+            } else if error.contains("timed out after") {
+                "llvm-clang-timeout"
+            } else {
+                "llvm-compilation-failed"
+            }
+        }
+        "LLVM" if error.starts_with("run ") && error.contains("timed out after") => {
+            "llvm-execution-timeout"
+        }
+        "LLVM" if error.starts_with("run ") => "llvm-execution-failed",
+        "LLVM" if error.starts_with("generated LLVM program exited with ") => "llvm-program-exited",
+        "LLVM"
+            if error.contains("result channel") || error.starts_with("parse generated LLVM ") =>
+        {
+            "llvm-result-channel-failed"
+        }
+        "LLVM" if error.starts_with("generated LLVM program stdout") => {
+            "llvm-stdout-capture-failed"
+        }
+        "LLVM" if error.starts_with("generated LLVM program stderr") => {
+            "llvm-stderr-capture-failed"
+        }
+        "LLVM" if error.starts_with("write ") || error.starts_with("locate Arandu runtime") => {
+            "llvm-artifact-setup-failed"
+        }
+        "LLVM" => "llvm-backend-failed",
         _ => "backend-failed",
     }
 }
@@ -1398,6 +1523,198 @@ pub(super) fn execute_c(
         stdout: normalize_captured_output(execution.stdout),
         stderr: normalize_captured_output(execution.stderr),
     })
+}
+
+pub(super) fn execute_llvm(
+    program: &arandu_semantics::amir::AmirProgram,
+    symbols: &arandu_semantics::SymbolTable,
+    type_info: &arandu_semantics::TypeInfo,
+) -> Result<BackendObservation, String> {
+    let ir = arandu_backend_llvm::emit_llvm_ir(program, symbols, type_info)
+        .map_err(|diagnostic| format!("emission diagnostic: {diagnostic:?}"))?;
+    let ir = rename_llvm_main_entry(&ir)?;
+    let runtime = locate_arandu_runtime_library()?;
+
+    // Match Cranelift/C smith argv: program name plus SYNTHESIZED_PROGRAM_ARGS.
+    let mut arg_literals = vec!["arandu-smith".to_owned()];
+    arg_literals.extend(
+        SYNTHESIZED_PROGRAM_ARGS
+            .iter()
+            .map(|argument| argument.replace('\\', "\\\\").replace('"', "\\\"")),
+    );
+    let argc = arg_literals.len();
+    let argv_init = arg_literals
+        .iter()
+        .map(|argument| format!("\"{argument}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let wrapper = format!(
+        "#include <stdint.h>\n#include <stdio.h>\n#include <stdlib.h>\n\
+         int32_t arandu_main(void);\n\
+         int ar_env_install_args(int argc, const char **argv);\n\
+         int main(void) {{\n\
+             const char *args[{argc}] = {{ {argv_init} }};\n\
+             if (ar_env_install_args({argc}, args) != 0) return 124;\n\
+             int32_t result = arandu_main();\n\
+             const char *path = getenv(\"ARANDU_SMITH_RESULT_PATH\");\n\
+             if (!path) return 125;\n\
+             FILE *out = fopen(path, \"wb\");\n\
+             if (!out) return 126;\n\
+             int ok = fprintf(out, \"%d\\n\", result) >= 0;\n\
+             if (fclose(out) != 0) ok = 0;\n\
+             return ok ? 0 : 127;\n\
+         }}\n"
+    );
+
+    let id = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
+    let stem = format!("arandu_smith_llvm_{}_{}", std::process::id(), id);
+    let directory = std::env::temp_dir();
+    let ir_path = directory.join(format!("{stem}.ll"));
+    let wrapper_path = directory.join(format!("{stem}_main.c"));
+    let executable_path = directory.join(if cfg!(windows) {
+        format!("{stem}.exe")
+    } else {
+        stem.clone()
+    });
+    let result_path = directory.join(format!("{stem}.result"));
+    let _cleanup = TemporaryArtifacts(vec![
+        ir_path.clone(),
+        wrapper_path.clone(),
+        executable_path.clone(),
+        result_path.clone(),
+    ]);
+    std::fs::write(&ir_path, ir)
+        .map_err(|error| format!("write {}: {error}", ir_path.display()))?;
+    std::fs::write(&wrapper_path, wrapper)
+        .map_err(|error| format!("write {}: {error}", wrapper_path.display()))?;
+
+    let mut compile_command = Command::new("clang");
+    compile_command
+        .arg(&ir_path)
+        .arg(&wrapper_path)
+        .arg(&runtime)
+        .arg("-O0")
+        .arg("-o")
+        .arg(&executable_path);
+    #[cfg(not(windows))]
+    compile_command.args(["-lpthread", "-ldl", "-lm"]);
+    let compile = run_with_timeout(&mut compile_command, BACKEND_PROCESS_TIMEOUT)
+        .map_err(|error| format!("clang: {error}"))?;
+    if !compile.status.success() {
+        return Err(format!(
+            "clang exited with {}: {}",
+            compile.status,
+            captured_stderr(&compile)
+        ));
+    }
+
+    let mut execution_command = Command::new(&executable_path);
+    execution_command.args(SYNTHESIZED_PROGRAM_ARGS);
+    execution_command.env("ARANDU_SMITH_RESULT_PATH", &result_path);
+    let execution = run_with_timeout(&mut execution_command, BACKEND_PROCESS_TIMEOUT)
+        .map_err(|error| format!("run {}: {error}", executable_path.display()))?;
+    if !execution.status.success() {
+        return Err(format!(
+            "generated LLVM program exited with {}: {}",
+            execution.status,
+            captured_stderr(&execution)
+        ));
+    }
+    if execution.stdout_truncated {
+        return Err("generated LLVM program stdout exceeded the capture limit".to_owned());
+    }
+    if execution.stderr_truncated {
+        return Err("generated LLVM program stderr exceeded the capture limit".to_owned());
+    }
+    let result_bytes = read_result_channel(&result_path, "generated LLVM")?;
+    let result = parse_backend_result(&result_bytes, false, "generated LLVM result channel")?;
+    Ok(BackendObservation {
+        result,
+        stdout: normalize_captured_output(execution.stdout),
+        stderr: normalize_captured_output(execution.stderr),
+    })
+}
+
+fn rename_llvm_main_entry(ir: &str) -> Result<String, String> {
+    if !ir.contains("@main(") {
+        return Err("LLVM IR does not define @main(".to_owned());
+    }
+    Ok(ir.replace("@main(", "@arandu_main("))
+}
+
+fn locate_arandu_runtime_library() -> Result<PathBuf, String> {
+    let filename = if cfg!(windows) {
+        "arandu_runtime.lib"
+    } else {
+        "libarandu_runtime.a"
+    };
+    if let Some(explicit) = std::env::var_os("ARANDU_RUNTIME_LIB") {
+        let explicit = PathBuf::from(explicit);
+        return if explicit.is_file() {
+            Ok(explicit)
+        } else {
+            Err(format!(
+                "locate Arandu runtime: ARANDU_RUNTIME_LIB does not name a regular file ({})",
+                explicit.display()
+            ))
+        };
+    }
+
+    let executable = std::env::current_exe()
+        .map_err(|error| format!("locate Arandu runtime: current_exe: {error}"))?;
+    let mut candidates = Vec::new();
+    for ancestor in executable.ancestors().take(6) {
+        if let Some(hashed) = newest_hashed_runtime(ancestor, filename) {
+            candidates.push(hashed);
+        }
+        candidates.push(ancestor.join(filename));
+        candidates.push(ancestor.join("deps").join(filename));
+    }
+
+    candidates
+        .into_iter()
+        .find(|candidate| candidate.is_file())
+        .ok_or_else(|| {
+            format!(
+                "locate Arandu runtime: expected {filename}; set ARANDU_RUNTIME_LIB or build arandu_runtime"
+            )
+        })
+}
+
+fn newest_hashed_runtime(profile_dir: &Path, filename: &str) -> Option<PathBuf> {
+    let (prefix, extension) = if cfg!(windows) {
+        ("arandu_runtime-", "lib")
+    } else {
+        ("libarandu_runtime-", "a")
+    };
+    let deps = if profile_dir.join("deps").is_dir() {
+        profile_dir.join("deps")
+    } else {
+        profile_dir.to_path_buf()
+    };
+    let mut candidates = std::fs::read_dir(deps)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_stem()
+                .and_then(|stem| stem.to_str())
+                .is_some_and(|stem| stem.starts_with(prefix))
+                && path.extension().and_then(|ext| ext.to_str()) == Some(extension)
+                && path.file_name().and_then(|name| name.to_str()) != Some(filename)
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| {
+        let modified = |path: &Path| {
+            std::fs::metadata(path)
+                .and_then(|metadata| metadata.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+        };
+        modified(left)
+            .cmp(&modified(right))
+            .then_with(|| left.cmp(right))
+    });
+    candidates.pop()
 }
 
 /// Windows' C runtime translates LF to CRLF for text-mode stdout/stderr.

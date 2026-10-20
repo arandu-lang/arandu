@@ -118,15 +118,21 @@ pub fn artifact_root() -> PathBuf {
         .unwrap_or_else(|| std::env::temp_dir().join("arandu-smith-artifacts"))
 }
 
-pub fn oracle_target_name(compare_c: bool, compare_wasm: bool, corpus_name: &str) -> &'static str {
+pub fn oracle_target_name(
+    compare_c: bool,
+    compare_wasm: bool,
+    compare_llvm: bool,
+    corpus_name: &str,
+) -> &'static str {
     if corpus_name != "synthesized" {
         return "emi-corpus";
     }
-    match (compare_c, compare_wasm) {
-        (false, false) => "synthesized",
-        (true, false) => "synthesized-c",
-        (false, true) => "synthesized-wasm",
-        (true, true) => "synthesized-all",
+    match (compare_c, compare_wasm, compare_llvm) {
+        (false, false, false) => "synthesized",
+        (true, false, false) => "synthesized-c",
+        (false, true, false) => "synthesized-wasm",
+        (false, false, true) => "synthesized-llvm",
+        _ => "synthesized-all",
     }
 }
 

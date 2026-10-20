@@ -11,6 +11,12 @@ final-status-level = "flaky"
 failure-output = "immediate-final"
 success-output = "never"
 
+# Differential backend oracles (C/Wasm/LLVM + clang/node) exceed the default
+# 30s watchdog. Keep the short default for the rest of the suite.
+[[profile.default.overrides]]
+filter = 'test(/backend_matches_cranelift|llvm_backend|llvm_emi|c_backend_matches|wasm_backend_matches|interpolation_matches|to_str_interpolation|nested_interpolation|gen_insert_get|run_b_llvm|build_b_llvm/)'
+slow-timeout = { period = "60s", terminate-after = 10 }
+
 [profile.ci]
 status-level = "all"
 final-status-level = "flaky"
@@ -19,6 +25,11 @@ retries = 1
 
 # Local verification includes deterministic compiler corpora and native linkers.
 # This watchdog detects hangs; performance budgets remain inside their tests.
+# Command: cargo nextest run --workspace --locked --profile verification --test-threads 2
 [profile.verification]
 slow-timeout = { period = "60s", terminate-after = 10 }
 retries = 0
+
+[[profile.verification.overrides]]
+filter = 'test(/backend_matches_cranelift|llvm_backend|llvm_emi|c_backend_matches|wasm_backend_matches|interpolation_matches|to_str_interpolation|nested_interpolation|gen_insert_get|run_b_llvm|build_b_llvm/)'
+slow-timeout = { period = "120s", terminate-after = 15 }

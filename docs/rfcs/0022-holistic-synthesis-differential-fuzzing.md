@@ -805,9 +805,13 @@ chamar uma função `Vec*` com uma slice. A mangling de instâncias genéricas
 inclui agora o nome qualificado do símbolo-fonte, com regressão multi-backend
 em `tests/regressions/generic-module-name-collision.aru`.
 
-Os alvos `synthesized-c` e `synthesized-wasm` comparam o valor de retorno com
-Cranelift; `synthesized-all` executa Cranelift, C e Wasm para a mesma seed e
-compara os três resultados em uma única invocação. O `xtask smith` executa cada
+Os alvos `synthesized-c`, `synthesized-wasm` e `synthesized-llvm` comparam o
+valor de retorno com Cranelift; `synthesized-all` executa Cranelift, C, Wasm e
+LLVM para a mesma seed e
+compara os quatro resultados em uma única invocação. O corpus EMI também
+liga LLVM nos fixtures já cobertos pelo lowering experimental (interpolação,
+GenArena, `core.str` e lifecycle de string); o restante permanece em
+Cranelift×C×Wasm até fechar gaps de Named/enum. O `xtask smith` executa cada
 seed em um worker isolado; um JIT que não termina encerra somente o worker ao
 vencer o orçamento da seed, sem prender a campanha. C usa `CC` (ou `cc`) e Wasm
 usa Node (`ARANDU_NODE` para selecionar outro executável). A execução JIT
@@ -934,7 +938,7 @@ o verificador. A leitura de fontes é limitada a 1 MiB e a de metadados a 64
 KiB, com leitura interrompida ao ultrapassar o limite. As mudanças ficam no
 working tree para revisão antes do commit.
 
-Os alvos `synthesized`, `synthesized-c`, `synthesized-wasm` e
+Os alvos `synthesized`, `synthesized-c`, `synthesized-wasm`, `synthesized-llvm` e
 `synthesized-all`, além da seed reproduzível, estão registrados em `arandu_fuzz`
 e `tests/fuzz-regressions/manifest.tsv`. O redutor CST remove grupos de itens
 top-level e statements irmãos em cada bloco, inclusive blocos aninhados, por

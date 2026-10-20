@@ -226,4 +226,8 @@ pub const STDLIB_MODULES: &[(&str, &str)] = &[
         "stdlib/std/time.aru",
         include_str!("../../../../stdlib/std/time.aru"),
     ),
+    (
+        "stdlib/std/text.aru",
+        include_str!("../../../../stdlib/std/text.aru"),
+    ),
 ];

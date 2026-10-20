@@ -150,3 +150,178 @@ public interface Display {
 public interface Debug {
     func fmtDebug(self: ref Self, f: mut ref Formatter): Result<usize, FmtError>
 }
+
+/// Text alignment within a formatted width.
+public enum Alignment {
+    Left,
+    Right,
+    Center,
+}
+
+/// Appends a base-10 unsigned 64-bit integer without heap allocation.
+public func Formatter.writeUint(self: mut ref Formatter, v: u64): Result<usize, FmtError> {
+    if v == (0 as u64) {
+        return self.writeByte(48 as u8)
+    }
+    let mut digits: [20]u8 = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    let mut count: usize = 0
+    let mut curr = v
+    while curr > (0 as u64) {
+        let rem = curr % (10 as u64)
+        digits[count] = (48 as u8) + (rem as u8)
+        curr = curr / (10 as u64)
+        count = count + 1
+    }
+    let cap = slice.len<u8>(self.buf)
+    if self.len > cap || count > cap - self.len {
+        return Result.Err(FmtError.BufferFull)
+    }
+    let mut i = count
+    while i > 0 {
+        i = i - 1
+        self.buf[self.len] = digits[i]
+        self.len = self.len + 1
+    }
+    return Result.Ok(count)
+}
+
+/// Appends a base-10 signed 64-bit integer without heap allocation.
+public func Formatter.writeInt(self: mut ref Formatter, v: i64): Result<usize, FmtError> {
+    if v >= (0 as i64) {
+        return self.writeUint(v as u64)
+    }
+    let cap = slice.len<u8>(self.buf)
+    if self.len >= cap {
+        return Result.Err(FmtError.BufferFull)
+    }
+    let _ = self.writeByte(45 as u8)
+    let uv: u64 = if v == (-9223372036854775807 as i64) - 1 {
+        9223372036854775808 as u64
+    } else {
+        (-v) as u64
+    }
+    let res = self.writeUint(uv)
+    match res {
+        Ok(n) => {
+            return Result.Ok(n + 1)
+        }
+        Err(e) => {
+            return Result.Err(e)
+        }
+    }
+}
+
+/// Appends a hexadecimal representation of `v` without heap allocation.
+public func Formatter.writeHex(self: mut ref Formatter, v: u64, upper: bool): Result<usize, FmtError> {
+    if v == (0 as u64) {
+        return self.writeByte(48 as u8)
+    }
+    let mut digits: [16]u8 = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    let mut count: usize = 0
+    let mut curr = v
+    let baseAlpha: u8 = if upper { 55 as u8 } else { 87 as u8 }
+    while curr > (0 as u64) {
+        let rem = curr % (16 as u64)
+        if rem < (10 as u64) {
+            digits[count] = (48 as u8) + (rem as u8)
+        } else {
+            digits[count] = baseAlpha + (rem as u8)
+        }
+        curr = curr / (16 as u64)
+        count = count + 1
+    }
+    let cap = slice.len<u8>(self.buf)
+    if self.len > cap || count > cap - self.len {
+        return Result.Err(FmtError.BufferFull)
+    }
+    let mut i = count
+    while i > 0 {
+        i = i - 1
+        self.buf[self.len] = digits[i]
+        self.len = self.len + 1
+    }
+    return Result.Ok(count)
+}
+
+/// Appends a binary representation of `v` without heap allocation.
+public func Formatter.writeBin(self: mut ref Formatter, v: u64): Result<usize, FmtError> {
+    if v == (0 as u64) {
+        return self.writeByte(48 as u8)
+    }
+    let mut digits: [64]u8 = [
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    ]
+    let mut count: usize = 0
+    let mut curr = v
+    while curr > (0 as u64) {
+        let rem = curr % (2 as u64)
+        digits[count] = (48 as u8) + (rem as u8)
+        curr = curr / (2 as u64)
+        count = count + 1
+    }
+    let cap = slice.len<u8>(self.buf)
+    if self.len > cap || count > cap - self.len {
+        return Result.Err(FmtError.BufferFull)
+    }
+    let mut i = count
+    while i > 0 {
+        i = i - 1
+        self.buf[self.len] = digits[i]
+        self.len = self.len + 1
+    }
+    return Result.Ok(count)
+}
+
+/// Appends `s` padded to `width` bytes according to `align` using `fill`.
+public func Formatter.writePadded(
+    self: mut ref Formatter,
+    s: str,
+    width: usize,
+    align: Alignment,
+    fill: u8
+): Result<usize, FmtError> {
+    let slen = strings.len(s)
+    if slen >= width {
+        return self.writeStr(s)
+    }
+    let pad = width - slen
+    match align {
+        Alignment.Left => {
+            let _ = self.writeStr(s)?
+            let mut i: usize = 0
+            while i < pad {
+                let _ = self.writeByte(fill)?
+                i = i + 1
+            }
+            return Result.Ok(width)
+        }
+        Alignment.Right => {
+            let mut i: usize = 0
+            while i < pad {
+                let _ = self.writeByte(fill)?
+                i = i + 1
+            }
+            let _ = self.writeStr(s)?
+            return Result.Ok(width)
+        }
+        Alignment.Center => {
+            let leftPad = pad / 2
+            let rightPad = pad - leftPad
+            let mut i: usize = 0
+            while i < leftPad {
+                let _ = self.writeByte(fill)?
+                i = i + 1
+            }
+            let _ = self.writeStr(s)?
+            let mut j: usize = 0
+            while j < rightPad {
+                let _ = self.writeByte(fill)?
+                j = j + 1
+            }
+            return Result.Ok(width)
+        }
+    }
+}

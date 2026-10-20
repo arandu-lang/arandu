@@ -87,3 +87,6 @@ mod rc_arc;
 
 #[path = "stdlib_suite/deque_slab.rs"]
 mod deque_slab;
+
+#[path = "stdlib_suite/text.rs"]
+mod text;

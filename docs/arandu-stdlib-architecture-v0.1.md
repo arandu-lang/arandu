@@ -150,7 +150,9 @@ compartilhamento. As guardas não são Copy nem Send e retêm o empréstimo do l
 Leitores entram por ref compartilhada; escritores usam uma fila FIFO, alternada
 com lotes de leitores pendentes. Estado e monitores ficam em tabelas por
 endereço, não em uma palavra mágica de quatro bytes. Fairness pressupõe término
-das seções críticas e progresso do escalonador.
+das seções críticas e progresso do escalonador. Leitura recursiva só é aceita
+sem escritor pendente; reentrada bloqueante incompatível aborta com diagnóstico
+em vez de deadlockar silenciosamente.
 
 `Condvar.wait` e `waitTimeout` emprestam exclusivamente uma MutexGuard, liberam
 a aquisição e sempre a readquirem. A sequência validada sob o bucket fecha a
@@ -163,6 +165,17 @@ um worker de executor cooperativo não deve bloquear esperando esse protocolo.
 capturas descritas por campos do job; join devolve o resultado possuído. Drop
 aguarda e destrói resultados não reclamados. A barreira de descarregamento JIT
 espera execução, descendentes, joins e drop glue ativos antes de liberar código.
+O runtime não interrompe threads ou instruções Arandu de forma assíncrona.
+`std.sync.cancel_token.CancelToken` oferece um sinal atômico compartilhável;
+jobs e corrotinas devem cloná-lo e consultá-lo em checkpoints cooperativos.
+Ele não interrompe chamadas bloqueantes nem adiciona checagens implícitas em
+`await`. O token interno de `WorkerTask` continua sendo observado apenas antes
+da execução. `SyncExecutor.cancel` descarta uma tarefa pendente ou aposenta o
+handle depois que uma tarefa em execução retorna; não interrompe nem sinaliza
+essa tarefa.
+Esse drop pode bloquear indefinidamente se a thread não terminar. Se a própria
+thread tentar dropar seu handle, a operação retorna sem consumi-lo; o handle
+permanece disponível para o dono ou para a barreira de descarregamento JIT.
 Closures gerais não estão implementadas. Traps/abort da linguagem encerram o
 processo; ThreadError não promete recuperar unwinding que o compilador não emite.
 `park` consome o token de unpark; `parkTimeout` usa prazo monotônico e pode ser
@@ -385,9 +398,10 @@ arandu_std
  │   ├─ http     # Cliente e servidor HTTP/1.1 e HTTP/2 embarcado de baixo overhead
  │   └─ websocket# Suporte nativo a WebSocket sobre a pilha HTTP/TCP
  ├─ sync         # Primitivas de sincronização avançadas
- │   ├─ mutex    # Mutex de exclusão mútua adaptativo (Spin + Park)
- │   ├─ rwlock   # Protótipo; múltiplos leitores e justiça ainda sem prova
- │   ├─ condvar  # Protótipo; registro/wakeup/cancelamento ainda pendentes
+ │   ├─ cancel_token # Sinal atômico compartilhado; cancelamento cooperativo
+ │   ├─ mutex    # Exclusão nativa pela fase FIFO de escritores do ParkingLot
+ │   ├─ rwlock   # Fases phase-fair; escritores FIFO e leitores admitidos em lote
+ │   ├─ condvar  # Wait/timeout por sequência, notify e cancelamento POSIX diferido
  │   ├─ barrier  # Barreiras de sincronização de threads
  │   ├─ once     # Inicialização lazy e thread-safe única
  │   ├─ channel  # Canais de comunicação (MPMC, SPSC, flume-style)

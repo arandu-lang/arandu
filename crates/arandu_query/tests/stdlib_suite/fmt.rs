@@ -22,7 +22,19 @@ fn stdlib_fmt_parses_and_exports_expected_symbols() {
         Err(e) => panic!("fmt.aru must parse; got {e}"),
     }
     let exports = exported_symbols(&db, file);
-    let expected = ["FmtError", "Formatter", "Formatter.new", "Display", "Debug"];
+    let expected = [
+        "FmtError",
+        "Formatter",
+        "Formatter.new",
+        "Display",
+        "Debug",
+        "Alignment",
+        "Formatter.writeInt",
+        "Formatter.writeUint",
+        "Formatter.writeHex",
+        "Formatter.writeBin",
+        "Formatter.writePadded",
+    ];
     for key in expected {
         assert!(
             exports.symbols.contains_key(key),
@@ -56,11 +68,26 @@ import std.core.fmt as fmt
 func testFormatter(f: mut ref fmt.Formatter): bool {
     let res = f.writeBool(true)
     let b = f.writeByte(10 as u8)
+    let w = f.writeInt(42 as i64)
+    let h = f.writeHex(255 as u64, true)
+    let p = f.writePadded("test", 8 as usize, fmt.Alignment.Left, 32 as u8)
     match res {
         Ok(_) => {}
         Err(_) => { return false }
     }
     match b {
+        Ok(_) => {}
+        Err(_) => { return false }
+    }
+    match w {
+        Ok(_) => {}
+        Err(_) => { return false }
+    }
+    match h {
+        Ok(_) => {}
+        Err(_) => { return false }
+    }
+    match p {
         Ok(_) => {}
         Err(_) => { return false }
     }

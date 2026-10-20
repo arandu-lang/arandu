@@ -99,8 +99,12 @@ pub fn cmd_project_build(
         .target
         .as_deref()
         .is_some_and(|t| t.starts_with("wasm32"))
-        || ctx.target_kind == project::TargetKind::Component
-        || data_layout.pointer_width() == 4;
+        || ctx.target_kind == project::TargetKind::Component;
+    if !is_wasm && data_layout != DataLayout::host() {
+        return Err(CliFailure::usage(
+            "native builds require the host data layout; non-host layouts are emit-only",
+        ));
+    }
     let wasm_triple = flags.target.as_deref().unwrap_or("wasm32-wasip1");
     if is_wasm {
         let identity =

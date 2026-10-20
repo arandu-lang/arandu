@@ -6,12 +6,19 @@ typedef struct {
     _Atomic size_t *key;
     _Atomic int result;
     int preserve_token;
+    int indefinite;
 } test_wait;
 
 static void *wait_worker(void *arg) {
     test_wait *w = (test_wait*)arg;
     if (w->preserve_token) ar_rt_thread_unpark(ar_rt_thread_current_id());
-    int result = ar_rt_condvar_wait_timeout(w->key, 0, 5000);
+    int result;
+    if (w->indefinite) {
+        ar_rt_condvar_wait(w->key, 0);
+        result = 1;
+    } else {
+        result = ar_rt_condvar_wait_timeout(w->key, 0, 5000);
+    }
     if (w->preserve_token) ar_rt_thread_park();
     atomic_store(&w->result, result);
     return NULL;
@@ -82,7 +89,7 @@ int main(void) {
     assert(atomic_load(&b.result) == 1);
     assert(ar_get_cv_bucket(a.key)->head == NULL);
     atomic_store(&words[0], 0);
-    test_wait canceled = {&words[0], -2, 0};
+    test_wait canceled = {&words[0], -2, 0, 1};
     pthread_t canceled_thread;
     assert(pthread_create(&canceled_thread, NULL, wait_worker, &canceled) == 0);
     await_registration(&canceled);

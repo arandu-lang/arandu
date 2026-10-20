@@ -620,7 +620,7 @@ mod tests {
         let byte = interner.intern(ArType::Primitive(Primitive::U8));
         let pointer = interner.intern(ArType::Ptr(byte));
         let array = interner.intern(ArType::Array(4, byte));
-        let (function, symbols) = shape_named(
+        let (function, mut symbols) = shape_named(
             int,
             "ptrWrite",
             vec![temp(0, pointer), temp(1, array)],
@@ -635,6 +635,10 @@ mod tests {
                     return_borrow: None,
                 }]
             },
+        );
+        symbols.set_lang_item(
+            SymbolId::new(0, 1),
+            arandu_middle::symbol_table::LangItem::CompilerIntrinsic,
         );
         assert!(
             safe(&function, &symbols, &interner),

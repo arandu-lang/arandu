@@ -135,7 +135,7 @@ static {int_c_ty} ar_fs_open(ArStr path, {int_c_ty} flags, {int_c_ty} mode) {{
 static {int_c_ty} ar_fs_read({int_c_ty} fd, uint8_t *buf, {uint_c_ty} count) {{
     if (fd < 0 || (count > 0 && !buf)) return -1;
     if (count == 0) return 0;
-#if !defined(_WIN32)
+#if !defined(_WIN32) || defined(__MINGW32__)
     for (;;) {{
         ssize_t n = read((int)fd, buf, (size_t)count);
         if (n < 0) {{
@@ -152,7 +152,7 @@ static {int_c_ty} ar_fs_read({int_c_ty} fd, uint8_t *buf, {uint_c_ty} count) {{
 static {int_c_ty} ar_fs_write({int_c_ty} fd, const uint8_t *buf, {uint_c_ty} count) {{
     if (fd < 0 || (count > 0 && !buf)) return -1;
     if (count == 0) return 0;
-#if !defined(_WIN32)
+#if !defined(_WIN32) || defined(__MINGW32__)
     for (;;) {{
         ssize_t n = write((int)fd, buf, (size_t)count);
         if (n < 0) {{
@@ -167,7 +167,7 @@ static {int_c_ty} ar_fs_write({int_c_ty} fd, const uint8_t *buf, {uint_c_ty} cou
 }}
 
 static {int_c_ty} ar_fs_close({int_c_ty} fd) {{
-#if !defined(_WIN32)
+#if !defined(_WIN32) || defined(__MINGW32__)
     if (fd >= 0) return ({int_c_ty})close((int)fd);
 #else
     (void)fd;
@@ -298,7 +298,7 @@ static void ar_fs_readdir(ArStr path, uint8_t **out_buf, {uint_c_ty} *out_count,
         *out_buf = NULL; *out_count = 0; *out_cap = 0; *err = 8;
         return;
     }}
-#if !defined(_WIN32)
+#if !defined(_WIN32) || defined(__MINGW32__)
     DIR *d = opendir(c_path);
     if (!d) {{
         int e = errno;

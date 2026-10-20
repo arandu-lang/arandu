@@ -74,13 +74,12 @@ pub unsafe extern "C" fn ar_rt_supervisor_destroy(id: i64) {
     let mut state = supervisor.lock().unwrap_or_else(|e| e.into_inner());
     state.closed = true;
     let mut g = lock();
-    if let Some(slot) = g.get_mut(id as usize) {
-        if slot
+    if let Some(slot) = g.get_mut(id as usize)
+        && slot
             .as_ref()
             .is_some_and(|current| Arc::ptr_eq(current, &supervisor))
-        {
-            *slot = None;
-        }
+    {
+        *slot = None;
     }
 }
 

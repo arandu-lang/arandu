@@ -226,14 +226,13 @@ pub unsafe extern "C" fn ar_rt_reactor_sleep_ms(id: ReactorId, ms: i64) -> i64 {
     }
     #[cfg(target_os = "linux")]
     {
-        if unsafe { ar_rt_reactor_backend() } == BACKEND_IO_URING {
-            if let Some(reactor) = get_reactor(id)
-                && let mut slot = reactor.lock().unwrap_or_else(|e| e.into_inner())
-                && !slot.closed
-                && unsafe { sleep_ms_io_uring(&mut slot, ms as u64) }
-            {
-                return 0;
-            }
+        if unsafe { ar_rt_reactor_backend() } == BACKEND_IO_URING
+            && let Some(reactor) = get_reactor(id)
+            && let mut slot = reactor.lock().unwrap_or_else(|e| e.into_inner())
+            && !slot.closed
+            && unsafe { sleep_ms_io_uring(&mut slot, ms as u64) }
+        {
+            return 0;
         }
     }
     if unsafe { ar_rt_reactor_arm_timer_ms(id, ms) } != 0 {

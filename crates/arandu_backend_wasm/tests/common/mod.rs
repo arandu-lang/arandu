@@ -254,7 +254,7 @@ pub fn emit_one(func: AmirFunc, interner: &TypeInterner, pool: &mut AmirLiteralP
     .expect("hand-built program must emit")
 }
 
-pub fn emit_with_imported_symbols(
+pub fn emit_with_imported_intrinsics(
     func: AmirFunc,
     extra_symbols: &[(SymbolId, &str)],
     interner: &TypeInterner,
@@ -264,6 +264,16 @@ pub fn emit_with_imported_symbols(
     register_imported_sym(&mut symbols, func.symbol, "main");
     for &(id, name) in extra_symbols {
         register_imported_sym(&mut symbols, id, name);
+        let kind = arandu_middle::IntrinsicKind::from_name(name)
+            .expect("imported intrinsic fixture must use a known intrinsic name");
+        let marker = kind
+            .declaration_marker()
+            .expect("imported intrinsic must declare its ABI marker");
+        symbols
+            .imported_symbols
+            .get_mut(&id)
+            .expect("registered imported intrinsic must exist")
+            .lang_item = Some(marker);
     }
     let program = AmirProgram {
         funcs: vec![func],

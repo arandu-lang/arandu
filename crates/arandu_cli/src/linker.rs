@@ -22,7 +22,14 @@ pub enum LinkerKind {
 pub(crate) const fn host_runtime_link_args() -> &'static [&'static str] {
     #[cfg(windows)]
     {
-        &["-lbcrypt"]
+        &[
+            "-lkernel32",
+            "-lntdll",
+            "-luserenv",
+            "-lws2_32",
+            "-lbcrypt",
+            "-ldbghelp",
+        ]
     }
     #[cfg(target_os = "macos")]
     {
@@ -815,7 +822,14 @@ mod tests {
         #[cfg(not(any(windows, target_os = "macos")))]
         assert!(args.contains(&"-ldl"));
         #[cfg(windows)]
-        assert!(args.contains(&"-lbcrypt"));
+        {
+            assert!(args.contains(&"-lbcrypt"));
+            assert!(args.contains(&"-lws2_32"));
+            assert!(args.contains(&"-lntdll"));
+            assert!(args.contains(&"-luserenv"));
+            assert!(args.contains(&"-lkernel32"));
+            assert!(args.contains(&"-ldbghelp"));
+        }
         #[cfg(not(windows))]
         {
             assert!(args.contains(&"-lpthread"));

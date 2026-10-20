@@ -22,7 +22,7 @@ pub enum LinkerKind {
 pub(crate) const fn host_runtime_link_args() -> &'static [&'static str] {
     #[cfg(windows)]
     {
-        &[]
+        &["bcrypt.lib"]
     }
     #[cfg(target_os = "macos")]
     {
@@ -451,6 +451,7 @@ fn build_system_linker_command(
             "ntdll.lib",
             "userenv.lib",
             "ws2_32.lib",
+            "bcrypt.lib",
             "dbghelp.lib",
             "msvcrt.lib",
         ]);
@@ -673,6 +674,7 @@ fn link_with_rustc(
     command
         .arg("-C")
         .arg(format!("link-arg={}", runtime_arg.display()))
+        .args(windows_runtime_link_args())
         .args(rustc_reproducible_link_args(patchable_elf));
     if size {
         command.args(["-C", "strip=symbols"]);
@@ -694,6 +696,16 @@ fn link_with_rustc(
             ),
         )),
     }
+}
+
+#[cfg(windows)]
+fn windows_runtime_link_args() -> [&'static str; 2] {
+    ["-C", "link-arg=bcrypt.lib"]
+}
+
+#[cfg(not(windows))]
+fn windows_runtime_link_args() -> [&'static str; 0] {
+    []
 }
 
 fn rustc_reproducible_link_args(patchable_elf: bool) -> Vec<&'static str> {
@@ -803,9 +815,12 @@ mod tests {
         #[cfg(not(any(windows, target_os = "macos")))]
         assert!(args.contains(&"-ldl"));
         #[cfg(windows)]
-        assert!(args.is_empty());
-        assert!(args.contains(&"-lpthread"));
-        assert!(args.contains(&"-lm"));
+        assert!(args.contains(&"bcrypt.lib"));
+        #[cfg(not(windows))]
+        {
+            assert!(args.contains(&"-lpthread"));
+            assert!(args.contains(&"-lm"));
+        }
     }
 
     #[test]

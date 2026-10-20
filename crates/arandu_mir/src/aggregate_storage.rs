@@ -367,8 +367,11 @@ pub fn function_scratch_safe(
                     // admitted.
                     AmirOperand::FunctionRef(symbol) => match symbols.try_get(*symbol) {
                         Some(definition) if definition.kind == SymbolKind::ExternFunc => {
-                            arandu_middle::intrinsics::IntrinsicKind::from_name(&definition.name)
-                                .is_some()
+                            arandu_middle::intrinsics::IntrinsicKind::from_declared_name(
+                                &definition.name,
+                                definition.lang_item,
+                            )
+                            .is_some()
                                 || !extern_exposes_backing(
                                     function,
                                     *lhs,

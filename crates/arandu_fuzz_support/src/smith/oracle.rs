@@ -1,6 +1,6 @@
 //! Multi-backend differential testing oracles and execution triangulators.
 
-use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::Ordering;
@@ -13,16 +13,16 @@ mod materialization_tests;
 mod static_if;
 
 use super::artifact::{
-    AUTOMATIC_SHRINK_BUDGET, Failure, FailureArtifact, NEXT_TEMP_ID, TemporaryArtifacts,
     artifact_root, catch_backend_panic, oracle_target_name, panic_payload_message,
-    shrink_and_confirm, write_failure_artifact,
+    shrink_and_confirm, write_failure_artifact, Failure, FailureArtifact, TemporaryArtifacts,
+    AUTOMATIC_SHRINK_BUDGET, NEXT_TEMP_ID,
 };
 use super::emi::{check_emi_pair_backends, inject_dead_pure_statement, inject_emi_mutation};
 use super::process::{
-    BACKEND_PROCESS_TIMEOUT, capture_jit_eprint, capture_jit_print, capture_jit_println,
-    captured_stderr, describe_exit_status, parse_backend_result, read_result_channel,
-    reset_jit_stdout_capture, run_with_timeout, synthesized_args_arg, synthesized_args_len,
-    take_jit_stderr_capture, take_jit_stdout_capture,
+    capture_jit_eprint, capture_jit_print, capture_jit_println, captured_stderr,
+    describe_exit_status, parse_backend_result, read_result_channel, reset_jit_stdout_capture,
+    run_with_timeout, synthesized_args_arg, synthesized_args_len, take_jit_stderr_capture,
+    take_jit_stdout_capture, BACKEND_PROCESS_TIMEOUT,
 };
 use super::synth::synthesize_with_oracle;
 use super::types::SYNTHESIZED_PROGRAM_ARGS;

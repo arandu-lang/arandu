@@ -1,0 +1,36 @@
+//! Shared cooperative cancellation signal for native jobs and coroutines.
+//!
+//! Clones observe the same monotonic atomic flag. Cancellation never interrupts
+//! execution: jobs and coroutines must poll `isCancelled` and return at a safe
+//! point. The token does not cancel blocking OS calls or release held guards.
+module std.sync.cancel_token
+
+import std.alloc.arc as arc
+import std.core.atomic as atomic
+
+/// Cloneable, thread-safe cancellation request.
+public struct CancelToken {
+    private flag: arc.Arc<atomic.AtomicBool>,
+}
+
+/// Creates a token whose cancellation flag is clear.
+public func CancelToken.new(): CancelToken {
+    return CancelToken {
+        flag: arc.Arc.new<atomic.AtomicBool>(atomic.AtomicBool.new(false)),
+    }
+}
+
+/// Clones a handle to the same cancellation request.
+public func CancelToken.clone(self: ref CancelToken): CancelToken {
+    return CancelToken { flag: self.flag.clone() }
+}
+
+/// Requests cancellation. Repeated calls leave the flag set.
+public func CancelToken.cancel(self: ref CancelToken): void {
+    self.flag.get().store(true, atomic.MemoryOrder.Release)
+}
+
+/// Checks whether cancellation has been requested.
+public func CancelToken.isCancelled(self: ref CancelToken): bool {
+    return self.flag.get().load(atomic.MemoryOrder.Acquire)
+}

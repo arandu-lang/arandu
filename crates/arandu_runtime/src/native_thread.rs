@@ -2,6 +2,9 @@
 //!
 //! Dropping a handle joins it. This intentionally keeps every callback and
 //! payload alive until execution and destruction finish; it is not detachment.
+//! It can block forever if the worker never returns. A worker cannot consume
+//! its own handle: self-drop is a no-op that leaves the handle for its owner or
+//! the JIT unload barrier to join.
 //! Language traps/abort are process failures, not recoverable child panics.
 
 use std::collections::HashMap;
@@ -209,12 +212,26 @@ pub extern "C" fn ar_rt_native_thread_is_finished(handle: usize) -> bool {
 }
 
 /// Consumes a handle, waits for completion and destroys any unclaimed result.
+/// A worker dropping its own handle returns without consuming it; the handle
+/// remains available to its owner or the JIT unload barrier. This may block
+/// indefinitely if called from another thread while the worker never returns.
 #[unsafe(no_mangle)]
 pub extern "C" fn ar_rt_native_thread_drop(handle: usize) {
+    if is_current_thread(handle) {
+        return;
+    }
     if let Some(thread) = claim_thread(handle) {
         drop(thread.join());
         finish_claim(handle);
     }
+}
+
+fn is_current_thread(handle: usize) -> bool {
+    let current = std::thread::current().id();
+    lock_threads()
+        .get(&handle)
+        .and_then(|running| running.thread.as_ref())
+        .is_some_and(|thread| thread.thread().id() == current)
 }
 
 fn claim_thread(handle: usize) -> Option<std::thread::JoinHandle<Option<Buffer>>> {

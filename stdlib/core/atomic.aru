@@ -37,10 +37,11 @@
 //! module still owns unshared memory; these APIs do not enable shared-memory
 //! threads or an OS thread runtime. Wasm engines must support atomic opcodes.
 //!
-//! Writes retain exclusive receivers. Copying/moving a wrapper is permitted
-//! only under ordinary borrow rules, without a live exclusive borrow. Shared
-//! mutable access is reserved for audited unsafe internals (for example Arc).
-//! Invalid load/store/CAS/fence orders trap before accessing memory.
+//! Atomic stores take shared receivers: the operation itself provides the
+//! mutation synchronization required by concurrent handles. Read-modify-write
+//! operations retain exclusive receivers. Copying/moving a wrapper still
+//! follows ordinary borrow rules. Invalid load/store/CAS/fence orders trap
+//! before accessing memory.
 //!
 //! ## See also
 //! - `std.core.cell` — interior mutability without thread safety
@@ -137,10 +138,10 @@ public func AtomicBool.load(self: ref AtomicBool, order: MemoryOrder): bool {
     unsafe { return (intrinsics.atomicLoad8(ref self.val) != (0 as u8)) }
 }
 
-/// Stores atomically. Acquire and AcqRel are invalid.
-public func AtomicBool.store(self: mut ref AtomicBool, val: bool, order: MemoryOrder): void {
+/// Stores atomically through shared access. Acquire and AcqRel are invalid.
+public func AtomicBool.store(self: ref AtomicBool, val: bool, order: MemoryOrder): void {
     requireStore(order)
-    unsafe { intrinsics.atomicStore8(mut ref self.val, encodeBool(val)) }
+    unsafe { intrinsics.atomicStore8(ref self.val, encodeBool(val)) }
 }
 
 /// Atomically updates storage and returns its previous value.
@@ -193,9 +194,9 @@ public func AtomicInt.load(self: ref AtomicInt, order: MemoryOrder): int {
 }
 
 /// Stores atomically. Acquire and AcqRel are invalid.
-public func AtomicInt.store(self: mut ref AtomicInt, val: int, order: MemoryOrder): void {
+public func AtomicInt.store(self: ref AtomicInt, val: int, order: MemoryOrder): void {
     requireStore(order)
-    unsafe { intrinsics.atomicStore32(mut ref self.val, (val as u32)) }
+    unsafe { intrinsics.atomicStore32(ref self.val, (val as u32)) }
 }
 
 /// Atomically updates storage and returns its previous value.
@@ -258,9 +259,9 @@ public func AtomicUint.load(self: ref AtomicUint, order: MemoryOrder): uint {
 }
 
 /// Stores atomically. Acquire and AcqRel are invalid.
-public func AtomicUint.store(self: mut ref AtomicUint, val: uint, order: MemoryOrder): void {
+public func AtomicUint.store(self: ref AtomicUint, val: uint, order: MemoryOrder): void {
     requireStore(order)
-    unsafe { intrinsics.atomicStore32(mut ref self.val, (val as u32)) }
+    unsafe { intrinsics.atomicStore32(ref self.val, (val as u32)) }
 }
 
 /// Atomically updates storage and returns its previous value.
@@ -323,9 +324,9 @@ public func AtomicUsize.load(self: ref AtomicUsize, order: MemoryOrder): usize {
 }
 
 /// Stores atomically. Acquire and AcqRel are invalid.
-public func AtomicUsize.store(self: mut ref AtomicUsize, val: usize, order: MemoryOrder): void {
+public func AtomicUsize.store(self: ref AtomicUsize, val: usize, order: MemoryOrder): void {
     requireStore(order)
-    unsafe { intrinsics.atomicStoreUsize(mut ref self.val, (val as usize)) }
+    unsafe { intrinsics.atomicStoreUsize(ref self.val, (val as usize)) }
 }
 
 /// Atomically updates storage and returns its previous value.
@@ -388,9 +389,9 @@ public func AtomicI64.load(self: ref AtomicI64, order: MemoryOrder): i64 {
 }
 
 /// Stores atomically. Acquire and AcqRel are invalid.
-public func AtomicI64.store(self: mut ref AtomicI64, val: i64, order: MemoryOrder): void {
+public func AtomicI64.store(self: ref AtomicI64, val: i64, order: MemoryOrder): void {
     requireStore(order)
-    unsafe { intrinsics.atomicStore64(mut ref self.val, (val as u64)) }
+    unsafe { intrinsics.atomicStore64(ref self.val, (val as u64)) }
 }
 
 /// Atomically updates storage and returns its previous value.
@@ -453,9 +454,9 @@ public func AtomicU64.load(self: ref AtomicU64, order: MemoryOrder): u64 {
 }
 
 /// Stores atomically. Acquire and AcqRel are invalid.
-public func AtomicU64.store(self: mut ref AtomicU64, val: u64, order: MemoryOrder): void {
+public func AtomicU64.store(self: ref AtomicU64, val: u64, order: MemoryOrder): void {
     requireStore(order)
-    unsafe { intrinsics.atomicStore64(mut ref self.val, (val as u64)) }
+    unsafe { intrinsics.atomicStore64(ref self.val, (val as u64)) }
 }
 
 /// Atomically updates storage and returns its previous value.
@@ -518,9 +519,9 @@ public func AtomicPtr.load<T>(self: ref AtomicPtr<T>, order: MemoryOrder): ptr[T
 }
 
 /// Stores atomically. Acquire and AcqRel are invalid.
-public func AtomicPtr.store<T>(self: mut ref AtomicPtr<T>, val: ptr[T], order: MemoryOrder): void {
+public func AtomicPtr.store<T>(self: ref AtomicPtr<T>, val: ptr[T], order: MemoryOrder): void {
     requireStore(order)
-    unsafe { intrinsics.atomicStorePtr(mut ref self.val, (val as ptr[u8])) }
+    unsafe { intrinsics.atomicStorePtr(ref self.val, (val as ptr[u8])) }
 }
 
 /// Atomically updates storage and returns its previous value.

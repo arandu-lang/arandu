@@ -49,6 +49,43 @@ fn misspelled_command_suggests_the_nearest_subcommand() {
 }
 
 #[test]
+fn value_options_do_not_consume_the_next_flag_as_their_value() {
+    for (command, option, expected) in [
+        (
+            "build",
+            "--target",
+            "--target requires a target triple argument",
+        ),
+        (
+            "check",
+            "--stdlib-path",
+            "--stdlib-path requires a path argument",
+        ),
+        (
+            "check",
+            "--cache-dir",
+            "--cache-dir requires a path argument",
+        ),
+    ] {
+        let output = common::cli_command()
+            .args([command, option, "--quiet"])
+            .output()
+            .expect("run command with missing option value");
+
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{command} {option}: {output:?}"
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(expected),
+            "{command} {option}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
 fn run_hides_incremental_query_counts_unless_verbose_is_requested() {
     let root = common::temp_dir("arandu-cli-run-status").expect("create temp root");
     let source = root.join("main.aru");

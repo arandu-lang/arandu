@@ -11,6 +11,8 @@
 //! boundary and reported by `JoinHandle.join` as `ThreadError.Panicked`.
 //! Native identities are process-unique and retired on thread exit; unpark
 //! supplies one coalescing token. Unknown or exited identities are ignored.
+//! Long-running jobs can share `std.sync.cancel_token.CancelToken` and poll it
+//! to return cooperatively. Dropping or joining a handle does not cancel work.
 //! - `sleep`: Pauses the current OS thread for a specified duration.
 //! - `yieldNow`: Cooperatively yields the processor to other runnable threads.
 //! - `park` and `parkTimeout` block the native thread until unparked (or until
@@ -61,7 +63,9 @@ public enum ThreadError {
     Panicked,
 }
 
-/// A handle to a spawned operating system thread.
+/// A handle to a spawned operating system thread. Dropping it waits for the
+/// worker and destroys any unclaimed result; if the worker never returns,
+/// dropping the handle never returns.
 public struct JoinHandle<R> {
     handle: usize,
 

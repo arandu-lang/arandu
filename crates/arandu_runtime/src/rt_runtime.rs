@@ -320,11 +320,19 @@ unsafe fn ar_str_concat_impl(
 ) -> ArFatStr {
     let a = slice_from_fat(a_ptr, a_len);
     let b = slice_from_fat(b_ptr, b_len);
-    let mut out = Vec::with_capacity(a.len() + b.len());
-    out.extend_from_slice(a);
-    out.extend_from_slice(b);
-    let len = out.len() as isize;
-    let ptr = Box::into_raw(out.into_boxed_slice()) as *mut u8;
+    let total = a.len() + b.len();
+    let len = isize::try_from(total).unwrap_or(isize::MAX);
+    // The documented contract is a malloc-style buffer, because Arandu frees
+    // runtime strings through libc `free`. Allocating through the Rust global
+    // allocator here would hand a pointer to `free` that it cannot release.
+    let ptr = unsafe { crate::vec_runtime::ar_rt_raw_malloc(total.max(1)) };
+    if ptr.is_null() {
+        std::process::abort();
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(a.as_ptr(), ptr, a.len());
+        std::ptr::copy_nonoverlapping(b.as_ptr(), ptr.add(a.len()), b.len());
+    }
     ArFatStr { ptr, len }
 }
 

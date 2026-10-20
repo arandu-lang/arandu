@@ -7,7 +7,7 @@
 
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream, UdpSocket};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 #[cfg(unix)]
@@ -25,18 +25,27 @@ enum SockKind {
     Stream(TcpStream),
 }
 
-static SOCKS: Mutex<Vec<Option<SockSlot>>> = Mutex::new(Vec::new());
+type SharedSockSlot = Arc<Mutex<SockSlot>>;
 
-fn lock() -> std::sync::MutexGuard<'static, Vec<Option<SockSlot>>> {
+static SOCKS: Mutex<Vec<Option<SharedSockSlot>>> = Mutex::new(Vec::new());
+
+fn lock() -> std::sync::MutexGuard<'static, Vec<Option<SharedSockSlot>>> {
     SOCKS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn get_slot(sock: i64) -> Option<SharedSockSlot> {
+    if sock < 0 {
+        return None;
+    }
+    lock().get(sock as usize).and_then(Clone::clone)
 }
 
 fn insert(kind: SockKind) -> i64 {
     let mut g = lock();
-    let slot = SockSlot {
+    let slot = Arc::new(Mutex::new(SockSlot {
         kind,
         nonblocking: false,
-    };
+    }));
     if let Some(idx) = g.iter().position(|s| s.is_none()) {
         g[idx] = Some(slot);
         return idx as i64;
@@ -64,10 +73,9 @@ fn raw_socket_of(kind: &SockKind) -> windows_sys::Win32::Networking::WinSock::SO
 
 #[cfg(unix)]
 pub fn get_socket_fd(sock_id: i64) -> Option<i32> {
-    let g = lock();
-    g.get(sock_id as usize)
-        .and_then(|s| s.as_ref())
-        .map(|s| raw_fd_of(&s.kind))
+    let slot = get_slot(sock_id)?;
+    let slot = slot.lock().unwrap_or_else(|e| e.into_inner());
+    Some(raw_fd_of(&slot.kind))
 }
 
 /// Events for [`ar_rt_tcp_wait`]: bit0 = readable, bit1 = writable.
@@ -115,11 +123,11 @@ pub unsafe extern "C" fn ar_rt_tcp_accept(listener: i64) -> i64 {
     if listener < 0 {
         return -1;
     }
+    let Some(slot) = get_slot(listener) else {
+        return -1;
+    };
     let cloned_listener = {
-        let mut g = lock();
-        let Some(Some(slot)) = g.get_mut(listener as usize) else {
-            return -1;
-        };
+        let slot = slot.lock().unwrap_or_else(|e| e.into_inner());
         let SockKind::Listener(l) = &slot.kind else {
             return -1;
         };
@@ -163,10 +171,10 @@ pub unsafe extern "C" fn ar_rt_tcp_read(sock: i64, buf: *mut u8, len: i64) -> i6
     if sock < 0 || buf.is_null() || len <= 0 {
         return -1;
     }
-    let mut g = lock();
-    let Some(Some(slot)) = g.get_mut(sock as usize) else {
+    let Some(slot) = get_slot(sock) else {
         return -1;
     };
+    let mut slot = slot.lock().unwrap_or_else(|e| e.into_inner());
     let SockKind::Stream(s) = &mut slot.kind else {
         return -1;
     };
@@ -190,10 +198,10 @@ pub unsafe extern "C" fn ar_rt_tcp_write(sock: i64, buf: *const u8, len: i64) ->
     if len == 0 {
         return 0;
     }
-    let mut g = lock();
-    let Some(Some(slot)) = g.get_mut(sock as usize) else {
+    let Some(slot) = get_slot(sock) else {
         return -1;
     };
+    let mut slot = slot.lock().unwrap_or_else(|e| e.into_inner());
     let SockKind::Stream(s) = &mut slot.kind else {
         return -1;
     };
@@ -229,10 +237,10 @@ pub unsafe extern "C" fn ar_rt_tcp_set_nonblocking(sock: i64, flag: i64) -> i64 
     if sock < 0 {
         return -1;
     }
-    let mut g = lock();
-    let Some(Some(slot)) = g.get_mut(sock as usize) else {
+    let Some(slot) = get_slot(sock) else {
         return -1;
     };
+    let mut slot = slot.lock().unwrap_or_else(|e| e.into_inner());
     let nb = flag != 0;
     let ok = match &mut slot.kind {
         SockKind::Listener(l) => l.set_nonblocking(nb).is_ok(),
@@ -258,11 +266,11 @@ pub unsafe extern "C" fn ar_rt_tcp_wait(sock: i64, events: i64, timeout_ms: i64)
     }
     #[cfg(unix)]
     {
+        let Some(slot) = get_slot(sock) else {
+            return -1;
+        };
         let fd = {
-            let g = lock();
-            let Some(Some(slot)) = g.get(sock as usize) else {
-                return -1;
-            };
+            let slot = slot.lock().unwrap_or_else(|e| e.into_inner());
             raw_fd_of(&slot.kind)
         };
         let mut pfd = libc::pollfd {
@@ -309,11 +317,11 @@ pub unsafe extern "C" fn ar_rt_tcp_wait(sock: i64, events: i64, timeout_ms: i64)
                 POLLERR, POLLHUP, POLLRDNORM, POLLWRNORM, WSAPOLLFD, WSAPoll,
             };
 
+            let Some(slot) = get_slot(sock) else {
+                return -1;
+            };
             let fd = {
-                let g = lock();
-                let Some(Some(slot)) = g.get(sock as usize) else {
-                    return -1;
-                };
+                let slot = slot.lock().unwrap_or_else(|e| e.into_inner());
                 raw_socket_of(&slot.kind)
             };
             let mut pfd = WSAPOLLFD {
@@ -421,9 +429,9 @@ unsafe fn read_io_uring(sock: i64, buf: *mut u8, len: i64) -> Option<i64> {
     if sock < 0 || buf.is_null() || len <= 0 {
         return Some(-1);
     }
+    let slot = get_slot(sock)?;
     let fd = {
-        let g = lock();
-        let slot = g.get(sock as usize).and_then(|s| s.as_ref())?;
+        let slot = slot.lock().unwrap_or_else(|e| e.into_inner());
         raw_fd_of(&slot.kind)
     };
     let mut ring = IoUring::new(IO_URING_DEFAULT_ENTRIES).ok()?;
@@ -452,9 +460,9 @@ unsafe fn write_io_uring(sock: i64, buf: *const u8, len: i64) -> Option<i64> {
     if len == 0 {
         return Some(0);
     }
+    let slot = get_slot(sock)?;
     let fd = {
-        let g = lock();
-        let slot = g.get(sock as usize).and_then(|s| s.as_ref())?;
+        let slot = slot.lock().unwrap_or_else(|e| e.into_inner());
         raw_fd_of(&slot.kind)
     };
     let mut ring = IoUring::new(IO_URING_DEFAULT_ENTRIES).ok()?;
@@ -473,10 +481,19 @@ unsafe fn write_io_uring(sock: i64, buf: *const u8, len: i64) -> Option<i64> {
     Some(res as i64)
 }
 
-static UDP_SOCKS: Mutex<Vec<Option<UdpSocket>>> = Mutex::new(Vec::new());
+type SharedUdpSocket = Arc<Mutex<UdpSocket>>;
 
-fn udp_lock() -> std::sync::MutexGuard<'static, Vec<Option<UdpSocket>>> {
+static UDP_SOCKS: Mutex<Vec<Option<SharedUdpSocket>>> = Mutex::new(Vec::new());
+
+fn udp_lock() -> std::sync::MutexGuard<'static, Vec<Option<SharedUdpSocket>>> {
     UDP_SOCKS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn get_udp_socket(id: i32) -> Option<SharedUdpSocket> {
+    if id < 0 {
+        return None;
+    }
+    udp_lock().get(id as usize).and_then(Clone::clone)
 }
 
 /// Binds a UDP socket on `host:port`.
@@ -493,6 +510,7 @@ pub unsafe extern "C" fn ar_net_udp_bind(host_ptr: *const u8, host_len: usize, p
             std::str::from_utf8(unsafe { std::slice::from_raw_parts(host_ptr, host_len) }).ok()?;
         let addr = format!("{host}:{port}");
         let socket = UdpSocket::bind(&addr).ok()?;
+        let socket = Arc::new(Mutex::new(socket));
         let mut g = udp_lock();
         if let Some(idx) = g.iter().position(|s| s.is_none()) {
             g[idx] = Some(socket);
@@ -529,8 +547,8 @@ pub unsafe extern "C" fn ar_net_udp_send_to(
             std::str::from_utf8(unsafe { std::slice::from_raw_parts(host_ptr, host_len) }).ok()?;
         let target = format!("{host}:{port}");
         let payload = unsafe { std::slice::from_raw_parts(buf, len) };
-        let g = udp_lock();
-        let socket = g.get(id as usize)?.as_ref()?;
+        let socket = get_udp_socket(id)?;
+        let socket = socket.lock().unwrap_or_else(|e| e.into_inner());
         Some(
             socket
                 .send_to(payload, &target)
@@ -558,8 +576,8 @@ pub unsafe extern "C" fn ar_net_udp_recv_from(
             return None;
         }
         let dest = unsafe { std::slice::from_raw_parts_mut(buf, len) };
-        let g = udp_lock();
-        let socket = g.get(id as usize)?.as_ref()?;
+        let socket = get_udp_socket(id)?;
+        let socket = socket.lock().unwrap_or_else(|e| e.into_inner());
         match socket.recv_from(dest) {
             Ok((n, addr)) => {
                 if !port_out.is_null() {
@@ -642,8 +660,9 @@ pub(crate) mod tests {
             );
             let port = {
                 let guard = lock();
-                let SockKind::Listener(socket) = &guard[listener as usize].as_ref().unwrap().kind
-                else {
+                let slot = guard[listener as usize].as_ref().unwrap().clone();
+                let slot = slot.lock().unwrap_or_else(|e| e.into_inner());
+                let SockKind::Listener(socket) = &slot.kind else {
                     panic!("expected listener");
                 };
                 socket.local_addr().unwrap().port()
@@ -702,6 +721,57 @@ pub(crate) mod tests {
             ar_rt_tcp_close(client);
             ar_rt_tcp_close(server);
             ar_rt_tcp_close(lis);
+        }
+    }
+
+    #[test]
+    fn udp_registry_supports_send_and_receive() {
+        let host = b"127.0.0.1";
+        // SAFETY: host and payload buffers remain alive and valid for each call.
+        unsafe {
+            let id = ar_net_udp_bind(host.as_ptr(), host.len(), 0);
+            assert!(id >= 0, "loopback UDP bind must succeed");
+            let socket = get_udp_socket(id).expect("bound UDP handle remains registered");
+            let address = socket
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .local_addr()
+                .expect("bound UDP socket has a local address");
+
+            let sender = UdpSocket::bind("127.0.0.1:0").expect("bind UDP test sender");
+            sender
+                .send_to(b"in", address)
+                .expect("send datagram to runtime socket");
+            let mut received = [0u8; 8];
+            let mut peer_port = 0;
+            assert_eq!(
+                ar_net_udp_recv_from(id, received.as_mut_ptr(), received.len(), &mut peer_port),
+                2
+            );
+            assert_eq!(&received[..2], b"in");
+            assert_eq!(peer_port as u16, sender.local_addr().unwrap().port());
+
+            let target = b"127.0.0.1";
+            assert_eq!(
+                ar_net_udp_send_to(
+                    id,
+                    b"out".as_ptr(),
+                    3,
+                    target.as_ptr(),
+                    target.len(),
+                    i32::from(sender.local_addr().unwrap().port()),
+                ),
+                3
+            );
+            let mut sent = [0u8; 8];
+            sender
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .expect("set bounded UDP receive timeout");
+            let (count, _) = sender
+                .recv_from(&mut sent)
+                .expect("receive runtime datagram");
+            assert_eq!(&sent[..count], b"out");
+            ar_net_udp_close(id);
         }
     }
 }

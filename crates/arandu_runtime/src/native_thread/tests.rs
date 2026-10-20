@@ -102,6 +102,73 @@ fn dropping_handle_joins_and_destroys_unclaimed_result() {
     assert!(!ar_rt_native_thread_is_finished(handle));
 }
 
+struct SelfDropContext {
+    handle: std::sync::mpsc::Receiver<usize>,
+    drops: Arc<AtomicUsize>,
+}
+
+impl Drop for SelfDropContext {
+    fn drop(&mut self) {
+        self.drops.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+unsafe extern "C" fn drop_self_context(pointer: *mut u8) {
+    // SAFETY: this callback is paired with the initialized SelfDropContext.
+    unsafe { ptr::drop_in_place(pointer.cast::<SelfDropContext>()) };
+}
+
+unsafe extern "C-unwind" fn drop_own_handle(context: *mut u8, _result: *mut u8) -> i32 {
+    // SAFETY: the spawn below pairs this pointer with SelfDropContext.
+    let context = unsafe { ptr::read(context.cast::<SelfDropContext>()) };
+    let handle = context
+        .handle
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    ar_rt_native_thread_drop(handle);
+    drop(context);
+    1
+}
+
+#[test]
+fn self_drop_returns_without_consuming_the_handle() {
+    let drops = Arc::new(AtomicUsize::new(0));
+    let (handle_tx, handle_rx) = std::sync::mpsc::channel();
+    let context_size = std::mem::size_of::<SelfDropContext>();
+    let context_align = std::mem::align_of::<SelfDropContext>();
+    // SAFETY: the context/result use their exact layouts and ownership is
+    // transferred once. The result is left uninitialized on status 1.
+    let handle = unsafe {
+        let context = crate::vec_runtime::ar_rt_alloc_aligned(context_size, context_align);
+        let result = crate::vec_runtime::ar_rt_alloc_aligned(1, 1);
+        assert!(!context.is_null());
+        assert!(!result.is_null());
+        ptr::write(
+            context.cast::<SelfDropContext>(),
+            SelfDropContext {
+                handle: handle_rx,
+                drops: Arc::clone(&drops),
+            },
+        );
+        ar_rt_native_thread_spawn(
+            context,
+            context_size,
+            context_align,
+            drop_own_handle as *const u8,
+            drop_self_context as *const u8,
+            result,
+            1,
+            1,
+            drop_probe as *const u8,
+        )
+    };
+    assert_ne!(handle, 0);
+    handle_tx.send(handle).unwrap();
+    assert_eq!(ar_rt_native_thread_join(handle), AR_THREAD_PANICKED);
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+    assert!(ar_rt_native_thread_join(handle).is_null());
+}
+
 #[test]
 fn failure_never_drops_uninitialized_result() {
     let drops = Arc::new(AtomicUsize::new(0));

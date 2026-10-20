@@ -3,7 +3,10 @@
 //! Writers enter in FIFO order. Releasing a writer admits all already waiting
 //! readers before the next writer. New readers cannot bypass a pending writer.
 //! Fairness assumes holders release and runnable threads eventually execute;
-//! it is not a wall-clock deadline. Recursive acquisition can deadlock.
+//! it is not a wall-clock deadline. Read reentry by the current reader is
+//! allowed only while no writer is queued. Blocking recursive write,
+//! read-to-write upgrade, read while holding write, and read reentry behind a
+//! queued writer abort with a runtime diagnostic instead of hanging.
 //!
 //! State is address-keyed in the native ParkingLot, not a four-byte PFLock.
 //! A guard keeps the lock stationary and releases its acquisition on drop.

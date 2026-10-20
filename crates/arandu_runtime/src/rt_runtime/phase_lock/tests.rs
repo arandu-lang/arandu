@@ -98,6 +98,81 @@ fn phase_fair_read_batches_alternate_with_fifo_writers() {
 }
 
 #[test]
+fn reentrant_reader_can_reacquire_while_no_writer_is_queued() {
+    let mut allocation = 0u8;
+    let key = (&raw mut allocation) as usize;
+    // SAFETY: the key remains stationary through both acquisitions and joins.
+    unsafe { ar_rt_rwlock_read(key as *mut u8) };
+    unsafe { ar_rt_rwlock_read(key as *mut u8) };
+    let owner = current_owner_id();
+    {
+        let entries = states(key).lock().unwrap();
+        let state = entries.get(&key).unwrap();
+        assert_eq!(state.readers, 2);
+        assert_eq!(state.reader_owners.get(&owner), Some(&2));
+    }
+    unsafe { ar_rt_rwlock_read_unlock(key as *mut u8) };
+    unsafe { ar_rt_rwlock_read_unlock(key as *mut u8) };
+    assert!(!states(key).lock().unwrap().contains_key(&key));
+}
+
+#[test]
+fn self_deadlock_policy_rejects_incompatible_reentry() {
+    let mut state = PhaseState {
+        writer: true,
+        writer_owner: Some(11),
+        ..PhaseState::default()
+    };
+    assert!(would_self_deadlock(&state, 11, false));
+    assert!(would_self_deadlock(&state, 11, true));
+
+    state.writer = false;
+    state.writer_owner = None;
+    state.readers = 1;
+    state.reader_owners.insert(11, 1);
+    assert!(would_self_deadlock(&state, 11, true));
+    assert!(!would_self_deadlock(&state, 11, false));
+    state.waiting_writers.push_back(Arc::new(PhaseWaiter {
+        owner_id: 12,
+        notified: Mutex::new(false),
+        ready: Condvar::new(),
+    }));
+    assert!(would_self_deadlock(&state, 11, false));
+}
+
+#[test]
+fn unlock_rejects_a_non_owner_without_changing_admission() {
+    let mut keys = [0u8; 2];
+    let read_key = keys.as_mut_ptr();
+    let write_key = unsafe { read_key.add(1) };
+    // SAFETY: both key bytes remain stationary until all acquisitions release.
+    unsafe {
+        ar_rt_rwlock_read(read_key);
+        ar_rt_rwlock_write(write_key);
+    }
+    let read_owner = current_owner_id();
+    let write_owner = read_owner;
+    let other_owner = std::thread::spawn(current_owner_id).join().unwrap();
+    assert_ne!(read_owner, other_owner);
+    assert!(!release(read_key, false, other_owner));
+    assert!(!release(write_key, true, other_owner));
+    {
+        let entries = states(read_key as usize).lock().unwrap();
+        let state = entries.get(&(read_key as usize)).unwrap();
+        assert_eq!(state.readers, 1);
+        assert_eq!(state.reader_owners.get(&read_owner), Some(&1));
+    }
+    {
+        let entries = states(write_key as usize).lock().unwrap();
+        let state = entries.get(&(write_key as usize)).unwrap();
+        assert!(state.writer);
+        assert_eq!(state.writer_owner, Some(write_owner));
+    }
+    assert!(release(read_key, false, read_owner));
+    assert!(release(write_key, true, write_owner));
+}
+
+#[test]
 fn phase_lock_try_admission_and_address_isolation() {
     let mut keys = [0u8; 2];
     let a = keys.as_mut_ptr();

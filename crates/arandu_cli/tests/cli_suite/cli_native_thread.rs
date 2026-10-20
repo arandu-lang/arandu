@@ -17,6 +17,13 @@ fn native_thread_moves_owned_argument_result_and_joins_on_drop() {
 }
 
 #[test]
+fn shared_cancel_token_is_observed_cooperatively_by_native_thread_job() {
+    run_native_contract(include_str!(
+        "../../../../tests/corpus/native_cancel_token.aru"
+    ));
+}
+
+#[test]
 fn native_shared_arc_supports_simultaneous_readers_and_a_later_writer() {
     run_native_contract(include_str!(
         "../../../../tests/corpus/native_shared_arc.aru"

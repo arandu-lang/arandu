@@ -667,7 +667,7 @@ pub(crate) fn collect_signature_types(checker: &mut TypeChecker<'_>, program: &P
                                         ArType::Ptr(byte)
                                     } else { ArType::Primitive(width.primitive()) };
                                     let scalar = checker.intern(scalar_ty.clone());
-                                    let reference = if op == AtomicOp::Load { ArType::Ref(scalar) } else { ArType::RefMut(scalar) };
+                                    let reference = if matches!(op, AtomicOp::Load | AtomicOp::Store) { ArType::Ref(scalar) } else { ArType::RefMut(scalar) };
                                     let mut parameters = vec![checker.intern(reference)];
                                     parameters.resize(op.argument_count(), scalar);
                                     Some((parameters, if op == AtomicOp::Store { ArType::Void } else { scalar_ty }))

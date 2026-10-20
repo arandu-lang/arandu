@@ -92,10 +92,23 @@ acesso seguro direto ao payload. A guarda continua exclusivamente emprestada
 durante wait: uma referência ativa ao valor protegido impede esse empréstimo.
 
 Cancelamento diferido de `pthread_cond_wait` remove o waiter e libera o bucket
-antes da saída da thread. Cancelamento assíncrono e interrupção arbitrária de
-código Arandu não são admitidos. O protocolo de cancelamento do executor é
-outro contrato: uma tarefa cooperativa não deve bloquear o worker nativo
-esperando uma condição comum do SO.
+antes da saída da thread. Isso é limpeza do mecanismo POSIX, não uma API para
+interromper código Arandu. Cancelamento assíncrono/preemptivo e interrupção
+arbitrária de código Arandu não são admitidos. `SyncExecutor.cancel` descarta
+tarefas ainda pendentes; se o join já está dirigindo a tarefa, marca o handle
+para descarte depois que ela retornar, sem sinalizar a coroutine. O token interno
+de `WorkerTask` só é consultado antes da execução; ainda não existe um
+`CancelToken` público geral observado por tarefas em pontos de suspensão.
+`std.thread.JoinHandle.drop` faz join bloqueante e não cancela a thread; o
+trabalho precisa retornar por conta própria. Tarefas cooperativas não devem
+bloquear o worker nativo em uma espera comum do SO.
+
+`std.sync.cancel_token.CancelToken` é um sinal atômico compartilhado e
+monotônico. O chamador deve cloná-lo para o job/coroutine e consultar
+`isCancelled()` em pontos onde possa encerrar com segurança. O runtime não
+injeta verificações em `await`, não interrompe uma chamada bloqueante e não
+libera guards automaticamente. O token interno de `WorkerTask` permanece uma
+checagem pré-execução do scheduler, independente desse tipo público.
 
 ## 4. RwLock phase-fair implementado
 
@@ -121,6 +134,23 @@ seções críticas e hipóteses de escalonamento explícitas. Limites de bloquei
 em modelos de tempo real não dão um prazo de relógio num SO geral, onde um
 holder pode ser suspenso indefinidamente. Benchmarks de latência e throughput
 são evidência adicional, não prova dessas propriedades.
+
+Leitura recursiva pelo mesmo holder é admitida somente quando não há escritor
+na fila. Cada aquisição é contada por identidade monotônica de thread. Uma
+tentativa bloqueante de escrita recursiva, upgrade leitura→escrita, leitura
+enquanto a mesma thread mantém escrita, ou leitura recursiva atrás de escritor
+na fila aborta com diagnóstico de runtime e endereço do lock, em vez de
+esperar por uma aquisição que depende da própria thread. As variantes `try*`
+continuam não bloqueantes e retornam falha nesses casos. Unlock de leitor ou
+escritor por thread sem a aquisição correspondente aborta. As guardas da stdlib
+são afins e não `Send`, além da validação do runtime na fronteira ABI.
+
+O estado por endereço e os registros de leitores são alocados enquanto há
+holders ou waiters e retirados quando ficam ociosos. No C, falha de `calloc` ou
+`malloc` aborta o processo; não há fast path atômica nem pool por bucket. O
+bucket também serializa locks distintos que colidem. Essas escolhas permanecem
+corretas, mas qualquer pool, alteração do striping ou fast path precisa de
+workload e medição antes/depois para justificar memória e complexidade.
 
 ## 5. Send, Sync e guardas
 

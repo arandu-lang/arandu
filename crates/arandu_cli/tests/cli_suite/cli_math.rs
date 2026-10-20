@@ -51,11 +51,10 @@ fn run_contract(source_text: &str) {
                 if cfg!(unix) {
                     command.args(["-fsanitize=undefined", "-fno-sanitize-recover=all"]);
                 }
+                command.arg(&c).arg("-o").arg(&executable);
+                #[cfg(not(windows))]
+                command.arg("-lm");
                 let compile = command
-                    .arg(&c)
-                    .arg("-o")
-                    .arg(&executable)
-                    .arg("-lm")
                     .output()
                     .expect("compile C");
                 assert!(

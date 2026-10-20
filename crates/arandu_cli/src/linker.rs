@@ -22,7 +22,7 @@ pub enum LinkerKind {
 pub(crate) const fn host_runtime_link_args() -> &'static [&'static str] {
     #[cfg(windows)]
     {
-        &["bcrypt.lib"]
+        &["-lbcrypt"]
     }
     #[cfg(target_os = "macos")]
     {
@@ -815,7 +815,7 @@ mod tests {
         #[cfg(not(any(windows, target_os = "macos")))]
         assert!(args.contains(&"-ldl"));
         #[cfg(windows)]
-        assert!(args.contains(&"bcrypt.lib"));
+        assert!(args.contains(&"-lbcrypt"));
         #[cfg(not(windows))]
         {
             assert!(args.contains(&"-lpthread"));

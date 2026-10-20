@@ -632,6 +632,12 @@ impl DatabaseImpl {
             if !has_alias {
                 let mut reg = self.files.write().unwrap_or_else(|e| e.into_inner());
                 reg.by_id.remove(fid);
+                drop(reg);
+                self.cst_cache
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .by_file
+                    .remove(fid);
             }
         }
     }
@@ -838,5 +844,44 @@ impl ArandCompilerDb for DatabaseImpl {
 
     fn as_db_impl(&self) -> Option<&DatabaseImpl> {
         Some(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DatabaseImpl;
+    use std::sync::Arc;
+
+    #[test]
+    fn unregistering_last_file_alias_evicts_its_cached_cst() {
+        let mut db = DatabaseImpl::new();
+        let file = db.new_file("temporary.aru".into(), "func f(): int { return 1 }".into());
+        let file_id = *file.file_id(&db);
+        let _tree = db.syntax_tree_for_arc(file_id, Arc::clone(file.text(&db)));
+        db.register_source_file("temporary-alias.aru".into(), file);
+
+        assert!(db
+            .cst_cache
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .by_file
+            .contains_key(&file_id));
+
+        db.unregister_source_file("temporary.aru");
+        assert!(db
+            .cst_cache
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .by_file
+            .contains_key(&file_id));
+
+        db.unregister_source_file("temporary-alias.aru");
+
+        assert!(!db
+            .cst_cache
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .by_file
+            .contains_key(&file_id));
     }
 }

@@ -401,6 +401,32 @@ fn hash_symbol_table(hasher: &mut Hasher, table: &SymbolTable, include_spans: bo
         hash_symbol_id(hasher, symbol);
     }
 
+    // Sealed-interface status and implementation edges affect exported
+    // surfaces and downstream type checking, so they belong to both the full
+    // resolution hash and the span-independent module-signature hash.
+    let mut sealed_interfaces: Vec<_> = table.sealed_interfaces.iter().copied().collect();
+    sealed_interfaces.sort_by_key(|symbol| (symbol.file_id, symbol.local_id.0));
+    hasher.update(b"SealedInterfaces/v1");
+    hasher.update(&u64_le(sealed_interfaces.len() as u64));
+    for symbol in sealed_interfaces {
+        hash_symbol_id(hasher, symbol);
+    }
+    let mut implementations: Vec<_> = table.interface_implementations.iter().copied().collect();
+    implementations.sort_by_key(|(ty, interface)| {
+        (
+            ty.file_id,
+            ty.local_id.0,
+            interface.file_id,
+            interface.local_id.0,
+        )
+    });
+    hasher.update(b"InterfaceImplementations/v1");
+    hasher.update(&u64_le(implementations.len() as u64));
+    for (ty, interface) in implementations {
+        hash_symbol_id(hasher, ty);
+        hash_symbol_id(hasher, interface);
+    }
+
     if include_spans {
         hasher.update(&u32_le(table.file_id));
         hasher.update(&u32_le(table.global_scope().0));
@@ -761,6 +787,14 @@ fn hash_type_check_result(result: &TypeCheckResult, include_spans: bool) -> blak
             hash_semantic_type(&mut h, field.ty, interner, symbols);
             h.update(&u64_le(field.index as u64));
         }
+    }
+
+    let mut private_fields: Vec<_> = info.private_fields.iter().copied().collect();
+    private_fields.sort_by_key(|symbol| (symbol.file_id, symbol.local_id.0));
+    h.update(b"PrivateFields/v1");
+    h.update(&u64_le(private_fields.len() as u64));
+    for symbol in private_fields {
+        hash_symbol_id(&mut h, symbol);
     }
 
     let mut enum_variants: Vec<_> = info.enum_variants.iter().collect();
@@ -2644,5 +2678,45 @@ mod authority_hash_tests {
         let mut canonical = plain.clone();
         std::sync::Arc::make_mut(&mut canonical.symbols).set_lang_item(id, LangItem::Arc);
         assert_ne!(type_signature_hash(&plain), type_signature_hash(&canonical));
+    }
+
+    #[test]
+    fn semantic_hashes_include_sealed_interface_metadata() {
+        let baseline = TypeCheckResult::empty();
+        let interface = arandu_middle::SymbolId::new(100, 7);
+        let ty = arandu_middle::SymbolId::new(100, 8);
+
+        let mut sealed = baseline.clone();
+        std::sync::Arc::make_mut(&mut sealed.symbols)
+            .sealed_interfaces
+            .insert(interface);
+        assert_ne!(baseline.stable_hash(), sealed.stable_hash());
+        assert_ne!(type_signature_hash(&baseline), type_signature_hash(&sealed));
+
+        let mut implemented = baseline.clone();
+        std::sync::Arc::make_mut(&mut implemented.symbols)
+            .interface_implementations
+            .insert((ty, interface));
+        assert_ne!(baseline.stable_hash(), implemented.stable_hash());
+        assert_ne!(
+            type_signature_hash(&baseline),
+            type_signature_hash(&implemented)
+        );
+    }
+
+    #[test]
+    fn semantic_signature_hash_includes_private_field_visibility() {
+        let baseline = TypeCheckResult::empty();
+        let field = arandu_middle::SymbolId::new(100, 9);
+        let mut private = baseline.clone();
+        std::sync::Arc::make_mut(&mut private.type_info)
+            .private_fields
+            .insert(field);
+
+        assert_ne!(baseline.stable_hash(), private.stable_hash());
+        assert_ne!(
+            type_signature_hash(&baseline),
+            type_signature_hash(&private)
+        );
     }
 }

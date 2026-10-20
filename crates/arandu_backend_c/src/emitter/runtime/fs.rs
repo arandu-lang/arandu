@@ -135,7 +135,7 @@ static {int_c_ty} ar_fs_open(ArStr path, {int_c_ty} flags, {int_c_ty} mode) {{
 static {int_c_ty} ar_fs_read({int_c_ty} fd, uint8_t *buf, {uint_c_ty} count) {{
     if (fd < 0 || (count > 0 && !buf)) return -1;
     if (count == 0) return 0;
-#if !defined(_WIN32) || defined(__MINGW32__)
+#if !defined(_WIN32)
     for (;;) {{
         ssize_t n = read((int)fd, buf, (size_t)count);
         if (n < 0) {{
@@ -152,7 +152,7 @@ static {int_c_ty} ar_fs_read({int_c_ty} fd, uint8_t *buf, {uint_c_ty} count) {{
 static {int_c_ty} ar_fs_write({int_c_ty} fd, const uint8_t *buf, {uint_c_ty} count) {{
     if (fd < 0 || (count > 0 && !buf)) return -1;
     if (count == 0) return 0;
-#if !defined(_WIN32) || defined(__MINGW32__)
+#if !defined(_WIN32)
     for (;;) {{
         ssize_t n = write((int)fd, buf, (size_t)count);
         if (n < 0) {{
@@ -167,7 +167,7 @@ static {int_c_ty} ar_fs_write({int_c_ty} fd, const uint8_t *buf, {uint_c_ty} cou
 }}
 
 static {int_c_ty} ar_fs_close({int_c_ty} fd) {{
-#if !defined(_WIN32) || defined(__MINGW32__)
+#if !defined(_WIN32)
     if (fd >= 0) return ({int_c_ty})close((int)fd);
 #else
     (void)fd;
@@ -298,7 +298,7 @@ static void ar_fs_readdir(ArStr path, uint8_t **out_buf, {uint_c_ty} *out_count,
         *out_buf = NULL; *out_count = 0; *out_cap = 0; *err = 8;
         return;
     }}
-#if !defined(_WIN32) || defined(__MINGW32__)
+#if !defined(_WIN32)
     DIR *d = opendir(c_path);
     if (!d) {{
         int e = errno;
@@ -630,7 +630,7 @@ static int ar_udp_duplicate_fd(int32_t id) {{
 }}
 
 static int32_t ar_net_udp_bind(const uint8_t *host_ptr, {uint_c_ty} host_len, int32_t port) {{
-#if !defined(_WIN32) || defined(__MINGW32__)
+#if !defined(_WIN32)
     if (!host_ptr || host_len == 0 || port < 0 || port > 65535) return -1;
     char host_buf[256];
     if (host_len >= sizeof(host_buf)) return -1;
@@ -678,7 +678,7 @@ static int32_t ar_net_udp_bind(const uint8_t *host_ptr, {uint_c_ty} host_len, in
 }}
 
 static int32_t ar_net_udp_send_to(int32_t id, const uint8_t *buf, {uint_c_ty} len, const uint8_t *host_ptr, {uint_c_ty} host_len, int32_t port) {{
-#if !defined(_WIN32) || defined(__MINGW32__)
+#if !defined(_WIN32)
     if (id < 0 || id >= AR_MAX_UDP_SOCKETS || !buf || !host_ptr || host_len == 0 || port < 0 || port > 65535) return -1;
     int fd = ar_udp_duplicate_fd(id);
     if (fd < 0) return -1;
@@ -704,7 +704,7 @@ static int32_t ar_net_udp_send_to(int32_t id, const uint8_t *buf, {uint_c_ty} le
 }}
 
 static int32_t ar_net_udp_recv_from(int32_t id, uint8_t *buf, {uint_c_ty} len, int32_t *port_out) {{
-#if !defined(_WIN32) || defined(__MINGW32__)
+#if !defined(_WIN32)
     if (id < 0 || id >= AR_MAX_UDP_SOCKETS || !buf || len == 0) return -1;
     int fd = ar_udp_duplicate_fd(id);
     if (fd < 0) return -1;
@@ -728,7 +728,7 @@ static int32_t ar_net_udp_recv_from(int32_t id, uint8_t *buf, {uint_c_ty} len, i
 }}
 
 static void ar_net_udp_close(int32_t id) {{
-#if !defined(_WIN32) || defined(__MINGW32__)
+#if !defined(_WIN32)
     if (id >= 0 && id < AR_MAX_UDP_SOCKETS) {{
         ar_udp_lock_table();
         int fd = ar_udp_fds[id];
@@ -744,7 +744,7 @@ static void ar_net_udp_close(int32_t id) {{
 }}
 
 static int32_t ar_net_dns_resolve(const uint8_t *name_ptr, {uint_c_ty} name_len, uint8_t *ip_buf, {uint_c_ty} ip_cap) {{
-#if !defined(_WIN32) || defined(__MINGW32__)
+#if !defined(_WIN32)
     if (!name_ptr || name_len == 0 || !ip_buf || ip_cap == 0) return -1;
     char name_buf[256];
     if (name_len >= sizeof(name_buf)) return -1;

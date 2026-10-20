@@ -5,12 +5,6 @@ use std::fmt::Write;
 use super::super::CEmitter;
 
 impl<'a> CEmitter<'a> {
-    pub(super) fn emit_str_eq_runtime(&mut self, len_c_ty: &str) {
-        let _ = writeln!(
-            self.output,
-            "static {len_c_ty} ar_str_eq(ArStr a, ArStr b) {{\n    if (a.len != b.len) return 0;\n    if (a.len <= 0) return 1;\n    if (!a.ptr || !b.ptr) return a.ptr == b.ptr ? 1 : 0;\n    return memcmp(a.ptr, b.ptr, (size_t)a.len) == 0 ? 1 : 0;\n}}"
-        );
-    }
     pub(super) fn emit_path_runtime(&mut self, len_c_ty: &str) {
         let _ = writeln!(
             &mut self.output,
@@ -66,39 +60,6 @@ static ArStr ar_path_file_name(ArStr p) {{
     uint8_t *buf = (uint8_t*)malloc((size_t)n + 1);
     if (!buf) abort();
     memcpy(buf, p.ptr + i, (size_t)n);
-    buf[n] = 0;
-    return ar_str_pack(buf, n);
-}}
-/* String allocation helpers. Borrowed string algorithms live in std.core.str. */
-static ArStr ar_str_concat(ArStr a, ArStr b) {{
-    {len_c_ty} al = a.len < 0 ? 0 : a.len;
-    {len_c_ty} bl = b.len < 0 ? 0 : b.len;
-    {len_c_ty} total = al + bl;
-    uint8_t *buf = (uint8_t*)malloc((size_t)total + 1);
-    if (!buf) abort();
-    if (al > 0 && a.ptr) memcpy(buf, a.ptr, (size_t)al);
-    if (bl > 0 && b.ptr) memcpy(buf + al, b.ptr, (size_t)bl);
-    buf[total] = 0;
-    return ar_str_pack(buf, total);
-}}
-static ArStr ar_str_split_last(ArStr s, ArStr sep) {{
-    if (s.len <= 0 || !s.ptr) return ar_str_pack((const uint8_t*)"", 0);
-    if (sep.len <= 0 || !sep.ptr) {{
-        uint8_t *buf = (uint8_t*)malloc((size_t)s.len + 1);
-        if (!buf) abort();
-        memcpy(buf, s.ptr, (size_t)s.len);
-        buf[s.len] = 0;
-        return ar_str_pack(buf, s.len);
-    }}
-    {len_c_ty} last = -1;
-    for ({len_c_ty} i = 0; i + sep.len <= s.len; i++) {{
-        if (memcmp(s.ptr + i, sep.ptr, (size_t)sep.len) == 0) last = i;
-    }}
-    {len_c_ty} start = last < 0 ? 0 : last + sep.len;
-    {len_c_ty} n = s.len - start;
-    uint8_t *buf = (uint8_t*)malloc((size_t)n + 1);
-    if (!buf) abort();
-    if (n > 0) memcpy(buf, s.ptr + start, (size_t)n);
     buf[n] = 0;
     return ar_str_pack(buf, n);
 }}"#
@@ -645,20 +606,28 @@ static {int_c_ty} ar_fs_unlinkat({int_c_ty} dir_fd, const uint8_t *path_ptr, {ui
 #define AR_MAX_UDP_SOCKETS 64
 static int ar_udp_fds[AR_MAX_UDP_SOCKETS];
 static int ar_udp_initialized = 0;
+static atomic_flag ar_udp_table_lock = ATOMIC_FLAG_INIT;
+
+static void ar_udp_lock_table(void) {{
+    while (atomic_flag_test_and_set_explicit(&ar_udp_table_lock, memory_order_acquire)) {{}}
+}}
+
+static void ar_udp_unlock_table(void) {{
+    atomic_flag_clear_explicit(&ar_udp_table_lock, memory_order_release);
+}}
+
+static int ar_udp_duplicate_fd(int32_t id) {{
+    if (id < 0 || id >= AR_MAX_UDP_SOCKETS) return -1;
+    ar_udp_lock_table();
+    int fd = ar_udp_fds[id];
+    int duplicate = fd >= 0 ? dup(fd) : -1;
+    ar_udp_unlock_table();
+    return duplicate;
+}}
 
 static int32_t ar_net_udp_bind(const uint8_t *host_ptr, {uint_c_ty} host_len, int32_t port) {{
 #if !defined(_WIN32) || defined(__MINGW32__)
     if (!host_ptr || host_len == 0 || port < 0 || port > 65535) return -1;
-    if (!ar_udp_initialized) {{
-        for (int i = 0; i < AR_MAX_UDP_SOCKETS; i++) ar_udp_fds[i] = -1;
-        ar_udp_initialized = 1;
-    }}
-    int slot = -1;
-    for (int i = 0; i < AR_MAX_UDP_SOCKETS; i++) {{
-        if (ar_udp_fds[i] == -1) {{ slot = i; break; }}
-    }}
-    if (slot < 0) return -1;
-
     char host_buf[256];
     if (host_len >= sizeof(host_buf)) return -1;
     memcpy(host_buf, host_ptr, (size_t)host_len);
@@ -681,7 +650,22 @@ static int32_t ar_net_udp_bind(const uint8_t *host_ptr, {uint_c_ty} host_len, in
         return -1;
     }}
 
+    ar_udp_lock_table();
+    if (!ar_udp_initialized) {{
+        for (int i = 0; i < AR_MAX_UDP_SOCKETS; i++) ar_udp_fds[i] = -1;
+        ar_udp_initialized = 1;
+    }}
+    int slot = -1;
+    for (int i = 0; i < AR_MAX_UDP_SOCKETS; i++) {{
+        if (ar_udp_fds[i] == -1) {{ slot = i; break; }}
+    }}
+    if (slot < 0) {{
+        ar_udp_unlock_table();
+        close(fd);
+        return -1;
+    }}
     ar_udp_fds[slot] = fd;
+    ar_udp_unlock_table();
     return (int32_t)slot;
 #else
     (void)host_ptr; (void)host_len; (void)port;
@@ -692,11 +676,11 @@ static int32_t ar_net_udp_bind(const uint8_t *host_ptr, {uint_c_ty} host_len, in
 static int32_t ar_net_udp_send_to(int32_t id, const uint8_t *buf, {uint_c_ty} len, const uint8_t *host_ptr, {uint_c_ty} host_len, int32_t port) {{
 #if !defined(_WIN32) || defined(__MINGW32__)
     if (id < 0 || id >= AR_MAX_UDP_SOCKETS || !buf || !host_ptr || host_len == 0 || port < 0 || port > 65535) return -1;
-    int fd = ar_udp_fds[id];
+    int fd = ar_udp_duplicate_fd(id);
     if (fd < 0) return -1;
 
     char host_buf[256];
-    if (host_len >= sizeof(host_buf)) return -1;
+    if (host_len >= sizeof(host_buf)) {{ close(fd); return -1; }}
     memcpy(host_buf, host_ptr, (size_t)host_len);
     host_buf[host_len] = '\0';
 
@@ -704,9 +688,10 @@ static int32_t ar_net_udp_send_to(int32_t id, const uint8_t *buf, {uint_c_ty} le
     memset(&target, 0, sizeof(target));
     target.sin_family = AF_INET;
     target.sin_port = htons((uint16_t)port);
-    if (inet_pton(AF_INET, host_buf, &target.sin_addr) <= 0) return -1;
+    if (inet_pton(AF_INET, host_buf, &target.sin_addr) <= 0) {{ close(fd); return -1; }}
 
     ssize_t sent = sendto(fd, buf, (size_t)len, 0, (struct sockaddr *)&target, sizeof(target));
+    close(fd);
     return sent < 0 ? -1 : (int32_t)sent;
 #else
     (void)id; (void)buf; (void)len; (void)host_ptr; (void)host_len; (void)port;
@@ -717,7 +702,7 @@ static int32_t ar_net_udp_send_to(int32_t id, const uint8_t *buf, {uint_c_ty} le
 static int32_t ar_net_udp_recv_from(int32_t id, uint8_t *buf, {uint_c_ty} len, int32_t *port_out) {{
 #if !defined(_WIN32) || defined(__MINGW32__)
     if (id < 0 || id >= AR_MAX_UDP_SOCKETS || !buf || len == 0) return -1;
-    int fd = ar_udp_fds[id];
+    int fd = ar_udp_duplicate_fd(id);
     if (fd < 0) return -1;
 
     struct sockaddr_in peer;
@@ -725,6 +710,7 @@ static int32_t ar_net_udp_recv_from(int32_t id, uint8_t *buf, {uint_c_ty} len, i
     memset(&peer, 0, sizeof(peer));
 
     ssize_t recvd = recvfrom(fd, buf, (size_t)len, 0, (struct sockaddr *)&peer, &peer_len);
+    close(fd);
     if (recvd < 0) return -1;
 
     if (port_out) {{
@@ -740,11 +726,13 @@ static int32_t ar_net_udp_recv_from(int32_t id, uint8_t *buf, {uint_c_ty} len, i
 static void ar_net_udp_close(int32_t id) {{
 #if !defined(_WIN32) || defined(__MINGW32__)
     if (id >= 0 && id < AR_MAX_UDP_SOCKETS) {{
+        ar_udp_lock_table();
         int fd = ar_udp_fds[id];
         if (fd >= 0) {{
-            close(fd);
             ar_udp_fds[id] = -1;
+            close(fd);
         }}
+        ar_udp_unlock_table();
     }}
 #else
     (void)id;

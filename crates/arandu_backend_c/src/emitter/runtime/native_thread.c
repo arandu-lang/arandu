@@ -19,12 +19,40 @@ typedef struct ar_native_thread {
 } ar_native_thread;
 static ar_native_thread *ar_native_threads = NULL;
 static size_t ar_native_next_id = 1;
-static atomic_flag ar_native_table_lock = ATOMIC_FLAG_INIT;
+static atomic_bool ar_native_table_lock = ATOMIC_VAR_INIT(false);
+static void ar_native_spin_hint(void) {
+#if defined(_WIN32)
+    YieldProcessor();
+#elif (defined(__i386__) || defined(__x86_64__)) && (defined(__GNUC__) || defined(__clang__))
+    __builtin_ia32_pause();
+#elif defined(__aarch64__) && (defined(__GNUC__) || defined(__clang__))
+    __asm__ __volatile__("isb" ::: "memory");
+#else
+    atomic_signal_fence(memory_order_seq_cst);
+#endif
+}
+static void ar_native_yield(void) {
+#if defined(_WIN32)
+    SwitchToThread();
+#else
+    sched_yield();
+#endif
+}
 static void ar_native_lock(void) {
-    while (atomic_flag_test_and_set_explicit(&ar_native_table_lock, memory_order_acquire)) {}
+    unsigned int spins = 0;
+    for (;;) {
+        if (!atomic_load_explicit(&ar_native_table_lock, memory_order_relaxed)
+            && !atomic_exchange_explicit(&ar_native_table_lock, true, memory_order_acquire))
+            return;
+        ar_native_spin_hint();
+        if (++spins == 64) {
+            ar_native_yield();
+            spins = 0;
+        }
+    }
 }
 static void ar_native_unlock(void) {
-    atomic_flag_clear_explicit(&ar_native_table_lock, memory_order_release);
+    atomic_store_explicit(&ar_native_table_lock, false, memory_order_release);
 }
 static void ar_native_execute(ar_native_thread *task) {
     task->status = task->entry(task->context, task->result);
@@ -109,6 +137,18 @@ static ar_native_thread *ar_native_take(size_t id) {
     }
     return task;
 }
+static bool ar_native_is_current_thread(size_t id) {
+    ar_native_lock();
+    ar_native_thread *task = ar_native_threads;
+    while (task && task->id != id) task = task->next;
+#if defined(_WIN32)
+    bool is_current = task && GetThreadId(task->thread) == GetCurrentThreadId();
+#else
+    bool is_current = task && pthread_equal(task->thread, pthread_self());
+#endif
+    ar_native_unlock();
+    return is_current;
+}
 static uint8_t *ar_rt_native_thread_join(size_t id) {
     ar_native_thread *task = ar_native_take(id);
     if (!task) return NULL;
@@ -132,6 +172,8 @@ static bool ar_rt_native_thread_is_finished(size_t id) {
     return finished;
 }
 static void ar_rt_native_thread_drop(size_t id) {
+    /* Self-drop leaves the handle registered for its owner or the JIT barrier. */
+    if (ar_native_is_current_thread(id)) return;
     ar_native_thread *task = ar_native_take(id);
     if (!task) return;
     if (task->status == 0) task->drop_result(task->result);

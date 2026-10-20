@@ -8,6 +8,7 @@ pub(super) mod memory;
 mod native_thread;
 mod phase_lock;
 pub(super) mod prelude;
+pub(super) mod string;
 pub(super) mod task;
 
 use std::fmt::Write;
@@ -82,6 +83,7 @@ impl<'a> CEmitter<'a> {
             );
         }
         if features.fs {
+            let _ = writeln!(self.output, "#include <stdatomic.h>");
             let _ = writeln!(self.output, "#include <sys/types.h>");
             let _ = writeln!(
                 self.output,
@@ -104,7 +106,7 @@ impl<'a> CEmitter<'a> {
         if features.concat {
             let _ = writeln!(&mut self.output, "#include <stdarg.h>");
         }
-        if features.formats[2] {
+        if features.formats.iter().any(|&f| f) {
             let _ = writeln!(&mut self.output, "#include <math.h>");
         }
         let _ = writeln!(
@@ -216,8 +218,13 @@ impl<'a> CEmitter<'a> {
             self.emit_path_runtime(len_c_ty);
         }
         if features.string_eq {
-            self.emit_str_eq_runtime(len_c_ty);
+            self.emit_str_eq_runtime();
         }
-        self.emit_str_converters(len_c_ty, features.concat, features.formats);
+        if features.concat || features.path {
+            self.emit_str_concat_runtime();
+        }
+        if features.formats.iter().any(|&f| f) {
+            self.emit_str_format_runtime();
+        }
     }
 }

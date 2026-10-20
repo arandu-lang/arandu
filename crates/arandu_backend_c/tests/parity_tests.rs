@@ -134,6 +134,112 @@ int main(void) {
 }
 
 #[test]
+#[cfg(unix)]
+fn generated_c_udp_socket_table_handles_concurrent_bind_send_close() {
+    let (amir, tc) = compile_src(
+        r#"
+extern "C" {
+    func ar_net_udp_bind(host: ptr[u8]?, host_len: usize, port: int): int
+}
+func main(): int {
+    return unsafe { ar_net_udp_bind(nil, 0 as usize, 0) }
+}
+"#,
+    );
+    let source = format!(
+        "#define main arandu_unused_main\n{}\n#undef main\n{}",
+        emit_c(&amir, &tc),
+        r#"
+#include <pthread.h>
+#include <stdatomic.h>
+#include <sched.h>
+
+enum { UDP_WORKERS = 8 };
+static atomic_int start_workers = 0;
+static atomic_int senders_ready = 0;
+static atomic_int start_senders = 0;
+static int socket_ids[UDP_WORKERS];
+static const uint8_t loopback[] = "127.0.0.1";
+static const uint8_t payload = 42;
+
+static void *bind_udp_socket(void *argument) {
+    intptr_t index = (intptr_t)argument;
+    while (!atomic_load_explicit(&start_workers, memory_order_acquire)) sched_yield();
+    socket_ids[index] = ar_net_udp_bind(loopback, sizeof(loopback) - 1, 0);
+    return NULL;
+}
+
+static void *send_udp_packets(void *argument) {
+    intptr_t index = (intptr_t)argument;
+    atomic_fetch_add_explicit(&senders_ready, 1, memory_order_release);
+    while (!atomic_load_explicit(&start_senders, memory_order_acquire)) sched_yield();
+    (void)ar_net_udp_send_to(
+        socket_ids[index], &payload, 1, loopback, sizeof(loopback) - 1, 9
+    );
+    return NULL;
+}
+
+int main(void) {
+    pthread_t workers[UDP_WORKERS];
+    for (intptr_t i = 0; i < UDP_WORKERS; ++i) {
+        if (pthread_create(&workers[i], NULL, bind_udp_socket, (void *)i) != 0) return 1;
+    }
+    atomic_store_explicit(&start_workers, 1, memory_order_release);
+    for (int i = 0; i < UDP_WORKERS; ++i) {
+        if (pthread_join(workers[i], NULL) != 0) return 2;
+    }
+    for (int i = 0; i < UDP_WORKERS; ++i) {
+        if (socket_ids[i] < 0) return 3;
+        for (int j = 0; j < i; ++j) {
+            if (socket_ids[i] == socket_ids[j]) return 4;
+        }
+    }
+    for (int i = 0; i < UDP_WORKERS; ++i) {
+        if (pthread_create(&workers[i], NULL, send_udp_packets, (void *)(intptr_t)i) != 0) return 5;
+    }
+    while (atomic_load_explicit(&senders_ready, memory_order_acquire) != UDP_WORKERS) sched_yield();
+    atomic_store_explicit(&start_senders, 1, memory_order_release);
+    for (int i = 0; i < UDP_WORKERS; ++i) ar_net_udp_close(socket_ids[i]);
+    for (int i = 0; i < UDP_WORKERS; ++i) {
+        if (pthread_join(workers[i], NULL) != 0) return 6;
+    }
+    return 0;
+}
+"#
+    );
+    let directory = env::temp_dir().join(format!("arandu-udp-c-{}", std::process::id()));
+    fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("udp.c");
+    let executable = directory.join("udp");
+    fs::write(&path, source).unwrap();
+    let compiler = env::var("CC").unwrap_or_else(|_| "cc".into());
+    let mut command = Command::new(compiler);
+    command.args(["-O2", "-pthread"]);
+    if cfg!(target_os = "linux") && env::var_os("ARANDU_C_TSAN").is_some() {
+        command.arg("-fsanitize=thread");
+    }
+    let output = command
+        .arg(&path)
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "C compilation failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output = Command::new(&executable).output().unwrap();
+    assert!(
+        output.status.success(),
+        "UDP table stress failed: status={}, stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn parity_ordinary_bit_names_are_not_intrinsics() {
     test_zero_result_all_opt_levels(
         "ordinary_bit_names",

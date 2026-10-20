@@ -1,4 +1,7 @@
 #include <assert.h>
+#include <sys/resource.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #include <signal.h>
 
 static uint8_t phase_keys[2];
@@ -21,6 +24,64 @@ static void *phase_run(void *raw) {
     if (worker->write) ar_rt_rwlock_write_unlock(worker->key);
     else ar_rt_rwlock_read_unlock(worker->key);
     return NULL;
+}
+
+typedef struct {
+    uint8_t *key;
+    int write;
+} phase_foreign_unlock;
+
+static void *phase_foreign_unlock_run(void *raw) {
+    phase_foreign_unlock *args = (phase_foreign_unlock*)raw;
+    if (args->write) ar_rt_rwlock_write_unlock(args->key);
+    else ar_rt_rwlock_read_unlock(args->key);
+    return NULL;
+}
+
+static void phase_queued(uint8_t *key, size_t readers, size_t writers);
+
+static void phase_foreign_unlock_aborts(uint8_t *key, int write) {
+    pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        struct rlimit no_core = {0,0};
+        (void)setrlimit(RLIMIT_CORE, &no_core);
+        if (write) ar_rt_rwlock_write(key);
+        else ar_rt_rwlock_read(key);
+        phase_foreign_unlock args = {key, write};
+        pthread_t invalid_unlocker;
+        if (pthread_create(&invalid_unlocker, NULL, phase_foreign_unlock_run, &args) != 0)
+            _exit(10);
+        (void)pthread_join(invalid_unlocker, NULL);
+        _exit(0);
+    }
+    int status = 0;
+    assert(waitpid(child, &status, 0) == child);
+    assert(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
+}
+
+static void phase_self_deadlock_aborts(uint8_t *key, int held_write,
+                                       int requested_write, int queued_writer) {
+    pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        struct rlimit no_core = {0,0};
+        (void)setrlimit(RLIMIT_CORE, &no_core);
+        if (held_write) ar_rt_rwlock_write(key);
+        else ar_rt_rwlock_read(key);
+        if (queued_writer) {
+            phase_worker writer = {key,1,9,0,0};
+            pthread_t thread;
+            if (pthread_create(&thread, NULL, phase_run, &writer) != 0) _exit(11);
+            phase_queued(key, 0, 1);
+        }
+        if (requested_write) ar_rt_rwlock_write(key);
+        else ar_rt_rwlock_read(key);
+        _exit(0);
+    }
+    int status = 0;
+    assert(waitpid(child, &status, 0) == child);
+    assert(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
 }
 
 static void phase_queued(uint8_t *key, size_t readers, size_t writers) {
@@ -51,6 +112,7 @@ static void phase_empty(uint8_t *key) {
 int main(void) {
     alarm(20);
     uint8_t *key = &phase_keys[0];
+    pthread_t r[3], w[2];
     assert(ar_rt_rwlock_try_read(key) == 1);
     assert(ar_rt_rwlock_try_read(key) == 1);
     assert(ar_rt_rwlock_try_write(key) == 0);
@@ -59,10 +121,32 @@ int main(void) {
     ar_rt_rwlock_read_unlock(key);
     ar_rt_rwlock_read_unlock(key);
     phase_empty(key);
+
+    phase_self_deadlock_aborts(key, 0, 1, 0); /* read -> write */
+    phase_self_deadlock_aborts(key, 1, 0, 0); /* write -> read */
+    phase_self_deadlock_aborts(key, 1, 1, 0); /* write -> write */
+    phase_self_deadlock_aborts(key, 0, 0, 1); /* read -> read behind writer */
+
+    /* A current reader can reacquire while no writer is queued. */
+    ar_rt_rwlock_read(key);
+    ar_rt_rwlock_read(key);
+    size_t owner_id = ar_rt_thread_current_id();
+    ar_cv_bucket *owner_bucket = ar_get_cv_bucket(key);
+    ar_cv_lock(owner_bucket);
+    ar_phase_state *owner_state = *ar_phase_link(owner_bucket,key);
+    assert(owner_state->readers == 2);
+    assert(owner_state->reader_owners && owner_state->reader_owners->thread_id == owner_id);
+    assert(owner_state->reader_owners->count == 2);
+    ar_cv_unlock(owner_bucket);
+    ar_rt_rwlock_read_unlock(key);
+    ar_rt_rwlock_read_unlock(key);
+    phase_empty(key);
+    atomic_store(&phase_order,0);
+    memset(phase_arrivals,0,sizeof(phase_arrivals));
+
     ar_rt_rwlock_write(key);
     phase_worker readers[3] = {{key,0,1,0,0}, {key,0,2,0,0}, {key,0,4,0,0}};
     phase_worker writers[2] = {{key,1,3,0,0}, {key,1,5,0,0}};
-    pthread_t r[3], w[2];
     assert(pthread_create(&r[0], NULL, phase_run, &readers[0]) == 0);
     phase_queued(key,1,0);
     assert(pthread_create(&w[0], NULL, phase_run, &writers[0]) == 0);
@@ -114,11 +198,15 @@ int main(void) {
     ar_cv_bucket *bucket = ar_get_cv_bucket(key);
     ar_cv_lock(bucket);
     ar_phase_state *state = *ar_phase_link(bucket,key);
-    ar_phase_release_state(state,1); /* reserve reader admission + signal */
+    ar_phase_release_state(state,1,ar_rt_thread_current_id()); /* reserve and signal */
     assert(pthread_cancel(r[0]) == 0);
     ar_cv_unlock(bucket);
     assert(pthread_join(r[0],&status) == 0);
     assert(status == PTHREAD_CANCELED || status == NULL);
     phase_empty(key);
+
+    /* Foreign read and write unlocks fail closed. */
+    phase_foreign_unlock_aborts(key, 0);
+    phase_foreign_unlock_aborts(key, 1);
     return 0;
 }

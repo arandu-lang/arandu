@@ -1,9 +1,16 @@
 /* Mirrors arandu_runtime::rt_runtime::phase_lock. The existing ParkingLot
-   bucket serializes exact-address state. The caller keeps the key stationary. */
+   bucket serializes exact-address state and thread identities validate unlocks.
+   The caller keeps the key stationary. */
+typedef struct ar_phase_reader_owner {
+    size_t thread_id, count;
+    struct ar_phase_reader_owner *next;
+} ar_phase_reader_owner;
 typedef struct ar_phase_state {
     const void *key;
     size_t readers;
     int writer;
+    size_t writer_owner;
+    ar_phase_reader_owner *reader_owners;
     ar_cv_waiter *read_head, *read_tail, *write_head, *write_tail;
     struct ar_phase_state *next;
 } ar_phase_state;
@@ -13,6 +20,38 @@ static ar_phase_state **ar_phase_link(ar_cv_bucket *bucket, const void *key) {
     ar_phase_state **link = &ar_phase_states[(size_t)(bucket - ar_cv_buckets)];
     while (*link && (*link)->key != key) link = &(*link)->next;
     return link;
+}
+
+static void ar_phase_add_reader(ar_phase_state *state, size_t owner_id) {
+    if (state->readers == SIZE_MAX) abort();
+    ar_phase_reader_owner *owner = state->reader_owners;
+    while (owner && owner->thread_id != owner_id) owner = owner->next;
+    if (owner) {
+        if (owner->count == SIZE_MAX) abort();
+        owner->count++;
+    } else {
+        owner = (ar_phase_reader_owner*)malloc(sizeof(*owner));
+        if (!owner) abort();
+        owner->thread_id = owner_id;
+        owner->count = 1;
+        owner->next = state->reader_owners;
+        state->reader_owners = owner;
+    }
+    state->readers++;
+}
+
+static int ar_phase_remove_reader(ar_phase_state *state, size_t owner_id) {
+    ar_phase_reader_owner **link = &state->reader_owners;
+    while (*link && (*link)->thread_id != owner_id) link = &(*link)->next;
+    ar_phase_reader_owner *owner = *link;
+    if (!owner || !owner->count || !state->readers) return 0;
+    owner->count--;
+    state->readers--;
+    if (!owner->count) {
+        *link = owner->next;
+        free(owner);
+    }
+    return 1;
 }
 
 static void ar_phase_signal(ar_cv_waiter *waiter) {
@@ -30,6 +69,7 @@ static void ar_phase_writer(ar_phase_state *state) {
     state->write_head = waiter->next;
     if (!state->write_head) state->write_tail = NULL;
     state->writer = 1;
+    state->writer_owner = waiter->owner_id;
     ar_phase_signal(waiter);
 }
 
@@ -38,28 +78,28 @@ static void ar_phase_readers(ar_phase_state *state) {
     state->read_head = state->read_tail = NULL;
     while (waiter) {
         ar_cv_waiter *next = waiter->next;
-        if (state->readers == SIZE_MAX) abort();
-        state->readers++;
+        ar_phase_add_reader(state, waiter->owner_id);
         ar_phase_signal(waiter);
         waiter = next;
     }
 }
 
-static void ar_phase_release_state(ar_phase_state *state, int write) {
+static void ar_phase_release_state(ar_phase_state *state, int write, size_t owner_id) {
     if (write) {
-        if (!state->writer || state->readers) abort();
+        if (!state->writer || state->writer_owner != owner_id || state->readers) abort();
         state->writer = 0;
+        state->writer_owner = 0;
         ar_phase_readers(state); /* PF3: all already queued readers enter. */
         if (!state->readers) ar_phase_writer(state);
     } else {
-        if (state->writer || !state->readers) abort();
-        state->readers--;
+        if (state->writer || !ar_phase_remove_reader(state, owner_id)) abort();
         if (!state->readers) ar_phase_writer(state);
     }
 }
 
 static void ar_phase_retire(ar_cv_bucket *bucket, ar_phase_state *state) {
     if (!state->writer && !state->readers && !state->read_head && !state->write_head) {
+        if (state->writer_owner || state->reader_owners) abort();
         ar_phase_state **link = ar_phase_link(bucket, state->key);
         if (*link != state) abort();
         *link = state->next;
@@ -80,7 +120,7 @@ static void ar_phase_cancel_wait(void *raw) {
     ar_phase_state *state = ctx->state;
     if (ctx->waiter->notified) {
         /* POSIX cancellation can race admission; give its reserved slot back. */
-        ar_phase_release_state(state, ctx->write);
+        ar_phase_release_state(state, ctx->write, ctx->waiter->owner_id);
     } else {
         ar_cv_waiter **head = ctx->write ? &state->write_head : &state->read_head;
         ar_cv_waiter **tail = ctx->write ? &state->write_tail : &state->read_tail;
@@ -100,6 +140,7 @@ static void ar_phase_cancel_wait(void *raw) {
 
 static int32_t ar_phase_acquire(uint8_t *key, int write, int blocking) {
     if (!key) abort();
+    size_t owner_id = ar_rt_thread_current_id();
     ar_cv_bucket *bucket = ar_get_cv_bucket(key);
     ar_cv_lock(bucket);
     ar_phase_state **link = ar_phase_link(bucket, key);
@@ -109,15 +150,27 @@ static int32_t ar_phase_acquire(uint8_t *key, int write, int blocking) {
         (*link)->key = key;
     }
     ar_phase_state *state = *link;
-    if (!state->writer && !state->write_head && (!write || !state->readers)) {
-        if (write) state->writer = 1;
-        else { if (state->readers == SIZE_MAX) abort(); state->readers++; }
+    int reentrant_reader = 0;
+    for (ar_phase_reader_owner *owner = state->reader_owners; owner; owner = owner->next)
+        if (owner->thread_id == owner_id) { reentrant_reader = 1; break; }
+    if (blocking && (state->writer_owner == owner_id
+        || (write && reentrant_reader)
+        || (!write && reentrant_reader && state->write_head))) {
+        fprintf(stderr,
+            "arandu runtime: reentrant %s acquisition on RwLock key %p would deadlock\n",
+            write ? "write" : "read", (void*)key);
+        abort();
+    }
+    if (!state->writer && !state->write_head
+        && (!write || !state->readers)) {
+        if (write) { state->writer = 1; state->writer_owner = owner_id; }
+        else ar_phase_add_reader(state, owner_id);
         ar_cv_unlock(bucket);
         return 1;
     }
     if (!blocking) { ar_cv_unlock(bucket); return 0; }
     ar_cv_waiter waiter = {0};
-    waiter.key = key;
+    waiter.owner_id = owner_id;
 #if defined(_WIN32)
     InitializeConditionVariable(&waiter.cv);
 #else
@@ -148,11 +201,12 @@ static int32_t ar_phase_acquire(uint8_t *key, int write, int blocking) {
 
 static void ar_phase_release(uint8_t *key, int write) {
     if (!key) abort();
+    size_t owner_id = ar_rt_thread_current_id();
     ar_cv_bucket *bucket = ar_get_cv_bucket(key);
     ar_cv_lock(bucket);
     ar_phase_state *state = *ar_phase_link(bucket, key);
     if (!state) abort();
-    ar_phase_release_state(state, write);
+    ar_phase_release_state(state, write, owner_id);
     ar_phase_retire(bucket, state);
     ar_cv_unlock(bucket);
 }

@@ -452,6 +452,9 @@ impl<'a> ModuleEmitter<'a> {
 
     fn integer_width(&self, ty: &ArType) -> Option<u64> {
         match ty {
+            // `llvm_type` represents an unconstrained integer literal as i32;
+            // keep coercion's width model aligned with that ABI choice.
+            ArType::IntLiteral => Some(32),
             ArType::Primitive(primitive) => Some(match primitive {
                 Primitive::Bool => 1,
                 Primitive::Int | Primitive::Uint | Primitive::I32 | Primitive::U32 => 32,
@@ -4211,5 +4214,48 @@ impl IntegerWidthFromLlvm for ModuleEmitter<'_> {
             "i64" => Some(64),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn int_literal_coercion_uses_its_llvm_integer_width() {
+        let program = AmirProgram {
+            funcs: Vec::new(),
+            literal_pool: Default::default(),
+            extern_funcs: Default::default(),
+            debug_bindings: Vec::new(),
+            debug_blocks: Vec::new(),
+        };
+        let symbols = SymbolTable::new(0);
+        let info = TypeInfo::default();
+        let module = ModuleEmitter::new(&program, &symbols, &info);
+        let blocks = Vec::new();
+        let func = AmirFunc {
+            symbol: SymbolId::new(0, 0),
+            return_type: info.type_interner.intern(ArType::Void),
+            receiver: None,
+            params: Vec::new(),
+            locals: Vec::new(),
+            temps: Vec::new(),
+            blocks: blocks.clone(),
+            block_params: Vec::new(),
+            stmts: Default::default(),
+            cfg: arandu_middle::cfg::compute_cfg_edges(&blocks),
+        };
+        let mut emitter = FuncEmitter::new(&module, &func).expect("empty function emitter");
+
+        let coerced = emitter
+            .coerce(
+                TypedValue::new("i64".to_owned(), "42".to_owned()),
+                &ArType::IntLiteral,
+            )
+            .expect("i64 must coerce to the i32 representation of IntLiteral");
+
+        assert_eq!(coerced.ty, "i32");
+        assert!(emitter.writer.finish().contains("trunc i64 42 to i32"));
     }
 }

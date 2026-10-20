@@ -114,13 +114,14 @@ fn compile_and_run(
     if deny_entropy {
         command.arg("-Wl,--wrap=fopen");
     }
-    let compile = command
+    command
         .arg(source)
         .arg("-o")
-        .arg(output)
-        .arg("-lm")
-        .output()
-        .unwrap();
+        .arg(output);
+    if !cfg!(windows) {
+        command.arg("-lm");
+    }
+    let compile = command.output().unwrap();
     assert!(
         compile.status.success(),
         "clang: {}",

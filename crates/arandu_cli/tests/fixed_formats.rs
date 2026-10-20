@@ -51,13 +51,14 @@ fn fixed_formats_match_wide_oracle_in_jit_and_c() {
             if cfg!(unix) {
                 command.args(["-fsanitize=undefined", "-fno-sanitize-recover=all"]);
             }
-            let compilation = command
+            command
                 .arg(&c_source)
                 .arg("-o")
-                .arg(&executable)
-                .arg("-lm")
-                .output()
-                .unwrap();
+                .arg(&executable);
+            if !cfg!(windows) {
+                command.arg("-lm");
+            }
+            let compilation = command.output().unwrap();
             assert!(
                 compilation.status.success(),
                 "C {optimization}: {}",

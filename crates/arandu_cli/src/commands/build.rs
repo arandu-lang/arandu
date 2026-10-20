@@ -405,8 +405,7 @@ pub fn cmd_project_build(
                     command.arg(object);
                     let runtime = linker::runtime_library()?;
                     command.arg(runtime);
-                    #[cfg(not(windows))]
-                    command.args(["-lpthread", "-ldl", "-lm"]);
+                    command.args(linker::host_runtime_link_args());
                     command.arg("-o").arg(output);
                     let status = command.status().map_err(|error| {
                         CliFailure::operational(

@@ -4,7 +4,7 @@
 //! processes** supervised by a parent. This module implements that host side.
 
 use std::process::{Child, Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 struct Worker {
     child: Child,
@@ -16,12 +16,22 @@ struct Worker {
 
 struct Supervisor {
     workers: Vec<Option<Worker>>,
+    closed: bool,
 }
 
-static SUPERS: Mutex<Vec<Option<Supervisor>>> = Mutex::new(Vec::new());
+type SharedSupervisor = Arc<Mutex<Supervisor>>;
 
-fn lock() -> std::sync::MutexGuard<'static, Vec<Option<Supervisor>>> {
+static SUPERS: Mutex<Vec<Option<SharedSupervisor>>> = Mutex::new(Vec::new());
+
+fn lock() -> std::sync::MutexGuard<'static, Vec<Option<SharedSupervisor>>> {
     SUPERS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn get_supervisor(id: i64) -> Option<SharedSupervisor> {
+    if id < 0 {
+        return None;
+    }
+    lock().get(id as usize).and_then(Clone::clone)
 }
 
 fn checked_path_len(length: i64) -> Option<usize> {
@@ -36,9 +46,10 @@ fn checked_path_len(length: i64) -> Option<usize> {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ar_rt_supervisor_create() -> i64 {
     let mut g = lock();
-    let s = Supervisor {
+    let s = Arc::new(Mutex::new(Supervisor {
         workers: Vec::new(),
-    };
+        closed: false,
+    }));
     if let Some(idx) = g.iter().position(|x| x.is_none()) {
         g[idx] = Some(s);
         return idx as i64;
@@ -57,9 +68,19 @@ pub unsafe extern "C" fn ar_rt_supervisor_destroy(id: i64) {
     if id < 0 {
         return;
     }
+    let Some(supervisor) = get_supervisor(id) else {
+        return;
+    };
+    let mut state = supervisor.lock().unwrap_or_else(|e| e.into_inner());
+    state.closed = true;
     let mut g = lock();
     if let Some(slot) = g.get_mut(id as usize) {
-        *slot = None;
+        if slot
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, &supervisor))
+        {
+            *slot = None;
+        }
     }
 }
 
@@ -100,10 +121,13 @@ pub unsafe extern "C" fn ar_rt_supervisor_spawn(
         Ok(s) => s,
         Err(_) => return -1,
     };
-    let mut g = lock();
-    let Some(Some(super_slot)) = g.get_mut(sup as usize) else {
+    let Some(supervisor) = get_supervisor(sup) else {
         return -1;
     };
+    let mut super_slot = supervisor.lock().unwrap_or_else(|e| e.into_inner());
+    if super_slot.closed {
+        return -1;
+    }
     let child = match Command::new(path)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -142,11 +166,14 @@ pub unsafe extern "C" fn ar_rt_supervisor_poll(sup: i64, worker: i64) -> i64 {
     if sup < 0 || worker < 0 {
         return -1;
     }
+    let Some(supervisor) = get_supervisor(sup) else {
+        return -1;
+    };
     let (should_restart, path_bytes) = {
-        let mut g = lock();
-        let Some(Some(super_slot)) = g.get_mut(sup as usize) else {
+        let mut super_slot = supervisor.lock().unwrap_or_else(|e| e.into_inner());
+        if super_slot.closed {
             return -1;
-        };
+        }
         let Some(Some(w)) = super_slot.workers.get_mut(worker as usize) else {
             return -1;
         };
@@ -178,10 +205,13 @@ pub unsafe extern "C" fn ar_rt_supervisor_poll(sup: i64, worker: i64) -> i64 {
             Err(_) => return 1,
         };
 
-        let mut g = lock();
-        let Some(Some(super_slot)) = g.get_mut(sup as usize) else {
+        let mut super_slot = supervisor.lock().unwrap_or_else(|e| e.into_inner());
+        if super_slot.closed {
+            let mut child = new_child;
+            let _ = child.kill();
+            let _ = child.wait();
             return -1;
-        };
+        }
         let Some(Some(w)) = super_slot.workers.get_mut(worker as usize) else {
             return -1;
         };
@@ -202,10 +232,13 @@ pub unsafe extern "C" fn ar_rt_supervisor_wait(sup: i64, worker: i64) -> i64 {
     if sup < 0 || worker < 0 {
         return -1;
     }
-    let mut g = lock();
-    let Some(Some(super_slot)) = g.get_mut(sup as usize) else {
+    let Some(supervisor) = get_supervisor(sup) else {
         return -1;
     };
+    let mut super_slot = supervisor.lock().unwrap_or_else(|e| e.into_inner());
+    if super_slot.closed {
+        return -1;
+    }
     let Some(Some(w)) = super_slot.workers.get_mut(worker as usize) else {
         return -1;
     };
@@ -224,10 +257,13 @@ pub unsafe extern "C" fn ar_rt_supervisor_kill(sup: i64, worker: i64) -> i64 {
     if sup < 0 || worker < 0 {
         return -1;
     }
-    let mut g = lock();
-    let Some(Some(super_slot)) = g.get_mut(sup as usize) else {
+    let Some(supervisor) = get_supervisor(sup) else {
         return -1;
     };
+    let mut super_slot = supervisor.lock().unwrap_or_else(|e| e.into_inner());
+    if super_slot.closed {
+        return -1;
+    }
     let Some(Some(w)) = super_slot.workers.get_mut(worker as usize) else {
         return -1;
     };

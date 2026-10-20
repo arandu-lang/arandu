@@ -129,8 +129,10 @@ fn run_linked(ir: &str) -> Option<i32> {
         .arg("-O0")
         .arg("-o")
         .arg(&bin_path);
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     compile.args(["-lpthread", "-ldl", "-lm"]);
+    #[cfg(target_os = "macos")]
+    compile.args(["-lpthread", "-lm"]);
     let status = compile.status().expect("start clang");
     let _ = fs::remove_file(&ir_path);
     if !status.success() {

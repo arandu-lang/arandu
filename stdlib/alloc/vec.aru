@@ -32,9 +32,8 @@ module std.alloc.vec
 /// Minimal 0.1 — growable array (`Vec<T>`).
 ///
 /// # Design
-/// Contiguous pure-buffer storage: host raw allocators
-/// (`ar_vec_malloc` / `ar_vec_realloc` / `ar_vec_buf_free`) + typed access via
-/// mem intrinsics (`sizeOf` / `ptrOffset` / `ptrRead` / `ptrWrite`).
+/// Contiguous storage: target-aligned host allocation + typed access via mem
+/// intrinsics (`sizeOf` / `alignOf` / `ptrOffset` / `ptrRead` / `ptrWrite`).
 ///
 /// Growth: geometric factor 2, minimum capacity 8 (amortised O(1) append).
 
@@ -44,12 +43,12 @@ import std.core.marker as marker
 import std.core.slice as slice
 
 extern "C" {
-    /// Host allocator for a raw byte buffer.
-    func ar_vec_malloc(size: usize): ptr[u8]
     /// Host deallocator for a raw byte buffer.
     func ar_vec_buf_free(p: ptr[u8], size: usize): void
-    /// Host allocator that resizes a raw byte buffer.
-    func ar_vec_realloc(p: ptr[u8], oldSize: usize, newSize: usize): ptr[u8]
+    /// Allocator for typed buffers using target-provided alignment.
+    func ar_rt_alloc_aligned(size: usize, align: usize): ptr[u8]
+    /// Matching deallocator for `ar_rt_alloc_aligned`.
+    func ar_rt_free_aligned(p: ptr[u8], size: usize, align: usize): void
 }
 
 /// Growable contiguous buffer of `T`.
@@ -60,6 +59,8 @@ public struct Vec<T> {
     private len: usize
     /// Allocated capacity in elements or bytes, as defined by this type.
     private capacity: usize
+    /// Adopted byte buffers use the separate `ar_vec_buf_free` ABI.
+    private rawBuffer: bool
 }
 
 /// Adopts an initialized byte buffer without allocating or copying.
@@ -78,7 +79,7 @@ public func adoptBytes(data: ptr[u8], bufCap: usize, bufLen: usize): Vec<u8> {
 // The public raw adoption boundary above transfers exactly this obligation.
 @Unsafe
 func Vec.adoptBytesImpl(data: ptr[u8], bufCap: usize, bufLen: usize): Vec<u8> {
-    return Vec<u8> { data: data, len: bufLen, capacity: bufCap }
+    return Vec<u8> { data: data, len: bufLen, capacity: bufCap, rawBuffer: true }
 }
 
 func Vec.newImpl<T>(): Vec<T> {
@@ -86,6 +87,7 @@ func Vec.newImpl<T>(): Vec<T> {
         data: nil,
         len: 0,
         capacity: 0,
+        rawBuffer: false,
     }
 }
 
@@ -152,14 +154,32 @@ func Vec.tryEnsureCapacityImpl<T>(v: mut ref Vec<T>, minCap: usize): bool {
     }
     let oldBytes = v.capacity * elem
     let newBytes = newCap * elem
+    let allocSize = if newBytes == 0 { 1 } else { newBytes }
+    let align = mem.alignOf<T>()
     unsafe {
         let nullp: ptr[u8] = nil
-        let p = ar_vec_realloc(v.data as ptr[u8], oldBytes, newBytes)
+        let p = ar_rt_alloc_aligned(allocSize, align)
         if p == nullp {
             return false
         }
+        let mut index: usize = 0
+        while index < v.len {
+            let oldElem = mem.ptrOffset<T>(v.data, index as isize)
+            let newElem = mem.ptrOffset<T>(p as ptr[T], index as isize)
+            mem.ptrWrite<T>(newElem, mem.ptrRead<T>(oldElem))
+            index = index + 1
+        }
+        if v.capacity > 0 {
+            if v.rawBuffer {
+                ar_vec_buf_free(v.data as ptr[u8], oldBytes)
+            } else {
+                let oldAllocSize = if oldBytes == 0 { 1 } else { oldBytes }
+                ar_rt_free_aligned(v.data as ptr[u8], oldAllocSize, align)
+            }
+        }
         v.data = p as ptr[T]
         v.capacity = newCap
+        v.rawBuffer = false
     }
     return true
 }
@@ -304,10 +324,16 @@ func Vec.destroyImpl<T>(v: mut ref Vec<T>): void {
     if v.capacity > 0 {
         let size = v.capacity * mem.sizeOf<T>()
         unsafe {
-            ar_vec_buf_free(v.data as ptr[u8], size)
+            if v.rawBuffer {
+                ar_vec_buf_free(v.data as ptr[u8], size)
+            } else {
+                let allocSize = if size == 0 { 1 } else { size }
+                ar_rt_free_aligned(v.data as ptr[u8], allocSize, mem.alignOf<T>())
+            }
         }
         v.data = nil
         v.capacity = 0
+        v.rawBuffer = false
     }
 }
 

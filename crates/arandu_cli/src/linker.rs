@@ -18,6 +18,22 @@ pub enum LinkerKind {
     InProcessElf,
 }
 
+/// Host libraries needed when invoking Clang for LLVM-generated programs.
+pub(crate) const fn host_runtime_link_args() -> &'static [&'static str] {
+    #[cfg(windows)]
+    {
+        &[]
+    }
+    #[cfg(target_os = "macos")]
+    {
+        &["-lpthread", "-lm"]
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        &["-lpthread", "-ldl", "-lm"]
+    }
+}
+
 impl LinkerKind {
     pub const fn label(self) -> &'static str {
         match self {
@@ -778,6 +794,19 @@ fn link_failure(output: &Path, message: String) -> CliFailure {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_runtime_link_args_omit_libdl_on_macos() {
+        let args = host_runtime_link_args();
+        #[cfg(target_os = "macos")]
+        assert!(!args.contains(&"-ldl"));
+        #[cfg(not(any(windows, target_os = "macos")))]
+        assert!(args.contains(&"-ldl"));
+        #[cfg(windows)]
+        assert!(args.is_empty());
+        assert!(args.contains(&"-lpthread"));
+        assert!(args.contains(&"-lm"));
+    }
 
     #[test]
     #[cfg(unix)]

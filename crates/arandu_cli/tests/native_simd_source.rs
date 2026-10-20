@@ -72,6 +72,105 @@ fn source_vectors_masks_and_checked_unaligned_slices_execute_in_jit_and_c() {
 }
 
 #[test]
+fn over_aligned_vec_elements_execute_in_jit_and_c() {
+    let root = common::temp_dir("arandu-vec-over-aligned").unwrap();
+    let path = root.join("aligned_vec.aru");
+    fs::write(
+        &path,
+        r#"import std.alloc.vec as vec
+import std.core.mem as mem
+import std.core.simd as simd
+
+extern "C" {
+    func ar_vec_malloc(size: usize): ptr[u8]
+}
+
+func main(): int {
+    if @alignOf(simd.F32x4) <= 8 { return 10 }
+    let mut values = vec.Vec<simd.F32x4>.new()
+    values.push(simd.F32x4.splat(12.5))
+    let item = values.getCopy(0)
+    match item {
+        Some(value) => {
+            if value.extractLane(0) != (12.5 as f32) { return 11 }
+        }
+        None => { return 12 }
+    }
+
+    let raw = unsafe { ar_vec_malloc(1 as usize) }
+    if raw == nil { return 13 }
+    unsafe { mem.ptrWrite<u8>(raw, 7 as u8) }
+    let mut adopted = unsafe { vec.adoptBytes(raw, 1 as usize, 1 as usize) }
+    adopted.push(9 as u8)
+    let bytes = adopted.asSlice()
+    if bytes[0] != (7 as u8) || bytes[1] != (9 as u8) {
+        return 14
+    }
+    return 0
+}
+"#,
+    )
+    .unwrap();
+
+    let jit = common::cli_command()
+        .arg("run")
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(
+        jit.status.success(),
+        "JIT status={:?}: {}",
+        jit.status.code(),
+        String::from_utf8_lossy(&jit.stderr)
+    );
+
+    let emitted = common::cli_command()
+        .arg("emit-c")
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(
+        emitted.status.success(),
+        "emit-c failed: {}",
+        String::from_utf8_lossy(&emitted.stderr)
+    );
+    let emitted_c = String::from_utf8_lossy(&emitted.stdout);
+    assert!(
+        emitted_c.contains("ar_rt_alloc_aligned"),
+        "typed Vec allocation must use the target-aligned allocator"
+    );
+    let c_path = root.join("aligned_vec.c");
+    let exe_path = root.join("aligned_vec");
+    fs::write(&c_path, emitted.stdout).unwrap();
+    if Command::new("clang")
+        .arg("--version")
+        .output()
+        .is_ok_and(|out| out.status.success())
+    {
+        let compile = Command::new("clang")
+            .args(["-O1", "-fsanitize=undefined", "-fno-sanitize-recover=all"])
+            .arg(&c_path)
+            .arg("-o")
+            .arg(&exe_path)
+            .output()
+            .unwrap();
+        assert!(
+            compile.status.success(),
+            "C compile failed: {}",
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        let output = Command::new(&exe_path).output().unwrap();
+        assert!(
+            output.status.success(),
+            "C runtime status={:?}: {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn invalid_source_lane_indices_trap_instead_of_aliasing_last_lane() {
     let root = common::temp_dir("arandu-native-simd-lane-bounds").unwrap();
     let path = root.join("bad.aru");

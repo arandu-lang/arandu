@@ -243,8 +243,7 @@ fn run_llvm_ir(
         let binary_path = ir_path.with_extension("bin");
         let mut command = Command::new("clang");
         command.arg(ir_path).arg(&runtime);
-        #[cfg(not(windows))]
-        command.args(["-lpthread", "-ldl", "-lm"]);
+        command.args(crate::linker::host_runtime_link_args());
         let compile = command
             .arg("-o")
             .arg(&binary_path)

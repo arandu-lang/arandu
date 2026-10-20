@@ -620,7 +620,11 @@ static int ar_udp_duplicate_fd(int32_t id) {{
     if (id < 0 || id >= AR_MAX_UDP_SOCKETS) return -1;
     ar_udp_lock_table();
     int fd = ar_udp_fds[id];
+#if !defined(_WIN32)
     int duplicate = fd >= 0 ? dup(fd) : -1;
+#else
+    int duplicate = -1;
+#endif
     ar_udp_unlock_table();
     return duplicate;
 }}

@@ -96,7 +96,7 @@ impl<'a> CEmitter<'a> {
             );
             let _ = writeln!(
                 &mut self.output,
-                "#if !defined(_WIN32) || defined(__MINGW32__)\n#include <dirent.h>\n#include <fcntl.h>\n#include <sys/socket.h>\n#include <netinet/in.h>\n#include <arpa/inet.h>\n#include <netdb.h>\n#endif"
+                "#if !defined(_WIN32)\n#include <dirent.h>\n#include <fcntl.h>\n#include <sys/socket.h>\n#include <netinet/in.h>\n#include <arpa/inet.h>\n#include <netdb.h>\n#endif"
             );
         }
         let _ = writeln!(

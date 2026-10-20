@@ -248,10 +248,45 @@ fn parity_ordinary_bit_names_are_not_intrinsics() {
 }
 
 #[test]
+fn parity_ordinary_extern_with_intrinsic_spelling_keeps_its_c_abi() {
+    let (amir, tc) = compile_src(
+        r#"
+extern "C" {
+    func sliceLen(value: u32): u32
+}
+
+func main(): int {
+    let result = unsafe { sliceLen(5) }
+    if result == 0 { return 1 }
+    return 0
+}
+"#,
+    );
+    let emitted = emit_c(&amir, &tc);
+    assert!(
+        emitted.contains("sliceLen("),
+        "ordinary extern should retain its declared C symbol"
+    );
+    assert!(
+        !emitted.contains("ar_slice_len"),
+        "ordinary extern must not be rewritten to the slice intrinsic"
+    );
+}
+
+#[test]
+fn parity_user_black_box_name_is_not_a_compiler_barrier() {
+    test_zero_result_all_opt_levels(
+        "user_black_box_name",
+        "func blackBox(value: int): int { return value + 1 } func main(): int { if blackBox(41) != 42 { return 1 }; return 0 }",
+    );
+}
+
+#[test]
 fn parity_integer_division_and_remainder_boundaries() {
     test_zero_result_all_opt_levels(
         "integer_division_boundaries",
         r#"
+module std.testing
 func blackBox<T>(value: T): T { return value }
 func main(): int {
     let minusOne = blackBox<int>(-1)
@@ -278,6 +313,7 @@ fn parity_dynamic_shifts_mask_the_value_execution_width() {
     test_zero_result_all_opt_levels(
         "dynamic_shift_width",
         r#"
+module std.testing
 func blackBox<T>(value: T): T { return value }
 func main(): int {
     let wideCount = blackBox<i32>(32)
@@ -309,7 +345,7 @@ fn cranelift_integer_division_traps_match_declared_width() {
         let left = fields[2];
         let right = fields[3];
         let (amir, tc) = compile_src(&format!(
-            "func blackBox<T>(value: T): T {{ return value }} func main(): int {{ return (blackBox<{ty}>({left}) {operator} blackBox<{ty}>({right})) as int }}"
+            "module std.testing\nfunc blackBox<T>(value: T): T {{ return value }} func main(): int {{ return (blackBox<{ty}>({left}) {operator} blackBox<{ty}>({right})) as int }}"
         ));
         execute_cranelift(&amir, &tc);
         return;
@@ -812,6 +848,7 @@ fn c_backend_genref_runtime_has_monotonic_type_erased_storage() {
 fn c_backend_emits_opaque_black_box_barrier() {
     let (amir, tc) = compile_src(
         r#"
+        module std.testing
         func blackBox<T>(value: T): T { return value }
         func main(): int {
             return blackBox<int>(42)
@@ -824,6 +861,7 @@ fn c_backend_emits_opaque_black_box_barrier() {
     test_execution_parity(
         "black_box_barrier",
         r#"
+        module std.testing
         func blackBox<T>(value: T): T { return value }
         func main(): int { return blackBox<int>(42) }
         "#,
@@ -834,7 +872,7 @@ fn c_backend_emits_opaque_black_box_barrier() {
 fn parity_black_box_preserves_fixed_float_types() {
     test_zero_result_all_opt_levels(
         "fixed_float_black_box",
-        "func blackBox<T>(value: T): T { return value } func main(): int { if blackBox<f32>(2.5 as f32) != 2.5 { return 1 }; if blackBox<f64>(3.75 as f64) != 3.75 { return 2 }; return 0 }",
+        "module std.testing\nfunc blackBox<T>(value: T): T { return value } func main(): int { if blackBox<f32>(2.5 as f32) != 2.5 { return 1 }; if blackBox<f64>(3.75 as f64) != 3.75 { return 2 }; return 0 }",
     );
 }
 

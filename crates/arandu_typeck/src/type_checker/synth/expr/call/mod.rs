@@ -423,7 +423,9 @@ pub(super) fn synth_call_expr(
                 }
                 let sym = checker.symbols.get(callee_sym);
                 if sym.kind == arandu_middle::SymbolKind::ExternFunc {
-                    let pure_bits = arandu_middle::IntrinsicKind::from_name(&sym.name)
+                    let declared_intrinsic =
+                        arandu_middle::IntrinsicKind::from_declared_name(&sym.name, sym.lang_item);
+                    let pure_bits = declared_intrinsic
                         .is_some_and(|kind| kind.is_pure_bit_operation())
                         && checker.type_info.function_effects.get(&callee_sym)
                             == Some(&arandu_middle::EffectFlags::NONE);
@@ -439,7 +441,7 @@ pub(super) fn synth_call_expr(
                     }
                     // Intrinsics that only inspect already-valid fat-pointer descriptors
                     // or produce compile-time constants are safe without `unsafe {}`.
-                    let is_safe_intrinsic = arandu_middle::IntrinsicKind::from_name(&sym.name)
+                    let is_safe_intrinsic = declared_intrinsic
                         .is_some_and(|k| k.is_safe() && (!k.is_pure_bit_operation() || pure_bits))
                         || pure_simd;
                     if !is_safe_intrinsic && !checker.ctx.is_in_unsafe() {

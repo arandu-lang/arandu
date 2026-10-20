@@ -118,6 +118,10 @@ pub enum LangItem {
     BitIntrinsic,
     /// Atomic operation explicitly declared with the compiler intrinsic ABI.
     AtomicIntrinsic,
+    /// Other compiler operations explicitly declared with the intrinsic ABI.
+    CompilerIntrinsic,
+    /// Canonical `std.testing.blackBox` optimization barrier.
+    BlackBox,
     /// Closed native SIMD types from the canonical core module.
     VectorF32x4,
     VectorF64x2,

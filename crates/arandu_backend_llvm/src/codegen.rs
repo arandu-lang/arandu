@@ -272,14 +272,7 @@ impl<'a> ModuleEmitter<'a> {
         if symbol.kind != SymbolKind::ExternFunc {
             return None;
         }
-        let kind = IntrinsicKind::from_name(&symbol.name)?;
-        if kind
-            .declaration_marker()
-            .is_some_and(|marker| symbol.lang_item != Some(marker))
-        {
-            return None;
-        }
-        Some(kind)
+        IntrinsicKind::from_declared_name(&symbol.name, symbol.lang_item)
     }
 
     fn signature_for(

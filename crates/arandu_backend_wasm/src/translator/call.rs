@@ -39,10 +39,8 @@ impl<'a> FuncTranslator<'a> {
                     }
                     return;
                 }
-                if let Some(kind) = IntrinsicKind::from_name(&sym_def.name)
-                    && kind
-                        .declaration_marker()
-                        .is_none_or(|marker| sym_def.lang_item == Some(marker))
+                if let Some(kind) =
+                    IntrinsicKind::from_declared_name(&sym_def.name, sym_def.lang_item)
                     && self.emit_intrinsic_call(kind, sym_def.name.ends_with("64"), lhs, args)
                 {
                     return;

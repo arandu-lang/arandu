@@ -65,7 +65,7 @@ fn trusted_well_formed_atomic_and_bit_intrinsics_are_admitted() {
         module std.core.intrinsicFixture
         extern "arandu-intrinsic" {
             func atomicLoad32(value: ref u32): u32
-            func atomicStore64(value: mut ref u64, replacement: u64): void
+            func atomicStore64(value: ref u64, replacement: u64): void
             func atomicFence(): void
             func bitCountOnes32(value: u32): u32
             func bitReverse64(value: u64): u64

@@ -42,8 +42,11 @@ impl FuncTranslator<'_> {
                         )
                 }) && self.symbols.try_get(*symbol).is_some_and(|symbol| {
                     symbol.kind != arandu_middle::SymbolKind::ExternFunc
-                        && arandu_middle::intrinsics::IntrinsicKind::from_name(&symbol.name)
-                            .is_none()
+                        && arandu_middle::intrinsics::IntrinsicKind::from_declared_name(
+                            &symbol.name,
+                            symbol.lang_item,
+                        )
+                        .is_none()
                 }) && let Some(next) = self.next_local.checked_add(1)
                 {
                     self.returned_homes.insert(id, self.next_local);

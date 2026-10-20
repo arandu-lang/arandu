@@ -481,13 +481,12 @@ impl<'a> WasmModuleBuilder<'a> {
             let Some(sym) = self.symbols.try_get(sym_id) else {
                 continue;
             };
-            if arandu_middle::IntrinsicKind::from_name(&sym.name).is_some_and(|kind| {
-                kind.declaration_marker()
-                    .is_none_or(|marker| sym.lang_item == Some(marker))
-            }) || matches!(
-                sym.name.as_str(),
-                "ar_rt_alloc_aligned" | "ar_rt_free_aligned"
-            ) {
+            if arandu_middle::IntrinsicKind::from_declared_name(&sym.name, sym.lang_item).is_some()
+                || matches!(
+                    sym.name.as_str(),
+                    "ar_rt_alloc_aligned" | "ar_rt_free_aligned"
+                )
+            {
                 continue;
             }
             let (module, field) = match style {

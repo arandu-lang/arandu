@@ -98,7 +98,7 @@ pub enum IntrinsicKind {
 }
 
 impl IntrinsicKind {
-    /// ABI identity required for newly admitted compiler intrinsics.
+    /// ABI identity required for compiler intrinsics.
     #[must_use]
     pub const fn declaration_marker(self) -> Option<crate::symbol_table::LangItem> {
         use crate::symbol_table::LangItem;
@@ -109,7 +109,7 @@ impl IntrinsicKind {
             Self::CountOnes | Self::LeadingZeros | Self::TrailingZeros | Self::ReverseBits => {
                 Some(LangItem::BitIntrinsic)
             }
-            _ => None,
+            _ => Some(LangItem::CompilerIntrinsic),
         }
     }
 
@@ -214,6 +214,17 @@ impl IntrinsicKind {
             "dropInPlace" | "drop_in_place" => Some(Self::DropInPlace),
             _ => None,
         }
+    }
+
+    /// Classifies a function only when its retained ABI marker declares it as
+    /// this compiler intrinsic. Names alone are never sufficient identity.
+    #[must_use]
+    pub fn from_declared_name(
+        name: &str,
+        marker: Option<crate::symbol_table::LangItem>,
+    ) -> Option<Self> {
+        let kind = Self::from_name(name)?;
+        (kind.declaration_marker() == marker).then_some(kind)
     }
 }
 
@@ -341,5 +352,32 @@ mod simd_tests {
         ] {
             assert!(SimdIntrinsic::from_name(name).is_none(), "{name}");
         }
+    }
+}
+
+#[cfg(test)]
+mod declaration_tests {
+    use super::*;
+
+    #[test]
+    fn every_intrinsic_spelling_requires_an_explicit_abi_marker() {
+        let ordinary =
+            IntrinsicKind::from_name("std.core.mem.sliceLen").expect("known intrinsic spelling");
+        assert_eq!(
+            ordinary.declaration_marker(),
+            Some(crate::symbol_table::LangItem::CompilerIntrinsic)
+        );
+        assert_eq!(
+            IntrinsicKind::from_name("bitCountOnes32")
+                .unwrap()
+                .declaration_marker(),
+            Some(crate::symbol_table::LangItem::BitIntrinsic)
+        );
+        assert_eq!(
+            IntrinsicKind::from_name("atomicFence")
+                .unwrap()
+                .declaration_marker(),
+            Some(crate::symbol_table::LangItem::AtomicIntrinsic)
+        );
     }
 }

@@ -91,9 +91,7 @@ impl LowerCtx<'_> {
             _ => None,
         };
         if black_box_symbol.is_some_and(|symbol| {
-            let name = symbols.get(symbol).name.as_str();
-            arandu_middle::IntrinsicKind::from_name(name)
-                == Some(arandu_middle::IntrinsicKind::BlackBox)
+            symbols.get(symbol).lang_item == Some(arandu_middle::symbol_table::LangItem::BlackBox)
         }) {
             let args_slice = self.hir.pool.expr_list(args);
             if let Some(&argument) = args_slice.first() {
@@ -394,7 +392,10 @@ impl LowerCtx<'_> {
         }
         if let Some(symbol) = callee_symbol {
             let name = symbols.get(symbol).name.as_str();
-            let kind = arandu_middle::IntrinsicKind::from_name(name);
+            let kind = arandu_middle::IntrinsicKind::from_declared_name(
+                name,
+                symbols.get(symbol).lang_item,
+            );
             if kind == Some(arandu_middle::IntrinsicKind::DropInPlace)
                 && let (Some(&arg), [pointer]) = (args_slice.first(), arg_ops.as_slice())
             {

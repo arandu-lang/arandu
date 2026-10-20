@@ -118,9 +118,12 @@ func main(): int { return 0 }
 #[test]
 fn freestanding_alloc_and_free_require_no_host_imports_and_execute_in_wasmtime() {
     let source = r#"
+module std.core.allocFixture
 extern "C" {
     func ar_rt_alloc_aligned(size: usize, align: usize): ptr[u8]
     func ar_rt_free_aligned(data: ptr[u8], size: usize, align: usize): void
+}
+extern "arandu-intrinsic" {
     func ptrRead<T>(p: ptr[T]): T
     func ptrWrite<T>(p: ptr[T], val: T): void
 }
@@ -140,7 +143,7 @@ public func main(): int {
     return 0
 }
 "#;
-    let bytes = common::compile_source(source);
+    let bytes = common::compile_trusted_core_fixture(source);
     assert!(
         imports(&bytes).is_empty(),
         "alloc and free must be freestanding internal wasm calls: {:?}",

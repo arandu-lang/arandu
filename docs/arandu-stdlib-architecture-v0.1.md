@@ -98,9 +98,13 @@ não houve preparação ou promoção de uma nova release nesta revisão.
 
 `core.atomic` usa declarações de identidade explícita na ABI
 `arandu-intrinsic`; nomes coincidentes em funções comuns não recebem lowering
-especial. A tipagem rejeita assinaturas incompatíveis antes do AMIR. Os
-intrínsecos de memória são `unsafe`: exigem armazenamento vivo, naturalmente
-alinhado e acessado segundo o protocolo atômico durante compartilhamento.
+especial. O marcador de identidade é preservado no símbolo e exigido pelo
+type checker, lowering, CTFE e backends; o nome apenas seleciona a operação e
+seu contrato de assinatura. A mesma regra vale para os demais intrínsecos. O
+barrier `blackBox` é reservado ao item canônico `std.testing.blackBox`, não a
+qualquer função com esse nome. A tipagem rejeita assinaturas incompatíveis
+antes do AMIR. Os intrínsecos de memória são `unsafe`: exigem armazenamento
+vivo, naturalmente alinhado e acessado segundo o protocolo atômico durante compartilhamento.
 Os campos dos wrappers são privados; suas escritas continuam exigindo
 `mut ref self`. Não há promoção automática a mutabilidade interior compartilhada
 ou transporte `Send`/`Sync`.

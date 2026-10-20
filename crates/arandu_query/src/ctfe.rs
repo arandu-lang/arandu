@@ -159,7 +159,7 @@ fn lower_scalar_function(
             Err(_) => {
                 return HashEq::new(CtfeLowering {
                     result: Err(BuildFailure::MissingFunction),
-                })
+                });
             }
         }
     } else {
@@ -610,7 +610,10 @@ impl FunctionProvider for QueryProvider<'_> {
         let locals = crate::passes::local_symbols(self.db, file);
         let def = locals.symbols.try_get(symbol)?;
         if def.kind == arandu_middle::SymbolKind::ExternFunc {
-            let kind = arandu_middle::intrinsics::IntrinsicKind::from_name(&def.name)?;
+            let kind = arandu_middle::intrinsics::IntrinsicKind::from_declared_name(
+                &def.name,
+                def.lang_item,
+            )?;
             if kind.is_pure_bit_operation()
                 || kind == arandu_middle::intrinsics::IntrinsicKind::Abort
             {
@@ -680,7 +683,10 @@ impl FunctionProvider for InstanceProvider<'_> {
         let locals = crate::passes::local_symbols(self.db, file);
         let def = locals.symbols.try_get(symbol)?;
         if def.kind == arandu_middle::SymbolKind::ExternFunc {
-            let kind = arandu_middle::intrinsics::IntrinsicKind::from_name(&def.name)?;
+            let kind = arandu_middle::intrinsics::IntrinsicKind::from_declared_name(
+                &def.name,
+                def.lang_item,
+            )?;
             if kind.is_pure_bit_operation()
                 || kind == arandu_middle::intrinsics::IntrinsicKind::Abort
             {

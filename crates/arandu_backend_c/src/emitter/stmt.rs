@@ -114,13 +114,8 @@ impl<'a> CEmitter<'a> {
         if symbol.kind != arandu_middle::SymbolKind::ExternFunc {
             return None;
         }
-        let kind = arandu_middle::IntrinsicKind::from_name(&symbol.name)?;
-        if kind
-            .declaration_marker()
-            .is_some_and(|marker| symbol.lang_item != Some(marker))
-        {
-            return None;
-        }
+        let kind =
+            arandu_middle::IntrinsicKind::from_declared_name(&symbol.name, symbol.lang_item)?;
         matches!(
             kind,
             arandu_middle::IntrinsicKind::Atomic(..)

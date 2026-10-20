@@ -106,6 +106,7 @@ impl<'a> Resolver<'a> {
                     if let Some(sym) = sym {
                         use arandu_middle::symbol_table::LangItem;
                         let item = match (self.current_module.as_deref(), name.as_str()) {
+                            (Some("std.testing"), "blackBox") => Some(LangItem::BlackBox),
                             (Some("std.thread"), "spawn") => Some(LangItem::ThreadSpawn),
                             (Some("std.thread"), "parkTimeout") => {
                                 Some(LangItem::ThreadParkTimeout)

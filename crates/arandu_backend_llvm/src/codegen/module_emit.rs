@@ -64,7 +64,10 @@ impl<'a> ModuleEmitter<'a> {
         self.add_declaration("memcmp", &format!("declare i32 @memcmp(ptr, ptr, {len})"));
         self.add_declaration(
             "ar_str_concat",
-            &format!("declare {fat} @ar_str_concat(ptr, {len}, ptr, {len})"),
+            &format!(
+                "declare {}{fat} @ar_str_concat(ptr, {len}, ptr, {len})",
+                self.runtime_calling_convention("ar_str_concat")
+            ),
         );
         self.add_declaration(
             memcpy,
@@ -173,9 +176,13 @@ impl<'a> ModuleEmitter<'a> {
             let parsed_ret = self.llvm_ty(&ret);
             if ok && let Ok(ret) = parsed_ret {
                 let params = flattened.join(", ");
+                let calling_convention = self.runtime_calling_convention(&name);
                 self.add_declaration(
                     &name,
-                    &format!("declare {ret} @{}({params})", quote_name(&name)),
+                    &format!(
+                        "declare {calling_convention}{ret} @{}({params})",
+                        quote_name(&name)
+                    ),
                 );
             }
         }
@@ -232,6 +239,20 @@ impl<'a> ModuleEmitter<'a> {
 
     pub(super) fn is_internal(&self, symbol: SymbolId) -> bool {
         self.program.funcs.iter().any(|func| func.symbol == symbol)
+    }
+
+    /// Runtime fat-string helpers use `extern "sysv64"` on Windows so their
+    /// ABI matches Cranelift JIT. LLVM's default convention on Windows is Win64,
+    /// so preserve the runtime convention explicitly for these imports.
+    pub(super) fn runtime_calling_convention(&self, name: &str) -> &'static str {
+        if self.info.target_identity.os == "windows"
+            && self.info.target_identity.arch == "x86_64"
+            && super::WINDOWS_SYSV_RUNTIME_SYMBOLS.contains(&name)
+        {
+            "x86_64_sysvcc "
+        } else {
+            ""
+        }
     }
 
     pub(super) fn intrinsic_kind(&self, symbol: SymbolId) -> Option<IntrinsicKind> {
@@ -512,5 +533,39 @@ impl<'a> ModuleEmitter<'a> {
             VectorType::I64x2 => 2,
         };
         Some((*vector, lanes, vector.lane()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ModuleEmitter;
+    use arandu_middle::amir::AmirProgram;
+
+    #[test]
+    fn windows_runtime_fat_string_helpers_use_sysv_calling_convention() {
+        let program = AmirProgram {
+            funcs: Vec::new(),
+            literal_pool: Default::default(),
+            extern_funcs: Default::default(),
+            debug_bindings: Vec::new(),
+            debug_blocks: Vec::new(),
+        };
+        let symbols = arandu_semantics::SymbolTable::default();
+        let mut info = arandu_semantics::TypeInfo::new();
+        info.target_identity =
+            arandu_middle::db::TargetIdentity::from_triple("x86_64-pc-windows-msvc")
+                .expect("canonical Windows triple");
+        info.target_layout = arandu_middle::DataLayout::ptr_width(8);
+        let module = ModuleEmitter::new(&program, &symbols, &info);
+
+        assert_eq!(
+            module.runtime_calling_convention("ar_env_arg"),
+            "x86_64_sysvcc "
+        );
+        assert_eq!(module.runtime_calling_convention("ar_jit_i64_to_str"), "");
+        let ir = module.emit().expect("empty Windows module");
+        assert!(
+            ir.contains("declare x86_64_sysvcc { ptr, i64 } @ar_str_concat(ptr, i64, ptr, i64)")
+        );
     }
 }

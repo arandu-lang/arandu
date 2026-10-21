@@ -56,8 +56,17 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
             rendered.push(self.operand(argument, expected)?.render());
         }
         let return_text = self.module.llvm_ty(&return_ty)?;
-        let name = quote_name(&self.module.function_name(symbol));
-        let call = format!("call {return_text} @{name}({})", rendered.join(", "));
+        let function_name = self.module.function_name(symbol);
+        let name = quote_name(&function_name);
+        let calling_convention = if flatten_host_abi {
+            self.module.runtime_calling_convention(&function_name)
+        } else {
+            ""
+        };
+        let call = format!(
+            "call {calling_convention}{return_text} @{name}({})",
+            rendered.join(", ")
+        );
         match lhs {
             Some(lhs) if !self.module.is_void(&return_ty) => {
                 let Some(result) = result else {

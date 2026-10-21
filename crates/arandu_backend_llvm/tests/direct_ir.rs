@@ -478,6 +478,41 @@ func main(): int {
 }
 
 #[test]
+fn uses_sysv_runtime_abi_for_windows_fat_string_returns() {
+    let source = r#"
+extern "C" {
+    func ar_env_arg(index: isize): str
+}
+
+func main(): int {
+    let executable = unsafe {
+        ar_env_arg(0 as isize)
+    }
+    if executable == "arandu-smith" {
+        return 0
+    }
+    return 1
+}
+"#;
+    let (program, checked) = compile_src(source);
+    let mut info = (*checked.type_info).clone();
+    info.target_identity = arandu_middle::db::TargetIdentity::from_triple("x86_64-pc-windows-msvc")
+        .expect("canonical Windows triple");
+    let ir =
+        emit_llvm_ir(&program, &checked.symbols, &info).expect("LLVM emission for Windows target");
+
+    assert!(
+        ir.contains("declare x86_64_sysvcc { ptr, i64 } @ar_env_arg(i64)"),
+        "Windows runtime declaration must retain the runtime ABI:\n{ir}"
+    );
+    assert!(
+        ir.contains("call x86_64_sysvcc { ptr, i64 } @ar_env_arg(i64 "),
+        "Windows runtime call must retain the runtime ABI:\n{ir}"
+    );
+    verify(&ir);
+}
+
+#[test]
 fn emits_vector_memory_and_shuffle_ir() {
     let case = fixture::memory_shuffle(VectorType::I32x4);
     let ir = emit_llvm_ir(&case.program, &case.symbols, &case.info).expect("LLVM emission failed");

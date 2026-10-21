@@ -25,6 +25,15 @@ mod stmt;
 mod term;
 mod value;
 
+const WINDOWS_SYSV_RUNTIME_SYMBOLS: &[&str] = &[
+    "ar_env_arg",
+    "ar_path_join",
+    "ar_path_file_name",
+    "ar_str_concat",
+    "ar_str_split_last",
+    "ar_test_temp_dir",
+];
+
 /// Emit one textual LLVM module for a validated AMIR program.
 pub fn emit_llvm_ir(
     program: &AmirProgram,

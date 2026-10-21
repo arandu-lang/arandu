@@ -114,7 +114,12 @@ impl<'a> Resolver<'a> {
                             (Some("std.thread"), "park") => Some(LangItem::ThreadPark),
                             (Some("std.thread"), "unpark") => Some(LangItem::ThreadUnpark),
                             _ => None,
-                        };
+                        }
+                        .or(match self.current_module.as_deref() {
+                            Some("std.thread") => Some(LangItem::StdThread),
+                            Some("std.fs") => Some(LangItem::StdFs),
+                            _ => None,
+                        });
                         if let Some(item) = item {
                             self.symbols.set_lang_item(sym, item);
                         }
@@ -148,6 +153,17 @@ impl<'a> Resolver<'a> {
                                     }
                                     _ => None,
                                 }
+                                .or(
+                                    match self.current_module.as_deref() {
+                                        Some("std.thread") => {
+                                            Some(arandu_middle::symbol_table::LangItem::StdThread)
+                                        }
+                                        Some("std.fs") => {
+                                            Some(arandu_middle::symbol_table::LangItem::StdFs)
+                                        }
+                                        _ => None,
+                                    },
+                                )
                             {
                                 self.symbols.set_lang_item(symbol, item);
                             }

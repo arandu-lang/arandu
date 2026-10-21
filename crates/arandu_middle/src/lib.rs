@@ -48,7 +48,9 @@ pub use layout::{
     LayoutOperation, SizeAlign, StructLayoutProvider, TypeLayout,
 };
 pub use package::{ModuleId, PackageId, TargetId};
-pub use target::{LinkerFlavor, LinkerPlan, TargetEnv, TargetOs, TargetSpec};
+pub use target::{
+    EmbeddedProfile, LinkerFlavor, LinkerPlan, TargetEnv, TargetOs, TargetSpec, embedded_profile,
+};
 
 pub use amir_validate::validate_amir_program;
 pub use diagnostics::{CodeReplacement, DiagCode, Diagnostic, Hint, Label, Severity};

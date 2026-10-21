@@ -1631,8 +1631,13 @@ fn compose_file_typing(
         diagnostics.extend(residual.diagnostics);
     }
 
+    let mut symbols = Arc::clone(&signatures.symbols);
+    if !merged_info.thread_captures.is_empty() {
+        Arc::make_mut(&mut merged_info).materialize_thread_captures(Arc::make_mut(&mut symbols));
+    }
+
     let res = TypeCheckResult {
-        symbols: Arc::clone(&signatures.symbols),
+        symbols,
         resolved: merged_resolved,
         type_info: merged_info,
         diagnostics,

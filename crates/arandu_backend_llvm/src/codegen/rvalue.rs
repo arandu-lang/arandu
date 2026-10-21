@@ -14,6 +14,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
         rvalue: &AmirRvalue,
         lhs: Option<TempId>,
     ) -> Result<(), Diagnostic> {
+        let fat = self.module.fat_ptr_llvm_ty();
         match rvalue {
             AmirRvalue::Use(operand) => {
                 let value = self.operand(operand, lhs_ty)?;
@@ -59,8 +60,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
             AmirRvalue::Alloc(size) => {
                 let size_ty = self.module.operand_type(size, self.func);
                 let size = self.operand(size, &size_ty)?;
-                let i64_ty = self.module.i64_ty();
-                let size = self.coerce(size, &i64_ty)?;
+                let size = self.coerce(size, &self.module.usize_ty())?;
                 self.writer.line(format!(
                     "{} = call ptr @ar_rt_raw_malloc({})",
                     result,
@@ -80,7 +80,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                 }
                 let value = self.operand(value, &ty)?;
                 let aggregate = self.module.llvm_ty(&ty)?;
-                if aggregate == "{ ptr, i64 }" {
+                if aggregate == fat {
                     self.writer.line(format!(
                         "{} = extractvalue {aggregate} {}, 1",
                         result, value.value
@@ -92,10 +92,11 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                     let len_addr = self.byte_gep(&value.value, self.module.layout.pointer_width());
                     let loaded = self.new_value();
                     let align = self.module.pointer_align();
+                    let len_ty = self.module.ptr_int_ty();
                     self.writer.line(format!(
-                        "{loaded} = load i64, ptr {len_addr}, align {align}"
+                        "{loaded} = load {len_ty}, ptr {len_addr}, align {align}"
                     ));
-                    self.assign_coerced(result, TypedValue::new("i64".to_owned(), loaded), lhs_ty)
+                    self.assign_coerced(result, TypedValue::new(len_ty.to_owned(), loaded), lhs_ty)
                 } else {
                     Err(ice(format!(
                         "LLVM lowering does not implement len for {ty:?}"
@@ -115,13 +116,14 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                         lhs_ty,
                     );
                 }
-                if value.ty == "{ ptr, i64 }" || parse_byte_aggregate_size(&value.ty).is_some() {
+                if value.ty == fat || parse_byte_aggregate_size(&value.ty).is_some() {
                     // By-value descriptor / opaque String: spill and return its address.
                     let slot = self.new_value();
+                    let align = self.module.pointer_align();
                     self.writer
-                        .line(format!("{slot} = alloca {}, align 8", value.ty));
+                        .line(format!("{slot} = alloca {}, align {align}", value.ty));
                     self.writer.line(format!(
-                        "store {} {}, ptr {slot}, align 8",
+                        "store {} {}, ptr {slot}, align {align}",
                         value.ty, value.value
                     ));
                     return self.assign_coerced(
@@ -340,7 +342,8 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                     .size;
                 let index_ty = self.module.usize_ty();
                 let index = self.operand(index, &index_ty)?;
-                let index = self.coerce(index, &self.module.i64_ty())?;
+                let index = self.coerce(index, &self.module.usize_ty())?;
+                let index_ll = index.ty.clone();
                 let base_address = if matches!(
                     &base_ty,
                     ArType::Ptr(_) | ArType::Ref(_) | ArType::RefMut(_)
@@ -353,7 +356,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                     let descriptor = self.operand(base, &deref_ty)?;
                     let pointer = self.new_value();
                     self.writer.line(format!(
-                        "{pointer} = extractvalue {{ ptr, i64 }} {}, 0",
+                        "{pointer} = extractvalue {fat} {}, 0",
                         descriptor.value
                     ));
                     pointer
@@ -363,11 +366,13 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                     )));
                 };
                 let offset = self.new_value();
-                self.writer
-                    .line(format!("{offset} = mul i64 {}, {stride}", index.value));
+                self.writer.line(format!(
+                    "{offset} = mul {index_ll} {}, {stride}",
+                    index.value
+                ));
                 let address = self.new_value();
                 self.writer.line(format!(
-                    "{address} = getelementptr inbounds i8, ptr {base_address}, i64 {offset}"
+                    "{address} = getelementptr inbounds i8, ptr {base_address}, {index_ll} {offset}"
                 ));
                 let element_text = self.module.llvm_ty(&element_ty)?;
                 let align = self.module.align_of(&element_ty);
@@ -386,38 +391,35 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                 let data = self.operand(data, &pointer_ty)?;
                 let length_ty = self.module.usize_ty();
                 let len = self.operand(len, &length_ty)?;
-                let len = self.coerce(len, &self.module.i64_ty())?;
+                let len = self.coerce(len, &self.module.usize_ty())?;
                 let first = self.new_value();
                 self.writer.line(format!(
-                    "{first} = insertvalue {{ ptr, i64 }} undef, ptr {}, 0",
+                    "{first} = insertvalue {fat} undef, ptr {}, 0",
                     data.value
                 ));
                 self.writer.line(format!(
-                    "{result} = insertvalue {{ ptr, i64 }} {first}, i64 {}, 1",
-                    len.value
+                    "{result} = insertvalue {fat} {first}, {} {}, 1",
+                    len.ty, len.value
                 ));
                 Ok(())
             }
             AmirRvalue::SliceData(slice) => {
                 let slice_ty = self.module.operand_type(slice, self.func);
                 let slice = self.operand(slice, &slice_ty)?;
-                self.writer.line(format!(
-                    "{result} = extractvalue {{ ptr, i64 }} {}, 0",
-                    slice.value
-                ));
+                self.writer
+                    .line(format!("{result} = extractvalue {fat} {}, 0", slice.value));
                 Ok(())
             }
             AmirRvalue::SliceSubslice { slice, start, len } => {
                 let slice_ty = self.module.operand_type(slice, self.func);
                 let slice = self.operand(slice, &slice_ty)?;
                 let pointer = self.new_value();
-                self.writer.line(format!(
-                    "{pointer} = extractvalue {{ ptr, i64 }} {}, 0",
-                    slice.value
-                ));
+                self.writer
+                    .line(format!("{pointer} = extractvalue {fat} {}, 0", slice.value));
                 let start_ty = self.module.usize_ty();
                 let start = self.operand(start, &start_ty)?;
-                let start = self.coerce(start, &self.module.i64_ty())?;
+                let start = self.coerce(start, &self.module.usize_ty())?;
+                let index_ll = start.ty.clone();
                 let element_ty = match &slice_ty {
                     ArType::Slice(inner) | ArType::MutSlice(inner) => {
                         self.module.interner.resolve(*inner)
@@ -437,22 +439,23 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                     })?
                     .size;
                 let offset = self.new_value();
-                self.writer
-                    .line(format!("{offset} = mul i64 {}, {stride}", start.value));
+                self.writer.line(format!(
+                    "{offset} = mul {index_ll} {}, {stride}",
+                    start.value
+                ));
                 let data = self.new_value();
                 self.writer.line(format!(
-                    "{data} = getelementptr inbounds i8, ptr {pointer}, i64 {offset}"
+                    "{data} = getelementptr inbounds i8, ptr {pointer}, {index_ll} {offset}"
                 ));
                 let length_ty = self.module.usize_ty();
                 let len = self.operand(len, &length_ty)?;
-                let len = self.coerce(len, &self.module.i64_ty())?;
+                let len = self.coerce(len, &self.module.usize_ty())?;
                 let first = self.new_value();
+                self.writer
+                    .line(format!("{first} = insertvalue {fat} undef, ptr {data}, 0"));
                 self.writer.line(format!(
-                    "{first} = insertvalue {{ ptr, i64 }} undef, ptr {data}, 0"
-                ));
-                self.writer.line(format!(
-                    "{result} = insertvalue {{ ptr, i64 }} {first}, i64 {}, 1",
-                    len.value
+                    "{result} = insertvalue {fat} {first}, {} {}, 1",
+                    len.ty, len.value
                 ));
                 Ok(())
             }

@@ -281,6 +281,22 @@ pub fn parse_invocation(raw_args: impl IntoIterator<Item = String>) -> CliInvoca
                     fail_usage(format!("{arg} requires a path argument"));
                 }
             }
+            "-o" | "--emit" | "--crate-type" | "--linker-script" => {
+                raw_project_flags.push(arg.clone());
+                i += 1;
+                if let Some(value) = raw_args_vec.get(i).filter(|value| !value.starts_with('-')) {
+                    raw_project_flags.push(value.clone());
+                } else {
+                    fail_usage(format!("{arg} requires a value"));
+                }
+            }
+            s if s.starts_with("--emit=")
+                || s.starts_with("--crate-type=")
+                || s.starts_with("--linker-script=")
+                || s.starts_with("-o=") =>
+            {
+                raw_project_flags.push(arg.clone());
+            }
             // Collect project flags even before we know the subcommand.
             s if s.starts_with("--stdlib-path")
                 || s.starts_with("--cache-dir")
@@ -332,6 +348,17 @@ pub fn parse_invocation(raw_args: impl IntoIterator<Item = String>) -> CliInvoca
             .is_some_and(|t| t.starts_with("wasm32"))
     {
         data_layout = DataLayout::ptr_width(4);
+    }
+    if let Some(triple) = project_flags.target.as_deref()
+        && arandu_middle::embedded_profile(triple).is_some()
+    {
+        let explicit = layout_flags
+            .iter()
+            .find_map(|flag| flag.strip_prefix("--layout="));
+        match explicit {
+            None | Some("ptr4" | "32") => data_layout = DataLayout::ptr_width(4),
+            Some(_) => fail_usage("bare-metal profiles use a 32-bit data layout"),
+        }
     }
 
     CliInvocation {
@@ -506,7 +533,7 @@ pub fn command_help(command: &str) -> Option<&'static str> {
             "Usage: arandu run [path] [-- program-args...]\n\nCompile and execute a package or .aru file. Cranelift JIT is the default; LLVM\nIR execution is experimental and requires `lli` or `clang` on PATH.\n\nOptions:\n  --opt             Optimize AMIR before execution\n  -b, --backend B   Select cranelift (default) or llvm\n  --stdlib-path DIR Override the standard library path\n  -v, --verbose     Show progress and incremental status\n  -q, --quiet       Suppress non-error status output\n\nExamples:\n  arandu run\n  arandu run -b llvm src/main.aru -- hello\n",
         ),
         "build" => Some(
-            "Usage: arandu build [path] [options]\n\nCompile a package to a native executable or library.\n\nOptions:\n  --release            Build with speed optimizations\n  -b, --backend B      Select cranelift (default) or llvm (release)\n  --size, -Oz          Optimize for size and strip native symbols\n  --target TRIPLE      Select a compilation target\n  --layout LAYOUT      Select host, ptr4, ptr8, or i686 layout\n  --locked             Require the lockfile to be current\n  --offline            Resolve from the local cache only\n  -v, --verbose        Show detailed build progress\n  -q, --quiet          Suppress non-error status output\n",
+            "Usage: arandu build [path] [options]\n\nCompile a package to a native executable, or to a freestanding object.\n\nOptions:\n  --release            Build with speed optimizations\n  -b, --backend B      Select cranelift (default) or llvm (release)\n  --size, -Oz          Optimize for size and strip native symbols\n  --target TRIPLE      Host, wasm32, thumbv7em-none-eabihf, or riscv32imc-unknown-none-elf\n  --emit obj|llvm-ir   Write an object file or LLVM IR instead of linking\n  --crate-type staticlib  Archive a bare-metal object (`llvm-ar` or `ar`)\n  --linker-script FILE Link an ELF only with this user-supplied script\n  -o FILE              Write the selected artifact to FILE\n  --layout LAYOUT      Select host, ptr4, ptr8, or i686 layout\n  --locked             Require the lockfile to be current\n  --offline            Resolve from the local cache only\n  -v, --verbose        Show detailed build progress\n  -q, --quiet          Suppress non-error status output\n\nBare-metal LLVM builds publish a relocatable object. The compiler does not\ninvent Flash, RAM, or a vector table. A final ELF requires --linker-script.\n",
         ),
         "check" => Some(
             "Usage: arandu check [path] [options]\n\nType-check a package or source file without code generation.\n\nOptions:\n  --parallel       Check source files in parallel\n  --target TRIPLE  Select a compilation target\n  --watch          Repeat checks after source changes\n  -v, --verbose    Show progress and incremental status\n  -q, --quiet      Suppress success and status output\n",
@@ -578,7 +605,7 @@ pub fn command_help(command: &str) -> Option<&'static str> {
             "Usage: arandu emit-c <file.aru> [--opt | --size]\n\nEmit portable C source (compiler inspection tool).\n",
         ),
         "emit-llvm" => Some(
-            "Usage: arandu emit-llvm <file.aru> [--opt]\n\nEmit experimental host LLVM IR directly from AMIR (no Clang required to emit).\n",
+            "Usage: arandu emit-llvm <file.aru> [--opt] [--target TRIPLE]\n\nEmit LLVM IR directly from AMIR (no Clang required to emit).\nHost layout stays the default. Canonical bare-metal triples use a 32-bit layout.\n",
         ),
         "emit-wasm" => Some(
             "Usage: arandu emit-wasm <file.aru> [--layout ptr4] [--opt | --size]\n\nEmit a WebAssembly module (compiler inspection tool).\n",

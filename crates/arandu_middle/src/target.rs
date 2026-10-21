@@ -48,6 +48,67 @@ pub struct LinkerPlan {
     flavor: LinkerFlavor,
 }
 
+/// Canonical freestanding profile. Exact triples only.
+///
+/// The compiler does not invent Flash or RAM maps, vector tables, or a linker
+/// script. A final ELF exists only when the user supplies `--linker-script`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct EmbeddedProfile {
+    triple: &'static str,
+    /// Pointer size in bytes. Never read from the host.
+    pointer_bytes: u8,
+    /// Pointer alignment in bytes.
+    pointer_align: u8,
+    /// LLVM module `target datalayout` string for this triple.
+    llvm_datalayout: &'static str,
+}
+
+const THUMBV7EM_NONE_EABIHF: EmbeddedProfile = EmbeddedProfile {
+    triple: "thumbv7em-none-eabihf",
+    pointer_bytes: 4,
+    pointer_align: 4,
+    llvm_datalayout: "e-m:e-p:32:32-Fi8-i64:64-v128:64:128-a:0:32-n32-S64",
+};
+
+const RISCV32IMC_UNKNOWN_NONE_ELF: EmbeddedProfile = EmbeddedProfile {
+    triple: "riscv32imc-unknown-none-elf",
+    pointer_bytes: 4,
+    pointer_align: 4,
+    llvm_datalayout: "e-m:e-p:32:32-i64:64-n32-S128",
+};
+
+impl EmbeddedProfile {
+    #[must_use]
+    pub const fn triple(self) -> &'static str {
+        self.triple
+    }
+
+    #[must_use]
+    pub const fn pointer_bytes(self) -> u8 {
+        self.pointer_bytes
+    }
+
+    #[must_use]
+    pub const fn pointer_align(self) -> u8 {
+        self.pointer_align
+    }
+
+    #[must_use]
+    pub const fn llvm_datalayout(self) -> &'static str {
+        self.llvm_datalayout
+    }
+}
+
+/// Look up a canonical bare-metal triple. Unknown triples are not guessed.
+#[must_use]
+pub fn embedded_profile(triple: &str) -> Option<&'static EmbeddedProfile> {
+    match triple {
+        "thumbv7em-none-eabihf" => Some(&THUMBV7EM_NONE_EABIHF),
+        "riscv32imc-unknown-none-elf" => Some(&RISCV32IMC_UNKNOWN_NONE_ELF),
+        _ => None,
+    }
+}
+
 impl TargetSpec {
     #[must_use]
     pub const fn linux_gnu() -> Self {
@@ -335,6 +396,25 @@ mod tests {
         assert!(spec.native_aot_cc_libs().contains(&"-lrt"));
         assert!(spec.msvc_runtime_libs().is_empty());
         assert!(spec.msvc_rustc_link_args().is_empty());
+    }
+
+    #[test]
+    fn embedded_profiles_are_exact_32_bit_triples_without_a_memory_map() {
+        let arm = embedded_profile("thumbv7em-none-eabihf").expect("arm profile");
+        assert_eq!(arm.pointer_bytes(), 4);
+        assert_eq!(arm.pointer_align(), 4);
+        assert_eq!(
+            arm.llvm_datalayout(),
+            "e-m:e-p:32:32-Fi8-i64:64-v128:64:128-a:0:32-n32-S64"
+        );
+        let riscv = embedded_profile("riscv32imc-unknown-none-elf").expect("riscv profile");
+        assert_eq!(riscv.pointer_bytes(), 4);
+        assert_eq!(riscv.pointer_align(), 4);
+        assert_eq!(riscv.llvm_datalayout(), "e-m:e-p:32:32-i64:64-n32-S128");
+        assert_ne!(arm.llvm_datalayout(), riscv.llvm_datalayout());
+        assert!(embedded_profile("thumbv7em-none-eabi").is_none());
+        assert!(embedded_profile("riscv32-unknown-none-elf").is_none());
+        assert!(embedded_profile("x86_64-unknown-linux-gnu").is_none());
     }
 
     #[test]

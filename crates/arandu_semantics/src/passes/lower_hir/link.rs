@@ -283,7 +283,7 @@ pub fn link_hir_module(
     // Symbols (params/locals) so AMIR can resolve ids from the imported file.
     for sym in src_tc.symbols.iter() {
         if dest_tc.symbols.try_get(sym.id).is_none() {
-            dest_tc.symbols_mut().register_imported_symbol(sym.clone());
+            dest_tc.symbols_mut().ensure_visible(sym.clone());
         }
     }
     // Module membership remains available after whole-program linking for

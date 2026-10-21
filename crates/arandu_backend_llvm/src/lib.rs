@@ -76,7 +76,63 @@ mod tests {
             (ArType::Vector(VectorType::I32x4), "<4 x i32>"),
             (ArType::Vector(VectorType::F32x4), "<4 x float>"),
         ] {
-            assert_eq!(llvm_type(&ty, &interner).as_deref(), Ok(expected));
+            assert_eq!(llvm_type(&ty, &interner, 8).as_deref(), Ok(expected));
         }
+        assert_eq!(
+            llvm_type(&ArType::Primitive(Primitive::Str), &interner, 8).as_deref(),
+            Ok("{ ptr, i64 }")
+        );
+        assert_eq!(
+            llvm_type(&ArType::Primitive(Primitive::Str), &interner, 4).as_deref(),
+            Ok("{ ptr, i32 }")
+        );
+        assert_eq!(
+            llvm_type(&ArType::Primitive(Primitive::USize), &interner, 4).as_deref(),
+            Ok("i32")
+        );
+        assert_eq!(
+            llvm_type(&ArType::Primitive(Primitive::ISize), &interner, 8).as_deref(),
+            Ok("i64")
+        );
+    }
+
+    #[test]
+    fn embedded_module_header_uses_the_arm_datalayout() {
+        let program = arandu_middle::amir::AmirProgram {
+            funcs: Vec::new(),
+            literal_pool: Default::default(),
+            extern_funcs: Default::default(),
+            debug_bindings: Vec::new(),
+            debug_blocks: Vec::new(),
+        };
+        let symbols = arandu_semantics::SymbolTable::default();
+        let mut info = arandu_semantics::TypeInfo::new();
+        info.target_identity =
+            arandu_middle::db::TargetIdentity::from_triple("thumbv7em-none-eabihf")
+                .expect("canonical triple");
+        info.target_layout = arandu_middle::DataLayout::ptr_width(4);
+        let ir = crate::emit_llvm_ir(&program, &symbols, &info).expect("empty module");
+        assert!(ir.contains("target triple = \"thumbv7em-none-eabihf\"\n"));
+        assert!(ir.contains(
+            "target datalayout = \"e-m:e-p:32:32-Fi8-i64:64-v128:64:128-a:0:32-n32-S64\"\n"
+        ));
+        assert!(ir.contains("source_filename = \"arandu\"\n"));
+    }
+
+    #[test]
+    fn host_module_header_omits_target_datalayout() {
+        let program = arandu_middle::amir::AmirProgram {
+            funcs: Vec::new(),
+            literal_pool: Default::default(),
+            extern_funcs: Default::default(),
+            debug_bindings: Vec::new(),
+            debug_blocks: Vec::new(),
+        };
+        let symbols = arandu_semantics::SymbolTable::default();
+        let info = arandu_semantics::TypeInfo::new();
+        let ir = crate::emit_llvm_ir(&program, &symbols, &info).expect("empty module");
+        assert!(ir.contains("source_filename = \"arandu\"\n"));
+        assert!(!ir.contains("target datalayout"));
+        assert!(!ir.contains("target triple"));
     }
 }

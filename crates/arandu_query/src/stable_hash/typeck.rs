@@ -61,6 +61,13 @@ fn hash_type_check_result(result: &TypeCheckResult, include_spans: bool) -> blak
     h.update(&[0]);
     h.update(result.type_info.target_identity.arch.as_bytes());
     h.update(&[0, result.type_info.target_pointer_width]);
+    // Empty host and wasm identities keep the v5 bytes. A supplied triple is
+    // hashed only when the driver stored one.
+    let triple = result.type_info.target_identity.triple.as_bytes();
+    if !triple.is_empty() {
+        h.update(b"\0triple:");
+        h.update(triple);
+    }
     let layout = result.type_info.target_layout;
     for class in [layout.pointer, layout.float, layout.i64, layout.f64] {
         h.update(&class.size.to_le_bytes());

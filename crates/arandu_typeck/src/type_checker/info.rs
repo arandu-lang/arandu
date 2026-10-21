@@ -25,6 +25,40 @@ pub struct InterfaceConstraint {
     pub type_args: SmallVec<[TypeId; 2]>,
 }
 
+/// One owned local moved into a synthesized `ThreadJob`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThreadCaptureField {
+    pub name: smol_str::SmolStr,
+    pub symbol: SymbolId,
+    pub source: SymbolId,
+    pub ty: TypeId,
+    pub span: arandu_middle::Span,
+}
+
+/// `move ||` with no parameters, lowered as a capture struct plus `run`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThreadCaptureRecipe {
+    pub lambda_span: arandu_middle::Span,
+    pub struct_symbol: SymbolId,
+    pub run_symbol: SymbolId,
+    pub self_param: SymbolId,
+    pub arg_param: SymbolId,
+    pub fields: Vec<ThreadCaptureField>,
+    pub return_type: TypeId,
+    /// Backend name. The source method is `run`; this spelling has no dots.
+    pub host_name: smol_str::SmolStr,
+}
+
+impl ThreadCaptureRecipe {
+    #[must_use]
+    pub fn struct_symbol_name(&self) -> String {
+        format!(
+            "__ThreadCapture_{}_{}",
+            self.lambda_span.start, self.lambda_span.end
+        )
+    }
+}
+
 /// One concrete declaration contract in this interner's domain. Templates
 /// retain their own metadata; distinct structural instance keys never overwrite it.
 #[derive(Debug, Clone)]
@@ -97,6 +131,9 @@ pub struct TypeInfo {
     pub unsafe_functions: FxHashSet<SymbolId>,
     /// Struct symbols that explicitly declare `@Repr("C")` / `#[repr(C)]`.
     pub struct_repr_c: rustc_hash::FxHashSet<SymbolId>,
+    /// Thread-closure capture jobs keyed by the lambda span. Empty unless a
+    /// `move ||` was accepted as a `ThreadJob`.
+    pub thread_captures: FxHashMap<arandu_middle::Span, ThreadCaptureRecipe>,
 }
 
 impl Default for TypeInfo {
@@ -148,7 +185,106 @@ impl TypeInfo {
             function_effects: FxHashMap::default(),
             unsafe_functions: FxHashSet::default(),
             struct_repr_c: rustc_hash::FxHashSet::default(),
+            thread_captures: FxHashMap::default(),
         }
+    }
+
+    #[must_use]
+    pub fn thread_capture_at(&self, span: arandu_middle::Span) -> Option<&ThreadCaptureRecipe> {
+        self.thread_captures.get(&span)
+    }
+
+    #[must_use]
+    pub fn thread_capture_for_run(&self, symbol: SymbolId) -> Option<&ThreadCaptureRecipe> {
+        self.thread_captures
+            .values()
+            .find(|recipe| recipe.run_symbol == symbol)
+    }
+
+    /// Re-register span-derived capture symbols on a signature table.
+    ///
+    /// Item body checks already hold them. File composition keeps the
+    /// signature table, so this runs only when a recipe was recorded.
+    pub fn materialize_thread_captures(&self, symbols: &mut crate::SymbolTable) {
+        if self.thread_captures.is_empty() {
+            return;
+        }
+        let scope = symbols.global_scope();
+        for recipe in self.thread_captures.values() {
+            if recipe.struct_symbol.file_id != symbols.file_id {
+                continue;
+            }
+            Self::ensure_capture_symbol(
+                symbols,
+                recipe.struct_symbol,
+                &recipe.struct_symbol_name(),
+                arandu_middle::SymbolKind::Struct,
+                recipe.lambda_span,
+                scope,
+            );
+            Self::ensure_capture_symbol(
+                symbols,
+                recipe.run_symbol,
+                &format!("{}.run", recipe.struct_symbol_name()),
+                arandu_middle::SymbolKind::AssociatedFunc,
+                recipe.lambda_span,
+                scope,
+            );
+            Self::ensure_capture_symbol(
+                symbols,
+                recipe.self_param,
+                "self",
+                arandu_middle::SymbolKind::Param,
+                recipe.lambda_span,
+                scope,
+            );
+            Self::ensure_capture_symbol(
+                symbols,
+                recipe.arg_param,
+                "argument",
+                arandu_middle::SymbolKind::Param,
+                recipe.lambda_span,
+                scope,
+            );
+            for field in &recipe.fields {
+                Self::ensure_capture_symbol(
+                    symbols,
+                    field.symbol,
+                    &field.name,
+                    arandu_middle::SymbolKind::Field,
+                    field.span,
+                    scope,
+                );
+            }
+            symbols
+                .associated_members
+                .insert((recipe.struct_symbol, "run".into()), recipe.run_symbol);
+            symbols
+                .host_function_names
+                .insert(recipe.run_symbol, recipe.host_name.clone());
+        }
+    }
+
+    fn ensure_capture_symbol(
+        symbols: &mut crate::SymbolTable,
+        id: SymbolId,
+        name: &str,
+        kind: arandu_middle::SymbolKind,
+        span: arandu_middle::Span,
+        scope: crate::ScopeId,
+    ) {
+        if symbols.try_get(id).is_some() {
+            return;
+        }
+        symbols.register_synthetic(arandu_middle::Symbol {
+            id,
+            name: name.into(),
+            kind,
+            span,
+            scope,
+            visibility: arandu_middle::Visibility::Public,
+            lang_item: None,
+        });
     }
 
     #[must_use]
@@ -822,6 +958,77 @@ pub enum BorrowShapeError {
 ///
 /// Used when merging type info across files / HIR module linking so TypeIds from
 /// one interner become valid in another.
+fn reintern_type(dest: &mut TypeInfo, source: &TypeInfo, id: TypeId) -> TypeId {
+    let ty = source.type_interner.resolve(id);
+    let translated = translate_type(&ty, &source.type_interner, &mut dest.type_interner);
+    dest.type_interner.intern(translated)
+}
+
+/// Copy synthesized capture symbols and their field layouts into `dest`.
+///
+/// Generic instances such as `std.thread.spawn` live in another file. Their
+/// monomorphization needs the capture struct, `run`, and the field types, and
+/// must not merge the caller's expression-type vector.
+pub fn import_thread_captures(dest: &mut super::TypeCheckResult, src: &super::TypeCheckResult) {
+    if src.type_info.thread_captures.is_empty() {
+        return;
+    }
+    for symbol in src.symbols.iter() {
+        if symbol.id.is_synthetic() {
+            dest.symbols_mut().ensure_visible(symbol.clone());
+        }
+    }
+    for ((parent, member), method) in &src.symbols.associated_members {
+        if parent.is_synthetic() || method.is_synthetic() {
+            dest.symbols_mut()
+                .associated_members
+                .insert((*parent, member.clone()), *method);
+        }
+    }
+    for (symbol, name) in &src.symbols.host_function_names {
+        if symbol.is_synthetic() {
+            dest.symbols_mut()
+                .host_function_names
+                .insert(*symbol, name.clone());
+        }
+    }
+    let declarations = src
+        .type_info
+        .decl_types
+        .iter()
+        .filter(|(symbol, _)| symbol.is_synthetic())
+        .map(|(symbol, ty)| (*symbol, *ty))
+        .collect::<Vec<_>>();
+    for (symbol, ty) in declarations {
+        let translated = reintern_type(dest.type_info_mut(), &src.type_info, ty);
+        dest.type_info_mut().record_decl_type(symbol, translated);
+    }
+    let owners = src
+        .type_info
+        .struct_fields
+        .keys()
+        .copied()
+        .filter(|symbol| symbol.is_synthetic())
+        .collect::<Vec<_>>();
+    for owner in owners {
+        if dest.type_info.struct_fields.contains_key(&owner) {
+            continue;
+        }
+        let Some(fields) = src.type_info.struct_fields.get(&owner) else {
+            continue;
+        };
+        let translated = StructFields::from_entries(fields.iter().map(|field| StructFieldInfo {
+            name: field.name.clone(),
+            symbol: field.symbol,
+            index: field.index,
+            ty: reintern_type(dest.type_info_mut(), &src.type_info, field.ty),
+        }));
+        dest.type_info_mut()
+            .struct_fields
+            .insert(owner, Arc::new(translated));
+    }
+}
+
 pub fn translate_type(ty: &ArType, from: &TypeInterner, to: &mut TypeInterner) -> ArType {
     match ty {
         ArType::Primitive(p) => ArType::Primitive(*p),
@@ -1047,6 +1254,45 @@ impl TypeInfo {
                     variants,
                 }),
             );
+        }
+
+        if !other.thread_captures.is_empty() {
+            for (span, recipe) in &other.thread_captures {
+                let fields = recipe
+                    .fields
+                    .iter()
+                    .map(|field| {
+                        let ty = reintern_type(self, other, field.ty);
+                        ThreadCaptureField {
+                            name: field.name.clone(),
+                            symbol: remap(field.symbol),
+                            source: remap(field.source),
+                            ty,
+                            span: field.span,
+                        }
+                    })
+                    .collect();
+                let return_type = reintern_type(self, other, recipe.return_type);
+                let struct_symbol = remap(recipe.struct_symbol);
+                let run_symbol = remap(recipe.run_symbol);
+                let self_param = remap(recipe.self_param);
+                let arg_param = remap(recipe.arg_param);
+                let host_name = recipe.host_name.clone();
+                let lambda_span = recipe.lambda_span;
+                self.thread_captures.insert(
+                    *span,
+                    ThreadCaptureRecipe {
+                        lambda_span,
+                        struct_symbol,
+                        run_symbol,
+                        self_param,
+                        arg_param,
+                        fields,
+                        return_type,
+                        host_name,
+                    },
+                );
+            }
         }
 
         // Fast path: empty body shards / empty import stubs.

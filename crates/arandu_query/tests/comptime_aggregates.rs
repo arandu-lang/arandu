@@ -377,6 +377,7 @@ fn target_properties_use_explicit_inputs_and_invalidate_staged_values() {
     db.set_target_identity(TargetIdentity {
         os: "windows".into(),
         arch: "x86".into(),
+        triple: String::new(),
     });
     let file = db.new_file("target.aru".into(), "func main(): int { let os = comptime @targetOS(); let arch = comptime @targetArch(); let bits = comptime @targetPointerWidth(); comptime if @targetOS() == \"windows\" { return 42 } else { return unknown } }".into());
     let first = checked(&db, file);
@@ -389,6 +390,7 @@ fn target_properties_use_explicit_inputs_and_invalidate_staged_values() {
     db.set_target_identity(TargetIdentity {
         os: "linux".into(),
         arch: "aarch64".into(),
+        triple: String::new(),
     });
     let changed = type_check(&db, file);
     assert!(changed
@@ -400,6 +402,7 @@ fn target_properties_use_explicit_inputs_and_invalidate_staged_values() {
     clean.set_target_identity(TargetIdentity {
         os: "linux".into(),
         arch: "aarch64".into(),
+        triple: String::new(),
     });
     let fresh = clean.new_file("target.aru".into(), file.text(&db).to_string());
     assert_eq!(changed.diagnostics, type_check(&clean, fresh).diagnostics);

@@ -118,9 +118,11 @@ sem staging compartilham o memo inicial sem varredura da arena.
 Parser/formatter, keyword semântico, completion e fallback TextMate reconhecem
 esse recorte. Seleção estática em match e templates usa a mesma continuação
 lexical. A seleção em escopos de lambda não habilita o sistema geral de closures:
-tipagem e lowering dessas expressões conservam U001. No plano revisável,
-closures têm contrato semântico próprio na trilha `0.3.x`; a disponibilidade
-do produtor por instância não implementa captures, escape ou drop de closures.
+tipagem e lowering dessas expressões conservam U001, exceto o recorte
+`move ||` sem parâmetros e com capturas próprias Send, que baixa para ThreadJob.
+No plano revisável, closures têm contrato semântico próprio na trilha `0.3.x`;
+a disponibilidade do produtor por instância não implementa captures, escape ou
+drop de closures gerais.
 
 `resolved_headers` executa o pipeline puro de imports e resolve declarações,
 atributos, constantes e assinaturas, sem visitar corpos de funções. Guarda

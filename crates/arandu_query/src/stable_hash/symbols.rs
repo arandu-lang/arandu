@@ -334,6 +334,8 @@ fn lang_item_discriminant(item: arandu_middle::symbol_table::LangItem) -> u8 {
         LangItem::ThreadParkTimeout => 46,
         LangItem::ThreadPark => 47,
         LangItem::ThreadUnpark => 48,
+        LangItem::StdThread => 51,
+        LangItem::StdFs => 52,
     }
 }
 

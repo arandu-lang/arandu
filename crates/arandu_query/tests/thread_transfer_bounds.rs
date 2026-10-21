@@ -471,11 +471,11 @@ func main(): int {
     );
     let result = type_check(&db, file);
     assert!(
-        result
+        !result
             .diagnostics
             .iter()
-            .any(|d| d.code == DiagCode::U001FeatureNotSupported && d.message.contains("require AMIR ThreadJob lowering")),
-        "valid thread closure spawn must be rejected with U001 pending AMIR ThreadJob lowering: {:?}",
+            .any(|d| d.severity == Severity::Error),
+        "move || with an owned Send capture must type-check: {:?}",
         result.diagnostics
     );
 }
@@ -637,14 +637,16 @@ func main(): int {
         .into(),
     );
     let result_alias = type_check(&db, alias_file);
-    // Because custom_spawn preserves LangItem::ThreadSpawn, it enters synth_thread_spawn_closure
-    // and emits the U001 asking for AMIR lowering (instead of T012 wrong arg count / type mismatch)
+    // custom_spawn preserves LangItem::ThreadSpawn, so the zero-capture closure
+    // is lowered as a ThreadJob instead of a wrong-arity mismatch.
     assert!(
-        result_alias
+        !result_alias.diagnostics.iter().any(|d| {
+            d.code == DiagCode::U001FeatureNotSupported
+                && d.message.contains("require AMIR ThreadJob lowering")
+        }) && !result_alias
             .diagnostics
             .iter()
-            .any(|d| d.code == DiagCode::U001FeatureNotSupported
-                && d.message.contains("require AMIR ThreadJob lowering")),
+            .any(|d| d.severity == Severity::Error),
         "alias import must preserve LangItem::ThreadSpawn identity: {:?}",
         result_alias.diagnostics
     );
@@ -672,12 +674,169 @@ func main(): int {
     let _ = type_check(&db, reexport_file);
     let result_client = type_check(&db, client_file);
     assert!(
-        result_client
+        !result_client.diagnostics.iter().any(|d| {
+            d.code == DiagCode::U001FeatureNotSupported
+                && d.message.contains("require AMIR ThreadJob lowering")
+        }) && !result_client
             .diagnostics
             .iter()
-            .any(|d| d.code == DiagCode::U001FeatureNotSupported
-                && d.message.contains("require AMIR ThreadJob lowering")),
+            .any(|d| d.severity == Severity::Error),
         "re-exported symbol must preserve LangItem::ThreadSpawn identity: {:?}",
         result_client.diagnostics
+    );
+}
+
+#[test]
+fn thread_spawn_move_closure_lowers_capture_struct_and_run() {
+    let mut db = DatabaseImpl::default();
+    db.new_stdlib_file(
+        "stdlib/core/marker.aru".into(),
+        include_str!("../../../stdlib/core/marker.aru").into(),
+    );
+    db.new_stdlib_file(
+        "stdlib/core/mem.aru".into(),
+        include_str!("../../../stdlib/core/mem.aru").into(),
+    );
+    db.new_stdlib_file(
+        "stdlib/std/thread.aru".into(),
+        include_str!("../../../stdlib/std/thread.aru").into(),
+    );
+    let file = db.new_file(
+        "capture_amir.aru".into(),
+        r#"
+import std.thread as thread
+
+func main(): int {
+    let dados: int = 41
+    let handleRes = thread.spawn(move || dados + 1)
+    return 0
+}
+"#
+        .into(),
+    );
+    let runtime = arandu_query::runtime::runtime_program(&db, file);
+    assert!(
+        !runtime
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.severity == Severity::Error),
+        "capture closure failed to lower: {:?}",
+        runtime.diagnostics
+    );
+    let symbols = &runtime.artifacts.type_check.symbols;
+    let run = symbols.iter().find(|symbol| {
+        symbols
+            .host_function_names
+            .get(&symbol.id)
+            .is_some_and(|name| name.starts_with("ar_thread_capture_") && name.ends_with("_run"))
+    });
+    let Some(run) = run else {
+        panic!("synthesized run is missing from the runtime symbol table");
+    };
+    assert!(
+        runtime
+            .artifacts
+            .amir
+            .funcs
+            .iter()
+            .any(|func| func.symbol == run.id),
+        "AMIR is missing the capture run body"
+    );
+    let capture = symbols.iter().find(|symbol| {
+        symbol.kind == arandu_middle::SymbolKind::Struct
+            && symbol.name.starts_with("__ThreadCapture_")
+    });
+    let Some(capture) = capture else {
+        panic!("capture struct is missing");
+    };
+    let fields = runtime
+        .artifacts
+        .type_check
+        .type_info
+        .struct_fields
+        .get(&capture.id);
+    assert!(
+        fields.is_some_and(|fields| fields.iter().any(|field| field.name == "dados")),
+        "capture struct must store dados"
+    );
+}
+
+#[test]
+fn bare_metal_rejects_std_thread() {
+    let mut db = DatabaseImpl::default();
+    db.set_target(
+        arandu_middle::DataLayout::ptr_width(4),
+        arandu_middle::db::TargetIdentity::from_triple("thumbv7em-none-eabihf")
+            .expect("canonical triple"),
+    );
+    db.new_stdlib_file(
+        "stdlib/core/marker.aru".into(),
+        include_str!("../../../stdlib/core/marker.aru").into(),
+    );
+    db.new_stdlib_file(
+        "stdlib/core/mem.aru".into(),
+        include_str!("../../../stdlib/core/mem.aru").into(),
+    );
+    db.new_stdlib_file(
+        "stdlib/std/thread.aru".into(),
+        include_str!("../../../stdlib/std/thread.aru").into(),
+    );
+    let file = db.new_file(
+        "bare_thread.aru".into(),
+        r#"
+import std.thread as thread
+
+func main(): int {
+    let handleRes = thread.spawn(move || 1)
+    return 0
+}
+"#
+        .into(),
+    );
+    let result = type_check(&db, file);
+    assert!(
+        result.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == DiagCode::T099RequiresOperatingSystem
+                && diagnostic.message
+                    == "The module 'std.thread' requires an underlying operating system, but target 'thumbv7em-none-eabihf' is bare-metal."
+        }),
+        "{:?}",
+        result.diagnostics
+    );
+}
+
+#[test]
+fn bare_metal_rejects_std_fs_read_to_string() {
+    let mut db = DatabaseImpl::default();
+    db.set_target(
+        arandu_middle::DataLayout::ptr_width(4),
+        arandu_middle::db::TargetIdentity::from_triple("thumbv7em-none-eabihf")
+            .expect("canonical triple"),
+    );
+    db.new_stdlib_file(
+        "stdlib/std/fs.aru".into(),
+        "module std.fs\npublic func readToString(path: str): int {\n    return 0\n}\n".into(),
+    );
+    let file = db.new_file(
+        "bare_fs.aru".into(),
+        r#"
+from std.fs import { readToString }
+
+func main(): int {
+    let content = readToString("memory.ld")
+    return 0
+}
+"#
+        .into(),
+    );
+    let result = type_check(&db, file);
+    assert!(
+        result.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == DiagCode::T099RequiresOperatingSystem
+                && diagnostic.message
+                    == "The module 'std.fs' requires an underlying operating system, but target 'thumbv7em-none-eabihf' is bare-metal."
+        }),
+        "{:?}",
+        result.diagnostics
     );
 }

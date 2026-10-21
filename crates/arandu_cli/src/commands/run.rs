@@ -315,17 +315,35 @@ pub fn cmd_single_file_dispatch(
             "`--backend` is supported only by `run` and `run -b llvm`",
         ));
     }
-    if inv.backend == RunBackend::Llvm && inv.project_flags.target.is_some() {
+    if inv.backend == RunBackend::Llvm
+        && inv.project_flags.target.is_some()
+        && command != "emit-llvm"
+    {
         return Err(CliFailure::usage(
             "experimental LLVM execution supports only the host target",
         ));
     }
-    if command == "emit-llvm"
-        && (inv.data_layout != DataLayout::host() || inv.project_flags.target.is_some())
-    {
-        return Err(CliFailure::usage(
-            "experimental emit-llvm supports only the host target and layout",
-        ));
+    if command == "emit-llvm" {
+        match inv.project_flags.target.as_deref() {
+            Some(triple) if arandu_middle::embedded_profile(triple).is_some() => {
+                if inv.data_layout.pointer_width() != 4 {
+                    return Err(CliFailure::usage(
+                        "bare-metal profiles use a 32-bit data layout",
+                    ));
+                }
+            }
+            Some(_) => {
+                return Err(CliFailure::usage(
+                    "experimental emit-llvm supports the host target or thumbv7em-none-eabihf / riscv32imc-unknown-none-elf",
+                ));
+            }
+            None if inv.data_layout != DataLayout::host() => {
+                return Err(CliFailure::usage(
+                    "experimental emit-llvm supports only the host target and layout",
+                ));
+            }
+            None => {}
+        }
     }
     let parallel = inv.parallel;
     let debug = inv.debug;
@@ -392,6 +410,7 @@ pub fn cmd_single_file_dispatch(
             arandu_middle::db::TargetIdentity {
                 os: "wasi".into(),
                 arch: "wasm32".into(),
+                triple: String::new(),
             }
         };
         db.set_target_identity(identity);

@@ -7,6 +7,7 @@ pub mod doc;
 pub mod doctor;
 pub mod fmt;
 pub mod hash;
+mod llvm_product;
 pub mod project;
 pub mod run;
 pub mod test;

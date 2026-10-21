@@ -421,7 +421,11 @@ pub(crate) fn synth_method_call(
 
     if let Some(sym) = method_sym_recorded {
         Arc::make_mut(&mut checker.resolved).value_ref(field_span, sym);
-        super::expr::check_target_thread_capabilities(checker, sym, call_span);
+        if super::expr::check_target_thread_capabilities(checker, sym, call_span) {
+            let err = checker.intern(ArType::Error);
+            checker.record_expr_type(callee, err);
+            return Some(err);
+        }
         if checker.type_info.unsafe_functions.contains(&sym) && !checker.ctx.is_in_unsafe() {
             checker.diagnostics.push(
                 crate::Diagnostic::error(

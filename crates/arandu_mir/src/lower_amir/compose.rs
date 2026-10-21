@@ -49,14 +49,19 @@ pub fn compose_function_units(
             poll();
             if aggregate.symbols.try_get(source.id).is_none() {
                 if source.id.file_id == aggregate.symbols.file_id {
-                    return Err(vec![ice(
-                        "composition is missing an entry-file source symbol",
-                        source.span,
-                    )]);
+                    if source.id.is_synthetic() {
+                        aggregate.symbols_mut().register_synthetic(source.clone());
+                    } else {
+                        return Err(vec![ice(
+                            "composition is missing an entry-file source symbol",
+                            source.span,
+                        )]);
+                    }
+                } else {
+                    aggregate
+                        .symbols_mut()
+                        .register_imported_symbol(source.clone());
                 }
-                aggregate
-                    .symbols_mut()
-                    .register_imported_symbol(source.clone());
             }
             if let Some(name) = input.context.symbols.host_function_names.get(&source.id) {
                 aggregate

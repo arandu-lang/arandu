@@ -5,7 +5,8 @@
 //! `spawn` moves a Send job and argument into a native OS thread. `join`
 //! transfers its Send result back. Dropping a handle joins and destroys any
 //! unclaimed result; it can block. Jobs use the statically dispatched
-//! `ThreadJob<A, R>` interface, not general capturing closure values. Language
+//! `ThreadJob<A, R>` interface. A `move ||` with no parameters and owned Send
+//! captures is lowered to that job; general capturing closures stay rejected. Language
 //! traps and aborts terminate the process (no cross-thread or cross-ABI stack
 //! unwinding); Rust panics in the native host worker are caught at the runtime
 //! boundary and reported by `JoinHandle.join` as `ThreadError.Panicked`.

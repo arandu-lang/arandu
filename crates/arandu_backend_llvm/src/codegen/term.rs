@@ -528,10 +528,11 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                             length + 1
                         ),
                     ))
-                } else if expected_text == "{ ptr, i64 }" {
+                } else if expected_text == self.module.fat_ptr_llvm_ty() {
+                    let len_ty = self.module.ptr_int_ty();
                     Ok(TypedValue::new(
                         expected_text.to_owned(),
-                        format!("{{ ptr {name}, i64 {length} }}"),
+                        format!("{{ ptr {name}, {len_ty} {length} }}"),
                     ))
                 } else if self.module.is_pointer(expected) {
                     Ok(TypedValue::new(
@@ -569,16 +570,19 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
         } else if value.ty == "ptr" {
             if expected_width.is_some() {
                 Some(format!("ptrtoint ptr {} to {expected_text}", value.value))
-            } else if expected_text == "{ ptr, i64 }" || self.module.is_fat_pointer(expected) {
+            } else if expected_text == self.module.fat_ptr_llvm_ty()
+                || self.module.is_fat_pointer(expected)
+            {
                 // Load a fat `{data,len}` descriptor from behind the pointer
                 // (e.g. `ref String` / `ref str` → by-value `str` / `[]T`).
                 let loaded = self.new_value();
                 let align = self.module.pointer_align();
+                let fat = self.module.fat_ptr_llvm_ty();
                 self.writer.line(format!(
-                    "{loaded} = load {{ ptr, i64 }}, ptr {}, align {align}",
+                    "{loaded} = load {fat}, ptr {}, align {align}",
                     value.value
                 ));
-                return Ok(TypedValue::new("{ ptr, i64 }".to_owned(), loaded));
+                return Ok(TypedValue::new(fat, loaded));
             } else if let Some(bytes) = parse_byte_aggregate_size(&expected_text) {
                 // Pointer-repr aggregate (Cranelift-style EnumPayload of a
                 // Named struct): materialize by copying `bytes` from the
@@ -586,8 +590,10 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                 let slot = self.new_value();
                 self.writer
                     .line(format!("{slot} = alloca {expected_text}, align 1"));
+                let memcpy = self.module.memcpy_intrinsic();
+                let n = self.module.ptr_int_ty();
                 self.writer.line(format!(
-                    "call void @llvm.memcpy.p0.p0.i64(ptr {slot}, ptr {}, i64 {bytes}, i1 false)",
+                    "call void @{memcpy}(ptr {slot}, ptr {}, {n} {bytes}, i1 false)",
                     value.value
                 ));
                 let loaded = self.new_value();
@@ -655,8 +661,10 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
             ));
             let copy = from_bytes.min(to_bytes);
             if copy > 0 {
+                let memcpy = self.module.memcpy_intrinsic();
+                let n = self.module.ptr_int_ty();
                 self.writer.line(format!(
-                    "call void @llvm.memcpy.p0.p0.i64(ptr {dst}, ptr {src}, i64 {copy}, i1 false)"
+                    "call void @{memcpy}(ptr {dst}, ptr {src}, {n} {copy}, i1 false)"
                 ));
             }
             let loaded = self.new_value();

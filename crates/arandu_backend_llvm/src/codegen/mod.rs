@@ -18,7 +18,7 @@ use arandu_middle::types::{ArType, Primitive, TypeInterner, VectorType};
 use arandu_middle::{DiagCode, Diagnostic, Span, SymbolId, SymbolKind, SymbolTable};
 use arandu_semantics::TypeInfo;
 
-use crate::types::llvm_type;
+use crate::types::{fat_ptr_llvm_ty, llvm_type, ptr_int};
 use crate::writer::IrWriter;
 
 mod call;
@@ -104,16 +104,23 @@ impl<'a> ModuleEmitter<'a> {
         self.add_declaration("llvm.trap", "declare void @llvm.trap()");
         // Match Cranelift: owned heap buffers use the runtime allocator pair,
         // never libc malloc/free (ToStr / str concat / Free share this ABI).
+        let pointer_bytes = self.layout.pointer_width();
+        let len = ptr_int(pointer_bytes);
+        let fat = fat_ptr_llvm_ty(pointer_bytes);
+        let memcpy = self.memcpy_intrinsic();
         self.add_declaration("ar_rt_raw_free", "declare void @ar_rt_raw_free(ptr)");
-        self.add_declaration("ar_rt_raw_malloc", "declare ptr @ar_rt_raw_malloc(i64)");
-        self.add_declaration("memcmp", "declare i32 @memcmp(ptr, ptr, i64)");
+        self.add_declaration(
+            "ar_rt_raw_malloc",
+            &format!("declare ptr @ar_rt_raw_malloc({len})"),
+        );
+        self.add_declaration("memcmp", &format!("declare i32 @memcmp(ptr, ptr, {len})"));
         self.add_declaration(
             "ar_str_concat",
-            "declare { ptr, i64 } @ar_str_concat(ptr, i64, ptr, i64)",
+            &format!("declare {fat} @ar_str_concat(ptr, {len}, ptr, {len})"),
         );
         self.add_declaration(
-            "llvm.memcpy.p0.p0.i64",
-            "declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)",
+            memcpy,
+            &format!("declare void @{memcpy}(ptr, ptr, {len}, i1)"),
         );
         for (name, ty) in [
             ("ar_jit_i64_to_str", "i64"),
@@ -242,7 +249,16 @@ impl<'a> ModuleEmitter<'a> {
 
         let mut output = String::new();
         output.push_str("; ModuleID = 'arandu'\n");
-        output.push_str("source_filename = \"arandu\"\n\n");
+        output.push_str("source_filename = \"arandu\"\n");
+        if let Some(profile) = arandu_middle::embedded_profile(&self.info.target_identity.triple) {
+            let _ = write!(
+                output,
+                "target triple = \"{}\"\ntarget datalayout = \"{}\"\n",
+                profile.triple(),
+                profile.llvm_datalayout()
+            );
+        }
+        output.push('\n');
         for global in &self.globals {
             output.push_str(global);
             output.push('\n');
@@ -379,7 +395,7 @@ impl<'a> ModuleEmitter<'a> {
         if self.is_byte_aggregate(ty) {
             return self.aggregate_ty(ty);
         }
-        llvm_type(ty, self.interner).map_err(ice)
+        llvm_type(ty, self.interner, self.layout.pointer_width()).map_err(ice)
     }
 
     /// Aggregates use the target layout as an opaque byte array. Their AMIR
@@ -431,6 +447,23 @@ impl<'a> ModuleEmitter<'a> {
 
     fn pointer_align(&self) -> u64 {
         self.layout.data_layout.pointer_align().max(1)
+    }
+
+    /// LLVM integer for pointer-sized lengths and indices. Bytes, not bits.
+    pub(super) fn ptr_int_ty(&self) -> &'static str {
+        ptr_int(self.layout.pointer_width())
+    }
+
+    pub(super) fn fat_ptr_llvm_ty(&self) -> String {
+        fat_ptr_llvm_ty(self.layout.pointer_width())
+    }
+
+    pub(super) fn memcpy_intrinsic(&self) -> &'static str {
+        if self.layout.pointer_width() == 4 {
+            "llvm.memcpy.p0.p0.i32"
+        } else {
+            "llvm.memcpy.p0.p0.i64"
+        }
     }
 
     fn usize_ty(&self) -> ArType {
@@ -496,16 +529,16 @@ impl<'a> ModuleEmitter<'a> {
 
     /// LLVM types for one logical parameter at the host/C ABI boundary.
     ///
-    /// Fat `str` and slices become two scalar slots (`ptr`, `i64`), matching
-    /// Cranelift and runtime helpers such as `ar_fs_read_all(path_ptr, path_len, ...)`.
+    /// Fat `str` and slices become two scalar slots (`ptr`, pointer integer),
+    /// matching Cranelift and runtime helpers such as `ar_fs_read_all`.
     /// Void parameters contribute no slots. Internal Arandu→Arandu calls keep
-    /// the first-class `{ ptr, i64 }` value ABI.
+    /// the first-class fat value ABI from [`Self::fat_ptr_llvm_ty`].
     fn host_abi_param_llvm_tys(&self, ty: &ArType) -> Result<Vec<String>, Diagnostic> {
         if self.is_void(ty) {
             return Ok(Vec::new());
         }
         if self.is_fat_pointer(ty) {
-            return Ok(vec!["ptr".to_owned(), "i64".to_owned()]);
+            return Ok(vec!["ptr".to_owned(), self.ptr_int_ty().to_owned()]);
         }
         Ok(vec![self.llvm_ty(ty)?])
     }

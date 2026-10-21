@@ -78,6 +78,14 @@ pub struct ProjectFlags {
     pub color: crate::args::ColorChoice,
     pub target: Option<String>,
     pub quiet: bool,
+    /// `obj` or `llvm-ir`. Bare-metal LLVM builds default to an object file.
+    pub emit: Option<String>,
+    /// `staticlib` archives the object. The compiler does not guess an ELF.
+    pub crate_type: Option<String>,
+    /// User-supplied linker script. Absent means no final ELF is produced.
+    pub linker_script: Option<PathBuf>,
+    /// Explicit `-o` path for the selected artifact.
+    pub output: Option<PathBuf>,
 }
 
 fn missing_option_value(args: &[String], index: usize) -> bool {
@@ -169,6 +177,50 @@ pub fn parse_project_flags(args: &[String]) -> Result<(ProjectFlags, Vec<String>
             }
             i += 1;
             flags.target = Some(args[i].clone());
+        } else if let Some(v) = a.strip_prefix("--emit=") {
+            if v.is_empty() {
+                return Err("--emit requires obj or llvm-ir".into());
+            }
+            flags.emit = Some(v.to_string());
+        } else if a == "--emit" {
+            if missing_option_value(args, i) {
+                return Err("--emit requires obj or llvm-ir".into());
+            }
+            i += 1;
+            flags.emit = Some(args[i].clone());
+        } else if let Some(v) = a.strip_prefix("--crate-type=") {
+            if v.is_empty() {
+                return Err("--crate-type requires staticlib".into());
+            }
+            flags.crate_type = Some(v.to_string());
+        } else if a == "--crate-type" {
+            if missing_option_value(args, i) {
+                return Err("--crate-type requires staticlib".into());
+            }
+            i += 1;
+            flags.crate_type = Some(args[i].clone());
+        } else if let Some(v) = a.strip_prefix("--linker-script=") {
+            if v.is_empty() {
+                return Err("--linker-script requires a path".into());
+            }
+            flags.linker_script = Some(PathBuf::from(v));
+        } else if a == "--linker-script" {
+            if missing_option_value(args, i) {
+                return Err("--linker-script requires a path".into());
+            }
+            i += 1;
+            flags.linker_script = Some(PathBuf::from(&args[i]));
+        } else if let Some(v) = a.strip_prefix("-o=") {
+            if v.is_empty() {
+                return Err("-o requires an output path".into());
+            }
+            flags.output = Some(PathBuf::from(v));
+        } else if a == "-o" {
+            if missing_option_value(args, i) {
+                return Err("-o requires an output path".into());
+            }
+            i += 1;
+            flags.output = Some(PathBuf::from(&args[i]));
         } else {
             rest.push(a.clone());
         }
@@ -432,6 +484,10 @@ mod tests {
                 "--color requires an argument (use auto|always|never)",
             ),
             ("--target", "--target requires a target triple argument"),
+            ("--emit", "--emit requires obj or llvm-ir"),
+            ("--crate-type", "--crate-type requires staticlib"),
+            ("--linker-script", "--linker-script requires a path"),
+            ("-o", "-o requires an output path"),
         ] {
             let error = parse_project_flags(&args(&[flag, "--release"])).expect_err(flag);
             assert_eq!(error, message, "{flag}");
@@ -455,6 +511,27 @@ mod tests {
         assert_eq!(flags.cache_dir.unwrap().as_os_str(), "cache");
         assert!(flags.release);
         assert_eq!(flags.target.as_deref(), Some("wasm32-wasip1"));
+        assert!(rest.is_empty());
+        let (flags, rest) = parse_project_flags(&args(&[
+            "--target=thumbv7em-none-eabihf",
+            "--emit=obj",
+            "--crate-type=staticlib",
+            "--linker-script=memory.ld",
+            "-o",
+            "firmware.a",
+        ]))
+        .expect("embedded emit flags");
+        assert_eq!(flags.target.as_deref(), Some("thumbv7em-none-eabihf"));
+        assert_eq!(flags.emit.as_deref(), Some("obj"));
+        assert_eq!(flags.crate_type.as_deref(), Some("staticlib"));
+        assert_eq!(
+            flags.linker_script.as_deref(),
+            Some(std::path::Path::new("memory.ld"))
+        );
+        assert_eq!(
+            flags.output.as_deref(),
+            Some(std::path::Path::new("firmware.a"))
+        );
         assert!(rest.is_empty());
     }
 }

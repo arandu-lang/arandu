@@ -15,13 +15,15 @@
   - [Polimorfismo e witness tables propostos](0034-adaptive-hybrid-polymorphism-and-witness-tables.md)
   - [Efeitos e capacidades propostos](0035-effect-system-polymorphism-and-capability-authority.md)
 
-> **Estado auditado em 2026-10-16:** proposta para avaliação no horizonte 0.3.x,
+> **Estado auditado em 2026-10-21:** proposta para avaliação no horizonte 0.3.x,
 > com contrato próprio e aceitação ainda pendente. Não bloqueia a 0.2.
-> O parser representa lambdas e o staging preserva seleção/escopo, mas a tipagem
-> geral de closures já produz U001; o lowering AMIR também mantém essa barreira.
-> Chamadas indiretas gerais na linguagem produzem T033. Tipos de função,
-> `FunctionRef` e callbacks internos existentes não habilitam automaticamente
-> closures executáveis ou funções de primeira classe de uso geral.
+> O parser representa lambdas e o staging preserva seleção/escopo. A tipagem
+> geral de closures produz U001 e o lowering AMIR mantém essa barreira.
+> A exceção já baixada é `std.thread.spawn(move || ...)`, sem parâmetros e com
+> capturas próprias Send: vira uma struct de captura e `run()`, não uma closure
+> de primeira classe. Chamadas indiretas gerais na linguagem produzem T033.
+> Tipos de função, `FunctionRef` e callbacks internos existentes não habilitam
+> automaticamente closures executáveis ou funções de primeira classe de uso geral.
 
 ---
 

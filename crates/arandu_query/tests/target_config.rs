@@ -217,6 +217,7 @@ fn wasm32_target_rejects_thread_park_timeout_with_u001() {
     let wasm_identity = arandu_middle::db::TargetIdentity {
         os: "wasi".into(),
         arch: "wasm32".into(),
+        triple: String::new(),
     };
     db.set_target(DataLayout::ptr_width(4), wasm_identity);
     db.new_stdlib_file(
@@ -261,6 +262,7 @@ fn wasm32_target_rejects_thread_park_and_unpark_with_u001() {
     let wasm_identity = arandu_middle::db::TargetIdentity {
         os: "wasi".into(),
         arch: "wasm32".into(),
+        triple: String::new(),
     };
     db.set_target(DataLayout::ptr_width(4), wasm_identity);
     db.new_stdlib_file(

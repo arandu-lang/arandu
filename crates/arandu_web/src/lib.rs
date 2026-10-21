@@ -132,6 +132,7 @@ fn configure_web_target(db: &mut DatabaseImpl) {
     db.set_target_identity(arandu_middle::db::TargetIdentity {
         os: "unknown".into(),
         arch: "wasm32".into(),
+        triple: String::new(),
     });
 }
 

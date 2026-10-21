@@ -41,7 +41,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                     }
                     let value = self.operand(payload, &payload_ty)?;
                     let raw = self.new_value();
-                    let width = if pointer_width == 32 { "i32" } else { "i64" };
+                    let width = if pointer_width == 4 { "i32" } else { "i64" };
                     self.writer
                         .line(format!("{raw} = ptrtoint ptr {} to {width}", value.value));
                     let clean = self.new_value();
@@ -54,15 +54,15 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                         .line(format!("{tagged} = or {width} {clean}, {tag}"));
                     tagged
                 } else {
-                    let width = if pointer_width == 32 { "i32" } else { "i64" };
+                    let width = if pointer_width == 4 { "i32" } else { "i64" };
                     let value = self.new_value();
                     self.writer.line(format!("{value} = add {width} 0, {tag}"));
                     value
                 };
                 let address = self.byte_gep(&slot, pointer_offset);
-                let width = if pointer_width == 32 { 4 } else { 8 };
+                let (bits, align) = if pointer_width == 4 { (32, 4) } else { (8, 8) };
                 self.writer.line(format!(
-                    "store i{width} {stored}, ptr {address}, align {width}"
+                    "store i{bits} {stored}, ptr {address}, align {align}"
                 ));
             }
             Some(TagEncoding::Niche {
@@ -354,12 +354,22 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
         let length = self.new_value();
         self.writer
             .line(format!("{length} = load i64, ptr {len_slot}, align 8"));
+        let fat = self.module.fat_ptr_llvm_ty();
+        let len_ty = self.module.ptr_int_ty();
+        let stored = if len_ty == "i64" {
+            length
+        } else {
+            let truncated = self.new_value();
+            self.writer
+                .line(format!("{truncated} = trunc i64 {length} to i32"));
+            truncated
+        };
         let first = self.new_value();
         self.writer.line(format!(
-            "{first} = insertvalue {{ ptr, i64 }} undef, ptr {pointer}, 0"
+            "{first} = insertvalue {fat} undef, ptr {pointer}, 0"
         ));
         self.writer.line(format!(
-            "{result} = insertvalue {{ ptr, i64 }} {first}, i64 {length}, 1"
+            "{result} = insertvalue {fat} {first}, {len_ty} {stored}, 1"
         ));
         Ok(())
     }
@@ -373,14 +383,15 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
         // Match Cranelift: always return a fresh malloc buffer. AMIR frees each
         // input part *and* the interp result; aliasing a single part (or leaking
         // intermediate `ar_str_concat` buffers) is a double-free / leak.
+        let fat = self.module.fat_ptr_llvm_ty();
+        let n = self.module.ptr_int_ty();
+        let memcpy = self.module.memcpy_intrinsic();
         if parts.is_empty() {
             let first = self.new_value();
-            self.writer.line(format!(
-                "{first} = insertvalue {{ ptr, i64 }} undef, ptr null, 0"
-            ));
-            self.writer.line(format!(
-                "{result} = insertvalue {{ ptr, i64 }} {first}, i64 0, 1"
-            ));
+            self.writer
+                .line(format!("{first} = insertvalue {fat} undef, ptr null, 0"));
+            self.writer
+                .line(format!("{result} = insertvalue {fat} {first}, {n} 0, 1"));
             return Ok(());
         }
         let string_ty = ArType::Primitive(Primitive::Str);
@@ -389,68 +400,59 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
             part_vals.push(self.operand(part, &string_ty)?);
         }
         let mut total = self.new_value();
-        self.writer.line(format!("{total} = add i64 0, 0"));
+        self.writer.line(format!("{total} = add {n} 0, 0"));
         let mut ptrs = Vec::with_capacity(part_vals.len());
         let mut lens = Vec::with_capacity(part_vals.len());
         for part in &part_vals {
             let ptr = self.new_value();
-            self.writer.line(format!(
-                "{ptr} = extractvalue {{ ptr, i64 }} {}, 0",
-                part.value
-            ));
+            self.writer
+                .line(format!("{ptr} = extractvalue {fat} {}, 0", part.value));
             let len = self.new_value();
-            self.writer.line(format!(
-                "{len} = extractvalue {{ ptr, i64 }} {}, 1",
-                part.value
-            ));
+            self.writer
+                .line(format!("{len} = extractvalue {fat} {}, 1", part.value));
             let next_total = self.new_value();
             self.writer
-                .line(format!("{next_total} = add i64 {total}, {len}"));
+                .line(format!("{next_total} = add {n} {total}, {len}"));
             total = next_total;
             ptrs.push(ptr);
             lens.push(len);
         }
         let alloc_size = self.new_value();
         self.writer
-            .line(format!("{alloc_size} = add i64 {total}, 1"));
+            .line(format!("{alloc_size} = add {n} {total}, 1"));
         let buf = self.new_value();
         self.writer.line(format!(
-            "{buf} = call ptr @ar_rt_raw_malloc(i64 {alloc_size})"
+            "{buf} = call ptr @ar_rt_raw_malloc({n} {alloc_size})"
         ));
         let mut offset = self.new_value();
-        self.writer.line(format!("{offset} = add i64 0, 0"));
+        self.writer.line(format!("{offset} = add {n} 0, 0"));
         for (ptr, len) in ptrs.iter().zip(&lens) {
             let dest = self.new_value();
             self.writer.line(format!(
-                "{dest} = getelementptr inbounds i8, ptr {buf}, i64 {offset}"
+                "{dest} = getelementptr inbounds i8, ptr {buf}, {n} {offset}"
             ));
             self.writer.line(format!(
-                "call void @llvm.memcpy.p0.p0.i64(ptr {dest}, ptr {ptr}, i64 {len}, i1 false)"
+                "call void @{memcpy}(ptr {dest}, ptr {ptr}, {n} {len}, i1 false)"
             ));
             let next_offset = self.new_value();
             self.writer
-                .line(format!("{next_offset} = add i64 {offset}, {len}"));
+                .line(format!("{next_offset} = add {n} {offset}, {len}"));
             offset = next_offset;
         }
         let nul_addr = self.new_value();
         self.writer.line(format!(
-            "{nul_addr} = getelementptr inbounds i8, ptr {buf}, i64 {total}"
+            "{nul_addr} = getelementptr inbounds i8, ptr {buf}, {n} {total}"
         ));
         self.writer
             .line(format!("store i8 0, ptr {nul_addr}, align 1"));
         let first = self.new_value();
-        self.writer.line(format!(
-            "{first} = insertvalue {{ ptr, i64 }} undef, ptr {buf}, 0"
-        ));
+        self.writer
+            .line(format!("{first} = insertvalue {fat} undef, ptr {buf}, 0"));
         let owned = self.new_value();
         self.writer.line(format!(
-            "{owned} = insertvalue {{ ptr, i64 }} {first}, i64 {total}, 1"
+            "{owned} = insertvalue {fat} {first}, {n} {total}, 1"
         ));
-        self.assign_coerced(
-            result,
-            TypedValue::new("{ ptr, i64 }".to_owned(), owned),
-            lhs_ty,
-        )
+        self.assign_coerced(result, TypedValue::new(fat, owned), lhs_ty)
     }
 
     /// Compare fat pointers (`str` / slices) by length then `memcmp`.
@@ -465,31 +467,29 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
         operand_ty: &ArType,
         negate: bool,
     ) -> Result<(), Diagnostic> {
+        let fat = self.module.fat_ptr_llvm_ty();
+        let n = self.module.ptr_int_ty();
         let left = self.operand(left, operand_ty)?;
         let right = self.operand(right, operand_ty)?;
         let left_ptr = self.new_value();
-        self.writer.line(format!(
-            "{left_ptr} = extractvalue {{ ptr, i64 }} {}, 0",
-            left.value
-        ));
+        self.writer
+            .line(format!("{left_ptr} = extractvalue {fat} {}, 0", left.value));
         let left_len = self.new_value();
-        self.writer.line(format!(
-            "{left_len} = extractvalue {{ ptr, i64 }} {}, 1",
-            left.value
-        ));
+        self.writer
+            .line(format!("{left_len} = extractvalue {fat} {}, 1", left.value));
         let right_ptr = self.new_value();
         self.writer.line(format!(
-            "{right_ptr} = extractvalue {{ ptr, i64 }} {}, 0",
+            "{right_ptr} = extractvalue {fat} {}, 0",
             right.value
         ));
         let right_len = self.new_value();
         self.writer.line(format!(
-            "{right_len} = extractvalue {{ ptr, i64 }} {}, 1",
+            "{right_len} = extractvalue {fat} {}, 1",
             right.value
         ));
         let len_eq = self.new_value();
         self.writer
-            .line(format!("{len_eq} = icmp eq i64 {left_len}, {right_len}"));
+            .line(format!("{len_eq} = icmp eq {n} {left_len}, {right_len}"));
         let same_length = self.new_block();
         let different_lengths = self.new_block();
         let empty_strings = self.new_block();
@@ -505,7 +505,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
         self.enter_llvm_label(&same_length);
         let is_empty = self.new_value();
         self.writer
-            .line(format!("{is_empty} = icmp eq i64 {left_len}, 0"));
+            .line(format!("{is_empty} = icmp eq {n} {left_len}, 0"));
         self.writer.line(format!(
             "br i1 {is_empty}, label %{empty_strings}, label %{compare_bytes}"
         ));
@@ -516,7 +516,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
         self.enter_llvm_label(&compare_bytes);
         let cmp = self.new_value();
         self.writer.line(format!(
-            "{cmp} = call i32 @memcmp(ptr {left_ptr}, ptr {right_ptr}, i64 {left_len})"
+            "{cmp} = call i32 @memcmp(ptr {left_ptr}, ptr {right_ptr}, {n} {left_len})"
         ));
         let bytes_eq = self.new_value();
         self.writer
@@ -554,7 +554,8 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
         let size = (8 + payload_layout.size.max(1)).max(16);
         let pointer = self.new_value();
         self.writer.line(format!(
-            "{pointer} = call ptr @ar_rt_raw_malloc(i64 {size})"
+            "{pointer} = call ptr @ar_rt_raw_malloc({} {size})",
+            self.module.ptr_int_ty()
         ));
         let null = self.new_value();
         self.writer

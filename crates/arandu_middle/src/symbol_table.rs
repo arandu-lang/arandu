@@ -14,6 +14,11 @@ pub struct SymbolId {
 }
 
 impl SymbolId {
+    /// High bit of [`LocalSymbolId`]. Body checkers mint these ids from a
+    /// span so parallel item typeck cannot collide, and they never occupy a
+    /// dense slot in [`SymbolTable`]'s source vector.
+    pub const SYNTHETIC_LOCAL_BIT: u32 = 0x8000_0000;
+
     pub const DUMMY: Self = Self {
         file_id: 0,
         local_id: LocalSymbolId(u32::MAX),
@@ -24,6 +29,11 @@ impl SymbolId {
             file_id,
             local_id: LocalSymbolId(local_id),
         }
+    }
+
+    #[must_use]
+    pub const fn is_synthetic(self) -> bool {
+        self.local_id.0 & Self::SYNTHETIC_LOCAL_BIT != 0
     }
 }
 
@@ -145,6 +155,10 @@ pub enum LangItem {
     ThreadParkTimeout,
     ThreadPark,
     ThreadUnpark,
+    /// Any other `std.thread` operation. Bare-metal targets reject the module.
+    StdThread,
+    /// Any `std.fs` operation. Bare-metal targets reject the module.
+    StdFs,
 }
 
 impl LangItem {
@@ -214,6 +228,9 @@ pub struct SymbolTable {
     pub file_id: crate::db::FileId,
     scopes: Vec<Scope>,
     symbols: Vec<Symbol>,
+    /// Span-derived symbols that are not dense source locals. Empty for every
+    /// program that does not synthesize a thread capture.
+    synthetic_symbols: FxHashMap<u32, Symbol>,
     pub imported_symbols: FxHashMap<SymbolId, Symbol>,
     pub module_members: FxHashMap<(SmolStr, SmolStr), SymbolId>,
     /// Module aliases whose source import failed. Semantic passes use this
@@ -255,6 +272,7 @@ impl SymbolTable {
                 symbols: Vec::new(),
             }],
             symbols: Vec::new(),
+            synthetic_symbols: FxHashMap::default(),
             imported_symbols: FxHashMap::default(),
             module_members: FxHashMap::default(),
             unresolved_module_aliases: std::collections::BTreeSet::new(),
@@ -295,9 +313,16 @@ impl SymbolTable {
         };
 
         let map_symbol = |old_symbol: SymbolId| -> SymbolId {
-            SymbolId {
-                file_id: self.file_id,
-                local_id: LocalSymbolId(old_symbol.local_id.0 + self_symbols_len),
+            if old_symbol.is_synthetic() {
+                SymbolId {
+                    file_id: self.file_id,
+                    local_id: old_symbol.local_id,
+                }
+            } else {
+                SymbolId {
+                    file_id: self.file_id,
+                    local_id: LocalSymbolId(old_symbol.local_id.0 + self_symbols_len),
+                }
             }
         };
 
@@ -319,6 +344,13 @@ impl SymbolTable {
                 parent: new_parent,
                 symbols: new_symbols,
             });
+        }
+
+        for old_symbol in other.synthetic_symbols.into_values() {
+            let mut symbol = old_symbol;
+            symbol.id.file_id = self.file_id;
+            symbol.scope = map_scope(symbol.scope);
+            self.synthetic_symbols.insert(symbol.id.local_id.0, symbol);
         }
 
         // 2. Merge other symbols
@@ -707,14 +739,42 @@ impl SymbolTable {
     #[must_use]
     pub fn try_get(&self, id: SymbolId) -> Option<&Symbol> {
         if id.file_id == self.file_id {
-            self.symbols.get(id.local_id.0 as usize)
+            if id.is_synthetic() {
+                self.synthetic_symbols.get(&id.local_id.0)
+            } else {
+                self.symbols.get(id.local_id.0 as usize)
+            }
         } else {
             self.imported_symbols.get(&id)
         }
     }
 
+    /// Registers a span-derived symbol. The id must already carry
+    /// [`SymbolId::SYNTHETIC_LOCAL_BIT`] and this table's file id.
+    pub fn register_synthetic(&mut self, symbol: Symbol) {
+        debug_assert!(symbol.id.is_synthetic());
+        debug_assert_eq!(symbol.id.file_id, self.file_id);
+        self.synthetic_symbols.insert(symbol.id.local_id.0, symbol);
+    }
+
+    /// Makes `symbol` reachable from [`Self::try_get`] without rebasing a
+    /// synthetic local id onto the dense source vector.
+    pub fn ensure_visible(&mut self, symbol: Symbol) {
+        if self.try_get(symbol.id).is_some() {
+            return;
+        }
+        if symbol.id.is_synthetic() && symbol.id.file_id == self.file_id {
+            self.register_synthetic(symbol);
+        } else {
+            self.register_imported_symbol(symbol);
+        }
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = &Symbol> {
-        self.symbols.iter().chain(self.imported_symbols.values())
+        self.symbols
+            .iter()
+            .chain(self.synthetic_symbols.values())
+            .chain(self.imported_symbols.values())
     }
 
     /// Deterministic flat symbol name used by native backends.

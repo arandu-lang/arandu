@@ -2,6 +2,7 @@
 
 mod arg;
 mod instantiate;
+mod thread_capture;
 
 pub(crate) use arg::check_call_arg;
 pub(crate) use instantiate::infer_and_instantiate_func;
@@ -418,6 +419,16 @@ pub(super) fn synth_call_expr(
                 }
             }
             if let Some(callee_sym) = checker.resolved.expr_symbol(callee_id) {
+                // Bare-metal rejection happens before namespace typing. Wasm
+                // keeps its U001 on the original call sites so `park`/`unpark`
+                // are not diagnosed twice.
+                if checker.type_info.target_identity.is_bare_metal()
+                    && check_target_thread_capabilities(checker, callee_sym, span)
+                {
+                    let err = checker.intern(ArType::Error);
+                    checker.record_expr_type(expr, err);
+                    return Some(err);
+                }
                 if let Some(&eff) = checker.type_info.function_effects.get(&callee_sym) {
                     checker.current_observed_effects = checker.current_observed_effects.union(eff);
                 }
@@ -539,7 +550,11 @@ pub(super) fn synth_call_expr(
                         }
                     });
                     if let Some(sym_id) = member_sym {
-                        check_target_thread_capabilities(checker, sym_id, span);
+                        if check_target_thread_capabilities(checker, sym_id, span) {
+                            let err = checker.intern(ArType::Error);
+                            checker.record_expr_type(expr, err);
+                            return Some(err);
+                        }
                         if checker.type_info.unsafe_functions.contains(&sym_id)
                             && !checker.ctx.is_in_unsafe()
                         {
@@ -864,7 +879,11 @@ pub(super) fn synth_call_expr(
                 }
 
                 if let Some(sym_id) = callee_func_sym {
-                    check_target_thread_capabilities(checker, sym_id, span);
+                    if check_target_thread_capabilities(checker, sym_id, span) {
+                        let err = checker.intern(ArType::Error);
+                        checker.record_expr_type(expr, err);
+                        return Some(err);
+                    }
                     if checker.type_info.unsafe_functions.contains(&sym_id)
                         && !checker.ctx.is_in_unsafe()
                     {
@@ -1073,17 +1092,48 @@ pub(super) fn synth_call_expr(
     }
 }
 
+/// Returns true when the call is rejected because the target has no OS.
+/// WebAssembly keeps its `U001` and returns false so the existing spawn
+/// checks still run.
 pub(crate) fn check_target_thread_capabilities(
     checker: &mut TypeChecker<'_>,
     sym_id: arandu_middle::SymbolId,
     span: Span,
-) {
-    if !checker.type_info.target_identity.arch.starts_with("wasm") {
-        return;
-    }
+) -> bool {
     let Some(lang_item) = checker.symbols.get(sym_id).lang_item else {
-        return;
+        return false;
     };
+    if checker.type_info.target_identity.is_bare_metal() {
+        let module = match lang_item {
+            arandu_middle::symbol_table::LangItem::ThreadParkTimeout
+            | arandu_middle::symbol_table::LangItem::ThreadPark
+            | arandu_middle::symbol_table::LangItem::ThreadUnpark
+            | arandu_middle::symbol_table::LangItem::ThreadSpawn
+            | arandu_middle::symbol_table::LangItem::StdThread => "std.thread",
+            arandu_middle::symbol_table::LangItem::StdFs => "std.fs",
+            _ => return false,
+        };
+        let identity = &checker.type_info.target_identity;
+        let target = if identity.triple.is_empty() {
+            format!("{}-{}", identity.arch, identity.os)
+        } else {
+            identity.triple.clone()
+        };
+        checker.diagnostics.push(
+            crate::Diagnostic::error(
+                crate::DiagCode::T099RequiresOperatingSystem,
+                format!(
+                    "The module '{module}' requires an underlying operating system, but target '{target}' is bare-metal."
+                ),
+                span,
+            )
+            .with_label(span, "this operation needs an operating system"),
+        );
+        return true;
+    }
+    if !checker.type_info.target_identity.arch.starts_with("wasm") {
+        return false;
+    }
     match lang_item {
         arandu_middle::symbol_table::LangItem::ThreadParkTimeout => {
             checker.diagnostics.push(
@@ -1115,6 +1165,7 @@ pub(crate) fn check_target_thread_capabilities(
         }
         _ => {}
     }
+    false
 }
 
 fn span_contains(outer: Span, inner: Span) -> bool {
@@ -1360,6 +1411,9 @@ pub(crate) fn synth_thread_spawn_closure(
         }
     }
 
+    let mut captures = Vec::new();
+    let mut seen_captures = rustc_hash::FxHashSet::default();
+    let mut rejected = false;
     for eid in expr_ids {
         if let Some(sym_id) = checker.resolved.expr_symbol(eid) {
             let (is_captured_var, sym_name) = {
@@ -1381,6 +1435,7 @@ pub(crate) fn synth_thread_spawn_closure(
                     .unwrap_or_else(|| checker.intern(ArType::Error));
                 let cap_ty = checker.resolve(cap_ty_id);
                 if matches!(cap_ty, ArType::Ref(_) | ArType::RefMut(_)) {
+                    rejected = true;
                     checker.diagnostics.push(
                         crate::Diagnostic::error(
                             crate::DiagCode::T025InterfaceNotSatisfied,
@@ -1396,6 +1451,7 @@ pub(crate) fn synth_thread_spawn_closure(
                         arandu_middle::symbol_table::LangItem::Send,
                     )
                 {
+                    rejected = true;
                     checker.diagnostics.push(
                         crate::Diagnostic::error(
                             crate::DiagCode::T025InterfaceNotSatisfied,
@@ -1408,6 +1464,15 @@ pub(crate) fn synth_thread_spawn_closure(
                         )
                         .with_label(expr_span, "non-Send type cannot cross thread boundaries"),
                     );
+                } else if cap_ty.is_error() {
+                    rejected = true;
+                } else if seen_captures.insert(sym_id) {
+                    captures.push(thread_capture::OwnedCapture {
+                        symbol: sym_id,
+                        name: sym_name,
+                        ty: cap_ty_id,
+                        span: expr_span,
+                    });
                 }
             }
         }
@@ -1424,13 +1489,14 @@ pub(crate) fn synth_thread_spawn_closure(
         }
     };
     let ret_ty = checker.resolve(ret_ty_id);
-    if !ret_ty.is_error()
-        && !crate::type_checker::types::transfer::satisfies(
-            checker,
-            &ret_ty,
-            arandu_middle::symbol_table::LangItem::Send,
-        )
-    {
+    if ret_ty.is_error() {
+        rejected = true;
+    } else if !crate::type_checker::types::transfer::satisfies(
+        checker,
+        &ret_ty,
+        arandu_middle::symbol_table::LangItem::Send,
+    ) {
+        rejected = true;
         checker.diagnostics.push(
             crate::Diagnostic::error(
                 crate::DiagCode::T025InterfaceNotSatisfied,
@@ -1463,21 +1529,22 @@ pub(crate) fn synth_thread_spawn_closure(
         checker.intern(ArType::Error)
     };
 
-    let lambda_ty = ArType::func(&[], ret_ty_id, &checker.type_info.type_interner);
-    let lambda_ty_id = checker.intern(lambda_ty);
-    checker.record_expr_type(arg_id, lambda_ty_id);
-    let call_func_ty = ArType::func(&[lambda_ty_id], res_ty, &checker.type_info.type_interner);
-    let call_func_ty_id = checker.intern(call_func_ty);
-    checker.record_expr_type(callee_id, call_func_ty_id);
-    checker.record_expr_type(call_expr, res_ty);
-
-    checker.diagnostics.push(
-        crate::Diagnostic::error(
-            crate::DiagCode::U001FeatureNotSupported,
-            "thread closures ('move || ...') require AMIR ThreadJob lowering, which is not yet available; implement ThreadJob statically for now",
+    if rejected {
+        let err = checker.intern(ArType::Error);
+        checker.record_expr_type(arg_id, err);
+        checker.record_expr_type(call_expr, err);
+        return Some(err);
+    }
+    Some(thread_capture::install_thread_capture(
+        checker,
+        thread_capture::CaptureInstall {
+            call_expr,
+            callee_id,
+            arg_id,
             arg_span,
-        )
-        .with_label(arg_span, "closure lowering for thread.spawn is pending AMIR support"),
-    );
-    Some(checker.intern(ArType::Error))
+            captures: &captures,
+            ret_ty: ret_ty_id,
+            res_ty,
+        },
+    ))
 }

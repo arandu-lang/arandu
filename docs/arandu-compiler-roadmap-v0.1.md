@@ -141,7 +141,7 @@ as mudanças posteriores. A matriz instalada da candidata ainda é pendente.
 | ST.8 | `alloc.slab` e deque circular | implementações locais; fechar freelist/reuso, crescimento/transbordamento, alinhamento, drops não-Copy e invalidação de views com regressões nos backends |
 | ST.9 | `std.random` | correções locais: fórmula xoshiro256++/seed zero, faixa int completa, entropia sem fallback fraco e tryFromEntropy falível; 136 vetores determinísticos em JIT/C/Wasm e injeção de falha C passaram; PRNG determinístico Wasm executa sem imports de host (poda aplicada também ao perfil padrão); entropia continua efeito de host; faixas float (`genRangeFloat` e `nextFloat`) validadas em JIT/C/Wasm; fechar execução por alvo; PRNG não é CSPRNG |
 | ST.10 | `sync.mutex`/`sync.rwlock`/`sync.condvar` nativos | implementação local com mutabilidade interior canônica, guardas afins ligadas ao proprietário, leitores compartilhados e escritores FIFO por fases; Condvar libera/reobtém MutexGuard, timeout monotônico e notify sem wrap da sequência; sem polling; cancelamento POSIX diferido no mirror C; integração cooperativa do executor e matriz nativa instalada continuam distintas (RFC 0039) |
-| ST.11 | `std.thread` e JoinHandle/parking | implementação local de IDs/park/unpark e spawn<A,R,J> por ThreadJob tipado; contrato da 0.1.11: o recorte `move || ...` sem parâmetros e com capturas próprias e Send é validado no typeck e rejeitado com U001, que orienta ThreadJob estático — a síntese da struct de captura no AMIR fica fora desta versão; closures sem move ou com parâmetros rejeitadas com U001; referências rejeitadas com T025; argumentos/jobs/resultados Send, buffers alinhados, join e drop que aguardam/limpam exatamente uma vez; retenção JIT inclui descendentes e join/drop concorrentes; parkTimeout interrompido por unpark com prazos monotônicos, tokens coalescentes e saturação de limites em C/Rust; rejeição em tempo de compilação em wasm32 (U001); closures gerais da RFC 0032 e unwind recuperável permanecem fora do contrato da v0.1; fechar matriz nativa instalada |
+| ST.11 | `std.thread` e JoinHandle/parking | implementação local de IDs/park/unpark e spawn<A,R,J> por ThreadJob tipado; contrato da 0.1.11 rejeitava `move || ...` sem parâmetros e com capturas próprias Send com U001; o início da 0.2.0 baixa esse recorte para uma struct de captura e `run()` no AMIR; closures sem move ou com parâmetros continuam U001; referências continuam T025; argumentos/jobs/resultados Send, buffers alinhados, join e drop que aguardam/limpam exatamente uma vez; retenção JIT inclui descendentes e join/drop concorrentes; parkTimeout interrompido por unpark com prazos monotônicos, tokens coalescentes e saturação de limites em C/Rust; rejeição em tempo de compilação em wasm32 (U001) e, em alvo bare-metal, T099 para `std.thread`/`std.fs`; closures gerais da RFC 0032 e unwind recuperável permanecem fora do contrato; fechar matriz nativa instalada |
 | ST.12 | filesystem por capacidades `Dir` (RFC 0016) | implementação Linux local com openat2 BENEATH/NO_SYMLINKS/NO_MAGICLINKS e pais pinados em mkdir/unlink; regressões JIT/C com UBSan e runtime passaram para caminhos absolutos, traversal, symlinks e rename da raiz; sem fallback inseguro; macOS/BSD têm recorte de um componente com O_NOFOLLOW/O_DIRECTORY/fstat em Rust/C, ainda sem execução nativa nesses alvos; flags create/truncate sem write rejeitadas; Windows fail-closed até ABI de HANDLE; privacidade de File.fd (`private fd: int`) e lifecycle com defesa contra double close implementados; faltam testes na matriz instalada |
 | ST.13 | DNS/UDP e reactor multiplataforma | bridges DNS/UDP locais; fechar lifecycle/falhas/cancelamento e testes nativos por alvo; IOCP/kqueue continuam ausentes, sem promover stubs a suporte |
 | ST.14 | `crypto.hash` SHA-256/BLAKE3 | implementação escalar local; vetores independentes de streaming/padding/chunks/árvore e snapshots passaram em C/Cranelift/Wasm; sem autenticação/keyed/XOF; matriz instalada e promoção pendentes |
@@ -173,7 +173,7 @@ As etapas abaixo detalham ST.2/ST.10–12; continuam pertencendo à campanha
 | ST.10b — locks compartilhados seguros | implementada localmente | UnsafeCell não-Copy/não-Sync, Mutex/RwLock com bounds distintos e guardas que conservam empréstimos até dentro do mesmo bloco; validar SDK instalado |
 | ST.10c — Condvar com guarda e PFLock | implementada localmente | release/sequence-wait/reacquire, fases por filas reais e contadores checados, cancelamento POSIX diferido; sem garantia de quatro bytes ou prazo de parede; promover somente após matriz nativa |
 | ST.11a — identidade e estacionamento | implementada localmente | IDs sem reuso, park/unpark e aposentadoria TLS/FLS; parkTimeout com prazo monotônico e interrupção por unpark validado em C/Rust; wasm32 rejeita primitivas de threads com U001; validar matriz nativa instalada |
-| ST.11b — spawn e JoinHandle | implementada localmente | ThreadJob tipado e possuído transporta argumentos/capturas de structs/resultados Send; na 0.1.11, `move || ...` com capturas Send próprias e 0 parâmetros permanece rejeitado com U001 orientando ThreadJob estático, sem desaçucar a closure no AMIR; cleanup/drop e retenção JIT; validar packages nativos, mantendo closures gerais/unwind fora do contrato atual |
+| ST.11b — spawn e JoinHandle | implementada localmente | ThreadJob tipado e possuído transporta argumentos/capturas de structs/resultados Send; a 0.1.11 rejeitava `move || ...` com U001, e o início da 0.2.0 desaçucara esse recorte (0 parâmetros, capturas próprias Send) para struct de captura e `run()`; cleanup/drop e retenção JIT; validar packages nativos, mantendo closures gerais/unwind fora do contrato atual |
 | ST.12a — confinamento Linux | implementada localmente | openat2 e pais pinados, flags destrutivas rejeitadas e provas de symlink/traversal/rename |
 | ST.12b — macOS/BSD e Windows | parcial / pendente | componente único por Dir em macOS/BSD exige runners nativos; Windows exige ponte HANDLE/posse sem truncamento, NtCreateFile relativo e rejeição de ADS/dispositivos; falhar fechado até lá |
 | ST.12c — adoção de capacidades | implementada localmente | privacidade/lifecycle integral de File (`File.fd` é `private` com construtor interno `File.fromRaw`), migração das aberturas legadas e regressões de capacidade com drop seguro; garantir testes na matriz instalada |
@@ -231,8 +231,19 @@ publicado; amostras, aquecimento, perfil e exclusões precisam ser explícitos.
 | HOT.6 — promoção | workloads prolongados, repetição de edições e matriz nativa instalada | RSS/filas limitados e p95 ≤100 ms para corpo no host de referência; CI compartilhada registra tempos sem impor esse limite |
 
 Não são gates automáticos da 0.2: todo CAS global, hidratação binária da IR,
-LLVM, metaprogramação ampla, todas as otimizações de LUT, ABI pública geral ou
-self-hosting. Bugs de correção e falhas de integridade continuam bloqueantes.
+LLVM como backend promovido, metaprogramação ampla, todas as otimizações de LUT,
+ABI pública geral ou self-hosting. Bugs de correção e falhas de integridade
+continuam bloqueantes.
+
+O início da série, sem substituir HOT.1–6, registra a interoperabilidade
+freestanding já ligada ao backend LLVM. As triples canônicas são
+`thumbv7em-none-eabihf` e `riscv32imc-unknown-none-elf`. O produto padrão é
+objeto, IR (`--emit=llvm-ir`) ou `--crate-type=staticlib`. Um ELF final existe
+somente quando o usuário passa `--linker-script`. O compilador não adivinha
+mapas de memória do chip. `core` permanece freestanding; `std.thread` e
+`std.fs` em alvo bare-metal produzem T099. O recorte `move ||` sem parâmetros
+e com capturas próprias Send baixa para uma struct de captura e `run()`;
+closures gerais continuam U001.
 
 A remoção de aliases legados de anotações só pode entrar na fronteira 0.2.0
 com decisão explícita, release notes e regressões de migração; não é requisito
@@ -243,7 +254,7 @@ para promover o serviço quente.
 | ID | Base atual | Trabalho / gate |
 | --- | --- | --- |
 | INC.3 | `function_hir`, `instance_hir`, `runtime_raw_unit`, `instance_contracts`, `runtime_unit`, compositor e closure CGU ativos | completar entrega/metadata/retention; editar corpo privado não rebaixa importadores ou CGUs irmãs; clean/incremental idênticos e p95 ≤10 ms no host/workload declarado |
-| LAMBDA / [RFC 0032](rfcs/0032-closures-ossa-capture-modes-and-first-class-functions.md) | parser/tipos preparam lambdas; lowering/executar ainda U001 | contrato de capturas, Copy/Move/borrow, representação ambiente, chamadas indiretas, drops/escape e paridade C/Cranelift/Wasm antes de habilitar |
+| LAMBDA / [RFC 0032](rfcs/0032-closures-ossa-capture-modes-and-first-class-functions.md) | parser/tipos preparam lambdas; closures gerais continuam U001; só `move ||` sem parâmetros e com capturas próprias Send baixa para ThreadJob | contrato de capturas, Copy/Move/borrow, representação ambiente, chamadas indiretas, drops/escape e paridade C/Cranelift/Wasm antes de habilitar o sistema geral |
 | CT.NEXT | valores e layout existentes | refletir tipos/descritores imutáveis apenas após contrato aceito de identidade, visibilidade, efeitos e budgets; atributos executáveis/geração de itens não entram por consequência |
 | TYP.NEXT / [RFC 0034](rfcs/0034-adaptive-hybrid-polymorphism-and-witness-tables.md) / [RFC 0036](rfcs/0036-typed-holes-and-integrated-semantic-tooling.md) | inferência contextual, interfaces estáticas e const generics existentes | separação `constraint_gen`/solver é melhoria arquitetural não bloqueante; tipos de literal tardios, typed holes e ergonomia só com escopo/recovery/determinismo; `dyn`/existenciais e dispatch adaptativo continuam propostas separadas |
 

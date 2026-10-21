@@ -166,7 +166,10 @@ geração. O timeout da condição não limita o tempo posterior de reaquisiçã
 um worker de executor cooperativo não deve bloquear esperando esse protocolo.
 
 `std.thread.spawn<A,R,J>` recebe argumentos e ThreadJob possuídos e Send, incluindo
-capturas descritas por campos do job; join devolve o resultado possuído. Drop
+capturas descritas por campos do job. `spawn(move || ...)` sem parâmetros e com
+capturas próprias Send sintetiza essa struct e o método `run()`; closures gerais
+continuam rejeitadas. Em alvo bare-metal, `std.thread` e `std.fs` produzem T099.
+join devolve o resultado possuído. Drop
 aguarda e destrói resultados não reclamados. A barreira de descarregamento JIT
 espera execução, descendentes, joins e drop glue ativos antes de liberar código.
 O runtime não interrompe threads ou instruções Arandu de forma assíncrona.
@@ -384,7 +387,7 @@ arandu_std
  ├─ path         # Manipulação e validação de caminhos de arquivos (Path, PathBuf)
  ├─ time         # Medição de tempo monotônico e absoluto, instantes, durações
  ├─ random       # PRNG xoshiro256++ e acesso falível à entropia do SO
- ├─ thread       # IDs/park e spawn/JoinHandle possuídos via ThreadJob tipado
+ ├─ thread       # IDs/park e spawn/JoinHandle; ThreadJob estático ou move || sem parâmetros
  ├─ ffi          # Conversão de tipos, ponteiros C, carregamento dinâmico (dlopen)
  ├─ collections  # Coleções avançadas (BTreeMap, Deque, LinkedList) dependentes de alocação e OS
  ├─ json         # Parser e serializador JSON ultra rápido, stream-based, cache-friendly

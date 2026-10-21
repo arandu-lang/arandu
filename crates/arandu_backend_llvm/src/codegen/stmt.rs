@@ -213,10 +213,9 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                 ) {
                     let value = self.operand(operand, &operand_ty)?;
                     let pointer = self.new_value();
-                    self.writer.line(format!(
-                        "{pointer} = extractvalue {{ ptr, i64 }} {}, 0",
-                        value.value
-                    ));
+                    let fat = self.module.fat_ptr_llvm_ty();
+                    self.writer
+                        .line(format!("{pointer} = extractvalue {fat} {}, 0", value.value));
                     TypedValue::new("ptr".to_owned(), pointer)
                 } else {
                     let pointer_ty = self.module.void_ptr_ty();

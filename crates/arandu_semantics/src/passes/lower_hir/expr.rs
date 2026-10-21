@@ -750,36 +750,40 @@ fn lower_expr_dispatch(
             value: lower_expr(type_check, pool, hir_pool, *value)?,
         },
         ExprKind::Lambda { params, body, .. } => {
-            let mut hir_params = Vec::new();
-            let param_ids = pool.lambda_param_list(*params);
-            for &pid in param_ids {
-                let p = pool.lambda_param(pid);
-                let symbol = require_def_symbol(&type_check.resolved, p.span)?;
-                let p_ty = type_check
-                    .type_info
-                    .decl_type_id(symbol)
-                    .unwrap_or_else(error_ty);
-                hir_params.push(HirLambdaParam {
-                    span: p.span,
-                    symbol,
-                    ty: p_ty,
-                });
-            }
-            let params_range = hir_pool.alloc_lambda_param_list(&hir_params);
-            let hir_body = match body {
-                arandu_parser::LambdaBody::Expr {
-                    expr: inner_expr, ..
-                } => {
-                    let eid = lower_expr(type_check, pool, hir_pool, *inner_expr)?;
-                    HirLambdaBody::Expr(eid)
+            if let Some(recipe) = type_check.type_info.thread_capture_at(span).cloned() {
+                super::thread_capture::capture_struct_literal(hir_pool, &recipe)
+            } else {
+                let mut hir_params = Vec::new();
+                let param_ids = pool.lambda_param_list(*params);
+                for &pid in param_ids {
+                    let p = pool.lambda_param(pid);
+                    let symbol = require_def_symbol(&type_check.resolved, p.span)?;
+                    let p_ty = type_check
+                        .type_info
+                        .decl_type_id(symbol)
+                        .unwrap_or_else(error_ty);
+                    hir_params.push(HirLambdaParam {
+                        span: p.span,
+                        symbol,
+                        ty: p_ty,
+                    });
                 }
-                arandu_parser::LambdaBody::Block { block, .. } => HirLambdaBody::Block(
-                    super::stmt::lower_block(type_check, pool, hir_pool, block)?,
-                ),
-            };
-            HirExprKind::Lambda {
-                params: params_range,
-                body: hir_body,
+                let params_range = hir_pool.alloc_lambda_param_list(&hir_params);
+                let hir_body = match body {
+                    arandu_parser::LambdaBody::Expr {
+                        expr: inner_expr, ..
+                    } => {
+                        let eid = lower_expr(type_check, pool, hir_pool, *inner_expr)?;
+                        HirLambdaBody::Expr(eid)
+                    }
+                    arandu_parser::LambdaBody::Block { block, .. } => HirLambdaBody::Block(
+                        super::stmt::lower_block(type_check, pool, hir_pool, block)?,
+                    ),
+                };
+                HirExprKind::Lambda {
+                    params: params_range,
+                    body: hir_body,
+                }
             }
         }
         ExprKind::Alloc {

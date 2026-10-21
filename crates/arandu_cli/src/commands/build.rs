@@ -3,6 +3,7 @@
 use std::fs;
 use std::path::Path;
 
+use super::llvm_product;
 use crate::artifact;
 use crate::cli_error::{CliFailure, CliResult, CliSuccess};
 use crate::linker;
@@ -46,20 +47,16 @@ pub fn cmd_project_build(
     data_layout: DataLayout,
     backend_choice: crate::args::RunBackend,
 ) -> CliResult {
-    if backend_choice == crate::args::RunBackend::Llvm && flags.target.is_some() {
-        return Err(CliFailure::usage(
-            "experimental LLVM build supports only the host target",
-        ));
-    }
+    let is_llvm = backend_choice == crate::args::RunBackend::Llvm;
+    let plan = llvm_product::prepare(is_llvm, flags)?;
     if flags.size && debug_info {
         return Err(CliFailure::usage(
             "`--size` cannot be combined with `--debug`: size builds strip debug information",
         ));
     }
-    let is_llvm = backend_choice == crate::args::RunBackend::Llvm;
     let backend = project::BackendChoice::from_release_flag(flags.release);
     let backend_label = if is_llvm {
-        "llvm-release"
+        llvm_product::status_label(plan.stop)
     } else if flags.size {
         "cranelift-size"
     } else {
@@ -124,7 +121,14 @@ pub fn cmd_project_build(
     } else {
         String::new()
     };
-    if !is_wasm && data_layout != DataLayout::host() {
+    if plan.embedded.is_some() {
+        if data_layout.pointer_width() != 4 {
+            return Err(CliFailure::usage(
+                "bare-metal profiles use a 32-bit data layout",
+            ));
+        }
+        db.set_target_config(DataLayout::ptr_width(4));
+    } else if !is_wasm && data_layout != DataLayout::host() {
         return Err(CliFailure::usage(
             "native builds require the host data layout; non-host layouts are emit-only",
         ));
@@ -152,11 +156,11 @@ pub fn cmd_project_build(
                 "wasm-core"
             }
         } else if is_llvm {
-            "llvm"
+            llvm_product::session_backend(plan.stop)
         } else {
             "cranelift"
         },
-        pointer_width: if is_wasm {
+        pointer_width: if is_wasm || plan.embedded.is_some() {
             4
         } else {
             data_layout.pointer_width()
@@ -166,7 +170,11 @@ pub fn cmd_project_build(
         toolchain: &toolchain_identity,
         manifest_path: &ctx.manifest_path,
         extra_inputs: &build_inputs,
-        target_triple: if is_wasm { Some(wasm_triple) } else { None },
+        target_triple: if is_wasm {
+            Some(wasm_triple)
+        } else {
+            plan.embedded.map(|profile| profile.triple())
+        },
     };
 
     let check = {
@@ -226,6 +234,8 @@ pub fn cmd_project_build(
 
     let compiler_artifact_layout = if is_wasm {
         artifact::layout_for_target(&ctx.root, profile.directory(), wasm_triple)
+    } else if let Some(embedded) = plan.embedded {
+        artifact::layout_for_target(&ctx.root, profile.directory(), embedded.triple())
     } else {
         artifact::layout(&ctx.root, profile.directory())
     };
@@ -372,6 +382,30 @@ pub fn cmd_project_build(
             std::env::temp_dir().join(format!("arandu-build-{}-{unique}.ll", std::process::id()));
         let temp_obj =
             std::env::temp_dir().join(format!("arandu-build-{}-{unique}.o", std::process::id()));
+
+        if plan.stop != llvm_product::LlvmStop::Executable {
+            let artifact = llvm_product::publish(&plan, flags, &ctx.root, &ctx.name, profile, &ir)?;
+            {
+                arandu_base::time_pass!("incremental-record");
+                crate::incremental::record_session(
+                    &session_config,
+                    &artifact.path,
+                    Some(artifact.digest),
+                    reusable_input_fingerprints,
+                )?;
+            }
+            if !flags.quiet {
+                println!(
+                    "built {} v{} (backend={}, entry={}, artifact={})",
+                    ctx.name,
+                    ctx.version,
+                    backend_label,
+                    ctx.entry_rel,
+                    artifact.path.display()
+                );
+            }
+            return Ok(CliSuccess::Done);
+        }
 
         if let Err(error) = fs::write(&temp_ll, &ir) {
             return Err(CliFailure::operational(

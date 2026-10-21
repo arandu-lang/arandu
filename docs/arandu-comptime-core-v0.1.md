@@ -360,10 +360,11 @@ declaration hashes remain independent of those decisions.
 Concrete generic instances select dependent conditions before resolving/typing
 their residual body. Match arms retain their lexical scopes: runtime pattern
 bindings cannot become CTFE inputs, although the selected runtime body can use
-them. Lambda staging preserves lexical selection and capture checks, but general
+them. Lambda staging preserves lexical selection and capture checks. General
 closure typing and execution remain unsupported (U001), planned separately
-for the 0.3.x closure contract;
-this preparation does not enable executable lambdas in 0.1.9. Nested explicit
+for the 0.3.x closure contract. The thread-job shape `move ||` with no
+parameters and owned Send captures lowers to a capture struct and `run()`;
+this preparation does not enable general executable lambdas. Nested explicit
 roots and helper-local roots execute as value scopes within the enclosing VM
 evaluation; local returns and propagation leave that value scope. They share
 the enclosing VM meter rather than restarting fuel or frame limits.

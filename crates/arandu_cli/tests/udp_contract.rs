@@ -107,13 +107,14 @@ public func main(): int {
         let c_path = root.join("udp.c");
         fs::write(&c_path, emitted.stdout).unwrap();
         let bin_path = root.join("udp");
-        let compile = std::process::Command::new("clang")
-            .args([
-                "-O2",
-                "-fwrapv",
-                "-fsanitize=undefined",
-                "-fno-sanitize-recover=all",
-            ])
+        let mut command = std::process::Command::new("clang");
+        command.args(["-O2", "-fwrapv"]);
+        // The UBSan runtime is available with Unix clang toolchains, but the
+        // Windows clang/MSVC linker fails with LNK1120 when this flag is set.
+        if cfg!(unix) {
+            command.args(["-fsanitize=undefined", "-fno-sanitize-recover=all"]);
+        }
+        let compile = command
             .arg(&c_path)
             .arg("-o")
             .arg(&bin_path)

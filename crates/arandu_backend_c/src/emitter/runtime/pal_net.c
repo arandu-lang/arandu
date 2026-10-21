@@ -2,7 +2,9 @@
    program does not take a Winsock or libsocket link dependency. Include this
    before the main PAL so Winsock precedes windows.h. */
 
+#include <limits.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #if defined(_WIN32)
@@ -63,34 +65,63 @@ static intptr_t ar_pal_dup(intptr_t fd) {
 static void ar_pal_udp_close(intptr_t fd) { close((int)fd); }
 #endif
 
+static int ar_pal_socket_invalid(intptr_t fd) {
+#if defined(_WIN32)
+    return (SOCKET)fd == INVALID_SOCKET;
+#else
+    return fd < 0;
+#endif
+}
+
+static int ar_pal_copy_host(const char *host, char *out, size_t out_cap) {
+    if (!host || out_cap == 0) return -1;
+    size_t len = strlen(host);
+    const char *start = host;
+    if (len >= 2 && host[0] == '[' && host[len - 1] == ']') {
+        start = host + 1;
+        len -= 2;
+    }
+    if (len == 0 || len >= out_cap) return -1;
+    memcpy(out, start, len);
+    out[len] = '\0';
+    return 0;
+}
+
+static struct addrinfo *ar_pal_udp_lookup(const char *host, int port) {
+    char node[256];
+    char service[8];
+    if (ar_pal_copy_host(host, node, sizeof(node)) != 0) return NULL;
+    if (snprintf(service, sizeof(service), "%d", port) < 0) return NULL;
+    struct addrinfo hints;
+    struct addrinfo *result = NULL;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_DGRAM;
+    hints.ai_flags = AI_NUMERICSERV;
+    if (getaddrinfo(node, service, &hints, &result) != 0) return NULL;
+    return result;
+}
+
 static intptr_t ar_pal_udp_bind(const char *host, int port) {
     if (ar_pal_net_init() != 0 || !host || port < 0 || port > 65535) return -1;
-    intptr_t fd = (intptr_t)socket(AF_INET, SOCK_DGRAM, 0);
+    struct addrinfo *result = ar_pal_udp_lookup(host, port);
+    if (!result) return -1;
+    intptr_t fd = (intptr_t)-1;
+    for (struct addrinfo *it = result; it != NULL; it = it->ai_next) {
+        intptr_t candidate = (intptr_t)socket(it->ai_family, it->ai_socktype, it->ai_protocol);
+        if (ar_pal_socket_invalid(candidate)) continue;
 #if defined(_WIN32)
-    if ((SOCKET)fd == INVALID_SOCKET) return -1;
+        int bound = bind((SOCKET)candidate, it->ai_addr, (int)it->ai_addrlen);
 #else
-    if (fd < 0) return -1;
+        int bound = bind((int)candidate, it->ai_addr, it->ai_addrlen);
 #endif
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons((uint16_t)port);
-    if (inet_pton(AF_INET, host, &addr.sin_addr) <= 0) {
-        ar_pal_udp_close(fd);
-        return -1;
+        if (bound == 0) {
+            fd = candidate;
+            break;
+        }
+        ar_pal_udp_close(candidate);
     }
-    if (bind((
-#if defined(_WIN32)
-                 SOCKET
-#else
-                 int
-#endif
-                 )fd,
-             (struct sockaddr *)&addr,
-             sizeof(addr)) < 0) {
-        ar_pal_udp_close(fd);
-        return -1;
-    }
+    freeaddrinfo(result);
     return fd;
 }
 
@@ -98,35 +129,54 @@ static intptr_t ar_pal_udp_send(
     intptr_t fd, const void *buf, size_t len, const char *host, int port
 ) {
     if (ar_pal_net_init() != 0 || !buf || !host || port < 0 || port > 65535) return -1;
-    struct sockaddr_in target;
-    memset(&target, 0, sizeof(target));
-    target.sin_family = AF_INET;
-    target.sin_port = htons((uint16_t)port);
-    if (inet_pton(AF_INET, host, &target.sin_addr) <= 0) return -1;
 #if defined(_WIN32)
-    int sent = sendto(
-        (SOCKET)fd, (const char *)buf, (int)len, 0, (struct sockaddr *)&target, sizeof(target));
-    return sent < 0 ? (intptr_t)-1 : (intptr_t)sent;
-#else
-    ssize_t sent = sendto(fd, buf, len, 0, (struct sockaddr *)&target, sizeof(target));
-    return sent < 0 ? (intptr_t)-1 : (intptr_t)sent;
+    if (len > (size_t)INT_MAX) return -1;
 #endif
+    struct addrinfo *result = ar_pal_udp_lookup(host, port);
+    if (!result) return -1;
+    intptr_t sent = (intptr_t)-1;
+    for (struct addrinfo *it = result; it != NULL; it = it->ai_next) {
+#if defined(_WIN32)
+        int wrote = sendto(
+            (SOCKET)fd, (const char *)buf, (int)len, 0, it->ai_addr, (int)it->ai_addrlen);
+        if (wrote >= 0) {
+            sent = (intptr_t)wrote;
+            break;
+        }
+#else
+        ssize_t wrote = sendto((int)fd, buf, len, 0, it->ai_addr, it->ai_addrlen);
+        if (wrote >= 0) {
+            sent = (intptr_t)wrote;
+            break;
+        }
+#endif
+    }
+    freeaddrinfo(result);
+    return sent;
 }
 
 static intptr_t ar_pal_udp_recv(intptr_t fd, void *buf, size_t len, int *port_out) {
     if (ar_pal_net_init() != 0 || !buf || len == 0) return -1;
-    struct sockaddr_in peer;
+    struct sockaddr_storage peer;
     memset(&peer, 0, sizeof(peer));
 #if defined(_WIN32)
+    if (len > (size_t)INT_MAX) return -1;
     int peer_len = (int)sizeof(peer);
-    int recvd = recvfrom((SOCKET)fd, (char *)buf, (int)len, 0, (struct sockaddr *)&peer, &peer_len);
+    int recvd =
+        recvfrom((SOCKET)fd, (char *)buf, (int)len, 0, (struct sockaddr *)&peer, &peer_len);
     if (recvd < 0) return -1;
 #else
     socklen_t peer_len = sizeof(peer);
-    ssize_t recvd = recvfrom(fd, buf, len, 0, (struct sockaddr *)&peer, &peer_len);
+    ssize_t recvd = recvfrom((int)fd, buf, len, 0, (struct sockaddr *)&peer, &peer_len);
     if (recvd < 0) return -1;
 #endif
-    if (port_out) *port_out = (int)ntohs(peer.sin_port);
+    if (port_out) {
+        if (peer.ss_family == AF_INET) {
+            *port_out = (int)ntohs(((struct sockaddr_in *)&peer)->sin_port);
+        } else if (peer.ss_family == AF_INET6) {
+            *port_out = (int)ntohs(((struct sockaddr_in6 *)&peer)->sin6_port);
+        }
+    }
     return (intptr_t)recvd;
 }
 

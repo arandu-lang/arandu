@@ -111,6 +111,14 @@ mod tests {
     }
 
     #[test]
+    fn source_longer_than_four_gibibytes_is_rejected_before_span_truncation() {
+        assert!(!crate::lexer::source_exceeds_span_limit(u32::MAX as usize));
+        assert!(crate::lexer::source_exceeds_span_limit(
+            (u32::MAX as usize).saturating_add(1)
+        ));
+    }
+
+    #[test]
     fn reports_unterminated_string() {
         let err = lex("\"open").unwrap_err();
         assert_eq!(err.code, LexErrorCode::UnterminatedString);

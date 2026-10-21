@@ -78,6 +78,20 @@ fn empty_range_has_no_ids() {
 }
 
 #[test]
+fn dense_range_rejects_offsets_that_do_not_fit_u32() {
+    assert!(DenseRange::try_new(usize::MAX, 1).is_none());
+    assert!(DenseRange::try_new(1, usize::MAX).is_none());
+    assert!(DenseRange::try_new(u32::MAX as usize, 1).is_none());
+    assert_eq!(
+        DenseRange::try_new(u32::MAX as usize, 0),
+        Some(DenseRange {
+            start: u32::MAX,
+            len: 0
+        })
+    );
+}
+
+#[test]
 fn typed_iteration_returns_dense_ids() {
     assert_eq!(TestId::from_usize(9).as_usize(), 9);
     let ids: Vec<_> = DenseRange::new(2, 3).iter_ids::<TestId>().collect();

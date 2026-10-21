@@ -9,8 +9,10 @@ impl CEmitter<'_> {
     /// Pending/Running/Completed states. A Pending blob is owned by the row;
     /// a join claims it, drives it, releases it, then caches the result. A
     /// cancel releases a Pending blob or marks a Running row for retirement.
-    /// Cooperative only: the joining thread drives the blob; standalone C has
-    /// no OS-worker scheduling at this surface.
+    /// Cooperative only: the joining thread drives the blob. The slot table is
+    /// locked around registration and retirement, and that lock is released
+    /// while the blob runs. Standalone C has no OS-worker scheduling at this
+    /// surface.
     pub(super) fn emit_task_runtime(&mut self) {
         self.output.push_str(include_str!("task.c"));
     }

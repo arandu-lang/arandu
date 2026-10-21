@@ -240,6 +240,90 @@ int main(void) {
 }
 
 #[test]
+#[cfg(unix)]
+fn generated_c_udp_accepts_localhost_ipv6_and_more_than_64_sockets() {
+    let (amir, tc) = compile_src(
+        r#"
+extern "C" {
+    func ar_net_udp_bind(host: ptr[u8]?, host_len: usize, port: int): int
+}
+func main(): int {
+    return unsafe { ar_net_udp_bind(nil, 0 as usize, 0) }
+}
+"#,
+    );
+    let source = format!(
+        "#define main arandu_unused_main\n{}\n#undef main\n{}",
+        emit_c(&amir, &tc),
+        r#"
+int main(void) {
+    const uint8_t v6[] = "::1";
+    int v6_id = ar_net_udp_bind(v6, sizeof(v6) - 1, 0);
+    if (v6_id < 0) return 7;
+    ar_net_udp_close(v6_id);
+
+    const uint8_t local[] = "localhost";
+    int local_id = ar_net_udp_bind(local, sizeof(local) - 1, 0);
+    if (local_id < 0) return 8;
+    ar_net_udp_close(local_id);
+
+    enum { UDP_COUNT = 70 };
+    int ids[UDP_COUNT];
+    const uint8_t loopback[] = "127.0.0.1";
+    for (int i = 0; i < UDP_COUNT; i++) {
+        ids[i] = ar_net_udp_bind(loopback, sizeof(loopback) - 1, 0);
+        if (ids[i] < 0) return 9;
+        for (int j = 0; j < i; j++) {
+            if (ids[i] == ids[j]) return 10;
+        }
+    }
+    int first = ids[0];
+    ar_net_udp_close(first);
+    int reused = ar_net_udp_bind(loopback, sizeof(loopback) - 1, 0);
+    if (reused < 0 || reused == first) return 11;
+    if (ar_net_udp_send_to(first, loopback, 1, loopback, sizeof(loopback) - 1, 9) != -1) return 12;
+    for (int i = 1; i < UDP_COUNT; i++) ar_net_udp_close(ids[i]);
+    ar_net_udp_close(reused);
+    return 0;
+}
+"#
+    );
+    let directory = env::temp_dir().join(format!(
+        "arandu-udp-parity-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("udp.c");
+    let executable = directory.join("udp");
+    fs::write(&path, source).unwrap();
+    let compiler = env::var("CC").unwrap_or_else(|_| "cc".into());
+    let output = Command::new(compiler)
+        .args(["-O2", "-pthread"])
+        .arg(&path)
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "C compilation failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output = Command::new(&executable).output().unwrap();
+    assert!(
+        output.status.success(),
+        "UDP parity failed: status={}, stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn parity_ordinary_bit_names_are_not_intrinsics() {
     test_zero_result_all_opt_levels(
         "ordinary_bit_names",
@@ -2281,6 +2365,8 @@ fn c_emit_arstr_layout_32bit() {
         c.lines().take(40).collect::<Vec<_>>().join("\n")
     );
     assert!(c.contains("static void *ar_vec_malloc(uint32_t size)"));
+    assert!(c.contains("#define AR_VEC_ALIGN 16"));
+    assert!(c.contains("((void **)aligned)[-1] = raw"));
     assert!(c.contains(
         "typedef struct { uint8_t *data; uint32_t len; uint32_t capacity; } ArOwnedStringRuntime;"
     ));

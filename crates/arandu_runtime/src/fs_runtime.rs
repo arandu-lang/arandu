@@ -101,7 +101,7 @@ fn read_all_impl(ptr: *const u8, len: isize) -> Result<(*mut u8, usize, usize), 
     }
 
     let mut capacity = initial;
-    // SAFETY: `ar_vec_malloc` returns an owned, 8-aligned buffer or `NULL`.
+    // SAFETY: `ar_vec_malloc` returns an owned, 16-aligned buffer or `NULL`.
     let mut data = if capacity == 0 {
         std::ptr::null_mut()
     } else {
@@ -283,7 +283,7 @@ fn read_dir_impl(ptr: *const u8, len: isize) -> Result<(*mut u8, usize, usize), 
     let descriptor_table = count.checked_mul(descriptor_size).ok_or(ERR_OTHER)?;
     let blob_len = directory_blob_len(count, names_len).ok_or(ERR_OTHER)?;
 
-    // SAFETY: `blob_len` bytes, writable, 8-aligned by `ar_vec_malloc`.
+    // SAFETY: `blob_len` bytes, writable, 16-aligned by `ar_vec_malloc`.
     let data = unsafe { ar_vec_malloc(blob_len) };
     if data.is_null() {
         return Err(ERR_OTHER);

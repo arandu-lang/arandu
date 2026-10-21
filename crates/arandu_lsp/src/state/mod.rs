@@ -7,7 +7,9 @@ pub mod path;
 pub mod types;
 pub mod vfs_ops;
 
+#[cfg(test)]
 pub use discovery::discover_aru_files;
+pub use discovery::discover_aru_files_until;
 pub use types::{DocInfo, ServerState};
 
 #[cfg(test)]

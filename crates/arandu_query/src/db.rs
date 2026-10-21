@@ -141,10 +141,14 @@ impl FileRegistry {
     }
 
     /// Next available FileId (starts at 100 to avoid collisions with test stubs).
-    fn next_id(&mut self) -> FileId {
+    ///
+    /// `u32::MAX` is never issued. A further allocation fails instead of wrapping
+    /// back onto an id Salsa may still be holding.
+    fn next_id(&mut self) -> Option<FileId> {
+        let next = self.next_id.checked_add(1)?;
         let id = self.next_id;
-        self.next_id = self.next_id.saturating_add(1);
-        id
+        self.next_id = next;
+        Some(id)
     }
 
     fn remove_path(&mut self, path: &str) -> Option<SourceFile> {
@@ -576,7 +580,9 @@ impl DatabaseImpl {
         // Drop previous registration first (separate lock scope — avoid deadlock).
         self.unregister_source_file(&path);
         let mut reg = self.files.write().unwrap_or_else(|e| e.into_inner());
-        let file_id = reg.next_id();
+        let file_id = reg
+            .next_id()
+            .expect("FileId allocator exhausted; ids are never reused");
         let file = SourceFile::new(
             self,
             file_id,
@@ -883,5 +889,13 @@ mod tests {
             .unwrap_or_else(|error| error.into_inner())
             .by_file
             .contains_key(&file_id));
+    }
+
+    #[test]
+    fn file_id_allocator_does_not_wrap() {
+        let mut registry = super::FileRegistry::default();
+        registry.next_id = u32::MAX;
+        assert!(registry.next_id().is_none());
+        assert_eq!(registry.next_id, u32::MAX);
     }
 }

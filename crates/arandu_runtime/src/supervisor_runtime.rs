@@ -2,12 +2,17 @@
 //!
 //! Language policy is abort-in-process; blast radius is bounded by **worker
 //! processes** supervised by a parent. This module implements that host side.
+//!
+//! `ar_rt_supervisor_destroy` closes the registry entry and then kills and reaps
+//! every worker. Close is not detach: a child does not keep running without a
+//! handle. Wait and kill take the per-worker lock only after releasing the
+//! supervisor lock, so one blocked worker does not stall lifecycle of another.
 
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 
 struct Worker {
-    child: Child,
+    child: Arc<Mutex<Child>>,
     /// Path bytes (for restart).
     path: Vec<u8>,
     restarts: i64,
@@ -59,7 +64,10 @@ pub unsafe extern "C" fn ar_rt_supervisor_create() -> i64 {
     id
 }
 
-/// Destroy supervisor (does not kill children).
+/// Destroy a supervisor and reap its workers.
+///
+/// The registry entry is removed before any `Child::wait`. In-flight wait or
+/// kill of the same worker still serializes on that worker's lock.
 ///
 /// # Safety
 /// `id` from create.
@@ -71,15 +79,25 @@ pub unsafe extern "C" fn ar_rt_supervisor_destroy(id: i64) {
     let Some(supervisor) = get_supervisor(id) else {
         return;
     };
-    let mut state = supervisor.lock().unwrap_or_else(|e| e.into_inner());
-    state.closed = true;
-    let mut g = lock();
-    if let Some(slot) = g.get_mut(id as usize)
-        && slot
-            .as_ref()
-            .is_some_and(|current| Arc::ptr_eq(current, &supervisor))
+    let workers = {
+        let mut state = supervisor.lock().unwrap_or_else(|e| e.into_inner());
+        state.closed = true;
+        std::mem::take(&mut state.workers)
+    };
     {
-        *slot = None;
+        let mut table = lock();
+        if let Some(slot) = table.get_mut(id as usize)
+            && slot
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, &supervisor))
+        {
+            *slot = None;
+        }
+    }
+    for worker in workers.into_iter().flatten() {
+        let mut child = worker.child.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }
 
@@ -137,7 +155,7 @@ pub unsafe extern "C" fn ar_rt_supervisor_spawn(
         Err(_) => return -1,
     };
     let worker = Worker {
-        child,
+        child: Arc::new(Mutex::new(child)),
         path: path_bytes.to_vec(),
         restarts: 0,
         max_restarts,
@@ -169,14 +187,15 @@ pub unsafe extern "C" fn ar_rt_supervisor_poll(sup: i64, worker: i64) -> i64 {
         return -1;
     };
     let (should_restart, path_bytes) = {
-        let mut super_slot = supervisor.lock().unwrap_or_else(|e| e.into_inner());
+        let super_slot = supervisor.lock().unwrap_or_else(|e| e.into_inner());
         if super_slot.closed {
             return -1;
         }
-        let Some(Some(w)) = super_slot.workers.get_mut(worker as usize) else {
+        let Some(Some(w)) = super_slot.workers.get(worker as usize) else {
             return -1;
         };
-        match w.child.try_wait() {
+        let mut child = w.child.lock().unwrap_or_else(|e| e.into_inner());
+        match child.try_wait() {
             Ok(None) => return 0,
             Ok(Some(_status)) => {
                 if w.restarts < w.max_restarts {
@@ -204,19 +223,27 @@ pub unsafe extern "C" fn ar_rt_supervisor_poll(sup: i64, worker: i64) -> i64 {
             Err(_) => return 1,
         };
 
-        let mut super_slot = supervisor.lock().unwrap_or_else(|e| e.into_inner());
-        if super_slot.closed {
-            let mut child = new_child;
+        let mut pending = Some(new_child);
+        let outcome = {
+            let mut super_slot = supervisor.lock().unwrap_or_else(|e| e.into_inner());
+            if !super_slot.closed
+                && let Some(Some(w)) = super_slot.workers.get_mut(worker as usize)
+            {
+                w.child = Arc::new(Mutex::new(pending.take().expect("replacement child")));
+                w.restarts += 1;
+                Some(2)
+            } else {
+                None
+            }
+        };
+        if let Some(code) = outcome {
+            return code;
+        }
+        if let Some(mut child) = pending {
             let _ = child.kill();
             let _ = child.wait();
-            return -1;
         }
-        let Some(Some(w)) = super_slot.workers.get_mut(worker as usize) else {
-            return -1;
-        };
-        w.child = new_child;
-        w.restarts += 1;
-        2
+        -1
     } else {
         1
     }
@@ -234,14 +261,18 @@ pub unsafe extern "C" fn ar_rt_supervisor_wait(sup: i64, worker: i64) -> i64 {
     let Some(supervisor) = get_supervisor(sup) else {
         return -1;
     };
-    let mut super_slot = supervisor.lock().unwrap_or_else(|e| e.into_inner());
-    if super_slot.closed {
-        return -1;
-    }
-    let Some(Some(w)) = super_slot.workers.get_mut(worker as usize) else {
-        return -1;
+    let child = {
+        let super_slot = supervisor.lock().unwrap_or_else(|e| e.into_inner());
+        if super_slot.closed {
+            return -1;
+        }
+        let Some(Some(w)) = super_slot.workers.get(worker as usize) else {
+            return -1;
+        };
+        Arc::clone(&w.child)
     };
-    match w.child.wait() {
+    let mut child = child.lock().unwrap_or_else(|e| e.into_inner());
+    match child.wait() {
         Ok(status) => status.code().unwrap_or(-1) as i64,
         Err(_) => -1,
     }
@@ -259,16 +290,20 @@ pub unsafe extern "C" fn ar_rt_supervisor_kill(sup: i64, worker: i64) -> i64 {
     let Some(supervisor) = get_supervisor(sup) else {
         return -1;
     };
-    let mut super_slot = supervisor.lock().unwrap_or_else(|e| e.into_inner());
-    if super_slot.closed {
-        return -1;
-    }
-    let Some(Some(w)) = super_slot.workers.get_mut(worker as usize) else {
-        return -1;
+    let child = {
+        let super_slot = supervisor.lock().unwrap_or_else(|e| e.into_inner());
+        if super_slot.closed {
+            return -1;
+        }
+        let Some(Some(w)) = super_slot.workers.get(worker as usize) else {
+            return -1;
+        };
+        Arc::clone(&w.child)
     };
-    match w.child.kill() {
+    let mut child = child.lock().unwrap_or_else(|e| e.into_inner());
+    match child.kill() {
         Ok(()) => {
-            let _ = w.child.wait();
+            let _ = child.wait();
             0
         }
         Err(_) => -1,
@@ -321,5 +356,77 @@ mod tests {
             assert_eq!(code, 0);
             ar_rt_supervisor_destroy(s);
         }
+    }
+
+    /// One worker blocked in `wait` must not hold the supervisor lock across
+    /// the other worker's `kill`.
+    #[cfg(unix)]
+    #[test]
+    fn kill_is_not_blocked_by_another_workers_wait() {
+        let dir = std::env::temp_dir().join(format!(
+            "arandu-supervisor-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("supervisor fixture dir");
+        let pidfile = dir.join("slow.pid");
+        let slow_script = dir.join("slow.sh");
+        let other_script = dir.join("other.sh");
+        std::fs::write(
+            &slow_script,
+            format!(
+                "#!/bin/sh\necho $$ > '{}'\nexec sleep 30\n",
+                pidfile.display()
+            ),
+        )
+        .expect("write waited sleeper");
+        std::fs::write(&other_script, "#!/bin/sh\nexec sleep 30\n").expect("write other sleeper");
+        use std::os::unix::fs::PermissionsExt;
+        for script in [&slow_script, &other_script] {
+            std::fs::set_permissions(script, std::fs::Permissions::from_mode(0o755))
+                .expect("mark sleeper executable");
+        }
+        let slow_path = slow_script.to_string_lossy().into_owned();
+        let other_path = other_script.to_string_lossy().into_owned();
+        unsafe {
+            let supervisor = ar_rt_supervisor_create();
+            assert!(supervisor >= 0);
+            let slow =
+                ar_rt_supervisor_spawn(supervisor, slow_path.as_ptr(), slow_path.len() as i64, 0);
+            let other =
+                ar_rt_supervisor_spawn(supervisor, other_path.as_ptr(), other_path.len() as i64, 0);
+            assert!(slow >= 0 && other >= 0, "spawn two sleepers");
+            let waiter = std::thread::spawn(move || ar_rt_supervisor_wait(supervisor, slow));
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while !pidfile.exists() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "sleeper did not publish its pid"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            let started = std::time::Instant::now();
+            assert_eq!(ar_rt_supervisor_kill(supervisor, other), 0);
+            assert!(started.elapsed() < std::time::Duration::from_millis(800));
+            let pid: i32 = std::fs::read_to_string(&pidfile)
+                .expect("pidfile")
+                .trim()
+                .parse()
+                .expect("pid");
+            let status = std::process::Command::new("kill")
+                .args(["-9", &pid.to_string()])
+                .status()
+                .expect("signal the waited worker");
+            assert!(status.success());
+            let _ = waiter
+                .join()
+                .expect("wait returns after the process is signaled");
+            ar_rt_supervisor_destroy(supervisor);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

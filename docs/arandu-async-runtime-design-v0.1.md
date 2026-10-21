@@ -55,11 +55,12 @@ the existing cancellation/reuse restrictions below continue to apply. The canoni
 integer queue ID does not establish a cross-thread ownership contract.
 
 The C backend represents coroutine values as opaque state pointers, consistent
-with `LayoutEngine`, and supplies `ar_co_block_on_i64`. It does not currently
-supply the `ar_rt_spawn_i64`/`ar_rt_join_i64`/`ar_rt_cancel_i64` queue hosts or
-the `ar_rt_block_on_i64` alias in standalone output. Thus coroutine pointer ABI
-parity does not establish standalone C support for `std.runtime.executor`.
-That host-surface gap must be closed before promoting executor backend parity.
+with `LayoutEngine`, and supplies `ar_co_block_on_i64`. When the tasks feature
+is live it also emits `ar_rt_spawn_i64`, `ar_rt_join_i64`, and `ar_rt_cancel_i64`.
+The joining thread still drives the blob; this is not an OS thread-pool executor.
+The task table lock covers registration and retirement and is released while the
+blob runs. Coroutine pointer ABI parity still does not by itself establish a
+preemptive `std.runtime.executor`.
 
 The host task table distinguishes pending, running and completed tasks. A join
 claims the pending blob under the table lock and becomes its sole polling/free

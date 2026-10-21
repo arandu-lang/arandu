@@ -2,7 +2,8 @@
 //!
 //! This module deliberately keeps LLVM behind a text boundary: the backend is
 //! pure Rust and never links `llvm-sys`. The generated module can be validated
-//! with `llvm-as` and executed with `lli` or compiled with `clang`/`llc`.
+//! with `llvm-as`. Execution links through `clang` and the packaged runtime;
+//! `lli` does not resolve Arandu runtime symbols, so the CLI refuses it.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;

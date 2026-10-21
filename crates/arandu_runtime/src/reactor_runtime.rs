@@ -245,6 +245,9 @@ pub unsafe extern "C" fn ar_rt_reactor_sleep_ms(id: ReactorId, ms: i64) -> i64 {
     0
 }
 
+/// The global reactor table lock is not held here. The caller already cloned
+/// this slot's `Arc` and dropped the table guard, so two reactors can wait at
+/// the same time. Only this slot's mutex covers `submit_and_wait`.
 #[cfg(target_os = "linux")]
 unsafe fn sleep_ms_io_uring(slot: &mut ReactorSlot, ms: u64) -> bool {
     let Some(ring) = &mut slot.ring else {
@@ -580,6 +583,26 @@ mod tests {
         assert!(guard.is_empty(), "partial registry state must be discarded");
         drop(guard);
         assert!(!table.is_poisoned(), "recovered registry must be reusable");
+    }
+
+    #[test]
+    fn two_reactors_sleep_without_serializing_on_the_table_lock() {
+        unsafe {
+            let first = ar_rt_reactor_create();
+            let second = ar_rt_reactor_create();
+            assert!(first >= 0 && second >= 0);
+            let started = std::time::Instant::now();
+            let other = std::thread::spawn(move || ar_rt_reactor_sleep_ms(second, 200));
+            assert_eq!(ar_rt_reactor_sleep_ms(first, 200), 0);
+            assert_eq!(other.join().expect("second reactor"), 0);
+            assert!(
+                started.elapsed() < std::time::Duration::from_millis(350),
+                "two reactor sleeps serialized: {:?}",
+                started.elapsed()
+            );
+            ar_rt_reactor_destroy(first);
+            ar_rt_reactor_destroy(second);
+        }
     }
 
     #[cfg(not(target_os = "linux"))]

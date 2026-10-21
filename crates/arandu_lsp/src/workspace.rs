@@ -5,7 +5,7 @@
 //! Discovery is bounded by the worker pool backlog; it never blocks `initialize`.
 
 use crate::pool::{Priority, WorkerPool};
-use crate::state::{discover_aru_files, ServerState};
+use crate::state::{discover_aru_files_until, ServerState};
 use crate::uri_util::uri_from_path;
 use arandu_package::{find_manifest, load_manifest};
 use arandu_query::{
@@ -52,13 +52,21 @@ pub(crate) fn spawn_workspace_discovery(
     const DISCOVERY_BACKLOG: usize = 8;
     let (tx, rx) = bounded(DISCOVERY_BACKLOG);
     let _ = pool.spawn(Priority::Background, None, move |cancellation| {
-        match discover_stdlib() {
+        match discover_stdlib(&|| cancellation.is_cancelled()) {
             Ok(stdlib) => {
+                if cancellation.is_cancelled() {
+                    let _ = tx.send(WorkspaceEvent::Done);
+                    return;
+                }
                 if tx.send(WorkspaceEvent::Stdlib(stdlib)).is_err() {
                     return;
                 }
             }
             Err(error) => {
+                if cancellation.is_cancelled() {
+                    let _ = tx.send(WorkspaceEvent::Done);
+                    return;
+                }
                 let _ = tx.send(WorkspaceEvent::Error(error));
             }
         }
@@ -69,24 +77,41 @@ pub(crate) fn spawn_workspace_discovery(
         // The compiler DB currently owns one ModuleRoots input. Select the
         // first workspace package deterministically; multi-root ownership is a
         // separate protocol capability, not an order-dependent overwrite.
-        match discover_workspace_project(&roots) {
+        match discover_workspace_project_with_cache(&roots, None, &|| cancellation.is_cancelled()) {
             Ok(Some(project)) => {
+                if cancellation.is_cancelled() {
+                    let _ = tx.send(WorkspaceEvent::Done);
+                    return;
+                }
                 if tx.send(WorkspaceEvent::Project(Box::new(project))).is_err() {
                     return;
                 }
             }
             Ok(None) => {
+                if cancellation.is_cancelled() {
+                    let _ = tx.send(WorkspaceEvent::Done);
+                    return;
+                }
                 if !roots.is_empty() && tx.send(WorkspaceEvent::NoManifest).is_err() {
                     return;
                 }
             }
             Err(error) => {
+                if cancellation.is_cancelled() || error == "workspace discovery cancelled" {
+                    let _ = tx.send(WorkspaceEvent::Done);
+                    return;
+                }
                 let _ = tx.send(WorkspaceEvent::Error(error));
                 let _ = tx.send(WorkspaceEvent::Done);
                 return;
             }
         }
-        for (path, text) in discover_aru_files(&roots) {
+        let files = discover_aru_files_until(&roots, || cancellation.is_cancelled());
+        if cancellation.is_cancelled() {
+            let _ = tx.send(WorkspaceEvent::Done);
+            return;
+        }
+        for (path, text) in files {
             if cancellation.is_cancelled() {
                 break;
             }
@@ -102,12 +127,15 @@ pub(crate) fn spawn_workspace_discovery(
     rx
 }
 
-fn discover_stdlib() -> Result<WorkspaceStdlib, String> {
+fn discover_stdlib(cancelled: &dyn Fn() -> bool) -> Result<WorkspaceStdlib, String> {
     let stdlib =
         resolve_stdlib_root(StdlibResolveOpts::default()).map_err(|error| error.to_string())?;
     let root = stdlib.path;
     let mut files = Vec::new();
     for relative in scan_aru_entries(&root) {
+        if cancelled() {
+            break;
+        }
         let path = root.join(relative);
         let text = std::fs::read_to_string(&path)
             .map_err(|error| format!("cannot read stdlib module {}: {error}", path.display()))?;
@@ -131,38 +159,54 @@ pub(crate) fn spawn_package_reload(
             if cancellation.is_cancelled() {
                 return;
             }
-            let result = discover_workspace_project(std::slice::from_ref(&manifest_path))
-                .and_then(|project| {
-                    project.ok_or_else(|| {
-                        format!("no package manifest found from {}", manifest_path.display())
-                    })
+            let result = discover_workspace_project_with_cache(
+                std::slice::from_ref(&manifest_path),
+                None,
+                &|| cancellation.is_cancelled(),
+            )
+            .and_then(|project| {
+                project.ok_or_else(|| {
+                    format!("no package manifest found from {}", manifest_path.display())
                 })
-                .map(Box::new);
-            if !cancellation.is_cancelled() {
-                let _ = tx.send(crate::dispatcher::JobResult::WorkspaceReload(result));
+            })
+            .map(Box::new);
+            if cancellation.is_cancelled()
+                || result
+                    .as_ref()
+                    .is_err_and(|error| error == "workspace discovery cancelled")
+            {
+                return;
             }
+            let _ = tx.send(crate::dispatcher::JobResult::WorkspaceReload(result));
         },
     );
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn discover_workspace_project(
     roots: &[PathBuf],
 ) -> Result<Option<WorkspaceProject>, String> {
-    discover_workspace_project_with_cache(roots, None)
+    discover_workspace_project_with_cache(roots, None, &|| false)
 }
 
 fn discover_workspace_project_with_cache(
     roots: &[PathBuf],
     cache_override: Option<&std::path::Path>,
+    cancelled: &dyn Fn() -> bool,
 ) -> Result<Option<WorkspaceProject>, String> {
+    if cancelled() {
+        return Err("workspace discovery cancelled".to_owned());
+    }
     for root in roots {
+        if cancelled() {
+            return Err("workspace discovery cancelled".to_owned());
+        }
         let Some(discovery) = find_manifest(root).map_err(|error| error.to_string())? else {
             continue;
         };
         let manifest_path = discovery.path;
-        let Ok((manifest_data, manifest_hash, _)) = load_manifest(&manifest_path) else {
-            continue;
-        };
+        let (manifest_data, manifest_hash, _) =
+            load_manifest(&manifest_path).map_err(|error| error.to_string())?;
         ensure_toolchain_compatible(&manifest_path, &manifest_data, env!("CARGO_PKG_VERSION"))
             .map_err(|error| error.to_string())?;
         let package_root = manifest_path
@@ -201,6 +245,9 @@ fn discover_workspace_project_with_cache(
                 .map(|binding| binding.physical.clone())
                 .collect::<std::collections::BTreeSet<_>>();
             for path in paths {
+                if cancelled() {
+                    return Err("workspace discovery cancelled".to_owned());
+                }
                 let text = std::fs::read_to_string(&path)
                     .map_err(|error| format!("cannot read module {}: {error}", path.display()))?;
                 module_files.push(WorkspaceFile { path, text });
@@ -323,6 +370,30 @@ mod tests {
     }
 
     #[test]
+    fn invalid_manifest_is_reported_instead_of_looking_absent() {
+        let root = std::env::temp_dir().join(format!(
+            "arandu-lsp-bad-manifest-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("create fixture");
+        std::fs::write(root.join("Arandu.toml"), "this is not a manifest [\n")
+            .expect("write invalid manifest");
+
+        let Err(error) = discover_workspace_project(std::slice::from_ref(&root)) else {
+            panic!("invalid manifest must surface");
+        };
+        assert!(
+            error.contains("malformed"),
+            "expected the manifest parser error, got {error}"
+        );
+        std::fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
     fn workspace_remote_dependency_uses_only_revalidated_locked_cache() {
         let suffix = format!(
             "{}-{}",
@@ -376,10 +447,13 @@ mod tests {
         };
         std::fs::write(root.join(LOCK_FILENAME), lock.to_canonical_bytes()).unwrap();
 
-        let project =
-            discover_workspace_project_with_cache(std::slice::from_ref(&root), Some(&cache_root))
-                .expect("offline cached remote discovery")
-                .expect("workspace project");
+        let project = discover_workspace_project_with_cache(
+            std::slice::from_ref(&root),
+            Some(&cache_root),
+            &|| false,
+        )
+        .expect("offline cached remote discovery")
+        .expect("workspace project");
         assert!(project.module_plan.is_some());
         assert!(project
             .module_files

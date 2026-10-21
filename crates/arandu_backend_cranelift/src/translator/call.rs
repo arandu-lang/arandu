@@ -16,8 +16,9 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             let sym = self.symbol_table.get(*sym_id);
             let bare = sym.name.rsplit('.').next().unwrap_or(sym.name.as_str());
             // L6.1: mem intrinsics (short mono names + qualified std.core.mem.*).
-            if arandu_semantics::IntrinsicKind::from_declared_name(bare, sym.lang_item).is_some()
-                && self.translate_mem_intrinsic(bare, &sym.name, lhs, args)
+            if let Some(kind) =
+                arandu_semantics::IntrinsicKind::from_declared_name(bare, sym.lang_item)
+                && self.translate_mem_intrinsic(kind, bare, &sym.name, lhs, args)
             {
                 return;
             }
@@ -273,17 +274,17 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
     /// Returns `true` when the call was handled as an intrinsic.
     fn translate_mem_intrinsic(
         &mut self,
+        declared: arandu_semantics::IntrinsicKind,
         bare: &str,
         full_name: &str,
         lhs: &Option<TempId>,
         args: &[AmirOperand],
     ) -> bool {
-        let kind = arandu_semantics::IntrinsicKind::from_name(bare)
-            .or_else(|| arandu_semantics::IntrinsicKind::from_name(full_name));
+        // The caller already matched the declared ABI marker. A second lookup
+        // by spelling would let a colliding extern name pick a different kind.
+        let kind = Some(declared);
 
-        if let Some(kind) = kind
-            && self.translate_atomic_intrinsic(kind, lhs, args)
-        {
+        if self.translate_atomic_intrinsic(declared, lhs, args) {
             return true;
         }
 

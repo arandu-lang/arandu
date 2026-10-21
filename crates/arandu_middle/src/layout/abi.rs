@@ -111,11 +111,62 @@ enum EightbyteClass {
     Memory,
 }
 
+/// An ABI was paired with a pointer width that convention does not define.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AbiConfigError {
+    pub abi: TargetAbi,
+    pub pointer_width: u64,
+}
+
+impl std::fmt::Display for AbiConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "unsupported ABI {:?} with pointer width {}",
+            self.abi, self.pointer_width
+        )
+    }
+}
+
+impl std::error::Error for AbiConfigError {}
+
 impl TargetAbiClassifier {
-    /// Creates a new classifier for the given target ABI and pointer width.
+    /// Creates a classifier when the ABI and pointer width are a supported pair.
+    ///
+    /// System V AMD64, Windows x64 and AAPCS64 are 64-bit conventions. `Generic`
+    /// is the explicit 32-bit and unspecified fallback and accepts width 4 or 8.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AbiConfigError`] when the pair is not in that matrix.
+    pub fn try_new(abi: TargetAbi, pointer_width: u64) -> Result<Self, AbiConfigError> {
+        let supported = match abi {
+            TargetAbi::SystemVAmd64 | TargetAbi::WindowsX64 | TargetAbi::Aapcs64 => {
+                pointer_width == 8
+            }
+            TargetAbi::Generic => pointer_width == 4 || pointer_width == 8,
+        };
+        if supported {
+            Ok(Self { abi, pointer_width })
+        } else {
+            Err(AbiConfigError { abi, pointer_width })
+        }
+    }
+
+    /// Creates a classifier for a pair already known to be supported.
+    ///
+    /// # Panics
+    ///
+    /// Panics if [`Self::try_new`] would reject the pair. Callers that receive
+    /// an unvalidated width use `try_new` and surface the error.
     #[must_use]
     pub fn new(abi: TargetAbi, pointer_width: u64) -> Self {
-        Self { abi, pointer_width }
+        Self::try_new(abi, pointer_width).unwrap_or_else(|error| {
+            panic!(
+                "unsupported ABI {:?} with pointer width {}",
+                error.abi, error.pointer_width
+            )
+        })
     }
 
     /// Classifies an [`ArType`] according to the target ABI.

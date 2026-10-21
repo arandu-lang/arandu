@@ -1775,96 +1775,122 @@ fn link_imported_hir_modules(
     let mut visited = std::collections::HashSet::new();
     visited.insert(*root.file_id(db));
 
-    fn walk(
-        db: &dyn ArandCompilerDb,
+    // Explicit heap stack. The root is visited first and is not linked here;
+    // each import is fingerprinted and linked after its own imports (post-order).
+    struct ImportFrame {
         file: SourceFile,
-        visited: &mut std::collections::HashSet<u32>,
-        type_check_result: &mut TypeCheckResult,
-        hir: &mut arandu_semantics::hir::HirProgram,
-        fingerprint: &mut blake3::Hasher,
-    ) {
-        let program_res = parse(db, file);
-        let Ok(program) = &**program_res else {
-            return;
+        children: Vec<SourceFile>,
+        paths: Vec<String>,
+        index: usize,
+        entered: bool,
+    }
+
+    let mut stack = vec![ImportFrame {
+        file: root,
+        children: Vec::new(),
+        paths: Vec::new(),
+        index: 0,
+        entered: false,
+    }];
+
+    while let Some(top) = stack.len().checked_sub(1) {
+        if !stack[top].entered {
+            stack[top].entered = true;
+            let file = stack[top].file;
+            let program_res = parse(db, file);
+            if let Ok(program) = &**program_res {
+                let mut children = Vec::new();
+                let mut paths = Vec::new();
+                for import in &program.imports {
+                    db.unwind_if_revision_cancelled();
+                    let Some(path) = arandu_resolve::canonicalize_import_path(import) else {
+                        continue;
+                    };
+                    let Some(imported_file) = db.as_source_db().resolve_module_path(&path) else {
+                        // Prelude-only or missing file — nothing to lower.
+                        continue;
+                    };
+                    let imported_id = *imported_file.file_id(db);
+                    if !visited.insert(imported_id) {
+                        continue;
+                    }
+                    children.push(imported_file);
+                    paths.push(path);
+                }
+                stack[top].children = children;
+                stack[top].paths = paths;
+            }
+        }
+
+        if stack[top].index < stack[top].children.len() {
+            let child = stack[top].children[stack[top].index];
+            stack.push(ImportFrame {
+                file: child,
+                children: Vec::new(),
+                paths: Vec::new(),
+                index: 0,
+                entered: false,
+            });
+            continue;
+        }
+
+        let finished = stack.pop().expect("import frame");
+        if stack.is_empty() {
+            break;
+        }
+        let path = {
+            let parent = stack.last_mut().expect("import parent");
+            let path = parent.paths[parent.index].clone();
+            parent.index += 1;
+            path
         };
 
-        for import in &program.imports {
-            db.unwind_if_revision_cancelled();
-            let Some(path) = arandu_resolve::canonicalize_import_path(import) else {
-                continue;
-            };
-            let Some(imported_file) = db.as_source_db().resolve_module_path(&path) else {
-                // Prelude-only or missing file — nothing to lower.
-                continue;
-            };
-            let imported_id = *imported_file.file_id(db);
-            if !visited.insert(imported_id) {
-                continue;
-            }
+        let imported_file = finished.file;
+        let imported_parse = parse(db, imported_file);
+        fingerprint.update(crate::StableHash::stable_hash(&**imported_parse).as_bytes());
+        let Ok(imported_program) = &**imported_parse else {
+            continue;
+        };
 
-            // Depth-first: link dependencies of the import first (post-order-ish).
-            walk(
-                db,
-                imported_file,
-                visited,
-                type_check_result,
-                hir,
-                fingerprint,
+        // Full body typeck without accumulating diags into the entry pipeline.
+        let imported_tc_arc = file_typing(db, imported_file);
+        fingerprint.update(crate::StableHash::stable_hash(&**imported_tc_arc).as_bytes());
+        // Skip modules with hard type errors — signatures already merged via
+        // module_signatures; codegen for those bodies is not required for
+        // entry check when the entry only references public signatures.
+        if imported_tc_arc
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.severity, arandu_middle::Severity::Error))
+        {
+            tracing::debug!(
+                target: "arandu_query",
+                %path,
+                "skip HIR link for import (body typeck has errors)"
             );
+            continue;
+        }
+        let mut imported_tc = (**imported_tc_arc).clone();
 
-            let imported_parse = parse(db, imported_file);
-            fingerprint.update(crate::StableHash::stable_hash(&**imported_parse).as_bytes());
-            let Ok(imported_program) = &**imported_parse else {
-                continue;
-            };
-
-            // Full body typeck without accumulating diags into the entry pipeline.
-            let imported_tc_arc = file_typing(db, imported_file);
-            fingerprint.update(crate::StableHash::stable_hash(&**imported_tc_arc).as_bytes());
-            // Skip modules with hard type errors — signatures already merged via
-            // module_signatures; codegen for those bodies is not required for
-            // entry check when the entry only references public signatures.
-            if imported_tc_arc
-                .diagnostics
-                .iter()
-                .any(|d| matches!(d.severity, arandu_middle::Severity::Error))
-            {
+        match arandu_semantics::lower_to_hir(&mut imported_tc, imported_program) {
+            Ok(temp_hir) => {
                 tracing::debug!(
                     target: "arandu_query",
                     %path,
-                    "skip HIR link for import (body typeck has errors)"
+                    decls = temp_hir.decls.len(),
+                    "linking imported HIR module"
                 );
-                continue;
+                arandu_semantics::link_hir_module(type_check_result, hir, &imported_tc, &temp_hir);
             }
-            let mut imported_tc = (**imported_tc_arc).clone();
-
-            match arandu_semantics::lower_to_hir(&mut imported_tc, imported_program) {
-                Ok(temp_hir) => {
-                    tracing::debug!(
-                        target: "arandu_query",
-                        %path,
-                        decls = temp_hir.decls.len(),
-                        "linking imported HIR module"
-                    );
-                    arandu_semantics::link_hir_module(
-                        type_check_result,
-                        hir,
-                        &imported_tc,
-                        &temp_hir,
-                    );
-                }
-                Err(_) => {
-                    tracing::debug!(
-                        target: "arandu_query",
-                        %path,
-                        "skip HIR link for import (lower_to_hir failed)"
-                    );
-                }
+            Err(_) => {
+                tracing::debug!(
+                    target: "arandu_query",
+                    %path,
+                    "skip HIR link for import (lower_to_hir failed)"
+                );
             }
         }
     }
-
-    walk(db, root, &mut visited, type_check_result, hir, fingerprint);
 }
 
 #[salsa::tracked]

@@ -279,25 +279,10 @@ fn run_llvm_ir(
         return Ok(CliSuccess::ProgramExit(status?.code().unwrap_or(1)));
     }
 
-    if tool_available("lli") {
-        let status = Command::new("lli")
-            .arg(ir_path)
-            .args(program_args)
-            .status()
-            .map_err(|error| {
-                CliFailure::operational(
-                    action,
-                    Some(context_path.to_path_buf()),
-                    format!("failed to start lli: {error}"),
-                )
-            })?;
-        return Ok(CliSuccess::ProgramExit(status.code().unwrap_or(1)));
-    }
-
     Err(CliFailure::operational(
         action,
         Some(context_path.to_path_buf()),
-        "LLVM execution requires `clang` (preferred, links the Arandu runtime) or `lli` on PATH",
+        "LLVM execution requires `clang` on PATH; `lli` cannot link the Arandu runtime",
     ))
 }
 

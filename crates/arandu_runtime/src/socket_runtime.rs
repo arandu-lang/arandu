@@ -27,32 +27,74 @@ enum SockKind {
 
 type SharedSockSlot = Arc<Mutex<SockSlot>>;
 
-static SOCKS: Mutex<Vec<Option<SharedSockSlot>>> = Mutex::new(Vec::new());
+/// A published handle keeps its generation. Close bumps it, so a stale id cannot
+/// address the socket that later occupies the same index. Generation 0 is the
+/// first publication and makes the handle equal the index.
+struct TcpEntry {
+    generation: u32,
+    slot: Option<SharedSockSlot>,
+}
 
-fn lock() -> std::sync::MutexGuard<'static, Vec<Option<SharedSockSlot>>> {
+const TCP_INDEX_MASK: u64 = 0xFFFF_FFFF;
+const TCP_GENERATION_MASK: u32 = 0x7FFF_FFFF;
+
+static SOCKS: Mutex<Vec<TcpEntry>> = Mutex::new(Vec::new());
+
+fn lock() -> std::sync::MutexGuard<'static, Vec<TcpEntry>> {
     SOCKS.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-fn get_slot(sock: i64) -> Option<SharedSockSlot> {
+fn pack_tcp_handle(index: usize, generation: u32) -> i64 {
+    let packed = ((u64::from(generation) & u64::from(TCP_GENERATION_MASK)) << 32)
+        | (index as u64 & TCP_INDEX_MASK);
+    packed as i64
+}
+
+fn unpack_tcp_handle(sock: i64) -> Option<(usize, u32)> {
     if sock < 0 {
         return None;
     }
-    lock().get(sock as usize).and_then(Clone::clone)
+    let raw = sock as u64;
+    let index = (raw & TCP_INDEX_MASK) as usize;
+    let generation = ((raw >> 32) & u64::from(TCP_GENERATION_MASK)) as u32;
+    Some((index, generation))
+}
+
+fn bump_tcp_generation(generation: u32) -> u32 {
+    let next = generation.wrapping_add(1) & TCP_GENERATION_MASK;
+    if next == 0 { 1 } else { next }
+}
+
+fn get_slot(sock: i64) -> Option<SharedSockSlot> {
+    let (index, generation) = unpack_tcp_handle(sock)?;
+    let table = lock();
+    let entry = table.get(index)?;
+    if entry.generation != generation {
+        return None;
+    }
+    entry.slot.clone()
 }
 
 fn insert(kind: SockKind) -> i64 {
-    let mut g = lock();
+    let mut table = lock();
     let slot = Arc::new(Mutex::new(SockSlot {
         kind,
         nonblocking: false,
     }));
-    if let Some(idx) = g.iter().position(|s| s.is_none()) {
-        g[idx] = Some(slot);
-        return idx as i64;
+    if let Some(index) = table.iter().position(|entry| entry.slot.is_none()) {
+        let generation = table[index].generation;
+        table[index].slot = Some(slot);
+        return pack_tcp_handle(index, generation);
     }
-    let id = g.len() as i64;
-    g.push(Some(slot));
-    id
+    if table.len() > u32::MAX as usize {
+        return -1;
+    }
+    let index = table.len();
+    table.push(TcpEntry {
+        generation: 0,
+        slot: Some(slot),
+    });
+    pack_tcp_handle(index, 0)
 }
 
 #[cfg(unix)]
@@ -219,13 +261,24 @@ pub unsafe extern "C" fn ar_rt_tcp_write(sock: i64, buf: *const u8, len: i64) ->
 /// Handle from listen/accept/connect.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ar_rt_tcp_close(sock: i64) {
-    if sock < 0 {
+    let Some((index, generation)) = unpack_tcp_handle(sock) else {
         return;
-    }
-    let mut g = lock();
-    if let Some(slot) = g.get_mut(sock as usize) {
-        *slot = None;
-    }
+    };
+    let removed = {
+        let mut table = lock();
+        let Some(entry) = table.get_mut(index) else {
+            return;
+        };
+        if entry.generation != generation {
+            return;
+        }
+        let removed = entry.slot.take();
+        if removed.is_some() {
+            entry.generation = bump_tcp_generation(entry.generation);
+        }
+        removed
+    };
+    drop(removed);
 }
 
 /// Set nonblocking mode. `flag` != 0 → nonblocking.
@@ -483,17 +536,78 @@ unsafe fn write_io_uring(sock: i64, buf: *const u8, len: i64) -> Option<i64> {
 
 type SharedUdpSocket = Arc<Mutex<UdpSocket>>;
 
-static UDP_SOCKS: Mutex<Vec<Option<SharedUdpSocket>>> = Mutex::new(Vec::new());
+/// Low 16 bits are the slot. The next 15 bits are the generation. Generation 0
+/// keeps the first handle equal to the index. The sign bit stays clear.
+struct UdpEntry {
+    generation: u16,
+    socket: Option<SharedUdpSocket>,
+}
 
-fn udp_lock() -> std::sync::MutexGuard<'static, Vec<Option<SharedUdpSocket>>> {
+const UDP_INDEX_MASK: u32 = 0xFFFF;
+const UDP_GENERATION_MASK: u16 = 0x7FFF;
+const UDP_MAX_SLOTS: usize = 65536;
+
+static UDP_SOCKS: Mutex<Vec<UdpEntry>> = Mutex::new(Vec::new());
+
+fn udp_lock() -> std::sync::MutexGuard<'static, Vec<UdpEntry>> {
     UDP_SOCKS.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-fn get_udp_socket(id: i32) -> Option<SharedUdpSocket> {
+fn pack_udp_handle(index: usize, generation: u16) -> i32 {
+    let packed = (u32::from(generation) << 16) | (index as u32 & UDP_INDEX_MASK);
+    packed as i32
+}
+
+fn unpack_udp_handle(id: i32) -> Option<(usize, u16)> {
     if id < 0 {
         return None;
     }
-    udp_lock().get(id as usize).and_then(Clone::clone)
+    let raw = id as u32;
+    Some((
+        (raw & UDP_INDEX_MASK) as usize,
+        ((raw >> 16) as u16) & UDP_GENERATION_MASK,
+    ))
+}
+
+fn bump_udp_generation(generation: u16) -> u16 {
+    let next = generation.wrapping_add(1) & UDP_GENERATION_MASK;
+    if next == 0 { 1 } else { next }
+}
+
+fn format_udp_endpoint(host: &str, port: i32) -> String {
+    if host.starts_with('[') || !host.contains(':') {
+        format!("{host}:{port}")
+    } else {
+        format!("[{host}]:{port}")
+    }
+}
+
+fn get_udp_socket(id: i32) -> Option<SharedUdpSocket> {
+    let (index, generation) = unpack_udp_handle(id)?;
+    let table = udp_lock();
+    let entry = table.get(index)?;
+    if entry.generation != generation {
+        return None;
+    }
+    entry.socket.clone()
+}
+
+fn publish_udp(socket: SharedUdpSocket) -> Option<i32> {
+    let mut table = udp_lock();
+    if let Some(index) = table.iter().position(|entry| entry.socket.is_none()) {
+        let generation = table[index].generation;
+        table[index].socket = Some(socket);
+        return Some(pack_udp_handle(index, generation));
+    }
+    if table.len() >= UDP_MAX_SLOTS {
+        return None;
+    }
+    let index = table.len();
+    table.push(UdpEntry {
+        generation: 0,
+        socket: Some(socket),
+    });
+    Some(pack_udp_handle(index, 0))
 }
 
 /// Binds a UDP socket on `host:port`.
@@ -508,18 +622,9 @@ pub unsafe extern "C" fn ar_net_udp_bind(host_ptr: *const u8, host_len: usize, p
         }
         let host =
             std::str::from_utf8(unsafe { std::slice::from_raw_parts(host_ptr, host_len) }).ok()?;
-        let addr = format!("{host}:{port}");
+        let addr = format_udp_endpoint(host, port);
         let socket = UdpSocket::bind(&addr).ok()?;
-        let socket = Arc::new(Mutex::new(socket));
-        let mut g = udp_lock();
-        if let Some(idx) = g.iter().position(|s| s.is_none()) {
-            g[idx] = Some(socket);
-            Some(idx as i32)
-        } else {
-            let id = g.len() as i32;
-            g.push(Some(socket));
-            Some(id)
-        }
+        publish_udp(Arc::new(Mutex::new(socket)))
     }))
     .ok()
     .flatten()
@@ -545,7 +650,7 @@ pub unsafe extern "C" fn ar_net_udp_send_to(
         }
         let host =
             std::str::from_utf8(unsafe { std::slice::from_raw_parts(host_ptr, host_len) }).ok()?;
-        let target = format!("{host}:{port}");
+        let target = format_udp_endpoint(host, port);
         let payload = unsafe { std::slice::from_raw_parts(buf, len) };
         let socket = get_udp_socket(id)?;
         let socket = socket.lock().unwrap_or_else(|e| e.into_inner());
@@ -599,12 +704,24 @@ pub unsafe extern "C" fn ar_net_udp_recv_from(
 /// Always safe to call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ar_net_udp_close(id: i32) {
-    if id >= 0 {
-        let mut g = udp_lock();
-        if let Some(slot) = g.get_mut(id as usize) {
-            *slot = None;
+    let Some((index, generation)) = unpack_udp_handle(id) else {
+        return;
+    };
+    let removed = {
+        let mut table = udp_lock();
+        let Some(entry) = table.get_mut(index) else {
+            return;
+        };
+        if entry.generation != generation {
+            return;
         }
-    }
+        let removed = entry.socket.take();
+        if removed.is_some() {
+            entry.generation = bump_udp_generation(entry.generation);
+        }
+        removed
+    };
+    drop(removed);
 }
 
 /// Resolves hostname via system DNS.
@@ -659,8 +776,7 @@ pub(crate) mod tests {
                 "loopback listener must be available for socket tests"
             );
             let port = {
-                let guard = lock();
-                let slot = guard[listener as usize].as_ref().unwrap().clone();
+                let slot = get_slot(listener).expect("listener handle stays registered");
                 let slot = slot.lock().unwrap_or_else(|e| e.into_inner());
                 let SockKind::Listener(socket) = &slot.kind else {
                     panic!("expected listener");
@@ -772,6 +888,103 @@ pub(crate) mod tests {
                 .expect("receive runtime datagram");
             assert_eq!(&sent[..count], b"out");
             ar_net_udp_close(id);
+        }
+    }
+
+    #[test]
+    fn closed_tcp_handle_does_not_alias_a_reused_slot() {
+        unsafe {
+            let first = ar_rt_tcp_listen(0);
+            assert!(first >= 0);
+            ar_rt_tcp_close(first);
+            let second = ar_rt_tcp_listen(0);
+            assert!(second >= 0);
+            assert_ne!(first, second);
+            let mut buf = [0u8; 1];
+            assert_eq!(ar_rt_tcp_read(first, buf.as_mut_ptr(), 1), -1);
+            ar_rt_tcp_close(second);
+        }
+    }
+
+    #[test]
+    fn blocked_accept_does_not_stall_another_socket() {
+        unsafe {
+            let blocked = ar_rt_tcp_listen(0);
+            assert!(blocked >= 0);
+            let port = {
+                let slot = get_slot(blocked).expect("listener remains registered");
+                let slot = slot.lock().unwrap_or_else(|error| error.into_inner());
+                let SockKind::Listener(socket) = &slot.kind else {
+                    panic!("expected listener");
+                };
+                socket.local_addr().expect("listener address").port()
+            };
+            let acceptor = std::thread::spawn(move || ar_rt_tcp_accept(blocked));
+            std::thread::sleep(Duration::from_millis(50));
+            let started = std::time::Instant::now();
+            let other = ar_rt_tcp_listen(0);
+            assert!(other >= 0);
+            ar_rt_tcp_close(other);
+            let again = ar_rt_tcp_listen(0);
+            assert!(again >= 0);
+            assert!(started.elapsed() < Duration::from_millis(500));
+            let client = ar_rt_tcp_connect(i64::from(port));
+            assert!(client >= 0);
+            let accepted = acceptor.join().expect("accept thread");
+            assert!(accepted >= 0);
+            ar_rt_tcp_close(client);
+            ar_rt_tcp_close(accepted);
+            ar_rt_tcp_close(blocked);
+            ar_rt_tcp_close(again);
+        }
+    }
+
+    #[test]
+    fn udp_rebind_localhost_ipv6_and_many_sockets() {
+        let loopback = b"127.0.0.1";
+        unsafe {
+            let v6 = b"::1";
+            let v6_id = ar_net_udp_bind(v6.as_ptr(), v6.len(), 0);
+            assert!(v6_id >= 0, "IPv6 loopback UDP bind");
+            ar_net_udp_close(v6_id);
+
+            let host = b"localhost";
+            let local = ar_net_udp_bind(host.as_ptr(), host.len(), 0);
+            assert!(local >= 0, "localhost UDP bind");
+            ar_net_udp_close(local);
+
+            let mut ids = Vec::with_capacity(70);
+            for _ in 0..70 {
+                let id = ar_net_udp_bind(loopback.as_ptr(), loopback.len(), 0);
+                assert!(id >= 0, "bind 70 loopback UDP sockets");
+                ids.push(id);
+            }
+            let mut unique = ids.clone();
+            unique.sort_unstable();
+            unique.dedup();
+            assert_eq!(unique.len(), ids.len());
+            for id in ids {
+                ar_net_udp_close(id);
+            }
+
+            let first = ar_net_udp_bind(loopback.as_ptr(), loopback.len(), 0);
+            assert!(first >= 0);
+            ar_net_udp_close(first);
+            let second = ar_net_udp_bind(loopback.as_ptr(), loopback.len(), 0);
+            assert!(second >= 0);
+            assert_ne!(first, second);
+            assert_eq!(
+                ar_net_udp_send_to(
+                    first,
+                    b"x".as_ptr(),
+                    1,
+                    loopback.as_ptr(),
+                    loopback.len(),
+                    9
+                ),
+                -1
+            );
+            ar_net_udp_close(second);
         }
     }
 }

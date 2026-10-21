@@ -14,6 +14,29 @@ use crate::project::{self, ProjectFlags};
 use arandu_middle::layout::DataLayout;
 use arandu_query::ArandCompilerDb;
 
+pub(crate) fn selects_wasm_backend(target: Option<&str>, kind: project::TargetKind) -> bool {
+    target.is_some_and(|triple| triple.starts_with("wasm32"))
+        || kind == project::TargetKind::Component
+}
+
+fn llvm_clang_identity() -> String {
+    match std::process::Command::new("clang")
+        .arg("--version")
+        .output()
+    {
+        Ok(output) if output.status.success() => {
+            let text = String::from_utf8_lossy(&output.stdout);
+            text.lines()
+                .next()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(str::to_owned)
+                .unwrap_or_else(|| "clang-unavailable".to_owned())
+        }
+        _ => "clang-unavailable".to_owned(),
+    }
+}
+
 pub fn cmd_project_build(
     start: &Path,
     flags: &ProjectFlags,
@@ -95,11 +118,12 @@ pub fn cmd_project_build(
         semantic_source: false,
     });
 
-    let is_wasm = flags
-        .target
-        .as_deref()
-        .is_some_and(|t| t.starts_with("wasm32"))
-        || ctx.target_kind == project::TargetKind::Component;
+    let is_wasm = selects_wasm_backend(flags.target.as_deref(), ctx.target_kind);
+    let toolchain_identity = if is_llvm {
+        llvm_clang_identity()
+    } else {
+        String::new()
+    };
     if !is_wasm && data_layout != DataLayout::host() {
         return Err(CliFailure::usage(
             "native builds require the host data layout; non-host layouts are emit-only",
@@ -139,6 +163,7 @@ pub fn cmd_project_build(
         },
         opt,
         debug_info,
+        toolchain: &toolchain_identity,
         manifest_path: &ctx.manifest_path,
         extra_inputs: &build_inputs,
         target_triple: if is_wasm { Some(wasm_triple) } else { None },
@@ -740,5 +765,25 @@ pub fn cmd_project_build(
             Ok(CliSuccess::Done)
         }
         Err(diag) => print_diagnostics_and_exit(std::iter::once(diag), &filepath),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::selects_wasm_backend;
+    use crate::project;
+
+    #[test]
+    fn wasm_selection_follows_the_triple_not_pointer_width() {
+        assert!(!selects_wasm_backend(
+            Some("i686-unknown-linux-gnu"),
+            project::TargetKind::Bin
+        ));
+        assert!(selects_wasm_backend(
+            Some("wasm32-wasip1"),
+            project::TargetKind::Bin
+        ));
+        assert!(selects_wasm_backend(None, project::TargetKind::Component));
+        assert!(!selects_wasm_backend(None, project::TargetKind::Bin));
     }
 }

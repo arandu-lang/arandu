@@ -13,20 +13,36 @@ impl<'a> CEmitter<'a> {
     pub(super) fn emit_vec_buf_runtime(&mut self, uint_c_ty: &str) {
         let _ = writeln!(
             &mut self.output,
-            r#"/* Pure-buffer alloc (Vec / GenArena thin) — mirrors JIT ar_vec_*. */
+            r#"/* Pure-buffer alloc (Vec / GenArena thin) — mirrors JIT ar_vec_*.
+   malloc's alignment is only the host pointer alignment. SIMD vectors need
+   16 bytes, so the payload pointer is over-aligned and the raw block is
+   stored immediately before it. realloc keeps the same contract. */
+#define AR_VEC_ALIGN 16
 static void *ar_vec_malloc({uint_c_ty} size) {{
     if (size == 0) return NULL;
-    void *p = malloc((size_t)size);
-    return p;
+    size_t payload = (size_t)size;
+    size_t extra = (size_t)AR_VEC_ALIGN - 1 + sizeof(void *);
+    if (payload > SIZE_MAX - extra) return NULL;
+    void *raw = malloc(payload + extra);
+    if (!raw) return NULL;
+    uintptr_t aligned = ((uintptr_t)raw + sizeof(void *) + ((size_t)AR_VEC_ALIGN - 1))
+        & ~(uintptr_t)((size_t)AR_VEC_ALIGN - 1);
+    ((void **)aligned)[-1] = raw;
+    return (void *)aligned;
 }}
 static void ar_vec_buf_free(void *p, {uint_c_ty} size) {{
     (void)size;
-    free(p);
+    if (p) free(((void **)p)[-1]);
 }}
 static void *ar_vec_realloc(void *p, {uint_c_ty} old_size, {uint_c_ty} new_size) {{
-    if (new_size == 0) {{ free(p); return NULL; }}
-    void *q = realloc(p, (size_t)new_size);
-    (void)old_size;
+    if (new_size == 0) {{ ar_vec_buf_free(p, old_size); return NULL; }}
+    void *q = ar_vec_malloc(new_size);
+    if (!q) return NULL;
+    if (p && old_size > 0) {{
+        size_t copied = (size_t)(old_size < new_size ? old_size : new_size);
+        memcpy(q, p, copied);
+        ar_vec_buf_free(p, old_size);
+    }}
     return q;
 }}
 typedef struct {{ uint8_t *data; {uint_c_ty} len; {uint_c_ty} capacity; }} ArOwnedStringRuntime;

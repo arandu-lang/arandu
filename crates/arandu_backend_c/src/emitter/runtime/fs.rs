@@ -560,10 +560,18 @@ static {int_c_ty} ar_fs_unlinkat({int_c_ty} dir_fd, const uint8_t *path_ptr, {ui
         let _ = writeln!(
             &mut self.output,
             r#"/* std.net host helpers. Socket syscalls live in the net PAL. */
-#define AR_MAX_UDP_SOCKETS 64
-static intptr_t ar_udp_fds[AR_MAX_UDP_SOCKETS];
-static int ar_udp_initialized = 0;
+typedef struct ArUdpSlot {{
+    uint16_t generation;
+    intptr_t fd;
+}} ArUdpSlot;
+
+static ArUdpSlot *ar_udp_slots = NULL;
+static size_t ar_udp_slot_count = 0;
+static size_t ar_udp_slot_cap = 0;
 static atomic_flag ar_udp_table_lock = ATOMIC_FLAG_INIT;
+
+#define AR_UDP_GEN_MASK 0x7FFFu
+#define AR_UDP_MAX_SLOTS 65536u
 
 static void ar_udp_lock_table(void) {{
     while (atomic_flag_test_and_set_explicit(&ar_udp_table_lock, memory_order_acquire)) {{}}
@@ -573,11 +581,49 @@ static void ar_udp_unlock_table(void) {{
     atomic_flag_clear_explicit(&ar_udp_table_lock, memory_order_release);
 }}
 
+static int32_t ar_udp_pack(size_t index, uint16_t generation) {{
+    return (int32_t)((((uint32_t)generation & (uint32_t)AR_UDP_GEN_MASK) << 16) | (uint32_t)index);
+}}
+
+static int ar_udp_unpack(int32_t id, size_t *index_out, uint16_t *generation_out) {{
+    if (id < 0) return 0;
+    uint32_t raw = (uint32_t)id;
+    *index_out = (size_t)(raw & 0xFFFFu);
+    *generation_out = (uint16_t)((raw >> 16) & (uint32_t)AR_UDP_GEN_MASK);
+    return 1;
+}}
+
+static uint16_t ar_udp_bump_generation(uint16_t generation) {{
+    uint16_t next = (uint16_t)((generation + 1u) & AR_UDP_GEN_MASK);
+    return next == 0 ? 1u : next;
+}}
+
+static int ar_udp_reserve(void) {{
+    if (ar_udp_slot_count < ar_udp_slot_cap) return 1;
+    if (ar_udp_slot_cap >= AR_UDP_MAX_SLOTS) return 0;
+    size_t next = ar_udp_slot_cap == 0 ? 8u : ar_udp_slot_cap * 2u;
+    if (next > AR_UDP_MAX_SLOTS) next = AR_UDP_MAX_SLOTS;
+    ArUdpSlot *grown = (ArUdpSlot *)realloc(ar_udp_slots, next * sizeof(ArUdpSlot));
+    if (!grown) return 0;
+    for (size_t i = ar_udp_slot_cap; i < next; i++) {{
+        grown[i].generation = 0;
+        grown[i].fd = (intptr_t)-1;
+    }}
+    ar_udp_slots = grown;
+    ar_udp_slot_cap = next;
+    return 1;
+}}
+
 static intptr_t ar_udp_duplicate_fd(int32_t id) {{
-    if (id < 0 || id >= AR_MAX_UDP_SOCKETS) return -1;
+    size_t index = 0;
+    uint16_t generation = 0;
+    if (!ar_udp_unpack(id, &index, &generation)) return -1;
     ar_udp_lock_table();
-    intptr_t fd = ar_udp_fds[id];
-    intptr_t duplicate = (ar_udp_initialized && fd != (intptr_t)-1) ? ar_pal_dup(fd) : (intptr_t)-1;
+    intptr_t fd = (intptr_t)-1;
+    if (index < ar_udp_slot_count && ar_udp_slots[index].generation == generation) {{
+        fd = ar_udp_slots[index].fd;
+    }}
+    intptr_t duplicate = fd != (intptr_t)-1 ? ar_pal_dup(fd) : (intptr_t)-1;
     ar_udp_unlock_table();
     return duplicate;
 }}
@@ -593,26 +639,31 @@ static int32_t ar_net_udp_bind(const uint8_t *host_ptr, {uint_c_ty} host_len, in
     if (fd == (intptr_t)-1) return -1;
 
     ar_udp_lock_table();
-    if (!ar_udp_initialized) {{
-        for (int i = 0; i < AR_MAX_UDP_SOCKETS; i++) ar_udp_fds[i] = (intptr_t)-1;
-        ar_udp_initialized = 1;
+    size_t slot = ar_udp_slot_count;
+    int reused = 0;
+    for (size_t i = 0; i < ar_udp_slot_count; i++) {{
+        if (ar_udp_slots[i].fd == (intptr_t)-1) {{
+            slot = i;
+            reused = 1;
+            break;
+        }}
     }}
-    int slot = -1;
-    for (int i = 0; i < AR_MAX_UDP_SOCKETS; i++) {{
-        if (ar_udp_fds[i] == (intptr_t)-1) {{ slot = i; break; }}
+    if (!reused) {{
+        if (ar_udp_slot_count >= AR_UDP_MAX_SLOTS || !ar_udp_reserve()) {{
+            ar_udp_unlock_table();
+            ar_pal_udp_close(fd);
+            return -1;
+        }}
+        slot = ar_udp_slot_count++;
     }}
-    if (slot < 0) {{
-        ar_udp_unlock_table();
-        ar_pal_udp_close(fd);
-        return -1;
-    }}
-    ar_udp_fds[slot] = fd;
+    uint16_t generation = ar_udp_slots[slot].generation;
+    ar_udp_slots[slot].fd = fd;
     ar_udp_unlock_table();
-    return (int32_t)slot;
+    return ar_udp_pack(slot, generation);
 }}
 
 static int32_t ar_net_udp_send_to(int32_t id, const uint8_t *buf, {uint_c_ty} len, const uint8_t *host_ptr, {uint_c_ty} host_len, int32_t port) {{
-    if (id < 0 || id >= AR_MAX_UDP_SOCKETS || !buf || !host_ptr || host_len == 0 || port < 0 || port > 65535) return -1;
+    if (id < 0 || !buf || !host_ptr || host_len == 0 || port < 0 || port > 65535) return -1;
     intptr_t fd = ar_udp_duplicate_fd(id);
     if (fd == (intptr_t)-1) return -1;
 
@@ -627,7 +678,7 @@ static int32_t ar_net_udp_send_to(int32_t id, const uint8_t *buf, {uint_c_ty} le
 }}
 
 static int32_t ar_net_udp_recv_from(int32_t id, uint8_t *buf, {uint_c_ty} len, int32_t *port_out) {{
-    if (id < 0 || id >= AR_MAX_UDP_SOCKETS || !buf || len == 0) return -1;
+    if (id < 0 || !buf || len == 0) return -1;
     intptr_t fd = ar_udp_duplicate_fd(id);
     if (fd == (intptr_t)-1) return -1;
     int port = 0;
@@ -639,15 +690,20 @@ static int32_t ar_net_udp_recv_from(int32_t id, uint8_t *buf, {uint_c_ty} len, i
 }}
 
 static void ar_net_udp_close(int32_t id) {{
-    if (id >= 0 && id < AR_MAX_UDP_SOCKETS) {{
-        ar_udp_lock_table();
-        intptr_t fd = ar_udp_fds[id];
-        if (ar_udp_initialized && fd != (intptr_t)-1) {{
-            ar_udp_fds[id] = (intptr_t)-1;
-            ar_pal_udp_close(fd);
-        }}
-        ar_udp_unlock_table();
+    size_t index = 0;
+    uint16_t generation = 0;
+    if (!ar_udp_unpack(id, &index, &generation)) return;
+    intptr_t fd = (intptr_t)-1;
+    ar_udp_lock_table();
+    if (index < ar_udp_slot_count
+        && ar_udp_slots[index].generation == generation
+        && ar_udp_slots[index].fd != (intptr_t)-1) {{
+        fd = ar_udp_slots[index].fd;
+        ar_udp_slots[index].fd = (intptr_t)-1;
+        ar_udp_slots[index].generation = ar_udp_bump_generation(generation);
     }}
+    ar_udp_unlock_table();
+    if (fd != (intptr_t)-1) ar_pal_udp_close(fd);
 }}
 
 static int32_t ar_net_dns_resolve(const uint8_t *name_ptr, {uint_c_ty} name_len, uint8_t *ip_buf, {uint_c_ty} ip_cap) {{

@@ -972,20 +972,33 @@ pub(super) fn token_expectation_names(name: &str) -> &'static [&'static str] {
 
 pub(super) fn merge_text_parts(parts: Vec<StringPart>) -> Vec<StringPart> {
     let mut merged = Vec::new();
+    let mut pending: Option<(arandu_lexer::Span, String)> = None;
     for part in parts {
-        match (merged.last_mut(), part) {
-            (
-                Some(StringPart::Text {
-                    span: existing_span,
-                    text: existing,
-                }),
-                StringPart::Text { span, text: next },
-            ) => {
-                *existing = SmolStr::new(format!("{}{}", existing, next));
-                *existing_span = span_between(*existing_span, span);
+        match part {
+            StringPart::Text { span, text } => {
+                if let Some((existing_span, existing)) = pending.as_mut() {
+                    existing.push_str(text.as_str());
+                    *existing_span = span_between(*existing_span, span);
+                } else {
+                    pending = Some((span, text.to_string()));
+                }
             }
-            (_, part) => merged.push(part),
+            other => {
+                if let Some((span, text)) = pending.take() {
+                    merged.push(StringPart::Text {
+                        span,
+                        text: SmolStr::new(text),
+                    });
+                }
+                merged.push(other);
+            }
         }
+    }
+    if let Some((span, text)) = pending.take() {
+        merged.push(StringPart::Text {
+            span,
+            text: SmolStr::new(text),
+        });
     }
     merged
 }
@@ -1037,5 +1050,56 @@ impl Checkpoint {
         parser.diagnostics.truncate(self.diagnostics_len);
         parser.pending_docs.truncate(self.pending_docs_len);
         self.pool.rollback(&mut parser.pool);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::merge_text_parts;
+    use crate::{ExprId, StringPart};
+    use arandu_lexer::Span;
+    use smol_str::SmolStr;
+
+    #[test]
+    fn adjacent_text_fragments_merge_once() {
+        let parts = vec![
+            StringPart::Text {
+                span: Span::new(0, 0, 1),
+                text: SmolStr::new("a"),
+            },
+            StringPart::Text {
+                span: Span::new(0, 1, 2),
+                text: SmolStr::new("b"),
+            },
+            StringPart::Text {
+                span: Span::new(0, 2, 3),
+                text: SmolStr::new("c"),
+            },
+            StringPart::Expr {
+                span: Span::new(0, 3, 4),
+                expr: ExprId::new(7),
+            },
+            StringPart::Text {
+                span: Span::new(0, 4, 5),
+                text: SmolStr::new("d"),
+            },
+        ];
+        let merged = merge_text_parts(parts);
+        assert_eq!(merged.len(), 3);
+        match &merged[0] {
+            StringPart::Text { span, text } => {
+                assert_eq!(text.as_str(), "abc");
+                assert_eq!((span.start, span.end), (0, 3));
+            }
+            StringPart::Expr { .. } => panic!("expected merged text"),
+        }
+        match &merged[1] {
+            StringPart::Expr { expr, .. } => assert_eq!(*expr, ExprId::new(7)),
+            StringPart::Text { .. } => panic!("expected expression"),
+        }
+        match &merged[2] {
+            StringPart::Text { text, .. } => assert_eq!(text.as_str(), "d"),
+            StringPart::Expr { .. } => panic!("expected trailing text"),
+        }
     }
 }

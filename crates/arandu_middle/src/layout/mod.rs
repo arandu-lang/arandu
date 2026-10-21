@@ -1,7 +1,9 @@
 pub mod abi;
 mod data_layout;
 
-pub use abi::{AbiScalar, AbiSlot, ArgAbi, DirectAbi, TargetAbi, TargetAbiClassifier};
+pub use abi::{
+    AbiConfigError, AbiScalar, AbiSlot, ArgAbi, DirectAbi, TargetAbi, TargetAbiClassifier,
+};
 pub use data_layout::{DataLayout, DataLayoutError, SizeAlign};
 
 use crate::SymbolId;
@@ -24,11 +26,31 @@ impl DenseRange {
         Self { start: 0, len: 0 }
     }
 
+    /// Builds a range when both ends fit in `u32` and their sum does not wrap.
+    #[must_use]
+    pub const fn try_new(start: usize, len: usize) -> Option<Self> {
+        if start > u32::MAX as usize || len > u32::MAX as usize {
+            return None;
+        }
+        let start = start as u32;
+        let len = len as u32;
+        if start.checked_add(len).is_none() {
+            return None;
+        }
+        Some(Self { start, len })
+    }
+
+    /// Builds a range.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `start` or `len` does not fit in `u32`, or if `start + len`
+    /// overflows. Callers that can observe a malformed range use [`Self::try_new`].
     #[must_use]
     pub const fn new(start: usize, len: usize) -> Self {
-        Self {
-            start: start as u32,
-            len: len as u32,
+        match Self::try_new(start, len) {
+            Some(range) => range,
+            None => panic!("DenseRange exceeds u32"),
         }
     }
 

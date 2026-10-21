@@ -168,10 +168,11 @@ pub unsafe extern "C" fn ar_vec_destroy(id: i64) {
 
 // ── Raw buffer helpers for pure-Arandu Vec growth (L6.1) ─────────────────
 
-/// Default 8-byte alignment required by JIT raw buffers and vectors.
-const VEC_BUFFER_ALIGN: usize = 8;
+/// Alignment shared by vector buffers and 128-bit SIMD element storage.
+/// Allocation, growth, and free all use this value.
+const VEC_BUFFER_ALIGN: usize = 16;
 
-/// Allocate `size` bytes (8-aligned). Null on OOM / invalid size.
+/// Allocate `size` bytes (16-aligned). Null on OOM / invalid size.
 ///
 /// # Safety
 /// JIT host only; free with [`ar_vec_buf_free`] using the same size.
@@ -410,6 +411,23 @@ pub unsafe extern "C" fn ar_string_push_str(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vec_buffers_stay_16_byte_aligned_across_alloc_and_realloc() {
+        unsafe {
+            let first = ar_vec_malloc(24);
+            assert!(!first.is_null());
+            assert_eq!(first as usize % 16, 0);
+            let grown = ar_vec_realloc(first, 24, 48);
+            assert!(!grown.is_null());
+            assert_eq!(grown as usize % 16, 0);
+            ar_vec_buf_free(grown, 48);
+            let fresh = ar_vec_realloc(std::ptr::null_mut(), 0, 32);
+            assert!(!fresh.is_null());
+            assert_eq!(fresh as usize % 16, 0);
+            ar_vec_buf_free(fresh, 32);
+        }
+    }
 
     #[test]
     fn push_get_len_free() {

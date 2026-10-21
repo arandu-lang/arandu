@@ -161,7 +161,9 @@ Some enums and unfinished Named layouts still return an explicit diagnostic.
 It emits `nonnull` on reference parameters and `nounwind` on definitions, but
 no scoped alias metadata. It is available through `arandu emit-llvm`,
 experimental `arandu run -b llvm`, and experimental `arandu build -b llvm`
-(host only; requires `clang` and the packaged runtime). Differential smith
+(host only; requires `clang` and the packaged runtime). `lli` does not link
+that runtime, and `run -b llvm` refuses it instead of executing unresolved IR.
+Differential smith
 fuzzing covers Cranelift↔LLVM via `synthesized-llvm` and `synthesized-all`
 (clang + packaged runtime; skips known experimental emission gaps). EMI also
 exercises LLVM on the interpolation / GenArena / string-lifecycle fixtures.
@@ -347,7 +349,11 @@ thread handles call `ar_pal_*`. The `#ifdef` branches for those operations live
 in the platform abstraction layer. Windows directory listing, including MinGW,
 uses `FindFirstFileW` and `FindNextFileW`, so the translation unit does not
 depend on `dirent.h`. Socket code is a separate net PAL emitted only when
-`ar_net_*` is live, and it includes `winsock2.h` before `windows.h`. `cl.exe`
+`ar_net_*` is live, and it includes `winsock2.h` before `windows.h`. UDP bind
+and send resolve the host with `getaddrinfo` (`AF_UNSPEC`), so hostnames and
+IPv6 are accepted. The C socket table grows past 64 entries and packs a
+generation into the handle; a closed id is not reused as the same integer.
+Host names longer than 255 bytes stay rejected. `cl.exe`
 still does not compile the GNU C dialect of user code. Clang or GCC does,
 including Clang targeting the MSVC ABI. The task parking lot stays
 platform-specific because Apple timed wait and thread cancellation differ.

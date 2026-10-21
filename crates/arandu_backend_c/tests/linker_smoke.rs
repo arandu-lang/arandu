@@ -35,7 +35,12 @@ fn platform_calls_stay_behind_the_pal() {
     let fs_rs = include_str!("../src/emitter/runtime/fs.rs");
     let env_rs = include_str!("../src/emitter/runtime/env.rs");
     let native = include_str!("../src/emitter/runtime/native_thread.c");
-    let task = include_str!("../src/emitter/runtime/task.c");
+    let task = concat!(
+        include_str!("../src/emitter/runtime/task_table.c"),
+        include_str!("../src/emitter/runtime/task_parallel.c"),
+        include_str!("../src/emitter/runtime/task_park.c"),
+        include_str!("../src/emitter/runtime/task_thread.c"),
+    );
     let pal = include_str!("../src/emitter/runtime/pal.c");
     let pal_net = include_str!("../src/emitter/runtime/pal_net.c");
 

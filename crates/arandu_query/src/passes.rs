@@ -125,6 +125,54 @@ pub fn cycle_recover_internal_symbols(
     Arc::new(arandu_middle::ExportedSymbolTable::cycle_fallback())
 }
 
+fn index_associated_methods<'a>(
+    tables: impl IntoIterator<
+        Item = &'a std::collections::BTreeMap<
+            String,
+            (arandu_middle::SymbolId, arandu_middle::SymbolKind),
+        >,
+    >,
+) -> std::collections::BTreeMap<
+    &'a str,
+    Vec<(&'a str, arandu_middle::SymbolId, arandu_middle::SymbolKind)>,
+> {
+    let mut methods = std::collections::BTreeMap::new();
+    for table in tables {
+        for (key, &(id, kind)) in table {
+            if kind != arandu_middle::SymbolKind::AssociatedFunc {
+                continue;
+            }
+            let Some((owner, method)) = key.split_once('.') else {
+                continue;
+            };
+            methods
+                .entry(owner)
+                .or_insert_with(Vec::new)
+                .push((method, id, kind));
+        }
+    }
+    methods
+}
+
+fn insert_reexported_methods(
+    methods: &std::collections::BTreeMap<
+        &str,
+        Vec<(&str, arandu_middle::SymbolId, arandu_middle::SymbolKind)>,
+    >,
+    type_name: &str,
+    export_name: &str,
+    map: &mut std::collections::BTreeMap<
+        String,
+        (arandu_middle::SymbolId, arandu_middle::SymbolKind),
+    >,
+) {
+    if let Some(found) = methods.get(type_name) {
+        for &(method, id, kind) in found {
+            map.insert(format!("{export_name}.{method}"), (id, kind));
+        }
+    }
+}
+
 /// Symbols visible to other files via `import`.
 ///
 /// Public surface only. Internal exports live in a separate query so public
@@ -177,6 +225,7 @@ pub fn exported_symbols(
                         if target_exports.is_cycle {
                             return Arc::new(arandu_middle::ExportedSymbolTable::cycle_fallback());
                         }
+                        let associated = index_associated_methods([&target_exports.symbols]);
                         for item in items {
                             let name = item.name.as_str();
                             if let Some(&(id, kind)) = target_exports.symbols.get(name) {
@@ -200,20 +249,12 @@ pub fn exported_symbols(
                                         | arandu_middle::SymbolKind::Enum
                                         | arandu_middle::SymbolKind::TypeAlias
                                 ) {
-                                    let prefix = format!("{name}.");
-                                    for (k, &(assoc_id, assoc_kind)) in &target_exports.symbols {
-                                        if matches!(
-                                            assoc_kind,
-                                            arandu_middle::SymbolKind::AssociatedFunc
-                                        ) {
-                                            if let Some(method) = k.strip_prefix(&prefix) {
-                                                map.insert(
-                                                    format!("{export_name}.{method}"),
-                                                    (assoc_id, assoc_kind),
-                                                );
-                                            }
-                                        }
-                                    }
+                                    insert_reexported_methods(
+                                        &associated,
+                                        name,
+                                        &export_name,
+                                        &mut map,
+                                    );
                                 }
                                 map.insert(export_name, (id, kind));
                             }
@@ -304,6 +345,13 @@ pub fn internal_symbols(
                         {
                             return Arc::new(arandu_middle::ExportedSymbolTable::cycle_fallback());
                         }
+                        let associated = index_associated_methods(
+                            std::iter::once(&target_exports.symbols).chain(
+                                target_internal
+                                    .as_ref()
+                                    .map(|table| &table.internal_symbols),
+                            ),
+                        );
                         for item in items {
                             let name = item.name.as_str();
                             if let Some(&(id, kind)) =
@@ -348,26 +396,12 @@ pub fn internal_symbols(
                                         | arandu_middle::SymbolKind::Enum
                                         | arandu_middle::SymbolKind::TypeAlias
                                 ) {
-                                    let prefix = format!("{name}.");
-                                    for (k, &(assoc_id, assoc_kind)) in
-                                        target_exports.symbols.iter().chain(
-                                            target_internal
-                                                .iter()
-                                                .flat_map(|t| t.internal_symbols.iter()),
-                                        )
-                                    {
-                                        if matches!(
-                                            assoc_kind,
-                                            arandu_middle::SymbolKind::AssociatedFunc
-                                        ) {
-                                            if let Some(method) = k.strip_prefix(&prefix) {
-                                                map.insert(
-                                                    format!("{export_name}.{method}"),
-                                                    (assoc_id, assoc_kind),
-                                                );
-                                            }
-                                        }
-                                    }
+                                    insert_reexported_methods(
+                                        &associated,
+                                        name,
+                                        &export_name,
+                                        &mut map,
+                                    );
                                 }
                                 map.insert(export_name, (id, kind));
                             }

@@ -893,8 +893,10 @@ mod tests {
 
     #[test]
     fn file_id_allocator_does_not_wrap() {
-        let mut registry = super::FileRegistry::default();
-        registry.next_id = u32::MAX;
+        let mut registry = super::FileRegistry {
+            next_id: u32::MAX,
+            ..super::FileRegistry::default()
+        };
         assert!(registry.next_id().is_none());
         assert_eq!(registry.next_id, u32::MAX);
     }

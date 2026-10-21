@@ -412,6 +412,22 @@ pub struct RawCompileResponse {
     pub json_len: usize,
 }
 
+/// # Safety
+/// `ptr` is null or points at `len` readable bytes that outlive `'a`.
+unsafe fn utf8_from_raw<'a>(ptr: *const u8, len: usize) -> &'a str {
+    if ptr.is_null() || len == 0 {
+        ""
+    } else {
+        let slice = unsafe { std::slice::from_raw_parts(ptr, len) };
+        std::str::from_utf8(slice).unwrap_or("")
+    }
+}
+
+fn catch_string(fallback: &str, body: impl FnOnce() -> String) -> String {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(body))
+        .unwrap_or_else(|_| fallback.to_string())
+}
+
 /// Compile source code passed from JavaScript and return a pointer to `RawCompileResponse`.
 ///
 /// # Safety
@@ -422,12 +438,7 @@ pub unsafe extern "C" fn arandu_compile(
     source_len: usize,
 ) -> *mut RawCompileResponse {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let source = if source_ptr.is_null() || source_len == 0 {
-            ""
-        } else {
-            let slice = unsafe { std::slice::from_raw_parts(source_ptr, source_len) };
-            std::str::from_utf8(slice).unwrap_or("")
-        };
+        let source = unsafe { utf8_from_raw(source_ptr, source_len) };
 
         compile_source(source)
     }));
@@ -536,18 +547,11 @@ pub unsafe extern "C" fn arandu_complete(
     source_len: usize,
     offset: u32,
 ) -> *mut RawJsonResponse {
-    let json_str = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let source = if source_ptr.is_null() || source_len == 0 {
-            ""
-        } else {
-            let slice = unsafe { std::slice::from_raw_parts(source_ptr, source_len) };
-            std::str::from_utf8(slice).unwrap_or("")
-        };
-
+    let json_str = catch_string("[]", || {
+        let source = unsafe { utf8_from_raw(source_ptr, source_len) };
         let items = completion_source(source, offset);
         serde_json::to_string(&items).unwrap_or_else(|_| "[]".to_string())
-    }))
-    .unwrap_or_else(|_| "[]".to_string());
+    });
 
     into_raw_json_response(json_str)
 }
@@ -565,18 +569,11 @@ pub unsafe extern "C" fn arandu_hover(
     source_len: usize,
     offset: u32,
 ) -> *mut RawJsonResponse {
-    let json_str = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let source = if source_ptr.is_null() || source_len == 0 {
-            ""
-        } else {
-            let slice = unsafe { std::slice::from_raw_parts(source_ptr, source_len) };
-            std::str::from_utf8(slice).unwrap_or("")
-        };
-
+    let json_str = catch_string("null", || {
+        let source = unsafe { utf8_from_raw(source_ptr, source_len) };
         let hover = hover_source(source, offset);
         serde_json::to_string(&hover).unwrap_or_else(|_| "null".to_string())
-    }))
-    .unwrap_or_else(|_| "null".to_string());
+    });
 
     into_raw_json_response(json_str)
 }
@@ -594,18 +591,11 @@ pub unsafe extern "C" fn arandu_signature_help(
     source_len: usize,
     offset: u32,
 ) -> *mut RawJsonResponse {
-    let json_str = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let source = if source_ptr.is_null() || source_len == 0 {
-            ""
-        } else {
-            let slice = unsafe { std::slice::from_raw_parts(source_ptr, source_len) };
-            std::str::from_utf8(slice).unwrap_or("")
-        };
-
+    let json_str = catch_string("null", || {
+        let source = unsafe { utf8_from_raw(source_ptr, source_len) };
         let sig_help = signature_help_source(source, offset);
         serde_json::to_string(&sig_help).unwrap_or_else(|_| "null".to_string())
-    }))
-    .unwrap_or_else(|_| "null".to_string());
+    });
 
     into_raw_json_response(json_str)
 }
@@ -643,18 +633,11 @@ pub unsafe extern "C" fn arandu_format(
     source_ptr: *const u8,
     source_len: usize,
 ) -> *mut RawJsonResponse {
-    let json_str = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let source = if source_ptr.is_null() || source_len == 0 {
-            ""
-        } else {
-            let slice = unsafe { std::slice::from_raw_parts(source_ptr, source_len) };
-            std::str::from_utf8(slice).unwrap_or("")
-        };
-
+    let json_str = catch_string("\"\"", || {
+        let source = unsafe { utf8_from_raw(source_ptr, source_len) };
         let formatted = format_source(source);
         serde_json::to_string(&formatted).unwrap_or_else(|_| "\"\"".to_string())
-    }))
-    .unwrap_or_else(|_| "\"\"".to_string());
+    });
 
     into_raw_json_response(json_str)
 }

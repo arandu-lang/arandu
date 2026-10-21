@@ -47,6 +47,7 @@ impl DenseRange {
     /// Panics if `start` or `len` does not fit in `u32`, or if `start + len`
     /// overflows. Callers that can observe a malformed range use [`Self::try_new`].
     #[must_use]
+    #[allow(clippy::panic)] // Infallible constructor; malformed ranges use try_new.
     pub const fn new(start: usize, len: usize) -> Self {
         match Self::try_new(start, len) {
             Some(range) => range,

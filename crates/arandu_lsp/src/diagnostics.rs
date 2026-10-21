@@ -19,6 +19,7 @@ use lsp_types::{
     CodeDescription, Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, DiagnosticTag,
     Location, NumberOrString, PublishDiagnosticsParams, Uri,
 };
+use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 /// Spawns one background diagnostics job for an already-committed document.
@@ -106,7 +107,8 @@ pub(crate) fn compute_diagnostics(
     source: SourceFile,
 ) -> (Vec<Diagnostic>, [u8; 32]) {
     let text = source.text(&snap.db);
-    let index = LineIndex::new(text);
+    let mut line_indexes = HashMap::new();
+    line_indexes.insert(*source.file_id(&snap.db), LineIndex::new(text));
     let source_uri = uri_from_path(source.path(&snap.db).as_ref());
     let ide_diags = arandu_query::file_ide_diagnostics(&snap.db, source);
     let fp = arandu_query::ide_diags_fingerprint(ide_diags);
@@ -116,12 +118,14 @@ pub(crate) fn compute_diagnostics(
         .iter()
         .map(|d| {
             let span = arandu_base::Span::new(d.file_id, d.start, d.end);
-            let primary_location = diagnostic_location(snap, span).or_else(|| {
-                source_uri.clone().map(|uri| Location {
-                    uri,
-                    range: span_to_range(&index, span),
-                })
-            });
+            let primary_location =
+                diagnostic_location(snap, span, &mut line_indexes).or_else(|| {
+                    let index = line_indexes.get(&d.file_id)?;
+                    source_uri.clone().map(|uri| Location {
+                        uri,
+                        range: span_to_range(index, span),
+                    })
+                });
             let range = primary_location
                 .as_ref()
                 .map_or_else(lsp_types::Range::default, |location| location.range);
@@ -138,6 +142,7 @@ pub(crate) fn compute_diagnostics(
                     diagnostic_location(
                         snap,
                         arandu_base::Span::new(label.file_id, label.start, label.end),
+                        &mut line_indexes,
                     )
                     .map(|location| DiagnosticRelatedInformation {
                         location,
@@ -157,6 +162,7 @@ pub(crate) fn compute_diagnostics(
                             replacement.start,
                             replacement.end,
                         ),
+                        &mut line_indexes,
                     )?;
                     Some(ide::DiagnosticFixData {
                         title: hint.message.clone(),
@@ -213,13 +219,19 @@ pub(crate) fn compute_diagnostics(
     (diags, bytes)
 }
 
-fn diagnostic_location(snap: &AnalysisSnapshot, span: arandu_base::Span) -> Option<Location> {
+fn diagnostic_location(
+    snap: &AnalysisSnapshot,
+    span: arandu_base::Span,
+    line_indexes: &mut HashMap<u32, LineIndex>,
+) -> Option<Location> {
     let source = snap.db.source_file_by_id(span.file_id)?;
     let uri = uri_from_path(source.path(&snap.db).as_ref())?;
-    let index = LineIndex::new(source.text(&snap.db));
+    let index = line_indexes
+        .entry(span.file_id)
+        .or_insert_with(|| LineIndex::new(source.text(&snap.db)));
     Some(Location {
         uri,
-        range: span_to_range(&index, span),
+        range: span_to_range(index, span),
     })
 }
 

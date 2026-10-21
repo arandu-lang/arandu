@@ -160,6 +160,7 @@ impl TargetAbiClassifier {
     /// Panics if [`Self::try_new`] would reject the pair. Callers that receive
     /// an unvalidated width use `try_new` and surface the error.
     #[must_use]
+    #[allow(clippy::panic)] // Infallible constructor; unvalidated pairs use try_new.
     pub fn new(abi: TargetAbi, pointer_width: u64) -> Self {
         Self::try_new(abi, pointer_width).unwrap_or_else(|error| {
             panic!(

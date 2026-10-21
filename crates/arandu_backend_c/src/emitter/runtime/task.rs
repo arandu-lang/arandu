@@ -14,6 +14,9 @@ impl CEmitter<'_> {
     /// while the blob runs. Standalone C has no OS-worker scheduling at this
     /// surface.
     pub(super) fn emit_task_runtime(&mut self) {
-        self.output.push_str(include_str!("task.c"));
+        self.output.push_str(include_str!("task_table.c"));
+        self.output.push_str(include_str!("task_parallel.c"));
+        self.output.push_str(include_str!("task_park.c"));
+        self.output.push_str(include_str!("task_thread.c"));
     }
 }

@@ -88,6 +88,21 @@ pub enum WebSeverity {
     Info,
 }
 
+fn columns_in_primary_file(
+    primary_file_id: u32,
+    file_id: u32,
+    start: u32,
+    end: u32,
+    line_index: &LineIndex,
+) -> (Option<u32>, Option<u32>, Option<u32>, Option<u32>) {
+    if file_id != primary_file_id {
+        return (None, None, None, None);
+    }
+    let (line, column) = line_index.line_col(start);
+    let (end_line, end_column) = line_index.line_col(end);
+    (Some(line), Some(column), Some(end_line), Some(end_column))
+}
+
 fn build_web_replacement(
     primary_file_id: u32,
     file_id: u32,
@@ -96,13 +111,8 @@ fn build_web_replacement(
     new_text: String,
     line_index: &LineIndex,
 ) -> WebReplacement {
-    let (line, column, end_line, end_column) = if file_id == primary_file_id {
-        let (line, column) = line_index.line_col(start);
-        let (end_line, end_column) = line_index.line_col(end);
-        (Some(line), Some(column), Some(end_line), Some(end_column))
-    } else {
-        (None, None, None, None)
-    };
+    let (line, column, end_line, end_column) =
+        columns_in_primary_file(primary_file_id, file_id, start, end, line_index);
     WebReplacement {
         file_id,
         start,
@@ -159,13 +169,13 @@ pub fn convert_diagnostic(
         .labels
         .iter()
         .map(|label| {
-            let (line, column, end_line, end_column) = if label.span.file_id == span.file_id {
-                let (line, column) = line_index.line_col(label.span.start);
-                let (end_line, end_column) = line_index.line_col(label.span.end);
-                (Some(line), Some(column), Some(end_line), Some(end_column))
-            } else {
-                (None, None, None, None)
-            };
+            let (line, column, end_line, end_column) = columns_in_primary_file(
+                span.file_id,
+                label.span.file_id,
+                label.span.start,
+                label.span.end,
+                line_index,
+            );
             WebLabel {
                 file_id: label.span.file_id,
                 start: label.span.start,
@@ -240,13 +250,13 @@ pub fn convert_ide_diagnostic(
         .labels
         .iter()
         .map(|label| {
-            let (line, column, end_line, end_column) = if label.file_id == diag.file_id {
-                let (line, column) = line_index.line_col(label.start);
-                let (end_line, end_column) = line_index.line_col(label.end);
-                (Some(line), Some(column), Some(end_line), Some(end_column))
-            } else {
-                (None, None, None, None)
-            };
+            let (line, column, end_line, end_column) = columns_in_primary_file(
+                diag.file_id,
+                label.file_id,
+                label.start,
+                label.end,
+                line_index,
+            );
             WebLabel {
                 file_id: label.file_id,
                 start: label.start,

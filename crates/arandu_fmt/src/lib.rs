@@ -87,7 +87,7 @@ pub fn format_edits_in_range(source: &str, start: u32, end: u32) -> Vec<TextEdit
         let s = item_start as usize;
         let e = (item_end as usize).min(source.len()).max(s);
         let item_src = &source[s..e];
-        let mut formatted = format_source(item_src);
+        let mut formatted = format_item_snippet(item_src);
         if !item_src.ends_with('\n') {
             formatted = formatted
                 .strip_suffix('\n')
@@ -161,6 +161,22 @@ fn minimal_edit(old: &str, new: &str, base: usize) -> Option<TextEdit> {
         end,
         new_text: new[prefix..new_end].to_string(),
     })
+}
+
+/// Reindent one top-level item from the tree already parsed for the range.
+///
+/// The full document was lexed once. This path keeps a parse of the formatted
+/// snippet as the recovery check and does not parse the item again beforehand.
+fn format_item_snippet(item_src: &str) -> String {
+    let mut pretty = reindent_item(item_src);
+    if !pretty.is_empty() && !pretty.ends_with('\n') {
+        pretty.push('\n');
+    }
+    if parses_clean(&pretty) {
+        pretty
+    } else {
+        normalize_whitespace(item_src)
+    }
 }
 
 fn parses_clean(source: &str) -> bool {

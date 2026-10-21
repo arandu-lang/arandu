@@ -6,6 +6,14 @@ use crate::explain::RebuildLog;
 use crate::manifest::ProjectManifest;
 use crate::vfs::{ModuleRoots, PackageModuleMap, ResolutionEpoch};
 use arandu_middle::DataLayout;
+
+mod cancel;
+mod hash_eq;
+mod registry;
+
+pub use cancel::{catch_query_cancellation, QueryCancellationToken, QueryCancelled};
+pub use hash_eq::HashEq;
+use registry::{CstCache, FileRegistry};
 use salsa::{Database as _, Setter, Storage};
 
 pub type FileId = u32;
@@ -24,60 +32,7 @@ pub struct RegistryMetrics {
     pub allocated_file_ids: FileId,
 }
 
-/// Per-file CST cache for incremental [`crate::passes::syntax_tree`] rebuilds.
-#[derive(Default)]
-struct CstCache {
-    /// Last successful tree per file (text must match before reuse).
-    by_file: FxHashMap<FileId, arandu_parser::SyntaxTree>,
-}
-
 pub use crate::stable_hash::StableHash;
-
-#[derive(Clone)]
-pub struct HashEq<T> {
-    pub value: Arc<T>,
-    hash: blake3::Hash,
-}
-
-impl<T: StableHash> HashEq<T> {
-    pub fn new(value: T) -> Self {
-        let hash = value.stable_hash();
-        Self {
-            value: Arc::new(value),
-            hash,
-        }
-    }
-
-    /// Wrap an existing `Arc` (compute hash once).
-    #[must_use]
-    pub fn from_arc(value: Arc<T>) -> Self {
-        let hash = value.stable_hash();
-        Self { value, hash }
-    }
-
-    /// Share the same `Arc` and hash without re-hashing or deep-cloning `T`.
-    #[must_use]
-    pub fn share(other: &Self) -> Self {
-        Self {
-            value: Arc::clone(&other.value),
-            hash: other.hash,
-        }
-    }
-}
-
-impl<T> PartialEq for HashEq<T> {
-    fn eq(&self, other: &Self) -> bool {
-        self.hash == other.hash
-    }
-}
-impl<T> Eq for HashEq<T> {}
-
-impl<T> std::ops::Deref for HashEq<T> {
-    type Target = T;
-    fn deref(&self) -> &Self::Target {
-        &self.value
-    }
-}
 
 #[salsa::db]
 pub trait ArandCompilerDb: salsa::Database {
@@ -106,57 +61,6 @@ pub trait ArandCompilerDb: salsa::Database {
 
 pub use arandu_middle::db::SourceFile;
 pub use arandu_middle::db::TargetConfig;
-
-/// Internal shared state for the file registry.
-///
-/// Two maps are kept in sync at every insertion point:
-/// - `by_path`  — `String → SourceFile` for import path resolution (O(1) by path)
-/// - `by_id`    — `FileId → SourceFile` for Salsa queries (O(1) by FileId)
-///
-/// Before this change both `source_text` and `file_path` performed an O(N)
-/// linear scan over `by_path.values()` to find a file by its numeric ID.
-#[derive(Clone)]
-struct FileRegistry {
-    by_path: FxHashMap<String, SourceFile>,
-    by_id: FxHashMap<FileId, SourceFile>,
-    /// Monotonic id allocator (must not reuse after unregister — Salsa keeps old inputs).
-    next_id: FileId,
-}
-
-impl Default for FileRegistry {
-    fn default() -> Self {
-        Self {
-            by_path: FxHashMap::default(),
-            by_id: FxHashMap::default(),
-            next_id: 100,
-        }
-    }
-}
-
-impl FileRegistry {
-    /// Insert a file into both indexes simultaneously.
-    fn insert(&mut self, path: String, file_id: FileId, file: SourceFile) {
-        self.by_path.insert(path, file);
-        self.by_id.insert(file_id, file);
-    }
-
-    /// Next available FileId (starts at 100 to avoid collisions with test stubs).
-    ///
-    /// `u32::MAX` is never issued. A further allocation fails instead of wrapping
-    /// back onto an id Salsa may still be holding.
-    fn next_id(&mut self) -> Option<FileId> {
-        let next = self.next_id.checked_add(1)?;
-        let id = self.next_id;
-        self.next_id = next;
-        Some(id)
-    }
-
-    fn remove_path(&mut self, path: &str) -> Option<SourceFile> {
-        let file = self.by_path.remove(path)?;
-        // by_id cleaned by caller once file_id is known (needs Database).
-        Some(file)
-    }
-}
 
 /// Salsa database with optional DX.5 rebuild logging.
 ///
@@ -697,22 +601,6 @@ impl DatabaseImpl {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct QueryCancellationToken(salsa::CancellationToken);
-
-impl QueryCancellationToken {
-    pub fn cancel(&self) {
-        self.0.cancel();
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct QueryCancelled;
-
-pub fn catch_query_cancellation<T>(operation: impl FnOnce() -> T) -> Result<T, QueryCancelled> {
-    salsa::Cancelled::catch(std::panic::AssertUnwindSafe(operation)).map_err(|_| QueryCancelled)
-}
-
 impl arandu_middle::db::SourceDatabase for DatabaseImpl {
     fn source_file_by_id(&self, file_id: FileId) -> Option<SourceFile> {
         DatabaseImpl::source_file_by_id(self, file_id)
@@ -893,9 +781,9 @@ mod tests {
 
     #[test]
     fn file_id_allocator_does_not_wrap() {
-        let mut registry = super::FileRegistry {
+        let mut registry = super::registry::FileRegistry {
             next_id: u32::MAX,
-            ..super::FileRegistry::default()
+            ..super::registry::FileRegistry::default()
         };
         assert!(registry.next_id().is_none());
         assert_eq!(registry.next_id, u32::MAX);

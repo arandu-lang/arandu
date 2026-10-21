@@ -1,6 +1,7 @@
 use super::*;
 use crate::hir::pool::IndexRange;
 use crate::newtype_index;
+use crate::types::Primitive;
 
 struct LayoutEngine(super::LayoutEngine);
 

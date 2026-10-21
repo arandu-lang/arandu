@@ -18,6 +18,8 @@
 #include <wchar.h>
 #if !defined(__MINGW32__)
 #include <io.h>
+#else
+#include <unistd.h>
 #endif
 #else
 #include <stdatomic.h>

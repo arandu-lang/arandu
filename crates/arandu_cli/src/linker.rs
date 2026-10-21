@@ -579,6 +579,7 @@ fn detect_fast_linker() -> Option<FastLinker> {
     select_fast_linker(explicit.as_deref(), bundled, path_has_lld, path_has_mold)
 }
 
+#[cfg(target_os = "linux")]
 fn select_fast_linker(
     explicit: Option<&str>,
     bundled: Option<String>,

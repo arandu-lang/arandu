@@ -319,8 +319,12 @@ jobs:
           $vcvars = Join-Path $install.Trim() "VC\Auxiliary\Build\vcvars64.bat"
           if (-not (Test-Path $vcvars)) { throw "vcvars64.bat was not found at $vcvars" }
           cmd /c "`"$vcvars`" >nul && set" | ForEach-Object {
-            if ($_ -match '^(.*?)=(.*)$' -and $Matches[1] -match '^[A-Za-z_][A-Za-z0-9_]*$') {
-              Set-Item -Path "Env:$($Matches[1])" -Value $Matches[2]
+            if ($_ -match '^(.*?)=(.*)$') {
+              $name = $Matches[1]
+              $value = $Matches[2]
+              if ($name -match '^[A-Za-z_][A-Za-z0-9_]*$') {
+                Set-Item -Path "Env:$name" -Value $value
+              }
             }
           }
           $env:PATH = "C:\Program Files\LLVM\bin;" + $env:PATH

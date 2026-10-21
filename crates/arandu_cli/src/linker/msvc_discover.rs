@@ -2,7 +2,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use super::{LinkAttempt, build_system_linker_command, format_output, strip_verbatim_prefix};
+use super::{
+    LinkAttempt, build_system_linker_command, format_output, linker_name_is_lld,
+    strip_verbatim_prefix,
+};
 
 #[cfg(windows)]
 pub(super) fn run_discovered_msvc(

@@ -442,4 +442,21 @@ func trigger(cond: bool): int {
         !has_undefined_abort,
         "object must not import an external libc 'abort' symbol; it must inline the CPU trap"
     );
+    let imports_host_trap = file.symbols().any(|sym| {
+        let Ok(name) = sym.name() else {
+            return false;
+        };
+        (name == "ar_rt_trap" || name == "_ar_rt_trap") && !sym.is_definition()
+    });
+    if cfg!(windows) {
+        assert!(
+            imports_host_trap,
+            "windows abort must call ar_rt_trap instead of an inline UD2"
+        );
+    } else {
+        assert!(
+            !imports_host_trap,
+            "unix abort must stay an inline trap with no ar_rt_trap import"
+        );
+    }
 }

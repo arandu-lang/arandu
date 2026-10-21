@@ -33,6 +33,30 @@ pub unsafe extern "C" fn ar_process_exit(code: i64) -> ! {
     std::process::exit(status)
 }
 
+/// End the process after a language-level abort on Windows.
+///
+/// An inline `ud2` inside a JIT frame has no unwind info. Windows reports
+/// that as a stack overflow and writes the message to stderr, so the abort
+/// contract (failed status, empty stderr) is lost. `ExitProcess` terminates
+/// without the C runtime's `abort` banner. Unix keeps the hardware trap and
+/// does not emit this symbol.
+///
+/// # Safety
+/// Called only from JIT-linked Arandu code. This function never returns.
+#[cfg(windows)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ar_rt_trap() -> ! {
+    // SAFETY: `ExitProcess` ends the process. Status 1 is a failed exit
+    // without writing to stderr.
+    unsafe { exit_process(1) }
+}
+
+#[cfg(windows)]
+unsafe extern "system" {
+    #[link_name = "ExitProcess"]
+    fn exit_process(code: u32) -> !;
+}
+
 /// Nanoseconds since an arbitrary process-local epoch (monotonic, not wall clock).
 ///
 /// # Safety

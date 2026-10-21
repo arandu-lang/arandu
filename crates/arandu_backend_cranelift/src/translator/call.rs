@@ -442,7 +442,9 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 true
             }
             Some(arandu_semantics::IntrinsicKind::Abort) => {
-                // PAN / Invariant 5: lower directly to CPU trap (UD2/BRK) with zero metadata overhead.
+                // PAN / Invariant 5: Unix lowers directly to a CPU trap (UD2/BRK)
+                // with zero metadata overhead. Windows calls `ar_rt_trap` first:
+                // an inline UD2 in a JIT frame is reported as a stack overflow.
                 let code = if bare == "abortGenerationalMismatch"
                     || full_name.ends_with("abortGenerationalMismatch")
                 {
@@ -450,6 +452,16 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 } else {
                     cranelift_codegen::ir::TrapCode::unwrap_user(1)
                 };
+                #[cfg(windows)]
+                {
+                    let Some(trap_id) = self.resolve_function("ar_rt_trap") else {
+                        self.record_ice("ar_rt_trap was not declared", self.func_span());
+                        self.builder.ins().trap(code);
+                        return true;
+                    };
+                    let trap_ref = self.module.declare_func_in_func(trap_id, self.builder.func);
+                    self.builder.ins().call(trap_ref, &[]);
+                }
                 self.builder.ins().trap(code);
                 true
             }

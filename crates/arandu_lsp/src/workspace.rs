@@ -17,7 +17,6 @@ use std::path::PathBuf;
 
 pub(crate) struct WorkspaceFile {
     pub(crate) path: PathBuf,
-    pub(crate) text: String,
 }
 
 pub(crate) struct WorkspaceStdlib {
@@ -111,12 +110,14 @@ pub(crate) fn spawn_workspace_discovery(
             let _ = tx.send(WorkspaceEvent::Done);
             return;
         }
-        for (path, text) in files {
+        for (path, _snapshot) in files {
             if cancellation.is_cancelled() {
                 break;
             }
+            // Registration re-reads the path. The scan snapshot is only proof
+            // that the file was readable when discovery accepted it.
             if tx
-                .send(WorkspaceEvent::File(WorkspaceFile { path, text }))
+                .send(WorkspaceEvent::File(WorkspaceFile { path }))
                 .is_err()
             {
                 break;
@@ -137,9 +138,9 @@ fn discover_stdlib(cancelled: &dyn Fn() -> bool) -> Result<WorkspaceStdlib, Stri
             break;
         }
         let path = root.join(relative);
-        let text = std::fs::read_to_string(&path)
+        std::fs::read_to_string(&path)
             .map_err(|error| format!("cannot read stdlib module {}: {error}", path.display()))?;
-        files.push(WorkspaceFile { path, text });
+        files.push(WorkspaceFile { path });
     }
     Ok(WorkspaceStdlib { root, files })
 }
@@ -248,9 +249,9 @@ fn discover_workspace_project_with_cache(
                 if cancelled() {
                     return Err("workspace discovery cancelled".to_owned());
                 }
-                let text = std::fs::read_to_string(&path)
+                std::fs::read_to_string(&path)
                     .map_err(|error| format!("cannot read module {}: {error}", path.display()))?;
-                module_files.push(WorkspaceFile { path, text });
+                module_files.push(WorkspaceFile { path });
             }
         }
         let stdlib_root = resolve_stdlib_root(StdlibResolveOpts::default())
@@ -280,9 +281,16 @@ pub(crate) fn register_workspace_file(state: &mut ServerState, file: WorkspaceFi
     // colon or unreserved filename bytes. DocumentStore replaces an existing
     // path on open, which would invalidate the editor's generational handle.
     let path = crate::uri_util::path_from_uri(&uri);
-    if !state.by_uri.contains_key(uri.as_str()) && state.docs.by_path(&path).is_none() {
-        state.open_or_commit(&uri, file.text);
+    if state.by_uri.contains_key(uri.as_str()) || state.docs.by_path(&path).is_some() {
+        return;
     }
+    // The scan can finish after didRenameFiles / didDeleteFiles. A snapshot
+    // captured at the old path must not resurrect a file that is already gone,
+    // and a file that is still there is indexed from its current bytes.
+    let Ok(current) = std::fs::read_to_string(&file.path) else {
+        return;
+    };
+    state.open_or_commit(&uri, current);
 }
 
 #[cfg(test)]
@@ -308,13 +316,7 @@ mod tests {
         state.mark_open(&client_uri);
         state.set_version(id, 7);
         let revision = state.revision();
-        register_workspace_file(
-            &mut state,
-            WorkspaceFile {
-                path,
-                text: "func main(): int { return missing_name }".into(),
-            },
-        );
+        register_workspace_file(&mut state, WorkspaceFile { path });
         assert_eq!(
             state.revision(),
             revision,
@@ -336,6 +338,56 @@ mod tests {
             .iter()
             .any(|diagnostic| diagnostic.code
                 == Some(lsp_types::NumberOrString::String("T045".into()))));
+    }
+
+    #[test]
+    fn discovery_does_not_resurrect_a_removed_or_stale_path() {
+        let root = std::env::temp_dir().join(format!(
+            "arandu-lsp-stale-discovery-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("create fixture");
+        let path = root.join("created.aru");
+        let original = "func created_symbol(): int { return 3 }\n";
+        std::fs::write(&path, original).expect("write source");
+        let mut state = ServerState::new();
+        state.host.set_ctfe_limits(
+            arandu_query::ctfe::CtfeLimits::new(1, 128, 1_000_000).expect("limits"),
+        );
+        register_workspace_file(&mut state, WorkspaceFile { path: path.clone() });
+        let uri = uri_from_path(&path).expect("uri");
+        let id = state.by_uri[uri.as_str()];
+        let source = state.docs.get(id).expect("discovered document").source;
+        let snapshot = state.snapshot();
+        assert_eq!(source.text(&snapshot.db).as_ref(), original);
+
+        let updated = "func renamed_body(): int { return 4 }\n";
+        state.remove_uri(&uri);
+        std::fs::write(&path, updated).expect("rewrite source");
+        register_workspace_file(&mut state, WorkspaceFile { path: path.clone() });
+        let id = state.by_uri[uri.as_str()];
+        let source = state.docs.get(id).expect("reread document").source;
+        let snapshot = state.snapshot();
+        assert_eq!(
+            source.text(&snapshot.db).as_ref(),
+            updated,
+            "discovery must commit the bytes still on disk"
+        );
+
+        state.remove_uri(&uri);
+        std::fs::remove_file(&path).expect("delete source");
+        register_workspace_file(&mut state, WorkspaceFile { path: path.clone() });
+        assert_eq!(
+            state.docs.len(),
+            0,
+            "a discovery snapshot must not resurrect a path that no longer exists"
+        );
+        assert!(state.by_uri.is_empty());
+        std::fs::remove_dir_all(root).expect("remove fixture");
     }
 
     #[test]

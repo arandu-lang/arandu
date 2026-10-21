@@ -147,8 +147,14 @@ func main(): int {
         .output()
         .is_ok_and(|out| out.status.success())
     {
-        let compile = Command::new("clang")
-            .args(["-O1", "-fsanitize=undefined", "-fno-sanitize-recover=all"])
+        let mut command = Command::new("clang");
+        command.arg("-O1");
+        // UBSan's runtime links on Unix. The Windows clang/MSVC driver fails
+        // here with LNK1120 because that runtime is not on the link line.
+        if cfg!(unix) {
+            command.args(["-fsanitize=undefined", "-fno-sanitize-recover=all"]);
+        }
+        let compile = command
             .arg(&c_path)
             .arg("-o")
             .arg(&exe_path)

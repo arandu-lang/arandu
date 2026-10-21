@@ -113,10 +113,18 @@ fn discovery_waits_for_interactive_response_delivery() {
         release_rx.recv().expect("release request");
         serde_json::json!({"items": []})
     });
+    let discovered = std::env::temp_dir().join(format!(
+        "arandu-discovered-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos()
+    ));
+    std::fs::write(&discovered, "func discovered() {}\n").expect("write discovered file");
     workspace_tx
         .send(WorkspaceEvent::File(WorkspaceFile {
-            path: std::env::temp_dir().join("arandu-discovered.aru"),
-            text: "func discovered() {}".into(),
+            path: discovered.clone(),
         }))
         .expect("discovery event");
 
@@ -167,6 +175,7 @@ fn discovery_waits_for_interactive_response_delivery() {
     };
     crate::workspace::register_workspace_file(&mut state, file);
     assert_ne!(state.revision(), revision);
+    std::fs::remove_file(discovered).expect("remove discovered file");
 }
 
 #[test]

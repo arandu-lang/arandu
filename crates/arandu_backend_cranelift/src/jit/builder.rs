@@ -243,6 +243,9 @@ pub(crate) fn create_jit_builder_with_io_and_process_args(
         "ar_process_exit",
         crate::os_runtime::ar_process_exit as *const u8,
     );
+    // Windows abort. Unix keeps the inline trap and must not look this up.
+    #[cfg(windows)]
+    builder.symbol("ar_rt_trap", crate::os_runtime::ar_rt_trap as *const u8);
     builder.symbol(
         "ar_time_monotonic_ns",
         crate::os_runtime::ar_time_monotonic_ns as *const u8,

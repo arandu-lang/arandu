@@ -198,9 +198,18 @@ pub(crate) fn runtime_imports(
         .map_err(|err| codegen_ice(format!("failed to declare free: {err:?}")))?;
     insert_sym(func_ids, "free", free_id);
 
-    // PAN / Invariant 5: `abort` and `abortGenerationalMismatch` are compiler intrinsics
-    // that lower directly to native hardware traps (UD2 on x86_64, BRK on AArch64)
-    // with zero unwinding metadata overhead, without importing libc abort.
+    // PAN / Invariant 5: `abort` and `abortGenerationalMismatch` are compiler intrinsics.
+    // Unix lowers them to a hardware trap (UD2 / BRK) with no libc `abort` import.
+    // Windows JIT frames have no unwind info for that trap and report a stack
+    // overflow on stderr, so abort calls `ar_rt_trap` (`ExitProcess`) instead.
+    #[cfg(windows)]
+    {
+        let trap_sig = Signature::new(default_call_conv);
+        let id = module
+            .declare_function("ar_rt_trap", Linkage::Import, &trap_sig)
+            .map_err(|err| codegen_ice(format!("failed to declare ar_rt_trap: {err:?}")))?;
+        insert_sym(func_ids, "ar_rt_trap", id);
+    }
 
     // SL_T.4 opaque optimization barriers. Signatures deliberately match
     // the machine representation selected by lowering.

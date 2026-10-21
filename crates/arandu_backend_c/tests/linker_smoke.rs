@@ -96,7 +96,12 @@ int main(int argc, char **argv) {
     if (argc < 2) return 2;
     if (sqrt(4.0) != 2.0) return 3;
     if (ar_pal_thread_id() == 0) return 4;
-    if (ar_pal_monotonic_ns() <= 0) return 5;
+    /* Windows anchors the monotonic clock at the first call, so that sample
+       may be zero. A later sample must move forward. */
+    int64_t started = ar_pal_monotonic_ns();
+    if (started < 0) return 5;
+    ar_pal_sleep_ms(20);
+    if (ar_pal_monotonic_ns() <= started) return 5;
     int err = 0;
     ArPalDir *dir = ar_pal_readdir_open(argv[1], &err);
     if (!dir) return 6;

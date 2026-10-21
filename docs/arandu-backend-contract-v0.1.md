@@ -1,7 +1,7 @@
 # Arandu backend contract v0.1
 
 **Status:** S1-C contract; audited 2026-08-20.
-**Scope:** the boundary from validated AMIR to C source, host JIT/native AOT or core-Wasm/component emission; each surface has its own support limits. LLVM/eBPF/SPIR-V are proposals, not current backends.
+**Scope:** the boundary from validated AMIR to C source, host JIT/native AOT, core-Wasm/component emission, and the experimental direct LLVM backend; each surface has its own support limits. eBPF/SPIR-V remain proposals.
 
 This document is intentionally conservative. A green frontend test means that a
 program reaches AMIR; it does not automatically promote every runtime facility,
@@ -159,10 +159,16 @@ atomics, primitive `StringInterp`/`ToStr`, and GenRef ops (`GenInsert`/
 `GenGet`/`GenSet`/`GenUpsert`/`GenRemove`, including `std.alloc.gen_arena`).
 Some enums and unfinished Named layouts still return an explicit diagnostic.
 It emits `nonnull` on reference parameters and `nounwind` on definitions, but
-no scoped alias metadata. It is available through `arandu emit-llvm`,
-experimental `arandu run -b llvm`, and experimental `arandu build -b llvm`
-(host only; requires `clang` and the packaged runtime). `lli` does not link
-that runtime, and `run -b llvm` refuses it instead of executing unresolved IR.
+no scoped alias metadata. Host products are available through `arandu
+emit-llvm`, experimental `arandu run -b llvm`, and `arandu build -b llvm`
+(requires `clang` and the packaged runtime). The current candidate branch also
+contains experimental freestanding products for `thumbv7em-none-eabihf` and
+`riscv32imc-unknown-none-elf`: LLVM IR, relocatable object, static library, or
+user-scripted ELF. These products do not imply a supplied chip memory map,
+startup code, or freestanding `std`; `std.thread` and `std.fs` diagnose T099 on
+bare-metal targets. Their CI and release promotion remain pending. `lli` does
+not link the host runtime, and `run -b llvm` refuses it instead of executing
+unresolved IR.
 Differential smith
 fuzzing covers Cranelift↔LLVM via `synthesized-llvm` and `synthesized-all`
 (clang + packaged runtime; skips known experimental emission gaps). EMI also

@@ -135,44 +135,20 @@ static {int_c_ty} ar_fs_open(ArStr path, {int_c_ty} flags, {int_c_ty} mode) {{
 static {int_c_ty} ar_fs_read({int_c_ty} fd, uint8_t *buf, {uint_c_ty} count) {{
     if (fd < 0 || (count > 0 && !buf)) return -1;
     if (count == 0) return 0;
-#if !defined(_WIN32) || defined(__MINGW32__)
-    for (;;) {{
-        ssize_t n = read((int)fd, buf, (size_t)count);
-        if (n < 0) {{
-            if (errno == EINTR) continue;
-            return -1;
-        }}
-        return ({int_c_ty})n;
-    }}
-#else
-    return -1;
-#endif
+    int64_t n = ar_pal_read((intptr_t)fd, buf, (size_t)count);
+    return n < 0 ? -1 : ({int_c_ty})n;
 }}
 
 static {int_c_ty} ar_fs_write({int_c_ty} fd, const uint8_t *buf, {uint_c_ty} count) {{
     if (fd < 0 || (count > 0 && !buf)) return -1;
     if (count == 0) return 0;
-#if !defined(_WIN32) || defined(__MINGW32__)
-    for (;;) {{
-        ssize_t n = write((int)fd, buf, (size_t)count);
-        if (n < 0) {{
-            if (errno == EINTR) continue;
-            return -1;
-        }}
-        return ({int_c_ty})n;
-    }}
-#else
-    return -1;
-#endif
+    int64_t n = ar_pal_write((intptr_t)fd, buf, (size_t)count);
+    return n < 0 ? -1 : ({int_c_ty})n;
 }}
 
 static {int_c_ty} ar_fs_close({int_c_ty} fd) {{
-#if !defined(_WIN32) || defined(__MINGW32__)
-    if (fd >= 0) return ({int_c_ty})close((int)fd);
-#else
-    (void)fd;
-#endif
-    return 0;
+    if (fd < 0) return 0;
+    return ar_pal_close_fd((intptr_t)fd) == 0 ? 0 : -1;
 }}
 
 static void ar_fs_read_all(ArStr path, uint8_t **out_buf, {uint_c_ty} *out_len, {uint_c_ty} *out_cap, {int_c_ty} *err) {{
@@ -298,10 +274,10 @@ static void ar_fs_readdir(ArStr path, uint8_t **out_buf, {uint_c_ty} *out_count,
         *out_buf = NULL; *out_count = 0; *out_cap = 0; *err = 8;
         return;
     }}
-#if !defined(_WIN32) || defined(__MINGW32__)
-    DIR *d = opendir(c_path);
+    int pal_err = 0;
+    ArPalDir *d = ar_pal_readdir_open(c_path, &pal_err);
     if (!d) {{
-        int e = errno;
+        int e = pal_err != 0 ? pal_err : errno;
         if (c_path != stack_buf) free(c_path);
         *out_buf = NULL; *out_count = 0; *out_cap = 0; *err = ar_map_errno(e);
         return;
@@ -311,87 +287,64 @@ static void ar_fs_readdir(ArStr path, uint8_t **out_buf, {uint_c_ty} *out_count,
     size_t descriptor_size = sizeof(void *) + sizeof({uint_c_ty});
     ArHostDirEntry *entries = (ArHostDirEntry *)malloc(entries_cap * sizeof(ArHostDirEntry));
     if (!entries) {{
-        closedir(d);
+        ar_pal_readdir_close(d);
         if (c_path != stack_buf) free(c_path);
         *out_buf = NULL; *out_count = 0; *out_cap = 0; *err = 8;
         return;
     }}
     size_t names_total_len = 0;
-    struct dirent *ent;
     int readdir_error = 0;
     for (;;) {{
-        errno = 0;
-        ent = readdir(d);
-        if (!ent) {{
+        ArPalDirEnt ent;
+        memset(&ent, 0, sizeof(ent));
+        int next = ar_pal_readdir_next(d, &ent, &pal_err);
+        if (next == 0) break;
+        if (next < 0) {{
             readdir_error = errno;
             break;
         }}
-        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
-        size_t nlen = strlen(ent->d_name);
+        size_t nlen = ent.name_len;
         if (nlen == SIZE_MAX || count == SIZE_MAX || names_total_len > SIZE_MAX - nlen) {{
+            free(ent.name);
             for (size_t j = 0; j < count; j++) free(entries[j].name);
             free(entries);
-            closedir(d);
+            ar_pal_readdir_close(d);
             if (c_path != stack_buf) free(c_path);
             *out_buf = NULL; *out_count = 0; *out_cap = 0; *err = 8;
             return;
         }}
-        uint8_t is_dir = 0;
-#ifdef DT_DIR
-        if (ent->d_type == DT_DIR) is_dir = 1;
-        else if (ent->d_type == DT_UNKNOWN) {{
-            char sub_path[4096];
-            snprintf(sub_path, sizeof(sub_path), "%s/%s", c_path, ent->d_name);
-            struct stat st;
-            if (stat(sub_path, &st) == 0 && S_ISDIR(st.st_mode)) is_dir = 1;
-        }}
-#else
-        char sub_path[4096];
-        snprintf(sub_path, sizeof(sub_path), "%s/%s", c_path, ent->d_name);
-        struct stat st;
-        if (stat(sub_path, &st) == 0 && S_ISDIR(st.st_mode)) is_dir = 1;
-#endif
         if (count == entries_cap) {{
             if (entries_cap > SIZE_MAX / 2 ||
                 entries_cap * 2 > SIZE_MAX / sizeof(ArHostDirEntry)) {{
+                free(ent.name);
                 for (size_t j = 0; j < count; j++) free(entries[j].name);
                 free(entries);
-                closedir(d);
+                ar_pal_readdir_close(d);
                 if (c_path != stack_buf) free(c_path);
                 *out_buf = NULL; *out_count = 0; *out_cap = 0; *err = 8;
                 return;
             }}
             size_t new_cap = entries_cap * 2;
-            ArHostDirEntry *next = (ArHostDirEntry *)realloc(entries, new_cap * sizeof(ArHostDirEntry));
-            if (!next) {{
+            ArHostDirEntry *grown = (ArHostDirEntry *)realloc(entries, new_cap * sizeof(ArHostDirEntry));
+            if (!grown) {{
+                free(ent.name);
                 for (size_t j = 0; j < count; j++) free(entries[j].name);
                 free(entries);
-                closedir(d);
+                ar_pal_readdir_close(d);
                 if (c_path != stack_buf) free(c_path);
                 *out_buf = NULL; *out_count = 0; *out_cap = 0; *err = 8;
                 return;
             }}
-            entries = next;
+            entries = grown;
             entries_cap = new_cap;
         }}
-        char *copy = (char *)malloc(nlen + 1);
-        if (!copy) {{
-            for (size_t j = 0; j < count; j++) free(entries[j].name);
-            free(entries);
-            closedir(d);
-            if (c_path != stack_buf) free(c_path);
-            *out_buf = NULL; *out_count = 0; *out_cap = 0; *err = 8;
-            return;
-        }}
-        memcpy(copy, ent->d_name, nlen);
-        copy[nlen] = '\0';
-        entries[count].name = copy;
+        entries[count].name = ent.name;
         entries[count].len = nlen;
-        entries[count].is_dir = is_dir;
+        entries[count].is_dir = ent.is_dir ? 1 : 0;
         count++;
         names_total_len += nlen;
     }}
-    closedir(d);
+    ar_pal_readdir_close(d);
     if (c_path != stack_buf) free(c_path);
     if (readdir_error != 0) {{
         for (size_t j = 0; j < count; j++) free(entries[j].name);
@@ -460,10 +413,6 @@ static void ar_fs_readdir(ArStr path, uint8_t **out_buf, {uint_c_ty} *out_count,
     *out_count = ({uint_c_ty})count;
     *out_cap = ({uint_c_ty})blob_len;
     *err = 0;
-#else
-    if (c_path != stack_buf) free(c_path);
-    *out_buf = NULL; *out_count = 0; *out_cap = 0; *err = 8;
-#endif
 }}
 
 #if defined(__linux__)
@@ -603,8 +552,16 @@ static {int_c_ty} ar_fs_unlinkat({int_c_ty} dir_fd, const uint8_t *path_ptr, {ui
 #endif
 }}
 
+"#
+        );
+    }
+
+    pub(super) fn emit_net_runtime(&mut self, uint_c_ty: &str) {
+        let _ = writeln!(
+            &mut self.output,
+            r#"/* std.net host helpers. Socket syscalls live in the net PAL. */
 #define AR_MAX_UDP_SOCKETS 64
-static int ar_udp_fds[AR_MAX_UDP_SOCKETS];
+static intptr_t ar_udp_fds[AR_MAX_UDP_SOCKETS];
 static int ar_udp_initialized = 0;
 static atomic_flag ar_udp_table_lock = ATOMIC_FLAG_INIT;
 
@@ -616,168 +573,91 @@ static void ar_udp_unlock_table(void) {{
     atomic_flag_clear_explicit(&ar_udp_table_lock, memory_order_release);
 }}
 
-static int ar_udp_duplicate_fd(int32_t id) {{
+static intptr_t ar_udp_duplicate_fd(int32_t id) {{
     if (id < 0 || id >= AR_MAX_UDP_SOCKETS) return -1;
     ar_udp_lock_table();
-    int fd = ar_udp_fds[id];
-#if !defined(_WIN32)
-    int duplicate = fd >= 0 ? dup(fd) : -1;
-#else
-    int duplicate = -1;
-#endif
+    intptr_t fd = ar_udp_fds[id];
+    intptr_t duplicate = (ar_udp_initialized && fd != (intptr_t)-1) ? ar_pal_dup(fd) : (intptr_t)-1;
     ar_udp_unlock_table();
     return duplicate;
 }}
 
 static int32_t ar_net_udp_bind(const uint8_t *host_ptr, {uint_c_ty} host_len, int32_t port) {{
-#if !defined(_WIN32)
     if (!host_ptr || host_len == 0 || port < 0 || port > 65535) return -1;
     char host_buf[256];
     if (host_len >= sizeof(host_buf)) return -1;
     memcpy(host_buf, host_ptr, (size_t)host_len);
     host_buf[host_len] = '\0';
 
-    int fd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (fd < 0) return -1;
-
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons((uint16_t)port);
-    if (inet_pton(AF_INET, host_buf, &addr.sin_addr) <= 0) {{
-        close(fd);
-        return -1;
-    }}
-
-    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {{
-        close(fd);
-        return -1;
-    }}
+    intptr_t fd = ar_pal_udp_bind(host_buf, port);
+    if (fd == (intptr_t)-1) return -1;
 
     ar_udp_lock_table();
     if (!ar_udp_initialized) {{
-        for (int i = 0; i < AR_MAX_UDP_SOCKETS; i++) ar_udp_fds[i] = -1;
+        for (int i = 0; i < AR_MAX_UDP_SOCKETS; i++) ar_udp_fds[i] = (intptr_t)-1;
         ar_udp_initialized = 1;
     }}
     int slot = -1;
     for (int i = 0; i < AR_MAX_UDP_SOCKETS; i++) {{
-        if (ar_udp_fds[i] == -1) {{ slot = i; break; }}
+        if (ar_udp_fds[i] == (intptr_t)-1) {{ slot = i; break; }}
     }}
     if (slot < 0) {{
         ar_udp_unlock_table();
-        close(fd);
+        ar_pal_udp_close(fd);
         return -1;
     }}
     ar_udp_fds[slot] = fd;
     ar_udp_unlock_table();
     return (int32_t)slot;
-#else
-    (void)host_ptr; (void)host_len; (void)port;
-    return -1;
-#endif
 }}
 
 static int32_t ar_net_udp_send_to(int32_t id, const uint8_t *buf, {uint_c_ty} len, const uint8_t *host_ptr, {uint_c_ty} host_len, int32_t port) {{
-#if !defined(_WIN32)
     if (id < 0 || id >= AR_MAX_UDP_SOCKETS || !buf || !host_ptr || host_len == 0 || port < 0 || port > 65535) return -1;
-    int fd = ar_udp_duplicate_fd(id);
-    if (fd < 0) return -1;
+    intptr_t fd = ar_udp_duplicate_fd(id);
+    if (fd == (intptr_t)-1) return -1;
 
     char host_buf[256];
-    if (host_len >= sizeof(host_buf)) {{ close(fd); return -1; }}
+    if (host_len >= sizeof(host_buf)) {{ ar_pal_udp_close(fd); return -1; }}
     memcpy(host_buf, host_ptr, (size_t)host_len);
     host_buf[host_len] = '\0';
 
-    struct sockaddr_in target;
-    memset(&target, 0, sizeof(target));
-    target.sin_family = AF_INET;
-    target.sin_port = htons((uint16_t)port);
-    if (inet_pton(AF_INET, host_buf, &target.sin_addr) <= 0) {{ close(fd); return -1; }}
-
-    ssize_t sent = sendto(fd, buf, (size_t)len, 0, (struct sockaddr *)&target, sizeof(target));
-    close(fd);
+    intptr_t sent = ar_pal_udp_send(fd, buf, (size_t)len, host_buf, port);
+    ar_pal_udp_close(fd);
     return sent < 0 ? -1 : (int32_t)sent;
-#else
-    (void)id; (void)buf; (void)len; (void)host_ptr; (void)host_len; (void)port;
-    return -1;
-#endif
 }}
 
 static int32_t ar_net_udp_recv_from(int32_t id, uint8_t *buf, {uint_c_ty} len, int32_t *port_out) {{
-#if !defined(_WIN32)
     if (id < 0 || id >= AR_MAX_UDP_SOCKETS || !buf || len == 0) return -1;
-    int fd = ar_udp_duplicate_fd(id);
-    if (fd < 0) return -1;
-
-    struct sockaddr_in peer;
-    socklen_t peer_len = sizeof(peer);
-    memset(&peer, 0, sizeof(peer));
-
-    ssize_t recvd = recvfrom(fd, buf, (size_t)len, 0, (struct sockaddr *)&peer, &peer_len);
-    close(fd);
+    intptr_t fd = ar_udp_duplicate_fd(id);
+    if (fd == (intptr_t)-1) return -1;
+    int port = 0;
+    intptr_t recvd = ar_pal_udp_recv(fd, buf, (size_t)len, &port);
+    ar_pal_udp_close(fd);
     if (recvd < 0) return -1;
-
-    if (port_out) {{
-        *port_out = (int32_t)ntohs(peer.sin_port);
-    }}
+    if (port_out) *port_out = port;
     return (int32_t)recvd;
-#else
-    (void)id; (void)buf; (void)len; (void)port_out;
-    return -1;
-#endif
 }}
 
 static void ar_net_udp_close(int32_t id) {{
-#if !defined(_WIN32)
     if (id >= 0 && id < AR_MAX_UDP_SOCKETS) {{
         ar_udp_lock_table();
-        int fd = ar_udp_fds[id];
-        if (fd >= 0) {{
-            ar_udp_fds[id] = -1;
-            close(fd);
+        intptr_t fd = ar_udp_fds[id];
+        if (ar_udp_initialized && fd != (intptr_t)-1) {{
+            ar_udp_fds[id] = (intptr_t)-1;
+            ar_pal_udp_close(fd);
         }}
         ar_udp_unlock_table();
     }}
-#else
-    (void)id;
-#endif
 }}
 
 static int32_t ar_net_dns_resolve(const uint8_t *name_ptr, {uint_c_ty} name_len, uint8_t *ip_buf, {uint_c_ty} ip_cap) {{
-#if !defined(_WIN32)
     if (!name_ptr || name_len == 0 || !ip_buf || ip_cap == 0) return -1;
     char name_buf[256];
     if (name_len >= sizeof(name_buf)) return -1;
     memcpy(name_buf, name_ptr, (size_t)name_len);
     name_buf[name_len] = '\0';
-
-    struct addrinfo hints, *res = NULL;
-    memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-
-    if (getaddrinfo(name_buf, NULL, &hints, &res) != 0 || !res) return -1;
-
-    char ip_str[INET6_ADDRSTRLEN];
-    const char *formatted = NULL;
-    if (res->ai_family == AF_INET) {{
-        struct sockaddr_in *ipv4 = (struct sockaddr_in *)res->ai_addr;
-        formatted = inet_ntop(AF_INET, &(ipv4->sin_addr), ip_str, sizeof(ip_str));
-    }} else if (res->ai_family == AF_INET6) {{
-        struct sockaddr_in6 *ipv6 = (struct sockaddr_in6 *)res->ai_addr;
-        formatted = inet_ntop(AF_INET6, &(ipv6->sin6_addr), ip_str, sizeof(ip_str));
-    }}
-    freeaddrinfo(res);
-
-    if (!formatted) return -1;
-    size_t slen = strlen(formatted);
-    if (slen > (size_t)ip_cap) return -1;
-    memcpy(ip_buf, formatted, slen);
-    return (int32_t)slen;
-#else
-    (void)name_ptr; (void)name_len; (void)ip_buf; (void)ip_cap;
-    return -1;
-#endif
+    int n = ar_pal_dns_resolve(name_buf, (char *)ip_buf, (size_t)ip_cap);
+    return n < 0 ? -1 : (int32_t)n;
 }}
 "#
         );

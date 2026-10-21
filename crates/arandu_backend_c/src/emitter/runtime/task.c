@@ -482,21 +482,11 @@ static int32_t ar_rt_parallel_fold_run(
 }
 
 static void ar_rt_thread_sleep_ms(uint64_t ms) {
-#if defined(_WIN32)
-    Sleep((DWORD)ms);
-#else
-    usleep((useconds_t)(ms * 1000));
-#endif
+    ar_pal_sleep_ms(ms);
 }
 
 static void ar_rt_thread_yield(void) {
-#if defined(_WIN32)
-    SwitchToThread();
-#elif defined(__GLIBC__) || defined(__linux__)
-    sched_yield();
-#else
-    usleep(0);
-#endif
+    ar_pal_yield();
 }
 
 #include <time.h>

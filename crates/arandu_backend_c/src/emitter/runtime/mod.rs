@@ -6,6 +6,7 @@ mod features;
 pub(super) mod fs;
 pub(super) mod memory;
 mod native_thread;
+mod pal;
 mod phase_lock;
 pub(super) mod prelude;
 pub(super) mod string;
@@ -66,7 +67,14 @@ impl<'a> CEmitter<'a> {
         if features.tasks {
             let _ = writeln!(&mut self.output, "#include <stdatomic.h>");
         }
-        if features.tasks || features.fs || features.buffers || features.env {
+        let needs_pal = features.tasks || features.native_threads || features.fs || features.env;
+        // Net PAL is emitted first so winsock2.h precedes windows.h inside pal.c.
+        if features.net {
+            self.emit_pal_net_runtime();
+        }
+        if needs_pal {
+            self.emit_pal_runtime();
+        } else if features.buffers {
             let _ = writeln!(
                 &mut self.output,
                 "#if defined(_WIN32)\n#include <malloc.h>\n#include <windows.h>\n#endif"
@@ -96,8 +104,11 @@ impl<'a> CEmitter<'a> {
             );
             let _ = writeln!(
                 &mut self.output,
-                "#if !defined(_WIN32) || defined(__MINGW32__)\n#include <dirent.h>\n#include <fcntl.h>\n#endif\n#if !defined(_WIN32)\n#include <sys/socket.h>\n#include <netinet/in.h>\n#include <arpa/inet.h>\n#include <netdb.h>\n#endif"
+                "#if !defined(_WIN32)\n#include <fcntl.h>\n#endif"
             );
+        }
+        if features.net && !features.fs {
+            let _ = writeln!(self.output, "#include <stdatomic.h>");
         }
         let _ = writeln!(
             &mut self.output,
@@ -205,6 +216,9 @@ impl<'a> CEmitter<'a> {
         }
         if features.fs {
             self.emit_fs_runtime(uint_c_ty, len_c_ty);
+        }
+        if features.net {
+            self.emit_net_runtime(uint_c_ty);
         }
         if features.env {
             self.emit_env_runtime(len_c_ty);

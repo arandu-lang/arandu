@@ -2,6 +2,7 @@
 
 use crate::artifact;
 use crate::cli_error::CliFailure;
+use arandu_middle::{LinkerFlavor, TargetOs, TargetSpec};
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -20,25 +21,7 @@ pub enum LinkerKind {
 
 /// Host libraries needed when invoking Clang for LLVM-generated programs.
 pub(crate) const fn host_runtime_link_args() -> &'static [&'static str] {
-    #[cfg(windows)]
-    {
-        &[
-            "-lkernel32",
-            "-lntdll",
-            "-luserenv",
-            "-lws2_32",
-            "-lbcrypt",
-            "-ldbghelp",
-        ]
-    }
-    #[cfg(target_os = "macos")]
-    {
-        &["-lpthread", "-lm"]
-    }
-    #[cfg(not(any(windows, target_os = "macos")))]
-    {
-        &["-lpthread", "-ldl", "-lm"]
-    }
+    TargetSpec::for_host().cc_link_args()
 }
 
 impl LinkerKind {
@@ -227,6 +210,9 @@ fn link_prepared_objects(
         match run_system_linker(&candidate, objects, runtime, output, patchable_elf, size) {
             Ok(()) => return Ok(LinkerKind::System),
             Err(LinkAttempt::NotFound) => {}
+            // A bundled or PATH `lld` that cannot see the SDK must not hide
+            // `link.exe` / the system driver. Classic linker failures stay fatal.
+            Err(LinkAttempt::Failed(_)) if linker_name_is_lld(&candidate) => {}
             Err(LinkAttempt::Failed(message)) => {
                 return Err(link_failure(output, message));
             }
@@ -278,11 +264,48 @@ enum LinkAttempt {
 }
 
 fn system_linker_candidates() -> Vec<OsString> {
-    if cfg!(windows) {
-        Vec::new()
-    } else {
-        vec![OsString::from("cc"), OsString::from("clang")]
+    match TargetSpec::for_host().linker_flavor() {
+        LinkerFlavor::MsvcLink => {
+            let mut candidates = Vec::new();
+            if let Some(bundled) = bundled_lld_executable() {
+                candidates.push(bundled.into_os_string());
+            }
+            // `lld-link` only resolves `*.lib` when the Windows SDK `LIB` path
+            // is already present. Otherwise discovery below calls VsDevCmd.
+            if std::env::var_os("LIB").is_some() {
+                candidates.push(OsString::from("lld-link"));
+            }
+            candidates
+        }
+        LinkerFlavor::GnuCc | LinkerFlavor::DarwinCc => {
+            vec![OsString::from("cc"), OsString::from("clang")]
+        }
     }
+}
+
+/// `lld-link.exe` contains the text `link.exe`. Match the file name on `lld`
+/// so a failed LLD attempt can fall through to the classic linker.
+fn linker_name_is_lld(linker: &std::ffi::OsStr) -> bool {
+    Path::new(linker)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.to_ascii_lowercase().contains("lld"))
+}
+
+fn bundled_lld_executable() -> Option<PathBuf> {
+    let executable = std::env::current_exe().ok()?;
+    let directory = executable.parent()?;
+    for name in TargetSpec::for_host().linker_plan().preferred_lld_names() {
+        let candidate = directory.join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        let with_exe = directory.join(format!("{name}.exe"));
+        if with_exe.is_file() {
+            return Some(with_exe);
+        }
+    }
+    None
 }
 
 #[cfg(windows)]
@@ -372,15 +395,32 @@ fn run_discovered_msvc(
             "VsDevCmd did not provide PATH".to_string(),
         ));
     };
-    let Some(linker) = std::env::split_paths(path_value)
-        .map(|directory| directory.join("link.exe"))
-        .find(|candidate| candidate.is_file())
-    else {
-        return Err(LinkAttempt::NotFound);
+    let sdk_libs_visible = variables
+        .iter()
+        .any(|(name, value)| name.eq_ignore_ascii_case("LIB") && !value.is_empty());
+    let names: &[&str] = if sdk_libs_visible {
+        &["lld-link.exe", "lld-link", "link.exe"]
+    } else {
+        &["link.exe"]
     };
-
-    let linker = strip_verbatim_prefix(&linker);
-    run_system_linker_with_environment(&linker, objects, runtime, output, &variables, size)
+    for name in names {
+        let Some(linker) = std::env::split_paths(path_value)
+            .map(|directory| directory.join(name))
+            .find(|candidate| candidate.is_file())
+        else {
+            continue;
+        };
+        let linker = strip_verbatim_prefix(&linker);
+        match run_system_linker_with_environment(
+            &linker, objects, runtime, output, &variables, size,
+        ) {
+            Ok(()) => return Ok(()),
+            Err(LinkAttempt::NotFound) => {}
+            Err(LinkAttempt::Failed(_)) if linker_name_is_lld(linker.as_os_str()) => {}
+            Err(failed) => return Err(failed),
+        }
+    }
+    Err(LinkAttempt::NotFound)
 }
 
 #[cfg(windows)]
@@ -413,10 +453,6 @@ fn build_system_linker_command(
     patchable_elf: bool,
     size: bool,
 ) -> Command {
-    #[cfg(not(target_os = "linux"))]
-    let _ = patchable_elf;
-    #[cfg(not(any(target_os = "linux", windows)))]
-    let _ = size;
     let mut command = Command::new(linker);
     let work_dir = linker_work_dir(objects, runtime, output);
     let object_args: Vec<PathBuf> = objects
@@ -440,72 +476,54 @@ fn build_system_linker_command(
     } else {
         strip_verbatim_prefix(runtime)
     };
-    if cfg!(windows) {
-        command
-            .arg("/NOLOGO")
-            .arg("/INCREMENTAL:NO")
-            .arg("/Brepro")
-            .arg("/SUBSYSTEM:CONSOLE")
-            .arg(format!("/OUT:{}", output_arg.display()));
-        if size {
-            command.args(["/OPT:REF", "/OPT:ICF"]);
-        }
-        for obj in &object_args {
-            command.arg(obj);
-        }
-        command.arg(&runtime_arg).args([
-            "kernel32.lib",
-            "ntdll.lib",
-            "userenv.lib",
-            "ws2_32.lib",
-            "bcrypt.lib",
-            "dbghelp.lib",
-            "msvcrt.lib",
-        ]);
-    } else {
-        for obj in &object_args {
-            command.arg(obj);
-        }
-        command.arg(&runtime_arg).arg("-o").arg(&output_arg);
-        #[cfg(target_os = "linux")]
-        {
-            command.arg("-Wl,--gc-sections").arg(if patchable_elf {
-                "-Wl,--build-id=none"
-            } else {
-                "-Wl,--build-id=sha1"
-            });
+    let spec = TargetSpec::for_host();
+    match spec.linker_flavor() {
+        LinkerFlavor::MsvcLink => {
+            command
+                .arg("/NOLOGO")
+                .arg("/INCREMENTAL:NO")
+                .arg("/Brepro")
+                .arg("/SUBSYSTEM:CONSOLE")
+                .arg(format!("/OUT:{}", output_arg.display()));
             if size {
-                command.arg("-Wl,--strip-all");
+                command.args(["/OPT:REF", "/OPT:ICF"]);
             }
-            command.args([
-                "-lgcc_s",
-                "-lutil",
-                "-lrt",
-                "-lpthread",
-                "-lm",
-                "-ldl",
-                "-lc",
-            ]);
+            for obj in &object_args {
+                command.arg(obj);
+            }
+            command.arg(&runtime_arg).args(spec.msvc_runtime_libs());
         }
-        #[cfg(target_os = "macos")]
-        {
-            command.args([
-                "-Wl,-dead_strip",
-                "-Wl,-x",
-                "-Wl,-S",
-                "-Wl,-oso_prefix,.",
-                "-framework",
-                "Security",
-                "-framework",
-                "CoreFoundation",
-                "-liconv",
-                "-lSystem",
-            ]);
+        LinkerFlavor::DarwinCc => {
+            let _ = (patchable_elf, size);
+            for obj in &object_args {
+                command.arg(obj);
+            }
+            command.arg(&runtime_arg).arg("-o").arg(&output_arg);
+            command.args(["-Wl,-dead_strip", "-Wl,-x", "-Wl,-S", "-Wl,-oso_prefix,."]);
+            for framework in spec.darwin_frameworks() {
+                command.arg("-framework").arg(framework);
+            }
+            command.args(spec.native_aot_cc_libs());
             command.env("ZERO_AR_DATE", "1");
             command.env("LD_DETERMINISTIC_MODE", "YES");
         }
-        #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
-        command.args(["-lpthread", "-lm", "-lc"]);
+        LinkerFlavor::GnuCc => {
+            for obj in &object_args {
+                command.arg(obj);
+            }
+            command.arg(&runtime_arg).arg("-o").arg(&output_arg);
+            if spec.os() == TargetOs::Linux {
+                command.arg("-Wl,--gc-sections").arg(if patchable_elf {
+                    "-Wl,--build-id=none"
+                } else {
+                    "-Wl,--build-id=sha1"
+                });
+                if size {
+                    command.arg("-Wl,--strip-all");
+                }
+            }
+            command.args(spec.native_aot_cc_libs());
+        }
     }
     command
 }
@@ -515,6 +533,7 @@ fn build_system_linker_command(
 enum FastLinker {
     Mold,
     Lld,
+    Bundled(String),
     Custom(String),
 }
 
@@ -527,7 +546,11 @@ impl FastLinker {
                 command.arg("-Wl,--threads=4");
             }
             Self::Lld => {
-                command.arg("-fuse-ld=lld");
+                command.arg(TargetSpec::for_host().linker_plan().cc_fuse_lld_flag());
+                command.arg("-Wl,--threads=4");
+            }
+            Self::Bundled(path) => {
+                command.arg(format!("-fuse-ld={path}"));
                 command.arg("-Wl,--threads=4");
             }
             Self::Custom(name) => {
@@ -548,27 +571,47 @@ fn is_compiler_driver(linker: &std::ffi::OsStr) -> bool {
 
 #[cfg(target_os = "linux")]
 fn detect_fast_linker() -> Option<FastLinker> {
-    if let Some(explicit) = std::env::var_os("ARANDU_USE_LD") {
-        let val = explicit.to_string_lossy().trim().to_string();
-        if val.is_empty() || val == "0" || val == "default" || val == "none" || val == "bfd" {
+    let explicit =
+        std::env::var_os("ARANDU_USE_LD").map(|value| value.to_string_lossy().trim().to_string());
+    let bundled = bundled_lld_executable().map(|path| path.to_string_lossy().into_owned());
+    let path_has_lld = is_executable_in_path("ld.lld") || is_executable_in_path("lld");
+    let path_has_mold = is_executable_in_path("mold") || is_executable_in_path("ld.mold");
+    select_fast_linker(explicit.as_deref(), bundled, path_has_lld, path_has_mold)
+}
+
+fn select_fast_linker(
+    explicit: Option<&str>,
+    bundled: Option<String>,
+    path_has_lld: bool,
+    path_has_mold: bool,
+) -> Option<FastLinker> {
+    if let Some(value) = explicit {
+        if value.is_empty()
+            || value == "0"
+            || value.eq_ignore_ascii_case("default")
+            || value.eq_ignore_ascii_case("none")
+            || value.eq_ignore_ascii_case("bfd")
+        {
             return None;
         }
-        if val.eq_ignore_ascii_case("mold") {
+        if value.eq_ignore_ascii_case("mold") {
             return Some(FastLinker::Mold);
         }
-        if val.eq_ignore_ascii_case("lld") {
+        if value.eq_ignore_ascii_case("lld") {
             return Some(FastLinker::Lld);
         }
-        return Some(FastLinker::Custom(val));
+        return Some(FastLinker::Custom(value.to_string()));
     }
-
-    if is_executable_in_path("mold") || is_executable_in_path("ld.mold") {
-        Some(FastLinker::Mold)
-    } else if is_executable_in_path("lld") || is_executable_in_path("ld.lld") {
-        Some(FastLinker::Lld)
-    } else {
-        None
+    if let Some(path) = bundled {
+        return Some(FastLinker::Bundled(path));
     }
+    if path_has_lld {
+        return Some(FastLinker::Lld);
+    }
+    if path_has_mold {
+        return Some(FastLinker::Mold);
+    }
+    None
 }
 
 #[cfg(target_os = "linux")]
@@ -681,7 +724,7 @@ fn link_with_rustc(
     command
         .arg("-C")
         .arg(format!("link-arg={}", runtime_arg.display()))
-        .args(windows_runtime_link_args())
+        .args(TargetSpec::for_host().msvc_rustc_link_args())
         .args(rustc_reproducible_link_args(patchable_elf));
     if size {
         command.args(["-C", "strip=symbols"]);
@@ -705,21 +748,10 @@ fn link_with_rustc(
     }
 }
 
-#[cfg(windows)]
-fn windows_runtime_link_args() -> [&'static str; 2] {
-    ["-C", "link-arg=bcrypt.lib"]
-}
-
-#[cfg(not(windows))]
-fn windows_runtime_link_args() -> [&'static str; 0] {
-    []
-}
-
 fn rustc_reproducible_link_args(patchable_elf: bool) -> Vec<&'static str> {
-    if cfg!(windows) {
-        vec!["-C", "link-arg=/Brepro"]
-    } else if cfg!(target_os = "macos") {
-        vec![
+    match TargetSpec::for_host().linker_flavor() {
+        LinkerFlavor::MsvcLink => vec!["-C", "link-arg=/Brepro"],
+        LinkerFlavor::DarwinCc => vec![
             "-C",
             "link-arg=-Wl,-dead_strip",
             "-C",
@@ -728,16 +760,15 @@ fn rustc_reproducible_link_args(patchable_elf: bool) -> Vec<&'static str> {
             "link-arg=-Wl,-S",
             "-C",
             "link-arg=-Wl,-oso_prefix,.",
-        ]
-    } else {
-        vec![
+        ],
+        LinkerFlavor::GnuCc => vec![
             "-C",
             if patchable_elf {
                 "link-arg=-Wl,--build-id=none"
             } else {
                 "link-arg=-Wl,--build-id=sha1"
             },
-        ]
+        ],
     }
 }
 
@@ -813,6 +844,17 @@ fn link_failure(output: &Path, message: String) -> CliFailure {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lld_link_is_not_classified_as_the_classic_msvc_linker() {
+        assert!(linker_name_is_lld(std::ffi::OsStr::new("lld-link.exe")));
+        assert!(linker_name_is_lld(std::ffi::OsStr::new("lld-link")));
+        assert!(linker_name_is_lld(std::ffi::OsStr::new(
+            r"C:\LLVM\bin\lld-link.exe"
+        )));
+        assert!(!linker_name_is_lld(std::ffi::OsStr::new("link.exe")));
+        assert!(!linker_name_is_lld(std::ffi::OsStr::new("cc")));
+    }
 
     #[test]
     fn host_runtime_link_args_omit_libdl_on_macos() {
@@ -944,10 +986,9 @@ mod tests {
         assert!(args.contains(&std::ffi::OsStr::new("main.o")));
         assert!(args.contains(&make_relative(&runtime, &objects).as_os_str()));
         let relative_output = make_relative(&output, &objects);
-        let output_arg = if cfg!(windows) {
-            OsString::from(format!("/OUT:{}", relative_output.display()))
-        } else {
-            relative_output.into_os_string()
+        let output_arg = match TargetSpec::for_host().linker_flavor() {
+            LinkerFlavor::MsvcLink => OsString::from(format!("/OUT:{}", relative_output.display())),
+            LinkerFlavor::GnuCc | LinkerFlavor::DarwinCc => relative_output.into_os_string(),
         };
         assert!(args.contains(&output_arg.as_os_str()));
     }
@@ -1016,5 +1057,36 @@ mod tests {
         let args: Vec<_> = command.get_args().collect();
         assert!(args.iter().any(|arg| *arg == "-fuse-ld=lld"));
         assert!(args.iter().any(|arg| *arg == "-Wl,--threads=4"));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn fast_linker_search_prefers_lld_before_mold() {
+        assert!(matches!(
+            select_fast_linker(None, None, true, true),
+            Some(FastLinker::Lld)
+        ));
+        assert!(matches!(
+            select_fast_linker(None, Some("/opt/arandu/ld.lld".to_string()), true, true),
+            Some(FastLinker::Bundled(path)) if path == "/opt/arandu/ld.lld"
+        ));
+        assert!(
+            select_fast_linker(
+                Some("none"),
+                Some("/opt/arandu/ld.lld".to_string()),
+                true,
+                true
+            )
+            .is_none()
+        );
+        assert!(matches!(
+            select_fast_linker(Some("mold"), None, true, true),
+            Some(FastLinker::Mold)
+        ));
+        assert!(matches!(
+            select_fast_linker(None, None, false, true),
+            Some(FastLinker::Mold)
+        ));
+        assert!(select_fast_linker(None, None, false, false).is_none());
     }
 }

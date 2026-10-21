@@ -555,6 +555,7 @@ fn c_backend_directory_name_views_coexist() {
             && generated_c.contains("blob_len > INT32_MAX")
             && generated_c.contains("entries_cap * 2 > SIZE_MAX / sizeof(ArHostDirEntry)")
             && generated_c.contains("readdir_error = errno")
+            && generated_c.contains("ar_pal_readdir_open")
             && generated_c.contains("if (ferror(f))")
             && generated_c.contains("int extra = fgetc(f)"),
         "C std.fs host runtime must guard buffer bounds and report read failures"
@@ -570,6 +571,7 @@ fn c_backend_directory_name_views_coexist() {
         .arg(&c_file)
         .arg("-o")
         .arg(&stem)
+        .args(arandu_middle::TargetSpec::for_host().cc_link_args())
         .output()
         .expect("compile emitted C");
     assert!(

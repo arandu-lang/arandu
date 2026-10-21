@@ -117,10 +117,8 @@ fn compile_and_run(
     command
         .arg(source)
         .arg("-o")
-        .arg(output);
-    if !cfg!(windows) {
-        command.arg("-lm");
-    }
+        .arg(output)
+        .args(arandu_middle::TargetSpec::for_host().cc_link_args());
     let compile = command.output().unwrap();
     assert!(
         compile.status.success(),

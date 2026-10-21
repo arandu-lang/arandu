@@ -10,33 +10,17 @@ typedef struct ar_native_thread {
     ar_native_drop drop_context, drop_result;
     int32_t status;
     atomic_bool finished;
-#if defined(_WIN32)
-    HANDLE thread;
-#else
-    pthread_t thread;
-#endif
+    ArPalThread thread;
     struct ar_native_thread *next;
 } ar_native_thread;
 static ar_native_thread *ar_native_threads = NULL;
 static size_t ar_native_next_id = 1;
 static atomic_bool ar_native_table_lock = false;
 static void ar_native_spin_hint(void) {
-#if defined(_WIN32)
-    YieldProcessor();
-#elif (defined(__i386__) || defined(__x86_64__)) && (defined(__GNUC__) || defined(__clang__))
-    __builtin_ia32_pause();
-#elif defined(__aarch64__) && (defined(__GNUC__) || defined(__clang__))
-    __asm__ __volatile__("isb" ::: "memory");
-#else
-    atomic_signal_fence(memory_order_seq_cst);
-#endif
+    ar_pal_spin_hint();
 }
 static void ar_native_yield(void) {
-#if defined(_WIN32)
-    SwitchToThread();
-#else
-    sched_yield();
-#endif
+    ar_pal_yield();
 }
 static void ar_native_lock(void) {
     unsigned int spins = 0;
@@ -60,17 +44,9 @@ static void ar_native_execute(ar_native_thread *task) {
     task->context = NULL;
     atomic_store_explicit(&task->finished, true, memory_order_release);
 }
-#if defined(_WIN32)
-static DWORD WINAPI ar_native_start(LPVOID raw) {
-    ar_native_execute((ar_native_thread*)raw);
-    return 0;
+static void ar_native_start(void *raw) {
+    ar_native_execute((ar_native_thread *)raw);
 }
-#else
-static void *ar_native_start(void *raw) {
-    ar_native_execute((ar_native_thread*)raw);
-    return NULL;
-}
-#endif
 static bool ar_native_valid_buffer(uint8_t *pointer, size_t size, size_t align) {
     return pointer && size && align && !(align & (align - 1))
         && size <= PTRDIFF_MAX && !((uintptr_t)pointer & (align - 1));
@@ -102,12 +78,7 @@ static size_t ar_rt_native_thread_spawn(
     ar_native_unlock();
     if (!id) goto failed;
     task->id = id;
-#if defined(_WIN32)
-    task->thread = CreateThread(NULL, 0, ar_native_start, task, 0, NULL);
-    if (!task->thread) goto failed;
-#else
-    if (pthread_create(&task->thread, NULL, ar_native_start, task)) goto failed;
-#endif
+    if (ar_pal_thread_spawn(&task->thread, ar_native_start, task) != 0) goto failed;
     ar_native_lock();
     task->next = ar_native_threads;
     ar_native_threads = task;
@@ -128,12 +99,7 @@ static ar_native_thread *ar_native_take(size_t id) {
     if (task) *slot = task->next;
     ar_native_unlock();
     if (task) {
-#if defined(_WIN32)
-        if (WaitForSingleObject(task->thread, INFINITE) != WAIT_OBJECT_0) abort();
-        if (!CloseHandle(task->thread)) abort();
-#else
-        if (pthread_join(task->thread, NULL)) abort();
-#endif
+        ar_pal_thread_join(&task->thread);
     }
     return task;
 }
@@ -141,11 +107,7 @@ static bool ar_native_is_current_thread(size_t id) {
     ar_native_lock();
     ar_native_thread *task = ar_native_threads;
     while (task && task->id != id) task = task->next;
-#if defined(_WIN32)
-    bool is_current = task && GetThreadId(task->thread) == GetCurrentThreadId();
-#else
-    bool is_current = task && pthread_equal(task->thread, pthread_self());
-#endif
+    bool is_current = task && ar_pal_thread_is_current(&task->thread);
     ar_native_unlock();
     return is_current;
 }

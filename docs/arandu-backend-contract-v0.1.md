@@ -333,6 +333,39 @@ The [RFC](./rfcs/0027-zero-bloat-binary-diet-and-on-demand-runtime.md) defines
 the scope and validation. No absolute executable size or freestanding support
 is inferred from the profile.
 
+### Platform knowledge, PAL, and linker profiles
+
+`TargetSpec` in `arandu_middle` is the only list of system libraries. Host
+linking, C tests, LLVM execution, and the smith oracles ask
+`TargetSpec::for_host()` for `cc_link_args()`, `math_libraries()`,
+`runtime_system_libs()`, `msvc_runtime_libs()`, and `msvc_rustc_link_args()`.
+A new operating system changes that table once. Tests do not embed `-lm`,
+`-lpthread`, or `bcrypt.lib`.
+
+Generated filesystem, environment, monotonic time, sleep, yield, and native
+thread handles call `ar_pal_*`. The `#ifdef` branches for those operations live
+in the platform abstraction layer. Windows directory listing, including MinGW,
+uses `FindFirstFileW` and `FindNextFileW`, so the translation unit does not
+depend on `dirent.h`. Socket code is a separate net PAL emitted only when
+`ar_net_*` is live, and it includes `winsock2.h` before `windows.h`. `cl.exe`
+still does not compile the GNU C dialect of user code. Clang or GCC does,
+including Clang targeting the MSVC ABI. The task parking lot stays
+platform-specific because Apple timed wait and thread cancellation differ.
+
+The CLI linker tries a bundled or `PATH` LLD before the system driver (`cc`,
+`clang`, or `link.exe`). `ARANDU_USE_LD` remains an explicit override, including
+`mold` and `none`. On Windows, `lld-link` is attempted only when `LIB` shows
+that the Windows SDK is visible, and a failed LLD attempt falls through to
+`link.exe`. Library names still come from `TargetSpec`. `LinkerKind` stays
+`system` when LLD runs. The checkout-only `rustc` fallback passes non-default
+MSVC libraries and omits `msvcrt`, so it does not introduce a second CRT.
+
+`linker_smoke` compiles and runs libm, a thread id, a monotonic clock, and a
+directory listing with the host `TargetSpec` flags. CI runs that smoke on
+Ubuntu GCC, Ubuntu Clang, macOS Apple Clang, Windows Clang with the MSVC
+environment, and Windows MinGW GCC. A bad flag fails in that job before the
+rest of the suite.
+
 ### What is required for real cross compilation
 
 Adding a new Gold target requires one named target specification containing at

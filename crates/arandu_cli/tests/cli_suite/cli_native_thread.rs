@@ -81,6 +81,7 @@ fn run_native_contract(contract: &str) {
                         "-fno-sanitize-recover=all",
                     ]);
                 }
+                compiler.args(arandu_middle::TargetSpec::for_host().cc_link_args());
                 let compiled = run_with_deadline(compiler.arg(&c).arg("-o").arg(&executable));
                 assert!(
                     compiled.status.success(),
@@ -325,7 +326,8 @@ public func main():int {{
                         .args([optimization, "-fwrapv"])
                         .arg(&c)
                         .arg("-o")
-                        .arg(&executable),
+                        .arg(&executable)
+                        .args(arandu_middle::TargetSpec::for_host().cc_link_args()),
                 );
                 assert!(
                     result.status.success(),

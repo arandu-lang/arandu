@@ -135,6 +135,7 @@ func main(): int {
             .arg(&c_path)
             .arg("-o")
             .arg(&executable)
+            .args(arandu_middle::TargetSpec::for_host().cc_link_args())
             .output()
             .unwrap();
         assert!(
@@ -246,6 +247,7 @@ func main(): int {
             .arg(&c_path)
             .arg("-o")
             .arg(&executable)
+            .args(arandu_middle::TargetSpec::for_host().cc_link_args())
             .output()
             .unwrap();
         assert!(

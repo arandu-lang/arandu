@@ -13,6 +13,7 @@ pub(super) struct RuntimeFeatures {
     pub tasks: bool,
     pub native_threads: bool,
     pub fs: bool,
+    pub net: bool,
     pub env: bool,
     pub path: bool,
     pub string_eq: bool,
@@ -154,7 +155,8 @@ impl RuntimeFeatures {
         self.string_eq |= name == "ar_str_eq";
         self.path |=
             name.starts_with("ar_path_") || (name.starts_with("ar_str_") && name != "ar_str_eq");
-        self.fs |= name.starts_with("ar_fs_") || name == "exists" || name.starts_with("ar_net_");
+        self.net |= name.starts_with("ar_net_");
+        self.fs |= name.starts_with("ar_fs_") || name == "exists";
         self.env |= name.starts_with("ar_env_")
             || matches!(name, "ar_time_monotonic_ns" | "ar_process_exit");
         self.arena |= name.starts_with("ar_gen_");

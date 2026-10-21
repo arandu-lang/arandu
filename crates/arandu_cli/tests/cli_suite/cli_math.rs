@@ -51,12 +51,12 @@ fn run_contract(source_text: &str) {
                 if cfg!(unix) {
                     command.args(["-fsanitize=undefined", "-fno-sanitize-recover=all"]);
                 }
-                command.arg(&c).arg("-o").arg(&executable);
-                #[cfg(not(windows))]
-                command.arg("-lm");
-                let compile = command
-                    .output()
-                    .expect("compile C");
+                command
+                    .arg(&c)
+                    .arg("-o")
+                    .arg(&executable)
+                    .args(arandu_middle::TargetSpec::for_host().cc_link_args());
+                let compile = command.output().expect("compile C");
                 assert!(
                     compile.status.success(),
                     "clang {optimization}: {:?}\n{}",

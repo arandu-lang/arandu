@@ -1486,7 +1486,7 @@ pub(super) fn execute_c(
         .arg(&source_path)
         .arg("-o")
         .arg(&executable_path)
-        .arg("-lm");
+        .args(arandu_middle::TargetSpec::for_host().cc_link_args());
     let compile = run_with_timeout(&mut compile_command, BACKEND_PROCESS_TIMEOUT)
         .map_err(|error| format!("C compiler {:?}: {error}", compiler))?;
     if !compile.status.success() {
@@ -1596,10 +1596,7 @@ pub(super) fn execute_llvm(
         .arg("-O0")
         .arg("-o")
         .arg(&executable_path);
-    #[cfg(not(any(windows, target_os = "macos")))]
-    compile_command.args(["-lpthread", "-ldl", "-lm"]);
-    #[cfg(target_os = "macos")]
-    compile_command.args(["-lpthread", "-lm"]);
+    compile_command.args(arandu_middle::TargetSpec::for_host().cc_link_args());
     let compile = run_with_timeout(&mut compile_command, BACKEND_PROCESS_TIMEOUT)
         .map_err(|error| format!("clang: {error}"))?;
     if !compile.status.success() {

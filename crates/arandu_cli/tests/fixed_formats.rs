@@ -54,10 +54,8 @@ fn fixed_formats_match_wide_oracle_in_jit_and_c() {
             command
                 .arg(&c_source)
                 .arg("-o")
-                .arg(&executable);
-            if !cfg!(windows) {
-                command.arg("-lm");
-            }
+                .arg(&executable)
+                .args(arandu_middle::TargetSpec::for_host().cc_link_args());
             let compilation = command.output().unwrap();
             assert!(
                 compilation.status.success(),

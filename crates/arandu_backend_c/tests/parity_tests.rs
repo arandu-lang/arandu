@@ -412,7 +412,7 @@ fn c_integer_division_traps_before_undefined_operations() {
                     .arg(&source_file)
                     .arg("-o")
                     .arg(&executable)
-                    .arg("-lm")
+                    .args(arandu_middle::TargetSpec::for_host().cc_link_args())
                     .output()
                     .unwrap();
                 assert!(
@@ -738,7 +738,7 @@ int main(void) {
         .arg(&source_file)
         .arg("-o")
         .arg(&executable)
-        .arg("-lm")
+        .args(arandu_middle::TargetSpec::for_host().cc_link_args())
         .output()
         .unwrap();
     assert!(
@@ -1028,12 +1028,12 @@ int main() {
     // Compiler selection: use $CC env var if set, otherwise fallback to gcc.
     let cc = env::var("CC").unwrap_or_else(|_| "gcc".to_string());
 
-    // `-lm` for ToStr float helpers (`isnan`/`isinf` via math.h).
+    // TargetSpec supplies libm and the host system libraries.
     let compile_status = c_compiler(&cc)
         .arg(&c_file)
         .arg("-o")
         .arg(&exe_file)
-        .arg("-lm")
+        .args(arandu_middle::TargetSpec::for_host().cc_link_args())
         .output()
         .unwrap_or_else(|_| {
             panic!(
@@ -1372,7 +1372,7 @@ fn generated_test_registry_entrypoint_compiles_and_executes() {
         .arg(&c_file)
         .arg("-o")
         .arg(&exe_file)
-        .arg("-lm")
+        .args(arandu_middle::TargetSpec::for_host().cc_link_args())
         .status()
         .unwrap_or_else(|_| panic!("failed to invoke C compiler '{cc}'"));
     assert!(
@@ -3161,7 +3161,7 @@ int main(void) {
         .arg("-o")
         .arg(&exe_file)
         .arg("-pthread")
-        .arg("-lm")
+        .args(arandu_middle::TargetSpec::for_host().cc_link_args())
         .output()
         .expect("compile worker pool suite");
 
@@ -3239,7 +3239,7 @@ int main(void) {
         .arg(&exe_file)
         .arg("-pthread")
         .arg("-Wl,--wrap=pthread_create")
-        .arg("-lm")
+        .args(arandu_middle::TargetSpec::for_host().cc_link_args())
         .output()
         .expect("compile partial worker creation harness");
     assert!(
@@ -4203,7 +4203,7 @@ func main(): int {
         .arg(&c_file)
         .arg("-o")
         .arg(&exe_file)
-        .arg("-lm")
+        .args(arandu_middle::TargetSpec::for_host().cc_link_args())
         .output()
         .unwrap();
     assert!(

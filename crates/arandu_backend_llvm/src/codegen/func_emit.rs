@@ -141,6 +141,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
     }
 
     pub(super) fn emit(mut self) -> Result<String, Diagnostic> {
+        let declarations_before = self.module.declaration_snapshot();
         let return_ty = self.module.interner.resolve(self.func.return_type);
         let function_name = self.module.function_name(self.func.symbol);
         let is_main = function_name == "main";
@@ -244,6 +245,8 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
         }
 
         self.writer.line("}");
+        self.module
+            .record_function_declarations(self.func.symbol, declarations_before);
         Ok(self.writer.finish())
     }
 }

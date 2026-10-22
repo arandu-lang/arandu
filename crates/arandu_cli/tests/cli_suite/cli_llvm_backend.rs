@@ -271,6 +271,85 @@ func main(): int { return 0 }
 }
 
 #[test]
+fn freestanding_export_rejects_host_runtime_dependency() {
+    let tmp = common::temp_dir("arandu_llvm_freestanding_export").unwrap();
+    let project = tmp.join("freestanding_export");
+    let init = run_cli_in(&tmp, &["new", "freestanding_export", "--bin", "--vcs=none"]);
+    assert!(
+        init.status.success(),
+        "new freestanding_export: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+    fs::write(
+        project.join("src/main.aru"),
+        r#"
+module hitbox.core.socd
+
+@Export
+func decorate(n: i64): i64 {
+    let text = "n=${n}"
+    return text.len() as i64
+}
+"#,
+    )
+    .expect("write main");
+
+    let output = tmp.join("freestanding.ll");
+    let output_arg = output.to_string_lossy().into_owned();
+    let build = run_cli_in(
+        &project,
+        &[
+            "build",
+            "-b",
+            "llvm",
+            "--target=thumbv6m-none-eabi",
+            "--emit=llvm-ir",
+            "-o",
+            &output_arg,
+        ],
+    );
+    let stderr = String::from_utf8_lossy(&build.stderr);
+    assert!(
+        !build.status.success(),
+        "an exported path that needs the host runtime must fail: {stderr}"
+    );
+    assert!(
+        stderr.contains("T049") && stderr.contains("host runtime"),
+        "expected T049 naming the host runtime dependency: {stderr}"
+    );
+
+    fs::write(
+        project.join("src/main.aru"),
+        r#"
+module hitbox.core.socd
+
+@Export
+func apply_socd(raw: u32): u32 { return raw }
+"#,
+    )
+    .expect("write scalar export");
+    let build = run_cli_in(
+        &project,
+        &[
+            "build",
+            "-b",
+            "llvm",
+            "--target=thumbv6m-none-eabi",
+            "--emit=llvm-ir",
+            "-o",
+            &output_arg,
+        ],
+    );
+    assert!(
+        build.status.success(),
+        "a scalar export must stay freestanding: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let _ = fs::remove_dir_all(tmp);
+}
+
+#[test]
 fn incremental_build_does_not_reuse_cranelift_artifact_for_llvm() {
     if !clang_available() {
         return;

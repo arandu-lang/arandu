@@ -1,12 +1,12 @@
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
 
-use arandu_middle::amir::{AmirConstant, AmirFunc, AmirOperand, AmirProgram};
+use arandu_middle::amir::{AmirConstant, AmirFunc, AmirOperand, AmirProgram, AmirStmt};
 use arandu_middle::intrinsics::IntrinsicKind;
 use arandu_middle::layout::LayoutEngine;
 use arandu_middle::types::{ArType, Primitive, VectorType};
-use arandu_middle::{Diagnostic, SymbolId, SymbolKind, SymbolTable};
+use arandu_middle::{DiagCode, Diagnostic, SymbolId, SymbolKind, SymbolTable};
 use arandu_semantics::TypeInfo;
 
 use super::{FuncEmitter, ModuleEmitter, escape_c_string, ice, quote_name};
@@ -42,6 +42,7 @@ impl<'a> ModuleEmitter<'a> {
             string_globals,
             globals,
             declarations: RefCell::new(BTreeMap::new()),
+            host_runtime_refs: RefCell::new(BTreeMap::new()),
         }
     }
 
@@ -170,6 +171,12 @@ impl<'a> ModuleEmitter<'a> {
             body.push('\n');
         }
 
+        if let Some(profile) = arandu_middle::embedded_profile(&self.info.target_identity.triple)
+            && let Err(diagnostic) = self.check_freestanding_exports(profile.triple())
+        {
+            return Err(diagnostic);
+        }
+
         let mut output = String::new();
         output.push_str("; ModuleID = 'arandu'\n");
         output.push_str("source_filename = \"arandu\"\n");
@@ -220,6 +227,95 @@ impl<'a> ModuleEmitter<'a> {
         } else {
             "internal "
         }
+    }
+
+    /// Declarations materialized so far, used to attribute to a single
+    /// function the extern symbols its body actually references.
+    pub(super) fn declaration_snapshot(&self) -> BTreeSet<String> {
+        self.declarations.borrow().keys().cloned().collect()
+    }
+
+    /// Record the declarations a finished function body added.
+    pub(super) fn record_function_declarations(&self, symbol: SymbolId, before: BTreeSet<String>) {
+        let added: BTreeSet<String> = self
+            .declaration_snapshot()
+            .difference(&before)
+            .cloned()
+            .collect();
+        if !added.is_empty() {
+            self.host_runtime_refs
+                .borrow_mut()
+                .entry(symbol)
+                .or_default()
+                .extend(added);
+        }
+    }
+
+    /// Reject an `@Export` whose reachable code needs the host runtime.
+    ///
+    /// A freestanding image has no allocator, fat-string helpers, generator
+    /// tables or coroutine scheduler. Emitting such a symbol would only fail at
+    /// link time with an undefined reference, so the boundary is validated
+    /// here, where the span of the exported function is still available.
+    fn check_freestanding_exports(&self, target: &str) -> Result<(), Diagnostic> {
+        let mut callees: HashMap<SymbolId, BTreeSet<SymbolId>> = HashMap::new();
+        for func in &self.program.funcs {
+            let mut edges = BTreeSet::new();
+            for block in &func.blocks {
+                for statement in func.block_stmts(block.id) {
+                    if let AmirStmt::Call {
+                        callee: AmirOperand::FunctionRef(callee),
+                        ..
+                    } = statement
+                    {
+                        edges.insert(*callee);
+                    }
+                }
+            }
+            callees.insert(func.symbol, edges);
+        }
+
+        for func in &self.program.funcs {
+            if !self.symbols.is_exported(func.symbol) {
+                continue;
+            }
+            let mut visited = BTreeSet::new();
+            let mut pending = vec![func.symbol];
+            let mut required = BTreeSet::new();
+            while let Some(current) = pending.pop() {
+                if !visited.insert(current) {
+                    continue;
+                }
+                if let Some(names) = self.host_runtime_refs.borrow().get(&current) {
+                    required.extend(
+                        names
+                            .iter()
+                            .filter(|name| is_host_runtime_symbol(name))
+                            .cloned(),
+                    );
+                }
+                if let Some(edges) = callees.get(&current) {
+                    pending.extend(edges.iter().copied());
+                }
+            }
+            if required.is_empty() {
+                continue;
+            }
+            let symbol = self.symbols.get(func.symbol);
+            let needed: Vec<&str> = required.iter().map(String::as_str).collect();
+            return Err(Diagnostic::error(
+                DiagCode::T049InvalidFfiExport,
+                format!(
+                    "exported function '{}' needs the host runtime ({}) which target '{target}' \
+                     cannot provide; keep the exported path free of allocation, strings, \
+                     generators and coroutines",
+                    self.symbols.host_func_name(symbol),
+                    needed.join(", ")
+                ),
+                symbol.span,
+            ));
+        }
+        Ok(())
     }
 
     /// Runtime fat-string helpers use `extern "sysv64"` on Windows so their
@@ -515,6 +611,17 @@ impl<'a> ModuleEmitter<'a> {
         };
         Some((*vector, lanes, vector.lane()))
     }
+}
+
+/// Symbols provided by the packaged host runtime, never by a freestanding
+/// image. Extern C functions declared by the user are not in this set.
+fn is_host_runtime_symbol(name: &str) -> bool {
+    name.starts_with("ar_rt_")
+        || name.starts_with("ar_jit_")
+        || name.starts_with("ar_gen_")
+        || name.starts_with("ar_co_")
+        || name == "ar_str_concat"
+        || name == "memcmp"
 }
 
 #[cfg(test)]

@@ -181,7 +181,13 @@ direct_ir.rs` asserts these invariants structurally.
 Linkage is equally explicit: a definition is `internal` unless the source
 marked it `@Export` (or it is `main`). The annotation is the single permission
 to publish a flat symbol, so an unannotated function never leaks a global
-symbol into the object file and cannot collide with C by accident.
+symbol into the object file and cannot collide with C by accident. On a
+freestanding target the backend additionally proves the exported path is
+self-contained: host runtime symbols (`ar_rt_*`, `ar_jit_*`, `ar_gen_*`,
+`ar_co_*`, `ar_str_concat`, `memcmp`) demanded while emitting a body are
+attributed to that function, the call graph is closed transitively, and any
+reachable requirement aborts compilation with `T049` instead of leaving an
+undefined reference for the linker to discover.
 Differential smith
 fuzzing covers Cranelift↔LLVM via `synthesized-llvm` and `synthesized-all`
 (clang + packaged runtime; skips known experimental emission gaps). EMI also

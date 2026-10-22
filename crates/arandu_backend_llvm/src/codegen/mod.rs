@@ -6,14 +6,14 @@
 //! `lli` does not resolve Arandu runtime symbols, so the CLI refuses it.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use arandu_middle::amir::{AmirFunc, AmirProgram, BlockId, LocalId, TempId};
 use arandu_middle::layout::LayoutEngine;
 use arandu_middle::types::{ArType, Primitive, TypeInterner};
-use arandu_middle::{DiagCode, Diagnostic, Span, SymbolTable};
+use arandu_middle::{DiagCode, Diagnostic, Span, SymbolId, SymbolTable};
 use arandu_semantics::TypeInfo;
 
 use crate::writer::IrWriter;
@@ -76,6 +76,10 @@ pub(super) struct ModuleEmitter<'a> {
     /// symbol. A declaration is a visible module entity in textual LLVM IR,
     /// unlike a JIT symbol table, so unused entries must never be materialized.
     declarations: RefCell<BTreeMap<String, String>>,
+    /// Extern symbols each function body references, keyed by the emitting
+    /// function. The freestanding gate walks this map to reject an `@Export`
+    /// whose reachable code needs the host runtime.
+    host_runtime_refs: RefCell<BTreeMap<SymbolId, BTreeSet<String>>>,
 }
 
 pub(super) struct FuncEmitter<'a, 'm> {

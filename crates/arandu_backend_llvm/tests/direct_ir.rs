@@ -565,6 +565,10 @@ func main(): int {
         declared_symbols(&ir).is_empty(),
         "a pure scalar module must not declare any runtime helper:\n{ir}"
     );
+    assert!(
+        !ir.contains("alloca"),
+        "locals without their address taken must not get a stack home:\n{ir}"
+    );
     verify(&ir);
 }
 

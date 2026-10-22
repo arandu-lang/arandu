@@ -27,9 +27,6 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
             terminator_labels: HashMap::new(),
             edge_args: HashMap::new(),
         };
-        if !func.temps.is_empty() {
-            this.temp_slots[0] = Some(String::new());
-        }
         for temp in &func.params {
             this.define(*temp, "function parameter")?;
         }
@@ -168,7 +165,11 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
         }
         self.writer.line(format!("{}:", block_label(entry_id)));
 
-        for local in &self.func.locals {
+        // AMIR pruning removes load/store traffic for locals that never have
+        // their address taken, leaving them as metadata only (symbol/span for
+        // diagnostics). Allocate a stack home exclusively for locals that are
+        // genuinely memory-backed, matching the Cranelift backend's rule.
+        for local in self.func.locals.iter().filter(|local| local.is_memory) {
             let ty = self.module.interner.resolve(local.ty);
             let (alloca, align) = self.module.alloca_type(&ty)?;
             self.writer.line(format!(

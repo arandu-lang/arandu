@@ -11,6 +11,17 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
         place: &AmirPlace,
     ) -> Result<(String, ArType), Diagnostic> {
         let local = &self.func.locals[place.local.as_usize()];
+        if !local.is_memory {
+            // `prune_dummy_loads_stores` guarantees that non-memory locals have
+            // no surviving place access. Reaching here means AMIR and this
+            // backend disagree, and emitting an address would silently read or
+            // write a stack slot that no longer exists.
+            return Err(ice(format!(
+                "AMIR local %l{} ({:?}) is not memory-backed but was used as a place",
+                local.id.as_usize(),
+                local.symbol
+            )));
+        }
         let mut address = local_name(local.id);
         let mut ty = self.module.interner.resolve(local.ty);
         for projection in &place.projections {

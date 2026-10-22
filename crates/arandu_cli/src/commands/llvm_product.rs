@@ -141,7 +141,10 @@ pub(crate) fn publish(
             format!("failed to write temporary LLVM IR: {error}"),
         )
     })?;
-    let triple = plan.embedded.map(|profile| profile.triple());
+    // clang canonicalizes the public short triple (`thumbv6m-none-eabi`) by
+    // inserting the `unknown` vendor. Passing the canonical form keeps the
+    // module header and the driver in agreement, avoiding -Woverride-module.
+    let triple = plan.embedded.map(|profile| profile.llvm_triple());
     if let Err(error) = clang_compile(&temp_ll, &temp_obj, triple) {
         let _ = fs::remove_file(&temp_ll);
         let _ = fs::remove_file(&temp_obj);

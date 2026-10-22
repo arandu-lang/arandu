@@ -177,7 +177,7 @@ impl<'a> ModuleEmitter<'a> {
             let _ = write!(
                 output,
                 "target triple = \"{}\"\ntarget datalayout = \"{}\"\n",
-                profile.triple(),
+                profile.llvm_triple(),
                 profile.llvm_datalayout()
             );
         }

@@ -112,7 +112,7 @@ mod tests {
                 .expect("canonical triple");
         info.target_layout = arandu_middle::DataLayout::ptr_width(4);
         let ir = crate::emit_llvm_ir(&program, &symbols, &info).expect("empty module");
-        assert!(ir.contains("target triple = \"thumbv7em-none-eabihf\"\n"));
+        assert!(ir.contains("target triple = \"thumbv7em-unknown-none-eabihf\"\n"));
         assert!(ir.contains(
             "target datalayout = \"e-m:e-p:32:32-Fi8-i64:64-v128:64:128-a:0:32-n32-S64\"\n"
         ));
@@ -134,7 +134,7 @@ mod tests {
             .expect("canonical triple");
         info.target_layout = arandu_middle::DataLayout::ptr_width(4);
         let ir = crate::emit_llvm_ir(&program, &symbols, &info).expect("empty module");
-        assert!(ir.contains("target triple = \"thumbv6m-none-eabi\"\n"));
+        assert!(ir.contains("target triple = \"thumbv6m-unknown-none-eabi\"\n"));
         assert!(ir.contains(
             "target datalayout = \"e-m:e-p:32:32-Fi8-i64:64-v128:64:128-a:0:32-n32-S64\"\n"
         ));

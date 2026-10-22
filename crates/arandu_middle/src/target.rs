@@ -55,6 +55,12 @@ pub struct LinkerPlan {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct EmbeddedProfile {
     triple: &'static str,
+    /// Tripla canônica que o LLVM/clang imprime em `-print-target-triple`.
+    ///
+    /// A forma curta (`thumbv6m-none-eabi`) é o nome público do alvo; clang a
+    /// normaliza para `thumbv6m-unknown-none-eabi` e avisa
+    /// `-Woverride-module` quando o módulo declara a forma curta.
+    llvm_triple: &'static str,
     /// Pointer size in bytes. Never read from the host.
     pointer_bytes: u8,
     /// Pointer alignment in bytes.
@@ -65,6 +71,7 @@ pub struct EmbeddedProfile {
 
 const THUMBV6M_NONE_EABI: EmbeddedProfile = EmbeddedProfile {
     triple: "thumbv6m-none-eabi",
+    llvm_triple: "thumbv6m-unknown-none-eabi",
     pointer_bytes: 4,
     pointer_align: 4,
     // Same 32-bit ARM layout LLVM reports for `thumbv6m-none-eabi`
@@ -74,6 +81,7 @@ const THUMBV6M_NONE_EABI: EmbeddedProfile = EmbeddedProfile {
 
 const THUMBV7EM_NONE_EABIHF: EmbeddedProfile = EmbeddedProfile {
     triple: "thumbv7em-none-eabihf",
+    llvm_triple: "thumbv7em-unknown-none-eabihf",
     pointer_bytes: 4,
     pointer_align: 4,
     llvm_datalayout: "e-m:e-p:32:32-Fi8-i64:64-v128:64:128-a:0:32-n32-S64",
@@ -81,6 +89,7 @@ const THUMBV7EM_NONE_EABIHF: EmbeddedProfile = EmbeddedProfile {
 
 const RISCV32IMC_UNKNOWN_NONE_ELF: EmbeddedProfile = EmbeddedProfile {
     triple: "riscv32imc-unknown-none-elf",
+    llvm_triple: "riscv32imc-unknown-none-elf",
     pointer_bytes: 4,
     pointer_align: 4,
     llvm_datalayout: "e-m:e-p:32:32-i64:64-n32-S128",
@@ -90,6 +99,12 @@ impl EmbeddedProfile {
     #[must_use]
     pub const fn triple(self) -> &'static str {
         self.triple
+    }
+
+    /// Tripla canônica usada no cabeçalho do módulo LLVM e em `clang --target`.
+    #[must_use]
+    pub const fn llvm_triple(self) -> &'static str {
+        self.llvm_triple
     }
 
     #[must_use]

@@ -451,6 +451,8 @@ fn exported_aggregates_link_and_run_against_a_c_consumer() {
     fs::write(
         project.join("src/lib.aru"),
         r#"
+import std.core.slice as slice
+
 @Repr("C")
 struct Frame {
     id: u32
@@ -477,6 +479,11 @@ func swap_pair(pair: Pair): Pair {
     let flipped = Pair { a: pair.b, b: pair.a }
     return flipped
 }
+
+@Export
+func buffer_len(data: []u8): u64 {
+    return slice.len<u8>(data) as u64
+}
 "#,
     )
     .expect("write library source");
@@ -493,29 +500,48 @@ func swap_pair(pair: Pair): Pair {
         String::from_utf8_lossy(&build.stderr)
     );
 
+    // The consumer uses the generated header, so a mismatch between Arandu's
+    // layout and the C declaration fails the `_Static_assert`s at compile time.
+    let header = tmp.join("abi.h");
+    let header_arg = header.to_string_lossy().into_owned();
+    let emit_header = run_cli_in(
+        &project,
+        &["build", "-b", "llvm", "--emit=header", "-o", &header_arg],
+    );
+    assert!(
+        emit_header.status.success(),
+        "emit C header: {}",
+        String::from_utf8_lossy(&emit_header.stderr)
+    );
+    let header_text = fs::read_to_string(&header).expect("header should exist");
+    assert!(
+        header_text.contains("_Static_assert(sizeof(Frame) == 8"),
+        "the header must pin the aggregate size:\n{header_text}"
+    );
+    assert!(
+        header_text.contains("AranduSliceU8"),
+        "a slice crosses as a {{ptr, len}} typedef:\n{header_text}"
+    );
+
     let consumer = tmp.join("consumer.c");
     fs::write(
         &consumer,
         r#"
-#include <stdint.h>
+#include "abi.h"
 #include <stdio.h>
 
-struct Frame { uint32_t id; float weight; };
-struct Pair { uint64_t a, b; };
-
-extern uint32_t frame_id(struct Frame frame);
-extern struct Frame bump(struct Frame frame);
-extern struct Pair swap_pair(struct Pair pair);
-
 int main(void) {
-    struct Frame frame = { .id = 41, .weight = 1.5f };
+    Frame frame = { .id = 41, .weight = 1.5f };
     if (frame_id(frame) != 41) { return 1; }
-    struct Frame moved = bump(frame);
+    Frame moved = bump(frame);
     if (moved.id != 42) { return 2; }
     if (moved.weight < 1.99f || moved.weight > 2.01f) { return 3; }
-    struct Pair pair = { .a = 7, .b = 9 };
-    struct Pair flipped = swap_pair(pair);
+    Pair pair = { .a = 7, .b = 9 };
+    Pair flipped = swap_pair(pair);
     if (flipped.a != 9 || flipped.b != 7) { return 4; }
+    const uint8_t bytes[] = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 };
+    AranduSliceU8 view = { bytes, sizeof bytes };
+    if (buffer_len(view) != sizeof bytes) { return 5; }
     puts("ABI OK");
     return 0;
 }
@@ -525,6 +551,10 @@ int main(void) {
 
     let binary = tmp.join("consumer");
     let link = Command::new("clang")
+        .arg("-I")
+        .arg(&tmp)
+        .arg("-Wall")
+        .arg("-Wextra")
         .arg(&consumer)
         .arg(&object)
         .arg("-o")

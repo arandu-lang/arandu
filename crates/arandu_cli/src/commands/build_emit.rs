@@ -122,12 +122,21 @@ pub(super) fn emit_llvm_artifact(
     amir: &arandu_semantics::amir::AmirProgram,
 ) -> CliResult {
     arandu_base::time_pass!("codegen-llvm");
-    let ir = arandu_backend_llvm::emit_llvm_ir(
-        amir,
-        type_check.symbols.as_ref(),
-        type_check.type_info.as_ref(),
-    )
-    .unwrap_or_else(|diag| print_diagnostics_and_exit(std::iter::once(diag), &filepath));
+    let ir = if plan.stop == llvm_product::LlvmStop::Header {
+        arandu_backend_llvm::header::emit_c_header(
+            amir,
+            type_check.symbols.as_ref(),
+            type_check.type_info.as_ref(),
+        )
+        .unwrap_or_else(|diag| print_diagnostics_and_exit(std::iter::once(diag), &filepath))
+    } else {
+        arandu_backend_llvm::emit_llvm_ir(
+            amir,
+            type_check.symbols.as_ref(),
+            type_check.type_info.as_ref(),
+        )
+        .unwrap_or_else(|diag| print_diagnostics_and_exit(std::iter::once(diag), &filepath))
+    };
 
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

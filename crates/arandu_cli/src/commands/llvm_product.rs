@@ -17,6 +17,7 @@ pub(crate) enum LlvmStop {
     /// Host link with the packaged runtime. Unchanged for host LLVM builds.
     Executable,
     Ir,
+    Header,
     Object,
     Staticlib,
     Elf,
@@ -60,8 +61,8 @@ fn classify(flags: &ProjectFlags, embedded: bool) -> Result<LlvmStop, CliFailure
     let emit = flags.emit.as_deref();
     let crate_type = flags.crate_type.as_deref();
     let script = flags.linker_script.is_some();
-    if emit.is_some_and(|value| value != "obj" && value != "llvm-ir") {
-        return Err(CliFailure::usage("--emit accepts obj or llvm-ir"));
+    if emit.is_some_and(|value| value != "obj" && value != "llvm-ir" && value != "header") {
+        return Err(CliFailure::usage("--emit accepts obj, llvm-ir, or header"));
     }
     if crate_type.is_some_and(|value| value != "staticlib") {
         return Err(CliFailure::usage("--crate-type accepts staticlib"));
@@ -73,6 +74,7 @@ fn classify(flags: &ProjectFlags, embedded: bool) -> Result<LlvmStop, CliFailure
     }
     match (emit, crate_type, script, embedded) {
         (Some("llvm-ir"), None, false, _) => Ok(LlvmStop::Ir),
+        (Some("header"), None, false, _) => Ok(LlvmStop::Header),
         (Some("obj"), None, false, _) => Ok(LlvmStop::Object),
         (None, Some("staticlib"), false, true) => Ok(LlvmStop::Staticlib),
         (None, None, true, true) => Ok(LlvmStop::Elf),
@@ -80,6 +82,9 @@ fn classify(flags: &ProjectFlags, embedded: bool) -> Result<LlvmStop, CliFailure
         (None, None, false, false) => Ok(LlvmStop::Executable),
         (Some("llvm-ir"), _, _, _) => Err(CliFailure::usage(
             "--emit=llvm-ir writes IR and does not archive or link",
+        )),
+        (Some("header"), _, _, _) => Err(CliFailure::usage(
+            "--emit=header writes a C header and does not archive or link",
         )),
         (_, Some("staticlib"), true, _) => Err(CliFailure::usage(
             "--linker-script and --crate-type=staticlib select different artifacts",
@@ -94,6 +99,7 @@ pub(crate) fn session_backend(stop: LlvmStop) -> &'static str {
     match stop {
         LlvmStop::Executable => "llvm",
         LlvmStop::Ir => "llvm-ir",
+        LlvmStop::Header => "c-header",
         LlvmStop::Object => "llvm-obj",
         LlvmStop::Staticlib => "llvm-staticlib",
         LlvmStop::Elf => "llvm-elf",
@@ -117,13 +123,14 @@ pub(crate) fn publish(
 ) -> Result<PublishedNativeArtifact, CliFailure> {
     let extension = match plan.stop {
         LlvmStop::Ir => "ll",
+        LlvmStop::Header => "h",
         LlvmStop::Object => "o",
         LlvmStop::Staticlib => "a",
         LlvmStop::Elf => "elf",
         LlvmStop::Executable => "o",
     };
     let output = output_path(plan, flags, project_root, package, profile, extension)?;
-    if plan.stop == LlvmStop::Ir {
+    if matches!(plan.stop, LlvmStop::Ir | LlvmStop::Header) {
         return write_bytes(&output, ir.as_bytes());
     }
 
@@ -165,7 +172,7 @@ pub(crate) fn publish(
         }
         LlvmStop::Staticlib => archive(&temp_obj, &output),
         LlvmStop::Elf => link_elf(&temp_obj, &output, triple, flags),
-        LlvmStop::Ir | LlvmStop::Executable => {
+        LlvmStop::Ir | LlvmStop::Header | LlvmStop::Executable => {
             return Err(CliFailure::usage(
                 "host LLVM executables are published by the runtime linker",
             ));

@@ -63,6 +63,15 @@ pub struct EmbeddedProfile {
     llvm_datalayout: &'static str,
 }
 
+const THUMBV6M_NONE_EABI: EmbeddedProfile = EmbeddedProfile {
+    triple: "thumbv6m-none-eabi",
+    pointer_bytes: 4,
+    pointer_align: 4,
+    // Same 32-bit ARM layout LLVM reports for `thumbv6m-none-eabi`
+    // (`clang -target thumbv6m-none-eabi -S -emit-llvm`).
+    llvm_datalayout: "e-m:e-p:32:32-Fi8-i64:64-v128:64:128-a:0:32-n32-S64",
+};
+
 const THUMBV7EM_NONE_EABIHF: EmbeddedProfile = EmbeddedProfile {
     triple: "thumbv7em-none-eabihf",
     pointer_bytes: 4,
@@ -103,6 +112,7 @@ impl EmbeddedProfile {
 #[must_use]
 pub fn embedded_profile(triple: &str) -> Option<&'static EmbeddedProfile> {
     match triple {
+        "thumbv6m-none-eabi" => Some(&THUMBV6M_NONE_EABI),
         "thumbv7em-none-eabihf" => Some(&THUMBV7EM_NONE_EABIHF),
         "riscv32imc-unknown-none-elf" => Some(&RISCV32IMC_UNKNOWN_NONE_ELF),
         _ => None,
@@ -411,6 +421,11 @@ mod tests {
         assert_eq!(riscv.pointer_bytes(), 4);
         assert_eq!(riscv.pointer_align(), 4);
         assert_eq!(riscv.llvm_datalayout(), "e-m:e-p:32:32-i64:64-n32-S128");
+        let cortex_m0 = embedded_profile("thumbv6m-none-eabi").expect("cortex-m0 profile");
+        assert_eq!(cortex_m0.pointer_bytes(), 4);
+        assert_eq!(cortex_m0.pointer_align(), 4);
+        // LLVM reports the same ARM layout for every 32-bit Thumb profile.
+        assert_eq!(cortex_m0.llvm_datalayout(), arm.llvm_datalayout());
         assert_ne!(arm.llvm_datalayout(), riscv.llvm_datalayout());
         assert!(embedded_profile("thumbv7em-none-eabi").is_none());
         assert!(embedded_profile("riscv32-unknown-none-elf").is_none());

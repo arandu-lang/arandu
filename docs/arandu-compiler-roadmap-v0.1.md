@@ -238,7 +238,8 @@ continuam bloqueantes.
 O código de interoperabilidade freestanding foi iniciado nesta branch com o
 backend LLVM, sem substituir HOT.1–6 nem promover suporte público. As triples
 canônicas são
-`thumbv7em-none-eabihf` e `riscv32imc-unknown-none-elf`. O produto padrão é
+`thumbv6m-none-eabi`, `thumbv7em-none-eabihf` e
+`riscv32imc-unknown-none-elf`. O produto padrão é
 objeto, IR (`--emit=llvm-ir`) ou `--crate-type=staticlib`. Um ELF final existe
 somente quando o usuário passa `--linker-script`. O compilador não adivinha
 mapas de memória do chip. `core` permanece freestanding; `std.thread` e

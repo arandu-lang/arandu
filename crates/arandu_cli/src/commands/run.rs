@@ -337,7 +337,7 @@ pub fn cmd_single_file_dispatch(
             }
             Some(_) => {
                 return Err(CliFailure::usage(
-                    "experimental emit-llvm supports the host target or thumbv7em-none-eabihf / riscv32imc-unknown-none-elf",
+                    "experimental emit-llvm supports the host target or thumbv6m-none-eabi / thumbv7em-none-eabihf / riscv32imc-unknown-none-elf",
                 ));
             }
             None if inv.data_layout != DataLayout::host() => {

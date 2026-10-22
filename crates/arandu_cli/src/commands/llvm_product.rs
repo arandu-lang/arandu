@@ -35,7 +35,7 @@ pub(crate) fn prepare(is_llvm: bool, flags: &ProjectFlags) -> Result<LlvmPlan, C
     if triple.is_some() {
         if embedded.is_none() && !wasm && is_llvm {
             return Err(CliFailure::usage(
-                "LLVM --target accepts thumbv7em-none-eabihf or riscv32imc-unknown-none-elf; the compiler does not guess other chips",
+                "LLVM --target accepts thumbv6m-none-eabi, thumbv7em-none-eabihf, or riscv32imc-unknown-none-elf; the compiler does not guess other chips",
             ));
         }
         if embedded.is_some() && !is_llvm {
@@ -375,6 +375,17 @@ mod tests {
         )
         .expect("default object");
         assert_eq!(plan.stop, LlvmStop::Object);
+    }
+
+    #[test]
+    fn cortex_m0_triple_plans_an_object() {
+        let plan = prepare(true, &flags(Some("thumbv6m-none-eabi"), None, None, false))
+            .expect("cortex-m0 object");
+        assert_eq!(plan.stop, LlvmStop::Object);
+        assert_eq!(
+            plan.embedded.map(|profile| profile.triple()),
+            Some("thumbv6m-none-eabi")
+        );
     }
 
     #[test]

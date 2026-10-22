@@ -162,13 +162,21 @@ It emits `nonnull` on reference parameters and `nounwind` on definitions, but
 no scoped alias metadata. Host products are available through `arandu
 emit-llvm`, experimental `arandu run -b llvm`, and `arandu build -b llvm`
 (requires `clang` and the packaged runtime). The current candidate branch also
-contains experimental freestanding products for `thumbv7em-none-eabihf` and
-`riscv32imc-unknown-none-elf`: LLVM IR, relocatable object, static library, or
-user-scripted ELF. These products do not imply a supplied chip memory map,
-startup code, or freestanding `std`; `std.thread` and `std.fs` diagnose T099 on
-bare-metal targets. Their CI and release promotion remain pending. `lli` does
-not link the host runtime, and `run -b llvm` refuses it instead of executing
-unresolved IR.
+contains experimental freestanding products for `thumbv6m-none-eabi`,
+`thumbv7em-none-eabihf`, and `riscv32imc-unknown-none-elf`: LLVM IR,
+relocatable object, static library, or user-scripted ELF. These products do not
+imply a supplied chip memory map, startup code, or freestanding `std`;
+`std.thread` and `std.fs` diagnose T099 on bare-metal targets. Their CI and
+release promotion remain pending. `lli` does not link the host runtime, and
+`run -b llvm` refuses it instead of executing unresolved IR.
+
+Emission is demand-driven, which keeps freestanding IR honest: a `declare` is
+materialized only when a body actually references the symbol, a stack slot
+exists only for an AMIR local whose address is taken (`is_memory`) or for a
+multi-assigned temp, and an identity assignment aliases the incoming SSA value
+instead of emitting `select i1 true, v, v`. A module that needs no runtime
+helper therefore emits no declarations at all. `arandu_backend_llvm/tests/
+direct_ir.rs` asserts these invariants structurally.
 Differential smith
 fuzzing covers Cranelift↔LLVM via `synthesized-llvm` and `synthesized-all`
 (clang + packaged runtime; skips known experimental emission gaps). EMI also

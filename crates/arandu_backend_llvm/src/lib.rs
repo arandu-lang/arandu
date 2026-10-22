@@ -120,6 +120,27 @@ mod tests {
     }
 
     #[test]
+    fn cortex_m0_module_header_uses_the_arm_datalayout() {
+        let program = arandu_middle::amir::AmirProgram {
+            funcs: Vec::new(),
+            literal_pool: Default::default(),
+            extern_funcs: Default::default(),
+            debug_bindings: Vec::new(),
+            debug_blocks: Vec::new(),
+        };
+        let symbols = arandu_semantics::SymbolTable::default();
+        let mut info = arandu_semantics::TypeInfo::new();
+        info.target_identity = arandu_middle::db::TargetIdentity::from_triple("thumbv6m-none-eabi")
+            .expect("canonical triple");
+        info.target_layout = arandu_middle::DataLayout::ptr_width(4);
+        let ir = crate::emit_llvm_ir(&program, &symbols, &info).expect("empty module");
+        assert!(ir.contains("target triple = \"thumbv6m-none-eabi\"\n"));
+        assert!(ir.contains(
+            "target datalayout = \"e-m:e-p:32:32-Fi8-i64:64-v128:64:128-a:0:32-n32-S64\"\n"
+        ));
+    }
+
+    #[test]
     fn host_module_header_omits_target_datalayout() {
         let program = arandu_middle::amir::AmirProgram {
             funcs: Vec::new(),

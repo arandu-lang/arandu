@@ -132,8 +132,9 @@ falham nesses alvos. Não se oferece uma caminhada multiplataforma com
 verificação atômica de ancestralidade entre várias syscalls. Windows continua
 fail-closed até existir adaptador de handles compatível com a ABI.
 `Dir.openDir` exige diretório; opções de append ainda são rejeitadas, assim
-como criar/truncar sem escrita. `File` ainda expõe seu fd na API legada;
-privacidade/adoção de handles e lifecycle completo continuam pendentes.
+como criar/truncar sem escrita. `File.fd` é privado; `File.close` invalida o
+descritor com `-1` e o destructor fecha somente descritores ainda abertos,
+evitando double close. Não há API pública para adotar handles arbitrários.
 Os testes da lógica no Linux não promovem suporte nativo macOS/BSD.
 
 A correção local de `Rc.tryUnwrap` zera a contagem forte antes de mover o

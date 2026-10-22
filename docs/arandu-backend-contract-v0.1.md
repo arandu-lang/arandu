@@ -188,6 +188,21 @@ self-contained: host runtime symbols (`ar_rt_*`, `ar_jit_*`, `ar_gen_*`,
 attributed to that function, the call graph is closed transitively, and any
 reachable requirement aborts compilation with `T049` instead of leaving an
 undefined reference for the linker to discover.
+
+A `@Export` signature is a C ABI contract, so aggregates are marshalled at
+lane granularity rather than passed as Arandu values:
+`arandu_middle::layout::export_abi` classifies a type for the target's family
+(System V AMD64, Windows x64, AAPCS64, AAPCS32 soft/hard-float, RISC-V ILP32)
+into integer/float lanes with byte offsets, `byval`, or `sret`. The definition
+spills lanes into a stack buffer at those offsets and the body consumes one
+aggregate value; every in-language call to an exported function marshals the
+same way, so the two sides cannot drift. Lane loads and stores use `align 1`,
+which is always valid and never claims an alignment the lane type lacks. A
+target without a classifier rejects by-value aggregates (`T049`) instead of
+applying the host rules. `--emit=header` renders the same types through the
+same `LayoutEngine`, including `_Static_assert` on size and field offsets; the
+CLI suite compiles that header with clang, links it against the Arandu object
+and runs it.
 Differential smith
 fuzzing covers Cranelift↔LLVM via `synthesized-llvm` and `synthesized-all`
 (clang + packaged runtime; skips known experimental emission gaps). EMI also

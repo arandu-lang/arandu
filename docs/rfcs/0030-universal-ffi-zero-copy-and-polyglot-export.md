@@ -140,11 +140,31 @@ prefixos de SDK e para manter o símbolo estável quando o módulo muda de nome.
 
 O subconjunto validado hoje cobre funções livres (sem receiver, sem `async`,
 sem genéricos) com primitivos de largura fixa (`i8`–`i64`, `u8`–`u64`, `f32`,
-`f64`, `bool`), ponteiros crus (`ptr T`) e retorno `void`. Structs por valor,
-fatias (`ref []T`/`mut ref []T`) e `str` são rejeitados com `T049` até que o
-classificador reverso de ABI (`byval`, `(ptr, len)`, contrato de erro) seja
-implementado; a fronteira permanece explícita e verificada em vez de depender
-de layout presumido. Ver `docs/errors/T049.md`.
+`f64`, `bool`), ponteiros crus (`ptr T`), structs `@Repr("C")` por valor,
+fatias síncronas `[]T`/`mut []T` (modeladas como `{ ptr, len }`) e retorno
+`void`. `str`, `char`, larguras dependentes do alvo (`int`/`uint`/`isize`/
+`usize`/`float`), structs sem `@Repr("C")` e campos recursivamente inseguros
+são rejeitados com `T049`.
+
+A passagem de agregados não presume layout: `crates/arandu_middle/src/layout/
+export_abi.rs` classifica cada tipo em lanes (`iN`, `float`, `double`,
+`[N x iW]`, `<2 x float>`, `byval`/`sret`) por família de ABI — System V AMD64,
+Windows x64, AAPCS64, AAPCS32 (soft e hard-float, incluindo o caso Cortex-M de
+structs de 5–8 bytes em `r0`/`r1`) e RISC-V ILP32. As regras foram derivadas de
+`clang -target … -S -emit-llvm` e são cobertas por testes que fixam as larguras
+exatas (`i24`, `i40`, `i48`, `i56`) e os limites de indireção de cada alvo.
+
+O backend LLVM materializa a fronteira em memória: cada lane é armazenada ou
+carregada no offset que o classificador atribuiu, com `align 1` (acesso byte a
+byte é sempre válido e não inventa alinhamento). Um alvo sem classificador
+falha com `T049` em vez de herdar silenciosamente a ABI do host.
+
+`arandu build -b llvm --emit=header` gera o cabeçalho C a partir das mesmas
+assinaturas e do mesmo `LayoutEngine`: `typedef`s de struct, `typedef { const
+T *ptr; size_t len; }` para fatias, protótipos e `_Static_assert` de tamanho e
+offset de cada campo. Um consumidor C que discorde do layout deixa de compilar
+em vez de corromper memória. O teste e2e compila esse cabeçalho com `clang
+-Wall -Wextra`, liga contra o objeto Arandu e executa a função.
 
 Colisões de símbolo entre duas funções exportadas são diagnosticadas em tempo
 de compilação, ao contrário do comportamento silencioso de `#[no_mangle]`.
@@ -206,8 +226,8 @@ Em conformidade com o Invariante 5 do Arandu:
 ## 5. Invariantes de Arquitetura e Desvantagens (Drawbacks & Invariants)
 
 ### 5.1 Invariantes Preservados
-* **`DataLayout` e `TargetInfo`**: Todos os tipos admitidos em `@FfiExport` e `extern func` são validados pelo classificador de ABI do alvo (`SysV AMD64`, `Windows x64`, `AArch64`). Tipos sem layout C definido são rejeitados com diagnóstico estruturado.
-* **Sem Dependência de Clang/LLVM no Compilador**: A emissão de cabeçalhos `.h` e wrappers poliglotas é puramente baseada na tabela de tipos e assinaturas da AMIR.
+* **`DataLayout` e `TargetInfo`**: Todos os tipos admitidos em `@Export` e `extern func` são validados pelo classificador de ABI do alvo (`SysV AMD64`, `Windows x64`, `AAPCS64`, `AAPCS32` soft/hard-float e RISC-V ILP32). Tipos sem layout C definido são rejeitados com diagnóstico estruturado.
+* **Sem Dependência de Clang/LLVM no Compilador**: A emissão de cabeçalhos `.h` e wrappers poliglotas é puramente baseada na tabela de tipos e assinaturas da AMIR — `--emit=header` não invoca `clang`.
 
 ### 5.2 Limitações e Trade-offs
 * **Restrição Síncrona de Fatias Zero-Copy**: Fatias `ref []T` emprestadas de runtimes gerenciados (Python/JS/Swift) só existem durante o frame da chamada síncrona. APIs assíncronas que cruzem threads exigem cópia explícita ou handles proprietários (`own`).

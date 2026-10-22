@@ -1,7 +1,8 @@
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 
-use arandu_middle::amir::{AmirConstant, AmirFunc, AmirOperand, AmirProgram, AmirStmt};
+use arandu_middle::amir::{AmirConstant, AmirFunc, AmirOperand, AmirProgram};
 use arandu_middle::intrinsics::IntrinsicKind;
 use arandu_middle::layout::LayoutEngine;
 use arandu_middle::types::{ArType, Primitive, VectorType};
@@ -32,7 +33,7 @@ impl<'a> ModuleEmitter<'a> {
             }
         }
 
-        let mut this = Self {
+        Self {
             program,
             symbols,
             info,
@@ -40,158 +41,125 @@ impl<'a> ModuleEmitter<'a> {
             layout: LayoutEngine::from_data_layout(info.target_layout),
             string_globals,
             globals,
-            declarations: BTreeMap::new(),
-        };
-        this.collect_declarations();
-        this
+            declarations: RefCell::new(BTreeMap::new()),
+        }
     }
 
-    fn collect_declarations(&mut self) {
-        // LLVM intrinsics and libc helpers are cheap to declare even when a
-        // particular module does not call them.
-        self.add_declaration("llvm.trap", "declare void @llvm.trap()");
-        // Match Cranelift: owned heap buffers use the runtime allocator pair,
-        // never libc malloc/free (ToStr / str concat / Free share this ABI).
-        let pointer_bytes = self.layout.pointer_width();
-        let len = ptr_int(pointer_bytes);
-        let fat = fat_ptr_llvm_ty(pointer_bytes);
-        let memcpy = self.memcpy_intrinsic();
-        self.add_declaration("ar_rt_raw_free", "declare void @ar_rt_raw_free(ptr)");
-        self.add_declaration(
+    /// Materialize a declaration the first time emission references it.
+    ///
+    /// Textual LLVM IR prints every `declare` as a module entity, so unlike a
+    /// JIT symbol table an unused declaration is observable output. Emission
+    /// sites that write `@name` request the symbol here; [`Self::emit`] prints
+    /// only the accumulated set, in deterministic `BTreeMap` order.
+    pub(super) fn require_declaration(&self, key: &str, text: impl Into<String>) {
+        self.declarations
+            .borrow_mut()
+            .entry(key.to_owned())
+            .or_insert_with(|| text.into());
+    }
+
+    pub(super) fn require_llvm_trap(&self) {
+        self.require_declaration("llvm.trap", "declare void @llvm.trap()");
+    }
+
+    pub(super) fn require_raw_malloc(&self) {
+        let len = ptr_int(self.layout.pointer_width());
+        self.require_declaration(
             "ar_rt_raw_malloc",
-            &format!("declare ptr @ar_rt_raw_malloc({len})"),
+            format!("declare ptr @ar_rt_raw_malloc({len})"),
         );
-        self.add_declaration("memcmp", &format!("declare i32 @memcmp(ptr, ptr, {len})"));
-        self.add_declaration(
-            "ar_str_concat",
-            &format!(
-                "declare {}{fat} @ar_str_concat(ptr, {len}, ptr, {len})",
-                self.runtime_calling_convention("ar_str_concat")
+    }
+
+    pub(super) fn require_raw_free(&self) {
+        self.require_declaration("ar_rt_raw_free", "declare void @ar_rt_raw_free(ptr)");
+    }
+
+    pub(super) fn require_memcmp(&self) {
+        let len = ptr_int(self.layout.pointer_width());
+        self.require_declaration("memcmp", format!("declare i32 @memcmp(ptr, ptr, {len})"));
+    }
+
+    pub(super) fn require_memcpy(&self) {
+        let memcpy = self.memcpy_intrinsic();
+        let len = ptr_int(self.layout.pointer_width());
+        self.require_declaration(
+            memcpy,
+            format!("declare void @{memcpy}(ptr, ptr, {len}, i1)"),
+        );
+    }
+
+    /// `ToStr` helpers keep their fixed host signatures: `bool` crosses as
+    /// `i8` and `char` as `i32`, independent of the Arandu facade.
+    pub(super) fn require_to_str_helper(&self, name: &str) -> Result<(), Diagnostic> {
+        let text = match name {
+            "ar_jit_i64_to_str" => "declare ptr @ar_jit_i64_to_str(i64, ptr)",
+            "ar_jit_u64_to_str" => "declare ptr @ar_jit_u64_to_str(i64, ptr)",
+            "ar_jit_f64_to_str" => "declare ptr @ar_jit_f64_to_str(double, ptr)",
+            "ar_jit_bool_to_str" => "declare ptr @ar_jit_bool_to_str(i8, ptr)",
+            "ar_jit_char_to_str" => "declare ptr @ar_jit_char_to_str(i32, ptr)",
+            "ar_jit_err_to_str" => "declare ptr @ar_jit_err_to_str(ptr, ptr)",
+            other => return Err(ice(format!("unknown ToStr helper {other}"))),
+        };
+        self.require_declaration(name, text);
+        Ok(())
+    }
+
+    pub(super) fn require_gen_helper(&self, name: &str) -> Result<(), Diagnostic> {
+        let text = match name {
+            "ar_gen_insert_raw" => "declare i64 @ar_gen_insert_raw(ptr, i64, i64, ptr)",
+            "ar_gen_get_raw" => "declare i1 @ar_gen_get_raw(i64, ptr, i64, i64)",
+            "ar_gen_set_raw" => "declare i1 @ar_gen_set_raw(i64, ptr, i64, i64, ptr)",
+            "ar_gen_upsert_raw" => "declare i64 @ar_gen_upsert_raw(i64, ptr, i64, i64, ptr)",
+            "ar_gen_remove_raw" => "declare i1 @ar_gen_remove_raw(i64, ptr, i64, i64)",
+            other => return Err(ice(format!("unknown GenRef helper {other}"))),
+        };
+        self.require_declaration(name, text);
+        Ok(())
+    }
+
+    pub(super) fn require_bit_intrinsic(&self, name: &str) -> Result<(), Diagnostic> {
+        let (intrinsic, width) = name
+            .rsplit_once(".i")
+            .ok_or_else(|| ice(format!("bit intrinsic {name} has no integer width")))?;
+        let width: u32 = width
+            .parse()
+            .map_err(|_| ice(format!("bit intrinsic {name} has an invalid width")))?;
+        let text = match intrinsic {
+            "llvm.ctpop" | "llvm.bitreverse" => {
+                format!("declare i{width} @{name}(i{width})")
+            }
+            "llvm.ctlz" | "llvm.cttz" => format!("declare i{width} @{name}(i{width}, i1)"),
+            other => return Err(ice(format!("unknown bit intrinsic {other}"))),
+        };
+        self.require_declaration(name, text);
+        Ok(())
+    }
+
+    /// Declare an extern callee with the exact signature the call site emits.
+    ///
+    /// `signature_for` is the single source of truth for extern ABIs, so the
+    /// declaration cannot drift from the `call` instruction.
+    pub(super) fn require_extern_signature(
+        &self,
+        name: &str,
+        args: &[ArType],
+        ret: &ArType,
+    ) -> Result<(), Diagnostic> {
+        let mut flattened = Vec::new();
+        for arg in args {
+            flattened.extend(self.host_abi_param_llvm_tys(arg)?);
+        }
+        let ret = self.llvm_ty(ret)?;
+        let params = flattened.join(", ");
+        let calling_convention = self.runtime_calling_convention(name);
+        self.require_declaration(
+            name,
+            format!(
+                "declare {calling_convention}{ret} @{}({params})",
+                quote_name(name)
             ),
         );
-        self.add_declaration(
-            memcpy,
-            &format!("declare void @{memcpy}(ptr, ptr, {len}, i1)"),
-        );
-        for (name, ty) in [
-            ("ar_jit_i64_to_str", "i64"),
-            ("ar_jit_u64_to_str", "i64"),
-            ("ar_jit_f64_to_str", "double"),
-            ("ar_jit_bool_to_str", "i8"),
-            ("ar_jit_char_to_str", "i32"),
-        ] {
-            self.add_declaration(name, &format!("declare ptr @{name}({ty}, ptr)"));
-        }
-        self.add_declaration(
-            "ar_jit_err_to_str",
-            "declare ptr @ar_jit_err_to_str(ptr, ptr)",
-        );
-        self.add_declaration(
-            "ar_co_make_ready_i64",
-            "declare ptr @ar_co_make_ready_i64(i64)",
-        );
-        self.add_declaration("ar_co_poll_i64", "declare i32 @ar_co_poll_i64(ptr, ptr)");
-        self.add_declaration("ar_co_block_on_i64", "declare i64 @ar_co_block_on_i64(ptr)");
-        // Host executor bridges are always i64 regardless of the Arandu
-        // `int` facade in `std.runtime.executor` (matches Cranelift).
-        self.add_declaration("ar_rt_spawn_i64", "declare i64 @ar_rt_spawn_i64(ptr)");
-        self.add_declaration("ar_rt_join_i64", "declare i64 @ar_rt_join_i64(i64)");
-        self.add_declaration("ar_rt_block_on_i64", "declare i64 @ar_rt_block_on_i64(ptr)");
-        self.add_declaration(
-            "ar_gen_insert_raw",
-            "declare i64 @ar_gen_insert_raw(ptr, i64, i64, ptr)",
-        );
-        self.add_declaration(
-            "ar_gen_get_raw",
-            "declare i1 @ar_gen_get_raw(i64, ptr, i64, i64)",
-        );
-        self.add_declaration(
-            "ar_gen_set_raw",
-            "declare i1 @ar_gen_set_raw(i64, ptr, i64, i64, ptr)",
-        );
-        self.add_declaration(
-            "ar_gen_upsert_raw",
-            "declare i64 @ar_gen_upsert_raw(i64, ptr, i64, i64, ptr)",
-        );
-        self.add_declaration(
-            "ar_gen_remove_raw",
-            "declare i1 @ar_gen_remove_raw(i64, ptr, i64, i64)",
-        );
-        for width in [8, 16, 32, 64] {
-            self.add_declaration(
-                &format!("llvm.ctpop.i{width}"),
-                &format!("declare i{width} @llvm.ctpop.i{width}(i{width})"),
-            );
-            self.add_declaration(
-                &format!("llvm.ctlz.i{width}"),
-                &format!("declare i{width} @llvm.ctlz.i{width}(i{width}, i1)"),
-            );
-            self.add_declaration(
-                &format!("llvm.cttz.i{width}"),
-                &format!("declare i{width} @llvm.cttz.i{width}(i{width}, i1)"),
-            );
-            self.add_declaration(
-                &format!("llvm.bitreverse.i{width}"),
-                &format!("declare i{width} @llvm.bitreverse.i{width}(i{width})"),
-            );
-        }
-
-        let mut signatures = Vec::new();
-        for func in &self.program.funcs {
-            for block in &func.blocks {
-                for id in func.block_stmt_ids(block.id) {
-                    if let AmirStmt::Call {
-                        callee: AmirOperand::FunctionRef(symbol),
-                        args,
-                        ..
-                    } = func.stmt(id)
-                        && self.intrinsic_kind(*symbol).is_none()
-                        && !self.is_internal(*symbol)
-                    {
-                        let (args, ret) = self.signature_for(*symbol, args, func);
-                        signatures.push((*symbol, args, ret));
-                    }
-                }
-            }
-        }
-        for (symbol, args, ret) in signatures {
-            let name = self.function_name(symbol);
-            if self.declarations.contains_key(&name) {
-                // Prefer the explicit host ABI declaration when present.
-                continue;
-            }
-            // Host/C ABI flattens fat `str`/slice to separate ptr+len slots,
-            // matching Cranelift and the runtime's `extern "C"` surface.
-            let mut flattened = Vec::new();
-            let mut ok = true;
-            for arg in &args {
-                match self.host_abi_param_llvm_tys(arg) {
-                    Ok(parts) => flattened.extend(parts),
-                    Err(_) => {
-                        ok = false;
-                        break;
-                    }
-                }
-            }
-            let parsed_ret = self.llvm_ty(&ret);
-            if ok && let Ok(ret) = parsed_ret {
-                let params = flattened.join(", ");
-                let calling_convention = self.runtime_calling_convention(&name);
-                self.add_declaration(
-                    &name,
-                    &format!(
-                        "declare {calling_convention}{ret} @{}({params})",
-                        quote_name(&name)
-                    ),
-                );
-            }
-        }
-    }
-
-    fn add_declaration(&mut self, key: &str, text: &str) {
-        self.declarations
-            .entry(key.to_owned())
-            .or_insert_with(|| text.to_owned());
+        Ok(())
     }
 
     pub(super) fn emit(self) -> Result<String, Diagnostic> {
@@ -221,7 +189,7 @@ impl<'a> ModuleEmitter<'a> {
         if !self.globals.is_empty() {
             output.push('\n');
         }
-        for declaration in self.declarations.values() {
+        for declaration in self.declarations.borrow().values() {
             output.push_str(declaration);
             output.push('\n');
         }
@@ -563,6 +531,16 @@ mod tests {
             "x86_64_sysvcc "
         );
         assert_eq!(module.runtime_calling_convention("ar_jit_i64_to_str"), "");
+        module
+            .require_extern_signature(
+                "ar_str_concat",
+                &[
+                    arandu_middle::types::ArType::Primitive(arandu_middle::types::Primitive::Str),
+                    arandu_middle::types::ArType::Primitive(arandu_middle::types::Primitive::Str),
+                ],
+                &arandu_middle::types::ArType::Primitive(arandu_middle::types::Primitive::Str),
+            )
+            .expect("ar_str_concat declaration");
         let ir = module.emit().expect("empty Windows module");
         assert!(
             ir.contains("declare x86_64_sysvcc { ptr, i64 } @ar_str_concat(ptr, i64, ptr, i64)")

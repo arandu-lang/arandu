@@ -45,6 +45,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                 let slot = self.new_value();
                 self.writer
                     .line(format!("{slot} = alloca {expected_text}, align 1"));
+                self.module.require_memcpy();
                 let memcpy = self.module.memcpy_intrinsic();
                 let n = self.module.ptr_int_ty();
                 self.writer.line(format!(
@@ -116,6 +117,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
             ));
             let copy = from_bytes.min(to_bytes);
             if copy > 0 {
+                self.module.require_memcpy();
                 let memcpy = self.module.memcpy_intrinsic();
                 let n = self.module.ptr_int_ty();
                 self.writer.line(format!(

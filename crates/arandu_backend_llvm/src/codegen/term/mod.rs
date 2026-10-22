@@ -99,6 +99,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                 Ok(())
             }
             AmirTerminator::Unreachable => {
+                self.module.require_llvm_trap();
                 self.writer.line("call void @llvm.trap()");
                 self.writer.line("unreachable");
                 Ok(())

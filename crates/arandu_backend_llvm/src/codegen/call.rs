@@ -33,6 +33,11 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                 args.len()
             )));
         }
+        let function_name = self.module.function_name(symbol);
+        if !self.module.is_internal(symbol) {
+            self.module
+                .require_extern_signature(&function_name, &param_types, &return_ty)?;
+        }
         // Extern/host calls use the flattened C ABI; Arandu-defined callees keep
         // first-class fat pointers as `{ ptr, i64 }` values.
         let flatten_host_abi = !self.module.is_internal(symbol);
@@ -56,7 +61,6 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
             rendered.push(self.operand(argument, expected)?.render());
         }
         let return_text = self.module.llvm_ty(&return_ty)?;
-        let function_name = self.module.function_name(symbol);
         let name = quote_name(&function_name);
         let calling_convention = if flatten_host_abi {
             self.module.runtime_calling_convention(&function_name)
@@ -111,6 +115,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                 Ok(())
             }
             IntrinsicKind::Abort => {
+                self.module.require_llvm_trap();
                 self.writer.line("call void @llvm.trap()");
                 Ok(())
             }
@@ -329,6 +334,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
             IntrinsicKind::ReverseBits => format!("llvm.bitreverse.i{width}"),
             _ => return Err(ice(format!("unexpected bit intrinsic {kind:?}"))),
         };
+        self.module.require_bit_intrinsic(&name)?;
         let extra = if matches!(
             kind,
             IntrinsicKind::LeadingZeros | IntrinsicKind::TrailingZeros

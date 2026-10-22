@@ -5,6 +5,7 @@
 //! with `llvm-as`. Execution links through `clang` and the packaged runtime;
 //! `lli` does not resolve Arandu runtime symbols, so the CLI refuses it.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -71,7 +72,10 @@ pub(super) struct ModuleEmitter<'a> {
     layout: LayoutEngine,
     string_globals: HashMap<u32, (String, usize)>,
     globals: Vec<String>,
-    declarations: BTreeMap<String, String>,
+    /// Declarations requested by emission sites that actually reference the
+    /// symbol. A declaration is a visible module entity in textual LLVM IR,
+    /// unlike a JIT symbol table, so unused entries must never be materialized.
+    declarations: RefCell<BTreeMap<String, String>>,
 }
 
 pub(super) struct FuncEmitter<'a, 'm> {

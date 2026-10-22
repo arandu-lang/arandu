@@ -520,3 +520,91 @@ fn emits_vector_memory_and_shuffle_ir() {
     assert!(ir.contains("shufflevector <16 x i8>"));
     verify(&ir);
 }
+
+/// Names of the module-level `declare` entities, in emission order.
+fn declared_symbols(ir: &str) -> Vec<String> {
+    ir.lines()
+        .filter_map(|line| {
+            let rest = line.trim().strip_prefix("declare ")?;
+            let at = rest.find('@')?;
+            let name = rest[at + 1..].split('(').next()?;
+            Some(name.trim_matches('"').to_owned())
+        })
+        .collect()
+}
+
+/// Textual LLVM IR makes every declaration a visible module entity, unlike a
+/// JIT symbol table. A declaration that the module never references is dead
+/// output and, in freestanding targets, a misleading promise about the
+/// runtime that will exist at link time.
+fn assert_no_orphan_declarations(ir: &str) {
+    let body = ir
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("declare "))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for name in declared_symbols(ir) {
+        assert!(
+            body.contains(&format!("@{name}(")),
+            "declaration @{name} is never referenced by the module:\n{ir}"
+        );
+    }
+}
+
+#[test]
+fn scalar_module_declares_no_runtime_helpers() {
+    let ir = emit(
+        r#"
+func main(): int {
+    let value: int = 7
+    return value
+}
+"#,
+    );
+    assert!(
+        declared_symbols(&ir).is_empty(),
+        "a pure scalar module must not declare any runtime helper:\n{ir}"
+    );
+    verify(&ir);
+}
+
+#[test]
+fn string_module_declares_only_the_helpers_it_uses() {
+    let ir = emit(
+        r#"
+func main(): int {
+    let n: int = 42
+    let text = "n=${n}"
+    if text != "n=42" {
+        return 1
+    }
+    return 0
+}
+"#,
+    );
+    let declared = declared_symbols(&ir);
+    assert!(
+        declared.iter().any(|name| name == "ar_jit_i64_to_str"),
+        "interpolation must declare the i64 ToStr helper:\n{ir}"
+    );
+    for forbidden in [
+        "ar_co_block_on_i64",
+        "ar_co_make_ready_i64",
+        "ar_co_poll_i64",
+        "ar_gen_insert_raw",
+        "ar_rt_spawn_i64",
+        "ar_rt_join_i64",
+        "ar_rt_block_on_i64",
+        "llvm.ctpop.i8",
+        "llvm.ctpop.i64",
+        "llvm.ctlz.i32",
+        "llvm.trap",
+    ] {
+        assert!(
+            !declared.iter().any(|name| name == forbidden),
+            "unused runtime helper @{forbidden} leaked into the module:\n{ir}"
+        );
+    }
+    assert_no_orphan_declarations(&ir);
+    verify(&ir);
+}

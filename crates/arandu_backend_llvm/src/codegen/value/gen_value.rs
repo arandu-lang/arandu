@@ -38,6 +38,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
         // Header is 8 bytes; host poll/block_on helpers read an i64 payload, so
         // keep at least 16 bytes (matches Cranelift).
         let size = (8 + payload_layout.size.max(1)).max(16);
+        self.module.require_raw_malloc();
         let pointer = self.new_value();
         self.writer.line(format!(
             "{pointer} = call ptr @ar_rt_raw_malloc({} {size})",
@@ -54,6 +55,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
             "br i1 {ok}, label %{continue_block}, label %{trap}"
         ));
         self.enter_llvm_label(&trap);
+        self.module.require_llvm_trap();
         self.writer.line("call void @llvm.trap()");
         self.writer.line("unreachable");
         self.enter_llvm_label(&continue_block);
@@ -109,6 +111,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                 let slot = self.scratch_alloca(&payload_ar)?;
                 let value = self.operand(value, &payload_ar)?;
                 self.store_value(&slot, &value, &payload_ar)?;
+                self.module.require_gen_helper("ar_gen_insert_raw")?;
                 let inserted = self.new_value();
                 self.writer.line(format!(
                     "{inserted} = call i64 @ar_gen_insert_raw(ptr {slot}, i64 {}, i64 {}, ptr null)",
@@ -141,6 +144,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                 } else {
                     "ar_gen_remove_raw"
                 };
+                self.module.require_gen_helper(name)?;
                 let ok = self.new_value();
                 self.writer.line(format!(
                     "{ok} = call i1 @{name}(i64 {}, ptr {slot}, i64 {}, i64 {})",
@@ -151,6 +155,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                 self.writer
                     .line(format!("br i1 {ok}, label %{cont}, label %{fail}"));
                 self.enter_llvm_label(&fail);
+                self.module.require_llvm_trap();
                 self.writer.line("call void @llvm.trap()");
                 self.writer.line("unreachable");
                 self.enter_llvm_label(&cont);
@@ -188,6 +193,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                 self.store_value(&slot, &value, &payload_ar)?;
                 let handle = self.operand(gen_ref, &ArType::Primitive(Primitive::I64))?;
                 if upsert {
+                    self.module.require_gen_helper("ar_gen_upsert_raw")?;
                     let updated = self.new_value();
                     self.writer.line(format!(
                         "{updated} = call i64 @ar_gen_upsert_raw(i64 {}, ptr {slot}, i64 {}, i64 {}, ptr null)",
@@ -195,6 +201,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                     ));
                     self.assign_coerced(result, TypedValue::new("i64".to_owned(), updated), lhs_ty)
                 } else {
+                    self.module.require_gen_helper("ar_gen_set_raw")?;
                     let ok = self.new_value();
                     self.writer.line(format!(
                         "{ok} = call i1 @ar_gen_set_raw(i64 {}, ptr {slot}, i64 {}, i64 {}, ptr null)",
@@ -205,6 +212,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                     self.writer
                         .line(format!("br i1 {ok}, label %{cont}, label %{fail}"));
                     self.enter_llvm_label(&fail);
+                    self.module.require_llvm_trap();
                     self.writer.line("call void @llvm.trap()");
                     self.writer.line("unreachable");
                     self.enter_llvm_label(&cont);

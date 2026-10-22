@@ -47,6 +47,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
         };
         let value = self.operand(value, &argument_ty)?;
         let len_slot = self.scratch_alloca(&ArType::Primitive(Primitive::I64))?;
+        self.module.require_to_str_helper(helper)?;
         let pointer = self.new_value();
         self.writer.line(format!(
             "{pointer} = call ptr @{helper}({}, ptr {len_slot})",
@@ -86,6 +87,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
         // intermediate `ar_str_concat` buffers) is a double-free / leak.
         let fat = self.module.fat_ptr_llvm_ty();
         let n = self.module.ptr_int_ty();
+        self.module.require_memcpy();
         let memcpy = self.module.memcpy_intrinsic();
         if parts.is_empty() {
             let first = self.new_value();
@@ -121,6 +123,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
         let alloc_size = self.new_value();
         self.writer
             .line(format!("{alloc_size} = add {n} {total}, 1"));
+        self.module.require_raw_malloc();
         let buf = self.new_value();
         self.writer.line(format!(
             "{buf} = call ptr @ar_rt_raw_malloc({n} {alloc_size})"
@@ -215,6 +218,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
         self.writer.line(format!("br label %{join}"));
 
         self.enter_llvm_label(&compare_bytes);
+        self.module.require_memcmp();
         let cmp = self.new_value();
         self.writer.line(format!(
             "{cmp} = call i32 @memcmp(ptr {left_ptr}, ptr {right_ptr}, {n} {left_len})"

@@ -151,12 +151,16 @@ fn run_cranelift(src: &str) -> i32 {
     unsafe { main() }
 }
 
-fn assert_llvm_matches_cranelift(src: &str) {
+fn assert_llvm_matches_cranelift(src: &str, expect_runtime_helpers: bool) {
     let ir = emit(src);
-    assert!(
-        ir.contains("ar_rt_raw_malloc") || ir.contains("ar_str_concat") || ir.contains("ar_jit_"),
-        "expected interpolation/ToStr runtime helpers in IR:\n{ir}"
-    );
+    if expect_runtime_helpers {
+        assert!(
+            ir.contains("ar_rt_raw_malloc")
+                || ir.contains("ar_str_concat")
+                || ir.contains("ar_jit_"),
+            "expected interpolation/ToStr runtime helpers in IR:\n{ir}"
+        );
+    }
     let cranelift = run_cranelift(src);
     let Some(llvm) = run_linked(&ir) else {
         return;
@@ -180,6 +184,7 @@ func main(): int {
     return 0
 }
 "#,
+        true,
     );
 }
 
@@ -194,6 +199,7 @@ func main(): int {
     return 0
 }
 "#,
+        true,
     );
 }
 
@@ -206,6 +212,10 @@ func main(): int {
     return 0
 }
 "#,
+        // The whole expression constant-folds to the expected literal, so the
+        // module legitimately references no interpolation helper. The parity
+        // assertion below still covers semantics.
+        false,
     );
 }
 

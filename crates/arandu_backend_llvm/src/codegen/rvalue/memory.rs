@@ -46,6 +46,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                 let size_ty = self.module.operand_type(size, self.func);
                 let size = self.operand(size, &size_ty)?;
                 let size = self.coerce(size, &self.module.usize_ty())?;
+                self.module.require_raw_malloc();
                 self.writer.line(format!(
                     "{} = call ptr @ar_rt_raw_malloc({})",
                     result,

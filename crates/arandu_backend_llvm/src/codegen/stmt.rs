@@ -221,6 +221,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                     let pointer_ty = self.module.void_ptr_ty();
                     self.operand(operand, &pointer_ty)?
                 };
+                self.module.require_raw_free();
                 self.writer
                     .line(format!("call void @ar_rt_raw_free({})", pointer.render()));
                 Ok(())
@@ -242,6 +243,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
             let pointer = self.new_value();
             self.writer
                 .line(format!("{pointer} = extractvalue {value_ty} {value}, 0"));
+            self.module.require_raw_free();
             self.writer
                 .line(format!("call void @ar_rt_raw_free(ptr {pointer})"));
             self.writer.line(format!(

@@ -206,6 +206,68 @@ fn explicit_output_outside_the_profile_builds_without_incremental_noise() {
 }
 
 #[test]
+fn export_emits_a_global_c_symbol_in_the_object() {
+    if !clang_available() {
+        return;
+    }
+    let nm = Command::new("llvm-nm").arg("--version").output();
+    if nm.is_err() || !nm.is_ok_and(|output| output.status.success()) {
+        return;
+    }
+    let tmp = common::temp_dir("arandu_llvm_export").unwrap();
+    let project = tmp.join("export_symbol");
+    let init = run_cli_in(&tmp, &["new", "export_symbol", "--bin", "--vcs=none"]);
+    assert!(
+        init.status.success(),
+        "new export_symbol: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+    fs::write(
+        project.join("src/main.aru"),
+        r#"
+module hitbox.core.socd
+
+@Export
+func apply_socd(raw: u32): u32 { return raw }
+
+@Export("arandu_core_process_inputs")
+func process_inputs(raw: u32): u32 { return raw }
+
+func main(): int { return 0 }
+"#,
+    )
+    .expect("write main");
+
+    let object = tmp.join("export.o");
+    let object_arg = object.to_string_lossy().into_owned();
+    let build = run_cli_in(
+        &project,
+        &["build", "-b", "llvm", "--emit=obj", "-o", &object_arg],
+    );
+    let stderr = String::from_utf8_lossy(&build.stderr);
+    assert!(build.status.success(), "build failed: {stderr}");
+
+    let symbols = Command::new("llvm-nm")
+        .arg("--defined-only")
+        .arg(&object)
+        .output()
+        .expect("run llvm-nm");
+    let symbols = String::from_utf8_lossy(&symbols.stdout);
+    for expected in [" T apply_socd", " T arandu_core_process_inputs"] {
+        assert!(
+            symbols.contains(expected),
+            "missing `{expected}` in:\n{symbols}"
+        );
+    }
+    assert!(
+        !symbols.contains("hitbox.core.socd.apply_socd"),
+        "@Export must not keep the module-qualified name:\n{symbols}"
+    );
+
+    let _ = fs::remove_dir_all(tmp);
+}
+
+#[test]
 fn incremental_build_does_not_reuse_cranelift_artifact_for_llvm() {
     if !clang_available() {
         return;

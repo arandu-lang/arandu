@@ -577,6 +577,34 @@ func main(): int {
 }
 
 #[test]
+fn export_emits_flat_c_symbols_for_module_functions() {
+    let ir = emit(
+        r#"
+module hitbox.core.socd
+
+@Export
+func apply_socd(raw: u32): u32 { return raw }
+
+@Export("arandu_core_process_inputs")
+func process_inputs(raw: u32): u32 { return raw }
+"#,
+    );
+    assert!(
+        ir.contains("define i32 @apply_socd(i32"),
+        "@Export must emit the unqualified function name:\n{ir}"
+    );
+    assert!(
+        ir.contains("define i32 @arandu_core_process_inputs(i32"),
+        "@Export(\"name\") must override the symbol:\n{ir}"
+    );
+    assert!(
+        !ir.contains("hitbox.core.socd.apply_socd"),
+        "an exported function must not keep its module-qualified host name:\n{ir}"
+    );
+    verify(&ir);
+}
+
+#[test]
 fn string_module_declares_only_the_helpers_it_uses() {
     let ir = emit(
         r#"

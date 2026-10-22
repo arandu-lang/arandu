@@ -292,6 +292,7 @@ Abaixo estão listados todos os diagnósticos mapeados para o compilador Arandu.
 | **T046** | `compile-time arithmetic overflows or uses an invalid shift` | Error | `0.1.9` | Operação inteira fora da faixa ou deslocamento inválido durante CTFE. |
 | **T047** | `type has no concrete target layout` | Error | `0.1.9` | Layout indefinido ou excessivo no alvo de compilação. |
 | **T048** | `invalid array repetition` | Error | `0.1.9` | Repetição exige tamanho estático limitado e elementos Copy quando há duplicação. |
+| **T049** | `invalid FFI export` | Error | `0.1.11` | `@Export` exige função livre, não genérica e não `async`, com primitivos de largura fixa, ponteiros ou `void`; structs por valor e fatias ainda exigem classificador de ABI. |
 | **T099** | `The module '{module}' requires an underlying operating system, but target '{target}' is bare-metal.` | Error | `0.2.0` | `std.thread` e `std.fs` exigem SO. T049–T098 permanecem sem uso; o contrato freestanding fixou T099. |
 
 ---
@@ -387,7 +388,7 @@ Erros de pânico gerados devido a falhas do próprio compilador Arandu. O sufixo
 Para adicionar um novo código de erro ao compilador Arandu, siga exatamente as seguintes regras e procedimentos:
 
 ### 4.1 Regras de Numeração e Sequenciamento
-*   **Sequenciamento Linear**: Novos códigos sempre devem utilizar o próximo número sequencial disponível dentro da categoria correspondente (ex: se o último erro em `T` foi `T048`, o próximo sequencial é `T049`). A exceção registrada é **T099**: o contrato freestanding da 0.2.0 fixou esse número. **T049–T098 permanecem sem uso** e não devem ser preenchidos retroativamente.
+*   **Sequenciamento Linear**: Novos códigos sempre devem utilizar o próximo número sequencial disponível dentro da categoria correspondente (ex: se o último erro em `T` foi `T048`, o próximo sequencial é `T049`). A exceção registrada é **T099**: o contrato freestanding da 0.2.0 fixou esse número. **T050–T098 permanecem sem uso** e não devem ser preenchidos retroativamente.
 *   **Invariabilidade de Lacunas**: Lacunas no sequenciamento lógico geradas por remoções ou migrações históricas de códigos **nunca devem ser preenchidas retroativamente**.
 *   **Preservação e Rastreabilidade**: Quando um código é descontinuado ou movido para outra categoria, ele não é excluído. Em vez disso, sua linha na tabela correspondente é marcada com `[Reservado / Obsoleto]` ou `[Movido → CÓDIGO]` para manter a rastreabilidade histórica em issues, discussões do GitHub e commits legados.
 

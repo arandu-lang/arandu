@@ -15,11 +15,13 @@
   - `docs/rfcs/0014-native-wasm-component-model-and-runtime.md`
   - `docs/rfcs/0015-native-mobile-architecture-and-zero-copy-interop.md`
 
-> **Estado auditado em 2026-10-15:** Proposta (`Draft`), sem exportador
-> poliglota universal implementado na árvore atual. O compilador hoje suporta
-> declarações `extern func`, `@Link`, verificação `@Unsafe` (`O013`) e
-> classificação `@Repr("C")`. A fila permanente vive no
-> [roadmap mestre](../arandu-compiler-roadmap-v0.1.md).
+> **Estado auditado em 2026-10-21:** A anotação `@Export` está implementada
+> para o subconjunto escalar/ponteiro descrito em §3.2.1 (símbolo plano, ABI C,
+> `nounwind`, validação `T049`). Exportação poliglota universal, vistas
+> zero-copy, `@FfiResource` e geração de headers/bindings continuam em
+> proposta. O compilador hoje também suporta declarações `extern func`,
+> `@Link`, verificação `@Unsafe` (`O013`) e classificação `@Repr("C")`. A fila
+> permanente vive no [roadmap mestre](../arandu-compiler-roadmap-v0.1.md).
 > **Regra de integridade de falhas:** no modelo nativo sem tabelas de unwinding
 > (Invariante 5 — `UD2`/`BRK`), um abort fatal de hardware **não** é uma exceção
 > recuperável dentro do mesmo processo nativo. Fronteiras FFI resilientes usam
@@ -127,6 +129,25 @@ public func normalizeSamples(
     return Result.Ok(())
 }
 ```
+
+#### 3.2.1 Estado implementado na 0.1.11 (`@Export`)
+
+A superfície canônica implementada é `@Export` (a forma `@FfiExport` continua
+aceita como alias legado, com aviso `W008`). Ela resolve a intenção inteira em
+uma única anotação: símbolo plano sem mangling, ABI C do alvo, linkage externo
+e `nounwind`. O nome pode ser fixado com `@Export("nome_c")`, útil para
+prefixos de SDK e para manter o símbolo estável quando o módulo muda de nome.
+
+O subconjunto validado hoje cobre funções livres (sem receiver, sem `async`,
+sem genéricos) com primitivos de largura fixa (`i8`–`i64`, `u8`–`u64`, `f32`,
+`f64`, `bool`), ponteiros crus (`ptr T`) e retorno `void`. Structs por valor,
+fatias (`ref []T`/`mut ref []T`) e `str` são rejeitados com `T049` até que o
+classificador reverso de ABI (`byval`, `(ptr, len)`, contrato de erro) seja
+implementado; a fronteira permanece explícita e verificada em vez de depender
+de layout presumido. Ver `docs/errors/T049.md`.
+
+Colisões de símbolo entre duas funções exportadas são diagnosticadas em tempo
+de compilação, ao contrário do comportamento silencioso de `#[no_mangle]`.
 
 ### 3.3 Consumo a partir do Python (Buffer Protocol Zero-Copy)
 

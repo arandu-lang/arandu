@@ -182,6 +182,9 @@ fn lower_decl_with_body(
                         .insert(receiver_ty, symbol);
                 }
             }
+            if annotations.contains(crate::attributes::AnnotationId::Export) {
+                lower_export(type_check, pool, d, symbol, &formal_types, return_type)?;
+            }
             Ok(Some(HirDecl::Func(HirFunc {
                 symbol,
                 params,
@@ -329,4 +332,145 @@ fn receiver_kind(
                 _ => ReceiverKind::Own,
             })
         })
+}
+
+/// Applies `@Export` to a free function: validates that the signature crosses
+/// the C ABI without an implicit transformation, then records the flat symbol
+/// name used by every native backend.
+fn lower_export(
+    type_check: &mut TypeCheckResult,
+    pool: &AstPool,
+    declaration: &arandu_parser::FuncDecl,
+    symbol: arandu_middle::SymbolId,
+    formal_types: &[TypeId],
+    return_type: TypeId,
+) -> Result<(), Diagnostic> {
+    if matches!(declaration.name, FuncName::Method { .. }) {
+        return Err(Diagnostic::error(
+            crate::DiagCode::T049InvalidFfiExport,
+            "@Export is only valid on free functions; methods have no C ABI",
+            declaration.span,
+        ));
+    }
+    if declaration.is_async {
+        return Err(Diagnostic::error(
+            crate::DiagCode::T049InvalidFfiExport,
+            "@Export cannot be applied to an async function; the C ABI has no suspension point",
+            declaration.span,
+        ));
+    }
+    if type_check.type_info.generic_params.contains_key(&symbol) {
+        return Err(Diagnostic::error(
+            crate::DiagCode::T049InvalidFfiExport,
+            "@Export requires a monomorphic function; add a concrete wrapper instead of exporting a generic",
+            declaration.span,
+        ));
+    }
+
+    let interner = &type_check.type_info.type_interner;
+    for (index, ty) in formal_types.iter().enumerate() {
+        if let Some(reason) = c_export_type_error(interner, interner.resolve(*ty), false) {
+            let span = declaration
+                .params
+                .get(index)
+                .map_or(declaration.span, |param| param.span);
+            return Err(Diagnostic::error(
+                crate::DiagCode::T049InvalidFfiExport,
+                format!("cannot export parameter {}: {reason}", index + 1),
+                span,
+            ));
+        }
+    }
+    if let Some(reason) = c_export_type_error(interner, interner.resolve(return_type), true) {
+        return Err(Diagnostic::error(
+            crate::DiagCode::T049InvalidFfiExport,
+            format!("cannot export return type: {reason}"),
+            declaration.span,
+        ));
+    }
+
+    let export_name = declaration
+        .attrs
+        .iter()
+        .filter_map(|attr| {
+            crate::attributes::annotation_spec(&attr.name)
+                .filter(|(spec, _)| spec.id == crate::attributes::AnnotationId::Export)
+                .map(|(_, _)| attr)
+        })
+        .find_map(|attr| crate::attributes::attribute_string_arg(attr, pool))
+        .unwrap_or_else(|| type_check.symbols.get(symbol).name.to_string());
+
+    if type_check
+        .symbols
+        .host_function_names
+        .iter()
+        .any(|(other, name)| *other != symbol && name == export_name.as_str())
+    {
+        return Err(Diagnostic::error(
+            crate::DiagCode::T049InvalidFfiExport,
+            format!("exported symbol '{export_name}' collides with another host symbol"),
+            declaration.span,
+        ));
+    }
+
+    type_check
+        .symbols_mut()
+        .host_function_names
+        .insert(symbol, crate::SmolStr::new(export_name));
+    Ok(())
+}
+
+/// Rejects every type whose C representation depends on an ABI transformation
+/// the backend does not implement yet. Rejecting is deliberate: exporting a
+/// slice or a by-value struct today would silently emit a mismatched ABI.
+fn c_export_type_error(interner: &TypeInterner, ty: ArType, allow_void: bool) -> Option<String> {
+    use arandu_middle::types::Primitive;
+    match ty {
+        ArType::Primitive(
+            Primitive::I8
+            | Primitive::I16
+            | Primitive::I32
+            | Primitive::I64
+            | Primitive::U8
+            | Primitive::U16
+            | Primitive::U32
+            | Primitive::U64
+            | Primitive::F32
+            | Primitive::F64
+            | Primitive::Bool,
+        ) => None,
+        ArType::Void if allow_void => None,
+        ArType::Ptr(inner) => match interner.resolve(inner) {
+            ArType::Void | ArType::Named(..) => None,
+            ArType::Primitive(
+                Primitive::I8
+                | Primitive::I16
+                | Primitive::I32
+                | Primitive::I64
+                | Primitive::U8
+                | Primitive::U16
+                | Primitive::U32
+                | Primitive::U64
+                | Primitive::F32
+                | Primitive::F64
+                | Primitive::Bool,
+            ) => None,
+            other => Some(format!(
+                "pointer to {other:?} has no stable C representation; point at a scalar or a nominal type"
+            )),
+        },
+        ArType::Primitive(other) => Some(format!(
+            "`{other:?}` has a target-dependent width; use a fixed-width type (i8..i64, u8..u64, f32, f64, bool)"
+        )),
+        ArType::Named(..) => Some(
+            "nominal types by value are not supported by @Export yet; pass `ptr T` across the boundary"
+                .to_owned(),
+        ),
+        ArType::Slice(_) | ArType::MutSlice(_) => Some(
+            "slices are not supported by @Export yet; pass a raw pointer plus an explicit length"
+                .to_owned(),
+        ),
+        ArType::Void => Some("`void` is only valid as the return type".to_owned()),
+        other => Some(format!("{other:?} has no C representation")),
+    }
 }

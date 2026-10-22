@@ -723,3 +723,104 @@ fn test_cyclic_type_alias_safety() {
     // Since X = Y = X is cyclic, it should result in a compiler error or poison, but not crash!
     assert!(!tc.diagnostics.is_empty() || tc.type_info.expr_types.iter().all(|s| s.is_none()));
 }
+
+fn lower_export_result(
+    src: &str,
+) -> Result<arandu_semantics::TypeCheckResult, Vec<arandu_semantics::Diagnostic>> {
+    let program = arandu_parser::parse(src).expect("parse failed");
+    let resolution = resolve_for_test(0, &program);
+    let mut tc = type_check(
+        resolution,
+        &program,
+        arandu_semantics::TargetInfo { pointer_width: 64 },
+    );
+    assert!(tc.diagnostics.is_empty(), "{:?}", tc.diagnostics);
+    lower_to_hir(&mut tc, &program).map(|_| tc)
+}
+
+fn symbol_named<'a>(
+    tc: &'a arandu_semantics::TypeCheckResult,
+    name: &str,
+) -> &'a arandu_middle::Symbol {
+    tc.symbols
+        .iter()
+        .find(|symbol| symbol.name == name)
+        .unwrap_or_else(|| panic!("symbol {name} not found"))
+}
+
+#[test]
+fn export_uses_flat_c_symbols_regardless_of_module() {
+    let tc = lower_export_result(
+        r#"
+module hitbox.core.socd
+
+@Export
+func apply_socd(raw: u32): u32 { return raw }
+
+@Export("arandu_core_process_inputs")
+func process_inputs(raw: u32): u32 { return raw }
+"#,
+    )
+    .expect("valid export");
+
+    assert_eq!(
+        tc.symbols.host_func_name(symbol_named(&tc, "apply_socd")),
+        "apply_socd"
+    );
+    assert_eq!(
+        tc.symbols
+            .host_func_name(symbol_named(&tc, "process_inputs")),
+        "arandu_core_process_inputs"
+    );
+}
+
+#[test]
+fn export_rejects_types_without_a_stable_c_representation() {
+    for signature in [
+        "func f(value: str): u32 { return 0 }",
+        "func f(value: []u32): u32 { return 0 }",
+        "func f(value: u32): int { return 0 }",
+        "func f(value: [4]u32): u32 { return 0 }",
+        "func f(value: ptr[[]u32]): u32 { return 0 }",
+    ] {
+        let errors = lower_export_result(&format!("@Export\n{signature}\n"))
+            .expect_err("must reject non-C signature");
+        assert_eq!(
+            errors[0].code,
+            arandu_semantics::DiagCode::T049InvalidFfiExport,
+            "{signature}"
+        );
+    }
+}
+
+#[test]
+fn export_rejects_async_generic_and_colliding_symbols() {
+    for source in [
+        "@Export\nasync func f(): u32 { return 0 }\n",
+        "@Export\nfunc f<T>(value: T): T { return value }\n",
+        "@Export(\"same\")\nfunc a(): u32 { return 1 }\n@Export(\"same\")\nfunc b(): u32 { return 2 }\n",
+    ] {
+        let errors = lower_export_result(source).expect_err("must reject invalid export shape");
+        assert_eq!(
+            errors[0].code,
+            arandu_semantics::DiagCode::T049InvalidFfiExport
+        );
+    }
+}
+
+#[test]
+fn export_accepts_fixed_width_pointers_and_unit() {
+    let tc = lower_export_result(
+        r#"
+struct Frame { id: u32 }
+
+@Export
+func reset(frame: ptr[Frame], flags: u64, gain: f32, active: bool): void {}
+"#,
+    )
+    .expect("valid export");
+    assert_eq!(
+        tc.symbols.host_func_name(symbol_named(&tc, "reset")),
+        "reset"
+    );
+}

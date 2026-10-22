@@ -46,7 +46,7 @@ fn scalar(ty: &ArType) -> Option<bool> {
     }
 }
 
-pub(super) fn satisfies(
+pub(crate) fn satisfies(
     checker: &TypeChecker<'_>,
     concrete: &ArType,
     capability: LangItem,
@@ -60,10 +60,10 @@ pub(super) fn satisfies(
     // change the depth cutoff. Interned IDs prevent repeated structural work.
     const MAX_PROOF_DEPTH: usize = 256;
     const MAX_PROOF_TYPES: usize = 4096;
-    let mut pending = VecDeque::from([(interner.intern(concrete.clone()), 0usize)]);
+    let mut pending = VecDeque::from([(interner.intern(concrete.clone()), capability, 0usize)]);
     let mut seen = FxHashSet::default();
-    while let Some((id, depth)) = pending.pop_front() {
-        if !seen.insert(id) {
+    while let Some((id, capability, depth)) = pending.pop_front() {
+        if !seen.insert((id, capability)) {
             continue;
         }
         if depth > MAX_PROOF_DEPTH || seen.len() > MAX_PROOF_TYPES {
@@ -100,6 +100,46 @@ pub(super) fn satisfies(
                 }
                 let arguments = interner.type_args(arguments);
                 match declaration.lang_item {
+                    Some(
+                        LangItem::RwLockReadGuard
+                        | LangItem::RwLockWriteGuard
+                        | LangItem::MutexGuard,
+                    ) => return false,
+                    Some(LangItem::Condvar) => {
+                        if capability == LangItem::Copy || !arguments.is_empty() {
+                            return false;
+                        }
+                        continue;
+                    }
+                    Some(LangItem::Arc | LangItem::ArcWeak) => {
+                        if capability == LangItem::Copy || arguments.len() != 1 {
+                            return false;
+                        }
+                        pending.push_back((arguments[0], LangItem::Send, depth + 1));
+                        pending.push_back((arguments[0], LangItem::Sync, depth + 1));
+                        continue;
+                    }
+                    Some(LangItem::UnsafeCell | LangItem::Mutex | LangItem::RwLock) => {
+                        if capability == LangItem::Copy || arguments.len() != 1 {
+                            return false;
+                        }
+                        if declaration.lang_item == Some(LangItem::UnsafeCell)
+                            && capability == LangItem::Sync
+                        {
+                            return false;
+                        }
+                        // Interior mutability is admitted only for canonical
+                        // synchronized owners, never by a user type's spelling.
+                        // Mutex<T>:Sync needs Send, while RwLock<T>:Sync needs
+                        // both Send (writer ownership) and Sync (shared reads).
+                        pending.push_back((arguments[0], LangItem::Send, depth + 1));
+                        if declaration.lang_item == Some(LangItem::RwLock)
+                            && capability == LangItem::Sync
+                        {
+                            pending.push_back((arguments[0], LangItem::Sync, depth + 1));
+                        }
+                        continue;
+                    }
                     Some(LangItem::String) => {
                         if capability == LangItem::Copy || !arguments.is_empty() {
                             return false;
@@ -110,7 +150,11 @@ pub(super) fn satisfies(
                         if capability == LangItem::Copy {
                             return false;
                         }
-                        pending.extend(arguments.iter().map(|&argument| (argument, depth + 1)));
+                        pending.extend(
+                            arguments
+                                .iter()
+                                .map(|&argument| (argument, capability, depth + 1)),
+                        );
                         continue;
                     }
                     _ => {}
@@ -120,7 +164,11 @@ pub(super) fn satisfies(
                 }
                 // Include phantom arguments: an empty wrapper must not launder
                 // a resource's negative transfer constraint.
-                pending.extend(arguments.iter().map(|&argument| (argument, depth + 1)));
+                pending.extend(
+                    arguments
+                        .iter()
+                        .map(|&argument| (argument, capability, depth + 1)),
+                );
                 let substitution = if let Some(parameters) = info.generic_params.get(&symbol) {
                     if parameters.len() != arguments.len() {
                         return false;
@@ -146,7 +194,7 @@ pub(super) fn satisfies(
                             fields
                                 .fields
                                 .iter()
-                                .map(|field| (instantiate(field.ty), depth + 1)),
+                                .map(|field| (instantiate(field.ty), capability, depth + 1)),
                         );
                     }
                     SymbolKind::Enum => {
@@ -156,7 +204,9 @@ pub(super) fn satisfies(
                                     info.variant_payload_for(*variant, &arguments)
                             {
                                 pending.extend(
-                                    fields.iter().map(|&field| (instantiate(field), depth + 1)),
+                                    fields
+                                        .iter()
+                                        .map(|&field| (instantiate(field), capability, depth + 1)),
                                 );
                             }
                         }
@@ -168,24 +218,25 @@ pub(super) fn satisfies(
             | ArType::ConstArray(_, inner)
             | ArType::Option(inner)
             | ArType::Range(inner) => {
-                pending.push_back((inner, depth + 1));
+                pending.push_back((inner, capability, depth + 1));
             }
             ArType::Result(ok, error) => {
-                pending.push_back((ok, depth + 1));
-                pending.push_back((error, depth + 1));
+                pending.push_back((ok, capability, depth + 1));
+                pending.push_back((error, capability, depth + 1));
             }
             ArType::Tuple(elements) => {
                 pending.extend(
                     interner
                         .type_args(elements)
                         .into_iter()
-                        .map(|id| (id, depth + 1)),
+                        .map(|id| (id, capability, depth + 1)),
                 );
             }
             ArType::Ptr(_)
             | ArType::Ref(_)
             | ArType::RefMut(_)
             | ArType::Slice(_)
+            | ArType::MutSlice(_)
             | ArType::Nullable(_)
             | ArType::Coroutine(_)
             | ArType::Poll(_)
@@ -196,7 +247,11 @@ pub(super) fn satisfies(
             | ArType::Error
             | ArType::IntLiteral
             | ArType::FloatLiteral => return false,
-            ArType::Primitive(_) | ArType::Void | ArType::FrozenConst(_) | ArType::Const(_) => {} // handled by scalar above
+            ArType::Vector(_)
+            | ArType::Primitive(_)
+            | ArType::Void
+            | ArType::FrozenConst(_)
+            | ArType::Const(_) => {} // handled by scalar above
         }
     }
     true
@@ -211,6 +266,66 @@ mod tests {
     use arandu_middle::symbol_table::SymbolTable;
     use arandu_parser::ast_pool::AstPool;
     use std::sync::Arc;
+
+    #[test]
+    fn canonical_locks_prove_child_capabilities_without_recursive_shortcuts() {
+        let pool = AstPool::default();
+        let mut symbols = SymbolTable::new(0);
+        let scope = symbols.global_scope();
+        let mut owners = Vec::new();
+        for marker in [LangItem::UnsafeCell, LangItem::Mutex, LangItem::RwLock] {
+            let symbol = symbols
+                .define(
+                    scope,
+                    &format!("{marker:?}"),
+                    SymbolKind::Struct,
+                    Span::new(0, 0, 0),
+                )
+                .unwrap();
+            symbols.set_lang_item(symbol, marker);
+            owners.push(symbol);
+        }
+        let mut checker = TypeChecker::new(
+            symbols,
+            ResolvedNames::default(),
+            Vec::new(),
+            &pool,
+            TargetInfo { pointer_width: 64 },
+        );
+        checker
+            .type_info
+            .interior_mutable_types
+            .extend(owners.iter().copied());
+        let interner = &checker.type_info.type_interner;
+        let int = interner.intern(ArType::Primitive(Primitive::Int));
+        let cell = interner.intern(ArType::named(owners[0], &[int], interner));
+        let mutex = ArType::named(owners[1], &[cell], interner);
+        let lock = ArType::named(owners[2], &[cell], interner);
+        let plain_lock = ArType::named(owners[2], &[int], interner);
+        assert!(satisfies(&checker, &interner.resolve(cell), LangItem::Send));
+        assert!(!satisfies(
+            &checker,
+            &interner.resolve(cell),
+            LangItem::Sync
+        ));
+        assert!(satisfies(&checker, &mutex, LangItem::Sync));
+        assert!(satisfies(&checker, &lock, LangItem::Send));
+        assert!(!satisfies(&checker, &lock, LangItem::Sync));
+        assert!(satisfies(&checker, &plain_lock, LangItem::Sync));
+        for owner in [
+            cell,
+            interner.intern(mutex),
+            interner.intern(lock),
+            interner.intern(plain_lock),
+        ] {
+            assert!(!checker.type_info.is_copy(owner));
+            assert!(!satisfies(
+                &checker,
+                &interner.resolve(owner),
+                LangItem::Copy
+            ));
+        }
+    }
 
     #[test]
     fn expanding_generic_storage_exhausts_proof_without_recursive_walk() {

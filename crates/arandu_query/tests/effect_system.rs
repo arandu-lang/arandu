@@ -326,7 +326,7 @@ func safeCaller(): int {
 #[test]
 fn imported_unsafe_function_requires_an_explicit_unsafe_block() {
     let mut db = DatabaseImpl::new();
-    let _ = db.new_file(
+    let _ = db.new_stdlib_file(
         "stdlib/std/unsafe_api.aru".into(),
         r#"
 module std.unsafe_api

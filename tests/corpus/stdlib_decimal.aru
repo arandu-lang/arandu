@@ -1,0 +1,79 @@
+module decimalContract
+
+import std.core.decimal as dec
+
+import std.core.intrinsics as intrinsics
+
+func parse(s: str): dec.Decimal {
+    match dec.Decimal.fromStr(s) {
+        Option.Some(value) => { return value }
+        Option.None => { unsafe { intrinsics.abort() } }
+    }
+    return dec.Decimal.zero()
+}
+
+func expect(value: dec.Decimal, expected: str): bool {
+    return value.eq(parse(expected))
+}
+
+public func main(): int {
+    let max = parse("79228162514264337593543950335")
+    match max.checkedAdd(dec.Decimal.one()) {
+        Option.Some(_) => { return 1 }
+        Option.None => {}
+    }
+    match max.checkedMul(dec.Decimal.fromInt(2)) {
+        Option.Some(_) => { return 2 }
+        Option.None => {}
+    }
+    match max.checkedToI64() {
+        Option.Some(_) => { return 3 }
+        Option.None => {}
+    }
+    match max.neg().checkedSub(dec.Decimal.one()) {
+        Option.Some(_) => { return 4 }
+        Option.None => {}
+    }
+    match parse("2147483648").checkedToInt() {
+        Option.Some(_) => { return 5 }
+        Option.None => {}
+    }
+    if parse("-9223372036854775808").toI64() != (-9223372036854775807 - 1) { return 6 }
+    if parse("9223372036854775807.999").toI64() != 9223372036854775807 { return 7 }
+    if parse("-2147483648.99").toInt() != (-2147483647 - 1) { return 8 }
+    if parse("-2.345").toCents() != -234 { return 9 }
+    if parse("-2.355").toCents() != -236 { return 10 }
+    if !expect(parse("7922816251426433759354395033.5").add(parse("0.05")), "7922816251426433759354395034") { return 11 }
+    if !expect(parse("7922816251426433759354395033.5").sub(parse("0.05")), "7922816251426433759354395033.4") { return 12 }
+    if !expect(parse("7922816251426433759354395033.5").sub(parse("7922816251426433759354395033.4")), "0.1") { return 13 }
+    if !expect(parse("1.2345678901234567890123456789").mul(parse("1.0000000000000000000000000000")), "1.2345678901234567890123456789") { return 14 }
+    match parse("1").div(parse("3")) {
+        Option.Some(value) => { if !expect(value, "0.3333333333333333333333333333") { return 15 } }
+        Option.None => { return 16 }
+    }
+    match parse("2").div(parse("3")) {
+        Option.Some(value) => { if !expect(value, "0.6666666666666666666666666667") { return 17 } }
+        Option.None => { return 18 }
+    }
+    match max.div(parse("0.1")) {
+        Option.Some(_) => { return 19 }
+        Option.None => {}
+    }
+    if !expect(parse("-2.5001").round(0 as u32, dec.RoundingMode.HalfEven), "-3") { return 20 }
+    if !expect(parse("-2.5").round(0 as u32, dec.RoundingMode.HalfEven), "-2") { return 21 }
+    if !expect(parse("-2.1").round(0 as u32, dec.RoundingMode.Floor), "-3") { return 22 }
+    if !expect(parse("-2.1").round(0 as u32, dec.RoundingMode.Ceil), "-2") { return 23 }
+    if !expect(parse("-2.9").round(0 as u32, dec.RoundingMode.Truncate), "-2") { return 24 }
+    if !parse("1_000.50").eq(parse("1000.5")) { return 25 }
+    match dec.Decimal.fromStr("_1") { Option.Some(_) => { return 26 } Option.None => {} }
+    match dec.Decimal.fromStr("1_") { Option.Some(_) => { return 27 } Option.None => {} }
+    match dec.Decimal.fromStr("1__0") { Option.Some(_) => { return 28 } Option.None => {} }
+    match dec.Decimal.fromStr("1._0") { Option.Some(_) => { return 29 } Option.None => {} }
+    match dec.Decimal.fromStr("0.00000000000000000000000000001") { Option.Some(_) => { return 30 } Option.None => {} }
+    match dec.Decimal.fromStr("79228162514264337593543950336") { Option.Some(_) => { return 31 } Option.None => {} }
+    if parse("7922816251426433759354395033.5").cmp(parse("7922816251426433759354395033.4")) != 1 { return 32 }
+    if !expect(max.add(max.neg()), "0") { return 33 }
+    if parse("12345678901234567.894999999999").toCents() != 1234567890123456789 { return 34 }
+    if parse("-12345678901234567.894999999999").toCents() != -1234567890123456789 { return 35 }
+    return 0
+}

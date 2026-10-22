@@ -37,6 +37,33 @@ fn size_inspection_rejects_debug_before_reading_the_source() {
 }
 
 #[test]
+fn native_build_does_not_treat_i686_layout_as_wasm() {
+    let tmp = tempfile_dir("arandu_native_i686_layout");
+    let project = tmp.join("native_i686_layout");
+    let init = run_cli_in(&tmp, &["new", "native_i686_layout", "--bin", "--vcs=none"]);
+    assert!(
+        init.status.success(),
+        "new project: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+
+    let build = run_cli_in(&project, &["build", "--layout=i686"]);
+    assert!(
+        !build.status.success(),
+        "i686 layout unexpectedly built as a native artifact"
+    );
+    let stderr = String::from_utf8_lossy(&build.stderr);
+    assert!(
+        stderr.contains("native builds require the host data layout"),
+        "expected explicit layout rejection, got: {stderr}"
+    );
+    assert!(
+        !project.join("target/dev/wasm32-wasip1").exists(),
+        "32-bit layout must not create an implicit Wasm artifact"
+    );
+}
+
+#[test]
 fn cache_dir_reports_the_absolute_override_without_creating_it() {
     let tmp = tempfile_dir("arandu_cache_dir");
     let cache = tmp.join("global-cache");

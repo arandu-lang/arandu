@@ -104,6 +104,27 @@ fn grouped_literal_zero_divisors_keep_integer_diagnostic_and_float_semantics() {
 }
 
 #[test]
+fn foreign_function_with_intrinsic_spelling_keeps_extern_safety() {
+    let source = r#"
+extern "C" {
+    func bitCountOnes32(value: u32): u32
+}
+func call_foreign(): u32 { return bitCountOnes32(1) }
+"#;
+    let program = arandu_parser::parse(source).unwrap();
+    let resolved = arandu_resolve::resolve_for_test(0, &program);
+    let result = crate::type_check(resolved, &program, TargetInfo { pointer_width: 64 });
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == DiagCode::O013ExternRequiresUnsafe),
+        "name collision must not turn an ordinary extern into a safe bit intrinsic: {:?}",
+        result.diagnostics
+    );
+}
+
+#[test]
 fn frozen_integer_lengths_lower_in_array_types_and_repetitions() {
     use arandu_middle::ctfe::{ConstInt, ConstValue, IntegerType};
     for (value, valid) in [(0, true), (2, true), (-1, false), (65_537, false)] {

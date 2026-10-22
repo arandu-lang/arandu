@@ -17,12 +17,16 @@ Esta RFC estabelece a arquitetura formal, os princípios de design de memória, 
 
 **Decisão de Triagem da Standard Library (v0.1):**
 Em alinhamento com a filosofia de compilador enxuto e de alta velocidade (seguindo os acertos históricos de Rust e Python), o Arandu adota uma **separação estrita entre o compilador e pacotes científicos**:
-- **In-Tree (`stdlib/core/math` e `stdlib/core/simd`)**: O repositório central do compilador é responsável **exclusivamente** pela matemática escalar fundamental (aritmética IEEE-754, funções elementares da `libm`, trigonometria, constantes numéricas) e tipos primitivos de registradores SIMD (`f32x4`, `u8x16`). Nada de matrizes pesadas, tensores ou dependências externas entra no compilador.
-- **Out-of-Tree / Ecossistema Externo (`arandu_math`, `arandu_data`, `arandu_science`)**: Esta RFC serve como **blueprint arquitetural canônico** para crates externas independentes mantidas pelo ecossistema/comunidade. Nenhum desses pacotes bloqueia a estabilização do compilador Arandu v1.0 nem reside na árvore padrão de crates.
+- **In-Tree (fronteira proposta de `std.core.math`/SIMD)**: O repositório central do compilador é responsável **exclusivamente** pela matemática escalar fundamental (aritmética IEEE-754, funções elementares da `libm`, trigonometria, constantes numéricas) e tipos primitivos de registradores SIMD (`f32x4`, `u8x16`). Nada de matrizes pesadas, tensores ou dependências externas entra no compilador.
+- **Out-of-Tree / Ecossistema Externo (`arandu_math`, `arandu_data`, `arandu_science`)**: Esta RFC serve como **blueprint arquitetural canônico** para crates externas independentes mantidas pelo ecossistema/comunidade. Esses pacotes não bloqueiam o compilador 1.0; a incubação atual em `stdlib/math` é a exceção transitória explicitada abaixo, não a stack inteira implementada.
 
-A proposta sintetiza e aprimora as melhores decisões arquiteturais de 14 ecossistemas de referência (**NumPy, Julia, JAX, Eigen, xtensor, nalgebra, faer, LAPACK/oneMKL, OpenBLAS, Apache Arrow, Polars, SciPy Sparse, GraphBLAS e FFTW**), eliminando deliberadamente suas dívidas técnicas históricas.
+A proposta toma NumPy, Julia, JAX, Eigen, xtensor, nalgebra, faer, LAPACK/oneMKL, OpenBLAS, Arrow, Polars, SciPy Sparse, GraphBLAS e FFTW como referências de desenho. Isso não demonstra superioridade ou elimina automaticamente os trade-offs dessas ferramentas.
 
-### 1.1 Estado da implementação (2026-09-20)
+As APIs e snippets multidimensionais, SIMD, Arrow e lazy query abaixo são
+propostas, exceto o recorte explicitamente listado como implementado. A ordem
+SCI.1–4 e seus gates vivem no [roadmap mestre](../arandu-compiler-roadmap-v0.1.md#trilha-da-stack-científica-numérica-e-de-dados--rfc-0012), sem promessa de versão do compilador.
+
+### 1.1 Estado da implementação (reconciliado em 2026-10-15)
 
 SCI.1 está **parcial**, não concluído. `stdlib/math` funciona hoje como área de
 incubação in-tree para views bidimensionais strided, `Matrix`, `StaticMatrix`,
@@ -56,7 +60,7 @@ A computação científica moderna enfrenta uma bifurcação crônica entre duas
    - Dificuldade para provar ausência de aliasing entre ponteiros (`restrict` raramente é garantido pelo sistema de tipos), forçando o compilador a emitir verificações redundantes em runtime ou impedindo autovetorização SIMD agressiva.
 
 O Arandu possui características nativas ideais para computação científica de alto desempenho:
-- **Ownership Semântico (OSSA)** e empréstimos exclusivos (`mut ref`): garantem não-aliasing absoluto por construção de tipos, permitindo autovetorização SIMD sem salvaguardas em runtime.
+- **Ownership Semântico (OSSA)** e empréstimos exclusivos (`mut ref`): fornecem fatos locais de exclusividade. Provar disjunção entre views, chamadas/FFI e acessos indiretos requer análise de proveniência/alias; autovetorização ainda não está implementada neste recorte.
 - **Stack-first & No hidden allocation**: controle total sobre quando e onde a memória é alocada.
 - **Data-Oriented Design (DOD)**: alinhamento natural com SoA, bitsets e estruturas densas contíguas.
 - **Compilador incremental com AMIR**: capacidade de reconhecer padrões de laço e aplicar fusão no nível de IR sem sobrecarregar o frontend com metaprogramação.
@@ -150,7 +154,7 @@ math.addInto(&mut out, view_a, view_b)
 math.mulAddInto(&mut out, view_a, view_b, view_c)
 ```
 
-Como `out` exige uma referência exclusiva (`&mut`), o compilador Arandu prova em tempo de compilação que não há sobreposição de memória (*no-aliasing*) com `view_a`, `view_b` ou `view_c`, emitindo código SIMD vetorizado sem gerar branches defensivos de verificação de ponteiros.
+A API pretende exigir destino exclusivo; a implementação deverá provar a relação entre as origens de `out` e das views, rejeitar sobreposição ou tratá-la explicitamente. A assinatura sozinha não prova noalias nem emissão SIMD; essas provas e medições são gates de SCI.1.
 
 #### Gerenciamento de Memória Temporária (Scratch Arena)
 Algoritmos densos de álgebra linear (como decomposição LU, QR, SVD e GEMM de alto desempenho) frequentemente requerem memória temporária para blocos de packing. No Arandu, essa memória nunca é requisitada silenciosamente ao sistema operacional:
@@ -171,6 +175,15 @@ for step in 0..100_000 {
     linalg.gemmInto(matrix_a, matrix_b, &mut result, &mut scratch)
 }
 ```
+
+#### 3.4.1. Fusão de Laços no AMIR (Loop Fusion) para Expressões Elementwise
+Além do DPS manual, o otimizador da AMIR implementa **Loop Fusion Automático** (inspirado no broadcast fusion de Julia e compiladores como XLA). Quando o programador escreve expressões compostas naturais:
+```arandu
+let resultado = (a + b) * c
+```
+Em vez de alocar um array temporário para `(a + b)` e outro para a multiplicação (como ocorre em Python/NumPy), o compilador reconhece que as operações compartilham a mesma geometria de índices e funde os blocos básicos da AMIR em uma **única passagem vetorial**:
+$$\forall i: \quad \text{resultado}[i] = (a[i] + b[i]) \times c[i]$$
+Os elementos são carregados uma única vez para registradores SIMD da CPU/GPU, processados em voo e gravados diretamente no destino final, com **zero alocações intermediárias de memória** e preservação total dos caches L1/L2.
 
 ---
 

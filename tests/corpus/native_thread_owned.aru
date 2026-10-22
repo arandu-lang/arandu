@@ -1,0 +1,39 @@
+module nativeThreadOwned
+
+import std.thread as thread
+import std.alloc.string as strings
+
+struct AppendJob {}
+
+public func AppendJob.run(self: own AppendJob, argument: strings.String): strings.String {
+    let mut text = argument
+    text.pushStr(" child")
+    return text
+}
+
+public func main(): int {
+    let started = thread.spawnWith<strings.String, strings.String, AppendJob>(
+        strings.String.from("owned"), AppendJob {}
+    )
+    match started {
+        Result.Ok(handle) => {
+            match handle.join() {
+                Result.Ok(text) => {
+                    if text.len() != (11 as usize) { return 1 }
+                    if text.asStr() != "owned child" { return 2 }
+                }
+                Result.Err(_) => { return 3 }
+            }
+        }
+        Result.Err(_) => { return 4 }
+    }
+    // An unjoined handle still joins and destroys its owned String result.
+    let discarded = thread.spawnWith<strings.String, strings.String, AppendJob>(
+        strings.String.from("discarded"), AppendJob {}
+    )
+    match discarded {
+        Result.Ok(handle) => {}
+        Result.Err(_) => { return 5 }
+    }
+    return 0
+}

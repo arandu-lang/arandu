@@ -1,0 +1,9 @@
+enum WorkerState {
+    Idle,
+    Running,
+    Terminated,
+}
+match worker.state {
+    WorkerState.Idle => { return true; }
+    _ => { return false; }
+}

@@ -25,22 +25,7 @@
 
 module std.core.prelude
 
-import std.core.option as option
-import std.core.result as result
-import std.core.pointer as pointer
-import std.core.future as future
-import std.core.mem as mem
-import std.core.cmp as cmp
-import std.core.slice as slice
-import std.core.num as num
-import std.core.char as chars
-import std.core.ascii as ascii
-import std.core.str as strings
-import std.core.hash as hash
-import std.core.iter as iter
-import std.core.cell as cell
-import std.core.marker as marker
-import std.core.atomic as atomic
+
 
 // Canonical re-exports via RFC 0021
 public use std.core.option.{ Option }

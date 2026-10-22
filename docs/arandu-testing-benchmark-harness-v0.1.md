@@ -193,9 +193,13 @@ adicionar um serviço ou uma dependência de runtime ao SDK.
   anunciado como recurso.
 - Regressão de performance só vira gate obrigatório em runner dedicado,
   identificado e calibrado; baseline não será atualizado automaticamente por PR.
-- Avaliar `cargo-nextest` somente após nova medição mostrar que execução — e não
-  compilação ou duplicação entre jobs — voltou a dominar o caminho crítico;
-  doctests e diferenças de isolamento deverão permanecer explícitos.
+- A campanha local 0.1.11 usa `cargo nextest run --workspace --locked
+  --profile verification --test-threads 2`, por orientação do mantenedor.
+  O watchdog desse perfil detecta travamentos; não substitui os orçamentos
+  internos de latência nem comprova ganho de performance. Nextest isola cada
+  teste em um processo e não executa doctests; estes exigem `cargo test --doc`.
+  A eventual migração do runner da CI exige medição própria de compilação e
+  execução, preservando a cobertura.
 - Fuzzing geracional, perf counters portáveis, execução remota e plugins de
   runner permanecem fora do contrato v1.
 

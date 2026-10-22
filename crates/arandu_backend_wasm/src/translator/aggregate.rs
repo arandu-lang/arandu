@@ -333,7 +333,7 @@ impl<'a> FuncTranslator<'a> {
                 let size = self.layout_of(&self.interner.resolve(*inner)).size;
                 (*inner, size)
             }
-            ArType::Slice(inner) => {
+            ArType::Slice(inner) | ArType::MutSlice(inner) => {
                 let size = self.layout_of(&self.interner.resolve(*inner)).size;
                 (*inner, size)
             }
@@ -349,7 +349,7 @@ impl<'a> FuncTranslator<'a> {
             (ArType::Array(len, _), _) => {
                 self.code.push(Instruction::I32Const(*len as i32));
             }
-            (ArType::Slice(_), Some(b)) => {
+            (ArType::Slice(_) | ArType::MutSlice(_), Some(b)) => {
                 self.code.push(Instruction::LocalGet(b + 1));
             }
             (_, None) => {

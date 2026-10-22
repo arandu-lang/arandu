@@ -23,6 +23,7 @@ pub mod gen_runtime;
 pub mod gen_runtime_gold;
 pub mod genref;
 pub mod genref_payload;
+pub mod native_thread;
 pub mod os_runtime;
 pub mod poll_runtime;
 pub mod reactor_runtime;

@@ -173,3 +173,173 @@ fn keywords_and_locals_are_ranked_before_types() {
         "locals should outrank keywords"
     );
 }
+
+#[test]
+fn str_methods_complete_after_receiver_dot() {
+    let text = concat!(
+        "import std.core.str as s\n",
+        "func main(): int {\n",
+        "    let text = \"hello\"\n",
+        "    return text.\n",
+        "}\n",
+    );
+    let mut host = AnalysisHost::new();
+    let _str_file = host.new_file(
+        "stdlib/core/str.aru".into(),
+        include_str!("../../../stdlib/core/str.aru").to_string(),
+    );
+    let file = host.new_file("main.aru".into(), text.to_string());
+    let snap = host.snapshot();
+    let start = text.find("    return text.").expect("cursor marker");
+    let offset = u32::try_from(start + "    return text.".len()).expect("offset");
+    let items = completions(&snap, file, text, offset);
+    let methods: Vec<&str> = items
+        .iter()
+        .filter(|item| item.kind == CompletionKind::Method)
+        .map(|item| item.label.as_str())
+        .collect();
+    assert!(methods.contains(&"len"), "got {methods:?}");
+    assert!(methods.contains(&"isEmpty"), "got {methods:?}");
+    assert!(methods.contains(&"startsWith"), "got {methods:?}");
+}
+
+#[test]
+fn primitive_methods_complete_without_import() {
+    let text = concat!(
+        "func main(): int {\n",
+        "    let text = \"hello\"\n",
+        "    return text.\n",
+        "}\n",
+    );
+    let mut host = AnalysisHost::new();
+    let _str_file = host.new_file(
+        "stdlib/core/str.aru".into(),
+        include_str!("../../../stdlib/core/str.aru").to_string(),
+    );
+    let file = host.new_file("main.aru".into(), text.to_string());
+    let snap = host.snapshot();
+    let start = text.find("    return text.").expect("cursor marker");
+    let offset = u32::try_from(start + "    return text.".len()).expect("offset");
+    let items = completions(&snap, file, text, offset);
+    let methods: Vec<&str> = items
+        .iter()
+        .filter(|item| item.kind == CompletionKind::Method)
+        .map(|item| item.label.as_str())
+        .collect();
+    assert!(methods.contains(&"len"), "got {methods:?}");
+    assert!(methods.contains(&"isEmpty"), "got {methods:?}");
+    assert!(methods.contains(&"startsWith"), "got {methods:?}");
+}
+
+#[test]
+fn int_methods_complete_without_import() {
+    let text = concat!(
+        "func main(): int {\n",
+        "    let x = 42\n",
+        "    return x.\n",
+        "}\n",
+    );
+    let mut host = AnalysisHost::new();
+    let _num_file = host.new_file(
+        "stdlib/core/num.aru".into(),
+        include_str!("../../../stdlib/core/num.aru").to_string(),
+    );
+    let file = host.new_file("main.aru".into(), text.to_string());
+    let snap = host.snapshot();
+    let start = text.find("    return x.").expect("cursor marker");
+    let offset = u32::try_from(start + "    return x.".len()).expect("offset");
+    let items = completions(&snap, file, text, offset);
+    let methods: Vec<&str> = items
+        .iter()
+        .filter(|item| item.kind == CompletionKind::Method)
+        .map(|item| item.label.as_str())
+        .collect();
+    assert!(methods.contains(&"abs"), "got {methods:?}");
+    assert!(methods.contains(&"checkedAdd"), "got {methods:?}");
+}
+
+#[test]
+fn unsigned_primitive_bit_methods_complete_from_the_stdlib() {
+    let mut host = AnalysisHost::new();
+    for (path, text) in [
+        (
+            "stdlib/core/intrinsics.aru",
+            include_str!("../../../stdlib/core/intrinsics.aru"),
+        ),
+        (
+            "stdlib/core/option.aru",
+            include_str!("../../../stdlib/core/option.aru"),
+        ),
+        (
+            "stdlib/core/num.aru",
+            include_str!("../../../stdlib/core/num.aru"),
+        ),
+    ] {
+        host.new_file(path.into(), text.into());
+    }
+    for ty in ["u32", "u64"] {
+        let text = format!("func main(): int {{ let value: {ty} = 0; value. }}");
+        let file = host.new_file(format!("bits_{ty}.aru"), text.clone());
+        let offset = u32::try_from(text.find("value. ").unwrap() + "value.".len()).unwrap();
+        let snapshot = host.snapshot();
+        let items = completions(&snapshot, file, &text, offset);
+        for method in ["countOnes", "leadingZeros", "trailingZeros", "reverseBits"] {
+            assert!(
+                labels(&items).contains(&method),
+                "{ty} missing {method}: {:?}",
+                labels(&items)
+            );
+        }
+        drop(snapshot);
+    }
+}
+
+#[test]
+fn decimal_methods_complete_from_the_stdlib() {
+    let mut host = AnalysisHost::new();
+    for (path, text) in [
+        (
+            "stdlib/core/intrinsics.aru",
+            include_str!("../../../stdlib/core/intrinsics.aru"),
+        ),
+        (
+            "stdlib/core/slice.aru",
+            include_str!("../../../stdlib/core/slice.aru"),
+        ),
+        (
+            "stdlib/core/decimal.aru",
+            include_str!("../../../stdlib/core/decimal.aru"),
+        ),
+    ] {
+        host.new_file(path.into(), text.into());
+    }
+    let text = "import std.core.decimal as decimal\nfunc main(): int { let d = decimal.Decimal.zero(); d. }";
+    let file = host.new_file("decimal_completion.aru".into(), text.to_string());
+    let offset = u32::try_from(text.find("d. ").unwrap() + "d.".len()).unwrap();
+    let snapshot = host.snapshot();
+    let items = completions(&snapshot, file, text, offset);
+    let item_labels = labels(&items);
+    for method in ["round", "add", "sub", "mul", "div"] {
+        assert!(
+            item_labels.contains(&method),
+            "Decimal missing {method}: {:?}",
+            item_labels
+        );
+    }
+}
+
+#[test]
+fn completions_surface_inherent_methods_on_primitive_types() {
+    let mut host = AnalysisHost::default();
+    let text = "public func int.double(self: int): int { return self * 2 }\nfunc main(): int {\n    let x: int = 10\n    return x.\n}\n";
+    let file = host.new_file("primitive_completion.aru".into(), text.to_string());
+    let offset = u32::try_from(text.find("return x.").unwrap() + "return x.".len()).unwrap();
+    let snapshot = host.snapshot();
+    let items = completions(&snapshot, file, text, offset);
+    let item_labels = labels(&items);
+    assert!(
+        item_labels.contains(&"double"),
+        "primitive int missing 'double': {:?}",
+        item_labels
+    );
+}

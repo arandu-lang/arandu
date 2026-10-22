@@ -3,7 +3,7 @@
 use super::*;
 use arandu_middle::ctfe::FloatType;
 use arandu_middle::layout::StructLayoutProvider;
-use arandu_middle::types::{ArType, TypeShape, build_subst_ids, substitute_type_id};
+use arandu_middle::types::{ArType, TypeShape, VectorType, build_subst_ids, substitute_type_id};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ValueType {
@@ -37,6 +37,7 @@ pub(super) enum AggregateKind {
     Array,
     Tuple,
     Struct(SymbolId),
+    Vector(VectorType),
 }
 
 impl ValueType {
@@ -84,6 +85,7 @@ impl ValueType {
                 | ArType::Named(..)
                 | ArType::Option(_)
                 | ArType::Result(..)
+                | ArType::Vector(..)
         ) {
             let shape = TypeShape::from_id(id, types).map_err(|_| EvalErrorKind::ValueLimit)?;
             arandu_middle::ctfe::validate_ctfe_type_shape(&shape)
@@ -160,6 +162,27 @@ impl ValueType {
                 Ok(Self::Aggregate(Arc::new(AggregateType {
                     shape: TypeShape::from_id(id, types).map_err(|_| EvalErrorKind::ValueLimit)?,
                     kind: AggregateKind::Tuple,
+                    fields,
+                    names: Vec::new(),
+                    symbols: Vec::new(),
+                })))
+            }
+            ArType::Vector(vector) => {
+                let lane_ty = types.intern(ArType::Primitive(vector.lane()));
+                let lanes = usize::from(vector.lanes());
+                if lanes > *remaining {
+                    return Err(EvalErrorKind::ValueLimit);
+                }
+                let mut fields = Vec::new();
+                fields
+                    .try_reserve_exact(lanes)
+                    .map_err(|_| EvalErrorKind::AllocationFailed)?;
+                for _ in 0..lanes {
+                    fields.push(recurse(lane_ty, remaining)?);
+                }
+                Ok(Self::Aggregate(Arc::new(AggregateType {
+                    shape: TypeShape::from_id(id, types).map_err(|_| EvalErrorKind::ValueLimit)?,
+                    kind: AggregateKind::Vector(vector),
                     fields,
                     names: Vec::new(),
                     symbols: Vec::new(),

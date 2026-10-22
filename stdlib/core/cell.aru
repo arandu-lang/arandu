@@ -1,12 +1,12 @@
-//! Simple value cells with explicit mutable access.
+//! Inline cells and the explicit boundary for unsafe interior mutability.
 //!
 //! ## Overview
 //!
-//! `Cell<T>` and `UnsafeCell<T>` store a value inline. The current public
-//! methods read, replace, or consume that value; mutation requires a mutable
-//! reference. Neither type provides mutual exclusion or atomic operations.
-//! Use an appropriate synchronization mechanism when values are shared
-//! between concurrent tasks.
+//! `Cell<T>` exposes mutation through exclusive references. `UnsafeCell<T>`
+//! additionally permits obtaining a raw pointer from a shared reference, in
+//! an unsafe block. The caller must enforce aliasing and synchronization.
+//! UnsafeCell is never Copy or Sync; it is Send only when its value is Send.
+//! Neither type provides mutual exclusion or atomic operations.
 //!
 //! ## Example
 //!
@@ -24,18 +24,31 @@
 //!
 //! ## See also
 //!
-//! - `std.core.atomic` — atomic-style API; current operations are not atomic
+//! - `std.core.atomic` — compiler-lowered scalar atomics
 //! - `std.runtime.mutex` — async mutex
 
 module std.core.cell
 
+import std.core.intrinsics as intrinsics
+
 /// Inline value wrapper without synchronization.
 ///
-/// The current public API only exposes construction and consuming extraction.
+/// get() is an unsafe raw-pointer boundary, not a safe mutation permission.
 /// Concurrent access requires external synchronization.
 public struct UnsafeCell<T> {
     /// Stored value.
-    value: T
+    private value: T
+}
+
+/// Returns the contained value's raw address without creating a mutable borrow.
+///
+/// Safety: the caller must enforce exclusivity of every write, synchronize
+/// concurrent accesses and keep this cell stationary until all uses finish.
+/// Merely obtaining the pointer grants no permission to dereference it.
+@Unsafe
+public func UnsafeCell.get<T>(self: ref UnsafeCell<T>): ptr[T] {
+    // The canonical cell has exactly one field, at offset zero and aligned as T.
+    unsafe { return intrinsics.addressOfShared(self) as ptr[T] }
 }
 
 /// Creates a new `UnsafeCell` containing `val`.
@@ -43,6 +56,12 @@ public func UnsafeCell.new<T>(val: T): UnsafeCell<T> {
     return UnsafeCell<T> {
         value: val,
     }
+}
+
+/// Exclusively borrows the stored value; an exclusive cell borrow rules out
+/// every concurrent cell access, so this operation needs no unsafe boundary.
+public func UnsafeCell.getMut<T>(self: mut ref UnsafeCell<T>): mut ref T {
+    return mut ref self.value
 }
 
 /// Unwraps and returns the contained value.

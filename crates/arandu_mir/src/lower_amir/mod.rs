@@ -265,7 +265,11 @@ fn validate_borrowed_function(
 ) {
     // M2 and escape validation intentionally run only after calls carry
     // the converged interprocedural interface.
-    diagnostics.extend(crate::borrow_check::check_borrows(function, &tc.symbols));
+    diagnostics.extend(crate::borrow_check::check_borrows_with_types(
+        function,
+        &tc.symbols,
+        &tc.type_info.type_interner,
+    ));
     let options = crate::escape_analysis::EscapeCheckOptions {
         no_fallback,
         return_borrow,
@@ -304,7 +308,8 @@ fn validate_borrowed_function(
 pub(crate) fn is_memory_type(ty: &ArType) -> bool {
     match ty {
         ArType::Primitive(p) => matches!(p, Primitive::Str | Primitive::Any),
-        ArType::IntLiteral
+        ArType::Vector(_)
+        | ArType::IntLiteral
         | ArType::FloatLiteral
         | ArType::FrozenConst(_)
         | ArType::Const(_)
@@ -319,7 +324,8 @@ pub(crate) fn is_memory_type(ty: &ArType) -> bool {
         | ArType::GenRef
         | ArType::Nullable(_)
         | ArType::Func(_, _)
-        | ArType::Slice(_) => false,
+        | ArType::Slice(_)
+        | ArType::MutSlice(_) => false,
         ArType::Array(_, _)
         | ArType::ConstArray(_, _)
         | ArType::Named(_, _)

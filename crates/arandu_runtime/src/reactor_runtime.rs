@@ -4,7 +4,7 @@
 
 #[cfg(target_os = "linux")]
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// Portable / no OS reactor.
@@ -36,6 +36,7 @@ struct RegisteredSocket {
 }
 
 struct ReactorSlot {
+    closed: bool,
     /// Linux: epoll fd. Portable fallback: ignored (sleep only).
     #[cfg(target_os = "linux")]
     epoll_fd: i32,
@@ -52,15 +53,17 @@ struct ReactorSlot {
     sockets: HashMap<i64, RegisteredSocket>,
 }
 
-static REACTORS: Mutex<Vec<Option<ReactorSlot>>> = Mutex::new(Vec::new());
+type SharedReactor = Arc<Mutex<ReactorSlot>>;
 
-fn lock_reactors() -> std::sync::MutexGuard<'static, Vec<Option<ReactorSlot>>> {
+static REACTORS: Mutex<Vec<Option<SharedReactor>>> = Mutex::new(Vec::new());
+
+fn lock_reactors() -> std::sync::MutexGuard<'static, Vec<Option<SharedReactor>>> {
     lock_reactor_table(&REACTORS)
 }
 
 fn lock_reactor_table(
-    table: &Mutex<Vec<Option<ReactorSlot>>>,
-) -> std::sync::MutexGuard<'_, Vec<Option<ReactorSlot>>> {
+    table: &Mutex<Vec<Option<SharedReactor>>>,
+) -> std::sync::MutexGuard<'_, Vec<Option<SharedReactor>>> {
     match table.lock() {
         Ok(guard) => guard,
         Err(poisoned) => {
@@ -68,8 +71,9 @@ fn lock_reactor_table(
             // mutation cannot be proven complete. Invalidate every opaque id
             // and release owned OS resources instead of exposing partial state.
             let mut guard = poisoned.into_inner();
-            for slot in guard.drain(..).flatten() {
-                close_reactor_slot(slot);
+            for reactor in guard.drain(..).flatten() {
+                let mut slot = reactor.lock().unwrap_or_else(|e| e.into_inner());
+                close_reactor_slot(&mut slot);
             }
             table.clear_poison();
             guard
@@ -77,7 +81,18 @@ fn lock_reactor_table(
     }
 }
 
-fn close_reactor_slot(slot: ReactorSlot) {
+fn get_reactor(id: ReactorId) -> Option<SharedReactor> {
+    if id < 0 {
+        return None;
+    }
+    lock_reactors().get(id as usize).and_then(Clone::clone)
+}
+
+fn close_reactor_slot(slot: &mut ReactorSlot) {
+    if slot.closed {
+        return;
+    }
+    slot.closed = true;
     #[cfg(target_os = "linux")]
     {
         if let Some(timer_fd) = slot.timer_fd {
@@ -149,6 +164,7 @@ pub unsafe extern "C" fn ar_rt_reactor_create() -> ReactorId {
             None
         };
         let slot = ReactorSlot {
+            closed: false,
             epoll_fd: epfd,
             timer_fd: None,
             ring,
@@ -156,6 +172,7 @@ pub unsafe extern "C" fn ar_rt_reactor_create() -> ReactorId {
             sockets: HashMap::new(),
         };
         let mut guard = lock_reactors();
+        let slot = Arc::new(Mutex::new(slot));
         if let Some(idx) = guard.iter().position(|s| s.is_none()) {
             guard[idx] = Some(slot);
             return idx as i64;
@@ -166,8 +183,12 @@ pub unsafe extern "C" fn ar_rt_reactor_create() -> ReactorId {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let slot = ReactorSlot { deadline: None };
+        let slot = ReactorSlot {
+            closed: false,
+            deadline: None,
+        };
         let mut guard = lock_reactors();
+        let slot = Arc::new(Mutex::new(slot));
         if let Some(idx) = guard.iter().position(|s| s.is_none()) {
             guard[idx] = Some(slot);
             return idx as i64;
@@ -187,11 +208,11 @@ pub unsafe extern "C" fn ar_rt_reactor_destroy(id: ReactorId) {
     if id < 0 {
         return;
     }
-    let mut guard = lock_reactors();
-    let Some(slot) = guard.get_mut(id as usize).and_then(|s| s.take()) else {
+    let Some(reactor) = lock_reactors().get_mut(id as usize).and_then(Option::take) else {
         return;
     };
-    close_reactor_slot(slot);
+    let mut slot = reactor.lock().unwrap_or_else(|e| e.into_inner());
+    close_reactor_slot(&mut slot);
 }
 
 /// Sleeps for `ms` milliseconds using the reactor.
@@ -205,13 +226,13 @@ pub unsafe extern "C" fn ar_rt_reactor_sleep_ms(id: ReactorId, ms: i64) -> i64 {
     }
     #[cfg(target_os = "linux")]
     {
-        if unsafe { ar_rt_reactor_backend() } == BACKEND_IO_URING {
-            let mut guard = lock_reactors();
-            if let Some(Some(slot)) = guard.get_mut(id as usize)
-                && unsafe { sleep_ms_io_uring(slot, ms as u64) }
-            {
-                return 0;
-            }
+        if unsafe { ar_rt_reactor_backend() } == BACKEND_IO_URING
+            && let Some(reactor) = get_reactor(id)
+            && let mut slot = reactor.lock().unwrap_or_else(|e| e.into_inner())
+            && !slot.closed
+            && unsafe { sleep_ms_io_uring(&mut slot, ms as u64) }
+        {
+            return 0;
         }
     }
     if unsafe { ar_rt_reactor_arm_timer_ms(id, ms) } != 0 {
@@ -224,6 +245,9 @@ pub unsafe extern "C" fn ar_rt_reactor_sleep_ms(id: ReactorId, ms: i64) -> i64 {
     0
 }
 
+/// The global reactor table lock is not held here. The caller already cloned
+/// this slot's `Arc` and dropped the table guard, so two reactors can wait at
+/// the same time. Only this slot's mutex covers `submit_and_wait`.
 #[cfg(target_os = "linux")]
 unsafe fn sleep_ms_io_uring(slot: &mut ReactorSlot, ms: u64) -> bool {
     let Some(ring) = &mut slot.ring else {
@@ -255,10 +279,13 @@ pub unsafe extern "C" fn ar_rt_reactor_arm_timer_ms(id: ReactorId, ms: i64) -> i
     if id < 0 || ms < 0 {
         return -1;
     }
-    let mut guard = lock_reactors();
-    let Some(slot) = guard.get_mut(id as usize).and_then(|s| s.as_mut()) else {
+    let Some(reactor) = get_reactor(id) else {
         return -1;
     };
+    let mut slot = reactor.lock().unwrap_or_else(|e| e.into_inner());
+    if slot.closed {
+        return -1;
+    }
     slot.deadline = Some(Instant::now() + Duration::from_millis(ms as u64));
 
     #[cfg(target_os = "linux")]
@@ -329,18 +356,19 @@ pub unsafe extern "C" fn ar_rt_reactor_poll_ms(id: ReactorId, timeout_ms: i64) -
 
     #[cfg(target_os = "linux")]
     {
-        let (epfd, tfd_opt, deadline, has_sockets) = {
-            let guard = lock_reactors();
-            let Some(slot) = guard.get(id as usize).and_then(|s| s.as_ref()) else {
-                return -1;
-            };
-            (
-                slot.epoll_fd,
-                slot.timer_fd,
-                slot.deadline,
-                !slot.sockets.is_empty(),
-            )
+        let Some(reactor) = get_reactor(id) else {
+            return -1;
         };
+        // Blocking waits hold only this reactor's lock. Other reactor IDs can
+        // continue to arm, poll, or destroy independently.
+        let mut slot = reactor.lock().unwrap_or_else(|e| e.into_inner());
+        if slot.closed {
+            return -1;
+        }
+        let epfd = slot.epoll_fd;
+        let tfd_opt = slot.timer_fd;
+        let deadline = slot.deadline;
+        let has_sockets = !slot.sockets.is_empty();
 
         // Socket readiness is independent of timer registration. Only use
         // the sleep-only fallback when epoll has no registered I/O sources.
@@ -348,10 +376,7 @@ pub unsafe extern "C" fn ar_rt_reactor_poll_ms(id: ReactorId, timeout_ms: i64) -
             if let Some(dl) = deadline {
                 let now = Instant::now();
                 if now >= dl {
-                    let mut guard = lock_reactors();
-                    if let Some(Some(slot)) = guard.get_mut(id as usize) {
-                        slot.deadline = None;
-                    }
+                    slot.deadline = None;
                     return 1;
                 }
                 let remaining = dl.saturating_duration_since(now);
@@ -363,10 +388,7 @@ pub unsafe extern "C" fn ar_rt_reactor_poll_ms(id: ReactorId, timeout_ms: i64) -
                 if wait_ms > 0 {
                     std::thread::sleep(Duration::from_millis(wait_ms as u64));
                 }
-                let mut guard = lock_reactors();
-                if let Some(Some(slot)) = guard.get_mut(id as usize)
-                    && slot.deadline.is_some_and(|d| Instant::now() >= d)
-                {
+                if slot.deadline.is_some_and(|d| Instant::now() >= d) {
                     slot.deadline = None;
                     return 1;
                 }
@@ -409,14 +431,7 @@ pub unsafe extern "C" fn ar_rt_reactor_poll_ms(id: ReactorId, timeout_ms: i64) -
                 let _ = unsafe { libc::read(fd_val, buf.as_mut_ptr() as *mut _, buf.len()) };
                 timer_fired = true;
             } else {
-                let waker_to_wake = {
-                    let mut guard = lock_reactors();
-                    if let Some(Some(slot)) = guard.get_mut(id as usize) {
-                        slot.sockets.get(&(fd_val as i64)).map(|rs| rs.waker_id)
-                    } else {
-                        None
-                    }
-                };
+                let waker_to_wake = slot.sockets.get(&(fd_val as i64)).map(|rs| rs.waker_id);
                 if let Some(waker_id) = waker_to_wake
                     && waker_id >= 0
                 {
@@ -428,21 +443,18 @@ pub unsafe extern "C" fn ar_rt_reactor_poll_ms(id: ReactorId, timeout_ms: i64) -
         }
 
         if timer_fired {
-            let mut guard = lock_reactors();
-            if let Some(Some(slot)) = guard.get_mut(id as usize) {
-                if let Some(old) = slot.timer_fd.take() {
-                    unsafe {
-                        let _ = libc::epoll_ctl(
-                            slot.epoll_fd,
-                            libc::EPOLL_CTL_DEL,
-                            old,
-                            std::ptr::null_mut(),
-                        );
-                        let _ = libc::close(old);
-                    }
+            if let Some(old) = slot.timer_fd.take() {
+                unsafe {
+                    let _ = libc::epoll_ctl(
+                        slot.epoll_fd,
+                        libc::EPOLL_CTL_DEL,
+                        old,
+                        std::ptr::null_mut(),
+                    );
+                    let _ = libc::close(old);
                 }
-                slot.deadline = None;
             }
+            slot.deadline = None;
             return 1;
         }
         0
@@ -450,13 +462,14 @@ pub unsafe extern "C" fn ar_rt_reactor_poll_ms(id: ReactorId, timeout_ms: i64) -
 
     #[cfg(not(target_os = "linux"))]
     {
-        let deadline = {
-            let guard = lock_reactors();
-            let Some(slot) = guard.get(id as usize).and_then(|s| s.as_ref()) else {
-                return -1;
-            };
-            slot.deadline
+        let Some(reactor) = get_reactor(id) else {
+            return -1;
         };
+        let mut slot = reactor.lock().unwrap_or_else(|e| e.into_inner());
+        if slot.closed {
+            return -1;
+        }
+        let deadline = slot.deadline;
         let Some(dl) = deadline else {
             if timeout_ms > 0 {
                 std::thread::sleep(Duration::from_millis(timeout_ms as u64));
@@ -465,10 +478,7 @@ pub unsafe extern "C" fn ar_rt_reactor_poll_ms(id: ReactorId, timeout_ms: i64) -
         };
         let now = Instant::now();
         if now >= dl {
-            let mut guard = lock_reactors();
-            if let Some(Some(slot)) = guard.get_mut(id as usize) {
-                slot.deadline = None;
-            }
+            slot.deadline = None;
             return 1;
         }
         let remaining = dl.saturating_duration_since(now);
@@ -480,11 +490,9 @@ pub unsafe extern "C" fn ar_rt_reactor_poll_ms(id: ReactorId, timeout_ms: i64) -
         if !wait.is_zero() {
             std::thread::sleep(wait);
         }
-        let mut guard = lock_reactors();
-        if let Some(Some(slot)) = guard.get_mut(id as usize)
-            && slot
-                .deadline
-                .is_some_and(|deadline| Instant::now() >= deadline)
+        if slot
+            .deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
         {
             slot.deadline = None;
             return 1;
@@ -514,10 +522,13 @@ pub unsafe extern "C" fn ar_rt_reactor_register_socket(
             None => return -1,
         };
 
-        let mut guard = lock_reactors();
-        let Some(Some(slot)) = guard.get_mut(reactor_id as usize) else {
+        let Some(reactor) = get_reactor(reactor_id) else {
             return -1;
         };
+        let mut slot = reactor.lock().unwrap_or_else(|e| e.into_inner());
+        if slot.closed {
+            return -1;
+        }
 
         slot.sockets
             .insert(fd as i64, RegisteredSocket { waker_id });
@@ -572,6 +583,26 @@ mod tests {
         assert!(guard.is_empty(), "partial registry state must be discarded");
         drop(guard);
         assert!(!table.is_poisoned(), "recovered registry must be reusable");
+    }
+
+    #[test]
+    fn two_reactors_sleep_without_serializing_on_the_table_lock() {
+        unsafe {
+            let first = ar_rt_reactor_create();
+            let second = ar_rt_reactor_create();
+            assert!(first >= 0 && second >= 0);
+            let started = std::time::Instant::now();
+            let other = std::thread::spawn(move || ar_rt_reactor_sleep_ms(second, 200));
+            assert_eq!(ar_rt_reactor_sleep_ms(first, 200), 0);
+            assert_eq!(other.join().expect("second reactor"), 0);
+            assert!(
+                started.elapsed() < std::time::Duration::from_millis(350),
+                "two reactor sleeps serialized: {:?}",
+                started.elapsed()
+            );
+            ar_rt_reactor_destroy(first);
+            ar_rt_reactor_destroy(second);
+        }
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -634,6 +665,42 @@ mod tests {
             ar_rt_tcp_close(server);
             ar_rt_tcp_close(listener);
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn io_uring_sleep_does_not_hold_the_global_reactor_registry() {
+        // This regression is meaningful only when the blocking io_uring path
+        // is available; other backends already wait without the registry lock.
+        if unsafe { ar_rt_reactor_backend() } != BACKEND_IO_URING {
+            return;
+        }
+        let sleeping_reactor = unsafe { ar_rt_reactor_create() };
+        assert!(sleeping_reactor >= 0);
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let sleeper = std::thread::spawn(move || unsafe {
+            started_tx.send(()).expect("signal before blocking sleep");
+            let result = ar_rt_reactor_sleep_ms(sleeping_reactor, 500);
+            ar_rt_reactor_destroy(sleeping_reactor);
+            result
+        });
+        started_rx.recv().expect("sleep worker started");
+        std::thread::sleep(Duration::from_millis(30));
+
+        let (created_tx, created_rx) = std::sync::mpsc::channel();
+        let creator = std::thread::spawn(move || unsafe {
+            let reactor = ar_rt_reactor_create();
+            if reactor >= 0 {
+                ar_rt_reactor_destroy(reactor);
+            }
+            created_tx.send(reactor).expect("report reactor creation");
+        });
+        let created = created_rx
+            .recv_timeout(Duration::from_millis(200))
+            .expect("another reactor must remain available during io_uring wait");
+        assert!(created >= 0);
+        creator.join().expect("creator thread");
+        assert_eq!(sleeper.join().expect("sleeper thread"), 0);
     }
 
     #[test]

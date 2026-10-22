@@ -1,0 +1,89 @@
+module nativeSharedArc
+
+import std.alloc.arc as arc
+import std.sync.mutex as mutex
+import std.sync.rwlock as rwlock
+import std.thread as thread
+
+struct Counter { public value: int }
+
+struct Shared {
+    data: rwlock.RwLock<Counter>,
+    readers: mutex.Mutex<Counter>,
+}
+struct ReadJob {}
+
+func markArrived(owner: ref arc.Arc<Shared>): void {
+    let mut arrived = owner.get().readers.lock()
+    if arrived.get().value < 0 { return }
+    let next = arrived.get().value + 1
+    let counter = arrived.getMut()
+    counter.value = next
+}
+
+func readersArrived(owner: ref arc.Arc<Shared>): bool {
+    let arrived = owner.get().readers.lock()
+    return arrived.get().value == 2 || arrived.get().value < 0
+}
+
+func cancelReaders(owner: ref arc.Arc<Shared>): void {
+    let mut guard = owner.get().readers.lock()
+    let counter = guard.getMut()
+    counter.value = -1
+}
+
+func setFinal(owner: ref arc.Arc<Shared>): void {
+    let mut writer = owner.get().data.write()
+    let counter = writer.getMut()
+    counter.value = 42
+}
+
+public func ReadJob.run(self: own ReadJob, owner: arc.Arc<Shared>): int {
+    let data = owner.get().data.read()
+    markArrived(ref owner)
+    // Reader one cannot finish until reader two has acquired the data lock.
+    // An exclusive read implementation deadlocks here and fails the harness
+    // timeout, rather than accidentally passing because scheduling was serial.
+    while true {
+        if readersArrived(ref owner) { break }
+        thread.yieldNow()
+    }
+    return data.get().value
+}
+
+func joinReaders(first: own thread.JoinHandle<int>, second: own thread.JoinHandle<int>): int {
+    match first.join() {
+        Result.Ok(value) => { if value != 41 { return 3 } }
+        Result.Err(_) => { return 4 }
+    }
+    match second.join() {
+        Result.Ok(value) => { if value != 41 { return 5 } }
+        Result.Err(_) => { return 6 }
+    }
+    return 0
+}
+
+public func main(): int {
+    let owner = arc.Arc<Shared>.new(Shared {
+        data: rwlock.RwLock<Counter>.new(Counter { value: 41 }),
+        readers: mutex.Mutex<Counter>.new(Counter { value: 0 }),
+    })
+    let first = thread.spawnWith<arc.Arc<Shared>, int, ReadJob>(owner.clone(), ReadJob {})
+    match first {
+        Result.Ok(firstHandle) => {
+            let second = thread.spawnWith<arc.Arc<Shared>, int, ReadJob>(owner.clone(), ReadJob {})
+            match second {
+                Result.Ok(secondHandle) => {
+                    let status = joinReaders(firstHandle, secondHandle)
+                    if status != 0 { return status }
+                }
+                Result.Err(_) => { cancelReaders(ref owner); return 2 }
+            }
+        }
+        Result.Err(_) => { return 1 }
+    }
+    setFinal(ref owner)
+    let finalValue = owner.get().data.read()
+    if finalValue.get().value != 42 { return 7 }
+    return 0
+}

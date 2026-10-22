@@ -160,20 +160,92 @@ camadas é uma regressão arquitetural.
 - Antes de editar, identifique a fase e o crate proprietário. Faça a menor
   mudança que preserve as APIs estreitas de query e acrescente regressões para
   qualquer invariante tocada (cutoff, ciclos, determinismo, CFG, layout ou LSP).
-- Não reporte conclusão sem executar, nesta ordem, a partir da raiz:
 
-  1. `cargo fmt --all -- --check`
-  2. `cargo check --workspace --locked`
-  3. `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
-  4. `cargo test --workspace --locked`
-  5. `cargo run --locked -p xtask -- check-diag-docs`
-  6. `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked`
+### Protocolo obrigatório da tarefa
 
-- Para mudanças em diagnósticos, execute também
-  `bash scripts/check-diag-determinism.sh arandu_typeck 8` quando Bash estiver
-  disponível. Para queries/LSP, execute os testes de integração relevantes em
-  `arandu_query/tests/` (por exemplo `architecture_invariants`,
-  `salsa_imports`, `item_body_cutoff`, `ide_diag_delta` e `block_delta`).
-- Não adicione dependências, altere IDs, una queries, remova guardrails ou
-  atualize snapshots em massa sem justificar a decisão e cobrir o risco com
-  teste de regressão.
+Antes de editar:
+
+1. Leia este arquivo e o documento técnico indicado para a área afetada. Não
+   repita no `AGENTS.md` uma especificação que já tenha fonte de verdade em
+   `docs/`.
+2. Execute `git status --short` e `git diff --stat`. A árvore pode conter
+   trabalho do usuário; preserve-o, não faça `reset`, `checkout`, `clean` ou
+   stash destrutivo e não atribua alterações preexistentes à tarefa atual.
+3. Identifique o crate dono, a fase do pipeline, o teste/regressão existente e
+   o menor comando de validação aplicável. Para mudanças que cruzem mais de um
+   crate, escreva primeiro um plano curto com arquivos, riscos e gates.
+4. Procure implementações, testes e documentação antes de criar uma nova API,
+   diagnóstico, RFC ou fixture. Não resolva uma inconsistência apenas por
+   conveniência de release: registre a fronteira arquitetural real.
+
+Durante a implementação:
+
+- Preserve o escopo confirmado. Se uma falha revelar outro defeito, corrija-o
+  somente quando ele for necessário para a tarefa; caso contrário, registre-o
+  como pendência com arquivo, teste e impacto.
+- Não trate texto de documentação, nomes de módulos, aliases ou comentários
+  como prova de autoridade, ownership ou capacidade. Essas propriedades devem
+  vir de IDs, inputs confiáveis e invariantes verificadas pelo compilador.
+- Não introduza cópias, caches, dependências, `unsafe`, fallback permissivo ou
+  wildcard em enumeração para silenciar um erro. Primeiro demonstre a
+  necessidade e cubra a semântica com uma regressão.
+
+Ao concluir:
+
+- Separe sempre evidência executada nesta árvore de resultados históricos,
+  expectativas e testes que não puderam rodar. Um comando não executado não é
+  uma validação implícita.
+- Informe o comando exato, o resultado, os testes ignorados e qualquer limite
+  de plataforma, ambiente ou integração externa. Não diga “passou” com base
+  apenas em compilação parcial.
+- Revise `git diff --check`, `git diff --stat` e `git status --short`; confirme
+  que cada arquivo alterado pertence ao escopo ou já estava modificado.
+- Atualize a fonte de verdade correspondente: `DiagCode`/docs de erro,
+  roadmap permanente, RFC, snapshots ou documentação técnica. Remova planos
+  temporários quando a campanha terminar.
+
+### Hierarquia de regras e manutenção
+
+Quando houver conflito, siga nesta ordem: instrução explícita do usuário,
+invariantes deste arquivo, documento técnico da área, código e testes atuais,
+preferências de estilo. Se o código contradizer uma regra arquitetural, pare
+de tratar a regra como fato e investigue a discrepância antes de alterar ambos.
+
+Este arquivo é um contrato operacional, não uma enciclopédia. Uma regra nova
+deve corrigir um erro observado ou proteger uma decisão não inferível pelo
+código; inclua a fonte de verdade quando houver. Remova regras obsoletas e
+revise comandos quando o toolchain mudar. Regras específicas de uma subárvore
+devem ficar no `AGENTS.md` daquela subárvore ou no skill apropriado.
+
+### Validação e testes por camada
+
+1. **Ciclo Rápido Iterativo (Inner Loop — Uso padrão durante desenvolvimento):**
+   Durante alterações pontuais ou investigação, **NUNCA** execute a suíte de testes do workspace inteiro nem `cargo doc`. Teste estritamente o crate e os alvos afetados com feedback imediato:
+   - Compilação rápida: `cargo check -p <crate> --locked`
+   - Teste direcionado rápido (preferir `nextest` para velocidade e isolamento):
+     `cargo nextest run -p <crate> [filtro]` (ou `cargo test -p <crate> [filtro]`)
+   - Exemplos práticos:
+     - Parser / Sintaxe: `cargo nextest run -p arandu_parser`
+     - Lexer: `cargo nextest run -p arandu_lexer`
+     - Typechecker: `cargo nextest run -p arandu_typeck`
+     - MIR: `cargo nextest run -p arandu_mir`
+     - Runtime: `cargo nextest run -p arandu_runtime`
+     - CLI / E2E: `cargo nextest run -p arandu_cli --test <nome_do_teste>`
+   - Para mudanças em diagnósticos pontuais, execute `bash scripts/check-diag-determinism.sh arandu_typeck 8` quando Bash estiver disponível. Para queries/LSP, execute os testes relevantes em `arandu_query/tests/`.
+
+2. **Gate Completo (Pre-PR / Confirmação Global):**
+   Execute a suíte global de 6 passos **SOMENTE** quando:
+   - O usuário pedir explicitamente para rodar o gate completo ou validar o workspace.
+   - Antes de abrir/submeter um PR final ou preparar uma release.
+
+   Passos do gate global:
+   1. `cargo fmt --all -- --check`
+   2. `cargo check --workspace --locked`
+   3. `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
+   4. `cargo nextest run --workspace --locked` (ou `cargo test --workspace --locked`)
+   5. `cargo run --locked -p xtask -- check-diag-docs`
+   6. `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked`
+
+3. **Interação com o Usuário:**
+   - Se o usuário fizer uma pergunta, solicitar explicação ou pedir para parar, responda de imediato. Não dispare compilações nem tarefas em background desnecessárias.
+   - Não adicione dependências, altere IDs, una queries, remova guardrails ou atualize snapshots em massa sem justificar a decisão e cobrir o risco com teste de regressão.

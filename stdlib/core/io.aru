@@ -15,7 +15,7 @@
 //! ```arandu
 //! import std.core.io as coreio
 //!
-//! func writeInto(buf: []u8, source: []u8): uint {
+//! func writeInto(buf: mut []u8, source: []u8): uint {
 //!     let mut w = coreio.SliceWriter.new(buf)
 //!     let _ = w.write(source)
 //!     return w.written()
@@ -35,6 +35,7 @@
 module std.core.io
 
 import std.core.slice as slice
+import std.core.intrinsics as intrinsics
 
 /// Error kinds for freestanding in-memory I/O operations (RFC 0017 / SL_S-Core.4).
 public enum CoreIoErrorKind {
@@ -71,7 +72,7 @@ public enum SeekFrom {
 
 /// Interface for reading bytes into a borrowed mutable buffer.
 public interface Reader {
-    func read(self: mut ref Self, buf: mut ref []u8): Result<usize, CoreIoError>
+    func read(self: mut ref Self, buf: mut []u8): Result<usize, CoreIoError>
 }
 
 /// Interface for writing bytes from a borrowed buffer.
@@ -120,12 +121,12 @@ public func SliceReader.remaining(self: ref SliceReader): usize {
 /// Returns `Ok(bytesRead)` and advances by that count. At end of input, it
 /// returns `Ok(0)`; an empty destination also reads zero bytes. A short read
 /// means fewer bytes remained than the destination could hold.
-public func SliceReader.read(self: mut ref SliceReader, buf: mut ref []u8): Result<usize, CoreIoError> {
+public func SliceReader.read(self: mut ref SliceReader, buf: mut []u8): Result<usize, CoreIoError> {
     let avail = self.remaining()
     if avail == 0 {
         return Result.Ok(0 as usize)
     }
-    let buf_len = slice.len<u8>(*buf)
+    let buf_len = intrinsics.sliceLen<u8>(buf)
     let mut to_read = avail
     if to_read > buf_len {
         to_read = buf_len
@@ -144,7 +145,7 @@ public func SliceReader.read(self: mut ref SliceReader, buf: mut ref []u8): Resu
 /// An in-memory writer over a caller-owned contiguous byte buffer.
 public struct SliceWriter {
     /// Caller-owned destination byte slice.
-    data: []u8
+    data: mut []u8
     /// Current byte position.
     pos: usize
 }
@@ -152,7 +153,7 @@ public struct SliceWriter {
 /// Borrows `data` as a fixed-capacity destination, positioned at byte zero.
 ///
 /// Writes change the caller's buffer in place and never grow or allocate it.
-public func SliceWriter.new(data: []u8): SliceWriter {
+public func SliceWriter.new(data: mut []u8): SliceWriter {
     return SliceWriter {
         data: data,
         pos: 0,
@@ -255,6 +256,21 @@ public func SliceWriter.seek(self: mut ref SliceWriter, pos: SeekFrom): Result<u
     }
     self.pos = new_pos
     return Result.Ok(new_pos)
+}
+
+/// Returns the written bytes as an immutable slice view.
+public func SliceWriter.asSlice(self: ref SliceWriter): []u8 {
+    return unsafe { intrinsics.sliceSubslice<u8>(self.data, 0, self.pos) }
+}
+
+/// Returns the full underlying destination buffer as an immutable slice view.
+public func SliceWriter.buffer(self: ref SliceWriter): []u8 {
+    return self.data
+}
+
+/// Consumes the writer and returns the underlying destination buffer.
+public func SliceWriter.intoInner(self: own SliceWriter): mut []u8 {
+    return self.data
 }
 
 /// Sets the read position relative to start, current position, or end.

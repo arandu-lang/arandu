@@ -97,7 +97,14 @@ pub(super) fn independent_string_result(function: &AmirFunc, interner: &TypeInte
                                     depth + 1,
                                 )
                         }
-                        AmirRvalue::Binary { .. }
+                        AmirRvalue::VectorSelect { .. }
+                        | AmirRvalue::VectorCompare { .. }
+                        | AmirRvalue::VectorOp { .. }
+                        | AmirRvalue::VectorSplat { .. }
+                        | AmirRvalue::VectorShuffle { .. }
+                        | AmirRvalue::VectorExtractLane { .. }
+                        | AmirRvalue::VectorInsertLane { .. }
+                        | AmirRvalue::Binary { .. }
                         | AmirRvalue::Unary { .. }
                         | AmirRvalue::FieldAccess { .. }
                         | AmirRvalue::IndexAccess { .. }

@@ -124,6 +124,100 @@ fn o003_shared_while_exclusive() {
     );
 }
 
+#[test]
+fn aggregate_guard_keeps_owner_borrowed_inside_one_block_until_drop() {
+    let interner = TypeInterner::new();
+    let result = interner.intern(ArType::Primitive(Primitive::Bool));
+    let owner = interner.intern(ArType::named(SymbolId::new(0, 90), &[], &interner));
+    let borrowed = interner.intern(ArType::Ref(owner));
+    let guard = interner.intern(ArType::tuple(&[borrowed], &interner));
+    let mut stmts = AmirStmtTable::new();
+    stmts.push(AmirStmt::Assign {
+        lhs: TempId::from_usize(1),
+        rhs: AmirRvalue::Borrow(place(0)),
+    });
+    stmts.push(AmirStmt::Assign {
+        lhs: TempId::from_usize(2),
+        rhs: AmirRvalue::Tuple {
+            items: vec![AmirOperand::Copy(TempId::from_usize(1))],
+        },
+    });
+    stmts.push(AmirStmt::Store {
+        lhs: place(1),
+        rhs: AmirOperand::Move(TempId::from_usize(2)),
+    });
+    stmts.push(AmirStmt::Assign {
+        lhs: TempId::from_usize(3),
+        rhs: AmirRvalue::Load(place(0)),
+    });
+    stmts.push(AmirStmt::Assign {
+        lhs: TempId::from_usize(4),
+        rhs: AmirRvalue::Use(AmirOperand::Move(TempId::from_usize(3))),
+    });
+    stmts.push(AmirStmt::Destroy(place(1)));
+    stmts.push(AmirStmt::Assign {
+        lhs: TempId::from_usize(0),
+        rhs: AmirRvalue::Use(AmirOperand::Constant(crate::amir::AmirConstant::Bool(
+            false,
+        ))),
+    });
+    let blocks = vec![AmirBasicBlock {
+        id: BlockId::from_usize(0),
+        statements: DenseRange::new(0, 7),
+        params: DenseRange::empty(),
+        terminator: AmirTerminator::Return,
+    }];
+    let mut moving = temp(3, owner);
+    moving.is_copy = false;
+    let func = AmirFunc {
+        symbol: SymbolId::new(0, 0),
+        return_type: result,
+        receiver: None,
+        params: vec![],
+        locals: vec![local(0, owner), local(1, guard)],
+        temps: vec![
+            temp(0, result),
+            temp(1, borrowed),
+            temp(2, guard),
+            moving,
+            temp(4, owner),
+        ],
+        cfg: compute_cfg_edges(&blocks),
+        blocks,
+        block_params: Vec::new(),
+        stmts,
+    };
+    let facts = analyze_borrow_facts(&func);
+    // The aggregate is live only in the block interior: neither boundary may
+    // stand in for the point-specific live set in the borrow checker.
+    assert!(
+        !facts
+            .local_live
+            .live_in(BlockId::from_usize(0))
+            .contains(LocalId::from_usize(1))
+    );
+    assert!(
+        !facts
+            .local_live
+            .live_out(BlockId::from_usize(0))
+            .contains(LocalId::from_usize(1))
+    );
+    assert!(
+        facts
+            .local_live
+            .live_before(BlockId::from_usize(0), 4)
+            .unwrap()
+            .contains(LocalId::from_usize(1))
+    );
+    let diagnostics = check_borrows(&func, &empty_symbols());
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == DiagCode::O002MoveWhileBorrowed),
+        "{diagnostics:?}"
+    );
+}
+
 /// Move of local while `&` live → O002.
 #[test]
 fn o002_move_while_borrowed() {
@@ -423,4 +517,70 @@ fn o003_store_to_projected_field_while_borrowed() {
             .any(|d| d.code == DiagCode::O003MutableBorrowConflict),
         "expected O003 for store to field while borrowed, got {diags:?}"
     );
+}
+
+#[test]
+fn scalar_read_releases_owner_loan_but_reference_return_keeps_it() {
+    let interner = TypeInterner::new();
+    let int = interner.intern(ArType::Primitive(Primitive::Int));
+    let reference = interner.intern(ArType::Ref(int));
+    for returns_reference in [false, true] {
+        let result = if returns_reference { reference } else { int };
+        let mut statements = AmirStmtTable::new();
+        statements.push(AmirStmt::Assign {
+            lhs: TempId::from_usize(1),
+            rhs: AmirRvalue::Borrow(place(0)),
+        });
+        statements.push(AmirStmt::Store {
+            lhs: place(1),
+            rhs: AmirOperand::Copy(TempId::from_usize(1)),
+        });
+        let loaded = if returns_reference {
+            place(1)
+        } else {
+            AmirPlace {
+                local: LocalId::from_usize(1),
+                projections: smallvec![AmirProjection::Deref],
+            }
+        };
+        statements.push(AmirStmt::Assign {
+            lhs: TempId::from_usize(0),
+            rhs: AmirRvalue::Load(loaded),
+        });
+        statements.push(AmirStmt::Destroy(place(0)));
+        let blocks = vec![AmirBasicBlock {
+            id: BlockId::from_usize(0),
+            statements: DenseRange::new(0, 4),
+            params: DenseRange::empty(),
+            terminator: AmirTerminator::Return,
+        }];
+        let function = AmirFunc {
+            symbol: SymbolId::new(0, 0),
+            return_type: result,
+            receiver: None,
+            params: vec![],
+            locals: vec![local(0, int), local(1, reference)],
+            temps: vec![temp(0, result), temp(1, reference)],
+            cfg: compute_cfg_edges(&blocks),
+            blocks,
+            block_params: vec![],
+            stmts: statements,
+        };
+        let diagnostics = check_borrows_with_types(&function, &empty_symbols(), &interner);
+        assert_eq!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == DiagCode::O006DestroyWhileBorrowed),
+            returns_reference,
+            "{diagnostics:?}"
+        );
+        let escapes = crate::escape_analysis::find_escapes(&function, &interner);
+        assert_eq!(
+            escapes
+                .iter()
+                .any(|event| event.kind == crate::escape_analysis::EscapeKind::Return),
+            returns_reference,
+            "{escapes:?}"
+        );
+    }
 }

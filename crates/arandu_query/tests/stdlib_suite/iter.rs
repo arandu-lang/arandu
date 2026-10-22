@@ -9,7 +9,7 @@ const ITER_ARU: &str = include_str!("../../../../stdlib/core/iter.aru");
 #[test]
 fn stdlib_iter_parses_and_exports_expected_symbols() {
     let mut db = DatabaseImpl::default();
-    let file = db.new_file("stdlib/core/iter.aru".to_string(), ITER_ARU.to_string());
+    let file = db.new_stdlib_file("stdlib/core/iter.aru".to_string(), ITER_ARU.to_string());
     match parse(&db, file).as_ref() {
         Ok(_) => {}
         Err(e) => {

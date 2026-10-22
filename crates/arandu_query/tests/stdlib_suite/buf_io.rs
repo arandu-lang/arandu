@@ -15,7 +15,7 @@ const MARKER_ARU: &str = include_str!("../../../../stdlib/core/marker.aru");
 #[test]
 fn stdlib_io_parses_and_exports_expected_symbols() {
     let mut db = DatabaseImpl::default();
-    let file = db.new_file("stdlib/std/io.aru".to_string(), IO_ARU.to_string());
+    let file = db.new_stdlib_file("stdlib/std/io.aru".to_string(), IO_ARU.to_string());
     match parse(&db, file).as_ref() {
         Ok(_) => {}
         Err(e) => panic!("io.aru must parse; got {e}"),
@@ -45,15 +45,15 @@ fn stdlib_io_parses_and_exports_expected_symbols() {
 #[test]
 fn stdlib_buf_io_usage_in_program() {
     let mut db = DatabaseImpl::default();
-    db.new_file(
+    db.new_stdlib_file(
         "stdlib/core/intrinsics.aru".to_string(),
         INTRINSICS_ARU.to_string(),
     );
-    db.new_file("stdlib/core/slice.aru".to_string(), SLICE_ARU.to_string());
-    db.new_file("stdlib/core/mem.aru".to_string(), MEM_ARU.to_string());
-    db.new_file("stdlib/alloc/vec.aru".to_string(), VEC_ARU.to_string());
-    db.new_file("stdlib/core/marker.aru".to_string(), MARKER_ARU.to_string());
-    let io_file = db.new_file("stdlib/std/io.aru".to_string(), IO_ARU.to_string());
+    db.new_stdlib_file("stdlib/core/slice.aru".to_string(), SLICE_ARU.to_string());
+    db.new_stdlib_file("stdlib/core/mem.aru".to_string(), MEM_ARU.to_string());
+    db.new_stdlib_file("stdlib/alloc/vec.aru".to_string(), VEC_ARU.to_string());
+    db.new_stdlib_file("stdlib/core/marker.aru".to_string(), MARKER_ARU.to_string());
+    let io_file = db.new_stdlib_file("stdlib/std/io.aru".to_string(), IO_ARU.to_string());
     let main_src = r#"
 import std.io as io
 import std.alloc.vec as vec
@@ -63,7 +63,7 @@ struct MockStream {
     count: int
 }
 
-public func MockStream.read(self: mut ref MockStream, buf: mut ref []u8): Result<usize, io.IoError> {
+public func MockStream.read(self: mut ref MockStream, buf: mut []u8): Result<usize, io.IoError> {
     return Result.Ok(0 as usize)
 }
 
@@ -77,11 +77,12 @@ public func MockStream.flush(self: mut ref MockStream): Result<bool, io.IoError>
 
 func testBufReader(): int {
     let s = MockStream { count: 10 }
-    let mut bytes = vec.Vec<u8>.new()
-    bytes.push(0 as u8)
-    let buf = bytes.asSlice()
-    let br = io.BufReader<MockStream>.new(s, buf)
-    let bw = io.BufWriter<MockStream>.new(s, buf)
+    let mut bytes1 = vec.Vec<u8>.new()
+    bytes1.push(0 as u8)
+    let br = io.BufReader<MockStream>.new(s, bytes1.asMutSlice())
+    let mut bytes2 = vec.Vec<u8>.new()
+    bytes2.push(0 as u8)
+    let bw = io.BufWriter<MockStream>.new(s, bytes2.asMutSlice())
     if br.pos != 0 || bw.buffered_count != 0 {
         return 1
     }

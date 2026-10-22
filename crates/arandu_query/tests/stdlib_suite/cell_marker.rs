@@ -10,7 +10,7 @@ const MARKER_ARU: &str = include_str!("../../../../stdlib/core/marker.aru");
 #[test]
 fn stdlib_cell_parses_and_exports_expected_symbols() {
     let mut db = DatabaseImpl::default();
-    let file = db.new_file("stdlib/core/cell.aru".to_string(), CELL_ARU.to_string());
+    let file = db.new_stdlib_file("stdlib/core/cell.aru".to_string(), CELL_ARU.to_string());
     match parse(&db, file).as_ref() {
         Ok(_) => {}
         Err(e) => panic!("cell.aru must parse; got {e}"),
@@ -39,7 +39,7 @@ fn stdlib_cell_parses_and_exports_expected_symbols() {
 #[test]
 fn stdlib_marker_parses_and_exports_expected_symbols() {
     let mut db = DatabaseImpl::default();
-    let file = db.new_file("stdlib/core/marker.aru".to_string(), MARKER_ARU.to_string());
+    let file = db.new_stdlib_file("stdlib/core/marker.aru".to_string(), MARKER_ARU.to_string());
     match parse(&db, file).as_ref() {
         Ok(_) => {}
         Err(e) => panic!("marker.aru must parse; got {e}"),

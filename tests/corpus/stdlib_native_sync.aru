@@ -1,0 +1,61 @@
+module nativeSyncContract
+import std.sync.rwlock as rwlock
+import std.sync.mutex as mutex
+import std.sync.condvar as condvar
+
+struct Value { number: int }
+
+func main(): int {
+    let lock = rwlock.RwLock<Value>.new(Value { number: 10 })
+    if true {
+        let first = lock.read()
+        let second = lock.read()
+        if first.get().number != 10 || second.get().number != 10 { return 1 }
+        match lock.tryWrite() {
+            Option.Some(_) => { return 2 }
+            Option.None => {}
+        }
+    }
+    if true {
+        let mut writer = lock.write()
+        let value = writer.getMut()
+        value.number = 20
+        match lock.tryRead() {
+            Option.Some(_) => { return 3 }
+            Option.None => {}
+        }
+    }
+    if true {
+        match lock.tryRead() {
+            Option.Some(guard) => { if guard.get().number != 20 { return 4 } }
+            Option.None => { return 5 }
+        }
+    }
+    if lock.intoInner().number != 20 { return 6 }
+
+    let native = mutex.Mutex<Value>.new(Value { number: 4 })
+    let cv = condvar.Condvar.new()
+    if true {
+        let mut guard = native.lock()
+        let value = guard.getMut()
+        value.number = 9
+        if cv.waitTimeout(mut ref guard, 0 as u64) { return 7 }
+        // Timeout returns with admission restored.
+        match native.tryLock() {
+            Option.Some(_) => { return 8 }
+            Option.None => {}
+        }
+        if guard.get().number != 9 { return 9 }
+    }
+    cv.notifyOne()
+    cv.notifyAll()
+    if cv.waitNotificationTimeout(0 as u64) { return 10 }
+    if true {
+        match native.tryLock() {
+            Option.Some(guard) => { if guard.get().number != 9 { return 11 } }
+            Option.None => { return 12 }
+        }
+    }
+    if native.intoInner().number != 9 { return 13 }
+    return 0
+}

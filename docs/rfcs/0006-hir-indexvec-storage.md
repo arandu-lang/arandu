@@ -4,11 +4,23 @@
 - **Título:** Armazenamento Achatado de HIR com Arenas por Função e IndexVec
 - **Autor(es):** Equipe do Compilador Arandu
 - **Data de Início:** 2026-06-25
-- **Status:** `Planned` (Planejado para v0.2+ / Whole-crate compilation)
+- **Status:** `Planned` (proposta integral; pools/IndexVec precursores já implementados)
 - **Área Principal:** `Middle-end` (`arandu_semantics` / `arandu_middle`)
 - **Substitui:** `docs/arandu-hir-indexvec-rfc.md` (resgatada do histórico de commits)
 
 ---
+
+## Fronteira da implementação
+
+`arandu_middle::hir::HirPools` já usa `IndexVec`, e nós/blocos tipados são
+referenciados por IDs. Isso não é trabalho a começar na 0.2. A proposta integral
+de arenas/ownership por função e seus ganhos exige comparação com o produtor
+por instância atual. Não reintroduzir whole-crate monolítico nem duplicar IDs;
+perfilar antes de mudar representação. A ordem de produto vive no
+[roadmap mestre](../arandu-compiler-roadmap-v0.1.md).
+
+O restante registra o desenho e a motivação histórica. Tipos de pseudocódigo
+não substituem os IDs/estruturas atuais, nem constituem decisão de migração.
 
 ## 1. Resumo (Summary)
 

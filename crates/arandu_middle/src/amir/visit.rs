@@ -70,6 +70,13 @@ pub fn for_each_function_context_mut(
                 | AmirRvalue::GenUpsert { payload_ty, .. }
                 | AmirRvalue::GenRemove { payload_ty, .. } => ty(payload_ty),
                 AmirRvalue::Use(_)
+                | AmirRvalue::VectorOp { .. }
+                | AmirRvalue::VectorCompare { .. }
+                | AmirRvalue::VectorSelect { .. }
+                | AmirRvalue::VectorSplat { .. }
+                | AmirRvalue::VectorShuffle { .. }
+                | AmirRvalue::VectorExtractLane { .. }
+                | AmirRvalue::VectorInsertLane { .. }
                 | AmirRvalue::Binary { .. }
                 | AmirRvalue::Unary { .. }
                 | AmirRvalue::FieldAccess { .. }
@@ -186,7 +193,9 @@ pub fn for_each_place_operand_mut(place: &mut AmirPlace, mut f: impl FnMut(&mut 
 /// adding an rvalue cannot silently leave unit-local literal IDs unremapped.
 pub fn for_each_rvalue_operand_mut(value: &mut AmirRvalue, mut f: impl FnMut(&mut AmirOperand)) {
     match value {
-        AmirRvalue::Use(op)
+        AmirRvalue::VectorSplat { value: op }
+        | AmirRvalue::VectorExtractLane { vector: op, .. }
+        | AmirRvalue::Use(op)
         | AmirRvalue::Unary { operand: op, .. }
         | AmirRvalue::Len(op)
         | AmirRvalue::SliceData(op)
@@ -207,13 +216,30 @@ pub fn for_each_rvalue_operand_mut(value: &mut AmirRvalue, mut f: impl FnMut(&mu
             f(gen_ref);
             f(value);
         }
-        AmirRvalue::Binary { left, right, .. }
+        AmirRvalue::VectorOp { left, right, .. }
+        | AmirRvalue::VectorCompare { left, right, .. }
+        | AmirRvalue::VectorShuffle { left, right, .. }
+        | AmirRvalue::VectorInsertLane {
+            vector: left,
+            value: right,
+            ..
+        }
+        | AmirRvalue::Binary { left, right, .. }
         | AmirRvalue::IndexAccess {
             base: left,
             index: right,
         } => {
             f(left);
             f(right);
+        }
+        AmirRvalue::VectorSelect {
+            mask,
+            if_true,
+            if_false,
+        } => {
+            f(mask);
+            f(if_true);
+            f(if_false);
         }
         AmirRvalue::SliceView { owner, data, len } => {
             f(owner);
@@ -354,7 +380,9 @@ pub fn for_each_terminator_operand(term: &AmirTerminator, mut f: impl FnMut(&Ami
 /// Invoke `f` for every operand used by `rvalue` (not places themselves).
 pub fn for_each_rvalue_operand(rvalue: &AmirRvalue, mut f: impl FnMut(&AmirOperand)) {
     match rvalue {
-        AmirRvalue::Use(op)
+        AmirRvalue::VectorSplat { value: op }
+        | AmirRvalue::VectorExtractLane { vector: op, .. }
+        | AmirRvalue::Use(op)
         | AmirRvalue::Unary { operand: op, .. }
         | AmirRvalue::Len(op)
         | AmirRvalue::SliceData(op)
@@ -376,7 +404,15 @@ pub fn for_each_rvalue_operand(rvalue: &AmirRvalue, mut f: impl FnMut(&AmirOpera
             f(value);
         }
 
-        AmirRvalue::Binary { left, right, .. }
+        AmirRvalue::VectorOp { left, right, .. }
+        | AmirRvalue::VectorCompare { left, right, .. }
+        | AmirRvalue::VectorShuffle { left, right, .. }
+        | AmirRvalue::VectorInsertLane {
+            vector: left,
+            value: right,
+            ..
+        }
+        | AmirRvalue::Binary { left, right, .. }
         | AmirRvalue::IndexAccess {
             base: left,
             index: right,
@@ -385,6 +421,15 @@ pub fn for_each_rvalue_operand(rvalue: &AmirRvalue, mut f: impl FnMut(&AmirOpera
             f(right);
         }
 
+        AmirRvalue::VectorSelect {
+            mask,
+            if_true,
+            if_false,
+        } => {
+            f(mask);
+            f(if_true);
+            f(if_false);
+        }
         AmirRvalue::SliceView { owner, data, len } => {
             f(owner);
             f(data);
@@ -432,6 +477,13 @@ pub fn for_each_rvalue_place(rvalue: &AmirRvalue, mut f: impl FnMut(&AmirPlace))
             f(place);
         }
         AmirRvalue::Use(_)
+        | AmirRvalue::VectorOp { .. }
+        | AmirRvalue::VectorCompare { .. }
+        | AmirRvalue::VectorSelect { .. }
+        | AmirRvalue::VectorSplat { .. }
+        | AmirRvalue::VectorShuffle { .. }
+        | AmirRvalue::VectorExtractLane { .. }
+        | AmirRvalue::VectorInsertLane { .. }
         | AmirRvalue::Binary { .. }
         | AmirRvalue::Unary { .. }
         | AmirRvalue::FieldAccess { .. }

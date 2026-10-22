@@ -9,7 +9,7 @@ const PARALLEL_ARU: &str = include_str!("../../../../stdlib/std/parallel.aru");
 #[test]
 fn stdlib_parallel_parses_and_exports_expected_symbols() {
     let mut db = DatabaseImpl::default();
-    let file = db.new_file(
+    let file = db.new_stdlib_file(
         "stdlib/std/parallel.aru".to_string(),
         PARALLEL_ARU.to_string(),
     );

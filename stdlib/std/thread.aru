@@ -1,0 +1,227 @@
+//! Operating system threads and synchronization.
+//!
+//! ## Overview
+//!
+//! `spawn` moves a Send job and argument into a native OS thread. `join`
+//! transfers its Send result back. Dropping a handle joins and destroys any
+//! unclaimed result; it can block. Jobs use the statically dispatched
+//! `ThreadJob<A, R>` interface. A `move ||` with no parameters and owned Send
+//! captures is lowered to that job; general capturing closures stay rejected. Language
+//! traps and aborts terminate the process (no cross-thread or cross-ABI stack
+//! unwinding); Rust panics in the native host worker are caught at the runtime
+//! boundary and reported by `JoinHandle.join` as `ThreadError.Panicked`.
+//! Native identities are process-unique and retired on thread exit; unpark
+//! supplies one coalescing token. Unknown or exited identities are ignored.
+//! Long-running jobs can share `std.sync.cancel_token.CancelToken` and poll it
+//! to return cooperatively. Dropping or joining a handle does not cancel work.
+//! - `sleep`: Pauses the current OS thread for a specified duration.
+//! - `yieldNow`: Cooperatively yields the processor to other runnable threads.
+//! - `park` and `parkTimeout` block the native thread until unparked (or until
+//!   the monotonic timeout expires in `parkTimeout`), consuming the token.
+//! These operations do not provide cooperative executor synchronization.
+//!
+//! ## Examples
+//!
+//! ```arandu
+//! import std.thread as thread
+//!
+//! thread.sleep(10u64) // sleeps 10 milliseconds
+//! thread.yieldNow()
+//! ```
+//!
+//! ## Platform
+//! `native` · `wasm32` (yield/sleep supported)
+module std.thread
+
+import std.core.marker as marker
+import std.core.mem as mem
+
+extern "C" {
+    func ar_rt_thread_sleep_ms(ms: u64): void
+    func ar_rt_thread_yield(): void
+    func ar_rt_thread_park(): void
+    func ar_rt_thread_park_timeout(timeoutMs: u64): void
+    func ar_rt_thread_unpark(threadId: usize): void
+    func ar_rt_thread_current_id(): usize
+    func ar_rt_alloc_aligned(size: usize, align: usize): ptr[u8]
+    func ar_rt_free_aligned(data: ptr[u8], size: usize, align: usize): void
+    func ar_rt_native_thread_spawn(
+        context: ptr[u8], contextSize: usize, contextAlign: usize,
+        entry: ptr[u8], dropContext: ptr[u8],
+        result: ptr[u8], resultSize: usize, resultAlign: usize,
+        dropResult: ptr[u8]
+    ): usize
+    func ar_rt_native_thread_join(handle: usize): ptr[u8]
+    func ar_rt_native_thread_panicked_sentinel(): ptr[u8]
+    func ar_rt_native_thread_is_finished(handle: usize): bool
+    func ar_rt_native_thread_drop(handle: usize): void
+}
+
+/// An error encountered during thread operations.
+public enum ThreadError {
+    SpawnFailed,
+    JoinFailed,
+    Panicked,
+}
+
+/// A handle to a spawned operating system thread. Dropping it waits for the
+/// worker and destroys any unclaimed result; if the worker never returns,
+/// dropping the handle never returns.
+public struct JoinHandle<R> {
+    handle: usize,
+
+}
+
+/// Returns `true` if the thread associated with this handle has finished execution.
+public func JoinHandle.isFinished<R>(self: ref JoinHandle<R>): bool {
+    unsafe { return ar_rt_native_thread_is_finished(self.handle) }
+}
+
+/// Pauses the current OS thread for at least `millis` milliseconds.
+public func sleep(millis: u64): void {
+    unsafe {
+        ar_rt_thread_sleep_ms(millis)
+    }
+}
+
+/// Cooperatively gives up the remainder of the current thread's time slice.
+public func yieldNow(): void {
+    unsafe {
+        ar_rt_thread_yield()
+    }
+}
+
+/// Consumes an unpark token, blocking if none is available. May wake spuriously.
+public func park(): void {
+    unsafe {
+        ar_rt_thread_park()
+    }
+}
+
+/// Consumes one unpark token or blocks until unparked or `timeoutMs` expires.
+///
+/// An unpark arriving before or during the wait completes the call immediately.
+/// On targets without thread support (e.g. `wasm32-unknown-unknown` without threads),
+/// this function is rejected with `U001FeatureNotSupported` at compile time because
+/// transforming it into a sleep would break the contract of being interruptible by
+/// `unpark`. Use `std.thread.sleep` when a non-interruptible delay is intended.
+public func parkTimeout(timeoutMs: u64): void {
+    unsafe {
+        ar_rt_thread_park_timeout(timeoutMs)
+    }
+}
+
+/// Unparks the thread identified by `threadId`.
+public func unpark(threadId: usize): void {
+    unsafe {
+        ar_rt_thread_unpark(threadId)
+    }
+}
+
+/// Returns the unique numeric identity of the calling OS thread.
+public func currentThreadId(): usize {
+    unsafe {
+        return ar_rt_thread_current_id()
+    }
+}
+
+/// A statically dispatched native thread job. `self` and `argument` are owned
+/// by the child; its return value is moved back by `JoinHandle.join`.
+public interface ThreadJob<A, R> {
+    func run(self: own Self, argument: A): R
+}
+
+struct ThreadContext<A, J> {
+    argument: A,
+    job: J,
+}
+
+func storageSize<T>(): usize {
+    let size = mem.sizeOf<T>()
+    if size == (0 as usize) { return 1 as usize }
+    return size
+}
+
+func destroyValue<T>(pointer: ptr[u8]): void {
+    unsafe { mem.dropInPlace<T>(pointer as ptr[T]) }
+}
+
+func runThread<A: marker.Send, R: marker.Send, J: marker.Send + ThreadJob<A, R>>(
+    context: ptr[u8], result: ptr[u8]
+): i32 {
+    let owned = unsafe { mem.ptrRead<ThreadContext<A, J>>(context as ptr[ThreadContext<A, J>]) }
+    let value: R = owned.job.run(owned.argument)
+    unsafe { mem.ptrWrite<R>(result as ptr[R], value) }
+    return 0
+}
+
+func voidValue(): void {
+}
+
+/// Moves a job to a new native thread.
+public func spawn<R: marker.Send, J: marker.Send + ThreadJob<void, R>>(
+    job: J
+): Result<JoinHandle<R>, ThreadError> {
+    return spawnWith<void, R, J>(voidValue(), job)
+}
+
+/// Moves `argument` and `job` to a new native thread. Failed construction
+/// destroys both inputs and frees all allocated buffers. Borrowed views and
+/// non-Send resources are rejected by the canonical Send proof.
+public func spawnWith<A: marker.Send, R: marker.Send, J: marker.Send + ThreadJob<A, R>>(
+    argument: A, job: J
+): Result<JoinHandle<R>, ThreadError> {
+    let contextValue = ThreadContext<A, J> { argument: argument, job: job }
+    let contextSize = storageSize<ThreadContext<A, J>>()
+    let contextAlign = mem.alignOf<ThreadContext<A, J>>()
+    let resultSize = storageSize<R>()
+    let resultAlign = mem.alignOf<R>()
+    let nullp: ptr[u8] = nil
+    let context = unsafe { ar_rt_alloc_aligned(contextSize, contextAlign) }
+    if context == nullp { return Result.Err(ThreadError.SpawnFailed) }
+    let result = unsafe { ar_rt_alloc_aligned(resultSize, resultAlign) }
+    if result == nullp {
+        unsafe { ar_rt_free_aligned(context, contextSize, contextAlign) }
+        return Result.Err(ThreadError.SpawnFailed)
+    }
+    unsafe { mem.ptrWrite<ThreadContext<A, J>>(context as ptr[ThreadContext<A, J>], contextValue) }
+    let entry = runThread<A, R, J> as ptr[u8]
+    let dropContext = destroyValue<ThreadContext<A, J>> as ptr[u8]
+    let dropResult = destroyValue<R> as ptr[u8]
+    // All three callbacks belong to this module. The host owns both buffers
+    // from this call, including OS spawn failure.
+    let handle = unsafe {
+        ar_rt_native_thread_spawn(
+            context, contextSize, contextAlign, entry, dropContext,
+            result, resultSize, resultAlign, dropResult
+        )
+    }
+    if handle == (0 as usize) { return Result.Err(ThreadError.SpawnFailed) }
+    return Result.Ok(JoinHandle<R> { handle: handle })
+}
+
+/// Waits for completion and consumes this handle. The result becomes owned by
+/// the caller. This synchronizes all child writes before returning.
+public func JoinHandle.join<R: marker.Send>(self: own JoinHandle<R>): Result<R, ThreadError> {
+    let mut owned = self
+    let handle = owned.handle
+    owned.handle = 0 as usize
+    let raw = unsafe { ar_rt_native_thread_join(handle) }
+    let nullp: ptr[u8] = nil
+    if raw == nullp { return Result.Err(ThreadError.JoinFailed) }
+    let panicked: ptr[u8] = unsafe { ar_rt_native_thread_panicked_sentinel() }
+    if raw == panicked { return Result.Err(ThreadError.Panicked) }
+    unsafe {
+        let value = mem.ptrRead<R>(raw as ptr[R])
+        ar_rt_free_aligned(raw, storageSize<R>(), mem.alignOf<R>())
+        return Result.Ok(value)
+    }
+}
+
+/// Waits for the child and destroys an unclaimed result exactly once.
+@Destructor
+func JoinHandle.destroy<R>(self: own JoinHandle<R>): void {
+    if self.handle != (0 as usize) {
+        unsafe { ar_rt_native_thread_drop(self.handle) }
+    }
+}

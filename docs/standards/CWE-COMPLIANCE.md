@@ -1,112 +1,129 @@
-# Conformidade de Segurança e Mapeamento de CWEs — Compilador Arandu
+# Mapeamento de mitigações e limites de segurança — Arandu
 
-## 1. Visão Geral
+**Estado em 15/10/2026:** inventário técnico de mecanismos e limites conhecidos.
+Este documento não é certificação CWE, SEI CERT ou ISO/IEC 25010, nem uma prova
+de eliminação de classes de vulnerabilidades. O nome histórico do arquivo é
+mantido para preservar referências.
 
-Este documento formaliza as garantias de segurança de memória, concorrência, integridade de tipos, robustez do frontend e proteção da cadeia de compilação do **Compilador Arandu** contra as vulnerabilidades críticas catalogadas pelo **Common Weakness Enumeration (CWE)** e pelas recomendações do **SEI CERT Coding Standard**, alinhado ao modelo de qualidade de software **ISO/IEC 25010**.
+## Visão Geral e Contexto
 
-O compilador Arandu foi projetado sob o princípio de **segurança por construção**: comportamentos indefinidos (*Undefined Behavior — UB*) e corrupção de memória são eliminados na fase de análise semântica estática, sem incorrer em custo de execução (*zero-cost abstractions*). Onde a verificação estática pura não for decidível em tempo de compilação (ex: índices de vetores dinâmicos), o compilador e o runtime emitem verificações de limites defensivas (*bounds checks*) com armadilhas determinísticas imediatas (*hardware traps/panics*).
+O compilador, o runtime e o SDK têm superfícies distintas: código Arandu seguro,
+blocos `unsafe`, FFI, implementações Rust/C, ferramentas de build, caches e
+instaladores. Uma regra da linguagem não prova a correção do runtime ou de um
+backend. `unsafe` e código estrangeiro dependem das obrigações do chamador;
+checks, ownership e layout precisam conservar seu contrato em cada target.
 
----
+A distribuição nativa v0.1.10 passou packages, integração SDK/VSIX e Public RC
+install/smoke em Linux x86-64, macOS ARM64 e Windows x86-64 no
+[run 38779239029](https://github.com/arandu-lang/arandu/actions/runs/38779239029),
+verificado em 15/10/2026. Isso valida os fluxos executados desses artefatos,
+incluindo o corpus CTFE, sem certificar todos os comportamentos de runtime,
+freestanding ou plataformas não distribuídas.
 
-## 2. Matriz de Conformidade CWE — Linguagem e Tempo de Execução
+## Detalhes Técnicos da Implementação
 
-### Pilar I: Segurança de Memória e Acesso a Buffers
+### Memória, tipos e fluxo de controle
 
-| CWE ID | Nome da Fraqueza | Classificação no C/C++ | Garantia Arquitetural do Arandu | Mecanismo Formal do Compilador |
-|---|---|---|---|---|
-| **CWE-416** | *Use After Free* | Crítica (RCE / Crash) | **Eliminada Estaticamente** | **OSSA Move Checker (`O001`, `O005`)**: invalida a variável no CFG após transferência de ownership. Em arenas dinâmicas, o **GenRef** invalida a geração do slot no momento do *retirement*, prevenindo acesso estragado sem problema ABA. |
-| **CWE-415** | *Double Free* | Crítica (Memory Corruption) | **Eliminada Estaticamente** | **Linearidade de Tipos + Cascade Drop Glue**: o compilador só emite `AmirStmt::Destroy` para variáveis em estado `MoveState::Live`. Variáveis movidas não sofrem drop duplicado. |
-| **CWE-476** | *NULL Pointer Dereference* | Alta (Crash / DoS) | **Eliminada por Tipagem** | **Ponteiros Nulos Ausentes na Superfície Segura**: referências `ref T` e `mut ref T` são não-nulas por contrato estático. Ausência de valor é representada exclusivamente pelo enum discriminado `Option<T>`. |
-| **CWE-825** | *Expired Pointer Dereference* | Alta (Escapamento de Pilha) | **Eliminada por Análise de Escape** | **Borrow Checker (`O010`, `O004`)**: empréstimos locais possuem janelas de vida (*loan windows*) restritas ao escopo léxico da raiz. Tentativas de retornar referências locais emitem `O010` determinístico. |
-| **CWE-787** | *Out-of-bounds Write* | Crítica (Buffer Overflow) | **Eliminada por Bounds Checking e Contratos** | **Hardware Traps em Runtime + Coleções Seguras**: mutações indexadas em arrays e fatias emitem verificação estrita de limites via comparação unsigned no backend Cranelift (`trapnz` se `idx >= len`), impedindo escrita fora do buffer. |
-| **CWE-125** | *Out-of-bounds Read* | Crítica (Heartbleed / Infoleak) | **Eliminada por Bounds Checking e Acesso Seguro** | **Hardware Traps em Runtime + `Slice.get`**: leituras indexadas diretas emitem checagem unsigned de limites no codegen Cranelift (`trapnz` se `idx >= len` ou `idx < 0`), enquanto acessos funcionais retornam `Option<ref T>`. |
-| **CWE-119** / **CWE-120** | *Improper Buffer Restriction / Copy* | Crítica (Memory Corruption) | **Eliminada por Tipagem de Buffers** | Strings (`str`) e fatias (`[]T`) são pares indissociáveis de ponteiro e tamanho `(ptr, len)`. Não existem funções no estilo `strcpy`/`gets` que dependam de terminação nula (`\0`). |
-| **CWE-129** | *Improper Validation of Array Index* | Média/Alta (OOB Access) | **Eliminada por Tipagem e Verificação Unsigned** | O type checker exige índice inteiro (`T017`). Em codegen Cranelift, índices inteiros com sinal são estendidos com sinal (`sextend`) para a largura do ponteiro nativo (`ptr_type`), e uma única instrução de comparação sem sinal (`IntCC::UnsignedGreaterThanOrEqual`) valida simultaneamente limites superiores e rejeita índices negativos (números negativos tornam-se inteiros $> 2^{63}$, disparando imediatamente o trap). |
-| **CWE-843** / **CWE-704** | *Type Confusion / Incorrect Cast* | Crítica (Corrupção de Tipos) | **Eliminada na Superfície Segura** | Uniões em Arandu são enums discriminados com tag e payload protegidos e checagem de exaustividade (`T024`). Casts de ponteiros arbitrários são proibidos em código seguro e restritos a blocos `unsafe` (`O012`, `O013`, `O014`). |
-| **CWE-590** / **CWE-763** | *Free of Non-Heap Memory / Invalid Pointer* | Alta (Memory Corruption) | **Eliminada por Construção** | Não há primitiva de `free()` manual em código seguro. A desalocação ocorre exclusivamente via RAII coordenado pelo compilador. |
+| CWEs relacionadas | Mitigação existente | Limite da afirmação |
+| --- | --- | --- |
+| CWE-416, CWE-415, CWE-825 | Move checker, loans, liveness, return-borrow summaries e verificações geracionais no fallback GenRef | Não prova ausência de UAF/double-free em `unsafe`, FFI, todos os carriers ou runtime; representação/lifetime de agregados e drop não trivial têm limites próprios |
+| CWE-476 | Referências seguras e representação tipada de ausência | Ponteiros crus e valores recebidos de FFI continuam exigindo validação; nulidade não é a única condição de validade |
+| CWE-787, CWE-125, CWE-129 | Checks de indexação e APIs como `Slice.get` retornando `Option<ref T>` | Depende de tipo/layout do alvo e codegen; ponteiro e comprimento recebidos de fonte insegura podem violar a precondição do buffer |
+| CWE-119, CWE-120 | Strings/slices com comprimento explícito e APIs seguras de coleção | Um par `(ptr, len)` sozinho não prova provenance, capacidade, lifetime ou ausência de overflow |
+| CWE-843, CWE-704 | Tipagem, enums discriminados, exaustividade e restrições de operações inseguras | Cast explícito não é prova de validade; ABI/FFI e casts de ponteiros têm obrigações adicionais |
+| CWE-590, CWE-763 | Ownership e checagens de operações de memória inseguras | O sistema não certifica desalocadores estrangeiros nem todo gerenciamento manual |
+| CWE-457 | Análise CFG de definite initialization (`O008`) | Exige preservação de usos, block args e dominância pelos passes |
+| CWE-478 | Exaustividade de `match` (`T024`) | Não demonstra que a lógica de cada braço é correta |
+| CWE-674 | Limites de instanciação e rejeição de tipos de tamanho infinito | Não impede toda recursão de execução nem esgotamento da pilha |
+| CWE-570, CWE-571, CWE-670 | Diagnósticos de código morto/inalcançável no recorte analisável | Não detecta toda condição invariável nem todos os erros lógicos |
 
----
+Fontes:
+[`move_checker.rs`](../../crates/arandu_mir/src/move_checker.rs),
+[`definite_init.rs`](../../crates/arandu_mir/src/definite_init.rs),
+[`borrow_interface.rs`](../../crates/arandu_mir/src/borrow_interface.rs),
+[`drop_elaborate.rs`](../../crates/arandu_mir/src/drop_elaborate.rs),
+[`GenRef`](../../crates/arandu_runtime/src/genref.rs) e
+[contrato de memória](../arandu-semantic-memory-model-v0.1.md).
+O [catálogo de diagnósticos](../diagnostics/SPEC.md) define os códigos públicos.
 
-### Pilar II: Aritmética, Literais e Lógica Numérica
+### Aritmética e lógica numérica
 
-| CWE ID | Nome da Fraqueza | Classificação no C/C++ | Garantia Arquitetural do Arandu | Mecanismo Formal do Compilador |
-|---|---|---|---|---|
-| **CWE-190** | *Integer Overflow* | Média/Alta (Wrap Imprevisto) | **Mitigada por Aritmética Checked** | **Checked Arithmetic por Contrato**: literais estáticos são validados em compilação (`T038`), negação unsigned e div/mod por zero são rejeitados estaticamente (`T005`, `T040`), e a execução em C/Cranelift anula UB via `-fwrapv` e runtime traps (RFC Semântica de Operadores v0.1). |
-| **CWE-191** | *Integer Underflow (Wraparound Negativo)* | Média/Alta (Wrap Imprevisto) | **Mitigada por Aritmética Checked** | Negação de inteiros sem sinal (`-u`) é rejeitada estaticamente com `T005`. Deslocamentos de bits com valores negativos (`x << -1`) são rejeitados com `T038`. Em runtime, opera sob as mesmas garantias de wrapping determinístico de complemento de dois (`-fwrapv`). |
-| **CWE-369** | *Divide by Zero* | Alta (Crash / DoS) | **Eliminada Estaticamente para Literais** | Tentativa de divisão ou resto por zero literal (`/ 0`, `% 0`, `/ 0.0`) é rejeitada em compilação com `T040DivisionByZero`. Divisões dinâmicas geram trap/panic controlado no runtime em vez de comportamento indefinido. |
-| **CWE-197** / **CWE-681** | *Numeric Truncation / Cast Loss* | Média (Perda de Precisão) | **Mitigada por Cast Explícito** | Coerções implícitas que causam perda de bits ou precisão são proibidas (`T015ImplicitWidening`). Casts via operador `as` são estritamente explícitos com truncamento determinístico documentado. |
-| **CWE-480** / **CWE-481** | *Assigning instead of Comparing* (`if x = 1`) | Média (Lógica Incorreta) | **Eliminada por Sintaxe e Tipagem** | Atribuição (`let x = 1` ou `x = 1`) é um comando (*statement*), não uma expressão com valor. A condição de controle de fluxo (`if`, `while`) exige estritamente tipo `bool` primitivo (`T009`), tornando esse erro impossível em Arandu. |
-| **CWE-193** | *Off-by-one Error* | Média (OOB / Loop Bounds) | **Prevenida por Idioma de Sintaxe** | Construções de loop operam sobre iteradores de coleções (`for item in list`) e fatias de intervalo semiaberto `0..n`, prevenindo erros comuns de contadores manuais com `<=`. |
+| CWEs relacionadas | Mitigação existente | Limite da afirmação |
+| --- | --- | --- |
+| CWE-190, CWE-191 | Validação de literais, negação unsigned rejeitada, operações CTFE checked e normalização tipada de constantes | `+`, `-`, `*` comuns não possuem trapping universal de overflow; Cranelift/Wasm são modulares e C depende também das opções da toolchain |
+| CWE-369 | `T040` para divisão/resto inteiros por zero literal | Float por zero conserva IEEE; divisão inteira dinâmica inválida não tem trap uniforme garantido em C/Cranelift/Wasm |
+| CWE-197, CWE-681 | Regras de coerção e casts explícitos | `as` pode perder bits/precisão; intenção explícita não prova ausência de bug |
+| CWE-480, CWE-481 | Atribuição como statement e condições booleanas | Reduz confusão sintática; não prova lógica correta |
+| CWE-193 | Iteradores, ranges e checks de acesso | Off-by-one continua possível em algoritmos e limites escolhidos pelo programa |
 
----
+O [contrato de operadores](../arandu-operator-arithmetic-semantics-rfc-v0.1.md)
+separa implementação de propostas antigas de overflow/shifts. Evidências:
+[`semantic_edge_cases.rs`](../../crates/arandu_query/tests/semantic_edge_cases.rs),
+[`ieee754_semantics.rs`](../../crates/arandu_query/tests/ieee754_semantics.rs) e
+[`CTFE`](../../crates/arandu_mir/src/ctfe/tests.rs).
 
-### Pilar III: Frontend, Lexer e Integridade de Código-Fonte
+### Frontend e código-fonte
 
-| CWE ID | Nome da Fraqueza | Classificação no C/C++ | Garantia Arquitetural do Arandu | Mecanismo Formal do Compilador |
-|---|---|---|---|---|
-| **CWE-1307** / **CVE-2021-42574** | *Trojan Source / BiDi Text Attack* | Alta (Ofuscação de Código Malicioso) | **Eliminada Estaticamente** | **Detecção de BiDi no Lexer (`LX004BidiTrojanSource`)**: o lexer intercepta e rejeita caracteres de formatação bidirecional Unicode invisíveis (`U+202A`..`U+202E`, `U+2066`..`U+2069`, `U+200E`, `U+200F`, `U+061C`) em comentários, doc-comments, strings literais e código, impedindo que revisores humanos vejam lógica diferente da executada. |
-| **CWE-1007** | *Visual Homoglyph Attack* | Média (Confusão de Identificadores) | **Eliminada por Especificação de Identificadores** | O lexer restringe identificadores à especificação rigorosa do **Unicode Standard Annex #31 (UAX #31)** (`unicode_ident::is_xid_start`, `is_xid_continue`), bloqueando caracteres de scripts incompatíveis. |
-| **CWE-134** | *Externally-Controlled Format String* | Crítica (RCE em C) | **Eliminada por Tipagem Estática** | Interpolações e macros de formatação são resolvidas estaticamente. Valores que não implementam o contrato de formatação são rejeitados com `T034CannotFormat`. Não há ponteiros de formatação estilo C (`%n`, `%s`). |
-| **CWE-754** / **CWE-391** | *Unchecked Error Condition* | Média/Alta (Falha Silenciosa) | **Detectada por Análise de Fluxo** | O compilador emite o diagnóstico `W006UnhandledResult` quando valores retornados do tipo `Result<T, E>` não são inspecionados ou descartados explicitamente. |
+| CWEs relacionadas | Mitigação existente | Limite da afirmação |
+| --- | --- | --- |
+| CWE-1307 / Trojan Source | Lexer diagnostica os controles BiDi cobertos por `LX004`, inclusive em comentários e strings | Não é prova contra toda forma de engano visual ou de apresentação do editor |
+| CWE-1007 | Identificadores seguem Unicode XID | XID não elimina homoglyphs e não restringe automaticamente mistura de scripts; não há garantia geral contra identificadores visualmente confundíveis |
+| CWE-134 | Interpolação tipada evita tratar texto comum como format string C arbitrária | FFI e APIs de formatação estrangeiras continuam fora dessa garantia |
+| CWE-754, CWE-391 | `W006` sinaliza `Result` não tratado no recorte aplicável | Warning não garante tratamento correto de erro nem torna descarte explícito seguro |
 
----
+Fontes:
+[`lexer/ident.rs`](../../crates/arandu_lexer/src/lexer/ident.rs),
+[`lexer/comment.rs`](../../crates/arandu_lexer/src/lexer/comment.rs),
+[`lexer/string.rs`](../../crates/arandu_lexer/src/lexer/string.rs) e
+[contrato do lexer](../arandu-lexer-v0.1.md).
 
-### Pilar IV: Fluxo de Controle, Exaustividade e Recursão
+### Concorrência e recursos
 
-| CWE ID | Nome da Fraqueza | Classificação no C/C++ | Garantia Arquitetural do Arandu | Mecanismo Formal do Compilador |
-|---|---|---|---|---|
-| **CWE-457** | *Use of Uninitialized Variable* | Média/Alta (UB) | **Eliminada por Análise de Fluxo** | **Definite Initialization (`O008`)**: rastreamento de *InitBits* através de todas as arestas do grafo de fluxo de controle (CFG), exigindo inicialização em todos os caminhos antes do uso. |
-| **CWE-478** | *Missing Default Case in Multiple Condition* | Média/Alta (Comportamento Omitido) | **Eliminada Estaticamente** | **Checagem de Exaustividade (`T024NonExhaustiveMatch`)**: expressões `match` sobre enums são verificadas estaticamente em `match_exhaust.rs`. Todas as variantes devem ser cobertas explicitamente ou por meio de padrão curinga (`_`). |
-| **CWE-674** | *Uncontrolled Recursion / Stack Exhaustion* | Alta (DoS / Crash) | **Mitigada Estaticamente no Compilador** | Tipos recursivos sem indireção de ponteiro são rejeitados com `T029RecursiveStructInfiniteSize`. Ciclos e limites de monomorfização de genéricos são contidos por `G001GenericInstantiationCycle` e `G002GenericInstantiationLimit`. |
-| **CWE-570** / **CWE-571** / **CWE-670** | *Expression Always False/True / Unreachable Code* | Baixa/Média (Código Inoperante) | **Detectada por Linting e Análise** | Emissão determinística de alertas para código morto (`W002DeadCode`) e instruções inalcançáveis (`W003UnreachableCode`) geradas por condicionais invariantes. |
+| CWEs relacionadas | Mitigação existente | Limite da afirmação |
+| --- | --- | --- |
+| CWE-362 | Bounds `Send`/`Sync`, armazenamento elegível, escopo de jobs e sincronização explícita | Não prova ausência geral de data races em FFI/unsafe ou todos os runtimes; `TaskHandle<T>` cooperativo não é prova de ownership entre threads |
+| CWE-772, CWE-401 | Elaboração de drops e cleanup nos caminhos modelados | Não existe garantia geral de zero leaks; payloads não triviais, recursos externos e falha/cancelamento exigem provas específicas |
+| CWE-833 | Filas bounded, execução inline aninhada e join de workers evitam classes concretas de deadlock | O runtime usa locks/canais bloqueantes; não é globalmente lock-free nem deadlock-proof |
 
----
+Fontes:
+[`worker_scheduler`](../../crates/arandu_runtime/src/worker_scheduler/pool.rs),
+[`waker_runtime.rs`](../../crates/arandu_runtime/src/waker_runtime.rs),
+[paralelismo](../arandu-structured-parallelism-v0.1.md) e
+[async](../arandu-async-runtime-design-v0.1.md).
 
-### Pilar V: Concorrência e Gerenciamento de Recursos
+### Compilador, cache e cadeia de distribuição
 
-| CWE ID | Nome da Fraqueza | Classificação no C/C++ | Garantia Arquitetural do Arandu | Mecanismo Formal do Compilador |
-|---|---|---|---|---|
-| **CWE-362** | *Race Condition (Data Race)* | Alta (Concorrência Indeterminística)| **Eliminada por Tipagem de Concorrência** | **Transferência Linear em Canais e Locks Cooperativos**: `Channel<T>` transfere ownership do payload no envio; `AsyncMutex<T>` isola acesso mutável exclusivo sob lock. |
-| **CWE-772** / **CWE-401** | *Missing Release of Resource / Memory Leak* | Média/Alta (Exaustão de Recursos) | **Eliminada por RAII e Destrutores** | Variáveis que saem de escopo executam a rotina de limpeza linear da AMIR (`AmirStmt::Destroy`). Tipos de usuário com gerenciamento de recursos externos utilizam a anotação `@Destructor` (`T035`). |
-| **CWE-833** | *Deadlock* | Alta (Hang / DoS) | **Mitigada por Concorrência Cooperativa** | O modelo padrão de concorrência do Arandu favorece canais sem bloqueio de threads de SO (*lock-free circular channels*) e agendamento cooperativo assíncrono. |
+| CWEs relacionadas | Mitigação existente | Limite da afirmação |
+| --- | --- | --- |
+| CWE-22, CWE-59 | Políticas de imports, validação de pacote e detecção de ciclos de symlink | O VFS atual não é sandbox de filesystem nem implementa `Dir`/openat2 da RFC 0016; canonicalização isolada não elimina TOCTOU |
+| CWE-78, CWE-88 | Invocações nativas com `Command` e argumentos separados evitam interpolação de shell nesses caminhos | Ainda é necessário validar opções, executável escolhido e wrappers; não é prova universal contra argument injection |
+| CWE-403 | Fechamento e política de handles dependentes da API/plataforma | Não há comprovação universal de ausência de descritores herdados em todo subprocesso |
+| CWE-732, CWE-377 | Staging, diretórios temporários e publicação atômica em caminhos implementados | Permissões, ambiente host e races precisam de testes por plataforma; não há imunidade geral a symlinks |
+| CWE-502 | Digests, envelopes versionados e validação fail-closed de caches/artefatos cobertos | Hash detecta divergência, não autentica conteúdo hostil. Dumps `.air`/`.amir`/`.ameta` atuais não reidratam AST/HIR nem persistem o grafo Salsa |
+| CWE-400, CWE-770 | Budgets CTFE/instanciação, filas limitadas e early-cutoff | Reduzem workloads de risco; não garantem tempo/memória constantes nem resistência geral a DoS |
+| Integridade do bootstrap | SHA-256 externo, validação nativa do archive e BLAKE3 em staging | `scripts/install.sh` ainda continua sem checksum se não encontra verificador; dívida fail-open conhecida, não corrigida por este documento |
 
----
+Fontes:
+[`vfs.rs`](../../crates/arandu_query/src/vfs.rs),
+[`incremental`](../../crates/arandu_cli/src/incremental/mod.rs),
+[`install.sh`](../../scripts/install.sh),
+[distribuição](../arandu-distribution-contract-v0.1.md) e
+[RFC 0016](../rfcs/0016-capability-safe-filesystem-and-path-resolution.md).
 
-## 3. Matriz de Segurança da Ferramenta de Compilação e Cadeia de Suprimentos
+## PONTOS DE MELHORIA (O que não está no roadmap)
 
-Como o compilador e suas ferramentas de linha de comando processam código-fonte de terceiros, manifestos de pacotes e caches de compilação, o próprio compilador implementa defesas contra ataques à ferramenta:
+Métricas de alocação, latência e invalidação precisam de workload, configuração
+e medição. `SmallVec`, arenas ou Salsa não demonstram zero alocação, ausência
+de leaks ou cutoff O(1) para toda edição. Recuperação de sintaxe e fuzzing
+reduzem regressões, mas não provam ausência de panic/ICE para toda entrada.
 
-| CWE ID | Nome da Fraqueza | Superfície de Risco | Garantia Arquitetural do Arandu | Mecanismo de Proteção |
-|---|---|---|---|---|
-| **CWE-22** | *Path Traversal* (Top 8 no Top 25) | Resolução de Módulos e Pacotes | **Eliminada Estaticamente** | **Isolamento de Pacote (`M005FilesystemImportForbidden`)**: em modo pacote, o compilador proíbe imports literais com caminhos de sistema de arquivos arbitrários, confinando toda a resolução ao grafo de módulos do pacote. |
-| **CWE-59** | *Improper Link Resolution (Symlink Traversal)* | Descoberta de Arquivos de Projeto | **Eliminada por Isolamento** | O discovery de projetos audita canonicalização de caminhos (`cli_project_adversarial.rs`) e rejeita que raízes de fontes sigam links para fora do pacote. |
-| **CWE-78** / **CWE-88** | *OS Command Injection / Argument Injection* (Top 5) | Invocação de Linkers de Sistema | **Eliminada por Arquitetura** | **Process Spawning Tipado**: a invocação do linker do sistema (`gcc`, `ld`) e ferramentas externas é feita via `std::process::Command` passando argumentos estruturados em vetor, sem intermediários de shell (`sh -c` ou `cmd.exe`). |
-| **CWE-403** | *Exposure of File Descriptor to Child Processes* | Execução de Subprocessos | **Eliminada por Contrato de Processo** | No Linux/macOS, a invocação de processos externos utiliza descritores com `O_CLOEXEC` ativo por padrão, prevenindo vazamento de handles de arquivos ou sockets. |
-| **CWE-732** / **CWE-377** | *Incorrect Permission / Insecure Temp Files* | Compilação AOT e Linkagem | **Eliminada por Isolamento** | Objetos compilados intermediários (`.o`) e bibliotecas estáticas são criados estritamente dentro da pasta `target/` do projeto ou em diretórios de sessão seguros com permissões restritas (0700/0600), prevenindo ataques de symlink e acesso indevido. |
-| **CWE-502** | *Deserialization of Untrusted Data* | Caches Incrementais de Compilação | **Mitigada por Hashing Criptográfico** | Dados cacheados entre sessões de compilação incremental validam integridade com digests estáveis de conteúdo (BLAKE3) antes de reidratar AST/HIR ou artefatos de código. |
-| **CWE-400** / **CWE-770** | *Uncontrolled Resource Consumption* (Compiler DoS) | Expansão de Genéricos e Caches Salsa | **Mitigada por Guardrails e Memoização** | Limite rígido de recursão em instanciação de genéricos (`G002`), interning estrutural de tipos e early-cutoff das queries Salsa impedem explosão combinatorial de tempo e memória. |
+CWE/CERT e ISO/IEC 25010 podem orientar revisões; declarar conformidade exigiria
+escopo, metodologia, rastreabilidade e avaliação próprios. Este inventário não
+substitui essa avaliação, os testes de regressão nem auditoria de código.
 
----
+## Futuro e Próximos Passos
 
-## 4. Modelo de Qualidade de Software (ISO/IEC 25010)
-
-O compilador Arandu implementa as características da norma **ISO/IEC 25010**:
-
-1. **Adequação Funcional (Functional Suitability)**:
-   - Cobertura de testes unitários e de integração com bijeção estrita de diagnósticos (`xtask check-diag-docs`).
-   - Pipeline de testes determinístico com suítes de golden fixtures para AST, HIR e AMIR.
-2. **Eficiência de Desempenho (Performance Efficiency)**:
-   - Estruturas de dados Data-Oriented Design (DoD): `AstPool`, `HirPool`, `IndexVec` e inteiros estáveis em vez de ponteiros esparsos.
-   - Zero heap allocations em regime permanente para coleções híbridas (`SmallVec4` na pilha) e concorrência (`Channel` circular).
-   - Invalidação incremental $O(1)$ via Salsa Queries puras (`arandu_query`).
-3. **Confiabilidade (Reliability)**:
-   - Recuperação em cascata com nós de erro na árvore sintática concreta (Rowan CST), impedindo que erros do usuário causem interrupção do compilador (*Internal Compiler Error — ICE*).
-   - Ausência de *panics* ou *unwraps* descontrolados no compilador perante entradas de usuário inválidas.
-4. **Segurança (Security)**:
-   - Eliminação de vulnerabilidades críticas do CWE Top 25 em tempo de compilação e tempo de execução.
-   - Defesa estrita em tempo de lexing contra ataques de *Trojan Source* (`CWE-1307` via `LX004`).
-   - *Bounds checking* determinístico via hardware traps contra *buffer overflows* (`CWE-125`, `CWE-787`, `CWE-129`).
-   - Confinamento estrito de código inseguro em blocos explícitos com diagnósticos dedicados (`O012`, `O013`, `O014`).
-5. **Manutenibilidade (Maintainability)**:
-   - Separação modular rigorosa entre crates definida em `AGENTS.md` e auditada continuamente por `xtask check-architecture`.
-   - Isolamento de execução de testes por processo nativo via `cargo-nextest`.
+A fila executiva e critérios de promoção pertencem ao
+[roadmap mestre](../arandu-compiler-roadmap-v0.1.md). Uma ampliação de garantia
+precisa indicar superfície segura, target/backend, evidência e fallback,
+incluindo os casos em que a ferramenta deve falhar explicitamente.

@@ -7,6 +7,26 @@ use crate::hir::pool::IndexRange;
 use crate::layout::{EnumPayloadShape, StructFieldInfo, StructFields};
 
 #[test]
+fn classifier_accepts_only_the_supported_abi_width_matrix() {
+    assert!(TargetAbiClassifier::try_new(TargetAbi::SystemVAmd64, 8).is_ok());
+    assert!(TargetAbiClassifier::try_new(TargetAbi::WindowsX64, 8).is_ok());
+    assert!(TargetAbiClassifier::try_new(TargetAbi::Aapcs64, 8).is_ok());
+    assert!(TargetAbiClassifier::try_new(TargetAbi::Generic, 4).is_ok());
+    assert!(TargetAbiClassifier::try_new(TargetAbi::Generic, 8).is_ok());
+    for abi in [
+        TargetAbi::SystemVAmd64,
+        TargetAbi::WindowsX64,
+        TargetAbi::Aapcs64,
+    ] {
+        let error = TargetAbiClassifier::try_new(abi, 4).expect_err("32-bit width");
+        assert_eq!(error.pointer_width, 4);
+        assert_eq!(error.abi, abi);
+    }
+    assert!(TargetAbiClassifier::try_new(TargetAbi::Generic, 2).is_err());
+    assert!(TargetAbiClassifier::try_new(TargetAbi::SystemVAmd64, 16).is_err());
+}
+
+#[test]
 fn arrays_follow_target_classes_without_partial_slot_overreads() {
     let interner = TypeInterner::new();
     let provider = TestMockProvider::default();

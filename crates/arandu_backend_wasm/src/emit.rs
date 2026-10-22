@@ -11,16 +11,15 @@
 //! core modules omit unused allocation helpers; components retain their ABI.
 
 mod component;
+mod core;
+mod sections;
 mod validate;
 
 pub(crate) use validate::validate_place_ops;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 use smol_str::SmolStr;
-use wasm_encoder::{
-    CodeSection, EntityType, ExportKind, ExportSection, FunctionSection, GlobalSection, GlobalType,
-    ImportSection, MemorySection, MemoryType, Module, TypeSection, ValType,
-};
+use wasm_encoder::{ExportKind, ExportSection, ValType};
 use wit_parser::abi::{WasmSignature, WasmType};
 
 use arandu_middle::amir::{AmirFunc, AmirProgram};
@@ -28,9 +27,6 @@ use arandu_middle::layout::{DataLayout, StructLayoutProvider};
 use arandu_middle::types::TypeInterner;
 use arandu_middle::{Diagnostic, SymbolId};
 use arandu_semantics::SymbolTable;
-
-use arandu_middle::amir::stmt::AmirStmt;
-use arandu_middle::amir::value::AmirOperand;
 
 use crate::canonical::CabiSupport;
 use crate::stackify;
@@ -71,7 +67,8 @@ pub struct WasmModuleBuilder<'a> {
     layout_provider: &'a dyn StructLayoutProvider,
     layout: DataLayout,
     functions: Vec<&'a AmirFunc>,
-    live: Option<FxHashSet<SymbolId>>,
+    live: FxHashSet<SymbolId>,
+    optimize_for_size: bool,
 }
 
 impl<'a> WasmModuleBuilder<'a> {
@@ -113,30 +110,36 @@ impl<'a> WasmModuleBuilder<'a> {
         layout_provider: &'a dyn StructLayoutProvider,
         layout: DataLayout,
     ) -> Self {
+        // Host imports are part of the module's linking contract even when
+        // never called. Apply the same dependency closure in every profile so
+        // an unreachable private body cannot introduce a host requirement.
+        let live = arandu_semantics::passes::reachability::live_functions(
+            program,
+            symbols,
+            interner,
+            layout_provider,
+        );
         Self {
             program,
             symbols,
             interner,
             layout_provider,
             layout,
-            functions: program.funcs.iter().collect(),
-            live: None,
+            functions: program
+                .funcs
+                .iter()
+                .filter(|function| live.contains(&function.symbol))
+                .collect(),
+            live,
+            optimize_for_size: false,
         }
     }
 
-    /// Select executable roots and omit unused core-module ABI helpers.
+    /// Omit unused core-module ABI helpers in addition to the shared pruning.
     /// Components still retain their mandatory Canonical ABI support.
     #[must_use]
     pub fn optimize_for_size(mut self) -> Self {
-        let live = arandu_semantics::passes::reachability::live_functions(
-            self.program,
-            self.symbols,
-            self.interner,
-            self.layout_provider,
-        );
-        self.functions
-            .retain(|function| live.contains(&function.symbol));
-        self.live = Some(live);
+        self.optimize_for_size = true;
         self
     }
 
@@ -146,269 +149,6 @@ impl<'a> WasmModuleBuilder<'a> {
     /// for hosts lowering strings and lists into the guest's linear memory.
     pub fn build(self) -> Result<Vec<u8>, Diagnostic> {
         self.build_core(ExportStyle::Host)
-    }
-
-    /// Build the core module with a specific export naming style.
-    fn build_core(self, style: ExportStyle<'a>) -> Result<Vec<u8>, Diagnostic> {
-        let mut module = Module::new();
-
-        let imports = self.collect_imports(style);
-        let num_imported_funcs = imports.len() as u32;
-
-        // Helpers follow all program definitions. Translate first so size mode
-        // can decide from actual calls, including implicit heap-backed frames.
-        let cabi_first_func_idx = num_imported_funcs + self.functions.len() as u32;
-        let canonical_abi = self.live.is_none() || matches!(style, ExportStyle::Component(_));
-
-        // ── 1. Type section ───────────────────────────────────────────────
-        let (mut type_section, import_type_indices, func_type_indices, mut next_type_idx) =
-            self.build_type_section_raw(&imports, style);
-
-        // ── 2. Import section ─────────────────────────────────────────────
-        let mut import_section = ImportSection::new();
-        if !imports.is_empty() {
-            for (i, import) in imports.iter().enumerate() {
-                let type_idx = import_type_indices[i];
-                import_section.import(
-                    &import.module,
-                    &import.field,
-                    EntityType::Function(type_idx),
-                );
-            }
-        }
-
-        // ── 3. Function section ───────────────────────────────────────────
-        let mut func_section = FunctionSection::new();
-        let mut func_index_map: FxHashMap<SymbolId, u32> = FxHashMap::default();
-
-        for (i, import) in imports.iter().enumerate() {
-            func_index_map.insert(import.symbol, i as u32);
-        }
-
-        for (i, func) in self.functions.iter().enumerate() {
-            let type_idx = func_type_indices[i];
-            func_section.function(type_idx);
-            func_index_map.insert(func.symbol, num_imported_funcs + i as u32);
-        }
-
-        // ── 4. Table section (empty for MVP) ──────────────────────────────
-
-        // ── 5. Memory section ─────────────────────────────────────────────
-        let mut used_literals = FxHashSet::default();
-        let mut remember = |operand: &AmirOperand| {
-            if let AmirOperand::Constant(arandu_middle::amir::AmirConstant::Pool(id)) = operand {
-                used_literals.insert(*id);
-            }
-        };
-        for func in &self.functions {
-            for block in &func.blocks {
-                for stmt in func.block_stmts(block.id) {
-                    arandu_middle::amir::visit::for_each_stmt_operand(stmt, &mut remember);
-                }
-                arandu_middle::amir::visit::for_each_terminator_operand(
-                    &block.terminator,
-                    &mut remember,
-                );
-            }
-        }
-        let mut rodata = crate::memory::RodataTable::from_used_literals(
-            &self.program.literal_pool,
-            &used_literals,
-        );
-        let mut static_offsets = FxHashMap::default();
-        let mut static_sources: FxHashMap<Vec<u8>, (u32, u32)> = FxHashMap::default();
-        for func in &self.functions {
-            let mut initializers = arandu_semantics::static_data::static_initializers(
-                func,
-                self.interner,
-                self.layout_provider,
-                &self.program.literal_pool,
-                self.layout,
-                true,
-            );
-            // Statement order, not hash iteration, determines artifact bytes.
-            for id in func.stmts.iter_ids() {
-                let Some(initializer) = initializers.remove(&id) else {
-                    continue;
-                };
-                if initializer.alignment > 16 || !initializer.alignment.is_power_of_two() {
-                    continue;
-                }
-                if let Some(&source) = static_sources.get(&initializer.bytes) {
-                    static_offsets.insert((func.symbol, id), source);
-                    continue;
-                }
-                let aligned = rodata
-                    .bytes
-                    .len()
-                    .checked_add(15)
-                    .map(|length| length & !15);
-                let offset = aligned.and_then(|length| {
-                    usize::try_from(crate::memory::RODATA_BASE)
-                        .ok()?
-                        .checked_add(length)
-                });
-                let Some((aligned, offset, size)) =
-                    aligned.zip(offset).and_then(|(aligned, offset)| {
-                        Some((
-                            aligned,
-                            u32::try_from(offset).ok()?,
-                            u32::try_from(initializer.bytes.len()).ok()?,
-                        ))
-                    })
-                else {
-                    return Err(Diagnostic::ice(
-                        arandu_middle::diagnostics::DiagCode::ICEGEN002,
-                        "Wasm static aggregate data exceeds the supported address space",
-                        arandu_middle::Span::new(0, 0, 0),
-                    ));
-                };
-                rodata.bytes.resize(aligned, 0);
-                rodata.bytes.extend_from_slice(&initializer.bytes);
-                static_sources.insert(initializer.bytes, (offset, size));
-                static_offsets.insert((func.symbol, id), (offset, size));
-            }
-        }
-        let (heap_base, initial_pages) = rodata.memory_regions().ok_or_else(|| {
-            Diagnostic::ice(
-                arandu_middle::diagnostics::DiagCode::ICEGEN002,
-                "Wasm rodata and shadow stack exceed the supported address space",
-                arandu_middle::Span::new(0, 0, 0),
-            )
-        })?;
-        let mut mem_section = MemorySection::new();
-        mem_section.memory(MemoryType {
-            minimum: initial_pages,
-            maximum: crate::memory::MAX_PAGES,
-            memory64: false,
-            shared: false,
-            page_size_log2: None,
-        });
-
-        // ── 6. Global section ─────────────────────────────────────────────
-        let mut global_section = GlobalSection::new();
-        // Global 0: __stack_pointer (mutable i32, init = STACK_BASE).
-        global_section.global(
-            GlobalType {
-                val_type: ValType::I32,
-                mutable: true,
-                shared: false,
-            },
-            &wasm_encoder::ConstExpr::i32_const(heap_base),
-        );
-        // Global 1: __heap_base (immutable i32, init = heap_base).
-        global_section.global(
-            GlobalType {
-                val_type: ValType::I32,
-                mutable: false,
-                shared: false,
-            },
-            &wasm_encoder::ConstExpr::i32_const(heap_base),
-        );
-        // Global 2: __heap_ptr (mutable i32, init = heap_base).
-        global_section.global(
-            GlobalType {
-                val_type: ValType::I32,
-                mutable: true,
-                shared: false,
-            },
-            &wasm_encoder::ConstExpr::i32_const(heap_base),
-        );
-        // Global 3: __stack_base (immutable i32, init = STACK_BASE).
-        global_section.global(
-            GlobalType {
-                val_type: ValType::I32,
-                mutable: false,
-                shared: false,
-            },
-            &wasm_encoder::ConstExpr::i32_const(heap_base),
-        );
-        // Global 4: __freelist_head (mutable i32, init = 0 — empty free list).
-        global_section.global(
-            GlobalType {
-                val_type: ValType::I32,
-                mutable: true,
-                shared: false,
-            },
-            &wasm_encoder::ConstExpr::i32_const(0),
-        );
-
-        // ── 8. Element section (empty for MVP) ────────────────────────────
-
-        // ── 9. Code section ───────────────────────────────────────────────
-        let ctx = crate::translator::TranslationContext {
-            functions: &self.program.funcs,
-            extern_functions: &self.program.extern_funcs,
-            symbols: self.symbols,
-            interner: self.interner,
-            layout_provider: self.layout_provider,
-            data_layout: self.layout,
-            literal_pool: &self.program.literal_pool,
-            rodata_offsets: &rodata.offsets,
-            static_offsets: &static_offsets,
-            func_index_map: &func_index_map,
-            alloc_func_idx: cabi_first_func_idx,
-            free_func_idx: cabi_first_func_idx + 1,
-        };
-
-        let mut code_section = CodeSection::new();
-        let mut needs_allocator = canonical_abi;
-        for func in &self.functions {
-            let (wasm_func, uses_allocator) = self.translate_func(func, &ctx, style)?;
-            needs_allocator |= uses_allocator;
-            code_section.function(&wasm_func);
-        }
-        let mut cabi = CabiSupport::new();
-        if needs_allocator {
-            cabi.add_allocator();
-        }
-        if canonical_abi {
-            cabi.add_realloc(cabi_first_func_idx, cabi_first_func_idx + 1);
-            if let ExportStyle::Component(names) = &style {
-                for func in &self.functions {
-                    if let Some((export_name, sig)) = names.get(&func.symbol)
-                        && sig.retptr
-                    {
-                        cabi.add_post_return(
-                            export_name,
-                            vec![ValType::I32],
-                            cabi_first_func_idx + 1,
-                        );
-                    }
-                }
-            }
-        }
-        let cabi_type_indices = cabi.append_types(&mut type_section, &mut next_type_idx);
-        cabi.append_function_section(&mut func_section, &cabi_type_indices);
-        cabi.append_code(&mut code_section);
-        let export_section =
-            self.build_export_section(&func_index_map, &cabi, cabi_first_func_idx, style);
-
-        // Serialize in Wasm section order after all dependencies are known.
-        module.section(&type_section);
-        if !imports.is_empty() {
-            module.section(&import_section);
-        }
-        module.section(&func_section);
-        module.section(&mem_section);
-        module.section(&global_section);
-        module.section(&export_section);
-        module.section(&code_section);
-
-        // ── 10. Data section ──────────────────────────────────────────────
-        if !rodata.bytes.is_empty() {
-            let mut data_section = wasm_encoder::DataSection::new();
-            data_section.segment(wasm_encoder::DataSegment {
-                mode: wasm_encoder::DataSegmentMode::Active {
-                    memory_index: 0,
-                    offset: &wasm_encoder::ConstExpr::i32_const(crate::memory::RODATA_BASE),
-                },
-                data: rodata.bytes.iter().copied(),
-            });
-            module.section(&data_section);
-        }
-
-        Ok(module.finish())
     }
 
     /// Translate a single AMIR function into a wasm Function.
@@ -430,194 +170,6 @@ impl<'a> WasmModuleBuilder<'a> {
                 if *index == ctx.alloc_func_idx || *index == ctx.free_func_idx)
         });
         Ok((function, uses_allocator))
-    }
-
-    /// Collect all imported extern functions deterministically.
-    fn collect_imports(&self, style: ExportStyle<'a>) -> Vec<WasmImportInfo> {
-        let mut sorted_extern: Vec<_> = self
-            .program
-            .extern_funcs
-            .iter()
-            .filter(|(symbol, _)| self.live.as_ref().is_none_or(|live| live.contains(symbol)))
-            .collect();
-        sorted_extern.sort_by_key(|(sym, _)| (sym.file_id, sym.local_id.0));
-
-        let mut import_infos = Vec::with_capacity(sorted_extern.len());
-        for (&sym_id, (params, ret)) in sorted_extern {
-            let Some(sym) = self.symbols.try_get(sym_id) else {
-                continue;
-            };
-            if arandu_middle::IntrinsicKind::from_name(&sym.name).is_some() {
-                continue;
-            }
-            let (module, field) = match style {
-                ExportStyle::Component(_) => {
-                    if let Some((m, f)) = sym.name.split_once('.') {
-                        (
-                            SmolStr::new(m),
-                            SmolStr::new(crate::wit_gen::to_wit_ident(f)),
-                        )
-                    } else {
-                        (
-                            SmolStr::new("$root"),
-                            SmolStr::new(crate::wit_gen::to_wit_ident(&sym.name)),
-                        )
-                    }
-                }
-                ExportStyle::Host => {
-                    if let Some((m, f)) = sym.name.split_once('.') {
-                        (SmolStr::new(m), SmolStr::new(f))
-                    } else {
-                        (SmolStr::new("env"), sym.name.clone())
-                    }
-                }
-            };
-
-            let mut wasm_params = Vec::new();
-            for p in params {
-                wasm_params.extend(crate::types::ar_type_valtypes(
-                    p,
-                    self.interner,
-                    self.layout,
-                ));
-            }
-            let wasm_results = crate::types::ar_type_valtypes(ret, self.interner, self.layout);
-
-            import_infos.push(WasmImportInfo {
-                symbol: sym_id,
-                module,
-                field,
-                params: wasm_params,
-                results: wasm_results,
-            });
-        }
-
-        // Detect prelude functions called in the program but not declared as
-        // externs. Their host imports are supplied by the runtime.
-        let mut called_prelude_symbols: Vec<(SymbolId, &'static str)> = Vec::new();
-        for func in &self.functions {
-            for stmt in func.stmts.payloads.iter() {
-                if let AmirStmt::Call {
-                    callee: AmirOperand::FunctionRef(sym),
-                    ..
-                } = stmt
-                    && !self.program.extern_funcs.contains_key(sym)
-                    && !self.program.funcs.iter().any(|f| f.symbol == *sym)
-                    && let Some(sym_def) = self.symbols.try_get(*sym)
-                    && let Some(field) = match sym_def.name.as_str() {
-                        "io.println" => Some("println"),
-                        "io.print" => Some("print"),
-                        "io.eprint" => Some("eprint"),
-                        _ => None,
-                    }
-                    && !called_prelude_symbols
-                        .iter()
-                        .any(|(existing, _)| existing == sym)
-                {
-                    called_prelude_symbols.push((*sym, field));
-                }
-            }
-        }
-        called_prelude_symbols.sort_by_key(|(sym, _)| (sym.file_id, sym.local_id.0));
-        for (sym_id, field) in called_prelude_symbols {
-            let str_ty =
-                arandu_middle::types::ArType::Primitive(arandu_middle::types::Primitive::Str);
-            let void_ty = arandu_middle::types::ArType::Void;
-            let mut wasm_params = Vec::new();
-            wasm_params.extend(crate::types::ar_type_valtypes(
-                &str_ty,
-                self.interner,
-                self.layout,
-            ));
-            let wasm_results = crate::types::ar_type_valtypes(&void_ty, self.interner, self.layout);
-
-            import_infos.push(WasmImportInfo {
-                symbol: sym_id,
-                module: SmolStr::new("io"),
-                field: SmolStr::new(field),
-                params: wasm_params,
-                results: wasm_results,
-            });
-        }
-
-        import_infos
-    }
-
-    /// Build the type section with deduplication for both imports and defined functions.
-    ///
-    /// Returns `(TypeSection, import type indices, per-program-func type indices, next_type_idx)`.
-    /// The caller appends Canonical ABI types after.
-    fn build_type_section_raw(
-        &self,
-        imports: &[WasmImportInfo],
-        style: ExportStyle<'a>,
-    ) -> (TypeSection, Vec<u32>, Vec<u32>, u32) {
-        let mut type_section = TypeSection::new();
-        let mut type_cache: FxHashMap<(Vec<ValType>, Vec<ValType>), u32> = FxHashMap::default();
-        let mut import_type_indices = Vec::with_capacity(imports.len());
-        let mut type_indices = Vec::with_capacity(self.functions.len());
-        let mut next_type_idx: u32 = 0;
-
-        for import in imports {
-            let key = (import.params.clone(), import.results.clone());
-            let type_idx = match type_cache.entry(key) {
-                std::collections::hash_map::Entry::Occupied(e) => *e.get(),
-                std::collections::hash_map::Entry::Vacant(e) => {
-                    let (p, r) = e.key();
-                    type_section.ty().function(p.clone(), r.clone());
-                    let idx = next_type_idx;
-                    next_type_idx += 1;
-                    *e.insert(idx)
-                }
-            };
-            import_type_indices.push(type_idx);
-        }
-
-        for func in &self.functions {
-            let (params, results) = match style {
-                ExportStyle::Component(names) if names.contains_key(&func.symbol) => {
-                    let (_, sig) = &names[&func.symbol];
-                    let params = sig
-                        .params
-                        .iter()
-                        .copied()
-                        .map(wasm_type_to_valtype)
-                        .collect();
-                    let results = sig
-                        .results
-                        .iter()
-                        .copied()
-                        .map(wasm_type_to_valtype)
-                        .collect();
-                    (params, results)
-                }
-                _ => {
-                    let params = func_wasm_params(func, self.interner, self.layout);
-                    let results = func_wasm_results(func, self.interner, self.layout);
-                    (params, results)
-                }
-            };
-
-            let key = (params, results);
-            let type_idx = match type_cache.entry(key) {
-                std::collections::hash_map::Entry::Occupied(e) => *e.get(),
-                std::collections::hash_map::Entry::Vacant(e) => {
-                    let (p, r) = e.key();
-                    type_section.ty().function(p.clone(), r.clone());
-                    let idx = next_type_idx;
-                    next_type_idx += 1;
-                    *e.insert(idx)
-                }
-            };
-            type_indices.push(type_idx);
-        }
-
-        (
-            type_section,
-            import_type_indices,
-            type_indices,
-            next_type_idx,
-        )
     }
 
     /// Build the export section, exporting all functions and linear memory.

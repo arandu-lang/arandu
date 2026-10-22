@@ -104,7 +104,10 @@ impl LowerCtx<'_> {
                 if matches!(base_ty, ArType::Ref(_) | ArType::RefMut(_) | ArType::Ptr(_)) {
                     place.projections.push(AmirProjection::Deref);
                 }
-                if !matches!(container_ty, ArType::Array(_, _) | ArType::Slice(_)) && !is_vec {
+                if !matches!(
+                    container_ty,
+                    ArType::Array(_, _) | ArType::Slice(_) | ArType::MutSlice(_)
+                ) && !is_vec {
                     return Err(self.move_diag(
                         "can only borrow an indexed place from an array, slice, or vector",
                     ));
@@ -113,6 +116,21 @@ impl LowerCtx<'_> {
                 place.projections.push(AmirProjection::Index(index));
                 self.mark_local_materialized(place.local);
                 Ok(place)
+            }
+            // Keep the reference returned by a call as a pointer place. Copying
+            // the projected payload instead would duplicate owned fields when
+            // auto-borrowing `owner.get().field.method()`.
+            HirExprKind::Call { .. }
+                if matches!(self.resolve_ty(expr.ty), ArType::Ref(_) | ArType::RefMut(_)) =>
+            {
+                let value = self.lower_expr(expr_id, None, symbols)?;
+                let local = self.new_compiler_local_id(expr.ty, expr.span);
+                self.mark_local_materialized(local);
+                self.write_variable_source(local, value)?;
+                Ok(AmirPlace {
+                    local,
+                    projections: smallvec::SmallVec::new(),
+                })
             }
             _ => Err(self.move_diag(
                 "can only borrow locals, indexed array/slice elements, `*p` through a pointer, and field paths",
@@ -197,7 +215,9 @@ impl LowerCtx<'_> {
             }
             if let Some(field_sym) = self.resolve_field_symbol(&base_ty, field) {
                 place.projections.push(AmirProjection::Field(field_sym));
-                if !self.tc.type_info.is_copy(expr_ty) {
+                if !self.tc.type_info.is_copy(expr_ty)
+                    || matches!(base_ty, ArType::Ref(_) | ArType::RefMut(_))
+                {
                     self.mark_local_materialized(place.local);
                     let dest = target.unwrap_or_else(|| self.new_temp_id(expr_ty));
                     self.emit_assign_temp(dest, AmirRvalue::Load(place));
@@ -233,6 +253,7 @@ impl LowerCtx<'_> {
     ) -> Result<AmirOperand, Diagnostic> {
         if let Ok(mut place) = self.lower_expr_to_place(base, symbols) {
             let base_ty = self.resolve_ty(self.hir.pool.expr(base).ty);
+            let through_reference = matches!(base_ty, ArType::Ref(_) | ArType::RefMut(_));
             let root_ty = self.resolve_ty(self.locals[place.local.as_usize()].ty);
             let through_shared_borrow = matches!(root_ty, ArType::Ref(_));
             if through_shared_borrow
@@ -255,15 +276,18 @@ impl LowerCtx<'_> {
                 _ => base_ty,
             };
             let is_vec = arandu_middle::types::is_vec_type(&container_ty, symbols);
-            if matches!(container_ty, ArType::Array(_, _) | ArType::Slice(_)) || is_vec {
+            if (matches!(
+                container_ty,
+                ArType::Array(_, _) | ArType::Slice(_) | ArType::MutSlice(_)
+            ) || is_vec)
+                && (!self.tc.type_info.is_copy(expr_ty) || through_reference)
+            {
                 let idx = self.lower_expr(index, None, symbols)?;
                 place.projections.push(AmirProjection::Index(idx));
-                if !self.tc.type_info.is_copy(expr_ty) {
-                    self.mark_local_materialized(place.local);
-                    let dest = target.unwrap_or_else(|| self.new_temp_id(expr_ty));
-                    self.emit_assign_temp(dest, AmirRvalue::Load(place));
-                    return Ok(AmirOperand::Copy(dest));
-                }
+                self.mark_local_materialized(place.local);
+                let dest = target.unwrap_or_else(|| self.new_temp_id(expr_ty));
+                self.emit_assign_temp(dest, AmirRvalue::Load(place));
+                return Ok(AmirOperand::Copy(dest));
             }
         }
         let base_op = self.lower_expr(base, None, symbols)?;

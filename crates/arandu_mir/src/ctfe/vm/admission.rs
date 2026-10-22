@@ -13,6 +13,7 @@ struct AdmittedUnit {
 pub(super) struct Admission {
     units: Vec<AdmittedUnit>,
     indices: FxHashMap<FunctionInstance, usize>,
+    intrinsics: FxHashMap<SymbolId, IntrinsicKind>,
 }
 
 impl Admission {
@@ -63,6 +64,7 @@ impl Admission {
         let mut admitted = Self {
             units: Vec::new(),
             indices: FxHashMap::default(),
+            intrinsics: FxHashMap::default(),
         };
         admitted
             .insert(root, None, meter)
@@ -144,7 +146,18 @@ impl Admission {
                                         return Err(site.error(EvalErrorKind::UnsupportedOperation));
                                     }
                                 }
-                                Some(*callee)
+                                if let Some(intrinsic) = provider.intrinsic(*callee) {
+                                    if intrinsic.is_pure_bit_operation()
+                                        || intrinsic == IntrinsicKind::Abort
+                                    {
+                                        admitted.intrinsics.insert(*callee, intrinsic);
+                                        None
+                                    } else {
+                                        Some(*callee)
+                                    }
+                                } else {
+                                    Some(*callee)
+                                }
                             }
                             AmirStmt::Store { rhs, .. } if scalar_operand(*rhs) => None,
                             AmirStmt::StorageLive(_) | AmirStmt::StorageDead(_) | AmirStmt::Nop => {
@@ -204,5 +217,9 @@ impl Admission {
             .and_then(|&index| self.units.get(index))
             .map(|entry| Arc::clone(&entry.unit))
             .ok_or(EvalErrorKind::MissingFunction(key.definition))
+    }
+
+    pub(super) fn intrinsic(&self, symbol: SymbolId) -> Option<IntrinsicKind> {
+        self.intrinsics.get(&symbol).copied()
     }
 }

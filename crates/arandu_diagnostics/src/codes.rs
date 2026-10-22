@@ -125,6 +125,9 @@ pub enum DiagCode {
     T047InvalidTypeLayout,
     /// Array repetition requires a static length and safely duplicable elements.
     T048InvalidArrayRepeat,
+    /// `std.thread` or `std.fs` was used on a freestanding target.
+    /// T049–T098 stay unused; T099 is the 0.2.0 bare-metal contract.
+    T099RequiresOperatingSystem,
 
     // ── Lowering (L) ──
     L001LoweringUnresolvedSymbol,
@@ -264,6 +267,7 @@ impl DiagCode {
             T046ComptimeArithmetic,
             T047InvalidTypeLayout,
             T048InvalidArrayRepeat,
+            T099RequiresOperatingSystem,
             L001LoweringUnresolvedSymbol,
             G001GenericInstantiationCycle,
             G002GenericInstantiationLimit,
@@ -410,6 +414,7 @@ impl DiagCode {
             DiagCode::T046ComptimeArithmetic => "T046",
             DiagCode::T047InvalidTypeLayout => "T047",
             DiagCode::T048InvalidArrayRepeat => "T048",
+            DiagCode::T099RequiresOperatingSystem => "T099",
             DiagCode::L001LoweringUnresolvedSymbol => "L001",
             DiagCode::G001GenericInstantiationCycle => "G001",
             DiagCode::G002GenericInstantiationLimit => "G002",

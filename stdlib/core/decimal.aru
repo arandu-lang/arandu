@@ -1,0 +1,1207 @@
+//! High-precision 128-bit decimal arithmetic for financial and commercial computation.
+//!
+//! ## Overview
+//!
+//! `Decimal` represents base-10 numbers using a 96-bit unsigned integer mantissa,
+//! a sign bit, and a decimal scale from `0` to `28`:
+//!
+//! `value = (-1)^sign * (lo + mid * 2^32 + hi * 2^64) * 10^(-scale)`
+//!
+//! Unlike binary floating-point (`float` / `f64`), `Decimal` stores decimal fractions
+//! such as `0.1`, `0.2`, and `0.3` exactly without binary representation drift.
+//!
+//! ## Example
+//!
+//! ```arandu
+//! import std.core.decimal as dec
+//!
+//! let a = dec.Decimal.fromCents(10) // 0.10
+//! let b = dec.Decimal.fromCents(20) // 0.20
+//! let c = dec.Decimal.fromCents(30) // 0.30
+//! let sum = a.add(b)
+//! let ok = sum.eq(c) // true
+//! ```
+//!
+//! ## Safety
+//! All operations are pure value arithmetic on 16-byte stack structs. Division by
+//! zero returns `Option.None`.
+//!
+//! ## Allocations
+//! None. `Decimal` is a 128-bit value type stored inline on the stack.
+//!
+//! ## Platform
+//! `native` · `wasm32` · `bare-metal`
+module std.core.decimal
+
+import std.core.intrinsics as intrinsics
+
+import std.core.slice as slice
+
+/// Rounding strategy for decimal scale reduction and division.
+public enum RoundingMode {
+    /// Round to nearest; ties round to the nearest even last digit (Banker's rounding).
+    HalfEven,
+    /// Round to nearest; ties round away from zero.
+    HalfUp,
+    /// Discard truncated digits (round toward zero).
+    Truncate,
+    /// Round toward negative infinity.
+    Floor,
+    /// Round toward positive infinity.
+    Ceil,
+}
+
+/// A 128-bit exact base-10 decimal number (96-bit mantissa + sign and 0..=28 scale).
+public struct Decimal {
+    /// Bits 0..31 of the unsigned 96-bit mantissa.
+    private lo: u32
+    /// Bits 32..63 of the unsigned 96-bit mantissa.
+    private mid: u32
+    /// Bits 64..95 of the unsigned 96-bit mantissa.
+    private hi: u32
+    /// Bit 31 is the sign bit (1 = negative); bits 16..23 hold the scale (0..=28).
+    private flags: u32
+}
+
+struct U96 {
+    lo: u32
+    mid: u32
+    hi: u32
+}
+
+struct U96DivRem32 {
+    quot: U96
+    rem: u32
+}
+
+struct U96DivRem96 {
+    quot: U96
+    rem: U96
+}
+
+struct U128 {
+    w0: u32
+    w1: u32
+    w2: u32
+    w3: u32
+}
+
+struct U192 {
+    w0: u32
+    w1: u32
+    w2: u32
+    w3: u32
+    w4: u32
+    w5: u32
+}
+
+struct U192DivRem32 {
+    quot: U192
+    rem: u32
+}
+
+func signMask(): u32 {
+    return (1 as u32) << (31 as u32)
+}
+
+func maxScale(): u32 {
+    return 28 as u32
+}
+
+func makeFlags(isNeg: bool, scale: u32): u32 {
+    let mut f: u32 = (scale & (0xFF as u32)) << (16 as u32)
+    if isNeg {
+        f = f | signMask()
+    }
+    return f
+}
+
+func u96Zero(): U96 {
+    return U96 { lo: 0 as u32, mid: 0 as u32, hi: 0 as u32 }
+}
+
+func Decimal.u96(self: ref Decimal): U96 {
+    return U96 { lo: self.lo, mid: self.mid, hi: self.hi }
+}
+
+func u96IsZero(v: U96): bool {
+    return v.lo == (0 as u32) && v.mid == (0 as u32) && v.hi == (0 as u32)
+}
+
+func u96Cmp(a: U96, b: U96): int {
+    if a.hi != b.hi {
+        if a.hi < b.hi {
+            return -1
+        }
+        return 1
+    }
+    if a.mid != b.mid {
+        if a.mid < b.mid {
+            return -1
+        }
+        return 1
+    }
+    if a.lo != b.lo {
+        if a.lo < b.lo {
+            return -1
+        }
+        return 1
+    }
+    return 0
+}
+
+func u96Add(a: U96, b: U96): Option<U96> {
+    let mask: u64 = 4294967295 as u64
+    let s0: u64 = (a.lo as u64) + (b.lo as u64)
+    let c0: u64 = s0 >> (32 as u64)
+    let s1: u64 = (a.mid as u64) + (b.mid as u64) + c0
+    let c1: u64 = s1 >> (32 as u64)
+    let s2: u64 = (a.hi as u64) + (b.hi as u64) + c1
+    if (s2 >> (32 as u64)) != (0 as u64) {
+        return Option.None
+    }
+    return Option.Some(U96 {
+        lo: (s0 & mask) as u32,
+        mid: (s1 & mask) as u32,
+        hi: (s2 & mask) as u32,
+    })
+}
+
+func u96AddU32(a: U96, b: u32): Option<U96> {
+    return u96Add(a, U96 { lo: b, mid: 0 as u32, hi: 0 as u32 })
+}
+
+func u96Sub(a: U96, b: U96): U96 {
+    let base: i64 = 4294967296
+    let mut d0: i64 = (a.lo as i64) - (b.lo as i64)
+    let mut borrow: i64 = 0
+    if d0 < 0 {
+        d0 = d0 + base
+        borrow = 1
+    }
+    let mut d1: i64 = (a.mid as i64) - (b.mid as i64) - borrow
+    borrow = 0
+    if d1 < 0 {
+        d1 = d1 + base
+        borrow = 1
+    }
+    let d2: i64 = (a.hi as i64) - (b.hi as i64) - borrow
+    return U96 {
+        lo: d0 as u32,
+        mid: d1 as u32,
+        hi: d2 as u32,
+    }
+}
+
+func u96MulU32(a: U96, factor: u32): Option<U96> {
+    let mask: u64 = 4294967295 as u64
+    let f: u64 = factor as u64
+    let p0: u64 = (a.lo as u64) * f
+    let c0: u64 = p0 >> (32 as u64)
+    let p1: u64 = (a.mid as u64) * f + c0
+    let c1: u64 = p1 >> (32 as u64)
+    let p2: u64 = (a.hi as u64) * f + c1
+    if (p2 >> (32 as u64)) != (0 as u64) {
+        return Option.None
+    }
+    return Option.Some(U96 {
+        lo: (p0 & mask) as u32,
+        mid: (p1 & mask) as u32,
+        hi: (p2 & mask) as u32,
+    })
+}
+
+func u96DivRemU32(a: U96, divisor: u32): U96DivRem32 {
+    let d: u64 = divisor as u64
+    let q2: u64 = (a.hi as u64) / d
+    let r2: u64 = (a.hi as u64) % d
+    let cur1: u64 = (r2 << (32 as u64)) | (a.mid as u64)
+    let q1: u64 = cur1 / d
+    let r1: u64 = cur1 % d
+    let cur0: u64 = (r1 << (32 as u64)) | (a.lo as u64)
+    let q0: u64 = cur0 / d
+    let r0: u64 = cur0 % d
+    return U96DivRem32 {
+        quot: U96 { lo: q0 as u32, mid: q1 as u32, hi: q2 as u32 },
+        rem: r0 as u32,
+    }
+}
+
+func u96GetBit(a: U96, bitIndex: int): u32 {
+    if bitIndex < 32 {
+        return (a.lo >> (bitIndex as u32)) & (1 as u32)
+    }
+    if bitIndex < 64 {
+        let shift = (bitIndex - 32) as u32
+        return (a.mid >> shift) & (1 as u32)
+    }
+    let shift = (bitIndex - 64) as u32
+    return (a.hi >> shift) & (1 as u32)
+}
+
+func u96SetBit(a: U96, bitIndex: int): U96 {
+    if bitIndex < 32 {
+        return U96 { lo: a.lo | ((1 as u32) << (bitIndex as u32)), mid: a.mid, hi: a.hi }
+    }
+    if bitIndex < 64 {
+        let shift = (bitIndex - 32) as u32
+        return U96 { lo: a.lo, mid: a.mid | ((1 as u32) << shift), hi: a.hi }
+    }
+    let shift = (bitIndex - 64) as u32
+    return U96 { lo: a.lo, mid: a.mid, hi: a.hi | ((1 as u32) << shift) }
+}
+
+func u96ShiftLeft1WithBit(a: U96, lsb: u32): U96 {
+    let c0 = a.lo >> (31 as u32)
+    let c1 = a.mid >> (31 as u32)
+    return U96 {
+        lo: (a.lo << (1 as u32)) | (lsb & (1 as u32)),
+        mid: (a.mid << (1 as u32)) | c0,
+        hi: (a.hi << (1 as u32)) | c1,
+    }
+}
+
+func u96DivRem96(num: U96, den: U96): U96DivRem96 {
+    let mut quot = u96Zero()
+    let mut rem = u96Zero()
+    let mut i: int = 95
+    while i >= 0 {
+        let bit = u96GetBit(num, i)
+        rem = u96ShiftLeft1WithBit(rem, bit)
+        if u96Cmp(rem, den) >= 0 {
+            rem = u96Sub(rem, den)
+            quot = u96SetBit(quot, i)
+        }
+        i = i - 1
+    }
+    return U96DivRem96 { quot: quot, rem: rem }
+}
+
+func u128MulU32(a: U96, factor: u32): U128 {
+    let mask: u64 = 4294967295 as u64
+    let f: u64 = factor as u64
+    let p0: u64 = (a.lo as u64) * f
+    let c0: u64 = p0 >> (32 as u64)
+    let p1: u64 = (a.mid as u64) * f + c0
+    let c1: u64 = p1 >> (32 as u64)
+    let p2: u64 = (a.hi as u64) * f + c1
+    let c2: u64 = p2 >> (32 as u64)
+    return U128 {
+        w0: (p0 & mask) as u32,
+        w1: (p1 & mask) as u32,
+        w2: (p2 & mask) as u32,
+        w3: (c2 & mask) as u32,
+    }
+}
+
+func u128CmpU96(a: U128, b: U96): int {
+    if a.w3 != (0 as u32) {
+        return 1
+    }
+    return u96Cmp(U96 { lo: a.w0, mid: a.w1, hi: a.w2 }, b)
+}
+
+func u128SubU96(a: U128, b: U96): U128 {
+    let base: i64 = 4294967296
+    let mut d0: i64 = (a.w0 as i64) - (b.lo as i64)
+    let mut borrow: i64 = 0
+    if d0 < 0 {
+        d0 = d0 + base
+        borrow = 1
+    }
+    let mut d1: i64 = (a.w1 as i64) - (b.mid as i64) - borrow
+    borrow = 0
+    if d1 < 0 {
+        d1 = d1 + base
+        borrow = 1
+    }
+    let mut d2: i64 = (a.w2 as i64) - (b.hi as i64) - borrow
+    borrow = 0
+    if d2 < 0 {
+        d2 = d2 + base
+        borrow = 1
+    }
+    let d3: i64 = (a.w3 as i64) - borrow
+    return U128 {
+        w0: d0 as u32,
+        w1: d1 as u32,
+        w2: d2 as u32,
+        w3: d3 as u32,
+    }
+}
+
+func u96MulFull(a: U96, b: U96): U192 {
+    let mask: u64 = 4294967295 as u64
+    let a0: u64 = a.lo as u64
+    let a1: u64 = a.mid as u64
+    let a2: u64 = a.hi as u64
+    let b0: u64 = b.lo as u64
+    let b1: u64 = b.mid as u64
+    let b2: u64 = b.hi as u64
+
+    // Row 0: a * b0
+    let p00: u64 = a0 * b0
+    let w0: u32 = (p00 & mask) as u32
+    let mut c: u64 = p00 >> (32 as u64)
+
+    let p10: u64 = a1 * b0 + c
+    let mut w1: u64 = p10 & mask
+    c = p10 >> (32 as u64)
+
+    let p20: u64 = a2 * b0 + c
+    let mut w2: u64 = p20 & mask
+    let mut w3: u64 = p20 >> (32 as u64)
+
+    // Row 1: a * b1
+    let p01: u64 = a0 * b1 + w1
+    w1 = p01 & mask
+    c = p01 >> (32 as u64)
+
+    let p11: u64 = a1 * b1 + w2 + c
+    w2 = p11 & mask
+    c = p11 >> (32 as u64)
+
+    let p21: u64 = a2 * b1 + w3 + c
+    w3 = p21 & mask
+    let mut w4: u64 = p21 >> (32 as u64)
+
+    // Row 2: a * b2
+    let p02: u64 = a0 * b2 + w2
+    w2 = p02 & mask
+    c = p02 >> (32 as u64)
+
+    let p12: u64 = a1 * b2 + w3 + c
+    w3 = p12 & mask
+    c = p12 >> (32 as u64)
+
+    let p22: u64 = a2 * b2 + w4 + c
+    w4 = p22 & mask
+    let w5: u64 = p22 >> (32 as u64)
+
+    return U192 {
+        w0: w0,
+        w1: w1 as u32,
+        w2: w2 as u32,
+        w3: w3 as u32,
+        w4: w4 as u32,
+        w5: w5 as u32,
+    }
+}
+
+func u192DivRemU32(a: U192, divisor: u32): U192DivRem32 {
+    let d: u64 = divisor as u64
+    let q5: u64 = (a.w5 as u64) / d
+    let r5: u64 = (a.w5 as u64) % d
+
+    let cur4: u64 = (r5 << (32 as u64)) | (a.w4 as u64)
+    let q4: u64 = cur4 / d
+    let r4: u64 = cur4 % d
+
+    let cur3: u64 = (r4 << (32 as u64)) | (a.w3 as u64)
+    let q3: u64 = cur3 / d
+    let r3: u64 = cur3 % d
+
+    let cur2: u64 = (r3 << (32 as u64)) | (a.w2 as u64)
+    let q2: u64 = cur2 / d
+    let r2: u64 = cur2 % d
+
+    let cur1: u64 = (r2 << (32 as u64)) | (a.w1 as u64)
+    let q1: u64 = cur1 / d
+    let r1: u64 = cur1 % d
+
+    let cur0: u64 = (r1 << (32 as u64)) | (a.w0 as u64)
+    let q0: u64 = cur0 / d
+    let r0: u64 = cur0 % d
+
+    return U192DivRem32 {
+        quot: U192 {
+            w0: q0 as u32,
+            w1: q1 as u32,
+            w2: q2 as u32,
+            w3: q3 as u32,
+            w4: q4 as u32,
+            w5: q5 as u32,
+        },
+        rem: r0 as u32,
+    }
+}
+
+// Internal widening is bounded: a 96-bit mantissa times 10^28 and the
+// sum of two such values fit in 192 bits. No heap or target i128 is needed.
+func u192FromU96(a: U96): U192 {
+    return U192 { w0: a.lo, w1: a.mid, w2: a.hi, w3: 0 as u32, w4: 0 as u32, w5: 0 as u32 }
+}
+
+func u192FitsU96(a: U192): bool {
+    return a.w3 == (0 as u32) && a.w4 == (0 as u32) && a.w5 == (0 as u32)
+}
+
+func u192Cmp(a: U192, b: U192): int {
+    if a.w5 != b.w5 {
+        if a.w5 < b.w5 { return -1 }
+        return 1
+    }
+    if a.w4 != b.w4 {
+        if a.w4 < b.w4 { return -1 }
+        return 1
+    }
+    if a.w3 != b.w3 {
+        if a.w3 < b.w3 { return -1 }
+        return 1
+    }
+    if a.w2 != b.w2 {
+        if a.w2 < b.w2 { return -1 }
+        return 1
+    }
+    if a.w1 != b.w1 {
+        if a.w1 < b.w1 { return -1 }
+        return 1
+    }
+    if a.w0 != b.w0 {
+        if a.w0 < b.w0 { return -1 }
+        return 1
+    }
+    return 0
+}
+
+func u192MulTen(a: U192): U192 {
+    let p0: u64 = (a.w0 as u64) * (10 as u64)
+    let p1: u64 = (a.w1 as u64) * (10 as u64) + (p0 >> (32 as u64))
+    let p2: u64 = (a.w2 as u64) * (10 as u64) + (p1 >> (32 as u64))
+    let p3: u64 = (a.w3 as u64) * (10 as u64) + (p2 >> (32 as u64))
+    let p4: u64 = (a.w4 as u64) * (10 as u64) + (p3 >> (32 as u64))
+    let p5: u64 = (a.w5 as u64) * (10 as u64) + (p4 >> (32 as u64))
+    return U192 { w0: p0 as u32, w1: p1 as u32, w2: p2 as u32, w3: p3 as u32, w4: p4 as u32, w5: p5 as u32 }
+}
+
+func u192Add(a: U192, b: U192): U192 {
+    let s0: u64 = (a.w0 as u64) + (b.w0 as u64)
+    let s1: u64 = (a.w1 as u64) + (b.w1 as u64) + (s0 >> (32 as u64))
+    let s2: u64 = (a.w2 as u64) + (b.w2 as u64) + (s1 >> (32 as u64))
+    let s3: u64 = (a.w3 as u64) + (b.w3 as u64) + (s2 >> (32 as u64))
+    let s4: u64 = (a.w4 as u64) + (b.w4 as u64) + (s3 >> (32 as u64))
+    let s5: u64 = (a.w5 as u64) + (b.w5 as u64) + (s4 >> (32 as u64))
+    return U192 { w0: s0 as u32, w1: s1 as u32, w2: s2 as u32, w3: s3 as u32, w4: s4 as u32, w5: s5 as u32 }
+}
+
+func u192Sub(a: U192, b: U192): U192 {
+    let mut borrow: i64 = 0
+    let mut d0: i64 = (a.w0 as i64) - (b.w0 as i64) - borrow
+    borrow = 0
+    if d0 < 0 {
+        d0 = d0 + 4294967296
+        borrow = 1
+    }
+    let mut d1: i64 = (a.w1 as i64) - (b.w1 as i64) - borrow
+    borrow = 0
+    if d1 < 0 {
+        d1 = d1 + 4294967296
+        borrow = 1
+    }
+    let mut d2: i64 = (a.w2 as i64) - (b.w2 as i64) - borrow
+    borrow = 0
+    if d2 < 0 {
+        d2 = d2 + 4294967296
+        borrow = 1
+    }
+    let mut d3: i64 = (a.w3 as i64) - (b.w3 as i64) - borrow
+    borrow = 0
+    if d3 < 0 {
+        d3 = d3 + 4294967296
+        borrow = 1
+    }
+    let mut d4: i64 = (a.w4 as i64) - (b.w4 as i64) - borrow
+    borrow = 0
+    if d4 < 0 {
+        d4 = d4 + 4294967296
+        borrow = 1
+    }
+    let mut d5: i64 = (a.w5 as i64) - (b.w5 as i64) - borrow
+    borrow = 0
+    if d5 < 0 {
+        d5 = d5 + 4294967296
+        borrow = 1
+    }
+    return U192 { w0: d0 as u32, w1: d1 as u32, w2: d2 as u32, w3: d3 as u32, w4: d4 as u32, w5: d5 as u32 }
+}
+
+// Round the exact intermediate only once, retaining discarded sticky bits.
+// Overflow at scale zero is an error, never truncation or saturation.
+func Decimal.normalizeWide(raw: U192, initialScale: u32, negative: bool): Option<Decimal> {
+    let mut value = raw
+    let mut scale = initialScale
+    let mut rem: u32 = 0 as u32
+    let mut sticky = false
+    while true {
+        if scale <= maxScale() && u192FitsU96(value) {
+            let mut m = U96 { lo: value.w0, mid: value.w1, hi: value.w2 }
+            let mut fits = true
+            if shouldIncrementRound(RoundingMode.HalfEven, negative, m.lo, rem, sticky) {
+                match u96AddU32(m, 1 as u32) {
+                    Option.Some(incremented) => { m = incremented }
+                    Option.None => { fits = false }
+                }
+            }
+            if fits {
+                return Option.Some(Decimal {
+                    lo: m.lo, mid: m.mid, hi: m.hi,
+                    flags: makeFlags(negative && !u96IsZero(m), scale),
+                })
+            }
+        }
+        if scale == (0 as u32) { return Option.None }
+        sticky = sticky || rem != (0 as u32)
+        let divided = u192DivRemU32(value, 10 as u32)
+        value = divided.quot
+        rem = divided.rem
+        scale = scale - (1 as u32)
+    }
+    return Option.None
+}
+
+func shouldIncrementRound(
+mode: RoundingMode,
+isNeg: bool,
+lastDigit: u32,
+rem: u32,
+sticky: bool
+): bool {
+    if rem == (0 as u32) && !sticky {
+        return false
+    }
+    match mode {
+        RoundingMode.Truncate => {
+            return false
+        }
+        RoundingMode.Floor => {
+            return isNeg
+        }
+        RoundingMode.Ceil => {
+            return !isNeg
+        }
+        RoundingMode.HalfUp => {
+            return rem >= (5 as u32)
+        }
+        RoundingMode.HalfEven => {
+            if rem > (5 as u32) {
+                return true
+            }
+            if rem < (5 as u32) {
+                return false
+            }
+            if sticky {
+                return true
+            }
+            return (lastDigit & (1 as u32)) == (1 as u32)
+        }
+    }
+}
+
+// ── Phase 1: Constructors and Inspection ────────────────────────────────────
+
+/// Returns the canonical zero `Decimal` (`0`, scale `0`).
+public func Decimal.zero(): Decimal {
+    return Decimal {
+        lo: 0 as u32,
+        mid: 0 as u32,
+        hi: 0 as u32,
+        flags: 0 as u32,
+    }
+}
+
+/// Returns the canonical unit `Decimal` (`1`, scale `0`).
+public func Decimal.one(): Decimal {
+    return Decimal {
+        lo: 1 as u32,
+        mid: 0 as u32,
+        hi: 0 as u32,
+        flags: 0 as u32,
+    }
+}
+
+/// Constructs a `Decimal` from raw 96-bit mantissa limbs, sign, and scale (`0..=28`).
+/// Returns `Option.None` if `scale > 28`.
+public func Decimal.fromParts(
+lo: u32,
+mid: u32,
+hi: u32,
+isNegative: bool,
+scale: u32
+): Option<Decimal> {
+    if scale > maxScale() {
+        return Option.None
+    }
+    let isZero = lo == (0 as u32) && mid == (0 as u32) && hi == (0 as u32)
+    let neg = if isZero { false } else { isNegative }
+    return Option.Some(Decimal {
+        lo: lo,
+        mid: mid,
+        hi: hi,
+        flags: makeFlags(neg, scale),
+    })
+}
+
+/// Constructs a `Decimal` with scale `0` from a 32-bit signed `int`.
+public func Decimal.fromInt(val: int): Decimal {
+    return Decimal.fromI64(val as i64)
+}
+
+/// Constructs a `Decimal` with scale `0` from a 64-bit signed `i64`.
+public func Decimal.fromI64(val: i64): Decimal {
+    if val == 0 {
+        return Decimal.zero()
+    }
+    let isNeg = val < 0
+    let mut mag: u64 = 0 as u64
+    if val < 0 {
+        mag = (-(val + 1) as u64) + (1 as u64)
+    } else {
+        mag = val as u64
+    }
+    let mask: u64 = 4294967295 as u64
+    return Decimal {
+        lo: (mag & mask) as u32,
+        mid: ((mag >> (32 as u64)) & mask) as u32,
+        hi: 0 as u32,
+        flags: makeFlags(isNeg, 0 as u32),
+    }
+}
+
+/// Constructs a `Decimal` with scale `2` from integer cents (e.g. `1050` -> `10.50`).
+public func Decimal.fromCents(cents: i64): Decimal {
+    let base = Decimal.fromI64(cents)
+    let neg = base.isNegative() && !base.isZero()
+    return Decimal {
+        lo: base.lo,
+        mid: base.mid,
+        hi: base.hi,
+        flags: makeFlags(neg, 2 as u32),
+    }
+}
+
+/// Returns `true` if the magnitude of `self` is zero.
+public func Decimal.isZero(self: ref Decimal): bool {
+    return self.lo == (0 as u32) && self.mid == (0 as u32) && self.hi == (0 as u32)
+}
+
+/// Returns `true` if `self` is strictly negative (less than zero).
+public func Decimal.isNegative(self: ref Decimal): bool {
+    if self.isZero() {
+        return false
+    }
+    return (self.flags & signMask()) != (0 as u32)
+}
+
+/// Returns the decimal scale (`0..=28`).
+public func Decimal.scale(self: ref Decimal): u32 {
+    return (self.flags >> (16 as u32)) & (0xFF as u32)
+}
+
+/// Returns the absolute value `|self|`.
+public func Decimal.abs(self: ref Decimal): Decimal {
+    return Decimal {
+        lo: self.lo,
+        mid: self.mid,
+        hi: self.hi,
+        flags: makeFlags(false, self.scale()),
+    }
+}
+
+/// Returns the negated value `-self`. Zero remains non-negative.
+public func Decimal.neg(self: ref Decimal): Decimal {
+    if self.isZero() {
+        return Decimal {
+            lo: 0 as u32,
+            mid: 0 as u32,
+            hi: 0 as u32,
+            flags: self.flags & ~signMask(),
+        }
+    }
+    return Decimal {
+        lo: self.lo,
+        mid: self.mid,
+        hi: self.hi,
+        flags: makeFlags(!self.isNegative(), self.scale()),
+    }
+}
+
+// ── Phase 2: Scale Normalization and Exact Comparisons ──────────────────────
+
+/// Compares the magnitudes `|self|` and `|other|` with automatic scale alignment.
+func Decimal.cmpMagnitude(self: ref Decimal, other: ref Decimal): int {
+    let mut a = u192FromU96(self.u96())
+    let mut b = u192FromU96(other.u96())
+    let mut sa = self.scale()
+    let mut sb = other.scale()
+    while sa < sb {
+        a = u192MulTen(a)
+        sa = sa + (1 as u32)
+    }
+    while sb < sa {
+        b = u192MulTen(b)
+        sb = sb + (1 as u32)
+    }
+    return u192Cmp(a, b)
+}
+
+/// Three-way comparison returning `-1` if `self < other`, `0` if equal, `1` if `self > other`.
+/// Values with different scales (such as `1.5` and `1.50`) compare as equal (`0`).
+public func Decimal.cmp(self: ref Decimal, other: Decimal): int {
+    let zSelf = self.isZero()
+    let zOther = other.isZero()
+    if zSelf && zOther {
+        return 0
+    }
+    let negSelf = self.isNegative()
+    let negOther = other.isNegative()
+    if negSelf && !negOther {
+        return -1
+    }
+    if !negSelf && negOther {
+        return 1
+    }
+    let magCmp = self.cmpMagnitude(other)
+    if negSelf {
+        return -magCmp
+    }
+    return magCmp
+}
+
+/// Returns `true` if `self` and `other` represent the exact same mathematical value.
+public func Decimal.eq(self: ref Decimal, other: Decimal): bool {
+    return self.cmp(other) == 0
+}
+
+/// Returns `true` if `self < other`.
+public func Decimal.lt(self: ref Decimal, other: Decimal): bool {
+    return self.cmp(other) < 0
+}
+
+/// Returns `true` if `self <= other`.
+public func Decimal.le(self: ref Decimal, other: Decimal): bool {
+    return self.cmp(other) <= 0
+}
+
+/// Returns `true` if `self > other`.
+public func Decimal.gt(self: ref Decimal, other: Decimal): bool {
+    return self.cmp(other) > 0
+}
+
+/// Returns `true` if `self >= other`.
+public func Decimal.ge(self: ref Decimal, other: Decimal): bool {
+    return self.cmp(other) >= 0
+}
+
+// ── Phase 3: Rounding and Arithmetic (`add`, `sub`, `mul`, `div`) ───────────
+
+/// Rounds `self` to `targetScale` fractional digits using the specified `RoundingMode`.
+/// If `targetScale >= self.scale()`, returns `self` unchanged.
+public func Decimal.round(self: ref Decimal, targetScale: u32, mode: RoundingMode): Decimal {
+    let mut s = self.scale()
+    if targetScale >= s || self.isZero() {
+        return Decimal {
+            lo: self.lo,
+            mid: self.mid,
+            hi: self.hi,
+            flags: self.flags,
+        }
+    }
+    let isNeg = self.isNegative()
+    let mut m = self.u96()
+    let mut rem: u32 = 0 as u32
+    let mut sticky = false
+
+    while s > targetScale {
+        if rem != (0 as u32) {
+            sticky = true
+        }
+        let div = u96DivRemU32(m, 10 as u32)
+        m = div.quot
+        rem = div.rem
+        s = s - (1 as u32)
+    }
+
+    let lastDigit = u96DivRemU32(m, 10 as u32).rem
+    if shouldIncrementRound(mode, isNeg, lastDigit, rem, sticky) {
+        match u96AddU32(m, 1 as u32) {
+            Option.Some(inc) => {
+                m = inc
+            }
+            Option.None => {}
+        }
+    }
+
+    let zero = u96IsZero(m)
+    return Decimal {
+        lo: m.lo,
+        mid: m.mid,
+        hi: m.hi,
+        flags: makeFlags(if zero { false } else { isNeg }, targetScale),
+    }
+}
+
+/// Adds with HalfEven rounding when the exact result exceeds the available
+/// mantissa at its scale. Returns None if the magnitude cannot fit at scale zero.
+public func Decimal.checkedAdd(self: ref Decimal, other: Decimal): Option<Decimal> {
+    let mut a = u192FromU96(self.u96())
+    let mut b = u192FromU96(other.u96())
+    let mut sa = self.scale()
+    let mut sb = other.scale()
+    while sa < sb {
+        a = u192MulTen(a)
+        sa = sa + (1 as u32)
+    }
+    while sb < sa {
+        b = u192MulTen(b)
+        sb = sb + (1 as u32)
+    }
+    if self.isNegative() == other.isNegative() {
+        return Decimal.normalizeWide(u192Add(a, b), sa, self.isNegative())
+    }
+    if u192Cmp(a, b) >= 0 {
+        return Decimal.normalizeWide(u192Sub(a, b), sa, self.isNegative())
+    }
+    return Decimal.normalizeWide(u192Sub(b, a), sa, other.isNegative())
+}
+
+/// Adds with HalfEven rounding; traps on unrepresentable overflow.
+/// Use checkedAdd to handle overflow explicitly.
+public func Decimal.add(self: ref Decimal, other: Decimal): Decimal {
+    match self.checkedAdd(other) {
+        Option.Some(value) => { return value }
+        Option.None => { unsafe { intrinsics.abort() } }
+    }
+    return Decimal.zero()
+}
+
+/// Subtracts with the same rounding and overflow policy as checkedAdd.
+public func Decimal.checkedSub(self: ref Decimal, other: Decimal): Option<Decimal> {
+    return self.checkedAdd(other.neg())
+}
+
+/// Subtracts with HalfEven rounding; traps on unrepresentable overflow.
+public func Decimal.sub(self: ref Decimal, other: Decimal): Decimal {
+    return self.add(other.neg())
+}
+
+/// Multiplies using the complete 192-bit product, then rounds HalfEven once.
+/// Returns None if the magnitude cannot fit at scale zero.
+public func Decimal.checkedMul(self: ref Decimal, other: Decimal): Option<Decimal> {
+    return Decimal.normalizeWide(u96MulFull(self.u96(), other.u96()), self.scale() + other.scale(), self.isNegative() != other.isNegative())
+}
+
+/// Multiplies with HalfEven rounding; traps on unrepresentable overflow.
+public func Decimal.mul(self: ref Decimal, other: Decimal): Decimal {
+    match self.checkedMul(other) {
+        Option.Some(value) => { return value }
+        Option.None => { unsafe { intrinsics.abort() } }
+    }
+    return Decimal.zero()
+}
+
+/// Divides `self` by `other`, returning `Option.None` on zero divisor or overflow.
+/// Computes up to `28` fractional digits with `HalfEven` rounding.
+public func Decimal.div(self: ref Decimal, other: Decimal): Option<Decimal> {
+    if other.isZero() {
+        return Option.None
+    }
+    if self.isZero() {
+        return Option.Some(Decimal.zero())
+    }
+
+    let isNeg = self.isNegative() != other.isNegative()
+    let mut ma = self.u96()
+    let mut mb = other.u96()
+    let mut sa = self.scale()
+    let mut sb = other.scale()
+
+    while sa < sb {
+        match u96MulU32(ma, 10 as u32) {
+            Option.Some(scaled) => {
+                ma = scaled
+                sa = sa + (1 as u32)
+            }
+            Option.None => {
+                break
+            }
+        }
+    }
+    while sb < sa {
+        match u96MulU32(mb, 10 as u32) {
+            Option.Some(scaled) => {
+                mb = scaled
+                sb = sb + (1 as u32)
+            }
+            Option.None => {
+                break
+            }
+        }
+    }
+
+    let mut scaleDiff: i32 = (sa as i32) - (sb as i32)
+    let initDiv = u96DivRem96(ma, mb)
+    let mut quot = initDiv.quot
+    let mut rem = initDiv.rem
+
+    while scaleDiff < (0 as i32) {
+        let mut r10 = u128MulU32(rem, 10 as u32)
+        let mut digit: u32 = 0 as u32
+        while u128CmpU96(r10, mb) >= 0 {
+            r10 = u128SubU96(r10, mb)
+            digit = digit + (1 as u32)
+        }
+        rem = U96 { lo: r10.w0, mid: r10.w1, hi: r10.w2 }
+        match u96MulU32(quot, 10 as u32) {
+            Option.Some(q10) => {
+                match u96AddU32(q10, digit) {
+                    Option.Some(nextQ) => {
+                        quot = nextQ
+                    }
+                    Option.None => {
+                        return Option.None
+                    }
+                }
+            }
+            Option.None => {
+                return Option.None
+            }
+        }
+        scaleDiff = scaleDiff + (1 as i32)
+    }
+
+    let mut scale: u32 = scaleDiff as u32
+    while !u96IsZero(rem) && scale < maxScale() {
+        match u96MulU32(quot, 10 as u32) {
+            Option.Some(q10) => {
+                let mut r10 = u128MulU32(rem, 10 as u32)
+                let mut digit: u32 = 0 as u32
+                while u128CmpU96(r10, mb) >= 0 {
+                    r10 = u128SubU96(r10, mb)
+                    digit = digit + (1 as u32)
+                }
+                match u96AddU32(q10, digit) {
+                    Option.Some(nextQuot) => {
+                        quot = nextQuot
+                        rem = U96 { lo: r10.w0, mid: r10.w1, hi: r10.w2 }
+                        scale = scale + (1 as u32)
+                    }
+                    Option.None => {
+                        break
+                    }
+                }
+            }
+            Option.None => {
+                break
+            }
+        }
+    }
+
+    // Banker's rounding on residual remainder
+    if !u96IsZero(rem) {
+        let rem2 = u128MulU32(rem, 2 as u32)
+        let cmpHalf = u128CmpU96(rem2, mb)
+        let isOdd = (quot.lo & (1 as u32)) == (1 as u32)
+        if cmpHalf > 0 || (cmpHalf == 0 && isOdd) {
+            match u96AddU32(quot, 1 as u32) {
+                Option.Some(inc) => {
+                    quot = inc
+                }
+                Option.None => {
+                    if scale == (0 as u32) { return Option.None }
+                    let reduced = u96DivRemU32(quot, 10 as u32)
+                    quot = reduced.quot
+                    scale = scale - (1 as u32)
+                    if shouldIncrementRound(RoundingMode.HalfEven, isNeg, quot.lo, reduced.rem, true) {
+                        match u96AddU32(quot, 1 as u32) {
+                            Option.Some(value) => { quot = value }
+                            Option.None => { return Option.None }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Strip redundant trailing zeros when there were fractional expansions
+    while scale > (0 as u32) && !u96IsZero(quot) {
+        let div10 = u96DivRemU32(quot, 10 as u32)
+        if div10.rem == (0 as u32) {
+            quot = div10.quot
+            scale = scale - (1 as u32)
+        } else {
+            break
+        }
+    }
+
+    if u96IsZero(quot) {
+        return Option.Some(Decimal.zero())
+    }
+    return Option.Some(Decimal {
+        lo: quot.lo,
+        mid: quot.mid,
+        hi: quot.hi,
+        flags: makeFlags(isNeg, scale),
+    })
+}
+
+// ── Phase 4: Parsing (`fromStr`) and Conversions (`toInt`, `toI64`, `toCents`) ─
+
+/// Parses an ASCII decimal string (such as `"0.1"`, `"-123.45"`, `"+42"`) into a `Decimal`.
+/// Returns `Option.None` if the input is empty, contains invalid characters, or exceeds
+/// the 96-bit mantissa or 28-digit scale limit.
+public func Decimal.fromStr(s: str): Option<Decimal> {
+    let bytes = intrinsics.strBytes(s)
+    let total = slice.len<u8>(bytes)
+    if total == (0 as usize) {
+        return Option.None
+    }
+
+    let mut i: usize = 0
+    let mut isNeg = false
+    let first = bytes[0]
+    if first == (45 as u8) {
+        isNeg = true
+        i = 1
+    } else if first == (43 as u8) {
+        i = 1
+    }
+
+    if i >= total {
+        return Option.None
+    }
+
+    let mut mantissa = u96Zero()
+    let mut scale: u32 = 0 as u32
+    let mut seenDot = false
+    let mut seenDigit = false
+
+    while i < total {
+        let b = bytes[i]
+        if b == (46 as u8) {
+            if seenDot {
+                return Option.None
+            }
+            seenDot = true
+        } else if b >= (48 as u8) && b <= (57 as u8) {
+            seenDigit = true
+            let digit: u32 = (b - (48 as u8)) as u32
+            match u96MulU32(mantissa, 10 as u32) {
+                Option.Some(m10) => {
+                    match u96AddU32(m10, digit) {
+                        Option.Some(mNext) => {
+                            mantissa = mNext
+                        }
+                        Option.None => {
+                            return Option.None
+                        }
+                    }
+                }
+                Option.None => {
+                    return Option.None
+                }
+            }
+            if seenDot {
+                scale = scale + (1 as u32)
+                if scale > maxScale() {
+                    return Option.None
+                }
+            }
+        } else if b == (95 as u8) {
+            // Separators must occur between two ASCII digits.
+            if i == (0 as usize) || i + (1 as usize) >= total {
+                return Option.None
+            }
+            let previous = bytes[i - (1 as usize)]
+            let next = bytes[i + (1 as usize)]
+            if (previous < (48 as u8)) || (previous > (57 as u8)) || (next < (48 as u8)) || (next > (57 as u8)) {
+                return Option.None
+            }
+        } else {
+            return Option.None
+        }
+        i = i + 1
+    }
+
+    if !seenDigit {
+        return Option.None
+    }
+
+    let zero = u96IsZero(mantissa)
+    return Option.Some(Decimal {
+        lo: mantissa.lo,
+        mid: mantissa.mid,
+        hi: mantissa.hi,
+        flags: makeFlags(if zero { false } else { isNeg }, scale),
+    })
+}
+
+/// Truncates toward zero and returns None if the integer does not fit i64.
+public func Decimal.checkedToI64(self: ref Decimal): Option<i64> {
+    let mut m = self.u96()
+    let mut s = self.scale()
+    while s > (0 as u32) {
+        m = u96DivRemU32(m, 10 as u32).quot
+        s = s - (1 as u32)
+    }
+    if m.hi != (0 as u32) { return Option.None }
+    let magnitude: u64 = ((m.mid as u64) << (32 as u64)) | (m.lo as u64)
+    let limit: u64 = (9223372036854775807 as u64)
+    if self.isNegative() {
+        if magnitude > limit + (1 as u64) { return Option.None }
+        if magnitude == limit + (1 as u64) { return Option.Some(-9223372036854775807 - 1) }
+        return Option.Some(-(magnitude as i64))
+    }
+    if magnitude > limit { return Option.None }
+    return Option.Some(magnitude as i64)
+}
+
+/// Truncates toward zero; traps if the integer does not fit i64.
+public func Decimal.toI64(self: ref Decimal): i64 {
+    match self.checkedToI64() {
+        Option.Some(value) => { return value }
+        Option.None => { unsafe { intrinsics.abort() } }
+    }
+    return 0
+}
+
+/// Truncates toward zero and returns None if the integer does not fit int.
+public func Decimal.checkedToInt(self: ref Decimal): Option<int> {
+    match self.checkedToI64() {
+        Option.Some(value) => {
+            if value < (-2147483647 - 1) || value > 2147483647 { return Option.None }
+            return Option.Some(value as int)
+        }
+        Option.None => { return Option.None }
+    }
+}
+
+/// Truncates toward zero; traps if the integer does not fit int.
+public func Decimal.toInt(self: ref Decimal): int {
+    match self.checkedToInt() {
+        Option.Some(value) => { return value }
+        Option.None => { unsafe { intrinsics.abort() } }
+    }
+    return 0
+}
+
+/// Converts to cents with HalfEven rounding, returning None on i64 overflow.
+public func Decimal.checkedToCents(self: ref Decimal): Option<i64> {
+    // Round before scaling so a large intermediate cannot round a second time
+    // across a half-cent boundary.
+    let rounded = self.round(2 as u32, RoundingMode.HalfEven)
+    match rounded.checkedMul(Decimal.fromInt(100)) {
+        Option.Some(scaled) => {
+            return scaled.checkedToI64()
+        }
+        Option.None => { return Option.None }
+    }
+}
+
+/// Converts to cents with HalfEven rounding; traps if the result does not fit i64.
+public func Decimal.toCents(self: ref Decimal): i64 {
+    match self.checkedToCents() {
+        Option.Some(value) => { return value }
+        Option.None => { unsafe { intrinsics.abort() } }
+    }
+    return 0
+}

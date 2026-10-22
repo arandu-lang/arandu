@@ -2,11 +2,11 @@ Func User.greet(shared self: ref User) -> str
   locals:
     _0: str // return
     _1: ref User
-    _2: ref User
     s0: ref User // self
 
   bb0:
-    _0 = _1.0
+    s0 = _1
+    _0 = (*s0).name
     return
 
 Func main() -> void

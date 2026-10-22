@@ -1,283 +1,425 @@
-# Arandu Compiler — Roadmap Mestre
+# Arandu — Roadmap mestre
 
-> **Fonte única de planejamento.** Itens marcados como concluídos abaixo são
-> decisões consolidadas, não tarefas pendentes. Os documentos técnicos ligados
-> aqui preservam apenas contratos necessários para implementar e validar essas
-> decisões.
+**Revisão:** 2026-10-18. **Base publicada:** 0.1.10.
+**Próximo marco de produto:** 0.2.0 — compilador quente e imagem dev recuperável.
 
-## Decisões consolidadas (Gold v0.1)
+Esta é a única fila permanente do projeto. Contratos descrevem comportamento
+implementado; RFCs descrevem propostas e seus recortes; relatórios de release
+preservam evidência de uma versão. O sufixo `v0.1` no nome deste arquivo é
+histórico: seu conteúdo acompanha todas as versões do projeto.
 
-- **Projeto e pacotes:** `arandu.toml` + `arandu.lock`, TOML versionado,
-  identidade por pacote/alvo/módulo, imports por alias explícito e grafo DAG
-  determinístico. Dependências remotas ficam presas a origem HTTPS/Git e
-  commit exato; não há branches flutuantes, registries ou scripts de build.
-- **Integridade:** lockfile canônico, hashes de conteúdo, cache imutável por
-  digest, publicação staging/rename e políticas `--locked`, `--offline` e
-  `--frozen`. Archives rejeitam traversal, links, duplicatas e bombas de
-  expansão; raízes são canonicalizadas em Windows, Linux e macOS.
-- **Reprodutibilidade:** manifests, grafos, lockfiles e metadados de artefatos
-  devem ser byte-estáveis entre sistemas suportados. A promoção Gold exige
-  E2E nativo fora do checkout e recuperação após interrupção.
-- **Tooling:** LSP incremental prioriza documentos abertos; snapshots stale
-  são descartados, filas são limitadas e diagnósticos permanecem estruturados.
-  O servidor classifica semantic tokens; cores e ícones pertencem à extensão
-  e ao tema do editor.
-- **Memória e execução:** o [Semantic Memory Model](./arandu-semantic-memory-model-v0.1.md)
-  conecta OSSA/liveness, `RelativeBorrow`, escape e GenRef. GenRef é fallback
-  seguro e explícito; efeitos, ownership, layout por alvo e invariantes
-  SSA/AMIR permanecem contratos do compilador. RC/ARC e tracing GC não são
-  requisitos da Gold v0.1.
-- **Tipos de produto:** um pacote Arandu pode publicar um target binário (`bin`),
-  um target de biblioteca (`lib`) ou, futuramente, ambos (`mixed`). Binários
-  exigem uma função `main` para `run`/`build`; bibliotecas não. O manifesto é a
-  unidade de projeto e pacote, no mesmo sentido em que Cargo combina pacote e
-  targets, enquanto a extensão do editor apenas expõe ações compatíveis com o
-  tipo de target.
-- **Templates de ecossistema:** `arandu new --bin` e `arandu new --lib` são a
-  superfície Gold atual. Templates de plugin multiplataforma, FFI e workspace
-  são extensões futuras, não requisitos da stdlib mínima. Eles só entram após
-  contratos de ABI, efeitos, runtime e distribuição estarem definidos.
+## Como ler estados e versões
 
-Detalhes históricos de pesquisa, checklists já executados e evidências de CI
-vivem no Git e nos contratos técnicos; não são novas tarefas do roadmap.
+Há três dimensões independentes:
 
-**Fonte única de verdade (checklist executivo).**
-Este documento consolida as decisões arquiteturais sobre Data-Oriented Design (Interning), Polimorfismo Híbrido, OSSA (Ownership SSA), Effects, Async Colorless, Arquitetura de Memória e Binários de Pegada Zero em uma especificação técnica unificada e acionável.
-
-> **Execução atual:** as campanhas transversais S0–S3, L0–L3, decomposição de
-> monólitos, anotações PascalCase e GenRef estão encerradas no escopo publicado.
-> Este é o único roadmap executivo; contratos técnicos vivos permanecem em
-> documentos próprios e campanhas concluídas permanecem recuperáveis no Git.
-
-> **Campanha ativa: 0.1.10 — estabilidade e documentação.**
-> A preparação da 0.1.9 foi integrada pela PR #32, com `S0 / Gate` aprovado,
-> e a tag `v0.1.9` aponta para `ab717953`. O smoke do SDK no Windows falhou
-> na linkedição; a distribuição não está validada. A tag permanece imutável.
-> A 0.1.10 concentra correções reproduzíveis e regressões, sem ampliar o escopo
-> da linguagem. A RFC 0013 ampla continua `Draft`; seu núcleo implementado tem
-> contrato público próprio.
-
-### Semântica de status
-
-O checklist histórico `[x]` significa que a implementação prevista naquele
-marco foi integrada; não significa automaticamente qualidade `gold`. A
-classificação canônica de maturidade é `gold`, `done`, `partial`,
-`experimental` ou `planned`, conforme definida abaixo.
-Uma fase posterior pode liberar a versão completa de um item antigo sem apagar
-o marco anterior: o item antigo permanece implementado, mas só vira `gold`
-quando cumprir seu contrato atual.
-
-| Estado | Significado |
+| Dimensão | Valores e significado |
 | --- | --- |
-| `gold` | escopo publicado implementado, exercitado pelo gate correspondente e sem bloqueador conhecido |
-| `done` | implementação prevista existe, mas falta ao menos uma prova ou obrigação de produto |
-| `partial` | caminho útil existe, porém partes do contrato ainda estão ausentes |
-| `experimental` | disponível sem promessa de estabilidade ou suporte completo |
-| `planned` | decisão aceita ou investigação registrada, ainda sem implementação |
+| Maturidade | `gold`: escopo delimitado, publicado e exercitado pelo gate correspondente, sem bloqueador conhecido nesse escopo; `done`: implementação existente com obrigação de produto/prova pendente; `partial`: parte útil existe; `experimental`: disponível sem promessa de suporte completo; `planned`: ainda sem implementação do recorte |
+| Governança | `Draft`/`Planned`: proposta ou investigação; `Accepted`: decisão aprovada; `Implemented`: recorte declarado implementado; `Frozen-R0`: baseline congelada; `Superseded`/`Rejected`: encerrada como proposta |
+| Publicação | preparada, candidata, publicada ou reprovada; a tag e o gate de fonte não substituem instalação do arquivo público |
 
-### Registro consolidado das campanhas encerradas
+Uma RFC `Draft` pode ter partes implementadas: isso não aprova suas partes
+restantes. `Implemented` vale para o recorte explicitado, não para toda expansão
+mencionada em “futuro”. `in progress`, `[→]` e `[/]` de registros antigos são
+substituídos aqui por `partial` acompanhado da lacuna concreta.
 
-| Campanha | Estado | Evidência e contrato vivo |
+`0.N.0` identifica a entrada de um marco de produto; `0.N.x` comporta correções,
+consolidação e incrementos compatíveis com seu contrato. As etapas abaixo
+ordenam dependências, não reservam um número de patch para cada tarefa. Uma
+correção urgente na 0.1.x não exige aguardar a 0.2, nem exige lançar 0.1.11
+apenas para iniciar a próxima campanha. Não há datas prometidas: os gates
+controlam a promoção. A partir da 0.4, a alocação por série é planejamento
+revisável; propostas dependem de aceitação e evidência antes de virar escopo.
+
+## Base entregue e evidência
+
+| Área / IDs históricos | Estado atual | Escopo entregue e limites |
 | --- | --- | --- |
-| S0 — baseline reproduzível | `gold` | toolchain/lockfile fixos e `S0 / Gate` obrigatório |
-| S1 — contratos e recovery | `gold` | falhas tipadas, ICE reportável, determinismo e contratos de [backend](./arandu-backend-contract-v0.1.md) e [CLI/LSP](./arandu-cli-lsp-contract-v0.1.md) |
-| S2 — projetos reais/endurance | `gold` | corpus versionado, churn, budgets, fuzz regressivo e `S2 / Endurance` |
-| S3 — distribuição beta | `gold` no canal RC publicado | pacotes nativos Linux x86-64, macOS ARM64 e Windows x86-64; [contrato de distribuição](./arandu-distribution-contract-v0.1.md) e [verificação](./release-verification.md) |
-| L0–L3 — LSP/editor | `gold` no escopo publicado | VFS/snapshots, Unicode, cancelamento, multi-file, UX e Extension Host; [arquitetura](./arandu-salsa-lsp-architecture-v0.1.md) e [matriz pública](./arandu-lsp-capabilities-v0.1.md) |
-| Decomposição arquitetural | `gold` | LSP handlers e IDE (`arandu_lsp/src/ide/`), pass manager, `arandu_runtime`, `arandu_codegen`, CLI (`main.rs`, `args.rs`, `pipeline.rs`, `commands/`, `project/`, `test_runner/`) e manifesto modularizados; separação de constraints permanece backlog futuro do type checker |
-| Minimal 0.1 e CLI de projeto | `gold` | superfície exercitada por `examples/minimal/` e comandos `new/check/run/build/doctor` |
-| Project & Package Lifecycle | `gold` | [manifesto, lockfile, grafo, cache e dependências remotas](./rfcs/0004-project-package-lifecycle.md) com recovery e E2E multiplataforma |
-| Anotações públicas | `gold` | contrato [PascalCase](./rfcs/0002-canonical-attribute-naming.md), aliases legados apenas na janela de migração |
-| GenRef (R0) | `frozen-R0` | [RFC 0001 (R0 Frozen)](./rfcs/0001-generational-fallback-genref.md); casca empírica congelada para medição acadêmica (TCC); AMIR tipada, payload/drop, C/Cranelift, O004/LSP |
-| SL_T — testes e benchmarks | `done`; soak para `gold` | [contrato consolidado](./arandu-testing-benchmark-harness-v0.1.md), SDK/VSIX e matriz nativa `SL_T / Harness` |
-| Paralelismo Estruturado | `done` | [RFC 0003](./rfcs/0003-structured-parallelism.md); funcional em Linux, aguardando benchmark reproduzível e matriz nativa para `gold` |
-| **v0.1.7** | **`released`** | Tag `v0.1.7` publicada; PR #29 verde; 71 commits, 609 arquivos. Inclui RFC 0023 (inteiros portáveis), RFC 0021 (visibilidade/módulos), RFC 0022 (AranduSmith), RFC 0020 (empacotamento nativo), correções de ownership e backends, expansão do corpus. |
-| **Preparação v0.1.8** | **`done`; tag publicada** | PR #30 mergeada com todos os checks verdes; contrato de release validado para 26 manifests; tag `v0.1.8` no commit `17d8936`. Diagnósticos, CLI, LSP, extensão e documentação consolidados. Evidência de instalação/publicação pertence à release. |
-| Redução de código — v0.1.9 | `done` no host Linux | [RFC 0027](./rfcs/0027-zero-bloat-binary-diet-and-on-demand-runtime.md): `--size` / `-Oz`, alcance compartilhado de funções e drops, AOT e Wasm sob demanda, interpolação literal estática, cache por perfil e medições reproduzíveis. Matriz nativa e publicação permanecem condições separadas de release. |
-| Preparação v0.1.9 | `done`; distribuição bloqueada | PR #32 integrada e tag `v0.1.9` em `ab717953`; smoke Windows falhou com LNK1181. [Evidência da candidata](./releases/0.1.9.md); não promove suporte multiplataforma. |
+| Frontend: lexer, parser, resolve, tipos, TYP.3.1/.2 | `done` | CST Rowan canônico → AST → resolução → tipagem bidirecional; inteiros padrão fixos de 32 bits e `isize`/`usize` por alvo (RFC 0023); APIs internas não são ABI pública |
+| HIR/AMIR: INF2.1, F1, A5, A9, M1/M2 | `done` | pools/IDs, statements densos, CFG/SSA, definite-init e ownership por worklist; promoções de backing agregado têm exclusões próprias |
+| Incrementalidade: A1, A10, PERF.5 | `done` | Salsa em `arandu_query`, queries por item, cutoff de exports, IDs de arquivo monotônicos, `DocumentId` geracional e revisão de snapshots; CLI batch recria a DB |
+| A6/A7/A11 | `done` no recorte atual | lexer/categorização e caminhos SIMD existentes, tokens/internamento; nenhuma promessa geral de parsing branchless ou ganho em todo alvo |
+| A8 / execução concorrente | `partial` | workers LSP limitados, cancelamento/prioridade e paralelismo existente; scheduler universal de compilação lock-free/NUMA/affinity não é garantia atual |
+| BC, C_FB, Wasm | `done` nos contratos atuais | JIT/AOT Cranelift, emissor C e core-Wasm; LLVM, eBPF e SPIR-V não estão implementados |
+| O0/O1/O2 | `done` / `done` / `experimental` | O1: SCCP, DCE e SimplifyCFG; O2 contém passes restritos, não SROA irrestrito nem promessa de spills/registradores |
+| Memória: F2, G2, BC.1a, BV.1–3, AUD.0–5 | `done` nos recortes publicados | borrows, contratos de retorno, carriers/views, drops de strings e fallback GenRef; não equivale a provar todos os retornos/agregados/FFI |
+| GenRef R0 | `Frozen-R0` | host/thread-confined, contratos e medição preservados; concorrência de handles/FFI/persistência não entram implicitamente |
+| A4 / layout | `done` no recorte | LayoutEngine por alvo, classificação ABI e nichos admitidos; `@Repr("C")` tem política própria, raw ptr/GenRef não recebem nicho por suposição; SOO/tagging/reordenação universais não são garantias |
+| CATCH / UNSAFE / ASYNC | `done` no recorte | catch e blocos unsafe já baixam para AMIR; async/await usa corrotina e limites A3/SL_R, ao contrário de lambdas ainda rejeitadas |
+| A2 / A3 | `partial` / `done` no recorte | flags/anotações e observação de efeitos existem, capabilities/inferência completa têm contrato próprio; modelo async do compilador não equivale a runtime multiplataforma completo |
+| Projeto/pacotes, T2/T3, visibilidade | `gold` no escopo publicado | `arandu.toml`, lockfile, dependências fixadas por digest/commit, new/init/tree/audit/vendor/verify/update, módulos e visibilidade; registry/build scripts/mixed targets não são garantias atuais |
+| SYN.4.1/.2, SYN.5, TYP.4 | `done` no recorte | patterns qualificados/compostos, membros contextuais e const generics de `StaticMatrix`; formas mais amplas precisam de contrato próprio |
+| DX / L0–L3 / IDE | `done` com evidência publicada | diagnósticos estruturados, UTF-16, cancelamento, apresentação compartilhada e VSIX instalado; budgets/endurance permanecem verificações recorrentes |
+| PERF | `done` no recorte dev/debug | timers, tracing/self-profile e explain-rebuild; não prova automaticamente RSS, perf counters nem latência do produto |
+| SL_T | `done` | harness e matriz nativa existentes; promoção `gold` exige o soak documentado, sem inferi-lo de uma execução verde |
+| SL_P | `done` no recorte | worker pool bounded, redução e `AccumulatorInit` não-Copy; benchmark versionado existe; promoção depende de evidência específica de plataforma e transporte/drop |
+| SL_R | `partial` | executor cooperativo, wakers, timers e reactor Linux epoll/io_uring; slots i64, hosts C e registro de sockets Win/macOS têm limites explícitos |
+| SL_S-Core / SL_S-Host | `partial` | core, alloc, I/O em memória, FS por caminhos e processos; allocator/OOM/drop, targets freestanding e capabilities não estão integralmente fechados |
+| CTFE CT.0–5 | `partial` na RFC ampla | núcleo público integrado; VM/superfície admitidas `done`; ver matriz específica abaixo |
+| DIST.1/.2/.4 | `done`, publicados na 0.1.10 | empacotador TAR/ZIP, assets/checksums e CLI archive validate nativos; DIST.3 ainda parcial |
+| E2 / ciclo de pacotes E4 | `done` no recorte | `arandu doc` HTML/JSON/Markdown e comandos de projeto/dependências; não há promessa de `arandu pkg`/registry |
+| RFC 0022 / RFC 0027 | `done` nos recortes | AranduSmith e matriz diferencial; `--size`/`-Oz`, alcance e runtime sob demanda; framework completo de remarks continua proposto |
 
-### Fila de execução
+### Releases e campanhas encerradas
 
-**Agora:** `0.1.10 — estabilidade e documentação`.
+| Marco | Evidência e limite |
+| --- | --- |
+| S0–S3, decomposição, PascalCase, minimal/project lifecycle | decisões integradas; contratos técnicos preservam escopo, evidência histórica e resíduos; não são campanhas a reabrir integralmente |
+| 0.1.7 / 0.1.8 | releases anteriores registradas no Git e em [releases/](releases/); não transferir prova de uma versão para outra |
+| 0.1.9 | CTFE e redução de código integrados; distribuição Windows reprovada com LNK1181; tag imutável, [relatório](releases/0.1.9.md) preservado |
+| 0.1.10 | publicada em 2026-10-15, commit `7df12f7a36ed872ea6c04287cb4e536525bc5291`; [Release 38779239029](https://github.com/arandu-lang/arandu/actions/runs/38779239029) verde, SDK/VSIX e archives públicos testados em Linux x86-64, Windows x86-64 e macOS ARM64; [relatório](releases/0.1.10.md) |
 
-1. Corrigir a linkedição do SDK no Windows e cobrir caminhos relativos,
-   verbatim e nomes de CGU; repetir o smoke nativo com o pacote fora do checkout.
-2. Confirmar e corrigir os bugs pontuais da auditoria: casts/shift e valores
-   vazios nos backends, guards de match, recuperação do parser, Unicode e
-   constantes tipadas. Cada correção exige regressão; não habilitar tipos
-   dependentes ainda não especializados diretamente no codegen.
-3. Sincronizar README, índice de RFCs e diagnósticos com o contrato existente.
-4. Preferir `mem.sizeOf<T>()`/`mem.alignOf<T>()` nos contratos e exemplos,
-   preservando as expressões `@sizeOf`/`@alignOf` da 0.1.9. APIs `embed.bytes`,
-   `embed.str` e `types.info<T>()` permanecem propostas que exigem contratos
-   próprios de inputs, tipos e visibilidade.
-5. Ampliar o AranduSmith com staging/repetição de arrays, casts de fronteira
-   definidos, paridade CTFE/runtime e mutações negativas determinísticas por
-   `DiagCode`, incluindo Os (`--size`) na matriz Cranelift/C/Wasm
-   O0/O1/O2/Os; executar a cobertura de portabilidade em Windows nativo e
-   preservar reproduções. A integração inclui `smith-cli` nos caminhos reais
-   JIT/nativo/GCC/Clang/core-Wasm, mutações AST/CST de fontes válidas com replay
-   explícito e bisseção POSIX isolada de reproduções. O corpus de projetos
-   compara análise incremental/fria no PR; isso não equivale à execução de
-   todos os projetos em todos os backends. O
-   [contrato integrado da RFC 0022](./rfcs/0022-holistic-synthesis-differential-fuzzing.md#11-contrato-integrado-na-revisão-0110)
-   delimita a cobertura. O framework de remarks, diretivas de codegen e
-   políticas especializadas da RFC 0025 continua proposto; avançar por recortes
-   com workloads e resultados reproduzíveis, sem equiparar paridade a prova
-   formal ou acrescentar blacklists sintáticas de guards/parênteses.
-6. Promover a nova versão somente após gate do PR, contrato de release e
-   provas de distribuição. Preservar OSSA e os seis invariantes incrementais.
+O smoke instalado da 0.1.10 inclui CTFE: check/run/build, execução nativa,
+reutilização incremental e limite de fuel. Isso fecha essa prova específica;
+não promove toda a RFC 0013, O2, async ou paralelismo a suporte irrestrito.
+Falhas locais posteriores devem ser diagnosticadas sem apagar a evidência da
+release. A auditoria local de 2026-10-15 observou variabilidade do gate LSP
+`stdio_cold_initialize_p95_stays_within_budget`: 368/360 ms em falhas e 2,86 ms
+em repetição aprovada; não há causa isolada nem gate global verde nessa rodada.
 
-### Núcleo CTFE integrado na 0.1.9 e evolução futura
+### Alterações locais e evidência de validação
 
-O recorte `0.1.9 — CTFE & Comptime Core` integrou VM limitada, valores escalares,
-agregados Copy, strings imutáveis, floats determinísticos, argumentos calculados,
-seleção por instância, expansão estática e repetição de arrays implementados.
-Enums congelados, constantes globais, argumentos tipados, identidade explícita
-de alvo e contratos concretos de cabeçalhos também estão implementados; a
-validação integrada permanece registrada por corte no host Linux. Matriz nativa, playground e promoção de release continuam
-separados; as provas locais estão no [contrato público](./arandu-comptime-core-v0.1.md#integrated-development-host-evidence).
-O desenho amplo permanece na
-[RFC 0013](./rfcs/0013-deterministic-ctfe-and-comptime-metaprogramming.md);
-o [contrato público](./arandu-comptime-core-v0.1.md) descreve a implementação.
-Os gates abaixo registram maturidade e evolução futura, não uma campanha ativa
-de implementação da 0.1.9.
+A base publicada acima continua sendo a 0.1.10. Em 2026-10-16, o worktree
+contém alterações ainda não publicadas para métodos inerentes de primitivos,
+resolução de módulos implícitos, completion e stdlib. Presença de código/testes
+não comprova integração ou suporte publicado. A auditoria documental preserva
+essas alterações e não as classifica como entregues na 0.1.10.
 
-| Gate | Estado | Entrega e condição para avançar |
+A sequência obrigatória e os checks extras da consolidação documental anterior
+passaram, incluindo `cargo test --workspace --locked` com quatro threads de
+teste. Esses resultados pertencem àquela execução; alterações posteriores no
+código exigem uma nova validação. A tentativa seguinte de 2026-10-16 aprovou
+check/rustdoc/diag-docs, mas encontrou falhas de formatação/Clippy nas alterações
+Rust e teve `cargo test` encerrado por SIGKILL durante compilação. O código
+mudou durante essa tentativa, portanto ela não valida um snapshot estável.
+A variabilidade histórica de initialize continua registrada para investigação,
+mesmo após uma rodada completa verde anterior.
+
+## Fila de execução
+
+Ordem imediata para a próxima campanha, mantendo correções independentes na
+0.1.x quando necessário:
+
+| Prioridade / ID | Trabalho aberto | Dono e prova de saída |
 | --- | --- | --- |
-| CT.0 — contrato e staging | `in progress`; recorte escalar aprovado, desenho amplo aberto | O mantenedor aprovou expressões/blocos escalares e retornos locais; gramática e limites desse corte estão no contrato de comptime core. Fechar efeitos ampliados, metaprogramação geral e o restante da RFC antes de ampliar a superfície. A aprovação parcial não aceita a RFC inteira. |
-| CT.1 — alvo e layout | `in progress`; validação e intrínsecos com layout completo | CTFE rejeita tamanhos/alinhamentos inconsistentes em `DataLayout`; unidades runtime/CTFE compartilham `LayoutEngine` com o layout completo, incluindo i686. OS/arquitetura e largura do ponteiro são inputs explícitos, expostos por intrínsecos públicos e configurados pelos drivers. Preservar validação de alvos nas bordas, sem equiparar layout conhecido a codegen nativo suportado. |
-| CT.2 — VM AMIR pura | `done` no recorte de valores; gates locais verdes | CFG, chamadas diretas, locais, fuel, limites de frames/slots/handles e cancelamento. Tuplas, structs Copy fechadas e arrays usam valores limitados; strings/views imutáveis contabilizam backing. Floats IEEE usam software e bits tipados, sem aritmética do host. Oráculos residuais comparam C/Cranelift/Wasm em O0/O1/O2. Recursos de runtime e closures permanecem fora da admissão. |
-| CT.3 — superfície e especialização | `done` no recorte CT.3a/b/c/d; gates locais verdes | Expressões/blocos públicos, retornos locais e argumentos de valor calculados usam raízes isoladas e identidade estrutural existente. Instâncias concretas selecionam condições dependentes e congelam argumentos antes do corpo residual. Match arms preservam escopo; `comptime for` expande domínios inteiros finitos, com locais frescos, drops e saídas estruturadas. Lambdas têm seleção/capturas preparadas, mas execução continua U001 até closures em 0.3. Raízes aninhadas, dimensões calculadas e cabeçalhos dependentes de funções, structs, enums e aliases têm continuação por contrato concreto. Headers de padrões/loops preservam escopo e capturas; arrays Copy fechados são domínios de expansão estática. CLI/LSP expõem limites CTFE validados, compartilhados com snapshots e chaves de cache. |
-| CT.4 — Salsa e editor | `in progress`; primeiro corte público conectado | `item_staged_typing` conecta tipagem inicial e queries de raiz sem AMIR runtime nem ciclos; itens sem staging compartilham memo inicial. Valores/layout participam do hash de corpo e preservam cutoff de exports. T042–T046 contextualizam falhas/limites; fmt, completion, keyword semântico e TextMate acompanham, com regressões LSP UTF-16/diagnóstico atual e temas no Extension Host. Demais cortes e budgets interativos de campanha permanecem abertos. |
-| CT.5 — layout público e release | `in progress`; layout validado nos gates locais, release pendente | `@sizeOf(T)`/`@alignOf(T)` usam o `LayoutEngine` completo, inclusive i686, e substituem operandos genéricos no lowering canônico. A API legada valida identidade intrínseca; layouts inválidos usam T047 e walks estruturais são limitados. Dimensões calculadas usam a VM e contratos concretos compartilhados por tipagem/layout. Faltam ampliar o corpus real, matriz nativa, playground e release. |
+| P0 / DIST.3 | correção local implementada: SHA-256 obrigatório, OpenSSL/fallback, archive/BLAKE3 em staging e rollback | 22 testes herméticos passaram com pytest/Ruff; CI; falta promoção com pacote nativo exato |
+| P0 / GATE.LSP | corrigido risco local de deadlock: soltar snapshots antes de backpressure e descartar jobs cancelados antes de writes; investigar variabilidade histórica sem aumentar orçamento | regressões determinísticas e 67 unitários passaram; stdio e gate final ainda exigidos no mesmo snapshot |
+| P0 / NUM.C | guards locais para div/mod C e alinhamento de shifts/narrow nos três backends | corpus de resultado/trap em O0/O1/O2/Os e Wasm executado; revalidar no snapshot final com nextest |
+| P0 / WASM.CFG | corrigidos escopos de salto cruzados, cópias de argumentos na aresta errada e desreferência parcial de agregados | Decimal/hashes em Wasmtime e projeções em C/Cranelift/Wasm passaram; regressão estrutural cobre diamantes, backedges e self-loops; gates finais pendentes |
+| WIP / PRIMITIVES | métodos inerentes/descoberta/completion de primitivos aparecem em alterações locais, fora da base publicada | parser/resolve/query/typeck/IDE/stdlib; provas de cutoff, colisões/identidade, diagnósticos e gates completos antes de atribuir uma release |
+| P1 / HOT.1 | baseline representativo e medição repetida de latência, CPU/RSS, hits e invalidação | xtask/benchmarks; p50/p95 e comparação clean/batch/quente com host/corpus/configuração documentados |
+| P1 / HOT.2–6 | sessão reutilizável, protocolo/supervisor, imagem dev, recuperação e endurance | CLI/query/codegen; gates 0.2 abaixo, sem I/O nas queries |
+| P1 / AGG.1 | reproduzir e classificar gaps de lifetime/cleanup dos fallbacks admitidos; correção local de GenArena.get com Copy e novo getRef para impedir duplicação de owners | MIR/backends; resultados corretos, alloc/free e RSS limitado; bug de memória reproduzido bloqueia release |
+| P2 / CT.4–5 e IDE | campanha de editor/playground e ampliação do corpus real | query/IDE/web/extensão; prova correspondente, sem equiparar smoke instalado ao universo de alvos |
+| P2 / SL_T, SL_P | fechar soak e evidência nativa específica antes de promover `gold` | harness/runtime; artefatos versionados por campanha e matriz descrita nos contratos |
 
-**Primeira entrega executável:** uma chamada pura com argumentos constantes,
-avaliada na VM e materializada como constante no programa residual, com testes
-C/Cranelift/Wasm e sem passar pelo `lower_amir` final durante o type checking.
-CT.3 e CT.4 avançam em cortes verticais: nenhuma superfície é habilitada no LSP
-antes de suas provas de fuel, cancelamento e invalidation.
+## Campanha autorizada 0.1.11 — fechamento da stdlib
 
-**Provas ainda necessárias:** ampliar o corpus real, comprovar a matriz nativa
-e o playground antes da promoção do recurso. Ciclos/cutoff das instâncias e os
-seis gates locais passaram em 2026-10-03, junto do Extension Host. O contrato
-público registra os limites e provas do núcleo. Implementação
-local não equivale a promoção de release; closures permanecem no marco 0.3.
-Defeito atual de staging em membros de módulos inline foi corrigido com busca
-recursiva e fingerprint do membro, preservando cutoff de siblings.
+Em 16/10/2026 o escopo foi ampliado explicitamente pelo mantenedor: fechar
+as alterações locais e os bloqueadores, e implementar a fundação abaixo antes
+da 0.2.0. A tabela registra entregas autorizadas, não funcionalidades publicadas.
+A 0.1.11 permanece em desenvolvimento enquanto houver itens não concluídos;
+a extensão do escopo não reduz as provas nem promove suporte por inferência.
+Como evidência histórica, o snapshot de 17/10 passou nos gates ordenados, em 3.184 testes nextest
+(sete ignorados), doctests, determinismo e checks documentais/arquiteturais.
+O C SIMD passou também em ASan/UBSan; os checks Rust de Windows/macOS usaram
+`blake3/pure`. Instalador e Extension Host mantêm a evidência histórica de 16/10. A [arquitetura da stdlib](arandu-stdlib-architecture-v0.1.md#evidência-local-desta-revisão)
+registra o alcance dessa prova. A revisão de 18/10 usa validação direcionada por
+camada, conforme AGENTS.md; a prova global anterior não certifica automaticamente
+as mudanças posteriores. A matriz instalada da candidata ainda é pendente.
 
-**Integração com a stdlib e corpus real (2026-10-03):** `[value; N]` preserva um
-único inicializador no AST/HIR, avalia uma vez inclusive para N=0 e exige Copy
-para N>1 após especialização. T048 cobre comprimentos/ownership inválidos; a
-expansão AMIR tem teto de 65.536 elementos e participa do orçamento de expansão
-estática. `ascii.byteSet` e `ascii.byteTable` exercitam construção e mutação CTFE.
-O Pypor usa perfis inteiros especializados, com fallback para configurações
-personalizadas; seus 13 testes passaram e a saída no kernel Linux permaneceu
-idêntica à do executável anterior. Isso não prova equivalência de classificação
-com Tokei, nem armazenamento global em `.rodata`.
-
-**Próximas lacunas do workload, na ordem de dependência:**
-
-1. Representação residual de agregados: o Cranelift agora promove casos
-   admitidos a frames independentes, com orçamento de 1 KiB, retornos em destino
-   do chamador e parâmetros por valor materializados no callee. Arrays de
-   literais, tuplas e structs Copy fechadas usam um serializador limitado no MIR,
-   compartilhado com Wasm, incluindo floats e padding determinístico; valores
-   mutáveis recebem cópias próprias. Containers afins admitidos também têm backing
-   privado, sem duplicar os drops de seus recursos. Casos além do orçamento usam buffers
-   heap privados por ponto de materialização, alocados sob demanda, reutilizados
-   nos loops e liberados após copiar/empacotar retornos. Option/Result/Poll nativos
-   têm retorno em destino do chamador. Wasm tem shadow stack separado de rodata/heap,
-   scratch maior liberado por invocação e transferência de resultados owned fechados,
-   incluindo payloads afins com destruição única dos recursos.
-   Ainda faltam provas para retenção externa desconhecida, phis de agregados em
-   back-edges, views emprestadas, suspensão/payloads agregados de corrotinas e
-   retornos Wasm com views por ponteiro; os fallbacks conservam gaps legados. O
-   experimento com LUT no Pypor confirmou aumento de RSS e chamadas de malloc
-   no assembly. Corrigir armazenamento/lifetimes e cópias por valor na AMIR/ABI
-   antes de prometer tabelas sem alocação; drops incondicionais causariam aliases
-   pendurados. Comparar alocações/liberações e RSS em loops e nos três backends.
-Os cortes de constantes globais CTFE, enums congelados, argumentos `comptime`
-tipados e identidade pública do alvo estão implementados. Os contratos
-concretos de cabeçalhos integram a descoberta do chamador, a inferência existente,
-a VM AMIR, aliases transitivos e o layout por instância. Não alteram os metadados
-do template ao especializar outra instância. Ciclos e profundidade de queries
-usam um caminho causal imutável e diagnósticos T044/T045; limites de VM continuam
-independentes. Detalhes e regressões estão no
-[contrato técnico](./arandu-comptime-core-v0.1.md#dependent-declaration-contracts).
-
-Budgets públicos estão conectados à CLI, LSP, extensão e API web como inputs
-Salsa; alterações invalidam também o cache de build. Argumentos calculados em
-headers de padrões/loops preservam escopo e capturas. Iteração estática sobre
-arrays Copy fixos, inclusive aninhados, congela o produtor e usa chaves estruturais
-por ocorrência; domínios vazios descartam o corpo. O playground usa identidade
-explícita wasm32, independente do host. O corpus instalado inclui esses caminhos.
-
-**Lacunas restantes:** provas dos casos de armazenamento acima e validação da
-matriz nativa/release. Contextos fora das formas documentadas exigem desenho e
-regressões próprios. Ampliar a superfície exige preservar os contratos de
-query, ownership, alvo e paridade; remover diagnósticos não substitui essas provas.
-
-**Escopo de produto proposto:** expressões/blocos `comptime`, parâmetros de valor
-inteiros compatíveis com os const generics atuais, decisões/iterações estáticas
-finitas e introspecção de layout. A RFC fecha a diferença entre executar um bloco
-em compilação e selecionar/expandir instruções que rodarão em runtime.
-
-**Após a 0.1.9:** `@typeInfo` estrutural, ABI/capabilities públicos,
-`quote`, splicing, `@Derive`, geração de items, inclusão de arquivos e JIT
-continuam fora deste núcleo, com desenho próprio.
-
-**Dívida preservada:** O2 continua `experimental`; granularidade completa do
-lowering permanece no marco `0.3` da RFC 0011. CTFE exige um caminho tipado sem
-ciclos para suas unidades, não a reescrita de todo o pipeline incremental AOT.
-`ctfe_func_amir` adianta um recorte escalar não genérico do lowering por função;
-o runtime também produz corpos por instância, mas isso não comprova o gate
-completo de CGU/latência do marco 0.3.
-`declaration_signatures` separa a consulta declarativa dos contratos derivados
-de corpos: consultar imports nessa fronteira não pede MIR final. A visão
-`module_signatures` preserva a composição usada pelo ownership. O produtor
-`borrow_interfaces` agora consulta contratos de unidades com retorno emprestado
-antes da validação final, sem solicitar HIR/MIR global. Há produtores
-`function_hir`, `instance_hir`,
-`runtime_raw_unit`, `instance_contracts` e `runtime_unit`, com um corpo por
-instância e contratos convergidos sem HIR/MIR global. `runtime_program` descobre
-dependências e remapeia tipos/símbolos/pools para o caminho ativo de
-`lower_amir`/CLI. `func_amir` e diagnósticos de uma definição fonte ordinária
-usam seu contexto próprio; instâncias concretas usam `instance_amir`, sem
-fallback por IDs sintéticos agregados. Headers transitivos são compartilhados
-e a composição traduz contextos sem clonar interners. CGUs agora declaram e
-hasheiam somente suas dependências reais, incluindo callbacks/destruidores;
-regressões provam cutoff de nova instância e igualdade de objetos incremental/clean.
-A entrega final agregada, retenção de metadata concreta, gates p95/CPU/RSS e
-matriz nativa permanecem limitações explícitas.
-A pressão de resultados LSP e o soak SL_T (10 execuções verdes em ≥7 dias)
-continuam classificados em suas trilhas; async/effects públicos, LLVM,
-closures, cache remoto e self-hosting não são pré-requisitos desta campanha.
-
-
-### Trilha incremental nativa — RFC 0011
-
-Os números abaixo são marcos de produto, não uma renumeração retroativa das
-fases históricas deste documento. O caminho batch completo continua sendo o
-fallback de correção em todos os marcos: cache ausente, incompatível ou
-corrompido deve causar rebuild/link completo com erro descritivo, nunca crash
-ou aceitação de estado não verificado.
-
-| Marco | Estado | Corpo funcional e critério de saída |
+| ID | Entrega | Estado / critério de saída |
 | --- | --- | --- |
-| Fundação atual (`0.1`) | `done` | O CLI verifica a closure de inputs e o BLAKE3 do executável antes de aceitar cutoff; mudanças apenas documentais cortam antes das queries; fingerprints atuais são movidos para a sessão substituta sem reler inputs imutáveis; CGUs têm chaves canônicas e sidecars verificados. No Linux x86-64, se todas as CGUs forem hits e o layout provar igualdade exata da closure, o executável verificado é reutilizado sem link; caso contrário, o CLI tenta patch ELF fail-closed e sempre pode voltar ao linker completo. O oráculo compara SHA-256 entre paths e `RAYON_NUM_THREADS=1/16`, e o relatório schema 2 separa tempo de parede de custos por fase. Limite conhecido: cada `build` ainda nasce com uma DB nova; `lower_amir` compõe unidades memoizadas para entrega agregada, enquanto hashes/emissão CGU compartilham a closure de dependências por função. |
-| Motor quente e imagem dev (`0.2`) | `planned` | Manter uma `DatabaseImpl` viva em um serviço local supervisionado, com protocolo versionado, fila limitada/coalescida, prioridade para o build solicitado e fallback transparente ao CLI batch após crash ou incompatibilidade. A DB Salsa não é serializada e queries continuam sem filesystem. Em paralelo, definir uma publicação de imagem dev recuperável que sincronize somente ranges/páginas alterados ou use clone CoW quando disponível, sem mutar artefatos CAS publicados; ausência de suporte sempre cai no protocolo atômico atual. O gate exige equivalência byte a byte com clean build, testes de kill/recovery, corpus de edições repetidas e `p95 ≤ 100 ms` para edição de corpo no host de referência documentado; CI compartilhada observa, mas não impõe a latência. |
-| Granularidade por instância (`0.3`) | `in progress`; produtor/compositor e closure CGU ativos | `item_source_input → item_typing → AMIR por instância` é real no runtime; `func_amir` fonte e `instance_amir` concreto não projetam o programa global. Headers são compartilhados, composição não clona interners e hashes/emissão CGU usam a mesma closure de assinatura/layout/callback/drop. Cutoff ao adicionar instância e equivalência de objetos incremental/clean têm regressões; completar retenção/latência e matriz nativa sem remover guardrails de ABI. Persistência em disco, se necessária, cobre apenas saídas canônicas e versionadas fora do grafo Salsa, com CAS BLAKE3, dependências explícitas, GC limitado e validação fail-closed. O gate exige que uma edição privada não rebaixe importadores nem CGUs irmãs, equivalência incremental/clean e `p95 ≤ 10 ms` no workload e host de referência. |
+| ST.0 | consolidar primitivos, Decimal e alterações locais | `in_progress`; Decimal com overflow checado, comparação exata, HalfEven e conversões validadas no corpus contratual e no oráculo inteiro independente executados nos três backends (C/Cranelift/Wasm); gates locais passaram; manter as provas de métodos/imports/completion e cutoff no SDK instalado |
+| ST.1 | `core.math`: sqrt, sin/cos/tan, pow, log/exp e PI/TAU/E | implementação escalar local; corrigidos trunc acima de 32 bits, round, escala extrema de exp, potências subnormais e overflow intermediário de cbrt; regressões independentes IEEE/f64 nos três backends; oráculos trigonométricos (sin, cos, tan) e logarítmicos (ln) com tolerâncias ULP e bordas fechados e validados em JIT, C (Clang -O0/-O2 UBSan) e Wasm; perfis float32 e matriz instalada pendentes |
+| ST.2 | `core.simd`: seis vetores de 128 bits | implementação local de tipos canônicos, métodos/intrínsecos tipados, layout 16/16, AMIR e Cranelift/C/Wasm; máscaras/comparações/select, wrapping e slices com bounds; escrita segura usa MutableSlice afim, descritores compartilhados exigem unsafe; backing heap do compilador alinhado a 16; CTFE concluído e verificado na VM com suporte a 128-bit hardware vectors, splat, extract/insert, ops, select, shuffle e intrínseco abort; faltam provas do SDK instalado na matriz nativa por alvo (RFC 0038) |
+| ST.3 | Q8.8/Q32.32 e correção de Q16.16 | implementação local; oráculo i128, JIT/C com UBSan/Wasm; 384 pares inteiros e gates locais passaram; conversões float validadas com clamping e oráculo diferencial nos três backends; matriz instalada pendente |
+| ST.4 | contagem/reversão de bits em `core.num` | implementação local u32/u64 nos três backends e avaliação puramente escalar no CTFE (popcnt, clz, ctz, bitrev); zero definido; identidade ABI explícita e validação de assinatura antes do codegen; integração local e testes de CTFE validados; matriz instalada pendente |
+| ST.5 | atomics reais como pré-requisito de compartilhamento | implementação local SeqCst em C/Cranelift/Wasm com assinaturas e armazenamento validados; primitivas de sincronização e Arc têm bounds canônicos específicos, sem liberar ponteiros arbitrários; wrappers atômicos comuns ainda exigem mut ref para escrita; fechar matriz instalada |
+| ST.6 | `alloc.boxed.Box<T>` | implementação local nativa e Wasm; Cranelift/JIT e C O0/O2 executam drops aninhados/ZST, movimento e mutação; rejeição de escapes/aliases/forja passou; o teste Wasm emite o módulo e valida que é core, mas não o executa em Wasmtime; faltam execução do contrato Box em Wasmtime, injeção de falha de alocação e prova específica pelo SDK instalado |
+| ST.7 | `alloc.rc`/`alloc.arc` | implementações locais; Rc.tryUnwrap impede ressurreição por Weak; Arc usa CAS com limites antes de overflow e trava da contagem fraca para unicidade/getMut; Arc/ArcWeak exigem T:Send+Sync para transporte/compartilhamento; o código limita Rc antes de overflow, mas a regressão white-box de overflow encontrada cobre Arc, não Rc; faltam regressões de overflow Rc e falhas de alocação, além de prova específica pelo SDK instalado |
+| ST.8 | `alloc.slab` e deque circular | Slab/deque executados no contrato CLI em JIT e C O0/O2 UBSan; o corpus cobre reuso de slot do Slab, crescimento/wrapping e elementos `String` do deque; Wasm só é emitido nesse teste. Corrigido overflow de capacidade do deque: arredondamento/crescimento abortam antes de ultrapassar o limite de alocação, com regressão para `usize::MAX`; ainda faltam execução do contrato em Wasm e regressão de drops não-Copy observáveis do deque |
+| ST.9 | `std.random` | correções locais: fórmula xoshiro256++/seed zero, faixa int completa, entropia sem fallback fraco e tryFromEntropy falível; 136 vetores determinísticos em JIT/C/Wasm e injeção de falha C passaram; PRNG determinístico Wasm executa sem imports de host (poda aplicada também ao perfil padrão); entropia continua efeito de host; faixas float (`genRangeFloat` e `nextFloat`) validadas em JIT/C/Wasm; fechar execução por alvo; PRNG não é CSPRNG |
+| ST.10 | `sync.mutex`/`sync.rwlock`/`sync.condvar` nativos | implementação local com mutabilidade interior canônica, guardas afins ligadas ao proprietário, leitores compartilhados e escritores FIFO por fases; Condvar libera/reobtém MutexGuard, timeout monotônico e notify sem wrap da sequência; sem polling; cancelamento POSIX diferido no mirror C; integração cooperativa do executor e matriz nativa instalada continuam distintas (RFC 0039) |
+| ST.11 | `std.thread` e JoinHandle/parking | implementação local de IDs/park/unpark e spawn<A,R,J> por ThreadJob tipado; a branch atual também baixa `move || ...` sem parâmetros e com capturas próprias Send para struct de captura e `run()` no AMIR; isso ainda não promove suporte público e depende do fechamento da candidata; closures sem move ou com parâmetros continuam U001; referências continuam T025; argumentos/jobs/resultados Send, buffers alinhados, join e drop que aguardam/limpam exatamente uma vez; retenção JIT inclui descendentes e join/drop concorrentes; parkTimeout interrompido por unpark com prazos monotônicos, tokens coalescentes e saturação de limites em C/Rust; rejeição em tempo de compilação em wasm32 (U001) e, em alvo bare-metal, T099 para `std.thread`/`std.fs`; closures gerais da RFC 0032 e unwind recuperável permanecem fora do contrato; fechar matriz nativa instalada |
+| ST.12 | filesystem por capacidades `Dir` (RFC 0016) | implementação Linux local com openat2 BENEATH/NO_SYMLINKS/NO_MAGICLINKS e pais pinados em mkdir/unlink; regressões JIT/C com UBSan e runtime passaram para caminhos absolutos, traversal, symlinks e rename da raiz; sem fallback inseguro; macOS/BSD têm recorte de um componente com O_NOFOLLOW/O_DIRECTORY/fstat em Rust/C; flags create/truncate sem write rejeitadas; Windows fail-closed até ABI de HANDLE; `File.fd` é privado, `close` invalida e o destructor evita double close. Permanecem sem prova de pacote instalado os contratos específicos de filesystem por alvo. |
+| ST.13 | DNS/UDP e reactor multiplataforma | DNS/UDP e lifecycle de sockets têm testes locais; o reactor só registra sockets no Linux e retorna erro nos demais alvos; IOCP/kqueue não estão implementados. Tratar esse suporte como ausente, não apenas sem teste; definir explicitamente o contrato de alvos da 0.1.11 antes de promover |
+| ST.14 | `crypto.hash` SHA-256/BLAKE3 | implementação escalar local; vetores independentes de streaming/padding/chunks/árvore e snapshots passaram em C/Cranelift/Wasm; sem autenticação/keyed/XOF; matriz instalada e promoção pendentes |
+| ST.15 | `math.big.BigInt`/`BigDecimal` (RFC 0037) | `done` localmente; camadas 1–3 ativas com adições de `divRem`, `div`, `rem`, `divAssign`, `remAssign`, `BigDecimal.mul`, operações de bit e representação de limbs; oráculo diferencial independente contra `num-bigint` (dev-dependency) com 59 casos curados cobrindo além de 128/256/512 bits executado e validado em JIT (Cranelift) e C (Clang -O0 e -O2 com UBSan). No teste CLI consultado, Wasm apenas é emitido e validado como core module; não há execução do oráculo BigInt/BigDecimal em Wasmtime comprovada. |
+| ST.16 | promoção da candidata | `partial`; o CI do commit `d99c9e41` construiu, instalou fora do checkout e testou o SDK candidato em Linux x86-64, macOS ARM64 e Windows x86-64; integração SL_T passou nos três alvos. Isso não equivale a publicar/instalar os archives da release nem cobre automaticamente cada contrato ST. Os gates do head documental `5ec5479c` estavam em execução quando esta nota foi escrita; a promoção ainda exige merge, tag, workflow de release e fechamento das provas específicas restantes. |
 
-Antes de otimizar estruturas por contagem de `.clone()`, `String` ou alocações,
-o relatório por fase deve localizar o custo dominante e um perfil antes/depois
-deve demonstrar o ganho. A ordem planejada é motor quente e publicação dev
-proporcional aos bytes alterados primeiro, lowering por instância depois e
-somente então cache remoto/distribuído ou novos formatos persistentes.
+A ordem de execução é: bloqueadores e ST.0 → aritmética/ST.3/ST.4 →
+fundação de memória e atomics → coleções/precisão arbitrária → serviços e
+concorrência → SIMD/math e integração final conforme dependências. Frentes
+independentes podem avançar em paralelo. ST.11 inclui fixar e implementar o
+entrypoint de thread e o transporte possuído de capturas/retornos. Qualquer
+recorte de chamadas/capturas necessário à API autorizada deve ser antecipado
+para essa campanha; LAMBDA na 0.3.x descreve a expansão geral posterior, sem
+adiar um pré-requisito da mesma API de threads. Os contratos técnicos mantêm
+design e limitações; esta é a única fila permanente.
 
-### Trilha da Stack Científica, Numérica e de Dados — RFC 0012
+### Etapas de fechamento das RFCs 0014, 0016, 0038 e 0039
 
-Esta trilha formaliza os marcos de maturidade para a infraestrutura oficial de
+As etapas abaixo detalham ST.2/ST.10–12; continuam pertencendo à campanha
+0.1.11 e não são transferidas automaticamente para 0.2.x por estarem abertas.
+
+| Etapa | Estado | Próxima entrega verificável / proprietário |
+| --- | --- | --- |
+| ST.2a — representação e execução interna | implementada localmente | seis formas, layout e AMIR; JIT/C/Wasm, wrapping, memória, shuffle, ABI interna e hashes; middle/MIR/backends |
+| ST.2b — identidade e frontend | implementada localmente | autoridade stdlib explícita por arquivo, aliases/reexports por SymbolId, assinaturas exatas e métodos genéricos sem reconhecimento por nome solto; preservar cutoff e validar drivers/SDK |
+| ST.2c — API fonte e memória | implementada localmente | API nativa, índices checados, backing 16-aligned, loads escalares e stores com MutableSlice exclusiva; garantir a mesma prova nos artefatos instalados e alvos de 32 bits |
+| ST.2d — máscaras e portabilidade | parcial | comparações/select/reduções e contrato NaN/zero implementados; executar matriz instalada/ARM e medir workloads antes de anunciar desempenho |
+| ST.10a — evento de sequência | implementada localmente | filas por endereço, validação/timeout/notify e isolamento de tokens; runtime Rust/C, JIT e host Wasm explícito |
+| ST.10b — locks compartilhados seguros | implementada localmente | UnsafeCell não-Copy/não-Sync, Mutex/RwLock com bounds distintos e guardas que conservam empréstimos até dentro do mesmo bloco; validar SDK instalado |
+| ST.10c — Condvar com guarda e PFLock | implementada localmente | release/sequence-wait/reacquire, fases por filas reais e contadores checados, cancelamento POSIX diferido; sem garantia de quatro bytes ou prazo de parede; promover somente após matriz nativa |
+| ST.11a — identidade e estacionamento | implementada localmente | IDs sem reuso, park/unpark e aposentadoria TLS/FLS; parkTimeout com prazo monotônico e interrupção por unpark validado em C/Rust; wasm32 rejeita primitivas de threads com U001; validar matriz nativa instalada |
+| ST.11b — spawn e JoinHandle | implementada localmente; promoção pendente | ThreadJob tipado e possuído transporta argumentos/capturas e resultados Send; a branch atual baixa o recorte `move || ...` (zero parâmetros, capturas próprias Send) para struct de captura e `run()`; validar cleanup/drop, retenção JIT e packages nativos; closures gerais/unwind continuam fora do contrato |
+| ST.12a — confinamento Linux | implementada localmente | openat2 e pais pinados, flags destrutivas rejeitadas e provas de symlink/traversal/rename |
+| ST.12b — macOS/BSD e Windows | parcial / pendente | componente único por Dir em macOS/BSD exige runners nativos; Windows exige ponte HANDLE/posse sem truncamento, NtCreateFile relativo e rejeição de ADS/dispositivos; falhar fechado até lá |
+| ST.12c — adoção de capacidades | implementada localmente | privacidade/lifecycle integral de File (`File.fd` é `private` com construtor interno `File.fromRaw`), migração das aberturas legadas e regressões de capacidade com drop seguro; garantir testes na matriz instalada |
+| RFC 0014 — poda de imports | implementada localmente | mesma closure nos perfis padrão/size/component, incluindo WIT; efeitos vivos exigem host, indiretas gerais continuam fora do lowering atual |
+
+## Plano de longo prazo por série
+
+As séries organizam o trabalho; não são promessa de entrega de toda RFC
+associada. Cada candidata declara seu recorte e limitações antes da promoção.
+
+| Série | Resultado principal | Dependências / gate | Estado |
+| --- | --- | --- | --- |
+| 0.1.x / 0.1.11 | fundação publicada e fechamento autorizado da stdlib | bloqueadores, ST.0–16, regressões e distribuição do pacote exato | 0.1.10 publicada; 0.1.11 em desenvolvimento |
+| 0.2.x | motor quente e imagem dev recuperável | sessão Salsa viva, protocolo/fallback, equivalência clean e p95 ≤100 ms em edição de corpo no host/corpus de referência | `planned`; fundação batch `done` |
+| 0.3.x | granularidade por instância e expressividade delimitada | completar produtores/CGUs, retenção e cutoff; p95 ≤10 ms no workload de referência; closures e reflexão inicial têm gates próprios | `partial` na granularidade; expansões `planned` |
+| 0.4.x | qualidade de código de release mensurada | OPT/AOT oracle, segurança de alias/escape e benchmarks; LLVM opcional só após aceitação da RFC 0031, paridade e distribuição | `experimental` O2; backend novo `planned` |
+| 0.5.x | contratos portáveis de ABI, recursos e interoperabilidade | layout/calling convention por alvo, ownership/FFI e runtime; capabilities/freestanding e WIT/mobile avançam por recortes | base `partial`; expansões `planned` |
+| 0.6.x | ferramentas e armazenamento sustentáveis | CAS/GC/formatos compatíveis quando justificados; documentação/pacotes existentes evoluem, REPL/bindgen/linter por contrato | base `partial`; expansões `planned` |
+| 0.7.x | convergência dos contratos candidatos à estabilidade | fechar inventário público, deprecações, ambiguidades de linguagem e incompatibilidades entre alvos suportados | `planned` |
+| 0.8.x | endurance e distribuição de candidata a 1.0 | soak, fuzz/sanitizers, consumo prolongado, upgrades e recuperação com SDK público | `planned` |
+| 0.9.x | congelamento de contrato e RCs de 1.0 | migração publicada, corpus de consumidores, nenhuma falha bloqueante nos gates definidos | `planned` |
+| 1.0 | linguagem/stdlib/CLI e matriz de suporte explicitamente estáveis | política de compatibilidade, documentação, diagnóstico e distribuição consistentes; zero bloqueadores conhecidos no escopo | `planned` |
+| 1.x | manutenção e evolução compatível do contrato estável | correções e adições preservam compatibilidade documentada, migração/avisos para deprecações e gates de consumidores; novos backends não ampliam suporte por inferência | direção de governança, sem calendário |
+| 2.0 ou novo contrato incompatível | mudanças incompatíveis somente quando justificadas | RFC aceita, alternativa/migração explícita, coexistência quando necessária e evidência de consumidores; não é destino automático de uma proposta atual | sem escopo de funcionalidades definido |
+| pós-1.0 / trilhas independentes | auto-hospedagem e extensões de domínio | projeto, mantenedores, contratos e provas próprios; não bloqueiam 1.0 por existir uma RFC | pesquisa/proposta |
+
+```mermaid
+flowchart LR
+    V01["0.1.x • fundação publicada"] --> V02["0.2.x • motor quente"]
+    V02 --> V03["0.3.x • instâncias"]
+    V03 --> V04["0.4.x • otimização medida"]
+    V04 --> V05["0.5.x • ABI e recursos"]
+    V05 --> V06["0.6.x • ferramentas e cache"]
+    V06 --> RC["0.7–0.9 • convergência e RCs"]
+    RC --> V1["1.0 • contrato estável"]
+```
+
+A sequência representa gates principais; correções e trilhas independentes
+podem avançar em paralelo sem promover propostas automaticamente.
+
+### 0.2.x — Motor quente e imagem dev
+
+A 0.2.0 exige HOT.1–6 e o fechamento da campanha de stdlib ST.0–16
+autorizada acima. Patches seguintes ampliam o corpus e cobertura e
+corrigem problemas mantendo o contrato. O `p95` é ponta a ponta até o artefato
+publicado; amostras, aquecimento, perfil e exclusões precisam ser explícitos.
+
+| Etapa | Entrega | Aceitação |
+| --- | --- | --- |
+| HOT.1 — medir antes | expandir `xtask bench-incremental`; corpus pequeno/médio/representativo, edições repetidas e descrição de host/filesystem/toolchain | p50/p95, CPU/RSS, queries, CGUs e fases; o harness mínimo atual prova determinismo, não o gate de latência |
+| HOT.2 — sessão | extrair configuração/inputs/análise/codegen/publicação da execução batch e preservar DB entre builds | corpo privado não invalida exports/CGUs irmãs sem necessidade; trocar target/opções/stdlib/toolchain invalida o estado correto |
+| HOT.3 — serviço local | protocolo versionado, endpoint com ownership local, supervisor, isolamento por workspace/configuração, fila limitada/coalescida, prioridade e cancelamento | clientes concorrentes e falhas não causam deadlock, starvation nem resultado stale; nenhuma serialização da DB Salsa |
+| HOT.4 — publicação | imagem dev recuperável com ranges/páginas ou CoW quando disponível; artefato publicado/CAS imutável | staging e publicação atômicos; ausência de suporte usa fallback; hardlink não autoriza mutação de objeto compartilhado |
+| HOT.5 — recuperação | kill durante análise/codegen/publicação, cache corrompido/incompatível e reinício | fallback transparente ao CLI batch e equivalência byte a byte com clean; não aceitar estado não verificado |
+| HOT.6 — promoção | workloads prolongados, repetição de edições e matriz nativa instalada | RSS/filas limitados e p95 ≤100 ms para corpo no host de referência; CI compartilhada registra tempos sem impor esse limite |
+
+Não são gates automáticos da 0.2: todo CAS global, hidratação binária da IR,
+LLVM como backend promovido, metaprogramação ampla, todas as otimizações de LUT,
+ABI pública geral ou self-hosting. Bugs de correção e falhas de integridade
+continuam bloqueantes.
+
+O código de interoperabilidade freestanding foi iniciado nesta branch com o
+backend LLVM, sem substituir HOT.1–6 nem promover suporte público. As triples
+canônicas são
+`thumbv7em-none-eabihf` e `riscv32imc-unknown-none-elf`. O produto padrão é
+objeto, IR (`--emit=llvm-ir`) ou `--crate-type=staticlib`. Um ELF final existe
+somente quando o usuário passa `--linker-script`. O compilador não adivinha
+mapas de memória do chip. `core` permanece freestanding; `std.thread` e
+`std.fs` em alvo bare-metal produzem T099. O recorte `move ||` sem parâmetros
+e com capturas próprias Send baixa para uma struct de captura e `run()`;
+closures gerais continuam U001.
+
+A aceitação desses produtos na 0.1.11 depende de CI e de uma decisão explícita
+de promoção; até lá, permanecem experimentais nesta branch. A remoção de
+aliases legados de anotações só pode entrar na fronteira 0.2.0 com decisão
+explícita, release notes e regressões de migração; não é requisito para
+promover o serviço quente.
+
+### 0.3.x — Instâncias, closures e staging delimitado
+
+| ID | Base atual | Trabalho / gate |
+| --- | --- | --- |
+| INC.3 | `function_hir`, `instance_hir`, `runtime_raw_unit`, `instance_contracts`, `runtime_unit`, compositor e closure CGU ativos | completar entrega/metadata/retention; editar corpo privado não rebaixa importadores ou CGUs irmãs; clean/incremental idênticos e p95 ≤10 ms no host/workload declarado |
+| LAMBDA / [RFC 0032](rfcs/0032-closures-ossa-capture-modes-and-first-class-functions.md) | parser/tipos preparam lambdas; closures gerais continuam U001; só `move ||` sem parâmetros e com capturas próprias Send baixa para ThreadJob | contrato de capturas, Copy/Move/borrow, representação ambiente, chamadas indiretas, drops/escape e paridade C/Cranelift/Wasm antes de habilitar o sistema geral |
+| CT.NEXT | valores e layout existentes | refletir tipos/descritores imutáveis apenas após contrato aceito de identidade, visibilidade, efeitos e budgets; atributos executáveis/geração de itens não entram por consequência |
+| TYP.NEXT / [RFC 0034](rfcs/0034-adaptive-hybrid-polymorphism-and-witness-tables.md) / [RFC 0036](rfcs/0036-typed-holes-and-integrated-semantic-tooling.md) | inferência contextual, interfaces estáticas e const generics existentes | separação `constraint_gen`/solver é melhoria arquitetural não bloqueante; tipos de literal tardios, typed holes e ergonomia só com escopo/recovery/determinismo; `dyn`/existenciais e dispatch adaptativo continuam propostas separadas |
+
+A meta de instância não exige persistir Salsa. Formatos duráveis, se
+necessários, serializam saídas canônicas versionadas fora do grafo, com
+validação de compatibilidade e dependências explícitas.
+
+### 0.4.x — Otimização e backend de release
+
+Sequência: provas de place/alias/efeitos → análises reutilizáveis → passes
+restritos medidos → oráculo de codegen → promoção do nível de otimização.
+O1 permanece baseline; O2 não vira estável apenas porque `--release` o usa.
+
+| IDs | Entrega planejada | Gate |
+| --- | --- | --- |
+| OPT.1–7 / [RFC 0033](rfcs/0033-amir-cooperative-optimization-place-provenance-and-memoryssa.md) | análises, loops, dataflow, canonicalização, memória, TCO/escape | sequência e regressões detalhadas adiante; sem ganho prometido por contagem de clones/linhas |
+| AOT / RFC 0025 | remarks estruturados, runner de diretivas e fuzz metamórfico especializado | política por passe, replay/redutor e oráculo independente; AranduSmith existente não comprova essas ferramentas |
+| LLVM / RFC 0031 | tier opt-in de produção, se a proposta for aceita | backend puro, layout por alvo, paridade/ABI, compile-time/RSS/tamanho/runtime medidos e empacotamento próprio; Cranelift continua disponível |
+| GEN / REG / PGO ([RFC 0034](rfcs/0034-adaptive-hybrid-polymorphism-and-witness-tables.md)) | investigar monomorfização adaptativa e perfil guiado | workload primeiro; alocação física de registradores pertence ao backend; nenhum algoritmo ou zero-spill garantido pelo Arandu |
+| C_PRETTY.1–4 | CFG estruturado, nomes/escopos, coalescência e headers C | paridade de efeitos/CFG, cobertura de fluxo irredutível e contrato de headers; legibilidade não equivale a certificação MISRA |
+
+MLIR, Linalg/StableHLO e aceleradores não são requisito de um primeiro backend
+LLVM. Metadados noalias dependem de prova de proveniência/alias e escopo de
+validade; não marcar todas as operações de um bloco por existir um BorrowMut.
+
+### 0.5.x — ABI, runtime e interoperabilidade
+
+| IDs | Entrega planejada | Gate |
+| --- | --- | --- |
+| AGG.1–3 / ABI | lifetime dos fallbacks, retornos/views/agregados e calling conventions documentadas | phis em backedges, views cruzando branches, retorno Wasm, FFI e suspensão com ownership/drop; alloc/free/RSS e resultados nos três backends |
+| SL_S-Core.1–4 | promoção freestanding delimitada, TrapCode e formatos fixos adicionais | núcleo sem host/heap implícito no alvo declarado; teste de objeto/opcode e tamanho; Q8.8/Q32.32 e intrínsecos de bits por recorte |
+| A2 / effects / [RFC 0035](rfcs/0035-effect-system-polymorphism-and-capability-authority.md) | inferência/summaries e autoridade por contrato, separados da base de flags/anotações | [contrato de efeitos](arandu-effects-v0.1.md), propagação determinística, unknown conservador e enforcement independente |
+| SL_S-Host.2–5 / RFC 0016 | Dir por capacidades, resolução segura, efeitos e VFS | testes adversariais de traversal/symlink/TOCTOU nos sistemas admitidos; canonicalização/ciclo não provam sandbox |
+| SL_R / SL_P | hosts async e transporte de resultados, drop glue e matriz de paralelismo | sockets reactor Win/macOS e executor C conforme contrato; ownership de resultados não-Copy e benchmarks 1/2/4/8 workers |
+| WIT / MOBILE / FFI | RFCs 0014/0015/0030 por recortes aceitos | layout/validação de buffers, lifetimes, erros explícitos, callbacks/threads e testes de consumidores; trap/abort fatal não é exceção recuperável no mesmo processo |
+
+### 0.6.x — Ferramentas e cache
+
+| IDs | Base atual | Próxima entrega / gate |
+| --- | --- | --- |
+| CACHE.1–4 / RFC 0019 | cache de pacotes por digest e cache CGU local com lock/GC | CAS global de compilação, target limpo e GC/LRU/cotas por contrato aceito, deduplicação e concorrência medidas |
+| CACHE.5 | envelopes íntegros `.air/.amir/.ameta` com dumps textuais write-only | hidratação de IR só após schema/compatibilidade/IDs/invalidação, oráculo clean e benefício medido |
+| E1 / REPL ([RFC 0036](rfcs/0036-typed-holes-and-integrated-semantic-tooling.md)) | JIT existente, sem REPL público | sessão, redefinição/estado/erros e saída de recursos documentados; nenhuma avaliação de programa inválido |
+| E2 / DOC | `arandu doc` HTML/JSON/Markdown implementado | ampliar corpus/links/busca/acessibilidade conforme necessidade; não reimplementar gerador existente |
+| E3 / bindgen ([RFC 0036](rfcs/0036-typed-holes-and-integrated-semantic-tooling.md)) | contratos ABI ainda restritos | headers/tipos suportados e roundtrip C com layout, ownership e erros explícitos |
+| E4 / pacotes | lifecycle/lockfile/vendor/audit/verify implementados | registry/workspaces/mixed/build scripts só após contratos de identidade, integridade e trust; nome `pkg` não é objetivo por si só |
+| E5 / linter ([RFC 0036](rfcs/0036-typed-holes-and-integrated-semantic-tooling.md)) | ownership/escape e diagnósticos existentes | lints opt-in com resultados reproduzíveis, poucos falsos positivos e replacements estruturados |
+
+### 0.7.x a 1.0 — Convergência e estabilidade
+
+0.7.x inventaria todas as APIs/comandos/alvos que serão estáveis, resolve
+ambiguidades e anuncia deprecações; não deve abrir uma frente obrigatória por
+cada RFC pendente. 0.8.x exercita consumidores e SDK público em longas sessões,
+crash recovery, upgrades/rollback, fuzz e análise de recursos. 0.9.x congela o
+escopo candidato, publica migração e usa novas RCs imutáveis para correções.
+
+1.0 exige contrato explícito de compatibilidade de linguagem, stdlib, CLI,
+manifest/lockfile, diagnósticos públicos e matriz suportada; documentação e
+artefatos devem concordar. APIs Rust internas, HIR/AMIR e formato de cache não
+se tornam estáveis por consequência. Desempenho tem budgets/workloads
+publicados, sem promessas universais. Self-hosting, GPU, eBPF e stack científica
+completa não bloqueiam esse contrato.
+
+Depois de 1.0, a série 1.x mantém as promessas estáveis e publica a evolução
+compatível. Uma quebra futura precisa de motivação, decisão e migração antes
+de reservar uma fronteira incompatível; não se inventa hoje uma lista de
+funcionalidades obrigatórias para 2.0.
+
+## Núcleo CTFE integrado e evolução futura
+
+| Gate | Maturidade atual | Pendência específica |
+| --- | --- | --- |
+| CT.0 — contrato/staging | `partial` na RFC; núcleo delimitado aprovado | definir/aceitar separadamente efeitos ampliados, reflexão e geração de código; não reabrir o núcleo implementado |
+| CT.1 — alvo/layout | `done` no recorte de layout | validação `DataLayout`, LayoutEngine e identidade de alvo existem; ampliar bordas e distinguir layout conhecido de codegen suportado |
+| CT.2 — VM pura | `done` no subconjunto admitido | CFG/chamadas/budgets/cancelamento, Copy/enums/arrays/strings e floats IEEE software; recursos runtime/closures não são admitidos |
+| CT.3 — superfície | `done` no recorte público | raízes isoladas, retornos locais, seleção/iteração finita, globais, headers e argumentos calculados; expansão além do contrato requer desenho próprio |
+| CT.4 — Salsa/editor | `partial` | `item_staged_typing`, raízes/cutoff, diagnósticos e editor conectados; falta campanha representativa de latência/recursos e paridade do playground |
+| CT.5 — produto/release | `partial` com smoke nativo publicado | SDK 0.1.10 testou `comptime_core` nos três alvos; ampliar corpus real e validar playground/limitações, sem inferir aprovação da RFC inteira |
+
+Contrato e regressões vivem em [comptime core](arandu-comptime-core-v0.1.md),
+[ABI/layout](arandu-abi-layout-v0.1.md) e [RFC 0013](rfcs/0013-deterministic-ctfe-and-comptime-metaprogramming.md).
+`mem.sizeOf<T>()`/`mem.alignOf<T>()` e `@sizeOf`/`@alignOf` são existentes;
+`embed.bytes`, `embed.str`, `types.info<T>()`, quote/splicing e atributos
+customizados permanecem propostas, não APIs liberadas por esta revisão.
+
+### Agregados e workload real
+
+AGG.1 comprova/corrige lifetime e cleanup; AGG.2 otimiza LUTs imutáveis e cópias
+após provar proveniência/imutabilidade; AGG.3 amplia retornos/views/suspensão
+conforme ABI. Bugs reproduzidos são P0 independentemente da série que concentra
+a expansão. Otimizações sem bug não impedem desenvolver HOT em paralelo.
+
+Cranelift promove casos admitidos com orçamento de frame de 1 KiB; Wasm usa
+16 KiB e uma shadow stack separada de rodata/heap. Valores maiores admitidos
+usam scratch privado lazy/reutilizável. Serialização estática já existe; não
+prova referência direta universal à rodata ou zero malloc do scanner Pypor.
+Phis agregados em backedges, views emprestadas, retenção externa e suspensão
+continuam excluídos de promoções sem prova. Não inserir frees incondicionais.
+
+As medições históricas do Pypor e de agregados estão no contrato ABI: comparar
+alocações/liberações, pico de RSS, estabilidade em loops, resultado e assembly
+antes/depois. Contagem de malloc do processo não mede apenas LUT nem prova leak.
+
+## Trilha incremental nativa — RFC 0011
+
+| Marco | Estado | Limite atual / saída |
+| --- | --- | --- |
+| Fundação 0.1 | `done` | fingerprints/closure e artefato verificados, cutoff de trivia, chaves CGU canônicas, sidecars, reuse sem link e patch ELF fail-closed Linux; CLI ainda cria DB nova |
+| Motor quente 0.2 | `planned` | HOT.1–6; DB viva, protocolo e publicação recuperável; p95 ≤100 ms e equivalência clean |
+| Instâncias 0.3 | `partial` | produtores/compositor e closure CGU ativos, regressões de instância nova e objetos clean; faltam gates completos de entrega, retenção, latência e matriz; p95 ≤10 ms delimitado |
+
+CAS remoto/distribuído e persistência de IR são decisões posteriores ao perfil
+do caminho quente; nenhuma delas autoriza serializar o grafo Salsa.
+
+## Otimização AMIR — estado e sequência
+
+O `PassManager` executa transformações puras por função, separado da
+memoização Salsa. O0 não transforma; O1 itera SCCP → DCE mark-sweep →
+SimplifyCFG. O2 é experimental: scalar replacement Copy e self-tail calls
+restritos, field forwarding/GVN/SCCP/LICM/DCE/tail merging/SimplifyCFG.
+Alcance compartilhado de funções/drop/runtime existe (RFC 0027); expansão
+interprocedural e reflection futura precisam preservar raízes públicas e tooling.
+SROA irrestrito, LoopInfo reutilizável/nesting e promoção geral por escape não
+são garantias atuais. OPT.1–7 abaixo preservam a ordem técnica da trilha 0.4.x;
+alguns recortes já existem, e a promoção depende do contrato completo.
+
+### OPT.1–7 — Sequência executiva
+
+O desenho técnico foi consolidado na [RFC 0033](rfcs/0033-amir-cooperative-optimization-place-provenance-and-memoryssa.md),
+ainda `Draft`. Esta tabela mantém estado, dependências e prova de saída; os
+nomes de APIs propostos na RFC não representam código implementado.
+
+| Etapa / dono | Estado atual | Trabalho restante e prova de saída |
+| --- | --- | --- |
+| OPT.1 / pass manager | scratch/fixpoint `done`; manager cooperativo `planned` | cache lazy por função, invalidação transitiva de CFG/dominadores/loops/alias/memória e lifetime separado de scratch; contagens determinísticas de construção/reuso/invalidação e medição CPU/RSS |
+| OPT.2 / análises de loops | LICM restrito e LoopInfo privado `experimental` | análise reutilizável com nesting/latches/preheader e tratamento conservador de CFG irredutível; zero iterações, traps, Move e efeitos preservados; hoist só com prova de disponibilidade e especulação/must-execute |
+| OPT.3 / memória | places/OSSA existentes; alias/ModRef unificados `planned` | identidade/proveniência/sobreposição de locais, campos, índices, reborrows, globals e calls; após Deref, bases distintas não bastam para NoAlias; unknown permanece conservador |
+| OPT.4 / dataflow | análises existentes `done`; engine compartilhada `planned` | extrair comportamento forward comum, uma análise por vez; comparar estados/diagnósticos, boundary/join/arestas, argumentos de Goto/Branch/SwitchInt/Suspend e convergência determinística |
+| OPT.5 / canonicalização/GVN | GVN O2 restrito `experimental` | regras puras, tipadas e idempotentes; preservar overflow/traps/NaN/signed-zero/Copy/Move; dominância do líder e fixpoint validado antes de compartilhar regras entre passes |
+| OPT.6 / otimizações de memória | field forwarding restrito existente; expansão `planned` | OPT.3 primeiro, load forwarding/DSE local medidos antes de MemorySSA; tabela virtual de uses/defs/merges fora da IR executável, walker limitado para ciclos e validator próprio |
+| OPT.7 / TCO/alcance/escape | self-tail calls e alcance restritos implementados | preservar ABI/header SSA/drops/borrows/retornos/roots públicas, tooling, callbacks e runtime; promoção geral de heap exige lifetime/escape/layout, incluindo loops; recursão mútua não é extensão automática |
+
+### Gates obrigatórios de correção e desempenho
+
+- Validator após passes em testes/debug: IDs densos, dominância, parâmetros e
+  argumentos de todas as arestas alinhados, ranges/statements e visitors coerentes.
+- Regressões de diamonds, blocos mortos, loops aninhados/múltiplos latches,
+  fluxo irredutível, traps, overflow, IEEE, Move/drop/borrow, calls/globals,
+  corrotinas e repetição determinística.
+- Oráculos O0/O1/O2/Os entre C/Cranelift/Wasm conforme o recorte; comparar
+  saída, traps e efeitos, não apenas uma forma de IR ou um resultado entre dois
+  backends que podem compartilhar o mesmo defeito.
+- Medir por função/passe: CPU/parede/RSS, construções/hits, iterações,
+  tamanho da IR/código, compile-time e runtime. Não alegar ausência de spill,
+  heap, load/store ou custo com base só em número de blocos/linhas/clones.
+- Nenhum passe vira default por uma fixture. O1 continua baseline e O2
+  `experimental` até gate completo, corpus E2E e benefício representativo.
+
+## Trilha da Stack Científica, Numérica e de Dados — RFC 0012
+
+Trilha independente, fora da promessa do compilador 1.0; os recortes de biblioteca
+presentes na árvore não tornam todo o ecossistema implementado. Esta trilha formaliza os marcos de maturidade para a infraestrutura oficial de
 computação científica, tensores, processamento colunar analítico e modelagem
 matemática, preservando o invariante de zero alocação oculta, `no_std` no core
 e interoperabilidade nativa com o padrão Apache Arrow.
@@ -289,1340 +431,65 @@ e interoperabilidade nativa com o padrão Apache Arrow.
 | SCI.3 — Arandu Compute | `planned` | Motor de consultas preguiçosas (*lazy query engine*). Representação de planos lógicos desacoplada com otimizador puro em pipeline: predicate pushdown, projection pushdown, slice pushdown e simplificação de expressões. Motor de execução física colunar em streaming chunked com controle estrito de RSS para datasets maiores que a memória RAM. |
 | SCI.4 — Arandu Science | `planned` | Matrizes esparsas com ciclo de vida segregado: `CooBuilder` para construção dinâmica mutável e `CsrMatrix`/`CscMatrix`/`BsrMatrix` para computação imutável de alto desempenho. Algoritmos de grafos e redes complexas implementados via álgebra linear esparsa e semirings (padrão GraphBLAS: SpMV, SpGEMM). Transformada rápida de Fourier baseada no modelo de planos reutilizáveis (FFTW: `Plan.estimate` vs `Plan.measure`). Geradores de números pseudo-aleatórios counter-based (Philox) e PCG desacoplados de distribuições, sem estado global mutável e compatíveis com paralelismo determinístico. Solvers para EDOs e processamento digital de sinais. |
 
-### Trilha de IntelliSense, IDE e Playground — consolidação
+## IDE, LSP e playground
 
-A direção é uma única engine de análise neutra compartilhada pelo servidor de
-linguagem e pelo playground wasm, apoiada no pipeline CST-first resiliente
-([RFC 0010](./rfcs/0010-cst-resilient-ide-typeck.md)) e no backend Component
-Model ([RFC 0014](./rfcs/0014-native-wasm-component-model-and-runtime.md)).
-Os itens abaixo consolidam desempenho, paridade de apresentação e tooling; não
-criam sintaxe, não relaxam o `parse` estrito e não introduzem uma API de editor
-paralela. O compilador continua retornando erro no primeiro diagnóstico; apenas
-o caminho IDE analisa o programa recuperado.
-
-| Item | Estado | Corpo funcional e critério de saída |
+| ID | Estado | Próxima obrigação |
 | --- | --- | --- |
-| IDE.1 — Sessão de análise quente no wasm | `planned` | Manter uma `AnalysisHost` viva no playground e aplicar edições incrementais em vez de reconstruir a DB a cada request de completion. Critério: orçamento de latência documentado no host de referência e itens semânticos idênticos aos do caminho atual. |
-| IDE.2 — Memoização por item do typeck recuperado | `planned` | Aproveitar os memos por item no fallback que analisa um buffer com erro de sintaxe (hoje resolve/checa por request). Critério: cutoff comprovado entre edições que não alteram o item, sem acumular diagnósticos nem tocar `parse`/`type_check`. |
-| IDE.3 — `sortText`/`filterText` alinhados ao cliente | `partial` | Mapear o rank neutro para `sortText` e `filterText` estáveis no LSP e no Monaco. Critério: ordem determinística idêntica entre os dois clientes para o mesmo buffer. |
-| IDE.4 — Hover e signature help sobre apresentação única | `planned` | Consumir a apresentação de tipos, assinaturas e doc comments no hover e no signature help dos dois clientes. Critério: mesma assinatura ativa e nenhum `SymbolId`/`Debug` de IR exposto ao usuário. |
-| IDE.5 — Alinhamento ao marco de typed holes | `planned` | Aproximar a superfície IDE do marco de typed holes listado acima: tipos, completion e hover durante código incompleto, com execução ainda bloqueada. Critério: nenhum caminho de execução aceita programa com holes. |
-| IDE.6 — Build wasm reprodutível e site | `planned` | Automatizar o build do playground fora do host (override das flags de linker globais e perfil sem debug info) e manter o site consumindo o artefato com `astro check` limpo ou exceções justificadas. Critério: um comando reproduz o `.wasm` de ~4 MB e o site o publica sem edição manual. |
-
-### Resíduos que continuam abertos
-
-- GenRef R0 possui casca pública congelada ([RFC 0001](./rfcs/0001-generational-fallback-genref.md))
-  para aferição experimental (sem concorrência nos handles, thread-confined, host-only).
-  Evoluções como inlining R1 e cross-thread channels pertencem a marcos posteriores.
-- Governança formal de RFCs unificada em `docs/rfcs/`.
-- A remoção dos aliases legados de anotações exige uma fronteira de release.
-- A separação completa `constraint_gen`/solver do type checker é melhoria de
-  arquitetura planejada, não bloqueador das garantias atuais.
-- Runtime async completo, effect system, ABI pública geral, LLVM, cache estável,
-  ecossistema e self-hosting continuam nos marcos futuros abaixo.
-
-### Linhas de pesquisa avaliadas
-
-Estas linhas foram confrontadas com papers e especificações primárias. Elas não
-autorizam implementação imediata: só viram marco executável quando houver
-contrato, benchmark ou prova de segurança que justifique o custo.
-
-| Linha | Estado | Aplicação possível no Arandu | Referência primária |
-| --- | --- | --- | --- |
-| Typed holes e sintaxe total | `planned` | LSP mantém tipos, completion e hover durante código incompleto; execução continua bloqueada enquanto houver holes | [Hazelnut Live](https://arxiv.org/abs/1805.00155), [Live Pattern Matching with Typed Holes](https://doi.org/10.1145/3586048) |
-| Effects + capabilities | `planned` | A2 evolui de rótulos de efeito para autoridade explícita sobre rede, filesystem (`std.fs.Dir` / [RFC 0016](./rfcs/0016-capability-safe-filesystem-and-path-resolution.md)), processos e FFI; contenção de kernel contra TOCTOU/symlinks | [Capsicum](https://www.usenix.org/legacy/event/sec10/tech/full_papers/Watson.pdf), [RFC 0016](./rfcs/0016-capability-safe-filesystem-and-path-resolution.md), [Effect Capabilities](https://doi.org/10.1016/j.scico.2015.12.002), [Object-Capability Model](https://arxiv.org/abs/1907.07154) |
-| Teste diferencial/metamórfico | `partial` | Fuzzing incremental compara diagnósticos após edições de texto e do grafo de módulos com uma DB nova; ampliar a comparação C/Cranelift e transformações semanticamente equivalentes no SL_T permanece pendente | [Csmith](https://users.cs.utah.edu/~regehr/papers/pldi11-preprint.pdf), [Metamorphic Testing de compiladores](https://onlinelibrary.wiley.com/doi/10.1002/stvr.1812) |
-| Equality saturation/e-graphs | `research` | Otimizações AMIR para expressões puras depois de benchmark de custo e limite de crescimento do e-graph | [egg](https://arxiv.org/abs/2004.03082) |
-| WebAssembly Component Model/WIT | `planned` | target WASM, plugins e compiler service com interfaces tipadas e ABI portável; substitui a ideia de usar Protobuf como ABI | [WIT](https://component-model.bytecodealliance.org/design/wit.html), [Component Model](https://component-model.bytecodealliance.org/design/component-model-concepts.html) |
-| Visibilidade granular e superfície de módulo | `planned` | `internal`, `sealed interface`, re-exports (`public use`), submódulos inline e quatro níveis de visibilidade para encapsulamento em projetos colaborativos/corporativos | [RFC 0021](./rfcs/0021-visibility-and-module-surface.md) |
-| Refinement types leves | `research` | Contratos opcionais para índices, paths, handles e estados de recursos sem introduzir tipos dependentes completos | [Refinement Types: A Tutorial](https://arxiv.org/abs/2010.07763) |
-| Núcleo formal OSSA/GenRef | `research` | Provar em um microcálculo as regras de ownership, promoção e ausência de use-after-free antes de tentar provar o compilador inteiro | [RustBelt](https://plv.mpi-sws.org/rustbelt/popl18/paper.pdf) |
-| Incrementalidade orientada à demanda | `research` | Estudar reutilização de resultados não observados sem substituir Salsa antes de medir workloads reais | [Adapton](https://matthewhammer.org/adapton/adapton-pldi2014.pdf) |
-
-As quatro linhas com maior retorno provável são typed holes, capabilities,
-teste diferencial/metamórfico e WebAssembly Component Model. E-graphs,
-refinement types, prova formal e incrementalidade orientada à demanda ficam
-como pesquisa até que a linguagem tenha workloads e contratos suficientes.
-
----
-
-## 📊 Painel de Progresso
-
-Legenda: `[x]` feito · `[/]` em andamento · `[ ]` não iniciado
-
-### Pipeline de Compilação
-
-| Passo | Estado | Notas |
-|-------|--------|-------|
-| Lexer | `[x]` | Recovery, spans, semicolon insertion |
-| Parser → AST | `[x]` | AST estruturada, `self`, `Result<T,E>` canônico |
-| Name resolver | `[x]` | N001–N006 |
-| Type checker | `[x]` | HM Bidirecional, `TypeId` interner |
-| AHIR | `[x]` | Golden `tests/hir/` |
-| AMIR CFG | `[x]` | Dominadores, SSA registers vs stack slots |
-| Definite init | `[x]` | lattices, InitBits flow, O008 diagnostic |
-| Move checker | `[x]` | OSSA intraprocedural, O001/O005/O007, spans reais |
-| Middle-end opt | `[/]` | O1: SCCP tipado + DCE + SimplifyCFG; O2 experimental com scalar replacement Copy, self-tail calls escalares, GVN, LICM seguro e tail merging; restrições e gates restantes em 3.2 |
-| Backend Cranelift | `[x]` | v0.2 Dev/Debug |
-| Backend C | `[x]` | Portabilidade fallback |
-| Backend LLVM | `[ ]` | v0.4+ Release Optimizer |
-
-### Marcos de Entrega
-
-```
-Fase 1 — Estabilização Semântica (v0.1) · [CONCLUÍDA]
-[x] B      Result<T,E> + Option<T> no type checker
-[x] C      receiver canônico (`self: own T` | `self: mut ref T` | `self: ref T`)
-[x] T      Generics instantiations + Constraints (Go-style)
-[x] G      Definite initialization (O008)
-[x] F1     Instruções OSSA no AMIR (StorageLive/StorageDead/Destroy/Borrow/Move)
-[x] M1     Move checker básico (O001, O005, O007) com spans reais (BUG-01)
-[x] O1     Constant folding + DCE com bitset denso O(1) (SCALE-02)
-
-Fase 2 — A Construção da Infraestrutura & Execução (marco histórico) · [FECHADA no checklist de infra]
-                  · Residual de produto em Fase 3 (F2 OSSA, A3 compiler model) tratado abaixo.
-[x] INF2.1 Refatoração para InternPool (AstPool & TypeInterner centralizado)
-[x] HIR Pool-first migration — structural HIR nodes (blocks, stmts, expr-blocks) stored in `HirPool` and referenced via `HirBlockId` (lowering, monomorphize, pretty-print, AMIR lowering and tests updated)
-[x] ARCH   Decomposição de monólitos — pass manager/AmirBuilder, handlers LSP,
-           `arandu_runtime` e `arandu_codegen` extraídos; ownership dos crates
-           e testes arquiteturais impedem reacoplamento.
-[x] A5     Layout de Dados Orientado a Objetos/Registros (SoA, dense ID-based graphs no AMIR/CFG)
-[x] A6     CPU-Oriented Execution Model (table-driven parsing, branchless categorization)
-[x] A7     Portable SIMD Infrastructure (AVX2/NEON UTF-8 validation e keyword matching)
-[x] A8     Parallel Task Scheduler (work-stealing DAG, thread-local arenas, affinity)
-[x] A9     Dense Bitset Infrastructure (dataflow, liveness, OSSA/DCE bits)
-[x] A10    Stable ID Infrastructure
-   ├─ [x] A10.a  IDs inteiros estáveis (ExprId, TypeId, SymbolId — NonZeroU32 + IndexVec) — em uso em todo o compilador
-   ├─ [x] A10.b  StableHandle por hash estrutural — removido (código morto, nunca integrado)
-   ├─ [x] A10.c  Generational IDs — `DocumentStore` + `slotmap::SlotMap` (`DocumentId`);
-   │              close/reopen invalida handles antigos (testes em `doc_store`)
-   └─ [x] A10.d  AnalysisRevision / LspSymbolId — stale-safety de análise por revisão de snapshot
-                  (não generation em SymbolId); ver `arandu_query::analysis`
-[x] A11    Token & String Storage Engine (packed tokens, SSO via smol_str, string interning)
-[x] BC     Backend Cranelift (Dev/Debug com compilador em memória)
-   ├─ [x] BC.1   Fat Pointer String JIT (tratar String como ptr + len na convenção de chamadas do Cranelift)
-   ├─ [x] BC.1a  Fechar ownership de buffers produzidos por `ToStr`, interpolação
-   │              e helpers de path nos dois backends; elaboração de drop glue
-   │              em `drop_elaborate` e limpeza de temporários em statement boundaries.
-   ├─ [x] BC.2   Implementar EnumPayload & Discriminant no Cranelift JIT (Garantia estática contra double-free depende de M2; atualmente mitigado via poison-check em debug)
-   ├─ [x] BC.3   Implementar IndexAccess & Array/Tuple no Cranelift JIT (Garantia estática contra double-free depende de M2; atualmente mitigado via poison-check em debug)
-   ├─ [x] BC.4a  Borrow/BorrowMut no Cranelift JIT
-   │              · `AmirProjection::Deref` + place addr via `use_var` (nunca `stack_addr` do slot do ponteiro)
-   │              · materializar base (`is_memory`) em place projetado para Stores sobreviverem ao prune
-   │              · `ref T`/`mut ref T` local: F2.0–F2.3 (stack home + OSSA);
-   │                projeções seguras sobre storage indireto: path BC.4a
-   │              · backend C: `format_place` com Deref lvalue
-   ├─ [x] BC.4b  Await no Cranelift JIT (A3.0–A3.6: layout disc/payload + block_on; scheduler = SL_R)
-   ├─ [x] BC.5   Classificador ABI por target para tipos nomeados no Cranelift;
-   │              não usar limiar universal `<=16`: SysV AMD64, Windows x64 e
-   │              AArch64 divergem em passagem/retorno de agregados
-   └─ [x] FUZZ   Fuzzing Lexer/Parser SIMD (arandu_fuzz e cron jobs semanais de robustez)
-[x] C_FB   Backend C de portabilidade e bootstrapping
-[x] DX     Diagnostics & Tooling Infrastructure (DX1-DX3, DX4 CFG visualization; DX2 recovery anchors completed)
-[x] PERF   Compiler Instrumentation & Observabilidade (pass timers, allocations, query logs, -Z flags, tracing-based self-profile)
-    ├─ [x] PERF.1   Tracing subscriber + -Zdebug-* flags via EnvFilter (replaces time_pass!/debug_point!)
-    ├─ [x] PERF.2   SelfProfile Layer — feature `self-profile` + debug build;
-    │               Trace Event JSON em memória e `finalize_self_profile()`
-    ├─ [x] PERF.3   #[instrument] em 22 funções críticas (parser, unify, typeck, resolve, etc.)
-    └─ [x] PERF.4   ParseCache (legado CompileSession) — absorvido pela query Salsa `parse`
-[x] SL_C   Scaffolding da stdlib: primitivas iniciais de `core`/`alloc` e provas
-           de compilação; não equivale ao contrato público Gold de `SL_S-Core`
-[x] DOC1   docs/ossa-virtual-anchoring.md — RFC retroativo documentando a técnica de âncoras virtuais + poda
-
-Fase 3 — OSSA Avançado, Semântica e OS Runtime (marco histórico) · [PARCIAL; vários marcos concluídos]
-[x] A1     Query System (Incremental Semantic Database, Salsa-like O(1) invalidation)
-   ├─ [x] A1.1   Salsa Integration / CompilerDatabase migration (`CompileSession` removido)
-   ├─ [x] A1.2   O(1) FileId lookup em DatabaseImpl (índice reverso FileId→SourceFile via FxHashMap)
-   ├─ [x] A1.3   Dataflow por bloco — `liveness_facts` / `block_dataflow_facts` (live+init+move)
-   ├─ [x] A1.4   F4 IDE diags — `file_ide_diagnostics` / `func_analysis_diags` + early cutoff
-   ├─ [x] DX.5   Causal-Chain explain-rebuild — `RebuildLog` + Salsa `Event` callback;
-   │              CLI `-Zexplain-rebuild`; testes `explain_rebuild`
-   └─ [x] DX.6   LSP gold — `arandu_lsp` com `lsp-server` + main síncrona + VFS debounce +
-                 snapshot workers (`AnalysisHost`/`AnalysisSnapshot`); diagnostics + goto-def +
-                 multi-file; `DocumentId` geracional; stale revision descarta jobs
-[x] DX.6a   Descoberta inicial e reload de pacote aguardam a entrega das respostas
-            interativas; controle limitado a 64 requests e um reload coalescido.
-            Regressões controladas cobrem ordenação, erro, cancelamento, saturação
-            e revisão stale sem relaxar `stdio_open_document_stays_interactive_during_discovery`.
-[x] PERF.5  Arc nos campos pesados de TypeCheckResult (pré-requisito para DX.6)
-   │  Feito: symbols / resolved / type_info atrás de `Arc`; diagnostics por valor.
-   │  Clone de `TypeCheckResult` é O(1) atomic refcount; `type_info_mut()` /
-   │  `Arc::make_mut` no lower HIR quando o interner precisa mutar.
-   │  `check_bodies_only` usa `Arc::unwrap_or_clone` ao reentrar no checker.
-[x] A2     Effect System (pure, readonly, noalloc, nothrow, nosuspend)
-[x] A3     Modelo Async **no compilador** (colorless / corrotina) — FECHADO como marco de language
-   │  Fronteira honesta: **não** é async runtime. `await` = block_on; scheduler/Waker/I/O = **SL_R**.
-   ├─ [x] A3.0   `async func` / `async {}` → `Coroutine[T]`; `CoroutineReady`
-   ├─ [x] A3.1   `Suspend` CFG frontier + resume
-   ├─ [x] A3.2   borrow-across-await (O010 absolute; A3.4 rewrites local refs)
-   ├─ [x] A3.3   stack-first `CoroutineReady.stack` (C multi-stmt)
-   ├─ [x] A3.4   pin-free `RelativeBorrow` / Load rewrite
-   ├─ [x] A3.5   dense live capture em `Suspend.args`
-   ├─ [x] A3.6   poll layout + block_on + `Poll[T]` typeck
-   └─ [→] SL_R    Runtime async real (fila, Waker, I/O) — **próximo marco async**, não residual A3
-[x] A4     Memory Layout Optimization Engine (field reordering, niche tags, SOO)
-   ├─ [x] A4.0   Struct Field Reordering (eliminação de padding)
-   ├─ [x] A4.1   Niche Optimization (Option/Enum Packing) — REQUER F2.0 referências seguras
-   ├─ [x] A4.2   Pointer Tagging (metadados nos bits menos significativos)
-   └─ [x] A4.3   Small Object Optimization (SOO) para tipos <= 24 bytes
-[x] F2     OSSA borrow completo — FECHADO no escopo de linguagem v0.3 compiler
-   │  Residuals W3 (parcialmente fechados):
-   │  · [x] auto-ref/auto-deref call args & method receivers (`T` ↔ `ref T`/`mut ref T`)
-   │  · [x] lower materializa `Borrow`/`BorrowMut` quando formal é Ref/RefMut
-   │  · [x] `ArgConsumeKind::is_exclusive` (`mut ref` vs `ref`)
-   │  · [x] assinaturas canônicas carregam `ref T`/`mut ref T` diretamente
-   │  Backend honesty (W5):
-   │  · [x] T033 barrando call indireto no typeck; JIT só rede de segurança
-   │  · [x] `??` é CFG no AMIR; BinaryOp::NullCoalesce no JIT = ICE de pipeline
-   ├─ [x] F2.0   Tipos seguros `ref T` / `mut ref T` no parser + type-checker
-   ├─ [x] F2.1   Local Borrow Checking Incremental (Salsa `block_borrow_facts` / may-borrow dataflow A9)
-   ├─ [x] F2.2   Janelas de Liveness de Empréstimos (loan window = live range da ref; `is_borrowed_at`)
-   ├─ [x] F2.3   Escape policy + O004/O010 + G2 promote (análise + GenRef nos backends i64 MVP)
-   │    ├─ [x] F2.3.1 Escape detection (return → O010; heap-store → O004 path)
-   │    ├─ [x] F2.3.2 O004 nota informativa (Magia Inspecionável — nunca silencioso)
-   │    └─ [x] F2.3.3 G2: `@NoFallback` / `--no-generational-fallback` promove O004→erro
-   └─ [x] F2.3.runtime  GenRef Gold no escopo seguro do
-        │               `docs/arandu-genref-gold-rfc-v0.1.md`
-        ├─ [x] Handle opaco tipado, identidade de arena, zero inválido e retirement sem ABA
-        ├─ [x] AMIR `GenInsert`/`GenGet`/`GenSet`/`GenUpsert`/`GenRemove` validada
-        ├─ [x] Payload type-erased com `DataLayout`, ownership e drop glue explícitos
-        ├─ [x] Promoção CFG para raízes representáveis; projeções sem owner/path first-class são rejeitadas
-        ├─ [x] Paridade C/Cranelift, shutdown determinístico e ausência do limite legado de 256 slots
-        ├─ [x] O004 rico, quick fix `@NoFallback`, relatório opt-in e métricas puras
-        └─ [x] Fuzz/oracle, endurance, Miri, ASan e UBSan; thread/FFI/persistência fora do escopo
-[x] M2     Move checker avançado (O002, O003, O006) — `borrow_check` sobre F2.1/F2.2
-           └─ Poison 0xDE em debug (BC.2/BC.3) permanece defesa extra, não substituto de M2
-[x] G2     fundido em F2.3.3 (promote O004; ver acima)
-[x] T2     DX Enhancements: Default Generic Parameters & Scoped Enum Variant Sugar
-   ├─ [x] T2.1   Default Generic Parameters (`T = Default`; expand on lower/return/instantiate; stdlib `Vec<T>` / `GenArena<T>` use `A = GlobalAllocator`)
-   └─ [x] T2.2   Implicit Enum Variant Dot-Notation Sugar (`.Ok`/`.None`/`.Some`/`.Pending` via expected type on return/let/set; `VariantSugar` AST + HIR ResultCtor)
-[x] T3     DX: Import Sem Aspas para Módulos Internos (LSP-friendly path tokens)
-   │
-   │  Motivação: `import "std.core.mem" as mem` usa uma string opaca que o LSP
-   │  não consegue completar sem tratamento especial de "cursor dentro de string".
-   │  Com `import std.core.mem as mem` o lexer emite tokens limpos (IDENT + DOT)
-   │  que o LSP completa com o mesmo mecanismo de qualquer expressão pontuada.
-   │  Strings com aspas continuam válidas para paths de filesystem com caracteres
-   │  inválidos como identificadores (barras, hifens, domínios).
-   │
-   ├─ [x] T3.1   AST: ImportDecl::ModuleAlias { span, path, alias }
-   ├─ [x] T3.2   Parser hand+RD: `import <path> as <alias>` sem aspas
-   ├─ [x] T3.3   Resolve: ModuleAlias via canonicalize_import_path + collect/load
-   ├─ [x] T3.4   Stdlib migrada (core/alloc usam path tokens; residual aspas só onde External)
-   ├─ [x] T3.5   Contrato parser: import_module + import_module_alias_path
-   └─ [x] T3.6   LSP complete em path tokens `import std.▮` + members `alias.▮` (W4)
-[x] SL_S-Core   Stdlib fundamental: targets `bin`/`lib`, multi-file HIR link,
-                 módulos/imports e fundação `std.core`/`std.alloc` em camelCase;
-                 resta fechar ownership genérico, OOM/allocators, paridade de alvo
-                 e a janela explícita de migração antes da promoção Gold
-                 · AUD.0–AUD.5 e BV.1–BV.3 implementados: contratos de retorno,
-                   múltiplas origens, carriers OSSA e APIs seguras de `[]T` e
-                   `String` preservam proveniência somente em compile-time;
-                   a classificação global continua **parcial** pelos gates de
-                   allocator, drop e matriz nativa; relatório
-                   permanente em [arquitetura da stdlib](./arandu-stdlib-architecture-v0.1.md#relatório-final-aud5--segurança-de-borrowed-views)
-                 · [ ] evidência nativa de pointer width 32 quando um SDK 32-bit
-                   for oficialmente publicado; layout 32/64 já possui regressão
-    ├─ [x] SL_S-Core.1  Fundação freestanding (`std.core` / [RFC 0017](./rfcs/0017-lean-freestanding-core-architecture.md)):
-    │                   Zero OS, Zero Heap Global, Zero Threads; `str` usa somente intrínseco do compilador e
-    │                   o paralelismo com runtime/alocação reside em `std.parallel`, fora de `std.core`
-    ├─ [ ] SL_S-Core.2  Anti-Panic Bloat: emissão de traps nativos de 1 instrução (`UD2`/`BKPT`/`EBREAK`)
-    │                   com `TrapCode` de 32 bits, sem metadados de string ou vtables de formatação em produção
-    ├─ [→] SL_S-Core.3  Primitivas para hardware restrito: `std.core.fixed.Q16_16` usa armazenamento `i32`
-    │                   e intermediários `i64`; Q8.8/Q32.32, operações checked e intrínsecos (`clz`, `ctz`, `popcount`, `bswap`) permanecem
-    └─ [x] SL_S-Core.4  I/O abstrato em memória: interfaces `Reader`/`Writer`/`Seeker` e implementações
-                        `SliceReader`/`SliceWriter` sobre buffers fornecidos pelo chamador (`std.core.io`)
-[x] SL_S-Host   APIs de sistema: host path/rt helpers, filesystem e processos;
-                 depende de A2 e de contratos nativos por plataforma
-    ├─ [x] SL_S-Host.1  Primitivas básicas de leitura e diretório (`readToString`, `DirListing` em `std.fs`, runtime C/Cranelift)
-    ├─ [ ] SL_S-Host.2  Capacidade de diretório e resolução segura ([RFC 0016](./rfcs/0016-capability-safe-filesystem-and-path-resolution.md)):
-    │                   introduzir `std.fs.Dir` em `std.fs` e `arandu_std::os::descriptors` eliminando autoridade ambiente em mutações
-    ├─ [ ] SL_S-Host.3  Motor nativo imune a TOCTOU/Symlink races: `openat2` (`RESOLVE_BENEATH`) no Linux, `openat`/`unlinkat` (`O_NOFOLLOW`)
-    │                   no Darwin/BSD, e `FILE_FLAG_OPEN_REPARSE_POINT` com semântica POSIX no Windows NT
-    ├─ [ ] SL_S-Host.4  Blindagem de limites do VFS do compilador: hardening em `scan_aru_entries_rec` (`arandu_query::vfs`)
-    │                   para auditar `d_type` e abortar travessia de symlinks que escapem de `package_src`
-    └─ [ ] SL_S-Host.5  Efeitos de sistema de arquivos e política de pacotes: distinção formal entre `@Effects(FileRead/FileWrite)`
-                        (escopo de capacidade) e `@Effects(AmbientFsRead/AmbientFsWrite)` (acesso irrestrito bloqueável via `arandu.toml`)
-[x] SL_R   Async Runtime: SL_R.0 typed spawn/join/block_on Coroutine + SyncExecutor; SL_R.2 EpollReactor (epoll+timerfd); SL_R.1/3 open
-[x] SL_P   [Processamento paralelo estruturado](./arandu-structured-parallelism-v0.1.md):
-           corpo funcional integrado; `WorkerPool` bounded e reutilizável no runtime Rust,
-           WorkThunk ABI `(ptr[C], ptr[R]) -> i32`, operação pública `parallelFold`
-           em `std.parallel`, inlining automático no AMIR (`arandu_mir::inlining`),
-           chunks fixos independentes da contagem de workers, seed/identidade separadas,
-            slabs alinhados e integração Pypor acima do cutoff. O backend C usa
-            worker pool nativo reutilizável com fila bounded e self-help. Promoção a Gold depende de:
-            · [x] pool reutilizável no backend C com fila bounded e self-help
-            · [ ] benchmark versionado e reproduzível com 1/2/4/8 workers
-            · [ ] matriz nativa Windows/macOS com cancelamento e falha de spawn
-            · [ ] desenho de ownership/drop glue antes de aceitar resultados não-`Copy`
-[x] SL_T   [Testing & Benchmark Harness](./arandu-testing-benchmark-harness-v0.1.md):
-           implementação, SDK/VSIX e matriz nativa concluídos; soak operacional
-           permanece como único requisito para promoção formal a Gold
-
-Fase 4 — Expressividade de Linguagem e Tipagem (marco histórico) · [PARCIAL; superfície inicial integrada]
-[x] SYN.1  Retorno implícito: última `Expr` do body → valor de retorno (typeck + AMIR; async wrap A3)
-[x] SYN.2  Interpolação: `$name` + `${expr}` (lexer → StringInterp/ToStr; e2e CLI)
-[x] SYN.3  Opcionais: `nil` → Option.None (contexto); match Some/None no AMIR; `T?` permanece Nullable (§2.1)
-[x] SYN.4  Patterns: `_`, binds, ranges, or-patterns `p1|p2` (parse/typeck/AMIR)
-   ├─ [x] SYN.4.1  Desconstrução Qualificada em Patterns: suporte transparente a enums do prelude/core (`Option.Some(v)`, `Option.None`, `Result.Ok(v)`, `Result.Err(v)`) em `is`/`match`, evitando desvio para enums nominais de usuário com erro T018 e oferecendo diagnósticos estruturados com hints
-   └─ [x] SYN.4.2  Condições de Padrão Compostas: encadeamento de múltiplos padrões e expressões booleanas em guardas de controle de fluxo (`if a is Some(x) && b is Some(y)`), eliminando aninhamentos artificiais em kernels e coleções
-[x] SYN.5  Identificadores Contextuais em Membros: relaxamento léxico/sintático permitindo palavras reservadas da linguagem como nomes de campos e métodos após `.` (`obj.set(...)`, `Type.set`)
-[→] TYP.1  Structural interface satisfaction (method sig duck) — done; dyn/existential interface types later
-[x] TYP.2  Constraints: `<T: I>` + `where T: I`; Self em interface; check_instantiation T025; call via bound
-[x] TYP.3  Inferência Bidirecional e Coerção Segura de Literais (Target-Aware Literal Unification)
-   ├─ [x] TYP.3.1  Descida Contextual Direta (`expected: Option<TypeId>` em chamadas, let, retornos e campos; validação com `TargetInfo` e T038)
-   ├─ [x] TYP.3.2  Propagação em Operadores Binários e Coleções (Inferência contextual em `1 + x`, `x + 1`, `[1, 2, 3]` sem casts manuais)
-   └─ [x] TYP.3.3  Unificação de Restrições Tardias no Solver (`TypeVar` de literais não resolvidos; resolução retroativa sem fallback arbitrário `i32`)
-[x] TYP.4  Const Generics em Parâmetros de Tipo: suporte a parâmetros inteiros/escalares em structs e aliases (`struct StaticMatrix<T, const M: uint, const N: uint>`), unificando matrizes de stack e buffers de tamanho fixo sem duplicação de tipos dedicados
-
-Fase 5 — Otimização Global, CodeGen & Ecossistema (marco histórico) · [NÃO INICIADA]
-[ ] LLVM   Backend LLVM (Release Optimizer, LTO, PGO profile-guided optimization pipeline)
-[ ] REG    Register Allocation (Linear Scan para Cranelift, Graph Coloring para LLVM)
-[ ] GEN    Adaptive Monomorphization (Witness tables para cold paths vs Lazy Monomorphization para loops)
-[ ] ABI    ABI & Layout Stability (repr(C) garantido, fat pointers, stable calling conventions)
-   ├─ [x] ABI.1   Classificador de ABI System V AMD64 / Calling Conventions (BC.5): classificação de agregados (INTEGER, SSE, MEMORY) para passagem/retorno de structs <= 16 bytes em registradores no Cranelift/LLVM.
-   └─ [→] DBG     Metadados DWARF v5: `build --debug` emite `.debug_info`, `.debug_line` e `.debug_loclists`,
-                  com spans, argumentos e variáveis escalares validados no GDB. Agregados completos, matriz LLDB,
-                  integração VS Code e stack traces de panic ainda são gates pendentes da Fase 3.
-[ ] C_PRETTY Emissor C Idiomático e Estruturado ([RFC 0018](./rfcs/0018-pretty-idiomatic-c-codegen.md)):
-   ├─ [ ] C_PRETTY.1  Reestruturação de Controle de Fluxo: algoritmo de dominância/Relooper convertendo o grafo de BasicBlocks em `if`/`else`, `while`, `for` e `switch`, eliminando >95% dos `goto bbX;`
-   ├─ [ ] C_PRETTY.2  Preservação de Identificadores Reais: mapeamento de `SymbolTable` para restaurar nomes de variáveis originais e escopos `{ ... }` locais
-   ├─ [ ] C_PRETTY.3  Coalescência de Expressões SSA: inline de temporários de uso único em expressões C naturais (`int res = (a + b) * c;`)
-   └─ [ ] C_PRETTY.4  Geração Canônica de Headers `.h`: exportação de interfaces C limpas com documentação e tipos `<stdint.h>` para integração direta em projetos C/C++ e conformidade MISRA C (Regra 15.1)
-[x] PAN    Panic & Error Model sem unwinding (abort nativo UD2/BRK, zero metadata overhead)
-[ ] CACHE  Cache Compartilhado Global e Target Zero-Bloat ([RFC 0019](./rfcs/0019-zero-bloat-target-and-shared-cache.md)):
-   ├─ [ ] CACHE.1  Content-Addressable Storage (CAS) Global: repositório centralizado indexado por BLAKE3 em `~/.cache/arandu/cas/` deduplicando artefatos compilados entre todos os projetos locais
-   ├─ [ ] CACHE.2  Target Local Zero-Bloat: diretório `target/` do projeto estritamente restrito a binários e bibliotecas finais (`bin/`, `lib/`), banindo objetos intermediários (`.o`), `.amir` e sessões incrementais
-   ├─ [ ] CACHE.3  Publicação por Cópia em Gravação (CoW/Reflinks): instanciação instantânea no `target/` via `ioctl(FICLONE)`, `clonefile` ou hardlink com zero consumo adicional de blocos físicos
-   ├─ [ ] CACHE.4  Coletor de Lixo LRU Automático: política de teto de disco rígido (default: 2,0 GiB) com expurgo assíncrono em background sem necessidade de ferramentas externas ou intervenção manual
-   └─ [→] CACHE.5  Envelope binário v1 atômico para payloads canônicos `.air`, `.amir` e `.ameta`, com namespace,
-                   comprimentos e hashes BLAKE3 verificados fail-closed. Os payloads atuais são dumps textuais write-only:
-                   hidratação direta de AST/AMIR, compatibilidade evolutiva e cutoff real por IR desserializada permanecem pendentes.
-* Mover json e xml para arandu_ext::serialization
-[ ] EXT    Ecosystem Extensions: arandu_ext (ecs, game loop, renderer, audio, media, physics, gui — Out-of-Tree)
-[ ] SCI    Scientific & Data Stack (Out-of-Tree / Crates Externas): arandu_math, arandu_data, arandu_science (RFC 0012)
-   ├─ [→] SCI.1  Fundação matemática parcial (views 2D, Matrix/StaticMatrix, *_into e ScratchArena);
-   │              Array N-dimensional, prova zero-allocation, SIMD, GEMM bloqueado e BLAS permanecem
-   ├─ [ ] SCI.2  Arandu Data v1 (Layout colunar Arrow, RecordBatch, validity bitmaps, Arrow C Data Interface zero-copy)
-   ├─ [ ] SCI.3  Arandu Compute (Motor de queries lazy, otimizador com pushdowns, executor streaming chunked)
-   └─ [ ] SCI.4  Arandu Science (Esparsos COO/CSR/CSC, GraphBLAS semirings, FFTW plans, Philox RNG, ODE solvers)
-
-Fase 6 — Bootstrap & Auto-Hospedagem (v1.0) · [NÃO INICIADA]
-[ ] HOST   Self-Hosting: compilador Arandu compilando a si mesmo de forma convergente (3-passos)
-[ ] BOOT   Remoção total de dependências do compilador Rust para build releases
-[ ] DIST   Empacotamento Nativo e Eliminação de Python ([RFC 0020](./rfcs/0020-native-packaging-and-python-eradication.md)):
-   ├─ [ ] DIST.1  Motor de Empacotamento no `xtask`: comandos `package-archive` e `validate-archive` em Rust puro (`tar`, `flate2`, `zip`), normalizando mtime (`SOURCE_DATE_EPOCH`), uid/gid 0 e permissões
-   ├─ [ ] DIST.2  Agregação de Assets de Release: comando `prepare-release-assets` em `xtask` gerando `SHA256SUMS`, `BLAKE3SUMS` e `release-manifest.json` com `sha2` e `blake3` nativos
-   ├─ [ ] DIST.3  Hardening de Instaladores Shell: remoção de `python3` de `install.sh` e `install-from-tarball.sh`, cascata de SHA-256 (`sha256sum`/`shasum`/`openssl`) e validação via `arandu hash-file`
-   └─ [ ] DIST.4  Validador Nativo no CLI (`arandu archive validate`): validação estrutural de segurança e manifest embutida no binário Arandu sem dependência de runtimes externos
-[ ] MS     Completa compilação paralela usando o runtime nativo de concorrência com compilação < 3 segundos
-
-Fase E — Ferramentas Integradas e Ecossistema (Evoluções Fora do Core) · [NÃO INICIADA]
-[ ] E1     REPL Interativo (`arandu repl` com compilação JIT incremental em memória via Cranelift)
-[ ] E2     Gerador de Documentação Integrado (`arandu doc` extraindo Rowan pending_docs para HTML estático)
-[ ] E3     FFI Bindgen Automatizado (`arandu bindgen` bidirecional C/Arandu para stubs extern)
-[ ] E4     Gerenciador de Pacotes Integrado (`arandu pkg` com manifesto arandu.toml e resolvedor Git)
-[ ] E5     Linter de Alocação e Escape (`arandu clippy` baseado no fluxo OSSA para performance)
-```
-
----
-
-## 🏛️ Os 6 Invariantes Arquiteturais do Arandu
-
-Para evitar o inchaço de binários do Rust e o overhead de runtimes pesados tradicionais, o compilador do Arandu assume seis premissas fixas de design:
-
-1. **Dataflow-First (Semantics-First)**: O compilador não tenta encaixar otimizações ou regras de memória após a geração de código. A linguagem converte a semântica em fatos propagáveis sobre um Grafo de Fluxo de Controle (CFG) estrito.
-2. **InternPool Centralizado (ID-Based)**: Proibido o uso de estruturas recursivas baseadas em ponteiros (`Box`, `Rc`, `Vec<Box<Node>>`) nas IRs intermediárias. Toda a árvore sintática e de tipos é armazenada em arrays contíguos na memória e referenciada por IDs compactos de 32 bits (`NodeId`, `TypeId`, `LiteralId`).
-3. **Polimorfismo Híbrido Adaptativo**: Rejeita witness tables como default absoluto (evitando o gargalo de inlining do Swift) e recusa monomorfização total por padrão (evitando a explosão de tamanho de binário do Rust). O compilador decide de forma adaptativa.
-4. **Ownership no OSSA (Ownership Semantic SSA)**: O gerenciamento de memória não é um validador de tipos na AST. Ele vive no AMIR através de instruções explícitas de fluxo de posse: `move`, `copy`, `borrow_shared`, `borrow_mut`, e `destroy`.
-5. **Zero-Metadata Runtime**: Abort imediato via instruções nativas do processador (`UD2`/`BRK`) elimina a necessidade de tabelas gigantescas de stack unwinding (`.eh_frame`) e strings de pânico embutidas no binário.
-6. **Identidade Única sob Incrementalidade**: A engine incremental (Salsa) nunca introduz um sistema de identidade paralelo ao já existente no compilador. Toda query usa como chave os IDs nativos do Arandu (`FileId`, `SymbolId`, `BlockId`, `TypeId`) diretamente, atuando apenas como camada de memoização.
----
-
-## 🏛️ Linguagem & Runtime Semantics
-
-Abstrações que prejudiquem a otimização e a análise estática são expressamente proibidas no core da linguagem.
-
-### Estilo de Código e Nomenclatura
-
-Constantes globais usam `SCREAMING_SNAKE_CASE` para diferenciação explícita de fluxo estático:
-
-* `MAX_INLINE_SIZE`
-* `DEFAULT_STACK_SIZE`
-
-### Closures e Scoped Blocks
-
-Closures utilizam a sintaxe de parenthesized closures para clareza visual e simplicidade de análise:
-
-```arandu
-thread::scope (scope) {
-    scope.spawn {
-        compile_file(job)
-    }
-}
-```
-
-**Motivação:**
-
-* Parser simples e previsível;
-* Sem necessidade de introduzir tokens especiais complexos;
-* Reduz ruído visual na leitura de código;
-* Favorece a legibilidade de fluxos concorrentes/estruturados;
-* Evita indireções sintáticas excessivas.
-
-### Async/Await
-
-A sintaxe canônica e oficial na linguagem é de prefixo:
-
-```arandu
-user = await fetch_user(id)
-```
-
-A forma sufixada:
-
-```arandu
-fetch_user(id).await
-```
-
-é aceita estritamente como açúcar sintático opcional. O formatter oficial converte automaticamente qualquer uso de sufixo para a forma prefixada.
-
-**Motivação:**
-
-* Linearização visual clara do fluxo de controle;
-* Melhor leitura do grafo de dataflow;
-* Lowering mais intuitivo para o CFG/AMIR;
-* Reduz o encadeamento (chaining) visual excessivo que esconde pontos de suspensão.
-
----
-
-## 🛠️ O Novo Pipeline de Dados do Arandu
-
-```text
-Source (.aru)
-    ↓
-  Lexer           → Error recovery + String Interning
-    ↓
-  Parser          → AST estruturada em Pools Lineares (NodeId)
-    ↓
-  Name Resolver   → Symbol Table Hierárquica O(1) via IDs
-    ↓
-  Type Checker    → Bidirecional HM + TypeInterner (TypeId)
-    ↓
-  AHIR            → Typed AST + Preservação de Interfaces
-    ↓
-  AMIR (CFG/SSA)  → Construção do Grafo + SSA Locals
-    ↓
-  OSSA Engine     → Definite Init (Lattices) + Move Checker + Escape Analysis
-    ↓
-  Middle-End Opt  → Constant Folding + Tree-Shaking DCE na AMIR
-    ↓
-  Backend Selector
-       ⚡ Dev/Debug   → Cranelift (Compilação Instantânea em Memória)
-       🚀 Release     → AMIR O2 + Cranelift AOT `speed`
-       🔌 Portability → C Puro (Fallback)
-```
-
----
-
-## 🚀 Fases e Detalhamento de Subsistemas
-
-> **Nota sobre fases:** as fases abaixo preservam o histórico arquitetural e não
-> definem versões de release. A fila executiva de releases e suas dependências
-> fica na seção “Fila de execução” acima.
-
-### Fase A — Compiler Infrastructure & Core Subsystems (marco histórico)
-
-Antes de expandir as capacidades de otimização, o compilador do Arandu constrói sua fundação infraestrutural. A Fase A cobre tanto a semântica e efeitos da linguagem (A1–A4) quanto a **arquitetura de execução** do compilador em si (A5–A11).
-
-#### A1 — Query System (Incremental Semantic Database via Salsa)
-
-Inspirado por Salsa e o request-evaluator do Swift, o compilador é estruturado como um banco de dados de consultas (queries) puras e memoizadas:
-
-* **ParseCache (precursor, Fase 2)**: `HashMap<PathBuf, &Program>` mantido em `CompileSession` evita re-parsing de arquivos stdlib entre resolução de nomes e type-check. É o primeiro passo de memoização no pipeline e será absorvido pelo Salsa database como uma query `parse(path) -> Program`.
-* **Grafo de Dependências Estáticas**: Rastreia de forma fina quais consultas dependem de quais arquivos fonte.
-* **Compilação Incremental O(1)**: Alterações em um método em uma classe só invalidam as queries daquele bloco de código específico, mantendo feedback de compilação abaixo de 50ms.
-* **Queries Determinísticas**: Garante que compilações repetidas com os mesmos inputs gerem binários idênticos byte a byte.
-
-**Roteiro de migração para Salsa:**
-1. `ParseCache` → query `parse(path: Path) -> Program` no Salsa database
-2. `CompileSession` → `salsa::Database` com todos os recursos (type_interner, symbol_table, etc.)
-3. Queries de name resolution e type-check → queries Salsa com dependências finas entre arquivos
-4. Cancelamento automático de queries obsoletas em edições LSP
-
-#### A2 — Effect System (marco histórico)
-
-Um sistema de efeitos estrito e rastreável pelo compilador. Effects são
-**inferidos transitivamente** a partir do código resolvido e tipado; anotações
-como `@Effects(Net)` declaram um contrato verificável, nunca uma afirmação em
-que o compilador confia cegamente. Omitir a anotação não oculta comportamento,
-e uma declaração menor que o conjunto inferido é erro.
-
-O modelo separa três dimensões para que alertas permaneçam úteis:
-
-* **autoridade/segurança**: `Net`, `FileRead`, `FileWrite`, `Environment`,
-  `Process`, `Foreign` e `UnknownCapability`;
-* **recursos**: `Heap`, `Blocking`, `Suspend` e `Thread`;
-* **semântica**: estado, não determinismo e falhas tipadas.
-
-`Unsafe` não concede autoridade. Operações de rede dentro de código unsafe
-continuam exigindo `Net`; FFI não classificada introduz conservadoramente
-`Foreign + Unsafe + UnknownCapability`. Uso interno auditável de memória unsafe
-é registrado como risco de implementação, mas não contamina automaticamente
-toda API pública. `UnknownCapability` sempre se propaga e políticas rigorosas o
-bloqueiam.
-
-O resumo inferido da API pública e os riscos de implementação formarão metadata
-assinada pelo compilador. O gerenciador de pacotes compara versões e exige
-aprovação para ampliações como `{} -> {Net}` ou alerta para mudanças de recurso
-como `{} -> {Heap}`. Manifesto define o teto autorizado, lockfile registra o
-perfil observado, e sandbox/runtime aplica a autoridade; checksum sozinho só
-prova identidade dos bytes.
-
-Propriedades semânticas iniciais:
-
-* `pure`: Garante ausência de efeitos colaterais e mutações globais. Permite otimização agressiva de GVN (Global Value Numbering) e eliminação total de sub-chamadas redundantes.
-* `readonly`: Permite ler dados arbitrários mas proíbe qualquer mutação. O compilador usa isso para promover borrows mutáveis em compartilhados de forma segura.
-* `noalloc`: Proíbe alocações na heap. Ideal para kernels, drivers e hot-paths de alta performance.
-* `nothrow`: Garante que a função nunca pânico/abort, eliminando caminhos de erro nas análises de controle de fluxo do AMIR.
-* `nosuspend`: Garante que a função é síncrona e nunca suspende controle, permitindo chamadas diretas sem overhead de corrotinas.
-
-**Marcos de implementação:**
-
-1. IDs estáveis de effects/capabilities e representação canônica de conjuntos;
-2. effects intrínsecos da stdlib e fronteiras conservadoras de FFI/unsafe;
-3. inferência local e propagação interprocedural com ciclos até ponto fixo;
-4. contratos explícitos e diagnósticos com cadeia causal;
-5. resumo público separado do risco interno, preservando early-cutoff;
-6. metadata de pacote, diff de atualização e políticas no manifesto/lockfile;
-7. enforcement por sandbox para autoridade — análise estática não substitui
-   isolamento de código nativo.
-
-#### A3 — Modelo Async Semântico e Colorless (marco histórico)
-
-O Arandu resolve o "Color Problem" das linguagens modernas (onde funções síncronas e assíncronas não se misturam facilmente) através de uma semântica flexível e de baixo nível no compilador:
-
-* **Sintaxe Colorless Adaptativa**: O parser aceita tanto a notação de prefixo quanto de sufixo:
-
-  ```arandu
-  user = await fetch_user(10)  // Prefixo
-  user = fetch_user(10).await  // Sufixo
-  ```
-
-  O formatter oficial padroniza a escrita de forma uniforme, mas a flexibilidade é garantida nativamente.
-* **Coroutine-Based Type System**: Para o sistema de tipos (`ArType`), o compilador possui a variante embutida `ArType::Coroutine(TypeId)` (representada como `Coroutine[T]`).
-  * `async func f() -> T` é açúcar sintático idêntico a `func f() -> Coroutine[T]`, e o compilador infere os tipos de forma equivalente.
-  * O interface `Future[T]` (com `poll` e `TaskContext`) existe apenas em `arandu_core` para bibliotecas de runtime, sendo implementado debaixo do capô pelo compilador para todas as `Coroutine[T]` geradas.
-* **Colorless Async & @nosuspend**: É possível invocar uma corrotina diretamente em contexto síncrono. Se o compilador provar estaticamente ou dinamicamente que ela não suspende (ou se o desenvolvedor decorar com `@NoSuspend`), ela executa síncrona e imediatamente sem overhead de agendamento de tarefas.
-* **Coroutining Lowering & State Machine**: Toda função `async` ou bloco `async { ... }` é quebrado em blocos básicos no CFG do AMIR contendo pontos de suspensão explícitos (`suspend` e `resume`). O compilador realiza o *coroutine splitting* transformando variáveis locais que atravessam suspension points em slots de uma struct de estado da tarefa.
-* **Zero Heap Alloc por Padrão & OSSA-Aware Suspension**: As structs de estado das corrotinas utilizam *stack-first allocation* na pilha do chamador por padrão. A alocação na heap só ocorre se a tarefa escapar do escopo corrente (via escape analysis).
-* **Pin-free Self-References via OSSA Indices**: O Arandu elimina a necessidade de `Pin` para corrotinas auto-referenciais. Toda variável que atravessa um suspension point é guardada na struct da corrotina. Para evitar ponteiros auto-referenciais diretos na RAM (que quebrariam se a corrotina fosse movida de posição), o compilador converte as referências internas em índices locais (`LocalId(u32)`). A struct pode assim ser movida livremente da Stack para a Heap sem quebrar ponteiros. A análise de ownership OSSA (Ownership and State Stack Allocation) valida e rastreia ownership através dos suspension points, proibindo moves parciais e borrows ativos incompatíveis que atravessem um `await`.
-
-#### A4 — Memory Layout Optimization Engine
-
-Um subsistema dedicado a rearranjar dados na pilha e na memória física para garantir máxima eficiência de cache e pegada zero:
-
-* **Struct Field Reordering**: Organiza campos de structs automaticamente para eliminar padding de alinhamento desnecessário, minimizando o consumo de cache L1.
-* **Niche Optimization (Option/Enum Packing)**: Enums como `Option<T>` e `Result<T, E>` aproveitam valores inválidos do tipo base (como padrões de bits inválidos) para codificar tags, mantendo a representação de `Option<ref T>` no mesmo tamanho de um ponteiro cru.
-  * *Invariante de Segurança e Sequenciamento*: Esta otimização possui dependência sequencial estrita de **F2.0 (OSSA Borrow completo)**. Somente referências seguras (`ref T` / `mut ref T`), garantidas como não-nulas pelo Borrow Checker, são qualificadas para nicho.
-  * *Exclusão de Ponteiros Crus*: Ponteiros crus (`ptr[T]`) são **estritamente inelegíveis** para otimização de nicho, pois o valor `0` (NULL) é um padrão de bits válido e comum em limites FFI e allocators.
-  * *Garantia GenRef*: Handles geracionais (`GenRef`) requerem validação estática de que o valor de geração/índice `0` é reservado e inválido antes de serem elegíveis.
-* **Pointer Tagging**: Codifica metadados ou tags de variantes de enums nos bits menos significativos não utilizados de ponteiros alinhados de 64 bits.
-* **Small Object Optimization (SOO)**: Evita alocações para structs ou vetores pequenos armazenando seus dados diretamente inline dentro do próprio container se o tamanho for menor ou igual a 24 bytes.
-
----
-
-### Fase A (cont.) — Execution Architecture (A5–A11)
-
-Os subsistemas A5–A11 definem **como o compilador em si executa**: como os dados fluem pela CPU, como evitar stalls de pipeline, como paralelismo escala e como cada traversal acontece. CTFE foi retirado desta fase histórica e está proposto separadamente na fila de releases.
-
-#### A5 — Data-Oriented Layout Engine
-
-O compilador do Arandu prioriza layouts contíguos e traversal linear de memória para minimizar cache misses e pointer chasing.
-
-**Status v0.2:** implementado no AMIR/CFG. Instruções AMIR agora vivem em uma tabela densa por função (`AmirStmtTable`) com IDs compactos (`InstrId`) e blocos básicos guardam apenas ranges contíguos (`DenseRange`). Traversals de CFG usam `BlockId` e RPO explícito; A6-A8 permanecem responsáveis por parsing table-driven, SIMD e scheduler.
-
-* **Struct-of-Arrays (SoA)**: Subsistemas de alta densidade computacional (dataflow, liveness, SSA analysis, dominators, register allocation) utilizam layouts SoA em vez de árvores orientadas a objetos. Exemplo: em vez de `Vec<Instruction>` onde cada `Instruction` contém opcode, operands e span intercalados, o compilador armazena `opcodes: Vec<Opcode>`, `operands: Vec<OperandPair>`, `spans: Vec<Span>` como arrays paralelos. Isso permite que um pass que só precisa de opcodes itere apenas sobre a memória dos opcodes, sem poluir cache com operands e spans.
-* **Dense ID-Based Graphs**: O AMIR evita ponteiros crus entre instruções e blocos básicos. Relações são representadas por IDs compactos (`InstrId(u32)`, `BlockId(u32)`, `TempId(u32)`) indexando tabelas densas contíguas. Comparação, cópia e hashing de qualquer entidade são O(1) por inteiro.
-* **Pointer Compression**: Estruturas persistentes evitam ponteiros de 64 bits sempre que possível, utilizando offsets compactos de 32 bits dentro de arenas contíguas. Isso dobra a densidade efetiva de cache L1 para grafos e árvores.
-* **Traversal Linearization**: Passes do middle-end reorganizam blocos básicos e instruções em ordem de Reverse Post-Order (RPO) para maximizar prefetching automático da CPU e locality durante análises iterativas de ponto fixo.
-
-#### A6 — CPU-Oriented Execution Model
-
-O Arandu trata o compilador como um pipeline intensivo em cache locality e previsibilidade microarquitetural. O design do frontend e middle-end prioriza:
-
-* Redução de cache misses (L1d/L1i/L2);
-* Redução de branch misprediction;
-* Redução de pointer chasing;
-* Maximização de linear traversal;
-* Maximização de prefetching automático da CPU.
-
-**Estratégias adotadas:**
-
-| Técnica | Onde Aplicada | Impacto |
-|---------|--------------|--------|
-| Table-driven parsing e dispatch | Lexer, Parser | Elimina cascatas de `if-else`/`match` longas, converte decisões em lookups indexados por tabela O(1) |
-| Branchless token classification | Lexer | Classifica categorias de caracteres (alpha, digit, whitespace, operator) via aritmética de inteiros sem branches condicionais |
-| Dense bitsets para dataflow | Move checker, Definite Init, Liveness | Operações vetoriais de set (`union`, `intersect`, `diff`) em palavras de 64 bits, processando 64 locais por instrução CPU |
-| Intrusive structures no IR | AMIR instructions | Metadados de encadeamento (`prev`/`next`) vivem dentro do próprio nó, eliminando alocações separadas de lista |
-| Compact CFG ordering | AMIR blocks | Blocos em RPO sequencial garantem que travessias de dataflow iterem linearmente na memória |
-| Flat hash tables com probing linear | Symbol tables, Type interner | Robin Hood / Swiss Tables minimizam probes e maximizam cache locality em lookups de alta frequência |
-| Hot/Cold path separation | Todo o compilador | Caminhos raros de erro, recovery e diagnósticos são separados fisicamente dos hot paths principais, reduzindo pressão sobre I-cache e melhorando branch prediction |
-| Arena recycling | Optimization passes | Páginas físicas de arenas transientes são reutilizadas entre passes sem devolver ao SO, evitando TLB churn e page faults |
-
-#### A7 — Portable SIMD Infrastructure
-
-O frontend textual do Arandu (lexer, UTF validation, keyword matching) suporta aceleração vetorial opcional baseada em capacidades da CPU.
-
-**Backends SIMD suportados:**
-
-| Backend | Plataforma | Largura | Uso Principal |
-|---------|-----------|---------|---------------|
-| Scalar fallback | Universal | 1 byte | Baseline garantido em qualquer CPU |
-| SSE2 | x86_64 baseline | 16 bytes | UTF-8 validation, whitespace skip |
-| AVX2 | x86_64 moderno | 32 bytes | Scanning léxico de alta vazão, keyword matching |
-| NEON | ARM64 (Apple Silicon, mobile) | 16 bytes | Paridade com SSE2 em ARM |
-
-**Runtime Dispatch:** O compilador detecta as capacidades da CPU em runtime (`cpuid` no x86, `/proc/cpuinfo` ou feature registers no ARM) e seleciona automaticamente o backend vetorial mais capaz disponível.
-
-**Objetivos mensuráveis:**
-
-* Reduzir branch pressure no lexer em ~4x comparado com classificação escalar;
-* Acelerar scanning textual para ~2 GB/s em AVX2;
-* Validar UTF-8 em blocos de 32 bytes por instrução;
-* Manter fallback escalar com performance aceitável (~400 MB/s).
-
-#### A8 — Parallel Task Scheduler
-
-O compilador utiliza um scheduler baseado em DAG de tarefas independentes para escalar linearmente com núcleos físicos.
-
-**Modelo de execução:**
-
-```text
-                    ┌──────────┐
-                    │  Source  │
-                    │  Files   │
-                    └────┬─────┘
-                         │
-              ┌──────────┼──────────┐
-              ▼          ▼          ▼
-         ┌────────┐ ┌────────┐ ┌────────┐
-         │ Parse  │ │ Parse  │ │ Parse  │   ← Thread-local arenas
-         │ file_a │ │ file_b │ │ file_c │
-         └───┬────┘ └───┬────┘ └───┬────┘
-             │          │          │
-             ▼          ▼          ▼
-         ┌──────────────────────────────┐
-         │    Merge Symbol Tables       │   ← Lock-free union
-         └──────────────┬───────────────┘
-              ┌─────────┼─────────┐
-              ▼         ▼         ▼
-         ┌────────┐ ┌────────┐ ┌────────┐
-         │Typecheck│ │Typecheck│ │Typecheck│  ← Per-worker allocators
-         │ mod_a  │ │ mod_b  │ │ mod_c  │
-         └───┬────┘ └───┬────┘ └───┬────┘
-             │          │          │
-              ▼         ▼         ▼
-         ┌────────┐ ┌────────┐ ┌────────┐
-         │Codegen │ │Codegen │ │Codegen │   ← Per-core NUMA arenas
-         │ mod_a  │ │ mod_b  │ │ mod_c  │
-         └────────┘ └────────┘ └────────┘
-```
-
-**Estratégias:**
-
-* **Work-stealing queues**: Threads ociosas roubam pacotes de compilação de outras threads sem sincronização pesada;
-* **Thread-local arenas**: Cada worker opera sobre sua própria arena, eliminando mutex e false sharing;
-* **Lock-free scheduling**: O DAG de dependências é resolvido com contadores atômicos — quando todas as dependências de uma tarefa completam, ela é enfileirada automaticamente;
-* **Affinity-aware worker assignment**: Workers são fixados em cores físicos (CPU affinity / pinning) para evitar migração de threads e maximizar reuso de cache L1/L2.
-
-#### A9 — Dense Bitset Infrastructure
-
-As análises de fluxo de dados (dataflow), tempo de vida (liveness), dominadores, checagem de empréstimo (borrow checker), eliminação de código morto (DCE) e detecção de invalidade de consultas do compilador dependem de um motor de manipulação de bits de altíssima performance:
-
-**Status v0.2:** implementado como infraestrutura densa compartilhada. `BitSet<T>` e `BitMatrix<R,C>` usam `Vec<u64>` e IDs densos; definite-init, move-state tracking, liveness local, reachability de CFG, dominance frontiers e DCE já usam a base densa. O escopo de **Borrow Tracking** em A9 é somente representacional: os conjuntos densos necessários para rastrear regiões/locais vivos ficam disponíveis para OSSA, mas as regras semânticas completas de conflito entre `borrow_shared`, `borrow_mut` e `end_borrow` continuam no marco **F2 — OSSA borrow completo**.
-
-* **Representação Vetorial**: Estados são armazenados em `Vec<u64>` contíguos de memória, garantindo acesso linear e tirando proveito do prefetching automático da CPU;
-* **Throughput Microarquitetural**: Operações lógicas fundamentais (`union`, `intersect`, `diff`) operam em palavras de 64 bits, processando até 64 elementos de dados por ciclo de instrução;
-* **Cache Locality**: Consome apenas ~128 bytes para rastrear 1024 locais, comparado aos ~8 KB exigidos por `HashSet<T>` baseados em ponteiros;
-* **Vetorização Automática**: Compilações release tiram proveito de instruções AVX2/NEON para processar bitsets de 256 bits em uma única operação lógica de hardware.
-
-**Utilização planejada:**
-
-| Análise | Bits por Local | Operações Dominantes |
-|---------|---------------|---------------------|
-| Definite Initialization | 1 bit | `union`, `intersect`, bit test |
-| Liveness Analysis | 1 bit | `union`, `diff`, bit test |
-| Move State Tracking | 2 bits (Available/Moved/MaybeMoved) | `join`, bit test |
-| Dominance Frontiers | 1 bit por bloco | `union`, membership |
-| Borrow Tracking | 1 bit por região | Infraestrutura representacional; regras semânticas completas em F2 |
-| DCE Reachability | 1 bit por instrução | `union`, sweep |
-
-**Estratégia de Pipeline Cache-Aware acoplada:**
-
-* **Compact CFG ordering**: Blocos básicos são renumerados em Reverse Post-Order (RPO) após construção e após cada transformação significativa para garantir que as travessias de dataflow baseadas em bitset acessem memória sequencialmente.
-* **Reverse Post-Order traversal**: Todas as análises de ponto fixo iteram os blocos em RPO, garantindo convergência de liveness/init mais rápida.
-* **Dataflow batching**: Múltiplas análises independentes são mescladas no mesmo traversal para maximizar reuso de cache L1.
-* **Arena recycling**: Chunks das arenas temporárias são resetados instantaneamente ao término do pass (bump pointer para 0) sem retornar páginas ao OS, eliminando page faults.
-
-#### A10 — Stable ID Infrastructure
-
-O compilador do Arandu evita expressamente ponteiros brutos e referências cruzadas que inviabilizariam a compilação incremental e criariam pointer chasing complexo. Toda a infraestrutura do compilador (AST, HIR, AMIR, caches e queries) baseia-se em IDs Estáveis:
-
-* **IDs inteiros estáveis** (`NonZeroU32` em `ExprId`, `TypeId`, `SymbolId`, `FileId`, etc.) indexando `IndexVec`s contíguos — **implementado e em uso em todo o compilador**.
-* **Generational IDs** para buffers LSP implementados por `DocumentStore` + `slotmap::SlotMap`; `AnalysisRevision` protege handles semânticos stale. IDs densos do compilador mantêm seus contratos próprios e não devem ser convertidos mecanicamente em IDs geracionais.
-* **Stable Handles**: removidos (código morto, nunca integrados ao compilador). A identidade estável entre sessões de compilação é provida pelos IDs inteiros determinísticos do Salsa.
-* **Zero Overhead de Serialização**: Como os IDs não dependem do endereço de memória virtual, salvar e restaurar caches de compilação do disco é um dump contíguo e direto de bytes.
-
-#### A11 — Token & String Storage Engine
-
-O frontend textual evita alocações individuais de tokens e strings, tratando o fluxo léxico como um problema de throughput de dados:
-
-| Componente | Técnica | Benefício |
-|-----------|---------|----------|
-| **Token Buffer** | Packed contiguous arrays (`Vec<Token>` onde `Token` é 12 bytes: `kind: u32` + `start: u32` + `len: u32`) | Zero alocação individual, locality perfeita |
-| **String Interning** | Pool global de strings deduplicado via `HashMap<&str, StringId>` | Comparação de identificadores vira comparação de inteiros O(1) |
-| **UTF-8 Validation** | Validação vetorizada (SIMD quando disponível, via A7) durante o scan do lexer | Custo amortizado: validação integrada ao scanning, sem segunda passada |
-| **Small-String Optimization (SSO)** | Identificadores ≤ 23 bytes armazenados inline sem alocação heap | ~95% dos identificadores reais cabem inline |
-| **Buffer Reuse** | Buffers temporários de diagnósticos e formatação são arenas scratch reutilizadas | Zero pressão sobre o alocador global |
-
-#### CTFE & Comptime — proposta separada (RFC 0013)
-
-CTFE não pertence à fase histórica A5–A11. O núcleo integrado na 0.1.9 está
-especificado no [contrato público](./arandu-comptime-core-v0.1.md).
-A RFC 0013 ampla permanece `Draft`; maturidade e evolução futura estão
-descritas na [fila de execução](#fila-de-execução) e na
-[RFC 0013](./rfcs/0013-deterministic-ctfe-and-comptime-metaprogramming.md).
-
----
-
-## 🧠 Arquitetura de Memória & Modelo de Alocação (Memory-First)
-
-O Arandu assume oficialmente a diretriz **"Memory Architecture First"**. A performance e escalabilidade de um compilador dependem da redução de pointer chasing, cache misses, fragmentação e contention de threads. Portanto, o pipeline é desenhado com estratégias de memória e alocadores sob medida para cada etapa.
-
-### 1. Base do Compilador: Arenas de Scratch por Passe
-
-> **Nota de implementação (2026-07):** A implementação manual de `VmReservation` (`mmap`/`VirtualAlloc`) e `BumpArena` foi removida do codebase por ser código morto — nenhuma fase do compilador a utilizava. Os dois arquivos continham bugs de segurança (integer overflow em bounds check e granularidade errada de commit no Windows). A estratégia de memória adotada é:
-
-* **Alocador padrão do sistema** para todas as estruturas persistentes (AST pools, tabelas de símbolos, AMIR). O design SoA com `IndexVec` já garante localidade de cache L1 sem precisar de arena customizada.
-* **`bumpalo`** (crate portável, segura, zero `unsafe` exposta, suporta WASM) como arena de scratch nos passes de otimização onde dados temporários são alocados e descartados em massa: monomorphization graph, scratch buffers do move checker, grafos temporários de CFG. **[ ] A implementar — próxima etapa da Fase 3.**
-* **NUMA Awareness** e **thread-local arenas por worker** permanecem como objetivo de longo prazo para quando o scheduler paralelo por arquivo (A8) for expandido além do estado atual.
-
----
-
-### 2. Frontend Allocation Model
-
-O modelo de memória no frontend é focado em alta densidade de dados e eliminação de alocações na heap global:
-
-| Subsistema / Fase | Estratégia de Alocação | Descrição Técnica & Vantagens |
-|-------------------|-------------------------|-------------------------------|
-| **Lexer** | Stack Buffers + Temp Arenas | Tokens não são alocados individualmente. São emitidos linearmente em packed buffers contíguos (`SmallVector<Token>` ou buffers estáticos reusáveis). Strings temporárias e diagnósticos rápidos utilizam alocações scratch curtas. |
-| **Parser** | Hierarchical Growable Arena | Nós da AST são alocados consecutivamente em chunks de arenas. Como a árvore sintática vive até o lowering/análise semântica e morre junta, toda a arena é descartada em O(1) ao fim do ciclo de parsing. |
-| **AST / AHIR** | VM-Backed Bump Arenas | A árvore sintática utiliza *Pointer Compression*. Em vez de ponteiros brutos de 64 bits (`Node*`), os nós referenciam uns aos outros através de offsets numéricos compactos de 32 bits (`NodeId`), dobrando a densidade de cache L1. |
-| **Type System** | Interned Canonical Types | Proibido estruturação de tipos redundantes. Todo tipo inferido ou resolvido é canônico e registrado no `TypeInterner`. O compilador manipula apenas `TypeId(u32)`, reduzindo comparações estruturais profundas a comparações simples de inteiros. |
-| **Semantic Analysis** | Temp Arenas + Scoped Rollback | A inferência e overload resolution geram milhões de fatos intermediários. Escopos de funções usam *Temporary Arenas* com checkpoints. Ao sair do escopo semântico, o bump-pointer retrocede (rollback) instantaneamente. |
-| **Symbol Tables** | Stable IDs + Dense Hash Storage | Símbolos não carregam ponteiros diretos que seriam invalidados por compilação incremental. São armazenados em Slot Maps compactos indexados por `SymbolId` e mapeados por tabelas Hash densas com Robin Hood Hashing / Swiss Tables. |
-
----
-
-### 3. Middle-End Allocation Model
-
-O middle-end trabalha com modificação e transformação frequente de código, exigindo alocação dinâmica mas controlada:
-
-| Subsistema / Fase | Estratégia de Alocação | Descrição Técnica & Vantagens |
-|-------------------|-------------------------|-------------------------------|
-| **AMIR (SSA / CFG)** | Arena + Slab Allocator | A representação intermediária é mutável por natureza (otimizações apagam e recriam instruções). Instruções e operandos utilizam um alocador Slab integrado a *Free Lists*, reciclando slots mortos para evitar vazamentos de memória na arena. |
-| **CFG Graph** | Contiguous Dense Storage | Blocos básicos (`AmirBasicBlock`) e arestas de dominadores são armazenados em vetores densos e contíguos (`IndexVec`). Isso garante buscas lineares rápidas e cache locality excelente durante travessias de análise de fluxo de dados. |
-| **SSA Nodes** | Intrusive Linked Structures | Fluxo de instruções e dependências SSA utilizam estruturas encadeadas intrusivas (onde os metadados de links vivem dentro do próprio objeto instrução). Isso elimina alocações e indireções extras em listas padrão como `std::list`. |
-| **Optimization Passes** | Scratch Arenas | Passes como Dominator Analysis e Liveness Analysis reservam uma Transient Arena dedicada. Todo grafo temporário de arestas e conjuntos liveness morre e é resetado instantaneamente ao término do pass. |
-| **DCE & Dataflow** | Arena Recycling | Análises iterativas que exigem recriação frequente de mapas utilizam reciclagem de páginas da arena. A memória física associada nunca é devolvida ao SO entre passes, evitando overhead de alocação de página e TLB misses. |
-
----
-
-### 4. Parallel Compilation Model
-
-O suporte a compilação paralela maciça exige isolamento de memória absoluto para evitar contenção de travas globais:
-
-| Subsistema / Fase | Estratégia de Alocação | Descrição Técnica & Vantagens |
-|-------------------|-------------------------|-------------------------------|
-| **Parsing** | Thread-Local Arenas | Cada thread de parsing lê arquivos fonte independentes e aloca sua AST em uma arena exclusiva. Zero lock contention global e ausência total de falsos compartilhamentos (false sharing) de linhas de cache. |
-| **Typechecking** | Per-Worker Allocators | Trabalhadores semânticos resolvem classes e métodos em paralelo. Cada um opera sobre sua própria arena temporária e interner local, unificando os símbolos no pool principal de forma controlada apenas ao término da fase. |
-| **Codegen** | Per-Core Arenas | A geração de código de máquina final subdivide os módulos por núcleos físicos (cores). As estruturas geradoras e buffers de escrita de binários operam em arenas NUMA-aware alinhadas à CPU física local. |
-| **Job System** | Lock-Free Queues | O agendamento de tarefas do compilador utiliza filas sem travas (lock-free rings) com algoritmos de *Work-Stealing*. Threads ociosas roubam pacotes de compilação de outras threads sem forçar sincronização pesada no kernel. |
-
----
-
-### 5. Incremental & IDE/LSP Model
-
-Ambientes de longa execução como IDEs e Language Servers (LSPs) exigem persistência de dados históricos sem fragmentação de memória:
-
-| Subsistema / Fase | Estratégia de Alocação | Descrição Técnica & Vantagens |
-|-------------------|-------------------------|-------------------------------|
-| **Syntax Trees** | Persistent Immutable Trees | Em vez de destruir a AST a cada digitação do usuário, o compilador IDE utiliza estruturas de dados persistentes e imutáveis (Green Trees / Ropes). Células inalteradas da árvore sintática são compartilhadas estritamente por referência. |
-| **Handles** | Generational IDs | Entidades e tipos persistentes no banco semântico são referenciados por `GenerationalId` (ID composto de `index` + `generation`). Evita referências dangling e detecta instantaneamente dados invalidados por edições de código. |
-| **Queries** | Salsa-like Dependency Graph | Todo o estado semântico do compilador IDE é modelado como queries memoizadas em um grafo de dependências estáticas. Apenas queries cujos arquivos de entrada sofreram alterações diretas ou indiretas são recomputadas. |
-| **Snapshots** | Copy-On-Write (COW) | Mapeamentos virtuais de arquivos e registros semânticos de builds antigos coexistem com a versão ativa usando proteção de página Copy-On-Write do sistema operacional, duplicando dados físicos somente quando editados. |
-
----
-
-### Fase 3 — Otimização Baseada em Fatos Semânticos (marco histórico)
-
-#### 3.1 Polimorfismo Híbrido Adaptativo (Adaptive Monomorphization)
-
-O compilador do Arandu rejeita abordagens extremas e escolhe a estratégia ótima baseada no local de uso:
-
-* **Witness Tables (Caminhos Frios & Fronteiras)**: Por padrão, genéricos geram uma única implementação compartilhada que opera sobre ponteiros opacos e recebe uma tabela de metadados (`ValueWitnessTable`). Isso reduz drasticamente o tamanho do binário e acelera o tempo de compilação.
-* **Lazy Monomorphization (Caminhos Quentes)**: O compilador realiza a monomorfização cirúrgica (duplicação e especialização de código concreto) para:
-  * Loops e hot-paths identificados por PGO ou análise estática.
-  * Tipos primitivos numéricos e tipos pequenos de dados.
-  * Funções explicitamente anotadas com `@Specialize`.
-  * Candidatos ideais para inlining de performance.
-
-#### 3.2 Otimizações Avançadas na AMIR
-
-O middle-end mantém dois níveis deliberadamente separados. Salsa, em
-`arandu_query`, reutiliza resultados entre revisões no nível de arquivos e itens;
-o `PassManager`, em `arandu_mir`, executa transformações puras dentro de uma
-função. Análises mutáveis pela passagem corrente nunca viram queries Salsa nem
-alteram a superfície exportada de módulos.
-
-##### Estado honesto do pipeline
-
-| Componente | Estado | Contrato atual / gate de promoção |
+| IDE.1 — sessão wasm | `planned` | sessão persistente de AnalysisHost, edições incrementais e budget reproduzível; hoje requests reconstruem estado |
+| IDE.2 — recuperação por item | `partial` | CST/recovery e queries existentes; memoização granular do caminho recuperado sem diagnósticos duplicados e sem relaxar execução estrita |
+| IDE.3 — ranking | `partial` na integração | DTO neutro e adapter LSP expõem sort/filter; comprovar a mesma ordem no cliente Monaco e LSP |
+| IDE.4 — apresentação | `done` na engine | hover/completion/signature usam `arandu_ide`; preservar assinaturas/doc comments e testar paridade entre clientes |
+| IDE.5 — typed holes / [RFC 0036](rfcs/0036-typed-holes-and-integrated-semantic-tooling.md) | `planned` | contrato próprio, completion/tipos úteis e execução bloqueada enquanto houver holes |
+| IDE.6 — site/artefato web | `partial` | API/build wasm existentes; comprovar publicação reprodutível e integração do site na revisão que o publica, sem prometer tamanho fixo |
+
+As etapas de engine acompanham 0.2/0.3 conforme dependências. Publicação no site
+é evidência do repositório consumidor; um teste Rust não a substitui. Tokens
+semânticos classificam; cores pertencem ao tema, com Extension Host em temas
+claro/escuro/alto contraste e Unicode/UTF-16.
+
+## Pesquisa e extensões condicionais
+
+Nenhuma linha desta tabela cria um novo requisito de 0.2 ou de 1.0. Antes de
+implementação: aceitar escopo, definir dependências e workload/oráculo, escolher
+mantenedores e demonstrar isolamento do compilador padrão.
+
+| Linha / RFC | Estado real | Pré-requisitos e prova |
 | --- | --- | --- |
-| O0 | `done` | AMIR já nasce em SSA; O0 não executa transformações e não significa, por si só, que todo valor será materializado na stack |
-| O1 | `done` | fixpoint limitado de SCCP → mark-sweep DCE → SimplifyCFG, preservando argumentos de terminadores e parâmetros de bloco |
-| O2 | `experimental` | entrada checked faz scalar replacement de campos escalares Copy sem escapes e self-tail calls escalares; fixpoint com field forwarding → GVN → SCCP → LICM → DCE → tail merging → SimplifyCFG; não promete SROA irrestrito, ausência de spills nem registradores físicos específicos |
-| LICM | `experimental` | conectado em O2: loops naturais por dominância, reconstrução de ranges, definições únicas Copy, operands disponíveis no preheader e exclusão de trap/efeitos/Move; análise reutilizável com nesting/cache continua na OPT.2 |
-| TCO | `experimental` | conectado na entrada checked O2 para self tail calls escalares sem cleanup/borrows/suspend, com entrada ABI separada do header e argumentos de bloco simultâneos; chamadas mútuas e ownership continuam fora do recorte |
-| Tree-shaking | `planned` | alcançabilidade interprocedural determinística, raízes públicas/FFI/runtime explícitas e teste de paridade entre backends |
-| Stack promotion | `planned` | depende de escape/ownership; “SSA” não equivale a stack promotion e promoção não garante registrador físico |
-
-O SROA agora também divide locais Copy com campos escalares, incluindo stores
-parciais, joins e snapshots de leitura. Escapes, projeções aninhadas e ownership
-de campos não-Copy continuam conservadores. O contrato e as medições estão em
-`arandu-backend-contract-v0.1.md`; nenhuma melhora percentual é garantia geral.
-
-##### OPT.1 — Infraestrutura de análises cooperativas
-
-- Um `AnalysisManager` por função vive por toda a execução do fixpoint e faz
-  lazy-compute/cache de análises intra-função; ele é descartado ao fim da função
-  e nunca é persistido em Salsa.
-- Passes recebem um único contexto de execução com literal pool, scratch arena e
-  acesso ao manager. O resultado de cada execução informa `changed` e a classe
-  real de mudança/preservação; preservação não deve ser uma promessa estática
-  quando o passe pode tanto reescrever valores quanto alterar terminadores.
-- A invalidação começa conservadora e respeita dependências transitivas:
-  `LoopInfo → Dominators → CFG`; futuras `MemorySSA → Dominators + Alias +
-  MemoryEffects`. Alterar arestas, reachability, ids ou numeração de blocos
-  invalida todas as análises dependentes.
-- SCCP só preserva análises de CFG quando não dobra branches nem altera
-  terminadores. GVN/DCE podem preservar análises puramente estruturais apenas
-  quando a transformação efetiva não muda CFG; SimplifyCFG invalida-as.
-- O cache é validado por contagem determinística de construções, reuse,
-  invalidação e dependências, não por igualdade acidental de endereços.
-
-##### OPT.2 — `LoopInfo` e transformações de loops
-
-- Implementar a detecção de loops como análise reutilizável baseada em
-  dominadores, antes do próprio LICM. Back-edges com o mesmo header formam um
-  único loop natural.
-- Representar header, latches, body ordenado canonicamente, preheader, nesting,
-  parent/children e profundidade; `loop_for(block)` retorna deterministicamente
-  o loop mais interno.
-- Definir comportamento conservador para CFG irredutível. Um predecessor externo
-  único não é automaticamente um preheader válido: a aresta e os argumentos de
-  bloco precisam permitir o hoist sem mudar semântica.
-- LICM só move uma definição quando operands dominam o destino, a instrução é
-  invariável, segura para especulação ou executada obrigatoriamente, e não move
-  `Move`/drop/efeito/trap através de fronteiras observáveis. `Div`, `Mod`, shifts,
-  loads e calls são conservadores até existir prova específica.
-- Toda movimentação reconstrói a tabela/ranges de statements por API central;
-  nunca aumenta um `DenseRange` e faz `push` global assumindo que o bloco é o
-  último da tabela.
-
-##### OPT.3 — Semântica de places, alias e efeitos de memória
-
-Antes de load forwarding, DSE ou MemorySSA, o contrato de `AmirPlace` deve
-definir identidade, proveniência e sobreposição:
-
-- `Local(x)` sem `Deref` identifica o storage local; locais-base distintos só
-  provam `NoAlias` enquanto nenhum caminho atravessar indireção.
-- Após `Deref`, o `LocalId` identifica o slot que contém um ponteiro, não o
-  objeto apontado; bases locais diferentes continuam `MayAlias` sem prova de
-  proveniência.
-- Campos distintos só são `NoAlias` quando o tipo/layout garante subobjetos não
-  sobrepostos. Índices dinâmicos são `MayAlias`; índices constantes exigem prova
-  de igualdade/desigualdade e validade.
-- O borrow checker responde se um acesso é permitido em um ponto; ele não
-  substitui análise de alias. Reborrows podem compartilhar identidade em
-  regiões temporais diferentes.
-- A análise inicial é `BasicAliasAnalysis`/`PlaceAliasAnalysis` conservadora:
-  retorna `NoAlias` somente com prova explícita, `MustAlias` com identidade
-  comprovada e `MayAlias` no restante. Ponteiros crus, globals, calls e interior
-  mutability formam barreiras até contratos mais precisos.
-- `MemoryEffects`/`ModRef` classifica loads, stores, destroy/free, alloc, calls,
-  atomics/volatile futuros e operações de runtime. Calls desconhecidas são
-  clobbers conservadores; o Effect System A2 poderá refinar essa resposta.
-
-O contrato normativo da linguagem para essas provas vive no
-[modelo semântico de memória](./arandu-semantic-memory-model-v0.1.md); o roadmap
-mantém apenas a ordem e os gates de entrega.
-
-##### OPT.4 — Dataflow compartilhado
-
-- Extrair primeiro uma engine forward do comportamento comum real de
-  `definite_init` e `move_checker`, migrando uma análise por vez e comparando
-  estados/diagnósticos com a implementação anterior.
-- O contrato cobre boundary por entry/exit, blocos inalcançáveis, join/meet,
-  transferência por bloco e por aresta, argumentos de `Goto`/`Branch`/`Suspend`,
-  ordem determinística da worklist e limite de convergência.
-- Análises backward, múltiplos exits, estado por program point e emissão de
-  diagnósticos entram somente quando houver consumidor concreto; não criar um
-  framework universal antecipadamente.
-
-##### OPT.5 — Canonicalização e GVN
-
-- Regras vivem numa biblioteca pura, type-aware e idempotente; primeiro são
-  exercitadas por um passe standalone observável. SCCP/GVN podem reutilizar
-  subconjuntos inline somente depois de testes de convergência e medição.
-- Cada regra preserva `Copy`/`Move`, traps, overflow, signed zero, NaN e a
-  semântica numérica do tipo. Identidades como `x * 0`, `x + 0` e `-(-x)` não
-  são universais para floats, inteiros com overflow observável ou operações
-  potencialmente trapping.
-- GVN exige dominância da definição líder, igualdade semântica da operação e
-  tratamento conservador de valores não-`Copy`, calls, memória e floats. Ordem
-  de `HashMap` nunca influencia a saída.
-
-##### OPT.6 — Otimizações de memória em camadas
-
-1. Formalizar places e implementar `MemoryEffects`/ModRef.
-2. Introduzir alias analysis básica e conservadora com corpus de ponteiros,
-   campos, índices, reborrow, calls e globals.
-3. Implementar load forwarding/DSE inicialmente local a bloco e medir ganho.
-4. Somente se workloads mostrarem benefício, criar MemorySSA intraprocedural
-   como IR virtual/side table com `liveOnEntry`, uses, defs, merges e clobber
-   walker. Tokens de memória não são parâmetros executáveis do AMIR e não
-   vazam para backends, pretty-print canônico ou hashing sem decisão explícita.
-5. Atualizações incrementais de MemorySSA só são aceitas com validator próprio;
-   caso contrário a transformação invalida e força recomputação.
-
-##### OPT.7 — TCO, alcance global e escape
-
-- TCO transforma apenas self tail calls em posição final comprovada. Argumentos
-  alimentam um header SSA explícito compatível com `func.params`; valores de
-  retorno, drops, borrows, calling convention e caminhos de erro permanecem
-  observáveis e equivalentes.
-- Tree-shaking parte de roots explícitas (`main`, exports, FFI, runtime e
-  reflection futura), preserva ordem determinística e não elimina símbolos
-  alcançáveis indiretamente sem prova.
-- Escape analysis pode promover heap para stack somente quando lifetime,
-  tamanho/layout por alvo, chamadas e retornos provarem não-escape. A documentação
-  reporta “sem load/store explícito na AMIR” separadamente de “sem spill” ou
-  “sem acesso à memória” no código de máquina.
-
-##### Gates obrigatórios de correção e desempenho
-
-- Validator após cada passe em testes/debug: ids densos, definições dominam usos,
-  block params e argumentos alinhados em `Goto`/`Branch`/`Suspend`, CFG coerente,
-  `DenseRange` e `AmirStmtKind` sincronizados e visitors exaustivos.
-- Regressões por passe para diamonds, blocos mortos, loops aninhados/múltiplos
-  latches, CFG irredutível, traps, overflow, floats, `Move`, drops, borrows,
-  calls, globals, corrotinas e determinismo repetido.
-- Testes metamórficos/diferenciais com O0/O1/O2 e paridade C/Cranelift: mesma
-  saída, traps e efeitos observáveis. TCO recebe teste de profundidade constante
-  apenas depois de provar tail calls com argumentos.
-- Benchmarks antes/depois registram tempo por passe/função, construções e hits do
-  cache de análises, iterações do fixpoint, tamanho da AMIR/código, compile time e
-  runtime. Contagem de blocos ou forma SSA isolada não prova branch prediction,
-  cache L1, ausência de stack/spills ou “latência zero”; tais alegações exigem
-  assembly e contadores de hardware apropriados.
-- Nenhum novo passe vira default por melhorar apenas uma fixture. O1 continua a
-  baseline estável; O2 permanece experimental até passar o gate completo do
-  `AGENTS.md`, corpus E2E, comparação entre backends e workload representativo.
-
----
-
-### Fase 4 — Geração e Execução Multitarget (marco histórico)
-
-#### 4.1 Pipeline de Duplo Backend
-
-O compilador do Arandu abandona o acoplamento exclusivo a um único backend:
-
-* **arandu run / build --dev**: `run` utiliza o JIT **Cranelift** em memória; `build` reutiliza o mesmo lowering para emitir objeto baseline do host, ligar o runtime estático distribuído e publicar um executável nativo transacional.
-* **arandu build --release**: utiliza **AMIR O2 + Cranelift AOT `speed`** como
-  pipeline de produção v0.1. LLVM/LTO/PGO permanece um tier futuro opcional,
-  condicionado a benchmark e sem mudar o significado de `--release`.
-* **arandu build --portability**: Utiliza o backend **C** puro para transpilar o código linearizado 1:1, servindo estritamente como fallback para plataformas de nicho, embarcados de arquiteturas exóticas e bootstrapping.
-
-#### 4.2 Register Allocation Strategy
-
-A alocação de registradores é o ponto onde a qualidade do código gerado vive ou morre. O Arandu adota estratégias diferentes por backend:
-
-| Backend | Algoritmo | Prioridade | Descrição |
-|---------|-----------|------------|----------|
-| **Cranelift (Dev/Release v0.1)** | alocador do backend | Dev prioriza compilação; release usa `speed` | A política de qualidade pertence ao Cranelift; o Arandu não promete algoritmo interno específico do backend |
-| **LLVM (tier futuro)** | definido pelo backend | qualidade adicional comprovada | só entra após benchmark representativo; LTO/PGO não são promessa atual |
-| **C (Portability)** | Delegado ao compilador C host | Portabilidade | O backend C emite variáveis locais e confia no GCC/Clang para alocação |
-
-**Objetivos mensuráveis:**
-
-* Dev builds: zero spills para funções com ≤ 12 variáveis live simultaneamente;
-* Release builds: spill pressure ≤ 5% para hot loops identificados por PGO;
-* Locality de registradores: priorizar reuso do mesmo registrador físico para variáveis com lifetimes não-sobrepostos.
-
-#### 4.3 Controlled Generational Fallback
-
-Onde a análise de tempo de vida estática do OSSA falhar em garantir a liberação automática sem overhead, o Arandu insere tags geracionais dinâmicas. Contudo, essa inserção é restrita e controlada pelo desenvolvedor:
-
-* **Bloqueio Explícito**: O desenvolvedor pode proibir qualquer fallback de heap geracional ou alocação dinâmica anotando o escopo com `@NoFallback` ou passando a flag global `--no-generational-fallback`.
-* **Diagnósticos Informativos**: O compilador emite a nota informativa **O004** detalhando onde e por que o fallback dinâmico foi inserido, fornecendo hints claros de como refatorar o código para se manter stack-first.
-
----
-
-### Fase DX — Diagnostics & Tooling Infrastructure
-
-#### DX1 — Rich Diagnostics Engine
-
-O compilador do Arandu implementa um sistema moderno de diagnósticos inspirado nas melhores práticas visuais do Rust, Swift e Clang.
-
-##### Recursos
-
-* **Multi-span diagnostics**: Aponta múltiplos locais no código envolvidos no mesmo erro semântico;
-* **Labels encadeadas**: Inline annotations explicativas no próprio trecho de código fonte;
-* **Fix-it hints**: Sugestões automáticas de correção sintática e semântica;
-* **Notes hierárquicas**: Explicações conceituais acopladas aos códigos de erro;
-* **Rendering colorido**: Terminal output rico com cores e indicadores de coluna;
-* **Mensagens estruturadas**: Representação interna unificada para fácil serialização.
-
-##### Exemplo de Output Técnico
-
-```text
-error[O002]: cannot move borrowed value
-  --> src/main.aru:5:10
-   |
- 3 | x = &y;
-   |         -- value borrowed here
- 4 |
- 5 | z = y;
-   |         ^ move occurs here
-   |
-note: borrow later used here on line 7
-```
-
-#### DX2 — Recovery Architecture
-
-O parser e as análises semânticas são estruturados para resiliência a falhas, permitindo o máximo de utilidade em IDEs e Language Servers:
-
-* **Error Nodes na AST**: Em vez de parar na primeira falha, construções sintáticas inválidas produzem nós de erro específicos sem interromper o parsing do restante do arquivo;
-* **Synchronization Points**: O parser avança até delimitadores de escopo conhecidos (como `;` ou `}`) para sincronizar e continuar a análise;
-* **Partial AST Continuation**: Análises de tipo operam sobre árvores sintáticas parcialmente inválidas;
-* **Speculative Recovery**: Correções heurísticas simples de digitação ou tokens faltantes são assumidas temporariamente para continuar capturando erros subsequentes.
-
-**Objetivo:** IDE responsiveness ultra rápida, exibindo múltiplos erros em uma única compilação e mantendo o LSP resiliente a código inacabado.
-
-#### DX3 — Structured Diagnostics
-
-Todos os diagnósticos emitidos pelo compilador possuem formato serializável nativo (JSON), permitindo integrações ricas com ferramentas externas de CI/CD e suporte a LSPs de forma consistente.
-
-#### DX4 — CFG & IR Visualization
-
-O compilador inclui suporte nativo para emissão visual de fluxo de controle (CFG) e estruturas de IR intermediárias em formato Dot/Graphviz. Permite que o desenvolvedor depure caminhos de OSSA, liveness, dominância e transformações de otimização de forma imediata e visual.
-
-#### IDE — Native LSP Engine
-
-Uma camada unificada de Language Server (LSP) nativa no compilador que expõe consultas eficientes de autocompletar, goto definition, busca de referências e diagnósticos inline. Ao compartilhar o mesmo banco de dados Salsa e as Persistent Green Trees de parser, a engine LSP responde a alterações de código em menos de 5ms de forma incremental.
-
----
-
-### TYP.3 — Inferência Bidirecional e Coerção Segura de Literais
-
-O Arandu implementa inferência contextual bidirecional estrita com coerção segura de literais inteiros sem sufixo (`10`, `0`, `1`), eliminando ruído de casts manuais (`as uint`) sem incorrer nos erros de fallback silencioso (`i32`) do Rust.
-
-#### Arquitetura de 3 Camadas
-
-1. **TYP.3.1 — Descida Contextual Direta (`expected: Option<TypeId>`) [v0.1 / CONCLUÍDO]**:
-   - `synth_expr_expected` propaga o tipo esperado top-down para argumentos de função, declarações `let x: T`, retornos de função e campos de struct.
-   - O `synth_literal_expr` consulta `TargetInfo` (`uint_max()`, `int_min()`, `int_max()`) derivado do `TargetConfig` (Salsa input) e materializa o tipo concreto diretamente, emitindo `T038IntegerLiteralOutOfRange` se o valor exceder a largura do alvo.
-
-2. **TYP.3.2 — Propagação em Operadores Binários e Coleções [v0.2 / CONCLUÍDO]**:
-   - **Operações Binárias**: `1 + x` e `x + 1` onde `x: T` (com `T` sendo qualquer tipo inteiro primitivo) propagam `Some(T)` para o lado literal, sintetizando `T` sem exigir cast explícito.
-   - **Coleções e Arrays**: Literais de array `[1, 2, 3]` sob contexto `array[uint, 3]` ou `slice[u8]` propagam o tipo do elemento para cada item da lista.
-   - **Requisitos de Implementação**:
-     - `crates/arandu_typeck/src/type_checker/synth/expr/binary.rs`: inspeção de operandos heterogêneos `(IntLiteral, ConcreteInt)` e `(ConcreteInt, IntLiteral)`.
-     - `crates/arandu_typeck/src/type_checker/synth/expr/array.rs`: propagação de `expected_element_ty` para os elementos.
-
-3. **TYP.3.3 — Unificação de Restrições Tardias no Solver [v0.35 / TÉCNICO]**:
-   - Para variáveis livres inicializadas sem anotação explícita (`let a = 10; let b = a + 20; take_uint(b);`), o compilador cria uma variável de tipo `TypeVar` atrelada a `ArType::IntLiteral`.
-   - O *constraint solver* resolve o grafo de tipos por unificação tardia: quando `take_uint(b)` impõe `uint`, o solver propaga `uint` para `b`, `a` e os literais, validando os limites numéricos retroativamente.
-   - **Política Anti-Ambiguidade**: Caso uma variável inteira livre nunca participe de uma operação com tipo concreto determinístico, o compilador adota `int` nativo (largura de ponteiro) ou emite aviso de desambiguação, nunca adotando `i32` silencioso.
-   - **Requisitos de Implementação**:
-     - `crates/arandu_typeck/src/type_checker/solver/`: extensão do unificador para restrições `ConstraintOrigin::LiteralPromotion`.
-     - `crates/arandu_typeck/src/type_checker/context/`: resolução de substituições na tabela de tipos locais (`TyCtx`).
-
----
-
-### Ergonomia de Sintaxe e Tipagem — Refinamentos de Campo (SYN.4.1, SYN.4.2, SYN.5, TYP.4)
-
-Identificados durante a implementação da biblioteca padrão e computação científica (`SCI.1`), estes refinamentos visam eliminar atritos práticos de codificação sem violar determinismo ou early-cutoff:
-
-1. **SYN.4.1 — Desconstrução Qualificada em Patterns**:
-   - **Contexto**: A linguagem constrói opções via `Option.Some(v)` e `Option.None`, mas a desconstrução em patterns exigia a forma não-qualificada `Some(v)` e `None` (`Pattern::TypeTuple`). Escrever `if x is Option.Some(v)` caía em `Pattern::Enum` para tipos nominais de usuário, gerando `T018: variant 'Some' is not defined on enum 'Option'`.
-   - **Solução**: `crates/arandu_typeck/src/type_checker/synth/pattern.rs` deve tratar `Pattern::Enum` qualificado com `Option` ou `Result` redirecionando para a semântica de tipo algébrico correspondente, além de emitir diagnósticos com `CodeReplacement` sugerindo a forma canônica caso haja incompatibilidade.
-
-2. **SYN.4.2 — Condições de Padrão Compostas**:
-   - **Contexto**: `Condition::Is` atualmente só suporta uma única cláusula `is` por comando `if`, exigindo aninhamento artificial (`if a is Some(x) { if b is Some(y) { ... } }`) em verificações simultâneas de múltiplos opcionais ou resultados.
-   - **Solução**: Estender a gramática do parser e o lowering da AMIR para permitir conjunções lógicas (`&&`) contendo múltiplos padrões `is` e predicados booleanos (`if a is Some(x) && b is Some(y)`), gerando ramificações de curto-circuito sem blocos aninhados.
-
-3. **SYN.5 — Identificadores Contextuais em Membros e Chamadas**:
-   - **Contexto**: Palavras-chave de instrução como `set` (`TokenKind::KwSet`) atualmente geram conflitos no parser quando utilizadas como identificadores de campo ou método (`obj.set(...)` ou `func Type.set(...)`), forçando renomeações artificiais como `setAt`.
-   - **Solução**: Tornar palavras-chave da linguagem sensíveis ao contexto: na posição de membro após `.` ou após `func Type.`, tokens reservados de instrução são tratados como `IdentValue`, compatível com a prática padrão de linguagens modernas (Rust e TypeScript).
-
-4. **TYP.4 — Const Generics em Parâmetros de Tipo**:
-   - **Contexto**: Arandu v0.1 suporta arrays nativos de tamanho fixo na stack (`[16]float`), mas structs genéricas ainda não aceitam parâmetros inteiros escalares (`<T, const M: uint, const N: uint>`).
-   - **Solução**: Suporte a parâmetros constantes no typechecker e no pipeline de monomorfização, inclusive como valores no corpo (`while i < N`) e como dimensões encaminhadas entre instanciações (`[M][N]T`). A biblioteca matemática foi migrada diretamente de `StaticMat2/3/4` e `setAt` para uma única definição estrutural `StaticMatrix<T, const M: uint, const N: uint>` e o membro contextual `set`, sem aliases ou wrappers de compatibilidade.
-
----
-
-### Fase PERF — Compiler Instrumentation & Profiling
-
-Para garantir que o compilador do Arandu permaneça sub-segundo à medida que o projeto escala, ele possui infraestrutura nativa de observabilidade interna e profiling.
-
-#### PERF1 — Pass Timing
-
-Medição em nanossegundos de cada passagem lógica do compilador, incluindo Lexer, Parser, Type Checker, lowering de AMIR, OSSA/Move Checker e otimizações de Backend.
-
-#### PERF2 — Allocation Tracking
-
-Mapeamento preciso de recursos de memória consumidos:
-
-* Monitoramento de páginas das Arenas e Slabs transientes;
-* Taxa de reciclagem de slots nas Free Lists de instruções;
-* Identificação de hotspots de alocação;
-* Rastreamento de cache pressure e desperdício de padding em estruturas de IR.
-
-#### PERF3 — Query Profiling
-
-Instrumentação fina do motor incremental (Salsa-like):
-
-* Grafo de invalidação de queries ativo em tempo real;
-* Custo de rebuild incremental por query;
-* Memoization hit rate de análises de tipo e resolução de escopos.
-* **ParseCache hit-rate** no self-profile: quantos `parse_with_file_id` foram evitados pelo cache (`-Zself-profile` mostra 6 em vez de 11 chamadas para um build single-file típico).
-
-#### PERF4 — Debug Flags (-Z)
-
-Flags internas ativadas em compilações debug/nightly para inspeção microarquitetural e dumping de IRs:
-
-* `-Ztime-passes`: Exibe tempo detalhado gasto em cada pass de otimização;
-* `-Zdump-amir`: Imprime a representação AMIR SSA por função;
-* `-Zdump-ossa`: Dump do grafo de liveness e estados de moves rastreados pelo OSSA;
-* `-Zprofile-queries`: Exibe hit rate e custos do cache de queries incrementais;
-* `-Zdump-cfg`: Emite grafos de fluxo de controle dos blocos básicos em formato `.dot`.
-
----
-
-### Geração de Código de Máquina & Perfilamento (trilha histórica)
-
-#### PGO — Profile-Guided Optimization Pipeline
-
-O compilador implementa suporte a otimizações guiadas por perfilamento (PGO). O desenvolvedor compila um binário de instrumentação que coleta métricas de execução reais em caminhos quentes (hot paths). Na compilação final:
-
-* O compilador prioriza a monomorfização agressiva de genéricos e o inlining de funções apenas em hot loops com profiling documentado;
-* Branches condicionais frios de erro são marcados para ordenação física distante na geração final do LLVM IR, maximizando o I-Cache de loops quentes.
-
----
-
-## ⚙️ Runtime Philosophy
-
-O runtime do Arandu segue uma diretriz de minimalismo e isolamento absoluto de dependências.
-
-### Modelo Oficial
-
-* **Corrotinas Stackless**: Suspensões do async/await geram splits de blocos básicos na AMIR e salvamento de estado em structs locais compactas (zero stack overhead de threads);
-* **Lowering para State Machines**: O compilador gera código linear e determinístico para a transição de estados das tarefas;
-* **Scheduler Cooperativo**: Tarefas cedem a CPU voluntariamente em pontos de suspensão explícitos (`await`), eliminando custos de preempção;
-* **Work-Stealing Executor**: Roteia e distribui a carga de tarefas dinamicamente sobre um pool de threads de forma lock-free com NUMA awareness.
-
-### Rejeição de Tracing Garbage Collectors (GC)
-
-O Arandu exclui expressamente o uso de um Garbage Collector clássico (tracing, stop-the-world, mark-sweep ou compactador). A decisão de rejeitar GCs é sustentada por dez objeções técnicas principais:
-
-1. **Perda de Previsibilidade**: GCs introduzem pausas (stop-the-world) e heurísticas de varredura temporais imprevisíveis, violando a diretriz de previsibilidade semântica;
-2. **Destruição do Stack-First Design**: GCs incentivam a alocação irresponsável na heap. O Arandu promove a alocação na Stack via Escape Analysis;
-3. **Piora de Locality (Pointer Chasing)**: A movimentação ou espalhamento de objetos por coletores aumenta a fragmentação de memória e deteriora a eficiência de cache L1/L2;
-4. **Poluição de Hot Paths com Barriers**: GCs modernos exigem barreiras de escrita (write barriers) e leitura (read barriers) nas instruções da CPU, poluindo o fluxo e reduzindo o throughput de execução;
-5. **Inchaço de Metadata**: Coletores de lixo exigem cabeçalhos de objetos gigantes, mark bits e metadados de RTTI implícitos, colidindo com o objetivo de "zero-metadata runtime";
-6. **Ineficiência Multicore**: Concorrer a threads globais de marcação causa gargalos e contenção de locks de memória, anulando a escalabilidade NUMA e thread-local do Arandu;
-7. **Enfraquecimento do OSSA**: O ownership-first faz do tempo de vida (lifetime) um fato explícito e determinístico. O GC esvazia o valor semântico de instruções `destroy` e `move`;
-8. **Complexidade no Async**: GCs acoplam a alocação de frames assíncronos ao heap global. O Arandu realiza coroutine splitting stack-first;
-9. **Footprint Gigante**: O suporte a runtime de tracing exige adicionar dezenas de megabytes ao binário final;
-10. **Inviabilização de Bare-metal/no_std**: Runtimes com GC não rodam com eficiência e segurança em microcontroladores e sistemas embarcados com restrição severa de recursos.
-
-A gerência de memória do Arandu baseia-se exclusivamente em **Semantics-driven memory**: `ownership + stack + arenas + escape analysis + controlled fallback`.
-
-### Objetivos Principais
-
-* Evitar stacks gigantescas de sistema por tarefa assíncrona;
-* Proibir alocações de heap implícitas durante suspensões de rotinas;
-* Garantir independência absoluta de garbage collectors globais;
-* Manter o custo de runtime invisível em compilações embarcadas.
-
-### Heap Allocation Policy
-
-Nenhuma operação built-in da linguagem realiza alocação de heap implícita. Quando o compilador detecta escape semântico inevitável de um valor, ele exige um alocador explícito ou insere fallbacks controlados geracionais. Em caso de fallback automático, o compilador emitirá o diagnóstico informativo **O004**, com notas de rodapé de refatoração para stack-first.
-
----
-
-## 🧱 ABI e Garantias de Layout
-
-O Arandu define explicitamente suas regras de ABI para garantir robustez em FFI, builds incrementais e interoperabilidade limpa entre backends.
-
-### Garantias de Layout do Compilador
-
-* **Struct Layout Determinístico**: O reordenamento de campos para eliminação de padding segue um algoritmo canônico fixo. Caso o desenvolvedor precise de compatibilidade C pura, ele deve anotar a struct com `@Repr(C)`;
-* **Enum Tagging Estável**: Tags de enums com valores de dados acoplados (como `Result`) utilizam nichos de bits nulos ou tags de tamanho previsível;
-* **Pointer Alignment & Calling Convention**: Alinhamento estrito baseado na plataforma de destino e passagens de parâmetros por registradores por padrão para Cranelift e LLVM.
-
-### Representações Internas
-
-Abstrações de tipos e referências dinâmicas usam witness tables compactas e ponteiros duplos (fat pointers) explícitos contendo ponteiro do objeto + ponteiro de metadados de interface.
-
-### Async ABI
-
-Os frames e estados das tarefas assíncronas gerados pelo compilador têm tamanho e layout resolvidos em tempo de compilação, permitindo que a OSSA rastreie ownership e liveness dos empréstimos através dos suspension points com segurança.
-
----
-
-## 🚨 Modelo de Falhas e Tratamento de Erros
-
-O Arandu adota uma filosofia pragmática dividida entre erros recuperáveis e falhas fatais não recuperáveis.
-
-### Recuperação de Erros (`Result<T, E>`)
-
-Todo erro que pode ser contornado pelo chamador é retornado explicitamente via tipo monádico `Result`. O compilador otimiza caminhos de erro para manter overhead zero em caminhos quentes.
-
-### Abort Imediato (Falhas Fatais)
-
-Falhas que representam quebra de invariantes (como out-of-bounds ou asserções violadas) abortam a execução imediatamente. O Arandu **não realiza stack unwinding**.
-
-* **Traps Nativas**: O runtime emite instruções de hardware como `ud2` (x86) ou `brk` (ARM) para encerrar o processo imediatamente;
-* **Custo Zero**: Sem unwinding, elimina-se a necessidade de metadados `.eh_frame`, tabelas de exceção complexas e código de limpeza invisível no binário, simplificando o Grafo de Fluxo de Controle e reduzindo drasticamente o tamanho do executável.
-
----
-
-## 🔥 Hot/Cold Path Separation
-
-O compilador separa fisicamente seus caminhos quentes de processamento de dados dos caminhos frios (exibição de erros e logs).
-
-* **Hot Paths**: Lexer, Parser, SSA traversal, análises CFG do OSSA, alocadores das arenas e passes de otimização de instruções. Esses blocos são mantidos compactos, lineares e em loops densos para maximizar o cache de instruções da CPU (I-cache) e reduzir branch mispredictions;
-* **Cold Paths**: Geração de formatação visual de diagnósticos, pretty printers do AMIR para depuração, escrita de arquivos de dump metadata e logs de instrumentação. Todo esse código é compilado com atributos de "cold coldness", instruindo o linker a movê-los para seções de memória distantes.
-
----
-
-## 💾 Stable Serialization & Incremental Cache
-
-O compilador define formatos e extensões serializáveis estáveis para garantir persistência determinística e reutilização de cache entre builds incrementais ou compartilhados em rede:
-
-* `.air`: Representação serializada compacta da AST em formato binário estável;
-* `.amir`: Grafo serializado de instruções SSA do middle-end;
-* `.ameta`: Metadados exportados de módulos com assinaturas de tipo e definições públicas;
-* `.aobj`: Código objeto final gerado pelo backend de compilação.
-
-### Garantias de Cache & Hashing Estável
-
-* **Stable Hashing**: O compilador computa hashes estáveis baseadas no algoritmo criptográfico **BLAKE3** para cada arquivo fonte e query semântica intermediária. Isso permite invalidar e reconstruir o grafo de dependências incrementais Salsa de forma instantânea sem reprocessar blocos de código inalterados;
-* **Versioned Schema**: Os metadados `.ameta` e as IRs intermediárias possuem cabeçalhos com esquemas binários versionados para prevenir erros ou conflitos de desserialização em atualizações de ferramentas do compilador.
-
-### DET — Deterministic & Reproducible Builds
-
-O Arandu garante a reprodutibilidade de compilação byte a byte (byte-by-byte binary convergence):
-
-* **Deterministic Ordering**: Hashes e ordenação de queries incrementais no banco de dados utilizam ordenação lexicográfica estável nos identificadores de símbolos, garantindo que o compilador emita o mesmo binário final independentemente do paralelismo ou ordem de leitura dos arquivos no sistema multi-core;
-* **Stable Compilation Outputs**: A ordenação determinística garante que builds distribuídos em CI/CD ou compilações remotas/compartilhadas produzam artefatos idênticos, acelerando o hit-rate em caches remotos.
-
----
-
-## 📋 Tabela de Códigos de Diagnóstico (DiagCodes)
-
-| Código | Categoria | Descrição Técnica e Gatilho Arquitetural |
-|--------|-----------|-----------------------------------------|
-| **N001** | Name Resolution | Identificador não declarado (com sugestão) |
-| **N002** | Name Resolution | Redeclaração no mesmo escopo |
-| **N003** | Name Resolution | Tipo usado erroneamente como valor |
-| **N004** | Name Resolution | Valor usado erroneamente como tipo |
-| **N005** | Name Resolution | Import não encontrado |
-| **N006** | Name Resolution | Conflito de símbolos entre imports |
-| **T011** | Type Checker | Generic constraint ou cláusula `where` inválida |
-| **T019** | Warning | `Result<T,E>` ignorado na atribuição sem handling (`?`) |
-| **T025** | Error | Interface não satisfeita (métodos faltantes no Go-style) |
-| **P006** | Parser | Uso sintático inválido de tupla para retorno de erro |
-| **O001** | Ownership | Uso de variável local após comando de move no CFG |
-| **O002** | Ownership | Move/consume while borrowed (`O002MoveWhileBorrowed`) |
-| **O003** | Ownership | Empréstimo mutável concorrendo com referências compartilhadas |
-| **O004** | Info | Generational/escape fallback (G2/F2.3) — not shared-borrow conflict |
-| **O005** | Ownership | Dupla liberação de memória (Double Free) |
-| **O006** | Ownership | Destroy/free while borrow still active (`O006DestroyWhileBorrowed`) |
-| **O007** | Ownership | Estado de move inconsistente entre branches no merge do CFG |
-| **O008** | Ownership | Leitura ou cópia de slot local não inicializado |
-
----
-
-## 🌟 Ecossistema Avançado & Ferramental (Propostas de Evolução)
-
-Estas propostas descrevem ferramentas auxiliares e subsistemas externos projetados para expandir o ecossistema do Arandu para além do compilador core.
-
-### E1 — REPL Interativo (`arandu repl`)
-Um interpretador de linha de comando interativo impulsionado pelo backend Cranelift JIT.
-* **Mecanismo**: Lê expressões e declarações do terminal, executa a verificação de tipos e compilação incremental de forma JIT na memória de processo, e executa a máquina de estado imediatamente para exibir o resultado avaliado.
-* **Objetivo**: Facilitar prototipagem rápida, aprendizado e testes exploratórios de código sem necessidade de criar arquivos `.aru` no disco.
-
-### E2 — Gerador de Documentação Integrado (`arandu doc`)
-Gerador estático de documentação de código.
-* **Mecanismo**: Extrai as strings estruturadas capturadas nos comentários de documentação do Rowan (`pending_docs`) e as compila em um site HTML estático com estilização moderna, navegação e caixa de busca integrada baseada em WebAssembly/JSON.
-* **Objetivo**: Garantir que projetos e bibliotecas tenham documentação de qualidade gerada sem dependências de ferramentas externas.
-
-### E3 — FFI Bindgen Automatizado (`arandu bindgen`)
-Gerador de bindings bidirecionais C/Arandu.
-* **Mecanismo**: Lê arquivos de cabeçalho C (`.h`) e emite stubs correspondentes de funções e structs `extern "C"` Arandu. Também suporta o fluxo reverso (gerar arquivos `.h` correspondentes para interfaces Arandu públicas compiladas como bibliotecas estáticas ou dinâmicas).
-* **Objetivo**: Facilitar a integração com APIs de sistema legadas e bibliotecas nativas C sem o risco de erros manuais de layout de struct ou alinhamento de ponteiros.
-
-### E4 — Gerenciador de Pacotes Integrado (`arandu pkg`)
-Orquestrador de dependências simples embutido na CLI do Arandu.
-* **Mecanismo**: Gerencia um manifesto `arandu.toml` e gera um arquivo de trava `arandu.lock`. Realiza download de dependências (resolução simples de branches/tags do Git) e alimenta os caminhos de importação da query Salsa automaticamente.
-* **Objetivo**: Prover um ecossistema pronto para compartilhamento de código de forma modular ("batteries-included") sem necessidade de caminhos relativos complexos.
-
-### E5 — Linter de Alocação e Escape (`arandu clippy`)
-Analisador estático avançado de uso de memória e desempenho.
-* **Mecanismo**: Analisa a árvore OSSA e o fluxo de posse no CFG para detectar padrões de ineficiência, como alocações em laços que causam escape redundante para a heap (`O004`), e sugere refatorações de tempo de vida ou reutilização de buffers.
-* **Objetivo**: Ajudar os programadores a manterem o código no caminho de performance ideal.
-
----
-
-## 12. Histórico de Revisões
-
-| Data | Autor / Agente | Mudança Realizada |
-|------|----------------|-------------------|
-| 2026-05 | Antigravity | Roadmap v0.1 criado; invariantes e decisões canônicas |
-| 2026-05 | Antigravity | **Grande Expansão v0.2**: Inclusão formal de Phase A (Salsa, Effects, Colorless Async, Memory Layout Engine), Hybrid Generics, Dual-Backend pipeline e Controlled Fallbacks. |
-| 2026-05 | Antigravity | **Integração Memory-First**: Inclusão formal do subsistema detalhado de alocação de memória por estágio do compilador (Lexer, Parser, AST, SSA, CFG, Parallel, Incremental e IDE/LSP). |
-| 2026-05 | Antigravity | **Execution Architecture (A5–A11)**: Inclusão formal dos subsistemas de Data-Oriented Layout (SoA, pointer compression), CPU-Oriented Execution Model (branchless, table-driven), Portable SIMD (SSE2/AVX2/NEON), Parallel Task Scheduler (work-stealing DAG), Cache-Aware Optimization Pipeline (RPO, arena recycling), Dense Bitset Engine, Token & String Storage Engine, Register Allocation Strategy e Hot/Cold Path Separation. |
-| 2026-05 | Antigravity | **Semantics, DX & Tooling**: Inclusão formal das especificações de Semântica e Sintaxe da Linguagem (closures, async canônico), Filosofia de Runtime, ABI/Layout Stability, Abort/Panic Model, Fase DX (Rich Diagnostics Engine, Recovery, JSON output), Fase PERF (Compiler instrumentation), Hot/Cold separation e Stable Serialization. |
-| 2026-07 | Antigravity | **Auditoria de Honestidade A10/A11/VM**: Removidos `vm.rs`, `arena.rs`, `stable_id.rs` e `string_pool.rs` (~1.080 LOC, 16 blocos `unsafe`) — código morto nunca integrado ao compilador. A10 corrigido para `[~]` parcial: IDs inteiros estáveis em uso, Generational IDs aguardam LSP (Fase 3) com `slotmap`. VM Reservation substituída por plano `bumpalo` para arenas de scratch nos passes de otimização. A11 permanece `[x]` via `smol_str`. |
-| 2026-07 | Antigravity | **Evolução do Ecossistema (E1–E5)**: Documentadas as propostas de evolução de ferramentas integradas (REPL, Gerador de Docs, FFI Bindgen, Package Manager e Linter de Alocação). |
-| 2026-08 | Codex | **Linhas de pesquisa avaliadas**: typed holes, effects/capabilities, teste diferencial/metamórfico, e-graphs, WebAssembly Component Model/WIT, refinement types, prova formal OSSA/GenRef e incrementalidade orientada à demanda; somente as linhas com contrato e evidência futura poderão virar implementação. |
-| 2026-08 | Codex | **Roadmap de otimização AMIR consolidado**: estado honesto de O0/O1/O2, análises cooperativas, LoopInfo, semântica de places/alias/ModRef, dataflow, canonicalização, MemorySSA virtual, TCO/escape e gates de correção e benchmark. |
-| 2026-09 | Codex | **Fechamento de hipóteses rc.5 em tipos, runtime e genéricos**: a substituição estrutural ganhou regressão que prova inserção finita sem expansão recursiva de aliases; o reactor passou a descartar o registro inteiro e liberar recursos após poison, restaurando um estado conhecido antes de aceitar novos IDs; acessos a um único campo genérico deixaram de materializar o mapa completo da struct; e um teste de integração passou a provar que instanciações genéricas idênticas feitas por módulos distintos convergem para uma única definição AMIR. |
-| 2026-09 | Codex | **Ownership sensível a campos na rc.5**: `Loan` e o M1 passaram a preservar caminhos compactos de campos do `AmirPlace`. Campos com `SymbolId` distintos não produzem O003/O001 falsos; roots/prefixes continuam sobrepostos, e índices/dereferences permanecem conservadores. O join distingue campo movido em todos ou apenas alguns predecessores, store reinicializa o subpath exato e drop glue ignora só o campo transferido. Extração parcial de tipos com `@Destructor` explícito é rejeitada porque o destrutor exige o valor completo. Matrizes tipadas cobrem shared/exclusive, paths aninhados, moves, reinicialização e CFG linear/diamond. |
-| 2026-09 | Codex | **Trilha RFC 0011 tornada executável**: a fundação batch verificável permanece funcional no 0.1; o 0.2 recebe o serviço de build quente sem persistir Salsa e o 0.3 recebe lowering/CGU realmente por instância, com gates explícitos de equivalência clean, determinismo e p95 em host documentado. |
-| 2026-09 | Antigravity | **Stack Científica e de Dados (RFC 0012)**: inclusão formal dos marcos SCI.1–SCI.4; arrays/views strided sem cópia, separação de matrizes stack/heap, destination-passing style, scratch arenas reutilizáveis, formato colunar Arrow, motor lazy em batches e álgebra de grafos sobre semirings GraphBLAS. |
-| 2026-09 | Antigravity | **Proposta de CTFE & Comptime (RFC 0013, Draft)**: registrada como direção de pesquisa. O escopo foi separado em núcleo incremental e possibilidades futuras; não representa especificação aceita nem implementação existente. |
-| 2026-09 | Antigravity | **Ergonomia de Sintaxe e Tipagem (SYN.4.1, SYN.4.2, SYN.5, TYP.4)**: inclusão formal dos débitos técnicos de ergonomia identificados na SCI.1; desconstrução qualificada de enums do prelude em patterns, condições compostas com múltiplos padrões is, palavras-chave contextuais como membros e const generics escalares em structs. |
-| 2026-09 | Antigravity | **Filesystem Seguro e Resolução por Capacidades (RFC 0016)**: especificação formal do subsistema de segurança de I/O (`SL_S-Host.1–5`); abstração `std.fs.Dir` eliminando autoridade ambiente em mutações, motor nativo imune a TOCTOU e symlink races (`openat2` com `RESOLVE_BENEATH` no Linux, `O_NOFOLLOW` no Darwin/BSD e `FILE_FLAG_OPEN_REPARSE_POINT` no Windows NT), hardening de limites do VFS em `arandu_query::vfs` e distinção formal de efeitos (`FileRead/Write` vs `AmbientFsRead/Write`). |
-| 2026-09 | Antigravity | **Arquitetura Fundamental do `arandu_core` Freestanding (RFC 0017)**: especificação formal do núcleo irreduzível da linguagem (`SL_S-Core.1–4`); garantia estrita de Zero OS, Zero Heap Global e Zero Threads, erradicação de "panic formatting bloat" via traps de 1 instrução (`UD2`/`BKPT`/`EBREAK`) com código numérico de 32 bits, matemática de ponto fixo (`Q16.16`), fatias e views canônicas `[]T`, I/O puro em memória (`Reader`/`Writer`) e compatibilidade universal do Cortex-M0 ao WebAssembly e AArch64. |
-| 2026-09 | Antigravity | **Emissor C Idiomático e Estruturado (RFC 0018)**: especificação formal do subsistema `C_PRETTY.1–4`; de-estruturação de controle de fluxo (Relooper/dominance) reconstruindo `if`/`while`/`for`/`switch` e eliminando >95% de `goto bbX`, preservação de identificadores do `SymbolTable`, declaração local de variáveis, coalescência de expressões SSA e conformidade MISRA C (Regra 15.1). |
-| 2026-09 | Antigravity | **Cache Global Compartilhado e Target Zero-Bloat (RFC 0019)**: especificação formal do subsistema `CACHE.1–5`; CAS global indexado por BLAKE3 (`~/.cache/arandu/cas/`), diretório `target/` estritamente limpo contendo apenas produtos finais (`bin/`, `lib/`), eliminação de 30–50 GB de inchaço do modelo Cargo, coletor de lixo LRU automático com cota configurável (default 2,0 GiB), política de depuração *Line-Tables-First* e publicação zero-copy via reflinks CoW (`FICLONE`/`clonefile`). |
-| 2026-09 | Antigravity | **Empacotamento Nativo e Erradicação de Python (RFC 0020)**: especificação formal do subsistema `DIST.1–4`; migração da geração/validação de `.tar.gz` e `.zip` para o `xtask`, agregação de assets (`SHA256SUMS`, `BLAKE3SUMS`, `release-manifest.json`), hardening de instaladores shell com cascata POSIX e validação via `arandu hash-file`, subcomando nativo `arandu archive validate` no CLI e preservação de scripts Python legados exclusivamente como oracles de teste diferencial. |
-
----
-
-*Mantenha este documento atualizado a cada avanço estratégico do compilador.*
+| SCI / 0012 | fundação 2D `partial`, demais camadas `planned` | sequência SCI.1→SCI.2→SCI.3/4 e bibliotecas independentes; não alegar tensor/SIMD/Arrow pronto |
+| Freestanding / 0017 | core inicial `partial` | objetos sem host/runtime implícito e runners/alvos reais; fonte que compila no host não prova Cortex-M/RISC-V |
+| eBPF / 0028 | `Draft`, sem backend | subconjunto/limites/target, emissão ELF/BTF e testes no verificador/kernel; OSSA não substitui aceitação do verificador |
+| GPU/SPIR-V / 0029 | `Draft`, sem backend | address spaces, barreiras, disjunção entre invocações, layout/validação SPIR-V e runners; borrow local não é prova automática de data-race freedom global |
+| FFI poliglota / 0030 | `Draft`, sem exportador universal | ABI e buffers por plataforma/runtime, ownership/callbacks; Result explícito ou isolamento de processo para falhas fatais, sem prometer capturar abort |
+| LLVM/MLIR / 0031 | `Draft`, lowering experimental direto AMIR→LLVM IR em `arandu_backend_llvm`, exposto por `emit-llvm`, `run -b llvm` e `build -b llvm` (host/`clang`); subconjunto escalar/agregados/SIMD/atômico/interp/Gen*; fuzz `synthesized-llvm` + EMI LLVM-ready | paridade/empacotamento/perfil e prova conservadora de alias; enums/ABI restante e MLIR/aceleradores são extensões separadas do tier LLVM |
+| Closures/tipos/reflexão/effects — RFCs 0032/0034–0036 | `Draft`, sem aprovação integral | capturas, existenciais, capacidades e holes têm contratos propostos; preparação sintática e flags atuais não entregam ambientes de closure, witness tables ou sandbox |
+| Otimização de pesquisa | proposta | e-graphs, monomorfização adaptativa, cache remoto e SIMD amplo só com benefício representativo medido |
+| GenRef R1 / prova formal | pesquisa | manter R0 congelado, definir novo contrato para cross-thread/FFI e prova independente |
+| HOST / BOOT | `planned`, pós-1.0 ou projeto independente | compilador escrito em Arandu, convergência em três estágios, bootstrap verificável e distribuição; não é condição para estabilidade da linguagem |
+
+## Gates transversais e manutenção
+
+- Preservar CST→AST→resolve→typeck→AMIR→backend e ownership de crates do AGENTS;
+  I/O pertence aos drivers/inputs e Salsa apenas a `arandu_query`.
+- IDs/queries/exports são determinísticos, snapshot não sobrevive a mutação na
+  mesma thread; jobs são limitados/coalescidos e o canal de resultados LSP tem
+  limite próprio. Pressão de publicação/escrita Salsa exige prova de endurance;
+  resultados stale não podem ser publicados.
+- Layout depende do alvo; validade em wasm32/i686 não publica um SDK nativo
+  para esses alvos. Backends novos não mudam o contrato dos existentes.
+- Toda correção semântica recebe regressão; números de desempenho vêm de
+  workload/host/configuração e distinguem runtime, compile-time, alocações e RSS.
+- Antes de promoção: sequência completa do AGENTS, S0 do PR, contrato de release,
+  smokes nativos fora do checkout, SDK/VSIX e arquivo público exato; falha é
+  registrada e bloqueia a candidata até diagnóstico/correção, sem mover tags.
+- Atualizar estado, lacuna, owner e prova no mesmo PR. Propostas só mudam de
+  status com decisão explícita; não inferir aceitação de um calendário.
+- Evidência histórica permanece no Git/relatório datado. Campanhas encerradas
+  são consolidadas em contratos e removidas; não manter uma segunda fila.
+
+## Histórico desta consolidação
+
+Em 2026-10-15/16, a revisão documental separou fases arquiteturais históricas de
+versões de produto; reconciliou a distribuição 0.1.10, CTFE, agregados, async,
+paralelismo, ferramentas e empacotamento; definiu etapas/gates de 0.2.x a 1.0 e
+classificou RFCs novas como propostas. O histórico anterior de A1–A11, F1/F2,
+S0–S3 e campanhas permanece recuperável no Git e nos contratos especializados.

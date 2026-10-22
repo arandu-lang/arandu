@@ -66,6 +66,14 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         for i in 0..projs.len().saturating_sub(1) {
             match &projs[i] {
                 AmirProjection::Deref => {
+                    if i != 0 {
+                        ptr_val = self.builder.ins().load(
+                            self.ptr_type,
+                            cranelift_codegen::ir::MemFlagsData::new(),
+                            ptr_val,
+                            0,
+                        );
+                    }
                     current_ty = unwrap_ptr_like(&current_ty, self);
                 }
                 AmirProjection::Field(symbol_id) => {
@@ -97,7 +105,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                         self.builder
                             .ins()
                             .trapnz(is_oob, cranelift_codegen::ir::TrapCode::unwrap_user(1));
-                    } else if matches!(current_ty, ArType::Slice(_)) {
+                    } else if matches!(current_ty, ArType::Slice(_) | ArType::MutSlice(_)) {
                         let len_val = self.builder.ins().load(
                             self.ptr_type,
                             cranelift_codegen::ir::MemFlagsData::new(),
@@ -122,6 +130,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     let inner_ty_id = match &current_ty {
                         ArType::Ptr(inner)
                         | ArType::Slice(inner)
+                        | ArType::MutSlice(inner)
                         | ArType::Array(_, inner)
                         | ArType::ConstArray(_, inner) => *inner,
                         ArType::Ref(inner) | ArType::RefMut(inner) => *inner,
@@ -167,6 +176,14 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         };
         match last_proj {
             AmirProjection::Deref => {
+                if projs.len() > 1 {
+                    ptr_val = self.builder.ins().load(
+                        self.ptr_type,
+                        cranelift_codegen::ir::MemFlagsData::new(),
+                        ptr_val,
+                        0,
+                    );
+                }
                 current_ty = unwrap_ptr_like(&current_ty, self);
                 let _ = current_ty;
                 (ptr_val, 0)
@@ -210,7 +227,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     self.builder
                         .ins()
                         .trapnz(is_oob, cranelift_codegen::ir::TrapCode::unwrap_user(1));
-                } else if matches!(current_ty, ArType::Slice(_)) {
+                } else if matches!(current_ty, ArType::Slice(_) | ArType::MutSlice(_)) {
                     let len_val = self.builder.ins().load(
                         self.ptr_type,
                         cranelift_codegen::ir::MemFlagsData::new(),
@@ -242,6 +259,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 let inner_ty_id = match &current_ty {
                     ArType::Ptr(inner)
                     | ArType::Slice(inner)
+                    | ArType::MutSlice(inner)
                     | ArType::Array(_, inner)
                     | ArType::ConstArray(_, inner) => *inner,
                     ArType::Ref(inner) | ArType::RefMut(inner) => *inner,
@@ -503,6 +521,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     let inner_ty_id = match &current_ty {
                         ArType::Ptr(inner)
                         | ArType::Slice(inner)
+                        | ArType::MutSlice(inner)
                         | ArType::Array(_, inner)
                         | ArType::ConstArray(_, inner) => *inner,
                         ArType::Ref(inner) | ArType::RefMut(inner) => *inner,

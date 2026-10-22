@@ -66,7 +66,7 @@ func main(): int {
         ] {
             let mut db = DatabaseImpl::new();
             db.set_target_config(layout);
-            let file = db.new_file("public-residual.aru".into(), source.clone());
+            let file = db.new_stdlib_file("stdlib/core/residual.aru".into(), source.clone());
             let artifacts = arandu_query::passes::lower_amir(&db, file);
             assert!(
                 artifacts

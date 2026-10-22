@@ -1,6 +1,6 @@
 # Arandu LSP and VS Code support matrix (v0.1)
 
-This document is the public support contract for the `0.1` release candidate.
+This document is the support contract for the published 0.1.x scope, exercised by the [0.1.10 release](releases/0.1.10.md).
 “Supported” means that the native SDK archive is installed into an empty prefix,
 the packaged VSIX is installed through the VS Code CLI, and the Extension Host
 exercises the installed `arandu-lsp`. A successful build on another target does
@@ -34,20 +34,30 @@ installers are the supported SDK delivery mechanism.
 |---|---|---|
 | Text | incremental sync, UTF-16 | supported; UTF-8/UTF-32 negotiation is not advertised |
 | Diagnostics | push diagnostics, quick fixes | supported; no workspace/pull diagnostics |
-| Navigation | definition, references, document highlight | supported; highlights do not yet distinguish read/write |
+| Navigation | definition, type definition, references, document highlight | supported; highlights do not yet distinguish read/write |
 | Structure | document/workspace symbols, folding, selection range | supported; workspace symbols use the progressively discovered index |
 | IntelliSense | completion, hover, signature help | supported; no auto-import and no completion resolve phase |
 | Refactoring | prepare rename and multi-file rename | supported with lexical/conflict validation |
 | Presentation | full/range semantic tokens | supported; no semantic-token delta protocol |
-| Formatting | whole-document formatting | supported and canonical; no range/on-type formatting |
+| Formatting | whole-document and range formatting | supported and canonical; no on-type formatting |
+| Hints | inlay hints | supported; no resolve phase |
 | Editing | code actions | structured quick fixes only |
 | Workspace | create/rename/delete notifications for `*.aru` | supported; one package root is selected deterministically in multi-root windows |
 | Lifecycle | progress, status, logs, bounded crash restart | supported by the VS Code extension |
 
-Not advertised in `0.1`: declaration/type-definition/implementation requests,
-call hierarchy, type hierarchy, CodeLens, inlay hints, document links, document
+Not advertised in the current scope: declaration/implementation requests,
+call hierarchy, type hierarchy, CodeLens, document links, document
 colors, linked editing, inline values, execute-command, notebooks and file
 operation “will” requests.
+
+### Latency and verification scope
+
+Item-level cutoff is tested; it does not promise universal sub-10ms responses.
+The initialize/interactive budgets and ignored endurance/performance campaigns
+are distinct. A passing installed VSIX smoke does not run every ignored campaign.
+The reference implementation of advertised capabilities is
+[`capabilities.rs`](../crates/arandu_lsp/src/capabilities.rs), with stdio and
+Extension Host regressions. Keep this matrix synchronized when capabilities change.
 
 ### Verification
 

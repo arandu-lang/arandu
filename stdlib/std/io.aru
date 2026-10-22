@@ -107,7 +107,7 @@ public func IoError.fromPlatform(code: int): IoError {
 
 /// Interface for reading bytes from a stream into a borrowed buffer.
 public interface Read {
-    func read(self: mut ref Self, buf: mut ref []u8): Result<usize, IoError>
+    func read(self: mut ref Self, buf: mut []u8): Result<usize, IoError>
 }
 
 /// Interface for writing bytes to a stream sink.
@@ -127,7 +127,7 @@ public struct BufReader<R: Read> {
     /// Wrapped reader or writer.
     inner: R
     /// Backing buffer.
-    buf: []u8
+    buf: mut []u8
     /// Current byte position.
     pos: usize
     /// Usable buffer capacity.
@@ -138,7 +138,7 @@ public struct BufReader<R: Read> {
 ///
 /// The wrapper borrows `buf` and does not allocate it. Keep the buffer valid
 /// while the reader is in use; a zero-length buffer cannot stage any bytes.
-public func BufReader.new<R: Read>(inner: R, buf: []u8): BufReader<R> {
+public func BufReader.new<R: Read>(inner: R, buf: mut []u8): BufReader<R> {
     return BufReader<R> {
         inner: inner,
         buf: buf,
@@ -178,7 +178,7 @@ public func BufReader.fillBuf<R: Read>(self: mut ref BufReader<R>): Result<usize
     if self.pos >= self.cap {
         self.pos = 0
         self.cap = 0
-        let n = self.inner.read(mut ref self.buf)?
+        let n = self.inner.read(self.buf)?
         self.cap = n
     }
     return Result.Ok(self.cap - self.pos)
@@ -190,8 +190,8 @@ public func BufReader.fillBuf<R: Read>(self: mut ref BufReader<R>): Result<usize
 /// A short read is possible; call again to request further bytes. Errors
 /// from the underlying reader propagate without changing the destination
 /// after the failed refill.
-public func BufReader.read<R: Read>(self: mut ref BufReader<R>, out_buf: mut ref []u8): Result<usize, IoError> {
-    let target_len = slice.len<u8>(*out_buf)
+public func BufReader.read<R: Read>(self: mut ref BufReader<R>, out_buf: mut []u8): Result<usize, IoError> {
+    let target_len = slice.len<u8>(out_buf)
     if target_len == 0 {
         return Result.Ok(0 as usize)
     }
@@ -217,7 +217,7 @@ public struct BufWriter<W: Write> {
     /// Wrapped reader or writer.
     inner: W
     /// Backing buffer.
-    buf: []u8
+    buf: mut []u8
     /// Number of bytes pending in the output buffer.
     buffered_count: usize
 }
@@ -226,7 +226,7 @@ public struct BufWriter<W: Write> {
 ///
 /// The wrapper borrows `buf` and allocates nothing. Data may remain staged
 /// until `flush` or a later write forces a flush.
-public func BufWriter.new<W: Write>(inner: W, buf: []u8): BufWriter<W> {
+public func BufWriter.new<W: Write>(inner: W, buf: mut []u8): BufWriter<W> {
     return BufWriter<W> {
         inner: inner,
         buf: buf,

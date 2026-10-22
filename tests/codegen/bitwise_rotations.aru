@@ -1,0 +1,10 @@
+func rotr(x: u32, n: u32): u32 {
+    let right: u32 = x >> n;
+    let left: u32 = x << (32 - n);
+    return right | left;
+}
+
+func main(): u32 {
+    let val: u32 = 0x12345678;
+    return rotr(val, 8);
+}

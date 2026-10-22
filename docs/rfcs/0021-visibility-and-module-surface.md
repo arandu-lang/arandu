@@ -25,14 +25,14 @@ detalhes de implementação inacessíveis fora do arquivo.
 
 ## 2. Motivação (Motivation)
 
-### Problema atual
+### Motivação histórica de 21/09/2026
 
-O Arandu tem hoje dois níveis de visibilidade:
+Antes desta implementação, o Arandu tinha dois níveis de visibilidade:
 
 - `public` — símbolo exportado pelo módulo, visível a qualquer importador.
 - implicitamente privado — acessível apenas dentro do arquivo `.aru` corrente.
 
-Isso cria um gap para código colaborativo/corporativo:
+Isso motivou a evolução abaixo; não descreve mais o inventário atual:
 
 1. **Sem package-private.** Não existe "visível dentro do pacote mas não fora".
    Toda API interna que precisa ser compartilhada entre módulos do mesmo pacote
@@ -94,7 +94,7 @@ struct Vec3 {
 
 ```arandu
 // math/src/expr.aru
-sealed interface Expr {
+public sealed interface Expr {
     // Somente tipos do mesmo pacote podem implementar Expr.
     // O compilador pode exaustivamente verificar `match`.
 }
@@ -120,8 +120,8 @@ O compilador infere exaustividade de `match` sobre tipos `sealed` sem
 ```arandu
 func eval(e: Expr): f32 {
     match e {
-        Num(n) => n.val
-        Add(a) => eval(a.left) + eval(a.right)
+        Num { val } => val
+        Add { left, right } => eval(left) + eval(right)
         // sem `_` — exaustivo porque Expr é sealed e todos os casos estão cobertos
     }
 }
@@ -172,7 +172,7 @@ func render(state: pipeline.PipelineState, cmds: commands.CommandBuffer): void {
 ### 3.5 Diagnósticos
 
 ```
-error[N008]: `dotUnchecked` is `internal` and cannot be used outside package `math`
+error[N016]: `dotUnchecked` is `internal` and cannot be used outside package `math`
   --> src/main.aru:12:5
    |
 12 |     let d = math_internal.dotUnchecked(a, b)
@@ -180,7 +180,7 @@ error[N008]: `dotUnchecked` is `internal` and cannot be used outside package `ma
    |
 note: use the public API `math.dot` instead
 
-error[N009]: cannot implement `sealed` interface `Expr` outside its defining package
+error[N017]: cannot implement `sealed` interface `Expr` outside its defining package
   --> src/ext.aru:5:1
    |
  5 | impl MyExpr: Expr {}
@@ -189,194 +189,83 @@ error[N009]: cannot implement `sealed` interface `Expr` outside its defining pac
 
 ---
 
-## 4. Explicação em Nível de Referência (Reference-Level Explanation)
+## 4. Implementação e evidência em 15/10/2026
 
-### 4.1 AST e Parser
+### 4.1 AST, resolução e identidade
 
-O enum `Visibility` em [`arandu_parser/src/ast/decl.rs`](../../crates/arandu_parser/src/ast/decl.rs) evolui de:
+O parser preserva `Visibility::{Private, Module, Internal, Public}`,
+`sealed interface`, `public use`/`internal use` e módulos inline.
+`Symbol.visibility` substituiu o antigo `is_public`; a identidade de interfaces
+seladas e implementações explícitas é armazenada em `SymbolTable` por IDs.
+O pseudocódigo da proposta original não é uma API Rust pública adicional.
 
-```rust
-pub enum Visibility {
-    Private,
-    Public,
-}
-```
+Fontes:
+[`ast/decl.rs`](../../crates/arandu_parser/src/ast/decl.rs),
+[`symbol_table.rs`](../../crates/arandu_middle/src/symbol_table.rs) e
+[`name_resolution/collect.rs`](../../crates/arandu_resolve/src/name_resolution/collect.rs).
 
-para:
+### 4.2 Exports e early-cutoff
 
-```rust
-pub enum Visibility {
-    /// `private` — restrito ao bloco/struct declarante.
-    Private,
-    /// Padrão (sem keyword) — restrito ao módulo/arquivo corrente.
-    Module,
-    /// `internal` — restrito ao pacote corrente (todos os `self.*`).
-    Internal,
-    /// `public` — sem restrição.
-    Public,
-}
-```
+`exported_symbols` e `internal_symbols` são queries tracked separadas em
+[`arandu_query/src/passes.rs`](../../crates/arandu_query/src/passes.rs).
+Importadores de outro pacote não recebem símbolos `internal`; o mapa de
+pacotes registrado na sessão determina a identidade de pacote. As superfícies
+públicas e internas participam dos contratos hash-estáveis do resolver.
 
-`sealed` é um atributo de `InterfaceDecl`, não uma variante de `Visibility`:
+Não existem accumulators `PublicExports`/`InternalExports` ou uma query pública
+`internal_exports` conforme o pseudocódigo original. `arandu_middle/src/db.rs`
+declara o trait compartilhado; `arandu_query` continua dono dos providers.
+Re-exports retêm a identidade do símbolo de origem, com diagnósticos de
+ampliação de visibilidade e ciclos. Esse mecanismo não autoriza descoberta de
+filesystem dentro das queries semânticas.
 
-```rust
-pub struct InterfaceDecl {
-    pub span: Span,
-    pub visibility: Visibility,
-    pub sealed: bool,          // `sealed interface`
-    pub name: SmolStr,
-    pub generic_params: …,
-    pub items: …,
-}
-```
+### 4.3 Interfaces seladas e campos privados
 
-`public use` (re-export) é uma variante nova de `TopLevelDecl`:
+`sealed` exige uma aresta explícita `impl Tipo: Interface`; satisfazer somente
+os métodos estruturalmente não contorna essa exigência. O resolver verifica a
+fronteira de pacote, e o type checker consulta as implementações registradas.
+Exaustividade de `match` sobre o conjunto explícito de implementadores já tem
+integração e regressões, incluindo implementadores em outro módulo do pacote.
 
-```rust
-pub enum TopLevelDecl {
-    // …existentes…
-    ReExport {
-        span: Span,
-        visibility: Visibility,
-        path: ImportPath,
-        items: SmallVec<[ReExportItem; 4]>,
-    },
-}
-```
+Isso não introduz automaticamente valores existenciais `dyn`, vtables ou
+representação geral de dispatch dinâmico. A promoção de uma nova forma de
+interface/valor exige contrato próprio; reconhecer a exaustividade no typeck
+não comprova execução de toda forma hipotética de interface.
 
-### 4.2 Resolução de nomes (`arandu_resolve`)
+Campos `private` são identificados por símbolo e `T041` cobre acesso,
+inicialização, padrões e struct update fora dos métodos do tipo proprietário.
+Campos sem modificador conservam a regra de acesso do módulo.
 
-A função `is_public` em
-[`collect.rs`](../../crates/arandu_resolve/src/name_resolution/collect.rs)
-evolui para `effective_visibility(vis: Visibility, context: ResolveContext)`:
+Fonte: [`types/interfaces.rs`](../../crates/arandu_typeck/src/type_checker/types/interfaces.rs).
 
-```rust
-pub fn symbol_accessible(sym: &Symbol, from: ModuleId, pkg_map: &PackageModuleMap) -> bool {
-    match sym.visibility {
-        Visibility::Public   => true,
-        Visibility::Internal => pkg_map.same_package(sym.module, from),
-        Visibility::Module   => sym.module == from,
-        Visibility::Private  => false, // nunca cruzável por resolução normal
-    }
-}
-```
+### 4.4 Diagnósticos públicos
 
-`exported_symbols` agora produz dois níveis separados:
-- `ExportedPublic` — símbolos `public`, disponíveis para qualquer importador.
-- `ExportedInternal` — símbolos `internal`, disponíveis apenas para módulos
-  do mesmo `PackageId`.
+| Código existente | Contrato |
+| --- | --- |
+| `N016InternalOutsidePackage` | Uso de símbolo internal fora do pacote declarante |
+| `N017SealedImplOutsidePackage` | Implementação de interface sealed fora do pacote |
+| `N018ReExportNarrowing` | Re-export mais amplo que a visibilidade da origem |
+| `N019CyclicReExport` | Ciclo de re-exports |
 
-Ambos participam do early-cutoff Salsa: uma mudança em `internal` de um módulo
-invalida apenas os importadores dentro do mesmo pacote; não invalida importadores
-externos.
+`N008`/`N009` eram nomes incorretos nos exemplos originais desta RFC e não devem
+ser usados para essas regras. A fonte canônica é
+[`DiagCode`](../../crates/arandu_diagnostics/src/codes.rs), com catálogo e
+[catálogo de diagnósticos](../diagnostics/SPEC.md) correspondentes.
 
-**`sealed` no resolve:**
+### 4.5 Regressões e fronteira de tooling
 
-`impl T: SealedInterface` verifica `same_package(impl_site, interface_defining_module)`;
-caso falhe, emite `N009SealedImplOutsidePackage`.
+[`package_modules_p4.rs`](../../crates/arandu_query/tests/package_modules_p4.rs)
+cobre exports internos por pacote, N016/N017, sealed explícito/exaustividade,
+re-exports públicos/internos, N018/N019, módulos inline e namespaces de métodos.
+[`cli_rfc0021_stdlib_facade.rs`](../../crates/arandu_cli/tests/cli_suite/cli_rfc0021_stdlib_facade.rs)
+exercita a fachada real da stdlib com `public use`.
+[`const_arguments.rs`](../../crates/arandu_query/tests/const_arguments.rs)
+cobre argumentos comptime e dependências em membros de módulos inline.
 
-**Re-exports:**
-
-`public use self.vector.{ Vec3, dot }` coloca os símbolos referenciados em
-`ExportedPublic` do módulo declarante, com rastreamento de origem para
-goto-definition e diagnósticos de ciclos.
-
-### 4.3 `SymbolTable` e `Symbol`
-
-```rust
-pub struct Symbol {
-    pub id: SymbolId,
-    pub name: SmolStr,
-    pub kind: SymbolKind,
-    pub span: Span,
-    pub scope: ScopeId,
-    pub visibility: Visibility,      // ← substituição de is_public: bool
-    pub lang_item: Option<LangItem>,
-    pub is_sealed: bool,             // ← para interfaces sealed
-}
-```
-
-`is_public: bool` é substituído por `visibility: Visibility` — a leitura de
-`is_public` em qualquer ponto do compilador deve ser substituída por uma
-comparação explícita de visibilidade.
-
-### 4.4 Typeck (`arandu_typeck`)
-
-Nenhuma nova regra de tipos. O typeck delega verificação de acessibilidade ao
-resolver antes de sintetizar tipos. `sealed` é verificado no resolve; o typeck
-assume que o check já passou.
-
-Exaustividade de `match` sobre `sealed interface` é adicionada ao verificador
-de exaustividade existente: o compilador conhece o conjunto fechado de
-implementadores internos (coletados em `collected_sealed_impls`) e verifica
-cobertura sem necessidade de `_`.
-
-### 4.5 Salsa e early-cutoff
-
-Dois novos accumulators em `arandu_middle/src/db.rs`:
-
-```rust
-#[salsa::accumulator]
-pub struct PublicExports(ExportedSymbolTable);
-
-#[salsa::accumulator]
-pub struct InternalExports(ExportedSymbolTable);
-```
-
-A query `exported_symbols` de um arquivo retorna apenas `PublicExports`.
-Uma nova query `internal_exports` retorna `InternalExports`, consultada
-somente quando o importador pertence ao mesmo `PackageId`. Isso garante:
-
-- Editar um símbolo `internal` não invalida importadores externos.
-- Editar um símbolo `public` invalida importadores conforme hoje.
-
-### 4.6 Novos DiagCodes
-
-| Código | Mensagem |
-|---|---|
-| `N016InternalOutsidePackage` | símbolo `internal` usado fora do pacote declarante |
-| `N017SealedImplOutsidePackage` | implementação de `sealed interface` fora do pacote |
-| `N018ReExportNarrowing` | re-export com visibilidade mais ampla que a declaração original (erro) |
-| `N019CyclicReExport` | ciclo detectado em re-exports |
-
-Cada código exige entrada em `DiagCode`, mapeamento, catálogo em
-`docs/diagnostics/SPEC.md` e `docs/errors/<CODIGO>.md`.
-
-### 4.7 LSP e IDE
-
-- Completion filtra símbolos por `symbol_accessible(sym, current_module, pkg_map)`.
-- Hover mostra a visibilidade efetiva: `[public]`, `[internal]`, `[module]`.
-- Quick-fix para `N008`: sugere usar API pública alternativa quando disponível.
-- Semantic tokens: `internal` recebe o modificador `defaultLibrary` como
-  indicação visual; não são cores fixas — o tema decide.
-
-### 4.8 Estado da implementação
-
-A implementação inicial cobre o modelo de visibilidade no parser e a
-visibilidade `internal` entre módulos registrados em um `PackageModuleMap`:
-
-- O parser distingue `public`, `internal`, `private` e a visibilidade padrão
-  `module`; a AST dump preserva os modificadores explícitos.
-- `Symbol` retém `Visibility`; o campo duplicado `is_public` foi removido e os
-  consumidores com superfície pública comparam a visibilidade explícita.
-- `exported_symbols` continua retornando somente símbolos públicos. A query
-  `internal_symbols` é separada e só é consultada por importadores cujo arquivo
-  e dependência têm o mesmo `PackageId` no mapa da sessão.
-- Um teste de integração verifica exports `internal`, N016 em import explícito
-  fora do pacote, e N017 ao declarar `impl Tipo: Interface` para uma interface
-  selada externa. A AST guarda a declaração explícita de implementação e
-  `SymbolTable` guarda sua identidade por IDs.
-- `sealed interface` é preservada pela AST, dump e metadata de typeck. A
-  exaustividade de `match` com o conjunto de implementadores ainda não está
-  integrada; implementações estruturais sem declaração `impl` também precisam
-  ser fechadas para evitar bypass.
-- Campos `private` usam IDs de símbolo e T041 cobre leituras, escritas,
-  inicializadores, padrões e struct update fora de métodos do tipo proprietário.
-  A visibilidade padrão dos campos permanece acessível no módulo, conforme o
-  modelo existente.
-- Re-exports e módulos inline ainda não estão implementados. A RFC segue `Draft`.
-
----
+Painel de API, quick-fix sugerindo uma alternativa pública e decoração específica
+de `internal` são possibilidades de tooling; a implementação do resolver não
+comprova que essas experiências estejam entregues. Tokens e apresentação devem
+seguir o contrato LSP e as escolhas do tema.
 
 ## 5. Invariantes de Arquitetura e Desvantagens (Drawbacks & Invariants)
 
@@ -384,8 +273,8 @@ visibilidade `internal` entre módulos registrados em um `PackageModuleMap`:
 
 | Invariante | Impacto | Preservação |
 |---|---|---|
-| `exported_symbols` early-cutoff | `internal` cria segundo nível de export | dois accumulators Salsa independentes; importadores externos não são invalidados por mudanças `internal` |
-| Determinismo de diagnósticos | `N008`/`N009` dependem de `PackageId` | `PackageId` é computado deterministicamente antes da análise; sem HashMap instável |
+| `exported_symbols` early-cutoff | `internal` cria segundo nível de export | queries tracked separadas; importadores externos não são invalidados por mudanças `internal` |
+| Determinismo de diagnósticos | `N016`/`N017` dependem de `PackageId` | `PackageId` é computado deterministicamente antes da análise; sem HashMap instável |
 | `SymbolId` monotônico | `private` em campos pode criar símbolos extras | IDs continuam alocados monotonicamente; visibilidade é metadata, não muda o ID |
 | Queries puras | `symbol_accessible` lê apenas dados já em Salsa | sem I/O, sem mutação global |
 
@@ -449,12 +338,15 @@ confiar na disciplina — o que não escala em times.
 - Kotlin: `sealed class` — exaustividade de `when` garantida.
 - Swift: `indirect enum` + `protocol` — fechamento parcial.
 - Java 17+: `sealed class/interface` — implementadores declarados explicitamente.
-- Arandu adota o modelo Kotlin por ser mais conciso e não exigir declaração
-  explícita de implementadores (o compilador os descobre nos módulos do pacote).
+- Arandu descobre as arestas explícitas `impl Tipo: Interface` registradas
+  nos módulos do pacote; não há conformidade puramente estrutural para `sealed`.
 
 ---
 
-## 8. Questões em Aberto (Unresolved Questions)
+## 8. Questões de evolução
+
+As questões abaixo não alteram o estatuto implementado do recorte acima.
+A fila executiva e novas decisões pertencem ao roadmap mestre.
 
 1. **`protected`?** Vale a pena um quinto nível (`protected` = acessível em
    tipos que satisfazem a interface) quando Arandu não tem herança de structs?
@@ -482,8 +374,6 @@ confiar na disciplina — o que não escala em times.
 
 - **`pub(in self.geometry)`** — visibilidade restrita a um submódulo específico,
   análogo ao `pub(in path)` do Rust. Útil para pacotes com hierarquia profunda.
-- **Visibilidade em re-exports com narrowing:** `internal use` re-exporta
-  para o pacote sem expor publicamente.
 - **`@Opaque` em structs públicos** — expõe o tipo como identidade opaca (sem
   campos acessíveis) para bindings de FFI com layout controlado.
 - **Editor/LSP:** painel de superfície de API mostrando o que um módulo exporta

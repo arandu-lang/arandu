@@ -12,7 +12,7 @@ const NET_ARU: &str = include_str!("../../../../stdlib/std/net.aru");
 #[test]
 fn stdlib_net_parses_and_exports_expected_symbols() {
     let mut db = DatabaseImpl::default();
-    let file = db.new_file("stdlib/std/net.aru".to_string(), NET_ARU.to_string());
+    let file = db.new_stdlib_file("stdlib/std/net.aru".to_string(), NET_ARU.to_string());
     match parse(&db, file).as_ref() {
         Ok(_) => {}
         Err(e) => panic!("net.aru must parse; got {e}"),
@@ -74,7 +74,7 @@ fn stdlib_net_tcp_stream_slice_read_write_safe() {
 import std.net as net
 import std.io as io
 
-func readGeneric<R: io.Read>(reader: mut ref R, buf: mut ref []u8): Result<usize, io.IoError> {
+func readGeneric<R: io.Read>(reader: mut ref R, buf: mut []u8): Result<usize, io.IoError> {
     return reader.read(buf)
 }
 
@@ -91,7 +91,7 @@ func sendData(stream: mut ref net.TcpStream, data: []u8): bool {
     }
 }
 
-func recvData(stream: mut ref net.TcpStream, buf: mut ref []u8): bool {
+func recvData(stream: mut ref net.TcpStream, buf: mut []u8): bool {
     let res: Result<usize, io.IoError> = readGeneric<net.TcpStream>(stream, buf)
     match res {
         Result.Ok(_) => { return true }
@@ -124,7 +124,7 @@ func main(): int {
 fn load_stdlib(db: &mut DatabaseImpl) -> arandu_query::db::SourceFile {
     let mut net_file = None;
     for (path, source) in common::STDLIB_MODULES {
-        let file = db.new_file((*path).to_string(), (*source).to_string());
+        let file = db.new_stdlib_file((*path).to_string(), (*source).to_string());
         if *path == "stdlib/std/net.aru" {
             net_file = Some(file);
         }

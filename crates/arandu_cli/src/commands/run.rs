@@ -3,17 +3,23 @@
 use rayon::prelude::*;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
+use crate::args::RunBackend;
 use crate::cli_error::{CliFailure, CliResult, CliSuccess};
 use crate::pipeline::{
-    attach_stdlib, ensure_host_jit_layout, fail_operational, fail_usage, find_aru_files, finish,
-    open_entry_file, optimize_amir_or_exit, optimize_amir_with_level_or_exit, parse_and_check,
-    pipeline_lower, pipeline_lower_checked, print_diagnostics_and_exit, print_genref_report,
-    render_nonfatal_diagnostics, render_pipeline_failure, validate_hir_and_monomorphize,
+    attach_stdlib, ensure_host_jit_layout, fail_operational, fail_usage, find_aru_files,
+    open_entry_file, optimize_amir_or_exit, pipeline_lower, pipeline_lower_checked,
+    print_diagnostics_and_exit, print_genref_report, render_nonfatal_diagnostics,
+    render_pipeline_failure,
 };
 use crate::project::{self, ProjectFlags};
 use arandu_middle::layout::DataLayout;
 
+#[path = "run_dispatch.rs"]
+mod run_dispatch;
+
+#[allow(clippy::too_many_arguments)]
 pub fn cmd_project_run(
     start: &Path,
     flags: &ProjectFlags,
@@ -21,6 +27,7 @@ pub fn cmd_project_run(
     _debug: bool,
     genref_report: bool,
     data_layout: DataLayout,
+    backend: RunBackend,
     program_args: &[String],
 ) -> CliResult {
     if flags.release || flags.size {
@@ -29,6 +36,11 @@ pub fn cmd_project_run(
         ));
     }
     ensure_host_jit_layout(data_layout)?;
+    if backend == RunBackend::Llvm && flags.target.is_some() {
+        return Err(CliFailure::usage(
+            "experimental LLVM execution supports only the host target",
+        ));
+    }
     let explain_rebuild = arandu_base::EXPLAIN_REBUILD.load(std::sync::atomic::Ordering::Relaxed);
     let (mut db, rebuild_log) = if flags.verbose || explain_rebuild {
         let (db, log) = arandu_query::DatabaseImpl::with_rebuild_log();
@@ -73,6 +85,16 @@ pub fn cmd_project_run(
         None => &artifacts.amir,
     };
 
+    if backend == RunBackend::Llvm {
+        return execute_llvm_main(
+            amir,
+            type_check,
+            ctx.entry_path,
+            program_args,
+            "run project",
+        );
+    }
+
     use arandu_semantics::CodegenBackend;
     let output = {
         let backend = match arandu_backend_cranelift::CraneliftBackend::try_new() {
@@ -100,7 +122,7 @@ pub fn cmd_project_run(
     )
 }
 
-fn execute_jit_main(
+pub(super) fn execute_jit_main(
     output: &impl arandu_semantics::CompiledCode,
     amir: &arandu_semantics::amir::AmirProgram,
     type_check: &arandu_semantics::TypeCheckResult,
@@ -162,6 +184,120 @@ fn execute_jit_main(
     ))
 }
 
+pub(super) fn execute_llvm_main(
+    amir: &arandu_semantics::amir::AmirProgram,
+    type_check: &arandu_semantics::TypeCheckResult,
+    context_path: PathBuf,
+    program_args: &[String],
+    action: &'static str,
+) -> CliResult {
+    let has_main = amir
+        .funcs
+        .iter()
+        .any(|f| type_check.symbols.get(f.symbol).name.as_str() == "main");
+    if !has_main {
+        return Err(CliFailure::operational(
+            action,
+            Some(context_path),
+            "'main' function not found in compiled program",
+        ));
+    }
+
+    let ir = arandu_backend_llvm::emit_llvm_ir(
+        amir,
+        type_check.symbols.as_ref(),
+        type_check.type_info.as_ref(),
+    )
+    .map_err(|diag| CliFailure::diagnostics(std::iter::once(diag), Some(context_path.clone())))?;
+
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+    let ir_path =
+        std::env::temp_dir().join(format!("arandu-llvm-{}-{unique}.ll", std::process::id()));
+    if let Err(error) = fs::write(&ir_path, ir) {
+        return Err(CliFailure::operational(
+            action,
+            Some(context_path),
+            format!("failed to write temporary LLVM IR: {error}"),
+        ));
+    }
+
+    let result = run_llvm_ir(&ir_path, program_args, &context_path, action);
+    let _ = fs::remove_file(&ir_path);
+    result
+}
+
+fn run_llvm_ir(
+    ir_path: &Path,
+    program_args: &[String],
+    context_path: &Path,
+    action: &'static str,
+) -> CliResult {
+    // `llvm-as` accepts external declarations, so IR validation alone does not
+    // prove that a program is runnable. Prefer the native linker path: it is the
+    // only one that resolves Arandu runtime symbols such as `io.println`.
+    if tool_available("clang") {
+        // Native link is the only path that resolves Arandu runtime symbols
+        // (`io.println`, `ar_rt_raw_*`, ToStr helpers). Fail loudly if the
+        // packaged static library is missing instead of producing an
+        // unresolvable binary.
+        let runtime = crate::linker::runtime_library()?;
+        let binary_path = ir_path.with_extension("bin");
+        let mut command = Command::new("clang");
+        command.arg(ir_path).arg(&runtime);
+        command.args(crate::linker::host_runtime_link_args());
+        let compile = command
+            .arg("-o")
+            .arg(&binary_path)
+            .status()
+            .map_err(|error| {
+                CliFailure::operational(
+                    action,
+                    Some(context_path.to_path_buf()),
+                    format!("failed to start clang: {error}"),
+                )
+            })?;
+        if !compile.success() {
+            return Err(CliFailure::operational(
+                action,
+                Some(context_path.to_path_buf()),
+                format!(
+                    "clang failed to compile or link the emitted LLVM IR (runtime {})",
+                    runtime.display()
+                ),
+            ));
+        }
+        let status = Command::new(&binary_path)
+            .args(program_args)
+            .status()
+            .map_err(|error| {
+                CliFailure::operational(
+                    action,
+                    Some(context_path.to_path_buf()),
+                    format!("failed to start LLVM program: {error}"),
+                )
+            });
+        let _ = fs::remove_file(&binary_path);
+        return Ok(CliSuccess::ProgramExit(status?.code().unwrap_or(1)));
+    }
+
+    Err(CliFailure::operational(
+        action,
+        Some(context_path.to_path_buf()),
+        "LLVM execution requires `clang` on PATH; `lli` cannot link the Arandu runtime",
+    ))
+}
+
+fn tool_available(name: &str) -> bool {
+    Command::new(name)
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
 pub fn cmd_single_file_dispatch(
     command: &str,
     target_path: &Path,
@@ -177,9 +313,45 @@ pub fn cmd_single_file_dispatch(
             "`--size` requires build, emit-c, emit-wasm or emit-component",
         ));
     }
+    if inv.backend != RunBackend::Cranelift && command != "run" {
+        return Err(CliFailure::usage(
+            "`--backend` is supported only by `run` and `run -b llvm`",
+        ));
+    }
+    if inv.backend == RunBackend::Llvm
+        && inv.project_flags.target.is_some()
+        && command != "emit-llvm"
+    {
+        return Err(CliFailure::usage(
+            "experimental LLVM execution supports only the host target",
+        ));
+    }
+    if command == "emit-llvm" {
+        match inv.project_flags.target.as_deref() {
+            Some(triple) if arandu_middle::embedded_profile(triple).is_some() => {
+                if inv.data_layout.pointer_width() != 4 {
+                    return Err(CliFailure::usage(
+                        "bare-metal profiles use a 32-bit data layout",
+                    ));
+                }
+            }
+            Some(_) => {
+                return Err(CliFailure::usage(
+                    "experimental emit-llvm supports the host target or thumbv7em-none-eabihf / riscv32imc-unknown-none-elf",
+                ));
+            }
+            None if inv.data_layout != DataLayout::host() => {
+                return Err(CliFailure::usage(
+                    "experimental emit-llvm supports only the host target and layout",
+                ));
+            }
+            None => {}
+        }
+    }
     let parallel = inv.parallel;
     let debug = inv.debug;
     let opt = inv.opt;
+    let backend = inv.backend;
     let genref_report = inv.genref_report;
     let cfg = inv.cfg;
     let ascii = inv.ascii;
@@ -241,6 +413,7 @@ pub fn cmd_single_file_dispatch(
             arandu_middle::db::TargetIdentity {
                 os: "wasi".into(),
                 arch: "wasm32".into(),
+                triple: String::new(),
             }
         };
         db.set_target_identity(identity);
@@ -262,14 +435,20 @@ pub fn cmd_single_file_dispatch(
             Ok(source) => {
                 let filepath = p.to_string_lossy().into_owned();
                 let file_id = registry.register(&filepath, &source);
-                let code = std::sync::Arc::from(source.clone());
-                let source_file = arandu_query::db::SourceFile::new(
-                    &db,
-                    file_id,
-                    code,
-                    std::sync::Arc::new(p.clone()),
-                );
-                db.register_source_file(filepath.clone(), source_file);
+                let source: std::sync::Arc<str> = std::sync::Arc::from(source);
+                let source_file = match crate::pipeline::registered_entry_source(&db, p, &source) {
+                    Some(existing) => existing,
+                    None => {
+                        let file = arandu_query::db::SourceFile::new(
+                            &db,
+                            file_id,
+                            std::sync::Arc::clone(&source),
+                            std::sync::Arc::new(p.clone()),
+                        );
+                        db.register_source_file(filepath.clone(), file);
+                        file
+                    }
+                };
                 source_files.push((source_file, filepath, source));
             }
             Err(err) => {
@@ -329,390 +508,25 @@ pub fn cmd_single_file_dispatch(
         return Ok(CliSuccess::Done);
     }
 
-    let process_file = |source_file: arandu_query::db::SourceFile,
-                        filepath: String,
-                        source: String,
-                        db: arandu_query::db::DatabaseImpl| {
-        match command {
-            "lex" => match arandu_lexer::lex_to_string(&source) {
-                Ok(output) => println!("{output}"),
-                Err(err) => {
-                    fail_operational(
-                        "lex source",
-                        Some(PathBuf::from(&filepath)),
-                        err.to_string(),
-                    );
-                }
-            },
-            "parse" => match arandu_parser::parse_to_string(&source) {
-                Ok(output) => println!("{output}"),
-                Err(err) => {
-                    fail_operational(
-                        "parse source",
-                        Some(PathBuf::from(&filepath)),
-                        err.to_string(),
-                    );
-                }
-            },
-            "check" => {
-                let artifacts = pipeline_lower(&db, source_file, &filepath);
-                if !project_flags.quiet
-                    && (project_flags.verbose || explain)
-                    && let Some(log) = db.rebuild_log()
-                {
-                    eprintln!("{}", log.status_line());
-                }
-                if genref_report {
-                    print_genref_report(&filepath, &artifacts);
-                }
-                tracing::info!(
-                    "Compilation verified successfully — no errors found for {}",
-                    filepath
-                );
-                if !project_flags.quiet {
-                    println!("ok {}", filepath);
-                }
-            }
-            "hir" => {
-                let mut checked = parse_and_check(&db, source_file, &filepath);
-                let mut hir = {
-                    arandu_base::time_pass!("lower-hir");
-                    match arandu_semantics::lower_to_hir(&mut checked.type_check, &checked.program)
-                    {
-                        Ok(hir) => hir,
-                        Err(diags) => print_diagnostics_and_exit(diags, &filepath),
-                    }
-                };
-                validate_hir_and_monomorphize(&mut hir, &mut checked.type_check, &filepath);
-
-                if debug {
-                    println!("{hir:#?}");
-                } else {
-                    let ctx = arandu_semantics::hir::HirPrettyCtx {
-                        pool: &hir.pool,
-                        symbols: &checked.type_check.symbols,
-                        show_spans: false,
-                        type_interner: Some(&checked.type_check.type_info.type_interner),
-                    };
-                    println!("--- HIR for {} ---", filepath);
-                    print!("{}", hir.pretty_print(&ctx));
-                }
-            }
-            "amir" => {
-                let artifacts = pipeline_lower(&db, source_file, &filepath);
-                if genref_report {
-                    print_genref_report(&filepath, &artifacts);
-                }
-                let symbols = artifacts.type_check.symbols.as_ref();
-                let interner = &artifacts.type_check.type_info.type_interner;
-                let mut amir_owned = if opt {
-                    Some(artifacts.amir.clone())
-                } else {
-                    None
-                };
-                if let Some(ref mut amir) = amir_owned {
-                    arandu_base::time_pass!("optimize-amir");
-                    optimize_amir_or_exit(amir, &artifacts.type_check, &filepath);
-                }
-                let amir = match &amir_owned {
-                    Some(a) => a,
-                    None => &artifacts.amir,
-                };
-
-                if cfg {
-                    if ascii {
-                        print!("{}", amir.render_cfg_ascii(symbols, interner));
-                    } else {
-                        print!("{}", amir.render_cfg_dot(symbols, interner));
-                    }
-                } else if debug {
-                    println!("{amir:#?}");
-                } else {
-                    println!("--- AMIR for {} ---", filepath);
-                    print!("{}", amir.pretty_print(symbols, interner));
-                }
-            }
-            "run" => {
-                if let Err(failure) = ensure_host_jit_layout(data_layout) {
-                    finish(Err(failure));
-                }
-                let artifacts = pipeline_lower(&db, source_file, &filepath);
-                if genref_report {
-                    print_genref_report(&filepath, &artifacts);
-                }
-                tracing::info!("AMIR lowering completed (Salsa: single pipeline)");
-
-                if !project_flags.quiet
-                    && let Some(log) = db.rebuild_log()
-                {
-                    eprintln!("{}", log.status_line());
-                }
-
-                let type_check = &artifacts.type_check;
-                let mut amir_owned = if opt {
-                    Some(artifacts.amir.clone())
-                } else {
-                    None
-                };
-                if let Some(ref mut amir) = amir_owned {
-                    arandu_base::time_pass!("optimize-amir");
-                    optimize_amir_or_exit(amir, type_check, &filepath);
-                    tracing::info!("Optimisation passes applied");
-                }
-                let amir = match &amir_owned {
-                    Some(a) => a,
-                    None => &artifacts.amir,
-                };
-
-                use arandu_semantics::CodegenBackend;
-                let output = {
-                    let backend = {
-                        arandu_base::time_pass!("codegen-init");
-                        match arandu_backend_cranelift::CraneliftBackend::try_new() {
-                            Ok(backend) => backend,
-                            Err(diag) => {
-                                print_diagnostics_and_exit(std::iter::once(diag), &filepath)
-                            }
-                        }
-                    };
-                    arandu_base::time_pass!("codegen-translate");
-                    match CodegenBackend::compile(
-                        backend,
-                        amir,
-                        type_check.symbols.as_ref(),
-                        type_check.type_info.as_ref(),
-                    ) {
-                        Ok(out) => out,
-                        Err(diag) => print_diagnostics_and_exit(std::iter::once(diag), &filepath),
-                    }
-                };
-                tracing::info!("Machine code generated (Cranelift JIT backend)");
-
-                let result = execute_jit_main(
-                    &output,
-                    amir,
-                    type_check,
-                    PathBuf::from(&filepath),
-                    &inv.program_args,
-                    "run program",
-                );
-                finish(result);
-            }
-            "emit-c" => {
-                let artifacts = pipeline_lower(&db, source_file, &filepath);
-                if genref_report {
-                    print_genref_report(&filepath, &artifacts);
-                }
-                let type_check = &artifacts.type_check;
-                let mut amir_owned = if opt || project_flags.size {
-                    Some(artifacts.amir.clone())
-                } else {
-                    None
-                };
-                if let Some(ref mut amir) = amir_owned {
-                    arandu_base::time_pass!("optimize-amir");
-                    if project_flags.size {
-                        optimize_amir_with_level_or_exit(
-                            amir,
-                            type_check,
-                            arandu_semantics::OptLevel::Os,
-                            &filepath,
-                        );
-                    } else {
-                        optimize_amir_or_exit(amir, type_check, &filepath);
-                    }
-                }
-                let amir = match &amir_owned {
-                    Some(a) => a,
-                    None => &artifacts.amir,
-                };
-
-                arandu_base::time_pass!("emit-c");
-                let c_src = arandu_backend_c::emit_c(
-                    amir,
-                    type_check.symbols.as_ref(),
-                    type_check.type_info.as_ref(),
-                    &type_check.type_info.type_interner,
-                    data_layout,
-                )
-                .unwrap_or_else(|diag| {
-                    print_diagnostics_and_exit(std::iter::once(diag), &filepath)
-                });
-                print!("{c_src}");
-            }
-            "emit-wasm" => {
-                let artifacts = pipeline_lower(&db, source_file, &filepath);
-                if genref_report {
-                    print_genref_report(&filepath, &artifacts);
-                }
-                let type_check = &artifacts.type_check;
-                let mut amir_owned = if opt || project_flags.size {
-                    Some(artifacts.amir.clone())
-                } else {
-                    None
-                };
-                if let Some(ref mut amir) = amir_owned {
-                    arandu_base::time_pass!("optimize-amir");
-                    if project_flags.size {
-                        optimize_amir_with_level_or_exit(
-                            amir,
-                            type_check,
-                            arandu_semantics::OptLevel::Os,
-                            &filepath,
-                        );
-                    } else {
-                        optimize_amir_or_exit(amir, type_check, &filepath);
-                    }
-                }
-                let amir = match &amir_owned {
-                    Some(a) => a,
-                    None => &artifacts.amir,
-                };
-
-                // Wasm32 requires ptr_width=4; warn if a different layout was
-                // requested via --layout.
-                let wasm_layout = if data_layout.pointer_width() == 4 {
-                    data_layout
-                } else {
-                    tracing::warn!(
-                        "emit-wasm requires ptr_width=4 (wasm32); \
-                         ignoring requested layout ({})",
-                        data_layout.pointer_width()
-                    );
-                    arandu_middle::layout::DataLayout::ptr_width(4)
-                };
-
-                arandu_base::time_pass!("emit-wasm");
-                let emit = if project_flags.size {
-                    arandu_backend_wasm::emit_wasm_for_size
-                } else {
-                    arandu_backend_wasm::emit_wasm
-                };
-                let wasm_bytes = emit(
-                    amir,
-                    type_check.symbols.as_ref(),
-                    &type_check.type_info.type_interner,
-                    type_check.type_info.as_ref(),
-                    wasm_layout,
-                )
-                .unwrap_or_else(|diag| {
-                    print_diagnostics_and_exit(std::iter::once(diag), &filepath)
-                });
-
-                // Write bytes to stdout; callers can redirect to a .wasm file.
-                use std::io::Write;
-                std::io::stdout()
-                    .write_all(&wasm_bytes)
-                    .unwrap_or_else(|e| {
-                        fail_operational("write wasm output", None, e.to_string());
-                    });
-            }
-            "emit-component" => {
-                let artifacts = pipeline_lower(&db, source_file, &filepath);
-                if genref_report {
-                    print_genref_report(&filepath, &artifacts);
-                }
-                let type_check = &artifacts.type_check;
-                let mut amir_owned = if opt || project_flags.size {
-                    Some(artifacts.amir.clone())
-                } else {
-                    None
-                };
-                if let Some(ref mut amir) = amir_owned {
-                    arandu_base::time_pass!("optimize-amir");
-                    if project_flags.size {
-                        optimize_amir_with_level_or_exit(
-                            amir,
-                            type_check,
-                            arandu_semantics::OptLevel::Os,
-                            &filepath,
-                        );
-                    } else {
-                        optimize_amir_or_exit(amir, type_check, &filepath);
-                    }
-                }
-                let amir = match &amir_owned {
-                    Some(a) => a,
-                    None => &artifacts.amir,
-                };
-
-                // Wasm32 requires ptr_width=4; warn if a different layout was
-                // requested via --layout.
-                let wasm_layout = if data_layout.pointer_width() == 4 {
-                    data_layout
-                } else {
-                    tracing::warn!(
-                        "emit-component requires ptr_width=4 (wasm32); \
-                         ignoring requested layout ({})",
-                        data_layout.pointer_width()
-                    );
-                    arandu_middle::layout::DataLayout::ptr_width(4)
-                };
-
-                // WIT package name derived from the source file stem (kebab-case).
-                let pkg_name = Path::new(&filepath)
-                    .file_stem()
-                    .map(|s| arandu_backend_wasm::wit_gen::to_wit_ident(&s.to_string_lossy()))
-                    .unwrap_or_else(|| "module".to_owned());
-
-                arandu_base::time_pass!("emit-component");
-                let emit = if project_flags.size {
-                    arandu_backend_wasm::emit_component_for_size
-                } else {
-                    arandu_backend_wasm::emit_component
-                };
-                let component_bytes = emit(
-                    amir,
-                    type_check.symbols.as_ref(),
-                    &type_check.type_info.type_interner,
-                    type_check.type_info.as_ref(),
-                    wasm_layout,
-                    &pkg_name,
-                )
-                .unwrap_or_else(|diag| {
-                    print_diagnostics_and_exit(std::iter::once(diag), &filepath)
-                });
-
-                // Write bytes to stdout; callers can redirect to a .wasm file.
-                use std::io::Write;
-                std::io::stdout()
-                    .write_all(&component_bytes)
-                    .unwrap_or_else(|e| {
-                        fail_operational("write component output", None, e.to_string());
-                    });
-            }
-            "graph" => {
-                use arandu_query::db::ArandCompilerDb;
-                let dep_graph = arandu_query::passes::module_dependency_graph(&db, source_file);
-                let mut dot_graph = petgraph::Graph::<String, ()>::new();
-                let mut node_map = std::collections::HashMap::new();
-                for node in dep_graph.node_indices() {
-                    let file_id = dep_graph[node];
-                    let path = db.file_path(file_id);
-                    let path_str = path.to_string_lossy().into_owned();
-                    let new_node = dot_graph.add_node(path_str);
-                    node_map.insert(node, new_node);
-                }
-                for edge in dep_graph.edge_indices() {
-                    let Some((source, target)) = dep_graph.edge_endpoints(edge) else {
-                        continue;
-                    };
-                    if let (Some(&s), Some(&t)) = (node_map.get(&source), node_map.get(&target)) {
-                        dot_graph.add_edge(s, t, ());
-                    }
-                }
-                println!("{:?}", petgraph::dot::Dot::with_config(&dot_graph, &[]));
-            }
-            _ => {
-                fail_usage("error: unknown command");
-            }
-        }
-    };
-
     for (source_file, filepath, source) in source_files {
-        process_file(source_file, filepath, source, db.clone());
+        run_dispatch::process_file(
+            source_file,
+            filepath,
+            source,
+            db.clone(),
+            command,
+            project_flags,
+            explain,
+            genref_report,
+            debug,
+            cfg,
+            ascii,
+            opt,
+            data_layout,
+            &backend,
+            inv,
+        );
     }
-
     if explain && let Some(log) = rebuild_log {
         eprint!("{}", log.format_chain(true));
     }

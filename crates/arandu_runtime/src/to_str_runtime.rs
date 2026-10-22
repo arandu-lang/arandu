@@ -10,11 +10,8 @@
 //! a panic must never unwind into JIT'd code, so it aborts instead.
 
 use std::fmt::{self, Write};
-use std::os::raw::c_void;
 
-unsafe extern "C" {
-    fn malloc(size: usize) -> *mut c_void;
-}
+use crate::vec_runtime::ar_rt_raw_malloc;
 
 /// Allocate `bytes` as a NUL-terminated buffer; write byte length (excluding
 /// NUL) to `out_len`. Returns pointer (never null on success; aborts on OOM).
@@ -31,7 +28,7 @@ unsafe fn pack_bytes(bytes: &[u8], out_len: *mut i64) -> *mut u8 {
             *out_len = i64::try_from(len).unwrap_or(i64::MAX);
         }
     }
-    let ptr = unsafe { malloc(len + 1) as *mut u8 };
+    let ptr = unsafe { ar_rt_raw_malloc(len + 1) };
     if ptr.is_null() {
         // Match C runtime abort-on-OOM policy for debug helpers.
         std::process::abort();
@@ -416,8 +413,9 @@ pub unsafe extern "C" fn ar_jit_err_to_str(err: *const u8, out_len: *mut i64) ->
 mod tests {
     use super::*;
 
+    use crate::vec_runtime::ar_rt_raw_free;
+
     unsafe extern "C" {
-        fn free(ptr: *mut c_void);
         #[link_name = "eprint"]
         fn aot_eprint(ptr: *const u8, len: i64);
     }
@@ -432,7 +430,7 @@ mod tests {
         // (the allocator may already reuse or scribble over the chunk).
         let s = String::from_utf8_lossy(bytes).into_owned();
         // SAFETY: paired with the `malloc` inside `pack_string`.
-        unsafe { free(ptr.cast()) };
+        unsafe { ar_rt_raw_free(ptr) };
         s
     }
 
@@ -469,7 +467,7 @@ mod tests {
             assert!(!p.is_null());
             let bytes = std::slice::from_raw_parts(p, 1);
             assert_eq!(bytes, b"7");
-            free(p.cast());
+            ar_rt_raw_free(p);
         }
     }
 
@@ -506,10 +504,10 @@ mod tests {
             // `out_len` may be null, including on the widest values.
             let p = ar_jit_i64_to_str(i64::MIN, std::ptr::null_mut());
             assert_eq!(*p.add(20), 0);
-            free(p.cast());
+            ar_rt_raw_free(p);
             let p = ar_jit_u64_to_str(u64::MAX, std::ptr::null_mut());
             assert_eq!(*p.add(20), 0);
-            free(p.cast());
+            ar_rt_raw_free(p);
         }
     }
 

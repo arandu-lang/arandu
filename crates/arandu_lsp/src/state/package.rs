@@ -1,5 +1,6 @@
 //! Package configuration, background discovery sync, and import alias bindings.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use arandu_query::db::SourceFile;
@@ -9,6 +10,20 @@ use super::path::{normalize_path_soft, package_relative_path};
 use super::types::{PackageState, ServerState};
 
 impl ServerState {
+    /// Commit the loader-verified stdlib root, including editor overlays opened
+    /// before background discovery completed. Never replace their source text.
+    pub fn configure_stdlib_root(&mut self, root: PathBuf) {
+        let normalized_root = normalize_path_soft(&root);
+        for &id in self.by_uri.values() {
+            if let Some(doc) = self.docs.get(id) {
+                if normalize_path_soft(doc.path.as_ref()).starts_with(&normalized_root) {
+                    self.host.db_mut().trust_stdlib_source(doc.source);
+                }
+            }
+        }
+        self.host.db_mut().set_stdlib_root(root);
+    }
+
     pub fn configure_package(
         &mut self,
         project: crate::workspace::WorkspaceProject,
@@ -23,7 +38,16 @@ impl ServerState {
             module_plan,
             module_files: _,
         } = project;
+        let trusted_stdlib_root = stdlib_root.clone();
         let package_name = manifest_data.name.clone();
+        let mut open_by_path = HashMap::<PathBuf, SourceFile>::new();
+        for &id in self.by_uri.values() {
+            if let Some(doc) = self.docs.get(id) {
+                open_by_path
+                    .entry(normalize_path_soft(doc.path.as_ref()))
+                    .or_insert(doc.source);
+            }
+        }
         let package_bindings = module_plan
             .as_ref()
             .map(|plan| {
@@ -31,18 +55,12 @@ impl ServerState {
                     .iter()
                     .map(|binding| {
                         let normalized = normalize_path_soft(&binding.physical);
-                        let source = self
-                            .by_uri
-                            .values()
-                            .filter_map(|&id| self.docs.get(id))
-                            .find(|doc| normalize_path_soft(doc.path.as_ref()) == normalized)
-                            .map(|doc| doc.source)
-                            .ok_or_else(|| {
-                                format!(
-                                    "package module {} was not registered before graph commit",
-                                    binding.physical.display()
-                                )
-                            })?;
+                        let source = open_by_path.get(&normalized).copied().ok_or_else(|| {
+                            format!(
+                                "package module {} was not registered before graph commit",
+                                binding.physical.display()
+                            )
+                        })?;
                         Ok((
                             binding.logical.clone(),
                             ModuleBinding {
@@ -91,7 +109,16 @@ impl ServerState {
             .filter_map(|&id| self.docs.get(id))
             .map(|doc| (doc.path.as_ref().clone(), doc.source))
             .collect();
+        let normalized_stdlib = trusted_stdlib_root
+            .as_ref()
+            .map(|root| normalize_path_soft(root));
         for (path, source) in known {
+            if normalized_stdlib
+                .as_ref()
+                .is_some_and(|root| normalize_path_soft(&path).starts_with(root))
+            {
+                self.host.db_mut().trust_stdlib_source(source);
+            }
             self.register_package_aliases(&path, source);
         }
         Ok(())

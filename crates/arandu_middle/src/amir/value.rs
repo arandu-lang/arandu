@@ -40,6 +40,43 @@ pub enum AmirProjection {
 #[derive(Debug, Clone)]
 pub enum AmirRvalue {
     Use(AmirOperand),
+    /// Pure lane-wise arithmetic, with wrapping integer semantics.
+    VectorOp {
+        op: VectorOp,
+        left: AmirOperand,
+        right: AmirOperand,
+    },
+    /// Bitwise select; mask is U8x16 and true/false have the result shape.
+    VectorSelect {
+        mask: AmirOperand,
+        if_true: AmirOperand,
+        if_false: AmirOperand,
+    },
+    /// Ordered lane comparisons (except Ne, which is unordered for NaN).
+    /// Produces U8x16 with every byte of a true lane set to 0xff.
+    VectorCompare {
+        op: VectorCompareOp,
+        left: AmirOperand,
+        right: AmirOperand,
+    },
+    VectorSplat {
+        value: AmirOperand,
+    },
+    /// Byte shuffle over the concatenation of two 128-bit vectors; indices < 32.
+    VectorShuffle {
+        left: AmirOperand,
+        right: AmirOperand,
+        mask: [u8; 16],
+    },
+    VectorExtractLane {
+        vector: AmirOperand,
+        lane: u8,
+    },
+    VectorInsertLane {
+        vector: AmirOperand,
+        lane: u8,
+        value: AmirOperand,
+    },
     Binary {
         op: BinaryOp,
         left: AmirOperand,
@@ -365,4 +402,66 @@ pub enum AmirConstant {
     Pool(LiteralId),
     Bool(bool),
     Nil,
+}
+
+/// Operations in the common portable hardware-vector contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum VectorOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    BitAnd,
+    BitOr,
+    BitXor,
+}
+
+impl VectorOp {
+    #[must_use]
+    pub const fn stable_tag(self) -> u8 {
+        match self {
+            Self::Add => 0,
+            Self::Sub => 1,
+            Self::Mul => 2,
+            Self::Div => 3,
+            Self::BitAnd => 4,
+            Self::BitOr => 5,
+            Self::BitXor => 6,
+        }
+    }
+
+    #[must_use]
+    pub fn supports(self, vector: crate::types::VectorType) -> bool {
+        use crate::types::VectorType;
+        match self {
+            Self::Add | Self::Sub => true,
+            Self::Mul => !matches!(vector, VectorType::U8x16),
+            Self::Div => vector.lane().is_float(),
+            Self::BitAnd | Self::BitOr | Self::BitXor => !vector.lane().is_float(),
+        }
+    }
+}
+
+/// Comparisons produce canonical all-ones/all-zero lane masks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum VectorCompareOp {
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+impl VectorCompareOp {
+    #[must_use]
+    pub const fn stable_tag(self) -> u8 {
+        match self {
+            Self::Eq => 0,
+            Self::Ne => 1,
+            Self::Lt => 2,
+            Self::Le => 3,
+            Self::Gt => 4,
+            Self::Ge => 5,
+        }
+    }
 }

@@ -1,0 +1,32 @@
+module std.core.atomicContention
+
+extern "arandu-intrinsic" {
+    func atomicFetchAdd32(value: mut ref u32, operand: u32): u32
+    func atomicLoad32(value: ref u32): u32
+    func atomicCompareExchange32(value: mut ref u32, expected: u32, desired: u32): u32
+}
+
+public func increment(counter: ptr[u32], iterations: int): void {
+    let mut i = 0
+    while i < iterations {
+        unsafe { atomicFetchAdd32(mut ref *counter, 1 as u32) }
+        i = i + 1
+    }
+}
+
+public func incrementCas(counter: ptr[u32], iterations: int): void {
+    let mut i = 0
+    while i < iterations {
+        unsafe {
+            let mut expected = atomicLoad32(ref *counter)
+            while true {
+                let observed = atomicCompareExchange32(mut ref *counter, expected, expected + (1 as u32))
+                if observed == expected { break }
+                expected = observed
+            }
+        }
+        i = i + 1
+    }
+}
+
+func main(): int { return 0 }

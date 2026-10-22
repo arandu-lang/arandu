@@ -1,0 +1,79 @@
+Func binarySearchSlice(arr: []int, len: usize, target: int) -> int
+  locals:
+    _0: int // return
+    _1: []int
+    _2: usize
+    _3: int
+    _4: usize
+    _5: usize
+    _6: usize
+    _7: usize
+    _8: usize
+    _9: bool
+    _10: usize
+    _11: usize
+    _12: usize
+    _13: usize
+    _14: usize
+    _15: usize
+    _16: usize
+    _17: []int
+    _18: []int
+    _19: usize
+    _20: int
+    _21: int
+    _22: int
+    _23: int
+    _24: bool
+    _25: usize
+    _26: int
+    _27: int
+    _28: bool
+    _29: usize
+    _30: usize
+    _31: usize
+    _32: usize
+    _33: usize
+    _34: usize
+    _35: []int
+    _36: int
+    s0: []int // arr
+    s1: usize // len
+    s2: int // target
+    s3: usize // low
+    s4: usize // high
+    s5: usize // mid
+    s6: int // val
+
+  bb0:
+    goto bb1(0, _2)
+  bb1(_5: usize /* from: "low" */, _7: usize /* from: "high" */):
+    _9 = lt _5, _7
+    branch _9 => bb2, else bb3
+  bb2:
+    _13 = sub _7, _5
+    _14 = 2
+    _15 = div _13, _14
+    _16 = add _5, _15
+    _20 = _1[_16]
+    _24 = eq _20, _3
+    branch _24 => bb4, else bb5
+  bb3:
+    _0 = neg 1
+    return
+  bb4:
+    _0 = _16
+    return
+  bb5:
+    goto bb6
+  bb6:
+    _28 = lt _20, _3
+    branch _28 => bb7, else bb8
+  bb7:
+    _30 = 1
+    _31 = add _16, _30
+    goto bb9(_31, _7)
+  bb8:
+    goto bb9(_5, _16)
+  bb9(_33: usize /* from: "low" */, _34: usize /* from: "high" */):
+    goto bb1(_33, _34)

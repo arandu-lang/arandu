@@ -52,6 +52,26 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         let rhs_ty = self.builder.func.dfg.value_type(rhs);
         let is_float = lhs_ty.is_float() || rhs_ty.is_float();
 
+        if !is_float && matches!(op, BinaryOp::ShiftLeft | BinaryOp::ShiftRight) {
+            // Wasm executes narrow integers in an i32 slot. Use that same
+            // execution width here; the count's type cannot widen the value.
+            // Truncating a wide count preserves its low mask bits.
+            let execution_ty = if lhs_ty.bits() < 32 {
+                cranelift_codegen::ir::types::I32
+            } else {
+                lhs_ty
+            };
+            lhs = self.cast_int_width_signed(lhs, execution_ty, !is_unsigned);
+            rhs = self.cast_int_width(rhs, execution_ty);
+            let shifted = match op {
+                BinaryOp::ShiftLeft => self.builder.ins().ishl(lhs, rhs),
+                BinaryOp::ShiftRight if is_unsigned => self.builder.ins().ushr(lhs, rhs),
+                BinaryOp::ShiftRight => self.builder.ins().sshr(lhs, rhs),
+                _ => unreachable!(),
+            };
+            return self.cast_int_width(shifted, lhs_ty);
+        }
+
         if !is_float && lhs_ty != rhs_ty {
             if lhs_ty.bits() < rhs_ty.bits() {
                 if is_unsigned {

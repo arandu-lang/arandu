@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[derive(Debug)]
 pub enum CliSuccess {
@@ -118,13 +119,13 @@ impl CliFailure {
                 let path = source_path
                     .as_deref()
                     .unwrap_or_else(|| std::path::Path::new(""));
-                let source = std::fs::read_to_string(path).unwrap_or_default();
+                let source: Arc<str> = std::fs::read_to_string(path).unwrap_or_default().into();
                 for diagnostic in diagnostics {
                     let mut diag = diagnostic.clone();
                     if diag.is_ice() {
                         attach_ice_report_metadata(&mut diag, source_path.as_deref());
                     }
-                    let source_len = source.len() as u32;
+                    let source_len = u32::try_from(source.len()).unwrap_or(u32::MAX);
                     if diag.span.end > source_len || diag.span.start > source_len {
                         diag.span.start = diag.span.start.min(source_len);
                         diag.span.end = diag.span.end.min(source_len);
@@ -136,7 +137,7 @@ impl CliFailure {
                         }
                     }
                     let named_source =
-                        miette::NamedSource::new(path.to_string_lossy(), source.clone());
+                        miette::NamedSource::new(path.to_string_lossy(), Arc::clone(&source));
                     let report = miette::Report::new(diag).with_source_code(named_source);
                     eprintln!("{report:?}");
                 }

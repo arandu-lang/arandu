@@ -10,10 +10,58 @@ struct WakerSlot {
     state: Arc<(StdMutex<bool>, Condvar)>,
 }
 
-static WAKERS: StdMutex<Vec<Option<WakerSlot>>> = StdMutex::new(Vec::new());
+struct WakerEntry {
+    /// Zero means the packed id equals the index, so the first occupant keeps
+    /// the historical handle. Later generations never reuse that integer.
+    generation: u32,
+    slot: Option<WakerSlot>,
+}
 
-fn lock() -> std::sync::MutexGuard<'static, Vec<Option<WakerSlot>>> {
+struct WakerTable {
+    entries: Vec<WakerEntry>,
+    free: Vec<u32>,
+}
+
+static WAKERS: StdMutex<WakerTable> = StdMutex::new(WakerTable {
+    entries: Vec::new(),
+    free: Vec::new(),
+});
+
+fn lock() -> std::sync::MutexGuard<'static, WakerTable> {
     WAKERS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn pack_waker(index: u32, generation: u32) -> i64 {
+    (((u64::from(generation) & 0x7FFF_FFFF) << 32) | u64::from(index)) as i64
+}
+
+fn unpack_waker(id: i64) -> Option<(usize, u32)> {
+    if id < 0 {
+        return None;
+    }
+    let raw = id as u64;
+    Some(((raw & 0xFFFF_FFFF) as usize, (raw >> 32) as u32))
+}
+
+fn bump_waker_generation(generation: u32) -> u32 {
+    let next = (generation + 1) & 0x7FFF_FFFF;
+    if next == 0 { 1 } else { next }
+}
+
+fn fresh_slot() -> WakerSlot {
+    WakerSlot {
+        state: Arc::new((StdMutex::new(false), Condvar::new())),
+    }
+}
+
+fn waker_state(id: i64) -> Option<Arc<(StdMutex<bool>, Condvar)>> {
+    let (index, generation) = unpack_waker(id)?;
+    let table = lock();
+    let entry = table.entries.get(index)?;
+    if entry.generation != generation {
+        return None;
+    }
+    entry.slot.as_ref().map(|slot| Arc::clone(&slot.state))
 }
 
 /// Create a waker. Returns id >= 0.
@@ -22,17 +70,21 @@ fn lock() -> std::sync::MutexGuard<'static, Vec<Option<WakerSlot>>> {
 /// C ABI for JIT.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ar_rt_waker_create() -> i64 {
-    let mut g = lock();
-    let slot = WakerSlot {
-        state: Arc::new((StdMutex::new(false), Condvar::new())),
-    };
-    if let Some(idx) = g.iter().position(|s| s.is_none()) {
-        g[idx] = Some(slot);
-        return idx as i64;
+    let mut table = lock();
+    if let Some(index) = table.free.pop() {
+        let entry = &mut table.entries[index as usize];
+        let generation = entry.generation;
+        entry.slot = Some(fresh_slot());
+        return pack_waker(index, generation);
     }
-    let id = g.len() as i64;
-    g.push(Some(slot));
-    id
+    let Ok(index) = u32::try_from(table.entries.len()) else {
+        return -1;
+    };
+    table.entries.push(WakerEntry {
+        generation: 0,
+        slot: Some(fresh_slot()),
+    });
+    pack_waker(index, 0)
 }
 
 /// Mark waker ready (idempotent).
@@ -44,13 +96,10 @@ pub unsafe extern "C" fn ar_rt_waker_wake(id: i64) {
     if id < 0 {
         return;
     }
-    let state = {
-        let g = lock();
-        g.get(id as usize)
-            .and_then(|s| s.as_ref())
-            .map(|s| Arc::clone(&s.state))
+    let Some(state) = waker_state(id) else {
+        return;
     };
-    if let Some(state) = state {
+    {
         let (lock, cvar) = &*state;
         {
             let mut woken = lock.lock().unwrap_or_else(|e| e.into_inner());
@@ -70,13 +119,7 @@ pub unsafe extern "C" fn ar_rt_waker_wait(id: i64, timeout_ms: i64) -> i64 {
     if id < 0 {
         return -1;
     }
-    let state = {
-        let g = lock();
-        g.get(id as usize)
-            .and_then(|s| s.as_ref())
-            .map(|s| Arc::clone(&s.state))
-    };
-    let Some(state) = state else {
+    let Some(state) = waker_state(id) else {
         return -1;
     };
 
@@ -125,12 +168,20 @@ pub unsafe extern "C" fn ar_rt_waker_wait(id: i64, timeout_ms: i64) -> i64 {
 /// `id` from create.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ar_rt_waker_destroy(id: i64) {
-    if id < 0 {
+    let Some((index, generation)) = unpack_waker(id) else {
+        return;
+    };
+    let mut table = lock();
+    let Some(entry) = table.entries.get_mut(index) else {
+        return;
+    };
+    if entry.generation != generation || entry.slot.is_none() {
         return;
     }
-    let mut g = lock();
-    if let Some(slot) = g.get_mut(id as usize) {
-        *slot = None;
+    entry.slot = None;
+    entry.generation = bump_waker_generation(entry.generation);
+    if let Ok(index) = u32::try_from(index) {
+        table.free.push(index);
     }
 }
 
@@ -145,6 +196,21 @@ mod tests {
             ar_rt_waker_wake(w);
             assert_eq!(ar_rt_waker_wait(w, 100), 1);
             ar_rt_waker_destroy(w);
+        }
+    }
+
+    #[test]
+    fn closed_waker_does_not_wake_the_reused_slot() {
+        unsafe {
+            let first = ar_rt_waker_create();
+            ar_rt_waker_destroy(first);
+            let second = ar_rt_waker_create();
+            assert_ne!(first, second);
+            ar_rt_waker_wake(first);
+            assert_eq!(ar_rt_waker_wait(second, 0), 0);
+            ar_rt_waker_wake(second);
+            assert_eq!(ar_rt_waker_wait(second, 0), 1);
+            ar_rt_waker_destroy(second);
         }
     }
 }

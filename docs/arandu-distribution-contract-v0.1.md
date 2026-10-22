@@ -99,17 +99,35 @@ explicitamente e o fallback `rustc` exclusivo dos checkouts de desenvolvimento.
 
 A tag `vX.Y.Z[-rc.N]`, as versões dos crates publicáveis, CLI, LSP e extensão
 devem coincidir. `cargo run --locked -p xtask -- check-release-contract` impede
-divergência antes do empacotamento. S3-B adicionará o manifest interno à mesma
-cadeia; S3-D exige BLAKE3 externo, provenance e conjunto completo de assets
-antes de tornar uma release pública.
+divergência antes do empacotamento. O manifest interno, SHA-256 do archive,
+BLAKE3 do conteúdo em staging, provenance e conjunto completo de assets
+integram a cadeia atual de publicação. `xtask package-archive`,
+`validate-archive` e `prepare-release-assets`, mais `arandu archive validate`,
+são implementações Rust ativas (RFC 0020).
+
+Em 15/10/2026, a release v0.1.10 foi publicada às 18:08:32 UTC no commit
+`7df12f7a36ed872ea6c04287cb4e536525bc5291`; o
+[run 38779239029](https://github.com/arandu-lang/arandu/actions/runs/38779239029)
+aprovou SDK/VSIX e Public RC install/smoke dos três alvos, incluindo CTFE no
+corpus instalado. Essa evidência não promove automaticamente todas as
+superfícies async, de paralelismo ou de stdlib para Gold.
 
 ## PONTOS DE MELHORIA (O que não está no roadmap)
 
-Tooling de empacotamento ainda inclui wrappers Python/Bash/PowerShell no fluxo
-de desenvolvimento; a migração self-hosted está classificada no roadmap. Isso
-não adiciona dependência Python ao SDK instalado.
+Bash e PowerShell preparam staging e chamam os comandos Rust; Python permanece
+em testes/smokes e como fallback de SHA-256. Não é requisito do executável SDK
+nem do empacotamento nativo. A erradicação integral de Python não está concluída.
+
+Na implementação local da campanha 0.1.11, `scripts/install.sh` rejeita a
+instalação sem verificador SHA-256 e oferece `sha256sum`/`shasum`/`openssl`/Python.
+Também valida manifest/archive com o CLI em staging e verifica `BLAKE3SUMS`
+antes de substituir a instalação. Publicação interrompida restaura a árvore
+anterior. O harness `scripts/test_install.py` cobre esses caminhos sem rede;
+a correção ainda exige promoção no pacote exato, não altera a prova histórica
+da release 0.1.10. Python é dependência do harness, não do bootstrap quando
+existe uma das alternativas nativas.
 
 ## Futuro e Próximos Passos
 
-Migrar tooling quando o bootstrap for seguro e promover novos installers/hosts
+A fila de correções e evolução permanece no roadmap mestre. Promover novos installers/hosts
 somente com smoke fora do checkout sobre os artefatos públicos exatos.

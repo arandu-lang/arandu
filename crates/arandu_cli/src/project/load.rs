@@ -78,6 +78,21 @@ pub struct ProjectFlags {
     pub color: crate::args::ColorChoice,
     pub target: Option<String>,
     pub quiet: bool,
+    /// `obj` or `llvm-ir`. Bare-metal LLVM builds default to an object file.
+    pub emit: Option<String>,
+    /// `staticlib` archives the object. The compiler does not guess an ELF.
+    pub crate_type: Option<String>,
+    /// User-supplied linker script. Absent means no final ELF is produced.
+    pub linker_script: Option<PathBuf>,
+    /// Explicit `-o` path for the selected artifact.
+    pub output: Option<PathBuf>,
+}
+
+fn missing_option_value(args: &[String], index: usize) -> bool {
+    match args.get(index + 1).map(String::as_str) {
+        None | Some("") => true,
+        Some(value) => value.starts_with('-'),
+    }
 }
 
 /// Parse `--stdlib-path=…` / `--stdlib-path …` / `--release` / `-v` from leftover args.
@@ -88,26 +103,27 @@ pub fn parse_project_flags(args: &[String]) -> Result<(ProjectFlags, Vec<String>
     while i < args.len() {
         let a = &args[i];
         if let Some(v) = a.strip_prefix("--stdlib-path=") {
-            flags.stdlib_path = Some(PathBuf::from(v));
-        } else if a == "--stdlib-path" {
-            i += 1;
-            if i < args.len() {
-                flags.stdlib_path = Some(PathBuf::from(&args[i]));
-            } else {
+            if v.is_empty() {
                 return Err("--stdlib-path requires a directory argument".into());
             }
+            flags.stdlib_path = Some(PathBuf::from(v));
+        } else if a == "--stdlib-path" {
+            if missing_option_value(args, i) {
+                return Err("--stdlib-path requires a directory argument".into());
+            }
+            i += 1;
+            flags.stdlib_path = Some(PathBuf::from(&args[i]));
         } else if let Some(v) = a.strip_prefix("--cache-dir=") {
             if v.is_empty() {
                 return Err("--cache-dir requires a directory argument".into());
             }
             flags.cache_dir = Some(PathBuf::from(v));
         } else if a == "--cache-dir" {
-            i += 1;
-            if i < args.len() {
-                flags.cache_dir = Some(PathBuf::from(&args[i]));
-            } else {
+            if missing_option_value(args, i) {
                 return Err("--cache-dir requires a directory argument".into());
             }
+            i += 1;
+            flags.cache_dir = Some(PathBuf::from(&args[i]));
         } else if a == "--release" {
             flags.release = true;
         } else if a == "--size" || a == "-Oz" {
@@ -132,20 +148,19 @@ pub fn parse_project_flags(args: &[String]) -> Result<(ProjectFlags, Vec<String>
         } else if a == "--color=auto" {
             flags.color = crate::args::ColorChoice::Auto;
         } else if a == "--color" {
-            i += 1;
-            if i < args.len() {
-                match args[i].as_str() {
-                    "always" => flags.color = crate::args::ColorChoice::Always,
-                    "never" => flags.color = crate::args::ColorChoice::Never,
-                    "auto" => flags.color = crate::args::ColorChoice::Auto,
-                    other => {
-                        return Err(format!(
-                            "unknown --color option: '{other}' (use auto|always|never)"
-                        ));
-                    }
-                }
-            } else {
+            if missing_option_value(args, i) {
                 return Err("--color requires an argument (use auto|always|never)".into());
+            }
+            i += 1;
+            match args[i].as_str() {
+                "always" => flags.color = crate::args::ColorChoice::Always,
+                "never" => flags.color = crate::args::ColorChoice::Never,
+                "auto" => flags.color = crate::args::ColorChoice::Auto,
+                other => {
+                    return Err(format!(
+                        "unknown --color option: '{other}' (use auto|always|never)"
+                    ));
+                }
             }
         } else if let Some(v) = a.strip_prefix("--color=") {
             return Err(format!(
@@ -157,12 +172,55 @@ pub fn parse_project_flags(args: &[String]) -> Result<(ProjectFlags, Vec<String>
             }
             flags.target = Some(v.to_string());
         } else if a == "--target" {
-            i += 1;
-            if i < args.len() {
-                flags.target = Some(args[i].clone());
-            } else {
+            if missing_option_value(args, i) {
                 return Err("--target requires a target triple argument".into());
             }
+            i += 1;
+            flags.target = Some(args[i].clone());
+        } else if let Some(v) = a.strip_prefix("--emit=") {
+            if v.is_empty() {
+                return Err("--emit requires obj or llvm-ir".into());
+            }
+            flags.emit = Some(v.to_string());
+        } else if a == "--emit" {
+            if missing_option_value(args, i) {
+                return Err("--emit requires obj or llvm-ir".into());
+            }
+            i += 1;
+            flags.emit = Some(args[i].clone());
+        } else if let Some(v) = a.strip_prefix("--crate-type=") {
+            if v.is_empty() {
+                return Err("--crate-type requires staticlib".into());
+            }
+            flags.crate_type = Some(v.to_string());
+        } else if a == "--crate-type" {
+            if missing_option_value(args, i) {
+                return Err("--crate-type requires staticlib".into());
+            }
+            i += 1;
+            flags.crate_type = Some(args[i].clone());
+        } else if let Some(v) = a.strip_prefix("--linker-script=") {
+            if v.is_empty() {
+                return Err("--linker-script requires a path".into());
+            }
+            flags.linker_script = Some(PathBuf::from(v));
+        } else if a == "--linker-script" {
+            if missing_option_value(args, i) {
+                return Err("--linker-script requires a path".into());
+            }
+            i += 1;
+            flags.linker_script = Some(PathBuf::from(&args[i]));
+        } else if let Some(v) = a.strip_prefix("-o=") {
+            if v.is_empty() {
+                return Err("-o requires an output path".into());
+            }
+            flags.output = Some(PathBuf::from(v));
+        } else if a == "-o" {
+            if missing_option_value(args, i) {
+                return Err("-o requires an output path".into());
+            }
+            i += 1;
+            flags.output = Some(PathBuf::from(&args[i]));
         } else {
             rest.push(a.clone());
         }
@@ -402,5 +460,78 @@ impl BackendChoice {
             BackendChoice::CraneliftDev => "cranelift-dev",
             BackendChoice::CraneliftRelease => "cranelift-release",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_project_flags;
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    #[test]
+    fn valued_flags_do_not_consume_the_following_option() {
+        for (flag, message) in [
+            (
+                "--stdlib-path",
+                "--stdlib-path requires a directory argument",
+            ),
+            ("--cache-dir", "--cache-dir requires a directory argument"),
+            (
+                "--color",
+                "--color requires an argument (use auto|always|never)",
+            ),
+            ("--target", "--target requires a target triple argument"),
+            ("--emit", "--emit requires obj or llvm-ir"),
+            ("--crate-type", "--crate-type requires staticlib"),
+            ("--linker-script", "--linker-script requires a path"),
+            ("-o", "-o requires an output path"),
+        ] {
+            let error = parse_project_flags(&args(&[flag, "--release"])).expect_err(flag);
+            assert_eq!(error, message, "{flag}");
+            let error = parse_project_flags(&args(&[flag])).expect_err(flag);
+            assert_eq!(error, message, "{flag} at end");
+        }
+        assert!(parse_project_flags(&args(&["--stdlib-path="])).is_err());
+        let (flags, rest) = parse_project_flags(&args(&[
+            "--stdlib-path",
+            "stdlib",
+            "--cache-dir",
+            "cache",
+            "--color",
+            "never",
+            "--target",
+            "wasm32-wasip1",
+            "--release",
+        ]))
+        .expect("complete flags");
+        assert_eq!(flags.stdlib_path.unwrap().as_os_str(), "stdlib");
+        assert_eq!(flags.cache_dir.unwrap().as_os_str(), "cache");
+        assert!(flags.release);
+        assert_eq!(flags.target.as_deref(), Some("wasm32-wasip1"));
+        assert!(rest.is_empty());
+        let (flags, rest) = parse_project_flags(&args(&[
+            "--target=thumbv7em-none-eabihf",
+            "--emit=obj",
+            "--crate-type=staticlib",
+            "--linker-script=memory.ld",
+            "-o",
+            "firmware.a",
+        ]))
+        .expect("embedded emit flags");
+        assert_eq!(flags.target.as_deref(), Some("thumbv7em-none-eabihf"));
+        assert_eq!(flags.emit.as_deref(), Some("obj"));
+        assert_eq!(flags.crate_type.as_deref(), Some("staticlib"));
+        assert_eq!(
+            flags.linker_script.as_deref(),
+            Some(std::path::Path::new("memory.ld"))
+        );
+        assert_eq!(
+            flags.output.as_deref(),
+            Some(std::path::Path::new("firmware.a"))
+        );
+        assert!(rest.is_empty());
     }
 }

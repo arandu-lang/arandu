@@ -36,6 +36,9 @@ mod cli_color_handling;
 #[path = "cli_suite/cli_comptime.rs"]
 mod cli_comptime;
 
+#[path = "cli_suite/cli_decimal.rs"]
+mod cli_decimal;
+
 #[path = "cli_suite/cli_core_foundation.rs"]
 mod cli_core_foundation;
 
@@ -116,3 +119,21 @@ mod cli_byte_literal;
 
 #[path = "cli_suite/cli_time_wide.rs"]
 mod cli_time_wide;
+
+#[path = "cli_suite/cli_llvm_backend.rs"]
+mod cli_llvm_backend;
+
+#[path = "cli_suite/cli_math.rs"]
+mod cli_math;
+
+#[path = "cli_suite/cli_alloc_structures.rs"]
+mod cli_alloc_structures;
+
+#[path = "cli_suite/cli_native_thread.rs"]
+mod cli_native_thread;
+
+#[path = "cli_suite/cli_big_simd.rs"]
+mod cli_big_simd;
+
+#[path = "cli_suite/cli_bigint_oracle.rs"]
+mod cli_bigint_oracle;

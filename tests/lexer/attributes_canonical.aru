@@ -1,0 +1,5 @@
+@Link("sqlite3")
+@Effects(NoAlloc)
+@Test(group = "net", shouldTrap = false)
+@Kernel(workgroupSize = (64, 1, 1))
+func processData() {}

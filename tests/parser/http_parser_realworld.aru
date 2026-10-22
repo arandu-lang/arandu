@@ -1,0 +1,34 @@
+enum Method {
+    Get,
+    Head,
+    Post,
+    Other,
+}
+
+struct HttpRequest {
+    method: Method,
+    content_length: uint,
+    is_keep_alive: bool,
+}
+
+func rangeEquals(a: []u8, a_start: usize, a_count: usize, b: []u8): bool {
+    let mut i: usize = 0;
+    while i < a_count {
+        if a[a_start + i] != b[i] {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+func parseMethod(bytes: []u8, start: usize, end: usize): Method {
+    let len = end - start;
+    if len == 3 && bytes[start] == 71 && bytes[start + 1] == 69 && bytes[start + 2] == 84 {
+        return Method.Get;
+    }
+    if len == 4 && bytes[start] == 80 && bytes[start + 1] == 79 && bytes[start + 2] == 83 && bytes[start + 3] == 84 {
+        return Method.Post;
+    }
+    return Method.Other;
+}

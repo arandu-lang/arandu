@@ -114,6 +114,98 @@ fn test_early_cutoff_on_function_body_change() {
 }
 
 #[test]
+fn test_early_cutoff_on_inherent_method_body_change() {
+    let mut db = DatabaseImpl::default();
+
+    // mod_b defines a struct and an inherent method on it
+    let mod_b_text = "public struct Counter { public val: int }\npublic func Counter.compute(self: ref Counter): int {\n    return self.val + 1\n}\n";
+    let mod_b = db.new_file("mod_b_method.aru".to_string(), mod_b_text.to_string());
+
+    // mod_a imports mod_b and calls the inherent method
+    let mod_a_text = "import mod_b_method\nfunc main(): int {\n    let c = mod_b_method.Counter { val: 10 }\n    return c.compute()\n}\n";
+    let mod_a = db.new_file("mod_a_method.aru".to_string(), mod_a_text.to_string());
+
+    // 1. Evaluate mod_a typecheck.
+    let tc1 = arandu_query::passes::type_check(&db, mod_a);
+    assert!(
+        tc1.diagnostics.is_empty(),
+        "initial tc failed: {:?}",
+        tc1.diagnostics
+    );
+
+    // Exported symbols before
+    let exp1 = (*arandu_query::passes::exported_symbols(&db, mod_b)).clone();
+
+    // 2. Change the body of Counter.compute in mod_b
+    let mod_b_text_new = "public struct Counter { public val: int }\npublic func Counter.compute(self: ref Counter): int {\n    let temp = self.val * 2\n    return temp - self.val + 1\n}\n";
+    mod_b
+        .set_text(&mut db)
+        .to(std::sync::Arc::from(mod_b_text_new));
+
+    // Exported symbols after
+    let exp2 = (*arandu_query::passes::exported_symbols(&db, mod_b)).clone();
+    assert_eq!(
+        exp1, exp2,
+        "exported symbols must remain identical across body edit"
+    );
+
+    // 3. Re-evaluate mod_a typecheck
+    let tc2 = arandu_query::passes::type_check(&db, mod_a);
+    assert!(
+        tc2.diagnostics.is_empty(),
+        "tc after edit failed: {:?}",
+        tc2.diagnostics
+    );
+}
+
+#[test]
+fn test_early_cutoff_on_primitive_inherent_method_body_change() {
+    let mut db = DatabaseImpl::default();
+
+    // mod_b defines an inherent method on a primitive type (int)
+    let mod_b_text = "public func int.double(self: int): int {\n    return self + self\n}\n";
+    let mod_b = db.new_file("mod_b_prim.aru".to_string(), mod_b_text.to_string());
+
+    // mod_a imports mod_b and calls the primitive inherent method
+    let mod_a_text =
+        "import mod_b_prim\nfunc main(): int {\n    let x: int = 21\n    return x.double()\n}\n";
+    let mod_a = db.new_file("mod_a_prim.aru".to_string(), mod_a_text.to_string());
+
+    // 1. Evaluate mod_a typecheck.
+    let tc1 = arandu_query::passes::type_check(&db, mod_a);
+    assert!(
+        tc1.diagnostics.is_empty(),
+        "initial tc failed: {:?}",
+        tc1.diagnostics
+    );
+
+    // Exported symbols before
+    let exp1 = (*arandu_query::passes::exported_symbols(&db, mod_b)).clone();
+
+    // 2. Change the body of int.double in mod_b
+    let mod_b_text_new =
+        "public func int.double(self: int): int {\n    let two = 2\n    return self * two\n}\n";
+    mod_b
+        .set_text(&mut db)
+        .to(std::sync::Arc::from(mod_b_text_new));
+
+    // Exported symbols after
+    let exp2 = (*arandu_query::passes::exported_symbols(&db, mod_b)).clone();
+    assert_eq!(
+        exp1, exp2,
+        "exported symbols must remain identical across body edit"
+    );
+
+    // 3. Re-evaluate mod_a typecheck
+    let tc2 = arandu_query::passes::type_check(&db, mod_a);
+    assert!(
+        tc2.diagnostics.is_empty(),
+        "tc after edit failed: {:?}",
+        tc2.diagnostics
+    );
+}
+
+#[test]
 fn test_cross_file_collision_during_circular_import_is_still_deterministic() {
     // circular dependency: A imports B, B imports A
     let mod_a_text = r#"
@@ -224,7 +316,7 @@ fn test_circular_import_diagnostics_survive_repeated_body_revisions() {
 #[test]
 fn test_import_generic_spawn_infer_from_coroutine() {
     let mut db = arandu_query::DatabaseImpl::default();
-    db.new_file(
+    db.new_stdlib_file(
         "stdlib/std/runtime/executor.aru".to_string(),
         include_str!("../../../stdlib/std/runtime/executor.aru").to_string(),
     );
@@ -315,4 +407,91 @@ fn test_unresolved_named_import_suggests_levenshtein() {
     );
     let hints: Vec<_> = errs[0].hints.iter().map(|h| h.message.as_str()).collect();
     assert_eq!(hints, vec!["did you mean 'calculate_total'?"]);
+}
+
+#[test]
+fn canonical_enum_constructors_keep_their_ir_types_through_reexports_and_aliases() {
+    let mut db = DatabaseImpl::default();
+    for (path, source) in [
+        (
+            "stdlib/core/option.aru",
+            "module std.core.option\npublic enum Option<T> { Some(T), None }",
+        ),
+        (
+            "stdlib/core/result.aru",
+            "module std.core.result\npublic enum Result<T, E> { Ok(T), Err(E) }",
+        ),
+        (
+            "stdlib/core/future.aru",
+            "module std.core.future\npublic enum Poll<T> { Ready(T), Pending }",
+        ),
+    ] {
+        db.new_stdlib_file(path.into(), source.into());
+    }
+    db.new_file(
+        "facade.aru".into(),
+        "public use std.core.option.{Option}\npublic use std.core.result.{Result}\npublic use std.core.future.{Poll}".into(),
+    );
+    let file = db.new_file(
+        "main.aru".into(),
+        r#"
+from facade import { Option as Maybe, Result as Outcome, Poll as Progress }
+enum Option<T> { Some(T), None }
+func optional(): Maybe<int> { return Maybe.Some(42) }
+func outcome(): Outcome<int, str> { return Outcome.Ok(42) }
+func progress(value: Progress<int>): int {
+    match value {
+        Progress.Ready(item) => { return item }
+        Progress.Pending => { return 0 }
+    }
+}
+func main(): int {
+    let nominal: Option<int> = Option.Some(7)
+    let inferred = Maybe.Some(42)
+    let ready = progress(Progress.Ready(42))
+    let checked = outcome()
+    match optional() {
+        Maybe.Some(value) => { return ready - value }
+        Maybe.None => { return 1 }
+    }
+}
+"#
+        .into(),
+    );
+    let result = arandu_query::runtime::runtime_program(&db, file);
+    assert!(
+        !result
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.severity == arandu_middle::Severity::Error),
+        "canonical constructors must not produce nominal IR types: {:?}",
+        result.diagnostics
+    );
+}
+
+#[test]
+fn test_incremental_dependency_newline_edit() {
+    let mut warm = arandu_query::AnalysisHost::new();
+    let dep_orig = "module dependency\npublic func value(): int { return 1 }\n";
+    let consumer_src =
+        "module consumer\nimport dependency\nfunc main(): int { return dependency.value() }\n";
+    let dep = warm.new_file("dependency.aru".into(), dep_orig.into());
+    let consumer = warm.new_file("consumer.aru".into(), consumer_src.into());
+
+    let _ = arandu_query::file_ide_diagnostics(warm.db(), consumer);
+
+    let dep_edited = "module dependency\npublic func value()\n: int { return 1 }\n";
+    warm.set_text(dep, dep_edited);
+
+    let mut fresh = arandu_query::AnalysisHost::new();
+    let fresh_dep = fresh.new_file("dependency.aru".into(), dep_edited.into());
+    let fresh_consumer = fresh.new_file("consumer.aru".into(), consumer_src.into());
+
+    let actual_dep = arandu_query::file_ide_diagnostics(warm.db(), dep);
+    let expected_dep = arandu_query::file_ide_diagnostics(fresh.db(), fresh_dep);
+    assert_eq!(**actual_dep, **expected_dep);
+
+    let actual_consumer = arandu_query::file_ide_diagnostics(warm.db(), consumer);
+    let expected_consumer = arandu_query::file_ide_diagnostics(fresh.db(), fresh_consumer);
+    assert_eq!(**actual_consumer, **expected_consumer);
 }

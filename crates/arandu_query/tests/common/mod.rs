@@ -7,6 +7,10 @@ pub const STDLIB_MODULES: &[(&str, &str)] = &[
         include_str!("../../../../stdlib/alloc/allocator_api.aru"),
     ),
     (
+        "stdlib/alloc/arc.aru",
+        include_str!("../../../../stdlib/alloc/arc.aru"),
+    ),
+    (
         "stdlib/alloc/arena.aru",
         include_str!("../../../../stdlib/alloc/arena.aru"),
     ),
@@ -15,12 +19,28 @@ pub const STDLIB_MODULES: &[(&str, &str)] = &[
         include_str!("../../../../stdlib/alloc/bitset.aru"),
     ),
     (
+        "stdlib/alloc/boxed.aru",
+        include_str!("../../../../stdlib/alloc/boxed.aru"),
+    ),
+    (
+        "stdlib/alloc/deque.aru",
+        include_str!("../../../../stdlib/alloc/deque.aru"),
+    ),
+    (
         "stdlib/alloc/gen_arena.aru",
         include_str!("../../../../stdlib/alloc/gen_arena.aru"),
     ),
     (
         "stdlib/alloc/hash_map.aru",
         include_str!("../../../../stdlib/alloc/hash_map.aru"),
+    ),
+    (
+        "stdlib/alloc/rc.aru",
+        include_str!("../../../../stdlib/alloc/rc.aru"),
+    ),
+    (
+        "stdlib/alloc/slab.aru",
+        include_str!("../../../../stdlib/alloc/slab.aru"),
     ),
     (
         "stdlib/alloc/smallvec.aru",
@@ -55,6 +75,10 @@ pub const STDLIB_MODULES: &[(&str, &str)] = &[
         include_str!("../../../../stdlib/core/cmp.aru"),
     ),
     (
+        "stdlib/core/decimal.aru",
+        include_str!("../../../../stdlib/core/decimal.aru"),
+    ),
+    (
         "stdlib/core/fixed.aru",
         include_str!("../../../../stdlib/core/fixed.aru"),
     ),
@@ -87,6 +111,10 @@ pub const STDLIB_MODULES: &[(&str, &str)] = &[
         include_str!("../../../../stdlib/core/marker.aru"),
     ),
     (
+        "stdlib/core/math.aru",
+        include_str!("../../../../stdlib/core/math.aru"),
+    ),
+    (
         "stdlib/core/mem.aru",
         include_str!("../../../../stdlib/core/mem.aru"),
     ),
@@ -115,6 +143,10 @@ pub const STDLIB_MODULES: &[(&str, &str)] = &[
         include_str!("../../../../stdlib/core/slice.aru"),
     ),
     (
+        "stdlib/core/simd.aru",
+        include_str!("../../../../stdlib/core/simd.aru"),
+    ),
+    (
         "stdlib/core/str.aru",
         include_str!("../../../../stdlib/core/str.aru"),
     ),
@@ -129,6 +161,10 @@ pub const STDLIB_MODULES: &[(&str, &str)] = &[
     (
         "stdlib/math/view.aru",
         include_str!("../../../../stdlib/math/view.aru"),
+    ),
+    (
+        "stdlib/std/crypto/hash.aru",
+        include_str!("../../../../stdlib/std/crypto/hash.aru"),
     ),
     (
         "stdlib/std/env.aru",
@@ -189,5 +225,9 @@ pub const STDLIB_MODULES: &[(&str, &str)] = &[
     (
         "stdlib/std/time.aru",
         include_str!("../../../../stdlib/std/time.aru"),
+    ),
+    (
+        "stdlib/std/text.aru",
+        include_str!("../../../../stdlib/std/text.aru"),
     ),
 ];

@@ -17,13 +17,16 @@ impl<'a> FuncTranslator<'a> {
     ) {
         let left_ty = self.operand_arity_ty(left);
         let right_ty = self.operand_arity_ty(right);
-        let is_str =
-            |ty: TypeId| matches!(self.interner.resolve(ty), ArType::Primitive(Primitive::Str));
+        let is_str = |ty: TypeId| {
+            self.interner
+                .resolve(ty)
+                .str_reference_depth(self.interner)
+                .is_some()
+        };
         if (is_str(left_ty) || is_str(right_ty))
             && matches!(op, BinaryOp::Equal | BinaryOp::NotEqual)
         {
-            let operand_ty = if is_str(left_ty) { left_ty } else { right_ty };
-            self.emit_string_equality(op, left, right, operand_ty);
+            self.emit_string_equality(op, left, right);
             return;
         }
 
@@ -59,6 +62,29 @@ impl<'a> FuncTranslator<'a> {
         let is_unsigned = types::ar_is_unsigned(operation_ty, self.interner);
         let is_float = types::ar_is_float(operation_ty, self.interner);
         let is_64 = types::ar_is_64bit(operation_ty, self.interner, self.layout_engine.data_layout);
+
+        // Narrow signed values occupy i32 slots, whose div_s would otherwise
+        // accept MIN_i8/i16 / -1 and silently truncate the quotient on store.
+        // Preserve the declared signed width's division-overflow trap.
+        let narrow_minimum = match self.interner.resolve(operation_ty) {
+            ArType::Primitive(Primitive::I8) => Some(i32::from(i8::MIN)),
+            ArType::Primitive(Primitive::I16) => Some(i32::from(i16::MIN)),
+            _ => None,
+        };
+        if op == BinaryOp::Div
+            && let Some(minimum) = narrow_minimum
+        {
+            self.emit_operand(left, operation_ty);
+            self.code.push(Instruction::I32Const(minimum));
+            self.code.push(Instruction::I32Eq);
+            self.emit_operand(right, operation_ty);
+            self.code.push(Instruction::I32Const(-1));
+            self.code.push(Instruction::I32Eq);
+            self.code.push(Instruction::I32And);
+            self.code.push(Instruction::If(BlockType::Empty));
+            self.code.push(Instruction::Unreachable);
+            self.code.push(Instruction::End);
+        }
 
         self.emit_operand(left, operation_ty);
         self.emit_operand(right, operation_ty);
@@ -219,15 +245,9 @@ impl<'a> FuncTranslator<'a> {
     /// leaves values on the operand stack and can also treat distinct strings
     /// with equal contents as unequal. Pointer locals advance together, while
     /// the left length is used as a bounded loop counter.
-    fn emit_string_equality(
-        &mut self,
-        op: BinaryOp,
-        left: &AmirOperand,
-        right: &AmirOperand,
-        operand_ty: TypeId,
-    ) {
-        self.emit_operand(left, operand_ty);
-        self.emit_operand(right, operand_ty);
+    fn emit_string_equality(&mut self, op: BinaryOp, left: &AmirOperand, right: &AmirOperand) {
+        self.emit_string_descriptor(left);
+        self.emit_string_descriptor(right);
         // Stack: left_ptr, left_len, right_ptr, right_len.
         self.code.push(Instruction::LocalSet(self.scratch_d));
         self.code.push(Instruction::LocalSet(self.scratch_c));
@@ -295,6 +315,42 @@ impl<'a> FuncTranslator<'a> {
         }
     }
 
+    fn emit_string_descriptor(&mut self, operand: &AmirOperand) {
+        let ty = self.operand_arity_ty(operand);
+        let depth = self
+            .interner
+            .resolve(ty)
+            .str_reference_depth(self.interner)
+            .unwrap_or(0);
+        if depth == 0 {
+            self.emit_operand(
+                operand,
+                self.interner.intern(ArType::Primitive(Primitive::Str)),
+            );
+            return;
+        }
+        self.emit_operand(operand, ty);
+        for _ in 1..depth {
+            self.code.push(Instruction::I32Load(wasm_encoder::MemArg {
+                offset: 0,
+                align: 2,
+                memory_index: 0,
+            }));
+        }
+        self.code.push(Instruction::LocalTee(self.scratch_c));
+        self.code.push(Instruction::I32Load(wasm_encoder::MemArg {
+            offset: 0,
+            align: 2,
+            memory_index: 0,
+        }));
+        self.code.push(Instruction::LocalGet(self.scratch_c));
+        self.code.push(Instruction::I32Load(wasm_encoder::MemArg {
+            offset: 4,
+            align: 2,
+            memory_index: 0,
+        }));
+    }
+
     /// Emit a unary operation.
     pub(super) fn emit_unary(&mut self, op: UnaryOp, operand: &AmirOperand, result_ty: TypeId) {
         match op {
@@ -352,6 +408,11 @@ impl<'a> FuncTranslator<'a> {
                 let operand_ty = self.operand_arity_ty(operand);
                 if self.interner.slice_abi_element(operand_ty).is_some() {
                     self.emit_operand(operand, result_ty);
+                } else if self.is_owned_aggregate(result_ty) {
+                    // Aggregate references point at inline bytes. Loading the
+                    // first word would interpret a field value as a cell pointer.
+                    self.emit_operand(operand, operand_ty);
+                    self.emit_copy_aggregate_at(result_ty);
                 } else {
                     let ptr_ty = self.interner.intern(ArType::Primitive(Primitive::Int));
                     self.emit_operand(operand, ptr_ty);

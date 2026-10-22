@@ -1,117 +1,130 @@
-# RFC: Semântica de Operadores e Aritmética v0.1
+# Semântica de operadores e aritmética v0.1
 
-**Status:** Proposed (Under Review)
-
-**Supersedes:** Aritmética implícita e comportamento ad-hoc herdado dos backends
-
----
+**Estado em 16/10/2026:** contrato descritivo do recorte implementado, com
+limites conhecidos. A proposta original de trapping universal de overflow não
+foi adotada como comportamento padrão de execução. Mudanças futuras dependem
+de decisão explícita; a fila executiva fica no
+[roadmap mestre](./arandu-compiler-roadmap-v0.1.md).
 
 ## Visão Geral e Contexto
 
-Arandu é uma linguagem de sistemas com foco em segurança por construção, determinismo e compilação incremental. O compilador possui dois backends de produção: **Cranelift** (JIT e AOT nativo) e **C Backend** (AOT portável).
+Este documento distingue checagem de operadores, execução nos backends,
+propagação de constantes e CTFE. Aceitar uma expressão no type checker não prova
+paridade de todos os casos de borda de C, Cranelift e Wasm.
 
-Historicamente, enquanto linguagens legadas (C, C++, JavaScript, PHP) acumularam bizarrices semânticas — como coerções implícitas perigosas, comportamento indefinido (Undefined Behavior — UB) em overflow assinado e shifts fora do range —, linguagens modernas de ponta (Rust, Swift, Zig e Go) estabeleceram padrões rigorosos para eliminar classes inteiras de falhas de segurança (como CWE-190: *Integer Overflow* e CWE-787: *Buffer Overflow*).
-
-No Arandu, embora o sistema de tipos já previna a maior parte das coerções fracas clássicas, a auditoria arquitetural revelou lacunas críticas:
-1. **Negação de Unsigned:** O type checker permite `-x` para tipos unsigned (`u8..u64`, `uint`), gerando complementos de dois modulares inesperados e valores negativos internados no otimizador.
-2. **Operadores Relacionais sem Ordem:** `<, <=, >, >=` exigem apenas unificação de tipos, permitindo comparações em `struct`, `tuple`, `bool` e `str` — causando *Internal Compiler Errors* (ICE) no Cranelift e erros de compilação C inválidos.
-3. **Ponteiros com Comparação Assinada:** O backend Cranelift compara ponteiros com `SignedLessThan`, considerando endereços de memória alta como negativos.
-4. **Discrepância entre Otimizador (SCCP) e Runtime:** O SCCP dobra constantes inteiras em `i128` sem truncamento para a largura do tipo, fazendo com que `255_u8 + 1` dobre para `256`, enquanto em runtime envolveria para `0`, invertendo o fluxo de controle em branch conditions.
-5. **Contrato de Overflow e Resto:** `docs/standards/CWE-COMPLIANCE.md` alega verificação de capacidade para CWE-190, mas os backends operam com wrapping desprotegido (Cranelift) ou herdam UB do C padrão (`+` assinado). Além disso, `%` em float é aceito no typeck, compilando via `fmod` no Cranelift mas falhando sintaticamente no backend C.
-
-Este RFC formaliza o **Contrato de Operadores e Aritmética do Arandu v0.1**, adotando os acertos do mercado e eliminando todas as expressões malditas e fontes de divergência entre backends.
-
----
+O texto original propunha traps para todo overflow, shifts dinâmicos saturados
+e dispatch de operadores por `PartialEq`/`Ord`. Esses pontos eram propostas;
+não descrevem integralmente o compilador atual e não devem fundamentar alegações
+de eliminação de CWE-190 ou ausência geral de comportamento indefinido.
 
 ## Detalhes Técnicos da Implementação
 
-### 1. Matriz de Operadores e Classificação de Tipos
+### Tipos e operadores admitidos
 
-O sistema de tipos classifica os tipos em categorias operacionais estritas:
+O proprietário da checagem é
+[`binary.rs`](../crates/arandu_typeck/src/type_checker/synth/expr/binary.rs).
+O corpus
+[`semantic_edge_cases.rs`](../crates/arandu_query/tests/semantic_edge_cases.rs)
+registra aceitação e diagnósticos para as regras abaixo.
 
-| Categoria | Tipos Integrantes |
-| :--- | :--- |
-| **Inteiro com Sinal (`SignedInt`)** | `i8`, `i16`, `i32`, `i64`, `int` |
-| **Inteiro sem Sinal (`UnsignedInt`)** | `u8`, `u16`, `u32`, `u64`, `uint`, `byte` |
-| **Ponto Flutuante (`Float`)** | `f32`, `f64`, `float` |
-| **Escalar de Caractere (`Char`)** | `char` (Unicode Scalar Value `0x0000..=0x10FFFF`) |
-| **Booleano (`Bool`)** | `bool` (`true`, `false`) |
-| **Ponteiro Cru (`RawPtr`)** | `ptr[T]` |
-| **Compostos (`Composite`)** | `struct`, `tuple`, `enum`, `array`, `slice`, `str` |
+| Operação | Recorte atual |
+| --- | --- |
+| `+`, `-`, `*`, `/` | Tipos numéricos compatíveis; inteiros e floats têm regras distintas de execução |
+| `%` | Inteiros; float é rejeitado com `T005` |
+| Negação unária | Signed e float; unsigned é rejeitado com `T005` |
+| `!`, `&&`, `\|\|` | Booleanos; `&&`/`\|\|` têm lowering de curto-circuito |
+| `~`, `&`, `\|`, `^` | Inteiros |
+| `<<`, `>>` | Inteiros; literal negativo ou fora da largura do operando esquerdo é rejeitado com `T038` |
+| `==`, `!=` | Escalares admitidos, strings por conteúdo, referências/ponteiros e carriers conforme seu lowering |
+| `<`, `<=`, `>`, `>=` | Numéricos e `char`; bool, string, structs e ponteiros crus são rejeitados |
 
-#### Matriz de Aplicação de Operadores:
+`int`/`uint` têm 32 bits; `isize`/`usize` seguem o alvo. `char` representa
+Unicode scalar value, excluindo surrogate codepoints. Layout não deve ser
+inferido do host ao analisar outro target.
 
-| Operador | Categorias Válidas | Comportamento Contratual |
-| :--- | :--- | :--- |
-| **`+`, `-`, `*`** | `SignedInt`, `UnsignedInt`, `Float` | Ambos os operandos devem unificar o mesmo tipo. Overflow em inteiros segue a política do item 2. Floats seguem IEEE 754-2019. |
-| **`\`** | `SignedInt`, `UnsignedInt`, `Float` | Divisão inteira truncada em direção ao zero. Divisão por literal `0` é **erro estático** (`T040`). Divisão por zero dinâmica gera **trap determinístico**. Floats produzem $\pm\infty$ ou NaN. |
-| **`%`** | `SignedInt`, `UnsignedInt` | **Estritamente restrito a inteiros**. Resto truncado ($sign(a \% b) = sign(a)$). Divisor `0` gera erro estático ou trap. Para floats, é obrigatório chamar função padrão (`math.mod`). |
-| **`-` (unário)** | `SignedInt`, `Float` | **Proibido em `UnsignedInt`** (`T005OperatorNotApplicable`). |
-| **`!`, `&&`, `\|\|`** | `Bool` | Operações lógicas puras. Curto-circuito garantido em `&&` e `\|\|`. |
-| **`~`, `&`, `\|`, `^`** | `SignedInt`, `UnsignedInt` | Bitwise bit a bit. |
-| **`<<`, `>>`** | `SignedInt`, `UnsignedInt` | O operando direito deve ser inteiro positivo. Shift $\ge$ bit width literal é **erro estático**. Em runtime, segue semântica determinística sem UB (item 3). |
-| **`==`, `!=`** | Escalares (`Int`, `Float`, `Char`, `Bool`, `RawPtr`), `str`, `Option`/`Nullable` com `nil` | Comparação por valor para escalares; comparação de conteúdo para `str` (`ar_str_eq`). **Proibido em structs e tuplas nativas** sem interface explícita (`std.core.cmp.PartialEq`). Proibida comparação de identidade referencial disfarçada de valor. |
-| **`<`, `<=`, `>`, `>=`** | `SignedInt`, `UnsignedInt`, `Float`, `Char` | **Restrito a tipos matematicamente ordenáveis (`Orderable`)**. Proibido em `bool`, `struct`, `tuple`, `str` (salvo via método `cmp`) e `ptr` direto. |
+### Overflow: execução, SCCP e CTFE
 
----
+As operações inteiras comuns `+`, `-` e `*` usam instruções modulares no
+Cranelift (`iadd`, `isub`, `imul`) e Wasm. Não há checagem universal de overflow
+inserida no lowering dessas operações. No C, o emissor produz operadores C;
+a suíte de paridade usa `-fwrapv` para signed overflow. Quem compila a saída
+`emit-c` deve preservar as opções exigidas pelo contrato; o texto C isolado não
+prova semântica modular portátil em todas as toolchains.
 
-### 2. Contrato de Overflow de Inteiros (CWE-190)
+Fontes:
+[`lower_amir/ops.rs`](../crates/arandu_mir/src/lower_amir/ops.rs),
+[`Cranelift compare.rs`](../crates/arandu_backend_cranelift/src/translator/compare.rs),
+[`C expr.rs`](../crates/arandu_backend_c/src/emitter/expr.rs),
+[`Wasm arith.rs`](../crates/arandu_backend_wasm/src/translator/arith.rs) e
+[`parity_tests.rs`](../crates/arandu_backend_c/tests/parity_tests.rs).
 
-Inspirado nas decisões do **Swift** e **Zig**:
-1. **Comportamento Padrão de Execução:** Operações aritméticas com estouro de capacidade em runtime disparam **trap determinístico de segurança** (ou abort seguro com código de saída padronizado), garantindo a promessa de `CWE-COMPLIANCE.md`.
-2. **Aritmética Modular Explícita:** Se o programador necessita deliberadamente de aritmética modular com wrap (e.g. criptografia, hashing FNV/Murmur), deve utilizar métodos explícitos da biblioteca padrão (ex: `wrapping_add`, `wrapping_sub`, `wrapping_mul`) ou operadores modulares dedicados caso venham a ser introduzidos.
-3. **Paridade C ↔ Cranelift:**
-   * No **Cranelift**: Emissão com verificação de overflow (usando instruções condicionadas a overflow flags ou `iadd_ifcout` / checks antes de instrução).
-   * No **Backend C**: O código C gerado compila obrigatoriamente com o sinalizador `-fwrapv` (para anular UB de signed overflow no GCC/Clang) e, para builds checked, utiliza as funções intrínsecas seguras `__builtin_add_overflow`, `__builtin_sub_overflow`, `__builtin_mul_overflow`.
-4. **Constantes no Compilador:** O estouro estático em expressões literais (ex: `127_i8 + 1`) gera erro de compilação (`T038IntegerLiteralOutOfRange`).
+`T038` valida a representabilidade de literais e contagens de shift; não é
+uma garantia de rejeição estática de toda expressão aritmética que transborda.
+O SCCP normaliza constantes conforme largura/sinal quando conhece o tipo e
+preserva operações potencialmente trapping quando não demonstra avaliação
+segura. O avaliador CTFE, por sua vez, verifica overflow e retorna erro no
+subconjunto admitido; não troca silenciosamente esse erro por wrap. Essa
+política de avaliação obrigatória é distinta da execução comum.
 
----
+Fontes e regressões:
+[`sccp.rs`](../crates/arandu_mir/src/sccp.rs),
+[`ctfe/mod.rs`](../crates/arandu_mir/src/ctfe/mod.rs) e
+[`ctfe/tests.rs`](../crates/arandu_mir/src/ctfe/tests.rs).
 
-### 3. Contrato de Bitwise Shifts (`<<`, `>>`)
+### Divisão, resto e ponto flutuante
 
-Inspirado na robustez de **Go** e **Swift**:
-1. **Verificação Estática:** Se o operando direito de um shift for uma constante literal tal que $shift < 0$ ou $shift \ge bit\_width(lhs)$, o compilador rejeita com erro estático.
-2. **Semântica de Runtime:** Para valores dinâmicos:
-   * Se $shift \ge bit\_width(lhs)$: o resultado avalia deterministamente para `0` para tipos unsigned e tipos positivos, ou `-1`/`0` para signed de acordo com o sinal, eliminando vazamento de comportamento de registradores x86/ARM e eliminando UB do backend C.
-   * Não ocorre truncamento mascarado acidental dependente de arquitetura de CPU.
+Divisão/resto **inteiros** por zero literal são rejeitados com `T040`.
+`42.0 / 0.0` é aceito e conserva o comportamento IEEE de infinito/NaN;
+`%` sobre floats é rejeitado com `T005`, inclusive com divisor zero.
 
----
+Em execução, divisão e resto inteiros por divisor dinâmico zero causam trap.
+Divisão signed de `MIN / -1` também causa trap, inclusive em `i8` e `i16`;
+o resto `MIN % -1` retorna zero. A divisão válida trunca em direção a zero e
+o resto signed tem o sinal do dividendo. Cranelift usa `sdiv`/`srem`; Wasm
+acrescenta a checagem de overflow para signed estreito, cujo slot é `i32`.
+O emissor C verifica zero e overflow antes de `/`, e desvia `% -1` para zero
+sem avaliar uma operação C indefinida. Essas proteções independem de `-fwrapv`.
+Os testes de paridade incluem subprocessos para traps e resultados nos níveis
+AMIR O0/O1/O2/Os; a geração C de traps é executada também com -O0/-O1/-O2/-Os.
+A comparação de valores
+IEEE também não pode assumir `x == x` quando `x` pode ser NaN; há regressão em
+[`ieee754_semantics.rs`](../crates/arandu_query/tests/ieee754_semantics.rs).
 
-### 4. Contrato de Comparações e Igualdade
+### Shifts e comparações
 
-1. **Ordenabilidade (`Orderable`):**
-   * Tipos primitivos numéricos (`int`, `uint`, `float`) e `char` são intrinsecamente ordenáveis.
-   * `bool` **não** é ordenável (`true < false` rejeitado com `T005`).
-   * `str` não permite `<` nativo diretamente na sintaxe v0.1 para evitar ambiguidades entre ordenação por bytes UTF-8 e ordenação alfabética localizada (collation). Comparações de string devem usar `std.core.cmp` ou método explícito `.compare()`.
-2. **Ponteiros crus (`ptr[T]`):**
-   * Comparação de igualdade (`==`, `!=`) é permitida para verificar nulidade ou mesmice de endereço.
-   * Comparações relacionais (`<`, `<=`, `>`, `>=`) em ponteiros, quando necessárias em código `unsafe`, **devem** ser tratadas como inteiros unsigned (`IntCC::UnsignedLessThan` no Cranelift e `uintptr_t` no backend C), eliminando a falha de considerar ponteiros em endereços altos como números negativos.
-3. **Structs e Tuplas:**
-   * Proibido o uso de `==`, `!=`, `<`, `>` diretamente em instâncias de structs e tuplas sem implementação comprovada da interface `PartialEq` ou `Ord` da stdlib.
-   * Fica terminantemente proibido o Cranelift comparar endereços de ponteiros sob a fachada de um `==` entre structs.
+A validação estática cobre contagens literais. Em execução, contagens dinâmicas
+são mascaradas por 31 para operações em slots de 32 bits e por 63 para slots de
+64 bits. Inteiros de 8 e 16 bits são estendidos conforme sinal para um slot de
+32 bits, deslocados, e truncados para o tipo de resultado. Isso significa que
+um `u8` deslocado por 8 bits resulta em zero, enquanto uma contagem dinâmica 32
+equivale a zero nesse slot. Uma contagem signed negativa usa os mesmos bits
+baixos da máscara. Isso não adota a antiga proposta de shifts saturantes.
 
----
+O shift direito signed estende o sinal; o unsigned preenche com zero. O shift
+esquerdo conserva os bits baixos do resultado. No C, deslocamentos são feitos
+por unsigned, com máscara explícita e reconstrução do sinal; não dependem de
+`<<` signed negativo/transbordante nem de `>>` signed negativo da toolchain.
+O type checker continua exigindo tipos compatíveis nos dois operandos.
 
-### 5. Contrato do Otimizador AMIR (SCCP e GVN)
-
-1. **Folding Tipado:** O otimizador de propagação condicional de constantes (SCCP) nunca deve avaliar operações inteiras em um espaço ilimitado `i128` sem truncar o resultado para a representação do tipo do operando.
-2. **Paridade com Runtime:** O resultado de uma expressão dobrada em tempo de compilação deve ser bit-a-bit idêntico ao resultado gerado pelo runtime em modo desotimizado (`OptLevel::O0`).
-3. **Preservação de IEEE 754:** Mantém-se o contrato já testado de que `NaN == NaN` nunca dobra para `true`.
-
----
+Igualdade direta de structs, tuplas, arrays e slices não é admitida pelo filtro
+atual do type checker; implementar uma interface não ativa automaticamente
+sobrecarga de `==`. `Option` e `Result` têm lowering dedicado que pode comparar
+recursivamente payloads agregados. Isso não libera `==` direto sobre qualquer
+agregado. O proprietário desse tratamento é
+[`lower_amir/equality.rs`](../crates/arandu_mir/src/lower_amir/equality.rs).
+Ponteiros crus admitem igualdade de endereço, mas relações `<`/`>` são
+rejeitadas mesmo em bloco `unsafe`; não se promete ordenação unsigned pública.
 
 ## PONTOS DE MELHORIA (O que não está no roadmap)
 
-- Sobrecarga arbitrária de operadores definidos pelo usuário através de métodos mágicos (estilo Python `__add__` ou C++ `operator+`) permanece fora do escopo do Arandu v0.1.
-- Operadores saturantes dedicados (`+|`, `-|` no estilo Zig) permanecem adiados para avaliação futura pós-v0.1.
-- Comparações com tolerância epsilon em floats (`approx_eq`) pertencem à biblioteca padrão (`std.math`), nunca à sintaxe `==`.
-
----
+Paridade de casos de borda depende de tipo, alvo, nível de otimização e opções
+da toolchain C. Os testes citados cobrem um corpus finito e não demonstram
+correção geral das transformações ou segurança de toda aplicação.
+Sobrecarga arbitrária, operadores saturantes e mudança global da política de
+overflow exigem propostas próprias; não são entregas implícitas deste contrato.
 
 ## Futuro e Próximos Passos
 
-1. Aprovação do plano de implementação e deste RFC.
-2. Endurecimento do Type Checker (`arandu_typeck`).
-3. Refatoração do SCCP (`arandu_mir`).
-4. Alinhamento de codegen e flags nos backends (`arandu_backend_cranelift` e `arandu_backend_c`).
-5. Criação da suíte unificada de testes de borda (`semantic_edge_cases.rs`) e testes de paridade de execução dupla.
+A priorização pertence ao roadmap mestre. Qualquer ampliação deve explicitar
+runtime versus CTFE, comportamento por target e regressões de paridade, sem
+alterar silenciosamente o significado de programas existentes.

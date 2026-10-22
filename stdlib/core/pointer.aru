@@ -77,3 +77,10 @@ public func isNull<T>(p: ptr[T]?): bool {
 // Dereference and pointer arithmetic intentionally remain in `std.core.mem`.
 // Those operations are compiler intrinsics and require explicit acknowledgement
 // of validity, alignment, and lifetime invariants via `unsafe` blocks.
+
+// ── Inherent methods on `ptr` ───────────────────────────────────────────────
+
+/// Returns `true` if the pointer is null (`nil`).
+public func ptr.isNull<T>(self: ptr[T]?): bool {
+    return isNull<T>(self)
+}

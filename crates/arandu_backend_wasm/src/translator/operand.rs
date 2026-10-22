@@ -280,7 +280,8 @@ impl<'a> FuncTranslator<'a> {
             Some(ValType::I64) => self.code.push(Instruction::I64Const(0)),
             Some(ValType::F32) => self.code.push(Instruction::F32Const(0.0.into())),
             Some(ValType::F64) => self.code.push(Instruction::F64Const(0.0.into())),
-            Some(ValType::V128 | ValType::Ref(_)) | None => {}
+            Some(ValType::V128) => self.code.push(Instruction::V128Const(0)),
+            Some(ValType::Ref(_)) | None => {}
         }
     }
 

@@ -12,7 +12,7 @@ const STRING_ARU: &str = include_str!("../../../../stdlib/alloc/string.aru");
 #[test]
 fn stdlib_string_parses_and_exports_expected_symbols() {
     let mut db = DatabaseImpl::default();
-    let file = db.new_file(
+    let file = db.new_stdlib_file(
         "stdlib/alloc/string.aru".to_string(),
         STRING_ARU.to_string(),
     );
@@ -45,7 +45,7 @@ fn stdlib_string_methods_usage() {
     let mut db = DatabaseImpl::default();
     let mut str_file = None;
     for (path, source) in common::STDLIB_MODULES {
-        let file = db.new_file((*path).to_string(), (*source).to_string());
+        let file = db.new_stdlib_file((*path).to_string(), (*source).to_string());
         if *path == "stdlib/alloc/string.aru" {
             str_file = Some(file);
         }

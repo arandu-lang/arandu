@@ -1,0 +1,17 @@
+func binarySearchSlice(arr: []int, len: usize, target: int): int {
+    let mut low: usize = 0;
+    let mut high: usize = len;
+    while low < high {
+        let mid = low + (high - low) / 2;
+        let val = arr[mid];
+        if val == target {
+            return mid as int;
+        }
+        if val < target {
+            low = mid + 1;
+        } else {
+            high = mid;
+        }
+    }
+    return -1;
+}

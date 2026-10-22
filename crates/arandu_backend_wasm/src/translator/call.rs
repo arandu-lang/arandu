@@ -16,11 +16,35 @@ impl<'a> FuncTranslator<'a> {
         args: &[AmirOperand],
     ) {
         if let AmirOperand::FunctionRef(sym) = callee {
-            if let Some(sym_def) = self.symbols.try_get(*sym)
-                && let Some(kind) = IntrinsicKind::from_name(&sym_def.name)
-                && self.emit_intrinsic_call(kind, lhs, args)
-            {
-                return;
+            if let Some(sym_def) = self.symbols.try_get(*sym) {
+                if sym_def.name == "ar_rt_alloc_aligned" {
+                    if let Some(size_arg) = args.first() {
+                        let usize_ty = self.interner.intern(ArType::Primitive(Primitive::USize));
+                        self.emit_operand(size_arg, usize_ty);
+                        self.code.push(Instruction::Call(self.alloc_func_idx));
+                        if let Some(temp) = lhs {
+                            let local = self.temp_local.get(&temp).copied().unwrap_or(0);
+                            self.code.push(Instruction::LocalSet(local));
+                        } else {
+                            self.code.push(Instruction::Drop);
+                        }
+                    }
+                    return;
+                }
+                if sym_def.name == "ar_rt_free_aligned" {
+                    if let Some(ptr_arg) = args.first() {
+                        let ptr_ty = self.interner.intern(ArType::Primitive(Primitive::USize));
+                        self.emit_operand(ptr_arg, ptr_ty);
+                        self.code.push(Instruction::Call(self.free_func_idx));
+                    }
+                    return;
+                }
+                if let Some(kind) =
+                    IntrinsicKind::from_declared_name(&sym_def.name, sym_def.lang_item)
+                    && self.emit_intrinsic_call(kind, sym_def.name.ends_with("64"), lhs, args)
+                {
+                    return;
+                }
             }
             if let Some(&func_idx) = self.func_index_map.get(sym) {
                 let callee = self
@@ -84,10 +108,98 @@ impl<'a> FuncTranslator<'a> {
     fn emit_intrinsic_call(
         &mut self,
         kind: IntrinsicKind,
+        wide: bool,
         lhs: Option<TempId>,
         args: &[AmirOperand],
     ) -> bool {
         match kind {
+            IntrinsicKind::Atomic(..)
+            | IntrinsicKind::AtomicFence
+            | IntrinsicKind::AtomicCompilerFence => self.emit_atomic_intrinsic(kind, lhs, args),
+            IntrinsicKind::CountOnes
+            | IntrinsicKind::LeadingZeros
+            | IntrinsicKind::TrailingZeros
+            | IntrinsicKind::ReverseBits => {
+                if let Some(argument) = args.first() {
+                    let input_ty = self.interner.intern(ArType::Primitive(if wide {
+                        Primitive::U64
+                    } else {
+                        Primitive::U32
+                    }));
+                    self.emit_operand(argument, input_ty);
+                    if kind == IntrinsicKind::ReverseBits {
+                        let scratch = if wide { self.scratch_i64 } else { self.scratch };
+                        for (shift, mask) in [
+                            (1i32, 0x5555_5555_5555_5555u64),
+                            (2, 0x3333_3333_3333_3333),
+                            (4, 0x0f0f_0f0f_0f0f_0f0f),
+                            (8, 0x00ff_00ff_00ff_00ff),
+                            (16, 0x0000_ffff_0000_ffff),
+                            (32, 0x0000_0000_ffff_ffff),
+                        ]
+                        .into_iter()
+                        .take(if wide { 6 } else { 5 })
+                        {
+                            self.code.push(Instruction::LocalSet(scratch));
+                            self.code.push(Instruction::LocalGet(scratch));
+                            if wide {
+                                self.code.push(Instruction::I64Const(i64::from(shift)));
+                                self.code.push(Instruction::I64ShrU);
+                                self.code.push(Instruction::I64Const(i64::from_ne_bytes(
+                                    mask.to_ne_bytes(),
+                                )));
+                                self.code.push(Instruction::I64And);
+                            } else {
+                                self.code.push(Instruction::I32Const(shift));
+                                self.code.push(Instruction::I32ShrU);
+                                let bytes = mask.to_le_bytes();
+                                self.code.push(Instruction::I32Const(i32::from_le_bytes([
+                                    bytes[0], bytes[1], bytes[2], bytes[3],
+                                ])));
+                                self.code.push(Instruction::I32And);
+                            }
+                            self.code.push(Instruction::LocalGet(scratch));
+                            if wide {
+                                self.code.push(Instruction::I64Const(i64::from_ne_bytes(
+                                    mask.to_ne_bytes(),
+                                )));
+                                self.code.push(Instruction::I64And);
+                                self.code.push(Instruction::I64Const(i64::from(shift)));
+                                self.code.push(Instruction::I64Shl);
+                                self.code.push(Instruction::I64Or);
+                            } else {
+                                let bytes = mask.to_le_bytes();
+                                self.code.push(Instruction::I32Const(i32::from_le_bytes([
+                                    bytes[0], bytes[1], bytes[2], bytes[3],
+                                ])));
+                                self.code.push(Instruction::I32And);
+                                self.code.push(Instruction::I32Const(shift));
+                                self.code.push(Instruction::I32Shl);
+                                self.code.push(Instruction::I32Or);
+                            }
+                        }
+                    } else {
+                        self.code.push(match (wide, kind) {
+                            (true, IntrinsicKind::CountOnes) => Instruction::I64Popcnt,
+                            (true, IntrinsicKind::LeadingZeros) => Instruction::I64Clz,
+                            (true, _) => Instruction::I64Ctz,
+                            (false, IntrinsicKind::CountOnes) => Instruction::I32Popcnt,
+                            (false, IntrinsicKind::LeadingZeros) => Instruction::I32Clz,
+                            (false, _) => Instruction::I32Ctz,
+                        });
+                        if wide {
+                            self.code.push(Instruction::I32WrapI64);
+                        }
+                    }
+                    if let Some(destination) = lhs {
+                        let local = self.temp_local.get(&destination).copied().unwrap_or(0);
+                        self.code.push(Instruction::LocalSet(local));
+                    } else {
+                        self.code.push(Instruction::Drop);
+                    }
+                }
+                true
+            }
             IntrinsicKind::Abort => {
                 self.code.push(Instruction::Unreachable);
                 true
@@ -300,10 +412,10 @@ impl<'a> FuncTranslator<'a> {
                     let int_ty = self.interner.intern(ArType::Primitive(Primitive::Int));
                     let slice_ty = self.operand_arity_ty(&args[0]);
                     let elem_ty = match self.interner.resolve(slice_ty) {
-                        ArType::Slice(inner) => inner,
+                        ArType::Slice(inner) | ArType::MutSlice(inner) => inner,
                         ArType::Ref(inner) | ArType::RefMut(inner) => {
                             match self.interner.resolve(inner) {
-                                ArType::Slice(elem) => elem,
+                                ArType::Slice(elem) | ArType::MutSlice(elem) => elem,
                                 _ => slice_ty,
                             }
                         }

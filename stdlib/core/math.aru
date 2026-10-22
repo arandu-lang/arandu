@@ -1,0 +1,729 @@
+//! Elementary scalar and transcendental floating-point mathematics.
+//!
+//! ## Overview
+//!
+//! `std.core.math` provides pure, freestanding mathematical constants and
+//! functions operating on `float` (64-bit in the current native/Wasm profiles).
+//!
+//! This module does not depend on host `libc` / `libm`, operating system syscalls,
+//! or heap allocation. The scalar algorithms are shared across Cranelift,
+//! C emission and WebAssembly; numerical error and exceptional inputs still
+//! require the cross-backend contract corpus. Bit-identical floating-point
+//! results are not promised for all targets.
+//!
+//! ## Examples
+//!
+//! ```arandu
+//! import std.core.math as math
+//!
+//! let root = math.sqrt(16.0)     // 4.0
+//! let s = math.sin(math.fracPi2()) // 1.0
+//! let p = math.pow(2.0, 10.0)      // 1024.0
+//!
+//! // Inherent receiver syntax on `float`:
+//! let val = 25.0
+//! let r = val.sqrt()             // 5.0
+//! ```
+//!
+//! ## Platform
+//! `native` · `wasm32` · `bare-metal`
+//!
+//! ## See also
+//! - `std.core.num` — integer arithmetic and bit manipulation
+//! - `std.core.decimal` — fixed-point decimal arithmetic for monetary computation
+module std.core.math
+
+// ── Mathematical Constants ──────────────────────────────────────────────────
+
+/// Archimedes' constant (π), the ratio of a circle's circumference to its diameter.
+public func pi(): float {
+    return 3.14159265358979323846264338327950288
+}
+
+/// The full circle constant (τ = 2π), the ratio of circumference to radius.
+public func tau(): float {
+    return 6.28318530717958647692528676655900577
+}
+
+/// Euler's number (e), the base of the natural logarithm.
+public func e(): float {
+    return 2.71828182845904523536028747135266250
+}
+
+/// 1 / π
+public func frac1Pi(): float {
+    return 0.318309886183790671537767526745028724
+}
+
+/// 2 / π
+public func frac2Pi(): float {
+    return 0.636619772367581343075535053490057448
+}
+
+/// π / 2
+public func fracPi2(): float {
+    return 1.57079632679489661923132169163975144
+}
+
+/// π / 4
+public func fracPi4(): float {
+    return 0.785398163397448309615660845819875721
+}
+
+/// √2
+public func sqrt2(): float {
+    return 1.41421356237309504880168872420969808
+}
+
+/// 1 / √2
+public func frac1Sqrt2(): float {
+    return 0.707106781186547524400844362104849039
+}
+
+/// ln(2)
+public func ln2(): float {
+    return 0.693147180559945309417232121458176568
+}
+
+/// ln(10)
+public func ln10(): float {
+    return 2.30258509299404568401799145468436421
+}
+
+/// log₂(e)
+public func log2E(): float {
+    return 1.44269504088896340735992468100189214
+}
+
+/// log₁₀(e)
+public func log10E(): float {
+    return 0.434294481903251827651128918916605082
+}
+
+/// IEEE 754 positive infinity (+∞).
+public func infinity(): float {
+    return 1.0 / 0.0
+}
+
+/// IEEE 754 negative infinity (-∞).
+public func negInfinity(): float {
+    return -1.0 / 0.0
+}
+
+/// IEEE 754 canonical Not-a-Number (NaN).
+public func nan(): float {
+    return 0.0 / 0.0
+}
+
+// ── Classification & Predicates ─────────────────────────────────────────────
+
+/// Returns `true` if `x` is NaN.
+public func isNan(x: float): bool {
+    return x != x
+}
+
+/// Returns `true` if `x` is positive or negative infinity.
+public func isInfinite(x: float): bool {
+    return x == infinity() || x == negInfinity()
+}
+
+/// Returns `true` if `x` is neither NaN nor infinite.
+public func isFinite(x: float): bool {
+    return !isNan(x) && !isInfinite(x)
+}
+
+// ── Basic Arithmetic & Rounding ─────────────────────────────────────────────
+
+/// Returns the absolute value of `x`.
+public func abs(x: float): float {
+    if isNan(x) { return x }
+    if x < 0.0 {
+        return -x
+    }
+    if x == 0.0 {
+        return 0.0
+    }
+    return x
+}
+
+/// Returns the minimum of two values, propagating NaN if either operand is NaN.
+public func min(a: float, b: float): float {
+    if isNan(a) { return a }
+    if isNan(b) { return b }
+    if a < b { return a }
+    return b
+}
+
+/// Returns the maximum of two values, propagating NaN if either operand is NaN.
+public func max(a: float, b: float): float {
+    if isNan(a) { return a }
+    if isNan(b) { return b }
+    if a > b { return a }
+    return b
+}
+
+/// Clamps `val` to the range `[minVal, maxVal]`.
+public func clamp(val: float, minVal: float, maxVal: float): float {
+    if isNan(val) { return val }
+    if val < minVal { return minVal }
+    if val > maxVal { return maxVal }
+    return val
+}
+
+/// Truncates the fractional part, returning the integer component as a float.
+public func trunc(x: float): float {
+    if !isFinite(x) { return x }
+    if x == 0.0 { return x }
+    // Beyond 2^52 (4503599627370496.0), floats have no fractional bits.
+    if x >= 4503599627370496.0 || x <= -4503599627370496.0 {
+        return x
+    }
+    // Every remaining finite magnitude fits i64; int is only 32 bits.
+    let asInt = x as i64
+    if asInt == (0 as i64) && x < 0.0 { return -0.0 }
+    return asInt as float
+}
+
+/// Returns the largest integer less than or equal to `x`.
+public func floor(x: float): float {
+    if !isFinite(x) { return x }
+    let t = trunc(x)
+    if x < 0.0 && x != t {
+        return t - 1.0
+    }
+    return t
+}
+
+/// Returns the smallest integer greater than or equal to `x`.
+public func ceil(x: float): float {
+    if !isFinite(x) { return x }
+    let t = trunc(x)
+    if x > 0.0 && x != t {
+        return t + 1.0
+    }
+    return t
+}
+
+/// Rounds `x` to the nearest integer, rounding half away from zero.
+public func round(x: float): float {
+    if !isFinite(x) { return x }
+    if x == 0.0 { return x }
+    // Adding 0.5 would round an already-integral large value a second time.
+    if x >= 4503599627370496.0 || x <= -4503599627370496.0 {
+        return x
+    }
+    let integral = trunc(x)
+    let fraction = x - integral
+    if fraction >= 0.5 { return integral + 1.0 }
+    if fraction <= -0.5 { return integral - 1.0 }
+    return integral
+}
+
+// ── Square Root & Hypotenuse ────────────────────────────────────────────────
+
+/// Computes the square root of `x` (√x) using high-precision Newton-Raphson.
+public func sqrt(x: float): float {
+    if isNan(x) { return x }
+    if x < 0.0 { return nan() }
+    if x == 0.0 { return x }
+    if isInfinite(x) { return x }
+
+    // Range reduction: scale into [1.0, 4.0)
+    let mut norm = x
+    let mut scale = 1.0
+
+    while norm >= 1.0e16 {
+        norm = norm * 1.0e-16
+        scale = scale * 1.0e8
+    }
+    while norm >= 10000.0 {
+        norm = norm * 0.0001
+        scale = scale * 100.0
+    }
+    while norm >= 4.0 {
+        norm = norm * 0.25
+        scale = scale * 2.0
+    }
+    while norm < 1.0e-16 {
+        norm = norm * 1.0e16
+        scale = scale * 1.0e-8
+    }
+    while norm < 0.0001 {
+        norm = norm * 10000.0
+        scale = scale * 0.01
+    }
+    while norm < 1.0 {
+        norm = norm * 4.0
+        scale = scale * 0.5
+    }
+
+    // Initial linear approximation in [1, 4]: y ≈ 0.41731 + 0.59016*norm
+    let mut y = 0.5 * norm + 0.5
+
+    // 6 iterations of Newton-Raphson: y = 0.5 * (y + norm / y)
+    y = 0.5 * (y + norm / y)
+    y = 0.5 * (y + norm / y)
+    y = 0.5 * (y + norm / y)
+    y = 0.5 * (y + norm / y)
+    y = 0.5 * (y + norm / y)
+    y = 0.5 * (y + norm / y)
+
+    return y * scale
+}
+
+/// Computes √(x² + y²) without premature overflow or underflow.
+public func hypot(x: float, y: float): float {
+    let ax = abs(x)
+    let ay = abs(y)
+    if isInfinite(ax) || isInfinite(ay) { return infinity() }
+    if isNan(ax) || isNan(ay) { return nan() }
+    if ax == 0.0 && ay == 0.0 { return 0.0 }
+
+    let mx = max(ax, ay)
+    let mn = min(ax, ay)
+    let ratio = mn / mx
+    return mx * sqrt(1.0 + ratio * ratio)
+}
+
+// ── Trigonometric Functions ─────────────────────────────────────────────────
+
+func sinSeries(z: float): float {
+    let z2 = z * z
+    return z * (1.0 + z2 * (-0.16666666666666666 + z2 * (0.008333333333333333 + z2 * (-0.0001984126984126984 + z2 * (0.000002755731922398589 + z2 * (-0.00000002505210838544172 + z2 * 0.00000000016059043836821615))))))
+}
+
+func cosSeries(z: float): float {
+    let z2 = z * z
+    return 1.0 + z2 * (-0.5 + z2 * (0.041666666666666664 + z2 * (-0.001388888888888889 + z2 * (0.0000248015873015873 + z2 * (-0.0000002755731922398589 + z2 * 0.00000000208767569878681)))))
+}
+
+/// Computes the sine of `x` (in radians).
+public func sin(x: float): float {
+    if !isFinite(x) { return nan() }
+    if x == 0.0 { return x }
+
+    let twoPi = tau()
+    let halfPi = fracPi2()
+
+    // Reduce to [-π, π]
+    let mut reduced = x
+    let cycles = round(reduced / twoPi)
+    reduced = reduced - cycles * twoPi
+
+    // Quadrant reduction to [-π/4, π/4]
+    let q = round(reduced / halfPi)
+    let z = reduced - q * halfPi
+    let quadrant = (q as int) % 4
+    let normQ = if quadrant < 0 { quadrant + 4 } else { quadrant }
+
+    if normQ == 0 {
+        return sinSeries(z)
+    }
+    if normQ == 1 {
+        return cosSeries(z)
+    }
+    if normQ == 2 {
+        return -sinSeries(z)
+    }
+    return -cosSeries(z)
+}
+
+/// Computes the cosine of `x` (in radians).
+public func cos(x: float): float {
+    if !isFinite(x) { return nan() }
+    if x == 0.0 { return 1.0 }
+
+    let twoPi = tau()
+    let halfPi = fracPi2()
+
+    // Reduce to [-π, π]
+    let mut reduced = x
+    let cycles = round(reduced / twoPi)
+    reduced = reduced - cycles * twoPi
+
+    // Quadrant reduction to [-π/4, π/4]
+    let q = round(reduced / halfPi)
+    let z = reduced - q * halfPi
+    let quadrant = (q as int) % 4
+    let normQ = if quadrant < 0 { quadrant + 4 } else { quadrant }
+
+    if normQ == 0 {
+        return cosSeries(z)
+    }
+    if normQ == 1 {
+        return -sinSeries(z)
+    }
+    if normQ == 2 {
+        return -cosSeries(z)
+    }
+    return sinSeries(z)
+}
+
+/// Computes the tangent of `x` (in radians).
+public func tan(x: float): float {
+    let c = cos(x)
+    if c == 0.0 {
+        let s = sin(x)
+        if s > 0.0 { return infinity() }
+        return negInfinity()
+    }
+    return sin(x) / c
+}
+
+func atanSeries(x: float): float {
+    let x2 = x * x
+    return x * (1.0 + x2 * (-0.3333314528 + x2 * (0.1999355085 + x2 * (-0.1420889944 + x2 * (0.1065626393 + x2 * (-0.0752896400 + x2 * (0.0429096138 - x2 * 0.0161657367)))))))
+}
+
+/// Computes the arctangent of `x` (in radians, range `[-π/2, π/2]`).
+public func atan(x: float): float {
+    if isNan(x) { return x }
+    if x == 0.0 { return x }
+    if x == infinity() { return fracPi2() }
+    if x == negInfinity() { return -fracPi2() }
+
+    if x < 0.0 {
+        return -atan(-x)
+    }
+
+    if x > 1.0 {
+        return fracPi2() - atanSeries(1.0 / x)
+    }
+    return atanSeries(x)
+}
+
+/// Computes the four-quadrant arctangent of `y` and `x` (in radians, range `[-π, π]`).
+public func atan2(y: float, x: float): float {
+    if isNan(x) || isNan(y) { return nan() }
+    if x > 0.0 {
+        return atan(y / x)
+    }
+    if x < 0.0 {
+        if y >= 0.0 {
+            return atan(y / x) + pi()
+        }
+        return atan(y / x) - pi()
+    }
+    if y > 0.0 {
+        return fracPi2()
+    }
+    if y < 0.0 {
+        return -fracPi2()
+    }
+    return 0.0
+}
+
+/// Computes the arcsine of `x` (in radians, range `[-π/2, π/2]`).
+public func asin(x: float): float {
+    if isNan(x) { return x }
+    if x < -1.0 || x > 1.0 { return nan() }
+    if x == 0.0 { return 0.0 }
+    if x == 1.0 { return fracPi2() }
+    if x == -1.0 { return -fracPi2() }
+    return atan2(x, sqrt(1.0 - x * x))
+}
+
+/// Computes the arccosine of `x` (in radians, range `[0, π]`).
+public func acos(x: float): float {
+    if isNan(x) { return x }
+    if x < -1.0 || x > 1.0 { return nan() }
+    return fracPi2() - asin(x)
+}
+
+/// Computes the cube root of `x` (∛x).
+public func cbrt(x: float): float {
+    if isNan(x) { return x }
+    if x == 0.0 { return x }
+    if isInfinite(x) { return x }
+    if x < 0.0 {
+        return -cbrt(-x)
+    }
+    let mut y = exp(ln(x) / 3.0)
+    // Divide successively: y^3 and 2*x can overflow for a finite cube root.
+    y = (2.0 * y + (x / y) / y) / 3.0
+    y = (2.0 * y + (x / y) / y) / 3.0
+    return y
+}
+
+// ── Exponential & Logarithm ─────────────────────────────────────────────────
+
+func expSeries(r: float): float {
+    // Pade / Taylor approximation for |r| <= 0.35
+    let term12 = 1.0 + r / 12.0
+    let term11 = 1.0 + r * term12 / 11.0
+    let term10 = 1.0 + r * term11 / 10.0
+    let term9 = 1.0 + r * term10 / 9.0
+    let term8 = 1.0 + r * term9 / 8.0
+    let term7 = 1.0 + r * term8 / 7.0
+    let term6 = 1.0 + r * term7 / 6.0
+    let term5 = 1.0 + r * term6 / 5.0
+    let term4 = 1.0 + r * term5 / 4.0
+    let term3 = 1.0 + r * term4 / 3.0
+    let term2 = 1.0 + r * term3 / 2.0
+    return 1.0 + r * term2
+}
+
+func pow2Integer(n: int): float {
+    if n == 0 { return 1.0 }
+    if n < 0 {
+        return 1.0 / pow2Integer(-n)
+    }
+    let mut base = 2.0
+    let mut exp = n
+    let mut res = 1.0
+    while exp > 0 {
+        if exp % 2 != 0 {
+            res = res * base
+        }
+        base = base * base
+        exp = exp / 2
+    }
+    return res
+}
+
+/// Computes the natural exponential function (eˣ).
+public func exp(x: float): float {
+    if isNan(x) { return x }
+    if x > 709.782712893384 { return infinity() }
+    if x < -745.1332191019412 { return 0.0 }
+    if x == 0.0 { return 1.0 }
+
+    let log2EVal = log2E()
+    let ln2Val = ln2()
+
+    let k = round(x * log2EVal)
+    let r = x - k * ln2Val
+    let eR = expSeries(r)
+    // Keep the scale normal until the final multiplication. Computing 2^k
+    // directly overflows for k=1024 and loses all subnormals for k<-1023.
+    if k > 1023.0 {
+        return (eR * pow2Integer((k as int) - 1)) * 2.0
+    }
+    if k < -1022.0 {
+        return (eR * pow2Integer((k as int) + 1022)) * pow2Integer(-1022)
+    }
+    return eR * pow2Integer(k as int)
+}
+
+/// Computes the natural logarithm ln(x).
+public func ln(x: float): float {
+    if isNan(x) { return x }
+    if x < 0.0 { return nan() }
+    if x == 0.0 { return negInfinity() }
+    if isInfinite(x) { return x }
+    if x == 1.0 { return 0.0 }
+
+    let mut norm = x
+    let mut k = 0
+
+    while norm >= 1.4142135623730951 {
+        norm = norm * 0.5
+        k = k + 1
+    }
+    while norm < 0.7071067811865475 {
+        norm = norm * 2.0
+        k = k - 1
+    }
+
+    // u = (norm - 1) / (norm + 1) where |u| < 0.1716
+    let u = (norm - 1.0) / (norm + 1.0)
+    let u2 = u * u
+    let u3 = u * u2
+    let u5 = u3 * u2
+    let u7 = u5 * u2
+    let u9 = u7 * u2
+    let u11 = u9 * u2
+    let u13 = u11 * u2
+    let u15 = u13 * u2
+
+    let lnM = 2.0 * (u + u3 / 3.0 + u5 / 5.0 + u7 / 7.0 + u9 / 9.0 + u11 / 11.0 + u13 / 13.0 + u15 / 15.0)
+    return (k as float) * ln2() + lnM
+}
+
+/// Computes the base-2 logarithm log₂(x).
+public func log2(x: float): float {
+    return ln(x) * log2E()
+}
+
+/// Computes the base-10 logarithm log₁₀(x).
+public func log10(x: float): float {
+    return ln(x) * log10E()
+}
+
+/// Raises `base` to the power `exponent` (baseᵉˣᵖ).
+public func pow(base: float, exponent: float): float {
+    if exponent == 0.0 { return 1.0 }
+    if base == 1.0 { return 1.0 }
+    if isNan(base) || isNan(exponent) { return nan() }
+    if base == 0.0 {
+        if exponent > 0.0 { return 0.0 }
+        return infinity()
+    }
+    if isInfinite(exponent) {
+        if abs(base) == 1.0 { return nan() }
+        if abs(base) > 1.0 {
+            if exponent > 0.0 { return infinity() }
+            return 0.0
+        }
+        if exponent > 0.0 { return 0.0 }
+        return infinity()
+    }
+
+    // Check for exact integer exponent (up to 2^53 where all float values are integral)
+    let isIntExp = exponent == trunc(exponent)
+    if isIntExp && exponent >= -9007199254740992.0 && exponent <= 9007199254740992.0 {
+        let n = exponent as i64
+        if n < (0 as i64) {
+            return powInt(1.0 / base, -n)
+        }
+        return powInt(base, n)
+    }
+
+    if base < 0.0 {
+        return nan()
+    }
+    return exp(exponent * ln(base))
+}
+
+func powInt(b: float, n: i64): float {
+    let mut base = b
+    let mut exp = n
+    let mut res = 1.0
+    while exp > (0 as i64) {
+        if exp % (2 as i64) != (0 as i64) {
+            res = res * base
+        }
+        base = base * base
+        exp = exp / (2 as i64)
+    }
+    return res
+}
+
+// ── Angular Conversions ─────────────────────────────────────────────────────
+
+/// Converts radians to degrees.
+public func toDegrees(rad: float): float {
+    return rad * (180.0 / pi())
+}
+
+/// Converts degrees to radians.
+public func toRadians(deg: float): float {
+    return deg * (pi() / 180.0)
+}
+
+// ── Inherent methods on `float` ─────────────────────────────────────────────
+
+/// Absolute value.
+public func float.abs(self: float): float {
+    return abs(self)
+}
+
+/// Square root.
+public func float.sqrt(self: float): float {
+    return sqrt(self)
+}
+
+/// Sine (in radians).
+public func float.sin(self: float): float {
+    return sin(self)
+}
+
+/// Cosine (in radians).
+public func float.cos(self: float): float {
+    return cos(self)
+}
+
+/// Tangent (in radians).
+public func float.tan(self: float): float {
+    return tan(self)
+}
+
+/// Natural exponential (eˣ).
+public func float.exp(self: float): float {
+    return exp(self)
+}
+
+/// Natural logarithm ln(x).
+public func float.ln(self: float): float {
+    return ln(self)
+}
+
+/// Base-2 logarithm log₂(x).
+public func float.log2(self: float): float {
+    return log2(self)
+}
+
+/// Base-10 logarithm log₁₀(x).
+public func float.log10(self: float): float {
+    return log10(self)
+}
+
+/// Raises `self` to `exponent`.
+public func float.pow(self: float, exponent: float): float {
+    return pow(self, exponent)
+}
+
+/// Floor.
+public func float.floor(self: float): float {
+    return floor(self)
+}
+
+/// Ceiling.
+public func float.ceil(self: float): float {
+    return ceil(self)
+}
+
+/// Nearest integer rounding.
+public func float.round(self: float): float {
+    return round(self)
+}
+
+/// Truncates fractional part.
+public func float.trunc(self: float): float {
+    return trunc(self)
+}
+
+/// Converts radians to degrees.
+public func float.toDegrees(self: float): float {
+    return toDegrees(self)
+}
+
+/// Converts degrees to radians.
+public func float.toRadians(self: float): float {
+    return toRadians(self)
+}
+
+/// Minimum with another float.
+public func float.min(self: float, other: float): float {
+    return min(self, other)
+}
+
+/// Maximum with another float.
+public func float.max(self: float, other: float): float {
+    return max(self, other)
+}
+
+/// Clamps value within `[minVal, maxVal]`.
+public func float.clamp(self: float, minVal: float, maxVal: float): float {
+    return clamp(self, minVal, maxVal)
+}
+
+/// Arctangent (in radians).
+public func float.atan(self: float): float {
+    return atan(self)
+}
+
+/// Arcsine (in radians).
+public func float.asin(self: float): float {
+    return asin(self)
+}
+
+/// Arccosine (in radians).
+public func float.acos(self: float): float {
+    return acos(self)
+}
+
+/// Cube root.
+public func float.cbrt(self: float): float {
+    return cbrt(self)
+}

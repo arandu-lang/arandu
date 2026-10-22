@@ -309,7 +309,10 @@ pub(crate) fn resolve_index(
     }
 
     let elem_ty_id = match &actual_base_ty {
-        ArType::Array(_, inner) | ArType::ConstArray(_, inner) | ArType::Slice(inner) => *inner,
+        ArType::Array(_, inner)
+        | ArType::ConstArray(_, inner)
+        | ArType::Slice(inner)
+        | ArType::MutSlice(inner) => *inner,
         ArType::Named(_, args)
             if arandu_middle::types::is_vec_type(&actual_base_ty, &checker.symbols) =>
         {
@@ -345,7 +348,12 @@ pub(crate) fn resolve_index(
     }
 
     if is_range_index {
-        let slice_ty_id = checker.intern(ArType::Slice(elem_ty_id));
+        let is_mut_slice = matches!(actual_base_ty, ArType::MutSlice(_));
+        let slice_ty_id = if is_mut_slice {
+            checker.intern(ArType::MutSlice(elem_ty_id))
+        } else {
+            checker.intern(ArType::Slice(elem_ty_id))
+        };
         if was_option {
             checker.intern(ArType::Option(slice_ty_id))
         } else if safe || was_nullable {

@@ -29,7 +29,11 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         // rejection of `scratch_type_safe`. The promotion gate still applies:
         // `Free`/back-edge phi/extern rules that disable promotion for the
         // function must disable it for descriptors too.
-        let slice_descriptor = matches!(ty, arandu_semantics::types::ArType::Slice(_));
+        let slice_descriptor = matches!(
+            ty,
+            arandu_semantics::types::ArType::Slice(_)
+                | arandu_semantics::types::ArType::MutSlice(_)
+        );
         let eligible = self.frame_promotion_safe
             && (slice_descriptor
                 || (arandu_semantics::aggregate_storage::scratch_type_safe(

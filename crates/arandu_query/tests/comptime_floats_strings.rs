@@ -7,9 +7,20 @@ use arandu_query::{
 };
 
 fn values(source: &str, layout: DataLayout) -> Vec<ConstValue> {
+    values_with_authority(source, layout, false)
+}
+
+fn values_with_authority(
+    source: &str,
+    layout: DataLayout,
+    trusted_fixture: bool,
+) -> Vec<ConstValue> {
     let mut db = DatabaseImpl::new();
     db.set_target_config(layout);
     let file = db.new_file("frozen.aru".into(), source.into());
+    if trusted_fixture {
+        db.trust_stdlib_source(file);
+    }
     let typed = type_check(&db, file);
     let errors: Vec<_> = typed
         .diagnostics
@@ -82,7 +93,7 @@ fn public_strings_preserve_utf8_empty_nul_and_helper_pool_content() {
 #[test]
 fn immutable_byte_views_freeze_static_backing_even_at_unicode_interior() {
     let source = "module std.core.frozen\nextern \"arandu-intrinsic\" {\nfunc strBytes(source: str): []u8\nfunc sliceSubslice<T>(source: []T, start: usize, len: usize): []T\nfunc sliceLen<T>(source: []T): usize\n}\nfunc main(): int {\nlet bytes = comptime { let all = strBytes(\"Olá\")\nunsafe { return sliceSubslice<u8>(all, 3, 1) } }\nreturn bytes[0] as int\n}";
-    let result = values(source, DataLayout::ptr_width(8));
+    let result = values_with_authority(source, DataLayout::ptr_width(8), true);
     let ConstValue::Bytes(bytes) = &result[0] else {
         panic!("bytes")
     };
@@ -105,7 +116,7 @@ let bytes = comptime {
 return bytes[1] as int
 }"#;
     for layout in [DataLayout::ptr_width(4), DataLayout::ptr_width(8)] {
-        let result = values(source, layout);
+        let result = values_with_authority(source, layout, true);
         assert_eq!(result.len(), 2);
         let ConstValue::String(text) = &result[0] else {
             panic!("expected decoded string");

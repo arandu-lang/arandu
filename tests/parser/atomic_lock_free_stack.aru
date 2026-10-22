@@ -1,0 +1,18 @@
+struct StackNode {
+    value: i64,
+    next: usize,
+}
+
+struct LockFreeStack {
+    head: usize,
+    capacity: usize,
+    version: u32,
+}
+
+func stackInit(cap: usize): LockFreeStack {
+    return LockFreeStack {
+        head: 0,
+        capacity: cap,
+        version: 1,
+    };
+}

@@ -182,6 +182,7 @@ pub(crate) fn seed_timeout(target: Target) -> Duration {
         Target::Synthesized => SYNTHESIZED_SEED_TIMEOUT,
         Target::SynthesizedC
         | Target::SynthesizedWasm
+        | Target::SynthesizedLlvm
         | Target::EmiCorpus
         | Target::SynthesizedAll => DIFFERENTIAL_SEED_TIMEOUT,
     }

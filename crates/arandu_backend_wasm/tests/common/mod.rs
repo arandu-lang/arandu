@@ -56,16 +56,44 @@ pub fn temp(id: usize, ty: TypeId) -> AmirTemp {
 /// Compile a surface-language program through the real compiler pipeline and
 /// return the emitted wasm bytes.
 pub fn compile_source(source: &str) -> Vec<u8> {
+    compile_source_with_authority(source, false)
+}
+
+/// Explicit test-only stdlib embedding for fixtures that declare compiler ABI.
+/// Ordinary surface fixtures keep the same untrusted origin as user programs.
+pub fn compile_trusted_core_fixture(source: &str) -> Vec<u8> {
+    compile_source_with_authority(source, true)
+}
+
+fn compile_source_with_authority(source: &str, trusted_stdlib: bool) -> Vec<u8> {
     let mut db = DatabaseImpl::new();
     db.set_target_config(wasm32());
     let file = db.new_file("e2e.aru".into(), source.into());
+    if trusted_stdlib {
+        db.trust_stdlib_source(file);
+    }
     let parsed = arandu_query::passes::parse(&db, file);
     assert!(
         parsed.is_ok(),
         "invalid test source: {:?}",
         parsed.as_ref().err()
     );
+    let parse_diags = arandu_query::passes::parse_diagnostics(&db, file);
+    assert!(
+        parse_diags.is_empty(),
+        "parse diagnostics: {:?}",
+        parse_diags.as_slice()
+    );
     let lowered = lower_amir(&db, file);
+    let runtime = arandu_query::runtime::runtime_program(&db, file);
+    assert!(
+        runtime
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.severity != arandu_middle::Severity::Error),
+        "lowering diagnostics: {:?}",
+        runtime.diagnostics
+    );
     assert!(
         lowered.type_check.diagnostics.is_empty(),
         "source did not lower cleanly:\n{:?}",
@@ -87,7 +115,22 @@ pub fn compile_source_component(source: &str, pkg_name: &str) -> Vec<u8> {
     let mut db = DatabaseImpl::new();
     db.set_target_config(wasm32());
     let file = db.new_file("e2e.aru".into(), source.into());
+    let parse_diags = arandu_query::passes::parse_diagnostics(&db, file);
+    assert!(
+        parse_diags.is_empty(),
+        "parse diagnostics: {:?}",
+        parse_diags.as_slice()
+    );
     let lowered = lower_amir(&db, file);
+    let runtime = arandu_query::runtime::runtime_program(&db, file);
+    assert!(
+        runtime
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.severity != arandu_middle::Severity::Error),
+        "lowering diagnostics: {:?}",
+        runtime.diagnostics
+    );
     assert!(
         lowered.type_check.diagnostics.is_empty(),
         "source did not lower cleanly:\n{:?}",
@@ -211,7 +254,7 @@ pub fn emit_one(func: AmirFunc, interner: &TypeInterner, pool: &mut AmirLiteralP
     .expect("hand-built program must emit")
 }
 
-pub fn emit_with_imported_symbols(
+pub fn emit_with_imported_intrinsics(
     func: AmirFunc,
     extra_symbols: &[(SymbolId, &str)],
     interner: &TypeInterner,
@@ -221,6 +264,16 @@ pub fn emit_with_imported_symbols(
     register_imported_sym(&mut symbols, func.symbol, "main");
     for &(id, name) in extra_symbols {
         register_imported_sym(&mut symbols, id, name);
+        let kind = arandu_middle::IntrinsicKind::from_name(name)
+            .expect("imported intrinsic fixture must use a known intrinsic name");
+        let marker = kind
+            .declaration_marker()
+            .expect("imported intrinsic must declare its ABI marker");
+        symbols
+            .imported_symbols
+            .get_mut(&id)
+            .expect("registered imported intrinsic must exist")
+            .lang_item = Some(marker);
     }
     let program = AmirProgram {
         funcs: vec![func],

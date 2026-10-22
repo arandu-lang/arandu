@@ -49,6 +49,43 @@ fn misspelled_command_suggests_the_nearest_subcommand() {
 }
 
 #[test]
+fn value_options_do_not_consume_the_next_flag_as_their_value() {
+    for (command, option, expected) in [
+        (
+            "build",
+            "--target",
+            "--target requires a target triple argument",
+        ),
+        (
+            "check",
+            "--stdlib-path",
+            "--stdlib-path requires a path argument",
+        ),
+        (
+            "check",
+            "--cache-dir",
+            "--cache-dir requires a path argument",
+        ),
+    ] {
+        let output = common::cli_command()
+            .args([command, option, "--quiet"])
+            .output()
+            .expect("run command with missing option value");
+
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{command} {option}: {output:?}"
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(expected),
+            "{command} {option}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
 fn run_hides_incremental_query_counts_unless_verbose_is_requested() {
     let root = common::temp_dir("arandu-cli-run-status").expect("create temp root");
     let source = root.join("main.aru");
@@ -253,4 +290,50 @@ fn shell_completions_are_available_for_supported_shells() {
         .expect("generate PowerShell completion");
     let powershell = String::from_utf8_lossy(&powershell.stdout);
     assert!(powershell.contains("$commandName, $parameterName, $wordToComplete"));
+}
+
+#[test]
+fn primitive_methods_run_without_imports() {
+    let root = common::temp_dir("arandu-cli-primitive-methods").expect("create temp root");
+    let source = root.join("main.aru");
+    fs::write(
+        &source,
+        r#"
+func main(): int {
+    let s = "hello"
+    if s.len() != 5 {
+        return 1
+    }
+    if s.isEmpty() {
+        return 2
+    }
+    if !s.startsWith("he") {
+        return 3
+    }
+    let x = -42
+    if x.abs() != 42 {
+        return 4
+    }
+    let c = 'a'
+    if !c.isAscii() {
+        return 5
+    }
+    return 0
+}
+"#,
+    )
+    .expect("write source");
+    let path = source.to_string_lossy().into_owned();
+
+    let output = common::cli_command()
+        .args(["run", &path])
+        .output()
+        .expect("run primitive methods program");
+    assert!(
+        output.status.success(),
+        "execution failed: stdout={}, stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let _ = fs::remove_dir_all(root);
 }

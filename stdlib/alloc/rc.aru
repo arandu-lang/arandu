@@ -1,0 +1,292 @@
+//! Single-threaded reference-counting pointer.
+//!
+//! ## Overview
+//!
+//! `Rc<T>` provides shared ownership of a heap-allocated value. Multiple `Rc`
+//! handles can point to the same allocation. The inner value is destroyed when
+//! the last strong reference is dropped.
+//!
+//! To prevent reference cycles that cause memory leaks, `Rc` provides non-owning
+//! `Weak<T>` pointers via `downgrade`. A `Weak` handle does not keep the value alive,
+//! but can attempt to upgrade to a full `Rc` if the value has not yet been dropped.
+//!
+//! ## Thread Safety
+//!
+//! `Rc<T>` is strictly thread-local. It uses non-atomic reference counts for
+//! maximum execution speed. For cross-thread shared ownership, use `std.alloc.arc.Arc<T>`.
+//!
+//! ## Examples
+//!
+//! ```arandu
+//! import std.alloc.rc as rc
+//!
+//! let five = rc.Rc.new(5)
+//! let copy = five.clone()
+//! assert(five.get() == 5)
+//! assert(copy.get() == 5)
+//! assert(five.strongCount() == 2)
+//! ```
+//!
+//! ## Platform
+//! Native allocation hosts; Wasm aligned-allocation wiring is pending.
+module std.alloc.rc
+
+import std.alloc.allocator_api as alloc
+
+import std.core.intrinsics as intrinsics
+
+import std.core.mem as mem
+
+import std.core.option as option
+
+extern "C" {
+    func ar_rt_alloc_aligned(size: usize, align: usize): ptr[u8]
+    func ar_rt_free_aligned(data: ptr[u8], size: usize, align: usize): void
+}
+
+struct RcBox<T> {
+    strong: usize
+    weak: usize
+    value: T
+}
+
+func boxSize<T>(): usize {
+    let size = mem.sizeOf<RcBox<T>>()
+    if size == (0 as usize) { return 1 as usize }
+    return size
+}
+
+func boxAlign<T>(): usize {
+    return mem.alignOf<RcBox<T>>()
+}
+
+func countLimit(): usize { return 2147483646 as usize }
+
+/// A single-threaded reference-counting pointer.
+public struct Rc<T> {
+    private inner: ptr[RcBox<T>]
+}
+
+/// A non-owning weak handle to an `Rc`-managed allocation.
+public struct Weak<T> {
+    private inner: ptr[RcBox<T>]
+}
+
+/// Attempts to allocate a new `Rc<T>` holding `value` on the heap, reporting allocation failures.
+public func Rc.tryNew<T>(value: T): Result<Rc<T>, alloc.AllocError> {
+    let size = boxSize<T>()
+    let align = boxAlign<T>()
+    let maximum: usize = 2147483647 as usize
+    if size > maximum || align == (0 as usize) || align > maximum {
+        return Result.Err(alloc.AllocError.InvalidLayout)
+    }
+    unsafe {
+        let raw = ar_rt_alloc_aligned(size, align)
+        let nullp: ptr[u8] = nil
+        if raw == nullp {
+            return Result.Err(alloc.AllocError.OutOfMemory)
+        }
+        let typed = raw as ptr[RcBox<T>]
+        let initial = RcBox<T> {
+            strong: 1 as usize,
+            weak: 1 as usize,
+            value: value,
+        }
+        mem.ptrWrite<RcBox<T>>(typed, initial)
+        return Result.Ok(Rc<T> { inner: typed })
+    }
+}
+
+/// Allocates a new `Rc<T>` holding `value` on the heap, aborting if allocation fails.
+public func Rc.new<T>(value: T): Rc<T> {
+    match Rc.tryNew<T>(value) {
+        Result.Ok(rc) => { return rc }
+        Result.Err(_) => { unsafe { intrinsics.abort() } }
+    }
+    return Rc<T> { inner: nil }
+}
+
+/// Borrows the contained value.
+public func Rc.get<T>(self: ref Rc<T>): ref T {
+    unsafe {
+        return ref (*self.inner).value
+    }
+}
+
+/// Returns a mutable reference to the contained value if there are no other references.
+public func Rc.getMut<T>(self: mut ref Rc<T>): Option<mut ref T> {
+    if Rc.isUnique(self) {
+        unsafe {
+            return Option.Some(mut ref (*self.inner).value)
+        }
+    }
+    return Option.None
+}
+
+/// Unwraps the inner value if this is the sole strong reference to the allocation.
+///
+/// If other references exist, returns `Result.Err(self)`.
+public func Rc.tryUnwrap<T>(self: own Rc<T>): Result<T, Rc<T>> {
+    let nullp: ptr[RcBox<T>] = nil
+    if self.inner == nullp {
+        return Result.Err(self)
+    }
+    unsafe {
+        let p0 = self.inner
+        if p0.strong == (1 as usize) {
+            let mut owned = self;
+            let p = owned.inner
+            // Weak handles may retain the allocation, but the moved payload
+            // must never become available to upgrade again.
+            p.strong = 0 as usize
+            let val = mem.ptrRead<T>(intrinsics.addressOf<T>(mut ref (*p).value))
+            // Only the payload moved; the counts remain live in the block.
+            let weak = p.weak - (1 as usize);
+            p.weak = weak
+            if weak == (0 as usize) {
+                ar_rt_free_aligned(p as ptr[u8], boxSize<T>(), boxAlign<T>())
+            }
+            owned.inner = nil
+            return Result.Ok(val)
+        }
+    }
+    return Result.Err(self)
+}
+
+/// Creates a new strong reference to the same allocation.
+public func Rc.clone<T>(self: ref Rc<T>): Rc<T> {
+    unsafe {
+        let p = self.inner
+        if p.strong == (0 as usize) || p.strong >= countLimit() {
+            intrinsics.abort()
+        }
+        p.strong = p.strong + (1 as usize)
+        return Rc<T> { inner: self.inner }
+    }
+}
+
+/// Returns the number of active strong references.
+public func Rc.strongCount<T>(self: ref Rc<T>): usize {
+    unsafe {
+        let p = self.inner
+        return p.strong
+    }
+}
+
+/// Returns the number of active weak references.
+public func Rc.weakCount<T>(self: ref Rc<T>): usize {
+    unsafe {
+        // Subtract the implicit weak count owned by the strong references
+        let p = self.inner
+        let w = p.weak
+        if w > (0 as usize) {
+            return w - (1 as usize)
+        }
+        return 0 as usize
+    }
+}
+
+/// Returns `true` if there are no other strong or weak references.
+public func Rc.isUnique<T>(self: ref Rc<T>): bool {
+    unsafe {
+        let p = self.inner
+        return p.strong == (1 as usize) && p.weak == (1 as usize)
+    }
+}
+
+func Weak.fromInner<T>(inner: ptr[RcBox<T>]): Weak<T> {
+    return Weak<T> { inner: inner }
+}
+
+func Rc.fromInner<T>(inner: ptr[RcBox<T>]): Rc<T> {
+    return Rc<T> { inner: inner }
+}
+
+/// Creates a non-owning `Weak<T>` pointer to this allocation.
+public func Rc.downgrade<T>(self: ref Rc<T>): Weak<T> {
+    unsafe {
+        let p = self.inner
+        if p.weak >= countLimit() {
+            intrinsics.abort()
+        }
+        p.weak = p.weak + (1 as usize)
+        return Weak.fromInner<T>(self.inner)
+    }
+}
+
+/// Destroys a strong reference. Destroys value when strong count reaches zero.
+@Destructor
+func Rc.destroy<T>(self: own Rc<T>): void {
+    let nullp: ptr[RcBox<T>] = nil
+    if self.inner == nullp { return }
+
+    unsafe {
+        let p = self.inner
+        let strong = p.strong - (1 as usize)
+        p.strong = strong
+
+        if strong == (0 as usize) {
+            // Drop inner value by reading it into a local variable dropped on scope exit
+            let _val = mem.ptrRead<T>(intrinsics.addressOf<T>(mut ref (*p).value))
+
+            // Only counts remain in the block after moving out the payload.
+            let weak = p.weak - (1 as usize)
+            p.weak = weak
+
+            if weak == (0 as usize) {
+                // No more weak references remain: free control block
+                ar_rt_free_aligned(self.inner as ptr[u8], boxSize<T>(), boxAlign<T>())
+            }
+        }
+    }
+}
+
+// ── Weak Pointer Implementation ─────────────────────────────────────────────
+
+/// Clones a weak handle, incrementing the weak reference count.
+public func Weak.clone<T>(self: ref Weak<T>): Weak<T> {
+    unsafe {
+        let p = self.inner
+        if p.weak == (0 as usize) || p.weak >= countLimit() {
+            intrinsics.abort()
+        }
+        p.weak = p.weak + (1 as usize)
+        return Weak<T> { inner: self.inner }
+    }
+}
+
+/// Attempts to upgrade to a strong `Rc<T>`. Returns `None` if the value was dropped.
+public func Weak.upgrade<T>(self: ref Weak<T>): Option<Rc<T>> {
+    let nullp: ptr[RcBox<T>] = nil
+    if self.inner == nullp { return Option.None }
+
+    unsafe {
+        let p = self.inner
+        let strong = p.strong
+        if strong == (0 as usize) {
+            return Option.None
+        }
+        if strong >= countLimit() {
+            intrinsics.abort()
+        }
+        p.strong = strong + (1 as usize)
+        return Option.Some(Rc.fromInner<T>(self.inner))
+    }
+}
+
+/// Destroys a weak handle. Frees the control block if no references remain.
+@Destructor
+func Weak.destroy<T>(self: own Weak<T>): void {
+    let nullp: ptr[RcBox<T>] = nil
+    if self.inner == nullp { return }
+
+    unsafe {
+        let p = self.inner
+        let weak = p.weak - (1 as usize)
+        p.weak = weak
+
+        if weak == (0 as usize) && p.strong == (0 as usize) {
+            ar_rt_free_aligned(self.inner as ptr[u8], boxSize<T>(), boxAlign<T>())
+        }
+    }
+}

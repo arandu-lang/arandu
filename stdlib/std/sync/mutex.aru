@@ -1,0 +1,119 @@
+//! Native FIFO mutex with a shared acquisition receiver and RAII guard.
+//!
+//! Uses the writer queue of the address-keyed phase-fair ParkingLot. Recursive
+//! acquisition can deadlock; guard destruction releases exactly once. The lock
+//! must stay stationary while any guard exists. Mutex<T> is Send/Sync if T:Send.
+//! Platform: native; independent of the cooperative std.runtime.mutex.
+module std.sync.mutex
+
+import std.core.cell as cell
+import std.core.intrinsics as intrinsics
+import std.core.option as option
+
+extern "C" {
+    func ar_rt_rwlock_write(key: ptr[u8]): void
+    func ar_rt_rwlock_try_write(key: ptr[u8]): i32
+    func ar_rt_rwlock_write_unlock(key: ptr[u8]): void
+    func ar_rt_condvar_wait(key: ptr[u8], seq: usize): void
+    func ar_rt_condvar_wait_timeout(key: ptr[u8], seq: usize, timeoutMs: u64): i32
+}
+
+/// Protected value and nonzero-size key; hidden storage cannot bypass locking.
+public struct Mutex<T> {
+    private key: u8,
+    private value: cell.UnsafeCell<T>,
+}
+
+/// A unique native mutex admission. Cannot be copied or sent to another thread.
+public struct MutexGuard<T> {
+    private lock: ref Mutex<T>,
+    private data: ptr[T],
+}
+
+/// Creates an unlocked native mutex.
+public func Mutex.new<T>(value: T): Mutex<T> {
+    return Mutex<T> { key: 0 as u8, value: cell.UnsafeCell.new(value) }
+}
+
+/// Acquires the mutex, parking the native thread when contended.
+public func Mutex.lock<T>(self: ref Mutex<T>): MutexGuard<T> {
+    unsafe { ar_rt_rwlock_write(intrinsics.addressOfShared(self) as ptr[u8]) }
+    unsafe { return MutexGuard.fromLocked(self) }
+}
+
+/// Tries to acquire the mutex without waiting.
+public func Mutex.tryLock<T>(self: ref Mutex<T>): Option<MutexGuard<T>> {
+    unsafe {
+        if ar_rt_rwlock_try_write(intrinsics.addressOfShared(self) as ptr[u8]) == (1 as i32) {
+            return Option.Some(MutexGuard.fromLocked(self))
+        }
+    }
+    return Option.None
+}
+
+/// Transfers an already acquired unique native admission into a guard.
+/// Safety: the caller owns exactly one write admission for this mutex and
+/// transfers sole responsibility to release it to the returned guard.
+@Unsafe
+public func MutexGuard.fromLocked<T>(lock: ref Mutex<T>): MutexGuard<T> {
+    unsafe { return MutexGuard<T> { lock: lock, data: lock.rawData() } }
+}
+
+/// Exposes protected storage without locking.
+/// Safety: dereferencing requires its live mutex guard or an exclusive owner
+/// borrow; the raw pointer must not outlive the mutex.
+@Unsafe
+public func Mutex.rawData<T>(self: ref Mutex<T>): ptr[T] {
+    unsafe { return self.value.get() }
+}
+
+/// Borrows the protected value through the guard.
+public func MutexGuard.get<T>(self: ref MutexGuard<T>): ref T {
+    unsafe { return ref *self.data }
+}
+
+/// Mutably borrows the protected value through the unique guard.
+public func MutexGuard.getMut<T>(self: mut ref MutexGuard<T>): mut ref T {
+    unsafe { return mut ref *self.data }
+}
+
+@Destructor
+func MutexGuard.destroy<T>(self: own MutexGuard<T>): void {
+    unsafe { ar_rt_rwlock_write_unlock(intrinsics.addressOfShared(self.lock) as ptr[u8]) }
+}
+
+/// Exclusively borrows without acquisition; no guard can coexist with this borrow.
+public func Mutex.getMut<T>(self: mut ref Mutex<T>): mut ref T {
+    return self.value.getMut()
+}
+
+/// Consumes an unborrowed mutex and returns the protected value.
+public func Mutex.intoInner<T>(self: own Mutex<T>): T { return self.value.intoInner() }
+
+/// Releases and reacquires this mutex around a sequence wait.
+///
+/// Safety: key must remain a live aligned atomic sequence until this returns;
+/// seq must have been sampled while this guard held the predicate mutex. All
+/// notifications increment that same sequence before waking its address.
+/// The guard stays exclusively borrowed throughout, including reacquisition.
+@Unsafe
+public func MutexGuard.waitOnSequence<T>(self: mut ref MutexGuard<T>, key: ptr[u8], seq: usize): void {
+    unsafe {
+        let mutexKey = intrinsics.addressOfShared(self.lock) as ptr[u8]
+        ar_rt_rwlock_write_unlock(mutexKey)
+        ar_rt_condvar_wait(key, seq)
+        ar_rt_rwlock_write(mutexKey)
+    }
+}
+
+/// Same safety contract as waitOnSequence; true means notified/sequence changed.
+@Unsafe
+public func MutexGuard.waitOnSequenceTimeout<T>(self: mut ref MutexGuard<T>, key: ptr[u8], seq: usize, timeoutMs: u64): bool {
+    unsafe {
+        let mutexKey = intrinsics.addressOfShared(self.lock) as ptr[u8]
+        ar_rt_rwlock_write_unlock(mutexKey)
+        let notified = ar_rt_condvar_wait_timeout(key, seq, timeoutMs) == (1 as i32)
+        ar_rt_rwlock_write(mutexKey)
+        return notified
+    }
+}

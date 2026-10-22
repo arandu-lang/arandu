@@ -10,7 +10,7 @@ const PROCESS_ARU: &str = include_str!("../../../../stdlib/std/process.aru");
 #[test]
 fn stdlib_process_parses_and_exports_expected_symbols() {
     let mut db = DatabaseImpl::default();
-    let file = db.new_file(
+    let file = db.new_stdlib_file(
         "stdlib/std/process.aru".to_string(),
         PROCESS_ARU.to_string(),
     );
@@ -40,7 +40,7 @@ fn stdlib_process_parses_and_exports_expected_symbols() {
 #[test]
 fn stdlib_process_usage_in_program() {
     let mut db = DatabaseImpl::default();
-    let proc_file = db.new_file(
+    let proc_file = db.new_stdlib_file(
         "stdlib/std/process.aru".to_string(),
         PROCESS_ARU.to_string(),
     );

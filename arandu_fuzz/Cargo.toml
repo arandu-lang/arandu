@@ -1,6 +1,6 @@
 [package]
 name = "arandu_fuzz"
-version = "0.1.10"
+version = "0.1.11"
 edition = "2024"
 publish = false
 
@@ -80,6 +80,12 @@ doc = false
 [[bin]]
 name = "fuzz_synthesized_wasm"
 path = "fuzz_targets/fuzz_synthesized_wasm.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_synthesized_llvm"
+path = "fuzz_targets/fuzz_synthesized_llvm.rs"
 test = false
 doc = false
 

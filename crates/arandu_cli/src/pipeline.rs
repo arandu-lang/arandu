@@ -378,7 +378,7 @@ pub fn register_stdlib_sources(db: &mut arandu_query::DatabaseImpl, root: &Path)
         }
         match fs::read_to_string(&path) {
             Ok(text) => {
-                db.new_file(key, text);
+                db.new_stdlib_file(key, text);
             }
             Err(error) => {
                 tracing::debug!(path = %path.display(), %error, "stdlib module load deferred");
@@ -400,11 +400,30 @@ pub fn open_entry_file(
     };
     let filepath = entry.to_string_lossy().into_owned();
     let file_id = registry.register(&filepath, &source);
+    if let Some(existing) = registered_entry_source(db, entry, &source) {
+        return (existing, filepath);
+    }
     let code = std::sync::Arc::from(source);
     let source_file =
         arandu_query::SourceFile::new(db, file_id, code, std::sync::Arc::new(entry.to_path_buf()));
     db.register_source_file(filepath.clone(), source_file);
     (source_file, filepath)
+}
+
+/// Reuse an exact loader input, including through a canonical path alias.
+/// Filesystem normalization belongs to this driver, not tracked queries.
+pub(crate) fn registered_entry_source(
+    db: &arandu_query::DatabaseImpl,
+    path: &Path,
+    source: &str,
+) -> Option<arandu_query::SourceFile> {
+    db.source_file_by_path(&path.to_string_lossy())
+        .or_else(|| {
+            path.canonicalize()
+                .ok()
+                .and_then(|path| db.source_file_by_path(&path.to_string_lossy()))
+        })
+        .filter(|file| file.text(db).as_ref() == source)
 }
 
 pub fn find_aru_files(dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {

@@ -89,37 +89,7 @@ pub fn transfer_edges(cfg: &mut ControlFlowGraph, into: BlockId, from: BlockId) 
 // ---------------------------------------------------------------------------
 
 fn terminator_successors(term: &AmirTerminator) -> smallvec::SmallVec<[BlockId; 2]> {
-    match term {
-        AmirTerminator::Return | AmirTerminator::Unreachable => smallvec::SmallVec::new(),
-        AmirTerminator::Goto { target, .. } => {
-            let mut s = smallvec::SmallVec::new();
-            s.push(*target);
-            s
-        }
-        AmirTerminator::Branch {
-            if_true, if_false, ..
-        } => {
-            let mut s = smallvec::SmallVec::new();
-            s.push(*if_true);
-            s.push(*if_false);
-            s
-        }
-        AmirTerminator::SwitchInt {
-            targets, otherwise, ..
-        } => {
-            let mut out = smallvec::SmallVec::new();
-            for (_, b, _) in targets {
-                out.push(*b);
-            }
-            out.push(otherwise.0);
-            out
-        }
-        AmirTerminator::Suspend { resume, .. } => {
-            let mut s = smallvec::SmallVec::new();
-            s.push(*resume);
-            s
-        }
-    }
+    crate::amir::reachability::terminator_targets(term)
 }
 
 #[cfg(test)]
@@ -149,6 +119,53 @@ mod tests {
         let cfg = compute_cfg_edges(&blocks);
         assert!(cfg.successors[0].is_empty());
         assert!(cfg.predecessors[0].is_empty());
+    }
+
+    #[test]
+    fn terminator_edges_share_one_enumeration_and_ignore_invalid_targets() {
+        use crate::amir::reachability::terminator_targets;
+        let cond = AmirOperand::Constant(AmirConstant::Bool(true));
+        let terms = [
+            AmirTerminator::Return,
+            AmirTerminator::Unreachable,
+            AmirTerminator::Goto {
+                target: BlockId::from_usize(4),
+                args: Vec::new(),
+            },
+            AmirTerminator::Branch {
+                condition: cond,
+                if_true: BlockId::from_usize(1),
+                true_args: Vec::new(),
+                if_false: BlockId::from_usize(2),
+                false_args: Vec::new(),
+            },
+            AmirTerminator::SwitchInt {
+                discriminant: cond,
+                targets: vec![(1, BlockId::from_usize(1), Vec::new())],
+                otherwise: (BlockId::from_usize(2), Vec::new()),
+            },
+            AmirTerminator::Suspend {
+                future: cond,
+                resume: BlockId::from_usize(1),
+                args: Vec::new(),
+            },
+        ];
+        for term in &terms {
+            assert_eq!(
+                terminator_successors(term).as_slice(),
+                terminator_targets(term).as_slice()
+            );
+        }
+        let blocks = vec![block(
+            0,
+            AmirTerminator::Goto {
+                target: BlockId::from_usize(9),
+                args: Vec::new(),
+            },
+        )];
+        let cfg = compute_cfg_edges(&blocks);
+        assert!(cfg.successors[0].is_empty());
+        assert_eq!(terminator_targets(&blocks[0].terminator).len(), 1);
     }
 
     #[test]

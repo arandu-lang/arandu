@@ -52,7 +52,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     ptr_val,
                     offset + pointer_width as i32,
                 );
-            } else if matches!(op_ty, ArType::Slice(_)) {
+            } else if matches!(op_ty, ArType::Slice(_) | ArType::MutSlice(_)) {
                 let (elem_ptr, elem_len) = self.translate_slice_operand(op);
                 self.builder.ins().store(
                     cranelift_codegen::ir::MemFlagsData::new(),
@@ -479,7 +479,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     .trapnz(is_oob, cranelift_codegen::ir::TrapCode::unwrap_user(1));
                 elem_ty
             }
-            ArType::Slice(elem) => {
+            ArType::Slice(elem) | ArType::MutSlice(elem) => {
                 let len_val = self.builder.ins().load(
                     self.ptr_type,
                     cranelift_codegen::ir::MemFlagsData::new(),

@@ -1,0 +1,9 @@
+// Lexer test for hex, binary and underscores in numeric literals
+let hex_lower = 0x428a2f98;
+let hex_upper = 0xDEADBEEF;
+let hex_grouped = 0x428a_2f98;
+let bin_simple = 0b101010;
+let bin_grouped = 0b1111_0000_1010_0101;
+let dec_grouped = 1_000_000;
+let zero_hex = 0x0;
+let zero_bin = 0b0;

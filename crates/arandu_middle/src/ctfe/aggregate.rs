@@ -71,6 +71,12 @@ impl ConstAggregate {
                     return Err(ConstValueError::InvalidAggregateShape);
                 }
             }
+            TypeShape::Vector(vector) if usize::from(vector.lanes()) == values.len() => {
+                let lane_shape = TypeShape::Primitive(vector.lane());
+                if !values.iter().all(|value| shape_accepts(&lane_shape, value)) {
+                    return Err(ConstValueError::InvalidAggregateShape);
+                }
+            }
             TypeShape::Tuple(elements) if elements.len() == values.len() => {
                 if !elements
                     .iter()
@@ -226,6 +232,7 @@ pub fn validate_ctfe_type_shape(shape: &TypeShape) -> Result<(), ConstValueError
                 inner.as_ref(),
                 TypeShape::Primitive(super::Primitive::Byte | super::Primitive::U8)
             ),
+            TypeShape::Vector(_) => true,
             TypeShape::Func(..)
             | TypeShape::Nullable(_)
             | TypeShape::ConstArray(..)
@@ -233,6 +240,7 @@ pub fn validate_ctfe_type_shape(shape: &TypeShape) -> Result<(), ConstValueError
             | TypeShape::Ptr(_)
             | TypeShape::Ref(_)
             | TypeShape::RefMut(_)
+            | TypeShape::MutSlice(_)
             | TypeShape::GenRef
             | TypeShape::Coroutine(_)
             | TypeShape::Poll(_)
@@ -264,6 +272,7 @@ fn shape_accepts(shape: &TypeShape, value: &ConstValue) -> bool {
         (TypeShape::Slice(_), ConstValue::Bytes(_)) => true,
         (
             TypeShape::Array(..)
+            | TypeShape::Vector(_)
             | TypeShape::Tuple(_)
             | TypeShape::Named(..)
             | TypeShape::Option(_)
@@ -286,6 +295,10 @@ pub fn canonical_type_bytes(shape: &TypeShape) -> Result<Vec<u8>, ConstValueErro
 
 fn encode_shape(shape: &TypeShape, bytes: &mut Vec<u8>) {
     match shape {
+        TypeShape::Vector(vector) => {
+            bytes.push(25);
+            bytes.extend_from_slice(vector.name().as_bytes());
+        }
         TypeShape::Array(count, inner) => {
             bytes.push(0);
             bytes.extend_from_slice(&count.to_le_bytes());
@@ -339,6 +352,10 @@ fn encode_shape(shape: &TypeShape, bytes: &mut Vec<u8>) {
         }
         TypeShape::Slice(inner) => {
             bytes.push(8);
+            encode_shape(inner, bytes);
+        }
+        TypeShape::MutSlice(inner) => {
+            bytes.push(26);
             encode_shape(inner, bytes);
         }
         TypeShape::Ptr(inner) => {

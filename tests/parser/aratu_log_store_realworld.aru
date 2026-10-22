@@ -1,0 +1,46 @@
+struct IndexEntry {
+    offset: u64,
+    deleted: bool,
+    key_hash: u32,
+}
+
+func compareBytes(a: []u8, an: usize, b: []u8, bn: usize): int {
+    let mut i: usize = 0;
+    while i < an && i < bn {
+        if a[i] < b[i] {
+            return -1;
+        }
+        if a[i] > b[i] {
+            return 1;
+        }
+        i = i + 1;
+    }
+    if an < bn {
+        return -1;
+    }
+    if an > bn {
+        return 1;
+    }
+    return 0;
+}
+
+func binarySearchOffset(entries: []IndexEntry, count: usize, target_hash: u32): int {
+    if count == 0 {
+        return -1;
+    }
+    let mut low: usize = 0;
+    let mut high: usize = count;
+    while low < high {
+        let mid = low + (high - low) / 2;
+        let h = entries[mid].key_hash;
+        if h == target_hash {
+            return mid as int;
+        }
+        if h < target_hash {
+            low = mid + 1;
+        } else {
+            high = mid;
+        }
+    }
+    return -1;
+}

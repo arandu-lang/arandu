@@ -634,7 +634,8 @@ fn borrowed_place_origins(
                 let inner = match current_ty {
                     ArType::Array(_, inner)
                     | ArType::ConstArray(_, inner)
-                    | ArType::Slice(inner) => Some(inner),
+                    | ArType::Slice(inner)
+                    | ArType::MutSlice(inner) => Some(inner),
                     _ => None,
                 };
                 if let Some(inner) = inner {

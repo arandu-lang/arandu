@@ -29,9 +29,9 @@
 //!
 //! - `std.core.fixed` — FPU-free fixed-point arithmetic
 //! - `std.core.cmp` — comparison and ordering
-
 module std.core.num
 
+import std.core.intrinsics as intrinsics
 
 func intMax(): int {
     return 2147483647
@@ -104,9 +104,9 @@ public func checkedMul(a: int, b: int): Option<int> {
         return Option.None
     }
     if (a > 0 && b > 0 && a > max / b)
-        || (a > 0 && b < 0 && b < min / a)
-        || (a < 0 && b > 0 && a < min / b)
-        || (a < 0 && b < 0 && a < max / b) {
+    || (a > 0 && b < 0 && b < min / a)
+    || (a < 0 && b > 0 && a < min / b)
+    || (a < 0 && b < 0 && a < max / b) {
         return Option.None
     }
     return Option.Some(a * b)
@@ -160,4 +160,137 @@ public func saturatingSub(a: int, b: int): int {
             return intMax()
         }
     }
+}
+
+/// Returns the magnitude; traps for the unrepresentable magnitude of intMin().
+public func abs(value: int): int {
+    if value == intMin() { unsafe { intrinsics.abort() } }
+    if value < 0 {
+        return -value
+    }
+    return value
+}
+
+/// Counts set bits. Pure and allocation-free.
+public func countOnes(value: u32): u32 {
+    unsafe { return intrinsics.bitCountOnes32(value) }
+}
+
+/// Counts set bits. Pure and allocation-free.
+public func countOnes64(value: u64): u32 {
+    unsafe { return intrinsics.bitCountOnes64(value) }
+}
+
+/// Counts leading zero bits; zero returns 32. Pure and allocation-free.
+public func leadingZeros(value: u32): u32 {
+    unsafe { return intrinsics.bitLeadingZeros32(value) }
+}
+
+/// Counts leading zero bits; zero returns 64. Pure and allocation-free.
+public func leadingZeros64(value: u64): u32 {
+    unsafe { return intrinsics.bitLeadingZeros64(value) }
+}
+
+/// Counts trailing zero bits; zero returns 32. Pure and allocation-free.
+public func trailingZeros(value: u32): u32 {
+    unsafe { return intrinsics.bitTrailingZeros32(value) }
+}
+
+/// Counts trailing zero bits; zero returns 64. Pure and allocation-free.
+public func trailingZeros64(value: u64): u32 {
+    unsafe { return intrinsics.bitTrailingZeros64(value) }
+}
+
+/// Reverses all 32 bits. Pure and allocation-free.
+public func reverseBits(value: u32): u32 {
+    unsafe { return intrinsics.bitReverse32(value) }
+}
+
+/// Reverses all 64 bits. Pure and allocation-free.
+public func reverseBits64(value: u64): u64 {
+    unsafe { return intrinsics.bitReverse64(value) }
+}
+
+/// Returns None when the magnitude cannot be represented in int.
+public func checkedAbs(value: int): Option<int> {
+    if value == intMin() { return Option.None }
+    if value < 0 { return Option.Some(-value) }
+    return Option.Some(value)
+}
+
+// ── Inherent methods on `int` ───────────────────────────────────────────────
+
+/// Returns the magnitude; traps for the unrepresentable magnitude of intMin().
+public func int.abs(self: int): int {
+    return abs(self)
+}
+
+/// Checked integer addition.
+public func int.checkedAdd(self: int, other: int): Option<int> {
+    return checkedAdd(self, other)
+}
+
+/// Checked integer subtraction.
+public func int.checkedSub(self: int, other: int): Option<int> {
+    return checkedSub(self, other)
+}
+
+/// Checked integer multiplication.
+public func int.checkedMul(self: int, other: int): Option<int> {
+    return checkedMul(self, other)
+}
+
+/// Saturating integer addition.
+public func int.saturatingAdd(self: int, other: int): int {
+    return saturatingAdd(self, other)
+}
+
+/// Saturating integer subtraction.
+public func int.saturatingSub(self: int, other: int): int {
+    return saturatingSub(self, other)
+}
+
+/// Counts set bits.
+public func u32.countOnes(self: u32): u32 {
+    return countOnes(self)
+}
+
+/// Counts set bits.
+public func u64.countOnes(self: u64): u32 {
+    return countOnes64(self)
+}
+
+/// Counts leading zero bits; zero returns 32.
+public func u32.leadingZeros(self: u32): u32 {
+    return leadingZeros(self)
+}
+
+/// Counts leading zero bits; zero returns 64.
+public func u64.leadingZeros(self: u64): u32 {
+    return leadingZeros64(self)
+}
+
+/// Counts trailing zero bits; zero returns 32.
+public func u32.trailingZeros(self: u32): u32 {
+    return trailingZeros(self)
+}
+
+/// Counts trailing zero bits; zero returns 64.
+public func u64.trailingZeros(self: u64): u32 {
+    return trailingZeros64(self)
+}
+
+/// Reverses all 32 bits.
+public func u32.reverseBits(self: u32): u32 {
+    return reverseBits(self)
+}
+
+/// Reverses all 64 bits.
+public func u64.reverseBits(self: u64): u64 {
+    return reverseBits64(self)
+}
+
+/// Returns None for intMin(); otherwise returns the magnitude.
+public func int.checkedAbs(self: int): Option<int> {
+    return checkedAbs(self)
 }

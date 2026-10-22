@@ -52,7 +52,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         if let ArType::Ref(inner) | ArType::RefMut(inner) | ArType::Ptr(inner) = &op_ty
             && matches!(
                 self.resolve_ty(*inner),
-                ArType::Primitive(Primitive::Str) | ArType::Slice(_)
+                ArType::Primitive(Primitive::Str) | ArType::Slice(_) | ArType::MutSlice(_)
             )
         {
             return self.translate_fat_ref_operand(operand);
@@ -74,6 +74,26 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             return (self.poison_i32(), self.poison_i32());
         }
 
+        if let Some(depth) = self
+            .get_operand_ar_type(operand)
+            .str_reference_depth(&self.type_info.type_interner)
+            && depth > 0
+        {
+            let mut descriptor = self.translate_operand(operand, Some(self.ptr_type));
+            let flags = cranelift_codegen::ir::MemFlagsData::new();
+            for _ in 1..depth {
+                descriptor = self.builder.ins().load(self.ptr_type, flags, descriptor, 0);
+            }
+            let data = self.builder.ins().load(self.ptr_type, flags, descriptor, 0);
+            let len = self.builder.ins().load(
+                self.ptr_type,
+                flags,
+                descriptor,
+                self.ptr_type.bytes() as i32,
+            );
+            return (data, len);
+        }
+
         match operand {
             AmirOperand::Copy(temp_id) | AmirOperand::Move(temp_id) => {
                 if let Some(&(var_ptr, var_len)) = self.str_temp_map.get(temp_id) {
@@ -85,7 +105,9 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     if let ArType::Ref(inner) | ArType::RefMut(inner) | ArType::Ptr(inner) = &op_ty
                         && matches!(
                             self.resolve_ty(*inner),
-                            ArType::Primitive(Primitive::Str) | ArType::Slice(_)
+                            ArType::Primitive(Primitive::Str)
+                                | ArType::Slice(_)
+                                | ArType::MutSlice(_)
                         )
                     {
                         // `ref str` view: the var is a pointer to the

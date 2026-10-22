@@ -16,7 +16,10 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             let sym = self.symbol_table.get(*sym_id);
             let bare = sym.name.rsplit('.').next().unwrap_or(sym.name.as_str());
             // L6.1: mem intrinsics (short mono names + qualified std.core.mem.*).
-            if self.translate_mem_intrinsic(bare, &sym.name, lhs, args) {
+            if let Some(kind) =
+                arandu_semantics::IntrinsicKind::from_declared_name(bare, sym.lang_item)
+                && self.translate_mem_intrinsic(kind, bare, &sym.name, lhs, args)
+            {
                 return;
             }
         }
@@ -271,15 +274,56 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
     /// Returns `true` when the call was handled as an intrinsic.
     fn translate_mem_intrinsic(
         &mut self,
+        declared: arandu_semantics::IntrinsicKind,
         bare: &str,
         full_name: &str,
         lhs: &Option<TempId>,
         args: &[AmirOperand],
     ) -> bool {
-        let kind = arandu_semantics::IntrinsicKind::from_name(bare)
-            .or_else(|| arandu_semantics::IntrinsicKind::from_name(full_name));
+        // The caller already matched the declared ABI marker. A second lookup
+        // by spelling would let a colliding extern name pick a different kind.
+        let kind = Some(declared);
+
+        if self.translate_atomic_intrinsic(declared, lhs, args) {
+            return true;
+        }
 
         match kind {
+            Some(
+                arandu_semantics::IntrinsicKind::CountOnes
+                | arandu_semantics::IntrinsicKind::LeadingZeros
+                | arandu_semantics::IntrinsicKind::TrailingZeros
+                | arandu_semantics::IntrinsicKind::ReverseBits,
+            ) => {
+                if let Some(argument) = args.first() {
+                    let input_ty = if bare.ends_with("64") {
+                        cranelift_codegen::ir::types::I64
+                    } else {
+                        cranelift_codegen::ir::types::I32
+                    };
+                    let value = self.translate_operand(argument, Some(input_ty));
+                    let result = match kind {
+                        Some(arandu_semantics::IntrinsicKind::CountOnes) => {
+                            self.builder.ins().popcnt(value)
+                        }
+                        Some(arandu_semantics::IntrinsicKind::LeadingZeros) => {
+                            self.builder.ins().clz(value)
+                        }
+                        Some(arandu_semantics::IntrinsicKind::TrailingZeros) => {
+                            self.builder.ins().ctz(value)
+                        }
+                        _ => self.builder.ins().bitrev(value),
+                    };
+                    if let Some(destination) = lhs
+                        && let Some(&variable) = self.temp_map.get(destination)
+                        && let Some(result_ty) = self.get_temp_clif_type(*destination)
+                    {
+                        let result = self.cast_int_width(result, result_ty);
+                        self.builder.def_var(variable, result);
+                    }
+                }
+                true
+            }
             Some(arandu_semantics::IntrinsicKind::PtrRead) => {
                 if args.is_empty() {
                     return true;
@@ -398,7 +442,9 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 true
             }
             Some(arandu_semantics::IntrinsicKind::Abort) => {
-                // PAN / Invariant 5: lower directly to CPU trap (UD2/BRK) with zero metadata overhead.
+                // PAN / Invariant 5: Unix lowers directly to a CPU trap (UD2/BRK)
+                // with zero metadata overhead. Windows calls `ar_rt_trap` first:
+                // an inline UD2 in a JIT frame is reported as a stack overflow.
                 let code = if bare == "abortGenerationalMismatch"
                     || full_name.ends_with("abortGenerationalMismatch")
                 {
@@ -406,6 +452,16 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 } else {
                     cranelift_codegen::ir::TrapCode::unwrap_user(1)
                 };
+                #[cfg(windows)]
+                {
+                    let Some(trap_id) = self.resolve_function("ar_rt_trap") else {
+                        self.record_ice("ar_rt_trap was not declared", self.func_span());
+                        self.builder.ins().trap(code);
+                        return true;
+                    };
+                    let trap_ref = self.module.declare_func_in_func(trap_id, self.builder.func);
+                    self.builder.ins().call(trap_ref, &[]);
+                }
                 self.builder.ins().trap(code);
                 true
             }
@@ -458,6 +514,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     | ArType::Array(_, _)
                     | ArType::ConstArray(_, _)
                     | ArType::Slice(_)
+                    | ArType::MutSlice(_)
             )
     }
 

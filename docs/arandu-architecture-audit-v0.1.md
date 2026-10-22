@@ -1,11 +1,18 @@
 # Auditoria de Arquitetura e Performance v0.1
 
-**Status:** auditoria estática inicial concluída; estabilização rc.5 em andamento
+**Status:** registro histórico da auditoria rc.5 e das correções subsequentes.
+**Leitura atualizada em 2026-10-15:** resultados e contagens abaixo pertencem
+às rodadas identificadas, não a uma execução atual da suíte. Estado atual,
+prioridades e gates vivem somente no [roadmap mestre](arandu-compiler-roadmap-v0.1.md).
+O planejamento de versões é revisável e não aprova RFCs implicitamente;
+extensões de pesquisa mantêm contratos próprios e não recebem promessa de
+versão por este registro.
 
 ## Evidência da rodada rc.5
 
-Esta rodada parte de `bca57ea` na branch `prep/rc5`. O flush da CLI já está
-integrado nesse baseline e sua validação Windows foi informada pelo mantenedor.
+O registro histórico desta rodada parte de `bca57ea` na branch `prep/rc5`.
+O flush da CLI já está integrado nesse baseline e sua validação Windows foi
+informada pelo mantenedor.
 As correções abaixo pertencem aos owners existentes, sem novas dependências,
 mudanças de IDs, interners, allocator ou fusão de queries.
 
@@ -43,7 +50,10 @@ declara explicitamente “process-lifetime leak”, mas o contrato público diz 
 o chamador possui o buffer sem representar esse ownership na AMIR. Inserir
 `free` no helper seria incorreto porque o fat `str` ainda pode escapar ou ser
 usado por uma concatenação. O fechamento exige distinguir views estáticas de
-buffers owned e elaborar seu drop nos dois backends; permanece em BC.1a.
+buffers owned e elaborar seu drop nos dois backends. Esse era o diagnóstico
+da rodada rc.5; BC.1a foi posteriormente marcado como implementado no roadmap.
+O relato histórico não constitui uma pendência atual nem substitui regressões
+e sanitizers do contrato de ownership vigente.
 
 Foram removidas cópias redundantes no DCE (listas de IDs já representadas por
 faixas densas) e no GVN (cópias dos statements, listas intermediárias de IDs
@@ -75,6 +85,14 @@ A fila de jobs continua limitada/coalescida. O canal de resultados permanece
 sem limite até existir desenho que descarte snapshots antes da publicação,
 preserve todas as respostas de requests e tenha prova de saturação/shutdown.
 O teste stdio intercalado é evidência de respostas/revisões, não de saturação.
+
+**Atualização da implementação (2026-10-15):** o registro acima descreve a rc.5.
+O caminho atual em `arandu_lsp/src/lib.rs` usa canal de resultados bounded, com
+capacidade 64 definida em `dispatcher::JOB_RESULT_CAPACITY`; rejeições do loop
+são adiadas em vez de fazer send bloqueante ao canal que ele próprio drena.
+Isso substitui o estado histórico unbounded, mas a interação de backpressure,
+snapshots Salsa, mutações de inputs e shutdown continua exigindo evidência
+específica de pressão. Limite de fila não prova por si só ausência de deadlock.
 
 O corpus corrigido também expõe custo real: em uma execução Linux/dev,
 50 módulos válidos levaram aproximadamente 5,46 s a frio, 37 µs em cache e
@@ -189,6 +207,28 @@ obviamente mortas podem ser removidas em revisão local; estruturas de dados e
 hot paths exigem workload representativo, perfil de alocação e benchmark antes
 e depois.
 
+### Memória persistente e scratch do compilador
+
+Pools e coleções persistentes do compilador usam o allocator padrão e ownership
+Rust, com IDs e compartilhamento explícito; isso não implica reservas virtuais
+manuais nem arenas uniformes para todas as fases. Dados temporários podem ter
+uma vida menor que a unidade consultada: o MIR já usa `bumpalo` no SCCP,
+SimplifyCFG e move checker. O
+[`pass_manager/fixpoint.rs`](../crates/arandu_mir/src/pass_manager/fixpoint.rs)
+cria uma arena por função e a reseta entre rodadas mutantes; o
+[`move_checker.rs`](../crates/arandu_mir/src/move_checker.rs) mantém suas arenas
+locais à análise e materializa os resultados que precisam sobreviver a ela.
+Scratch não pode escapar para resultados persistentes ou memos Salsa.
+
+O registro histórico anterior à consolidação anotava a retirada de
+`VmReservation`/`BumpArena` manuais: eram código sem consumidores nas fases e
+continham falhas de bounds/overflow e granularidade de commit no Windows.
+Essa retirada não é trabalho pendente nem motivo para reintroduzir um allocator
+próprio. O uso atual de `bumpalo` tampouco torna implementadas arenas NUMA,
+allocators por worker ou snapshots apoiados em CoW do sistema operacional.
+Qualquer ampliação precisa preservar lifetimes e cutoff e demonstrar benefício
+no workload medido; não existe uma obrigação geral de migrar pools para arenas.
+
 ### Documentação e portabilidade
 
 A taxonomia agora distingue roadmap, contrato, arquitetura, decisão concluída,
@@ -199,19 +239,22 @@ materializado em `.gitattributes`, `.editorconfig`, xtask e CI.
 
 ## PONTOS DE MELHORIA (O que não está no roadmap)
 
+Esta seção preserva decisões históricas e limites de evidência, não uma fila
+concorrente de implementação. Pendências executivas pertencem ao roadmap.
+
 ### Decisões de estabilização rc.5
 
 | Tema | Decisão e critério |
 | --- | --- |
 | Modularização CLI/runner/LSP | Preservar as extrações existentes e seus testes; remover da lista de pendências o trabalho já implementado. |
-| Cobertura macOS | Adicionar `macos-portability` com `cargo test --workspace --locked` nativo, selecionado pelo mesmo escopo de produto que Linux/Windows e exigido pelo S0. Uma execução verde ainda precisa ser obtida no PR. |
+| Cobertura macOS | Decisão da rc.5: adicionar `macos-portability` com `cargo test --workspace --locked` nativo, selecionado pelo mesmo escopo de produto que Linux/Windows e exigido pelo S0. O fechamento exigia uma execução verde no PR; este registro não certifica o estado atual da CI. |
 | Contrato do gate | Falha, cancelamento ou skip inesperado do macOS bloqueiam S0; alteração sem código aceita somente skip intencional. SDK empacotado permanece uma evidência separada. |
 | Nome `arandu_package` | Manter o alias de library nesta candidata. Extrair um package Cargo só se houver benefício demonstrado de dependências/build ou fronteira funcional; mudança cosmética não estabiliza execução. |
 | Guardrail arquitetural | Preservar a checagem atual. Evolução para grafo Cargo/AST exige casos concretos de falso positivo/negativo e regressões, sem remover a proteção existente. |
 | Heap e latência | Usar corpus válido e preservar cutoff. Alteração estrutural exige medição antes/depois de tempo, recomputações, RSS e alocações; o microbenchmark debug do RPO não demonstra custo release. |
 
-O ganho desta decisão é cobertura obrigatória de uma plataforma anteriormente
-representada principalmente pelo SDK. O custo é um job macOS por mudança de
+O objetivo dessa decisão era cobertura obrigatória de uma plataforma anteriormente
+representada principalmente pelo SDK. O custo previsto era um job macOS por mudança de
 produto, executado em paralelo. Não há promessa de paridade do reactor de
 sockets: testes devem verificar o contrato suportado e a rejeição explícita
 das operações ainda indisponíveis.

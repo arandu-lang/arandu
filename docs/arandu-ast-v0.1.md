@@ -1,8 +1,8 @@
 # Arandu AST v0.1
 
-Status: specification draft
+Status: implemented AST with conceptual schema examples; Rust definitions are authoritative for physical representation
 Grammar source: `arandu-grammar-v0.6.ebnf`
-Goal: define the canonical in-memory shape of an Arandu program before choosing a compiler implementation language.
+Owner: `arandu_middle::ast`; `arandu_parser` lowers canonical Rowan CST to this AST. The compiler is implemented in Rust; schemas below describe logical records, not a stable serialization API.
 
 ## Visão Geral e Contexto
 
@@ -25,26 +25,25 @@ resolução de nomes, tipos e lowering para os IRs.
 
 Fields:
 
-- `file`: source file path or module-relative identifier.
-- `start_byte`: inclusive UTF-8 byte offset.
-- `end_byte`: exclusive UTF-8 byte offset.
-- `start_line`, `start_col`, `end_line`, `end_col`: one-based display positions.
+- `file_id`: source file identity (`u32`).
+- `start`: inclusive UTF-8 byte offset (`u32`).
+- `end`: exclusive UTF-8 byte offset (`u32`).
+
+The physical `arandu_base::Span` is 12 bytes. Paths/line/column and UTF-16
+positions are derived at rendering/protocol boundaries, not stored in every span.
+Older expanded JSON examples below are explanatory projections, not a promised wire format.
 
 Invariant:
 
-- `start_byte <= end_byte`.
+- `start <= end`.
 
 Example:
 
 ```json
 {
-  "file": "examples/stable/syntax/hello.aru",
-  "start_byte": 0,
-  "end_byte": 29,
-  "start_line": 1,
-  "start_col": 1,
-  "end_line": 1,
-  "end_col": 30
+  "file_id": 1,
+  "start": 0,
+  "end": 29
 }
 ```
 
@@ -150,7 +149,7 @@ module examples.stable.syntax.hello
 Variants:
 
 - `ModuleImport`: `import io`
-- `NamedImport`: `import { println as print } from io`
+- `NamedImport`: `from io import { println as print }`
 
 Fields:
 

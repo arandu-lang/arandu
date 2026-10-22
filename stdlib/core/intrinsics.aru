@@ -14,6 +14,7 @@
 //! and `std.core.str`.
 //!
 //! The following intrinsics are **safe** (no `unsafe {}` required):
+//! - `bitCountOnes*`, `bitLeadingZeros*`, `bitTrailingZeros*`, `bitReverse*` — pure integer operations.
 //! - `sliceLen` — reads the `len` field of an already-validated fat-pointer.
 //! - `strBytes` — reinterprets a `str` fat-pointer as `[]u8`; no deref occurs.
 //! - `sizeOf` — compile-time constant; no runtime memory access.
@@ -30,24 +31,85 @@
 //! - `std.core.mem` — safe wrapper over memory intrinsics
 //! - `std.core.pointer` — raw-pointer utilities
 //! - `std.core.slice` — bounds-checked slices
-
 module std.core.intrinsics
 
 extern "arandu-intrinsic" {
+    /// Number of set bits; pure, safe, allocation-free.
+    func bitCountOnes32(value: u32): u32
+    func bitCountOnes64(value: u64): u32
+    /// Leading zeros; zero returns 32 or 64.
+    func bitLeadingZeros32(value: u32): u32
+    func bitLeadingZeros64(value: u64): u32
+    /// Trailing zeros; zero returns 32 or 64.
+    func bitTrailingZeros32(value: u32): u32
+    func bitTrailingZeros64(value: u64): u32
+    /// Reverses every bit, including leading zeros.
+    func bitReverse32(value: u32): u32
+    func bitReverse64(value: u64): u64
+
+    /// Unsafe scalar atomics. Storage must be live, naturally aligned and
+    /// accessed only atomically during concurrent use. Lowering uses SeqCst.
+    func atomicLoad8(value: ref u8): u8
+    func atomicStore8(value: ref u8, replacement: u8): void
+    func atomicSwap8(value: mut ref u8, replacement: u8): u8
+    func atomicFetchAdd8(value: mut ref u8, operand: u8): u8
+    func atomicFetchSub8(value: mut ref u8, operand: u8): u8
+    func atomicFetchAnd8(value: mut ref u8, operand: u8): u8
+    func atomicFetchOr8(value: mut ref u8, operand: u8): u8
+    func atomicFetchXor8(value: mut ref u8, operand: u8): u8
+    func atomicCompareExchange8(value: mut ref u8, expected: u8, desired: u8): u8
+    func atomicLoad32(value: ref u32): u32
+    func atomicStore32(value: ref u32, replacement: u32): void
+    func atomicSwap32(value: mut ref u32, replacement: u32): u32
+    func atomicFetchAdd32(value: mut ref u32, operand: u32): u32
+    func atomicFetchSub32(value: mut ref u32, operand: u32): u32
+    func atomicFetchAnd32(value: mut ref u32, operand: u32): u32
+    func atomicFetchOr32(value: mut ref u32, operand: u32): u32
+    func atomicFetchXor32(value: mut ref u32, operand: u32): u32
+    func atomicCompareExchange32(value: mut ref u32, expected: u32, desired: u32): u32
+    func atomicLoad64(value: ref u64): u64
+    func atomicStore64(value: ref u64, replacement: u64): void
+    func atomicSwap64(value: mut ref u64, replacement: u64): u64
+    func atomicFetchAdd64(value: mut ref u64, operand: u64): u64
+    func atomicFetchSub64(value: mut ref u64, operand: u64): u64
+    func atomicFetchAnd64(value: mut ref u64, operand: u64): u64
+    func atomicFetchOr64(value: mut ref u64, operand: u64): u64
+    func atomicFetchXor64(value: mut ref u64, operand: u64): u64
+    func atomicCompareExchange64(value: mut ref u64, expected: u64, desired: u64): u64
+    func atomicLoadUsize(value: ref usize): usize
+    func atomicStoreUsize(value: ref usize, replacement: usize): void
+    func atomicSwapUsize(value: mut ref usize, replacement: usize): usize
+    func atomicFetchAddUsize(value: mut ref usize, operand: usize): usize
+    func atomicFetchSubUsize(value: mut ref usize, operand: usize): usize
+    func atomicFetchAndUsize(value: mut ref usize, operand: usize): usize
+    func atomicFetchOrUsize(value: mut ref usize, operand: usize): usize
+    func atomicFetchXorUsize(value: mut ref usize, operand: usize): usize
+    func atomicCompareExchangeUsize(value: mut ref usize, expected: usize, desired: usize): usize
+    func atomicLoadPtr(value: ref ptr[u8]): ptr[u8]
+    func atomicStorePtr(value: ref ptr[u8], replacement: ptr[u8]): void
+    func atomicSwapPtr(value: mut ref ptr[u8], replacement: ptr[u8]): ptr[u8]
+    func atomicCompareExchangePtr(value: mut ref ptr[u8], expected: ptr[u8], desired: ptr[u8]): ptr[u8]
+    func atomicFence(): void
+    func atomicCompilerFence(): void
+
     /// Unconditional fatal trap (out-of-bounds, failed assertions, etc.).
-    func abort() : void
+    func abort(): void
 
     /// Generational ref mismatch trap: slot was recycled (use-after-free detected).
     /// Used by `std.alloc.gen_arena` verification paths and compiler-lowered `GenGet` nodes.
-    func abortGenerationalMismatch() : void
+    func abortGenerationalMismatch(): void
     /// Builds a slice view from a raw pointer and length. The memory must
     /// stay valid for as long as the slice is used.
     func sliceFromRaw<Owner, T>(owner: ref Owner, data: ptr[T], len: usize): []T
+    /// Builds a mutable slice view from a raw pointer and length tied to an exclusive owner borrow.
+    func mutSliceFromRaw<Owner, T>(owner: mut ref Owner, data: ptr[T], len: usize): mut []T
     /// Returns the element count of a slice without reading its contents.
     ///
     /// **Safe**: only reads the `len` field of the fat-pointer descriptor;
     /// the element data is never dereferenced.
     func sliceLen<T>(source: []T): usize
+    /// Returns the element count of a mutable slice without reading its contents.
+    func mutSliceLen<T>(source: mut []T): usize
     /// Returns the raw pointer to a slice's first element, if any.
     func sliceData<T>(source: []T): ptr[T]
     /// Builds a sub-view over a slice range. Out-of-range bounds trap.
@@ -67,4 +129,8 @@ extern "arandu-intrinsic" {
     /// container implementations. Dereferencing or retaining the pointer
     /// beyond the exclusive borrow requires `unsafe`.
     func addressOf<T>(value: mut ref T): ptr[T]
+
+    /// Exposes the address behind a shared reference. Dereferencing or
+    /// retaining the pointer beyond the borrow requires `unsafe`.
+    func addressOfShared<T>(value: ref T): ptr[T]
 }

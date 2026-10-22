@@ -34,6 +34,8 @@
 module std.core.slice
 
 import std.core.intrinsics as intrinsics
+import std.core.mem as mem
+import std.core.marker as marker
 
 /// Returns the number of elements in the borrowed view `[]T`.
 ///
@@ -215,4 +217,47 @@ public func splitAt<T>(s: []T, mid: usize): Option<Split<T>> {
         let right = intrinsics.sliceSubslice<T>(s, mid, total - mid)
         return Option.Some(Split<T> { left: left, right: right })
     }
+}
+
+/// An exclusive borrowed view. Unlike []T, this value cannot be copied: its
+/// owner is mutably borrowed until the view and all element borrows expire.
+/// This representation does not allocate and does not own/drop the elements.
+public struct MutableSlice<Owner, T> {
+    private owner: mut ref Owner,
+    private data: ptr[T],
+    private count: usize,
+}
+
+/// Builds an exclusive view tied to an owner borrow.
+/// Safety: data points to count initialized, scalar-aligned T elements wholly
+/// owned by owner. No other accesses may alias these elements for the view's
+/// lifetime. The full byte range and every element offset must fit isize.
+/// A zero-length view may use null; no element access is then permitted.
+@Unsafe
+public func MutableSlice.fromRaw<Owner, T>(owner: mut ref Owner, data: ptr[T], count: usize): MutableSlice<Owner, T> {
+    return MutableSlice<Owner, T> { owner: owner, data: data, count: count }
+}
+
+/// Returns the initialized element count without accessing the buffer.
+public func MutableSlice.len<Owner, T>(self: ref MutableSlice<Owner, T>): usize {
+    return self.count
+}
+
+/// Borrows one element while keeping its exclusive view borrowed.
+public func MutableSlice.get<Owner, T>(self: ref MutableSlice<Owner, T>, index: usize): Option<ref T> {
+    if index >= self.count { return Option.None }
+    unsafe {
+        let sharedView = intrinsics.sliceFromRaw<MutableSlice<Owner, T>, T>(self, self.data, self.count)
+        return get<T>(sharedView, index)
+    }
+}
+
+/// Replaces a Copy element. A rejected index performs no memory access.
+public func MutableSlice.set<Owner, T: marker.Copy>(self: mut ref MutableSlice<Owner, T>, index: usize, value: T): bool {
+    if index >= self.count { return false }
+    unsafe {
+        let element = mem.ptrOffset<T>(self.data, index as isize)
+        mem.ptrWrite<T>(element, value)
+    }
+    return true
 }

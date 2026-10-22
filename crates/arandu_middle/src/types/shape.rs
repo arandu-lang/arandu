@@ -8,10 +8,12 @@ use crate::SymbolId;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TypeShape {
     Primitive(Primitive),
+    Vector(super::VectorType),
     Named(SymbolId, Vec<Self>),
     Func(Vec<Self>, Box<Self>),
     Nullable(Box<Self>),
     Slice(Box<Self>),
+    MutSlice(Box<Self>),
     Array(u64, Box<Self>),
     ConstArray(SymbolId, Box<Self>),
     Const(u64),
@@ -61,6 +63,8 @@ mod tests {
             TypeShape::Ptr(int()),
             TypeShape::Ref(int()),
             TypeShape::RefMut(int()),
+            TypeShape::Vector(super::super::VectorType::F32x4),
+            TypeShape::Vector(super::super::VectorType::I64x2),
             TypeShape::GenRef,
             TypeShape::Tuple(vec![TypeShape::Option(int()), *int()]),
             TypeShape::Result(int(), Box::new(TypeShape::Err)),
@@ -235,6 +239,7 @@ impl TypeShape {
                 }
                 Self::Nullable(inner)
                 | Self::Slice(inner)
+                | Self::MutSlice(inner)
                 | Self::Array(_, inner)
                 | Self::Ptr(inner)
                 | Self::Ref(inner)
@@ -248,6 +253,7 @@ impl TypeShape {
                     pending.push(err);
                 }
                 Self::Primitive(_)
+                | Self::Vector(_)
                 | Self::Const(_)
                 | Self::FrozenConst(_)
                 | Self::GenRef
@@ -291,6 +297,7 @@ impl TypeShape {
             }
             Self::Nullable(inner)
             | Self::Slice(inner)
+            | Self::MutSlice(inner)
             | Self::Array(_, inner)
             | Self::ConstArray(_, inner)
             | Self::Ptr(inner)
@@ -305,6 +312,7 @@ impl TypeShape {
                 error.default_literals(depth + 1, remaining)?;
             }
             Self::Primitive(_)
+            | Self::Vector(_)
             | Self::FrozenConst(_)
             | Self::Const(_)
             | Self::ConstParam(_)
@@ -363,6 +371,7 @@ impl TypeShape {
             }
             Self::Nullable(inner)
             | Self::Slice(inner)
+            | Self::MutSlice(inner)
             | Self::Array(_, inner)
             | Self::Ptr(inner)
             | Self::Ref(inner)
@@ -376,6 +385,7 @@ impl TypeShape {
                 error.visit_symbols(depth + 1, remaining, visitor)?;
             }
             Self::Primitive(_)
+            | Self::Vector(_)
             | Self::Const(_)
             | Self::GenRef
             | Self::Err
@@ -426,6 +436,7 @@ impl TypeShape {
                 ArType::Func(args, ret) => Self::Func(many(args, remaining)?, one(ret, remaining)?),
                 ArType::Nullable(id) => Self::Nullable(one(id, remaining)?),
                 ArType::Slice(id) => Self::Slice(one(id, remaining)?),
+                ArType::MutSlice(id) => Self::MutSlice(one(id, remaining)?),
                 ArType::Array(n, id) => Self::Array(n, one(id, remaining)?),
                 ArType::ConstArray(n, id) => Self::ConstArray(n, one(id, remaining)?),
                 ArType::Const(n) => Self::Const(n),
@@ -434,6 +445,7 @@ impl TypeShape {
                 ArType::Ptr(id) => Self::Ptr(one(id, remaining)?),
                 ArType::Ref(id) => Self::Ref(one(id, remaining)?),
                 ArType::RefMut(id) => Self::RefMut(one(id, remaining)?),
+                ArType::Vector(vector) => Self::Vector(vector),
                 ArType::GenRef => Self::GenRef,
                 ArType::Tuple(args) => Self::Tuple(many(args, remaining)?),
                 ArType::Result(ok, error) => {
@@ -483,6 +495,7 @@ impl TypeShape {
             }
             Self::Nullable(inner) => ArType::Nullable(one(inner, remaining)?),
             Self::Slice(inner) => ArType::Slice(one(inner, remaining)?),
+            Self::MutSlice(inner) => ArType::MutSlice(one(inner, remaining)?),
             Self::Array(n, inner) => ArType::Array(*n, one(inner, remaining)?),
             Self::ConstArray(n, inner) => ArType::ConstArray(*n, one(inner, remaining)?),
             Self::Const(n) => ArType::Const(*n),
@@ -491,6 +504,7 @@ impl TypeShape {
             Self::Ptr(inner) => ArType::Ptr(one(inner, remaining)?),
             Self::Ref(inner) => ArType::Ref(one(inner, remaining)?),
             Self::RefMut(inner) => ArType::RefMut(one(inner, remaining)?),
+            Self::Vector(vector) => ArType::Vector(*vector),
             Self::GenRef => ArType::GenRef,
             Self::Tuple(args) => ArType::tuple(&many(args, remaining)?, interner),
             Self::Result(ok, error) => ArType::Result(one(ok, remaining)?, one(error, remaining)?),

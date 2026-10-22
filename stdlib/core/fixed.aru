@@ -1,8 +1,9 @@
-//! Deterministic Q16.16 fixed-point arithmetic.
+//! Deterministic Q8.8, Q16.16 and Q32.32 fixed-point arithmetic.
 //!
 //! ## Overview
 //!
-//! Use `Q16_16` for signed arithmetic without a floating-point unit. Values have 16 fractional bits; division returns `Option` when the divisor is zero.
+//! Signed fixed-point values use 8, 16 or 32 fractional bits. Arithmetic saturates
+//! to the raw signed range; division returns `None` only for a zero divisor.
 //!
 //! ## Example
 //!
@@ -16,16 +17,16 @@
 //! ```
 //!
 //! ## Safety
-//! Arithmetic clamps results to the signed 32-bit raw range on overflow.
+//! Arithmetic clamps results to each format's signed raw range on overflow.
+//! Multiplication rounds toward negative infinity; division truncates toward zero.
 //! Division by zero returns `Option.None`; other division results are clamped.
 //! `toInt` shifts away the fractional bits, so it loses precision.
 //!
 //! ## Allocations
-//! None. Values are stored inline as signed 32-bit integers.
+//! None. Values are stored inline as signed 16-, 32- or 64-bit integers.
 //!
 //! ## Platform
 //! `native` · `wasm32` · `bare-metal`
-
 module std.core.fixed
 
 /// A 32-bit fixed-point number with 16 bits of integer part and 16 bits of fractional part (Q16.16).
@@ -53,11 +54,11 @@ public func Q16_16.fromRaw(raw: i32): Q16_16 {
     return Q16_16 { raw: raw }
 }
 
-/// Converts a signed 16-bit whole number by shifting it left 16 bits.
+/// Converts a signed 16-bit whole number by multiplying by 65536.
 ///
 /// This conversion is exact for every `i16` input and does not allocate.
 public func Q16_16.fromInt(val: i16): Q16_16 {
-    let scaled: i64 = (val as i64) << (16 as i64)
+    let scaled: i64 = (val as i64) * (65536 as i64)
     return Q16_16 { raw: scaled as i32 }
 }
 
@@ -76,9 +77,16 @@ public func Q16_16.toRaw(self: ref Q16_16): i32 {
 
 /// Adds two values and clamps the raw result to the signed 32-bit range.
 ///
+/// Adds two values and clamps the raw result to the signed 32-bit range.
+///
 /// Intermediate arithmetic uses 64 bits; no allocation occurs.
 public func Q16_16.add(self: ref Q16_16, other: Q16_16): Q16_16 {
     return Q16_16 { raw: clampRaw((self.raw as i64) + (other.raw as i64)) }
+}
+
+/// Adds `other` into `self` in-place with saturation.
+public func Q16_16.addAssign(self: mut ref Q16_16, other: Q16_16): void {
+    self.raw = clampRaw((self.raw as i64) + (other.raw as i64))
 }
 
 /// Subtracts `other` and clamps the raw result to signed 32-bit range.
@@ -86,6 +94,11 @@ public func Q16_16.add(self: ref Q16_16, other: Q16_16): Q16_16 {
 /// Intermediate arithmetic uses 64 bits; no allocation occurs.
 public func Q16_16.sub(self: ref Q16_16, other: Q16_16): Q16_16 {
     return Q16_16 { raw: clampRaw((self.raw as i64) - (other.raw as i64)) }
+}
+
+/// Subtracts `other` from `self` in-place with saturation.
+public func Q16_16.subAssign(self: mut ref Q16_16, other: Q16_16): void {
+    self.raw = clampRaw((self.raw as i64) - (other.raw as i64))
 }
 
 /// Multiplies raw values, shifts right by 16, and clamps the result.
@@ -97,15 +110,21 @@ public func Q16_16.mul(self: ref Q16_16, other: Q16_16): Q16_16 {
     return Q16_16 { raw: clampRaw(wide >> (16 as i64)) }
 }
 
+/// Multiplies `self` by `other` in-place with saturation.
+public func Q16_16.mulAssign(self: mut ref Q16_16, other: Q16_16): void {
+    let wide: i64 = (self.raw as i64) * (other.raw as i64)
+    self.raw = clampRaw(wide >> (16 as i64))
+}
+
 /// Divides by `other`, returning `None` when its raw value is zero.
 ///
-/// The numerator is shifted left by 16 before integer division. Successful
+/// The numerator is multiplied by 65536 before integer division. Successful
 /// results are clamped to signed 32-bit raw range and returned as `Some`.
 public func Q16_16.div(self: ref Q16_16, other: Q16_16): Option<Q16_16> {
     if other.raw == 0 {
         return Option.None
     }
-    let numerator: i64 = (self.raw as i64) << (16 as i64)
+    let numerator: i64 = (self.raw as i64) * (65536 as i64)
     let quot: i64 = numerator / (other.raw as i64)
     return Option.Some(Q16_16 { raw: clampRaw(quot) })
 }
@@ -117,7 +136,7 @@ public func Q16_16.abs(self: ref Q16_16): Q16_16 {
     if self.raw < 0 {
         return Q16_16 { raw: clampRaw(-(self.raw as i64)) }
     }
-    return *self
+    return Q16_16 { raw: self.raw }
 }
 
 /// Returns `true` if `self` is negative.
@@ -135,4 +154,327 @@ public func Q16_16.fractionPart(self: ref Q16_16): i32 {
         val = -val
     }
     return (val & mask) as i32
+}
+
+/// Converts a floating-point number to Q16.16 format with saturation.
+public func Q16_16.fromFloat(f: float): Q16_16 {
+    let scaled = f * 65536.0
+    if scaled > 2147483647.0 {
+        return Q16_16 { raw: 2147483647 as i32 }
+    }
+    if scaled < -2147483648.0 {
+        return Q16_16 { raw: (-(2147483647 as i32)) - (1 as i32) }
+    }
+    return Q16_16 { raw: scaled as i32 }
+}
+
+/// Converts this Q16.16 number to a 64-bit float.
+public func Q16_16.toFloat(self: ref Q16_16): float {
+    return (self.raw as float) / 65536.0
+}
+
+/// Compares two Q16.16 values, returning -1 if self < other, 1 if self > other, or 0 if equal.
+public func Q16_16.cmp(self: ref Q16_16, other: Q16_16): int {
+    if self.raw < other.raw { return -1 }
+    if self.raw > other.raw { return 1 }
+    return 0
+}
+
+/// Signed Q8.8 value, stored inline in 16 bits.
+public struct Q8_8 {
+    /// Signed raw bits; the low eight bits are fractional.
+    raw: i16
+}
+
+func clampRaw8(value: i32): i16 {
+    if value > 32767 { return 32767 as i16 }
+    if value < -32768 { return -32768 as i16 }
+    return value as i16
+}
+
+/// Wraps raw Q8.8 bits without scaling.
+public func Q8_8.fromRaw(raw: i16): Q8_8 {
+    return Q8_8 { raw: raw }
+}
+
+/// Converts every signed 8-bit whole number exactly.
+public func Q8_8.fromInt(value: i8): Q8_8 {
+    return Q8_8 { raw: ((value as i32) * 256) as i16 }
+}
+
+/// Returns the raw signed 16-bit representation.
+public func Q8_8.toRaw(self: ref Q8_8): i16 { return self.raw }
+
+/// Discards fractional bits, rounding toward negative infinity.
+public func Q8_8.toInt(self: ref Q8_8): i16 { return self.raw >> (8 as i16) }
+
+/// Adds with saturation to the signed 16-bit raw range.
+public func Q8_8.add(self: ref Q8_8, other: Q8_8): Q8_8 {
+    return Q8_8 { raw: clampRaw8((self.raw as i32) + (other.raw as i32)) }
+}
+
+/// Adds `other` into `self` in-place with saturation.
+public func Q8_8.addAssign(self: mut ref Q8_8, other: Q8_8): void {
+    self.raw = clampRaw8((self.raw as i32) + (other.raw as i32))
+}
+
+/// Subtracts with saturation to the signed 16-bit raw range.
+public func Q8_8.sub(self: ref Q8_8, other: Q8_8): Q8_8 {
+    return Q8_8 { raw: clampRaw8((self.raw as i32) - (other.raw as i32)) }
+}
+
+/// Subtracts `other` from `self` in-place with saturation.
+public func Q8_8.subAssign(self: mut ref Q8_8, other: Q8_8): void {
+    self.raw = clampRaw8((self.raw as i32) - (other.raw as i32))
+}
+
+/// Multiplies with a signed 32-bit intermediate, rounds down, and saturates.
+public func Q8_8.mul(self: ref Q8_8, other: Q8_8): Q8_8 {
+    let product: i32 = (self.raw as i32) * (other.raw as i32)
+    return Q8_8 { raw: clampRaw8(product >> (8 as i32)) }
+}
+
+/// Multiplies `self` by `other` in-place with saturation.
+public func Q8_8.mulAssign(self: mut ref Q8_8, other: Q8_8): void {
+    let product: i32 = (self.raw as i32) * (other.raw as i32)
+    self.raw = clampRaw8(product >> (8 as i32))
+}
+
+/// Divides, truncating toward zero and saturating; a zero divisor returns `None`.
+public func Q8_8.div(self: ref Q8_8, other: Q8_8): Option<Q8_8> {
+    if other.raw == (0 as i16) { return Option.None }
+    let numerator: i32 = (self.raw as i32) * 256
+    return Option.Some(Q8_8 { raw: clampRaw8(numerator / (other.raw as i32)) })
+}
+
+/// Returns the absolute value, saturating the minimum raw value.
+public func Q8_8.abs(self: ref Q8_8): Q8_8 {
+    if self.raw < (0 as i16) { return Q8_8 { raw: clampRaw8(-(self.raw as i32)) } }
+    return Q8_8 { raw: self.raw }
+}
+
+/// Returns whether the raw value is negative.
+public func Q8_8.isNegative(self: ref Q8_8): bool { return self.raw < (0 as i16) }
+
+/// Returns the fractional magnitude in `0..=255`.
+public func Q8_8.fractionPart(self: ref Q8_8): i16 {
+    let mut magnitude = self.raw as i32
+    if magnitude < 0 { magnitude = -magnitude }
+    return (magnitude & 255) as i16
+}
+
+/// Converts a floating-point number to Q8.8 format with saturation.
+public func Q8_8.fromFloat(f: float): Q8_8 {
+    let scaled = f * 256.0
+    if scaled > 32767.0 {
+        return Q8_8 { raw: 32767 as i16 }
+    }
+    if scaled < -32768.0 {
+        return Q8_8 { raw: -32768 as i16 }
+    }
+    return Q8_8 { raw: scaled as i16 }
+}
+
+/// Converts this Q8.8 number to a 64-bit float.
+public func Q8_8.toFloat(self: ref Q8_8): float {
+    return (self.raw as float) / 256.0
+}
+
+/// Compares two Q8.8 values, returning -1 if self < other, 1 if self > other, or 0 if equal.
+public func Q8_8.cmp(self: ref Q8_8, other: Q8_8): int {
+    if self.raw < other.raw { return -1 }
+    if self.raw > other.raw { return 1 }
+    return 0
+}
+
+/// Signed Q32.32 value, stored inline in 64 bits.
+///
+/// Multiplication uses unsigned 32-bit limbs and division uses a bounded
+/// 96-step binary division. Neither requires a native 128-bit integer or heap.
+public struct Q32_32 {
+    /// Signed raw bits; the low 32 bits are fractional.
+    raw: i64
+}
+
+func raw32Max(): i64 { return 9223372036854775807 as i64 }
+
+func raw32Min(): i64 { return -(9223372036854775807 as i64) - (1 as i64) }
+
+func magnitude32(value: i64): u64 {
+    if value < (0 as i64) {
+        // `value + 1` makes negation representable even for the minimum i64.
+        return (-(value + (1 as i64)) as u64) + (1 as u64)
+    }
+    return value as u64
+}
+
+func signedRaw32(magnitude: u64, negative: bool): i64 {
+    let negativeLimit: u64 = (1 as u64) << (63 as u64)
+    if negative {
+        if magnitude >= negativeLimit { return raw32Min() }
+        return -(magnitude as i64)
+    }
+    if magnitude > (raw32Max() as u64) { return raw32Max() }
+    return magnitude as i64
+}
+
+/// Wraps raw Q32.32 bits without scaling.
+public func Q32_32.fromRaw(raw: i64): Q32_32 { return Q32_32 { raw: raw } }
+
+/// Converts every signed 32-bit whole number exactly.
+public func Q32_32.fromInt(value: i32): Q32_32 {
+    return Q32_32 { raw: (value as i64) * (4294967296 as i64) }
+}
+
+/// Returns the raw signed 64-bit representation.
+public func Q32_32.toRaw(self: ref Q32_32): i64 { return self.raw }
+
+/// Discards fractional bits, rounding toward negative infinity.
+public func Q32_32.toInt(self: ref Q32_32): i64 { return self.raw >> (32 as i64) }
+
+/// Adds with saturation; bounds are checked before the signed addition.
+public func Q32_32.add(self: ref Q32_32, other: Q32_32): Q32_32 {
+    if other.raw > (0 as i64) && self.raw > raw32Max() - other.raw {
+        return Q32_32 { raw: raw32Max() }
+    }
+    if other.raw < (0 as i64) && self.raw < raw32Min() - other.raw {
+        return Q32_32 { raw: raw32Min() }
+    }
+    return Q32_32 { raw: self.raw + other.raw }
+}
+
+/// Adds `other` into `self` in-place with saturation.
+public func Q32_32.addAssign(self: mut ref Q32_32, other: Q32_32): void {
+    if other.raw > (0 as i64) && self.raw > raw32Max() - other.raw {
+        self.raw = raw32Max()
+        return
+    }
+    if other.raw < (0 as i64) && self.raw < raw32Min() - other.raw {
+        self.raw = raw32Min()
+        return
+    }
+    self.raw = self.raw + other.raw
+}
+
+/// Subtracts with saturation; bounds are checked before signed subtraction.
+public func Q32_32.sub(self: ref Q32_32, other: Q32_32): Q32_32 {
+    if other.raw < (0 as i64) && self.raw > raw32Max() + other.raw {
+        return Q32_32 { raw: raw32Max() }
+    }
+    if other.raw > (0 as i64) && self.raw < raw32Min() + other.raw {
+        return Q32_32 { raw: raw32Min() }
+    }
+    return Q32_32 { raw: self.raw - other.raw }
+}
+
+/// Subtracts `other` from `self` in-place with saturation.
+public func Q32_32.subAssign(self: mut ref Q32_32, other: Q32_32): void {
+    if other.raw < (0 as i64) && self.raw > raw32Max() + other.raw {
+        self.raw = raw32Max()
+        return
+    }
+    if other.raw > (0 as i64) && self.raw < raw32Min() + other.raw {
+        self.raw = raw32Min()
+        return
+    }
+    self.raw = self.raw - other.raw
+}
+
+/// Multiplies with exact unsigned limb intermediates, rounds down, and saturates.
+public func Q32_32.mul(self: ref Q32_32, other: Q32_32): Q32_32 {
+    let negative = (self.raw < (0 as i64)) != (other.raw < (0 as i64))
+    let a = magnitude32(self.raw)
+    let b = magnitude32(other.raw)
+    let mask: u64 = 4294967295 as u64
+    let a0 = a & mask
+    let a1 = a >> (32 as u64)
+    let b0 = b & mask
+    let b1 = b >> (32 as u64)
+    let w0 = a0 * b0
+    // Each sum is bounded by 2^64 - 2^32, so no u64 overflow occurs.
+    let t = a1 * b0 + (w0 >> (32 as u64))
+    let middle = a0 * b1 + (t & mask)
+    let high = a1 * b1 + (t >> (32 as u64)) + (middle >> (32 as u64))
+    if (high >> (32 as u64)) != (0 as u64) {
+        if negative { return Q32_32 { raw: raw32Min() } }
+        return Q32_32 { raw: raw32Max() }
+    }
+    let mut scaled = (high << (32 as u64)) | (middle & mask)
+    if negative && (w0 & mask) != (0 as u64) {
+        // Avoid unsigned wrap before applying signed saturation.
+        if scaled >= ((1 as u64) << (63 as u64)) {
+            return Q32_32 { raw: raw32Min() }
+        }
+        scaled = scaled + (1 as u64)
+    }
+    return Q32_32 { raw: signedRaw32(scaled, negative) }
+}
+
+/// Divides a 96-bit scaled numerator by a 64-bit magnitude without allocation.
+///
+/// The quotient truncates toward zero and saturates to the signed raw range.
+/// A zero divisor returns `None`.
+public func Q32_32.div(self: ref Q32_32, other: Q32_32): Option<Q32_32> {
+    if other.raw == (0 as i64) { return Option.None }
+    let negative = (self.raw < (0 as i64)) != (other.raw < (0 as i64))
+    let numerator = magnitude32(self.raw)
+    let denominator = magnitude32(other.raw)
+    let mut remainder: u64 = 0 as u64
+    let mut quotient: u64 = 0 as u64
+    let mut bit: int = 95
+    while bit >= 0 {
+        let mut next: u64 = 0 as u64
+        if bit >= 32 {
+            next = (numerator >> ((bit - 32) as u64)) & (1 as u64)
+        }
+        // remainder < denominator <= 2^63, making this shift representable.
+        remainder = (remainder << (1 as u64)) | next
+        if remainder >= denominator {
+            remainder = remainder - denominator
+            if bit >= 64 {
+                if negative { return Option.Some(Q32_32 { raw: raw32Min() }) }
+                return Option.Some(Q32_32 { raw: raw32Max() })
+            }
+            quotient = quotient | ((1 as u64) << (bit as u64))
+        }
+        bit = bit - 1
+    }
+    return Option.Some(Q32_32 { raw: signedRaw32(quotient, negative) })
+}
+
+/// Returns the absolute value, saturating the minimum raw value.
+public func Q32_32.abs(self: ref Q32_32): Q32_32 {
+    return Q32_32 { raw: signedRaw32(magnitude32(self.raw), false) }
+}
+
+/// Returns whether the raw value is negative.
+public func Q32_32.isNegative(self: ref Q32_32): bool { return self.raw < (0 as i64) }
+
+/// Returns the fractional magnitude in `0..=4294967295`.
+public func Q32_32.fractionPart(self: ref Q32_32): u32 {
+    return (magnitude32(self.raw) & (4294967295 as u64)) as u32
+}
+
+/// Converts a floating-point number to Q32.32 format with saturation.
+public func Q32_32.fromFloat(f: float): Q32_32 {
+    let scaled = f * 4294967296.0
+    if scaled > 9223372036854775807.0 {
+        return Q32_32 { raw: raw32Max() }
+    }
+    if scaled < -9223372036854775808.0 {
+        return Q32_32 { raw: raw32Min() }
+    }
+    return Q32_32 { raw: scaled as i64 }
+}
+
+/// Converts this Q32.32 number to a 64-bit float.
+public func Q32_32.toFloat(self: ref Q32_32): float {
+    return (self.raw as float) / 4294967296.0
+}
+
+/// Compares two Q32.32 values, returning -1 if self < other, 1 if self > other, or 0 if equal.
+public func Q32_32.cmp(self: ref Q32_32, other: Q32_32): int {
+    if self.raw < other.raw { return -1 }
+    if self.raw > other.raw { return 1 }
+    return 0
 }

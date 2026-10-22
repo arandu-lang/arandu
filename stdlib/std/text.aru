@@ -1,0 +1,330 @@
+//! High-level text manipulation, string building, and Unicode processing.
+//!
+//! ## Overview
+//!
+//! `std.text` provides rich text algorithms and utilities built on top of
+//! `std.core.str` (immutable views) and `std.alloc.string` (owned buffers).
+//!
+//! Features:
+//! - `StringBuilder`: Efficient, incremental buffer construction on the heap.
+//! - Trimming: Allocation-free trimming of whitespace prefixes and suffixes (`trim`, `trimStart`, `trimEnd`).
+//! - Case conversion: ASCII case mapping producing fresh owned strings (`toUpper`, `toLower`).
+//! - Padding & Alignment: Length-aware padding (`padLeft`, `padRight`, `center`).
+//! - Repetition: Constructing repeated text patterns (`repeat`).
+//!
+//! ## Example
+//!
+//! ```arandu
+//! import std.text as text
+//!
+//! let mut sb = text.StringBuilder.new()
+//! sb.append("Hello")
+//! sb.append(", ")
+//! sb.append("World!")
+//! let message = sb.intoString()
+//!
+//! let trimmed = text.trim("   arandu lang   \n") // "arandu lang"
+//! ```
+//!
+//! ## Platform
+//! `native` · `wasm32`
+
+module std.text
+
+import std.alloc.string as string
+import std.core.str as core_str
+import std.core.slice as slice
+import std.core.intrinsics as intrinsics
+import std.core.fmt as fmt
+
+/// Returns `true` if byte `b` represents an ASCII whitespace character
+/// (` `, `\t`, `\n`, `\r`, `\x0B`, `\x0C`).
+public func isWhitespaceByte(b: u8): bool {
+    return b == (32 as u8) || b == (9 as u8) || b == (10 as u8) || b == (13 as u8) || b == (11 as u8) || b == (12 as u8)
+}
+
+/// Returns `true` if byte `b` is an ASCII alphabetic character ('a'..'z', 'A'..'Z').
+public func isAlphaByte(b: u8): bool {
+    return (b >= (65 as u8) && b <= (90 as u8)) || (b >= (97 as u8) && b <= (122 as u8))
+}
+
+/// Returns `true` if byte `b` is an ASCII decimal digit ('0'..'9').
+public func isDigitByte(b: u8): bool {
+    return b >= (48 as u8) && b <= (57 as u8)
+}
+
+func appendBytes(res: mut ref string.String, bytes: []u8, start: usize, end: usize): void {
+    let mut i = start
+    while i < end {
+        res.pushScalar(bytes[i] as char)
+        i = i + 1
+    }
+}
+
+/// Returns a newly allocated `String` with leading whitespace removed.
+public func trimStart(s: str): string.String {
+    let slen = core_str.len(s)
+    if slen == 0 {
+        return string.String.new()
+    }
+    let bytes = intrinsics.strBytes(s)
+    let mut start: usize = 0
+    while start < slen && isWhitespaceByte(bytes[start]) {
+        start = start + 1
+    }
+    if start >= slen {
+        return string.String.new()
+    }
+    let rem = slen - start
+    let mut res = string.String.withCapacity(rem)
+    appendBytes(res, bytes, start, slen)
+    return res
+}
+
+/// Returns a newly allocated `String` with trailing whitespace removed.
+public func trimEnd(s: str): string.String {
+    let slen = core_str.len(s)
+    if slen == 0 {
+        return string.String.new()
+    }
+    let bytes = intrinsics.strBytes(s)
+    let mut end = slen
+    while end > 0 && isWhitespaceByte(bytes[end - 1]) {
+        end = end - 1
+    }
+    if end == 0 {
+        return string.String.new()
+    }
+    let mut res = string.String.withCapacity(end)
+    appendBytes(res, bytes, 0, end)
+    return res
+}
+
+/// Returns a newly allocated `String` with leading and trailing whitespace removed.
+public func trim(s: str): string.String {
+    let slen = core_str.len(s)
+    if slen == 0 {
+        return string.String.new()
+    }
+    let bytes = intrinsics.strBytes(s)
+    let mut start: usize = 0
+    while start < slen && isWhitespaceByte(bytes[start]) {
+        start = start + 1
+    }
+    let mut end = slen
+    while end > start && isWhitespaceByte(bytes[end - 1]) {
+        end = end - 1
+    }
+    if start >= end {
+        return string.String.new()
+    }
+    let rem = end - start
+    let mut res = string.String.withCapacity(rem)
+    appendBytes(res, bytes, start, end)
+    return res
+}
+
+/// Returns a newly allocated `String` where ASCII lowercase characters are converted to uppercase.
+public func toUpper(s: str): string.String {
+    let slen = core_str.len(s)
+    let mut res = string.String.withCapacity(slen)
+    let bytes = intrinsics.strBytes(s)
+    let mut i: usize = 0
+    while i < slen {
+        let b = bytes[i]
+        let outB: u8 = if b >= (97 as u8) && b <= (122 as u8) {
+            b - (32 as u8)
+        } else {
+            b
+        }
+        res.pushScalar(outB as char)
+        i = i + 1
+    }
+    return res
+}
+
+/// Returns a newly allocated `String` where ASCII uppercase characters are converted to lowercase.
+public func toLower(s: str): string.String {
+    let slen = core_str.len(s)
+    let mut res = string.String.withCapacity(slen)
+    let bytes = intrinsics.strBytes(s)
+    let mut i: usize = 0
+    while i < slen {
+        let b = bytes[i]
+        let outB: u8 = if b >= (65 as u8) && b <= (90 as u8) {
+            b + (32 as u8)
+        } else {
+            b
+        }
+        res.pushScalar(outB as char)
+        i = i + 1
+    }
+    return res
+}
+
+/// Returns a new `String` containing `s` repeated `count` times.
+public func repeat(s: str, count: usize): string.String {
+    let slen = core_str.len(s)
+    if count == 0 || slen == 0 {
+        return string.String.new()
+    }
+    let total = slen * count
+    let mut res = string.String.withCapacity(total)
+    let mut i: usize = 0
+    while i < count {
+        let _ = res.pushStr(s)
+        i = i + 1
+    }
+    return res
+}
+
+/// Pads `s` on the left with `fill` until it reaches `width` characters.
+public func padLeft(s: str, width: usize, fill: char): string.String {
+    let slen = core_str.len(s)
+    if slen >= width {
+        return string.String.from(s)
+    }
+    let pad = width - slen
+    let mut res = string.String.withCapacity(width)
+    let mut i: usize = 0
+    while i < pad {
+        res.pushScalar(fill)
+        i = i + 1
+    }
+    let _ = res.pushStr(s)
+    return res
+}
+
+/// Pads `s` on the right with `fill` until it reaches `width` characters.
+public func padRight(s: str, width: usize, fill: char): string.String {
+    let slen = core_str.len(s)
+    if slen >= width {
+        return string.String.from(s)
+    }
+    let pad = width - slen
+    let mut res = string.String.withCapacity(width)
+    let _ = res.pushStr(s)
+    let mut i: usize = 0
+    while i < pad {
+        res.pushScalar(fill)
+        i = i + 1
+    }
+    return res
+}
+
+/// Centers `s` in a string of `width` characters, padding with `fill`.
+public func center(s: str, width: usize, fill: char): string.String {
+    let slen = core_str.len(s)
+    if slen >= width {
+        return string.String.from(s)
+    }
+    let pad = width - slen
+    let leftPad = pad / 2
+    let rightPad = pad - leftPad
+    let mut res = string.String.withCapacity(width)
+    let mut i: usize = 0
+    while i < leftPad {
+        res.pushScalar(fill)
+        i = i + 1
+    }
+    let _ = res.pushStr(s)
+    let mut j: usize = 0
+    while j < rightPad {
+        res.pushScalar(fill)
+        j = j + 1
+    }
+    return res
+}
+
+/// Incremental heap-allocated string builder.
+public struct StringBuilder {
+    buf: string.String
+}
+
+/// Creates a new empty `StringBuilder`.
+public func StringBuilder.new(): StringBuilder {
+    return StringBuilder {
+        buf: string.String.new(),
+    }
+}
+
+/// Creates a new `StringBuilder` with pre-allocated capacity.
+public func StringBuilder.withCapacity(cap: usize): StringBuilder {
+    return StringBuilder {
+        buf: string.String.withCapacity(cap),
+    }
+}
+
+/// Returns the number of bytes currently stored in the builder.
+public func StringBuilder.len(self: ref StringBuilder): usize {
+    return self.buf.len()
+}
+
+/// Returns `true` if the builder contains no bytes.
+public func StringBuilder.isEmpty(self: ref StringBuilder): bool {
+    return self.buf.isEmpty()
+}
+
+/// Appends string slice `s` to the builder.
+public func StringBuilder.append(self: mut ref StringBuilder, s: str): void {
+    let _ = self.buf.pushStr(s)
+}
+
+/// Appends string slice `s` followed by a newline `\n` to the builder.
+public func StringBuilder.appendLine(self: mut ref StringBuilder, s: str): void {
+    self.append(s)
+    self.append("\n")
+}
+
+/// Appends a Unicode scalar character to the builder.
+public func StringBuilder.appendChar(self: mut ref StringBuilder, c: char): void {
+    self.buf.pushScalar(c)
+}
+
+/// Appends a base-10 signed integer to the builder.
+public func StringBuilder.appendInt(self: mut ref StringBuilder, v: i64): void {
+    if v == (0 as i64) {
+        self.appendChar('0')
+        return
+    }
+    let mut uv: u64 = 0 as u64
+    if v < (0 as i64) {
+        self.appendChar('-')
+        if v == (-9223372036854775807 as i64) - 1 {
+            uv = 9223372036854775808 as u64
+        } else {
+            uv = (-v) as u64
+        }
+    } else {
+        uv = v as u64
+    }
+    let mut digits: [20]u8 = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    let mut count: usize = 0
+    let mut curr = uv
+    while curr > (0 as u64) {
+        let rem = curr % (10 as u64)
+        digits[count] = (48 as u8) + (rem as u8)
+        curr = curr / (10 as u64)
+        count = count + 1
+    }
+    let mut i = count
+    while i > 0 {
+        i = i - 1
+        self.appendChar(digits[i] as char)
+    }
+}
+
+/// Clears the contents of the builder while retaining its capacity.
+public func StringBuilder.clear(self: mut ref StringBuilder): void {
+    self.buf.clear()
+}
+
+/// Borrows the current contents of the builder as an immutable string slice.
+public func StringBuilder.asStr(self: ref StringBuilder): ref str {
+    return self.buf.asStr()
+}
+
+/// Consumes the builder and returns the underlying owned `String`.
+public func StringBuilder.intoString(self: own StringBuilder): string.String {
+    return self.buf
+}

@@ -34,6 +34,7 @@ pub(crate) fn contains_any(pool: &AstPool, ty: TypeExprId) -> Option<Span> {
         | TypeExpr::Ref { inner, .. }
         | TypeExpr::RefMut { inner, .. }
         | TypeExpr::Slice { inner, .. }
+        | TypeExpr::MutSlice { inner, .. }
         | TypeExpr::Array { elem: inner, .. }
         | TypeExpr::Group { inner, .. } => contains_any(pool, *inner),
         TypeExpr::Func { params, result, .. } => {
@@ -115,6 +116,7 @@ pub(crate) fn validate_const_arguments(checker: &mut TypeChecker<'_>, ty: TypeEx
         | TypeExpr::Ref { inner, .. }
         | TypeExpr::RefMut { inner, .. }
         | TypeExpr::Slice { inner, .. }
+        | TypeExpr::MutSlice { inner, .. }
         | TypeExpr::Group { inner, .. } => validate_const_arguments(checker, *inner),
         TypeExpr::Array {
             size_expression,
@@ -628,6 +630,7 @@ fn validate_type_expr_constraints(
         | TypeExpr::Ref { inner, .. }
         | TypeExpr::RefMut { inner, .. }
         | TypeExpr::Slice { inner, .. }
+        | TypeExpr::MutSlice { inner, .. }
         | TypeExpr::Array { elem: inner, .. }
         | TypeExpr::Group { inner, .. } => {
             validate_type_expr_constraints(checker, *inner, scope);

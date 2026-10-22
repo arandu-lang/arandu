@@ -93,7 +93,7 @@ fn folded_int_literals(db: &DatabaseImpl, file: arandu_query::SourceFile) -> Vec
 #[test]
 fn mem_sizeof_alignof_fold_with_target_pointer_width() {
     let mut db = DatabaseImpl::new();
-    db.new_file("stdlib/core/mem.aru".into(), MEM_MODULE.into());
+    db.new_stdlib_file("stdlib/core/mem.aru".into(), MEM_MODULE.into());
     let file = db.new_file("main_mem.aru".into(), MAIN_WITH_MEM_INTRINSICS.into());
 
     // ILP32 natural layout: usize=4, u64=8, usize align=4.
@@ -122,7 +122,7 @@ fn mem_intrinsics_preserve_non_natural_abi_alignments_in_runtime_and_ctfe() {
     use arandu_query::runtime::Instance;
 
     let mut db = DatabaseImpl::new();
-    db.new_file("stdlib/core/mem.aru".into(), MEM_MODULE.into());
+    db.new_stdlib_file("stdlib/core/mem.aru".into(), MEM_MODULE.into());
     let source = "import std.core.mem as mem\nstruct Pair { tag: u8, value: u64 }\nfunc main(): usize { return mem.alignOf<Pair>() }\n";
     let file = db.new_file("main.aru".into(), source.into());
     let public_file = db.new_file("public_layout.aru".into(), "import std.core.mem as mem\nstruct Pair { tag: u8, value: u64 }\nfunc main(): usize { return comptime mem.alignOf<Pair>() }".into());
@@ -177,7 +177,7 @@ fn imported_layout_intrinsics_do_not_depend_on_sibling_bodies() {
 
     let (mut db, log) = DatabaseImpl::with_rebuild_log();
     let module = format!("{MEM_MODULE}\nfunc sibling(): int {{ return 1 }}");
-    let memory = db.new_file("stdlib/core/mem.aru".into(), module.clone());
+    let memory = db.new_stdlib_file("stdlib/core/mem.aru".into(), module.clone());
     let file = db.new_file(
         "main.aru".into(),
         "import std.core.mem as mem\nfunc main(): usize { return mem.sizeOf<u64>() }".into(),
@@ -209,4 +209,177 @@ fn imported_layout_intrinsics_do_not_depend_on_sibling_bodies() {
             log.format_chain(true)
         );
     }
+}
+
+#[test]
+fn wasm32_target_rejects_thread_park_timeout_with_u001() {
+    let mut db = DatabaseImpl::new();
+    let wasm_identity = arandu_middle::db::TargetIdentity {
+        os: "wasi".into(),
+        arch: "wasm32".into(),
+        triple: String::new(),
+    };
+    db.set_target(DataLayout::ptr_width(4), wasm_identity);
+    db.new_stdlib_file(
+        "stdlib/core/marker.aru".into(),
+        include_str!("../../../stdlib/core/marker.aru").into(),
+    );
+    db.new_stdlib_file(
+        "stdlib/core/mem.aru".into(),
+        include_str!("../../../stdlib/core/mem.aru").into(),
+    );
+    db.new_stdlib_file(
+        "stdlib/std/thread.aru".into(),
+        include_str!("../../../stdlib/std/thread.aru").into(),
+    );
+    let file = db.new_file(
+        "wasm_threads.aru".into(),
+        r#"
+import std.thread as thread
+
+func main(): void {
+    thread.parkTimeout(10)
+}
+"#
+        .into(),
+    );
+    let result = type_check(&db, file);
+    let u001 = result
+        .diagnostics
+        .iter()
+        .find(|d| d.code == DiagCode::U001FeatureNotSupported)
+        .expect("expected U001FeatureNotSupported on wasm32 for parkTimeout");
+    assert!(
+        u001.message.contains("requires target thread support"),
+        "unexpected message: {}",
+        u001.message
+    );
+}
+
+#[test]
+fn wasm32_target_rejects_thread_park_and_unpark_with_u001() {
+    let mut db = DatabaseImpl::new();
+    let wasm_identity = arandu_middle::db::TargetIdentity {
+        os: "wasi".into(),
+        arch: "wasm32".into(),
+        triple: String::new(),
+    };
+    db.set_target(DataLayout::ptr_width(4), wasm_identity);
+    db.new_stdlib_file(
+        "stdlib/core/marker.aru".into(),
+        include_str!("../../../stdlib/core/marker.aru").into(),
+    );
+    db.new_stdlib_file(
+        "stdlib/core/mem.aru".into(),
+        include_str!("../../../stdlib/core/mem.aru").into(),
+    );
+    db.new_stdlib_file(
+        "stdlib/std/thread.aru".into(),
+        include_str!("../../../stdlib/std/thread.aru").into(),
+    );
+    let file = db.new_file(
+        "wasm_threads_park.aru".into(),
+        r#"
+import std.thread as thread
+
+func main(): void {
+    thread.park()
+    thread.unpark(0 as usize)
+}
+"#
+        .into(),
+    );
+    let result = type_check(&db, file);
+    let u001_count = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == DiagCode::U001FeatureNotSupported)
+        .count();
+    assert_eq!(
+        u001_count, 2,
+        "expected two U001 diagnostics for park and unpark on wasm32"
+    );
+}
+
+#[test]
+fn bit_intrinsics_evaluate_at_comptime() {
+    use arandu_middle::ctfe::ConstValue;
+    use arandu_mir::ctfe::Budget;
+    use arandu_query::ctfe::{ctfe_eval, CtfeRequest};
+    use arandu_query::passes::declaration_signatures;
+
+    let mut db = DatabaseImpl::new();
+    db.new_stdlib_file(
+        "stdlib/core/intrinsics.aru".into(),
+        include_str!("../../../stdlib/core/intrinsics.aru").into(),
+    );
+    let source = r#"
+import std.core.intrinsics as intrinsics
+
+func test_popcnt(): u32 {
+    let a: u32 = 305419896
+    return intrinsics.bitCountOnes32(a)
+}
+
+func test_popcnt64(): u32 {
+    let a: u64 = 305419896
+    return intrinsics.bitCountOnes64(a)
+}
+
+func test_clz(): u32 {
+    let a: u32 = 65535
+    return intrinsics.bitLeadingZeros32(a)
+}
+
+func test_ctz(): u32 {
+    let a: u32 = 65536
+    return intrinsics.bitTrailingZeros32(a)
+}
+
+func test_bitrev(): u32 {
+    let a: u32 = 305419896
+    return intrinsics.bitReverse32(a)
+}
+
+func test_bitrev64(): u64 {
+    let a: u64 = 305419896
+    return intrinsics.bitReverse64(a)
+}
+"#;
+    let file = db.new_file("test_bits.aru".into(), source.into());
+    let sigs = declaration_signatures(&db, file);
+    let budget = Budget {
+        fuel: 10_000,
+        frames: 16,
+        values: 1_000,
+    };
+    let eval_func = |name: &str| -> i128 {
+        let sym = sigs.symbols.iter().find(|s| s.name == name).expect(name).id;
+        let res = ctfe_eval(&db, CtfeRequest::new(&db, file, sym, vec![], budget))
+            .as_ref()
+            .unwrap();
+        match res {
+            ConstValue::Integer(v) => v.value(),
+            other => panic!("expected integer for {name}, got {other:?}"),
+        }
+    };
+
+    assert_eq!(
+        eval_func("test_popcnt"),
+        (305419896_u32).count_ones() as i128
+    );
+    assert_eq!(
+        eval_func("test_popcnt64"),
+        (305419896_u64).count_ones() as i128
+    );
+    assert_eq!(eval_func("test_clz"), (65535_u32).leading_zeros() as i128);
+    assert_eq!(eval_func("test_ctz"), (65536_u32).trailing_zeros() as i128);
+    assert_eq!(
+        eval_func("test_bitrev"),
+        (305419896_u32).reverse_bits() as i128
+    );
+    assert_eq!(
+        eval_func("test_bitrev64"),
+        (305419896_u64).reverse_bits() as i128
+    );
 }

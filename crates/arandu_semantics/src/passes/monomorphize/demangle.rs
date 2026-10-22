@@ -40,6 +40,10 @@ pub fn demangle_symbol(mangled: &str) -> Option<String> {
 fn mangle_type_into(out: &mut String, ty: &ArType, symbols: &SymbolTable, interner: &TypeInterner) {
     match ty {
         ArType::Primitive(p) => out.push_str(p.as_str()),
+        ArType::Vector(vector) => {
+            out.push_str("v128_");
+            out.push_str(vector.name());
+        }
         ArType::Named(id, args) => {
             // Nominal arguments need their defining module identity too:
             // identity<a.User> and identity<b.User> are different instances.
@@ -72,6 +76,10 @@ fn mangle_type_into(out: &mut String, ty: &ArType, symbols: &SymbolTable, intern
         ArType::GenRef => out.push_str("genref"),
         ArType::Slice(inner) => {
             out.push_str("slice_");
+            mangle_type_into(out, &interner.resolve(*inner), symbols, interner);
+        }
+        ArType::MutSlice(inner) => {
+            out.push_str("mutslice_");
             mangle_type_into(out, &interner.resolve(*inner), symbols, interner);
         }
         ArType::Array(n, inner) => {
@@ -155,6 +163,20 @@ mod tests {
     use super::*;
     use arandu_middle::ctfe::{ConstAggregate, ConstString, ConstValue};
     use arandu_middle::types::{Primitive, TypeShape};
+
+    #[test]
+    fn hardware_vector_shapes_have_distinct_stable_instance_names() {
+        let symbols = SymbolTable::new(0);
+        let interner = TypeInterner::new();
+        let mut names = std::collections::BTreeSet::new();
+        for vector in arandu_middle::types::VectorType::ALL {
+            let mut name = String::new();
+            mangle_type_into(&mut name, &ArType::Vector(vector), &symbols, &interner);
+            assert_eq!(name, format!("v128_{}", vector.name()));
+            assert!(names.insert(name));
+        }
+        assert_eq!(names.len(), 6);
+    }
 
     #[test]
     fn aggregate_argument_symbols_are_bounded_and_keep_full_value_identity() {

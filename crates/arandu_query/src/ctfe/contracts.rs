@@ -352,6 +352,7 @@ fn demand_shapes(
             TypeShape::Array(_, inner)
             | TypeShape::Nullable(inner)
             | TypeShape::Slice(inner)
+            | TypeShape::MutSlice(inner)
             | TypeShape::Ptr(inner)
             | TypeShape::Ref(inner)
             | TypeShape::RefMut(inner)
@@ -361,6 +362,7 @@ fn demand_shapes(
             | TypeShape::Range(inner)
             | TypeShape::ConstArray(_, inner) => shapes.push(inner),
             TypeShape::Primitive(_)
+            | TypeShape::Vector(_)
             | TypeShape::Const(_)
             | TypeShape::FrozenConst(_)
             | TypeShape::ConstParam(_)

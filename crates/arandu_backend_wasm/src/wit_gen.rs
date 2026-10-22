@@ -41,6 +41,8 @@ mod emit;
 mod lower;
 mod model;
 mod naming;
+mod validate;
+pub(crate) use validate::validate_vector_boundaries;
 
 pub use emit::generate_wit;
 pub(crate) use emit::generate_wit_filtered;

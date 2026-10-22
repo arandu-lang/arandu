@@ -3,7 +3,9 @@
 use super::super::cursor::{Cursor, HandCtx};
 use super::super::stmt::parse_block_tokens;
 use super::super::ty::primitive_type_token_name;
-use super::control::{looks_like_lambda, parse_if_expr, parse_lambda, parse_match_expr};
+use super::control::{
+    looks_like_lambda, parse_if_expr, parse_lambda, parse_match_expr, parse_pipe_lambda,
+};
 use super::struct_lit::parse_type_led;
 use super::try_hand_lower_expr;
 use crate::StringPart;
@@ -78,6 +80,23 @@ fn parse_primary_dispatch(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option
                 ctx.token_span(t),
             ))
         }
+        TokenKind::IdentValue
+            if ctx.text(t) == Some("move")
+                && cur
+                    .peek_at(1)
+                    .is_some_and(|t| matches!(t.kind, TokenKind::Pipe | TokenKind::LogicalOr)) =>
+        {
+            cur.bump();
+            parse_pipe_lambda(ctx, cur, start, true)
+        }
+        TokenKind::KwOwn
+            if cur
+                .peek_at(1)
+                .is_some_and(|t| matches!(t.kind, TokenKind::Pipe | TokenKind::LogicalOr)) =>
+        {
+            cur.bump();
+            parse_pipe_lambda(ctx, cur, start, true)
+        }
         TokenKind::IdentValue => {
             // `mod.Type.method` pattern: identical check to RD parse_prefix
             if cur.peek_at(1).is_some_and(|t| t.kind == TokenKind::Dot)
@@ -142,6 +161,7 @@ fn parse_primary_dispatch(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option
         // type token as type-led (int is TypeInt etc.)
         k if primitive_type_token_name(k).is_some() => parse_type_led(ctx, cur, start),
         TokenKind::LParen => parse_group_or_lambda(ctx, cur),
+        TokenKind::Pipe | TokenKind::LogicalOr => parse_pipe_lambda(ctx, cur, start, false),
         TokenKind::StringStart => parse_string(ctx, cur, start, TokenKind::StringEnd),
         TokenKind::MultilineStringStart => {
             parse_string(ctx, cur, start, TokenKind::MultilineStringEnd)

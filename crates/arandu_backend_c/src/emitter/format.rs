@@ -93,6 +93,7 @@ impl<'a> CEmitter<'a> {
 
     pub(super) fn format_type(&self, ty: &ArType) -> Cow<'static, str> {
         match ty {
+            ArType::Vector(vector) => Cow::Owned(format!("ArVector_{}", vector.name())),
             ArType::Primitive(Primitive::I8) => Cow::Borrowed("int8_t"),
             ArType::Primitive(Primitive::I16) => Cow::Borrowed("int16_t"),
             ArType::Primitive(Primitive::I32) => Cow::Borrowed("int32_t"),
@@ -159,6 +160,10 @@ impl<'a> CEmitter<'a> {
             ArType::Slice(inner) => {
                 let inner_name = self.format_type(&self.interner.resolve(*inner));
                 Cow::Owned(format!("ArType_Slice_{}", sanitize_c_ident(&inner_name)))
+            }
+            ArType::MutSlice(inner) => {
+                let inner_name = self.format_type(&self.interner.resolve(*inner));
+                Cow::Owned(format!("ArType_MutSlice_{}", sanitize_c_ident(&inner_name)))
             }
             ArType::Array(len, inner) => {
                 let inner_name = self.format_type(&self.interner.resolve(*inner));
@@ -394,7 +399,8 @@ impl<'a> CEmitter<'a> {
                         ArType::Ptr(_) | ArType::Ref(_) | ArType::RefMut(_)
                     ) {
                         path = format!("(({}*){})[{}]", elem_c_ty, path, index_str);
-                    } else if matches!(current_ty, ArType::Slice(_)) || is_vec {
+                    } else if matches!(current_ty, ArType::Slice(_) | ArType::MutSlice(_)) || is_vec
+                    {
                         path = format!(
                             "(( {}* )(*(void**)((uint8_t*)&{} + 0)))[{}]",
                             elem_c_ty, path, index_str
@@ -447,7 +453,8 @@ impl<'a> CEmitter<'a> {
                         ArType::Ptr(_) | ArType::Ref(_) | ArType::RefMut(_)
                     ) {
                         path = format!("(({}*){})[{}]", elem_c_ty, path, index);
-                    } else if matches!(current_ty, ArType::Slice(_)) || is_vec {
+                    } else if matches!(current_ty, ArType::Slice(_) | ArType::MutSlice(_)) || is_vec
+                    {
                         path = format!(
                             "(( {}* )(*(void**)((uint8_t*)&{} + 0)))[{}]",
                             elem_c_ty, path, index

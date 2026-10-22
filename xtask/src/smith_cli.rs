@@ -272,7 +272,11 @@ fn run_case(
                     "-O0"
                 },
             ]);
-            compile.arg(&c_path).arg("-o").arg(&binary).arg("-lm");
+            compile
+                .arg(&c_path)
+                .arg("-o")
+                .arg(&binary)
+                .args(arandu_middle::TargetSpec::for_host().cc_link_args());
             evidence.invoke(&format!("compile-{compiler}-{mode}"), &mut compile)?;
             let mut execute = Command::new(&binary);
             let label = format!("c-{compiler}-amir-{ir_mode}-host-{mode}");

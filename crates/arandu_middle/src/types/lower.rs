@@ -120,6 +120,11 @@ pub fn lower_type_expr_ctx(
             let id = interner.intern(inner_ty);
             ArType::Slice(id)
         }
+        TypeExpr::MutSlice { inner, .. } => {
+            let inner_ty = lower_type_expr_ctx(*inner, ctx, interner);
+            let id = interner.intern(inner_ty);
+            ArType::MutSlice(id)
+        }
         TypeExpr::Array {
             size,
             size_span,
@@ -230,6 +235,18 @@ pub fn lower_named_type(
     if let Some(&symbol_id) = ctx.resolved.type_refs.get(&key) {
         if ctx.symbols.get(symbol_id).kind == crate::SymbolKind::ConstParam && args.is_empty() {
             return ArType::ConstParam(symbol_id);
+        }
+        if let Some(shape) = ctx
+            .symbols
+            .get(symbol_id)
+            .lang_item
+            .and_then(crate::symbol_table::LangItem::vector_shape)
+        {
+            return if args.is_empty() {
+                ArType::Vector(shape)
+            } else {
+                ArType::Error
+            };
         }
         let generic_args: Vec<super::type_interner::TypeId> = args
             .iter()

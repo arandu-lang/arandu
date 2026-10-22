@@ -396,6 +396,13 @@ pub(super) fn dump_type(ty: &TypeExpr, pool: &AstPool) -> String {
                 dump_type(pool.type_expr(*inner), pool)
             )
         }
+        TypeExpr::MutSlice { span, inner } => {
+            format!(
+                "MutSlice {} {}",
+                dump_span(*span),
+                dump_type(pool.type_expr(*inner), pool)
+            )
+        }
         TypeExpr::Array {
             span,
             size,

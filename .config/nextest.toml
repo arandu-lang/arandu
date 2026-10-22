@@ -2,8 +2,9 @@
 # Documentação: https://nexte.st/docs/configuration/
 
 [profile.default]
-# Limites de detecção de testes lentos
-slow-timeout = { period = "15s", terminate-after = 2 }
+# The full stdlib graph typecheck is about 40s alone, and several CLI oracles
+# cross 30s when the suite runs in parallel. Kill a stuck test at 180s.
+slow-timeout = { period = "60s", terminate-after = 3 }
 
 # Formato e nível de detalhes da saída
 status-level = "pass"
@@ -11,8 +12,26 @@ final-status-level = "flaky"
 failure-output = "immediate-final"
 success-output = "never"
 
+# Multi-minute differential oracles (C/Wasm/LLVM + clang/node), the heavy CLI
+# numeric/allocator tests, and smith runs across every backend outlive the
+# 180s default. Other tests keep that shorter watchdog.
+[[profile.default.overrides]]
+filter = 'test(/backend_matches_cranelift|llvm_backend|llvm_emi|c_backend_matches|wasm_backend_matches|interpolation_matches|to_str_interpolation|nested_interpolation|gen_insert_get|run_b_llvm|build_b_llvm|alloc_structures_rc_arc_slab_and_deque|bigint_and_bigdecimal_match_independent|all_backend|every_backend|across_backends|survives_emi/)'
+slow-timeout = { period = "60s", terminate-after = 10 }
+
 [profile.ci]
 status-level = "all"
 final-status-level = "flaky"
 failure-output = "immediate-final"
 retries = 1
+
+# Local verification includes deterministic compiler corpora and native linkers.
+# This watchdog detects hangs; performance budgets remain inside their tests.
+# Command: cargo nextest run --workspace --locked --profile verification --test-threads 2
+[profile.verification]
+slow-timeout = { period = "60s", terminate-after = 10 }
+retries = 0
+
+[[profile.verification.overrides]]
+filter = 'test(/backend_matches_cranelift|llvm_backend|llvm_emi|c_backend_matches|wasm_backend_matches|interpolation_matches|to_str_interpolation|nested_interpolation|gen_insert_get|run_b_llvm|build_b_llvm|alloc_structures_rc_arc_slab_and_deque|bigint_and_bigdecimal_match_independent|all_backend|every_backend|across_backends|survives_emi/)'
+slow-timeout = { period = "120s", terminate-after = 15 }

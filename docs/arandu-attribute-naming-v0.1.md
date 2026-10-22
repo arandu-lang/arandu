@@ -128,13 +128,13 @@ roadmap da fase que implementa sua semântica.
 
 A migração ocorre antes de declarar o contrato estável:
 
-1. [x] Implementar uma fonte única de metadados para anotações embutidas: nome
+1. Implementado: fonte canônica para metadados de anotações embutidas: nome
    canônico, aliases temporários, alvos, argumentos e estado de estabilidade.
-2. [x] Fazer `@NoFallback` produzir exatamente o HIR `no_fallback` já existente.
-3. [x] Aceitar temporariamente os aliases implementados, emitindo aviso com
+2. Implementado: `@NoFallback` produz exatamente o HIR `no_fallback` já existente.
+3. Implementado: aceitação temporária dos aliases legados, emitindo aviso com
    replacement estruturado; não alterar texto automaticamente no formatter.
-4. [x] Atualizar exemplos, documentação, snippets, completion e semantic tokens.
-5. [ ] Remover aliases somente em uma fronteira de versão anunciada nas release
+4. Implementado: exemplos, documentação, snippets, completion e semantic tokens.
+5. Fronteira futura: remover aliases somente em uma fronteira de versão anunciada nas release
    notes e coberta por teste de migração.
 
 Documentação nova usa apenas a grafia canônica. Documentos históricos e testes

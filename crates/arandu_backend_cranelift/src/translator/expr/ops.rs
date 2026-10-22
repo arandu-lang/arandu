@@ -2,7 +2,7 @@
 
 use arandu_semantics::amir::AmirOperand;
 use arandu_semantics::ops::UnaryOp;
-use arandu_semantics::passes::type_checker::types::{ArType, Primitive};
+use arandu_semantics::passes::type_checker::types::ArType;
 use cranelift_codegen::ir::{InstBuilder, Type, Value};
 
 use super::super::FunctionTranslator;
@@ -17,14 +17,14 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         expected_ar_type: Option<&ArType>,
     ) -> Value {
         // `str` equality uses fat pointers + memcmp (not scalar icmp).
-        let left_is_str = matches!(
-            self.get_operand_ar_type(left),
-            ArType::Primitive(Primitive::Str)
-        );
-        let right_is_str = matches!(
-            self.get_operand_ar_type(right),
-            ArType::Primitive(Primitive::Str)
-        );
+        let left_is_str = self
+            .get_operand_ar_type(left)
+            .str_reference_depth(&self.type_info.type_interner)
+            .is_some();
+        let right_is_str = self
+            .get_operand_ar_type(right)
+            .str_reference_depth(&self.type_info.type_interner)
+            .is_some();
         if left_is_str || right_is_str {
             match op {
                 arandu_semantics::ops::BinaryOp::Equal
@@ -82,6 +82,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         op: UnaryOp,
         operand: &AmirOperand,
         expected_ty: Option<Type>,
+        expected_ar_type: Option<&ArType>,
     ) -> Value {
         if matches!(op, UnaryOp::Deref) {
             let operand_ty = self.get_operand_ar_type(operand);
@@ -92,6 +93,19 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 return self.translate_operand(operand, Some(self.ptr_type));
             }
             let ptr = self.translate_operand(operand, Some(self.ptr_type));
+            let pointee_ty = expected_ar_type.cloned().or_else(|| match &operand_ty {
+                ArType::Ref(inner) | ArType::RefMut(inner) | ArType::Ptr(inner) => {
+                    Some(self.type_info.type_interner.resolve(*inner))
+                }
+                _ => None,
+            });
+            if let Some(pointee_ty) = pointee_ty.as_ref()
+                && self.is_inline_aggregate_ty(pointee_ty)
+            {
+                return self
+                    .materialize_ptr_read_copy(ptr, pointee_ty)
+                    .unwrap_or(ptr);
+            }
             let load_ty = expected_ty.unwrap_or(self.ptr_type);
             return self.builder.ins().load(
                 load_ty,

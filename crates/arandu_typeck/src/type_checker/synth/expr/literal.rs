@@ -271,6 +271,14 @@ pub(super) fn synth_literal_expr(
             let ty_id = *ty;
             let fields_range = *fields;
             let struct_ty = checker.lower_type_expr(ty_id, checker.type_scope());
+            if matches!(struct_ty, ArType::Vector(_)) {
+                checker.diagnostics.push(crate::Diagnostic::error(
+                    crate::DiagCode::U001FeatureNotSupported,
+                    "native vector storage is opaque; use its constructors",
+                    checker.pool.expr_span(expr),
+                ));
+                return Some(checker.intern(ArType::Error));
+            }
             let mut struct_ty_id = checker.intern(struct_ty);
             let struct_info = match checker.resolve(struct_ty_id) {
                 ArType::Named(symbol_id, generic_args) => Some((symbol_id, generic_args)),
@@ -495,7 +503,8 @@ pub(super) fn synth_literal_expr(
             let expected_element = expected.and_then(|ty| match checker.resolve(ty) {
                 ArType::Array(_, element)
                 | ArType::ConstArray(_, element)
-                | ArType::Slice(element) => Some(element),
+                | ArType::Slice(element)
+                | ArType::MutSlice(element) => Some(element),
                 _ => None,
             });
             let element = super::synth_expr_expected(checker, *value, expected_element);
@@ -551,7 +560,9 @@ pub(super) fn synth_literal_expr(
         ExprKind::Array { items } => {
             let items_range = *items;
             let expected_elem_id = expected.and_then(|exp_id| match checker.resolve(exp_id) {
-                ArType::Array(_, elem_id) | ArType::Slice(elem_id) => Some(elem_id),
+                ArType::Array(_, elem_id) | ArType::Slice(elem_id) | ArType::MutSlice(elem_id) => {
+                    Some(elem_id)
+                }
                 _ => None,
             });
             let error_id = checker.intern(ArType::Error);

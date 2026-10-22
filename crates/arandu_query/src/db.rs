@@ -4,11 +4,26 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use crate::explain::RebuildLog;
 use crate::manifest::ProjectManifest;
-use crate::vfs::{ModuleRoots, PackageModuleMap};
+use crate::vfs::{ModuleRoots, PackageModuleMap, ResolutionEpoch};
 use arandu_middle::DataLayout;
+
+mod cancel;
+mod hash_eq;
+mod registry;
+
+pub use cancel::{catch_query_cancellation, QueryCancellationToken, QueryCancelled};
+pub use hash_eq::HashEq;
+use registry::{CstCache, FileRegistry};
 use salsa::{Database as _, Setter, Storage};
 
 pub type FileId = u32;
+
+/// Origin is supplied by the embedding driver, never by Arandu source names.
+/// A separate input per file preserves cutoff when another file is registered.
+#[salsa::input]
+pub(crate) struct SourceAuthority {
+    pub trusted_stdlib: bool,
+}
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct RegistryMetrics {
@@ -17,60 +32,7 @@ pub struct RegistryMetrics {
     pub allocated_file_ids: FileId,
 }
 
-/// Per-file CST cache for incremental [`crate::passes::syntax_tree`] rebuilds.
-#[derive(Default)]
-struct CstCache {
-    /// Last successful tree per file (text must match before reuse).
-    by_file: FxHashMap<FileId, arandu_parser::SyntaxTree>,
-}
-
 pub use crate::stable_hash::StableHash;
-
-#[derive(Clone)]
-pub struct HashEq<T> {
-    pub value: Arc<T>,
-    hash: blake3::Hash,
-}
-
-impl<T: StableHash> HashEq<T> {
-    pub fn new(value: T) -> Self {
-        let hash = value.stable_hash();
-        Self {
-            value: Arc::new(value),
-            hash,
-        }
-    }
-
-    /// Wrap an existing `Arc` (compute hash once).
-    #[must_use]
-    pub fn from_arc(value: Arc<T>) -> Self {
-        let hash = value.stable_hash();
-        Self { value, hash }
-    }
-
-    /// Share the same `Arc` and hash without re-hashing or deep-cloning `T`.
-    #[must_use]
-    pub fn share(other: &Self) -> Self {
-        Self {
-            value: Arc::clone(&other.value),
-            hash: other.hash,
-        }
-    }
-}
-
-impl<T> PartialEq for HashEq<T> {
-    fn eq(&self, other: &Self) -> bool {
-        self.hash == other.hash
-    }
-}
-impl<T> Eq for HashEq<T> {}
-
-impl<T> std::ops::Deref for HashEq<T> {
-    type Target = T;
-    fn deref(&self) -> &Self::Target {
-        &self.value
-    }
-}
 
 #[salsa::db]
 pub trait ArandCompilerDb: salsa::Database {
@@ -100,53 +62,6 @@ pub trait ArandCompilerDb: salsa::Database {
 pub use arandu_middle::db::SourceFile;
 pub use arandu_middle::db::TargetConfig;
 
-/// Internal shared state for the file registry.
-///
-/// Two maps are kept in sync at every insertion point:
-/// - `by_path`  — `String → SourceFile` for import path resolution (O(1) by path)
-/// - `by_id`    — `FileId → SourceFile` for Salsa queries (O(1) by FileId)
-///
-/// Before this change both `source_text` and `file_path` performed an O(N)
-/// linear scan over `by_path.values()` to find a file by its numeric ID.
-#[derive(Clone)]
-struct FileRegistry {
-    by_path: FxHashMap<String, SourceFile>,
-    by_id: FxHashMap<FileId, SourceFile>,
-    /// Monotonic id allocator (must not reuse after unregister — Salsa keeps old inputs).
-    next_id: FileId,
-}
-
-impl Default for FileRegistry {
-    fn default() -> Self {
-        Self {
-            by_path: FxHashMap::default(),
-            by_id: FxHashMap::default(),
-            next_id: 100,
-        }
-    }
-}
-
-impl FileRegistry {
-    /// Insert a file into both indexes simultaneously.
-    fn insert(&mut self, path: String, file_id: FileId, file: SourceFile) {
-        self.by_path.insert(path, file);
-        self.by_id.insert(file_id, file);
-    }
-
-    /// Next available FileId (starts at 100 to avoid collisions with test stubs).
-    fn next_id(&mut self) -> FileId {
-        let id = self.next_id;
-        self.next_id = self.next_id.saturating_add(1);
-        id
-    }
-
-    fn remove_path(&mut self, path: &str) -> Option<SourceFile> {
-        let file = self.by_path.remove(path)?;
-        // by_id cleaned by caller once file_id is known (needs Database).
-        Some(file)
-    }
-}
-
 /// Salsa database with optional DX.5 rebuild logging.
 ///
 /// Prefer [`Self::default`] / [`Self::new`] for production (no event callback).
@@ -155,6 +70,7 @@ impl FileRegistry {
 pub struct DatabaseImpl {
     storage: Storage<Self>,
     files: Arc<RwLock<FileRegistry>>,
+    source_authorities: Arc<RwLock<FxHashMap<SourceFile, SourceAuthority>>>,
     /// Incremental CST reuse across `syntax_tree` queries (side cache; result still pure in text).
     cst_cache: Arc<Mutex<CstCache>>,
     /// Shared with the Salsa event callback when explain mode is on.
@@ -172,6 +88,9 @@ pub struct DatabaseImpl {
     /// Compilation target Salsa input (default: host layout). See [`Self::set_target_config`].
     target_config: Arc<RwLock<Option<TargetConfig>>>,
     ctfe_config: Arc<RwLock<Option<crate::ctfe::CtfeConfig>>>,
+    /// Stable Salsa input bumped on every resolution-config change so queries
+    /// that ran before configuration invalidate. See [`ResolutionEpoch`].
+    resolution_epoch: Arc<RwLock<Option<ResolutionEpoch>>>,
 }
 
 // Manual Clone: Storage is cloneable; share Arc file registry + log + CST cache.
@@ -180,6 +99,7 @@ impl Clone for DatabaseImpl {
         Self {
             storage: self.storage.clone(),
             files: Arc::clone(&self.files),
+            source_authorities: Arc::clone(&self.source_authorities),
             cst_cache: Arc::clone(&self.cst_cache),
             rebuild_log: self.rebuild_log.clone(),
             stdlib_root: Arc::clone(&self.stdlib_root),
@@ -188,6 +108,7 @@ impl Clone for DatabaseImpl {
             package_modules: Arc::clone(&self.package_modules),
             target_config: Arc::clone(&self.target_config),
             ctfe_config: Arc::clone(&self.ctfe_config),
+            resolution_epoch: Arc::clone(&self.resolution_epoch),
         }
     }
 }
@@ -218,6 +139,7 @@ impl DatabaseImpl {
         let mut db = Self {
             storage: Storage::new(callback),
             files: Arc::new(RwLock::new(FileRegistry::default())),
+            source_authorities: Arc::new(RwLock::new(FxHashMap::default())),
             cst_cache: Arc::new(Mutex::new(CstCache::default())),
             rebuild_log: None,
             stdlib_root: Arc::new(RwLock::new(None)),
@@ -226,9 +148,11 @@ impl DatabaseImpl {
             package_modules: Arc::new(RwLock::new(None)),
             target_config: Arc::new(RwLock::new(None)),
             ctfe_config: Arc::new(RwLock::new(None)),
+            resolution_epoch: Arc::new(RwLock::new(None)),
         };
         db.set_target_config(DataLayout::host());
         db.set_ctfe_limits(crate::ctfe::CtfeLimits::default());
+        db.ensure_resolution_epoch();
         db
     }
 
@@ -240,6 +164,7 @@ impl DatabaseImpl {
         let mut db = Self {
             storage: Storage::new(Some(callback)),
             files: Arc::new(RwLock::new(FileRegistry::default())),
+            source_authorities: Arc::new(RwLock::new(FxHashMap::default())),
             cst_cache: Arc::new(Mutex::new(CstCache::default())),
             rebuild_log: Some(Arc::clone(&log)),
             stdlib_root: Arc::new(RwLock::new(None)),
@@ -248,9 +173,11 @@ impl DatabaseImpl {
             package_modules: Arc::new(RwLock::new(None)),
             target_config: Arc::new(RwLock::new(None)),
             ctfe_config: Arc::new(RwLock::new(None)),
+            resolution_epoch: Arc::new(RwLock::new(None)),
         };
         db.set_target_config(DataLayout::host());
         db.set_ctfe_limits(crate::ctfe::CtfeLimits::default());
+        db.ensure_resolution_epoch();
         (db, log)
     }
 
@@ -271,10 +198,59 @@ impl DatabaseImpl {
         }
     }
 
+    /// Create the resolution epoch input (idempotent). Called by the
+    /// constructors so queries running before any configuration still register
+    /// a dependency on the epoch and invalidate once configuration lands.
+    fn ensure_resolution_epoch(&mut self) {
+        if self
+            .resolution_epoch
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
+        {
+            return;
+        }
+        let epoch = ResolutionEpoch::new(self, 0);
+        *self
+            .resolution_epoch
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = Some(epoch);
+    }
+
+    /// Advance the resolution epoch so that cached resolution queries recompute.
+    ///
+    /// Mutates the *same* Salsa input (rather than swapping in a fresh one) so
+    /// queries that already read it are invalidated.
+    fn bump_resolution_epoch(&mut self) {
+        let epoch = *self
+            .resolution_epoch
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        let Some(epoch) = epoch else {
+            return;
+        };
+        let next = epoch.generation(self).wrapping_add(1);
+        epoch.set_generation(self).to(next);
+    }
+
+    /// Read the resolution epoch inside a tracked query, registering the
+    /// dependency that `bump_resolution_epoch` later invalidates.
+    pub fn resolution_epoch(&self) {
+        let epoch = *self
+            .resolution_epoch
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(epoch) = epoch {
+            let _ = epoch.generation(self);
+        }
+    }
+
     /// Pin the stdlib root used by [`arandu_middle::db::SourceDatabase::resolve_module_path`].
-    pub fn set_stdlib_root(&self, root: PathBuf) {
+    pub fn set_stdlib_root(&mut self, root: PathBuf) {
         let mut g = self.stdlib_root.write().unwrap_or_else(|e| e.into_inner());
         *g = Some(root);
+        drop(g);
+        self.bump_resolution_epoch();
     }
 
     #[must_use]
@@ -286,12 +262,14 @@ impl DatabaseImpl {
     }
 
     /// Store the project manifest Salsa input (invalidation key for package mode).
-    pub fn set_project_manifest(&self, manifest: ProjectManifest) {
+    pub fn set_project_manifest(&mut self, manifest: ProjectManifest) {
         let mut g = self
             .project_manifest
             .write()
             .unwrap_or_else(|e| e.into_inner());
         *g = Some(manifest);
+        drop(g);
+        self.bump_resolution_epoch();
     }
 
     #[must_use]
@@ -303,7 +281,7 @@ impl DatabaseImpl {
     }
 
     /// Register dual module roots (package + stdlib) for `resolve_module_path`.
-    pub fn set_module_roots(&self, roots: ModuleRoots) {
+    pub fn set_module_roots(&mut self, roots: ModuleRoots) {
         let std = roots.stdlib_root(self);
         {
             let mut g = self.module_roots.write().unwrap_or_else(|e| e.into_inner());
@@ -313,6 +291,7 @@ impl DatabaseImpl {
         if let Some(std) = std {
             self.set_stdlib_root(std.as_ref().clone());
         }
+        self.bump_resolution_epoch();
     }
 
     #[must_use]
@@ -338,6 +317,34 @@ impl DatabaseImpl {
             None => {
                 let input =
                     TargetConfig::new(self, data_layout, arandu_middle::db::TargetIdentity::host());
+                let mut slot = self
+                    .target_config
+                    .write()
+                    .unwrap_or_else(|error| error.into_inner());
+                *slot = Some(input);
+            }
+        }
+    }
+
+    /// Set both data layout and platform target identity.
+    pub fn set_target(
+        &mut self,
+        data_layout: DataLayout,
+        identity: arandu_middle::db::TargetIdentity,
+    ) {
+        let existing = self
+            .target_config
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .copied();
+        match existing {
+            Some(input) => {
+                input.set_data_layout(self).to(data_layout);
+                input.set_identity(self).to(identity);
+            }
+            None => {
+                let input = TargetConfig::new(self, data_layout, identity);
                 let mut slot = self
                     .target_config
                     .write()
@@ -392,20 +399,24 @@ impl DatabaseImpl {
             .expect("TargetConfig input is initialized by DatabaseImpl::new/with_rebuild_log")
     }
 
-    pub fn set_package_module_map(&self, map: PackageModuleMap) {
+    pub fn set_package_module_map(&mut self, map: PackageModuleMap) {
         let mut current = self
             .package_modules
             .write()
             .unwrap_or_else(|error| error.into_inner());
         *current = Some(map);
+        drop(current);
+        self.bump_resolution_epoch();
     }
 
-    pub fn clear_package_module_map(&self) {
+    pub fn clear_package_module_map(&mut self) {
         let mut current = self
             .package_modules
             .write()
             .unwrap_or_else(|error| error.into_inner());
         *current = None;
+        drop(current);
+        self.bump_resolution_epoch();
     }
 
     #[must_use]
@@ -416,17 +427,73 @@ impl DatabaseImpl {
             .unwrap_or_else(|error| error.into_inner())
     }
 
+    fn register_source_authority(&self, file: SourceFile) -> SourceAuthority {
+        let mut authorities = self
+            .source_authorities
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
+        *authorities
+            .entry(file)
+            .or_insert_with(|| SourceAuthority::new(self, false))
+    }
+
+    /// Grant compiler-owned stdlib identities to a driver-verified source.
+    /// Module declarations and path spellings cannot grant this authority.
+    /// Call before analysis, from the stdlib loader or an embedded stdlib fixture.
+    pub fn trust_stdlib_source(&mut self, file: SourceFile) {
+        let was_registered = self
+            .source_authorities
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(&file);
+        let authority = self.register_source_authority(file);
+        if !was_registered {
+            self.bump_resolution_epoch();
+        }
+        if !authority.trusted_stdlib(self) {
+            authority.set_trusted_stdlib(self).to(true);
+        }
+    }
+
+    #[must_use]
+    pub fn is_trusted_stdlib_source(&self, file: SourceFile) -> bool {
+        let authority = self
+            .source_authorities
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&file)
+            .copied();
+        match authority {
+            Some(authority) => *authority.trusted_stdlib(self),
+            None => {
+                self.resolution_epoch();
+                false
+            }
+        }
+    }
+
+    /// Register a source delivered by the stdlib loader. This API is an
+    /// embedding trust boundary; it is never inferred from source syntax.
+    pub fn new_stdlib_file(&mut self, path: String, text: String) -> SourceFile {
+        let file = self.new_file(path, text);
+        self.trust_stdlib_source(file);
+        file
+    }
+
     pub fn new_file(&mut self, path: String, text: String) -> SourceFile {
         // Drop previous registration first (separate lock scope — avoid deadlock).
         self.unregister_source_file(&path);
         let mut reg = self.files.write().unwrap_or_else(|e| e.into_inner());
-        let file_id = reg.next_id();
+        let file_id = reg
+            .next_id()
+            .expect("FileId allocator exhausted; ids are never reused");
         let file = SourceFile::new(
             self,
             file_id,
             Arc::from(text),
             Arc::new(std::path::PathBuf::from(&path)),
         );
+        self.register_source_authority(file);
         reg.insert(path, file_id, file);
         file
     }
@@ -443,6 +510,7 @@ impl DatabaseImpl {
     pub fn register_source_file(&self, path: String, file: SourceFile) {
         let mut reg = self.files.write().unwrap_or_else(|e| e.into_inner());
         let file_id = file.file_id(self.as_source_db());
+        self.register_source_authority(file);
         if *file_id >= reg.next_id {
             reg.next_id = file_id.saturating_add(1);
         }
@@ -474,6 +542,12 @@ impl DatabaseImpl {
             if !has_alias {
                 let mut reg = self.files.write().unwrap_or_else(|e| e.into_inner());
                 reg.by_id.remove(fid);
+                drop(reg);
+                self.cst_cache
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .by_file
+                    .remove(fid);
             }
         }
     }
@@ -527,22 +601,6 @@ impl DatabaseImpl {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct QueryCancellationToken(salsa::CancellationToken);
-
-impl QueryCancellationToken {
-    pub fn cancel(&self) {
-        self.0.cancel();
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct QueryCancelled;
-
-pub fn catch_query_cancellation<T>(operation: impl FnOnce() -> T) -> Result<T, QueryCancelled> {
-    salsa::Cancelled::catch(std::panic::AssertUnwindSafe(operation)).map_err(|_| QueryCancelled)
-}
-
 impl arandu_middle::db::SourceDatabase for DatabaseImpl {
     fn source_file_by_id(&self, file_id: FileId) -> Option<SourceFile> {
         DatabaseImpl::source_file_by_id(self, file_id)
@@ -557,6 +615,7 @@ impl arandu_middle::db::SourceDatabase for DatabaseImpl {
     }
 
     fn same_package(&self, current_file: FileId, imported_file: SourceFile) -> bool {
+        self.resolution_epoch();
         let Some(map) = self.package_module_map() else {
             return false;
         };
@@ -592,6 +651,9 @@ impl arandu_middle::db::SourceDatabase for DatabaseImpl {
     }
 
     fn resolve_module_path(&self, path: &str) -> Option<SourceFile> {
+        // Depend on the resolution epoch so a query that ran before the
+        // package/stdlib configuration existed recomputes once it lands.
+        self.resolution_epoch();
         if let Some(map) = self.package_module_map() {
             if let Some(binding) = crate::vfs::package_module(self, map, path) {
                 return Some(binding.file);
@@ -635,6 +697,7 @@ impl arandu_middle::db::SourceDatabase for DatabaseImpl {
     }
 
     fn package_mode(&self) -> bool {
+        self.resolution_epoch();
         self.project_manifest().is_some()
     }
 }
@@ -675,5 +738,54 @@ impl ArandCompilerDb for DatabaseImpl {
 
     fn as_db_impl(&self) -> Option<&DatabaseImpl> {
         Some(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DatabaseImpl;
+    use std::sync::Arc;
+
+    #[test]
+    fn unregistering_last_file_alias_evicts_its_cached_cst() {
+        let mut db = DatabaseImpl::new();
+        let file = db.new_file("temporary.aru".into(), "func f(): int { return 1 }".into());
+        let file_id = *file.file_id(&db);
+        let _tree = db.syntax_tree_for_arc(file_id, Arc::clone(file.text(&db)));
+        db.register_source_file("temporary-alias.aru".into(), file);
+
+        assert!(db
+            .cst_cache
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .by_file
+            .contains_key(&file_id));
+
+        db.unregister_source_file("temporary.aru");
+        assert!(db
+            .cst_cache
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .by_file
+            .contains_key(&file_id));
+
+        db.unregister_source_file("temporary-alias.aru");
+
+        assert!(!db
+            .cst_cache
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .by_file
+            .contains_key(&file_id));
+    }
+
+    #[test]
+    fn file_id_allocator_does_not_wrap() {
+        let mut registry = super::registry::FileRegistry {
+            next_id: u32::MAX,
+            ..super::registry::FileRegistry::default()
+        };
+        assert!(registry.next_id().is_none());
+        assert_eq!(registry.next_id, u32::MAX);
     }
 }

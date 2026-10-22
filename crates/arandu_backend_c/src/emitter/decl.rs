@@ -184,6 +184,10 @@ impl<'a> CEmitter<'a> {
             return;
         }
 
+        if let ArType::Vector(vector) = ty {
+            self.emit_vector_type(*vector);
+            return;
+        }
         let layout = self.checked_layout(ty);
         if layout.size > 0 {
             let _ = writeln!(
@@ -207,7 +211,10 @@ impl<'a> CEmitter<'a> {
                     self.ensure_type_emitted(&field_ty);
                 }
             }
-            ArType::Option(inner) | ArType::Nullable(inner) | ArType::Slice(inner) => {
+            ArType::Option(inner)
+            | ArType::Nullable(inner)
+            | ArType::Slice(inner)
+            | ArType::MutSlice(inner) => {
                 let inner_ty = self.interner.resolve(*inner);
                 self.ensure_type_emitted(&inner_ty);
             }

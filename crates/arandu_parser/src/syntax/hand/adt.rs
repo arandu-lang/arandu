@@ -34,11 +34,12 @@ pub(super) fn try_hand_lower_struct(
     cur.expect(TokenKind::LBrace)?;
     let mut fields = Vec::new();
     while cur.peek_kind() != Some(TokenKind::RBrace) && !cur.at_end() {
-        while cur.eat(TokenKind::Semicolon) {}
+        while cur.eat(TokenKind::Semicolon) || cur.eat(TokenKind::Comma) {}
         if cur.peek_kind() == Some(TokenKind::RBrace) {
             break;
         }
         fields.push(parse_field(&mut ctx, &mut cur, true)?);
+        while cur.eat(TokenKind::Semicolon) || cur.eat(TokenKind::Comma) {}
     }
     cur.expect(TokenKind::RBrace)?;
     if !cur.at_end() {
@@ -65,7 +66,7 @@ pub(super) fn try_hand_lower_struct(
 pub(super) fn parse_field(
     ctx: &mut HandCtx<'_>,
     cur: &mut Cursor<'_>,
-    require_semi: bool,
+    _require_semi: bool,
 ) -> Option<FieldDecl> {
     let field_start = cur.peek()?.start;
     let attrs = parse_attributes(ctx, cur)?;
@@ -74,12 +75,8 @@ pub(super) fn parse_field(
     let name = SmolStr::new(ctx.text(name_tok)?);
     cur.expect(TokenKind::Colon)?;
     let ty = parse_type(ctx, cur)?;
-    if require_semi {
-        let _ = cur.eat(TokenKind::Semicolon);
-    } else {
-        let _ = cur.eat(TokenKind::Comma);
-        let _ = cur.eat(TokenKind::Semicolon);
-    }
+    let _ = cur.eat(TokenKind::Semicolon);
+    let _ = cur.eat(TokenKind::Comma);
     let end = ctx.pool.type_expr_span(ty).end;
     Some(FieldDecl {
         span: ctx.span(field_start, end),

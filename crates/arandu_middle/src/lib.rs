@@ -30,6 +30,7 @@ pub mod ops;
 pub mod package;
 pub mod resolved;
 pub mod symbol_table;
+pub mod target;
 pub mod types;
 
 pub use arandu_base::bitset;
@@ -47,6 +48,9 @@ pub use layout::{
     LayoutOperation, SizeAlign, StructLayoutProvider, TypeLayout,
 };
 pub use package::{ModuleId, PackageId, TargetId};
+pub use target::{
+    EmbeddedProfile, LinkerFlavor, LinkerPlan, TargetEnv, TargetOs, TargetSpec, embedded_profile,
+};
 
 pub use amir_validate::validate_amir_program;
 pub use diagnostics::{CodeReplacement, DiagCode, Diagnostic, Hint, Label, Severity};
@@ -60,6 +64,7 @@ pub use symbol_table::{ScopeId, Symbol, SymbolId, SymbolKind, SymbolTable};
 pub struct ExportedSymbolTable {
     pub symbols: std::collections::BTreeMap<String, (SymbolId, SymbolKind)>,
     pub internal_symbols: std::collections::BTreeMap<String, (SymbolId, SymbolKind)>,
+    pub lang_items: std::collections::BTreeMap<SymbolId, symbol_table::LangItem>,
     /// Names of interfaces sealed to the package that declares them.
     pub sealed_symbols: std::collections::BTreeSet<String>,
     /// Explicit implementation edges for sealed interfaces, kept as stable IDs.

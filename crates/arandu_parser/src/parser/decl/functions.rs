@@ -133,7 +133,8 @@ impl<'a> Parser<'a> {
         if matches!(
             self.current().kind,
             TokenKind::IdentType | TokenKind::IdentValue
-        ) {
+        ) || self.current().kind.is_primitive_type()
+        {
             let checkpoint = self.checkpoint();
             if let Ok(receiver) = self.parse_type_name()
                 && self.eat_name("DOT")

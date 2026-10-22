@@ -39,6 +39,10 @@ pub(super) fn run_wasm(data: &[u8]) {
     oracle::run_wasm(data);
 }
 
+pub(super) fn run_llvm(data: &[u8]) {
+    oracle::run_llvm(data);
+}
+
 pub(super) fn run_all_backends(data: &[u8]) {
     oracle::run_all_backends(data);
 }

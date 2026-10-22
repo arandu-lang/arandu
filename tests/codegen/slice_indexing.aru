@@ -1,0 +1,16 @@
+func checkSlice(a: []u8, len: int, target: u8): bool {
+    let mut i: int = 0;
+    while i < len {
+        if a[i] == target {
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+func main(): bool {
+    let mut data: [4]u8 = [1, 2, 3, 4];
+    let slice_view: []u8 = data[0..4];
+    return checkSlice(slice_view, 4, 3);
+}

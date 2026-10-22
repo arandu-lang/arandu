@@ -37,7 +37,7 @@ extern "C" {
     func ar_rt_spawn_i64(state: ptr[u8]): int
     /// Host executor bridge that joins a queued task.
     func ar_rt_join_i64(handle: int): int
-    /// Host executor bridge that cancels a queued task.
+    /// Host bridge that discards a pending task or retires a running handle.
     func ar_rt_cancel_i64(handle: int): void
 }
 
@@ -84,7 +84,7 @@ public func SyncExecutor.blockOn<T>(self: ref SyncExecutor, job: Coroutine<T>): 
 /// Queues `job` on the host executor and returns a typed task handle.
 ///
 /// The handle stores the host task ID. Join with `SyncExecutor.join` or request
-/// cancellation with `SyncExecutor.cancel`.
+/// handle retirement with `SyncExecutor.cancel`.
 public func SyncExecutor.spawn<T>(self: ref SyncExecutor, job: Coroutine<T>): TaskHandle<T> {
     unsafe {
         let id = ar_rt_spawn_i64(job as ptr[u8])
@@ -103,10 +103,9 @@ public func SyncExecutor.join<T>(self: ref SyncExecutor, handle: TaskHandle<T>):
     }
 }
 
-/// Requests cancellation for a spawned task through the host bridge.
-///
-/// The call returns no confirmation that the task stopped; it should not be
-/// treated as a completed join.
+/// Discards a task that has not started, or marks a running task's handle for
+/// retirement after the coroutine returns. It does not interrupt running code
+/// or signal a cooperative cancellation token, and is not a completed join.
 public func SyncExecutor.cancel<T>(self: ref SyncExecutor, handle: TaskHandle<T>): void {
     unsafe {
         ar_rt_cancel_i64(handle.id)

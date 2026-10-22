@@ -36,17 +36,31 @@ fn resolve_method_target(
         };
         if matches!(
             base_ty,
-            ArType::Named(_, _) | ArType::Result(_, _) | ArType::Option(_)
+            ArType::Named(_, _)
+                | ArType::Result(_, _)
+                | ArType::Option(_)
+                | ArType::Primitive(_)
+                | ArType::Slice(_)
+                | ArType::MutSlice(_)
         ) {
             break;
         }
     }
-    // Named receivers use their type SymbolId; builtin Result/Option methods
+    // Named receivers use their type SymbolId; builtin Result/Option/primitive methods
     // live on the prelude type symbols (linked by import re-index).
     let type_id = match base_ty {
         ArType::Named(id, _) => Some(id),
+        ArType::Vector(shape) => symbols.vector_type_symbol(shape),
         ArType::Result(_, _) => symbols.builtins.result,
         ArType::Option(_) => symbols.builtins.option,
+        ArType::Primitive(Primitive::Str) => symbols.builtins.str_type,
+        ArType::Primitive(Primitive::Char) => symbols.builtins.char_type,
+        ArType::Primitive(Primitive::Int) | ArType::IntLiteral => symbols.builtins.int_type,
+        ArType::Primitive(Primitive::U32) => symbols.builtins.u32_type,
+        ArType::Primitive(Primitive::U64) => symbols.builtins.u64_type,
+        ArType::Primitive(Primitive::Float) | ArType::FloatLiteral => symbols.builtins.float_type,
+        ArType::Slice(_) | ArType::MutSlice(_) => symbols.builtins.slice_type,
+        ArType::Ptr(_) => symbols.builtins.ptr_type,
         _ => None,
     }?;
 
@@ -77,9 +91,7 @@ impl LowerCtx<'_> {
             _ => None,
         };
         if black_box_symbol.is_some_and(|symbol| {
-            let name = symbols.get(symbol).name.as_str();
-            arandu_middle::IntrinsicKind::from_name(name)
-                == Some(arandu_middle::IntrinsicKind::BlackBox)
+            symbols.get(symbol).lang_item == Some(arandu_middle::symbol_table::LangItem::BlackBox)
         }) {
             let args_slice = self.hir.pool.expr_list(args);
             if let Some(&argument) = args_slice.first() {
@@ -318,9 +330,72 @@ impl LowerCtx<'_> {
         } else {
             Some(target.unwrap_or_else(|| self.new_temp_id(expr.ty)))
         };
+        if let Some(symbol) = callee_symbol
+            && symbols.get(symbol).lang_item
+                == Some(arandu_middle::symbol_table::LangItem::SimdIntrinsic)
+            && let Some(intrinsic) =
+                arandu_middle::intrinsics::SimdIntrinsic::from_name(&symbols.get(symbol).name)
+        {
+            use arandu_middle::intrinsics::SimdOperation;
+            // Constants must become typed SSA values: vector validation cannot
+            // infer the scalar type of a literal pool entry in isolation.
+            for (argument, formal) in arg_ops.iter_mut().zip(&formal_params) {
+                if matches!(argument, AmirOperand::Constant(_)) {
+                    let temp = self.new_temp(formal.clone());
+                    self.emit_assign_temp(temp, AmirRvalue::Use(*argument));
+                    *argument = AmirOperand::Copy(temp);
+                }
+            }
+            let value = match (intrinsic.operation, arg_ops.as_slice()) {
+                (SimdOperation::Splat, [value]) => AmirRvalue::VectorSplat { value: *value },
+                (SimdOperation::Binary(op), [left, right]) => AmirRvalue::VectorOp {
+                    op,
+                    left: *left,
+                    right: *right,
+                },
+                (SimdOperation::Extract(lane), [vector]) => AmirRvalue::VectorExtractLane {
+                    vector: *vector,
+                    lane,
+                },
+                (SimdOperation::Insert(lane), [vector, value]) => AmirRvalue::VectorInsertLane {
+                    vector: *vector,
+                    lane,
+                    value: *value,
+                },
+                (SimdOperation::Compare(op), [left, right]) => AmirRvalue::VectorCompare {
+                    op,
+                    left: *left,
+                    right: *right,
+                },
+                (SimdOperation::Select, [mask, if_true, if_false]) => AmirRvalue::VectorSelect {
+                    mask: *mask,
+                    if_true: *if_true,
+                    if_false: *if_false,
+                },
+                _ => {
+                    return Err(Diagnostic::ice(
+                        DiagCode::ICEGEN001,
+                        "invalid SIMD intrinsic arity after type checking",
+                        expr.span,
+                    ));
+                }
+            };
+            let Some(dest) = dest else {
+                return Err(Diagnostic::ice(
+                    DiagCode::ICEGEN001,
+                    "SIMD intrinsic has no value destination",
+                    expr.span,
+                ));
+            };
+            self.emit_assign_temp(dest, value);
+            return Ok(AmirOperand::Copy(dest));
+        }
         if let Some(symbol) = callee_symbol {
             let name = symbols.get(symbol).name.as_str();
-            let kind = arandu_middle::IntrinsicKind::from_name(name);
+            let kind = arandu_middle::IntrinsicKind::from_declared_name(
+                name,
+                symbols.get(symbol).lang_item,
+            );
             if kind == Some(arandu_middle::IntrinsicKind::DropInPlace)
                 && let (Some(&arg), [pointer]) = (args_slice.first(), arg_ops.as_slice())
             {

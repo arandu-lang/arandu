@@ -4,7 +4,9 @@ use arandu_middle::Diagnostic;
 use arandu_middle::amir::{AmirFunc, AmirStmt, BlockId, TempId};
 use arandu_middle::types::ArType;
 
-use super::{FuncEmitter, ModuleEmitter, block_label, ice, local_name, quote_name, temp_name};
+use super::{
+    FuncEmitter, ModuleEmitter, TypedValue, block_label, ice, local_name, quote_name, temp_name,
+};
 use crate::writer::IrWriter;
 
 impl<'a, 'm> FuncEmitter<'a, 'm> {
@@ -18,6 +20,8 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
             writer: IrWriter::default(),
             defined: vec![None; func.temps.len()],
             temp_slots: vec![None; func.temps.len()],
+            temp_values: vec![None; func.temps.len()],
+            pending_assignment: None,
             temp_llvm_ty: vec![None; func.temps.len()],
             next_value: 0,
             current_return: None,
@@ -72,7 +76,22 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
         self.temp_slots[temp.as_usize()].as_deref()
     }
 
+    pub(super) fn bind_temp(&mut self, lhs: TempId, value: TypedValue) -> Result<(), Diagnostic> {
+        if self.temp_slots[lhs.as_usize()].is_some() {
+            return Err(ice(format!(
+                "AMIR temp %t{} has a stack slot but was bound as an SSA alias",
+                lhs.as_usize()
+            )));
+        }
+        if lhs.as_usize() == 0 {
+            self.current_return = Some(value.value.clone());
+        }
+        self.temp_values[lhs.as_usize()] = Some(value);
+        Ok(())
+    }
+
     pub(super) fn destination(&mut self, lhs: TempId) -> String {
+        self.pending_assignment = Some(lhs);
         if self.temp_slots[lhs.as_usize()].is_some() {
             let name = self.new_value();
             if lhs.as_usize() == 0 {

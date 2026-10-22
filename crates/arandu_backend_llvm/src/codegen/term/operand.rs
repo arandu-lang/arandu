@@ -34,7 +34,9 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                     }
                     return self.coerce(loaded_value, expected);
                 }
-                let value = if temp.as_usize() == 0 {
+                let value = if let Some(alias) = self.temp_values[temp.as_usize()].clone() {
+                    return self.coerce(alias, expected);
+                } else if temp.as_usize() == 0 {
                     self.return_value()
                         .ok_or_else(|| ice("return register is read before it is assigned"))?
                 } else {

@@ -162,6 +162,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
     }
 
     pub(super) fn emit_statement(&mut self, statement: &AmirStmt) -> Result<(), Diagnostic> {
+        self.pending_assignment = None;
         match statement {
             AmirStmt::Assign { lhs, rhs } => {
                 let ty = self.temp_type(*lhs);

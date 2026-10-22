@@ -84,11 +84,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                 }
                 let raw = self.new_value();
                 self.writer.line(format!("{raw} = {call}"));
-                let coerced = self.coerce(TypedValue::new(return_text, raw), &expected)?;
-                let rendered = coerced.render();
-                self.writer
-                    .line(format!("{result} = select i1 true, {rendered}, {rendered}"));
-                Ok(())
+                self.assign_coerced(result, TypedValue::new(return_text, raw), &expected)
             }
             Some(_) => Err(ice(format!(
                 "call to {} has a void return but an assigned destination",

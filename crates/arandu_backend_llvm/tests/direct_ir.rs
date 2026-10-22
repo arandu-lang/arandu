@@ -569,6 +569,10 @@ func main(): int {
         !ir.contains("alloca"),
         "locals without their address taken must not get a stack home:\n{ir}"
     );
+    assert!(
+        !ir.contains("select i1 true"),
+        "identity assignments must alias the SSA value instead of emitting a copy:\n{ir}"
+    );
     verify(&ir);
 }
 

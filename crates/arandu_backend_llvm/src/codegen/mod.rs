@@ -84,6 +84,12 @@ pub(super) struct FuncEmitter<'a, 'm> {
     writer: IrWriter,
     defined: Vec<Option<&'static str>>,
     temp_slots: Vec<Option<String>>,
+    /// SSA value bound to a temp that was assigned by aliasing an existing
+    /// value instead of materializing a copy instruction.
+    temp_values: Vec<Option<TypedValue>>,
+    /// Temp whose statement destination was just allocated by `destination()`,
+    /// so the value emitter can bind it without a fake identity instruction.
+    pending_assignment: Option<TempId>,
     /// LLVM type actually written for a temp when it differs from the AMIR view
     /// (full enum-variant payloads that AMIR projects thinly).
     temp_llvm_ty: Vec<Option<String>>,
@@ -103,6 +109,7 @@ pub(super) struct FuncEmitter<'a, 'm> {
     edge_args: HashMap<(BlockId, BlockId), Vec<TypedValue>>,
 }
 
+#[derive(Clone)]
 pub(super) struct TypedValue {
     ty: String,
     value: String,

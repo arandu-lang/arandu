@@ -19,10 +19,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
         match rvalue {
             AmirRvalue::Use(operand) => {
                 let value = self.operand(operand, lhs_ty)?;
-                let rendered = value.render();
-                self.writer
-                    .line(format!("{result} = select i1 true, {rendered}, {rendered}"));
-                Ok(())
+                self.assign_coerced(result, value, lhs_ty)
             }
             AmirRvalue::Binary { op, left, right } => {
                 self.emit_binary(result, lhs_ty, *op, left, right)
@@ -111,10 +108,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
             }
             AmirRvalue::BlackBox { value, .. } => {
                 let value = self.operand(value, lhs_ty)?;
-                let rendered = value.render();
-                self.writer
-                    .line(format!("{result} = select i1 true, {rendered}, {rendered}"));
-                Ok(())
+                self.assign_coerced(result, value, lhs_ty)
             }
         }
     }

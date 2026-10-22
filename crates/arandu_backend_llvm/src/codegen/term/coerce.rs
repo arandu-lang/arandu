@@ -13,7 +13,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
     ) -> Result<TypedValue, Diagnostic> {
         let expected_text = self.module.llvm_ty(expected)?;
         if value.ty == expected_text {
-            return Ok(TypedValue::new(expected_text, value.value));
+            return Ok(value);
         }
         let actual_width = self.module.integer_width_from_llvm(&value.ty);
         let expected_width = self.module.integer_width(expected);
@@ -195,7 +195,11 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
             )));
         };
         let Some(instruction) = instruction else {
-            return Ok(TypedValue::new(expected_text, value.value));
+            let mut coerced = TypedValue::new(expected_text, value.value);
+            if self.module.integer_width(expected).is_some() {
+                coerced = coerced.with_source_signed(self.module.is_signed(expected));
+            }
+            return Ok(coerced);
         };
         let result = self.new_value();
         self.writer.line(format!("{result} = {instruction}"));
@@ -209,6 +213,12 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
         lhs_ty: &ArType,
     ) -> Result<(), Diagnostic> {
         let value = self.coerce(value, lhs_ty)?;
+        if let Some(lhs) = self.pending_assignment.take()
+            && self.temp_slots[lhs.as_usize()].is_none()
+        {
+            self.bind_temp(lhs, value)?;
+            return Ok(());
+        }
         let rendered = value.render();
         self.writer
             .line(format!("{result} = select i1 true, {rendered}, {rendered}"));

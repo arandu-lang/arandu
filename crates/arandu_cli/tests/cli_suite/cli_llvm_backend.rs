@@ -155,6 +155,57 @@ fn build_b_llvm_interpolation_and_gen_arena_binaries() {
 }
 
 #[test]
+fn explicit_output_outside_the_profile_builds_without_incremental_noise() {
+    if !clang_available() {
+        return;
+    }
+    let tmp = common::temp_dir("arandu_llvm_explicit_output").unwrap();
+    let project = tmp.join("explicit_output");
+    let init = run_cli_in(&tmp, &["new", "explicit_output", "--bin", "--vcs=none"]);
+    assert!(
+        init.status.success(),
+        "new explicit_output: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+    fs::write(
+        project.join("src/main.aru"),
+        "func main(): int { let raw: u32 = 7 as u32 return 0 }\n",
+    )
+    .expect("write main");
+
+    let object = tmp.join("artifacts").join("explicit.o");
+    let object_arg = object.to_string_lossy().into_owned();
+    let build = run_cli_in(
+        &project,
+        &[
+            "build",
+            "-b",
+            "llvm",
+            "--target=thumbv6m-none-eabi",
+            "--emit=obj",
+            "-o",
+            &object_arg,
+        ],
+    );
+    let stderr = String::from_utf8_lossy(&build.stderr);
+    assert!(
+        build.status.success(),
+        "--emit=obj with an explicit -o must succeed: {stderr}"
+    );
+    assert!(
+        !stderr.contains("artifact is outside the active build profile"),
+        "an explicit -o is not an incremental-cache failure: {stderr}"
+    );
+    assert!(
+        !stderr.contains("override-module"),
+        "the module header must use clang's canonical triple: {stderr}"
+    );
+    assert!(object.is_file(), "missing object at {}", object.display());
+
+    let _ = fs::remove_dir_all(tmp);
+}
+
+#[test]
 fn incremental_build_does_not_reuse_cranelift_artifact_for_llvm() {
     if !clang_available() {
         return;

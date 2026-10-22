@@ -317,23 +317,15 @@ pub fn record_session(
         }
         None => artifact::layout(config.project_root, config.profile.directory()),
     };
-    fs::create_dir_all(&layout.incremental).map_err(|error| {
-        CliFailure::operational(
-            "create incremental cache directory",
-            Some(layout.incremental.clone()),
-            error.to_string(),
-        )
-    })?;
-
-    let relative = artifact_full_path
-        .strip_prefix(&layout.profile_root)
-        .map_err(|_| {
-            CliFailure::operational(
-                "record incremental artifact",
-                Some(artifact_full_path.to_path_buf()),
-                "artifact is outside the active build profile",
-            )
-        })?;
+    let relative = artifact_full_path.strip_prefix(&layout.profile_root);
+    let Ok(relative) = relative else {
+        // `-o` may point outside the profile tree. Such an artifact is still
+        // published, but the incremental session cannot own it: there is no
+        // profile-relative name to replay the cutoff against. Skipping the
+        // record keeps a successful build successful instead of turning a
+        // valid explicit output path into an operational failure.
+        return Ok(());
+    };
     if !is_safe_relative_path(relative) {
         return Err(CliFailure::operational(
             "record incremental artifact",
@@ -342,6 +334,13 @@ pub fn record_session(
         ));
     }
     let artifact_relative = relative.to_string_lossy().into_owned();
+    fs::create_dir_all(&layout.incremental).map_err(|error| {
+        CliFailure::operational(
+            "create incremental cache directory",
+            Some(layout.incremental.clone()),
+            error.to_string(),
+        )
+    })?;
     // Publication already hashed the exact staged bytes to derive the
     // content-addressed filename. Move that digest into the session rather
     // than reading the executable again; every future cutoff still re-hashes

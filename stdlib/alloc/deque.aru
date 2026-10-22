@@ -54,9 +54,35 @@ func elemSize<T>(): usize {
     return size
 }
 
-func roundUpPowerOfTwo(n: usize): usize {
+func maxPowerOfTwoCapacity<T>(): usize {
+    let maxBytes: usize = 2147483647 as usize
+    let maxElements = maxBytes / elemSize<T>()
+    if maxElements < MINIMUM_CAPACITY {
+        return 0 as usize
+    }
     let mut cap = MINIMUM_CAPACITY
+    while cap <= maxElements / (2 as usize) {
+        cap = cap * (2 as usize)
+    }
+    return cap
+}
+
+func capacityOverflow(): void {
+    unsafe {
+        intrinsics.abort()
+    }
+}
+
+func roundUpPowerOfTwo<T>(n: usize): usize {
+    let mut cap = MINIMUM_CAPACITY
+    let maxCap = maxPowerOfTwoCapacity<T>()
+    if maxCap < MINIMUM_CAPACITY || n > maxCap {
+        capacityOverflow()
+    }
     while cap < n {
+        if cap > maxCap / (2 as usize) {
+            capacityOverflow()
+        }
         cap = cap * (2 as usize)
     }
     return cap
@@ -79,7 +105,7 @@ public func VecDeque.withCapacity<T>(capacity: usize): VecDeque<T> {
     if capacity == (0 as usize) {
         return VecDeque<T>.new()
     }
-    let cap = roundUpPowerOfTwo(capacity)
+    let cap = roundUpPowerOfTwo<T>(capacity)
     unsafe {
         let raw = ar_vec_malloc(cap * elemSize<T>())
         let nullp: ptr[u8] = nil
@@ -111,9 +137,16 @@ public func VecDeque.capacity<T>(self: ref VecDeque<T>): usize {
 }
 
 func VecDeque.grow<T>(self: mut ref VecDeque<T>): void {
+    let maxCap = maxPowerOfTwoCapacity<T>()
     let newCap = if self.capacity == (0 as usize) {
+        if maxCap < MINIMUM_CAPACITY {
+            capacityOverflow()
+        }
         MINIMUM_CAPACITY
     } else {
+        if self.capacity > maxCap / (2 as usize) {
+            capacityOverflow()
+        }
         self.capacity * (2 as usize)
     }
 

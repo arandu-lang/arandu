@@ -19,6 +19,35 @@ fn rc_arc_unwrap_and_last_drop_do_not_resurrect_payloads_through_weak() {
     );
 }
 
+#[test]
+#[cfg(target_pointer_width = "64")]
+fn deque_rejects_capacity_that_cannot_be_rounded_without_overflow() {
+    let root = common::temp_dir("arandu-deque-capacity-overflow").expect("temporary directory");
+    let source = root.join("deque_capacity_overflow.aru");
+    fs::write(
+        &source,
+        r#"
+import std.alloc.deque as deque
+
+func main(): int {
+    let _q = deque.VecDeque<u8>.withCapacity((18446744073709551615 as u64) as usize)
+    return 0
+}
+"#,
+    )
+    .expect("write overflow contract");
+
+    let output = common::cli_command()
+        .arg("run")
+        .arg(&source)
+        .output()
+        .expect("run CLI");
+    assert!(
+        !output.status.success(),
+        "unrepresentable deque capacity must abort instead of wrapping or hanging"
+    );
+}
+
 fn run_contract(contract: &str, expected_stdout: Option<&str>) {
     let root = common::temp_dir("arandu-alloc-contract").expect("temporary directory");
     let source = root.join("alloc_structures.aru");

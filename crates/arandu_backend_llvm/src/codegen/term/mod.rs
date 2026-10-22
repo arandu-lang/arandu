@@ -42,6 +42,53 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                         "AMIR return terminator has no preceding assignment to the return register",
                     ));
                 };
+                if let Some((info, aggregate, align)) = self
+                    .export_return
+                    .as_ref()
+                    .map(|shape| (shape.info.clone(), shape.aggregate.clone(), shape.align))
+                {
+                    use super::export::lanes_ty;
+                    use arandu_middle::layout::ReturnAbi;
+                    let value = crate::codegen::TypedValue::new(aggregate.clone(), value);
+                    match &info.ret {
+                        ReturnAbi::Void => {
+                            self.writer.line("ret void");
+                        }
+                        ReturnAbi::Sret => {
+                            self.writer.line(format!(
+                                "store {} {}, ptr %sret, align {align}",
+                                value.ty, value.value
+                            ));
+                            self.writer.line("ret void");
+                        }
+                        ReturnAbi::Direct(lanes) => {
+                            let buffer = self.spill_aggregate(&value, &aggregate, align);
+                            let ty_text = lanes_ty(lanes);
+                            if let [lane] = lanes.as_slice() {
+                                let lane = self.load_lane(&buffer, lane);
+                                self.writer.line(format!("ret {ty_text} {}", lane.value));
+                            } else {
+                                let first = self.load_lane(&buffer, &lanes[0]);
+                                let mut aggregate_value = self.new_value();
+                                self.writer.line(format!(
+                                    "{aggregate_value} = insertvalue {ty_text} undef, {}, 0",
+                                    first.render()
+                                ));
+                                for (index, lane) in lanes.iter().enumerate().skip(1) {
+                                    let lane = self.load_lane(&buffer, lane);
+                                    let next = self.new_value();
+                                    self.writer.line(format!(
+                                        "{next} = insertvalue {ty_text} {aggregate_value}, {}, {index}",
+                                        lane.render()
+                                    ));
+                                    aggregate_value = next;
+                                }
+                                self.writer.line(format!("ret {ty_text} {aggregate_value}"));
+                            }
+                        }
+                    }
+                    return Ok(());
+                }
                 let ty_text = self.module.llvm_ty(&return_ty)?;
                 self.writer.line(format!("ret {ty_text} {value}"));
                 Ok(())

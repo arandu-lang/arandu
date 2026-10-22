@@ -683,3 +683,43 @@ func main(): int {
     assert_no_orphan_declarations(&ir);
     verify(&ir);
 }
+
+#[test]
+fn export_marshals_repr_c_aggregates_through_abi_lanes() {
+    // An 8-byte `{u32, f32}` is one 64-bit integer lane on every ABI family the
+    // host can be built for (SysV, Windows x64, AAPCS64), so the shape below is
+    // portable across CI hosts while still proving lane marshalling.
+    let ir = emit(
+        r#"
+@Repr("C")
+struct Frame {
+    id: u32
+    weight: f32
+}
+
+@Export
+func shift(frame: Frame): Frame {
+    let moved = Frame { id: frame.id, weight: frame.weight }
+    return moved
+}
+"#,
+    );
+    assert!(
+        ir.contains("define i64 @shift(i64 %p")
+            && ir.lines().any(|line| line.starts_with("ret i64 %")),
+        "an 8-byte C struct crosses as one i64 lane:\n{ir}"
+    );
+    assert!(
+        ir.contains("alloca [8 x i8]"),
+        "the body must materialize the aggregate representation:\n{ir}"
+    );
+    assert!(
+        ir.contains("getelementptr inbounds i8"),
+        "lanes are rebuilt through byte offsets:\n{ir}"
+    );
+    assert!(
+        !ir.contains("define [8 x i8] @shift"),
+        "the ABI lane type, not the memory representation, must appear in the signature:\n{ir}"
+    );
+    verify(&ir);
+}

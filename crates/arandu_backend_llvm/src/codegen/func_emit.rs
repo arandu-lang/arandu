@@ -4,10 +4,13 @@ use arandu_middle::Diagnostic;
 use arandu_middle::amir::{AmirFunc, AmirStmt, BlockId, TempId};
 use arandu_middle::types::ArType;
 
+use super::export::lanes_ty;
 use super::{
-    FuncEmitter, ModuleEmitter, TypedValue, block_label, ice, local_name, quote_name, temp_name,
+    ExportReturn, FuncEmitter, ModuleEmitter, TypedValue, block_label, ice, local_name, quote_name,
+    temp_name,
 };
 use crate::writer::IrWriter;
+use arandu_middle::layout::{ReturnAbi, is_export_aggregate};
 
 impl<'a, 'm> FuncEmitter<'a, 'm> {
     pub(super) fn new(
@@ -30,6 +33,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
             current_llvm_label: String::new(),
             terminator_labels: HashMap::new(),
             edge_args: HashMap::new(),
+            export_return: None,
         };
         for temp in &func.params {
             this.define(*temp, "function parameter")?;
@@ -145,30 +149,60 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
         let return_ty = self.module.interner.resolve(self.func.return_type);
         let function_name = self.module.function_name(self.func.symbol);
         let is_main = function_name == "main";
-        let return_text = if is_main && self.module.is_void(&return_ty) {
+        let exported = self.module.symbols.is_exported(self.func.symbol);
+        let span = self.module.symbols.get(self.func.symbol).span;
+        let mut return_text = if is_main && self.module.is_void(&return_ty) {
             "i32".to_owned()
         } else {
             self.module.llvm_ty(&return_ty)?
         };
+        let mut sret = None;
+        if exported && is_export_aggregate(&return_ty) {
+            let info = self.module.classify_export_type(&return_ty, span)?;
+            let (aggregate, align) = self.module.alloca_type(&return_ty)?;
+            return_text = match &info.ret {
+                ReturnAbi::Void => "void".to_owned(),
+                ReturnAbi::Sret => {
+                    sret = Some((aggregate.clone(), align));
+                    "void".to_owned()
+                }
+                ReturnAbi::Direct(lanes) => lanes_ty(lanes),
+            };
+            self.export_return = Some(ExportReturn {
+                info,
+                aggregate,
+                align,
+            });
+        }
 
-        let params = self
-            .func
-            .params
-            .iter()
-            .map(|temp| {
-                let ty = self.temp_type(*temp);
+        let mut params = Vec::new();
+        let mut aggregate_params = Vec::new();
+        if let Some((aggregate, align)) = &sret {
+            params.push(format!("ptr sret({aggregate}) align {align} %sret"));
+        }
+        for temp in &self.func.params {
+            let ty = self.temp_type(*temp);
+            if exported && is_export_aggregate(&ty) {
+                let info = self.module.classify_export_type(&ty, span)?;
+                let (aggregate, _) = self.module.alloca_type(&ty)?;
+                let rendered = self.emit_export_param(*temp, &info, &aggregate)?;
+                if !rendered.is_empty() {
+                    params.push(rendered);
+                }
+                aggregate_params.push((*temp, info, aggregate));
+            } else {
                 let attribute = if matches!(ty, ArType::Ref(_) | ArType::RefMut(_)) {
                     "nonnull "
                 } else {
                     ""
                 };
-                Ok(format!(
+                params.push(format!(
                     "{} {attribute}{}",
                     self.module.llvm_ty(&ty)?,
                     temp_name(*temp)
-                ))
-            })
-            .collect::<Result<Vec<_>, Diagnostic>>()?;
+                ));
+            }
+        }
 
         let linkage = self
             .module
@@ -187,6 +221,11 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
             return Err(ice("AMIR entry block must not have block parameters"));
         }
         self.writer.line(format!("{}:", block_label(entry_id)));
+        // Aggregate parameters are ABI lanes; the body consumes one aggregate
+        // value, so the entry block spills or loads them once.
+        for (temp, info, aggregate) in aggregate_params {
+            self.bind_export_param(temp, &info, &aggregate);
+        }
 
         // AMIR pruning removes load/store traffic for locals that never have
         // their address taken, leaving them as metadata only (symbol/span for

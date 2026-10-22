@@ -368,8 +368,44 @@ fn lower_export(
     }
 
     let interner = &type_check.type_info.type_interner;
-    for (index, ty) in formal_types.iter().enumerate() {
-        if let Some(reason) = c_export_type_error(interner, interner.resolve(*ty), false) {
+    let mut has_aggregate = false;
+    let mut resolved_params = Vec::with_capacity(formal_types.len());
+    for ty in formal_types {
+        let resolved = interner.resolve(*ty);
+        has_aggregate |= arandu_middle::layout::is_export_aggregate(&resolved);
+        resolved_params.push(resolved);
+    }
+    let resolved_return = interner.resolve(return_type);
+    has_aggregate |= arandu_middle::layout::is_export_aggregate(&resolved_return);
+    if has_aggregate {
+        let target = &type_check.type_info.target_identity;
+        // An empty identity means the driver did not configure a target (unit
+        // tests and the pure semantic API). The backend enforces the same rule
+        // with the real triple before emitting.
+        if !target.arch.is_empty()
+            && arandu_middle::layout::ExportAbi::for_target(
+                &target.arch,
+                &target.os,
+                &target.triple,
+            )
+            .is_none()
+        {
+            return Err(Diagnostic::error(
+                crate::DiagCode::T049InvalidFfiExport,
+                format!(
+                    "aggregates by value are not classified for target '{}'; pass scalars or pointers",
+                    if target.triple.is_empty() {
+                        &target.arch
+                    } else {
+                        &target.triple
+                    }
+                ),
+                declaration.span,
+            ));
+        }
+    }
+    for (index, ty) in resolved_params.into_iter().enumerate() {
+        if let Some(reason) = c_export_type_error(type_check, ty, false, 0) {
             let span = declaration
                 .params
                 .get(index)
@@ -381,7 +417,7 @@ fn lower_export(
             ));
         }
     }
-    if let Some(reason) = c_export_type_error(interner, interner.resolve(return_type), true) {
+    if let Some(reason) = c_export_type_error(type_check, resolved_return, true, 0) {
         return Err(Diagnostic::error(
             crate::DiagCode::T049InvalidFfiExport,
             format!("cannot export return type: {reason}"),
@@ -424,8 +460,18 @@ fn lower_export(
 /// Rejects every type whose C representation depends on an ABI transformation
 /// the backend does not implement yet. Rejecting is deliberate: exporting a
 /// slice or a by-value struct today would silently emit a mismatched ABI.
-fn c_export_type_error(interner: &TypeInterner, ty: ArType, allow_void: bool) -> Option<String> {
+fn c_export_type_error(
+    type_check: &TypeCheckResult,
+    ty: ArType,
+    allow_void: bool,
+    depth: usize,
+) -> Option<String> {
+    use arandu_middle::layout::StructLayoutProvider as _;
     use arandu_middle::types::Primitive;
+    if depth > 8 {
+        return Some("aggregate nesting is too deep for a C boundary".to_owned());
+    }
+    let interner = &type_check.type_info.type_interner;
     match ty {
         ArType::Primitive(
             Primitive::I8
@@ -440,6 +486,7 @@ fn c_export_type_error(interner: &TypeInterner, ty: ArType, allow_void: bool) ->
             | Primitive::F64
             | Primitive::Bool,
         ) => None,
+        ArType::Primitive(Primitive::Byte) => None,
         ArType::Void if allow_void => None,
         ArType::Ptr(inner) => match interner.resolve(inner) {
             ArType::Void | ArType::Named(..) => None,
@@ -454,23 +501,69 @@ fn c_export_type_error(interner: &TypeInterner, ty: ArType, allow_void: bool) ->
                 | Primitive::U64
                 | Primitive::F32
                 | Primitive::F64
-                | Primitive::Bool,
+                | Primitive::Bool
+                | Primitive::Byte,
             ) => None,
             other => Some(format!(
                 "pointer to {other:?} has no stable C representation; point at a scalar or a nominal type"
             )),
         },
+        ArType::Slice(element) | ArType::MutSlice(element) => match interner.resolve(element) {
+            ArType::Primitive(
+                Primitive::I8
+                | Primitive::I16
+                | Primitive::I32
+                | Primitive::I64
+                | Primitive::U8
+                | Primitive::U16
+                | Primitive::U32
+                | Primitive::U64
+                | Primitive::F32
+                | Primitive::F64
+                | Primitive::Byte,
+            ) => None,
+            other => Some(format!(
+                "a slice of {other:?} has no C representation; use fixed-width scalars or a pointer"
+            )),
+        },
+        ArType::Named(symbol, _) => {
+            if !type_check.type_info.struct_repr_c.contains(&symbol) {
+                return Some(
+                    "nominal types by value need `@Repr(\"C\")` so their layout is the C layout; add it or pass `ptr T`"
+                        .to_owned(),
+                );
+            }
+            let Some(fields) = type_check
+                .type_info
+                .get_struct_fields_for_type(&ty, interner)
+            else {
+                return Some(
+                    "this nominal type has no concrete field table; instantiate it or pass `ptr T`"
+                        .to_owned(),
+                );
+            };
+            if fields.is_empty() {
+                return Some("an empty struct has no C representation".to_owned());
+            }
+            let fields = fields.clone();
+            for field in fields.iter() {
+                let field_ty = interner.resolve(field.ty);
+                if let Some(reason) = c_export_type_error(type_check, field_ty, false, depth + 1) {
+                    return Some(format!("field `{}`: {reason}", field.name));
+                }
+            }
+            None
+        }
+        ArType::Primitive(Primitive::Str) => Some(
+            "`str` is a fat pointer with an encoding contract; pass `ptr u8` plus a length"
+                .to_owned(),
+        ),
+        ArType::Primitive(Primitive::Char) => {
+            Some("`char` is a Unicode scalar value, not a C character; use u32 or u8".to_owned())
+        }
         ArType::Primitive(other) => Some(format!(
             "`{other:?}` has a target-dependent width; use a fixed-width type (i8..i64, u8..u64, f32, f64, bool)"
         )),
-        ArType::Named(..) => Some(
-            "nominal types by value are not supported by @Export yet; pass `ptr T` across the boundary"
-                .to_owned(),
-        ),
-        ArType::Slice(_) | ArType::MutSlice(_) => Some(
-            "slices are not supported by @Export yet; pass a raw pointer plus an explicit length"
-                .to_owned(),
-        ),
         ArType::Void => Some("`void` is only valid as the return type".to_owned()),
         other => Some(format!("{other:?} has no C representation")),
     }

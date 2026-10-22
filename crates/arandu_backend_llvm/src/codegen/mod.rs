@@ -19,6 +19,7 @@ use arandu_semantics::TypeInfo;
 use crate::writer::IrWriter;
 
 mod call;
+mod export;
 mod func_emit;
 mod module_emit;
 mod rvalue;
@@ -111,6 +112,17 @@ pub(super) struct FuncEmitter<'a, 'm> {
     /// Values passed across CFG edges, materialized in the predecessor so
     /// successor PHI nodes never insert instructions before/between phis.
     edge_args: HashMap<(BlockId, BlockId), Vec<TypedValue>>,
+    /// C ABI shape of an `@Export` aggregate return, consumed by the return
+    /// terminator. `None` for ordinary Arandu functions.
+    pub(super) export_return: Option<ExportReturn>,
+}
+
+/// Boundary return shape of an exported function.
+pub(super) struct ExportReturn {
+    pub info: arandu_middle::layout::ExportAbiInfo,
+    /// Opaque byte representation of the aggregate.
+    pub aggregate: String,
+    pub align: u64,
 }
 
 #[derive(Clone)]

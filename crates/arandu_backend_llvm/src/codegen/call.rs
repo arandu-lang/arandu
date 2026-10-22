@@ -1,8 +1,10 @@
 use arandu_middle::Diagnostic;
 use arandu_middle::amir::{AmirOperand, TempId};
 use arandu_middle::intrinsics::{AtomicOp, AtomicWidth, IntrinsicKind};
+use arandu_middle::layout::{ReturnAbi, is_export_aggregate};
 use arandu_middle::types::{ArType, Primitive};
 
+use super::export::lanes_ty;
 use super::{FuncEmitter, TypedValue, ice, quote_name};
 
 impl<'a, 'm> FuncEmitter<'a, 'm> {
@@ -41,9 +43,40 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
         // Extern/host calls use the flattened C ABI; Arandu-defined callees keep
         // first-class fat pointers as `{ ptr, i64 }` values.
         let flatten_host_abi = !self.module.is_internal(symbol);
+        let exported = self.module.symbols.is_exported(symbol);
+        let span = self.module.symbols.get(symbol).span;
         let mut rendered = Vec::with_capacity(args.len());
+        let mut sret_return = None;
+        let mut direct_return = None;
+        let mut return_text = self.module.llvm_ty(&return_ty)?;
+        if exported && is_export_aggregate(&return_ty) {
+            let info = self.module.classify_export_type(&return_ty, span)?;
+            let (aggregate, align) = self.module.alloca_type(&return_ty)?;
+            match &info.ret {
+                ReturnAbi::Void => return_text = "void".to_owned(),
+                ReturnAbi::Sret => {
+                    let buffer = self.new_value();
+                    self.writer
+                        .line(format!("{buffer} = alloca {aggregate}, align {align}"));
+                    rendered.push(format!("ptr sret({aggregate}) align {align} {buffer}"));
+                    sret_return = Some((buffer, aggregate, align));
+                    return_text = "void".to_owned();
+                }
+                ReturnAbi::Direct(lanes) => {
+                    return_text = lanes_ty(lanes);
+                    direct_return = Some((lanes.clone(), aggregate, align));
+                }
+            }
+        }
         for (argument, expected) in args.iter().zip(&param_types) {
             if self.module.is_void(expected) {
+                continue;
+            }
+            if exported && is_export_aggregate(expected) {
+                let info = self.module.classify_export_type(expected, span)?;
+                let (aggregate, _) = self.module.alloca_type(expected)?;
+                let value = self.operand(argument, expected)?;
+                rendered.extend(self.export_argument(&value, &info, &aggregate));
                 continue;
             }
             if flatten_host_abi && self.module.is_fat_pointer(expected) {
@@ -60,7 +93,6 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
             }
             rendered.push(self.operand(argument, expected)?.render());
         }
-        let return_text = self.module.llvm_ty(&return_ty)?;
         let name = quote_name(&function_name);
         let calling_convention = if flatten_host_abi {
             self.module.runtime_calling_convention(&function_name)
@@ -71,6 +103,48 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
             "call {calling_convention}{return_text} @{name}({})",
             rendered.join(", ")
         );
+        if let Some((buffer, aggregate, align)) = sret_return {
+            self.writer.line(call);
+            let Some(lhs) = lhs else {
+                return Ok(());
+            };
+            let Some(result) = result else {
+                return Err(ice("call destination has no LLVM name"));
+            };
+            let expected = self.temp_type(lhs);
+            let loaded = self.load_aggregate(&buffer, &aggregate, align);
+            return self.assign_coerced(result, TypedValue::new(aggregate, loaded), &expected);
+        }
+        if let Some((lanes, aggregate, align)) = direct_return {
+            let Some(lhs) = lhs else {
+                self.writer.line(call);
+                return Ok(());
+            };
+            let Some(result) = result else {
+                return Err(ice("call destination has no LLVM name"));
+            };
+            let expected = self.temp_type(lhs);
+            let returned = self.new_value();
+            self.writer.line(format!("{returned} = {call}"));
+            let buffer = self.new_value();
+            self.writer
+                .line(format!("{buffer} = alloca {aggregate}, align {align}"));
+            if let [lane] = lanes.as_slice() {
+                let value = TypedValue::new(return_text.clone(), returned);
+                self.store_lane(&buffer, lane, &value);
+            } else {
+                for (index, lane) in lanes.iter().enumerate() {
+                    let value = self.new_value();
+                    self.writer.line(format!(
+                        "{value} = extractvalue {return_text} {returned}, {index}"
+                    ));
+                    let lane_value = TypedValue::new(super::export::part_ty(lane.part), value);
+                    self.store_lane(&buffer, lane, &lane_value);
+                }
+            }
+            let loaded = self.load_aggregate(&buffer, &aggregate, align);
+            return self.assign_coerced(result, TypedValue::new(aggregate, loaded), &expected);
+        }
         match lhs {
             Some(lhs) if !self.module.is_void(&return_ty) => {
                 let Some(result) = result else {

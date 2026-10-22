@@ -218,6 +218,10 @@ fn clang_compile(ir: &Path, object: &Path, triple: Option<&str>) -> Result<(), C
     command.args(["-c", "-O3"]);
     if let Some(triple) = triple {
         command.arg(format!("--target={triple}"));
+    } else {
+        // Host modules deliberately carry no `target triple` so the artifact is
+        // built for the machine compiling it; clang's "override" is the intent.
+        command.arg("-Wno-override-module");
     }
     command.arg(ir).arg("-o").arg(object);
     let status = command.status().map_err(|error| {

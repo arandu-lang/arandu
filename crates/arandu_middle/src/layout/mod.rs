@@ -1,10 +1,15 @@
 pub mod abi;
 mod data_layout;
+pub mod export_abi;
 
 pub use abi::{
     AbiConfigError, AbiScalar, AbiSlot, ArgAbi, DirectAbi, TargetAbi, TargetAbiClassifier,
 };
 pub use data_layout::{DataLayout, DataLayoutError, SizeAlign};
+pub use export_abi::{
+    AbiLane, AbiPart, ExportAbi, ExportAbiInfo, ParamAbi, ReturnAbi, classify as classify_export,
+    is_export_aggregate,
+};
 
 use crate::SymbolId;
 use crate::index_vec::IdIndex;

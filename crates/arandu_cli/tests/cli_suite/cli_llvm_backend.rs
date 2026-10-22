@@ -434,3 +434,115 @@ fn emit_llvm_includes_interp_runtime_helpers() {
         "expected a main definition in m16 IR:\n{arena_ir}"
     );
 }
+
+#[test]
+fn exported_aggregates_link_and_run_against_a_c_consumer() {
+    if !clang_available() {
+        return;
+    }
+    let tmp = common::temp_dir("arandu_llvm_export_abi").unwrap();
+    let project = tmp.join("abi");
+    let init = run_cli_in(&tmp, &["new", "abi", "--lib", "--vcs=none"]);
+    assert!(
+        init.status.success(),
+        "new abi: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+    fs::write(
+        project.join("src/lib.aru"),
+        r#"
+@Repr("C")
+struct Frame {
+    id: u32
+    weight: f32
+}
+
+@Repr("C")
+struct Pair {
+    a: u64
+    b: u64
+}
+
+@Export
+func frame_id(frame: Frame): u32 { return frame.id }
+
+@Export
+func bump(frame: Frame): Frame {
+    let moved = Frame { id: frame.id + 1, weight: frame.weight + 0.5 }
+    return moved
+}
+
+@Export
+func swap_pair(pair: Pair): Pair {
+    let flipped = Pair { a: pair.b, b: pair.a }
+    return flipped
+}
+"#,
+    )
+    .expect("write library source");
+
+    let object = tmp.join("abi.o");
+    let object_arg = object.to_string_lossy().into_owned();
+    let build = run_cli_in(
+        &project,
+        &["build", "-b", "llvm", "--emit=obj", "-o", &object_arg],
+    );
+    assert!(
+        build.status.success(),
+        "build abi object: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let consumer = tmp.join("consumer.c");
+    fs::write(
+        &consumer,
+        r#"
+#include <stdint.h>
+#include <stdio.h>
+
+struct Frame { uint32_t id; float weight; };
+struct Pair { uint64_t a, b; };
+
+extern uint32_t frame_id(struct Frame frame);
+extern struct Frame bump(struct Frame frame);
+extern struct Pair swap_pair(struct Pair pair);
+
+int main(void) {
+    struct Frame frame = { .id = 41, .weight = 1.5f };
+    if (frame_id(frame) != 41) { return 1; }
+    struct Frame moved = bump(frame);
+    if (moved.id != 42) { return 2; }
+    if (moved.weight < 1.99f || moved.weight > 2.01f) { return 3; }
+    struct Pair pair = { .a = 7, .b = 9 };
+    struct Pair flipped = swap_pair(pair);
+    if (flipped.a != 9 || flipped.b != 7) { return 4; }
+    puts("ABI OK");
+    return 0;
+}
+"#,
+    )
+    .expect("write consumer");
+
+    let binary = tmp.join("consumer");
+    let link = Command::new("clang")
+        .arg(&consumer)
+        .arg(&object)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("clang should run");
+    assert!(
+        link.status.success(),
+        "link C consumer: {}",
+        String::from_utf8_lossy(&link.stderr)
+    );
+    let run = Command::new(&binary).output().expect("run consumer");
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "C consumer disagreed with the exported ABI: {}{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "ABI OK");
+}

@@ -107,7 +107,7 @@ func main(): int {
 "#,
     );
     assert!(ir.contains("source_filename = \"arandu\""));
-    assert!(ir.contains("define i32 @add(i32 %t1, i32 %t2)"));
+    assert!(ir.contains("define internal i32 @add(i32 %t1, i32 %t2)"));
     verify(&ir);
     if let Some(code) = run(&ir) {
         assert_eq!(code, 42);
@@ -339,7 +339,7 @@ func main(): int {
 "#,
     );
     assert!(ir.contains("sum_point([8 x i8]"));
-    assert!(ir.contains("define [8 x i8]"));
+    assert!(ir.contains("define internal [8 x i8]"));
     assert!(ir.contains("getelementptr inbounds i8"));
     verify(&ir);
     if let Some(code) = run(&ir) {
@@ -467,7 +467,7 @@ func main(): int {
         "must not pass fat str as a single aggregate to C:\n{ir}"
     );
     assert!(
-        ir.contains("define i32 @keep_str({ ptr, i64 }"),
+        ir.contains("define internal i32 @keep_str({ ptr, i64 }"),
         "Arandu→Arandu calls keep first-class fat str:\n{ir}"
     );
     assert!(
@@ -600,6 +600,45 @@ func process_inputs(raw: u32): u32 { return raw }
     assert!(
         !ir.contains("hitbox.core.socd.apply_socd"),
         "an exported function must not keep its module-qualified host name:\n{ir}"
+    );
+    verify(&ir);
+}
+
+#[test]
+fn unexported_functions_keep_internal_linkage() {
+    let ir = emit(
+        r#"
+module hitbox.core.socd
+
+@Export
+func apply_socd(raw: u32): u32 { return helper(raw) }
+
+func helper(raw: u32): u32 { return raw }
+
+func main(): int { return 0 }
+"#,
+    );
+    let definitions: Vec<&str> = ir
+        .lines()
+        .filter(|line| line.starts_with("define "))
+        .collect();
+    assert!(
+        definitions
+            .iter()
+            .any(|line| line.contains("@apply_socd(") && !line.contains("internal")),
+        "@Export publishes the symbol:\n{ir}"
+    );
+    assert!(
+        definitions
+            .iter()
+            .any(|line| line.contains(".helper(") && line.contains("internal")),
+        "an unannotated function must not leak a global symbol:\n{ir}"
+    );
+    assert!(
+        definitions
+            .iter()
+            .any(|line| line.contains("@main(") && !line.contains("internal")),
+        "main stays visible to the linker:\n{ir}"
     );
     verify(&ir);
 }

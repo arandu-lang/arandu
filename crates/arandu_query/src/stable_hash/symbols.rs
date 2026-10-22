@@ -398,6 +398,16 @@ pub(super) fn hash_symbol_table(hasher: &mut Hasher, table: &SymbolTable, includ
         hash_symbol_id(hasher, symbol);
     }
 
+    // `@Export` controls linkage and the flat symbol name, so the set belongs
+    // to the codegen-relevant identity of the program.
+    let mut exported: Vec<_> = table.exported_functions.iter().copied().collect();
+    exported.sort_by_key(|symbol| (symbol.file_id, symbol.local_id.0));
+    hasher.update(b"ExportedFunctions/v1");
+    hasher.update(&u64_le(exported.len() as u64));
+    for symbol in exported {
+        hash_symbol_id(hasher, symbol);
+    }
+
     // Sealed-interface status and implementation edges affect exported
     // surfaces and downstream type checking, so they belong to both the full
     // resolution hash and the span-independent module-signature hash.

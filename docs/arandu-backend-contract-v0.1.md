@@ -177,6 +177,11 @@ multi-assigned temp, and an identity assignment aliases the incoming SSA value
 instead of emitting `select i1 true, v, v`. A module that needs no runtime
 helper therefore emits no declarations at all. `arandu_backend_llvm/tests/
 direct_ir.rs` asserts these invariants structurally.
+
+Linkage is equally explicit: a definition is `internal` unless the source
+marked it `@Export` (or it is `main`). The annotation is the single permission
+to publish a flat symbol, so an unannotated function never leaks a global
+symbol into the object file and cannot collide with C by accident.
 Differential smith
 fuzzing covers Cranelift↔LLVM via `synthesized-llvm` and `synthesized-all`
 (clang + packaged runtime; skips known experimental emission gaps). EMI also

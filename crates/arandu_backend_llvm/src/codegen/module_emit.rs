@@ -209,6 +209,19 @@ impl<'a> ModuleEmitter<'a> {
         self.program.funcs.iter().any(|func| func.symbol == symbol)
     }
 
+    /// Linkage prefix for a function definition.
+    ///
+    /// Only `@Export` and `main` are visible to the linker. Every other
+    /// definition keeps internal linkage, so an unannotated function never
+    /// leaks a global symbol into the object file.
+    pub(super) fn definition_linkage(&self, symbol: SymbolId, name: &str) -> &'static str {
+        if name == "main" || self.symbols.is_exported(symbol) {
+            ""
+        } else {
+            "internal "
+        }
+    }
+
     /// Runtime fat-string helpers use `extern "sysv64"` on Windows so their
     /// ABI matches Cranelift JIT. LLVM's default convention on Windows is Win64,
     /// so preserve the runtime convention explicitly for these imports.

@@ -233,6 +233,8 @@ func apply_socd(raw: u32): u32 { return raw }
 @Export("arandu_core_process_inputs")
 func process_inputs(raw: u32): u32 { return raw }
 
+func helper(raw: u32): u32 { return raw }
+
 func main(): int { return 0 }
 "#,
     )
@@ -249,19 +251,20 @@ func main(): int { return 0 }
 
     let symbols = Command::new("llvm-nm")
         .arg("--defined-only")
+        .arg("--extern-only")
         .arg(&object)
         .output()
         .expect("run llvm-nm");
     let symbols = String::from_utf8_lossy(&symbols.stdout);
-    for expected in [" T apply_socd", " T arandu_core_process_inputs"] {
-        assert!(
-            symbols.contains(expected),
-            "missing `{expected}` in:\n{symbols}"
-        );
-    }
-    assert!(
-        !symbols.contains("hitbox.core.socd.apply_socd"),
-        "@Export must not keep the module-qualified name:\n{symbols}"
+    let mut globals: Vec<&str> = symbols
+        .lines()
+        .filter_map(|line| line.split_whitespace().last())
+        .collect();
+    globals.sort_unstable();
+    assert_eq!(
+        globals,
+        ["apply_socd", "arandu_core_process_inputs", "main"],
+        "only @Export functions and main may stay global:\n{symbols}"
     );
 
     let _ = fs::remove_dir_all(tmp);

@@ -169,8 +169,11 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
             })
             .collect::<Result<Vec<_>, Diagnostic>>()?;
 
+        let linkage = self
+            .module
+            .definition_linkage(self.func.symbol, &function_name);
         self.writer.line(format!(
-            "define {return_text} @{}({}) nounwind {{",
+            "define {linkage}{return_text} @{}({}) nounwind {{",
             quote_name(&function_name),
             params.join(", ")
         ));

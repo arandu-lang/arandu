@@ -413,10 +413,11 @@ fn lower_export(
         ));
     }
 
-    type_check
-        .symbols_mut()
+    let symbols = type_check.symbols_mut();
+    symbols
         .host_function_names
         .insert(symbol, crate::SmolStr::new(export_name));
+    symbols.exported_functions.insert(symbol);
     Ok(())
 }
 

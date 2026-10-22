@@ -104,6 +104,8 @@ impl super::SymbolTable {
             self.host_function_names
                 .insert(map_symbol(old_symbol_id), name);
         }
+        self.exported_functions
+            .extend(other.exported_functions.into_iter().map(map_symbol));
         self.tooling_entrypoints
             .extend(other.tooling_entrypoints.into_iter().map(map_symbol));
 

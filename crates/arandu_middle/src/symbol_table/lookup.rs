@@ -105,6 +105,12 @@ impl super::SymbolTable {
             .map_or_else(|| sym.name.as_str(), SmolStr::as_str)
     }
 
+    /// Whether `@Export` published this symbol to the linker.
+    #[must_use]
+    pub fn is_exported(&self, symbol: SymbolId) -> bool {
+        self.exported_functions.contains(&symbol)
+    }
+
     #[must_use]
     pub fn lookup_value(&self, scope: ScopeId, name: &str) -> Option<SymbolId> {
         self.lookup_with(scope, name, SymbolKind::is_value)

@@ -244,6 +244,10 @@ pub struct SymbolTable {
     /// Canonical backend identities of functions and nominal type arguments,
     /// computed once from defining module paths, never from import aliases.
     pub host_function_names: FxHashMap<SymbolId, SmolStr>,
+    /// Functions published to the linker by `@Export`. Every other definition
+    /// keeps internal linkage, so a module never leaks symbols it did not
+    /// explicitly export.
+    pub exported_functions: FxHashSet<SymbolId>,
     /// Functions invoked by tooling rather than source calls (`@Test`, `@Benchmark`).
     pub tooling_entrypoints: FxHashSet<SymbolId>,
     pub module_scopes: FxHashMap<SymbolId, ScopeId>,
@@ -280,6 +284,7 @@ impl SymbolTable {
             sealed_interfaces: FxHashSet::default(),
             interface_implementations: FxHashSet::default(),
             host_function_names: FxHashMap::default(),
+            exported_functions: FxHashSet::default(),
             tooling_entrypoints: FxHashSet::default(),
             module_scopes: FxHashMap::default(),
             type_params: FxHashMap::default(),

@@ -148,6 +148,8 @@ de layout presumido. Ver `docs/errors/T049.md`.
 
 Colisões de símbolo entre duas funções exportadas são diagnosticadas em tempo
 de compilação, ao contrário do comportamento silencioso de `#[no_mangle]`.
+Definições sem `@Export` mantêm linkage interno no objeto, então `pub` não
+publica nada para o C por acidente.
 
 ### 3.3 Consumo a partir do Python (Buffer Protocol Zero-Copy)
 

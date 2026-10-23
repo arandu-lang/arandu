@@ -200,9 +200,18 @@ same way, so the two sides cannot drift. Lane loads and stores use `align 1`,
 which is always valid and never claims an alignment the lane type lacks. A
 target without a classifier rejects by-value aggregates (`T049`) instead of
 applying the host rules. `--emit=header` renders the same types through the
-same `LayoutEngine`, including `_Static_assert` on size and field offsets; the
-CLI suite compiles that header with clang, links it against the Arandu object
-and runs it.
+same `LayoutEngine`, including `_Static_assert` on size, alignment and field
+offsets; the CLI suite compiles that header with clang, links it against the
+Arandu object and runs it. The header lives in `arandu_ffi` and takes only
+`TypeInfo` plus the symbol table, so it describes the object regardless of the
+backend that will emit it; its pointer width comes from the requested target,
+which is why `--emit=header --target=thumbv6m-none-eabi` asserts
+`sizeof(void *) == 4`. Type mapping itself is a single function,
+`ffi_type_of`, shared by `@Export` validation and the header: a type is
+exportable exactly when the header can spell it. C is a flat namespace, so the
+header also rejects exported type names that would redeclare `AranduStr`,
+`AranduSlice*` or `AranduMutSlice*`, and two distinct types competing for one C
+name.
 Differential smith
 fuzzing covers Cranelift↔LLVM via `synthesized-llvm` and `synthesized-all`
 (clang + packaged runtime; skips known experimental emission gaps). EMI also

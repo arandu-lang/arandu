@@ -140,11 +140,20 @@ prefixos de SDK e para manter o símbolo estável quando o módulo muda de nome.
 
 O subconjunto validado hoje cobre funções livres (sem receiver, sem `async`,
 sem genéricos) com primitivos de largura fixa (`i8`–`i64`, `u8`–`u64`, `f32`,
-`f64`, `bool`), ponteiros crus (`ptr T`), structs `@Repr("C")` por valor,
-fatias síncronas `[]T`/`mut []T` (modeladas como `{ ptr, len }`) e retorno
-`void`. `str`, `char`, larguras dependentes do alvo (`int`/`uint`/`isize`/
-`usize`/`float`), structs sem `@Repr("C")` e campos recursivamente inseguros
-são rejeitados com `T049`.
+`f64`, `bool`), os aliases de largura definida pela RFC 0023 (`int`/`uint` como
+32 bits, `isize`/`usize` como largura de ponteiro do alvo), ponteiros crus
+(`ptr T` e `ref T`/`mut ref T` como `const T *`/`T *`), structs `@Repr("C")`
+por valor, fatias síncronas `[]T`/`mut []T` (modeladas como `{ ptr, len }`),
+`str` como `AranduStr` (`{ const uint8_t *ptr; size_t len; }`, UTF-8 sem
+terminador) e retorno `void`. `char`, tipos sem representação C
+(`Result`, `Option`, tuplas, `any`), structs sem `@Repr("C")` e campos
+recursivamente inseguros são rejeitados com `T049`.
+
+Arrays (`[N]T`) existem apenas como campo de struct `@Repr("C")`, onde viram
+`T campo[N]`; como parâmetro decairiam silenciosamente para ponteiro, então
+são rejeitados. `str`, `int` e `usize` não são “tipos soltos” na fronteira:
+cada um tem uma única grafia C documentada e o cabeçalho usa exatamente essa
+grafia.
 
 A passagem de agregados não presume layout: `crates/arandu_middle/src/layout/
 export_abi.rs` classifica cada tipo em lanes (`iN`, `float`, `double`,
@@ -159,12 +168,22 @@ carregada no offset que o classificador atribuiu, com `align 1` (acesso byte a
 byte é sempre válido e não inventa alinhamento). Um alvo sem classificador
 falha com `T049` em vez de herdar silenciosamente a ABI do host.
 
-`arandu build -b llvm --emit=header` gera o cabeçalho C a partir das mesmas
-assinaturas e do mesmo `LayoutEngine`: `typedef`s de struct, `typedef { const
-T *ptr; size_t len; }` para fatias, protótipos e `_Static_assert` de tamanho e
-offset de cada campo. Um consumidor C que discorde do layout deixa de compilar
-em vez de corromper memória. O teste e2e compila esse cabeçalho com `clang
--Wall -Wextra`, liga contra o objeto Arandu e executa a função.
+`arandu build --emit=header` gera o cabeçalho C a partir de um contrato único
+(`crates/arandu_ffi`), sem depender de backend: as mesmas assinaturas e o mesmo
+`LayoutEngine` descrevem o objeto, qualquer que seja o emissor. O cabeçalho tem
+`typedef`s de struct, `typedef { const T *ptr; size_t len; } AranduSlice*` e
+`AranduMutSlice*` (fatias mutáveis e imutáveis nunca colapsam), `AranduStr`,
+protótipos e `_Static_assert` de tamanho, alinhamento e offset de cada campo. A
+largura de ponteiro vem do alvo pedido, não do host: `--emit=header
+--target=thumbv6m-none-eabi` emite `_Static_assert(sizeof(void *) == 4)` e os
+tamanhos de 32 bits, e um consumidor compilado com o modelo errado falha no
+`#include`. O guard é derivado do conjunto exportado, então dois cabeçalhos
+podem conviver na mesma unidade de tradução. Nomes de tipo que colidiriam com
+os `typedef`s gerados (`AranduStr`, `AranduSlice*`, `AranduMutSlice*`) ou entre
+si são diagnosticados em vez de gerar C inválido. Um consumidor C que discorde
+do layout deixa de compilar em vez de corromper memória; o teste e2e compila
+esse cabeçalho com `clang -Wall -Wextra`, liga contra o objeto Arandu e executa
+a função.
 
 Colisões de símbolo entre duas funções exportadas são diagnosticadas em tempo
 de compilação, ao contrário do comportamento silencioso de `#[no_mangle]`.

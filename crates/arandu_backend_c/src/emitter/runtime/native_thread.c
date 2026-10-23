@@ -11,9 +11,16 @@ typedef struct ar_native_thread {
     int32_t status;
     atomic_bool finished;
     ArPalThread thread;
-    struct ar_native_thread *next;
+    struct ar_native_thread *next; /* id index chain */
 } ar_native_thread;
-static ar_native_thread *ar_native_threads = NULL;
+/* Handles are looked up by id on join/drop/is_finished: index them so each
+   lookup is O(1) expected instead of a walk over every live thread. */
+#define AR_NATIVE_BUCKETS 1024
+static ar_native_thread *ar_native_threads[AR_NATIVE_BUCKETS];
+static ar_native_thread **ar_native_bucket(size_t id) {
+    uint64_t mixed = (uint64_t)id * UINT64_C(0x9E3779B97F4A7C15);
+    return &ar_native_threads[(size_t)(mixed >> 32) % AR_NATIVE_BUCKETS];
+}
 static size_t ar_native_next_id = 1;
 static atomic_bool ar_native_table_lock = false;
 static void ar_native_spin_hint(void) {
@@ -42,6 +49,10 @@ static void ar_native_execute(ar_native_thread *task) {
     task->status = task->entry(task->context, task->result);
     ar_rt_free_aligned(task->context, task->context_size, task->context_align);
     task->context = NULL;
+#if defined(AR_GEN_ARENA_RUNTIME)
+    /* Mirrors the JIT thread_local! registry drop at thread exit. */
+    ar_gen_shutdown_raw();
+#endif
     atomic_store_explicit(&task->finished, true, memory_order_release);
 }
 static void ar_native_start(void *raw) {
@@ -80,8 +91,9 @@ static size_t ar_rt_native_thread_spawn(
     task->id = id;
     if (ar_pal_thread_spawn(&task->thread, ar_native_start, task) != 0) goto failed;
     ar_native_lock();
-    task->next = ar_native_threads;
-    ar_native_threads = task;
+    ar_native_thread **bucket = ar_native_bucket(id);
+    task->next = *bucket;
+    *bucket = task;
     ar_native_unlock();
     return id;
 failed:
@@ -93,7 +105,7 @@ failed:
 }
 static ar_native_thread *ar_native_take(size_t id) {
     ar_native_lock();
-    ar_native_thread **slot = &ar_native_threads;
+    ar_native_thread **slot = ar_native_bucket(id);
     while (*slot && (*slot)->id != id) slot = &(*slot)->next;
     ar_native_thread *task = *slot;
     if (task) *slot = task->next;
@@ -105,7 +117,7 @@ static ar_native_thread *ar_native_take(size_t id) {
 }
 static bool ar_native_is_current_thread(size_t id) {
     ar_native_lock();
-    ar_native_thread *task = ar_native_threads;
+    ar_native_thread *task = *ar_native_bucket(id);
     while (task && task->id != id) task = task->next;
     bool is_current = task && ar_pal_thread_is_current(&task->thread);
     ar_native_unlock();
@@ -127,7 +139,7 @@ static uint8_t *ar_rt_native_thread_panicked_sentinel(void) {
 }
 static bool ar_rt_native_thread_is_finished(size_t id) {
     ar_native_lock();
-    ar_native_thread *task = ar_native_threads;
+    ar_native_thread *task = *ar_native_bucket(id);
     while (task && task->id != id) task = task->next;
     bool finished = task && atomic_load_explicit(&task->finished, memory_order_acquire);
     ar_native_unlock();

@@ -114,7 +114,9 @@ impl<'a> CEmitter<'a> {
             &mut self.output,
             "#if defined(__GNUC__) || defined(__clang__)\n#define AR_MAY_ALIAS __attribute__((__may_alias__))\n#else\n#define AR_MAY_ALIAS\n#endif"
         );
-        if features.concat {
+        // The concat runtime (and its variadic `ar_str_concat_n`) is also
+        // emitted for path-only programs; see `emit_str_concat_runtime` below.
+        if features.concat || features.path {
             let _ = writeln!(&mut self.output, "#include <stdarg.h>");
         }
         if features.formats.iter().any(|&f| f) {

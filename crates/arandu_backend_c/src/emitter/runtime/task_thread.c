@@ -7,11 +7,20 @@ typedef struct ar_thread_waiter {
     pthread_mutex_t mutex;
     pthread_cond_t cond;
 #endif
-    struct ar_thread_waiter *next;
+    struct ar_thread_waiter *next, *prev; /* registry list */
+    struct ar_thread_waiter *bucket_next;  /* id index chain */
 } ar_thread_waiter;
 
 static _Atomic ar_usize_t ar_next_thread_id = 1;
 static ar_thread_waiter *ar_waiter_list = NULL;
+/* unpark(id) is O(1) expected: Rust keeps an Arc to the parker in the
+   handle, but the ABI here only carries the numeric id, so index it. */
+#define AR_WAITER_BUCKETS 1024
+static ar_thread_waiter *ar_waiter_buckets[AR_WAITER_BUCKETS];
+static ar_thread_waiter **ar_waiter_bucket(ar_usize_t id) {
+    uint64_t mixed = (uint64_t)id * UINT64_C(0x9E3779B97F4A7C15);
+    return &ar_waiter_buckets[(size_t)(mixed >> 32) % AR_WAITER_BUCKETS];
+}
 #if defined(_WIN32)
 static SRWLOCK ar_waiter_mutex = SRWLOCK_INIT;
 static INIT_ONCE ar_waiter_once = INIT_ONCE_STATIC_INIT;
@@ -41,9 +50,11 @@ static void ar_thread_waiter_destroy(void *ptr) {
     ar_thread_waiter *w = (ar_thread_waiter*)ptr;
     if (!w) return;
     ar_waiter_list_lock();
-    ar_thread_waiter **link = &ar_waiter_list;
-    while (*link && *link != w) link = &(*link)->next;
-    if (*link) *link = w->next;
+    if (w->prev) w->prev->next = w->next; else if (ar_waiter_list == w) ar_waiter_list = w->next;
+    if (w->next) w->next->prev = w->prev;
+    ar_thread_waiter **link = ar_waiter_bucket(w->id);
+    while (*link && *link != w) link = &(*link)->bucket_next;
+    if (*link) *link = w->bucket_next;
     ar_waiter_list_unlock();
 #if defined(_WIN32)
     CloseHandle(w->event);
@@ -98,8 +109,13 @@ static ar_thread_waiter* ar_get_or_create_thread_waiter(void) {
     if (pthread_setspecific(ar_waiter_tls, w) != 0) abort();
 #endif
     ar_waiter_list_lock();
+    w->prev = NULL;
     w->next = ar_waiter_list;
+    if (ar_waiter_list) ar_waiter_list->prev = w;
     ar_waiter_list = w;
+    ar_thread_waiter **bucket = ar_waiter_bucket(w->id);
+    w->bucket_next = *bucket;
+    *bucket = w;
     ar_waiter_list_unlock();
     return w;
 }
@@ -183,7 +199,8 @@ static void ar_rt_thread_unpark(ar_usize_t thread_id) {
     if (thread_id == 0) return;
     /* Hold registry while signaling: TLS destruction cannot free this waiter. */
     ar_waiter_list_lock();
-    for (ar_thread_waiter *target = ar_waiter_list; target; target = target->next) {
+    for (ar_thread_waiter *target = *ar_waiter_bucket(thread_id); target;
+         target = target->bucket_next) {
         if (target->id != thread_id) continue;
 #if defined(_WIN32)
         if (!SetEvent(target->event)) abort();
@@ -198,6 +215,16 @@ static void ar_rt_thread_unpark(ar_usize_t thread_id) {
     ar_waiter_list_unlock();
 }
 
+#if !defined(_WIN32) && defined(__has_include)
+#if defined(__linux__) && __has_include(<sys/random.h>)
+#include <sys/random.h>
+#define AR_HAVE_GETRANDOM 1
+#elif (defined(__APPLE__) || defined(__FreeBSD__)) \
+    && __has_include(<sys/random.h>)
+#include <sys/random.h>
+#define AR_HAVE_GETENTROPY 1
+#endif
+#endif
 static int32_t ar_rt_get_entropy(uint8_t *buf, size_t len) {
     if (len == 0) return 0;
     if (!buf || len > PTRDIFF_MAX) return -1;
@@ -219,11 +246,39 @@ static int32_t ar_rt_get_entropy(uint8_t *buf, size_t len) {
         if (offset == len) return 0;
     }
 #else
-    FILE *f = fopen("/dev/urandom", "rb");
-    if (f) {
-        size_t r = fread(buf, 1, len, f);
-        fclose(f);
-        if (r == len) return 0;
+    /* Kernel CSPRNG first (as Rust std, Go and libsodium do): no fd to
+       exhaust and no /dev needed in a chroot. Only "unavailable" errors
+       (old kernel, seccomp) fall back to the device; real errors fail. */
+    size_t offset = 0;
+    int fallback = 1;
+#if defined(AR_HAVE_GETRANDOM)
+    while (offset < len) {
+        ssize_t got = getrandom(buf + offset, len - offset, 0);
+        if (got < 0) {
+            if (errno == EINTR) continue;
+            fallback = errno == ENOSYS || errno == EPERM;
+            break;
+        }
+        offset += (size_t)got;
+    }
+#elif defined(AR_HAVE_GETENTROPY)
+    while (offset < len) {
+        size_t chunk = len - offset > 256 ? 256 : len - offset; /* getentropy limit */
+        if (getentropy(buf + offset, chunk) != 0) {
+            fallback = errno == ENOSYS || errno == EPERM;
+            break;
+        }
+        offset += chunk;
+    }
+#endif
+    if (offset == len) return 0;
+    if (fallback) {
+        FILE *f = fopen("/dev/urandom", "rb");
+        if (f) {
+            size_t r = fread(buf, 1, len, f);
+            fclose(f);
+            if (r == len) return 0;
+        }
     }
 #endif
     memset(buf, 0, len);

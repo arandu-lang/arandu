@@ -108,6 +108,8 @@ int main(void) {
         last_id = id;
         ar_waiter_list_lock();
         for (ar_thread_waiter *cur = ar_waiter_list; cur; cur = cur->next) assert(cur->id != id);
+        for (ar_thread_waiter *cur = *ar_waiter_bucket(id); cur; cur = cur->bucket_next)
+            assert(cur->id != id);
         ar_waiter_list_unlock();
         ar_rt_thread_unpark(id);
     }

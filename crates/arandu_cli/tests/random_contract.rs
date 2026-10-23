@@ -90,7 +90,10 @@ fn entropy_source_failure_is_reported_in_generated_c() {
         let mut c = String::from_utf8(emitted.stdout).unwrap();
         // Linker interposition denies the actual OS source without changing
         // the emitted failure path or substituting an entropy implementation.
+        // getrandom reports "unavailable" so the device fallback is exercised
+        // and denied too.
         c.push_str("\nFILE *__wrap_fopen(const char *path, const char *mode) { (void)path; (void)mode; return NULL; }\n");
+        c.push_str("ssize_t __wrap_getrandom(void *buf, size_t len, unsigned flags) { (void)buf; (void)len; (void)flags; errno = ENOSYS; return -1; }\n");
         let cpath = root.join("failure.c");
         fs::write(&cpath, c).unwrap();
         for optimization in ["-O0", "-O2"] {
@@ -112,7 +115,7 @@ fn compile_and_run(
         command.args(["-fsanitize=undefined", "-fno-sanitize-recover=all"]);
     }
     if deny_entropy {
-        command.arg("-Wl,--wrap=fopen");
+        command.args(["-Wl,--wrap=fopen", "-Wl,--wrap=getrandom"]);
     }
     command
         .arg(source)

@@ -102,6 +102,33 @@ static void gen_arena_contract(void) {
     assert(drops == 6);
 }
 
+static void *gen_arena_worker(void *raw) {
+    (void)raw;
+    /* A fresh thread starts with its own empty registry and token counter,
+       like the JIT thread_local! registry. */
+    assert(ar_gen_len == 0 && !ar_gen_head);
+    uint64_t value = 77, out = 0;
+    uint64_t token = ar_gen_insert_raw(&value, sizeof(value), _Alignof(uint64_t), count_drop);
+    assert(token == 1);
+    assert(ar_gen_get_raw(token, &out, sizeof(out), _Alignof(uint64_t)) && out == 77);
+    ar_gen_shutdown_raw();
+    return NULL;
+}
+
+static void gen_arena_thread_isolation(void) {
+    uint64_t value = 5;
+    uint64_t token = ar_gen_insert_raw(&value, sizeof(value), _Alignof(uint64_t), count_drop);
+    int before = drops;
+    pthread_t thread;
+    assert(pthread_create(&thread, NULL, gen_arena_worker, NULL) == 0);
+    assert(pthread_join(thread, NULL) == 0);
+    assert(drops == before + 1);
+    uint64_t out = 0;
+    assert(ar_gen_get_raw(token, &out, sizeof(out), _Alignof(uint64_t)) && out == 5);
+    ar_gen_shutdown_raw();
+    assert(drops == before + 2);
+}
+
 static ArStr lit(const char *text) {
     return ar_str_pack((const uint8_t *)text, (int64_t)strlen(text));
 }
@@ -173,6 +200,7 @@ static void format_contract(void) {
 
 int main(void) {
     gen_arena_contract();
+    gen_arena_thread_isolation();
     string_contract();
     task_table_contract();
     format_contract();

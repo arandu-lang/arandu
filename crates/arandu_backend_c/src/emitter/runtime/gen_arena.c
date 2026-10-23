@@ -1,6 +1,16 @@
 /* G4 type-erased GenRef ABI: monotonic tokens, target layout, ordered drops.
    A doubly linked list keeps insertion order for shutdown drops; a chained
-   token index makes find/remove O(1) expected instead of a list walk. */
+   token index makes find/remove O(1) expected instead of a list walk.
+   Like the JIT's thread_local! registry, each thread owns its registry: no
+   shared mutable state, and native threads drain theirs when they finish. */
+#define AR_GEN_ARENA_RUNTIME 1
+#if defined(_MSC_VER)
+#define AR_GEN_THREAD_LOCAL __declspec(thread)
+#elif defined(__GNUC__) || defined(__clang__)
+#define AR_GEN_THREAD_LOCAL __thread
+#else
+#define AR_GEN_THREAD_LOCAL _Thread_local
+#endif
 typedef void (*ar_gen_drop_fn)(void *);
 typedef struct ar_gen_entry {
     uint64_t token;
@@ -12,12 +22,12 @@ typedef struct ar_gen_entry {
     struct ar_gen_entry *next, *prev;
     struct ar_gen_entry *bucket_next;
 } ar_gen_entry;
-static ar_gen_entry *ar_gen_head = NULL;
-static ar_gen_entry *ar_gen_tail = NULL;
-static ar_gen_entry **ar_gen_buckets = NULL;
-static size_t ar_gen_bucket_count = 0; /* zero or a power of two */
-static uint64_t ar_gen_next_token = 0;
-static uint64_t ar_gen_len = 0;
+static AR_GEN_THREAD_LOCAL ar_gen_entry *ar_gen_head = NULL;
+static AR_GEN_THREAD_LOCAL ar_gen_entry *ar_gen_tail = NULL;
+static AR_GEN_THREAD_LOCAL ar_gen_entry **ar_gen_buckets = NULL;
+static AR_GEN_THREAD_LOCAL size_t ar_gen_bucket_count = 0; /* zero or a power of two */
+static AR_GEN_THREAD_LOCAL uint64_t ar_gen_next_token = 0;
+static AR_GEN_THREAD_LOCAL uint64_t ar_gen_len = 0;
 static int ar_gen_valid_layout(size_t size, size_t align) {
     return align != 0 && (align & (align - 1)) == 0 && size <= SIZE_MAX - (align - 1);
 }

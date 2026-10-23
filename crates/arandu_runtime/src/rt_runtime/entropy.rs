@@ -30,10 +30,63 @@ pub(super) fn fill_entropy_with(
     }
 }
 
+/// Kernel CSPRNG first (getrandom/getentropy, as Rust std and Go do); the
+/// device is only a fallback when that interface is unavailable (old kernel,
+/// seccomp). Keep in sync with `ar_rt_get_entropy` in the C runtime.
 #[cfg(unix)]
 fn os_entropy(bytes: &mut [u8]) -> std::io::Result<()> {
     use std::io::Read;
-    std::fs::File::open("/dev/urandom")?.read_exact(bytes)
+    match kernel_entropy(bytes) {
+        Ok(()) => Ok(()),
+        Err(error) if is_unavailable(&error) => {
+            std::fs::File::open("/dev/urandom")?.read_exact(bytes)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(unix)]
+fn is_unavailable(error: &std::io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(libc::ENOSYS | libc::EPERM))
+}
+
+#[cfg(target_os = "linux")]
+fn kernel_entropy(bytes: &mut [u8]) -> std::io::Result<()> {
+    let mut filled = 0;
+    while filled < bytes.len() {
+        let rest = &mut bytes[filled..];
+        // SAFETY: `rest` is exclusively writable for `rest.len()` bytes.
+        let got = unsafe { libc::getrandom(rest.as_mut_ptr().cast(), rest.len(), 0) };
+        if got < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error);
+        }
+        filled += got.unsigned_abs();
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", target_os = "freebsd"))]
+fn kernel_entropy(bytes: &mut [u8]) -> std::io::Result<()> {
+    // getentropy accepts at most 256 bytes per call.
+    for chunk in bytes.chunks_mut(256) {
+        // SAFETY: `chunk` is exclusively writable for `chunk.len()` bytes.
+        if unsafe { libc::getentropy(chunk.as_mut_ptr().cast(), chunk.len()) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(all(
+    unix,
+    not(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))
+))]
+fn kernel_entropy(_bytes: &mut [u8]) -> std::io::Result<()> {
+    Err(std::io::Error::from_raw_os_error(libc::ENOSYS))
 }
 
 #[cfg(windows)]

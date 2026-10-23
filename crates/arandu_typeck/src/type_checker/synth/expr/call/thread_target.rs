@@ -87,188 +87,36 @@ fn span_contains(outer: Span, inner: Span) -> bool {
     outer.file_id == inner.file_id && outer.start <= inner.start && outer.end >= inner.end
 }
 
-fn walk_expr_ids(pool: &arandu_parser::ast_pool::AstPool, expr: ExprId, out: &mut Vec<ExprId>) {
-    out.push(expr);
-    match pool.expr(expr) {
-        ExprKind::Path { .. }
-        | ExprKind::TypePath { .. }
-        | ExprKind::Int { .. }
-        | ExprKind::Float { .. }
-        | ExprKind::Bool { .. }
-        | ExprKind::Char { .. }
-        | ExprKind::Byte { .. }
-        | ExprKind::Nil
-        | ExprKind::Error => {}
-        ExprKind::Field { base, .. }
-        | ExprKind::SafeField { base, .. }
-        | ExprKind::Unary { expr: base, .. }
-        | ExprKind::Alloc { expr: base, .. }
-        | ExprKind::Try { expr: base, .. }
-        | ExprKind::Cast { expr: base, .. }
-        | ExprKind::Group { expr: base }
-        | ExprKind::ArrayRepeat { value: base, .. }
-        | ExprKind::Generic { callee: base, .. } => {
-            walk_expr_ids(pool, *base, out);
-        }
-        ExprKind::Binary { left, right, .. }
-        | ExprKind::NullCoalesce { left, right, .. }
-        | ExprKind::Index {
-            base: left,
-            index: right,
-        }
-        | ExprKind::SafeIndex {
-            base: left,
-            index: right,
-        } => {
-            walk_expr_ids(pool, *left, out);
-            walk_expr_ids(pool, *right, out);
-        }
-        ExprKind::Call {
-            callee,
-            args,
-            trailing_block,
-        } => {
-            walk_expr_ids(pool, *callee, out);
-            for &arg in pool.expr_list(*args) {
-                walk_expr_ids(pool, arg, out);
-            }
-            if let Some(tb) = trailing_block {
-                walk_block(pool, pool.block(*tb), out);
-            }
-        }
-        ExprKind::Array { items } => {
-            for &item in pool.expr_list(*items) {
-                walk_expr_ids(pool, item, out);
-            }
-        }
-        ExprKind::StructLiteral { fields, .. } => {
-            for &field in pool.field_init_list(*fields) {
-                walk_expr_ids(pool, pool.field_init(field).value, out);
-            }
-        }
-        ExprKind::If {
-            condition,
-            then_block,
-            else_block,
-        } => {
-            match condition {
-                arandu_parser::Condition::Expr { expr: e, .. }
-                | arandu_parser::Condition::Is { expr: e, .. } => {
-                    walk_expr_ids(pool, *e, out);
-                }
-                arandu_parser::Condition::And { conditions, .. } => {
-                    for c in conditions.iter() {
-                        if let arandu_parser::Condition::Expr { expr: e, .. }
-                        | arandu_parser::Condition::Is { expr: e, .. } = c
-                        {
-                            walk_expr_ids(pool, *e, out);
-                        }
-                    }
-                }
-            }
-            walk_block(pool, pool.block(*then_block), out);
-            walk_block(pool, pool.block(*else_block), out);
-        }
-        ExprKind::Match { value, arms } => {
-            walk_expr_ids(pool, *value, out);
-            for &arm in pool.match_arm_list(*arms) {
-                let arm_data = pool.match_arm(arm);
-                match &arm_data.body {
-                    arandu_parser::MatchArmBody::Expr { expr: e, .. } => {
-                        walk_expr_ids(pool, *e, out)
-                    }
-                    arandu_parser::MatchArmBody::Block { block: b, .. } => walk_block(pool, b, out),
-                }
-            }
-        }
-        ExprKind::Catch {
-            expr: base,
-            handler,
-        } => {
-            walk_expr_ids(pool, *base, out);
-            match pool.catch_handler(*handler) {
-                arandu_parser::CatchHandler::Expr { expr: e, .. } => walk_expr_ids(pool, *e, out),
-                arandu_parser::CatchHandler::Block { block: b, .. } => walk_block(pool, b, out),
-            }
-        }
-        ExprKind::Lambda { .. } => {}
-        _ => {}
-    }
-}
-
-fn walk_block(
-    pool: &arandu_parser::ast_pool::AstPool,
-    block: &arandu_parser::Block,
-    out: &mut Vec<ExprId>,
-) {
-    for &stmt_id in pool.stmt_list(block.statements) {
-        match pool.stmt(stmt_id) {
-            arandu_parser::Stmt::Expr { expr, .. } | arandu_parser::Stmt::Free { expr, .. } => {
-                walk_expr_ids(pool, *expr, out);
-            }
-            arandu_parser::Stmt::VarDecl { value, .. } | arandu_parser::Stmt::Set { value, .. } => {
-                walk_expr_ids(pool, *value, out);
-            }
-            arandu_parser::Stmt::Return { values, .. } => {
-                for v in values {
-                    walk_expr_ids(pool, *v, out);
-                }
-            }
-            arandu_parser::Stmt::If {
-                condition,
-                then_block,
-                else_block,
-                ..
-            } => {
-                match condition {
-                    arandu_parser::Condition::Expr { expr: e, .. }
-                    | arandu_parser::Condition::Is { expr: e, .. } => {
-                        walk_expr_ids(pool, *e, out);
-                    }
-                    arandu_parser::Condition::And { conditions, .. } => {
-                        for c in conditions.iter() {
-                            if let arandu_parser::Condition::Expr { expr: e, .. }
-                            | arandu_parser::Condition::Is { expr: e, .. } = c
-                            {
-                                walk_expr_ids(pool, *e, out);
-                            }
-                        }
-                    }
-                }
-                walk_block(pool, then_block, out);
-                if let Some(eb) = else_block {
-                    walk_block(pool, eb, out);
-                }
-            }
-            arandu_parser::Stmt::While {
-                condition, body, ..
-            } => {
-                if let arandu_parser::Condition::Expr { expr: e, .. }
-                | arandu_parser::Condition::Is { expr: e, .. } = condition
-                {
-                    walk_expr_ids(pool, *e, out);
-                }
-                walk_block(pool, body, out);
-            }
-            arandu_parser::Stmt::For { clause, body, .. } => {
-                match clause {
-                    arandu_parser::ForClause::In { iterable, .. } => {
-                        walk_expr_ids(pool, *iterable, out);
-                    }
-                    arandu_parser::ForClause::CStyle { condition, .. } => {
-                        if let Some(c) = condition {
-                            walk_expr_ids(pool, *c, out);
-                        }
-                    }
-                }
-                walk_block(pool, body, out);
-            }
-            arandu_parser::Stmt::Match { expr, .. } => {
-                walk_expr_ids(pool, *expr, out);
-            }
-            _ => {}
+/// Every resolved value use inside the lambda, in source order.
+///
+/// Captures are read from the resolver's tables instead of a syntax walk:
+/// a hand-written walker silently drops uses inside forms it forgets
+/// (interpolation, match statements, nested lambdas, assignment targets),
+/// and a dropped capture leaves the `run` body naming a local of another
+/// function. Expression uses come from `expr_symbols`; assignment roots,
+/// which are places rather than expressions, come from `value_refs`.
+fn value_uses_within(
+    checker: &TypeChecker<'_>,
+    lambda: Span,
+) -> Vec<(Span, arandu_middle::SymbolId)> {
+    let mut uses = Vec::new();
+    for (index, symbol) in checker.resolved.expr_symbols.iter().enumerate() {
+        let (Some(symbol), Some(span)) = (*symbol, checker.pool.expr_spans.get(index)) else {
+            continue;
+        };
+        if *span != lambda && span_contains(lambda, *span) {
+            uses.push((*span, symbol));
         }
     }
+    for (key, symbol) in &checker.resolved.value_refs {
+        let span = Span::new(lambda.file_id, key.start, key.end);
+        if span_contains(lambda, span) {
+            uses.push((span, *symbol));
+        }
+    }
+    uses.sort_unstable_by_key(|(span, symbol)| (span.start, span.end, *symbol));
+    uses.dedup();
+    uses
 }
 
 pub(crate) fn synth_thread_spawn_closure(
@@ -286,7 +134,14 @@ pub(crate) fn synth_thread_spawn_closure(
             body,
             is_move,
         } => (*params, body.clone(), *is_move),
-        _ => unreachable!(),
+        _ => {
+            checker.diagnostics.push(crate::Diagnostic::ice(
+                crate::DiagCode::ICET001,
+                "thread closure lowering was reached for an expression that is not a lambda",
+                arg_span,
+            ));
+            return Some(checker.intern(ArType::Error));
+        }
     };
 
     if !is_move {
@@ -313,24 +168,15 @@ pub(crate) fn synth_thread_spawn_closure(
         return Some(checker.intern(ArType::Error));
     }
 
-    // Inspect captured symbols
-    let mut expr_ids = Vec::new();
-    match &body {
-        arandu_parser::LambdaBody::Expr {
-            expr: inner_expr, ..
-        } => {
-            walk_expr_ids(checker.pool, *inner_expr, &mut expr_ids);
-        }
-        arandu_parser::LambdaBody::Block { block, .. } => {
-            walk_block(checker.pool, block, &mut expr_ids);
-        }
-    }
-
     let mut captures = Vec::new();
     let mut seen_captures = rustc_hash::FxHashSet::default();
     let mut rejected = false;
-    for eid in expr_ids {
-        if let Some(sym_id) = checker.resolved.expr_symbol(eid) {
+    for (expr_span, sym_id) in value_uses_within(checker, arg_span) {
+        // One verdict per captured symbol: the first use names the capture.
+        if seen_captures.contains(&sym_id) {
+            continue;
+        }
+        {
             let (is_captured_var, sym_name) = {
                 let sym = checker.symbols.get(sym_id);
                 (
@@ -342,7 +188,7 @@ pub(crate) fn synth_thread_spawn_closure(
                 )
             };
             if is_captured_var {
-                let expr_span = checker.pool.expr_span(eid);
+                seen_captures.insert(sym_id);
                 let cap_ty_id = checker
                     .ctx
                     .lookup(sym_id)
@@ -381,7 +227,7 @@ pub(crate) fn synth_thread_spawn_closure(
                     );
                 } else if cap_ty.is_error() {
                     rejected = true;
-                } else if seen_captures.insert(sym_id) {
+                } else {
                     captures.push(thread_capture::OwnedCapture {
                         symbol: sym_id,
                         name: sym_name,
@@ -399,8 +245,7 @@ pub(crate) fn synth_thread_spawn_closure(
             expr: inner_expr, ..
         } => super::synth_expr(checker, *inner_expr),
         arandu_parser::LambdaBody::Block { block, .. } => {
-            let b_ty = crate::type_checker::check::check_block(checker, checker.pool, block);
-            checker.intern(b_ty)
+            crate::type_checker::check::check_thread_closure_block(checker, block)
         }
     };
     let ret_ty = checker.resolve(ret_ty_id);

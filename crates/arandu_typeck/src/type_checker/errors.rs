@@ -84,6 +84,19 @@ pub fn constraint_to_diagnostic(
         } else {
             "make the explicit returns and the final expression yield the same type"
         }),
+        ConstraintOrigin::ClosureResult {
+            value_span,
+            closure_span,
+        } => Diagnostic::error(
+            DiagCode::T004IncompatibleReturnType,
+            format!("incompatible closure result: expected '{expected_str}', found '{found_str}'"),
+            *value_span,
+        )
+        .with_primary_label(format!("this exit yields '{found_str}'"))
+        .with_label(*closure_span, format!("this closure yields '{expected_str}'"))
+        .with_hint(
+            "a `return` inside a closure leaves the closure, not the enclosing function; make every exit yield the same type",
+        ),
         ConstraintOrigin::ReturnType {
             return_span,
             declared_span,

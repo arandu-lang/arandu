@@ -840,3 +840,153 @@ func main(): int {
         result.diagnostics
     );
 }
+fn thread_db() -> DatabaseImpl {
+    let mut db = DatabaseImpl::default();
+    db.new_stdlib_file(
+        "stdlib/core/marker.aru".into(),
+        include_str!("../../../stdlib/core/marker.aru").into(),
+    );
+    db.new_stdlib_file(
+        "stdlib/core/mem.aru".into(),
+        include_str!("../../../stdlib/core/mem.aru").into(),
+    );
+    db.new_stdlib_file(
+        "stdlib/std/thread.aru".into(),
+        include_str!("../../../stdlib/std/thread.aru").into(),
+    );
+    db
+}
+
+/// Capture discovery reads resolved uses, so a non-Send or borrowed value is
+/// rejected wherever it appears in the body, not only in the forms a syntax
+/// walker happens to visit.
+#[test]
+fn move_closure_captures_are_found_in_every_body_form() {
+    let mut db = thread_db();
+    let bodies = [
+        ("interpolation", "let s = \"p=${p}\"\n        return 0"),
+        (
+            "match_statement_arm",
+            "let mut out = 0\n        match out {\n            0 => { let q = p }\n            _ => {}\n        }\n        return out",
+        ),
+        ("assignment_target", "p = nil\n        return 0"),
+        (
+            "nested_closure",
+            "let inner = thread.spawn(move || { let q = p\n return 0 })\n        return 0",
+        ),
+    ];
+    for (name, body) in bodies {
+        let file = db.new_file(
+            format!("capture_{name}.aru"),
+            format!(
+                r#"
+import std.thread as thread
+
+func main(): int {{
+    let mut p: ptr[u8] = nil
+    let handleRes = thread.spawn(move || {{
+        {body}
+    }})
+    return 0
+}}
+"#
+            ),
+        );
+        let result = type_check(&db, file);
+        assert!(
+            result.diagnostics.iter().any(|d| {
+                d.code == DiagCode::T025InterfaceNotSatisfied && d.message.contains("'p'")
+            }),
+            "{name}: non-Send capture must be rejected with T025: {:?}",
+            result.diagnostics
+        );
+    }
+
+    let borrowed = db.new_file(
+        "capture_nested_ref.aru".into(),
+        r#"
+import std.thread as thread
+
+func check(r: ref int): void {
+    let handleRes = thread.spawn(move || {
+        let inner = thread.spawn(move || *r)
+        return 0
+    })
+}
+
+func main(): int {
+    return 0
+}
+"#
+        .into(),
+    );
+    let result = type_check(&db, borrowed);
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.code == DiagCode::T025InterfaceNotSatisfied),
+        "a reference captured by a nested closure must stay T025: {:?}",
+        result.diagnostics
+    );
+}
+
+/// `return` inside a `move ||` body leaves the job: it is checked against the
+/// closure result, never against the enclosing function's signature.
+#[test]
+fn move_closure_return_belongs_to_the_closure() {
+    let mut db = thread_db();
+    let accepted = db.new_file(
+        "closure_return_void_outer.aru".into(),
+        r#"
+import std.thread as thread
+
+func observe(n: int): void {
+    let handleRes = thread.spawn(move || {
+        if n > 0 { return n }
+        return 0 - n
+    })
+}
+
+func main(): int {
+    return 0
+}
+"#
+        .into(),
+    );
+    let result = type_check(&db, accepted);
+    assert!(
+        !result
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error),
+        "return inside the closure must not use the outer void signature: {:?}",
+        result.diagnostics
+    );
+
+    let mismatched = db.new_file(
+        "closure_return_mismatch.aru".into(),
+        r#"
+import std.thread as thread
+
+func main(): int {
+    let n: int = 1
+    let handleRes = thread.spawn(move || {
+        if n > 0 { return n }
+        return true
+    })
+    return 0
+}
+"#
+        .into(),
+    );
+    let result = type_check(&db, mismatched);
+    assert!(
+        result.diagnostics.iter().any(|d| {
+            d.code == DiagCode::T004IncompatibleReturnType
+                && d.message.starts_with("incompatible closure result")
+        }),
+        "closure exits with different types must report the closure result: {:?}",
+        result.diagnostics
+    );
+}

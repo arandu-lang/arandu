@@ -16,6 +16,15 @@ fn native_thread_moves_owned_argument_result_and_joins_on_drop() {
     ));
 }
 
+/// `move ||` captures: independent owned values, interpolation and match-arm
+/// uses, assignment, nested jobs, value tails and `return` inside the job.
+#[test]
+fn native_thread_move_closure_captures_run_on_every_native_path() {
+    run_native_contract(include_str!(
+        "../../../../tests/corpus/native_thread_move_capture.aru"
+    ));
+}
+
 #[test]
 fn shared_cancel_token_is_observed_cooperatively_by_native_thread_job() {
     run_native_contract(include_str!(

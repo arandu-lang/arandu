@@ -1,7 +1,15 @@
 //! Lower one synthesized thread-capture `run` body.
 //!
 //! The call site lowers the lambda to a struct literal. This pass lowers only
-//! the closure body, rewriting each captured path to a fresh `self.field`.
+//! the closure body and wraps it in one irrefutable struct pattern,
+//! `match self { Capture { field: capture, .. } => body }`, that rebinds every
+//! capture under its original symbol.
+//!
+//! Destructuring once, instead of rewriting each use to `self.field`, keeps
+//! the captures independent owned values: consuming one capture would
+//! otherwise move all of `self` and reject any later use of another capture.
+//! It also leaves the body exactly as the type checker saw it, including
+//! assignment targets, interpolation and nested closures.
 
 use crate::TypeCheckResult;
 use crate::diagnostics::{DiagCode, Diagnostic, Severity};
@@ -10,7 +18,7 @@ use crate::hir::{
     HirStmtKind, HirStruct, HirStructField, ReceiverKind,
 };
 use arandu_middle::SymbolId;
-use arandu_middle::hir::{HirBlockId, HirExprId, IndexRange};
+use arandu_middle::hir::{HirBlockId, HirFieldPattern, HirMatchArm, HirMatchArmBody, HirPattern};
 use arandu_middle::types::TypeId;
 use arandu_parser::Program;
 use arandu_parser::ast_pool::{ExprId, ExprKind};
@@ -70,7 +78,6 @@ pub fn lower_thread_capture_hir(
         arandu_parser::LambdaBody::Expr { expr, .. } => {
             let value = super::expr::lower_expr(type_check, &program.pool, &mut pool, *expr)
                 .map_err(|diagnostic| vec![diagnostic])?;
-            rewrite_expr(&mut pool, value, &recipe, recipe.self_param, struct_ty);
             let span = program.pool.expr_span(*expr);
             let values = pool.alloc_expr_list(&[value]);
             let ret = pool.alloc_stmt(HirStmt {
@@ -83,10 +90,11 @@ pub fn lower_thread_capture_hir(
         arandu_parser::LambdaBody::Block { block, .. } => {
             let lowered = super::stmt::lower_block(type_check, &program.pool, &mut pool, block)
                 .map_err(|diagnostic| vec![diagnostic])?;
-            rewrite_block(&mut pool, lowered, &recipe, recipe.self_param, struct_ty);
+            return_value_tail(&mut pool, lowered, &program.pool, block);
             lowered
         }
     };
+    let body_block = destructure_captures(&mut pool, &recipe, struct_ty, body_block, type_check);
 
     let params = pool.alloc_param_list(&[
         HirParam {
@@ -185,291 +193,97 @@ pub(crate) fn capture_struct_literal(
     }
 }
 
-fn rewrite_block(
+/// A final expression without `;` is the closure result. Inside the
+/// destructuring arm it would only be the arm's value, so it becomes an
+/// explicit `return`.
+fn return_value_tail(
     pool: &mut crate::hir::HirPool,
-    block: HirBlockId,
-    recipe: &ThreadCaptureRecipe,
-    self_param: SymbolId,
-    self_ty: TypeId,
+    lowered: HirBlockId,
+    ast: &arandu_parser::ast_pool::AstPool,
+    block: &arandu_parser::Block,
 ) {
-    let statements = pool.stmt_list(pool.block(block).statements).to_vec();
-    for statement in statements {
-        rewrite_stmt(pool, statement, recipe, self_param, self_ty);
-    }
-}
-
-fn rewrite_stmt(
-    pool: &mut crate::hir::HirPool,
-    id: arandu_middle::hir::HirStmtId,
-    recipe: &ThreadCaptureRecipe,
-    self_param: SymbolId,
-    self_ty: TypeId,
-) {
-    let kind = pool.stmt(id).kind.clone();
-    match kind {
-        HirStmtKind::VarDecl { value, .. }
-        | HirStmtKind::Set { value, .. }
-        | HirStmtKind::Free(value)
-        | HirStmtKind::Expr(value) => rewrite_expr(pool, value, recipe, self_param, self_ty),
-        HirStmtKind::Return { values } => {
-            for value in expr_ids(pool, values) {
-                rewrite_expr(pool, value, recipe, self_param, self_ty);
-            }
-        }
-        HirStmtKind::If {
-            condition,
-            then_block,
-            else_block,
-        } => {
-            rewrite_condition(pool, &condition, recipe, self_param, self_ty);
-            rewrite_block(pool, then_block, recipe, self_param, self_ty);
-            if let Some(else_block) = else_block {
-                rewrite_block(pool, else_block, recipe, self_param, self_ty);
-            }
-        }
-        HirStmtKind::While { condition, body } => {
-            rewrite_condition(pool, &condition, recipe, self_param, self_ty);
-            rewrite_block(pool, body, recipe, self_param, self_ty);
-        }
-        HirStmtKind::For { clause, body, .. } => {
-            match &clause {
-                arandu_middle::hir::HirForClause::In { iterable, .. } => {
-                    rewrite_expr(pool, *iterable, recipe, self_param, self_ty);
-                }
-                arandu_middle::hir::HirForClause::CStyle {
-                    init,
-                    condition,
-                    step,
-                    ..
-                } => {
-                    if let Some(init) = init {
-                        rewrite_simple(pool, init, recipe, self_param, self_ty);
-                    }
-                    if let Some(condition) = condition {
-                        rewrite_expr(pool, *condition, recipe, self_param, self_ty);
-                    }
-                    if let Some(step) = step {
-                        rewrite_simple(pool, step, recipe, self_param, self_ty);
-                    }
-                }
-            }
-            rewrite_block(pool, body, recipe, self_param, self_ty);
-        }
-        HirStmtKind::Match { value, arms } => {
-            rewrite_expr(pool, value, recipe, self_param, self_ty);
-            let arms = pool.match_arms_list(arms).to_vec();
-            for arm in arms {
-                if let Some(guard) = arm.guard {
-                    rewrite_expr(pool, guard, recipe, self_param, self_ty);
-                }
-                match arm.body {
-                    arandu_middle::hir::HirMatchArmBody::Expr(expr) => {
-                        rewrite_expr(pool, expr, recipe, self_param, self_ty);
-                    }
-                    arandu_middle::hir::HirMatchArmBody::Block(block) => {
-                        rewrite_block(pool, block, recipe, self_param, self_ty);
-                    }
-                }
-            }
-        }
-        HirStmtKind::Defer(block)
-        | HirStmtKind::ErrDefer(block)
-        | HirStmtKind::Unsafe(block)
-        | HirStmtKind::Scope(block) => rewrite_block(pool, block, recipe, self_param, self_ty),
-        HirStmtKind::Break | HirStmtKind::Continue | HirStmtKind::Error => {}
-    }
-}
-
-fn rewrite_simple(
-    pool: &mut crate::hir::HirPool,
-    stmt: &arandu_middle::hir::HirSimpleStmt,
-    recipe: &ThreadCaptureRecipe,
-    self_param: SymbolId,
-    self_ty: TypeId,
-) {
-    match stmt {
-        arandu_middle::hir::HirSimpleStmt::VarDecl { value, .. }
-        | arandu_middle::hir::HirSimpleStmt::Set { value, .. }
-        | arandu_middle::hir::HirSimpleStmt::Expr(value) => {
-            rewrite_expr(pool, *value, recipe, self_param, self_ty);
-        }
-    }
-}
-
-fn rewrite_condition(
-    pool: &mut crate::hir::HirPool,
-    condition: &arandu_middle::hir::HirCondition,
-    recipe: &ThreadCaptureRecipe,
-    self_param: SymbolId,
-    self_ty: TypeId,
-) {
-    match condition {
-        arandu_middle::hir::HirCondition::Expr(expr)
-        | arandu_middle::hir::HirCondition::Is { expr, .. } => {
-            rewrite_expr(pool, *expr, recipe, self_param, self_ty);
-        }
-        arandu_middle::hir::HirCondition::And(parts) => {
-            for part in parts.iter() {
-                rewrite_condition(pool, part, recipe, self_param, self_ty);
-            }
-        }
-    }
-}
-
-fn rewrite_expr(
-    pool: &mut crate::hir::HirPool,
-    id: HirExprId,
-    recipe: &ThreadCaptureRecipe,
-    self_param: SymbolId,
-    self_ty: TypeId,
-) {
-    let kind = pool.expr(id).kind.clone();
-    if let HirExprKind::Path { symbol } = &kind
-        && let Some(field) = recipe.fields.iter().find(|field| field.source == *symbol)
-    {
-        let span = pool.expr(id).span;
-        let base = pool.alloc_expr(HirExpr {
-            kind: HirExprKind::Path { symbol: self_param },
-            ty: self_ty,
-            span,
-        });
-        let expr = pool.expr_mut(id);
-        expr.kind = HirExprKind::Field {
-            base,
-            field: field.name.clone(),
-        };
-        expr.ty = field.ty;
+    let Some(tail) = ast
+        .stmt_list(block.statements)
+        .last()
+        .and_then(|&id| match ast.stmt(id) {
+            arandu_parser::Stmt::Expr {
+                expr,
+                has_semi: false,
+                ..
+            } => Some(ast.expr_span(*expr)),
+            _ => None,
+        })
+    else {
+        return;
+    };
+    let Some(&last) = pool.stmt_list(pool.block(lowered).statements).last() else {
+        return;
+    };
+    let HirStmtKind::Expr(value) = pool.stmt(last).kind else {
+        return;
+    };
+    if pool.expr(value).span != tail {
         return;
     }
-    match kind {
-        HirExprKind::Generic { callee, .. }
-        | HirExprKind::Field { base: callee, .. }
-        | HirExprKind::SafeField { base: callee, .. }
-        | HirExprKind::Try { expr: callee }
-        | HirExprKind::ArrayRepeat { value: callee }
-        | HirExprKind::Alloc { expr: callee }
-        | HirExprKind::Unary { expr: callee, .. }
-        | HirExprKind::Cast { expr: callee, .. }
-        | HirExprKind::ToStr { value: callee } => {
-            rewrite_expr(pool, callee, recipe, self_param, self_ty);
-        }
-        HirExprKind::Index { base, index }
-        | HirExprKind::SafeIndex { base, index }
-        | HirExprKind::NullCoalesce {
-            left: base,
-            right: index,
-        }
-        | HirExprKind::Binary {
-            left: base,
-            right: index,
-            ..
-        } => {
-            rewrite_expr(pool, base, recipe, self_param, self_ty);
-            rewrite_expr(pool, index, recipe, self_param, self_ty);
-        }
-        HirExprKind::Call {
-            callee,
-            args,
-            trailing_block,
-        } => {
-            rewrite_expr(pool, callee, recipe, self_param, self_ty);
-            for arg in expr_ids(pool, args) {
-                rewrite_expr(pool, arg, recipe, self_param, self_ty);
-            }
-            if let Some(block) = trailing_block {
-                rewrite_block(pool, block, recipe, self_param, self_ty);
-            }
-        }
-        HirExprKind::ResultCtor { value, .. } => {
-            rewrite_expr(pool, value, recipe, self_param, self_ty);
-        }
-        HirExprKind::StructLiteral { fields, .. } => {
-            let values = pool
-                .field_inits_list(fields)
-                .iter()
-                .map(|field| field.value)
-                .collect::<Vec<_>>();
-            for value in values {
-                rewrite_expr(pool, value, recipe, self_param, self_ty);
-            }
-        }
-        HirExprKind::Array { items } | HirExprKind::Tuple { items } => {
-            for item in expr_ids(pool, items) {
-                rewrite_expr(pool, item, recipe, self_param, self_ty);
-            }
-        }
-        HirExprKind::Lambda { body, .. } => match body {
-            arandu_middle::hir::HirLambdaBody::Expr(expr) => {
-                rewrite_expr(pool, expr, recipe, self_param, self_ty);
-            }
-            arandu_middle::hir::HirLambdaBody::Block(block) => {
-                rewrite_block(pool, block, recipe, self_param, self_ty);
-            }
-        },
-        HirExprKind::AsyncBlock { block }
-        | HirExprKind::ValueBlock { block }
-        | HirExprKind::UnsafeBlock { block } => {
-            rewrite_block(pool, block, recipe, self_param, self_ty);
-        }
-        HirExprKind::If {
-            condition,
-            then_block,
-            else_block,
-        } => {
-            rewrite_condition(pool, &condition, recipe, self_param, self_ty);
-            rewrite_block(pool, then_block, recipe, self_param, self_ty);
-            rewrite_block(pool, else_block, recipe, self_param, self_ty);
-        }
-        HirExprKind::Match { value, arms } => {
-            rewrite_expr(pool, value, recipe, self_param, self_ty);
-            let arms = pool.match_arms_list(arms).to_vec();
-            for arm in arms {
-                if let Some(guard) = arm.guard {
-                    rewrite_expr(pool, guard, recipe, self_param, self_ty);
-                }
-                match arm.body {
-                    arandu_middle::hir::HirMatchArmBody::Expr(expr) => {
-                        rewrite_expr(pool, expr, recipe, self_param, self_ty);
-                    }
-                    arandu_middle::hir::HirMatchArmBody::Block(block) => {
-                        rewrite_block(pool, block, recipe, self_param, self_ty);
-                    }
-                }
-            }
-        }
-        HirExprKind::Catch { expr, handler } => {
-            rewrite_expr(pool, expr, recipe, self_param, self_ty);
-            match handler {
-                arandu_middle::hir::HirCatchHandler::Expr(expr) => {
-                    rewrite_expr(pool, expr, recipe, self_param, self_ty);
-                }
-                arandu_middle::hir::HirCatchHandler::Block { block, .. } => {
-                    rewrite_block(pool, block, recipe, self_param, self_ty);
-                }
-            }
-        }
-        HirExprKind::StringInterp { parts } => {
-            for part in parts {
-                if let arandu_middle::hir::HirStringPart::Expr(expr) = part {
-                    rewrite_expr(pool, expr, recipe, self_param, self_ty);
-                }
-            }
-        }
-        HirExprKind::Layout { .. }
-        | HirExprKind::FloatBits(_)
-        | HirExprKind::FrozenBytes(_)
-        | HirExprKind::Path { .. }
-        | HirExprKind::TypePath { .. }
-        | HirExprKind::Int(_)
-        | HirExprKind::Float(_)
-        | HirExprKind::Bool(_)
-        | HirExprKind::Char(_)
-        | HirExprKind::Str(_)
-        | HirExprKind::Nil
-        | HirExprKind::Error => {}
+    let values = pool.alloc_expr_list(&[value]);
+    if let Some(statement) = pool.stmts.get_mut(last) {
+        statement.kind = HirStmtKind::Return { values };
     }
 }
 
-fn expr_ids(pool: &crate::hir::HirPool, range: IndexRange) -> Vec<HirExprId> {
-    pool.expr_list(range).to_vec()
+/// `match self { Capture { f: capture, .. } => body }`, binding each field to
+/// the symbol the closure body already uses.
+fn destructure_captures(
+    pool: &mut crate::hir::HirPool,
+    recipe: &ThreadCaptureRecipe,
+    struct_ty: TypeId,
+    body: HirBlockId,
+    type_check: &TypeCheckResult,
+) -> HirBlockId {
+    let span = recipe.lambda_span;
+    let field_patterns = recipe
+        .fields
+        .iter()
+        .map(|field| {
+            let name = type_check
+                .symbols
+                .try_get(field.source)
+                .map_or_else(|| field.name.clone(), |symbol| symbol.name.clone());
+            let binding = pool.alloc_pattern(HirPattern::Bind {
+                span: field.span,
+                name,
+                symbol: field.source,
+            });
+            pool.alloc_field_pattern(HirFieldPattern {
+                span: field.span,
+                name: field.name.clone(),
+                pattern: Some(binding),
+            })
+        })
+        .collect::<Vec<_>>();
+    let fields = pool.alloc_field_pattern_list(&field_patterns);
+    let pattern = pool.alloc_pattern(HirPattern::Struct {
+        span,
+        struct_symbol: recipe.struct_symbol,
+        fields,
+    });
+    let value = pool.alloc_expr(HirExpr {
+        kind: HirExprKind::Path {
+            symbol: recipe.self_param,
+        },
+        ty: struct_ty,
+        span,
+    });
+    let arms = pool.alloc_match_arm_list(&[HirMatchArm {
+        span,
+        pattern,
+        guard: None,
+        body: HirMatchArmBody::Block(body),
+    }]);
+    let destructure = pool.alloc_stmt(HirStmt {
+        kind: HirStmtKind::Match { value, arms },
+        span,
+    });
+    let statements = pool.alloc_stmt_list(&[destructure]);
+    pool.alloc_block(HirBlock { statements, span })
 }

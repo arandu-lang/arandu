@@ -46,6 +46,7 @@ fn empty_program() -> AmirProgram {
 pub fn runtime_program(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<RuntimeProgram> {
     const MAX_INSTANCES: usize = 4096;
     let declarations = declaration_hir(db, file);
+    let resolution = crate::passes::resolve(db, file);
     let mut aggregate = declarations.artifacts.type_check.clone();
     let mut diagnostics = declarations.artifacts.diagnostics.clone();
     let mut pending = std::collections::VecDeque::new();
@@ -259,6 +260,7 @@ pub fn runtime_program(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Run
         artifacts: std::sync::Arc::new(crate::passes::LowerAmirArtifacts {
             amir,
             type_check: aggregate,
+            docs: std::sync::Arc::new(resolution.docs.clone()),
         }),
         instances,
         diagnostics,

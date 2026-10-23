@@ -40,6 +40,7 @@ fn legacy_program(
     HashEq::new(passes::LowerAmirArtifacts {
         amir,
         type_check: context,
+        docs: Arc::new(arandu_middle::DocCommentMap::default()),
     })
 }
 

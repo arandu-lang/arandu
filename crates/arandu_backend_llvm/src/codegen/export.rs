@@ -7,11 +7,11 @@
 //! assigned. Loads and stores share the target data layout, so endianness
 //! never needs a special case.
 
-use arandu_middle::Diagnostic;
 use arandu_middle::layout::{
     AbiLane, AbiPart, ExportAbi, ExportAbiInfo, ParamAbi, classify_export,
 };
 use arandu_middle::types::ArType;
+use arandu_middle::{Diagnostic, SymbolId};
 
 use super::{FuncEmitter, ModuleEmitter, TypedValue};
 
@@ -43,6 +43,16 @@ pub(super) fn lanes_ty(lanes: &[AbiLane]) -> String {
 }
 
 impl ModuleEmitter<'_> {
+    /// True when `ty` is the consuming receiver of the exported destructor
+    /// `function`. `TypeInfo::destructors` is the semantic record; no method
+    /// name is inspected.
+    pub(super) fn is_exported_destructor_receiver(&self, function: SymbolId, ty: &ArType) -> bool {
+        let ArType::Named(receiver, _) = ty else {
+            return false;
+        };
+        self.info.destructors.get(receiver) == Some(&function)
+    }
+
     /// C ABI family of the module target. An empty identity means the host.
     pub(super) fn export_abi(&self) -> Option<ExportAbi> {
         let target = &self.info.target_identity;
@@ -176,6 +186,7 @@ impl FuncEmitter<'_, '_> {
                     info.align.max(1)
                 ))
             }
+            ParamAbi::OwnedPointer => Ok(format!("ptr %p{}", temp.as_usize())),
             ParamAbi::Direct(lanes) => {
                 let mut rendered = Vec::with_capacity(lanes.len());
                 for (index, lane) in lanes.iter().enumerate() {
@@ -201,6 +212,13 @@ impl FuncEmitter<'_, '_> {
         match &info.param {
             ParamAbi::Ignored => {}
             ParamAbi::Indirect => {
+                let name = format!("%p{}", temp.as_usize());
+                let loaded = self.load_aggregate(&name, aggty, info.align.max(1));
+                self.temp_values[temp.as_usize()] = Some(TypedValue::new(aggty, loaded));
+            }
+            ParamAbi::OwnedPointer => {
+                // The caller keeps the allocation; the body consumes the value
+                // stored there, so loading it transfers the resources it holds.
                 let name = format!("%p{}", temp.as_usize());
                 let loaded = self.load_aggregate(&name, aggty, info.align.max(1));
                 self.temp_values[temp.as_usize()] = Some(TypedValue::new(aggty, loaded));
@@ -234,6 +252,12 @@ impl FuncEmitter<'_, '_> {
         match &info.param {
             ParamAbi::Ignored => Vec::new(),
             ParamAbi::Indirect => {
+                let buffer = self.spill_aggregate(value, aggty, info.align.max(1));
+                vec![format!("ptr {buffer}")]
+            }
+            ParamAbi::OwnedPointer => {
+                // Passing an owned value to an exported destructor transfers
+                // it: the callee loads and consumes the copy at `buffer`.
                 let buffer = self.spill_aggregate(value, aggty, info.align.max(1));
                 vec![format!("ptr {buffer}")]
             }

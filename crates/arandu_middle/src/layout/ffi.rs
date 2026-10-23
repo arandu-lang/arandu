@@ -18,6 +18,13 @@ pub enum FfiPosition {
     Parameter,
     Return,
     StructField,
+    /// The consuming receiver of an exported `@Destructor`.
+    ///
+    /// C cannot pass an opaque type by value, so the receiver crosses as
+    /// `T *` even though the Arandu body consumes a `T`. The backend loads the
+    /// value from that pointer at the call boundary; the allocation itself
+    /// belongs to whoever created the handle.
+    OwnedReceiver,
 }
 
 /// One value as C sees it.
@@ -162,6 +169,12 @@ pub fn ffi_type_of(
             })
         }
         ArType::Named(symbol, _) => {
+            if position == FfiPosition::OwnedReceiver {
+                // An exported destructor receives the handle, not its layout:
+                // the C side only ever sees `T *`. Fields may hold anything the
+                // Arandu side owns, because C never spells them.
+                return Ok(FfiType::Ptr(Box::new(FfiType::Struct(*symbol))));
+            }
             if !provider.is_repr_c(*symbol) {
                 return Err(
                     "nominal types by value need `@Repr(\"C\")` so their layout is the C layout; add it or pass `ptr T`"

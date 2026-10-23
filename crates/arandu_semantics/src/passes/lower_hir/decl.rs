@@ -345,10 +345,19 @@ fn lower_export(
     formal_types: &[TypeId],
     return_type: TypeId,
 ) -> Result<(), Diagnostic> {
-    if matches!(declaration.name, FuncName::Method { .. }) {
+    // A method has no C ABI by itself, but `@Destructor` is the one method
+    // whose entire purpose is releasing a resource: exporting it as
+    // `void name(T *self)` is exactly the ownership contract C needs. Any
+    // other method would need a receiver convention nobody wrote down.
+    let is_destructor = type_check
+        .type_info
+        .destructors
+        .values()
+        .any(|destructor| *destructor == symbol);
+    if matches!(declaration.name, FuncName::Method { .. }) && !is_destructor {
         return Err(Diagnostic::error(
             crate::DiagCode::T049InvalidFfiExport,
-            "@Export is only valid on free functions; methods have no C ABI",
+            "@Export is only valid on free functions and `@Destructor` methods; other methods have no C receiver convention",
             declaration.span,
         ));
     }
@@ -405,11 +414,16 @@ fn lower_export(
         }
     }
     for (index, ty) in resolved_params.into_iter().enumerate() {
+        let position = if index == 0 && is_destructor {
+            arandu_middle::layout::FfiPosition::OwnedReceiver
+        } else {
+            arandu_middle::layout::FfiPosition::Parameter
+        };
         if let Err(reason) = arandu_middle::layout::ffi_type_of(
             &ty,
             interner,
             type_check.type_info.as_ref(),
-            arandu_middle::layout::FfiPosition::Parameter,
+            position,
             0,
         ) {
             let span = declaration

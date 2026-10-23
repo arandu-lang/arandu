@@ -14,6 +14,10 @@ use salsa::Accumulator;
 pub struct LowerAmirArtifacts {
     pub amir: AmirProgram,
     pub type_check: TypeCheckResult,
+    /// Doc comments from the same resolution this program was lowered from.
+    /// Consumers that describe the source (the generated C header) read them
+    /// here instead of resolving again outside the Salsa graph.
+    pub docs: std::sync::Arc<arandu_middle::DocCommentMap>,
 }
 
 /// Shared canonical HIR/monomorphization stage. Its conservative fingerprint

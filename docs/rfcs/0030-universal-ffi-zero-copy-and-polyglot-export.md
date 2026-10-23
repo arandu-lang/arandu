@@ -186,10 +186,19 @@ então um handle pode conter campos que nunca cruzariam por valor (um `Vec`, um
 gerador) sem vazar layout nem exigir `@Repr("C")`. Um consumidor C que discorde
 do layout deixa de compilar em vez de corromper memória; o teste e2e compila
 esse cabeçalho com `clang -Wall -Wextra`, liga contra o objeto Arandu e executa
-a função.
+a função. Comentários `///` da função exportada e do tipo opaco viajam no mesmo
+contrato e viram blocos `/** … */` acima do protótipo ou do `typedef`, com `*/`
+escapado; declaração sem doc não gera bloco vazio. Se `TypeInfo::destructors`
+associa ao tipo um `@Destructor` exportado, o `typedef` e todo retorno `ptr T`
+documentam a função de liberação e a posse do handle; sem destrutor exportado,
+o retorno avisa que o chamador não tem função de liberação. Essas notas
+descrevem o contrato existente e não produzem diagnóstico.
 
 Colisões de símbolo entre duas funções exportadas são diagnosticadas em tempo
 de compilação, ao contrário do comportamento silencioso de `#[no_mangle]`.
+A única forma de exportar um método é `@Destructor`: ele é a função de liberação
+do tipo e cruza como `void name(T *self)`, sem exigir que o C conheça o layout
+do handle.
 Definições sem `@Export` mantêm linkage interno no objeto, então `pub` não
 publica nada para o C por acidente.
 

@@ -59,6 +59,22 @@ impl StableHash for crate::passes::LowerAmirArtifacts {
         let mut h = Hasher::new();
         h.update(self.amir.stable_hash().as_bytes());
         h.update(self.type_check.stable_hash().as_bytes());
+        // Docs do not change codegen, but they are part of this bundle's
+        // observable output (the generated header), so a doc edit must not be
+        // cut off by Salsa's hash equality. Iterate in span order: the map is
+        // a hash map.
+        h.update(b"DocComments/v1");
+        let mut docs = self.docs.iter().collect::<Vec<_>>();
+        docs.sort_by_key(|(key, _)| (key.start, key.end));
+        h.update(&u64_le(docs.len() as u64));
+        for (key, lines) in docs {
+            h.update(&u32_le(key.start));
+            h.update(&u32_le(key.end));
+            h.update(&u64_le(lines.len() as u64));
+            for line in lines {
+                hash_str(&mut h, line);
+            }
+        }
         finish(h)
     }
 }

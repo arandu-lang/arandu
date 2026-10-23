@@ -314,6 +314,7 @@ pub fn cmd_project_build(
             filepath,
             type_check,
             amir,
+            &artifacts.docs,
         );
     }
     build_emit::emit_native_artifact(

@@ -874,6 +874,53 @@ func frame_view(frame: ptr[Frame], out: mut []u32): void {
 }
 
 #[test]
+fn export_accepts_an_owning_destructor_as_an_opaque_handle_release() {
+    let tc = lower_export_result(
+        r#"
+struct Buffer {
+    data: ptr[u8]
+    len: usize
+}
+
+@Destructor
+@Export("buffer_release")
+func Buffer.close(own self): void {
+    return
+}
+
+"#,
+    )
+    .expect("a @Destructor is the one method with a written-down C receiver");
+    assert_eq!(
+        tc.symbols.host_func_name(symbol_named(&tc, "Buffer.close")),
+        "buffer_release"
+    );
+}
+
+#[test]
+fn export_rejects_methods_that_are_not_destructors() {
+    let diagnostics = lower_export_result(
+        r#"
+struct Frame {
+    id: u32
+}
+
+@Export
+func Frame.id_copy(self: ref Frame): u32 {
+    return self.id
+}
+"#,
+    )
+    .expect_err("a borrowed method has no C receiver convention");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("@Destructor")),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
 fn export_rejects_repr_c_structs_with_non_c_fields() {
     for source in [
         r#"

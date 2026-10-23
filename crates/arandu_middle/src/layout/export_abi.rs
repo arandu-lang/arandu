@@ -96,6 +96,11 @@ pub enum ParamAbi {
     Direct(Vec<AbiLane>),
     /// Pointer to a caller-owned copy (`byval` on System V).
     Indirect,
+    /// Pointer to an opaque handle owned by the caller, with no `byval`: the
+    /// callee reads the value the pointer addresses. Used for the consuming
+    /// receiver of an exported `@Destructor`, where C holds `T *` and the
+    /// Arandu body consumes a `T`.
+    OwnedPointer,
 }
 
 /// How a C caller receives this return value.

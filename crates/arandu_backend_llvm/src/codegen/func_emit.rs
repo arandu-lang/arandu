@@ -183,7 +183,15 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
         for temp in &self.func.params {
             let ty = self.temp_type(*temp);
             if exported && is_export_aggregate(&ty) {
-                let info = self.module.classify_export_type(&ty, span)?;
+                let mut info = self.module.classify_export_type(&ty, span)?;
+                // A consuming `@Destructor` receiver is a handle, not a
+                // by-value aggregate: C holds `T *`, so no `byval` applies.
+                if self
+                    .module
+                    .is_exported_destructor_receiver(self.func.symbol, &ty)
+                {
+                    info.param = arandu_middle::layout::ParamAbi::OwnedPointer;
+                }
                 let (aggregate, _) = self.module.alloca_type(&ty)?;
                 let rendered = self.emit_export_param(*temp, &info, &aggregate)?;
                 if !rendered.is_empty() {

@@ -765,3 +765,129 @@ func buffer_len(handle: ptr[Buffer]): usize {
     assert!(!text.contains("struct Buffer {"), "{text}");
     assert!(!text.contains("Vec"), "{text}");
 }
+
+/// Documentation travels with the export contract: the header a C consumer
+/// reads should carry the same doc comment the Arandu source has, and a
+/// function without docs must not gain an empty block.
+#[test]
+fn header_carries_export_doc_comments() {
+    let tmp = common::temp_dir("arandu_llvm_export_docs").unwrap();
+    let project = tmp.join("docs");
+    let init = run_cli_in(&tmp, &["new", "docs", "--lib", "--vcs=none"]);
+    assert!(
+        init.status.success(),
+        "new docs: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+    fs::write(
+        project.join("src/lib.aru"),
+        r#"
+/// Computes the total.
+/// Second line.
+@Export
+func total(raw: u32): u32 {
+    return raw
+}
+
+@Export
+func bare(raw: u32): u32 {
+    return raw
+}
+"#,
+    )
+    .expect("write library source");
+
+    let header = tmp.join("docs.h");
+    let header_arg = header.to_string_lossy().into_owned();
+    let build = run_cli_in(&project, &["build", "--emit=header", "-o", &header_arg]);
+    assert!(
+        build.status.success(),
+        "documented header: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let text = fs::read_to_string(&header).expect("read documented header");
+    assert!(
+        text.contains(
+            "/**\n * Computes the total.\n * Second line.\n */\nuint32_t total(uint32_t);"
+        ),
+        "{text}"
+    );
+    assert!(text.contains("\nuint32_t bare(uint32_t);"), "{text}");
+    assert!(!text.contains("/**\n */"), "{text}");
+}
+
+/// Ownership is a contract, not a comment the user writes: an exported
+/// `@Destructor` is the release function, C only ever sees the opaque handle,
+/// and the header states which symbol releases it.
+#[test]
+fn exported_destructor_is_the_release_contract_for_an_opaque_handle() {
+    let tmp = common::temp_dir("arandu_llvm_export_ownership").unwrap();
+    let project = tmp.join("ownership");
+    let init = run_cli_in(&tmp, &["new", "ownership", "--lib", "--vcs=none"]);
+    assert!(
+        init.status.success(),
+        "new ownership: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+    fs::write(
+        project.join("src/lib.aru"),
+        r#"
+public struct Buffer {
+    data: ptr[u8]
+    len: usize
+}
+
+@Destructor
+@Export("buffer_release")
+func Buffer.close(own self): void {
+    return
+}
+
+@Export
+func buffer_len(handle: ptr[Buffer]): usize {
+    return 0
+}
+"#,
+    )
+    .expect("write library source");
+
+    let header = tmp.join("ownership.h");
+    let header_arg = header.to_string_lossy().into_owned();
+    let build = run_cli_in(&project, &["build", "--emit=header", "-o", &header_arg]);
+    assert!(
+        build.status.success(),
+        "ownership header: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let text = fs::read_to_string(&header).expect("read ownership header");
+    assert!(text.contains("typedef struct Buffer Buffer;"), "{text}");
+    assert!(text.contains("void buffer_release(Buffer *);"), "{text}");
+    assert!(
+        text.contains("Release with buffer_release(Buffer *)"),
+        "{text}"
+    );
+    // The handle stays opaque: no fields, no `ptr[u8]` spelling in C.
+    assert!(!text.contains("struct Buffer {"), "{text}");
+
+    let object = tmp.join("ownership.o");
+    let object_arg = object.to_string_lossy().into_owned();
+    let build = run_cli_in(
+        &project,
+        &["build", "-b", "llvm", "--emit=obj", "-o", &object_arg],
+    );
+    assert!(
+        build.status.success(),
+        "ownership object: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let Ok(symbols) = Command::new("llvm-nm")
+        .args(["--defined-only", "--extern-only"])
+        .arg(&object)
+        .output()
+    else {
+        return;
+    };
+    let symbols = String::from_utf8_lossy(&symbols.stdout);
+    assert!(symbols.contains("T buffer_release"), "{symbols}");
+    assert!(symbols.contains("T buffer_len"), "{symbols}");
+}

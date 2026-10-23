@@ -139,7 +139,11 @@ pub static BUILTIN_ANNOTATIONS: &[AnnotationSpec] = &[
         id: AnnotationId::Export,
         canonical_name: "Export",
         legacy_aliases: &["FfiExport"],
-        targets: FREE_FUNCTION,
+        // Methods reach `lower_export` so the rejection for a non-destructor
+        // method names the real rule (`T049`) instead of a generic target
+        // error. Silently ignoring the annotation would be the `#[no_mangle]`
+        // trap this design exists to avoid.
+        targets: FUNCTION,
         arguments: AnnotationArguments::OptionalString,
         repeatable: false,
         availability: AnnotationAvailability::Implemented,

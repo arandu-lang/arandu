@@ -2,28 +2,33 @@
 
 static ArStr ar_str_concat_n(int n, ...) {
     if (n <= 0) return (ArStr){ .ptr = (const uint8_t*)"", .len = 0 };
-    va_list ap;
+    /* Two passes over the arguments (measure, copy) need no parts buffer. */
+    va_list ap, copy;
     va_start(ap, n);
-    ArStr *parts = (ArStr*)malloc((size_t)n * sizeof(ArStr));
-    if (!parts) { va_end(ap); abort(); }
-    int64_t total = 0;
+    va_copy(copy, ap);
+    size_t total = 0;
     for (int i = 0; i < n; i++) {
-        parts[i] = va_arg(ap, ArStr);
-        if (parts[i].len > 0) total += parts[i].len;
+        ArStr part = va_arg(ap, ArStr);
+        if (part.len <= 0) continue;
+        /* ArStr.len is signed and pointer-width: reject totals it cannot hold. */
+        if ((size_t)part.len > (size_t)PTRDIFF_MAX - 1 - total) { va_end(copy); va_end(ap); abort(); }
+        total += (size_t)part.len;
     }
     va_end(ap);
-    uint8_t *buf = (uint8_t*)malloc((size_t)total + 1);
-    if (!buf) { free(parts); abort(); }
-    int64_t off = 0;
+    uint8_t *buf = (uint8_t*)malloc(total + 1);
+    if (!buf) { va_end(copy); abort(); }
+    size_t off = 0;
     for (int i = 0; i < n; i++) {
-        if (parts[i].len > 0 && parts[i].ptr) {
-            memcpy(buf + off, parts[i].ptr, (size_t)parts[i].len);
-            off += parts[i].len;
+        ArStr part = va_arg(copy, ArStr);
+        if (part.len > 0 && part.ptr) {
+            memcpy(buf + off, part.ptr, (size_t)part.len);
+            off += (size_t)part.len;
         }
     }
-    buf[total] = 0;
-    free(parts);
-    return (ArStr){ .ptr = buf, .len = total };
+    va_end(copy);
+    /* A part with len > 0 and a null ptr contributes no bytes. */
+    buf[off] = 0;
+    return (ArStr){ .ptr = buf, .len = off };
 }
 
 /* Allocation-free measure/write for proven-private integer concat parts. */
@@ -45,13 +50,14 @@ static size_t ar_u64_write_digits(uint64_t v, uint8_t *out) {
 
 /* String allocation helpers. Borrowed string algorithms live in std.core.str. */
 static ArStr ar_str_concat(ArStr a, ArStr b) {
-    int64_t al = a.len < 0 ? 0 : a.len;
-    int64_t bl = b.len < 0 ? 0 : b.len;
-    int64_t total = al + bl;
-    uint8_t *buf = (uint8_t*)malloc((size_t)total + 1);
+    size_t al = a.len > 0 && a.ptr ? (size_t)a.len : 0;
+    size_t bl = b.len > 0 && b.ptr ? (size_t)b.len : 0;
+    if (bl > (size_t)PTRDIFF_MAX - 1 - al) abort();
+    size_t total = al + bl;
+    uint8_t *buf = (uint8_t*)malloc(total + 1);
     if (!buf) abort();
-    if (al > 0 && a.ptr) memcpy(buf, a.ptr, (size_t)al);
-    if (bl > 0 && b.ptr) memcpy(buf + al, b.ptr, (size_t)bl);
+    if (al > 0) memcpy(buf, a.ptr, al);
+    if (bl > 0) memcpy(buf + al, b.ptr, bl);
     buf[total] = 0;
     return (ArStr){ .ptr = buf, .len = total };
 }
@@ -65,11 +71,14 @@ static ArStr ar_str_split_last(ArStr s, ArStr sep) {
         buf[s.len] = 0;
         return (ArStr){ .ptr = buf, .len = s.len };
     }
-    int64_t last = -1;
-    for (int64_t i = 0; i + sep.len <= s.len; i++) {
-        if (memcmp(s.ptr + i, sep.ptr, (size_t)sep.len) == 0) last = i;
+    /* Scan from the end: the last match is the first one found. */
+    int64_t start = 0;
+    for (int64_t i = s.len - sep.len; i >= 0; i--) {
+        if (s.ptr[i] == sep.ptr[0] && memcmp(s.ptr + i, sep.ptr, (size_t)sep.len) == 0) {
+            start = i + sep.len;
+            break;
+        }
     }
-    int64_t start = last < 0 ? 0 : last + sep.len;
     int64_t n = s.len - start;
     uint8_t *buf = (uint8_t*)malloc((size_t)n + 1);
     if (!buf) abort();

@@ -4916,3 +4916,66 @@ fn generated_c_phase_lock_alternates_batches_preserves_fifo_and_cleans_cancellat
     }
     fs::remove_dir_all(directory).unwrap();
 }
+
+#[test]
+#[cfg(target_os = "linux")]
+fn generated_c_runtime_memory_helpers_are_clean_under_address_and_ub_sanitizers() {
+    let (amir, tc) = compile_src(
+        r#"
+extern "C" {
+    func ar_gen_shutdown_raw(): void
+    func ar_str_split_last(s: str, sep: str): str
+    func ar_rt_spawn_i64(state: ptr[u8]): i64
+}
+public func probe(s: str, state: ptr[u8], x: float): str {
+    unsafe { ar_gen_shutdown_raw() }
+    let spawned = unsafe { ar_rt_spawn_i64(state) }
+    return unsafe { ar_str_split_last(s, "${x}${spawned}") }
+}
+func main(): int { return 0 }
+"#,
+    );
+    let source = format!(
+        "#define main arandu_unused_main\n{}\n#undef main\n{}",
+        emit_c(&amir, &tc),
+        include_str!("runtime_memory_harness.c"),
+    );
+    let directory = env::temp_dir().join(format!("arandu-runtime-memory-c-{}", std::process::id()));
+    fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("runtime_memory.c");
+    fs::write(&path, source).unwrap();
+    let compiler = env::var("CC").unwrap_or_else(|_| "cc".into());
+    for optimization in ["-O0", "-O2"] {
+        let executable = directory.join("runtime_memory");
+        let output = Command::new(&compiler)
+            .args([
+                optimization,
+                "-g",
+                "-pthread",
+                "-fsanitize=address,undefined,float-cast-overflow",
+                "-fno-sanitize-recover=all",
+                "-fno-omit-frame-pointer",
+            ])
+            .arg(&path)
+            .arg("-o")
+            .arg(&executable)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let output = Command::new(executable)
+            .env("ASAN_OPTIONS", "detect_leaks=1:abort_on_error=1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{optimization} {:?}: {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    fs::remove_dir_all(directory).unwrap();
+}

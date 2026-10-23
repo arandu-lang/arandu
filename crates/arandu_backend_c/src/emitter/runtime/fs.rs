@@ -73,6 +73,8 @@ static ArStr ar_path_file_name(ArStr p) {{
 static inline char *ar_str_to_c_path(ArStr s, char *stack_buf, size_t stack_sz) {{
     if (s.len < 0 || (!s.ptr && s.len > 0)) return NULL;
     size_t len = (size_t)s.len;
+    /* An interior NUL would make the OS see a different, shorter name. */
+    if (len > 0 && memchr(s.ptr, 0, len)) {{ errno = EINVAL; return NULL; }}
     if (len + 1 <= stack_sz) {{
         if (len > 0 && s.ptr) memcpy(stack_buf, s.ptr, len);
         stack_buf[len] = '\0';
@@ -568,6 +570,7 @@ typedef struct ArUdpSlot {{
 static ArUdpSlot *ar_udp_slots = NULL;
 static size_t ar_udp_slot_count = 0;
 static size_t ar_udp_slot_cap = 0;
+static size_t ar_udp_free_hint = 0; /* every slot below it holds a socket */
 static atomic_flag ar_udp_table_lock = ATOMIC_FLAG_INIT;
 
 #define AR_UDP_GEN_MASK 0x7FFFu
@@ -631,7 +634,7 @@ static intptr_t ar_udp_duplicate_fd(int32_t id) {{
 static int32_t ar_net_udp_bind(const uint8_t *host_ptr, {uint_c_ty} host_len, int32_t port) {{
     if (!host_ptr || host_len == 0 || port < 0 || port > 65535) return -1;
     char host_buf[256];
-    if (host_len >= sizeof(host_buf)) return -1;
+    if (host_len >= sizeof(host_buf) || memchr(host_ptr, 0, (size_t)host_len)) return -1;
     memcpy(host_buf, host_ptr, (size_t)host_len);
     host_buf[host_len] = '\0';
 
@@ -641,7 +644,7 @@ static int32_t ar_net_udp_bind(const uint8_t *host_ptr, {uint_c_ty} host_len, in
     ar_udp_lock_table();
     size_t slot = ar_udp_slot_count;
     int reused = 0;
-    for (size_t i = 0; i < ar_udp_slot_count; i++) {{
+    for (size_t i = ar_udp_free_hint; i < ar_udp_slot_count; i++) {{
         if (ar_udp_slots[i].fd == (intptr_t)-1) {{
             slot = i;
             reused = 1;
@@ -658,6 +661,7 @@ static int32_t ar_net_udp_bind(const uint8_t *host_ptr, {uint_c_ty} host_len, in
     }}
     uint16_t generation = ar_udp_slots[slot].generation;
     ar_udp_slots[slot].fd = fd;
+    ar_udp_free_hint = slot + 1;
     ar_udp_unlock_table();
     return ar_udp_pack(slot, generation);
 }}
@@ -668,7 +672,7 @@ static int32_t ar_net_udp_send_to(int32_t id, const uint8_t *buf, {uint_c_ty} le
     if (fd == (intptr_t)-1) return -1;
 
     char host_buf[256];
-    if (host_len >= sizeof(host_buf)) {{ ar_pal_udp_close(fd); return -1; }}
+    if (host_len >= sizeof(host_buf) || memchr(host_ptr, 0, (size_t)host_len)) {{ ar_pal_udp_close(fd); return -1; }}
     memcpy(host_buf, host_ptr, (size_t)host_len);
     host_buf[host_len] = '\0';
 
@@ -701,6 +705,7 @@ static void ar_net_udp_close(int32_t id) {{
         fd = ar_udp_slots[index].fd;
         ar_udp_slots[index].fd = (intptr_t)-1;
         ar_udp_slots[index].generation = ar_udp_bump_generation(generation);
+        if (index < ar_udp_free_hint) ar_udp_free_hint = index;
     }}
     ar_udp_unlock_table();
     if (fd != (intptr_t)-1) ar_pal_udp_close(fd);
@@ -709,7 +714,7 @@ static void ar_net_udp_close(int32_t id) {{
 static int32_t ar_net_dns_resolve(const uint8_t *name_ptr, {uint_c_ty} name_len, uint8_t *ip_buf, {uint_c_ty} ip_cap) {{
     if (!name_ptr || name_len == 0 || !ip_buf || ip_cap == 0) return -1;
     char name_buf[256];
-    if (name_len >= sizeof(name_buf)) return -1;
+    if (name_len >= sizeof(name_buf) || memchr(name_ptr, 0, (size_t)name_len)) return -1;
     memcpy(name_buf, name_ptr, (size_t)name_len);
     name_buf[name_len] = '\0';
     int n = ar_pal_dns_resolve(name_buf, (char *)ip_buf, (size_t)ip_cap);

@@ -187,20 +187,21 @@ static void ar_c_pool_ensure_init(void) {
     InitOnceExecuteOnce(&ar_c_pool_init_once, ar_c_pool_init_routine, NULL, NULL);
 }
 
-static void ar_c_pool_enqueue(ar_parallel_batch *batch) {
+static int ar_c_pool_enqueue(ar_parallel_batch *batch) {
     EnterCriticalSection(&ar_global_c_pool.cs);
     while (ar_global_c_pool.count == AR_PARALLEL_QUEUE_CAP && !ar_global_c_pool.shutdown) {
         SleepConditionVariableCS(&ar_global_c_pool.cv_space, &ar_global_c_pool.cs, INFINITE);
     }
     if (ar_global_c_pool.shutdown) {
         LeaveCriticalSection(&ar_global_c_pool.cs);
-        return;
+        return -1;
     }
     ar_global_c_pool.queue[ar_global_c_pool.tail] = batch;
     ar_global_c_pool.tail = (ar_global_c_pool.tail + 1) % AR_PARALLEL_QUEUE_CAP;
     ar_global_c_pool.count++;
     WakeConditionVariable(&ar_global_c_pool.cv_task);
     LeaveCriticalSection(&ar_global_c_pool.cs);
+    return 0;
 }
 
 #else
@@ -272,20 +273,21 @@ static void ar_c_pool_ensure_init(void) {
     pthread_once(&ar_c_pool_init_once, ar_c_pool_init_routine);
 }
 
-static void ar_c_pool_enqueue(ar_parallel_batch *batch) {
+static int ar_c_pool_enqueue(ar_parallel_batch *batch) {
     pthread_mutex_lock(&ar_global_c_pool.mutex);
     while (ar_global_c_pool.count == AR_PARALLEL_QUEUE_CAP && !ar_global_c_pool.shutdown) {
         pthread_cond_wait(&ar_global_c_pool.cv_space, &ar_global_c_pool.mutex);
     }
     if (ar_global_c_pool.shutdown) {
         pthread_mutex_unlock(&ar_global_c_pool.mutex);
-        return;
+        return -1;
     }
     ar_global_c_pool.queue[ar_global_c_pool.tail] = batch;
     ar_global_c_pool.tail = (ar_global_c_pool.tail + 1) % AR_PARALLEL_QUEUE_CAP;
     ar_global_c_pool.count++;
     pthread_cond_signal(&ar_global_c_pool.cv_task);
     pthread_mutex_unlock(&ar_global_c_pool.mutex);
+    return 0;
 }
 
 #endif
@@ -354,7 +356,9 @@ static int32_t ar_rt_parallel_fold_run(
 
     /* Dispatch (worker_count - 1) batches to reusable worker pool */
     for (uint64_t i = 0; i < worker_count - 1; i++) {
-        ar_c_pool_enqueue(&batches[i]);
+        /* A refused batch never runs; retire it so the join cannot hang.
+           Chunks are claimed dynamically, so the remaining batches cover it. */
+        if (ar_c_pool_enqueue(&batches[i]) != 0) ar_parallel_group_finish_batch(&group);
     }
 
     /* Work sharing: calling thread directly runs dynamically as well */

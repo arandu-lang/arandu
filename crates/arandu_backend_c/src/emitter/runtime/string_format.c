@@ -31,7 +31,8 @@ static ArStr ar_f64_to_str(double v) {
         n = snprintf(tmp, sizeof(tmp), "nan");
     } else if (isinf(v)) {
         n = snprintf(tmp, sizeof(tmp), "%s", (v < 0) ? "-inf" : "inf");
-    } else if (v == (double)(long long)v && v < 1e15 && v > -1e15) {
+    } else if (v < 1e15 && v > -1e15 && v == (double)(long long)v) {
+        /* Range first: converting an out-of-range double to an integer is UB. */
         n = snprintf(tmp, sizeof(tmp), "%lld", (long long)v);
     } else {
         n = snprintf(tmp, sizeof(tmp), "%.15g", v);

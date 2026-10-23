@@ -17,12 +17,22 @@ typedef struct {
 static ar_rt_slot *ar_rt_slots = NULL;
 static uint64_t ar_rt_capacity = 0;
 static uint64_t ar_rt_len = 0;
+/* Every index below this hint is occupied. Spawn still picks the lowest free
+   index (same handles as the JIT table) without rescanning the busy prefix. */
+static uint64_t ar_rt_free_hint = 0;
 /* Table mutations only. The join releases this lock before driving the blob,
    so one task cannot stall spawn/cancel of another. */
 static atomic_flag ar_rt_table_lock = ATOMIC_FLAG_INIT;
 
 static void ar_rt_lock_table(void) {
-    while (atomic_flag_test_and_set_explicit(&ar_rt_table_lock, memory_order_acquire)) {}
+    while (atomic_flag_test_and_set_explicit(&ar_rt_table_lock, memory_order_acquire))
+        ar_pal_spin_hint();
+}
+
+static void ar_rt_retire_slot(uint64_t index) {
+    ar_rt_slots[index].state = 0;
+    ar_rt_slots[index].blob = NULL;
+    if (index < ar_rt_free_hint) ar_rt_free_hint = index;
 }
 
 static void ar_rt_unlock_table(void) {
@@ -33,7 +43,7 @@ static int64_t ar_rt_spawn_i64(uint8_t *state) {
     if (!state) abort();
     ar_rt_lock_table();
     uint64_t index = ar_rt_capacity;
-    for (uint64_t i = 0; i < ar_rt_len; i++) {
+    for (uint64_t i = ar_rt_free_hint; i < ar_rt_len; i++) {
         if (ar_rt_slots[i].state == 0) { index = i; break; }
     }
     if (index == ar_rt_capacity) {
@@ -59,6 +69,7 @@ static int64_t ar_rt_spawn_i64(uint8_t *state) {
     ar_rt_slots[index].state = 1;
     ar_rt_slots[index].cancel_requested = 0;
     ar_rt_slots[index].blob = state;
+    ar_rt_free_hint = index + 1;
     ar_rt_unlock_table();
     return (int64_t)index;
 }
@@ -90,8 +101,7 @@ static int64_t ar_rt_join_i64(int64_t handle) {
     /* realloc during another spawn may have moved the table. */
     slot = &ar_rt_slots[(uint64_t)handle];
     if (slot->cancel_requested) {
-        slot->state = 0;
-        slot->blob = NULL;
+        ar_rt_retire_slot((uint64_t)handle);
     } else {
         slot->state = 3;
         slot->result = result;
@@ -109,8 +119,7 @@ static void ar_rt_cancel_i64(int64_t handle) {
     ar_rt_slot *slot = &ar_rt_slots[(uint64_t)handle];
     if (slot->state == 1) {
         uint8_t *blob = slot->blob;
-        slot->state = 0;
-        slot->blob = NULL;
+        ar_rt_retire_slot((uint64_t)handle);
         ar_rt_unlock_table();
         if (*(uint32_t*)(blob + 4) != 0x4152434fu) abort(); /* fail-closed magic */
         free(blob);
@@ -118,7 +127,7 @@ static void ar_rt_cancel_i64(int64_t handle) {
     } else if (slot->state == 2) {
         slot->cancel_requested = 1;
     } else if (slot->state == 3) {
-        slot->state = 0; /* cached row is retired by cancel (JIT slot.take) */
+        ar_rt_retire_slot((uint64_t)handle); /* cached row is retired by cancel (JIT slot.take) */
     } /* EMPTY: no-op */
     ar_rt_unlock_table();
 }

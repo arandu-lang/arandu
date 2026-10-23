@@ -100,11 +100,22 @@ static int64_t ar_pal_monotonic_ns(void) {
 #endif
 }
 
+/* Long durations are sliced/saturated instead of truncated: usleep takes a
+   32-bit microsecond count and may reject >= 1s; DWORD INFINITE never wakes. */
 static void ar_pal_sleep_ms(uint64_t ms) {
 #if defined(_WIN32)
-    Sleep((DWORD)ms);
+    do {
+        DWORD slice = ms >= (uint64_t)INFINITE ? INFINITE - 1 : (DWORD)ms;
+        Sleep(slice);
+        ms -= slice;
+    } while (ms > 0);
 #else
-    usleep((useconds_t)(ms * 1000));
+    uint64_t seconds = ms / 1000;
+    uint64_t max_seconds = sizeof(time_t) <= 4 ? INT32_MAX : INT64_MAX;
+    struct timespec request;
+    request.tv_sec = (time_t)(seconds > max_seconds ? max_seconds : seconds);
+    request.tv_nsec = (long)((ms % 1000) * 1000000);
+    while (nanosleep(&request, &request) != 0 && errno == EINTR) {}
 #endif
 }
 
@@ -391,6 +402,26 @@ static ArPalDir *ar_pal_readdir_open(const char *path, int *err) {
 #endif
 }
 
+#if !defined(_WIN32)
+/* d_type fallback. Paths that do not fit the stack buffer use the heap
+   instead of stat-ing a silently truncated (different) path. */
+static int ar_pal_dirent_is_dir(const char *dir_path, const char *name) {
+    char stack_path[4096];
+    char *sub_path = stack_path;
+    int needed = snprintf(stack_path, sizeof(stack_path), "%s/%s", dir_path, name);
+    if (needed < 0) return 0;
+    if ((size_t)needed >= sizeof(stack_path)) {
+        sub_path = (char *)malloc((size_t)needed + 1);
+        if (!sub_path) return 0;
+        snprintf(sub_path, (size_t)needed + 1, "%s/%s", dir_path, name);
+    }
+    struct stat st;
+    int is_dir = stat(sub_path, &st) == 0 && S_ISDIR(st.st_mode);
+    if (sub_path != stack_path) free(sub_path);
+    return is_dir;
+}
+#endif
+
 static int ar_pal_readdir_next(ArPalDir *dir, ArPalDirEnt *out, int *err) {
     if (err) *err = 0;
     if (!dir || !out) {
@@ -459,17 +490,9 @@ static int ar_pal_readdir_next(ArPalDir *dir, ArPalDirEnt *out, int *err) {
         int is_dir = 0;
 #ifdef DT_DIR
         if (ent->d_type == DT_DIR) is_dir = 1;
-        else if (ent->d_type == DT_UNKNOWN) {
-            char sub_path[4096];
-            snprintf(sub_path, sizeof(sub_path), "%s/%s", dir->path, ent->d_name);
-            struct stat st;
-            if (stat(sub_path, &st) == 0 && S_ISDIR(st.st_mode)) is_dir = 1;
-        }
+        else if (ent->d_type == DT_UNKNOWN) is_dir = ar_pal_dirent_is_dir(dir->path, ent->d_name);
 #else
-        char sub_path[4096];
-        snprintf(sub_path, sizeof(sub_path), "%s/%s", dir->path, ent->d_name);
-        struct stat st;
-        if (stat(sub_path, &st) == 0 && S_ISDIR(st.st_mode)) is_dir = 1;
+        is_dir = ar_pal_dirent_is_dir(dir->path, ent->d_name);
 #endif
         out->name = name;
         out->name_len = nlen;

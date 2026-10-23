@@ -20,6 +20,8 @@ typedef struct ar_cv_waiter {
     pthread_cond_t cv;
 #endif
     struct ar_cv_waiter *next;
+    struct ar_cv_waiter *prev; /* bucket list only; phase queues use next */
+    int queued;                /* still linked in its bucket list */
 } ar_cv_waiter;
 
 typedef struct ar_cv_bucket {
@@ -66,18 +68,21 @@ static void ar_cv_unlock(ar_cv_bucket *b) {
 #endif
 }
 
+static void ar_cv_push(ar_cv_bucket *b, ar_cv_waiter *waiter) {
+    waiter->next = NULL;
+    waiter->prev = b->tail;
+    if (b->tail) b->tail->next = waiter; else b->head = waiter;
+    b->tail = waiter;
+    waiter->queued = 1;
+}
+
+/* O(1): waiters are doubly linked; removing an unqueued waiter is a no-op. */
 static void ar_cv_remove(ar_cv_bucket *b, ar_cv_waiter *target) {
-    ar_cv_waiter **link = &b->head;
-    ar_cv_waiter *prev = NULL;
-    while (*link) {
-        if (*link == target) {
-            *link = target->next;
-            if (b->tail == target) b->tail = prev;
-            return;
-        }
-        prev = *link;
-        link = &(*link)->next;
-    }
+    if (!target->queued) return;
+    if (target->prev) target->prev->next = target->next; else b->head = target->next;
+    if (target->next) target->next->prev = target->prev; else b->tail = target->prev;
+    target->next = target->prev = NULL;
+    target->queued = 0;
 }
 
 #if !defined(_WIN32)
@@ -129,8 +134,7 @@ static int32_t ar_cv_wait(const void *key, size_t seq, int timed, uint64_t timeo
 #endif
         return 1;
     }
-    if (b->tail) b->tail->next = &waiter; else b->head = &waiter;
-    b->tail = &waiter;
+    ar_cv_push(b, &waiter);
 #if !defined(_WIN32)
     ar_cv_cancel_context cancel_context = {b, &waiter};
     pthread_cleanup_push(ar_cv_cancel_wait, &cancel_context);

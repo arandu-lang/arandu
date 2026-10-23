@@ -123,7 +123,10 @@ pub struct ExportAbiInfo {
 pub fn is_export_aggregate(ty: &ArType) -> bool {
     matches!(
         ty,
-        ArType::Named(..) | ArType::Slice(_) | ArType::MutSlice(_)
+        ArType::Named(..)
+            | ArType::Slice(_)
+            | ArType::MutSlice(_)
+            | ArType::Primitive(Primitive::Str)
     )
 }
 
@@ -534,7 +537,9 @@ fn primitive_leaf(primitive: Primitive, pointer_width: u64) -> Result<(u64, Leaf
     let leaf = match primitive {
         Primitive::Bool | Primitive::I8 | Primitive::U8 | Primitive::Byte => (1, LeafKind::Int),
         Primitive::I16 | Primitive::U16 => (2, LeafKind::Int),
-        Primitive::I32 | Primitive::U32 | Primitive::Char => (4, LeafKind::Int),
+        Primitive::I32 | Primitive::U32 | Primitive::Char | Primitive::Int | Primitive::Uint => {
+            (4, LeafKind::Int)
+        }
         Primitive::I64 | Primitive::U64 => (8, LeafKind::Int),
         Primitive::ISize | Primitive::USize => (pointer_width, LeafKind::Int),
         Primitive::F32 => (4, LeafKind::F32),
@@ -546,6 +551,9 @@ fn primitive_leaf(primitive: Primitive, pointer_width: u64) -> Result<(u64, Leaf
 }
 
 /// The C spelling of a primitive type, used by the generated header.
+///
+/// This is the single source of truth for both `@Export` validation and the
+/// header: a primitive is exportable exactly when this function names it.
 #[must_use]
 pub fn c_primitive_name(primitive: Primitive, pointer_width: u64) -> Option<String> {
     let name = match primitive {
@@ -556,8 +564,12 @@ pub fn c_primitive_name(primitive: Primitive, pointer_width: u64) -> Option<Stri
         Primitive::I64 => "int64_t",
         Primitive::U8 | Primitive::Byte => "uint8_t",
         Primitive::U16 => "uint16_t",
-        Primitive::U32 | Primitive::Char => "uint32_t",
+        Primitive::U32 => "uint32_t",
         Primitive::U64 => "uint64_t",
+        // `int` and `uint` are fixed 32-bit in Arandu (RFC 0023); spelling them
+        // with the sized typedefs keeps the boundary independent of the host.
+        Primitive::Int => "int32_t",
+        Primitive::Uint => "uint32_t",
         Primitive::ISize => {
             if pointer_width == 4 {
                 "int32_t"
@@ -565,13 +577,7 @@ pub fn c_primitive_name(primitive: Primitive, pointer_width: u64) -> Option<Stri
                 "int64_t"
             }
         }
-        Primitive::USize => {
-            if pointer_width == 4 {
-                "uint32_t"
-            } else {
-                "uint64_t"
-            }
-        }
+        Primitive::USize => "size_t",
         Primitive::F32 => "float",
         Primitive::F64 | Primitive::Float => "double",
         _ => return None,

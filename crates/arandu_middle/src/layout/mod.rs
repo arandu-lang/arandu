@@ -1,6 +1,7 @@
 pub mod abi;
 mod data_layout;
 pub mod export_abi;
+pub mod ffi;
 
 pub use abi::{
     AbiConfigError, AbiScalar, AbiSlot, ArgAbi, DirectAbi, TargetAbi, TargetAbiClassifier,
@@ -10,6 +11,7 @@ pub use export_abi::{
     AbiLane, AbiPart, ExportAbi, ExportAbiInfo, ParamAbi, ReturnAbi, c_primitive_name,
     classify as classify_export, is_export_aggregate,
 };
+pub use ffi::{FfiPosition, FfiType, ffi_type_of};
 
 use crate::SymbolId;
 use crate::index_vec::IdIndex;

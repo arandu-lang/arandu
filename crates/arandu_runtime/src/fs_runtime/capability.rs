@@ -1,4 +1,12 @@
 use crate::rt_runtime::path_from_fat;
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+))]
 use std::path::Path;
 
 // Capability paths are deliberately strict: no absolute paths, empty
@@ -165,7 +173,7 @@ fn capability_parent(
     Some((descriptor, leaf))
 }
 
-/// Opens an ambient directory capability on Linux, macOS and BSD.
+/// Opens an ambient directory capability on Linux, macOS, BSD and Windows.
 ///
 /// # Safety
 /// The pointer/length pair must be readable for the duration of this call.
@@ -194,7 +202,12 @@ pub unsafe extern "C" fn ar_fs_dir_open(path_ptr: *const u8, path_len: usize) ->
             };
             (fd >= 0).then_some(fd)
         }
+        #[cfg(windows)]
+        {
+            super::capability_windows::dir_open(path.to_str()?)
+        }
         #[cfg(not(any(
+            windows,
             target_os = "linux",
             target_os = "macos",
             target_os = "freebsd",
@@ -260,7 +273,19 @@ pub unsafe extern "C" fn ar_fs_openat(
             capability_open(dir_fd, &path, flags, if create { 0o666 } else { 0 }, false)
                 .map(|fd| fd.into_raw_fd())
         }
+        #[cfg(windows)]
+        {
+            super::capability_windows::openat(
+                dir_fd,
+                path.to_str()?.as_bytes(),
+                read,
+                write,
+                create,
+                truncate,
+            )
+        }
         #[cfg(not(any(
+            windows,
             target_os = "linux",
             target_os = "macos",
             target_os = "freebsd",
@@ -303,7 +328,12 @@ pub unsafe extern "C" fn ar_fs_dir_openat(
             capability_open(dir_fd, &path, libc::O_RDONLY | libc::O_DIRECTORY, 0, true)
                 .map(|fd| fd.into_raw_fd())
         }
+        #[cfg(windows)]
+        {
+            super::capability_windows::dir_openat(dir_fd, path.to_str()?.as_bytes())
+        }
         #[cfg(not(any(
+            windows,
             target_os = "linux",
             target_os = "macos",
             target_os = "freebsd",
@@ -356,7 +386,12 @@ pub unsafe extern "C" fn ar_fs_mkdirat(dir_fd: i32, path_ptr: *const u8, path_le
             )
             .map(|fd| fd.into_raw_fd())
         }
+        #[cfg(windows)]
+        {
+            super::capability_windows::mkdirat(dir_fd, path.to_str()?.as_bytes())
+        }
         #[cfg(not(any(
+            windows,
             target_os = "linux",
             target_os = "macos",
             target_os = "freebsd",
@@ -409,7 +444,13 @@ pub unsafe extern "C" fn ar_fs_unlinkat(
             };
             (result == 0).then_some(0)
         }
+        #[cfg(windows)]
+        {
+            super::capability_windows::unlinkat(dir_fd, path.to_str()?.as_bytes(), is_dir)
+                .map(|()| 0)
+        }
         #[cfg(not(any(
+            windows,
             target_os = "linux",
             target_os = "macos",
             target_os = "freebsd",

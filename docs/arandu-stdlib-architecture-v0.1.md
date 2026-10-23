@@ -36,7 +36,8 @@ symlinks. As regressões de runtime e JIT/C com UBSan rejeitam caminhos
 absolutos, parent traversal e fugas por symlinks; rename da raiz preserva
 a autoridade do descritor aberto. Kernels Linux sem a syscall falham sem
 fallback menos restritivo. macOS/BSD têm um recorte local de um componente por
-capacidade, ainda sem prova de execução nativa; Windows permanece fail-closed.
+capacidade, ainda sem prova de execução nativa; Windows (ST.12b) usa o mesmo
+recorte com `NtCreateFile` relativo, também sem prova de execução nativa.
 Isso não fecha toda a RFC 0016 nem
 o lifecycle de I/O. A campanha local 0.1.11 acrescenta Q8.8/Q32.32, intrínsecos
 u32/u64 de contagem/reversão de bits, operações checadas de Decimal e protótipos
@@ -82,7 +83,7 @@ memória/ABI/shuffle e wrapping por via). O harness C ParkingLot passou em O0/O2
 com UBSan. O runtime Rust passou em checks para Windows x86-64 e macOS ARM64/
 x86-64, com `blake3/pure` e flags de linker do host removidas. Isso verifica
 compilação Rust dessas branches, não execução nativa ou compilação dos shims C
-nesses sistemas; Windows Dir permanece fail-closed.
+nesses sistemas; o `Dir` Windows tem testes `#[cfg(windows)]` para o runner CI.
 
 Como evidência histórica de 16/10, a extensão passou em 26 testes unitários,
 nos cenários projeto/manifestless do Extension Host e em TypeScript; o instalador
@@ -129,8 +130,11 @@ somente um componente e usa `openat` com `O_NOFOLLOW | O_CLOEXEC`;
 diretórios exigem também `O_DIRECTORY` e `fstat` no descritor aberto.
 `Dir.openDir` deriva explicitamente a próxima capacidade; caminhos com `/`
 falham nesses alvos. Não se oferece uma caminhada multiplataforma com
-verificação atômica de ancestralidade entre várias syscalls. Windows continua
-fail-closed até existir adaptador de handles compatível com a ABI.
+verificação atômica de ancestralidade entre várias syscalls. No Windows o token
+é um descritor CRT (`_open_osfhandle`) que possui o `HANDLE` sem truncamento;
+aberturas relativas usam `NtCreateFile` com `RootDirectory`, `OBJ_DONT_REPARSE`
+e `FILE_OPEN_REPARSE_POINT`, rejeitando reparse points, ADS, dispositivos e
+ponto/espaço finais (RFC 0016 §4.2.3).
 `Dir.openDir` exige diretório; opções de append ainda são rejeitadas, assim
 como criar/truncar sem escrita. `File.fd` é privado; `File.close` invalida o
 descritor com `-1` e o destructor fecha somente descritores ainda abertos,

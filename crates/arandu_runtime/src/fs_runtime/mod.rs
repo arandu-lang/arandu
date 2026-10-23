@@ -17,6 +17,8 @@
 use std::io::Read;
 
 mod capability;
+#[cfg(any(windows, test))]
+mod capability_windows;
 mod dir;
 mod fd;
 mod read;
@@ -115,6 +117,7 @@ use dir::directory_blob_len;
 mod tests {
     use super::*;
     use crate::vec_runtime::ar_vec_buf_free;
+    #[cfg(unix)]
     use std::path::Path;
     use std::sync::atomic::{AtomicUsize, Ordering};
 

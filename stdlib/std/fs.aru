@@ -463,8 +463,12 @@ extern "C" {
 /// macOS/BSD accept only one normal component per call, using O_NOFOLLOW;
 /// derive a child Dir explicitly before accessing its files. Multi-component
 /// paths fail closed there. Handles retain authority over their directory if
-/// it is renamed. Unsupported kernels/platforms fail closed; Linux never falls
-/// back from openat2 to a weaker traversal.
+/// it is renamed. Windows also accepts one component per call: NtCreateFile
+/// relative to the pinned handle with OBJ_DONT_REPARSE and
+/// FILE_OPEN_REPARSE_POINT; reparse points, devices (`NUL`, `COM1`), streams
+/// (`:`), separators and trailing dot/space are rejected. The token there is a
+/// CRT descriptor that owns the HANDLE. Unsupported kernels/platforms fail
+/// closed; Linux never falls back from openat2 to a weaker traversal.
 /// The descriptor is private and cannot be forged by safe clients.
 public struct Dir {
     private fd: int
@@ -476,7 +480,7 @@ public func openDir(path: str): Result<Dir, io.IoError> {
 }
 
 /// Acquires an ambient directory handle. Linux uses openat2 for relative paths;
-/// macOS/BSD require one component per relative call. Windows is unsupported.
+/// macOS/BSD and Windows require one component per relative call.
 public func Dir.open(path: str): Result<Dir, io.IoError> {
     let bytes = intrinsics.strBytes(path)
     unsafe {

@@ -5,11 +5,14 @@
     target_os = "freebsd",
     target_os = "openbsd",
     target_os = "netbsd",
-    target_os = "dragonfly"
+    target_os = "dragonfly",
+    windows
 ))]
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 mod common;
-use std::{fs, os::unix::fs::symlink, process::Command};
+#[cfg(unix)]
+use std::os::unix::fs::symlink;
+use std::{fs, process::Command};
 
 #[test]
 #[cfg(target_os = "linux")]
@@ -174,6 +177,7 @@ func main(): int {
 }
 
 #[test]
+#[cfg(unix)]
 fn dir_capability_derives_child_explicitly_in_jit_and_c() {
     let base = common::temp_dir("arandu-capability-component").unwrap();
     let root = base.join("root");
@@ -267,5 +271,125 @@ func main(): int {
         fs::read_to_string(outside.join("victim")).unwrap(),
         "outside"
     );
+    fs::remove_dir_all(base).unwrap();
+}
+/// ST.12b: NT relative opens through the CRT-descriptor bridge in JIT and C.
+#[test]
+#[cfg(windows)]
+fn dir_capability_confines_nt_relative_opens_in_jit_and_c() {
+    let base = common::temp_dir("arandu-capability-nt").unwrap();
+    let root = base.join("root");
+    let outside = base.join("outside");
+    fs::create_dir_all(root.join("child")).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(root.join("child").join("inside"), "inside").unwrap();
+    fs::write(outside.join("victim"), "outside").unwrap();
+    // Junctions need no privilege, so the reparse rejection always runs.
+    let junction = Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(root.join("junction"))
+        .arg(&outside)
+        .output()
+        .unwrap();
+    assert!(junction.status.success(), "mklink /J failed");
+    let source = r#"import std.fs as fs
+func rejects(dir: ref fs.Dir, path: str): bool {
+    match dir.openFile(path, fs.OpenOptions.writeOnly()) {
+        Result.Ok(_) => { return false }
+        Result.Err(_) => { return true }
+    }
+}
+func main(): int {
+    match fs.openDir(ROOT) {
+        Result.Ok(root) => {
+            match root.openDir("junction") { Result.Ok(_) => { return 1 } Result.Err(_) => {} }
+            if !rejects(ref root, "junction\\victim") { return 2 }
+            if !rejects(ref root, "..\\outside\\victim") { return 3 }
+            if !rejects(ref root, ABSOLUTE) { return 4 }
+            if !rejects(ref root, "NUL") { return 11 }
+            if !rejects(ref root, "data:stream") { return 12 }
+            if !rejects(ref root, "trailing.") { return 13 }
+            match root.openDir("child") {
+                Result.Ok(child) => {
+                    if !child.fileExists("inside") { return 5 }
+                    match child.createDir("created") {
+                        Result.Ok(created) => {
+                            match created.openFile("file", fs.OpenOptions.writeOnly()) { Result.Ok(_) => {} Result.Err(_) => { return 6 } }
+                            match created.removeFile("file") { Result.Ok(_) => {} Result.Err(_) => { return 7 } }
+                        }
+                        Result.Err(_) => { return 8 }
+                    }
+                    match child.removeDir("created") { Result.Ok(_) => {} Result.Err(_) => { return 9 } }
+                }
+                Result.Err(_) => { return 10 }
+            }
+        }
+        Result.Err(_) => { return 14 }
+    }
+    return 0
+}
+"#
+    .replace("ROOT", &format!("{:?}", root.to_str().unwrap()))
+    .replace(
+        "ABSOLUTE",
+        &format!("{:?}", outside.join("victim").to_str().unwrap()),
+    );
+    let path = base.join("nt.aru");
+    fs::write(&path, source).unwrap();
+    let output = common::cli_command()
+        .arg("run")
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "JIT {:?}: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output = common::cli_command()
+        .arg("emit-c")
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let c_path = base.join("nt.c");
+    fs::write(&c_path, output.stdout).unwrap();
+    if Command::new("clang")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success())
+    {
+        let executable = base.join("nt.exe");
+        let output = Command::new("clang")
+            .args(["-O2"])
+            .arg(&c_path)
+            .arg("-o")
+            .arg(&executable)
+            .args(arandu_middle::TargetSpec::for_host().cc_link_args())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let output = Command::new(&executable).output().unwrap();
+        assert!(
+            output.status.success(),
+            "C {:?}: {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(outside.join("victim")).unwrap(),
+        "outside"
+    );
+    assert!(!root.join("data").exists());
     fs::remove_dir_all(base).unwrap();
 }

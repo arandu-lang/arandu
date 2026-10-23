@@ -429,7 +429,7 @@ static void ar_fs_readdir(ArStr path, uint8_t **out_buf, {uint_c_ty} *out_count,
 #if defined(__linux__) || defined(AR_CAP_COMPONENT_ONLY)
 #define AR_CAP_SUPPORTED 1
 #endif
-static bool ar_cap_path_valid(const uint8_t *path, {uint_c_ty} len, bool allow_dot) {{
+{win_cap}static bool ar_cap_path_valid(const uint8_t *path, {uint_c_ty} len, bool allow_dot) {{
     if (!path || len == 0 || len >= 4096) return false;
     if (allow_dot && len == 1 && path[0] == '.') return true;
     size_t begin = 0;
@@ -494,6 +494,8 @@ static {int_c_ty} ar_fs_dir_open(const uint8_t *path_ptr, {uint_c_ty} path_len) 
     memcpy(stack_buf, path_ptr, (size_t)path_len);
     stack_buf[path_len] = 0;
     return ({int_c_ty})open(stack_buf, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+#elif defined(_WIN32)
+    return ({int_c_ty})ar_cap_win_dir_open(path_ptr, (size_t)path_len);
 #else
     (void)path_ptr; (void)path_len;
     return -1;
@@ -504,6 +506,8 @@ static {int_c_ty} ar_fs_dir_openat({int_c_ty} dir_fd, const uint8_t *path_ptr, {
     if (!ar_cap_path_valid(path_ptr, path_len, true)) return -1;
     char path[4096]; memcpy(path, path_ptr, (size_t)path_len); path[path_len] = 0;
     return ({int_c_ty})ar_cap_open_beneath((int)dir_fd, path, O_RDONLY | O_DIRECTORY, 0);
+#elif defined(_WIN32)
+    return ({int_c_ty})ar_cap_win_dir_openat((int64_t)dir_fd, path_ptr, (size_t)path_len);
 #else
     (void)dir_fd; (void)path_ptr; (void)path_len;
     return -1;
@@ -517,6 +521,8 @@ static {int_c_ty} ar_fs_openat({int_c_ty} dir_fd, const uint8_t *path_ptr, {uint
     if (create) flags |= O_CREAT;
     if (truncate) flags |= O_TRUNC;
     return ({int_c_ty})ar_cap_open_beneath((int)dir_fd, path, flags, create ? 0666 : 0);
+#elif defined(_WIN32)
+    return ({int_c_ty})ar_cap_win_openat((int64_t)dir_fd, path_ptr, (size_t)path_len, read, write, create, truncate);
 #else
     (void)dir_fd; (void)path_ptr; (void)path_len; (void)read; (void)write; (void)create; (void)truncate;
     return -1;
@@ -533,6 +539,8 @@ static {int_c_ty} ar_fs_mkdirat({int_c_ty} dir_fd, const uint8_t *path_ptr, {uin
     if (mkdirat(parent, leaf, 0777) == 0) result = ar_cap_open_beneath(parent, leaf, O_RDONLY | O_DIRECTORY, 0);
     close(parent);
     return ({int_c_ty})result;
+#elif defined(_WIN32)
+    return ({int_c_ty})ar_cap_win_mkdirat((int64_t)dir_fd, path_ptr, (size_t)path_len);
 #else
     (void)dir_fd; (void)path_ptr; (void)path_len;
     return -1;
@@ -548,13 +556,16 @@ static {int_c_ty} ar_fs_unlinkat({int_c_ty} dir_fd, const uint8_t *path_ptr, {ui
     int result = unlinkat(parent, leaf, is_dir ? AT_REMOVEDIR : 0);
     close(parent);
     return ({int_c_ty})result;
+#elif defined(_WIN32)
+    return ({int_c_ty})ar_cap_win_unlinkat((int64_t)dir_fd, path_ptr, (size_t)path_len, is_dir);
 #else
     (void)dir_fd; (void)path_ptr; (void)path_len; (void)is_dir;
     return -1;
 #endif
 }}
 
-"#
+"#,
+            win_cap = include_str!("fs_cap_windows.c"),
         );
     }
 

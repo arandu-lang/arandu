@@ -40,9 +40,11 @@ pais pinados usados em mutações Linux.
 A lógica de componente único é exercitada no Linux, incluindo troca do
 nome por symlink após adquirir o filho. Compilação cruzada e testes nativos
 nos demais sistemas continuam obrigatórios antes de promover suporte.
-Windows permanece fail-closed: a ABI atual de descritores `i32` exige um
-adaptador seguro para `HANDLE`, sem truncamento. `NtCreateFile` relativo e
-as políticas de reparse points, ADS e nomes de dispositivos ainda faltam.
+Windows (ST.12b) tem implementação local com o mesmo recorte de um
+componente: o token é um descritor CRT que possui o `HANDLE`, aberturas
+relativas usam `NtCreateFile` com `RootDirectory`, e reparse points, ADS,
+dispositivos e aliases Win32 são rejeitados (§4.2.3). A compilação cruzada
+Rust/C foi verificada em Linux; a execução nativa depende do runner Windows.
 
 Os mecanismos multiplataforma completos, fallback para kernels antigos, efeitos de
 autoridade ambiente e `[capabilities]` descritos adiante são propostas. O
@@ -264,19 +266,115 @@ O recorte atual não presume que essas flags estejam disponíveis.
 
 #### 4.2.3 Windows NT
 
-Ainda não implementado. A ABI atual usa `i32` para descritores; um `HANDLE`
-nativo não pode ser compactado nem truncado para esse campo. Antes de habilitar
-Windows, é necessário um adaptador com ownership e fechamento consistentes
-entre Rust, JIT e C.
+Implementado localmente em ST.12b, com o mesmo recorte de **um componente
+por chamada** usado em macOS/BSD. Fontes: runtime Rust
+[`capability_windows.rs`](../../crates/arandu_runtime/src/fs_runtime/capability_windows.rs)
+e C gerado
+[`fs_cap_windows.c`](../../crates/arandu_backend_c/src/emitter/runtime/fs_cap_windows.c);
+os dois seguem a mesma sequência de chamadas e validação.
 
-A proposta usa [NtCreateFile relativo a RootDirectory](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-zwcreatefile)
-para abrir uma folha sob um handle já adquirido, com tratamento explícito de
-reparse points. `CreateFileW` em um caminho concatenado e a flag
-`FILE_FLAG_OPEN_REPARSE_POINT` isolada não estabelecem contenção dos
-componentes intermediários. ADS (`:`), nomes de dispositivos e prefixos de
-namespace devem ser rejeitados antes da chamada. Deleção requer operação por
-handle e validação das flags suportadas pelo sistema/volume. Até esse contrato
-estar implementado e testado, o runtime retorna erro.
+**Ponte de posse sem truncamento.** A ABI de `Dir`/`File` continua `int`
+(`i32` no JIT), sem mudança para Linux/macOS. No Windows, o token é um
+descritor CRT criado por `_open_osfhandle`: a tabela da CRT guarda o
+`HANDLE` em largura de ponteiro, e o `HANDLE` nunca passa por um inteiro de
+32 bits. `_get_osfhandle` empresta o handle a cada operação, e `_close` o
+fecha uma única vez. Se `_open_osfhandle` falhar, o runtime fecha o handle
+que ainda possui. Assim, `File.read/write/close` reutilizam `_read`,
+`_write` e `_close`, que o PAL C já usava; o runtime Rust passou a usar as
+mesmas funções. O `fd = -1` após `close` e o destrutor condicional evitam
+double close e uso após fechamento. Uma tabela própria com geração foi
+descartada porque duplicaria o que a CRT já oferece e mudaria a ABI do JIT.
+
+**Abertura relativa.** `NtCreateFile` recebe `RootDirectory` igual ao handle
+pinado, `OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE`, `FILE_OPEN_REPARSE_POINT` e
+`FILE_SYNCHRONOUS_IO_NONALERT`. A seleção entre diretório e arquivo usa
+`FILE_DIRECTORY_FILE` ou `FILE_NON_DIRECTORY_FILE`. O C resolve
+`NtCreateFile`/`NtSetInformationFile` do `ntdll` já carregado por
+`GetProcAddress`, então não precisa de flags extras de link. Em Rust, as
+mesmas funções vêm de `windows-sys`; `ntdll.lib` já faz parte do runtime
+empacotado. Se o kernel rejeitar `OBJ_DONT_REPARSE` com
+`STATUS_INVALID_PARAMETER`, a chamada é repetida sem essa flag. A garantia
+continua: com um componente e `RootDirectory` pinado, o único reparse point
+possível é a própria folha. `FILE_OPEN_REPARSE_POINT` abre essa folha sem
+segui-la, e a checagem posterior a rejeita.
+
+**Checagem do objeto aberto.** O objeto precisa ter `GetFileType ==
+FILE_TYPE_DISK` e o atributo `FILE_ATTRIBUTE_DIRECTORY` esperado; qualquer
+`FILE_ATTRIBUTE_REPARSE_POINT` é rejeitado. A regra não se limita a
+name-surrogates e falha fechado também para placeholders de nuvem e dedup.
+`truncate` roda só depois da checagem, via `SetEndOfFile`. Não se usa
+`FILE_OVERWRITE_IF`, para que um link ou dispositivo nunca seja sobrescrito.
+`createDir` usa `FILE_CREATE` e devolve o handle criado, sem a segunda
+abertura do Linux.
+
+**Remoção.** A entrada é aberta com `DELETE` e marcada por
+`FileDispositionInformationEx` (`DELETE | POSIX_SEMANTICS`). Em kernels
+anteriores ao 1607 ou volumes sem suporte, o fallback é
+`FileDispositionInformation`; só muda o momento em que a remoção aparece, a
+contenção é a mesma. `removeFile` sobre um link de arquivo remove o próprio
+link, como `unlink`. `removeDir` sobre junction ou symlink de diretório
+falha, como `rmdir` em symlink.
+
+**Nomes rejeitados antes da chamada.** São recusados: separadores `\` e `/`;
+`:` (ADS e drive); `* ? " < > |`; caracteres de controle; `.` e `..` (`.` só
+é aceito em `openDir`, como reabertura da raiz por nome vazio); ponto ou
+espaço finais; UTF-8 inválido, sem fallback para code page ANSI; e nomes de
+dispositivo. A comparação de dispositivos considera a base antes do primeiro
+ponto, ignora espaços finais e não diferencia maiúsculas: `CON`, `PRN`,
+`AUX`, `NUL`, `CONIN$`, `CONOUT$`, `CLOCK$`, `COM0-9`, `LPT0-9` e
+`COM/LPT¹²³`. Com isso, caminhos absolutos, UNC, `\\?\` e `\??\` nunca
+chegam ao kernel. `Dir.open` é a única entrada de autoridade ambiente
+(`CreateFileW` + `FILE_FLAG_BACKUP_SEMANTICS`) e, como `open(2)`, segue
+reparse points no caminho informado. Os handles usam compartilhamento
+`READ|WRITE|DELETE`, então renomear a raiz preserva a autoridade.
+
+**Pesquisa e decisões.**
+
+- Rust std, [CVE-2022-21658](https://blog.rust-lang.org/2022/01/20/cve-2022-21658.html):
+  `remove_dir_all` no Windows passou a usar `NtOpenFile` relativo com
+  `OBJ_DONT_REPARSE` e `FILE_OPEN_REPARSE_POINT`. Copiamos o par de flags e
+  o retry sem `OBJ_DONT_REPARSE`. O `fs::Dir::open_file` instável do std
+  (`sys/fs/windows/dir.rs`) não usa nenhuma das duas flags e delega caminhos
+  absolutos a `File::open`, ou seja, escapa por desenho. Não seguimos isso.
+- Go 1.24 [`os.Root`](https://pkg.go.dev/os#Root)
+  ([`internal/syscall/windows/at_windows.go`](https://github.com/golang/go/blob/master/src/internal/syscall/windows/at_windows.go)):
+  usa `NtCreateFile` com `RootDirectory` e `OBJ_DONT_REPARSE`. Quando a flag
+  não existe, o fallback aceita apenas um componente sem `..`, `\`, `/` ou `:`
+  e verifica atributos no handle. Esse é o desenho adotado aqui. A deleção
+  POSIX com fallback também vem do Go. O
+  [CVE-2023-45284](https://pkg.go.dev/vuln/GO-2023-2186) mostrou que nomes
+  reservados com espaço final e dígitos sobrescritos escapavam de
+  `IsLocal`; esses casos estão cobertos por teste aqui.
+- cap-std/cap-primitives: no Windows, `open_unchecked` normaliza `..`
+  manualmente e, ao subir além do início, reconstrói um caminho absoluto a
+  partir do handle e chama `CreateFileW`. A checagem de symlink acontece
+  depois da abertura, por metadata. A segurança depende da camada superior,
+  que resolve componente por componente. Rejeitamos a reconstrução de
+  caminho por string.
+- Chromium sandbox: a política do broker é avaliada sobre caminhos textuais,
+  com checagem de reparse points no caminho. A
+  [documentação](https://chromium.googlesource.com/chromium/src/+/main/docs/design/sandbox.md)
+  diz que a interceptação não é fronteira de segurança, e o Firefox removeu
+  parte dessa checagem por incompatibilidade. O padrão "validar texto e
+  depois abrir" é exatamente o TOCTOU evitado aqui.
+- WASI/wasmtime: herda o modelo de cap-std. A RFC continua citando o
+  CVE-2021-3924 como histórico, mas ST.12b não depende dele.
+
+**Riscos residuais e limites.**
+
+- Nomes curtos 8.3 (`PROGRA~1`) e a busca sem distinção de maiúsculas criam
+  aliases **dentro do mesmo diretório**. Não há fuga, mas uma política por
+  nome sobre `Dir` não deve presumir unicidade textual.
+- Hard links apontando para fora são compartilhados com Linux:
+  `openat2`/`NtCreateFile` não os distinguem.
+- Um fd CRT inválido passado à CRT aciona o invalid parameter handler. O
+  código seguro não consegue forjá-lo, porque `Dir.fd`/`File.fd` são
+  privados.
+- Subdiretórios exigem um `Dir` derivado explicitamente. Caminhos com
+  vários componentes falham, como em macOS/BSD.
+- A execução nativa só existe nos testes `#[cfg(windows)]` do runner CI.
+  Neste host Linux, Rust e C foram verificados apenas por check, clippy e
+  checagem de sintaxe.
 
 #### 4.2.4 WebAssembly / WASI (`arandu_backend_wasm` / RFC 0014)
 

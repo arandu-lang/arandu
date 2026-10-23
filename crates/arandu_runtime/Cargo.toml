@@ -21,7 +21,17 @@ blake3.workspace = true
 io-uring = "0.7.14"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.60.2", features = ["Win32_Networking_WinSock", "Win32_Security_Cryptography"] }
+# RFC 0016 Windows capabilities: NtCreateFile/NtSetInformationFile (ntdll is
+# already in the packaged runtime link set) plus kernel32 handle queries.
+windows-sys = { version = "0.60.2", features = [
+    "Wdk_Foundation",
+    "Wdk_Storage_FileSystem",
+    "Win32_Networking_WinSock",
+    "Win32_Security",
+    "Win32_Security_Cryptography",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+] }
 
 [lib]
 path = "src/lib.rs"

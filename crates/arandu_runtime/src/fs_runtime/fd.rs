@@ -60,7 +60,16 @@ pub unsafe extern "C" fn ar_fs_read(fd: i32, buf: *mut u8, count: usize) -> isiz
             return res as isize;
         }
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        // Windows tokens are CRT descriptors owning a HANDLE (RFC 0016); the
+        // CRT count is 32-bit, so clamp like the C PAL instead of truncating.
+        let count = libc::c_uint::try_from(count.min(i32::MAX as usize)).unwrap_or(0);
+        // SAFETY: buf holds at least count writable bytes (see contract).
+        let res = unsafe { libc::read(fd, buf.cast(), count) };
+        if res < 0 { -1 } else { res as isize }
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         -1
     }
@@ -92,7 +101,14 @@ pub unsafe extern "C" fn ar_fs_write(fd: i32, buf: *const u8, count: usize) -> i
             return res as isize;
         }
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        let count = libc::c_uint::try_from(count.min(i32::MAX as usize)).unwrap_or(0);
+        // SAFETY: buf holds at least count readable bytes (see contract).
+        let res = unsafe { libc::write(fd, buf.cast(), count) };
+        if res < 0 { -1 } else { res as isize }
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         -1
     }
@@ -110,7 +126,15 @@ pub unsafe extern "C" fn ar_fs_close(fd: i32) -> isize {
             unsafe { libc::close(fd) };
         }
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        if fd >= 0 {
+            // SAFETY: `_close` releases the CRT slot and its owned HANDLE once;
+            // Arandu invalidates the token before any second close.
+            unsafe { libc::close(fd) };
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = fd;
     }

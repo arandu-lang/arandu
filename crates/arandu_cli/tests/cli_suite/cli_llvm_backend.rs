@@ -719,3 +719,49 @@ func text(value: str): u32 {
     assert!(stderr.contains("AranduStr"), "{stderr}");
     assert!(!header.exists(), "no header may be published");
 }
+
+/// A pointer is an opaque handle: C needs the name, never the layout. A type
+/// that holds runtime-only fields (here a `Vec`) cannot cross by value, but it
+/// must still be exportable behind `ptr`, and its fields must not leak.
+#[test]
+fn header_forward_declares_opaque_handles() {
+    let tmp = common::temp_dir("arandu_llvm_export_opaque").unwrap();
+    let project = tmp.join("opaque");
+    let init = run_cli_in(&tmp, &["new", "opaque", "--lib", "--vcs=none"]);
+    assert!(
+        init.status.success(),
+        "new opaque: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+    fs::write(
+        project.join("src/lib.aru"),
+        r#"
+import std.alloc.vec as vec
+
+public struct Buffer {
+    data: vec.Vec<u8>
+    len: usize
+}
+
+@Export
+func buffer_len(handle: ptr[Buffer]): usize {
+    return 0
+}
+"#,
+    )
+    .expect("write library source");
+
+    let header = tmp.join("opaque.h");
+    let header_arg = header.to_string_lossy().into_owned();
+    let build = run_cli_in(&project, &["build", "--emit=header", "-o", &header_arg]);
+    assert!(
+        build.status.success(),
+        "opaque header: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let text = fs::read_to_string(&header).expect("read header");
+    assert!(text.contains("typedef struct Buffer Buffer;"), "{text}");
+    assert!(text.contains("size_t buffer_len(Buffer *);"), "{text}");
+    assert!(!text.contains("struct Buffer {"), "{text}");
+    assert!(!text.contains("Vec"), "{text}");
+}

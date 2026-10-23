@@ -206,6 +206,9 @@ struct SliceDecl {
 struct Exports {
     functions: Vec<Function>,
     structs: Vec<StructDecl>,
+    /// Types that only ever appear behind a pointer. C needs the name, not the
+    /// layout: an opaque handle keeps the Arandu fields private.
+    forwards: Vec<SymbolId>,
     slices: Vec<SliceDecl>,
     uses_str: bool,
 }
@@ -250,18 +253,6 @@ impl Exports {
                     }
                     return Ok(());
                 }
-                let c_name = context.struct_name(*symbol);
-                if c_name == "AranduStr"
-                    || c_name.starts_with("AranduSlice")
-                    || c_name.starts_with("AranduMutSlice")
-                {
-                    return Err(context.error(
-                        owner,
-                        format!(
-                            "type name '{c_name}' is reserved: the C boundary generates `AranduStr` and `AranduSlice*`/`AranduMutSlice*` typedefs with that prefix"
-                        ),
-                    ));
-                }
                 self.structs.push(StructDecl {
                     symbol: *symbol,
                     ty: ty.clone(),
@@ -297,8 +288,10 @@ impl Exports {
                 FfiType::Ref { pointee, .. },
             ) if !pointee.is_void() => {
                 let pointee_ty = context.interner.resolve(*inner);
-                if let ArType::Named(..) = pointee_ty {
-                    self.collect(context, &pointee_ty, FfiPosition::Parameter, owner)?;
+                if let ArType::Named(symbol, _) = pointee_ty
+                    && !self.forwards.contains(&symbol)
+                {
+                    self.forwards.push(symbol);
                 }
             }
             (ArType::Array(_, element), FfiType::Array { .. }) => {
@@ -312,13 +305,29 @@ impl Exports {
 
     fn render(&self, context: &Context<'_>) -> Result<String, Diagnostic> {
         let mut names = std::collections::BTreeMap::<String, SymbolId>::new();
-        for decl in &self.structs {
-            let name = context.struct_name(decl.symbol).to_owned();
-            if let Some(existing) = names.insert(name.clone(), decl.symbol)
-                && existing != decl.symbol
+        for symbol in self
+            .structs
+            .iter()
+            .map(|decl| decl.symbol)
+            .chain(self.forwards.iter().copied())
+        {
+            let name = context.struct_name(symbol).to_owned();
+            if name == "AranduStr"
+                || name.starts_with("AranduSlice")
+                || name.starts_with("AranduMutSlice")
             {
                 return Err(context.error(
-                    decl.symbol,
+                    symbol,
+                    format!(
+                        "type name '{name}' is reserved: the C boundary generates `AranduStr` and `AranduSlice*`/`AranduMutSlice*` typedefs with that prefix"
+                    ),
+                ));
+            }
+            if let Some(existing) = names.insert(name.clone(), symbol)
+                && existing != symbol
+            {
+                return Err(context.error(
+                    symbol,
                     format!(
                         "two Arandu types map to the C name '{name}'; rename one of them, because C has a single namespace"
                     ),

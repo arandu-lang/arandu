@@ -180,7 +180,10 @@ tamanhos de 32 bits, e um consumidor compilado com o modelo errado falha no
 `#include`. O guard é derivado do conjunto exportado, então dois cabeçalhos
 podem conviver na mesma unidade de tradução. Nomes de tipo que colidiriam com
 os `typedef`s gerados (`AranduStr`, `AranduSlice*`, `AranduMutSlice*`) ou entre
-si são diagnosticados em vez de gerar C inválido. Um consumidor C que discorde
+si são diagnosticados em vez de gerar C inválido. Tipos que só atravessam por
+ponteiro viram apenas declaração antecipada (`typedef struct Buffer Buffer;`),
+então um handle pode conter campos que nunca cruzariam por valor (um `Vec`, um
+gerador) sem vazar layout nem exigir `@Repr("C")`. Um consumidor C que discorde
 do layout deixa de compilar em vez de corromper memória; o teste e2e compila
 esse cabeçalho com `clang -Wall -Wextra`, liga contra o objeto Arandu e executa
 a função.

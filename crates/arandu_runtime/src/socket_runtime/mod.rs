@@ -10,6 +10,10 @@ mod udp;
 
 #[cfg(unix)]
 pub use tcp::get_socket_fd;
+#[cfg(windows)]
+pub use tcp::get_socket_raw;
+#[cfg(windows)]
+pub(crate) use tcp::{SocketLease, lease_socket};
 pub use tcp::{
     WAIT_READ, WAIT_WRITE, ar_rt_tcp_accept, ar_rt_tcp_close, ar_rt_tcp_connect, ar_rt_tcp_listen,
     ar_rt_tcp_read, ar_rt_tcp_read_async, ar_rt_tcp_set_nonblocking, ar_rt_tcp_wait,
@@ -28,6 +32,15 @@ pub(crate) mod tests {
     use super::udp::get_udp_socket;
     use super::*;
 
+    pub(crate) fn listener_port(listener: i64) -> u16 {
+        let slot = get_slot(listener).expect("listener handle stays registered");
+        let slot = slot.lock().unwrap_or_else(|e| e.into_inner());
+        let SockKind::Listener(socket) = &slot.kind else {
+            panic!("expected listener");
+        };
+        socket.local_addr().expect("listener address").port()
+    }
+
     pub(crate) fn connected_pair() -> (i64, i64, i64) {
         // SAFETY: handles are created here, checked before use and transferred
         // to the caller for cleanup; these calls do not borrow raw buffers.
@@ -37,14 +50,7 @@ pub(crate) mod tests {
                 listener >= 0,
                 "loopback listener must be available for socket tests"
             );
-            let port = {
-                let slot = get_slot(listener).expect("listener handle stays registered");
-                let slot = slot.lock().unwrap_or_else(|e| e.into_inner());
-                let SockKind::Listener(socket) = &slot.kind else {
-                    panic!("expected listener");
-                };
-                socket.local_addr().unwrap().port()
-            };
+            let port = listener_port(listener);
             let client = ar_rt_tcp_connect(i64::from(port));
             assert!(client >= 0, "connect to the allocated loopback port");
             let server = ar_rt_tcp_accept(listener);

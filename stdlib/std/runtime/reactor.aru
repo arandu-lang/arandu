@@ -14,7 +14,7 @@
 
 module std.runtime.reactor
 
-/// experimental — not Minimal 0.1 — epoll / io_uring reactor.
+/// experimental — not Minimal 0.1 — epoll / io_uring / kqueue / WSAPoll reactor.
 ///
 /// Moved out of the former `std.runtime` monolith. Owns the reactor only;
 /// sockets live in `std.net` (registration takes a raw host socket id), so the
@@ -45,7 +45,7 @@ public struct EpollReactor {
     id: int
 }
 
-/// 0 = portable, 1 = epoll, 2 = io_uring (runtime detect).
+/// 0 = portable, 1 = epoll, 2 = io_uring (runtime detect), 3 = kqueue, 4 = WSAPoll.
 public func reactorBackend(): int {
     unsafe {
         return ar_rt_reactor_backend()
@@ -106,7 +106,8 @@ public func EpollReactor.pollMs(self: ref EpollReactor, timeoutMs: int): int {
 /// Registers a raw socket (by host id) with the reactor. The socket type lives
 /// in `std.net`; the reactor itself remains socket-agnostic.
 /// `events` uses the read/write readiness bits from `std.net`. The waker is
-/// signaled when a matching event is observed. A negative result is a host
+/// signaled once when a matching event is observed; register again to rearm.
+/// `-2` means the host has no readiness backend; any other negative result is a host
 /// registration failure.
 internal func reactorRegisterSocket(r: ref EpollReactor, sockId: int, events: int, w: ref waker.Waker): int {
     unsafe {

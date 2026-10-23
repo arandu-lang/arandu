@@ -113,6 +113,32 @@ pub fn get_socket_fd(sock_id: i64) -> Option<i32> {
     Some(raw_fd_of(&slot.kind))
 }
 
+/// Raw `SOCKET` of a live TCP handle. Constant for the slot's lifetime, so the
+/// reactor captures it once at registration (without holding the slot lock
+/// across a wait) and revalidates the generation-tagged id on every poll.
+#[cfg(windows)]
+pub fn get_socket_raw(sock_id: i64) -> Option<windows_sys::Win32::Networking::WinSock::SOCKET> {
+    let slot = get_slot(sock_id)?;
+    let slot = slot.lock().unwrap_or_else(|e| e.into_inner());
+    Some(raw_socket_of(&slot.kind))
+}
+
+/// Keeps a live socket's OS handle open while held: `ar_rt_tcp_close` only
+/// unpublishes the id, and `closesocket` runs when the last lease drops. The
+/// reactor holds one across `WSAPoll`, so the kernel cannot hand the same
+/// `SOCKET` value to a new socket mid-wait. It does not take the slot mutex,
+/// so a blocking read/write on another thread never stalls the reactor.
+#[cfg(windows)]
+pub(crate) struct SocketLease {
+    _keep_open: SharedSockSlot,
+}
+
+/// Leases `sock_id` if its generation is still current, else `None`.
+#[cfg(windows)]
+pub(crate) fn lease_socket(sock_id: i64) -> Option<SocketLease> {
+    get_slot(sock_id).map(|slot| SocketLease { _keep_open: slot })
+}
+
 /// Events for [`ar_rt_tcp_wait`]: bit0 = readable, bit1 = writable.
 pub const WAIT_READ: i64 = 1;
 pub const WAIT_WRITE: i64 = 2;

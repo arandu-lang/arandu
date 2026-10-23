@@ -33,13 +33,16 @@ pub(crate) fn prepare(is_llvm: bool, flags: &ProjectFlags) -> Result<LlvmPlan, C
     let triple = flags.target.as_deref();
     let embedded = triple.and_then(embedded_profile);
     let wasm = triple.is_some_and(|target| target.starts_with("wasm32"));
+    let stop = classify(flags, embedded.is_some())?;
     if triple.is_some() {
         if embedded.is_none() && !wasm && is_llvm {
             return Err(CliFailure::usage(
                 "LLVM --target accepts thumbv6m-none-eabi, thumbv7em-none-eabihf, or riscv32imc-unknown-none-elf; the compiler does not guess other chips",
             ));
         }
-        if embedded.is_some() && !is_llvm {
+        // A header is derived from type information alone, so describing a
+        // bare-metal target does not require a code generator.
+        if embedded.is_some() && !is_llvm && stop != LlvmStop::Header {
             return Err(CliFailure::usage("bare-metal targets require -b llvm"));
         }
         if wasm && is_llvm {
@@ -48,8 +51,7 @@ pub(crate) fn prepare(is_llvm: bool, flags: &ProjectFlags) -> Result<LlvmPlan, C
             ));
         }
     }
-    let stop = classify(flags, embedded.is_some())?;
-    if !is_llvm && stop != LlvmStop::Executable {
+    if !is_llvm && stop != LlvmStop::Executable && stop != LlvmStop::Header {
         return Err(CliFailure::usage(
             "--emit, --crate-type and --linker-script require -b llvm",
         ));

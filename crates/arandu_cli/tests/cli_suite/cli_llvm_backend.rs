@@ -576,3 +576,146 @@ int main(void) {
     );
     assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "ABI OK");
 }
+
+/// The header is a description of the boundary, not of a backend: it must be
+/// producible without `-b llvm`, and it must describe the *requested* target
+/// rather than the host the compiler happens to run on.
+#[test]
+fn header_describes_the_boundary_without_a_backend() {
+    let tmp = common::temp_dir("arandu_llvm_export_header").unwrap();
+    let project = tmp.join("hdr");
+    let init = run_cli_in(&tmp, &["new", "hdr", "--lib", "--vcs=none"]);
+    assert!(
+        init.status.success(),
+        "new hdr: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+    fs::write(
+        project.join("src/lib.aru"),
+        r#"
+@Repr("C")
+struct Packet {
+    tag: int
+    count: usize
+    name: str
+    payload: [8]u8
+}
+
+@Export
+func read_packet(buf: []u8): Packet {
+    return Packet { tag: 1, count: 0, name: "x", payload: [0, 0, 0, 0, 0, 0, 0, 0] }
+}
+
+@Export
+func fill(buf: mut []u8): void {
+}
+
+@Export
+func label(text: str): int {
+    return 0
+}
+"#,
+    )
+    .expect("write library source");
+
+    let host_header = tmp.join("host.h");
+    let host_arg = host_header.to_string_lossy().into_owned();
+    let build = run_cli_in(&project, &["build", "--emit=header", "-o", &host_arg]);
+    assert!(
+        build.status.success(),
+        "header without a backend: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let host = fs::read_to_string(&host_header).expect("read host header");
+
+    assert!(
+        host.contains("_Static_assert(sizeof(void *) == 8"),
+        "{host}"
+    );
+    // A guard derived from the export set, so two headers can share a TU.
+    assert!(host.contains("#ifndef ARANDU_EXPORT_"), "{host}");
+    assert!(host.contains("_H\n"), "{host}");
+    assert!(!host.contains("ARANDU_EXPORT_HEADER"), "{host}");
+    // `[]u8` and `mut []u8` are different contracts and must not collapse.
+    assert!(
+        host.contains("const uint8_t *ptr; size_t len; } AranduSliceU8;"),
+        "{host}"
+    );
+    assert!(
+        host.contains("uint8_t *ptr; size_t len; } AranduMutSliceU8;"),
+        "{host}"
+    );
+    // Text is nominal: it says UTF-8, it is not a byte slice in disguise.
+    assert!(host.contains("AranduStr"), "{host}");
+    // C array fields keep their declarator syntax, and layouts are asserted.
+    assert!(host.contains("uint8_t payload[8];"), "{host}");
+    assert!(host.contains("_Alignof(Packet) == 8"), "{host}");
+    assert!(host.contains("int32_t tag;"), "{host}");
+    assert!(host.contains("size_t count;"), "{host}");
+
+    let m0_header = tmp.join("m0.h");
+    let m0_arg = m0_header.to_string_lossy().into_owned();
+    let build = run_cli_in(
+        &project,
+        &[
+            "build",
+            "--emit=header",
+            "--target=thumbv6m-none-eabi",
+            "-o",
+            &m0_arg,
+        ],
+    );
+    assert!(
+        build.status.success(),
+        "32-bit header: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let m0 = fs::read_to_string(&m0_header).expect("read cortex-m0 header");
+    assert!(m0.contains("_Static_assert(sizeof(void *) == 4"), "{m0}");
+    assert!(m0.contains("_Alignof(Packet) == 4"), "{m0}");
+    assert!(m0.contains("sizeof(Packet) == 24"), "{m0}");
+}
+
+/// The boundary owns a small C namespace: `AranduStr` and the slice typedefs.
+/// An Arandu type with that name would redeclare a C type, so it is rejected
+/// at header time instead of producing a header clang refuses to compile.
+#[test]
+fn header_rejects_types_that_collide_with_generated_typedefs() {
+    let tmp = common::temp_dir("arandu_llvm_export_reserved").unwrap();
+    let project = tmp.join("reserved");
+    let init = run_cli_in(&tmp, &["new", "reserved", "--lib", "--vcs=none"]);
+    assert!(
+        init.status.success(),
+        "new reserved: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+    fs::write(
+        project.join("src/lib.aru"),
+        r#"
+@Repr("C")
+struct AranduStr {
+    len: usize
+}
+
+@Export
+func take(value: AranduStr): u32 {
+    return 0
+}
+
+@Export
+func text(value: str): u32 {
+    return 0
+}
+"#,
+    )
+    .expect("write library source");
+
+    let header = tmp.join("reserved.h");
+    let header_arg = header.to_string_lossy().into_owned();
+    let build = run_cli_in(&project, &["build", "--emit=header", "-o", &header_arg]);
+    let stderr = String::from_utf8_lossy(&build.stderr);
+    assert!(!build.status.success(), "must reject: {stderr}");
+    assert!(stderr.contains("T049"), "{stderr}");
+    assert!(stderr.contains("AranduStr"), "{stderr}");
+    assert!(!header.exists(), "no header may be published");
+}

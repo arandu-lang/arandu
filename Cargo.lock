@@ -134,6 +134,7 @@ dependencies = [
  "arandu_base",
  "arandu_codegen",
  "arandu_doc",
+ "arandu_ffi",
  "arandu_fmt",
  "arandu_lexer",
  "arandu_middle",
@@ -184,6 +185,14 @@ dependencies = [
  "arandu_middle",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "arandu_ffi"
+version = "0.1.11"
+dependencies = [
+ "arandu_middle",
+ "arandu_typeck",
 ]
 
 [[package]]

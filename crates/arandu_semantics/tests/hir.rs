@@ -777,11 +777,12 @@ func process_inputs(raw: u32): u32 { return raw }
 #[test]
 fn export_rejects_types_without_a_stable_c_representation() {
     for signature in [
-        "func f(value: str): u32 { return 0 }",
         "func f(value: char): u32 { return 0 }",
-        "func f(value: u32): int { return 0 }",
         "func f(value: [4]u32): u32 { return 0 }",
         "func f(value: ptr[[]u32]): u32 { return 0 }",
+        "func f(value: Result<u32, u32>): u32 { return 0 }",
+        "func f(value: Option<u32>): u32 { return 0 }",
+        "func f(value: []str): u32 { return 0 }",
     ] {
         let errors = lower_export_result(&format!("@Export\n{signature}\n"))
             .expect_err("must reject non-C signature");
@@ -791,6 +792,34 @@ fn export_rejects_types_without_a_stable_c_representation() {
             "{signature}"
         );
     }
+}
+
+#[test]
+fn export_accepts_fixed_width_aliases_str_and_array_fields() {
+    let tc = lower_export_result(
+        r#"
+@Repr("C")
+struct Packet {
+    tag: int
+    size: usize
+    name: str
+    payload: [8]u8
+}
+
+@Export
+func handle(packet: Packet, text: str): int { return 0 }
+
+@Export
+func lend(value: ref u32): void {
+    return
+}
+"#,
+    )
+    .expect("fixed-width aliases, str and array fields are part of the C contract");
+    assert_eq!(
+        tc.symbols.host_func_name(symbol_named(&tc, "handle")),
+        "handle"
+    );
 }
 
 #[test]
@@ -874,15 +903,6 @@ struct Empty {}
 
 @Export
 func f(value: Empty): u32 { return 0 }
-"#,
-        r#"
-@Repr("C")
-struct Text {
-    value: str
-}
-
-@Export
-func f(value: Text): u32 { return 0 }
 "#,
     ] {
         let errors = lower_export_result(source).expect_err("nested non-C field");

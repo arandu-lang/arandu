@@ -6,7 +6,6 @@
 //! an LLVM toolchain by the caller.
 
 mod codegen;
-pub mod header;
 mod types;
 mod writer;
 

@@ -10,6 +10,7 @@ members = [
     "crates/arandu_typeck",
     "crates/arandu_mir",
     "crates/arandu_semantics",
+    "crates/arandu_ffi",
     "crates/arandu_cli",
     "crates/arandu_backend_cranelift",
     "crates/arandu_backend_llvm",

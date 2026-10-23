@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use super::llvm_product;
+use super::llvm_product::{self, LlvmStop};
 use crate::artifact;
 use crate::cli_error::{CliFailure, CliResult, CliSuccess};
 use crate::linker;
@@ -256,11 +256,14 @@ pub fn cmd_project_build(
     // optimized non-debug builds unchanged; native `--debug` deliberately
     // favors inspectability and stable location ranges.
     let native_debug_info = debug_info && !is_wasm;
-    let mut amir_owned = if (opt || flags.release || flags.size || is_llvm) && !native_debug_info {
-        Some(artifacts.amir.clone())
-    } else {
-        None
-    };
+    let mut amir_owned =
+        if (opt || flags.release || flags.size || is_llvm || plan.stop == LlvmStop::Header)
+            && !native_debug_info
+        {
+            Some(artifacts.amir.clone())
+        } else {
+            None
+        };
     if let Some(ref mut amir) = amir_owned {
         if flags.size {
             optimize_amir_with_level_or_exit(
@@ -299,7 +302,7 @@ pub fn cmd_project_build(
             amir,
         );
     }
-    if is_llvm {
+    if is_llvm || plan.stop == LlvmStop::Header {
         return build_emit::emit_llvm_artifact(
             flags,
             &ctx,

@@ -1,0 +1,13 @@
+[package]
+name = "arandu_ffi"
+version = "0.1.11"
+edition = "2024"
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+arandu_middle = { path = "../arandu_middle" }
+arandu_typeck = { path = "../arandu_typeck" }
+
+[lints]
+workspace = true

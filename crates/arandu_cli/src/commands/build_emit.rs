@@ -123,10 +123,9 @@ pub(super) fn emit_llvm_artifact(
 ) -> CliResult {
     arandu_base::time_pass!("codegen-llvm");
     let ir = if plan.stop == llvm_product::LlvmStop::Header {
-        arandu_backend_llvm::header::emit_c_header(
-            amir,
-            type_check.symbols.as_ref(),
+        arandu_ffi::header::emit_c_header(
             type_check.type_info.as_ref(),
+            type_check.symbols.as_ref(),
         )
         .unwrap_or_else(|diag| print_diagnostics_and_exit(std::iter::once(diag), &filepath))
     } else {

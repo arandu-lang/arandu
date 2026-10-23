@@ -209,6 +209,12 @@ documentam a função de liberação e a posse do handle; sem destrutor exportad
 o retorno avisa que o chamador não tem função de liberação. Essas notas
 descrevem o contrato existente e não produzem diagnóstico.
 
+Callbacks C (`void (*)(...)`) não têm tipo Arandu correspondente ainda. Tipos
+de função como `(u32) -> u32` existem e um nome de função é um valor, mas
+chamar através desse valor é rejeitado com `T033` (`Arandu` só faz chamadas
+diretas). Exportar um callback exige, portanto, chamadas de primeira classe no
+AMIR e em todos os backends (RFC 0032), não apenas um `typedef` no cabeçalho.
+
 Colisões de símbolo entre duas funções exportadas são diagnosticadas em tempo
 de compilação, ao contrário do comportamento silencioso de `#[no_mangle]`.
 A única forma de exportar um método é `@Destructor`: ele é a função de liberação

@@ -212,6 +212,16 @@ exportable exactly when the header can spell it. C is a flat namespace, so the
 header also rejects exported type names that would redeclare `AranduStr`,
 `AranduSlice*` or `AranduMutSlice*`, and two distinct types competing for one C
 name.
+A `Result<T, E>` return is not an aggregate at the boundary: the AMIR pass
+`lower_export_status` rewrites the exported function into `E f(.., T *out)`,
+where `Ok` stores the payload and returns status `0` and `Err(e)` returns `e`.
+The rewrite is all-or-nothing — the function is left untouched and `T049` is
+reported when `E` is not a fixed-width integer, when a `return` does not
+construct `Ok`/`Err` directly, when an Arandu-level caller would keep the
+sum-type signature, or when a `@Destructor` returns `Result`. Because the pass
+runs on AMIR, every backend sees the same status shape and `--emit=header`
+derives the out-parameter from the same signature instead of from a second
+rule.
 Differential smith
 fuzzing covers Cranelift↔LLVM via `synthesized-llvm` and `synthesized-all`
 (clang + packaged runtime; skips known experimental emission gaps). EMI also

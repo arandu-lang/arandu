@@ -385,6 +385,14 @@ fn lower_export(
         resolved_params.push(resolved);
     }
     let resolved_return = interner.resolve(return_type);
+    // `Result<T, E>` leaves the boundary as a C status code plus an out
+    // parameter (`E f(..., T *out)`), so it is neither a value return nor an
+    // aggregate. The AMIR pass performs the rewrite; here we only validate
+    // that the status and payload can cross the boundary.
+    let status_return = match &resolved_return {
+        arandu_middle::types::ArType::Result(ok, err) => Some((*ok, *err)),
+        _ => None,
+    };
     has_aggregate |= arandu_middle::layout::is_export_aggregate(&resolved_return);
     if has_aggregate {
         let target = &type_check.type_info.target_identity;
@@ -437,7 +445,30 @@ fn lower_export(
             ));
         }
     }
-    if let Err(reason) = arandu_middle::layout::ffi_type_of(
+    if let Some((ok, status)) = status_return {
+        if let Some(reason) = c_status_type_error(interner, status) {
+            return Err(Diagnostic::error(
+                crate::DiagCode::T049InvalidFfiExport,
+                format!("cannot export `Result` status: {reason}"),
+                declaration.span,
+            ));
+        }
+        if !matches!(interner.resolve(ok), arandu_middle::types::ArType::Void)
+            && let Err(reason) = arandu_middle::layout::ffi_type_of(
+                &interner.resolve(ok),
+                interner,
+                type_check.type_info.as_ref(),
+                arandu_middle::layout::FfiPosition::Return,
+                0,
+            )
+        {
+            return Err(Diagnostic::error(
+                crate::DiagCode::T049InvalidFfiExport,
+                format!("cannot export `Result` success value: {reason}"),
+                declaration.span,
+            ));
+        }
+    } else if let Err(reason) = arandu_middle::layout::ffi_type_of(
         &resolved_return,
         interner,
         type_check.type_info.as_ref(),
@@ -481,4 +512,30 @@ fn lower_export(
         .insert(symbol, crate::SmolStr::new(export_name));
     symbols.exported_functions.insert(symbol);
     Ok(())
+}
+
+/// A C status code must have the same width on every target the object can be
+/// linked for, so target-dependent integer types are refused.
+fn c_status_type_error(interner: &TypeInterner, ty: TypeId) -> Option<String> {
+    use crate::passes::type_checker::types::Primitive;
+    match interner.resolve(ty) {
+        ArType::Primitive(
+            Primitive::I8
+            | Primitive::I16
+            | Primitive::I32
+            | Primitive::I64
+            | Primitive::U8
+            | Primitive::U16
+            | Primitive::U32
+            | Primitive::U64,
+        ) => None,
+        ArType::Primitive(
+            Primitive::Int | Primitive::Uint | Primitive::ISize | Primitive::USize,
+        ) => Some(
+            "the error type needs a fixed width; use `i32`/`u32` instead of \
+                 `int`/`uint`/`isize`/`usize`"
+                .to_owned(),
+        ),
+        _ => Some("the error type must be a fixed-width integer such as `u32`".to_owned()),
+    }
 }

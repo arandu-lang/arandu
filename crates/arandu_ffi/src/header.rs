@@ -89,7 +89,22 @@ pub fn emit_c_header(
             })
             .collect::<Result<Vec<_>, _>>()?;
         let return_ty = context.interner.resolve(signature.1);
-        let ret = exports.collect(&context, &return_ty, FfiPosition::Return, symbol)?;
+        // `Result<T, E>` crosses as a C status code with the payload written
+        // through a trailing out-parameter — the same rule the AMIR pass
+        // applies to the body, derived from the same `ArType`.
+        let mut params = params;
+        let status = matches!(return_ty, ArType::Result(..));
+        let ret = match &return_ty {
+            ArType::Result(ok, err) => {
+                if !matches!(context.interner.resolve(*ok), ArType::Void) {
+                    let out = ArType::Ptr(*ok);
+                    params.push(exports.collect(&context, &out, FfiPosition::Parameter, symbol)?);
+                }
+                let status_ty = context.interner.resolve(*err);
+                exports.collect(&context, &status_ty, FfiPosition::Return, symbol)?
+            }
+            _ => exports.collect(&context, &return_ty, FfiPosition::Return, symbol)?,
+        };
         // An owned handle is exactly what `ffi_type_of` already mapped: a
         // pointer to a named type that is not `@Repr("C")`. Reading the rule
         // back from the mapping keeps the header from inventing a second one.
@@ -112,6 +127,7 @@ pub fn emit_c_header(
             params,
             ret,
             owned_handle,
+            status,
         });
     }
 
@@ -351,6 +367,8 @@ struct Function {
     ret: FfiType,
     /// Pointee of an owned opaque handle returned by this function, if any.
     owned_handle: Option<SymbolId>,
+    /// Returning a C status code (`Result` lowered): 0 means success.
+    status: bool,
 }
 
 struct StructDecl {
@@ -518,6 +536,9 @@ impl Exports {
             context.push_doc_comment(&mut prototype, function.symbol);
             if let Some(handle) = function.owned_handle {
                 context.push_owned_handle_comment(&mut prototype, handle);
+            }
+            if function.status {
+                prototype.push_str("/* Status code: 0 on success, non-zero on failure. */\n");
             }
             let _ = writeln!(
                 prototype,

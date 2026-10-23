@@ -22,6 +22,7 @@ mod builder;
 mod compose;
 mod ctx;
 mod equality;
+pub mod export_status;
 mod expr;
 mod flow;
 mod func;
@@ -96,6 +97,10 @@ pub fn lower_to_amir_with_layout(
     tc.type_info_mut().return_borrow_summaries = solution.summaries.clone();
 
     validate_borrowed_program(tc, &mut program, &solution, &no_fallback, &mut diagnostics);
+    // Export-only ABI adaptation runs after semantic validation: the Arandu
+    // program is checked in its source shape, then the C boundary signature is
+    // derived from it.
+    export_status::lower_export_status_returns(&mut program, tc, &mut diagnostics);
     if diagnostics.iter().any(|d| d.severity == Severity::Error) {
         Err(diagnostics)
     } else {

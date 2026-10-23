@@ -577,6 +577,254 @@ int main(void) {
     assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "ABI OK");
 }
 
+/// C has no sum types, so an exported `Result<T, E>` becomes a status code
+/// with the payload written through a trailing out-parameter. The header and
+/// the object must agree, and a real C consumer must see `0` for `Ok`.
+#[test]
+fn exported_result_returns_a_c_status_code_and_an_out_parameter() {
+    if !clang_available() {
+        return;
+    }
+    let tmp = common::temp_dir("arandu_llvm_export_status").unwrap();
+    let project = tmp.join("status");
+    let init = run_cli_in(&tmp, &["new", "status", "--lib", "--vcs=none"]);
+    assert!(
+        init.status.success(),
+        "new status: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+    fs::write(
+        project.join("src/lib.aru"),
+        r#"
+@Export
+func read(v: u32): Result<u32, u32> {
+    if v == 0 as u32 {
+        return Result.Err(7 as u32)
+    }
+    return Result.Ok(v + 1 as u32)
+}
+"#,
+    )
+    .expect("write lib.aru");
+
+    let header = tmp.join("abi.h");
+    let emit_header = run_cli_in(
+        &project,
+        &["build", "--emit=header", "-o", header.to_str().unwrap()],
+    );
+    assert!(
+        emit_header.status.success(),
+        "emit header: {}",
+        String::from_utf8_lossy(&emit_header.stderr)
+    );
+    let header_text = fs::read_to_string(&header).expect("read header");
+    assert!(
+        header_text.contains("uint32_t read(uint32_t, uint32_t *);"),
+        "a Result crosses as a status plus an out-parameter:\n{header_text}"
+    );
+    assert!(
+        header_text.contains("0 on success"),
+        "the header must state the status convention:\n{header_text}"
+    );
+
+    let object = tmp.join("lib.o");
+    let emit_object = run_cli_in(
+        &project,
+        &[
+            "build",
+            "-b",
+            "llvm",
+            "--emit=obj",
+            "-o",
+            object.to_str().unwrap(),
+        ],
+    );
+    assert!(
+        emit_object.status.success(),
+        "emit object: {}",
+        String::from_utf8_lossy(&emit_object.stderr)
+    );
+
+    let consumer = tmp.join("consumer.c");
+    fs::write(
+        &consumer,
+        r#"
+#include "abi.h"
+#include <stdio.h>
+
+int main(void) {
+    uint32_t out = 0;
+    if (read(0, &out) != 7) { return 1; }
+    if (read(5, &out) != 0) { return 2; }
+    if (out != 6) { return 3; }
+    puts("STATUS OK");
+    return 0;
+}
+"#,
+    )
+    .expect("write consumer");
+    let binary = tmp.join("consumer");
+    let link = Command::new("clang")
+        .arg("-I")
+        .arg(&tmp)
+        .arg("-Wall")
+        .arg("-Wextra")
+        .arg(&consumer)
+        .arg(&object)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("clang should run");
+    assert!(
+        link.status.success(),
+        "link C consumer: {}",
+        String::from_utf8_lossy(&link.stderr)
+    );
+    let run = Command::new(&binary).output().expect("run consumer");
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "C consumer disagreed with the status ABI: {}{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "STATUS OK");
+}
+
+/// A status crosses to C, so its width must not depend on the target the
+/// object ends up being linked for. `Result<void, E>` needs no out-parameter:
+/// the status is the whole result.
+#[test]
+fn exported_result_status_is_fixed_width_and_void_needs_no_out_parameter() {
+    let tmp = common::temp_dir("arandu_llvm_export_status_shape").unwrap();
+    let project = tmp.join("status_shape");
+    let init = run_cli_in(&tmp, &["new", "status_shape", "--lib", "--vcs=none"]);
+    assert!(
+        init.status.success(),
+        "new status_shape: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+    fs::write(
+        project.join("src/lib.aru"),
+        r#"
+@Export
+func ping(): Result<void, u32> {
+    return nil
+}
+"#,
+    )
+    .expect("write library source");
+
+    let header = tmp.join("status_shape.h");
+    let header_arg = header.to_string_lossy().into_owned();
+    let build = run_cli_in(&project, &["build", "--emit=header", "-o", &header_arg]);
+    assert!(
+        build.status.success(),
+        "void result header: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let text = fs::read_to_string(&header).expect("read header");
+    assert!(text.contains("uint32_t ping(void);"), "{text}");
+    assert!(text.contains("0 on success"), "{text}");
+
+    fs::write(
+        project.join("src/lib.aru"),
+        r#"
+@Export
+func bad(v: u32): Result<u32, usize> {
+    return Result.Err(7)
+}
+"#,
+    )
+    .expect("write target-dependent status");
+    let build = run_cli_in(&project, &["build", "--emit=header", "-o", &header_arg]);
+    let stderr = String::from_utf8_lossy(&build.stderr);
+    assert!(!build.status.success(), "must reject: {stderr}");
+    assert!(stderr.contains("T049"), "{stderr}");
+    assert!(stderr.contains("fixed width"), "{stderr}");
+}
+
+/// The rewrite changes the signature at the boundary, so an in-language call
+/// would silently observe the status instead of the sum type. It is rejected
+/// rather than emitting a call that disagrees with its own definition.
+#[test]
+fn exported_result_rejects_an_in_language_caller() {
+    let tmp = common::temp_dir("arandu_llvm_export_status_caller").unwrap();
+    let project = tmp.join("status_caller");
+    let init = run_cli_in(&tmp, &["new", "status_caller", "--lib", "--vcs=none"]);
+    assert!(
+        init.status.success(),
+        "new status_caller: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+    fs::write(
+        project.join("src/lib.aru"),
+        r#"
+@Export
+func read(v: u32): Result<u32, u32> {
+    return Result.Ok(v)
+}
+
+public func readTwice(v: u32): u32 {
+    match read(v) {
+        Result.Ok(value) => value
+        Result.Err(code) => code
+    }
+}
+"#,
+    )
+    .expect("write library source");
+
+    let header = tmp.join("status_caller.h");
+    let header_arg = header.to_string_lossy().into_owned();
+    let build = run_cli_in(&project, &["build", "--emit=header", "-o", &header_arg]);
+    let stderr = String::from_utf8_lossy(&build.stderr);
+    assert!(!build.status.success(), "must reject: {stderr}");
+    assert!(stderr.contains("T049"), "{stderr}");
+    assert!(stderr.contains("still calls"), "{stderr}");
+    assert!(stderr.contains("readTwice"), "{stderr}");
+    assert!(!header.exists(), "no header may be published");
+}
+
+/// Release is the one method allowed across the boundary, and it stays `void`:
+/// the `Result` status contract does not extend to it, so a destructor that
+/// tries to report failure through a status is rejected by its own shape rule.
+#[test]
+fn exported_destructor_rejects_a_result_return() {
+    let tmp = common::temp_dir("arandu_llvm_export_destructor_status").unwrap();
+    let project = tmp.join("destructor_status");
+    let init = run_cli_in(&tmp, &["new", "destructor_status", "--lib", "--vcs=none"]);
+    assert!(
+        init.status.success(),
+        "new destructor_status: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+    fs::write(
+        project.join("src/lib.aru"),
+        r#"
+public struct Buffer {
+    len: usize
+}
+
+@Destructor
+@Export("buffer_release")
+func Buffer.close(own self): Result<void, u32> {
+    return nil
+}
+"#,
+    )
+    .expect("write library source");
+
+    let header = tmp.join("destructor_status.h");
+    let header_arg = header.to_string_lossy().into_owned();
+    let build = run_cli_in(&project, &["build", "--emit=header", "-o", &header_arg]);
+    let stderr = String::from_utf8_lossy(&build.stderr);
+    assert!(!build.status.success(), "must reject: {stderr}");
+    assert!(stderr.contains("T035"), "{stderr}");
+    assert!(stderr.contains("void"), "{stderr}");
+    assert!(!header.exists(), "no header may be published");
+}
+
 /// The header is a description of the boundary, not of a backend: it must be
 /// producible without `-b llvm`, and it must describe the *requested* target
 /// rather than the host the compiler happens to run on.

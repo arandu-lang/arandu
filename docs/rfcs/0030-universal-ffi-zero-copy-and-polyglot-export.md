@@ -15,10 +15,14 @@
   - `docs/rfcs/0014-native-wasm-component-model-and-runtime.md`
   - `docs/rfcs/0015-native-mobile-architecture-and-zero-copy-interop.md`
 
-> **Estado auditado em 2026-10-21:** A anotação `@Export` está implementada
-> para o subconjunto escalar/ponteiro descrito em §3.2.1 (símbolo plano, ABI C,
-> `nounwind`, validação `T049`). Exportação poliglota universal, vistas
-> zero-copy, `@FfiResource` e geração de headers/bindings continuam em
+> **Estado auditado em 2026-10-22:** A anotação `@Export` está implementada
+> conforme §3.2.1: símbolo plano, ABI C, `nounwind`, validação `T049`,
+> agregados `@Repr("C")` por valor classificados por alvo, fatias e `str`
+> como pares `(ptr, len)`, `Result<T, E>` como status + out-parameter e
+> cabeçalho C gerado sem backend (`--emit=header`) com asserções de tamanho,
+> alinhamento e offset. Handles opacos e `@Destructor` já descrevem ownership
+> no cabeçalho. Exportação poliglota universal, vistas zero-copy,
+> `@FfiResource`, callbacks e bindings para Python/Node/Swift continuam em
 > proposta. O compilador hoje também suporta declarações `extern func`,
 > `@Link`, verificação `@Unsafe` (`O013`) e classificação `@Repr("C")`. A fila
 > permanente vive no [roadmap mestre](../arandu-compiler-roadmap-v0.1.md).
@@ -145,9 +149,20 @@ sem genéricos) com primitivos de largura fixa (`i8`–`i64`, `u8`–`u64`, `f32
 (`ptr T` e `ref T`/`mut ref T` como `const T *`/`T *`), structs `@Repr("C")`
 por valor, fatias síncronas `[]T`/`mut []T` (modeladas como `{ ptr, len }`),
 `str` como `AranduStr` (`{ const uint8_t *ptr; size_t len; }`, UTF-8 sem
-terminador) e retorno `void`. `char`, tipos sem representação C
-(`Result`, `Option`, tuplas, `any`), structs sem `@Repr("C")` e campos
+terminador) e retorno `void`. `Result<T, E>` é aceito no retorno e baixa para
+status C + out-parameter (abaixo). `char`, tipos sem representação C
+(`Option`, tuplas, `any`), structs sem `@Repr("C")` e campos
 recursivamente inseguros são rejeitados com `T049`.
+
+Erros não usam canal de exceção: um `@Export` que retorna `Result<T, E>` é
+reescrito, uma única vez, no AMIR (`lower_export_status`) para
+`E f(..., T *out)` — `Ok(v)` grava `v` no out-parameter e devolve `0`,
+`Err(e)` devolve `e`. A transformação é tudo-ou-nada: `E` precisa ser inteiro
+de largura fixa, todo `return` precisa construir `Ok`/`Err` diretamente, um
+`@Destructor` não pode retornar `Result`, e uma função exportada nessa forma
+não pode ser chamada de dentro do Arandu, porque a assinatura muda na
+fronteira. Como o passe vive no AMIR, todo backend herda a mesma forma e o
+cabeçalho deriva o out-parameter da mesma assinatura.
 
 Arrays (`[N]T`) existem apenas como campo de struct `@Repr("C")`, onde viram
 `T campo[N]`; como parâmetro decairiam silenciosamente para ponteiro, então

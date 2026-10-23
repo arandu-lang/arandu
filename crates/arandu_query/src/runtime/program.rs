@@ -249,13 +249,22 @@ pub fn runtime_program(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Run
             }
         }
     };
-    let (amir, instances) = match composed {
+    let (mut amir, instances) = match composed {
         Some(composed) => {
             diagnostics.extend(composed.diagnostics);
             (composed.program, composed.instances)
         }
         None => (empty_program(), Vec::new()),
     };
+    // The unit composition path above is what the real pipeline uses, so the
+    // C status-code rewrite for `@Export` functions returning `Result<T, E>`
+    // has to run here as well. The pass itself lives in `arandu_mir` and stays
+    // pure; this crate only orchestrates it.
+    arandu_mir::lower_amir::export_status::lower_export_status_returns(
+        &mut amir,
+        &aggregate,
+        &mut diagnostics,
+    );
     HashEq::new(RuntimeProgram {
         artifacts: std::sync::Arc::new(crate::passes::LowerAmirArtifacts {
             amir,

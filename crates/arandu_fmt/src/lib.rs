@@ -214,6 +214,16 @@ fn format_from_tree(tree: &SyntaxTree) -> String {
         }
         let item_src = &source[s..e];
         out.push_str(&reindent_item(item_src));
+        // An explicit `;` terminating the item on the same line is not an
+        // item node; keep it on the item's line instead of emitting it as a
+        // standalone trivia line (which inserts an extra empty statement).
+        let mut e = e;
+        let rest = &source[e..];
+        let after_ws = rest.trim_start_matches([' ', '\t']);
+        if after_ws.starts_with(';') {
+            out.push(';');
+            e += rest.len() - after_ws.len() + 1;
+        }
         if !out.ends_with('\n') {
             out.push('\n');
         }
@@ -703,6 +713,22 @@ mod tests {
         let applied = apply_edits(src, &edits);
         assert_eq!(applied, format_source(src));
         assert!(format_edits(&applied).is_empty());
+    }
+
+    #[test]
+    fn explicit_item_semicolon_is_kept_on_the_item_line() {
+        // Fuzz finding (fuzz_fmt): `import a;` became `import a\n;\n`.
+        for (src, expected) in [
+            ("from;", "from;\n"),
+            (
+                "import std.io as io;\nfunc main(): int { return 0 }\n",
+                "import std.io as io;\n\nfunc main(): int { return 0 }\n",
+            ),
+        ] {
+            let formatted = format_source(src);
+            assert_eq!(formatted, expected);
+            assert_eq!(format_source(&formatted), formatted);
+        }
     }
 
     #[test]

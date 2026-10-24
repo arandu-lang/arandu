@@ -41,6 +41,11 @@ pub fn check_source(source: &str, range: Option<(u8, u8)>) {
             "formatting changed the token stream"
         );
         assert_eq!(
+            doc_comments(source),
+            doc_comments(&once),
+            "formatting changed documentation comments"
+        );
+        assert_eq!(
             comment_count(source),
             comment_count(&once),
             "formatting dropped or duplicated comments"
@@ -98,8 +103,21 @@ fn significant_tokens(source: &str) -> Vec<(TokenKind, bool, String)> {
     lexed
         .tokens
         .iter()
-        .filter(|token| token.kind != TokenKind::Eof)
+        .filter(|token| !matches!(token.kind, TokenKind::Eof | TokenKind::DocComment))
         .map(|token| (token.kind, token.inserted, token.lexeme(source).to_owned()))
+        .collect()
+}
+
+/// Doc comments are compared as an ordered list of trimmed texts, separately
+/// from code tokens: the formatter normalizes their trailing whitespace and
+/// moves a trailing `///` onto its own line (after the inserted `;`).
+fn doc_comments(source: &str) -> Vec<String> {
+    let lexed = lex_recovering(source);
+    lexed
+        .tokens
+        .iter()
+        .filter(|token| token.kind == TokenKind::DocComment)
+        .map(|token| token.lexeme(source).trim_end().to_owned())
         .collect()
 }
 
@@ -169,5 +187,24 @@ mod tests {
             check_source(source, None);
             check_source(source, Some((0, 255)));
         }
+    }
+
+    #[test]
+    fn doc_comment_trailing_whitespace_is_not_a_token_change() {
+        // Minimized fuzz_fmt input: range bytes 0x20 0x0a, body "/// ".
+        super::run(b" \n/// ");
+    }
+
+    #[test]
+    fn trailing_doc_comment_moved_to_own_line_keeps_code_tokens() {
+        // Minimized fuzz_fmt input: "from///" formats to "from\n///\n"; the
+        // doc comment's position relative to the inserted `;` changes.
+        super::run(b"{Pfrom///");
+    }
+
+    #[test]
+    fn explicit_top_level_semicolon_stays_on_its_item_line() {
+        // Minimized fuzz_fmt input: "from;" formatted to "from\n;\n".
+        super::run(b"fufrom;");
     }
 }

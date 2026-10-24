@@ -123,7 +123,7 @@ fn push_overflowing(string: &mut ArOwnedString, model: &[u8], word: u64) {
 }
 
 fn vector_op(vectors: &mut Vec<(i64, Vec<i64>)>, selector: u8, kind: u8, word: u64) {
-    if vectors.is_empty() || kind % 8 == 0 {
+    if vectors.is_empty() || kind.is_multiple_of(8) {
         if vectors.len() < 8 {
             // SAFETY: allocates a fresh handle.
             let id = unsafe { ar_vec_new() };

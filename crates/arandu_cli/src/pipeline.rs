@@ -82,6 +82,41 @@ pub fn optimize_amir_or_exit(
     }
 }
 
+/// AMIR level a product is built with for these flags; `None` keeps the
+/// baseline AMIR. Inspection commands share it with `build` so they print what
+/// would be compiled. `always_optimized` marks products that never consume
+/// baseline AMIR (LLVM).
+#[must_use]
+pub fn product_opt_level(
+    opt: bool,
+    flags: &crate::project::ProjectFlags,
+    always_optimized: bool,
+) -> Option<arandu_semantics::OptLevel> {
+    if flags.size {
+        Some(arandu_semantics::OptLevel::Os)
+    } else if flags.release || always_optimized {
+        Some(arandu_semantics::OptLevel::O2)
+    } else if opt {
+        Some(arandu_semantics::OptLevel::O1)
+    } else {
+        None
+    }
+}
+
+/// The AMIR a product consumes: optimized at `level`, or `None` for baseline.
+pub fn product_amir_or_exit(
+    amir: &arandu_semantics::amir::AmirProgram,
+    type_check: &arandu_semantics::TypeCheckResult,
+    level: Option<arandu_semantics::OptLevel>,
+    filepath: &str,
+) -> Option<arandu_semantics::amir::AmirProgram> {
+    let level = level?;
+    arandu_base::time_pass!("optimize-amir");
+    let mut amir = amir.clone();
+    optimize_amir_with_level_or_exit(&mut amir, type_check, level, filepath);
+    Some(amir)
+}
+
 pub fn optimize_amir_with_level_or_exit(
     amir: &mut arandu_semantics::amir::AmirProgram,
     type_check: &arandu_semantics::TypeCheckResult,

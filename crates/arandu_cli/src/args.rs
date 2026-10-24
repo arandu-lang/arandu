@@ -596,22 +596,22 @@ pub fn command_help(command: &str) -> Option<&'static str> {
             "Usage: arandu hir <file.aru> [--debug]\n\nPrint the lowered High-level IR (compiler inspection tool).\n",
         ),
         "amir" => Some(
-            "Usage: arandu amir <file.aru> [--cfg] [--ascii] [--opt]\n\nPrint Arandu Mid-level IR (compiler inspection tool).\n",
+            "Usage: arandu amir <file.aru> [--cfg] [--ascii] [--opt | --release]\n\nPrint Arandu Mid-level IR (compiler inspection tool).\n--opt applies AMIR O1 and --release AMIR O2, as `build` does.\n",
         ),
         "graph" => Some(
             "Usage: arandu graph <file.aru>\n\nEmit a Graphviz dependency graph (compiler inspection tool).\n",
         ),
         "emit-c" => Some(
-            "Usage: arandu emit-c <file.aru> [--opt | --size]\n\nEmit portable C source (compiler inspection tool).\n",
+            "Usage: arandu emit-c <file.aru> [--opt | --release | --size]\n\nEmit portable C source (compiler inspection tool).\nThe AMIR level matches `build`: --opt O1, --release O2, --size Os.\n",
         ),
         "emit-llvm" => Some(
-            "Usage: arandu emit-llvm <file.aru> [--opt] [--target TRIPLE]\n\nEmit LLVM IR directly from AMIR (no Clang required to emit).\nHost layout stays the default. Canonical bare-metal triples use a 32-bit layout.\n",
+            "Usage: arandu emit-llvm <file.aru> [--target TRIPLE]\n\nEmit LLVM IR directly from AMIR (no Clang required to emit).\nLike the LLVM product, the AMIR is always optimized at O2.\nHost layout stays the default. Canonical bare-metal triples use a 32-bit layout.\n",
         ),
         "emit-wasm" => Some(
-            "Usage: arandu emit-wasm <file.aru> [--layout ptr4] [--opt | --size]\n\nEmit a WebAssembly module (compiler inspection tool).\n",
+            "Usage: arandu emit-wasm <file.aru> [--layout ptr4] [--opt | --release | --size]\n\nEmit a WebAssembly module (compiler inspection tool).\nThe AMIR level matches `build`: --opt O1, --release O2, --size Os.\n",
         ),
         "emit-component" => Some(
-            "Usage: arandu emit-component <file.aru> [--opt | --size]\n\nEmit a WebAssembly Component (compiler inspection tool).\n",
+            "Usage: arandu emit-component <file.aru> [--opt | --release | --size]\n\nEmit a WebAssembly Component (compiler inspection tool).\nThe AMIR level matches `build`: --opt O1, --release O2, --size Os.\n",
         ),
         "hash-file" => {
             Some("Usage: arandu hash-file <path>\n\nCompute a BLAKE3 checksum for packaging.\n")

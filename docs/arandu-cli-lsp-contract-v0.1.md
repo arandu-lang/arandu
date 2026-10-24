@@ -53,9 +53,11 @@ Backend and cross-target details are defined in
 
 The size profile uses `target/size` and its own incremental cache identity.
 `--size` and `-Oz` are aliases; combining them with `--release` or `--debug`
-is a usage failure. `run` rejects build profiles. Inspection commands
-`emit-c`, `emit-wasm`, and `emit-component` accept `--size` for the AMIR Os
-pipeline. Linux native size builds strip symbols, so use a separate debug
+is a usage failure. `run` rejects build profiles. Inspection commands select
+the AMIR level with the same rule as `build`, so they print what that build
+compiles: baseline by default, O1 with `--opt`, O2 with `--release` and Os with
+`--size`. `emit-llvm` is always O2, like the LLVM product. `--size` is accepted
+by `emit-c`, `emit-wasm` and `emit-component`. Linux native size builds strip symbols, so use a separate debug
 build when those symbols are required.
 
 ### LSP request and snapshot rules

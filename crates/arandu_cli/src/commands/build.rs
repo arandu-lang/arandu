@@ -7,8 +7,7 @@ use crate::artifact;
 use crate::cli_error::{CliFailure, CliResult, CliSuccess};
 use crate::linker;
 use crate::pipeline::{
-    open_entry_file, optimize_amir_or_exit, optimize_amir_with_level_or_exit, pipeline_lower,
-    print_genref_report,
+    open_entry_file, pipeline_lower, print_genref_report, product_amir_or_exit, product_opt_level,
 };
 use crate::project::{self, ProjectFlags};
 use arandu_middle::layout::DataLayout;
@@ -256,33 +255,12 @@ pub fn cmd_project_build(
     // optimized non-debug builds unchanged; native `--debug` deliberately
     // favors inspectability and stable location ranges.
     let native_debug_info = debug_info && !is_wasm;
-    let mut amir_owned =
-        if (opt || flags.release || flags.size || is_llvm || plan.stop == LlvmStop::Header)
-            && !native_debug_info
-        {
-            Some(artifacts.amir.clone())
-        } else {
-            None
-        };
-    if let Some(ref mut amir) = amir_owned {
-        if flags.size {
-            optimize_amir_with_level_or_exit(
-                amir,
-                type_check,
-                arandu_semantics::OptLevel::Os,
-                &filepath,
-            );
-        } else if flags.release || is_llvm {
-            optimize_amir_with_level_or_exit(
-                amir,
-                type_check,
-                arandu_semantics::OptLevel::O2,
-                &filepath,
-            );
-        } else {
-            optimize_amir_or_exit(amir, type_check, &filepath);
-        }
-    }
+    let level = product_opt_level(opt || plan.stop == LlvmStop::Header, flags, is_llvm);
+    let amir_owned = if native_debug_info {
+        None
+    } else {
+        product_amir_or_exit(&artifacts.amir, type_check, level, &filepath)
+    };
     let amir = match &amir_owned {
         Some(a) => a,
         None => &artifacts.amir,

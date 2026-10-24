@@ -2,8 +2,8 @@ use super::{execute_jit_main, execute_llvm_main};
 use crate::args::RunBackend;
 use crate::pipeline::{
     ensure_host_jit_layout, fail_operational, fail_usage, finish, optimize_amir_or_exit,
-    optimize_amir_with_level_or_exit, parse_and_check, pipeline_lower, print_diagnostics_and_exit,
-    print_genref_report, validate_hir_and_monomorphize,
+    parse_and_check, pipeline_lower, print_diagnostics_and_exit, print_genref_report,
+    product_amir_or_exit, product_opt_level, validate_hir_and_monomorphize,
 };
 use crate::project::ProjectFlags;
 use arandu_middle::layout::DataLayout;
@@ -98,19 +98,13 @@ pub(super) fn process_file(
             }
             let symbols = artifacts.type_check.symbols.as_ref();
             let interner = &artifacts.type_check.type_info.type_interner;
-            let mut amir_owned = if opt {
-                Some(artifacts.amir.clone())
-            } else {
-                None
-            };
-            if let Some(ref mut amir) = amir_owned {
-                arandu_base::time_pass!("optimize-amir");
-                optimize_amir_or_exit(amir, &artifacts.type_check, &filepath);
-            }
-            let amir = match &amir_owned {
-                Some(a) => a,
-                None => &artifacts.amir,
-            };
+            let amir_owned = product_amir_or_exit(
+                &artifacts.amir,
+                &artifacts.type_check,
+                product_opt_level(opt, project_flags, false),
+                &filepath,
+            );
+            let amir = amir_owned.as_ref().unwrap_or(&artifacts.amir);
 
             if cfg {
                 if ascii {
@@ -205,28 +199,13 @@ pub(super) fn process_file(
                 print_genref_report(&filepath, &artifacts);
             }
             let type_check = &artifacts.type_check;
-            let mut amir_owned = if opt || project_flags.size {
-                Some(artifacts.amir.clone())
-            } else {
-                None
-            };
-            if let Some(ref mut amir) = amir_owned {
-                arandu_base::time_pass!("optimize-amir");
-                if project_flags.size {
-                    optimize_amir_with_level_or_exit(
-                        amir,
-                        type_check,
-                        arandu_semantics::OptLevel::Os,
-                        &filepath,
-                    );
-                } else {
-                    optimize_amir_or_exit(amir, type_check, &filepath);
-                }
-            }
-            let amir = match &amir_owned {
-                Some(a) => a,
-                None => &artifacts.amir,
-            };
+            let amir_owned = product_amir_or_exit(
+                &artifacts.amir,
+                type_check,
+                product_opt_level(opt, project_flags, false),
+                &filepath,
+            );
+            let amir = amir_owned.as_ref().unwrap_or(&artifacts.amir);
 
             arandu_base::time_pass!("emit-c");
             let c_src = arandu_backend_c::emit_c(
@@ -245,19 +224,12 @@ pub(super) fn process_file(
                 print_genref_report(&filepath, &artifacts);
             }
             let type_check = &artifacts.type_check;
-            let mut amir_owned = if opt {
-                Some(artifacts.amir.clone())
-            } else {
-                None
-            };
-            if let Some(ref mut amir) = amir_owned {
-                optimize_amir_with_level_or_exit(
-                    amir,
-                    type_check,
-                    arandu_semantics::OptLevel::O2,
-                    &filepath,
-                );
-            }
+            let amir_owned = product_amir_or_exit(
+                &artifacts.amir,
+                type_check,
+                product_opt_level(opt, project_flags, true),
+                &filepath,
+            );
             let amir = amir_owned.as_ref().unwrap_or(&artifacts.amir);
             arandu_base::time_pass!("emit-llvm");
             let ir = arandu_backend_llvm::emit_llvm_ir(
@@ -274,28 +246,13 @@ pub(super) fn process_file(
                 print_genref_report(&filepath, &artifacts);
             }
             let type_check = &artifacts.type_check;
-            let mut amir_owned = if opt || project_flags.size {
-                Some(artifacts.amir.clone())
-            } else {
-                None
-            };
-            if let Some(ref mut amir) = amir_owned {
-                arandu_base::time_pass!("optimize-amir");
-                if project_flags.size {
-                    optimize_amir_with_level_or_exit(
-                        amir,
-                        type_check,
-                        arandu_semantics::OptLevel::Os,
-                        &filepath,
-                    );
-                } else {
-                    optimize_amir_or_exit(amir, type_check, &filepath);
-                }
-            }
-            let amir = match &amir_owned {
-                Some(a) => a,
-                None => &artifacts.amir,
-            };
+            let amir_owned = product_amir_or_exit(
+                &artifacts.amir,
+                type_check,
+                product_opt_level(opt, project_flags, false),
+                &filepath,
+            );
+            let amir = amir_owned.as_ref().unwrap_or(&artifacts.amir);
 
             // Wasm32 requires ptr_width=4; warn if a different layout was
             // requested via --layout.
@@ -339,28 +296,13 @@ pub(super) fn process_file(
                 print_genref_report(&filepath, &artifacts);
             }
             let type_check = &artifacts.type_check;
-            let mut amir_owned = if opt || project_flags.size {
-                Some(artifacts.amir.clone())
-            } else {
-                None
-            };
-            if let Some(ref mut amir) = amir_owned {
-                arandu_base::time_pass!("optimize-amir");
-                if project_flags.size {
-                    optimize_amir_with_level_or_exit(
-                        amir,
-                        type_check,
-                        arandu_semantics::OptLevel::Os,
-                        &filepath,
-                    );
-                } else {
-                    optimize_amir_or_exit(amir, type_check, &filepath);
-                }
-            }
-            let amir = match &amir_owned {
-                Some(a) => a,
-                None => &artifacts.amir,
-            };
+            let amir_owned = product_amir_or_exit(
+                &artifacts.amir,
+                type_check,
+                product_opt_level(opt, project_flags, false),
+                &filepath,
+            );
+            let amir = amir_owned.as_ref().unwrap_or(&artifacts.amir);
 
             // Wasm32 requires ptr_width=4; warn if a different layout was
             // requested via --layout.

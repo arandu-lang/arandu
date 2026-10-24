@@ -61,16 +61,17 @@ impl<'a> CEmitter<'a> {
                 AmirStmt::Store { lhs, .. } | AmirStmt::Destroy(lhs) => {
                     used_locals.insert(lhs.local.as_usize());
                 }
-                AmirStmt::StorageLive(local) | AmirStmt::StorageDead(local) => {
-                    used_locals.insert(local.as_usize());
-                }
-                AmirStmt::Free(_) | AmirStmt::Nop => {}
+                // Storage markers emit no C, and block parameters bind temps:
+                // neither names a local, so neither may declare one.
+                AmirStmt::StorageLive(_)
+                | AmirStmt::StorageDead(_)
+                | AmirStmt::Free(_)
+                | AmirStmt::Nop => {}
             }
         }
         for block in &func.blocks {
             for param in func.block_params(block.params) {
                 used_temps.insert(param.id.as_usize());
-                used_locals.insert(param.local.as_usize());
             }
             arandu_middle::amir::visit::for_each_terminator_operand(&block.terminator, |op| {
                 if let AmirOperand::Copy(temp) | AmirOperand::Move(temp) = op {

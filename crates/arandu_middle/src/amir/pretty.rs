@@ -298,11 +298,16 @@ impl AmirRvalue {
                 out.push_str(&field_strs.join(", "));
                 out.push_str(" }");
             }
-            AmirRvalue::IndexAccess { base, index } => {
+            AmirRvalue::IndexAccess {
+                base,
+                index,
+                in_bounds,
+            } => {
                 out.push_str(&format!(
-                    "{}[{}]",
+                    "{}[{}]{}",
                     base.to_pretty_string(symbols, pool),
-                    index.to_pretty_string(symbols, pool)
+                    index.to_pretty_string(symbols, pool),
+                    if *in_bounds { " /* in bounds */" } else { "" }
                 ));
             }
             AmirRvalue::Array { items } => {

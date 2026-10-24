@@ -847,6 +847,7 @@ fn array_calls_keep_their_own_types_and_project_checked_values() {
                 index: AmirOperand::Constant(AmirConstant::Pool(
                     arandu_middle::literal_pool::LiteralId(0),
                 )),
+                in_bounds: false,
             },
         },
     );

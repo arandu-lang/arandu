@@ -66,6 +66,9 @@ mod cli_opt_await_suspend;
 #[path = "cli_suite/cli_opt_while_backedge.rs"]
 mod cli_opt_while_backedge;
 
+#[path = "cli_suite/cli_bounds_check_elim.rs"]
+mod cli_bounds_check_elim;
+
 #[path = "cli_suite/cli_emit_c_locals.rs"]
 mod cli_emit_c_locals;
 

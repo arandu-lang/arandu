@@ -1,6 +1,6 @@
 use crate::amir::{
     AmirFunc, AmirOperand, AmirProjection, AmirRvalue, AmirStmt, AmirTerminator, BlockId, TempId,
-    for_each_rvalue_operand, for_each_terminator_operand,
+    for_each_rvalue_operand, for_each_rvalue_place, for_each_terminator_operand,
 };
 use crate::layout::DenseRange;
 use crate::{DiagCode, Diagnostic, Span};
@@ -10,14 +10,25 @@ use std::collections::VecDeque;
 /// Mark-Sweep Dead Code Elimination (Cooper & Torczon, Engineering a Compiler, ch. 10).
 ///
 /// Phase 1 — Mark: seeds are side-effecting instructions (Call, Store, Free, Destroy,
-/// StorageLive/Dead, Alloc).  Transitively marks the defining instruction of every
+/// StorageLive/Dead, Alloc). A store or storage marker of a local nothing ever
+/// observes (see [`observed_locals`]) is not a seed: the slot is write-only.  Transitively marks the defining instruction of every
 /// temp operand used by a live instruction.  **All** terminator operand uses are
 /// seeds (conditions **and** block-param jump args via [`for_each_terminator_operand`]).
 ///
 /// Phase 2 — Sweep: removes every unmarked statement by rebuilding the stmt table.
 ///
 /// Returns `true` if any instruction was removed.
+#[cfg(test)]
 pub fn mark_sweep_dce(func: &mut AmirFunc) -> Result<bool, Diagnostic> {
+    mark_sweep_dce_with_removable_calls(func, &rustc_hash::FxHashSet::default())
+}
+
+/// [`mark_sweep_dce`] that may also drop a call to one of `removable_callees`
+/// whose result is unused (see `IntrinsicKind::is_removable_when_unused`).
+pub fn mark_sweep_dce_with_removable_calls(
+    func: &mut AmirFunc,
+    removable_callees: &rustc_hash::FxHashSet<crate::SymbolId>,
+) -> Result<bool, Diagnostic> {
     let n_stmts = func.stmts.len();
     let n_temps = func.temps.len();
     if n_stmts == 0 || n_temps == 0 {
@@ -33,8 +44,11 @@ pub fn mark_sweep_dce(func: &mut AmirFunc) -> Result<bool, Diagnostic> {
     for bi in 0..func.blocks.len() {
         let bid = BlockId::from_usize(bi);
         for stmt_id in func.block_stmt_ids(bid) {
-            if let AmirStmt::Assign { lhs, .. } = func.stmt(stmt_id) {
-                defs_of[lhs.as_usize()].push(stmt_id);
+            match func.stmt(stmt_id) {
+                AmirStmt::Assign { lhs, .. } | AmirStmt::Call { lhs: Some(lhs), .. } => {
+                    defs_of[lhs.as_usize()].push(stmt_id)
+                }
+                _ => {}
             }
         }
     }
@@ -80,6 +94,7 @@ pub fn mark_sweep_dce(func: &mut AmirFunc) -> Result<bool, Diagnostic> {
     }
 
     // Seeds: side-effecting stmts + terminator operand defs
+    let observed = observed_locals(func);
     for bi in 0..func.blocks.len() {
         let bid = BlockId::from_usize(bi);
 
@@ -94,7 +109,11 @@ pub fn mark_sweep_dce(func: &mut AmirFunc) -> Result<bool, Diagnostic> {
         }
 
         for stmt_id in func.block_stmt_ids(bid) {
-            if has_side_effect(func.stmt(stmt_id)) {
+            let stmt = func.stmt(stmt_id);
+            if has_side_effect(stmt)
+                && !writes_unobserved_local(stmt, &observed)
+                && !is_removable_call(stmt, removable_callees)
+            {
                 let idx = stmt_id.as_usize();
                 if !live[idx] {
                     live[idx] = true;
@@ -170,6 +189,62 @@ fn optimization_span(func: &AmirFunc) -> Span {
 // ---------------------------------------------------------------------------
 // Side-effect / temp helpers
 // ---------------------------------------------------------------------------
+
+/// Locals whose slot may be read: the return slot `0`, any place loaded or
+/// borrowed (so its address may escape), any destroyed place, and any local
+/// whose pointer a store dereferences. Everything else is write-only.
+fn observed_locals(func: &AmirFunc) -> Vec<bool> {
+    let mut observed = vec![false; func.locals.len()];
+    let mut observe = |local: crate::amir::LocalId| {
+        if let Some(slot) = observed.get_mut(local.as_usize()) {
+            *slot = true;
+        }
+    };
+    observe(crate::amir::LocalId::from_usize(0));
+    for stmt in func.stmts.payloads.iter() {
+        match stmt {
+            AmirStmt::Assign { rhs, .. } => {
+                for_each_rvalue_place(rhs, |place| observe(place.local));
+                if let AmirRvalue::RelativeBorrow { local, .. } = rhs {
+                    observe(*local);
+                }
+            }
+            AmirStmt::Store { lhs, .. }
+                if lhs
+                    .projections
+                    .iter()
+                    .any(|projection| matches!(projection, AmirProjection::Deref)) =>
+            {
+                observe(lhs.local);
+            }
+            AmirStmt::Destroy(place) => observe(place.local),
+            _ => {}
+        }
+    }
+    observed
+}
+
+fn is_removable_call(
+    stmt: &AmirStmt,
+    removable_callees: &rustc_hash::FxHashSet<crate::SymbolId>,
+) -> bool {
+    matches!(
+        stmt,
+        AmirStmt::Call { callee: AmirOperand::FunctionRef(symbol), .. }
+            if removable_callees.contains(symbol)
+    )
+}
+
+/// A store or storage marker whose local is never observed. Locals outside the
+/// table are treated as observed.
+fn writes_unobserved_local(stmt: &AmirStmt, observed: &[bool]) -> bool {
+    let local = match stmt {
+        AmirStmt::Store { lhs, .. } => lhs.local,
+        AmirStmt::StorageLive(local) | AmirStmt::StorageDead(local) => *local,
+        _ => return false,
+    };
+    observed.get(local.as_usize()) == Some(&false)
+}
 
 fn has_side_effect(stmt: &AmirStmt) -> bool {
     match stmt {
@@ -680,6 +755,141 @@ mod tests {
         // t1 is only referenced from Goto.args — must not be removed.
         assert!(!mark_sweep_dce(&mut f).unwrap());
         assert_eq!(f.blocks[0].statements.len, 1);
+    }
+
+    fn with_int_locals(mut f: AmirFunc, count: usize) -> AmirFunc {
+        f.locals = (0..count)
+            .map(|id| crate::amir::AmirLocal {
+                id: LocalId::from_usize(id),
+                ty: intern_ty(ArType::Primitive(Primitive::Int)),
+                is_memory: false,
+                symbol: None,
+                span: crate::Span::new(0, 0, 0),
+                use_span: None,
+            })
+            .collect();
+        f
+    }
+
+    fn place(local: usize, projections: &[AmirProjection]) -> AmirPlace {
+        AmirPlace {
+            local: LocalId::from_usize(local),
+            projections: projections.iter().cloned().collect(),
+        }
+    }
+
+    fn store_one(local: usize, projections: &[AmirProjection]) -> Vec<AmirStmt> {
+        vec![
+            AmirStmt::Assign {
+                lhs: TempId::from_usize(1),
+                rhs: AmirRvalue::Use(AmirOperand::Constant(AmirConstant::Bool(true))),
+            },
+            AmirStmt::StorageLive(LocalId::from_usize(local)),
+            AmirStmt::Store {
+                lhs: place(local, projections),
+                rhs: AmirOperand::Copy(TempId::from_usize(1)),
+            },
+        ]
+    }
+
+    #[test]
+    fn removes_stores_to_a_local_nothing_reads() {
+        let mut f = with_int_locals(func(store_one(1, &[]), vec![int_temp(0), int_temp(1)]), 2);
+        assert!(mark_sweep_dce(&mut f).unwrap());
+        assert_eq!(f.blocks[0].statements.len, 0);
+    }
+
+    #[test]
+    fn keeps_stores_to_loaded_destroyed_or_dereferenced_locals() {
+        let observers = [
+            AmirStmt::Assign {
+                lhs: TempId::from_usize(2),
+                rhs: AmirRvalue::Load(place(1, &[])),
+            },
+            AmirStmt::Assign {
+                lhs: TempId::from_usize(2),
+                rhs: AmirRvalue::Borrow(place(1, &[])),
+            },
+            AmirStmt::Destroy(place(1, &[])),
+        ];
+        for observer in observers {
+            let mut stmts = store_one(1, &[]);
+            stmts.push(observer.clone());
+            stmts.push(AmirStmt::Call {
+                lhs: None,
+                callee: AmirOperand::FunctionRef(crate::SymbolId::new(0, 1)),
+                args: smallvec::smallvec![AmirOperand::Copy(TempId::from_usize(2))],
+                return_borrow: None,
+            });
+            let mut f =
+                with_int_locals(func(stmts, vec![int_temp(0), int_temp(1), int_temp(2)]), 2);
+            mark_sweep_dce(&mut f).unwrap();
+            let kept: Vec<_> = f.block_stmts(BlockId::from_usize(0)).collect();
+            assert!(
+                kept.iter()
+                    .any(|stmt| matches!(stmt, AmirStmt::Store { .. })),
+                "store must survive {observer:?}"
+            );
+        }
+
+        let mut through_pointer = with_int_locals(
+            func(
+                store_one(1, &[AmirProjection::Deref]),
+                vec![int_temp(0), int_temp(1)],
+            ),
+            2,
+        );
+        assert!(!mark_sweep_dce(&mut through_pointer).unwrap());
+        assert_eq!(through_pointer.blocks[0].statements.len, 3);
+    }
+
+    #[test]
+    fn drops_an_unused_removable_call_but_keeps_used_or_effectful_ones() {
+        let pure = crate::SymbolId::new(0, 7);
+        let effectful = crate::SymbolId::new(0, 8);
+        let call = |lhs: usize, callee| AmirStmt::Call {
+            lhs: Some(TempId::from_usize(lhs)),
+            callee: AmirOperand::FunctionRef(callee),
+            args: smallvec::smallvec![AmirOperand::Copy(TempId::from_usize(1))],
+            return_borrow: None,
+        };
+        let removable = [pure].into_iter().collect();
+        let mut f = func(
+            vec![
+                AmirStmt::Assign {
+                    lhs: TempId::from_usize(1),
+                    rhs: AmirRvalue::Use(AmirOperand::Constant(AmirConstant::Bool(true))),
+                },
+                call(2, pure),
+                call(3, effectful),
+            ],
+            vec![int_temp(0), int_temp(1), int_temp(2), int_temp(3)],
+        );
+        assert!(mark_sweep_dce_with_removable_calls(&mut f, &removable).unwrap());
+        let kept: Vec<_> = f.block_stmts(BlockId::from_usize(0)).cloned().collect();
+        assert!(
+            matches!(kept.as_slice(), [AmirStmt::Assign { .. }, AmirStmt::Call { callee: AmirOperand::FunctionRef(symbol), .. }] if *symbol == effectful)
+        );
+
+        let mut used = func(
+            vec![
+                AmirStmt::Assign {
+                    lhs: TempId::from_usize(1),
+                    rhs: AmirRvalue::Use(AmirOperand::Constant(AmirConstant::Bool(true))),
+                },
+                call(2, pure),
+                AmirStmt::Store {
+                    lhs: AmirPlace {
+                        local: LocalId::from_usize(0),
+                        projections: smallvec::smallvec![],
+                    },
+                    rhs: AmirOperand::Copy(TempId::from_usize(2)),
+                },
+            ],
+            vec![int_temp(0), int_temp(1), int_temp(2)],
+        );
+        assert!(!mark_sweep_dce_with_removable_calls(&mut used, &removable).unwrap());
+        assert_eq!(used.blocks[0].statements.len, 3);
     }
 
     #[test]

@@ -116,8 +116,12 @@ impl<'a> CEmitter<'a> {
             AmirRvalue::StrView { owner } => {
                 self.emit_str_view(owner, func, expected_c_type);
             }
-            AmirRvalue::IndexAccess { base, index } => {
-                self.emit_index_access(base, index, func);
+            AmirRvalue::IndexAccess {
+                base,
+                index,
+                in_bounds,
+            } => {
+                self.emit_index_access(base, index, *in_bounds, func);
             }
             AmirRvalue::Alloc(op) => {
                 self.emit_alloc(op, func);

@@ -84,6 +84,7 @@ impl LowerCtx<'_> {
                         AmirRvalue::IndexAccess {
                             base: left,
                             index: AmirOperand::Constant(literal),
+                            in_bounds: false,
                         },
                     );
                     self.emit_assign_temp(
@@ -91,6 +92,7 @@ impl LowerCtx<'_> {
                         AmirRvalue::IndexAccess {
                             base: right,
                             index: AmirOperand::Constant(literal),
+                            in_bounds: false,
                         },
                     );
                     let equal = self.lower_value_equality_inner(

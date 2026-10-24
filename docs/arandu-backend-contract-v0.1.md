@@ -70,6 +70,17 @@ lowering therefore never rebuilds a backend. This holds because:
 
 Tests may still drive the whole front end through dev-dependencies.
 
+### Index bounds
+
+Every backend traps on an out-of-bounds index into an array or slice (`Vec`
+and raw pointers are unchecked); LLVM matches C, Cranelift and Wasm with an
+`icmp uge` and `llvm.trap`. `AmirRvalue::IndexAccess::in_bounds` lets a backend
+omit the check. Lowering always clears it; only the AMIR
+`bounds_check_elim` pass sets it, when a dominating branch proved
+`index < len(slice)` on unsigned single-definition values of the same slice.
+Integer `+`, `-` and `*` wrap, so the pass never derives a fact through
+arithmetic: `pos + n <= len` leaves the check on `slice[pos + k]` in place.
+
 ### Temporary storage and bounded inlining
 
 C and Cranelift share a conservative block-local temporary storage plan in
@@ -205,8 +216,9 @@ release promotion remain pending. `lli` does not link the host runtime, and
 Emission is demand-driven, which keeps freestanding IR honest: a `declare` is
 materialized only when a body actually references the symbol, a stack slot
 exists only for an AMIR local whose address is taken (`is_memory`) or for a
-multi-assigned temp, and an identity assignment aliases the incoming SSA value
-instead of emitting `select i1 true, v, v`. A module that needs no runtime
+multi-assigned temp, and an assigned value is never copied through
+`select i1 true, v, v`: an SSA temp aliases it and a stack-slot temp stores it
+directly. A module that needs no runtime
 helper therefore emits no declarations at all. `arandu_backend_llvm/tests/
 direct_ir.rs` asserts these invariants structurally.
 

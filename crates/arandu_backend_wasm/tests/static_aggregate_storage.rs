@@ -229,6 +229,7 @@ fn static_array_passed_as_a_block_argument_keeps_its_materialization() {
         rhs: AmirRvalue::IndexAccess {
             base: AmirOperand::Copy(TempId::from_usize(2)),
             index: zero,
+            in_bounds: false,
         },
     });
     let blocks = vec![
@@ -316,6 +317,7 @@ fn static_array_passed_as_a_block_argument_keeps_its_materialization() {
         rhs: AmirRvalue::IndexAccess {
             base: AmirOperand::Copy(TempId::from_usize(2)),
             index: zero,
+            in_bounds: false,
         },
     });
     function.stmts = statements;

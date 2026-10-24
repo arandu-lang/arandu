@@ -415,7 +415,7 @@ fn validate_borrowed_gen_result(
             | AmirRvalue::SliceData(base)
             | AmirRvalue::Discriminant { value: base }
             | AmirRvalue::EnumPayload { value: base, .. } => references(base),
-            AmirRvalue::IndexAccess { base, index } => references(base) && !references(index),
+            AmirRvalue::IndexAccess { base, index, .. } => references(base) && !references(index),
             _ => false,
         };
         if !safe_projection {

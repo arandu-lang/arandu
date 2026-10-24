@@ -213,10 +213,23 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
         lhs_ty: &ArType,
     ) -> Result<(), Diagnostic> {
         let value = self.coerce(value, lhs_ty)?;
-        if let Some(lhs) = self.pending_assignment.take()
-            && self.temp_slots[lhs.as_usize()].is_none()
-        {
-            self.bind_temp(lhs, value)?;
+        self.assign_value(result, value)
+    }
+
+    /// Gives an already computed value to the pending destination without an
+    /// instruction: SSA temps alias it, stack-slot temps store it directly.
+    /// Only a destination that is not the statement's own temp still needs a
+    /// named copy.
+    pub(in crate::codegen) fn assign_value(
+        &mut self,
+        result: &str,
+        value: TypedValue,
+    ) -> Result<(), Diagnostic> {
+        if let Some(lhs) = self.pending_assignment.take() {
+            if self.temp_slots[lhs.as_usize()].is_none() {
+                return self.bind_temp(lhs, value);
+            }
+            self.slot_value = Some(value.value);
             return Ok(());
         }
         let rendered = value.render();

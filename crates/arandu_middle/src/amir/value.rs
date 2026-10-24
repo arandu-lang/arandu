@@ -97,6 +97,10 @@ pub enum AmirRvalue {
     IndexAccess {
         base: AmirOperand,
         index: AmirOperand,
+        /// Set only by `bounds_check_elim` once a dominating guard proves
+        /// `index < len(base)`. Lowering always emits `false`, and backends
+        /// keep the bounds check unless it is `true`.
+        in_bounds: bool,
     },
     Array {
         items: Vec<AmirOperand>,

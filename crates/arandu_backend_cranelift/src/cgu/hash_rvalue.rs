@@ -85,10 +85,15 @@ impl HashContext<'_> {
                     self.operand(operand);
                 }
             }
-            AmirRvalue::IndexAccess { base, index } => {
+            AmirRvalue::IndexAccess {
+                base,
+                index,
+                in_bounds,
+            } => {
                 self.hash.tag(5);
                 self.operand(base);
                 self.operand(index);
+                self.hash.tag(u8::from(*in_bounds));
             }
             AmirRvalue::Array { items } => {
                 self.hash.tag(6);

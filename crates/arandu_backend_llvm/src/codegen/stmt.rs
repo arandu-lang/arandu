@@ -163,6 +163,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
 
     pub(super) fn emit_statement(&mut self, statement: &AmirStmt) -> Result<(), Diagnostic> {
         self.pending_assignment = None;
+        self.slot_value = None;
         match statement {
             AmirStmt::Assign { lhs, rhs } => {
                 let ty = self.temp_type(*lhs);
@@ -173,8 +174,9 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                         .clone()
                         .map_or_else(|| self.module.llvm_ty(&ty), Ok)?;
                     let align = self.module.align_of(&ty);
+                    let value = self.slot_value.take().unwrap_or(result);
                     self.writer.line(format!(
-                        "store {ty_text} {result}, ptr {slot}, align {align}"
+                        "store {ty_text} {value}, ptr {slot}, align {align}"
                     ));
                 }
                 Ok(())
@@ -200,6 +202,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                     let ty = self.temp_type(*lhs);
                     let ty_text = self.module.llvm_ty(&ty)?;
                     let align = self.module.align_of(&ty);
+                    let value = self.slot_value.take().unwrap_or(value);
                     self.writer.line(format!(
                         "store {ty_text} {value}, ptr {slot}, align {align}"
                     ));

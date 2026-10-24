@@ -17,7 +17,18 @@ use std::fmt::Write;
 use super::CEmitter;
 
 impl<'a> CEmitter<'a> {
+    /// Runtime helpers are linked in feature groups, so a program may leave
+    /// some of a group unused. The pragma silences `-Wunused-function` for the
+    /// runtime region only; dead user functions still warn.
     pub(super) fn emit_headers(&mut self, needs_str: bool) {
+        self.emit_runtime_prelude(needs_str);
+        let _ = writeln!(
+            &mut self.output,
+            "#if defined(__GNUC__) || defined(__clang__)\n#pragma GCC diagnostic pop\n#endif"
+        );
+    }
+
+    fn emit_runtime_prelude(&mut self, needs_str: bool) {
         let features = self.runtime_features();
         self.arena_runtime = features.arena;
         let mut rotate_widths = [false; 2];
@@ -34,6 +45,10 @@ impl<'a> CEmitter<'a> {
         let _ = writeln!(
             &mut self.output,
             "#if !defined(_WIN32) && !defined(_DEFAULT_SOURCE)\n#define _DEFAULT_SOURCE\n#endif\n#if defined(__APPLE__) && !defined(_DARWIN_C_SOURCE)\n#define _DARWIN_C_SOURCE\n#endif\n#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)\n#define _POSIX_C_SOURCE 200112L\n#endif"
+        );
+        let _ = writeln!(
+            &mut self.output,
+            "#if defined(__GNUC__) || defined(__clang__)\n#pragma GCC diagnostic push\n#pragma GCC diagnostic ignored \"-Wunused-function\"\n#endif"
         );
         let _ = writeln!(&mut self.output, "#include <stdint.h>");
         let _ = writeln!(&mut self.output, "#include <stdbool.h>");

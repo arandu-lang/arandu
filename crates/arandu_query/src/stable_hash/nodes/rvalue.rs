@@ -82,10 +82,15 @@ pub(in crate::stable_hash) fn hash_rvalue(
                 hash_amir_operand(hasher, operand);
             }
         }
-        R::IndexAccess { base, index } => {
+        R::IndexAccess {
+            base,
+            index,
+            in_bounds,
+        } => {
             hasher.update(&[5]);
             hash_amir_operand(hasher, base);
             hash_amir_operand(hasher, index);
+            hasher.update(&[u8::from(*in_bounds)]);
         }
         R::Array { items } => {
             hasher.update(&[6]);

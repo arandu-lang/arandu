@@ -357,7 +357,7 @@ fn promote_escaped_coroutines(func: &mut AmirFunc) {
                                     }
                                 }
                             }
-                            AmirRvalue::IndexAccess { base, index } => {
+                            AmirRvalue::IndexAccess { base, index, .. } => {
                                 if let AmirOperand::Copy(src) | AmirOperand::Move(src) = base
                                     && let Some(src_origins) = temp_origins.get(src)
                                 {

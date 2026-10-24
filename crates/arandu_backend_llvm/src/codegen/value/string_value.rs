@@ -229,15 +229,16 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
         self.writer.line(format!("br label %{join}"));
 
         self.enter_llvm_label(&join);
-        let eq = self.new_value();
+        let eq = if negate {
+            self.new_value()
+        } else {
+            result.to_owned()
+        };
         self.writer.line(format!(
             "{eq} = phi i1 [ false, %{different_lengths} ], [ true, %{empty_strings} ], [ {bytes_eq}, %{compare_bytes} ]"
         ));
         if negate {
             self.writer.line(format!("{result} = xor i1 {eq}, true"));
-        } else {
-            self.writer
-                .line(format!("{result} = select i1 true, i1 {eq}, i1 {eq}"));
         }
         Ok(())
     }

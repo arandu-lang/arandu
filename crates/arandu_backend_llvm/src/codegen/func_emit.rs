@@ -25,6 +25,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
             temp_slots: vec![None; func.temps.len()],
             temp_values: vec![None; func.temps.len()],
             pending_assignment: None,
+            slot_value: None,
             temp_llvm_ty: vec![None; func.temps.len()],
             next_value: 0,
             current_return: None,

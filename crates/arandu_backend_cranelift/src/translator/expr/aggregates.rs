@@ -403,9 +403,10 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         &mut self,
         base: &AmirOperand,
         index: &AmirOperand,
+        in_bounds: bool,
         expected_ty: Option<Type>,
     ) -> Value {
-        let (target_ptr, elem_ty) = self.translate_index_address(base, index);
+        let (target_ptr, elem_ty) = self.translate_index_address(base, index, in_bounds);
         if self.is_inline_aggregate_ty(&elem_ty) {
             return target_ptr;
         }
@@ -417,12 +418,25 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         )
     }
 
+    fn trap_unless_index_below(&mut self, index: Value, len: Value) {
+        let is_oob = self.builder.ins().icmp(
+            cranelift_codegen::ir::condcodes::IntCC::UnsignedGreaterThanOrEqual,
+            index,
+            len,
+        );
+        self.builder
+            .ins()
+            .trapnz(is_oob, cranelift_codegen::ir::TrapCode::unwrap_user(1));
+    }
+
     /// Shared bounds-checked address calculation for scalar, aggregate and
     /// fat-string element loads. The latter needs both target ABI words.
+    /// `in_bounds` (proven by AMIR) omits the check.
     pub(in crate::translator) fn translate_index_address(
         &mut self,
         base: &AmirOperand,
         index: &AmirOperand,
+        in_bounds: bool,
     ) -> (Value, ArType) {
         let mut ptr_val = self.translate_operand(base, Some(self.ptr_type));
         let mut idx_val = self.translate_operand(index, Some(self.ptr_type));
@@ -447,15 +461,10 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         };
         let elem_ty = match &deref_ty {
             ArType::Array(len, elem) => {
-                let len_val = self.builder.ins().iconst(self.ptr_type, *len as i64);
-                let is_oob = self.builder.ins().icmp(
-                    cranelift_codegen::ir::condcodes::IntCC::UnsignedGreaterThanOrEqual,
-                    idx_val,
-                    len_val,
-                );
-                self.builder
-                    .ins()
-                    .trapnz(is_oob, cranelift_codegen::ir::TrapCode::unwrap_user(1));
+                if !in_bounds {
+                    let len_val = self.builder.ins().iconst(self.ptr_type, *len as i64);
+                    self.trap_unless_index_below(idx_val, len_val);
+                }
                 self.type_info.resolve_type_id(*elem)
             }
             ArType::ConstArray(_, elem) => {
@@ -463,32 +472,22 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 let elem_ty = self.type_info.resolve_type_id(*elem);
                 let elem_layout = self.checked_layout(&elem_ty);
                 let len = arr_layout.size.checked_div(elem_layout.size).unwrap_or(0);
-                let len_val = self.builder.ins().iconst(self.ptr_type, len as i64);
-                let is_oob = self.builder.ins().icmp(
-                    cranelift_codegen::ir::condcodes::IntCC::UnsignedGreaterThanOrEqual,
-                    idx_val,
-                    len_val,
-                );
-                self.builder
-                    .ins()
-                    .trapnz(is_oob, cranelift_codegen::ir::TrapCode::unwrap_user(1));
+                if !in_bounds {
+                    let len_val = self.builder.ins().iconst(self.ptr_type, len as i64);
+                    self.trap_unless_index_below(idx_val, len_val);
+                }
                 elem_ty
             }
             ArType::Slice(elem) | ArType::MutSlice(elem) => {
-                let len_val = self.builder.ins().load(
-                    self.ptr_type,
-                    cranelift_codegen::ir::MemFlagsData::new(),
-                    ptr_val,
-                    self.ptr_type.bytes() as i32,
-                );
-                let is_oob = self.builder.ins().icmp(
-                    cranelift_codegen::ir::condcodes::IntCC::UnsignedGreaterThanOrEqual,
-                    idx_val,
-                    len_val,
-                );
-                self.builder
-                    .ins()
-                    .trapnz(is_oob, cranelift_codegen::ir::TrapCode::unwrap_user(1));
+                if !in_bounds {
+                    let len_val = self.builder.ins().load(
+                        self.ptr_type,
+                        cranelift_codegen::ir::MemFlagsData::new(),
+                        ptr_val,
+                        self.ptr_type.bytes() as i32,
+                    );
+                    self.trap_unless_index_below(idx_val, len_val);
+                }
                 ptr_val = self.builder.ins().load(
                     self.ptr_type,
                     cranelift_codegen::ir::MemFlagsData::new(),

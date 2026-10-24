@@ -41,7 +41,7 @@ revisável; propostas dependem de aceitação e evidência antes de virar escopo
 | A6/A7/A11 | `done` no recorte atual | lexer/categorização e caminhos SIMD existentes, tokens/internamento; nenhuma promessa geral de parsing branchless ou ganho em todo alvo |
 | A8 / execução concorrente | `partial` | workers LSP limitados, cancelamento/prioridade e paralelismo existente; scheduler universal de compilação lock-free/NUMA/affinity não é garantia atual |
 | BC, C_FB, Wasm | `done` nos contratos atuais | JIT/AOT Cranelift, emissor C e core-Wasm; LLVM, eBPF e SPIR-V não estão implementados |
-| O0/O1/O2 | `done` / `done` / `experimental` | O1: SCCP, DCE e SimplifyCFG; O2 contém passes restritos, não SROA irrestrito nem promessa de spills/registradores |
+| O0/O1/O2 | `done` / `done` / `experimental` | O1: SCCP, BCE por guarda dominante, DCE e SimplifyCFG; O2 contém passes restritos, não SROA irrestrito nem promessa de spills/registradores |
 | Memória: F2, G2, BC.1a, BV.1–3, AUD.0–5 | `done` nos recortes publicados | borrows, contratos de retorno, carriers/views, drops de strings e fallback GenRef; não equivale a provar todos os retornos/agregados/FFI |
 | GenRef R0 | `Frozen-R0` | host/thread-confined, contratos e medição preservados; concorrência de handles/FFI/persistência não entram implicitamente |
 | A4 / layout | `done` no recorte | LayoutEngine por alvo, classificação ABI e nichos admitidos; `@Repr("C")` tem política própria, raw ptr/GenRef não recebem nicho por suposição; SOO/tagging/reordenação universais não são garantias |
@@ -379,8 +379,9 @@ do caminho quente; nenhuma delas autoriza serializar o grafo Salsa.
 ## Otimização AMIR — estado e sequência
 
 O `PassManager` executa transformações puras por função, separado da
-memoização Salsa. O0 não transforma; O1 itera SCCP → DCE mark-sweep →
-SimplifyCFG. O2 é experimental: scalar replacement Copy e self-tail calls
+memoização Salsa. O0 não transforma; O1 itera SCCP → eliminação de bounds
+checks por guarda dominante → DCE mark-sweep → SimplifyCFG. O DCE também remove
+stores a locais nunca observados e chamadas sem uso a intrínsecos sem efeito. O2 é experimental: scalar replacement Copy e self-tail calls
 restritos, field forwarding/GVN/SCCP/LICM/DCE/tail merging/SimplifyCFG.
 Alcance compartilhado de funções/drop/runtime existe (RFC 0027); expansão
 interprocedural e reflection futura precisam preservar raízes públicas e tooling.

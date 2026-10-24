@@ -298,6 +298,7 @@ impl LowerCtx<'_> {
             AmirRvalue::IndexAccess {
                 base: base_op,
                 index: idx_op,
+                in_bounds: false,
             },
         );
         Ok(AmirOperand::Copy(dest))

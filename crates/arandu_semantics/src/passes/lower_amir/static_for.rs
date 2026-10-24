@@ -149,6 +149,7 @@ impl LowerCtx<'_> {
                     AmirRvalue::IndexAccess {
                         base,
                         index: AmirOperand::Constant(literal),
+                        in_bounds: false,
                     }
                 } else {
                     AmirRvalue::Use(AmirOperand::Constant(literal))

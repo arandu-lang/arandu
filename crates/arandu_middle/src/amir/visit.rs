@@ -228,6 +228,7 @@ pub fn for_each_rvalue_operand_mut(value: &mut AmirRvalue, mut f: impl FnMut(&mu
         | AmirRvalue::IndexAccess {
             base: left,
             index: right,
+            ..
         } => {
             f(left);
             f(right);
@@ -416,6 +417,7 @@ pub fn for_each_rvalue_operand(rvalue: &AmirRvalue, mut f: impl FnMut(&AmirOpera
         | AmirRvalue::IndexAccess {
             base: left,
             index: right,
+            ..
         } => {
             f(left);
             f(right);

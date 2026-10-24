@@ -4,6 +4,22 @@ use arandu_middle::amir::{AmirRvalue, TempId};
 use arandu_middle::types::{ArType, Primitive};
 
 impl<'a, 'm> FuncEmitter<'a, 'm> {
+    fn trap_unless_index_below(&mut self, ty: &str, index: &str, bound: &str) {
+        let out_of_bounds = self.new_value();
+        self.writer
+            .line(format!("{out_of_bounds} = icmp uge {ty} {index}, {bound}"));
+        let trap = self.new_block();
+        let in_range = self.new_block();
+        self.writer.line(format!(
+            "br i1 {out_of_bounds}, label %{trap}, label %{in_range}"
+        ));
+        self.enter_llvm_label(&trap);
+        self.module.require_llvm_trap();
+        self.writer.line("call void @llvm.trap()");
+        self.writer.line("unreachable");
+        self.enter_llvm_label(&in_range);
+    }
+
     pub(super) fn emit_aggregate_rvalue(
         &mut self,
         result: &str,
@@ -179,7 +195,11 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                     lhs_ty,
                 )
             }
-            AmirRvalue::IndexAccess { base, index } => {
+            AmirRvalue::IndexAccess {
+                base,
+                index,
+                in_bounds,
+            } => {
                 let base_ty = self.module.operand_type(base, self.func);
                 let deref_ty = match &base_ty {
                     ArType::Ptr(inner) | ArType::Ref(inner) | ArType::RefMut(inner) => {
@@ -220,14 +240,20 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                 let index = self.operand(index, &index_ty)?;
                 let index = self.coerce(index, &self.module.usize_ty())?;
                 let index_ll = index.ty.clone();
-                let base_address = if matches!(
+                // Arrays and slices trap on out-of-bounds indices, matching the
+                // C, Cranelift and Wasm backends; `Vec` and raw pointers do not.
+                let array_bound = match &deref_ty {
+                    ArType::Array(len, _) => Some(len.to_string()),
+                    _ => None,
+                };
+                let (base_address, bound) = if matches!(
                     &base_ty,
                     ArType::Ptr(_) | ArType::Ref(_) | ArType::RefMut(_)
                 ) {
                     let pointer = self.operand(base, &base_ty)?;
-                    pointer.value
+                    (pointer.value, array_bound)
                 } else if matches!(&deref_ty, ArType::Array(..)) {
-                    self.aggregate_address(base, &deref_ty)?
+                    (self.aggregate_address(base, &deref_ty)?, array_bound)
                 } else if matches!(&deref_ty, ArType::Slice(_) | ArType::MutSlice(_)) {
                     let descriptor = self.operand(base, &deref_ty)?;
                     let pointer = self.new_value();
@@ -235,12 +261,20 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                         "{pointer} = extractvalue {fat} {}, 0",
                         descriptor.value
                     ));
-                    pointer
+                    let len = self.new_value();
+                    self.writer.line(format!(
+                        "{len} = extractvalue {fat} {}, 1",
+                        descriptor.value
+                    ));
+                    (pointer, Some(len))
                 } else {
                     return Err(ice(format!(
                         "LLVM backend does not implement index access for {deref_ty:?}"
                     )));
                 };
+                if !*in_bounds && let Some(bound) = bound {
+                    self.trap_unless_index_below(&index_ll, &index.value, &bound);
+                }
                 let offset = self.new_value();
                 self.writer.line(format!(
                     "{offset} = mul {index_ll} {}, {stride}",

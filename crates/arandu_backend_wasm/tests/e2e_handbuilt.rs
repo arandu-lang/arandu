@@ -434,6 +434,7 @@ fn hand_built_slice_index_access_executes() {
         rhs: AmirRvalue::IndexAccess {
             base: AmirOperand::Copy(sv_t),
             index: zero(),
+            in_bounds: false,
         },
     });
 

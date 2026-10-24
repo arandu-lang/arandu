@@ -122,6 +122,26 @@ impl IntrinsicKind {
         )
     }
 
+    /// Calls whose result may be dropped when unused: they read no memory,
+    /// write nothing, cannot trap and always return (LLVM's `memory(none)`,
+    /// `nounwind` and `willreturn` together).
+    #[must_use]
+    pub const fn is_removable_when_unused(self) -> bool {
+        matches!(
+            self,
+            Self::CountOnes
+                | Self::LeadingZeros
+                | Self::TrailingZeros
+                | Self::ReverseBits
+                | Self::PtrOffset
+                | Self::SizeOf
+                | Self::AlignOf
+                | Self::SliceLen
+                | Self::SliceData
+                | Self::StrBytes
+        )
+    }
+
     /// Returns `true` for intrinsics that are safe to call without an `unsafe` block.
     ///
     /// ## Criteria

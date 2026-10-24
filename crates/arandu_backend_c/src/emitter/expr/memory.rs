@@ -179,6 +179,7 @@ impl<'a> CEmitter<'a> {
         &mut self,
         base: &AmirOperand,
         index: &AmirOperand,
+        in_bounds: bool,
         func: &AmirFunc,
     ) {
         let base_ty = match base {
@@ -204,8 +205,10 @@ impl<'a> CEmitter<'a> {
         let is_nonempty_array = matches!(&deref_ty, ArType::Array(len, _) if *len > 0)
             && self.checked_layout(&deref_ty).size > 0;
         // Arrays and slices trap on out-of-bounds indices, matching the
-        // Cranelift and Wasm backends; `Vec` and raw pointers do not.
+        // Cranelift and Wasm backends; `Vec` and raw pointers do not. An index
+        // AMIR proved in bounds needs no check.
         let index_str = match &deref_ty {
+            _ if in_bounds => index_str,
             ArType::Array(len, _) => Self::checked_array_index(&index_str, *len),
             _ if base_ty.slice_abi_element(self.interner).is_some() => {
                 self.checked_slice_index(&index_str, &base_str)

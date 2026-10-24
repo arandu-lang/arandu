@@ -22,8 +22,12 @@ impl<'a> FuncTranslator<'a> {
             AmirRvalue::FieldAccess { base, field } => {
                 self.emit_field_access(base, *field, result_ty);
             }
-            AmirRvalue::IndexAccess { base, index } => {
-                self.emit_index_access(base, index, result_ty);
+            AmirRvalue::IndexAccess {
+                base,
+                index,
+                in_bounds,
+            } => {
+                self.emit_index_access(base, index, *in_bounds, result_ty);
             }
             AmirRvalue::EnumConstruct {
                 variant_tag,

@@ -473,6 +473,7 @@ impl LowerCtx<'_> {
                             AmirRvalue::IndexAccess {
                                 base,
                                 index: idx_op2,
+                                in_bounds: false,
                             }
                         } else {
                             AmirRvalue::Use(idx_op2)

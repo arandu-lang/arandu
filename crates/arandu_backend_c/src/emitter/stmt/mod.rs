@@ -46,6 +46,16 @@ impl<'a> CEmitter<'a> {
                         Some(format!("(({lhs_c_ty})({expression}))"));
                     return;
                 }
+                // Coalesced copy: both temps share one C variable, so the
+                // assignment would be `tN = tN;`.
+                if let arandu_middle::amir::AmirRvalue::Use(
+                    AmirOperand::Copy(source) | AmirOperand::Move(source),
+                ) = rhs
+                    && self.temp_expressions[source.as_usize()].is_none()
+                    && self.temp_slot(*source) == self.temp_slots[lhs.as_usize()]
+                {
+                    return;
+                }
                 match rhs {
                     arandu_middle::amir::AmirRvalue::GenInsert {
                         value, payload_ty, ..

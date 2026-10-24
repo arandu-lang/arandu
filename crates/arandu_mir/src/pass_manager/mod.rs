@@ -54,6 +54,38 @@ pub struct PassResources<'a> {
     pub literal_pool: &'a mut AmirLiteralPool,
     /// Per-function scratch arena, reset between mutating fixpoint rounds.
     pub bump: &'a mut Bump,
+    /// Callees whose call DCE may drop when the result is unused. Empty when
+    /// no symbol table is available.
+    pub removable_callees: &'a rustc_hash::FxHashSet<crate::SymbolId>,
+}
+
+/// Intrinsic callees of `func` that read no memory, cannot trap and return.
+fn removable_callees(
+    func: &AmirFunc,
+    symbols: &SymbolTable,
+) -> rustc_hash::FxHashSet<crate::SymbolId> {
+    let mut callees = rustc_hash::FxHashSet::default();
+    for stmt in func.stmts.payloads.iter() {
+        let crate::amir::AmirStmt::Call {
+            callee: crate::amir::AmirOperand::FunctionRef(symbol),
+            ..
+        } = stmt
+        else {
+            continue;
+        };
+        let removable = symbols.try_get(*symbol).is_some_and(|definition| {
+            definition.kind == crate::SymbolKind::ExternFunc
+                && arandu_middle::intrinsics::IntrinsicKind::from_declared_name(
+                    &definition.name,
+                    definition.lang_item,
+                )
+                .is_some_and(arandu_middle::intrinsics::IntrinsicKind::is_removable_when_unused)
+        });
+        if removable {
+            callees.insert(*symbol);
+        }
+    }
+    callees
 }
 
 /// A single AMIR function-to-function transformation step.
@@ -126,6 +158,7 @@ impl PassManager {
             func,
             literal_pool,
             None,
+            &rustc_hash::FxHashSet::default(),
             fixpoint::DEFAULT_MAX_FIXPOINT_ITERATIONS,
             &mut |_, _| Ok(()),
         )
@@ -145,11 +178,13 @@ impl PassManager {
         if self.passes.is_empty() {
             return Ok(PassStats::default());
         }
+        let removable = removable_callees(func, symbols);
         fixpoint::run_pipeline_to_fixpoint(
             &self.passes,
             func,
             literal_pool,
             Some(interner),
+            &removable,
             fixpoint::DEFAULT_MAX_FIXPOINT_ITERATIONS,
             &mut |func, pass| match crate::amir_validate::validate_amir_func(
                 func, symbols, interner,
@@ -194,6 +229,7 @@ impl PassManager {
                 func,
                 &mut program.literal_pool,
                 Some(interner),
+                &rustc_hash::FxHashSet::default(),
                 fixpoint::DEFAULT_MAX_FIXPOINT_ITERATIONS,
                 &mut |_, _| Ok(()),
             )?;
@@ -462,11 +498,22 @@ mod tests {
         assert!(PassManager::for_level(OptLevel::O0).pass_names().is_empty());
         assert_eq!(
             PassManager::for_level(OptLevel::O1).pass_names(),
-            vec!["sccp", "mark_sweep_dce", "simplify_cfg"]
+            vec![
+                "sccp",
+                "bounds_check_elim",
+                "mark_sweep_dce",
+                "simplify_cfg"
+            ]
         );
         assert_eq!(
             PassManager::for_level(OptLevel::Os).pass_names(),
-            vec!["sccp", "mark_sweep_dce", "tail_merge", "simplify_cfg"]
+            vec![
+                "sccp",
+                "bounds_check_elim",
+                "mark_sweep_dce",
+                "tail_merge",
+                "simplify_cfg"
+            ]
         );
         assert_eq!(
             PassManager::for_level(OptLevel::O2).pass_names(),
@@ -475,6 +522,7 @@ mod tests {
                 "gvn",
                 "sccp",
                 "licm",
+                "bounds_check_elim",
                 "mark_sweep_dce",
                 "tail_merge",
                 "simplify_cfg"

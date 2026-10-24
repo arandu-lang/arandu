@@ -274,7 +274,7 @@ impl Frame {
                     .cloned()
                     .ok_or(EvalErrorKind::InvalidIr)
             }
-            AmirRvalue::IndexAccess { base, index } => {
+            AmirRvalue::IndexAccess { base, index, .. } => {
                 let base = self.operand(*base, None, meter)?;
                 let index = self.index_operand(*index, meter)?;
                 meter.step()?;

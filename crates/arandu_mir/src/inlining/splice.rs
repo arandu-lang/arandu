@@ -354,9 +354,14 @@ fn remap_rvalue(rv: &AmirRvalue, temp_map: &[TempId], local_map: &[LocalId]) -> 
                 .map(|(name, op)| (name.clone(), remap_op(op, temp_map)))
                 .collect(),
         },
-        AmirRvalue::IndexAccess { base, index } => AmirRvalue::IndexAccess {
+        AmirRvalue::IndexAccess {
+            base,
+            index,
+            in_bounds,
+        } => AmirRvalue::IndexAccess {
             base: remap_op(base, temp_map),
             index: remap_op(index, temp_map),
+            in_bounds: *in_bounds,
         },
         AmirRvalue::Array { items } => AmirRvalue::Array {
             items: items.iter().map(|it| remap_op(it, temp_map)).collect(),

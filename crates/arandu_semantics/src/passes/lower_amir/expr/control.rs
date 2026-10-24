@@ -229,6 +229,7 @@ impl LowerCtx<'_> {
             AmirRvalue::IndexAccess {
                 base: base_op,
                 index: index_op,
+                in_bounds: false,
             },
         );
         if self.builder.current_block.is_some() {

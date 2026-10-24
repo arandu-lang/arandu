@@ -281,12 +281,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                 };
                 let ty = self.module.operand_type(&args[0], self.func);
                 let value = self.operand(&args[0], &ty)?;
-                self.writer.line(format!(
-                    "{result} = select i1 true, {}, {}",
-                    value.render(),
-                    value.render()
-                ));
-                Ok(())
+                self.assign_value(result, value)
             }
             other => Err(ice(format!(
                 "LLVM backend does not yet lower intrinsic {other:?}"

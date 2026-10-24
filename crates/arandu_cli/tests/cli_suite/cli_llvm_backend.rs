@@ -398,6 +398,82 @@ fn incremental_build_does_not_reuse_cranelift_artifact_for_llvm() {
     assert!(String::from_utf8_lossy(&repeated_llvm.stdout).contains("incremental: up-to-date"));
 }
 
+/// Arrays and slices trap on an out-of-bounds index in the LLVM product too,
+/// matching the C, Cranelift and Wasm backends.
+#[test]
+fn llvm_product_traps_on_an_out_of_bounds_index() {
+    if !clang_available() {
+        return;
+    }
+    let dir = std::env::temp_dir().join("arandu_cli_llvm_index_trap");
+    std::fs::create_dir_all(&dir).expect("dir");
+    let source = dir.join("main.aru");
+    std::fs::write(
+        &source,
+        "func at(values: [3]u8, i: usize): u8 {\n    return values[i]\n}\n\nfunc main(): int {\n    let values: [3]u8 = [1 as u8, 2 as u8, 3 as u8]\n    return at(values, 5 as usize) as int\n}\n",
+    )
+    .expect("write");
+    let ir = run_cli_in(&dir, &["emit-llvm", "main.aru"]);
+    assert!(
+        ir.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ir.stderr)
+    );
+    let ll = dir.join("main.ll");
+    std::fs::write(&ll, &ir.stdout).expect("write ll");
+    let binary = dir.join("main.bin");
+    let clang = Command::new("clang")
+        .args(["-O2", "-w"])
+        .arg(&ll)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("clang");
+    assert!(
+        clang.status.success(),
+        "{}",
+        String::from_utf8_lossy(&clang.stderr)
+    );
+    let run = Command::new(&binary).output().expect("run");
+    assert!(
+        !run.status.success(),
+        "index 5 of a [3]u8 must trap, got {:?}",
+        run.status
+    );
+}
+
+/// Values reach their destination without identity copies: SSA temps alias
+/// the computed value and stack-slot temps store it directly. LLVM textual IR
+/// has no `%a = %b`, so the old fallback was `select i1 true, x, x`.
+#[test]
+fn emit_llvm_names_values_without_identity_selects() {
+    let root = workspace_root();
+    let mut examples: Vec<_> = std::fs::read_dir(root.join("examples/minimal"))
+        .expect("minimal examples")
+        .map(|entry| entry.expect("entry").path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "aru"))
+        .collect();
+    examples.sort();
+    let mut emitted = 0;
+    for example in &examples {
+        let output = run_cli_in(&root, &["emit-llvm", &example.to_string_lossy()]);
+        if !output.status.success() {
+            continue;
+        }
+        emitted += 1;
+        let ir = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            !ir.contains("select i1 true,"),
+            "{} still copies a value through `select i1 true`",
+            example.display()
+        );
+    }
+    assert!(
+        emitted >= 20,
+        "only {emitted} minimal examples emitted LLVM IR"
+    );
+}
+
 #[test]
 fn emit_llvm_includes_interp_runtime_helpers() {
     let root = workspace_root();

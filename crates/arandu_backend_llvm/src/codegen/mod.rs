@@ -95,6 +95,9 @@ pub(super) struct FuncEmitter<'a, 'm> {
     /// Temp whose statement destination was just allocated by `destination()`,
     /// so the value emitter can bind it without a fake identity instruction.
     pending_assignment: Option<TempId>,
+    /// Value computed for a stack-slot destination; the statement stores it
+    /// directly instead of first naming it with an identity instruction.
+    slot_value: Option<String>,
     /// LLVM type actually written for a temp when it differs from the AMIR view
     /// (full enum-variant payloads that AMIR projects thinly).
     temp_llvm_ty: Vec<Option<String>>,

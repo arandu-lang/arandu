@@ -282,9 +282,11 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 tuple_ty,
                 ..
             } => self.translate_enum_payload(value, *field_ty, *tuple_ty, *index, expected_ty),
-            AmirRvalue::IndexAccess { base, index } => {
-                self.translate_index_access(base, index, expected_ty)
-            }
+            AmirRvalue::IndexAccess {
+                base,
+                index,
+                in_bounds,
+            } => self.translate_index_access(base, index, *in_bounds, expected_ty),
             AmirRvalue::Borrow(place) | AmirRvalue::BorrowMut(place) => {
                 self.translate_borrow(place)
             }

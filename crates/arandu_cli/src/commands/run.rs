@@ -563,23 +563,26 @@ pub fn cmd_project_check(
     };
     let mut registry = arandu_base::SourceRegistry::default();
     let (file, filepath) = open_entry_file(&db, &mut registry, &ctx.entry_path);
-    if parallel {
-        let package_src = ctx
-            .entry_path
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| ctx.root.clone());
-        let mut module_files = vec![(file, filepath.clone())];
-        for rel in arandu_query::scan_aru_entries(&package_src) {
-            let full_path = package_src.join(&rel);
-            let key = full_path.to_string_lossy().into_owned();
-            if key == filepath {
-                continue;
-            }
-            if let Some(sf) = db.source_file_by_path(&key) {
-                module_files.push((sf, key));
-            }
+    // Check every module of the package, not only what the entry reaches:
+    // bodies that main never calls would otherwise skip type and ownership
+    // checks (stdlib and dependencies keep their own checks).
+    let package_src = ctx
+        .entry_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| ctx.root.clone());
+    let mut module_files = vec![(file, filepath.clone())];
+    for rel in arandu_query::scan_aru_entries(&package_src) {
+        let full_path = package_src.join(&rel);
+        let key = full_path.to_string_lossy().into_owned();
+        if key == filepath {
+            continue;
         }
+        if let Some(sf) = db.source_file_by_path(&key) {
+            module_files.push((sf, key));
+        }
+    }
+    if parallel {
         let db_mutex = std::sync::Mutex::new(db);
         let outcomes = module_files
             .into_par_iter()
@@ -607,9 +610,11 @@ pub fn cmd_project_check(
             }
         }
     } else {
-        let artifacts = pipeline_lower(&db, file, &filepath);
-        if genref_report {
-            print_genref_report(&filepath, &artifacts);
+        for (sf, path_str) in &module_files {
+            let artifacts = pipeline_lower(&db, *sf, path_str);
+            if genref_report && *path_str == filepath {
+                print_genref_report(&filepath, &artifacts);
+            }
         }
     }
     if !flags.quiet

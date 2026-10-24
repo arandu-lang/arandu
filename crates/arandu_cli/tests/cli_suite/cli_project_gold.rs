@@ -985,3 +985,40 @@ fn collect_files(
     }
     result
 }
+
+#[test]
+fn package_check_covers_modules_the_entry_never_calls() {
+    // `check` used to lower only what main reached, so type and ownership
+    // errors in an unused package module passed silently.
+    let tmp = tempfile_dir("arandu_check_all_modules");
+    let project = tmp.join("unreached");
+    let new_out = run_cli_in(&tmp, &["new", "unreached"]);
+    assert!(
+        new_out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&new_out.stderr)
+    );
+    for (body, code) in [
+        (
+            "public func typo(): usize {\n    let x: bool = 3\n    return 0\n}\n",
+            "T",
+        ),
+        (
+            "import std.alloc.vec as vec\npublic func moved(): usize {\n    let a = vec.Vec.new<int>()\n    let b = a\n    return a.len()\n}\n",
+            "O001",
+        ),
+    ] {
+        fs::write(
+            project.join("src/helper.aru"),
+            format!("module helper\n\n{body}"),
+        )
+        .unwrap();
+        let check = run_cli_in(&project, &["check"]);
+        let stderr = String::from_utf8_lossy(&check.stderr);
+        assert!(
+            !check.status.success(),
+            "unreached module error was not reported:\n{body}"
+        );
+        assert!(stderr.contains(code), "expected {code}, got:\n{stderr}");
+    }
+}

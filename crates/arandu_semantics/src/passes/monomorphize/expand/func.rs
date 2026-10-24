@@ -85,8 +85,11 @@ pub(super) fn specialize_func(
         ));
     }
 
-    let mangled =
-        super::super::demangle::mangle_symbol(key, &tc.type_info.type_interner, &tc.symbols);
+    let mangled = arandu_middle::symbol_mangling::mangle_symbol(
+        key,
+        &tc.type_info.type_interner,
+        &tc.symbols,
+    );
 
     let global = tc.symbols.global_scope();
     let allocation_scope = if private_scope {

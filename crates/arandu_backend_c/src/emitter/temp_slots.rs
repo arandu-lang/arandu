@@ -28,7 +28,7 @@ pub(super) fn scalar_slots(func: &AmirFunc, eligible: impl Fn(TempId) -> bool) -
             }
         }
     }
-    let graph = arandu_semantics::passes::liveness::temp_interference_graph(func);
+    let graph = arandu_mir::liveness::temp_interference_graph(func);
     let mut representatives: Vec<_> = (0..func.temps.len()).collect();
     let mut slots: Vec<Vec<TempId>> = Vec::new();
     for temp in &func.temps {

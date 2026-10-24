@@ -39,8 +39,12 @@ camadas é uma regressão arquitetural.
   lowering de HIR/monomorfização. `check-architecture` impõe isso sobre as
   dependências diretas; as arestas legadas `backend_* → arandu_semantics`
   ficam em `BACKEND_DEPENDENCY_DEBT` (`xtask/src/architecture.rs`), lista que
-  só pode encolher. Dívida transitiva conhecida: `arandu_middle` depende de
-  lexer/parser e `arandu_mir` de typeck.
+  só pode encolher. Contratos que backends precisam moram no crate dono
+  (`arandu_middle::symbol_mangling` para nomes de instâncias, `arandu_mir`
+  para liveness/reachability/static data), nunca na fachada. O bloqueio
+  restante é `CodegenBackend::TargetConfig = TypeInfo` (resultado do typeck).
+  Dívida transitiva conhecida: `arandu_middle` depende de lexer/parser e
+  `arandu_mir` de typeck.
 - `arandu_query` é o único dono da execução Salsa. A exceção estreita é
   `arandu_middle/src/db.rs`, que declara inputs/accumulators e o trait
   `SourceDatabase` compartilhado sem possuir providers. `arandu_resolve`,

@@ -147,8 +147,8 @@ impl<'a> CEmitter<'a> {
                 let name = if arguments.is_empty() {
                     self.symbols.get(*id).name.to_string()
                 } else {
-                    arandu_semantics::passes::monomorphize::mangle_symbol(
-                        &arandu_semantics::passes::monomorphize::InstantiationKey {
+                    arandu_middle::symbol_mangling::mangle_symbol(
+                        &arandu_middle::symbol_mangling::InstantiationKey {
                             symbol: *id,
                             type_args: &arguments,
                         },

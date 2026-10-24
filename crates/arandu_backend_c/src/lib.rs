@@ -13,10 +13,10 @@ pub use emitter::CEmitter;
 
 use arandu_codegen::{CodegenBackend, CompiledCode};
 use arandu_middle::Diagnostic;
+use arandu_middle::SymbolTable;
 use arandu_middle::amir::AmirProgram;
 use arandu_middle::layout::{DataLayout, LayoutEngine, StructLayoutProvider};
 use arandu_middle::types::TypeInterner;
-use arandu_semantics::SymbolTable;
 
 /// Emit a full C translation unit for `program` under `data_layout`.
 ///

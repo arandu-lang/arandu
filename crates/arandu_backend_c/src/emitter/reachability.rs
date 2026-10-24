@@ -1,1 +1,1 @@
-pub(super) use arandu_semantics::passes::reachability::live_functions;
+pub(super) use arandu_mir::reachability::live_functions;

@@ -29,6 +29,7 @@ pub mod literal_pool;
 pub mod ops;
 pub mod package;
 pub mod resolved;
+pub mod symbol_mangling;
 pub mod symbol_table;
 pub mod target;
 pub mod types;

@@ -7,11 +7,11 @@
 
 use std::fmt::Write;
 
+use arandu_middle::SymbolTable;
 use arandu_middle::amir::{AmirFunc, AmirProgram};
 use arandu_middle::layout::{LayoutEngine, StructLayoutProvider};
 use arandu_middle::types::{ArType, TypeInterner};
 use arandu_middle::{DiagCode, Diagnostic, Span};
-use arandu_semantics::SymbolTable;
 
 mod atomic;
 mod constant_data;

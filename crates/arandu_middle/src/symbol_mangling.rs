@@ -1,8 +1,17 @@
-use arandu_middle::symbol_table::SymbolTable;
-use arandu_middle::types::{ArType, TypeInterner};
+//! Stable external spelling of monomorphized instances: the name ABI shared by
+//! the monomorphizer, which allocates instances, and the backends, which emit
+//! and look them up.
+
+use crate::symbol_table::{SymbolId, SymbolTable};
+use crate::types::{ArType, TypeId, TypeInterner};
 use std::fmt::Write as _;
 
-use super::graph::InstantiationKey;
+/// A generic function together with the concrete type arguments of one instance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct InstantiationKey<'bump> {
+    pub symbol: SymbolId,
+    pub type_args: &'bump [TypeId],
+}
 
 pub fn mangle_symbol(
     key: &InstantiationKey<'_>,
@@ -161,15 +170,15 @@ fn mangle_type_into(out: &mut String, ty: &ArType, symbols: &SymbolTable, intern
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
-    use arandu_middle::ctfe::{ConstAggregate, ConstString, ConstValue};
-    use arandu_middle::types::{Primitive, TypeShape};
+    use crate::ctfe::{ConstAggregate, ConstString, ConstValue};
+    use crate::types::{Primitive, TypeShape};
 
     #[test]
     fn hardware_vector_shapes_have_distinct_stable_instance_names() {
         let symbols = SymbolTable::new(0);
         let interner = TypeInterner::new();
         let mut names = std::collections::BTreeSet::new();
-        for vector in arandu_middle::types::VectorType::ALL {
+        for vector in crate::types::VectorType::ALL {
             let mut name = String::new();
             mangle_type_into(&mut name, &ArType::Vector(vector), &symbols, &interner);
             assert_eq!(name, format!("v128_{}", vector.name()));

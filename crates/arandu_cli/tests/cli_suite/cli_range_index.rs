@@ -15,7 +15,7 @@ fn run_everywhere(name: &str, source: &str) -> Vec<Option<i32>> {
     let file = std::env::temp_dir().join(format!("arandu_cli_range_index_{name}.aru"));
     fs::write(&file, source).expect("write");
     let path = file.to_string_lossy();
-    [None, Some("--opt"), Some("--release")]
+    let mut codes: Vec<Option<i32>> = [None, Some("--opt")]
         .into_iter()
         .map(|profile| {
             let mut args = vec!["run"];
@@ -23,7 +23,11 @@ fn run_everywhere(name: &str, source: &str) -> Vec<Option<i32>> {
             args.push(&path);
             cli(&args).status.code()
         })
-        .collect()
+        .collect();
+    codes.extend(super::common::c_release_exit_code(std::path::Path::new(
+        &*path,
+    )));
+    codes
 }
 
 #[test]
@@ -52,7 +56,8 @@ func main(): int {
 "#;
     // tail = [3, 4, 5], mid = [2, 3], empty = []: 120 + 5 + 0 + 300 = 425,
     // which the exit status reports modulo 256.
-    assert_eq!(run_everywhere("values", source), [Some(169); 3]);
+    let codes = run_everywhere("values", source);
+    assert!(codes.iter().all(|code| *code == Some(169)), "{codes:?}");
 }
 
 #[test]

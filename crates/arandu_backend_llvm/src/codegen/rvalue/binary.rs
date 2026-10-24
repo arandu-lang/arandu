@@ -106,23 +106,54 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
             BinaryOp::Add => self.arithmetic("add", "fadd", &left, &right, float),
             BinaryOp::Sub => self.arithmetic("sub", "fsub", &left, &right, float),
             BinaryOp::Mul => self.arithmetic("mul", "fmul", &left, &right, float),
-            BinaryOp::Div => {
-                if float {
-                    format!("fdiv {}, {}", left.render(), right.value)
-                } else if signed {
-                    format!("sdiv {}, {}", left.render(), right.value)
-                } else {
-                    format!("udiv {}, {}", left.render(), right.value)
-                }
+            BinaryOp::Div | BinaryOp::Mod if float => {
+                let instruction = if op == BinaryOp::Div { "fdiv" } else { "frem" };
+                format!("{instruction} {}, {}", left.render(), right.value)
             }
-            BinaryOp::Mod => {
-                if float {
-                    format!("frem {}, {}", left.render(), right.value)
-                } else if signed {
-                    format!("srem {}, {}", left.render(), right.value)
-                } else {
-                    format!("urem {}, {}", left.render(), right.value)
+            // LLVM leaves a zero divisor and signed `MIN / -1` undefined.
+            // Trap on both like C, Cranelift and Wasm, and give `MIN % -1`
+            // its defined result 0 by dividing by 1 instead.
+            BinaryOp::Div | BinaryOp::Mod => {
+                let ty = left.ty.clone();
+                let zero = self.new_value();
+                self.writer
+                    .line(format!("{zero} = icmp eq {ty} {}, 0", right.value));
+                self.trap_if(&zero);
+                let mut divisor = right.value.clone();
+                if signed {
+                    let Some(width) = self.module.integer_width(&operand_ty) else {
+                        return Err(ice(format!(
+                            "integer division requires an integer, got {operand_ty:?}"
+                        )));
+                    };
+                    let minus_one = self.new_value();
+                    self.writer
+                        .line(format!("{minus_one} = icmp eq {ty} {}, -1", right.value));
+                    if op == BinaryOp::Div {
+                        let min = -(1i128 << (width - 1));
+                        let is_min = self.new_value();
+                        self.writer
+                            .line(format!("{is_min} = icmp eq {ty} {}, {min}", left.value));
+                        let overflow = self.new_value();
+                        self.writer
+                            .line(format!("{overflow} = and i1 {is_min}, {minus_one}"));
+                        self.trap_if(&overflow);
+                    } else {
+                        let safe = self.new_value();
+                        self.writer.line(format!(
+                            "{safe} = select i1 {minus_one}, {ty} 1, {ty} {}",
+                            right.value
+                        ));
+                        divisor = safe;
+                    }
                 }
+                let instruction = match (op, signed) {
+                    (BinaryOp::Div, true) => "sdiv",
+                    (BinaryOp::Div, false) => "udiv",
+                    (_, true) => "srem",
+                    (_, false) => "urem",
+                };
+                format!("{instruction} {ty} {}, {divisor}", left.value)
             }
             BinaryOp::BitOr => self.arithmetic("or", "or", &left, &right, false),
             BinaryOp::BitXor => self.arithmetic("xor", "xor", &left, &right, false),
@@ -137,20 +168,40 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                         "shift requires an integer, got {operand_ty:?}"
                     )));
                 };
-                let shift_ty = left.ty.clone();
-                let mask = self.new_value();
-                self.writer.line(format!(
-                    "{mask} = and {shift_ty} {}, {}",
-                    right.value,
-                    width.saturating_sub(1)
-                ));
                 let instruction = match op {
                     BinaryOp::ShiftLeft => "shl",
                     BinaryOp::ShiftRight if signed => "ashr",
                     BinaryOp::ShiftRight => "lshr",
                     _ => unreachable!(),
                 };
-                format!("{instruction} {shift_ty} {}, {mask}", left.value)
+                let narrow_ty = left.ty.clone();
+                // Like C, Cranelift and Wasm, 8- and 16-bit values shift in a
+                // 32-bit slot with the count masked by 31, then truncate.
+                if width < 32 {
+                    let extend = if signed { "sext" } else { "zext" };
+                    let wide = self.new_value();
+                    self.writer.line(format!(
+                        "{wide} = {extend} {narrow_ty} {} to i32",
+                        left.value
+                    ));
+                    let count = self.new_value();
+                    self.writer
+                        .line(format!("{count} = zext {narrow_ty} {} to i32", right.value));
+                    let mask = self.new_value();
+                    self.writer.line(format!("{mask} = and i32 {count}, 31"));
+                    let shifted = self.new_value();
+                    self.writer
+                        .line(format!("{shifted} = {instruction} i32 {wide}, {mask}"));
+                    format!("trunc i32 {shifted} to {narrow_ty}")
+                } else {
+                    let mask = self.new_value();
+                    self.writer.line(format!(
+                        "{mask} = and {narrow_ty} {}, {}",
+                        right.value,
+                        width - 1
+                    ));
+                    format!("{instruction} {narrow_ty} {}, {mask}", left.value)
+                }
             }
             _ => {
                 return Err(ice(format!(

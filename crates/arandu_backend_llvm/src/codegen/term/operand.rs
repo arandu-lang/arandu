@@ -34,7 +34,12 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                     }
                     return self.coerce(loaded_value, expected);
                 }
-                let value = if let Some(alias) = self.temp_values[temp.as_usize()].clone() {
+                let value = if let Some(mut alias) = self.temp_values[temp.as_usize()].clone() {
+                    // The alias carries the defining value's LLVM type; its
+                    // signedness is this temp's AMIR type.
+                    if self.module.integer_width(&actual_ty).is_some() {
+                        alias = alias.with_source_signed(self.module.is_signed(&actual_ty));
+                    }
                     return self.coerce(alias, expected);
                 } else if temp.as_usize() == 0 {
                     self.return_value()

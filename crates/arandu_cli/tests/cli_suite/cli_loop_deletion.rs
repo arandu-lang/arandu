@@ -152,7 +152,7 @@ fn deletes_only_finite_effect_free_loops() {
     ] {
         assert!(jumps(&amir, kept) > 0, "{kept} must keep its loop:\n{amir}");
     }
-    let run = cli(&["run", "--release", &path]);
+    let run = cli(&["run", "--opt", &path]);
     assert_eq!(
         run.status.code(),
         Some(12),
@@ -172,7 +172,7 @@ fn an_unused_out_of_bounds_index_traps_at_every_level() {
     )
     .expect("write");
     let path = file.to_string_lossy();
-    for profile in [None, Some("--opt"), Some("--release")] {
+    for profile in [None, Some("--opt")] {
         let mut args = vec!["run"];
         args.extend(profile);
         args.push(&path);
@@ -180,6 +180,12 @@ fn an_unused_out_of_bounds_index_traps_at_every_level() {
         assert!(
             !run.status.success(),
             "{profile:?}: s[9] of a 3-byte slice must trap"
+        );
+    }
+    if let Some(code) = super::common::c_release_exit_code(&file) {
+        assert!(
+            code.is_none_or(|code| code >= 128),
+            "O2 C build must trap, got {code:?}"
         );
     }
 }

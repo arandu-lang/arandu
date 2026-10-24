@@ -13,16 +13,22 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
         let out_of_bounds = self.new_value();
         self.writer
             .line(format!("{out_of_bounds} = icmp uge {ty} {index}, {bound}"));
+        self.trap_if(&out_of_bounds);
+    }
+
+    /// Traps when the `i1` value `condition` is true, then continues in a
+    /// fresh block, matching the traps of the other backends.
+    pub(in crate::codegen) fn trap_if(&mut self, condition: &str) {
         let trap = self.new_block();
-        let in_range = self.new_block();
+        let proceed = self.new_block();
         self.writer.line(format!(
-            "br i1 {out_of_bounds}, label %{trap}, label %{in_range}"
+            "br i1 {condition}, label %{trap}, label %{proceed}"
         ));
         self.enter_llvm_label(&trap);
         self.module.require_llvm_trap();
         self.writer.line("call void @llvm.trap()");
         self.writer.line("unreachable");
-        self.enter_llvm_label(&in_range);
+        self.enter_llvm_label(&proceed);
     }
 
     pub(super) fn emit_aggregate_rvalue(

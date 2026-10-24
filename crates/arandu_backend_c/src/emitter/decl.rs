@@ -180,12 +180,17 @@ impl<'a> CEmitter<'a> {
                 return;
             }
             let layout = self.checked_layout(ty);
-            if layout.size > 0 && *len > 0 {
+            // Zero-sized elements still occupy a byte each in C, and the
+            // emitter indexes them as `T[len]`, so the storage must exist.
+            if *len > 0 {
                 let elem_c_ty = self.format_type(&inner_ty);
                 let _ = writeln!(
                     &mut self.output,
                     "typedef struct AR_MAY_ALIAS {{ _Alignas({}) {} data[{}]; }} {};",
-                    layout.align, elem_c_ty, len, name
+                    layout.align.max(1),
+                    elem_c_ty,
+                    len,
+                    name
                 );
             } else {
                 let _ = writeln!(

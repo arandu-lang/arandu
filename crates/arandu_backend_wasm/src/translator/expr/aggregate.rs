@@ -36,7 +36,12 @@ impl<'a> FuncTranslator<'a> {
                 // Allocate layout-driven cell, store tag + payload.
                 self.emit_bump_alloc_enum(*variant_tag, *payload, result_ty);
             }
-            AmirRvalue::EnumPayload { value, .. } => {
+            AmirRvalue::EnumPayload {
+                value,
+                index,
+                tuple_ty,
+                ..
+            } => {
                 // Load the payload field from an enum cell at its layout offset.
                 let operand_ty = self.operand_arity_ty(value);
                 let enum_ty = self.strip_ref(operand_ty).unwrap_or(operand_ty);
@@ -58,12 +63,22 @@ impl<'a> FuncTranslator<'a> {
                     self.code.push(Instruction::I32And);
                     return;
                 }
-                let payload_offset =
-                    if matches!(layout.tag_encoding, Some(TagEncoding::Niche { .. })) {
-                        0
-                    } else {
-                        layout.field_offsets.get(1).copied().unwrap_or(4)
-                    };
+                let payload_base = if matches!(layout.tag_encoding, Some(TagEncoding::Niche { .. }))
+                {
+                    0
+                } else {
+                    layout.field_offsets.get(1).copied().unwrap_or(4)
+                };
+                // A multi-field payload is a tuple: add the field's offset in
+                // it, as Cranelift does, instead of always reading field 0.
+                let field_offset = tuple_ty.map_or(0, |tuple_ty| {
+                    self.layout_of_id(tuple_ty)
+                        .field_offsets
+                        .get(*index)
+                        .copied()
+                        .unwrap_or(0)
+                });
+                let payload_offset = payload_base + field_offset;
                 if self.is_owned_aggregate(result_ty) {
                     let size = self.layout_of_id(result_ty).size as i32;
                     self.emit_operand(value, operand_ty);

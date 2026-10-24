@@ -24,6 +24,41 @@ pub fn temp_dir(prefix: &str) -> std::io::Result<PathBuf> {
     ))
 }
 
+/// Exit status of `source_path` built through AMIR O2 (`emit-c --release`)
+/// and the host C compiler, or `None` when no `cc` is available. `run`
+/// rejects build profiles, so this is how a single file reaches O2.
+#[allow(dead_code)]
+pub fn c_release_exit_code(source_path: &std::path::Path) -> Option<Option<i32>> {
+    Command::new("cc").arg("--version").output().ok()?;
+    let emitted = cli_command()
+        .args(["emit-c", "--release"])
+        .arg(source_path)
+        .output()
+        .expect("emit-c should run");
+    assert!(
+        emitted.status.success(),
+        "emit-c --release: {}",
+        String::from_utf8_lossy(&emitted.stderr)
+    );
+    let c_file = source_path.with_extension("release.c");
+    let binary = source_path.with_extension("release.bin");
+    std::fs::write(&c_file, &emitted.stdout).expect("write C");
+    let compiled = Command::new("cc")
+        .args(["-O1", "-w", "-fwrapv"])
+        .arg(&c_file)
+        .arg("-o")
+        .arg(&binary)
+        .arg("-lm")
+        .output()
+        .expect("cc should run");
+    assert!(
+        compiled.status.success(),
+        "cc: {}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+    Some(Command::new(&binary).status().expect("run binary").code())
+}
+
 pub fn cli_command() -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_arandu_cli"));
     command.env("ARANDU_RUNTIME_LIB", runtime_library());

@@ -22,10 +22,50 @@ static ArStr ar_u64_to_str(uint64_t v) {
     return (ArStr){ .ptr = buf, .len = n };
 }
 
+/* The shortest decimal that reads back as the finite `v`, in fixed
+   notation: the digits Rust's `Display` prints. The precision search keeps
+   the first `%.Ne` that `strtod` round-trips. */
+static int ar_f64_shortest(double v, char *out, size_t cap) {
+    char sci[40];
+    for (int precision = 1; precision <= 17; precision++) {
+        snprintf(sci, sizeof(sci), "%.*e", precision - 1, v);
+        if (strtod(sci, NULL) == v) break;
+    }
+    char digits[24];
+    int count = 0;
+    const char *p = sci;
+    int negative = *p == '-';
+    if (negative) p++;
+    for (; *p && *p != 'e'; p++) {
+        if (*p >= '0' && *p <= '9' && count < (int)sizeof(digits)) digits[count++] = *p;
+    }
+    int exponent = *p == 'e' ? atoi(p + 1) : 0;
+    while (count > 1 && digits[count - 1] == '0') count--;
+    size_t n = 0;
+#define AR_PUT(c) do { if (n + 1 < cap) out[n] = (c); n++; } while (0)
+    if (negative) AR_PUT('-');
+    if (exponent >= count - 1) {
+        for (int i = 0; i < count; i++) AR_PUT(digits[i]);
+        for (int i = 0; i < exponent - (count - 1); i++) AR_PUT('0');
+    } else if (exponent >= 0) {
+        for (int i = 0; i <= exponent; i++) AR_PUT(digits[i]);
+        AR_PUT('.');
+        for (int i = exponent + 1; i < count; i++) AR_PUT(digits[i]);
+    } else {
+        AR_PUT('0');
+        AR_PUT('.');
+        for (int i = 0; i < -exponent - 1; i++) AR_PUT('0');
+        for (int i = 0; i < count; i++) AR_PUT(digits[i]);
+    }
+#undef AR_PUT
+    out[n < cap ? n : cap - 1] = 0;
+    return (int)(n < cap ? n : cap - 1);
+}
+
 /* Keep in sync with arandu_runtime::to_str_runtime::format_f64_v01
-   (specials + integer-looking values + %.15g for the rest). */
+   (specials + integer-looking values + shortest round-trip digits). */
 static ArStr ar_f64_to_str(double v) {
-    char tmp[64];
+    char tmp[400];
     int n;
     if (isnan(v)) {
         n = snprintf(tmp, sizeof(tmp), "nan");
@@ -35,7 +75,7 @@ static ArStr ar_f64_to_str(double v) {
         /* Range first: converting an out-of-range double to an integer is UB. */
         n = snprintf(tmp, sizeof(tmp), "%lld", (long long)v);
     } else {
-        n = snprintf(tmp, sizeof(tmp), "%.15g", v);
+        n = ar_f64_shortest(v, tmp, sizeof(tmp));
     }
     if (n < 0) abort();
     uint8_t *buf = (uint8_t*)malloc((size_t)n + 1);

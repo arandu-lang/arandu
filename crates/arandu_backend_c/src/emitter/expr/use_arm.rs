@@ -39,6 +39,44 @@ impl<'a> CEmitter<'a> {
                 return;
             }
         }
+        // Float to integer, as Cranelift and Wasm: truncate in a width of at
+        // least 32 bits with the target's signedness, trap on NaN or a value
+        // outside that width, then wrap to the target. A plain C conversion
+        // is undefined there.
+        if let (ArType::Primitive(from), ArType::Primitive(to)) = (&source_ty, expected_ar_type)
+            && from.is_float()
+            && to.is_integer()
+        {
+            let bits = (self.checked_layout(expected_ar_type).size * 8).max(32);
+            let unsigned = !to.is_signed();
+            let (low, high) = match (unsigned, bits) {
+                (true, 64) => ("-1.0", "18446744073709551616.0"),
+                (true, _) => ("-1.0", "4294967296.0"),
+                (false, 64) => ("-9223372036854777856.0", "9223372036854775808.0"),
+                (false, _) => ("-2147483649.0", "2147483648.0"),
+            };
+            let wide = format!("{}int{bits}_t", if unsigned { "u" } else { "" });
+            let _ = write!(
+                &mut self.output,
+                "({{ double ar_f = (double)({op_str}); if (!(ar_f > {low} && ar_f < {high})) {{ AR_ABORT(); }} ({expected_c_type})({wide})ar_f; }})"
+            );
+            return;
+        }
+        // Unwrapping a propagated `nil` only happens on a path the program
+        // never takes; it still needs a C value of the destination type.
+        if matches!(op, AmirOperand::Constant(AmirConstant::Nil))
+            && matches!(
+                expected_ar_type,
+                ArType::Named(..)
+                    | ArType::Tuple(_)
+                    | ArType::Array(..)
+                    | ArType::Option(_)
+                    | ArType::Result(..)
+            )
+        {
+            let _ = write!(&mut self.output, "({expected_c_type}){{0}}");
+            return;
+        }
         if let ArType::Nullable(inner) = &source_ty
             && !matches!(expected_ar_type, ArType::Nullable(_))
         {

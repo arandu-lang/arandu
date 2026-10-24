@@ -260,6 +260,16 @@ fn has_side_effect(stmt: &AmirStmt) -> bool {
             rhs: AmirRvalue::IndexAccess { in_bounds, .. },
             ..
         } => !in_bounds,
+        // Integer division and remainder trap on a zero divisor and division
+        // on `MIN / -1`, so an unused quotient still runs.
+        AmirStmt::Assign {
+            rhs:
+                AmirRvalue::Binary {
+                    op: crate::ops::BinaryOp::Div | crate::ops::BinaryOp::Mod,
+                    ..
+                },
+            ..
+        } => true,
         AmirStmt::Assign {
             rhs: AmirRvalue::Load(place) | AmirRvalue::Borrow(place) | AmirRvalue::BorrowMut(place),
             ..

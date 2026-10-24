@@ -21,7 +21,7 @@ fn write(name: &str, source: &str) -> String {
 
 fn exit_codes(name: &str, source: &str) -> Vec<Option<i32>> {
     let path = write(name, source);
-    [None, Some("--opt"), Some("--release")]
+    let mut codes: Vec<Option<i32>> = [None, Some("--opt")]
         .into_iter()
         .map(|profile| {
             let mut args = vec!["run"];
@@ -29,7 +29,11 @@ fn exit_codes(name: &str, source: &str) -> Vec<Option<i32>> {
             args.push(&path);
             cli(&args).status.code()
         })
-        .collect()
+        .collect();
+    codes.extend(super::common::c_release_exit_code(std::path::Path::new(
+        &*path,
+    )));
+    codes
 }
 
 const RUNS: &[(&str, &str, i32)] = &[
@@ -265,7 +269,11 @@ func main(): int {
 #[test]
 fn programs_run_to_their_result_at_every_level() {
     for (name, source, expected) in RUNS {
-        assert_eq!(exit_codes(name, source), [Some(*expected); 3], "{name}");
+        let codes = exit_codes(name, source);
+        assert!(
+            codes.iter().all(|code| *code == Some(*expected)),
+            "{name}: {codes:?}"
+        );
     }
 }
 
@@ -423,7 +431,8 @@ fn unsound_programs_are_rejected() {
 #[test]
 fn field_writes_with_mutable_access_are_accepted() {
     let source = "struct P { x: int }\nfunc put(p: mut ref P): void { p.x = 6 }\nfunc P.fine(mut self): void { self.x = 2 }\nfunc main(): int {\n    let mut q = P { x: 1 }\n    q.x = 3\n    put(mut ref q)\n    q.fine()\n    return q.x\n}\n";
-    assert_eq!(exit_codes("field_mutable", source), [Some(2); 3]);
+    let codes = exit_codes("field_mutable", source);
+    assert!(codes.iter().all(|code| *code == Some(2)), "{codes:?}");
 }
 
 /// `T?` of a value type is a boxed handle in C as in Cranelift: the C build

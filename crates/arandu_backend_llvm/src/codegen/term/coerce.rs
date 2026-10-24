@@ -137,16 +137,50 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
             } else {
                 Some(format!("fptrunc double {} to float", value.value))
             }
-        } else if actual_float && expected_width.is_some() {
-            let op = if self.module.is_signed(expected) {
-                "fptosi"
-            } else {
-                "fptoui"
+        } else if actual_float && let Some(width) = expected_width {
+            // As Cranelift and Wasm: truncate in at least 32 bits with the
+            // target's signedness, trap on NaN or a value outside that width
+            // (LLVM yields poison there), then wrap to the target.
+            let signed = self.module.is_signed(expected);
+            let bits = width.max(32);
+            let (low, high) = match (signed, bits) {
+                (false, 64) => ("-1.0", "18446744073709551616.0"),
+                (false, _) => ("-1.0", "4294967296.0"),
+                (true, 64) => ("-9223372036854777856.0", "9223372036854775808.0"),
+                (true, _) => ("-2147483649.0", "2147483648.0"),
             };
-            Some(format!(
-                "{op} {} {} to {expected_text}",
-                value.ty, value.value
-            ))
+            let wide = if value.ty == "double" {
+                value.value.clone()
+            } else {
+                let extended = self.new_value();
+                self.writer.line(format!(
+                    "{extended} = fpext {} {} to double",
+                    value.ty, value.value
+                ));
+                extended
+            };
+            let above = self.new_value();
+            self.writer
+                .line(format!("{above} = fcmp ogt double {wide}, {low}"));
+            let below = self.new_value();
+            self.writer
+                .line(format!("{below} = fcmp olt double {wide}, {high}"));
+            let in_range = self.new_value();
+            self.writer
+                .line(format!("{in_range} = and i1 {above}, {below}"));
+            let out_of_range = self.new_value();
+            self.writer
+                .line(format!("{out_of_range} = xor i1 {in_range}, true"));
+            self.trap_if(&out_of_range);
+            let op = if signed { "fptosi" } else { "fptoui" };
+            if bits == width {
+                Some(format!("{op} double {wide} to {expected_text}"))
+            } else {
+                let converted = self.new_value();
+                self.writer
+                    .line(format!("{converted} = {op} double {wide} to i{bits}"));
+                Some(format!("trunc i{bits} {converted} to {expected_text}"))
+            }
         } else if expected_float {
             let Some(width) = actual_width else {
                 return Err(ice(format!("cannot cast {} to {expected_text}", value.ty)));
@@ -203,7 +237,14 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
         };
         let result = self.new_value();
         self.writer.line(format!("{result} = {instruction}"));
-        Ok(TypedValue::new(expected_text, result))
+        // The converted value has the expected type's signedness: a later
+        // widening of a `u8` result must zero-extend even though LLVM spells
+        // it `i8` like a signed byte.
+        let mut converted = TypedValue::new(expected_text, result);
+        if self.module.integer_width(expected).is_some() {
+            converted = converted.with_source_signed(self.module.is_signed(expected));
+        }
+        Ok(converted)
     }
 
     pub(in crate::codegen) fn assign_coerced(

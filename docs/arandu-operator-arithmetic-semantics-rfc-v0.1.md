@@ -83,7 +83,17 @@ o resto `MIN % -1` retorna zero. A divisão válida trunca em direção a zero e
 o resto signed tem o sinal do dividendo. Cranelift usa `sdiv`/`srem`; Wasm
 acrescenta a checagem de overflow para signed estreito, cujo slot é `i32`.
 O emissor C verifica zero e overflow antes de `/`, e desvia `% -1` para zero
-sem avaliar uma operação C indefinida. Essas proteções independem de `-fwrapv`.
+sem avaliar uma operação C indefinida. O LLVM emite as mesmas checagens antes
+de `sdiv`/`udiv`/`srem` e divide `% -1` por 1. Essas proteções independem de
+`-fwrapv`. Como o trap é observável, o DCE preserva divisão e resto mesmo quando
+o resultado não é usado.
+
+A conversão `float as inteiro` trunca em direção a zero numa largura de pelo
+menos 32 bits, com o sinal do tipo de destino: `i32`/`u32` para destinos de 8,
+16 e 32 bits, `i64`/`u64` para 64 bits. NaN ou um valor fora dessa largura causa
+trap; dentro dela, o resultado é reduzido ao destino por wrap (`300.7 as i8`
+resulta em `44`). Cranelift, Wasm, C e LLVM seguem essa regra; C e LLVM checam
+a faixa antes da conversão nativa, que seria indefinida.
 Os testes de paridade incluem subprocessos para traps e resultados nos níveis
 AMIR O0/O1/O2/Os; a geração C de traps é executada também com -O0/-O1/-O2/-Os.
 A comparação de valores

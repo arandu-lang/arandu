@@ -2286,7 +2286,9 @@ fn c_f64_to_str_checks_range_before_integer_cast() {
     assert!(!emitted[..guarded].contains("(long long)v && v < 1e15"));
     let (result, stdout) = execute_c_output("f64_to_str_range_guard", &amir, &tc);
     assert_eq!(result, 0);
-    assert!(stdout.starts_with("1e+300|-9.3e+18|2\n"), "{stdout:?}");
+    // Shortest round-trip digits in fixed notation, as the runtime prints.
+    let expected = format!("1{}|-9300000000000000000|2\n", "0".repeat(300));
+    assert!(stdout.starts_with(&expected), "{stdout:?}");
 }
 
 #[test]

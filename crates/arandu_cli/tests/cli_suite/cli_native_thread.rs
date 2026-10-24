@@ -59,7 +59,7 @@ fn run_native_contract(contract: &str) {
         let mut command = common::cli_command();
         command.arg(mode).arg(&source);
         if optimized {
-            command.arg("--release");
+            command.arg(if mode == "run" { "--opt" } else { "--release" });
         }
         let output = run_with_deadline(&mut command);
         assert!(

@@ -1,5 +1,6 @@
 use super::{execute_jit_main, execute_llvm_main};
 use crate::args::RunBackend;
+use crate::commands::run::CliFailure;
 use crate::pipeline::{
     ensure_host_jit_layout, fail_operational, fail_usage, finish, optimize_amir_or_exit,
     parse_and_check, pipeline_lower, print_diagnostics_and_exit, print_genref_report,
@@ -120,6 +121,13 @@ pub(super) fn process_file(
             }
         }
         "run" => {
+            // Like `run` on a project: profiles belong to `build`, and an
+            // accepted flag must not be silently ignored.
+            if project_flags.release || project_flags.size {
+                finish(Err(CliFailure::usage(
+                    "`--release` and `--size` are supported by `build`; `run` remains the interactive Cranelift JIT path",
+                )));
+            }
             if let Err(failure) = ensure_host_jit_layout(data_layout) {
                 finish(Err(failure));
             }

@@ -1649,3 +1649,48 @@ fn borrowed_projections_preserve_pointer_loads_and_single_evaluation() {
     ));
     assert_eq!(run_main_i32(&bytes), 0);
 }
+
+#[test]
+fn surface_multi_field_variant_reads_each_payload_field() {
+    // Each payload field is read at its own offset in the payload tuple; the
+    // translator used to read field 0 for every binding.
+    let bytes = compile_source(
+        r#"
+enum A {
+    X(u8, i64)
+    Y(bool, u16, i8)
+}
+
+func pick(a: A): int {
+    return match a {
+        A.X(p, q) => (p as int) * 100 + (q as int)
+        A.Y(b, m, n) => if b { (m as int) + (n as int) } else { 0 }
+    }
+}
+
+func main(): int {
+    return pick(A.X(1 as u8, 23 as i64)) + pick(A.Y(true, 40 as u16, 2 as i8))
+}
+"#,
+    );
+    assert_eq!(run_main_i32(&bytes), 165);
+}
+
+#[test]
+fn surface_float_special_values_format_without_leaving_the_caller() {
+    // NaN and infinities used to `return` from the user's function mid-format.
+    let bytes = compile_source(
+        r#"
+func main(): int {
+    let b: f64 = 1e300 * 1e10
+    let n: f64 = -b
+    let z: f64 = b - b
+    let c: f64 = 100.0
+    let s = "${b}|${n}|${z}|${c}|${1.5}"
+    if s == "inf|-inf|nan|100|1.5" { return 7 }
+    return 9
+}
+"#,
+    );
+    assert_eq!(run_main_i32(&bytes), 7);
+}

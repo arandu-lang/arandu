@@ -191,9 +191,17 @@ static void task_table_contract(void) {
 
 static void format_contract(void) {
     /* Out-of-range values must not reach the double -> integer conversion. */
-    expect_owned(ar_f64_to_str(1e300), "1e+300");
-    expect_owned(ar_f64_to_str(-1e300), "-1e+300");
-    expect_owned(ar_f64_to_str(9.3e18), "9.3e+18");
+    /* Shortest round-trip digits in fixed notation, like the runtime. */
+    char big[303];
+    big[0] = '-';
+    big[1] = '1';
+    memset(big + 2, '0', 300);
+    big[302] = 0;
+    expect_owned(ar_f64_to_str(1e300), big + 1);
+    expect_owned(ar_f64_to_str(-1e300), big);
+    expect_owned(ar_f64_to_str(9.3e18), "9300000000000000000");
+    expect_owned(ar_f64_to_str(0.1 + 0.2), "0.30000000000000004");
+    expect_owned(ar_f64_to_str(1.5e-10), "0.00000000015");
     expect_owned(ar_f64_to_str(42.0), "42");
     expect_owned(ar_f64_to_str(0.5), "0.5");
 }

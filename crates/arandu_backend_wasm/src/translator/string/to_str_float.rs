@@ -20,18 +20,22 @@ impl<'a> FuncTranslator<'a> {
         }
         self.code.push(Instruction::LocalSet(self.scratch_f64));
 
+        // NaN and infinities leave the formatting block early with their
+        // length in `scratch_d`; `return` would leave the user's function.
+        self.code.push(Instruction::Block(BlockType::Empty));
+
         // NaN check: val != val
         self.code.push(Instruction::LocalGet(self.scratch_f64));
         self.code.push(Instruction::LocalGet(self.scratch_f64));
         self.code.push(Instruction::F64Ne);
         self.code.push(Instruction::If(BlockType::Empty));
         self.code.push(Instruction::LocalGet(self.scratch_b));
-        self.code.push(Instruction::I32Const(0x004E_614E));
+        self.code.push(Instruction::I32Const(0x006E_616E));
         self.code
             .push(Instruction::I32Store(crate::memory::noffset_memarg()));
-        self.code.push(Instruction::LocalGet(self.scratch_b));
         self.code.push(Instruction::I32Const(3));
-        self.code.push(Instruction::Return);
+        self.code.push(Instruction::LocalSet(self.scratch_d));
+        self.code.push(Instruction::Br(1));
         self.code.push(Instruction::End);
 
         // +inf check
@@ -43,9 +47,9 @@ impl<'a> FuncTranslator<'a> {
         self.code.push(Instruction::I32Const(0x0066_6E69));
         self.code
             .push(Instruction::I32Store(crate::memory::noffset_memarg()));
-        self.code.push(Instruction::LocalGet(self.scratch_b));
         self.code.push(Instruction::I32Const(3));
-        self.code.push(Instruction::Return);
+        self.code.push(Instruction::LocalSet(self.scratch_d));
+        self.code.push(Instruction::Br(1));
         self.code.push(Instruction::End);
 
         // -inf check
@@ -65,21 +69,15 @@ impl<'a> FuncTranslator<'a> {
             align: 0,
             memory_index: 0,
         }));
-        self.code.push(Instruction::LocalGet(self.scratch_b));
         self.code.push(Instruction::I32Const(4));
-        self.code.push(Instruction::Return);
+        self.code.push(Instruction::LocalSet(self.scratch_d));
+        self.code.push(Instruction::Br(1));
         self.code.push(Instruction::End);
 
-        // Sign check: val < 0.0 or 1.0 / val < 0.0 (handles -0.0)
+        // Sign check: val < 0.0. Like the runtime's ToStr, -0.0 renders "0".
         self.code.push(Instruction::LocalGet(self.scratch_f64));
         self.code.push(Instruction::F64Const(0.0.into()));
         self.code.push(Instruction::F64Lt);
-        self.code.push(Instruction::F64Const(1.0.into()));
-        self.code.push(Instruction::LocalGet(self.scratch_f64));
-        self.code.push(Instruction::F64Div);
-        self.code.push(Instruction::F64Const(0.0.into()));
-        self.code.push(Instruction::F64Lt);
-        self.code.push(Instruction::I32Or);
         self.code.push(Instruction::If(BlockType::Empty));
         self.code.push(Instruction::I32Const(1));
         self.code.push(Instruction::LocalSet(self.scratch_c));
@@ -257,9 +255,10 @@ impl<'a> FuncTranslator<'a> {
         self.code.push(Instruction::I32Add);
         self.code.push(Instruction::LocalSet(self.scratch_d));
 
-        // Trim trailing zeros, leaving at least 1 digit after '.'
+        // Trim trailing zeros; an integral value then drops its '.' too,
+        // rendering "100" like the runtime's ToStr.
         self.code.push(Instruction::LocalGet(self.scratch_d));
-        self.code.push(Instruction::I32Const(5));
+        self.code.push(Instruction::I32Const(6));
         self.code.push(Instruction::I32Sub);
         self.code.push(Instruction::LocalSet(self.scratch));
 
@@ -290,6 +289,25 @@ impl<'a> FuncTranslator<'a> {
         self.code.push(Instruction::End);
         self.code.push(Instruction::End);
 
+        self.code.push(Instruction::LocalGet(self.scratch_b));
+        self.code.push(Instruction::LocalGet(self.scratch_d));
+        self.code.push(Instruction::I32Add);
+        self.code.push(Instruction::I32Const(1));
+        self.code.push(Instruction::I32Sub);
+        self.code.push(Instruction::I32Load8U(wasm_encoder::MemArg {
+            offset: 0,
+            align: 0,
+            memory_index: 0,
+        }));
+        self.code.push(Instruction::I32Const(46));
+        self.code.push(Instruction::I32Eq);
+        self.code.push(Instruction::If(BlockType::Empty));
+        self.code.push(Instruction::LocalGet(self.scratch_d));
+        self.code.push(Instruction::I32Const(1));
+        self.code.push(Instruction::I32Sub);
+        self.code.push(Instruction::LocalSet(self.scratch_d));
+        self.code.push(Instruction::End);
+
         // Null-terminate
         self.code.push(Instruction::LocalGet(self.scratch_b));
         self.code.push(Instruction::LocalGet(self.scratch_d));
@@ -300,6 +318,8 @@ impl<'a> FuncTranslator<'a> {
             align: 0,
             memory_index: 0,
         }));
+
+        self.code.push(Instruction::End);
 
         self.code.push(Instruction::LocalGet(self.scratch_b));
         self.code.push(Instruction::LocalGet(self.scratch_d));

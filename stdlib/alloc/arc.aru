@@ -21,7 +21,7 @@
 //! Valid memory orders are currently strengthened to SeqCst by the compiler.
 //!
 //! ## Platform
-//! Native allocation hosts; Wasm allocation wiring is pending.
+//! Native allocation hosts and wasm32 (module-internal allocator).
 module std.alloc.arc
 
 import std.alloc.allocator_api as alloc

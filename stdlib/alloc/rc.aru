@@ -27,8 +27,15 @@
 //! assert(five.strongCount() == 2)
 //! ```
 //!
+//! ## Failure semantics
+//!
+//! `tryNew` reports `AllocError` and destroys the rejected value; `new`
+//! aborts. A clone, downgrade or upgrade that would push a count past
+//! `2147483646` aborts before writing, as Rust's `Rc` and Swift ARC do. Counts
+//! never wrap or saturate: wrapping frees a live payload, saturating leaks it.
+//!
 //! ## Platform
-//! Native allocation hosts; Wasm aligned-allocation wiring is pending.
+//! Native allocation hosts and wasm32 (module-internal allocator).
 module std.alloc.rc
 
 import std.alloc.allocator_api as alloc

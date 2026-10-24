@@ -164,17 +164,32 @@ impl LowerCtx<'_> {
             self.emit_goto(bb_join);
 
             self.builder.current_block = Some(bb_access);
-            let base_tmp = self.new_temp_id(base_expr.ty);
+            // Unwrap `T?` to `T` first, as `??` does: the field belongs to `T`.
+            let (unwrapped_ty, base_ty) = match self.resolve_ty(base_expr.ty) {
+                ArType::Nullable(inner) => (inner, self.resolve_ty(inner)),
+                other => (base_expr.ty, other),
+            };
+            let base_tmp = self.new_temp_id(unwrapped_ty);
             self.emit_assign_temp(base_tmp, AmirRvalue::Use(base_op));
-            let base_ty = self.resolve_ty(base_expr.ty);
             let field_idx = self.resolve_field_index(&base_ty, field);
+            // Project at the field's own type; `Use` then wraps a plain field
+            // into the `T?` result, or passes an already nullable one through.
+            let field_ty = arandu_middle::layout::instantiated_field_type(
+                &base_ty,
+                field,
+                &self.tc.type_info.type_interner,
+                &*self.tc.type_info,
+            )
+            .unwrap_or(expr.ty);
+            let field_tmp = self.new_temp_id(field_ty);
             self.emit_assign_temp(
-                dest,
+                field_tmp,
                 AmirRvalue::FieldAccess {
                     base: AmirOperand::Copy(base_tmp),
                     field: field_idx,
                 },
             );
+            self.emit_assign_temp(dest, AmirRvalue::Use(AmirOperand::Copy(field_tmp)));
             self.emit_goto(bb_join);
         }
 

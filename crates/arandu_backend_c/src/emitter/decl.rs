@@ -5,7 +5,7 @@ use std::fmt::Write;
 use arandu_middle::SymbolId;
 use arandu_middle::amir::{AmirFunc, AmirRvalue, AmirStmt};
 use arandu_middle::literal_pool::AmirLiteralEntry;
-use arandu_middle::types::ArType;
+use arandu_middle::types::{ArType, Primitive};
 
 use super::CEmitter;
 
@@ -89,13 +89,29 @@ impl<'a> CEmitter<'a> {
         }
     }
 
+    /// Whether `T?` with this inner type is a `T*` box handle in C.
+    pub(super) fn is_boxed_nullable(&self, inner: &ArType) -> bool {
+        inner.slice_abi_element(self.interner).is_none()
+            && !matches!(
+                inner,
+                ArType::Ptr(_)
+                    | ArType::Ref(_)
+                    | ArType::RefMut(_)
+                    | ArType::Nullable(_)
+                    | ArType::Primitive(Primitive::Str)
+                    | ArType::Void
+                    | ArType::Error
+            )
+    }
+
     pub(super) fn ensure_type_emitted(&mut self, ty: &ArType) {
         if let ArType::Nullable(inner) = ty {
             let inner_ty = self.interner.resolve(*inner);
-            if matches!(
+            if (matches!(
                 inner_ty,
                 ArType::Ptr(_) | ArType::Ref(_) | ArType::RefMut(_)
-            ) && inner_ty.slice_abi_element(self.interner).is_none()
+            ) && inner_ty.slice_abi_element(self.interner).is_none())
+                || self.is_boxed_nullable(&inner_ty)
             {
                 self.ensure_type_emitted(&inner_ty);
                 return;

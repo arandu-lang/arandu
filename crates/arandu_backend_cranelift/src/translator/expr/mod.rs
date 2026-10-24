@@ -36,6 +36,29 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         ptr
     }
 
+    /// Copy an inline aggregate into a fresh heap box for a `T?` handle. The
+    /// value's storage may be a stack slot of this frame, which a returned or
+    /// stored handle would outlive.
+    fn box_nullable_aggregate(&mut self, val: Value, inner: &ArType) -> Value {
+        let (Some(malloc_id), Some(memcpy_id)) = (self.malloc_func_id(), self.memcpy_func_id())
+        else {
+            return self.poison_i32();
+        };
+        let malloc_ref = self
+            .module
+            .declare_func_in_func(malloc_id, self.builder.func);
+        let size = self.checked_layout(inner).size.max(1) as i64;
+        let size = self.builder.ins().iconst(self.ptr_type, size);
+        let call = self.builder.ins().call(malloc_ref, &[size]);
+        let ptr = self.builder.inst_results(call)[0];
+        self.trap_if_null(ptr);
+        let memcpy_ref = self
+            .module
+            .declare_func_in_func(memcpy_id, self.builder.func);
+        self.builder.ins().call(memcpy_ref, &[ptr, val, size]);
+        ptr
+    }
+
     /// Load a boxed scalar from a non-null `T?` handle.
     fn unbox_nullable_scalar(&mut self, handle: Value, inner: &ArType) -> Value {
         let clif = match crate::types::clif_type(inner, self.ptr_type) {
@@ -75,6 +98,17 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     return self.translate_operand(op, Some(self.ptr_type));
                 }
             }
+            // A projection already yields the field, element or payload at its
+            // own type, which here is the `T?` handle itself.
+            if matches!(
+                rvalue,
+                AmirRvalue::FieldAccess { .. }
+                    | AmirRvalue::IndexAccess { .. }
+                    | AmirRvalue::Load(_)
+                    | AmirRvalue::EnumPayload { .. }
+            ) {
+                return self.translate_rvalue_inner(rvalue, Some(self.ptr_type), expected_ar_type);
+            }
             // Produce the inner value, then box scalars.
             let inner_clif = match crate::types::clif_type(&inner, self.ptr_type) {
                 crate::types::ClifType::Concrete(t) => Some(t),
@@ -83,6 +117,9 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             let raw = self.translate_rvalue_inner(rvalue, inner_clif, Some(&inner));
             if inner.needs_nullable_box() {
                 return self.box_nullable_scalar(raw, &inner);
+            }
+            if self.is_inline_aggregate_ty(&inner) {
+                return self.box_nullable_aggregate(raw, &inner);
             }
             return raw;
         }

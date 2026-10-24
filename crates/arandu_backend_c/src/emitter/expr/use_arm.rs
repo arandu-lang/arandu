@@ -1,5 +1,5 @@
 use super::super::CEmitter;
-use arandu_middle::amir::{AmirFunc, AmirOperand};
+use arandu_middle::amir::{AmirConstant, AmirFunc, AmirOperand};
 use arandu_middle::types::{ArType, Primitive};
 use std::fmt::Write;
 
@@ -24,6 +24,30 @@ impl<'a> CEmitter<'a> {
             expected_ar_type,
             ArType::Ptr(_) | ArType::Ref(_) | ArType::RefMut(_)
         ) && !expected_ar_type.is_borrowed_slice_abi(self.interner);
+        // Box a `T` into a `T?` handle, and unbox a non-nil handle back to `T`.
+        if let ArType::Nullable(inner) = expected_ar_type
+            && !matches!(source_ty, ArType::Nullable(_))
+            && !matches!(op, AmirOperand::Constant(AmirConstant::Nil))
+        {
+            let inner_ty = self.interner.resolve(*inner);
+            if self.is_boxed_nullable(&inner_ty) {
+                let inner_c = self.format_type(&inner_ty);
+                let _ = write!(
+                    &mut self.output,
+                    "({{ {inner_c}* ar_box = ({inner_c}*)malloc(sizeof({inner_c})); if (!ar_box) abort(); *ar_box = ({inner_c})({op_str}); ar_box; }})"
+                );
+                return;
+            }
+        }
+        if let ArType::Nullable(inner) = &source_ty
+            && !matches!(expected_ar_type, ArType::Nullable(_))
+        {
+            let inner_ty = self.interner.resolve(*inner);
+            if self.is_boxed_nullable(&inner_ty) {
+                let _ = write!(&mut self.output, "(*({op_str}))");
+                return;
+            }
+        }
         if self.is_str_ref_to_str(&source_ty, expected_ar_type) {
             let _ = write!(&mut self.output, "(*({op_str}))");
         } else if dest_is_pointer {

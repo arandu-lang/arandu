@@ -20,22 +20,29 @@ impl LowerCtx<'_> {
                 ArType::Primitive(primitive) if primitive.is_integer() && *primitive != Primitive::Int))
     }
 
-    /// If `local` is `T?` and `value` is a non-Nil constant, assign through a
-    /// temp so codegen can box the scalar (prevents bare `0` becoming `nil`).
+    /// If `local` is `T?` and `value` is a non-Nil `T`, assign through a
+    /// `T?` temp so codegen boxes it (a bare `0` must not become `nil`, and a
+    /// phi or block parameter of `T?` must not receive a raw `T`).
     fn materialize_nullable_const(&mut self, local: LocalId, value: AmirOperand) -> AmirOperand {
         let ty = self.resolve_ty(self.locals[local.as_usize()].ty);
         if !matches!(ty, ArType::Nullable(_)) {
             return value;
         }
-        match &value {
-            AmirOperand::Constant(AmirConstant::Nil) => value,
-            AmirOperand::Constant(_) => {
-                let t = self.new_temp(ty);
-                self.emit_assign_temp(t, AmirRvalue::Use(value));
-                AmirOperand::Copy(t)
-            }
-            _ => value,
+        let needs_box = match &value {
+            AmirOperand::Constant(AmirConstant::Nil) => false,
+            AmirOperand::Constant(_) => true,
+            AmirOperand::Copy(temp) | AmirOperand::Move(temp) => !matches!(
+                self.resolve_ty(self.temps[temp.as_usize()].ty),
+                ArType::Nullable(_)
+            ),
+            AmirOperand::FunctionRef(_) | AmirOperand::GlobalRef(_) => false,
+        };
+        if !needs_box {
+            return value;
         }
+        let t = self.new_temp(ty);
+        self.emit_assign_temp(t, AmirRvalue::Use(value));
+        AmirOperand::Copy(t)
     }
 
     pub(crate) fn write_variable(&mut self, block: BlockId, local: LocalId, value: AmirOperand) {

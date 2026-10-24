@@ -259,12 +259,14 @@ pub(crate) fn resolve_field_type(
             return checker.intern(ArType::Error);
         };
 
+    let field_already_nullable = matches!(field_ty, ArType::Nullable(_));
     let field_id = checker.intern(field_ty);
     if was_option {
         checker.intern(ArType::Option(field_id))
-    } else if safe || was_nullable {
+    } else if (safe || was_nullable) && !field_already_nullable {
         checker.intern(ArType::Nullable(field_id))
     } else {
+        // `a?.b` where `b: T?` is `T?`: nil-or-absent collapses to one nil.
         field_id
     }
 }

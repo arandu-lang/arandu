@@ -186,6 +186,11 @@ impl<'a> CEmitter<'a> {
                     return self.format_type(&inner_ty);
                 }
                 let inner_name = self.format_type(&inner_ty);
+                // A value `T?` is a handle to a boxed `T`, NULL for nil, as in
+                // Cranelift: payload `0` stays distinct from `nil`.
+                if self.is_boxed_nullable(&inner_ty) {
+                    return Cow::Owned(format!("{inner_name}*"));
+                }
                 Cow::Owned(format!("ArType_Nullable_{}", sanitize_c_ident(&inner_name)))
             }
             ArType::Option(inner) => {

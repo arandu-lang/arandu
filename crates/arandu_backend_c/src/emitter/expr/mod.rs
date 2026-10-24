@@ -1,6 +1,7 @@
 use super::CEmitter;
 use arandu_middle::amir::{AmirFunc, AmirRvalue};
 use arandu_middle::types::ArType;
+use std::fmt::Write;
 
 mod aggregate;
 mod binary;
@@ -16,6 +17,32 @@ impl<'a> CEmitter<'a> {
         expected_ar_type: &ArType,
         expected_c_type: &str,
     ) {
+        // A freshly constructed `T` assigned to a `T?` box handle: compute the
+        // `T`, then box it, as Cranelift does. `Use` converts between `T` and
+        // `T?` itself; projections already have the projected type.
+        if let ArType::Nullable(inner) = expected_ar_type
+            && matches!(
+                rvalue,
+                AmirRvalue::StructLiteral { .. }
+                    | AmirRvalue::Tuple { .. }
+                    | AmirRvalue::Array { .. }
+                    | AmirRvalue::EnumConstruct { .. }
+                    | AmirRvalue::Binary { .. }
+                    | AmirRvalue::Unary { .. }
+            )
+        {
+            let inner_ty = self.interner.resolve(*inner);
+            if self.is_boxed_nullable(&inner_ty) {
+                let inner_c = self.format_type(&inner_ty).into_owned();
+                let _ = write!(
+                    &mut self.output,
+                    "({{ {inner_c}* ar_box = ({inner_c}*)malloc(sizeof({inner_c})); if (!ar_box) abort(); *ar_box = ("
+                );
+                self.emit_rvalue(rvalue, func, &inner_ty, &inner_c);
+                let _ = write!(&mut self.output, "); ar_box; }})");
+                return;
+            }
+        }
         match rvalue {
             AmirRvalue::VectorCompare { .. }
             | AmirRvalue::VectorSelect { .. }

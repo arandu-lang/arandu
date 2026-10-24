@@ -182,6 +182,84 @@ func main(): int {
 "#,
         8,
     ),
+    (
+        "nullable_struct_assigned_in_branch",
+        r#"struct Inner { v: int }
+func main(): int {
+    let mut inn: Inner? = nil
+    let c = 1
+    if c > 0 { inn = Inner { v: 3 } }
+    return inn?.v ?? 7
+}
+"#,
+        3,
+    ),
+    (
+        "nullable_scalar_from_variable",
+        r#"func main(): int {
+    let x = 5
+    let k: int? = x
+    let c = 1
+    if c > 0 { }
+    return k ?? 7
+}
+"#,
+        5,
+    ),
+    (
+        "nested_safe_navigation",
+        r#"struct Inner { v: int }
+struct Outer { inner: Inner? }
+func mk(): Inner? { return Inner { v: 4 } }
+func mko(): Outer? { return Outer { inner: mk() } }
+func main(): int {
+    return mko()?.inner?.v ?? 9
+}
+"#,
+        4,
+    ),
+    (
+        "nullable_struct_return",
+        r#"struct P { v: int }
+func g(x: int): P? {
+    if x > 0 { return P { v: x } }
+    return nil
+}
+func main(): int {
+    return (g(6)?.v ?? 0) + (g(-1)?.v ?? 10)
+}
+"#,
+        16,
+    ),
+    (
+        "nullable_field_round_trip",
+        r#"struct Inner { v: int }
+struct Outer { inner: Inner? }
+func mk(): Inner? { return Inner { v: 4 } }
+func main(): int {
+    let i: Inner? = mk()
+    let o = Outer { inner: i }
+    let j: Inner? = o.inner
+    if i == j { return 77 }
+    return 78
+}
+"#,
+        77,
+    ),
+    (
+        "nullable_field_read_after_other_calls",
+        r#"struct Inner { v: int }
+struct Outer { inner: Inner? }
+func mk(): Inner? { return Inner { v: 4 } }
+func main(): int {
+    let o = Outer { inner: mk() }
+    let x: Inner? = o.inner
+    let y: Inner? = mk()
+    return (x?.v ?? 9) * 10 + (y?.v ?? 9)
+}
+"#,
+        44,
+    ),
 ];
 
 #[test]
@@ -346,4 +424,40 @@ fn unsound_programs_are_rejected() {
 fn field_writes_with_mutable_access_are_accepted() {
     let source = "struct P { x: int }\nfunc put(p: mut ref P): void { p.x = 6 }\nfunc P.fine(mut self): void { self.x = 2 }\nfunc main(): int {\n    let mut q = P { x: 1 }\n    q.x = 3\n    put(mut ref q)\n    q.fine()\n    return q.x\n}\n";
     assert_eq!(exit_codes("field_mutable", source), [Some(2); 3]);
+}
+
+/// `T?` of a value type is a boxed handle in C as in Cranelift: the C build
+/// agrees with `run` and stays clean under AddressSanitizer.
+#[test]
+fn nullable_values_match_between_cranelift_and_c() {
+    if Command::new("cc").arg("--version").output().is_err() {
+        return;
+    }
+    for (name, source, expected) in RUNS.iter().filter(|(name, ..)| name.contains("nullable")) {
+        let path = write(name, source);
+        let c = cli(&["emit-c", &path]);
+        assert!(
+            c.status.success(),
+            "{name}: {}",
+            String::from_utf8_lossy(&c.stderr)
+        );
+        let dir = std::env::temp_dir();
+        let c_file = dir.join(format!("arandu_cli_soundness_{name}.c"));
+        let binary = dir.join(format!("arandu_cli_soundness_{name}.bin"));
+        fs::write(&c_file, &c.stdout).expect("write c");
+        let compiled = Command::new("cc")
+            .args(["-O1", "-w"])
+            .arg(&c_file)
+            .arg("-o")
+            .arg(&binary)
+            .output()
+            .expect("cc");
+        assert!(
+            compiled.status.success(),
+            "{name}: {}",
+            String::from_utf8_lossy(&compiled.stderr)
+        );
+        let status = Command::new(&binary).status().expect("run");
+        assert_eq!(status.code(), Some(*expected), "{name}");
+    }
 }

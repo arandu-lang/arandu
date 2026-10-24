@@ -243,12 +243,10 @@ public func VecDeque.get<T>(self: ref VecDeque<T>, index: usize): Option<ref T> 
     if index >= self.len {
         return Option.None
     }
-    unsafe {
-        let mask = self.capacity - (1 as usize)
-        let phys = (self.head + index) & mask
-        let p = mem.ptrOffset<T>(self.data, phys as isize)
-        return Option.Some(ref *p)
-    }
+    let phys = (self.head + index) & (self.capacity - (1 as usize))
+    // The owner-tied view gives the borrow a formal origin in `self`.
+    let ring = unsafe { intrinsics.sliceFromRaw<VecDeque<T>, T>(self, self.data, self.capacity) }
+    return Option.Some(ref ring[phys])
 }
 
 /// Exclusively borrows the element at logical index `index`.
@@ -256,12 +254,9 @@ public func VecDeque.getMut<T>(self: mut ref VecDeque<T>, index: usize): Option<
     if index >= self.len {
         return Option.None
     }
-    unsafe {
-        let mask = self.capacity - (1 as usize)
-        let phys = (self.head + index) & mask
-        let p = mem.ptrOffset<T>(self.data, phys as isize)
-        return Option.Some(mut ref *p)
-    }
+    let phys = (self.head + index) & (self.capacity - (1 as usize))
+    let ring = unsafe { intrinsics.mutSliceFromRaw<VecDeque<T>, T>(self, self.data, self.capacity) }
+    return Option.Some(mut ref ring[phys])
 }
 
 /// Borrows the element at the front of the deque without removing it.

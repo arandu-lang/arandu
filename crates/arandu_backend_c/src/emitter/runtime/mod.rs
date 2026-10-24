@@ -128,6 +128,10 @@ impl<'a> CEmitter<'a> {
         );
         let _ = writeln!(
             &mut self.output,
+            "static inline uint64_t ar_index_check(uint64_t index, uint64_t len) {{ if (index >= len) AR_ABORT(); return index; }}"
+        );
+        let _ = writeln!(
+            &mut self.output,
             "#ifndef AR_UNREACHABLE\n#if defined(__GNUC__) || defined(__clang__)\n#define AR_UNREACHABLE() __builtin_trap()\n#else\n#define AR_UNREACHABLE() abort()\n#endif\n#endif"
         );
         let _ = writeln!(

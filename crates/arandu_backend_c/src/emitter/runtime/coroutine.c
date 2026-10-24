@@ -28,7 +28,8 @@ static inline void** ar_make_range(intptr_t left, intptr_t right) {
 }
 
 static inline void* ar_co_make_ready_heap(size_t size, void* val_ptr, size_t val_size) {
-    uint8_t* co = (uint8_t*)malloc(size);
+    /* Zeroed: the i64 poll helpers read a full word from narrower payloads. */
+    uint8_t* co = (uint8_t*)calloc(1, size);
     if (!co) abort();
     *(uint32_t*)co = 0;
     *(uint32_t*)(co + 4) = 0x4152434f;

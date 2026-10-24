@@ -222,6 +222,27 @@ impl<'a> CEmitter<'a> {
         }
     }
 
+    /// Bounds-checked subscript for a fixed-length array element.
+    ///
+    /// Mirrors the Cranelift/Wasm trap: an index outside `[0, len)` aborts
+    /// instead of reading or writing out of bounds.
+    pub(super) fn checked_array_index(index: &str, len: u64) -> String {
+        format!("ar_index_check((uint64_t)({index}), UINT64_C({len}))")
+    }
+
+    /// Bounds-checked subscript for an element of the fat slice lvalue `slice`.
+    pub(super) fn checked_slice_index(&self, index: &str, slice: &str) -> String {
+        let off = self.layout.fat_ptr_len_offset();
+        let len_ty = if self.layout.fat_ptr_len_size() == 4 {
+            "int32_t"
+        } else {
+            "int64_t"
+        };
+        format!(
+            "ar_index_check((uint64_t)({index}), (uint64_t)(*({len_ty}*)((uint8_t*)&{slice} + {off})))"
+        )
+    }
+
     pub(super) fn format_place(&mut self, place: &AmirPlace, func: &AmirFunc) -> String {
         let local_idx = place.local.as_usize();
         let mut current_ty = self.local_ty(func, place.local);
@@ -389,23 +410,35 @@ impl<'a> CEmitter<'a> {
                         && len > 0
                         && self.checked_layout(&ArType::Array(len, elem_id)).size > 0
                     {
+                        let index_str = Self::checked_array_index(&index_str, len);
                         path = format!("({})->data[{}]", path, index_str);
-                    } else if matches!(&current_ty, ArType::Array(len, _) if *len > 0)
+                    } else if let ArType::Array(len, _) = &current_ty
+                        && *len > 0
                         && self.checked_layout(&current_ty).size > 0
                     {
+                        let index_str = Self::checked_array_index(&index_str, *len);
                         path = format!("({}).data[{}]", path, index_str);
                     } else if matches!(
                         current_ty,
                         ArType::Ptr(_) | ArType::Ref(_) | ArType::RefMut(_)
                     ) {
                         path = format!("(({}*){})[{}]", elem_c_ty, path, index_str);
-                    } else if matches!(current_ty, ArType::Slice(_) | ArType::MutSlice(_)) || is_vec
-                    {
+                    } else if matches!(current_ty, ArType::Slice(_) | ArType::MutSlice(_)) {
+                        let index_str = self.checked_slice_index(&index_str, &path);
+                        path = format!(
+                            "(( {}* )(*(void**)((uint8_t*)&{} + 0)))[{}]",
+                            elem_c_ty, path, index_str
+                        );
+                    } else if is_vec {
                         path = format!(
                             "(( {}* )(*(void**)((uint8_t*)&{} + 0)))[{}]",
                             elem_c_ty, path, index_str
                         );
                     } else {
+                        let index_str = match &current_ty {
+                            ArType::Array(len, _) => Self::checked_array_index(&index_str, *len),
+                            _ => index_str,
+                        };
                         path = format!("(({}*)&{})[{}]", elem_c_ty, path, index_str);
                     }
                     current_ty = elem_ty;

@@ -278,9 +278,13 @@ fn run_case(
                 event.logs,
                 event.logs_truncated,
             ),
+            // Keep the exit status: a trap (e.g. an out-of-bounds index)
+            // terminates the child by signal before it can send its frame.
             Err(error) => (
                 TestStatus::Crashed,
-                Some(TestFailure::simple(format!("protocol failure: {error}"))),
+                Some(TestFailure::simple(format!(
+                    "protocol failure: {error} ({exit})"
+                ))),
                 Vec::new(),
                 Vec::new(),
                 false,

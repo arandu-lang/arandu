@@ -44,7 +44,11 @@ impl LowerCtx<'_> {
             self.emit_goto(bb_join);
 
             self.builder.current_block = Some(bb_right);
+            let start_owned = self.owned_string_temps.clone();
             let right_op = self.lower_expr(right, None, symbols)?;
+            // Temporaries of the right operand exist only on this edge; free
+            // them here rather than at the join, where they are undefined.
+            self.free_new_owned_string_temps(&start_owned, None);
             if self.builder.current_block.is_some() {
                 let right_block = self.require_block()?;
                 self.write_variable(right_block, result_local, right_op);

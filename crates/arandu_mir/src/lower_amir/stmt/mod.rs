@@ -174,17 +174,33 @@ impl LowerCtx<'_> {
     ) -> Result<(), Diagnostic> {
         let start_owned = self.owned_string_temps.clone();
         self.lower_expr(expr_id, None, symbols)?;
-        let to_free: Vec<TempId> = self
+        self.free_new_owned_string_temps(&start_owned, None);
+        Ok(())
+    }
+
+    /// Frees owned string temporaries created since `start_owned` in the
+    /// current block, except `keep` (a value that escapes into its consumer).
+    ///
+    /// Callers use this where the produced value cannot alias those strings
+    /// (expression statements, `bool` conditions, `bool` operands), so the
+    /// temporaries are dead once the value has been computed. Ids are freed
+    /// in creation order so AMIR stays deterministic.
+    pub(crate) fn free_new_owned_string_temps(
+        &mut self,
+        start_owned: &rustc_hash::FxHashSet<TempId>,
+        keep: Option<TempId>,
+    ) {
+        let mut to_free: Vec<TempId> = self
             .owned_string_temps
             .iter()
             .copied()
-            .filter(|t| !start_owned.contains(t))
+            .filter(|t| !start_owned.contains(t) && Some(*t) != keep)
             .collect();
+        to_free.sort_unstable_by_key(|t| t.as_usize());
         for t in to_free {
             self.owned_string_temps.remove(&t);
             self.push_stmt(AmirStmt::Free(AmirOperand::Copy(t)));
         }
-        Ok(())
     }
 
     pub(crate) fn lower_set_places(

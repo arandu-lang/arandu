@@ -84,7 +84,14 @@ impl LowerCtx<'_> {
             return self.lower_condition_branch(last, if_true, if_false, symbols);
         }
 
+        let start_owned = self.owned_string_temps.clone();
         let condition = self.lower_condition(cond, symbols)?;
+        // A plain `bool` condition cannot alias string temporaries built for
+        // it (e.g. `if "${x}" != y`); free them before the branch. `is`
+        // patterns may bind into the scrutinee and keep their temporaries.
+        if matches!(cond, HirCondition::Expr(_)) {
+            self.free_new_owned_string_temps(&start_owned, None);
+        }
         if self.builder.current_block.is_some() {
             self.set_bool_branch(condition, if_true, if_false);
         }

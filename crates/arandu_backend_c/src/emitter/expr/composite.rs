@@ -110,7 +110,8 @@ impl<'a> CEmitter<'a> {
         let payload_ar = self.interner.resolve(*payload_ty);
         let payload_c = self.format_type(&payload_ar);
         let v = self.format_operand(value, func);
-        let payload_size = self.checked_layout(&payload_ar).size.max(1);
+        // `ar_co_poll_i64`/`ar_co_await_i64` read an 8-byte payload word.
+        let payload_size = self.checked_layout(&payload_ar).size.max(8);
         let size = 8 + payload_size;
         let _ = write!(
             &mut self.output,

@@ -5043,3 +5043,130 @@ func main(): int {
     assert!(c.contains("ar_str_concat_n") && c.contains("#include <stdarg.h>"));
     assert_eq!(execute_c("path_only_concat_header", &amir, &tc), 0);
 }
+
+/// Compile emitted C and run it, returning whether the process exited cleanly.
+fn c_program_succeeds(name: &str, amir: &AmirProgram, tc: &TypeCheckResult) -> bool {
+    let out_dir = env::temp_dir().join("arandu_c_tests");
+    fs::create_dir_all(&out_dir).unwrap();
+    let c_file = out_dir.join(format!("{name}_{}.c", std::process::id()));
+    let exe_file = out_dir.join(format!("{name}_{}.exe", std::process::id()));
+    fs::write(&c_file, emit_c(amir, tc)).unwrap();
+    let cc = env::var("CC").unwrap_or_else(|_| "gcc".to_string());
+    let compiled = c_compiler(&cc)
+        .arg(&c_file)
+        .arg("-o")
+        .arg(&exe_file)
+        .arg("-lm")
+        .output()
+        .unwrap();
+    assert!(
+        compiled.status.success(),
+        "C compilation failed for {name}: {}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+    Command::new(&exe_file).status().unwrap().success()
+}
+
+/// Softwares/kandiru regression: indexing an empty `[]T` read through a null
+/// data pointer in C (segfault at -O0, garbage at -O2) while Cranelift and
+/// Wasm trap. Arrays and slices must trap on every C path, reads and writes.
+#[test]
+fn c_array_and_slice_indices_trap_out_of_bounds() {
+    let program = |body: &str| {
+        format!(
+            r#"
+module std.core.c_bounds_regression
+
+extern "arandu-intrinsic" {{
+    func strBytes(source: str): []u8
+}}
+
+func at(i: int): int {{
+    let bytes = unsafe {{ strBytes("abcd") }}
+    let mut arr: [4]int = [1, 2, 3, 4]
+    {body}
+}}
+
+func main(): int {{
+    return at(4)
+}}
+"#
+        )
+    };
+    let cases = [
+        ("slice_read", "return bytes[i] as int"),
+        ("array_read", "return arr[i]"),
+        ("array_write", "arr[i] = 9\n    return arr[0]"),
+    ];
+    for (name, body) in cases {
+        let (amir, tc) = compile_src(&program(body));
+        let c = emit_c(&amir, &tc);
+        assert!(
+            c.contains("ar_index_check("),
+            "{name}: missing bounds check"
+        );
+        assert!(
+            !c_program_succeeds(&format!("bounds_{name}"), &amir, &tc),
+            "{name}: out-of-bounds index must trap in C"
+        );
+    }
+    let (amir, tc) = compile_src(&program("return arr[i - 1] + (bytes[i - 1] as int) - 104"));
+    assert!(c_program_succeeds("bounds_in_range", &amir, &tc));
+}
+
+/// LeakSanitizer regression: interpolations consumed only by an `if`/`while`
+/// condition or by the right operand of `&&`/`||` were never freed (one leak
+/// per loop iteration). Every owned interpolation must reach a `free`.
+#[test]
+fn interpolation_temporaries_in_conditions_are_freed() {
+    let src = r#"
+func main(): int {
+    let mut i: int = 0
+    let mut hits: int = 0
+    while "${i}" != "3" {
+        if "${i}:${i}" == "1:1" { hits = hits + 1 }
+        if i > 0 && "${i}" == "2" { hits = hits + 10 }
+        if i > 5 || "${i}" == "0" { hits = hits + 100 }
+        i = i + 1
+    }
+    return hits - 111
+}
+"#;
+    let (amir, tc) = compile_src(src);
+    let main = amir
+        .funcs
+        .iter()
+        .find(|f| tc.symbols.get(f.symbol).name == "main")
+        .unwrap();
+    // temp -> defining block, and temp -> block of its `free`.
+    let mut interps = std::collections::BTreeMap::new();
+    let mut freed = std::collections::BTreeMap::new();
+    for (block_index, block) in main.blocks.iter().enumerate() {
+        for id in block.statements.iter_ids::<arandu_middle::amir::InstrId>() {
+            match main.stmts.get(id) {
+                Some(AmirStmt::Assign {
+                    lhs,
+                    rhs: AmirRvalue::StringInterp { .. },
+                }) => {
+                    interps.insert(lhs.as_usize(), block_index);
+                }
+                Some(AmirStmt::Free(AmirOperand::Copy(t) | AmirOperand::Move(t))) => {
+                    freed.insert(t.as_usize(), block_index);
+                }
+                _ => {}
+            }
+        }
+    }
+    assert!(!interps.is_empty());
+    // Freeing in the defining block keeps the free on the only path where
+    // the value exists (the right operand of `&&`/`||` is conditional).
+    for (temp, block) in &interps {
+        assert_eq!(
+            freed.get(temp),
+            Some(block),
+            "interpolation t{temp} from bb{block} is not freed in its block"
+        );
+    }
+    assert_eq!(execute_c("interp_condition_free", &amir, &tc), 0);
+    assert_eq!(execute_cranelift(&amir, &tc), 0);
+}

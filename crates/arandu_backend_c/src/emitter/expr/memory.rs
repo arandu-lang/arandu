@@ -203,6 +203,15 @@ impl<'a> CEmitter<'a> {
 
         let is_nonempty_array = matches!(&deref_ty, ArType::Array(len, _) if *len > 0)
             && self.checked_layout(&deref_ty).size > 0;
+        // Arrays and slices trap on out-of-bounds indices, matching the
+        // Cranelift and Wasm backends; `Vec` and raw pointers do not.
+        let index_str = match &deref_ty {
+            ArType::Array(len, _) => Self::checked_array_index(&index_str, *len),
+            _ if base_ty.slice_abi_element(self.interner).is_some() => {
+                self.checked_slice_index(&index_str, &base_str)
+            }
+            _ => index_str,
+        };
 
         if is_nonempty_array {
             if matches!(base_ty, ArType::Ptr(_) | ArType::Ref(_) | ArType::RefMut(_)) {

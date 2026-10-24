@@ -128,11 +128,12 @@ impl<'a> CEmitter<'a> {
                     let payload_c = self.format_type(&payload_ar);
                     let v = self.format_operand(value, func);
                     let slot = self.next_co_stack_slot();
-                    let payload_size = self.checked_layout(&payload_ar).size.max(1);
+                    // `ar_co_poll_i64`/`ar_co_await_i64` read an 8-byte payload word.
+                    let payload_size = self.checked_layout(&payload_ar).size.max(8);
                     let size = 8 + payload_size;
                     let _ = writeln!(
                         &mut self.output,
-                        "    uint8_t __ar_co_{slot}[{size}] __attribute__((aligned(8)));"
+                        "    uint8_t __ar_co_{slot}[{size}] __attribute__((aligned(8))) = {{0}};"
                     );
                     let _ = writeln!(&mut self.output, "    *(uint32_t*)__ar_co_{slot} = 0;");
                     let _ = writeln!(

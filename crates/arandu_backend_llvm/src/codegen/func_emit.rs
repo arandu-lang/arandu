@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use arandu_middle::Diagnostic;
-use arandu_middle::amir::{AmirFunc, AmirStmt, BlockId, TempId};
+use arandu_middle::amir::{AmirFunc, AmirStmt, BlockId, TempId, reverse_post_order};
 use arandu_middle::types::ArType;
 
 use super::export::lanes_ty;
@@ -269,9 +269,38 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
         // Pass 1: lower each block body + terminator into a private buffer so
         // edge arguments are materialized in predecessors before any successor
         // PHI is written (LLVM requires phis to be grouped at the block top).
+        // Lower in reverse post-order: SSA aliases are bound when their
+        // defining block is lowered, so every dominating definition must be
+        // lowered before the blocks that use it, whatever the block numbering
+        // (inlining can number a dominating join after its users).
         let blocks = self.func.blocks.clone();
-        let mut bodies = Vec::with_capacity(blocks.len());
-        for block in &blocks {
+        let mut order = reverse_post_order(self.func);
+        let mut ordered = vec![false; blocks.len()];
+        for id in &order {
+            if let Some(seen) = ordered.get_mut(id.as_usize()) {
+                *seen = true;
+            }
+        }
+        order.extend(
+            blocks
+                .iter()
+                .map(|block| block.id)
+                .filter(|id| !ordered.get(id.as_usize()).copied().unwrap_or(false)),
+        );
+        let index_of: HashMap<BlockId, usize> = blocks
+            .iter()
+            .enumerate()
+            .map(|(index, block)| (block.id, index))
+            .collect();
+        let mut bodies = vec![String::new(); blocks.len()];
+        for id in order {
+            let Some(&index) = index_of.get(&id) else {
+                return Err(ice(format!(
+                    "AMIR CFG references unknown block {}",
+                    id.as_usize()
+                )));
+            };
+            let block = &blocks[index];
             self.current_block = block.id;
             self.current_llvm_label = block_label(block.id);
             self.current_return = None;
@@ -286,7 +315,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                 .insert(block.id, self.current_llvm_label.clone());
             self.emit_terminator(&terminator)?;
             std::mem::swap(&mut self.writer, &mut body);
-            bodies.push(body.finish());
+            bodies[index] = body.finish();
         }
 
         // Pass 2: emit labels, PHI nodes from recorded edge args, then bodies.

@@ -59,6 +59,10 @@ jobs:
         run: cargo run --locked -p xtask -- check-line-endings
       - name: Compiler architecture boundaries
         run: cargo run --locked -p xtask -- check-architecture
+      # arandu_fuzz is excluded from the workspace and keeps its own lock;
+      # metadata --locked fails on drift without building the fuzz targets.
+      - name: Fuzz project lockfile is current
+        run: cargo metadata --manifest-path arandu_fuzz/Cargo.toml --locked --format-version 1 > /dev/null
       - name: Documentation taxonomy
         run: cargo run --locked -p xtask -- check-docs-taxonomy
       - name: Diagnostic documentation bijection

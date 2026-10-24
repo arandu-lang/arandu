@@ -89,7 +89,7 @@ pub fn format_edits_in_range(source: &str, start: u32, end: u32) -> Vec<TextEdit
         // CST items may start with leading trivia (the newline ending the
         // previous item). Formatting strips leading blank lines, so keep the
         // trivia out of the edited text or items would be joined together.
-        let s = e - source[s..e].trim_start().len();
+        let s = e - source[s..e].trim_start_matches(is_arandu_ws).len();
         let item_start = s as u32;
         let item_src = &source[s..e];
         let mut formatted = format_item_snippet(item_src);
@@ -208,7 +208,7 @@ fn format_from_tree(tree: &SyntaxTree) -> String {
         // Top-level trivia belongs to the source, not necessarily to an item
         // node. Preserve it so documentation and standalone comments cannot
         // disappear when printing only the green item nodes.
-        let trivia = source[previous_end..s].trim();
+        let trivia = source[previous_end..s].trim_matches(is_arandu_ws);
         if !trivia.is_empty() {
             out.push_str(&normalize_whitespace(trivia));
         }
@@ -229,7 +229,7 @@ fn format_from_tree(tree: &SyntaxTree) -> String {
         }
         previous_end = e;
     }
-    let trailing = source[previous_end..].trim();
+    let trailing = source[previous_end..].trim_matches(is_arandu_ws);
     if !trailing.is_empty() {
         out.push_str(&normalize_whitespace(trailing));
     }
@@ -258,7 +258,7 @@ fn reindent_item(item_src: &str) -> String {
     let mut lines_iter = item_src.lines().peekable();
     let mut emitted_any = false;
     while let Some(line) = lines_iter.next() {
-        let trimmed = line.trim();
+        let trimmed = line.trim_matches(is_arandu_ws);
         if trimmed.is_empty() {
             if emitted_any && lines_iter.peek().is_some() {
                 out.push('\n');
@@ -274,7 +274,7 @@ fn reindent_item(item_src: &str) -> String {
             for c in formatted.chars() {
                 if c == '}' {
                     leading_closes += 1;
-                } else if c.is_whitespace() {
+                } else if is_arandu_ws(c) {
                     continue;
                 } else {
                     break;
@@ -434,11 +434,18 @@ fn trim_trailing_horizontal_ws(out: &mut String) {
     out.truncate(end);
 }
 
+/// Whitespace exactly as the lexer defines it. `str::trim` and
+/// `char::is_whitespace` follow Unicode (form feed, NBSP, …), which would let
+/// the formatter delete characters the lexer rejects and lose idempotence.
+fn is_arandu_ws(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\r' | '\n')
+}
+
 fn normalize_whitespace(source: &str) -> String {
     let mut out = String::with_capacity(source.len() + 1);
     let mut blank_run = 0u32;
     for line in source.lines() {
-        let trimmed = line.trim_end();
+        let trimmed = line.trim_end_matches(is_arandu_ws);
         if trimmed.is_empty() {
             blank_run += 1;
             if blank_run <= 1 {
@@ -540,6 +547,27 @@ pub fn actions_for_expected_semicolon(start: u32, end: u32, message: &str) -> Op
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn characters_the_lexer_rejects_are_kept_so_formatting_is_idempotent() {
+        // fuzz_fmt minimized input: Unicode-aware trim deleted the form feed on
+        // the first pass, so the second pass formatted different text.
+        for source in [
+            "func m(){\x0c\nn}",
+            "func m(){\x0b\nn}",
+            "func m(){\u{a0}\nn}",
+        ] {
+            let once = format_source(source);
+            assert_eq!(format_source(&once), once, "{source:?}");
+            let control = source
+                .chars()
+                .find(|c| !c.is_ascii_graphic() && !is_arandu_ws(*c));
+            assert!(
+                control.is_some_and(|c| once.contains(c)),
+                "{source:?} -> {once:?}"
+            );
+        }
+    }
 
     #[test]
     fn array_repetition_preserves_semicolons_and_formats_idempotently() {

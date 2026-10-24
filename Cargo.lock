@@ -211,6 +211,7 @@ dependencies = [
  "arandu_backend_llvm",
  "arandu_backend_wasm",
  "arandu_codegen",
+ "arandu_fmt",
  "arandu_ide",
  "arandu_lexer",
  "arandu_lsp",

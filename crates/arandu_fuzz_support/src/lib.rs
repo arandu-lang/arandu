@@ -7,10 +7,13 @@
 
 use arandu_query::{AnalysisHost, DatabaseImpl};
 
+mod fmt;
+pub mod host_diff;
 mod incremental;
 mod lsp_session;
 mod module_graph;
 pub mod process_job;
+mod runtime_abi;
 pub mod shrinker;
 pub mod smith;
 
@@ -46,10 +49,13 @@ pub enum Target {
     EmiCorpus,
     SynthesizedAll,
     LspSession,
+    Fmt,
+    RuntimeAbi,
+    HostDiffC,
 }
 
 impl Target {
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 20] = [
         Self::Lex,
         Self::Syntax,
         Self::Pipeline,
@@ -67,6 +73,9 @@ impl Target {
         Self::EmiCorpus,
         Self::SynthesizedAll,
         Self::LspSession,
+        Self::Fmt,
+        Self::RuntimeAbi,
+        Self::HostDiffC,
     ];
 
     pub const fn name(self) -> &'static str {
@@ -88,6 +97,9 @@ impl Target {
             Self::EmiCorpus => "emi-corpus",
             Self::SynthesizedAll => "synthesized-all",
             Self::LspSession => "lsp-session",
+            Self::Fmt => "fmt",
+            Self::RuntimeAbi => "runtime-abi",
+            Self::HostDiffC => "host-diff-c",
         }
     }
 
@@ -115,6 +127,9 @@ impl Target {
             Self::EmiCorpus => "fuzz_emi_corpus",
             Self::SynthesizedAll => "fuzz_synthesized_all",
             Self::LspSession => "fuzz_lsp_session",
+            Self::Fmt => "fuzz_fmt",
+            Self::RuntimeAbi => "fuzz_runtime_abi",
+            Self::HostDiffC => "fuzz_host_diff_c",
         }
     }
 }
@@ -141,6 +156,9 @@ pub fn run(target: Target, data: &[u8]) {
         Target::EmiCorpus => smith::run_emi_corpus(data),
         Target::SynthesizedAll => smith::run_all_backends(data),
         Target::LspSession => lsp_session::run(data),
+        Target::Fmt => fmt::run(data),
+        Target::RuntimeAbi => runtime_abi::run(data),
+        Target::HostDiffC => host_diff::run(data),
     }
 }
 

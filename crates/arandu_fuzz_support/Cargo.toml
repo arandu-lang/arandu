@@ -9,6 +9,7 @@ description = "Shared deterministic fuzz targets for Arandu"
 
 [dependencies]
 arandu_ide = { path = "../arandu_ide" }
+arandu_fmt = { path = "../arandu_fmt" }
 arandu_backend_cranelift = { path = "../arandu_backend_cranelift" }
 arandu_backend_c = { path = "../arandu_backend_c" }
 arandu_backend_llvm = { path = "../arandu_backend_llvm" }

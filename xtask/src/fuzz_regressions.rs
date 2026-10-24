@@ -174,7 +174,9 @@ pub(crate) fn seed_timeout(target: Target) -> Duration {
         | Target::Cycles
         | Target::LexSimd
         | Target::Structured
-        | Target::GenRef => SIMPLE_SEED_TIMEOUT,
+        | Target::GenRef
+        | Target::Fmt
+        | Target::RuntimeAbi => SIMPLE_SEED_TIMEOUT,
         Target::Incremental | Target::ModuleGraph | Target::IncrementalCutoff => {
             INCREMENTAL_SEED_TIMEOUT
         }
@@ -184,7 +186,8 @@ pub(crate) fn seed_timeout(target: Target) -> Duration {
         | Target::SynthesizedWasm
         | Target::SynthesizedLlvm
         | Target::EmiCorpus
-        | Target::SynthesizedAll => DIFFERENTIAL_SEED_TIMEOUT,
+        | Target::SynthesizedAll
+        | Target::HostDiffC => DIFFERENTIAL_SEED_TIMEOUT,
     }
 }
 

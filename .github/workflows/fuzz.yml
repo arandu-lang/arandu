@@ -38,6 +38,9 @@ jobs:
           - { name: fuzz_synthesized_llvm, seconds: 900, timeout: 300 }
           - { name: fuzz_synthesized_all, seconds: 1800, timeout: 300 }
           - { name: fuzz_emi_corpus, seconds: 900, timeout: 300 }
+          - { name: fuzz_fmt, seconds: 1800, timeout: 2 }
+          - { name: fuzz_runtime_abi, seconds: 900, timeout: 2 }
+          - { name: fuzz_host_diff_c, seconds: 900, timeout: 120 }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

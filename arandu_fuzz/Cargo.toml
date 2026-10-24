@@ -106,3 +106,21 @@ name = "fuzz_lsp_session"
 path = "fuzz_targets/fuzz_lsp_session.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "fuzz_fmt"
+path = "fuzz_targets/fuzz_fmt.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_runtime_abi"
+path = "fuzz_targets/fuzz_runtime_abi.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_host_diff_c"
+path = "fuzz_targets/fuzz_host_diff_c.rs"
+test = false
+doc = false

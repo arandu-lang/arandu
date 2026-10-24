@@ -63,3 +63,5 @@ windows-sys = { version = "0.60.2", features = [
 
 [dev-dependencies]
 num-bigint = "0.5.1"
+# Executes `emit-wasm` output for the stdlib contracts; same version as the Wasm backend tests.
+wasmtime = "49"

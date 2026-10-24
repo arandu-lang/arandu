@@ -2,6 +2,8 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 mod common;
+#[path = "common/wasm_host.rs"]
+mod wasm_host;
 
 use std::{fs, process::Command};
 
@@ -125,10 +127,11 @@ fn boxed_drops_and_allocations_in_wasm() {
         "{}",
         String::from_utf8_lossy(&emitted.stderr)
     );
-    assert!(
-        arandu_backend_wasm::is_core_module(&emitted.stdout),
-        "emitted Wasm must be a valid core module"
-    );
+    let run = wasm_host::run_main(&emitted.stdout);
+    run.assert_returns(0, "Box contract in Wasmtime");
+    let mut tags = run.stdout.lines().collect::<Vec<_>>();
+    tags.sort_unstable();
+    assert_eq!(tags, ["11", "22", "33", "44", "55"]);
 }
 
 #[test]

@@ -110,7 +110,7 @@ fn run_native_contract(contract: &str) {
     fs::remove_dir_all(root).unwrap();
 }
 
-fn run_with_deadline(command: &mut Command) -> Output {
+pub(crate) fn run_with_deadline(command: &mut Command) -> Output {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -350,7 +350,7 @@ public func main():int {{
     fs::remove_dir_all(root).unwrap();
 }
 
-fn assert_runtime_abort(output: &Output, name: &str) {
+pub(crate) fn assert_runtime_abort(output: &Output, name: &str) {
     assert!(
         !output.status.success(),
         "{name}: counter increment unexpectedly succeeded"

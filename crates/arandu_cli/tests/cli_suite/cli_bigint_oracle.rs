@@ -94,10 +94,9 @@ fn bigint_and_bigdecimal_match_independent_num_bigint_oracle() {
         emit_wasm.status.code(),
         String::from_utf8_lossy(&emit_wasm.stderr)
     );
-    assert!(
-        arandu_backend_wasm::is_core_module(&emit_wasm.stdout),
-        "emitted Wasm is not a valid core module"
-    );
+    // Execute the same oracle in Wasmtime: `main` returns the 1-based index
+    // of the first failing case, so any mismatch is reported by number.
+    crate::wasm_host::run_main(&emit_wasm.stdout).assert_returns(0, "BigInt oracle in Wasmtime");
 
     let _ = fs::remove_dir_all(root);
 }

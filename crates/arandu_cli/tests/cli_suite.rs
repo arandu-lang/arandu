@@ -9,6 +9,9 @@
 #[path = "common/mod.rs"]
 mod common;
 
+#[path = "common/wasm_host.rs"]
+mod wasm_host;
+
 #[path = "cli_suite/cli_archive.rs"]
 mod cli_archive;
 

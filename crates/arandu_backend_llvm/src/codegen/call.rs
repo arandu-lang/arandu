@@ -91,7 +91,15 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                 rendered.push(format!("i64 {len}"));
                 continue;
             }
-            rendered.push(self.operand(argument, expected)?.render());
+            let value = self.operand(argument, expected)?;
+            if exported {
+                // The call site repeats the definition's extension attributes;
+                // a mismatch is undefined behavior in LLVM.
+                let extension = super::export::scalar_extension(expected);
+                rendered.push(format!("{} {extension}{}", value.ty, value.value));
+            } else {
+                rendered.push(value.render());
+            }
         }
         let name = quote_name(&function_name);
         let calling_convention = if flatten_host_abi {
@@ -99,8 +107,13 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
         } else {
             ""
         };
+        let return_extension = if exported {
+            super::export::scalar_extension(&return_ty)
+        } else {
+            ""
+        };
         let call = format!(
-            "call {calling_convention}{return_text} @{name}({})",
+            "call {calling_convention}{return_extension}{return_text} @{name}({})",
             rendered.join(", ")
         );
         if let Some((buffer, aggregate, align)) = sret_return {

@@ -40,6 +40,14 @@ pub fn emit_c_header(
         pointer_width: u64::from(info.target_pointer_width) / 8,
         layout: LayoutEngine::new(u64::from(info.target_pointer_width) / 8),
     };
+    if let Some((_, second, name)) = symbols.exported_symbol_collision() {
+        return Err(context.error(
+            second,
+            format!(
+                "exported symbol '{name}' is claimed by two functions; C has a single namespace, so give one of them a distinct `@Export(\"...\")` name"
+            ),
+        ));
+    }
     let mut exports = Exports::default();
 
     let mut exported = symbols
@@ -432,10 +440,6 @@ impl Exports {
                     }
                     return Ok(());
                 }
-                self.structs.push(StructDecl {
-                    symbol: *symbol,
-                    ty: ty.clone(),
-                });
                 let fields = context
                     .provider
                     .get_struct_fields_for_type(ty, context.interner)
@@ -445,6 +449,12 @@ impl Exports {
                     let field_ty = context.interner.resolve(field.ty);
                     self.collect(context, &field_ty, FfiPosition::StructField, owner)?;
                 }
+                // Post-order: C needs a complete type for a by-value field, so
+                // every nested struct is defined before the struct using it.
+                self.structs.push(StructDecl {
+                    symbol: *symbol,
+                    ty: ty.clone(),
+                });
             }
             (ArType::Slice(element) | ArType::MutSlice(element), FfiType::Slice { .. }) => {
                 let element_ty = context.interner.resolve(*element);

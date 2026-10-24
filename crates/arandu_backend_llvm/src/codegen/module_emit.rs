@@ -164,6 +164,15 @@ impl<'a> ModuleEmitter<'a> {
     }
 
     pub(super) fn emit(self) -> Result<String, Diagnostic> {
+        if let Some((_, second, name)) = self.symbols.exported_symbol_collision() {
+            return Err(Diagnostic::error(
+                DiagCode::T049InvalidFfiExport,
+                format!(
+                    "exported symbol '{name}' is claimed by two functions; C has a single namespace, so give one of them a distinct `@Export(\"...\")` name"
+                ),
+                self.symbols.get(second).span,
+            ));
+        }
         let mut body = String::new();
         for func in &self.program.funcs {
             let function = FuncEmitter::new(&self, func)?;

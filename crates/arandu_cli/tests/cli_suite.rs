@@ -122,6 +122,8 @@ mod cli_time_wide;
 
 #[path = "cli_suite/cli_llvm_backend.rs"]
 mod cli_llvm_backend;
+#[path = "cli_suite/cli_llvm_freestanding_abi.rs"]
+mod cli_llvm_freestanding_abi;
 
 #[path = "cli_suite/cli_math.rs"]
 mod cli_math;

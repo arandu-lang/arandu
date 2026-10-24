@@ -493,6 +493,15 @@ fn lower_export(
         .find_map(|attr| crate::attributes::attribute_string_arg(attr, pool))
         .unwrap_or_else(|| type_check.symbols.get(symbol).name.to_string());
 
+    if let Some(reason) = reserved_export_name(&export_name) {
+        return Err(Diagnostic::error(
+            crate::DiagCode::T049InvalidFfiExport,
+            format!(
+                "exported symbol '{export_name}' {reason}; choose another name with `@Export(\"...\")`"
+            ),
+            declaration.span,
+        ));
+    }
     if type_check
         .symbols
         .host_function_names
@@ -512,6 +521,130 @@ fn lower_export(
         .insert(symbol, crate::SmolStr::new(export_name));
     symbols.exported_functions.insert(symbol);
     Ok(())
+}
+
+/// Keywords of C23 and C++23. The generated header is valid C and is wrapped
+/// in `extern "C"` for C++, so a prototype named after either breaks a
+/// consumer at its first `#include`.
+const C_FAMILY_KEYWORDS: &[&str] = &[
+    "alignas",
+    "alignof",
+    "and",
+    "and_eq",
+    "asm",
+    "auto",
+    "bitand",
+    "bitor",
+    "bool",
+    "break",
+    "case",
+    "catch",
+    "char",
+    "char16_t",
+    "char32_t",
+    "char8_t",
+    "class",
+    "co_await",
+    "co_return",
+    "co_yield",
+    "compl",
+    "concept",
+    "const",
+    "const_cast",
+    "consteval",
+    "constexpr",
+    "constinit",
+    "continue",
+    "decltype",
+    "default",
+    "delete",
+    "do",
+    "double",
+    "dynamic_cast",
+    "else",
+    "enum",
+    "explicit",
+    "export",
+    "extern",
+    "false",
+    "float",
+    "for",
+    "friend",
+    "goto",
+    "if",
+    "inline",
+    "int",
+    "long",
+    "mutable",
+    "namespace",
+    "new",
+    "noexcept",
+    "not",
+    "not_eq",
+    "nullptr",
+    "operator",
+    "or",
+    "or_eq",
+    "private",
+    "protected",
+    "public",
+    "register",
+    "reinterpret_cast",
+    "requires",
+    "restrict",
+    "return",
+    "short",
+    "signed",
+    "sizeof",
+    "static",
+    "static_assert",
+    "static_cast",
+    "struct",
+    "switch",
+    "template",
+    "this",
+    "thread_local",
+    "throw",
+    "true",
+    "try",
+    "typedef",
+    "typeid",
+    "typename",
+    "typeof",
+    "typeof_unqual",
+    "union",
+    "unsigned",
+    "using",
+    "virtual",
+    "void",
+    "volatile",
+    "wchar_t",
+    "while",
+    "xor",
+    "xor_eq",
+];
+
+/// Why a flat symbol cannot be published, or `None` when it can.
+///
+/// `ar_` is the compiler runtime namespace (`ar_rt_*`, `ar_str_concat`,
+/// synthesized `ar_thread_capture_*`): exporting into it would interpose on,
+/// or collide with, the host runtime at link time. `main` belongs to the
+/// program entry, and `__x`/`_X` are reserved to the C implementation.
+fn reserved_export_name(name: &str) -> Option<&'static str> {
+    let mut chars = name.chars();
+    let reserved_by_c = name.starts_with("__")
+        || (chars.next() == Some('_') && chars.next().is_some_and(|ch| ch.is_ascii_uppercase()));
+    if C_FAMILY_KEYWORDS.contains(&name) {
+        Some("is a C or C++ keyword")
+    } else if reserved_by_c {
+        Some("is reserved to the C implementation (`__` or `_` + uppercase prefix)")
+    } else if name.starts_with("ar_") {
+        Some("uses the `ar_` prefix reserved for the Arandu runtime")
+    } else if name == "main" {
+        Some("is the program entry point")
+    } else {
+        None
+    }
 }
 
 /// A C status code must have the same width on every target the object can be

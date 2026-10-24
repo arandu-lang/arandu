@@ -10,7 +10,7 @@
 use arandu_middle::layout::{
     AbiLane, AbiPart, ExportAbi, ExportAbiInfo, ParamAbi, classify_export,
 };
-use arandu_middle::types::ArType;
+use arandu_middle::types::{ArType, Primitive};
 use arandu_middle::{Diagnostic, SymbolId};
 
 use super::{FuncEmitter, ModuleEmitter, TypedValue};
@@ -39,6 +39,37 @@ pub(super) fn lanes_ty(lanes: &[AbiLane]) -> String {
                 .collect::<Vec<_>>();
             format!("{{ {} }}", fields.join(", "))
         }
+    }
+}
+
+/// Extension attribute a C compiler attaches to a sub-word integer at the
+/// boundary (`zeroext i8`, `signext i16`).
+///
+/// AAPCS32 and the RISC-V psABI make the callee widen sub-word return values
+/// to a full register, and clang-built callers rely on it (`uint8_t r = f();`
+/// is not re-masked). Every `clang -target` probe emits the same attributes
+/// on parameters and returns, so the definition mirrors them on all targets.
+pub(super) fn scalar_extension(ty: &ArType) -> &'static str {
+    let ArType::Primitive(primitive) = ty else {
+        return "";
+    };
+    match primitive {
+        Primitive::Bool | Primitive::U8 | Primitive::Byte | Primitive::U16 => "zeroext ",
+        Primitive::I8 | Primitive::I16 => "signext ",
+        Primitive::Int
+        | Primitive::Uint
+        | Primitive::ISize
+        | Primitive::USize
+        | Primitive::Float
+        | Primitive::I32
+        | Primitive::I64
+        | Primitive::U32
+        | Primitive::U64
+        | Primitive::F32
+        | Primitive::F64
+        | Primitive::Char
+        | Primitive::Str
+        | Primitive::Any => "",
     }
 }
 

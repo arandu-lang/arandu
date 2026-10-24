@@ -38,7 +38,8 @@ pub fn live_functions(
             (library
                 || matches!(symbol.visibility, Visibility::Public | Visibility::Internal)
                 || symbols.host_func_name(symbol) == "main"
-                || symbols.tooling_entrypoints.contains(&f.symbol))
+                || symbols.tooling_entrypoints.contains(&f.symbol)
+                || symbols.is_exported(f.symbol))
             .then_some(f.symbol)
         })
         .collect();

@@ -80,6 +80,11 @@ pub fn compose_function_units(
                     .tooling_entrypoints
                     .insert(source.id);
             }
+            // An `@Export` of an imported module is a linker root too; the
+            // flat name alone would keep it internal and hide name clashes.
+            if input.context.symbols.is_exported(source.id) {
+                aggregate.symbols_mut().exported_functions.insert(source.id);
+            }
         }
         aggregate.symbols_mut().module_members.extend(
             input

@@ -156,6 +156,12 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
         } else {
             self.module.llvm_ty(&return_ty)?
         };
+        if exported && !is_main {
+            return_text = format!(
+                "{}{return_text}",
+                super::export::scalar_extension(&return_ty)
+            );
+        }
         let mut sret = None;
         if exported && is_export_aggregate(&return_ty) {
             let info = self.module.classify_export_type(&return_ty, span)?;
@@ -201,6 +207,8 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
             } else {
                 let attribute = if matches!(ty, ArType::Ref(_) | ArType::RefMut(_)) {
                     "nonnull "
+                } else if exported {
+                    super::export::scalar_extension(&ty)
                 } else {
                     ""
                 };

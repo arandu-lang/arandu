@@ -111,6 +111,30 @@ impl super::SymbolTable {
         self.exported_functions.contains(&symbol)
     }
 
+    /// First pair of distinct `@Export`s that claim the same linker symbol,
+    /// in deterministic order: `(first, second, name)`.
+    ///
+    /// Each module rejects a duplicate it can see while lowering, but two
+    /// modules each export into their own table. Only the merged program
+    /// table sees both, so every consumer of the export set (object emission
+    /// and header generation) asks here instead of trusting the first writer.
+    #[must_use]
+    pub fn exported_symbol_collision(&self) -> Option<(SymbolId, SymbolId, &str)> {
+        let mut named = self
+            .exported_functions
+            .iter()
+            .filter_map(|symbol| {
+                let name = self.host_function_names.get(symbol)?;
+                Some((name.as_str(), *symbol))
+            })
+            .collect::<Vec<_>>();
+        named.sort_unstable();
+        named
+            .windows(2)
+            .find(|pair| pair[0].0 == pair[1].0 && pair[0].1 != pair[1].1)
+            .map(|pair| (pair[0].1, pair[1].1, pair[0].0))
+    }
+
     #[must_use]
     pub fn lookup_value(&self, scope: ScopeId, name: &str) -> Option<SymbolId> {
         self.lookup_with(scope, name, SymbolKind::is_value)

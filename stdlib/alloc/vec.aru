@@ -366,10 +366,9 @@ public func Vec.getMut<T>(self: mut ref Vec<T>, index: usize): Option<mut ref T>
     if index >= self.len {
         return Option.None
     }
-    unsafe {
-        let elemPtr = mem.ptrOffset<T>(self.data, index as isize)
-        return Option.Some(mut ref *elemPtr)
-    }
+    // The owner-tied view gives the borrow a formal origin in `self`.
+    let items = unsafe { intrinsics.mutSliceFromRaw<Vec<T>, T>(self, self.data, self.len) }
+    return Option.Some(mut ref items[index])
 }
 
 /// Replaces the element at `index` with `value`, returning the previous element.

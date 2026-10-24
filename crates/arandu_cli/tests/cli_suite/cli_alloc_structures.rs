@@ -29,6 +29,16 @@ fn deque_drops_each_noncopy_element_exactly_once() {
 }
 
 #[test]
+fn vec_get_mut_borrows_through_an_owner_tied_view() {
+    // Regression: Vec.getMut formed `mut ref *ptr` and was rejected (O010)
+    // at every instantiation.
+    run_contract(
+        include_str!("../../../../tests/corpus/vec_get_mut.aru"),
+        None,
+    );
+}
+
+#[test]
 fn loop_reassigned_owner_keeps_its_backing_until_dropped() {
     // Regression: Wasm reclaimed a call site's returned backing on re-entry
     // while a loop-carried local still owned it (double free, then a hang).

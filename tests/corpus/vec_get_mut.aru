@@ -1,0 +1,22 @@
+import std.alloc.vec as vec
+
+struct Cell { value: int }
+
+func main(): int {
+    let mut v = vec.Vec<Cell>.new()
+    v.push(Cell { value: 1 })
+    v.push(Cell { value: 2 })
+    match v.getMut(1 as usize) {
+        Option.Some(slot) => { slot.value = 40 }
+        Option.None => { return 1 }
+    }
+    match v.getMut(2 as usize) {
+        Option.Some(_) => { return 2 }
+        Option.None => {}
+    }
+    match v.get(1 as usize) {
+        Option.Some(value) => { if value.value != 40 { return 3 } }
+        Option.None => { return 4 }
+    }
+    return 0
+}

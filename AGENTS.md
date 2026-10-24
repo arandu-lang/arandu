@@ -9,26 +9,38 @@ camadas é uma regressão arquitetural.
 
 ## Mapa do workspace
 
-| Área | Responsabilidade |
-| --- | --- |
-| `arandu_base` | Utilitários e dados fundamentais. Mantenha-o deliberadamente leve; não adicione dependências sem justificativa arquitetural. |
-| `arandu_testing_contract` | DTOs puros compartilhados pelo runtime e pelo harness de testes; sem IR, Salsa ou dependências de compilação. |
-| `arandu_lexer` / `arandu_parser` | Lexer e CST-first com Rowan; `syntax_tree(file)` é canônico e `parse(file)` apenas baixa CST para AST. |
-| `arandu_diagnostics` | `DiagCode`, diagnósticos e documentação longa em `docs/errors/`. |
-| `arandu_middle` | Contratos entre fases, HIR/AMIR, `SourceDatabase`, IDs e layout. `src/db.rs` declara apenas os tipos Salsa compartilhados; não executa queries. |
-| `arandu_resolve` / `arandu_typeck` / `arandu_mir` | Lógica pura de resolução, tipos, ownership/dataflow e AMIR. Não são donos de Salsa. |
-| `arandu_query` | Único dono de Salsa: DB, inputs, queries tracked, `AnalysisHost` e reparse incremental. |
-| `arandu_backend_cranelift` / `arandu_backend_c` / `arandu_backend_wasm` | Backends de execução nativa e WebAssembly. |
-| `arandu_ide` | Análise pura para IDE (completions, apresentações), compartilhada entre LSP e web sem dependência de UI. |
-| `arandu_cli` / `arandu_lsp` / `arandu_web` | Orquestram a DB e pontos de entrada; LSP usa `lsp-server`, VFS e snapshots; web expõe C-ABI in-memory. |
-| `arandu_fmt` | Formatter puro, sem Salsa/LSP. |
-| `arandu_test_support` / `xtask` | Infraestrutura de testes e tarefas do workspace. |
+| Área                                                                                            | Responsabilidade                                                                                                                                |
+| ----------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `arandu_base`                                                                                   | Utilitários e dados fundamentais. Mantenha-o deliberadamente leve; não adicione dependências sem justificativa arquitetural.                    |
+| `arandu_testing_contract`                                                                       | DTOs puros compartilhados pelo runtime e pelo harness de testes; sem IR, Salsa ou dependências de compilação.                                   |
+| `arandu_lexer` / `arandu_parser`                                                                | Lexer e CST-first com Rowan; `syntax_tree(file)` é canônico e `parse(file)` apenas baixa CST para AST.                                          |
+| `arandu_diagnostics`                                                                            | `DiagCode`, diagnósticos e documentação longa em `docs/errors/`.                                                                                |
+| `arandu_middle`                                                                                 | Contratos entre fases, HIR/AMIR, `SourceDatabase`, IDs e layout. `src/db.rs` declara apenas os tipos Salsa compartilhados; não executa queries. |
+| `arandu_resolve` / `arandu_typeck` / `arandu_mir`                                               | Lógica pura de resolução, tipos, ownership/dataflow e AMIR. Não são donos de Salsa.                                                             |
+| `arandu_semantics`                                                                              | Lowering AST→HIR e monomorfização; hoje também é fachada de reexports das fases. Não cresça a fachada: código novo importa do crate dono.       |
+| `arandu_codegen`                                                                                | Contrato de backend agnóstico (papel de `rustc_codegen_ssa`).                                                                                   |
+| `arandu_query`                                                                                  | Único dono de Salsa: DB, inputs, queries tracked, `AnalysisHost` e reparse incremental.                                                         |
+| `arandu_backend_cranelift` / `arandu_backend_c` / `arandu_backend_wasm` / `arandu_backend_llvm` | Backends que consomem AMIR validado: nativo/JIT, C, WebAssembly e LLVM IR textual.                                                              |
+| `arandu_runtime`                                                                                | Runtime host; folha que não depende de crates do compilador.                                                                                    |
+| `arandu_ffi` / `arandu_doc`                                                                     | Superfície C de pacotes e renderização pura de documentação.                                                                                    |
+| `arandu_ide`                                                                                    | Análise pura para IDE (completions, apresentações), compartilhada entre LSP e web sem dependência de UI.                                        |
+| `arandu_cli` / `arandu_lsp` / `arandu_web`                                                      | Orquestram a DB e pontos de entrada; LSP usa `lsp-server`, VFS e snapshots; web expõe C-ABI in-memory.                                          |
+| `arandu_fmt`                                                                                    | Formatter puro, sem Salsa/LSP.                                                                                                                  |
+| `arandu_test_support` / `arandu_fuzz_support` / `xtask`                                         | Infraestrutura de testes, fuzz e tarefas do workspace.                                                                                          |
 
 ## Invariantes de arquitetura — não violar sem discussão explícita
 
 - Pipeline: CST (`syntax_tree`) → AST (`parse`) → `resolve` → `type_check` →
   `lower_amir` → backend. Não coloque resolução ou tipagem no parser, nem
   faça re-lex/parse paralelo a partir de texto quando o CST já for disponível.
+- Dependências apontam para baixo no pipeline. Fases e contratos nunca dependem
+  de backends, `arandu_query` ou drivers. Backends consomem AMIR, layout e
+  `arandu_codegen`; não dependem de lexer, parser, resolve, typeck nem de
+  lowering de HIR/monomorfização. `check-architecture` impõe isso sobre as
+  dependências diretas; as arestas legadas `backend_* → arandu_semantics`
+  ficam em `BACKEND_DEPENDENCY_DEBT` (`xtask/src/architecture.rs`), lista que
+  só pode encolher. Dívida transitiva conhecida: `arandu_middle` depende de
+  lexer/parser e `arandu_mir` de typeck.
 - `arandu_query` é o único dono da execução Salsa. A exceção estreita é
   `arandu_middle/src/db.rs`, que declara inputs/accumulators e o trait
   `SourceDatabase` compartilhado sem possuir providers. `arandu_resolve`,

@@ -25,6 +25,64 @@ const PURE_CRATES: &[&str] = &[
     "arandu_web",
 ];
 
+const BACKEND_CRATES: &[&str] = &[
+    "arandu_backend_c",
+    "arandu_backend_cranelift",
+    "arandu_backend_llvm",
+    "arandu_backend_wasm",
+];
+
+/// Backends consume validated AMIR, layout and the codegen contract; front-end
+/// phases (lexer, parser, resolve, typeck, HIR lowering) stay out of reach.
+const BACKEND_ALLOWED_DEPENDENCIES: &[&str] = &[
+    "arandu_base",
+    "arandu_codegen",
+    "arandu_diagnostics",
+    "arandu_middle",
+    "arandu_mir",
+    "arandu_runtime",
+    "arandu_testing_contract",
+];
+
+/// Existing backend edges that predate the boundary. The list may only shrink:
+/// an entry whose edge no longer exists is reported so it gets removed.
+const BACKEND_DEPENDENCY_DEBT: &[(&str, &str)] = &[
+    ("arandu_backend_c", "arandu_semantics"),
+    ("arandu_backend_cranelift", "arandu_semantics"),
+    ("arandu_backend_llvm", "arandu_semantics"),
+    ("arandu_backend_wasm", "arandu_semantics"),
+];
+
+/// Compiler phases and their contracts. They must never depend on backends,
+/// the query layer or drivers.
+const PHASE_CRATES: &[&str] = &[
+    "arandu_base",
+    "arandu_codegen",
+    "arandu_diagnostics",
+    "arandu_lexer",
+    "arandu_middle",
+    "arandu_mir",
+    "arandu_parser",
+    "arandu_resolve",
+    "arandu_semantics",
+    "arandu_testing_contract",
+    "arandu_typeck",
+];
+
+const DOWNSTREAM_CRATES: &[&str] = &[
+    "arandu_backend_c",
+    "arandu_backend_cranelift",
+    "arandu_backend_llvm",
+    "arandu_backend_wasm",
+    "arandu_cli",
+    "arandu_fuzz_support",
+    "arandu_ide",
+    "arandu_lsp",
+    "arandu_query",
+    "arandu_test_support",
+    "arandu_web",
+];
+
 const FS_EFFECT_MARKERS: &[&str] = &[
     "std::fs",
     "use std::{fs",
@@ -40,7 +98,7 @@ pub fn check(root: &Path) -> i32 {
     match violations(root) {
         Ok(violations) if violations.is_empty() => {
             println!(
-                "check-architecture: ok (Salsa ownership and pure-crate filesystem boundaries)"
+                "check-architecture: ok (Salsa ownership, crate dependency direction and pure-crate filesystem boundaries)"
             );
             0
         }
@@ -61,6 +119,7 @@ pub fn check(root: &Path) -> i32 {
 fn violations(root: &Path) -> Result<Vec<String>, String> {
     let crates = root.join("crates");
     let mut violations = runtime_dependency_violations(&read_utf8(&root.join("Cargo.lock"))?)?;
+    let mut dependencies = BTreeMap::new();
 
     for entry in sorted_entries(&crates)? {
         let crate_root = entry.path();
@@ -72,11 +131,18 @@ fn violations(root: &Path) -> Result<Vec<String>, String> {
         };
 
         let manifest = crate_root.join("Cargo.toml");
-        if manifest.is_file() && crate_name != "arandu_query" && crate_name != "arandu_middle" {
+        if manifest.is_file() {
             let text = read_utf8(&manifest)?;
-            if text
-                .lines()
-                .any(|line| line.trim_start().starts_with("salsa ="))
+            dependencies.insert(
+                crate_name.to_owned(),
+                normal_dependencies(&text)
+                    .map_err(|error| format!("{}: {error}", relative(root, &manifest)))?,
+            );
+            if crate_name != "arandu_query"
+                && crate_name != "arandu_middle"
+                && text
+                    .lines()
+                    .any(|line| line.trim_start().starts_with("salsa ="))
             {
                 violations.push(format!(
                     "{} declares Salsa directly; only arandu_query owns execution and arandu_middle declares shared DB contracts",
@@ -117,7 +183,72 @@ fn violations(root: &Path) -> Result<Vec<String>, String> {
         }
     }
 
+    violations.extend(dependency_direction_violations(&dependencies));
     Ok(violations)
+}
+
+/// Normal (non-dev, non-build) dependencies, including target-specific ones,
+/// keyed by package name so renamed dependencies cannot hide an edge.
+fn normal_dependencies(manifest: &str) -> Result<BTreeSet<String>, String> {
+    let document: toml::Value =
+        toml::from_str(manifest).map_err(|error| format!("parse manifest: {error}"))?;
+    let mut tables = Vec::new();
+    tables.extend(document.get("dependencies"));
+    if let Some(targets) = document.get("target").and_then(toml::Value::as_table) {
+        tables.extend(
+            targets
+                .values()
+                .filter_map(|target| target.get("dependencies")),
+        );
+    }
+    let mut names = BTreeSet::new();
+    for table in tables {
+        let table = table.as_table().ok_or("dependencies must be a table")?;
+        for (key, spec) in table {
+            let name = spec
+                .get("package")
+                .and_then(toml::Value::as_str)
+                .unwrap_or(key);
+            names.insert(name.to_owned());
+        }
+    }
+    Ok(names)
+}
+
+fn dependency_direction_violations(
+    dependencies: &BTreeMap<String, BTreeSet<String>>,
+) -> Vec<String> {
+    let mut violations = Vec::new();
+    for (krate, deps) in dependencies {
+        let krate = krate.as_str();
+        for dep in deps.iter().map(String::as_str) {
+            if BACKEND_CRATES.contains(&krate)
+                && dep.starts_with("arandu_")
+                && !BACKEND_ALLOWED_DEPENDENCIES.contains(&dep)
+                && !BACKEND_DEPENDENCY_DEBT.contains(&(krate, dep))
+            {
+                violations.push(format!(
+                    "{krate} depends on {dep}; backends consume AMIR through arandu_middle, arandu_mir and arandu_codegen, not front-end phases"
+                ));
+            }
+            if PHASE_CRATES.contains(&krate) && DOWNSTREAM_CRATES.contains(&dep) {
+                violations.push(format!(
+                    "{krate} depends on downstream crate {dep}; compiler phases must not depend on backends, queries or drivers"
+                ));
+            }
+        }
+    }
+    for &(krate, dep) in BACKEND_DEPENDENCY_DEBT {
+        if !dependencies
+            .get(krate)
+            .is_some_and(|deps| deps.contains(dep))
+        {
+            violations.push(format!(
+                "{krate} no longer depends on {dep}; remove the edge from BACKEND_DEPENDENCY_DEBT"
+            ));
+        }
+    }
+    violations
 }
 
 /// The lock includes target-specific and dev dependencies. Check them all
@@ -223,6 +354,68 @@ mod tests {
         assert!(FS_EFFECT_MARKERS.contains(&"fs::read_to_string("));
         assert!(FS_EFFECT_MARKERS.contains(&"fs::write("));
         assert!("#[salsa::tracked]".contains("#[salsa"));
+    }
+
+    fn graph(edges: &[(&str, &[&str])]) -> BTreeMap<String, BTreeSet<String>> {
+        edges
+            .iter()
+            .map(|(krate, deps)| {
+                (
+                    (*krate).to_owned(),
+                    deps.iter().map(|dep| (*dep).to_owned()).collect(),
+                )
+            })
+            .collect()
+    }
+
+    fn debt_graph() -> Vec<(&'static str, &'static [&'static str])> {
+        BACKEND_DEPENDENCY_DEBT
+            .iter()
+            .map(|&(krate, _)| (krate, &["arandu_middle", "arandu_semantics"][..]))
+            .collect()
+    }
+
+    #[test]
+    fn normal_dependencies_cover_targets_and_renames_but_not_dev() {
+        let manifest = r#"
+[dependencies]
+arandu_middle = { workspace = true }
+front = { package = "arandu_typeck", path = "../arandu_typeck" }
+[target.'cfg(unix)'.dependencies]
+arandu_parser = "0.1"
+[dev-dependencies]
+arandu_cli = { path = "../arandu_cli" }
+"#;
+        let deps = normal_dependencies(manifest).unwrap();
+        assert_eq!(
+            deps.into_iter().collect::<Vec<_>>(),
+            ["arandu_middle", "arandu_parser", "arandu_typeck"]
+        );
+    }
+
+    #[test]
+    fn backend_boundary_accepts_contracts_and_recorded_debt() {
+        assert!(dependency_direction_violations(&graph(&debt_graph())).is_empty());
+    }
+
+    #[test]
+    fn backend_boundary_rejects_new_front_end_edges() {
+        let mut edges = debt_graph();
+        edges.push(("arandu_backend_c", &["arandu_semantics", "arandu_typeck"]));
+        edges.push(("arandu_typeck", &["arandu_query"]));
+        let violations = dependency_direction_violations(&graph(&edges));
+        assert_eq!(violations.len(), 2);
+        assert!(violations[0].contains("arandu_backend_c depends on arandu_typeck"));
+        assert!(violations[1].contains("arandu_typeck depends on downstream crate arandu_query"));
+    }
+
+    #[test]
+    fn backend_boundary_reports_paid_debt() {
+        let mut edges = debt_graph();
+        edges[0].1 = &["arandu_middle"];
+        let violations = dependency_direction_violations(&graph(&edges));
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].contains("remove the edge from BACKEND_DEPENDENCY_DEBT"));
     }
 
     #[test]

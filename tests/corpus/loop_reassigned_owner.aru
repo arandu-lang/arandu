@@ -1,0 +1,47 @@
+module loopReassignedOwner
+
+import std.alloc.vec as vec
+
+import std.core.io as io
+
+// A loop-carried local reassigned from a call keeps owning the previous
+// iteration's value until the assignment drops it; per-call-site backing
+// must not be reclaimed while the local still names it.
+struct Tracked { tag: int, items: vec.Vec<int> }
+
+@Destructor
+func Tracked.destroy(self: own Tracked): void { io.println(self.tag) }
+
+func tracked(tag: int): Tracked {
+    let mut items = vec.Vec<int>.new()
+    items.push(tag)
+    return Tracked { tag: tag, items: items }
+}
+
+func emptyVec(): vec.Vec<u64> {
+    let items = vec.Vec<u64>.new()
+    return items
+}
+
+func reassignVec(): int {
+    let mut owner = emptyVec()
+    let mut step = 0
+    while step < 3 {
+        owner = emptyVec()
+        step = step + 1
+    }
+    return owner.len() as int
+}
+
+public func main(): int {
+    if reassignVec() != 0 { return 2 }
+    let mut current = tracked(0)
+    let mut tag = 1
+    while tag <= 4 {
+        let previous = current.tag
+        current = tracked(tag)
+        if current.items.len() != (1 as usize) || current.tag != previous + 1 { return 1 }
+        tag = tag + 1
+    }
+    return 0
+}

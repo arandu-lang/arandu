@@ -5,6 +5,7 @@ mod cycles;
 mod scratch;
 mod string_origin;
 
+pub use cycles::cyclic_aggregate_local_store;
 pub use scratch::{ScratchResultAbi, function_scratch_safe, scratch_type_safe};
 
 #[cfg(test)]
@@ -688,5 +689,111 @@ mod tests {
             !safe(&cyclic_aggregate, &symbols, &interner),
             "cyclic aggregate block param must remain rejected"
         );
+    }
+
+    #[test]
+    fn loop_carried_aggregate_locals_are_detected_only_inside_cycles() {
+        use arandu_middle::amir::{AmirConstant, AmirLocal, AmirPlace, BlockId, LocalId};
+        let interner = TypeInterner::new();
+        let int = interner.intern(ArType::Primitive(Primitive::Int));
+        let named = interner.intern(ArType::named(SymbolId::new(0, 7), &[], &interner));
+        // Stores local 0 once in each listed block (blocks in ascending order).
+        let build = |local_ty: TypeId, store_blocks: &[usize]| {
+            let mut stmts = AmirStmtTable::new();
+            for _ in store_blocks {
+                stmts.push(AmirStmt::Store {
+                    lhs: AmirPlace {
+                        local: LocalId::from_usize(0),
+                        projections: smallvec![],
+                    },
+                    rhs: AmirOperand::Move(TempId::from_usize(0)),
+                });
+            }
+            let range = |block: usize| match store_blocks.iter().position(|b| *b == block) {
+                Some(index) => DenseRange::new(index, 1),
+                None => DenseRange::empty(),
+            };
+            let blocks = vec![
+                AmirBasicBlock {
+                    id: BlockId::from_usize(0),
+                    params: DenseRange::empty(),
+                    statements: range(0),
+                    terminator: AmirTerminator::Goto {
+                        target: BlockId::from_usize(1),
+                        args: Vec::new(),
+                    },
+                },
+                AmirBasicBlock {
+                    id: BlockId::from_usize(1),
+                    params: DenseRange::empty(),
+                    statements: range(1),
+                    terminator: AmirTerminator::Branch {
+                        condition: AmirOperand::Constant(AmirConstant::Bool(true)),
+                        if_true: BlockId::from_usize(2),
+                        true_args: Vec::new(),
+                        if_false: BlockId::from_usize(3),
+                        false_args: Vec::new(),
+                    },
+                },
+                AmirBasicBlock {
+                    id: BlockId::from_usize(2),
+                    params: DenseRange::empty(),
+                    statements: range(2),
+                    terminator: AmirTerminator::Goto {
+                        target: BlockId::from_usize(1),
+                        args: Vec::new(),
+                    },
+                },
+                AmirBasicBlock {
+                    id: BlockId::from_usize(3),
+                    params: DenseRange::empty(),
+                    statements: range(3),
+                    terminator: AmirTerminator::Return,
+                },
+            ];
+            let cfg = compute_cfg_edges(&blocks);
+            AmirFunc {
+                symbol: SymbolId::new(0, 0),
+                return_type: int,
+                receiver: None,
+                params: Vec::new(),
+                locals: vec![AmirLocal {
+                    id: LocalId::from_usize(0),
+                    ty: local_ty,
+                    is_memory: true,
+                    symbol: None,
+                    span: Span::new(0, 0, 1),
+                    use_span: None,
+                }],
+                temps: vec![temp(0, local_ty)],
+                blocks,
+                block_params: Vec::new(),
+                stmts,
+                cfg,
+            }
+        };
+        // Initialized before the loop and reassigned inside it: loop-carried.
+        assert!(cyclic_aggregate_local_store(
+            &build(named, &[0, 2]),
+            &interner
+        ));
+        assert!(cyclic_aggregate_local_store(
+            &build(named, &[0, 1]),
+            &interner
+        ));
+        // A single binding inside the loop is per-iteration.
+        assert!(!cyclic_aggregate_local_store(
+            &build(named, &[2]),
+            &interner
+        ));
+        // Reassignment outside any cycle cannot meet a re-entered site.
+        assert!(!cyclic_aggregate_local_store(
+            &build(named, &[0, 3]),
+            &interner
+        ));
+        assert!(!cyclic_aggregate_local_store(
+            &build(int, &[0, 2]),
+            &interner
+        ));
     }
 }

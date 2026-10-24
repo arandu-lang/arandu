@@ -22,6 +22,15 @@ impl FuncTranslator<'_> {
         if !function_scratch_safe(self.func, self.symbols, self.interner, result_abi) {
             return;
         }
+        // A Wasm move into a whole local copies the backing pointer, so a
+        // loop-carried local would keep naming a site's backing after the next
+        // entry of that site reclaims (returned home) or overwrites it.
+        if arandu_semantics::aggregate_storage::cyclic_aggregate_local_store(
+            self.func,
+            self.interner,
+        ) {
+            return;
+        }
         for id in self.func.stmts.iter_ids() {
             if self.static_initializer_temps.contains(&id) {
                 continue;

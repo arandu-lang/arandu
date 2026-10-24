@@ -75,3 +75,49 @@ pub(super) fn block_param_safe(
         | ArType::Error => false,
     }
 }
+
+/// Whether a loop reassigns an aggregate local that another statement also
+/// assigns, so the local carries a value across the back-edge.
+///
+/// Backends whose aggregate moves copy the backing pointer make that local
+/// name the storage of the producing site. A loop-carried local outlives the
+/// next entry of that site, so per-site backing reclaimed or overwritten on
+/// re-entry would be observed (use after free) through it. A local with a
+/// single store inside the loop is a per-iteration binding: elaborated AMIR
+/// moves or drops it before the site runs again.
+#[must_use]
+pub fn cyclic_aggregate_local_store(function: &AmirFunc, interner: &TypeInterner) -> bool {
+    // (stores, stored inside a cycle) per aggregate local.
+    let mut stores = vec![(0usize, false); function.locals.len()];
+    for block in &function.blocks {
+        let mut in_cycle = None;
+        for statement in function.block_stmts(block.id) {
+            let arandu_middle::amir::AmirStmt::Store { lhs, .. } = statement else {
+                continue;
+            };
+            if !lhs.projections.is_empty() {
+                continue;
+            }
+            let Some(local) = function.locals.get(lhs.local.as_usize()) else {
+                continue;
+            };
+            if !matches!(
+                interner.resolve(local.ty),
+                ArType::Named(..)
+                    | ArType::Tuple(_)
+                    | ArType::Array(..)
+                    | ArType::Option(_)
+                    | ArType::Result(..)
+                    | ArType::Poll(_)
+            ) {
+                continue;
+            }
+            let cyclic = *in_cycle.get_or_insert_with(|| block_in_cycle(function, block.id));
+            if let Some(entry) = stores.get_mut(lhs.local.as_usize()) {
+                entry.0 = entry.0.saturating_add(1);
+                entry.1 |= cyclic;
+            }
+        }
+    }
+    stores.iter().any(|&(count, cyclic)| cyclic && count > 1)
+}

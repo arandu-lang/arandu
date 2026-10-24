@@ -48,18 +48,38 @@ Func main() -> bool
   locals:
     _0: bool // return
     _1: [4]u8
-    _2: [4]u8
-    _3: Range<int>
-    _4: []u8
-    _5: []u8
+    _2: ref [4]u8
+    _3: []u8
+    _4: bool
+    _5: usize
+    _6: usize
+    _7: bool
+    _8: bool
+    _9: usize
+    _10: []u8
+    _11: []u8
     s0: [4]u8 // data
     s1: []u8 // slice_view
 
   bb0:
     _1 = [1, 2, 3, 4]
     s0 = _1
-    _2 = s0
-    _3 = range_exclusive 0, 4
-    _4 = _2[_3]
-    _0 = call fn@checkSlice(_4, 4, 3)
+    _2 = &s0
+    _3 = slice_view(_2, _2, 4)
+    _4 = ge 0, 0
+    branch _4 => bb2, else bb1
+  bb1:
+    unreachable
+  bb2:
+    _5 = 0
+    _6 = 4
+    _7 = le _5, _6
+    branch _7 => bb3, else bb1
+  bb3:
+    _8 = le _6, 4
+    branch _8 => bb4, else bb1
+  bb4:
+    _9 = sub _6, _5
+    _10 = slice_subslice(_3, _5, _9)
+    _0 = call fn@checkSlice(_10, 4, 3)
     return

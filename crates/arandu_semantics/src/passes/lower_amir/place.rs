@@ -4,8 +4,10 @@ use crate::SymbolTable;
 use crate::amir::{AmirOperand, AmirPlace, AmirProjection, AmirRvalue, TempId};
 use crate::diagnostics::Diagnostic;
 use crate::hir::{HirExprId, HirExprKind};
-use crate::ops::UnaryOp;
+use crate::ops::{BinaryOp, UnaryOp};
+use crate::passes::lower_amir::amir_unsupported;
 use crate::passes::type_checker::types::ArType;
+use crate::types::Primitive;
 
 impl LowerCtx<'_> {
     /// Keep dummy `Store`s for `local` so projected places see a defined SSA value.
@@ -251,6 +253,15 @@ impl LowerCtx<'_> {
         target: Option<TempId>,
         symbols: &SymbolTable,
     ) -> Result<AmirOperand, Diagnostic> {
+        if let HirExprKind::Binary {
+            op: op @ (BinaryOp::RangeExclusive | BinaryOp::RangeInclusive),
+            left,
+            right,
+        } = self.hir.pool.expr(index).kind
+        {
+            let inclusive = op == BinaryOp::RangeInclusive;
+            return self.lower_range_index(base, left, right, inclusive, expr_ty, target, symbols);
+        }
         if let Ok(mut place) = self.lower_expr_to_place(base, symbols) {
             let base_ty = self.resolve_ty(self.hir.pool.expr(base).ty);
             let through_reference = matches!(base_ty, ArType::Ref(_) | ArType::RefMut(_));
@@ -290,6 +301,16 @@ impl LowerCtx<'_> {
                 return Ok(AmirOperand::Copy(dest));
             }
         }
+        if matches!(
+            self.resolve_ty(self.hir.pool.expr(index).ty),
+            ArType::Range(_)
+        ) {
+            return Err(amir_unsupported(
+                self.diag_span(self.current_span),
+                "indexing with a range value",
+                "write the range literally: `s[start..end]`",
+            ));
+        }
         let base_op = self.lower_expr(base, None, symbols)?;
         let idx_op = self.lower_expr(index, None, symbols)?;
         let dest = target.unwrap_or_else(|| self.new_temp_id(expr_ty));
@@ -302,5 +323,119 @@ impl LowerCtx<'_> {
             },
         );
         Ok(AmirOperand::Copy(dest))
+    }
+
+    /// Lowers `base[start..end]` (or `..=`) on an array or slice to a checked
+    /// [`AmirRvalue::SliceSubslice`]. Out-of-range bounds reach an
+    /// `Unreachable` block, which every backend lowers to a trap, like an
+    /// out-of-bounds element index.
+    #[allow(clippy::too_many_arguments)]
+    fn lower_range_index(
+        &mut self,
+        base: HirExprId,
+        start: HirExprId,
+        end: HirExprId,
+        inclusive: bool,
+        expr_ty: crate::types::TypeId,
+        target: Option<TempId>,
+        symbols: &SymbolTable,
+    ) -> Result<AmirOperand, Diagnostic> {
+        let base_ty_id = self.hir.pool.expr(base).ty;
+        let (slice, len) = match self.resolve_ty(base_ty_id) {
+            ArType::Slice(_) | ArType::MutSlice(_) => {
+                let slice = self.lower_expr(base, None, symbols)?;
+                let len = self.new_temp(ArType::Primitive(Primitive::USize));
+                self.emit_assign_temp(len, AmirRvalue::Len(slice));
+                (slice, AmirOperand::Copy(len))
+            }
+            ArType::Array(count, _) => {
+                let place = self.lower_expr_to_place(base, symbols)?;
+                self.mark_local_materialized(place.local);
+                let owner = self.new_temp(ArType::Ref(base_ty_id));
+                self.emit_assign_temp(owner, AmirRvalue::Borrow(place));
+                let len = AmirOperand::Constant(self.intern_literal_int(count.to_string()));
+                let slice = self.new_temp_id(expr_ty);
+                self.emit_assign_temp(
+                    slice,
+                    AmirRvalue::SliceView {
+                        owner: AmirOperand::Copy(owner),
+                        data: AmirOperand::Copy(owner),
+                        len,
+                    },
+                );
+                (AmirOperand::Copy(slice), len)
+            }
+            _ => {
+                return Err(amir_unsupported(
+                    self.diag_span(self.current_span),
+                    "range index outside arrays and slices",
+                    "take a slice first, e.g. `v.asSlice()[start..end]`",
+                ));
+            }
+        };
+        let bound_ty = self.resolve_ty(self.hir.pool.expr(start).ty);
+        let start = self.lower_expr(start, None, symbols)?;
+        let end = self.lower_expr(end, None, symbols)?;
+        let trap = self.new_block();
+        if bound_ty.is_signed() {
+            let zero = AmirOperand::Constant(self.intern_literal_int("0"));
+            let nonnegative = self.range_binary(BinaryOp::GtEqual, start, zero, Primitive::Bool);
+            self.trap_unless(nonnegative, trap);
+        }
+        let start = self.range_bound(start);
+        let end = self.range_bound(end);
+        let ordered = self.range_binary(BinaryOp::LtEqual, start, end, Primitive::Bool);
+        self.trap_unless(ordered, trap);
+        let fits_op = if inclusive {
+            BinaryOp::Lt
+        } else {
+            BinaryOp::LtEqual
+        };
+        let fits = self.range_binary(fits_op, end, len, Primitive::Bool);
+        self.trap_unless(fits, trap);
+        self.seal_block(trap);
+        let mut count = self.range_binary(BinaryOp::Sub, end, start, Primitive::USize);
+        if inclusive {
+            let one = AmirOperand::Constant(self.intern_literal_int("1"));
+            count = self.range_binary(BinaryOp::Add, count, one, Primitive::USize);
+        }
+        let dest = target.unwrap_or_else(|| self.new_temp_id(expr_ty));
+        self.emit_assign_temp(
+            dest,
+            AmirRvalue::SliceSubslice {
+                slice,
+                start,
+                len: count,
+            },
+        );
+        Ok(AmirOperand::Copy(dest))
+    }
+
+    fn range_binary(
+        &mut self,
+        op: BinaryOp,
+        left: AmirOperand,
+        right: AmirOperand,
+        result: Primitive,
+    ) -> AmirOperand {
+        let temp = self.new_temp(ArType::Primitive(result));
+        self.emit_assign_temp(temp, AmirRvalue::Binary { op, left, right });
+        AmirOperand::Copy(temp)
+    }
+
+    /// The bound converted to `usize`; signed bounds were checked nonnegative.
+    fn range_bound(&mut self, bound: AmirOperand) -> AmirOperand {
+        let temp = self.new_temp(ArType::Primitive(Primitive::USize));
+        self.emit_assign_temp(temp, AmirRvalue::Use(bound));
+        AmirOperand::Copy(temp)
+    }
+
+    /// Continues in a fresh block reached when `condition` holds; otherwise
+    /// control enters `trap`.
+    fn trap_unless(&mut self, condition: AmirOperand, trap: crate::amir::BlockId) {
+        let ok = self.new_block();
+        self.set_bool_branch(condition, ok, trap);
+        self.seal_block(ok);
+        self.builder.current_block = Some(ok);
     }
 }

@@ -73,9 +73,15 @@ Tests may still drive the whole front end through dev-dependencies.
 ### Index bounds
 
 Every backend traps on an out-of-bounds index into an array or slice (`Vec`
-and raw pointers are unchecked); LLVM matches C, Cranelift and Wasm with an
-`icmp uge` and `llvm.trap`. `AmirRvalue::IndexAccess::in_bounds` lets a backend
-omit the check. Lowering always clears it; only the AMIR
+and raw pointers are unchecked), both for `IndexAccess` values and for
+`AmirProjection::Index` places; LLVM matches C, Cranelift and Wasm with an
+`icmp uge` and `llvm.trap`. A range index `base[start..end]` (or `..=`) on an
+array or slice lowers to `SliceSubslice` after AMIR checks that a signed start
+is nonnegative, `start <= end` and `end` fits the length; a failed check
+reaches `Unreachable`, which every backend lowers to a trap. A range index on
+other bases or through a range value is reported as unsupported.
+`AmirRvalue::IndexAccess::in_bounds` lets a backend omit the check, and DCE
+keeps every unproven dynamic index even when its value is unused. Lowering always clears it; only the AMIR
 `bounds_check_elim` pass sets it, when a dominating branch proved
 `index < len(slice)` on unsigned single-definition values of the same slice.
 Integer `+`, `-` and `*` wrap, so the pass never derives a fact through

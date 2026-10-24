@@ -254,6 +254,19 @@ fn has_side_effect(stmt: &AmirStmt) -> bool {
         | AmirStmt::Destroy(_)
         | AmirStmt::StorageLive(_)
         | AmirStmt::StorageDead(_) => true,
+        // A dynamic index may trap, and that trap is observable whether or
+        // not the value is used; only `bounds_check_elim` proves it cannot.
+        AmirStmt::Assign {
+            rhs: AmirRvalue::IndexAccess { in_bounds, .. },
+            ..
+        } => !in_bounds,
+        AmirStmt::Assign {
+            rhs: AmirRvalue::Load(place) | AmirRvalue::Borrow(place) | AmirRvalue::BorrowMut(place),
+            ..
+        } => place
+            .projections
+            .iter()
+            .any(|projection| matches!(projection, AmirProjection::Index(_))),
         AmirStmt::Assign { rhs, .. } => matches!(
             rhs,
             AmirRvalue::Alloc(_)

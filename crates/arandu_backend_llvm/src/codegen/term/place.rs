@@ -171,10 +171,14 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                     ty = element;
                 }
                 AmirProjection::Index(index) => {
-                    let (base_ptr, element) = match &ty {
-                        ArType::Array(_, element) => {
-                            (address.clone(), self.module.interner.resolve(*element))
-                        }
+                    // Arrays and slices trap on out-of-bounds indices, as in
+                    // `IndexAccess` and the C and Cranelift place paths.
+                    let (base_ptr, element, bound) = match &ty {
+                        ArType::Array(len, element) => (
+                            address.clone(),
+                            self.module.interner.resolve(*element),
+                            Some(len.to_string()),
+                        ),
                         ArType::Slice(element) | ArType::MutSlice(element) => {
                             // `address` points at a fat `{data,len}` descriptor.
                             let element = self.module.interner.resolve(*element);
@@ -182,14 +186,24 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                             let align = self.module.pointer_align();
                             self.writer
                                 .line(format!("{data} = load ptr, ptr {address}, align {align}"));
-                            (data, element)
+                            let len_address = self.new_value();
+                            self.writer.line(format!(
+                                "{len_address} = getelementptr inbounds i8, ptr {address}, i64 {}",
+                                self.module.layout.fat_ptr_len_offset()
+                            ));
+                            let usize_ll = self.module.llvm_ty(&self.module.usize_ty())?;
+                            let len = self.new_value();
+                            self.writer.line(format!(
+                                "{len} = load {usize_ll}, ptr {len_address}, align {align}"
+                            ));
+                            (data, element, Some(len))
                         }
                         ArType::Primitive(Primitive::Str) => {
                             let data = self.new_value();
                             let align = self.module.pointer_align();
                             self.writer
                                 .line(format!("{data} = load ptr, ptr {address}, align {align}"));
-                            (data, ArType::Primitive(Primitive::U8))
+                            (data, ArType::Primitive(Primitive::U8), None)
                         }
                         other => {
                             return Err(ice(format!(
@@ -207,13 +221,19 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                         .size;
                     let index_ty = self.module.operand_type(index, self.func);
                     let index = self.operand(index, &index_ty)?;
-                    let index = self.coerce(index, &self.module.i64_ty())?;
+                    let index = self.coerce(index, &self.module.usize_ty())?;
+                    let index_ll = index.ty.clone();
+                    if let Some(bound) = bound {
+                        self.trap_unless_index_below(&index_ll, &index.value, &bound);
+                    }
                     let offset = self.new_value();
-                    self.writer
-                        .line(format!("{offset} = mul i64 {}, {stride}", index.value));
+                    self.writer.line(format!(
+                        "{offset} = mul {index_ll} {}, {stride}",
+                        index.value
+                    ));
                     let next = self.new_value();
                     self.writer.line(format!(
-                        "{next} = getelementptr inbounds i8, ptr {base_ptr}, i64 {offset}"
+                        "{next} = getelementptr inbounds i8, ptr {base_ptr}, {index_ll} {offset}"
                     ));
                     address = next;
                     ty = element;

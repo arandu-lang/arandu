@@ -398,25 +398,16 @@ fn incremental_build_does_not_reuse_cranelift_artifact_for_llvm() {
     assert!(String::from_utf8_lossy(&repeated_llvm.stdout).contains("incremental: up-to-date"));
 }
 
-/// Arrays and slices trap on an out-of-bounds index in the LLVM product too,
-/// matching the C, Cranelift and Wasm backends.
-#[test]
-fn llvm_product_traps_on_an_out_of_bounds_index() {
-    if !clang_available() {
-        return;
-    }
-    let dir = std::env::temp_dir().join("arandu_cli_llvm_index_trap");
+/// Compiles `source` through `emit-llvm` and clang, runs it and returns its
+/// exit status.
+fn llvm_native_status(name: &str, source: &str) -> std::process::ExitStatus {
+    let dir = std::env::temp_dir().join(format!("arandu_cli_llvm_{name}"));
     std::fs::create_dir_all(&dir).expect("dir");
-    let source = dir.join("main.aru");
-    std::fs::write(
-        &source,
-        "func at(values: [3]u8, i: usize): u8 {\n    return values[i]\n}\n\nfunc main(): int {\n    let values: [3]u8 = [1 as u8, 2 as u8, 3 as u8]\n    return at(values, 5 as usize) as int\n}\n",
-    )
-    .expect("write");
+    std::fs::write(dir.join("main.aru"), source).expect("write");
     let ir = run_cli_in(&dir, &["emit-llvm", "main.aru"]);
     assert!(
         ir.status.success(),
-        "{}",
+        "{name}: {}",
         String::from_utf8_lossy(&ir.stderr)
     );
     let ll = dir.join("main.ll");
@@ -431,15 +422,36 @@ fn llvm_product_traps_on_an_out_of_bounds_index() {
         .expect("clang");
     assert!(
         clang.status.success(),
-        "{}",
+        "{name}: {}",
         String::from_utf8_lossy(&clang.stderr)
     );
-    let run = Command::new(&binary).output().expect("run");
-    assert!(
-        !run.status.success(),
-        "index 5 of a [3]u8 must trap, got {:?}",
-        run.status
-    );
+    Command::new(&binary).output().expect("run").status
+}
+
+/// Arrays and slices trap on an out-of-bounds index in the LLVM product too,
+/// matching the C, Cranelift and Wasm backends, whether the index reads a
+/// value, a place through `ref []T`, or bounds a subslice.
+#[test]
+fn llvm_product_traps_on_an_out_of_bounds_index() {
+    if !clang_available() {
+        return;
+    }
+    let array = "func at(values: [3]u8, i: usize): u8 {\n    return values[i]\n}\n\nfunc main(): int {\n    let values: [3]u8 = [1 as u8, 2 as u8, 3 as u8]\n    return at(values, INDEX as usize) as int\n}\n";
+    let borrowed = "func at(s: ref []u8, i: usize): u8 {\n    return s[i]\n}\n\nfunc main(): int {\n    let values: [4]u8 = [10 as u8, 20 as u8, 30 as u8, 40 as u8]\n    let s: []u8 = values[0..4]\n    return at(ref s, INDEX) as int\n}\n";
+    let subslice = "import std.core.slice as slice\n\nfunc cut(s: []u8, end: usize): usize {\n    let t: []u8 = s[1..end]\n    return slice.len<u8>(t)\n}\n\nfunc main(): int {\n    let values: [4]u8 = [1 as u8, 2 as u8, 3 as u8, 4 as u8]\n    return cut(values[0..4], INDEX) as int\n}\n";
+    for (name, source, inside, expected) in [
+        ("array", array, "2", 3),
+        ("borrowed", borrowed, "2", 30),
+        ("subslice", subslice, "4", 3),
+    ] {
+        let status = llvm_native_status(name, &source.replace("INDEX", inside));
+        assert_eq!(status.code(), Some(expected), "{name} in bounds");
+        let status = llvm_native_status(&format!("{name}_oob"), &source.replace("INDEX", "9"));
+        assert!(
+            !status.success(),
+            "{name}: index 9 must trap, got {status:?}"
+        );
+    }
 }
 
 /// Values reach their destination without identity copies: SSA temps alias

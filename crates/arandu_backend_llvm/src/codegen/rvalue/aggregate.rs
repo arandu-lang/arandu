@@ -4,7 +4,12 @@ use arandu_middle::amir::{AmirRvalue, TempId};
 use arandu_middle::types::{ArType, Primitive};
 
 impl<'a, 'm> FuncEmitter<'a, 'm> {
-    fn trap_unless_index_below(&mut self, ty: &str, index: &str, bound: &str) {
+    pub(in crate::codegen) fn trap_unless_index_below(
+        &mut self,
+        ty: &str,
+        index: &str,
+        bound: &str,
+    ) {
         let out_of_bounds = self.new_value();
         self.writer
             .line(format!("{out_of_bounds} = icmp uge {ty} {index}, {bound}"));

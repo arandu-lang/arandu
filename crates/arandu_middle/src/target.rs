@@ -61,6 +61,11 @@ pub struct EmbeddedProfile {
     /// normaliza para `thumbv6m-unknown-none-eabi` e avisa
     /// `-Woverride-module` quando o módulo declara a forma curta.
     llvm_triple: &'static str,
+    /// Code-generation flags clang needs beyond the triple. LLVM's triple
+    /// parser has no `riscv32imc` architecture (clang rejects the Rust-style
+    /// triple outright), so the ISA extensions and the ABI travel as
+    /// `-march`/`-mabi` next to the base `riscv32` triple.
+    clang_args: &'static [&'static str],
     /// Pointer size in bytes. Never read from the host.
     pointer_bytes: u8,
     /// Pointer alignment in bytes.
@@ -72,6 +77,7 @@ pub struct EmbeddedProfile {
 const THUMBV6M_NONE_EABI: EmbeddedProfile = EmbeddedProfile {
     triple: "thumbv6m-none-eabi",
     llvm_triple: "thumbv6m-unknown-none-eabi",
+    clang_args: &[],
     pointer_bytes: 4,
     pointer_align: 4,
     // Same 32-bit ARM layout LLVM reports for `thumbv6m-none-eabi`
@@ -82,6 +88,7 @@ const THUMBV6M_NONE_EABI: EmbeddedProfile = EmbeddedProfile {
 const THUMBV7EM_NONE_EABIHF: EmbeddedProfile = EmbeddedProfile {
     triple: "thumbv7em-none-eabihf",
     llvm_triple: "thumbv7em-unknown-none-eabihf",
+    clang_args: &[],
     pointer_bytes: 4,
     pointer_align: 4,
     llvm_datalayout: "e-m:e-p:32:32-Fi8-i64:64-v128:64:128-a:0:32-n32-S64",
@@ -89,7 +96,8 @@ const THUMBV7EM_NONE_EABIHF: EmbeddedProfile = EmbeddedProfile {
 
 const RISCV32IMC_UNKNOWN_NONE_ELF: EmbeddedProfile = EmbeddedProfile {
     triple: "riscv32imc-unknown-none-elf",
-    llvm_triple: "riscv32imc-unknown-none-elf",
+    llvm_triple: "riscv32-unknown-none-elf",
+    clang_args: &["-march=rv32imc", "-mabi=ilp32"],
     pointer_bytes: 4,
     pointer_align: 4,
     llvm_datalayout: "e-m:e-p:32:32-i64:64-n32-S128",
@@ -105,6 +113,12 @@ impl EmbeddedProfile {
     #[must_use]
     pub const fn llvm_triple(self) -> &'static str {
         self.llvm_triple
+    }
+
+    /// Extra clang flags that select the ISA and ABI the triple cannot name.
+    #[must_use]
+    pub const fn clang_args(self) -> &'static [&'static str] {
+        self.clang_args
     }
 
     #[must_use]
@@ -436,6 +450,11 @@ mod tests {
         assert_eq!(riscv.pointer_bytes(), 4);
         assert_eq!(riscv.pointer_align(), 4);
         assert_eq!(riscv.llvm_datalayout(), "e-m:e-p:32:32-i64:64-n32-S128");
+        // clang rejects `--target=riscv32imc-unknown-none-elf`; the base triple
+        // plus `-march` is the only spelling every supported clang accepts.
+        assert_eq!(riscv.llvm_triple(), "riscv32-unknown-none-elf");
+        assert_eq!(riscv.clang_args(), ["-march=rv32imc", "-mabi=ilp32"]);
+        assert!(arm.clang_args().is_empty());
         let cortex_m0 = embedded_profile("thumbv6m-none-eabi").expect("cortex-m0 profile");
         assert_eq!(cortex_m0.pointer_bytes(), 4);
         assert_eq!(cortex_m0.pointer_align(), 4);

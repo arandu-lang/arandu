@@ -153,8 +153,7 @@ pub(crate) fn publish(
     // clang canonicalizes the public short triple (`thumbv6m-none-eabi`) by
     // inserting the `unknown` vendor. Passing the canonical form keeps the
     // module header and the driver in agreement, avoiding -Woverride-module.
-    let triple = plan.embedded.map(|profile| profile.llvm_triple());
-    if let Err(error) = clang_compile(&temp_ll, &temp_obj, triple) {
+    if let Err(error) = clang_compile(&temp_ll, &temp_obj, plan.embedded) {
         let _ = fs::remove_file(&temp_ll);
         let _ = fs::remove_file(&temp_obj);
         return Err(error);
@@ -173,7 +172,7 @@ pub(crate) fn publish(
             write_bytes(&output, &bytes)
         }
         LlvmStop::Staticlib => archive(&temp_obj, &output),
-        LlvmStop::Elf => link_elf(&temp_obj, &output, triple, flags),
+        LlvmStop::Elf => link_elf(&temp_obj, &output, plan.embedded, flags),
         LlvmStop::Ir | LlvmStop::Header | LlvmStop::Executable => {
             return Err(CliFailure::usage(
                 "host LLVM executables are published by the runtime linker",
@@ -222,11 +221,16 @@ fn output_path(
     Ok(layout.deps.join(format!("{package}.{extension}")))
 }
 
-fn clang_compile(ir: &Path, object: &Path, triple: Option<&str>) -> Result<(), CliFailure> {
+fn clang_compile(
+    ir: &Path,
+    object: &Path,
+    embedded: Option<&EmbeddedProfile>,
+) -> Result<(), CliFailure> {
     let mut command = Command::new("clang");
     command.args(["-c", "-O3"]);
-    if let Some(triple) = triple {
-        command.arg(format!("--target={triple}"));
+    if let Some(profile) = embedded {
+        command.arg(format!("--target={}", profile.llvm_triple()));
+        command.args(profile.clang_args());
     } else {
         // Host modules deliberately carry no `target triple` so the artifact is
         // built for the machine compiling it; clang's "override" is the intent.
@@ -279,7 +283,7 @@ fn archive(object: &Path, output: &Path) -> Result<PublishedNativeArtifact, CliF
 fn link_elf(
     object: &Path,
     output: &Path,
-    triple: Option<&str>,
+    embedded: Option<&EmbeddedProfile>,
     flags: &ProjectFlags,
 ) -> Result<PublishedNativeArtifact, CliFailure> {
     let Some(script) = flags.linker_script.as_ref() else {
@@ -292,11 +296,19 @@ fn link_elf(
             "linker script does not exist; the compiler does not invent a memory map",
         ));
     }
-    let triple = triple.ok_or_else(|| {
+    let profile = embedded.ok_or_else(|| {
         CliFailure::usage("--linker-script requires a canonical bare-metal --target")
     })?;
+    // `-fuse-ld=lld`: the clang driver otherwise falls back to the host `ld`,
+    // which has no ARM or RISC-V emulation on an x86-64 Linux toolchain.
     let status = Command::new("clang")
-        .args(["-nostdlib", &format!("--target={triple}"), "-T"])
+        .args([
+            "-nostdlib",
+            "-fuse-ld=lld",
+            &format!("--target={}", profile.llvm_triple()),
+        ])
+        .args(profile.clang_args())
+        .arg("-T")
         .arg(script)
         .arg(object)
         .arg("-o")

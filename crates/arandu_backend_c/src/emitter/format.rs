@@ -29,7 +29,8 @@ impl<'a> CEmitter<'a> {
                 .and_then(Option::as_ref)
                 .cloned()
                 .unwrap_or_else(|| format!("t{}", self.temp_slot(*t))),
-            AmirOperand::FunctionRef(id) | AmirOperand::GlobalRef(id) => {
+            AmirOperand::FunctionRef(id) => self.c_function_name(*id),
+            AmirOperand::GlobalRef(id) => {
                 let sym = self.symbols.get(*id);
                 sanitize_c_ident(self.symbols.host_func_name(sym))
             }

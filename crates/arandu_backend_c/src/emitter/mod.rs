@@ -44,6 +44,11 @@ pub(super) fn sanitize_c_ident(name: &str) -> String {
         "alloc" => return "ar_user_alloc".to_string(),
         _ => {}
     }
+    sanitize_c_chars(name)
+}
+
+/// Maps an Arandu path to C identifier characters (`.` becomes `__`).
+fn sanitize_c_chars(name: &str) -> String {
     let mut out = String::with_capacity(name.len() + 4);
     for c in name.chars() {
         if c.is_ascii_alphanumeric() {
@@ -55,6 +60,40 @@ pub(super) fn sanitize_c_ident(name: &str) -> String {
         }
     }
     out
+}
+
+/// Definitions no other translation unit may name: private or module-local
+/// functions of a program with `main`. Linker roots keep their names, as in
+/// `live_functions`: `public`/`internal` API, `@Export`, tooling entrypoints
+/// (`@Test`/`@Benchmark` shims link to them) and every function of a library
+/// without `main`, whose hosts may look up any definition.
+fn internal_functions(
+    program: &AmirProgram,
+    symbols: &SymbolTable,
+) -> rustc_hash::FxHashSet<arandu_middle::SymbolId> {
+    let is_main = |function: &arandu_middle::amir::AmirFunc| {
+        symbols
+            .try_get(function.symbol)
+            .is_some_and(|symbol| symbols.host_func_name(symbol) == "main")
+    };
+    if !program.funcs.iter().any(is_main) {
+        return rustc_hash::FxHashSet::default();
+    }
+    program
+        .funcs
+        .iter()
+        .filter(|function| !is_main(function))
+        .filter(|function| {
+            symbols.try_get(function.symbol).is_some_and(|symbol| {
+                matches!(
+                    symbol.visibility,
+                    arandu_middle::Visibility::Private | arandu_middle::Visibility::Module
+                ) && !symbols.is_exported(function.symbol)
+                    && !symbols.tooling_entrypoints.contains(&function.symbol)
+            })
+        })
+        .map(|function| function.symbol)
+        .collect()
 }
 
 /// Emits a full C translation unit from an [`AmirProgram`].
@@ -83,6 +122,9 @@ pub struct CEmitter<'a> {
         rustc_hash::FxHashMap<(arandu_middle::SymbolId, arandu_middle::amir::InstrId), usize>,
     pub(super) current_initializer: Option<arandu_middle::amir::InstrId>,
     pub(super) error: Option<Diagnostic>,
+    /// Private definitions of an executable program. They get a reserved
+    /// `ar__` prefix and internal linkage; see [`internal_functions`].
+    pub(super) defined_functions: rustc_hash::FxHashSet<arandu_middle::SymbolId>,
 }
 
 impl<'a> CEmitter<'a> {
@@ -114,6 +156,36 @@ impl<'a> CEmitter<'a> {
             static_sources: rustc_hash::FxHashMap::default(),
             current_initializer: None,
             error: None,
+            defined_functions: internal_functions(program, symbols),
+        }
+    }
+
+    /// Whether a defined function is private to this translation unit.
+    pub(super) fn is_internal_function(&self, symbol: arandu_middle::SymbolId) -> bool {
+        self.defined_functions.contains(&symbol)
+    }
+
+    /// C name of a function symbol. Internal functions are namespaced like
+    /// Nim/Zig output (`ar__<module path>_<name>`), so user names such as
+    /// `sqrt` or `write` cannot collide with libc declarations; imports and
+    /// `@Export`s keep the linker name the user or host chose.
+    pub(super) fn c_function_name(&self, symbol: arandu_middle::SymbolId) -> String {
+        let host = self.symbols.host_func_name(self.symbols.get(symbol));
+        if self.is_internal_function(symbol) {
+            format!("ar__{}", sanitize_c_chars(host))
+        } else if self.symbols.is_exported(symbol) {
+            host.to_string()
+        } else {
+            sanitize_c_ident(host)
+        }
+    }
+
+    /// `static ` for internal functions, nothing for linker-visible ones.
+    pub(super) fn c_function_linkage(&self, symbol: arandu_middle::SymbolId) -> &'static str {
+        if self.is_internal_function(symbol) {
+            "static "
+        } else {
+            ""
         }
     }
 

@@ -5,7 +5,7 @@ use std::fmt::Write;
 use arandu_middle::amir::reachability::terminator_targets;
 use arandu_middle::amir::{AmirFunc, AmirOperand, AmirRvalue, AmirStmt};
 
-use super::{CEmitter, sanitize_c_ident};
+use super::CEmitter;
 
 impl<'a> CEmitter<'a> {
     pub(super) fn emit_func(&mut self, func: &AmirFunc) {
@@ -26,10 +26,10 @@ impl<'a> CEmitter<'a> {
         self.temp_expressions = vec![None; func.temps.len()];
         (self.rotations, self.rotation_elided) =
             super::rotations::plan(func, &self.program.literal_pool, self.interner);
-        let sym = self.symbols.get(func.symbol);
-        let name = sanitize_c_ident(self.symbols.host_func_name(sym));
+        let name = self.c_function_name(func.symbol);
+        let linkage = self.c_function_linkage(func.symbol);
         let ret_ty = self.c_func_return_type(func);
-        let _ = write!(&mut self.output, "{} {}(", ret_ty, name);
+        let _ = write!(&mut self.output, "{linkage}{} {}(", ret_ty, name);
         self.emit_func_parameters(func);
         let _ = writeln!(&mut self.output, ") {{");
 

@@ -4570,7 +4570,8 @@ func main(): int {
 "#,
     );
     let emitted = emit_c(&amir, &tc);
-    assert!(emitted.contains("= print(") && emitted.contains("= User__println("));
+    // Private program functions are namespaced and cannot shadow libc.
+    assert!(emitted.contains("= ar__print(") && emitted.contains("= ar__User__println("));
     assert_eq!(execute_cranelift(&amir, &tc), 16);
     let (result, output) = execute_c_output("user_print_returns_and_effects", &amir, &tc);
     assert_eq!(result, 16);
@@ -5238,4 +5239,36 @@ func main(): int {
         "        n = n + count(\"x\")\n",
     ));
     assert_eq!(execute_c("interpolated_call_arguments", &amir, &tc), 0);
+}
+
+#[test]
+fn private_functions_cannot_collide_with_libc_declarations() {
+    // kururu defined `sqrt`; unprefixed it replaced libm's symbol and clashed
+    // with <math.h>. Public API and `main` keep their names.
+    let (amir, tc) = compile_src(
+        "func sqrt(x: float): float { return x + 1.0 }\npublic func api(): int { return 2 }\nfunc main(): int { if sqrt(4.0) != 5.0 { return 1 }\n return api() - 2 }",
+    );
+    let emitted = emit_c(&amir, &tc);
+    assert!(emitted.contains("static double ar__sqrt("), "{emitted}");
+    assert!(emitted.contains("int32_t api(void)") && !emitted.contains("ar__api"));
+    let with_math = format!("#include <math.h>\n{emitted}");
+    let dir = env::temp_dir().join("arandu_c_tests");
+    fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("libc_collision.c");
+    let exe = dir.join("libc_collision.exe");
+    fs::write(&source, with_math).unwrap();
+    let cc = env::var("CC").unwrap_or_else(|_| "cc".into());
+    let compiled = Command::new(&cc)
+        .arg(&source)
+        .arg("-o")
+        .arg(&exe)
+        .args(arandu_middle::TargetSpec::for_host().cc_link_args())
+        .output()
+        .unwrap();
+    assert!(
+        compiled.status.success(),
+        "{}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+    assert_eq!(Command::new(&exe).status().unwrap().code(), Some(0));
 }

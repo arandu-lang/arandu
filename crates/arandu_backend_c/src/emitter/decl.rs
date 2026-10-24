@@ -7,7 +7,7 @@ use arandu_middle::amir::{AmirFunc, AmirRvalue, AmirStmt};
 use arandu_middle::literal_pool::AmirLiteralEntry;
 use arandu_middle::types::ArType;
 
-use super::{CEmitter, sanitize_c_ident};
+use super::CEmitter;
 
 impl<'a> CEmitter<'a> {
     pub(super) fn gen_drop_glue(
@@ -49,8 +49,7 @@ impl<'a> CEmitter<'a> {
         }
         for (glue, (ty, destructor)) in payloads {
             let payload_c = self.format_type(&ty);
-            let destructor_sym = self.symbols.get(destructor);
-            let destructor_c = sanitize_c_ident(self.symbols.host_func_name(destructor_sym));
+            let destructor_c = self.c_function_name(destructor);
             let _ = writeln!(
                 &mut self.output,
                 "static void {glue}(void *raw) {{ {destructor_c}(*({payload_c} *)raw); }}"
@@ -61,8 +60,7 @@ impl<'a> CEmitter<'a> {
     /// C linkage name for a function's return type (`main` is always `int`).
     pub(super) fn c_func_return_type(&self, func: &AmirFunc) -> String {
         let sym = self.symbols.get(func.symbol);
-        let name = sanitize_c_ident(self.symbols.host_func_name(sym));
-        if name == "main" {
+        if self.symbols.host_func_name(sym) == "main" {
             return "int".to_string();
         }
         let ret = self.interner.resolve(func.return_type);
@@ -247,10 +245,10 @@ impl<'a> CEmitter<'a> {
     }
 
     pub(super) fn emit_func_decl(&mut self, func: &AmirFunc) {
-        let sym = self.symbols.get(func.symbol);
-        let name = sanitize_c_ident(self.symbols.host_func_name(sym));
+        let name = self.c_function_name(func.symbol);
+        let linkage = self.c_function_linkage(func.symbol);
         let ret_ty = self.c_func_return_type(func);
-        let _ = write!(&mut self.output, "{} {}(", ret_ty, name);
+        let _ = write!(&mut self.output, "{linkage}{} {}(", ret_ty, name);
         self.emit_func_parameters(func);
         let _ = writeln!(&mut self.output, ");");
     }

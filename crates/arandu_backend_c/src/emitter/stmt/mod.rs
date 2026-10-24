@@ -397,9 +397,7 @@ impl<'a> CEmitter<'a> {
                 } else {
                     let ty_id = self.interner.intern(current_ty.clone());
                     if let Some((_, destructor)) = self.gen_drop_glue(ty_id, &current_ty) {
-                        let destructor_symbol = self.symbols.get(destructor);
-                        let destructor =
-                            super::sanitize_c_ident(self.symbols.host_func_name(destructor_symbol));
+                        let destructor = self.c_function_name(destructor);
                         let value = self.format_place(place, func);
                         let _ = writeln!(&mut self.output, "    {destructor}({value});");
                     }

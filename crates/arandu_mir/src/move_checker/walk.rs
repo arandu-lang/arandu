@@ -100,12 +100,24 @@ pub(super) fn temp_origins<'bump>(
             });
         }
     }
+    // A temp assigned on several paths, such as the destination of a `match`
+    // or `catch`, holds whichever arm's value ran. Each arm's own move is
+    // already tracked at its definition, so such a temp has no single origin.
+    let mut definitions =
+        bumpalo::collections::Vec::from_iter_in(std::iter::repeat_n(0u32, func.temps.len()), bump);
+    for stmt in func.stmts.payloads.iter() {
+        if let AmirStmt::Assign { lhs, .. } | AmirStmt::Call { lhs: Some(lhs), .. } = stmt {
+            definitions[lhs.as_usize()] += 1;
+        }
+    }
     let mut changed = true;
     while changed {
         changed = false;
         for block in &func.blocks {
             for stmt in func.block_stmts(block.id) {
-                if let AmirStmt::Assign { lhs, rhs } = stmt {
+                if let AmirStmt::Assign { lhs, rhs } = stmt
+                    && definitions[lhs.as_usize()] == 1
+                {
                     let mut found_origin = None;
                     match rhs {
                         // Named fields remain sparse move paths; dynamic index and

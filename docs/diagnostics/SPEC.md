@@ -249,7 +249,7 @@ Abaixo estão listados todos os diagnósticos mapeados para o compilador Arandu.
 | **T003** | `incompatible argument: expected '{expected}', found '{found}'` | Error | `0.1.0` | Argumento incompatível; argumentos comptime exigem valor congelável admitido e tipo compatível. Inteiros assinados, bool e agregados Copy admitidos têm chaves estruturais; negativos não são rejeitados universalmente. |
 | **T004** | `incompatible return type: expected '{expected}', found '{found}'` | Error | `0.1.0` | Valor incompatível com seu destino de retorno. Na função, a assinatura declarada; no bloco público `comptime`, retornos/cauda devem concordar com o destino local e todo caminho de saída deve produzir o valor exigido. |
 | **T005** | `operator '{op}' is not applicable to type '{type}'` | Error | `0.1.0` | Tentativa de usar operador matemático ou lógico em tipos não suportados. |
-| **T006** | `type '{type}' is not nullable` | Error | `0.1.0` | Atribuição de `null` ou uso de operador de navegação segura em um tipo que não é explicitamente opcional/nulo. |
+| **T006** | `type '{type}' is not nullable` | Error | `0.1.0` | Atribuição de `null` ou uso de operador de navegação segura em um tipo que não é explicitamente opcional/nulo. Desde `0.1.11`, também rejeita `T?` quando `T` possui recursos (`String`, `Vec<T>`): `T?` não tem drop e duplicaria o valor; use `Option<T>`. |
 | **T007** | `type mismatch: 'if' and 'else' branches have incompatible types: '{then_ty}' and '{else_ty}'` | Error | `0.1.0` | As ramificações de uma expressão condicional `if/else` avaliam para tipos diferentes (Type Mismatch). |
 | **T008** | `type mismatch: match arm has type '{arm_ty}', expected '{expected_ty}'` | Error | `0.1.0` | Um braço do bloco `match` retorna um tipo inconsistente com a expressão esperada (Type Mismatch). |
 | **T009** | `condition is not a boolean: expected 'bool', found '{type}'` | Error | `0.1.0` | A expressão condicional de um `if` ou `while` não avalia para o tipo booleano primário. |
@@ -315,6 +315,7 @@ Abaixo estão listados todos os diagnósticos mapeados para o compilador Arandu.
 | **O012** | `` `alloc` requires an `unsafe` block `` | Error | `0.1.0` | Alocação direta de memória bruta na heap via `alloc` exige contexto explícito `unsafe`. |
 | **O013** | `` call to extern function requires an `unsafe` block `` | Error | `0.1.0` | Chamadas para funções `extern` e funções anotadas com `@Unsafe` exigem bloco `unsafe`. |
 | **O014** | `` `free` requires an `unsafe` block `` | Error | `0.1.0` | Desalocação manual de memória via `free` é operação insegura e exige bloco `unsafe`. |
+| **O015** | `cannot move a value with a destructor out of an indexed place` | Error | `0.1.11` | Mover um elemento com destrutor para fora de `arr[i]`, `slice[i]` ou `vec[i]` deixaria o dono destruindo o mesmo valor de novo. Empreste o elemento ou use uma operação que retire o valor (`pop`, `swap`). |
 
 
 ---

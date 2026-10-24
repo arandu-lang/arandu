@@ -284,30 +284,56 @@ impl LowerCtx<'_> {
         let mut projections = Vec::new();
         let starts_with_named_field =
             matches!(place.suffixes.first(), Some(HirPlaceSuffix::Field { .. }));
+        let starts_with_index =
+            matches!(place.suffixes.first(), Some(HirPlaceSuffix::Index { .. }));
+        let mut container_ty = root_ty.clone();
         if starts_with_named_field
             && matches!(root_ty, ArType::Ref(_) | ArType::RefMut(_) | ArType::Ptr(_))
         {
             projections.push(AmirProjection::Deref);
         }
-        let suffix_projections: Result<Vec<_>, Diagnostic> = place
-            .suffixes
-            .iter()
-            .map(|s| match s {
+        // A `Vec` indexed through a reference is addressed through its
+        // referent, as reads do; backends otherwise index the reference itself
+        // as if it pointed at an array of vectors. Borrowed slices keep their
+        // reference ABI.
+        if starts_with_index
+            && let ArType::Ref(inner) | ArType::RefMut(inner) = root_ty
+            && arandu_middle::types::is_vec_type(&self.resolve_ty(inner), symbols)
+        {
+            projections.push(AmirProjection::Deref);
+            container_ty = self.resolve_ty(inner);
+        }
+        for suffix in &place.suffixes {
+            let projection = match suffix {
                 HirPlaceSuffix::Field {
                     field_symbol: Some(symbol),
                     ..
-                } => Ok(AmirProjection::Field(*symbol)),
-                HirPlaceSuffix::Field { span, name, .. } => Err(crate::Diagnostic::error(
-                    crate::DiagCode::L001LoweringUnresolvedSymbol,
-                    format!("cannot lower field projection `{name}`: symbol not resolved"),
-                    *span,
-                )),
-                HirPlaceSuffix::Index { expr, .. } => Ok(AmirProjection::Index(
-                    self.lower_expr(*expr, None, symbols)?,
-                )),
-            })
-            .collect();
-        projections.extend(suffix_projections?);
+                } => AmirProjection::Field(*symbol),
+                HirPlaceSuffix::Field { span, name, .. } => {
+                    return Err(crate::Diagnostic::error(
+                        crate::DiagCode::L001LoweringUnresolvedSymbol,
+                        format!("cannot lower field projection `{name}`: symbol not resolved"),
+                        *span,
+                    ));
+                }
+                HirPlaceSuffix::Index { expr, .. } => {
+                    let index_ty = self.hir.pool.expr(*expr).ty;
+                    let index = self.lower_expr(*expr, None, symbols)?;
+                    let container = AmirPlace {
+                        local: local_id,
+                        projections: projections.clone().into(),
+                    };
+                    self.check_vec_index(&container, &container_ty, index, index_ty, symbols)?;
+                    AmirProjection::Index(index)
+                }
+            };
+            projections.push(projection);
+            container_ty = match suffix {
+                HirPlaceSuffix::Field { ty, .. } | HirPlaceSuffix::Index { ty, .. } => {
+                    self.resolve_ty(*ty)
+                }
+            };
+        }
         let amir_place = AmirPlace {
             local: local_id,
             projections: projections.into(),

@@ -354,7 +354,111 @@ impl<'a> TypeChecker<'a> {
             )
         };
         let ty = types::expand_named_with_defaults(self, ty);
-        types::expand_aliases(self, ty)
+        let ty = types::expand_aliases(self, ty);
+        self.reject_owned_nullable(&ty, self.pool.type_expr_span(expr_id));
+        ty
+    }
+
+    /// `T?` is a bare value-or-nil with no drop flag, so a `T` that owns
+    /// resources would be copied and never destroyed; `Option<T>` carries
+    /// that ownership instead (T006).
+    fn reject_owned_nullable(&mut self, ty: &ArType, span: arandu_base::Span) {
+        let ArType::Nullable(inner) = ty else {
+            return;
+        };
+        let inner_ty = self.type_info.type_interner.resolve(*inner);
+        if matches!(
+            inner_ty,
+            ArType::Ref(_) | ArType::RefMut(_) | ArType::Ptr(_) | ArType::Error
+        ) || self.mentions_type_param(&inner_ty)
+            || !self.owns_resources(*inner, &mut Vec::new())
+            || self
+                .diagnostics
+                .iter()
+                .any(|d| d.span == span && d.code == crate::DiagCode::T006NotNullable)
+        {
+            return;
+        }
+        let name = inner_ty.display(&self.symbols, &self.type_info.type_interner);
+        self.diagnostics.push(
+            crate::Diagnostic::error(
+                crate::DiagCode::T006NotNullable,
+                format!("type '{name}' owns resources and cannot be nullable"),
+                span,
+            )
+            .with_label(span, "`?` would copy this value and never destroy it")
+            .with_hint(format!(
+                "use `Option<{name}>`, which tracks ownership of the value"
+            )),
+        );
+    }
+
+    /// Whether a value of `id` carries a destructor obligation, directly or
+    /// through a field, payload or element. Recursive types stop at their
+    /// first revisit.
+    fn owns_resources(&self, id: TypeId, visiting: &mut Vec<SymbolId>) -> bool {
+        let interner = &self.type_info.type_interner;
+        match interner.resolve(id) {
+            ArType::Named(sym, _) => {
+                if self.type_info.destructors.contains_key(&sym) {
+                    return true;
+                }
+                if visiting.contains(&sym) {
+                    return false;
+                }
+                visiting.push(sym);
+                let fields = self.type_info.struct_fields.get(&sym).cloned();
+                let owns = fields.is_some_and(|fields| {
+                    fields
+                        .iter()
+                        .any(|field| self.owns_resources(field.ty, visiting))
+                }) || self
+                    .type_info
+                    .enum_variants
+                    .values()
+                    .any(|(owner, payload)| {
+                        *owner == sym
+                            && matches!(payload, info::EnumPayloadShape::Tuple(items)
+                            if items.iter().any(|&item| self.owns_resources(item, visiting)))
+                    });
+                visiting.pop();
+                owns
+            }
+            ArType::Array(_, inner)
+            | ArType::ConstArray(_, inner)
+            | ArType::Option(inner)
+            | ArType::Nullable(inner) => self.owns_resources(inner, visiting),
+            ArType::Result(ok, err) => {
+                self.owns_resources(ok, visiting) || self.owns_resources(err, visiting)
+            }
+            ArType::Tuple(items) => interner
+                .type_args(items)
+                .iter()
+                .any(|&item| self.owns_resources(item, visiting)),
+            _ => false,
+        }
+    }
+
+    fn mentions_type_param(&self, ty: &ArType) -> bool {
+        match ty {
+            ArType::Named(sym, args) => {
+                self.symbols.try_get(*sym).is_some_and(|symbol| {
+                    matches!(
+                        symbol.kind,
+                        crate::SymbolKind::TypeParam | crate::SymbolKind::ConstParam
+                    )
+                }) || self
+                    .type_info
+                    .type_interner
+                    .type_args(*args)
+                    .iter()
+                    .any(|&arg| {
+                        self.mentions_type_param(&self.type_info.type_interner.resolve(arg))
+                    })
+            }
+            ArType::ConstParam(_) => true,
+            _ => false,
+        }
     }
 
     pub fn lower_result_type(

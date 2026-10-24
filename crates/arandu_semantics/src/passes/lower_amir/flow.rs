@@ -222,8 +222,10 @@ impl LowerCtx<'_> {
         self.seal_block(bb_err);
         self.seal_block(bb_ok);
 
-        // Err arm: evaluate handler (optionally bind error payload).
+        // Err arm: evaluate handler (optionally bind error payload). The error
+        // binding lives only in this arm, so it is dropped when the handler ends.
         self.builder.current_block = Some(bb_err);
+        self.begin_local_scope();
         if let HirCatchHandler::Block {
             error_symbol: Some(err_sym),
             ..
@@ -243,6 +245,7 @@ impl LowerCtx<'_> {
                 self.lower_block_as_expr(*block, Some(dest), symbols)?;
             }
         }
+        self.end_local_scope();
         if self.builder.current_block.is_some() {
             self.emit_goto(bb_join);
         }

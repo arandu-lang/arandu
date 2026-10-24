@@ -81,6 +81,9 @@ mod cli_loop_deletion;
 #[path = "cli_suite/cli_range_index.rs"]
 mod cli_range_index;
 
+#[path = "cli_suite/cli_soundness_regressions.rs"]
+mod cli_soundness_regressions;
+
 #[path = "cli_suite/cli_option_nil.rs"]
 mod cli_option_nil;
 

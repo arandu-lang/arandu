@@ -160,6 +160,7 @@ pub enum DiagCode {
     O012AllocRequiresUnsafe,
     O013ExternRequiresUnsafe,
     O014FreeRequiresUnsafe,
+    O015MoveOutOfIndex,
 
     // ── Warnings & Linting (W) ──
     W001VariableAssignedNotUsed,
@@ -289,6 +290,7 @@ impl DiagCode {
             O012AllocRequiresUnsafe,
             O013ExternRequiresUnsafe,
             O014FreeRequiresUnsafe,
+            O015MoveOutOfIndex,
             W001VariableAssignedNotUsed,
             W002DeadCode,
             W003UnreachableCode,
@@ -437,6 +439,7 @@ impl DiagCode {
             DiagCode::O012AllocRequiresUnsafe => "O012",
             DiagCode::O013ExternRequiresUnsafe => "O013",
             DiagCode::O014FreeRequiresUnsafe => "O014",
+            DiagCode::O015MoveOutOfIndex => "O015",
             DiagCode::W001VariableAssignedNotUsed => "W001",
             DiagCode::W002DeadCode => "W002",
             DiagCode::W003UnreachableCode => "W003",

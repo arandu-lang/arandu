@@ -323,7 +323,7 @@ fn validate_mutability(checker: &mut TypeChecker<'_>, place: &arandu_parser::Pla
                     _ => return,
                 }
             }
-            arandu_parser::PlaceSuffix::Field { name, .. } => {
+            arandu_parser::PlaceSuffix::Field { name, span, .. } => {
                 let interner = &checker.type_info.type_interner;
                 let struct_info_opt = match actual_base_ty {
                     ArType::Named(id, args) => Some((id, interner.type_args(args))),
@@ -350,6 +350,31 @@ fn validate_mutability(checker: &mut TypeChecker<'_>, place: &arandu_parser::Pla
                         return;
                     }
                 } else {
+                    return;
+                }
+                if !is_mutable {
+                    let (sym_name, sym_span) = symbol_id_opt
+                        .map(|s| {
+                            (
+                                checker.symbols.get(s).name.as_str(),
+                                checker.symbols.get(s).span,
+                            )
+                        })
+                        .unwrap_or(("", place.span));
+                    let diag = crate::Diagnostic::error(
+                        crate::DiagCode::T026CannotAssignImmutable,
+                        format!("cannot assign to field `{name}` of immutable '{sym_name}'"),
+                        *span,
+                    )
+                    .with_label(
+                        *span,
+                        "cannot assign to a field reached without mutable access",
+                    )
+                    .with_label(sym_span, "declared here without mutable access")
+                    .with_hint(format!(
+                        "declare it mutable (`mut {sym_name}`) or take it as `mut ref`/`mut self`"
+                    ));
+                    checker.diagnostics.push(diag);
                     return;
                 }
             }

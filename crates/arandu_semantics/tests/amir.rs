@@ -87,7 +87,7 @@ struct Point {
 }
 
 func main() {
-    let p: Point = Point { x: 1, y: 2 }
+    let mut p: Point = Point { x: 1, y: 2 }
     p.x = 3
 }
 "#;

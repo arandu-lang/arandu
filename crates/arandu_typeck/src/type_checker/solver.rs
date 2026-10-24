@@ -332,50 +332,51 @@ impl TypeChecker<'_> {
         {
             let literals = self.literal_table.vars[root.0 as usize].literals.clone();
             for occ in literals {
-                if let Some(parsed) = arandu_middle::literal_pool::parse_int_literal(&occ.raw) {
-                    let fits = match p {
-                        Primitive::I8 => (i8::MIN as i128..=i8::MAX as i128).contains(&parsed),
-                        Primitive::I16 => (i16::MIN as i128..=i16::MAX as i128).contains(&parsed),
-                        Primitive::I32 => (i32::MIN as i128..=i32::MAX as i128).contains(&parsed),
-                        Primitive::I64 => (i64::MIN as i128..=i64::MAX as i128).contains(&parsed),
-                        Primitive::Int => (self.target_info.int_min()..=self.target_info.int_max())
-                            .contains(&parsed),
-                        Primitive::ISize => (self.target_info.isize_min()
-                            ..=self.target_info.isize_max())
-                            .contains(&parsed),
-                        Primitive::U8 | Primitive::Byte => (0..=u8::MAX as i128).contains(&parsed),
-                        Primitive::U16 => (0..=u16::MAX as i128).contains(&parsed),
-                        Primitive::U32 => (0..=u32::MAX as i128).contains(&parsed),
-                        Primitive::U64 => parsed >= 0 && (parsed as u128 <= u64::MAX as u128),
-                        Primitive::Uint => {
-                            parsed >= 0 && (parsed as u128 <= self.target_info.uint_max())
-                        }
-                        Primitive::USize => {
-                            parsed >= 0 && (parsed as u128 <= self.target_info.usize_max())
-                        }
-                        _ => true,
-                    };
-                    if !fits {
-                        out_of_range = true;
-                        let origin_target = origin.target_span();
-                        let target_span = if origin_target == Span::new(0, 0, 0) {
-                            occ.span
-                        } else {
-                            origin_target
-                        };
-                        // Route through the solver so the failure is recorded
-                        // as a solved constraint (causal provenance, 4.2) and
-                        // rendered with the current diagnostic policy.
-                        self.add_constraint(
-                            concrete_id,
-                            ArType::IntLiteral,
-                            ConstraintOrigin::LiteralPromotion {
-                                literal: occ.raw.clone(),
-                                literal_span: occ.span,
-                                target_span,
-                            },
-                        );
+                // A literal beyond `i128` fits no integer primitive.
+                let parsed = arandu_middle::literal_pool::parse_int_literal(&occ.raw);
+                let fits = parsed.is_some_and(|parsed| match p {
+                    Primitive::I8 => (i8::MIN as i128..=i8::MAX as i128).contains(&parsed),
+                    Primitive::I16 => (i16::MIN as i128..=i16::MAX as i128).contains(&parsed),
+                    Primitive::I32 => (i32::MIN as i128..=i32::MAX as i128).contains(&parsed),
+                    Primitive::I64 => (i64::MIN as i128..=i64::MAX as i128).contains(&parsed),
+                    Primitive::Int => {
+                        (self.target_info.int_min()..=self.target_info.int_max()).contains(&parsed)
                     }
+                    Primitive::ISize => (self.target_info.isize_min()
+                        ..=self.target_info.isize_max())
+                        .contains(&parsed),
+                    Primitive::U8 | Primitive::Byte => (0..=u8::MAX as i128).contains(&parsed),
+                    Primitive::U16 => (0..=u16::MAX as i128).contains(&parsed),
+                    Primitive::U32 => (0..=u32::MAX as i128).contains(&parsed),
+                    Primitive::U64 => parsed >= 0 && (parsed as u128 <= u64::MAX as u128),
+                    Primitive::Uint => {
+                        parsed >= 0 && (parsed as u128 <= self.target_info.uint_max())
+                    }
+                    Primitive::USize => {
+                        parsed >= 0 && (parsed as u128 <= self.target_info.usize_max())
+                    }
+                    _ => true,
+                });
+                if !fits {
+                    out_of_range = true;
+                    let origin_target = origin.target_span();
+                    let target_span = if origin_target == Span::new(0, 0, 0) {
+                        occ.span
+                    } else {
+                        origin_target
+                    };
+                    // Route through the solver so the failure is recorded
+                    // as a solved constraint (causal provenance, 4.2) and
+                    // rendered with the current diagnostic policy.
+                    self.add_constraint(
+                        concrete_id,
+                        ArType::IntLiteral,
+                        ConstraintOrigin::LiteralPromotion {
+                            literal: occ.raw.clone(),
+                            literal_span: occ.span,
+                            target_span,
+                        },
+                    );
                 }
             }
         }

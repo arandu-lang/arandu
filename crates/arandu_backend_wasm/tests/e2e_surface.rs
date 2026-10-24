@@ -805,7 +805,7 @@ struct Point {
 }
 
 func main(): int {
-    let p: Point = Point { x: 10, y: 20 }
+    let mut p: Point = Point { x: 10, y: 20 }
     p.x = 30
     p.y = 40
     return p.x + p.y

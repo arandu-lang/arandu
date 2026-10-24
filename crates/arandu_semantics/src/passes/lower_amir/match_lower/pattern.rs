@@ -187,6 +187,9 @@ impl LowerCtx<'_> {
                         ArType::Ref(_) | ArType::RefMut(_) => bound_ty,
                         _ => self.intern_ty(ArType::Ref(bound_ty)),
                     };
+                    // The guard reads the scrutinee through this borrow, so its
+                    // home must keep the stored value (e.g. a scalar parameter).
+                    self.mark_local_materialized(place.local);
                     let borrowed = self.new_temp_id(borrowed_ty);
                     self.emit_assign_temp(borrowed, AmirRvalue::Borrow(place));
                     let local = self.new_compiler_local_id(borrowed_ty, *span);
@@ -348,9 +351,19 @@ impl LowerCtx<'_> {
                             commit,
                         )?;
                     }
-                    _ => {
-                        let _ = span;
+                    // An unqualified variant of a user enum, e.g. `Add(a, b)`
+                    // on a `ref Op` scrutinee: bind it as `Op.Add(a, b)`.
+                    (ArType::Named(type_symbol, _), _) => {
+                        let qualified = HirPattern::Enum {
+                            span: *span,
+                            type_symbol: *type_symbol,
+                            variant: name.clone(),
+                            variant_symbol: None,
+                            payload: *payload,
+                        };
+                        self.lower_pattern_places_at(place, &qualified, value_ty, symbols, commit)?;
                     }
+                    _ => {}
                 }
             }
             HirPattern::Enum {

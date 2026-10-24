@@ -126,11 +126,20 @@ pub(crate) fn lower_func(
             // SYN.1: only when the last statement is an expression (implicit return).
             // Empty bodies / last=`return`/`if`/… keep ordinary `lower_block` so we do
             // not invent a `Nil` store into a `void` return temp (breaks C backend).
+            let returns_value = !matches!(
+                tc.type_info.type_interner.resolve(ret_ty),
+                crate::types::ArType::Void
+            );
             let last_is_expr = {
                 let stmts = hir.pool.stmt_list(hir.pool.block(body).statements);
-                stmts.last().is_some_and(|&sid| {
-                    matches!(hir.pool.stmt(sid).kind, crate::hir::HirStmtKind::Expr(_))
-                })
+                stmts
+                    .last()
+                    .is_some_and(|&sid| match hir.pool.stmt(sid).kind {
+                        crate::hir::HirStmtKind::Expr(_) => true,
+                        // A trailing `match` is the value of a function that has one.
+                        crate::hir::HirStmtKind::Match { .. } => returns_value && !f.is_async,
+                        _ => false,
+                    })
             };
             if last_is_expr {
                 // Async bodies return bare `T` in source; wrap as `CoroutineReady` (A3).
@@ -157,6 +166,41 @@ pub(crate) fn lower_func(
             .terminator
             .is_unreachable()
     {
+        // Falling off a body without a tail value returns nothing, which
+        // only a `void` function may do (Rust's E0308 for a missing tail).
+        let returns_value = |ty: crate::types::TypeId| {
+            !matches!(
+                tc.type_info.type_interner.resolve(ty),
+                crate::types::ArType::Void | crate::types::ArType::Error
+            )
+        };
+        let declared = match tc.type_info.type_interner.resolve(ret_ty) {
+            crate::types::ArType::Coroutine(payload) if f.is_async => payload,
+            _ => ret_ty,
+        };
+        let falls_off_without_value = match body {
+            BodyRoot::IsolatedBlock { value_tail, .. } => !value_tail,
+            BodyRoot::Expression(_) => false,
+            BodyRoot::Block(body) => {
+                let stmts = hir.pool.stmt_list(hir.pool.block(body).statements);
+                !stmts.last().is_some_and(|&sid| {
+                    matches!(
+                        hir.pool.stmt(sid).kind,
+                        crate::hir::HirStmtKind::Expr(_) | crate::hir::HirStmtKind::Match { .. }
+                    )
+                })
+            }
+        };
+        if falls_off_without_value && returns_value(declared) {
+            let name = tc.symbols.get(f.symbol).name.clone();
+            return Err(crate::Diagnostic::error(
+                crate::DiagCode::T004IncompatibleReturnType,
+                format!("function `{name}` can reach its end without returning a value"),
+                f.span,
+            )
+            .with_label(f.span, "some path through this body has no `return`")
+            .with_hint("return a value on every path, or end the body with an expression"));
+        }
         ctx.builder.blocks[curr.as_usize()].terminator = AmirTerminator::Return;
     }
 

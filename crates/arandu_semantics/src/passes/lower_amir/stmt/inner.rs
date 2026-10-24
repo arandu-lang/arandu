@@ -141,7 +141,16 @@ impl LowerCtx<'_> {
                 self.emit_goto(bb_cond);
 
                 self.builder.current_block = Some(bb_cond);
-                self.lower_condition_branch(condition, bb_body, bb_exit, symbols)?;
+                // `while true` leaves only through `break`, like Rust's
+                // `loop`: no edge to the exit, so code after a loop that
+                // never breaks is unreachable.
+                if matches!(condition, crate::hir::HirCondition::Expr(expr)
+                    if matches!(self.hir.pool.expr(*expr).kind, HirExprKind::Bool(true)))
+                {
+                    self.emit_goto(bb_body);
+                } else {
+                    self.lower_condition_branch(condition, bb_body, bb_exit, symbols)?;
+                }
                 self.seal_block(bb_body);
                 self.seal_block(bb_exit);
 
@@ -157,7 +166,8 @@ impl LowerCtx<'_> {
                 self.loop_stack.pop();
                 self.seal_block(bb_cond);
 
-                self.builder.current_block = Some(bb_exit);
+                self.builder.current_block =
+                    self.builder.has_predecessor(bb_exit).then_some(bb_exit);
             }
             HirStmtKind::For {
                 comptime_bounds: Some(bounds),

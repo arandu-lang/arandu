@@ -125,7 +125,13 @@ pub(in crate::type_checker::synth::expr) fn synth_binary_expr(
         | BinaryOp::GtEqual => {
             let mut l_id = synth_expr(checker, left_id);
             let l_ty = checker.resolve(l_id);
-            let r_expected = if !l_ty.is_literal() && l_ty.is_numeric() {
+            // A generic constructor such as `Option.None` takes its type
+            // arguments from the other operand.
+            let r_expected = if (!l_ty.is_literal() && l_ty.is_numeric())
+                || matches!(
+                    l_ty,
+                    ArType::Option(_) | ArType::Result(..) | ArType::Nullable(_)
+                ) {
                 Some(l_id)
             } else {
                 None

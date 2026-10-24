@@ -503,6 +503,17 @@ impl LowerCtx<'_> {
             }
             let stmt = self.hir.pool.stmt(stmt_id);
             if i == last_idx {
+                // A trailing `match` is the block's value, as the type checker
+                // already treats it; lowering it as a statement dropped it.
+                if let (HirStmtKind::Match { value, arms }, Some(dest), None) =
+                    (&stmt.kind, target, async_payload_ty)
+                {
+                    let dest_ty = self.temps[dest.as_usize()].ty;
+                    if !matches!(self.resolve_ty(dest_ty), ArType::Void) {
+                        self.lower_match(*value, arms, Some(dest), dest_ty, symbols)?;
+                        continue;
+                    }
+                }
                 if let HirStmtKind::Expr(expr) = stmt.kind {
                     let start_owned = self.owned_string_temps.clone();
                     let res_op = if let (Some(dest), Some(payload_ty)) = (target, async_payload_ty)

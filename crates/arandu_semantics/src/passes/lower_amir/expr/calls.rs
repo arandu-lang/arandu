@@ -522,6 +522,16 @@ impl LowerCtx<'_> {
                 .and_then(|symbol| self.tc.type_info.return_borrow_summaries.get(&symbol))
                 .cloned(),
         });
+        // `abort` never returns (Rust's `!`): code after it is unreachable,
+        // and a path ending in it needs no return value.
+        if callee_symbol.is_some_and(|symbol| {
+            arandu_middle::IntrinsicKind::from_declared_name(
+                symbols.get(symbol).name.as_str(),
+                symbols.get(symbol).lang_item,
+            ) == Some(arandu_middle::IntrinsicKind::Abort)
+        }) {
+            self.builder.current_block = None;
+        }
         Ok(dest.map_or(AmirOperand::Constant(AmirConstant::Nil), AmirOperand::Copy))
     }
 

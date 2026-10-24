@@ -501,6 +501,7 @@ mod tests {
             vec![
                 "sccp",
                 "bounds_check_elim",
+                "loop_deletion",
                 "mark_sweep_dce",
                 "simplify_cfg"
             ]
@@ -510,6 +511,7 @@ mod tests {
             vec![
                 "sccp",
                 "bounds_check_elim",
+                "loop_deletion",
                 "mark_sweep_dce",
                 "tail_merge",
                 "simplify_cfg"
@@ -523,6 +525,7 @@ mod tests {
                 "sccp",
                 "licm",
                 "bounds_check_elim",
+                "loop_deletion",
                 "mark_sweep_dce",
                 "tail_merge",
                 "simplify_cfg"

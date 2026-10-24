@@ -20,11 +20,11 @@ use rustc_hash::FxHashSet;
 
 /// A natural loop reduced to what LICM needs.
 #[derive(Debug, Clone)]
-struct LoopInfo {
+pub(crate) struct LoopInfo {
     /// The single predecessor outside the loop, where hoisted code is placed.
-    preheader: BlockId,
-    /// Blocks in the loop, header included.
-    body: Vec<BlockId>,
+    pub(crate) preheader: BlockId,
+    /// Blocks in the loop, header first.
+    pub(crate) body: Vec<BlockId>,
 }
 
 /// Applies Loop-Invariant Code Motion to `func`.
@@ -58,7 +58,7 @@ pub fn licm(func: &mut AmirFunc) -> bool {
 }
 
 /// Finds natural loops that have a unique preheader candidate.
-fn discover_loops(func: &AmirFunc, doms: &Dominators) -> Vec<LoopInfo> {
+pub(crate) fn discover_loops(func: &AmirFunc, doms: &Dominators) -> Vec<LoopInfo> {
     let mut headers: Vec<BlockId> = Vec::new();
     let mut back_edges: Vec<(BlockId, BlockId)> = Vec::new();
     for (bid, succs) in successors_of(func) {
@@ -141,7 +141,11 @@ fn successors_of(func: &AmirFunc) -> Vec<(BlockId, Vec<BlockId>)> {
 
 /// Values available at the preheader with exactly one definition outside the loop.
 /// Header parameters are not available before their incoming edge executes.
-fn compute_invariant(func: &AmirFunc, lp: &LoopInfo, doms: &Dominators) -> FxHashSet<TempId> {
+pub(crate) fn compute_invariant(
+    func: &AmirFunc,
+    lp: &LoopInfo,
+    doms: &Dominators,
+) -> FxHashSet<TempId> {
     let mut definitions = vec![Vec::new(); func.temps.len()];
     for block in &func.blocks {
         for param in func.block_params(block.params) {

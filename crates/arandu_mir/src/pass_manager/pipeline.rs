@@ -106,6 +106,30 @@ impl FunctionPass for BoundsCheckElimPass {
     }
 }
 
+/// Deletion of effect-free loops proven to terminate.
+struct LoopDeletionPass;
+
+impl FunctionPass for LoopDeletionPass {
+    fn name(&self) -> &'static str {
+        "loop_deletion"
+    }
+
+    fn run(
+        &self,
+        func: &mut AmirFunc,
+        resources: &mut PassResources<'_>,
+    ) -> Result<bool, Diagnostic> {
+        Ok(resources.interner.is_some_and(|interner| {
+            crate::loop_deletion::delete_dead_loops(
+                func,
+                resources.removable_callees,
+                resources.literal_pool,
+                interner,
+            )
+        }))
+    }
+}
+
 /// Loop-Invariant Code Motion.
 ///
 /// Hoists pure, dominating computations out of natural loops so the register
@@ -159,8 +183,8 @@ impl FunctionPass for SimplifyCfgPass {
 
 /// Builds the standard pass sequence for `level`.
 ///
-/// O1 runs baseline simplification (SCCP → bounds-check elimination → DCE →
-/// SimplifyCFG).
+/// O1 runs baseline simplification (SCCP → bounds-check elimination → loop
+/// deletion → DCE → SimplifyCFG).
 /// O2 adds SROA, GVN and LICM before the O1 core.
 ///
 /// LICM runs after SCCP so folded constants are visible to the invariance
@@ -175,12 +199,14 @@ pub fn pipeline_for_level(level: OptLevel) -> Vec<Box<dyn FunctionPass>> {
         OptLevel::O1 => vec![
             Box::new(SccpPass),
             Box::new(BoundsCheckElimPass),
+            Box::new(LoopDeletionPass),
             Box::new(MarkSweepDcePass),
             Box::new(SimplifyCfgPass),
         ],
         OptLevel::Os => vec![
             Box::new(SccpPass),
             Box::new(BoundsCheckElimPass),
+            Box::new(LoopDeletionPass),
             Box::new(MarkSweepDcePass),
             Box::new(TailMergePass),
             Box::new(SimplifyCfgPass),
@@ -191,6 +217,7 @@ pub fn pipeline_for_level(level: OptLevel) -> Vec<Box<dyn FunctionPass>> {
             Box::new(SccpPass),
             Box::new(LicmPass),
             Box::new(BoundsCheckElimPass),
+            Box::new(LoopDeletionPass),
             Box::new(MarkSweepDcePass),
             Box::new(TailMergePass),
             Box::new(SimplifyCfgPass),

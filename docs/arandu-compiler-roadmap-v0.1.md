@@ -380,8 +380,12 @@ do caminho quente; nenhuma delas autoriza serializar o grafo Salsa.
 
 O `PassManager` executa transformações puras por função, separado da
 memoização Salsa. O0 não transforma; O1 itera SCCP → eliminação de bounds
-checks por guarda dominante → DCE mark-sweep → SimplifyCFG. O DCE também remove
-stores a locais nunca observados e chamadas sem uso a intrínsecos sem efeito. O2 é experimental: scalar replacement Copy e self-tail calls
+checks por guarda dominante → deleção de laços → DCE mark-sweep → SimplifyCFG.
+O DCE também remove stores a locais nunca observados e chamadas sem uso a
+intrínsecos sem efeito, mas mantém todo índice dinâmico não provado: o trap é
+observável mesmo sem uso do valor. A deleção de laços só remove laços sem efeito
+cuja terminação é provada (`iv < limite` invariante, passo `+1`); um laço sem
+prova, como `while true {}`, fica. O2 é experimental: scalar replacement Copy e self-tail calls
 restritos, field forwarding/GVN/SCCP/LICM/DCE/tail merging/SimplifyCFG.
 Alcance compartilhado de funções/drop/runtime existe (RFC 0027); expansão
 interprocedural e reflection futura precisam preservar raízes públicas e tooling.

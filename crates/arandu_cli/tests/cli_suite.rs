@@ -75,6 +75,9 @@ mod cli_emit_c_locals;
 #[path = "cli_suite/cli_inspection_opt_level.rs"]
 mod cli_inspection_opt_level;
 
+#[path = "cli_suite/cli_loop_deletion.rs"]
+mod cli_loop_deletion;
+
 #[path = "cli_suite/cli_range_index.rs"]
 mod cli_range_index;
 

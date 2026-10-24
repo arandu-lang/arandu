@@ -15,6 +15,7 @@ pub(crate) mod gvn;
 pub mod inlining;
 pub mod licm;
 pub mod liveness;
+pub(crate) mod loop_deletion;
 pub mod move_checker;
 pub mod optimize;
 pub mod pass_manager;

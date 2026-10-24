@@ -8,6 +8,9 @@ pub(super) fn borrows_through_external_storage(
     local: LocalId,
     projections: &[crate::amir::AmirProjection],
 ) -> bool {
+    if projections.is_empty() && holds_only_static_strings(func, interner, local) {
+        return true;
+    }
     func.locals.get(local.as_usize()).is_some_and(|local| {
         matches!(
             (projections.first(), interner.try_resolve(local.ty)),
@@ -23,6 +26,50 @@ pub(super) fn borrows_through_external_storage(
             )
         )
     })
+}
+
+/// A `str` local whose every write is a pool literal only holds descriptors of
+/// static bytes: a view derived through `ref local` (e.g. `asBytes("")`) points
+/// at those bytes, not at the stack slot. Owned interpolation results and any
+/// mutable borrow keep the conservative stack origin.
+fn holds_only_static_strings(
+    func: &AmirFunc,
+    interner: &crate::types::TypeInterner,
+    local: LocalId,
+) -> bool {
+    use crate::amir::{AmirConstant, AmirRvalue, AmirStmt};
+    let is_str = func.locals.get(local.as_usize()).is_some_and(|slot| {
+        matches!(
+            interner.try_resolve(slot.ty),
+            Some(ArType::Primitive(crate::types::Primitive::Str))
+        )
+    });
+    if !is_str {
+        return false;
+    }
+    let mut writes = 0usize;
+    for statement in func
+        .blocks
+        .iter()
+        .flat_map(|block| func.block_stmts(block.id))
+    {
+        match statement {
+            AmirStmt::Store { lhs, rhs } if lhs.local == local => {
+                if !lhs.projections.is_empty()
+                    || !matches!(rhs, AmirOperand::Constant(AmirConstant::Pool(_)))
+                {
+                    return false;
+                }
+                writes += 1;
+            }
+            AmirStmt::Assign {
+                rhs: AmirRvalue::BorrowMut(place),
+                ..
+            } if place.local == local => return false,
+            _ => {}
+        }
+    }
+    writes > 0
 }
 
 /// Whether a value can hide a first-class borrow inside an aggregate. Slices

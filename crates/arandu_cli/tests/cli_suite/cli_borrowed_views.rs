@@ -688,3 +688,41 @@ func main(): int {
         "generic field templates leaked into a monomorphic C function"
     );
 }
+
+#[test]
+fn byte_views_of_static_literals_may_be_returned() {
+    // A literal materialized in a local only holds a descriptor of static
+    // bytes; returning `asBytes("")` from a match arm is not a stack escape.
+    let output = check(
+        r#"module tests.borrowed_views.static_literal
+import std.core.slice as slice
+import std.core.str as strings
+
+func lineSlice(h: []u8, start: usize, n: usize): []u8 {
+    match slice.subslice<u8>(h, start, n) {
+        Option.Some(s) => { return s }
+        Option.None => { return strings.asBytes("") }
+    }
+}
+
+func main(): int { return slice.len<u8>(lineSlice(strings.asBytes("abc"), 1, 1)) as int - 1 }
+"#,
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn byte_views_of_owned_strings_still_cannot_escape() {
+    for source in [
+        "import std.core.str as strings\nfunc f(n: int): []u8 {\n    let s = \"v=${n}\"\n    return strings.asBytes(s)\n}\nfunc main(): int { return 0 }\n",
+        "import std.core.str as strings\nfunc f(flag: bool, n: int): []u8 {\n    let mut s = \"static\"\n    if flag { s = \"v=${n}\" }\n    return strings.asBytes(s)\n}\nfunc main(): int { return 0 }\n",
+    ] {
+        let output = check(source);
+        assert!(!output.status.success(), "owned view escaped:\n{source}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("O010"));
+    }
+}

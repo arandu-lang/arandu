@@ -1226,3 +1226,90 @@ fn cabi_realloc_preserves_data_and_frees_old_ptr() {
         .expect("allocation of freed size");
     assert_eq!(p3, p1, "old buffer p1 must have been freed and reused");
 }
+
+/// Lower `source` and return its component WIT text, or the component error.
+fn component_wit(source: &str) -> Result<Option<String>, arandu_middle::Diagnostic> {
+    component_wit_with(source, &[])
+}
+
+fn component_wit_with(
+    source: &str,
+    modules: &[(&str, &str)],
+) -> Result<Option<String>, arandu_middle::Diagnostic> {
+    use arandu_query::db::DatabaseImpl;
+    let mut db = DatabaseImpl::new();
+    db.set_target_config(common::wasm32());
+    for (path, text) in modules {
+        db.new_file((*path).into(), (*text).into());
+    }
+    let file = db.new_file("wit_surface.aru".into(), source.into());
+    let lowered = arandu_query::passes::lower_amir(&db, file);
+    assert!(
+        lowered.type_check.diagnostics.is_empty(),
+        "{:?}",
+        lowered.type_check.diagnostics
+    );
+    let symbols = lowered.type_check.symbols.as_ref();
+    let info = lowered.type_check.type_info.as_ref();
+    arandu_backend_wasm::emit_component(
+        &lowered.amir,
+        symbols,
+        &info.type_interner,
+        info,
+        common::wasm32(),
+        "surface",
+    )?;
+    Ok(arandu_backend_wasm::wit_gen::generate_wit(
+        &lowered.amir,
+        symbols,
+        &info.type_interner,
+        info,
+        "surface",
+    ))
+}
+
+#[test]
+fn component_surface_is_the_root_module_not_the_linked_stdlib() {
+    // Public API of an imported module (as of the linked stdlib) is an
+    // implementation detail of this component.
+    let wit = component_wit_with(
+        "import helper\npublic func size(): int { return helper.count() }\nfunc main(): int { return size() }\n",
+        &[("helper.aru", "module helper\npublic func count(): int { return 3 }\n")],
+    )
+    .unwrap()
+    .expect("root public function is exported");
+    assert!(wit.contains("size: func"), "{wit}");
+    assert!(
+        !wit.contains("count: func"),
+        "imported public API leaked:\n{wit}"
+    );
+}
+
+#[test]
+fn kebab_case_export_collisions_are_diagnosed_not_ices() {
+    let error = component_wit(
+        "public struct Vec3 { public x: f32 }\npublic func vec3(x: f32): Vec3 { return Vec3 { x: x } }\nfunc main(): int { return 0 }\n",
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.code,
+        arandu_middle::diagnostics::DiagCode::T049InvalidFfiExport
+    );
+    assert!(error.message.contains("vec3"), "{}", error.message);
+}
+
+#[test]
+fn variant_cases_keep_declaration_order_and_their_own_payloads() {
+    let source = "public enum Msg { Quit, Move(i32), Write(f64) }\npublic func make(n: i32): Msg { if n > 0 { return Msg.Move(n) } return Msg.Quit }\nfunc main(): int { return 0 }\n";
+    let wit = component_wit(source).unwrap().expect("enum is exported");
+    let quit = wit.find("    quit,").expect(&wit);
+    let moved = wit.find("    move(s32),").expect(&wit);
+    let write = wit.find("    write(f64),").expect(&wit);
+    assert!(quit < moved && moved < write, "{wit}");
+    for _ in 0..8 {
+        assert_eq!(
+            component_wit(source).unwrap().as_deref(),
+            Some(wit.as_str())
+        );
+    }
+}

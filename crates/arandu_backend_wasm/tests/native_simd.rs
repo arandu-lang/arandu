@@ -112,6 +112,12 @@ fn component_model_rejects_vector_boundary_instead_of_lowering_it_to_u32() {
         .get_mut(&fixture::symbol(0))
         .unwrap()
         .span = origin;
+    // The fixture's function lives outside the root file; only `@Export`
+    // puts such a function on the component surface.
+    fixture
+        .symbols
+        .exported_functions
+        .insert(fixture::symbol(0));
     let error = arandu_backend_wasm::emit_component(
         &fixture.program,
         &fixture.symbols,

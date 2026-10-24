@@ -40,7 +40,7 @@ impl<'a> WasmModuleBuilder<'a> {
             self.layout_provider,
             pkg_name,
             Some(&self.live),
-        );
+        )?;
 
         let Some(wit_text) = maybe_wit else {
             // No public functions → nothing to wrap; return core module.

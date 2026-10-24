@@ -2,6 +2,20 @@ use arandu_middle::types::ArType;
 use arandu_middle::{Diagnostic, SymbolId};
 use rustc_hash::FxHashSet;
 
+/// The component's export surface: `public` functions of the root module and
+/// every `@Export`. Public API of imported modules and the stdlib is an
+/// implementation detail, as with cargo-component's explicit world.
+pub(crate) fn is_component_export(
+    symbols: &arandu_semantics::SymbolTable,
+    function: SymbolId,
+) -> bool {
+    symbols.is_exported(function)
+        || symbols.try_get(function).is_some_and(|symbol| {
+            symbol.visibility == arandu_middle::Visibility::Public
+                && symbol.id.file_id == symbols.file_id
+        })
+}
+
 /// The Component Model has no v128 canonical value. Do not silently turn a
 /// native vector (including one nested in an aggregate) into WIT `u32`.
 pub(crate) fn validate_vector_boundaries(
@@ -18,7 +32,7 @@ pub(crate) fn validate_vector_boundaries(
         .filter(|function| live.is_none_or(|set| set.contains(&function.symbol)))
     {
         if let Some(symbol) = symbols.try_get(function.symbol)
-            && symbol.visibility == arandu_middle::Visibility::Public
+            && is_component_export(symbols, function.symbol)
         {
             let origin = symbol.span;
             pending.push((function.return_type, origin));

@@ -101,6 +101,45 @@ pub fn generate_wit(
     pkg_name: &str,
 ) -> Option<String> {
     generate_wit_filtered(program, symbols, interner, layout_provider, pkg_name, None)
+        .ok()
+        .flatten()
+}
+
+/// WIT identifiers share one namespace per interface (types and functions)
+/// and per record/enum/variant. Distinct Arandu names can lower to the same
+/// kebab-case identifier (`Vec3` / `vec3`, `fooBar` / `foobar`): reject that
+/// before encoding instead of failing inside the WIT parser.
+fn reject_duplicate_ident<'n>(
+    seen: &mut FxHashMap<&'n str, SymbolId>,
+    name: &'n str,
+    symbol: SymbolId,
+    symbols: &SymbolTable,
+    scope: &str,
+) -> Result<(), arandu_middle::Diagnostic> {
+    let Some(&first) = seen.get(name) else {
+        seen.insert(name, symbol);
+        return Ok(());
+    };
+    let span = |id: SymbolId| {
+        symbols
+            .try_get(id)
+            .map_or(arandu_base::Span::new(0, 0, 0), |s| s.span)
+    };
+    let label = |id: SymbolId| {
+        symbols
+            .try_get(id)
+            .map_or_else(String::new, |s| s.name.to_string())
+    };
+    Err(arandu_middle::Diagnostic::error(
+        arandu_middle::diagnostics::DiagCode::T049InvalidFfiExport,
+        format!(
+            "`{}` and `{}` both export as `{name}` in the component {scope}",
+            label(first),
+            label(symbol)
+        ),
+        span(symbol),
+    )
+    .with_label(span(first), "first exported here"))
 }
 
 pub(crate) fn generate_wit_filtered(
@@ -110,20 +149,16 @@ pub(crate) fn generate_wit_filtered(
     layout_provider: &dyn StructLayoutProvider,
     pkg_name: &str,
     live: Option<&FxHashSet<SymbolId>>,
-) -> Option<String> {
-    super::validate_vector_boundaries(program, symbols, interner, layout_provider, live).ok()?;
+) -> Result<Option<String>, arandu_middle::Diagnostic> {
+    super::validate_vector_boundaries(program, symbols, interner, layout_provider, live)?;
     let public_funcs: Vec<_> = program
         .funcs
         .iter()
-        .filter(|f| {
-            symbols
-                .try_get(f.symbol)
-                .is_some_and(|s| s.visibility == arandu_middle::Visibility::Public)
-        })
+        .filter(|f| super::validate::is_component_export(symbols, f.symbol))
         .collect();
 
     if public_funcs.is_empty() {
-        return None;
+        return Ok(None);
     }
 
     let mut lowerer = TypeLowerer::new(symbols, interner, layout_provider);
@@ -140,6 +175,7 @@ pub(crate) fn generate_wit_filtered(
     // Check for explicit public interfaces in the symbol table
     let mut public_ifaces: Vec<&arandu_middle::symbol_table::Symbol> = Vec::new();
     for sym in symbols.iter() {
+        // An interface only groups functions already on the export surface.
         if sym.kind == SymbolKind::Interface && sym.visibility == arandu_middle::Visibility::Public
         {
             public_ifaces.push(sym);
@@ -183,6 +219,18 @@ pub(crate) fn generate_wit_filtered(
             result,
             symbol: func.symbol,
         });
+    }
+
+    if let Some(&unsupported) = lowerer.unsupported.first() {
+        let symbol = symbols.try_get(unsupported);
+        return Err(arandu_middle::Diagnostic::error(
+            arandu_middle::diagnostics::DiagCode::U001FeatureNotSupported,
+            format!(
+                "type `{}` has no Component Model representation; export a concrete struct or enum",
+                symbol.map_or("?", |s| s.name.as_str())
+            ),
+            symbol.map_or(arandu_base::Span::new(0, 0, 0), |s| s.span),
+        ));
     }
 
     // Partition functions into named interfaces vs default `exports`.
@@ -294,6 +342,42 @@ pub(crate) fn generate_wit_filtered(
             .collect()
     };
 
+    let check_names = |defs: &[WitTypeDef], sigs: &[FuncSigInfo], scope: &str| {
+        let mut interface_names = FxHashMap::default();
+        for def in defs {
+            reject_duplicate_ident(&mut interface_names, &def.name, def.symbol, symbols, scope)?;
+            let mut members = FxHashMap::default();
+            let names: Vec<&str> = match &def.kind {
+                WitTypeDefKind::Record { fields } => {
+                    fields.iter().map(|(n, _)| n.as_str()).collect()
+                }
+                WitTypeDefKind::Enum { cases } => cases.iter().map(SmolStr::as_str).collect(),
+                WitTypeDefKind::Variant { cases } => {
+                    cases.iter().map(|(n, _)| n.as_str()).collect()
+                }
+            };
+            for name in names {
+                reject_duplicate_ident(
+                    &mut members,
+                    name,
+                    def.symbol,
+                    symbols,
+                    &format!("type `{}`", def.name),
+                )?;
+            }
+        }
+        for sig in sigs {
+            reject_duplicate_ident(
+                &mut interface_names,
+                &sig.fn_name,
+                sig.symbol,
+                symbols,
+                scope,
+            )?;
+        }
+        Ok::<(), arandu_middle::Diagnostic>(())
+    };
+
     // Helper closure to emit nominal types
     let emit_types = |wit: &mut String, defs: &[WitTypeDef], lowerer: &TypeLowerer| {
         for def in defs {
@@ -374,6 +458,7 @@ pub(crate) fn generate_wit_filtered(
         wit.push_str(" {\n");
 
         let iface_types = collect_iface_types(sigs);
+        check_names(&iface_types, sigs, &format!("interface `{iface_wit_name}`"))?;
         emit_types(&mut wit, &iface_types, &lowerer);
         emit_funcs(&mut wit, sigs, &lowerer);
         wit.push_str("}\n\n");
@@ -384,6 +469,7 @@ pub(crate) fn generate_wit_filtered(
     if !default_exports.is_empty() || iface_groups.is_empty() {
         wit.push_str("interface exports {\n");
         let exports_types = collect_iface_types(&default_exports);
+        check_names(&exports_types, &default_exports, "interface `exports`")?;
         emit_types(&mut wit, &exports_types, &lowerer);
         emit_funcs(&mut wit, &default_exports, &lowerer);
         wit.push_str("}\n\n");
@@ -450,5 +536,5 @@ pub(crate) fn generate_wit_filtered(
     }
     wit.push_str("}\n");
 
-    Some(wit)
+    Ok(Some(wit))
 }

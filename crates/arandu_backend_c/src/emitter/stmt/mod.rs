@@ -174,7 +174,16 @@ impl<'a> CEmitter<'a> {
                 }
                 let lhs_str = self.format_place(lhs, func);
                 let rhs_str = self.format_operand(rhs, func);
-                let _ = writeln!(&mut self.output, "    {} = {};", lhs_str, rhs_str);
+                if lhs.projections.is_empty()
+                    && self.is_str_ref_to_str(
+                        &self.operand_ty(func, rhs),
+                        &self.local_ty(func, lhs.local),
+                    )
+                {
+                    let _ = writeln!(&mut self.output, "    {lhs_str} = *({rhs_str});");
+                } else {
+                    let _ = writeln!(&mut self.output, "    {} = {};", lhs_str, rhs_str);
+                }
             }
             AmirStmt::Call {
                 lhs, callee, args, ..

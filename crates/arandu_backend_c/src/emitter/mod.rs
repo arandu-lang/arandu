@@ -136,6 +136,19 @@ impl<'a> CEmitter<'a> {
         self.interner.resolve(func.locals[local.as_usize()].ty)
     }
 
+    /// `ref str -> str` auto-deref admitted by `unify::is_assignable`: the
+    /// reference points at a `{ data, len }` descriptor (Cranelift loads it in
+    /// `translate_str_operand`), so C must dereference the `ArStr*`.
+    pub(super) fn is_str_ref_to_str(&self, source: &ArType, dest: &ArType) -> bool {
+        use arandu_middle::types::Primitive;
+        matches!(dest, ArType::Primitive(Primitive::Str))
+            && matches!(
+                source,
+                ArType::Ptr(inner) | ArType::Ref(inner) | ArType::RefMut(inner)
+                    if matches!(self.interner.resolve(*inner), ArType::Primitive(Primitive::Str))
+            )
+    }
+
     #[inline]
     pub(super) fn operand_ty(
         &self,

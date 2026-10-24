@@ -84,8 +84,13 @@ pub fn format_edits_in_range(source: &str, start: u32, end: u32) -> Vec<TextEdit
         if item_start >= end || start >= item_end {
             continue;
         }
-        let s = item_start as usize;
-        let e = (item_end as usize).min(source.len()).max(s);
+        let e = (item_end as usize).min(source.len());
+        let s = (item_start as usize).min(e);
+        // CST items may start with leading trivia (the newline ending the
+        // previous item). Formatting strips leading blank lines, so keep the
+        // trivia out of the edited text or items would be joined together.
+        let s = e - source[s..e].trim_start().len();
+        let item_start = s as u32;
         let item_src = &source[s..e];
         let mut formatted = format_item_snippet(item_src);
         if !item_src.ends_with('\n') {
@@ -698,6 +703,24 @@ mod tests {
         let applied = apply_edits(src, &edits);
         assert_eq!(applied, format_source(src));
         assert!(format_edits(&applied).is_empty());
+    }
+
+    #[test]
+    fn format_edits_in_range_preserves_line_breaks_between_items() {
+        // Fuzz finding (fuzz_fmt): range formatting a later item removed the
+        // newline separating it from the previous one, which drops the
+        // automatic semicolon inserted after `}`.
+        let src = "struct P { x: int, y: int }\nfunc main(): int { let p = P { x: 1, y: 2 }\n return p.x }\n";
+        let edits = format_edits_in_range(src, 0, src.len() as u32);
+        let mut applied = src.to_string();
+        for edit in edits.iter().rev() {
+            applied.replace_range(edit.start as usize..edit.end as usize, &edit.new_text);
+        }
+        assert!(
+            applied.starts_with("struct P { x: int, y: int }\nfunc main"),
+            "{edits:?}\n{applied}"
+        );
+        assert!(parses_clean(&applied), "{applied}");
     }
 
     #[test]

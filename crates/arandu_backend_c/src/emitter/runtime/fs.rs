@@ -17,18 +17,20 @@ static {len_c_ty} ar_path_is_empty(ArStr p) {{
     return p.len <= 0 ? 1 : 0;
 }}
 static ArStr ar_path_join(ArStr a, ArStr b) {{
-    /* Absolute b replaces (Unix Path::join). */
+    /* Unix Path::join: absolute b replaces; a separator follows any
+       non-empty a lacking one, even when b is empty ("a" + "" = "a/"). */
     if (b.len > 0 && b.ptr && b.ptr[0] == '/') return b;
-    if (a.len <= 0) return b;
-    if (b.len <= 0) return a;
+    if (a.len <= 0 || !a.ptr) return b;
+    {len_c_ty} bl = (b.len > 0 && b.ptr) ? b.len : 0;
     int need_sep = !(a.ptr[a.len - 1] == '/');
-    {len_c_ty} total = a.len + b.len + (need_sep ? 1 : 0);
+    if (bl == 0 && !need_sep) return a;
+    {len_c_ty} total = a.len + bl + (need_sep ? 1 : 0);
     uint8_t *buf = (uint8_t*)malloc((size_t)total + 1);
     if (!buf) abort();
     memcpy(buf, a.ptr, (size_t)a.len);
     {len_c_ty} off = a.len;
     if (need_sep) buf[off++] = '/';
-    memcpy(buf + off, b.ptr, (size_t)b.len);
+    if (bl > 0) memcpy(buf + off, b.ptr, (size_t)bl);
     buf[total] = 0;
     return ar_str_pack(buf, total);
 }}
@@ -38,7 +40,7 @@ static bool ar_path_join_owned(ArStr a, ArStr b, uint8_t **out_buf, {len_c_ty} *
     *out_buf = NULL; *out_len = 0; *out_cap = 0;
     bool absolute = b.len > 0 && b.ptr[0] == '/';
     {len_c_ty} al = absolute ? 0 : a.len;
-    bool need_sep = al > 0 && b.len > 0 && a.ptr[al - 1] != '/';
+    bool need_sep = al > 0 && a.ptr[al - 1] != '/';
     if (al > INT64_MAX - b.len - (need_sep ? 1 : 0)) return false;
     {len_c_ty} total = al + b.len + (need_sep ? 1 : 0);
     if (total == 0) return true;
@@ -52,11 +54,22 @@ static bool ar_path_join_owned(ArStr a, ArStr b, uint8_t **out_buf, {len_c_ty} *
     return true;
 }}
 static ArStr ar_path_file_name(ArStr p) {{
+    /* Unix Path::file_name: last normal component, ignoring trailing
+       separators and non-leading "." components; root, "." and ".." have none. */
     if (p.len <= 0 || !p.ptr) return ar_str_pack((const uint8_t*)"", 0);
-    {len_c_ty} i = p.len;
-    while (i > 0 && p.ptr[i - 1] != '/') i--;
-    {len_c_ty} n = p.len - i;
-    if (n <= 0) return ar_str_pack((const uint8_t*)"", 0);
+    {len_c_ty} end = p.len;
+    {len_c_ty} i;
+    for (;;) {{
+        while (end > 0 && p.ptr[end - 1] == '/') end--;
+        i = end;
+        while (i > 0 && p.ptr[i - 1] != '/') i--;
+        if (i > 0 && end - i == 1 && p.ptr[i] == '.') {{ end = i; continue; }}
+        break;
+    }}
+    {len_c_ty} n = end - i;
+    if (n <= 0 || (n == 1 && p.ptr[i] == '.') ||
+        (n == 2 && p.ptr[i] == '.' && p.ptr[i + 1] == '.'))
+        return ar_str_pack((const uint8_t*)"", 0);
     uint8_t *buf = (uint8_t*)malloc((size_t)n + 1);
     if (!buf) abort();
     memcpy(buf, p.ptr + i, (size_t)n);

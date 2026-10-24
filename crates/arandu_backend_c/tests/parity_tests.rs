@@ -2265,6 +2265,51 @@ fn parity_io_println_to_str() {
 }
 
 #[test]
+fn c_f64_to_str_checks_range_before_integer_cast() {
+    // Fuzz finding: `(long long)v` ran before the `|v| < 1e15` guard, which is
+    // undefined behavior for out-of-range doubles (UBSan float-cast-overflow).
+    let src = r#"
+    import io
+    func main(): int {
+        let big: float = 1e300
+        let low: float = -9.3e18
+        let whole: float = 2.0
+        io.println("${big}|${low}|${whole}")
+        return 0
+    }
+    "#;
+    let (amir, tc) = compile_src(src);
+    let emitted = emit_c(&amir, &tc);
+    let guarded = emitted
+        .find("v < 1e15 && v > -1e15 && v == (double)(long long)v")
+        .expect("range check must precede the integer cast");
+    assert!(!emitted[..guarded].contains("(long long)v && v < 1e15"));
+    let (result, stdout) = execute_c_output("f64_to_str_range_guard", &amir, &tc);
+    assert_eq!(result, 0);
+    assert!(stdout.starts_with("1e+300|-9.3e+18|2\n"), "{stdout:?}");
+}
+
+#[test]
+fn parity_ref_str_auto_deref_on_assignment() {
+    // Fuzz finding: typeck admits `ref str -> str` on `let`, Cranelift loads
+    // the descriptor, but C assigned `ArStr*` to `ArStr` and failed to compile.
+    let src = r#"
+    func view(s: ref str): ref str {
+        return s
+    }
+    func main(): int {
+        let base: str = "abc"
+        let copy: str = view(ref base)
+        if copy != "abc" {
+            return 1
+        }
+        return 0
+    }
+    "#;
+    test_execution_parity("ref_str_auto_deref_assignment", src);
+}
+
+#[test]
 fn parity_io_eprint_emits_the_runtime_alias() {
     let src = r#"
     import io

@@ -24,7 +24,9 @@ impl<'a> CEmitter<'a> {
             expected_ar_type,
             ArType::Ptr(_) | ArType::Ref(_) | ArType::RefMut(_)
         ) && !expected_ar_type.is_borrowed_slice_abi(self.interner);
-        if dest_is_pointer {
+        if self.is_str_ref_to_str(&source_ty, expected_ar_type) {
+            let _ = write!(&mut self.output, "(*({op_str}))");
+        } else if dest_is_pointer {
             if source_is_pointer
                 || matches!(source_ty, ArType::Func(_, _))
                 || matches!(op, AmirOperand::FunctionRef(_))

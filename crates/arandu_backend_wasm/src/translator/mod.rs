@@ -35,7 +35,7 @@ use arandu_middle::types::{ArType, TypeId, TypeInterner};
 use rustc_hash::FxHashMap;
 use wasm_encoder::{BlockType, Function, Instruction, ValType};
 
-use arandu_semantics::SymbolTable;
+use arandu_middle::SymbolTable;
 
 use crate::types::{self, Shape};
 

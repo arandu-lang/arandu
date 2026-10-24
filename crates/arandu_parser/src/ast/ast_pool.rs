@@ -2,6 +2,7 @@ use super::{
     Block, CatchHandler, FieldInit, FieldPattern, LambdaParam, MatchArm, Pattern, Stmt, StringPart,
     TopLevelDecl, TypeExpr,
 };
+pub use arandu_base::lang::LayoutQuery;
 use arandu_lexer::Span;
 use smallvec::SmallVec;
 use smol_str::SmolStr;
@@ -140,42 +141,6 @@ pub enum ComptimeBody {
 }
 
 // ─── ExprKind ──────────────────────────────────────────────────────────────────
-
-/// Public target-layout expressions, distinct from declaration attributes and
-/// ordinary calls (a user function named `sizeOf` is not an intrinsic).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum LayoutQuery {
-    Size,
-    Align,
-    TargetOS,
-    TargetArch,
-    TargetPointerWidth,
-}
-
-impl LayoutQuery {
-    #[must_use]
-    pub fn from_name(name: &str) -> Option<Self> {
-        match name {
-            "sizeOf" => Some(Self::Size),
-            "alignOf" => Some(Self::Align),
-            "targetOS" => Some(Self::TargetOS),
-            "targetArch" => Some(Self::TargetArch),
-            "targetPointerWidth" => Some(Self::TargetPointerWidth),
-            _ => None,
-        }
-    }
-
-    #[must_use]
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Size => "sizeOf",
-            Self::Align => "alignOf",
-            Self::TargetOS => "targetOS",
-            Self::TargetArch => "targetArch",
-            Self::TargetPointerWidth => "targetPointerWidth",
-        }
-    }
-}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExprKind {

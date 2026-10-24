@@ -43,7 +43,8 @@ mod tests {
 
     #[test]
     fn resolution_hash_distinguishes_symbol_kind_with_identical_name_and_span() {
-        use arandu_middle::{ResolutionResult, Span, SymbolKind};
+        use arandu_middle::{Span, SymbolKind};
+        use arandu_resolve::ResolutionResult;
         let result = |kind| {
             let mut result = ResolutionResult::cycle_fallback();
             let scope = result.symbols.global_scope();

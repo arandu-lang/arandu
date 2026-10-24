@@ -1,5 +1,5 @@
 use super::HashContext;
-use arandu_semantics::amir::AmirFunc;
+use arandu_middle::amir::AmirFunc;
 
 impl HashContext<'_> {
     pub(super) fn func_signature(&mut self, func: &AmirFunc) {
@@ -19,21 +19,15 @@ impl HashContext<'_> {
             self.hash.tag(1);
             self.hash.usize(receiver.temp.as_usize());
             self.hash.tag(match receiver.kind {
-                arandu_semantics::hir::ReceiverKind::Shared => 0,
-                arandu_semantics::hir::ReceiverKind::Mut => 1,
-                arandu_semantics::hir::ReceiverKind::Own => 2,
+                arandu_middle::hir::ReceiverKind::Shared => 0,
+                arandu_middle::hir::ReceiverKind::Mut => 1,
+                arandu_middle::hir::ReceiverKind::Own => 2,
             });
         } else {
             self.hash.tag(0);
         }
-        self.hash.u32(
-            self.type_info
-                .function_effects
-                .get(&func.symbol)
-                .copied()
-                .unwrap_or_default()
-                .0,
-        );
+        self.hash
+            .u32(self.type_info.function_effects(func.symbol).0);
     }
 
     pub(super) fn func(&mut self, func: &AmirFunc) {
@@ -112,7 +106,7 @@ impl HashContext<'_> {
                     self.ar_type(param);
                 }
                 self.ar_type(result);
-            } else if let Some(&ty) = self.type_info.decl_types.get(&symbol) {
+            } else if let Some(ty) = self.type_info.decl_type_id(symbol) {
                 self.hash.tag(2);
                 self.type_id(ty);
             } else {

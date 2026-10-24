@@ -4,11 +4,11 @@
 //! building [`Signature`]s used when declaring and calling functions.
 
 use crate::types::clif_types;
-use arandu_semantics::layout::{
+use arandu_middle::layout::{
     AbiScalar, ArgAbi, StructLayoutProvider, TargetAbi, TargetAbiClassifier,
 };
-use arandu_semantics::passes::type_checker::types::{ArType, Primitive};
-use arandu_semantics::types::TypeInterner;
+use arandu_middle::types::TypeInterner;
+use arandu_middle::types::{ArType, Primitive};
 use cranelift_codegen::ir::{AbiParam, ArgumentPurpose, Signature, Type};
 use cranelift_codegen::isa::CallConv;
 
@@ -17,7 +17,7 @@ use cranelift_codegen::isa::CallConv;
 pub(crate) fn load_aggregate_slot(
     builder: &mut cranelift_frontend::FunctionBuilder<'_>,
     base: cranelift_codegen::ir::Value,
-    slot: &arandu_semantics::layout::AbiSlot,
+    slot: &arandu_middle::layout::AbiSlot,
     aggregate_size: u64,
     little_endian: bool,
 ) -> Result<cranelift_codegen::ir::Value, &'static str> {
@@ -229,7 +229,7 @@ mod bounded_slot_tests {
             let block = builder.create_block();
             builder.switch_to_block(block);
             let base = builder.ins().iconst(types::I64, 0);
-            let slot = arandu_semantics::layout::AbiSlot {
+            let slot = arandu_middle::layout::AbiSlot {
                 scalar: AbiScalar::I64,
                 offset: 0,
             };
@@ -250,7 +250,7 @@ mod bounded_slot_tests {
                     types::I8
                 );
             }
-            let outside = arandu_semantics::layout::AbiSlot {
+            let outside = arandu_middle::layout::AbiSlot {
                 scalar: AbiScalar::I64,
                 offset: 4,
             };

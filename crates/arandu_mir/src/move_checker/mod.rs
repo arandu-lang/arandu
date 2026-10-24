@@ -13,11 +13,11 @@ use crate::{BitSet, SymbolTable};
 use smallvec::SmallVec;
 
 #[cfg(test)]
+use crate::Span;
+#[cfg(test)]
 use crate::amir::{AmirRvalue, AmirStmt, AmirTerminator, TempId};
 #[cfg(test)]
 use crate::diagnostics::DiagCode;
-#[cfg(test)]
-use arandu_lexer::Span;
 
 mod walk;
 

@@ -75,7 +75,7 @@ mod tests {
             arandu_semantics::lower_to_amir_with_interfaces(&mut checked, &hir, 8).unwrap();
         let artifact = crate::aot::CraneliftObjectBackend::host_baseline()
             .unwrap()
-            .compile(&program, &checked.symbols, &checked.type_info)
+            .compile(&program, &checked.symbols, &*checked.type_info)
             .unwrap();
         let object = cranelift_object::object::File::parse(artifact.bytes()).unwrap();
         let expected: Vec<u8> = (1_i32..=8)
@@ -112,7 +112,7 @@ mod tests {
             arandu_semantics::lower_to_amir_with_interfaces(&mut checked, &hir, 8).unwrap();
         let artifact = crate::aot::CraneliftObjectBackend::host_baseline()
             .unwrap()
-            .compile(&program, &checked.symbols, &checked.type_info)
+            .compile(&program, &checked.symbols, &*checked.type_info)
             .unwrap();
         let object = cranelift_object::object::File::parse(artifact.bytes()).unwrap();
         let expected: Vec<_> = (1_i32..=8)

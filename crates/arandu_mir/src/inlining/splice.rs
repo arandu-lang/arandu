@@ -42,7 +42,7 @@ pub fn splice_call(
         .iter_ids::<InstrId>()
         .next()
         .and_then(|id| caller.try_stmt(id))
-        .map_or(arandu_lexer::Span::new(0, 0, 0), |_| {
+        .map_or(crate::Span::new(0, 0, 0), |_| {
             caller.temps[caller
                 .params
                 .first()

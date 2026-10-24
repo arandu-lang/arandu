@@ -397,7 +397,7 @@ impl<'a> FuncTranslator<'a> {
     /// Assign slots to non-parameter temps by coloring an interference graph,
     /// so disjoint-lifetime SSA temps share the same Wasm local index.
     fn assign_colored_temps(&mut self, next: &mut u32, slot_types: &mut Vec<ValType>) {
-        let interference = arandu_semantics::passes::liveness::temp_interference_graph(self.func);
+        let interference = arandu_mir::liveness::temp_interference_graph(self.func);
 
         let mut fat_temps = Vec::new();
         let mut i32_temps = Vec::new();

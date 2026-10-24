@@ -109,7 +109,7 @@ fn runtime_producer_workload() {
             .collect::<Vec<_>>();
         let inputs = units
             .iter()
-            .map(|(key, unit)| arandu_mir::ContextualFunctionUnit {
+            .map(|(key, unit)| arandu_semantics::ContextualFunctionUnit {
                 key,
                 unit: unit.result.as_ref().expect("valid body"),
                 context: &unit.context,
@@ -123,7 +123,7 @@ fn runtime_producer_workload() {
             .type_check
             .clone();
         let start = Instant::now();
-        arandu_mir::compose_function_units(&mut aggregate, &inputs, || {})
+        arandu_semantics::compose_function_units(&mut aggregate, &inputs, || {})
             .expect("canonical composition");
         eprintln!(
             "producer=units stage=composition_only elapsed_us={}",

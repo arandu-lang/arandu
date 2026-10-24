@@ -1,7 +1,6 @@
 use super::super::{FuncEmitter, ice};
 use arandu_middle::Diagnostic;
 use arandu_middle::amir::{AmirRvalue, TempId};
-use arandu_middle::layout::StructLayoutProvider;
 use arandu_middle::types::{ArType, Primitive};
 
 impl<'a, 'm> FuncEmitter<'a, 'm> {

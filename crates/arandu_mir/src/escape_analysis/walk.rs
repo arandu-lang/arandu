@@ -6,6 +6,7 @@ use super::types::{EscapeEvent, EscapeKind};
 use crate::amir::{AmirFunc, AmirOperand, AmirRvalue, AmirStmt, AmirTerminator, LocalId};
 use crate::borrow_facts::analyze_borrow_facts_with_types;
 use crate::types::ArType;
+use arandu_middle::type_context::AmirTypeContext;
 
 /// Pure escape finder (no diagnostics).
 #[must_use]
@@ -17,15 +18,15 @@ pub fn find_escapes(func: &AmirFunc, interner: &crate::types::TypeInterner) -> V
 /// treating named wrappers around slice views as hidden reference carriers.
 pub fn find_escapes_with_type_info(
     func: &AmirFunc,
-    type_info: &arandu_typeck::TypeInfo,
+    type_info: &dyn AmirTypeContext,
 ) -> Vec<EscapeEvent> {
-    find_escapes_impl(func, &type_info.type_interner, Some(type_info))
+    find_escapes_impl(func, type_info.type_interner(), Some(type_info))
 }
 
 fn find_escapes_impl(
     func: &AmirFunc,
     interner: &crate::types::TypeInterner,
-    type_info: Option<&arandu_typeck::TypeInfo>,
+    type_info: Option<&dyn AmirTypeContext>,
 ) -> Vec<EscapeEvent> {
     let facts = analyze_borrow_facts_with_types(func, interner);
     // Generated functions commonly reuse the same types across many stores.

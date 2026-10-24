@@ -25,9 +25,9 @@ pub fn finalize_function_unit(
     summaries: &FxHashMap<SymbolId, arandu_middle::types::ReturnBorrowSummary>,
 ) -> Result<arandu_middle::types::ReturnBorrowSummary, Vec<Diagnostic>> {
     let function = std::sync::Arc::make_mut(&mut unit.function);
-    crate::borrow_interface::apply_call_interfaces(function, summaries);
+    arandu_mir::borrow_interface::apply_call_interfaces(function, summaries);
     let (summary, missing) =
-        crate::borrow_interface::infer_function_interface(function, &tc.type_info, summaries);
+        arandu_mir::borrow_interface::infer_function_interface(function, &*tc.type_info, summaries);
     let mut diagnostics = Vec::new();
     super::validate_borrowed_function(
         tc,
@@ -209,7 +209,7 @@ pub fn lower_block_unit(
     if !matches!(
         tc.type_info.type_interner.resolve(result_type),
         ArType::Void | ArType::Error
-    ) && !crate::definite_init::uninitialized_return_exits(&unit.function).is_empty()
+    ) && !arandu_mir::definite_init::uninitialized_return_exits(&unit.function).is_empty()
     {
         return Err(vec![
             Diagnostic::error(

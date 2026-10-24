@@ -235,7 +235,7 @@ pub(super) fn lower_scalar_function(
         link_extern_headers(db, &mut checked, &mut hir)?;
         db.unwind_if_revision_cancelled();
         let (mut program, diagnostics) =
-            arandu_mir::lower_to_amir_with_layout(&mut checked, &hir, layout)
+            arandu_semantics::lower_to_amir_with_layout(&mut checked, &hir, layout)
                 .map_err(BuildFailure::Diagnostics)?;
         if diagnostics
             .iter()

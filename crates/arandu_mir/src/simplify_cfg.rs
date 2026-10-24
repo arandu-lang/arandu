@@ -458,7 +458,7 @@ mod tests {
     };
     use crate::cfg::compute_cfg_edges;
     use crate::layout::DenseRange;
-    use crate::passes::type_checker::types::{ArType, Primitive};
+    use crate::types::{ArType, Primitive};
     use smallvec::smallvec;
 
     fn bbid(id: usize) -> BlockId {
@@ -471,7 +471,7 @@ mod tests {
             ty: intern_ty(ArType::Primitive(Primitive::Int)),
             is_copy: true,
             is_nullable: false,
-            span: arandu_lexer::Span::new(0, 0, 0),
+            span: crate::Span::new(0, 0, 0),
         }
     }
 

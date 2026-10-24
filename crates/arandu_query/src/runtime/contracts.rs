@@ -193,7 +193,7 @@ pub fn instance_contracts<'db>(
             let local = local_contracts(unit, &contracts);
             let summary = arandu_mir::borrow_interface::infer_function_interface(
                 &raw.function,
-                &unit.context.type_info,
+                &*unit.context.type_info,
                 &local,
             )
             .0;
@@ -257,7 +257,7 @@ pub fn runtime_unit<'db>(
                 .cloned()
                 .collect::<FxHashMap<_, _>>();
             let local = local_contracts(raw, &summaries);
-            let validation = arandu_mir::finalize_function_unit(unit, &raw.context, &local);
+            let validation = arandu_semantics::finalize_function_unit(unit, &raw.context, &local);
             analysis_function = Some(std::sync::Arc::clone(&unit.function));
             match validation {
                 Ok(summary) => borrow_summary = Some(summary),

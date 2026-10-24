@@ -379,7 +379,7 @@ fn validate_gen_operations(func: &AmirFunc, interner: &TypeInterner, diags: &mut
 fn validate_borrowed_gen_result(
     func: &AmirFunc,
     borrowed: crate::amir::TempId,
-    origin: arandu_lexer::Span,
+    origin: crate::Span,
     diags: &mut Vec<Diagnostic>,
 ) {
     let references = |operand: &AmirOperand| matches!(operand, AmirOperand::Copy(temp) | AmirOperand::Move(temp) if *temp == borrowed);
@@ -459,7 +459,7 @@ fn validate_borrowed_gen_result(
 }
 
 fn borrowed_gen_escape(
-    origin: arandu_lexer::Span,
+    origin: crate::Span,
     borrowed: crate::amir::TempId,
     diags: &mut Vec<Diagnostic>,
 ) {
@@ -478,7 +478,7 @@ fn require_payload_operand(
     interner: &TypeInterner,
     operand: &AmirOperand,
     expected: TypeId,
-    origin: arandu_lexer::Span,
+    origin: crate::Span,
     label: &str,
     diags: &mut Vec<Diagnostic>,
 ) {
@@ -502,7 +502,7 @@ fn require_gen_ref_operand(
     func: &AmirFunc,
     interner: &TypeInterner,
     operand: &AmirOperand,
-    origin: arandu_lexer::Span,
+    origin: crate::Span,
     diags: &mut Vec<Diagnostic>,
 ) {
     let Some(actual) = operand_type(func, operand, interner) else {
@@ -514,7 +514,7 @@ fn require_gen_ref_operand(
 fn require_gen_ref_type(
     interner: &TypeInterner,
     actual: TypeId,
-    origin: arandu_lexer::Span,
+    origin: crate::Span,
     label: &str,
     diags: &mut Vec<Diagnostic>,
 ) {
@@ -618,7 +618,7 @@ fn edge_types_compatible(interner: &TypeInterner, actual: TypeId, expected: Type
 fn validate_vector_operations(
     func: &AmirFunc,
     interner: &TypeInterner,
-    span: arandu_lexer::Span,
+    span: crate::Span,
     diags: &mut Vec<Diagnostic>,
 ) {
     for stmt in func.stmts.payloads.iter() {

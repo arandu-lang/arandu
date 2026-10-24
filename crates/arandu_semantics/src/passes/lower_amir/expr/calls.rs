@@ -121,7 +121,7 @@ impl LowerCtx<'_> {
                 view @ Some(ArType::Primitive(crate::types::Primitive::Str) | ArType::Slice(_)) => {
                     is_view(view)
                 }
-                _ => !crate::borrow_facts::type_may_carry_borrow(param, interner),
+                _ => !arandu_mir::borrow_facts::type_may_carry_borrow(param, interner),
             })
     }
 
@@ -582,7 +582,7 @@ impl LowerCtx<'_> {
         operand_ty: crate::types::TypeId,
         result_ty: crate::types::TypeId,
         target: Option<TempId>,
-        span: arandu_lexer::Span,
+        span: arandu_middle::Span,
     ) -> Result<AmirOperand, Diagnostic> {
         let ty = self.resolve_ty(operand_ty);
         let engine = arandu_middle::layout::LayoutEngine::from_data_layout(self.layout);
@@ -627,6 +627,6 @@ fn result_may_hold_view(ty: crate::types::TypeId, interner: &crate::types::TypeI
         Some(ArType::Result(ok, err)) => {
             result_may_hold_view(ok, interner) || result_may_hold_view(err, interner)
         }
-        _ => crate::borrow_facts::type_may_carry_borrow(ty, interner),
+        _ => arandu_mir::borrow_facts::type_may_carry_borrow(ty, interner),
     }
 }

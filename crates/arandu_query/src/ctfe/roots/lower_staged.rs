@@ -428,9 +428,9 @@ pub(super) fn lower_staged_root<'db, 'prog>(
     db.unwind_if_revision_cancelled();
     let unit = match lowered {
         LoweredRoot::Expression(expression) => {
-            arandu_mir::lower_expression_unit(&checked, &hir, header, expression, layout)
+            arandu_semantics::lower_expression_unit(&checked, &hir, header, expression, layout)
         }
-        LoweredRoot::Block(block) => arandu_mir::lower_block_unit(
+        LoweredRoot::Block(block) => arandu_semantics::lower_block_unit(
             &checked,
             &hir,
             header,

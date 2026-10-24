@@ -32,7 +32,7 @@ pub fn analyze_borrow_facts_with_types(
     analyze_borrow_facts_impl(func, Some(&carriers))
 }
 
-pub(crate) fn type_may_carry_borrow(
+pub fn type_may_carry_borrow(
     ty: crate::types::TypeId,
     interner: &crate::types::TypeInterner,
 ) -> bool {

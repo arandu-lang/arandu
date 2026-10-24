@@ -3,6 +3,7 @@ use super::walk::{find_escapes, find_escapes_with_type_info};
 use crate::amir::{AmirFunc, AmirRvalue, AmirStmt, BlockId, LocalId};
 use crate::diagnostics::{DiagCode, Diagnostic};
 use crate::{Span, SymbolTable};
+use arandu_middle::type_context::AmirTypeContext;
 use arandu_middle::types::ReturnBorrowSummary;
 
 /// Run escape analysis and produce O004 / O010 diagnostics.
@@ -22,13 +23,13 @@ pub fn check_escapes(
 pub fn check_escapes_with_type_info(
     func: &AmirFunc,
     symbols: &SymbolTable,
-    type_info: &arandu_typeck::TypeInfo,
+    type_info: &dyn AmirTypeContext,
     opts: EscapeCheckOptions,
 ) -> Vec<Diagnostic> {
     check_escapes_by_block_impl(
         func,
         symbols,
-        &type_info.type_interner,
+        type_info.type_interner(),
         Some(type_info),
         opts,
     )
@@ -52,7 +53,7 @@ fn check_escapes_by_block_impl(
     func: &AmirFunc,
     symbols: &SymbolTable,
     interner: &crate::types::TypeInterner,
-    type_info: Option<&arandu_typeck::TypeInfo>,
+    type_info: Option<&dyn AmirTypeContext>,
     opts: EscapeCheckOptions,
 ) -> Vec<(BlockId, Diagnostic)> {
     if func.blocks.is_empty() {

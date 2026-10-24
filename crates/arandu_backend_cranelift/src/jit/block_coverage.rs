@@ -52,7 +52,7 @@ pub(crate) struct BlockCoverageSession {
 }
 
 impl BlockCoverageSession {
-    pub(crate) fn new(program: &arandu_semantics::amir::AmirProgram) -> Option<Arc<Self>> {
+    pub(crate) fn new(program: &arandu_middle::amir::AmirProgram) -> Option<Arc<Self>> {
         let id = NEXT_SESSION_ID
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                 current.checked_add(1)
@@ -101,7 +101,7 @@ impl BlockCoverageSession {
     }
 }
 
-fn source_spans(program: &arandu_semantics::amir::AmirProgram) -> HashMap<(u32, u32), Span> {
+fn source_spans(program: &arandu_middle::amir::AmirProgram) -> HashMap<(u32, u32), Span> {
     let function_indices = program
         .funcs
         .iter()
@@ -178,10 +178,10 @@ pub(crate) extern "C" fn record_block_hit(session_id: i64, function_index: i64, 
 }
 
 #[cfg(test)]
-fn empty_program() -> arandu_semantics::amir::AmirProgram {
-    arandu_semantics::amir::AmirProgram {
+fn empty_program() -> arandu_middle::amir::AmirProgram {
+    arandu_middle::amir::AmirProgram {
         funcs: Vec::new(),
-        literal_pool: arandu_semantics::literal_pool::AmirLiteralPool::default(),
+        literal_pool: arandu_middle::literal_pool::AmirLiteralPool::default(),
         extern_funcs: Default::default(),
         debug_bindings: Vec::new(),
         debug_blocks: Vec::new(),

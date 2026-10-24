@@ -398,6 +398,7 @@ mod tests {
         crate::types::TypeInterner::new().intern(ty)
     }
     use super::*;
+    use crate::Span;
     use crate::SymbolId;
     use crate::SymbolTable;
     use crate::amir::block::AmirBasicBlock;
@@ -406,8 +407,7 @@ mod tests {
     use crate::amir::stmt::{AmirStmt, AmirStmtTable, AmirTerminator};
     use crate::amir::value::{AmirConstant, AmirOperand, AmirPlace, AmirRvalue};
     use crate::layout::DenseRange;
-    use crate::passes::type_checker::types::ArType;
-    use arandu_lexer::Span;
+    use crate::types::ArType;
     use smallvec::smallvec;
 
     fn make_symbol_table() -> SymbolTable {
@@ -417,9 +417,7 @@ mod tests {
     fn make_local(id: usize, sym: Option<SymbolId>) -> AmirLocal {
         AmirLocal {
             id: LocalId::from_usize(id),
-            ty: intern_ty(ArType::Primitive(
-                crate::passes::type_checker::types::Primitive::Int,
-            )),
+            ty: intern_ty(ArType::Primitive(crate::types::Primitive::Int)),
             is_memory: false,
             symbol: sym,
             span: Span::new(0, 0, 0),
@@ -430,9 +428,7 @@ mod tests {
     fn make_temp(id: usize) -> AmirTemp {
         AmirTemp {
             id: TempId::from_usize(id),
-            ty: intern_ty(ArType::Primitive(
-                crate::passes::type_checker::types::Primitive::Int,
-            )),
+            ty: intern_ty(ArType::Primitive(crate::types::Primitive::Int)),
             is_copy: true,
             is_nullable: false,
             span: Span::new(0, 0, 0),
@@ -918,9 +914,7 @@ mod tests {
         func.block_params.push(crate::amir::BlockParam {
             id: TempId::from_usize(0),
             local: LocalId::from_usize(0),
-            ty: intern_ty(ArType::Primitive(
-                crate::passes::type_checker::types::Primitive::Int,
-            )),
+            ty: intern_ty(ArType::Primitive(crate::types::Primitive::Int)),
             from: None,
             moved: false,
         });

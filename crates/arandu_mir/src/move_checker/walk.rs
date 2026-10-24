@@ -1,11 +1,11 @@
 use super::{LocalMoveState, MoveState};
+use crate::Span;
 use crate::SymbolTable;
 use crate::amir::{
     AmirFunc, AmirOperand, AmirPlace, AmirProjection, AmirRvalue, AmirStmt, AmirTerminator,
     BlockId, LocalId, TempId, for_each_rvalue_operand, for_each_rvalue_place,
 };
 use crate::diagnostics::{DiagCode, Diagnostic};
-use arandu_lexer::Span;
 use smallvec::SmallVec;
 use std::collections::VecDeque;
 

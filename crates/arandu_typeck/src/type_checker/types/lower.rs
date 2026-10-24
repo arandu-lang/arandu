@@ -1,11 +1,9 @@
-use arandu_lexer::Span;
+//! Lowering of AST type expressions into interned [`ArType`]s.
+
+use arandu_middle::types::{ArType, Primitive, TypeInterner};
 use arandu_parser::{ResultType, TypeExpr, TypeExprId, TypeName, ast_pool::AstPool};
 
-use super::ar_type::ArType;
-use super::primitive::Primitive;
-use super::result_option::{lower_builtin_generic, type_name_base};
-use super::type_interner::TypeInterner;
-use crate::{ResolvedNames, ScopeId, SymbolTable};
+use crate::{ResolvedNames, ScopeId, Span, SymbolTable};
 
 // ── Lowering context ─────────────────────────────────────────────────
 
@@ -240,7 +238,7 @@ pub fn lower_named_type(
             .symbols
             .get(symbol_id)
             .lang_item
-            .and_then(crate::symbol_table::LangItem::vector_shape)
+            .and_then(arandu_middle::symbol_table::LangItem::vector_shape)
         {
             return if args.is_empty() {
                 ArType::Vector(shape)
@@ -279,10 +277,79 @@ fn parse_const_u64(text: &str) -> Option<u64> {
     saw_digit.then_some(value)
 }
 
+#[must_use]
+pub fn result_type_decl_span(result: &ResultType) -> crate::Span {
+    match result {
+        ResultType::Single { span, .. } | ResultType::Multi { span, .. } => *span,
+    }
+}
+
+#[must_use]
+pub fn type_name_base(name: &TypeName) -> &str {
+    name.path.last().map_or("", |s| s.as_str())
+}
+
+fn lower_builtin_generic(
+    name: &TypeName,
+    args: &[TypeExprId],
+    ctx: &LowerCtx<'_>,
+    interner: &mut TypeInterner,
+) -> Option<ArType> {
+    let resolved_sym = ctx
+        .resolved
+        .type_refs
+        .get(&name.span.into())
+        .copied()
+        .or_else(|| {
+            let base = name.path.last().map(|s| s.as_str())?;
+            ctx.symbols.lookup_type(ctx.symbols.global_scope(), base)
+        })?;
+    let lowered: Vec<ArType> = args
+        .iter()
+        .map(|&a| lower_type_expr_ctx(a, ctx, interner))
+        .collect();
+
+    if ctx.symbols.is_result_type(resolved_sym) && lowered.len() == 2 {
+        let mut it = lowered.into_iter();
+        if let (Some(ok), Some(err)) = (it.next(), it.next()) {
+            let ok_id = interner.intern(ok);
+            let err_id = interner.intern(err);
+            Some(ArType::Result(ok_id, err_id))
+        } else {
+            None
+        }
+    } else if ctx.symbols.is_option_type(resolved_sym) && lowered.len() == 1 {
+        let mut it = lowered.into_iter();
+        if let Some(inner) = it.next() {
+            let id = interner.intern(inner);
+            Some(ArType::Option(id))
+        } else {
+            None
+        }
+    } else if ctx.symbols.is_coroutine_type(resolved_sym) && lowered.len() == 1 {
+        let mut it = lowered.into_iter();
+        if let Some(inner) = it.next() {
+            let id = interner.intern(inner);
+            Some(ArType::Coroutine(id))
+        } else {
+            None
+        }
+    } else if ctx.symbols.is_poll_type(resolved_sym) && lowered.len() == 1 {
+        let mut it = lowered.into_iter();
+        if let Some(inner) = it.next() {
+            let id = interner.intern(inner);
+            Some(ArType::Poll(id))
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::Primitive;
     use arandu_parser::ast_pool::IndexRange;
 
     fn new_interner() -> TypeInterner {
@@ -709,5 +776,65 @@ mod tests {
             lower_named_type(Span::new(0, 4, 0), &name, &[], &ctx, &mut i),
             ArType::Void
         );
+    }
+
+    // ── type_name_base ──
+
+    #[test]
+    fn type_name_base_single_path() {
+        let name = TypeName {
+            span: crate::Span::new(0, 0, 0),
+            path: vec![smol_str::SmolStr::new("Result")].into(),
+        };
+        assert_eq!(type_name_base(&name), "Result");
+    }
+
+    #[test]
+    fn type_name_base_multi_path() {
+        let name = TypeName {
+            span: crate::Span::new(0, 0, 0),
+            path: vec![
+                smol_str::SmolStr::new("std"),
+                smol_str::SmolStr::new("core"),
+                smol_str::SmolStr::new("String"),
+            ]
+            .into(),
+        };
+        assert_eq!(type_name_base(&name), "String");
+    }
+
+    #[test]
+    fn type_name_base_empty_path() {
+        let name = TypeName {
+            span: crate::Span::new(0, 0, 0),
+            path: smallvec::SmallVec::new(),
+        };
+        assert_eq!(type_name_base(&name), "");
+    }
+
+    // ── lower_builtin_generic ──
+
+    #[test]
+    fn lower_builtin_wrong_name_returns_none() {
+        let mut i = new_interner();
+        let name = TypeName {
+            span: crate::Span::new(0, 0, 0),
+            path: vec![smol_str::SmolStr::new("NonExistent")].into(),
+        };
+        let result = lower_builtin_generic(&name, &[], &create_dummy_ctx(), &mut i);
+        assert!(result.is_none());
+    }
+
+    fn create_dummy_ctx() -> LowerCtx<'static> {
+        use crate::ResolvedNames;
+        let pool = Box::new(AstPool::new());
+        let symbols = Box::new(crate::SymbolTable::new(0));
+        let resolved = Box::new(ResolvedNames::default());
+        LowerCtx {
+            pool: Box::leak(pool),
+            symbols: Box::leak(symbols),
+            scope: crate::ScopeId(0),
+            resolved: Box::leak(resolved),
+        }
     }
 }

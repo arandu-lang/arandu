@@ -1,4 +1,4 @@
-use arandu_semantics::Diagnostic;
+use arandu_middle::Diagnostic;
 use cranelift_codegen::ir::types::{F64, I8, I64};
 use cranelift_codegen::ir::{AbiParam, Signature, Type};
 use cranelift_codegen::isa::CallConv;

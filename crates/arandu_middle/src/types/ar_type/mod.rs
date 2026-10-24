@@ -389,7 +389,7 @@ mod tests {
     #[test]
     fn display_named_no_args() {
         let mut syms = empty_symbols();
-        let span = arandu_lexer::Span::new(0, 0, 0);
+        let span = crate::Span::new(0, 0, 0);
         let id = syms
             .define(
                 syms.global_scope(),
@@ -408,7 +408,7 @@ mod tests {
     #[test]
     fn display_named_with_generic_args() {
         let mut syms = empty_symbols();
-        let span = arandu_lexer::Span::new(0, 0, 0);
+        let span = crate::Span::new(0, 0, 0);
         let list_id = syms
             .define(syms.global_scope(), "List", crate::SymbolKind::Struct, span)
             .unwrap();
@@ -431,7 +431,7 @@ mod tests {
     #[test]
     fn display_func_type() {
         let mut syms = empty_symbols();
-        let span = arandu_lexer::Span::new(0, 0, 0);
+        let span = crate::Span::new(0, 0, 0);
         let sym = syms
             .define(
                 syms.global_scope(),
@@ -450,7 +450,7 @@ mod tests {
     #[test]
     fn display_func_with_return() {
         let mut syms = empty_symbols();
-        let span = arandu_lexer::Span::new(0, 0, 0);
+        let span = crate::Span::new(0, 0, 0);
         let int_sym = syms
             .define(
                 syms.global_scope(),
@@ -477,7 +477,7 @@ mod tests {
     #[test]
     fn display_nullable_slice_array_ptr() {
         let mut syms = empty_symbols();
-        let span = arandu_lexer::Span::new(0, 0, 0);
+        let span = crate::Span::new(0, 0, 0);
         let int_sym = syms
             .define(
                 syms.global_scope(),
@@ -498,7 +498,7 @@ mod tests {
     #[test]
     fn display_tuple_result_option() {
         let mut syms = empty_symbols();
-        let span = arandu_lexer::Span::new(0, 0, 0);
+        let span = crate::Span::new(0, 0, 0);
         let int_sym = syms
             .define(
                 syms.global_scope(),

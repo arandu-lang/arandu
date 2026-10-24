@@ -9,8 +9,6 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
-arandu_lexer = { path = "../arandu_lexer" }
-arandu_parser = { path = "../arandu_parser" }
 arandu_diagnostics = { path = "../arandu_diagnostics" }
 arandu_base = { path = "../arandu_base" }
 smallvec = { workspace = true }

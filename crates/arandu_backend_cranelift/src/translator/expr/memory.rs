@@ -1,7 +1,7 @@
 //! Memory loads, borrows, slice descriptors, length queries, and allocation.
 
-use arandu_semantics::amir::{AmirOperand, AmirPlace};
-use arandu_semantics::passes::type_checker::types::{ArType, Primitive};
+use arandu_middle::amir::{AmirOperand, AmirPlace};
+use arandu_middle::types::{ArType, Primitive};
 use cranelift_codegen::ir::{InstBuilder, Type, Value};
 
 use super::super::FunctionTranslator;
@@ -35,12 +35,12 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         let start = self.translate_operand(start, Some(self.ptr_type));
         let elem_size = match expected_ar_type {
             Some(ArType::Slice(inner) | ArType::MutSlice(inner)) => {
-                let element = self.type_info.type_interner.resolve(*inner);
+                let element = self.type_info.type_interner().resolve(*inner);
                 self.checked_layout(&element).size
             }
             _ => match self.get_operand_ar_type(slice) {
                 ArType::Slice(inner) | ArType::MutSlice(inner) => {
-                    let element = self.type_info.type_interner.resolve(inner);
+                    let element = self.type_info.type_interner().resolve(inner);
                     self.checked_layout(&element).size
                 }
                 _ => 1,
@@ -127,7 +127,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         let through_ptr = place
             .projections
             .iter()
-            .any(|p| matches!(p, arandu_semantics::amir::AmirProjection::Deref));
+            .any(|p| matches!(p, arandu_middle::amir::AmirProjection::Deref));
         let is_memory_backed = through_ptr
             || has_stack_home
             || local_is_memory
@@ -147,7 +147,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 ty,
                 ArType::Named(sym_id, _) if matches!(
                     self.symbol_table.get(sym_id).kind,
-                    arandu_semantics::SymbolKind::Struct | arandu_semantics::SymbolKind::Enum
+                    arandu_middle::SymbolKind::Struct | arandu_middle::SymbolKind::Enum
                 )
             );
 
@@ -188,7 +188,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             }
         } else {
             self.record_error(
-                arandu_semantics::DiagCode::U001FeatureNotSupported,
+                arandu_middle::DiagCode::U001FeatureNotSupported,
                 "borrow of non-memory local without address_taken (F2.0 should mark is_memory)",
                 self.local_span(place.local),
             );
@@ -212,7 +212,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 self.cast_int_width(len_val, result_ty)
             }
             _ if op_ty
-                .slice_abi_element(&self.type_info.type_interner)
+                .slice_abi_element(self.type_info.type_interner())
                 .is_some() =>
             {
                 // Slice fat pointer in memory: {ptr @0, len @pointer_width}.

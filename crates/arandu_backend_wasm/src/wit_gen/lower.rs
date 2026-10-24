@@ -1,8 +1,8 @@
 use arandu_middle::SymbolId;
+use arandu_middle::SymbolTable;
 use arandu_middle::layout::StructLayoutProvider;
 use arandu_middle::symbol_table::SymbolKind;
 use arandu_middle::types::{ArType, Primitive, TypeId, TypeInterner};
-use arandu_semantics::SymbolTable;
 use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 use smol_str::SmolStr;

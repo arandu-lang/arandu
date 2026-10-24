@@ -6,7 +6,7 @@ use rustc_hash::FxHashSet;
 /// every `@Export`. Public API of imported modules and the stdlib is an
 /// implementation detail, as with cargo-component's explicit world.
 pub(crate) fn is_component_export(
-    symbols: &arandu_semantics::SymbolTable,
+    symbols: &arandu_middle::SymbolTable,
     function: SymbolId,
 ) -> bool {
     symbols.is_exported(function)
@@ -20,7 +20,7 @@ pub(crate) fn is_component_export(
 /// native vector (including one nested in an aggregate) into WIT `u32`.
 pub(crate) fn validate_vector_boundaries(
     program: &arandu_middle::amir::AmirProgram,
-    symbols: &arandu_semantics::SymbolTable,
+    symbols: &arandu_middle::SymbolTable,
     interner: &arandu_middle::types::TypeInterner,
     layout_provider: &dyn arandu_middle::layout::StructLayoutProvider,
     live: Option<&FxHashSet<SymbolId>>,

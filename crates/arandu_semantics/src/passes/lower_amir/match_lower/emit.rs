@@ -4,7 +4,7 @@ use crate::amir::{AmirOperand, AmirRvalue, AmirTerminator, BlockId, TempId};
 use crate::diagnostics::{DiagCode, Diagnostic};
 use crate::hir::{HirMatchArm, HirMatchArmBody, HirPattern};
 use crate::passes::type_checker::types::ArType;
-use arandu_lexer::Span;
+use arandu_middle::Span;
 
 impl LowerCtx<'_> {
     fn current_block_or_error(&self, span: Span) -> Result<BlockId, Diagnostic> {

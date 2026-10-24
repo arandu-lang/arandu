@@ -35,7 +35,7 @@ pub(super) fn lower_unary(
     Ok({
         let inner_id = super::lower_expr(type_check, pool, hir_pool, *inner_expr)?;
         HirExprKind::Unary {
-            op: (*op).into(),
+            op: super::super::ops::lower_unary_op(*op),
             expr: inner_id,
         }
     })
@@ -58,7 +58,7 @@ pub(super) fn lower_binary(
             let left_id = super::lower_expr(type_check, pool, hir_pool, *left)?;
             let right_id = super::lower_expr(type_check, pool, hir_pool, *right)?;
             HirExprKind::Binary {
-                op: (*op).into(),
+                op: super::super::ops::lower_binary_op(*op),
                 left: left_id,
                 right: right_id,
             }

@@ -12,9 +12,9 @@ use std::fmt::Write as _;
 
 use arandu_middle::amir::{AmirFunc, AmirProgram, BlockId, LocalId, TempId};
 use arandu_middle::layout::LayoutEngine;
+use arandu_middle::type_context::CodegenTypeContext;
 use arandu_middle::types::{ArType, Primitive, TypeInterner};
 use arandu_middle::{DiagCode, Diagnostic, Span, SymbolId, SymbolTable};
-use arandu_semantics::TypeInfo;
 
 use crate::writer::IrWriter;
 
@@ -40,9 +40,9 @@ const WINDOWS_SYSV_RUNTIME_SYMBOLS: &[&str] = &[
 pub fn emit_llvm_ir(
     program: &AmirProgram,
     symbols: &SymbolTable,
-    info: &TypeInfo,
+    info: &dyn CodegenTypeContext,
 ) -> Result<String, Diagnostic> {
-    let diagnostics = arandu_middle::validate_amir_program(program, symbols, &info.type_interner);
+    let diagnostics = arandu_middle::validate_amir_program(program, symbols, info.type_interner());
     if let Some(error) = diagnostics.into_iter().next() {
         return Err(error);
     }
@@ -68,7 +68,7 @@ pub(super) fn block_label(block: BlockId) -> String {
 pub(super) struct ModuleEmitter<'a> {
     program: &'a AmirProgram,
     symbols: &'a SymbolTable,
-    info: &'a TypeInfo,
+    info: &'a dyn CodegenTypeContext,
     interner: &'a TypeInterner,
     layout: LayoutEngine,
     string_globals: HashMap<u32, (String, usize)>,
@@ -276,6 +276,7 @@ impl IntegerWidthFromLlvm for ModuleEmitter<'_> {
 mod tests {
     use super::*;
     use arandu_middle::SymbolId;
+    use arandu_semantics::TypeInfo;
 
     #[test]
     fn int_literal_coercion_uses_its_llvm_integer_width() {

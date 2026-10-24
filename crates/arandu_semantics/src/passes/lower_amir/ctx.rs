@@ -7,7 +7,7 @@ use crate::diagnostics::Diagnostic;
 use crate::hir::HirBlock;
 use crate::passes::type_checker::types::{ArType, Primitive};
 use crate::{SymbolId, SymbolTable};
-use arandu_lexer::Span;
+use arandu_middle::Span;
 
 impl LowerCtx<'_> {
     pub(crate) fn lower_const_operand(
@@ -326,7 +326,7 @@ impl LowerCtx<'_> {
         let Some(local) = self.locals.get(local.as_usize()) else {
             return false;
         };
-        crate::drop_elaborate::type_needs_drop(local.ty, &self.tc.type_info)
+        arandu_mir::drop_elaborate::type_needs_drop(local.ty, &*self.tc.type_info)
             || self.tc.type_info.type_interner.with_type(local.ty, |ty| {
                 matches!(ty, ArType::Primitive(Primitive::Str))
             })

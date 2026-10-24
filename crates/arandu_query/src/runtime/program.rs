@@ -220,7 +220,7 @@ pub fn runtime_program(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Run
             .iter()
             .filter_map(|(key, checked)| {
                 let unit = checked.result.as_ref().ok()?;
-                Some(arandu_mir::ContextualFunctionUnit {
+                Some(arandu_semantics::ContextualFunctionUnit {
                     key,
                     unit,
                     context: &checked.context,
@@ -238,7 +238,7 @@ pub fn runtime_program(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Run
             ));
             None
         } else {
-            match arandu_mir::compose_function_units(&mut aggregate, &inputs, || {
+            match arandu_semantics::compose_function_units(&mut aggregate, &inputs, || {
                 db.unwind_if_revision_cancelled()
             }) {
                 Ok(composed) => Some(composed),
@@ -260,7 +260,7 @@ pub fn runtime_program(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Run
     // C status-code rewrite for `@Export` functions returning `Result<T, E>`
     // has to run here as well. The pass itself lives in `arandu_mir` and stays
     // pure; this crate only orchestrates it.
-    arandu_mir::lower_amir::export_status::lower_export_status_returns(
+    arandu_semantics::passes::lower_amir::export_status::lower_export_status_returns(
         &mut amir,
         &aggregate,
         &mut diagnostics,

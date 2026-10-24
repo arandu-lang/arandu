@@ -1,4 +1,4 @@
-use arandu_semantics::amir::AmirOperand;
+use arandu_middle::amir::AmirOperand;
 use cranelift_codegen::ir::{InstBuilder, Value};
 
 use super::FunctionTranslator;
@@ -9,7 +9,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
     pub(super) fn translate_coroutine_ready(
         &mut self,
         value: &AmirOperand,
-        payload_ty: arandu_semantics::types::TypeId,
+        payload_ty: arandu_middle::types::TypeId,
         stack: bool,
     ) -> Value {
         use cranelift_codegen::ir::types::I32;

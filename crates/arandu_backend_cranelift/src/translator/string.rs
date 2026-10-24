@@ -1,5 +1,5 @@
-use arandu_semantics::amir::{AmirOperand, AmirRvalue};
-use arandu_semantics::passes::type_checker::types::{ArType, Primitive};
+use arandu_middle::amir::{AmirOperand, AmirRvalue};
+use arandu_middle::types::{ArType, Primitive};
 use cranelift_codegen::ir::{InstBuilder, Value};
 
 use super::FunctionTranslator;
@@ -9,7 +9,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
     /// is removed. Formatting into the result happens at the concat position.
     pub(super) fn capture_integer_concat_part(
         &mut self,
-        temp: arandu_semantics::amir::TempId,
+        temp: arandu_middle::amir::TempId,
         rvalue: &AmirRvalue,
     ) -> bool {
         use arandu_codegen::string_interp::IntegerStringKind;
@@ -86,7 +86,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         match rvalue {
             AmirRvalue::Use(op) => self.translate_str_operand(op),
             AmirRvalue::Unary {
-                op: arandu_semantics::ops::UnaryOp::Deref,
+                op: arandu_middle::ops::UnaryOp::Deref,
                 operand,
             } => {
                 let address = self.translate_operand(operand, Some(self.ptr_type));
@@ -161,13 +161,13 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     AmirOperand::Copy(temp_id) | AmirOperand::Move(temp_id) => {
                         self.temp_ar_ty(*temp_id)
                     }
-                    _ => arandu_semantics::types::ArType::Error,
+                    _ => arandu_middle::types::ArType::Error,
                 };
                 let struct_ty = match base_ty {
-                    arandu_semantics::types::ArType::Ptr(inner)
-                    | arandu_semantics::types::ArType::Ref(inner)
-                    | arandu_semantics::types::ArType::RefMut(inner)
-                    | arandu_semantics::types::ArType::Nullable(inner) => {
+                    arandu_middle::types::ArType::Ptr(inner)
+                    | arandu_middle::types::ArType::Ref(inner)
+                    | arandu_middle::types::ArType::RefMut(inner)
+                    | arandu_middle::types::ArType::Nullable(inner) => {
                         self.type_info.resolve_type_id(inner)
                     }
                     other => other,
@@ -204,27 +204,22 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     AmirOperand::Copy(temp_id) | AmirOperand::Move(temp_id) => {
                         self.temp_ar_ty(*temp_id)
                     }
-                    _ => arandu_semantics::types::ArType::Error,
+                    _ => arandu_middle::types::ArType::Error,
                 };
                 let enum_ty = match base_ty {
-                    arandu_semantics::types::ArType::Ptr(inner) => {
+                    arandu_middle::types::ArType::Ptr(inner) => {
                         self.type_info.resolve_type_id(inner)
                     }
                     other => other,
                 };
-                let tag = self
-                    .type_info
-                    .enum_variant_tags
-                    .get(variant)
-                    .copied()
-                    .unwrap_or(0);
+                let tag = self.type_info.enum_variant_tag(*variant).unwrap_or(0);
 
                 let mut payload_offset = 0;
                 if let Some(payload_ty_id) = (*tuple_ty).or_else(|| {
-                    arandu_semantics::layout::instantiated_enum_variant_payload_type(
+                    arandu_middle::layout::instantiated_enum_variant_payload_type(
                         &enum_ty,
                         tag,
-                        &self.type_info.type_interner,
+                        self.type_info.type_interner(),
                         self.type_info,
                     )
                 }) {
@@ -300,9 +295,9 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
     fn translate_to_str(
         &mut self,
         value: &AmirOperand,
-        src_ty: arandu_semantics::types::TypeId,
+        src_ty: arandu_middle::types::TypeId,
     ) -> (Value, Value) {
-        let ar_ty = self.type_info.type_interner.resolve(src_ty);
+        let ar_ty = self.type_info.type_interner().resolve(src_ty);
         if matches!(ar_ty, ArType::Primitive(Primitive::Str)) {
             return self.translate_str_operand(value);
         }
@@ -424,7 +419,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         &mut self,
         left: &AmirOperand,
         right: &AmirOperand,
-        op: arandu_semantics::ops::BinaryOp,
+        op: arandu_middle::ops::BinaryOp,
     ) -> Value {
         let (l_ptr, l_len) = self.translate_str_operand(left);
         let (r_ptr, r_len) = self.translate_str_operand(right);
@@ -499,8 +494,8 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         let eq = self.builder.block_params(join)[0];
 
         match op {
-            arandu_semantics::ops::BinaryOp::Equal => eq,
-            arandu_semantics::ops::BinaryOp::NotEqual => self.builder.ins().bxor_imm_u(eq, 1),
+            arandu_middle::ops::BinaryOp::Equal => eq,
+            arandu_middle::ops::BinaryOp::NotEqual => self.builder.ins().bxor_imm_u(eq, 1),
             _ => self.poison_i32(),
         }
     }

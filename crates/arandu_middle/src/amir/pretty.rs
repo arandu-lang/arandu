@@ -543,7 +543,7 @@ impl AmirConstant {
                 AmirLiteralEntry::Str(v) => out.push_str(&format!("\"{v}\"")),
                 AmirLiteralEntry::Char(v) => {
                     if let Some(value) = v.chars().next() {
-                        out.push_str(&arandu_lexer::char_literal(value));
+                        out.push_str(&arandu_base::lang::char_literal(value));
                     } else {
                         out.push_str("''");
                     }

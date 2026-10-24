@@ -9,7 +9,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 type LoweredFunction = (
     AmirFunc,
     Vec<(TempId, crate::amir::LocalId)>,
-    Vec<arandu_lexer::Span>,
+    Vec<arandu_middle::Span>,
 );
 
 #[derive(Clone, Copy)]
@@ -61,7 +61,7 @@ pub(crate) fn lower_func(
         current_def: FxHashMap::default(),
         incomplete_phis: FxHashMap::default(),
         redirected_temps: FxHashMap::default(),
-        current_span: arandu_lexer::Span::new(0, 0, 0),
+        current_span: arandu_middle::Span::new(0, 0, 0),
         layout,
         owned_string_temps: FxHashSet::default(),
     };
@@ -188,11 +188,14 @@ pub(crate) fn lower_func(
         &tc.symbols,
         &tc.type_info.type_interner,
     ));
-    func_diagnostics.extend(crate::definite_init::check_definite_init(
+    func_diagnostics.extend(arandu_mir::definite_init::check_definite_init(
         &raw_func,
         &tc.symbols,
     ));
-    func_diagnostics.extend(crate::move_checker::check_moves(&raw_func, &tc.symbols));
+    func_diagnostics.extend(arandu_mir::move_checker::check_moves(
+        &raw_func,
+        &tc.symbols,
+    ));
 
     // Restore into ctx for phi elimination / rewrite.
     ctx.locals = std::mem::take(&mut raw_func.locals);
@@ -235,15 +238,15 @@ pub(crate) fn lower_func(
 
     // A3.4: rewrite Borrow→RelativeBorrow (LocalId index) for refs that cross Suspend;
     // *p becomes Load of the local so addresses never pin the state blob.
-    crate::pin_free::apply_pin_free_refs(&mut amir_f, &tc.type_info.type_interner);
+    arandu_mir::pin_free::apply_pin_free_refs(&mut amir_f, &tc.type_info.type_interner);
 
     // Drop obligations are part of the semantic AMIR inspected by M2. Inserting
     // them after borrow checking made O006 unreachable in the production
     // pipeline even though the checker itself implemented the rule.
-    crate::drop_elaborate::elaborate_drops(&mut amir_f, &tc.type_info);
+    arandu_mir::drop_elaborate::elaborate_drops(&mut amir_f, &*tc.type_info);
 
     // A3.2: remaining absolute Ref/RefMut live into resume → O010.
-    func_diagnostics.extend(crate::suspend_check::check_borrow_across_suspend(
+    func_diagnostics.extend(arandu_mir::suspend_check::check_borrow_across_suspend(
         &amir_f,
         &tc.symbols,
         &tc.type_info.type_interner,

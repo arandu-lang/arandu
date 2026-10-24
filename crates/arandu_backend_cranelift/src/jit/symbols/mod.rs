@@ -1,6 +1,6 @@
 //! Runtime function declaration and external import mapping for Cranelift modules.
 
-use arandu_semantics::Diagnostic;
+use arandu_middle::Diagnostic;
 use cranelift_codegen::ir::types::I64;
 use cranelift_codegen::ir::{Signature, Type};
 use cranelift_codegen::isa::CallConv;
@@ -120,16 +120,16 @@ impl RuntimeImports {
 /// including public/tooling roots, callback addresses and implicit destructors.
 /// Unknown foreign code or indirect calls conservatively retain cleanup.
 pub(crate) fn gen_shutdown_required(
-    program: &arandu_semantics::amir::AmirProgram,
-    symbols: &arandu_semantics::SymbolTable,
-    type_info: &arandu_semantics::TypeInfo,
+    program: &arandu_middle::amir::AmirProgram,
+    symbols: &arandu_middle::SymbolTable,
+    type_info: &dyn arandu_middle::type_context::CodegenTypeContext,
 ) -> bool {
-    use arandu_semantics::amir::{AmirOperand, AmirRvalue, AmirStmt};
+    use arandu_middle::amir::{AmirOperand, AmirRvalue, AmirStmt};
 
-    let live = arandu_semantics::passes::reachability::live_functions(
+    let live = arandu_mir::reachability::live_functions(
         program,
         symbols,
-        &type_info.type_interner,
+        type_info.type_interner(),
         type_info,
     );
     // Only names are inspected here; signatures used in lowering are always
@@ -156,7 +156,7 @@ pub(crate) fn gen_shutdown_required(
         .filter(|func| live.contains(&func.symbol))
         .any(|func| {
             if func.temps.iter().any(|temp| {
-                type_info.resolve_type_id(temp.ty) == arandu_semantics::types::ArType::GenRef
+                type_info.resolve_type_id(temp.ty) == arandu_middle::types::ArType::GenRef
             }) {
                 return true;
             }

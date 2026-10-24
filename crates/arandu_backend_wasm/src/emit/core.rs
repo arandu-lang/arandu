@@ -109,7 +109,7 @@ impl<'a> WasmModuleBuilder<'a> {
         let mut static_offsets = FxHashMap::default();
         let mut static_sources: FxHashMap<Vec<u8>, (u32, u32)> = FxHashMap::default();
         for func in &self.functions {
-            let mut initializers = arandu_semantics::static_data::static_initializers(
+            let mut initializers = arandu_mir::static_data::static_initializers(
                 func,
                 self.interner,
                 self.layout_provider,

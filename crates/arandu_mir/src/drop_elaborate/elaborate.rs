@@ -7,16 +7,13 @@ use crate::amir::{
 };
 use crate::move_checker::move_states_at_block_exit;
 use arandu_middle::layout::DenseRange;
-use arandu_typeck::TypeInfo;
+use arandu_middle::type_context::AmirTypeContext;
 use smallvec::SmallVec;
 
 /// Insert exactly-once root-local and nested cascade destruction before normal function returns.
-pub fn elaborate_drops(func: &mut AmirFunc, type_info: &TypeInfo) {
+pub fn elaborate_drops(func: &mut AmirFunc, type_info: &dyn AmirTypeContext) {
     let owned_string_locals = find_owned_string_locals(func);
-    let is_destructor_func = type_info
-        .destructor_instances
-        .values()
-        .any(|symbol| *symbol == func.symbol);
+    let is_destructor_func = type_info.is_destructor_instance(func.symbol);
 
     let initialized = crate::definite_init::initialized_at_block_exit(func);
     let initialized_before = crate::definite_init::initialized_before_statements(func);
@@ -198,7 +195,7 @@ pub fn elaborate_drops(func: &mut AmirFunc, type_info: &TypeInfo) {
 /// The intrinsic is lowered to `Destroy(*pointer)`; this pass recursively
 /// decomposes that place just like lexical cleanup, so emitters only need to
 /// implement atomic leaf destruction and nominal destructor calls.
-fn expand_indirect_drops(func: &mut AmirFunc, type_info: &TypeInfo) {
+fn expand_indirect_drops(func: &mut AmirFunc, type_info: &dyn AmirTypeContext) {
     let moved_before = crate::move_checker::move_states_before_statements(func);
     let old = std::mem::replace(&mut func.stmts, AmirStmtTable::new());
     let mut rebuilt = AmirStmtTable::new();

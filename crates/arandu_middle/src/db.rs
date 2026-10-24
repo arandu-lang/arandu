@@ -36,16 +36,7 @@ pub trait SourceDatabase: salsa::Database {
     fn same_package(&self, current_file: FileId, imported_file: SourceFile) -> bool;
 
     /// Retrieves the exact lexical span of a symbol for diagnostics (prevents Span from breaking early cutoff).
-    fn symbol_span(&self, symbol_id: crate::SymbolId) -> arandu_lexer::Span;
-
-    /// Parses a file and returns its AST.
-    fn parse_file(
-        &self,
-        file: SourceFile,
-    ) -> Result<Arc<arandu_parser::Program>, arandu_parser::ParseError>;
-
-    /// Resolves all symbols (public and private) within a file.
-    fn resolve_file(&self, file: SourceFile) -> Arc<crate::ResolutionResult>;
+    fn symbol_span(&self, symbol_id: crate::SymbolId) -> crate::Span;
 
     /// Maps a module import path to a Salsa SourceFile.
     fn resolve_module_path(&self, path: &str) -> Option<SourceFile>;

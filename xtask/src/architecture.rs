@@ -1,7 +1,7 @@
 //! Deterministic checks for workspace boundaries that are easy to erode in a
 //! seemingly local refactor.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -42,15 +42,6 @@ const BACKEND_ALLOWED_DEPENDENCIES: &[&str] = &[
     "arandu_mir",
     "arandu_runtime",
     "arandu_testing_contract",
-];
-
-/// Existing backend edges that predate the boundary. The list may only shrink:
-/// an entry whose edge no longer exists is reported so it gets removed.
-const BACKEND_DEPENDENCY_DEBT: &[(&str, &str)] = &[
-    ("arandu_backend_c", "arandu_semantics"),
-    ("arandu_backend_cranelift", "arandu_semantics"),
-    ("arandu_backend_llvm", "arandu_semantics"),
-    ("arandu_backend_wasm", "arandu_semantics"),
 ];
 
 /// Compiler phases and their contracts. They must never depend on backends,
@@ -98,7 +89,7 @@ pub fn check(root: &Path) -> i32 {
     match violations(root) {
         Ok(violations) if violations.is_empty() => {
             println!(
-                "check-architecture: ok (Salsa ownership, crate dependency direction and pure-crate filesystem boundaries)"
+                "check-architecture: ok (Salsa ownership, transitive backend boundary, crate dependency direction and pure-crate filesystem boundaries)"
             );
             0
         }
@@ -221,16 +212,16 @@ fn dependency_direction_violations(
     let mut violations = Vec::new();
     for (krate, deps) in dependencies {
         let krate = krate.as_str();
-        for dep in deps.iter().map(String::as_str) {
-            if BACKEND_CRATES.contains(&krate)
-                && dep.starts_with("arandu_")
-                && !BACKEND_ALLOWED_DEPENDENCIES.contains(&dep)
-                && !BACKEND_DEPENDENCY_DEBT.contains(&(krate, dep))
-            {
+        if BACKEND_CRATES.contains(&krate) {
+            for path in forbidden_backend_paths(krate, dependencies) {
                 violations.push(format!(
-                    "{krate} depends on {dep}; backends consume AMIR through arandu_middle, arandu_mir and arandu_codegen, not front-end phases"
+                    "{krate} reaches {} ({}); backends consume AMIR through arandu_middle, arandu_mir and arandu_codegen, not front-end phases",
+                    path[path.len() - 1],
+                    path.join(" -> ")
                 ));
             }
+        }
+        for dep in deps.iter().map(String::as_str) {
             if PHASE_CRATES.contains(&krate) && DOWNSTREAM_CRATES.contains(&dep) {
                 violations.push(format!(
                     "{krate} depends on downstream crate {dep}; compiler phases must not depend on backends, queries or drivers"
@@ -238,17 +229,43 @@ fn dependency_direction_violations(
             }
         }
     }
-    for &(krate, dep) in BACKEND_DEPENDENCY_DEBT {
-        if !dependencies
-            .get(krate)
-            .is_some_and(|deps| deps.contains(dep))
-        {
-            violations.push(format!(
-                "{krate} no longer depends on {dep}; remove the edge from BACKEND_DEPENDENCY_DEBT"
-            ));
+    violations
+}
+
+/// Shortest path from `backend` to each workspace crate it may not reach, in
+/// breadth-first order. Transitive edges count: an upstream crate that pulls in
+/// a front-end phase recompiles every backend on each front-end edit.
+fn forbidden_backend_paths(
+    backend: &str,
+    dependencies: &BTreeMap<String, BTreeSet<String>>,
+) -> Vec<Vec<String>> {
+    let mut parent = BTreeMap::from([(backend.to_owned(), None::<String>)]);
+    let mut queue = VecDeque::from([backend.to_owned()]);
+    let mut forbidden = Vec::new();
+    while let Some(krate) = queue.pop_front() {
+        for dep in dependencies.get(&krate).into_iter().flatten() {
+            if !dep.starts_with("arandu_") || parent.contains_key(dep) {
+                continue;
+            }
+            parent.insert(dep.clone(), Some(krate.clone()));
+            if BACKEND_ALLOWED_DEPENDENCIES.contains(&dep.as_str()) {
+                queue.push_back(dep.clone());
+            } else {
+                forbidden.push(dep.clone());
+            }
         }
     }
-    violations
+    forbidden
+        .into_iter()
+        .map(|target| {
+            let mut path = vec![target];
+            while let Some(Some(previous)) = parent.get(&path[path.len() - 1]) {
+                path.push(previous.clone());
+            }
+            path.reverse();
+            path
+        })
+        .collect()
 }
 
 /// The lock includes target-specific and dev dependencies. Check them all
@@ -368,13 +385,6 @@ mod tests {
             .collect()
     }
 
-    fn debt_graph() -> Vec<(&'static str, &'static [&'static str])> {
-        BACKEND_DEPENDENCY_DEBT
-            .iter()
-            .map(|&(krate, _)| (krate, &["arandu_middle", "arandu_semantics"][..]))
-            .collect()
-    }
-
     #[test]
     fn normal_dependencies_cover_targets_and_renames_but_not_dev() {
         let manifest = r#"
@@ -394,28 +404,57 @@ arandu_cli = { path = "../arandu_cli" }
     }
 
     #[test]
-    fn backend_boundary_accepts_contracts_and_recorded_debt() {
-        assert!(dependency_direction_violations(&graph(&debt_graph())).is_empty());
+    fn backend_boundary_accepts_codegen_contracts() {
+        let edges = graph(&[
+            (
+                "arandu_backend_c",
+                &[
+                    "arandu_codegen",
+                    "arandu_middle",
+                    "arandu_mir",
+                    "rustc-hash",
+                ],
+            ),
+            ("arandu_typeck", &["arandu_middle", "arandu_resolve"]),
+        ]);
+        assert!(dependency_direction_violations(&edges).is_empty());
     }
 
     #[test]
-    fn backend_boundary_rejects_new_front_end_edges() {
-        let mut edges = debt_graph();
-        edges.push(("arandu_backend_c", &["arandu_semantics", "arandu_typeck"]));
-        edges.push(("arandu_typeck", &["arandu_query"]));
-        let violations = dependency_direction_violations(&graph(&edges));
-        assert_eq!(violations.len(), 2);
-        assert!(violations[0].contains("arandu_backend_c depends on arandu_typeck"));
-        assert!(violations[1].contains("arandu_typeck depends on downstream crate arandu_query"));
+    fn backend_boundary_rejects_front_end_and_upward_edges() {
+        let edges = graph(&[
+            (
+                "arandu_backend_c",
+                &["arandu_middle", "arandu_semantics", "arandu_typeck"],
+            ),
+            ("arandu_typeck", &["arandu_query"]),
+        ]);
+        let violations = dependency_direction_violations(&edges);
+        assert_eq!(violations.len(), 3);
+        assert!(violations[0].contains("arandu_backend_c reaches arandu_semantics"));
+        assert!(violations[1].contains("arandu_backend_c reaches arandu_typeck"));
+        assert!(violations[2].contains("arandu_typeck depends on downstream crate arandu_query"));
     }
 
     #[test]
-    fn backend_boundary_reports_paid_debt() {
-        let mut edges = debt_graph();
-        edges[0].1 = &["arandu_middle"];
-        let violations = dependency_direction_violations(&graph(&edges));
-        assert_eq!(violations.len(), 1);
-        assert!(violations[0].contains("remove the edge from BACKEND_DEPENDENCY_DEBT"));
+    fn backend_boundary_rejects_front_end_reached_through_a_contract() {
+        let edges = graph(&[
+            ("arandu_backend_c", &["arandu_codegen", "arandu_mir"]),
+            ("arandu_codegen", &["arandu_middle"]),
+            ("arandu_mir", &["arandu_middle", "arandu_typeck"]),
+            ("arandu_middle", &["arandu_base", "arandu_parser"]),
+        ]);
+        let violations = dependency_direction_violations(&edges);
+        assert_eq!(
+            violations
+                .iter()
+                .map(|violation| violation.split(';').next().unwrap())
+                .collect::<Vec<_>>(),
+            [
+                "arandu_backend_c reaches arandu_typeck (arandu_backend_c -> arandu_mir -> arandu_typeck)",
+                "arandu_backend_c reaches arandu_parser (arandu_backend_c -> arandu_codegen -> arandu_middle -> arandu_parser)",
+            ]
+        );
     }
 
     #[test]

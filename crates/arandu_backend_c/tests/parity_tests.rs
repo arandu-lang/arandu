@@ -39,7 +39,7 @@ fn atomic_intrinsics_survive_real_native_thread_contention() {
     let (amir, tc) = compile_src(include_str!("../../../tests/corpus/atomic_contention.aru"));
     let module = CraneliftBackend::try_new()
         .unwrap()
-        .compile(&amir, &tc.symbols, &tc.type_info)
+        .compile(&amir, &tc.symbols, &*tc.type_info)
         .unwrap();
     for name in ["increment", "incrementCas"] {
         let symbol = tc
@@ -4878,7 +4878,7 @@ func main(): int { return 0 }
     );
     let module = CraneliftBackend::try_new()
         .unwrap()
-        .compile(&amir, &tc.symbols, &tc.type_info)
+        .compile(&amir, &tc.symbols, &*tc.type_info)
         .unwrap();
     // SAFETY: the declarations above specify these exact ABI signatures; the
     // compiled module and aligned atomic sequence outlive every call/worker.

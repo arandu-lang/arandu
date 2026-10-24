@@ -8,9 +8,10 @@ pub use type_checker::{
 };
 
 pub use arandu_middle::{
-    CodeReplacement, DiagCode, Diagnostic, Hint, Label, NodeKey, ResolutionResult, ResolvedNames,
-    ScopeId, Severity, Span, SymbolId, SymbolKind, SymbolTable,
+    CodeReplacement, DiagCode, Diagnostic, Hint, Label, NodeKey, ScopeId, Severity, Span, SymbolId,
+    SymbolKind, SymbolTable,
 };
+pub use arandu_resolve::{ResolutionResult, ResolvedNames};
 
 pub mod passes {
     pub use crate::type_checker;

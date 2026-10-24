@@ -1,15 +1,15 @@
 use super::needs_drop::{
     emit_recursive_drops, enum_variant_payload_types, projected_place_type, type_needs_drop,
 };
+use crate::Span;
 use crate::amir::{
     AmirBasicBlock, AmirFunc, AmirOperand, AmirProjection, AmirRvalue, AmirStmt, AmirStmtTable,
     AmirTemp, AmirTerminator, BlockId, TempId,
 };
 use crate::move_checker::MoveState;
-use arandu_lexer::Span;
 use arandu_middle::layout::DenseRange;
+use arandu_middle::type_context::AmirTypeContext;
 use arandu_middle::types::ArType;
-use arandu_typeck::TypeInfo;
 
 #[derive(Clone)]
 struct DropBlockWork {
@@ -23,7 +23,7 @@ struct DropBlockWork {
 /// Turn dynamic enum cleanup into ordinary discriminant branches plus atomic
 /// `Destroy` places. Backends only read the discriminant and run named
 /// destructors; they do not recurse through sum-type payloads.
-pub(super) fn expand_dynamic_enum_drops(func: &mut AmirFunc, type_info: &TypeInfo) {
+pub(super) fn expand_dynamic_enum_drops(func: &mut AmirFunc, type_info: &dyn AmirTypeContext) {
     let moved_before = crate::move_checker::move_states_before_statements(func);
     let old_blocks = std::mem::take(&mut func.blocks);
     let old_stmts = std::mem::replace(&mut func.stmts, AmirStmtTable::new());
@@ -112,11 +112,11 @@ pub(super) fn expand_dynamic_enum_drops(func: &mut AmirFunc, type_info: &TypeInf
             for stmt in remaining.drain(..) {
                 statements.push(stmt);
             }
-            let int_ty = type_info.type_interner.intern(ArType::Primitive(
-                crate::passes::type_checker::types::Primitive::Int,
-            ));
-            let enum_ty_id = type_info.type_interner.intern(enum_ty.clone());
-            let discriminant_ty = type_info.type_interner.intern(ArType::Ref(enum_ty_id));
+            let int_ty = type_info
+                .type_interner()
+                .intern(ArType::Primitive(crate::types::Primitive::Int));
+            let enum_ty_id = type_info.type_interner().intern(enum_ty.clone());
+            let discriminant_ty = type_info.type_interner().intern(ArType::Ref(enum_ty_id));
             let borrowed_temp = TempId::from_usize(func.temps.len());
             func.temps.push(AmirTemp {
                 id: borrowed_temp,
@@ -161,8 +161,8 @@ pub(super) fn expand_dynamic_enum_drops(func: &mut AmirFunc, type_info: &TypeInf
                     let field_ids: Vec<_> = fields.clone();
                     Some(
                         type_info
-                            .type_interner
-                            .intern(ArType::tuple(&field_ids, &type_info.type_interner)),
+                            .type_interner()
+                            .intern(ArType::tuple(&field_ids, type_info.type_interner())),
                     )
                 } else {
                     None

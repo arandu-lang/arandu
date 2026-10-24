@@ -13,8 +13,8 @@ use crate::hir::{HirBlock, HirDecl, HirFunc, HirProgram};
 use crate::literal_pool::AmirLiteralPool;
 use crate::passes::type_checker::types::{ArType, Primitive};
 use crate::{SymbolId, TypeCheckResult};
-use arandu_lexer::Span;
 use arandu_middle::DataLayout;
+use arandu_middle::Span;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 mod arg_modes;
@@ -53,7 +53,11 @@ pub(crate) use func::lower_func;
 /// `pointer_width` (in bytes) comes from the target
 /// [`arandu_middle::layout::DataLayout`]; it drives `mem.sizeOf`/`alignOf`
 /// constant folding (no host `usize` in the hot path).
-#[tracing::instrument(level = "trace", target = "arandu_mir::lower_amir", skip(tc, hir))]
+#[tracing::instrument(
+    level = "trace",
+    target = "arandu_semantics::passes::lower_amir",
+    skip(tc, hir)
+)]
 pub fn lower_to_amir(
     tc: &TypeCheckResult,
     hir: &HirProgram,
@@ -74,7 +78,11 @@ pub fn lower_to_amir(
 /// `pointer_width` (in bytes) comes from the target
 /// [`arandu_middle::layout::DataLayout`]; it drives `mem.sizeOf`/`alignOf`
 /// constant folding (no host `usize` in the hot path).
-#[tracing::instrument(level = "trace", target = "arandu_mir::lower_amir", skip(tc, hir))]
+#[tracing::instrument(
+    level = "trace",
+    target = "arandu_semantics::passes::lower_amir",
+    skip(tc, hir)
+)]
 pub fn lower_to_amir_with_interfaces(
     tc: &mut TypeCheckResult,
     hir: &HirProgram,
@@ -93,7 +101,8 @@ pub fn lower_to_amir_with_layout(
 ) -> Result<(AmirProgram, Vec<Diagnostic>), Vec<Diagnostic>> {
     let (mut program, mut diagnostics, no_fallback) =
         lower_program(tc, hir, layout, LoweringPurpose::Runtime)?;
-    let solution = crate::borrow_interface::solve_borrow_interfaces(&mut program, &tc.type_info);
+    let solution =
+        arandu_mir::borrow_interface::solve_borrow_interfaces(&mut program, &*tc.type_info);
     tc.type_info_mut().return_borrow_summaries = solution.summaries.clone();
 
     validate_borrowed_program(tc, &mut program, &solution, &no_fallback, &mut diagnostics);
@@ -118,12 +127,12 @@ pub fn lower_borrow_interfaces(
     tc: &TypeCheckResult,
     hir: &HirProgram,
     pointer_width: u64,
-) -> Result<crate::borrow_interface::BorrowInterfaceSolution, Vec<Diagnostic>> {
+) -> Result<arandu_mir::borrow_interface::BorrowInterfaceSolution, Vec<Diagnostic>> {
     let layout = natural_layout(pointer_width, hir)?;
     let (mut program, _, _) = lower_program(tc, hir, layout, LoweringPurpose::ReturnInterfaces)?;
-    Ok(crate::borrow_interface::solve_borrow_interfaces(
+    Ok(arandu_mir::borrow_interface::solve_borrow_interfaces(
         &mut program,
-        &tc.type_info,
+        &*tc.type_info,
     ))
 }
 
@@ -241,7 +250,7 @@ fn lower_program(
 fn validate_borrowed_program(
     tc: &TypeCheckResult,
     program: &mut AmirProgram,
-    solution: &crate::borrow_interface::BorrowInterfaceSolution,
+    solution: &arandu_mir::borrow_interface::BorrowInterfaceSolution,
     no_fallback: &FxHashMap<SymbolId, bool>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
@@ -270,19 +279,19 @@ fn validate_borrowed_function(
 ) {
     // M2 and escape validation intentionally run only after calls carry
     // the converged interprocedural interface.
-    diagnostics.extend(crate::borrow_check::check_borrows_with_types(
+    diagnostics.extend(arandu_mir::borrow_check::check_borrows_with_types(
         function,
         &tc.symbols,
         &tc.type_info.type_interner,
     ));
-    let options = crate::escape_analysis::EscapeCheckOptions {
+    let options = arandu_mir::escape_analysis::EscapeCheckOptions {
         no_fallback,
         return_borrow,
     };
-    let escape_diagnostics = crate::escape_analysis::check_escapes_with_type_info(
+    let escape_diagnostics = arandu_mir::escape_analysis::check_escapes_with_type_info(
         function,
         &tc.symbols,
-        &tc.type_info,
+        &*tc.type_info,
         options.clone(),
     );
     let already_reports_return = escape_diagnostics
@@ -307,7 +316,7 @@ fn validate_borrowed_function(
                     .with_hint("return owned data or forward a borrow derived from a formal `ref` input"),
                 );
     }
-    crate::gen_promote::apply_gen_promotion_with_type_info(function, &tc.type_info, options);
+    arandu_mir::gen_promote::apply_gen_promotion_with_type_info(function, &*tc.type_info, options);
 }
 
 pub(crate) fn is_memory_type(ty: &ArType) -> bool {
@@ -470,6 +479,7 @@ pub(crate) enum MoveState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SymbolId;
     use crate::amir::{
         AmirBasicBlock, AmirFunc, AmirLocal, AmirOperand, AmirPlace, AmirRvalue, AmirStmt,
         AmirStmtTable, AmirTerminator, BlockId, InstrId, LocalId, TempId,
@@ -477,7 +487,7 @@ mod tests {
     use crate::cfg::ControlFlowGraph;
     use crate::layout::DenseRange;
     use crate::types::TypeId;
-    use crate::{Span, SymbolId};
+    use arandu_middle::Span;
     use smallvec::SmallVec;
 
     #[test]

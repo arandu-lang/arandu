@@ -7,7 +7,7 @@ use crate::SymbolTable;
 use crate::amir::{AmirOperand, BlockId, TempId};
 use crate::diagnostics::Diagnostic;
 use crate::hir::{HirExprId, HirMatchArm, IndexRange};
-use arandu_lexer::Span;
+use arandu_middle::Span;
 
 struct SwitchArm {
     value: i128,

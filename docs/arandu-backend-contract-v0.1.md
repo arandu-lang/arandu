@@ -38,6 +38,38 @@ All profiles reject objects at or above the positive `isize` bound of the
 modeled address space. Layout arithmetic is checked and a failure returns a
 typed diagnostic before a successful artifact is exposed.
 
+### Backend inputs and crate boundary
+
+`CodegenBackend::compile` receives the validated `AmirProgram`, the
+`SymbolTable` and a `&dyn CodegenTypeContext`. The contract lives in
+`arandu_middle::type_context` in two layers. `AmirTypeContext` extends
+`StructLayoutProvider` with the facts AMIR passes read: the type interner, enum
+tags and payloads, borrow paths, return-borrow summaries, explicit references
+and `@Destructor` instances. `CodegenTypeContext` extends it with target
+identity and data layout, declaration types, effects, `@Destructor` methods and
+concrete field tables. Typeck implements both for `TypeInfo`; no AMIR pass or
+backend names `TypeInfo` or any front-end type. Instance symbol names come from
+`arandu_middle::symbol_mangling`, and AMIR analyses (liveness, reachability,
+static data, scratch storage) from `arandu_mir`.
+
+Every `arandu_*` crate a backend reaches, directly or transitively, is one of
+`arandu_base`, `arandu_codegen`, `arandu_diagnostics`, `arandu_middle`,
+`arandu_mir`, `arandu_runtime` and `arandu_testing_contract`; `xtask
+check-architecture` walks the normal-dependency graph and reports the shortest
+path to any other crate. An edit to the lexer, parser, resolve, typeck or
+lowering therefore never rebuilds a backend. This holds because:
+
+- `arandu_middle` is AST-free. Vocabulary shared with the syntax (`Span`,
+  `Visibility`, `AbiKind`, `LayoutQuery`, `char_literal`) lives in
+  `arandu_base::lang`; AST type lowering lives in typeck; operator lowering
+  lives in `arandu_semantics`; `ResolvedNames`/`ResolutionResult`, keyed by AST
+  nodes, live in `arandu_resolve`.
+- `arandu_mir` holds AMIR passes and analyses only. HIR→AMIR lowering, which
+  needs the concrete `TypeCheckResult`, lives in
+  `arandu_semantics::passes::lower_amir`.
+
+Tests may still drive the whole front end through dev-dependencies.
+
 ### Temporary storage and bounded inlining
 
 C and Cranelift share a conservative block-local temporary storage plan in

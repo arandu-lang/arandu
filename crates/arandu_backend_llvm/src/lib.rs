@@ -11,8 +11,9 @@ mod writer;
 
 use arandu_codegen::{CodegenBackend, CompiledCode};
 use arandu_middle::Diagnostic;
+use arandu_middle::SymbolTable;
 use arandu_middle::amir::AmirProgram;
-use arandu_semantics::{SymbolTable, TypeInfo};
+use arandu_middle::type_context::CodegenTypeContext;
 
 pub use codegen::emit_llvm_ir;
 
@@ -42,16 +43,15 @@ impl CompiledCode for LlvmModule {
 }
 
 impl CodegenBackend for LlvmBackend {
-    type TargetConfig = TypeInfo;
     type CompilationOutput = LlvmModule;
 
     fn compile(
         self,
         program: &AmirProgram,
         symbols: &SymbolTable,
-        config: &Self::TargetConfig,
+        types: &dyn CodegenTypeContext,
     ) -> Result<Self::CompilationOutput, Diagnostic> {
-        emit_llvm_ir(program, symbols, config).map(LlvmModule)
+        emit_llvm_ir(program, symbols, types).map(LlvmModule)
     }
 }
 
@@ -105,7 +105,7 @@ mod tests {
             debug_bindings: Vec::new(),
             debug_blocks: Vec::new(),
         };
-        let symbols = arandu_semantics::SymbolTable::default();
+        let symbols = arandu_middle::SymbolTable::default();
         let mut info = arandu_semantics::TypeInfo::new();
         info.target_identity =
             arandu_middle::db::TargetIdentity::from_triple("thumbv7em-none-eabihf")
@@ -128,7 +128,7 @@ mod tests {
             debug_bindings: Vec::new(),
             debug_blocks: Vec::new(),
         };
-        let symbols = arandu_semantics::SymbolTable::default();
+        let symbols = arandu_middle::SymbolTable::default();
         let mut info = arandu_semantics::TypeInfo::new();
         info.target_identity = arandu_middle::db::TargetIdentity::from_triple("thumbv6m-none-eabi")
             .expect("canonical triple");
@@ -149,7 +149,7 @@ mod tests {
             debug_bindings: Vec::new(),
             debug_blocks: Vec::new(),
         };
-        let symbols = arandu_semantics::SymbolTable::default();
+        let symbols = arandu_middle::SymbolTable::default();
         let info = arandu_semantics::TypeInfo::new();
         let ir = crate::emit_llvm_ir(&program, &symbols, &info).expect("empty module");
         assert!(ir.contains("source_filename = \"arandu\"\n"));

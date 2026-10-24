@@ -1,5 +1,5 @@
-use arandu_semantics::amir::AmirOperand;
-use arandu_semantics::ops::BinaryOp;
+use arandu_middle::amir::AmirOperand;
+use arandu_middle::ops::BinaryOp;
 use cranelift_codegen::ir::{InstBuilder, Value};
 
 use super::FunctionTranslator;
@@ -34,7 +34,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         rhs: Value,
         left_operand: Option<&AmirOperand>,
         right_operand: Option<&AmirOperand>,
-        expected_ar_type: Option<&arandu_semantics::types::ArType>,
+        expected_ar_type: Option<&arandu_middle::types::ArType>,
     ) -> Value {
         // A shift count has its own integer type; it cannot determine the
         // signedness (or extension) of the value being shifted.

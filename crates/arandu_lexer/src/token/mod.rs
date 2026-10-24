@@ -3,6 +3,7 @@ mod kind;
 
 use crate::LexErrorCode;
 
+pub use arandu_base::lang::char_literal;
 pub use arandu_base::span::Span;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,23 +120,6 @@ pub fn decode_char_content(content: &str) -> Option<char> {
     let mut chars = content.chars();
     let value = chars.next()?;
     chars.next().is_none().then_some(value)
-}
-
-/// Encode a Unicode scalar as a valid Arandu character literal.
-#[must_use]
-pub fn char_literal(value: char) -> String {
-    let escaped = match value {
-        '\n' => "\\n",
-        '\t' => "\\t",
-        '\r' => "\\r",
-        '\0' => "\\0",
-        '\\' => "\\\\",
-        '\'' => "\\'",
-        '"' => "\\\"",
-        '$' => "\\$",
-        value => return format!("'{value}'"),
-    };
-    format!("'{escaped}'")
 }
 
 /// Decode the contents between the quotes of a byte literal.

@@ -338,7 +338,7 @@ impl<'a> TypeChecker<'a> {
             scope,
             resolved: &self.resolved,
         };
-        let ty = arandu_middle::types::lower::lower_type_expr_ctx(
+        let ty = crate::type_checker::types::lower::lower_type_expr_ctx(
             expr_id,
             &ctx,
             &mut self.type_info.type_interner,
@@ -369,7 +369,7 @@ impl<'a> TypeChecker<'a> {
             scope,
             resolved: &self.resolved,
         };
-        let ty = arandu_middle::types::lower::lower_result_type_ctx(
+        let ty = crate::type_checker::types::lower::lower_result_type_ctx(
             result,
             &ctx,
             &mut self.type_info.type_interner,

@@ -6,10 +6,10 @@ use arandu_parser::ast_pool::{ExprId, ExprKind};
 use arandu_parser::{GenericParam, IndexRange};
 
 use crate::type_checker::TypeChecker;
+use crate::type_checker::types::lower::lower_type_expr_ctx;
 use crate::type_checker::types::{
     ArType, GenericSubst, LowerCtx, TypeId, TypeInterner, build_subst, substitute_type,
 };
-use arandu_middle::types::lower::lower_type_expr_ctx;
 
 #[must_use]
 pub fn extract_generic_param_symbols(

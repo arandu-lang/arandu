@@ -11,13 +11,13 @@ camadas é uma regressão arquitetural.
 
 | Área                                                                                            | Responsabilidade                                                                                                                                |
 | ----------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `arandu_base`                                                                                   | Utilitários e dados fundamentais. Mantenha-o deliberadamente leve; não adicione dependências sem justificativa arquitetural.                    |
+| `arandu_base`                                                                                   | Utilitários, dados fundamentais e vocabulário comum à sintaxe e à semântica (`span`, `lang`). Mantenha-o deliberadamente leve; não adicione dependências sem justificativa arquitetural. |
 | `arandu_testing_contract`                                                                       | DTOs puros compartilhados pelo runtime e pelo harness de testes; sem IR, Salsa ou dependências de compilação.                                   |
 | `arandu_lexer` / `arandu_parser`                                                                | Lexer e CST-first com Rowan; `syntax_tree(file)` é canônico e `parse(file)` apenas baixa CST para AST.                                          |
 | `arandu_diagnostics`                                                                            | `DiagCode`, diagnósticos e documentação longa em `docs/errors/`.                                                                                |
-| `arandu_middle`                                                                                 | Contratos entre fases, HIR/AMIR, `SourceDatabase`, IDs e layout. `src/db.rs` declara apenas os tipos Salsa compartilhados; não executa queries. |
-| `arandu_resolve` / `arandu_typeck` / `arandu_mir`                                               | Lógica pura de resolução, tipos, ownership/dataflow e AMIR. Não são donos de Salsa.                                                             |
-| `arandu_semantics`                                                                              | Lowering AST→HIR e monomorfização; hoje também é fachada de reexports das fases. Não cresça a fachada: código novo importa do crate dono.       |
+| `arandu_middle`                                                                                 | Contratos entre fases sem AST: HIR/AMIR, `SourceDatabase`, IDs, layout e `type_context`. `src/db.rs` declara apenas os tipos Salsa compartilhados; não executa queries. |
+| `arandu_resolve` / `arandu_typeck` / `arandu_mir`                                               | Lógica pura de resolução (dona de `ResolvedNames`), tipos (dona do lowering de tipos do AST) e passes/análises AMIR. Não são donos de Salsa.          |
+| `arandu_semantics`                                                                              | Lowering AST→HIR, monomorfização e HIR→AMIR (`passes::lower_amir`); hoje também é fachada de reexports. Não cresça a fachada: código novo importa do crate dono. |
 | `arandu_codegen`                                                                                | Contrato de backend agnóstico (papel de `rustc_codegen_ssa`).                                                                                   |
 | `arandu_query`                                                                                  | Único dono de Salsa: DB, inputs, queries tracked, `AnalysisHost` e reparse incremental.                                                         |
 | `arandu_backend_cranelift` / `arandu_backend_c` / `arandu_backend_wasm` / `arandu_backend_llvm` | Backends que consomem AMIR validado: nativo/JIT, C, WebAssembly e LLVM IR textual.                                                              |
@@ -36,15 +36,16 @@ camadas é uma regressão arquitetural.
 - Dependências apontam para baixo no pipeline. Fases e contratos nunca dependem
   de backends, `arandu_query` ou drivers. Backends consomem AMIR, layout e
   `arandu_codegen`; não dependem de lexer, parser, resolve, typeck nem de
-  lowering de HIR/monomorfização. `check-architecture` impõe isso sobre as
-  dependências diretas; as arestas legadas `backend_* → arandu_semantics`
-  ficam em `BACKEND_DEPENDENCY_DEBT` (`xtask/src/architecture.rs`), lista que
-  só pode encolher. Contratos que backends precisam moram no crate dono
-  (`arandu_middle::symbol_mangling` para nomes de instâncias, `arandu_mir`
-  para liveness/reachability/static data), nunca na fachada. O bloqueio
-  restante é `CodegenBackend::TargetConfig = TypeInfo` (resultado do typeck).
-  Dívida transitiva conhecida: `arandu_middle` depende de lexer/parser e
-  `arandu_mir` de typeck.
+  lowering de HIR/monomorfização. `check-architecture` impõe isso sobre o grafo
+  transitivo, sem exceções: `arandu_middle` e `arandu_mir` não alcançam o
+  front-end. Vocabulário comum à sintaxe (`Span`, `Visibility`, `AbiKind`,
+  `LayoutQuery`) mora em `arandu_base::lang`; nada que conheça o AST entra no
+  `middle`. Fatos de tipo chegam por `&dyn AmirTypeContext` (passes AMIR) ou
+  `&dyn CodegenTypeContext` (backends), em `arandu_middle::type_context` e
+  implementados pelo typeck; precisando de outro fato, estenda o trait, nunca
+  importe `TypeInfo`. Contratos compartilhados moram no crate dono
+  (`arandu_middle::symbol_mangling`, análises AMIR em `arandu_mir`), nunca na
+  fachada `arandu_semantics`. Ver `docs/arandu-backend-contract-v0.1.md`.
 - `arandu_query` é o único dono da execução Salsa. A exceção estreita é
   `arandu_middle/src/db.rs`, que declara inputs/accumulators e o trait
   `SourceDatabase` compartilhado sem possuir providers. `arandu_resolve`,

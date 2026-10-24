@@ -9,14 +9,15 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
-arandu_lexer = { path = "../arandu_lexer" }
 arandu_middle = { path = "../arandu_middle" }
-arandu_typeck = { path = "../arandu_typeck" }
 rustc-hash = { workspace = true }
 smallvec = { workspace = true }
 smol_str.workspace = true
 tracing.workspace = true
 bumpalo = { workspace = true, features = ["collections"] }
+
+[dev-dependencies]
+arandu_typeck = { path = "../arandu_typeck" }
 
 [lib]
 path = "src/lib.rs"

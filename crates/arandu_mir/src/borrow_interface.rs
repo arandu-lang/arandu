@@ -17,7 +17,7 @@ use crate::types::{
     ArType, BorrowPath, BorrowPathSegment, BorrowSource, ReturnBorrowDependency,
     ReturnBorrowSummary,
 };
-use arandu_typeck::TypeInfo;
+use arandu_middle::type_context::AmirTypeContext;
 
 type Origins = BTreeMap<BorrowPath, BTreeSet<BorrowSource>>;
 
@@ -44,7 +44,7 @@ pub struct BorrowInterfaceSolution {
 #[must_use]
 pub fn solve_borrow_interfaces(
     program: &mut AmirProgram,
-    type_info: &TypeInfo,
+    type_info: &dyn AmirTypeContext,
 ) -> BorrowInterfaceSolution {
     let local_symbols = program
         .funcs
@@ -52,7 +52,7 @@ pub fn solve_borrow_interfaces(
         .map(|function| function.symbol)
         .collect::<FxHashSet<_>>();
     let mut summaries = type_info
-        .return_borrow_summaries
+        .return_borrow_summaries()
         .iter()
         .filter(|(symbol, _)| !local_symbols.contains(symbol))
         .map(|(symbol, summary)| (*symbol, summary.clone()))
@@ -71,7 +71,7 @@ pub fn solve_borrow_interfaces(
         .iter()
         .map(|function| function.params.len().max(1))
         .sum::<usize>()
-        .saturating_mul(TypeInfo::MAX_BORROW_PATHS)
+        .saturating_mul(arandu_middle::types::MAX_BORROW_PATHS)
         .max(1);
     for _ in 0..=source_bound {
         let mut changed = false;
@@ -128,7 +128,7 @@ pub fn solve_borrow_interfaces(
 /// convergence; this function reads only this body and the supplied contracts.
 pub fn infer_function_interface(
     function: &AmirFunc,
-    type_info: &TypeInfo,
+    type_info: &dyn AmirTypeContext,
     summaries: &FxHashMap<crate::SymbolId, ReturnBorrowSummary>,
 ) -> (ReturnBorrowSummary, Vec<BorrowPath>) {
     let expected = match type_info.borrow_paths(function.return_type) {
@@ -175,7 +175,7 @@ pub fn infer_function_interface(
         .temps
         .len()
         .saturating_add(function.locals.len())
-        .saturating_mul(TypeInfo::MAX_BORROW_PATHS)
+        .saturating_mul(arandu_middle::types::MAX_BORROW_PATHS)
         .max(1);
     for _ in 0..=bound {
         let mut changed = false;
@@ -245,7 +245,7 @@ pub fn apply_call_interfaces(
 fn transfer_statement(
     function: &AmirFunc,
     statement: &AmirStmt,
-    type_info: &TypeInfo,
+    type_info: &dyn AmirTypeContext,
     summaries: &FxHashMap<crate::SymbolId, ReturnBorrowSummary>,
     temps: &mut [Origins],
     locals: &mut [Origins],
@@ -300,7 +300,7 @@ fn transfer_statement(
                     let segment = function
                         .temps
                         .get(lhs.as_usize())
-                        .map(|temp| type_info.type_interner.resolve(temp.ty))
+                        .map(|temp| type_info.type_interner().resolve(temp.ty))
                         .and_then(|ty| match ty {
                             ArType::Option(_) if *variant_tag == 1 => {
                                 Some(BorrowPathSegment::OptionSome)
@@ -338,14 +338,10 @@ fn transfer_statement(
                     index,
                     ..
                 } => {
-                    let tag = type_info
-                        .enum_variant_tags
-                        .get(variant)
-                        .copied()
-                        .unwrap_or(0);
+                    let tag = type_info.enum_variant_tag(*variant).unwrap_or(0);
                     let base_ty = operand_temp(*value)
                         .and_then(|temp| function.temps.get(temp.as_usize()))
-                        .map(|temp| type_info.type_interner.resolve(temp.ty));
+                        .map(|temp| type_info.type_interner().resolve(temp.ty));
                     let first = match base_ty {
                         Some(ArType::Option(_)) => BorrowPathSegment::OptionSome,
                         Some(ArType::Result(_, _)) if tag == 0 => BorrowPathSegment::ResultOk,
@@ -547,7 +543,7 @@ fn merge_origins(target: &mut Origins, source: &mut Origins) -> bool {
 fn borrowed_place_origins(
     function: &AmirFunc,
     place: &AmirPlace,
-    type_info: &TypeInfo,
+    type_info: &dyn AmirTypeContext,
     locals: &[Origins],
 ) -> Origins {
     let mut origins = locals
@@ -563,10 +559,10 @@ fn borrowed_place_origins(
             AmirProjection::Deref => None,
             AmirProjection::Field(symbol) => {
                 let resolved =
-                    type_info.resolve_type_id(type_info.type_interner.intern(current_ty.clone()));
+                    type_info.resolve_type_id(type_info.type_interner().intern(current_ty.clone()));
                 let field = match resolved {
                     ArType::Named(owner, _) => {
-                        type_info.struct_fields.get(&owner).and_then(|fields| {
+                        type_info.get_struct_fields(owner).and_then(|fields| {
                             fields
                                 .fields
                                 .iter()
@@ -621,7 +617,7 @@ fn borrowed_place_origins(
                 let segment = u32::try_from(*index).ok().map(BorrowPathSegment::Tuple);
                 if let ArType::Tuple(tuple) = current_ty {
                     current_ty = type_info
-                        .type_interner
+                        .type_interner()
                         .type_args(tuple)
                         .get(*index)
                         .copied()
@@ -652,20 +648,19 @@ fn borrowed_place_origins(
 }
 
 fn field_name(
-    type_info: &TypeInfo,
+    type_info: &dyn AmirTypeContext,
     type_id: crate::types::TypeId,
     index: usize,
 ) -> Option<smol_str::SmolStr> {
-    let mut resolved = type_info.type_interner.resolve(type_id);
+    let mut resolved = type_info.type_interner().resolve(type_id);
     while let ArType::Ref(inner) | ArType::RefMut(inner) = resolved {
-        resolved = type_info.type_interner.resolve(inner);
+        resolved = type_info.type_interner().resolve(inner);
     }
     let ArType::Named(symbol, _) = resolved else {
         return None;
     };
     type_info
-        .struct_fields
-        .get(&symbol)?
+        .get_struct_fields(symbol)?
         .iter()
         .find(|f| f.index == index)
         .map(|f| f.name.clone())

@@ -9,7 +9,8 @@ authors.workspace = true
 arandu_base = { path = "../arandu_base" }
 arandu_codegen = { path = "../arandu_codegen" }
 arandu_runtime = { path = "../arandu_runtime" }
-arandu_semantics = { path = "../arandu_semantics" }
+arandu_middle = { path = "../arandu_middle" }
+arandu_mir = { path = "../arandu_mir" }
 cranelift-codegen = "0.136.1"
 cranelift-frontend = "0.136.1"
 cranelift-jit = "0.136.1"
@@ -24,3 +25,4 @@ tracing.workspace = true
 
 [dev-dependencies]
 arandu_parser = { path = "../arandu_parser" }
+arandu_semantics = { path = "../arandu_semantics" }

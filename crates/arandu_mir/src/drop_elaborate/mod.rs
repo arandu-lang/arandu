@@ -10,7 +10,7 @@ mod elaborate;
 mod needs_drop;
 
 pub use elaborate::elaborate_drops;
-pub(crate) use needs_drop::type_needs_drop;
+pub use needs_drop::type_needs_drop;
 
 #[cfg(test)]
 use crate::amir::{AmirPlace, AmirProjection, AmirStmt, AmirStmtTable, LocalId};
@@ -29,7 +29,7 @@ use smallvec::SmallVec;
 mod tests {
     use super::*;
     use crate::SymbolId;
-    use crate::passes::type_checker::types::Primitive;
+    use crate::types::Primitive;
 
     #[test]
     fn test_type_needs_drop_containers() {

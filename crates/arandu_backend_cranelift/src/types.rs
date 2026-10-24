@@ -3,8 +3,8 @@
 //! Provides the mapping between Arandu [`ArType`]s and the Cranelift
 //! [`Type`] system used to build function signatures and emit IR values.
 
-use arandu_semantics::passes::type_checker::types::ArType;
-use arandu_semantics::passes::type_checker::types::Primitive;
+use arandu_middle::types::ArType;
+use arandu_middle::types::Primitive;
 use cranelift_codegen::ir::Type;
 use cranelift_codegen::ir::types::*;
 
@@ -81,12 +81,12 @@ pub fn clif_type(ty: &ArType, ptr_type: Type) -> ClifType {
 pub fn clif_type_with_float(ty: &ArType, ptr_type: Type, float_type: Type) -> ClifType {
     match ty {
         ArType::Vector(vector) => ClifType::Concrete(match vector {
-            arandu_semantics::types::VectorType::F32x4 => F32X4,
-            arandu_semantics::types::VectorType::F64x2 => F64X2,
-            arandu_semantics::types::VectorType::I32x4 => I32X4,
-            arandu_semantics::types::VectorType::I16x8 => I16X8,
-            arandu_semantics::types::VectorType::U8x16 => I8X16,
-            arandu_semantics::types::VectorType::I64x2 => I64X2,
+            arandu_middle::types::VectorType::F32x4 => F32X4,
+            arandu_middle::types::VectorType::F64x2 => F64X2,
+            arandu_middle::types::VectorType::I32x4 => I32X4,
+            arandu_middle::types::VectorType::I16x8 => I16X8,
+            arandu_middle::types::VectorType::U8x16 => I8X16,
+            arandu_middle::types::VectorType::I64x2 => I64X2,
         }),
         ArType::Primitive(p) => match p {
             Primitive::Int | Primitive::Uint => ClifType::Concrete(I32),
@@ -188,16 +188,14 @@ mod tests {
     #[test]
     fn test_string_length_matches_pointer_width() {
         let ptr_type_32 = cranelift_codegen::ir::types::I32;
-        let str_ty = arandu_semantics::passes::type_checker::types::ArType::Primitive(
-            arandu_semantics::passes::type_checker::types::Primitive::Str,
-        );
+        let str_ty = arandu_middle::types::ArType::Primitive(arandu_middle::types::Primitive::Str);
         let clif_tys = clif_types(&str_ty, ptr_type_32);
         assert_eq!(clif_tys, vec![ptr_type_32, ptr_type_32]);
     }
 
     #[test]
     fn slice_abi_is_two_pointer_sized_slots_on_32_and_64_bit_targets() {
-        let interner = arandu_semantics::passes::type_checker::types::TypeInterner::new();
+        let interner = arandu_middle::types::TypeInterner::new();
         let element = interner.intern(ArType::Primitive(Primitive::U8));
         let slice = ArType::Slice(element);
 

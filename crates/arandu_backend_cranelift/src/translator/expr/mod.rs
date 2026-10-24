@@ -7,8 +7,8 @@ pub(super) mod memory;
 pub(super) mod ops;
 mod simd;
 
-use arandu_semantics::amir::{AmirConstant, AmirOperand, AmirRvalue};
-use arandu_semantics::passes::type_checker::types::ArType;
+use arandu_middle::amir::{AmirConstant, AmirOperand, AmirRvalue};
+use arandu_middle::types::ArType;
 use cranelift_codegen::ir::{InstBuilder, Type, Value};
 
 use super::FunctionTranslator;
@@ -61,7 +61,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         // `T?` is always a pointer: null = nil; non-null = object ptr or
         // boxed scalar. Box/unbox keeps `int? = 0` distinct from `nil`.
         if let Some(ArType::Nullable(inner_id)) = expected_ar_type {
-            let inner = self.type_info.type_interner.resolve(*inner_id);
+            let inner = self.type_info.type_interner().resolve(*inner_id);
             if matches!(
                 rvalue,
                 AmirRvalue::Use(AmirOperand::Constant(AmirConstant::Nil))
@@ -91,7 +91,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         if let AmirRvalue::Use(op) = rvalue {
             let op_ty = self.get_operand_ar_type(op);
             if let ArType::Nullable(inner_id) = &op_ty {
-                let inner = self.type_info.type_interner.resolve(*inner_id);
+                let inner = self.type_info.type_interner().resolve(*inner_id);
                 if expected_ar_type.is_none_or(|e| !matches!(e, ArType::Nullable(_)))
                     && inner.needs_nullable_box()
                 {

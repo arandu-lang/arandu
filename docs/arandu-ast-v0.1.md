@@ -2,7 +2,7 @@
 
 Status: implemented AST with conceptual schema examples; Rust definitions are authoritative for physical representation
 Grammar source: `arandu-grammar-v0.6.ebnf`
-Owner: `arandu_middle::ast`; `arandu_parser` lowers canonical Rowan CST to this AST. The compiler is implemented in Rust; schemas below describe logical records, not a stable serialization API.
+Owner: `arandu_parser::ast`; the parser lowers canonical Rowan CST to this AST. The compiler is implemented in Rust; schemas below describe logical records, not a stable serialization API.
 
 ## Visão Geral e Contexto
 

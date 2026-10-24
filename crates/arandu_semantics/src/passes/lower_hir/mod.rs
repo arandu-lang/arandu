@@ -12,6 +12,7 @@ mod decl;
 mod expr;
 mod link;
 mod materialize;
+mod ops;
 mod pattern;
 mod place;
 mod stmt;

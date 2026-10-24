@@ -228,7 +228,7 @@ mod tests {
     };
     use crate::cfg::compute_cfg_edges;
     use crate::layout::DenseRange;
-    use crate::passes::type_checker::types::{ArType, Primitive};
+    use crate::types::{ArType, Primitive};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -243,7 +243,7 @@ mod tests {
             ty: intern_ty(ArType::Primitive(Primitive::Int)),
             is_copy: true,
             is_nullable: false,
-            span: arandu_lexer::Span::new(0, 0, 0),
+            span: crate::Span::new(0, 0, 0),
         }
     }
 
@@ -438,7 +438,7 @@ mod tests {
                 symbols.global_scope(),
                 "probe",
                 crate::SymbolKind::Func,
-                arandu_lexer::Span::new(0, 0, 0),
+                crate::Span::new(0, 0, 0),
             )
             .unwrap();
         let mut f = func(Vec::new(), Vec::new());
@@ -493,7 +493,7 @@ mod tests {
             ty: intern_ty(ArType::Primitive(Primitive::Bool)),
             is_copy: true,
             is_nullable: false,
-            span: arandu_lexer::Span::new(0, 0, 0),
+            span: crate::Span::new(0, 0, 0),
         };
         let mut stmts = AmirStmtTable::new();
         let instr = stmts.push(AmirStmt::Assign {

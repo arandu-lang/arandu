@@ -41,7 +41,7 @@ pub struct InstanceHir {
 
 #[derive(Debug)]
 pub struct RuntimeUnit {
-    pub result: Result<arandu_mir::FunctionUnit, Vec<Diagnostic>>,
+    pub result: Result<arandu_semantics::FunctionUnit, Vec<Diagnostic>>,
     pub context: std::sync::Arc<arandu_semantics::TypeCheckResult>,
     pub instances: Vec<(SymbolId, FunctionInstance)>,
     pub generated_symbols: Vec<SymbolId>,
@@ -266,7 +266,7 @@ pub fn runtime_raw_unit<'db>(
                 )]
             })
             .and_then(|function| {
-                arandu_mir::lower_function_unit(
+                arandu_semantics::lower_function_unit(
                     &concrete.artifacts.type_check,
                     hir,
                     function,

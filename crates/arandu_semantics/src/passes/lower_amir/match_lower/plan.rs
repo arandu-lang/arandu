@@ -264,7 +264,7 @@ impl LowerCtx<'_> {
         Err(Diagnostic::error(
             crate::DiagCode::T018UndefinedField,
             format!("variant '{variant}' not found on enum"),
-            crate::Span {
+            arandu_middle::Span {
                 file_id: 0,
                 start: 0,
                 end: 0,

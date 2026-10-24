@@ -52,7 +52,7 @@ a suíte de paridade usa `-fwrapv` para signed overflow. Quem compila a saída
 prova semântica modular portátil em todas as toolchains.
 
 Fontes:
-[`lower_amir/ops.rs`](../crates/arandu_mir/src/lower_amir/ops.rs),
+[`lower_amir/ops.rs`](../crates/arandu_semantics/src/passes/lower_amir/ops.rs),
 [`Cranelift compare.rs`](../crates/arandu_backend_cranelift/src/translator/compare.rs),
 [`C expr.rs`](../crates/arandu_backend_c/src/emitter/expr.rs),
 [`Wasm arith.rs`](../crates/arandu_backend_wasm/src/translator/arith.rs) e
@@ -111,7 +111,7 @@ atual do type checker; implementar uma interface não ativa automaticamente
 sobrecarga de `==`. `Option` e `Result` têm lowering dedicado que pode comparar
 recursivamente payloads agregados. Isso não libera `==` direto sobre qualquer
 agregado. O proprietário desse tratamento é
-[`lower_amir/equality.rs`](../crates/arandu_mir/src/lower_amir/equality.rs).
+[`lower_amir/equality.rs`](../crates/arandu_semantics/src/passes/lower_amir/equality.rs).
 Ponteiros crus admitem igualdade de endereço, mas relações `<`/`>` são
 rejeitadas mesmo em bloco `unsafe`; não se promete ordenação unsigned pública.
 

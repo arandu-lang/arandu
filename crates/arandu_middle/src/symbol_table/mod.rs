@@ -2,7 +2,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
-use arandu_lexer::Span;
+use crate::Span;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct LocalSymbolId(pub u32);
@@ -185,7 +185,7 @@ pub struct Symbol {
     pub span: Span,
     pub scope: ScopeId,
     /// Source-level visibility retained after resolution for export filtering.
-    pub visibility: arandu_parser::Visibility,
+    pub visibility: crate::Visibility,
     /// Canonical core item classification (zero-indirection, 1 byte).
     pub lang_item: Option<LangItem>,
 }

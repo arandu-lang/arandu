@@ -1,5 +1,5 @@
-use arandu_semantics::amir::{AmirConstant, AmirOperand};
-use arandu_semantics::passes::type_checker::types::{ArType, Primitive};
+use arandu_middle::amir::{AmirConstant, AmirOperand};
+use arandu_middle::types::{ArType, Primitive};
 use cranelift_codegen::ir::{InstBuilder, Type, Value};
 use cranelift_module::Module;
 
@@ -20,7 +20,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         match ty {
             ArType::Primitive(Primitive::Str) => FatOperandKind::Str,
             _ if ty
-                .slice_abi_element(&self.type_info.type_interner)
+                .slice_abi_element(self.type_info.type_interner())
                 .is_some() =>
             {
                 FatOperandKind::Slice
@@ -76,7 +76,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
 
         if let Some(depth) = self
             .get_operand_ar_type(operand)
-            .str_reference_depth(&self.type_info.type_interner)
+            .str_reference_depth(self.type_info.type_interner())
             && depth > 0
         {
             let mut descriptor = self.translate_operand(operand, Some(self.ptr_type));
@@ -143,7 +143,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             }
             AmirOperand::Constant(AmirConstant::Pool(lit_id)) => {
                 let entry = self.literal_pool.get(*lit_id);
-                if let arandu_semantics::literal_pool::AmirLiteralEntry::Str(s) = entry {
+                if let arandu_middle::literal_pool::AmirLiteralEntry::Str(s) = entry {
                     let str_bytes = s.as_bytes();
                     let data_id = match self.module.declare_data(
                         &format!("str_lit_{}", lit_id.0),
@@ -198,7 +198,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         &mut self,
         operand: &AmirOperand,
         expected_ty: Option<Type>,
-        expected_ar_type: Option<&arandu_semantics::types::ArType>,
+        expected_ar_type: Option<&arandu_middle::types::ArType>,
     ) -> Value {
         if self.error.is_some() {
             return self.poison_i32();
@@ -214,8 +214,8 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                         let ty = self.temp_ar_ty(*temp_id);
                         if matches!(
                             ty,
-                            arandu_semantics::types::ArType::Void
-                                | arandu_semantics::types::ArType::Error
+                            arandu_middle::types::ArType::Void
+                                | arandu_middle::types::ArType::Error
                         ) {
                             return self.poison_i32();
                         }
@@ -243,8 +243,8 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 AmirConstant::Pool(lit_id) => {
                     let entry = self.literal_pool.get(*lit_id);
                     match entry {
-                        arandu_semantics::literal_pool::AmirLiteralEntry::Int(s) => {
-                            let val = match arandu_semantics::literal_pool::parse_int_literal(s) {
+                        arandu_middle::literal_pool::AmirLiteralEntry::Int(s) => {
+                            let val = match arandu_middle::literal_pool::parse_int_literal(s) {
                                 Some(v) => v as i64,
                                 None => {
                                     self.record_ice(
@@ -262,8 +262,8 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                             };
                             self.builder.ins().iconst(ty, val)
                         }
-                        arandu_semantics::literal_pool::AmirLiteralEntry::Float(s) => {
-                            let val = match arandu_semantics::literal_pool::parse_float_literal(s) {
+                        arandu_middle::literal_pool::AmirLiteralEntry::Float(s) => {
+                            let val = match arandu_middle::literal_pool::parse_float_literal(s) {
                                 Some(v) => v,
                                 None => {
                                     self.record_ice(
@@ -285,7 +285,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                                 self.builder.ins().f64const(val)
                             }
                         }
-                        arandu_semantics::literal_pool::AmirLiteralEntry::FloatBits(value) => {
+                        arandu_middle::literal_pool::AmirLiteralEntry::FloatBits(value) => {
                             if let Some(bits) = value.bits32() {
                                 self.builder.ins().f32const(
                                     cranelift_codegen::ir::immediates::Ieee32::with_bits(bits),
@@ -298,7 +298,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                                 )
                             }
                         }
-                        arandu_semantics::literal_pool::AmirLiteralEntry::Str(s) => {
+                        arandu_middle::literal_pool::AmirLiteralEntry::Str(s) => {
                             let str_bytes = s.as_bytes();
                             let data_id = match self.module.declare_data(
                                 &format!("str_lit_{}", lit_id.0),
@@ -326,7 +326,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                                 .ins()
                                 .symbol_value(self.ptr_type, local_data_ref)
                         }
-                        arandu_semantics::literal_pool::AmirLiteralEntry::Char(s) => {
+                        arandu_middle::literal_pool::AmirLiteralEntry::Char(s) => {
                             let val = s.chars().next().unwrap_or('\0') as i64;
                             self.builder
                                 .ins()

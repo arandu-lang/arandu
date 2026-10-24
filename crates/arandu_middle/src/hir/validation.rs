@@ -1,10 +1,10 @@
 //! Structural and invariant validation for HIR trees.
 
+use crate::Span;
 use crate::SymbolTable;
 use crate::hir::HirProgram;
 use crate::hir::decl::HirDecl;
 use crate::hir::pool::HirPool;
-use arandu_lexer::Span;
 
 pub(crate) fn check_span(span: Span) -> Result<(), String> {
     if span.start == 0 && span.end == 0 {

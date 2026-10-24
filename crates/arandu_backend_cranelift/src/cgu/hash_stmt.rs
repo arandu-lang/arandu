@@ -1,9 +1,9 @@
 use super::HashContext;
-use arandu_semantics::amir::{
+use arandu_middle::amir::{
     AmirConstant, AmirOperand, AmirPlace, AmirProjection, AmirStmt, AmirTerminator,
 };
-use arandu_semantics::literal_pool::AmirLiteralEntry;
-use arandu_semantics::types::{BorrowKind, BorrowPath, BorrowPathSegment, ReturnBorrowSummary};
+use arandu_middle::literal_pool::AmirLiteralEntry;
+use arandu_middle::types::{BorrowKind, BorrowPath, BorrowPathSegment, ReturnBorrowSummary};
 
 impl HashContext<'_> {
     pub(super) fn place(&mut self, place: &AmirPlace) {

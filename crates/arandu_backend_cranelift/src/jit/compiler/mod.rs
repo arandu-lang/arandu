@@ -1,7 +1,7 @@
 //! Two-phase module compilation for JIT and AOT targets.
 
-use arandu_semantics::amir::AmirProgram;
-use arandu_semantics::{Diagnostic, SymbolId, SymbolTable};
+use arandu_middle::amir::AmirProgram;
+use arandu_middle::{Diagnostic, SymbolId, SymbolTable};
 use cranelift_jit::JITModule;
 use cranelift_module::{FuncId, Module};
 use rustc_hash::FxHashMap;
@@ -54,7 +54,7 @@ pub(crate) struct DebugCodeRange {
 #[derive(Debug)]
 pub(crate) struct DebugLocal {
     pub symbol: SymbolId,
-    pub ty: arandu_semantics::types::TypeId,
+    pub ty: arandu_middle::types::TypeId,
     pub span: arandu_base::span::Span,
     pub is_parameter: bool,
     pub ranges: Vec<DebugValueRange>,
@@ -189,7 +189,7 @@ impl AranduModule<JITModule> {
         mut self,
         program: &AmirProgram,
         symbols: &SymbolTable,
-        type_info: &arandu_semantics::TypeInfo,
+        type_info: &dyn arandu_middle::type_context::CodegenTypeContext,
     ) -> Result<CompiledModule, Diagnostic> {
         let mut func_ids = self.compile_module(program, symbols, type_info)?;
         self.adapt_host_results(program, symbols, type_info, &mut func_ids)?;
@@ -204,7 +204,7 @@ impl AranduModule<JITModule> {
         mut self,
         program: &AmirProgram,
         symbols: &SymbolTable,
-        type_info: &arandu_semantics::TypeInfo,
+        type_info: &dyn arandu_middle::type_context::CodegenTypeContext,
     ) -> Result<CompiledModule, Diagnostic> {
         let coverage = BlockCoverageSession::new(program)
             .ok_or_else(|| codegen_ice("AMIR block coverage session ID space exhausted"))?;
@@ -235,7 +235,7 @@ impl<M: Module> AranduModule<M> {
         &mut self,
         program: &AmirProgram,
         symbols: &SymbolTable,
-        type_info: &arandu_semantics::TypeInfo,
+        type_info: &dyn arandu_middle::type_context::CodegenTypeContext,
     ) -> Result<FxHashMap<String, FuncId>, Diagnostic> {
         self.compile_filtered_module(program, symbols, type_info, None)
     }
@@ -244,7 +244,7 @@ impl<M: Module> AranduModule<M> {
         &mut self,
         program: &AmirProgram,
         symbols: &SymbolTable,
-        type_info: &arandu_semantics::TypeInfo,
+        type_info: &dyn arandu_middle::type_context::CodegenTypeContext,
         coverage: &BlockCoverageSession,
     ) -> Result<FxHashMap<String, FuncId>, Diagnostic> {
         self.compile_filtered_module_inner(program, symbols, type_info, None, Some(coverage))
@@ -259,7 +259,7 @@ impl<M: Module> AranduModule<M> {
         &mut self,
         program: &AmirProgram,
         symbols: &SymbolTable,
-        type_info: &arandu_semantics::TypeInfo,
+        type_info: &dyn arandu_middle::type_context::CodegenTypeContext,
         unit_func_symbols: Option<&[SymbolId]>,
     ) -> Result<FxHashMap<String, FuncId>, Diagnostic> {
         self.compile_filtered_module_inner(program, symbols, type_info, unit_func_symbols, None)

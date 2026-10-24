@@ -88,19 +88,19 @@ impl CompiledModule {
         &self,
         name: &str,
         expected_sig: &cranelift_codegen::ir::Signature,
-    ) -> Result<F, arandu_semantics::JitError> {
+    ) -> Result<F, arandu_codegen::JitError> {
         let id = self
             .func_ids
             .get(name)
-            .ok_or(arandu_semantics::JitError::NotFound)?;
+            .ok_or(arandu_codegen::JitError::NotFound)?;
         let decl = self.module.declarations().get_function_decl(*id);
         if decl.signature != *expected_sig {
-            return Err(arandu_semantics::JitError::SignatureMismatch {
+            return Err(arandu_codegen::JitError::SignatureMismatch {
                 expected: format!("{:?}", expected_sig),
                 actual: format!("{:?}", decl.signature),
             });
         }
 
-        unsafe { self.get_fn::<F>(name) }.ok_or(arandu_semantics::JitError::NotFound)
+        unsafe { self.get_fn::<F>(name) }.ok_or(arandu_codegen::JitError::NotFound)
     }
 }

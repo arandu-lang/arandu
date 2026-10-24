@@ -212,7 +212,7 @@ pub(crate) fn lower_expr_raw(
             let left = lower_expr(type_check, pool, hir_pool, *left)?;
             let right = lower_expr(type_check, pool, hir_pool, *right)?;
             HirExprKind::Binary {
-                op: (*op).into(),
+                op: super::ops::lower_binary_op(*op),
                 left,
                 right,
             }
@@ -220,7 +220,7 @@ pub(crate) fn lower_expr_raw(
         ExprKind::Unary { op, expr: inner } => {
             let inner = lower_expr(type_check, pool, hir_pool, *inner)?;
             HirExprKind::Unary {
-                op: (*op).into(),
+                op: super::ops::lower_unary_op(*op),
                 expr: inner,
             }
         }

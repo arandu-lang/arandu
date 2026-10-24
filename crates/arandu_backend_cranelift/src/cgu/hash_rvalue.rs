@@ -1,5 +1,5 @@
 use super::HashContext;
-use arandu_semantics::amir::AmirRvalue;
+use arandu_middle::amir::AmirRvalue;
 
 impl HashContext<'_> {
     pub(super) fn rvalue(&mut self, rvalue: &AmirRvalue) {

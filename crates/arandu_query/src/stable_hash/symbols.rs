@@ -1,6 +1,7 @@
 //! Symbol-table, diagnostic, and resolution hashes.
 
-use arandu_middle::{Diagnostic, ResolutionResult, SymbolId, SymbolKind, SymbolTable};
+use arandu_middle::{Diagnostic, SymbolId, SymbolKind, SymbolTable};
+use arandu_resolve::ResolutionResult;
 use blake3::Hasher;
 
 /// Types that can be content-addressed for [`crate::db::HashEq`].
@@ -171,7 +172,7 @@ pub(super) fn hash_symbol_id(hasher: &mut Hasher, id: SymbolId) {
     hasher.update(&u32_le(id.local_id.0));
 }
 
-pub(super) fn hash_resolved_names(hasher: &mut Hasher, resolved: &arandu_middle::ResolvedNames) {
+pub(super) fn hash_resolved_names(hasher: &mut Hasher, resolved: &arandu_resolve::ResolvedNames) {
     let mut loops: Vec<_> = resolved.comptime_loops.iter().collect();
     loops.sort_by_key(|(key, _)| (key.start, key.end));
     hasher.update(&u64_le(u64::try_from(loops.len()).unwrap_or(u64::MAX)));

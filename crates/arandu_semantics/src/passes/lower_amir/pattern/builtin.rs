@@ -4,7 +4,7 @@ use crate::diagnostics::{DiagCode, Diagnostic};
 use crate::ops::BinaryOp;
 use crate::passes::type_checker::types::{ArType, Primitive};
 use crate::{SymbolId, SymbolTable};
-use arandu_lexer::Span;
+use arandu_middle::Span;
 
 pub(super) struct BuiltinResultPatternInput<'a> {
     pub(super) scrutinee: AmirOperand,

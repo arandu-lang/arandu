@@ -1,7 +1,7 @@
 //! Generational arena host interop and storage layout.
 
-use arandu_semantics::amir::AmirOperand;
-use arandu_semantics::passes::type_checker::types::ArType;
+use arandu_middle::amir::AmirOperand;
+use arandu_middle::types::ArType;
 use cranelift_codegen::ir::{InstBuilder, Type, Value};
 
 use super::super::FunctionTranslator;
@@ -9,14 +9,11 @@ use super::super::FunctionTranslator;
 impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
     fn gen_payload_slot(
         &mut self,
-        payload_ty: arandu_semantics::types::TypeId,
+        payload_ty: arandu_middle::types::TypeId,
     ) -> Option<(cranelift_codegen::ir::StackSlot, Type, u64, u64, bool)> {
         let ar_ty = self.type_info.resolve_type_id(payload_ty);
-        let has_destructor = self
-            .type_info
-            .destructor_instances
-            .contains_key(&payload_ty);
-        if !self.type_info.is_copy(payload_ty) && !has_destructor {
+        let has_destructor = self.type_info.destructor_for_type(payload_ty).is_some();
+        if self.type_info.is_copy_type(payload_ty) != Some(true) && !has_destructor {
             self.record_ice(
                 "non-Copy GenRef payload has no explicit @Destructor contract",
                 self.func_span(),
@@ -59,18 +56,17 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
 
     fn gen_layout_args(
         &mut self,
-        payload_ty: arandu_semantics::types::TypeId,
+        payload_ty: arandu_middle::types::TypeId,
         size: u64,
         align: u64,
     ) -> (Value, Value, Value) {
         let drop_glue = match self.type_info.resolve_type_id(payload_ty) {
             ArType::Named(_, _) => self
                 .type_info
-                .destructor_instances
-                .get(&payload_ty)
+                .destructor_for_type(payload_ty)
                 .and_then(|destructor| {
                     let name =
-                        crate::cgu::dependencies::drop_shim_name(self.symbol_table, *destructor)?;
+                        crate::cgu::dependencies::drop_shim_name(self.symbol_table, destructor)?;
                     self.resolve_function(&name)
                 })
                 .map(|id| {
@@ -90,7 +86,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
     pub(super) fn translate_gen_insert(
         &mut self,
         value: &AmirOperand,
-        payload_ty: arandu_semantics::types::TypeId,
+        payload_ty: arandu_middle::types::TypeId,
     ) -> Value {
         let Some((slot, clif_ty, size, align, indirect)) = self.gen_payload_slot(payload_ty) else {
             return self.poison_i32();
@@ -121,7 +117,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         &mut self,
         name: &str,
         gen_ref: &AmirOperand,
-        payload_ty: arandu_semantics::types::TypeId,
+        payload_ty: arandu_middle::types::TypeId,
     ) -> Value {
         use cranelift_codegen::ir::{TrapCode, types::I64};
         let Some((slot, clif_ty, size, align, indirect)) = self.gen_payload_slot(payload_ty) else {
@@ -157,7 +153,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         name: &str,
         gen_ref: &AmirOperand,
         value: &AmirOperand,
-        payload_ty: arandu_semantics::types::TypeId,
+        payload_ty: arandu_middle::types::TypeId,
         returns_handle: bool,
     ) -> Value {
         use cranelift_codegen::ir::{TrapCode, types::I64};

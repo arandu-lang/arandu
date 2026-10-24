@@ -1,7 +1,7 @@
-use arandu_semantics::amir::AmirProgram;
-use arandu_semantics::layout::TargetAbiClassifier;
-use arandu_semantics::passes::type_checker::types::{ArType, Primitive};
-use arandu_semantics::{Diagnostic, SymbolId, SymbolKind, SymbolTable};
+use arandu_middle::amir::AmirProgram;
+use arandu_middle::layout::TargetAbiClassifier;
+use arandu_middle::types::{ArType, Primitive};
+use arandu_middle::{Diagnostic, SymbolId, SymbolKind, SymbolTable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{FuncId, Linkage, Module};
 use rustc_hash::FxHashMap;
@@ -23,12 +23,12 @@ impl<M: Module> AranduModule<M> {
         &mut self,
         program: &AmirProgram,
         symbols: &SymbolTable,
-        type_info: &arandu_semantics::TypeInfo,
+        type_info: &dyn arandu_middle::type_context::CodegenTypeContext,
         unit_func_symbols: Option<&[SymbolId]>,
         block_coverage: Option<&BlockCoverageSession>,
     ) -> Result<FxHashMap<String, FuncId>, Diagnostic> {
         if let Some(issue) =
-            arandu_semantics::validate_amir_program(program, symbols, &type_info.type_interner)
+            arandu_middle::validate_amir_program(program, symbols, type_info.type_interner())
                 .into_iter()
                 .next()
         {
@@ -89,16 +89,20 @@ impl<M: Module> AranduModule<M> {
             let param_types: Vec<_> = func
                 .params
                 .iter()
-                .map(|&p| type_info.type_interner.resolve(func.temps[p.as_usize()].ty))
+                .map(|&p| {
+                    type_info
+                        .type_interner()
+                        .resolve(func.temps[p.as_usize()].ty)
+                })
                 .collect();
-            let ret_ty = type_info.type_interner.resolve(func.return_type);
+            let ret_ty = type_info.type_interner().resolve(func.return_type);
             let sig = build_internal_signature(
                 &param_types,
                 &ret_ty,
                 default_call_conv,
                 ptr_type,
                 &classifier,
-                &type_info.type_interner,
+                type_info.type_interner(),
                 type_info,
             );
 
@@ -141,22 +145,19 @@ impl<M: Module> AranduModule<M> {
                 continue;
             }
             for stmt in func.stmts.payloads.iter() {
-                let arandu_semantics::amir::AmirStmt::Assign { rhs, .. } = stmt else {
+                let arandu_middle::amir::AmirStmt::Assign { rhs, .. } = stmt else {
                     continue;
                 };
                 let payload_ty = match rhs {
-                    arandu_semantics::amir::AmirRvalue::GenInsert { payload_ty, .. }
-                    | arandu_semantics::amir::AmirRvalue::GenSet { payload_ty, .. }
-                    | arandu_semantics::amir::AmirRvalue::GenUpsert { payload_ty, .. } => {
-                        *payload_ty
-                    }
+                    arandu_middle::amir::AmirRvalue::GenInsert { payload_ty, .. }
+                    | arandu_middle::amir::AmirRvalue::GenSet { payload_ty, .. }
+                    | arandu_middle::amir::AmirRvalue::GenUpsert { payload_ty, .. } => *payload_ty,
                     _ => continue,
                 };
                 let ArType::Named(_, _) = type_info.resolve_type_id(payload_ty) else {
                     continue;
                 };
-                let Some(&destructor_symbol) = type_info.destructor_instances.get(&payload_ty)
-                else {
+                let Some(destructor_symbol) = type_info.destructor_for_type(payload_ty) else {
                     continue;
                 };
                 let name = crate::cgu::dependencies::drop_shim_name(symbols, destructor_symbol)
@@ -191,8 +192,8 @@ impl<M: Module> AranduModule<M> {
             let c_name = sym.name.split('.').next_back().unwrap_or(&sym.name);
             // PAN / Invariant 5: do not import libc `abort`. Unix inlines a CPU
             // trap; Windows calls `ar_rt_trap` from the translator.
-            if arandu_semantics::IntrinsicKind::from_declared_name(c_name, sym.lang_item)
-                == Some(arandu_semantics::IntrinsicKind::Abort)
+            if arandu_middle::IntrinsicKind::from_declared_name(c_name, sym.lang_item)
+                == Some(arandu_middle::IntrinsicKind::Abort)
             {
                 continue;
             }
@@ -204,7 +205,7 @@ impl<M: Module> AranduModule<M> {
                         default_call_conv,
                         ptr_type,
                         &classifier,
-                        &type_info.type_interner,
+                        type_info.type_interner(),
                         type_info,
                     );
                     runtime_imports.insert(&sym.name, c_name, sig);
@@ -221,7 +222,7 @@ impl<M: Module> AranduModule<M> {
                     default_call_conv,
                     ptr_type,
                     &classifier,
-                    &type_info.type_interner,
+                    type_info.type_interner(),
                     type_info,
                 );
                 self.module
@@ -250,7 +251,7 @@ impl<M: Module> AranduModule<M> {
                 default_call_conv,
                 ptr_type,
                 &classifier,
-                &type_info.type_interner,
+                type_info.type_interner(),
                 type_info,
             );
             runtime_imports.insert("io.print", "io.print", sig);
@@ -309,16 +310,20 @@ impl<M: Module> AranduModule<M> {
             let param_types: Vec<_> = func
                 .params
                 .iter()
-                .map(|&p| type_info.type_interner.resolve(func.temps[p.as_usize()].ty))
+                .map(|&p| {
+                    type_info
+                        .type_interner()
+                        .resolve(func.temps[p.as_usize()].ty)
+                })
                 .collect();
-            let ret_ty = type_info.type_interner.resolve(func.return_type);
+            let ret_ty = type_info.type_interner().resolve(func.return_type);
             let sig = build_internal_signature(
                 &param_types,
                 &ret_ty,
                 default_call_conv,
                 ptr_type,
                 &classifier,
-                &type_info.type_interner,
+                type_info.type_interner(),
                 type_info,
             );
             context.func.signature = sig;
@@ -461,24 +466,23 @@ impl<M: Module> AranduModule<M> {
                     .module
                     .declare_func_in_func(destructor_id, builder.func);
                 let arg_abi = classifier.classify_type(
-                    &type_info.type_interner.resolve(payload_ty),
-                    &type_info.type_interner,
+                    &type_info.type_interner().resolve(payload_ty),
+                    type_info.type_interner(),
                     type_info,
                 );
                 match arg_abi {
-                    arandu_semantics::layout::ArgAbi::ZeroSized => {
+                    arandu_middle::layout::ArgAbi::ZeroSized => {
                         builder.ins().call(destructor, &[]);
                     }
-                    arandu_semantics::layout::ArgAbi::Direct(direct) => {
+                    arandu_middle::layout::ArgAbi::Direct(direct) => {
                         let mut call_args = Vec::with_capacity(direct.slots.len());
-                        let payload = type_info.type_interner.resolve(payload_ty);
-                        let layout = arandu_semantics::layout::LayoutEngine::new(u64::from(
-                            ptr_type.bytes(),
-                        ))
-                        .layout_of_type(&payload, &type_info.type_interner, type_info)
-                        .map_err(|error| {
-                            codegen_ice(format!("invalid drop shim layout: {error}"))
-                        })?;
+                        let payload = type_info.type_interner().resolve(payload_ty);
+                        let layout =
+                            arandu_middle::layout::LayoutEngine::new(u64::from(ptr_type.bytes()))
+                                .layout_of_type(&payload, type_info.type_interner(), type_info)
+                                .map_err(|error| {
+                                    codegen_ice(format!("invalid drop shim layout: {error}"))
+                                })?;
                         let little = self.module.isa().endianness()
                             == cranelift_codegen::ir::Endianness::Little;
                         for abi_slot in &direct.slots {
@@ -496,7 +500,7 @@ impl<M: Module> AranduModule<M> {
                         }
                         builder.ins().call(destructor, &call_args);
                     }
-                    arandu_semantics::layout::ArgAbi::Indirect => {
+                    arandu_middle::layout::ArgAbi::Indirect => {
                         builder.ins().call(destructor, &[raw]);
                     }
                 }

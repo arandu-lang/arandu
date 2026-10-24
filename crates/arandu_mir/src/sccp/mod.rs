@@ -62,7 +62,7 @@ mod tests {
     };
     use crate::cfg::compute_cfg_edges;
     use crate::layout::DenseRange;
-    use crate::passes::type_checker::types::{ArType, Primitive};
+    use crate::types::{ArType, Primitive};
 
     fn intern_ty(ty: ArType) -> crate::types::TypeId {
         crate::types::TypeInterner::new().intern(ty)
@@ -74,7 +74,7 @@ mod tests {
             ty: intern_ty(ArType::Primitive(Primitive::Int)),
             is_copy: true,
             is_nullable: false,
-            span: arandu_lexer::Span::new(0, 0, 0),
+            span: crate::Span::new(0, 0, 0),
         }
     }
 
@@ -84,7 +84,7 @@ mod tests {
             ty: intern_ty(ArType::Primitive(Primitive::Bool)),
             is_copy: true,
             is_nullable: false,
-            span: arandu_lexer::Span::new(0, 0, 0),
+            span: crate::Span::new(0, 0, 0),
         }
     }
 
@@ -232,7 +232,7 @@ mod tests {
                 ty: bool_ty,
                 is_memory: false,
                 symbol: None,
-                span: arandu_lexer::Span::new(0, 0, 0),
+                span: crate::Span::new(0, 0, 0),
                 use_span: None,
             }],
             temps: vec![bool_temp(0), bool_temp(1), bool_temp(2)],
@@ -317,7 +317,7 @@ mod tests {
                 ty: int_ty,
                 is_memory: false,
                 symbol: None,
-                span: arandu_lexer::Span::new(0, 0, 0),
+                span: crate::Span::new(0, 0, 0),
                 use_span: None,
             }],
             temps: vec![int_temp(0), int_temp(1), int_temp(2)],
@@ -428,7 +428,7 @@ mod tests {
                 ty: int_ty,
                 is_memory: false,
                 symbol: None,
-                span: arandu_lexer::Span::new(0, 0, 0),
+                span: crate::Span::new(0, 0, 0),
                 use_span: None,
             }],
             temps: vec![int_temp(0), int_temp(1), int_temp(2)],

@@ -1,9 +1,9 @@
 use arandu_middle::SymbolId;
+use arandu_middle::SymbolTable;
 use arandu_middle::amir::AmirProgram;
 use arandu_middle::layout::StructLayoutProvider;
 use arandu_middle::symbol_table::SymbolKind;
 use arandu_middle::types::TypeInterner;
-use arandu_semantics::SymbolTable;
 use rustc_hash::{FxHashMap, FxHashSet};
 use smol_str::SmolStr;
 

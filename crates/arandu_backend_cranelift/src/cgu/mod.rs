@@ -7,8 +7,9 @@
 
 use crate::aot::{AotOptimization, CraneliftObjectBackend};
 use crate::jit::isa::codegen_ice;
-use arandu_semantics::amir::{AmirFunc, AmirProgram};
-use arandu_semantics::{Diagnostic, SymbolId, SymbolTable, TypeInfo};
+use arandu_middle::amir::{AmirFunc, AmirProgram};
+use arandu_middle::type_context::CodegenTypeContext;
+use arandu_middle::{Diagnostic, SymbolId, SymbolTable};
 use target_lexicon::Triple;
 
 pub(crate) mod dependencies;
@@ -36,7 +37,7 @@ pub struct CodegenUnit {
 pub fn partition_program(
     program: &AmirProgram,
     symbols: &SymbolTable,
-    type_info: &TypeInfo,
+    type_info: &dyn CodegenTypeContext,
     target: &Triple,
     optimization: AotOptimization,
     toolchain_fingerprint: &str,
@@ -72,7 +73,7 @@ pub fn compute_cgu_hash(
     func: &AmirFunc,
     program: &AmirProgram,
     symbols: &SymbolTable,
-    type_info: &TypeInfo,
+    type_info: &dyn CodegenTypeContext,
     target: &Triple,
     optimization: AotOptimization,
     toolchain_fingerprint: &str,
@@ -168,7 +169,7 @@ struct HashContext<'a> {
     hash: &'a mut StableHash,
     program: &'a AmirProgram,
     symbols: &'a SymbolTable,
-    type_info: &'a TypeInfo,
+    type_info: &'a dyn CodegenTypeContext,
     named_type_stack: Vec<SymbolId>,
 }
 
@@ -177,7 +178,7 @@ pub fn compile_cgu(
     unit: &CodegenUnit,
     program: &AmirProgram,
     symbols: &SymbolTable,
-    type_info: &TypeInfo,
+    type_info: &dyn CodegenTypeContext,
     target: &Triple,
     optimization: AotOptimization,
 ) -> Result<Vec<u8>, Diagnostic> {

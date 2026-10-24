@@ -268,8 +268,9 @@ fn ctfe_instance_amir_in_context<'db>(
             })
             .ok_or(BuildFailure::MissingFunction)?;
         db.unwind_if_revision_cancelled();
-        let unit = arandu_mir::lower_function_unit(&artifacts.type_check, hir, function, layout)
-            .map_err(BuildFailure::Diagnostics)?;
+        let unit =
+            arandu_semantics::lower_function_unit(&artifacts.type_check, hir, function, layout)
+                .map_err(BuildFailure::Diagnostics)?;
         let called = unit
             .function
             .stmts

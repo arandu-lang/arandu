@@ -20,12 +20,12 @@ mod terminator;
 mod translate;
 
 use arandu_base::span::Span;
-use arandu_semantics::amir::{
+use arandu_middle::amir::{
     AmirBasicBlock, AmirConstant, AmirDebugBinding, AmirFunc, AmirOperand, AmirStmt,
     AmirTerminator, BlockId, InstrId, LocalId, TempId,
 };
-use arandu_semantics::passes::type_checker::types::{ArType, Primitive};
-use arandu_semantics::{DiagCode, Diagnostic, SymbolTable};
+use arandu_middle::types::{ArType, Primitive};
+use arandu_middle::{DiagCode, Diagnostic, SymbolTable};
 use cranelift_codegen::ir::{
     Block, InstBuilder, RelSourceLoc, SourceLoc, StackSlot, Type, Value, ValueLabel,
     ValueLabelAssignments, ValueLabelStart,
@@ -76,12 +76,11 @@ pub struct FunctionTranslator<'a, 'b, M: Module> {
     pub(crate) frame_promotion_safe: bool,
     /// Lazily allocated Copy scratch buffers, owned by this invocation only.
     pub(crate) heap_scratch_slots: Vec<StackSlot>,
-    pub(crate) static_initializers:
-        FxHashMap<InstrId, arandu_semantics::static_data::StaticInitializer>,
+    pub(crate) static_initializers: FxHashMap<InstrId, arandu_mir::static_data::StaticInitializer>,
     pub(crate) current_initializer: Option<InstrId>,
-    pub literal_pool: &'b arandu_semantics::literal_pool::AmirLiteralPool,
+    pub literal_pool: &'b arandu_middle::literal_pool::AmirLiteralPool,
     pub current_func: &'b AmirFunc,
-    pub type_info: &'b arandu_semantics::TypeInfo,
+    pub type_info: &'b dyn arandu_middle::type_context::CodegenTypeContext,
     block_coverage: Option<(FuncId, u32, i64)>,
     pub(crate) debug_locations: Option<&'b mut Vec<Span>>,
     debug_temp_locals: Option<FxHashMap<TempId, Vec<LocalId>>>,
@@ -131,9 +130,9 @@ impl<'a, 'b, M: Module> FunctionTranslator<'a, 'b, M> {
         runtime_imports: &'b crate::jit::symbols::RuntimeImports,
         gen_shutdown: bool,
         ptr_type: Type,
-        literal_pool: &'b arandu_semantics::literal_pool::AmirLiteralPool,
+        literal_pool: &'b arandu_middle::literal_pool::AmirLiteralPool,
         current_func: &'b AmirFunc,
-        type_info: &'b arandu_semantics::TypeInfo,
+        type_info: &'b dyn arandu_middle::type_context::CodegenTypeContext,
         debug_locations: Option<&'b mut Vec<Span>>,
         debug_bindings: &'b [AmirDebugBinding],
         block_coverage: Option<(FuncId, u32, i64)>,
@@ -164,7 +163,7 @@ impl<'a, 'b, M: Module> FunctionTranslator<'a, 'b, M> {
             local_stack_slots: FxHashMap::default(),
             integer_concat_temps: arandu_codegen::string_interp::integer_concat_temps(
                 current_func,
-                &type_info.type_interner,
+                type_info.type_interner(),
             ),
             integer_concat_values: FxHashMap::default(),
             str_temp_map: FxHashMap::default(),
@@ -178,12 +177,12 @@ impl<'a, 'b, M: Module> FunctionTranslator<'a, 'b, M> {
                 type_info,
             ),
             heap_scratch_slots: Vec::new(),
-            static_initializers: arandu_semantics::static_data::static_initializers(
+            static_initializers: arandu_mir::static_data::static_initializers(
                 current_func,
-                &type_info.type_interner,
+                type_info.type_interner(),
                 type_info,
                 literal_pool,
-                arandu_semantics::layout::DataLayout::ptr_width(u64::from(ptr_type.bytes())),
+                arandu_middle::layout::DataLayout::ptr_width(u64::from(ptr_type.bytes())),
                 little_endian,
             ),
             current_initializer: None,
@@ -305,10 +304,10 @@ impl<'a, 'b, M: Module> FunctionTranslator<'a, 'b, M> {
         }
     }
 
-    pub(crate) fn checked_layout(&mut self, ty: &ArType) -> arandu_semantics::layout::TypeLayout {
+    pub(crate) fn checked_layout(&mut self, ty: &ArType) -> arandu_middle::layout::TypeLayout {
         let pointer_width = self.ptr_type.bytes() as u64;
-        let engine = arandu_semantics::layout::LayoutEngine::new(pointer_width);
-        match engine.layout_of_type(ty, &self.type_info.type_interner, self.type_info) {
+        let engine = arandu_middle::layout::LayoutEngine::new(pointer_width);
+        match engine.layout_of_type(ty, self.type_info.type_interner(), self.type_info) {
             Ok(layout)
                 if layout.size <= i32::MAX as u64
                     && layout
@@ -326,28 +325,27 @@ impl<'a, 'b, M: Module> FunctionTranslator<'a, 'b, M> {
                     ),
                     self.func_span(),
                 );
-                arandu_semantics::layout::TypeLayout::simple(0, 1)
+                arandu_middle::layout::TypeLayout::simple(0, 1)
             }
             Err(error) => {
                 self.record_ice(
                     format!(
                         "Cranelift rejected the layout of '{}': {error}",
-                        ty.display(self.symbol_table, &self.type_info.type_interner)
+                        ty.display(self.symbol_table, self.type_info.type_interner())
                     ),
                     self.func_span(),
                 );
-                arandu_semantics::layout::TypeLayout::simple(0, 1)
+                arandu_middle::layout::TypeLayout::simple(0, 1)
             }
         }
     }
 
-    pub(crate) fn classify_arg_abi(&mut self, ty: &ArType) -> arandu_semantics::layout::ArgAbi {
+    pub(crate) fn classify_arg_abi(&mut self, ty: &ArType) -> arandu_middle::layout::ArgAbi {
         let triple = self.module.isa().triple();
         let target_abi = crate::abi::target_abi_for_triple(triple);
         let pointer_width = self.ptr_type.bytes() as u64;
-        let classifier =
-            arandu_semantics::layout::TargetAbiClassifier::new(target_abi, pointer_width);
-        classifier.classify_type(ty, &self.type_info.type_interner, self.type_info)
+        let classifier = arandu_middle::layout::TargetAbiClassifier::new(target_abi, pointer_width);
+        classifier.classify_type(ty, self.type_info.type_interner(), self.type_info)
     }
 
     pub(crate) fn poison_i32(&mut self) -> Value {
@@ -388,8 +386,8 @@ impl<'a, 'b, M: Module> FunctionTranslator<'a, 'b, M> {
     }
 
     #[inline]
-    pub(crate) fn resolve_ty(&self, id: arandu_semantics::types::TypeId) -> ArType {
-        self.type_info.type_interner.resolve(id)
+    pub(crate) fn resolve_ty(&self, id: arandu_middle::types::TypeId) -> ArType {
+        self.type_info.type_interner().resolve(id)
     }
 
     #[inline]
@@ -409,17 +407,15 @@ impl<'a, 'b, M: Module> FunctionTranslator<'a, 'b, M> {
                 AmirConstant::Bool(_) => ArType::Primitive(Primitive::Bool),
                 AmirConstant::Nil => ArType::Void,
                 AmirConstant::Pool(lit_id) => match self.literal_pool.get(*lit_id) {
-                    arandu_semantics::literal_pool::AmirLiteralEntry::Int(_) => ArType::IntLiteral,
-                    arandu_semantics::literal_pool::AmirLiteralEntry::Float(_) => {
-                        ArType::FloatLiteral
-                    }
-                    arandu_semantics::literal_pool::AmirLiteralEntry::FloatBits(value) => {
+                    arandu_middle::literal_pool::AmirLiteralEntry::Int(_) => ArType::IntLiteral,
+                    arandu_middle::literal_pool::AmirLiteralEntry::Float(_) => ArType::FloatLiteral,
+                    arandu_middle::literal_pool::AmirLiteralEntry::FloatBits(value) => {
                         ArType::Primitive(value.ty().primitive())
                     }
-                    arandu_semantics::literal_pool::AmirLiteralEntry::Str(_) => {
+                    arandu_middle::literal_pool::AmirLiteralEntry::Str(_) => {
                         ArType::Primitive(Primitive::Str)
                     }
-                    arandu_semantics::literal_pool::AmirLiteralEntry::Char(_) => {
+                    arandu_middle::literal_pool::AmirLiteralEntry::Char(_) => {
                         ArType::Primitive(Primitive::Char)
                     }
                 },

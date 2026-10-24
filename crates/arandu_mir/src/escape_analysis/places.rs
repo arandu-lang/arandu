@@ -1,6 +1,7 @@
 use crate::Span;
 use crate::amir::{AmirFunc, AmirOperand, LocalId, TempId};
 use crate::types::ArType;
+use arandu_middle::type_context::AmirTypeContext;
 
 pub(super) fn borrows_through_external_storage(
     func: &AmirFunc,
@@ -79,7 +80,7 @@ fn holds_only_static_strings(
 pub(super) fn type_is_borrow_carrier(
     ty: crate::types::TypeId,
     interner: &crate::types::TypeInterner,
-    type_info: Option<&arandu_typeck::TypeInfo>,
+    type_info: Option<&dyn AmirTypeContext>,
 ) -> bool {
     if let Some(type_info) = type_info {
         let is_aggregate = matches!(

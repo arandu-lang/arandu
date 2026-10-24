@@ -255,7 +255,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
         }
 
         let type_id = self.module.interner.intern(ty.clone());
-        let Some(&destructor) = self.module.info.destructor_instances.get(&type_id) else {
+        let Some(destructor) = self.module.info.destructor_for_type(type_id) else {
             return Ok(());
         };
         let destructor_func = self

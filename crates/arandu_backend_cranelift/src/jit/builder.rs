@@ -1,6 +1,6 @@
 //! Host-JIT builder configuration and symbol table registration.
 
-use arandu_semantics::Diagnostic;
+use arandu_middle::Diagnostic;
 use cranelift_jit::{ArenaMemoryProvider, JITBuilder};
 
 use super::isa::cached_host_isa;

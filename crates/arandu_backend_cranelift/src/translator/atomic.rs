@@ -1,7 +1,7 @@
 //! Cranelift atomics are sequentially consistent, including weaker source orders.
 use super::FunctionTranslator;
-use arandu_semantics::amir::{AmirOperand, TempId};
-use arandu_semantics::intrinsics::{AtomicOp, AtomicWidth, IntrinsicKind};
+use arandu_middle::amir::{AmirOperand, TempId};
+use arandu_middle::intrinsics::{AtomicOp, AtomicWidth, IntrinsicKind};
 use cranelift_codegen::ir::{AtomicRmwOp, InstBuilder, MemFlagsData, types};
 
 impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {

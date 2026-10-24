@@ -1,5 +1,5 @@
-use arandu_semantics::amir::AmirTerminator;
-use arandu_semantics::passes::type_checker::types::{ArType, Primitive};
+use arandu_middle::amir::AmirTerminator;
+use arandu_middle::types::{ArType, Primitive};
 use cranelift_codegen::ir::{BlockArg, InstBuilder, TrapCode};
 use cranelift_frontend::Switch;
 
@@ -22,7 +22,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 }
                 let return_ty = self.resolve_ty(self.current_func.return_type);
                 if let Some(destination) = self.indirect_return_destination {
-                    let ret_temp = arandu_semantics::amir::TempId::from_usize(0);
+                    let ret_temp = arandu_middle::amir::TempId::from_usize(0);
                     let Some(&var) = self.temp_map.get(&ret_temp) else {
                         self.record_ice("missing indirect result value", self.func_span());
                         return;
@@ -34,7 +34,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     return;
                 }
                 if matches!(&return_ty, ArType::Primitive(Primitive::Str)) {
-                    let ret_temp = arandu_semantics::amir::TempId::from_usize(0);
+                    let ret_temp = arandu_middle::amir::TempId::from_usize(0);
                     if let Some(&(var_ptr, var_len)) = self.str_temp_map.get(&ret_temp) {
                         let ptr_val = self.builder.use_var(var_ptr);
                         let len_val = self.builder.use_var(var_len);
@@ -44,8 +44,8 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                         self.builder.ins().return_(&[p, p]);
                     }
                 } else if matches!(self.fat_operand_kind(&return_ty), FatOperandKind::Slice) {
-                    let ret_temp = arandu_semantics::amir::TempId::from_usize(0);
-                    let operand = arandu_semantics::amir::AmirOperand::Copy(ret_temp);
+                    let ret_temp = arandu_middle::amir::TempId::from_usize(0);
+                    let operand = arandu_middle::amir::AmirOperand::Copy(ret_temp);
                     let (data, len) = self.translate_slice_operand(&operand);
                     self.builder.ins().return_(&[data, len]);
                 } else if matches!(
@@ -54,11 +54,11 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 ) {
                     let arg_abi = self.classify_arg_abi(&return_ty);
                     match arg_abi {
-                        arandu_semantics::layout::ArgAbi::ZeroSized => {
+                        arandu_middle::layout::ArgAbi::ZeroSized => {
                             self.builder.ins().return_(&[]);
                         }
-                        arandu_semantics::layout::ArgAbi::Direct(direct) => {
-                            let ret_temp = arandu_semantics::amir::TempId::from_usize(0);
+                        arandu_middle::layout::ArgAbi::Direct(direct) => {
+                            let ret_temp = arandu_middle::amir::TempId::from_usize(0);
                             let base_ptr = if let Some(&var) = self.temp_map.get(&ret_temp) {
                                 self.builder.use_var(var)
                             } else {
@@ -72,8 +72,8 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                             }
                             self.builder.ins().return_(&chunks);
                         }
-                        arandu_semantics::layout::ArgAbi::Indirect => {
-                            let ret_temp = arandu_semantics::amir::TempId::from_usize(0);
+                        arandu_middle::layout::ArgAbi::Indirect => {
+                            let ret_temp = arandu_middle::amir::TempId::from_usize(0);
                             if let Some(&var) = self.temp_map.get(&ret_temp) {
                                 let ret_val = self.builder.use_var(var);
                                 if let Some(destination) = self.indirect_return_destination {
@@ -94,7 +94,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     let clif_ret = clif_type(&ret_ty, self.ptr_type);
                     match clif_ret {
                         ClifType::Concrete(clif_ty) => {
-                            let ret_temp = arandu_semantics::amir::TempId::from_usize(0);
+                            let ret_temp = arandu_middle::amir::TempId::from_usize(0);
                             if let Some(&var) = self.temp_map.get(&ret_temp) {
                                 let ret_val = self.builder.use_var(var);
                                 self.builder.ins().return_(&[ret_val]);

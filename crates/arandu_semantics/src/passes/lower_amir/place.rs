@@ -201,7 +201,7 @@ impl LowerCtx<'_> {
             let root_ty = self.resolve_ty(self.locals[place.local.as_usize()].ty);
             let through_shared_borrow = matches!(root_ty, ArType::Ref(_));
             if through_shared_borrow
-                && crate::drop_elaborate::type_needs_drop(expr_ty, &self.tc.type_info)
+                && arandu_mir::drop_elaborate::type_needs_drop(expr_ty, &*self.tc.type_info)
             {
                 return Err(Diagnostic::error(
                     crate::DiagCode::O002MoveWhileBorrowed,
@@ -257,7 +257,7 @@ impl LowerCtx<'_> {
             let root_ty = self.resolve_ty(self.locals[place.local.as_usize()].ty);
             let through_shared_borrow = matches!(root_ty, ArType::Ref(_));
             if through_shared_borrow
-                && crate::drop_elaborate::type_needs_drop(expr_ty, &self.tc.type_info)
+                && arandu_mir::drop_elaborate::type_needs_drop(expr_ty, &*self.tc.type_info)
             {
                 return Err(Diagnostic::error(
                     crate::DiagCode::O002MoveWhileBorrowed,

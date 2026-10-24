@@ -22,11 +22,11 @@ use smol_str::SmolStr;
 use wasm_encoder::{ExportKind, ExportSection, ValType};
 use wit_parser::abi::{WasmSignature, WasmType};
 
+use arandu_middle::SymbolTable;
 use arandu_middle::amir::{AmirFunc, AmirProgram};
 use arandu_middle::layout::{DataLayout, StructLayoutProvider};
 use arandu_middle::types::TypeInterner;
 use arandu_middle::{Diagnostic, SymbolId};
-use arandu_semantics::SymbolTable;
 
 use crate::canonical::CabiSupport;
 use crate::stackify;
@@ -113,12 +113,8 @@ impl<'a> WasmModuleBuilder<'a> {
         // Host imports are part of the module's linking contract even when
         // never called. Apply the same dependency closure in every profile so
         // an unreachable private body cannot introduce a host requirement.
-        let live = arandu_semantics::passes::reachability::live_functions(
-            program,
-            symbols,
-            interner,
-            layout_provider,
-        );
+        let live =
+            arandu_mir::reachability::live_functions(program, symbols, interner, layout_provider);
         Self {
             program,
             symbols,

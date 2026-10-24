@@ -1,9 +1,9 @@
 use super::local::{LocalId, TempId};
+use crate::Span;
 use crate::SymbolId;
 use crate::literal_pool::LiteralId;
 use crate::ops::{BinaryOp, UnaryOp};
 use crate::types::TypeId;
-use arandu_lexer::Span;
 use smallvec::SmallVec;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

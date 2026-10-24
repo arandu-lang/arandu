@@ -1,6 +1,6 @@
-use arandu_semantics::amir::AmirProgram;
-use arandu_semantics::layout::TargetAbiClassifier;
-use arandu_semantics::{Diagnostic, SymbolTable};
+use arandu_middle::amir::AmirProgram;
+use arandu_middle::layout::TargetAbiClassifier;
+use arandu_middle::{Diagnostic, SymbolTable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::JITModule;
 use cranelift_module::{FuncId, Module};
@@ -20,7 +20,7 @@ impl AranduModule<JITModule> {
         &mut self,
         program: &AmirProgram,
         symbols: &SymbolTable,
-        info: &arandu_semantics::TypeInfo,
+        info: &dyn arandu_middle::type_context::CodegenTypeContext,
         functions: &mut FxHashMap<String, FuncId>,
     ) -> Result<(), Diagnostic> {
         use cranelift_codegen::ir::InstBuilder;
@@ -30,7 +30,7 @@ impl AranduModule<JITModule> {
             target_abi_for_triple(self.module.isa().triple()),
             u64::from(pointer.bytes()),
         );
-        let layout = arandu_semantics::layout::LayoutEngine::new(u64::from(pointer.bytes()));
+        let layout = arandu_middle::layout::LayoutEngine::new(u64::from(pointer.bytes()));
         let mut context = self.module.make_context();
         for function in &program.funcs {
             let symbol = symbols.get(function.symbol);
@@ -47,7 +47,7 @@ impl AranduModule<JITModule> {
                 convention,
                 pointer,
                 &classifier,
-                &info.type_interner,
+                info.type_interner(),
                 info,
             );
             let internal = build_internal_signature(
@@ -56,7 +56,7 @@ impl AranduModule<JITModule> {
                 convention,
                 pointer,
                 &classifier,
-                &info.type_interner,
+                info.type_interner(),
                 info,
             );
             if host == internal {
@@ -67,7 +67,7 @@ impl AranduModule<JITModule> {
                 return Err(codegen_ice("unsupported JIT host result adapter"));
             }
             let size = layout
-                .layout_of_type(&result, &info.type_interner, info)
+                .layout_of_type(&result, info.type_interner(), info)
                 .map_err(|error| codegen_ice(format!("JIT host result layout: {error:?}")))?
                 .size
                 .max(1);

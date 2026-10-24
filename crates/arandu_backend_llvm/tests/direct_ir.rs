@@ -42,7 +42,7 @@ fn compile_src(src: &str) -> (AmirProgram, TypeCheckResult) {
 
 fn emit(src: &str) -> String {
     let (amir, tc) = compile_src(src);
-    emit_llvm_ir(&amir, &tc.symbols, &tc.type_info).expect("LLVM emission failed")
+    emit_llvm_ir(&amir, &tc.symbols, &*tc.type_info).expect("LLVM emission failed")
 }
 
 fn verify(ir: &str) {
@@ -79,7 +79,7 @@ fn run_cranelift(src: &str) -> i32 {
     let (amir, tc) = compile_src(src);
     let module = CraneliftBackend::try_new()
         .expect("Cranelift backend")
-        .compile(&amir, &tc.symbols, &tc.type_info)
+        .compile(&amir, &tc.symbols, &*tc.type_info)
         .expect("Cranelift compile");
     let main = unsafe { module.get_fn::<unsafe fn() -> i32>("main") }.expect("main export");
     unsafe { main() }

@@ -5,9 +5,9 @@ use std::fmt::Write as _;
 use arandu_middle::amir::{AmirConstant, AmirFunc, AmirOperand, AmirProgram, AmirStmt};
 use arandu_middle::intrinsics::IntrinsicKind;
 use arandu_middle::layout::LayoutEngine;
+use arandu_middle::type_context::CodegenTypeContext;
 use arandu_middle::types::{ArType, Primitive, VectorType};
 use arandu_middle::{DiagCode, Diagnostic, SymbolId, SymbolKind, SymbolTable};
-use arandu_semantics::TypeInfo;
 
 use super::{FuncEmitter, ModuleEmitter, escape_c_string, ice, quote_name};
 use crate::types::{fat_ptr_llvm_ty, llvm_type, ptr_int};
@@ -16,7 +16,7 @@ impl<'a> ModuleEmitter<'a> {
     pub(super) fn new(
         program: &'a AmirProgram,
         symbols: &'a SymbolTable,
-        info: &'a TypeInfo,
+        info: &'a dyn CodegenTypeContext,
     ) -> Self {
         let mut string_globals = HashMap::new();
         let mut globals = Vec::new();
@@ -37,8 +37,8 @@ impl<'a> ModuleEmitter<'a> {
             program,
             symbols,
             info,
-            interner: &info.type_interner,
-            layout: LayoutEngine::from_data_layout(info.target_layout),
+            interner: info.type_interner(),
+            layout: LayoutEngine::from_data_layout(info.target_layout()),
             string_globals,
             globals,
             declarations: RefCell::new(BTreeMap::new()),
@@ -180,7 +180,7 @@ impl<'a> ModuleEmitter<'a> {
             body.push('\n');
         }
 
-        if let Some(profile) = arandu_middle::embedded_profile(&self.info.target_identity.triple)
+        if let Some(profile) = arandu_middle::embedded_profile(&self.info.target_identity().triple)
             && let Err(diagnostic) = self.check_freestanding_exports(profile.triple())
         {
             return Err(diagnostic);
@@ -189,7 +189,8 @@ impl<'a> ModuleEmitter<'a> {
         let mut output = String::new();
         output.push_str("; ModuleID = 'arandu'\n");
         output.push_str("source_filename = \"arandu\"\n");
-        if let Some(profile) = arandu_middle::embedded_profile(&self.info.target_identity.triple) {
+        if let Some(profile) = arandu_middle::embedded_profile(&self.info.target_identity().triple)
+        {
             let _ = write!(
                 output,
                 "target triple = \"{}\"\ntarget datalayout = \"{}\"\n",
@@ -331,8 +332,8 @@ impl<'a> ModuleEmitter<'a> {
     /// ABI matches Cranelift JIT. LLVM's default convention on Windows is Win64,
     /// so preserve the runtime convention explicitly for these imports.
     pub(super) fn runtime_calling_convention(&self, name: &str) -> &'static str {
-        if self.info.target_identity.os == "windows"
-            && self.info.target_identity.arch == "x86_64"
+        if self.info.target_identity().os == "windows"
+            && self.info.target_identity().arch == "x86_64"
             && super::WINDOWS_SYSV_RUNTIME_SYMBOLS.contains(&name)
         {
             "x86_64_sysvcc "
@@ -362,8 +363,8 @@ impl<'a> ModuleEmitter<'a> {
         if let Some((args, ret)) = self.program.extern_funcs.get(&symbol) {
             return (args.clone(), ret.clone());
         }
-        if let Some(ty) = self.info.decl_types.get(&symbol)
-            && let ArType::Func(args, ret) = self.interner.resolve(*ty)
+        if let Some(ty) = self.info.decl_type_id(symbol)
+            && let ArType::Func(args, ret) = self.interner.resolve(ty)
         {
             let args = self
                 .interner
@@ -408,8 +409,8 @@ impl<'a> ModuleEmitter<'a> {
             }
             AmirOperand::Constant(constant) => self.constant_type(constant),
             AmirOperand::FunctionRef(symbol) | AmirOperand::GlobalRef(symbol) => {
-                if let Some(ty) = self.info.decl_types.get(symbol) {
-                    let ty = self.interner.resolve(*ty);
+                if let Some(ty) = self.info.decl_type_id(*symbol) {
+                    let ty = self.interner.resolve(ty);
                     if matches!(ty, ArType::Func(..)) {
                         return ty;
                     }
@@ -647,7 +648,7 @@ mod tests {
             debug_bindings: Vec::new(),
             debug_blocks: Vec::new(),
         };
-        let symbols = arandu_semantics::SymbolTable::default();
+        let symbols = arandu_middle::SymbolTable::default();
         let mut info = arandu_semantics::TypeInfo::new();
         info.target_identity =
             arandu_middle::db::TargetIdentity::from_triple("x86_64-pc-windows-msvc")

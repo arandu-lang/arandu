@@ -5,12 +5,12 @@ use crate::amir::{
 };
 use crate::diagnostics::Diagnostic;
 use crate::passes::type_checker::types::{ArType, Primitive};
-use arandu_lexer::Span;
+use arandu_middle::Span;
 
 impl LowerCtx<'_> {
     /// Untyped pool operands cannot replace typed integer SSA values:
     /// comparison results carry bool, not operand width or signedness.
-    pub(in crate::lower_amir) fn integer_constant_needs_type(
+    pub(in crate::passes::lower_amir) fn integer_constant_needs_type(
         &self,
         ty: crate::types::TypeId,
         operand: AmirOperand,

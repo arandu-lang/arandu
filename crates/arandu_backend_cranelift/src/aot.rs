@@ -7,8 +7,9 @@
 
 use crate::debug::{self, DebugSource};
 use crate::jit::{AranduModule, codegen_ice};
-use arandu_semantics::amir::AmirProgram;
-use arandu_semantics::{Diagnostic, SymbolTable, TypeInfo};
+use arandu_middle::amir::AmirProgram;
+use arandu_middle::type_context::CodegenTypeContext;
+use arandu_middle::{Diagnostic, SymbolTable};
 use std::str::FromStr;
 
 use cranelift_codegen::settings::{self, Configurable};
@@ -174,7 +175,7 @@ impl CraneliftObjectBackend {
         self,
         program: &AmirProgram,
         symbols: &SymbolTable,
-        type_info: &TypeInfo,
+        type_info: &dyn CodegenTypeContext,
     ) -> Result<ObjectArtifact, Diagnostic> {
         self.compile_impl(program, symbols, type_info, &[])
     }
@@ -185,7 +186,7 @@ impl CraneliftObjectBackend {
         mut self,
         program: &AmirProgram,
         symbols: &SymbolTable,
-        type_info: &TypeInfo,
+        type_info: &dyn CodegenTypeContext,
         sources: &[DebugSource],
     ) -> Result<ObjectArtifact, Diagnostic> {
         self.compiler.debug = Some(Default::default());
@@ -196,13 +197,13 @@ impl CraneliftObjectBackend {
         mut self,
         program: &AmirProgram,
         symbols: &SymbolTable,
-        type_info: &TypeInfo,
+        type_info: &dyn CodegenTypeContext,
         sources: &[DebugSource],
     ) -> Result<ObjectArtifact, Diagnostic> {
-        let live = arandu_semantics::passes::reachability::live_functions(
+        let live = arandu_mir::reachability::live_functions(
             program,
             symbols,
-            &type_info.type_interner,
+            type_info.type_interner(),
             type_info,
         );
         let definitions: Vec<_> = program

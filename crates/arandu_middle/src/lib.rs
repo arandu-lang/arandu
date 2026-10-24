@@ -16,6 +16,7 @@
 pub mod amir;
 pub mod amir_validate;
 pub mod cfg;
+
 pub mod ctfe;
 pub mod db;
 pub mod diagnostics;
@@ -32,6 +33,7 @@ pub mod resolved;
 pub mod symbol_mangling;
 pub mod symbol_table;
 pub mod target;
+pub mod type_context;
 pub mod types;
 
 pub use arandu_base::bitset;
@@ -42,8 +44,8 @@ pub use smol_str::SmolStr;
 /// G2 / F2.3.3 global opt-in: promote O004 notes to errors.
 pub use arandu_base::NO_GENERATIONAL_FALLBACK;
 pub use arandu_base::bitset::{BitMatrix, BitSet};
+pub use arandu_base::lang::Visibility;
 pub use arandu_base::newtype_index;
-pub use arandu_parser::Visibility;
 pub use layout::{
     DataLayout, DenseRange, EnumPayloadShape, GenPayloadLayout, LayoutEngine, LayoutError,
     LayoutOperation, SizeAlign, StructLayoutProvider, TypeLayout,
@@ -57,8 +59,7 @@ pub use amir_validate::validate_amir_program;
 pub use diagnostics::{CodeReplacement, DiagCode, Diagnostic, Hint, Label, Severity};
 pub use effects::EffectFlags;
 pub use intrinsics::IntrinsicKind;
-pub use resolved::{DocCommentMap, NodeKey, ResolvedNames};
-use std::sync::Arc;
+pub use resolved::{DocCommentMap, NodeKey};
 pub use symbol_table::{ScopeId, Symbol, SymbolId, SymbolKind, SymbolTable};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
@@ -85,42 +86,5 @@ impl ExportedSymbolTable {
             is_cycle: true,
             ..Self::default()
         }
-    }
-}
-
-/// Resolution output shared across queries and type-check fan-out.
-///
-/// PERF: `symbols`/`resolved` are O(1)-clone [`Arc`] handles so that Salsa
-/// memoization, IDE snapshots and per-item type-check share one table instead
-/// of deep-cloning on every query call. Mutation goes through
-/// `Arc::make_mut` / `Arc::unwrap_or_clone` (copy-on-write, once per shared
-/// handle). `diagnostics` stays an owned `Vec` — it is typically empty and
-/// pushed to in many sites.
-#[derive(Debug, Clone)]
-pub struct ResolutionResult {
-    pub symbols: Arc<SymbolTable>,
-    pub resolved: Arc<ResolvedNames>,
-    pub docs: DocCommentMap,
-    pub diagnostics: Vec<Diagnostic>,
-    pub is_cycle_fallback: bool,
-}
-
-impl ResolutionResult {
-    #[must_use]
-    pub fn cycle_fallback() -> Self {
-        Self {
-            symbols: Arc::new(SymbolTable::new(0)),
-            resolved: Arc::new(ResolvedNames::default()),
-            docs: DocCommentMap::default(),
-            diagnostics: Vec::new(),
-            is_cycle_fallback: true,
-        }
-    }
-
-    #[must_use]
-    pub fn has_errors(&self) -> bool {
-        self.diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.severity == Severity::Error)
     }
 }

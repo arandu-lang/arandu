@@ -208,7 +208,7 @@ fn rewrite_function(
     status_ty: TypeId,
     out_ty: Option<TypeId>,
     zero: LiteralId,
-    span: arandu_lexer::Span,
+    span: arandu_middle::Span,
 ) {
     let out = out_ty.map(|ty| {
         let temp = TempId::from_usize(func.temps.len());

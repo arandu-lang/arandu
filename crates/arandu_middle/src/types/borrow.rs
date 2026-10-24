@@ -7,6 +7,19 @@
 
 use smol_str::SmolStr;
 
+/// Maximum nesting published in a borrow interface. This bound is part of
+/// the compiler contract, not a recursion guard chosen by the host stack.
+pub const MAX_BORROW_PATH_DEPTH: usize = 32;
+/// Maximum borrowed leaves published for one type.
+pub const MAX_BORROW_PATHS: usize = 256;
+
+/// Deterministic reason why a structural borrow contract cannot be published.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BorrowShapeError {
+    DepthExceeded,
+    PathCountExceeded,
+}
+
 /// Access permission carried by a safe reference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum BorrowKind {

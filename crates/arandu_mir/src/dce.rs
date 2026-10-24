@@ -271,7 +271,7 @@ mod tests {
     };
     use crate::layout::DenseRange;
     use crate::ops::BinaryOp;
-    use crate::passes::type_checker::types::{ArType, Primitive};
+    use crate::types::{ArType, Primitive};
 
     fn int_temp(id: usize) -> AmirTemp {
         AmirTemp {
@@ -279,7 +279,7 @@ mod tests {
             ty: intern_ty(ArType::Primitive(Primitive::Int)),
             is_copy: true,
             is_nullable: false,
-            span: arandu_lexer::Span::new(0, 0, 0),
+            span: crate::Span::new(0, 0, 0),
         }
     }
 
@@ -289,7 +289,7 @@ mod tests {
             ty: intern_ty(ArType::Primitive(Primitive::Bool)),
             is_copy: true,
             is_nullable: false,
-            span: arandu_lexer::Span::new(0, 0, 0),
+            span: crate::Span::new(0, 0, 0),
         }
     }
 
@@ -361,7 +361,7 @@ mod tests {
                     value: AmirOperand::Copy(TempId::from_usize(0)),
                     payload_ty,
                     arena: GenArenaDomain::CompilerManaged,
-                    origin: arandu_lexer::Span::new(0, 4, 8),
+                    origin: crate::Span::new(0, 4, 8),
                 },
             }],
             vec![int_temp(0), int_temp(1)],

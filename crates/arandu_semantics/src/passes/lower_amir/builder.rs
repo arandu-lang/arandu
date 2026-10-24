@@ -9,7 +9,7 @@ use super::LowerCtx;
 use crate::amir::program::extend_block_range;
 use crate::amir::{AmirBasicBlock, AmirStmtTable, AmirTerminator, BlockId, BlockParam};
 use crate::layout::DenseRange;
-use arandu_lexer::Span;
+use arandu_middle::Span;
 use rustc_hash::FxHashMap;
 
 pub(super) struct AmirBuilder {
@@ -152,13 +152,13 @@ impl LowerCtx<'_> {
         let span = if Self::span_is_usable(self.current_span) {
             self.current_span
         } else {
-            arandu_lexer::Span::new(0, 0, 0)
+            arandu_middle::Span::new(0, 0, 0)
         };
         self.builder.new_block(span)
     }
 
     #[inline]
-    pub(crate) fn new_block_at(&mut self, span: arandu_lexer::Span) -> BlockId {
+    pub(crate) fn new_block_at(&mut self, span: arandu_middle::Span) -> BlockId {
         self.builder.new_block(span)
     }
 

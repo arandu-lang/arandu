@@ -5,11 +5,11 @@ use wasm_encoder::{BlockType, Instruction, ValType};
 
 impl FuncTranslator<'_> {
     pub(super) fn plan_frame(&mut self, locals: &mut Vec<(u32, ValType)>) {
-        use arandu_semantics::aggregate_storage::{ScratchResultAbi, function_scratch_safe};
+        use arandu_mir::aggregate_storage::{ScratchResultAbi, function_scratch_safe};
         self.plan_static_initializer_temps();
         self.transfer_owned_result = self.component_sig.is_none()
             && self.is_owned_aggregate(self.func.return_type)
-            && arandu_semantics::aggregate_storage::scratch_type_safe(
+            && arandu_mir::aggregate_storage::scratch_type_safe(
                 self.func.return_type,
                 self.interner,
                 self.layout_provider,
@@ -25,10 +25,7 @@ impl FuncTranslator<'_> {
         // A Wasm move into a whole local copies the backing pointer, so a
         // loop-carried local would keep naming a site's backing after the next
         // entry of that site reclaims (returned home) or overwrites it.
-        if arandu_semantics::aggregate_storage::cyclic_aggregate_local_store(
-            self.func,
-            self.interner,
-        ) {
+        if arandu_mir::aggregate_storage::cyclic_aggregate_local_store(self.func, self.interner) {
             return;
         }
         for id in self.func.stmts.iter_ids() {
@@ -44,7 +41,7 @@ impl FuncTranslator<'_> {
                 let ty = self.func.temps.get(temp.as_usize()).map(|temp| temp.ty);
                 if ty.is_some_and(|ty| {
                     self.is_owned_aggregate(ty)
-                        && arandu_semantics::aggregate_storage::scratch_type_safe(
+                        && arandu_mir::aggregate_storage::scratch_type_safe(
                             ty,
                             self.interner,
                             self.layout_provider,
@@ -86,7 +83,7 @@ impl FuncTranslator<'_> {
                 continue;
             };
             if !self.is_owned_aggregate(ty)
-                || !arandu_semantics::aggregate_storage::scratch_type_safe(
+                || !arandu_mir::aggregate_storage::scratch_type_safe(
                     ty,
                     self.interner,
                     self.layout_provider,

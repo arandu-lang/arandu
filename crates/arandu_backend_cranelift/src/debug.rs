@@ -18,8 +18,9 @@ use gimli::{Encoding, Format, RunTimeEndian, SectionId};
 
 use crate::jit::codegen_ice;
 use crate::jit::compiler::DebugCompilation;
-use arandu_semantics::types::{ArType, Primitive, TypeId};
-use arandu_semantics::{Diagnostic, SymbolTable, TypeInfo};
+use arandu_middle::type_context::CodegenTypeContext;
+use arandu_middle::types::{ArType, Primitive, TypeId};
+use arandu_middle::{Diagnostic, SymbolTable};
 
 /// Source text and path used only while emitting native debug metadata.
 #[derive(Clone, Debug)]
@@ -56,7 +57,7 @@ pub(crate) fn emit_dwarf(
     debug: &DebugCompilation,
     sources: &[DebugSource],
     symbols: &SymbolTable,
-    type_info: &TypeInfo,
+    type_info: &dyn CodegenTypeContext,
     target_endianness: Result<target_lexicon::Endianness, ()>,
 ) -> Result<(), Diagnostic> {
     if debug.functions.is_empty() || sources.is_empty() {
@@ -187,7 +188,7 @@ pub(crate) fn emit_dwarf(
         );
         entry.set(
             gimli::DW_AT_external,
-            AttributeValue::Flag(symbol.visibility == arandu_semantics::Visibility::Public),
+            AttributeValue::Flag(symbol.visibility == arandu_middle::Visibility::Public),
         );
         let mut frame_base = Expression::new();
         frame_base.op(gimli::DW_OP_call_frame_cfa);
@@ -277,7 +278,7 @@ pub(crate) fn emit_dwarf(
 fn emit_scalar_type(
     dwarf: &mut DwarfUnit,
     type_id: TypeId,
-    type_info: &TypeInfo,
+    type_info: &dyn CodegenTypeContext,
     address_size: u8,
 ) -> Option<gimli::write::UnitEntryId> {
     let (name, byte_size, encoding) = match type_info.resolve_type_id(type_id) {

@@ -1,22 +1,7 @@
-use arandu_parser::{ResultType, TypeExprId, TypeName};
-
 use crate::SymbolTable;
 
 use super::ar_type::ArType;
-use super::lower::LowerCtx;
 use super::type_interner::{TypeId, TypeInterner};
-
-#[must_use]
-pub fn result_type_decl_span(result: &ResultType) -> arandu_lexer::Span {
-    match result {
-        ResultType::Single { span, .. } | ResultType::Multi { span, .. } => *span,
-    }
-}
-
-#[must_use]
-pub fn type_name_base(name: &TypeName) -> &str {
-    name.path.last().map_or("", |s| s.as_str())
-}
 
 #[must_use]
 pub fn is_err_type(ty: &ArType, interner: &TypeInterner) -> bool {
@@ -129,64 +114,6 @@ pub fn try_ok_type(ty: &ArType, interner: &TypeInterner) -> Option<ArType> {
 pub fn is_tryable_type(ty: &ArType, interner: &TypeInterner) -> bool {
     matches!(ty, ArType::Result(_, _) | ArType::Option(_))
         || (matches!(ty, ArType::Nullable(_)) && !is_err_type(ty, interner))
-}
-
-pub(crate) fn lower_builtin_generic(
-    name: &TypeName,
-    args: &[TypeExprId],
-    ctx: &LowerCtx<'_>,
-    interner: &mut TypeInterner,
-) -> Option<ArType> {
-    let resolved_sym = ctx
-        .resolved
-        .type_refs
-        .get(&name.span.into())
-        .copied()
-        .or_else(|| {
-            let base = name.path.last().map(|s| s.as_str())?;
-            ctx.symbols.lookup_type(ctx.symbols.global_scope(), base)
-        })?;
-    let lowered: Vec<ArType> = args
-        .iter()
-        .map(|&a| super::lower::lower_type_expr_ctx(a, ctx, interner))
-        .collect();
-
-    if ctx.symbols.is_result_type(resolved_sym) && lowered.len() == 2 {
-        let mut it = lowered.into_iter();
-        if let (Some(ok), Some(err)) = (it.next(), it.next()) {
-            let ok_id = interner.intern(ok);
-            let err_id = interner.intern(err);
-            Some(ArType::Result(ok_id, err_id))
-        } else {
-            None
-        }
-    } else if ctx.symbols.is_option_type(resolved_sym) && lowered.len() == 1 {
-        let mut it = lowered.into_iter();
-        if let Some(inner) = it.next() {
-            let id = interner.intern(inner);
-            Some(ArType::Option(id))
-        } else {
-            None
-        }
-    } else if ctx.symbols.is_coroutine_type(resolved_sym) && lowered.len() == 1 {
-        let mut it = lowered.into_iter();
-        if let Some(inner) = it.next() {
-            let id = interner.intern(inner);
-            Some(ArType::Coroutine(id))
-        } else {
-            None
-        }
-    } else if ctx.symbols.is_poll_type(resolved_sym) && lowered.len() == 1 {
-        let mut it = lowered.into_iter();
-        if let Some(inner) = it.next() {
-            let id = interner.intern(inner);
-            Some(ArType::Poll(id))
-        } else {
-            None
-        }
-    } else {
-        None
-    }
 }
 
 /// `Poll[T]` → `T` when Ready.
@@ -364,66 +291,6 @@ mod tests {
         assert!(!is_tryable_type(&ArType::Primitive(Primitive::Int), &i));
     }
 
-    // ── type_name_base ──
-
-    #[test]
-    fn type_name_base_single_path() {
-        let name = arandu_parser::TypeName {
-            span: arandu_lexer::Span::new(0, 0, 0),
-            path: vec![smol_str::SmolStr::new("Result")].into(),
-        };
-        assert_eq!(type_name_base(&name), "Result");
-    }
-
-    #[test]
-    fn type_name_base_multi_path() {
-        let name = arandu_parser::TypeName {
-            span: arandu_lexer::Span::new(0, 0, 0),
-            path: vec![
-                smol_str::SmolStr::new("std"),
-                smol_str::SmolStr::new("core"),
-                smol_str::SmolStr::new("String"),
-            ]
-            .into(),
-        };
-        assert_eq!(type_name_base(&name), "String");
-    }
-
-    #[test]
-    fn type_name_base_empty_path() {
-        let name = arandu_parser::TypeName {
-            span: arandu_lexer::Span::new(0, 0, 0),
-            path: smallvec::SmallVec::new(),
-        };
-        assert_eq!(type_name_base(&name), "");
-    }
-
-    // ── lower_builtin_generic ──
-
-    #[test]
-    fn lower_builtin_wrong_name_returns_none() {
-        let mut i = interner();
-        let name = arandu_parser::TypeName {
-            span: arandu_lexer::Span::new(0, 0, 0),
-            path: vec![smol_str::SmolStr::new("NonExistent")].into(),
-        };
-        let result = lower_builtin_generic(&name, &[], &create_dummy_ctx(), &mut i);
-        assert!(result.is_none());
-    }
-
-    fn create_dummy_ctx() -> LowerCtx<'static> {
-        use crate::ResolvedNames;
-        let pool = Box::new(arandu_parser::ast_pool::AstPool::new());
-        let symbols = Box::new(crate::SymbolTable::new(0));
-        let resolved = Box::new(ResolvedNames::default());
-        LowerCtx {
-            pool: Box::leak(pool),
-            symbols: Box::leak(symbols),
-            scope: crate::ScopeId(0),
-            resolved: Box::leak(resolved),
-        }
-    }
-
     // ── is_vec_type ──
 
     #[test]
@@ -435,7 +302,7 @@ mod tests {
                 crate::ScopeId(0),
                 "Vec",
                 crate::SymbolKind::Struct,
-                arandu_lexer::Span::new(0, 0, 0),
+                crate::Span::new(0, 0, 0),
             )
             .unwrap();
         let ty = ArType::named(vec_sym, &[i.intern(ArType::Primitive(Primitive::Int))], &i);
@@ -451,7 +318,7 @@ mod tests {
                 crate::ScopeId(0),
                 "std.alloc.vec.Vec",
                 crate::SymbolKind::Struct,
-                arandu_lexer::Span::new(0, 0, 0),
+                crate::Span::new(0, 0, 0),
             )
             .unwrap();
         let ty = ArType::named(vec_sym, &[i.intern(ArType::Primitive(Primitive::Int))], &i);
@@ -467,7 +334,7 @@ mod tests {
                 crate::ScopeId(0),
                 "Widget",
                 crate::SymbolKind::Struct,
-                arandu_lexer::Span::new(0, 0, 0),
+                crate::Span::new(0, 0, 0),
             )
             .unwrap();
         let ty = ArType::named(
@@ -487,7 +354,7 @@ mod tests {
                 crate::ScopeId(0),
                 "Vec",
                 crate::SymbolKind::Struct,
-                arandu_lexer::Span::new(0, 0, 0),
+                crate::Span::new(0, 0, 0),
             )
             .unwrap();
         let int_id = i.intern(ArType::Primitive(Primitive::Int));
@@ -523,7 +390,7 @@ mod tests {
                 crate::ScopeId(0),
                 "Vec",
                 crate::SymbolKind::Struct,
-                arandu_lexer::Span::new(0, 0, 0),
+                crate::Span::new(0, 0, 0),
             )
             .unwrap();
         let vec = ArType::named(vec_sym, &[int_id], &i);

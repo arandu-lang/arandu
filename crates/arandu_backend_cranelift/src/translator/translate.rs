@@ -1,9 +1,9 @@
 use arandu_base::span::Span;
-use arandu_semantics::Diagnostic;
-use arandu_semantics::amir::{
+use arandu_middle::Diagnostic;
+use arandu_middle::amir::{
     AmirBasicBlock, AmirOperand, AmirStmt, AmirTerminator, BlockId, InstrId,
 };
-use arandu_semantics::passes::type_checker::types::{ArType, Primitive};
+use arandu_middle::types::{ArType, Primitive};
 use cranelift_codegen::ir::{InstBuilder, SourceLoc};
 use cranelift_module::Module;
 use rustc_hash::FxHashMap;
@@ -52,7 +52,7 @@ impl<'a, 'b, M: Module> FunctionTranslator<'a, 'b, M> {
             AmirStmt::Free(operand) => self.operand_span(operand),
             AmirStmt::StorageLive(local)
             | AmirStmt::StorageDead(local)
-            | AmirStmt::Destroy(arandu_semantics::amir::AmirPlace { local, .. }) => {
+            | AmirStmt::Destroy(arandu_middle::amir::AmirPlace { local, .. }) => {
                 self.local_span(*local)
             }
             AmirStmt::Nop => self.func_span(),
@@ -166,7 +166,7 @@ impl<'a, 'b, M: Module> FunctionTranslator<'a, 'b, M> {
             }
         }
 
-        let rpo = arandu_semantics::amir::reverse_post_order(self.current_func);
+        let rpo = arandu_middle::amir::reverse_post_order(self.current_func);
         for &block_id in &rpo {
             let block = self.current_func.block(block_id);
             self.visit_block(block);
@@ -304,13 +304,13 @@ impl<'a, 'b, M: Module> AmirVisitor for FunctionTranslator<'a, 'b, M> {
                 ) {
                     let arg_abi = self.classify_arg_abi(&param_ty);
                     match arg_abi {
-                        arandu_semantics::layout::ArgAbi::ZeroSized => {
+                        arandu_middle::layout::ArgAbi::ZeroSized => {
                             let null_ptr = self.builder.ins().iconst(self.ptr_type, 0);
                             if let Some(&var) = self.temp_map.get(&param_temp_id) {
                                 self.builder.def_var(var, null_ptr);
                             }
                         }
-                        arandu_semantics::layout::ArgAbi::Direct(direct) => {
+                        arandu_middle::layout::ArgAbi::Direct(direct) => {
                             let layout = self.checked_layout(&param_ty);
                             let addr = self.allocate_independent_aggregate(&param_ty);
                             for abi_slot in &direct.slots {
@@ -322,7 +322,7 @@ impl<'a, 'b, M: Module> AmirVisitor for FunctionTranslator<'a, 'b, M> {
                                 self.builder.def_var(var, addr);
                             }
                         }
-                        arandu_semantics::layout::ArgAbi::Indirect => {
+                        arandu_middle::layout::ArgAbi::Indirect => {
                             let ptr_val = clif_params[clif_slot_idx];
                             clif_slot_idx += 1;
                             // A by-value parameter is not a borrow of the

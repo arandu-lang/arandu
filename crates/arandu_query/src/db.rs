@@ -635,21 +635,6 @@ impl arandu_middle::db::SourceDatabase for DatabaseImpl {
         crate::passes::symbol_span(self, symbol_id)
     }
 
-    fn parse_file(
-        &self,
-        file: SourceFile,
-    ) -> Result<Arc<arandu_parser::Program>, arandu_parser::ParseError> {
-        let res = crate::passes::parse(self, file);
-        match &**res {
-            Ok(p) => Ok(Arc::clone(p)),
-            Err(e) => Err(e.clone()),
-        }
-    }
-
-    fn resolve_file(&self, file: SourceFile) -> Arc<arandu_middle::ResolutionResult> {
-        crate::passes::resolve(self, file).value.clone()
-    }
-
     fn resolve_module_path(&self, path: &str) -> Option<SourceFile> {
         // Depend on the resolution epoch so a query that ran before the
         // package/stdlib configuration existed recomputes once it lands.

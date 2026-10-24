@@ -154,11 +154,8 @@ impl Default for TypeInfo {
 }
 
 impl TypeInfo {
-    /// Maximum nesting published in a borrow interface. This bound is part of
-    /// the compiler contract, not a recursion guard chosen by the host stack.
-    pub const MAX_BORROW_PATH_DEPTH: usize = 32;
-    /// Maximum borrowed leaves published for one type.
-    pub const MAX_BORROW_PATHS: usize = 256;
+    pub const MAX_BORROW_PATH_DEPTH: usize = arandu_middle::types::MAX_BORROW_PATH_DEPTH;
+    pub const MAX_BORROW_PATHS: usize = arandu_middle::types::MAX_BORROW_PATHS;
 
     #[must_use]
     pub fn new() -> Self {
@@ -338,12 +335,7 @@ impl TypeInfo {
     }
 }
 
-/// Deterministic reason why a structural borrow contract cannot be published.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BorrowShapeError {
-    DepthExceeded,
-    PathCountExceeded,
-}
+pub use arandu_middle::types::BorrowShapeError;
 
 impl TypeInfo {
     pub fn record_expr_type(&mut self, expr: ExprId, id: TypeId) {
@@ -537,6 +529,94 @@ impl arandu_middle::layout::StructLayoutProvider for TypeInfo {
     }
 }
 
+impl arandu_middle::type_context::AmirTypeContext for TypeInfo {
+    fn type_interner(&self) -> &TypeInterner {
+        &self.type_interner
+    }
+
+    fn enum_variant_payloads(
+        &self,
+        owner: SymbolId,
+        args: &[TypeId],
+    ) -> Vec<arandu_middle::type_context::EnumVariantPayload<'_>> {
+        self.enum_variants
+            .iter()
+            .filter(|(_, (parent, _))| *parent == owner)
+            .filter_map(|(&variant, _)| {
+                let payload = match self.variant_payload_for(variant, args)? {
+                    EnumPayloadShape::Unit => None,
+                    EnumPayloadShape::Tuple(types) => Some(types.as_slice()),
+                };
+                Some(arandu_middle::type_context::EnumVariantPayload {
+                    variant,
+                    tag: self.enum_variant_tags.get(&variant).copied(),
+                    payload,
+                })
+            })
+            .collect()
+    }
+
+    fn borrow_paths(
+        &self,
+        ty: TypeId,
+    ) -> Result<
+        Vec<(
+            arandu_middle::types::BorrowPath,
+            arandu_middle::types::BorrowKind,
+        )>,
+        BorrowShapeError,
+    > {
+        TypeInfo::borrow_paths(self, ty)
+    }
+
+    fn enum_variant_tag(&self, variant: SymbolId) -> Option<usize> {
+        self.enum_variant_tags.get(&variant).copied()
+    }
+
+    fn return_borrow_summaries(&self) -> &FxHashMap<SymbolId, ReturnBorrowSummary> {
+        &self.return_borrow_summaries
+    }
+
+    fn contains_explicit_reference(&self, ty: TypeId) -> bool {
+        TypeInfo::contains_explicit_reference(self, ty)
+    }
+
+    fn is_destructor_instance(&self, function: SymbolId) -> bool {
+        self.destructor_instances
+            .values()
+            .any(|symbol| *symbol == function)
+    }
+}
+
+impl arandu_middle::type_context::CodegenTypeContext for TypeInfo {
+    fn target_identity(&self) -> &arandu_middle::db::TargetIdentity {
+        &self.target_identity
+    }
+
+    fn target_layout(&self) -> arandu_middle::DataLayout {
+        self.target_layout
+    }
+
+    fn decl_type_id(&self, symbol: SymbolId) -> Option<TypeId> {
+        self.decl_types.get(&symbol).copied()
+    }
+
+    fn function_effects(&self, function: SymbolId) -> arandu_middle::EffectFlags {
+        self.function_effects
+            .get(&function)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    fn destructor_method(&self, receiver: SymbolId) -> Option<SymbolId> {
+        self.destructors.get(&receiver).copied()
+    }
+
+    fn fields_for(&self, owner: SymbolId, args: &[TypeId]) -> Option<&StructFields> {
+        TypeInfo::fields_for(self, owner, args)
+    }
+}
+
 #[cfg(test)]
 mod borrow_shape_tests {
     use super::*;
@@ -669,5 +749,51 @@ mod borrow_shape_tests {
             info.borrow_paths(nested),
             Err(BorrowShapeError::DepthExceeded)
         );
+    }
+}
+
+#[cfg(test)]
+mod type_context_tests {
+    use super::*;
+    use arandu_middle::type_context::{AmirTypeContext, EnumVariantPayload};
+
+    #[test]
+    fn type_context_reports_variants_tags_and_borrow_freedom() {
+        let mut info = TypeInfo::new();
+        let int = info.type_interner.intern(ArType::Primitive(Primitive::Int));
+        let shared = info.type_interner.intern(ArType::Ref(int));
+        let owner = SymbolId::new(0, 1);
+        let unit = SymbolId::new(0, 2);
+        let tuple = SymbolId::new(0, 3);
+        let foreign = SymbolId::new(0, 4);
+        info.enum_variants
+            .insert(unit, (owner, EnumPayloadShape::Unit));
+        info.enum_variants
+            .insert(tuple, (owner, EnumPayloadShape::Tuple(vec![int])));
+        info.enum_variants
+            .insert(foreign, (SymbolId::new(0, 9), EnumPayloadShape::Unit));
+        info.enum_variant_tags.insert(unit, 0);
+        info.enum_variant_tags.insert(tuple, 1);
+
+        let mut variants = info.enum_variant_payloads(owner, &[]);
+        variants.sort_by_key(|variant| variant.tag);
+        assert_eq!(
+            variants,
+            [
+                EnumVariantPayload {
+                    variant: unit,
+                    tag: Some(0),
+                    payload: None,
+                },
+                EnumVariantPayload {
+                    variant: tuple,
+                    tag: Some(1),
+                    payload: Some(&[int][..]),
+                },
+            ]
+        );
+        assert_eq!(info.enum_variant_tag(foreign), None);
+        assert!(info.is_borrow_free(int));
+        assert!(!info.is_borrow_free(shared));
     }
 }

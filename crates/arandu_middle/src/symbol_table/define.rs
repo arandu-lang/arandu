@@ -1,5 +1,5 @@
 use super::{LangItem, LocalSymbolId, Scope, ScopeId, Symbol, SymbolId, SymbolKind, SymbolTable};
-use arandu_lexer::Span;
+use crate::Span;
 
 impl super::SymbolTable {
     /// Merges definitions and scopes from another `SymbolTable` into `self`.
@@ -309,7 +309,7 @@ impl super::SymbolTable {
         kind: SymbolKind,
         span: Span,
     ) -> Result<SymbolId, SymbolId> {
-        self.define_with_visibility(scope, name, kind, span, arandu_parser::Visibility::Module)
+        self.define_with_visibility(scope, name, kind, span, crate::Visibility::Module)
     }
 
     /// Define a symbol while preserving its full source visibility.
@@ -319,7 +319,7 @@ impl super::SymbolTable {
         name: &str,
         kind: SymbolKind,
         span: Span,
-        visibility: arandu_parser::Visibility,
+        visibility: crate::Visibility,
     ) -> Result<SymbolId, SymbolId> {
         if let Some(existing) = self.find_in_scope(scope, name) {
             return Err(existing);
@@ -417,7 +417,7 @@ impl super::SymbolTable {
             &format!("{module}.{member}"),
             SymbolKind::NamespaceMember,
             span,
-            arandu_parser::Visibility::Public,
+            crate::Visibility::Public,
         )?;
         self.module_members
             .insert((module.into(), member.into()), id);
@@ -439,7 +439,7 @@ impl super::SymbolTable {
             parent_id,
             member,
             span,
-            arandu_parser::Visibility::Module,
+            crate::Visibility::Module,
         )
     }
 
@@ -448,7 +448,7 @@ impl super::SymbolTable {
         parent_id: SymbolId,
         member: &str,
         span: Span,
-        visibility: arandu_parser::Visibility,
+        visibility: crate::Visibility,
     ) -> Result<SymbolId, SymbolId> {
         let parent_name = self.get(parent_id).name.clone();
         let base_ty = parent_name.split('.').next_back().unwrap_or(&parent_name);

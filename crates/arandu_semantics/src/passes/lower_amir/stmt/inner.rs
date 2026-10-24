@@ -354,7 +354,7 @@ impl LowerCtx<'_> {
         &mut self,
         clause: &HirForClause,
         body: &crate::hir::HirBlockId,
-        span: arandu_lexer::Span,
+        span: arandu_middle::Span,
         symbols: &SymbolTable,
     ) -> Result<(), Diagnostic> {
         match clause {

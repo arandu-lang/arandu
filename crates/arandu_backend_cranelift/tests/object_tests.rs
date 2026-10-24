@@ -338,7 +338,7 @@ fn size_object_emission_is_deterministic() {
             arandu_backend_cranelift::AotOptimization::Size,
         )
         .unwrap()
-        .compile(&amir, &tc.symbols, &tc.type_info)
+        .compile(&amir, &tc.symbols, &*tc.type_info)
         .unwrap()
     };
     assert_eq!(emit().bytes(), emit().bytes());

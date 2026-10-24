@@ -8,7 +8,7 @@ use crate::diagnostics::{DiagCode, Diagnostic};
 use crate::hir::{HirCondition, HirPattern};
 use crate::passes::type_checker::types::ArType;
 use crate::{SymbolId, SymbolTable};
-use arandu_lexer::Span;
+use arandu_middle::Span;
 
 pub(crate) struct EnumPatternInput<'a> {
     scrutinee: AmirOperand,

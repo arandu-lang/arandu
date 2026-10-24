@@ -4,8 +4,9 @@
 //! affine moves; the internal result ABI proves caller-owned returns. Unsupported
 //! lifetime boundaries keep their existing backing rather than guessing.
 
-use arandu_semantics::amir::AmirFunc;
-use arandu_semantics::{SymbolTable, TypeInfo};
+use arandu_middle::SymbolTable;
+use arandu_middle::amir::AmirFunc;
+use arandu_middle::type_context::CodegenTypeContext;
 
 /// Bound promoted scratch storage, including existing explicit slots. This
 /// does not include register-allocation spills or claim to implement coloring.
@@ -14,13 +15,13 @@ pub(super) const FRAME_PROMOTION_BUDGET: u32 = 1024;
 pub(super) fn frame_promotion_safe(
     function: &AmirFunc,
     symbols: &SymbolTable,
-    info: &TypeInfo,
+    info: &dyn CodegenTypeContext,
 ) -> bool {
-    arandu_semantics::aggregate_storage::function_scratch_safe(
+    arandu_mir::aggregate_storage::function_scratch_safe(
         function,
         symbols,
-        &info.type_interner,
-        arandu_semantics::aggregate_storage::ScratchResultAbi::CallerOwnedAggregates,
+        info.type_interner(),
+        arandu_mir::aggregate_storage::ScratchResultAbi::CallerOwnedAggregates,
     )
 }
 impl<M: cranelift_module::Module> super::FunctionTranslator<'_, '_, M> {
@@ -178,7 +179,7 @@ mod tests {
             debug: None,
         };
         let module = compiler
-            .compile_program(&program, &checked.symbols, &checked.type_info)
+            .compile_program(&program, &checked.symbols, &*checked.type_info)
             .unwrap();
         ALLOCATIONS.with(|count| count.set(0));
         FREES.with(|count| count.set(0));
@@ -412,7 +413,7 @@ func main(): int {
 
     #[test]
     fn malformed_array_initializer_is_rejected_before_emitting_out_of_bounds_stores() {
-        use arandu_semantics::amir::{AmirRvalue, AmirStmt};
+        use arandu_middle::amir::{AmirRvalue, AmirStmt};
         let ast = arandu_parser::parse("func main(): int { let a: [2]int = [1,2]; return a[0] }")
             .unwrap();
         let mut checked = type_check(
@@ -442,7 +443,7 @@ func main(): int {
             debug: None,
         };
         let error = compiler
-            .compile_program(&program, &checked.symbols, &checked.type_info)
+            .compile_program(&program, &checked.symbols, &*checked.type_info)
             .err()
             .expect("invalid AMIR must fail closed");
         assert!(format!("{error:?}").contains("array initializer length does not match its type"));

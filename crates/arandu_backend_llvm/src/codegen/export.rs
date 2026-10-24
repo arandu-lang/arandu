@@ -75,18 +75,18 @@ pub(super) fn scalar_extension(ty: &ArType) -> &'static str {
 
 impl ModuleEmitter<'_> {
     /// True when `ty` is the consuming receiver of the exported destructor
-    /// `function`. `TypeInfo::destructors` is the semantic record; no method
+    /// `function`. The typeck `@Destructor` record is the authority; no method
     /// name is inspected.
     pub(super) fn is_exported_destructor_receiver(&self, function: SymbolId, ty: &ArType) -> bool {
         let ArType::Named(receiver, _) = ty else {
             return false;
         };
-        self.info.destructors.get(receiver) == Some(&function)
+        self.info.destructor_method(*receiver) == Some(function)
     }
 
     /// C ABI family of the module target. An empty identity means the host.
     pub(super) fn export_abi(&self) -> Option<ExportAbi> {
-        let target = &self.info.target_identity;
+        let target = &self.info.target_identity();
         let arch = if target.arch.is_empty() {
             std::env::consts::ARCH
         } else {
@@ -116,7 +116,7 @@ impl ModuleEmitter<'_> {
                 arandu_middle::DiagCode::T049InvalidFfiExport,
                 format!(
                     "aggregates by value are not classified for target '{}'; pass scalars or pointers",
-                    self.info.target_identity.triple
+                    self.info.target_identity().triple
                 ),
                 span,
             ));

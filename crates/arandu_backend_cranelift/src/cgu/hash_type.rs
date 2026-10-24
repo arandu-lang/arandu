@@ -1,6 +1,6 @@
 use super::HashContext;
-use arandu_semantics::types::{ArType, TypeId};
-use arandu_semantics::{EnumPayloadShape, SymbolId};
+use arandu_middle::SymbolId;
+use arandu_middle::types::{ArType, TypeId};
 
 impl HashContext<'_> {
     pub(super) fn symbol(&mut self, id: SymbolId) {
@@ -19,13 +19,13 @@ impl HashContext<'_> {
     }
 
     pub(super) fn type_id(&mut self, id: TypeId) {
-        let Some(ty) = self.type_info.type_interner.try_resolve(id) else {
+        let Some(ty) = self.type_info.type_interner().try_resolve(id) else {
             self.hash.tag(u8::MAX);
             self.hash.usize(id.as_usize());
             return;
         };
         self.ar_type(&ty);
-        if let Some(&destructor) = self.type_info.destructor_instances.get(&id) {
+        if let Some(destructor) = self.type_info.destructor_for_type(id) {
             self.hash.tag(1);
             self.symbol(destructor);
         } else {
@@ -33,10 +33,10 @@ impl HashContext<'_> {
         }
     }
 
-    pub(super) fn type_args(&mut self, range: arandu_semantics::hir::pool::IndexRange) {
+    pub(super) fn type_args(&mut self, range: arandu_middle::hir::pool::IndexRange) {
         self.hash.u32(range.len);
         for index in 0..range.len as usize {
-            match self.type_info.type_interner.type_arg(range, index) {
+            match self.type_info.type_interner().type_arg(range, index) {
                 Some(id) => {
                     self.hash.tag(0);
                     self.type_id(id);
@@ -60,7 +60,7 @@ impl HashContext<'_> {
                 self.hash.tag(1);
                 self.symbol(*symbol);
                 self.type_args(*args);
-                self.named_layout(*symbol, &self.type_info.type_interner.type_args(*args));
+                self.named_layout(*symbol, &self.type_info.type_interner().type_args(*args));
             }
             ArType::Func(params, result) => {
                 self.hash.tag(2);
@@ -152,7 +152,7 @@ impl HashContext<'_> {
     pub(super) fn named_layout(
         &mut self,
         symbol: SymbolId,
-        arguments: &[arandu_semantics::types::TypeId],
+        arguments: &[arandu_middle::types::TypeId],
     ) {
         if self.named_type_stack.contains(&symbol) {
             self.hash.tag(0);
@@ -160,9 +160,8 @@ impl HashContext<'_> {
         }
         self.hash.tag(1);
         self.named_type_stack.push(symbol);
-        self.hash
-            .bool(self.type_info.struct_repr_c.contains(&symbol));
-        if let Some(params) = self.type_info.generic_params.get(&symbol) {
+        self.hash.bool(self.type_info.is_repr_c(symbol));
+        if let Some(params) = self.type_info.get_generic_params(symbol) {
             self.hash.usize(params.len());
             for &param in params.iter() {
                 self.symbol(param);
@@ -189,34 +188,23 @@ impl HashContext<'_> {
             self.hash.tag(1);
         }
 
-        let mut variants: Vec<_> = self
-            .type_info
-            .enum_variants
-            .iter()
-            .filter(|(_, (parent, _))| *parent == symbol)
-            .filter_map(|(&variant, _)| {
-                let shape = self.type_info.variant_payload_for(variant, arguments)?;
-                Some((
-                    self.type_info
-                        .enum_variant_tags
-                        .get(&variant)
-                        .copied()
-                        .unwrap_or(usize::MAX),
-                    variant.file_id,
-                    variant.local_id.0,
-                    variant,
-                    shape,
-                ))
-            })
-            .collect();
-        variants.sort_by_key(|&(tag, file_id, local_id, _, _)| (tag, file_id, local_id));
+        // Copy the `'a` reference so the payload slices do not borrow `self`.
+        let type_info = self.type_info;
+        let mut variants = type_info.enum_variant_payloads(symbol, arguments);
+        variants.sort_by_key(|variant| {
+            (
+                variant.tag.unwrap_or(usize::MAX),
+                variant.variant.file_id,
+                variant.variant.local_id.0,
+            )
+        });
         self.hash.usize(variants.len());
-        for (tag, _, _, variant, shape) in variants {
-            self.hash.usize(tag);
-            self.symbol(variant);
-            match shape {
-                EnumPayloadShape::Unit => self.hash.tag(0),
-                EnumPayloadShape::Tuple(types) => {
+        for variant in variants {
+            self.hash.usize(variant.tag.unwrap_or(usize::MAX));
+            self.symbol(variant.variant);
+            match variant.payload {
+                None => self.hash.tag(0),
+                Some(types) => {
                     self.hash.tag(1);
                     self.hash.usize(types.len());
                     for &ty in types {

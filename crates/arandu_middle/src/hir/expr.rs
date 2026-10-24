@@ -1,13 +1,13 @@
 //! High-level Intermediate Representation (HIR) expressions and operands.
 
+use crate::Span;
 use crate::hir::pool::{HirBlockId, HirExprId, HirPatternId, HirPool, IndexRange};
 use crate::hir::stmt::HirCondition;
 use crate::hir::validation::check_span;
 use crate::ops::{BinaryOp, UnaryOp};
 use crate::types::TypeId;
 use crate::{SymbolId, SymbolTable};
-use arandu_lexer::Span;
-pub use arandu_parser::LayoutQuery;
+pub use arandu_base::lang::LayoutQuery;
 use smol_str::SmolStr;
 
 #[derive(Debug, Clone)]

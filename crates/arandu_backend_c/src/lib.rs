@@ -16,6 +16,7 @@ use arandu_middle::Diagnostic;
 use arandu_middle::SymbolTable;
 use arandu_middle::amir::AmirProgram;
 use arandu_middle::layout::{DataLayout, LayoutEngine, StructLayoutProvider};
+use arandu_middle::type_context::CodegenTypeContext;
 use arandu_middle::types::TypeInterner;
 
 /// Emit a full C translation unit for `program` under `data_layout`.
@@ -42,9 +43,8 @@ pub fn emit_c(
 
 /// [`CodegenBackend`] adapter around [`emit_c`].
 ///
-/// Holds the explicit target [`DataLayout`]; the type information supplied as
-/// `TargetConfig` provides both the struct-layout provider and the interner,
-/// mirroring how the CLI calls [`emit_c`] today.
+/// Holds the explicit target [`DataLayout`]; the [`CodegenTypeContext`]
+/// provides both the struct-layout provider and the interner.
 pub struct CEmitBackend {
     data_layout: DataLayout,
 }
@@ -70,20 +70,19 @@ impl CompiledCode for CTranslationUnit {
 }
 
 impl CodegenBackend for CEmitBackend {
-    type TargetConfig = arandu_semantics::TypeInfo;
     type CompilationOutput = CTranslationUnit;
 
     fn compile(
         self,
         program: &AmirProgram,
         symbols: &SymbolTable,
-        config: &Self::TargetConfig,
+        types: &dyn CodegenTypeContext,
     ) -> Result<Self::CompilationOutput, Diagnostic> {
         emit_c(
             program,
             symbols,
-            config,
-            &config.type_interner,
+            types,
+            types.type_interner(),
             self.data_layout,
         )
         .map(CTranslationUnit)

@@ -2,24 +2,23 @@ use crate::amir::{AmirFunc, AmirPlace, AmirProjection, AmirStmt, AmirStmtTable, 
 use crate::move_checker::MoveState;
 use arandu_middle::SymbolId;
 use arandu_middle::layout::instantiated_field_type;
+use arandu_middle::type_context::AmirTypeContext;
 use arandu_middle::types::{ArType, TypeId, build_subst_ids, substitute_type_id};
-use arandu_typeck::TypeInfo;
-use arandu_typeck::type_checker::EnumPayloadShape;
 
 /// Checks recursively whether a type or any of its composite fields needs cleanup.
-pub(crate) fn type_needs_drop(ty: TypeId, type_info: &TypeInfo) -> bool {
+pub fn type_needs_drop(ty: TypeId, type_info: &dyn AmirTypeContext) -> bool {
     let resolved = type_info.resolve_type_id(ty);
     match resolved {
         ArType::Named(sym, _) => {
-            if type_info.destructor_instances.contains_key(&ty) {
+            if type_info.destructor_for_type(ty).is_some() {
                 return true;
             }
-            if let Some(fields) = type_info.struct_fields.get(&sym) {
+            if let Some(fields) = type_info.get_struct_fields(sym) {
                 for f in fields.iter() {
                     let field_ty = instantiated_field_type(
                         &resolved,
                         &f.name,
-                        &type_info.type_interner,
+                        type_info.type_interner(),
                         type_info,
                     )
                     .unwrap_or(f.ty);
@@ -43,7 +42,7 @@ pub(crate) fn type_needs_drop(ty: TypeId, type_info: &TypeInfo) -> bool {
             type_needs_drop(ok, type_info) || type_needs_drop(err, type_info)
         }
         ArType::Tuple(args) => {
-            let arg_ids = type_info.type_interner.type_args(args);
+            let arg_ids = type_info.type_interner().type_args(args);
             arg_ids
                 .iter()
                 .any(|&arg_ty| type_needs_drop(arg_ty, type_info))
@@ -59,7 +58,7 @@ pub(crate) fn type_needs_drop(ty: TypeId, type_info: &TypeInfo) -> bool {
 pub(super) fn emit_recursive_drops(
     place: &AmirPlace,
     ty: TypeId,
-    type_info: &TypeInfo,
+    type_info: &dyn AmirTypeContext,
     move_state: &MoveState,
     skip_top_level_destructor: bool,
     rebuilt: &mut AmirStmtTable,
@@ -70,7 +69,7 @@ pub(super) fn emit_recursive_drops(
     let resolved = type_info.resolve_type_id(ty);
     match resolved {
         ArType::Named(sym, _) => {
-            let has_destructor = type_info.destructor_instances.contains_key(&ty);
+            let has_destructor = type_info.destructor_for_type(ty).is_some();
             if has_destructor && !skip_top_level_destructor {
                 rebuilt.push(AmirStmt::Destroy(place.clone()));
                 return;
@@ -89,8 +88,8 @@ pub(super) fn emit_recursive_drops(
                     {
                         let tuple_ty = (fields.len() > 1).then(|| {
                             type_info
-                                .type_interner
-                                .intern(ArType::tuple(fields, &type_info.type_interner))
+                                .type_interner()
+                                .intern(ArType::tuple(fields, type_info.type_interner()))
                         });
                         for (index, field_ty) in fields.iter().copied().enumerate().rev() {
                             if !type_needs_drop(field_ty, type_info) {
@@ -122,14 +121,14 @@ pub(super) fn emit_recursive_drops(
                 return;
             }
 
-            if let Some(fields) = type_info.struct_fields.get(&sym) {
+            if let Some(fields) = type_info.get_struct_fields(sym) {
                 let mut indexed: Vec<(usize, Option<SymbolId>, TypeId)> = fields
                     .iter()
                     .map(|f| {
                         let ty = instantiated_field_type(
                             &resolved,
                             &f.name,
-                            &type_info.type_interner,
+                            type_info.type_interner(),
                             type_info,
                         )
                         .unwrap_or(f.ty);
@@ -198,7 +197,7 @@ pub(super) fn emit_recursive_drops(
             }
         }
         ArType::Tuple(args) => {
-            let fields = type_info.type_interner.type_args(args);
+            let fields = type_info.type_interner().type_args(args);
             for (index, field_ty) in fields.iter().copied().enumerate().rev() {
                 if !type_needs_drop(field_ty, type_info) {
                     continue;
@@ -245,7 +244,7 @@ pub(super) fn emit_recursive_drops(
 pub(super) fn projected_place_type(
     place: &AmirPlace,
     func: &AmirFunc,
-    type_info: &TypeInfo,
+    type_info: &dyn AmirTypeContext,
 ) -> Option<TypeId> {
     let mut ty = func.locals.get(place.local.as_usize())?.ty;
     for projection in &place.projections {
@@ -263,12 +262,16 @@ pub(super) fn projected_place_type(
                     return None;
                 };
                 let field = type_info
-                    .struct_fields
-                    .get(struct_symbol)?
+                    .get_struct_fields(*struct_symbol)?
                     .iter()
                     .find(|field| field.symbol == Some(*field_symbol))?;
-                instantiated_field_type(&resolved, &field.name, &type_info.type_interner, type_info)
-                    .unwrap_or(field.ty)
+                instantiated_field_type(
+                    &resolved,
+                    &field.name,
+                    type_info.type_interner(),
+                    type_info,
+                )
+                .unwrap_or(field.ty)
             }
             AmirProjection::Variant(_) => ty,
             AmirProjection::Payload { field_ty, .. } => *field_ty,
@@ -276,7 +279,7 @@ pub(super) fn projected_place_type(
                 let ArType::Tuple(args) = resolved else {
                     return None;
                 };
-                *type_info.type_interner.type_args(args).get(*index)?
+                *type_info.type_interner().type_args(args).get(*index)?
             }
             AmirProjection::Index(_) | AmirProjection::IndexConstant(_) => match resolved {
                 ArType::Array(_, inner)
@@ -371,42 +374,25 @@ pub(super) fn find_owned_string_locals(func: &AmirFunc) -> rustc_hash::FxHashSet
 /// the concrete enum type. Built-in sum types use their language-defined tags.
 pub(super) fn enum_variant_payload_types(
     enum_ty: &ArType,
-    type_info: &TypeInfo,
+    type_info: &dyn AmirTypeContext,
 ) -> Option<Vec<(usize, Vec<TypeId>)>> {
     match enum_ty {
         ArType::Option(inner) => Some(vec![(0, Vec::new()), (1, vec![*inner])]),
         ArType::Result(ok, err) => Some(vec![(0, vec![*ok]), (1, vec![*err])]),
         ArType::Named(enum_symbol, args) => {
             if type_info
-                .destructor_instances
-                .contains_key(&type_info.type_interner.intern(enum_ty.clone()))
+                .destructor_for_type(type_info.type_interner().intern(enum_ty.clone()))
+                .is_some()
             {
                 return None;
             }
-            let generic_params = type_info
-                .generic_params
-                .get(enum_symbol)
-                .map_or(&[][..], |params| params.as_slice());
-            let subst = build_subst_ids(
-                generic_params,
-                &type_info.type_interner.type_args(*args),
-                &type_info.type_interner,
-            );
+            let generic_params = type_info.get_generic_params(*enum_symbol).unwrap_or(&[]);
+            let type_args = type_info.type_interner().type_args(*args);
+            let subst = build_subst_ids(generic_params, &type_args, type_info.type_interner());
             let mut variants: Vec<_> = type_info
-                .enum_variants
-                .iter()
-                .filter_map(|(variant, (parent, _))| {
-                    let shape = type_info
-                        .variant_payload_for(*variant, &type_info.type_interner.type_args(*args))?;
-                    (*parent == *enum_symbol).then_some((
-                        type_info
-                            .enum_variant_tags
-                            .get(variant)
-                            .copied()
-                            .unwrap_or(0),
-                        shape,
-                    ))
-                })
+                .enum_variant_payloads(*enum_symbol, &type_args)
+                .into_iter()
+                .map(|variant| (variant.tag.unwrap_or(0), variant.payload))
                 .collect();
             variants.sort_by_key(|(tag, _)| *tag);
             variants.dedup_by_key(|(tag, _)| *tag);
@@ -416,16 +402,15 @@ pub(super) fn enum_variant_payload_types(
             Some(
                 variants
                     .into_iter()
-                    .map(|(tag, shape)| {
-                        let fields = match shape {
-                            EnumPayloadShape::Unit => Vec::new(),
-                            EnumPayloadShape::Tuple(fields) => fields
+                    .map(|(tag, payload)| {
+                        let fields = payload.map_or_else(Vec::new, |fields| {
+                            fields
                                 .iter()
                                 .map(|field| {
-                                    substitute_type_id(*field, &subst, &type_info.type_interner)
+                                    substitute_type_id(*field, &subst, type_info.type_interner())
                                 })
-                                .collect(),
-                        };
+                                .collect()
+                        });
                         (tag, fields)
                     })
                     .collect(),

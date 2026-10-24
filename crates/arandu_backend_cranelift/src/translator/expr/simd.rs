@@ -1,7 +1,7 @@
 //! Native fixed-width SIMD lowering; never reinterpret a scalar struct as a vector.
 use super::*;
-use arandu_semantics::amir::{VectorCompareOp, VectorOp};
-use arandu_semantics::types::{ArType, VectorType};
+use arandu_middle::amir::{VectorCompareOp, VectorOp};
+use arandu_middle::types::{ArType, VectorType};
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::{MemFlagsData, types::I8X16};
 

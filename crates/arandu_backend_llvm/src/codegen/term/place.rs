@@ -1,5 +1,4 @@
 use arandu_middle::amir::{AmirOperand, AmirPlace, AmirProjection};
-use arandu_middle::layout::StructLayoutProvider;
 use arandu_middle::types::{ArType, Primitive};
 use arandu_middle::{Diagnostic, SymbolId};
 

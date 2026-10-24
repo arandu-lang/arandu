@@ -5170,3 +5170,72 @@ func main(): int {
     assert_eq!(execute_c("interp_condition_free", &amir, &tc), 0);
     assert_eq!(execute_cranelift(&amir, &tc), 0);
 }
+
+#[test]
+fn interpolated_call_arguments_are_freed_only_when_the_call_cannot_keep_them() {
+    // Statement-scoped temporaries: a string built for a view parameter dies
+    // after the call unless the result may alias it. A `ref` argument is owned
+    // by its materialized local, which the scope drops (no second free).
+    let src = r#"
+func count(s: str): usize { return 1 as usize }
+func byRef(s: ref str): usize { return 2 as usize }
+func keep(s: str): str { return s }
+
+func main(): int {
+    let mut i: int = 0
+    let mut n: usize = 0 as usize
+    while i < 3 {
+        n = n + count("${i}")
+        n = n + byRef("${i}")
+        let v = keep("${i}")
+        n = n + count(v)
+        i = i + 1
+    }
+    return (n as int) - 12
+}
+"#;
+    let (amir, tc) = compile_src(src);
+    let main = amir
+        .funcs
+        .iter()
+        .find(|f| tc.symbols.get(f.symbol).name == "main")
+        .unwrap();
+    let mut interps = Vec::new();
+    let mut frees = std::collections::BTreeMap::<usize, usize>::new();
+    for id in main.stmts.iter_ids() {
+        match main.stmts.get(id) {
+            Some(AmirStmt::Assign {
+                lhs,
+                rhs: AmirRvalue::StringInterp { .. },
+            }) => interps.push(lhs.as_usize()),
+            Some(AmirStmt::Free(AmirOperand::Copy(t) | AmirOperand::Move(t))) => {
+                *frees.entry(t.as_usize()).or_default() += 1;
+            }
+            _ => {}
+        }
+    }
+    interps.sort_unstable();
+    let [for_count, for_ref, for_keep] = interps[..] else {
+        panic!("expected three interpolations, got {interps:?}");
+    };
+    assert!(
+        frees.values().all(|&n| n == 1),
+        "a temp is freed twice: {frees:?}"
+    );
+    assert_eq!(frees.get(&for_count), Some(&1), "count() argument leaked");
+    assert!(
+        !frees.contains_key(&for_ref),
+        "ref argument freed besides its local"
+    );
+    assert!(
+        !frees.contains_key(&for_keep),
+        "view-returning call freed its argument"
+    );
+    // The view case still leaks by design (safe, not freed); execute the
+    // freed paths so sanitized runs see no leak or double free.
+    let (amir, tc) = compile_src(&src.replace(
+        "        let v = keep(\"${i}\")\n        n = n + count(v)\n",
+        "        n = n + count(\"x\")\n",
+    ));
+    assert_eq!(execute_c("interpolated_call_arguments", &amir, &tc), 0);
+}

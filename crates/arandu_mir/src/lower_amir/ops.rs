@@ -296,6 +296,11 @@ impl LowerCtx<'_> {
                     let val = self.lower_expr(arg, None, symbols)?;
                     let tmp = self.new_compiler_local_id(arg_expr.ty, arg_expr.span);
                     self.locals[tmp.as_usize()].is_memory = true;
+                    // The scope-dropped local now owns an owned string, as a
+                    // `let` binding does; the temp must not be freed again.
+                    if let AmirOperand::Copy(t) | AmirOperand::Move(t) = val {
+                        self.owned_string_temps.remove(&t);
+                    }
                     self.write_variable_source(tmp, val)?;
                     crate::amir::AmirPlace {
                         local: tmp,

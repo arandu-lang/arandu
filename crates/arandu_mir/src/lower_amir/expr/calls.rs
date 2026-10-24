@@ -76,6 +76,63 @@ impl LowerCtx<'_> {
         target: Option<TempId>,
         symbols: &SymbolTable,
     ) -> Result<AmirOperand, Diagnostic> {
+        let start_owned = self.owned_string_temps.clone();
+        let result = self.lower_call_inner(callee, args, expr, target, symbols)?;
+        // Statement-scoped temporaries, as in Rust, restricted to what is
+        // provably unaliased: an owned string created for the arguments
+        // (`"${x}".len()`, `str.len("${x}")`) dies after the call when every
+        // parameter is a `str`/`[]T` view (by value or shared `ref`) or carries
+        // no borrow, and the result carries no borrow. View-returning calls and
+        // `mut ref`/aggregate parameters that could keep the string are left
+        // alone.
+        if self.owned_string_temps.len() > start_owned.len()
+            && self.call_cannot_retain_string_args(callee, expr.ty)
+        {
+            self.free_new_owned_string_temps(&start_owned, None);
+        }
+        Ok(result)
+    }
+
+    fn call_cannot_retain_string_args(
+        &self,
+        callee: HirExprId,
+        result_ty: crate::types::TypeId,
+    ) -> bool {
+        let interner = &self.tc.type_info.type_interner;
+        if result_may_hold_view(result_ty, interner) {
+            return false;
+        }
+        let ArType::Func(params, _) = self.resolve_ty(self.hir.pool.expr(callee).ty) else {
+            return false;
+        };
+        // A view parameter can only outlive the call through the result, a
+        // retaining parameter (`mut ref`, aggregates) or unsafe global state.
+        let is_view = |ty: Option<ArType>| {
+            matches!(
+                ty,
+                Some(ArType::Primitive(crate::types::Primitive::Str) | ArType::Slice(_))
+            )
+        };
+        interner
+            .type_args(params)
+            .iter()
+            .all(|&param| match interner.try_resolve(param) {
+                Some(ArType::Ref(inner)) => is_view(interner.try_resolve(inner)),
+                view @ Some(ArType::Primitive(crate::types::Primitive::Str) | ArType::Slice(_)) => {
+                    is_view(view)
+                }
+                _ => !crate::borrow_facts::type_may_carry_borrow(param, interner),
+            })
+    }
+
+    fn lower_call_inner(
+        &mut self,
+        callee: HirExprId,
+        args: IndexRange,
+        expr: &HirExpr,
+        target: Option<TempId>,
+        symbols: &SymbolTable,
+    ) -> Result<AmirOperand, Diagnostic> {
         let callee_expr = self.hir.pool.expr(callee);
         // `std.testing.blackBox<T>(value)` is a compiler-recognized
         // identity barrier. Lower it before generic call expansion so
@@ -553,5 +610,23 @@ impl LowerCtx<'_> {
         let dest = target.unwrap_or_else(|| self.new_temp_id(result_ty));
         self.emit_assign_temp(dest, AmirRvalue::Use(AmirOperand::Constant(lit)));
         Ok(AmirOperand::Copy(dest))
+    }
+}
+
+/// Structural refinement of `type_may_carry_borrow` for call results:
+/// `Option<usize>` or `Result<bool, int>` cannot alias an argument string.
+/// Named aggregates and tuples stay conservative.
+fn result_may_hold_view(ty: crate::types::TypeId, interner: &crate::types::TypeInterner) -> bool {
+    match interner.try_resolve(ty) {
+        Some(
+            ArType::Option(inner)
+            | ArType::Nullable(inner)
+            | ArType::Array(_, inner)
+            | ArType::ConstArray(_, inner),
+        ) => result_may_hold_view(inner, interner),
+        Some(ArType::Result(ok, err)) => {
+            result_may_hold_view(ok, interner) || result_may_hold_view(err, interner)
+        }
+        _ => crate::borrow_facts::type_may_carry_borrow(ty, interner),
     }
 }

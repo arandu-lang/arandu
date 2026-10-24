@@ -183,7 +183,10 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
     ) -> Result<(), Diagnostic> {
         match op {
             UnaryOp::Neg => {
-                let operand_ty = self.module.operand_type(operand, self.func);
+                // The result type is the operand type; a bare literal is only
+                // typed as an untyped literal (defaulting to i32), so take the
+                // width from the destination: `let x: i64 = -5`.
+                let operand_ty = lhs_ty.clone();
                 let value = self.operand(operand, &operand_ty)?;
                 if self.module.is_float(&operand_ty) {
                     self.writer
@@ -195,7 +198,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                 Ok(())
             }
             UnaryOp::Not | UnaryOp::BitNot => {
-                let operand_ty = self.module.operand_type(operand, self.func);
+                let operand_ty = lhs_ty.clone();
                 let value = self.operand(operand, &operand_ty)?;
                 let all_ones = if value.ty == "i1" {
                     "true".to_owned()

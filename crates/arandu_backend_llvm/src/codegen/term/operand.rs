@@ -123,7 +123,9 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                 } else {
                     masked.to_string()
                 };
-                Ok(TypedValue::new(expected_text.to_owned(), rendered))
+                // Record the literal's AMIR signedness like temps do: a `u64`
+                // literal cast to float must use uitofp, not the i64 default.
+                Ok(self.typed_from_ar(expected_text.to_owned(), rendered, expected))
             }
             AmirLiteralEntry::Float(text) => {
                 let value = arandu_middle::literal_pool::parse_float_literal(text)

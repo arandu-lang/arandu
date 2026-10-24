@@ -723,3 +723,47 @@ func shift(frame: Frame): Frame {
     );
     verify(&ir);
 }
+
+#[test]
+fn unsigned_literal_casts_to_float_use_uitofp() {
+    // A u64 literal above i64::MAX must convert unsigned; sitofp read it as -2048.
+    let src = r#"
+func main(): int {
+    let wide: u64 = 18446744073709549568
+    let real = wide as f64
+    if real != 18446744073709549568.0 || real as u64 != wide { return 1 }
+    return 0
+}
+"#;
+    let ir = emit(src);
+    assert!(
+        !ir.contains("sitofp i64 18446744073709549568"),
+        "unsigned literal must not use sitofp:\n{ir}"
+    );
+    verify(&ir);
+    if let Some(code) = run(&ir) {
+        assert_eq!(code, 0);
+    }
+}
+
+#[test]
+fn negated_and_inverted_literals_take_the_destination_width() {
+    let src = r#"
+func main(): int {
+    let neg: i64 = -5
+    if (neg as f64) != -5.0 { return 1 }
+    let mask: u64 = ~0
+    if mask != 18446744073709551615 { return 2 }
+    return 0
+}
+"#;
+    let ir = emit(src);
+    assert!(
+        !ir.contains("sub i32 0, 5"),
+        "i64 negation emitted at i32:\n{ir}"
+    );
+    verify(&ir);
+    if let Some(code) = run(&ir) {
+        assert_eq!(code, run_cranelift(src));
+    }
+}

@@ -122,9 +122,15 @@ impl<'a> WasmModuleBuilder<'a> {
                 let Some(initializer) = initializers.remove(&id) else {
                     continue;
                 };
-                if initializer.alignment > 16 || !initializer.alignment.is_power_of_two() {
+                // Offsets are relative to RODATA_BASE, so they can honour any
+                // power-of-two alignment up to that base's own alignment.
+                let base_align = 1u64 << crate::memory::RODATA_BASE.trailing_zeros();
+                if !initializer.alignment.is_power_of_two() || initializer.alignment > base_align {
                     continue;
                 }
+                // Every rodata blob starts on at least a 16-byte boundary.
+                let align_mask = usize::try_from(initializer.alignment.max(16))
+                    .map_or(usize::MAX, |align| align - 1);
                 if let Some(&source) = static_sources.get(&initializer.bytes) {
                     static_offsets.insert((func.symbol, id), source);
                     continue;
@@ -132,8 +138,8 @@ impl<'a> WasmModuleBuilder<'a> {
                 let aligned = rodata
                     .bytes
                     .len()
-                    .checked_add(15)
-                    .map(|length| length & !15);
+                    .checked_add(align_mask)
+                    .map(|length| length & !align_mask);
                 let offset = aligned.and_then(|length| {
                     usize::try_from(crate::memory::RODATA_BASE)
                         .ok()?

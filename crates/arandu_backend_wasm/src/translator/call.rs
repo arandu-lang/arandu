@@ -20,8 +20,27 @@ impl<'a> FuncTranslator<'a> {
                 if sym_def.name == "ar_rt_alloc_aligned" {
                     if let Some(size_arg) = args.first() {
                         let usize_ty = self.interner.intern(ArType::Primitive(Primitive::USize));
-                        self.emit_operand(size_arg, usize_ty);
-                        self.code.push(Instruction::Call(self.alloc_func_idx));
+                        // Cells guarantee CELL_ALIGNMENT. A larger request
+                        // reports allocation failure (null), like the C
+                        // runtime's invalid-layout path, instead of returning
+                        // a silently under-aligned pointer.
+                        if let Some(align_arg) = args.get(1) {
+                            self.emit_operand(align_arg, usize_ty);
+                            self.code
+                                .push(Instruction::I32Const(crate::memory::CELL_ALIGNMENT));
+                            self.code.push(Instruction::I32GtU);
+                            self.code.push(Instruction::If(BlockType::Result(
+                                wasm_encoder::ValType::I32,
+                            )));
+                            self.code.push(Instruction::I32Const(0));
+                            self.code.push(Instruction::Else);
+                            self.emit_operand(size_arg, usize_ty);
+                            self.code.push(Instruction::Call(self.alloc_func_idx));
+                            self.code.push(Instruction::End);
+                        } else {
+                            self.emit_operand(size_arg, usize_ty);
+                            self.code.push(Instruction::Call(self.alloc_func_idx));
+                        }
                         if let Some(temp) = lhs {
                             let local = self.temp_local.get(&temp).copied().unwrap_or(0);
                             self.code.push(Instruction::LocalSet(local));

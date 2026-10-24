@@ -151,3 +151,28 @@ public func main(): int {
     );
     assert_eq!(common::run_main_i32(&bytes), 0);
 }
+
+#[test]
+fn over_aligned_raw_allocations_fail_closed_instead_of_under_aligning() {
+    // Cells guarantee 16-byte alignment. A larger request reports allocation
+    // failure (null) rather than returning a silently misaligned pointer.
+    let source = r#"
+module std.core.alignFixture
+extern "C" {
+    func ar_rt_alloc_aligned(size: usize, align: usize): ptr[u8]
+    func ar_rt_free_aligned(data: ptr[u8], size: usize, align: usize): void
+}
+
+public func main(): int {
+    let nullp: ptr[u8] = nil
+    let wide = unsafe { ar_rt_alloc_aligned(64 as usize, 64 as usize) }
+    if wide != nullp { return 1 }
+    let p = unsafe { ar_rt_alloc_aligned(64 as usize, 16 as usize) }
+    if p == nullp { return 2 }
+    unsafe { ar_rt_free_aligned(p, 64 as usize, 16 as usize) }
+    return 0
+}
+"#;
+    let bytes = common::compile_trusted_core_fixture(source);
+    assert_eq!(common::run_main_i32(&bytes), 0);
+}

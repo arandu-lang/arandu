@@ -261,3 +261,95 @@ public func MutableSlice.set<Owner, T: marker.Copy>(self: mut ref MutableSlice<O
     }
     return true
 }
+
+// =========================================================================
+// Inherent methods on `[]T` (`slice.*`)
+// =========================================================================
+
+/// Returns the number of elements in the slice (`s.len()`).
+public func slice.len<T>(self: []T): usize {
+    return len<T>(self)
+}
+
+/// Returns `true` if the slice contains no elements (`s.isEmpty()`).
+public func slice.isEmpty<T>(self: []T): bool {
+    return isEmpty<T>(self)
+}
+
+/// Returns the raw pointer to the underlying buffer of the slice (`s.asPtr()`).
+public func slice.asPtr<T>(self: []T): ptr[T] {
+    return asPtr<T>(self)
+}
+
+/// Returns a shared reference to the element at `index`, or `Option.None` if out of bounds (`s.get(index)`).
+public func slice.get<T>(self: []T, index: usize): Option<ref T> {
+    return get<T>(self, index)
+}
+
+/// Returns a shared reference to the first element, or `Option.None` if the slice is empty (`s.first()`).
+public func slice.first<T>(self: []T): Option<ref T> {
+    return first<T>(self)
+}
+
+/// Returns a shared reference to the last element, or `Option.None` if the slice is empty (`s.last()`).
+public func slice.last<T>(self: []T): Option<ref T> {
+    return last<T>(self)
+}
+
+/// Returns a checked subview starting at `start` with length `count`, or `Option.None` if out of bounds (`s.subslice(start, count)`).
+public func slice.subslice<T>(self: []T, start: usize, count: usize): Option<[]T> {
+    return subslice<T>(self, start, count)
+}
+
+/// Reads a little-endian `u16` at byte offset `offset`, or returns `Option.None` if out of bounds.
+public func readU16Le(bytes: []u8, offset: usize): Option<u16> {
+    if offset > bytes.len || bytes.len - offset < 2 {
+        return Option.None
+    }
+    let b0 = bytes[offset] as u16
+    let b1 = (bytes[offset + 1] as u16) << (8 as u16)
+    return Option.Some(b0 | b1)
+}
+
+/// Reads a little-endian `u32` at byte offset `offset`, or returns `Option.None` if out of bounds.
+public func readU32Le(bytes: []u8, offset: usize): Option<u32> {
+    if offset > bytes.len || bytes.len - offset < 4 {
+        return Option.None
+    }
+    let b0 = bytes[offset] as u32
+    let b1 = (bytes[offset + 1] as u32) << (8 as u32)
+    let b2 = (bytes[offset + 2] as u32) << (16 as u32)
+    let b3 = (bytes[offset + 3] as u32) << (24 as u32)
+    return Option.Some(b0 | b1 | b2 | b3)
+}
+
+/// Reads a little-endian `u64` at byte offset `offset`, or returns `Option.None` if out of bounds.
+public func readU64Le(bytes: []u8, offset: usize): Option<u64> {
+    if offset > bytes.len || bytes.len - offset < 8 {
+        return Option.None
+    }
+    let b0 = bytes[offset] as u64
+    let b1 = (bytes[offset + 1] as u64) << (8 as u64)
+    let b2 = (bytes[offset + 2] as u64) << (16 as u64)
+    let b3 = (bytes[offset + 3] as u64) << (24 as u64)
+    let b4 = (bytes[offset + 4] as u64) << (32 as u64)
+    let b5 = (bytes[offset + 5] as u64) << (40 as u64)
+    let b6 = (bytes[offset + 6] as u64) << (48 as u64)
+    let b7 = (bytes[offset + 7] as u64) << (56 as u64)
+    return Option.Some(b0 | b1 | b2 | b3 | b4 | b5 | b6 | b7)
+}
+
+/// Reads a little-endian `u16` at byte offset `offset` (`bytes.readU16Le(offset)`).
+public func slice.readU16Le(self: []u8, offset: usize): Option<u16> {
+    return readU16Le(self, offset)
+}
+
+/// Reads a little-endian `u32` at byte offset `offset` (`bytes.readU32Le(offset)`).
+public func slice.readU32Le(self: []u8, offset: usize): Option<u32> {
+    return readU32Le(self, offset)
+}
+
+/// Reads a little-endian `u64` at byte offset `offset` (`bytes.readU64Le(offset)`).
+public func slice.readU64Le(self: []u8, offset: usize): Option<u64> {
+    return readU64Le(self, offset)
+}

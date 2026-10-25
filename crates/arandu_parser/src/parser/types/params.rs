@@ -6,8 +6,9 @@ impl<'a> Parser<'a> {
         if self.eat_name("KW_OWN") {
             Some(Ownership::Own)
         } else if self.eat_name("KW_MUT") {
+            let _ = self.eat_name("KW_REF");
             Some(Ownership::Mut)
-        } else if self.eat_name("KW_SHARED") {
+        } else if self.eat_name("KW_SHARED") || self.eat_name("KW_REF") {
             Some(Ownership::Shared)
         } else {
             None

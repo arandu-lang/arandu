@@ -586,6 +586,52 @@ public func Dir.removeDir(self: ref Dir, subpath: str): Result<bool, io.IoError>
     }
 }
 
+/// Writes all bytes of `bytes` to `subpath` relative to this directory descriptor,
+/// creating or truncating the file.
+public func Dir.writeBytes(self: ref Dir, subpath: str, bytes: []u8): Result<usize, io.IoError> {
+    let .Ok(mut file) = self.openFile(subpath, OpenOptions.writeOnly()) else {
+        return Result.Err(io.IoError.new(io.IoErrorKind.PermissionDenied, -1))
+    }
+    let total = bytes.len
+    let mut written: usize = 0
+    while written < total {
+        unsafe {
+            let p = mem.ptrOffset<u8>(bytes.asPtr(), written as isize)
+            let n = file.write(p, total - written)
+            if n <= 0 {
+                file.close()
+                return Result.Err(io.IoError.new(io.IoErrorKind.Other, n))
+            }
+            written = written + (n as usize)
+        }
+    }
+    file.close()
+    return Result.Ok(written)
+}
+
+/// Writes all bytes of `content` to `subpath` relative to this directory descriptor,
+/// creating or truncating the file.
+public func Dir.writeFile(self: ref Dir, subpath: str, content: str): Result<usize, io.IoError> {
+    return self.writeBytes(subpath, intrinsics.strBytes(content))
+}
+
+/// Writes `bytes` to `path` (relative to the current directory or absolute), creating or truncating the file.
+@Effects(FileWrite, Foreign)
+public func writeBytes(path: str, bytes: []u8): Result<usize, io.IoError> {
+    let .Ok(mut dir) = Dir.open(".") else {
+        return Result.Err(io.IoError.new(io.IoErrorKind.PermissionDenied, -1))
+    }
+    let res = dir.writeBytes(path, bytes)
+    dir.close()
+    return res
+}
+
+/// Writes `content` to `path` (relative to the current directory or absolute), creating or truncating the file.
+@Effects(FileWrite, Foreign)
+public func write(path: str, content: str): Result<usize, io.IoError> {
+    return writeBytes(path, intrinsics.strBytes(content))
+}
+
 /// Closes this directory capability handle.
 public func Dir.close(self: mut ref Dir): void {
     if self.fd >= 0 {

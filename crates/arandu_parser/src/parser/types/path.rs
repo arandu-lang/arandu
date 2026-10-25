@@ -119,6 +119,11 @@ impl<'a> Parser<'a> {
         let start = self.mark();
         let mut path = Vec::new();
         while matches!(self.current().kind, TokenKind::IdentValue)
+            && !(self.current_text() == "slice"
+                && !self
+                    .tokens
+                    .get(self.pos + 2)
+                    .is_some_and(|token| matches!(token.kind, TokenKind::IdentType)))
             && self
                 .tokens
                 .get(self.pos + 1)
@@ -133,7 +138,7 @@ impl<'a> Parser<'a> {
                 self.advance();
                 name
             }
-            TokenKind::IdentValue if self.current_text() == "void" => {
+            TokenKind::IdentValue if matches!(self.current_text(), "void" | "slice") => {
                 let name = SmolStr::new(self.current_text());
                 self.advance();
                 name

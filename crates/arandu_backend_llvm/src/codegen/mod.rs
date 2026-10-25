@@ -230,10 +230,7 @@ pub(super) fn parse_char_literal(text: &str) -> Option<char> {
 pub(super) fn escape_c_string(bytes: &[u8]) -> String {
     let mut escaped = String::new();
     for &byte in bytes {
-        if byte.is_ascii_graphic() || byte == b' ' {
-            if byte == b'"' || byte == b'\\' {
-                escaped.push('\\');
-            }
+        if (byte.is_ascii_graphic() || byte == b' ') && byte != b'"' && byte != b'\\' {
             escaped.push(byte as char);
         } else {
             let _ = write!(escaped, "\\{byte:02X}");

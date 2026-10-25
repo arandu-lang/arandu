@@ -206,6 +206,26 @@ func main(): int {
 }
 
 #[test]
+fn lowers_string_literal_with_quotes_and_backslashes() {
+    let ir = emit(
+        r#"
+func keep_str(s: str): int {
+    return 0
+}
+
+func main(): int {
+    let s: str = "<p class=\"badge\">\"hello\\world\"</p>"
+    return keep_str(s)
+}
+"#,
+    );
+    verify(&ir);
+    if let Some(code) = run(&ir) {
+        assert_eq!(code, 0);
+    }
+}
+
+#[test]
 fn lowers_tuple_destructure_and_return() {
     let ir = emit(
         r#"

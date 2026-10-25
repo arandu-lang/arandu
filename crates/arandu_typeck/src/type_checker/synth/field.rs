@@ -246,6 +246,17 @@ pub(crate) fn resolve_field_type(
                     return checker.intern(ArType::Error);
                 }
             }
+        } else if field == "len"
+            && matches!(
+                actual_base_ty,
+                ArType::Primitive(Primitive::Str)
+                    | ArType::Slice(_)
+                    | ArType::MutSlice(_)
+                    | ArType::Array(_, _)
+                    | ArType::ConstArray(_, _)
+            )
+        {
+            ArType::Primitive(Primitive::USize)
         } else {
             checker.add_constraint(
                 actual_base_ty_id,

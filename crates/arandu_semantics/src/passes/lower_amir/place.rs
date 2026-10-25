@@ -200,6 +200,78 @@ impl LowerCtx<'_> {
         target: Option<TempId>,
         symbols: &SymbolTable,
     ) -> Result<AmirOperand, Diagnostic> {
+        if field == "len" {
+            let mut peeled_ty = self.resolve_ty(self.hir.pool.expr(base).ty);
+            for _ in 0..8 {
+                match peeled_ty {
+                    ArType::Ref(inner) | ArType::RefMut(inner) | ArType::Ptr(inner) => {
+                        peeled_ty = self.resolve_ty(inner);
+                    }
+                    _ => break,
+                }
+            }
+            match peeled_ty {
+                ArType::Array(count, _) => {
+                    let _ = self.lower_expr(base, None, symbols)?;
+                    let lit = self.intern_literal_int(count.to_string());
+                    let dest = target.unwrap_or_else(|| self.new_temp_id(expr_ty));
+                    self.emit_assign_temp(dest, AmirRvalue::Use(AmirOperand::Constant(lit)));
+                    return Ok(AmirOperand::Copy(dest));
+                }
+                ArType::Slice(_) | ArType::MutSlice(_) => {
+                    let mut base_op = self.lower_expr(base, None, symbols)?;
+                    let mut current_ty = self.resolve_ty(self.hir.pool.expr(base).ty);
+                    while let ArType::Ref(inner) | ArType::RefMut(inner) | ArType::Ptr(inner) =
+                        current_ty
+                    {
+                        let deref_temp = self.new_temp_id(inner);
+                        self.emit_assign_temp(
+                            deref_temp,
+                            AmirRvalue::Unary {
+                                op: arandu_middle::ops::UnaryOp::Deref,
+                                operand: base_op,
+                            },
+                        );
+                        base_op = AmirOperand::Copy(deref_temp);
+                        current_ty = self.resolve_ty(inner);
+                    }
+                    let dest = target.unwrap_or_else(|| self.new_temp_id(expr_ty));
+                    self.emit_assign_temp(dest, AmirRvalue::Len(base_op));
+                    return Ok(AmirOperand::Copy(dest));
+                }
+                ArType::Primitive(crate::types::Primitive::Str) => {
+                    let mut base_op = self.lower_expr(base, None, symbols)?;
+                    let mut current_ty = self.resolve_ty(self.hir.pool.expr(base).ty);
+                    while let ArType::Ref(inner) | ArType::RefMut(inner) | ArType::Ptr(inner) =
+                        current_ty
+                    {
+                        let deref_temp = self.new_temp_id(inner);
+                        self.emit_assign_temp(
+                            deref_temp,
+                            AmirRvalue::Unary {
+                                op: arandu_middle::ops::UnaryOp::Deref,
+                                operand: base_op,
+                            },
+                        );
+                        base_op = AmirOperand::Copy(deref_temp);
+                        current_ty = self.resolve_ty(inner);
+                    }
+                    let u8_id = self
+                        .tc
+                        .type_info
+                        .type_interner
+                        .intern(ArType::Primitive(crate::types::Primitive::U8));
+                    let bytes_ty = self.tc.type_info.type_interner.intern(ArType::Slice(u8_id));
+                    let bytes_temp = self.new_temp_id(bytes_ty);
+                    self.emit_assign_temp(bytes_temp, AmirRvalue::StrBytes { source: base_op });
+                    let dest = target.unwrap_or_else(|| self.new_temp_id(expr_ty));
+                    self.emit_assign_temp(dest, AmirRvalue::Len(AmirOperand::Copy(bytes_temp)));
+                    return Ok(AmirOperand::Copy(dest));
+                }
+                _ => {}
+            }
+        }
+
         if let Ok(mut place) = self.lower_expr_to_place(base, symbols) {
             let base_ty = self.resolve_ty(self.hir.pool.expr(base).ty);
             let root_ty = self.resolve_ty(self.locals[place.local.as_usize()].ty);

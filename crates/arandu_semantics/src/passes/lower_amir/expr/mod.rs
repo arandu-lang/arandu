@@ -141,7 +141,7 @@ impl LowerCtx<'_> {
                 Ok(op)
             }
             HirExprKind::FrozenBytes(value) => {
-                let source = AmirOperand::Constant(self.intern_literal_str(value.backing_str()));
+                let source = AmirOperand::Constant(self.intern_frozen_bytes(value));
                 let bytes = self.new_temp_id(expr.ty);
                 self.emit_assign_temp(bytes, AmirRvalue::StrBytes { source });
                 let start = u64::try_from(value.start()).map_err(|_| {

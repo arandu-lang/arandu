@@ -51,7 +51,7 @@ impl<'a> CEmitter<'a> {
                             format!("ar_f64_from_bits(UINT64_C({}))", value.bits())
                         }
                     }
-                    AmirLiteralEntry::Str(_) => {
+                    AmirLiteralEntry::Str(_) | AmirLiteralEntry::Bytes(_) => {
                         // Prefer named constant when available; compound literal fallback
                         // is handled in format_operand for pool constants.
                         "((ArStr){ .ptr = (const uint8_t*)\"\", .len = 0 })".to_string()
@@ -80,9 +80,9 @@ impl<'a> CEmitter<'a> {
         match op {
             AmirOperand::Constant(AmirConstant::Pool(id)) => {
                 match self.program.literal_pool.get(*id) {
-                    AmirLiteralEntry::Str(s) => {
+                    AmirLiteralEntry::Str(_) | AmirLiteralEntry::Bytes(_) => {
                         // LayoutEngine Str: named constant or compound literal {ptr, len}.
-                        let _ = s;
+                        // Byte blobs share that fat-pointer ABI.
                         format!("AR_STR_{}", id.0)
                     }
                     _ => self.format_operand_str(op),

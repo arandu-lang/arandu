@@ -76,6 +76,20 @@ impl LowerCtx<'_> {
         AmirConstant::Pool(self.literal_pool.intern_str(s))
     }
 
+    /// Frozen byte blobs reuse the interned string when their backing is UTF-8
+    /// and fall back to a raw pool entry otherwise, so `b"\xFF"` keeps its
+    /// exact bytes instead of a lossy display form.
+    #[inline]
+    pub(crate) fn intern_frozen_bytes(
+        &mut self,
+        value: &arandu_middle::ctfe::ConstBytes,
+    ) -> AmirConstant {
+        match value.backing_str() {
+            Some(text) => self.intern_literal_str(text),
+            None => AmirConstant::Pool(self.literal_pool.intern_bytes(value.backing_bytes())),
+        }
+    }
+
     #[inline]
     pub(crate) fn intern_literal_char(&mut self, s: impl Into<smol_str::SmolStr>) -> AmirConstant {
         let source = s.into();

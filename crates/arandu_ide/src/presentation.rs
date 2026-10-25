@@ -154,7 +154,7 @@ pub fn function_parameter_names(
         Err(_) => {
             let tree = arandu_query::passes::syntax_tree(&snap.db, source);
             let file_id = *source.file_id(&snap.db);
-            let output = arandu_parser::syntax::lower_syntax_to_program_recovering(&tree, file_id);
+            let output = arandu_parser::syntax::lower_syntax_to_program_recovering(tree, file_id);
             Some(std::sync::Arc::new(output.program))
         }
     };

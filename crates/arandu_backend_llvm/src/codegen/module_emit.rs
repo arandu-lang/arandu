@@ -21,16 +21,17 @@ impl<'a> ModuleEmitter<'a> {
         let mut string_globals = HashMap::new();
         let mut globals = Vec::new();
         for (index, entry) in program.literal_pool.entries.iter().enumerate() {
-            if let arandu_middle::literal_pool::AmirLiteralEntry::Str(value) = entry {
-                let name = format!("@.str.{index}");
-                let length = value.len();
-                globals.push(format!(
-                    "{name} = private unnamed_addr constant [{} x i8] c\"{}\\00\", align 1",
-                    length + 1,
-                    escape_c_string(value.as_bytes())
-                ));
-                string_globals.insert(index as u32, (name, length));
-            }
+            let Some(bytes) = entry_string_bytes(entry) else {
+                continue;
+            };
+            let name = format!("@.str.{index}");
+            let length = bytes.len();
+            globals.push(format!(
+                "{name} = private unnamed_addr constant [{} x i8] c\"{}\\00\", align 1",
+                length + 1,
+                escape_c_string(bytes)
+            ));
+            string_globals.insert(index as u32, (name, length));
         }
 
         Self {
@@ -435,7 +436,9 @@ impl<'a> ModuleEmitter<'a> {
                         _ => Primitive::F64,
                     })
                 }
-                arandu_middle::literal_pool::AmirLiteralEntry::Str(_) => {
+                // Byte blobs share the `str` fat-pointer ABI (data + length).
+                arandu_middle::literal_pool::AmirLiteralEntry::Str(_)
+                | arandu_middle::literal_pool::AmirLiteralEntry::Bytes(_) => {
                     ArType::Primitive(Primitive::Str)
                 }
                 arandu_middle::literal_pool::AmirLiteralEntry::Char(_) => {
@@ -632,6 +635,19 @@ fn is_host_runtime_symbol(name: &str) -> bool {
         || name.starts_with("ar_co_")
         || name == "ar_str_concat"
         || name == "memcmp"
+}
+
+/// Bytes behind a pooled string-like literal.
+///
+/// `Str` holds UTF-8 text; `Bytes` holds a frozen blob that may contain
+/// non-UTF-8 bytes. Both share the `str` fat-pointer ABI (data + length), so
+/// they share the same rodata global and only the backing storage differs.
+fn entry_string_bytes(entry: &arandu_middle::literal_pool::AmirLiteralEntry) -> Option<&[u8]> {
+    match entry {
+        arandu_middle::literal_pool::AmirLiteralEntry::Str(value) => Some(value.as_bytes()),
+        arandu_middle::literal_pool::AmirLiteralEntry::Bytes(value) => Some(value.as_ref()),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

@@ -937,7 +937,8 @@ fn move_lambda_parses_with_is_move_flag() {
 
 #[test]
 fn call_label_shorthand_parses() {
-    let source = "func main(): void { let port = 8080; let host = \"0.0.0.0\"; connect(port:, host:); }";
+    let source =
+        "func main(): void { let port = 8080; let host = \"0.0.0.0\"; connect(port:, host:); }";
     let program = parse(source).expect("label shorthand call parse");
     // Should have Call with 2 args, both Path (port and host)
     let has_two_arg_call = program.pool.exprs.iter().any(|e| {
@@ -948,7 +949,10 @@ fn call_label_shorthand_parses() {
             false
         }
     });
-    assert!(has_two_arg_call, "expected 2-arg call from shorthand port:, host:");
+    assert!(
+        has_two_arg_call,
+        "expected 2-arg call from shorthand port:, host:"
+    );
 }
 
 #[test]
@@ -967,7 +971,10 @@ fn pipe_placeholder_inserts_at_underscore() {
         }
         false
     });
-    assert!(has_matching_call, "expected `data` inserted at placeholder index 1");
+    assert!(
+        has_matching_call,
+        "expected `data` inserted at placeholder index 1"
+    );
 }
 
 #[test]
@@ -989,7 +996,11 @@ fn guard_statement_parses() {
     let source = "func main(): void { guard x > 0 else { return; } do_something(); }";
     let program = parse(source).expect("guard statement parse");
     assert!(
-        program.pool.stmts.iter().any(|s| matches!(s, crate::Stmt::If { .. })),
+        program
+            .pool
+            .stmts
+            .iter()
+            .any(|s| matches!(s, crate::Stmt::If { .. })),
         "expected guard to lower into Stmt::If"
     );
 }

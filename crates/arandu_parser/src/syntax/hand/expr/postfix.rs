@@ -136,11 +136,12 @@ fn parse_postfix_tail(
                         if matches!(cur.peek_kind(), Some(TokenKind::IdentValue))
                             && cur.peek_at(1).is_some_and(|t| t.kind == TokenKind::Colon)
                         {
-                            let name_tok = *cur.peek().unwrap();
+                            let name_tok = cur.peek().copied()?;
                             let start_span = name_tok.start;
                             cur.bump();
-                            let colon_tok = cur.bump().unwrap();
-                            if matches!(cur.peek_kind(), Some(TokenKind::Comma | TokenKind::RParen)) {
+                            let colon_tok = cur.bump()?;
+                            if matches!(cur.peek_kind(), Some(TokenKind::Comma | TokenKind::RParen))
+                            {
                                 let name = SmolStr::new(ctx.text(&name_tok)?);
                                 let span = ctx.span(start_span, colon_tok.start + colon_tok.len);
                                 args.push(ctx.pool.alloc_expr(

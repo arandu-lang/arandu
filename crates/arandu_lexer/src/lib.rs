@@ -241,4 +241,59 @@ mod tests {
             LexErrorCode::UnterminatedChar
         );
     }
+
+    #[test]
+    fn byte_string_lexing_preserves_raw_bytes_and_escapes() {
+        for (source, expected) in [
+            ("b\"\"", &b""[..]),
+            ("b\"AB\"", b"AB"),
+            ("b\"a\\0\\n\\t\\r\\\\\\\"\\'\"", b"a\0\n\t\r\\\"'"),
+            ("b\"\\x00\\x7f\\xff\"", &[0x00, 0x7f, 0xff]),
+            ("b\"\\x41B\"", b"AB"),
+        ] {
+            let result = lex(source).expect("byte string must lex");
+            assert_eq!(result.tokens[0].kind, TokenKind::ByteString, "{source:?}");
+            assert_eq!(
+                result.tokens[0].byte_string_bytes(source).as_deref(),
+                Some(expected),
+                "{source:?}"
+            );
+        }
+
+        // Byte strings are not interpolated: `$` and `${}` stay literal bytes.
+        let literal = "b\"${x} $y\"";
+        let result = lex(literal).expect("byte strings do not interpolate");
+        assert_eq!(result.tokens[0].kind, TokenKind::ByteString);
+        assert_eq!(
+            result.tokens[0].byte_string_bytes(literal).as_deref(),
+            Some(&b"${x} $y"[..])
+        );
+        assert!(
+            !result
+                .tokens
+                .iter()
+                .any(|token| matches!(token.kind, TokenKind::InterpStart | TokenKind::StringStart))
+        );
+    }
+
+    #[test]
+    fn byte_string_rejects_non_ascii_unterminated_and_control_characters() {
+        assert_eq!(lex("b\"é\"").unwrap_err().code, LexErrorCode::InvalidChar);
+        assert_eq!(
+            lex("b\"open").unwrap_err().code,
+            LexErrorCode::UnterminatedString
+        );
+        assert_eq!(
+            lex("b\"line\nbreak\"").unwrap_err().code,
+            LexErrorCode::UnterminatedString
+        );
+        assert_eq!(
+            lex("b\"\u{202e}\"").unwrap_err().code,
+            LexErrorCode::BidiTrojanSource
+        );
+        assert_eq!(
+            lex("b\"\\q\"").unwrap_err().code,
+            LexErrorCode::InvalidEscape
+        );
+    }
 }

@@ -3,7 +3,8 @@ use std::sync::Arc;
 use super::{CtfeFunction, EvalError, EvalErrorKind, Frame, Meter, ValueType, slice_range};
 use arandu_middle::amir::*;
 use arandu_middle::ctfe::{
-    ConstAggregate, ConstFloat, ConstInt, ConstString, ConstValue, FloatType, IntegerType,
+    ConstAggregate, ConstBytes, ConstFloat, ConstInt, ConstString, ConstValue, FloatType,
+    IntegerType,
 };
 use arandu_middle::literal_pool::{AmirLiteralEntry, parse_int_literal};
 use arandu_middle::types::Primitive;
@@ -247,6 +248,13 @@ impl Frame {
                     continue;
                 }
                 AmirLiteralEntry::Char(_) => return Err(EvalErrorKind::InvalidLiteral),
+                // Raw blobs are opaque data: charge their size, never parse them.
+                AmirLiteralEntry::Bytes(bytes) => {
+                    for _ in bytes.iter() {
+                        meter.step()?;
+                    }
+                    continue;
+                }
             };
             for _ in text.bytes() {
                 meter.step()?;
@@ -357,6 +365,12 @@ impl Frame {
                     };
                     return Ok(ConstValue::Float(value));
                 }
+                if let AmirLiteralEntry::Bytes(bytes) = entry {
+                    for _ in bytes.iter() {
+                        meter.step()?;
+                    }
+                    return Ok(ConstValue::Bytes(ConstBytes::from_raw(bytes.clone())));
+                }
                 let text = match entry {
                     AmirLiteralEntry::Int(text)
                     | AmirLiteralEntry::Float(text)
@@ -364,6 +378,7 @@ impl Frame {
                     AmirLiteralEntry::Char(_) | AmirLiteralEntry::FloatBits(_) => {
                         return Err(EvalErrorKind::InvalidLiteral);
                     }
+                    AmirLiteralEntry::Bytes(_) => return Err(EvalErrorKind::InvalidLiteral),
                 };
                 // Charge every decoding, not just admission: a loop can read
                 // the same long spelling repeatedly. Bounding each parse keeps

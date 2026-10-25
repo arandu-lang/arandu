@@ -5274,3 +5274,39 @@ fn private_functions_cannot_collide_with_libc_declarations() {
     );
     assert_eq!(Command::new(&exe).status().unwrap().code(), Some(0));
 }
+
+/// Non-UTF-8 byte strings are frozen blobs. The C emitter must publish them as
+/// a raw `ArStr` over a byte array (not a UTF-8 string) and agree with the JIT.
+#[test]
+fn parity_non_utf8_byte_string_blob_keeps_raw_bytes() {
+    let source = r#"
+func main(): int {
+    let raw = b"\xFF\x00AB"
+    if raw.len != 4 { return 1 }
+    if raw[0] != b'\xFF' { return 2 }
+    if raw[1] != b'\0' { return 3 }
+    if (raw[2] as int) != 65 { return 4 }
+    if (raw[3] as int) != 66 { return 5 }
+    let tail = raw[2..4]
+    if tail.len != 2 { return 6 }
+    if tail[0] != b'A' { return 7 }
+    return 42
+}
+"#;
+    let (amir, tc) = compile_src(source);
+    assert_eq!(execute_cranelift(&amir, &tc), 42, "cranelift baseline");
+    let emitted = emit_c(&amir, &tc);
+    assert!(
+        emitted.contains("STR_0[] = {255,0,65,66,0}"),
+        "raw blob must be emitted as a byte array:\n{emitted}"
+    );
+    assert!(
+        emitted.contains("static const ArStr AR_STR_0 = { .ptr = STR_0, .len = 4 };"),
+        "blob length must stay 4 bytes:\n{emitted}"
+    );
+    assert_eq!(
+        execute_c("non_utf8_byte_string_blob", &amir, &tc),
+        42,
+        "generated C must agree with the JIT"
+    );
+}

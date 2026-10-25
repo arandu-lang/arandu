@@ -123,6 +123,10 @@ impl HashContext<'_> {
                 self.hash.tag(3);
                 self.hash.str(value);
             }
+            AmirLiteralEntry::Bytes(value) => {
+                self.hash.tag(5);
+                self.hash.bytes(value);
+            }
         }
     }
 

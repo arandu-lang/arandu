@@ -412,7 +412,9 @@ impl<'a, 'b, M: Module> FunctionTranslator<'a, 'b, M> {
                     arandu_middle::literal_pool::AmirLiteralEntry::FloatBits(value) => {
                         ArType::Primitive(value.ty().primitive())
                     }
-                    arandu_middle::literal_pool::AmirLiteralEntry::Str(_) => {
+                    // Byte blobs share the `str` fat-pointer ABI (data + length).
+                    arandu_middle::literal_pool::AmirLiteralEntry::Str(_)
+                    | arandu_middle::literal_pool::AmirLiteralEntry::Bytes(_) => {
                         ArType::Primitive(Primitive::Str)
                     }
                     arandu_middle::literal_pool::AmirLiteralEntry::Char(_) => {

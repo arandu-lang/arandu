@@ -180,7 +180,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                     u32::from(ch).to_string(),
                 ))
             }
-            AmirLiteralEntry::Str(_) => {
+            AmirLiteralEntry::Str(_) | AmirLiteralEntry::Bytes(_) => {
                 let index = id.0;
                 let (name, length) = self
                     .module

@@ -299,9 +299,7 @@ fn lower_expr_dispatch(
         ExprKind::Bool { .. } => literal::lower_bool(pool, expr)?,
         ExprKind::Char { .. } => literal::lower_char(pool, expr)?,
         ExprKind::Byte { .. } => literal::lower_byte(pool, expr)?,
-        ExprKind::ByteString { .. } => {
-            literal::lower_byte_string(type_check, pool, hir_pool, expr)?
-        }
+        ExprKind::ByteString { .. } => literal::lower_byte_string(pool, expr)?,
         ExprKind::InterpolatedString { .. } => {
             literal::lower_interpolated_string(type_check, pool, hir_pool, expr)?
         }

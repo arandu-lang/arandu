@@ -233,7 +233,9 @@ impl<'a> CEmitter<'a> {
             arandu_middle::amir::AmirOperand::Constant(c) => match c {
                 arandu_middle::amir::AmirConstant::Pool(id) => {
                     match self.program.literal_pool.get(*id) {
-                        arandu_middle::literal_pool::AmirLiteralEntry::Str(_) => {
+                        // Byte blobs share the `str` fat-pointer ABI (data + length).
+                        arandu_middle::literal_pool::AmirLiteralEntry::Str(_)
+                        | arandu_middle::literal_pool::AmirLiteralEntry::Bytes(_) => {
                             ArType::Primitive(arandu_middle::types::Primitive::Str)
                         }
                         arandu_middle::literal_pool::AmirLiteralEntry::Int(_) => {

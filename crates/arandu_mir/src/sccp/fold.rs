@@ -128,6 +128,7 @@ pub(super) fn const_as_i128(c: &AmirConstant, pool: &AmirLiteralPool) -> Option<
             AmirLiteralEntry::Float(_)
             | AmirLiteralEntry::FloatBits(_)
             | AmirLiteralEntry::Str(_)
+            | AmirLiteralEntry::Bytes(_)
             | AmirLiteralEntry::Char(_) => None,
         },
         AmirConstant::Bool(_) | AmirConstant::Nil => None,
@@ -192,7 +193,9 @@ pub(super) fn normalize_constant(
             | AmirLiteralEntry::Float(_)
             | AmirLiteralEntry::FloatBits(_) => None,
             // These constants have no arithmetic-width-dependent conversion.
-            AmirLiteralEntry::Str(_) | AmirLiteralEntry::Char(_) => Some(value),
+            AmirLiteralEntry::Str(_) | AmirLiteralEntry::Char(_) | AmirLiteralEntry::Bytes(_) => {
+                Some(value)
+            }
         },
         AmirConstant::Bool(_) | AmirConstant::Nil => Some(value),
     }

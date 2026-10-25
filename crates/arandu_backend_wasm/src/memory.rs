@@ -143,23 +143,26 @@ impl RodataTable {
             if !include(arandu_middle::literal_pool::LiteralId(idx as u32)) {
                 continue;
             }
-            if let arandu_middle::literal_pool::AmirLiteralEntry::Str(s) = entry {
-                let bytes = s.as_bytes();
-                // 4-byte align the start of each string
-                let padding = (4 - (table.bytes.len() % 4)) % 4;
-                for _ in 0..padding {
-                    table.bytes.push(0);
-                    current_offset += 1;
-                }
-                let offset = current_offset;
-                table.bytes.extend_from_slice(bytes);
-                // Null-terminate for safety and C ABI compatibility
+            let bytes = match entry {
+                arandu_middle::literal_pool::AmirLiteralEntry::Str(s) => s.as_bytes(),
+                // `str` and non-UTF-8 `b"..."` blobs are both static byte arrays.
+                arandu_middle::literal_pool::AmirLiteralEntry::Bytes(b) => b,
+                _ => continue,
+            };
+            // 4-byte align the start of each blob
+            let padding = (4 - (table.bytes.len() % 4)) % 4;
+            for _ in 0..padding {
                 table.bytes.push(0);
-                current_offset += bytes.len() as u32 + 1;
-                table
-                    .offsets
-                    .insert(arandu_middle::literal_pool::LiteralId(idx as u32), offset);
+                current_offset += 1;
             }
+            let offset = current_offset;
+            table.bytes.extend_from_slice(bytes);
+            // Null-terminate for safety and C ABI compatibility
+            table.bytes.push(0);
+            current_offset += bytes.len() as u32 + 1;
+            table
+                .offsets
+                .insert(arandu_middle::literal_pool::LiteralId(idx as u32), offset);
         }
         table
     }

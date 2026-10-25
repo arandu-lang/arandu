@@ -41,6 +41,12 @@ pub(crate) fn hash_literal_entry(
             hasher.update(&value.canonical_bytes());
             return;
         }
+        AmirLiteralEntry::Bytes(bytes) => {
+            hasher.update(&[5]);
+            hasher.update(&u64_le(bytes.len() as u64));
+            hasher.update(bytes);
+            return;
+        }
     };
     hasher.update(&[tag]);
     hash_str(hasher, text);

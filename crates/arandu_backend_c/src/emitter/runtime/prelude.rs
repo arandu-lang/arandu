@@ -101,7 +101,7 @@ impl<'a> CEmitter<'a> {
             .literal_pool
             .entries
             .iter()
-            .any(|e| matches!(e, AmirLiteralEntry::Str(_)))
+            .any(|e| matches!(e, AmirLiteralEntry::Str(_) | AmirLiteralEntry::Bytes(_)))
         {
             return true;
         }

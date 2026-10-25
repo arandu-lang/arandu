@@ -2582,3 +2582,33 @@ fn jit_dx_ergonomics_suite() {
     // total = 8103 + 5 + 2 + 30 = 8140
     assert_eq!(result, 8140);
 }
+
+/// Non-UTF-8 byte strings are frozen blobs, not arrays: the raw `0xFF` byte
+/// must survive AMIR and reach the JIT unchanged (regression for the
+/// `ICE-GEN-001` that `lower_byte_string` used to raise).
+#[test]
+fn jit_non_utf8_byte_string_blob_keeps_raw_bytes() {
+    let src = r#"
+    public func main(): int {
+        let raw = b"\xFF\x00AB"
+        if raw.len != 4 { return 1 }
+        if raw[0] != b'\xFF' { return 2 }
+        if raw[1] != b'\0' { return 3 }
+        if (raw[2] as int) != 65 { return 4 }
+        if (raw[3] as int) != 66 { return 5 }
+        let tail = raw[2..4]
+        if tail.len != 2 { return 6 }
+        if tail[0] != b'A' { return 7 }
+        return 42
+    }
+    "#;
+    let (amir, symbols, type_info) = compile_src_mono(src);
+    let backend = backend_for_test();
+    let module = backend.compile(&amir, &symbols, &type_info).unwrap();
+
+    let result: i64 = unsafe {
+        let f: unsafe extern "C" fn() -> i64 = module.get_fn("main").unwrap();
+        f()
+    };
+    assert_eq!(result, 42);
+}

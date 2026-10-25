@@ -150,6 +150,39 @@ impl<'a> FuncTranslator<'a> {
         }
     }
 
+    /// Emits a (data, len) pair for a static byte blob.
+    ///
+    /// Registered rodata literals reference their segment offset; dynamically
+    /// generated ones are materialized through the scratch store sequence.
+    fn emit_blob_literal(
+        &mut self,
+        literal_id: &arandu_middle::literal_pool::LiteralId,
+        bytes: &[u8],
+    ) {
+        let len = bytes.len() as i32;
+        if let Some(&offset) = self.rodata_offsets.get(literal_id) {
+            self.code.push(Instruction::I32Const(offset as i32));
+            self.code.push(Instruction::I32Const(len));
+            return;
+        }
+        self.alloc_cell(len);
+        self.code.push(Instruction::LocalGet(self.scratch));
+        self.code.push(Instruction::LocalSet(self.scratch_b));
+        for (i, byte) in bytes.iter().enumerate() {
+            self.code.push(Instruction::LocalGet(self.scratch_b));
+            self.code.push(Instruction::I32Const(i as i32));
+            self.code.push(Instruction::I32Add);
+            self.code.push(Instruction::I32Const(*byte as i32));
+            self.code.push(Instruction::I32Store8(wasm_encoder::MemArg {
+                offset: 0,
+                align: 0,
+                memory_index: 0,
+            }));
+        }
+        self.code.push(Instruction::LocalGet(self.scratch_b));
+        self.code.push(Instruction::I32Const(len));
+    }
+
     /// Emit a constant value.
     fn emit_constant(&mut self, c: &AmirConstant, ty: TypeId) {
         match c {
@@ -226,29 +259,11 @@ impl<'a> FuncTranslator<'a> {
                         self.emit_scalar_width_cast(source_ty, ty);
                     }
                     AmirLiteralEntry::Str(lexeme) => {
-                        let len = lexeme.len() as i32;
-                        if let Some(&offset) = self.rodata_offsets.get(literal_id) {
-                            self.code.push(Instruction::I32Const(offset as i32));
-                            self.code.push(Instruction::I32Const(len));
-                        } else {
-                            // Fallback for dynamically generated or unregistered literals
-                            self.alloc_cell(len);
-                            self.code.push(Instruction::LocalGet(self.scratch));
-                            self.code.push(Instruction::LocalSet(self.scratch_b));
-                            for (i, byte) in lexeme.bytes().enumerate() {
-                                self.code.push(Instruction::LocalGet(self.scratch_b));
-                                self.code.push(Instruction::I32Const(i as i32));
-                                self.code.push(Instruction::I32Add);
-                                self.code.push(Instruction::I32Const(byte as i32));
-                                self.code.push(Instruction::I32Store8(wasm_encoder::MemArg {
-                                    offset: 0,
-                                    align: 0,
-                                    memory_index: 0,
-                                }));
-                            }
-                            self.code.push(Instruction::LocalGet(self.scratch_b));
-                            self.code.push(Instruction::I32Const(len));
-                        }
+                        self.emit_blob_literal(literal_id, lexeme.as_bytes());
+                    }
+                    // Non-UTF-8 `b"..."` blobs share the same (data, len) ABI.
+                    AmirLiteralEntry::Bytes(bytes) => {
+                        self.emit_blob_literal(literal_id, bytes);
                     }
                     AmirLiteralEntry::Char(lexeme) => {
                         let val = lexeme.chars().next().unwrap_or('\0') as i32;
@@ -355,7 +370,8 @@ impl<'a> FuncTranslator<'a> {
                     AmirLiteralEntry::FloatBits(value) => self
                         .interner
                         .intern(ArType::Primitive(value.ty().primitive())),
-                    AmirLiteralEntry::Str(_) => {
+                    // Byte blobs share the `str` fat-pointer ABI (data + length).
+                    AmirLiteralEntry::Str(_) | AmirLiteralEntry::Bytes(_) => {
                         self.interner.intern(ArType::Primitive(Primitive::Str))
                     }
                     AmirLiteralEntry::Char(_) => {

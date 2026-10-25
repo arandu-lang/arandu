@@ -94,16 +94,18 @@ pub fn inlay_hints(
                 ) {
                     continue;
                 }
-                let param_names = arandu_ide::presentation::function_parameter_names(snap, source, symbol);
+                let param_names =
+                    arandu_ide::presentation::function_parameter_names(snap, source, symbol);
                 if param_names.is_empty() {
                     continue;
                 }
                 let is_method_call = matches!(program.pool.expr(*callee), ExprKind::Field { .. });
-                let param_offset = if is_method_call && param_names.first().is_some_and(|n| n == "self") {
-                    1
-                } else {
-                    0
-                };
+                let param_offset =
+                    if is_method_call && param_names.first().is_some_and(|n| n == "self") {
+                        1
+                    } else {
+                        0
+                    };
                 let arg_ids = program.pool.expr_list(*args);
                 for (arg_idx, &arg_id) in arg_ids.iter().enumerate() {
                     let target_param_idx = arg_idx + param_offset;

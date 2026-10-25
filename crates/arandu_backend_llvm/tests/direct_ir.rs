@@ -787,3 +787,28 @@ func main(): int {
         assert_eq!(code, run_cranelift(src));
     }
 }
+
+/// Non-UTF-8 byte strings are frozen blobs: the LLVM backend must emit a raw
+/// rodata global (not a string-shaped one) and keep every byte intact.
+#[test]
+fn lowers_non_utf8_byte_string_blob_to_raw_global() {
+    let src = r#"
+func main(): int {
+    let raw = b"\xFF\x00AB"
+    if raw.len != 4 { return 1 }
+    if raw[0] != b'\xFF' { return 2 }
+    if raw[3] != b'B' { return 3 }
+    return 42
+}
+"#;
+    let ir = emit(src);
+    assert!(
+        ir.contains(r#"c"\FF\00AB\00""#),
+        "raw blob must reach the rodata global intact:\n{ir}"
+    );
+    assert_eq!(run_cranelift(src), 42);
+    if let Some(code) = run(&ir) {
+        assert_eq!(code, 42, "lli must agree with Cranelift");
+    }
+    verify(&ir);
+}

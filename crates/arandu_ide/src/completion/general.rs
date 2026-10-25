@@ -34,20 +34,20 @@ pub(super) fn general_completions(
                 })
                 .map(|s| s.id)
         });
-        if let Some(sym_id) = sym {
-            if let Some(symbol) = tc.symbols.try_get(sym_id) {
-                let param_names = crate::presentation::function_parameter_names(snap, source, symbol);
-                for param in param_names {
-                    if param == "self" || param.is_empty() {
-                        continue;
-                    }
-                    if accepted(prefix, prefix_l, &param) {
-                        let label = format!("{param}:");
-                        let mut item = CompletionItem::new(&label, CompletionKind::Property);
-                        item.detail = Some(format!("parameter `{param}` of `{}`", symbol.name));
-                        item.insert_text = Some(format!("{param}: "));
-                        offer(&mut best, &label, RANK_LOCAL, 0, item);
-                    }
+        if let Some(sym_id) = sym
+            && let Some(symbol) = tc.symbols.try_get(sym_id)
+        {
+            let param_names = crate::presentation::function_parameter_names(snap, source, symbol);
+            for param in param_names {
+                if param == "self" || param.is_empty() {
+                    continue;
+                }
+                if accepted(prefix, prefix_l, &param) {
+                    let label = format!("{param}:");
+                    let mut item = CompletionItem::new(&label, CompletionKind::Property);
+                    item.detail = Some(format!("parameter `{param}` of `{}`", symbol.name));
+                    item.insert_text = Some(format!("{param}: "));
+                    offer(&mut best, &label, RANK_LOCAL, 0, item);
                 }
             }
         }

@@ -113,7 +113,10 @@ const KEYWORDS: &[(&str, &str)] = &[
     ("is", "pattern-test a value"),
     ("impl", "attach behavior to a type"),
     ("let", "bind an immutable local"),
-    ("guard", "early exit if condition is not met (guard <cond> else { <diverge> })"),
+    (
+        "guard",
+        "early exit if condition is not met (guard <cond> else { <diverge> })",
+    ),
     ("mut", "make a binding mutable"),
     ("set", "assign to a mutable place"),
     ("return", "return from the current function"),

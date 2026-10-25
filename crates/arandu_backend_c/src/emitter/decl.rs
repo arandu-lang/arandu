@@ -69,10 +69,16 @@ impl<'a> CEmitter<'a> {
 
     pub(super) fn emit_str_literals(&mut self) {
         for (i, entry) in self.program.literal_pool.entries.iter().enumerate() {
-            if let AmirLiteralEntry::Str(s) = entry {
+            // `str` and non-UTF-8 `b"..."` blobs are both static byte arrays.
+            let bytes = match entry {
+                AmirLiteralEntry::Str(s) => s.as_bytes(),
+                AmirLiteralEntry::Bytes(b) => b,
+                _ => continue,
+            };
+            {
                 // emit global array
                 let _ = write!(&mut self.output, "static const uint8_t STR_{}[] = {{", i);
-                for b in s.bytes() {
+                for b in bytes {
                     let _ = write!(&mut self.output, "{},", b);
                 }
                 let _ = writeln!(&mut self.output, "0}};"); // null terminator for safety
@@ -83,7 +89,7 @@ impl<'a> CEmitter<'a> {
                     "static const ArStr AR_STR_{} = {{ .ptr = STR_{}, .len = {} }};",
                     i,
                     i,
-                    s.len()
+                    bytes.len()
                 );
             }
         }

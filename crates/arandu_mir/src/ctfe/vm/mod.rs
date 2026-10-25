@@ -438,7 +438,7 @@ impl<C: FnMut() -> bool> Meter<'_, C> {
                 }
             }
             ConstValue::String(value) => self.bytes(value.backing_len())?,
-            ConstValue::Bytes(value) => self.bytes(value.backing_str().len())?,
+            ConstValue::Bytes(value) => self.bytes(value.backing_bytes().len())?,
             ConstValue::Void
             | ConstValue::Bool(_)
             | ConstValue::Integer(_)

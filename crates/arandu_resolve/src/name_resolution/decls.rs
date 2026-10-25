@@ -193,8 +193,27 @@ impl<'a> Resolver<'a> {
         for where_item in &decl.where_clause {
             self.resolve_where_item(enum_scope, where_item);
         }
+        let mut seen_variants = smallvec::SmallVec::<[(&str, arandu_lexer::Span); 8]>::new();
         for variant in &decl.variants {
-            self.resolve_enum_variant(enum_scope, variant);
+            if let Some((_, prev_span)) =
+                seen_variants.iter().find(|(name, _)| *name == variant.name)
+            {
+                self.diagnostics.push(
+                    crate::Diagnostic::error(
+                        crate::DiagCode::N003RedefinedName,
+                        format!(
+                            "variant '{}' is already declared in enum '{}'",
+                            variant.name, decl.name
+                        ),
+                        variant.span,
+                    )
+                    .with_label(*prev_span, "first declaration here")
+                    .with_label(variant.span, "duplicate variant"),
+                );
+            } else {
+                seen_variants.push((&variant.name, variant.span));
+                self.resolve_enum_variant(enum_scope, variant);
+            }
         }
     }
 

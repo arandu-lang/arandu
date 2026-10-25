@@ -29,6 +29,10 @@ pub fn simplify_cfg(func: &mut AmirFunc, bump: &bumpalo::Bump) -> Result<bool, D
         let mut local = false;
 
         // Phase 1 — jump threading + block merging with local worklist.
+        // Merges are logical: `absorbed[b]` lists the blocks whose statements
+        // follow `b`'s, and one compaction rebuilds the table afterwards.
+        // Rebuilding it per merge made a long chain quadratic.
+        let mut absorbed: Vec<Vec<BlockId>> = vec![Vec::new(); func.blocks.len()];
         let mut worklist: VecDeque<BlockId> =
             (0..func.blocks.len()).map(BlockId::from_usize).collect();
         let max_visits = func.blocks.len().saturating_mul(4).max(16);
@@ -44,8 +48,8 @@ pub fn simplify_cfg(func: &mut AmirFunc, bump: &bumpalo::Bump) -> Result<bool, D
             }
 
             let mut block_changed = false;
-            block_changed |= thread_block(func, bid);
-            block_changed |= merge_block_candidate(func, bid, bump)?;
+            block_changed |= thread_block(func, bid, &absorbed);
+            block_changed |= merge_block_candidate(func, bid, &mut absorbed);
 
             if block_changed {
                 local = true;
@@ -56,6 +60,10 @@ pub fn simplify_cfg(func: &mut AmirFunc, bump: &bumpalo::Bump) -> Result<bool, D
                     worklist.push_back(succ);
                 }
             }
+        }
+
+        if absorbed.iter().any(|blocks| !blocks.is_empty()) {
+            compact_merged_statements(func, &absorbed, bump)?;
         }
 
         // Phase 2 — unreachable removal (full CFG recompute, indices shift).
@@ -76,7 +84,7 @@ pub fn simplify_cfg(func: &mut AmirFunc, bump: &bumpalo::Bump) -> Result<bool, D
 
 /// If `bid` ends with `Goto(target)` and `target` is an empty `Goto`-only
 /// chain, bypass the chain and go directly to the final non-trivial block.
-fn thread_block(func: &mut AmirFunc, bid: BlockId) -> bool {
+fn thread_block(func: &mut AmirFunc, bid: BlockId, absorbed: &[Vec<BlockId>]) -> bool {
     let (target, args) = match &func.block(bid).terminator {
         AmirTerminator::Goto { target, args } => (*target, args),
         _ => return false,
@@ -85,7 +93,7 @@ fn thread_block(func: &mut AmirFunc, bid: BlockId) -> bool {
         return false;
     }
 
-    let final_target = resolve_goto_chain(func, target);
+    let final_target = resolve_goto_chain(func, target, absorbed);
     if final_target == target {
         return false;
     }
@@ -98,14 +106,17 @@ fn thread_block(func: &mut AmirFunc, bid: BlockId) -> bool {
     true
 }
 
-fn resolve_goto_chain(func: &AmirFunc, mut block: BlockId) -> BlockId {
+fn resolve_goto_chain(func: &AmirFunc, mut block: BlockId, absorbed: &[Vec<BlockId>]) -> BlockId {
     let original = block;
     // A terminating chain visits at most one block per CFG node. Beyond
     // that bound a node was revisited: keep the original edge into the cycle.
     // This also handles self-loops without allocating a visited set.
     for _ in 0..func.blocks.len() {
         let b = func.block(block);
-        if !b.statements.is_empty() || !func.block_params(b.params).is_empty() {
+        if !b.statements.is_empty()
+            || !absorbed[block.as_usize()].is_empty()
+            || !func.block_params(b.params).is_empty()
+        {
             return block;
         }
         match &b.terminator {
@@ -135,51 +146,80 @@ fn resolve_goto_chain(func: &AmirFunc, mut block: BlockId) -> BlockId {
 ///   drops resume block params → ICE / wrong codegen under `--opt`.
 /// - `succ` must have **no block params**. Params require jump-arg materialization
 ///   before merge; dropping them leaves undef uses of the param temps.
-fn merge_block_candidate(
-    func: &mut AmirFunc,
-    bid: BlockId,
-    bump: &bumpalo::Bump,
-) -> Result<bool, Diagnostic> {
+fn merge_block_candidate(func: &mut AmirFunc, bid: BlockId, absorbed: &mut [Vec<BlockId>]) -> bool {
     // Gate 1: only Goto(empty). Suspend/Branch/Switch are control edges, not
     // fallthrough — same rule as LLVM merge of trivial blocks.
     match &func.block(bid).terminator {
         AmirTerminator::Goto { args, .. } if args.is_empty() => {}
-        _ => return Ok(false),
+        _ => return false,
     }
 
     let succs = func.successors(bid);
     if succs.len() != 1 {
-        return Ok(false);
+        return false;
     }
     let succ = succs[0];
     if succ.as_usize() >= func.blocks.len() || succ == bid {
-        return Ok(false);
+        return false;
     }
     if func.predecessors(succ).len() != 1 || func.predecessors(succ)[0] != bid {
-        return Ok(false);
+        return false;
     }
 
     // Gate 2: successor phis/block-params cannot be dropped on the floor.
     if !func.block_params(func.block(succ).params).is_empty() {
-        return Ok(false);
+        return false;
     }
 
-    merge_two_blocks(func, bid, succ, bump)?;
-    Ok(true)
+    merge_two_blocks(func, bid, succ, absorbed);
+    true
 }
 
+/// Appends `from` to `into` logically: `into` takes `from`'s terminator and
+/// CFG edges now, and `from`'s statements at the next compaction.
 fn merge_two_blocks(
     func: &mut AmirFunc,
     into: BlockId,
     from: BlockId,
+    absorbed: &mut [Vec<BlockId>],
+) {
+    let mut moved = std::mem::take(&mut absorbed[from.as_usize()]);
+    absorbed[into.as_usize()].push(from);
+    absorbed[into.as_usize()].append(&mut moved);
+
+    let from_term = std::mem::replace(
+        &mut func.block_mut(from).terminator,
+        AmirTerminator::Unreachable,
+    );
+    func.block_mut(into).terminator = from_term;
+
+    // Incremental CFG update: `into` inherits `from`'s successors;
+    // `from` is cleared and will be removed by unreachable sweep.
+    transfer_edges(&mut func.cfg, into, from);
+    clear_block(&mut func.cfg, from);
+}
+
+/// Rebuilds the statement table once, placing each block's absorbed blocks'
+/// statements after its own, in merge order.
+fn compact_merged_statements(
+    func: &mut AmirFunc,
+    absorbed: &[Vec<BlockId>],
     bump: &bumpalo::Bump,
 ) -> Result<(), Diagnostic> {
-    // Snapshot per-block stmt order before taking ownership of the table.
     let mut block_stmt_ids = bumpalo::collections::Vec::with_capacity_in(func.blocks.len(), bump);
     for bi in 0..func.blocks.len() {
         let mut ids = bumpalo::collections::Vec::new_in(bump);
         ids.extend(func.block_stmt_ids(BlockId::from_usize(bi)));
         block_stmt_ids.push(ids);
+    }
+    let mut merged_away = bumpalo::collections::Vec::from_iter_in(
+        std::iter::repeat_n(false, func.blocks.len()),
+        bump,
+    );
+    for blocks in absorbed {
+        for from in blocks {
+            merged_away[from.as_usize()] = true;
+        }
     }
 
     let old = std::mem::replace(&mut func.stmts, AmirStmtTable::new());
@@ -190,48 +230,24 @@ fn merge_two_blocks(
     let mut new_ranges = bumpalo::collections::Vec::with_capacity_in(func.blocks.len(), bump);
 
     for bi in 0..func.blocks.len() {
-        let bid = BlockId::from_usize(bi);
         let start = new_stmts.len();
-        let mut count = 0usize;
-
-        if bid == into {
-            for &stmt_id in &block_stmt_ids[bi] {
-                let stmt = take_stmt(&mut slots, stmt_id.as_usize(), ice_span, "block merge")?;
-                new_stmts.push(stmt);
-                count += 1;
-            }
-            for &stmt_id in &block_stmt_ids[from.as_usize()] {
-                let stmt = take_stmt(&mut slots, stmt_id.as_usize(), ice_span, "block merge")?;
-                new_stmts.push(stmt);
-                count += 1;
-            }
-        } else if bid == from {
-            // stmts already merged into `into`
-        } else {
-            for &stmt_id in &block_stmt_ids[bi] {
-                let stmt = take_stmt(&mut slots, stmt_id.as_usize(), ice_span, "block merge")?;
-                new_stmts.push(stmt);
-                count += 1;
+        if !merged_away[bi] {
+            let parts =
+                std::iter::once(BlockId::from_usize(bi)).chain(absorbed[bi].iter().copied());
+            for part in parts {
+                for &stmt_id in &block_stmt_ids[part.as_usize()] {
+                    let stmt = take_stmt(&mut slots, stmt_id.as_usize(), ice_span, "block merge")?;
+                    new_stmts.push(stmt);
+                }
             }
         }
-
-        new_ranges.push(DenseRange::new(start, count));
+        new_ranges.push(DenseRange::new(start, new_stmts.len() - start));
     }
 
-    let from_term = std::mem::replace(
-        &mut func.block_mut(from).terminator,
-        AmirTerminator::Unreachable,
-    );
-    func.block_mut(into).terminator = from_term;
     func.stmts = new_stmts;
     for (i, range) in new_ranges.into_iter().enumerate() {
         func.blocks[i].statements = range;
     }
-
-    // Incremental CFG update: `into` inherits `from`'s successors;
-    // `from` is cleared and will be removed by unreachable sweep.
-    transfer_edges(&mut func.cfg, into, from);
-    clear_block(&mut func.cfg, from);
     Ok(())
 }
 

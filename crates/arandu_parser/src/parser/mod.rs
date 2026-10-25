@@ -143,6 +143,7 @@ pub struct Parser<'a> {
     pub(crate) events: Option<Vec<crate::syntax::events::ParseEvent>>,
     pub(crate) split_gt: Option<Token>,
     pub(crate) recursion_depth: u32,
+    pub(crate) block_depth: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -169,6 +170,7 @@ impl<'a> Parser<'a> {
             events: None,
             split_gt: None,
             recursion_depth: 0,
+            block_depth: 0,
         }
     }
 

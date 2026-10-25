@@ -7,6 +7,9 @@ use super::{BinaryOp, CatchHandler, ParseError, ParseErrorCode, Parser, TokenKin
 use crate::ast::ast_pool::{ExprId, ExprKind};
 
 const MAX_EXPR_RECURSION_DEPTH: u32 = 105;
+/// Operators one left-associated chain may fold. The parser loop is flat, but
+/// every later phase walks the resulting left spine recursively.
+const MAX_BINARY_CHAIN: u32 = 512;
 
 impl<'a> Parser<'a> {
     pub(super) fn parse_expr(&mut self, min_bp: u8) -> Result<ExprId, ParseError> {
@@ -55,6 +58,7 @@ impl<'a> Parser<'a> {
 
     // Prefix recursion must not retain the postfix/infix dispatch's locals.
     fn parse_postfix_binary(&mut self, mut left: ExprId, min_bp: u8) -> Result<ExprId, ParseError> {
+        let mut folded = 0u32;
         loop {
             let next_kind = self.current().kind;
             match next_kind {
@@ -296,6 +300,16 @@ const BINARY_OP_TABLE: [BinaryOpInfo; 21] = [
     BinaryOpInfo {
         op: BinaryOp::GtEqual,
         bp: 60,
+            folded += 1;
+            if folded > MAX_BINARY_CHAIN {
+                return Err(ParseError::new(
+                    ParseErrorCode::ExpectedExpression,
+                    "expression chain exceeds the nesting limit; split it with intermediate `let` bindings",
+                    self.current(),
+                    self.file_id,
+                    self.source,
+                ));
+            }
     }, // 8
     BinaryOpInfo {
         op: BinaryOp::RangeExclusive,

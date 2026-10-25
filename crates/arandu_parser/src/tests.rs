@@ -815,6 +815,49 @@ fn deeply_nested_expression_does_not_stack_overflow_and_recovers() {
 }
 
 #[test]
+fn long_operator_chains_and_deep_blocks_are_bounded() {
+    const STACK: usize = 512 * 1024;
+    {
+        {
+            let chain = |terms: usize| {
+                format!(
+                    "func main(): int {{\n    return {}\n}}\nfunc after(): int {{ return 1 }}\n",
+                    vec!["1"; terms].join(" + ")
+                )
+            };
+            let blocks = |depth: usize| {
+                format!(
+                    "func main(): int {{\n{}    return 1\n{}    return 0\n}}\nfunc after(): int {{ return 1 }}\n",
+                    "    if true {\n".repeat(depth),
+                    "    }\n".repeat(depth)
+                )
+            };
+            for (source, expected_error, case) in [
+                (chain(400), false, "400-term chain"),
+                (chain(2000), true, "2000-term chain"),
+                (blocks(60), false, "60 nested blocks"),
+                (blocks(100), true, "100 nested blocks"),
+            ] {
+                std::thread::Builder::new()
+                    .stack_size(STACK)
+                    .spawn(move || {
+                        let tree = crate::syntax::parse_syntax(&source);
+                        let output = crate::syntax::lower_syntax_to_program_recovering(&tree, 0);
+                        assert_eq!(!output.diagnostics.is_empty(), expected_error, "{case}");
+                        assert!(output.program.decls.iter().any(|decl| matches!(output.program.pool.decl(*decl),
+                            crate::TopLevelDecl::Func(function)
+                                if matches!(&function.name, crate::FuncName::Free { name, .. } if name == "after")
+                        )), "{case}: recovery must preserve the following declaration");
+                    })
+                    .expect("spawn bounded parser worker")
+                    .join()
+                    .expect(case);
+            }
+        }
+    }
+}
+
+#[test]
 fn deeply_nested_type_does_not_stack_overflow_and_recovers() {
     std::thread::Builder::new()
         .stack_size(512 * 1024)

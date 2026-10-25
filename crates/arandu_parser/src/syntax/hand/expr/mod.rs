@@ -35,6 +35,9 @@ pub fn try_hand_lower_expr_all(
 }
 
 const MAX_EXPR_DEPTH: u32 = 105;
+/// Matches the recursive parser's chain bound; beyond it this fast path yields
+/// to that parser, which reports the limit.
+const MAX_BINARY_CHAIN: u32 = 512;
 
 /// Parse expression with minimum binding power.
 pub fn try_hand_lower_expr(
@@ -66,6 +69,7 @@ fn parse_binary_tail(
     min_bp: u8,
     mut left: ExprId,
 ) -> Option<ExprId> {
+    let mut folded = 0u32;
     loop {
         // catch / as as postfix-infix
         match cur.peek_kind() {
@@ -138,6 +142,10 @@ fn parse_binary_tail(
                 ..
             }
         ) {
+            return None;
+        }
+        folded += 1;
+        if folded > MAX_BINARY_CHAIN {
             return None;
         }
         cur.bump();

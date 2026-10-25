@@ -5,12 +5,28 @@ use super::{
 use crate::ast::ExprKind;
 use smol_str::SmolStr;
 
+/// Blocks that may nest inside one another (`if`, loops, `match` arms...).
+const MAX_BLOCK_NESTING: u32 = 64;
+
 impl<'a> Parser<'a> {
     pub(super) fn parse_block(&mut self) -> Result<Block, ParseError> {
         use crate::syntax::SyntaxKind;
+        // Every phase after parsing recurses through nested blocks, so this
+        // bound keeps them all within the stack.
+        if self.block_depth >= MAX_BLOCK_NESTING {
+            return Err(ParseError::new(
+                ParseErrorCode::ExpectedExpression,
+                "block nesting exceeds the limit; move the inner code into a function",
+                self.current(),
+                self.file_id,
+                self.source,
+            ));
+        }
+        self.block_depth += 1;
         self.start_node(SyntaxKind::BLOCK);
         let result = self.parse_block_inner();
         self.finish_node();
+        self.block_depth -= 1;
         result
     }
 

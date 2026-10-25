@@ -327,10 +327,30 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     return true;
                 }
                 let ptr_val = self.translate_operand(&args[0], Some(self.ptr_type));
+                let pointee = self.ptr_pointee_ty(&args[0]);
+                let lhs_is_str = lhs.is_some_and(|temp| {
+                    matches!(self.temp_ar_ty(temp), ArType::Primitive(Primitive::Str))
+                });
+                if matches!(pointee, ArType::Primitive(Primitive::Str)) || lhs_is_str {
+                    if let Some(lhs_temp) = lhs
+                        && let Some(&(var_ptr, var_len)) = self.str_temp_map.get(lhs_temp)
+                    {
+                        let flags = cranelift_codegen::ir::MemFlagsData::new();
+                        let loaded_ptr = self.builder.ins().load(self.ptr_type, flags, ptr_val, 0);
+                        let loaded_len = self.builder.ins().load(
+                            self.ptr_type,
+                            flags,
+                            ptr_val,
+                            self.ptr_type.bytes() as i32,
+                        );
+                        self.builder.def_var(var_ptr, loaded_ptr);
+                        self.builder.def_var(var_len, loaded_len);
+                    }
+                    return true;
+                }
                 let clif_ty = lhs
                     .and_then(|temp| self.get_temp_clif_type(temp))
                     .unwrap_or(self.ptr_type);
-                let pointee = self.ptr_pointee_ty(&args[0]);
                 // Named aggregates present raw-memory values at `*p`. The JIT
                 // represents them as pointers, so read the full payload into a
                 // fresh blob rather than loading only the first pointer-sized
@@ -363,11 +383,23 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     return true;
                 }
                 let ptr_val = self.translate_operand(&args[0], Some(self.ptr_type));
+                let val_ty = self.get_operand_ar_type(&args[1]);
+                if matches!(val_ty, ArType::Primitive(Primitive::Str)) {
+                    let (elem_ptr, elem_len) = self.translate_str_operand(&args[1]);
+                    let flags = cranelift_codegen::ir::MemFlagsData::new();
+                    self.builder.ins().store(flags, elem_ptr, ptr_val, 0);
+                    self.builder.ins().store(
+                        flags,
+                        elem_len,
+                        ptr_val,
+                        self.ptr_type.bytes() as i32,
+                    );
+                    return true;
+                }
                 let val_to_store = self.translate_operand(&args[1], None);
                 // Match `PtrRead`: writing a named struct by value copies the
                 // object bytes from the value's blob into `*p` instead of
                 // storing the 8-byte object pointer.
-                let val_ty = self.get_operand_ar_type(&args[1]);
                 if self.is_inline_aggregate_ty(&val_ty)
                     && let Some(memmove_id) = self.memmove_func_id()
                 {

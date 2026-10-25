@@ -127,6 +127,13 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     let len_val = self.builder.ins().iconst(self.ptr_type, 0);
                     (ptr_val, len_val)
                 } else {
+                    let ty = self.temp_ar_ty(*temp_id);
+                    if matches!(
+                        crate::types::clif_type(&ty, self.ptr_type),
+                        crate::types::ClifType::Void
+                    ) {
+                        return (self.poison_i32(), self.poison_i32());
+                    }
                     self.record_ice(
                         "use of undeclared AMIR temp in codegen",
                         self.temp_span(*temp_id),
@@ -206,25 +213,23 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
 
         let mut val = match operand {
             AmirOperand::Copy(temp_id) | AmirOperand::Move(temp_id) => {
-                match self.temp_map.get(temp_id) {
-                    Some(var) => self.builder.use_var(*var),
-                    None => {
-                        // ZST temps (void / typeck error) have no Cranelift vars.
-                        // `Err` is pointer-sized and must be declared like other scalars.
-                        let ty = self.temp_ar_ty(*temp_id);
-                        if matches!(
-                            ty,
-                            arandu_middle::types::ArType::Void
-                                | arandu_middle::types::ArType::Error
-                        ) {
-                            return self.poison_i32();
-                        }
-                        self.record_ice(
-                            "use of undeclared AMIR temp in codegen",
-                            self.temp_span(*temp_id),
-                        );
+                if let Some(var) = self.temp_map.get(temp_id) {
+                    self.builder.use_var(*var)
+                } else if let Some(&(var_ptr, _var_len)) = self.str_temp_map.get(temp_id) {
+                    self.builder.use_var(var_ptr)
+                } else {
+                    let ty = self.temp_ar_ty(*temp_id);
+                    if matches!(
+                        crate::types::clif_type(&ty, self.ptr_type),
+                        crate::types::ClifType::Void
+                    ) {
                         return self.poison_i32();
                     }
+                    self.record_ice(
+                        "use of undeclared AMIR temp in codegen",
+                        self.temp_span(*temp_id),
+                    );
+                    return self.poison_i32();
                 }
             }
             AmirOperand::Constant(c) => match c {

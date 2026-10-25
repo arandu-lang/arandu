@@ -23,6 +23,18 @@ Exit `101` belongs to Cargo when Cargo itself fails; it is not an Arandu CLI
 exit-code contract. Shells and operating systems may restrict the observable
 range of a program return value.
 
+The host decides how much of that value survives. On Unix a process exit code
+is truncated to eight bits, and a fault that terminates the process is reported
+as a signal rather than as an exit code; on Windows the full 32-bit status is
+preserved, and a hardware fault is reported as an `NTSTATUS` value such as
+`0xC000001D` (`STATUS_ILLEGAL_INSTRUCTION`) or `0xC0000094`
+(`STATUS_INTEGER_DIVIDE_BY_ZERO`). Neither form is a backend disagreement: the
+compiled program produced the same result, and only the operating system's
+reporting contract differs. Consumers that need a portable reading observe the
+low eight bits of a normal return and treat a signal or an `NTSTATUS` fault as a
+trap; Arandu's own CLI test harness does exactly that in
+`crates/arandu_cli/tests/common/mod.rs`.
+
 Test harness children return parse/type/AMIR compilation failures through the
 terminal IPC event, rather than exiting inside the compiler pipeline. A missing
 control frame denotes a process/protocol failure, not an ordinary source error.

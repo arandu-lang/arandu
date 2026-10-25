@@ -4,9 +4,31 @@ use wasm_encoder::{BlockType, Instruction};
 
 use super::super::FuncTranslator;
 
+/// Cell offsets past the text where the fraction's digit count and scale live.
+const SCALE_DIGITS: u64 = 48;
+const SCALE_POWER: u64 = 56;
+
+fn scale_digits() -> wasm_encoder::MemArg {
+    wasm_encoder::MemArg {
+        offset: SCALE_DIGITS,
+        align: 2,
+        memory_index: 0,
+    }
+}
+
+fn scale_power() -> wasm_encoder::MemArg {
+    wasm_encoder::MemArg {
+        offset: SCALE_POWER,
+        align: 3,
+        memory_index: 0,
+    }
+}
+
 impl<'a> FuncTranslator<'a> {
     pub(super) fn emit_to_str_float(&mut self, value: &AmirOperand, src_ty: TypeId) {
-        self.alloc_cell(32);
+        // 37 bytes of text at most (20 integer digits, sign, point, 15
+        // fractional digits) plus the fraction scale stored at `SCALE`.
+        self.alloc_cell(64);
         self.code.push(Instruction::LocalGet(self.scratch));
         self.code.push(Instruction::LocalSet(self.scratch_b));
 
@@ -89,29 +111,102 @@ impl<'a> FuncTranslator<'a> {
         self.code.push(Instruction::LocalSet(self.scratch_c));
         self.code.push(Instruction::End);
 
-        // Decompose into integer and fractional parts
+        // Decompose into integer and fractional parts. The fraction keeps up
+        // to 15 significant digits in total: k = max(0, 15 - integer digits),
+        // scaled by 10^k (exact as an i64) and rounded.
         self.code.push(Instruction::LocalGet(self.scratch_f64));
         self.code.push(Instruction::I64TruncSatF64U);
         self.code.push(Instruction::LocalSet(self.scratch_i64));
 
+        // scratch = number of integer digits (0 for a zero integer part).
+        self.code.push(Instruction::I32Const(0));
+        self.code.push(Instruction::LocalSet(self.scratch));
+        self.code.push(Instruction::LocalGet(self.scratch_i64));
+        self.code.push(Instruction::LocalSet(self.scratch_i64b));
+        self.code.push(Instruction::Block(BlockType::Empty));
+        self.code.push(Instruction::Loop(BlockType::Empty));
+        self.code.push(Instruction::LocalGet(self.scratch_i64b));
+        self.code.push(Instruction::I64Eqz);
+        self.code.push(Instruction::BrIf(1));
+        self.code.push(Instruction::LocalGet(self.scratch));
+        self.code.push(Instruction::I32Const(1));
+        self.code.push(Instruction::I32Add);
+        self.code.push(Instruction::LocalSet(self.scratch));
+        self.code.push(Instruction::LocalGet(self.scratch_i64b));
+        self.code.push(Instruction::I64Const(10));
+        self.code.push(Instruction::I64DivU);
+        self.code.push(Instruction::LocalSet(self.scratch_i64b));
+        self.code.push(Instruction::Br(0));
+        self.code.push(Instruction::End);
+        self.code.push(Instruction::End);
+
+        // k = max(0, 15 - digits), kept at SCALE_DIGITS.
+        self.code.push(Instruction::LocalGet(self.scratch_b));
+        self.code.push(Instruction::I32Const(15));
+        self.code.push(Instruction::LocalGet(self.scratch));
+        self.code.push(Instruction::I32Sub);
+        self.code.push(Instruction::LocalTee(self.scratch));
+        self.code.push(Instruction::I32Const(0));
+        self.code.push(Instruction::LocalGet(self.scratch));
+        self.code.push(Instruction::I32Const(0));
+        self.code.push(Instruction::I32GtS);
+        self.code.push(Instruction::Select);
+        self.code.push(Instruction::LocalTee(self.scratch));
+        self.code.push(Instruction::I32Store(wasm_encoder::MemArg {
+            offset: SCALE_DIGITS,
+            align: 2,
+            memory_index: 0,
+        }));
+
+        // 10^k at SCALE_POWER.
+        self.code.push(Instruction::I64Const(1));
+        self.code.push(Instruction::LocalSet(self.scratch_i64b));
+        self.code.push(Instruction::Block(BlockType::Empty));
+        self.code.push(Instruction::Loop(BlockType::Empty));
+        self.code.push(Instruction::LocalGet(self.scratch));
+        self.code.push(Instruction::I32Eqz);
+        self.code.push(Instruction::BrIf(1));
+        self.code.push(Instruction::LocalGet(self.scratch_i64b));
+        self.code.push(Instruction::I64Const(10));
+        self.code.push(Instruction::I64Mul);
+        self.code.push(Instruction::LocalSet(self.scratch_i64b));
+        self.code.push(Instruction::LocalGet(self.scratch));
+        self.code.push(Instruction::I32Const(1));
+        self.code.push(Instruction::I32Sub);
+        self.code.push(Instruction::LocalSet(self.scratch));
+        self.code.push(Instruction::Br(0));
+        self.code.push(Instruction::End);
+        self.code.push(Instruction::End);
+        self.code.push(Instruction::LocalGet(self.scratch_b));
+        self.code.push(Instruction::LocalGet(self.scratch_i64b));
+        self.code.push(Instruction::I64Store(wasm_encoder::MemArg {
+            offset: SCALE_POWER,
+            align: 3,
+            memory_index: 0,
+        }));
+
+        // scaled fraction = trunc((value - integer) * 10^k + 0.5)
         self.code.push(Instruction::LocalGet(self.scratch_f64));
         self.code.push(Instruction::LocalGet(self.scratch_i64));
         self.code.push(Instruction::F64ConvertI64U);
         self.code.push(Instruction::F64Sub);
-        self.code.push(Instruction::F64Const(1_000_000.0.into()));
+        self.code.push(Instruction::LocalGet(self.scratch_i64b));
+        self.code.push(Instruction::F64ConvertI64U);
         self.code.push(Instruction::F64Mul);
         self.code.push(Instruction::F64Const(0.5.into()));
         self.code.push(Instruction::F64Add);
         self.code.push(Instruction::I64TruncSatF64U);
         self.code.push(Instruction::LocalSet(self.scratch_i64b));
 
-        // Overflow carry
+        // Overflow carry: a fraction that rounds up to 10^k adds one unit.
         self.code.push(Instruction::LocalGet(self.scratch_i64b));
-        self.code.push(Instruction::I64Const(1_000_000));
+        self.code.push(Instruction::LocalGet(self.scratch_b));
+        self.code.push(Instruction::I64Load(scale_power()));
         self.code.push(Instruction::I64GeU);
         self.code.push(Instruction::If(BlockType::Empty));
         self.code.push(Instruction::LocalGet(self.scratch_i64b));
-        self.code.push(Instruction::I64Const(1_000_000));
+        self.code.push(Instruction::LocalGet(self.scratch_b));
+        self.code.push(Instruction::I64Load(scale_power()));
         self.code.push(Instruction::I64Sub);
         self.code.push(Instruction::LocalSet(self.scratch_i64b));
         self.code.push(Instruction::LocalGet(self.scratch_i64));
@@ -210,9 +305,11 @@ impl<'a> FuncTranslator<'a> {
         self.code.push(Instruction::I32Add);
         self.code.push(Instruction::LocalSet(self.scratch_d));
 
-        // Write 6 fractional digits into scratch_b[cursor..cursor+6]
-        self.code.push(Instruction::I32Const(6));
-        self.code.push(Instruction::LocalSet(self.scratch));
+        // Write k fractional digits into scratch_b[cursor..cursor+k].
+        self.code.push(Instruction::LocalGet(self.scratch_b));
+        self.code.push(Instruction::I32Load(scale_digits()));
+        self.code.push(Instruction::LocalTee(self.scratch));
+        self.code.push(Instruction::If(BlockType::Empty));
 
         self.code.push(Instruction::Loop(BlockType::Empty));
         self.code.push(Instruction::LocalGet(self.scratch));
@@ -249,16 +346,20 @@ impl<'a> FuncTranslator<'a> {
         self.code.push(Instruction::BrIf(0));
         self.code.push(Instruction::End);
 
-        // cursor += 6
+        self.code.push(Instruction::End);
+
+        // cursor += k
         self.code.push(Instruction::LocalGet(self.scratch_d));
-        self.code.push(Instruction::I32Const(6));
+        self.code.push(Instruction::LocalGet(self.scratch_b));
+        self.code.push(Instruction::I32Load(scale_digits()));
         self.code.push(Instruction::I32Add);
         self.code.push(Instruction::LocalSet(self.scratch_d));
 
         // Trim trailing zeros; an integral value then drops its '.' too,
         // rendering "100" like the runtime's ToStr.
         self.code.push(Instruction::LocalGet(self.scratch_d));
-        self.code.push(Instruction::I32Const(6));
+        self.code.push(Instruction::LocalGet(self.scratch_b));
+        self.code.push(Instruction::I32Load(scale_digits()));
         self.code.push(Instruction::I32Sub);
         self.code.push(Instruction::LocalSet(self.scratch));
 

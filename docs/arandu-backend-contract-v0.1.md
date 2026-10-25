@@ -94,8 +94,9 @@ arithmetic: `pos + n <= len` leaves the check on `slice[pos + k]` in place.
 and otherwise the shortest decimal that reads back as the same value, in fixed
 notation (Rust's `Display`). The C runtime finds those digits by taking the
 first `%.Ne` that `strtod` round-trips. Wasm matches the special values and
-integral cases but still prints at most six fractional digits; the shortest
-round-trip digits there remain open work.
+integral cases and prints up to 15 significant digits with trailing zeros
+removed, which agrees with the runtime whenever the shortest round-trip form
+fits in 15 digits; values that need 16 or 17 (`0.1 + 0.2`) remain open work.
 
 ### Temporary storage and bounded inlining
 

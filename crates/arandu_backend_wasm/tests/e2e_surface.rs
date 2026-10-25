@@ -1694,3 +1694,23 @@ func main(): int {
     );
     assert_eq!(run_main_i32(&bytes), 7);
 }
+
+#[test]
+fn surface_float_fractions_keep_fifteen_significant_digits() {
+    // Fractions used to stop at six decimal places.
+    let bytes = compile_source(
+        r#"
+func main(): int {
+    let a: f64 = 0.0000001
+    let b: f64 = 0.123456789012345
+    let c: f64 = 12345678901.5
+    let d: f64 = 1.5e-10
+    if "${a}|${b}|${c}|${d}" == "0.0000001|0.123456789012345|12345678901.5|0.00000000015" {
+        return 7
+    }
+    return 9
+}
+"#,
+    );
+    assert_eq!(run_main_i32(&bytes), 7);
+}

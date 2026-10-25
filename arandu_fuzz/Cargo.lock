@@ -45,7 +45,7 @@ dependencies = [
  "arandu_base",
  "arandu_codegen",
  "arandu_middle",
- "arandu_semantics",
+ "arandu_mir",
  "rustc-hash 2.1.3",
 ]
 
@@ -55,8 +55,9 @@ version = "0.1.11"
 dependencies = [
  "arandu_base",
  "arandu_codegen",
+ "arandu_middle",
+ "arandu_mir",
  "arandu_runtime",
- "arandu_semantics",
  "blake3",
  "cranelift-codegen",
  "cranelift-frontend",
@@ -76,7 +77,6 @@ version = "0.1.11"
 dependencies = [
  "arandu_codegen",
  "arandu_middle",
- "arandu_semantics",
 ]
 
 [[package]]
@@ -86,7 +86,7 @@ dependencies = [
  "arandu_base",
  "arandu_codegen",
  "arandu_middle",
- "arandu_semantics",
+ "arandu_mir",
  "rustc-hash 2.1.3",
  "smallvec",
  "smol_str",
@@ -263,8 +263,7 @@ version = "0.1.11"
 dependencies = [
  "arandu_base",
  "arandu_diagnostics",
- "arandu_lexer",
- "arandu_parser",
+ "blake3",
  "rustc-hash 2.1.3",
  "rustc_apfloat",
  "salsa",
@@ -278,9 +277,7 @@ dependencies = [
 name = "arandu_mir"
 version = "0.1.11"
 dependencies = [
- "arandu_lexer",
  "arandu_middle",
- "arandu_typeck",
  "bumpalo",
  "rustc-hash 2.1.3",
  "smallvec",
@@ -364,9 +361,10 @@ dependencies = [
  "arandu_parser",
  "arandu_resolve",
  "arandu_typeck",
- "blake3",
  "bumpalo",
  "rustc-hash 2.1.3",
+ "smallvec",
+ "smol_str",
  "tracing",
 ]
 

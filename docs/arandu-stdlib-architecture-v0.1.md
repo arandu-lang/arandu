@@ -430,6 +430,61 @@ arandu_std
 
 ---
 
+### Superfície pública adicionada na 0.1.11
+
+A campanha 0.1.11 adicionou açúcar sintático e APIs que mudam como a stdlib é
+chamada. A sintaxe é responsabilidade de lexer/parser/typeck; a lista abaixo
+registra apenas o contrato que o usuário da stdlib observa.
+
+Linguagem:
+
+- argumentos rotulados e shorthand: `cfg.bump(delta: 20)` e `connect(port:, host:)`
+  passam os valores posicionalmente, então nenhuma assinatura de stdlib muda;
+- default de campo de struct: `struct Config { port: int = 8080 }` permite
+  `Config { label: "api" }`; o valor default é dobrado no typeck;
+- `.len` em `[]T`, `[T; N]` e `str`, sem chamada de função;
+- literais de byte: `b'A'` é `u8` e `b"..."` é `[]u8` com os bytes preservados,
+  inclusive fora de UTF-8;
+- `|>`, que apenas reescreve a chamada (placeholder `_` ou primeiro argumento);
+- `let <pattern> = ... else { ... }`, `guard ... else { ... }` e `.Variant`.
+
+`core.num`:
+
+```text
+parse(s: str): Option<int>          int.parse(s: str): Option<int>
+parseU64(s: str): Option<u64>       u64.parse(s: str): Option<u64>
+```
+
+`core.slice` (métodos sobre `[]T`):
+
+```text
+len, isEmpty, asPtr
+get(index): Option<ref T>        first(): Option<ref T>   last(): Option<ref T>
+subslice(start, count): Option<[]T>
+readU16Le/readU32Le/readU64Le(offset): Option<u16|u32|u64>   // apenas []u8
+```
+
+`core.iter` (adaptadores lazy, todos consumidos por `next`):
+
+```text
+take(count)   skip(count)   stepBy(step)   enumerate()   chain(other)   zip(other)
+count()       last()        nth(n)         iter(slice)
+```
+
+`std.fs` (escrita confinada à autoridade do `Dir`):
+
+```text
+Dir.writeBytes(subpath, bytes): Result<usize, io.IoError>
+Dir.writeFile(subpath, content): Result<usize, io.IoError>
+writeBytes(path, bytes)        write(path, content)   // raiz ambiente
+```
+
+Os adaptadores de `core.iter` e os métodos de `core.slice` devolvem views e
+iteradores que preservam a dependência do owner; `get`, `first`, `last` e
+`subslice` são `Option`, não ponteiros nus.
+
+---
+
 ### 4. `arandu_ext` (Extensões Opcionais de Aplicação)
 
 `arandu_ext` é uma proposta de organização de extensões opcionais. A árvore

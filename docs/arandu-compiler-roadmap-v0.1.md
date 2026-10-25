@@ -128,6 +128,15 @@ registra o alcance dessa prova. A revisão de 18/10 usa validação direcionada 
 camada, conforme AGENTS.md; a prova global anterior não certifica automaticamente
 as mudanças posteriores. A matriz instalada da candidata ainda é pendente.
 
+A campanha também absorveu a rodada de ergonomia da linguagem que estava sem
+documentação e sem cobertura: byte literals (`b'A'` e `b"..."` com payload cru,
+inclusive não-UTF-8), pipe `|>`, argumentos rotulados/shorthand, default de
+campo, `.len`, `.Variant`, `let … else`/`guard … else`, iteradores de
+`core.iter`, parsing de inteiro, métodos de slice e escrita em `std.fs`. O
+relatório de [0.1.11](releases/0.1.11.md) lista a superfície e as regressões; as
+fontes de verdade de sintaxe são `arandu-lexer-v0.1.md`, `arandu-parser-v0.1.md`
+e `arandu-ast-v0.1.md`.
+
 | ID | Entrega | Estado / critério de saída |
 | --- | --- | --- |
 | ST.0 | consolidar primitivos, Decimal e alterações locais | `in_progress`; Decimal com overflow checado, comparação exata, HalfEven e conversões validadas no corpus contratual e no oráculo inteiro independente executados nos três backends (C/Cranelift/Wasm); gates locais passaram; manter as provas de métodos/imports/completion e cutoff no SDK instalado |
@@ -146,7 +155,7 @@ as mudanças posteriores. A matriz instalada da candidata ainda é pendente.
 | ST.13 | DNS/UDP e reactor multiplataforma | Reactor registra sockets TCP em Linux (epoll/io_uring), macOS/FreeBSD/OpenBSD/NetBSD/DragonFly (kqueue) e Windows (WSAPoll), com contrato único: one-shot por registro, readiness independente de timer, ids de reactor com geração e close com registro ativo seguro; outros hosts falham fechado com `REGISTER_UNSUPPORTED` (-2). Compilado para macOS e Windows; promoção exige os testes `reactor_runtime::tests::readiness` verdes em runners nativos macOS e Windows; as BSDs seguem só com gate por `cfg`, sem CI. DNS/UDP inalterados; registro de UDP no reactor fica fora do escopo |
 | ST.14 | `crypto.hash` SHA-256/BLAKE3 | implementação escalar local; vetores independentes de streaming/padding/chunks/árvore e snapshots passaram em C/Cranelift/Wasm; sem autenticação/keyed/XOF; matriz instalada e promoção pendentes |
 | ST.15 | `math.big.BigInt`/`BigDecimal` (RFC 0037) | `done` localmente; camadas 1–3 ativas com adições de `divRem`, `div`, `rem`, `divAssign`, `remAssign`, `BigDecimal.mul`, operações de bit e representação de limbs; oráculo diferencial independente contra `num-bigint` (dev-dependency) com 59 casos curados cobrindo além de 128/256/512 bits executado e validado em JIT (Cranelift), C (Clang -O0 e -O2 com UBSan) e Wasmtime; a execução no Wasm revelou e corrigiu um double free do backend em locais agregados reatribuídos em loop (BigDecimal.add travava). |
-| ST.16 | promoção da candidata | `partial`; o CI do commit `d99c9e41` construiu, instalou fora do checkout e testou o SDK candidato em Linux x86-64, macOS ARM64 e Windows x86-64; integração SL_T passou nos três alvos. Isso não equivale a publicar/instalar os archives da release nem cobre automaticamente cada contrato ST. Os gates do head documental `5ec5479c` estavam em execução quando esta nota foi escrita; a promoção ainda exige merge, tag, workflow de release e fechamento das provas específicas restantes. |
+| ST.16 | promoção da candidata | `in_review`; o código da candidata está congelado localmente na branch `codex/0.1.11-dev` (PR #35) e os gates Rust deste host passaram: fmt, check, clippy `-D warnings`, doc `-D warnings`, `check-diag-docs` (105 códigos), `check-release-contract` (29 manifestos), `check-line-endings` e `check-architecture`. O CI do commit `d99c9e41` já construiu, instalou fora do checkout e testou o SDK candidato em Linux x86-64, macOS ARM64 e Windows x86-64, com integração SL_T nos três alvos. Pendente: push do head final, `S0 / Gate` verde nesse head, merge, tag `v0.1.11`, workflow de release, instalação dos archives públicos e evidência de checksums/provenance. Nada disso é coberto pelos gates locais. |
 
 A ordem de execução é: bloqueadores e ST.0 → aritmética/ST.3/ST.4 →
 fundação de memória e atomics → coleções/precisão arbitrária → serviços e
@@ -186,7 +195,7 @@ associada. Cada candidata declara seu recorte e limitações antes da promoção
 
 | Série | Resultado principal | Dependências / gate | Estado |
 | --- | --- | --- | --- |
-| 0.1.x / 0.1.11 | fundação publicada e fechamento autorizado da stdlib | bloqueadores, ST.0–16, regressões e distribuição do pacote exato | 0.1.10 publicada; 0.1.11 em desenvolvimento |
+| 0.1.x / 0.1.11 | fundação publicada e fechamento autorizado da stdlib | bloqueadores, ST.0–16, regressões e distribuição do pacote exato | 0.1.10 publicada; 0.1.11 em revisão no PR #35, tag pendente |
 | 0.2.x | motor quente e imagem dev recuperável | sessão Salsa viva, protocolo/fallback, equivalência clean e p95 ≤100 ms em edição de corpo no host/corpus de referência | `planned`; fundação batch `done` |
 | 0.3.x | granularidade por instância e expressividade delimitada | completar produtores/CGUs, retenção e cutoff; p95 ≤10 ms no workload de referência; closures e reflexão inicial têm gates próprios | `partial` na granularidade; expansões `planned` |
 | 0.4.x | qualidade de código de release mensurada | OPT/AOT oracle, segurança de alias/escape e benchmarks; LLVM opcional só após aceitação da RFC 0031, paridade e distribuição | `experimental` O2; backend novo `planned` |

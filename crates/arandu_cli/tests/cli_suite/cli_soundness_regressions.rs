@@ -19,18 +19,18 @@ fn write(name: &str, source: &str) -> String {
     file.to_string_lossy().into_owned()
 }
 
-fn exit_codes(name: &str, source: &str) -> Vec<Option<i32>> {
+fn outcomes(name: &str, source: &str) -> Vec<super::common::ProgramOutcome> {
     let path = write(name, source);
-    let mut codes: Vec<Option<i32>> = [None, Some("--opt")]
+    let mut codes: Vec<super::common::ProgramOutcome> = [None, Some("--opt")]
         .into_iter()
         .map(|profile| {
             let mut args = vec!["run"];
             args.extend(profile);
             args.push(&path);
-            cli(&args).status.code()
+            super::common::outcome(&cli(&args).status)
         })
         .collect();
-    codes.extend(super::common::c_release_exit_code(std::path::Path::new(
+    codes.extend(super::common::c_release_outcome(std::path::Path::new(
         &*path,
     )));
     codes
@@ -292,9 +292,11 @@ func main(): int {
 #[test]
 fn programs_run_to_their_result_at_every_level() {
     for (name, source, expected) in RUNS {
-        let codes = exit_codes(name, source);
+        let codes = outcomes(name, source);
         assert!(
-            codes.iter().all(|code| *code == Some(*expected)),
+            codes
+                .iter()
+                .all(|code| *code == super::common::ProgramOutcome::Returned(*expected)),
             "{name}: {codes:?}"
         );
     }
@@ -409,10 +411,11 @@ func main(): int {
 #[test]
 fn out_of_bounds_vec_indices_trap() {
     for (name, source) in TRAPS {
-        for code in exit_codes(name, source) {
-            assert!(
-                code.is_none_or(|code| code >= 128),
-                "{name}: must trap, got {code:?}"
+        for code in outcomes(name, source) {
+            assert_eq!(
+                code,
+                super::common::ProgramOutcome::Trapped,
+                "{name}: must trap"
             );
         }
     }
@@ -505,8 +508,13 @@ fn unsound_programs_are_rejected() {
 #[test]
 fn field_writes_with_mutable_access_are_accepted() {
     let source = "struct P { x: int }\nfunc put(p: mut ref P): void { p.x = 6 }\nfunc P.fine(mut self): void { self.x = 2 }\nfunc main(): int {\n    let mut q = P { x: 1 }\n    q.x = 3\n    put(mut ref q)\n    q.fine()\n    return q.x\n}\n";
-    let codes = exit_codes("field_mutable", source);
-    assert!(codes.iter().all(|code| *code == Some(2)), "{codes:?}");
+    let codes = outcomes("field_mutable", source);
+    assert!(
+        codes
+            .iter()
+            .all(|code| *code == super::common::ProgramOutcome::Returned(2)),
+        "{codes:?}"
+    );
 }
 
 /// `T?` of a value type is a boxed handle in C as in Cranelift: the C build

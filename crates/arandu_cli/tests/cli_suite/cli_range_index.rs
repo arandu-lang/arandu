@@ -11,20 +11,20 @@ fn cli(args: &[&str]) -> std::process::Output {
         .expect("cli should run")
 }
 
-fn run_everywhere(name: &str, source: &str) -> Vec<Option<i32>> {
+fn run_everywhere(name: &str, source: &str) -> Vec<super::common::ProgramOutcome> {
     let file = std::env::temp_dir().join(format!("arandu_cli_range_index_{name}.aru"));
     fs::write(&file, source).expect("write");
     let path = file.to_string_lossy();
-    let mut codes: Vec<Option<i32>> = [None, Some("--opt")]
+    let mut codes: Vec<super::common::ProgramOutcome> = [None, Some("--opt")]
         .into_iter()
         .map(|profile| {
             let mut args = vec!["run"];
             args.extend(profile);
             args.push(&path);
-            cli(&args).status.code()
+            super::common::outcome(&cli(&args).status)
         })
         .collect();
-    codes.extend(super::common::c_release_exit_code(std::path::Path::new(
+    codes.extend(super::common::c_release_outcome(std::path::Path::new(
         &*path,
     )));
     codes
@@ -57,7 +57,12 @@ func main(): int {
     // tail = [3, 4, 5], mid = [2, 3], empty = []: 120 + 5 + 0 + 300 = 425,
     // which the exit status reports modulo 256.
     let codes = run_everywhere("values", source);
-    assert!(codes.iter().all(|code| *code == Some(169)), "{codes:?}");
+    assert!(
+        codes
+            .iter()
+            .all(|code| *code == super::common::ProgramOutcome::Returned(169)),
+        "{codes:?}"
+    );
 }
 
 #[test]
@@ -73,9 +78,10 @@ fn out_of_range_bounds_trap() {
         );
         // A valid cut would exit with its length, at most 4.
         for code in run_everywhere(name, &source) {
-            assert!(
-                code.is_none_or(|code| code > 4),
-                "{name}: must trap, got {code:?}"
+            assert_eq!(
+                code,
+                super::common::ProgramOutcome::Trapped,
+                "{name}: must trap"
             );
         }
     }

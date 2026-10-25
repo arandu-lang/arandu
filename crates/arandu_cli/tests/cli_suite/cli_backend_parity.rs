@@ -6,6 +6,8 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
+use super::common::ProgramOutcome;
+
 fn cli(args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_arandu_cli"))
         .args(args)
@@ -13,7 +15,7 @@ fn cli(args: &[&str]) -> std::process::Output {
         .expect("cli should run")
 }
 
-fn llvm_exit_code(source: &Path) -> Option<Option<i32>> {
+fn llvm_outcome(source: &Path) -> Option<super::common::ProgramOutcome> {
     Command::new("clang").arg("--version").output().ok()?;
     let ir = cli(&["emit-llvm", &source.to_string_lossy()]);
     assert!(
@@ -36,30 +38,39 @@ fn llvm_exit_code(source: &Path) -> Option<Option<i32>> {
         "{}",
         String::from_utf8_lossy(&built.stderr)
     );
-    Some(Command::new(&binary).status().expect("run").code())
+    Some(super::common::outcome(
+        &Command::new(&binary).status().expect("run"),
+    ))
 }
 
-/// Exit codes from every backend and level available on this host. LLVM
+/// Outcomes from every backend and level available on this host. LLVM
 /// executables link no runtime, so programs that need one skip it.
-fn exit_codes_on(name: &str, source: &str, llvm: bool) -> Vec<(&'static str, Option<i32>)> {
+fn outcomes_on(
+    name: &str,
+    source: &str,
+    llvm: bool,
+) -> Vec<(&'static str, super::common::ProgramOutcome)> {
     let file = std::env::temp_dir().join(format!("arandu_cli_parity_{name}.aru"));
     fs::write(&file, source).expect("write");
     let path = file.to_string_lossy().into_owned();
     let mut codes = vec![
-        ("run", cli(&["run", &path]).status.code()),
-        ("run --opt", cli(&["run", "--opt", &path]).status.code()),
+        ("run", super::common::outcome(&cli(&["run", &path]).status)),
+        (
+            "run --opt",
+            super::common::outcome(&cli(&["run", "--opt", &path]).status),
+        ),
     ];
-    if let Some(code) = super::common::c_release_exit_code(&file) {
+    if let Some(code) = super::common::c_release_outcome(&file) {
         codes.push(("c --release", code));
     }
-    if llvm && let Some(code) = llvm_exit_code(&file) {
+    if llvm && let Some(code) = llvm_outcome(&file) {
         codes.push(("llvm", code));
     }
     codes
 }
 
-fn exit_codes(name: &str, source: &str) -> Vec<(&'static str, Option<i32>)> {
-    exit_codes_on(name, source, true)
+fn outcomes(name: &str, source: &str) -> Vec<(&'static str, super::common::ProgramOutcome)> {
+    outcomes_on(name, source, true)
 }
 
 const RESULTS: &[(&str, &str, i32)] = &[
@@ -199,8 +210,12 @@ func main(): int {
 #[test]
 fn every_backend_computes_the_same_result() {
     for (name, source, expected) in RESULTS {
-        for (backend, code) in exit_codes(name, source) {
-            assert_eq!(code, Some(*expected), "{name} on {backend}");
+        for (backend, outcome) in outcomes(name, source) {
+            assert_eq!(
+                outcome,
+                ProgramOutcome::Returned(*expected),
+                "{name} on {backend}"
+            );
         }
     }
 }
@@ -281,10 +296,11 @@ func main(): int {
 #[test]
 fn every_backend_traps() {
     for (name, source) in TRAPS {
-        for (backend, code) in exit_codes(name, source) {
-            assert!(
-                code.is_none_or(|code| code >= 128),
-                "{name} must trap on {backend}, got {code:?}"
+        for (backend, outcome) in outcomes(name, source) {
+            assert_eq!(
+                outcome,
+                ProgramOutcome::Trapped,
+                "{name} must trap on {backend}"
             );
         }
     }
@@ -316,8 +332,8 @@ func g(n: u32): int {
 }
 func main(): int { return f(3) + g(4) }
 "#;
-    for (backend, code) in exit_codes("loops_that_return", accepted) {
-        assert_eq!(code, Some(10), "{backend}");
+    for (backend, outcome) in outcomes("loops_that_return", accepted) {
+        assert_eq!(outcome, ProgramOutcome::Returned(10), "{backend}");
     }
 }
 
@@ -337,8 +353,8 @@ func main(): int {
     return 2
 }
 "#;
-    for (backend, code) in exit_codes_on("float_text", source, false) {
-        assert_eq!(code, Some(1), "{backend}");
+    for (backend, outcome) in outcomes_on("float_text", source, false) {
+        assert_eq!(outcome, ProgramOutcome::Returned(1), "{backend}");
     }
 }
 
@@ -359,8 +375,8 @@ fn value_nullables_match_on_llvm() {
     for (name, source, expected) in RUNS_NULLABLE {
         let file = dir.join(format!("arandu_cli_parity_nullable_{name}.aru"));
         fs::write(&file, source).expect("write");
-        let jit = cli(&["run", &file.to_string_lossy()]).status.code();
-        assert_eq!(jit, Some(*expected), "{name} on run");
+        let jit = super::common::outcome(&cli(&["run", &file.to_string_lossy()]).status);
+        assert_eq!(jit, ProgramOutcome::Returned(*expected), "{name} on run");
         let ir = cli(&["emit-llvm", &file.to_string_lossy()]);
         assert!(
             ir.status.success(),
@@ -383,8 +399,8 @@ fn value_nullables_match_on_llvm() {
             "{name}: {}",
             String::from_utf8_lossy(&built.stderr)
         );
-        let code = Command::new(&binary).status().expect("run").code();
-        assert_eq!(code, Some(*expected), "{name} on llvm");
+        let code = super::common::outcome(&Command::new(&binary).status().expect("run"));
+        assert_eq!(code, ProgramOutcome::Returned(*expected), "{name} on llvm");
     }
 }
 

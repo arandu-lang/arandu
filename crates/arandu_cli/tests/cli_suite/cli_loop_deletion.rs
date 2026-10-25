@@ -182,10 +182,11 @@ fn an_unused_out_of_bounds_index_traps_at_every_level() {
             "{profile:?}: s[9] of a 3-byte slice must trap"
         );
     }
-    if let Some(code) = super::common::c_release_exit_code(&file) {
-        assert!(
-            code.is_none_or(|code| code >= 128),
-            "O2 C build must trap, got {code:?}"
+    if let Some(code) = super::common::c_release_outcome(&file) {
+        assert_eq!(
+            code,
+            super::common::ProgramOutcome::Trapped,
+            "O2 C build must trap"
         );
     }
 }

@@ -363,7 +363,8 @@ impl LowerCtx<'_> {
                 &callee_expr.kind
         {
             let formal0 = formal_params.first();
-            arg_ops.push(self.lower_call_arg(*base, 0, callee_for_modes, formal0, symbols)?);
+            let receiver = self.lower_call_arg(*base, 0, callee_for_modes, formal0, symbols)?;
+            arg_ops.push(self.reborrow_shared(receiver, formal0));
         }
         let arg_param_offset = if inject_receiver { 1 } else { 0 };
         for (i, &arg) in args_slice.iter().enumerate() {
@@ -371,6 +372,7 @@ impl LowerCtx<'_> {
             let formal_i = i + arg_param_offset;
             let formal = formal_params.get(formal_i);
             let arg_op = self.lower_call_arg(arg, formal_i, callee_for_modes, formal, symbols)?;
+            let arg_op = self.reborrow_shared(arg_op, formal);
             let arg_op = if let Some(param_ty) = formal {
                 if matches!(param_ty, ArType::Primitive(Primitive::Str)) {
                     self.maybe_to_str(arg_op, arg_expr.ty)?
@@ -533,6 +535,29 @@ impl LowerCtx<'_> {
             self.builder.current_block = None;
         }
         Ok(dest.map_or(AmirOperand::Constant(AmirConstant::Nil), AmirOperand::Copy))
+    }
+
+    /// A `mut ref` passed where the formal is `ref` is a shared reborrow
+    /// (Rust's `&*r`): give the call a `ref` copy, so an argument typed
+    /// `mut ref` always means an exclusive use the borrow checker must clear.
+    fn reborrow_shared(&mut self, operand: AmirOperand, formal: Option<&ArType>) -> AmirOperand {
+        let (Some(ArType::Ref(_)), AmirOperand::Copy(temp) | AmirOperand::Move(temp)) =
+            (formal, operand)
+        else {
+            return operand;
+        };
+        if !matches!(
+            self.resolve_ty(self.temps[temp.as_usize()].ty),
+            ArType::RefMut(_)
+        ) {
+            return operand;
+        }
+        let Some(formal) = formal else {
+            return operand;
+        };
+        let shared = self.new_temp(formal.clone());
+        self.emit_assign_temp(shared, AmirRvalue::Use(AmirOperand::Copy(temp)));
+        AmirOperand::Copy(shared)
     }
 
     pub(super) fn try_lower_mem_size_align_intrinsic(

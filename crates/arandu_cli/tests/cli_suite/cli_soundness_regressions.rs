@@ -264,6 +264,29 @@ func main(): int {
 "#,
         44,
     ),
+    (
+        "reads_through_mut_ref_while_slice_is_live",
+        r#"import std.alloc.vec as vec
+func work(v: mut ref vec.Vec<int>): int {
+    let s = v.asSlice()
+    let first = s[0]
+    let n = v.len()
+    v.push(first)
+    let t = v.asSlice()
+    return t[0] + (n as int)
+}
+func main(): int {
+    let mut v = vec.Vec<int>.new()
+    v.push(1)
+    let r = mut ref v
+    let a = r.asSlice()
+    let x = a[0] + (r.len() as int)
+    r.push(x)
+    return work(mut ref v)
+}
+"#,
+        3,
+    ),
 ];
 
 #[test]
@@ -415,6 +438,57 @@ const REJECTS: &[(&str, &str, &str)] = &[
         "literal_beyond_i128",
         "func main(): int {\n    let x = 99999999999999999999999999999999999999999999\n    return x\n}\n",
         "T038",
+    ),
+    (
+        "slice_through_mut_ref_param_then_push",
+        r#"import std.alloc.vec as vec
+func work(v: mut ref vec.Vec<int>): int {
+    let s = v.asSlice()
+    let mut i = 0
+    while i < 1000 {
+        v.push(i)
+        i = i + 1
+    }
+    return s[0]
+}
+func main(): int {
+    let mut v = vec.Vec<int>.new()
+    v.push(1)
+    return work(mut ref v)
+}
+"#,
+        "O003",
+    ),
+    (
+        "slice_through_mut_ref_local_then_push",
+        r#"import std.alloc.vec as vec
+func main(): int {
+    let mut v = vec.Vec<int>.new()
+    v.push(1)
+    let r = mut ref v
+    let s = r.asSlice()
+    r.push(2)
+    return s[0]
+}
+"#,
+        "O003",
+    ),
+    (
+        "slice_escapes_inner_scope_by_reassignment",
+        r#"import std.alloc.vec as vec
+func main(): int {
+    let mut values = vec.Vec<int>.new()
+    values.push(7)
+    let mut s = values.asSlice()
+    if values.len() > 0 {
+        let mut other = vec.Vec<int>.new()
+        other.push(3)
+        s = other.asSlice()
+    }
+    return s[0]
+}
+"#,
+        "O006",
     ),
 ];
 

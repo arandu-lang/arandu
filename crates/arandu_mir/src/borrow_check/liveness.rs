@@ -27,6 +27,12 @@ pub(super) fn compute_temp_live_before(
         if matches!(block.terminator, AmirTerminator::Return) && !func.temps.is_empty() {
             live.insert(TempId::from_usize(0));
         }
+        // Jump arguments and branch conditions are uses: a borrow passed to
+        // a successor's block parameter is live until the jump, past any
+        // `Destroy` of its owner earlier in the block.
+        crate::amir::visit::for_each_terminator_operand(&block.terminator, |op| {
+            mark_use(op, &mut live);
+        });
         // Before terminator:
         live_before[n] = live.clone();
         // Reverse statements.

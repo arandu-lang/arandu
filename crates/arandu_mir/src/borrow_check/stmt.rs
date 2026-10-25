@@ -11,6 +11,7 @@ pub(super) fn check_borrows_from_facts(
     func: &AmirFunc,
     symbols: &SymbolTable,
     facts: FuncBorrowFacts,
+    interner: Option<&crate::types::TypeInterner>,
 ) -> Vec<(BlockId, Diagnostic)> {
     if func.blocks.is_empty() || func.locals.is_empty() {
         return Vec::new();
@@ -33,7 +34,9 @@ pub(super) fn check_borrows_from_facts(
 
     let temp_live_before = super::liveness::compute_temp_live_before(func, &facts.temp_live);
 
-    let mut diags = Vec::new();
+    let mut diags = interner.map_or_else(Vec::new, |interner| {
+        super::reborrow::check_exclusive_reborrows(func, interner, &temp_live_before)
+    });
 
     for block in &func.blocks {
         let bi = block.id.as_usize();

@@ -16,6 +16,7 @@
 mod diag;
 mod liveness;
 mod places;
+mod reborrow;
 mod stmt;
 
 use crate::SymbolTable;
@@ -49,7 +50,7 @@ pub fn check_borrows_by_block(
     if func.blocks.is_empty() || func.locals.is_empty() {
         return Vec::new();
     }
-    stmt::check_borrows_from_facts(func, symbols, analyze_borrow_facts(func))
+    stmt::check_borrows_from_facts(func, symbols, analyze_borrow_facts(func), None)
 }
 
 /// Type-aware checks do not prolong a loan through an independent scalar read.
@@ -77,6 +78,7 @@ pub fn check_borrows_by_block_with_types(
         func,
         symbols,
         crate::borrow_facts::analyze_borrow_facts_with_types(func, interner),
+        Some(interner),
     )
 }
 #[cfg(test)]

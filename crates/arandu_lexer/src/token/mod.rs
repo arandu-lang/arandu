@@ -82,6 +82,21 @@ impl Token {
     }
 
     #[must_use]
+    pub fn byte_string_content<'a>(&self, source: &'a str) -> &'a str {
+        let lexeme = self.lexeme(source);
+        lexeme
+            .strip_prefix("b\"")
+            .and_then(|text| text.strip_suffix('"'))
+            .unwrap_or("")
+    }
+
+    /// Decode a lexed byte string literal (`b"..."`) into raw bytes.
+    #[must_use]
+    pub fn byte_string_bytes(&self, source: &str) -> Option<Vec<u8>> {
+        decode_byte_string_content(self.byte_string_content(source))
+    }
+
+    #[must_use]
     pub fn dump(&self, source: &str) -> String {
         if self.kind == TokenKind::Semicolon && self.inserted {
             "SEMICOLON(inserted)".to_string()
@@ -148,6 +163,44 @@ pub fn decode_byte_content(content: &str) -> Option<u8> {
     None
 }
 
+/// Decode the contents between the quotes of a byte string literal (`b"..."`).
+#[must_use]
+pub fn decode_byte_string_content(content: &str) -> Option<Vec<u8>> {
+    let bytes = content.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'\\' {
+            i += 1;
+            let esc = *bytes.get(i)?;
+            match esc {
+                b'n' => out.push(b'\n'),
+                b't' => out.push(b'\t'),
+                b'r' => out.push(b'\r'),
+                b'0' => out.push(b'\0'),
+                b'\\' => out.push(b'\\'),
+                b'"' => out.push(b'"'),
+                b'\'' => out.push(b'\''),
+                b'x' => {
+                    let hex_slice = content.get(i + 1..i + 3)?;
+                    let val = u8::from_str_radix(hex_slice, 16).ok()?;
+                    out.push(val);
+                    i += 2;
+                }
+                _ => return None,
+            }
+            i += 1;
+        } else if b.is_ascii() {
+            out.push(b);
+            i += 1;
+        } else {
+            return None;
+        }
+    }
+    Some(out)
+}
+
 /// Encode a byte as a valid Arandu byte character literal.
 #[must_use]
 pub fn byte_literal(value: u8) -> String {
@@ -187,6 +240,7 @@ pub enum TokenKind {
     MultilineStringEnd,
     Char,
     ByteChar,
+    ByteString,
     KwIf,
     KwElse,
     KwFor,
@@ -305,6 +359,7 @@ pub enum TokenKind {
     RangeExclusive,
     Ellipsis,
     Arrow,
+    PipeGt,
     Eof,
     Error(LexErrorCode),
 }

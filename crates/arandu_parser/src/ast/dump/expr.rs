@@ -253,6 +253,13 @@ pub(super) fn dump_expr(pool: &AstPool, expr: ExprId) -> String {
         ExprKind::Bool { value } => format!("Bool {}({value})", dump_span(span)),
         ExprKind::Char { value } => format!("Char {}('{value}')", dump_span(span)),
         ExprKind::Byte { value } => format!("Byte {}(b'{value}')", dump_span(span)),
+        ExprKind::ByteString { bytes } => {
+            format!(
+                "ByteString {}(b\"{}\")",
+                dump_span(span),
+                String::from_utf8_lossy(bytes)
+            )
+        }
         ExprKind::InterpolatedString { parts } => {
             let part_ids = pool.string_part_list(*parts);
             let parts_resolved: Vec<StringPart> = part_ids

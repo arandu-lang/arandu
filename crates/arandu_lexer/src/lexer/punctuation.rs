@@ -29,6 +29,7 @@ pub(super) fn token_kind_from_prefix(bytes: &[u8]) -> Option<(TokenKind, usize)>
         [b'?', b'[', ..] => Some((TokenKind::SafeIndexStart, 2)),
         [b'?', b'?', ..] => Some((TokenKind::NullCoalesce, 2)),
         [b'|', b'|', ..] => Some((TokenKind::LogicalOr, 2)),
+        [b'|', b'>', ..] => Some((TokenKind::PipeGt, 2)),
         [b'&', b'&', ..] => Some((TokenKind::LogicalAnd, 2)),
         [b'=', b'>', ..] => Some((TokenKind::FatArrow, 2)),
         [b'-', b'>', ..] => Some((TokenKind::Arrow, 2)),

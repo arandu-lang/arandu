@@ -240,6 +240,7 @@ impl Resolver<'_> {
             | ExprKind::Bool { .. }
             | ExprKind::Char { .. }
             | ExprKind::Byte { .. }
+            | ExprKind::ByteString { .. }
             | ExprKind::Nil => {}
         }
         for child in children {

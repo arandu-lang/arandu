@@ -142,6 +142,8 @@ impl TokenKind {
             TokenKind::TypeUsize => 134,
             TokenKind::ByteChar => 137,
             TokenKind::KwComptime => 138,
+            TokenKind::ByteString => 139,
+            TokenKind::PipeGt => 140,
             TokenKind::Error(_) => 132,
         }
     }
@@ -287,6 +289,8 @@ impl TokenKind {
             134 => TokenKind::TypeUsize,
             137 => TokenKind::ByteChar,
             138 => TokenKind::KwComptime,
+            139 => TokenKind::ByteString,
+            140 => TokenKind::PipeGt,
             _ => TokenKind::Error(crate::LexErrorCode::InvalidChar),
         }
     }

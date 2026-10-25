@@ -102,6 +102,38 @@ pub(super) fn lower_byte(pool: &AstPool, expr: ExprId) -> Result<HirExprKind, Di
     Ok(HirExprKind::Int(crate::SmolStr::new(value.to_string())))
 }
 
+pub(super) fn lower_byte_string(
+    type_check: &TypeCheckResult,
+    pool: &AstPool,
+    hir_pool: &mut crate::hir::HirPool,
+    expr: ExprId,
+) -> Result<HirExprKind, Diagnostic> {
+    let ExprKind::ByteString { bytes } = pool.expr(expr) else {
+        unreachable!();
+    };
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        return Ok(HirExprKind::FrozenBytes(
+            arandu_middle::ctfe::ConstString::new(text).bytes(),
+        ));
+    }
+    let span = pool.expr_span(expr);
+    let u8_ty = type_check.type_info.type_interner.intern(
+        crate::passes::type_checker::types::ArType::Primitive(
+            crate::passes::type_checker::types::Primitive::U8,
+        ),
+    );
+    let mut hir_items = Vec::with_capacity(bytes.len());
+    for &b in bytes.iter() {
+        hir_items.push(hir_pool.alloc_expr(HirExpr {
+            kind: HirExprKind::Int(crate::SmolStr::new(b.to_string())),
+            ty: u8_ty,
+            span,
+        }));
+    }
+    let items_range = hir_pool.alloc_expr_list(&hir_items);
+    Ok(HirExprKind::Array { items: items_range })
+}
+
 pub(super) fn lower_interpolated_string(
     type_check: &mut TypeCheckResult,
     pool: &AstPool,

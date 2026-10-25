@@ -478,7 +478,7 @@ pub fn map_token_kind(kind: TokenKind) -> SyntaxKind {
         IdentType => SyntaxKind::TYPE_IDENT,
         IntDec | IntHex | IntBin | IntOct | Float => SyntaxKind::NUMBER,
         StringStart | StringText | StringEscape | InterpStart | InterpEnd | StringEnd
-        | RawString | MultilineStringStart | MultilineStringEnd => SyntaxKind::STRING,
+        | RawString | ByteString | MultilineStringStart | MultilineStringEnd => SyntaxKind::STRING,
         Char | ByteChar => SyntaxKind::CHAR,
         TypeInt | TypeUint | TypeIsize | TypeUsize | TypeFloat | TypeI8 | TypeI16 | TypeI32
         | TypeI64 | TypeU8 | TypeU16 | TypeU32 | TypeU64 | TypeF32 | TypeF64 | TypeBool

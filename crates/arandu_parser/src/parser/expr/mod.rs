@@ -215,6 +215,64 @@ impl<'a> Parser<'a> {
                         .alloc_expr(ExprKind::Cast { expr: left, ty }, span);
                     continue;
                 }
+                TokenKind::PipeGt => {
+                    let left_bp = 15;
+                    let right_bp = 16;
+                    if left_bp < min_bp {
+                        break;
+                    }
+                    let span_start = self.pool.expr_span(left);
+                    self.advance();
+                    let right = self.parse_expr(right_bp)?;
+                    let span = span_between(span_start, self.pool.expr_span(right));
+                    left = match self.pool.expr(right).clone() {
+                        ExprKind::Call {
+                            callee,
+                            args,
+                            trailing_block,
+                        } => {
+                            let existing = self.pool.expr_list(args).to_vec();
+                            let mut new_args = Vec::with_capacity(existing.len() + 1);
+                            new_args.push(left);
+                            new_args.extend(existing);
+                            let new_range = self.pool.alloc_expr_list(&new_args);
+                            self.pool.alloc_expr(
+                                ExprKind::Call {
+                                    callee,
+                                    args: new_range,
+                                    trailing_block,
+                                },
+                                span,
+                            )
+                        }
+                        ExprKind::TypePath { .. }
+                        | ExprKind::Path { .. }
+                        | ExprKind::Field { .. }
+                        | ExprKind::Generic { .. } => {
+                            let new_range = self.pool.alloc_expr_list(&[left]);
+                            self.pool.alloc_expr(
+                                ExprKind::Call {
+                                    callee: right,
+                                    args: new_range,
+                                    trailing_block: None,
+                                },
+                                span,
+                            )
+                        }
+                        _ => {
+                            let new_range = self.pool.alloc_expr_list(&[left]);
+                            self.pool.alloc_expr(
+                                ExprKind::Call {
+                                    callee: right,
+                                    args: new_range,
+                                    trailing_block: None,
+                                },
+                                span,
+                            )
+                        }
+                    };
+                    continue;
+                }
                 _ => {}
             }
 
@@ -241,6 +299,16 @@ impl<'a> Parser<'a> {
                         self.source,
                     ));
                 }
+            }
+            folded += 1;
+            if folded > MAX_BINARY_CHAIN {
+                return Err(ParseError::new(
+                    ParseErrorCode::ExpectedExpression,
+                    "expression chain exceeds the nesting limit; split it with intermediate `let` bindings",
+                    self.current(),
+                    self.file_id,
+                    self.source,
+                ));
             }
             let span_start = self.pool.expr_span(left);
             self.advance();
@@ -300,16 +368,6 @@ const BINARY_OP_TABLE: [BinaryOpInfo; 21] = [
     BinaryOpInfo {
         op: BinaryOp::GtEqual,
         bp: 60,
-            folded += 1;
-            if folded > MAX_BINARY_CHAIN {
-                return Err(ParseError::new(
-                    ParseErrorCode::ExpectedExpression,
-                    "expression chain exceeds the nesting limit; split it with intermediate `let` bindings",
-                    self.current(),
-                    self.file_id,
-                    self.source,
-                ));
-            }
     }, // 8
     BinaryOpInfo {
         op: BinaryOp::RangeExclusive,

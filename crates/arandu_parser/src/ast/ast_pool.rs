@@ -267,6 +267,9 @@ pub enum ExprKind {
     Byte {
         value: u8,
     },
+    ByteString {
+        bytes: std::sync::Arc<[u8]>,
+    },
     InterpolatedString {
         parts: IndexRange,
     }, // string_part_ids range

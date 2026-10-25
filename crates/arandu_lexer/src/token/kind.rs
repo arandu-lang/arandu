@@ -12,7 +12,7 @@ impl fmt::Display for TokenKind {
 }
 
 impl TokenKind {
-    pub const COUNT: usize = 139;
+    pub const COUNT: usize = 141;
 
     /// Returns `true` if this token kind represents a language keyword.
     #[must_use]
@@ -123,6 +123,9 @@ impl TokenKind {
             }
             TokenKind::Char => format!("CHAR({})", token.char_content(source)),
             TokenKind::ByteChar => format!("BYTE_CHAR({})", token.byte_content(source)),
+            TokenKind::ByteString => {
+                format!("BYTE_STRING({})", token.byte_string_content(source))
+            }
             TokenKind::Error(code) => format!("ERROR({code:?})"),
             other => other.name().to_string(),
         }
@@ -148,9 +151,10 @@ impl TokenKind {
             TokenKind::StringText | TokenKind::StringEscape => "string content".to_string(),
             TokenKind::InterpStart | TokenKind::InterpEnd => "string interpolation".to_string(),
             TokenKind::StringEnd | TokenKind::MultilineStringEnd => "end of string".to_string(),
-            TokenKind::RawString | TokenKind::StringStart | TokenKind::MultilineStringStart => {
-                "string literal".to_string()
-            }
+            TokenKind::RawString
+            | TokenKind::ByteString
+            | TokenKind::StringStart
+            | TokenKind::MultilineStringStart => "string literal".to_string(),
             TokenKind::Char => {
                 let content = token.char_content(source);
                 if content.is_empty() {
@@ -204,6 +208,7 @@ impl TokenKind {
             TokenKind::MultilineStringEnd => "MULTILINE_STRING_END",
             TokenKind::Char => "CHAR",
             TokenKind::ByteChar => "BYTE_CHAR",
+            TokenKind::ByteString => "BYTE_STRING",
             TokenKind::KwIf => "KW_IF",
             TokenKind::KwElse => "KW_ELSE",
             TokenKind::KwFor => "KW_FOR",
@@ -322,6 +327,7 @@ impl TokenKind {
             TokenKind::RangeExclusive => "RANGE_EXCLUSIVE",
             TokenKind::Ellipsis => "ELLIPSIS",
             TokenKind::Arrow => "ARROW",
+            TokenKind::PipeGt => "PIPE_GT",
             TokenKind::Eof => "EOF",
             TokenKind::Error(_) => "ERROR",
         }
@@ -387,6 +393,7 @@ static TOKEN_FLAGS_TABLE: [TokenFlags; TokenKind::COUNT] = {
                 | TokenKind::Nil
                 | TokenKind::Char
                 | TokenKind::ByteChar
+                | TokenKind::ByteString
                 | TokenKind::StringEnd
                 | TokenKind::RawString
                 | TokenKind::MultilineStringEnd
@@ -431,6 +438,7 @@ static TOKEN_FLAGS_TABLE: [TokenFlags; TokenKind::COUNT] = {
                 | TokenKind::RangeInclusive
                 | TokenKind::FatArrow
                 | TokenKind::Arrow
+                | TokenKind::PipeGt
                 | TokenKind::KwElse
                 | TokenKind::KwCatch
                 | TokenKind::KwAs

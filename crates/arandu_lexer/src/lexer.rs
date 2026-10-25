@@ -149,6 +149,8 @@ impl<'a> Lexer<'a> {
             b'b' => {
                 if remaining >= 2 && bytes[self.pos + 1] == b'\'' {
                     return self.lex_byte_char();
+                } else if remaining >= 2 && bytes[self.pos + 1] == b'"' {
+                    return self.lex_byte_string();
                 }
             }
             b'r' => {

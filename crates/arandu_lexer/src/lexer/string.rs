@@ -403,6 +403,59 @@ impl<'a> Lexer<'a> {
         Ok(())
     }
 
+    pub(super) fn lex_byte_string(&mut self) -> Result<(), LexError> {
+        let start = self.mark();
+        self.bump(); // 'b'
+        self.bump(); // '"'
+        while !self.is_at_end() && self.peek() != Some('"') {
+            if matches!(self.peek(), Some('\n' | '\r')) {
+                return Err(self.error_from(
+                    start,
+                    LexErrorCode::UnterminatedString,
+                    "unterminated byte string literal",
+                ));
+            }
+            if let Some(ch) = self.peek()
+                && is_bidi_control(ch)
+            {
+                let err_start = self.mark();
+                self.bump();
+                return Err(self.error_from(
+                    err_start,
+                    LexErrorCode::BidiTrojanSource,
+                    "unescaped bidirectional Unicode control character (Trojan Source, CWE-1307)",
+                ));
+            }
+            if self.peek() == Some('\\') {
+                let escape_start = self.mark();
+                self.consume_byte_escape_sequence(escape_start)?;
+                continue;
+            }
+            if let Some(ch) = self.peek()
+                && !ch.is_ascii()
+            {
+                let err_start = self.mark();
+                self.bump();
+                return Err(self.error_from(
+                    err_start,
+                    LexErrorCode::InvalidChar,
+                    "byte string literal must be ASCII",
+                ));
+            }
+            self.bump();
+        }
+        if self.is_at_end() || self.peek() != Some('"') {
+            return Err(self.error_from(
+                start,
+                LexErrorCode::UnterminatedString,
+                "unterminated byte string literal",
+            ));
+        }
+        self.bump();
+        self.push_token(TokenKind::ByteString, self.span_from(start), false);
+        Ok(())
+    }
+
     fn consume_byte_escape_sequence(&mut self, start: Mark) -> Result<(), LexError> {
         self.bump();
         match self.peek() {

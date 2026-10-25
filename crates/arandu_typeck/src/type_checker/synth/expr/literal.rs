@@ -63,6 +63,10 @@ fn peek_value_type(checker: &mut TypeChecker<'_>, value: ExprId) -> Option<TypeI
         ExprKind::Bool { .. } => Some(checker.intern(ArType::Primitive(Primitive::Bool))),
         ExprKind::Char { .. } => Some(checker.intern(ArType::Primitive(Primitive::Char))),
         ExprKind::Byte { .. } => Some(checker.intern(ArType::Primitive(Primitive::U8))),
+        ExprKind::ByteString { .. } => {
+            let u8_id = checker.intern(ArType::Primitive(Primitive::U8));
+            Some(checker.intern(ArType::Slice(u8_id)))
+        }
         ExprKind::InterpolatedString { .. } => {
             Some(checker.intern(ArType::Primitive(Primitive::Str)))
         }
@@ -205,6 +209,10 @@ pub(super) fn synth_literal_expr(
         ExprKind::Bool { .. } => Some(checker.intern(ArType::Primitive(Primitive::Bool))),
         ExprKind::Char { .. } => Some(checker.intern(ArType::Primitive(Primitive::Char))),
         ExprKind::Byte { .. } => Some(checker.intern(ArType::Primitive(Primitive::U8))),
+        ExprKind::ByteString { .. } => {
+            let u8_id = checker.intern(ArType::Primitive(Primitive::U8));
+            Some(checker.intern(ArType::Slice(u8_id)))
+        }
         ExprKind::InterpolatedString { parts } => {
             // ToStr v0.1: formatable primitives are accepted; lower inserts
             // AmirRvalue::ToStr. Non-formatable types get T034 (not silent Any).

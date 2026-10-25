@@ -10,7 +10,8 @@ pub mod simd;
 pub use error::{LexError, LexErrorCode};
 pub use lexer::Lexer;
 pub use token::{
-    Span, Token, TokenKind, byte_literal, char_literal, decode_byte_content, decode_char_content,
+    Span, Token, TokenKind, byte_literal, char_literal, decode_byte_content,
+    decode_byte_string_content, decode_char_content,
 };
 
 /// Classify a complete source spelling as an identifier token.

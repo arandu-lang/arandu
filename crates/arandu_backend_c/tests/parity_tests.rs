@@ -5039,7 +5039,7 @@ fn path_only_programs_include_the_variadic_concat_header() {
 extern "C" { func ar_path_join(a: str, b: str): str }
 func main(): int {
     let joined = unsafe { ar_path_join("a", "b") }
-    if joined == "a/b" { return 0 }
+    if joined == "a/b" || joined == "a\\b" { return 0 }
     return 1
 }
 "#,

@@ -8,28 +8,48 @@ impl<'a> CEmitter<'a> {
     pub(super) fn emit_path_runtime(&mut self, len_c_ty: &str) {
         let _ = writeln!(
             &mut self.output,
-            r#"/* std.path host (Unix-oriented gold; mirrors JIT Path helpers). */
+            r#"/* std.path host (supports Windows and POSIX; mirrors JIT Path helpers). */
+#if defined(_WIN32) || defined(__WIN32__) || defined(_MSC_VER)
+static inline int ar_path_is_sep(uint8_t c) {{
+    return c == '/' || c == '\\';
+}}
+#define AR_PATH_SEP '\\'
+#else
+static inline int ar_path_is_sep(uint8_t c) {{
+    return c == '/';
+}}
+#define AR_PATH_SEP '/'
+#endif
 static {len_c_ty} ar_path_is_absolute(ArStr p) {{
     if (p.len <= 0 || !p.ptr) return 0;
+#if defined(_WIN32) || defined(__WIN32__) || defined(_MSC_VER)
+    if (ar_path_is_sep(p.ptr[0])) return 1;
+    if (p.len >= 3 && p.ptr[1] == ':' && ar_path_is_sep(p.ptr[2])) {{
+        uint8_t d = p.ptr[0];
+        if ((d >= 'a' && d <= 'z') || (d >= 'A' && d <= 'Z')) return 1;
+    }}
+    return 0;
+#else
     return p.ptr[0] == '/' ? 1 : 0;
+#endif
 }}
 static {len_c_ty} ar_path_is_empty(ArStr p) {{
     return p.len <= 0 ? 1 : 0;
 }}
 static ArStr ar_path_join(ArStr a, ArStr b) {{
-    /* Unix Path::join: absolute b replaces; a separator follows any
+    /* Host Path::join: absolute b replaces; a separator follows any
        non-empty a lacking one, even when b is empty ("a" + "" = "a/"). */
-    if (b.len > 0 && b.ptr && b.ptr[0] == '/') return b;
+    if (ar_path_is_absolute(b)) return b;
     if (a.len <= 0 || !a.ptr) return b;
     {len_c_ty} bl = (b.len > 0 && b.ptr) ? b.len : 0;
-    int need_sep = !(a.ptr[a.len - 1] == '/');
+    int need_sep = !ar_path_is_sep(a.ptr[a.len - 1]);
     if (bl == 0 && !need_sep) return a;
     {len_c_ty} total = a.len + bl + (need_sep ? 1 : 0);
     uint8_t *buf = (uint8_t*)malloc((size_t)total + 1);
     if (!buf) abort();
     memcpy(buf, a.ptr, (size_t)a.len);
     {len_c_ty} off = a.len;
-    if (need_sep) buf[off++] = '/';
+    if (need_sep) buf[off++] = AR_PATH_SEP;
     if (bl > 0) memcpy(buf + off, b.ptr, (size_t)bl);
     buf[total] = 0;
     return ar_str_pack(buf, total);
@@ -38,9 +58,9 @@ static bool ar_path_join_owned(ArStr a, ArStr b, uint8_t **out_buf, {len_c_ty} *
     if (!out_buf || !out_len || !out_cap || a.len < 0 || b.len < 0 ||
         (a.len > 0 && !a.ptr) || (b.len > 0 && !b.ptr)) return false;
     *out_buf = NULL; *out_len = 0; *out_cap = 0;
-    bool absolute = b.len > 0 && b.ptr[0] == '/';
+    bool absolute = ar_path_is_absolute(b) != 0;
     {len_c_ty} al = absolute ? 0 : a.len;
-    bool need_sep = al > 0 && a.ptr[al - 1] != '/';
+    bool need_sep = al > 0 && !ar_path_is_sep(a.ptr[al - 1]);
     if (al > INT64_MAX - b.len - (need_sep ? 1 : 0)) return false;
     {len_c_ty} total = al + b.len + (need_sep ? 1 : 0);
     if (total == 0) return true;
@@ -48,21 +68,21 @@ static bool ar_path_join_owned(ArStr a, ArStr b, uint8_t **out_buf, {len_c_ty} *
     if (!buf) return false;
     {len_c_ty} off = 0;
     if (al > 0) {{ memcpy(buf, a.ptr, (size_t)al); off = al; }}
-    if (need_sep) buf[off++] = '/';
+    if (need_sep) buf[off++] = AR_PATH_SEP;
     if (b.len > 0) memcpy(buf + off, b.ptr, (size_t)b.len);
     *out_buf = buf; *out_len = total; *out_cap = total;
     return true;
 }}
 static ArStr ar_path_file_name(ArStr p) {{
-    /* Unix Path::file_name: last normal component, ignoring trailing
+    /* Host Path::file_name: last normal component, ignoring trailing
        separators and non-leading "." components; root, "." and ".." have none. */
     if (p.len <= 0 || !p.ptr) return ar_str_pack((const uint8_t*)"", 0);
     {len_c_ty} end = p.len;
     {len_c_ty} i;
     for (;;) {{
-        while (end > 0 && p.ptr[end - 1] == '/') end--;
+        while (end > 0 && ar_path_is_sep(p.ptr[end - 1])) end--;
         i = end;
-        while (i > 0 && p.ptr[i - 1] != '/') i--;
+        while (i > 0 && !ar_path_is_sep(p.ptr[i - 1])) i--;
         if (i > 0 && end - i == 1 && p.ptr[i] == '.') {{ end = i; continue; }}
         break;
     }}

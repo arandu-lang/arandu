@@ -341,3 +341,72 @@ func main(): int {
         assert_eq!(code, Some(1), "{backend}");
     }
 }
+
+/// `T?` of a value type is a boxed handle on LLVM as on Cranelift and C. The
+/// IR calls the runtime allocator, which a minimal stub provides here.
+#[test]
+fn value_nullables_match_on_llvm() {
+    if Command::new("clang").arg("--version").output().is_err() {
+        return;
+    }
+    let dir = std::env::temp_dir();
+    let stub = dir.join("arandu_cli_parity_raw_malloc.c");
+    fs::write(
+        &stub,
+        "#include <stdint.h>\n#include <stdlib.h>\nvoid *ar_rt_raw_malloc(uintptr_t n) { return malloc(n); }\n",
+    )
+    .expect("write stub");
+    for (name, source, expected) in RUNS_NULLABLE {
+        let file = dir.join(format!("arandu_cli_parity_nullable_{name}.aru"));
+        fs::write(&file, source).expect("write");
+        let jit = cli(&["run", &file.to_string_lossy()]).status.code();
+        assert_eq!(jit, Some(*expected), "{name} on run");
+        let ir = cli(&["emit-llvm", &file.to_string_lossy()]);
+        assert!(
+            ir.status.success(),
+            "{name}: {}",
+            String::from_utf8_lossy(&ir.stderr)
+        );
+        let ll = file.with_extension("ll");
+        let binary = file.with_extension("llvm.bin");
+        fs::write(&ll, &ir.stdout).expect("write ll");
+        let built = Command::new("clang")
+            .args(["-O2", "-w"])
+            .arg(&ll)
+            .arg(&stub)
+            .arg("-o")
+            .arg(&binary)
+            .output()
+            .expect("clang");
+        assert!(
+            built.status.success(),
+            "{name}: {}",
+            String::from_utf8_lossy(&built.stderr)
+        );
+        let code = Command::new(&binary).status().expect("run").code();
+        assert_eq!(code, Some(*expected), "{name} on llvm");
+    }
+}
+
+const RUNS_NULLABLE: &[(&str, &str, i32)] = &[
+    (
+        "struct_assigned_in_branch",
+        "struct Inner { v: int }\nfunc main(): int {\n    let mut inn: Inner? = nil\n    let c = 1\n    if c > 0 { inn = Inner { v: 3 } }\n    return inn?.v ?? 7\n}\n",
+        3,
+    ),
+    (
+        "scalar_from_variable",
+        "func main(): int {\n    let x = 5\n    let k: int? = x\n    let c = 1\n    if c > 0 { }\n    return k ?? 7\n}\n",
+        5,
+    ),
+    (
+        "nested_safe_navigation",
+        "struct Inner { v: int }\nstruct Outer { inner: Inner? }\nfunc mk(): Inner? { return Inner { v: 4 } }\nfunc mko(): Outer? { return Outer { inner: mk() } }\nfunc main(): int {\n    return mko()?.inner?.v ?? 9\n}\n",
+        4,
+    ),
+    (
+        "struct_return_or_nil",
+        "struct P { v: int }\nfunc g(x: int): P? {\n    if x > 0 { return P { v: x } }\n    return nil\n}\nfunc main(): int {\n    return (g(6)?.v ?? 0) + (g(-1)?.v ?? 10)\n}\n",
+        16,
+    ),
+];

@@ -253,8 +253,76 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
         value: TypedValue,
         lhs_ty: &ArType,
     ) -> Result<(), Diagnostic> {
+        // A `T` assigned to a `T?` is boxed, as in Cranelift and C.
+        if let ArType::Nullable(inner) = lhs_ty
+            && value.ty != "ptr"
+        {
+            let inner = self.module.interner.resolve(*inner);
+            if self.is_boxed_nullable(&inner) {
+                let boxed = self.box_nullable(value, &inner)?;
+                return self.assign_value(result, boxed);
+            }
+        }
         let value = self.coerce(value, lhs_ty)?;
         self.assign_value(result, value)
+    }
+
+    /// Whether `T?` with this `T` is a handle to a boxed `T` (null for nil):
+    /// value types are boxed, references and pointers keep their own null.
+    pub(in crate::codegen) fn is_boxed_nullable(&self, inner: &ArType) -> bool {
+        !self.module.is_pointer(inner)
+            && !self.module.is_fat_pointer(inner)
+            && !matches!(inner, ArType::Void | ArType::Error)
+    }
+
+    fn box_nullable(
+        &mut self,
+        value: TypedValue,
+        inner: &ArType,
+    ) -> Result<TypedValue, Diagnostic> {
+        let value = self.coerce(value, inner)?;
+        let size = self
+            .module
+            .layout
+            .layout_of_type(inner, self.module.interner, self.module.info)
+            .map_err(|error| ice(format!("LLVM layout failed for {inner:?}: {error}")))?
+            .size
+            .max(1);
+        self.module.require_raw_malloc();
+        let handle = self.new_value();
+        self.writer.line(format!(
+            "{handle} = call ptr @ar_rt_raw_malloc({} {size})",
+            self.module.ptr_int_ty()
+        ));
+        let failed = self.new_value();
+        self.writer
+            .line(format!("{failed} = icmp eq ptr {handle}, null"));
+        self.trap_if(&failed);
+        let align = self.module.align_of(inner);
+        self.writer.line(format!(
+            "store {} {}, ptr {handle}, align {align}",
+            value.ty, value.value
+        ));
+        Ok(TypedValue::new("ptr".to_owned(), handle))
+    }
+
+    pub(in crate::codegen) fn unbox_nullable(
+        &mut self,
+        handle: TypedValue,
+        inner: &ArType,
+    ) -> Result<TypedValue, Diagnostic> {
+        let inner_text = self.module.llvm_ty(inner)?;
+        let align = self.module.align_of(inner);
+        let loaded = self.new_value();
+        self.writer.line(format!(
+            "{loaded} = load {inner_text}, ptr {}, align {align}",
+            handle.value
+        ));
+        let mut value = TypedValue::new(inner_text, loaded);
+        if self.module.integer_width(inner).is_some() {
+            value = value.with_source_signed(self.module.is_signed(inner));
+        }
+        Ok(value)
     }
 
     /// Gives an already computed value to the pending destination without an

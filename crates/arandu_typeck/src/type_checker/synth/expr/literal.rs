@@ -476,6 +476,38 @@ pub(super) fn synth_literal_expr(
                         let mut missing_fields = Vec::new();
                         for def_name in fields_def.keys() {
                             if !seen_fields.iter().any(|(name, _)| name == def_name) {
+                                if let Some(&default_expr) = checker
+                                    .type_info
+                                    .struct_field_defaults
+                                    .get(&(symbol_id, def_name.as_str().into()))
+                                {
+                                    let expected_id_opt = fields_def
+                                        .get(def_name)
+                                        .map(|f_ty| checker.intern(f_ty.clone()));
+                                    let def_val_ty_id = super::super::synth_expr_expected(
+                                        checker,
+                                        default_expr,
+                                        expected_id_opt,
+                                    );
+                                    if let Some(defined_field_ty) = fields_def.get(def_name)
+                                        && let Some(var_id) =
+                                            checker.literal_table.var_for_expr(default_expr)
+                                    {
+                                        let exp_id = checker.intern(defined_field_ty.clone());
+                                        checker.constrain_literal_var(
+                                            var_id,
+                                            exp_id,
+                                            ConstraintOrigin::FieldInit {
+                                                struct_span: span,
+                                                field_name: def_name.to_string(),
+                                                field_span: span,
+                                                value_span: checker.pool.expr_span(default_expr),
+                                            },
+                                        );
+                                    }
+                                    let _ = def_val_ty_id;
+                                    continue;
+                                }
                                 missing_fields.push(format!("`{def_name}`"));
                             }
                         }

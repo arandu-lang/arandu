@@ -253,6 +253,7 @@ pub struct FieldDecl {
     pub visibility: Visibility,
     pub name: SmolStr,
     pub ty: TypeExprId,
+    pub default: Option<Expr>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -91,6 +91,14 @@ pub(crate) fn collect_type_shapes(checker: &mut TypeChecker<'_>, program: &Progr
                             field_entries,
                         )),
                     );
+                    for field in &struct_decl.fields {
+                        if let Some(default_expr) = field.default {
+                            checker
+                                .type_info
+                                .struct_field_defaults
+                                .insert((symbol_id, field.name.clone()), default_expr);
+                        }
+                    }
                     let params = super::super::super::types::extract_generic_param_symbols(
                         checker,
                         &struct_decl.generic_params,

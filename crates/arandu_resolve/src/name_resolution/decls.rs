@@ -351,6 +351,9 @@ impl<'a> Resolver<'a> {
     pub(crate) fn resolve_field(&mut self, scope: ScopeId, field: &FieldDecl) {
         self.resolve_attrs(scope, &field.attrs);
         self.resolve_type_expr(scope, field.ty);
+        if let Some(default_expr) = field.default {
+            self.resolve_expr(scope, default_expr);
+        }
         self.define(scope, &field.name, SymbolKind::Field, field.span);
     }
 

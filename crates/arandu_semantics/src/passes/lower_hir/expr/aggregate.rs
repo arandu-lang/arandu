@@ -61,29 +61,48 @@ pub(super) fn lower_struct_literal(
                 }
             }
 
-            if let Some(base_vid) = base_value_id
-                && let Some(defined_fields) = type_check
-                    .type_info
-                    .struct_fields
-                    .get(&struct_symbol)
-                    .cloned()
+            if let Some(defined_fields) = type_check
+                .type_info
+                .struct_fields
+                .get(&struct_symbol)
+                .cloned()
             {
-                for f in defined_fields.iter() {
-                    let smol_name = f.name.clone();
-                    if !explicit_field_names.contains(&smol_name) {
-                        let field_expr = hir_pool.alloc_expr(HirExpr {
-                            kind: HirExprKind::Field {
-                                base: base_vid,
-                                field: smol_name.clone(),
-                            },
-                            ty: f.ty,
-                            span,
-                        });
-                        hir_fields.push(HirFieldInit {
-                            span,
-                            name: smol_name,
-                            value: field_expr,
-                        });
+                if let Some(base_vid) = base_value_id {
+                    for f in defined_fields.iter() {
+                        let smol_name = f.name.clone();
+                        if !explicit_field_names.contains(&smol_name) {
+                            let field_expr = hir_pool.alloc_expr(HirExpr {
+                                kind: HirExprKind::Field {
+                                    base: base_vid,
+                                    field: smol_name.clone(),
+                                },
+                                ty: f.ty,
+                                span,
+                            });
+                            hir_fields.push(HirFieldInit {
+                                span,
+                                name: smol_name,
+                                value: field_expr,
+                            });
+                        }
+                    }
+                } else {
+                    for f in defined_fields.iter() {
+                        let smol_name = f.name.clone();
+                        if !explicit_field_names.contains(&smol_name)
+                            && let Some(&default_expr) = type_check
+                                .type_info
+                                .struct_field_defaults
+                                .get(&(struct_symbol, smol_name.clone()))
+                        {
+                            let value_id =
+                                super::lower_expr(type_check, pool, hir_pool, default_expr)?;
+                            hir_fields.push(HirFieldInit {
+                                span,
+                                name: smol_name,
+                                value: value_id,
+                            });
+                        }
                     }
                 }
             }

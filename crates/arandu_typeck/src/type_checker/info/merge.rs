@@ -297,6 +297,10 @@ impl TypeInfo {
             );
         }
         self.struct_repr_c.extend(&other.struct_repr_c);
+        for ((sym, name), &expr_id) in &other.struct_field_defaults {
+            self.struct_field_defaults
+                .insert((remap(*sym), name.clone()), expr_id);
+        }
         self.interior_mutable_types
             .extend(other.interior_mutable_types.iter().copied().map(&remap));
     }

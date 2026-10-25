@@ -75,6 +75,9 @@ pub(super) fn parse_field(
     let name = SmolStr::new(ctx.text(name_tok)?);
     cur.expect(TokenKind::Colon)?;
     let ty = parse_type(ctx, cur)?;
+    if cur.eat(TokenKind::Equal) {
+        return None;
+    }
     let _ = cur.eat(TokenKind::Semicolon);
     let _ = cur.eat(TokenKind::Comma);
     let end = ctx.pool.type_expr_span(ty).end;
@@ -84,6 +87,7 @@ pub(super) fn parse_field(
         visibility,
         name,
         ty,
+        default: None,
     })
 }
 

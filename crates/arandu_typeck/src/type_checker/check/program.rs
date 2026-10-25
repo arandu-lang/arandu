@@ -119,6 +119,19 @@ fn duplicate_module_member_info(checker: &mut TypeChecker<'_>, program: &Program
             if let Some(fields) = checker.type_info.struct_fields.get(&free_id).cloned() {
                 checker.type_info.struct_fields.insert(member_id, fields);
             }
+            let defaults_for_free: Vec<_> = checker
+                .type_info
+                .struct_field_defaults
+                .iter()
+                .filter(|((sym, _), _)| *sym == free_id)
+                .map(|((_, fname), &expr_id)| (fname.clone(), expr_id))
+                .collect();
+            for (fname, expr_id) in defaults_for_free {
+                checker
+                    .type_info
+                    .struct_field_defaults
+                    .insert((member_id, fname), expr_id);
+            }
         }
     }
 }

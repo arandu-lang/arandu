@@ -142,6 +142,8 @@ pub struct TypeInfo {
     pub unsafe_functions: FxHashSet<SymbolId>,
     /// Struct symbols that explicitly declare `@Repr("C")` / `#[repr(C)]`.
     pub struct_repr_c: rustc_hash::FxHashSet<SymbolId>,
+    /// Struct field default value expressions (`(struct_symbol, field_name) -> default_expr`).
+    pub struct_field_defaults: FxHashMap<(SymbolId, smol_str::SmolStr), ExprId>,
     /// Thread-closure capture jobs keyed by the lambda span. Empty unless a
     /// `move ||` was accepted as a `ThreadJob`.
     pub thread_captures: FxHashMap<arandu_middle::Span, ThreadCaptureRecipe>,
@@ -193,6 +195,7 @@ impl TypeInfo {
             function_effects: FxHashMap::default(),
             unsafe_functions: FxHashSet::default(),
             struct_repr_c: rustc_hash::FxHashSet::default(),
+            struct_field_defaults: FxHashMap::default(),
             thread_captures: FxHashMap::default(),
         }
     }

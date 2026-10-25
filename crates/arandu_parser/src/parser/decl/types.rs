@@ -113,6 +113,11 @@ impl<'a> Parser<'a> {
         let name = self.expect_ident_value()?;
         self.expect_name("COLON")?;
         let ty = self.parse_type()?;
+        let default = if self.eat_name("EQUAL") {
+            Some(self.parse_expr(0)?)
+        } else {
+            None
+        };
         if self.at_kind_name("SEMICOLON") {
             self.advance();
         }
@@ -122,6 +127,7 @@ impl<'a> Parser<'a> {
             visibility,
             name,
             ty,
+            default,
         };
         self.attach_docs(docs, field.span);
         Ok(field)

@@ -85,11 +85,15 @@ func_name          = IDENT_VALUE
 
 param_list         = param { "," param } [ "," ] ;
 
-param              = attribute_list [ ownership ] ( self_param | regular_param ) [ "..." ] ;
+param              = attribute_list ( self_param | regular_param ) [ "..." ] ;
 
-regular_param      = IDENT_VALUE ":" type_expr ;
+regular_param      = [ ownership ] IDENT_VALUE ":" type_expr ;
 
-self_param         = "self" [ ":" self_type ] ;
+self_param         = short_self | typed_self ;
+
+short_self         = [ "mut" | "ref" | "own" ] "self" ;
+
+typed_self         = "self" [ ":" self_type ] ;
 
 self_type          = [ "ref" | "mut" "ref" | "own" ] [ type_expr ] ;
 
@@ -110,7 +114,7 @@ struct_decl        = attribute_list [ visibility ] "struct"
                      IDENT_TYPE [ generic_params ] [ where_clause ]
                      "{" { field_decl } "}" ;
 
-field_decl         = attribute_list [ visibility ] IDENT_VALUE ":" type_expr stmt_end ;
+field_decl         = attribute_list [ visibility ] IDENT_VALUE ":" type_expr [ "=" expr ] stmt_end ;
 
 
 enum_decl          = attribute_list [ visibility ] "enum"
@@ -184,6 +188,7 @@ type_primary       = primitive_type
                    | own_type
                    | ptr_type
                    | slice_type
+                   | mut_slice_type
                    | array_type
                    | func_type
                    | "(" type_expr ")"
@@ -209,6 +214,8 @@ ptr_type           = "ptr" "[" type_expr "]" ;
 
 slice_type         = "[" "]" type_expr ;
 
+mut_slice_type     = "mut" "[" "]" type_expr ;
+
 array_type         = "[" array_dimension "]" type_expr ;
 
 array_dimension    = INT_LIT | comptime_expr | IDENT_VALUE ;
@@ -227,6 +234,8 @@ type_list          = type_expr { "," type_expr } [ "," ] ;
 block              = "{" { stmt_end | statement } "}" ;
 
 statement          = var_decl stmt_end
+                   | let_else_stmt
+                   | guard_stmt
                    | set_stmt stmt_end
                    | return_stmt stmt_end
                    | break_stmt stmt_end
@@ -243,7 +252,11 @@ statement          = var_decl stmt_end
                    | unsafe_stmt
                    ;
 
-var_decl           = "let" binding_item { "," binding_item } "=" expr ;
+var_decl           = "let" [ "(" ] binding_item { "," binding_item } [ ")" ] "=" expr ;
+
+let_else_stmt      = "let" ( [ "mut" ] binding_name | pattern ) [ ":" type_expr ] "=" expr "else" block ;
+
+guard_stmt         = "guard" condition "else" block ;
 
 binding_item       = [ "mut" ] binding_name [ ":" type_expr ] ;
 
@@ -279,7 +292,11 @@ if_stmt            = [ "comptime" ] "if" condition block
                      { "else" "if" condition block }
                      [ "else" block ] ;
 
-condition          = is_condition | expr ;
+condition          = condition_clause { ( "&&" | "," ) condition_clause } ;
+
+condition_clause   = [ "let" ] pattern "=" expr
+                   | expr [ "is" pattern ]
+                   ;
 
 is_condition       = expr "is" pattern ;
 
@@ -355,55 +372,58 @@ range_pattern      = LITERAL ( ".." | "..=" ) LITERAL ;
 (* Level 1: Catch expression (Right-associative) *)
 expr               = catch_expr ;
 
-catch_expr         = null_coalesce_expr [ "catch" ( expr | catch_block ) ] ;
+catch_expr         = pipe_expr [ "catch" ( expr | catch_block ) ] ;
 
 catch_block        = "|" IDENT_VALUE "|" block ;
 
-(* Level 2: Null-coalescing (Right-associative) *)
+(* Level 2: Pipeline operator (Left-associative) *)
+pipe_expr          = null_coalesce_expr { "|>" null_coalesce_expr } ;
+
+(* Level 3: Null-coalescing (Right-associative) *)
 null_coalesce_expr = logical_or_expr { "??" logical_or_expr } ;
 
-(* Level 3: Logical OR *)
+(* Level 4: Logical OR *)
 logical_or_expr    = logical_and_expr { "||" logical_and_expr } ;
 
-(* Level 4: Logical AND *)
+(* Level 5: Logical AND *)
 logical_and_expr   = equality_expr { "&&" equality_expr } ;
 
-(* Level 5: Equality *)
+(* Level 6: Equality *)
 equality_expr      = comparison_expr { ( "==" | "!=" ) comparison_expr } ;
 
-(* Level 6: Comparison *)
+(* Level 7: Comparison *)
 comparison_expr    = range_expr { ( "<" | ">" | "<=" | ">=" ) range_expr } ;
 
-(* Level 7: Range *)
+(* Level 8: Range *)
 range_expr         = bitor_expr [ ( ".." | "..=" ) bitor_expr ] ;
 
-(* Level 8: Bitwise OR *)
+(* Level 9: Bitwise OR *)
 bitor_expr         = bitxor_expr { "|" bitxor_expr } ;
 
-(* Level 9: Bitwise XOR *)
+(* Level 10: Bitwise XOR *)
 bitxor_expr        = bitand_expr { "^" bitand_expr } ;
 
-(* Level 10: Bitwise AND *)
+(* Level 11: Bitwise AND *)
 bitand_expr        = shift_expr { "&" shift_expr } ;
 
-(* Level 11: Shift *)
+(* Level 12: Shift *)
 shift_expr         = additive_expr { ( "<<" | ">>" ) additive_expr } ;
 
-(* Level 12: Additive *)
+(* Level 13: Additive *)
 additive_expr      = multiplicative_expr { ( "+" | "-" ) multiplicative_expr } ;
 
-(* Level 13: Multiplicative *)
+(* Level 14: Multiplicative *)
 multiplicative_expr = cast_expr { ( "*" | "/" | "%" ) cast_expr } ;
 
-(* Level 14: Type cast *)
+(* Level 15: Type cast *)
 cast_expr          = unary_expr { "as" type_expr } ;
 
-(* Level 15: Unary prefix *)
+(* Level 16: Unary prefix *)
 unary_expr         = ( "!" | "-" | "~" | "await" | "*" | "ref" | "mut" "ref" | "&" | "&mut" ) unary_expr
                    | postfix_expr
                    ;
 
-(* Level 16: Postfix suffixes *)
+(* Level 17: Postfix suffixes *)
 postfix_expr       = primary_expr { postfix_op } ;
 
 postfix_op         = generic_call_suffix
@@ -475,7 +495,8 @@ match_expr         = "match" expr "{" { match_arm } "}" ;
 
 argument_list      = argument { "," argument } [ "," ] ;
 
-argument           = IDENT_VALUE ":" expr
+argument           = IDENT_VALUE ":" [ expr ]
+                   | "_"
                    | expr
                    ;
 
@@ -493,7 +514,11 @@ array_literal      = "[" [ expr_list ] "]" ;
 
 array_repeat_literal = "[" expr ";" ( INT_LIT | comptime_expr | type_expr ) "]" ;
 
-lambda_expr        = "(" [ lambda_params ] ")" "=>" ( expr | block ) ;
+lambda_expr        = arrow_lambda | pipe_lambda ;
+
+arrow_lambda       = "(" [ lambda_params ] ")" "=>" ( expr | block ) ;
+
+pipe_lambda        = [ "move" | "own" ] ( "|" [ lambda_params ] "|" | "||" ) ( expr | block ) ;
 
 lambda_params      = lambda_param { "," lambda_param } [ "," ] ;
 

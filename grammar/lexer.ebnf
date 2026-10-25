@@ -144,6 +144,8 @@ RANGE_OP           = ".." | "..=" ;
 
 ELLIPSIS_OP        = "..." ;
 
+PIPE_OP            = "|>" ;
+
 
 (* ------------------------------------------------------------------ *)
 (*  7. LITERALS                                                        *)
@@ -154,6 +156,7 @@ LITERAL            = INT_LIT
                    | BOOL_LIT
                    | CHAR_LIT
                    | BYTE_CHAR_LIT
+                   | BYTE_STRING_LIT
                    | STRING_LIT
                    | NIL_LIT
                    ;
@@ -181,6 +184,10 @@ exponent           = ( "e" | "E" ) [ "+" | "-" ] digit { digit | "_" } ;
 CHAR_LIT           = "'" ( escape_seq | ? any UTF-8 char except "'" or "\\" ? ) "'" ;
 
 BYTE_CHAR_LIT      = "b'" ( escape_seq | ? any ASCII char except "'" or "\\" ? ) "'" ;
+
+BYTE_STRING_LIT    = 'b"' { byte_str_content | escape_seq } '"' ;
+
+byte_str_content   = ? any ASCII character except '"', '\\' or newline ? ;
 
 STRING_LIT         = normal_string | multiline_string | raw_string ;
 

@@ -246,6 +246,7 @@ fn lower_return(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>, start: u32) -> Opti
 fn lower_let(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>, start: u32) -> Option<StmtId> {
     cur.expect(TokenKind::KwLet)?;
     let mut bindings = Vec::new();
+    let has_paren = cur.eat(TokenKind::LParen);
     loop {
         let bind_start_tok = cur.peek()?;
         let mutable = cur.eat(TokenKind::KwMut);
@@ -274,6 +275,9 @@ fn lower_let(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>, start: u32) -> Option<
             continue;
         }
         break;
+    }
+    if has_paren {
+        cur.expect(TokenKind::RParen)?;
     }
     cur.expect(TokenKind::Equal)?;
     let value = try_hand_lower_expr(ctx, cur, 0)?;

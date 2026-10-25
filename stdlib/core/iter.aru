@@ -21,6 +21,8 @@
 
 module std.core.iter
 
+import std.core.marker as marker
+
 
 /// Pull-based interface that returns one `Item` or `None` per `next` call.
 ///
@@ -215,4 +217,142 @@ public func count<I: Iterator<Item>, Item>(mut it: I): uint {
         }
     }
     return c
+}
+
+/// An iterator yielding copied elements from a slice view.
+public struct SliceIter<Item> {
+    /// Borrowed slice backing this iterator.
+    slice: []Item
+    /// Current element index within the slice.
+    index: usize
+}
+
+/// Creates an iterator over the elements of a slice view.
+public func iter<Item>(s: []Item): SliceIter<Item> {
+    return SliceIter<Item> {
+        slice: s,
+        index: 0,
+    }
+}
+
+/// Returns the next element from the slice, or `Option.None` at the end.
+public func SliceIter.next<Item: marker.Copy>(self: mut ref SliceIter<Item>): Option<Item> {
+    if self.index >= self.slice.len {
+        return Option.None
+    }
+    let item = self.slice[self.index]
+    self.index = self.index + 1
+    return Option.Some(item)
+}
+
+/// An iterator adapter that chains two iterators of the same item type sequentially.
+public struct Chain<I1: Iterator<Item>, I2: Iterator<Item>, Item> {
+    /// First iterator to consume.
+    first: I1
+    /// Second iterator to consume once `first` has ended.
+    second: I2
+    /// Whether `first` has yielded `Option.None`.
+    first_done: bool
+}
+
+/// Wraps two iterators to yield all elements of `first` followed by all elements of `second`.
+public func chain<I1: Iterator<Item>, I2: Iterator<Item>, Item>(first: I1, second: I2): Chain<I1, I2, Item> {
+    return Chain<I1, I2, Item> {
+        first: first,
+        second: second,
+        first_done: false,
+    }
+}
+
+/// Returns the next element from `first`, or from `second` after `first` ends.
+public func Chain.next<I1: Iterator<Item>, I2: Iterator<Item>, Item>(self: mut ref Chain<I1, I2, Item>): Option<Item> {
+    if !self.first_done {
+        match self.first.next() {
+            Some(val) => {
+                return Option.Some(val)
+            }
+            None => {
+                self.first_done = true
+            }
+        }
+    }
+    return self.second.next()
+}
+
+/// Pair representing two zipped elements in [`Zip`].
+public struct Pair<A, B> {
+    /// Element from the first iterator.
+    public first: A
+    /// Element from the second iterator.
+    public second: B
+}
+
+/// An iterator adapter that pairs elements from two iterators simultaneously.
+public struct Zip<I1: Iterator<A>, I2: Iterator<B>, A, B> {
+    /// First source iterator.
+    first: I1
+    /// Second source iterator.
+    second: I2
+}
+
+/// Wraps two iterators to yield paired elements as [`Pair`] until either source ends.
+public func zip<I1: Iterator<A>, I2: Iterator<B>, A, B>(first: I1, second: I2): Zip<I1, I2, A, B> {
+    return Zip<I1, I2, A, B> {
+        first: first,
+        second: second,
+    }
+}
+
+/// Returns the next pair of elements, or `Option.None` if either iterator has ended.
+public func Zip.next<I1: Iterator<A>, I2: Iterator<B>, A, B>(self: mut ref Zip<I1, I2, A, B>): Option<Pair<A, B> > {
+    match self.first.next() {
+        Some(val_a) => {
+            match self.second.next() {
+                Some(val_b) => {
+                    return Option.Some(Pair<A, B> {
+                        first: val_a,
+                        second: val_b,
+                    })
+                }
+                None => {
+                    return Option.None
+                }
+            }
+        }
+        None => {
+            return Option.None
+        }
+    }
+}
+
+/// Consumes the iterator and returns the last element, or `Option.None` if empty.
+public func last<I: Iterator<Item>, Item>(mut it: I): Option<Item> {
+    let mut last_val: Option<Item> = Option.None
+    while true {
+        match it.next() {
+            Some(val) => {
+                last_val = Option.Some(val)
+            }
+            None => {
+                return last_val
+            }
+        }
+    }
+    return last_val
+}
+
+/// Returns the `n`-th element (0-indexed) of the iterator, consuming elements up to it.
+public func nth<I: Iterator<Item>, Item>(mut it: I, n: uint): Option<Item> {
+    let mut i: uint = 0
+    while i < n {
+        match it.next() {
+            Some(_) => {
+                i = i + 1
+            }
+            None => {
+                return Option.None
+            }
+        }
+    }
+    return it.next()
 }

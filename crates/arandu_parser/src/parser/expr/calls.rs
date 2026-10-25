@@ -1,4 +1,4 @@
-use super::super::{ParseError, Parser, span_between};
+use super::super::{ParseError, Parser, TokenKind, span_between};
 use crate::ast::ast_pool::{ExprId, ExprKind};
 
 impl<'a> Parser<'a> {
@@ -57,6 +57,32 @@ impl<'a> Parser<'a> {
             return Ok(args);
         }
         loop {
+            if matches!(self.current().kind, TokenKind::IdentValue)
+                && self
+                    .tokens
+                    .get(self.pos + 1)
+                    .is_some_and(|t| matches!(t.kind, TokenKind::Colon))
+            {
+                let start = self.mark();
+                let name = self.expect_ident_value()?;
+                self.expect_name("COLON")?;
+                if self.at_kind_name("COMMA") || self.at_kind_name("RPAREN") {
+                    let span = self.span_from_mark(start);
+                    args.push(self.pool.alloc_expr(
+                        ExprKind::Path {
+                            path: smallvec::smallvec![name],
+                        },
+                        span,
+                    ));
+                    if !self.eat_name("COMMA") {
+                        break;
+                    }
+                    if self.at_kind_name("RPAREN") {
+                        break;
+                    }
+                    continue;
+                }
+            }
             args.push(self.parse_expr(0)?);
             if !self.eat_name("COMMA") {
                 break;

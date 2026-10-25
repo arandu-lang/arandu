@@ -325,6 +325,7 @@ impl<'a> Resolver<'a> {
         for (name, lang_item) in [
             ("u32", arandu_middle::symbol_table::LangItem::U32),
             ("u64", arandu_middle::symbol_table::LangItem::U64),
+            ("usize", arandu_middle::symbol_table::LangItem::Usize),
         ] {
             let symbol = self
                 .symbols

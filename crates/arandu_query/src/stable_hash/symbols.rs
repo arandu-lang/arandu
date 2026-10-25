@@ -337,6 +337,7 @@ fn lang_item_discriminant(item: arandu_middle::symbol_table::LangItem) -> u8 {
         LangItem::ThreadUnpark => 48,
         LangItem::StdThread => 51,
         LangItem::StdFs => 52,
+        LangItem::Usize => 53,
     }
 }
 

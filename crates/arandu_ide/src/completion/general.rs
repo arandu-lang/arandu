@@ -20,6 +20,39 @@ pub(super) fn general_completions(
 ) -> Vec<CompletionItem> {
     let mut best: FxHashMap<String, Candidate> = FxHashMap::default();
 
+    // Inside a call: offer formal parameter name suggestions (e.g. `port:`, `host:`).
+    if let Some(context) = crate::signature_help::call_context(snap, source, offset) {
+        let sym = crate::signature_help::callee_symbol(snap, source, tc, &context).or_else(|| {
+            tc.symbols
+                .iter()
+                .find(|s| {
+                    s.name.as_str() == context.name.as_str()
+                        && matches!(
+                            s.kind,
+                            SymbolKind::Func | SymbolKind::AssociatedFunc | SymbolKind::ExternFunc
+                        )
+                })
+                .map(|s| s.id)
+        });
+        if let Some(sym_id) = sym {
+            if let Some(symbol) = tc.symbols.try_get(sym_id) {
+                let param_names = crate::presentation::function_parameter_names(snap, source, symbol);
+                for param in param_names {
+                    if param == "self" || param.is_empty() {
+                        continue;
+                    }
+                    if accepted(prefix, prefix_l, &param) {
+                        let label = format!("{param}:");
+                        let mut item = CompletionItem::new(&label, CompletionKind::Property);
+                        item.detail = Some(format!("parameter `{param}` of `{}`", symbol.name));
+                        item.insert_text = Some(format!("{param}: "));
+                        offer(&mut best, &label, RANK_LOCAL, 0, item);
+                    }
+                }
+            }
+        }
+    }
+
     for symbol in tc.symbols.iter() {
         // Members are only meaningful after `.`.
         if matches!(

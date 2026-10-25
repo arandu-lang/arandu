@@ -167,6 +167,9 @@ impl super::SymbolTable {
         if self.builtins.u64_type.is_none() {
             self.builtins.u64_type = other.builtins.u64_type.map(map_symbol);
         }
+        if self.builtins.usize_type.is_none() {
+            self.builtins.usize_type = other.builtins.usize_type.map(map_symbol);
+        }
         if self.builtins.ptr_type.is_none() {
             self.builtins.ptr_type = other.builtins.ptr_type.map(map_symbol);
         }
@@ -202,6 +205,7 @@ impl super::SymbolTable {
         self.builtins.ptr_type = valid(self.builtins.ptr_type);
         self.builtins.u32_type = valid(self.builtins.u32_type);
         self.builtins.u64_type = valid(self.builtins.u64_type);
+        self.builtins.usize_type = valid(self.builtins.usize_type);
         self.builtin_alloc = valid(self.builtin_alloc);
         self.builtin_free = valid(self.builtin_free);
     }
@@ -229,6 +233,7 @@ impl super::SymbolTable {
             LangItem::Ptr => self.builtins.ptr_type = Some(sym),
             LangItem::U32 => self.builtins.u32_type = Some(sym),
             LangItem::U64 => self.builtins.u64_type = Some(sym),
+            LangItem::Usize => self.builtins.usize_type = Some(sym),
             LangItem::Alloc => self.builtin_alloc = Some(sym),
             LangItem::Free => self.builtin_free = Some(sym),
             _ => {}

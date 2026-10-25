@@ -129,13 +129,17 @@ func_name          = value_identifier
 
 param_list         = param { "," param } [ "," ] ;
 
-param              = attribute_list [ ownership ] ( self_param | regular_param ) [ "..." ] ;
+param              = attribute_list ( self_param | regular_param ) [ "..." ] ;
                    (* semantic rule: "..." only on the last parameter. *)
                    (* semantic rule: type any is only allowed in variadic params and FFI. *)
 
-regular_param      = value_identifier ":" type_expr ;
+regular_param      = [ ownership ] value_identifier ":" type_expr ;
 
-self_param         = "self" [ ":" self_type ] ;
+self_param         = short_self | typed_self ;
+
+short_self         = [ "mut" | "ref" | "own" ] "self" ;
+
+typed_self         = "self" [ ":" self_type ] ;
 
 self_type          = [ "ref" | "mut" "ref" | "own" ] [ type_expr ] ;
 
@@ -157,7 +161,7 @@ struct_decl        = attribute_list [ visibility ] "struct"
                      type_identifier [ generic_params ] [ where_clause ]
                      "{" { field_decl } "}" ;
 
-field_decl         = attribute_list [ visibility ] value_identifier ":" type_expr stmt_end ;
+field_decl         = attribute_list [ visibility ] value_identifier ":" type_expr [ "=" expr ] stmt_end ;
 
 
 enum_decl          = attribute_list [ visibility ] "enum"
@@ -281,6 +285,8 @@ type_list          = type_expr { "," type_expr } [ "," ] ;
 block              = "{" { stmt_end | statement } "}" ;
 
 statement          = var_decl stmt_end
+                   | let_else_stmt
+                   | guard_stmt
                    | set_stmt stmt_end
                    | return_stmt stmt_end
                    | break_stmt stmt_end
@@ -297,7 +303,11 @@ statement          = var_decl stmt_end
                    | unsafe_stmt
                    ;
 
-var_decl           = "let" binding_item { "," binding_item } "=" expr ;
+var_decl           = "let" [ "(" ] binding_item { "," binding_item } [ ")" ] "=" expr ;
+
+let_else_stmt      = "let" ( [ "mut" ] binding_name | pattern ) [ ":" type_expr ] "=" expr "else" block ;
+
+guard_stmt         = "guard" condition "else" block ;
 
 binding_item       = [ "mut" ] binding_name [ ":" type_expr ] ;
 
@@ -333,7 +343,11 @@ if_stmt            = [ "comptime" ] "if" condition block
                      { "else" "if" condition block }
                      [ "else" block ] ;
 
-condition          = is_condition | expr ;
+condition          = condition_clause { ( "&&" | "," ) condition_clause } ;
+
+condition_clause   = [ "let" ] pattern "=" expr
+                   | expr [ "is" pattern ]
+                   ;
 
 is_condition       = expr "is" pattern ;
 
@@ -408,9 +422,11 @@ range_pattern      = literal ( ".." | "..=" ) literal ;
 
 expr               = catch_expr ;
 
-catch_expr         = null_coalesce_expr [ "catch" ( expr | catch_block ) ] ;
+catch_expr         = pipe_expr [ "catch" ( expr | catch_block ) ] ;
 
 catch_block        = "|" value_identifier "|" block ;
+
+pipe_expr          = null_coalesce_expr { "|>" null_coalesce_expr } ;
 
 null_coalesce_expr = logical_or_expr { "??" logical_or_expr } ;
 
@@ -522,20 +538,28 @@ match_expr         = "match" expr "{" { match_arm } "}" ;
 
 argument_list      = argument { "," argument } [ "," ] ;
 
-argument           = value_identifier ":" expr
+argument           = value_identifier ":" [ expr ]
+                   | "_"
                    | expr
                    ;
 
 struct_literal     = type_name [ generic_args ]
                      "{" [ field_init { "," field_init } [ "," ] ] "}" ;
 
-field_init         = value_identifier ":" expr ;
+field_init         = value_identifier ":" expr
+                   | value_identifier      (* Shorthand: Point { x, y } *)
+                   | ".." expr             (* Functional update: Point { x: 1, ..base } *)
+                   ;
 
 array_literal      = "[" [ expr_list ] "]" ;
 
 array_repeat_literal = "[" expr ";" ( int_lit | comptime_expr | type_expr ) "]" ;
 
-lambda_expr        = "(" [ lambda_params ] ")" "=>" ( expr | block ) ;
+lambda_expr        = arrow_lambda | pipe_lambda ;
+
+arrow_lambda       = "(" [ lambda_params ] ")" "=>" ( expr | block ) ;
+
+pipe_lambda        = [ "move" | "own" ] ( "|" [ lambda_params ] "|" | "||" ) ( expr | block ) ;
 
 lambda_params      = lambda_param { "," lambda_param } [ "," ] ;
 
@@ -557,6 +581,7 @@ literal            = int_lit
                    | bool_lit
                    | char_lit
                    | byte_char_lit
+                   | byte_string_lit
                    | string_lit
                    | nil_lit
                    ;
@@ -586,6 +611,12 @@ nil_lit            = "nil" ;
 char_lit           = "'" char_content "'" ;
 
 byte_char_lit      = "b'" char_content "'" ;
+
+byte_string_lit    = 'b"' { byte_str_part } '"' ;
+
+byte_str_part      = byte_str_char | escape_seq ;
+
+byte_str_char      = ? any ASCII character except double quote, backslash, and newline ? ;
 
 char_content       = escape_seq
                    | ? any UTF-8 codepoint except single quote and backslash ?

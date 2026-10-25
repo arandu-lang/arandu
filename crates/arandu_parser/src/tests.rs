@@ -934,3 +934,62 @@ fn move_lambda_parses_with_is_move_flag() {
         );
     }
 }
+
+#[test]
+fn call_label_shorthand_parses() {
+    let source = "func main(): void { let port = 8080; let host = \"0.0.0.0\"; connect(port:, host:); }";
+    let program = parse(source).expect("label shorthand call parse");
+    // Should have Call with 2 args, both Path (port and host)
+    let has_two_arg_call = program.pool.exprs.iter().any(|e| {
+        if let crate::ExprKind::Call { args, .. } = e {
+            let list = program.pool.expr_list(*args);
+            list.len() == 2
+        } else {
+            false
+        }
+    });
+    assert!(has_two_arg_call, "expected 2-arg call from shorthand port:, host:");
+}
+
+#[test]
+fn pipe_placeholder_inserts_at_underscore() {
+    let source = "func main(): void { let res = data |> write(path, _, len); }";
+    let program = parse(source).expect("pipe placeholder parse");
+    let has_matching_call = program.pool.exprs.iter().any(|e| {
+        if let crate::ExprKind::Call { args, .. } = e {
+            let list = program.pool.expr_list(*args);
+            if list.len() == 3 {
+                // The second argument should be the piped `data` (path with "data")
+                if let crate::ExprKind::Path { path } = program.pool.expr(list[1]) {
+                    return path.len() == 1 && path[0] == "data";
+                }
+            }
+        }
+        false
+    });
+    assert!(has_matching_call, "expected `data` inserted at placeholder index 1");
+}
+
+#[test]
+fn tuple_let_binding_parses() {
+    let source = "func main(): void { let (a, b) = pair; }";
+    let program = parse(source).expect("tuple let binding parse");
+    let has_var_decl = program.pool.stmts.iter().any(|s| {
+        if let crate::Stmt::VarDecl { bindings, .. } = s {
+            bindings.len() == 2 && bindings[0].name == "a" && bindings[1].name == "b"
+        } else {
+            false
+        }
+    });
+    assert!(has_var_decl, "expected VarDecl with bindings a and b");
+}
+
+#[test]
+fn guard_statement_parses() {
+    let source = "func main(): void { guard x > 0 else { return; } do_something(); }";
+    let program = parse(source).expect("guard statement parse");
+    assert!(
+        program.pool.stmts.iter().any(|s| matches!(s, crate::Stmt::If { .. })),
+        "expected guard to lower into Stmt::If"
+    );
+}

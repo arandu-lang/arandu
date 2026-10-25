@@ -123,6 +123,7 @@ pub enum LangItem {
     Free,
     U32,
     U64,
+    Usize,
     /// Bit intrinsic explicitly declared with the compiler intrinsic ABI.
     /// Spelling alone must not replace an ordinary or foreign function call.
     BitIntrinsic,
@@ -221,6 +222,7 @@ pub struct BuiltinTypes {
     pub ptr_type: Option<SymbolId>,
     pub u32_type: Option<SymbolId>,
     pub u64_type: Option<SymbolId>,
+    pub usize_type: Option<SymbolId>,
 }
 
 #[derive(Debug, Clone)]

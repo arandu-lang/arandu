@@ -343,3 +343,27 @@ fn completions_surface_inherent_methods_on_primitive_types() {
         item_labels
     );
 }
+
+#[test]
+fn guard_keyword_is_suggested() {
+    let text = "func main(): void {\n    gu\n}\n";
+    let items = completions_at(text, "    gu");
+    let item_labels = labels(&items);
+    assert!(item_labels.contains(&"guard"), "missing 'guard': {item_labels:?}");
+}
+
+#[test]
+fn call_arguments_are_suggested_with_labels() {
+    let text = concat!(
+        "func connect(host: str, port: int): bool {\n",
+        "    return true\n",
+        "}\n",
+        "func main(): void {\n",
+        "    connect(\n",
+        "}\n",
+    );
+    let items = completions_at(text, "connect(");
+    let item_labels = labels(&items);
+    assert!(item_labels.contains(&"host:"), "missing 'host:': {item_labels:?}");
+    assert!(item_labels.contains(&"port:"), "missing 'port:': {item_labels:?}");
+}

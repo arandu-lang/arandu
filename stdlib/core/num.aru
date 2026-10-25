@@ -381,3 +381,16 @@ public func parseU64(s: str): Option<u64> {
 public func u64.parse(s: str): Option<u64> {
     return parseU64(s)
 }
+
+/// Parses an unsigned pointer-sized decimal integer from a UTF-8 string view.
+public func parseUsize(s: str): Option<usize> {
+    let .Some(val) = parseU64(s) else {
+        return Option.None
+    }
+    return Option.Some(val as usize)
+}
+
+/// Parses an unsigned pointer-sized decimal integer (`usize.parse(s)`).
+public func usize.parse(s: str): Option<usize> {
+    return parseUsize(s)
+}

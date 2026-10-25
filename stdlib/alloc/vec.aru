@@ -91,6 +91,31 @@ func Vec.newImpl<T>(): Vec<T> {
     }
 }
 
+/// Creates a new `Vec<Element>` filled with `count` copies of `value`.
+public func Vec.filled<Element: marker.Copy>(value: Element, count: usize): Vec<Element> {
+    let mut v = Vec.withCapacity<Element>(count)
+    let mut i: usize = 0
+    while i < count {
+        v.push(value)
+        i += 1
+    }
+    return v
+}
+
+/// Appends all elements from `items` to the end of this vector.
+public func Vec.extend<Element: marker.Copy>(self: mut ref Vec<Element>, items: []Element): void {
+    let n = items.len
+    if n == 0 {
+        return
+    }
+    self.reserve(n)
+    let mut i: usize = 0
+    while i < n {
+        self.push(items[i])
+        i += 1
+    }
+}
+
 /// Creates a new empty `Vec<T>` without heap allocation.
 ///
 /// # Examples

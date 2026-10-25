@@ -149,8 +149,16 @@ pub fn function_parameter_names(
     source: SourceFile,
     symbol: &Symbol,
 ) -> Vec<String> {
-    let program = arandu_query::passes::parse(&snap.db, source);
-    let Ok(program) = &**program else {
+    let program = match arandu_query::passes::parse(&snap.db, source).as_ref() {
+        Ok(program) => Some(std::sync::Arc::clone(program)),
+        Err(_) => {
+            let tree = arandu_query::passes::syntax_tree(&snap.db, source);
+            let file_id = *source.file_id(&snap.db);
+            let output = arandu_parser::syntax::lower_syntax_to_program_recovering(&tree, file_id);
+            Some(std::sync::Arc::new(output.program))
+        }
+    };
+    let Some(program) = program else {
         return Vec::new();
     };
     let mut result = Vec::new();

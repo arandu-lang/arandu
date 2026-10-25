@@ -50,6 +50,10 @@ impl<'a> Parser<'a> {
                 ));
                 break;
             }
+            if let Some(let_else) = self.try_parse_let_else_in_block()? {
+                statements.push(let_else);
+                break;
+            }
             statements.push(self.parse_stmt()?);
         }
         if !self.at_kind_name("EOF") {
@@ -60,6 +64,74 @@ impl<'a> Parser<'a> {
             span: self.span_from_mark(start),
             statements,
         })
+    }
+
+    /// Parses `let <Pattern> = <Expr> else { <else_block> }` and folds the
+    /// remaining statements in the enclosing block into the `then_block` of an
+    /// equivalent `Stmt::If { condition: Condition::Is { expr, pattern }, then_block, else_block }`.
+    fn try_parse_let_else_in_block(
+        &mut self,
+    ) -> Result<Option<crate::ast_pool::StmtId>, ParseError> {
+        if !self.at_kind_name("KW_LET") {
+            return Ok(None);
+        }
+        let start = self.mark();
+        let checkpoint = self.checkpoint();
+        self.advance(); // consume `let`
+
+        // Check if this is a standard `let [mut] ident [: Type] [, ...] = expr` without `else`.
+        let pat_res = self.parse_pattern();
+        let Ok(pattern) = pat_res else {
+            checkpoint.rollback(self);
+            return Ok(None);
+        };
+        if !self.eat_name("EQUAL") {
+            checkpoint.rollback(self);
+            return Ok(None);
+        }
+        let Ok(expr) = self.parse_expr_without_block_calls(0) else {
+            checkpoint.rollback(self);
+            return Ok(None);
+        };
+        if !self.eat_name("KW_ELSE") {
+            checkpoint.rollback(self);
+            return Ok(None);
+        }
+
+        let cond_span = self.span_from_mark(start);
+        let else_block = self.parse_block()?;
+        self.skip_semicolons();
+
+        // Parse the remaining statements of the enclosing block as `then_block`.
+        let then_start = self.mark();
+        let mut then_stmts = Vec::new();
+        while !self.at_kind_name("RBRACE") && !self.at_kind_name("EOF") {
+            self.skip_semicolons();
+            self.discard_doc_comments();
+            if self.at_kind_name("RBRACE") || self.at_kind_name("EOF") {
+                break;
+            }
+            if let Some(nested_let_else) = self.try_parse_let_else_in_block()? {
+                then_stmts.push(nested_let_else);
+                break;
+            }
+            then_stmts.push(self.parse_stmt()?);
+        }
+        let then_block = Block {
+            span: self.span_from_mark(then_start),
+            statements: self.pool.alloc_stmt_list(&then_stmts),
+        };
+        Ok(Some(self.pool.alloc_stmt(Stmt::If {
+            span: self.span_from_mark(start),
+            is_comptime: false,
+            condition: Condition::Is {
+                span: cond_span,
+                expr,
+                pattern,
+            },
+            then_block,
+            else_block: Some(else_block),
+        })))
     }
 
     pub(super) fn parse_stmt(&mut self) -> Result<crate::ast_pool::StmtId, ParseError> {
@@ -144,6 +216,7 @@ impl<'a> Parser<'a> {
         }
         let start = self.mark();
         let expr = self.parse_expr(0)?;
+        let has_semi = self.current().kind == TokenKind::Semicolon && !self.current().inserted;
         self.expect_semicolon()?;
         let is_match = matches!(self.pool.expr(expr), ExprKind::Match { .. });
         Ok(self.pool.alloc_stmt(if is_match {
@@ -155,7 +228,7 @@ impl<'a> Parser<'a> {
             Stmt::Expr {
                 span: self.span_from_mark(start),
                 expr,
-                has_semi: true,
+                has_semi,
             }
         }))
     }

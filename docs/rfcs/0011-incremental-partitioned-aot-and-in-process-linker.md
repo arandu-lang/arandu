@@ -145,16 +145,16 @@ a8f5c3... target/debug/meu_app
 - O hash CGU v5 não usa `Debug`, spans, offsets de pools ou IDs sintéticos de composição como identidade de máquina. Cobre AMIR exaustivamente, layouts concretos/`repr(C)`, literais por conteúdo, assinaturas de callees, a closure de declarações fornecida ao `ObjectModule`, target, otimização, Cranelift e compilador. Hashing e emissão compartilham a closure por função (referências, callbacks e destruidores implícitos), não a superfície inteira do programa. Adicionar uma instância ou remover declaração não relacionada preserva objetos irmãos, com regressões byte a byte; mudanças de ABI/layout dependido invalidam o caller. A closure final do link continua verificada: remover uma CGU pode reutilizar os objetos restantes, mas não o executável que ainda a continha.
 - O patch ELF valida digest, geometria de `.text`, ranges, tamanho exato e relocações antes do `mmap`; `msync` e `munmap` são verificados. `.rodata` e metadata hostil exercitam fallback em testes.
 - O teste ELF compara o executável incremental byte a byte com clean build para o mesmo source final. Linkers cuja geometria ou metadata não satisfazem a prova exata exercitam o fallback explícito e determinístico em vez de transformar indisponibilidade da otimização em erro de compilação.
-- `cargo run --locked -p xtask -- bench-incremental --verify-determinism` mede as cinco mutações, registra timings por fase no schema 2 e falha se SHA-256 divergir entre diretórios e `RAYON_NUM_THREADS=1/16`. A metodologia vive em [`docs/benchmarks/`](../benchmarks/README.md).
+- `cargo run --locked -p xtask -- bench-incremental --verify-determinism` mede sete classes de edição em corpus gerados (4 a 64 módulos), com aquecimento, N amostras, p50/p95, CPU, pico de RSS, caminho de publicação e timings por fase no schema 3, e falha se SHA-256 divergir entre diretórios e `RAYON_NUM_THREADS=1/16`. A metodologia vive em [`docs/benchmarks/`](../benchmarks/README.md).
 - O daemon de build não está implementado: `commands/build.rs` cria uma nova
   `DatabaseImpl` a cada build. O LSP e os testes de queries quentes não provam
   persistência de sessão no CLI.
 - O patch atual copia a imagem inteira para staging, sincroniza o mapeamento
   inteiro e calcula BLAKE3 integral. O artefato publicado é preservado, mas o
   custo ainda pode escalar com o tamanho do executável.
-- O harness atual usa um programa mínimo de duas funções e uma amostra por
-  classe de edição. Não calcula p95 nem certifica um host de referência.
-  Seus hashes e timers não comprovam os budgets de produto.
+- O harness mede processos batch novos; até existir a sessão quente, ele não
+  certifica o gate p95 da 0.2. O corpus gerado é sintético (inteiros, laços e
+  chamadas diretas) e ainda não mede o delta de tamanho por função.
 - Esta RFC permanece `Draft`; a fila permanente e os critérios de saída vivem
   somente no [roadmap mestre](../arandu-compiler-roadmap-v0.1.md). No plano
   revisável, `0.2.x` cobre motor quente e imagem dev recuperável, com p95 ≤100 ms

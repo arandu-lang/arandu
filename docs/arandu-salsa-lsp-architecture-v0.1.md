@@ -312,9 +312,10 @@ byte a byte, kill/recovery e p95 ≤100 ms em host/corpus documentados. A trilha
 `0.3.x` completa os gates por instância e p95 ≤10 ms. São marcos de planejamento
 revisável, sem aprovação implícita dos Drafts.
 
-`xtask bench-incremental` mede uma amostra por classe num corpus de duas
-funções; seus timers e hashes não constituem distribuição p95. A
-[metodologia](benchmarks/README.md) distingue esse oráculo dos gates futuros.
+`xtask bench-incremental` mede distribuições p50/p95, CPU e pico de RSS por
+classe de edição em corpus gerados de 4 a 64 módulos. Os padrões de CI medem
+pouco e com o CLI debug; só uma execução release no host documentado sustenta
+um gate. A [metodologia](benchmarks/README.md) separa as duas coisas.
 CAS global, LLVM, interop e extensões de pesquisa mantêm contratos próprios.
 
 O workload informativo `runtime_workload` compara o produtor puro global

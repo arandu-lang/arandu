@@ -3522,6 +3522,7 @@ dependencies = [
  "arandu_query",
  "blake3",
  "flate2",
+ "libc",
  "salsa",
  "serde_json",
  "sha2 0.11.0",

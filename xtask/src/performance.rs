@@ -270,7 +270,7 @@ fn percentile_usize(samples: &mut [usize], percentile: usize) -> usize {
         .unwrap_or_default()
 }
 
-fn percentile_index(len: usize, percentile: usize) -> usize {
+pub(crate) fn percentile_index(len: usize, percentile: usize) -> usize {
     len.saturating_mul(percentile)
         .saturating_add(99)
         .checked_div(100)
@@ -297,14 +297,14 @@ fn current_rss_bytes() -> Option<u64> {
     None
 }
 
-fn cpu_name() -> String {
+pub(crate) fn cpu_name() -> String {
     std::env::var("PROCESSOR_IDENTIFIER")
         .or_else(|_| std::env::var("HOSTTYPE"))
         .unwrap_or_else(|_| "unreported".into())
         .replace(['\n', '\r'], " ")
 }
 
-fn toolchain_name(workspace_root: &Path) -> String {
+pub(crate) fn toolchain_name(workspace_root: &Path) -> String {
     fs::read_to_string(workspace_root.join("rust-toolchain.toml"))
         .ok()
         .and_then(|text| {

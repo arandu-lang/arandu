@@ -1,0 +1,462 @@
+//! Portable scalar SHA-256 for integrity digests.
+//!
+//! Implements the byte-oriented SHA-256 algorithm from FIPS 180-4 sections
+//! 4.1.2, 4.2.2, 5 and 6.2, independently of host crypto libraries.
+//! Specification: https://doi.org/10.6028/NIST.FIPS.180-4
+//! The state and workspace have bounded inline storage; no OS, allocator or
+//! foreign function is imported. Backend storage choices remain target-specific.
+//! This implementation is not a FIPS-certified cryptographic module.
+//!
+//! Construction, update and finish use the same algorithm on native and wasm32.
+//! Hashes provide integrity when compared to a trusted expected digest; this
+//! module does not implement authentication, password hashing or encryption.
+module std.crypto.hash
+
+import std.core.slice as slice
+
+// SHA-256 array/loop corpus: constants are compile-time data.
+const K = comptime [0x428a2f98 as u32, 0x71374491 as u32, 0xb5c0fbcf as u32, 0xe9b5dba5 as u32, 0x3956c25b as u32, 0x59f111f1 as u32, 0x923f82a4 as u32, 0xab1c5ed5 as u32, 0xd807aa98 as u32, 0x12835b01 as u32, 0x243185be as u32, 0x550c7dc3 as u32, 0x72be5d74 as u32, 0x80deb1fe as u32, 0x9bdc06a7 as u32, 0xc19bf174 as u32, 0xe49b69c1 as u32, 0xefbe4786 as u32, 0x0fc19dc6 as u32, 0x240ca1cc as u32, 0x2de92c6f as u32, 0x4a7484aa as u32, 0x5cb0a9dc as u32, 0x76f988da as u32, 0x983e5152 as u32, 0xa831c66d as u32, 0xb00327c8 as u32, 0xbf597fc7 as u32, 0xc6e00bf3 as u32, 0xd5a79147 as u32, 0x06ca6351 as u32, 0x14292967 as u32, 0x27b70a85 as u32, 0x2e1b2138 as u32, 0x4d2c6dfc as u32, 0x53380d13 as u32, 0x650a7354 as u32, 0x766a0abb as u32, 0x81c2c92e as u32, 0x92722c85 as u32, 0xa2bfe8a1 as u32, 0xa81a664b as u32, 0xc24b8b70 as u32, 0xc76c51a3 as u32, 0xd192e819 as u32, 0xd6990624 as u32, 0xf40e3585 as u32, 0x106aa070 as u32, 0x19a4c116 as u32, 0x1e376c08 as u32, 0x2748774c as u32, 0x34b0bcb5 as u32, 0x391c0cb3 as u32, 0x4ed8aa4a as u32, 0x5b9cca4f as u32, 0x682e6ff3 as u32, 0x748f82ee as u32, 0x78a5636f as u32, 0x84c87814 as u32, 0x8cc70208 as u32, 0x90befffa as u32, 0xa4506ceb as u32, 0xbef9a3f7 as u32, 0xc67178f2 as u32]
+
+// ─── Bit-rotation helpers ─────────────────────────────────────────────────────
+// Inlining and target instruction selection are measured, not assumed.
+
+func rotr32(x: u32, n: u32): u32 {
+    return (x >> n) | (x << ((32 as u32) - n))
+}
+
+func ch(e: u32, f: u32, g: u32): u32 {
+    return (e & f) ^ ((~e) & g)
+}
+
+func maj(a: u32, b: u32, c: u32): u32 {
+    return (a & b) ^ (a & c) ^ (b & c)
+}
+
+func sigma0(a: u32): u32 {
+    return rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22)
+}
+
+func sigma1(e: u32): u32 {
+    return rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25)
+}
+
+func gamma0(x: u32): u32 {
+    return rotr32(x, 7) ^ rotr32(x, 18) ^ (x >> 3)
+}
+
+func gamma1(x: u32): u32 {
+    return rotr32(x, 17) ^ rotr32(x, 19) ^ (x >> 10)
+}
+
+// ─── SHA-256 state ────────────────────────────────────────────────────────────
+
+/// SHA-256 incremental state with bounded value storage and no explicit
+/// allocation. Layout and backend storage choices remain target-dependent.
+public struct Sha256 {
+    /// Hash chaining values (a..h).
+    private h0: u32
+    private h1: u32
+    private h2: u32
+    private h3: u32
+    private h4: u32
+    private h5: u32
+    private h6: u32
+    private h7: u32
+    /// Partial block buffer (< 64 bytes).
+    private buf: [64]u8
+    /// How many bytes are in the partial buffer.
+    private buf_len: usize
+    /// Total bytes processed so far.
+    private total_bytes: u64
+}
+
+/// Returns the initial SHA-256 state with the standard IV.
+public func Sha256.new(): Sha256 {
+    return Sha256 {
+        h0: 0x6a09e667, h1: 0xbb67ae85,
+        h2: 0x3c6ef372, h3: 0xa54ff53a,
+        h4: 0x510e527f, h5: 0x9b05688c,
+        h6: 0x1f83d9ab, h7: 0x5be0cd19,
+        buf: [0; 64],
+        buf_len: 0,
+        total_bytes: 0,
+    }
+}
+
+func Sha256.bufSet(state: mut ref Sha256, i: usize, value: u8): void { state.buf[i] = value }
+
+func Sha256.beU32Buf(state: ref Sha256, off: usize): u32 {
+    return ((state.buf[off] as u32) << 24) | ((state.buf[off + 1] as u32) << 16) | ((state.buf[off + 2] as u32) << 8) | (state.buf[off + 3] as u32)
+}
+
+// A 16-word circular schedule retains only the live SHA-256 window.
+func Sha256.compress(state: mut ref Sha256): void {
+    let mut schedule: [16]u32 = [0; 16]
+    let mut a = state.h0
+    let mut b = state.h1
+    let mut c = state.h2
+    let mut d = state.h3
+    let mut e = state.h4
+    let mut f = state.h5
+    let mut g = state.h6
+    let mut h = state.h7
+    let mut round: usize = 0
+    // Freeze once before the loop; preserve a global source of truth.
+    let constants = K
+    while round < 64 {
+        let slot = round % 16
+        if round < 16 {
+            schedule[slot] = Sha256.beU32Buf(state, round * 4)
+        } else {
+            schedule[slot] = gamma1(schedule[(round - 2) % 16]) + schedule[(round - 7) % 16] + gamma0(schedule[(round - 15) % 16]) + schedule[slot]
+        }
+        let t1 = h + sigma1(e) + ch(e, f, g) + constants[round] + schedule[slot]
+        let t2 = sigma0(a) + maj(a, b, c)
+        h = g
+        g = f
+        f = e
+        e = d + t1
+        d = c
+        c = b
+        b = a
+        a = t1 + t2
+        round = round + 1
+    }
+    state.h0 = state.h0 + a
+    state.h1 = state.h1 + b
+    state.h2 = state.h2 + c
+    state.h3 = state.h3 + d
+    state.h4 = state.h4 + e
+    state.h5 = state.h5 + f
+    state.h6 = state.h6 + g
+    state.h7 = state.h7 + h
+}
+
+/// Update the hash state with an arbitrary number of bytes.
+/// Returns false without modifying the state when total length would exceed
+/// 2^61 - 1 bytes. Otherwise buffers partial blocks and returns true.
+public func Sha256.update(self: mut ref Sha256, data: []u8): bool {
+    let dlen = slice.len<u8>(data)
+    // SHA-256 admits messages shorter than 2^64 bits. Reject atomically.
+    if (dlen as u64) > (2305843009213693951 as u64) - self.total_bytes { return false }
+    let mut di: usize = 0
+    while di < dlen {
+        Sha256.bufSet(self, self.buf_len, data[di])
+        self.buf_len = self.buf_len + 1
+        self.total_bytes = self.total_bytes + 1
+        di = di + 1
+        if self.buf_len == 64 {
+            Sha256.compress(self)
+            self.buf_len = 0
+        }
+    }
+    return true
+}
+
+/// Finalize the hash: pad the message, compress the final block(s), return 32-byte digest.
+func Sha256.finalize(state: mut ref Sha256): [32]u8 {
+    let bit_len: u64 = state.total_bytes * 8
+
+    // Append 0x80 byte.
+    Sha256.bufSet(state, state.buf_len, 0x80)
+    state.buf_len = state.buf_len + 1
+
+    // Pad with zeros until 56 bytes used (8 bytes reserved for length).
+    while state.buf_len < 56 {
+        Sha256.bufSet(state, state.buf_len, 0)
+        state.buf_len = state.buf_len + 1
+    }
+
+    // If we already passed 56 bytes, flush and do a second pad block.
+    if state.buf_len > 56 {
+        while state.buf_len < 64 {
+            Sha256.bufSet(state, state.buf_len, 0)
+            state.buf_len = state.buf_len + 1
+        }
+        Sha256.compress(state)
+        state.buf_len = 0
+        while state.buf_len < 56 {
+            Sha256.bufSet(state, state.buf_len, 0)
+            state.buf_len = state.buf_len + 1
+        }
+    }
+
+    // Append 64-bit big-endian bit length.
+    Sha256.bufSet(state, 56, ((bit_len >> 56) & 0xff) as u8)
+    Sha256.bufSet(state, 57, ((bit_len >> 48) & 0xff) as u8)
+    Sha256.bufSet(state, 58, ((bit_len >> 40) & 0xff) as u8)
+    Sha256.bufSet(state, 59, ((bit_len >> 32) & 0xff) as u8)
+    Sha256.bufSet(state, 60, ((bit_len >> 24) & 0xff) as u8)
+    Sha256.bufSet(state, 61, ((bit_len >> 16) & 0xff) as u8)
+    Sha256.bufSet(state, 62, ((bit_len >> 8)  & 0xff) as u8)
+    Sha256.bufSet(state, 63, ( bit_len        & 0xff) as u8)
+    state.buf_len = 64
+
+    Sha256.compress(state)
+
+    // Build the 32-byte digest in big-endian.
+    let digest: [32]u8 = [
+    ((state.h0 >> 24) & 0xff) as u8, ((state.h0 >> 16) & 0xff) as u8,
+    ((state.h0 >>  8) & 0xff) as u8, ( state.h0        & 0xff) as u8,
+    ((state.h1 >> 24) & 0xff) as u8, ((state.h1 >> 16) & 0xff) as u8,
+    ((state.h1 >>  8) & 0xff) as u8, ( state.h1        & 0xff) as u8,
+    ((state.h2 >> 24) & 0xff) as u8, ((state.h2 >> 16) & 0xff) as u8,
+    ((state.h2 >>  8) & 0xff) as u8, ( state.h2        & 0xff) as u8,
+    ((state.h3 >> 24) & 0xff) as u8, ((state.h3 >> 16) & 0xff) as u8,
+    ((state.h3 >>  8) & 0xff) as u8, ( state.h3        & 0xff) as u8,
+    ((state.h4 >> 24) & 0xff) as u8, ((state.h4 >> 16) & 0xff) as u8,
+    ((state.h4 >>  8) & 0xff) as u8, ( state.h4        & 0xff) as u8,
+    ((state.h5 >> 24) & 0xff) as u8, ((state.h5 >> 16) & 0xff) as u8,
+    ((state.h5 >>  8) & 0xff) as u8, ( state.h5        & 0xff) as u8,
+    ((state.h6 >> 24) & 0xff) as u8, ((state.h6 >> 16) & 0xff) as u8,
+    ((state.h6 >>  8) & 0xff) as u8, ( state.h6        & 0xff) as u8,
+    ((state.h7 >> 24) & 0xff) as u8, ((state.h7 >> 16) & 0xff) as u8,
+    ((state.h7 >>  8) & 0xff) as u8, ( state.h7        & 0xff) as u8,
+    ]
+    return digest
+}
+
+/// Returns the digest without consuming or modifying the streaming state.
+/// Further updates continue the original message; repeated finish calls agree.
+public func Sha256.finish(self: ref Sha256): [32]u8 {
+    let mut state = *self
+    return Sha256.finalize(mut ref state)
+}
+
+/// Hashes one byte slice, rejecting lengths outside the SHA-256 message domain.
+public func sha256(data: []u8): Option<[32]u8> {
+    let mut state = Sha256.new()
+    if !state.update(data) { return Option.None }
+    return Option.Some(state.finish())
+}
+
+// BLAKE3 unkeyed 256-bit mode, implemented from the public algorithm:
+// https://github.com/BLAKE3-team/BLAKE3-specs/blob/master/blake3.pdf
+// Constants and round topology follow that specification. No upstream source
+// code is included; the upstream reference implementation is CC0/Apache-2.0.
+const B3_IV = comptime [0x6a09e667 as u32, 0xbb67ae85 as u32, 0x3c6ef372 as u32, 0xa54ff53a as u32, 0x510e527f as u32, 0x9b05688c as u32, 0x1f83d9ab as u32, 0x5be0cd19 as u32]
+
+const B3_PERMUTATION = comptime [2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8]
+
+struct BlakeOutput {
+    cv: [8]u32,
+    words: [16]u32,
+    counter: u64,
+    blockLen: u32,
+    flags: u32,
+}
+
+struct BlakeWork { words: [16]u32 }
+
+func blakeMix(work: mut ref BlakeWork, a: usize, b: usize, c: usize, d: usize, x: u32, y: u32): void {
+    work.words[a] = work.words[a] + work.words[b] + x
+    work.words[d] = rotr32(work.words[d] ^ work.words[a], 16)
+    work.words[c] = work.words[c] + work.words[d]
+    work.words[b] = rotr32(work.words[b] ^ work.words[c], 12)
+    work.words[a] = work.words[a] + work.words[b] + y
+    work.words[d] = rotr32(work.words[d] ^ work.words[a], 8)
+    work.words[c] = work.words[c] + work.words[d]
+    work.words[b] = rotr32(work.words[b] ^ work.words[c], 7)
+}
+
+func blakeCompress(output: ref BlakeOutput): [8]u32 {
+    let iv = B3_IV
+    let mut work = BlakeWork { words: [0; 16] }
+    let mut i: usize = 0
+    while i < 8 {
+        work.words[i] = output.cv[i]
+        i = i + 1
+    }
+    work.words[8] = iv[0]
+    work.words[9] = iv[1]
+    work.words[10] = iv[2]
+    work.words[11] = iv[3]
+    work.words[12] = output.counter as u32
+    work.words[13] = (output.counter >> 32) as u32
+    work.words[14] = output.blockLen
+    work.words[15] = output.flags
+    let mut message = output.words
+    let permutation = B3_PERMUTATION
+    let mut round: usize = 0
+    while round < 7 {
+        blakeMix(mut ref work, 0, 4, 8, 12, message[0], message[1])
+        blakeMix(mut ref work, 1, 5, 9, 13, message[2], message[3])
+        blakeMix(mut ref work, 2, 6, 10, 14, message[4], message[5])
+        blakeMix(mut ref work, 3, 7, 11, 15, message[6], message[7])
+        blakeMix(mut ref work, 0, 5, 10, 15, message[8], message[9])
+        blakeMix(mut ref work, 1, 6, 11, 12, message[10], message[11])
+        blakeMix(mut ref work, 2, 7, 8, 13, message[12], message[13])
+        blakeMix(mut ref work, 3, 4, 9, 14, message[14], message[15])
+        if round < 6 {
+            let previous = message
+            i = 0
+            while i < 16 {
+                message[i] = previous[permutation[i] as usize]
+                i = i + 1
+            }
+        }
+        round = round + 1
+    }
+    let mut result: [8]u32 = [0; 8]
+    i = 0
+    while i < 8 {
+        result[i] = work.words[i] ^ work.words[i + 8]
+        i = i + 1
+    }
+    return result
+}
+
+func blakeParent(left: [8]u32, right: [8]u32): BlakeOutput {
+    let mut parent = BlakeOutput { cv: B3_IV, words: [0; 16], counter: 0, blockLen: 64, flags: 4 }
+    let mut i: usize = 0
+    while i < 8 {
+        parent.words[i] = left[i]
+        parent.words[i + 8] = right[i]
+        i = i + 1
+    }
+    return parent
+}
+
+/// Streaming unkeyed BLAKE3 state with a bounded 54-level chaining-value stack.
+/// This API produces 32-byte digests; keyed hashing, KDF and XOF are separate
+/// modes and are not exposed by this type.
+public struct Blake3 {
+    private cv: [8]u32,
+    private block: [64]u8,
+    private buffered: usize,
+    private blocks: u32,
+    private chunk: u64,
+    private stack: [432]u32,
+    private depth: usize,
+    private totalBytes: u64,
+}
+
+/// Starts a new unkeyed BLAKE3 message.
+public func Blake3.new(): Blake3 {
+    return Blake3 { cv: B3_IV, block: [0; 64], buffered: 0, blocks: 0, chunk: 0, stack: [0; 432], depth: 0, totalBytes: 0 }
+}
+
+func Blake3.chunkOutput(state: ref Blake3): BlakeOutput {
+    let mut output = BlakeOutput { cv: state.cv, words: [0; 16], counter: state.chunk, blockLen: state.buffered as u32, flags: 2 }
+    if state.blocks == 0 { output.flags = output.flags | 1 }
+    let mut i: usize = 0
+    while i < state.buffered {
+        let shift = ((i % 4) * 8) as u32
+        output.words[i / 4] = output.words[i / 4] | ((state.block[i] as u32) << shift)
+        i = i + 1
+    }
+    return output
+}
+
+func Blake3.pushChunk(state: mut ref Blake3, value: [8]u32): void {
+    let mut cv = value
+    let mut chunks = state.chunk + 1
+    while (chunks & 1) == 0 {
+        state.depth = state.depth - 1
+        let mut left: [8]u32 = [0; 8]
+        let mut i: usize = 0
+        while i < 8 {
+            left[i] = state.stack[state.depth * 8 + i]
+            i = i + 1
+        }
+        let parent = blakeParent(left, cv)
+        cv = blakeCompress(ref parent)
+        chunks = chunks >> 1
+    }
+    let mut i: usize = 0
+    while i < 8 {
+        state.stack[state.depth * 8 + i] = cv[i]
+        i = i + 1
+    }
+    state.depth = state.depth + 1
+}
+
+/// Appends bytes and returns true, or returns false without changing the state
+/// when the total message length would exceed 2^64 - 1 bytes.
+public func Blake3.update(self: mut ref Blake3, bytes: []u8): bool {
+    let length = slice.len<u8>(bytes)
+    if (length as u64) > (18446744073709551615 as u64) - self.totalBytes { return false }
+    let mut index: usize = 0
+    while index < length {
+        // Keep the last block until another byte proves it is not the root's
+        // final block. Exact 64/1024-byte messages must retain CHUNK_END.
+        if self.buffered == 64 {
+            let mut output = Blake3.chunkOutput(self)
+            if self.blocks == 15 {
+                let cv = blakeCompress(ref output)
+                Blake3.pushChunk(self, cv)
+                self.chunk = self.chunk + 1
+                self.cv = B3_IV
+                self.blocks = 0
+            } else {
+                output.flags = 0
+                if self.blocks == 0 { output.flags = 1 }
+                self.cv = blakeCompress(ref output)
+                self.blocks = self.blocks + 1
+            }
+            self.buffered = 0
+        }
+        self.block[self.buffered] = bytes[index]
+        self.buffered = self.buffered + 1
+        self.totalBytes = self.totalBytes + 1
+        index = index + 1
+    }
+    return true
+}
+
+/// Returns a 32-byte digest without mutating or consuming the state.
+public func Blake3.finish(self: ref Blake3): [32]u8 {
+    let mut output = Blake3.chunkOutput(self)
+    let mut remaining = self.depth
+    while remaining > 0 {
+        remaining = remaining - 1
+        let cv = blakeCompress(ref output)
+        let mut left: [8]u32 = [0; 8]
+        let mut i: usize = 0
+        while i < 8 {
+            left[i] = self.stack[remaining * 8 + i]
+            i = i + 1
+        }
+        output = blakeParent(left, cv)
+    }
+    // ROOT changes compression itself; a root digest is not a chaining value.
+    output.flags = output.flags | 8
+    output.counter = 0
+    let words = blakeCompress(ref output)
+    let mut digest: [32]u8 = [0; 32]
+    let mut i: usize = 0
+    while i < 32 {
+        digest[i] = (words[i / 4] >> (((i % 4) * 8) as u32)) as u8
+        i = i + 1
+    }
+    return digest
+}
+
+/// Hashes one complete byte slice in unkeyed 256-bit BLAKE3 mode.
+public func blake3(data: []u8): [32]u8 {
+    let mut state = Blake3.new()
+    // A single slice is representable by u64 on supported pointer widths.
+    state.update(data)
+    return state.finish()
+}
+
+/// Lowercase hexadecimal digits, indexed by nibble value (`'0'` = 48).
+const HEX_DIGITS = comptime [
+    48 as u8, 49 as u8, 50 as u8, 51 as u8,
+    52 as u8, 53 as u8, 54 as u8, 55 as u8,
+    56 as u8, 57 as u8, 97 as u8, 98 as u8,
+    99 as u8, 100 as u8, 101 as u8, 102 as u8
+]
+
+/// Converts a 32-byte binary digest into a 64-byte lowercase hexadecimal representation.
+public func toHex(digest: [32]u8): [64]u8 {
+    let mut out: [64]u8 = [0 as u8; 64]
+    let mut i: usize = 0
+    while i < 32 {
+        let b = digest[i]
+        out[i * 2] = HEX_DIGITS[(b >> 4) as usize]
+        out[i * 2 + 1] = HEX_DIGITS[(b & 0x0f as u8) as usize]
+        i = i + 1
+    }
+    return out
+}

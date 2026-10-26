@@ -13,12 +13,14 @@
 
 mod aggregate;
 mod arith;
+mod atomic;
 mod body;
 mod call;
 pub mod expr;
 mod locals;
 mod operand;
 mod place;
+mod simd;
 mod storage;
 mod string;
 
@@ -33,7 +35,7 @@ use arandu_middle::types::{ArType, TypeId, TypeInterner};
 use rustc_hash::FxHashMap;
 use wasm_encoder::{BlockType, Function, Instruction, ValType};
 
-use arandu_semantics::SymbolTable;
+use arandu_middle::SymbolTable;
 
 use crate::types::{self, Shape};
 
@@ -252,6 +254,11 @@ impl<'a> FuncTranslator<'a> {
                         align: crate::memory::MEM_ALIGN,
                         memory_index: 0,
                     })),
+                    ValType::V128 => self.code.push(Instruction::V128Store(wasm_encoder::MemArg {
+                        offset: u64::from(field.offset),
+                        align: 4,
+                        memory_index: 0,
+                    })),
                     _ => self.code.push(Instruction::I32Store(wasm_encoder::MemArg {
                         offset: field.offset as u64,
                         align: crate::memory::MEM_ALIGN,
@@ -274,6 +281,7 @@ impl<'a> FuncTranslator<'a> {
                     | arandu_middle::types::ArType::RefMut(_)
                     | arandu_middle::types::ArType::Nullable(_)
                     | arandu_middle::types::ArType::Slice(_)
+                    | arandu_middle::types::ArType::MutSlice(_)
             );
             if local.is_memory && !pointer_like && !self.is_owned_aggregate(local.ty) {
                 let size = self.layout_of(&ty).size.max(1) as i32;
@@ -330,8 +338,7 @@ impl<'a> FuncTranslator<'a> {
                     if invert {
                         self.code.push(Instruction::I32Eqz);
                     }
-                    self.emit_block_args(target, &args);
-                    self.code.push(Instruction::BrIf(depth));
+                    self.emit_conditional_branch(depth, target, &args);
                 }
                 Op::BrIfEq {
                     depth,
@@ -350,8 +357,7 @@ impl<'a> FuncTranslator<'a> {
                         self.code.push(Instruction::I32Const(value as i32));
                         self.code.push(Instruction::I32Eq);
                     }
-                    self.emit_block_args(target, &args);
-                    self.code.push(Instruction::BrIf(depth));
+                    self.emit_conditional_branch(depth, target, &args);
                 }
                 Op::BrTable {
                     depths,

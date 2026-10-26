@@ -24,7 +24,6 @@
 //!
 //! ## Platform
 //! `native` · `wasm32`
-
 // arandu_alloc::gen_arena — generational slots.
 //
 // Minimal 0.1 — generational arena.
@@ -32,6 +31,12 @@
 module std.alloc.gen_arena
 
 import std.core.mem as mem
+
+import std.core.marker as marker
+
+import std.core.slice as slice
+import std.core.option as option
+
 import std.core.intrinsics as intrinsics
 
 func allocationFailure(): void {
@@ -252,36 +257,34 @@ public func GenArena.insert<T>(self: mut ref GenArena<T>, value: T): GenRef {
     return insert<T>(self, value)
 }
 
-func get<T>(a: ref GenArena<T>, r: GenRef): T {
+func checkedPointer<T>(a: ref GenArena<T>, r: GenRef): ptr[T] {
     let idx = r.index as usize
-    if idx >= a.slots {
-        unsafe {
-            intrinsics.abort()
-        }
-    }
+    if idx >= a.slots { unsafe { intrinsics.abort() } }
     unsafe {
         let usedPtr = mem.ptrOffset<u8>(a.used, r.index as isize)
-        let u = mem.ptrRead<u8>(usedPtr)
-        if u == 0 as u8 {
-            intrinsics.abort()
-        }
+        if mem.ptrRead<u8>(usedPtr) == (0 as u8) { intrinsics.abort() }
         let genPtr = mem.ptrOffset<u32>(a.gen, r.index as isize)
-        let g = mem.ptrRead<u32>(genPtr)
-        if g != r.generation {
-            intrinsics.abort()
-        }
-        let dataPtr = mem.ptrOffset<T>(a.data, r.index as isize)
-        return mem.ptrRead<T>(dataPtr)
+        if mem.ptrRead<u32>(genPtr) != r.generation { intrinsics.abort() }
+        return mem.ptrOffset<T>(a.data, r.index as isize)
     }
 }
 
-/// Returns the value at a live handle.
-///
-/// An out-of-range index, removed slot, or stale generation aborts execution.
-/// Use `remove` when invalid handles must be handled without aborting. This
-/// reads the value without removing its slot and does not allocate.
-public func GenArena.get<T>(self: ref GenArena<T>, r: GenRef): T {
-    return get<T>(self, r)
+/// Copies the value at a live handle. Only Copy values may be duplicated.
+/// Out-of-range, removed and stale handles trap. Use getRef for non-Copy values
+/// or remove to transfer ownership out of the arena.
+public func GenArena.get<T: marker.Copy>(self: ref GenArena<T>, r: GenRef): T {
+    unsafe { return mem.ptrRead<T>(checkedPointer<T>(self, r)) }
+}
+
+/// Borrows the value at a live handle, retaining the arena as its owner.
+/// The borrow prevents mutation/removal/growth while it remains in use.
+/// Out-of-range, removed and stale handles trap.
+public func GenArena.getRef<T>(self: ref GenArena<T>, r: GenRef): ref T {
+    unsafe {
+        let data = checkedPointer<T>(self, r)
+        let view = intrinsics.sliceFromRaw<GenArena<T>, T>(self, data, 1 as usize)
+        return slice.get<T>(view, 0 as usize).expectOrAbort("")
+    }
 }
 
 func remove<T>(a: mut ref GenArena<T>, r: GenRef): Option<T> {

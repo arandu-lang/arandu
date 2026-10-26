@@ -1,6 +1,7 @@
 use super::*;
 use crate::hir::pool::IndexRange;
 use crate::newtype_index;
+use crate::types::Primitive;
 
 struct LayoutEngine(super::LayoutEngine);
 
@@ -75,6 +76,20 @@ fn empty_range_has_no_ids() {
     assert!(range.is_empty());
     assert_eq!(range.as_range(), 0..0);
     assert!(range.iter_ids::<TestId>().next().is_none());
+}
+
+#[test]
+fn dense_range_rejects_offsets_that_do_not_fit_u32() {
+    assert!(DenseRange::try_new(usize::MAX, 1).is_none());
+    assert!(DenseRange::try_new(1, usize::MAX).is_none());
+    assert!(DenseRange::try_new(u32::MAX as usize, 1).is_none());
+    assert_eq!(
+        DenseRange::try_new(u32::MAX as usize, 0),
+        Some(DenseRange {
+            start: u32::MAX,
+            len: 0
+        })
+    );
 }
 
 #[test]
@@ -985,12 +1000,13 @@ fn test_enum_layouts_32bit_and_64bit() {
 
     // 32-bit standard ILP32 (DataLayout::ptr_width(4)): i64 has natural align 8
     // max_align = max(8, 4) = 8.
-    // payload_end = checked_add(4, 8) = 12.
-    // align_up(12, 8) = 16.
+    // payload_offset = align_up(4, 8) = 8.
+    // payload_end = checked_add(8, 8) = 16.
+    // align_up(16, 8) = 16.
     let layout_ilp32 = engine_32.layout_of(enum_id_i64, &interner, &provider_i64);
     assert_eq!(layout_ilp32.size, 16);
     assert_eq!(layout_ilp32.align, 8);
-    assert_eq!(layout_ilp32.field_offsets, vec![0, 4]);
+    assert_eq!(layout_ilp32.field_offsets, vec![0, 8]);
 }
 
 #[test]
@@ -1355,4 +1371,30 @@ fn test_small_object_optimization_soo_layout() {
     assert_eq!(soo_s32.inline_capacity, 0);
     assert!(!soo_s32.is_inline_eligible);
     assert!(!engine.is_soo_eligible(&s32_ty, &interner, &struct_provider));
+}
+
+#[test]
+fn hardware_vectors_keep_16_byte_layout_in_32_bit_and_packed_scalar_abis() {
+    use crate::types::VectorType;
+    let interner = TypeInterner::new();
+    for data in [
+        DataLayout::ptr_width(4),
+        DataLayout::ptr_width(8),
+        DataLayout::i686_sysv(),
+    ] {
+        let engine = LayoutEngine::from_data_layout(data);
+        for shape in VectorType::ALL {
+            let vector = interner.intern(ArType::Vector(shape));
+            let layout = engine.layout_of(vector, &interner, &MockProvider);
+            assert_eq!((layout.size, layout.align), (16, 16));
+            let byte = interner.intern(ArType::Primitive(Primitive::U8));
+            let tuple = interner.intern(ArType::tuple(&[byte, vector, byte], &interner));
+            let layout = engine.layout_of(tuple, &interner, &MockProvider);
+            assert_eq!(layout.field_offsets, vec![0, 16, 32]);
+            assert_eq!((layout.size, layout.align), (48, 16));
+            let array = interner.intern(ArType::Array(3, vector));
+            let layout = engine.layout_of(array, &interner, &MockProvider);
+            assert_eq!((layout.size, layout.align), (48, 16));
+        }
+    }
 }

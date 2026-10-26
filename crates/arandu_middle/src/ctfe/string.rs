@@ -1,4 +1,4 @@
-//! Immutable UTF-8 backing and checked logical views, never host addresses.
+//! Immutable literal backing and checked logical views, never host addresses.
 
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -12,11 +12,31 @@ pub struct ConstString {
     len: usize,
 }
 
+/// Owned backing of a frozen byte sequence.
+///
+/// `b"..."` literals keep their decoded bytes verbatim, so the backing is not
+/// necessarily UTF-8 (e.g. `b"\xFF"`). String views still carry a `str`
+/// allocation, which keeps `ConstString::as_str` infallible.
+#[derive(Debug, Clone)]
+enum BytesBacking {
+    Utf8(Arc<str>),
+    Raw(Arc<[u8]>),
+}
+
+impl BytesBacking {
+    fn as_bytes(&self) -> &[u8] {
+        match self {
+            Self::Utf8(backing) => backing.as_bytes(),
+            Self::Raw(backing) => backing,
+        }
+    }
+}
+
 /// Byte views may start inside a Unicode codepoint; conversion back to `str`
 /// must validate UTF-8. Their backing is immutable and owned, not a VM pointer.
 #[derive(Debug, Clone)]
 pub struct ConstBytes {
-    backing: Arc<str>,
+    backing: BytesBacking,
     start: usize,
     len: usize,
 }
@@ -102,7 +122,7 @@ impl ConstString {
     #[must_use]
     pub fn bytes(&self) -> ConstBytes {
         ConstBytes {
-            backing: Arc::clone(&self.backing),
+            backing: BytesBacking::Utf8(Arc::clone(&self.backing)),
             start: self.start,
             len: self.len,
         }
@@ -121,9 +141,31 @@ impl ConstString {
 }
 
 impl ConstBytes {
+    /// Frozen bytes that are not necessarily UTF-8 (`b"\xFF"`).
     #[must_use]
-    pub fn backing_str(&self) -> &str {
-        &self.backing
+    pub fn from_raw(bytes: impl Into<Arc<[u8]>>) -> Self {
+        let backing = bytes.into();
+        Self {
+            len: backing.len(),
+            backing: BytesBacking::Raw(backing),
+            start: 0,
+        }
+    }
+
+    /// Full retained allocation, including bytes outside a visible subview.
+    #[must_use]
+    pub fn backing_bytes(&self) -> &[u8] {
+        self.backing.as_bytes()
+    }
+
+    /// `Some` when the backing is a UTF-8 allocation, which lets callers reuse
+    /// the interned string literal instead of copying raw bytes.
+    #[must_use]
+    pub fn backing_str(&self) -> Option<&str> {
+        match &self.backing {
+            BytesBacking::Utf8(backing) => Some(backing),
+            BytesBacking::Raw(_) => None,
+        }
     }
 
     #[must_use]
@@ -153,18 +195,24 @@ impl ConstBytes {
             .ok_or(StringError::Bounds)?;
         let start = self.start.checked_add(start).ok_or(StringError::Bounds)?;
         Ok(Self {
-            backing: Arc::clone(&self.backing),
+            backing: self.backing.clone(),
             start,
             len,
         })
     }
 
     pub fn to_string_view(&self) -> Result<ConstString, StringError> {
-        std::str::from_utf8(self.as_bytes()).map_err(|_| StringError::InvalidUtf8)?;
-        Ok(ConstString {
-            backing: Arc::clone(&self.backing),
-            start: self.start,
-            len: self.len,
+        let bytes = self.as_bytes();
+        let text = std::str::from_utf8(bytes).map_err(|_| StringError::InvalidUtf8)?;
+        Ok(match &self.backing {
+            BytesBacking::Utf8(backing) => ConstString {
+                backing: Arc::clone(backing),
+                start: self.start,
+                len: self.len,
+            },
+            // Raw backings have no `str` allocation to borrow; validation above
+            // makes the copy sound.
+            BytesBacking::Raw(_) => ConstString::new(text),
         })
     }
 
@@ -206,6 +254,28 @@ mod tests {
         assert_eq!(
             bytes.view(5, 4).unwrap().to_string_view().unwrap().as_str(),
             "🦀"
+        );
+    }
+
+    #[test]
+    fn raw_backing_keeps_non_utf8_bytes_with_checked_views() {
+        let bytes = ConstBytes::from_raw(vec![0xFF, 0x00, 0x41, 0x42]);
+        assert_eq!(bytes.backing_bytes(), &[0xFF, 0x00, 0x41, 0x42]);
+        assert_eq!(bytes.as_bytes(), &[0xFF, 0x00, 0x41, 0x42]);
+        assert_eq!(bytes.len(), 4);
+        assert!(bytes.backing_str().is_none());
+        assert_eq!(bytes.to_string_view(), Err(StringError::InvalidUtf8));
+        assert_eq!(bytes.view(5, 0), Err(StringError::Bounds));
+        assert_eq!(bytes.view(usize::MAX, 1), Err(StringError::Bounds));
+
+        let text_view = bytes.view(2, 2).unwrap();
+        assert_eq!(text_view.as_bytes(), b"AB");
+        assert_eq!(text_view.to_string_view().unwrap().as_str(), "AB");
+        // Identity is the visible content, not the backing representation.
+        assert_eq!(
+            text_view,
+            ConstString::new("AB").bytes(),
+            "a raw blob and a UTF-8 literal view must compare equal"
         );
     }
 }

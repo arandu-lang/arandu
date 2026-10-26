@@ -1,0 +1,33 @@
+struct LzMatch {
+    offset: u16,
+    length: u16,
+    has_match: bool,
+}
+
+struct CompressWindow {
+    head: usize,
+    tail: usize,
+    mask: usize,
+}
+
+func findLongestMatch(bytes: []u8, pos: usize, max_len: usize, window: CompressWindow): LzMatch {
+    let mut best_off: u16 = 0;
+    let mut best_len: u16 = 0;
+    let mut curr = window.head;
+    while curr > window.tail && best_len < (max_len as u16) {
+        let mut match_len: u16 = 0;
+        while match_len < (max_len as u16) && bytes[pos + (match_len as usize)] == bytes[curr + (match_len as usize)] {
+            match_len = match_len + 1;
+        }
+        if match_len > best_len {
+            best_len = match_len;
+            best_off = (pos - curr) as u16;
+        }
+        curr = curr - 1;
+    }
+    return LzMatch {
+        offset: best_off,
+        length: best_len,
+        has_match: best_len >= 3,
+    };
+}

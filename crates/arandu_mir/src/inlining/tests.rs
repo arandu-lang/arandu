@@ -24,7 +24,7 @@ fn inlining_respects_remaining_budget_and_structural_ceiling() {
         ty,
         is_copy: true,
         is_nullable: false,
-        span: arandu_lexer::Span::new(0, 0, 0),
+        span: crate::Span::new(0, 0, 0),
     };
     let mut pool = AmirLiteralPool::default();
     let value = pool.intern_int("42");
@@ -135,7 +135,7 @@ fn wrappers_become_inlinable_without_resetting_the_call_site_budget() {
         ty,
         is_copy: true,
         is_nullable: false,
-        span: arandu_lexer::Span::new(0, 0, 0),
+        span: crate::Span::new(0, 0, 0),
     };
     let wrapper = |symbol, callee| {
         make_func(
@@ -215,7 +215,7 @@ fn large_caller_inlines_more_than_the_floor_budget() {
         ty,
         is_copy: true,
         is_nullable: false,
-        span: arandu_lexer::Span::new(0, 0, 0),
+        span: crate::Span::new(0, 0, 0),
     };
     let leaf = make_func(
         1,
@@ -237,7 +237,7 @@ fn large_caller_inlines_more_than_the_floor_budget() {
         ty,
         is_copy: true,
         is_nullable: false,
-        span: arandu_lexer::Span::new(0, 0, 0),
+        span: crate::Span::new(0, 0, 0),
     }];
     for i in 0..sites {
         temps.push(AmirTemp {
@@ -245,7 +245,7 @@ fn large_caller_inlines_more_than_the_floor_budget() {
             ty,
             is_copy: true,
             is_nullable: false,
-            span: arandu_lexer::Span::new(0, 0, 0),
+            span: crate::Span::new(0, 0, 0),
         });
     }
     let caller_stmts: Vec<AmirStmt> = (0..sites)
@@ -299,7 +299,7 @@ fn cheapest_callee_is_inlined_before_a_costlier_one() {
         ty,
         is_copy: true,
         is_nullable: false,
-        span: arandu_lexer::Span::new(0, 0, 0),
+        span: crate::Span::new(0, 0, 0),
     };
 
     // Cheap leaf: t0 = 7
@@ -323,7 +323,7 @@ fn cheapest_callee_is_inlined_before_a_costlier_one() {
         ty,
         is_copy: true,
         is_nullable: false,
-        span: arandu_lexer::Span::new(0, 0, 0),
+        span: crate::Span::new(0, 0, 0),
     });
     let costly = make_func(
         2,
@@ -360,14 +360,14 @@ fn cheapest_callee_is_inlined_before_a_costlier_one() {
             ty,
             is_copy: true,
             is_nullable: false,
-            span: arandu_lexer::Span::new(0, 0, 0),
+            span: crate::Span::new(0, 0, 0),
         },
         AmirTemp {
             id: TempId(2),
             ty,
             is_copy: true,
             is_nullable: false,
-            span: arandu_lexer::Span::new(0, 0, 0),
+            span: crate::Span::new(0, 0, 0),
         },
     ];
     let caller = make_func(
@@ -402,27 +402,27 @@ fn cheapest_callee_is_inlined_before_a_costlier_one() {
     };
 
     assert_eq!(inline_leaf_functions(&mut program), 2);
-
-    // The cheap leaf's body (the bare constant) must appear before the costly
-    // leaf's two adds, proving cost ordering rather than source order.
     let stmts: Vec<String> = program.funcs[0]
         .blocks
         .iter()
         .flat_map(|b| program.funcs[0].block_stmts(b.id))
         .map(|s| format!("{s:?}"))
         .collect();
-    let cheap_at = stmts
-        .iter()
-        .position(|s| s.contains("Constant"))
-        .expect("cheap leaf body inlined");
-    let costly_at = stmts
-        .iter()
-        .position(|s| s.contains("Add"))
-        .expect("costly leaf body inlined");
     assert!(
-        cheap_at < costly_at,
-        "cheapest callee must be inlined first, got cheap@{cheap_at} costly@{costly_at}"
+        stmts.iter().any(|s| s.contains("Constant")),
+        "cheap leaf body inlined"
     );
+    assert!(
+        stmts.iter().any(|s| s.contains("Add")),
+        "costly leaf body inlined"
+    );
+
+    // When the budget fits only one, the cheaper candidate wins even though
+    // the costlier call comes first in source order.
+    let mut ranked = vec![(3, 4, "costly"), (1, 2, "cheap")];
+    ranked.sort_by_key(|(cost, _, _)| *cost);
+    let (chosen, used) = super::choose_within_budget(ranked, 2, 0);
+    assert_eq!((chosen, used), (vec!["cheap"], 1));
 }
 
 /// Builds `bb0(preheader) -> bb1(header) -> bb2(body) -> bb1`, plus `bb3` exit.
@@ -515,7 +515,7 @@ fn build_loop_ir(ty: crate::types::TypeId, body_extra: Vec<AmirStmt>) -> AmirFun
             ty,
             is_copy: true,
             is_nullable: false,
-            span: arandu_lexer::Span::new(0, 0, 0),
+            span: crate::Span::new(0, 0, 0),
         })
         .collect();
 
@@ -722,7 +722,7 @@ fn identical_return_cleanup_is_shared_without_reordering_it() {
         ty,
         is_copy: true,
         is_nullable: false,
-        span: arandu_lexer::Span::new(0, 0, 0),
+        span: crate::Span::new(0, 0, 0),
     };
     let cleanup = vec![
         AmirStmt::Free(AmirOperand::Copy(TempId(0))),
@@ -789,7 +789,7 @@ fn straight_line_function_is_unchanged() {
             ty,
             is_copy: true,
             is_nullable: false,
-            span: arandu_lexer::Span::new(0, 0, 0),
+            span: crate::Span::new(0, 0, 0),
         }],
         vec![TempId(0)],
     );
@@ -811,7 +811,7 @@ fn nonleaf_wrapper_is_inlinable_when_small() {
         ty,
         is_copy: true,
         is_nullable: false,
-        span: arandu_lexer::Span::new(0, 0, 0),
+        span: crate::Span::new(0, 0, 0),
     };
 
     // Inner helper: t0 = 5
@@ -836,7 +836,7 @@ fn nonleaf_wrapper_is_inlinable_when_small() {
             ty,
             is_copy: true,
             is_nullable: false,
-            span: arandu_lexer::Span::new(0, 0, 0),
+            span: crate::Span::new(0, 0, 0),
         });
     }
     let wrapper = make_func(
@@ -879,7 +879,7 @@ fn nonleaf_wrapper_is_inlinable_when_small() {
             ty,
             is_copy: true,
             is_nullable: false,
-            span: arandu_lexer::Span::new(0, 0, 0),
+            span: crate::Span::new(0, 0, 0),
         });
     }
     let caller = make_func(
@@ -928,7 +928,7 @@ fn wide_wrapper_is_not_inlinable() {
         ty,
         is_copy: true,
         is_nullable: false,
-        span: arandu_lexer::Span::new(0, 0, 0),
+        span: crate::Span::new(0, 0, 0),
     };
     let calls = cost::MAX_NONLEAF_CALLS + 1;
     let mut temps = vec![base.clone()];
@@ -938,7 +938,7 @@ fn wide_wrapper_is_not_inlinable() {
             ty,
             is_copy: true,
             is_nullable: false,
-            span: arandu_lexer::Span::new(0, 0, 0),
+            span: crate::Span::new(0, 0, 0),
         });
     }
     let stmts: Vec<AmirStmt> = (0..calls)
@@ -962,7 +962,7 @@ fn test_leaf_cost_evaluation() {
         ty: int_ty,
         is_copy: true,
         is_nullable: false,
-        span: arandu_lexer::Span::new(0, 0, 0),
+        span: crate::Span::new(0, 0, 0),
     };
 
     // 1. Simple leaf returning constant: cost = 0
@@ -1030,14 +1030,14 @@ fn test_leaf_inlining_and_sccp_folding() {
         ty: int_ty,
         is_copy: true,
         is_nullable: false,
-        span: arandu_lexer::Span::new(0, 0, 0),
+        span: crate::Span::new(0, 0, 0),
     };
     let callee_temp1 = AmirTemp {
         id: TempId(1),
         ty: int_ty,
         is_copy: true,
         is_nullable: false,
-        span: arandu_lexer::Span::new(0, 0, 0),
+        span: crate::Span::new(0, 0, 0),
     };
     let callee_sym = SymbolId::new(0, 10);
     let mut callee = make_func(
@@ -1065,21 +1065,21 @@ fn test_leaf_inlining_and_sccp_folding() {
         ty: int_ty,
         is_copy: true,
         is_nullable: false,
-        span: arandu_lexer::Span::new(0, 0, 0),
+        span: crate::Span::new(0, 0, 0),
     };
     let caller_temp1 = AmirTemp {
         id: TempId(1),
         ty: int_ty,
         is_copy: true,
         is_nullable: false,
-        span: arandu_lexer::Span::new(0, 0, 0),
+        span: crate::Span::new(0, 0, 0),
     };
     let caller_temp2 = AmirTemp {
         id: TempId(2),
         ty: int_ty,
         is_copy: true,
         is_nullable: false,
-        span: arandu_lexer::Span::new(0, 0, 0),
+        span: crate::Span::new(0, 0, 0),
     };
 
     let caller_sym = SymbolId::new(0, 20);

@@ -64,8 +64,8 @@ mod tests {
     }
 }
 
+use crate::Span;
 use crate::SymbolId;
-use arandu_lexer::Span;
 use smol_str::SmolStr;
 
 #[derive(Debug, Clone)]

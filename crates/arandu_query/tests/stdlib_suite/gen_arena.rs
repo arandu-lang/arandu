@@ -13,7 +13,7 @@ const INTRINSICS_ARU: &str = include_str!("../../../../stdlib/core/intrinsics.ar
 #[test]
 fn stdlib_gen_arena_parses_and_exports_expected_symbols() {
     let mut db = DatabaseImpl::default();
-    let file = db.new_file(
+    let file = db.new_stdlib_file(
         "stdlib/alloc/gen_arena.aru".to_string(),
         GEN_ARENA_ARU.to_string(),
     );
@@ -43,13 +43,21 @@ fn stdlib_gen_arena_parses_and_exports_expected_symbols() {
 #[test]
 fn stdlib_gen_arena_usage_typechecks() {
     let mut db = DatabaseImpl::default();
-    db.new_file(
+    db.new_stdlib_file(
+        "stdlib/core/marker.aru".to_string(),
+        include_str!("../../../../stdlib/core/marker.aru").to_string(),
+    );
+    db.new_stdlib_file(
         "stdlib/core/intrinsics.aru".to_string(),
         INTRINSICS_ARU.to_string(),
     );
-    db.new_file("stdlib/core/mem.aru".to_string(), MEM_ARU.to_string());
-    db.new_file("stdlib/core/option.aru".to_string(), OPTION_ARU.to_string());
-    let arena_file = db.new_file(
+    db.new_stdlib_file("stdlib/core/mem.aru".to_string(), MEM_ARU.to_string());
+    db.new_stdlib_file(
+        "stdlib/core/slice.aru".to_string(),
+        include_str!("../../../../stdlib/core/slice.aru").to_string(),
+    );
+    db.new_stdlib_file("stdlib/core/option.aru".to_string(), OPTION_ARU.to_string());
+    let arena_file = db.new_stdlib_file(
         "stdlib/alloc/gen_arena.aru".to_string(),
         GEN_ARENA_ARU.to_string(),
     );

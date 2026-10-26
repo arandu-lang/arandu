@@ -28,7 +28,7 @@ The parser must:
 Current implemented slice:
 
 - `module` and module imports;
-- named imports: `import { Button, Window as AppWindow } from ui`;
+- named imports: `from ui import { Button, Window as AppWindow }`;
 - attributes, `const`, `type`, `struct`, `enum`, `interface`, `extern`, and functions;
 - `public`, `async`, and type-qualified method names such as `func User.greet(...)`;
 - generic params, generic type args, where clauses, and generic calls;
@@ -209,7 +209,7 @@ Forms:
 
 ```text
 import io
-import { println as print, Reader } from io
+from io import { println as print, Reader }
 ```
 
 AST:
@@ -315,6 +315,23 @@ struct User {
 
 Fields require `stmt_end`.
 
+A field may declare a default value with `=`:
+
+```arandu
+struct Config {
+    port int = 8080
+    retries int = 3
+    label str
+}
+```
+
+Parser decision:
+
+- `=` after the field type starts a default-value expression; the expression is
+  stored in the field declaration, not parsed as a separate statement.
+- Defaults are applied by type checking at construction sites, so
+  `Config { label: "api" }` is valid when every omitted field has a default.
+
 ### enum_decl
 
 Form:
@@ -395,6 +412,7 @@ Type forms:
 - Named: `User`
 - Generic named: `Box<int>`
 - Slice: `[]int`
+- Mutable slice: `mut []int`
 - Array: `[4]int`
 - Pointer: `ptr[u8]`
 - Function: `func(int, int) int`
@@ -465,6 +483,29 @@ Binding-list shape:
 ```text
 [mut] IDENT_VALUE [type_expr] { "," [mut] IDENT_VALUE [type_expr] } "="
 ```
+
+### let and let ... else
+
+`let` introduces bindings; a bare `let` accepts a binding list, a tuple
+binding or a full pattern, and may be narrowed by an `else` block:
+
+```arandu
+let (a, b) = pair
+let .Some(value) = maybe else {
+    return 0
+}
+let Some(value) = maybe else { return 0 }
+```
+
+Parser decisions:
+
+- `let ( ... ) =` with comma-separated bindings is a tuple destructuring
+  binding, not a parenthesized expression.
+- `let` followed by a pattern (literal, variant, enum, struct, range or
+  wildcard) and then `=` parses a pattern binding.
+- `else` after the initializer makes it a refutable binding: the block runs
+  when the pattern does not match, and control never continues past it.
+- The `else` block needs no `stmt_end`.
 
 ### set_stmt
 
@@ -575,6 +616,7 @@ Pattern forms:
 - Binding pattern: `value` or mutable `mut value`
 - Wildcard pattern
 - Type variant pattern: `Some(value)`
+- Leading-dot variant pattern: `.Some(value)` / `.None`
 - Enum pattern: `Result.Ok(value)`
 - Struct pattern: `User { name, age: value }`
 - Tuple pattern: `(a, b)`
@@ -585,6 +627,8 @@ Parser decision:
 - `_` lexes as `IDENT_VALUE("_")`, but parser converts it to `WildcardPattern` in pattern context.
 - `mut` is accepted only before a value binding and marks that arm-local binding mutable.
 - Try wildcard, range, enum, struct, and tuple patterns before simple binding/type patterns.
+- `DOT IDENT_VALUE`/`DOT IDENT_TYPE` starts a variant pattern; the variant is
+  resolved against the scrutinee's enum during type checking.
 - `IDENT_TYPE DOT IDENT_TYPE` starts an enum pattern.
 - `IDENT_TYPE LBRACE` starts a struct pattern.
 - A literal followed by `..` or `..=` starts a range pattern.
@@ -614,6 +658,7 @@ BANG
 MINUS
 TILDE
 KW_AWAIT
+DOT variant sugar
 ```
 
 Type-qualified value path:
@@ -648,10 +693,42 @@ safe index: ?[expr]
 try: ?
 ```
 
+Leading-dot variant sugar is a prefix parselet, accepted both in expressions
+and in patterns:
+
+```arandu
+let color = .Red
+let value = .Occupied(42)
+match slot {
+  .Occupied(val) => val
+  .Empty => 0
+}
+```
+
+It lowers to `ExprKind::VariantSugar { name, args }`; the expected enum type
+comes from the surrounding expression or pattern, so the variant name alone is
+sufficient. Arguments are positional and follow the call argument grammar
+below.
+
+Call arguments:
+
+```text
+argument = IDENT_VALUE ":" [expr]   // label, optional shorthand
+         | "_"                      // pipe placeholder (see Pipe expressions)
+         | expr
+```
+
+A label is consumed by the parser and the argument is passed positionally, so
+`cfg.bump(delta: 20)` lowers to the same call as `cfg.bump(20)`. The shorthand
+form `f(x:)` is `f(x)`: when the token after `:` is `,` or `)`, the label name
+itself becomes the `Path` argument. Labels are metadata for readers and for
+diagnostics; they do not affect the callee or the argument order.
+
 Infix parselets, low to high:
 
 ```text
 catch
+|>
 ??
 ||
 &&
@@ -671,6 +748,7 @@ Binding power table:
 
 ```text
 catch              10, right
+|>                 15, left
 ??                 20, left
 ||                 30, left
 &&                 40, left
@@ -705,6 +783,32 @@ Generic call ambiguity:
 - `foo<int>(value)` is a generic call.
 - `a < b > c` is comparison syntax, not generic arguments.
 - Generic arguments in expressions are accepted only when immediately followed by `(`.
+
+Pipe expressions:
+
+`|>` is left-associative at binding power 15/16 (above `catch`, below `??`), so
+comparisons, arithmetic and method calls on the right-hand side bind tighter
+than the pipe itself:
+
+```arandu
+bytes[0..2] |> decode |> print
+value |> clamp(0, 100) |> double
+```
+
+Lowering rules:
+
+- If the right-hand side is a call with exactly one `_` placeholder argument,
+  the left-hand value replaces that argument and keeps its position:
+  `path |> join(".", _)` becomes `join(".", path)`.
+- Otherwise the left-hand value becomes the first argument:
+  `value |> clamp(0, 100)` becomes `clamp(value, 0, 100)`.
+- A right-hand side that is not a call becomes a call with a single argument:
+  `value |> handler` becomes `handler(value)`.
+
+There is no pipe operator precedence trick for the trailing block: the whole
+right-hand call, including a trailing `{ ... }` block, is the pipe target. A
+placeholder beyond the first is not special-cased; only the first `_`
+positional argument is substituted.
 
 ### Error Recovery
 
@@ -790,7 +894,7 @@ Program
 Input:
 
 ```arandu
-mut idade = 25
+let mut idade = 25
 set idade = idade + 1
 ```
 

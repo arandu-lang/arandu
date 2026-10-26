@@ -28,8 +28,8 @@ pub use stmt::{
     HirSimpleStmt, HirStmt, HirStmtKind,
 };
 
+use crate::Span;
 use crate::{SymbolId, SymbolTable};
-use arandu_lexer::Span;
 
 #[must_use]
 pub fn symbol_name(symbols: &SymbolTable, id: SymbolId) -> &str {

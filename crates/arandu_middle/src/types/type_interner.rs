@@ -248,9 +248,9 @@ impl TypeInterner {
     pub fn slice_abi_element(&self, id: TypeId) -> Option<TypeId> {
         let types = self.types.read().unwrap_or_else(|error| error.into_inner());
         match &types[id.as_usize()] {
-            ArType::Slice(element) => Some(*element),
+            ArType::Slice(element) | ArType::MutSlice(element) => Some(*element),
             ArType::Ref(inner) | ArType::RefMut(inner) => match &types[inner.as_usize()] {
-                ArType::Slice(element) => Some(*element),
+                ArType::Slice(element) | ArType::MutSlice(element) => Some(*element),
                 _ => None,
             },
             _ => None,

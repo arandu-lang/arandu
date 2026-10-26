@@ -7,6 +7,7 @@ use crate::type_checker::constraints::ConstraintOrigin;
 use crate::type_checker::synth::check_pattern;
 use crate::type_checker::types::{self, ArType, Primitive};
 
+#[allow(dead_code)]
 #[cold]
 #[inline(never)]
 pub(super) fn report_unsupported(
@@ -37,12 +38,11 @@ pub(super) fn synth_control_flow_expr(
 ) -> Option<TypeId> {
     match kind {
         ExprKind::Lambda { .. } => {
-            report_unsupported(
-                checker,
+            checker.diagnostics.push(crate::Diagnostic::error(
+                crate::DiagCode::U001FeatureNotSupported,
+                "AMIR v0.1: lambda/closure is not supported yet (v0.3 LAMBDA: closure type checking and lowering)",
                 span,
-                "lambda/closure",
-                "v0.3 LAMBDA: closure type checking and lowering",
-            );
+            ));
             Some(checker.intern(ArType::Error))
         }
         ExprKind::Alloc { expr: inner_expr } => {

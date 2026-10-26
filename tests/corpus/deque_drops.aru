@@ -1,0 +1,76 @@
+module dequeDrops
+
+import std.alloc.deque as deque
+
+import std.alloc.string as strings
+
+import std.core.io as io
+
+// Each destructor prints its tag; the expected transcript proves that every
+// element is dropped exactly once, at the observable point of its removal.
+struct Tracked { tag: int, text: strings.String }
+
+@Destructor
+func Tracked.destroy(self: own Tracked): void { io.println(self.tag) }
+
+func tracked(tag: int): Tracked {
+    return Tracked { tag: tag, text: strings.String.from("payload") }
+}
+
+func scenario(): int {
+    let mut q = deque.VecDeque<Tracked>.new()
+    let mut tag = 1
+    while tag <= 6 {
+        q.pushBack(tracked(tag))
+        tag = tag + 1
+    }
+    // Popped values are owned by the arm and dropped when it ends: 1, 2, 3.
+    let mut popped = 0
+    while popped < 3 {
+        match q.popFront() {
+            Option.Some(value) => { if value.text.len() != 7 { return 1 } }
+            Option.None => { return 2 }
+        }
+        popped = popped + 1
+    }
+    // head = 3: these pushes wrap around the eight-slot ring and fill it.
+    while tag <= 11 {
+        q.pushBack(tracked(tag))
+        tag = tag + 1
+    }
+    if q.len() != (8 as usize) || q.capacity() != (8 as usize) { return 3 }
+    // A full wrapped ring grows by moving elements; no destructor may run.
+    q.pushFront(tracked(0))
+    if q.len() != (9 as usize) || q.capacity() != (16 as usize) { return 4 }
+    match q.popBack() {
+        Option.Some(value) => { if value.tag != 11 { return 5 } }
+        Option.None => { return 6 }
+    }
+    match q.front() {
+        Option.Some(value) => { if value.tag != 0 { return 7 } }
+        Option.None => { return 8 }
+    }
+    // Mutation through a borrowed slot is visible to the later drop: 10 -> 30.
+    match q.backMut() {
+        Option.Some(value) => { value.tag = 30 }
+        Option.None => { return 10 }
+    }
+    match q.back() {
+        Option.Some(value) => { if value.tag != 30 { return 11 } }
+        Option.None => { return 12 }
+    }
+    // clear drops the remaining elements in logical order: 0, 4..9, 30.
+    q.clear()
+    if !q.isEmpty() { return 9 }
+    q.pushBack(tracked(20))
+    q.pushFront(tracked(19))
+    q.pushBack(tracked(21))
+    // Leaving scope destroys the deque and its live elements: 19, 20, 21.
+    return 0
+}
+
+public func main(): int {
+    let status = scenario()
+    io.println(99)
+    return status
+}

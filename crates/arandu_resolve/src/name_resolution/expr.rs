@@ -229,6 +229,7 @@ impl<'a> Resolver<'a> {
             | ExprKind::Bool { .. }
             | ExprKind::Char { .. }
             | ExprKind::Byte { .. }
+            | ExprKind::ByteString { .. }
             | ExprKind::Nil
             | ExprKind::Error => {}
         }

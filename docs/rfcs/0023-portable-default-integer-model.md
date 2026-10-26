@@ -46,13 +46,13 @@ deve ocorrer de forma versionada antes do congelamento da ABI pública.
 
 ## 2. Motivação (Motivation)
 
-### 2.1 Estado atual
+### 2.1 Estado anterior à implementação (motivação histórica)
 
 Desde julho de 2026, `int`, `uint` e o fallback de literais inteiros usam a
 largura do ponteiro: 32 bits em `ptr4` e 64 bits em `ptr8`. A decisão foi
 consistente com a intenção de ter inteiros nativos e layouts coerentes com o
 target. O roadmap chama essa regra de “`int` nativo (largura de ponteiro)” e
-ela está implementada de ponta a ponta:
+ela era implementada de ponta a ponta antes da migração:
 
 - `LayoutEngine` resolve `Primitive::Int`/`Uint` pelo tamanho do ponteiro;
 - `TargetInfo` modela a faixa de `int`/`uint` a partir do `TargetConfig`;

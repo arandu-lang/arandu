@@ -589,7 +589,10 @@ func main(): int {
     assert_deterministic(
         "struct carrier",
         mutation_struct_carrier,
-        &[DiagCode::O004GenerationalFallback],
+        &[
+            DiagCode::O003MutableBorrowConflict,
+            DiagCode::O004GenerationalFallback,
+        ],
     );
 
     let mutation_call_result = r#"

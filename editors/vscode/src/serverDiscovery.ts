@@ -102,7 +102,7 @@ function findBundledServer(
     return undefined;
 }
 
-function expandConfiguredPath(
+export function expandConfiguredPath(
     configured: string,
     workspaceRoots: readonly string[],
     environment: NodeJS.ProcessEnv

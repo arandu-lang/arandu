@@ -5,9 +5,10 @@ pub(super) mod enums;
 pub(super) mod gen_arena;
 pub(super) mod memory;
 pub(super) mod ops;
+mod simd;
 
-use arandu_semantics::amir::{AmirConstant, AmirOperand, AmirRvalue};
-use arandu_semantics::passes::type_checker::types::ArType;
+use arandu_middle::amir::{AmirConstant, AmirOperand, AmirRvalue};
+use arandu_middle::types::ArType;
 use cranelift_codegen::ir::{InstBuilder, Type, Value};
 
 use super::FunctionTranslator;
@@ -32,6 +33,29 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         self.builder
             .ins()
             .store(cranelift_codegen::ir::MemFlagsData::new(), val, ptr, 0);
+        ptr
+    }
+
+    /// Copy an inline aggregate into a fresh heap box for a `T?` handle. The
+    /// value's storage may be a stack slot of this frame, which a returned or
+    /// stored handle would outlive.
+    fn box_nullable_aggregate(&mut self, val: Value, inner: &ArType) -> Value {
+        let (Some(malloc_id), Some(memcpy_id)) = (self.malloc_func_id(), self.memcpy_func_id())
+        else {
+            return self.poison_i32();
+        };
+        let malloc_ref = self
+            .module
+            .declare_func_in_func(malloc_id, self.builder.func);
+        let size = self.checked_layout(inner).size.max(1) as i64;
+        let size = self.builder.ins().iconst(self.ptr_type, size);
+        let call = self.builder.ins().call(malloc_ref, &[size]);
+        let ptr = self.builder.inst_results(call)[0];
+        self.trap_if_null(ptr);
+        let memcpy_ref = self
+            .module
+            .declare_func_in_func(memcpy_id, self.builder.func);
+        self.builder.ins().call(memcpy_ref, &[ptr, val, size]);
         ptr
     }
 
@@ -60,7 +84,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         // `T?` is always a pointer: null = nil; non-null = object ptr or
         // boxed scalar. Box/unbox keeps `int? = 0` distinct from `nil`.
         if let Some(ArType::Nullable(inner_id)) = expected_ar_type {
-            let inner = self.type_info.type_interner.resolve(*inner_id);
+            let inner = self.type_info.type_interner().resolve(*inner_id);
             if matches!(
                 rvalue,
                 AmirRvalue::Use(AmirOperand::Constant(AmirConstant::Nil))
@@ -74,6 +98,17 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     return self.translate_operand(op, Some(self.ptr_type));
                 }
             }
+            // A projection already yields the field, element or payload at its
+            // own type, which here is the `T?` handle itself.
+            if matches!(
+                rvalue,
+                AmirRvalue::FieldAccess { .. }
+                    | AmirRvalue::IndexAccess { .. }
+                    | AmirRvalue::Load(_)
+                    | AmirRvalue::EnumPayload { .. }
+            ) {
+                return self.translate_rvalue_inner(rvalue, Some(self.ptr_type), expected_ar_type);
+            }
             // Produce the inner value, then box scalars.
             let inner_clif = match crate::types::clif_type(&inner, self.ptr_type) {
                 crate::types::ClifType::Concrete(t) => Some(t),
@@ -83,6 +118,9 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             if inner.needs_nullable_box() {
                 return self.box_nullable_scalar(raw, &inner);
             }
+            if self.is_inline_aggregate_ty(&inner) {
+                return self.box_nullable_aggregate(raw, &inner);
+            }
             return raw;
         }
 
@@ -90,7 +128,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         if let AmirRvalue::Use(op) = rvalue {
             let op_ty = self.get_operand_ar_type(op);
             if let ArType::Nullable(inner_id) = &op_ty {
-                let inner = self.type_info.type_interner.resolve(*inner_id);
+                let inner = self.type_info.type_interner().resolve(*inner_id);
                 if expected_ar_type.is_none_or(|e| !matches!(e, ArType::Nullable(_)))
                     && inner.needs_nullable_box()
                 {
@@ -132,6 +170,13 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         }
 
         match rvalue {
+            AmirRvalue::VectorCompare { .. }
+            | AmirRvalue::VectorSelect { .. }
+            | AmirRvalue::VectorOp { .. }
+            | AmirRvalue::VectorSplat { .. }
+            | AmirRvalue::VectorShuffle { .. }
+            | AmirRvalue::VectorExtractLane { .. }
+            | AmirRvalue::VectorInsertLane { .. } => self.translate_vector(rvalue, expected_ty),
             AmirRvalue::Use(op) => {
                 let val = self.translate_typed_operand(op, expected_ty, expected_ar_type);
                 let op_ty = self.get_operand_ar_type(op);
@@ -152,6 +197,36 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             AmirRvalue::BlackBox { value, .. } => {
                 let input = self.translate_operand(value, expected_ty);
                 let input_ty = self.builder.func.dfg.value_type(input);
+                if input_ty.is_vector() {
+                    let slot = self.builder.create_sized_stack_slot(
+                        cranelift_codegen::ir::StackSlotData {
+                            kind: cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+                            size: 16,
+                            align_shift: 4,
+                            key: None,
+                        },
+                    );
+                    self.builder
+                        .ins()
+                        .stack_store(self.ptr_type, input, slot, 0);
+                    let address = self.builder.ins().stack_addr(self.ptr_type, slot, 0);
+                    let Some(id) = self.resolve_function("ar_bench_black_box_ptr") else {
+                        self.record_ice(
+                            "missing vector black box runtime barrier",
+                            self.func_span(),
+                        );
+                        return self.poison_i32();
+                    };
+                    let callee = self.module.declare_func_in_func(id, self.builder.func);
+                    let call = self.builder.ins().call(callee, &[address]);
+                    let address = self.builder.inst_results(call)[0];
+                    return self.builder.ins().load(
+                        input_ty,
+                        cranelift_codegen::ir::MemFlagsData::new(),
+                        address,
+                        0,
+                    );
+                }
                 let pointer_like = expected_ar_type.is_some_and(|ty| {
                     matches!(
                         ty,
@@ -163,6 +238,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                             | ArType::Array(_, _)
                             | ArType::Tuple(_)
                             | ArType::Slice(_)
+                            | ArType::MutSlice(_)
                     )
                 });
                 let helper = if input_ty == cranelift_codegen::ir::types::F32 {
@@ -218,7 +294,9 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             AmirRvalue::Binary { op, left, right } => {
                 self.translate_binary(*op, left, right, expected_ty, expected_ar_type)
             }
-            AmirRvalue::Unary { op, operand } => self.translate_unary(*op, operand, expected_ty),
+            AmirRvalue::Unary { op, operand } => {
+                self.translate_unary(*op, operand, expected_ty, expected_ar_type)
+            }
             AmirRvalue::Load(place) => self.translate_load(place, expected_ty, expected_ar_type),
             AmirRvalue::StructLiteral {
                 struct_symbol,
@@ -241,9 +319,11 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 tuple_ty,
                 ..
             } => self.translate_enum_payload(value, *field_ty, *tuple_ty, *index, expected_ty),
-            AmirRvalue::IndexAccess { base, index } => {
-                self.translate_index_access(base, index, expected_ty)
-            }
+            AmirRvalue::IndexAccess {
+                base,
+                index,
+                in_bounds,
+            } => self.translate_index_access(base, index, *in_bounds, expected_ty),
             AmirRvalue::Borrow(place) | AmirRvalue::BorrowMut(place) => {
                 self.translate_borrow(place)
             }

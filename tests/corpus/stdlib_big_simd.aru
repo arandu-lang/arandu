@@ -1,0 +1,63 @@
+module bigSimdContract
+
+import std.math.big as big
+import std.core.simd as simd
+
+public func main(): int {
+    // 1. BigInt: Zero & One
+    let z = big.BigInt.zero()
+    if !z.isZero() { return 1 }
+
+    let o = big.BigInt.one()
+    if o.isZero() { return 2 }
+
+    // 2. BigInt: fromInt & fromI64
+    let a = big.BigInt.fromInt(1000)
+    let b = big.BigInt.fromInt(250)
+
+    // a + b = 1250
+    let sum = a.add(ref b)
+    if sum.isZero() { return 3 }
+
+    // a - b = 750
+    let diff = a.sub(ref b)
+    if diff.isZero() { return 4 }
+
+    // a * b = 250000
+    let prod = a.mul(ref b)
+    if prod.isZero() { return 5 }
+
+    // Multiplicação grande que ultrapassa 64 bits (força múltiplos limbs)
+    let big1 = big.BigInt.fromI64(3000000000 as i64)
+    let big2 = big.BigInt.fromI64(4000000000 as i64)
+    let bigProd = big1.mul(ref big2)
+    if bigProd.isZero() { return 6 }
+
+    // BigDecimal
+    let dec = big.BigDecimal.new(sum, 2 as i64)
+    if dec.scale() != (2 as i64) { return 7 }
+
+    // 3. SIMD: F32x4
+    let v1 = simd.F32x4.splat(2.5)
+    let v2 = simd.F32x4.splat(1.5)
+
+    let vAdd = v1.add(v2)
+    if vAdd.extractLane(0) != 4.0 { return 8 }
+    if vAdd.extractLane(1) != 4.0 { return 9 }
+    if vAdd.extractLane(2) != 4.0 { return 10 }
+    if vAdd.extractLane(3) != 4.0 { return 11 }
+
+    let vSub = v1.sub(v2)
+    if vSub.extractLane(0) != 1.0 { return 12 }
+
+    let vMul = v1.mul(v2)
+    if vMul.extractLane(0) != 3.75 { return 13 }
+
+    // 4. SIMD: U8x16
+    let u1 = simd.U8x16.splat(100 as u8)
+    let u2 = simd.U8x16.splat(25 as u8)
+    let uSum = u1.add(u2)
+    // uSum lane 0 deve ser 125 as u8
+
+    return 0
+}

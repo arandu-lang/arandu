@@ -59,6 +59,10 @@ jobs:
         run: cargo run --locked -p xtask -- check-line-endings
       - name: Compiler architecture boundaries
         run: cargo run --locked -p xtask -- check-architecture
+      # arandu_fuzz is excluded from the workspace and keeps its own lock;
+      # metadata --locked fails on drift without building the fuzz targets.
+      - name: Fuzz project lockfile is current
+        run: cargo metadata --manifest-path arandu_fuzz/Cargo.toml --locked --format-version 1 > /dev/null
       - name: Documentation taxonomy
         run: cargo run --locked -p xtask -- check-docs-taxonomy
       - name: Diagnostic documentation bijection
@@ -250,6 +254,87 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  linker-smoke:
+    name: Linker smoke (${{ matrix.name }})
+    if: needs.scope.outputs.code == 'true'
+    needs: scope
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ubuntu-gcc
+            os: ubuntu-24.04
+            cc: gcc
+            setup: none
+          - name: ubuntu-clang
+            os: ubuntu-24.04
+            cc: clang
+            setup: clang
+          - name: macos-clang
+            os: macos-latest
+            cc: clang
+            setup: none
+          - name: windows-msvc
+            os: windows-latest
+            cc: clang
+            setup: msvc
+          - name: windows-gnu
+            os: windows-latest
+            cc: gcc
+            setup: mingw
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: linker-smoke-${{ matrix.name }}-rust-1.97.1
+          shared-key: core-rust-1.97.1
+          save-if: "true"
+      - name: Install Clang
+        if: matrix.setup == 'clang'
+        run: sudo apt-get update && sudo apt-get install -y clang
+      - name: Install MinGW
+        if: matrix.setup == 'mingw'
+        shell: pwsh
+        run: choco install mingw -y
+      - name: Linker smoke (Unix)
+        if: matrix.setup != 'msvc' && matrix.setup != 'mingw'
+        env:
+          CC: ${{ matrix.cc }}
+        run: cargo test --locked -p arandu_backend_c --test linker_smoke
+      - name: Linker smoke (MinGW)
+        if: matrix.setup == 'mingw'
+        shell: pwsh
+        run: |
+          $env:CC = "gcc"
+          cargo test --locked -p arandu_backend_c --test linker_smoke
+      - name: Linker smoke (MSVC Clang)
+        if: matrix.setup == 'msvc'
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $install = @(
+            & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath |
+              Where-Object { $_ -and $_.Trim() }
+          ) | Select-Object -First 1
+          if (-not $install) { throw "vswhere did not find the VC toolset" }
+          $vcvars = Join-Path $install.Trim() "VC\Auxiliary\Build\vcvars64.bat"
+          if (-not (Test-Path $vcvars)) { throw "vcvars64.bat was not found at $vcvars" }
+          cmd /c "`"$vcvars`" >nul && set" | ForEach-Object {
+            if ($_ -match '^(.*?)=(.*)$') {
+              $name = $Matches[1]
+              $value = $Matches[2]
+              if ($name -match '^[A-Za-z_][A-Za-z0-9_]*$') {
+                Set-Item -Path "Env:$name" -Value $value
+              }
+            }
+          }
+          $env:PATH = "C:\Program Files\LLVM\bin;" + $env:PATH
+          $env:CC = "clang"
+          cargo test --locked -p arandu_backend_c --test linker_smoke
+
   diag-determinism:
     name: Diagnostic determinism
     if: needs.scope.outputs.code == 'true'
@@ -321,7 +406,12 @@ jobs:
           npm ci --ignore-scripts
           xvfb-run -a npm test
           npm run package:check
-          npm audit --audit-level=high
+          # Audit the surface that ships. The only npm runtime surface is the
+          # bundled extension code; `@vscode/vsce` and its Azure SDK chain
+          # (`@azure/identity` -> `@azure/msal-node` 5.x, advisory
+          # GHSA-xcx6-jx8p-x3h5) are packaging-only devDependencies and no
+          # fixed `@azure/identity` release exists yet.
+          npm audit --omit=dev --audit-level=high
 
   distribution:
     name: Distribution smoke
@@ -332,6 +422,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Standalone installer integrity and rollback
+        run: python3 scripts/test_install.py
       - uses: ./.github/actions/setup-rust
         with:
           cache-key: distribution-rust-1.97.1

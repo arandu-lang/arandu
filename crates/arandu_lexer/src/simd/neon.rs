@@ -24,8 +24,8 @@ pub unsafe fn neon_movemask(cmp_mask: uint8x16_t) -> u16 {
         let v32 = vpaddlq_u16(v16);
         let v64 = vpaddlq_u32(v32);
 
-        let low_byte = vgetq_lane_u64(std::mem::transmute(v64), 0);
-        let high_byte = vgetq_lane_u64(std::mem::transmute(v64), 1);
+        let low_byte = vgetq_lane_u64(v64, 0);
+        let high_byte = vgetq_lane_u64(v64, 1);
 
         (low_byte | (high_byte << 8)) as u16
     }

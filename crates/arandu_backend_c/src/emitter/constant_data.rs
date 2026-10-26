@@ -10,7 +10,7 @@ impl CEmitter<'_> {
             if !self.live_functions.contains(&function.symbol) {
                 continue;
             }
-            let mut little = arandu_semantics::static_data::static_initializers(
+            let mut little = arandu_mir::static_data::static_initializers(
                 function,
                 self.interner,
                 self.provider,
@@ -18,7 +18,7 @@ impl CEmitter<'_> {
                 self.layout.data_layout,
                 true,
             );
-            let mut big = arandu_semantics::static_data::static_initializers(
+            let mut big = arandu_mir::static_data::static_initializers(
                 function,
                 self.interner,
                 self.provider,

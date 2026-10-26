@@ -60,6 +60,11 @@ pub enum TypeExpr {
         span: Span,
         inner: TypeExprId,
     },
+    /// Exclusive mutable slice type: `mut []T`.
+    MutSlice {
+        span: Span,
+        inner: TypeExprId,
+    },
     Array {
         span: Span,
         size: SmolStr,
@@ -92,6 +97,7 @@ impl TypeExpr {
             | TypeExpr::Ref { span, .. }
             | TypeExpr::RefMut { span, .. }
             | TypeExpr::Slice { span, .. }
+            | TypeExpr::MutSlice { span, .. }
             | TypeExpr::Array { span, .. }
             | TypeExpr::Func { span, .. }
             | TypeExpr::Group { span, .. } => *span,

@@ -82,6 +82,41 @@ pub fn optimize_amir_or_exit(
     }
 }
 
+/// AMIR level a product is built with for these flags; `None` keeps the
+/// baseline AMIR. Inspection commands share it with `build` so they print what
+/// would be compiled. `always_optimized` marks products that never consume
+/// baseline AMIR (LLVM).
+#[must_use]
+pub fn product_opt_level(
+    opt: bool,
+    flags: &crate::project::ProjectFlags,
+    always_optimized: bool,
+) -> Option<arandu_semantics::OptLevel> {
+    if flags.size {
+        Some(arandu_semantics::OptLevel::Os)
+    } else if flags.release || always_optimized {
+        Some(arandu_semantics::OptLevel::O2)
+    } else if opt {
+        Some(arandu_semantics::OptLevel::O1)
+    } else {
+        None
+    }
+}
+
+/// The AMIR a product consumes: optimized at `level`, or `None` for baseline.
+pub fn product_amir_or_exit(
+    amir: &arandu_semantics::amir::AmirProgram,
+    type_check: &arandu_semantics::TypeCheckResult,
+    level: Option<arandu_semantics::OptLevel>,
+    filepath: &str,
+) -> Option<arandu_semantics::amir::AmirProgram> {
+    let level = level?;
+    arandu_base::time_pass!("optimize-amir");
+    let mut amir = amir.clone();
+    optimize_amir_with_level_or_exit(&mut amir, type_check, level, filepath);
+    Some(amir)
+}
+
 pub fn optimize_amir_with_level_or_exit(
     amir: &mut arandu_semantics::amir::AmirProgram,
     type_check: &arandu_semantics::TypeCheckResult,
@@ -378,7 +413,7 @@ pub fn register_stdlib_sources(db: &mut arandu_query::DatabaseImpl, root: &Path)
         }
         match fs::read_to_string(&path) {
             Ok(text) => {
-                db.new_file(key, text);
+                db.new_stdlib_file(key, text);
             }
             Err(error) => {
                 tracing::debug!(path = %path.display(), %error, "stdlib module load deferred");
@@ -400,11 +435,30 @@ pub fn open_entry_file(
     };
     let filepath = entry.to_string_lossy().into_owned();
     let file_id = registry.register(&filepath, &source);
+    if let Some(existing) = registered_entry_source(db, entry, &source) {
+        return (existing, filepath);
+    }
     let code = std::sync::Arc::from(source);
     let source_file =
         arandu_query::SourceFile::new(db, file_id, code, std::sync::Arc::new(entry.to_path_buf()));
     db.register_source_file(filepath.clone(), source_file);
     (source_file, filepath)
+}
+
+/// Reuse an exact loader input, including through a canonical path alias.
+/// Filesystem normalization belongs to this driver, not tracked queries.
+pub(crate) fn registered_entry_source(
+    db: &arandu_query::DatabaseImpl,
+    path: &Path,
+    source: &str,
+) -> Option<arandu_query::SourceFile> {
+    db.source_file_by_path(&path.to_string_lossy())
+        .or_else(|| {
+            path.canonicalize()
+                .ok()
+                .and_then(|path| db.source_file_by_path(&path.to_string_lossy()))
+        })
+        .filter(|file| file.text(db).as_ref() == source)
 }
 
 pub fn find_aru_files(dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {

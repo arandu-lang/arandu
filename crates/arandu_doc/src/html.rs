@@ -65,7 +65,34 @@ pub fn render_html(module: &DocModule) -> String {
     ));
     out.push_str("<style>\n");
     out.push_str(CSS_STYLES);
-    out.push_str("</style>\n</head>\n<body>\n");
+    out.push_str("</style>\n");
+
+    let json_ld = serde_json::json!({
+        "@context": "https://schema.org",
+        "@type": "TechArticle",
+        "headline": module.name,
+        "description": module.overview.as_deref().unwrap_or("Documentação técnica do módulo Arandu"),
+        "inLanguage": "pt-BR",
+        "publisher": {
+            "@type": "Organization",
+            "name": "Arandu Programming Language",
+            "url": "https://arandu-lang.dev"
+        }
+    });
+    if let Ok(json_str) = serde_json::to_string(&json_ld) {
+        // JSON quoting alone does not escape HTML's script-end token. Doc
+        // comments must stay data even when they contain </script> markup.
+        let json_str = json_str
+            .replace('&', "\\u0026")
+            .replace('<', "\\u003c")
+            .replace('>', "\\u003e");
+        out.push_str(&format!(
+            "<script type=\"application/ld+json\">{}</script>\n",
+            json_str
+        ));
+    }
+
+    out.push_str("</head>\n<body>\n");
 
     out.push_str("<div class=\"doc-layout\">\n");
 
@@ -624,5 +651,32 @@ mod tests {
         assert!(html.contains("[Zero-Alloc]"));
         assert!(html.contains("O(n)"));
         assert!(html.contains("Buffers must not overlap."));
+        assert!(html.contains("application/ld+json"));
+        assert!(html.contains("TechArticle"));
+    }
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn structured_metadata_cannot_close_its_script_element() {
+        let text = "</script><script>alert('doc')</script>&";
+        let module = DocModule {
+            name: text.into(),
+            path: "untrusted.aru".into(),
+            file_id: 1,
+            overview: Some(text.into()),
+            items: vec![],
+        };
+        let html = render_html(&module);
+        let prefix = "<script type=\"application/ld+json\">";
+        let data = html
+            .split_once(prefix)
+            .unwrap()
+            .1
+            .split_once("</script>")
+            .unwrap()
+            .0;
+        assert!(!data.contains('<'));
+        let metadata: serde_json::Value = serde_json::from_str(data).unwrap();
+        assert_eq!(metadata["headline"], text);
+        assert_eq!(metadata["description"], text);
     }
 }

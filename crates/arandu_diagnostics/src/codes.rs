@@ -125,6 +125,12 @@ pub enum DiagCode {
     T047InvalidTypeLayout,
     /// Array repetition requires a static length and safely duplicable elements.
     T048InvalidArrayRepeat,
+    /// `@Export` crosses the C ABI with a type or shape that has no stable
+    /// representation (or would need an ABI transformation).
+    T049InvalidFfiExport,
+    /// `std.thread` or `std.fs` was used on a freestanding target.
+    /// T049–T098 stay unused; T099 is the 0.2.0 bare-metal contract.
+    T099RequiresOperatingSystem,
 
     // ── Lowering (L) ──
     L001LoweringUnresolvedSymbol,
@@ -154,6 +160,7 @@ pub enum DiagCode {
     O012AllocRequiresUnsafe,
     O013ExternRequiresUnsafe,
     O014FreeRequiresUnsafe,
+    O015MoveOutOfIndex,
 
     // ── Warnings & Linting (W) ──
     W001VariableAssignedNotUsed,
@@ -264,6 +271,8 @@ impl DiagCode {
             T046ComptimeArithmetic,
             T047InvalidTypeLayout,
             T048InvalidArrayRepeat,
+            T049InvalidFfiExport,
+            T099RequiresOperatingSystem,
             L001LoweringUnresolvedSymbol,
             G001GenericInstantiationCycle,
             G002GenericInstantiationLimit,
@@ -281,6 +290,7 @@ impl DiagCode {
             O012AllocRequiresUnsafe,
             O013ExternRequiresUnsafe,
             O014FreeRequiresUnsafe,
+            O015MoveOutOfIndex,
             W001VariableAssignedNotUsed,
             W002DeadCode,
             W003UnreachableCode,
@@ -410,6 +420,8 @@ impl DiagCode {
             DiagCode::T046ComptimeArithmetic => "T046",
             DiagCode::T047InvalidTypeLayout => "T047",
             DiagCode::T048InvalidArrayRepeat => "T048",
+            DiagCode::T049InvalidFfiExport => "T049",
+            DiagCode::T099RequiresOperatingSystem => "T099",
             DiagCode::L001LoweringUnresolvedSymbol => "L001",
             DiagCode::G001GenericInstantiationCycle => "G001",
             DiagCode::G002GenericInstantiationLimit => "G002",
@@ -427,6 +439,7 @@ impl DiagCode {
             DiagCode::O012AllocRequiresUnsafe => "O012",
             DiagCode::O013ExternRequiresUnsafe => "O013",
             DiagCode::O014FreeRequiresUnsafe => "O014",
+            DiagCode::O015MoveOutOfIndex => "O015",
             DiagCode::W001VariableAssignedNotUsed => "W001",
             DiagCode::W002DeadCode => "W002",
             DiagCode::W003UnreachableCode => "W003",

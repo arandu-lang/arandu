@@ -1,0 +1,59 @@
+Func hexDigit(val: u8) -> u8
+  locals:
+    _0: u8 // return
+    _1: u8
+    _2: u8
+    _3: u8
+    _4: bool
+    _5: u8
+    _6: u8
+    _7: u8
+    _8: u8
+    s0: u8 // val
+
+  bb0:
+    _3 = 10
+    _4 = lt _1, _3
+    branch _4 => bb1, else bb2
+  bb1:
+    _6 = 48
+    _0 = add _6, _1
+    return
+  bb2:
+    _8 = 87
+    _0 = add _8, _1
+    return
+  bb3:
+    unreachable
+
+Func encodeByte(b: u8) -> [2]u8
+  locals:
+    _0: [2]u8 // return
+    _1: u8
+    _2: u8
+    _3: u8
+    _4: u8
+    _5: u8
+    _6: u8
+    _7: u8
+    _8: u8
+    _9: u8
+    _10: u8
+    _11: u8
+    _12: u8
+    _13: u8
+    s0: u8 // b
+    s1: u8 // hi
+    s2: u8 // lo
+
+  bb0:
+    _3 = 4
+    _4 = shr _1, _3
+    _5 = 15
+    _6 = bitand _4, _5
+    _8 = 15
+    _9 = bitand _1, _8
+    _11 = call fn@hexDigit(_6)
+    _13 = call fn@hexDigit(_9)
+    _0 = [_11, _13]
+    return

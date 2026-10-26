@@ -1,7 +1,7 @@
 //! Enum construction, discriminant inspection, and payload extraction.
 
-use arandu_semantics::amir::AmirOperand;
-use arandu_semantics::passes::type_checker::types::{ArType, Primitive};
+use arandu_middle::amir::AmirOperand;
+use arandu_middle::types::{ArType, Primitive};
 use cranelift_codegen::ir::{InstBuilder, Type, Value};
 
 use super::super::FunctionTranslator;
@@ -20,7 +20,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
 
         let ptr_val = self.allocate_aggregate(&enum_ty);
 
-        if let Some(arandu_semantics::layout::TagEncoding::PointerTag {
+        if let Some(arandu_middle::layout::TagEncoding::PointerTag {
             tag_mask,
             pointer_offset,
             ..
@@ -53,9 +53,9 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
 
         let tag_is_niche = matches!(
             layout.tag_encoding,
-            Some(arandu_semantics::layout::TagEncoding::Niche { .. })
+            Some(arandu_middle::layout::TagEncoding::Niche { .. })
         );
-        if let Some(arandu_semantics::layout::TagEncoding::Niche {
+        if let Some(arandu_middle::layout::TagEncoding::Niche {
             niche_offset,
             niche_value,
             tagged_variant,
@@ -84,17 +84,21 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         let payload_base_offset = if tag_is_niche {
             0
         } else {
-            pointer_width as i32
+            layout
+                .field_offsets
+                .get(1)
+                .copied()
+                .unwrap_or(pointer_width) as i32
         };
 
         if let Some(op) = payload {
             let op_ty = self.get_operand_ar_type(op);
             let payload_ar_ty = match &enum_ty {
                 ArType::Named(_, _) => {
-                    arandu_semantics::layout::instantiated_enum_variant_payload_type(
+                    arandu_middle::layout::instantiated_enum_variant_payload_type(
                         &enum_ty,
                         variant_tag,
-                        &self.type_info.type_interner,
+                        self.type_info.type_interner(),
                         self.type_info,
                     )
                 }
@@ -127,7 +131,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     ptr_val,
                     payload_base_offset + pointer_width as i32,
                 );
-            } else if matches!(op_ty, ArType::Slice(_)) {
+            } else if matches!(op_ty, ArType::Slice(_) | ArType::MutSlice(_)) {
                 let (elem_ptr, elem_len) = self.translate_slice_operand(op);
                 self.builder.ins().store(
                     cranelift_codegen::ir::MemFlagsData::new(),
@@ -211,18 +215,16 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         let ptr_val = self.translate_operand(value, Some(self.ptr_type));
         let base_ty = match value {
             AmirOperand::Copy(temp_id) | AmirOperand::Move(temp_id) => self.temp_ar_ty(*temp_id),
-            _ => arandu_semantics::types::ArType::Error,
+            _ => arandu_middle::types::ArType::Error,
         };
         let enum_ty = match base_ty {
-            arandu_semantics::types::ArType::Ptr(inner)
-            | arandu_semantics::types::ArType::Ref(inner)
-            | arandu_semantics::types::ArType::RefMut(inner) => {
-                self.type_info.resolve_type_id(inner)
-            }
+            arandu_middle::types::ArType::Ptr(inner)
+            | arandu_middle::types::ArType::Ref(inner)
+            | arandu_middle::types::ArType::RefMut(inner) => self.type_info.resolve_type_id(inner),
             other => other,
         };
         let layout = self.checked_layout(&enum_ty);
-        if let Some(arandu_semantics::layout::TagEncoding::PointerTag {
+        if let Some(arandu_middle::layout::TagEncoding::PointerTag {
             tag_mask,
             pointer_offset,
             ..
@@ -235,7 +237,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 pointer_offset as i32,
             );
             self.builder.ins().band_imm_u(raw_val, tag_mask as i64)
-        } else if let Some(arandu_semantics::layout::TagEncoding::Niche {
+        } else if let Some(arandu_middle::layout::TagEncoding::Niche {
             niche_offset,
             niche_value,
             untagged_variant,
@@ -278,8 +280,8 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
     pub(super) fn translate_enum_payload(
         &mut self,
         value: &AmirOperand,
-        field_ty: arandu_semantics::types::TypeId,
-        tuple_ty: Option<arandu_semantics::types::TypeId>,
+        field_ty: arandu_middle::types::TypeId,
+        tuple_ty: Option<arandu_middle::types::TypeId>,
         index: usize,
         expected_ty: Option<Type>,
     ) -> Value {
@@ -287,14 +289,14 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
 
         let base_ty = match value {
             AmirOperand::Copy(temp_id) | AmirOperand::Move(temp_id) => self.temp_ar_ty(*temp_id),
-            _ => arandu_semantics::types::ArType::Error,
+            _ => arandu_middle::types::ArType::Error,
         };
         let enum_ty = match base_ty {
-            arandu_semantics::types::ArType::Ptr(inner) => self.type_info.resolve_type_id(inner),
+            arandu_middle::types::ArType::Ptr(inner) => self.type_info.resolve_type_id(inner),
             other => other,
         };
         let layout = self.checked_layout(&enum_ty);
-        if let Some(arandu_semantics::layout::TagEncoding::PointerTag {
+        if let Some(arandu_middle::layout::TagEncoding::PointerTag {
             tag_mask,
             pointer_offset,
             ..

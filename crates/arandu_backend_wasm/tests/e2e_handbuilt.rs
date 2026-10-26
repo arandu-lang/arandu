@@ -23,7 +23,7 @@ use arandu_middle::types::{ArType, Primitive, TypeInterner};
 use arandu_semantics::DiagCode;
 use arandu_semantics::SymbolTable;
 use common::{
-    compile_source, emit_one, emit_with_imported_symbols, foreign_sym, register_imported_sym,
+    compile_source, emit_one, emit_with_imported_intrinsics, foreign_sym, register_imported_sym,
     run_main_f64, run_main_i32, run_main_i64, temp, wasm32,
 };
 
@@ -434,6 +434,7 @@ fn hand_built_slice_index_access_executes() {
         rhs: AmirRvalue::IndexAccess {
             base: AmirOperand::Copy(sv_t),
             index: zero(),
+            in_bounds: false,
         },
     });
 
@@ -945,7 +946,7 @@ fn hand_built_memory_intrinsics_executes() {
         (foreign_sym(100), "ptrWrite"),
         (foreign_sym(101), "ptrRead"),
     ];
-    let bytes = emit_with_imported_symbols(func, &extra, &interner, &mut pool);
+    let bytes = emit_with_imported_intrinsics(func, &extra, &interner, &mut pool);
     assert_eq!(run_main_i32(&bytes), 42);
 }
 
@@ -1015,7 +1016,7 @@ fn hand_built_slice_intrinsics_executes() {
         (foreign_sym(102), "sliceFromRaw"),
         (foreign_sym(103), "sliceLen"),
     ];
-    let bytes = emit_with_imported_symbols(func, &extra, &interner, &mut pool);
+    let bytes = emit_with_imported_intrinsics(func, &extra, &interner, &mut pool);
     assert_eq!(run_main_i32(&bytes), 8);
 }
 
@@ -1103,7 +1104,7 @@ fn hand_built_slice_subslice_intrinsic_call_executes() {
         (foreign_sym(103), "sliceLen"),
         (foreign_sym(104), "sliceSubslice"),
     ];
-    let bytes = emit_with_imported_symbols(func, &extra, &interner, &mut pool);
+    let bytes = emit_with_imported_intrinsics(func, &extra, &interner, &mut pool);
     assert_eq!(run_main_i32(&bytes), 5);
 }
 

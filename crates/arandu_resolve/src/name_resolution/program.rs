@@ -258,6 +258,123 @@ impl<'a> Resolver<'a> {
                 .set_lang_item(sym, arandu_middle::symbol_table::LangItem::Poll);
         }
 
+        let str_sym = self
+            .symbols
+            .define_with_visibility(
+                global_scope,
+                "str",
+                SymbolKind::Struct,
+                span,
+                arandu_parser::Visibility::Public,
+            )
+            .ok()
+            .or_else(|| self.symbols.lookup_type(global_scope, "str"));
+        if let Some(sym) = str_sym {
+            self.symbols
+                .set_lang_item(sym, arandu_middle::symbol_table::LangItem::Str);
+        }
+
+        let slice_sym = self
+            .symbols
+            .define_with_visibility(
+                global_scope,
+                "slice",
+                SymbolKind::Struct,
+                span,
+                arandu_parser::Visibility::Public,
+            )
+            .ok()
+            .or_else(|| self.symbols.lookup_type(global_scope, "slice"));
+        if let Some(sym) = slice_sym {
+            self.symbols
+                .set_lang_item(sym, arandu_middle::symbol_table::LangItem::Slice);
+        }
+
+        let char_sym = self
+            .symbols
+            .define_with_visibility(
+                global_scope,
+                "char",
+                SymbolKind::Struct,
+                span,
+                arandu_parser::Visibility::Public,
+            )
+            .ok()
+            .or_else(|| self.symbols.lookup_type(global_scope, "char"));
+        if let Some(sym) = char_sym {
+            self.symbols
+                .set_lang_item(sym, arandu_middle::symbol_table::LangItem::Char);
+        }
+
+        let int_sym = self
+            .symbols
+            .define_with_visibility(
+                global_scope,
+                "int",
+                SymbolKind::Struct,
+                span,
+                arandu_parser::Visibility::Public,
+            )
+            .ok()
+            .or_else(|| self.symbols.lookup_type(global_scope, "int"));
+        if let Some(sym) = int_sym {
+            self.symbols
+                .set_lang_item(sym, arandu_middle::symbol_table::LangItem::Int);
+        }
+
+        for (name, lang_item) in [
+            ("u32", arandu_middle::symbol_table::LangItem::U32),
+            ("u64", arandu_middle::symbol_table::LangItem::U64),
+            ("usize", arandu_middle::symbol_table::LangItem::Usize),
+        ] {
+            let symbol = self
+                .symbols
+                .define_with_visibility(
+                    global_scope,
+                    name,
+                    SymbolKind::Struct,
+                    span,
+                    arandu_parser::Visibility::Public,
+                )
+                .ok()
+                .or_else(|| self.symbols.lookup_type(global_scope, name));
+            if let Some(symbol) = symbol {
+                self.symbols.set_lang_item(symbol, lang_item);
+            }
+        }
+
+        let float_sym = self
+            .symbols
+            .define_with_visibility(
+                global_scope,
+                "float",
+                SymbolKind::Struct,
+                span,
+                arandu_parser::Visibility::Public,
+            )
+            .ok()
+            .or_else(|| self.symbols.lookup_type(global_scope, "float"));
+        if let Some(sym) = float_sym {
+            self.symbols
+                .set_lang_item(sym, arandu_middle::symbol_table::LangItem::Float);
+        }
+
+        let ptr_sym = self
+            .symbols
+            .define_with_visibility(
+                global_scope,
+                "ptr",
+                SymbolKind::Struct,
+                span,
+                arandu_parser::Visibility::Public,
+            )
+            .ok()
+            .or_else(|| self.symbols.lookup_type(global_scope, "ptr"));
+        if let Some(sym) = ptr_sym {
+            self.symbols
+                .set_lang_item(sym, arandu_middle::symbol_table::LangItem::Ptr);
+        }
+
         let global = self.symbols.global_scope();
         let has_result = self.symbols.lookup_type(global, "Result").is_some();
         let has_option = self.symbols.lookup_type(global, "Option").is_some();

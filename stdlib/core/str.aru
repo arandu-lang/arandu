@@ -225,3 +225,45 @@ public func find(s: str, needle: str): Option<usize> {
     }
     return Option.None
 }
+
+// ── Inherent methods on `str` ───────────────────────────────────────────────
+
+/// Returns a shared view of the UTF-8 bytes without allocating or copying.
+public func str.asBytes(self: ref str): []u8 {
+    return asBytes(self)
+}
+
+/// Returns `true` if the string is empty (`len == 0`).
+public func str.isEmpty(self: str): bool {
+    return isEmpty(self)
+}
+
+/// Returns the byte length of the string when encoded as UTF-8.
+public func str.len(self: str): usize {
+    return len(self)
+}
+
+/// Returns the number of Unicode scalar values (`char`s) in `self`.
+public func str.charCount(self: str): usize {
+    return charCount(self)
+}
+
+/// Returns `true` if the string starts with `prefix`.
+public func str.startsWith(self: str, prefix: str): bool {
+    return startsWith(self, prefix)
+}
+
+/// Returns `true` if the string ends with `suffix`.
+public func str.endsWith(self: str, suffix: str): bool {
+    return endsWith(self, suffix)
+}
+
+/// Returns `true` if the string contains the substring `needle`.
+public func str.contains(self: str, needle: str): bool {
+    return contains(self, needle)
+}
+
+/// Returns the first byte index of `needle` in `self`, or `Option.None` if not found.
+public func str.find(self: str, needle: str): Option<usize> {
+    return find(self, needle)
+}

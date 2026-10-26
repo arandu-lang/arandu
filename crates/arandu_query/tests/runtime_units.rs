@@ -698,9 +698,9 @@ fn imported_effect_metadata_survives_expression_shard_removal() {
         .type_check
         .clone();
     aggregate.type_info_mut().function_effects.clear();
-    arandu_mir::compose_function_units(
+    arandu_semantics::compose_function_units(
         &mut aggregate,
-        &[arandu_mir::ContextualFunctionUnit {
+        &[arandu_semantics::ContextualFunctionUnit {
             key: &key,
             unit: unit.result.as_ref().expect("validated callee"),
             context: &unit.context,
@@ -1006,7 +1006,7 @@ fn declaration_context_preserves_constants_and_consuming_receiver_modes() {
             _ => None,
         })
         .expect("function");
-    let unit = arandu_mir::lower_function_unit(
+    let unit = arandu_semantics::lower_function_unit(
         &lowered.type_check,
         hir,
         function,

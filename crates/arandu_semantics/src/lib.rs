@@ -15,10 +15,9 @@
 pub use arandu_codegen::{CodegenBackend, CompiledCode, JitError};
 pub use arandu_middle::{
     BitMatrix, BitSet, CodeReplacement, DenseRange, DiagCode, Diagnostic, DocCommentMap, Hint,
-    IntrinsicKind, Label, NodeKey, ResolutionResult, ResolvedNames, ScopeId, Severity, SmolStr,
-    Symbol, SymbolId, SymbolKind, SymbolTable, amir, amir_validate, bitset, cfg, ctfe, diagnostics,
-    hir, index_vec, intrinsics, layout, literal_pool, newtype_index, ops, resolved, symbol_table,
-    types, validate_amir_program,
+    IntrinsicKind, Label, NodeKey, ScopeId, Severity, SmolStr, Symbol, SymbolId, SymbolKind,
+    SymbolTable, amir, amir_validate, bitset, cfg, ctfe, diagnostics, hir, index_vec, intrinsics,
+    layout, literal_pool, newtype_index, ops, resolved, symbol_table, types, validate_amir_program,
 };
 pub use arandu_mir::aggregate_storage;
 pub use arandu_mir::static_data;
@@ -31,10 +30,12 @@ pub mod passes;
 pub mod testing;
 
 pub use arandu_mir::{
-    OptLevel, check_borrows, check_moves, lower_to_amir, lower_to_amir_with_interfaces,
-    optimize_amir, optimize_amir_checked, optimize_amir_checked_with_level,
+    OptLevel, check_borrows, check_moves, optimize_amir, optimize_amir_checked,
+    optimize_amir_checked_with_level,
 };
-pub use arandu_resolve::{resolve_for_test, resolve_imports_and_bodies, resolve_local};
+pub use arandu_resolve::{
+    ResolutionResult, ResolvedNames, resolve_for_test, resolve_imports_and_bodies, resolve_local,
+};
 pub use arandu_typeck::type_checker::TargetInfo;
 pub use arandu_typeck::{
     EnumPayloadShape, TypeCheckResult, TypeChecker, TypeInfo, body_item_symbols, check_bodies,
@@ -42,10 +43,16 @@ pub use arandu_typeck::{
     check_signatures, check_signatures_only, free_func_symbols, item_source_span, primary_def_key,
     type_check,
 };
+pub use passes::lower_amir::{
+    ComposedUnits, ContextualFunctionUnit, FunctionUnit, append_function_unit,
+    compose_function_units, finalize_function_unit, lower_block_unit, lower_borrow_interfaces,
+    lower_expression_unit, lower_function_unit, lower_to_amir, lower_to_amir_with_interfaces,
+    lower_to_amir_with_layout,
+};
 pub use passes::lower_hir::{
     MaterializationError, link_hir_module, lower_block_to_hir, lower_ctfe_declarations_to_hir,
     lower_ctfe_function_to_hir, lower_declarations_to_hir, lower_expression_to_hir,
-    lower_extern_to_hir, lower_function_to_hir, lower_to_hir, materialize_ctfe_scalar,
-    materialize_ctfe_value,
+    lower_extern_to_hir, lower_function_to_hir, lower_thread_capture_hir, lower_to_hir,
+    materialize_ctfe_scalar, materialize_ctfe_value,
 };
 pub use passes::monomorphize::monomorphize_program;

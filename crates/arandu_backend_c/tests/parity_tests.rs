@@ -29,6 +29,497 @@ fn c_compiler(cc: &str) -> Command {
 }
 
 #[test]
+fn parity_bit_intrinsics_cover_every_bit_position_and_zero() {
+    test_zero_result_all_opt_levels("bit_intrinsics", include_str!("bit_intrinsics.aru"));
+}
+
+#[test]
+fn atomic_intrinsics_survive_real_native_thread_contention() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    let (amir, tc) = compile_src(include_str!("../../../tests/corpus/atomic_contention.aru"));
+    let module = CraneliftBackend::try_new()
+        .unwrap()
+        .compile(&amir, &tc.symbols, &*tc.type_info)
+        .unwrap();
+    for name in ["increment", "incrementCas"] {
+        let symbol = tc
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name.rsplit('.').next() == Some(name))
+            .unwrap();
+        let host_name = tc.symbols.host_func_name(symbol);
+        // SAFETY: Both exports have exactly the declared pointer/i32 -> void
+        // ABI. The module stays alive until every scoped worker has joined.
+        let increment = unsafe {
+            module
+                .get_fn::<unsafe extern "C" fn(*mut u32, i32)>(host_name)
+                .unwrap()
+        };
+        let counter = AtomicU32::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..6 {
+                let shared = &counter;
+                scope.spawn(move || {
+                    // SAFETY: AtomicU32 provides aligned, live storage; every
+                    // concurrent access in the generated function is atomic.
+                    unsafe { increment(shared.as_ptr(), 50_000) };
+                });
+            }
+        });
+        assert_eq!(counter.load(Ordering::SeqCst), 300_000, "{name}");
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn generated_c_atomic_intrinsics_survive_pthread_contention() {
+    let (amir, tc) = compile_src(include_str!("../../../tests/corpus/atomic_contention.aru"));
+    let source = format!(
+        "#define main arandu_unused_main\n{}\n#undef main\n{}",
+        emit_c(&amir, &tc),
+        r#"
+#include <pthread.h>
+static uint32_t counter = 0;
+static int use_cas = 0;
+static void *worker(void *unused) {
+    (void)unused;
+    if (use_cas) std__core__atomicContention__incrementCas(&counter, 50000);
+    else std__core__atomicContention__increment(&counter, 50000);
+    return NULL;
+}
+int main(void) {
+    for (use_cas = 0; use_cas < 2; ++use_cas) {
+        __atomic_store_n(&counter, 0, __ATOMIC_SEQ_CST);
+        pthread_t workers[6];
+        for (int i = 0; i < 6; ++i) if (pthread_create(&workers[i], NULL, worker, NULL)) return 1;
+        for (int i = 0; i < 6; ++i) if (pthread_join(workers[i], NULL)) return 2;
+        if (__atomic_load_n(&counter, __ATOMIC_SEQ_CST) != 300000) return 3;
+    }
+    return 0;
+}
+"#
+    );
+    let directory = std::env::temp_dir().join(format!("arandu-atomic-c-{}", std::process::id()));
+    fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("atomic.c");
+    fs::write(&path, source).unwrap();
+    for optimization in ["-O0", "-O2"] {
+        let executable = directory.join("atomic");
+        let output = Command::new("cc")
+            .args([
+                optimization,
+                "-pthread",
+                "-fsanitize=undefined",
+                "-fno-sanitize-recover=all",
+            ])
+            .arg(&path)
+            .arg("-o")
+            .arg(&executable)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let output = Command::new(executable).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{:?}: {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+#[cfg(unix)]
+fn generated_c_udp_socket_table_handles_concurrent_bind_send_close() {
+    let (amir, tc) = compile_src(
+        r#"
+extern "C" {
+    func ar_net_udp_bind(host: ptr[u8]?, host_len: usize, port: int): int
+}
+func main(): int {
+    return unsafe { ar_net_udp_bind(nil, 0 as usize, 0) }
+}
+"#,
+    );
+    let source = format!(
+        "#define main arandu_unused_main\n{}\n#undef main\n{}",
+        emit_c(&amir, &tc),
+        r#"
+#include <pthread.h>
+#include <stdatomic.h>
+#include <sched.h>
+
+enum { UDP_WORKERS = 8 };
+static atomic_int start_workers = 0;
+static atomic_int senders_ready = 0;
+static atomic_int start_senders = 0;
+static int socket_ids[UDP_WORKERS];
+static const uint8_t loopback[] = "127.0.0.1";
+static const uint8_t payload = 42;
+
+static void *bind_udp_socket(void *argument) {
+    intptr_t index = (intptr_t)argument;
+    while (!atomic_load_explicit(&start_workers, memory_order_acquire)) sched_yield();
+    socket_ids[index] = ar_net_udp_bind(loopback, sizeof(loopback) - 1, 0);
+    return NULL;
+}
+
+static void *send_udp_packets(void *argument) {
+    intptr_t index = (intptr_t)argument;
+    atomic_fetch_add_explicit(&senders_ready, 1, memory_order_release);
+    while (!atomic_load_explicit(&start_senders, memory_order_acquire)) sched_yield();
+    (void)ar_net_udp_send_to(
+        socket_ids[index], &payload, 1, loopback, sizeof(loopback) - 1, 9
+    );
+    return NULL;
+}
+
+int main(void) {
+    pthread_t workers[UDP_WORKERS];
+    for (intptr_t i = 0; i < UDP_WORKERS; ++i) {
+        if (pthread_create(&workers[i], NULL, bind_udp_socket, (void *)i) != 0) return 1;
+    }
+    atomic_store_explicit(&start_workers, 1, memory_order_release);
+    for (int i = 0; i < UDP_WORKERS; ++i) {
+        if (pthread_join(workers[i], NULL) != 0) return 2;
+    }
+    for (int i = 0; i < UDP_WORKERS; ++i) {
+        if (socket_ids[i] < 0) return 3;
+        for (int j = 0; j < i; ++j) {
+            if (socket_ids[i] == socket_ids[j]) return 4;
+        }
+    }
+    for (int i = 0; i < UDP_WORKERS; ++i) {
+        if (pthread_create(&workers[i], NULL, send_udp_packets, (void *)(intptr_t)i) != 0) return 5;
+    }
+    while (atomic_load_explicit(&senders_ready, memory_order_acquire) != UDP_WORKERS) sched_yield();
+    atomic_store_explicit(&start_senders, 1, memory_order_release);
+    for (int i = 0; i < UDP_WORKERS; ++i) ar_net_udp_close(socket_ids[i]);
+    for (int i = 0; i < UDP_WORKERS; ++i) {
+        if (pthread_join(workers[i], NULL) != 0) return 6;
+    }
+    return 0;
+}
+"#
+    );
+    let directory = env::temp_dir().join(format!("arandu-udp-c-{}", std::process::id()));
+    fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("udp.c");
+    let executable = directory.join("udp");
+    fs::write(&path, source).unwrap();
+    let compiler = env::var("CC").unwrap_or_else(|_| "cc".into());
+    let mut command = Command::new(compiler);
+    command.args(["-O2", "-pthread"]);
+    if cfg!(target_os = "linux") && env::var_os("ARANDU_C_TSAN").is_some() {
+        command.arg("-fsanitize=thread");
+    }
+    let output = command
+        .arg(&path)
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "C compilation failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output = Command::new(&executable).output().unwrap();
+    assert!(
+        output.status.success(),
+        "UDP table stress failed: status={}, stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+#[cfg(unix)]
+fn generated_c_udp_accepts_localhost_ipv6_and_more_than_64_sockets() {
+    let (amir, tc) = compile_src(
+        r#"
+extern "C" {
+    func ar_net_udp_bind(host: ptr[u8]?, host_len: usize, port: int): int
+}
+func main(): int {
+    return unsafe { ar_net_udp_bind(nil, 0 as usize, 0) }
+}
+"#,
+    );
+    let source = format!(
+        "#define main arandu_unused_main\n{}\n#undef main\n{}",
+        emit_c(&amir, &tc),
+        r#"
+int main(void) {
+    const uint8_t v6[] = "::1";
+    int v6_id = ar_net_udp_bind(v6, sizeof(v6) - 1, 0);
+    if (v6_id < 0) return 7;
+    ar_net_udp_close(v6_id);
+
+    const uint8_t local[] = "localhost";
+    int local_id = ar_net_udp_bind(local, sizeof(local) - 1, 0);
+    if (local_id < 0) return 8;
+    ar_net_udp_close(local_id);
+
+    enum { UDP_COUNT = 70 };
+    int ids[UDP_COUNT];
+    const uint8_t loopback[] = "127.0.0.1";
+    for (int i = 0; i < UDP_COUNT; i++) {
+        ids[i] = ar_net_udp_bind(loopback, sizeof(loopback) - 1, 0);
+        if (ids[i] < 0) return 9;
+        for (int j = 0; j < i; j++) {
+            if (ids[i] == ids[j]) return 10;
+        }
+    }
+    int first = ids[0];
+    ar_net_udp_close(first);
+    int reused = ar_net_udp_bind(loopback, sizeof(loopback) - 1, 0);
+    if (reused < 0 || reused == first) return 11;
+    if (ar_net_udp_send_to(first, loopback, 1, loopback, sizeof(loopback) - 1, 9) != -1) return 12;
+    for (int i = 1; i < UDP_COUNT; i++) ar_net_udp_close(ids[i]);
+    ar_net_udp_close(reused);
+    return 0;
+}
+"#
+    );
+    let directory = env::temp_dir().join(format!(
+        "arandu-udp-parity-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("udp.c");
+    let executable = directory.join("udp");
+    fs::write(&path, source).unwrap();
+    let compiler = env::var("CC").unwrap_or_else(|_| "cc".into());
+    let output = Command::new(compiler)
+        .args(["-O2", "-pthread"])
+        .arg(&path)
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "C compilation failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output = Command::new(&executable).output().unwrap();
+    assert!(
+        output.status.success(),
+        "UDP parity failed: status={}, stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn parity_ordinary_bit_names_are_not_intrinsics() {
+    test_zero_result_all_opt_levels(
+        "ordinary_bit_names",
+        "func bitCountOnes32(value: u32): u32 { return value + 7 } func main(): int { if bitCountOnes32(5) != 12 { return 1 }; return 0 }",
+    );
+}
+
+#[test]
+fn parity_ordinary_extern_with_intrinsic_spelling_keeps_its_c_abi() {
+    let (amir, tc) = compile_src(
+        r#"
+extern "C" {
+    func sliceLen(value: u32): u32
+}
+
+func main(): int {
+    let result = unsafe { sliceLen(5) }
+    if result == 0 { return 1 }
+    return 0
+}
+"#,
+    );
+    let emitted = emit_c(&amir, &tc);
+    assert!(
+        emitted.contains("sliceLen("),
+        "ordinary extern should retain its declared C symbol"
+    );
+    assert!(
+        !emitted.contains("ar_slice_len"),
+        "ordinary extern must not be rewritten to the slice intrinsic"
+    );
+}
+
+#[test]
+fn parity_user_black_box_name_is_not_a_compiler_barrier() {
+    test_zero_result_all_opt_levels(
+        "user_black_box_name",
+        "func blackBox(value: int): int { return value + 1 } func main(): int { if blackBox(41) != 42 { return 1 }; return 0 }",
+    );
+}
+
+#[test]
+fn parity_integer_division_and_remainder_boundaries() {
+    test_zero_result_all_opt_levels(
+        "integer_division_boundaries",
+        r#"
+module std.testing
+func blackBox<T>(value: T): T { return value }
+func main(): int {
+    let minusOne = blackBox<int>(-1)
+    let minimum = blackBox<int>(-2147483648)
+    if minimum % minusOne != 0 { return 1 }
+    if blackBox<int>(-43) / blackBox<int>(5) != -8 { return 2 }
+    if blackBox<int>(-43) % blackBox<int>(5) != -3 { return 3 }
+    let wideMinimum = blackBox<i64>(-9223372036854775808)
+    let wideMinusOne = blackBox<i64>(-1)
+    if wideMinimum % wideMinusOne != 0 { return 4 }
+    if wideMinimum / blackBox<i64>(1) != wideMinimum { return 5 }
+    if blackBox<u32>(4294967295) / blackBox<u32>(2) != 2147483647 { return 6 }
+    if blackBox<u64>(18446744073709551615) % blackBox<u64>(2) != 1 { return 7 }
+    if blackBox<i8>(-128) % blackBox<i8>(-1) != 0 { return 8 }
+    if blackBox<i16>(-32768) % blackBox<i16>(-1) != 0 { return 9 }
+    return 0
+}
+"#,
+    );
+}
+
+#[test]
+fn parity_dynamic_shifts_mask_the_value_execution_width() {
+    test_zero_result_all_opt_levels(
+        "dynamic_shift_width",
+        r#"
+module std.testing
+func blackBox<T>(value: T): T { return value }
+func main(): int {
+    let wideCount = blackBox<i32>(32)
+    if blackBox<i32>(1) << wideCount != 1 { return 1 }
+    if blackBox<i32>(-8) >> wideCount != -8 { return 2 }
+    if blackBox<u32>(2147483648) >> blackBox<u32>(33) != 1073741824 { return 3 }
+    if blackBox<i64>(-8) >> blackBox<i64>(65) != -4 { return 4 }
+    if blackBox<u64>(1) << blackBox<u64>(127) != (9223372036854775808 as u64) { return 5 }
+    if blackBox<i32>(1) << blackBox<i32>(31) != -2147483648 { return 6 }
+    if blackBox<i32>(-1) << blackBox<i32>(1) != -2 { return 7 }
+    if blackBox<i8>(-128) >> blackBox<i8>(8) != -1 { return 8 }
+    if blackBox<u8>(255) >> blackBox<u8>(8) != 0 { return 9 }
+    if blackBox<i16>(-32768) >> blackBox<i16>(16) != -1 { return 10 }
+    if blackBox<u16>(65535) >> blackBox<u16>(16) != 0 { return 11 }
+    if blackBox<i32>(-8) >> blackBox<i32>(-1) != -1 { return 12 }
+    return 0
+}
+"#,
+    );
+}
+
+#[test]
+fn cranelift_integer_division_traps_match_declared_width() {
+    const CASE: &str = "ARANDU_INTEGER_TRAP_CASE";
+    if let Ok(case) = env::var(CASE) {
+        let fields: Vec<_> = case.split(':').collect();
+        let ty = fields[0];
+        let operator = fields[1];
+        let left = fields[2];
+        let right = fields[3];
+        let (amir, tc) = compile_src(&format!(
+            "module std.testing\nfunc blackBox<T>(value: T): T {{ return value }} func main(): int {{ return (blackBox<{ty}>({left}) {operator} blackBox<{ty}>({right})) as int }}"
+        ));
+        execute_cranelift(&amir, &tc);
+        return;
+    }
+    let executable = env::current_exe().unwrap();
+    for (ty, minimum) in [
+        ("i8", "-128"),
+        ("i16", "-32768"),
+        ("i32", "-2147483648"),
+        ("i64", "-9223372036854775808"),
+    ] {
+        for (operator, left, right) in [("/", minimum, "-1"), ("/", "7", "0"), ("%", "7", "0")] {
+            let output = Command::new(&executable)
+                .args([
+                    "--exact",
+                    "cranelift_integer_division_traps_match_declared_width",
+                ])
+                .env(CASE, format!("{ty}:{operator}:{left}:{right}"))
+                .output()
+                .unwrap();
+            assert!(
+                !output.status.success(),
+                "{ty} {left} {operator} {right}: must trap"
+            );
+            assert_ne!(
+                output.status.code(),
+                Some(101),
+                "child test panicked: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+}
+
+#[test]
+fn c_integer_division_traps_before_undefined_operations() {
+    let directory = env::temp_dir().join("arandu_c_tests");
+    fs::create_dir_all(&directory).unwrap();
+    let compiler = env::var("CC").unwrap_or_else(|_| "gcc".into());
+    for (ty, c_ty, minimum, signed) in [
+        ("i32", "int32_t", "INT32_MIN", true),
+        ("i64", "int64_t", "INT64_MIN", true),
+        ("u32", "uint32_t", "0", false),
+        ("u64", "uint64_t", "0", false),
+    ] {
+        for operation in ["/", "%"] {
+            let (amir, tc) = compile_src(&format!(
+                "public func probe(a: {ty}, b: {ty}): {ty} {{ return a {operation} b }} func main(): int {{ return 0 }}"
+            ));
+            let emitted = emit_c(&amir, &tc);
+            let source = format!(
+                "#define main arandu_unused_main\n{emitted}\n#undef main\nint main(int argc, char **argv) {{ (void)argv; volatile {c_ty} a = argc == 1 ? 7 : {minimum}; volatile {c_ty} b = argc == 1 ? 0 : ({c_ty})-1; volatile {c_ty} result = probe(a, b); return result != 0; }}\n"
+            );
+            for optimization in ["-O0", "-O1", "-O2", "-Os"] {
+                let name = format!(
+                    "integer_trap_{ty}_{}_{optimization}",
+                    if operation == "/" { "div" } else { "rem" }
+                );
+                let source_file = directory.join(format!("{name}.c"));
+                let executable = directory.join(format!("{name}.exe"));
+                fs::write(&source_file, &source).unwrap();
+                let compilation = c_compiler(&compiler)
+                    .arg(optimization)
+                    .arg(&source_file)
+                    .arg("-o")
+                    .arg(&executable)
+                    .args(arandu_middle::TargetSpec::for_host().cc_link_args())
+                    .output()
+                    .unwrap();
+                assert!(
+                    compilation.status.success(),
+                    "{name}: {}",
+                    String::from_utf8_lossy(&compilation.stderr)
+                );
+                let zero = Command::new(&executable).output().unwrap();
+                assert!(!zero.status.success(), "{name}: zero divisor must trap");
+                if signed {
+                    let overflow = Command::new(&executable).arg("minimum").output().unwrap();
+                    assert_eq!(
+                        overflow.status.success(),
+                        operation == "%",
+                        "{name}: MIN / -1 traps; MIN % -1 is zero"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn parity_unit_arguments_and_locals_have_no_c_storage() {
     let (amir, tc) = compile_src(
         "func unit(): void {} func consume(a: void, x: int, b: void, y: int): int { return x + y } func main(): int { let value = unit(); return consume(value, 19, unit(), 23) }",
@@ -331,7 +822,7 @@ int main(void) {
         .arg(&source_file)
         .arg("-o")
         .arg(&executable)
-        .arg("-lm")
+        .args(arandu_middle::TargetSpec::for_host().cc_link_args())
         .output()
         .unwrap();
     assert!(
@@ -441,6 +932,7 @@ fn c_backend_genref_runtime_has_monotonic_type_erased_storage() {
 fn c_backend_emits_opaque_black_box_barrier() {
     let (amir, tc) = compile_src(
         r#"
+        module std.testing
         func blackBox<T>(value: T): T { return value }
         func main(): int {
             return blackBox<int>(42)
@@ -453,6 +945,7 @@ fn c_backend_emits_opaque_black_box_barrier() {
     test_execution_parity(
         "black_box_barrier",
         r#"
+        module std.testing
         func blackBox<T>(value: T): T { return value }
         func main(): int { return blackBox<int>(42) }
         "#,
@@ -463,7 +956,7 @@ fn c_backend_emits_opaque_black_box_barrier() {
 fn parity_black_box_preserves_fixed_float_types() {
     test_zero_result_all_opt_levels(
         "fixed_float_black_box",
-        "func blackBox<T>(value: T): T { return value } func main(): int { if blackBox<f32>(2.5 as f32) != 2.5 { return 1 }; if blackBox<f64>(3.75 as f64) != 3.75 { return 2 }; return 0 }",
+        "module std.testing\nfunc blackBox<T>(value: T): T { return value } func main(): int { if blackBox<f32>(2.5 as f32) != 2.5 { return 1 }; if blackBox<f64>(3.75 as f64) != 3.75 { return 2 }; return 0 }",
     );
 }
 
@@ -619,12 +1112,12 @@ int main() {
     // Compiler selection: use $CC env var if set, otherwise fallback to gcc.
     let cc = env::var("CC").unwrap_or_else(|_| "gcc".to_string());
 
-    // `-lm` for ToStr float helpers (`isnan`/`isinf` via math.h).
+    // TargetSpec supplies libm and the host system libraries.
     let compile_status = c_compiler(&cc)
         .arg(&c_file)
         .arg("-o")
         .arg(&exe_file)
-        .arg("-lm")
+        .args(arandu_middle::TargetSpec::for_host().cc_link_args())
         .output()
         .unwrap_or_else(|_| {
             panic!(
@@ -963,7 +1456,7 @@ fn generated_test_registry_entrypoint_compiles_and_executes() {
         .arg(&c_file)
         .arg("-o")
         .arg(&exe_file)
-        .arg("-lm")
+        .args(arandu_middle::TargetSpec::for_host().cc_link_args())
         .status()
         .unwrap_or_else(|_| panic!("failed to invoke C compiler '{cc}'"));
     assert!(
@@ -1772,6 +2265,55 @@ fn parity_io_println_to_str() {
 }
 
 #[test]
+fn c_f64_to_str_checks_range_before_integer_cast() {
+    // Fuzz finding: `(long long)v` ran before the `|v| < 1e15` guard, which is
+    // undefined behavior for out-of-range doubles (UBSan float-cast-overflow).
+    let src = r#"
+    import io
+    func main(): int {
+        let big: float = 1e300
+        let low: float = -9.3e18
+        let whole: float = 2.0
+        io.println("${big}|${low}|${whole}")
+        return 0
+    }
+    "#;
+    let (amir, tc) = compile_src(src);
+    let emitted = emit_c(&amir, &tc);
+    let guarded = emitted
+        .find("v < 1e15 && v > -1e15 && v == (double)(long long)v")
+        .expect("range check must precede the integer cast");
+    assert!(!emitted[..guarded].contains("(long long)v && v < 1e15"));
+    let (result, stdout) = execute_c_output("f64_to_str_range_guard", &amir, &tc);
+    assert_eq!(result, 0);
+    // Shortest round-trip digits in fixed notation, as the runtime prints. The
+    // CRT on Windows translates `\n` to `\r\n`, so normalize before comparing.
+    let expected = format!("1{}|-9300000000000000000|2\n", "0".repeat(300));
+    let stdout = stdout.replace("\r\n", "\n");
+    assert!(stdout.starts_with(&expected), "{stdout:?}");
+}
+
+#[test]
+fn parity_ref_str_auto_deref_on_assignment() {
+    // Fuzz finding: typeck admits `ref str -> str` on `let`, Cranelift loads
+    // the descriptor, but C assigned `ArStr*` to `ArStr` and failed to compile.
+    let src = r#"
+    func view(s: ref str): ref str {
+        return s
+    }
+    func main(): int {
+        let base: str = "abc"
+        let copy: str = view(ref base)
+        if copy != "abc" {
+            return 1
+        }
+        return 0
+    }
+    "#;
+    test_execution_parity("ref_str_auto_deref_assignment", src);
+}
+
+#[test]
 fn parity_io_eprint_emits_the_runtime_alias() {
     let src = r#"
     import io
@@ -1872,6 +2414,8 @@ fn c_emit_arstr_layout_32bit() {
         c.lines().take(40).collect::<Vec<_>>().join("\n")
     );
     assert!(c.contains("static void *ar_vec_malloc(uint32_t size)"));
+    assert!(c.contains("#define AR_VEC_ALIGN 16"));
+    assert!(c.contains("((void **)aligned)[-1] = raw"));
     assert!(c.contains(
         "typedef struct { uint8_t *data; uint32_t len; uint32_t capacity; } ArOwnedStringRuntime;"
     ));
@@ -2752,7 +3296,7 @@ int main(void) {
         .arg("-o")
         .arg(&exe_file)
         .arg("-pthread")
-        .arg("-lm")
+        .args(arandu_middle::TargetSpec::for_host().cc_link_args())
         .output()
         .expect("compile worker pool suite");
 
@@ -2830,7 +3374,7 @@ int main(void) {
         .arg(&exe_file)
         .arg("-pthread")
         .arg("-Wl,--wrap=pthread_create")
-        .arg("-lm")
+        .args(arandu_middle::TargetSpec::for_host().cc_link_args())
         .output()
         .expect("compile partial worker creation harness");
     assert!(
@@ -2895,15 +3439,15 @@ fn parity_safe_fmt_formatter() {
 module std.core.fmt_test
 
 extern "arandu-intrinsic" {
-    func sliceFromRaw(owner: ptr[u8], data: ptr[u8], len: uint): []u8
+    func mutSliceFromRaw(owner: ptr[u8], data: ptr[u8], len: uint): mut []u8
 }
 
 struct Formatter {
-    buf: []u8
+    buf: mut []u8
     len: uint
 }
 
-func newFormatter(buf: []u8): Formatter {
+func newFormatter(buf: mut []u8): Formatter {
     return Formatter {
         buf: buf,
         len: 0,
@@ -2918,11 +3462,11 @@ func Formatter.writeByte(self: mut ref Formatter, b: u8): bool {
 
 func main(): int {
     let raw = alloc(16) as ptr[u8]
-    let s = unsafe { sliceFromRaw(raw, raw, 16 as uint) }
+    let s = unsafe { mutSliceFromRaw(raw, raw, 16 as uint) }
     let mut f = newFormatter(s)
     f.writeByte(65 as u8)
     f.writeByte(66 as u8)
-    if s[0] != (65 as u8) || s[1] != (66 as u8) {
+    if f.buf[0] != (65 as u8) || f.buf[1] != (66 as u8) {
         unsafe { free(raw) }
         return 1
     }
@@ -2972,24 +3516,24 @@ fn parity_mut_ref_slice_preserves_data_and_length_words() {
 module std.core.mut_slice_parity
 
 extern "arandu-intrinsic" {
-    func sliceFromRaw(owner: ptr[u8], data: ptr[u8], len: uint): []u8
-    func sliceLen<T>(source: []T): uint
+    func mutSliceFromRaw(owner: ptr[u8], data: ptr[u8], len: uint): mut []u8
+    func mutSliceLen<T>(source: mut []T): uint
 }
 
-func fill(buf: mut ref []u8): uint {
-    let len = unsafe { sliceLen<u8>(*buf) }
+func fill(buf: mut ref mut []u8): uint {
+    let len = unsafe { mutSliceLen<u8>(*buf) }
     if len != 4 { return 99 }
     buf[1] = 42 as u8
     return len
 }
 
-func observedLen(buf: ref []u8): uint {
-    return unsafe { sliceLen<u8>(*buf) }
+func observedLen(buf: ref mut []u8): uint {
+    return unsafe { mutSliceLen<u8>(*buf) }
 }
 
 func main(): int {
     let raw = alloc(4) as ptr[u8]
-    let mut bytes = unsafe { sliceFromRaw(raw, raw, 4 as uint) }
+    let mut bytes = unsafe { mutSliceFromRaw(raw, raw, 4 as uint) }
     let len = fill(mut ref bytes)
     if len != 4 || observedLen(ref bytes) != 4 || bytes[1] != (42 as u8) {
         unsafe { free(raw) }
@@ -3027,9 +3571,11 @@ func asPtr<T>(s: []T): ptr[T] {
 
 func main(): int {
     let raw = alloc(8) as ptr[u8]
+    unsafe {
+        ptrWrite<u8>(raw, 42 as u8)
+        ptrWrite<u8>(ptrOffset<u8>(raw, 1), 99 as u8)
+    }
     let s = unsafe { sliceFromRaw(raw, raw, 8 as uint) }
-    s[0] = 42 as u8
-    s[1] = 99 as u8
     let p = asPtr<u8>(s)
     let v0 = unsafe { ptrRead<u8>(p) }
     if v0 != (42 as u8) {
@@ -3067,6 +3613,8 @@ extern "arandu-intrinsic" {
     func sliceFromRaw(owner: ptr[int], data: ptr[int], len: uint): []int
     func sliceLen(source: []int): uint
     func sliceSubslice(source: []int, start: uint, len: uint): []int
+    func ptrWrite<T>(p: ptr[T], val: T): void
+    func ptrOffset<T>(base: ptr[T], offset: i32): ptr[T]
 }
 
 struct Split {
@@ -3083,11 +3631,13 @@ func splitAt(s: []int, mid: uint): Split {
 
 func main(): int {
     let raw = alloc(32) as ptr[int]
+    unsafe {
+        ptrWrite<int>(raw, 10)
+        ptrWrite<int>(ptrOffset<int>(raw, 1), 20)
+        ptrWrite<int>(ptrOffset<int>(raw, 2), 30)
+        ptrWrite<int>(ptrOffset<int>(raw, 3), 40)
+    }
     let s = unsafe { sliceFromRaw(raw, raw, 4 as uint) }
-    s[0] = 10
-    s[1] = 20
-    s[2] = 30
-    s[3] = 40
     let parts = splitAt(s, 2 as uint)
     if parts.left[0] != 10 || parts.left[1] != 20 {
         unsafe { free(raw) }
@@ -3788,7 +4338,7 @@ func main(): int {
         .arg(&c_file)
         .arg("-o")
         .arg(&exe_file)
-        .arg("-lm")
+        .args(arandu_middle::TargetSpec::for_host().cc_link_args())
         .output()
         .unwrap();
     assert!(
@@ -4024,7 +4574,8 @@ func main(): int {
 "#,
     );
     let emitted = emit_c(&amir, &tc);
-    assert!(emitted.contains("= print(") && emitted.contains("= User__println("));
+    // Private program functions are namespaced and cannot shadow libc.
+    assert!(emitted.contains("= ar__print(") && emitted.contains("= ar__User__println("));
     assert_eq!(execute_cranelift(&amir, &tc), 16);
     let (result, output) = execute_c_output("user_print_returns_and_effects", &amir, &tc);
     assert_eq!(result, 16);
@@ -4248,5 +4799,516 @@ fn c_adjacent_true_target_with_arguments_keeps_its_label() {
     assert_eq!(
         execute_c("adjacent_true_target_arguments", &program, &tc),
         7
+    );
+}
+
+#[test]
+fn parity_borrowed_projections_preserve_pointer_loads_and_single_evaluation() {
+    test_zero_result_all_opt_levels(
+        "borrowed_projections",
+        include_str!("../../../tests/corpus/borrowed_projections.aru"),
+    );
+}
+
+#[test]
+fn parity_borrowed_string_equality_compares_contents_in_both_operand_orders() {
+    test_zero_result_all_opt_levels(
+        "borrowed_string_equality",
+        include_str!("../../../tests/corpus/borrowed_string_equality.aru"),
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn generated_c_parking_lot_preserves_instance_wakes_tokens_and_thread_lifetimes() {
+    let (amir, tc) = compile_src(
+        "extern \"C\" { func ar_rt_condvar_wait_timeout(key: ptr[u8], seq: usize, ms: u64): i32 }\npublic func probe(key: ptr[u8]): i32 { return unsafe { ar_rt_condvar_wait_timeout(key, 0 as usize, 0 as u64) } }\nfunc main(): int { return 0 }",
+    );
+    let source = format!(
+        "#define main arandu_unused_main\n{}\n#undef main\n{}",
+        emit_c(&amir, &tc),
+        include_str!("parking_lot_harness.c"),
+    );
+    let directory = env::temp_dir().join(format!("arandu-parking-c-{}", std::process::id()));
+    fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("parking.c");
+    fs::write(&path, source).unwrap();
+    let compiler = env::var("CC").unwrap_or_else(|_| "cc".into());
+    for optimization in ["-O0", "-O2"] {
+        let executable = directory.join("parking");
+        let output = Command::new(&compiler)
+            .args([
+                optimization,
+                "-pthread",
+                "-fsanitize=undefined",
+                "-fno-sanitize-recover=all",
+            ])
+            .arg(&path)
+            .arg("-o")
+            .arg(&executable)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let output = Command::new(executable).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{:?}: {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn jit_condvar_timeout_bridge_uses_pointer_sized_sequence_and_u64_duration() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let (amir, tc) = compile_src(
+        r#"
+extern "C" {
+    func ar_rt_condvar_wait_timeout(key: ptr[u8], seq: usize, ms: u64): i32
+    func ar_rt_condvar_notify_one(key: ptr[u8]): void
+}
+public func timedWait(key: ptr[u8], seq: usize, ms: u64): i32 {
+    return unsafe { ar_rt_condvar_wait_timeout(key, seq, ms) }
+}
+public func notify(key: ptr[u8]): void { unsafe { ar_rt_condvar_notify_one(key) } }
+func main(): int { return 0 }
+"#,
+    );
+    let module = CraneliftBackend::try_new()
+        .unwrap()
+        .compile(&amir, &tc.symbols, &*tc.type_info)
+        .unwrap();
+    // SAFETY: the declarations above specify these exact ABI signatures; the
+    // compiled module and aligned atomic sequence outlive every call/worker.
+    let wait = unsafe {
+        module
+            .get_fn::<unsafe extern "C" fn(*const u8, usize, u64) -> i32>("timedWait")
+            .unwrap()
+    };
+    let notify = unsafe {
+        module
+            .get_fn::<unsafe extern "C" fn(*const u8)>("notify")
+            .unwrap()
+    };
+    let sequence = AtomicUsize::new(0);
+    let key = (&sequence as *const AtomicUsize).cast::<u8>();
+    // SAFETY: all accesses use the stable atomic word; no concurrent mutation
+    // exists for the timeout and mismatch cases.
+    unsafe {
+        assert_eq!(wait(key, 1, u64::MAX), 1);
+        assert_eq!(wait(key, 0, 0), 0);
+    }
+    std::thread::scope(|scope| {
+        let sequence = &sequence;
+        let worker = scope.spawn(move || {
+            // SAFETY: scope retains the atomic allocation, and no non-atomic
+            // access to it is performed while the JIT helper may read it.
+            unsafe { wait((sequence as *const AtomicUsize).cast(), 0, 5_000) }
+        });
+        sequence.fetch_add(1, Ordering::Release);
+        // SAFETY: notify follows the atomic sequence increment and shares its
+        // live allocation; it is valid before or after waiter registration.
+        unsafe {
+            notify(key);
+        }
+        assert_eq!(worker.join().unwrap(), 1);
+    });
+}
+
+#[test]
+#[cfg(unix)]
+fn generated_c_phase_lock_alternates_batches_preserves_fifo_and_cleans_cancellation() {
+    let (amir, tc) = compile_src(
+        "extern \"C\" { func ar_rt_rwlock_try_write(key: ptr[u8]): i32 }\npublic func probe(key: ptr[u8]): i32 { return unsafe { ar_rt_rwlock_try_write(key) } }\nfunc main(): int { return 0 }",
+    );
+    let source = format!(
+        "#define main arandu_unused_main\n{}\n#undef main\n{}",
+        emit_c(&amir, &tc),
+        include_str!("phase_lock_harness.c"),
+    );
+    let directory = env::temp_dir().join(format!("arandu-phase-lock-c-{}", std::process::id()));
+    fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("phase_lock.c");
+    fs::write(&path, source).unwrap();
+    let compiler = env::var("CC").unwrap_or_else(|_| "cc".into());
+    for optimization in ["-O0", "-O2"] {
+        let executable = directory.join("phase_lock");
+        let output = Command::new(&compiler)
+            .args([
+                optimization,
+                "-pthread",
+                "-fsanitize=undefined",
+                "-fno-sanitize-recover=all",
+            ])
+            .arg(&path)
+            .arg("-o")
+            .arg(&executable)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let output = Command::new(executable).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{:?}: {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn generated_c_runtime_memory_helpers_are_clean_under_address_and_ub_sanitizers() {
+    let (amir, tc) = compile_src(
+        r#"
+extern "C" {
+    func ar_gen_shutdown_raw(): void
+    func ar_str_split_last(s: str, sep: str): str
+    func ar_rt_spawn_i64(state: ptr[u8]): i64
+}
+public func probe(s: str, state: ptr[u8], x: float): str {
+    unsafe { ar_gen_shutdown_raw() }
+    let spawned = unsafe { ar_rt_spawn_i64(state) }
+    return unsafe { ar_str_split_last(s, "${x}${spawned}") }
+}
+func main(): int { return 0 }
+"#,
+    );
+    let source = format!(
+        "#define main arandu_unused_main\n{}\n#undef main\n{}",
+        emit_c(&amir, &tc),
+        include_str!("runtime_memory_harness.c"),
+    );
+    let directory = env::temp_dir().join(format!("arandu-runtime-memory-c-{}", std::process::id()));
+    fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("runtime_memory.c");
+    fs::write(&path, source).unwrap();
+    let compiler = env::var("CC").unwrap_or_else(|_| "cc".into());
+    for optimization in ["-O0", "-O2"] {
+        let executable = directory.join("runtime_memory");
+        let output = Command::new(&compiler)
+            .args([
+                optimization,
+                "-g",
+                "-pthread",
+                "-fsanitize=address,undefined,float-cast-overflow",
+                "-fno-sanitize-recover=all",
+                "-fno-omit-frame-pointer",
+            ])
+            .arg(&path)
+            .arg("-o")
+            .arg(&executable)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let output = Command::new(executable)
+            .env("ASAN_OPTIONS", "detect_leaks=1:abort_on_error=1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{optimization} {:?}: {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn path_only_programs_include_the_variadic_concat_header() {
+    // The path group emits the concat runtime (variadic `ar_str_concat_n`)
+    // without any interpolation in the program itself.
+    let (amir, tc) = compile_src(
+        r#"
+extern "C" { func ar_path_join(a: str, b: str): str }
+func main(): int {
+    let joined = unsafe { ar_path_join("a", "b") }
+    if joined == "a/b" || joined == "a\\b" { return 0 }
+    return 1
+}
+"#,
+    );
+    let c = emit_c(&amir, &tc);
+    assert!(c.contains("ar_str_concat_n") && c.contains("#include <stdarg.h>"));
+    assert_eq!(execute_c("path_only_concat_header", &amir, &tc), 0);
+}
+
+/// Compile emitted C and run it, returning whether the process exited cleanly.
+fn c_program_succeeds(name: &str, amir: &AmirProgram, tc: &TypeCheckResult) -> bool {
+    let out_dir = env::temp_dir().join("arandu_c_tests");
+    fs::create_dir_all(&out_dir).unwrap();
+    let c_file = out_dir.join(format!("{name}_{}.c", std::process::id()));
+    let exe_file = out_dir.join(format!("{name}_{}.exe", std::process::id()));
+    fs::write(&c_file, emit_c(amir, tc)).unwrap();
+    let cc = env::var("CC").unwrap_or_else(|_| "gcc".to_string());
+    let compiled = c_compiler(&cc)
+        .arg(&c_file)
+        .arg("-o")
+        .arg(&exe_file)
+        .arg("-lm")
+        .output()
+        .unwrap();
+    assert!(
+        compiled.status.success(),
+        "C compilation failed for {name}: {}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+    Command::new(&exe_file).status().unwrap().success()
+}
+
+/// Softwares/kandiru regression: indexing an empty `[]T` read through a null
+/// data pointer in C (segfault at -O0, garbage at -O2) while Cranelift and
+/// Wasm trap. Arrays and slices must trap on every C path, reads and writes.
+#[test]
+fn c_array_and_slice_indices_trap_out_of_bounds() {
+    let program = |body: &str| {
+        format!(
+            r#"
+module std.core.c_bounds_regression
+
+extern "arandu-intrinsic" {{
+    func strBytes(source: str): []u8
+}}
+
+func at(i: int): int {{
+    let bytes = unsafe {{ strBytes("abcd") }}
+    let mut arr: [4]int = [1, 2, 3, 4]
+    {body}
+}}
+
+func main(): int {{
+    return at(4)
+}}
+"#
+        )
+    };
+    let cases = [
+        ("slice_read", "return bytes[i] as int"),
+        ("array_read", "return arr[i]"),
+        ("array_write", "arr[i] = 9\n    return arr[0]"),
+    ];
+    for (name, body) in cases {
+        let (amir, tc) = compile_src(&program(body));
+        let c = emit_c(&amir, &tc);
+        assert!(
+            c.contains("ar_index_check("),
+            "{name}: missing bounds check"
+        );
+        assert!(
+            !c_program_succeeds(&format!("bounds_{name}"), &amir, &tc),
+            "{name}: out-of-bounds index must trap in C"
+        );
+    }
+    let (amir, tc) = compile_src(&program("return arr[i - 1] + (bytes[i - 1] as int) - 104"));
+    assert!(c_program_succeeds("bounds_in_range", &amir, &tc));
+}
+
+/// LeakSanitizer regression: interpolations consumed only by an `if`/`while`
+/// condition or by the right operand of `&&`/`||` were never freed (one leak
+/// per loop iteration). Every owned interpolation must reach a `free`.
+#[test]
+fn interpolation_temporaries_in_conditions_are_freed() {
+    let src = r#"
+func main(): int {
+    let mut i: int = 0
+    let mut hits: int = 0
+    while "${i}" != "3" {
+        if "${i}:${i}" == "1:1" { hits = hits + 1 }
+        if i > 0 && "${i}" == "2" { hits = hits + 10 }
+        if i > 5 || "${i}" == "0" { hits = hits + 100 }
+        i = i + 1
+    }
+    return hits - 111
+}
+"#;
+    let (amir, tc) = compile_src(src);
+    let main = amir
+        .funcs
+        .iter()
+        .find(|f| tc.symbols.get(f.symbol).name == "main")
+        .unwrap();
+    // temp -> defining block, and temp -> block of its `free`.
+    let mut interps = std::collections::BTreeMap::new();
+    let mut freed = std::collections::BTreeMap::new();
+    for (block_index, block) in main.blocks.iter().enumerate() {
+        for id in block.statements.iter_ids::<arandu_middle::amir::InstrId>() {
+            match main.stmts.get(id) {
+                Some(AmirStmt::Assign {
+                    lhs,
+                    rhs: AmirRvalue::StringInterp { .. },
+                }) => {
+                    interps.insert(lhs.as_usize(), block_index);
+                }
+                Some(AmirStmt::Free(AmirOperand::Copy(t) | AmirOperand::Move(t))) => {
+                    freed.insert(t.as_usize(), block_index);
+                }
+                _ => {}
+            }
+        }
+    }
+    assert!(!interps.is_empty());
+    // Freeing in the defining block keeps the free on the only path where
+    // the value exists (the right operand of `&&`/`||` is conditional).
+    for (temp, block) in &interps {
+        assert_eq!(
+            freed.get(temp),
+            Some(block),
+            "interpolation t{temp} from bb{block} is not freed in its block"
+        );
+    }
+    assert_eq!(execute_c("interp_condition_free", &amir, &tc), 0);
+    assert_eq!(execute_cranelift(&amir, &tc), 0);
+}
+
+#[test]
+fn interpolated_call_arguments_are_freed_only_when_the_call_cannot_keep_them() {
+    // Statement-scoped temporaries: a string built for a view parameter dies
+    // after the call unless the result may alias it. A `ref` argument is owned
+    // by its materialized local, which the scope drops (no second free).
+    let src = r#"
+func count(s: str): usize { return 1 as usize }
+func byRef(s: ref str): usize { return 2 as usize }
+func keep(s: str): str { return s }
+
+func main(): int {
+    let mut i: int = 0
+    let mut n: usize = 0 as usize
+    while i < 3 {
+        n = n + count("${i}")
+        n = n + byRef("${i}")
+        let v = keep("${i}")
+        n = n + count(v)
+        i = i + 1
+    }
+    return (n as int) - 12
+}
+"#;
+    let (amir, tc) = compile_src(src);
+    let main = amir
+        .funcs
+        .iter()
+        .find(|f| tc.symbols.get(f.symbol).name == "main")
+        .unwrap();
+    let mut interps = Vec::new();
+    let mut frees = std::collections::BTreeMap::<usize, usize>::new();
+    for id in main.stmts.iter_ids() {
+        match main.stmts.get(id) {
+            Some(AmirStmt::Assign {
+                lhs,
+                rhs: AmirRvalue::StringInterp { .. },
+            }) => interps.push(lhs.as_usize()),
+            Some(AmirStmt::Free(AmirOperand::Copy(t) | AmirOperand::Move(t))) => {
+                *frees.entry(t.as_usize()).or_default() += 1;
+            }
+            _ => {}
+        }
+    }
+    interps.sort_unstable();
+    let [for_count, for_ref, for_keep] = interps[..] else {
+        panic!("expected three interpolations, got {interps:?}");
+    };
+    assert!(
+        frees.values().all(|&n| n == 1),
+        "a temp is freed twice: {frees:?}"
+    );
+    assert_eq!(frees.get(&for_count), Some(&1), "count() argument leaked");
+    assert!(
+        !frees.contains_key(&for_ref),
+        "ref argument freed besides its local"
+    );
+    assert!(
+        !frees.contains_key(&for_keep),
+        "view-returning call freed its argument"
+    );
+    // The view case still leaks by design (safe, not freed); execute the
+    // freed paths so sanitized runs see no leak or double free.
+    let (amir, tc) = compile_src(&src.replace(
+        "        let v = keep(\"${i}\")\n        n = n + count(v)\n",
+        "        n = n + count(\"x\")\n",
+    ));
+    assert_eq!(execute_c("interpolated_call_arguments", &amir, &tc), 0);
+}
+
+#[test]
+fn private_functions_cannot_collide_with_libc_declarations() {
+    // kururu defined `sqrt`; unprefixed it replaced libm's symbol and clashed
+    // with <math.h>. Public API and `main` keep their names.
+    let (amir, tc) = compile_src(
+        "func sqrt(x: float): float { return x + 1.0 }\npublic func api(): int { return 2 }\nfunc main(): int { if sqrt(4.0) != 5.0 { return 1 }\n return api() - 2 }",
+    );
+    let emitted = emit_c(&amir, &tc);
+    assert!(emitted.contains("static double ar__sqrt("), "{emitted}");
+    assert!(emitted.contains("int32_t api(void)") && !emitted.contains("ar__api"));
+    let with_math = format!("#include <math.h>\n{emitted}");
+    let dir = env::temp_dir().join("arandu_c_tests");
+    fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("libc_collision.c");
+    let exe = dir.join("libc_collision.exe");
+    fs::write(&source, with_math).unwrap();
+    let cc = env::var("CC").unwrap_or_else(|_| "cc".into());
+    let compiled = Command::new(&cc)
+        .arg(&source)
+        .arg("-o")
+        .arg(&exe)
+        .args(arandu_middle::TargetSpec::for_host().cc_link_args())
+        .output()
+        .unwrap();
+    assert!(
+        compiled.status.success(),
+        "{}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+    assert_eq!(Command::new(&exe).status().unwrap().code(), Some(0));
+}
+
+/// Non-UTF-8 byte strings are frozen blobs. The C emitter must publish them as
+/// a raw `ArStr` over a byte array (not a UTF-8 string) and agree with the JIT.
+#[test]
+fn parity_non_utf8_byte_string_blob_keeps_raw_bytes() {
+    let source = r#"
+func main(): int {
+    let raw = b"\xFF\x00AB"
+    if raw.len != 4 { return 1 }
+    if raw[0] != b'\xFF' { return 2 }
+    if raw[1] != b'\0' { return 3 }
+    if (raw[2] as int) != 65 { return 4 }
+    if (raw[3] as int) != 66 { return 5 }
+    let tail = raw[2..4]
+    if tail.len != 2 { return 6 }
+    if tail[0] != b'A' { return 7 }
+    return 42
+}
+"#;
+    let (amir, tc) = compile_src(source);
+    assert_eq!(execute_cranelift(&amir, &tc), 42, "cranelift baseline");
+    let emitted = emit_c(&amir, &tc);
+    assert!(
+        emitted.contains("STR_0[] = {255,0,65,66,0}"),
+        "raw blob must be emitted as a byte array:\n{emitted}"
+    );
+    assert!(
+        emitted.contains("static const ArStr AR_STR_0 = { .ptr = STR_0, .len = 4 };"),
+        "blob length must stay 4 bytes:\n{emitted}"
+    );
+    assert_eq!(
+        execute_c("non_utf8_byte_string_blob", &amir, &tc),
+        42,
+        "generated C must agree with the JIT"
     );
 }

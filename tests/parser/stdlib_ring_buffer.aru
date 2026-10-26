@@ -1,0 +1,25 @@
+struct RingBuffer {
+    head: usize,
+    tail: usize,
+    count: usize,
+    capacity: usize,
+}
+
+func ringPush(ring: mut ref RingBuffer, val: int, storage: []int): bool {
+    if ring.count == ring.capacity {
+        return false;
+    }
+    storage[ring.tail] = val;
+    ring.tail = (ring.tail + 1) % ring.capacity;
+    ring.count = ring.count + 1;
+    return true;
+}
+
+func ringPop(ring: mut ref RingBuffer): int {
+    if ring.count == 0 {
+        return -1;
+    }
+    ring.head = (ring.head + 1) % ring.capacity;
+    ring.count = ring.count - 1;
+    return 0;
+}

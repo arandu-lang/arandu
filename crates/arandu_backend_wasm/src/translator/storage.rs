@@ -5,11 +5,11 @@ use wasm_encoder::{BlockType, Instruction, ValType};
 
 impl FuncTranslator<'_> {
     pub(super) fn plan_frame(&mut self, locals: &mut Vec<(u32, ValType)>) {
-        use arandu_semantics::aggregate_storage::{ScratchResultAbi, function_scratch_safe};
+        use arandu_mir::aggregate_storage::{ScratchResultAbi, function_scratch_safe};
         self.plan_static_initializer_temps();
         self.transfer_owned_result = self.component_sig.is_none()
             && self.is_owned_aggregate(self.func.return_type)
-            && arandu_semantics::aggregate_storage::scratch_type_safe(
+            && arandu_mir::aggregate_storage::scratch_type_safe(
                 self.func.return_type,
                 self.interner,
                 self.layout_provider,
@@ -20,6 +20,12 @@ impl FuncTranslator<'_> {
             ScratchResultAbi::ScalarsOnly
         };
         if !function_scratch_safe(self.func, self.symbols, self.interner, result_abi) {
+            return;
+        }
+        // A Wasm move into a whole local copies the backing pointer, so a
+        // loop-carried local would keep naming a site's backing after the next
+        // entry of that site reclaims (returned home) or overwrites it.
+        if arandu_mir::aggregate_storage::cyclic_aggregate_local_store(self.func, self.interner) {
             return;
         }
         for id in self.func.stmts.iter_ids() {
@@ -35,15 +41,18 @@ impl FuncTranslator<'_> {
                 let ty = self.func.temps.get(temp.as_usize()).map(|temp| temp.ty);
                 if ty.is_some_and(|ty| {
                     self.is_owned_aggregate(ty)
-                        && arandu_semantics::aggregate_storage::scratch_type_safe(
+                        && arandu_mir::aggregate_storage::scratch_type_safe(
                             ty,
                             self.interner,
                             self.layout_provider,
                         )
                 }) && self.symbols.try_get(*symbol).is_some_and(|symbol| {
                     symbol.kind != arandu_middle::SymbolKind::ExternFunc
-                        && arandu_middle::intrinsics::IntrinsicKind::from_name(&symbol.name)
-                            .is_none()
+                        && arandu_middle::intrinsics::IntrinsicKind::from_declared_name(
+                            &symbol.name,
+                            symbol.lang_item,
+                        )
+                        .is_none()
                 }) && let Some(next) = self.next_local.checked_add(1)
                 {
                     self.returned_homes.insert(id, self.next_local);
@@ -74,7 +83,7 @@ impl FuncTranslator<'_> {
                 continue;
             };
             if !self.is_owned_aggregate(ty)
-                || !arandu_semantics::aggregate_storage::scratch_type_safe(
+                || !arandu_mir::aggregate_storage::scratch_type_safe(
                     ty,
                     self.interner,
                     self.layout_provider,

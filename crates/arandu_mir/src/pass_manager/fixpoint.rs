@@ -17,6 +17,7 @@ pub(super) fn run_pipeline_to_fixpoint<F>(
     func: &mut AmirFunc,
     literal_pool: &mut AmirLiteralPool,
     interner: Option<&crate::types::TypeInterner>,
+    removable_callees: &rustc_hash::FxHashSet<crate::SymbolId>,
     max_iterations: usize,
     validate: &mut F,
 ) -> Result<PassStats, Diagnostic>
@@ -35,6 +36,7 @@ where
                 interner,
                 literal_pool: &mut *literal_pool,
                 bump: &mut bump,
+                removable_callees,
             };
             for pass in passes {
                 if pass.run(func, &mut resources)? {

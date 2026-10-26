@@ -75,7 +75,7 @@ impl Resolver<'_> {
         // does not resolve sibling branches, initializers or lambda captures.
         let mut children = Vec::new();
         match pool.expr(expression) {
-            ExprKind::Lambda { params, body } => {
+            ExprKind::Lambda { params, body, .. } => {
                 let scope = self.symbols.new_scope(scope);
                 for &parameter in pool.lambda_param_list(*params) {
                     let parameter = pool.lambda_param(parameter);
@@ -240,6 +240,7 @@ impl Resolver<'_> {
             | ExprKind::Bool { .. }
             | ExprKind::Char { .. }
             | ExprKind::Byte { .. }
+            | ExprKind::ByteString { .. }
             | ExprKind::Nil => {}
         }
         for child in children {

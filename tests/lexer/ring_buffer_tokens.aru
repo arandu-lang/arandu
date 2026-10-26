@@ -1,0 +1,3 @@
+ring.tail = (ring.tail + 1) % ring.capacity;
+ring.count = ring.count + 1;
+return ring.count == ring.capacity;

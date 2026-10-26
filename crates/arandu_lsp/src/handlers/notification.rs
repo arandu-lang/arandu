@@ -1,7 +1,7 @@
 //! Document synchronization and file-event notification handlers.
 //!
 //! Ordering rules preserved from the monolith: every mutation path cancels
-//! in-flight requests before touching state (`pool.cancel_requests()`), open
+//! snapshot jobs before touching state (`dispatcher::cancel_analysis`), open
 //! documents publish diagnostics immediately, and workspace-wide events refresh
 //! the package listing then re-run diagnostics for open buffers.
 
@@ -57,7 +57,7 @@ pub(super) fn handle(
                 not.extract(DidOpenTextDocument::METHOD)?;
             let uri = params.text_document.uri;
             let version = params.text_document.version;
-            pool.cancel_requests();
+            crate::dispatcher::cancel_analysis(state, pool);
             let id = state.open_or_commit(&uri, params.text_document.text);
             state.mark_open(&uri);
             state.set_version(id, version);
@@ -93,7 +93,7 @@ pub(super) fn handle(
                 state.queue_change(&params.text_document.uri, text);
             }
             if state.vfs.has_pending() {
-                pool.cancel_requests();
+                crate::dispatcher::cancel_analysis(state, pool);
             }
             let committed = state.flush_all();
             if committed.is_empty() {
@@ -111,14 +111,14 @@ pub(super) fn handle(
             // Closing restores disk contents or unregisters the source, both
             // of which mutate Salsa state. Retire snapshot-based requests
             // before that write so stale workers cannot hold the writer barrier.
-            pool.cancel_requests();
+            crate::dispatcher::cancel_analysis(state, pool);
             state.close_uri(&uri);
             publish_diagnostics(connection, uri, Vec::new(), None)?;
             spawn_open_diagnostics(state, pool, job_tx);
         }
         DidCreateFiles::METHOD => {
             let params: lsp_types::CreateFilesParams = not.extract(DidCreateFiles::METHOD)?;
-            pool.cancel_requests();
+            crate::dispatcher::cancel_analysis(state, pool);
             let manifest_changed = params.files.iter().any(|file| {
                 parse_uri(&file.uri).is_some_and(|uri| is_manifest_path(&path_from_uri(&uri)))
             });
@@ -132,7 +132,7 @@ pub(super) fn handle(
         }
         DidRenameFiles::METHOD => {
             let params: lsp_types::RenameFilesParams = not.extract(DidRenameFiles::METHOD)?;
-            pool.cancel_requests();
+            crate::dispatcher::cancel_analysis(state, pool);
             let manifest_changed = params.files.iter().any(|file| {
                 [file.old_uri.as_str(), file.new_uri.as_str()]
                     .into_iter()
@@ -158,7 +158,7 @@ pub(super) fn handle(
         }
         DidDeleteFiles::METHOD => {
             let params: lsp_types::DeleteFilesParams = not.extract(DidDeleteFiles::METHOD)?;
-            pool.cancel_requests();
+            crate::dispatcher::cancel_analysis(state, pool);
             let manifest_changed = params.files.iter().any(|file| {
                 parse_uri(&file.uri).is_some_and(|uri| is_manifest_path(&path_from_uri(&uri)))
             });
@@ -174,7 +174,7 @@ pub(super) fn handle(
         DidChangeWatchedFiles::METHOD => {
             let params: lsp_types::DidChangeWatchedFilesParams =
                 not.extract(DidChangeWatchedFiles::METHOD)?;
-            pool.cancel_requests();
+            crate::dispatcher::cancel_analysis(state, pool);
             let manifest_changed = params
                 .changes
                 .iter()

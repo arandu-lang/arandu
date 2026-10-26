@@ -46,7 +46,7 @@ fn every_stdlib_module_parses_and_type_checks_with_the_full_graph() {
     let files: Vec<_> = sources
         .iter()
         .map(|(path, source)| {
-            let file = db.new_file(path.clone(), source.clone());
+            let file = db.new_stdlib_file(path.clone(), source.clone());
             parse(&db, file)
                 .as_ref()
                 .unwrap_or_else(|error| panic!("{path} must parse: {error}"));
@@ -88,7 +88,7 @@ fn stdlib_naming_and_resource_conventions_are_enforced() {
     let files: Vec<_> = sources
         .iter()
         .map(|(path, source)| {
-            let file = db.new_file(path.clone(), source.clone());
+            let file = db.new_stdlib_file(path.clone(), source.clone());
             (path.as_str(), file)
         })
         .collect();

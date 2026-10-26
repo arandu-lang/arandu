@@ -9,7 +9,7 @@ const ATOMIC_ARU: &str = include_str!("../../../../stdlib/core/atomic.aru");
 #[test]
 fn stdlib_atomic_parses_and_exports_expected_symbols() {
     let mut db = DatabaseImpl::default();
-    let file = db.new_file("stdlib/core/atomic.aru".to_string(), ATOMIC_ARU.to_string());
+    let file = db.new_stdlib_file("stdlib/core/atomic.aru".to_string(), ATOMIC_ARU.to_string());
     match parse(&db, file).as_ref() {
         Ok(_) => {}
         Err(e) => panic!("atomic.aru must parse; got {e}"),

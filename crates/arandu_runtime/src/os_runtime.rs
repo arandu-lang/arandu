@@ -33,6 +33,30 @@ pub unsafe extern "C" fn ar_process_exit(code: i64) -> ! {
     std::process::exit(status)
 }
 
+/// End the process after a language-level abort on Windows.
+///
+/// An inline `ud2` inside a JIT frame has no unwind info. Windows reports
+/// that as a stack overflow and writes the message to stderr, so the abort
+/// contract (failed status, empty stderr) is lost. `ExitProcess` terminates
+/// without the C runtime's `abort` banner. Unix keeps the hardware trap and
+/// does not emit this symbol.
+///
+/// # Safety
+/// Called only from JIT-linked Arandu code. This function never returns.
+#[cfg(windows)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ar_rt_trap() -> ! {
+    // SAFETY: `ExitProcess` ends the process. Status 1 is a failed exit
+    // without writing to stderr.
+    unsafe { exit_process(1) }
+}
+
+#[cfg(windows)]
+unsafe extern "system" {
+    #[link_name = "ExitProcess"]
+    fn exit_process(code: u32) -> !;
+}
+
 /// Nanoseconds since an arbitrary process-local epoch (monotonic, not wall clock).
 ///
 /// # Safety
@@ -54,6 +78,39 @@ static HOST_ARGV: std::sync::OnceLock<Box<[String]>> = std::sync::OnceLock::new(
 /// the program entry path followed by the values after `arandu run ... --`.
 pub fn install_program_args(args: Box<[String]>) -> Result<(), Box<[String]>> {
     PROGRAM_ARGV.set(args)
+}
+
+/// C ABI for AOT wrappers (LLVM/C smith) that need a synthetic `argv[0]`.
+///
+/// Returns `0` on success and `-1` when arguments are invalid or already
+/// installed. Pointers must remain valid for the duration of this call.
+///
+/// # Safety
+/// `argv` must point to `argc` readable C strings (null entries become empty).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ar_env_install_args(
+    argc: i32,
+    argv: *const *const core::ffi::c_char,
+) -> i32 {
+    if argc < 0 || argv.is_null() {
+        return -1;
+    }
+    let mut args = Vec::with_capacity(argc as usize);
+    for index in 0..argc as usize {
+        // SAFETY: caller promised `argv` has `argc` readable entries.
+        let pointer = unsafe { *argv.add(index) };
+        if pointer.is_null() {
+            args.push(String::new());
+            continue;
+        }
+        // SAFETY: non-null entries are NUL-terminated C strings for this call.
+        let c_str = unsafe { std::ffi::CStr::from_ptr(pointer) };
+        args.push(c_str.to_string_lossy().into_owned());
+    }
+    match install_program_args(args.into_boxed_slice()) {
+        Ok(()) => 0,
+        Err(_) => -1,
+    }
 }
 
 fn argv_snapshot() -> &'static [String] {
@@ -159,6 +216,14 @@ mod tests {
     fn args_len_at_least_one() {
         unsafe {
             assert!(ar_env_args_len() >= 1);
+        }
+    }
+
+    #[test]
+    fn install_args_rejects_invalid_pointers() {
+        unsafe {
+            assert_eq!(ar_env_install_args(-1, std::ptr::null()), -1);
+            assert_eq!(ar_env_install_args(1, std::ptr::null()), -1);
         }
     }
 

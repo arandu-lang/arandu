@@ -9,6 +9,9 @@
 #[path = "common/mod.rs"]
 mod common;
 
+#[path = "common/wasm_host.rs"]
+mod wasm_host;
+
 #[path = "cli_suite/cli_archive.rs"]
 mod cli_archive;
 
@@ -36,6 +39,9 @@ mod cli_color_handling;
 #[path = "cli_suite/cli_comptime.rs"]
 mod cli_comptime;
 
+#[path = "cli_suite/cli_decimal.rs"]
+mod cli_decimal;
+
 #[path = "cli_suite/cli_core_foundation.rs"]
 mod cli_core_foundation;
 
@@ -59,6 +65,27 @@ mod cli_opt_await_suspend;
 
 #[path = "cli_suite/cli_opt_while_backedge.rs"]
 mod cli_opt_while_backedge;
+
+#[path = "cli_suite/cli_backend_parity.rs"]
+mod cli_backend_parity;
+
+#[path = "cli_suite/cli_bounds_check_elim.rs"]
+mod cli_bounds_check_elim;
+
+#[path = "cli_suite/cli_emit_c_locals.rs"]
+mod cli_emit_c_locals;
+
+#[path = "cli_suite/cli_inspection_opt_level.rs"]
+mod cli_inspection_opt_level;
+
+#[path = "cli_suite/cli_loop_deletion.rs"]
+mod cli_loop_deletion;
+
+#[path = "cli_suite/cli_range_index.rs"]
+mod cli_range_index;
+
+#[path = "cli_suite/cli_soundness_regressions.rs"]
+mod cli_soundness_regressions;
 
 #[path = "cli_suite/cli_option_nil.rs"]
 mod cli_option_nil;
@@ -116,3 +143,23 @@ mod cli_byte_literal;
 
 #[path = "cli_suite/cli_time_wide.rs"]
 mod cli_time_wide;
+
+#[path = "cli_suite/cli_llvm_backend.rs"]
+mod cli_llvm_backend;
+#[path = "cli_suite/cli_llvm_freestanding_abi.rs"]
+mod cli_llvm_freestanding_abi;
+
+#[path = "cli_suite/cli_math.rs"]
+mod cli_math;
+
+#[path = "cli_suite/cli_alloc_structures.rs"]
+mod cli_alloc_structures;
+
+#[path = "cli_suite/cli_native_thread.rs"]
+mod cli_native_thread;
+
+#[path = "cli_suite/cli_big_simd.rs"]
+mod cli_big_simd;
+
+#[path = "cli_suite/cli_bigint_oracle.rs"]
+mod cli_bigint_oracle;

@@ -5,36 +5,52 @@ use std::fmt::Write;
 use super::super::CEmitter;
 
 impl<'a> CEmitter<'a> {
-    pub(super) fn emit_str_eq_runtime(&mut self, len_c_ty: &str) {
-        let _ = writeln!(
-            self.output,
-            "static {len_c_ty} ar_str_eq(ArStr a, ArStr b) {{\n    if (a.len != b.len) return 0;\n    if (a.len <= 0) return 1;\n    if (!a.ptr || !b.ptr) return a.ptr == b.ptr ? 1 : 0;\n    return memcmp(a.ptr, b.ptr, (size_t)a.len) == 0 ? 1 : 0;\n}}"
-        );
-    }
     pub(super) fn emit_path_runtime(&mut self, len_c_ty: &str) {
         let _ = writeln!(
             &mut self.output,
-            r#"/* std.path host (Unix-oriented gold; mirrors JIT Path helpers). */
+            r#"/* std.path host (supports Windows and POSIX; mirrors JIT Path helpers). */
+#if defined(_WIN32) || defined(__WIN32__) || defined(_MSC_VER)
+static inline int ar_path_is_sep(uint8_t c) {{
+    return c == '/' || c == '\\';
+}}
+#define AR_PATH_SEP '\\'
+#else
+static inline int ar_path_is_sep(uint8_t c) {{
+    return c == '/';
+}}
+#define AR_PATH_SEP '/'
+#endif
 static {len_c_ty} ar_path_is_absolute(ArStr p) {{
     if (p.len <= 0 || !p.ptr) return 0;
+#if defined(_WIN32) || defined(__WIN32__) || defined(_MSC_VER)
+    if (ar_path_is_sep(p.ptr[0])) return 1;
+    if (p.len >= 3 && p.ptr[1] == ':' && ar_path_is_sep(p.ptr[2])) {{
+        uint8_t d = p.ptr[0];
+        if ((d >= 'a' && d <= 'z') || (d >= 'A' && d <= 'Z')) return 1;
+    }}
+    return 0;
+#else
     return p.ptr[0] == '/' ? 1 : 0;
+#endif
 }}
 static {len_c_ty} ar_path_is_empty(ArStr p) {{
     return p.len <= 0 ? 1 : 0;
 }}
 static ArStr ar_path_join(ArStr a, ArStr b) {{
-    /* Absolute b replaces (Unix Path::join). */
-    if (b.len > 0 && b.ptr && b.ptr[0] == '/') return b;
-    if (a.len <= 0) return b;
-    if (b.len <= 0) return a;
-    int need_sep = !(a.ptr[a.len - 1] == '/');
-    {len_c_ty} total = a.len + b.len + (need_sep ? 1 : 0);
+    /* Host Path::join: absolute b replaces; a separator follows any
+       non-empty a lacking one, even when b is empty ("a" + "" = "a/"). */
+    if (ar_path_is_absolute(b)) return b;
+    if (a.len <= 0 || !a.ptr) return b;
+    {len_c_ty} bl = (b.len > 0 && b.ptr) ? b.len : 0;
+    int need_sep = !ar_path_is_sep(a.ptr[a.len - 1]);
+    if (bl == 0 && !need_sep) return a;
+    {len_c_ty} total = a.len + bl + (need_sep ? 1 : 0);
     uint8_t *buf = (uint8_t*)malloc((size_t)total + 1);
     if (!buf) abort();
     memcpy(buf, a.ptr, (size_t)a.len);
     {len_c_ty} off = a.len;
-    if (need_sep) buf[off++] = '/';
-    memcpy(buf + off, b.ptr, (size_t)b.len);
+    if (need_sep) buf[off++] = AR_PATH_SEP;
+    if (bl > 0) memcpy(buf + off, b.ptr, (size_t)bl);
     buf[total] = 0;
     return ar_str_pack(buf, total);
 }}
@@ -42,9 +58,9 @@ static bool ar_path_join_owned(ArStr a, ArStr b, uint8_t **out_buf, {len_c_ty} *
     if (!out_buf || !out_len || !out_cap || a.len < 0 || b.len < 0 ||
         (a.len > 0 && !a.ptr) || (b.len > 0 && !b.ptr)) return false;
     *out_buf = NULL; *out_len = 0; *out_cap = 0;
-    bool absolute = b.len > 0 && b.ptr[0] == '/';
+    bool absolute = ar_path_is_absolute(b) != 0;
     {len_c_ty} al = absolute ? 0 : a.len;
-    bool need_sep = al > 0 && b.len > 0 && a.ptr[al - 1] != '/';
+    bool need_sep = al > 0 && !ar_path_is_sep(a.ptr[al - 1]);
     if (al > INT64_MAX - b.len - (need_sep ? 1 : 0)) return false;
     {len_c_ty} total = al + b.len + (need_sep ? 1 : 0);
     if (total == 0) return true;
@@ -52,53 +68,31 @@ static bool ar_path_join_owned(ArStr a, ArStr b, uint8_t **out_buf, {len_c_ty} *
     if (!buf) return false;
     {len_c_ty} off = 0;
     if (al > 0) {{ memcpy(buf, a.ptr, (size_t)al); off = al; }}
-    if (need_sep) buf[off++] = '/';
+    if (need_sep) buf[off++] = AR_PATH_SEP;
     if (b.len > 0) memcpy(buf + off, b.ptr, (size_t)b.len);
     *out_buf = buf; *out_len = total; *out_cap = total;
     return true;
 }}
 static ArStr ar_path_file_name(ArStr p) {{
+    /* Host Path::file_name: last normal component, ignoring trailing
+       separators and non-leading "." components; root, "." and ".." have none. */
     if (p.len <= 0 || !p.ptr) return ar_str_pack((const uint8_t*)"", 0);
-    {len_c_ty} i = p.len;
-    while (i > 0 && p.ptr[i - 1] != '/') i--;
-    {len_c_ty} n = p.len - i;
-    if (n <= 0) return ar_str_pack((const uint8_t*)"", 0);
+    {len_c_ty} end = p.len;
+    {len_c_ty} i;
+    for (;;) {{
+        while (end > 0 && ar_path_is_sep(p.ptr[end - 1])) end--;
+        i = end;
+        while (i > 0 && !ar_path_is_sep(p.ptr[i - 1])) i--;
+        if (i > 0 && end - i == 1 && p.ptr[i] == '.') {{ end = i; continue; }}
+        break;
+    }}
+    {len_c_ty} n = end - i;
+    if (n <= 0 || (n == 1 && p.ptr[i] == '.') ||
+        (n == 2 && p.ptr[i] == '.' && p.ptr[i + 1] == '.'))
+        return ar_str_pack((const uint8_t*)"", 0);
     uint8_t *buf = (uint8_t*)malloc((size_t)n + 1);
     if (!buf) abort();
     memcpy(buf, p.ptr + i, (size_t)n);
-    buf[n] = 0;
-    return ar_str_pack(buf, n);
-}}
-/* String allocation helpers. Borrowed string algorithms live in std.core.str. */
-static ArStr ar_str_concat(ArStr a, ArStr b) {{
-    {len_c_ty} al = a.len < 0 ? 0 : a.len;
-    {len_c_ty} bl = b.len < 0 ? 0 : b.len;
-    {len_c_ty} total = al + bl;
-    uint8_t *buf = (uint8_t*)malloc((size_t)total + 1);
-    if (!buf) abort();
-    if (al > 0 && a.ptr) memcpy(buf, a.ptr, (size_t)al);
-    if (bl > 0 && b.ptr) memcpy(buf + al, b.ptr, (size_t)bl);
-    buf[total] = 0;
-    return ar_str_pack(buf, total);
-}}
-static ArStr ar_str_split_last(ArStr s, ArStr sep) {{
-    if (s.len <= 0 || !s.ptr) return ar_str_pack((const uint8_t*)"", 0);
-    if (sep.len <= 0 || !sep.ptr) {{
-        uint8_t *buf = (uint8_t*)malloc((size_t)s.len + 1);
-        if (!buf) abort();
-        memcpy(buf, s.ptr, (size_t)s.len);
-        buf[s.len] = 0;
-        return ar_str_pack(buf, s.len);
-    }}
-    {len_c_ty} last = -1;
-    for ({len_c_ty} i = 0; i + sep.len <= s.len; i++) {{
-        if (memcmp(s.ptr + i, sep.ptr, (size_t)sep.len) == 0) last = i;
-    }}
-    {len_c_ty} start = last < 0 ? 0 : last + sep.len;
-    {len_c_ty} n = s.len - start;
-    uint8_t *buf = (uint8_t*)malloc((size_t)n + 1);
-    if (!buf) abort();
-    if (n > 0) memcpy(buf, s.ptr + start, (size_t)n);
     buf[n] = 0;
     return ar_str_pack(buf, n);
 }}"#
@@ -112,6 +106,8 @@ static ArStr ar_str_split_last(ArStr s, ArStr sep) {{
 static inline char *ar_str_to_c_path(ArStr s, char *stack_buf, size_t stack_sz) {{
     if (s.len < 0 || (!s.ptr && s.len > 0)) return NULL;
     size_t len = (size_t)s.len;
+    /* An interior NUL would make the OS see a different, shorter name. */
+    if (len > 0 && memchr(s.ptr, 0, len)) {{ errno = EINVAL; return NULL; }}
     if (len + 1 <= stack_sz) {{
         if (len > 0 && s.ptr) memcpy(stack_buf, s.ptr, len);
         stack_buf[len] = '\0';
@@ -172,18 +168,22 @@ static {int_c_ty} ar_fs_open(ArStr path, {int_c_ty} flags, {int_c_ty} mode) {{
 }}
 
 static {int_c_ty} ar_fs_read({int_c_ty} fd, uint8_t *buf, {uint_c_ty} count) {{
-    (void)fd; (void)buf; (void)count;
-    return -1;
+    if (fd < 0 || (count > 0 && !buf)) return -1;
+    if (count == 0) return 0;
+    int64_t n = ar_pal_read((intptr_t)fd, buf, (size_t)count);
+    return n < 0 ? -1 : ({int_c_ty})n;
 }}
 
 static {int_c_ty} ar_fs_write({int_c_ty} fd, const uint8_t *buf, {uint_c_ty} count) {{
-    (void)fd; (void)buf; (void)count;
-    return -1;
+    if (fd < 0 || (count > 0 && !buf)) return -1;
+    if (count == 0) return 0;
+    int64_t n = ar_pal_write((intptr_t)fd, buf, (size_t)count);
+    return n < 0 ? -1 : ({int_c_ty})n;
 }}
 
 static {int_c_ty} ar_fs_close({int_c_ty} fd) {{
-    (void)fd;
-    return 0;
+    if (fd < 0) return 0;
+    return ar_pal_close_fd((intptr_t)fd) == 0 ? 0 : -1;
 }}
 
 static void ar_fs_read_all(ArStr path, uint8_t **out_buf, {uint_c_ty} *out_len, {uint_c_ty} *out_cap, {int_c_ty} *err) {{
@@ -309,10 +309,10 @@ static void ar_fs_readdir(ArStr path, uint8_t **out_buf, {uint_c_ty} *out_count,
         *out_buf = NULL; *out_count = 0; *out_cap = 0; *err = 8;
         return;
     }}
-#if !defined(_WIN32) || defined(__MINGW32__)
-    DIR *d = opendir(c_path);
+    int pal_err = 0;
+    ArPalDir *d = ar_pal_readdir_open(c_path, &pal_err);
     if (!d) {{
-        int e = errno;
+        int e = pal_err != 0 ? pal_err : errno;
         if (c_path != stack_buf) free(c_path);
         *out_buf = NULL; *out_count = 0; *out_cap = 0; *err = ar_map_errno(e);
         return;
@@ -322,87 +322,64 @@ static void ar_fs_readdir(ArStr path, uint8_t **out_buf, {uint_c_ty} *out_count,
     size_t descriptor_size = sizeof(void *) + sizeof({uint_c_ty});
     ArHostDirEntry *entries = (ArHostDirEntry *)malloc(entries_cap * sizeof(ArHostDirEntry));
     if (!entries) {{
-        closedir(d);
+        ar_pal_readdir_close(d);
         if (c_path != stack_buf) free(c_path);
         *out_buf = NULL; *out_count = 0; *out_cap = 0; *err = 8;
         return;
     }}
     size_t names_total_len = 0;
-    struct dirent *ent;
     int readdir_error = 0;
     for (;;) {{
-        errno = 0;
-        ent = readdir(d);
-        if (!ent) {{
+        ArPalDirEnt ent;
+        memset(&ent, 0, sizeof(ent));
+        int next = ar_pal_readdir_next(d, &ent, &pal_err);
+        if (next == 0) break;
+        if (next < 0) {{
             readdir_error = errno;
             break;
         }}
-        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
-        size_t nlen = strlen(ent->d_name);
+        size_t nlen = ent.name_len;
         if (nlen == SIZE_MAX || count == SIZE_MAX || names_total_len > SIZE_MAX - nlen) {{
+            free(ent.name);
             for (size_t j = 0; j < count; j++) free(entries[j].name);
             free(entries);
-            closedir(d);
+            ar_pal_readdir_close(d);
             if (c_path != stack_buf) free(c_path);
             *out_buf = NULL; *out_count = 0; *out_cap = 0; *err = 8;
             return;
         }}
-        uint8_t is_dir = 0;
-#ifdef DT_DIR
-        if (ent->d_type == DT_DIR) is_dir = 1;
-        else if (ent->d_type == DT_UNKNOWN) {{
-            char sub_path[4096];
-            snprintf(sub_path, sizeof(sub_path), "%s/%s", c_path, ent->d_name);
-            struct stat st;
-            if (stat(sub_path, &st) == 0 && S_ISDIR(st.st_mode)) is_dir = 1;
-        }}
-#else
-        char sub_path[4096];
-        snprintf(sub_path, sizeof(sub_path), "%s/%s", c_path, ent->d_name);
-        struct stat st;
-        if (stat(sub_path, &st) == 0 && S_ISDIR(st.st_mode)) is_dir = 1;
-#endif
         if (count == entries_cap) {{
             if (entries_cap > SIZE_MAX / 2 ||
                 entries_cap * 2 > SIZE_MAX / sizeof(ArHostDirEntry)) {{
+                free(ent.name);
                 for (size_t j = 0; j < count; j++) free(entries[j].name);
                 free(entries);
-                closedir(d);
+                ar_pal_readdir_close(d);
                 if (c_path != stack_buf) free(c_path);
                 *out_buf = NULL; *out_count = 0; *out_cap = 0; *err = 8;
                 return;
             }}
             size_t new_cap = entries_cap * 2;
-            ArHostDirEntry *next = (ArHostDirEntry *)realloc(entries, new_cap * sizeof(ArHostDirEntry));
-            if (!next) {{
+            ArHostDirEntry *grown = (ArHostDirEntry *)realloc(entries, new_cap * sizeof(ArHostDirEntry));
+            if (!grown) {{
+                free(ent.name);
                 for (size_t j = 0; j < count; j++) free(entries[j].name);
                 free(entries);
-                closedir(d);
+                ar_pal_readdir_close(d);
                 if (c_path != stack_buf) free(c_path);
                 *out_buf = NULL; *out_count = 0; *out_cap = 0; *err = 8;
                 return;
             }}
-            entries = next;
+            entries = grown;
             entries_cap = new_cap;
         }}
-        char *copy = (char *)malloc(nlen + 1);
-        if (!copy) {{
-            for (size_t j = 0; j < count; j++) free(entries[j].name);
-            free(entries);
-            closedir(d);
-            if (c_path != stack_buf) free(c_path);
-            *out_buf = NULL; *out_count = 0; *out_cap = 0; *err = 8;
-            return;
-        }}
-        memcpy(copy, ent->d_name, nlen);
-        copy[nlen] = '\0';
-        entries[count].name = copy;
+        entries[count].name = ent.name;
         entries[count].len = nlen;
-        entries[count].is_dir = is_dir;
+        entries[count].is_dir = ent.is_dir ? 1 : 0;
         count++;
         names_total_len += nlen;
     }}
-    closedir(d);
+    ar_pal_readdir_close(d);
     if (c_path != stack_buf) free(c_path);
     if (readdir_error != 0) {{
         for (size_t j = 0; j < count; j++) free(entries[j].name);
@@ -471,11 +448,323 @@ static void ar_fs_readdir(ArStr path, uint8_t **out_buf, {uint_c_ty} *out_count,
     *out_count = ({uint_c_ty})count;
     *out_cap = ({uint_c_ty})blob_len;
     *err = 0;
-#else
-    if (c_path != stack_buf) free(c_path);
-    *out_buf = NULL; *out_count = 0; *out_cap = 0; *err = 8;
+}}
+
+#if defined(__linux__)
+#include <sys/syscall.h>
 #endif
-}}"#
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+#if (defined(__APPLE__) && TARGET_OS_OSX) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__) || defined(__DragonFly__)
+#define AR_CAP_COMPONENT_ONLY 1
+#endif
+#if defined(__linux__) || defined(AR_CAP_COMPONENT_ONLY)
+#define AR_CAP_SUPPORTED 1
+#endif
+{win_cap}static bool ar_cap_path_valid(const uint8_t *path, {uint_c_ty} len, bool allow_dot) {{
+    if (!path || len == 0 || len >= 4096) return false;
+    if (allow_dot && len == 1 && path[0] == '.') return true;
+    size_t begin = 0;
+    for (size_t i = 0; i <= (size_t)len; ++i) {{
+        if (i < (size_t)len && path[i] == 0) return false;
+        if (i == (size_t)len || path[i] == '/') {{
+            size_t count = i - begin;
+            if (count == 0 || (count == 1 && path[begin] == '.') ||
+                (count == 2 && path[begin] == '.' && path[begin + 1] == '.')) return false;
+            begin = i + 1;
+        }}
+    }}
+#if defined(AR_CAP_COMPONENT_ONLY)
+    if (memchr(path, '/', (size_t)len)) return false;
+#endif
+    return true;
+}}
+static int ar_cap_open_beneath(int dir_fd, const char *path, int flags, unsigned mode) {{
+#if defined(__linux__) && defined(SYS_openat2)
+    if (dir_fd < 0) return -1;
+    struct {{ uint64_t flags, mode, resolve; }} how = {{
+        (uint64_t)(flags | O_CLOEXEC), (uint64_t)mode,
+        UINT64_C(0x08) | UINT64_C(0x04) | UINT64_C(0x02)
+    }};
+    return (int)syscall(SYS_openat2, dir_fd, path, &how, sizeof(how));
+#elif defined(AR_CAP_COMPONENT_ONLY)
+    if (dir_fd < 0 || !path || !*path || strchr(path, '/')) return -1;
+    int fd = openat(dir_fd, path, flags | O_NOFOLLOW | O_CLOEXEC, (mode_t)mode);
+    if (fd < 0) return -1;
+    if (flags & O_DIRECTORY) {{
+        struct stat metadata;
+        if (fstat(fd, &metadata) != 0 || !S_ISDIR(metadata.st_mode)) {{
+            close(fd);
+            return -1;
+        }}
+    }}
+    return fd;
+#else
+    (void)dir_fd; (void)path; (void)flags; (void)mode;
+    return -1; /* No weaker traversal fallback. */
+#endif
+}}
+static int ar_cap_parent(int dir_fd, char *path, char **leaf) {{
+    char *separator = strrchr(path, '/');
+    if (separator) {{
+        *separator = 0;
+        *leaf = separator + 1;
+    }} else {{
+        *leaf = path;
+    }}
+#if defined(AR_CAP_SUPPORTED)
+    return ar_cap_open_beneath(dir_fd, separator ? path : ".", O_RDONLY | O_DIRECTORY, 0);
+#else
+    (void)dir_fd;
+    return -1;
+#endif
+}}
+static {int_c_ty} ar_fs_dir_open(const uint8_t *path_ptr, {uint_c_ty} path_len) {{
+#if defined(AR_CAP_SUPPORTED)
+    if (!path_ptr || path_len == 0 || path_len >= 4096 || memchr(path_ptr, 0, (size_t)path_len)) return -1;
+    char stack_buf[4096];
+    memcpy(stack_buf, path_ptr, (size_t)path_len);
+    stack_buf[path_len] = 0;
+    return ({int_c_ty})open(stack_buf, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+#elif defined(_WIN32)
+    return ({int_c_ty})ar_cap_win_dir_open(path_ptr, (size_t)path_len);
+#else
+    (void)path_ptr; (void)path_len;
+    return -1;
+#endif
+}}
+static {int_c_ty} ar_fs_dir_openat({int_c_ty} dir_fd, const uint8_t *path_ptr, {uint_c_ty} path_len) {{
+#if defined(AR_CAP_SUPPORTED)
+    if (!ar_cap_path_valid(path_ptr, path_len, true)) return -1;
+    char path[4096]; memcpy(path, path_ptr, (size_t)path_len); path[path_len] = 0;
+    return ({int_c_ty})ar_cap_open_beneath((int)dir_fd, path, O_RDONLY | O_DIRECTORY, 0);
+#elif defined(_WIN32)
+    return ({int_c_ty})ar_cap_win_dir_openat((int64_t)dir_fd, path_ptr, (size_t)path_len);
+#else
+    (void)dir_fd; (void)path_ptr; (void)path_len;
+    return -1;
+#endif
+}}
+static {int_c_ty} ar_fs_openat({int_c_ty} dir_fd, const uint8_t *path_ptr, {uint_c_ty} path_len, bool read, bool write, bool create, bool truncate) {{
+#if defined(AR_CAP_SUPPORTED)
+    if (!ar_cap_path_valid(path_ptr, path_len, false) || (!read && !write) || ((create || truncate) && !write)) return -1;
+    char path[4096]; memcpy(path, path_ptr, (size_t)path_len); path[path_len] = 0;
+    int flags = (read && write) ? O_RDWR : (write ? O_WRONLY : O_RDONLY);
+    if (create) flags |= O_CREAT;
+    if (truncate) flags |= O_TRUNC;
+    return ({int_c_ty})ar_cap_open_beneath((int)dir_fd, path, flags, create ? 0666 : 0);
+#elif defined(_WIN32)
+    return ({int_c_ty})ar_cap_win_openat((int64_t)dir_fd, path_ptr, (size_t)path_len, read, write, create, truncate);
+#else
+    (void)dir_fd; (void)path_ptr; (void)path_len; (void)read; (void)write; (void)create; (void)truncate;
+    return -1;
+#endif
+}}
+static {int_c_ty} ar_fs_mkdirat({int_c_ty} dir_fd, const uint8_t *path_ptr, {uint_c_ty} path_len) {{
+#if defined(AR_CAP_SUPPORTED)
+    if (!ar_cap_path_valid(path_ptr, path_len, false)) return -1;
+    char path[4096]; memcpy(path, path_ptr, (size_t)path_len); path[path_len] = 0;
+    char *leaf = NULL;
+    int parent = ar_cap_parent((int)dir_fd, path, &leaf);
+    if (parent < 0) return -1;
+    int result = -1;
+    if (mkdirat(parent, leaf, 0777) == 0) result = ar_cap_open_beneath(parent, leaf, O_RDONLY | O_DIRECTORY, 0);
+    close(parent);
+    return ({int_c_ty})result;
+#elif defined(_WIN32)
+    return ({int_c_ty})ar_cap_win_mkdirat((int64_t)dir_fd, path_ptr, (size_t)path_len);
+#else
+    (void)dir_fd; (void)path_ptr; (void)path_len;
+    return -1;
+#endif
+}}
+static {int_c_ty} ar_fs_unlinkat({int_c_ty} dir_fd, const uint8_t *path_ptr, {uint_c_ty} path_len, bool is_dir) {{
+#if defined(AR_CAP_SUPPORTED)
+    if (!ar_cap_path_valid(path_ptr, path_len, false)) return -1;
+    char path[4096]; memcpy(path, path_ptr, (size_t)path_len); path[path_len] = 0;
+    char *leaf = NULL;
+    int parent = ar_cap_parent((int)dir_fd, path, &leaf);
+    if (parent < 0) return -1;
+    int result = unlinkat(parent, leaf, is_dir ? AT_REMOVEDIR : 0);
+    close(parent);
+    return ({int_c_ty})result;
+#elif defined(_WIN32)
+    return ({int_c_ty})ar_cap_win_unlinkat((int64_t)dir_fd, path_ptr, (size_t)path_len, is_dir);
+#else
+    (void)dir_fd; (void)path_ptr; (void)path_len; (void)is_dir;
+    return -1;
+#endif
+}}
+
+"#,
+            win_cap = include_str!("fs_cap_windows.c"),
+        );
+    }
+
+    pub(super) fn emit_net_runtime(&mut self, uint_c_ty: &str) {
+        let _ = writeln!(
+            &mut self.output,
+            r#"/* std.net host helpers. Socket syscalls live in the net PAL. */
+typedef struct ArUdpSlot {{
+    uint16_t generation;
+    intptr_t fd;
+}} ArUdpSlot;
+
+static ArUdpSlot *ar_udp_slots = NULL;
+static size_t ar_udp_slot_count = 0;
+static size_t ar_udp_slot_cap = 0;
+static size_t ar_udp_free_hint = 0; /* every slot below it holds a socket */
+static atomic_flag ar_udp_table_lock = ATOMIC_FLAG_INIT;
+
+#define AR_UDP_GEN_MASK 0x7FFFu
+#define AR_UDP_MAX_SLOTS 65536u
+
+static void ar_udp_lock_table(void) {{
+    while (atomic_flag_test_and_set_explicit(&ar_udp_table_lock, memory_order_acquire)) {{}}
+}}
+
+static void ar_udp_unlock_table(void) {{
+    atomic_flag_clear_explicit(&ar_udp_table_lock, memory_order_release);
+}}
+
+static int32_t ar_udp_pack(size_t index, uint16_t generation) {{
+    return (int32_t)((((uint32_t)generation & (uint32_t)AR_UDP_GEN_MASK) << 16) | (uint32_t)index);
+}}
+
+static int ar_udp_unpack(int32_t id, size_t *index_out, uint16_t *generation_out) {{
+    if (id < 0) return 0;
+    uint32_t raw = (uint32_t)id;
+    *index_out = (size_t)(raw & 0xFFFFu);
+    *generation_out = (uint16_t)((raw >> 16) & (uint32_t)AR_UDP_GEN_MASK);
+    return 1;
+}}
+
+static uint16_t ar_udp_bump_generation(uint16_t generation) {{
+    uint16_t next = (uint16_t)((generation + 1u) & AR_UDP_GEN_MASK);
+    return next == 0 ? 1u : next;
+}}
+
+static int ar_udp_reserve(void) {{
+    if (ar_udp_slot_count < ar_udp_slot_cap) return 1;
+    if (ar_udp_slot_cap >= AR_UDP_MAX_SLOTS) return 0;
+    size_t next = ar_udp_slot_cap == 0 ? 8u : ar_udp_slot_cap * 2u;
+    if (next > AR_UDP_MAX_SLOTS) next = AR_UDP_MAX_SLOTS;
+    ArUdpSlot *grown = (ArUdpSlot *)realloc(ar_udp_slots, next * sizeof(ArUdpSlot));
+    if (!grown) return 0;
+    for (size_t i = ar_udp_slot_cap; i < next; i++) {{
+        grown[i].generation = 0;
+        grown[i].fd = (intptr_t)-1;
+    }}
+    ar_udp_slots = grown;
+    ar_udp_slot_cap = next;
+    return 1;
+}}
+
+static intptr_t ar_udp_duplicate_fd(int32_t id) {{
+    size_t index = 0;
+    uint16_t generation = 0;
+    if (!ar_udp_unpack(id, &index, &generation)) return -1;
+    ar_udp_lock_table();
+    intptr_t fd = (intptr_t)-1;
+    if (index < ar_udp_slot_count && ar_udp_slots[index].generation == generation) {{
+        fd = ar_udp_slots[index].fd;
+    }}
+    intptr_t duplicate = fd != (intptr_t)-1 ? ar_pal_dup(fd) : (intptr_t)-1;
+    ar_udp_unlock_table();
+    return duplicate;
+}}
+
+static int32_t ar_net_udp_bind(const uint8_t *host_ptr, {uint_c_ty} host_len, int32_t port) {{
+    if (!host_ptr || host_len == 0 || port < 0 || port > 65535) return -1;
+    char host_buf[256];
+    if (host_len >= sizeof(host_buf) || memchr(host_ptr, 0, (size_t)host_len)) return -1;
+    memcpy(host_buf, host_ptr, (size_t)host_len);
+    host_buf[host_len] = '\0';
+
+    intptr_t fd = ar_pal_udp_bind(host_buf, port);
+    if (fd == (intptr_t)-1) return -1;
+
+    ar_udp_lock_table();
+    size_t slot = ar_udp_slot_count;
+    int reused = 0;
+    for (size_t i = ar_udp_free_hint; i < ar_udp_slot_count; i++) {{
+        if (ar_udp_slots[i].fd == (intptr_t)-1) {{
+            slot = i;
+            reused = 1;
+            break;
+        }}
+    }}
+    if (!reused) {{
+        if (ar_udp_slot_count >= AR_UDP_MAX_SLOTS || !ar_udp_reserve()) {{
+            ar_udp_unlock_table();
+            ar_pal_udp_close(fd);
+            return -1;
+        }}
+        slot = ar_udp_slot_count++;
+    }}
+    uint16_t generation = ar_udp_slots[slot].generation;
+    ar_udp_slots[slot].fd = fd;
+    ar_udp_free_hint = slot + 1;
+    ar_udp_unlock_table();
+    return ar_udp_pack(slot, generation);
+}}
+
+static int32_t ar_net_udp_send_to(int32_t id, const uint8_t *buf, {uint_c_ty} len, const uint8_t *host_ptr, {uint_c_ty} host_len, int32_t port) {{
+    if (id < 0 || !buf || !host_ptr || host_len == 0 || port < 0 || port > 65535) return -1;
+    intptr_t fd = ar_udp_duplicate_fd(id);
+    if (fd == (intptr_t)-1) return -1;
+
+    char host_buf[256];
+    if (host_len >= sizeof(host_buf) || memchr(host_ptr, 0, (size_t)host_len)) {{ ar_pal_udp_close(fd); return -1; }}
+    memcpy(host_buf, host_ptr, (size_t)host_len);
+    host_buf[host_len] = '\0';
+
+    intptr_t sent = ar_pal_udp_send(fd, buf, (size_t)len, host_buf, port);
+    ar_pal_udp_close(fd);
+    return sent < 0 ? -1 : (int32_t)sent;
+}}
+
+static int32_t ar_net_udp_recv_from(int32_t id, uint8_t *buf, {uint_c_ty} len, int32_t *port_out) {{
+    if (id < 0 || !buf || len == 0) return -1;
+    intptr_t fd = ar_udp_duplicate_fd(id);
+    if (fd == (intptr_t)-1) return -1;
+    int port = 0;
+    intptr_t recvd = ar_pal_udp_recv(fd, buf, (size_t)len, &port);
+    ar_pal_udp_close(fd);
+    if (recvd < 0) return -1;
+    if (port_out) *port_out = port;
+    return (int32_t)recvd;
+}}
+
+static void ar_net_udp_close(int32_t id) {{
+    size_t index = 0;
+    uint16_t generation = 0;
+    if (!ar_udp_unpack(id, &index, &generation)) return;
+    intptr_t fd = (intptr_t)-1;
+    ar_udp_lock_table();
+    if (index < ar_udp_slot_count
+        && ar_udp_slots[index].generation == generation
+        && ar_udp_slots[index].fd != (intptr_t)-1) {{
+        fd = ar_udp_slots[index].fd;
+        ar_udp_slots[index].fd = (intptr_t)-1;
+        ar_udp_slots[index].generation = ar_udp_bump_generation(generation);
+        if (index < ar_udp_free_hint) ar_udp_free_hint = index;
+    }}
+    ar_udp_unlock_table();
+    if (fd != (intptr_t)-1) ar_pal_udp_close(fd);
+}}
+
+static int32_t ar_net_dns_resolve(const uint8_t *name_ptr, {uint_c_ty} name_len, uint8_t *ip_buf, {uint_c_ty} ip_cap) {{
+    if (!name_ptr || name_len == 0 || !ip_buf || ip_cap == 0) return -1;
+    char name_buf[256];
+    if (name_len >= sizeof(name_buf) || memchr(name_ptr, 0, (size_t)name_len)) return -1;
+    memcpy(name_buf, name_ptr, (size_t)name_len);
+    name_buf[name_len] = '\0';
+    int n = ar_pal_dns_resolve(name_buf, (char *)ip_buf, (size_t)ip_cap);
+    return n < 0 ? -1 : (int32_t)n;
+}}
+"#
         );
     }
 }

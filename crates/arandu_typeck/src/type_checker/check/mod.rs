@@ -14,6 +14,7 @@ pub(crate) use validate::{validate_const_arguments, validate_const_result};
 
 pub use block::{check_block, check_block_tail};
 pub use condition::check_condition;
+pub(crate) use ctfe_block::check_thread_closure_block;
 pub use ctfe_block::{CtfeBlockType, check_ctfe_block};
 pub use ctfe_root::{
     CtfeCapture, CtfeInitialRoot, check_ctfe_root, check_ctfe_root_with_substitution,

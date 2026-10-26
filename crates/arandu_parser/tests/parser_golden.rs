@@ -231,6 +231,81 @@ fn parses_span_dump_fixture() {
 }
 
 #[test]
+fn parses_http_parser_realworld_fixture() {
+    assert_golden("http_parser_realworld");
+}
+
+#[test]
+fn parses_raytracer_math_realworld_fixture() {
+    assert_golden("raytracer_math_realworld");
+}
+
+#[test]
+fn parses_elf_binary_parser_fixture() {
+    assert_golden("elf_binary_parser");
+}
+
+#[test]
+fn parses_sha256_hash_realworld_fixture() {
+    assert_golden("sha256_hash_realworld");
+}
+
+#[test]
+fn parses_lz_compression_realworld_fixture() {
+    assert_golden("lz_compression_realworld");
+}
+
+#[test]
+fn parses_kandiru_json_ast_realworld_fixture() {
+    assert_golden("kandiru_json_ast_realworld");
+}
+
+#[test]
+fn parses_aratu_log_store_realworld_fixture() {
+    assert_golden("aratu_log_store_realworld");
+}
+
+#[test]
+fn parses_katu_walker_realworld_fixture() {
+    assert_golden("katu_walker_realworld");
+}
+
+#[test]
+fn parses_poraque_hexdump_realworld_fixture() {
+    assert_golden("poraque_hexdump_realworld");
+}
+
+#[test]
+fn parses_sarapo_status_realworld_fixture() {
+    assert_golden("sarapo_status_realworld");
+}
+
+#[test]
+fn parses_kururu_camera_realworld_fixture() {
+    assert_golden("kururu_camera_realworld");
+}
+
+#[test]
+fn parses_stdlib_vector_algorithm_fixture() {
+    assert_golden("stdlib_vector_algorithm");
+}
+
+#[test]
+fn parses_stdlib_ring_buffer_fixture() {
+    assert_golden("stdlib_ring_buffer");
+}
+
+#[test]
+fn parses_concurrency_thread_pool_fixture() {
+    assert_golden("concurrency_thread_pool");
+}
+
+#[test]
+fn parses_atomic_lock_free_stack_fixture() {
+    assert_golden("atomic_lock_free_stack");
+}
+
+#[test]
 fn parses_trailing_commas_in_named_imports_and_generics() {
     assert_parses_source(
         "module tests.inline\nfrom ui import { Button, }\ntype Box<T,> = T\nfunc id<T,>(value: T): T { return value; }\n",

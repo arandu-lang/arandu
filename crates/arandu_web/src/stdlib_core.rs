@@ -28,6 +28,10 @@ pub const CORE_MODULES: &[(&str, &str)] = &[
         include_str!("../../../stdlib/core/cmp.aru"),
     ),
     (
+        "stdlib/core/decimal.aru",
+        include_str!("../../../stdlib/core/decimal.aru"),
+    ),
+    (
         "stdlib/core/fixed.aru",
         include_str!("../../../stdlib/core/fixed.aru"),
     ),
@@ -60,6 +64,10 @@ pub const CORE_MODULES: &[(&str, &str)] = &[
         include_str!("../../../stdlib/core/marker.aru"),
     ),
     (
+        "stdlib/core/math.aru",
+        include_str!("../../../stdlib/core/math.aru"),
+    ),
+    (
         "stdlib/core/mem.aru",
         include_str!("../../../stdlib/core/mem.aru"),
     ),
@@ -88,6 +96,10 @@ pub const CORE_MODULES: &[(&str, &str)] = &[
         include_str!("../../../stdlib/core/slice.aru"),
     ),
     (
+        "stdlib/core/simd.aru",
+        include_str!("../../../stdlib/core/simd.aru"),
+    ),
+    (
         "stdlib/core/str.aru",
         include_str!("../../../stdlib/core/str.aru"),
     ),
@@ -96,7 +108,7 @@ pub const CORE_MODULES: &[(&str, &str)] = &[
 /// Pre-register all freestanding core library modules in the Salsa database.
 pub fn register_embedded_core(db: &mut DatabaseImpl) {
     for (path, content) in CORE_MODULES {
-        let file = db.new_file((*path).to_string(), (*content).to_string());
+        let file = db.new_stdlib_file((*path).to_string(), (*content).to_string());
         if let Some(short) = path.strip_prefix("stdlib/") {
             db.register_source_file(short.to_string(), file);
             db.register_source_file(format!("std/{short}"), file);

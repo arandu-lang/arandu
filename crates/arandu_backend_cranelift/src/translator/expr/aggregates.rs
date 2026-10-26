@@ -1,8 +1,7 @@
 //! Aggregate construction and member/index access for structs, tuples, and arrays.
 
-use arandu_semantics::amir::AmirOperand;
-use arandu_semantics::layout::StructLayoutProvider;
-use arandu_semantics::passes::type_checker::types::{ArType, Primitive, is_vec_type};
+use arandu_middle::amir::AmirOperand;
+use arandu_middle::types::{ArType, Primitive, is_vec_type};
 use cranelift_codegen::ir::{InstBuilder, Type, Value};
 
 use super::super::FunctionTranslator;
@@ -10,17 +9,13 @@ use super::super::FunctionTranslator;
 impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
     pub(super) fn translate_struct_literal(
         &mut self,
-        struct_symbol: &arandu_semantics::SymbolId,
-        fields: &[(arandu_semantics::SmolStr, AmirOperand)],
+        struct_symbol: &arandu_middle::SymbolId,
+        fields: &[(arandu_middle::SmolStr, AmirOperand)],
         expected_ar_type: Option<&ArType>,
     ) -> Value {
         let pointer_width = self.ptr_type.bytes() as u64;
         let struct_ty = expected_ar_type.cloned().unwrap_or_else(|| {
-            arandu_semantics::types::ArType::named(
-                *struct_symbol,
-                &[],
-                &self.type_info.type_interner,
-            )
+            arandu_middle::types::ArType::named(*struct_symbol, &[], self.type_info.type_interner())
         });
         let layout = self.checked_layout(&struct_ty);
 
@@ -32,7 +27,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         for (i, (name, op)) in fields.iter().enumerate() {
             let field_idx = self
                 .type_info
-                .get_struct_fields_for_type(&struct_ty, &self.type_info.type_interner)
+                .get_struct_fields_for_type(&struct_ty, self.type_info.type_interner())
                 .and_then(|m| m.get(name.as_str()))
                 .map(|f| f.index)
                 .unwrap_or(i);
@@ -52,7 +47,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     ptr_val,
                     offset + pointer_width as i32,
                 );
-            } else if matches!(op_ty, ArType::Slice(_)) {
+            } else if matches!(op_ty, ArType::Slice(_) | ArType::MutSlice(_)) {
                 let (elem_ptr, elem_len) = self.translate_slice_operand(op);
                 self.builder.ins().store(
                     cranelift_codegen::ir::MemFlagsData::new(),
@@ -67,20 +62,20 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     offset + pointer_width as i32,
                 );
             } else {
-                let field_ty = arandu_semantics::layout::instantiated_field_type(
+                let field_ty = arandu_middle::layout::instantiated_field_type(
                     &struct_ty,
                     name.as_str(),
-                    &self.type_info.type_interner,
+                    self.type_info.type_interner(),
                     self.type_info,
                 )
-                .map(|id| self.type_info.type_interner.resolve(id))
+                .map(|id| self.type_info.type_interner().resolve(id))
                 .unwrap_or_else(|| {
                     let field_defs = self
                         .type_info
-                        .get_struct_fields_for_type(&struct_ty, &self.type_info.type_interner);
+                        .get_struct_fields_for_type(&struct_ty, self.type_info.type_interner());
                     field_defs
                         .and_then(|m| m.get(name.as_str()))
-                        .map(|f| self.type_info.type_interner.resolve(f.ty))
+                        .map(|f| self.type_info.type_interner().resolve(f.ty))
                         .unwrap_or_else(|| self.get_operand_ar_type(op))
                 });
                 let field_layout = self.checked_layout(&field_ty);
@@ -164,10 +159,10 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 let elem_ty = match &tuple_ty {
                     ArType::Tuple(tids) => self
                         .type_info
-                        .type_interner
+                        .type_interner()
                         .type_args(*tids)
                         .get(i)
-                        .map(|&tid| self.type_info.type_interner.resolve(tid))
+                        .map(|&tid| self.type_info.type_interner().resolve(tid))
                         .unwrap_or(ArType::Error),
                     _ => ArType::Error,
                 };
@@ -337,15 +332,15 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         let ptr_val = self.translate_operand(base, Some(self.ptr_type));
         let base_ty = match base {
             AmirOperand::Copy(temp_id) | AmirOperand::Move(temp_id) => self.temp_ar_ty(*temp_id),
-            _ => arandu_semantics::types::ArType::Error,
+            _ => arandu_middle::types::ArType::Error,
         };
         // Unwrap ptr / ref / nullable so layout sees the struct/tuple payload.
         // `shared`/`mut self` formals are `&T`/`&mut T` (pointer-sized SSA).
         let struct_ty = match base_ty {
-            arandu_semantics::types::ArType::Ptr(inner)
-            | arandu_semantics::types::ArType::Ref(inner)
-            | arandu_semantics::types::ArType::RefMut(inner)
-            | arandu_semantics::types::ArType::Nullable(inner) => {
+            arandu_middle::types::ArType::Ptr(inner)
+            | arandu_middle::types::ArType::Ref(inner)
+            | arandu_middle::types::ArType::RefMut(inner)
+            | arandu_middle::types::ArType::Nullable(inner) => {
                 self.type_info.resolve_type_id(inner)
             }
             other => other,
@@ -366,14 +361,14 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             .unwrap_or_else(|| match &struct_ty {
                 ArType::Tuple(elems) => self
                     .type_info
-                    .type_interner
+                    .type_interner()
                     .type_args(*elems)
                     .get(field)
                     .map(|tid| self.is_inline_aggregate_ty(&self.type_info.resolve_type_id(*tid)))
                     .unwrap_or(false),
                 ArType::Named(_, _) => self
                     .type_info
-                    .get_struct_fields_for_type(&struct_ty, &self.type_info.type_interner)
+                    .get_struct_fields_for_type(&struct_ty, self.type_info.type_interner())
                     .and_then(|fields| fields.fields.iter().find(|f| f.index == field))
                     .map(|f| self.is_inline_aggregate_ty(&self.type_info.resolve_type_id(f.ty)))
                     .unwrap_or(false),
@@ -408,9 +403,10 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         &mut self,
         base: &AmirOperand,
         index: &AmirOperand,
+        in_bounds: bool,
         expected_ty: Option<Type>,
     ) -> Value {
-        let (target_ptr, elem_ty) = self.translate_index_address(base, index);
+        let (target_ptr, elem_ty) = self.translate_index_address(base, index, in_bounds);
         if self.is_inline_aggregate_ty(&elem_ty) {
             return target_ptr;
         }
@@ -422,12 +418,25 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         )
     }
 
+    fn trap_unless_index_below(&mut self, index: Value, len: Value) {
+        let is_oob = self.builder.ins().icmp(
+            cranelift_codegen::ir::condcodes::IntCC::UnsignedGreaterThanOrEqual,
+            index,
+            len,
+        );
+        self.builder
+            .ins()
+            .trapnz(is_oob, cranelift_codegen::ir::TrapCode::unwrap_user(1));
+    }
+
     /// Shared bounds-checked address calculation for scalar, aggregate and
     /// fat-string element loads. The latter needs both target ABI words.
+    /// `in_bounds` (proven by AMIR) omits the check.
     pub(in crate::translator) fn translate_index_address(
         &mut self,
         base: &AmirOperand,
         index: &AmirOperand,
+        in_bounds: bool,
     ) -> (Value, ArType) {
         let mut ptr_val = self.translate_operand(base, Some(self.ptr_type));
         let mut idx_val = self.translate_operand(index, Some(self.ptr_type));
@@ -443,7 +452,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             ArType::Ptr(inner) => self.type_info.resolve_type_id(*inner),
             ArType::Ref(inner) | ArType::RefMut(inner)
                 if base_ty
-                    .slice_abi_element(&self.type_info.type_interner)
+                    .slice_abi_element(self.type_info.type_interner())
                     .is_some() =>
             {
                 self.type_info.resolve_type_id(*inner)
@@ -452,15 +461,10 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         };
         let elem_ty = match &deref_ty {
             ArType::Array(len, elem) => {
-                let len_val = self.builder.ins().iconst(self.ptr_type, *len as i64);
-                let is_oob = self.builder.ins().icmp(
-                    cranelift_codegen::ir::condcodes::IntCC::UnsignedGreaterThanOrEqual,
-                    idx_val,
-                    len_val,
-                );
-                self.builder
-                    .ins()
-                    .trapnz(is_oob, cranelift_codegen::ir::TrapCode::unwrap_user(1));
+                if !in_bounds {
+                    let len_val = self.builder.ins().iconst(self.ptr_type, *len as i64);
+                    self.trap_unless_index_below(idx_val, len_val);
+                }
                 self.type_info.resolve_type_id(*elem)
             }
             ArType::ConstArray(_, elem) => {
@@ -468,32 +472,22 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 let elem_ty = self.type_info.resolve_type_id(*elem);
                 let elem_layout = self.checked_layout(&elem_ty);
                 let len = arr_layout.size.checked_div(elem_layout.size).unwrap_or(0);
-                let len_val = self.builder.ins().iconst(self.ptr_type, len as i64);
-                let is_oob = self.builder.ins().icmp(
-                    cranelift_codegen::ir::condcodes::IntCC::UnsignedGreaterThanOrEqual,
-                    idx_val,
-                    len_val,
-                );
-                self.builder
-                    .ins()
-                    .trapnz(is_oob, cranelift_codegen::ir::TrapCode::unwrap_user(1));
+                if !in_bounds {
+                    let len_val = self.builder.ins().iconst(self.ptr_type, len as i64);
+                    self.trap_unless_index_below(idx_val, len_val);
+                }
                 elem_ty
             }
-            ArType::Slice(elem) => {
-                let len_val = self.builder.ins().load(
-                    self.ptr_type,
-                    cranelift_codegen::ir::MemFlagsData::new(),
-                    ptr_val,
-                    self.ptr_type.bytes() as i32,
-                );
-                let is_oob = self.builder.ins().icmp(
-                    cranelift_codegen::ir::condcodes::IntCC::UnsignedGreaterThanOrEqual,
-                    idx_val,
-                    len_val,
-                );
-                self.builder
-                    .ins()
-                    .trapnz(is_oob, cranelift_codegen::ir::TrapCode::unwrap_user(1));
+            ArType::Slice(elem) | ArType::MutSlice(elem) => {
+                if !in_bounds {
+                    let len_val = self.builder.ins().load(
+                        self.ptr_type,
+                        cranelift_codegen::ir::MemFlagsData::new(),
+                        ptr_val,
+                        self.ptr_type.bytes() as i32,
+                    );
+                    self.trap_unless_index_below(idx_val, len_val);
+                }
                 ptr_val = self.builder.ins().load(
                     self.ptr_type,
                     cranelift_codegen::ir::MemFlagsData::new(),
@@ -510,7 +504,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     0,
                 );
                 self.type_info
-                    .type_interner
+                    .type_interner()
                     .type_args(*args)
                     .first()
                     .copied()

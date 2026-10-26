@@ -1,8 +1,7 @@
 # Arandu backend contract v0.1
 
 **Status:** S1-C contract; audited 2026-08-20.
-**Scope:** the public boundary from validated AMIR to C source, host JIT code,
-or a host-native AOT object.
+**Scope:** the boundary from validated AMIR to C source, host JIT/native AOT, core-Wasm/component emission, and the experimental direct LLVM backend; each surface has its own support limits. eBPF/SPIR-V remain proposals.
 
 This document is intentionally conservative. A green frontend test means that a
 program reaches AMIR; it does not automatically promote every runtime facility,
@@ -22,16 +21,82 @@ require ABI, CPU, object format, system headers, libraries, and linker choices.
 Arandu v0.1 models only the layout subset below. Consequently, `ptr4` and `ptr8`
 are layout profiles, not target triples and not cross-toolchain configurations.
 
-| Profile | Pointer / `int` | `float` | `i64` / `f64` ABI alignment | Contract |
+| Profile | Pointer / `isize` / `usize` | `float` | `i64` / `f64` ABI alignment | Contract |
 |---|---:|---:|---:|---|
 | `host` | host width | IEEE f64 | host profile | Required for C ↔ Cranelift parity. |
 | `ptr4` | 4 bytes | IEEE f64 | 8 bytes | Generic ILP32-style layout model; emit-only and experimental. |
 | `ptr8` | 8 bytes | IEEE f64 | 8 bytes | Generic LP64-style layout model; emit-only unless it equals the host. |
 | `i686` | 4 bytes | IEEE f64 | 4 bytes | i686 SysV data-layout model; emit-only and tested structurally. |
 
+`int`/`uint` are fixed i32/u32 in every profile; pointer-sized integers are
+`isize`/`usize`. `float` follows TargetInfo/DataLayout; the table describes the
+currently listed profiles, not a universal f64 assumption for future targets.
+Explicit target identity and layout validation exist, but a layout profile is
+not a complete native cross-toolchain or a published SDK.
+
 All profiles reject objects at or above the positive `isize` bound of the
 modeled address space. Layout arithmetic is checked and a failure returns a
 typed diagnostic before a successful artifact is exposed.
+
+### Backend inputs and crate boundary
+
+`CodegenBackend::compile` receives the validated `AmirProgram`, the
+`SymbolTable` and a `&dyn CodegenTypeContext`. The contract lives in
+`arandu_middle::type_context` in two layers. `AmirTypeContext` extends
+`StructLayoutProvider` with the facts AMIR passes read: the type interner, enum
+tags and payloads, borrow paths, return-borrow summaries, explicit references
+and `@Destructor` instances. `CodegenTypeContext` extends it with target
+identity and data layout, declaration types, effects, `@Destructor` methods and
+concrete field tables. Typeck implements both for `TypeInfo`; no AMIR pass or
+backend names `TypeInfo` or any front-end type. Instance symbol names come from
+`arandu_middle::symbol_mangling`, and AMIR analyses (liveness, reachability,
+static data, scratch storage) from `arandu_mir`.
+
+Every `arandu_*` crate a backend reaches, directly or transitively, is one of
+`arandu_base`, `arandu_codegen`, `arandu_diagnostics`, `arandu_middle`,
+`arandu_mir`, `arandu_runtime` and `arandu_testing_contract`; `xtask
+check-architecture` walks the normal-dependency graph and reports the shortest
+path to any other crate. An edit to the lexer, parser, resolve, typeck or
+lowering therefore never rebuilds a backend. This holds because:
+
+- `arandu_middle` is AST-free. Vocabulary shared with the syntax (`Span`,
+  `Visibility`, `AbiKind`, `LayoutQuery`, `char_literal`) lives in
+  `arandu_base::lang`; AST type lowering lives in typeck; operator lowering
+  lives in `arandu_semantics`; `ResolvedNames`/`ResolutionResult`, keyed by AST
+  nodes, live in `arandu_resolve`.
+- `arandu_mir` holds AMIR passes and analyses only. HIR→AMIR lowering, which
+  needs the concrete `TypeCheckResult`, lives in
+  `arandu_semantics::passes::lower_amir`.
+
+Tests may still drive the whole front end through dev-dependencies.
+
+### Index bounds
+
+Every backend traps on an out-of-bounds index into an array or slice (`Vec`
+and raw pointers are unchecked), both for `IndexAccess` values and for
+`AmirProjection::Index` places; LLVM matches C, Cranelift and Wasm with an
+`icmp uge` and `llvm.trap`. A range index `base[start..end]` (or `..=`) on an
+array or slice lowers to `SliceSubslice` after AMIR checks that a signed start
+is nonnegative, `start <= end` and `end` fits the length; a failed check
+reaches `Unreachable`, which every backend lowers to a trap. A range index on
+other bases or through a range value is reported as unsupported.
+`AmirRvalue::IndexAccess::in_bounds` lets a backend omit the check, and DCE
+keeps every unproven dynamic index even when its value is unused. Lowering always clears it; only the AMIR
+`bounds_check_elim` pass sets it, when a dominating branch proved
+`index < len(slice)` on unsigned single-definition values of the same slice.
+Integer `+`, `-` and `*` wrap, so the pass never derives a fact through
+arithmetic: `pos + n <= len` leaves the check on `slice[pos + k]` in place.
+
+### Float text
+
+`ToStr` and interpolation of `f64` follow the runtime's `format_f64_v01`:
+`nan`, `inf`/`-inf`, integral values below 1e15 as integers (`-0.0` is `0`),
+and otherwise the shortest decimal that reads back as the same value, in fixed
+notation (Rust's `Display`). The C runtime finds those digits by taking the
+first `%.Ne` that `strtod` round-trips. Wasm matches the special values and
+integral cases and prints up to 15 significant digits with trailing zeros
+removed, which agrees with the runtime whenever the shortest round-trip form
+fits in 15 digits; values that need 16 or 17 (`0.1 + 0.2`) remain open work.
 
 ### Temporary storage and bounded inlining
 
@@ -82,6 +147,16 @@ when that local has no other accesses; shared locals retain their write via
 boundaries. Structured bodies explicitly reject implicit fallthrough, including
 functions whose only return occurs inside a tail-recursion loop.
 
+Wasm landing scopes must nest even when forward edges form overlapping
+diamonds. Openings are hoisted across crossing intervals and loop exits;
+emission reports an ICE if a landing would skip its CFG block or a successor
+has no active label. Conditional edge arguments are copied only on their own
+edge, after testing the condition. A dereferenced aggregate reference copies
+the complete inline value into independent storage, including nested arrays;
+its first field is never treated as a pointer to the value. Decimal parsing,
+streaming hash snapshots and the shared projection corpus exercise these
+contracts in a real Wasm runtime.
+
 The checked O2 entrypoint scalarizes nonescaping Copy record/tuple locals with
 scalar fields. Partial stores and joins remain ordinary scalar place operations;
 aggregate loads capture the fields at the original load point, preserving Copy
@@ -126,20 +201,105 @@ or 15–30% runtime speedup is promised.
 
 ### Backend and platform matrix
 
-| Capability | C backend | Cranelift backend |
-|---|---|---|
-| Product | One GNU C translation unit | JIT module or relocatable native object |
-| Execution model | External compiler and linker | Host JIT; host AOT uses a native linker and packaged static runtime |
-| Target selection | Explicit `DataLayout`; no triple | Explicit Cranelift triple; public build selects a baseline host ISA |
-| Cross-target status | Source emission only; caller supplies matching compiler, flags, sysroot, libc/runtime, and linker | Unsupported |
-| C dialect/toolchain | GCC or Clang GNU extensions; MSVC is unsupported | Not applicable |
-| Validated CI hosts | Host parity on the S0 Linux gate; install smoke on Linux and macOS | Object structure/determinism locally; installed native build smoke on release hosts |
-| Invalid AMIR | Shared validator runs before emission | Shared validator runs before JIT mutation |
-| Backend failure | `Err(Diagnostic)`; no successful partial source | `Err(Diagnostic)`; no successful partial module |
+| Capability | C backend | Cranelift backend | LLVM experimental |
+|---|---|---|---|
+| Product | One GNU C translation unit | JIT module or relocatable native object | LLVM IR text emitted directly from AMIR |
+| Execution model | External compiler and linker | Host JIT; host AOT uses a native linker and packaged static runtime | IR emission; experimental `run -b llvm` and `build -b llvm` via `clang` + packaged runtime (host only) |
+| Target selection | Explicit `DataLayout`; no triple | Explicit Cranelift triple; public build selects a baseline host ISA | Host target/layout only; no target configuration |
+| Cross-target status | Source emission only; caller supplies matching compiler, flags, sysroot, libc/runtime, and linker | Unsupported | Unsupported; only the host target/layout is accepted |
+| C dialect/toolchain | GCC or Clang GNU extensions; MSVC is unsupported | Not applicable | Pure Rust emission; external LLVM tools only to verify/execute |
+| Validated CI hosts | Host parity on the S0 Linux gate; install smoke on Linux and macOS | Object structure/determinism locally; installed native build smoke on release hosts | Local scalar/aggregate/vector/atomic/trap lowering smoke only |
+| Invalid AMIR | Shared validator runs before emission | Shared validator runs before JIT mutation | Shared validator runs before emission |
+| Backend failure | `Err(Diagnostic)`; no successful partial source | `Err(Diagnostic)`; no successful partial module | `Err(Diagnostic)`; no successful partial IR |
 
-Windows builds are locally supported by the Rust workspace, but Windows backend
-Gold requires a dedicated mandatory CI runner and runtime campaign. Until that
-exists, this contract does not claim Windows backend Gold.
+The initial `arandu_backend_llvm` experiment is a direct AMIR-to-LLVM-IR
+lowering, not a supported production target. It covers scalars, pointers,
+structs, tuples, arrays, basic slice descriptors, 128-bit SIMD vectors,
+atomics, primitive `StringInterp`/`ToStr`, and GenRef ops (`GenInsert`/
+`GenGet`/`GenSet`/`GenUpsert`/`GenRemove`, including `std.alloc.gen_arena`).
+Some enums and unfinished Named layouts still return an explicit diagnostic.
+It emits `nonnull` on reference parameters and `nounwind` on definitions, but
+no scoped alias metadata. Host products are available through `arandu
+emit-llvm`, experimental `arandu run -b llvm`, and `arandu build -b llvm`
+(requires `clang` and the packaged runtime). The current candidate branch also
+contains experimental freestanding products for `thumbv6m-none-eabi`,
+`thumbv7em-none-eabihf`, and `riscv32imc-unknown-none-elf`: LLVM IR,
+relocatable object, static library, or user-scripted ELF. These products do not
+imply a supplied chip memory map, startup code, or freestanding `std`;
+`std.thread` and `std.fs` diagnose T099 on bare-metal targets. Their CI and
+release promotion remain pending. `lli` does not link the host runtime, and
+`run -b llvm` refuses it instead of executing unresolved IR.
+
+Emission is demand-driven, which keeps freestanding IR honest: a `declare` is
+materialized only when a body actually references the symbol, a stack slot
+exists only for an AMIR local whose address is taken (`is_memory`) or for a
+multi-assigned temp, and an assigned value is never copied through
+`select i1 true, v, v`: an SSA temp aliases it and a stack-slot temp stores it
+directly. A module that needs no runtime
+helper therefore emits no declarations at all. `arandu_backend_llvm/tests/
+direct_ir.rs` asserts these invariants structurally.
+
+Linkage is equally explicit: a definition is `internal` unless the source
+marked it `@Export` (or it is `main`). The annotation is the single permission
+to publish a flat symbol, so an unannotated function never leaks a global
+symbol into the object file and cannot collide with C by accident. On a
+freestanding target the backend additionally proves the exported path is
+self-contained: host runtime symbols (`ar_rt_*`, `ar_jit_*`, `ar_gen_*`,
+`ar_co_*`, `ar_str_concat`, `memcmp`) demanded while emitting a body are
+attributed to that function, the call graph is closed transitively, and any
+reachable requirement aborts compilation with `T049` instead of leaving an
+undefined reference for the linker to discover.
+
+A `@Export` signature is a C ABI contract, so aggregates are marshalled at
+lane granularity rather than passed as Arandu values:
+`arandu_middle::layout::export_abi` classifies a type for the target's family
+(System V AMD64, Windows x64, AAPCS64, AAPCS32 soft/hard-float, RISC-V ILP32)
+into integer/float lanes with byte offsets, `byval`, or `sret`. The definition
+spills lanes into a stack buffer at those offsets and the body consumes one
+aggregate value; every in-language call to an exported function marshals the
+same way, so the two sides cannot drift. Lane loads and stores use `align 1`,
+which is always valid and never claims an alignment the lane type lacks. A
+target without a classifier rejects by-value aggregates (`T049`) instead of
+applying the host rules. `--emit=header` renders the same types through the
+same `LayoutEngine`, including `_Static_assert` on size, alignment and field
+offsets; the CLI suite compiles that header with clang, links it against the
+Arandu object and runs it. The header lives in `arandu_ffi` and takes only
+`TypeInfo` plus the symbol table, so it describes the object regardless of the
+backend that will emit it; its pointer width comes from the requested target,
+which is why `--emit=header --target=thumbv6m-none-eabi` asserts
+`sizeof(void *) == 4`. Type mapping itself is a single function,
+`ffi_type_of`, shared by `@Export` validation and the header: a type is
+exportable exactly when the header can spell it. C is a flat namespace, so the
+header also rejects exported type names that would redeclare `AranduStr`,
+`AranduSlice*` or `AranduMutSlice*`, and two distinct types competing for one C
+name.
+A `Result<T, E>` return is not an aggregate at the boundary: the AMIR pass
+`lower_export_status` rewrites the exported function into `E f(.., T *out)`,
+where `Ok` stores the payload and returns status `0` and `Err(e)` returns `e`.
+The rewrite is all-or-nothing — the function is left untouched and `T049` is
+reported when `E` is not a fixed-width integer, when a `return` does not
+construct `Ok`/`Err` directly, when an Arandu-level caller would keep the
+sum-type signature, or when a `@Destructor` returns `Result`. Because the pass
+runs on AMIR, every backend sees the same status shape and `--emit=header`
+derives the out-parameter from the same signature instead of from a second
+rule.
+Differential smith
+fuzzing covers Cranelift↔LLVM via `synthesized-llvm` and `synthesized-all`
+(clang + packaged runtime; skips known experimental emission gaps). EMI also
+exercises LLVM on the interpolation / GenArena / string-lifecycle fixtures.
+See [RFC 0031](rfcs/0031-llvm-mlir-backend-and-scoped-noalias-vectorization.md).
+
+The published 0.1.10 SDK was installed and exercised by native release jobs on
+Windows x86-64 MSVC, Linux x86-64 and macOS ARM64; see the
+[release evidence](releases/0.1.10.md). This covers the executed SDK/VSIX and
+native-build flows. It does not establish complete C dialect, async, parallel,
+FFI or freestanding parity on every host. MSVC native linking is distinct from
+compiling GNU C backend output with MSVC.
+
+Wasm is an implemented third backend. Core emission, WIT/component adapters
+and execution have their own corpus and Canonical ABI limits in
+[RFC 0014](rfcs/0014-native-wasm-component-model-and-runtime.md). The two native
+columns above are not an inventory excluding Wasm.
 
 ### Type and representation matrix
 
@@ -148,14 +308,14 @@ exists, this contract does not claim Windows backend Gold.
 | `bool`, bytes, chars, fixed integers | fixed-width scalar | Supported | Supported |
 | `int`, `uint` | fixed 32-bit scalar | Supported by selected layout | `I32` |
 | `isize`, `usize` | target pointer-width scalar | Supported by selected layout | Supported at host width |
-| `float`, `f32`, `f64` | IEEE scalar; language `float` is f64 | Supported | Supported |
+| `float`, `f32`, `f64` | IEEE scalar; `float` uses TargetInfo.float_size, explicit types retain their widths | Supported | Supported |
 | pointers, references, borrows | pointer plus AMIR ownership rules | Supported after borrow lowering | Supported after borrow lowering |
-| arrays, slices, `str` | inline array or `{ptr,len}` fat pointer | Supported; target layout applies | Supported on host layout |
+| arrays, slices, `str` | inline array or `{ptr,len}` fat pointer; host/`extern "C"` calls flatten fat `str`/slice to separate `ptr`+`len` slots (Cranelift and LLVM) | Supported; target layout applies | Supported on host layout |
 | tuples and structs | ordered fields plus ABI padding | Supported | Supported |
-| enums, `Option`, `Result` | pointer-width tag plus payload | Supported | Supported |
+| enums, `Option`, `Result` | target-derived discriminant/payload or admitted niche representation | Supported | Supported |
 | functions and `extern "C"` | declared ABI boundary | Partial: caller must provide compatible symbols | Partial: only registered host/runtime symbols are linkable |
 | allocation and `free` | libc/runtime calls | Hosted runtime only | Host runtime only |
-| string interpolation / primitive `ToStr` | runtime helpers | Supported for primitives and `str` | Supported for primitives and `str` |
+| string interpolation / primitive `ToStr` | runtime helpers | Supported for primitives and `str` | Supported for primitives and `str` (LLVM experimental matches host Cranelift on the m09 fixture) |
 | user-defined formatting | no stable ABI yet | Unsupported | Unsupported |
 | async/await | current ready/poll runtime model | Partial/experimental | Partial/experimental host runtime |
 | OS, sockets, supervisor, generational runtime | runtime-specific symbols | Partial; not a freestanding contract | Experimental host implementation |
@@ -294,6 +454,43 @@ reallocation validates supported alignment and arithmetic before writing.
 The [RFC](./rfcs/0027-zero-bloat-binary-diet-and-on-demand-runtime.md) defines
 the scope and validation. No absolute executable size or freestanding support
 is inferred from the profile.
+
+### Platform knowledge, PAL, and linker profiles
+
+`TargetSpec` in `arandu_middle` is the only list of system libraries. Host
+linking, C tests, LLVM execution, and the smith oracles ask
+`TargetSpec::for_host()` for `cc_link_args()`, `math_libraries()`,
+`runtime_system_libs()`, `msvc_runtime_libs()`, and `msvc_rustc_link_args()`.
+A new operating system changes that table once. Tests do not embed `-lm`,
+`-lpthread`, or `bcrypt.lib`.
+
+Generated filesystem, environment, monotonic time, sleep, yield, and native
+thread handles call `ar_pal_*`. The `#ifdef` branches for those operations live
+in the platform abstraction layer. Windows directory listing, including MinGW,
+uses `FindFirstFileW` and `FindNextFileW`, so the translation unit does not
+depend on `dirent.h`. Socket code is a separate net PAL emitted only when
+`ar_net_*` is live, and it includes `winsock2.h` before `windows.h`. UDP bind
+and send resolve the host with `getaddrinfo` (`AF_UNSPEC`), so hostnames and
+IPv6 are accepted. The C socket table grows past 64 entries and packs a
+generation into the handle; a closed id is not reused as the same integer.
+Host names longer than 255 bytes stay rejected. `cl.exe`
+still does not compile the GNU C dialect of user code. Clang or GCC does,
+including Clang targeting the MSVC ABI. The task parking lot stays
+platform-specific because Apple timed wait and thread cancellation differ.
+
+The CLI linker tries a bundled or `PATH` LLD before the system driver (`cc`,
+`clang`, or `link.exe`). `ARANDU_USE_LD` remains an explicit override, including
+`mold` and `none`. On Windows, `lld-link` is attempted only when `LIB` shows
+that the Windows SDK is visible, and a failed LLD attempt falls through to
+`link.exe`. Library names still come from `TargetSpec`. `LinkerKind` stays
+`system` when LLD runs. The checkout-only `rustc` fallback passes non-default
+MSVC libraries and omits `msvcrt`, so it does not introduce a second CRT.
+
+`linker_smoke` compiles and runs libm, a thread id, a monotonic clock, and a
+directory listing with the host `TargetSpec` flags. CI runs that smoke on
+Ubuntu GCC, Ubuntu Clang, macOS Apple Clang, Windows Clang with the MSVC
+environment, and Windows MinGW GCC. A bad flag fails in that job before the
+rest of the suite.
 
 ### What is required for real cross compilation
 

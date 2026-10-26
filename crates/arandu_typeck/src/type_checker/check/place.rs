@@ -3,7 +3,10 @@ use super::super::constraints::ConstraintOrigin;
 use super::super::types::{ArType, Primitive, TypeId};
 
 /// Peel `Nullable` / `&` / `&mut` / `ptr` so place field/index works on `shared`/`mut self`.
-fn peel_auto_deref_place(checker: &TypeChecker<'_>, base_ty_id: TypeId) -> (TypeId, bool) {
+pub(super) fn peel_auto_deref_place(
+    checker: &TypeChecker<'_>,
+    base_ty_id: TypeId,
+) -> (TypeId, bool) {
     let mut id = base_ty_id;
     let mut was_nullable = false;
     for _ in 0..8 {
@@ -158,7 +161,8 @@ pub(crate) fn synth_place(checker: &mut TypeChecker<'_>, place: &arandu_parser::
                 match &actual_base_ty {
                     ArType::Array(_, inner)
                     | ArType::ConstArray(_, inner)
-                    | ArType::Slice(inner) => {
+                    | ArType::Slice(inner)
+                    | ArType::MutSlice(inner) => {
                         current_ty_id = *inner;
                     }
                     ArType::Named(_, args)

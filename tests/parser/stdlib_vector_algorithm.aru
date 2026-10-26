@@ -1,0 +1,18 @@
+func partition(arr: []int, low: usize, high: usize): usize {
+    let pivot = arr[high];
+    let mut i = low;
+    let mut j = low;
+    while j < high {
+        if arr[j] <= pivot {
+            let temp = arr[i];
+            arr[i] = arr[j];
+            arr[j] = temp;
+            i = i + 1;
+        }
+        j = j + 1;
+    }
+    let temp = arr[i];
+    arr[i] = arr[high];
+    arr[high] = temp;
+    return i;
+}

@@ -76,6 +76,7 @@ pub fn slot_valtype(
 fn scalar_valtype(ty: &ArType, layout: DataLayout) -> Option<ValType> {
     match ty {
         ArType::Primitive(p) => primitive_scalar_valtype(*p, layout),
+        ArType::Vector(_) => Some(ValType::V128),
         ArType::IntLiteral => Some(ValType::I32),
         ArType::FloatLiteral => Some(ValType::F64),
         // Aggregates (by address), refs, pointers, handles: i32 (ptr_width=4).

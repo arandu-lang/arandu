@@ -17,7 +17,7 @@ const NUM_ARU: &str = include_str!("../../../../stdlib/core/num.aru");
 #[test]
 fn stdlib_math_view_parses_and_exports_expected_symbols() {
     let mut db = DatabaseImpl::default();
-    let file = db.new_file("stdlib/math/view.aru".to_string(), VIEW_ARU.to_string());
+    let file = db.new_stdlib_file("stdlib/math/view.aru".to_string(), VIEW_ARU.to_string());
     match parse(&db, file).as_ref() {
         Ok(_) => {}
         Err(e) => panic!("view.aru must parse; got {e}"),
@@ -43,7 +43,7 @@ fn stdlib_math_view_parses_and_exports_expected_symbols() {
 #[test]
 fn stdlib_math_matrix_parses_and_exports_expected_symbols() {
     let mut db = DatabaseImpl::default();
-    let file = db.new_file("stdlib/math/matrix.aru".to_string(), MATRIX_ARU.to_string());
+    let file = db.new_stdlib_file("stdlib/math/matrix.aru".to_string(), MATRIX_ARU.to_string());
     match parse(&db, file).as_ref() {
         Ok(_) => {}
         Err(e) => panic!("matrix.aru must parse; got {e}"),
@@ -93,7 +93,7 @@ fn stdlib_math_matrix_parses_and_exports_expected_symbols() {
 #[test]
 fn stdlib_math_linalg_parses_and_exports_expected_symbols() {
     let mut db = DatabaseImpl::default();
-    let file = db.new_file("stdlib/math/linalg.aru".to_string(), LINALG_ARU.to_string());
+    let file = db.new_stdlib_file("stdlib/math/linalg.aru".to_string(), LINALG_ARU.to_string());
     match parse(&db, file).as_ref() {
         Ok(_) => {}
         Err(e) => panic!("linalg.aru must parse; got {e}"),
@@ -119,17 +119,23 @@ fn stdlib_math_linalg_parses_and_exports_expected_symbols() {
 #[test]
 fn stdlib_math_usage_in_program() {
     let mut db = DatabaseImpl::default();
-    let _ = db.new_file(
+    db.new_stdlib_file(
+        "stdlib/core/marker.aru".into(),
+        include_str!("../../../../stdlib/core/marker.aru").into(),
+    );
+    let _ = db.new_stdlib_file(
         "stdlib/core/intrinsics.aru".to_string(),
         INTRINSICS_ARU.to_string(),
     );
-    let _ = db.new_file("stdlib/core/mem.aru".to_string(), MEM_ARU.to_string());
-    let _ = db.new_file("stdlib/core/num.aru".to_string(), NUM_ARU.to_string());
-    let _ = db.new_file("stdlib/core/slice.aru".to_string(), SLICE_ARU.to_string());
-    let _ = db.new_file("stdlib/alloc/arena.aru".to_string(), ARENA_ARU.to_string());
-    let view_file = db.new_file("stdlib/math/view.aru".to_string(), VIEW_ARU.to_string());
-    let matrix_file = db.new_file("stdlib/math/matrix.aru".to_string(), MATRIX_ARU.to_string());
-    let linalg_file = db.new_file("stdlib/math/linalg.aru".to_string(), LINALG_ARU.to_string());
+    let _ = db.new_stdlib_file("stdlib/core/mem.aru".to_string(), MEM_ARU.to_string());
+    let _ = db.new_stdlib_file("stdlib/core/num.aru".to_string(), NUM_ARU.to_string());
+    let _ = db.new_stdlib_file("stdlib/core/slice.aru".to_string(), SLICE_ARU.to_string());
+    let _ = db.new_stdlib_file("stdlib/alloc/arena.aru".to_string(), ARENA_ARU.to_string());
+    let view_file = db.new_stdlib_file("stdlib/math/view.aru".to_string(), VIEW_ARU.to_string());
+    let matrix_file =
+        db.new_stdlib_file("stdlib/math/matrix.aru".to_string(), MATRIX_ARU.to_string());
+    let linalg_file =
+        db.new_stdlib_file("stdlib/math/linalg.aru".to_string(), LINALG_ARU.to_string());
 
     let main_src = r#"
 import std.math.matrix as matrix

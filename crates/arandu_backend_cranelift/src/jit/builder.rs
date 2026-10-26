@@ -1,6 +1,6 @@
 //! Host-JIT builder configuration and symbol table registration.
 
-use arandu_semantics::Diagnostic;
+use arandu_middle::Diagnostic;
 use cranelift_jit::{ArenaMemoryProvider, JITBuilder};
 
 use super::isa::cached_host_isa;
@@ -173,6 +173,50 @@ pub(crate) fn create_jit_builder_with_io_and_process_args(
         arandu_runtime::worker_scheduler::ar_rt_parallel_fold_run as *const u8,
     );
     builder.symbol(
+        "ar_rt_native_thread_spawn",
+        arandu_runtime::native_thread::ar_rt_native_thread_spawn as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_native_thread_join",
+        arandu_runtime::native_thread::ar_rt_native_thread_join as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_native_thread_panicked_sentinel",
+        arandu_runtime::native_thread::ar_rt_native_thread_panicked_sentinel as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_native_thread_is_finished",
+        arandu_runtime::native_thread::ar_rt_native_thread_is_finished as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_native_thread_drop",
+        arandu_runtime::native_thread::ar_rt_native_thread_drop as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_rwlock_read",
+        crate::rt_runtime::ar_rt_rwlock_read as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_rwlock_write",
+        crate::rt_runtime::ar_rt_rwlock_write as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_rwlock_try_read",
+        crate::rt_runtime::ar_rt_rwlock_try_read as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_rwlock_try_write",
+        crate::rt_runtime::ar_rt_rwlock_try_write as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_rwlock_read_unlock",
+        crate::rt_runtime::ar_rt_rwlock_read_unlock as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_rwlock_write_unlock",
+        crate::rt_runtime::ar_rt_rwlock_write_unlock as *const u8,
+    );
+    builder.symbol(
         "ar_path_is_absolute",
         crate::rt_runtime::ar_path_is_absolute as *const u8,
     );
@@ -199,6 +243,9 @@ pub(crate) fn create_jit_builder_with_io_and_process_args(
         "ar_process_exit",
         crate::os_runtime::ar_process_exit as *const u8,
     );
+    // Windows abort. Unix keeps the inline trap and must not look this up.
+    #[cfg(windows)]
+    builder.symbol("ar_rt_trap", crate::os_runtime::ar_rt_trap as *const u8);
     builder.symbol(
         "ar_time_monotonic_ns",
         crate::os_runtime::ar_time_monotonic_ns as *const u8,
@@ -223,6 +270,23 @@ pub(crate) fn create_jit_builder_with_io_and_process_args(
     builder.symbol("ar_fs_write", crate::fs_runtime::ar_fs_write as *const u8);
     builder.symbol("ar_fs_close", crate::fs_runtime::ar_fs_close as *const u8);
     builder.symbol("exists", crate::fs_runtime::exists as *const u8);
+    builder.symbol(
+        "ar_fs_dir_open",
+        crate::fs_runtime::ar_fs_dir_open as *const u8,
+    );
+    builder.symbol("ar_fs_openat", crate::fs_runtime::ar_fs_openat as *const u8);
+    builder.symbol(
+        "ar_fs_dir_openat",
+        crate::fs_runtime::ar_fs_dir_openat as *const u8,
+    );
+    builder.symbol(
+        "ar_fs_mkdirat",
+        crate::fs_runtime::ar_fs_mkdirat as *const u8,
+    );
+    builder.symbol(
+        "ar_fs_unlinkat",
+        crate::fs_runtime::ar_fs_unlinkat as *const u8,
+    );
 
     // SL_T.3: std.testing expectation and runner symbols
     builder.symbol(
@@ -463,6 +527,74 @@ pub(crate) fn create_jit_builder_with_io_and_process_args(
     builder.symbol(
         "ar_rt_supervisor_kill",
         crate::supervisor_runtime::ar_rt_supervisor_kill as *const u8,
+    );
+
+    // Threads, Condvars, and Entropy
+    builder.symbol(
+        "ar_rt_thread_sleep_ms",
+        crate::rt_runtime::ar_rt_thread_sleep_ms as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_thread_yield",
+        crate::rt_runtime::ar_rt_thread_yield as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_thread_park",
+        crate::rt_runtime::ar_rt_thread_park as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_thread_park_timeout",
+        crate::rt_runtime::ar_rt_thread_park_timeout as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_thread_unpark",
+        crate::rt_runtime::ar_rt_thread_unpark as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_thread_current_id",
+        crate::rt_runtime::ar_rt_thread_current_id as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_condvar_wait",
+        crate::rt_runtime::ar_rt_condvar_wait as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_condvar_wait_timeout",
+        crate::rt_runtime::ar_rt_condvar_wait_timeout as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_condvar_notify_one",
+        crate::rt_runtime::ar_rt_condvar_notify_one as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_condvar_notify_all",
+        crate::rt_runtime::ar_rt_condvar_notify_all as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_get_entropy",
+        crate::rt_runtime::ar_rt_get_entropy as *const u8,
+    );
+
+    // UDP and DNS
+    builder.symbol(
+        "ar_net_udp_bind",
+        crate::socket_runtime::ar_net_udp_bind as *const u8,
+    );
+    builder.symbol(
+        "ar_net_udp_send_to",
+        crate::socket_runtime::ar_net_udp_send_to as *const u8,
+    );
+    builder.symbol(
+        "ar_net_udp_recv_from",
+        crate::socket_runtime::ar_net_udp_recv_from as *const u8,
+    );
+    builder.symbol(
+        "ar_net_udp_close",
+        crate::socket_runtime::ar_net_udp_close as *const u8,
+    );
+    builder.symbol(
+        "ar_net_dns_resolve",
+        crate::socket_runtime::ar_net_dns_resolve as *const u8,
     );
 
     Ok(builder)

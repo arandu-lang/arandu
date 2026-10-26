@@ -42,8 +42,9 @@ Func testSafeField(p: Point?) -> int
     _2: int?
     _3: Point?
     _4: bool
-    _5: Point?
-    _6: bool
+    _5: Point
+    _6: int
+    _7: bool
     s0: Point? // p
 
   bb0:
@@ -54,11 +55,12 @@ Func testSafeField(p: Point?) -> int
     goto bb3
   bb2:
     _5 = _1
-    _2 = _5.0
+    _6 = _5.0
+    _2 = _6
     goto bb3
   bb3:
-    _6 = ne _2, nil
-    branch _6 => bb4, else bb5
+    _7 = ne _2, nil
+    branch _7 => bb4, else bb5
   bb4:
     _0 = _2
     goto bb6

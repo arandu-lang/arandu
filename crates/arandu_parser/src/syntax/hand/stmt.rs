@@ -246,6 +246,7 @@ fn lower_return(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>, start: u32) -> Opti
 fn lower_let(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>, start: u32) -> Option<StmtId> {
     cur.expect(TokenKind::KwLet)?;
     let mut bindings = Vec::new();
+    let has_paren = cur.eat(TokenKind::LParen);
     loop {
         let bind_start_tok = cur.peek()?;
         let mutable = cur.eat(TokenKind::KwMut);
@@ -275,8 +276,14 @@ fn lower_let(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>, start: u32) -> Option<
         }
         break;
     }
+    if has_paren {
+        cur.expect(TokenKind::RParen)?;
+    }
     cur.expect(TokenKind::Equal)?;
     let value = try_hand_lower_expr(ctx, cur, 0)?;
+    if cur.peek_kind() == Some(TokenKind::KwElse) {
+        return None;
+    }
     let _ = cur.eat(TokenKind::Semicolon);
     let end = ctx.pool.expr_span(value).end;
     Some(ctx.pool.alloc_stmt(Stmt::VarDecl {
@@ -311,6 +318,9 @@ fn lower_set(
     let op = set_op_from_token(cur.peek_kind()?)?;
     cur.bump();
     let value = try_hand_lower_expr(ctx, cur, 0)?;
+    if cur.peek_kind() == Some(TokenKind::KwElse) {
+        return None;
+    }
     let _ = cur.eat(TokenKind::Semicolon);
     let end = ctx.pool.expr_span(value).end;
     Some(ctx.pool.alloc_stmt(Stmt::Set {

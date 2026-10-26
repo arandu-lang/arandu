@@ -79,9 +79,14 @@ fn expression_root(db: &DatabaseImpl, file: SourceFile, owner: SymbolId) -> Arc<
         })
         .expect("root initializer");
     let layout = *db.target_config().data_layout(db);
-    let root =
-        arandu_mir::lower_expression_unit(&prepared.type_check, hir, function, expression, layout)
-            .expect("isolated expression lowering");
+    let root = arandu_semantics::lower_expression_unit(
+        &prepared.type_check,
+        hir,
+        function,
+        expression,
+        layout,
+    )
+    .expect("isolated expression lowering");
     assert!(
         root.function.params.is_empty(),
         "runtime parameters are not root arguments"

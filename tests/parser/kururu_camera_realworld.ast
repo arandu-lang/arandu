@@ -1,0 +1,15 @@
+Program @1:1-26:2
+  Struct @1:1-5:2 Vec3
+    Field @2:5-2:11 x Type @2:8-2:11 f32
+    Field @3:5-3:11 y Type @3:8-3:11 f32
+    Field @4:5-4:11 z Type @4:8-4:11 f32
+  Struct @7:1-10:2 Ray
+    Field @8:5-8:17 origin Type @8:13-8:17 @8:13-8:17 Vec3
+    Field @9:5-9:20 direction Type @9:16-9:20 @9:16-9:20 Vec3
+  Struct @12:1-17:2 Camera
+    Field @13:5-13:17 origin Type @13:13-13:17 @13:13-13:17 Vec3
+    Field @14:5-14:21 lower_left Type @14:17-14:21 @14:17-14:21 Vec3
+    Field @15:5-15:21 horizontal Type @15:17-15:21 @15:17-15:21 Vec3
+    Field @16:5-16:19 vertical Type @16:15-16:19 @16:15-16:19 Vec3
+  Func @19:1-26:2 buildDefaultCamera() -> Type @19:28-19:34 @19:28-19:34 Camera
+    Return @20:5-25:6 StructLiteral @20:12-25:6(Type @20:12-20:18 @20:12-20:18 Camera, [@21:9-21:48 origin: StructLiteral @21:17-21:48(Type @21:17-21:21 @21:17-21:21 Vec3, [@21:24-21:30 x: Float @21:27-21:30(0.0), @21:32-21:38 y: Float @21:35-21:38(1.0), @21:40-21:46 z: Float @21:43-21:46(3.0)]), @22:9-22:54 lower_left: StructLiteral @22:21-22:54(Type @22:21-22:25 @22:21-22:25 Vec3, [@22:28-22:35 x: Unary @22:31-22:35(-, Float @22:32-22:35(2.0)), @22:37-22:44 y: Unary @22:40-22:44(-, Float @22:41-22:44(0.5)), @22:46-22:52 z: Float @22:49-22:52(1.0)]), @23:9-23:52 horizontal: StructLiteral @23:21-23:52(Type @23:21-23:25 @23:21-23:25 Vec3, [@23:28-23:34 x: Float @23:31-23:34(4.0), @23:36-23:42 y: Float @23:39-23:42(0.0), @23:44-23:50 z: Float @23:47-23:50(0.0)]), @24:9-24:50 vertical: StructLiteral @24:19-24:50(Type @24:19-24:23 @24:19-24:23 Vec3, [@24:26-24:32 x: Float @24:29-24:32(0.0), @24:34-24:40 y: Float @24:37-24:40(3.0), @24:42-24:48 z: Float @24:45-24:48(0.0)])])

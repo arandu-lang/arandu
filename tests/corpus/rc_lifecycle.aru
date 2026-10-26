@@ -1,0 +1,117 @@
+module rcLifecycle
+
+import std.alloc.rc as rc
+
+import std.alloc.arc as arc
+
+import std.alloc.string as strings
+
+import std.core.io as io
+
+struct Tracked { tag: int, text: strings.String }
+
+@Destructor
+func Tracked.destroy(self: own Tracked): void { io.println(self.tag) }
+
+func rcUnwrapWithWeak(): int {
+    let owner = rc.Rc<Tracked>.new(Tracked { tag: 11, text: strings.String.from("owned") })
+    let weak = owner.downgrade()
+    let otherWeak = weak.clone()
+    match owner.tryUnwrap() {
+        Result.Ok(value) => { if value.text.len() != 5 { return 1 } }
+        Result.Err(_) => { return 2 }
+    }
+    match weak.upgrade() {
+        Option.Some(_) => { return 3 }
+        Option.None => {}
+    }
+    match otherWeak.upgrade() {
+        Option.Some(_) => { return 4 }
+        Option.None => {}
+    }
+    let deadWeak = weak.clone()
+    match deadWeak.upgrade() {
+        Option.Some(_) => { return 5 }
+        Option.None => {}
+    }
+    return 0
+}
+
+func arcUnwrapWithWeak(): int {
+    let owner = arc.Arc<Tracked>.new(Tracked { tag: 22, text: strings.String.from("owned") })
+    let weak = owner.downgrade()
+    let otherWeak = weak.clone()
+    match owner.tryUnwrap() {
+        Result.Ok(value) => { if value.text.len() != 5 { return 6 } }
+        Result.Err(_) => { return 7 }
+    }
+    match weak.upgrade() {
+        Option.Some(_) => { return 8 }
+        Option.None => {}
+    }
+    match otherWeak.upgrade() {
+        Option.Some(_) => { return 9 }
+        Option.None => {}
+    }
+    return 0
+}
+
+func rcDropWithWeak(): rc.Weak<Tracked> {
+    let owner = rc.Rc<Tracked>.new(Tracked { tag: 33, text: strings.String.from("drop") })
+    return owner.downgrade()
+}
+
+func arcDropWithWeak(): arc.ArcWeak<Tracked> {
+    let owner = arc.Arc<Tracked>.new(Tracked { tag: 44, text: strings.String.from("drop") })
+    return owner.downgrade()
+}
+
+func failedRcUnwrap(): int {
+    let owner = rc.Rc<Tracked>.new(Tracked { tag: 55, text: strings.String.from("shared") })
+    let other = owner.clone()
+    match owner.tryUnwrap() {
+        Result.Ok(_) => { return 12 }
+        Result.Err(recovered) => {
+            if recovered.get().text.len() != 6 { return 13 }
+            if recovered.strongCount() != (2 as usize) { return 14 }
+        }
+    }
+    if other.strongCount() != (1 as usize) { return 15 }
+    return 0
+}
+
+func failedArcUnwrap(): int {
+    let owner = arc.Arc<Tracked>.new(Tracked { tag: 66, text: strings.String.from("shared") })
+    let other = owner.clone()
+    match owner.tryUnwrap() {
+        Result.Ok(_) => { return 16 }
+        Result.Err(recovered) => {
+            if recovered.get().text.len() != 6 { return 17 }
+            if recovered.strongCount() != (2 as usize) { return 18 }
+        }
+    }
+    if other.strongCount() != (1 as usize) { return 19 }
+    return 0
+}
+
+public func main(): int {
+    let r = rcUnwrapWithWeak()
+    if r != 0 { return r }
+    let a = arcUnwrapWithWeak()
+    if a != 0 { return a }
+    let weak = rcDropWithWeak()
+    match weak.upgrade() {
+        Option.Some(_) => { return 10 }
+        Option.None => {}
+    }
+    let atomicWeak = arcDropWithWeak()
+    match atomicWeak.upgrade() {
+        Option.Some(_) => { return 11 }
+        Option.None => {}
+    }
+    let failedRc = failedRcUnwrap()
+    if failedRc != 0 { return failedRc }
+    let failedArc = failedArcUnwrap()
+    if failedArc != 0 { return failedArc }
+    return 0
+}

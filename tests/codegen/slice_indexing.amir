@@ -1,0 +1,85 @@
+Func checkSlice(a: []u8, len: int, target: u8) -> bool
+  locals:
+    _0: bool // return
+    _1: []u8
+    _2: int
+    _3: u8
+    _4: int
+    _5: int
+    _6: int
+    _7: int
+    _8: bool
+    _9: []u8
+    _10: []u8
+    _11: int
+    _12: u8
+    _13: u8
+    _14: u8
+    _15: bool
+    _16: int
+    _17: int
+    s0: []u8 // a
+    s1: int // len
+    s2: u8 // target
+    s3: int // i
+
+  bb0:
+    goto bb1(0)
+  bb1(_4: int /* from: "i" */):
+    _8 = lt _4, _2
+    branch _8 => bb2, else bb3
+  bb2:
+    _12 = _1[_4]
+    _15 = eq _12, _3
+    branch _15 => bb4, else bb5
+  bb3:
+    _0 = false
+    return
+  bb4:
+    _0 = true
+    return
+  bb5:
+    goto bb6
+  bb6:
+    _17 = add _4, 1
+    goto bb1(_17)
+
+Func main() -> bool
+  locals:
+    _0: bool // return
+    _1: [4]u8
+    _2: ref [4]u8
+    _3: []u8
+    _4: bool
+    _5: usize
+    _6: usize
+    _7: bool
+    _8: bool
+    _9: usize
+    _10: []u8
+    _11: []u8
+    s0: [4]u8 // data
+    s1: []u8 // slice_view
+
+  bb0:
+    _1 = [1, 2, 3, 4]
+    s0 = _1
+    _2 = &s0
+    _3 = slice_view(_2, _2, 4)
+    _4 = ge 0, 0
+    branch _4 => bb2, else bb1
+  bb1:
+    unreachable
+  bb2:
+    _5 = 0
+    _6 = 4
+    _7 = le _5, _6
+    branch _7 => bb3, else bb1
+  bb3:
+    _8 = le _6, 4
+    branch _8 => bb4, else bb1
+  bb4:
+    _9 = sub _6, _5
+    _10 = slice_subslice(_3, _5, _9)
+    _0 = call fn@checkSlice(_10, 4, 3)
+    return

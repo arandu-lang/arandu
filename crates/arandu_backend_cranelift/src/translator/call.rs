@@ -1,5 +1,5 @@
-use arandu_semantics::amir::{AmirOperand, TempId};
-use arandu_semantics::passes::type_checker::types::{ArType, Primitive};
+use arandu_middle::amir::{AmirOperand, TempId};
+use arandu_middle::types::{ArType, Primitive};
 use cranelift_codegen::ir::{InstBuilder, Type, Value};
 
 use super::FunctionTranslator;
@@ -16,7 +16,10 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             let sym = self.symbol_table.get(*sym_id);
             let bare = sym.name.rsplit('.').next().unwrap_or(sym.name.as_str());
             // L6.1: mem intrinsics (short mono names + qualified std.core.mem.*).
-            if self.translate_mem_intrinsic(bare, &sym.name, lhs, args) {
+            if let Some(kind) =
+                arandu_middle::IntrinsicKind::from_declared_name(bare, sym.lang_item)
+                && self.translate_mem_intrinsic(kind, bare, &sym.name, lhs, args)
+            {
                 return;
             }
         }
@@ -46,23 +49,21 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     .collect();
 
                 let callee_param_types: Option<Vec<ArType>> = match callee {
-                    AmirOperand::FunctionRef(sym_id) => self
-                        .type_info
-                        .decl_types
-                        .get(sym_id)
-                        .and_then(|&decl_ty_id| {
-                            let decl_ty = self.type_info.type_interner.resolve(decl_ty_id);
+                    AmirOperand::FunctionRef(sym_id) => {
+                        self.type_info.decl_type_id(*sym_id).and_then(|decl_ty_id| {
+                            let decl_ty = self.type_info.type_interner().resolve(decl_ty_id);
                             if let ArType::Func(param_range, _) = decl_ty {
-                                let pids = self.type_info.type_interner.type_args(param_range);
+                                let pids = self.type_info.type_interner().type_args(param_range);
                                 Some(
                                     pids.iter()
-                                        .map(|&pid| self.type_info.type_interner.resolve(pid))
+                                        .map(|&pid| self.type_info.type_interner().resolve(pid))
                                         .collect(),
                                 )
                             } else {
                                 None
                             }
-                        }),
+                        })
+                    }
                     _ => None,
                 };
 
@@ -75,12 +76,12 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                         param.purpose == cranelift_codegen::ir::ArgumentPurpose::StructReturn
                     })
                 {
-                    let result_ty =
-                        self.type_info.decl_types.get(sym_id).and_then(|id| {
-                            match self.resolve_ty(*id) {
-                                ArType::Func(_, result) => Some(self.resolve_ty(result)),
-                                _ => None,
-                            }
+                    let result_ty = self
+                        .type_info
+                        .decl_type_id(*sym_id)
+                        .and_then(|id| match self.resolve_ty(id) {
+                            ArType::Func(_, result) => Some(self.resolve_ty(result)),
+                            _ => None,
                         });
                     let Some(result_ty) = result_ty else {
                         self.record_ice("missing type for indirect aggregate result", sym.span);
@@ -120,8 +121,8 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                             ) {
                                 let arg_abi = self.classify_arg_abi(&arg_ty);
                                 match arg_abi {
-                                    arandu_semantics::layout::ArgAbi::ZeroSized => {}
-                                    arandu_semantics::layout::ArgAbi::Direct(direct) => {
+                                    arandu_middle::layout::ArgAbi::ZeroSized => {}
+                                    arandu_middle::layout::ArgAbi::Direct(direct) => {
                                         let base_ptr =
                                             self.translate_operand(arg, Some(self.ptr_type));
                                         let layout = self.checked_layout(&arg_ty);
@@ -132,7 +133,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                                             clif_param_idx += 1;
                                         }
                                     }
-                                    arandu_semantics::layout::ArgAbi::Indirect => {
+                                    arandu_middle::layout::ArgAbi::Indirect => {
                                         let val = self.translate_operand(arg, Some(self.ptr_type));
                                         clif_args.push(val);
                                         clif_param_idx += 1;
@@ -191,13 +192,13 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             ) {
                 let arg_abi = self.classify_arg_abi(&lhs_ty);
                 match arg_abi {
-                    arandu_semantics::layout::ArgAbi::ZeroSized => {
+                    arandu_middle::layout::ArgAbi::ZeroSized => {
                         let null_ptr = self.builder.ins().iconst(self.ptr_type, 0);
                         if let Some(&var) = self.temp_map.get(lhs_temp) {
                             self.builder.def_var(var, null_ptr);
                         }
                     }
-                    arandu_semantics::layout::ArgAbi::Direct(direct) => {
+                    arandu_middle::layout::ArgAbi::Direct(direct) => {
                         let results = self.builder.inst_results(call_inst).to_vec();
                         let layout = self.checked_layout(&lhs_ty);
                         let size = u32::try_from(layout.size.max(1)).unwrap_or(1);
@@ -220,7 +221,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                             self.builder.def_var(var, addr);
                         }
                     }
-                    arandu_semantics::layout::ArgAbi::Indirect => {
+                    arandu_middle::layout::ArgAbi::Indirect => {
                         if let Some(destination) = indirect_result {
                             if let Some(&var) = self.temp_map.get(lhs_temp) {
                                 self.builder.def_var(var, destination);
@@ -271,24 +272,85 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
     /// Returns `true` when the call was handled as an intrinsic.
     fn translate_mem_intrinsic(
         &mut self,
+        declared: arandu_middle::IntrinsicKind,
         bare: &str,
         full_name: &str,
         lhs: &Option<TempId>,
         args: &[AmirOperand],
     ) -> bool {
-        let kind = arandu_semantics::IntrinsicKind::from_name(bare)
-            .or_else(|| arandu_semantics::IntrinsicKind::from_name(full_name));
+        // The caller already matched the declared ABI marker. A second lookup
+        // by spelling would let a colliding extern name pick a different kind.
+        let kind = Some(declared);
+
+        if self.translate_atomic_intrinsic(declared, lhs, args) {
+            return true;
+        }
 
         match kind {
-            Some(arandu_semantics::IntrinsicKind::PtrRead) => {
+            Some(
+                arandu_middle::IntrinsicKind::CountOnes
+                | arandu_middle::IntrinsicKind::LeadingZeros
+                | arandu_middle::IntrinsicKind::TrailingZeros
+                | arandu_middle::IntrinsicKind::ReverseBits,
+            ) => {
+                if let Some(argument) = args.first() {
+                    let input_ty = if bare.ends_with("64") {
+                        cranelift_codegen::ir::types::I64
+                    } else {
+                        cranelift_codegen::ir::types::I32
+                    };
+                    let value = self.translate_operand(argument, Some(input_ty));
+                    let result = match kind {
+                        Some(arandu_middle::IntrinsicKind::CountOnes) => {
+                            self.builder.ins().popcnt(value)
+                        }
+                        Some(arandu_middle::IntrinsicKind::LeadingZeros) => {
+                            self.builder.ins().clz(value)
+                        }
+                        Some(arandu_middle::IntrinsicKind::TrailingZeros) => {
+                            self.builder.ins().ctz(value)
+                        }
+                        _ => self.builder.ins().bitrev(value),
+                    };
+                    if let Some(destination) = lhs
+                        && let Some(&variable) = self.temp_map.get(destination)
+                        && let Some(result_ty) = self.get_temp_clif_type(*destination)
+                    {
+                        let result = self.cast_int_width(result, result_ty);
+                        self.builder.def_var(variable, result);
+                    }
+                }
+                true
+            }
+            Some(arandu_middle::IntrinsicKind::PtrRead) => {
                 if args.is_empty() {
                     return true;
                 }
                 let ptr_val = self.translate_operand(&args[0], Some(self.ptr_type));
+                let pointee = self.ptr_pointee_ty(&args[0]);
+                let lhs_is_str = lhs.is_some_and(|temp| {
+                    matches!(self.temp_ar_ty(temp), ArType::Primitive(Primitive::Str))
+                });
+                if matches!(pointee, ArType::Primitive(Primitive::Str)) || lhs_is_str {
+                    if let Some(lhs_temp) = lhs
+                        && let Some(&(var_ptr, var_len)) = self.str_temp_map.get(lhs_temp)
+                    {
+                        let flags = cranelift_codegen::ir::MemFlagsData::new();
+                        let loaded_ptr = self.builder.ins().load(self.ptr_type, flags, ptr_val, 0);
+                        let loaded_len = self.builder.ins().load(
+                            self.ptr_type,
+                            flags,
+                            ptr_val,
+                            self.ptr_type.bytes() as i32,
+                        );
+                        self.builder.def_var(var_ptr, loaded_ptr);
+                        self.builder.def_var(var_len, loaded_len);
+                    }
+                    return true;
+                }
                 let clif_ty = lhs
                     .and_then(|temp| self.get_temp_clif_type(temp))
                     .unwrap_or(self.ptr_type);
-                let pointee = self.ptr_pointee_ty(&args[0]);
                 // Named aggregates present raw-memory values at `*p`. The JIT
                 // represents them as pointers, so read the full payload into a
                 // fresh blob rather than loading only the first pointer-sized
@@ -316,16 +378,28 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 }
                 true
             }
-            Some(arandu_semantics::IntrinsicKind::PtrWrite) => {
+            Some(arandu_middle::IntrinsicKind::PtrWrite) => {
                 if args.len() < 2 {
                     return true;
                 }
                 let ptr_val = self.translate_operand(&args[0], Some(self.ptr_type));
+                let val_ty = self.get_operand_ar_type(&args[1]);
+                if matches!(val_ty, ArType::Primitive(Primitive::Str)) {
+                    let (elem_ptr, elem_len) = self.translate_str_operand(&args[1]);
+                    let flags = cranelift_codegen::ir::MemFlagsData::new();
+                    self.builder.ins().store(flags, elem_ptr, ptr_val, 0);
+                    self.builder.ins().store(
+                        flags,
+                        elem_len,
+                        ptr_val,
+                        self.ptr_type.bytes() as i32,
+                    );
+                    return true;
+                }
                 let val_to_store = self.translate_operand(&args[1], None);
                 // Match `PtrRead`: writing a named struct by value copies the
                 // object bytes from the value's blob into `*p` instead of
                 // storing the 8-byte object pointer.
-                let val_ty = self.get_operand_ar_type(&args[1]);
                 if self.is_inline_aggregate_ty(&val_ty)
                     && let Some(memmove_id) = self.memmove_func_id()
                 {
@@ -347,7 +421,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 );
                 true
             }
-            Some(arandu_semantics::IntrinsicKind::PtrOffset) => {
+            Some(arandu_middle::IntrinsicKind::PtrOffset) => {
                 if args.len() < 2 {
                     return true;
                 }
@@ -379,10 +453,8 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 }
                 true
             }
-            Some(
-                arandu_semantics::IntrinsicKind::SizeOf | arandu_semantics::IntrinsicKind::AlignOf,
-            ) => {
-                let is_size = kind == Some(arandu_semantics::IntrinsicKind::SizeOf);
+            Some(arandu_middle::IntrinsicKind::SizeOf | arandu_middle::IntrinsicKind::AlignOf) => {
+                let is_size = kind == Some(arandu_middle::IntrinsicKind::SizeOf);
                 let ty = ArType::Primitive(Primitive::Int);
                 let layout = self.checked_layout(&ty);
                 let value = if is_size { layout.size } else { layout.align };
@@ -397,8 +469,10 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 }
                 true
             }
-            Some(arandu_semantics::IntrinsicKind::Abort) => {
-                // PAN / Invariant 5: lower directly to CPU trap (UD2/BRK) with zero metadata overhead.
+            Some(arandu_middle::IntrinsicKind::Abort) => {
+                // PAN / Invariant 5: Unix lowers directly to a CPU trap (UD2/BRK)
+                // with zero metadata overhead. Windows calls `ar_rt_trap` first:
+                // an inline UD2 in a JIT frame is reported as a stack overflow.
                 let code = if bare == "abortGenerationalMismatch"
                     || full_name.ends_with("abortGenerationalMismatch")
                 {
@@ -406,10 +480,20 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 } else {
                     cranelift_codegen::ir::TrapCode::unwrap_user(1)
                 };
+                #[cfg(windows)]
+                {
+                    let Some(trap_id) = self.resolve_function("ar_rt_trap") else {
+                        self.record_ice("ar_rt_trap was not declared", self.func_span());
+                        self.builder.ins().trap(code);
+                        return true;
+                    };
+                    let trap_ref = self.module.declare_func_in_func(trap_id, self.builder.func);
+                    self.builder.ins().call(trap_ref, &[]);
+                }
                 self.builder.ins().trap(code);
                 true
             }
-            Some(arandu_semantics::IntrinsicKind::DropInPlace) => false,
+            Some(arandu_middle::IntrinsicKind::DropInPlace) => false,
             _ => false,
         }
     }
@@ -429,10 +513,10 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         matches!(
             ty,
             ArType::Named(sym_id, _)
-                if self.type_info.struct_fields.contains_key(sym_id)
+                if self.type_info.get_struct_fields(*sym_id).is_some()
                     || matches!(
                         self.symbol_table.get(*sym_id).kind,
-                        arandu_semantics::SymbolKind::Struct
+                        arandu_middle::SymbolKind::Struct
                     )
         )
     }
@@ -445,7 +529,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 ArType::Named(sym_id, _)
                     if matches!(
                         self.symbol_table.get(*sym_id).kind,
-                        arandu_semantics::SymbolKind::Enum
+                        arandu_middle::SymbolKind::Enum
                     )
             )
             || matches!(
@@ -458,6 +542,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     | ArType::Array(_, _)
                     | ArType::ConstArray(_, _)
                     | ArType::Slice(_)
+                    | ArType::MutSlice(_)
             )
     }
 

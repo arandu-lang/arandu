@@ -1,0 +1,348 @@
+//! Atomic shared ownership with checked counts and synchronized uniqueness.
+//!
+//! ## Overview
+//!
+//! `Arc<T>` and `ArcWeak<T>` can cross threads only when `T` is both Send
+//! and Sync. Reference increments use checked CAS loops and abort before
+//! exceeding 2,147,483,646 references on either 32-bit or 64-bit targets.
+//! `getMut` locks the weak counter while checking uniqueness, excluding the
+//! weak-upgrade/drop race before exposing an exclusive payload reference.
+//!
+//! The inner value is destroyed when the last strong reference is dropped.
+//! To prevent reference cycles, `ArcWeak<T>` provides non-owning weak handles.
+//!
+//! ## Synchronization & Memory Ordering
+//!
+//! - Incrementing counts (`clone`) uses `Relaxed` ordering.
+//! - Decrementing counts uses `Release` ordering.
+//! - An `Acquire` barrier precedes dropping the inner value, ensuring all prior
+//!   writes by other threads are visible to the thread destroying the payload.
+//!
+//! Valid memory orders are currently strengthened to SeqCst by the compiler.
+//!
+//! ## Platform
+//! Native allocation hosts and wasm32 (module-internal allocator).
+module std.alloc.arc
+
+import std.alloc.allocator_api as alloc
+
+import std.core.atomic as atomic
+
+import std.core.intrinsics as intrinsics
+
+import std.core.mem as mem
+
+import std.core.option as option
+
+extern "C" {
+    func ar_rt_alloc_aligned(size: usize, align: usize): ptr[u8]
+    func ar_rt_free_aligned(data: ptr[u8], size: usize, align: usize): void
+}
+
+struct ArcBox<T> {
+    strong: atomic.AtomicUsize
+    weak: atomic.AtomicUsize
+    value: T
+}
+
+func boxSize<T>(): usize {
+    let size = mem.sizeOf<ArcBox<T>>()
+    if size == (0 as usize) { return 1 as usize }
+    return size
+}
+
+func boxAlign<T>(): usize {
+    return mem.alignOf<ArcBox<T>>()
+}
+
+/// Atomic shared ownership. Send/Sync require a Send + Sync payload.
+public struct Arc<T> {
+    private inner: ptr[ArcBox<T>]
+}
+
+/// A non-owning weak handle to an `Arc`-managed allocation.
+public struct ArcWeak<T> {
+    private inner: ptr[ArcBox<T>]
+}
+
+/// Symmetrical alias for `ArcWeak<T>`.
+public type Weak<T> = ArcWeak<T>;
+
+// The conservative common bound fits every admitted usize target. The next
+// value is reserved as the transient weak-counter lock, never a live count.
+func countLimit(): usize { return 2147483646 as usize }
+func countLock(): usize { return 2147483647 as usize }
+
+func retainStrong<T>(inner: ptr[ArcBox<T>]): void {
+    unsafe {
+        let mut p = inner
+        let mut count = p.strong.load(atomic.MemoryOrder.Relaxed)
+        while true {
+            if count == (0 as usize) || count >= countLimit() { intrinsics.abort() }
+            match p.strong.compareExchangeWeak(
+                count, count + (1 as usize),
+                atomic.MemoryOrder.Relaxed, atomic.MemoryOrder.Relaxed
+            ) {
+                Result.Ok(_) => { return }
+                Result.Err(observed) => { count = observed }
+            }
+        }
+    }
+}
+
+func retainWeak<T>(inner: ptr[ArcBox<T>]): void {
+    unsafe {
+        let mut p = inner
+        let mut count = p.weak.load(atomic.MemoryOrder.Relaxed)
+        while true {
+            // A uniqueness check holds this lock for a bounded number of
+            // atomic operations. Do not turn the sentinel into a live count.
+            if count == countLock() {
+                count = p.weak.load(atomic.MemoryOrder.Relaxed)
+                continue
+            }
+            if count == (0 as usize) || count >= countLimit() { intrinsics.abort() }
+            match p.weak.compareExchangeWeak(
+                count, count + (1 as usize),
+                atomic.MemoryOrder.Acquire, atomic.MemoryOrder.Relaxed
+            ) {
+                Result.Ok(_) => { return }
+                Result.Err(observed) => { count = observed }
+            }
+        }
+    }
+}
+
+/// Attempts to allocate an `Arc<T>` holding `value` on the heap, reporting allocation failures.
+public func Arc.tryNew<T>(value: T): Result<Arc<T>, alloc.AllocError> {
+    let size = boxSize<T>()
+    let align = boxAlign<T>()
+    let maximum: usize = 2147483647 as usize
+    if size > maximum || align == (0 as usize) || align > maximum {
+        return Result.Err(alloc.AllocError.InvalidLayout)
+    }
+    unsafe {
+        let raw = ar_rt_alloc_aligned(size, align)
+        let nullp: ptr[u8] = nil
+        if raw == nullp {
+            return Result.Err(alloc.AllocError.OutOfMemory)
+        }
+        let typed = raw as ptr[ArcBox<T>]
+        let initial = ArcBox<T> {
+            strong: atomic.AtomicUsize.new(1 as usize),
+            weak: atomic.AtomicUsize.new(1 as usize),
+            value: value,
+        }
+        mem.ptrWrite<ArcBox<T>>(typed, initial)
+        return Result.Ok(Arc<T> { inner: typed })
+    }
+}
+
+/// Allocates an `Arc<T>` holding `value` on the heap, aborting if allocation fails.
+public func Arc.new<T>(value: T): Arc<T> {
+    match Arc.tryNew<T>(value) {
+        Result.Ok(arc) => { return arc }
+        Result.Err(_) => { unsafe { intrinsics.abort() } }
+    }
+    return Arc<T> { inner: nil }
+}
+
+/// Borrows the contained value.
+public func Arc.get<T>(self: ref Arc<T>): ref T {
+    unsafe {
+        return ref (*self.inner).value
+    }
+}
+
+/// Returns `true` if this `Arc` has no other strong or weak references.
+public func Arc.isUnique<T>(self: ref Arc<T>): bool {
+    unsafe {
+        let mut p = self.inner
+        // Lock only the implicit weak reference. A live explicit weak handle
+        // makes this CAS fail, so no upgrade can race the strong-count read.
+        match p.weak.compareExchange(
+            1 as usize, countLock(),
+            atomic.MemoryOrder.Acquire, atomic.MemoryOrder.Relaxed
+        ) {
+            Result.Ok(_) => {
+                let unique = p.strong.load(atomic.MemoryOrder.Acquire) == (1 as usize)
+                p.weak.store(1 as usize, atomic.MemoryOrder.Release)
+                return unique
+            }
+            Result.Err(_) => { return false }
+        }
+    }
+}
+
+/// Returns an exclusive mutable reference to the contained value if there are no other references.
+public func Arc.getMut<T>(self: mut ref Arc<T>): Option<mut ref T> {
+    if Arc.isUnique(self) {
+        unsafe {
+            return Option.Some(mut ref (*self.inner).value)
+        }
+    }
+    return Option.None
+}
+
+/// Unwraps the inner value if this is the sole strong reference to the allocation.
+///
+/// If other strong references exist, returns `Result.Err(self)`.
+public func Arc.tryUnwrap<T>(self: own Arc<T>): Result<T, Arc<T>> {
+    let nullp: ptr[ArcBox<T>] = nil
+    if self.inner == nullp {
+        return Result.Err(self)
+    }
+    unsafe {
+        let mut p0 = self.inner
+        match p0.strong.compareExchange(
+        1 as usize,
+        0 as usize,
+        atomic.MemoryOrder.Acquire,
+        atomic.MemoryOrder.Relaxed
+        ) {
+            Result.Ok(_) => {
+                let mut owned = self
+                let p = owned.inner
+                let val = mem.ptrRead<T>(intrinsics.addressOf<T>(mut ref (*p).value))
+                let mut p_mut = owned.inner
+                let prevWeak = p_mut.weak.fetchSub(1 as usize, atomic.MemoryOrder.Release)
+                if prevWeak == (1 as usize) {
+                    atomic.fence(atomic.MemoryOrder.Acquire)
+                    ar_rt_free_aligned(p as ptr[u8], boxSize<T>(), boxAlign<T>())
+                }
+                owned.inner = nil
+                return Result.Ok(val)
+            }
+            Result.Err(_) => {
+                return Result.Err(self)
+            }
+        }
+    }
+}
+
+func ArcWeak.fromInner<T>(inner: ptr[ArcBox<T>]): ArcWeak<T> {
+    return ArcWeak<T> { inner: inner }
+}
+
+func Arc.fromInner<T>(inner: ptr[ArcBox<T>]): Arc<T> {
+    return Arc<T> { inner: inner }
+}
+
+/// Clones an `Arc`, atomically incrementing the strong reference count.
+public func Arc.clone<T>(self: ref Arc<T>): Arc<T> {
+    unsafe {
+        retainStrong<T>(self.inner)
+        return Arc<T> { inner: self.inner }
+    }
+}
+
+/// Returns the current strong reference count.
+public func Arc.strongCount<T>(self: ref Arc<T>): usize {
+    unsafe {
+        let p = self.inner
+        return p.strong.load(atomic.MemoryOrder.Acquire)
+    }
+}
+
+/// Returns the current weak reference count.
+public func Arc.weakCount<T>(self: ref Arc<T>): usize {
+    unsafe {
+        let p = self.inner
+        let w = p.weak.load(atomic.MemoryOrder.Acquire)
+        // During a uniqueness check the sentinel represents only the implicit
+        // weak reference. Returning zero is a valid concurrent snapshot.
+        if w == countLock() { return 0 as usize }
+        if w > (0 as usize) {
+            return w - (1 as usize)
+        }
+        return 0 as usize
+    }
+}
+
+/// Creates a non-owning `ArcWeak<T>` pointer to this allocation.
+public func Arc.downgrade<T>(self: ref Arc<T>): ArcWeak<T> {
+    unsafe {
+        retainWeak<T>(self.inner)
+        return ArcWeak.fromInner<T>(self.inner)
+    }
+}
+
+/// Destroys a strong reference. Releases payload when strong count hits 0.
+@Destructor
+func Arc.destroy<T>(self: own Arc<T>): void {
+    let nullp: ptr[ArcBox<T>] = nil
+    if self.inner == nullp { return }
+
+    unsafe {
+        let mut p = self.inner
+        let prev = p.strong.fetchSub(1 as usize, atomic.MemoryOrder.Release)
+        if prev == (1 as usize) {
+            // Synchronize with all prior decrements
+            atomic.fence(atomic.MemoryOrder.Acquire)
+
+            // Move payload while the implicit weak still pins its storage.
+            let _val = mem.ptrRead<T>(intrinsics.addressOf<T>(mut ref (*p).value))
+
+            // Touch only the counts after the payload has moved out.
+            let prevWeak = p.weak.fetchSub(1 as usize, atomic.MemoryOrder.Release)
+            if prevWeak == (1 as usize) {
+                atomic.fence(atomic.MemoryOrder.Acquire)
+                ar_rt_free_aligned(self.inner as ptr[u8], boxSize<T>(), boxAlign<T>())
+            }
+        }
+    }
+}
+
+// ── ArcWeak Implementation ──────────────────────────────────────────────────
+
+/// Clones a weak handle.
+public func ArcWeak.clone<T>(self: ref ArcWeak<T>): ArcWeak<T> {
+    unsafe {
+        retainWeak<T>(self.inner)
+        return ArcWeak<T> { inner: self.inner }
+    }
+}
+
+/// Attempts to upgrade to a strong `Arc<T>`.
+public func ArcWeak.upgrade<T>(self: ref ArcWeak<T>): Option<Arc<T>> {
+    let nullp: ptr[ArcBox<T>] = nil
+    if self.inner == nullp { return Option.None }
+
+    unsafe {
+        let mut p = self.inner
+        let mut count = p.strong.load(atomic.MemoryOrder.Relaxed)
+        while count > (0 as usize) {
+            if count >= countLimit() { intrinsics.abort() }
+            match p.strong.compareExchangeWeak(
+            count,
+            count + (1 as usize),
+            atomic.MemoryOrder.Acquire,
+            atomic.MemoryOrder.Relaxed
+            ) {
+                Result.Ok(_) => {
+                    return Option.Some(Arc.fromInner<T>(self.inner))
+                }
+                Result.Err(current) => {
+                    count = current
+                }
+            }
+        }
+        return Option.None
+    }
+}
+
+/// Destroys a weak handle.
+@Destructor
+func ArcWeak.destroy<T>(self: own ArcWeak<T>): void {
+    let nullp: ptr[ArcBox<T>] = nil
+    if self.inner == nullp { return }
+
+    unsafe {
+        let mut p = self.inner
+        let prevWeak = p.weak.fetchSub(1 as usize, atomic.MemoryOrder.Release)
+        if prevWeak == (1 as usize) {
+            atomic.fence(atomic.MemoryOrder.Acquire)
+            ar_rt_free_aligned(self.inner as ptr[u8], boxSize<T>(), boxAlign<T>())
+        }
+    }
+}

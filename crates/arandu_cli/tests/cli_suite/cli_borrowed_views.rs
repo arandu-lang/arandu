@@ -149,12 +149,12 @@ func main(): int {
         storage.push(0 as u8)
         i = i + 1
     }
-    let view = storage.asSlice()
-    let mut writer = fmt.Formatter.new(view)
+    let mut writer = fmt.Formatter.new(storage.asMutSlice())
     match writer.writeStr("hey") {
         Ok(3) => {}
         _ => { return 1 }
     }
+    let view = writer.asSlice()
     if view[0] != (104 as u8) || view[1] != (101 as u8) || view[2] != (121 as u8) {
         return 2
     }
@@ -163,7 +163,8 @@ func main(): int {
         Err(_) => {}
         _ => { return 4 }
     }
-    if writer.len() != 3 || view[0] != (104 as u8) { return 5 }
+    let view2 = writer.asSlice()
+    if writer.len() != 3 || view2[0] != (104 as u8) { return 5 }
     return 0
 }
 "#,
@@ -554,6 +555,7 @@ fn c_backend_directory_name_views_coexist() {
             && generated_c.contains("blob_len > INT32_MAX")
             && generated_c.contains("entries_cap * 2 > SIZE_MAX / sizeof(ArHostDirEntry)")
             && generated_c.contains("readdir_error = errno")
+            && generated_c.contains("ar_pal_readdir_open")
             && generated_c.contains("if (ferror(f))")
             && generated_c.contains("int extra = fgetc(f)"),
         "C std.fs host runtime must guard buffer bounds and report read failures"
@@ -569,6 +571,7 @@ fn c_backend_directory_name_views_coexist() {
         .arg(&c_file)
         .arg("-o")
         .arg(&stem)
+        .args(arandu_middle::TargetSpec::for_host().cc_link_args())
         .output()
         .expect("compile emitted C");
     assert!(
@@ -684,4 +687,42 @@ func main(): int {
         !c.contains("*(T**)((uint8_t*)"),
         "generic field templates leaked into a monomorphic C function"
     );
+}
+
+#[test]
+fn byte_views_of_static_literals_may_be_returned() {
+    // A literal materialized in a local only holds a descriptor of static
+    // bytes; returning `asBytes("")` from a match arm is not a stack escape.
+    let output = check(
+        r#"module tests.borrowed_views.static_literal
+import std.core.slice as slice
+import std.core.str as strings
+
+func lineSlice(h: []u8, start: usize, n: usize): []u8 {
+    match slice.subslice<u8>(h, start, n) {
+        Option.Some(s) => { return s }
+        Option.None => { return strings.asBytes("") }
+    }
+}
+
+func main(): int { return slice.len<u8>(lineSlice(strings.asBytes("abc"), 1, 1)) as int - 1 }
+"#,
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn byte_views_of_owned_strings_still_cannot_escape() {
+    for source in [
+        "import std.core.str as strings\nfunc f(n: int): []u8 {\n    let s = \"v=${n}\"\n    return strings.asBytes(s)\n}\nfunc main(): int { return 0 }\n",
+        "import std.core.str as strings\nfunc f(flag: bool, n: int): []u8 {\n    let mut s = \"static\"\n    if flag { s = \"v=${n}\" }\n    return strings.asBytes(s)\n}\nfunc main(): int { return 0 }\n",
+    ] {
+        let output = check(source);
+        assert!(!output.status.success(), "owned view escaped:\n{source}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("O010"));
+    }
 }

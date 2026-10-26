@@ -6,7 +6,7 @@ use super::FunctionTranslator;
 impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
     /// A result construction can write straight into its caller-owned buffer.
     /// Consume the hint once: nested fields must retain independent storage.
-    pub(super) fn allocate_aggregate(&mut self, ty: &arandu_semantics::types::ArType) -> Value {
+    pub(super) fn allocate_aggregate(&mut self, ty: &arandu_middle::types::ArType) -> Value {
         match self.aggregate_destination.take() {
             Some(destination) => destination,
             None => self.allocate_independent_aggregate(ty),
@@ -18,10 +18,10 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
     /// reused across loop iterations; copies have separate slots.
     pub(super) fn allocate_independent_aggregate(
         &mut self,
-        ty: &arandu_semantics::types::ArType,
+        ty: &arandu_middle::types::ArType,
     ) -> Value {
         let layout = self.checked_layout(ty);
-        let id = self.type_info.type_interner.intern(ty.clone());
+        let id = self.type_info.type_interner().intern(ty.clone());
         // A bare slice descriptor is a non-owning `{data, len}` view: its own
         // bytes carry no lifetime (the pointee stays with its owner), so a
         // per-site slot replaces a per-execution malloc. Only a bare slice
@@ -29,17 +29,17 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         // rejection of `scratch_type_safe`. The promotion gate still applies:
         // `Free`/back-edge phi/extern rules that disable promotion for the
         // function must disable it for descriptors too.
-        let slice_descriptor = matches!(ty, arandu_semantics::types::ArType::Slice(_));
+        let slice_descriptor = matches!(
+            ty,
+            arandu_middle::types::ArType::Slice(_) | arandu_middle::types::ArType::MutSlice(_)
+        );
         let eligible = self.frame_promotion_safe
             && (slice_descriptor
-                || (arandu_semantics::aggregate_storage::scratch_type_safe(
+                || (arandu_mir::aggregate_storage::scratch_type_safe(
                     id,
-                    &self.type_info.type_interner,
+                    self.type_info.type_interner(),
                     self.type_info,
-                ) && self
-                    .type_info
-                    .borrow_paths(id)
-                    .is_ok_and(|paths| paths.is_empty())));
+                ) && self.type_info.is_borrow_free(id)));
         // Ownership/drop elaboration already governs non-Copy payloads. This
         // allocation owns only their backing bytes: moving a value transfers
         // its resources, while each invocation retains its private backing.
@@ -78,7 +78,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             && alignment <= 16
             && self
                 .current_func
-                .predecessors(arandu_semantics::amir::BlockId::from_usize(0))
+                .predecessors(arandu_middle::amir::BlockId::from_usize(0))
                 .is_empty()
         {
             return self.allocate_heap_scratch(size);
@@ -111,7 +111,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
     pub(super) fn load_abi_slot(
         &mut self,
         base: Value,
-        slot: &arandu_semantics::layout::AbiSlot,
+        slot: &arandu_middle::layout::AbiSlot,
         aggregate_size: u64,
     ) -> Value {
         let ty = crate::abi::abi_scalar_to_clif(slot.scalar);
@@ -132,7 +132,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         &mut self,
         value: Value,
         base: Value,
-        slot: &arandu_semantics::layout::AbiSlot,
+        slot: &arandu_middle::layout::AbiSlot,
         aggregate_size: u64,
     ) {
         let Some(bytes) = aggregate_size.checked_sub(slot.offset) else {

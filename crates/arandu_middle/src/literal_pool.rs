@@ -7,6 +7,8 @@
 //! longer ones are refcounted. Callers pass `&str` via [`AmirLiteralPool::intern_str`]
 //! etc. so lowering does not need to `String::clone` just to intern.
 
+use std::sync::Arc;
+
 use rustc_hash::FxHashMap;
 use smol_str::SmolStr;
 
@@ -20,6 +22,9 @@ pub enum AmirLiteralEntry {
     /// Frozen IEEE value: residual CTFE must not reparse a decimal display.
     FloatBits(crate::ctfe::ConstFloat),
     Str(SmolStr),
+    /// Frozen bytes that are not valid UTF-8 (`b"\xFF"`). Decoded byte strings
+    /// must keep their exact bytes, so they cannot reuse a `str` entry.
+    Bytes(Arc<[u8]>),
     Char(SmolStr),
 }
 
@@ -61,6 +66,12 @@ impl AmirLiteralPool {
     #[inline]
     pub fn intern_str(&mut self, s: impl Into<SmolStr>) -> LiteralId {
         self.intern(AmirLiteralEntry::Str(s.into()))
+    }
+
+    /// Intern a non-UTF-8 byte blob (`b"\xFF"`).
+    #[inline]
+    pub fn intern_bytes(&mut self, bytes: impl Into<Arc<[u8]>>) -> LiteralId {
+        self.intern(AmirLiteralEntry::Bytes(bytes.into()))
     }
 
     /// Intern a char lexeme (source spelling, possibly multi-byte escape form).

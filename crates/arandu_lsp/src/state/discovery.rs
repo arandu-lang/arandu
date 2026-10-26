@@ -4,8 +4,23 @@ use std::path::PathBuf;
 
 /// Read a deterministic, bounded set of workspace sources outside the LSP
 /// handshake. Registration remains on the main server thread.
+///
+/// Production discovery passes a cancellation callback to
+/// [`discover_aru_files_until`]. This wrapper remains for callers that scan
+/// to completion.
 #[must_use]
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn discover_aru_files(roots: &[PathBuf]) -> Vec<(PathBuf, String)> {
+    discover_aru_files_until(roots, || false)
+}
+
+/// Like [`discover_aru_files`], but stops before the next directory or file
+/// read once `cancelled` returns true. Files already accepted are returned.
+#[must_use]
+pub fn discover_aru_files_until(
+    roots: &[PathBuf],
+    mut cancelled: impl FnMut() -> bool,
+) -> Vec<(PathBuf, String)> {
     const MAX_FILES: usize = 256;
 
     let mut stack = roots.to_vec();
@@ -15,6 +30,9 @@ pub fn discover_aru_files(roots: &[PathBuf]) -> Vec<(PathBuf, String)> {
     let mut visited_dirs = std::collections::HashSet::new();
 
     while let Some(dir) = stack.pop() {
+        if cancelled() {
+            break;
+        }
         let canonical = std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
         if !visited_dirs.insert(canonical) {
             continue;
@@ -25,6 +43,9 @@ pub fn discover_aru_files(roots: &[PathBuf]) -> Vec<(PathBuf, String)> {
         let mut entries: Vec<_> = rd.flatten().collect();
         entries.sort_by_key(std::fs::DirEntry::path);
         for ent in entries.into_iter().rev() {
+            if cancelled() {
+                break;
+            }
             let p = ent.path();
             if p.is_dir() {
                 if matches!(
@@ -41,18 +62,21 @@ pub fn discover_aru_files(roots: &[PathBuf]) -> Vec<(PathBuf, String)> {
                 }
             }
         }
-        if paths.len() >= MAX_FILES {
+        if paths.len() >= MAX_FILES || cancelled() {
             break;
         }
     }
 
-    paths
-        .into_iter()
-        .filter_map(|path| {
-            let text = std::fs::read_to_string(&path).ok()?;
-            Some((path, text))
-        })
-        .collect()
+    let mut files = Vec::new();
+    for path in paths {
+        if cancelled() {
+            break;
+        }
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            files.push((path, text));
+        }
+    }
+    files
 }
 
 #[cfg(test)]
@@ -83,6 +107,25 @@ mod tests {
             Some("main.aru")
         );
 
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn discover_aru_files_until_returns_nothing_when_already_cancelled() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "arandu_test_discovery_cancel_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        std::fs::write(temp_dir.join("main.aru"), "func main(): int { 0 }").unwrap();
+        std::fs::write(temp_dir.join("other.aru"), "func other(): int { 1 }").unwrap();
+
+        let discovered = discover_aru_files_until(std::slice::from_ref(&temp_dir), || true);
+        assert!(discovered.is_empty());
+
+        let present = discover_aru_files(std::slice::from_ref(&temp_dir));
+        assert_eq!(present.len(), 2);
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

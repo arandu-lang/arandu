@@ -283,7 +283,7 @@ public func is_empty(s: str): bool {
 "#
         .into(),
     );
-    db.new_file(
+    db.new_stdlib_file(
         "stdlib/std/path.aru".into(),
         "public func is_empty(s: str): bool { return true }\n".into(),
     );

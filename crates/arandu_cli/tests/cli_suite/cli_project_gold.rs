@@ -37,6 +37,33 @@ fn size_inspection_rejects_debug_before_reading_the_source() {
 }
 
 #[test]
+fn native_build_does_not_treat_i686_layout_as_wasm() {
+    let tmp = tempfile_dir("arandu_native_i686_layout");
+    let project = tmp.join("native_i686_layout");
+    let init = run_cli_in(&tmp, &["new", "native_i686_layout", "--bin", "--vcs=none"]);
+    assert!(
+        init.status.success(),
+        "new project: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+
+    let build = run_cli_in(&project, &["build", "--layout=i686"]);
+    assert!(
+        !build.status.success(),
+        "i686 layout unexpectedly built as a native artifact"
+    );
+    let stderr = String::from_utf8_lossy(&build.stderr);
+    assert!(
+        stderr.contains("native builds require the host data layout"),
+        "expected explicit layout rejection, got: {stderr}"
+    );
+    assert!(
+        !project.join("target/dev/wasm32-wasip1").exists(),
+        "32-bit layout must not create an implicit Wasm artifact"
+    );
+}
+
+#[test]
 fn cache_dir_reports_the_absolute_override_without_creating_it() {
     let tmp = tempfile_dir("arandu_cache_dir");
     let cache = tmp.join("global-cache");
@@ -957,4 +984,41 @@ fn collect_files(
         }
     }
     result
+}
+
+#[test]
+fn package_check_covers_modules_the_entry_never_calls() {
+    // `check` used to lower only what main reached, so type and ownership
+    // errors in an unused package module passed silently.
+    let tmp = tempfile_dir("arandu_check_all_modules");
+    let project = tmp.join("unreached");
+    let new_out = run_cli_in(&tmp, &["new", "unreached"]);
+    assert!(
+        new_out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&new_out.stderr)
+    );
+    for (body, code) in [
+        (
+            "public func typo(): usize {\n    let x: bool = 3\n    return 0\n}\n",
+            "T",
+        ),
+        (
+            "import std.alloc.vec as vec\npublic func moved(): usize {\n    let a = vec.Vec.new<int>()\n    let b = a\n    return a.len()\n}\n",
+            "O001",
+        ),
+    ] {
+        fs::write(
+            project.join("src/helper.aru"),
+            format!("module helper\n\n{body}"),
+        )
+        .unwrap();
+        let check = run_cli_in(&project, &["check"]);
+        let stderr = String::from_utf8_lossy(&check.stderr);
+        assert!(
+            !check.status.success(),
+            "unreached module error was not reported:\n{body}"
+        );
+        assert!(stderr.contains(code), "expected {code}, got:\n{stderr}");
+    }
 }

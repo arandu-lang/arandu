@@ -18,6 +18,27 @@ pub struct CompiledModule {
     block_coverage: Option<Arc<BlockCoverageSession>>,
 }
 
+impl Drop for CompiledModule {
+    fn drop(&mut self) {
+        // Definitions include compiler-generated thread entry/drop thunks.
+        // Keep the module and coverage metadata alive through all descendants
+        // and destruction of unclaimed results. External function-pointer
+        // callers must already have stopped, as required by get_fn's contract.
+        let definitions: std::collections::HashSet<_> = self
+            .func_ids
+            .values()
+            .filter(|&&id| {
+                self.module.declarations().get_function_decl(id).linkage
+                    != cranelift_module::Linkage::Import
+            })
+            .map(|&id| self.module.get_finalized_function(id).addr())
+            .collect();
+        arandu_runtime::native_thread::join_module_threads(|callback| {
+            definitions.contains(&callback)
+        });
+    }
+}
+
 impl CompiledModule {
     pub(crate) fn new(
         module: JITModule,
@@ -42,7 +63,10 @@ impl CompiledModule {
     /// # Safety
     /// The caller must guarantee that the type `F` exactly matches the
     /// signature of the compiled function. Mismatched signatures cause
-    /// undefined behaviour.
+    /// undefined behaviour. Keep this CompiledModule alive throughout every
+    /// external call and stop all such calls before dropping it. Function
+    /// pointers must not be invoked after module destruction. Native threads
+    /// admitted by std.thread are drained separately by the module's drop.
     pub unsafe fn get_fn<F>(&self, name: &str) -> Option<F> {
         let id = self.func_ids.get(name)?;
         let ptr = self.module.get_finalized_function(*id);
@@ -58,24 +82,25 @@ impl CompiledModule {
     /// that the full signature (types and arity) matches the expected signature.
     ///
     /// # Safety
-    /// The caller must still guarantee that the type `F` matches the signature's types.
+    /// The caller must still guarantee that the type `F` matches the signature's
+    /// types and obey the module lifetime contract documented on [`Self::get_fn`].
     pub unsafe fn get_fn_checked<F>(
         &self,
         name: &str,
         expected_sig: &cranelift_codegen::ir::Signature,
-    ) -> Result<F, arandu_semantics::JitError> {
+    ) -> Result<F, arandu_codegen::JitError> {
         let id = self
             .func_ids
             .get(name)
-            .ok_or(arandu_semantics::JitError::NotFound)?;
+            .ok_or(arandu_codegen::JitError::NotFound)?;
         let decl = self.module.declarations().get_function_decl(*id);
         if decl.signature != *expected_sig {
-            return Err(arandu_semantics::JitError::SignatureMismatch {
+            return Err(arandu_codegen::JitError::SignatureMismatch {
                 expected: format!("{:?}", expected_sig),
                 actual: format!("{:?}", decl.signature),
             });
         }
 
-        unsafe { self.get_fn::<F>(name) }.ok_or(arandu_semantics::JitError::NotFound)
+        unsafe { self.get_fn::<F>(name) }.ok_or(arandu_codegen::JitError::NotFound)
     }
 }

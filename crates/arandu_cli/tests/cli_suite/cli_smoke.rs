@@ -706,6 +706,7 @@ fn emit_c_host_m25_fs_env_compiles_and_runs() {
             .arg(&c_file)
             .arg("-o")
             .arg(&bin_file)
+            .args(arandu_middle::TargetSpec::for_host().cc_link_args())
             .output()
             .expect("invoke C compiler");
         assert!(

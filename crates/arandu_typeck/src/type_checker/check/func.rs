@@ -68,6 +68,50 @@ fn validate_method_receiver(checker: &mut TypeChecker<'_>, decl: &FuncDecl) {
             ArType::Coroutine(_) if checker.symbols.is_coroutine_type(owner) => {
                 Some(self_ty.clone())
             }
+            ArType::Primitive(arandu_middle::types::Primitive::Str)
+                if checker.symbols.builtins.str_type == Some(owner) =>
+            {
+                Some(self_ty.clone())
+            }
+            ArType::Primitive(arandu_middle::types::Primitive::Char)
+                if checker.symbols.builtins.char_type == Some(owner) =>
+            {
+                Some(self_ty.clone())
+            }
+            ArType::Primitive(arandu_middle::types::Primitive::Int)
+                if checker.symbols.builtins.int_type == Some(owner) =>
+            {
+                Some(self_ty.clone())
+            }
+            ArType::Primitive(arandu_middle::types::Primitive::U32)
+                if checker.symbols.builtins.u32_type == Some(owner) =>
+            {
+                Some(self_ty.clone())
+            }
+            ArType::Primitive(arandu_middle::types::Primitive::U64)
+                if checker.symbols.builtins.u64_type == Some(owner) =>
+            {
+                Some(self_ty.clone())
+            }
+            ArType::Primitive(arandu_middle::types::Primitive::Float)
+                if checker.symbols.builtins.float_type == Some(owner) =>
+            {
+                Some(self_ty.clone())
+            }
+            ArType::Slice(_) | ArType::MutSlice(_)
+                if checker.symbols.builtins.slice_type == Some(owner) =>
+            {
+                Some(self_ty.clone())
+            }
+            ArType::Ptr(_) if checker.symbols.builtins.ptr_type == Some(owner) => {
+                Some(self_ty.clone())
+            }
+            ArType::Nullable(inner)
+                if matches!(checker.resolve(*inner), ArType::Ptr(_))
+                    && checker.symbols.builtins.ptr_type == Some(owner) =>
+            {
+                Some(self_ty.clone())
+            }
             _ => None,
         };
         if let Some(intrinsic_receiver) = intrinsic_receiver {

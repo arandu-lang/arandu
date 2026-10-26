@@ -1,0 +1,131 @@
+//! Exclusive ownership of one heap-allocated value.
+//!
+//! `Box<T>` moves its value into aligned storage and destroys it exactly once
+//! when the box leaves scope. `tryNew` reports allocation errors; `new` aborts
+//! on failure. Failed construction drops its input value.
+//!
+//! A zero-sized value uses a one-byte allocation with its required alignment,
+//! so references remain non-null and its destructor still runs normally.
+//!
+//! ## Platform
+//! Native targets with the aligned allocator host, and wasm32. This module is not a
+//! freestanding allocator and does not provide shared or atomic ownership.
+module std.alloc.boxed
+
+import std.alloc.allocator_api as alloc
+
+import std.core.intrinsics as intrinsics
+
+import std.core.mem as mem
+
+import std.core.slice as slice
+import std.core.option as option
+
+extern "C" {
+    /// Allocates a buffer with the selected target's size and alignment.
+    func ar_rt_alloc_aligned(size: usize, align: usize): ptr[u8]
+    /// Frees a buffer using the same layout with which it was allocated.
+    func ar_rt_free_aligned(data: ptr[u8], size: usize, align: usize): void
+}
+
+/// An exclusive, non-copyable owner of one initialized `T`.
+public struct Box<T> {
+    /// Private allocation pointer; safe clients cannot forge or duplicate it.
+    private data: ptr[T]
+}
+
+func storageSize<T>(): usize {
+    let size = mem.sizeOf<T>()
+    if size == (0 as usize) { return 1 as usize }
+    return size
+}
+
+/// Moves `value` into aligned storage or returns an allocation error.
+///
+/// The input is destroyed if allocation fails; no box is created in that case.
+public func Box.tryNew<T>(value: T): Result<Box<T>, alloc.AllocError> {
+    let size = storageSize<T>()
+    let align = mem.alignOf<T>()
+    let maximum: usize = 2147483647 as usize
+    if size > maximum || align == (0 as usize) || align > maximum {
+        return Result.Err(alloc.AllocError.InvalidLayout)
+    }
+    unsafe {
+        let data = ar_rt_alloc_aligned(size, align)
+        let nullp: ptr[u8] = nil
+        if data == nullp { return Result.Err(alloc.AllocError.OutOfMemory) }
+        let typed = data as ptr[T]
+        mem.ptrWrite<T>(typed, value)
+        return Result.Ok(Box<T> { data: typed })
+    }
+}
+
+/// Moves `value` into aligned storage, aborting if allocation fails.
+public func Box.new<T>(value: T): Box<T> {
+    match Box.tryNew<T>(value) {
+        Result.Ok(boxed) => { return boxed }
+        Result.Err(_) => { unsafe { intrinsics.abort() } }
+    }
+    // Unreachable after the abort intrinsic; retained for the void signature.
+    return Box<T> { data: nil }
+}
+
+/// Borrows the contained value; the reference cannot outlive this box.
+public func Box.get<T>(self: ref Box<T>): ref T {
+    unsafe {
+        return ref *self.data
+    }
+}
+
+/// Exclusively borrows the contained value for this box's mutable borrow.
+public func Box.getMut<T>(self: mut ref Box<T>): mut ref T {
+    unsafe { return mut ref *self.data }
+}
+
+/// Moves out the contained value and releases the allocation.
+///
+/// The returned value becomes the caller's responsibility to destroy.
+public func Box.intoInner<T>(self: own Box<T>): T {
+    let mut owned = self;
+    unsafe {
+        let value = mem.ptrRead<T>(owned.data)
+        ar_rt_free_aligned(owned.data as ptr[u8], storageSize<T>(), mem.alignOf<T>())
+        owned.data = nil
+        return value
+    }
+}
+
+/// Consumes the `Box`, returning a raw pointer to the heap-allocated value without freeing it.
+///
+/// The caller assumes ownership of the allocation and is responsible for eventually
+/// dropping the inner value and freeing the memory (e.g., via `Box.fromRaw`).
+public func Box.leak<T>(self: own Box<T>): ptr[T] {
+    let mut owned = self
+    let raw = owned.data
+    owned.data = nil
+    return raw
+}
+
+/// Constructs a `Box<T>` from a raw pointer previously obtained via `Box.leak`.
+///
+/// ## Safety
+/// `p` must be the non-null aligned pointer returned by `Box.leak`, holding
+/// exactly one initialized `T` with its original Box allocation layout. This
+/// call transfers its unique ownership; reconstructing another Box from the
+/// same pointer or reading/freeing through stale aliases is invalid.
+@Unsafe
+public func Box.fromRaw<T>(p: ptr[T]): Box<T> {
+    return Box<T> { data: p }
+}
+
+/// Destroys the contained value, then frees its allocation with the same layout.
+@Destructor
+func Box.destroy<T>(self: own Box<T>): void {
+    let nullp: ptr[T] = nil
+    if self.data != nullp {
+        unsafe {
+            mem.dropInPlace<T>(self.data)
+            ar_rt_free_aligned(self.data as ptr[u8], storageSize<T>(), mem.alignOf<T>())
+        }
+    }
+}

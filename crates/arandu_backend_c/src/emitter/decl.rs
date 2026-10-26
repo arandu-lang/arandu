@@ -5,9 +5,9 @@ use std::fmt::Write;
 use arandu_middle::SymbolId;
 use arandu_middle::amir::{AmirFunc, AmirRvalue, AmirStmt};
 use arandu_middle::literal_pool::AmirLiteralEntry;
-use arandu_middle::types::ArType;
+use arandu_middle::types::{ArType, Primitive};
 
-use super::{CEmitter, sanitize_c_ident};
+use super::CEmitter;
 
 impl<'a> CEmitter<'a> {
     pub(super) fn gen_drop_glue(
@@ -49,8 +49,7 @@ impl<'a> CEmitter<'a> {
         }
         for (glue, (ty, destructor)) in payloads {
             let payload_c = self.format_type(&ty);
-            let destructor_sym = self.symbols.get(destructor);
-            let destructor_c = sanitize_c_ident(self.symbols.host_func_name(destructor_sym));
+            let destructor_c = self.c_function_name(destructor);
             let _ = writeln!(
                 &mut self.output,
                 "static void {glue}(void *raw) {{ {destructor_c}(*({payload_c} *)raw); }}"
@@ -61,8 +60,7 @@ impl<'a> CEmitter<'a> {
     /// C linkage name for a function's return type (`main` is always `int`).
     pub(super) fn c_func_return_type(&self, func: &AmirFunc) -> String {
         let sym = self.symbols.get(func.symbol);
-        let name = sanitize_c_ident(self.symbols.host_func_name(sym));
-        if name == "main" {
+        if self.symbols.host_func_name(sym) == "main" {
             return "int".to_string();
         }
         let ret = self.interner.resolve(func.return_type);
@@ -71,10 +69,16 @@ impl<'a> CEmitter<'a> {
 
     pub(super) fn emit_str_literals(&mut self) {
         for (i, entry) in self.program.literal_pool.entries.iter().enumerate() {
-            if let AmirLiteralEntry::Str(s) = entry {
+            // `str` and non-UTF-8 `b"..."` blobs are both static byte arrays.
+            let bytes = match entry {
+                AmirLiteralEntry::Str(s) => s.as_bytes(),
+                AmirLiteralEntry::Bytes(b) => b,
+                _ => continue,
+            };
+            {
                 // emit global array
                 let _ = write!(&mut self.output, "static const uint8_t STR_{}[] = {{", i);
-                for b in s.bytes() {
+                for b in bytes {
                     let _ = write!(&mut self.output, "{},", b);
                 }
                 let _ = writeln!(&mut self.output, "0}};"); // null terminator for safety
@@ -85,19 +89,35 @@ impl<'a> CEmitter<'a> {
                     "static const ArStr AR_STR_{} = {{ .ptr = STR_{}, .len = {} }};",
                     i,
                     i,
-                    s.len()
+                    bytes.len()
                 );
             }
         }
     }
 
+    /// Whether `T?` with this inner type is a `T*` box handle in C.
+    pub(super) fn is_boxed_nullable(&self, inner: &ArType) -> bool {
+        inner.slice_abi_element(self.interner).is_none()
+            && !matches!(
+                inner,
+                ArType::Ptr(_)
+                    | ArType::Ref(_)
+                    | ArType::RefMut(_)
+                    | ArType::Nullable(_)
+                    | ArType::Primitive(Primitive::Str)
+                    | ArType::Void
+                    | ArType::Error
+            )
+    }
+
     pub(super) fn ensure_type_emitted(&mut self, ty: &ArType) {
         if let ArType::Nullable(inner) = ty {
             let inner_ty = self.interner.resolve(*inner);
-            if matches!(
+            if (matches!(
                 inner_ty,
                 ArType::Ptr(_) | ArType::Ref(_) | ArType::RefMut(_)
-            ) && inner_ty.slice_abi_element(self.interner).is_none()
+            ) && inner_ty.slice_abi_element(self.interner).is_none())
+                || self.is_boxed_nullable(&inner_ty)
             {
                 self.ensure_type_emitted(&inner_ty);
                 return;
@@ -166,12 +186,17 @@ impl<'a> CEmitter<'a> {
                 return;
             }
             let layout = self.checked_layout(ty);
-            if layout.size > 0 && *len > 0 {
+            // Zero-sized elements still occupy a byte each in C, and the
+            // emitter indexes them as `T[len]`, so the storage must exist.
+            if *len > 0 {
                 let elem_c_ty = self.format_type(&inner_ty);
                 let _ = writeln!(
                     &mut self.output,
                     "typedef struct AR_MAY_ALIAS {{ _Alignas({}) {} data[{}]; }} {};",
-                    layout.align, elem_c_ty, len, name
+                    layout.align.max(1),
+                    elem_c_ty,
+                    len,
+                    name
                 );
             } else {
                 let _ = writeln!(
@@ -184,6 +209,10 @@ impl<'a> CEmitter<'a> {
             return;
         }
 
+        if let ArType::Vector(vector) = ty {
+            self.emit_vector_type(*vector);
+            return;
+        }
         let layout = self.checked_layout(ty);
         if layout.size > 0 {
             let _ = writeln!(
@@ -207,7 +236,10 @@ impl<'a> CEmitter<'a> {
                     self.ensure_type_emitted(&field_ty);
                 }
             }
-            ArType::Option(inner) | ArType::Nullable(inner) | ArType::Slice(inner) => {
+            ArType::Option(inner)
+            | ArType::Nullable(inner)
+            | ArType::Slice(inner)
+            | ArType::MutSlice(inner) => {
                 let inner_ty = self.interner.resolve(*inner);
                 self.ensure_type_emitted(&inner_ty);
             }
@@ -240,10 +272,10 @@ impl<'a> CEmitter<'a> {
     }
 
     pub(super) fn emit_func_decl(&mut self, func: &AmirFunc) {
-        let sym = self.symbols.get(func.symbol);
-        let name = sanitize_c_ident(self.symbols.host_func_name(sym));
+        let name = self.c_function_name(func.symbol);
+        let linkage = self.c_function_linkage(func.symbol);
         let ret_ty = self.c_func_return_type(func);
-        let _ = write!(&mut self.output, "{} {}(", ret_ty, name);
+        let _ = write!(&mut self.output, "{linkage}{} {}(", ret_ty, name);
         self.emit_func_parameters(func);
         let _ = writeln!(&mut self.output, ");");
     }

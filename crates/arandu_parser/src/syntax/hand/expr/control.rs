@@ -208,6 +208,7 @@ pub(super) fn parse_lambda(
             ExprKind::Lambda {
                 params: params_range,
                 body,
+                is_move: false,
             },
             ctx.span(start, end),
         ));
@@ -230,6 +231,75 @@ pub(super) fn parse_lambda(
         ExprKind::Lambda {
             params: params_range,
             body,
+            is_move: false,
+        },
+        ctx.span(start, end),
+    ))
+}
+
+pub(super) fn parse_pipe_lambda(
+    ctx: &mut HandCtx<'_>,
+    cur: &mut Cursor<'_>,
+    start: u32,
+    is_move: bool,
+) -> Option<ExprId> {
+    let mut params = Vec::new();
+    if !cur.eat(TokenKind::LogicalOr) {
+        cur.expect(TokenKind::Pipe)?;
+        if cur.peek_kind() != Some(TokenKind::Pipe) {
+            loop {
+                let name_tok = cur.expect(TokenKind::IdentValue)?;
+                let name = SmolStr::new(ctx.text(name_tok)?);
+                let p_start = name_tok.start;
+                let ty = if cur.eat(TokenKind::Colon)
+                    || cur.peek_kind().is_some_and(can_start_type_kind)
+                {
+                    Some(parse_type(ctx, cur)?)
+                } else {
+                    None
+                };
+                let p_end = ty
+                    .map(|id| ctx.pool.type_expr_span(id).end)
+                    .unwrap_or(name_tok.start + name_tok.len);
+                params.push(LambdaParam {
+                    span: ctx.span(p_start, p_end),
+                    name,
+                    ty,
+                });
+                if cur.eat(TokenKind::Comma) {
+                    continue;
+                }
+                break;
+            }
+        }
+        cur.expect(TokenKind::Pipe)?;
+    }
+    let body = if cur.peek_kind() == Some(TokenKind::LBrace) {
+        let block = parse_block_tokens(ctx, cur)?;
+        LambdaBody::Block {
+            span: block.span,
+            block,
+        }
+    } else {
+        let expr = try_hand_lower_expr(ctx, cur, 0)?;
+        LambdaBody::Expr {
+            span: ctx.pool.expr_span(expr),
+            expr,
+        }
+    };
+    let end = match &body {
+        LambdaBody::Expr { span, .. } | LambdaBody::Block { span, .. } => span.end,
+    };
+    let param_ids: Vec<_> = params
+        .into_iter()
+        .map(|p| ctx.pool.alloc_lambda_param(p))
+        .collect();
+    let params_range = ctx.pool.alloc_lambda_param_list(&param_ids);
+    Some(ctx.pool.alloc_expr(
+        ExprKind::Lambda {
+            params: params_range,
+            body,
+            is_move,
         },
         ctx.span(start, end),
     ))

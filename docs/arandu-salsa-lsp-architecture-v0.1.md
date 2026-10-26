@@ -37,9 +37,9 @@ impedem o LSP de publicar resultados de buffers/revisões obsoletos.
 | `ctfe_instance_amir` / `ctfe_eval_instance` | Unidades concretas; monomorphização canônica e identidade estrutural de callees |
 | `ctfe_root_amir` / `ctfe_eval_root` | Tipagem inicial e avaliação de expressão/bloco isolados; seletores estruturais de instância e ocorrência |
 | `item_static_branches` | Seleção pública de `comptime if` por função não genérica antes de resolução de corpos; mapa explícito de decisões, exclusão parent-first e recuperação de ciclos |
-| `item_const_arguments` | Argumentos `comptime (expr)` independentes da instância em corpos ordinários, inclusive templates; congelados via headers/VM antes do checker puro, com `Const(u64)` e falhas explícitas, sem AMIR runtime |
+| `item_const_arguments` | Argumentos `comptime (expr)` independentes da instância em corpos ordinários, inclusive templates; congelados via headers/VM antes do checker puro, com chaves congeladas tipadas (`Const(u64)` no caminho compatível não negativo) e falhas explícitas, sem AMIR runtime |
 | `item_staged_typing` | Obrigações públicas após tipagem inicial por item; materialização de valores antes de HIR runtime |
-| `item_static_loops` | Domínios inteiros finitos via raízes AMIR; expansões não executam um interpretador de AST |
+| `item_static_loops` | Domínios inteiros finitos e arrays Copy fechados via raízes AMIR; expansões não executam um interpretador de AST |
 | `instance_staged_result` | Seleção, argumentos e raízes dependentes antes de resolver/tipar uma instância concreta; corpos residuais por ocorrência |
 | `declaration_hir` / `declaration_context` | Headers por módulo e closure transitiva compartilhada, sem corpos |
 | `function_hir` / `instance_hir` | Corpo isolado e especialização concreta; headers são ligados somente na instância |
@@ -118,8 +118,11 @@ sem staging compartilham o memo inicial sem varredura da arena.
 Parser/formatter, keyword semântico, completion e fallback TextMate reconhecem
 esse recorte. Seleção estática em match e templates usa a mesma continuação
 lexical. A seleção em escopos de lambda não habilita o sistema geral de closures:
-tipagem e lowering dessas expressões conservam U001 até o marco 0.3, conforme
-a delimitação de escopo aprovada pelo mantenedor.
+tipagem e lowering dessas expressões conservam U001, exceto o recorte
+`move ||` sem parâmetros e com capturas próprias Send, que baixa para ThreadJob.
+No plano revisável, closures têm contrato semântico próprio na trilha `0.3.x`;
+a disponibilidade do produtor por instância não implementa captures, escape ou
+drop de closures gerais.
 
 `resolved_headers` executa o pipeline puro de imports e resolve declarações,
 atributos, constantes e assinaturas, sem visitar corpos de funções. Guarda
@@ -274,7 +277,7 @@ assinatura/layout, não corpo. Pool IDs, IDs sintéticos de composição e símb
 de debug locais não são identidade de máquina: literais/tipos são codificados
 por conteúdo e símbolos válidos pelos nomes nativos qualificados. `SymbolId`
 composto continua intacto no IR. Drop shims usam o mesmo nome nativo estável.
-O schema CGU v3 invalida caches antigos, preservando verificações de objetos,
+O schema CGU v5 invalida caches antigos, preservando verificações de objetos,
 target, toolchain, ABI/layout (inclusive `repr(C)`) e closure final do link.
 Remover uma CGU pode reutilizar objetos restantes, mas obriga relink do
 executável quando sua closure mudou. Regressões comparam objetos byte a byte
@@ -290,6 +293,29 @@ concretos ainda retêm metadata em domínios locais. Cutoff de nova instância e
 mudanças não relacionadas têm regressões, mas não encerram o marco 0.3. A DB
 batch continua nova a cada processo. Latência p95, retenção de contextos e
 validação nativa Windows/macOS continuam gates distintos.
+
+### Fronteira do motor quente e publicação dev
+
+Estado auditado em 2026-10-15: `commands/build.rs` instancia a DB por build;
+não há daemon de build. O cache CGU local possui lock e GC de 500 MiB, sem CAS
+global. O patch ELF copia o executável inteiro para staging, sincroniza o
+mapeamento e recalcula o digest integral antes da publicação. Isso preserva o
+artefato anterior, mas não prova custo proporcional à edição.
+
+O [roadmap mestre](arandu-compiler-roadmap-v0.1.md) mantém a única fila e os
+gates. O plano `0.2.x` direciona serviço local supervisionado com DB viva,
+protocolo versionado, fila limitada/coalescida, prioridade/cancelamento e
+fallback batch; queries continuam puras e Salsa não é serializada. A imagem
+dev deve ser recuperável, usando ranges/páginas alterados ou CoW disponível,
+com fallback atômico e sem mutar artefatos publicados. Seu gate exige clean
+byte a byte, kill/recovery e p95 ≤100 ms em host/corpus documentados. A trilha
+`0.3.x` completa os gates por instância e p95 ≤10 ms. São marcos de planejamento
+revisável, sem aprovação implícita dos Drafts.
+
+`xtask bench-incremental` mede uma amostra por classe num corpus de duas
+funções; seus timers e hashes não constituem distribuição p95. A
+[metodologia](benchmarks/README.md) distingue esse oráculo dos gates futuros.
+CAS global, LLVM, interop e extensões de pesquisa mantêm contratos próprios.
 
 O workload informativo `runtime_workload` compara o produtor puro global
 legado e o ativo no mesmo checkout: 32 funções com `Vec<int>`, helper genérico,
@@ -428,6 +454,12 @@ O teste mantém exatamente uma HIR e unidade raw/final reexecutadas na edição.
     Dependências Git remotas são materializadas fora de Salsa pela biblioteca
     compartilhada `arandu_package`; o LSP opera apenas com lock e cache
     revalidado, sem rede durante descoberta ou reload.
+    A autoridade para intrínsecos e identidades canônicas é um input separado
+    por `SourceFile`, concedido pelo driver à stdlib verificada; declarar um
+    namespace `std` não concede essa origem. A descoberta instala a raiz antes
+    de registrar fontes novas e atualiza a autoridade de overlays já abertos
+    sob essa raiz, sem substituir seu texto. Isso também vale sem manifesto.
+    Resolver e typechecker consomem os inputs, sem consultar o filesystem.
 14. Rename usa análise pura em `arandu_query`: a gramática lexical rejeita
     nomes reservados/inválidos, scopes relacionados bloqueiam conflitos e os
     spans vêm dos tokens do CST cruzados com a identidade semântica. O LSP
@@ -471,6 +503,12 @@ O teste mantém exatamente uma HIR e unidade raw/final reexecutadas na edição.
     revisão rejeita resultados invalidados por edições reais. Tráfego interativo
     contínuo pode adiar a descoberta até haver uma janela sem respostas pendentes.
 
+O canal worker→loop de resultados é bounded em 64 mensagens no código atual;
+o loop adia rejeições em vez de enviar bloqueando ao mesmo canal. Essa fronteira
+é distinta do limite/coalescência de jobs e das 64 requests admitidas. Validar
+pressão com snapshots/escrita Salsa e shutdown é obrigação própria; não inferir
+endurance apenas de uma troca de tipo de canal.
+
 ### F4 / P3 — delta on-type
 
 - `block_dataflow_facts`: live/init/moved/stmt por bloco.  
@@ -502,5 +540,6 @@ guardrail atual é lexical e deliberadamente estreito.
 
 ## Futuro e Próximos Passos
 
-Medir latência p50/p95 e recomputações por workload antes de mudar granularidade;
-manter filas limitadas, cancelamento e early-cutoff por item.
+Prioridades e critérios de saída vivem somente no
+[roadmap mestre](arandu-compiler-roadmap-v0.1.md). Medições de latência e
+recomputações devem preservar filas limitadas, cancelamento e cutoff por item.

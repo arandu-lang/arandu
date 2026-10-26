@@ -23,20 +23,33 @@ A proposta substitui a herança do modelo isolado do Cargo por uma arquitetura e
 1. **Diretório `target/` Local Estritamente Limpo**: A pasta `target/` na raiz do projeto armazena **exclusivamente os produtos finais solicitados** (`bin/` e `lib/`). Arquivos de objetos intermediários (`.o`), CGUs, metadados `.amir`, `.air` e árvores incrementais são permanentemente banidos da pasta local do projeto.
 2. **Content-Addressable Storage (CAS) Global Compartilhado**: Todos os artefatos intermediários residem em um repositório centralizado do usuário (`~/.cache/arandu/cas/`), indexados pelo digest criptográfico **BLAKE3** de suas entradas semânticas exatas. Módulos da biblioteca padrão e dependências compartilhadas por múltiplos projetos são compilados **exatamente uma vez** na máquina.
 3. **Coletor de Lixo com Teto Rígido de Disco (*Disk Budget Controller*)**: O compilador impõe um teto de armazenamento configurável (padrão: **2,0 GiB**). Ao final de cada compilação, um mecanismo de auto-limpeza em segundo plano expurga automaticamente os artefatos menos recentemente utilizados (**LRU - Least Recently Used**). O desenvolvedor nunca precisa executar `arandu clean` nem instalar ferramentas de terceiros como `cargo-sweep`.
-4. **Política de Depuração Leve (*Line-Tables-First & Split DWARF*)**: Em compilações de desenvolvimento (`debug`), o compilador emite apenas tabelas de linhas de execução para rastreamento de pilha (*stack traces*), eliminando 75% a 85% do inchaço tradicional de metadados DWARF. Metadados completos de depuração são emitidos em arquivos desacoplados (*Split DWARF* `.dwo`/`.dwp`).
-5. **Publicação Instantânea Zero-Copy via Reflinks (Copy-on-Write)**: A cópia do binário final do CAS para o `target/` local utiliza primitivas de clone de blocos de sistemas de arquivos modernos (`ioctl(FICLONE)` no Linux, `clonefile` no macOS APFS e `FSCTL_DUPLICATE_EXTENTS_TO_FILE` no Windows ReFS), alcançando publicação em sub-milissegundo com **zero bytes adicionais de espaço físico em disco**.
+4. **Política de Depuração Leve (*Line-Tables-First & Split DWARF*)**: Em compilações de desenvolvimento (`debug`), o compilador emite apenas tabelas de linhas de execução para rastreamento de pilha (*stack traces*), com meta de reduzir 75% a 85% do tamanho de metadados DWARF, ainda sem medição local que certifique esse ganho. Metadados completos de depuração são emitidos em arquivos desacoplados (*Split DWARF* `.dwo`/`.dwp`).
+5. **Publicação Instantânea Zero-Copy via Reflinks (Copy-on-Write)**: A cópia do binário final do CAS para o `target/` local utiliza primitivas de clone de blocos de sistemas de arquivos modernos (`ioctl(FICLONE)` no Linux, `clonefile` no macOS APFS e `FSCTL_DUPLICATE_EXTENTS_TO_FILE` no Windows ReFS), com meta de reduzir custo de cópia e compartilhar blocos iniciais. Latência e espaço físico exigem medição, incluindo metadata, alterações e fallbacks.
 
-### 1.1 Estado da implementação (2026-09-20)
+### 1.1 Estado da implementação (auditado em 2026-10-15)
 
-Somente a fundação de CACHE.5 está implementada: envelopes locais v1 para
+No escopo desta RFC, somente a fundação de CACHE.5 está implementada: envelopes locais v1 para
 `.air`, `.amir` e `.ameta`, publicados atomicamente e validados por tipo,
 comprimento e BLAKE3. Os payloads atuais são dumps textuais canônicos usados
 para auditoria/fingerprint; o compilador ainda não hidrata AST ou AMIR a partir
-deles. CAS global, catálogo/LRU, locks multiprocesso, reflinks, target
+deles. CAS global, catálogo/LRU, locks do repositório global, reflinks, target
 zero-bloat, line-tables-first e Split DWARF continuam propostas desta RFC. O
 `--debug` atual emite `.debug_info`, `.debug_line` e `.debug_loclists` no objeto
 normal e foi validado no GDB; não há medição que sustente ainda a redução de
 75–85% citada como meta.
+
+O cache CGU local da RFC 0011 já possui lock multiprocesso, sidecars de
+integridade e coleta de objetos órfãos acima de 500 MiB. Isso não implementa
+catálogo/LRU nem deduplicação global. O layout atual ainda inclui `deps/` e
+`incremental/` em `target/<perfil>/<triple>/`.
+
+A fila permanente fica no [roadmap mestre](../arandu-compiler-roadmap-v0.1.md).
+No plano revisável, ferramentas/pacotes/cache pertencem à trilha `0.6.x`; isso
+não transforma todo este Draft em requisito da `0.2.x`. A publicação recuperável
+de imagem dev do motor quente pode usar ranges/páginas ou CoW disponível sem
+implementar o CAS global. Cache remoto e extensões de pesquisa não recebem
+promessa de versão por esta RFC. As seções seguintes descrevem a proposta,
+não comandos ou garantias já disponíveis.
 
 ---
 
@@ -135,7 +148,9 @@ O Content-Addressable Storage do Arandu é organizado por prefixo de hash cripto
 
 ### 4.2 O Envelope Canônico de Artefato (`ARANCAS\0`)
 
-Conforme introduzido em `crates/arandu_query/src/artifact_cache.rs`, todo artefato salvo no CAS é encapsulado em um envelope autocontido e verificável:
+O envelope local implementado em `crates/arandu_query/src/artifact_cache.rs`
+serve de fundação para a proposta de CAS. Sua presença não significa que o
+repositório global ou a hidratação de IR existam:
 
 ```text
 ┌─────────────────────────┬────────────────────────────────────────────────┐
@@ -193,45 +208,20 @@ Esta é a política proposta para uma etapa posterior; o gerador atual ainda nã
 
 ### 4.5 Publicação Zero-Copy via Reflinks (Copy-on-Write)
 
-Quando o linker in-process ou externo produz o binário final no CAS e precisa materializá-lo em `target/<profile>/meu_app`:
+A publicação proposta deve criar staging privado, tentar clone CoW quando o
+filesystem oferecer suporte, verificar o resultado e publicar atomicamente.
+Sem suporte a clone, usa cópia para staging e o protocolo atômico portável.
+O caminho atual ainda copia o executável inteiro antes do patch ELF.
 
-```rust
-// arandu_cli/src/publish.rs
-pub fn publish_artifact_cow(src: &Path, dst: &Path) -> std::io::Result<()> {
-    #[cfg(target_os = "linux")]
-    {
-        // Tenta cópia atômica de blocos via ioctl FICLONE (Btrfs, XFS)
-        if let Ok(src_file) = std::fs::File::open(src) {
-            if let Ok(dst_file) = std::fs::File::create(dst) {
-                use std::os::unix::io::AsRawFd;
-                let ret = unsafe { libc::ioctl(dst_file.as_raw_fd(), libc::FICLONE, src_file.as_raw_fd()) };
-                if ret == 0 {
-                    return Ok(()); // Zero bytes físicos gastos! Clone instantâneo.
-                }
-            }
-        }
-    }
+Um hardlink compartilha o mesmo inode e não substitui clone CoW para uma imagem
+dev mutável: alterar esse destino também alteraria o artefato CAS. Imagens
+patcháveis devem ter armazenamento independente; artefatos CAS publicados
+permanecem imutáveis. Kill/recovery, concorrência e arquivos em execução precisam
+ser exercitados nas plataformas suportadas antes de habilitar a otimização.
 
-    #[cfg(target_os = "macos")]
-    {
-        // Tenta clonefile nativo do Apple APFS
-        use std::ffi::CString;
-        let c_src = CString::new(src.to_str().unwrap()).unwrap();
-        let c_dst = CString::new(dst.to_str().unwrap()).unwrap();
-        if unsafe { libc::clonefile(c_src.as_ptr(), c_dst.as_ptr(), libc::CLONE_NOFOLLOW) } == 0 {
-            return Ok(());
-        }
-    }
-
-    // Fallback: Hardlink atômico no mesmo volume, ou stream copy como último recurso
-    if std::fs::hard_link(src, dst).is_ok() {
-        return Ok(());
-    }
-    std::fs::copy(src, dst).map(|_| ())
-}
-```
-
-* **Resultado:** No Linux com Btrfs/XFS e no macOS com APFS (que cobre mais de 90% das máquinas modernas de desenvolvimento), a publicação do binário em `target/` consome **0 bytes adicionais de SSD**.
+Clones podem compartilhar os blocos iniciais, mas metadata, blocos alterados e
+fallbacks têm custo. Não há medição nesta RFC que prove publicação em
+sub-milissegundo, zero consumo total ou uma proporção de filesystems suportados.
 
 ---
 

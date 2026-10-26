@@ -246,6 +246,17 @@ pub(crate) fn resolve_field_type(
                     return checker.intern(ArType::Error);
                 }
             }
+        } else if field == "len"
+            && matches!(
+                actual_base_ty,
+                ArType::Primitive(Primitive::Str)
+                    | ArType::Slice(_)
+                    | ArType::MutSlice(_)
+                    | ArType::Array(_, _)
+                    | ArType::ConstArray(_, _)
+            )
+        {
+            ArType::Primitive(Primitive::USize)
         } else {
             checker.add_constraint(
                 actual_base_ty_id,
@@ -259,12 +270,14 @@ pub(crate) fn resolve_field_type(
             return checker.intern(ArType::Error);
         };
 
+    let field_already_nullable = matches!(field_ty, ArType::Nullable(_));
     let field_id = checker.intern(field_ty);
     if was_option {
         checker.intern(ArType::Option(field_id))
-    } else if safe || was_nullable {
+    } else if (safe || was_nullable) && !field_already_nullable {
         checker.intern(ArType::Nullable(field_id))
     } else {
+        // `a?.b` where `b: T?` is `T?`: nil-or-absent collapses to one nil.
         field_id
     }
 }
@@ -309,7 +322,10 @@ pub(crate) fn resolve_index(
     }
 
     let elem_ty_id = match &actual_base_ty {
-        ArType::Array(_, inner) | ArType::ConstArray(_, inner) | ArType::Slice(inner) => *inner,
+        ArType::Array(_, inner)
+        | ArType::ConstArray(_, inner)
+        | ArType::Slice(inner)
+        | ArType::MutSlice(inner) => *inner,
         ArType::Named(_, args)
             if arandu_middle::types::is_vec_type(&actual_base_ty, &checker.symbols) =>
         {
@@ -345,7 +361,12 @@ pub(crate) fn resolve_index(
     }
 
     if is_range_index {
-        let slice_ty_id = checker.intern(ArType::Slice(elem_ty_id));
+        let is_mut_slice = matches!(actual_base_ty, ArType::MutSlice(_));
+        let slice_ty_id = if is_mut_slice {
+            checker.intern(ArType::MutSlice(elem_ty_id))
+        } else {
+            checker.intern(ArType::Slice(elem_ty_id))
+        };
         if was_option {
             checker.intern(ArType::Option(slice_ty_id))
         } else if safe || was_nullable {

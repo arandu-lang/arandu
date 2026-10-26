@@ -344,11 +344,12 @@ import std.runtime.reactor as reactor
 
 func main(): int {
     let b = reactor.reactorBackend()
-    // Portable fallback: 0; Linux: 1 = epoll, 2 = io_uring.
+    // Portable fallback: 0; Linux: 1 = epoll, 2 = io_uring;
+    // macOS/BSD: 3 = kqueue; Windows: 4 = WSAPoll.
     if b < 0 {
         return 1
     }
-    if b > 2 {
+    if b > 4 {
         return 2
     }
     return 0

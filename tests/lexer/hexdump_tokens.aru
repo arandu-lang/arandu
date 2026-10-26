@@ -1,0 +1,3 @@
+let h: u8 = if hi < 10 { 48 + hi } else { 87 + hi };
+let digit = (v & 15) as u8;
+v = v >> 4;

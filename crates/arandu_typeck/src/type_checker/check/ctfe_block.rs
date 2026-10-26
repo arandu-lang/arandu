@@ -29,6 +29,56 @@ pub fn check_ctfe_block(
     block: &Block,
     expected: Option<TypeId>,
 ) -> CtfeBlockType {
+    check_return_root(checker, block, expected, RootKind::Comptime)
+}
+
+/// Which isolated return target a block belongs to. Both kinds collect every
+/// `return` and the final expression; only the diagnostic wording differs.
+#[derive(Clone, Copy)]
+enum RootKind {
+    Comptime,
+    ThreadClosure,
+}
+
+impl RootKind {
+    fn origin(
+        self,
+        value_span: arandu_lexer::Span,
+        root_span: arandu_lexer::Span,
+    ) -> ConstraintOrigin {
+        match self {
+            Self::Comptime => ConstraintOrigin::CtfeResult {
+                value_span,
+                block_span: root_span,
+            },
+            Self::ThreadClosure => ConstraintOrigin::ClosureResult {
+                value_span,
+                closure_span: root_span,
+            },
+        }
+    }
+}
+
+/// Type the block body of a `move ||` thread closure as its own return root.
+///
+/// A `return` inside the closure leaves the synthesized `run`, so it must not
+/// be checked against the enclosing function's signature, and the job result
+/// is the join of every exit, not only the final expression. Effects observed
+/// in the body stay visible to the enclosing function: spawning the job
+/// performs them.
+pub(crate) fn check_thread_closure_block(checker: &mut TypeChecker<'_>, block: &Block) -> TypeId {
+    let outer_effects = checker.current_observed_effects;
+    let result = check_return_root(checker, block, None, RootKind::ThreadClosure);
+    checker.current_observed_effects = outer_effects.union(result.observed_effects);
+    result.return_type
+}
+
+fn check_return_root(
+    checker: &mut TypeChecker<'_>,
+    block: &Block,
+    expected: Option<TypeId>,
+    kind: RootKind,
+) -> CtfeBlockType {
     let outer_effects = checker.current_observed_effects;
     checker.current_observed_effects = arandu_middle::EffectFlags::NONE;
     checker.ctx.push_ctfe_return(expected, block.span);
@@ -100,38 +150,17 @@ pub fn check_ctfe_block(
         }
     }
     if returns.is_empty() && !matches!(checker.resolve(result), ArType::Void | ArType::Error) {
-        checker.add_constraint(
-            result,
-            ArType::Void,
-            ConstraintOrigin::CtfeResult {
-                value_span: block.span,
-                block_span: block.span,
-            },
-        );
+        checker.add_constraint(result, ArType::Void, kind.origin(block.span, block.span));
     }
     for value in returns {
         if let Some(expression) = value.expression
             && let Some(variable) = checker.literal_table.var_for_expr(expression)
             && checker.resolve(result).is_numeric()
         {
-            checker.constrain_literal_var(
-                variable,
-                result,
-                ConstraintOrigin::CtfeResult {
-                    value_span: value.span,
-                    block_span: block.span,
-                },
-            );
+            checker.constrain_literal_var(variable, result, kind.origin(value.span, block.span));
         }
         if !checker.unify_ids(result, value.ty) {
-            checker.add_constraint(
-                result,
-                value.ty,
-                ConstraintOrigin::CtfeResult {
-                    value_span: value.span,
-                    block_span: block.span,
-                },
-            );
+            checker.add_constraint(result, value.ty, kind.origin(value.span, block.span));
         }
     }
     CtfeBlockType {

@@ -38,7 +38,8 @@ pub fn live_functions(
             (library
                 || matches!(symbol.visibility, Visibility::Public | Visibility::Internal)
                 || symbols.host_func_name(symbol) == "main"
-                || symbols.tooling_entrypoints.contains(&f.symbol))
+                || symbols.tooling_entrypoints.contains(&f.symbol)
+                || symbols.is_exported(f.symbol))
             .then_some(f.symbol)
         })
         .collect();
@@ -104,7 +105,14 @@ pub fn function_dependencies(
                     AmirRvalue::GenInsert { payload_ty, .. }
                     | AmirRvalue::GenSet { payload_ty, .. }
                     | AmirRvalue::GenUpsert { payload_ty, .. } => types.push(*payload_ty),
-                    AmirRvalue::Use(_)
+                    AmirRvalue::VectorSelect { .. }
+                    | AmirRvalue::VectorCompare { .. }
+                    | AmirRvalue::VectorOp { .. }
+                    | AmirRvalue::VectorSplat { .. }
+                    | AmirRvalue::VectorShuffle { .. }
+                    | AmirRvalue::VectorExtractLane { .. }
+                    | AmirRvalue::VectorInsertLane { .. }
+                    | AmirRvalue::Use(_)
                     | AmirRvalue::Binary { .. }
                     | AmirRvalue::Unary { .. }
                     | AmirRvalue::FieldAccess { .. }
@@ -181,6 +189,7 @@ pub fn function_dependencies(
             ArType::Tuple(arguments) => types.extend(interner.type_args(arguments)),
             ArType::Nullable(inner)
             | ArType::Slice(inner)
+            | ArType::MutSlice(inner)
             | ArType::Array(_, inner)
             | ArType::ConstArray(_, inner)
             | ArType::Ptr(inner)
@@ -192,6 +201,7 @@ pub fn function_dependencies(
             | ArType::Range(inner) => types.push(inner),
             ArType::Result(ok, error) => types.extend([ok, error]),
             ArType::Primitive(_)
+            | ArType::Vector(_)
             | ArType::FrozenConst(_)
             | ArType::Const(_)
             | ArType::ConstParam(_)

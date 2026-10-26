@@ -1,4 +1,5 @@
 use super::{Block, DeclId, Expr, IndexRange, TypeExprId, TypeName};
+pub use arandu_base::lang::{AbiKind, Visibility};
 use arandu_lexer::Span;
 use smallvec::SmallVec;
 use smol_str::SmolStr;
@@ -158,14 +159,6 @@ pub struct Attribute {
     pub args: Vec<Expr>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Visibility {
-    Private,
-    Module,
-    Internal,
-    Public,
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct GenericParam {
     pub span: Span,
@@ -260,6 +253,7 @@ pub struct FieldDecl {
     pub visibility: Visibility,
     pub name: SmolStr,
     pub ty: TypeExprId,
+    pub default: Option<Expr>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -305,42 +299,6 @@ pub struct ExternDecl {
     pub attrs: SmallVec<[Attribute; 2]>,
     pub abi: SmolStr,
     pub members: Vec<FuncSignature>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum AbiKind {
-    C,
-    AranduIntrinsic,
-    Rust,
-    Other,
-}
-
-impl AbiKind {
-    #[must_use]
-    pub fn from_abi_str(abi: &str) -> Self {
-        match abi.trim_matches('"') {
-            "C" => Self::C,
-            "arandu-intrinsic" => Self::AranduIntrinsic,
-            "Rust" => Self::Rust,
-            _ => Self::Other,
-        }
-    }
-
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::C => "C",
-            Self::AranduIntrinsic => "arandu-intrinsic",
-            Self::Rust => "Rust",
-            Self::Other => "other",
-        }
-    }
-}
-
-impl std::fmt::Display for AbiKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

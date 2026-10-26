@@ -1,0 +1,40 @@
+module std.core.borrowedProjections
+extern "arandu-intrinsic" { func addressOf<T>(value: mut ref T): ptr[T]
+func refWrite<T>(value: mut ref T, replacement: T): void }
+struct Pair { left: int, right: int }
+struct Counter { calls: int, item: Pair }
+func copyCounter(value: ref Counter): Counter { return *value }
+func copyValues(value: ref [2]int): [2]int { return *value }
+func Counter.next(self: mut ref Counter): mut ref Pair {
+    self.calls = self.calls + 1
+    return mut ref self.item
+}
+func index(counter: mut ref Counter): usize {
+    counter.calls = counter.calls + 1
+    return 0
+}
+struct PointerOwner { data: ptr[int] }
+func PointerOwner.write(self: mut ref PointerOwner): void {
+    unsafe { refWrite<int>(mut ref *self.data, 73) }
+}
+public func main(): int {
+    let mut counter = Counter { calls: 0, item: Pair { left: 42, right: 7 } }
+    if counter.next().left != 42 { return 1 }
+    if counter.calls != 1 { return 2 }
+    let mut values = [5, 9]
+    if values[index(mut ref counter)] != 5 { return 3 }
+    if counter.calls != 2 { return 4 }
+    let mut value = 1
+    let pointer = unsafe { addressOf<int>(mut ref value) }
+    let mut owner = PointerOwner { data: pointer }
+    owner.write()
+    if value != 73 { return 5 }
+    let snapshot = copyCounter(ref counter)
+    counter.item.left = 99
+    counter.calls = 99
+    if snapshot.item.left != 42 || snapshot.calls != 2 { return 6 }
+    let copied = copyValues(ref values)
+    values[1] = 81
+    if copied[0] != 5 || copied[1] != 9 { return 7 }
+    return 0
+}

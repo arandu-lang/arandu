@@ -1,9 +1,17 @@
+mod cursor;
 mod decl;
 mod error;
 mod expr;
 mod pattern;
 mod stmt;
+mod token_info;
 mod types;
+
+pub(crate) use token_info::{Checkpoint, is_primitive_type_token};
+pub(super) use token_info::{
+    is_contextual_module_segment, is_type_token, merge_text_parts, primitive_type_name,
+    span_between, token_expectation_names, user_facing_token_name,
+};
 
 pub use error::{ParseError, ParseErrorCode};
 
@@ -135,6 +143,7 @@ pub struct Parser<'a> {
     pub(crate) events: Option<Vec<crate::syntax::events::ParseEvent>>,
     pub(crate) split_gt: Option<Token>,
     pub(crate) recursion_depth: u32,
+    pub(crate) block_depth: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -161,6 +170,7 @@ impl<'a> Parser<'a> {
             events: None,
             split_gt: None,
             recursion_depth: 0,
+            block_depth: 0,
         }
     }
 
@@ -382,660 +392,55 @@ impl<'a> Parser<'a> {
                 target_span,
             }));
     }
-
-    /// Statement terminator: explicit `;`, newline ASI (already a `SEMICOLON` token),
-    /// or omitted before `}` / EOF (one-line bodies like `return 1 }`).
-    pub(super) fn expect_semicolon(&mut self) -> Result<(), ParseError> {
-        if self.at_kind_name("SEMICOLON") {
-            self.advance();
-            return Ok(());
-        }
-        // Optional terminator before block/file end (does not affect if-expr blocks:
-        // those use expression parsing, not `expect_semicolon`).
-        if self.at_kind_name("RBRACE") || self.at_kind_name("EOF") {
-            return Ok(());
-        }
-        self.expect_name("SEMICOLON")
-    }
-
-    pub(super) fn expect_ident_value(&mut self) -> Result<SmolStr, ParseError> {
-        match &self.current().kind {
-            TokenKind::IdentValue => {
-                let name = SmolStr::new(self.current_text());
-                self.advance();
-                Ok(name)
-            }
-            _ => Err(ParseError::expected(
-                ParseErrorCode::ExpectedToken,
-                "expected value identifier",
-                self.current(),
-                self.file_id,
-                self.source,
-                &["value identifier"],
-            )),
-        }
-    }
-
-    pub(super) fn expect_ident_type(&mut self) -> Result<SmolStr, ParseError> {
-        match &self.current().kind {
-            TokenKind::IdentType | TokenKind::TypeErr => {
-                let name = SmolStr::new(self.current_text());
-                self.advance();
-                Ok(name)
-            }
-            _ => Err(ParseError::expected(
-                ParseErrorCode::ExpectedToken,
-                "expected type identifier",
-                self.current(),
-                self.file_id,
-                self.source,
-                &["type identifier"],
-            )),
-        }
-    }
-
-    pub(super) fn expect_member_name(&mut self) -> Result<SmolStr, ParseError> {
-        if self.current().kind.is_contextual_member_name() {
-            let name = SmolStr::new(self.current_text());
-            self.advance();
-            Ok(name)
-        } else {
-            Err(ParseError::expected(
-                ParseErrorCode::ExpectedToken,
-                "expected member name",
-                self.current(),
-                self.file_id,
-                self.source,
-                &["member name"],
-            ))
-        }
-    }
-
-    pub(super) fn expect_name_like(&mut self) -> Result<SmolStr, ParseError> {
-        match &self.current().kind {
-            TokenKind::TypeErr | TokenKind::IdentValue | TokenKind::IdentType => {
-                let name = SmolStr::new(self.current_text());
-                self.advance();
-                Ok(name)
-            }
-            kind if is_contextual_module_segment(kind) => {
-                let name = SmolStr::new(self.current_text());
-                self.advance();
-                Ok(name)
-            }
-            _ => Err(ParseError::expected(
-                ParseErrorCode::ExpectedToken,
-                "expected identifier",
-                self.current(),
-                self.file_id,
-                self.source,
-                &["identifier"],
-            )),
-        }
-    }
-
-    pub(super) fn expect_module_segment(&mut self) -> Result<SmolStr, ParseError> {
-        match &self.current().kind {
-            TokenKind::IdentValue => {
-                let name = SmolStr::new(self.current_text());
-                self.advance();
-                Ok(name)
-            }
-            kind if is_contextual_module_segment(kind) => {
-                let text = SmolStr::new(self.current_text());
-                self.advance();
-                Ok(text)
-            }
-            _ => Err(ParseError::expected(
-                ParseErrorCode::ExpectedToken,
-                "expected module path segment",
-                self.current(),
-                self.file_id,
-                self.source,
-                &["module path segment"],
-            )),
-        }
-    }
-
-    pub(super) fn expect_name(&mut self, name: &str) -> Result<(), ParseError> {
-        if self.at_kind_name(name) {
-            self.advance();
-            return Ok(());
-        }
-        Err(ParseError::expected(
-            ParseErrorCode::ExpectedToken,
-            format!("expected {}", user_facing_token_name(name)),
-            self.current(),
-            self.file_id,
-            self.source,
-            token_expectation_names(name),
-        ))
-    }
-
-    pub(super) fn eat_name(&mut self, name: &str) -> bool {
-        if self.at_kind_name(name) {
-            self.advance();
-            true
-        } else {
-            false
-        }
-    }
-
-    pub(super) fn at_gt(&self) -> bool {
-        matches!(self.current().kind, TokenKind::Gt | TokenKind::ShiftRight)
-    }
-
-    pub(super) fn eat_gt(&mut self) -> bool {
-        if let Some(split) = self.split_gt.take() {
-            self.suppression_window += 1;
-            self.emit_token_event(&split);
-            if self.pos < self.tokens.len() - 1 {
-                self.pos += 1;
-            }
-            return true;
-        }
-        if self.tokens[self.pos].kind == TokenKind::ShiftRight {
-            self.suppression_window += 1;
-            let tok = self.tokens[self.pos];
-            let first = Token {
-                kind: TokenKind::Gt,
-                start: tok.start,
-                len: 1,
-                inserted: false,
-            };
-            let second = Token {
-                kind: TokenKind::Gt,
-                start: tok.start + 1,
-                len: 1,
-                inserted: false,
-            };
-            self.emit_token_event(&first);
-            self.split_gt = Some(second);
-            return true;
-        }
-        if self.tokens[self.pos].kind == TokenKind::Gt {
-            self.advance();
-            return true;
-        }
-        false
-    }
-
-    pub(super) fn expect_gt(&mut self) -> Result<(), ParseError> {
-        if self.eat_gt() {
-            return Ok(());
-        }
-        Err(ParseError::expected(
-            ParseErrorCode::ExpectedToken,
-            format!("expected {}", user_facing_token_name("GT")),
-            self.current(),
-            self.file_id,
-            self.source,
-            token_expectation_names("GT"),
-        ))
-    }
-
-    pub(super) fn expect_kind(&mut self, kind: TokenKind) -> Result<(), ParseError> {
-        if self.current().kind == kind {
-            self.advance();
-            Ok(())
-        } else {
-            let name = kind.name();
-            Err(ParseError::expected(
-                ParseErrorCode::ExpectedToken,
-                format!("expected {}", user_facing_token_name(name)),
-                self.current(),
-                self.file_id,
-                self.source,
-                token_expectation_names(name),
-            ))
-        }
-    }
-
-    pub(super) fn eat_kind(&mut self, kind: TokenKind) -> bool {
-        if self.current().kind == kind {
-            self.advance();
-            true
-        } else {
-            false
-        }
-    }
-
-    pub(super) fn at_kind_name(&self, name: &str) -> bool {
-        self.current().kind.name() == name
-    }
-
-    /// Soft keywords lex as plain identifiers but keep a keyword meaning in
-    /// specific positions (e.g. `from` inside import syntax).
-    pub(super) fn at_soft_keyword(&self, word: &str) -> bool {
-        self.current().kind == TokenKind::IdentValue && self.token_text(self.current()) == word
-    }
-
-    pub(super) fn current(&self) -> &Token {
-        if let Some(ref tok) = self.split_gt {
-            tok
-        } else {
-            &self.tokens[self.pos]
-        }
-    }
-
-    pub(super) fn token_text(&self, token: &Token) -> &str {
-        token.lexeme(self.source)
-    }
-
-    pub(super) fn current_text(&self) -> &str {
-        self.token_text(self.current())
-    }
-
-    pub(super) fn previous(&self) -> &Token {
-        &self.tokens[self.pos - 1]
-    }
-
-    pub(super) fn advance(&mut self) -> &Token {
-        self.advance_raw()
-    }
-
-    pub(super) fn advance_raw(&mut self) -> &Token {
-        self.suppression_window += 1;
-        if let Some(split) = self.split_gt.take() {
-            self.emit_token_event(&split);
-            if self.pos < self.tokens.len() - 1 {
-                self.pos += 1;
-            }
-            return if self.pos > 0 {
-                &self.tokens[self.pos - 1]
-            } else {
-                &self.tokens[0]
-            };
-        }
-        let idx = self.pos;
-        let token = self.tokens[idx];
-        self.emit_token_event(&token);
-        if self.pos < self.tokens.len() - 1 {
-            self.pos += 1;
-        }
-        &self.tokens[idx]
-    }
-
-    pub(crate) fn report_error(&mut self, err: ParseError) {
-        if self.suppression_window >= 3 {
-            self.diagnostics.push(err);
-        }
-        self.suppression_window = 0;
-    }
-
-    #[cold]
-    #[inline(never)]
-    pub(crate) fn synchronize_top_level(&mut self) {
-        if matches!(
-            self.current().kind,
-            TokenKind::KwFunc
-                | TokenKind::KwStruct
-                | TokenKind::KwEnum
-                | TokenKind::KwInterface
-                | TokenKind::KwImpl
-                | TokenKind::KwExtern
-                | TokenKind::KwType
-                | TokenKind::KwConst
-                | TokenKind::KwImport
-                | TokenKind::KwFrom
-                | TokenKind::KwModule
-        ) {
-            return;
-        }
-        self.advance_raw();
-        while !self.at_kind_name("EOF") {
-            if matches!(
-                self.current().kind,
-                TokenKind::KwFunc
-                    | TokenKind::KwStruct
-                    | TokenKind::KwEnum
-                    | TokenKind::KwInterface
-                    | TokenKind::KwImpl
-                    | TokenKind::KwExtern
-                    | TokenKind::KwType
-                    | TokenKind::KwConst
-                    | TokenKind::KwImport
-                    | TokenKind::KwFrom
-                    | TokenKind::KwModule
-            ) {
-                break;
-            }
-            self.advance_raw();
-        }
-    }
-
-    #[cold]
-    #[inline(never)]
-    pub(super) fn synchronize_stmt(&mut self) {
-        if matches!(
-            self.current().kind,
-            TokenKind::RBrace
-                | TokenKind::KwLet
-                | TokenKind::KwReturn
-                | TokenKind::KwIf
-                | TokenKind::KwFor
-                | TokenKind::KwWhile
-                | TokenKind::KwMatch
-                | TokenKind::KwBreak
-                | TokenKind::KwContinue
-                | TokenKind::KwDefer
-                | TokenKind::KwErrdefer
-        ) {
-            return;
-        }
-        self.advance_raw();
-        while !self.at_kind_name("EOF") {
-            if self.previous().kind == TokenKind::Semicolon {
-                break;
-            }
-            if matches!(
-                self.current().kind,
-                TokenKind::RBrace
-                    | TokenKind::KwLet
-                    | TokenKind::KwReturn
-                    | TokenKind::KwIf
-                    | TokenKind::KwFor
-                    | TokenKind::KwWhile
-                    | TokenKind::KwMatch
-                    | TokenKind::KwBreak
-                    | TokenKind::KwContinue
-                    | TokenKind::KwDefer
-                    | TokenKind::KwErrdefer
-            ) {
-                break;
-            }
-            self.advance_raw();
-        }
-    }
-
-    pub(super) fn parse_expr_without_block_calls(
-        &mut self,
-        min_bp: u8,
-    ) -> Result<Expr, ParseError> {
-        let previous = self.allow_block_calls;
-        self.allow_block_calls = false;
-        let result = self.parse_expr(min_bp);
-        self.allow_block_calls = previous;
-        result
-    }
 }
 
-pub(super) fn is_type_token(kind: &TokenKind) -> bool {
-    TOKEN_INFO_TABLE[kind.index()].is_type_token
-}
+#[cfg(test)]
+mod tests {
+    use super::merge_text_parts;
+    use crate::{ExprId, StringPart};
+    use arandu_lexer::Span;
+    use smol_str::SmolStr;
 
-pub(super) fn primitive_type_name(kind: &TokenKind) -> Option<&'static str> {
-    TOKEN_INFO_TABLE[kind.index()].primitive_type_name
-}
-
-#[derive(Clone, Copy)]
-struct TokenInfo {
-    is_type_token: bool,
-    is_contextual_module_segment: bool,
-    primitive_type_name: Option<&'static str>,
-}
-
-static TOKEN_INFO_TABLE: [TokenInfo; TokenKind::COUNT] = {
-    let mut table = [TokenInfo {
-        is_type_token: false,
-        is_contextual_module_segment: false,
-        primitive_type_name: None,
-    }; TokenKind::COUNT];
-    let mut i = 0;
-    while i < TokenKind::COUNT {
-        let kind = TokenKind::index_to_token_kind(i);
-        let prim = match kind {
-            TokenKind::TypeInt => Some("int"),
-            TokenKind::TypeUint => Some("uint"),
-            TokenKind::TypeIsize => Some("isize"),
-            TokenKind::TypeUsize => Some("usize"),
-            TokenKind::TypeFloat => Some("float"),
-            TokenKind::TypeI8 => Some("i8"),
-            TokenKind::TypeI16 => Some("i16"),
-            TokenKind::TypeI32 => Some("i32"),
-            TokenKind::TypeI64 => Some("i64"),
-            TokenKind::TypeU8 => Some("u8"),
-            TokenKind::TypeU16 => Some("u16"),
-            TokenKind::TypeU32 => Some("u32"),
-            TokenKind::TypeU64 => Some("u64"),
-            TokenKind::TypeF32 => Some("f32"),
-            TokenKind::TypeF64 => Some("f64"),
-            TokenKind::TypeBool => Some("bool"),
-            TokenKind::TypeByte => Some("byte"),
-            TokenKind::TypeChar => Some("char"),
-            TokenKind::TypeStr => Some("str"),
-            TokenKind::TypeAny => Some("any"),
-            TokenKind::TypeErr => Some("Err"),
-            _ => None,
-        };
-        let is_type = prim.is_some()
-            || matches!(
-                kind,
-                TokenKind::IdentType
-                    | TokenKind::IdentValue
-                    | TokenKind::KwOwn
-                    | TokenKind::KwRef
-                    | TokenKind::KwMut
-            );
-        let is_contextual = matches!(
-            kind,
-            TokenKind::IdentType
-                | TokenKind::KwIf
-                | TokenKind::KwElse
-                | TokenKind::KwFor
-                | TokenKind::KwIn
-                | TokenKind::KwWhile
-                | TokenKind::KwMatch
-                | TokenKind::KwReturn
-                | TokenKind::KwBreak
-                | TokenKind::KwContinue
-                | TokenKind::KwFunc
-                | TokenKind::KwAsync
-                | TokenKind::KwAwait
-                | TokenKind::KwStruct
-                | TokenKind::KwEnum
-                | TokenKind::KwInterface
-                | TokenKind::KwConst
-                | TokenKind::KwType
-                | TokenKind::KwModule
-                | TokenKind::KwImport
-                | TokenKind::KwFrom
-                | TokenKind::KwAs
-                | TokenKind::KwPublic
-                | TokenKind::KwInternal
-                | TokenKind::KwPrivate
-                | TokenKind::KwExtern
-                | TokenKind::KwUnsafe
-                | TokenKind::KwWhere
-                | TokenKind::KwCatch
-                | TokenKind::KwIs
-                | TokenKind::KwSet
-                | TokenKind::KwOwn
-                | TokenKind::KwMut
-                | TokenKind::KwShared
-                | TokenKind::KwRef
-                | TokenKind::KwSelf
-                | TokenKind::KwPtr
-                | TokenKind::KwDefer
-                | TokenKind::KwErrdefer
-                | TokenKind::KwLet
-                | TokenKind::TypeInt
-                | TokenKind::TypeUint
-                | TokenKind::TypeIsize
-                | TokenKind::TypeUsize
-                | TokenKind::TypeFloat
-                | TokenKind::TypeI8
-                | TokenKind::TypeI16
-                | TokenKind::TypeI32
-                | TokenKind::TypeI64
-                | TokenKind::TypeU8
-                | TokenKind::TypeU16
-                | TokenKind::TypeU32
-                | TokenKind::TypeU64
-                | TokenKind::TypeF32
-                | TokenKind::TypeF64
-                | TokenKind::TypeBool
-                | TokenKind::TypeByte
-                | TokenKind::TypeChar
-                | TokenKind::TypeStr
-                | TokenKind::TypeAny
-                | TokenKind::TypeErr
-        );
-        table[i] = TokenInfo {
-            is_type_token: is_type,
-            is_contextual_module_segment: is_contextual,
-            primitive_type_name: prim,
-        };
-        i += 1;
-    }
-    table
-};
-
-pub(super) fn user_facing_token_name(name: &str) -> &'static str {
-    token_expectation_names(name)
-        .first()
-        .copied()
-        .unwrap_or("token")
-}
-
-pub(super) fn token_expectation_names(name: &str) -> &'static [&'static str] {
-    match name {
-        // Punctuation and symbol spellings (never the internal kind name).
-        "AMP" => &["&"],
-        "ARROW" => &["->"],
-        "AT" => &["@"],
-        "COLON" => &[":"],
-        "COMMA" => &[","],
-        "DOT" => &["."],
-        "ELLIPSIS" => &["..."],
-        "EQUAL" => &["="],
-        "FAT_ARROW" => &["=>"],
-        "GT" => &[">"],
-        "INTERP_END" | "RBRACE" => &["}"],
-        "LBRACE" => &["{"],
-        "LBRACKET" => &["["],
-        "LPAREN" => &["("],
-        "LT" => &["<"],
-        "PIPE" => &["|"],
-        "PLUS" => &["+"],
-        "QUESTION" => &["?"],
-        "RANGE_EXCLUSIVE" => &[".."],
-        "RANGE_INCLUSIVE" => &["..="],
-        "RBRACKET" => &["]"],
-        "RPAREN" => &[")"],
-        "EOF" => &["end of file"],
-        "SEMICOLON" => &["statement terminator"],
-        "STRING_END" => &["end of string"],
-        "STRING_START" => &["string literal"],
-        // Keywords and type keywords spell their source text.
-        "KW_AS" => &["as"],
-        "KW_ASYNC" => &["async"],
-        "KW_BREAK" => &["break"],
-        "KW_CONST" => &["const"],
-        "KW_CONTINUE" => &["continue"],
-        "KW_DEFER" => &["defer"],
-        "KW_ELSE" => &["else"],
-        "KW_ENUM" => &["enum"],
-        "KW_ERRDEFER" => &["errdefer"],
-        "KW_EXTERN" => &["extern"],
-        "KW_FOR" => &["for"],
-        "KW_FROM" => &["from"],
-        "KW_FUNC" => &["func"],
-        "KW_IF" => &["if"],
-        "KW_IMPL" => &["impl"],
-        "KW_IMPORT" => &["import"],
-        "KW_IN" => &["in"],
-        "KW_INTERFACE" => &["interface"],
-        "KW_IS" => &["is"],
-        "KW_LET" => &["let"],
-        "KW_MATCH" => &["match"],
-        "KW_MODULE" => &["module"],
-        "KW_MUT" => &["mut"],
-        "KW_OWN" => &["own"],
-        "KW_PTR" => &["ptr"],
-        "KW_PUBLIC" => &["public"],
-        "KW_INTERNAL" => &["internal"],
-        "KW_PRIVATE" => &["private"],
-        "KW_REF" => &["ref"],
-        "KW_RETURN" => &["return"],
-        "KW_SELF" => &["self"],
-        "KW_SET" => &["set"],
-        "KW_SHARED" => &["shared"],
-        "KW_STRUCT" => &["struct"],
-        "KW_TYPE" => &["type"],
-        "KW_UNSAFE" => &["unsafe"],
-        "KW_WHERE" => &["where"],
-        "KW_WHILE" => &["while"],
-        _ => &["token"],
-    }
-}
-
-pub(super) fn merge_text_parts(parts: Vec<StringPart>) -> Vec<StringPart> {
-    let mut merged = Vec::new();
-    for part in parts {
-        match (merged.last_mut(), part) {
-            (
-                Some(StringPart::Text {
-                    span: existing_span,
-                    text: existing,
-                }),
-                StringPart::Text { span, text: next },
-            ) => {
-                *existing = SmolStr::new(format!("{}{}", existing, next));
-                *existing_span = span_between(*existing_span, span);
+    #[test]
+    fn adjacent_text_fragments_merge_once() {
+        let parts = vec![
+            StringPart::Text {
+                span: Span::new(0, 0, 1),
+                text: SmolStr::new("a"),
+            },
+            StringPart::Text {
+                span: Span::new(0, 1, 2),
+                text: SmolStr::new("b"),
+            },
+            StringPart::Text {
+                span: Span::new(0, 2, 3),
+                text: SmolStr::new("c"),
+            },
+            StringPart::Expr {
+                span: Span::new(0, 3, 4),
+                expr: ExprId::new(7),
+            },
+            StringPart::Text {
+                span: Span::new(0, 4, 5),
+                text: SmolStr::new("d"),
+            },
+        ];
+        let merged = merge_text_parts(parts);
+        assert_eq!(merged.len(), 3);
+        match &merged[0] {
+            StringPart::Text { span, text } => {
+                assert_eq!(text.as_str(), "abc");
+                assert_eq!((span.start, span.end), (0, 3));
             }
-            (_, part) => merged.push(part),
+            StringPart::Expr { .. } => panic!("expected merged text"),
         }
-    }
-    merged
-}
-
-pub(super) fn is_contextual_module_segment(kind: &TokenKind) -> bool {
-    TOKEN_INFO_TABLE[kind.index()].is_contextual_module_segment
-}
-
-pub(crate) fn is_primitive_type_token(kind: &TokenKind) -> bool {
-    TOKEN_INFO_TABLE[kind.index()].primitive_type_name.is_some()
-}
-
-pub(super) fn span_between(start: Span, end: Span) -> Span {
-    Span {
-        file_id: start.file_id,
-        start: start.start,
-        end: end.end,
-    }
-}
-
-pub(crate) struct Checkpoint {
-    pos: usize,
-    events_len: usize,
-    diagnostics_len: usize,
-    pending_docs_len: usize,
-    pool: crate::ast::ast_pool::PoolCheckpoint,
-}
-
-impl Checkpoint {
-    pub(crate) fn new(parser: &Parser<'_>) -> Self {
-        let pos = parser.pos;
-        let events_len = parser.events.as_ref().map_or(0, |evs| evs.len());
-        let diagnostics_len = parser.diagnostics.len();
-        let pending_docs_len = parser.pending_docs.len();
-        Self {
-            pos,
-            events_len,
-            diagnostics_len,
-            pending_docs_len,
-            pool: parser.pool.checkpoint(),
+        match &merged[1] {
+            StringPart::Expr { expr, .. } => assert_eq!(*expr, ExprId::new(7)),
+            StringPart::Text { .. } => panic!("expected expression"),
         }
-    }
-
-    pub(crate) fn rollback(self, parser: &mut Parser<'_>) {
-        parser.pos = self.pos;
-        if let Some(evs) = &mut parser.events {
-            evs.truncate(self.events_len);
+        match &merged[2] {
+            StringPart::Text { text, .. } => assert_eq!(text.as_str(), "d"),
+            StringPart::Expr { .. } => panic!("expected trailing text"),
         }
-        parser.diagnostics.truncate(self.diagnostics_len);
-        parser.pending_docs.truncate(self.pending_docs_len);
-        self.pool.rollback(&mut parser.pool);
     }
 }

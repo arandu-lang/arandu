@@ -44,8 +44,9 @@ pub type EnvArgHandler = unsafe extern "sysv64" fn(isize) -> arandu_runtime::rt_
 
 use crate::jit::AranduJit;
 use arandu_codegen::{CodegenBackend, CompiledCode};
-use arandu_semantics::amir::AmirProgram;
-use arandu_semantics::{Diagnostic, SymbolTable, TypeInfo};
+use arandu_middle::amir::AmirProgram;
+use arandu_middle::type_context::CodegenTypeContext;
+use arandu_middle::{Diagnostic, SymbolTable};
 
 /// Entry point for the Cranelift JIT backend.
 ///
@@ -142,7 +143,7 @@ impl CraneliftBackend {
         self,
         program: &AmirProgram,
         symbols: &SymbolTable,
-        type_info: &TypeInfo,
+        type_info: &dyn CodegenTypeContext,
     ) -> Result<CompiledModule, Diagnostic> {
         CodegenBackend::compile(self, program, symbols, type_info)
     }
@@ -156,7 +157,7 @@ impl CraneliftBackend {
         self,
         program: &AmirProgram,
         symbols: &SymbolTable,
-        type_info: &TypeInfo,
+        type_info: &dyn CodegenTypeContext,
     ) -> Result<CompiledModule, Diagnostic> {
         self.jit
             .compile_program_with_block_coverage(program, symbols, type_info)
@@ -164,16 +165,15 @@ impl CraneliftBackend {
 }
 
 impl CodegenBackend for CraneliftBackend {
-    type TargetConfig = TypeInfo;
     type CompilationOutput = CompiledModule;
 
     fn compile(
         self,
         program: &AmirProgram,
         symbols: &SymbolTable,
-        config: &Self::TargetConfig,
+        types: &dyn CodegenTypeContext,
     ) -> Result<Self::CompilationOutput, Diagnostic> {
-        self.jit.compile_program(program, symbols, config)
+        self.jit.compile_program(program, symbols, types)
     }
 }
 

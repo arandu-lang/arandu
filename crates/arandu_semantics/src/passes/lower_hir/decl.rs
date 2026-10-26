@@ -182,6 +182,9 @@ fn lower_decl_with_body(
                         .insert(receiver_ty, symbol);
                 }
             }
+            if annotations.contains(crate::attributes::AnnotationId::Export) {
+                lower_export(type_check, pool, d, symbol, &formal_types, return_type)?;
+            }
             Ok(Some(HirDecl::Func(HirFunc {
                 symbol,
                 params,
@@ -329,4 +332,343 @@ fn receiver_kind(
                 _ => ReceiverKind::Own,
             })
         })
+}
+
+/// Applies `@Export` to a free function: validates that the signature crosses
+/// the C ABI without an implicit transformation, then records the flat symbol
+/// name used by every native backend.
+fn lower_export(
+    type_check: &mut TypeCheckResult,
+    pool: &AstPool,
+    declaration: &arandu_parser::FuncDecl,
+    symbol: arandu_middle::SymbolId,
+    formal_types: &[TypeId],
+    return_type: TypeId,
+) -> Result<(), Diagnostic> {
+    // A method has no C ABI by itself, but `@Destructor` is the one method
+    // whose entire purpose is releasing a resource: exporting it as
+    // `void name(T *self)` is exactly the ownership contract C needs. Any
+    // other method would need a receiver convention nobody wrote down.
+    let is_destructor = type_check
+        .type_info
+        .destructors
+        .values()
+        .any(|destructor| *destructor == symbol);
+    if matches!(declaration.name, FuncName::Method { .. }) && !is_destructor {
+        return Err(Diagnostic::error(
+            crate::DiagCode::T049InvalidFfiExport,
+            "@Export is only valid on free functions and `@Destructor` methods; other methods have no C receiver convention",
+            declaration.span,
+        ));
+    }
+    if declaration.is_async {
+        return Err(Diagnostic::error(
+            crate::DiagCode::T049InvalidFfiExport,
+            "@Export cannot be applied to an async function; the C ABI has no suspension point",
+            declaration.span,
+        ));
+    }
+    if type_check.type_info.generic_params.contains_key(&symbol) {
+        return Err(Diagnostic::error(
+            crate::DiagCode::T049InvalidFfiExport,
+            "@Export requires a monomorphic function; add a concrete wrapper instead of exporting a generic",
+            declaration.span,
+        ));
+    }
+
+    let interner = &type_check.type_info.type_interner;
+    let mut has_aggregate = false;
+    let mut resolved_params = Vec::with_capacity(formal_types.len());
+    for ty in formal_types {
+        let resolved = interner.resolve(*ty);
+        has_aggregate |= arandu_middle::layout::is_export_aggregate(&resolved);
+        resolved_params.push(resolved);
+    }
+    let resolved_return = interner.resolve(return_type);
+    // `Result<T, E>` leaves the boundary as a C status code plus an out
+    // parameter (`E f(..., T *out)`), so it is neither a value return nor an
+    // aggregate. The AMIR pass performs the rewrite; here we only validate
+    // that the status and payload can cross the boundary.
+    let status_return = match &resolved_return {
+        arandu_middle::types::ArType::Result(ok, err) => Some((*ok, *err)),
+        _ => None,
+    };
+    has_aggregate |= arandu_middle::layout::is_export_aggregate(&resolved_return);
+    if has_aggregate {
+        let target = &type_check.type_info.target_identity;
+        // An empty identity means the driver did not configure a target (unit
+        // tests and the pure semantic API). The backend enforces the same rule
+        // with the real triple before emitting.
+        if !target.arch.is_empty()
+            && arandu_middle::layout::ExportAbi::for_target(
+                &target.arch,
+                &target.os,
+                &target.triple,
+            )
+            .is_none()
+        {
+            return Err(Diagnostic::error(
+                crate::DiagCode::T049InvalidFfiExport,
+                format!(
+                    "aggregates by value are not classified for target '{}'; pass scalars or pointers",
+                    if target.triple.is_empty() {
+                        &target.arch
+                    } else {
+                        &target.triple
+                    }
+                ),
+                declaration.span,
+            ));
+        }
+    }
+    for (index, ty) in resolved_params.into_iter().enumerate() {
+        let position = if index == 0 && is_destructor {
+            arandu_middle::layout::FfiPosition::OwnedReceiver
+        } else {
+            arandu_middle::layout::FfiPosition::Parameter
+        };
+        if let Err(reason) = arandu_middle::layout::ffi_type_of(
+            &ty,
+            interner,
+            type_check.type_info.as_ref(),
+            position,
+            0,
+        ) {
+            let span = declaration
+                .params
+                .get(index)
+                .map_or(declaration.span, |param| param.span);
+            return Err(Diagnostic::error(
+                crate::DiagCode::T049InvalidFfiExport,
+                format!("cannot export parameter {}: {reason}", index + 1),
+                span,
+            ));
+        }
+    }
+    if let Some((ok, status)) = status_return {
+        if let Some(reason) = c_status_type_error(interner, status) {
+            return Err(Diagnostic::error(
+                crate::DiagCode::T049InvalidFfiExport,
+                format!("cannot export `Result` status: {reason}"),
+                declaration.span,
+            ));
+        }
+        if !matches!(interner.resolve(ok), arandu_middle::types::ArType::Void)
+            && let Err(reason) = arandu_middle::layout::ffi_type_of(
+                &interner.resolve(ok),
+                interner,
+                type_check.type_info.as_ref(),
+                arandu_middle::layout::FfiPosition::Return,
+                0,
+            )
+        {
+            return Err(Diagnostic::error(
+                crate::DiagCode::T049InvalidFfiExport,
+                format!("cannot export `Result` success value: {reason}"),
+                declaration.span,
+            ));
+        }
+    } else if let Err(reason) = arandu_middle::layout::ffi_type_of(
+        &resolved_return,
+        interner,
+        type_check.type_info.as_ref(),
+        arandu_middle::layout::FfiPosition::Return,
+        0,
+    ) {
+        return Err(Diagnostic::error(
+            crate::DiagCode::T049InvalidFfiExport,
+            format!("cannot export return type: {reason}"),
+            declaration.span,
+        ));
+    }
+
+    let export_name = declaration
+        .attrs
+        .iter()
+        .filter_map(|attr| {
+            crate::attributes::annotation_spec(&attr.name)
+                .filter(|(spec, _)| spec.id == crate::attributes::AnnotationId::Export)
+                .map(|(_, _)| attr)
+        })
+        .find_map(|attr| crate::attributes::attribute_string_arg(attr, pool))
+        .unwrap_or_else(|| type_check.symbols.get(symbol).name.to_string());
+
+    if let Some(reason) = reserved_export_name(&export_name) {
+        return Err(Diagnostic::error(
+            crate::DiagCode::T049InvalidFfiExport,
+            format!(
+                "exported symbol '{export_name}' {reason}; choose another name with `@Export(\"...\")`"
+            ),
+            declaration.span,
+        ));
+    }
+    if type_check
+        .symbols
+        .host_function_names
+        .iter()
+        .any(|(other, name)| *other != symbol && name == export_name.as_str())
+    {
+        return Err(Diagnostic::error(
+            crate::DiagCode::T049InvalidFfiExport,
+            format!("exported symbol '{export_name}' collides with another host symbol"),
+            declaration.span,
+        ));
+    }
+
+    let symbols = type_check.symbols_mut();
+    symbols
+        .host_function_names
+        .insert(symbol, crate::SmolStr::new(export_name));
+    symbols.exported_functions.insert(symbol);
+    Ok(())
+}
+
+/// Keywords of C23 and C++23. The generated header is valid C and is wrapped
+/// in `extern "C"` for C++, so a prototype named after either breaks a
+/// consumer at its first `#include`.
+const C_FAMILY_KEYWORDS: &[&str] = &[
+    "alignas",
+    "alignof",
+    "and",
+    "and_eq",
+    "asm",
+    "auto",
+    "bitand",
+    "bitor",
+    "bool",
+    "break",
+    "case",
+    "catch",
+    "char",
+    "char16_t",
+    "char32_t",
+    "char8_t",
+    "class",
+    "co_await",
+    "co_return",
+    "co_yield",
+    "compl",
+    "concept",
+    "const",
+    "const_cast",
+    "consteval",
+    "constexpr",
+    "constinit",
+    "continue",
+    "decltype",
+    "default",
+    "delete",
+    "do",
+    "double",
+    "dynamic_cast",
+    "else",
+    "enum",
+    "explicit",
+    "export",
+    "extern",
+    "false",
+    "float",
+    "for",
+    "friend",
+    "goto",
+    "if",
+    "inline",
+    "int",
+    "long",
+    "mutable",
+    "namespace",
+    "new",
+    "noexcept",
+    "not",
+    "not_eq",
+    "nullptr",
+    "operator",
+    "or",
+    "or_eq",
+    "private",
+    "protected",
+    "public",
+    "register",
+    "reinterpret_cast",
+    "requires",
+    "restrict",
+    "return",
+    "short",
+    "signed",
+    "sizeof",
+    "static",
+    "static_assert",
+    "static_cast",
+    "struct",
+    "switch",
+    "template",
+    "this",
+    "thread_local",
+    "throw",
+    "true",
+    "try",
+    "typedef",
+    "typeid",
+    "typename",
+    "typeof",
+    "typeof_unqual",
+    "union",
+    "unsigned",
+    "using",
+    "virtual",
+    "void",
+    "volatile",
+    "wchar_t",
+    "while",
+    "xor",
+    "xor_eq",
+];
+
+/// Why a flat symbol cannot be published, or `None` when it can.
+///
+/// `ar_` is the compiler runtime namespace (`ar_rt_*`, `ar_str_concat`,
+/// synthesized `ar_thread_capture_*`): exporting into it would interpose on,
+/// or collide with, the host runtime at link time. `main` belongs to the
+/// program entry, and `__x`/`_X` are reserved to the C implementation.
+fn reserved_export_name(name: &str) -> Option<&'static str> {
+    let mut chars = name.chars();
+    let reserved_by_c = name.starts_with("__")
+        || (chars.next() == Some('_') && chars.next().is_some_and(|ch| ch.is_ascii_uppercase()));
+    if C_FAMILY_KEYWORDS.contains(&name) {
+        Some("is a C or C++ keyword")
+    } else if reserved_by_c {
+        Some("is reserved to the C implementation (`__` or `_` + uppercase prefix)")
+    } else if name.starts_with("ar_") {
+        Some("uses the `ar_` prefix reserved for the Arandu runtime")
+    } else if name == "main" {
+        Some("is the program entry point")
+    } else {
+        None
+    }
+}
+
+/// A C status code must have the same width on every target the object can be
+/// linked for, so target-dependent integer types are refused.
+fn c_status_type_error(interner: &TypeInterner, ty: TypeId) -> Option<String> {
+    use crate::passes::type_checker::types::Primitive;
+    match interner.resolve(ty) {
+        ArType::Primitive(
+            Primitive::I8
+            | Primitive::I16
+            | Primitive::I32
+            | Primitive::I64
+            | Primitive::U8
+            | Primitive::U16
+            | Primitive::U32
+            | Primitive::U64,
+        ) => None,
+        ArType::Primitive(
+            Primitive::Int | Primitive::Uint | Primitive::ISize | Primitive::USize,
+        ) => Some(
+            "the error type needs a fixed width; use `i32`/`u32` instead of \
+                 `int`/`uint`/`isize`/`usize`"
+                .to_owned(),
+        ),
+        _ => Some("the error type must be a fixed-width integer such as `u32`".to_owned()),
+    }
 }

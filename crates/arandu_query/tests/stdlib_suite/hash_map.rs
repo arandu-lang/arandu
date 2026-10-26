@@ -12,7 +12,7 @@ const HASH_MAP_ARU: &str = include_str!("../../../../stdlib/alloc/hash_map.aru")
 #[test]
 fn stdlib_hash_map_parses_and_exports_expected_symbols() {
     let mut db = DatabaseImpl::default();
-    let file = db.new_file(
+    let file = db.new_stdlib_file(
         "stdlib/alloc/hash_map.aru".to_string(),
         HASH_MAP_ARU.to_string(),
     );
@@ -51,7 +51,7 @@ fn stdlib_hash_map_usage_in_program() {
     let mut db = DatabaseImpl::default();
     let mut map_file = None;
     for (path, source) in common::STDLIB_MODULES {
-        let file = db.new_file((*path).to_string(), (*source).to_string());
+        let file = db.new_stdlib_file((*path).to_string(), (*source).to_string());
         if *path == "stdlib/alloc/hash_map.aru" {
             map_file = Some(file);
         }

@@ -129,7 +129,7 @@ mod tests {
     use crate::literal_pool::AmirLiteralEntry;
     use crate::literal_pool::AmirLiteralPool;
     use crate::ops::{BinaryOp, UnaryOp};
-    use crate::passes::type_checker::types::{ArType, Primitive};
+    use crate::types::{ArType, Primitive};
 
     fn int_temp(id: usize) -> AmirTemp {
         AmirTemp {
@@ -137,7 +137,7 @@ mod tests {
             ty: intern_ty(ArType::Primitive(Primitive::Int)),
             is_copy: true,
             is_nullable: false,
-            span: arandu_lexer::Span::new(0, 0, 0),
+            span: crate::Span::new(0, 0, 0),
         }
     }
 
@@ -147,7 +147,7 @@ mod tests {
             ty: intern_ty(ArType::Primitive(Primitive::Bool)),
             is_copy: true,
             is_nullable: false,
-            span: arandu_lexer::Span::new(0, 0, 0),
+            span: crate::Span::new(0, 0, 0),
         }
     }
 
@@ -388,7 +388,7 @@ mod tests {
                     ty: intern_ty(ArType::Primitive(Primitive::Bool)),
                     is_memory: false,
                     symbol: None,
-                    span: arandu_lexer::Span::new(0, 0, 0),
+                    span: crate::Span::new(0, 0, 0),
                     use_span: None,
                 },
                 crate::amir::AmirLocal {
@@ -396,7 +396,7 @@ mod tests {
                     ty: intern_ty(ArType::Primitive(Primitive::Bool)),
                     is_memory: false,
                     symbol: None,
-                    span: arandu_lexer::Span::new(0, 0, 0),
+                    span: crate::Span::new(0, 0, 0),
                     use_span: None,
                 },
             ],
@@ -549,7 +549,7 @@ mod tests {
                     ty: intern_ty(ArType::Primitive(Primitive::Bool)),
                     is_memory: false,
                     symbol: None,
-                    span: arandu_lexer::Span::new(0, 0, 0),
+                    span: crate::Span::new(0, 0, 0),
                     use_span: None,
                 },
                 crate::amir::AmirLocal {
@@ -557,7 +557,7 @@ mod tests {
                     ty: intern_ty(ArType::Primitive(Primitive::Bool)),
                     is_memory: false,
                     symbol: None,
-                    span: arandu_lexer::Span::new(0, 0, 0),
+                    span: crate::Span::new(0, 0, 0),
                     use_span: None,
                 },
             ],
@@ -669,7 +669,7 @@ mod tests {
             ty,
             is_copy: true,
             is_nullable: false,
-            span: arandu_lexer::Span::new(0, 0, 0),
+            span: crate::Span::new(0, 0, 0),
         };
         let mut f = func(
             vec![

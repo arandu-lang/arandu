@@ -18,7 +18,7 @@ pub static ITEM_BENCHMARK_CASE_EXEC_COUNT: std::sync::atomic::AtomicUsize =
 
 fn declaration_matches(
     decl: &TopLevelDecl,
-    resolved: &arandu_middle::ResolvedNames,
+    resolved: &arandu_resolve::ResolvedNames,
     item_sym: SymbolId,
 ) -> bool {
     arandu_semantics::primary_def_key(decl)

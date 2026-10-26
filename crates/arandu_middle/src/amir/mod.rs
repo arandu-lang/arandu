@@ -19,7 +19,10 @@ pub use rpo::{reverse_post_order, reverse_post_order_body_first};
 pub use stmt::{
     AmirStmt, AmirStmtKind, AmirStmtTable, AmirTerminator, CallBorrowDependency, InstrId,
 };
-pub use value::{AmirConstant, AmirOperand, AmirPlace, AmirProjection, AmirRvalue, GenArenaDomain};
+pub use value::{
+    AmirConstant, AmirOperand, AmirPlace, AmirProjection, AmirRvalue, GenArenaDomain,
+    VectorCompareOp, VectorOp,
+};
 pub use visit::{
     for_each_place_operand, for_each_rvalue_operand, for_each_rvalue_place,
     for_each_terminator_operand,

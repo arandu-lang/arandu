@@ -1,0 +1,69 @@
+module atomicContract
+
+import std.core.atomic as atomic
+
+import std.core.intrinsics as intrinsics
+
+public func main(): int {
+    let mut flag = atomic.AtomicBool.new(false)
+    if flag.load(atomic.MemoryOrder.Acquire) { return 1 }
+    flag.store(true, atomic.MemoryOrder.Release)
+    if !flag.fetchXor(true, atomic.MemoryOrder.Relaxed) { return 2 }
+    if flag.fetchOr(true, atomic.MemoryOrder.AcqRel) { return 3 }
+    if !flag.fetchAnd(false, atomic.MemoryOrder.SeqCst) { return 4 }
+    match flag.compareExchange(false, true, atomic.MemoryOrder.SeqCst, atomic.MemoryOrder.Acquire) {
+        Result.Ok(previous) => { if previous { return 5 } }
+        Result.Err(_) => { return 6 }
+    }
+    match flag.compareExchange(false, true, atomic.MemoryOrder.AcqRel, atomic.MemoryOrder.Relaxed) {
+        Result.Err(actual) => { if !actual { return 7 } }
+        Result.Ok(_) => { return 8 }
+    }
+    match flag.compareExchangeWeak(true, false, atomic.MemoryOrder.Acquire, atomic.MemoryOrder.Acquire) {
+        Result.Ok(previous) => { if !previous { return 9 } }
+        Result.Err(_) => { return 10 }
+    }
+
+    let mut signed = atomic.AtomicInt.new(2147483647)
+    if signed.fetchAdd(1, atomic.MemoryOrder.Relaxed) != 2147483647 { return 11 }
+    if signed.load(atomic.MemoryOrder.SeqCst) != -2147483647 - 1 { return 12 }
+    if signed.fetchSub(1, atomic.MemoryOrder.Release) != -2147483647 - 1 { return 13 }
+    if signed.swap(-7, atomic.MemoryOrder.AcqRel) != 2147483647 { return 14 }
+
+    let mut unsigned = atomic.AtomicUint.new(4294967295 as uint)
+    if unsigned.fetchAdd(1 as uint, atomic.MemoryOrder.Relaxed) != (4294967295 as uint) { return 15 }
+    if unsigned.load(atomic.MemoryOrder.Acquire) != (0 as uint) { return 16 }
+    unsigned.store(240 as uint, atomic.MemoryOrder.SeqCst)
+    if unsigned.fetchAnd(15 as uint, atomic.MemoryOrder.SeqCst) != (240 as uint) { return 17 }
+    if unsigned.fetchOr(3 as uint, atomic.MemoryOrder.Acquire) != (0 as uint) { return 18 }
+    if unsigned.fetchXor(1 as uint, atomic.MemoryOrder.Release) != (3 as uint) { return 19 }
+
+    let mut large = atomic.AtomicU64.new(18446744073709551615 as u64)
+    if large.fetchAdd(1 as u64, atomic.MemoryOrder.Relaxed) != (18446744073709551615 as u64) { return 20 }
+    if large.load(atomic.MemoryOrder.Acquire) != (0 as u64) { return 21 }
+    match large.compareExchange(0 as u64, 9223372036854775809 as u64, atomic.MemoryOrder.SeqCst, atomic.MemoryOrder.Relaxed) {
+        Result.Ok(previous) => { if previous != (0 as u64) { return 22 } }
+        Result.Err(_) => { return 23 }
+    }
+    if large.load(atomic.MemoryOrder.Relaxed) != (9223372036854775809 as u64) { return 24 }
+    let minimum = -(9223372036854775807 as i64) - (1 as i64)
+    let mut signedLarge = atomic.AtomicI64.new(minimum)
+    if signedLarge.fetchSub(1 as i64, atomic.MemoryOrder.SeqCst) != minimum { return 25 }
+    if signedLarge.load(atomic.MemoryOrder.Acquire) != (9223372036854775807 as i64) { return 26 }
+
+    let mut pointerSized = atomic.AtomicUsize.new(7 as usize)
+    if pointerSized.fetchAdd(9 as usize, atomic.MemoryOrder.Relaxed) != (7 as usize) { return 27 }
+    if pointerSized.fetchSub(2 as usize, atomic.MemoryOrder.Release) != (16 as usize) { return 28 }
+    if pointerSized.load(atomic.MemoryOrder.Acquire) != (14 as usize) { return 29 }
+
+    let mut first = 1
+    let mut second = 2
+    let p1 = unsafe { intrinsics.addressOf<int>(mut ref first) }
+    let p2 = unsafe { intrinsics.addressOf<int>(mut ref second) }
+    let mut pointer = atomic.AtomicPtr<int>.new(p1)
+    if pointer.swap(p2, atomic.MemoryOrder.AcqRel) != p1 { return 30 }
+    if pointer.load(atomic.MemoryOrder.Acquire) != p2 { return 31 }
+    atomic.fence(atomic.MemoryOrder.Acquire)
+    atomic.compilerFence(atomic.MemoryOrder.SeqCst)
+    return 0
+}

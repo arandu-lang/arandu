@@ -1,8 +1,9 @@
 //! Declaration-header obligations, separate from function-body staging.
 use super::{ConstArguments, CtfeRoot, CtfeRootRequest, RootSelector};
 use crate::{db::HashEq, ArandCompilerDb, SourceFile};
-use arandu_middle::{ctfe::ConstValue, NodeKey, ResolvedNames, Span, SymbolId};
+use arandu_middle::{ctfe::ConstValue, NodeKey, Span, SymbolId};
 use arandu_parser::{ast_pool::ExprId, Program, TopLevelDecl, TypeExpr};
+use arandu_resolve::ResolvedNames;
 use std::sync::Arc;
 
 pub(crate) fn header_arguments(

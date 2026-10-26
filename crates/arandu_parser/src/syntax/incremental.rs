@@ -269,6 +269,14 @@ pub fn reparse_subtree(
     {
         return fallback(new_source);
     }
+
+    let mut parser =
+        crate::parser::Parser::new(item_text, Arc::new(item_lexed.tokens.clone())).with_events();
+    let _ = parser.parse_program();
+    if !parser.diagnostics.is_empty() {
+        return fallback(new_source);
+    }
+
     let new_item = build_item_green(item_text, &item_lexed.tokens);
 
     let new_green = root_green.replace_child(child_index, NodeOrToken::Node(new_item));

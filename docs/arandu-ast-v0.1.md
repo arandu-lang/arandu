@@ -1,8 +1,8 @@
 # Arandu AST v0.1
 
-Status: specification draft
+Status: implemented AST with conceptual schema examples; Rust definitions are authoritative for physical representation
 Grammar source: `arandu-grammar-v0.6.ebnf`
-Goal: define the canonical in-memory shape of an Arandu program before choosing a compiler implementation language.
+Owner: `arandu_parser::ast`; the parser lowers canonical Rowan CST to this AST. The compiler is implemented in Rust; schemas below describe logical records, not a stable serialization API.
 
 ## Visão Geral e Contexto
 
@@ -25,26 +25,25 @@ resolução de nomes, tipos e lowering para os IRs.
 
 Fields:
 
-- `file`: source file path or module-relative identifier.
-- `start_byte`: inclusive UTF-8 byte offset.
-- `end_byte`: exclusive UTF-8 byte offset.
-- `start_line`, `start_col`, `end_line`, `end_col`: one-based display positions.
+- `file_id`: source file identity (`u32`).
+- `start`: inclusive UTF-8 byte offset (`u32`).
+- `end`: exclusive UTF-8 byte offset (`u32`).
+
+The physical `arandu_base::Span` is 12 bytes. Paths/line/column and UTF-16
+positions are derived at rendering/protocol boundaries, not stored in every span.
+Older expanded JSON examples below are explanatory projections, not a promised wire format.
 
 Invariant:
 
-- `start_byte <= end_byte`.
+- `start <= end`.
 
 Example:
 
 ```json
 {
-  "file": "examples/stable/syntax/hello.aru",
-  "start_byte": 0,
-  "end_byte": 29,
-  "start_line": 1,
-  "start_col": 1,
-  "end_line": 1,
-  "end_col": 30
+  "file_id": 1,
+  "start": 0,
+  "end": 29
 }
 ```
 
@@ -150,7 +149,7 @@ module examples.stable.syntax.hello
 Variants:
 
 - `ModuleImport`: `import io`
-- `NamedImport`: `import { println as print } from io`
+- `NamedImport`: `from io import { println as print }`
 
 Fields:
 
@@ -282,7 +281,20 @@ Fields:
 
 - `name`: `ValueName`
 - `type`: `TypeExpr`
+- `default`: optional `Expr`
 - common declaration fields
+
+A field default is evaluated during type checking (constant foldable) and is
+applied when a struct literal omits the field:
+
+```arandu
+struct Config {
+    port: int = 8080
+    label: str
+}
+
+let cfg = Config { label: "api" } // port == 8080
+```
 
 ### EnumDecl
 
@@ -488,6 +500,37 @@ Fields:
 - `type`: optional `TypeExpr`
 - `span`
 
+### Let Else and Guard
+
+`let <pattern> = <expr> else { <else_block> }` and
+`guard <condition> else { <else_block> }` have no AST node of their own. The
+parser folds the **remaining statements of the enclosing block** into an
+equivalent `Stmt::If`:
+
+```arandu
+// input
+let .Some(value) = parse(input) else { return .None }
+use_value(value)
+
+// lowers to
+if parse(input) is .Some(value) { use_value(value) } else { return .None }
+```
+
+Rules:
+
+- `let` with a bare binding list (`let (a, b) = pair`) stays a plain
+  `Stmt::VarDecl` with two `BindingItem`s; only the refutable form binds a
+  pattern and needs `else`.
+- The refutable form requires `else`. Without it the statement falls back to
+  the ordinary `let` binding form, which only accepts binding names, so a
+  refutable pattern there is a parse error.
+- Because the rest of the block moves into `then_block`, a refutable `let`
+  must be the last statement of its block.
+- `guard` takes a full `Condition` (so `guard x is .Some(v)` and
+  `guard a > 0 && b > 0` both work) and also requires `else`.
+- Bindings introduced by the pattern are visible in the moved statements, which
+  is exactly the scope the written program implies.
+
 ### SetStmt
 
 Variants:
@@ -587,12 +630,28 @@ Fields:
 - `StructPattern`
 - `TuplePattern`
 - `RangePattern`
+- `OrPattern` (`p1 | p2`)
 
 Invariant:
 
 - `_` is always `WildcardPattern`, never a binding.
 - `mut name` creates a mutable binding while preserving the matched value's type.
 - Pattern exhaustiveness is checked later, not during parsing.
+
+Leading-dot variant patterns:
+
+```arandu
+match slot {
+    .Occupied(value) => value
+    .Empty => 0
+}
+```
+
+`.Variant` and `.Variant(payload)` parse as the leading-dot form of
+`TypeVariantPattern`: the type is inferred from the scrutinee, so only the
+variant name is written. This form is accepted in `match` arms, `if … is`
+conditions, `let`/`let … else` and `guard`; it is never a value expression in
+pattern position and never a bare path.
 
 ### MatchArm
 
@@ -621,6 +680,7 @@ Token.Number(value) if value > 0 => "positive number"
 - `LiteralExpr`
 - `ValuePathExpr`
 - `TypeQualifiedValuePathExpr`
+- `VariantSugarExpr`
 - `StructLiteralExpr`
 - `ArrayLiteralExpr`
 - `LambdaExpr`
@@ -654,6 +714,46 @@ Fields:
 - `type`: `NamedType`
 - `member`: `ValueName`
 - `span`
+
+### VariantSugarExpr
+
+Fields:
+
+- `name`: `ValueName`
+- `args`: list of `Expr` (empty for unit variants)
+- `span`
+
+Example:
+
+```arandu
+let color = .Red
+return .Some(10)
+```
+
+Invariant:
+
+- The enum or result type comes from the expected type of the expression
+  (return type, binding type, argument type). A variant sugar that has no
+  expected enum type is a type-checking error, not a parse error.
+- `TypeQualifiedValuePathExpr` is unrelated: it is a static member lookup on a
+  named type, not a variant constructor.
+
+### Pipe Expressions
+
+`|>` has no dedicated AST node. The parser lowers it eagerly:
+
+```arandu
+value |> add(5)
+value |> add(_, 5)
+value |> handler
+```
+
+- Right-hand call with a `_` placeholder: the piped value replaces the
+  placeholder argument in place.
+- Right-hand call without `_`: the piped value becomes the first argument.
+- Right-hand non-call: it becomes a one-argument call.
+
+The result is always an ordinary `CallExpr`, so later phases never see a pipe.
 
 Example:
 
@@ -706,10 +806,16 @@ Invariant:
 
 ### Argument
 
-Variants:
+Arguments are a positional list of expressions. Labels and the `_` pipe
+placeholder are parser-only syntax:
 
-- `Positional(expr)`
-- `Named(name, expr)`
+- `f(expr)` — positional.
+- `f(label: expr)` — the label is consumed and the expression is stored
+  positionally, so the AST does not distinguish `f(label: x)` from `f(x)`.
+- `f(label:)` — shorthand for `f(label)`; the label name becomes a
+  `ValuePathExpr` argument.
+- `_` — a `ValuePathExpr` whose only path segment is `_`; the pipe lowering
+  replaces it. A `_` that survives to type checking is an unresolved value.
 
 ### StructLiteralExpr
 
@@ -766,8 +872,32 @@ Invariant:
 - `FloatLiteral`
 - `BoolLiteral`
 - `CharLiteral`
+- `ByteLiteral`
+- `ByteStringLiteral`
 - `StringLiteral`
 - `NilLiteral`
+
+### Byte Literals
+
+`b'A'` is a `ByteLiteral` with a `u8` value already decoded from the token (the
+lexer rejects non-ASCII bytes and invalid escapes).
+
+`b"..."` is a `ByteStringLiteral` that keeps the decoded payload as raw bytes
+(`Arc<[u8]>`), not as a `str`:
+
+```arandu
+let raw = b"\xFF\x00AB"
+```
+
+Invariants:
+
+- The element type is `u8`; the expression type is `[]u8` (a slice), so
+  `raw.len`, `raw[i]` and sub-slicing behave like any other byte slice.
+- Bytes are preserved exactly. A payload that is not valid UTF-8 never becomes
+  a `StringLiteral` and never round-trips through `str`.
+- Byte strings do not interpolate: `b"${x}"` is six literal bytes.
+- The payload is stored in the AMIR literal pool as raw bytes
+  (`AmirLiteralEntry::Bytes`) and every backend emits it as a static array.
 
 ### Numeric Literals
 

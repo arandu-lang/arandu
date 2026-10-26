@@ -150,19 +150,36 @@ if [[ "$REPORTED_VERSION" != "arandu $PACKAGE_VERSION" ]]; then
   exit 1
 fi
 
-# Optional: verify in-tree BLAKE3SUMS against extracted files.
-if [[ -f "$TREE/BLAKE3SUMS" ]]; then
-  echo "==> verifying in-tree BLAKE3SUMS"
-  while read -r hash path; do
-    [[ -z "${hash:-}" || "$hash" =~ ^# ]] && continue
-    actual="$(hash_file "$TREE/$path")"
-    if [[ "$hash" != "$actual" ]]; then
-      echo "error: BLAKE3SUMS mismatch for $path" >&2
-      echo "  expected $hash" >&2
-      echo "  actual   $actual" >&2
-      exit 1
-    fi
-  done <"$TREE/BLAKE3SUMS"
+# The internal checksum is mandatory. A missing, empty, or non-regular file
+# must fail before the staged tree replaces any previous prefix.
+if [[ -L "$TREE/BLAKE3SUMS" || ! -f "$TREE/BLAKE3SUMS" ]]; then
+  echo "error: archive missing regular BLAKE3SUMS" >&2
+  exit 1
+fi
+if [[ ! -s "$TREE/BLAKE3SUMS" ]]; then
+  echo "error: empty BLAKE3SUMS" >&2
+  exit 1
+fi
+echo "==> verifying in-tree BLAKE3SUMS"
+SUM_COUNT=0
+while read -r hash path || [[ -n "${hash:-}" ]]; do
+  [[ -z "${hash:-}" || "$hash" =~ ^# ]] && continue
+  if [[ ! "$hash" =~ ^[0-9a-f]{64}$ || -z "${path:-}" || "$path" == /* || "/$path/" == *"/../"* || "/$path/" == *"/./"* ]]; then
+    echo "error: malformed BLAKE3SUMS entry" >&2
+    exit 1
+  fi
+  actual="$(hash_file "$TREE/$path")"
+  if [[ "$hash" != "$actual" ]]; then
+    echo "error: BLAKE3SUMS mismatch for $path" >&2
+    echo "  expected $hash" >&2
+    echo "  actual   $actual" >&2
+    exit 1
+  fi
+  SUM_COUNT=$((SUM_COUNT + 1))
+done <"$TREE/BLAKE3SUMS"
+if [[ "$SUM_COUNT" -eq 0 ]]; then
+  echo "error: empty BLAKE3SUMS" >&2
+  exit 1
 fi
 
 echo "==> atomic publish → $VERSION_DIR"

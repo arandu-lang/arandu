@@ -1,8 +1,8 @@
 use arandu_middle::SymbolId;
+use arandu_middle::SymbolTable;
 use arandu_middle::layout::StructLayoutProvider;
 use arandu_middle::symbol_table::SymbolKind;
 use arandu_middle::types::{ArType, Primitive, TypeId, TypeInterner};
-use arandu_semantics::SymbolTable;
 use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 use smol_str::SmolStr;
@@ -20,6 +20,9 @@ pub(super) struct TypeLowerer<'a> {
     defined_symbols: FxHashSet<SymbolId>,
     visiting_symbols: FxHashSet<SymbolId>,
     pub(super) named_map: FxHashMap<SymbolId, SmolStr>,
+    /// Nominal types with no WIT definition (generic parameters, interfaces,
+    /// aliases). Generation reports them instead of naming an undefined type.
+    pub(super) unsupported: Vec<SymbolId>,
 }
 
 impl<'a> TypeLowerer<'a> {
@@ -37,6 +40,7 @@ impl<'a> TypeLowerer<'a> {
             defined_symbols: FxHashSet::default(),
             visiting_symbols: FxHashSet::default(),
             named_map: FxHashMap::default(),
+            unsupported: Vec::new(),
         }
     }
 
@@ -52,13 +56,16 @@ impl<'a> TypeLowerer<'a> {
     pub(super) fn lower_ar_type(&mut self, resolved: &ArType) -> Option<WitTypeId> {
         match resolved {
             ArType::Void | ArType::Err | ArType::Error => None,
+            // The shared boundary validator rejects native vectors before
+            // generation. Never use the legacy opaque-u32 fallback for them.
+            ArType::Vector(_) => None,
 
             ArType::Primitive(prim) => {
                 let p = map_primitive(*prim);
                 Some(self.pool.add(WitTypeKind::Primitive(p)))
             }
 
-            ArType::Slice(inner) => {
+            ArType::Slice(inner) | ArType::MutSlice(inner) => {
                 let inner_id = self
                     .lower_type(*inner)
                     .unwrap_or_else(|| self.pool.add(WitTypeKind::Primitive(WitPrimitive::U8)));
@@ -154,6 +161,12 @@ impl<'a> TypeLowerer<'a> {
             return;
         };
 
+        if !matches!(sym.kind, SymbolKind::Struct | SymbolKind::Enum) {
+            if !self.unsupported.contains(&sym_id) {
+                self.unsupported.push(sym_id);
+            }
+            return;
+        }
         self.visiting_symbols.insert(sym_id);
         let wit_name = SmolStr::new(to_wit_ident(&sym.name));
         self.named_map.insert(sym_id, wit_name.clone());
@@ -180,24 +193,31 @@ impl<'a> TypeLowerer<'a> {
             }
             SymbolKind::Enum => {
                 // Collect associated members of this enum that are EnumVariant
-                let mut variants: Vec<(SmolStr, Option<TypeId>)> = Vec::new();
-                for ((parent_sym, member_name), &var_sym) in &self.symbols.associated_members {
-                    if *parent_sym == sym_id
-                        && self
-                            .symbols
-                            .try_get(var_sym)
-                            .is_some_and(|s| s.kind == SymbolKind::EnumVariant)
-                    {
-                        variants.push((member_name.clone(), None));
-                    }
+                // Cases come from the layout in tag order; each tag names its
+                // own variant symbol, so names and payloads cannot drift apart
+                // and the order never depends on hash-map iteration.
+                let shapes = self
+                    .layout_provider
+                    .get_enum_variants(sym_id)
+                    .unwrap_or_default();
+                let mut variants: Vec<(SmolStr, Option<TypeId>)> = Vec::with_capacity(shapes.len());
+                for (tag, shape) in shapes.into_iter().enumerate() {
+                    let Some(name) = self
+                        .layout_provider
+                        .get_enum_variant_symbol(sym_id, tag)
+                        .and_then(|variant| self.symbols.try_get(variant))
+                        .map(|variant| {
+                            SmolStr::new(variant.name.rsplit('.').next().unwrap_or(&variant.name))
+                        })
+                    else {
+                        continue;
+                    };
+                    variants.push((name, shape.payload_ty));
                 }
-
-                // Associate payload types from layout provider if available
-                if let Some(payload_shapes) = self.layout_provider.get_enum_variants(sym_id) {
-                    for (i, shape) in payload_shapes.into_iter().enumerate() {
-                        if let Some(var) = variants.get_mut(i) {
-                            var.1 = shape.payload_ty;
-                        }
+                if variants.is_empty() {
+                    // A WIT enum must have cases; report it rather than emit `enum x {}`.
+                    if !self.unsupported.contains(&sym_id) {
+                        self.unsupported.push(sym_id);
                     }
                 }
 

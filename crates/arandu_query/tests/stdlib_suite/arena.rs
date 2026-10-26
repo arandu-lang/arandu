@@ -12,7 +12,7 @@ const INTRINSICS_ARU: &str = include_str!("../../../../stdlib/core/intrinsics.ar
 #[test]
 fn stdlib_arena_parses_and_exports_expected_symbols() {
     let mut db = DatabaseImpl::default();
-    let file = db.new_file("stdlib/alloc/arena.aru".to_string(), ARENA_ARU.to_string());
+    let file = db.new_stdlib_file("stdlib/alloc/arena.aru".to_string(), ARENA_ARU.to_string());
     match parse(&db, file).as_ref() {
         Ok(_) => {}
         Err(e) => panic!("arena.aru must parse; got {e}"),
@@ -38,12 +38,13 @@ fn stdlib_arena_parses_and_exports_expected_symbols() {
 #[test]
 fn stdlib_arena_usage_in_program() {
     let mut db = DatabaseImpl::default();
-    let _ = db.new_file(
+    let _ = db.new_stdlib_file(
         "stdlib/core/intrinsics.aru".to_string(),
         INTRINSICS_ARU.to_string(),
     );
-    let _ = db.new_file("stdlib/core/mem.aru".to_string(), MEM_ARU.to_string());
-    let arena_file = db.new_file("stdlib/alloc/arena.aru".to_string(), ARENA_ARU.to_string());
+    let _ = db.new_stdlib_file("stdlib/core/mem.aru".to_string(), MEM_ARU.to_string());
+    let arena_file =
+        db.new_stdlib_file("stdlib/alloc/arena.aru".to_string(), ARENA_ARU.to_string());
     let main_src = r#"
 import std.alloc.arena as arena
 

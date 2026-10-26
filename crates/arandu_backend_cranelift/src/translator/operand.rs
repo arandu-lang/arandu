@@ -1,5 +1,5 @@
-use arandu_semantics::amir::{AmirConstant, AmirOperand};
-use arandu_semantics::passes::type_checker::types::{ArType, Primitive};
+use arandu_middle::amir::{AmirConstant, AmirOperand};
+use arandu_middle::types::{ArType, Primitive};
 use cranelift_codegen::ir::{InstBuilder, Type, Value};
 use cranelift_module::Module;
 
@@ -20,7 +20,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         match ty {
             ArType::Primitive(Primitive::Str) => FatOperandKind::Str,
             _ if ty
-                .slice_abi_element(&self.type_info.type_interner)
+                .slice_abi_element(self.type_info.type_interner())
                 .is_some() =>
             {
                 FatOperandKind::Slice
@@ -52,7 +52,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         if let ArType::Ref(inner) | ArType::RefMut(inner) | ArType::Ptr(inner) = &op_ty
             && matches!(
                 self.resolve_ty(*inner),
-                ArType::Primitive(Primitive::Str) | ArType::Slice(_)
+                ArType::Primitive(Primitive::Str) | ArType::Slice(_) | ArType::MutSlice(_)
             )
         {
             return self.translate_fat_ref_operand(operand);
@@ -69,9 +69,77 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         (data, len)
     }
 
+    /// Declares (once per literal id) a static byte blob and returns its address.
+    ///
+    /// `str` literals and non-UTF-8 `b"..."` blobs only differ in their bytes, so
+    /// both string and byte-slice views share this data declaration.
+    fn declare_blob_data(
+        &mut self,
+        lit_id: arandu_middle::literal_pool::LiteralId,
+        bytes: &[u8],
+    ) -> Option<Value> {
+        let data_id = match self.module.declare_data(
+            &format!("str_lit_{}", lit_id.0),
+            cranelift_module::Linkage::Local,
+            false,
+            false,
+        ) {
+            Ok(data_id) => data_id,
+            Err(err) => {
+                self.record_ice(
+                    format!("failed to declare string literal in JIT module: {err:?}"),
+                    self.func_span(),
+                );
+                return None;
+            }
+        };
+        let mut data_ctx = cranelift_module::DataDescription::new();
+        data_ctx.define(bytes.to_vec().into_boxed_slice());
+        match self.module.define_data(data_id, &data_ctx) {
+            Ok(()) => {}
+            // Data lives at module scope and is keyed by literal id: a second
+            // function that uses the same literal re-declares the same id with
+            // identical bytes, which is already defined.
+            Err(cranelift_module::ModuleError::DuplicateDefinition(_)) => {}
+            Err(err) => {
+                self.record_ice(
+                    format!("failed to define string literal in JIT module: {err:?}"),
+                    self.func_span(),
+                );
+                return None;
+            }
+        }
+        let local_data_ref = self.module.declare_data_in_func(data_id, self.builder.func);
+        Some(
+            self.builder
+                .ins()
+                .symbol_value(self.ptr_type, local_data_ref),
+        )
+    }
+
     pub(super) fn translate_str_operand(&mut self, operand: &AmirOperand) -> (Value, Value) {
         if self.error.is_some() {
             return (self.poison_i32(), self.poison_i32());
+        }
+
+        if let Some(depth) = self
+            .get_operand_ar_type(operand)
+            .str_reference_depth(self.type_info.type_interner())
+            && depth > 0
+        {
+            let mut descriptor = self.translate_operand(operand, Some(self.ptr_type));
+            let flags = cranelift_codegen::ir::MemFlagsData::new();
+            for _ in 1..depth {
+                descriptor = self.builder.ins().load(self.ptr_type, flags, descriptor, 0);
+            }
+            let data = self.builder.ins().load(self.ptr_type, flags, descriptor, 0);
+            let len = self.builder.ins().load(
+                self.ptr_type,
+                flags,
+                descriptor,
+                self.ptr_type.bytes() as i32,
+            );
+            return (data, len);
         }
 
         match operand {
@@ -85,7 +153,9 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     if let ArType::Ref(inner) | ArType::RefMut(inner) | ArType::Ptr(inner) = &op_ty
                         && matches!(
                             self.resolve_ty(*inner),
-                            ArType::Primitive(Primitive::Str) | ArType::Slice(_)
+                            ArType::Primitive(Primitive::Str)
+                                | ArType::Slice(_)
+                                | ArType::MutSlice(_)
                         )
                     {
                         // `ref str` view: the var is a pointer to the
@@ -105,6 +175,13 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     let len_val = self.builder.ins().iconst(self.ptr_type, 0);
                     (ptr_val, len_val)
                 } else {
+                    let ty = self.temp_ar_ty(*temp_id);
+                    if matches!(
+                        crate::types::clif_type(&ty, self.ptr_type),
+                        crate::types::ClifType::Void
+                    ) {
+                        return (self.poison_i32(), self.poison_i32());
+                    }
                     self.record_ice(
                         "use of undeclared AMIR temp in codegen",
                         self.temp_span(*temp_id),
@@ -120,39 +197,20 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 (ptr_val, len_val)
             }
             AmirOperand::Constant(AmirConstant::Pool(lit_id)) => {
-                let entry = self.literal_pool.get(*lit_id);
-                if let arandu_semantics::literal_pool::AmirLiteralEntry::Str(s) = entry {
-                    let str_bytes = s.as_bytes();
-                    let data_id = match self.module.declare_data(
-                        &format!("str_lit_{}", lit_id.0),
-                        cranelift_module::Linkage::Local,
-                        false,
-                        false,
-                    ) {
-                        Ok(data_id) => data_id,
-                        Err(err) => {
-                            self.record_ice(
-                                format!("failed to declare string literal in JIT module: {err:?}"),
-                                self.func_span(),
-                            );
-                            return (self.poison_i32(), self.poison_i32());
-                        }
-                    };
-                    let mut data_ctx = cranelift_module::DataDescription::new();
-                    data_ctx.define(str_bytes.to_vec().into_boxed_slice());
-                    let _ = self.module.define_data(data_id, &data_ctx);
-                    let local_data_ref =
-                        self.module.declare_data_in_func(data_id, self.builder.func);
-                    let ptr_val = self
-                        .builder
-                        .ins()
-                        .symbol_value(self.ptr_type, local_data_ref);
-                    let len_val = self.builder.ins().iconst(self.ptr_type, s.len() as i64);
-                    (ptr_val, len_val)
-                } else {
-                    self.record_ice("expected string literal in pool", self.func_span());
-                    (self.poison_i32(), self.poison_i32())
-                }
+                let bytes = match self.literal_pool.get(*lit_id) {
+                    arandu_middle::literal_pool::AmirLiteralEntry::Str(s) => s.as_bytes(),
+                    // Non-UTF-8 `b"..."` blobs share the same (data, len) ABI.
+                    arandu_middle::literal_pool::AmirLiteralEntry::Bytes(b) => b,
+                    _ => {
+                        self.record_ice("expected string literal in pool", self.func_span());
+                        return (self.poison_i32(), self.poison_i32());
+                    }
+                };
+                let Some(ptr_val) = self.declare_blob_data(*lit_id, bytes) else {
+                    return (self.poison_i32(), self.poison_i32());
+                };
+                let len_val = self.builder.ins().iconst(self.ptr_type, bytes.len() as i64);
+                (ptr_val, len_val)
             }
             _ => {
                 self.record_ice(
@@ -176,7 +234,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         &mut self,
         operand: &AmirOperand,
         expected_ty: Option<Type>,
-        expected_ar_type: Option<&arandu_semantics::types::ArType>,
+        expected_ar_type: Option<&arandu_middle::types::ArType>,
     ) -> Value {
         if self.error.is_some() {
             return self.poison_i32();
@@ -184,25 +242,23 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
 
         let mut val = match operand {
             AmirOperand::Copy(temp_id) | AmirOperand::Move(temp_id) => {
-                match self.temp_map.get(temp_id) {
-                    Some(var) => self.builder.use_var(*var),
-                    None => {
-                        // ZST temps (void / typeck error) have no Cranelift vars.
-                        // `Err` is pointer-sized and must be declared like other scalars.
-                        let ty = self.temp_ar_ty(*temp_id);
-                        if matches!(
-                            ty,
-                            arandu_semantics::types::ArType::Void
-                                | arandu_semantics::types::ArType::Error
-                        ) {
-                            return self.poison_i32();
-                        }
-                        self.record_ice(
-                            "use of undeclared AMIR temp in codegen",
-                            self.temp_span(*temp_id),
-                        );
+                if let Some(var) = self.temp_map.get(temp_id) {
+                    self.builder.use_var(*var)
+                } else if let Some(&(var_ptr, _var_len)) = self.str_temp_map.get(temp_id) {
+                    self.builder.use_var(var_ptr)
+                } else {
+                    let ty = self.temp_ar_ty(*temp_id);
+                    if matches!(
+                        crate::types::clif_type(&ty, self.ptr_type),
+                        crate::types::ClifType::Void
+                    ) {
                         return self.poison_i32();
                     }
+                    self.record_ice(
+                        "use of undeclared AMIR temp in codegen",
+                        self.temp_span(*temp_id),
+                    );
+                    return self.poison_i32();
                 }
             }
             AmirOperand::Constant(c) => match c {
@@ -221,8 +277,8 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 AmirConstant::Pool(lit_id) => {
                     let entry = self.literal_pool.get(*lit_id);
                     match entry {
-                        arandu_semantics::literal_pool::AmirLiteralEntry::Int(s) => {
-                            let val = match arandu_semantics::literal_pool::parse_int_literal(s) {
+                        arandu_middle::literal_pool::AmirLiteralEntry::Int(s) => {
+                            let val = match arandu_middle::literal_pool::parse_int_literal(s) {
                                 Some(v) => v as i64,
                                 None => {
                                     self.record_ice(
@@ -240,8 +296,8 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                             };
                             self.builder.ins().iconst(ty, val)
                         }
-                        arandu_semantics::literal_pool::AmirLiteralEntry::Float(s) => {
-                            let val = match arandu_semantics::literal_pool::parse_float_literal(s) {
+                        arandu_middle::literal_pool::AmirLiteralEntry::Float(s) => {
+                            let val = match arandu_middle::literal_pool::parse_float_literal(s) {
                                 Some(v) => v,
                                 None => {
                                     self.record_ice(
@@ -263,7 +319,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                                 self.builder.ins().f64const(val)
                             }
                         }
-                        arandu_semantics::literal_pool::AmirLiteralEntry::FloatBits(value) => {
+                        arandu_middle::literal_pool::AmirLiteralEntry::FloatBits(value) => {
                             if let Some(bits) = value.bits32() {
                                 self.builder.ins().f32const(
                                     cranelift_codegen::ir::immediates::Ieee32::with_bits(bits),
@@ -276,35 +332,19 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                                 )
                             }
                         }
-                        arandu_semantics::literal_pool::AmirLiteralEntry::Str(s) => {
-                            let str_bytes = s.as_bytes();
-                            let data_id = match self.module.declare_data(
-                                &format!("str_lit_{}", lit_id.0),
-                                cranelift_module::Linkage::Local,
-                                false,
-                                false,
-                            ) {
-                                Ok(data_id) => data_id,
-                                Err(err) => {
-                                    self.record_ice(
-                                        format!(
-                                            "failed to declare string literal in JIT module: {err:?}"
-                                        ),
-                                        self.func_span(),
-                                    );
-                                    return self.poison_i32();
-                                }
-                            };
-                            let mut data_ctx = cranelift_module::DataDescription::new();
-                            data_ctx.define(str_bytes.to_vec().into_boxed_slice());
-                            let _ = self.module.define_data(data_id, &data_ctx);
-                            let local_data_ref =
-                                self.module.declare_data_in_func(data_id, self.builder.func);
-                            self.builder
-                                .ins()
-                                .symbol_value(self.ptr_type, local_data_ref)
+                        arandu_middle::literal_pool::AmirLiteralEntry::Str(s) => {
+                            match self.declare_blob_data(*lit_id, s.as_bytes()) {
+                                Some(value) => value,
+                                None => self.poison_i32(),
+                            }
                         }
-                        arandu_semantics::literal_pool::AmirLiteralEntry::Char(s) => {
+                        arandu_middle::literal_pool::AmirLiteralEntry::Bytes(b) => {
+                            match self.declare_blob_data(*lit_id, b) {
+                                Some(value) => value,
+                                None => self.poison_i32(),
+                            }
+                        }
+                        arandu_middle::literal_pool::AmirLiteralEntry::Char(s) => {
                             let val = s.chars().next().unwrap_or('\0') as i64;
                             self.builder
                                 .ins()

@@ -1,0 +1,537 @@
+(* ================================================================== *)
+(*  ARANDU LANGUAGE — FORMAL SYNTACTIC GRAMMAR                        *)
+(*  File: grammar/parser.ebnf                                         *)
+(*  Notation: ISO/IEC 14977-inspired EBNF                              *)
+(* ================================================================== *)
+
+(* ------------------------------------------------------------------ *)
+(*  1. PROGRAM AND TOP-LEVEL DECLARATIONS                              *)
+(* ------------------------------------------------------------------ *)
+
+program            = { stmt_end } [ module_decl ]
+                     { stmt_end | top_level_decl } EOF ;
+
+stmt_end           = ";" ;
+
+module_decl        = "module" module_path stmt_end ;
+
+module_path        = IDENT_VALUE { "." IDENT_VALUE } ;
+
+top_level_decl     = import_decl
+                   | const_decl
+                   | type_alias_decl
+                   | func_decl
+                   | struct_decl
+                   | enum_decl
+                   | interface_decl
+                   | impl_decl
+                   | submodule_decl
+                   | extern_decl
+                   ;
+
+visibility         = "public" | "internal" | "private" ;
+
+attribute_list     = { attribute } ;
+
+(* RFC 0002: Declarative annotations strictly follow @PascalCase convention *)
+attribute          = "@" IDENT_TYPE [ "(" [ argument_list ] ")" ] ;
+
+const_name         = IDENT_VALUE | IDENT_TYPE ;
+
+
+(* ------------------------------------------------------------------ *)
+(*  2. IMPORTS, MODULES AND RE-EXPORTS                                 *)
+(* ------------------------------------------------------------------ *)
+
+import_decl        = named_import
+                   | module_import
+                   | reexport_decl
+                   ;
+
+named_import       = "from" ( module_path | STRING_LIT )
+                     "import" "{" import_item { "," import_item } [ "," ] "}" stmt_end ;
+
+module_import      = "import" ( module_path | STRING_LIT )
+                     [ "as" import_name ] stmt_end ;
+
+reexport_decl      = [ visibility ] "use" module_path "."
+                     "{" import_item { "," import_item } [ "," ] "}" stmt_end ;
+
+import_item        = import_name [ "as" import_name ] ;
+
+import_name        = IDENT_VALUE | IDENT_TYPE ;
+
+
+(* ------------------------------------------------------------------ *)
+(*  3. DECLARATIONS                                                    *)
+(* ------------------------------------------------------------------ *)
+
+const_decl         = attribute_list [ visibility ] "const"
+                     const_name [ ":" type_expr ] "=" expr stmt_end ;
+
+type_alias_decl    = attribute_list [ visibility ] "type"
+                     IDENT_TYPE [ generic_params ] "=" type_expr stmt_end ;
+
+func_decl          = attribute_list [ visibility ] [ "async" ] "func"
+                     func_name [ generic_params ]
+                     "(" [ param_list ] ")"
+                     [ ":" result_type ]
+                     [ where_clause ]
+                     block ;
+
+func_name          = IDENT_VALUE
+                   | type_name "." IDENT_VALUE
+                   ;
+
+param_list         = param { "," param } [ "," ] ;
+
+param              = attribute_list ( self_param | regular_param ) [ "..." ] ;
+
+regular_param      = [ ownership ] IDENT_VALUE ":" type_expr ;
+
+self_param         = short_self | typed_self ;
+
+short_self         = [ "mut" | "ref" | "own" ] "self" ;
+
+typed_self         = "self" [ ":" self_type ] ;
+
+self_type          = [ "ref" | "mut" "ref" | "own" ] [ type_expr ] ;
+
+ownership          = "own" | "mut" | "shared" ;
+
+result_type        = type_expr | multi_result_type ;
+
+multi_result_type  = "(" type_expr "," type_expr { "," type_expr } [ "," ] ")" ;
+
+where_clause       = "where" where_item { "," where_item } [ "," ] ;
+
+where_item         = IDENT_TYPE ":" constraint_list ;
+
+constraint_list    = type_expr { "+" type_expr } ;
+
+
+struct_decl        = attribute_list [ visibility ] "struct"
+                     IDENT_TYPE [ generic_params ] [ where_clause ]
+                     "{" { field_decl } "}" ;
+
+field_decl         = attribute_list [ visibility ] IDENT_VALUE ":" type_expr [ "=" expr ] stmt_end ;
+
+
+enum_decl          = attribute_list [ visibility ] "enum"
+                     IDENT_TYPE [ generic_params ] [ where_clause ]
+                     "{" [ enum_variant { "," enum_variant } [ "," ] ] "}" ;
+
+enum_variant       = attribute_list IDENT_TYPE
+                     [ "(" [ type_list ] ")"
+                     | "{" { field_decl } "}"
+                     ] ;
+
+
+interface_decl     = attribute_list [ visibility ] [ "sealed" ] "interface"
+                     IDENT_TYPE [ generic_params ] [ where_clause ]
+                     "{" { interface_member } "}" ;
+
+interface_member   = attribute_list func_signature stmt_end ;
+
+func_signature     = "func" IDENT_VALUE [ generic_params ]
+                     "(" [ param_list ] ")" [ ":" result_type ] [ where_clause ] ;
+
+
+impl_decl          = attribute_list [ visibility ] "impl" [ generic_params ]
+                     type_name [ generic_args ] [ ":" type_name ] [ where_clause ]
+                     "{" { impl_member } "}" ;
+
+impl_member        = func_decl ;
+
+
+submodule_decl     = attribute_list [ visibility ] "module" IDENT_VALUE
+                     "{" { top_level_decl } "}" ;
+
+
+extern_decl        = attribute_list "extern" abi_lit "{" { extern_member } "}" ;
+
+abi_lit            = STRING_LIT ;
+
+extern_member      = attribute_list func_signature stmt_end ;
+
+
+(* ------------------------------------------------------------------ *)
+(*  4. GENERICS AND CONST GENERICS                                     *)
+(* ------------------------------------------------------------------ *)
+
+generic_params     = "<" generic_param { "," generic_param } [ "," ] ">" ;
+
+generic_param      = [ "const" | "comptime" ] IDENT_TYPE
+                     [ ":" ( constraint_list | type_expr ) ]
+                     [ "=" type_expr ] ;
+
+generic_args       = "<" generic_arg { "," generic_arg } [ "," ] ">" ;
+
+generic_arg        = type_expr
+                   | INT_LIT
+                   | comptime_generic_arg
+                   ;
+
+comptime_generic_arg = "comptime" "(" expr ")" ;
+
+
+(* ------------------------------------------------------------------ *)
+(*  5. TYPES                                                           *)
+(* ------------------------------------------------------------------ *)
+
+type_expr          = type_primary [ "?" ] ;
+
+type_primary       = primitive_type
+                   | type_name [ generic_args ]
+                   | ref_type
+                   | mut_ref_type
+                   | own_type
+                   | ptr_type
+                   | slice_type
+                   | mut_slice_type
+                   | array_type
+                   | func_type
+                   | "(" type_expr ")"
+                   ;
+
+primitive_type     = "int"   | "uint"  | "isize" | "usize" | "float"
+                   | "i8"    | "i16"   | "i32"   | "i64"
+                   | "u8"    | "u16"   | "u32"   | "u64"
+                   | "f32"   | "f64"
+                   | "bool"  | "byte"  | "char"  | "str"
+                   | "any"   | "Err"
+                   ;
+
+type_name          = [ module_path "." ] IDENT_TYPE ;
+
+ref_type           = ( "ref" | "&" ) type_expr ;
+
+mut_ref_type       = ( "mut" "ref" | "&mut" ) type_expr ;
+
+own_type           = "own" type_expr ;
+
+ptr_type           = "ptr" "[" type_expr "]" ;
+
+slice_type         = "[" "]" type_expr ;
+
+mut_slice_type     = "mut" "[" "]" type_expr ;
+
+array_type         = "[" array_dimension "]" type_expr ;
+
+array_dimension    = INT_LIT | comptime_expr | IDENT_VALUE ;
+
+func_type          = "func" "(" [ type_list ] ")" [ ":" result_type ]
+                   | "(" [ type_list ] ")" "->" type_expr
+                   ;
+
+type_list          = type_expr { "," type_expr } [ "," ] ;
+
+
+(* ------------------------------------------------------------------ *)
+(*  6. BLOCKS AND STATEMENTS                                           *)
+(* ------------------------------------------------------------------ *)
+
+block              = "{" { stmt_end | statement } "}" ;
+
+statement          = var_decl stmt_end
+                   | let_else_stmt
+                   | guard_stmt
+                   | set_stmt stmt_end
+                   | return_stmt stmt_end
+                   | break_stmt stmt_end
+                   | continue_stmt stmt_end
+                   | free_stmt stmt_end
+                   | expr_stmt stmt_end
+                   | if_stmt
+                   | for_stmt
+                   | while_stmt
+                   | match_stmt
+                   | comptime_stmt
+                   | defer_stmt
+                   | errdefer_stmt
+                   | unsafe_stmt
+                   ;
+
+var_decl           = "let" [ "(" ] binding_item { "," binding_item } [ ")" ] "=" expr ;
+
+let_else_stmt      = "let" ( [ "mut" ] binding_name | pattern ) [ ":" type_expr ] "=" expr "else" block ;
+
+guard_stmt         = "guard" condition "else" block ;
+
+binding_item       = [ "mut" ] binding_name [ ":" type_expr ] ;
+
+binding_name       = IDENT_VALUE ;
+
+set_stmt           = [ "set" ] place_list "=" expr
+                   | place_expr compound_assign_op expr
+                   ;
+
+place_list         = place_expr { "," place_expr } ;
+
+place_expr         = ( IDENT_VALUE | "self" ) { place_suffix } ;
+
+place_suffix       = "." IDENT_VALUE
+                   | "[" expr "]"
+                   ;
+
+compound_assign_op = "+=" | "-=" | "*=" | "/=" | "%="
+                   | "&=" | "|=" | "^=" | "<<=" | ">>="
+                   ;
+
+return_stmt        = "return" [ expr_list ] ;
+
+break_stmt         = "break" ;
+
+continue_stmt      = "continue" ;
+
+free_stmt          = "free" expr ;
+
+expr_stmt          = expr ;
+
+if_stmt            = [ "comptime" ] "if" condition block
+                     { "else" "if" condition block }
+                     [ "else" block ] ;
+
+condition          = condition_clause { ( "&&" | "," ) condition_clause } ;
+
+condition_clause   = [ "let" ] pattern "=" expr
+                   | expr [ "is" pattern ]
+                   ;
+
+is_condition       = expr "is" pattern ;
+
+for_stmt           = [ "comptime" ] "for" for_clause block ;
+
+for_clause         = for_binding_list "in" expr
+                   | [ simple_stmt ] ";" [ expr ] ";" [ simple_stmt ]
+                   ;
+
+for_binding_list   = for_binding { "," for_binding } ;
+
+for_binding        = [ "mut" ] IDENT_VALUE ;
+
+simple_stmt        = var_decl
+                   | set_stmt
+                   | expr
+                   ;
+
+while_stmt         = "while" condition block ;
+
+match_stmt         = "match" expr "{" { match_arm } "}" ;
+
+match_arm          = pattern [ "if" expr ] "=>" ( expr stmt_end | block ) ;
+
+comptime_stmt      = "comptime" ( if_stmt | for_stmt | block ) ;
+
+defer_stmt         = "defer" ( expr stmt_end | block ) ;
+
+errdefer_stmt      = "errdefer" ( expr stmt_end | block ) ;
+
+unsafe_stmt        = "unsafe" block ;
+
+expr_list          = expr { "," expr } [ "," ] ;
+
+
+(* ------------------------------------------------------------------ *)
+(*  7. PATTERNS                                                        *)
+(* ------------------------------------------------------------------ *)
+
+pattern            = pattern_alt { "|" pattern_alt } ;
+
+pattern_alt        = "_"
+                   | range_pattern
+                   | enum_pattern
+                   | struct_pattern
+                   | tuple_pattern
+                   | LITERAL
+                   | IDENT_TYPE [ "(" [ pattern_list ] ")" ]
+                   | [ "mut" ] IDENT_VALUE
+                   ;
+
+pattern_list       = pattern { "," pattern } [ "," ] ;
+
+enum_pattern       = type_name "." ( IDENT_TYPE | IDENT_VALUE ) [ "(" [ pattern_list ] ")" ]
+                   | "." ( IDENT_TYPE | IDENT_VALUE ) [ "(" [ pattern_list ] ")" ]
+                   ;
+
+struct_pattern     = type_name "{"
+                     [ field_pattern { "," field_pattern } [ "," ] ]
+                     "}" ;
+
+field_pattern      = IDENT_VALUE [ ":" pattern ] ;
+
+tuple_pattern      = "(" pattern "," pattern { "," pattern } [ "," ] ")" ;
+
+range_pattern      = LITERAL ( ".." | "..=" ) LITERAL ;
+
+
+(* ------------------------------------------------------------------ *)
+(*  8. EXPRESSIONS (PRECEDENCE HIERARCHY — LOWEST TO HIGHEST)          *)
+(* ------------------------------------------------------------------ *)
+
+(* Level 1: Catch expression (Right-associative) *)
+expr               = catch_expr ;
+
+catch_expr         = pipe_expr [ "catch" ( expr | catch_block ) ] ;
+
+catch_block        = "|" IDENT_VALUE "|" block ;
+
+(* Level 2: Pipeline operator (Left-associative) *)
+pipe_expr          = null_coalesce_expr { "|>" null_coalesce_expr } ;
+
+(* Level 3: Null-coalescing (Right-associative) *)
+null_coalesce_expr = logical_or_expr { "??" logical_or_expr } ;
+
+(* Level 4: Logical OR *)
+logical_or_expr    = logical_and_expr { "||" logical_and_expr } ;
+
+(* Level 5: Logical AND *)
+logical_and_expr   = equality_expr { "&&" equality_expr } ;
+
+(* Level 6: Equality *)
+equality_expr      = comparison_expr { ( "==" | "!=" ) comparison_expr } ;
+
+(* Level 7: Comparison *)
+comparison_expr    = range_expr { ( "<" | ">" | "<=" | ">=" ) range_expr } ;
+
+(* Level 8: Range *)
+range_expr         = bitor_expr [ ( ".." | "..=" ) bitor_expr ] ;
+
+(* Level 9: Bitwise OR *)
+bitor_expr         = bitxor_expr { "|" bitxor_expr } ;
+
+(* Level 10: Bitwise XOR *)
+bitxor_expr        = bitand_expr { "^" bitand_expr } ;
+
+(* Level 11: Bitwise AND *)
+bitand_expr        = shift_expr { "&" shift_expr } ;
+
+(* Level 12: Shift *)
+shift_expr         = additive_expr { ( "<<" | ">>" ) additive_expr } ;
+
+(* Level 13: Additive *)
+additive_expr      = multiplicative_expr { ( "+" | "-" ) multiplicative_expr } ;
+
+(* Level 14: Multiplicative *)
+multiplicative_expr = cast_expr { ( "*" | "/" | "%" ) cast_expr } ;
+
+(* Level 15: Type cast *)
+cast_expr          = unary_expr { "as" type_expr } ;
+
+(* Level 16: Unary prefix *)
+unary_expr         = ( "!" | "-" | "~" | "await" | "*" | "ref" | "mut" "ref" | "&" | "&mut" ) unary_expr
+                   | postfix_expr
+                   ;
+
+(* Level 17: Postfix suffixes *)
+postfix_expr       = primary_expr { postfix_op } ;
+
+postfix_op         = generic_call_suffix
+                   | call_suffix
+                   | field_suffix
+                   | safe_field_suffix
+                   | index_suffix
+                   | safe_index_suffix
+                   | try_suffix
+                   ;
+
+generic_call_suffix = generic_args "(" [ argument_list ] ")" [ block ] ;
+
+call_suffix        = "(" [ argument_list ] ")" [ block ] ;
+
+field_suffix       = "." IDENT_VALUE ;
+
+safe_field_suffix  = "?." IDENT_VALUE ;
+
+index_suffix       = "[" expr "]" ;
+
+safe_index_suffix  = "?[" expr "]" ;
+
+try_suffix         = "?" ;
+
+
+(* ------------------------------------------------------------------ *)
+(*  9. PRIMARY EXPRESSIONS                                             *)
+(* ------------------------------------------------------------------ *)
+
+primary_expr       = LITERAL
+                     | struct_literal
+                     | array_literal
+                     | array_repeat_literal
+                     | variant_sugar
+                     | layout_expr
+                     | lambda_expr
+                     | alloc_expr
+                     | comptime_expr
+                     | async_block
+                     | unsafe_block
+                     | if_expr
+                     | match_expr
+                     | bare_block_call
+                     | type_qualified_value_path
+                     | value_path
+                     | "self"
+                     | "(" expr ")"
+                     ;
+
+type_qualified_value_path = type_name "." ( IDENT_VALUE | IDENT_TYPE ) ;
+
+variant_sugar      = "." ( IDENT_VALUE | IDENT_TYPE ) [ "(" [ argument_list ] ")" ] ;
+
+layout_expr        = ( "@sizeOf" | "@alignOf" ) "(" type_expr ")" ;
+                   (* Legacy 0.1.9 compatibility. The canonical language surface is
+                      mem.sizeOf<T>() and mem.alignOf<T>() via `import std.core.mem as mem`.
+                      See docs/arandu-attribute-naming-v0.1.md *)
+
+comptime_expr      = "comptime" ( block | "(" expr ")" | expr ) ;
+
+bare_block_call    = value_path [ generic_args ] block ;
+
+if_expr            = "if" condition block
+                     { "else" "if" condition block }
+                     "else" block ;
+
+match_expr         = "match" expr "{" { match_arm } "}" ;
+
+argument_list      = argument { "," argument } [ "," ] ;
+
+argument           = IDENT_VALUE ":" [ expr ]
+                   | "_"
+                   | expr
+                   ;
+
+struct_literal     = type_name [ generic_args ]
+                     "{" [ struct_field_list ] "}" ;
+
+struct_field_list  = struct_field_init { "," struct_field_init } [ "," ] ;
+
+struct_field_init  = IDENT_VALUE ":" expr
+                   | IDENT_VALUE           (* Shorthand: Point { x, y } *)
+                   | ".." expr             (* Functional update: Point { x: 1, ..base } *)
+                   ;
+
+array_literal      = "[" [ expr_list ] "]" ;
+
+array_repeat_literal = "[" expr ";" ( INT_LIT | comptime_expr | type_expr ) "]" ;
+
+lambda_expr        = arrow_lambda | pipe_lambda ;
+
+arrow_lambda       = "(" [ lambda_params ] ")" "=>" ( expr | block ) ;
+
+pipe_lambda        = [ "move" | "own" ] ( "|" [ lambda_params ] "|" | "||" ) ( expr | block ) ;
+
+lambda_params      = lambda_param { "," lambda_param } [ "," ] ;
+
+lambda_param       = IDENT_VALUE [ ":" type_expr ] ;
+
+alloc_expr         = "alloc" expr ;
+
+async_block        = "async" block ;
+
+unsafe_block       = "unsafe" block ;
+
+value_path         = IDENT_VALUE { "." IDENT_VALUE } ;
+
+(* ================================================================== *)
+(*  END OF SYNTACTIC GRAMMAR                                           *)
+(* ================================================================== *)

@@ -1,6 +1,6 @@
 # Arandu Lexer Contract v0.1
 
-Status: specification draft
+Status: implemented lexer; token schemas below are conceptual projections
 Grammar source: `arandu-grammar-v0.6.ebnf`
 Depends on: `docs/arandu-ast-v0.1.md`
 
@@ -13,7 +13,7 @@ sequência de tokens consumida pelo parser e pelos testes dourados.
 
 ### Goal
 
-Define the token stream that the parser will consume. This document is the contract for the future lexer implementation and for lexer tests.
+Define the token stream that the parser will consume. The lexer is implemented in `arandu_lexer`; this document describes its lexical contract and explanatory token projections. Physical token packing, compact byte spans and exact output are defined by the Rust types and golden tests, not by these JSON examples.
 
 The lexer must:
 
@@ -345,6 +345,8 @@ RAW_STRING
 MULTILINE_STRING_START
 MULTILINE_STRING_END
 CHAR
+BYTE_STRING
+BYTE_CHAR
 ```
 
 The lexer may either emit a single structured `STRING` token or emit string-part tokens. For v0.1 parser clarity, use string-part tokens.
@@ -426,12 +428,58 @@ error: expected `}` to close string interpolation
 error: unterminated multiline string literal
 ```
 
+### Byte Literals
+
+`b'...'` is a single-byte literal and `b"..."` is a byte string. Both are
+ASCII-only at the source level: any byte outside `0x00..=0x7F` must use a
+`\xNN` escape.
+
+```arandu
+b'A'
+b'\xFF'
+b"\xFF\x00AB"
+```
+
+Tokens:
+
+```text
+BYTE_CHAR
+BYTE_STRING
+```
+
+Rules:
+
+- a byte char holds exactly one byte (`b'ab'` and `b''` are errors);
+- a byte string may be empty and may contain any sequence of bytes;
+- byte strings are **not** interpolated: `$` and `${...}` stay literal bytes;
+- escapes are `\n`, `\t`, `\r`, `\0`, `\\`, `\"`, `\'` and `\xNN` (exactly two
+  hexadecimal digits); `\u{...}` and `\$` are not part of byte literals;
+- the type of `b"..."` is `[]u8`; a byte string whose bytes happen to be valid
+  UTF-8 is still `[]u8`, never `str`;
+- neither form may span a line break.
+
+Byte diagnostics:
+
+```text
+error: empty byte literal
+error: byte literal contains more than one byte
+error: unterminated byte literal
+error: byte string literal must be ASCII
+error: byte literal must be ASCII
+error: unterminated byte string literal
+error: hex escape in byte literal must have exactly 2 hex digits
+error: invalid escape sequence in byte literal
+```
+
+Bidirectional Unicode control characters are rejected with the same Trojan
+Source diagnostic as ordinary strings and char literals.
+
 ### Operators and Punctuation
 
 Multi-character tokens:
 
 ```text
-?. ?[ ?? => += -= *= /= %= &= |= ^= <<= >>= << >> == != <= >= ..= ..
+?. ?[ ?? => += -= *= /= %= &= |= ^= <<= >>= << >> == != <= >= ..= .. |>
 ...
 ```
 
@@ -459,6 +507,7 @@ SHIFT_LEFT SHIFT_RIGHT
 EQUAL_EQUAL BANG_EQUAL LT_EQUAL GT_EQUAL
 RANGE_INCLUSIVE RANGE_EXCLUSIVE
 ELLIPSIS
+PIPE_GT
 ```
 
 Longest-match examples:
@@ -674,14 +723,14 @@ When implementation starts, create tests from these fixtures.
 Input:
 
 ```arandu
-mut idade = 25
+let mut idade = 25
 set idade = idade + 1
 ```
 
 Expected tokens:
 
 ```text
-KW_MUT IDENT_VALUE(idade) EQUAL INT_DEC(25) SEMICOLON(inserted)
+KW_LET KW_MUT IDENT_VALUE(idade) EQUAL INT_DEC(25) SEMICOLON(inserted)
 KW_SET IDENT_VALUE(idade) EQUAL IDENT_VALUE(idade) PLUS INT_DEC(1) SEMICOLON(inserted)
 EOF
 ```

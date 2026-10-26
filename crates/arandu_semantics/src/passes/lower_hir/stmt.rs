@@ -12,7 +12,6 @@ use crate::hir::{
     HirBindingItem, HirBlock, HirBlockId, HirCondition, HirForBinding, HirForClause, HirSimpleStmt,
     HirStmt, HirStmtId, HirStmtKind, ReceiverKind,
 };
-use crate::ops::SetOp;
 use crate::passes::lowering::require_def_symbol;
 use crate::passes::type_checker::types::ArType;
 use arandu_lexer::Span;
@@ -124,7 +123,7 @@ fn lower_stmt_raw(
             let places_range = hir_pool.alloc_place_list(&hir_places?);
             HirStmtKind::Set {
                 places: places_range,
-                op: SetOp::from(op.clone()),
+                op: super::ops::lower_set_op(op.clone()),
                 value: value_vid,
             }
         }
@@ -465,7 +464,7 @@ pub(crate) fn lower_simple_stmt(
             let places_range = hir_pool.alloc_place_list(&hir_places?);
             Ok(HirSimpleStmt::Set {
                 places: places_range,
-                op: SetOp::from(op.clone()),
+                op: super::ops::lower_set_op(op.clone()),
                 value: vid,
             })
         }

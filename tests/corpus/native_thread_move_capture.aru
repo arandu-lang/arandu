@@ -1,0 +1,132 @@
+module nativeThreadMoveCapture
+
+import std.thread as thread
+import std.alloc.string as strings
+
+// Each capture stays an independent owned value: consuming `text` must not
+// move the other captures out of the job.
+func consumeOneCaptureThenReadAnother(): int {
+    let base: int = 41
+    let text = strings.String.from("owned")
+    let started = thread.spawn(move || {
+        let mut local = text
+        local.pushStr(" child")
+        if local.asStr() != "owned child" { return 0 - 1 }
+        return base + 1
+    })
+    match started {
+        Result.Ok(handle) => {
+            match handle.join() {
+                Result.Ok(v) => { return v }
+                Result.Err(_) => { return 0 - 2 }
+            }
+        }
+        Result.Err(_) => { return 0 - 3 }
+    }
+}
+
+// Captures used only inside interpolation or a match-statement arm.
+func capturesInInterpolationAndMatchArms(): int {
+    let n: int = 7
+    let k: int = 5
+    let started = thread.spawn(move || {
+        let mut out = "n=${n}".len() as int
+        match n {
+            7 => { out = out + k }
+            _ => { out = 0 }
+        }
+        return out
+    })
+    match started {
+        Result.Ok(handle) => {
+            match handle.join() {
+                Result.Ok(v) => { return v }
+                Result.Err(_) => { return 0 - 1 }
+            }
+        }
+        Result.Err(_) => { return 0 - 2 }
+    }
+}
+
+// Assigning a capture writes the job's copy; the parent keeps its own value.
+func assignmentWritesTheJobCopy(): int {
+    let mut n: int = 1
+    let started = thread.spawn(move || {
+        n = n + 41
+        return n
+    })
+    let mut result = 0 - 1
+    match started {
+        Result.Ok(handle) => {
+            match handle.join() {
+                Result.Ok(v) => { result = v }
+                Result.Err(_) => { return 0 - 2 }
+            }
+        }
+        Result.Err(_) => { return 0 - 3 }
+    }
+    if n != 1 { return 0 - 4 }
+    return result
+}
+
+// The inner closure's capture is transitively captured by the outer job.
+func nestedMoveClosures(): int {
+    let n: int = 40
+    let started = thread.spawn(move || {
+        let inner = thread.spawn(move || n + 2)
+        match inner {
+            Result.Ok(handle) => {
+                match handle.join() {
+                    Result.Ok(v) => { return v }
+                    Result.Err(_) => { return 0 - 1 }
+                }
+            }
+            Result.Err(_) => { return 0 - 2 }
+        }
+    })
+    match started {
+        Result.Ok(handle) => {
+            match handle.join() {
+                Result.Ok(v) => { return v }
+                Result.Err(_) => { return 0 - 3 }
+            }
+        }
+        Result.Err(_) => { return 0 - 4 }
+    }
+}
+
+// A final expression without `;` is the job result.
+func valueTail(): int {
+    let n: int = 21
+    let started = thread.spawn(move || {
+        let doubled = n * 2
+        doubled
+    })
+    match started {
+        Result.Ok(handle) => {
+            match handle.join() {
+                Result.Ok(v) => { return v }
+                Result.Err(_) => { return 0 - 1 }
+            }
+        }
+        Result.Err(_) => { return 0 - 2 }
+    }
+}
+
+// `return` leaves the job, not this void function. Dropping the unjoined
+// handle joins the child and destroys the owned String result exactly once.
+func returnInsideClosureOfVoidFunction(text: strings.String): void {
+    let started = thread.spawn(move || {
+        return text
+    })
+}
+
+public func main(): int {
+    if consumeOneCaptureThenReadAnother() != 42 { return 1 }
+    if capturesInInterpolationAndMatchArms() != 8 { return 2 }
+    if assignmentWritesTheJobCopy() != 42 { return 3 }
+    if nestedMoveClosures() != 42 { return 4 }
+    if valueTail() != 42 { return 5 }
+    returnInsideClosureOfVoidFunction(strings.String.from("discarded"))
+    return 0
+}

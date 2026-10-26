@@ -125,40 +125,43 @@ impl<'a> Parser<'a> {
             ExprKind::Lambda {
                 params: range,
                 body,
+                is_move: false,
             },
             span,
         ))
     }
 
-    pub(super) fn parse_pipe_lambda(&mut self) -> Result<ExprId, ParseError> {
+    pub(super) fn parse_pipe_lambda(&mut self, is_move: bool) -> Result<ExprId, ParseError> {
         let start = self.mark();
-        self.expect_name("PIPE")?;
         let mut params = Vec::new();
-        if !self.at_kind_name("PIPE") {
-            loop {
-                let param_start = self.mark();
-                let name = self.expect_ident_value()?;
-                let ty = if self.can_start_type() {
-                    Some(self.parse_type()?)
-                } else {
-                    None
-                };
-                let param = LambdaParam {
-                    span: self.span_from_mark(param_start),
-                    name,
-                    ty,
-                };
-                let param_id = self.pool.alloc_lambda_param(param);
-                params.push(param_id);
-                if !self.eat_name("COMMA") {
-                    break;
-                }
-                if self.at_kind_name("PIPE") {
-                    break;
+        if !self.eat_name("LOGICAL_OR") {
+            self.expect_name("PIPE")?;
+            if !self.at_kind_name("PIPE") {
+                loop {
+                    let param_start = self.mark();
+                    let name = self.expect_ident_value()?;
+                    let ty = if self.eat_name("COLON") || self.can_start_type() {
+                        Some(self.parse_type()?)
+                    } else {
+                        None
+                    };
+                    let param = LambdaParam {
+                        span: self.span_from_mark(param_start),
+                        name,
+                        ty,
+                    };
+                    let param_id = self.pool.alloc_lambda_param(param);
+                    params.push(param_id);
+                    if !self.eat_name("COMMA") {
+                        break;
+                    }
+                    if self.at_kind_name("PIPE") {
+                        break;
+                    }
                 }
             }
+            self.expect_name("PIPE")?;
         }
-        self.expect_name("PIPE")?;
         let body = if self.at_kind_name("LBRACE") {
             let block = self.parse_block()?;
             LambdaBody::Block {
@@ -179,6 +182,7 @@ impl<'a> Parser<'a> {
             ExprKind::Lambda {
                 params: range,
                 body,
+                is_move,
             },
             span,
         ))

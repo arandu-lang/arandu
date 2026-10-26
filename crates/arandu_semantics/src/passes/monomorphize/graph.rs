@@ -1,15 +1,11 @@
 use arandu_middle::newtype_index;
+pub use arandu_middle::symbol_mangling::InstantiationKey;
+use arandu_middle::symbol_mangling::mangle_symbol;
 use arandu_middle::symbol_table::{SymbolId, SymbolTable};
-use arandu_middle::types::{TypeId, TypeInterner};
+use arandu_middle::types::TypeInterner;
 use rustc_hash::FxHashMap;
 
 newtype_index!(InstantiationNodeId);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct InstantiationKey<'bump> {
-    pub symbol: SymbolId,
-    pub type_args: &'bump [TypeId],
-}
 
 #[derive(Debug, Clone)]
 pub struct InstantiationNode<'bump> {
@@ -76,7 +72,7 @@ impl<'bump> InstantiationGraph<'bump> {
             });
         }
 
-        let mangled = super::demangle::mangle_symbol(key, interner, symbols);
+        let mangled = mangle_symbol(key, interner, symbols);
         let mangled_bump = bump.alloc_str(&mangled);
         let id = InstantiationNodeId::from_usize(self.nodes.len());
         self.nodes.push(InstantiationNode {

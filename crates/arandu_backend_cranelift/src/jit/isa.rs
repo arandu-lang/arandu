@@ -3,7 +3,7 @@
 use std::sync::OnceLock;
 
 use arandu_base::span::Span;
-use arandu_semantics::{DiagCode, Diagnostic};
+use arandu_middle::{DiagCode, Diagnostic};
 use cranelift_codegen::isa::OwnedTargetIsa;
 use cranelift_codegen::settings::{self, Configurable};
 

@@ -36,10 +36,11 @@ pub mod wit_gen;
 
 use arandu_codegen::{CodegenBackend, CompiledCode};
 use arandu_middle::Diagnostic;
+use arandu_middle::SymbolTable;
 use arandu_middle::amir::AmirProgram;
 use arandu_middle::layout::{DataLayout, StructLayoutProvider};
+use arandu_middle::type_context::CodegenTypeContext;
 use arandu_middle::types::TypeInterner;
-use arandu_semantics::SymbolTable;
 
 use crate::emit::{WasmModuleBuilder, validate_place_ops};
 pub use emit::{is_component, is_core_module, validate_magic};
@@ -69,7 +70,7 @@ fn first_validation_error(
 /// Uses `DataLayout::ptr_width(4)` (wasm32) by default; pass an explicit
 /// `data_layout` to override. `provider` supplies structural layout metadata
 /// (struct fields, enum variants) flowing from `type_check`; pass the same
-/// `TypeInfo` instance whose interner produced `program`'s types.
+/// type context whose interner produced `program`'s types.
 ///
 /// # Errors
 /// Returns a [`Diagnostic`] on ICE / unsupported program structure.
@@ -177,9 +178,9 @@ impl CompiledCode for WasmModule {
 
 /// [`CodegenBackend`] adapter for the Wasm emitter.
 ///
-/// `TargetConfig` is [`arandu_semantics::TypeInfo`] to match the other
-/// backends. The `data_layout` field must be `DataLayout::ptr_width(4)` for
-/// wasm32 targets.
+/// Type facts arrive as [`CodegenTypeContext`] like in the other backends.
+/// The `data_layout` field must be `DataLayout::ptr_width(4)` for wasm32
+/// targets.
 pub struct WasmEmitBackend {
     pub data_layout: DataLayout,
 }
@@ -201,20 +202,19 @@ impl Default for WasmEmitBackend {
 }
 
 impl CodegenBackend for WasmEmitBackend {
-    type TargetConfig = arandu_semantics::TypeInfo;
     type CompilationOutput = WasmModule;
 
     fn compile(
         self,
         program: &AmirProgram,
         symbols: &SymbolTable,
-        config: &Self::TargetConfig,
+        types: &dyn CodegenTypeContext,
     ) -> Result<Self::CompilationOutput, Diagnostic> {
         emit_wasm(
             program,
             symbols,
-            &config.type_interner,
-            config,
+            types.type_interner(),
+            types,
             self.data_layout,
         )
         .map(WasmModule)

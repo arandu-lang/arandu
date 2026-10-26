@@ -1,9 +1,9 @@
 //! High-level Intermediate Representation (HIR) declarations.
 
+use crate::Span;
 use crate::SymbolId;
 use crate::hir::pool::{HirBlockId, HirExprId, IndexRange};
 use crate::types::TypeId;
-use arandu_lexer::Span;
 
 #[derive(Debug, Clone)]
 pub enum HirDecl {
@@ -113,7 +113,7 @@ pub struct HirInterface {
 
 #[derive(Debug, Clone)]
 pub struct HirExtern {
-    pub abi: arandu_parser::AbiKind,
+    pub abi: arandu_base::lang::AbiKind,
     pub members: IndexRange,
     pub span: Span,
 }
@@ -121,7 +121,7 @@ pub struct HirExtern {
 impl HirExtern {
     #[must_use]
     pub fn is_intrinsic(&self) -> bool {
-        self.abi == arandu_parser::AbiKind::AranduIntrinsic
+        self.abi == arandu_base::lang::AbiKind::AranduIntrinsic
     }
 }
 

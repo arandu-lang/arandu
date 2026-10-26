@@ -254,14 +254,14 @@ fn symbol_for_span(
 #[must_use]
 pub fn compute_highlights(
     tree: &arandu_parser::SyntaxTree,
-    resolved: &arandu_middle::ResolutionResult,
+    resolved: &arandu_resolve::ResolutionResult,
 ) -> Arc<[HlToken]> {
     compute_highlights_with(tree, resolved, || {})
 }
 
 fn compute_highlights_with(
     tree: &arandu_parser::SyntaxTree,
-    resolved: &arandu_middle::ResolutionResult,
+    resolved: &arandu_resolve::ResolutionResult,
     mut check_cancellation: impl FnMut(),
 ) -> Arc<[HlToken]> {
     let maps: [&FxHashMap<NodeKey, SymbolId>; 3] = [

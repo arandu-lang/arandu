@@ -1,0 +1,57 @@
+module arcUniqueness
+
+import std.alloc.arc as arc
+
+struct Counter { public value: int }
+
+func temporaryStrong(owner: ref arc.Arc<Counter>): int {
+    let copy = owner.clone()
+    if owner.strongCount() != (2 as usize) { return 1 }
+    if owner.isUnique() { return 2 }
+    return 0
+}
+
+func temporaryWeak(owner: mut ref arc.Arc<Counter>): int {
+    let weak = owner.downgrade()
+    let weakCopy = weak.clone()
+    if owner.weakCount() != (2 as usize) { return 3 }
+    if owner.isUnique() { return 4 }
+    match owner.getMut() {
+        Option.Some(_) => { return 5 }
+        Option.None => {}
+    }
+    match weak.upgrade() {
+        Option.Some(copy) => {
+            if copy.strongCount() != (2 as usize) { return 6 }
+            if copy.get().value != 42 { return 7 }
+        }
+        Option.None => { return 8 }
+    }
+    if owner.strongCount() != (1 as usize) { return 9 }
+    return 0
+}
+
+public func main(): int {
+    let mut owner = arc.Arc<Counter>.new(Counter { value: 41 })
+    if !owner.isUnique() { return 10 }
+    match owner.getMut() {
+        Option.Some(value) => { value.value = 42 }
+        Option.None => { return 11 }
+    }
+    let strong = temporaryStrong(ref owner)
+    if strong != 0 { return strong }
+    if !owner.isUnique() { return 12 }
+    let weak = temporaryWeak(mut ref owner)
+    if weak != 0 { return weak }
+    if owner.weakCount() != (0 as usize) { return 13 }
+    if !owner.isUnique() { return 14 }
+    match owner.getMut() {
+        Option.Some(value) => { value.value = 43 }
+        Option.None => { return 15 }
+    }
+    match owner.tryUnwrap() {
+        Result.Ok(value) => { if value.value != 43 { return 16 } }
+        Result.Err(_) => { return 17 }
+    }
+    return 0
+}

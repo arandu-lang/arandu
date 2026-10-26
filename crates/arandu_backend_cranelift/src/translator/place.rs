@@ -1,6 +1,5 @@
-use arandu_semantics::amir::{AmirPlace, AmirProjection};
-use arandu_semantics::layout::StructLayoutProvider;
-use arandu_semantics::passes::type_checker::types::{ArType, is_vec_type};
+use arandu_middle::amir::{AmirPlace, AmirProjection};
+use arandu_middle::types::{ArType, is_vec_type};
 use cranelift_codegen::ir::{InstBuilder, Value};
 
 use super::FunctionTranslator;
@@ -66,6 +65,14 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         for i in 0..projs.len().saturating_sub(1) {
             match &projs[i] {
                 AmirProjection::Deref => {
+                    if i != 0 {
+                        ptr_val = self.builder.ins().load(
+                            self.ptr_type,
+                            cranelift_codegen::ir::MemFlagsData::new(),
+                            ptr_val,
+                            0,
+                        );
+                    }
                     current_ty = unwrap_ptr_like(&current_ty, self);
                 }
                 AmirProjection::Field(symbol_id) => {
@@ -97,7 +104,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                         self.builder
                             .ins()
                             .trapnz(is_oob, cranelift_codegen::ir::TrapCode::unwrap_user(1));
-                    } else if matches!(current_ty, ArType::Slice(_)) {
+                    } else if matches!(current_ty, ArType::Slice(_) | ArType::MutSlice(_)) {
                         let len_val = self.builder.ins().load(
                             self.ptr_type,
                             cranelift_codegen::ir::MemFlagsData::new(),
@@ -122,6 +129,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     let inner_ty_id = match &current_ty {
                         ArType::Ptr(inner)
                         | ArType::Slice(inner)
+                        | ArType::MutSlice(inner)
                         | ArType::Array(_, inner)
                         | ArType::ConstArray(_, inner) => *inner,
                         ArType::Ref(inner) | ArType::RefMut(inner) => *inner,
@@ -167,6 +175,14 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         };
         match last_proj {
             AmirProjection::Deref => {
+                if projs.len() > 1 {
+                    ptr_val = self.builder.ins().load(
+                        self.ptr_type,
+                        cranelift_codegen::ir::MemFlagsData::new(),
+                        ptr_val,
+                        0,
+                    );
+                }
                 current_ty = unwrap_ptr_like(&current_ty, self);
                 let _ = current_ty;
                 (ptr_val, 0)
@@ -210,7 +226,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     self.builder
                         .ins()
                         .trapnz(is_oob, cranelift_codegen::ir::TrapCode::unwrap_user(1));
-                } else if matches!(current_ty, ArType::Slice(_)) {
+                } else if matches!(current_ty, ArType::Slice(_) | ArType::MutSlice(_)) {
                     let len_val = self.builder.ins().load(
                         self.ptr_type,
                         cranelift_codegen::ir::MemFlagsData::new(),
@@ -242,11 +258,12 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 let inner_ty_id = match &current_ty {
                     ArType::Ptr(inner)
                     | ArType::Slice(inner)
+                    | ArType::MutSlice(inner)
                     | ArType::Array(_, inner)
                     | ArType::ConstArray(_, inner) => *inner,
                     ArType::Ref(inner) | ArType::RefMut(inner) => *inner,
                     ArType::Named(_, args) if is_vec => {
-                        self.type_info.type_interner.type_args(*args)[0]
+                        self.type_info.type_interner().type_args(*args)[0]
                     }
                     _ => {
                         self.record_ice(
@@ -345,7 +362,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
     pub(super) fn translate_projection_offset(
         &mut self,
         current_ty: &mut ArType,
-        symbol_id: arandu_semantics::SymbolId,
+        symbol_id: arandu_middle::SymbolId,
     ) -> i32 {
         // Unwrap one pointer layer for field access on `*p.field` bases.
         let struct_ty = match &*current_ty {
@@ -359,7 +376,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         let field_name = &self.symbol_table.get(symbol_id).name;
         let field_idx = self
             .type_info
-            .get_struct_fields_for_type(&struct_ty, &self.type_info.type_interner)
+            .get_struct_fields_for_type(&struct_ty, self.type_info.type_interner())
             .and_then(|m| m.get(field_name.as_str()))
             .map(|f| f.index)
             .unwrap_or(0);
@@ -367,10 +384,10 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         let layout = self.checked_layout(&struct_ty);
         let offset = layout.field_offsets.get(field_idx).copied().unwrap_or(0) as i32;
         // Update current_ty to the field type for nested projections.
-        if let Some(field) = arandu_semantics::layout::instantiated_field_type(
+        if let Some(field) = arandu_middle::layout::instantiated_field_type(
             &struct_ty,
             field_name,
-            &self.type_info.type_interner,
+            self.type_info.type_interner(),
             self.type_info,
         ) {
             *current_ty = self.type_info.resolve_type_id(field);
@@ -384,7 +401,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         &mut self,
         current_ty: &mut ArType,
         projection: &AmirProjection,
-        local: arandu_semantics::amir::LocalId,
+        local: arandu_middle::amir::LocalId,
     ) -> i32 {
         let (offset, result_ty) = match projection {
             AmirProjection::Payload {
@@ -416,7 +433,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 let result = match current_ty {
                     ArType::Tuple(args) => self
                         .type_info
-                        .type_interner
+                        .type_interner()
                         .type_args(*args)
                         .get(*index)
                         .copied()
@@ -463,10 +480,10 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     }
                     let struct_ty = current_ty.clone();
                     let field_name = &self.symbol_table.get(*symbol_id).name;
-                    if let Some(field) = arandu_semantics::layout::instantiated_field_type(
+                    if let Some(field) = arandu_middle::layout::instantiated_field_type(
                         &struct_ty,
                         field_name,
-                        &self.type_info.type_interner,
+                        self.type_info.type_interner(),
                         self.type_info,
                     ) {
                         current_ty = self.type_info.resolve_type_id(field);
@@ -482,7 +499,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     if let ArType::Tuple(args) = &current_ty {
                         current_ty = self
                             .type_info
-                            .type_interner
+                            .type_interner()
                             .type_args(*args)
                             .get(*index)
                             .copied()
@@ -503,11 +520,12 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     let inner_ty_id = match &current_ty {
                         ArType::Ptr(inner)
                         | ArType::Slice(inner)
+                        | ArType::MutSlice(inner)
                         | ArType::Array(_, inner)
                         | ArType::ConstArray(_, inner) => *inner,
                         ArType::Ref(inner) | ArType::RefMut(inner) => *inner,
                         ArType::Named(_, args) if is_vec => {
-                            self.type_info.type_interner.type_args(*args)[0]
+                            self.type_info.type_interner().type_args(*args)[0]
                         }
                         _ => return ArType::Error,
                     };

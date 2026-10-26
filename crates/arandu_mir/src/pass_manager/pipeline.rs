@@ -6,8 +6,8 @@
 use super::{FunctionPass, OptLevel, PassResources};
 use crate::amir::AmirFunc;
 use crate::{
-    Diagnostic, dce::mark_sweep_dce, gvn::gvn, licm::licm, sccp::sccp, simplify_cfg::simplify_cfg,
-    sroa::sroa,
+    Diagnostic, dce::mark_sweep_dce_with_removable_calls, gvn::gvn, licm::licm, sccp::sccp,
+    simplify_cfg::simplify_cfg, sroa::sroa,
 };
 
 /// Sparse conditional constant propagation + branch folding.
@@ -81,9 +81,52 @@ impl FunctionPass for MarkSweepDcePass {
     fn run(
         &self,
         func: &mut AmirFunc,
-        _resources: &mut PassResources<'_>,
+        resources: &mut PassResources<'_>,
     ) -> Result<bool, Diagnostic> {
-        mark_sweep_dce(func)
+        mark_sweep_dce_with_removable_calls(func, resources.removable_callees)
+    }
+}
+
+/// Bounds-check elimination from dominating unsigned guards.
+struct BoundsCheckElimPass;
+
+impl FunctionPass for BoundsCheckElimPass {
+    fn name(&self) -> &'static str {
+        "bounds_check_elim"
+    }
+
+    fn run(
+        &self,
+        func: &mut AmirFunc,
+        resources: &mut PassResources<'_>,
+    ) -> Result<bool, Diagnostic> {
+        Ok(resources.interner.is_some_and(|interner| {
+            crate::bounds_check_elim::eliminate_bounds_checks(func, interner)
+        }))
+    }
+}
+
+/// Deletion of effect-free loops proven to terminate.
+struct LoopDeletionPass;
+
+impl FunctionPass for LoopDeletionPass {
+    fn name(&self) -> &'static str {
+        "loop_deletion"
+    }
+
+    fn run(
+        &self,
+        func: &mut AmirFunc,
+        resources: &mut PassResources<'_>,
+    ) -> Result<bool, Diagnostic> {
+        Ok(resources.interner.is_some_and(|interner| {
+            crate::loop_deletion::delete_dead_loops(
+                func,
+                resources.removable_callees,
+                resources.literal_pool,
+                interner,
+            )
+        }))
     }
 }
 
@@ -140,7 +183,8 @@ impl FunctionPass for SimplifyCfgPass {
 
 /// Builds the standard pass sequence for `level`.
 ///
-/// O1 runs baseline simplification (SCCP → DCE → SimplifyCFG).
+/// O1 runs baseline simplification (SCCP → bounds-check elimination → loop
+/// deletion → DCE → SimplifyCFG).
 /// O2 adds SROA, GVN and LICM before the O1 core.
 ///
 /// LICM runs after SCCP so folded constants are visible to the invariance
@@ -154,11 +198,15 @@ pub fn pipeline_for_level(level: OptLevel) -> Vec<Box<dyn FunctionPass>> {
         OptLevel::O0 => Vec::new(),
         OptLevel::O1 => vec![
             Box::new(SccpPass),
+            Box::new(BoundsCheckElimPass),
+            Box::new(LoopDeletionPass),
             Box::new(MarkSweepDcePass),
             Box::new(SimplifyCfgPass),
         ],
         OptLevel::Os => vec![
             Box::new(SccpPass),
+            Box::new(BoundsCheckElimPass),
+            Box::new(LoopDeletionPass),
             Box::new(MarkSweepDcePass),
             Box::new(TailMergePass),
             Box::new(SimplifyCfgPass),
@@ -168,6 +216,8 @@ pub fn pipeline_for_level(level: OptLevel) -> Vec<Box<dyn FunctionPass>> {
             Box::new(GvnPass),
             Box::new(SccpPass),
             Box::new(LicmPass),
+            Box::new(BoundsCheckElimPass),
+            Box::new(LoopDeletionPass),
             Box::new(MarkSweepDcePass),
             Box::new(TailMergePass),
             Box::new(SimplifyCfgPass),

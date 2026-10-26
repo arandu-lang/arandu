@@ -84,10 +84,27 @@ pub fn detect_color_choice(raw_args: &[String]) -> ColorChoice {
     choice
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunBackend {
+    Cranelift,
+    Llvm,
+}
+
+impl RunBackend {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "cranelift" | "jit" => Some(Self::Cranelift),
+            "llvm" => Some(Self::Llvm),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CliInvocation {
     pub debug: bool,
     pub opt: bool,
+    pub backend: RunBackend,
     pub parallel: bool,
     pub genref_report: bool,
     pub cfg: bool,
@@ -106,6 +123,7 @@ pub fn parse_invocation(raw_args: impl IntoIterator<Item = String>) -> CliInvoca
     let raw_args_vec: Vec<String> = raw_args.into_iter().collect();
     let mut debug = false;
     let mut opt = false;
+    let mut backend = RunBackend::Cranelift;
     let mut parallel = false;
     let mut genref_report = false;
     let mut cfg = false;
@@ -169,6 +187,25 @@ pub fn parse_invocation(raw_args: impl IntoIterator<Item = String>) -> CliInvoca
             }
             "--debug" => debug = true,
             "--opt" => opt = true,
+            "-b" | "--backend" => {
+                i += 1;
+                let value = raw_args_vec
+                    .get(i)
+                    .unwrap_or_else(|| fail_usage("--backend requires a value"));
+                backend = RunBackend::parse(value).unwrap_or_else(|| {
+                    fail_usage(format!(
+                        "unknown backend '{value}'; expected cranelift or llvm"
+                    ))
+                });
+            }
+            s if s.starts_with("--backend=") => {
+                let value = &s["--backend=".len()..];
+                backend = RunBackend::parse(value).unwrap_or_else(|| {
+                    fail_usage(format!(
+                        "unknown backend '{value}'; expected cranelift or llvm"
+                    ))
+                });
+            }
             "--parallel" => parallel = true,
             "--genref-report" => genref_report = true,
             "--cfg" => cfg = true,
@@ -238,11 +275,27 @@ pub fn parse_invocation(raw_args: impl IntoIterator<Item = String>) -> CliInvoca
             "--stdlib-path" | "--cache-dir" => {
                 raw_project_flags.push(arg.clone());
                 i += 1;
-                if i < raw_args_vec.len() {
-                    raw_project_flags.push(raw_args_vec[i].clone());
+                if let Some(value) = raw_args_vec.get(i).filter(|value| !value.starts_with('-')) {
+                    raw_project_flags.push(value.clone());
                 } else {
                     fail_usage(format!("{arg} requires a path argument"));
                 }
+            }
+            "-o" | "--emit" | "--crate-type" | "--linker-script" => {
+                raw_project_flags.push(arg.clone());
+                i += 1;
+                if let Some(value) = raw_args_vec.get(i).filter(|value| !value.starts_with('-')) {
+                    raw_project_flags.push(value.clone());
+                } else {
+                    fail_usage(format!("{arg} requires a value"));
+                }
+            }
+            s if s.starts_with("--emit=")
+                || s.starts_with("--crate-type=")
+                || s.starts_with("--linker-script=")
+                || s.starts_with("-o=") =>
+            {
+                raw_project_flags.push(arg.clone());
             }
             // Collect project flags even before we know the subcommand.
             s if s.starts_with("--stdlib-path")
@@ -261,8 +314,11 @@ pub fn parse_invocation(raw_args: impl IntoIterator<Item = String>) -> CliInvoca
                 if s == "--target" {
                     raw_project_flags.push(arg.clone());
                     i += 1;
-                    if i < raw_args_vec.len() {
-                        raw_project_flags.push(raw_args_vec[i].clone());
+                    if let Some(value) = raw_args_vec.get(i).filter(|value| !value.starts_with('-'))
+                    {
+                        raw_project_flags.push(value.clone());
+                    } else {
+                        fail_usage("--target requires a target triple argument");
                     }
                 } else {
                     raw_project_flags.push(arg.clone());
@@ -293,10 +349,22 @@ pub fn parse_invocation(raw_args: impl IntoIterator<Item = String>) -> CliInvoca
     {
         data_layout = DataLayout::ptr_width(4);
     }
+    if let Some(triple) = project_flags.target.as_deref()
+        && arandu_middle::embedded_profile(triple).is_some()
+    {
+        let explicit = layout_flags
+            .iter()
+            .find_map(|flag| flag.strip_prefix("--layout="));
+        match explicit {
+            None | Some("ptr4" | "32") => data_layout = DataLayout::ptr_width(4),
+            Some(_) => fail_usage("bare-metal profiles use a 32-bit data layout"),
+        }
+    }
 
     CliInvocation {
         debug,
         opt,
+        backend,
         parallel,
         genref_report,
         cfg,
@@ -413,7 +481,7 @@ pub fn global_help() -> &'static str {
         "  doctor     Inspect compiler toolchain and environment\n",
         "  cache      Inspect, prune, and verify compiler caches\n\n",
         "Compiler Inspection (advanced):\n",
-        "  lex, parse, hir, amir, graph, emit-c, emit-wasm, emit-component\n",
+        "  lex, parse, hir, amir, graph, emit-c, emit-llvm, emit-wasm, emit-component\n",
         "  hash-file  Compute a BLAKE3 checksum for packaging\n",
         "  archive    Validate a package archive\n\n",
         "Target & Toolchain Options:\n",
@@ -462,10 +530,10 @@ pub fn global_help() -> &'static str {
 pub fn command_help(command: &str) -> Option<&'static str> {
     match command {
         "run" => Some(
-            "Usage: arandu run [path] [-- program-args...]\n\nCompile and execute a package or .aru file with the Cranelift JIT.\n\nOptions:\n  --opt             Optimize AMIR before execution\n  --stdlib-path DIR Override the standard library path\n  -v, --verbose     Show progress and incremental status\n  -q, --quiet       Suppress non-error status output\n\nExamples:\n  arandu run\n  arandu run src/main.aru -- hello\n",
+            "Usage: arandu run [path] [-- program-args...]\n\nCompile and execute a package or .aru file. Cranelift JIT is the default; LLVM\nIR execution is experimental and requires `lli` or `clang` on PATH.\n\nOptions:\n  --opt             Optimize AMIR before execution\n  -b, --backend B   Select cranelift (default) or llvm\n  --stdlib-path DIR Override the standard library path\n  -v, --verbose     Show progress and incremental status\n  -q, --quiet       Suppress non-error status output\n\nExamples:\n  arandu run\n  arandu run -b llvm src/main.aru -- hello\n",
         ),
         "build" => Some(
-            "Usage: arandu build [path] [options]\n\nCompile a package to a native executable or library.\n\nOptions:\n  --release            Build with speed optimizations\n  --size, -Oz          Optimize for size and strip native symbols\n  --target TRIPLE      Select a compilation target\n  --layout LAYOUT      Select host, ptr4, ptr8, or i686 layout\n  --locked             Require the lockfile to be current\n  --offline            Resolve from the local cache only\n  -v, --verbose        Show detailed build progress\n  -q, --quiet          Suppress non-error status output\n",
+            "Usage: arandu build [path] [options]\n\nCompile a package to a native executable, or to a freestanding object.\n\nOptions:\n  --release            Build with speed optimizations\n  -b, --backend B      Select cranelift (default) or llvm (release)\n  --size, -Oz          Optimize for size and strip native symbols\n  --target TRIPLE      Host, wasm32, thumbv6m-none-eabi, thumbv7em-none-eabihf, or riscv32imc-unknown-none-elf\n  --emit obj|llvm-ir|header  Write an object, LLVM IR, or a C header instead of linking\n  --crate-type staticlib  Archive a bare-metal object (`llvm-ar` or `ar`)\n  --linker-script FILE Link an ELF only with this user-supplied script\n  -o FILE              Write the selected artifact to FILE\n  --layout LAYOUT      Select host, ptr4, ptr8, or i686 layout\n  --locked             Require the lockfile to be current\n  --offline            Resolve from the local cache only\n  -v, --verbose        Show detailed build progress\n  -q, --quiet          Suppress non-error status output\n\nBare-metal LLVM builds publish a relocatable object. The compiler does not\ninvent Flash, RAM, or a vector table. A final ELF requires --linker-script.\n",
         ),
         "check" => Some(
             "Usage: arandu check [path] [options]\n\nType-check a package or source file without code generation.\n\nOptions:\n  --parallel       Check source files in parallel\n  --target TRIPLE  Select a compilation target\n  --watch          Repeat checks after source changes\n  -v, --verbose    Show progress and incremental status\n  -q, --quiet      Suppress success and status output\n",
@@ -528,19 +596,22 @@ pub fn command_help(command: &str) -> Option<&'static str> {
             "Usage: arandu hir <file.aru> [--debug]\n\nPrint the lowered High-level IR (compiler inspection tool).\n",
         ),
         "amir" => Some(
-            "Usage: arandu amir <file.aru> [--cfg] [--ascii] [--opt]\n\nPrint Arandu Mid-level IR (compiler inspection tool).\n",
+            "Usage: arandu amir <file.aru> [--cfg] [--ascii] [--opt | --release]\n\nPrint Arandu Mid-level IR (compiler inspection tool).\n--opt applies AMIR O1 and --release AMIR O2, as `build` does.\n",
         ),
         "graph" => Some(
             "Usage: arandu graph <file.aru>\n\nEmit a Graphviz dependency graph (compiler inspection tool).\n",
         ),
         "emit-c" => Some(
-            "Usage: arandu emit-c <file.aru> [--opt | --size]\n\nEmit portable C source (compiler inspection tool).\n",
+            "Usage: arandu emit-c <file.aru> [--opt | --release | --size]\n\nEmit portable C source (compiler inspection tool).\nThe AMIR level matches `build`: --opt O1, --release O2, --size Os.\n",
+        ),
+        "emit-llvm" => Some(
+            "Usage: arandu emit-llvm <file.aru> [--target TRIPLE]\n\nEmit LLVM IR directly from AMIR (no Clang required to emit).\nLike the LLVM product, the AMIR is always optimized at O2.\nHost layout stays the default. Canonical bare-metal triples use a 32-bit layout.\n",
         ),
         "emit-wasm" => Some(
-            "Usage: arandu emit-wasm <file.aru> [--layout ptr4] [--opt | --size]\n\nEmit a WebAssembly module (compiler inspection tool).\n",
+            "Usage: arandu emit-wasm <file.aru> [--layout ptr4] [--opt | --release | --size]\n\nEmit a WebAssembly module (compiler inspection tool).\nThe AMIR level matches `build`: --opt O1, --release O2, --size Os.\n",
         ),
         "emit-component" => Some(
-            "Usage: arandu emit-component <file.aru> [--opt | --size]\n\nEmit a WebAssembly Component (compiler inspection tool).\n",
+            "Usage: arandu emit-component <file.aru> [--opt | --release | --size]\n\nEmit a WebAssembly Component (compiler inspection tool).\nThe AMIR level matches `build`: --opt O1, --release O2, --size Os.\n",
         ),
         "hash-file" => {
             Some("Usage: arandu hash-file <path>\n\nCompute a BLAKE3 checksum for packaging.\n")
@@ -582,6 +653,23 @@ mod tests {
                 "test", "--format", "json", "--filter", "parser", "--quiet", "--watch"
             ]
         );
+    }
+
+    #[test]
+    fn run_backend_accepts_separated_and_equals_forms() {
+        let separated = parse_invocation([
+            "arandu".to_string(),
+            "run".to_string(),
+            "-b".to_string(),
+            "llvm".to_string(),
+        ]);
+        assert_eq!(separated.backend, RunBackend::Llvm);
+        let equals = parse_invocation([
+            "arandu".to_string(),
+            "run".to_string(),
+            "--backend=cranelift".to_string(),
+        ]);
+        assert_eq!(equals.backend, RunBackend::Cranelift);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 [package]
 name = "arandu_fuzz"
-version = "0.1.10"
+version = "0.1.11"
 edition = "2024"
 publish = false
 
@@ -84,6 +84,12 @@ test = false
 doc = false
 
 [[bin]]
+name = "fuzz_synthesized_llvm"
+path = "fuzz_targets/fuzz_synthesized_llvm.rs"
+test = false
+doc = false
+
+[[bin]]
 name = "fuzz_emi_corpus"
 path = "fuzz_targets/fuzz_emi_corpus.rs"
 test = false
@@ -98,5 +104,23 @@ doc = false
 [[bin]]
 name = "fuzz_lsp_session"
 path = "fuzz_targets/fuzz_lsp_session.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_fmt"
+path = "fuzz_targets/fuzz_fmt.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_runtime_abi"
+path = "fuzz_targets/fuzz_runtime_abi.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_host_diff_c"
+path = "fuzz_targets/fuzz_host_diff_c.rs"
 test = false
 doc = false

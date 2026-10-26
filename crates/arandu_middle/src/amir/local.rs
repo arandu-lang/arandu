@@ -57,11 +57,11 @@ mod tests {
     }
 }
 
+use crate::Span;
 use crate::SymbolId;
 use crate::hir::ReceiverKind;
 use crate::newtype_index;
 use crate::types::TypeId;
-use arandu_lexer::Span;
 
 newtype_index!(LocalId);
 newtype_index!(TempId);

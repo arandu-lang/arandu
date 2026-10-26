@@ -14,7 +14,7 @@ const INTRINSICS_ARU: &str = include_str!("../../../../stdlib/core/intrinsics.ar
 #[test]
 fn stdlib_runtime_exports_channel_and_async_mutex() {
     let mut db = DatabaseImpl::default();
-    let channel_file = db.new_file(
+    let channel_file = db.new_stdlib_file(
         "stdlib/std/runtime/channel.aru".to_string(),
         CHANNEL_ARU.to_string(),
     );
@@ -32,7 +32,7 @@ fn stdlib_runtime_exports_channel_and_async_mutex() {
         );
     }
 
-    let mutex_file = db.new_file(
+    let mutex_file = db.new_stdlib_file(
         "stdlib/std/runtime/mutex.aru".to_string(),
         MUTEX_ARU.to_string(),
     );
@@ -54,16 +54,16 @@ fn stdlib_runtime_exports_channel_and_async_mutex() {
 #[test]
 fn stdlib_channel_and_mutex_usage_in_program() {
     let mut db = DatabaseImpl::default();
-    let _mem_file = db.new_file("stdlib/core/mem.aru".to_string(), MEM_ARU.to_string());
-    let _intrinsics_file = db.new_file(
+    let _mem_file = db.new_stdlib_file("stdlib/core/mem.aru".to_string(), MEM_ARU.to_string());
+    let _intrinsics_file = db.new_stdlib_file(
         "stdlib/core/intrinsics.aru".to_string(),
         INTRINSICS_ARU.to_string(),
     );
-    let _channel_file = db.new_file(
+    let _channel_file = db.new_stdlib_file(
         "stdlib/std/runtime/channel.aru".to_string(),
         CHANNEL_ARU.to_string(),
     );
-    let _mutex_file = db.new_file(
+    let _mutex_file = db.new_stdlib_file(
         "stdlib/std/runtime/mutex.aru".to_string(),
         MUTEX_ARU.to_string(),
     );

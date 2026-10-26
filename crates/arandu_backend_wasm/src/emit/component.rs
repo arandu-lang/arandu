@@ -24,6 +24,14 @@ impl<'a> WasmModuleBuilder<'a> {
         use wit_component::{ComponentEncoder, StringEncoding, embed_component_metadata};
         use wit_parser::Resolve;
 
+        crate::wit_gen::validate_vector_boundaries(
+            self.program,
+            self.symbols,
+            self.interner,
+            self.layout_provider,
+            Some(&self.live),
+        )?;
+
         // Generate WIT text from public functions.
         let maybe_wit = crate::wit_gen::generate_wit_filtered(
             self.program,
@@ -31,8 +39,8 @@ impl<'a> WasmModuleBuilder<'a> {
             self.interner,
             self.layout_provider,
             pkg_name,
-            self.live.as_ref(),
-        );
+            Some(&self.live),
+        )?;
 
         let Some(wit_text) = maybe_wit else {
             // No public functions → nothing to wrap; return core module.

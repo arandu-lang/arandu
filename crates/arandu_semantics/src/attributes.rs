@@ -10,6 +10,7 @@ use arandu_parser::{Attribute, ExprKind, FuncName, TopLevelDecl};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AnnotationId {
     Link,
+    Export,
     Test,
     Benchmark,
     Suppress,
@@ -66,6 +67,9 @@ impl AnnotationTarget {
 pub enum AnnotationArguments {
     None,
     OneString,
+    /// No argument or exactly one string: the declaration name is the default,
+    /// and the string overrides it (e.g. `@Export` / `@Export("c_name")`).
+    OptionalString,
     OneStringOrIdent,
     EffectList,
 }
@@ -76,6 +80,7 @@ impl AnnotationArguments {
         match self {
             Self::None => "no arguments",
             Self::OneString => "one string argument",
+            Self::OptionalString => "no arguments or one string argument",
             Self::OneStringOrIdent => "one string or identifier argument",
             Self::EffectList => "one or more effect identifiers or strings",
         }
@@ -129,6 +134,20 @@ pub static BUILTIN_ANNOTATIONS: &[AnnotationSpec] = &[
         repeatable: false,
         availability: AnnotationAvailability::Implemented,
         summary: "Links an extern block to a native library.",
+    },
+    AnnotationSpec {
+        id: AnnotationId::Export,
+        canonical_name: "Export",
+        legacy_aliases: &["FfiExport"],
+        // Methods reach `lower_export` so the rejection for a non-destructor
+        // method names the real rule (`T049`) instead of a generic target
+        // error. Silently ignoring the annotation would be the `#[no_mangle]`
+        // trap this design exists to avoid.
+        targets: FUNCTION,
+        arguments: AnnotationArguments::OptionalString,
+        repeatable: false,
+        availability: AnnotationAvailability::Implemented,
+        summary: "Exports a function to the linker with a flat C symbol and the target C ABI.",
     },
     AnnotationSpec {
         id: AnnotationId::Test,
@@ -309,6 +328,13 @@ fn arguments_match(spec: &AnnotationSpec, attr: &Attribute, pool: &AstPool) -> b
                     matches!(pool.expr(*arg), ExprKind::InterpolatedString { .. })
                 })
         }
+        AnnotationArguments::OptionalString => {
+            attr.args.is_empty()
+                || (attr.args.len() == 1
+                    && attr.args.first().is_some_and(|arg| {
+                        matches!(pool.expr(*arg), ExprKind::InterpolatedString { .. })
+                    }))
+        }
         AnnotationArguments::OneStringOrIdent => {
             attr.args.len() == 1
                 && attr.args.first().is_some_and(|arg| {
@@ -328,6 +354,39 @@ fn arguments_match(spec: &AnnotationSpec, attr: &Attribute, pool: &AstPool) -> b
                 })
         }
     }
+}
+
+/// Extracts the single static text argument of an annotation.
+///
+/// Returns `None` when the annotation has no argument or when the argument is
+/// not a purely textual string literal (interpolated parts are rejected).
+#[must_use]
+pub fn attribute_string_arg(attr: &Attribute, pool: &AstPool) -> Option<String> {
+    let [arg] = attr.args.as_slice() else {
+        return None;
+    };
+    let ExprKind::InterpolatedString { parts } = pool.expr(*arg) else {
+        return None;
+    };
+    let mut value = String::new();
+    for &part in pool.string_part_list(*parts) {
+        match pool.string_part(part) {
+            arandu_parser::StringPart::Text { text, .. } => value.push_str(text),
+            _ => return None,
+        }
+    }
+    Some(value)
+}
+
+/// Whether `name` is a valid flat symbol for a C toolchain.
+#[must_use]
+pub fn is_c_symbol_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
 }
 
 #[must_use]
@@ -441,6 +500,29 @@ pub fn validate_attributes(
                     attr.span,
                 ));
                 continue;
+            }
+        }
+        if spec.id == AnnotationId::Export && !attr.args.is_empty() {
+            match attribute_string_arg(attr, pool) {
+                Some(name) if is_c_symbol_name(&name) => {}
+                Some(name) => {
+                    out.diagnostics.push(Diagnostic::error(
+                        DiagCode::N014InvalidAnnotationArguments,
+                        format!(
+                            "invalid exported symbol '{name}'; expected a C identifier ([A-Za-z_][A-Za-z0-9_]*)"
+                        ),
+                        attr.span,
+                    ));
+                    continue;
+                }
+                None => {
+                    out.diagnostics.push(Diagnostic::error(
+                        DiagCode::N014InvalidAnnotationArguments,
+                        "@Export expects a static string literal naming the C symbol".to_owned(),
+                        attr.span,
+                    ));
+                    continue;
+                }
             }
         }
         if !spec.repeatable && out.ids.contains(&spec.id) {
@@ -653,6 +735,33 @@ mod tests {
         );
     }
 
+    #[test]
+    fn export_accepts_bare_and_named_forms() {
+        for source in [
+            "@Export\nfunc apply(raw: u32): u32 { return raw }\n",
+            "@Export(\"arandu_core_apply\")\nfunc apply(raw: u32): u32 { return raw }\n",
+        ] {
+            let result = validate(source);
+            assert!(result.contains(AnnotationId::Export));
+            assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        }
+    }
+
+    #[test]
+    fn export_rejects_invalid_or_dynamic_symbol_names() {
+        for name in ["\"bad-name\"", "\"1bad\"", "\"\"", "\"${symbol}\""] {
+            let source = format!("@Export({name})\nfunc apply(raw: u32): u32 {{ return raw }}\n");
+            let result = validate(&source);
+            assert!(
+                !result.contains(AnnotationId::Export),
+                "{name} must be rejected"
+            );
+            assert_eq!(
+                result.diagnostics[0].code,
+                DiagCode::N014InvalidAnnotationArguments
+            );
+        }
+    }
     #[test]
     fn repr_c_string_and_ident_are_accepted() {
         let result_str = validate("@Repr(\"C\")\nstruct Point { x: i32, y: i32 }\n");

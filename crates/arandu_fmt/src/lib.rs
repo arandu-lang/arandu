@@ -84,10 +84,15 @@ pub fn format_edits_in_range(source: &str, start: u32, end: u32) -> Vec<TextEdit
         if item_start >= end || start >= item_end {
             continue;
         }
-        let s = item_start as usize;
-        let e = (item_end as usize).min(source.len()).max(s);
+        let e = (item_end as usize).min(source.len());
+        let s = (item_start as usize).min(e);
+        // CST items may start with leading trivia (the newline ending the
+        // previous item). Formatting strips leading blank lines, so keep the
+        // trivia out of the edited text or items would be joined together.
+        let s = e - source[s..e].trim_start_matches(is_arandu_ws).len();
+        let item_start = s as u32;
         let item_src = &source[s..e];
-        let mut formatted = format_source(item_src);
+        let mut formatted = format_item_snippet(item_src);
         if !item_src.ends_with('\n') {
             formatted = formatted
                 .strip_suffix('\n')
@@ -163,6 +168,22 @@ fn minimal_edit(old: &str, new: &str, base: usize) -> Option<TextEdit> {
     })
 }
 
+/// Reindent one top-level item from the tree already parsed for the range.
+///
+/// The full document was lexed once. This path keeps a parse of the formatted
+/// snippet as the recovery check and does not parse the item again beforehand.
+fn format_item_snippet(item_src: &str) -> String {
+    let mut pretty = reindent_item(item_src);
+    if !pretty.is_empty() && !pretty.ends_with('\n') {
+        pretty.push('\n');
+    }
+    if parses_clean(&pretty) {
+        pretty
+    } else {
+        normalize_whitespace(item_src)
+    }
+}
+
 fn parses_clean(source: &str) -> bool {
     let tree = parse_syntax(source);
     lower_syntax_to_program(&tree, 0).is_ok() && tree.lex_diagnostics().is_empty()
@@ -187,18 +208,28 @@ fn format_from_tree(tree: &SyntaxTree) -> String {
         // Top-level trivia belongs to the source, not necessarily to an item
         // node. Preserve it so documentation and standalone comments cannot
         // disappear when printing only the green item nodes.
-        let trivia = source[previous_end..s].trim();
+        let trivia = source[previous_end..s].trim_matches(is_arandu_ws);
         if !trivia.is_empty() {
             out.push_str(&normalize_whitespace(trivia));
         }
         let item_src = &source[s..e];
         out.push_str(&reindent_item(item_src));
+        // An explicit `;` terminating the item on the same line is not an
+        // item node; keep it on the item's line instead of emitting it as a
+        // standalone trivia line (which inserts an extra empty statement).
+        let mut e = e;
+        let rest = &source[e..];
+        let after_ws = rest.trim_start_matches([' ', '\t']);
+        if after_ws.starts_with(';') {
+            out.push(';');
+            e += rest.len() - after_ws.len() + 1;
+        }
         if !out.ends_with('\n') {
             out.push('\n');
         }
         previous_end = e;
     }
-    let trailing = source[previous_end..].trim();
+    let trailing = source[previous_end..].trim_matches(is_arandu_ws);
     if !trailing.is_empty() {
         out.push_str(&normalize_whitespace(trailing));
     }
@@ -227,7 +258,7 @@ fn reindent_item(item_src: &str) -> String {
     let mut lines_iter = item_src.lines().peekable();
     let mut emitted_any = false;
     while let Some(line) = lines_iter.next() {
-        let trimmed = line.trim();
+        let trimmed = line.trim_matches(is_arandu_ws);
         if trimmed.is_empty() {
             if emitted_any && lines_iter.peek().is_some() {
                 out.push('\n');
@@ -243,7 +274,7 @@ fn reindent_item(item_src: &str) -> String {
             for c in formatted.chars() {
                 if c == '}' {
                     leading_closes += 1;
-                } else if c.is_whitespace() {
+                } else if is_arandu_ws(c) {
                     continue;
                 } else {
                     break;
@@ -403,11 +434,18 @@ fn trim_trailing_horizontal_ws(out: &mut String) {
     out.truncate(end);
 }
 
+/// Whitespace exactly as the lexer defines it. `str::trim` and
+/// `char::is_whitespace` follow Unicode (form feed, NBSP, …), which would let
+/// the formatter delete characters the lexer rejects and lose idempotence.
+fn is_arandu_ws(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\r' | '\n')
+}
+
 fn normalize_whitespace(source: &str) -> String {
     let mut out = String::with_capacity(source.len() + 1);
     let mut blank_run = 0u32;
     for line in source.lines() {
-        let trimmed = line.trim_end();
+        let trimmed = line.trim_end_matches(is_arandu_ws);
         if trimmed.is_empty() {
             blank_run += 1;
             if blank_run <= 1 {
@@ -509,6 +547,27 @@ pub fn actions_for_expected_semicolon(start: u32, end: u32, message: &str) -> Op
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn characters_the_lexer_rejects_are_kept_so_formatting_is_idempotent() {
+        // fuzz_fmt minimized input: Unicode-aware trim deleted the form feed on
+        // the first pass, so the second pass formatted different text.
+        for source in [
+            "func m(){\x0c\nn}",
+            "func m(){\x0b\nn}",
+            "func m(){\u{a0}\nn}",
+        ] {
+            let once = format_source(source);
+            assert_eq!(format_source(&once), once, "{source:?}");
+            let control = source
+                .chars()
+                .find(|c| !c.is_ascii_graphic() && !is_arandu_ws(*c));
+            assert!(
+                control.is_some_and(|c| once.contains(c)),
+                "{source:?} -> {once:?}"
+            );
+        }
+    }
 
     #[test]
     fn array_repetition_preserves_semicolons_and_formats_idempotently() {
@@ -682,6 +741,40 @@ mod tests {
         let applied = apply_edits(src, &edits);
         assert_eq!(applied, format_source(src));
         assert!(format_edits(&applied).is_empty());
+    }
+
+    #[test]
+    fn explicit_item_semicolon_is_kept_on_the_item_line() {
+        // Fuzz finding (fuzz_fmt): `import a;` became `import a\n;\n`.
+        for (src, expected) in [
+            ("from;", "from;\n"),
+            (
+                "import std.io as io;\nfunc main(): int { return 0 }\n",
+                "import std.io as io;\n\nfunc main(): int { return 0 }\n",
+            ),
+        ] {
+            let formatted = format_source(src);
+            assert_eq!(formatted, expected);
+            assert_eq!(format_source(&formatted), formatted);
+        }
+    }
+
+    #[test]
+    fn format_edits_in_range_preserves_line_breaks_between_items() {
+        // Fuzz finding (fuzz_fmt): range formatting a later item removed the
+        // newline separating it from the previous one, which drops the
+        // automatic semicolon inserted after `}`.
+        let src = "struct P { x: int, y: int }\nfunc main(): int { let p = P { x: 1, y: 2 }\n return p.x }\n";
+        let edits = format_edits_in_range(src, 0, src.len() as u32);
+        let mut applied = src.to_string();
+        for edit in edits.iter().rev() {
+            applied.replace_range(edit.start as usize..edit.end as usize, &edit.new_text);
+        }
+        assert!(
+            applied.starts_with("struct P { x: int, y: int }\nfunc main"),
+            "{edits:?}\n{applied}"
+        );
+        assert!(parses_clean(&applied), "{applied}");
     }
 
     #[test]

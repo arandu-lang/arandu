@@ -6,10 +6,10 @@ use arandu_parser::ast_pool::{ExprId, ExprKind};
 use arandu_parser::{GenericParam, IndexRange};
 
 use crate::type_checker::TypeChecker;
+use crate::type_checker::types::lower::lower_type_expr_ctx;
 use crate::type_checker::types::{
     ArType, GenericSubst, LowerCtx, TypeId, TypeInterner, build_subst, substitute_type,
 };
-use arandu_middle::types::lower::lower_type_expr_ctx;
 
 #[must_use]
 pub fn extract_generic_param_symbols(
@@ -136,6 +136,12 @@ pub fn expand_named_with_defaults(checker: &mut TypeChecker<'_>, ty: ArType) -> 
             let expanded = expand_named_with_defaults(checker, inner_ty);
             let tid = checker.intern(expanded);
             ArType::Slice(tid)
+        }
+        ArType::MutSlice(inner) => {
+            let inner_ty = checker.resolve(inner);
+            let expanded = expand_named_with_defaults(checker, inner_ty);
+            let tid = checker.intern(expanded);
+            ArType::MutSlice(tid)
         }
         ArType::Array(n, inner) => {
             let inner_ty = checker.resolve(inner);
@@ -535,6 +541,7 @@ fn resolve_generic_callee_symbol(
                 other => other.clone(),
             };
             let struct_id = match &actual_base_ty {
+                ArType::Vector(shape) => checker.symbols.vector_type_symbol(*shape),
                 ArType::Named(id, _) => Some(*id),
                 ArType::Ptr(inner) => match checker.resolve(*inner) {
                     ArType::Named(id, _) => Some(id),
@@ -672,6 +679,11 @@ fn expand_aliases_rec(checker: &mut TypeChecker<'_>, ty: ArType, depth: usize) -
             let inner_ty = checker.resolve(inner);
             let expanded = expand_aliases_rec(checker, inner_ty, depth + 1);
             ArType::Slice(checker.intern(expanded))
+        }
+        ArType::MutSlice(inner) => {
+            let inner_ty = checker.resolve(inner);
+            let expanded = expand_aliases_rec(checker, inner_ty, depth + 1);
+            ArType::MutSlice(checker.intern(expanded))
         }
         ArType::Array(len, inner) => {
             let inner_ty = checker.resolve(inner);

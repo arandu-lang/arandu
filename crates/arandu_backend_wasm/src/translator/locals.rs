@@ -97,21 +97,29 @@ impl<'a> FuncTranslator<'a> {
             for local in &self.func.locals {
                 let base = next;
                 self.local_wasm.insert(local.id, base);
+                let address_backed_vector = local.is_memory
+                    && matches!(
+                        self.interner.resolve(local.ty),
+                        arandu_middle::types::ArType::Vector(_)
+                    );
                 let slots = shape_slots(types::shape(
                     local.ty,
                     self.interner,
                     self.layout_engine.data_layout,
                 ));
                 for k in 0..slots {
-                    slot_types.push(
+                    let slot_ty = if address_backed_vector {
+                        ValType::I32
+                    } else {
                         types::slot_valtype(
                             local.ty,
                             k as usize,
                             self.interner,
                             self.layout_engine.data_layout,
                         )
-                        .unwrap_or(ValType::I32),
-                    );
+                        .unwrap_or(ValType::I32)
+                    };
+                    slot_types.push(slot_ty);
                 }
                 next += slots;
             }
@@ -208,21 +216,29 @@ impl<'a> FuncTranslator<'a> {
             for local in &self.func.locals {
                 let base = next;
                 self.local_wasm.insert(local.id, base);
+                let address_backed_vector = local.is_memory
+                    && matches!(
+                        self.interner.resolve(local.ty),
+                        arandu_middle::types::ArType::Vector(_)
+                    );
                 let slots = shape_slots(types::shape(
                     local.ty,
                     self.interner,
                     self.layout_engine.data_layout,
                 ));
                 for k in 0..slots {
-                    slot_types.push(
+                    let slot_ty = if address_backed_vector {
+                        ValType::I32
+                    } else {
                         types::slot_valtype(
                             local.ty,
                             k as usize,
                             self.interner,
                             self.layout_engine.data_layout,
                         )
-                        .unwrap_or(ValType::I32),
-                    );
+                        .unwrap_or(ValType::I32)
+                    };
+                    slot_types.push(slot_ty);
                 }
                 next += slots;
             }
@@ -381,13 +397,14 @@ impl<'a> FuncTranslator<'a> {
     /// Assign slots to non-parameter temps by coloring an interference graph,
     /// so disjoint-lifetime SSA temps share the same Wasm local index.
     fn assign_colored_temps(&mut self, next: &mut u32, slot_types: &mut Vec<ValType>) {
-        let interference = arandu_semantics::passes::liveness::temp_interference_graph(self.func);
+        let interference = arandu_mir::liveness::temp_interference_graph(self.func);
 
         let mut fat_temps = Vec::new();
         let mut i32_temps = Vec::new();
         let mut i64_temps = Vec::new();
         let mut f32_temps = Vec::new();
         let mut f64_temps = Vec::new();
+        let mut v128_temps = Vec::new();
 
         for temp in &self.func.temps {
             if self.temp_local.contains_key(&temp.id) {
@@ -414,6 +431,7 @@ impl<'a> FuncTranslator<'a> {
                         ValType::I64 => i64_temps.push(temp.id),
                         ValType::F32 => f32_temps.push(temp.id),
                         ValType::F64 => f64_temps.push(temp.id),
+                        ValType::V128 => v128_temps.push(temp.id),
                         _ => i32_temps.push(temp.id),
                     }
                 }
@@ -460,6 +478,15 @@ impl<'a> FuncTranslator<'a> {
             ValType::F32,
         );
 
+        Self::color_class_and_assign(
+            &v128_temps,
+            &interference,
+            &mut self.temp_local,
+            next,
+            slot_types,
+            1,
+            ValType::V128,
+        );
         Self::color_class_and_assign(
             &f64_temps,
             &interference,

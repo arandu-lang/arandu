@@ -30,7 +30,10 @@ e backends, sem depender de detalhes de host ou frontend.
    - `Goto(bbX)`: Unconditionally transfers control to basic block `bbX`.
    - `Branch { condition, if_true: bbX, if_false: bbY }`: Boolean conditional branch; used for `if`, `while`, and C-style `for` conditions.
    - `SwitchInt { discriminant, targets: [(value, bbX), ...], otherwise: bbY }`: Integer discriminant switch used for `match` on `int` literals, enum unit variants (via `discriminant`), `if`/`while` boolean conditions (`1 => true`), and hybrid fallbacks (range/guard arms chain on `otherwise`).
+   - `Suspend { resume, args, ... }`: suspension frontier with live values and resume block.
    - `Unreachable`: Denotes code that cannot be executed.
+
+Goto/Branch/SwitchInt edges carry arguments matching destination block parameters. These logical examples omit the physical dense statement table and some arguments; canonical fixtures and `arandu_middle::amir` define the current schema.
 
 4. **Statements and Rvalues**:
    - `Assign(lhs, rvalue)`: Evaluates an rvalue and assigns it to a register.
@@ -48,8 +51,8 @@ AMIR outputs conform to a deterministic, indented format:
 
 Source:
 
-```swift
-func add(a int, b int) int {
+```arandu
+func add(a: int, b: int): int {
     return a + b
 }
 ```
@@ -72,8 +75,8 @@ Func add(a: int, b: int) -> int
 
 Source:
 
-```swift
-func test(x int) int {
+```arandu
+func test(x: int): int {
     if x > 5 {
         return 10
     } else {
@@ -108,7 +111,7 @@ Func test(x: int) -> int
 
 Source:
 
-```swift
+```arandu
 func test() {
     idx = 0
     while idx < 5 {
@@ -146,24 +149,24 @@ Func test() -> void
 
 ### Invariantes formais (v0.1)
 
-Todo pass que lê ou escreve AMIR deve preservar estas regras. O validador `validate_amir_program` em `arandu_semantics/src/amir_validate.rs` aplica CFG-1…CFG-5 e TYP-1 nos goldens `tests/amir/*`. HIR usa `validate_invariants` separadamente.
+Todo pass que lê ou escreve AMIR deve preservar estas regras. O validador `validate_amir_program` em `crates/arandu_middle/src/amir_validate.rs` aplica CFG-1…CFG-5 e TYP-1 nos goldens `tests/amir/*`. HIR usa `validate_invariants` separadamente.
 
 ### CFG
 
 | ID | Invariante |
 |----|------------|
-| CFG-1 | Todo basic block termina com exatamente um **terminador** (`Return`, `Goto`, `Branch`, `SwitchInt`, `Unreachable`). |
+| CFG-1 | Todo basic block termina com exatamente um **terminador** (`Return`, `Goto`, `Branch`, `SwitchInt`, `Suspend`, `Unreachable`). |
 | CFG-2 | Nenhuma instrução aparece **após** o terminador no mesmo bloco. |
-| CFG-3 | Todo `Goto` / `Branch` / `SwitchInt` aponta para um `bb` existente na mesma função. |
+| CFG-3 | Todo `Goto` / `Branch` / `SwitchInt` / `Suspend.resume` aponta para um `bb` existente na mesma função. |
 | CFG-4 | `bb0` é o único ponto de entrada; blocos órfãos são erro de lowering (ou `Unreachable` explícito). |
 | CFG-5 | Blocos alcançáveis a partir de `bb0` (exceto código morto marcado `Unreachable`). |
 
-### SSA (v0.1 — preparação)
+### SSA (implementado)
 
 | ID | Invariante |
 |----|------------|
 | SSA-1 | Cada local `_N` tem tipo `ArType` concreto (não `Error`) após type check. |
-| SSA-2 | **Definição antes do uso** dentro do mesmo caminho linear do bloco (v0.1); phi explícitos em merges — v0.2. |
+| SSA-2 | **Definições dominam usos**; merges usam parâmetros de bloco e argumentos de aresta já implementados, incluindo backedges e atribuição simultânea. Isso não prova lifetime de todo backing agregado. |
 | SSA-3 | Parâmetros `_1.._N` e retorno `_0` alocados antes do corpo; nomes de símbolo opcionais na seção `locals`. |
 
 ### Ownership / OSSA (a partir de F1)
@@ -182,11 +185,11 @@ Todo pass que lê ou escreve AMIR deve preservar estas regras. O validador `vali
 | TYP-1 | Todo operando de rvalue tem tipo compatível com a operação (checker já validou; AMIR não re-inventa tipos). |
 | TYP-2 | `Result` / `Option` no AMIR usam representação acordada (`ResultCtor` ou layout ok/err interno) — tipagem fonte só `Result<T,E>` e `Option<T>`. |
 
-### Efeitos (metadata v0.2+)
+### Efeitos e suspensão
 
 | ID | Invariante |
 |----|------------|
-| EFF-1 | Funções podem carregar flags `can_throw`, `can_suspend` derivadas do AHIR (preparação; não obrigatório v0.1). |
+| EFF-1 | Efeitos são inferidos/validados pela análise semântica; suspensão é explícita no CFG. Os nomes de flags deste esquema conceitual não prometem campos Rust ou ABI públicos. |
 
 Violações devem falhar no validador de IR ou no pass que as introduz, não no backend C.
 
@@ -248,3 +251,16 @@ todos os backends. O texto não implica que toda otimização possível já exis
 
 Manter validação de dominância, argumentos de bloco e efeitos antes/depois de
 passes; novas otimizações exigem corpus e medição.
+
+## Vetores internos de 128 bits (RFC 0038)
+
+`ArType::Vector(VectorType)` admite somente F32x4/F64x2/I32x4/I16x8/U8x16/I64x2.
+A AMIR tem `VectorOp`, `VectorCompare`, `VectorSelect`, `VectorSplat`,
+`VectorShuffle`, `VectorExtractLane` e
+`VectorInsertLane`; são operações puras, Copy, sem proveniência de empréstimo.
+O visitor compartilhado percorre ambos os vetores e o valor inserido; SSA,
+inlining, liveness/DCE e hashes conservam esses operandos. Shuffle usa 16 índices
+de bytes de 0 a 31, com ordem little-endian por via. O validador exige formas e
+escalares exatos, operações admitidas e índices válidos antes dos backends.
+CTFE rejeita esses nós explicitamente. O contrato completo e as fronteiras
+identidade canônica fonte, máscaras e limites de portabilidade estão na [RFC 0038](rfcs/0038-portable-simd-hardware-vectors-and-alignment-safety.md).

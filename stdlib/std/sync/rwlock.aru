@@ -1,0 +1,146 @@
+//! Native phase-fair reader/writer lock with shared receiver borrows.
+//!
+//! Writers enter in FIFO order. Releasing a writer admits all already waiting
+//! readers before the next writer. New readers cannot bypass a pending writer.
+//! Fairness assumes holders release and runnable threads eventually execute;
+//! it is not a wall-clock deadline. Read reentry by the current reader is
+//! allowed only while no writer is queued. Blocking recursive write,
+//! read-to-write upgrade, read while holding write, and read reentry behind a
+//! queued writer abort with a runtime diagnostic instead of hanging.
+//!
+//! State is address-keyed in the native ParkingLot, not a four-byte PFLock.
+//! A guard keeps the lock stationary and releases its acquisition on drop.
+//! `RwLock<T>` is Send for T:Send, Sync for T:Send+Sync. Guards are not Send.
+//! Platform: native (the host ABI is unavailable on standalone Wasm).
+module std.sync.rwlock
+
+import std.core.cell as cell
+import std.core.intrinsics as intrinsics
+import std.core.option as option
+
+extern "C" {
+    func ar_rt_rwlock_read(key: ptr[u8]): void
+    func ar_rt_rwlock_write(key: ptr[u8]): void
+    func ar_rt_rwlock_try_read(key: ptr[u8]): i32
+    func ar_rt_rwlock_try_write(key: ptr[u8]): i32
+    func ar_rt_rwlock_read_unlock(key: ptr[u8]): void
+    func ar_rt_rwlock_write_unlock(key: ptr[u8]): void
+}
+
+/// An inline protected value. Safe code cannot access its storage directly.
+public struct RwLock<T> {
+    private key: u8,
+    private value: cell.UnsafeCell<T>,
+}
+
+/// Creates an unlocked lock. The contained value determines its storage size.
+public func RwLock.new<T>(value: T): RwLock<T> {
+    return RwLock<T> { key: 0 as u8, value: cell.UnsafeCell.new(value) }
+}
+
+/// Owned read admission tied to a shared borrow of the lock.
+public struct RwLockReadGuard<T> {
+    private lock: ref RwLock<T>,
+    private data: ptr[T],
+}
+
+/// Owned writer admission; shared receiver acquisition is synchronized natively.
+public struct RwLockWriteGuard<T> {
+    private lock: ref RwLock<T>,
+    private data: ptr[T],
+}
+
+/// Forms a guard from an already acquired read admission.
+/// Safety: exactly one matching read acquisition belongs to this new guard;
+/// no other guard or code may release that admission.
+@Unsafe
+public func RwLockReadGuard.fromLocked<T>(lock: ref RwLock<T>): RwLockReadGuard<T> {
+    unsafe { return RwLockReadGuard<T> { lock: lock, data: lock.rawData() } }
+}
+
+/// Forms a guard from an already acquired unique writer admission.
+/// Safety: the caller transfers exactly one writer admission to this guard.
+@Unsafe
+public func RwLockWriteGuard.fromLocked<T>(lock: ref RwLock<T>): RwLockWriteGuard<T> {
+    unsafe { return RwLockWriteGuard<T> { lock: lock, data: lock.rawData() } }
+}
+
+/// Exposes protected storage without locking.
+/// Safety: every dereference requires an appropriate live read/write guard or
+/// an exclusive owner borrow; this raw pointer cannot outlive the lock.
+@Unsafe
+public func RwLock.rawData<T>(self: ref RwLock<T>): ptr[T] {
+    unsafe { return self.value.get() }
+}
+
+/// Borrows the protected value for the lifetime of this guard borrow.
+public func RwLockReadGuard.get<T>(self: ref RwLockReadGuard<T>): ref T {
+    unsafe { return ref *self.data }
+}
+
+/// Borrows the writer-protected value.
+public func RwLockWriteGuard.get<T>(self: ref RwLockWriteGuard<T>): ref T {
+    unsafe { return ref *self.data }
+}
+
+/// Exclusively borrows the value while the unique writer guard is borrowed.
+public func RwLockWriteGuard.getMut<T>(self: mut ref RwLockWriteGuard<T>): mut ref T {
+    unsafe { return mut ref *self.data }
+}
+
+@Destructor
+func RwLockReadGuard.destroy<T>(self: own RwLockReadGuard<T>): void {
+    unsafe { ar_rt_rwlock_read_unlock(intrinsics.addressOfShared(self.lock) as ptr[u8]) }
+}
+
+@Destructor
+func RwLockWriteGuard.destroy<T>(self: own RwLockWriteGuard<T>): void {
+    unsafe { ar_rt_rwlock_write_unlock(intrinsics.addressOfShared(self.lock) as ptr[u8]) }
+}
+
+/// Acquires a shared reader phase, parking the native thread if necessary.
+public func RwLock.read<T>(self: ref RwLock<T>): RwLockReadGuard<T> {
+    unsafe { ar_rt_rwlock_read(intrinsics.addressOfShared(self) as ptr[u8]) }
+    unsafe { return RwLockReadGuard.fromLocked(self) }
+}
+
+/// Acquires the unique writer phase, parking without polling.
+public func RwLock.write<T>(self: ref RwLock<T>): RwLockWriteGuard<T> {
+    unsafe { ar_rt_rwlock_write(intrinsics.addressOfShared(self) as ptr[u8]) }
+    unsafe { return RwLockWriteGuard.fromLocked(self) }
+}
+
+/// Attempts immediate reader admission, returning the owning guard on success.
+public func RwLock.tryRead<T>(self: ref RwLock<T>): Option<RwLockReadGuard<T>> {
+    unsafe {
+        if ar_rt_rwlock_try_read(intrinsics.addressOfShared(self) as ptr[u8]) == (1 as i32) {
+            return Option.Some(RwLockReadGuard.fromLocked(self))
+        }
+    }
+    return Option.None
+}
+
+/// Attempts immediate writer admission, returning the owning guard on success.
+public func RwLock.tryWrite<T>(self: ref RwLock<T>): Option<RwLockWriteGuard<T>> {
+    unsafe {
+        if ar_rt_rwlock_try_write(intrinsics.addressOfShared(self) as ptr[u8]) == (1 as i32) {
+            return Option.Some(RwLockWriteGuard.fromLocked(self))
+        }
+    }
+    return Option.None
+}
+
+/// Extracts the value; existing guards prevent moving the lock.
+public func RwLock.intoInner<T>(self: own RwLock<T>): T {
+    return self.value.intoInner()
+}
+
+/// Exclusively borrows the value without locking through an exclusive owner borrow.
+public func RwLock.getMut<T>(self: mut ref RwLock<T>): mut ref T {
+    return self.value.getMut()
+}
+
+/// Alias for read.
+public func RwLock.readLock<T>(self: ref RwLock<T>): RwLockReadGuard<T> { return self.read() }
+/// Alias for write.
+public func RwLock.writeLock<T>(self: ref RwLock<T>): RwLockWriteGuard<T> { return self.write() }

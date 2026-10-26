@@ -688,3 +688,23 @@ fn literal_pair_float_literal_with_int_concrete_promotes() {
     let result = resolve_literal_pair(&ArType::IntLiteral, &ArType::Primitive(Primitive::Float));
     assert_eq!(result, ArType::Primitive(Primitive::Float));
 }
+
+#[test]
+fn native_vectors_unify_only_with_the_same_closed_shape() {
+    let interner = new_interner();
+    for left in crate::types::VectorType::ALL {
+        for right in crate::types::VectorType::ALL {
+            let left_ty = ArType::Vector(left);
+            let right_ty = ArType::Vector(right);
+            assert_eq!(unify(&left_ty, &right_ty, &interner), left == right);
+            assert_eq!(is_assignable(&left_ty, &right_ty, &interner), left == right);
+        }
+        assert!(!unify(
+            &ArType::Vector(left),
+            &ArType::Primitive(left.lane()),
+            &interner
+        ));
+        let nominal = ArType::named(SymbolId::new(12, 34), &[], &interner);
+        assert!(!unify(&ArType::Vector(left), &nominal, &interner));
+    }
+}

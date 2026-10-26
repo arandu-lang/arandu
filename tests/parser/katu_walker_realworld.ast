@@ -1,0 +1,12 @@
+Program @1:1-21:2
+  Struct @1:1-4:2 WalkOpts
+    Field @2:5-2:21 count_only Type @2:17-2:21 bool
+    Field @3:5-3:29 files_with_matches Type @3:25-3:29 bool
+  Func @6:1-11:2 defaultWalkOpts() -> Type @6:25-6:33 @6:25-6:33 WalkOpts
+    Return @7:5-10:6 StructLiteral @7:12-10:6(Type @7:12-7:20 @7:12-7:20 WalkOpts, [@8:9-8:26 count_only: Bool @8:21-8:26(false), @9:9-9:34 files_with_matches: Bool @9:29-9:34(false)])
+  Func @13:1-21:2 shouldDescend(@13:20-13:30 name Slice @13:26-13:30 Type @13:28-13:30 u8, @13:32-13:42 len Type @13:37-13:42 usize, @13:44-13:57 is_root Type @13:53-13:57 bool) -> Type @13:60-13:64 bool
+    If @14:5-16:6 Condition @14:8-14:32 Binary @14:8-14:32(&&, Binary @14:8-14:15(>, Path @14:8-14:11(len), Int @14:14-14:15(0)), Binary @14:19-14:32(==, Index @14:19-14:26(Path @14:19-14:23(name), Int @14:24-14:25(0)), Int @14:30-14:32(46)))
+      Return @15:9-15:21 Bool @15:16-15:21(false)
+    If @17:5-19:6 Condition @17:8-17:134 Binary @17:8-17:134(&&, Binary @17:8-17:116(&&, Binary @17:8-17:98(&&, Binary @17:8-17:80(&&, Binary @17:8-17:62(&&, Binary @17:8-17:45(&&, Binary @17:8-17:27(&&, Path @17:8-17:15(is_root), Binary @17:19-17:27(==, Path @17:19-17:22(len), Int @17:26-17:27(6))), Binary @17:31-17:45(==, Index @17:31-17:38(Path @17:31-17:35(name), Int @17:36-17:37(0)), Int @17:42-17:45(116))), Binary @17:49-17:62(==, Index @17:49-17:56(Path @17:49-17:53(name), Int @17:54-17:55(1)), Int @17:60-17:62(97))), Binary @17:66-17:80(==, Index @17:66-17:73(Path @17:66-17:70(name), Int @17:71-17:72(2)), Int @17:77-17:80(114))), Binary @17:84-17:98(==, Index @17:84-17:91(Path @17:84-17:88(name), Int @17:89-17:90(3)), Int @17:95-17:98(103))), Binary @17:102-17:116(==, Index @17:102-17:109(Path @17:102-17:106(name), Int @17:107-17:108(4)), Int @17:113-17:116(101))), Binary @17:120-17:134(==, Index @17:120-17:127(Path @17:120-17:124(name), Int @17:125-17:126(5)), Int @17:131-17:134(116)))
+      Return @18:9-18:21 Bool @18:16-18:21(false)
+    Return @20:5-20:16 Bool @20:12-20:16(true)

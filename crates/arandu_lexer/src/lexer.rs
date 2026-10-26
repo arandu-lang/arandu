@@ -26,6 +26,12 @@ pub(super) struct Mark {
     pub(super) pos: usize,
 }
 
+/// Byte offsets stored in spans are `u32`. A longer source is rejected before
+/// any token is sliced, instead of truncating the offset.
+pub(crate) fn source_exceeds_span_limit(len: usize) -> bool {
+    len > u32::MAX as usize
+}
+
 impl<'a> Lexer<'a> {
     /// Heuristic ratio for token buffer preallocation based on average token density.
     const ESTIMATED_BYTES_PER_TOKEN: usize = 10;
@@ -64,6 +70,18 @@ impl<'a> Lexer<'a> {
 
     #[must_use]
     pub fn lex_recovering(mut self) -> crate::Lexed<'a> {
+        if source_exceeds_span_limit(self.source.len()) {
+            let span = Span::new(0, 0, 0);
+            let error = LexError::new(LexErrorCode::SourceTooLarge, "source exceeds 4 GiB", span);
+            self.diagnostics.push(error);
+            self.push_token(TokenKind::Error(LexErrorCode::SourceTooLarge), span, false);
+            self.push_token(TokenKind::Eof, span, false);
+            return crate::Lexed {
+                source: self.source,
+                tokens: self.tokens,
+                diagnostics: self.diagnostics,
+            };
+        }
         while !self.is_at_end() {
             let start_pos = self.pos;
             let result = self.lex_next_token();
@@ -131,6 +149,8 @@ impl<'a> Lexer<'a> {
             b'b' => {
                 if remaining >= 2 && bytes[self.pos + 1] == b'\'' {
                     return self.lex_byte_char();
+                } else if remaining >= 2 && bytes[self.pos + 1] == b'"' {
+                    return self.lex_byte_string();
                 }
             }
             b'r' => {
@@ -419,10 +439,12 @@ impl<'a> Lexer<'a> {
     }
 
     fn current_span(&self) -> Span {
+        debug_assert!(!source_exceeds_span_limit(self.pos));
         Span::new(0, self.pos as u32, self.pos as u32)
     }
 
     fn span_from(&self, start: Mark) -> Span {
+        debug_assert!(!source_exceeds_span_limit(start.pos.max(self.pos)));
         Span::new(0, start.pos as u32, self.pos as u32)
     }
 

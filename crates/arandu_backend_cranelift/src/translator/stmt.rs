@@ -1,5 +1,5 @@
-use arandu_semantics::amir::{AmirStmt, LocalId};
-use arandu_semantics::passes::type_checker::types::{ArType, Primitive};
+use arandu_middle::amir::{AmirStmt, LocalId};
+use arandu_middle::types::{ArType, Primitive};
 use cranelift_codegen::ir::{InstBuilder, MemFlagsData, Value};
 
 use super::FunctionTranslator;
@@ -97,7 +97,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     // Route through translate_rvalue so `T?` stores box scalars
                     // (`int? = 0` must not store a null pointer handle).
                     let val = self.translate_rvalue(
-                        &arandu_semantics::amir::AmirRvalue::Use(*rhs),
+                        &arandu_middle::amir::AmirRvalue::Use(*rhs),
                         expected_ty,
                         Some(&place_ty),
                     );
@@ -117,8 +117,8 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 }
             }
             AmirStmt::Free(op) => {
-                if let arandu_semantics::amir::AmirOperand::Copy(temp)
-                | arandu_semantics::amir::AmirOperand::Move(temp) = op
+                if let arandu_middle::amir::AmirOperand::Copy(temp)
+                | arandu_middle::amir::AmirOperand::Move(temp) = op
                     && self.integer_concat_temps[temp.as_usize()].is_some()
                 {
                     return;
@@ -192,18 +192,18 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
 
     pub(super) fn emit_destroy_value(&mut self, ty: &ArType, ptr_val: Value, local: LocalId) {
         if let ArType::Named(_, _) = ty {
-            let ty_id = self.type_info.type_interner.intern(ty.clone());
-            if let Some(destructor) = self.type_info.destructor_instances.get(&ty_id) {
-                let symbol = self.symbol_table.get(*destructor);
+            let ty_id = self.type_info.type_interner().intern(ty.clone());
+            if let Some(destructor) = self.type_info.destructor_for_type(ty_id) {
+                let symbol = self.symbol_table.get(destructor);
                 let host_name = self.symbol_table.host_func_name(symbol);
                 if let Some(id) = self.resolve_function(host_name) {
                     let function = self.module.declare_func_in_func(id, self.builder.func);
                     let arg_abi = self.classify_arg_abi(ty);
                     match arg_abi {
-                        arandu_semantics::layout::ArgAbi::ZeroSized => {
+                        arandu_middle::layout::ArgAbi::ZeroSized => {
                             self.builder.ins().call(function, &[]);
                         }
-                        arandu_semantics::layout::ArgAbi::Direct(direct) => {
+                        arandu_middle::layout::ArgAbi::Direct(direct) => {
                             let mut args = Vec::with_capacity(direct.slots.len());
                             let layout = self.checked_layout(ty);
                             for abi_slot in &direct.slots {
@@ -212,7 +212,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                             }
                             self.builder.ins().call(function, &args);
                         }
-                        arandu_semantics::layout::ArgAbi::Indirect => {
+                        arandu_middle::layout::ArgAbi::Indirect => {
                             self.builder.ins().call(function, &[ptr_val]);
                         }
                     }

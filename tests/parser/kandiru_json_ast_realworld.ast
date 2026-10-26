@@ -1,0 +1,29 @@
+Program @1:1-38:2
+  Enum @1:1-10:2 JsonKind
+    Variant @2:5-2:9 Null
+    Variant @3:5-3:13 BoolTrue
+    Variant @4:5-4:14 BoolFalse
+    Variant @5:5-5:12 Integer
+    Variant @6:5-6:10 Float
+    Variant @7:5-7:11 String
+    Variant @8:5-8:10 Array
+    Variant @9:5-9:11 Object
+  Struct @12:1-20:2 JsonNode
+    Field @13:5-13:19 kind Type @13:11-13:19 @13:11-13:19 JsonKind
+    Field @14:5-14:17 int_val Type @14:14-14:17 i64
+    Field @15:5-15:19 float_val Type @15:16-15:19 f64
+    Field @16:5-16:21 str_start Type @16:16-16:21 usize
+    Field @17:5-17:19 str_len Type @17:14-17:19 usize
+    Field @18:5-18:23 child_start Type @18:18-18:23 usize
+    Field @19:5-19:23 child_count Type @19:18-19:23 usize
+  Struct @22:1-26:2 ObjectEntry
+    Field @23:5-23:21 key_start Type @23:16-23:21 usize
+    Field @24:5-24:19 key_len Type @24:14-24:19 usize
+    Field @25:5-25:21 value_idx Type @25:16-25:21 usize
+  Func @28:1-30:2 isWhitespace(@28:19-28:24 b Type @28:22-28:24 u8) -> Type @28:27-28:31 bool
+    Return @29:5-29:51 Binary @29:12-29:51(||, Binary @29:12-29:40(||, Binary @29:12-29:29(||, Binary @29:12-29:19(==, Path @29:12-29:13(b), Int @29:17-29:19(32)), Binary @29:23-29:29(==, Path @29:23-29:24(b), Int @29:28-29:29(9))), Binary @29:33-29:40(==, Path @29:33-29:34(b), Int @29:38-29:40(10))), Binary @29:44-29:51(==, Path @29:44-29:45(b), Int @29:49-29:51(13)))
+  Func @32:1-38:2 skipWhitespace(@32:21-32:30 src Slice @32:26-32:30 Type @32:28-32:30 u8, @32:32-32:42 pos Type @32:37-32:42 usize, @32:44-32:54 len Type @32:49-32:54 usize) -> Type @32:57-32:62 usize
+    Var @33:5-33:22 @33:9-33:16 mut cur = Path @33:19-33:22(pos)
+    While @34:5-36:6 Condition @34:11-34:46 Binary @34:11-34:46(&&, Binary @34:11-34:20(<, Path @34:11-34:14(cur), Path @34:17-34:20(len)), Call @34:24-34:46(Path @34:24-34:36(isWhitespace), [Index @34:37-34:45(Path @34:37-34:40(src), Path @34:41-34:44(cur))]))
+      Set @35:9-35:22 @35:9-35:12 cur = Binary @35:15-35:22(+, Path @35:15-35:18(cur), Int @35:21-35:22(1))
+    Return @37:5-37:15 Path @37:12-37:15(cur)

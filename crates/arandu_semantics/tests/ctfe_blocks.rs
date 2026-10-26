@@ -65,7 +65,7 @@ fn typed(program: &Program, expected: Option<ArType>) -> (TypeCheckResult, CtfeB
 
 fn lowered(
     body: &str,
-) -> Result<(TypeCheckResult, arandu_mir::FunctionUnit), Vec<arandu_middle::Diagnostic>> {
+) -> Result<(TypeCheckResult, arandu_semantics::FunctionUnit), Vec<arandu_middle::Diagnostic>> {
     let program = arandu_parser::parse(&source(body)).expect("canonical parse");
     let (mut tc, ty) = typed(&program, None);
     assert!(
@@ -85,7 +85,7 @@ fn lowered(
         })
         .expect("owner header");
     assert!(owner.body.is_none(), "runtime body not lowered");
-    let unit = arandu_mir::lower_block_unit(
+    let unit = arandu_semantics::lower_block_unit(
         &tc,
         &hir,
         owner,

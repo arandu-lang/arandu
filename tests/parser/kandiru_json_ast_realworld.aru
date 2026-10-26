@@ -1,0 +1,38 @@
+enum JsonKind {
+    Null,
+    BoolTrue,
+    BoolFalse,
+    Integer,
+    Float,
+    String,
+    Array,
+    Object,
+}
+
+struct JsonNode {
+    kind: JsonKind,
+    int_val: i64,
+    float_val: f64,
+    str_start: usize,
+    str_len: usize,
+    child_start: usize,
+    child_count: usize,
+}
+
+struct ObjectEntry {
+    key_start: usize,
+    key_len: usize,
+    value_idx: usize,
+}
+
+func isWhitespace(b: u8): bool {
+    return b == 32 || b == 9 || b == 10 || b == 13;
+}
+
+func skipWhitespace(src: []u8, pos: usize, len: usize): usize {
+    let mut cur = pos;
+    while cur < len && isWhitespace(src[cur]) {
+        cur = cur + 1;
+    }
+    return cur;
+}

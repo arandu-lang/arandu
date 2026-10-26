@@ -1,5 +1,6 @@
 //! High-level Intermediate Representation (HIR) statements, blocks, and places.
 
+use crate::Span;
 use crate::hir::expr::HirMatchArmBody;
 use crate::hir::pool::{HirBlockId, HirExprId, HirPatternId, HirPool, IndexRange};
 use crate::hir::symbol_name;
@@ -7,7 +8,6 @@ use crate::hir::validation::check_span;
 use crate::ops::SetOp;
 use crate::types::TypeId;
 use crate::{SymbolId, SymbolTable};
-use arandu_lexer::Span;
 use smallvec::SmallVec;
 use smol_str::SmolStr;
 

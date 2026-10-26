@@ -29,7 +29,8 @@ impl<'a> CEmitter<'a> {
                 .and_then(Option::as_ref)
                 .cloned()
                 .unwrap_or_else(|| format!("t{}", self.temp_slot(*t))),
-            AmirOperand::FunctionRef(id) | AmirOperand::GlobalRef(id) => {
+            AmirOperand::FunctionRef(id) => self.c_function_name(*id),
+            AmirOperand::GlobalRef(id) => {
                 let sym = self.symbols.get(*id);
                 sanitize_c_ident(self.symbols.host_func_name(sym))
             }
@@ -50,7 +51,7 @@ impl<'a> CEmitter<'a> {
                             format!("ar_f64_from_bits(UINT64_C({}))", value.bits())
                         }
                     }
-                    AmirLiteralEntry::Str(_) => {
+                    AmirLiteralEntry::Str(_) | AmirLiteralEntry::Bytes(_) => {
                         // Prefer named constant when available; compound literal fallback
                         // is handled in format_operand for pool constants.
                         "((ArStr){ .ptr = (const uint8_t*)\"\", .len = 0 })".to_string()
@@ -79,9 +80,9 @@ impl<'a> CEmitter<'a> {
         match op {
             AmirOperand::Constant(AmirConstant::Pool(id)) => {
                 match self.program.literal_pool.get(*id) {
-                    AmirLiteralEntry::Str(s) => {
+                    AmirLiteralEntry::Str(_) | AmirLiteralEntry::Bytes(_) => {
                         // LayoutEngine Str: named constant or compound literal {ptr, len}.
-                        let _ = s;
+                        // Byte blobs share that fat-pointer ABI.
                         format!("AR_STR_{}", id.0)
                     }
                     _ => self.format_operand_str(op),
@@ -93,6 +94,7 @@ impl<'a> CEmitter<'a> {
 
     pub(super) fn format_type(&self, ty: &ArType) -> Cow<'static, str> {
         match ty {
+            ArType::Vector(vector) => Cow::Owned(format!("ArVector_{}", vector.name())),
             ArType::Primitive(Primitive::I8) => Cow::Borrowed("int8_t"),
             ArType::Primitive(Primitive::I16) => Cow::Borrowed("int16_t"),
             ArType::Primitive(Primitive::I32) => Cow::Borrowed("int32_t"),
@@ -145,8 +147,8 @@ impl<'a> CEmitter<'a> {
                 let name = if arguments.is_empty() {
                     self.symbols.get(*id).name.to_string()
                 } else {
-                    arandu_semantics::passes::monomorphize::mangle_symbol(
-                        &arandu_semantics::passes::monomorphize::InstantiationKey {
+                    arandu_middle::symbol_mangling::mangle_symbol(
+                        &arandu_middle::symbol_mangling::InstantiationKey {
                             symbol: *id,
                             type_args: &arguments,
                         },
@@ -159,6 +161,10 @@ impl<'a> CEmitter<'a> {
             ArType::Slice(inner) => {
                 let inner_name = self.format_type(&self.interner.resolve(*inner));
                 Cow::Owned(format!("ArType_Slice_{}", sanitize_c_ident(&inner_name)))
+            }
+            ArType::MutSlice(inner) => {
+                let inner_name = self.format_type(&self.interner.resolve(*inner));
+                Cow::Owned(format!("ArType_MutSlice_{}", sanitize_c_ident(&inner_name)))
             }
             ArType::Array(len, inner) => {
                 let inner_name = self.format_type(&self.interner.resolve(*inner));
@@ -180,6 +186,11 @@ impl<'a> CEmitter<'a> {
                     return self.format_type(&inner_ty);
                 }
                 let inner_name = self.format_type(&inner_ty);
+                // A value `T?` is a handle to a boxed `T`, NULL for nil, as in
+                // Cranelift: payload `0` stays distinct from `nil`.
+                if self.is_boxed_nullable(&inner_ty) {
+                    return Cow::Owned(format!("{inner_name}*"));
+                }
                 Cow::Owned(format!("ArType_Nullable_{}", sanitize_c_ident(&inner_name)))
             }
             ArType::Option(inner) => {
@@ -215,6 +226,27 @@ impl<'a> CEmitter<'a> {
             }
             _ => Cow::Owned(format!("ArType_{}", sanitize_c_ident(&format!("{:?}", ty)))),
         }
+    }
+
+    /// Bounds-checked subscript for a fixed-length array element.
+    ///
+    /// Mirrors the Cranelift/Wasm trap: an index outside `[0, len)` aborts
+    /// instead of reading or writing out of bounds.
+    pub(super) fn checked_array_index(index: &str, len: u64) -> String {
+        format!("ar_index_check((uint64_t)({index}), UINT64_C({len}))")
+    }
+
+    /// Bounds-checked subscript for an element of the fat slice lvalue `slice`.
+    pub(super) fn checked_slice_index(&self, index: &str, slice: &str) -> String {
+        let off = self.layout.fat_ptr_len_offset();
+        let len_ty = if self.layout.fat_ptr_len_size() == 4 {
+            "int32_t"
+        } else {
+            "int64_t"
+        };
+        format!(
+            "ar_index_check((uint64_t)({index}), (uint64_t)(*({len_ty}*)((uint8_t*)&{slice} + {off})))"
+        )
     }
 
     pub(super) fn format_place(&mut self, place: &AmirPlace, func: &AmirFunc) -> String {
@@ -384,22 +416,35 @@ impl<'a> CEmitter<'a> {
                         && len > 0
                         && self.checked_layout(&ArType::Array(len, elem_id)).size > 0
                     {
+                        let index_str = Self::checked_array_index(&index_str, len);
                         path = format!("({})->data[{}]", path, index_str);
-                    } else if matches!(&current_ty, ArType::Array(len, _) if *len > 0)
+                    } else if let ArType::Array(len, _) = &current_ty
+                        && *len > 0
                         && self.checked_layout(&current_ty).size > 0
                     {
+                        let index_str = Self::checked_array_index(&index_str, *len);
                         path = format!("({}).data[{}]", path, index_str);
                     } else if matches!(
                         current_ty,
                         ArType::Ptr(_) | ArType::Ref(_) | ArType::RefMut(_)
                     ) {
                         path = format!("(({}*){})[{}]", elem_c_ty, path, index_str);
-                    } else if matches!(current_ty, ArType::Slice(_)) || is_vec {
+                    } else if matches!(current_ty, ArType::Slice(_) | ArType::MutSlice(_)) {
+                        let index_str = self.checked_slice_index(&index_str, &path);
+                        path = format!(
+                            "(( {}* )(*(void**)((uint8_t*)&{} + 0)))[{}]",
+                            elem_c_ty, path, index_str
+                        );
+                    } else if is_vec {
                         path = format!(
                             "(( {}* )(*(void**)((uint8_t*)&{} + 0)))[{}]",
                             elem_c_ty, path, index_str
                         );
                     } else {
+                        let index_str = match &current_ty {
+                            ArType::Array(len, _) => Self::checked_array_index(&index_str, *len),
+                            _ => index_str,
+                        };
                         path = format!("(({}*)&{})[{}]", elem_c_ty, path, index_str);
                     }
                     current_ty = elem_ty;
@@ -447,7 +492,8 @@ impl<'a> CEmitter<'a> {
                         ArType::Ptr(_) | ArType::Ref(_) | ArType::RefMut(_)
                     ) {
                         path = format!("(({}*){})[{}]", elem_c_ty, path, index);
-                    } else if matches!(current_ty, ArType::Slice(_)) || is_vec {
+                    } else if matches!(current_ty, ArType::Slice(_) | ArType::MutSlice(_)) || is_vec
+                    {
                         path = format!(
                             "(( {}* )(*(void**)((uint8_t*)&{} + 0)))[{}]",
                             elem_c_ty, path, index

@@ -1,6 +1,6 @@
 # RFC: GenRef Gold v0.1
 
-**Status:** Accepted / implemented
+**Status:** contrato implementado da baseline `Frozen-R0`; governança canônica na [RFC 0001](rfcs/0001-generational-fallback-genref.md). Não autoriza expansão concorrente/FFI desta baseline.
 
 **Supersedes:** the F2.3 i64 MVP contract preserved in Git history
 
@@ -69,6 +69,14 @@ The emitted C runtime is a separate unsafe implementation boundary and is
 tested with ASan+UBSan. Miri cannot validate C or arbitrary FFI. GenRef has no
 stable direct C representation: FFI must use opaque handles and validation
 functions or copy values across the boundary.
+
+This contract describes the compiler-managed fallback and `ArenaRegistry`,
+not the separate `std.alloc.gen_arena.GenArena<T>` collection. In the local
+stdlib, `GenArena.get` copies only `T: Copy`; `getRef` borrows a non-Copy
+payload and ties its lifetime to the arena, while `remove` moves it out.
+The collection's public slot/generation representation is not the opaque
+four-part compiler handle. Retirement, forging protection and thread-safety
+claims from `ArenaRegistry` must not be transferred to that collection.
 
 ### Reproducible campaigns
 

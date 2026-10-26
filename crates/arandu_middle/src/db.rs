@@ -36,16 +36,7 @@ pub trait SourceDatabase: salsa::Database {
     fn same_package(&self, current_file: FileId, imported_file: SourceFile) -> bool;
 
     /// Retrieves the exact lexical span of a symbol for diagnostics (prevents Span from breaking early cutoff).
-    fn symbol_span(&self, symbol_id: crate::SymbolId) -> arandu_lexer::Span;
-
-    /// Parses a file and returns its AST.
-    fn parse_file(
-        &self,
-        file: SourceFile,
-    ) -> Result<Arc<arandu_parser::Program>, arandu_parser::ParseError>;
-
-    /// Resolves all symbols (public and private) within a file.
-    fn resolve_file(&self, file: SourceFile) -> Arc<crate::ResolutionResult>;
+    fn symbol_span(&self, symbol_id: crate::SymbolId) -> crate::Span;
 
     /// Maps a module import path to a Salsa SourceFile.
     fn resolve_module_path(&self, path: &str) -> Option<SourceFile>;
@@ -66,6 +57,8 @@ pub struct DiagnosticsAccumulator(pub crate::Diagnostic);
 pub struct TargetIdentity {
     pub os: String,
     pub arch: String,
+    /// Original triple when the driver supplied one. Empty for [`Self::host`].
+    pub triple: String,
 }
 
 impl TargetIdentity {
@@ -109,7 +102,15 @@ impl TargetIdentity {
         Ok(Self {
             os: os.into(),
             arch: arch.into(),
+            triple: triple.to_owned(),
         })
+    }
+
+    /// `none` is the freestanding OS token (`thumbv7em-none-eabihf`).
+    /// Wasm stays `wasi` or `unknown` and is not bare-metal.
+    #[must_use]
+    pub fn is_bare_metal(&self) -> bool {
+        self.os == "none"
     }
 
     /// Native driver default; call outside semantic queries.
@@ -118,6 +119,7 @@ impl TargetIdentity {
         Self {
             os: std::env::consts::OS.into(),
             arch: std::env::consts::ARCH.into(),
+            triple: String::new(),
         }
     }
 }
@@ -138,11 +140,18 @@ mod target_identity_tests {
             ("wasm32-wasip1", "wasm32", "wasi"),
             ("wasm32-wasip2", "wasm32", "wasi"),
             ("wasm32-unknown-unknown", "wasm32", "unknown"),
+            ("thumbv7em-none-eabihf", "thumbv7em", "none"),
+            ("riscv32imc-unknown-none-elf", "riscv32imc", "none"),
         ] {
             let identity = TargetIdentity::from_triple(triple).expect("supported target identity");
             assert_eq!(identity.arch, arch);
             assert_eq!(identity.os, os);
+            assert_eq!(identity.triple, triple);
+            assert_eq!(identity.is_bare_metal(), os == "none");
         }
+        let host = TargetIdentity::host();
+        assert!(host.triple.is_empty());
+        assert!(!host.is_bare_metal());
         for invalid in [
             "",
             "wasm32",

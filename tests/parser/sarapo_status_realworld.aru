@@ -1,0 +1,13 @@
+func statusText(code: uint): str {
+    match code {
+        200 => { return "OK"; }
+        201 => { return "Created"; }
+        204 => { return "No Content"; }
+        301 => { return "Moved Permanently"; }
+        400 => { return "Bad Request"; }
+        403 => { return "Forbidden"; }
+        404 => { return "Not Found"; }
+        500 => { return "Internal Server Error"; }
+        _ => { return "Unknown"; }
+    }
+}

@@ -42,3 +42,43 @@ fn lexes_if_else_fixture() {
 fn lexes_nested_interpolation_fixture() {
     assert_golden("interpolation_nested");
 }
+
+#[test]
+fn lexes_hex_and_binary_fixture() {
+    assert_golden("hex_and_binary");
+}
+
+#[test]
+fn lexes_slices_and_casts_fixture() {
+    assert_golden("slices_and_casts");
+}
+
+#[test]
+fn lexes_attributes_canonical_fixture() {
+    assert_golden("attributes_canonical");
+}
+
+#[test]
+fn lexes_bitwise_hash_fixture() {
+    assert_golden("bitwise_hash");
+}
+
+#[test]
+fn lexes_compression_ops_fixture() {
+    assert_golden("compression_ops");
+}
+
+#[test]
+fn lexes_hexdump_tokens_fixture() {
+    assert_golden("hexdump_tokens");
+}
+
+#[test]
+fn lexes_ring_buffer_tokens_fixture() {
+    assert_golden("ring_buffer_tokens");
+}
+
+#[test]
+fn lexes_thread_pool_tokens_fixture() {
+    assert_golden("thread_pool_tokens");
+}

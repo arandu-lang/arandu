@@ -1,9 +1,9 @@
 use arandu_middle::Diagnostic;
+use arandu_middle::SymbolTable;
 use arandu_middle::amir::stmt::AmirStmt;
 use arandu_middle::amir::value::{AmirPlace, AmirRvalue};
 use arandu_middle::amir::{AmirFunc, AmirProgram};
 use arandu_middle::types::TypeInterner;
-use arandu_semantics::SymbolTable;
 
 /// Reject `Place`-based operations the wasm memory model cannot represent.
 ///
@@ -75,6 +75,7 @@ fn reject_unaddressable_place(
             | arandu_middle::types::ArType::RefMut(_)
             | arandu_middle::types::ArType::Nullable(_)
             | arandu_middle::types::ArType::Slice(_)
+            | arandu_middle::types::ArType::MutSlice(_)
             | arandu_middle::types::ArType::Named(..)
             | arandu_middle::types::ArType::Array(..)
             | arandu_middle::types::ArType::Tuple(..)

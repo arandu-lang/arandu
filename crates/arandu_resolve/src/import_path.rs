@@ -101,6 +101,16 @@ pub fn canonicalize_import_path(import: &ImportDecl) -> Option<String> {
     }
 }
 
+/// Canonical paths and logical module names for standard library modules providing
+/// inherent primitive methods available in all scopes without explicit imports.
+pub const AMBIENT_PRIMITIVE_MODULES: &[(&str, &str)] = &[
+    ("stdlib/core/str.aru", "std.core.str"),
+    ("stdlib/core/slice.aru", "std.core.slice"),
+    ("stdlib/core/char.aru", "std.core.char"),
+    ("stdlib/core/num.aru", "std.core.num"),
+    ("stdlib/core/pointer.aru", "std.core.pointer"),
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -40,6 +40,7 @@ fn legacy_program(
     HashEq::new(passes::LowerAmirArtifacts {
         amir,
         type_check: context,
+        docs: Arc::new(arandu_middle::DocCommentMap::default()),
     })
 }
 
@@ -55,7 +56,7 @@ fn runtime_producer_workload() {
     source.push_str("func main(): int { return worker0() }\n");
     let (mut db, log) = DatabaseImpl::with_rebuild_log();
     for &(path, text) in common::STDLIB_MODULES {
-        db.new_file(path.into(), text.into());
+        db.new_stdlib_file(path.into(), text.into());
     }
     let file = db.new_file("main.aru".into(), source.clone());
     let produce = |stage: &str| {
@@ -108,7 +109,7 @@ fn runtime_producer_workload() {
             .collect::<Vec<_>>();
         let inputs = units
             .iter()
-            .map(|(key, unit)| arandu_mir::ContextualFunctionUnit {
+            .map(|(key, unit)| arandu_semantics::ContextualFunctionUnit {
                 key,
                 unit: unit.result.as_ref().expect("valid body"),
                 context: &unit.context,
@@ -122,7 +123,7 @@ fn runtime_producer_workload() {
             .type_check
             .clone();
         let start = Instant::now();
-        arandu_mir::compose_function_units(&mut aggregate, &inputs, || {})
+        arandu_semantics::compose_function_units(&mut aggregate, &inputs, || {})
             .expect("canonical composition");
         eprintln!(
             "producer=units stage=composition_only elapsed_us={}",

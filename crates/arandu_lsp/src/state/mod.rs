@@ -7,7 +7,9 @@ pub mod path;
 pub mod types;
 pub mod vfs_ops;
 
+#[cfg(test)]
 pub use discovery::discover_aru_files;
+pub use discovery::discover_aru_files_until;
 pub use types::{DocInfo, ServerState};
 
 #[cfg(test)]
@@ -27,6 +29,29 @@ mod tests {
         uri_from_path(std::path::Path::new(&format!("/tmp/{name}")))
             .or_else(|| parse_uri(&format!("file:///tmp/{name}")))
             .expect("uri")
+    }
+
+    #[test]
+    fn stdlib_discovery_trusts_existing_overlays_only_beneath_the_verified_root() {
+        let root =
+            std::env::temp_dir().join(format!("arandu-lsp-authority-{}", std::process::id()));
+        let trusted_uri = uri_from_path(&root.join("core/intrinsics.aru")).expect("stdlib URI");
+        let outside_uri = uri_from_path(&root.with_extension("untrusted").join("intrinsics.aru"))
+            .expect("outside URI");
+        let overlay = "module std.core.intrinsics\nfunc edited(): int { return 42 }";
+        let mut state = ServerState::new();
+        let id = state.open_or_commit(&trusted_uri, overlay.into());
+        let outside_id = state.open_or_commit(&outside_uri, overlay.into());
+        let source = state.docs.get(id).expect("stdlib overlay").source;
+        let outside = state.docs.get(outside_id).expect("outside overlay").source;
+        assert!(!state.host.db().is_trusted_stdlib_source(source));
+
+        state.configure_stdlib_root(root);
+
+        assert!(state.host.db().is_trusted_stdlib_source(source));
+        assert!(!state.host.db().is_trusted_stdlib_source(outside));
+        assert_eq!(source.text(state.host.db()).as_ref(), overlay);
+        assert!(state.docs.get(id).expect("same live overlay").source == source);
     }
 
     #[cfg(windows)]
@@ -304,6 +329,113 @@ mod tests {
                 .iter()
                 .any(|diag| matches!(diag.code, arandu_middle::DiagCode::M001UnresolvedImport)),
             "renaming an imported module must invalidate its importers"
+        );
+
+        std::fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn configure_after_first_analysis_invalidates_stale_unresolved_import() {
+        // Regression: a document analyzed *before* workspace configuration used
+        // to keep a memoized `M001 unresolved import` forever, because the
+        // resolution configuration lives behind untracked handles. The package
+        // configuration now bumps a Salsa epoch the resolution path reads, so
+        // the memo is invalidated once the package lands.
+        let root = std::env::temp_dir().join(format!(
+            "arandu-lsp-stale-import-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos()
+        ));
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).expect("create fixture");
+        let discovered_src = std::fs::canonicalize(&src).expect("canonical source root");
+        let main_path = src.join("main.aru");
+        let main_text = concat!(
+            "module editor_gold\n",
+            "import editor_gold.util as util\n",
+            "import std.path as path\n",
+            "func main(): int {\n",
+            "    if path.Path.from(\"\").isEmpty() { return util.answer() }\n",
+            "    return 0\n",
+            "}\n",
+        );
+        std::fs::write(&main_path, main_text).expect("write entry");
+
+        let mut state = ServerState::new();
+        let main_uri = uri_from_path(&main_path).expect("main URI");
+        let main_id = state.open_or_commit(&main_uri, main_text.into());
+        state.mark_open(&main_uri);
+        let main = state.docs.get(main_id).expect("main document").source;
+
+        // Register the package-local module and the stdlib tree *before* the
+        // first analysis, so the only change between the two diagnostics runs
+        // is the package configuration itself (`configure_package` attaches
+        // import aliases for every already-known document).
+        let util_path = src.join("util.aru");
+        std::fs::write(
+            &util_path,
+            "/// Package answer.\npublic func answer(): int { return 42 }\n",
+        )
+        .expect("write module");
+        let util_uri = uri_from_path(&util_path).expect("util URI");
+        state.open_or_commit(
+            &util_uri,
+            std::fs::read_to_string(&util_path).expect("read module"),
+        );
+
+        let stdlib_root =
+            arandu_query::resolve_stdlib_root(arandu_query::StdlibResolveOpts::default())
+                .ok()
+                .map(|stdlib| stdlib.path)
+                .expect("workspace stdlib");
+        // Register the whole stdlib tree, exactly like workspace discovery does,
+        // so transitive stdlib imports resolve once the root is configured.
+        for rel in arandu_query::scan_aru_entries(&stdlib_root) {
+            let stdlib_path = stdlib_root.join(&rel);
+            let stdlib_uri = uri_from_path(&stdlib_path).expect("stdlib URI");
+            state.open_or_commit(
+                &stdlib_uri,
+                std::fs::read_to_string(&stdlib_path).expect("read stdlib module"),
+            );
+        }
+
+        // Analyze before any package configuration: imports cannot resolve yet.
+        let stale = arandu_query::file_ide_diagnostics(state.host.db(), main);
+        assert!(
+            stale.iter().any(|diag| diag.code == "M001"),
+            "expected unresolved imports before configuration"
+        );
+
+        // Configure the package *after* that first analysis. Nothing else about
+        // the workspace changes afterwards.
+        state
+            .configure_package(crate::workspace::WorkspaceProject {
+                manifest_path: root.join("Arandu.toml"),
+                manifest_data: ManifestData::legacy(
+                    "editor_gold".into(),
+                    "0.1.0".into(),
+                    "src/main.aru".into(),
+                ),
+                manifest_hash: "fixture".into(),
+                package_src: discovered_src,
+                entries: vec!["main.aru".into(), "util.aru".into()],
+                stdlib_root: Some(stdlib_root),
+                module_plan: None,
+                module_files: Vec::new(),
+            })
+            .expect("configure package");
+
+        let fresh = arandu_query::file_ide_diagnostics(state.host.db(), main);
+        assert!(
+            fresh.iter().all(|diag| diag.code != "M001"),
+            "stale memoized import diagnostics after configuration: {:?}",
+            fresh
+                .iter()
+                .map(|diag| diag.code.as_str())
+                .collect::<Vec<_>>()
         );
 
         std::fs::remove_dir_all(root).expect("remove fixture");

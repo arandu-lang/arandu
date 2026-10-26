@@ -313,8 +313,9 @@ fn residual_literals_round_trip_through_canonical_lowering_and_vm() {
             )
             .expect("materialize");
             let expression = hir.pool.alloc_expr(expression);
-            let unit = arandu_mir::lower_expression_unit(&tc, &hir, &owner, expression, layout)
-                .expect("canonical AMIR");
+            let unit =
+                arandu_semantics::lower_expression_unit(&tc, &hir, &owner, expression, layout)
+                    .expect("canonical AMIR");
             let scalar = CtfeFunction::new(
                 Arc::unwrap_or_clone(unit.function),
                 unit.literals,

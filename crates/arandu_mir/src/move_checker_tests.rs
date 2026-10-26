@@ -6,7 +6,7 @@ use super::*;
 use crate::amir::program::extend_block_range;
 use crate::amir::{AmirBasicBlock, AmirLocal, AmirStmtTable, AmirTemp, BlockId};
 use crate::layout::DenseRange;
-use crate::passes::type_checker::types::{ArType, Primitive};
+use crate::types::{ArType, Primitive};
 use smallvec::smallvec;
 
 fn non_copy_ty() -> ArType {

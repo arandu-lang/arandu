@@ -1,0 +1,183 @@
+module allocStructuresContract
+
+import std.alloc.rc as rc
+import std.alloc.arc as arc
+import std.alloc.slab as slab
+import std.alloc.deque as deque
+import std.alloc.string as strings
+import std.core.option as option
+
+public func main(): int {
+    // 1. Teste de Rc e Weak
+    let r1 = rc.Rc<int>.new(42)
+    if *r1.get() != 42 { return 1 }
+    if r1.strongCount() != (1 as usize) { return 2 }
+    if !r1.isUnique() { return 3 }
+
+    let r2 = r1.clone()
+    if *r2.get() != 42 { return 4 }
+    if r1.strongCount() != (2 as usize) { return 5 }
+    if r1.isUnique() { return 6 }
+
+    let w1 = r1.downgrade()
+    if r1.weakCount() != (1 as usize) { return 7 }
+
+    let upgraded = w1.upgrade()
+    match upgraded {
+        Option.Some(r3) => {
+            if *r3.get() != 42 { return 8 }
+            if r1.strongCount() != (3 as usize) { return 9 }
+        }
+        Option.None => { return 10 }
+    }
+
+    // 2. Teste de Arc e ArcWeak
+    let a1 = arc.Arc<int>.new(100)
+    if *a1.get() != 100 { return 11 }
+    if a1.strongCount() != (1 as usize) { return 12 }
+
+    let a2 = a1.clone()
+    if *a2.get() != 100 { return 13 }
+    if a1.strongCount() != (2 as usize) { return 14 }
+
+    let aw1 = a1.downgrade()
+    if a1.weakCount() != (1 as usize) { return 15 }
+
+    let aUpgraded = aw1.upgrade()
+    match aUpgraded {
+        Option.Some(a3) => {
+            if *a3.get() != 100 { return 16 }
+            if a1.strongCount() != (3 as usize) { return 17 }
+        }
+        Option.None => { return 18 }
+    }
+
+    // 3. Teste de Slab
+    let mut s = slab.Slab<int>.new()
+    let k0 = s.insert(10)
+    let k1 = s.insert(20)
+    let k2 = s.insert(30)
+
+    if s.len() != (3 as usize) { return 19 }
+    if !s.contains(k0) || !s.contains(k1) || !s.contains(k2) { return 20 }
+
+    match s.get(k1) {
+        Option.Some(v) => { if *v != 20 { return 21 } }
+        Option.None => { return 22 }
+    }
+
+    // Remove k1 e verifica reciclagem do slot
+    match s.remove(k1) {
+        Option.Some(v) => { if v != 20 { return 23 } }
+        Option.None => { return 24 }
+    }
+    if s.len() != (2 as usize) { return 25 }
+    if s.contains(k1) { return 26 }
+
+    let k3 = s.insert(99)
+    if k3 != k1 { return 27 } // O slot k1 deve ser reusado!
+    if s.len() != (3 as usize) { return 28 }
+
+    // 4. Teste de VecDeque (Ring Buffer)
+    let mut q = deque.VecDeque<int>.new()
+    q.pushBack(1)
+    q.pushBack(2)
+    q.pushFront(0)
+    q.pushFront(-1)
+
+    // A fila deve ser: [-1, 0, 1, 2]
+    if q.len() != (4 as usize) { return 29 }
+
+    match q.popFront() {
+        Option.Some(v) => { if v != -1 { return 30 } }
+        Option.None => { return 31 }
+    }
+    match q.popBack() {
+        Option.Some(v) => { if v != 2 { return 32 } }
+        Option.None => { return 33 }
+    }
+    match q.popFront() {
+        Option.Some(v) => { if v != 0 { return 34 } }
+        Option.None => { return 35 }
+    }
+    match q.popFront() {
+        Option.Some(v) => { if v != 1 { return 36 } }
+        Option.None => { return 37 }
+    }
+
+    if !q.isEmpty() { return 38 }
+
+    // Enche o deque forçando crescimento com wrapping
+    let mut i = 0 as usize
+    while i < (20 as usize) {
+        q.pushBack(i as int)
+        i = i + (1 as usize)
+    }
+    if q.len() != (20 as usize) { return 39 }
+
+    // 5. Teste de Slab com tipo não-Copy (String)
+    let mut strSlab = slab.Slab<strings.String>.new()
+    let s0 = strSlab.insert(strings.String.from("alpha"))
+    let s1 = strSlab.insert(strings.String.from("beta"))
+    let s2 = strSlab.insert(strings.String.from("gamma"))
+    if strSlab.len() != (3 as usize) { return 41 }
+
+    match strSlab.get(s1) {
+        Option.Some(st) => {
+            if st.asStr() != "beta" { return 42 }
+        }
+        Option.None => { return 43 }
+    }
+
+    match strSlab.remove(s1) {
+        Option.Some(st) => {
+            if st.asStr() != "beta" { return 44 }
+        }
+        Option.None => { return 45 }
+    }
+    if strSlab.len() != (2 as usize) { return 46 }
+
+    let s3 = strSlab.insert(strings.String.from("delta"))
+    if s3 != s1 { return 47 } // Deve reciclar o slot s1
+    match strSlab.get(s3) {
+        Option.Some(st) => {
+            if st.asStr() != "delta" { return 48 }
+        }
+        Option.None => { return 49 }
+    }
+    strSlab.clear()
+    if !strSlab.isEmpty() { return 50 }
+
+    // 6. Teste de VecDeque com tipo não-Copy (String)
+    let mut strQ = deque.VecDeque<strings.String>.new()
+    strQ.pushBack(strings.String.from("world"))
+    strQ.pushFront(strings.String.from("hello"))
+
+    if strQ.len() != (2 as usize) { return 51 }
+
+    match strQ.popFront() {
+        Option.Some(st) => {
+            if st.asStr() != "hello" { return 52 }
+        }
+        Option.None => { return 53 }
+    }
+    match strQ.popBack() {
+        Option.Some(st) => {
+            if st.asStr() != "world" { return 54 }
+        }
+        Option.None => { return 55 }
+    }
+    if !strQ.isEmpty() { return 56 }
+
+    // Forçar crescimento com wrapping em VecDeque<String>
+    let mut j = 0 as usize
+    while j < (12 as usize) {
+        strQ.pushBack(strings.String.from("item"))
+        j = j + (1 as usize)
+    }
+    if strQ.len() != (12 as usize) { return 57 }
+    strQ.clear()
+    if !strQ.isEmpty() { return 58 }
+
+    return 0
+}

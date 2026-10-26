@@ -38,5 +38,43 @@ func main(): int {
             return 10
         }
     }
+
+    // Inherent method syntax on str
+    let greeting = "hello world"
+    if !"".isEmpty() {
+        return 11
+    }
+    if greeting.isEmpty() {
+        return 12
+    }
+    if greeting.len() != 11 {
+        return 13
+    }
+    if !greeting.startsWith("hello") {
+        return 14
+    }
+    if greeting.startsWith("world") {
+        return 15
+    }
+    if !greeting.endsWith("world") {
+        return 16
+    }
+    if !greeting.contains("lo wo") {
+        return 17
+    }
+    match greeting.find("world") {
+        Some(idx) => {
+            if idx != 6 {
+                return 18
+            }
+        }
+        None => {
+            return 19
+        }
+    }
+    if greeting.charCount() != 11 {
+        return 20
+    }
+
     return 0
 }

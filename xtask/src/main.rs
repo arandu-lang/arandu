@@ -8,6 +8,7 @@
 //! cargo run -p xtask -- help
 //! ```
 
+mod agents;
 mod architecture;
 mod archive;
 mod churn;
@@ -46,6 +47,7 @@ fn main() {
         "promote-fuzz-sequence" => fuzz_regressions::promote_sequence(&workspace_root(), args),
         "promote-fuzz-artifact" => fuzz_artifact::promote(&workspace_root(), args),
         "check-architecture" => architecture::check(&workspace_root()),
+        "check-agents" => agents::check(&workspace_root()),
         "check-line-endings" => line_endings::check(&workspace_root()),
         "bench-incremental" => incremental::run(&workspace_root(), args),
         "run-fuzz-seed" => fuzz_regressions::run_one(args),
@@ -92,6 +94,7 @@ Commands:
   promote-fuzz-artifact  Verify and add a minimized failure to the EMI regression corpus
   promote-fuzz-sequence  Verify and add an incremental/LSP byte sequence to the regression corpus
   check-architecture  Enforce compiler crate and effect boundaries
+  check-agents        Validate AGENTS.md size, headings, and local links
   check-line-endings  Reject CRLF or mixed text stored in the Git index
   bench-incremental  Measure five edit classes and prove native binary determinism
   check-release-contract  Validate component versions and an optional v* tag
@@ -116,6 +119,7 @@ Examples:
   cargo run -p xtask -- promote-fuzz-artifact /tmp/arandu-smith-artifacts/ARTIFACT c-backend-regression
   cargo run -p xtask -- promote-fuzz-sequence incremental 01020304 incremental-case incremental-public-edit-invalidation
   cargo run -p xtask -- check-architecture
+  cargo run -p xtask -- check-agents
   cargo run -p xtask -- check-line-endings
   cargo run -p xtask -- bench-incremental
   cargo run -p xtask -- check-release-contract [vX.Y.Z[-rc.N]]

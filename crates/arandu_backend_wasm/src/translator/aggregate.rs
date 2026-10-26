@@ -302,10 +302,38 @@ impl<'a> FuncTranslator<'a> {
     }
 
     /// Emit an index access: bounds-check then load the element.
+    fn emit_index_bounds_check(
+        &mut self,
+        owner: &ArType,
+        base_local: Option<u32>,
+        index: &AmirOperand,
+        int_ty: TypeId,
+    ) {
+        self.emit_operand(index, int_ty);
+        match (owner, base_local) {
+            (ArType::Array(len, _), _) => {
+                self.code.push(Instruction::I32Const(*len as i32));
+            }
+            (ArType::Slice(_) | ArType::MutSlice(_), Some(b)) => {
+                self.code.push(Instruction::LocalGet(b + 1));
+            }
+            (_, None) => {
+                // Unknown length: trap on every index.
+                self.code.push(Instruction::I32Const(0));
+            }
+            _ => {}
+        }
+        self.code.push(Instruction::I32GeU);
+        self.code.push(Instruction::If(BlockType::Empty));
+        self.code.push(Instruction::Unreachable);
+        self.code.push(Instruction::End);
+    }
+
     pub(super) fn emit_index_access(
         &mut self,
         base: &AmirOperand,
         index: &AmirOperand,
+        in_bounds: bool,
         result_ty: TypeId,
     ) {
         let base_ty = self.operand_arity_ty(base);
@@ -333,7 +361,7 @@ impl<'a> FuncTranslator<'a> {
                 let size = self.layout_of(&self.interner.resolve(*inner)).size;
                 (*inner, size)
             }
-            ArType::Slice(inner) => {
+            ArType::Slice(inner) | ArType::MutSlice(inner) => {
                 let size = self.layout_of(&self.interner.resolve(*inner)).size;
                 (*inner, size)
             }
@@ -343,25 +371,10 @@ impl<'a> FuncTranslator<'a> {
             }
         };
         let int_ty = self.interner.intern(ArType::Primitive(Primitive::Int));
-        // Bounds check: index < len.
-        self.emit_operand(index, int_ty);
-        match (&owner, base_local) {
-            (ArType::Array(len, _), _) => {
-                self.code.push(Instruction::I32Const(*len as i32));
-            }
-            (ArType::Slice(_), Some(b)) => {
-                self.code.push(Instruction::LocalGet(b + 1));
-            }
-            (_, None) => {
-                // Unknown length: trap on every index.
-                self.code.push(Instruction::I32Const(0));
-            }
-            _ => {}
+        // Bounds check: index < len, unless AMIR proved it.
+        if !in_bounds {
+            self.emit_index_bounds_check(&owner, base_local, index, int_ty);
         }
-        self.code.push(Instruction::I32GeU);
-        self.code.push(Instruction::If(BlockType::Empty));
-        self.code.push(Instruction::Unreachable);
-        self.code.push(Instruction::End);
         // address = base + index * elem_size
         self.emit_operand(index, int_ty);
         self.code.push(Instruction::I32Const(elem_size as i32));

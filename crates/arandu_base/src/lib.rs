@@ -1,5 +1,6 @@
 pub mod bitset;
 pub mod index_vec;
+pub mod lang;
 pub mod line_index;
 pub mod perf;
 pub mod source_registry;

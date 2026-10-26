@@ -7,6 +7,9 @@ use super::{BinaryOp, CatchHandler, ParseError, ParseErrorCode, Parser, TokenKin
 use crate::ast::ast_pool::{ExprId, ExprKind};
 
 const MAX_EXPR_RECURSION_DEPTH: u32 = 105;
+/// Operators one left-associated chain may fold. The parser loop is flat, but
+/// every later phase walks the resulting left spine recursively.
+const MAX_BINARY_CHAIN: u32 = 512;
 
 impl<'a> Parser<'a> {
     pub(super) fn parse_expr(&mut self, min_bp: u8) -> Result<ExprId, ParseError> {
@@ -55,6 +58,7 @@ impl<'a> Parser<'a> {
 
     // Prefix recursion must not retain the postfix/infix dispatch's locals.
     fn parse_postfix_binary(&mut self, mut left: ExprId, min_bp: u8) -> Result<ExprId, ParseError> {
+        let mut folded = 0u32;
         loop {
             let next_kind = self.current().kind;
             match next_kind {
@@ -211,6 +215,79 @@ impl<'a> Parser<'a> {
                         .alloc_expr(ExprKind::Cast { expr: left, ty }, span);
                     continue;
                 }
+                TokenKind::PipeGt => {
+                    let left_bp = 15;
+                    let right_bp = 16;
+                    if left_bp < min_bp {
+                        break;
+                    }
+                    let span_start = self.pool.expr_span(left);
+                    self.advance();
+                    let right = self.parse_expr(right_bp)?;
+                    let span = span_between(span_start, self.pool.expr_span(right));
+                    left = match self.pool.expr(right).clone() {
+                        ExprKind::Call {
+                            callee,
+                            args,
+                            trailing_block,
+                        } => {
+                            let existing = self.pool.expr_list(args).to_vec();
+                            let placeholder_pos = existing.iter().position(|&arg_id| {
+                                if let ExprKind::Path { path } = self.pool.expr(arg_id) {
+                                    path.len() == 1 && path[0] == "_"
+                                } else {
+                                    false
+                                }
+                            });
+
+                            let new_args = if let Some(idx) = placeholder_pos {
+                                let mut new_args = existing;
+                                new_args[idx] = left;
+                                new_args
+                            } else {
+                                let mut new_args = Vec::with_capacity(existing.len() + 1);
+                                new_args.push(left);
+                                new_args.extend(existing);
+                                new_args
+                            };
+                            let new_range = self.pool.alloc_expr_list(&new_args);
+                            self.pool.alloc_expr(
+                                ExprKind::Call {
+                                    callee,
+                                    args: new_range,
+                                    trailing_block,
+                                },
+                                span,
+                            )
+                        }
+                        ExprKind::TypePath { .. }
+                        | ExprKind::Path { .. }
+                        | ExprKind::Field { .. }
+                        | ExprKind::Generic { .. } => {
+                            let new_range = self.pool.alloc_expr_list(&[left]);
+                            self.pool.alloc_expr(
+                                ExprKind::Call {
+                                    callee: right,
+                                    args: new_range,
+                                    trailing_block: None,
+                                },
+                                span,
+                            )
+                        }
+                        _ => {
+                            let new_range = self.pool.alloc_expr_list(&[left]);
+                            self.pool.alloc_expr(
+                                ExprKind::Call {
+                                    callee: right,
+                                    args: new_range,
+                                    trailing_block: None,
+                                },
+                                span,
+                            )
+                        }
+                    };
+                    continue;
+                }
                 _ => {}
             }
 
@@ -237,6 +314,16 @@ impl<'a> Parser<'a> {
                         self.source,
                     ));
                 }
+            }
+            folded += 1;
+            if folded > MAX_BINARY_CHAIN {
+                return Err(ParseError::new(
+                    ParseErrorCode::ExpectedExpression,
+                    "expression chain exceeds the nesting limit; split it with intermediate `let` bindings",
+                    self.current(),
+                    self.file_id,
+                    self.source,
+                ));
             }
             let span_start = self.pool.expr_span(left);
             self.advance();

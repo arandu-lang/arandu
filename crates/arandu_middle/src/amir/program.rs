@@ -1,12 +1,12 @@
 use super::block::{AmirBasicBlock, BlockId, BlockParam};
 use super::local::{AmirLocal, AmirReceiver, AmirTemp, LocalId, TempId};
 use super::stmt::{AmirStmt, AmirStmtTable, InstrId};
+use crate::Span;
 use crate::SymbolId;
 use crate::cfg::ControlFlowGraph;
 use crate::layout::DenseRange;
 use crate::literal_pool::AmirLiteralPool;
 use crate::types::TypeId;
-use arandu_lexer::Span;
 
 #[derive(Debug, Clone)]
 pub struct AmirProgram {

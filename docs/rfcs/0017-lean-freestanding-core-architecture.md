@@ -22,16 +22,16 @@
 
 ## 1. Resumo (Summary)
 
-Esta RFC formaliza a especificação técnica, os invariantes matemáticos e os limites de fronteira da camada **`arandu_core`** (`std.core`), o bloco fundacional irreduzível do ecossistema Arandu.
+Esta RFC propõe os requisitos técnicos e os limites de fronteira da camada **`arandu_core`** (`std.core`), o bloco fundacional irreduzível do ecossistema Arandu.
 
 O `arandu_core` é projetado sob o princípio da **"Física Fundamental da Linguagem"**:
 1. **Ambiente Freestanding Puro**: Dependência absolutamente ZERO de sistemas operacionais, chamadas de sistema (syscalls), bibliotecas C externas (`libc`), threads de kernel ou alocação dinâmica de memória global (heap);
 2. **Prevenção de "Panic Bloat"**: Eliminação de tabelas complexas de formatação de strings e vtables em situações de erro irrecuperável, adotando traps/aborts de uma única instrução de máquina de hardware (`UD2`, `BKPT`, `EBREAK`) com código escalar de 32 bits;
-3. **Fatias e Views como Primitivas de Primeira Classe (`[]T`, `str`)**: Todo processamento de sequências opera sobre *fat pointers* determinísticos `(ptr, len)`, garantindo zero cópias e verificação estática de limites;
-4. **Universalidade de Alvos**: Execução idêntica e sem atritos em microcontroladores de baixíssimo consumo (ARM Cortex-M0/M3/M4, RISC-V de 4 KB a 16 KB de RAM), WebAssembly puro sem WASI (`wasm32-unknown-unknown`), kernels de sistemas operacionais, engines gráficas 3D de 120 FPS e nós de computação de alta densidade;
+3. **Fatias e Views (`[]T`, `str`)**: descritores `(ptr, len)` com proveniência; elisão de cópias e de bounds checks depende de prova, e acessos dinâmicos continuam exigindo validação;
+4. **Direção de alvos**: core reutilizável em hosts, WebAssembly e, futuramente, bare-metal; cada alvo exige layout, codegen, startup/linker/runtime e validação próprios. Não há SDK Cortex-M/RISC-V publicado por esta proposta;
 5. **Compatibilidade futura com CTFE (RFC 0013, Draft)**: a pureza do `core` pode facilitar avaliações em compilação, mas não implica que todas as APIs serão interpretáveis. Só o subconjunto explicitamente suportado e aceito pela RFC 0013 poderá ser avaliado.
 
-### 1.1 Estado da implementação (2026-09-20)
+### 1.1 Estado da implementação (reconciliado em 2026-10-15)
 
 A fronteira executável atual já contém `std.core.fixed` (Q16.16),
 `std.core.io` (`Reader`, `Writer`, `Seeker`, `SliceReader` e `SliceWriter`) e
@@ -42,9 +42,9 @@ módulo de paralelismo, que depende de heap e threads do runtime, reside em
 
 O marco ainda é parcial: somente Q16.16 está implementado; Q8.8/Q32.32,
 aritmética checked completa, intrínsecos de bits e validação em targets
-bare-metal permanecem. CTFE determinístico também continua sendo objetivo da
-RFC 0013, portanto o invariante “100% comptime-friendly” é gate futuro, não uma
-garantia da toolchain atual. `[]T`, `ref []T` e `mut ref []T` compartilham o
+bare-metal permanecem. O núcleo CTFE da RFC 0013 já está integrado, mas
+isso não admite todas as APIs do core. “100% comptime-friendly” não é uma
+garantia atual; a admissão depende do contrato público e do subconjunto da VM. `[]T`, `ref []T` e `mut ref []T` compartilham o
 ABI de duas words `(data, len)` em C, Cranelift e Wasm; `Reader` recebe
 `mut ref []u8`, e a exclusividade existe apenas nos fatos de ownership/OSSA,
 sem word adicional na ABI nem alocação na heap. O lowering pode materializar
@@ -54,33 +54,29 @@ temporariamente o par em stack slots internos, invisíveis à semântica.
 
 ## 2. Motivação (Motivation)
 
-### 2.1 As Falhas Históricas das Bibliotecas Fundamentais
+### 2.1 Requisitos que motivam a separação
 
-O desenvolvimento de software de sistemas nas últimas décadas foi repetidamente prejudicado por decisões de design nas camadas fundamentais de linguagens consagradas:
-
-| Linguagem | Erro Arquitetural no Núcleo | Consequência Prática |
-| :--- | :--- | :--- |
-| **C (`freestanding libc`)** | Strings terminadas em nulo (`\0`), falta de estruturas com comprimento embutido e ausência de tratamento canônico de erros. | Décadas de estouros de buffer, vulnerabilidades críticas de segurança de memória e ausência de uma biblioteca padrão segura em ambientes bare-metal. |
-| **C++ (`<type_traits>`, `<utility>`)** | Exceções de linguagem (`throw`/`catch`) e estruturas monolíticas fortemente acopladas a templates pesados. | Geração obrigatória de tabelas gigantescas de *stack unwinding* (DWARF/SEH). Em sistemas embarcados e jogos, a primeira diretiva é `-fno-exceptions`, fragmentando o ecossistema. |
-| **Rust (`core`)** | O problema do **"Panic Formatting Bloat"**: um simples `assert!` em `core` carrega indiretamente o motor de `core::fmt`, vtables e metadados de arquivo/linha. | Em microcontroladores com 16 KB a 32 KB de Flash, incluir um único `panic!` consome mais de 20 KB de memória flash com strings e tabelas de formatação. Além disso, a abstração `Pin<T>` introduziu alta fricção cognitiva para corrotinas. |
-| **Go** | Ausência completa de uma camada `core` desacoplada; o coletor de lixo (GC) e o escalonador estão fundidos na linguagem. | Impossibilidade de rodar em microcontroladores sem projetos de reescrita total (TinyGo) e binários WASM que partem de vários megabytes. |
-| **Zig** | Falta de uma divisão formal entre `core` e `std`. | O desenvolvedor só descobre que uma função depende de sistema operacional quando o compilador falha por símbolos ausentes da `libc` na fase de linkagem. |
+Firmware e kernels precisam controlar dependências de SO, heap, threads,
+startup e tratamento de falhas. A divisão core/alloc/host torna essas escolhas
+explícitas. Tamanho de panic, presença de símbolos e desempenho devem ser
+medidos no objeto final com alvo/configuração declarados; não há uma comparação
+universal em bytes com outras linguagens nem certificação de segurança implícita.
 
 ### 2.2 A Oportunidade do Arandu
 
-O Arandu possui vantagens arquiteturais únicas que permitem conceber um `core` significativamente superior:
+A proposta reaproveita mecanismos existentes, respeitando seus limites:
 1. **Modelo de Memória Semântica e OSSA ([RFC 0007](0007-semantic-memory-model.md))**: Confinamento estático de ciclo de vida e empréstimos sem anotações léxicas manuais de tempo de vida;
-2. **Colorless Async ([RFC 0008](0008-async-runtime-and-colorless-model.md))**: Máquinas de estado de corrotina geradas pelo compilador sem necessidade de `Pin` ou de alocação dinâmica na heap;
-3. **Sistema de Efeitos Explícitos (`@Effects`)**: Garantia matemática de que funções do `core` possuem `@Effects(Pure)` ou operam apenas em mutação de memória local (`LocalMut`), permitindo execução em tempo de compilação (CTFE) e verificação formal;
-4. **Layout Parametrizável por Alvo (`TargetInfo` e `DataLayout`)**: Adaptação precisa a ponteiros de 16, 32 ou 64 bits sem suposições sobre a arquitetura do host.
+2. **Colorless Async ([RFC 0008](0008-async-runtime-and-colorless-model.md))**: máquinas de estado e RelativeBorrow nos casos admitidos; storage e escape precisam de prova antes de prometer ausência de heap;
+3. **Sistema de Efeitos Explícitos (`@Effects`)**: flags/anotações existem, mas a inferência ampliada e enforcement têm [contrato próprio](../arandu-effects-v0.1.md). `LocalMut` não é flag pública implementada, e pureza não garante admissão CTFE;
+4. **Layout Parametrizável por Alvo (`TargetInfo` e `DataLayout`)**: perfis de ponteiro 32/64 bits e identidade explícita do alvo, sem presumir ABI do host. Alvos de 16 bits ainda exigem desenho e implementação próprios.
 
 ---
 
 ## 3. Explicação em Nível de Guia (Guide-Level Explanation)
 
-### 3.1 Escrevendo Código em Modo Freestanding (`@no_std`)
+### 3.1 Proposta de código freestanding e MMIO
 
-Quando desenvolvemos para um microcontrolador bare-metal ou um ambiente sem sistema operacional, declaramos a dependência exclusiva de `std.core`:
+Exemplos de firmware/MMIO e typestate abaixo são desenho ilustrativo: `std.embedded.mmio`, handlers e toolchain bare-metal não estão implementados. As assinaturas conceituais não introduzem lifetimes ou sintaxe novos no contrato atual. Implementação precisa definir volatile, barreiras, interrupções e obtenção única de periféricos; ownership local sozinho não prova exclusividade contra ISR/DMA:
 
 ```arandu
 // Firmware bare-metal para microcontrolador ARM Cortex-M
@@ -88,21 +84,54 @@ import std.core.mem as mem
 import std.core.slice as slice
 import std.core.math as math
 import std.core.intrinsics as intrinsics
+import std.embedded.mmio as mmio
 
-// Registro de periférico mapeado em memória (MMIO)
+// 1. Acesso Cru a Registrador MMIO (Primitiva de baixo nível)
 const GPIOA_ODR: ptr[mut u32] = 0x40020014 as ptr[mut u32]
 
-public func alternarLed(): void {
+public func alternarLedCru(): void {
     unsafe {
         let atual = *GPIOA_ODR
         *GPIOA_ODR = atual ^ 0x00000020 // Alterna pino 5
     }
 }
+
+// 2. Modelagem Segura de Periféricos MMIO (Padrão Singleton + Bitfields Fortemente Tipados)
+// Exige contrato de obtenção única e coordenação com ISR/DMA; OSSA local não basta.
+public struct GpioPortA {
+    // Endereço base resolvido estaticamente em tempo de compilação (RFC 0013)
+    const BASE_ADDR: usize = 0x40020000
+
+    // Registrador tipado com permissões de campo (Read/Write)
+    public func alternarPino(mut ref self, pino: u8): void {
+        mmio.writeVolatile(Self.BASE_ADDR + 0x14, mmio.readVolatile(Self.BASE_ADDR + 0x14) ^ (1 << pino))
+    }
+}
 ```
+
+### 3.1.1 Typestates de Hardware e Segurança de Periféricos
+A proposta usa **typestate** para restringir operações disponíveis por estado. Sua implementação ainda precisa definir o mapeamento para o sistema de tipos e para o hardware:
+```arandu
+// A UART começa no estado Não-Inicializada
+struct Uart<Estado> { /* ... */ }
+enum Desabilitada {}
+enum Habilitada {}
+
+func inicializar(uart: own Uart<Desabilitada>, baudRate: u32): own Uart<Habilitada> {
+    // Configura registradores de hardware...
+    return Uart<Habilitada> { /* ... */ }
+}
+
+// O método transmitir só existe para o tipo Uart<Habilitada>!
+func transmitir(mut ref uart: Uart<Habilitada>, byte: u8): void {
+    // Envia byte para o registrador de transmissão (MMIO)
+}
+```
+A API pretendida deve rejeitar chamadas em estado incompatível; custo de wrapper/layout será verificado no artefato, sem promessa antecipada de zero bytes.
 
 ### 3.2 O Modelo Canônico de Tratamento de Erros: `Result<T, E>`
 
-No `arandu_core`, erros são valores que trafegam em registradores através do enum unificado `Result<T, E>`. Não existem exceções, não há saltos não-locais e não há geração de tabelas DWARF:
+Erros recuperáveis usam `Result<T,E>` existente, com passagem/retorno definidos pela ABI do alvo. Traps fatais não se tornam Result automaticamente. Ausência de unwinding não proíbe DWARF de depuração; `build --debug` já emite metadados:
 
 ```arandu
 import std.core.result.Result
@@ -145,7 +174,7 @@ bx    lr
 mov   r0, #0xE001  ; Código compacto do erro
 bkpt  #0x01        ; Ponto de parada imediato do depurador JTAG/SWD (2 bytes!)
 ```
-Custo total em Flash: **6 bytes** (ao invés dos 20 KB de formatadores de string do Rust!).
+Assembly ilustrativo, não saída medida do Arandu: Thumb/TrapCode32 e o canal de diagnóstico ainda precisam de implementação e teste de objeto. Não há garantia atual de seis bytes ou de código em um registrador específico.
 
 ### 3.4 Matemática de Ponto Fixo para Hardware sem FPU
 
@@ -161,7 +190,7 @@ public func aplicarEscala(valor: fixed.Q16_16, escala: fixed.Q16_16): fixed.Q16_
 
 ### 3.5 Corrotinas e Concorrência Cooperativa sem Alocação na Heap
 
-No Arandu, tarefas assíncronas cooperativas rodam no `core` sem alocar nenhum byte de heap:
+A proposta busca corrotinas com storage fornecido/limitado pelo chamador em firmware. O modelo async atual tem caminhos stack-first, mas também alocação e runtime; o exemplo não comprova execução bare-metal sem heap:
 
 ```arandu
 import std.core.future.Poll
@@ -179,20 +208,20 @@ public async func piscarPeriodico(intervaloMs: u32): void {
 
 ## 4. Explicação em Nível de Referência (Reference-Level Explanation)
 
-### 4.1 Os 6 Invariantes Absolutos de `arandu_core`
+### 4.1 Requisitos de aceitação do core freestanding completo
 
 Qualquer módulo que resida em `arandu_core` deve satisfazer formalmente estes 6 invariantes:
 
 1. **Invariante 1 — Zero Heap Global**: Nenhuma função, tipo ou macro do `core` pode invocar direta ou indiretamente alocadores dinâmicos globais (`malloc`, `free`, alocador de sistema). Toda memória dinâmica deve ser fornecida explicitamente pelo chamador através de fatias (`[]T`) ou buffers pré-alocados.
 2. **Invariante 2 — Zero OS / Zero Syscall**: Proibida a inclusão de chamadas de sistema (POSIX, Win32, Linux syscalls). O código deve ser capaz de inicializar em hardware bruto com a CPU em reset.
 3. **Invariante 3 — Zero Threading de Kernel**: Não há primitivas de criação de threads de sistema operacional (`pthread_create`, `CreateThread`). A concorrência no `core` restringe-se a operações atômicas de hardware (`std.core.atomic`), interrupções de hardware e corrotinas cooperativas.
-4. **Invariante 4 — Zero DWARF / Zero Exception Unwinding**: O modelo de erro é puramente baseado em valores escalares em registradores. Nenhum metadado de propagação de exceção é emitido no binário.
+4. **Invariante 4 — Sem unwinding implícito**: erros recuperáveis são valores pela ABI do alvo; produção pode remover metadados, enquanto DWARF de depuração é escolha independente.
 5. **Invariante 5 — Zero Panic Text Bloat**: Asserções de integridade em código de produção compilam para traps de hardware diretos (`UD2` em x86_64, `BKPT`/`UDF` em ARM, `EBREAK` em RISC-V), com um identificador de 32 bits (`TrapCode`) repassado via registrador da ABI.
-6. **Invariante 6 — Compatibilidade com o subconjunto CTFE**: funções de `arandu_core` destinadas a uso em compilação devem permanecer interpretáveis pelo subconjunto documentado da AMIR (conforme a proposta [RFC 0013](0013-deterministic-ctfe-and-comptime-metaprogramming.md)). Pureza, por si só, não garante suporte do interpretador; o executor CTFE ainda não integra a toolchain.
+6. **Invariante 6 — Compatibilidade com o subconjunto CTFE**: funções de `arandu_core` destinadas a uso em compilação devem permanecer interpretáveis pelo subconjunto documentado da AMIR (conforme a proposta [RFC 0013](0013-deterministic-ctfe-and-comptime-metaprogramming.md)). Pureza não garante suporte da VM já integrada; somente o subconjunto do [contrato público](../arandu-comptime-core-v0.1.md) é admitido.
 
 ### 4.2 Topologia de Módulos do `arandu_core`
 
-A estrutura interna de `arandu_core` é modularizada para máxima densidade e separação estrita de responsabilidades:
+Topologia pretendida, não inventário de módulos implementados. O inventário real é `stdlib/core/`; Q16.16 está em `std.core.fixed` e recursos host ficam fora do core. Novos SIMD/atomic/crypto/MMIO exigem contratos e targets próprios:
 
 ```text
 arandu_core (std.core)
@@ -224,7 +253,7 @@ arandu_core (std.core)
 
 ### 4.3 Arquitetura de Abort/Trap sem Bloat de Texto
 
-Para resolver definitivamente o problema que afeta o ecossistema Rust em microcontroladores de 32 KB, a infraestrutura de `panic` em `arandu_core` é modelada com separação entre **modo de diagnóstico de desenvolvimento** e **modo de produção embarcada**:
+Desenho futuro de TrapCode32 e diagnóstico externo. Abort já vira trap em Cranelift e Wasm; o contrato completo abaixo, os perfis `--profile=embedded/debug` e os códigos públicos não estão implementados:
 
 ```arandu
 // Estrutura compacta de identificação de falha (4 bytes)
@@ -288,7 +317,7 @@ Isso permite que um parser de JSON, um descompactador ou um decodificador de ima
 1. **No hidden allocation**: O `core` não aloca. Ponto final. Funções que necessitam de memória auxiliar de rascunho (*scratch memory*) recebem explicitamente um buffer contíguo (`scratch: mut ref []u8`).
 2. **No implicit runtime**: Corrotinas compilam para máquinas de estado explícitas. Agendadores cooperativos rodam em loops simples sem despacho indireto de threads.
 3. **Cache locality over abstraction purity**: Algoritmos operam diretamente sobre fatias contíguas (`[]T`), minimizando saltos de ponteiro e maximizando a previsibilidade de execução em hardware restrito.
-4. **Layout dependente do alvo**: Toda representação de tipo respeita `TargetInfo` (ex: `usize` é `u16` em microcontroladores de 16 bits, `u32` em ARM Cortex-M e WASM, e `u64` em x86_64/AArch64).
+4. **Layout dependente do alvo**: Toda representação de tipo respeita `TargetInfo` (ex: `usize` segue os perfis 32/64 admitidos; suporte nativo a ponteiros de 16 bits é proposto, não implementado).
 
 ### 5.2 Desvantagens e Trade-offs
 
@@ -312,11 +341,11 @@ Isso permite que um parser de JSON, um descompactador ou um decodificador de ima
 ## 7. Arte Prévia e Literatura Científica (Prior Art)
 
 1. **The Rust Core Library (`core`)**:
-   - A decisão do Rust (iniciada em 2014) de isolar `core` de `alloc` e `std` provou-se um dos maiores sucessos de engenharia da linguagem, viabilizando o Rust em kernels (Linux Kernel Rust support) e sistemas embarcados. O Arandu adota a mesma divisão conceitual, mas elimina as deficiências de "panic formatting bloat" e a complexidade do `Pin`.
+   - A decisão do Rust (iniciada em 2014) de isolar `core` de `alloc` e `std` provou-se um dos maiores sucessos de engenharia da linguagem, viabilizando o Rust em kernels (Linux Kernel Rust support) e sistemas embarcados. A divisão conceitual inspira o projeto; o contrato freestanding e o tamanho final ainda precisam de validação por alvo.
 2. **Diretrizes MISRA C / AUTOSAR**:
-   - Padrões de segurança crítica para software automotivo e aeroespacial proíbem alocação dinâmica de memória (`malloc`/`free`) após a fase de inicialização e vetam exceções de C++. A arquitetura do `arandu_core` cumpre nativamente essas exigências.
+   - Padrões de segurança crítica para software automotivo e aeroespacial proíbem alocação dinâmica de memória (`malloc`/`free`) após a fase de inicialização e vetam exceções de C++. Esses requisitos motivam a proposta; não há certificação MISRA/AUTOSAR ou de segurança funcional declarada.
 3. **Klein et al. (2009) — seL4: Formal Verification of an OS Kernel (SOSP '09)**:
-   - Demonstra que a garantia de ausência de falhas em sistemas de alto isolamento depende de evitar alocação de memória dinâmica não rastreável e manter o núcleo do sistema puramente determinístico.
+   - Demonstra que verificação formal exige modelo, hipóteses e provas explícitos; não é evidência de verificação formal do Arandu.
 4. **Zig Freestanding / `std.mem.Allocator`**:
    - O modelo de passar explicitamente buffers ou alocadores inspirou diretamente a ergonomia do `core` do Arandu para funções que precisam materializar saídas de tamanho dinâmico.
 
@@ -336,6 +365,8 @@ Isso permite que um parser de JSON, um descompactador ou um decodificador de ima
 ---
 
 ## 9. Possibilidades Futuras (Future Possibilities)
+
+A ordem e os gates de produto vivem no [roadmap mestre](../arandu-compiler-roadmap-v0.1.md). Freestanding/ABI seguem a trilha condicional 0.5.x; exemplos não aceitam esta RFC inteira nem ampliam a matriz do SDK.
 
 1. **Certificação ISO 26262 / IEC 61508**: Criar um subconjunto estrito e formalizado do `arandu_core` destinado à certificação de segurança funcional em veículos autônomos, aviônica e dispositivos médicos.
 2. **Biblioteca de Redes Neurais Embarcadas (TinyML)**: Implementação de operadores de inferência de tensores inteiros quantizados (INT8) inteiramente dentro de `std.core.math`, permitindo rodar modelos de Machine Learning em microcontroladores com 64 KB de Flash.

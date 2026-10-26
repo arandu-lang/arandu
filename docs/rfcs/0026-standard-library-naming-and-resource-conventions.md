@@ -11,6 +11,20 @@
 
 ---
 
+## Estado auditado em 15/10/2026
+
+As convenções de casing e a superfície canônica de construtores e métodos já
+orientam a stdlib v0.1.10; `std.core.mem.sizeOf<T>()` e `alignOf<T>()` são APIs
+existentes. Isso não implementa automaticamente toda a proposta desta RFC.
+Os lints de migração e `arandu fix` continuam propostas, não comandos públicos.
+
+O contrato uniforme `close(): Result<void, IoError>` ainda não cobre todos os
+recursos: `std.fs.File.close` e `DirListing.close` atualmente retornam `void`.
+Destruição automática genérica de payloads não triviais, política uniforme de
+OOM e idempotência verificável por tipo devem ser avaliadas separadamente da
+renomeação. Esta RFC permanece `Draft`; a fila executiva vive no roadmap mestre.
+O smoke público do SDK v0.1.10 não comprova essas garantias para toda a stdlib.
+
 ## 1. Resumo (Summary)
 
 Esta RFC formaliza a gramática conceitual e as convenções de design de APIs para a Biblioteca Padrão (`stdlib`) da linguagem Arandu. Ela estabelece uma identidade coesa baseada em três pilares fundamentais:
@@ -22,7 +36,9 @@ Esta RFC formaliza a gramática conceitual e as convenções de design de APIs p
 
 ## 2. Motivação (Motivation)
 
-À medida que a biblioteca padrão do Arandu expandiu suas camadas (`core`, `alloc`, `std`), surgiram divergências de estilo e inconsistências de semântica que prejudicam a ergonomia do desenvolvedor e introduzem falhas de segurança:
+A motivação original de 06/10/2026 registrou as divergências abaixo durante a
+expansão de `core`, `alloc` e `std`. Os exemplos legados explicam a migração e
+não constituem um inventário atualizado de símbolos públicos:
 
 1. **Inconsistência de Construtores:** Coexistem padrões funcionais e híbridos como `bitsetNew(n)`, `atomicBoolNew(v)`, `newChannel(cap)` e `Duration.fromSecs(s)`. Isso prejudica a autocompletação no LSP e quebra a expectativa do usuário.
 2. **Fragmentação de Receptores:** Operações com receiver óbvio por vezes foram definidas como funções livres (`vec.get(ref v, i)` vs `v.get(i)`), poluindo o escopo de módulos e obscurecendo a descoberta de métodos na IDE.

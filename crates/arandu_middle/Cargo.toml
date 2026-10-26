@@ -1,6 +1,6 @@
 [package]
 name = "arandu_middle"
-version = "0.1.10"
+version = "0.1.11"
 edition = "2024"
 license.workspace = true
 authors.workspace = true
@@ -9,8 +9,6 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
-arandu_lexer = { path = "../arandu_lexer" }
-arandu_parser = { path = "../arandu_parser" }
 arandu_diagnostics = { path = "../arandu_diagnostics" }
 arandu_base = { path = "../arandu_base" }
 smallvec = { workspace = true }
@@ -20,6 +18,7 @@ salsa = { workspace = true }
 smol_str.workspace = true
 serde = { workspace = true }
 rustc_apfloat.workspace = true
+blake3.workspace = true
 
 [lib]
 path = "src/lib.rs"

@@ -1,7 +1,7 @@
 ---
 version: 0.0.1
 last_revised: 2026-06
-compiler_version: arandu 0.1.10
+compiler_version: arandu 0.1.11
 ---
 
 # Especificação e Catálogo de Diagnósticos de Erro do Arandu
@@ -246,10 +246,10 @@ Abaixo estão listados todos os diagnósticos mapeados para o compilador Arandu.
 | :--- | :--- | :--- | :--- | :--- |
 | **T001** | `cannot infer type: type annotation needed for '{name}'` | Error | `0.1.0` | O compilador não possui informações suficientes para deduzir o tipo de uma variável e exige declaração explícita. |
 | **T002** | `incompatible assignment: expected '{expected}', found '{found}'` | Error | `0.1.0` | Tentativa de atribuir um tipo incompatível a uma variável já tipada. |
-| **T003** | `incompatible argument: expected '{expected}', found '{found}'` | Error | `0.1.0` | Argumento incompatível; inclui argumento genérico calculado não inteiro, negativo ou fora do domínio de chaves `u64`. |
-| **T004** | `incompatible return type: expected '{expected}', found '{found}'` | Error | `0.1.0` | Valor incompatível com seu destino de retorno. Na função, a assinatura declarada; na API interna de bloco CTFE, retornos/cauda devem concordar e todo caminho de saída deve produzir o valor exigido. Gramática pública `comptime` ainda pendente. |
+| **T003** | `incompatible argument: expected '{expected}', found '{found}'` | Error | `0.1.0` | Argumento incompatível; argumentos comptime exigem valor congelável admitido e tipo compatível. Inteiros assinados, bool e agregados Copy admitidos têm chaves estruturais; negativos não são rejeitados universalmente. |
+| **T004** | `incompatible return type: expected '{expected}', found '{found}'` | Error | `0.1.0` | Valor incompatível com seu destino de retorno. Na função, a assinatura declarada; no bloco público `comptime`, retornos/cauda devem concordar com o destino local e todo caminho de saída deve produzir o valor exigido. Desde `0.1.11`, uma função com tipo de retorno que pode chegar ao fim do corpo sem `return` também é rejeitada. |
 | **T005** | `operator '{op}' is not applicable to type '{type}'` | Error | `0.1.0` | Tentativa de usar operador matemático ou lógico em tipos não suportados. |
-| **T006** | `type '{type}' is not nullable` | Error | `0.1.0` | Atribuição de `null` ou uso de operador de navegação segura em um tipo que não é explicitamente opcional/nulo. |
+| **T006** | `type '{type}' is not nullable` | Error | `0.1.0` | Atribuição de `null` ou uso de operador de navegação segura em um tipo que não é explicitamente opcional/nulo. Desde `0.1.11`, também rejeita `T?` quando `T` possui recursos (`String`, `Vec<T>`): `T?` não tem drop e duplicaria o valor; use `Option<T>`. |
 | **T007** | `type mismatch: 'if' and 'else' branches have incompatible types: '{then_ty}' and '{else_ty}'` | Error | `0.1.0` | As ramificações de uma expressão condicional `if/else` avaliam para tipos diferentes (Type Mismatch). |
 | **T008** | `type mismatch: match arm has type '{arm_ty}', expected '{expected_ty}'` | Error | `0.1.0` | Um braço do bloco `match` retorna um tipo inconsistente com a expressão esperada (Type Mismatch). |
 | **T009** | `condition is not a boolean: expected 'bool', found '{type}'` | Error | `0.1.0` | A expressão condicional de um `if` ou `while` não avalia para o tipo booleano primário. |
@@ -292,6 +292,8 @@ Abaixo estão listados todos os diagnósticos mapeados para o compilador Arandu.
 | **T046** | `compile-time arithmetic overflows or uses an invalid shift` | Error | `0.1.9` | Operação inteira fora da faixa ou deslocamento inválido durante CTFE. |
 | **T047** | `type has no concrete target layout` | Error | `0.1.9` | Layout indefinido ou excessivo no alvo de compilação. |
 | **T048** | `invalid array repetition` | Error | `0.1.9` | Repetição exige tamanho estático limitado e elementos Copy quando há duplicação. |
+| **T049** | `invalid FFI export` | Error | `0.1.11` | `@Export` exige função livre, não genérica e não `async`, com primitivos de largura fixa, ponteiros ou `void`; structs por valor e fatias ainda exigem classificador de ABI. |
+| **T099** | `The module '{module}' requires an underlying operating system, but target '{target}' is bare-metal.` | Error | `0.2.0` | `std.thread` e `std.fs` exigem SO. T049–T098 permanecem sem uso; o contrato freestanding fixou T099. |
 
 ---
 
@@ -313,6 +315,7 @@ Abaixo estão listados todos os diagnósticos mapeados para o compilador Arandu.
 | **O012** | `` `alloc` requires an `unsafe` block `` | Error | `0.1.0` | Alocação direta de memória bruta na heap via `alloc` exige contexto explícito `unsafe`. |
 | **O013** | `` call to extern function requires an `unsafe` block `` | Error | `0.1.0` | Chamadas para funções `extern` e funções anotadas com `@Unsafe` exigem bloco `unsafe`. |
 | **O014** | `` `free` requires an `unsafe` block `` | Error | `0.1.0` | Desalocação manual de memória via `free` é operação insegura e exige bloco `unsafe`. |
+| **O015** | `cannot move a value with a destructor out of an indexed place` | Error | `0.1.11` | Mover um elemento com destrutor para fora de `arr[i]`, `slice[i]` ou `vec[i]` deixaria o dono destruindo o mesmo valor de novo. Empreste o elemento ou use uma operação que retire o valor (`pop`, `swap`). |
 
 
 ---
@@ -350,7 +353,7 @@ Esta categoria agrupa recursos previstos pela sintaxe da linguagem ou sua especi
 
 | Código | Mensagem Principal no Compilador | Severidade Padrão | Introduzido em | Descrição e Contexto |
 | :--- | :--- | :--- | :--- | :--- |
-| **U001** | `feature not yet supported: '{feature}'` | Error | `0.1.0` | Tentativa de utilizar um recurso de sintaxe válido, mas que a versão atual do compilador não suporta ou não gera código correspondente. (Antigo `L002`). |
+| **U001** | `feature not yet supported: '{feature}'` | Error | `0.1.0` | Recurso sintático ou contrato de lowering não admitido, incluindo assinatura incompatível de intrínseco de bits ou atômico (aridade, largura, referência, retorno ou generics). (Antigo `L002`). |
 
 ---
 
@@ -386,7 +389,7 @@ Erros de pânico gerados devido a falhas do próprio compilador Arandu. O sufixo
 Para adicionar um novo código de erro ao compilador Arandu, siga exatamente as seguintes regras e procedimentos:
 
 ### 4.1 Regras de Numeração e Sequenciamento
-*   **Sequenciamento Linear**: Novos códigos sempre devem utilizar o próximo número sequencial disponível dentro da categoria correspondente (ex: se o último erro em `T` foi `T025`, o próximo deve ser `T026`).
+*   **Sequenciamento Linear**: Novos códigos sempre devem utilizar o próximo número sequencial disponível dentro da categoria correspondente (ex: se o último erro em `T` foi `T048`, o próximo sequencial é `T049`). A exceção registrada é **T099**: o contrato freestanding da 0.2.0 fixou esse número. **T050–T098 permanecem sem uso** e não devem ser preenchidos retroativamente.
 *   **Invariabilidade de Lacunas**: Lacunas no sequenciamento lógico geradas por remoções ou migrações históricas de códigos **nunca devem ser preenchidas retroativamente**.
 *   **Preservação e Rastreabilidade**: Quando um código é descontinuado ou movido para outra categoria, ele não é excluído. Em vez disso, sua linha na tabela correspondente é marcada com `[Reservado / Obsoleto]` ou `[Movido → CÓDIGO]` para manter a rastreabilidade histórica em issues, discussões do GitHub e commits legados.
 

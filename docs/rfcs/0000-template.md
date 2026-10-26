@@ -4,12 +4,21 @@
 - **Título:** [Título descritivo da proposta]
 - **Autor(es):** [Nome do Autor] ([@github-user](https://github.com/github-user))
 - **Data de Início:** AAAA-MM-DD
-- **Status:** `Draft` | `Accepted` | `Implemented` | `Frozen-R0` | `Superseded`
+- **Status:** `Draft` | `Planned` | `Accepted` | `Implemented` | `Frozen-R0` | `Superseded` | `Rejected`
 - **Área Principal:** `Frontend` | `Middle-end` | `Backend` | `Runtime` | `Stdlib` | `Tooling`
 - **PR da RFC:** [Link para o PR]
 - **Issue de Acompanhamento:** [Link para a issue do Arandu]
 
 ---
+
+## Fronteira de implementação e evidência
+
+Ao preencher, declare a revisão/data, partes existentes, partes propostas e
+limites de alvo/ABI. Marque snippets/comandos ainda ausentes como ilustrativos.
+Status da RFC não é maturidade nem publicação; preserve o recorte quando
+houver implementação parcial. A ordem de versões fica no roadmap mestre.
+Ganhos de tempo, memória, tamanho e garantias de segurança exigem workload,
+configuração e evidência; não copie metas como se fossem resultados.
 
 ## 1. Resumo (Summary)
 
@@ -51,7 +60,7 @@ Este é o detalhamento técnico profundo da implementação para mantenedores do
   - *Resolução de Nomes*: Escopos, tabelas de símbolos e tratamento de ciclos.
   - *Inferência de Tipos / Typeck*: Regras formais de checagem, unificação e coerção.
   - *HIR / AMIR*: Como o recurso se comporta em SSA/OSSA (terminadores, rvalues, blocos básicos).
-  - *Backends*: Geração de código em C e Cranelift (ABI, registradores, chamadas de runtime).
+  - *Backends*: Geração de código em C, Cranelift e Wasm (ABI, registradores, chamadas de runtime).
 - **Semântica de Runtime:**
   - Alocações, layouts de structs, concorrência e confinamento de threads.
 - **Corner Cases e Casos Limítrofes:**
@@ -61,7 +70,7 @@ Este é o detalhamento técnico profundo da implementação para mantenedores do
 
 ## 5. Invariantes de Arquitetura e Desvantagens (Drawbacks & Invariants)
 
-- **Invariantes Afetados:** Como esta proposta preserva os 6 Invariantes Arquiteturais do Arandu (early-cutoff de queries Salsa, ausência de I/O em queries puras, integridade monotônica de `SymbolId`, dominância SSA/OSSA, layout dependente de `TargetInfo`)?
+- **Invariantes Afetados:** Como esta proposta preserva os 6 Invariantes Arquiteturais do Arandu (early-cutoff de queries Salsa, ausência de I/O em queries puras, `SymbolId` composto e alocação monotônica de `FileId`, dominância SSA/OSSA, layout dependente de `TargetInfo`)?
 - **Custo de Complexidade:** Qual é o custo em tempo de compilação, tamanho do binário gerado e ergonomia cognitiva para o usuário?
 - **Superfície de Invalidação Incremental:** A mudança aumenta a frequência de recompilação no LSP?
 

@@ -231,7 +231,10 @@ pub(crate) fn scalarize(
                 let mut scalar_local: AmirLocal = func.locals[local].clone();
                 scalar_local.id = LocalId::from_usize(func.locals.len());
                 scalar_local.ty = *ty;
-                scalar_local.is_memory = false;
+                // The rewrite below reads and writes these slots with real
+                // Store/Load places that no later pass prunes, so they are
+                // memory-backed (backends allocate a stack home for them).
+                scalar_local.is_memory = true;
                 scalar_local.symbol = None;
                 plan.slots[field] = Some(scalar_local.id);
                 func.locals.push(scalar_local);

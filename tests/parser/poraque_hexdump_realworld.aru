@@ -1,0 +1,27 @@
+func isPrintable(b: u8): bool {
+    return b >= 32 && b <= 126;
+}
+
+func formatHexByte(b: u8): [2]u8 {
+    let hi = (b >> 4) & 15;
+    let lo = b & 15;
+    let h: u8 = if hi < 10 { 48 + hi } else { 87 + hi };
+    let l: u8 = if lo < 10 { 48 + lo } else { 87 + lo };
+    return [h, l];
+}
+
+func formatOffset(off: usize): [8]u8 {
+    let mut buf: [8]u8 = [48, 48, 48, 48, 48, 48, 48, 48];
+    let mut v = off;
+    let mut i: usize = 7;
+    while v > 0 {
+        let digit = (v & 15) as u8;
+        buf[i] = if digit < 10 { 48 + digit } else { 87 + digit };
+        v = v >> 4;
+        if i == 0 {
+            break;
+        }
+        i = i - 1;
+    }
+    return buf;
+}

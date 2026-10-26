@@ -7,6 +7,7 @@
 //! The runtime ABI remains integer-only, but propagation is CFG-complete: the
 //! loan graph is the source of truth for aliases and block parameters.
 
+use crate::Span;
 use crate::amir::{
     AmirConstant, AmirFunc, AmirOperand, AmirRvalue, AmirStmt, AmirTemp, GenArenaDomain, TempId,
 };
@@ -16,7 +17,7 @@ use crate::escape_analysis::{
 };
 use crate::ops::UnaryOp;
 use crate::types::{ArType, Primitive};
-use arandu_lexer::Span;
+use arandu_middle::type_context::AmirTypeContext;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 /// Rewrite `func` in place when escape analysis finds heap-store candidates.
@@ -34,22 +35,22 @@ pub fn apply_gen_promotion(
 /// aggregates without teaching this MIR pass a second set of type rules.
 pub fn apply_gen_promotion_with_type_info(
     func: &mut AmirFunc,
-    type_info: &arandu_typeck::TypeInfo,
+    type_info: &dyn AmirTypeContext,
     opts: EscapeCheckOptions,
 ) {
     apply_gen_promotion_impl(
         func,
-        &type_info.type_interner,
+        type_info.type_interner(),
         Some(type_info),
         opts,
-        |ty| type_info.is_copy(ty),
+        |ty| type_info.is_copy_type(ty) == Some(true),
     );
 }
 
 fn apply_gen_promotion_impl(
     func: &mut AmirFunc,
     interner: &crate::types::TypeInterner,
-    type_info: Option<&arandu_typeck::TypeInfo>,
+    type_info: Option<&dyn AmirTypeContext>,
     opts: EscapeCheckOptions,
     is_supported_payload: impl Fn(crate::types::TypeId) -> bool,
 ) {

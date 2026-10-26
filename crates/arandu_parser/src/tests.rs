@@ -815,6 +815,49 @@ fn deeply_nested_expression_does_not_stack_overflow_and_recovers() {
 }
 
 #[test]
+fn long_operator_chains_and_deep_blocks_are_bounded() {
+    const STACK: usize = 512 * 1024;
+    {
+        {
+            let chain = |terms: usize| {
+                format!(
+                    "func main(): int {{\n    return {}\n}}\nfunc after(): int {{ return 1 }}\n",
+                    vec!["1"; terms].join(" + ")
+                )
+            };
+            let blocks = |depth: usize| {
+                format!(
+                    "func main(): int {{\n{}    return 1\n{}    return 0\n}}\nfunc after(): int {{ return 1 }}\n",
+                    "    if true {\n".repeat(depth),
+                    "    }\n".repeat(depth)
+                )
+            };
+            for (source, expected_error, case) in [
+                (chain(400), false, "400-term chain"),
+                (chain(2000), true, "2000-term chain"),
+                (blocks(60), false, "60 nested blocks"),
+                (blocks(100), true, "100 nested blocks"),
+            ] {
+                std::thread::Builder::new()
+                    .stack_size(STACK)
+                    .spawn(move || {
+                        let tree = crate::syntax::parse_syntax(&source);
+                        let output = crate::syntax::lower_syntax_to_program_recovering(&tree, 0);
+                        assert_eq!(!output.diagnostics.is_empty(), expected_error, "{case}");
+                        assert!(output.program.decls.iter().any(|decl| matches!(output.program.pool.decl(*decl),
+                            crate::TopLevelDecl::Func(function)
+                                if matches!(&function.name, crate::FuncName::Free { name, .. } if name == "after")
+                        )), "{case}: recovery must preserve the following declaration");
+                    })
+                    .expect("spawn bounded parser worker")
+                    .join()
+                    .expect(case);
+            }
+        }
+    }
+}
+
+#[test]
 fn deeply_nested_type_does_not_stack_overflow_and_recovers() {
     std::thread::Builder::new()
         .stack_size(512 * 1024)
@@ -855,4 +898,109 @@ fn deeply_nested_type_does_not_stack_overflow_and_recovers() {
         .expect("spawn bounded type parser worker")
         .join()
         .expect("bounded type parser worker failed");
+}
+
+#[test]
+fn mut_slice_type_parses_consistently_in_direct_and_cst_paths() {
+    let source = "func process(buf: mut []u8): void { }";
+    let direct = parse(source).expect("direct parse");
+    let canonical =
+        crate::lower_syntax_to_program(&crate::parse_syntax(source), 0).expect("CST parse");
+    assert_eq!(direct, canonical);
+    assert!(
+        canonical
+            .pool
+            .type_exprs
+            .iter()
+            .any(|ty| matches!(ty, crate::TypeExpr::MutSlice { .. }))
+    );
+}
+
+#[test]
+fn move_lambda_parses_with_is_move_flag() {
+    for source in [
+        "func main(): void { let f = move || 42; }",
+        "func main(): void { let f = move |x: int| x + 1; }",
+        "func main(): void { let f = own || { return 10; }; }",
+    ] {
+        let program = parse(source).expect("move lambda parse");
+        assert!(
+            program
+                .pool
+                .exprs
+                .iter()
+                .any(|e| matches!(e, crate::ExprKind::Lambda { is_move: true, .. })),
+            "expected is_move: true in {source}"
+        );
+    }
+}
+
+#[test]
+fn call_label_shorthand_parses() {
+    let source =
+        "func main(): void { let port = 8080; let host = \"0.0.0.0\"; connect(port:, host:); }";
+    let program = parse(source).expect("label shorthand call parse");
+    // Should have Call with 2 args, both Path (port and host)
+    let has_two_arg_call = program.pool.exprs.iter().any(|e| {
+        if let crate::ExprKind::Call { args, .. } = e {
+            let list = program.pool.expr_list(*args);
+            list.len() == 2
+        } else {
+            false
+        }
+    });
+    assert!(
+        has_two_arg_call,
+        "expected 2-arg call from shorthand port:, host:"
+    );
+}
+
+#[test]
+fn pipe_placeholder_inserts_at_underscore() {
+    let source = "func main(): void { let res = data |> write(path, _, len); }";
+    let program = parse(source).expect("pipe placeholder parse");
+    let has_matching_call = program.pool.exprs.iter().any(|e| {
+        if let crate::ExprKind::Call { args, .. } = e {
+            let list = program.pool.expr_list(*args);
+            if list.len() == 3 {
+                // The second argument should be the piped `data` (path with "data")
+                if let crate::ExprKind::Path { path } = program.pool.expr(list[1]) {
+                    return path.len() == 1 && path[0] == "data";
+                }
+            }
+        }
+        false
+    });
+    assert!(
+        has_matching_call,
+        "expected `data` inserted at placeholder index 1"
+    );
+}
+
+#[test]
+fn tuple_let_binding_parses() {
+    let source = "func main(): void { let (a, b) = pair; }";
+    let program = parse(source).expect("tuple let binding parse");
+    let has_var_decl = program.pool.stmts.iter().any(|s| {
+        if let crate::Stmt::VarDecl { bindings, .. } = s {
+            bindings.len() == 2 && bindings[0].name == "a" && bindings[1].name == "b"
+        } else {
+            false
+        }
+    });
+    assert!(has_var_decl, "expected VarDecl with bindings a and b");
+}
+
+#[test]
+fn guard_statement_parses() {
+    let source = "func main(): void { guard x > 0 else { return; } do_something(); }";
+    let program = parse(source).expect("guard statement parse");
+    assert!(
+        program
+            .pool
+            .stmts
+            .iter()
+            .any(|s| matches!(s, crate::Stmt::If { .. })),
+        "expected guard to lower into Stmt::If"
+    );
 }

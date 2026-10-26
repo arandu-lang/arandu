@@ -8,6 +8,15 @@ use crate::amir::{
 use crate::layout::DenseRange;
 use smallvec::SmallVec;
 
+/// One call to splice: the call statement `instr_id` in `bid` and its callee.
+pub struct CallSite<'c> {
+    pub bid: BlockId,
+    pub instr_id: InstrId,
+    pub lhs: Option<TempId>,
+    pub args: &'c [AmirOperand],
+    pub callee: &'c AmirFunc,
+}
+
 /// Slices `callee` into `caller` at the call site `(caller_bid, call_instr_id)`.
 ///
 /// Returns `true` if inlining succeeded.
@@ -19,234 +28,200 @@ pub fn splice_call(
     call_args: &[AmirOperand],
     callee: &AmirFunc,
 ) -> bool {
-    if callee.params.len() != call_args.len() {
-        return false;
-    }
+    splice_calls(
+        caller,
+        &[CallSite {
+            bid: caller_bid,
+            instr_id: call_instr_id,
+            lhs: call_lhs,
+            args: call_args,
+            callee,
+        }],
+    ) == 1
+}
 
-    let orig_caller_block_count = caller.blocks.len();
-    if caller_bid.as_usize() >= orig_caller_block_count {
-        return false;
-    }
+/// A site that passed validation, with its position in its block and the
+/// caller temps and locals its callee's are renamed to.
+struct PreparedSite<'c> {
+    position: usize,
+    site: &'c CallSite<'c>,
+    temp_map: Vec<TempId>,
+    local_map: Vec<LocalId>,
+}
 
-    // 1. Collect caller statements for `caller_bid` and find split index
-    let caller_bid_stmts: Vec<InstrId> = caller.block_stmt_ids(caller_bid).collect();
-    let split_pos = match caller_bid_stmts.iter().position(|&id| id == call_instr_id) {
-        Some(pos) => pos,
-        None => return false,
-    };
-
-    // 2. Allocate fresh TempIds in caller for callee temps
-    let mut temp_map = Vec::with_capacity(callee.temps.len());
-    let span = caller.blocks[caller_bid.as_usize()]
-        .statements
-        .iter_ids::<InstrId>()
-        .next()
-        .and_then(|id| caller.try_stmt(id))
-        .map_or(arandu_lexer::Span::new(0, 0, 0), |_| {
-            caller.temps[caller
-                .params
-                .first()
-                .copied()
-                .unwrap_or(TempId(0))
-                .as_usize()]
-            .span
+/// Splices every valid site into `caller` with a single rebuild of its
+/// statement and block tables, and returns how many were spliced. Rebuilding
+/// once per call made inlining a long function quadratic.
+///
+/// Each original block keeps its id and the statements before its first
+/// spliced call; every call appends its callee's blocks and a continuation
+/// holding the statements up to the next call (or the block's terminator).
+pub fn splice_calls(caller: &mut AmirFunc, sites: &[CallSite<'_>]) -> usize {
+    let block_count = caller.blocks.len();
+    let block_stmt_ids: Vec<Vec<InstrId>> = (0..block_count)
+        .map(|b| caller.block_stmt_ids(BlockId::from_usize(b)).collect())
+        .collect();
+    let span = caller
+        .params
+        .first()
+        .map_or(crate::Span::new(0, 0, 0), |param| {
+            caller.temps[param.as_usize()].span
         });
 
-    // TempId(0) represents the return register of the callee
-    let return_dest_temp = if let Some(lhs) = call_lhs {
-        lhs
-    } else {
-        let dummy_id = TempId::from_usize(caller.temps.len());
-        caller.temps.push(AmirTemp {
-            id: dummy_id,
-            ty: callee.return_type,
-            is_copy: true,
-            is_nullable: false,
-            span,
-        });
-        dummy_id
-    };
-    temp_map.push(return_dest_temp);
-
-    // Map each callee temporary to a new caller temporary
-    for (t_idx, callee_temp) in callee.temps.iter().enumerate().skip(1) {
-        let new_id = TempId::from_usize(caller.temps.len());
-        caller.temps.push(AmirTemp {
-            id: new_id,
-            ty: callee_temp.ty,
-            is_copy: callee_temp.is_copy,
-            is_nullable: callee_temp.is_nullable,
-            span: callee_temp.span,
-        });
-        debug_assert_eq!(temp_map.len(), t_idx);
-        temp_map.push(new_id);
-    }
-
-    // 3. Allocate fresh LocalIds in caller for callee locals
-    let mut local_map = Vec::with_capacity(callee.locals.len());
-    for callee_local in &callee.locals {
-        let new_local_id = LocalId::from_usize(caller.locals.len());
-        caller.locals.push(AmirLocal {
-            id: new_local_id,
-            ty: callee_local.ty,
-            is_memory: callee_local.is_memory,
-            symbol: None,
-            span: callee_local.span,
-            use_span: None,
-        });
-        local_map.push(new_local_id);
-    }
-
-    // 4. Determine block IDs
-    // Callee blocks will be placed starting at `orig_caller_block_count`
-    let callee_block_start = orig_caller_block_count;
-    let mut block_map = Vec::with_capacity(callee.blocks.len());
-    for i in 0..callee.blocks.len() {
-        block_map.push(BlockId::from_usize(callee_block_start + i));
-    }
-
-    // The resume block receives the tail statements after the call in `caller_bid`
-    let resume_bid = BlockId::from_usize(callee_block_start + callee.blocks.len());
-    let total_new_blocks = orig_caller_block_count + callee.blocks.len() + 1;
-
-    // 5. Build statements and terminators for every block in the new layout
-    let mut all_stmts: Vec<Vec<AmirStmt>> = Vec::with_capacity(total_new_blocks);
-    let mut all_block_params: Vec<Vec<BlockParam>> = Vec::with_capacity(total_new_blocks);
-    let mut all_terminators: Vec<AmirTerminator> = Vec::with_capacity(total_new_blocks);
-
-    // Snapshot existing caller blocks
-    for b in 0..orig_caller_block_count {
-        let bid = BlockId::from_usize(b);
-        let block_params: Vec<BlockParam> = caller.block_params(caller.block(bid).params).to_vec();
-        all_block_params.push(block_params);
-
-        if bid == caller_bid {
-            // Head statements before the call
-            let mut head_stmts = Vec::new();
-            for &instr_id in &caller_bid_stmts[..split_pos] {
-                if let Some(stmt) = caller.try_stmt(instr_id) {
-                    head_stmts.push(stmt.clone());
-                }
-            }
-
-            // Assign actual call arguments to the callee's parameter temps
-            for (param_idx, &param_temp) in callee.params.iter().enumerate() {
-                let remapped_param_temp = temp_map[param_temp.as_usize()];
-                head_stmts.push(AmirStmt::Assign {
-                    lhs: remapped_param_temp,
-                    rhs: AmirRvalue::Use(call_args[param_idx]),
-                });
-            }
-
-            all_stmts.push(head_stmts);
-            // Connect to callee entry block
-            all_terminators.push(AmirTerminator::Goto {
-                target: block_map[0],
-                args: Vec::new(),
-            });
-        } else {
-            let mut existing_stmts = Vec::new();
-            for instr_id in caller.block_stmt_ids(bid) {
-                if let Some(stmt) = caller.try_stmt(instr_id) {
-                    existing_stmts.push(stmt.clone());
-                }
-            }
-            all_stmts.push(existing_stmts);
-            all_terminators.push(caller.block(bid).terminator.clone());
+    // 1. Validate sites and group them by block in statement order. A callee
+    // that suspends cannot be spliced into straight-line code.
+    let mut per_block: Vec<Vec<(usize, &CallSite<'_>)>> = vec![Vec::new(); block_count];
+    for site in sites {
+        if site.callee.params.len() != site.args.len()
+            || site.bid.as_usize() >= block_count
+            || site
+                .callee
+                .blocks
+                .iter()
+                .any(|block| matches!(block.terminator, AmirTerminator::Suspend { .. }))
+        {
+            continue;
         }
-    }
-
-    // Callee blocks
-    for (cb_idx, callee_block) in callee.blocks.iter().enumerate() {
-        let mut remapped_params = Vec::new();
-        for bp in callee.block_params(callee_block.params) {
-            remapped_params.push(BlockParam {
-                id: temp_map[bp.id.as_usize()],
-                local: local_map[bp.local.as_usize()],
-                ty: bp.ty,
-                from: bp.from.clone(),
-                moved: bp.moved,
-            });
-        }
-        all_block_params.push(remapped_params);
-
-        let mut inlined_stmts = Vec::new();
-        for instr_id in callee.block_stmt_ids(BlockId::from_usize(cb_idx)) {
-            if let Some(stmt) = callee.try_stmt(instr_id) {
-                inlined_stmts.push(remap_stmt(stmt, &temp_map, &local_map));
-            }
-        }
-        all_stmts.push(inlined_stmts);
-
-        // Remap terminator
-        let term = match &callee_block.terminator {
-            AmirTerminator::Return => AmirTerminator::Goto {
-                target: resume_bid,
-                args: Vec::new(),
-            },
-            AmirTerminator::Goto { target, args } => AmirTerminator::Goto {
-                target: block_map[target.as_usize()],
-                args: args.iter().map(|a| remap_op(a, &temp_map)).collect(),
-            },
-            AmirTerminator::Branch {
-                condition,
-                if_true,
-                true_args,
-                if_false,
-                false_args,
-            } => AmirTerminator::Branch {
-                condition: remap_op(condition, &temp_map),
-                if_true: block_map[if_true.as_usize()],
-                true_args: true_args.iter().map(|a| remap_op(a, &temp_map)).collect(),
-                if_false: block_map[if_false.as_usize()],
-                false_args: false_args.iter().map(|a| remap_op(a, &temp_map)).collect(),
-            },
-            AmirTerminator::SwitchInt {
-                discriminant,
-                targets,
-                otherwise,
-            } => AmirTerminator::SwitchInt {
-                discriminant: remap_op(discriminant, &temp_map),
-                targets: targets
-                    .iter()
-                    .map(|(val, target, args)| {
-                        (
-                            *val,
-                            block_map[target.as_usize()],
-                            args.iter().map(|a| remap_op(a, &temp_map)).collect(),
-                        )
-                    })
-                    .collect(),
-                otherwise: (
-                    block_map[otherwise.0.as_usize()],
-                    otherwise.1.iter().map(|a| remap_op(a, &temp_map)).collect(),
-                ),
-            },
-            AmirTerminator::Suspend { .. } => return false,
-            AmirTerminator::Unreachable => AmirTerminator::Unreachable,
+        let Some(position) = block_stmt_ids[site.bid.as_usize()]
+            .iter()
+            .position(|&id| id == site.instr_id)
+        else {
+            continue;
         };
-        all_terminators.push(term);
-    }
-
-    // Resume block
-    all_block_params.push(Vec::new());
-    let mut tail_stmts = Vec::new();
-    for &instr_id in &caller_bid_stmts[split_pos + 1..] {
-        if let Some(stmt) = caller.try_stmt(instr_id) {
-            tail_stmts.push(stmt.clone());
+        let entries = &mut per_block[site.bid.as_usize()];
+        if !entries.iter().any(|(p, _)| *p == position) {
+            entries.push((position, site));
         }
     }
-    all_stmts.push(tail_stmts);
-    all_terminators.push(caller.block(caller_bid).terminator.clone());
+    for entries in &mut per_block {
+        entries.sort_by_key(|(position, _)| *position);
+    }
 
-    // 6. Reconstruct dense caller statement table and block table
+    // 2. Give each callee fresh caller temps and locals.
+    let mut prepared: Vec<Vec<PreparedSite<'_>>> = Vec::with_capacity(block_count);
+    for entries in &per_block {
+        let mut block_sites = Vec::with_capacity(entries.len());
+        for &(position, site) in entries {
+            let (temp_map, local_map) = rename_callee_values(caller, site, span);
+            block_sites.push(PreparedSite {
+                position,
+                site,
+                temp_map,
+                local_map,
+            });
+        }
+        prepared.push(block_sites);
+    }
+    let spliced: usize = prepared.iter().map(Vec::len).sum();
+    if spliced == 0 {
+        return 0;
+    }
+
+    // 3. Move statements into the new layout.
+    let mut slots: Vec<Option<AmirStmt>> = std::mem::take(&mut caller.stmts)
+        .payloads
+        .raw
+        .into_iter()
+        .map(Some)
+        .collect();
+    let mut take = |id: InstrId| slots.get_mut(id.as_usize()).and_then(Option::take);
+
+    let mut all_stmts: Vec<Vec<AmirStmt>> = Vec::with_capacity(block_count);
+    let mut all_params: Vec<Vec<BlockParam>> = Vec::with_capacity(block_count);
+    let mut all_terminators: Vec<AmirTerminator> = Vec::with_capacity(block_count);
+    let mut extra_stmts: Vec<Vec<AmirStmt>> = Vec::new();
+    let mut extra_params: Vec<Vec<BlockParam>> = Vec::new();
+    let mut extra_terminators: Vec<AmirTerminator> = Vec::new();
+
+    for (b, block_sites) in prepared.iter().enumerate() {
+        let bid = BlockId::from_usize(b);
+        all_params.push(caller.block_params(caller.block(bid).params).to_vec());
+        let ids = &block_stmt_ids[b];
+        if block_sites.is_empty() {
+            all_stmts.push(ids.iter().filter_map(|&id| take(id)).collect());
+            all_terminators.push(caller.block(bid).terminator.clone());
+            continue;
+        }
+
+        // Statements before the first call, then that call's argument binds.
+        let first = &block_sites[0];
+        let mut head: Vec<AmirStmt> = ids[..first.position]
+            .iter()
+            .filter_map(|&id| take(id))
+            .collect();
+        bind_params(&mut head, first);
+        all_stmts.push(head);
+        all_terminators.push(AmirTerminator::Goto {
+            target: BlockId::from_usize(block_count + extra_stmts.len()),
+            args: Vec::new(),
+        });
+
+        for (k, current) in block_sites.iter().enumerate() {
+            let callee = current.site.callee;
+            let entry = block_count + extra_stmts.len();
+            let resume = BlockId::from_usize(entry + callee.blocks.len());
+            for (cb_idx, callee_block) in callee.blocks.iter().enumerate() {
+                extra_params.push(
+                    callee
+                        .block_params(callee_block.params)
+                        .iter()
+                        .map(|bp| BlockParam {
+                            id: current.temp_map[bp.id.as_usize()],
+                            local: current.local_map[bp.local.as_usize()],
+                            ty: bp.ty,
+                            from: bp.from.clone(),
+                            moved: bp.moved,
+                        })
+                        .collect(),
+                );
+                extra_stmts.push(
+                    callee
+                        .block_stmt_ids(BlockId::from_usize(cb_idx))
+                        .filter_map(|id| callee.try_stmt(id))
+                        .map(|stmt| remap_stmt(stmt, &current.temp_map, &current.local_map))
+                        .collect(),
+                );
+                extra_terminators.push(remap_terminator(
+                    &callee_block.terminator,
+                    entry,
+                    resume,
+                    &current.temp_map,
+                ));
+            }
+
+            // Continuation: statements up to the next call, then its binds.
+            let end = block_sites
+                .get(k + 1)
+                .map_or(ids.len(), |next| next.position);
+            let mut tail: Vec<AmirStmt> = ids[current.position + 1..end]
+                .iter()
+                .filter_map(|&id| take(id))
+                .collect();
+            extra_params.push(Vec::new());
+            let terminator = if let Some(next) = block_sites.get(k + 1) {
+                bind_params(&mut tail, next);
+                AmirTerminator::Goto {
+                    target: BlockId::from_usize(resume.as_usize() + 1),
+                    args: Vec::new(),
+                }
+            } else {
+                caller.block(bid).terminator.clone()
+            };
+            extra_stmts.push(tail);
+            extra_terminators.push(terminator);
+        }
+    }
+    all_stmts.extend(extra_stmts);
+    all_params.extend(extra_params);
+    all_terminators.extend(extra_terminators);
+
+    // 4. Reconstruct the dense statement, block and parameter tables once.
     let mut new_stmt_table = AmirStmtTable::new();
-    let mut new_blocks = Vec::with_capacity(total_new_blocks);
+    let mut new_blocks = Vec::with_capacity(all_stmts.len());
     let mut new_block_params_pool = Vec::new();
-
     for (b, ((stmts, params), terminator)) in all_stmts
         .into_iter()
-        .zip(all_block_params)
+        .zip(all_params)
         .zip(all_terminators)
         .enumerate()
     {
@@ -255,13 +230,9 @@ pub fn splice_call(
             new_stmt_table.push(stmt);
         }
         let stmt_range = DenseRange::new(stmt_start, new_stmt_table.len() - stmt_start);
-
         let param_start = new_block_params_pool.len();
-        for param in params {
-            new_block_params_pool.push(param);
-        }
+        new_block_params_pool.extend(params);
         let param_range = DenseRange::new(param_start, new_block_params_pool.len() - param_start);
-
         new_blocks.push(AmirBasicBlock {
             id: BlockId::from_usize(b),
             params: param_range,
@@ -269,13 +240,117 @@ pub fn splice_call(
             terminator,
         });
     }
-
     caller.stmts = new_stmt_table;
     caller.blocks = new_blocks;
     caller.block_params = new_block_params_pool;
     caller.cfg = crate::cfg::compute_cfg_edges(&caller.blocks);
+    spliced
+}
 
-    true
+/// Fresh caller temps and locals for one callee. `TempId(0)`, the callee's
+/// return register, maps to the call's destination (or a fresh dummy).
+fn rename_callee_values(
+    caller: &mut AmirFunc,
+    site: &CallSite<'_>,
+    span: crate::Span,
+) -> (Vec<TempId>, Vec<LocalId>) {
+    let callee = site.callee;
+    let mut temp_map = Vec::with_capacity(callee.temps.len());
+    let return_dest = site.lhs.unwrap_or_else(|| {
+        let dummy = TempId::from_usize(caller.temps.len());
+        caller.temps.push(AmirTemp {
+            id: dummy,
+            ty: callee.return_type,
+            is_copy: true,
+            is_nullable: false,
+            span,
+        });
+        dummy
+    });
+    temp_map.push(return_dest);
+    for callee_temp in callee.temps.iter().skip(1) {
+        let new_id = TempId::from_usize(caller.temps.len());
+        caller.temps.push(AmirTemp {
+            id: new_id,
+            ty: callee_temp.ty,
+            is_copy: callee_temp.is_copy,
+            is_nullable: callee_temp.is_nullable,
+            span: callee_temp.span,
+        });
+        temp_map.push(new_id);
+    }
+    let mut local_map = Vec::with_capacity(callee.locals.len());
+    for callee_local in &callee.locals {
+        let new_id = LocalId::from_usize(caller.locals.len());
+        caller.locals.push(AmirLocal {
+            id: new_id,
+            ty: callee_local.ty,
+            is_memory: callee_local.is_memory,
+            symbol: None,
+            span: callee_local.span,
+            use_span: None,
+        });
+        local_map.push(new_id);
+    }
+    (temp_map, local_map)
+}
+
+/// Assigns the call's arguments to the renamed callee parameter temps.
+fn bind_params(stmts: &mut Vec<AmirStmt>, prepared: &PreparedSite<'_>) {
+    for (index, &param) in prepared.site.callee.params.iter().enumerate() {
+        stmts.push(AmirStmt::Assign {
+            lhs: prepared.temp_map[param.as_usize()],
+            rhs: AmirRvalue::Use(prepared.site.args[index]),
+        });
+    }
+}
+
+/// A callee terminator in the caller: blocks shift by `entry`, `Return` jumps
+/// to the continuation. `Suspend` callees are rejected before splicing.
+fn remap_terminator(
+    term: &AmirTerminator,
+    entry: usize,
+    resume: BlockId,
+    temp_map: &[TempId],
+) -> AmirTerminator {
+    let block = |target: BlockId| BlockId::from_usize(entry + target.as_usize());
+    let args = |args: &[AmirOperand]| args.iter().map(|a| remap_op(a, temp_map)).collect();
+    match term {
+        AmirTerminator::Return => AmirTerminator::Goto {
+            target: resume,
+            args: Vec::new(),
+        },
+        AmirTerminator::Goto { target, args: a } => AmirTerminator::Goto {
+            target: block(*target),
+            args: args(a),
+        },
+        AmirTerminator::Branch {
+            condition,
+            if_true,
+            true_args,
+            if_false,
+            false_args,
+        } => AmirTerminator::Branch {
+            condition: remap_op(condition, temp_map),
+            if_true: block(*if_true),
+            true_args: args(true_args),
+            if_false: block(*if_false),
+            false_args: args(false_args),
+        },
+        AmirTerminator::SwitchInt {
+            discriminant,
+            targets,
+            otherwise,
+        } => AmirTerminator::SwitchInt {
+            discriminant: remap_op(discriminant, temp_map),
+            targets: targets
+                .iter()
+                .map(|(value, target, a)| (*value, block(*target), args(a)))
+                .collect(),
+            otherwise: (block(otherwise.0), args(&otherwise.1)),
+        },
+        AmirTerminator::Suspend { .. } | AmirTerminator::Unreachable => AmirTerminator::Unreachable,
+    }
 }
 
 fn remap_op(op: &AmirOperand, temp_map: &[TempId]) -> AmirOperand {
@@ -317,6 +392,19 @@ fn remap_place(place: &AmirPlace, temp_map: &[TempId], local_map: &[LocalId]) ->
 
 fn remap_rvalue(rv: &AmirRvalue, temp_map: &[TempId], local_map: &[LocalId]) -> AmirRvalue {
     match rv {
+        AmirRvalue::VectorSelect { .. }
+        | AmirRvalue::VectorCompare { .. }
+        | AmirRvalue::VectorOp { .. }
+        | AmirRvalue::VectorSplat { .. }
+        | AmirRvalue::VectorShuffle { .. }
+        | AmirRvalue::VectorExtractLane { .. }
+        | AmirRvalue::VectorInsertLane { .. } => {
+            let mut mapped = rv.clone();
+            crate::amir::visit::for_each_rvalue_operand_mut(&mut mapped, |operand| {
+                *operand = remap_op(operand, temp_map);
+            });
+            mapped
+        }
         AmirRvalue::Use(op) => AmirRvalue::Use(remap_op(op, temp_map)),
         AmirRvalue::Binary { op, left, right } => AmirRvalue::Binary {
             op: *op,
@@ -341,9 +429,14 @@ fn remap_rvalue(rv: &AmirRvalue, temp_map: &[TempId], local_map: &[LocalId]) -> 
                 .map(|(name, op)| (name.clone(), remap_op(op, temp_map)))
                 .collect(),
         },
-        AmirRvalue::IndexAccess { base, index } => AmirRvalue::IndexAccess {
+        AmirRvalue::IndexAccess {
+            base,
+            index,
+            in_bounds,
+        } => AmirRvalue::IndexAccess {
             base: remap_op(base, temp_map),
             index: remap_op(index, temp_map),
+            in_bounds: *in_bounds,
         },
         AmirRvalue::Array { items } => AmirRvalue::Array {
             items: items.iter().map(|it| remap_op(it, temp_map)).collect(),
@@ -512,5 +605,64 @@ fn remap_stmt(stmt: &AmirStmt, temp_map: &[TempId], local_map: &[LocalId]) -> Am
         AmirStmt::StorageDead(l) => AmirStmt::StorageDead(local_map[l.as_usize()]),
         AmirStmt::Destroy(p) => AmirStmt::Destroy(remap_place(p, temp_map, local_map)),
         AmirStmt::Nop => AmirStmt::Nop,
+    }
+}
+
+#[cfg(test)]
+mod vector_tests {
+    use super::*;
+    use crate::amir::VectorOp;
+
+    #[test]
+    fn inlining_remaps_every_vector_operand_without_changing_lanes_or_shuffle() {
+        let left = AmirOperand::Copy(TempId(0));
+        let right = AmirOperand::Move(TempId(1));
+        let mapped_left = AmirOperand::Copy(TempId(10));
+        let mapped_right = AmirOperand::Move(TempId(11));
+        let mask = [31, 0, 29, 2, 27, 4, 25, 6, 23, 8, 21, 10, 19, 12, 17, 14];
+        let cases = [
+            (
+                AmirRvalue::VectorOp {
+                    op: VectorOp::Add,
+                    left,
+                    right,
+                },
+                vec![mapped_left, mapped_right],
+            ),
+            (AmirRvalue::VectorSplat { value: left }, vec![mapped_left]),
+            (
+                AmirRvalue::VectorShuffle { left, right, mask },
+                vec![mapped_left, mapped_right],
+            ),
+            (
+                AmirRvalue::VectorExtractLane {
+                    vector: left,
+                    lane: 3,
+                },
+                vec![mapped_left],
+            ),
+            (
+                AmirRvalue::VectorInsertLane {
+                    vector: left,
+                    lane: 3,
+                    value: right,
+                },
+                vec![mapped_left, mapped_right],
+            ),
+        ];
+        for (value, expected) in cases {
+            let mapped = remap_rvalue(&value, &[TempId(10), TempId(11)], &[]);
+            let mut actual = Vec::new();
+            crate::amir::visit::for_each_rvalue_operand(&mapped, |operand| actual.push(*operand));
+            assert_eq!(actual, expected);
+            match mapped {
+                AmirRvalue::VectorShuffle { mask: actual, .. } => assert_eq!(actual, mask),
+                AmirRvalue::VectorExtractLane { lane, .. }
+                | AmirRvalue::VectorInsertLane { lane, .. } => assert_eq!(lane, 3),
+                AmirRvalue::VectorOp { op, .. } => assert_eq!(op, VectorOp::Add),
+                AmirRvalue::VectorSplat { .. } => {}
+                _ => unreachable!("vector remapping must retain its variant"),
+            }
+        }
     }
 }

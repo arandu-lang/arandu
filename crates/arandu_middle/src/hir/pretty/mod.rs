@@ -33,6 +33,7 @@ impl super::HirPatternId {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Span;
     use crate::hir::pool::HirPool;
     use crate::hir::{
         HirBlock, HirConst, HirDecl, HirExpr, HirExprKind, HirFunc, HirProgram, HirStmt,
@@ -40,7 +41,6 @@ mod tests {
     };
     use crate::types::{Primitive, TypeInterner};
     use crate::{ScopeId, SymbolKind, SymbolTable};
-    use arandu_lexer::Span;
 
     fn make_ctx<'a>(pool: &'a HirPool, symbols: &'a SymbolTable) -> HirPrettyCtx<'a> {
         HirPrettyCtx {

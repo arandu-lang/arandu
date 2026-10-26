@@ -2,6 +2,6 @@ module tests.invalidMatchPattern
 
 func main() {
     match token {
-        .End => "end"
+        + => "invalid"
     }
 }

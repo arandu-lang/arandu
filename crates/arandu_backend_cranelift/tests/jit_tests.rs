@@ -2483,3 +2483,132 @@ fn jit_enum_struct_variants_execute_end_to_end() {
     // Circle: 4 * 4 * 3 = 48; Rect: 6 * 7 = 42; Empty: 0 => 90
     assert_eq!(result, 90);
 }
+
+#[test]
+fn jit_ptr_read_write_str() {
+    let src = r#"
+    module std.core.memTest
+
+    extern "C" {
+        func ar_rt_alloc_aligned(size: usize, align: usize): ptr[u8]
+    }
+    extern "arandu-intrinsic" {
+        func ptrRead<T>(p: ptr[T]): T
+        func ptrWrite<T>(p: ptr[T], val: T): void
+    }
+
+    public func main(): int {
+        let p = unsafe { ar_rt_alloc_aligned(32 as usize, 8 as usize) } as ptr[str]
+        ptrWrite<str>(p, "updated")
+        let read = ptrRead<str>(p)
+        if read == "updated" {
+            return 42
+        }
+        return 0
+    }
+    "#;
+    let (amir, symbols, type_info) = compile_src_mono(src);
+    let backend = backend_for_test();
+    let module = backend.compile(&amir, &symbols, &type_info).unwrap();
+
+    let result: i64 = unsafe {
+        let f: unsafe extern "C" fn() -> i64 = module.get_fn("main").unwrap();
+        f()
+    };
+    assert_eq!(result, 42);
+}
+
+#[test]
+fn jit_dx_ergonomics_suite() {
+    let src = r#"
+    module dx.test
+
+    struct Config {
+        port: int = 8080
+        retries: int = 3
+        label: str
+    }
+
+    func Config.bump(mut self, delta: int): void {
+        self.port = self.port + delta
+    }
+
+    func Config.total(ref self): int {
+        return self.port + self.retries
+    }
+
+    func add(x: int, y: int): int {
+        return x + y
+    }
+
+    func double(x: int): int {
+        return x * 2
+    }
+
+    func parseTag(data: []u8): Option<int> {
+        if data.len == 4 && data[0] == b'A' && data[3] == b'Z' {
+            return .Some(10)
+        }
+        return .None
+    }
+
+    public func main(): int {
+        let mut cfg = Config { label: "api" }
+        cfg.bump(delta: 20)
+        let s = "hello"
+        let bytes = b"ABZ"
+        let sub = bytes[0..2]
+        let tag_bytes = b"A12Z"
+        let .Some(tag_val) = parseTag(data: tag_bytes) else {
+            return -1
+        }
+        let piped = tag_val
+            |> add(y: 5)
+            |> double()
+        return cfg.total() + (s.len as int) + (sub.len as int) + piped
+    }
+    "#;
+    let (amir, symbols, type_info) = compile_src_mono(src);
+    let backend = backend_for_test();
+    let module = backend.compile(&amir, &symbols, &type_info).unwrap();
+
+    let result: i64 = unsafe {
+        let f: unsafe extern "C" fn() -> i64 = module.get_fn("main").unwrap();
+        f()
+    };
+    // cfg.total() = 8080 + 20 + 3 = 8103
+    // s.len = 5, sub.len = 2
+    // piped = (10 + 5) * 2 = 30
+    // total = 8103 + 5 + 2 + 30 = 8140
+    assert_eq!(result, 8140);
+}
+
+/// Non-UTF-8 byte strings are frozen blobs, not arrays: the raw `0xFF` byte
+/// must survive AMIR and reach the JIT unchanged (regression for the
+/// `ICE-GEN-001` that `lower_byte_string` used to raise).
+#[test]
+fn jit_non_utf8_byte_string_blob_keeps_raw_bytes() {
+    let src = r#"
+    public func main(): int {
+        let raw = b"\xFF\x00AB"
+        if raw.len != 4 { return 1 }
+        if raw[0] != b'\xFF' { return 2 }
+        if raw[1] != b'\0' { return 3 }
+        if (raw[2] as int) != 65 { return 4 }
+        if (raw[3] as int) != 66 { return 5 }
+        let tail = raw[2..4]
+        if tail.len != 2 { return 6 }
+        if tail[0] != b'A' { return 7 }
+        return 42
+    }
+    "#;
+    let (amir, symbols, type_info) = compile_src_mono(src);
+    let backend = backend_for_test();
+    let module = backend.compile(&amir, &symbols, &type_info).unwrap();
+
+    let result: i64 = unsafe {
+        let f: unsafe extern "C" fn() -> i64 = module.get_fn("main").unwrap();
+        f()
+    };
+    assert_eq!(result, 42);
+}

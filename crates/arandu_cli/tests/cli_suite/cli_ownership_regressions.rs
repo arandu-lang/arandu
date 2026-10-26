@@ -206,7 +206,7 @@ func main(): int { return 0 }
         "borrowed_index",
     );
     assert!(
-        stderr.contains("O002") || stderr.contains("T025"),
+        stderr.contains("O015") || stderr.contains("O002") || stderr.contains("T025"),
         "expected a move/Copy rejection, got: {stderr}"
     );
 }

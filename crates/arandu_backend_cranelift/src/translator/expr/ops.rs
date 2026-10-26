@@ -1,8 +1,8 @@
 //! Arithmetic, logical, bitwise, and casting operations.
 
-use arandu_semantics::amir::AmirOperand;
-use arandu_semantics::ops::UnaryOp;
-use arandu_semantics::passes::type_checker::types::{ArType, Primitive};
+use arandu_middle::amir::AmirOperand;
+use arandu_middle::ops::UnaryOp;
+use arandu_middle::types::ArType;
 use cranelift_codegen::ir::{InstBuilder, Type, Value};
 
 use super::super::FunctionTranslator;
@@ -10,25 +10,24 @@ use super::super::FunctionTranslator;
 impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
     pub(super) fn translate_binary(
         &mut self,
-        op: arandu_semantics::ops::BinaryOp,
+        op: arandu_middle::ops::BinaryOp,
         left: &AmirOperand,
         right: &AmirOperand,
         expected_ty: Option<Type>,
         expected_ar_type: Option<&ArType>,
     ) -> Value {
         // `str` equality uses fat pointers + memcmp (not scalar icmp).
-        let left_is_str = matches!(
-            self.get_operand_ar_type(left),
-            ArType::Primitive(Primitive::Str)
-        );
-        let right_is_str = matches!(
-            self.get_operand_ar_type(right),
-            ArType::Primitive(Primitive::Str)
-        );
+        let left_is_str = self
+            .get_operand_ar_type(left)
+            .str_reference_depth(self.type_info.type_interner())
+            .is_some();
+        let right_is_str = self
+            .get_operand_ar_type(right)
+            .str_reference_depth(self.type_info.type_interner())
+            .is_some();
         if left_is_str || right_is_str {
             match op {
-                arandu_semantics::ops::BinaryOp::Equal
-                | arandu_semantics::ops::BinaryOp::NotEqual => {
+                arandu_middle::ops::BinaryOp::Equal | arandu_middle::ops::BinaryOp::NotEqual => {
                     return self.translate_str_eq(left, right, op);
                 }
                 _ => {
@@ -38,24 +37,24 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             }
         }
         let opt_ty = match op {
-            arandu_semantics::ops::BinaryOp::Add
-            | arandu_semantics::ops::BinaryOp::Sub
-            | arandu_semantics::ops::BinaryOp::Mul
-            | arandu_semantics::ops::BinaryOp::Div
-            | arandu_semantics::ops::BinaryOp::Mod
-            | arandu_semantics::ops::BinaryOp::BitOr
-            | arandu_semantics::ops::BinaryOp::BitXor
-            | arandu_semantics::ops::BinaryOp::BitAnd
-            | arandu_semantics::ops::BinaryOp::ShiftLeft
-            | arandu_semantics::ops::BinaryOp::ShiftRight => expected_ty,
+            arandu_middle::ops::BinaryOp::Add
+            | arandu_middle::ops::BinaryOp::Sub
+            | arandu_middle::ops::BinaryOp::Mul
+            | arandu_middle::ops::BinaryOp::Div
+            | arandu_middle::ops::BinaryOp::Mod
+            | arandu_middle::ops::BinaryOp::BitOr
+            | arandu_middle::ops::BinaryOp::BitXor
+            | arandu_middle::ops::BinaryOp::BitAnd
+            | arandu_middle::ops::BinaryOp::ShiftLeft
+            | arandu_middle::ops::BinaryOp::ShiftRight => expected_ty,
             // Comparisons (incl. `x == nil` / `x != nil`): prefer the
             // non-constant side's ABI type so Nil is a zero of matching width.
-            arandu_semantics::ops::BinaryOp::Equal
-            | arandu_semantics::ops::BinaryOp::NotEqual
-            | arandu_semantics::ops::BinaryOp::Lt
-            | arandu_semantics::ops::BinaryOp::LtEqual
-            | arandu_semantics::ops::BinaryOp::Gt
-            | arandu_semantics::ops::BinaryOp::GtEqual => {
+            arandu_middle::ops::BinaryOp::Equal
+            | arandu_middle::ops::BinaryOp::NotEqual
+            | arandu_middle::ops::BinaryOp::Lt
+            | arandu_middle::ops::BinaryOp::LtEqual
+            | arandu_middle::ops::BinaryOp::Gt
+            | arandu_middle::ops::BinaryOp::GtEqual => {
                 let left_ty = self.get_operand_clif_type(left);
                 let right_ty = self.get_operand_clif_type(right);
                 let typed_ty = [left, right].into_iter().find_map(|operand| match operand {
@@ -82,16 +81,30 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         op: UnaryOp,
         operand: &AmirOperand,
         expected_ty: Option<Type>,
+        expected_ar_type: Option<&ArType>,
     ) -> Value {
         if matches!(op, UnaryOp::Deref) {
             let operand_ty = self.get_operand_ar_type(operand);
-            if operand_ty.is_borrowed_slice_abi(&self.type_info.type_interner) {
+            if operand_ty.is_borrowed_slice_abi(self.type_info.type_interner()) {
                 // A reference to a dynamically-sized slice is already the
                 // `{ data, len }` view. Dereferencing changes the static
                 // permission, not the runtime representation.
                 return self.translate_operand(operand, Some(self.ptr_type));
             }
             let ptr = self.translate_operand(operand, Some(self.ptr_type));
+            let pointee_ty = expected_ar_type.cloned().or_else(|| match &operand_ty {
+                ArType::Ref(inner) | ArType::RefMut(inner) | ArType::Ptr(inner) => {
+                    Some(self.type_info.type_interner().resolve(*inner))
+                }
+                _ => None,
+            });
+            if let Some(pointee_ty) = pointee_ty.as_ref()
+                && self.is_inline_aggregate_ty(pointee_ty)
+            {
+                return self
+                    .materialize_ptr_read_copy(ptr, pointee_ty)
+                    .unwrap_or(ptr);
+            }
             let load_ty = expected_ty.unwrap_or(self.ptr_type);
             return self.builder.ins().load(
                 load_ty,
@@ -188,7 +201,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             // `UnaryOp` is `#[non_exhaustive]` across crate boundaries.
             _ => {
                 self.record_error(
-                    arandu_semantics::DiagCode::U001FeatureNotSupported,
+                    arandu_middle::DiagCode::U001FeatureNotSupported,
                     "unsupported unary operator in Cranelift backend",
                     self.func_span(),
                 );

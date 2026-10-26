@@ -35,6 +35,9 @@ pub fn try_hand_lower_expr_all(
 }
 
 const MAX_EXPR_DEPTH: u32 = 105;
+/// Matches the recursive parser's chain bound; beyond it this fast path yields
+/// to that parser, which reports the limit.
+const MAX_BINARY_CHAIN: u32 = 512;
 
 /// Parse expression with minimum binding power.
 pub fn try_hand_lower_expr(
@@ -66,6 +69,7 @@ fn parse_binary_tail(
     min_bp: u8,
     mut left: ExprId,
 ) -> Option<ExprId> {
+    let mut folded = 0u32;
     loop {
         // catch / as as postfix-infix
         match cur.peek_kind() {
@@ -115,6 +119,61 @@ fn parse_binary_tail(
                     .alloc_expr(ExprKind::Cast { expr: left, ty }, ctx.span(span_start, end));
                 continue;
             }
+            Some(TokenKind::PipeGt) if min_bp <= 15 => {
+                let span_start = ctx.pool.expr_span(left).start;
+                cur.bump();
+                let right = try_hand_lower_expr(ctx, cur, 16)?;
+                let span_end = ctx.pool.expr_span(right).end;
+                let span = ctx.span(span_start, span_end);
+                left = match ctx.pool.expr(right).clone() {
+                    ExprKind::Call {
+                        callee,
+                        args,
+                        trailing_block,
+                    } => {
+                        let existing = ctx.pool.expr_list(args).to_vec();
+                        let placeholder_pos = existing.iter().position(|&arg_id| {
+                            if let ExprKind::Path { path } = ctx.pool.expr(arg_id) {
+                                path.len() == 1 && path[0] == "_"
+                            } else {
+                                false
+                            }
+                        });
+
+                        let new_args = if let Some(idx) = placeholder_pos {
+                            let mut new_args = existing;
+                            new_args[idx] = left;
+                            new_args
+                        } else {
+                            let mut new_args = Vec::with_capacity(existing.len() + 1);
+                            new_args.push(left);
+                            new_args.extend(existing);
+                            new_args
+                        };
+                        let new_range = ctx.pool.alloc_expr_list(&new_args);
+                        ctx.pool.alloc_expr(
+                            ExprKind::Call {
+                                callee,
+                                args: new_range,
+                                trailing_block,
+                            },
+                            span,
+                        )
+                    }
+                    _ => {
+                        let new_range = ctx.pool.alloc_expr_list(&[left]);
+                        ctx.pool.alloc_expr(
+                            ExprKind::Call {
+                                callee: right,
+                                args: new_range,
+                                trailing_block: None,
+                            },
+                            span,
+                        )
+                    }
+                };
+                continue;
+            }
             _ => {}
         }
 
@@ -138,6 +197,10 @@ fn parse_binary_tail(
                 ..
             }
         ) {
+            return None;
+        }
+        folded += 1;
+        if folded > MAX_BINARY_CHAIN {
             return None;
         }
         cur.bump();

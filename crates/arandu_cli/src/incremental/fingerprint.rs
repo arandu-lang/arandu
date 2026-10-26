@@ -17,7 +17,7 @@ use crate::artifact::{self, NativeProfile};
 use crate::cli_error::CliFailure;
 use crate::incremental::compiler_artifacts::compiler_artifact_path;
 
-const SCHEMA_VERSION: u32 = 5;
+const SCHEMA_VERSION: u32 = 7;
 const FINGERPRINT_FILENAME: &str = "session-fingerprint.json";
 
 /// One external input participating in the end-to-end build closure.
@@ -73,11 +73,14 @@ pub struct SessionFingerprint {
     pub package: String,
     pub version: String,
     pub profile: String,
+    pub backend: String,
     pub target: String,
     pub pointer_width: u64,
     pub ctfe_limits: [u64; 3],
     pub opt: bool,
     pub debug_info: bool,
+    /// First line of `clang --version` for LLVM sessions. Empty for other backends.
+    pub toolchain: String,
     pub artifact_relative: String,
     pub artifact_digest: String,
     pub compiler_artifacts: CompilerArtifactFingerprints,
@@ -128,13 +131,48 @@ pub struct SessionConfig<'a> {
     pub package: &'a str,
     pub version: &'a str,
     pub profile: NativeProfile,
+    pub backend: &'a str,
     pub pointer_width: u64,
     pub ctfe_limits: arandu_query::ctfe::CtfeLimits,
     pub opt: bool,
     pub debug_info: bool,
+    pub toolchain: &'a str,
     pub manifest_path: &'a Path,
     pub extra_inputs: &'a [IncrementalInput],
     pub target_triple: Option<&'a str>,
+}
+
+struct SessionIdentity<'a> {
+    schema_version: u32,
+    compiler_version: &'a str,
+    package: &'a str,
+    version: &'a str,
+    profile: &'a str,
+    backend: &'a str,
+    target: &'a str,
+    pointer_width: u64,
+    ctfe_limits: [u64; 3],
+    opt: bool,
+    debug_info: bool,
+    toolchain: &'a str,
+}
+
+fn session_configuration_changed(
+    session: &SessionFingerprint,
+    current: &SessionIdentity<'_>,
+) -> bool {
+    session.schema_version != current.schema_version
+        || session.compiler_version != current.compiler_version
+        || session.package != current.package
+        || session.version != current.version
+        || session.profile != current.profile
+        || session.backend != current.backend
+        || session.target != current.target
+        || session.pointer_width != current.pointer_width
+        || session.ctfe_limits != current.ctfe_limits
+        || session.opt != current.opt
+        || session.debug_info != current.debug_info
+        || session.toolchain != current.toolchain
 }
 
 fn budget_key(limits: arandu_query::ctfe::CtfeLimits) -> [u64; 3] {
@@ -160,17 +198,23 @@ pub fn check_incremental(config: &SessionConfig<'_>) -> IncrementalCheck {
         Err(_) => return rebuild("corrupted or incompatible incremental session fingerprint"),
     };
 
-    if session.schema_version != SCHEMA_VERSION
-        || session.compiler_version != crate::project::ARANDU_VERSION
-        || session.package != config.package
-        || session.version != config.version
-        || session.profile != config.profile.directory()
-        || session.target != layout.triple
-        || session.pointer_width != config.pointer_width
-        || session.ctfe_limits != budget_key(config.ctfe_limits)
-        || session.opt != config.opt
-        || session.debug_info != config.debug_info
-    {
+    if session_configuration_changed(
+        &session,
+        &SessionIdentity {
+            schema_version: SCHEMA_VERSION,
+            compiler_version: crate::project::ARANDU_VERSION,
+            package: config.package,
+            version: config.version,
+            profile: config.profile.directory(),
+            backend: config.backend,
+            target: &layout.triple,
+            pointer_width: config.pointer_width,
+            ctfe_limits: budget_key(config.ctfe_limits),
+            opt: config.opt,
+            debug_info: config.debug_info,
+            toolchain: config.toolchain,
+        },
+    ) {
         return rebuild("compilation configuration or compiler version changed");
     }
 
@@ -273,23 +317,15 @@ pub fn record_session(
         }
         None => artifact::layout(config.project_root, config.profile.directory()),
     };
-    fs::create_dir_all(&layout.incremental).map_err(|error| {
-        CliFailure::operational(
-            "create incremental cache directory",
-            Some(layout.incremental.clone()),
-            error.to_string(),
-        )
-    })?;
-
-    let relative = artifact_full_path
-        .strip_prefix(&layout.profile_root)
-        .map_err(|_| {
-            CliFailure::operational(
-                "record incremental artifact",
-                Some(artifact_full_path.to_path_buf()),
-                "artifact is outside the active build profile",
-            )
-        })?;
+    let relative = artifact_full_path.strip_prefix(&layout.profile_root);
+    let Ok(relative) = relative else {
+        // `-o` may point outside the profile tree. Such an artifact is still
+        // published, but the incremental session cannot own it: there is no
+        // profile-relative name to replay the cutoff against. Skipping the
+        // record keeps a successful build successful instead of turning a
+        // valid explicit output path into an operational failure.
+        return Ok(());
+    };
     if !is_safe_relative_path(relative) {
         return Err(CliFailure::operational(
             "record incremental artifact",
@@ -298,6 +334,13 @@ pub fn record_session(
         ));
     }
     let artifact_relative = relative.to_string_lossy().into_owned();
+    fs::create_dir_all(&layout.incremental).map_err(|error| {
+        CliFailure::operational(
+            "create incremental cache directory",
+            Some(layout.incremental.clone()),
+            error.to_string(),
+        )
+    })?;
     // Publication already hashed the exact staged bytes to derive the
     // content-addressed filename. Move that digest into the session rather
     // than reading the executable again; every future cutoff still re-hashes
@@ -324,11 +367,13 @@ pub fn record_session(
         package: config.package.to_owned(),
         version: config.version.to_owned(),
         profile: config.profile.directory().to_owned(),
+        backend: config.backend.to_owned(),
         target: layout.triple,
         pointer_width: config.pointer_width,
         ctfe_limits: budget_key(config.ctfe_limits),
         opt: config.opt,
         debug_info: config.debug_info,
+        toolchain: config.toolchain.to_owned(),
         artifact_relative,
         artifact_digest,
         compiler_artifacts,
@@ -519,5 +564,74 @@ mod tests {
         assert!(validated_relative_path("../outside").is_none());
         assert!(validated_relative_path("/outside").is_none());
         assert!(validated_relative_path("").is_none());
+    }
+
+    fn sample_session(backend: &str, toolchain: &str) -> SessionFingerprint {
+        SessionFingerprint {
+            schema_version: SCHEMA_VERSION,
+            compiler_version: "test".to_owned(),
+            package: "pkg".to_owned(),
+            version: "0.0.0".to_owned(),
+            profile: "debug".to_owned(),
+            backend: backend.to_owned(),
+            target: "x86_64-unknown-linux-gnu".to_owned(),
+            pointer_width: 8,
+            ctfe_limits: [1, 2, 3],
+            opt: false,
+            debug_info: false,
+            toolchain: toolchain.to_owned(),
+            artifact_relative: "bin/app".to_owned(),
+            artifact_digest: "00".to_owned(),
+            compiler_artifacts: CompilerArtifactFingerprints {
+                air: String::new(),
+                amir: String::new(),
+                ameta: String::new(),
+            },
+            source_files: BTreeMap::new(),
+        }
+    }
+
+    fn identity_for<'a>(
+        session: &'a SessionFingerprint,
+        backend: &'a str,
+        toolchain: &'a str,
+    ) -> SessionIdentity<'a> {
+        SessionIdentity {
+            schema_version: session.schema_version,
+            compiler_version: &session.compiler_version,
+            package: &session.package,
+            version: &session.version,
+            profile: &session.profile,
+            backend,
+            target: &session.target,
+            pointer_width: session.pointer_width,
+            ctfe_limits: session.ctfe_limits,
+            opt: session.opt,
+            debug_info: session.debug_info,
+            toolchain,
+        }
+    }
+
+    #[test]
+    fn session_identity_distinguishes_backend_and_clang_toolchain() {
+        let llvm = sample_session("llvm", "clang version 18.1.0");
+        assert!(session_configuration_changed(
+            &llvm,
+            &identity_for(&llvm, "cranelift", "")
+        ));
+        assert!(session_configuration_changed(
+            &llvm,
+            &identity_for(&llvm, "llvm", "clang version 19.1.0")
+        ));
+        assert!(!session_configuration_changed(
+            &llvm,
+            &identity_for(&llvm, "llvm", "clang version 18.1.0")
+        ));
+        let mut stale = llvm.clone();
+        stale.schema_version = 6;
+        assert!(session_configuration_changed(
+            &stale,
+            &identity_for(&llvm, "llvm", "clang version 18.1.0")
+        ));
     }
 }

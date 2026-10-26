@@ -57,7 +57,7 @@ struct Packet { bytes: [64]u8, marker: u32 }
 public func initial(): Packet { return Packet { bytes: [7; 64], marker: 42 } }
 func main(): int {
     let original = initial()
-    let changed = original
+    let mut changed = original
     changed.bytes[1] = 99
     if original.bytes[1] != 7 || changed.bytes[1] != 99 { return 1 }
     if original.marker != 42 || changed.marker != 42 { return 2 }
@@ -79,7 +79,7 @@ fn copied_literal_remains_mutable_independently_across_calls() {
         r#"
 public func initial(): [64]u8 { return [7; 64] }
 func main(): int {
-    let a = initial()
+    let mut a = initial()
     a[0] = 99
     let b = initial()
     if a[0] != 99 || b[0] != 7 || b[63] != 7 { return 1 }
@@ -229,6 +229,7 @@ fn static_array_passed_as_a_block_argument_keeps_its_materialization() {
         rhs: AmirRvalue::IndexAccess {
             base: AmirOperand::Copy(TempId::from_usize(2)),
             index: zero,
+            in_bounds: false,
         },
     });
     let blocks = vec![
@@ -316,6 +317,7 @@ fn static_array_passed_as_a_block_argument_keeps_its_materialization() {
         rhs: AmirRvalue::IndexAccess {
             base: AmirOperand::Copy(TempId::from_usize(2)),
             index: zero,
+            in_bounds: false,
         },
     });
     function.stmts = statements;

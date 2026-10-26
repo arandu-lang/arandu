@@ -7,12 +7,13 @@
 
 use std::fmt::Write;
 
+use arandu_middle::SymbolTable;
 use arandu_middle::amir::{AmirFunc, AmirProgram};
 use arandu_middle::layout::{LayoutEngine, StructLayoutProvider};
 use arandu_middle::types::{ArType, TypeInterner};
 use arandu_middle::{DiagCode, Diagnostic, Span};
-use arandu_semantics::SymbolTable;
 
+mod atomic;
 mod constant_data;
 pub mod decl;
 pub mod expr;
@@ -22,6 +23,7 @@ pub mod func;
 mod reachability;
 mod rotations;
 pub mod runtime;
+mod simd;
 pub mod stmt;
 mod temp_slots;
 
@@ -42,6 +44,11 @@ pub(super) fn sanitize_c_ident(name: &str) -> String {
         "alloc" => return "ar_user_alloc".to_string(),
         _ => {}
     }
+    sanitize_c_chars(name)
+}
+
+/// Maps an Arandu path to C identifier characters (`.` becomes `__`).
+fn sanitize_c_chars(name: &str) -> String {
     let mut out = String::with_capacity(name.len() + 4);
     for c in name.chars() {
         if c.is_ascii_alphanumeric() {
@@ -53,6 +60,40 @@ pub(super) fn sanitize_c_ident(name: &str) -> String {
         }
     }
     out
+}
+
+/// Definitions no other translation unit may name: private or module-local
+/// functions of a program with `main`. Linker roots keep their names, as in
+/// `live_functions`: `public`/`internal` API, `@Export`, tooling entrypoints
+/// (`@Test`/`@Benchmark` shims link to them) and every function of a library
+/// without `main`, whose hosts may look up any definition.
+fn internal_functions(
+    program: &AmirProgram,
+    symbols: &SymbolTable,
+) -> rustc_hash::FxHashSet<arandu_middle::SymbolId> {
+    let is_main = |function: &arandu_middle::amir::AmirFunc| {
+        symbols
+            .try_get(function.symbol)
+            .is_some_and(|symbol| symbols.host_func_name(symbol) == "main")
+    };
+    if !program.funcs.iter().any(is_main) {
+        return rustc_hash::FxHashSet::default();
+    }
+    program
+        .funcs
+        .iter()
+        .filter(|function| !is_main(function))
+        .filter(|function| {
+            symbols.try_get(function.symbol).is_some_and(|symbol| {
+                matches!(
+                    symbol.visibility,
+                    arandu_middle::Visibility::Private | arandu_middle::Visibility::Module
+                ) && !symbols.is_exported(function.symbol)
+                    && !symbols.tooling_entrypoints.contains(&function.symbol)
+            })
+        })
+        .map(|function| function.symbol)
+        .collect()
 }
 
 /// Emits a full C translation unit from an [`AmirProgram`].
@@ -81,6 +122,9 @@ pub struct CEmitter<'a> {
         rustc_hash::FxHashMap<(arandu_middle::SymbolId, arandu_middle::amir::InstrId), usize>,
     pub(super) current_initializer: Option<arandu_middle::amir::InstrId>,
     pub(super) error: Option<Diagnostic>,
+    /// Private definitions of an executable program. They get a reserved
+    /// `ar__` prefix and internal linkage; see [`internal_functions`].
+    pub(super) defined_functions: rustc_hash::FxHashSet<arandu_middle::SymbolId>,
 }
 
 impl<'a> CEmitter<'a> {
@@ -112,6 +156,36 @@ impl<'a> CEmitter<'a> {
             static_sources: rustc_hash::FxHashMap::default(),
             current_initializer: None,
             error: None,
+            defined_functions: internal_functions(program, symbols),
+        }
+    }
+
+    /// Whether a defined function is private to this translation unit.
+    pub(super) fn is_internal_function(&self, symbol: arandu_middle::SymbolId) -> bool {
+        self.defined_functions.contains(&symbol)
+    }
+
+    /// C name of a function symbol. Internal functions are namespaced like
+    /// Nim/Zig output (`ar__<module path>_<name>`), so user names such as
+    /// `sqrt` or `write` cannot collide with libc declarations; imports and
+    /// `@Export`s keep the linker name the user or host chose.
+    pub(super) fn c_function_name(&self, symbol: arandu_middle::SymbolId) -> String {
+        let host = self.symbols.host_func_name(self.symbols.get(symbol));
+        if self.is_internal_function(symbol) {
+            format!("ar__{}", sanitize_c_chars(host))
+        } else if self.symbols.is_exported(symbol) {
+            host.to_string()
+        } else {
+            sanitize_c_ident(host)
+        }
+    }
+
+    /// `static ` for internal functions, nothing for linker-visible ones.
+    pub(super) fn c_function_linkage(&self, symbol: arandu_middle::SymbolId) -> &'static str {
+        if self.is_internal_function(symbol) {
+            "static "
+        } else {
+            ""
         }
     }
 
@@ -134,6 +208,19 @@ impl<'a> CEmitter<'a> {
         self.interner.resolve(func.locals[local.as_usize()].ty)
     }
 
+    /// `ref str -> str` auto-deref admitted by `unify::is_assignable`: the
+    /// reference points at a `{ data, len }` descriptor (Cranelift loads it in
+    /// `translate_str_operand`), so C must dereference the `ArStr*`.
+    pub(super) fn is_str_ref_to_str(&self, source: &ArType, dest: &ArType) -> bool {
+        use arandu_middle::types::Primitive;
+        matches!(dest, ArType::Primitive(Primitive::Str))
+            && matches!(
+                source,
+                ArType::Ptr(inner) | ArType::Ref(inner) | ArType::RefMut(inner)
+                    if matches!(self.interner.resolve(*inner), ArType::Primitive(Primitive::Str))
+            )
+    }
+
     #[inline]
     pub(super) fn operand_ty(
         &self,
@@ -146,7 +233,9 @@ impl<'a> CEmitter<'a> {
             arandu_middle::amir::AmirOperand::Constant(c) => match c {
                 arandu_middle::amir::AmirConstant::Pool(id) => {
                     match self.program.literal_pool.get(*id) {
-                        arandu_middle::literal_pool::AmirLiteralEntry::Str(_) => {
+                        // Byte blobs share the `str` fat-pointer ABI (data + length).
+                        arandu_middle::literal_pool::AmirLiteralEntry::Str(_)
+                        | arandu_middle::literal_pool::AmirLiteralEntry::Bytes(_) => {
                             ArType::Primitive(arandu_middle::types::Primitive::Str)
                         }
                         arandu_middle::literal_pool::AmirLiteralEntry::Int(_) => {
@@ -322,15 +411,43 @@ impl<'a> CEmitter<'a> {
                     | "ar_fs_read"
                     | "ar_fs_write"
                     | "ar_fs_close"
+                    | "ar_fs_dir_open"
+                    | "ar_fs_dir_openat"
+                    | "ar_fs_openat"
+                    | "ar_fs_mkdirat"
+                    | "ar_fs_unlinkat"
                     | "ar_fs_read_all"
                     | "ar_fs_readdir"
+                    | "ar_net_udp_bind"
+                    | "ar_net_udp_send_to"
+                    | "ar_net_udp_recv_from"
+                    | "ar_net_udp_close"
+                    | "ar_net_dns_resolve"
                     | "ar_env_args_len"
                     | "ar_env_arg"
                     | "ar_env_var_is_set"
+                    | "ar_time_monotonic_ns"
+                    | "ar_process_exit"
                     | "ar_rt_block_on_i64"
                     | "ar_rt_spawn_i64"
                     | "ar_rt_join_i64"
                     | "ar_rt_cancel_i64"
+                    | "ar_rt_native_thread_spawn"
+                    | "ar_rt_native_thread_join"
+                    | "ar_rt_native_thread_panicked_sentinel"
+                    | "ar_rt_native_thread_is_finished"
+                    | "ar_rt_native_thread_drop"
+                    | "ar_rt_thread_sleep_ms"
+                    | "ar_rt_thread_yield"
+                    | "ar_rt_thread_park"
+                    | "ar_rt_thread_park_timeout"
+                    | "ar_rt_thread_unpark"
+                    | "ar_rt_thread_current_id"
+                    | "ar_rt_condvar_wait"
+                    | "ar_rt_condvar_wait_timeout"
+                    | "ar_rt_condvar_notify_one"
+                    | "ar_rt_condvar_notify_all"
+                    | "ar_rt_get_entropy"
                     | "ar_rt_parallel_fold_run"
                     | "ar_rt_copy_value"
                     | "ar_rt_alloc_aligned"
@@ -338,9 +455,25 @@ impl<'a> CEmitter<'a> {
                     | "io__eprint"
                     | "eprint"
             ) || name.ends_with("__ar_rt_copy_value")
+                || name.ends_with("__ar_rt_native_thread_spawn")
+                || name.ends_with("__ar_rt_native_thread_join")
+                || name.ends_with("__ar_rt_native_thread_panicked_sentinel")
+                || name.ends_with("__ar_rt_native_thread_is_finished")
+                || name.ends_with("__ar_rt_native_thread_drop")
                 || name.ends_with("__ar_rt_alloc_aligned")
                 || name.ends_with("__ar_rt_free_aligned")
                 || name.ends_with("__ar_rt_parallel_fold_run")
+                || name.ends_with("__ar_rt_condvar_wait")
+                || name.ends_with("__ar_rt_condvar_wait_timeout")
+                || name.ends_with("__ar_rt_condvar_notify_one")
+                || name.ends_with("__ar_rt_condvar_notify_all")
+                || name.ends_with("__ar_rt_get_entropy")
+                || name.ends_with("__ar_rt_thread_sleep_ms")
+                || name.ends_with("__ar_rt_thread_yield")
+                || name.ends_with("__ar_rt_thread_park")
+                || name.ends_with("__ar_rt_thread_park_timeout")
+                || name.ends_with("__ar_rt_thread_unpark")
+                || name.ends_with("__ar_rt_thread_current_id")
             {
                 continue;
             }

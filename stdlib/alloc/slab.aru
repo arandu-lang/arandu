@@ -1,0 +1,179 @@
+//! Pre-allocated homogeneous slab allocator with an embedded freelist.
+//!
+//! ## Overview
+//!
+//! `Slab<T>` provides O(1) allocation, lookup, and deallocation for homogeneous
+//! objects. It reuses vacated slots via an intrusive freelist, completely avoiding
+//! memory fragmentation.
+//!
+//! When a value is removed, its slot becomes vacant and is recycled for the next
+//! insertion.
+//!
+//! ## Examples
+//!
+//! ```arandu
+//! import std.alloc.slab as slab
+//!
+//! let mut s = slab.Slab<str>.new()
+//! let id1 = s.insert("alpha")
+//! let id2 = s.insert("beta")
+//!
+//! assert(s.get(id1) is Option.Some("alpha"))
+//!
+//! let removed = s.remove(id1)
+//! let id3 = s.insert("gamma") // Reuses slot `id1`
+//! assert(id3 == id1)
+//! ```
+//!
+//! ## Platform
+//! `native` · `wasm32`
+module std.alloc.slab
+
+import std.alloc.vec as vec
+import std.core.option as option
+
+enum Slot<T> {
+    Vacant(usize),
+    Occupied(T),
+}
+
+/// A pre-allocated storage for homogeneous objects.
+public struct Slab<T> {
+    entries: vec.Vec<Slot<T>>,
+    len: usize,
+    next: usize,
+}
+
+/// Creates a new, empty `Slab<T>`.
+public func Slab.new<T>(): Slab<T> {
+    return Slab<T> {
+        entries: vec.Vec<Slot<T>>.new(),
+        len: 0 as usize,
+        next: 0 as usize,
+    }
+}
+
+/// Creates a `Slab<T>` with at least the specified capacity pre-allocated.
+public func Slab.withCapacity<T>(capacity: usize): Slab<T> {
+    return Slab<T> {
+        entries: vec.Vec<Slot<T>>.withCapacity(capacity),
+        len: 0 as usize,
+        next: 0 as usize,
+    }
+}
+
+/// Returns the number of currently active (occupied) elements.
+public func Slab.len<T>(self: ref Slab<T>): usize {
+    return self.len
+}
+
+/// Returns `true` if the slab contains no occupied elements.
+public func Slab.isEmpty<T>(self: ref Slab<T>): bool {
+    return self.len == (0 as usize)
+}
+
+/// Returns the total number of slots currently allocated.
+public func Slab.capacity<T>(self: ref Slab<T>): usize {
+    return self.entries.capacity()
+}
+
+/// Inserts `value` into the slab, returning its stable integer key.
+public func Slab.insert<T>(self: mut ref Slab<T>, value: T): usize {
+    let key = self.next
+    let total = self.entries.len()
+
+    if key < total {
+        // Reuse an existing vacant slot
+        let mut nextFree = key + (1 as usize)
+        if let Option.Some(slot) = self.entries.get(key) {
+            if let Slot.Vacant(f) = *slot {
+                nextFree = f
+            }
+        }
+        self.next = nextFree
+        self.entries.set(key, Slot.Occupied(value))
+    } else {
+        // Append a new slot at the end
+        self.entries.push(Slot.Occupied(value))
+        self.next = total + (1 as usize)
+    }
+
+    self.len = self.len + (1 as usize)
+    return key
+}
+
+/// Borrows the element at `key`, if it exists and is occupied.
+public func Slab.get<T>(self: ref Slab<T>, key: usize): Option<ref T> {
+    if let Option.Some(slot) = self.entries.get(key) {
+        match slot {
+            Slot.Occupied(val) => {
+                return Option.Some(val)
+            }
+            Slot.Vacant(_) => {}
+        }
+    }
+    return Option.None
+}
+
+/// Exclusively borrows the element at `key`, if it exists and is occupied.
+public func Slab.getMut<T>(self: mut ref Slab<T>, key: usize): Option<mut ref T> {
+    if let Option.Some(slot) = self.entries.getMut(key) {
+        match slot {
+            Slot.Occupied(val) => {
+                return Option.Some(val)
+            }
+            Slot.Vacant(_) => {}
+        }
+    }
+    return Option.None
+}
+
+/// Removes and returns the element at `key`, recycling its slot.
+public func Slab.remove<T>(self: mut ref Slab<T>, key: usize): Option<T> {
+    let total = self.entries.len()
+    if key >= total {
+        return Option.None
+    }
+
+    let mut isOccupied = false
+    if let Option.Some(slot) = self.entries.get(key) {
+        match slot {
+            Slot.Occupied(_) => {
+                isOccupied = true
+            }
+            Slot.Vacant(_) => {}
+        }
+    }
+
+    if !isOccupied {
+        return Option.None
+    }
+
+    // Replace the slot with Vacant pointing to the current next free slot
+    let old = self.entries.replace(key, Slot.Vacant(self.next))
+    self.next = key
+    self.len = self.len - (1 as usize)
+
+    if let Option.Some(oldSlot) = old {
+        match oldSlot {
+            Slot.Occupied(val) => {
+                return Option.Some(val)
+            }
+            Slot.Vacant(_) => {}
+        }
+    }
+    return Option.None
+}
+
+/// Returns `true` if `key` is occupied in the slab.
+public func Slab.contains<T>(self: ref Slab<T>, key: usize): bool {
+    let opt = self.get(key)
+    return opt.isSome()
+}
+
+/// Clears all elements from the slab without releasing buffer capacity.
+public func Slab.clear<T>(self: mut ref Slab<T>): void {
+    self.entries.clear()
+    self.len = 0 as usize
+    self.next = 0 as usize
+}

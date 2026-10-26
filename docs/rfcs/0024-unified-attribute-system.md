@@ -10,11 +10,16 @@
 - **PR da RFC:** N/A (In-Tree RFC)
 - **Issue de Acompanhamento:** N/A
 
+> Proposta ampla, ainda não implementada. A 0.1.10 consolidou a sintaxe dos
+> atributos intrínsecos; ela não executa `Foo.apply` nem atributos de terceiros.
+> Reflexão e geração de declarações exigem contratos adicionais e não são gates
+> obrigatórios da 0.2. A fila de versões pertence ao roadmap mestre.
+
 ---
 
 ## 1. Resumo
 
-Esta RFC define o modelo semântico completo de atributos no Arandu. Um atributo
+Esta RFC propõe um modelo semântico completo de atributos no Arandu. Um atributo
 `@Foo(args...)` aplicado a uma declaração é açúcar sintático para uma chamada
 comptime `Foo.apply(target, args...)`, onde `target` é uma representação
 reflexiva da declaração anotada. O compilador fornece apenas três primitivos:
@@ -362,12 +367,14 @@ por privilégio. Do ponto de vista do usuário, todos os atributos são iguais.
 
 ### 4.8. Impacto no pipeline incremental (Salsa)
 
-- Fragmentos gerados por `apply` são inputs Salsa com identidade estável:
-  `SymbolId::Generated { origin: ExprId, index: u32 }`
+- Resultados de `apply` precisam de origem estrutural estável e hash semântico;
+  uma query pura não registra novos inputs durante a avaliação. O mapeamento
+  para `SymbolId { file_id, local_id }` exige contrato explícito.
 - O grafo de dependência inclui: o atributo aplicado, os argumentos, o tipo
   anotado e as dependências da implementação do `apply`
-- Editar um método `manual` de um tipo não reinvalida o `@Derive` —
-  Salsa vê os mesmos inputs e corta a re-execução
+- Edições em métodos manuais só podem preservar a derivação quando os inputs
+  semânticos que ela consulta permanecem iguais; isso exige regressão de cutoff,
+  não uma garantia geral de ausência de reexecução.
 - Editar a implementação do `apply` invalida todos os itens que usam aquele atributo
 
 ---
@@ -376,15 +383,16 @@ por privilégio. Do ponto de vista do usuário, todos os atributos são iguais.
 
 ### 5.1. Invariantes preservados
 
-- **Pureza de queries**: `apply` comptime é pura (sem I/O por padrão); efeitos
-  são declarados explicitamente via `@Effects`. Queries tracked não adquirem
-  efeitos colaterais.
-- **`SymbolId` monotônico**: `Generated` é uma variante adicional, não reutiliza
-  IDs existentes. O alocador de IDs gerados é monotônico por sessão.
+- **Pureza de queries**: `apply` comptime é pura. Uma anotação `@Effects` não
+  autoriza efeitos colaterais dentro de queries tracked.
+- **Identidade de símbolos**: preservar `SymbolId { file_id, local_id }` e
+  alocação sem reutilização de IDs. Uma variante de identidade gerada exigiria
+  discussão arquitetural explícita; não está aprovada nesta proposta.
 - **Early-cutoff**: fragmentos gerados com output idêntico não invalidam
   consumidores. O hash do `impl` gerado entra no hash do item.
-- **Ausência de I/O em queries puras**: atributos que declaram `fsRead` ou
-  efeitos equivalentes são excluídos da memoização normal.
+- **Ausência de I/O em queries**: recursos externos, se aceitos no futuro,
+  exigem leitura na borda do driver e inputs Salsa explícitos. Excluir uma
+  operação da memoização não autoriza filesystem no caminho de avaliação.
 
 ### 5.2. Desvantagens e riscos
 
@@ -529,19 +537,22 @@ impl Debug for Point {
 
 ---
 
-## 10. Plano de implementação por fase
+## 10. Dependências e critérios para eventual implementação
 
-| Fase | Versão | O que é implementado |
-|---|---|---|
-| 0 | 0.1.9 | `@` intrínsecos hardcoded (`@Link`, `@Effects`, `@Test`, `@Deprecated` como metadata simples) |
-| 1 | 0.2 | `type` como valor comptime, `T.name`, `T.fields()` — fundação da reflection |
-| 2 | 0.3 | `Foo.apply(target, args...)` como protocolo; `@Derive` implementado em stdlib; `SymbolId::Generated` |
-| 3 | 0.4 | Atributos de terceiros sem recompilação do compilador; `@Orm.Table`, `@Http.Get` |
-| 4 | 0.5+ | Atributos em membros, parâmetros, `impl` blocks; composição de atributos |
+O [roadmap mestre](../arandu-compiler-roadmap-v0.1.md) mantém a fila permanente.
+A sintaxe intrínseca existente é a base implementada. O restante depende de:
 
----
+- Descrições de tipos independentes de pools, identidade nominal, visibilidade
+  e introspecção limitada com budgets e cutoff comprovados.
+- Um protocolo `apply` com higiene, recuperação de ciclos, diagnósticos e origem
+  de expansões preservados no parser, resolve, typeck, AMIR e clientes IDE.
+- Geração de declarações que preserve identidades existentes e permita validar
+  conflitos, código manual e dependências de forma determinística.
+- Contratos próprios de capacidades e inputs para eventuais recursos externos.
 
-*Esta RFC depende da implementação do comptime de tipos (RFC 0013, fase 0.2) como
-pré-requisito. Nenhuma mudança de compilador é necessária na 0.1.9 para alinhar
-com este design — os atributos intrínsecos atuais são compatíveis com o protocolo
-futuro.*
+Um primeiro recorte de reflexão pode ser avaliado em 0.3.x, se aceito com
+contrato próprio, sem se confundir com a entrega de closures. Derivação ampla
+ou atributos de terceiros são possibilidades condicionais de 0.4+, dependentes
+dessas fundações; os exemplos desta RFC não prometem uma versão de entrega.
+Tipos como valores e atributos personalizados não são gates obrigatórios da
+0.2 nem tornam a RFC aceita por consequência da publicação do CTFE core.

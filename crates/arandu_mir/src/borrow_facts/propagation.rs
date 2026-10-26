@@ -1,12 +1,15 @@
 //! CFG propagation of holder states and reference live range tracking.
 
-use super::paths::{
-    LocalHolderState, merge_local_paths, merge_temp_paths, place_path, prefix_paths,
-};
-use super::types::{BorrowState, Loan};
+use super::paths::{merge_local_paths, merge_temp_paths, place_path, prefix_paths};
+use super::types::{BorrowState, HolderPath, Loan};
 use crate::BitSet;
 use crate::amir::{AmirFunc, AmirOperand, AmirStmt, AmirTerminator, BlockId, LocalId, TempId};
 use std::collections::{BTreeSet, VecDeque};
+
+struct ActiveLoan {
+    loan_index: usize,
+    locals: Vec<LocalId>,
+}
 
 /// Forward may-analysis for stack carriers. Unlike the global holder index,
 /// this state models overwrites: assigning one projection kills only that
@@ -14,8 +17,38 @@ use std::collections::{BTreeSet, VecDeque};
 pub(crate) fn analyze_local_holder_states(
     func: &AmirFunc,
     loans: &[Loan],
-) -> Vec<Vec<Vec<BitSet<LocalId>>>> {
-    let empty_state = || vec![vec![BTreeSet::new(); func.locals.len()]; loans.len()];
+) -> (Vec<Vec<Vec<BitSet<LocalId>>>>, bool) {
+    let active_loans: Vec<ActiveLoan> = loans
+        .iter()
+        .enumerate()
+        .filter_map(|(i, loan)| {
+            if loan.holder_locals.is_empty() {
+                None
+            } else {
+                Some(ActiveLoan {
+                    loan_index: i,
+                    locals: loan.holder_locals.iter().collect(),
+                })
+            }
+        })
+        .collect();
+
+    if active_loans.is_empty() {
+        let empty_bits = vec![BitSet::with_capacity(func.locals.len()); loans.len()];
+        let points = func
+            .blocks
+            .iter()
+            .map(|block| vec![empty_bits.clone(); 1 + func.block_stmts(block.id).count()])
+            .collect();
+        return (points, false);
+    }
+
+    let empty_state = || {
+        active_loans
+            .iter()
+            .map(|active| vec![BTreeSet::new(); active.locals.len()])
+            .collect::<Vec<Vec<BTreeSet<HolderPath>>>>()
+    };
     let mut block_in = vec![empty_state(); func.blocks.len()];
     let mut block_out = vec![empty_state(); func.blocks.len()];
     let mut queue = (0..func.blocks.len())
@@ -23,12 +56,19 @@ pub(crate) fn analyze_local_holder_states(
         .collect::<VecDeque<_>>();
     let mut queued = vec![true; func.blocks.len()];
 
+    let mut guard = 0;
+    let mut exceeded_limit = false;
     while let Some(block_id) = queue.pop_front() {
+        guard += 1;
+        if guard >= crate::analysis_limits::BORROW_FACTS_ITERATION_GUARD {
+            exceeded_limit = true;
+            break;
+        }
         let bi = block_id.as_usize();
         queued[bi] = false;
         let mut state = block_in[bi].clone();
         for stmt in func.block_stmts(block_id) {
-            transfer_local_holders(stmt, loans, &mut state);
+            transfer_local_holders(stmt, &active_loans, loans, &mut state);
         }
         if state == block_out[bi] {
             continue;
@@ -41,12 +81,16 @@ pub(crate) fn analyze_local_holder_states(
                 let succ_params = func.block_params(successor.params);
                 for (parameter, argument) in succ_params.iter().zip(args) {
                     let source = operand_temp(argument);
-                    for (loan_index, loan) in loans.iter().enumerate() {
-                        let paths = source
-                            .and_then(|temp| loan.holder_temp_paths.get(temp.as_usize()))
-                            .cloned()
-                            .unwrap_or_default();
-                        edge[loan_index][parameter.local.as_usize()] = paths;
+                    for (active_idx, active) in active_loans.iter().enumerate() {
+                        if let Some(pos) = active.locals.iter().position(|&l| l == parameter.local)
+                        {
+                            let loan = &loans[active.loan_index];
+                            let paths = source
+                                .and_then(|temp| loan.holder_temp_paths.get(temp.as_usize()))
+                                .cloned()
+                                .unwrap_or_default();
+                            edge[active_idx][pos] = paths;
+                        }
                     }
                 }
             }
@@ -62,38 +106,57 @@ pub(crate) fn analyze_local_holder_states(
     let mut points = Vec::with_capacity(func.blocks.len());
     for block in &func.blocks {
         let mut state = block_in[block.id.as_usize()].clone();
-        let mut block_points = Vec::new();
-        block_points.push(holder_bits(&state, func.locals.len()));
+        let mut block_points = Vec::with_capacity(1 + func.block_stmts(block.id).count());
+        block_points.push(holder_bits(
+            &state,
+            &active_loans,
+            loans.len(),
+            func.locals.len(),
+        ));
         for stmt in func.block_stmts(block.id) {
-            transfer_local_holders(stmt, loans, &mut state);
-            block_points.push(holder_bits(&state, func.locals.len()));
+            transfer_local_holders(stmt, &active_loans, loans, &mut state);
+            block_points.push(holder_bits(
+                &state,
+                &active_loans,
+                loans.len(),
+                func.locals.len(),
+            ));
         }
         points.push(block_points);
     }
-    points
+    (points, exceeded_limit)
 }
 
-fn transfer_local_holders(stmt: &AmirStmt, loans: &[Loan], state: &mut LocalHolderState) {
+fn transfer_local_holders(
+    stmt: &AmirStmt,
+    active_loans: &[ActiveLoan],
+    loans: &[Loan],
+    state: &mut [Vec<BTreeSet<HolderPath>>],
+) {
     match stmt {
         AmirStmt::Store { lhs, rhs } => {
             let destination = place_path(lhs);
             let source = operand_temp(rhs);
-            for (loan_index, loan) in loans.iter().enumerate() {
-                let local = &mut state[loan_index][lhs.local.as_usize()];
-                local.retain(|path| !path.0.starts_with(&destination.0));
-                if let Some(source) = source {
-                    let paths = loan
-                        .holder_temp_paths
-                        .get(source.as_usize())
-                        .cloned()
-                        .unwrap_or_default();
-                    local.extend(prefix_paths(&paths, &destination));
+            for (active_idx, active) in active_loans.iter().enumerate() {
+                if let Some(pos) = active.locals.iter().position(|&l| l == lhs.local) {
+                    let local = &mut state[active_idx][pos];
+                    local.retain(|path| !path.0.starts_with(&destination.0));
+                    if let Some(source) = source {
+                        let loan = &loans[active.loan_index];
+                        if let Some(paths) = loan.holder_temp_paths.get(source.as_usize())
+                            && !paths.is_empty()
+                        {
+                            local.extend(prefix_paths(paths, &destination));
+                        }
+                    }
                 }
             }
         }
         AmirStmt::StorageDead(local) => {
-            for loan_state in state.iter_mut() {
-                loan_state[local.as_usize()].clear();
+            for (active_idx, active) in active_loans.iter().enumerate() {
+                if let Some(pos) = active.locals.iter().position(|&l| l == *local) {
+                    state[active_idx][pos].clear();
+                }
             }
         }
         AmirStmt::Assign { .. }
@@ -105,7 +168,10 @@ fn transfer_local_holders(stmt: &AmirStmt, loans: &[Loan], state: &mut LocalHold
     }
 }
 
-fn merge_local_state(target: &mut LocalHolderState, source: &LocalHolderState) -> bool {
+fn merge_local_state(
+    target: &mut [Vec<BTreeSet<HolderPath>>],
+    source: &[Vec<BTreeSet<HolderPath>>],
+) -> bool {
     let mut changed = false;
     for (target_loan, source_loan) in target.iter_mut().zip(source) {
         for (target_local, source_local) in target_loan.iter_mut().zip(source_loan) {
@@ -117,19 +183,22 @@ fn merge_local_state(target: &mut LocalHolderState, source: &LocalHolderState) -
     changed
 }
 
-fn holder_bits(state: &LocalHolderState, num_locals: usize) -> Vec<BitSet<LocalId>> {
-    state
-        .iter()
-        .map(|loan| {
-            let mut bits = BitSet::with_capacity(num_locals);
-            for (index, paths) in loan.iter().enumerate() {
-                if !paths.is_empty() {
-                    bits.insert(LocalId::from_usize(index));
-                }
+fn holder_bits(
+    state: &[Vec<BTreeSet<HolderPath>>],
+    active_loans: &[ActiveLoan],
+    num_loans: usize,
+    num_locals: usize,
+) -> Vec<BitSet<LocalId>> {
+    let mut bits = vec![BitSet::with_capacity(num_locals); num_loans];
+    for (active_idx, active) in active_loans.iter().enumerate() {
+        let loan_bits = &mut bits[active.loan_index];
+        for (pos, &local) in active.locals.iter().enumerate() {
+            if !state[active_idx][pos].is_empty() {
+                loan_bits.insert(local);
             }
-            bits
-        })
-        .collect()
+        }
+    }
+    bits
 }
 
 fn terminator_edges(terminator: &AmirTerminator) -> Vec<(BlockId, &[AmirOperand])> {

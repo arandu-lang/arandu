@@ -99,3 +99,20 @@ public func toDigit(c: char, radix: u32): Option<u32> {
     }
     return Option.None
 }
+
+// ── Inherent methods on `char` ──────────────────────────────────────────────
+
+/// Returns `true` if the character is within the ASCII range (`U+0000` to `U+007F`).
+public func char.isAscii(self: char): bool {
+    return isAscii(self)
+}
+
+/// Returns the byte length of `self` when encoded as UTF-8 (1 to 4 bytes).
+public func char.lenUtf8(self: char): u32 {
+    return lenUtf8(self)
+}
+
+/// Converts `self` to its corresponding numeric digit in the specified radix.
+public func char.toDigit(self: char, radix: u32): Option<u32> {
+    return toDigit(self, radix)
+}

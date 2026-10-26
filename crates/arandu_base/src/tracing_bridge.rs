@@ -181,7 +181,7 @@ fn flags_to_env_filter(cfg: &TracingConfig) -> EnvFilter {
     }
     if cfg.debug_all || cfg.debug_ossa {
         directives.push("arandu_mir::move_checker=trace");
-        directives.push("arandu_mir::lower_amir=trace");
+        directives.push("arandu_semantics::passes::lower_amir=trace");
         directives.push("arandu_middle::amir=trace");
     }
     if cfg.debug_all || cfg.debug_layout {

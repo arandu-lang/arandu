@@ -1,6 +1,6 @@
 # Arandu LSP and VS Code support matrix (v0.1)
 
-This document is the public support contract for the `0.1` release candidate.
+This document is the support contract for the published 0.1.x scope, exercised by the [0.1.10 release](releases/0.1.10.md).
 “Supported” means that the native SDK archive is installed into an empty prefix,
 the packaged VSIX is installed through the VS Code CLI, and the Extension Host
 exercises the installed `arandu-lsp`. A successful build on another target does
@@ -34,20 +34,47 @@ installers are the supported SDK delivery mechanism.
 |---|---|---|
 | Text | incremental sync, UTF-16 | supported; UTF-8/UTF-32 negotiation is not advertised |
 | Diagnostics | push diagnostics, quick fixes | supported; no workspace/pull diagnostics |
-| Navigation | definition, references, document highlight | supported; highlights do not yet distinguish read/write |
+| Navigation | definition, type definition, references, document highlight | supported; highlights do not yet distinguish read/write |
 | Structure | document/workspace symbols, folding, selection range | supported; workspace symbols use the progressively discovered index |
-| IntelliSense | completion, hover, signature help | supported; no auto-import and no completion resolve phase |
+| IntelliSense | completion, hover, signature help | supported, including call argument-label completion; no auto-import and no completion resolve phase |
 | Refactoring | prepare rename and multi-file rename | supported with lexical/conflict validation |
 | Presentation | full/range semantic tokens | supported; no semantic-token delta protocol |
-| Formatting | whole-document formatting | supported and canonical; no range/on-type formatting |
+| Formatting | whole-document and range formatting | supported and canonical; no on-type formatting |
+| Hints | inlay hints | type hints for `let` and parameter-name hints for call arguments; no resolve phase |
 | Editing | code actions | structured quick fixes only |
 | Workspace | create/rename/delete notifications for `*.aru` | supported; one package root is selected deterministically in multi-root windows |
 | Lifecycle | progress, status, logs, bounded crash restart | supported by the VS Code extension |
 
-Not advertised in `0.1`: declaration/type-definition/implementation requests,
-call hierarchy, type hierarchy, CodeLens, inlay hints, document links, document
+Not advertised in the current scope: declaration/implementation requests,
+call hierarchy, type hierarchy, CodeLens, document links, document
 colors, linked editing, inline values, execute-command, notebooks and file
 operation “will” requests.
+
+### Inlay hints and argument suggestions
+
+Both surfaces derive from the same formal parameter list as signature help
+(`function_parameter_names`), so labels are the declared names, never
+heuristics.
+
+- **Type hints** (`InlayHintKind::TYPE`) insert `: <type>` after an unannotated
+  local `let` binding. They are skipped when the binding already has a type
+  annotation and for `void`, error and unsuffixed literal types.
+- **Parameter hints** (`InlayHintKind::PARAMETER`) insert `<name>:` before each
+  positional argument. They are skipped for `self`, for empty names, when the
+  source already writes an explicit label, and when the argument is exactly the
+  parameter's own identifier (the shorthand form already reads as a name).
+- **Argument label completion** offers `<name>:` items (insert text `<name>: `)
+  inside a call, with the callee in the item detail, matching the shorthand
+  syntax accepted by the parser.
+
+### Latency and verification scope
+
+Item-level cutoff is tested; it does not promise universal sub-10ms responses.
+The initialize/interactive budgets and ignored endurance/performance campaigns
+are distinct. A passing installed VSIX smoke does not run every ignored campaign.
+The reference implementation of advertised capabilities is
+[`capabilities.rs`](../crates/arandu_lsp/src/capabilities.rs), with stdio and
+Extension Host regressions. Keep this matrix synchronized when capabilities change.
 
 ### Verification
 

@@ -1,0 +1,7 @@
+// Slices, casts, references and ranges
+let slice_type: []u8 = buf[0..16];
+let full_slice = buf[..];
+let cast_byte = b as char;
+let cast_int = c as u32;
+let mut_borrow = mut ref buffer;
+let shared_borrow = ref buffer;

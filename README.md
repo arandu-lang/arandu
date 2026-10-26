@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/arandu-lang/arandu/actions/workflows/release.yml"><img src="https://img.shields.io/github/actions/workflow/status/arandu-lang/arandu/release.yml?branch=main&label=CI%20Gate&style=flat-square" alt="CI Gate"></a>
+  <a href="https://github.com/arandu-lang/arandu/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/arandu-lang/arandu/ci.yml?branch=main&label=CI%20Gate&style=flat-square" alt="CI Gate"></a>
   <a href="https://github.com/arandu-lang/arandu/releases/latest"><img src="https://img.shields.io/github/v/release/arandu-lang/arandu?label=release&style=flat-square" alt="Latest Release"></a>
   <a href="https://arandu-lang.dev"><img src="https://img.shields.io/badge/docs-arandu--lang.dev-207080?style=flat-square" alt="Documentation"></a>
   <a href="LICENSE-MIT"><img src="https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue?style=flat-square" alt="License"></a>
@@ -29,12 +29,12 @@
 
 **Arandu** is a modern systems programming language engineered for developers who demand deterministic control over memory, execution, and machine code without sacrificing ergonomic syntax or understandable compiler diagnostics.
 
-Arandu introduces a **hybrid memory safety model**: static linear ownership (`own`) and safe borrowing (`ref`), complemented by a thread-confined generational fallback runtime (**GenRef**). This architecture eliminates use-after-free, double-free, and dangling pointer vulnerabilities at compile time with dynamic verification guarantees — completely avoiding stop-the-world garbage collection pauses.
+Arandu uses a **hybrid memory model**: static ownership (`own`) and borrowing (`ref`), complemented by a thread-confined generational fallback runtime (**GenRef**). Supported safe surfaces combine compile-time checks and explicit runtime validation without tracing garbage collection. Unsafe code, FFI and residual aggregate representations have separate contracts and limitations.
 
 ### Why Arandu?
 
-- **Zero-Cost Safety Without a Garbage Collector**: Values have clear owners and borrowed references. Where lifetimes cannot be proven strictly at compile time, the generational fallback model provides safe, typed handles with deterministic cleanup.
-- **Incremental by Design**: Built from the ground up on Rowan concrete syntax trees (CST) and Salsa tracked queries. Modifying a function body re-analyzes only the affected item, keeping IDE response times under 10ms.
+- **Ownership and Explicit Fallback Without Tracing GC**: Values have owners and borrowed references. Representable escaping roots can use typed GenRef handles with runtime validation and deterministic cleanup; unsupported projections or borrows are rejected. This is not a universal zero-cost or lifetime-recovery guarantee.
+- **Incremental by Design**: Built from the ground up on Rowan concrete syntax trees (CST) and Salsa tracked queries. Item-level queries preserve early-cutoff when dependencies are unchanged. CLI builds still create a fresh database; warm-service latency is a future milestone with a defined benchmark gate.
 - **Empathetic Developer Experience**: Compiler diagnostics (via Miette and LSP) explain *what* failed, *why* it failed with precise source labels, and *how* to resolve it, linked to documented explanation pages for every error code.
 - **Three Code Generation Backends**: Cranelift JIT and native compilation (`arandu run`, `arandu build`), portable GNU C emission (`arandu emit-c`), and WebAssembly modules and components (`arandu emit-wasm`, `arandu emit-component`).
 
@@ -222,7 +222,7 @@ Developer & Debug Flags (-Z):
   -Zdebug-all            Enable all compiler debug traces
 ```
 
-`--release` and `--size` select different optimization profiles. Size builds use
+`--release` and `--size` select different optimization profiles. AMIR O2 remains experimental; selecting release does not promote every optimization to a stable guarantee. Size builds use
 an isolated `target/size` cache; a smaller result depends on the workload. See
 [RFC 0027](docs/rfcs/0027-zero-bloat-binary-diet-and-on-demand-runtime.md).
 
@@ -275,10 +275,10 @@ flowchart TD
 | Area | Crates | Responsibilities |
 | :--- | :--- | :--- |
 | **Frontend** | [`arandu_base`](crates/arandu_base)<br>[`arandu_lexer`](crates/arandu_lexer)<br>[`arandu_parser`](crates/arandu_parser)<br>[`arandu_diagnostics`](crates/arandu_diagnostics) | Lexer, Rowan CST-first parsing, token streams, diagnostic definitions (`DiagCode`), and Miette report rendering. |
-| **Middle-end** | [`arandu_middle`](crates/arandu_middle)<br>[`arandu_resolve`](crates/arandu_resolve)<br>[`arandu_typeck`](crates/arandu_typeck)<br>[`arandu_mir`](crates/arandu_mir) | Name resolution, bidirectional type inference, generic monomorphization, OSSA, borrow checking, and AMIR optimizations. |
+| **Middle-end** | [`arandu_middle`](crates/arandu_middle)<br>[`arandu_resolve`](crates/arandu_resolve)<br>[`arandu_typeck`](crates/arandu_typeck)<br>[`arandu_semantics`](crates/arandu_semantics)<br>[`arandu_mir`](crates/arandu_mir) | Name resolution, bidirectional type inference, generic monomorphization, OSSA, borrow checking, and AMIR optimizations. |
 | **Incremental** | [`arandu_query`](crates/arandu_query) | Sole owner of Salsa database state, tracking query inputs, item-level hashes, and early-cutoff caching. |
 | **Backends** | [`arandu_backend_cranelift`](crates/arandu_backend_cranelift)<br>[`arandu_backend_c`](crates/arandu_backend_c)<br>[`arandu_backend_wasm`](crates/arandu_backend_wasm)<br>[`arandu_codegen`](crates/arandu_codegen)<br>[`arandu_runtime`](crates/arandu_runtime) | Cranelift JIT/native emission, portable GNU C, WebAssembly modules/components, and runtime support. |
-| **Tooling & IDE** | [`arandu_cli`](crates/arandu_cli)<br>[`arandu_lsp`](crates/arandu_lsp)<br>[`arandu_fmt`](crates/arandu_fmt)<br>[`arandu_doc`](crates/arandu_doc) | Compiler CLI, Language Server (`arandu-lsp`), pure CST formatter, and documentation extractor. |
+| **Tooling & IDE** | [`arandu_ide`](crates/arandu_ide)<br>[`arandu_web`](crates/arandu_web)<br>[`arandu_cli`](crates/arandu_cli)<br>[`arandu_lsp`](crates/arandu_lsp)<br>[`arandu_fmt`](crates/arandu_fmt)<br>[`arandu_doc`](crates/arandu_doc) | Compiler CLI, Language Server (`arandu-lsp`), pure CST formatter, and documentation extractor. |
 | **Test & Infra** | [`arandu_test_support`](crates/arandu_test_support)<br>[`arandu_fuzz_support`](crates/arandu_fuzz_support)<br>[`xtask`](xtask) | Golden test runners, grammar fuzzing harness, release contract verification, and architecture invariants. |
 
 ---
@@ -313,10 +313,10 @@ git clone https://github.com/arandu-lang/arandu.git
 cd arandu
 
 # Build the release compiler binary
-cargo build --release --bin arandu
+cargo build --release --locked -p arandu_cli
 
-# The executable will be placed in target/release/arandu
-./target/release/arandu --version
+# Source builds use the arandu_cli binary; SDK packages also provide arandu
+./target/release/arandu_cli --version
 ```
 
 ### Invariant Verification Suite
@@ -338,8 +338,26 @@ cargo run --locked -p xtask -- check-line-endings
 
 ## Roadmap & RFCs
 
+The published baseline is **0.1.10**. The [master roadmap](docs/arandu-compiler-roadmap-v0.1.md)
+is the single source for implemented scope, gaps and release gates:
+
+| Series | Planned product milestone |
+| --- | --- |
+| 0.1.11 | Authorized stdlib closure and correctness fixes; in development, gated by the master roadmap |
+| 0.2.x | Warm compiler service, recoverable dev image, measured p95 ≤100 ms on a reference workload/host |
+| 0.3.x | Instance-level incrementality; closures and further staging under separate contracts |
+| 0.4.x | Measured release optimization; optional LLVM only if its proposal is accepted and validated |
+| 0.5.x–0.6.x | Portable ABI/runtime/interop, tooling and sustainable cache storage |
+| 0.7.x–0.9.x | Contract convergence, endurance, migration and release candidates |
+| 1.0 | Explicitly stable public contract and supported platform matrix |
+| 1.x and later | Compatible evolution; breaking changes require a separately approved contract and migration |
+
+These are dependency-based plans, not delivery dates. GPU, eBPF, MLIR,
+self-hosting and the full scientific ecosystem are independent proposals.
+
+
 - **Master Compiler Roadmap**: [docs/arandu-compiler-roadmap-v0.1.md](docs/arandu-compiler-roadmap-v0.1.md) — The single authoritative execution queue.
-- **RFC Catalog**: [docs/rfcs/](docs/rfcs/) — Formal architectural specifications (RFC 0000 through RFC 0010).
+- **RFC Catalog**: [docs/rfcs/](docs/rfcs/) — Formal architectural specifications (RFC 0000 through RFC 0037).
 - **Diagnostic Catalog**: [docs/errors/](docs/errors/) — Detailed guides and solutions for every user-facing compiler diagnostic.
 - **Documentation Hub**: [docs/README.md](docs/README.md) — Map of all technical specifications and architecture contracts.
 

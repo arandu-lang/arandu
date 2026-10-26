@@ -5,7 +5,11 @@ pub(super) mod env;
 mod features;
 pub(super) mod fs;
 pub(super) mod memory;
+mod native_thread;
+mod pal;
+mod phase_lock;
 pub(super) mod prelude;
+pub(super) mod string;
 pub(super) mod task;
 
 use std::fmt::Write;
@@ -13,7 +17,18 @@ use std::fmt::Write;
 use super::CEmitter;
 
 impl<'a> CEmitter<'a> {
+    /// Runtime helpers are linked in feature groups, so a program may leave
+    /// some of a group unused. The pragma silences `-Wunused-function` for the
+    /// runtime region only; dead user functions still warn.
     pub(super) fn emit_headers(&mut self, needs_str: bool) {
+        self.emit_runtime_prelude(needs_str);
+        let _ = writeln!(
+            &mut self.output,
+            "#if defined(__GNUC__) || defined(__clang__)\n#pragma GCC diagnostic pop\n#endif"
+        );
+    }
+
+    fn emit_runtime_prelude(&mut self, needs_str: bool) {
         let features = self.runtime_features();
         self.arena_runtime = features.arena;
         let mut rotate_widths = [false; 2];
@@ -29,7 +44,11 @@ impl<'a> CEmitter<'a> {
         }
         let _ = writeln!(
             &mut self.output,
-            "#if defined(__APPLE__) && !defined(_DARWIN_C_SOURCE)\n#define _DARWIN_C_SOURCE\n#endif\n#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)\n#define _POSIX_C_SOURCE 200112L\n#endif"
+            "#if !defined(_WIN32) && !defined(_DEFAULT_SOURCE)\n#define _DEFAULT_SOURCE\n#endif\n#if defined(__APPLE__) && !defined(_DARWIN_C_SOURCE)\n#define _DARWIN_C_SOURCE\n#endif\n#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)\n#define _POSIX_C_SOURCE 200112L\n#endif"
+        );
+        let _ = writeln!(
+            &mut self.output,
+            "#if defined(__GNUC__) || defined(__clang__)\n#pragma GCC diagnostic push\n#pragma GCC diagnostic ignored \"-Wunused-function\"\n#endif"
         );
         let _ = writeln!(&mut self.output, "#include <stdint.h>");
         let _ = writeln!(&mut self.output, "#include <stdbool.h>");
@@ -63,7 +82,14 @@ impl<'a> CEmitter<'a> {
         if features.tasks {
             let _ = writeln!(&mut self.output, "#include <stdatomic.h>");
         }
-        if features.tasks || features.fs || features.buffers {
+        let needs_pal = features.tasks || features.native_threads || features.fs || features.env;
+        // Net PAL is emitted first so winsock2.h precedes windows.h inside pal.c.
+        if features.net {
+            self.emit_pal_net_runtime();
+        }
+        if needs_pal {
+            self.emit_pal_runtime();
+        } else if features.buffers {
             let _ = writeln!(
                 &mut self.output,
                 "#if defined(_WIN32)\n#include <malloc.h>\n#include <windows.h>\n#endif"
@@ -72,7 +98,7 @@ impl<'a> CEmitter<'a> {
         if features.tasks {
             let _ = writeln!(
                 self.output,
-                "#if !defined(_WIN32) || defined(__MINGW32__)\n#include <pthread.h>\n#include <unistd.h>\n#endif"
+                "#if !defined(_WIN32) || defined(__MINGW32__)\n#include <pthread.h>\n#include <unistd.h>\n#include <sched.h>\n#endif"
             );
             let _ = writeln!(
                 &mut self.output,
@@ -80,6 +106,7 @@ impl<'a> CEmitter<'a> {
             );
         }
         if features.fs {
+            let _ = writeln!(self.output, "#include <stdatomic.h>");
             let _ = writeln!(self.output, "#include <sys/types.h>");
             let _ = writeln!(
                 self.output,
@@ -92,22 +119,31 @@ impl<'a> CEmitter<'a> {
             );
             let _ = writeln!(
                 &mut self.output,
-                "#if !defined(_WIN32) || defined(__MINGW32__)\n#include <dirent.h>\n#endif"
+                "#if !defined(_WIN32)\n#include <fcntl.h>\n#endif"
             );
+        }
+        if features.net && !features.fs {
+            let _ = writeln!(self.output, "#include <stdatomic.h>");
         }
         let _ = writeln!(
             &mut self.output,
             "#if defined(__GNUC__) || defined(__clang__)\n#define AR_MAY_ALIAS __attribute__((__may_alias__))\n#else\n#define AR_MAY_ALIAS\n#endif"
         );
-        if features.concat {
+        // The concat runtime (and its variadic `ar_str_concat_n`) is also
+        // emitted for path-only programs; see `emit_str_concat_runtime` below.
+        if features.concat || features.path {
             let _ = writeln!(&mut self.output, "#include <stdarg.h>");
         }
-        if features.formats[2] {
+        if features.formats.iter().any(|&f| f) {
             let _ = writeln!(&mut self.output, "#include <math.h>");
         }
         let _ = writeln!(
             &mut self.output,
             "#ifndef AR_ABORT\n#if defined(__GNUC__) || defined(__clang__)\n#define AR_ABORT() __builtin_trap()\n#else\n#define AR_ABORT() abort()\n#endif\n#endif"
+        );
+        let _ = writeln!(
+            &mut self.output,
+            "static inline uint64_t ar_index_check(uint64_t index, uint64_t len) {{ if (index >= len) AR_ABORT(); return index; }}"
         );
         let _ = writeln!(
             &mut self.output,
@@ -190,6 +226,10 @@ impl<'a> CEmitter<'a> {
         // SL_R.0: cooperative task table mirror (SyncExecutor host surface).
         if features.tasks {
             self.emit_task_runtime();
+            self.emit_phase_lock_runtime();
+        }
+        if features.native_threads {
+            self.emit_native_thread_runtime();
         }
         // std.fs / std.env runtime hosts.
         if features.fs || features.env {
@@ -197,6 +237,9 @@ impl<'a> CEmitter<'a> {
         }
         if features.fs {
             self.emit_fs_runtime(uint_c_ty, len_c_ty);
+        }
+        if features.net {
+            self.emit_net_runtime(uint_c_ty);
         }
         if features.env {
             self.emit_env_runtime(len_c_ty);
@@ -210,8 +253,13 @@ impl<'a> CEmitter<'a> {
             self.emit_path_runtime(len_c_ty);
         }
         if features.string_eq {
-            self.emit_str_eq_runtime(len_c_ty);
+            self.emit_str_eq_runtime();
         }
-        self.emit_str_converters(len_c_ty, features.concat, features.formats);
+        if features.concat || features.path {
+            self.emit_str_concat_runtime();
+        }
+        if features.formats.iter().any(|&f| f) {
+            self.emit_str_format_runtime();
+        }
     }
 }

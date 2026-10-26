@@ -70,6 +70,11 @@ fn generates_named_interface_for_public_interface_symbols() {
         },
     );
 
+    // Hand-built symbols live outside the root file; `@Export` puts them on
+    // the component surface.
+    symbols.exported_functions.insert(method_sym);
+    symbols.exported_functions.insert(ping_sym);
+
     // Build minimal AMIR func for Calculator.add
     let add_func = AmirFunc {
         symbol: method_sym,
@@ -108,6 +113,7 @@ fn generates_named_interface_for_public_interface_symbols() {
     };
 
     // Build minimal AMIR func for ping
+    symbols.exported_functions.insert(ping_sym);
     let ping_func = AmirFunc {
         symbol: ping_sym,
         return_type: i32_ty,
@@ -245,6 +251,9 @@ fn wit_multiple_interfaces_with_scoped_types() {
         },
     );
 
+    symbols.exported_functions.insert(draw_sym);
+    symbols.exported_functions.insert(ping_sym);
+
     let draw_func = AmirFunc {
         symbol: draw_sym,
         return_type: i32_ty,
@@ -269,6 +278,7 @@ fn wit_multiple_interfaces_with_scoped_types() {
         cfg: ControlFlowGraph::default(),
     };
 
+    symbols.exported_functions.insert(ping_sym);
     let ping_func = AmirFunc {
         symbol: ping_sym,
         return_type: i32_ty,
@@ -389,6 +399,7 @@ fn wit_receiver_is_exposed_once() {
 
     // The AMIR contract materializes the receiver as `params[0]`.
     let receiver_temp = arandu_middle::amir::local::TempId::from_usize(0);
+    symbols.exported_functions.insert(method_sym);
     let tag_func = AmirFunc {
         symbol: method_sym,
         return_type: i32_ty,

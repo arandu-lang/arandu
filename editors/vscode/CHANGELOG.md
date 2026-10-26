@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.11
+
+- Keep `move || ...` thread closures on the explicit ThreadJob path: the typechecker validates Send captures and rejects the closure with U001.
+- Retire socket, reactor, supervisor, and waker ids by generation so a closed handle cannot act on a reused slot.
+- Require the outer SHA-256 sidecar and the internal BLAKE3SUMS before an installer publishes.
+- Split LLVM codegen, the C task runtime, and structural hashing without changing emitted IR, C, or hash bytes.
+
 ## 0.1.10
 
 - Align the extension, language server and SDK release version to 0.1.10.

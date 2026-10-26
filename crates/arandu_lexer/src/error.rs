@@ -53,4 +53,6 @@ pub enum LexErrorCode {
     LeadingZero,
     UnclosedInterpolation,
     BidiTrojanSource,
+    /// The source is longer than a `u32` byte offset. Spans are not truncated.
+    SourceTooLarge,
 }

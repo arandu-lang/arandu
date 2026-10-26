@@ -1,0 +1,33 @@
+Program @1:1-46:2
+  Struct @1:1-5:2 IndexEntry
+    Field @2:5-2:16 offset Type @2:13-2:16 u64
+    Field @3:5-3:18 deleted Type @3:14-3:18 bool
+    Field @4:5-4:18 key_hash Type @4:15-4:18 u32
+  Func @7:1-25:2 compareBytes(@7:19-7:26 a Slice @7:22-7:26 Type @7:24-7:26 u8, @7:28-7:37 an Type @7:32-7:37 usize, @7:39-7:46 b Slice @7:42-7:46 Type @7:44-7:46 u8, @7:48-7:57 bn Type @7:52-7:57 usize) -> Type @7:60-7:63 int
+    Var @8:5-8:25 @8:9-8:21 mut i Type @8:16-8:21 usize = Int @8:24-8:25(0)
+    While @9:5-17:6 Condition @9:11-9:27 Binary @9:11-9:27(&&, Binary @9:11-9:17(<, Path @9:11-9:12(i), Path @9:15-9:17(an)), Binary @9:21-9:27(<, Path @9:21-9:22(i), Path @9:25-9:27(bn)))
+      If @10:9-12:10 Condition @10:12-10:23 Binary @10:12-10:23(<, Index @10:12-10:16(Path @10:12-10:13(a), Path @10:14-10:15(i)), Index @10:19-10:23(Path @10:19-10:20(b), Path @10:21-10:22(i)))
+        Return @11:13-11:22 Unary @11:20-11:22(-, Int @11:21-11:22(1))
+      If @13:9-15:10 Condition @13:12-13:23 Binary @13:12-13:23(>, Index @13:12-13:16(Path @13:12-13:13(a), Path @13:14-13:15(i)), Index @13:19-13:23(Path @13:19-13:20(b), Path @13:21-13:22(i)))
+        Return @14:13-14:21 Int @14:20-14:21(1)
+      Set @16:9-16:18 @16:9-16:10 i = Binary @16:13-16:18(+, Path @16:13-16:14(i), Int @16:17-16:18(1))
+    If @18:5-20:6 Condition @18:8-18:15 Binary @18:8-18:15(<, Path @18:8-18:10(an), Path @18:13-18:15(bn))
+      Return @19:9-19:18 Unary @19:16-19:18(-, Int @19:17-19:18(1))
+    If @21:5-23:6 Condition @21:8-21:15 Binary @21:8-21:15(>, Path @21:8-21:10(an), Path @21:13-21:15(bn))
+      Return @22:9-22:17 Int @22:16-22:17(1)
+    Return @24:5-24:13 Int @24:12-24:13(0)
+  Func @27:1-46:2 binarySearchOffset(@27:25-27:46 entries Slice @27:34-27:46 Type @27:36-27:46 @27:36-27:46 IndexEntry, @27:48-27:60 count Type @27:55-27:60 usize, @27:62-27:78 target_hash Type @27:75-27:78 u32) -> Type @27:81-27:84 int
+    If @28:5-30:6 Condition @28:8-28:18 Binary @28:8-28:18(==, Path @28:8-28:13(count), Int @28:17-28:18(0))
+      Return @29:9-29:18 Unary @29:16-29:18(-, Int @29:17-29:18(1))
+    Var @31:5-31:27 @31:9-31:23 mut low Type @31:18-31:23 usize = Int @31:26-31:27(0)
+    Var @32:5-32:32 @32:9-32:24 mut high Type @32:19-32:24 usize = Path @32:27-32:32(count)
+    While @33:5-44:6 Condition @33:11-33:21 Binary @33:11-33:21(<, Path @33:11-33:14(low), Path @33:17-33:21(high))
+      Var @34:9-34:41 @34:13-34:16 mid = Binary @34:19-34:41(+, Path @34:19-34:22(low), Binary @34:25-34:41(/, Group @34:25-34:37(Binary @34:26-34:36(-, Path @34:26-34:30(high), Path @34:33-34:36(low))), Int @34:40-34:41(2)))
+      Var @35:9-35:38 @35:13-35:14 h = Field @35:17-35:38(Index @35:17-35:29(Path @35:17-35:24(entries), Path @35:25-35:28(mid)), key_hash)
+      If @36:9-38:10 Condition @36:12-36:28 Binary @36:12-36:28(==, Path @36:12-36:13(h), Path @36:17-36:28(target_hash))
+        Return @37:13-37:30 Cast @37:20-37:30(Path @37:20-37:23(mid), Type @37:27-37:30 int)
+      If @39:9-43:10 Condition @39:12-39:27 Binary @39:12-39:27(<, Path @39:12-39:13(h), Path @39:16-39:27(target_hash))
+        Set @40:13-40:26 @40:13-40:16 low = Binary @40:19-40:26(+, Path @40:19-40:22(mid), Int @40:25-40:26(1))
+      Else @41:16-43:10
+        Set @42:13-42:23 @42:13-42:17 high = Path @42:20-42:23(mid)
+    Return @45:5-45:14 Unary @45:12-45:14(-, Int @45:13-45:14(1))

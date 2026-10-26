@@ -43,6 +43,13 @@ pub enum ConstraintOrigin {
     /// containing function's signature.
     CtfeResult { value_span: Span, block_span: Span },
 
+    /// A `return` or final expression of a `move ||` thread closure must agree
+    /// with the closure result, not the containing function's signature.
+    ClosureResult {
+        value_span: Span,
+        closure_span: Span,
+    },
+
     /// `if cond { A } else { B }` — then-branch vs else-branch type.
     IfBranches { then_span: Span, else_span: Span },
 
@@ -147,6 +154,7 @@ impl ConstraintOrigin {
             ConstraintOrigin::CallArg { param_span, .. } => *param_span,
             ConstraintOrigin::ReturnType { declared_span, .. } => *declared_span,
             ConstraintOrigin::CtfeResult { block_span, .. } => *block_span,
+            ConstraintOrigin::ClosureResult { closure_span, .. } => *closure_span,
             ConstraintOrigin::IfBranches { else_span, .. } => *else_span,
             ConstraintOrigin::MatchArms { mismatch_span, .. } => *mismatch_span,
             ConstraintOrigin::BinaryOp { op_span, .. } => *op_span,

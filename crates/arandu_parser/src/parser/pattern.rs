@@ -82,6 +82,27 @@ impl<'a> Parser<'a> {
                 items: range,
             }));
         }
+        if self.at_kind_name("DOT")
+            && self
+                .tokens
+                .get(self.pos + 1)
+                .is_some_and(|t| matches!(t.kind, TokenKind::IdentType | TokenKind::IdentValue))
+        {
+            self.advance();
+            let name = self.expect_member_name()?;
+            let payload = if self.eat_name("LPAREN") {
+                let payload = self.parse_pattern_list_until("RPAREN")?;
+                self.expect_name("RPAREN")?;
+                self.pool.alloc_pattern_list(&payload)
+            } else {
+                IndexRange::empty()
+            };
+            return Ok(self.pool.alloc_pattern(Pattern::TypeTuple {
+                span: self.span_from_mark(start),
+                name,
+                payload,
+            }));
+        }
         if matches!(self.current().kind, TokenKind::IdentType) {
             let type_start_span = self.current().span(self.file_id);
             let name = self.expect_ident_type()?;

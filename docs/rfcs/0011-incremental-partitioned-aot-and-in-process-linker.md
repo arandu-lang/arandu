@@ -18,30 +18,36 @@ Esta RFC estabelece a evolução da compilação AOT (*Ahead-Of-Time*) do Arandu
 A proposta introduz quatro mecanismos arquiteturais integrados:
 1. **Cutoff entre Execuções do CLI (Fase 0):** fingerprint persistente e verificável da closure de inputs e do artefato. O grafo Salsa e suas estruturas internas não são serializados.
 2. **Codegen Particionado em CGUs (*Codegen Units*) no Cranelift (Fase 1):** Quebra da geração de `.o` monolítica em unidades discretas por item/função, indexadas por hash semântico de entrada (AMIR da função + assinaturas dependidas).
-3. **Linker In-Process via `mmap` para Linux ELF (Fase 2):** Emissor/patcher ELF nativo embutido que elimina a dependência de processos externos (`cc`, `mold`, `ld`) no ciclo de desenvolvimento, permitindo sobrescrita in-place de seções de máquina em tempo sub-10ms.
+3. **Linker In-Process via `mmap` para Linux ELF (Fase 2):** Emissor/patcher ELF nativo embutido que elimina a dependência de processos externos (`cc`, `mold`, `ld`) no ciclo de desenvolvimento, aplicando patch em staging quando o layout é compatível, sem promessa atual de tempo fixo.
 4. **Determinismo Ponta a Ponta e Harness de Verificação (Fases 3 e 4):** Garantia de reprodutibilidade bit a bit do binário final, independente de contagem de threads ou ordem de compilação, com harness automatizado de medição de cache-bust.
 
 ---
 
 ## 2. Motivação (Motivation)
 
-Atualmente, o Arandu possui um dos sistemas de queries incrementais mais granulares da indústria em memória (`crates/arandu_query`), provado em testes como `item_body_cutoff.rs`. No entanto, esse poder sofre de duas barreiras críticas:
+Na motivação original de 2026-09-12, queries incrementais em memória
+(`crates/arandu_query`, incluindo `item_body_cutoff.rs`) já preservavam cutoff,
+mas o caminho AOT ainda tinha duas barreiras. O estado auditado em 2026-10-15
+está na seção 8; a descrição monolítica abaixo é histórica:
 
 1. **Amnésia entre Sessões do CLI:** Cada comando `arandu build` instancia uma nova `DatabaseImpl`, executa em lote e descarta toda a memória. O early cutoff existe no LSP (processo longo), mas o desenvolvedor no terminal sempre paga o custo de compilação fria.
 2. **O Abismo da Última Milha (The Linker Bottleneck):** Ao final da compilação, o compilador emite um único arquivo `.o` volumoso e invoca um linker de sistema externo via fork/exec (`cc`/`clang`/GNU `ld`). O linker externo não tem ciência do grafo Salsa e re-linka 100% dos símbolos, tabelas e bibliotecas a cada pequena edição.
 
-Como resultado, enquanto a análise semântica de uma função alterada leva **2 ms**, o link final consome centenas de milissegundos a vários segundos. Fechar esse elo transforma o ciclo de desenvolvimento do Arandu no mais rápido entre as linguagens compiladas de sistemas.
+A hipótese original era que o link poderia dominar o custo de uma pequena
+edição semântica. O relatório por fase deve comprovar essa distribuição no
+workload medido; não há comparação nesta RFC que sustente liderança de
+performance entre linguagens.
 
 ---
 
 ## 3. Explicação em Nível de Guia (Guide-Level Explanation)
 
-Para o desenvolvedor Arandu, a experiência é completamente transparente e instantânea.
+A intenção é preservar o comando habitual, com cache/patch ou fallback. A saída e os tempos abaixo são ilustrativos; os gates medidos vivem no roadmap.
 
 ### Uso Cotidiano
 
 ```bash
-# Primeira compilação (fria): cria o cache em .arandu/incremental/
+# Primeira compilação: cria sessão/CGUs no layout target/<perfil>/incremental/
 $ arandu build
 Compilando projeto (frio: 48 funções, 3 módulos)
 Linkando artefato final: target/debug/meu_app [142ms]
@@ -54,7 +60,7 @@ In-process linker: patch exato ou fallback seguro
 ```
 
 ### Garantia de Reprodutibilidade
-O mesmo comando executado em outra máquina ou no CI com o mesmo código-fonte produzirá um binário com o mesmo hash criptográfico:
+A equivalência byte a byte é verificada com os mesmos inputs, toolchain/runtime, target, opções e demais entradas relevantes. Não se promete o mesmo binário entre targets/ABIs diferentes:
 
 ```bash
 $ sha256sum target/debug/meu_app
@@ -80,7 +86,7 @@ a8f5c3... target/debug/meu_app
 ### Fase 2: Linker In-Process via `mmap` (Linux ELF x86_64)
 - **Layout Verificado:** o ELF recém-linkado fornece os offsets exatos de `.text`, símbolos e GOT. O arquivo de layout é cache não confiável e inclui o BLAKE3 integral do executável.
 - **Sobrescrita Cirúrgica (In-Place Patching):**
-  1. O compilador abre o executável existente com `mmap(..., PROT_READ | PROT_WRITE, MAP_SHARED)`.
+  1. O CLI copia o executável verificado para staging e o patcher mapeia essa cópia com `mmap(..., PROT_READ | PROT_WRITE, MAP_SHARED)`; o publicado permanece imutável.
   2. Somente funções com tamanho exatamente igual ao slot anterior podem ser copiadas. Crescimento, redução ou mudança estrutural faz fallback.
   3. As relocações daquela função são recalculadas contra os endereços absolutos já estabilizados das outras funções e da runtime.
   4. Relocações para `.rodata`, seções ou formas desconhecidas nunca são aproximadas: fazem fallback para link completo.
@@ -88,13 +94,13 @@ a8f5c3... target/debug/meu_app
 - **Fallback Automático:** Para releases de produção (`--release`) ou arquiteturas não suportadas pelo linker embutido (ex: Windows MSVC, macOS), o CLI utiliza o caminho de emissão tradicional via linker do sistema (`cc`/`mold`).
 
 ### Fase 3: Auditoria de Determinismo Ponta a Ponta
-- Todo o pipeline de AMIR, alocação de IDs e emissão de código de máquina deve obedecer à ordenação monotônica do `SymbolId`.
+- Coleções que influenciam bytes usam ordem canônica; `SymbolId` conserva o par `{file_id, local_id}` e não se confunde com o alocador monotônico de FileId.
 - Proibição absoluta de iteração sobre coleções com hashing não-determinístico (`std::collections::HashMap`) em rotas que influenciem a geração de bytes. Adoção mandatória de `IndexMap`, `BTreeMap` ou vetores ordenados por ID canônico.
 
 ### Fase 4: Harness de Medição Científica
 - Criação de uma tarefa `xtask bench-incremental` que:
   1. Simula fluxos de edição reais (mutação de docstring, mutação de corpo de função privada, mutação de assinatura pública, adição de novo símbolo).
-  2. Valida se o SHA-256 do binário resultante é idêntico sob diferentes contagens de threads (`--threads=1` vs `--threads=16`).
+  2. Valida se o SHA-256 do binário resultante é idêntico sob diferentes contagens de threads (`RAYON_NUM_THREADS=1` vs `RAYON_NUM_THREADS=16`).
   3. Mede a taxa de cache-hit/cache-bust, a latência de ponta a ponta e os
      timers internos por fase em um relatório estruturado.
 
@@ -136,16 +142,40 @@ a8f5c3... target/debug/meu_app
 
 - Cutoff integral verifica a closure de inputs e o digest do executável; cache adulterado é miss e é reparado.
 - Em um miss seguro, fingerprints já capturados são transferidos para a nova sessão e o digest calculado pela publicação é reutilizado; compilador, runtime, stdlib e executável não são relidos apenas para duplicar hashes. Um conjunto integral de hits de CGU reutiliza o executável verificado sem relink.
-- O hash CGU v3 não usa `Debug`, spans, offsets de pools ou IDs sintéticos de composição como identidade de máquina. Cobre AMIR exaustivamente, layouts concretos/`repr(C)`, literais por conteúdo, assinaturas de callees, a closure de declarações fornecida ao `ObjectModule`, target, otimização, Cranelift e compilador. Hashing e emissão compartilham a closure por função (referências, callbacks e destruidores implícitos), não a superfície inteira do programa. Adicionar uma instância ou remover declaração não relacionada preserva objetos irmãos, com regressões byte a byte; mudanças de ABI/layout dependido invalidam o caller. A closure final do link continua verificada: remover uma CGU pode reutilizar os objetos restantes, mas não o executável que ainda a continha.
+- O hash CGU v5 não usa `Debug`, spans, offsets de pools ou IDs sintéticos de composição como identidade de máquina. Cobre AMIR exaustivamente, layouts concretos/`repr(C)`, literais por conteúdo, assinaturas de callees, a closure de declarações fornecida ao `ObjectModule`, target, otimização, Cranelift e compilador. Hashing e emissão compartilham a closure por função (referências, callbacks e destruidores implícitos), não a superfície inteira do programa. Adicionar uma instância ou remover declaração não relacionada preserva objetos irmãos, com regressões byte a byte; mudanças de ABI/layout dependido invalidam o caller. A closure final do link continua verificada: remover uma CGU pode reutilizar os objetos restantes, mas não o executável que ainda a continha.
 - O patch ELF valida digest, geometria de `.text`, ranges, tamanho exato e relocações antes do `mmap`; `msync` e `munmap` são verificados. `.rodata` e metadata hostil exercitam fallback em testes.
 - O teste ELF compara o executável incremental byte a byte com clean build para o mesmo source final. Linkers cuja geometria ou metadata não satisfazem a prova exata exercitam o fallback explícito e determinístico em vez de transformar indisponibilidade da otimização em erro de compilação.
 - `cargo run --locked -p xtask -- bench-incremental --verify-determinism` mede as cinco mutações, registra timings por fase no schema 2 e falha se SHA-256 divergir entre diretórios e `RAYON_NUM_THREADS=1/16`. A metodologia vive em [`docs/benchmarks/`](../benchmarks/README.md).
-- A meta de latência sub-10 ms ainda não foi atingida; por isso esta RFC permanece `Draft` e os tempos não são gate em runners compartilhados.
+- O daemon de build não está implementado: `commands/build.rs` cria uma nova
+  `DatabaseImpl` a cada build. O LSP e os testes de queries quentes não provam
+  persistência de sessão no CLI.
+- O patch atual copia a imagem inteira para staging, sincroniza o mapeamento
+  inteiro e calcula BLAKE3 integral. O artefato publicado é preservado, mas o
+  custo ainda pode escalar com o tamanho do executável.
+- O harness atual usa um programa mínimo de duas funções e uma amostra por
+  classe de edição. Não calcula p95 nem certifica um host de referência.
+  Seus hashes e timers não comprovam os budgets de produto.
+- Esta RFC permanece `Draft`; a fila permanente e os critérios de saída vivem
+  somente no [roadmap mestre](../arandu-compiler-roadmap-v0.1.md). No plano
+  revisável, `0.2.x` cobre motor quente e imagem dev recuperável, com p95 ≤100 ms
+  no host documentado; `0.3.x` cobre granularidade por instância, com p95 ≤10 ms
+  no workload/host documentados. Closures têm contrato próprio; o recorte AOT
+  não certifica sua semântica. CI compartilhada observa latência e verifica
+  correção, sem impor budgets do host de referência.
+- CAS global, LLVM e o restante do backlog não são requisitos implícitos do
+  motor quente. Dependências de correção demonstradas devem ser tratadas como
+  tais; a aprovação e a implementação de outras RFCs continuam independentes.
 
 ## 9. Questões em Aberto (Unresolved Questions)
 
-1. **Persistência semântica entre processos:** vale introduzir um daemon/servidor de build para conservar a DB Salsa, ou um formato estável de resultados por item?
-2. **Latência:** quais custos de inicialização, leitura integral de integridade e análise dominam o ciclo após o cutoff correto?
+1. **Serviço quente proposto:** definir protocolo versionado, identidade da sessão
+   (workspace, alvo, opções e toolchain), supervisão, filas limitadas/coalescidas,
+   cancelamento e fallback batch. O roadmap direciona o motor quente; formatos
+   persistentes por item não substituem esse marco nem serializam Salsa.
+2. **Publicação e latência:** medir inicialização, integridade, análise e publicação
+   em corpus repetido; validar kill/recovery e equivalência byte a byte com clean
+   build. A imagem dev pode sincronizar ranges/páginas alterados ou usar clone
+   CoW quando suportado, preservando o fallback atômico e artefatos imutáveis.
 
 ---
 

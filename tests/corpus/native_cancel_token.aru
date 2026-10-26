@@ -1,0 +1,34 @@
+module nativeCancelToken
+
+import std.sync.cancel_token as cancellation
+import std.thread as thread
+
+struct CancelJob {}
+
+public func CancelJob.run(self: own CancelJob, token: cancellation.CancelToken): int {
+    while !token.isCancelled() {
+        thread.yieldNow()
+    }
+    return 37
+}
+
+public func main(): int {
+    let token = cancellation.CancelToken.new()
+    let started = thread.spawnWith<cancellation.CancelToken, int, CancelJob>(
+        token.clone(), CancelJob {}
+    )
+    match started {
+        Result.Err(_) => { return 1 }
+        Result.Ok(handle) => {
+            token.cancel()
+            if !token.isCancelled() { return 2 }
+            match handle.join() {
+                Result.Err(_) => { return 3 }
+                Result.Ok(value) => {
+                    if value != 37 { return 4 }
+                }
+            }
+        }
+    }
+    return 0
+}

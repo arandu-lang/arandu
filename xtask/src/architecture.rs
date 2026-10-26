@@ -1,7 +1,7 @@
 //! Deterministic checks for workspace boundaries that are easy to erode in a
 //! seemingly local refactor.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -25,6 +25,55 @@ const PURE_CRATES: &[&str] = &[
     "arandu_web",
 ];
 
+const BACKEND_CRATES: &[&str] = &[
+    "arandu_backend_c",
+    "arandu_backend_cranelift",
+    "arandu_backend_llvm",
+    "arandu_backend_wasm",
+];
+
+/// Backends consume validated AMIR, layout and the codegen contract; front-end
+/// phases (lexer, parser, resolve, typeck, HIR lowering) stay out of reach.
+const BACKEND_ALLOWED_DEPENDENCIES: &[&str] = &[
+    "arandu_base",
+    "arandu_codegen",
+    "arandu_diagnostics",
+    "arandu_middle",
+    "arandu_mir",
+    "arandu_runtime",
+    "arandu_testing_contract",
+];
+
+/// Compiler phases and their contracts. They must never depend on backends,
+/// the query layer or drivers.
+const PHASE_CRATES: &[&str] = &[
+    "arandu_base",
+    "arandu_codegen",
+    "arandu_diagnostics",
+    "arandu_lexer",
+    "arandu_middle",
+    "arandu_mir",
+    "arandu_parser",
+    "arandu_resolve",
+    "arandu_semantics",
+    "arandu_testing_contract",
+    "arandu_typeck",
+];
+
+const DOWNSTREAM_CRATES: &[&str] = &[
+    "arandu_backend_c",
+    "arandu_backend_cranelift",
+    "arandu_backend_llvm",
+    "arandu_backend_wasm",
+    "arandu_cli",
+    "arandu_fuzz_support",
+    "arandu_ide",
+    "arandu_lsp",
+    "arandu_query",
+    "arandu_test_support",
+    "arandu_web",
+];
+
 const FS_EFFECT_MARKERS: &[&str] = &[
     "std::fs",
     "use std::{fs",
@@ -40,7 +89,7 @@ pub fn check(root: &Path) -> i32 {
     match violations(root) {
         Ok(violations) if violations.is_empty() => {
             println!(
-                "check-architecture: ok (Salsa ownership and pure-crate filesystem boundaries)"
+                "check-architecture: ok (Salsa ownership, transitive backend boundary, crate dependency direction and pure-crate filesystem boundaries)"
             );
             0
         }
@@ -61,6 +110,7 @@ pub fn check(root: &Path) -> i32 {
 fn violations(root: &Path) -> Result<Vec<String>, String> {
     let crates = root.join("crates");
     let mut violations = runtime_dependency_violations(&read_utf8(&root.join("Cargo.lock"))?)?;
+    let mut dependencies = BTreeMap::new();
 
     for entry in sorted_entries(&crates)? {
         let crate_root = entry.path();
@@ -72,11 +122,18 @@ fn violations(root: &Path) -> Result<Vec<String>, String> {
         };
 
         let manifest = crate_root.join("Cargo.toml");
-        if manifest.is_file() && crate_name != "arandu_query" && crate_name != "arandu_middle" {
+        if manifest.is_file() {
             let text = read_utf8(&manifest)?;
-            if text
-                .lines()
-                .any(|line| line.trim_start().starts_with("salsa ="))
+            dependencies.insert(
+                crate_name.to_owned(),
+                normal_dependencies(&text)
+                    .map_err(|error| format!("{}: {error}", relative(root, &manifest)))?,
+            );
+            if crate_name != "arandu_query"
+                && crate_name != "arandu_middle"
+                && text
+                    .lines()
+                    .any(|line| line.trim_start().starts_with("salsa ="))
             {
                 violations.push(format!(
                     "{} declares Salsa directly; only arandu_query owns execution and arandu_middle declares shared DB contracts",
@@ -117,7 +174,98 @@ fn violations(root: &Path) -> Result<Vec<String>, String> {
         }
     }
 
+    violations.extend(dependency_direction_violations(&dependencies));
     Ok(violations)
+}
+
+/// Normal (non-dev, non-build) dependencies, including target-specific ones,
+/// keyed by package name so renamed dependencies cannot hide an edge.
+fn normal_dependencies(manifest: &str) -> Result<BTreeSet<String>, String> {
+    let document: toml::Value =
+        toml::from_str(manifest).map_err(|error| format!("parse manifest: {error}"))?;
+    let mut tables = Vec::new();
+    tables.extend(document.get("dependencies"));
+    if let Some(targets) = document.get("target").and_then(toml::Value::as_table) {
+        tables.extend(
+            targets
+                .values()
+                .filter_map(|target| target.get("dependencies")),
+        );
+    }
+    let mut names = BTreeSet::new();
+    for table in tables {
+        let table = table.as_table().ok_or("dependencies must be a table")?;
+        for (key, spec) in table {
+            let name = spec
+                .get("package")
+                .and_then(toml::Value::as_str)
+                .unwrap_or(key);
+            names.insert(name.to_owned());
+        }
+    }
+    Ok(names)
+}
+
+fn dependency_direction_violations(
+    dependencies: &BTreeMap<String, BTreeSet<String>>,
+) -> Vec<String> {
+    let mut violations = Vec::new();
+    for (krate, deps) in dependencies {
+        let krate = krate.as_str();
+        if BACKEND_CRATES.contains(&krate) {
+            for path in forbidden_backend_paths(krate, dependencies) {
+                violations.push(format!(
+                    "{krate} reaches {} ({}); backends consume AMIR through arandu_middle, arandu_mir and arandu_codegen, not front-end phases",
+                    path[path.len() - 1],
+                    path.join(" -> ")
+                ));
+            }
+        }
+        for dep in deps.iter().map(String::as_str) {
+            if PHASE_CRATES.contains(&krate) && DOWNSTREAM_CRATES.contains(&dep) {
+                violations.push(format!(
+                    "{krate} depends on downstream crate {dep}; compiler phases must not depend on backends, queries or drivers"
+                ));
+            }
+        }
+    }
+    violations
+}
+
+/// Shortest path from `backend` to each workspace crate it may not reach, in
+/// breadth-first order. Transitive edges count: an upstream crate that pulls in
+/// a front-end phase recompiles every backend on each front-end edit.
+fn forbidden_backend_paths(
+    backend: &str,
+    dependencies: &BTreeMap<String, BTreeSet<String>>,
+) -> Vec<Vec<String>> {
+    let mut parent = BTreeMap::from([(backend.to_owned(), None::<String>)]);
+    let mut queue = VecDeque::from([backend.to_owned()]);
+    let mut forbidden = Vec::new();
+    while let Some(krate) = queue.pop_front() {
+        for dep in dependencies.get(&krate).into_iter().flatten() {
+            if !dep.starts_with("arandu_") || parent.contains_key(dep) {
+                continue;
+            }
+            parent.insert(dep.clone(), Some(krate.clone()));
+            if BACKEND_ALLOWED_DEPENDENCIES.contains(&dep.as_str()) {
+                queue.push_back(dep.clone());
+            } else {
+                forbidden.push(dep.clone());
+            }
+        }
+    }
+    forbidden
+        .into_iter()
+        .map(|target| {
+            let mut path = vec![target];
+            while let Some(Some(previous)) = parent.get(&path[path.len() - 1]) {
+                path.push(previous.clone());
+            }
+            path.reverse();
+            path
+        })
+        .collect()
 }
 
 /// The lock includes target-specific and dev dependencies. Check them all
@@ -223,6 +371,90 @@ mod tests {
         assert!(FS_EFFECT_MARKERS.contains(&"fs::read_to_string("));
         assert!(FS_EFFECT_MARKERS.contains(&"fs::write("));
         assert!("#[salsa::tracked]".contains("#[salsa"));
+    }
+
+    fn graph(edges: &[(&str, &[&str])]) -> BTreeMap<String, BTreeSet<String>> {
+        edges
+            .iter()
+            .map(|(krate, deps)| {
+                (
+                    (*krate).to_owned(),
+                    deps.iter().map(|dep| (*dep).to_owned()).collect(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn normal_dependencies_cover_targets_and_renames_but_not_dev() {
+        let manifest = r#"
+[dependencies]
+arandu_middle = { workspace = true }
+front = { package = "arandu_typeck", path = "../arandu_typeck" }
+[target.'cfg(unix)'.dependencies]
+arandu_parser = "0.1"
+[dev-dependencies]
+arandu_cli = { path = "../arandu_cli" }
+"#;
+        let deps = normal_dependencies(manifest).unwrap();
+        assert_eq!(
+            deps.into_iter().collect::<Vec<_>>(),
+            ["arandu_middle", "arandu_parser", "arandu_typeck"]
+        );
+    }
+
+    #[test]
+    fn backend_boundary_accepts_codegen_contracts() {
+        let edges = graph(&[
+            (
+                "arandu_backend_c",
+                &[
+                    "arandu_codegen",
+                    "arandu_middle",
+                    "arandu_mir",
+                    "rustc-hash",
+                ],
+            ),
+            ("arandu_typeck", &["arandu_middle", "arandu_resolve"]),
+        ]);
+        assert!(dependency_direction_violations(&edges).is_empty());
+    }
+
+    #[test]
+    fn backend_boundary_rejects_front_end_and_upward_edges() {
+        let edges = graph(&[
+            (
+                "arandu_backend_c",
+                &["arandu_middle", "arandu_semantics", "arandu_typeck"],
+            ),
+            ("arandu_typeck", &["arandu_query"]),
+        ]);
+        let violations = dependency_direction_violations(&edges);
+        assert_eq!(violations.len(), 3);
+        assert!(violations[0].contains("arandu_backend_c reaches arandu_semantics"));
+        assert!(violations[1].contains("arandu_backend_c reaches arandu_typeck"));
+        assert!(violations[2].contains("arandu_typeck depends on downstream crate arandu_query"));
+    }
+
+    #[test]
+    fn backend_boundary_rejects_front_end_reached_through_a_contract() {
+        let edges = graph(&[
+            ("arandu_backend_c", &["arandu_codegen", "arandu_mir"]),
+            ("arandu_codegen", &["arandu_middle"]),
+            ("arandu_mir", &["arandu_middle", "arandu_typeck"]),
+            ("arandu_middle", &["arandu_base", "arandu_parser"]),
+        ]);
+        let violations = dependency_direction_violations(&edges);
+        assert_eq!(
+            violations
+                .iter()
+                .map(|violation| violation.split(';').next().unwrap())
+                .collect::<Vec<_>>(),
+            [
+                "arandu_backend_c reaches arandu_typeck (arandu_backend_c -> arandu_mir -> arandu_typeck)",
+                "arandu_backend_c reaches arandu_parser (arandu_backend_c -> arandu_codegen -> arandu_middle -> arandu_parser)",
+            ]
+        );
     }
 
     #[test]

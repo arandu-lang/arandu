@@ -6,6 +6,7 @@ use crate::SymbolTable;
 use crate::hir::ReceiverKind;
 use crate::literal_pool::{AmirLiteralEntry, AmirLiteralPool};
 use crate::ops::{BinaryOp, UnaryOp};
+use std::fmt::Write;
 
 impl AmirProgram {
     #[must_use]
@@ -233,6 +234,35 @@ impl AmirRvalue {
             AmirRvalue::Use(op) => {
                 op.pretty_print_to(out, symbols, pool);
             }
+            AmirRvalue::VectorOp { op, left, right } => {
+                let _ = write!(out, "vector.{op:?} {left:?}, {right:?}");
+            }
+            AmirRvalue::VectorCompare { op, left, right } => {
+                let _ = write!(out, "vector.cmp.{op:?} {left:?}, {right:?}");
+            }
+            AmirRvalue::VectorSelect {
+                mask,
+                if_true,
+                if_false,
+            } => {
+                let _ = write!(out, "vector.select {mask:?}, {if_true:?}, {if_false:?}");
+            }
+            AmirRvalue::VectorSplat { value } => {
+                let _ = write!(out, "vector.splat {value:?}");
+            }
+            AmirRvalue::VectorShuffle { left, right, mask } => {
+                let _ = write!(out, "vector.shuffle {left:?}, {right:?}, {mask:?}");
+            }
+            AmirRvalue::VectorExtractLane { vector, lane } => {
+                let _ = write!(out, "vector.extract {vector:?}, {lane}");
+            }
+            AmirRvalue::VectorInsertLane {
+                vector,
+                lane,
+                value,
+            } => {
+                let _ = write!(out, "vector.insert {vector:?}, {lane}, {value:?}");
+            }
             AmirRvalue::Binary { op, left, right } => {
                 out.push_str(&format!(
                     "{} {}, {}",
@@ -268,11 +298,16 @@ impl AmirRvalue {
                 out.push_str(&field_strs.join(", "));
                 out.push_str(" }");
             }
-            AmirRvalue::IndexAccess { base, index } => {
+            AmirRvalue::IndexAccess {
+                base,
+                index,
+                in_bounds,
+            } => {
                 out.push_str(&format!(
-                    "{}[{}]",
+                    "{}[{}]{}",
                     base.to_pretty_string(symbols, pool),
-                    index.to_pretty_string(symbols, pool)
+                    index.to_pretty_string(symbols, pool),
+                    if *in_bounds { " /* in bounds */" } else { "" }
                 ));
             }
             AmirRvalue::Array { items } => {
@@ -511,9 +546,18 @@ impl AmirConstant {
                 AmirLiteralEntry::Float(v) => out.push_str(v),
                 AmirLiteralEntry::FloatBits(v) => out.push_str(&v.display()),
                 AmirLiteralEntry::Str(v) => out.push_str(&format!("\"{v}\"")),
+                AmirLiteralEntry::Bytes(bytes) => {
+                    // Raw non-UTF-8 blobs have no faithful text spelling.
+                    use std::fmt::Write as _;
+                    out.push_str("bytes<");
+                    for byte in bytes.iter() {
+                        let _ = write!(out, "{byte:02x}");
+                    }
+                    out.push('>');
+                }
                 AmirLiteralEntry::Char(v) => {
                     if let Some(value) = v.chars().next() {
-                        out.push_str(&arandu_lexer::char_literal(value));
+                        out.push_str(&arandu_base::lang::char_literal(value));
                     } else {
                         out.push_str("''");
                     }

@@ -504,6 +504,38 @@ mod tests {
     }
 
     #[test]
+    fn inlay_hints_show_parameter_names_for_calls() {
+        use lsp_types::{InlayHintLabel, Position, Range};
+
+        let text = concat!(
+            "func add(a: int, b: int): int {\n",
+            "    return a + b\n",
+            "}\n",
+            "func main(): int {\n",
+            "    return add(10, 20)\n",
+            "}\n",
+        );
+        let mut host = AnalysisHost::new();
+        let file = host.new_file("param_inlay.aru".into(), text.into());
+        let snap = host.snapshot();
+        let range = Range::new(Position::new(0, 0), Position::new(6, 0));
+        let hints = inlay_hints(&snap, file, text, range);
+        let param_hints: Vec<_> = hints
+            .iter()
+            .filter(|hint| hint.kind == Some(InlayHintKind::PARAMETER))
+            .collect();
+        assert_eq!(param_hints.len(), 2);
+        match &param_hints[0].label {
+            InlayHintLabel::String(s) => assert_eq!(s, "a:"),
+            _ => panic!("expected String label"),
+        }
+        match &param_hints[1].label {
+            InlayHintLabel::String(s) => assert_eq!(s, "b:"),
+            _ => panic!("expected String label"),
+        }
+    }
+
+    #[test]
     fn format_range_limits_edits_to_the_selected_item() {
         use crate::conv::position_to_offset;
         use arandu_base::LineIndex;

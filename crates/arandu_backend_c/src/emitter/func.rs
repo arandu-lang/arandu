@@ -5,7 +5,7 @@ use std::fmt::Write;
 use arandu_middle::amir::reachability::terminator_targets;
 use arandu_middle::amir::{AmirFunc, AmirOperand, AmirRvalue, AmirStmt};
 
-use super::{CEmitter, sanitize_c_ident};
+use super::CEmitter;
 
 impl<'a> CEmitter<'a> {
     pub(super) fn emit_func(&mut self, func: &AmirFunc) {
@@ -26,10 +26,10 @@ impl<'a> CEmitter<'a> {
         self.temp_expressions = vec![None; func.temps.len()];
         (self.rotations, self.rotation_elided) =
             super::rotations::plan(func, &self.program.literal_pool, self.interner);
-        let sym = self.symbols.get(func.symbol);
-        let name = sanitize_c_ident(self.symbols.host_func_name(sym));
+        let name = self.c_function_name(func.symbol);
+        let linkage = self.c_function_linkage(func.symbol);
         let ret_ty = self.c_func_return_type(func);
-        let _ = write!(&mut self.output, "{} {}(", ret_ty, name);
+        let _ = write!(&mut self.output, "{linkage}{} {}(", ret_ty, name);
         self.emit_func_parameters(func);
         let _ = writeln!(&mut self.output, ") {{");
 
@@ -61,16 +61,17 @@ impl<'a> CEmitter<'a> {
                 AmirStmt::Store { lhs, .. } | AmirStmt::Destroy(lhs) => {
                     used_locals.insert(lhs.local.as_usize());
                 }
-                AmirStmt::StorageLive(local) | AmirStmt::StorageDead(local) => {
-                    used_locals.insert(local.as_usize());
-                }
-                AmirStmt::Free(_) | AmirStmt::Nop => {}
+                // Storage markers emit no C, and block parameters bind temps:
+                // neither names a local, so neither may declare one.
+                AmirStmt::StorageLive(_)
+                | AmirStmt::StorageDead(_)
+                | AmirStmt::Free(_)
+                | AmirStmt::Nop => {}
             }
         }
         for block in &func.blocks {
             for param in func.block_params(block.params) {
                 used_temps.insert(param.id.as_usize());
-                used_locals.insert(param.local.as_usize());
             }
             arandu_middle::amir::visit::for_each_terminator_operand(&block.terminator, |op| {
                 if let AmirOperand::Copy(temp) | AmirOperand::Move(temp) = op {

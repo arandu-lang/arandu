@@ -357,7 +357,7 @@ func main(): int {{
 #[test]
 fn ide_slice_view_conflict_is_born_and_removed_incrementally() {
     let mut db = DatabaseImpl::new();
-    let file = db.new_file("slice_view.aru".into(), slice_view_source(false));
+    let file = db.new_stdlib_file("slice_view.aru".into(), slice_view_source(false));
     assert!(!codes(&db, file).iter().any(|code| code == "O003"));
 
     file.set_text(&mut db)

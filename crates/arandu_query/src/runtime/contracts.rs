@@ -2,7 +2,7 @@
 //! domains. Only structural instance keys and borrow paths cross those domains.
 
 use super::{runtime_raw_unit, Instance, RuntimeUnit};
-use crate::{db::HashEq, ArandCompilerDb, StableHash};
+use crate::{db::FingerprintEq, db::HashEq, ArandCompilerDb, StableHash};
 use arandu_middle::amir::{AmirOperand, AmirStmt};
 use arandu_middle::types::{ArType, FunctionInstance, ReturnBorrowSummary};
 use arandu_middle::{DiagCode, Diagnostic, Span, SymbolId};
@@ -156,7 +156,7 @@ pub fn instance_contracts<'db>(
             seen.insert(called.clone());
             pending.push_back(Instance::new(db, file, called));
         }
-        units.push((key, HashEq::share(unit)));
+        units.push((key, unit.clone()));
     }
     if !diagnostics.is_empty() {
         return HashEq::new(InstanceContracts {
@@ -236,10 +236,10 @@ pub fn instance_contracts<'db>(
 pub fn runtime_unit<'db>(
     db: &'db dyn ArandCompilerDb,
     instance: Instance<'db>,
-) -> HashEq<RuntimeUnit> {
+) -> FingerprintEq<RuntimeUnit> {
     let raw = runtime_raw_unit(db, instance);
     if raw.result.is_err() {
-        return HashEq::share(raw);
+        return raw.clone();
     }
     let contracts = instance_contracts(db, instance);
     let mut result = raw.result.clone();
@@ -267,13 +267,14 @@ pub fn runtime_unit<'db>(
     } else {
         result = Err(contracts.diagnostics.clone());
     }
-    HashEq::new(RuntimeUnit {
+    RuntimeUnit {
         result,
         context: std::sync::Arc::clone(&raw.context),
-        context_hash: raw.context_hash,
+        context_identity: raw.context_identity,
         instances: raw.instances.clone(),
         generated_symbols: raw.generated_symbols.clone(),
         borrow_summary,
         analysis_function,
-    })
+    }
+    .into_query_output(db, "runtime_unit")
 }

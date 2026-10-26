@@ -103,7 +103,7 @@ pub fn item_staged_typing(
     file: SourceFile,
     owner: SymbolId,
 ) -> HashEq<TypeCheckResult> {
-    let initial = passes::item_typing(db, file, owner);
+    let initial = &HashEq::from_fingerprinted(passes::item_typing(db, file, owner));
     if initial.type_info.ctfe_global_values.contains_key(&owner) {
         let mut checked = (**initial).clone();
         let source = passes::item_source_input(db, file, owner);

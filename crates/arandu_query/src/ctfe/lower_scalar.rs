@@ -178,7 +178,7 @@ pub(super) fn lower_scalar_function(
         );
         checked.diagnostics.extend(resolved.diagnostics);
         checked.diagnostics.extend(prerequisite_diagnostics);
-        HashEq::new(checked)
+        crate::db::FingerprintEq::exact(checked)
     };
     let build = || -> Result<Arc<CtfeFunction>, BuildFailure> {
         if let Some(diagnostics) = &resolution_diagnostics {

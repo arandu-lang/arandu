@@ -185,7 +185,7 @@ pub fn func_amir(
 fn source_runtime_unit(
     db: &dyn ArandCompilerDb,
     symbol: SymbolId,
-) -> Option<&HashEq<crate::runtime::RuntimeUnit>> {
+) -> Option<&crate::db::FingerprintEq<crate::runtime::RuntimeUnit>> {
     let source = db.source_file_by_id(symbol.file_id)?;
     let declarations = crate::passes::declaration_signatures(db, source);
     if declarations.symbols.try_get(symbol)?.kind != arandu_middle::SymbolKind::Func

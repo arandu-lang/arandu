@@ -196,7 +196,7 @@ pub fn runtime_program(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Run
             }
             Err(errors) => diagnostics.extend(errors.iter().cloned()),
         }
-        units.push((key, HashEq::share(checked)));
+        units.push((key, checked.clone()));
     }
     let file_path_key = |file_id: arandu_middle::db::FileId| {
         db.source_file_by_id(file_id)

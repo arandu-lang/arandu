@@ -1,6 +1,6 @@
 use super::capture::import_synthetic_captures;
 use super::{declaration_context, declaration_hir, function_hir, Instance, InstanceHir};
-use crate::db::HashEq;
+use crate::db::FingerprintEq;
 use crate::passes::{item_source_input, PreparedHir};
 use crate::{ArandCompilerDb, StableHash};
 use arandu_middle::{Diagnostic, Severity};
@@ -10,7 +10,7 @@ pub(super) fn build_instance_hir<'db>(
     instance: Instance<'db>,
     for_ctfe: bool,
     context: &crate::ctfe::DependencyContext,
-) -> HashEq<InstanceHir> {
+) -> FingerprintEq<InstanceHir> {
     let key = instance.key(db);
     let source = item_source_input(db, *instance.file(db), key.definition);
     let has_static_loop = if source.may_have_comptime && key.arguments.is_empty() {
@@ -46,11 +46,13 @@ pub(super) fn build_instance_hir<'db>(
     let staged = dependent_header
         || (source.may_have_comptime && (!key.arguments.is_empty() || has_static_loop));
     let template = if for_ctfe {
-        crate::ctfe::instances::instance_ctfe_hir(db, instance, context)
+        FingerprintEq::from_content(&crate::ctfe::instances::instance_ctfe_hir(
+            db, instance, context,
+        ))
     } else if staged {
-        crate::ctfe::instance_staged_hir(db, instance)
+        FingerprintEq::from_content(&crate::ctfe::instance_staged_hir(db, instance))
     } else {
-        HashEq::share(function_hir(db, *instance.file(db), key.definition))
+        function_hir(db, *instance.file(db), key.definition).clone()
     };
     let mut checked = template.type_check.clone();
     let mut hir = template.hir.as_ref().map(|source| {
@@ -154,7 +156,10 @@ pub(super) fn build_instance_hir<'db>(
             if !visited.insert(file_id) {
                 continue;
             }
-            let Some(context_file) = db.source_file_by_id(file_id) else {
+            let registered = db.source_file_by_id(file_id);
+            fingerprint.update(&file_id.to_le_bytes());
+            fingerprint.update(&[u8::from(registered.is_some())]);
+            let Some(context_file) = registered else {
                 continue;
             };
             if for_ctfe {
@@ -192,16 +197,20 @@ pub(super) fn build_instance_hir<'db>(
             } else {
                 diagnostics.extend(declarations.artifacts.diagnostics.iter().cloned());
             }
-            for (_, imported) in crate::passes::module_import_edges(db, context_file)
-                .iter()
-                .rev()
-            {
+            let edges = crate::passes::module_import_edges(db, context_file);
+            fingerprint.update(&(edges.len() as u64).to_le_bytes());
+            for (path, imported) in edges {
+                fingerprint.update(path.as_bytes());
+                fingerprint.update(&[0]);
+                fingerprint.update(&imported.map_or(u64::MAX, u64::from).to_le_bytes());
+            }
+            for (_, imported) in edges.iter().rev() {
                 if let Some(file_id) = imported {
                     pending.push(*file_id);
                 }
             }
         }
-        import_synthetic_captures(db, key, &mut checked);
+        import_synthetic_captures(db, key, &mut checked, &mut fingerprint);
         // Narrow CTFE declaration contexts contain local headers only. Retain
         // demanded imported intrinsic declarations before monomorphization;
         // otherwise a layout query becomes an unavailable external call.
@@ -239,15 +248,26 @@ pub(super) fn build_instance_hir<'db>(
     {
         hir = None;
     }
-    HashEq::new(InstanceHir::new(
-        PreparedHir {
+    let source_fingerprint = fingerprint.finalize();
+    let output = InstanceHir {
+        artifacts: PreparedHir {
             hir,
             type_check: checked,
             diagnostics,
-            source_fingerprint: fingerprint.finalize(),
+            source_fingerprint,
         },
         function,
         instances,
         generated_symbols,
-    ))
+    };
+    if for_ctfe || staged {
+        return FingerprintEq::exact(output);
+    }
+    // Outside staging and CTFE, the output is a deterministic function of the
+    // digests folded into `source_fingerprint`: the template, the instance,
+    // the declaration contexts, import edges and captures.
+    let mut identity = blake3::Hasher::new();
+    identity.update(b"InstanceHir/fingerprint/v1");
+    identity.update(source_fingerprint.as_bytes());
+    FingerprintEq::fingerprinted(db, "instance_hir", output, identity.finalize())
 }

@@ -19,6 +19,11 @@ impl ModuleSignatures {
         let hash = crate::stable_hash::type_signature_hash(&value);
         Self { value, hash }
     }
+
+    /// The digest Salsa compares this output by, for input fingerprints.
+    pub(crate) fn identity(&self) -> blake3::Hash {
+        self.hash
+    }
 }
 
 impl PartialEq for ModuleSignatures {

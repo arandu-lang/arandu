@@ -1,4 +1,4 @@
-use crate::db::HashEq;
+use crate::db::{FingerprintEq, HashEq};
 use crate::{ArandCompilerDb, SourceFile};
 use arandu_parser::Program;
 use arandu_semantics::TypeCheckResult;
@@ -182,17 +182,31 @@ pub fn item_typing(
     db: &dyn ArandCompilerDb,
     file: SourceFile,
     item_sym: arandu_middle::SymbolId,
-) -> HashEq<TypeCheckResult> {
+) -> FingerprintEq<TypeCheckResult> {
     let body_in = item_source_input(db, file, item_sym);
     let signatures = super::signatures::declaration_signatures(db, file);
+    // Every read is folded in, including those that only select a branch.
+    let mut identity = blake3::Hasher::new();
+    identity.update(b"ItemTyping/fingerprint/v1");
+    identity.update(&item_sym.file_id.to_le_bytes());
+    identity.update(&item_sym.local_id.0.to_le_bytes());
+    identity.update(crate::StableHash::stable_hash(body_in).as_bytes());
+    identity.update(signatures.identity().as_bytes());
     if signatures
         .resolved
         .deferred_comptime_functions
         .contains(&item_sym)
     {
-        return HashEq::from_arc(Arc::clone(&signatures.value));
+        identity.update(b"deferred");
+        return FingerprintEq::fingerprinted(
+            db,
+            "item_typing",
+            Arc::clone(&signatures.value),
+            identity.finalize(),
+        );
     }
     let arguments = crate::ctfe::item_const_arguments(db, file, item_sym);
+    identity.update(crate::StableHash::stable_hash(arguments).as_bytes());
     let mut staged;
     let initial = if arguments.values.is_empty()
         && arguments.typed_values.is_empty()
@@ -215,13 +229,13 @@ pub fn item_typing(
         &staged
     };
     let mut concrete;
-    let initial = if initial.type_info.deferred_headers.contains(&item_sym)
+    let deferred_header = initial.type_info.deferred_headers.contains(&item_sym)
         && !initial
             .type_info
             .generic_params
             .get(&item_sym)
-            .is_some_and(|parameters| !parameters.is_empty())
-    {
+            .is_some_and(|parameters| !parameters.is_empty());
+    let initial = if deferred_header {
         concrete = initial.clone();
         let key = arandu_middle::types::FunctionInstance {
             definition: item_sym,
@@ -235,7 +249,7 @@ pub fn item_typing(
             &crate::ctfe::DependencyContext::default(),
         ) {
             concrete.diagnostics.extend(errors);
-            return HashEq::new(concrete);
+            return FingerprintEq::exact(concrete);
         }
         &concrete
     } else {
@@ -251,7 +265,13 @@ pub fn item_typing(
     );
     res.diagnostics
         .extend(arguments.diagnostics.iter().cloned());
-    HashEq::new(res)
+    // `prepare_owner` reads are not fingerprinted, and a failed header read
+    // leaves a diagnostic without installing the header it read.
+    if deferred_header || !res.diagnostics.is_empty() {
+        return FingerprintEq::exact(res);
+    }
+    crate::ctfe::contracts::fingerprint_installed_headers(db, initial, &res, &mut identity);
+    FingerprintEq::fingerprinted(db, "item_typing", res, identity.finalize())
 }
 
 /// Composed file typeck: signatures + per-item body memos (P2).

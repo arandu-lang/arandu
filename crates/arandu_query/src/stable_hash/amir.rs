@@ -81,18 +81,10 @@ impl StableHash for crate::passes::LowerAmirArtifacts {
 
 impl StableHash for crate::passes::PreparedHir {
     fn stable_hash(&self) -> blake3::Hash {
-        self.stable_hash_with_type_check(self.type_check.stable_hash())
-    }
-}
-
-impl crate::passes::PreparedHir {
-    /// The [`StableHash`] digest, given an already computed
-    /// `self.type_check.stable_hash()`.
-    pub(crate) fn stable_hash_with_type_check(&self, type_check: blake3::Hash) -> blake3::Hash {
         let mut hash = Hasher::new();
         hash.update(b"PreparedHir/v1");
         hash.update(self.source_fingerprint.as_bytes());
-        hash.update(type_check.as_bytes());
+        hash.update(self.type_check.stable_hash().as_bytes());
         hash.update(self.diagnostics.stable_hash().as_bytes());
         hash.update(&[u8::from(self.hir.is_some())]);
         hash.finalize()

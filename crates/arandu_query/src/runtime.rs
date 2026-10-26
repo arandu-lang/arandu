@@ -2,7 +2,7 @@
 //! constants and nominal metadata; it never lowers a sibling function body.
 
 use crate::ctfe::item_staged_typing as item_typing;
-use crate::db::HashEq;
+use crate::db::{FingerprintEq, HashEq};
 use crate::passes::{declaration_signatures, item_source_input, PreparedHir};
 use crate::{ArandCompilerDb, SourceFile, StableHash};
 use arandu_middle::types::FunctionInstance;
@@ -37,36 +37,15 @@ pub struct InstanceHir {
     pub function: Option<SymbolId>,
     pub instances: Vec<(SymbolId, FunctionInstance)>,
     pub generated_symbols: Vec<SymbolId>,
-    /// `artifacts.type_check.stable_hash()`. The context holds the module's
-    /// declaration closure, so it is hashed once here and reused by the units.
-    type_check_hash: blake3::Hash,
-}
-
-impl InstanceHir {
-    fn new(
-        artifacts: PreparedHir,
-        function: Option<SymbolId>,
-        instances: Vec<(SymbolId, FunctionInstance)>,
-        generated_symbols: Vec<SymbolId>,
-    ) -> Self {
-        let type_check_hash = artifacts.type_check.stable_hash();
-        Self {
-            artifacts,
-            function,
-            instances,
-            generated_symbols,
-            type_check_hash,
-        }
-    }
 }
 
 #[derive(Debug)]
 pub struct RuntimeUnit {
     pub result: Result<arandu_semantics::FunctionUnit, Vec<Diagnostic>>,
     pub context: std::sync::Arc<arandu_semantics::TypeCheckResult>,
-    /// `context.stable_hash()`, inherited from the [`InstanceHir`] that owns
-    /// the same context content.
-    context_hash: blake3::Hash,
+    /// Identity of the [`InstanceHir`] that built `context`. The fingerprint
+    /// uses it instead of rehashing the declaration closure in `context`.
+    context_identity: blake3::Hash,
     pub instances: Vec<(SymbolId, FunctionInstance)>,
     pub generated_symbols: Vec<SymbolId>,
     pub borrow_summary: Option<arandu_middle::types::ReturnBorrowSummary>,
@@ -114,11 +93,7 @@ impl StableHash for InstanceHir {
     fn stable_hash(&self) -> blake3::Hash {
         let mut hash = blake3::Hasher::new();
         hash.update(b"InstanceHir/v1");
-        hash.update(
-            self.artifacts
-                .stable_hash_with_type_check(self.type_check_hash)
-                .as_bytes(),
-        );
+        hash.update(self.artifacts.stable_hash().as_bytes());
         if let Some(function) = self.function {
             hash.update(&[1]);
             hash.update(&function.file_id.to_le_bytes());
@@ -141,9 +116,30 @@ impl StableHash for InstanceHir {
 
 impl StableHash for RuntimeUnit {
     fn stable_hash(&self) -> blake3::Hash {
+        self.hash_with_context(b"RuntimeUnit/v1", self.context.stable_hash())
+    }
+}
+
+impl RuntimeUnit {
+    fn into_query_output(
+        self,
+        db: &dyn ArandCompilerDb,
+        kind: &'static str,
+    ) -> FingerprintEq<Self> {
+        let fingerprint = self.fingerprint();
+        FingerprintEq::fingerprinted(db, kind, self, fingerprint)
+    }
+
+    /// Input fingerprint: the unit's own content with the context replaced by
+    /// the identity of the instance that built it. O(unit), not O(program).
+    fn fingerprint(&self) -> blake3::Hash {
+        self.hash_with_context(b"RuntimeUnit/fingerprint/v1", self.context_identity)
+    }
+
+    fn hash_with_context(&self, tag: &[u8], context: blake3::Hash) -> blake3::Hash {
         let mut hash = blake3::Hasher::new();
-        hash.update(b"RuntimeUnit/v1");
-        hash.update(self.context_hash.as_bytes());
+        hash.update(tag);
+        hash.update(context.as_bytes());
         match &self.result {
             Ok(unit) => {
                 hash.update(&[1]);
@@ -198,7 +194,7 @@ fn instance_hir_cycle<'db>(
     db: &'db dyn ArandCompilerDb,
     _id: salsa::Id,
     instance: Instance<'db>,
-) -> HashEq<InstanceHir> {
+) -> FingerprintEq<InstanceHir> {
     // Recovery may run while headers and the selected root are themselves
     // active. Read only the interned identity, never ask another body/header
     // query for a "better" fallback and recreate the same dependency cycle.
@@ -211,17 +207,17 @@ fn instance_hir_cycle<'db>(
     .with_primary_label("cyclic compile-time dependency")];
     let mut checked = arandu_semantics::TypeCheckResult::empty();
     checked.diagnostics = diagnostics.clone();
-    HashEq::new(InstanceHir::new(
-        PreparedHir {
+    FingerprintEq::exact(InstanceHir {
+        artifacts: PreparedHir {
             hir: None,
             type_check: checked,
             diagnostics,
             source_fingerprint: key.stable_hash(),
         },
-        None,
-        Vec::new(),
-        Vec::new(),
-    ))
+        function: None,
+        instances: Vec::new(),
+        generated_symbols: Vec::new(),
+    })
 }
 
 #[salsa::tracked(cycle_result = instance_hir_cycle)]
@@ -234,7 +230,7 @@ fn instance_hir_cycle<'db>(
 pub fn instance_hir<'db>(
     db: &'db dyn ArandCompilerDb,
     instance: Instance<'db>,
-) -> HashEq<InstanceHir> {
+) -> FingerprintEq<InstanceHir> {
     build::build_instance_hir(
         db,
         instance,
@@ -249,7 +245,7 @@ fn instance_ctfe_hir_cycle<'db>(
     id: salsa::Id,
     instance: Instance<'db>,
     _context: crate::ctfe::DependencyContext,
-) -> HashEq<InstanceHir> {
+) -> FingerprintEq<InstanceHir> {
     instance_hir_cycle(db, id, instance)
 }
 
@@ -258,7 +254,7 @@ pub(crate) fn instance_ctfe_hir_in_context<'db>(
     db: &'db dyn ArandCompilerDb,
     instance: Instance<'db>,
     context: crate::ctfe::DependencyContext,
-) -> HashEq<InstanceHir> {
+) -> FingerprintEq<InstanceHir> {
     build::build_instance_hir(db, instance, true, &context)
 }
 
@@ -272,7 +268,7 @@ pub(crate) fn instance_ctfe_hir_in_context<'db>(
 pub fn runtime_raw_unit<'db>(
     db: &'db dyn ArandCompilerDb,
     instance: Instance<'db>,
-) -> HashEq<RuntimeUnit> {
+) -> FingerprintEq<RuntimeUnit> {
     let concrete = instance_hir(db, instance);
     let result = match (&concrete.artifacts.hir, concrete.function) {
         (Some(hir), Some(symbol)) => hir
@@ -313,15 +309,16 @@ pub fn runtime_raw_unit<'db>(
             Err(diagnostics)
         }
     };
-    HashEq::new(RuntimeUnit {
+    RuntimeUnit {
         result,
         context: std::sync::Arc::new(concrete.artifacts.type_check.clone()),
-        context_hash: concrete.type_check_hash,
+        context_identity: concrete.stable_hash(),
         instances: concrete.instances.clone(),
         generated_symbols: concrete.generated_symbols.clone(),
         borrow_summary: None,
         analysis_function: None,
-    })
+    }
+    .into_query_output(db, "runtime_raw_unit")
 }
 
 impl StableHash for DeclarationHir {
@@ -415,9 +412,11 @@ pub fn function_hir(
     db: &dyn ArandCompilerDb,
     file: SourceFile,
     symbol: SymbolId,
-) -> HashEq<PreparedHir> {
+) -> FingerprintEq<PreparedHir> {
     if symbol.is_synthetic() {
-        return capture::thread_capture_function_hir(db, file, symbol);
+        return FingerprintEq::from_content(&capture::thread_capture_function_hir(
+            db, file, symbol,
+        ));
     }
     let source = item_source_input(db, file, symbol);
     let item = item_typing(db, file, symbol);
@@ -453,6 +452,7 @@ pub fn function_hir(
     let mut fingerprint = blake3::Hasher::new();
     fingerprint.update(b"FunctionHir/v1");
     fingerprint.update(source.stable_hash().as_bytes());
+    let source_fingerprint = fingerprint.finalize();
     let mut diagnostics = Vec::new();
     let hir = match arandu_semantics::lower_function_to_hir(&mut checked, &source.program, symbol) {
         Ok(hir) => hir,
@@ -461,12 +461,26 @@ pub fn function_hir(
             None
         }
     };
-    HashEq::new(PreparedHir {
-        hir,
-        type_check: checked,
-        diagnostics,
-        source_fingerprint: fingerprint.finalize(),
-    })
+    // The output is a deterministic function of the item source, its typing,
+    // the module declarations (diagnostics) and the selected symbol.
+    let mut identity = blake3::Hasher::new();
+    identity.update(b"FunctionHir/fingerprint/v1");
+    identity.update(source_fingerprint.as_bytes());
+    identity.update(item.stable_hash().as_bytes());
+    identity.update(declared.identity().as_bytes());
+    identity.update(&symbol.file_id.to_le_bytes());
+    identity.update(&symbol.local_id.0.to_le_bytes());
+    FingerprintEq::fingerprinted(
+        db,
+        "function_hir",
+        PreparedHir {
+            hir,
+            type_check: checked,
+            diagnostics,
+            source_fingerprint,
+        },
+        identity.finalize(),
+    )
 }
 
 #[cfg(test)]
@@ -494,7 +508,9 @@ mod tests {
     }
 
     #[test]
-    fn cached_context_hashes_match_the_context_contents() {
+    fn units_inherit_the_instance_context_identity_and_track_imported_headers() {
+        use salsa::Setter;
+
         let mut db = crate::DatabaseImpl::new();
         let library = db.new_file(
             "calc.aru".into(),
@@ -504,19 +520,24 @@ mod tests {
             "main.aru".into(),
             "import calc\nfunc main(): int { return calc.double(21) }".into(),
         );
-        for (source, name) in [(file, "main"), (library, "double")] {
-            let id = instance(&db, source, name);
-            let concrete = instance_hir(&db, id);
-            assert_eq!(
-                concrete.type_check_hash,
-                concrete.artifacts.type_check.stable_hash()
-            );
-            let raw = runtime_raw_unit(&db, id);
-            let unit = runtime_unit(&db, id);
+        let identity = |db: &crate::DatabaseImpl| {
+            let id = instance(db, file, "main");
+            let concrete = instance_hir(db, id);
+            let raw = runtime_raw_unit(db, id);
+            let unit = runtime_unit(db, id);
             assert!(unit.result.is_ok(), "{:?}", unit.result);
             for checked in [&raw, &unit] {
-                assert_eq!(checked.context_hash, checked.context.stable_hash());
+                assert_eq!(checked.context_identity, concrete.stable_hash());
             }
-        }
+            concrete.stable_hash()
+        };
+        let before = identity(&db);
+        library.set_text(&mut db).to(std::sync::Arc::from(
+            "module calc\npublic func double(value: int, extra: int): int { return value * 2 + extra }",
+        ));
+        file.set_text(&mut db).to(std::sync::Arc::from(
+            "import calc\nfunc main(): int { return calc.double(21, 0) }",
+        ));
+        assert_ne!(identity(&db), before);
     }
 }

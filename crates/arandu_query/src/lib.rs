@@ -9,6 +9,7 @@ pub mod doc_store;
 pub mod docs;
 pub mod edit_vfs;
 pub mod explain;
+mod fingerprint;
 pub mod highlight;
 pub mod lockfile;
 pub mod manifest;

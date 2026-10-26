@@ -311,7 +311,7 @@ impl LowerCtx<'_> {
             && self.builder.current_block.is_some()
         {
             for local in scope.into_iter().rev() {
-                if self.local_needs_scope_drop(local) {
+                if self.local_needs_scope_end(local) {
                     self.push_stmt(crate::amir::AmirStmt::StorageDead(local));
                 }
             }
@@ -330,10 +330,16 @@ impl LowerCtx<'_> {
             .flat_map(|scope| scope.iter().rev().copied())
             .collect::<Vec<_>>();
         for local in locals {
-            if self.local_needs_scope_drop(local) {
+            if self.local_needs_scope_end(local) {
                 self.push_stmt(crate::amir::AmirStmt::StorageDead(local));
             }
         }
+    }
+
+    /// A scope end is marked for locals that need cleanup or were borrowed:
+    /// the borrow checker rejects a borrow still live at the marker.
+    fn local_needs_scope_end(&self, local: LocalId) -> bool {
+        self.borrowed_locals.contains(&local) || self.local_needs_scope_drop(local)
     }
 
     fn local_needs_scope_drop(&self, local: LocalId) -> bool {

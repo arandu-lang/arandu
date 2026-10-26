@@ -50,6 +50,7 @@ pub(crate) fn lower_func(
         static_expansion_product: 1,
         static_expansion_depth: 0,
         local_scopes: Vec::new(),
+        borrowed_locals: rustc_hash::FxHashSet::default(),
         literal_pool,
         defer_frames: Vec::new(),
         temp_states: Vec::new(),

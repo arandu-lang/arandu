@@ -154,6 +154,9 @@ impl LowerCtx<'_> {
                         self.locals[idx].is_memory = true;
                     }
                 }
+                if !through_ptr {
+                    self.borrowed_locals.insert(place.local);
+                }
                 let dest = target.unwrap_or_else(|| self.new_temp_id(expr_ty));
                 let rv = if matches!(op, UnaryOp::RefMut) {
                     AmirRvalue::BorrowMut(place)
@@ -319,6 +322,7 @@ impl LowerCtx<'_> {
                 None => arg_expr.ty,
             };
             let dest = self.new_temp_id(formal_tid);
+            self.borrowed_locals.insert(place.local);
             let rv = if exclusive {
                 AmirRvalue::BorrowMut(place)
             } else {

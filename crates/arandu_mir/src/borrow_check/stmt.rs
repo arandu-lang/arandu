@@ -204,7 +204,21 @@ fn check_stmt(
                 ));
             }
         }
-        AmirStmt::StorageLive(_) | AmirStmt::StorageDead(_) | AmirStmt::Nop => {}
+        // A borrowed local whose scope ends while the borrow is still used
+        // (e.g. passed out through a jump argument) would dangle.
+        AmirStmt::StorageDead(local) => {
+            let place = AmirPlace {
+                local: *local,
+                projections: smallvec::SmallVec::new(),
+            };
+            if super::places::place_borrowed_at(&place, live, facts, point) {
+                diags.push((
+                    block,
+                    super::diag::destroy_diag(*local, func, symbols, facts, live, block),
+                ));
+            }
+        }
+        AmirStmt::StorageLive(_) | AmirStmt::Nop => {}
     }
 }
 

@@ -287,6 +287,24 @@ func main(): int {
 "#,
         3,
     ),
+    (
+        "ref_to_scalar_within_its_scope",
+        r#"func main(): int {
+    let a = 5
+    let mut total = 0
+    let mut i = 0
+    while i < 3 {
+        let b = i * 2
+        let r = ref b
+        total = total + *r
+        i = i + 1
+    }
+    let r2 = ref a
+    return total + *r2
+}
+"#,
+        11,
+    ),
 ];
 
 #[test]
@@ -489,6 +507,20 @@ func main(): int {
         s = other.asSlice()
     }
     return s[0]
+}
+"#,
+        "O006",
+    ),
+    (
+        "ref_to_inner_scalar_escapes_its_scope",
+        r#"func main(): int {
+    let a = 5
+    let mut r = ref a
+    if a > 0 {
+        let b = 9
+        r = ref b
+    }
+    return *r
 }
 "#,
         "O006",

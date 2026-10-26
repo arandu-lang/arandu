@@ -446,6 +446,9 @@ pub(crate) struct LowerCtx<'a> {
     /// Lexical local scopes used to emit StorageDead on block exits and loop
     /// control-flow edges. Drop elaboration turns these markers into cleanup.
     local_scopes: Vec<Vec<LocalId>>,
+    /// Locals whose address a `ref`/`mut ref` took. Their scope end is marked
+    /// even without a destructor, so a borrow cannot outlive them.
+    borrowed_locals: rustc_hash::FxHashSet<LocalId>,
     literal_pool: &'a mut AmirLiteralPool,
     defer_frames: Vec<DeferFrame>,
     temp_states: Vec<MoveState>,

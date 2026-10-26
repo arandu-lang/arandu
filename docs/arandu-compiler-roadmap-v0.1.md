@@ -110,6 +110,7 @@ Ordem imediata para a próxima campanha, mantendo correções independentes na
 | P1 / HOT.1 | baseline representativo e medição repetida de latência, CPU/RSS, hits e invalidação | xtask/benchmarks; p50/p95 e comparação clean/batch/quente com host/corpus/configuração documentados |
 | P1 / HOT.2–6 | sessão reutilizável, protocolo/supervisor, imagem dev, recuperação e endurance | CLI/query/codegen; gates 0.2 abaixo, sem I/O nas queries |
 | P1 / AGG.1 | reproduzir e classificar gaps de lifetime/cleanup dos fallbacks admitidos; correção local de GenArena.get com Copy e novo getRef para impedir duplicação de owners | MIR/backends; resultados corretos, alloc/free e RSS limitado; bug de memória reproduzido bloqueia release |
+| P1 / WASM.FLOAT | `ToStr` de `f64` no Wasm imprime até 15 dígitos significativos; valores que precisam de 16 ou 17 (`0.1 + 0.2`) divergem do runtime. Adiado da 0.1.11: exige um algoritmo de round-trip exato (Schubfach/Ryu) em Wasm sem inchar módulos que não formatam float | backend Wasm; mesmo texto que `format_f64_v01` no corpus de paridade de float, emitido só quando o módulo formata `f64`, com custo de tamanho medido |
 | P2 / CT.4–5 e IDE | campanha de editor/playground e ampliação do corpus real | query/IDE/web/extensão; prova correspondente, sem equiparar smoke instalado ao universo de alvos |
 | P2 / SL_T, SL_P | fechar soak e evidência nativa específica antes de promover `gold` | harness/runtime; artefatos versionados por campanha e matriz descrita nos contratos |
 

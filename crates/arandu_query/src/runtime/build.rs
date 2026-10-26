@@ -239,8 +239,8 @@ pub(super) fn build_instance_hir<'db>(
     {
         hir = None;
     }
-    HashEq::new(InstanceHir {
-        artifacts: PreparedHir {
+    HashEq::new(InstanceHir::new(
+        PreparedHir {
             hir,
             type_check: checked,
             diagnostics,
@@ -249,5 +249,5 @@ pub(super) fn build_instance_hir<'db>(
         function,
         instances,
         generated_symbols,
-    })
+    ))
 }

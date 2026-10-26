@@ -270,6 +270,7 @@ pub fn runtime_unit<'db>(
     HashEq::new(RuntimeUnit {
         result,
         context: std::sync::Arc::clone(&raw.context),
+        context_hash: raw.context_hash,
         instances: raw.instances.clone(),
         generated_symbols: raw.generated_symbols.clone(),
         borrow_summary,

@@ -37,12 +37,36 @@ pub struct InstanceHir {
     pub function: Option<SymbolId>,
     pub instances: Vec<(SymbolId, FunctionInstance)>,
     pub generated_symbols: Vec<SymbolId>,
+    /// `artifacts.type_check.stable_hash()`. The context holds the module's
+    /// declaration closure, so it is hashed once here and reused by the units.
+    type_check_hash: blake3::Hash,
+}
+
+impl InstanceHir {
+    fn new(
+        artifacts: PreparedHir,
+        function: Option<SymbolId>,
+        instances: Vec<(SymbolId, FunctionInstance)>,
+        generated_symbols: Vec<SymbolId>,
+    ) -> Self {
+        let type_check_hash = artifacts.type_check.stable_hash();
+        Self {
+            artifacts,
+            function,
+            instances,
+            generated_symbols,
+            type_check_hash,
+        }
+    }
 }
 
 #[derive(Debug)]
 pub struct RuntimeUnit {
     pub result: Result<arandu_semantics::FunctionUnit, Vec<Diagnostic>>,
     pub context: std::sync::Arc<arandu_semantics::TypeCheckResult>,
+    /// `context.stable_hash()`, inherited from the [`InstanceHir`] that owns
+    /// the same context content.
+    context_hash: blake3::Hash,
     pub instances: Vec<(SymbolId, FunctionInstance)>,
     pub generated_symbols: Vec<SymbolId>,
     pub borrow_summary: Option<arandu_middle::types::ReturnBorrowSummary>,
@@ -90,7 +114,11 @@ impl StableHash for InstanceHir {
     fn stable_hash(&self) -> blake3::Hash {
         let mut hash = blake3::Hasher::new();
         hash.update(b"InstanceHir/v1");
-        hash.update(self.artifacts.stable_hash().as_bytes());
+        hash.update(
+            self.artifacts
+                .stable_hash_with_type_check(self.type_check_hash)
+                .as_bytes(),
+        );
         if let Some(function) = self.function {
             hash.update(&[1]);
             hash.update(&function.file_id.to_le_bytes());
@@ -115,7 +143,7 @@ impl StableHash for RuntimeUnit {
     fn stable_hash(&self) -> blake3::Hash {
         let mut hash = blake3::Hasher::new();
         hash.update(b"RuntimeUnit/v1");
-        hash.update(self.context.stable_hash().as_bytes());
+        hash.update(self.context_hash.as_bytes());
         match &self.result {
             Ok(unit) => {
                 hash.update(&[1]);
@@ -183,17 +211,17 @@ fn instance_hir_cycle<'db>(
     .with_primary_label("cyclic compile-time dependency")];
     let mut checked = arandu_semantics::TypeCheckResult::empty();
     checked.diagnostics = diagnostics.clone();
-    HashEq::new(InstanceHir {
-        artifacts: PreparedHir {
+    HashEq::new(InstanceHir::new(
+        PreparedHir {
             hir: None,
             type_check: checked,
             diagnostics,
             source_fingerprint: key.stable_hash(),
         },
-        function: None,
-        instances: Vec::new(),
-        generated_symbols: Vec::new(),
-    })
+        None,
+        Vec::new(),
+        Vec::new(),
+    ))
 }
 
 #[salsa::tracked(cycle_result = instance_hir_cycle)]
@@ -288,6 +316,7 @@ pub fn runtime_raw_unit<'db>(
     HashEq::new(RuntimeUnit {
         result,
         context: std::sync::Arc::new(concrete.artifacts.type_check.clone()),
+        context_hash: concrete.type_check_hash,
         instances: concrete.instances.clone(),
         generated_symbols: concrete.generated_symbols.clone(),
         borrow_summary: None,
@@ -438,4 +467,56 @@ pub fn function_hir(
         diagnostics,
         source_fingerprint: fingerprint.finalize(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn instance<'db>(db: &'db crate::DatabaseImpl, file: SourceFile, name: &str) -> Instance<'db> {
+        let declarations = crate::passes::declaration_signatures(db, file);
+        let parsed = crate::passes::parse(db, file);
+        let Ok(program) = &**parsed else {
+            panic!("valid source");
+        };
+        let definition = arandu_semantics::body_item_symbols(program, &declarations.resolved)
+            .into_iter()
+            .find(|id| declarations.symbols.get(*id).name == name)
+            .unwrap_or_else(|| panic!("function `{name}`"));
+        Instance::new(
+            db,
+            file,
+            FunctionInstance {
+                definition,
+                arguments: Vec::new(),
+            },
+        )
+    }
+
+    #[test]
+    fn cached_context_hashes_match_the_context_contents() {
+        let mut db = crate::DatabaseImpl::new();
+        let library = db.new_file(
+            "calc.aru".into(),
+            "module calc\npublic func double(value: int): int { return value * 2 }".into(),
+        );
+        let file = db.new_file(
+            "main.aru".into(),
+            "import calc\nfunc main(): int { return calc.double(21) }".into(),
+        );
+        for (source, name) in [(file, "main"), (library, "double")] {
+            let id = instance(&db, source, name);
+            let concrete = instance_hir(&db, id);
+            assert_eq!(
+                concrete.type_check_hash,
+                concrete.artifacts.type_check.stable_hash()
+            );
+            let raw = runtime_raw_unit(&db, id);
+            let unit = runtime_unit(&db, id);
+            assert!(unit.result.is_ok(), "{:?}", unit.result);
+            for checked in [&raw, &unit] {
+                assert_eq!(checked.context_hash, checked.context.stable_hash());
+            }
+        }
+    }
 }

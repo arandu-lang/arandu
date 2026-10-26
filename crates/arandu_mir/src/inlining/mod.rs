@@ -3,14 +3,13 @@
 pub mod cost;
 pub mod splice;
 
-use crate::SymbolId;
 use crate::amir::{AmirOperand, AmirProgram, AmirStmt, BlockId, InstrId, TempId};
 use cost::{
     INLINE_LEAF_BUDGET, evaluate_leaf_inlining, evaluate_nonleaf_inlining, nested_call_targets,
 };
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
-use splice::splice_call;
+use splice::splice_calls;
 
 /// Floor for the per-caller inlining budget, in inlined callee statements.
 ///
@@ -26,7 +25,6 @@ struct InlinableCall {
     instr_id: InstrId,
     lhs: Option<TempId>,
     args: SmallVec<[AmirOperand; 4]>,
-    callee_sym: SymbolId,
 }
 
 /// Maximum factor by which one caller may grow from inlining, on top of the
@@ -51,34 +49,62 @@ const MAX_GROWTH_FACTOR: usize = 8;
 // measured workload instead of reintroducing calls in its inner loop.
 const MAX_CALLER_IR_SIZE: usize = 32 * 1024;
 
-fn expanded_caller_size(
-    caller: &crate::amir::AmirFunc,
-    callee: &crate::amir::AmirFunc,
-    has_lhs: bool,
-) -> usize {
-    // splice_call removes one call, adds parameter assignments, appends the
-    // callee blocks and a continuation, and maps the callee's return temp.
+/// Takes `(cost, growth, site)` candidates in order while each fits both the
+/// remaining statement budget and the caller size ceiling. Returns the chosen
+/// sites and the budget they use.
+fn choose_within_budget<T>(
+    candidates: impl IntoIterator<Item = (usize, usize, T)>,
+    budget_left: usize,
+    mut size: usize,
+) -> (Vec<T>, usize) {
+    let mut used = 0usize;
+    let mut chosen = Vec::new();
+    for (cost, growth, site) in candidates {
+        let cost = cost.max(1);
+        let grown = size.saturating_add(growth);
+        if cost > budget_left.saturating_sub(used) || grown > MAX_CALLER_IR_SIZE {
+            continue;
+        }
+        used += cost;
+        size = grown;
+        chosen.push(site);
+    }
+    (chosen, used)
+}
+
+/// The caller's IR size as the growth ceiling counts it: statements, blocks,
+/// temps and locals.
+fn current_caller_size(caller: &crate::amir::AmirFunc) -> usize {
     caller
         .stmts
         .len()
-        .saturating_sub(1)
-        .saturating_add(callee.stmts.len())
-        .saturating_add(callee.params.len())
         .saturating_add(caller.blocks.len())
+        .saturating_add(caller.temps.len())
+        .saturating_add(caller.locals.len())
+}
+
+/// What one splice adds: it removes the call, adds parameter assignments,
+/// appends the callee blocks and a continuation, and maps the callee's return
+/// temp.
+fn inlining_growth(callee: &crate::amir::AmirFunc, has_lhs: bool) -> usize {
+    callee
+        .stmts
+        .len()
+        .saturating_add(callee.params.len())
         .saturating_add(callee.blocks.len())
         .saturating_add(1)
-        .saturating_add(caller.temps.len())
         .saturating_add(callee.temps.len().saturating_sub(1))
         .saturating_add(usize::from(!has_lhs))
-        .saturating_add(caller.locals.len())
         .saturating_add(callee.locals.len())
+        .saturating_sub(1)
 }
 
 /// Optimizes `program` by inlining eligible small leaf functions into their callers.
 ///
-/// Within a round each caller inlines the *cheapest* eligible callee available
-/// first, so a caller full of trivial constant getters inlines those before
-/// spending budget on a multi-statement helper.
+/// Within a round each caller inlines the *cheapest* eligible callees first,
+/// so a caller full of trivial constant getters inlines those before spending
+/// budget on a multi-statement helper. All of a round's sites are spliced in
+/// one rebuild; calls a splice exposes are considered in the next round.
 ///
 /// Returns the total number of call sites inlined across the program.
 pub fn inline_leaf_functions(program: &mut AmirProgram) -> usize {
@@ -142,76 +168,75 @@ pub fn inline_leaf_functions(program: &mut AmirProgram) -> usize {
             let caller_sym = program.funcs[caller_idx].symbol;
             let budget = budgets[caller_idx];
             let mut spent = *spent_slot;
+            if spent >= budget {
+                continue;
+            }
 
-            loop {
-                if spent >= budget {
-                    break;
-                }
-
-                // Find the eligible call site with the cheapest callee.
-                // The caller is re-scanned after every splice because splicing
-                // rebuilds the dense statement table and invalidates InstrIds.
-                let caller = &program.funcs[caller_idx];
-                let mut target_call: Option<InlinableCall> = None;
-                let mut best_cost = usize::MAX;
-
-                for (bid_usize, block) in caller.blocks.iter().enumerate() {
-                    let bid = BlockId::from_usize(bid_usize);
-                    for instr_id in block.statements.iter_ids::<InstrId>() {
-                        if let Some(AmirStmt::Call {
-                            lhs,
-                            callee: AmirOperand::FunctionRef(callee_sym),
-                            args,
-                            ..
-                        }) = caller.try_stmt(instr_id)
-                            && *callee_sym != caller_sym
-                            && let Some(&(callee_idx, cost)) = eligible.get(callee_sym)
-                            && cost.max(1) <= budget.saturating_sub(spent)
-                            && expanded_caller_size(
-                                caller,
-                                &program.funcs[callee_idx],
-                                lhs.is_some(),
-                            ) <= MAX_CALLER_IR_SIZE
-                            && cost < best_cost
-                        {
-                            best_cost = cost;
-                            target_call = Some(InlinableCall {
+            // One scan per round: every eligible call site of this caller.
+            let caller = &program.funcs[caller_idx];
+            let mut candidates: Vec<(usize, usize, InlinableCall)> = Vec::new();
+            for (bid_usize, block) in caller.blocks.iter().enumerate() {
+                let bid = BlockId::from_usize(bid_usize);
+                for instr_id in block.statements.iter_ids::<InstrId>() {
+                    if let Some(AmirStmt::Call {
+                        lhs,
+                        callee: AmirOperand::FunctionRef(callee_sym),
+                        args,
+                        ..
+                    }) = caller.try_stmt(instr_id)
+                        && *callee_sym != caller_sym
+                        && let Some(&(callee_idx, cost)) = eligible.get(callee_sym)
+                    {
+                        candidates.push((
+                            cost,
+                            callee_idx,
+                            InlinableCall {
                                 bid,
                                 instr_id,
                                 lhs: *lhs,
                                 args: args.clone(),
-                                callee_sym: *callee_sym,
-                            });
-                        }
+                            },
+                        ));
                     }
                 }
-
-                let Some(call) = target_call else {
-                    break;
-                };
-
-                let Some(&(callee_idx, cost)) = eligible.get(&call.callee_sym) else {
-                    break;
-                };
-                // Clone the callee template so caller can be mutated in place
-                let callee = program.funcs[callee_idx].clone();
-
-                let caller_mut = &mut program.funcs[caller_idx];
-                if splice_call(
-                    caller_mut,
-                    call.bid,
-                    call.instr_id,
-                    call.lhs,
-                    &call.args,
-                    &callee,
-                ) {
-                    spent += cost.max(1);
-                    total_inlined += 1;
-                } else {
-                    // Splicing failed; don't loop endlessly on the same call
-                    break;
-                }
             }
+            // Cheapest callees first, as one splice at a time would choose
+            // them; source order breaks ties deterministically.
+            candidates.sort_by_key(|(cost, _, call)| (*cost, call.bid, call.instr_id));
+
+            let sized = candidates.into_iter().map(|(cost, callee_idx, call)| {
+                let growth = inlining_growth(&program.funcs[callee_idx], call.lhs.is_some());
+                (cost, growth, (callee_idx, call))
+            });
+            let (chosen, used) = choose_within_budget(
+                sized,
+                budget.saturating_sub(spent),
+                current_caller_size(caller),
+            );
+            spent += used;
+            if chosen.is_empty() {
+                *spent_slot = spent;
+                continue;
+            }
+
+            // Clone each distinct callee once so the caller can be rebuilt.
+            let mut templates: FxHashMap<usize, crate::amir::AmirFunc> = FxHashMap::default();
+            for (callee_idx, _) in &chosen {
+                templates
+                    .entry(*callee_idx)
+                    .or_insert_with(|| program.funcs[*callee_idx].clone());
+            }
+            let sites: Vec<splice::CallSite<'_>> = chosen
+                .iter()
+                .map(|(callee_idx, call)| splice::CallSite {
+                    bid: call.bid,
+                    instr_id: call.instr_id,
+                    lhs: call.lhs,
+                    args: &call.args,
+                    callee: &templates[callee_idx],
+                })
+                .collect();
+            total_inlined += splice_calls(&mut program.funcs[caller_idx], &sites);
             *spent_slot = spent;
         }
         if total_inlined == before_round {

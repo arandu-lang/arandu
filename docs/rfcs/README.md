@@ -100,6 +100,7 @@ suportada é definida pelos contratos e pela evidência de release.
 | [0039](0039-parking-lot-and-phase-fair-synchronization.md) | ParkingLot, condições de espera e sincronização por fases | Runtime / Type System / Stdlib / Concurrency | `Draft` | 2026-10-16 |
 | [0040](0040-algebraic-formatter-ir-and-cst-resilience.md) | Arquitetura de Formatação Algébrica, Formatter IR (Wadler-Leijen) e Resiliência CST (`arandu_fmt v2`) | Tooling / Frontend | `Draft` | 2026-10-18 |
 | [0041](0041-advanced-test-harness-cross-target-and-sarif.md) | Harness de Testes Avançado, Execução Cross-Target (WASI/Wasmtime), Snapshot Testing e Diagnósticos SARIF (`arandu_testing_contract v2`) | Tooling / Testing / CLI | `Draft` | 2026-10-18 |
+| [0042](0042-item-relative-spans-and-ast-id-map.md) | Identidade Estável de Item (`AstId`), Spans Relativos e Isolamento de Invalidação Intramódulo | Frontend / Middle-end / Tooling | `Draft` | 2026-10-26 |
 
 
 ---

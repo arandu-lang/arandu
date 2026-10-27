@@ -436,6 +436,25 @@ Inventário das leituras dependentes de posição no caminho por item:
 | `dataflow/ide.rs` | `item_start` nos quick fixes estruturados |
 | bordas: acumulador de diagnósticos (CLI), `file_ide_diagnostics` (LSP), composição (DWARF, `N021`), `symbol_span` (goto), `docs.rs`, `highlight.rs`, `rename.rs`, `testing.rs` | consomem ou produzem posições absolutas; continuam absolutas e passam a materializar pelo `AstIdMap` |
 
+### 8.6. Fase 1: identidade e mapa (feito em 2026-10-27)
+
+- `arandu_base::AstId { file_id, index }`: ordinal do item de topo no CST.
+- `arandu_query::passes::item_positions(file)` → `Arc<AstIdMap>`: span absoluto
+  de cada item (`item_span`), conversão relativo → absoluto (`to_absolute`) e
+  item que contém um span (`ast_id_containing`). É a única query nova que muda
+  quando um item se desloca.
+- `item_ast_ids(file)` → `Arc<BTreeMap<SymbolId, AstId>>`: item que define cada
+  símbolo; membros de `impl`, `extern` e submódulos apontam para o item que os
+  contém. Igualdade estrutural dá early-cutoff quando só posições mudam.
+- Achado: o intervalo do item no CST inclui atributos, mas **não** os doc
+  comments que o precedem (são trivia anterior ao item). O span do item contém
+  `item_source_span` sem ser igual a ele. Consequência para a fase 2: o AST
+  local do item não carrega docs; `Program::docs` continua vindo do parse do
+  arquivo.
+- Testes: `arandu_query/tests/item_ast_ids.rs` (cobertura de todas as
+  definições, inclusive `impl`/`extern`; posições mudam e IDs ficam após
+  crescimento de um corpo; `to_absolute` resolve contra o início atual).
+
 ## 9. Questões em Aberto (Unresolved Questions)
 
 1. **Reordenação de Funções no Arquivo:** Se o usuário inverter a ordem de duas funções no arquivo (`func A(); func B();` $\to$ `func B(); func A();`), os índices ordinais de seus `AstId`s se invertem, invalidando ambas. Devemos considerar no futuro um fallback baseado no nome do símbolo para manter estabilidade sob reordenação?

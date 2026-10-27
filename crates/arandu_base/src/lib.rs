@@ -17,5 +17,5 @@ pub use perf::{
     track_query_miss,
 };
 pub use source_registry::{SourceFile, SourceRegistry};
-pub use span::Span;
+pub use span::{AstId, Span};
 pub use tracing_bridge::{TracingConfig, finalize_self_profile, init_tracing};

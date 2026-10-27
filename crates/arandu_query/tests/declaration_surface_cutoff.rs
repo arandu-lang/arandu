@@ -84,10 +84,12 @@ impl Package {
         }
     }
 
-    /// Identity of the whole lowering result: AMIR, the composed type
+    /// Content hash of the whole lowering result: AMIR, the composed type
     /// context with its symbol positions, and docs.
     fn lowered(&self) -> blake3::Hash {
-        lower_amir(&self.db, self.files["main.aru"]).stable_hash()
+        lower_amir(&self.db, self.files["main.aru"])
+            .value
+            .stable_hash()
     }
 }
 

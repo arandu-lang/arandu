@@ -34,13 +34,18 @@ pub fn compose_function_units(
     // units. An importer records an imported symbol at its `import` and
     // observes imported declarations by surface, so it may also keep older
     // positions. Debug info and diagnostics read these spans, so a symbol of
-    // another file takes its position from a unit of that file.
+    // another file takes its position from a unit of that file. The owner's
+    // context also carries the symbol's host name, tooling root and `@Export`
+    // marks, so importer copies of these symbols are skipped below: every
+    // unit's context repeats its whole import closure.
+    let mut owned_files = FxHashSet::default();
     for input in units {
         poll();
         let own = &input.context.symbols;
         if own.file_id == aggregate.symbols.file_id || own.file_id != input.key.definition.file_id {
             continue;
         }
+        owned_files.insert(own.file_id);
         for source in own
             .iter_own()
             .filter(|symbol| !input.generated_symbols.contains(&symbol.id))
@@ -55,11 +60,13 @@ pub fn compose_function_units(
             {
                 imported.span = source.span;
             }
+            merge_symbol_marks(aggregate, own, source.id);
         }
     }
     // Register every source symbol before allocating aggregate-local symbols.
     // The entry file's source table must already be complete; importing an ID
     // from that same file cannot extend its dense source table.
+    let entry_file = aggregate.symbols.file_id;
     for input in units {
         poll();
         let generated = input
@@ -67,12 +74,10 @@ pub fn compose_function_units(
             .iter()
             .copied()
             .collect::<FxHashSet<_>>();
-        for source in input
-            .context
-            .symbols
-            .iter()
-            .filter(|symbol| !generated.contains(&symbol.id))
-        {
+        for source in input.context.symbols.iter().filter(|symbol| {
+            !generated.contains(&symbol.id)
+                && (symbol.id.file_id == entry_file || !owned_files.contains(&symbol.id.file_id))
+        }) {
             poll();
             if aggregate.symbols.try_get(source.id).is_none() {
                 if source.id.file_id == aggregate.symbols.file_id {
@@ -90,28 +95,7 @@ pub fn compose_function_units(
                         .register_imported_symbol(source.clone());
                 }
             }
-            if let Some(name) = input.context.symbols.host_function_names.get(&source.id) {
-                aggregate
-                    .symbols_mut()
-                    .host_function_names
-                    .insert(source.id, name.clone());
-            }
-            if input
-                .context
-                .symbols
-                .tooling_entrypoints
-                .contains(&source.id)
-            {
-                aggregate
-                    .symbols_mut()
-                    .tooling_entrypoints
-                    .insert(source.id);
-            }
-            // An `@Export` of an imported module is a linker root too; the
-            // flat name alone would keep it internal and hide name clashes.
-            if input.context.symbols.is_exported(source.id) {
-                aggregate.symbols_mut().exported_functions.insert(source.id);
-            }
+            merge_symbol_marks(aggregate, &input.context.symbols, source.id);
         }
         aggregate.symbols_mut().module_members.extend(
             input
@@ -330,6 +314,29 @@ pub fn compose_function_units(
         diagnostics,
         instances,
     })
+}
+
+/// Copies `symbol`'s host name, tooling root and `@Export` marks from
+/// `context` into the aggregate.
+fn merge_symbol_marks(
+    aggregate: &mut TypeCheckResult,
+    context: &arandu_middle::SymbolTable,
+    symbol: SymbolId,
+) {
+    if let Some(name) = context.host_function_names.get(&symbol) {
+        aggregate
+            .symbols_mut()
+            .host_function_names
+            .insert(symbol, name.clone());
+    }
+    if context.tooling_entrypoints.contains(&symbol) {
+        aggregate.symbols_mut().tooling_entrypoints.insert(symbol);
+    }
+    // An `@Export` of an imported module is a linker root too; the flat name
+    // alone would keep it internal and hide name clashes.
+    if context.is_exported(symbol) {
+        aggregate.symbols_mut().exported_functions.insert(symbol);
+    }
 }
 
 fn ice(message: &str, span: Span) -> Diagnostic {

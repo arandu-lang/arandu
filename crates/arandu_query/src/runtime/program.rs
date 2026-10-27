@@ -100,6 +100,12 @@ pub fn runtime_program(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Run
     const MAX_INSTANCES: usize = 4096;
     let declarations = declaration_hir(db, file);
     let resolution = crate::passes::resolve(db, file);
+    // The composed program is a deterministic function of these reads, so its
+    // identity folds their digests instead of hashing the whole program.
+    let mut fingerprint = blake3::Hasher::new();
+    fingerprint.update(b"RuntimeProgram/fingerprint/v1");
+    fingerprint.update(declarations.stable_hash().as_bytes());
+    fingerprint.update(resolution.stable_hash().as_bytes());
     let mut aggregate = declarations.artifacts.type_check.clone();
     let mut diagnostics = declarations.artifacts.diagnostics.clone();
     let mut pending = std::collections::VecDeque::new();
@@ -116,12 +122,9 @@ pub fn runtime_program(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Run
             {
                 // Uninstantiated entry templates still receive their ordinary
                 // source/body diagnostics. They are not executable units.
-                diagnostics.extend(
-                    crate::ctfe::item_staged_typing(db, file, function.symbol)
-                        .diagnostics
-                        .iter()
-                        .cloned(),
-                );
+                let staged = crate::ctfe::item_staged_typing(db, file, function.symbol);
+                fingerprint.update(staged.stable_hash().as_bytes());
+                diagnostics.extend(staged.diagnostics.iter().cloned());
                 continue;
             }
             let key = FunctionInstance {
@@ -263,6 +266,16 @@ pub fn runtime_program(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Run
             *key.stable_hash().as_bytes(),
         )
     });
+    for (key, checked) in &units {
+        fingerprint.update(
+            file_path_key(key.definition.file_id)
+                .as_os_str()
+                .as_encoded_bytes(),
+        );
+        fingerprint.update(&[0]);
+        fingerprint.update(key.stable_hash().as_bytes());
+        fingerprint.update(checked.stable_hash().as_bytes());
+    }
     let composed = if diagnostics
         .iter()
         .any(|diagnostic| diagnostic.severity == arandu_middle::Severity::Error)
@@ -319,7 +332,7 @@ pub fn runtime_program(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Run
         &aggregate,
         &mut diagnostics,
     );
-    HashEq::new(RuntimeProgram {
+    let program = RuntimeProgram {
         artifacts: std::sync::Arc::new(crate::passes::LowerAmirArtifacts {
             amir,
             type_check: aggregate,
@@ -327,5 +340,11 @@ pub fn runtime_program(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Run
         }),
         instances,
         diagnostics,
-    })
+    };
+    let fingerprint = fingerprint.finalize();
+    #[cfg(any(test, debug_assertions))]
+    crate::fingerprint::verify(db, "runtime_program", fingerprint, program.stable_hash());
+    // Identity by fingerprint alone: equal fingerprints imply equal content,
+    // and comparing content would hash the program on every warm build.
+    HashEq::with_identity(std::sync::Arc::new(program), fingerprint)
 }

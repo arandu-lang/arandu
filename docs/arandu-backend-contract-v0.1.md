@@ -257,8 +257,11 @@ declaration, the implicit logical module the driver derives from the package
 root (`src/a/b.aru` in package `app` is `app.a.b`, the module
 `import app.a.b` names; a dependency file uses its binding alias). The entry
 file, `main`, `extern` functions and `@Export` names keep their unqualified
-spelling. Cranelift objects, the JIT and LLVM IR therefore never see two
-definitions under one name, whatever linkage they use.
+spelling. If two distinct functions still map to one name (for example a
+method `Box.read` in an entry declaring `module app` and `read` in
+`src/Box.aru`), composition rejects the program with `N021`. Cranelift
+objects, the JIT and LLVM IR therefore never see two definitions under one
+name, whatever linkage they use.
 
 A `@Export` signature is a C ABI contract, so aggregates are marshalled at
 lane granularity rather than passed as Arandu values:

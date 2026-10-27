@@ -24,15 +24,15 @@ identity, lockfile integrity and cache isolation are proven.
 
 ## Detalhes Técnicos da Implementação
 
-| Area | Current state | Gold gap |
-| --- | --- | --- |
-| Project creation | transactional `new`/`init`, bin/lib targets, README, ignore file and VCS policy | lifecycle E2E remains in P7 |
-| Manifest | strict deterministic TOML with schema, edition, targets, path dependencies, exports, workspace members and compatibility validation | registry/Git origins and target-specific dependency features remain future work |
-| Incrementality | manifest fields and an authoritative `PackageModuleMap` are stable Salsa inputs, including live background LSP reload | remote resolver/cache inputs begin in P5/P6 |
-| Build | Cranelift emits a baseline dev object or speed-oriented release object, links the packaged runtime and atomically publishes a content-addressed executable in its profile | cross-target builds and LLVM/LTO/PGO remain out of scope |
-| Dependencies | deterministic local workspace DAG, direct aliases, explicit exports and a semantic lockfile | verified global cache and remote resolver start in P5/P6 |
-| Imports | `self`, `std` and direct dependency roots are logical; private, transitive and quoted filesystem access fail closed | complete live CLI/LSP graph refresh and edition removal of the temporary bare-local migration |
-| Portability | installed SDK smoke is native on three OS families | generated projects are not yet exercised as a complete lifecycle outside checkout |
+| Area             | Current state                                                                                                                                                             | Gold gap                                                                                      |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| Project creation | transactional `new`/`init`, bin/lib targets, README, ignore file and VCS policy                                                                                           | lifecycle E2E remains in P7                                                                   |
+| Manifest         | strict deterministic TOML with schema, edition, targets, path dependencies, exports, workspace members and compatibility validation                                       | registry/Git origins and target-specific dependency features remain future work               |
+| Incrementality   | manifest fields and an authoritative `PackageModuleMap` are stable Salsa inputs, including live background LSP reload                                                     | remote resolver/cache inputs begin in P5/P6                                                   |
+| Build            | Cranelift emits a baseline dev object or speed-oriented release object, links the packaged runtime and atomically publishes a content-addressed executable in its profile | cross-target builds and LLVM/LTO/PGO remain out of scope                                      |
+| Dependencies     | deterministic local workspace DAG, direct aliases, explicit exports and a semantic lockfile                                                                               | verified global cache and remote resolver start in P5/P6                                      |
+| Imports          | `self`, `std` and direct dependency roots are logical; private, transitive and quoted filesystem access fail closed                                                       | complete live CLI/LSP graph refresh and edition removal of the temporary bare-local migration |
+| Portability      | installed SDK smoke is native on three OS families                                                                                                                        | generated projects are not yet exercised as a complete lifecycle outside checkout             |
 
 The existing narrow query boundaries are retained. Parsing a manifest is pure;
 reading it, walking directories, resolving VCS and writing files stay in CLI or
@@ -44,13 +44,13 @@ dedicated effectful infrastructure before values enter Salsa.
 
 The comparison was reopened rather than inherited from Cargo:
 
-| Format | Strength | Reason not selected |
-| --- | --- | --- |
-| JSON | ubiquitous, strict data model and strong schema tooling | no native comments; noisy for hand-maintained dependency tables |
-| YAML | concise and expressive | specification and implicit typing are too broad for a compiler control file; parser behavior is harder to constrain |
-| custom `mod`-style DSL | could optimize package syntax | creates a second language, parser, formatter and editor ecosystem with no semantic benefit yet |
-| executable manifest | arbitrary build logic | reading dependencies becomes host-code execution and harms reproducibility/security |
-| TOML 1.0 | typed, UTF-8, comments, unambiguous tables, mature Rust parsers | table/dotted-key rules require good diagnostics and tool edits must preserve user formatting |
+| Format                 | Strength                                                        | Reason not selected                                                                                                 |
+| ---------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| JSON                   | ubiquitous, strict data model and strong schema tooling         | no native comments; noisy for hand-maintained dependency tables                                                     |
+| YAML                   | concise and expressive                                          | specification and implicit typing are too broad for a compiler control file; parser behavior is harder to constrain |
+| custom `mod`-style DSL | could optimize package syntax                                   | creates a second language, parser, formatter and editor ecosystem with no semantic benefit yet                      |
+| executable manifest    | arbitrary build logic                                           | reading dependencies becomes host-code execution and harms reproducibility/security                                 |
+| TOML 1.0               | typed, UTF-8, comments, unambiguous tables, mature Rust parsers | table/dotted-key rules require good diagnostics and tool edits must preserve user formatting                        |
 
 **Decision:** both `arandu.toml` and generated `arandu.lock` use TOML 1.0.
 The manifest accepts the complete TOML syntax but a strict Arandu schema. The
@@ -169,10 +169,10 @@ portable relative path only when the dependency is inside the workspace.
 
 Do not overload one `target` directory with unrelated trust and lifetime rules:
 
-| Domain | Location | Contract |
-| --- | --- | --- |
-| project artifacts | `<workspace>/target/` | disposable; ignored by Git; `arandu clean` owns only this verified directory |
-| project metadata | `<workspace>/.arandu/` | disposable resolution/query metadata; no downloaded executable code |
+| Domain               | Location                 | Contract                                                                           |
+| -------------------- | ------------------------ | ---------------------------------------------------------------------------------- |
+| project artifacts    | `<workspace>/target/`    | disposable; ignored by Git; `arandu clean` owns only this verified directory       |
+| project metadata     | `<workspace>/.arandu/`   | disposable resolution/query metadata; no downloaded executable code                |
 | global package cache | platform cache directory | content-addressed immutable sources; shared safely; explicit verify/prune commands |
 
 Project output is separated by profile and target triple, strictly limited to final deliverables ([RFC 0019](./rfcs/0019-zero-bloat-target-and-shared-cache.md)):
@@ -215,17 +215,28 @@ workspace.
 Arandu adopts four explicit layers instead of treating a source path as all of
 them at once:
 
-| Layer | Meaning | Example |
-| --- | --- | --- |
-| package | versioned/distributed unit from one manifest | `acme_math@1.2.0` |
-| target | independently compiled product inside a package | library `math`, binary `calc`, tests |
-| module | namespace/analysis unit inside one target | `self.geometry.vector` |
-| file | current physical source of a module | `src/geometry/vector.aru` |
+| Layer   | Meaning                                         | Example                              |
+| ------- | ----------------------------------------------- | ------------------------------------ |
+| package | versioned/distributed unit from one manifest    | `acme_math@1.2.0`                    |
+| target  | independently compiled product inside a package | library `math`, binary `calc`, tests |
+| module  | namespace/analysis unit inside one target       | `self.geometry.vector`               |
+| file    | current physical source of a module             | `src/geometry/vector.aru`            |
 
 `PackageId`, `TargetId` and `ModuleId` must be typed identities. None is a raw
 path or a `SymbolId`. A file rename may change the module mapping, but package
 resolution never manufactures a `FileId`; CLI/LSP register sources and provide
 the resulting immutable package/module map as Salsa inputs.
+
+A source file's location is its module identity; a `module` declaration may
+only restate it. Under the package source root, `src/a/b.aru` is the module
+`<package>.a.b` (the module `import <package>.a.b` names) and the entry file is
+the package itself. A declaration with any other path is rejected with `N020`,
+whose structured fix rewrites it; the only spelling is the full path, so one
+module never has two names. An omitted declaration means the same module.
+Function symbols are qualified with that module, except in the entry file, and
+two functions that still map to one native symbol are rejected with `N021`
+before code generation. Dependency sources are checked when their own package
+is compiled. Since 0.2.0.
 
 The manifest target shape replaces the MVP `kind`/`entry` pair before it becomes
 a compatibility burden:
@@ -409,12 +420,12 @@ prove that those bytes are safe: a malicious maintainer can publish malicious
 source with a perfectly valid checksum, signature and provenance statement.
 Arandu therefore separates four claims:
 
-| Claim | Mechanism | What it does not prove |
-| --- | --- | --- |
-| integrity | content digest in lockfile/cache | author intent or code safety |
-| origin authenticity | canonical source plus signed registry metadata | that a legitimate publisher is uncompromised |
-| build provenance | signed source/build attestation and transparency record | absence of malicious source/build instructions |
-| policy/audit | explicit review, advisories, source/capability policy | mathematical safety of dependency behavior |
+| Claim               | Mechanism                                               | What it does not prove                         |
+| ------------------- | ------------------------------------------------------- | ---------------------------------------------- |
+| integrity           | content digest in lockfile/cache                        | author intent or code safety                   |
+| origin authenticity | canonical source plus signed registry metadata          | that a legitimate publisher is uncompromised   |
+| build provenance    | signed source/build attestation and transparency record | absence of malicious source/build instructions |
+| policy/audit        | explicit review, advisories, source/capability policy   | mathematical safety of dependency behavior     |
 
 #### Closed-world resolution
 
@@ -536,33 +547,33 @@ The lockfile is not ignored for applications/workspaces.
 
 ### Failures observed elsewhere that Arandu must avoid
 
-| Failure class | Arandu guardrail |
-| --- | --- |
-| dependency install/build hooks execute arbitrary code | no executable manifest or lifecycle hook in v0.1 |
-| offline mode silently resolves a different graph | `--offline` and `--locked` are independent; `--frozen` requires both |
-| lockfile changes unexpectedly during ordinary commands | resolution policy is explicit and atomic; CI uses `--locked` |
-| different origins produce duplicate logical packages | canonical source identity and collision diagnostics |
-| mutable/shared cache contaminates builds | immutable content-addressed entries, digest verification and per-entry locks |
-| global cache grows forever | inspect, verify and bounded prune commands; never implicit destructive cleanup |
-| case-insensitive filesystems collapse distinct names | portable name validation and canonical lowercase control files |
-| workspace child configuration shadows the root | one root lockfile and metadata directory; nested roots are diagnosed |
-| path dependencies escape a sandbox or package boundary | normalized paths, explicit workspace membership and containment checks |
-| failed build leaves a plausible partial artifact | staging and atomic publication of final outputs |
-| arbitrary unknown manifest keys appear accepted | strict owned schema with a namespaced metadata escape hatch |
-| consumers deep-import private source files | explicit target export map; file existence does not imply public API |
-| transitive dependency accidentally becomes importable | only direct dependency aliases enter the module map |
-| package rename rewrites every consumer import | manifest dependency key is the stable source-level alias |
-| module resolution probes several filesystem layouts | one canonical logical mapping; no extension/index probing |
-| source imports smuggle URLs, versions or host paths | dependency source belongs only to manifest/lockfile |
-| package and module graphs invalidate each other wholesale | separate immutable inputs and tracked module edges |
-| dependency confusion/private-name takeover | imports never discover packages; source/scopes are explicit and never fall back |
-| tag or archive changes after resolution | exact commit plus independent normalized tree digest |
-| malicious legitimate release | no automatic updates; provenance is not treated as safety; audit/review/policy remain required |
-| compromised registry or mirror | signed versioned metadata, immutable digests and future transparency log |
-| rollback/freeze/mix-and-match metadata attack | future registry must implement expiring TUF-style role metadata |
-| install-time dependency code execution | no lifecycle hooks, executable manifests or build scripts in v0.1 |
-| private package name leaks to public service | source routing is explicit; private origin has no public fallback |
-| dependency graph/archive resource exhaustion | strict graph, archive, expanded-size and file-count limits |
+| Failure class                                             | Arandu guardrail                                                                               |
+| --------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| dependency install/build hooks execute arbitrary code     | no executable manifest or lifecycle hook in v0.1                                               |
+| offline mode silently resolves a different graph          | `--offline` and `--locked` are independent; `--frozen` requires both                           |
+| lockfile changes unexpectedly during ordinary commands    | resolution policy is explicit and atomic; CI uses `--locked`                                   |
+| different origins produce duplicate logical packages      | canonical source identity and collision diagnostics                                            |
+| mutable/shared cache contaminates builds                  | immutable content-addressed entries, digest verification and per-entry locks                   |
+| global cache grows forever                                | inspect, verify and bounded prune commands; never implicit destructive cleanup                 |
+| case-insensitive filesystems collapse distinct names      | portable name validation and canonical lowercase control files                                 |
+| workspace child configuration shadows the root            | one root lockfile and metadata directory; nested roots are diagnosed                           |
+| path dependencies escape a sandbox or package boundary    | normalized paths, explicit workspace membership and containment checks                         |
+| failed build leaves a plausible partial artifact          | staging and atomic publication of final outputs                                                |
+| arbitrary unknown manifest keys appear accepted           | strict owned schema with a namespaced metadata escape hatch                                    |
+| consumers deep-import private source files                | explicit target export map; file existence does not imply public API                           |
+| transitive dependency accidentally becomes importable     | only direct dependency aliases enter the module map                                            |
+| package rename rewrites every consumer import             | manifest dependency key is the stable source-level alias                                       |
+| module resolution probes several filesystem layouts       | one canonical logical mapping; no extension/index probing                                      |
+| source imports smuggle URLs, versions or host paths       | dependency source belongs only to manifest/lockfile                                            |
+| package and module graphs invalidate each other wholesale | separate immutable inputs and tracked module edges                                             |
+| dependency confusion/private-name takeover                | imports never discover packages; source/scopes are explicit and never fall back                |
+| tag or archive changes after resolution                   | exact commit plus independent normalized tree digest                                           |
+| malicious legitimate release                              | no automatic updates; provenance is not treated as safety; audit/review/policy remain required |
+| compromised registry or mirror                            | signed versioned metadata, immutable digests and future transparency log                       |
+| rollback/freeze/mix-and-match metadata attack             | future registry must implement expiring TUF-style role metadata                                |
+| install-time dependency code execution                    | no lifecycle hooks, executable manifests or build scripts in v0.1                              |
+| private package name leaks to public service              | source routing is explicit; private origin has no public fallback                              |
+| dependency graph/archive resource exhaustion              | strict graph, archive, expanded-size and file-count limits                                     |
 
 ### Implementation evidence
 

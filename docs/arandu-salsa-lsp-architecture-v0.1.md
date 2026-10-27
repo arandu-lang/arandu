@@ -304,8 +304,10 @@ fingerprint. `HashEq` e `ModuleSignatures` expõem o digest guardado (via
 **Superfície de declarações.** Importadores leem `declaration_surface`, o
 `DeclarationHir` identificado sem as posições de declaração. Com isso, um
 corpo que muda de comprimento não reexecuta os units de outros módulos. As
-posições de um arquivo só são autoritativas nas queries do próprio arquivo. A
-composição registra cada símbolo a partir de um unit do arquivo dono, e
+posições de um arquivo só são autoritativas nas queries do próprio arquivo.
+Tabelas de importadores registram membros importados no span do `import`. Por
+isso a composição registra ou corrige cada símbolo a partir de um unit do
+arquivo dono, que é a posição que o DWARF e os diagnósticos leem.
 `declaration_surface_cutoff` exige lowering incremental idêntico ao frio.
 
 **Limite:** a entrega final aos backends continua agregada; isso não é um

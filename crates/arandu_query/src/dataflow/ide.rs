@@ -21,6 +21,7 @@ pub(super) fn collect_item_ide_diagnostics(
 
     let body_tc = crate::ctfe::item_staged_typing(db, file, item_sym);
     let runtime = source_runtime_unit(db, item_sym);
+    let runtime = runtime.as_deref();
     let mut out: Vec<IdeDiagnostic> = body_tc
         .diagnostics
         .iter()

@@ -182,10 +182,11 @@ pub fn func_amir(
     HashEq::new(empty_func(func_sym))
 }
 
+/// The source unit of `symbol`, with its positions in its file.
 fn source_runtime_unit(
     db: &dyn ArandCompilerDb,
     symbol: SymbolId,
-) -> Option<&crate::db::FingerprintEq<crate::runtime::RuntimeUnit>> {
+) -> Option<std::sync::Arc<crate::runtime::RuntimeUnit>> {
     let source = db.source_file_by_id(symbol.file_id)?;
     let declarations = crate::passes::declaration_signatures(db, source);
     if declarations.symbols.try_get(symbol)?.kind != arandu_middle::SymbolKind::Func
@@ -193,17 +194,16 @@ fn source_runtime_unit(
     {
         return None;
     }
-    Some(crate::runtime::runtime_unit(
-        db,
-        crate::runtime::Instance::new(
-            db,
-            source,
-            arandu_middle::types::FunctionInstance {
-                definition: symbol,
-                arguments: Vec::new(),
-            },
-        ),
-    ))
+    let key = arandu_middle::types::FunctionInstance {
+        definition: symbol,
+        arguments: Vec::new(),
+    };
+    let unit =
+        crate::runtime::runtime_unit(db, crate::runtime::Instance::new(db, source, key.clone()));
+    Some(match crate::runtime::place_unit(db, &key, unit) {
+        Some(placed) => std::sync::Arc::new(placed),
+        None => std::sync::Arc::clone(&unit.value),
+    })
 }
 
 fn empty_func(symbol: SymbolId) -> AmirFunc {
@@ -496,6 +496,7 @@ pub fn block_diagnostics(
     let body_tc = crate::ctfe::item_staged_typing(db, file, func_sym);
     let amir = func_amir(db, file, func_sym);
     let runtime = source_runtime_unit(db, func_sym);
+    let runtime = runtime.as_deref();
     let aggregate;
     let context = if let Some(unit) = runtime {
         &*unit.context

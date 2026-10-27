@@ -40,6 +40,9 @@ pub struct InstanceHir {
     pub function: Option<SymbolId>,
     pub instances: Vec<(SymbolId, FunctionInstance)>,
     pub generated_symbols: Vec<SymbolId>,
+    /// Positions are relative to the definition's item (RFC 0042): the
+    /// template came from the item-local [`function_hir`].
+    pub local: bool,
 }
 
 #[derive(Debug)]
@@ -55,6 +58,9 @@ pub struct RuntimeUnit {
     /// Retains annotated flow for IDE diagnostics even when final validation
     /// fails. It is not publishable executable code; `result` owns that gate.
     pub analysis_function: Option<std::sync::Arc<arandu_middle::amir::AmirFunc>>,
+    /// Inherited from [`InstanceHir::local`]: `runtime_program` and the IDE
+    /// place the unit's positions at its item before publishing them.
+    pub local: bool,
 }
 
 /// Concrete analysis identities never depend on synthetic symbols allocated
@@ -113,6 +119,7 @@ impl StableHash for InstanceHir {
             hash.update(&symbol.file_id.to_le_bytes());
             hash.update(&symbol.local_id.0.to_le_bytes());
         }
+        hash.update(&[u8::from(self.local)]);
         hash.finalize()
     }
 }
@@ -189,6 +196,7 @@ impl RuntimeUnit {
         } else {
             hash.update(&[0]);
         }
+        hash.update(&[u8::from(self.local)]);
         hash.finalize()
     }
 }
@@ -220,6 +228,7 @@ fn instance_hir_cycle<'db>(
         function: None,
         instances: Vec::new(),
         generated_symbols: Vec::new(),
+        local: false,
     })
 }
 
@@ -320,6 +329,7 @@ pub fn runtime_raw_unit<'db>(
         generated_symbols: concrete.generated_symbols.clone(),
         borrow_summary: None,
         analysis_function: None,
+        local: concrete.local,
     }
     .into_query_output(db, "runtime_raw_unit")
 }
@@ -370,7 +380,66 @@ pub fn header_hir(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Declarat
 #[salsa::tracked]
 #[tracing::instrument(level = "trace", target = "arandu_query", skip(db), fields(query = "declaration_context", file = ?file.file_id(db)))]
 pub fn declaration_context(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<PreparedHir> {
-    let root = declaration_hir(db, file);
+    declaration_context_from(db, file, declaration_hir(db, file))
+}
+
+/// [`declaration_context`] for units in item coordinates (RFC 0042): the
+/// file's own headers enter by [`declaration_shape`], without positions, so a
+/// body that moves later items leaves it equal.
+#[salsa::tracked]
+#[tracing::instrument(level = "trace", target = "arandu_query", skip(db), fields(query = "local_declaration_context", file = ?file.file_id(db)))]
+pub fn local_declaration_context(
+    db: &dyn ArandCompilerDb,
+    file: SourceFile,
+) -> HashEq<PreparedHir> {
+    declaration_context_from(db, file, declaration_shape(db, file))
+}
+
+/// [`declaration_hir`] without the positions of this file: its HIR and symbol
+/// spans carry the `Span::new(0, 0, 0)` placeholder and its position-keyed
+/// tables are empty. Identified by [`DeclarationHir::surface`].
+#[salsa::tracked]
+#[tracing::instrument(level = "trace", target = "arandu_query", skip(db), fields(query = "declaration_shape", file = ?file.file_id(db)))]
+pub fn declaration_shape(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<DeclarationHir> {
+    let declarations = declaration_hir(db, file);
+    let file_id = *file.file_id(db);
+    let hir = declarations.artifacts.hir.as_ref().map(|source| {
+        let mut hir = arandu_middle::hir::HirProgram {
+            span: source.span,
+            module: source.module.clone(),
+            decls: source.decls.clone(),
+            pool: source.pool.clone(),
+        };
+        hir.map_spans(&mut |span| {
+            if span.file_id == file_id {
+                arandu_middle::Span::new(0, 0, 0)
+            } else {
+                span
+            }
+        });
+        hir
+    });
+    let surface = declarations.surface;
+    HashEq::with_identity(
+        std::sync::Arc::new(DeclarationHir {
+            artifacts: PreparedHir {
+                hir,
+                type_check: crate::passes::without_positions(&declarations.artifacts.type_check),
+                diagnostics: declarations.artifacts.diagnostics.clone(),
+                source_fingerprint: surface,
+            },
+            fingerprint: surface,
+            surface,
+        }),
+        surface,
+    )
+}
+
+fn declaration_context_from(
+    db: &dyn ArandCompilerDb,
+    file: SourceFile,
+    root: &HashEq<DeclarationHir>,
+) -> HashEq<PreparedHir> {
     let mut checked = root.artifacts.type_check.clone();
     let mut hir = root
         .artifacts
@@ -395,7 +464,7 @@ pub fn declaration_context(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq
         // Imported headers enter by surface; only this file's own positions
         // belong to its context identity.
         let declarations = if context_file == file {
-            declaration_hir(db, context_file)
+            root
         } else {
             declaration_surface(db, context_file)
         };
@@ -446,6 +515,10 @@ pub fn function_hir(
             db, file, symbol,
         ));
     }
+    if let Some(local) = local_function_hir(db, file, symbol) {
+        return local;
+    }
+
     let source = item_source_input(db, file, symbol);
     let item = item_typing(db, file, symbol);
     let declared = declaration_signatures(db, file);
@@ -509,6 +582,150 @@ pub fn function_hir(
         },
         identity.finalize(),
     )
+}
+
+/// A [`RuntimeUnit::local`] unit with every position placed in its file:
+/// shifted by the start of its definition's item, and its file's symbols at
+/// their declared positions. `None` for a unit already in file coordinates.
+pub(crate) fn place_unit(
+    db: &dyn ArandCompilerDb,
+    key: &FunctionInstance,
+    unit: &RuntimeUnit,
+) -> Option<RuntimeUnit> {
+    if !unit.local {
+        return None;
+    }
+    let file = db.source_file_by_id(key.definition.file_id)?;
+    let (_, at) = crate::passes::item_local_typing(db, file, key.definition).as_ref()?;
+    let at = *at;
+    let span = |span| at.span(span);
+    let place_diagnostics = |diagnostics: &[Diagnostic]| {
+        diagnostics
+            .iter()
+            .map(|diagnostic| {
+                let mut diagnostic = diagnostic.clone();
+                crate::passes::for_each_span(&mut diagnostic, |span| *span = at.span(*span));
+                diagnostic
+            })
+            .collect::<Vec<_>>()
+    };
+    let place_function = |function: &std::sync::Arc<arandu_middle::amir::AmirFunc>| {
+        let mut function = function.as_ref().clone();
+        function.map_spans(&mut |span| at.span(span));
+        std::sync::Arc::new(function)
+    };
+    let result = match &unit.result {
+        Ok(placed) => {
+            let mut placed = placed.clone();
+            placed.function = place_function(&placed.function);
+            for block in &mut placed.debug_blocks {
+                block.span = span(block.span);
+            }
+            placed.diagnostics = place_diagnostics(&placed.diagnostics);
+            Ok(placed)
+        }
+        Err(diagnostics) => Err(place_diagnostics(diagnostics)),
+    };
+    // The unit context names this file's symbols without their positions.
+    let declared = crate::passes::declaration_signatures(db, file);
+    let mut context = unit.context.as_ref().clone();
+    context.symbols = std::sync::Arc::new(context.symbols.map_spans(|symbol| {
+        declared
+            .symbols
+            .try_get(symbol.id)
+            .map_or_else(|| at.span(symbol.span), |declared| declared.span)
+    }));
+    context.diagnostics = place_diagnostics(&context.diagnostics);
+    // The composed file view merges the unit's expression tables.
+    context.type_info_mut().place_at(at);
+    Some(RuntimeUnit {
+        result,
+        context: std::sync::Arc::new(context),
+        context_identity: unit.context_identity,
+        instances: unit.instances.clone(),
+        generated_symbols: unit.generated_symbols.clone(),
+        borrow_summary: unit.borrow_summary.clone(),
+        analysis_function: unit.analysis_function.as_ref().map(place_function),
+        local: false,
+    })
+}
+
+/// Whether [`function_hir`] of `symbol` is lowered in its item's coordinates.
+pub(crate) fn lowers_locally(db: &dyn ArandCompilerDb, file: SourceFile, symbol: SymbolId) -> bool {
+    !symbol.is_synthetic()
+        && crate::passes::item_context(db, file, symbol).is_some()
+        && declaration_shape(db, file).artifacts.hir.is_some()
+}
+
+/// [`function_hir`] lowered from the item AST against its
+/// [`crate::passes::item_context`]: every position is relative to the start
+/// of the item (RFC 0042). `None` when the item has no local context.
+fn local_function_hir(
+    db: &dyn ArandCompilerDb,
+    file: SourceFile,
+    symbol: SymbolId,
+) -> Option<FingerprintEq<PreparedHir>> {
+    if !lowers_locally(db, file, symbol) {
+        return None;
+    }
+    let (context, id) = crate::passes::item_context(db, file, symbol).as_ref()?;
+    let item = crate::passes::item_ast(db, file, *id);
+    let Ok(program) = &*item.value else {
+        return None;
+    };
+    let module = declared_module(db, file);
+    let mut fingerprint = blake3::Hasher::new();
+    fingerprint.update(b"FunctionHir/local/v1");
+    fingerprint.update(item.stable_hash().as_bytes());
+    fingerprint.update(&symbol.file_id.to_le_bytes());
+    fingerprint.update(&symbol.local_id.0.to_le_bytes());
+    let source_fingerprint = fingerprint.finalize();
+    let mut checked = (**context).clone();
+    let mut diagnostics = Vec::new();
+    let hir = match arandu_semantics::lower_function_to_hir(&mut checked, program, symbol) {
+        Ok(hir) => hir.map(|mut hir| {
+            // The module declaration is an item of its own.
+            hir.module.clone_from(module);
+            hir
+        }),
+        Err(errors) => {
+            diagnostics = errors;
+            None
+        }
+    };
+    let mut identity = blake3::Hasher::new();
+    identity.update(b"FunctionHir/local/fingerprint/v1");
+    identity.update(source_fingerprint.as_bytes());
+    identity.update(context.stable_hash().as_bytes());
+    match module {
+        Some(module) => {
+            identity.update(&[1]);
+            identity.update(module.as_bytes());
+        }
+        None => {
+            identity.update(&[0]);
+        }
+    }
+    Some(FingerprintEq::fingerprinted(
+        db,
+        "function_hir",
+        PreparedHir {
+            hir,
+            type_check: checked,
+            diagnostics,
+            source_fingerprint,
+        },
+        identity.finalize(),
+    ))
+}
+
+/// Dotted path of the file's `module` declaration.
+#[salsa::tracked(returns(ref))]
+fn declared_module(db: &dyn ArandCompilerDb, file: SourceFile) -> Option<String> {
+    match &**crate::passes::parse(db, file) {
+        Ok(program) => program.module.as_ref().map(|module| module.path.join(".")),
+        Err(_) => None,
+    }
 }
 
 #[cfg(test)]

@@ -1,5 +1,8 @@
 use super::capture::import_synthetic_captures;
-use super::{declaration_context, declaration_surface, function_hir, Instance, InstanceHir};
+use super::{
+    declaration_context, declaration_surface, function_hir, local_declaration_context, Instance,
+    InstanceHir,
+};
 use crate::db::FingerprintEq;
 use crate::passes::{item_source_input, PreparedHir};
 use crate::{ArandCompilerDb, StableHash};
@@ -12,39 +15,18 @@ pub(super) fn build_instance_hir<'db>(
     context: &crate::ctfe::DependencyContext,
 ) -> FingerprintEq<InstanceHir> {
     let key = instance.key(db);
-    let source = item_source_input(db, *instance.file(db), key.definition);
-    let has_static_loop = if source.may_have_comptime && key.arguments.is_empty() {
-        let mut body_span = None;
-        source.program.for_each_decl_recursive(|_, declaration| {
-            if arandu_semantics::item_source_span(declaration).start == source.item_start {
-                if let arandu_parser::TopLevelDecl::Func(function) = declaration {
-                    body_span = Some(function.body.span);
-                }
-            }
-        });
-        body_span.is_some_and(|body| {
-            source.program.pool.stmts.iter().any(|stmt| {
-                matches!(
-                    stmt,
-                    arandu_parser::Stmt::For {
-                        is_comptime: true,
-                        ..
-                    }
-                ) && body.start <= stmt.span().start
-                    && stmt.span().end <= body.end
-            })
-        })
-    } else {
-        false
-    };
+    let (may_have_comptime, has_static_loop) =
+        *item_staging(db, *instance.file(db), key.definition);
     let dependent_header = !for_ctfe
         && !key.arguments.is_empty()
         && crate::passes::declaration_signatures(db, *instance.file(db))
             .type_info
             .deferred_headers
             .contains(&key.definition);
-    let staged = dependent_header
-        || (source.may_have_comptime && (!key.arguments.is_empty() || has_static_loop));
+    let staged =
+        dependent_header || (may_have_comptime && (!key.arguments.is_empty() || has_static_loop));
+    let local =
+        !for_ctfe && !staged && super::lowers_locally(db, *instance.file(db), key.definition);
     let template = if for_ctfe {
         FingerprintEq::from_content(&crate::ctfe::instances::instance_ctfe_hir(
             db, instance, context,
@@ -72,11 +54,13 @@ pub(super) fn build_instance_hir<'db>(
     let mut fingerprint = blake3::Hasher::new();
     fingerprint.update(template.stable_hash().as_bytes());
     fingerprint.update(key.stable_hash().as_bytes());
+    fingerprint.update(&[u8::from(local)]);
     if let Some(hir) = &mut hir {
         db.unwind_if_revision_cancelled();
         // Header linking is memoized per module closure, not repeated in the
         // retained function HIR and then copied again for every instance.
         if for_ctfe {
+            let source = item_source_input(db, *instance.file(db), key.definition);
             match crate::ctfe::globals::declaration_context(
                 db,
                 *instance.file(db),
@@ -121,7 +105,11 @@ pub(super) fn build_instance_hir<'db>(
                 ),
             }
         } else {
-            let headers = declaration_context(db, *instance.file(db));
+            let headers = if local {
+                local_declaration_context(db, *instance.file(db))
+            } else {
+                declaration_context(db, *instance.file(db))
+            };
             fingerprint.update(headers.stable_hash().as_bytes());
             if let Some(context) = &headers.hir {
                 arandu_semantics::link_hir_module(&mut checked, hir, &headers.type_check, context);
@@ -259,6 +247,7 @@ pub(super) fn build_instance_hir<'db>(
         function,
         instances,
         generated_symbols,
+        local,
     };
     if for_ctfe || staged {
         return FingerprintEq::exact(output);
@@ -270,4 +259,42 @@ pub(super) fn build_instance_hir<'db>(
     identity.update(b"InstanceHir/fingerprint/v1");
     identity.update(source_fingerprint.as_bytes());
     FingerprintEq::fingerprinted(db, "instance_hir", output, identity.finalize())
+}
+
+/// Whether the item's text may stage (`comptime`), and whether its body holds
+/// a static loop: the position-free facts that choose the staged lowering.
+#[salsa::tracked]
+#[tracing::instrument(level = "trace", target = "arandu_query", skip(db), fields(
+    query = "item_staging", file = ?file.file_id(db), item = ?symbol,
+))]
+pub(super) fn item_staging(
+    db: &dyn ArandCompilerDb,
+    file: crate::SourceFile,
+    symbol: arandu_middle::SymbolId,
+) -> (bool, bool) {
+    let source = item_source_input(db, file, symbol);
+    if !source.may_have_comptime {
+        return (false, false);
+    }
+    let mut body_span = None;
+    source.program.for_each_decl_recursive(|_, declaration| {
+        if arandu_semantics::item_source_span(declaration).start == source.item_start {
+            if let arandu_parser::TopLevelDecl::Func(function) = declaration {
+                body_span = Some(function.body.span);
+            }
+        }
+    });
+    let has_static_loop = body_span.is_some_and(|body| {
+        source.program.pool.stmts.iter().any(|stmt| {
+            matches!(
+                stmt,
+                arandu_parser::Stmt::For {
+                    is_comptime: true,
+                    ..
+                }
+            ) && body.start <= stmt.span().start
+                && stmt.span().end <= body.end
+        })
+    });
+    (true, has_static_loop)
 }

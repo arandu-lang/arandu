@@ -174,7 +174,7 @@ impl IndexRange {
 }
 
 /// A compact, index-backed storage for HIR nodes.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct HirPool {
     /// Lowering context only; runtime producers must materialize explicit roots.
     pub ctfe_lowering: bool,

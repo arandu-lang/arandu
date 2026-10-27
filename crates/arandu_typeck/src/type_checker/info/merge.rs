@@ -56,6 +56,24 @@ impl TypeInfo {
         );
     }
 
+    /// Moves the expression tables and spans of an item-local shard to `at`,
+    /// in place: the inverse of making them local.
+    pub fn place_at(&mut self, at: ItemPlacement) {
+        let mut expr_types = vec![None; at.exprs as usize];
+        expr_types.append(&mut self.expr_types);
+        self.expr_types = expr_types;
+        for root in &mut self.ctfe_roots {
+            *root = at.expr(*root);
+        }
+        self.ctfe_values = std::mem::take(&mut self.ctfe_values)
+            .into_iter()
+            .map(|(span, value)| (at.span(span), value))
+            .collect();
+        for span in self.header_requests.values_mut() {
+            *span = at.span(*span);
+        }
+    }
+
     /// Merge an item shard recorded in item-local coordinates, placing its
     /// expression tables and spans at `at`. Thread captures are never item
     /// local: their recipes and synthetic names carry file positions.

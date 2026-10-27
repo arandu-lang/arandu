@@ -1,8 +1,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 //! RFC 0042 phase 0: guards for a body edit that moves the later items of its
 //! file. Positions must stay exact wherever they reach the user (diagnostics,
-//! goto, debug info), the incremental result must equal a cold build, and the
-//! number of re-lowered siblings is pinned so the migration can lower it.
+//! goto, debug info), the incremental result must equal a cold build, and only
+//! the edited item is lowered again.
 
 use arandu_middle::db::DiagnosticsAccumulator;
 use arandu_query::passes::{lower_amir, symbol_span, type_check};
@@ -50,14 +50,16 @@ fn growing_a_body_relowers_the_siblings_it_moves() {
 
     file.set_text(&mut db).to(Arc::from(program(3)));
     let _ = lower_amir(&db, file);
-    // `alpha` plus the four items it moves. RFC 0042 targets 1: only the
-    // edited item should be lowered again.
-    assert_eq!(
-        log.count_executions_matching("instance_hir"),
-        5,
-        "{}",
-        log.format_chain(false)
-    );
+    // Only the edited item is lowered again; the four items it moves keep
+    // their item-local HIR and units (RFC 0042 step C).
+    for query in ["instance_hir", "runtime_raw_unit", "runtime_unit"] {
+        assert_eq!(
+            log.count_executions_matching(query),
+            1,
+            "{query}: {}",
+            log.format_chain(false)
+        );
+    }
 }
 
 #[test]
@@ -133,4 +135,95 @@ fn a_moved_sibling_keeps_its_declaration_and_goto_positions() {
             "goto `{name}`"
         );
     }
+}
+
+/// An ownership diagnostic comes from the unit of a moved sibling, whose
+/// positions are relative to its item until the composition and the IDE place
+/// them back in the file.
+#[test]
+fn a_moved_sibling_keeps_exact_ownership_diagnostic_positions() {
+    let conflicting = |growth: usize| {
+        format!(
+            "{}\nfunc borrowValue(value: ref int): ref int {{\n    return value\n}}\n\nfunc conflict(): int {{\n    let mut value = 42\n    let borrowed = borrowValue(value)\n    value = 43\n    return *borrowed\n}}\n",
+            program(growth)
+        )
+    };
+    let mut db = DatabaseImpl::new();
+    let file = db.new_file("guards.aru".into(), conflicting(0));
+    for growth in [0, 3] {
+        if growth > 0 {
+            file.set_text(&mut db).to(Arc::from(conflicting(growth)));
+        }
+        let ide = file_ide_diagnostics(&db, file);
+        let diagnostic = ide
+            .iter()
+            .find(|diagnostic| diagnostic.code == "O003")
+            .unwrap_or_else(|| panic!("growth {growth}: {:?}", ide.iter().collect::<Vec<_>>()));
+        let at = |start: u32, end: u32| {
+            text_at(
+                &db,
+                file,
+                arandu_middle::Span::new(diagnostic.file_id, start, end),
+            )
+        };
+        assert_eq!(
+            at(diagnostic.start, diagnostic.end),
+            "mut value",
+            "growth {growth}"
+        );
+        assert_eq!(
+            diagnostic
+                .labels
+                .iter()
+                .map(|label| at(label.start, label.end))
+                .collect::<Vec<_>>(),
+            ["let borrowed = borrowValue(value)"],
+            "growth {growth}"
+        );
+        let runtime = arandu_query::runtime::runtime_program(&db, file);
+        let compiled = runtime
+            .diagnostics
+            .iter()
+            .find(|diagnostic| {
+                diagnostic.code == arandu_middle::DiagCode::O003MutableBorrowConflict
+            })
+            .unwrap_or_else(|| panic!("growth {growth}: {:?}", runtime.diagnostics));
+        assert_eq!(
+            text_at(&db, file, compiled.span),
+            "mut value",
+            "growth {growth}"
+        );
+        assert_eq!(
+            compiled
+                .labels
+                .iter()
+                .map(|label| text_at(&db, file, label.span))
+                .collect::<Vec<_>>(),
+            ["let borrowed = borrowValue(value)"],
+            "growth {growth}"
+        );
+    }
+}
+
+/// A caller lowered before its generic callee names the callee header without
+/// positions. Debug info reads each instance's symbol span, so the composed
+/// instance takes it from the unit that defines it.
+#[test]
+fn an_instance_is_positioned_by_its_own_unit_even_after_its_caller() {
+    let source = "func main(): int {\n    return identity(5)\n}\n\nfunc identity<T>(x: T): T {\n    return x\n}\n";
+    let mut db = DatabaseImpl::new();
+    let file = db.new_file("order.aru".into(), source.into());
+    let artifacts = lower_amir(&db, file);
+    let symbols = &artifacts.type_check.symbols;
+    let instance = artifacts
+        .amir
+        .funcs
+        .iter()
+        .map(|function| symbols.get(function.symbol))
+        .find(|symbol| symbol.name.contains("identity"))
+        .expect("identity instance");
+    assert!(
+        text_at(&db, file, instance.span).starts_with("func identity<T>"),
+        "{instance:?}"
+    );
 }

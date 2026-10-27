@@ -130,38 +130,44 @@ pub fn compose_function_units(
     }
     // Allocations are scoped and structural-key deduplicated. An incidental
     // symbol number from one unit never aliases another unit's definition.
-    for input in units {
-        poll();
-        for (symbol, key) in input.instances {
-            if canonical.contains_key(key) {
-                continue;
-            }
-            let source = input.context.symbols.try_get(*symbol).ok_or_else(|| {
-                vec![ice(
-                    "instance header has no symbol",
-                    input
-                        .unit
-                        .function
-                        .temps
-                        .first()
-                        .map_or(Span::new(0, 0, 0), |temp| temp.span),
-                )]
-            })?;
-            let global = aggregate.symbols.global_scope();
-            let scope = aggregate.symbols_mut().new_scope(global);
-            let mapped = aggregate
-                .symbols_mut()
-                .define(scope, &source.name, source.kind, source.span)
-                .map_err(|_| vec![ice("instance symbol allocation collided", source.span)])?;
-            if let Some(name) = input.context.symbols.host_function_names.get(symbol) {
-                aggregate
+    // An instance takes its symbol from the unit that defines it, whose
+    // context positions it; a caller's context names the callee header
+    // without positions (RFC 0042). The second pass covers instances that
+    // no unit defines.
+    for defining in [true, false] {
+        for input in units {
+            poll();
+            for (symbol, key) in input.instances {
+                if canonical.contains_key(key) || (defining && input.key != key) {
+                    continue;
+                }
+                let source = input.context.symbols.try_get(*symbol).ok_or_else(|| {
+                    vec![ice(
+                        "instance header has no symbol",
+                        input
+                            .unit
+                            .function
+                            .temps
+                            .first()
+                            .map_or(Span::new(0, 0, 0), |temp| temp.span),
+                    )]
+                })?;
+                let global = aggregate.symbols.global_scope();
+                let scope = aggregate.symbols_mut().new_scope(global);
+                let mapped = aggregate
                     .symbols_mut()
-                    .host_function_names
-                    .insert(mapped, name.clone());
-            }
-            canonical.insert(key.clone(), mapped);
-            if input.context.symbols.tooling_entrypoints.contains(symbol) {
-                aggregate.symbols_mut().tooling_entrypoints.insert(mapped);
+                    .define(scope, &source.name, source.kind, source.span)
+                    .map_err(|_| vec![ice("instance symbol allocation collided", source.span)])?;
+                if let Some(name) = input.context.symbols.host_function_names.get(symbol) {
+                    aggregate
+                        .symbols_mut()
+                        .host_function_names
+                        .insert(mapped, name.clone());
+                }
+                canonical.insert(key.clone(), mapped);
+                if input.context.symbols.tooling_entrypoints.contains(symbol) {
+                    aggregate.symbols_mut().tooling_entrypoints.insert(mapped);
+                }
             }
         }
     }

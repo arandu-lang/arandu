@@ -148,7 +148,11 @@ pub fn runtime_program(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Run
     while let Some(instance) = pending.pop_front() {
         db.unwind_if_revision_cancelled();
         let key = instance.key(db).clone();
-        let checked = runtime_unit(db, instance);
+        let produced = runtime_unit(db, instance);
+        let checked = match super::place_unit(db, &key, produced) {
+            Some(placed) => std::sync::Arc::new(placed),
+            None => std::sync::Arc::clone(&produced.value),
+        };
         match &checked.result {
             Ok(unit) => {
                 let mut callees = Vec::new();
@@ -252,21 +256,21 @@ pub fn runtime_program(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Run
             }
             Err(errors) => diagnostics.extend(errors.iter().cloned()),
         }
-        units.push((key, checked.clone()));
+        units.push((key, produced.clone(), checked));
     }
     let file_path_key = |file_id: arandu_middle::db::FileId| {
         db.source_file_by_id(file_id)
             .map(|sf| sf.path(db).clone())
             .unwrap_or_else(|| std::sync::Arc::new(std::path::PathBuf::new()))
     };
-    units.sort_by_key(|(key, _)| {
+    units.sort_by_key(|(key, _, _)| {
         (
             file_path_key(key.definition.file_id),
             key.definition.local_id.0,
             *key.stable_hash().as_bytes(),
         )
     });
-    for (key, checked) in &units {
+    for (key, produced, _) in &units {
         fingerprint.update(
             file_path_key(key.definition.file_id)
                 .as_os_str()
@@ -274,7 +278,7 @@ pub fn runtime_program(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Run
         );
         fingerprint.update(&[0]);
         fingerprint.update(key.stable_hash().as_bytes());
-        fingerprint.update(checked.stable_hash().as_bytes());
+        fingerprint.update(produced.stable_hash().as_bytes());
     }
     let composed = if diagnostics
         .iter()
@@ -284,7 +288,7 @@ pub fn runtime_program(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Run
     } else {
         let inputs = units
             .iter()
-            .filter_map(|(key, checked)| {
+            .filter_map(|(key, _, checked)| {
                 let unit = checked.result.as_ref().ok()?;
                 Some(arandu_semantics::ContextualFunctionUnit {
                     key,

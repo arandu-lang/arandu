@@ -109,10 +109,11 @@ fn growing_a_body_relowers_only_its_own_module_and_matches_a_cold_build() {
     lib.set_text(&mut package.db).to(Arc::from(library(3)));
     let incremental = package.lowered();
 
-    // `grow` changed and `after` moved; `combined` and `main` only import them.
+    // `grow` changed. `after` moved, but its HIR is item-local (RFC 0042), and
+    // `combined` and `main` only import them.
     assert_eq!(
         package.log.count_executions_matching("instance_hir"),
-        2,
+        1,
         "{}",
         package.log.format_chain(false)
     );

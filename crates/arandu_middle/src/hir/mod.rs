@@ -5,6 +5,7 @@ pub mod expr;
 pub mod pattern;
 pub mod pool;
 pub mod pretty;
+mod spans;
 pub mod stmt;
 pub(crate) mod validation;
 

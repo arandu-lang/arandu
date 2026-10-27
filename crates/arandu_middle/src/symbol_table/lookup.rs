@@ -90,6 +90,21 @@ impl super::SymbolTable {
         self.iter_own().chain(self.imported_symbols.values())
     }
 
+    /// A copy in which `f` gives the span of every symbol of this table's own
+    /// file; imported symbols keep theirs.
+    #[must_use]
+    pub fn map_spans(&self, mut f: impl FnMut(&Symbol) -> crate::Span) -> Self {
+        let mut table = self.clone();
+        for symbol in table
+            .symbols
+            .iter_mut()
+            .chain(table.synthetic_symbols.values_mut())
+        {
+            symbol.span = f(symbol);
+        }
+        table
+    }
+
     /// Symbols of this table's own file, without imported ones.
     pub fn iter_own(&self) -> impl Iterator<Item = &Symbol> {
         self.symbols.iter().chain(self.synthetic_symbols.values())

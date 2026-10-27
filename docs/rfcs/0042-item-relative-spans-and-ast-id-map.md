@@ -591,6 +591,63 @@ um build frio; o passo seguinte move a conversão para baixo.
   então um `let` novo num corpo desloca os símbolos dos itens seguintes e
   muda a tipagem local deles (acoplamento 7, ainda aberto).
 
+### 8.11. Passo C: HIR e units por item em coordenadas locais (2026-10-27)
+
+Regra do passo: um artefato que não reexecuta não pode guardar posição
+absoluta, porque ela envelhece. Tudo o que `function_hir`, `instance_hir` e as
+units guardam é relativo ao próprio item ou é o placeholder
+`Span::new(0, 0, 0)`; a conversão para o arquivo acontece nas bordas.
+
+- `signature_context(file)` e `without_positions`: as assinaturas sem as
+  tabelas por posição e com os símbolos do arquivo no placeholder
+  (`SymbolTable::map_spans`).
+- `item_context(file, símbolo)`: o contexto acima com a `LocalTyping` do item
+  colocada na origem, os símbolos do item relativos a ele e os de outros itens
+  no placeholder. Recusa (`None`) quando a tipagem não é local, o arquivo tem
+  `struct_field_defaults` (acoplamento 6), o item é template comptime adiado ou
+  há diagnóstico de import.
+- `function_hir` baixa o `item_ast` com esse contexto (`lowers_locally`, que
+  também exige o HIR de declarações sem erro). O `module` do arquivo vem de
+  `declared_module`, porque a declaração `module` é um item próprio.
+- `declaration_shape(file)`: o `declaration_hir` com HIR e símbolos do arquivo
+  no placeholder (`HirProgram::map_spans`), identificado pela superfície.
+  `local_declaration_context` liga o próprio arquivo por ele; as units não
+  locais continuam no `declaration_context` com posições.
+- `instance_hir` não lê mais `item_source_input` nem `declaration_signatures`
+  no caminho local: os fatos de staging vêm de `item_staging` (booleans).
+  `InstanceHir::local` e `RuntimeUnit::local` marcam as units relativas.
+- Bordas: `place_unit` desloca a unit pela `ItemPlacement` do item
+  (`AmirFunc::map_spans`, `debug_blocks`, diagnósticos e
+  `TypeInfo::place_at`, que leva as tabelas de expressão à base de arena do
+  item, porque a composição as funde no agregado), e dá aos símbolos do arquivo
+  as posições declaradas. `runtime_program` e os consumidores IDE
+  (`dataflow::source_runtime_unit`) só leem units colocadas.
+- Composição: o símbolo canônico de uma instância vem da unit que a define,
+  não da primeira que a menciona. O contexto de um chamador nomeia o header
+  do callee sem posição; antes disso, um chamador anterior ao genérico no
+  arquivo dava ao DWARF a linha 0 da instância.
+- Gates: `item_relative_guards` (`instance_hir`, `runtime_raw_unit` e
+  `runtime_unit` reexecutam 1 vez; bytes iguais ao build frio; posições de
+  diagnóstico de tipagem e de ownership, na CLI e na IDE;
+  `an_instance_is_positioned_by_its_own_unit_even_after_its_caller`, que falha
+  sem a correção da composição). `declaration_surface_cutoff` e a sessão de
+  build do CLI caem de 2 para 1 unit reconstruída.
+- Equivalência com o commit anterior em todo arquivo de `examples/`, `stdlib/`
+  e `tests/`: diagnósticos de compilação e de IDE idênticos, com texto de
+  span e labels; AMIR e tabela de símbolos idênticos em 350 de 355 arquivos.
+  Nos 5 restantes (genéricos), só difere o span de clones de parâmetro de
+  header criados no contexto do chamador, que o AMIR não referencia; agora
+  ficam no placeholder.
+- Custo: `perf` (50 módulos, mínimo de 7 rodadas intercaladas) sem regressão
+  (cold 0,74 s → 0,62 s; edição de dependência 5,7 ms → 5,8 ms). Uma edição que
+  desloca 200 funções de um arquivo: `lower_amir` 705 ms → 234 ms; `function_hir`,
+  `instance_hir`, `instance_contracts` e as units passam de 201 execuções a 1.
+- Limite: a tipagem por item (`item_typing`, `item_staged_typing`,
+  `item_const_arguments`, `item_static_branches`, `item_source_input`) ainda
+  reexecuta para todos os itens deslocados, e os acoplamentos 6 e 7 seguem
+  abertos. O Passo D trata as bordas restantes (DWARF de ponta a ponta, LSP e
+  hash de CGU com `--debug`).
+
 ## 9. Questões em Aberto (Unresolved Questions)
 
 1. **Reordenação de Funções no Arquivo:** Se o usuário inverter a ordem de duas funções no arquivo (`func A(); func B();` $\to$ `func B(); func A();`), os índices ordinais de seus `AstId`s se invertem, invalidando ambas. Devemos considerar no futuro um fallback baseado no nome do símbolo para manter estabilidade sob reordenação?

@@ -275,6 +275,7 @@ pub fn runtime_unit<'db>(
         generated_symbols: raw.generated_symbols.clone(),
         borrow_summary,
         analysis_function,
+        local: raw.local,
     }
     .into_query_output(db, "runtime_unit")
 }

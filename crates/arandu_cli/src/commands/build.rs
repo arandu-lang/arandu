@@ -592,10 +592,11 @@ mod tests {
             log.clear();
             session.build().unwrap();
             assert_eq!(exit_code(&root), Some(13));
-            // `grow` changed and `after` moved; importers keep their units.
+            // `grow` changed. `after` moved but keeps its item-local unit
+            // (RFC 0042), and importers keep theirs.
             assert_eq!(
                 log.count_executions_matching("instance_hir"),
-                2,
+                1,
                 "{}",
                 log.format_chain(false)
             );

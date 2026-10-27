@@ -413,7 +413,7 @@ fn without_signatures(local: &mut TypeInfo, signatures: &TypeInfo) {
 }
 
 /// Every position a diagnostic carries.
-fn for_each_span(diagnostic: &mut Diagnostic, mut f: impl FnMut(&mut Span)) {
+pub(crate) fn for_each_span(diagnostic: &mut Diagnostic, mut f: impl FnMut(&mut Span)) {
     let Diagnostic {
         code: _,
         severity: _,

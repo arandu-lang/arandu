@@ -5,13 +5,66 @@ use arandu_resolve::ResolutionResult;
 
 use std::sync::Arc;
 
+/// Logical module of a package source, derived from inputs only, for files
+/// without a `module` declaration. A package source `<src>/a/b.aru` is
+/// `<package>.a.b`, the module an `import <package>.a.b` names; a dependency
+/// file uses its binding key (`<alias>/x.aru` is `<alias>.x`). The entry file
+/// has none: its unqualified names cannot collide with the qualified ones, and
+/// its symbols stay independent of the package name. Sources outside both,
+/// such as single files and the stdlib, have none either.
+#[salsa::tracked]
+pub(crate) fn implicit_module(db: &dyn ArandCompilerDb, file: SourceFile) -> Option<Arc<str>> {
+    let database = db.as_db_impl()?;
+    database.resolution_epoch();
+    let path = file.path(db);
+    if let Some(roots) = database.module_roots() {
+        if let Ok(relative) = path.strip_prefix(roots.package_src(db).as_ref()) {
+            // The package source root is the directory of the entry file.
+            let entry = database.project_manifest().and_then(|manifest| {
+                std::path::Path::new(manifest.entry(db))
+                    .file_name()
+                    .map(std::path::Path::new)
+            });
+            if entry == Some(relative) {
+                return None;
+            }
+            let mut segments = vec![roots.package_name(db).clone()];
+            segments.extend(module_segments(relative)?);
+            return Some(Arc::from(segments.join(".")));
+        }
+    }
+    let map = database.package_module_map()?;
+    map.bindings(db)
+        .iter()
+        .filter(|(key, binding)| binding.file == file && !key.starts_with("self/"))
+        .filter_map(|(key, _)| {
+            let segments = module_segments(std::path::Path::new(key))?;
+            (segments.len() > 1).then(|| segments.join("."))
+        })
+        .min()
+        .map(Arc::from)
+}
+
+fn module_segments(relative: &std::path::Path) -> Option<Vec<String>> {
+    let stem = relative.with_extension("");
+    stem.components()
+        .map(|component| match component {
+            std::path::Component::Normal(segment) => segment.to_str().map(str::to_owned),
+            _ => None,
+        })
+        .collect()
+}
+
 #[salsa::tracked]
 pub fn local_symbols(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<ResolutionResult> {
     let program_res = super::resolution::parse(db, file);
     let mut resolved = match &**program_res {
-        Ok(program) => arandu_resolve::resolve_local_with_poll(*file.file_id(db), program, || {
-            db.unwind_if_revision_cancelled();
-        }),
+        Ok(program) => arandu_resolve::resolve_local_in_module_with_poll(
+            *file.file_id(db),
+            program,
+            implicit_module(db, file).as_deref(),
+            || db.unwind_if_revision_cancelled(),
+        ),
         Err(_) => ResolutionResult {
             is_cycle_fallback: false,
             symbols: Arc::new(arandu_semantics::SymbolTable::default()),

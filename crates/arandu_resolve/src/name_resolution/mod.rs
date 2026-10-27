@@ -54,7 +54,25 @@ pub fn resolve_local_with_poll(
     program: &Program,
     poll: impl FnMut(),
 ) -> ResolutionResult {
-    Resolver::new(file_id, &program.pool, Some(program)).resolve_local_with_poll(program, poll)
+    resolve_local_in_module_with_poll(file_id, program, None, poll)
+}
+
+/// [`resolve_local_with_poll`] for a file whose logical module path the driver
+/// knows. A file without a `module` declaration qualifies its function host
+/// names with `implicit_module`, so equal names in different modules stay
+/// distinct linker symbols.
+#[must_use]
+pub fn resolve_local_in_module_with_poll(
+    file_id: u32,
+    program: &Program,
+    implicit_module: Option<&str>,
+    poll: impl FnMut(),
+) -> ResolutionResult {
+    Resolver::new(file_id, &program.pool, Some(program)).resolve_local_with_poll(
+        program,
+        implicit_module,
+        poll,
+    )
 }
 
 /// Single-file / unit-test resolve that runs the **same** import pipeline as

@@ -473,9 +473,12 @@ pub fn ide_type_check(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Type
         arandu_parser::syntax::lower_syntax_to_program_recovering(tree.value.as_ref(), file_id)
             .program;
 
-    let locals = arandu_resolve::resolve_local_with_poll(file_id, &program, || {
-        db.unwind_if_revision_cancelled();
-    });
+    let locals = arandu_resolve::resolve_local_in_module_with_poll(
+        file_id,
+        &program,
+        super::symbols::implicit_module(db, file).as_deref(),
+        || db.unwind_if_revision_cancelled(),
+    );
     let resolved = arandu_resolve::resolve_imports_and_bodies_with_poll(
         &arandu_resolve::SourceDbLoader(db.as_source_db()),
         &program,

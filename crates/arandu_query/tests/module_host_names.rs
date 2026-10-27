@@ -207,3 +207,43 @@ fn coinciding_qualified_names_are_rejected_before_codegen() {
         "{diagnostics:?}"
     );
 }
+
+#[test]
+fn composed_functions_keep_the_position_of_their_own_declaration() {
+    // Debug info reads `symbol.span` as each subprogram's declaration file and
+    // line. An importer records imported functions at its `import`, so the
+    // composed program must take their positions from the defining file.
+    let package = Package::new(
+        "positions",
+        &[
+            (
+                "main.aru",
+                "import app.left as left\nimport app.right as right\n\nfunc main(): int {\n    return left.api(1) + right.api(2)\n}\n",
+            ),
+            (
+                "left.aru",
+                "func helper(value: int): int {\n    return value + 10\n}\n\npublic func api(value: int): int {\n    return helper(value)\n}\n",
+            ),
+            (
+                "right.aru",
+                "public func api(value: int): int {\n    return value * 3\n}\n",
+            ),
+        ],
+    );
+    let artifacts = lower_amir(&package.db, package.file("main.aru"));
+    let symbols = &artifacts.type_check.symbols;
+    let mut checked = 0;
+    for function in &artifacts.amir.funcs {
+        let symbol = symbols.get(function.symbol);
+        assert_eq!(
+            symbol.span.file_id, symbol.id.file_id,
+            "`{}` must be positioned in its own file",
+            symbol.name
+        );
+        let text = arandu_query::ArandCompilerDb::source_text(&package.db, symbol.id.file_id);
+        let named = text.get(symbol.span.start as usize..symbol.span.end as usize);
+        assert_eq!(named, Some(symbol.name.as_str()), "`{}` span", symbol.name);
+        checked += 1;
+    }
+    assert_eq!(checked, 4, "main, left.helper, left.api and right.api");
+}

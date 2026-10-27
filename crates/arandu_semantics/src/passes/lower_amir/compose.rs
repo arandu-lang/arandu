@@ -31,9 +31,10 @@ pub fn compose_function_units(
     let mut canonical = FxHashMap::<FunctionInstance, SymbolId>::default();
     let mut diagnostics = Vec::new();
     // Positions of a file's symbols are current only in contexts of its own
-    // units; an importer observes imported declarations by surface and may
-    // keep an older copy (parameter and local spans feed debug info).
-    // Registration keeps the first copy, so own-file symbols go first.
+    // units. An importer records an imported symbol at its `import` and
+    // observes imported declarations by surface, so it may also keep older
+    // positions. Debug info and diagnostics read these spans, so a symbol of
+    // another file takes its position from a unit of that file.
     for input in units {
         poll();
         let own = &input.context.symbols;
@@ -49,6 +50,10 @@ pub fn compose_function_units(
                 aggregate
                     .symbols_mut()
                     .register_imported_symbol(source.clone());
+            } else if let Some(imported) =
+                aggregate.symbols_mut().imported_symbols.get_mut(&source.id)
+            {
+                imported.span = source.span;
             }
         }
     }

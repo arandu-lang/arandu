@@ -1,10 +1,11 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 //! RFC 0042 phase 1: `AstId` names a top-level item independently of where it
 //! sits, and `item_positions` is the only map from that identity to bytes.
+//! Phase 2: `item_ast` is the item's AST with positions relative to it.
 
 use arandu_base::AstId;
-use arandu_query::passes::{item_ast_ids, item_positions, parse, type_check};
-use arandu_query::{DatabaseImpl, SourceFile};
+use arandu_query::passes::{item_ast, item_ast_ids, item_positions, parse, type_check};
+use arandu_query::{DatabaseImpl, SourceFile, StableHash};
 use salsa::Setter;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -55,7 +56,7 @@ fn every_definition_maps_to_its_enclosing_item() {
 }
 
 #[test]
-fn item_positions_cover_attributes_but_not_doc_comments() {
+fn item_positions_cover_attributes() {
     let mut db = DatabaseImpl::new();
     let source = program(0);
     let file = db.new_file("items.aru".into(), source.clone());
@@ -72,8 +73,8 @@ fn item_positions_cover_attributes_but_not_doc_comments() {
     let first = positions
         .item_span(positions.ids().next().expect("item"))
         .expect("span");
-    // Doc comments are trivia before the item, outside its range: the item
-    // text excludes them, and docs are collected by their own queries.
+    // A doc comment that opens the file is root trivia, outside the first
+    // item; the item still covers its attributes.
     let text = &source[first.start as usize..first.end as usize];
     assert!(text.trim_start().starts_with("@Effects(none)"), "{text:?}");
     assert!(!text.contains("/// Grows."), "{text:?}");
@@ -104,5 +105,54 @@ fn growing_a_body_moves_positions_but_keeps_ids() {
         // A relative position resolves against the item's current start.
         let relative = arandu_base::Span::new(old.file_id, 0, old.end - old.start);
         assert_eq!(after.to_absolute(*id, relative), Some(new));
+    }
+}
+
+fn item_ast_hashes(db: &DatabaseImpl, file: SourceFile) -> Vec<blake3::Hash> {
+    item_positions(db, file)
+        .ids()
+        .map(|id| item_ast(db, file, id).stable_hash())
+        .collect()
+}
+
+#[test]
+fn a_moved_item_keeps_its_local_ast() {
+    let mut db = DatabaseImpl::new();
+    let file = db.new_file("items.aru".into(), program(0));
+    let before = item_ast_hashes(&db, file);
+
+    file.set_text(&mut db).to(Arc::from(program(3)));
+    let after = item_ast_hashes(&db, file);
+    assert_ne!(before[0], after[0], "the edited item changes");
+    assert_eq!(before[1..], after[1..], "the moved items do not");
+}
+
+#[test]
+fn local_positions_resolve_to_the_file_ast() {
+    let mut db = DatabaseImpl::new();
+    let file = db.new_file("items.aru".into(), program(3));
+    let positions = item_positions(&db, file);
+    let parsed = parse(&db, file);
+    let parsed = parsed.as_ref();
+    let whole = parsed.as_ref().expect("parse");
+    let mut file_spans = whole.pool.decl_spans.clone();
+    file_spans.extend(whole.pool.expr_spans.iter().copied());
+    file_spans.sort();
+
+    for id in positions.ids() {
+        let local = item_ast(&db, file, id);
+        let local = local.value.as_ref().as_ref().expect("item parse");
+        let len = {
+            let item = positions.item_span(id).expect("item");
+            item.end - item.start
+        };
+        for span in local.pool.decl_spans.iter().chain(&local.pool.expr_spans) {
+            assert!(span.end <= len, "{span:?} outside item {id:?}");
+            let absolute = positions.to_absolute(id, *span).expect("absolute");
+            assert!(
+                file_spans.binary_search(&absolute).is_ok(),
+                "{absolute:?} of {id:?}"
+            );
+        }
     }
 }

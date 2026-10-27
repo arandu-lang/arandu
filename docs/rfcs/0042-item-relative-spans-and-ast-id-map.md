@@ -446,14 +446,47 @@ Inventário das leituras dependentes de posição no caminho por item:
 - `item_ast_ids(file)` → `Arc<BTreeMap<SymbolId, AstId>>`: item que define cada
   símbolo; membros de `impl`, `extern` e submódulos apontam para o item que os
   contém. Igualdade estrutural dá early-cutoff quando só posições mudam.
-- Achado: o intervalo do item no CST inclui atributos, mas **não** os doc
-  comments que o precedem (são trivia anterior ao item). O span do item contém
-  `item_source_span` sem ser igual a ele. Consequência para a fase 2: o AST
-  local do item não carrega docs; `Program::docs` continua vindo do parse do
-  arquivo.
+- Achado: o intervalo do item no CST inclui atributos e contém
+  `item_source_span`, mas não é igual a ele: a distribuição de trivia é do
+  construtor de eventos. Doc comments que abrem o arquivo ficam na raiz, fora
+  do primeiro item; depois de `module`/`import`, os doc comments e as linhas
+  em branco entram no item (o `import` anterior absorve as linhas em branco
+  finais). Consequência: identidades e conversões usam sempre o intervalo do
+  CST, nunca o span da declaração.
 - Testes: `arandu_query/tests/item_ast_ids.rs` (cobertura de todas as
   definições, inclusive `impl`/`extern`; posições mudam e IDs ficam após
   crescimento de um corpo; `to_absolute` resolve contra o início atual).
+
+### 8.7. Fase 2: AST local (feito em 2026-10-27)
+
+- `SyntaxTree::item_tree(index)` (`arandu_parser`): subárvore verde do item sob
+  um `SOURCE_FILE` novo, fatia do texto e os tokens/erros léxicos do item,
+  rebaseados para o offset 0 (busca binária no cache de tokens, sem relex).
+  O lowering existente (`lower_syntax_to_program_recovering`) produz o AST do
+  item com spans relativos, sem visitor de spans.
+- `item_ast(file, AstId)` (`arandu_query`): esse AST, com o mesmo contrato de
+  `parse` (`Err` no primeiro erro; diagnósticos continuam acumulados só por
+  `parse`). Identidade **por conteúdo**: com spans relativos, o hash do AST
+  já ignora posições, e um item deslocado mantém a identidade sem depender de
+  um fingerprint de texto cuja completude teria de ser provada (tokens e
+  estrutura verde vêm do arquivo). Um fingerprint de texto fica como
+  otimização, só com medição.
+- Placeholders sintéticos usam `Span::new(0, 0, 0)` e não são posições: a
+  conversão relativo → absoluto das fases 3–5 deve preservá-los.
+- Prova: `arandu_parser/tests/item_tree.rs` percorre `examples/`, `stdlib/` e
+  `tests/`: 2 541 itens de arquivos sem erro (de 2 629); para todos, cada span
+  do AST local deslocado é um span do AST do arquivo e cada span do arquivo
+  dentro de itens é coberto exatamente uma vez; 2 488 também são idênticos ao
+  parse isolado do texto do item (os demais têm doc comments que, isolados,
+  viram trivia da raiz). `arandu_query/tests/item_ast_ids.rs`: o item editado
+  muda de identidade e os deslocados não; spans locais resolvem pelo
+  `AstIdMap` para spans do arquivo.
+- Medição (release, arquivo de 35 KB com 33 itens): lowering do arquivo
+  3,48 ms; de todos os itens por `item_tree` 2,77 ms; um item 35 µs. Memória
+  (capacidade dos vetores do pool): AST do arquivo 1,52 MB; ASTs dos itens com
+  tokens e texto 1,75 MB. Reter os dois dobra a memória de AST; na troca das
+  fases 3–5, o caminho por item deixa de reter o `Program` do arquivo
+  (risco já listado em 8.4).
 
 ## 9. Questões em Aberto (Unresolved Questions)
 

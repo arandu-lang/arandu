@@ -118,6 +118,61 @@ impl SyntaxTree {
             .collect()
     }
 
+    /// Tree of one top-level item, positioned at offset 0: its green subtree
+    /// under a fresh `SOURCE_FILE`, its slice of the text, and the cached
+    /// tokens and lex errors inside the item, rebased. Lowering it yields the
+    /// item's AST with spans relative to the item start, without re-lexing.
+    #[must_use]
+    pub fn item_tree(&self, index: usize) -> Option<SyntaxTree> {
+        let item = self
+            .root()
+            .children()
+            .filter(|n| n.kind().is_top_level_item())
+            .nth(index)?;
+        let range = item.text_range();
+        let (start, end) = (u32::from(range.start()), u32::from(range.end()));
+        let text = self.text.get(start as usize..end as usize)?;
+        let green = GreenNode::new(
+            SyntaxKind::SOURCE_FILE.into(),
+            [rowan::NodeOrToken::Node(item.green().to_owned())],
+        );
+        // Tokens are in source order: slice the item's run instead of
+        // scanning the whole file once per item.
+        let first = self.tokens.partition_point(|token| token.start < start);
+        let mut tokens: Vec<Token> = self.tokens[first..]
+            .iter()
+            .take_while(|token| token.start < end)
+            .filter(|token| token.kind != TokenKind::Eof && token.end() <= end)
+            .map(|token| Token {
+                start: token.start - start,
+                ..*token
+            })
+            .collect();
+        tokens.push(Token {
+            start: end - start,
+            len: 0,
+            kind: TokenKind::Eof,
+            inserted: false,
+        });
+        let lex_diagnostics = self
+            .lex_diagnostics
+            .iter()
+            .filter(|err| start <= err.span.start && err.span.end <= end)
+            .map(|err| {
+                let mut err = *err;
+                err.span.start -= start;
+                err.span.end -= start;
+                err
+            })
+            .collect();
+        Some(SyntaxTree {
+            green,
+            text: Arc::from(text),
+            tokens: Arc::new(tokens),
+            lex_diagnostics: Arc::new(lex_diagnostics),
+        })
+    }
+
     /// Index of the ITEM covering `offset` (byte), if any.
     #[must_use]
     pub fn item_index_at(&self, offset: u32) -> Option<usize> {

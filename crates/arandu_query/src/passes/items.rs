@@ -2,9 +2,11 @@
 //! its ordinal, and [`AstIdMap`] is the only place that knows where each item
 //! currently sits in its file.
 
+use crate::db::HashEq;
 use crate::{ArandCompilerDb, SourceFile};
 use arandu_base::{AstId, Span};
 use arandu_middle::SymbolId;
+use arandu_parser::Program;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -117,4 +119,31 @@ pub fn item_ast_ids(db: &dyn ArandCompilerDb, file: SourceFile) -> Arc<BTreeMap<
         }
     });
     Arc::new(ids)
+}
+
+/// AST of one top-level item, lowered from its CST subtree without re-lexing,
+/// with every position relative to the item start. Its identity is its
+/// content, so moving the item does not change it. Parse diagnostics are
+/// accumulated by `parse`, never here.
+#[salsa::tracked]
+#[tracing::instrument(level = "debug", skip(db), fields(
+    file = ?file.file_id(db),
+))]
+pub fn item_ast(
+    db: &dyn ArandCompilerDb,
+    file: SourceFile,
+    id: AstId,
+) -> HashEq<Result<Arc<Program>, arandu_parser::ParseError>> {
+    let tree = super::resolution::syntax_tree(db, file);
+    let Some(item) = (id.file_id == *file.file_id(db))
+        .then(|| tree.item_tree(id.index as usize))
+        .flatten()
+    else {
+        return HashEq::new(Ok(Arc::new(super::typing::empty_program())));
+    };
+    let output = arandu_parser::syntax::lower_syntax_to_program_recovering(&item, id.file_id);
+    match output.diagnostics.into_iter().next() {
+        Some(error) => HashEq::new(Err(error)),
+        None => HashEq::new(Ok(Arc::new(output.program))),
+    }
 }

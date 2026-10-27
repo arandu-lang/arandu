@@ -21,6 +21,9 @@ pub use program::{runtime_program, RuntimeProgram};
 pub struct DeclarationHir {
     pub artifacts: PreparedHir,
     pub(crate) fingerprint: blake3::Hash,
+    /// [`Self::fingerprint`] without declaration positions; see
+    /// [`declaration_surface`].
+    pub(crate) surface: blake3::Hash,
 }
 
 #[salsa::interned]
@@ -335,6 +338,25 @@ pub fn declaration_hir(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Dec
     decl::declaration_hir_from(db, file, false)
 }
 
+/// [`declaration_hir`] as importers observe it: identified by its surface,
+/// without declaration positions. A body that changes length moves every later
+/// declaration of its file; importers link these headers by `SymbolId` and
+/// pool IDs, never by position, so such an edit must not invalidate them (the
+/// same contract as [`crate::passes::exported_symbols`]). Positions of a
+/// file's declarations are authoritative only through that file's own
+/// queries.
+#[salsa::tracked]
+#[tracing::instrument(level = "trace", target = "arandu_query", skip(db), fields(
+    query = "declaration_surface", file = ?file.file_id(db),
+))]
+pub fn declaration_surface(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<DeclarationHir> {
+    let declarations = declaration_hir(db, file);
+    HashEq::with_identity(
+        std::sync::Arc::clone(&declarations.value),
+        declarations.surface,
+    )
+}
+
 /// Pre-body staging context. Uses the same declaration lowering and constant
 /// checker, but cannot request full resolution, staged bodies or runtime units.
 #[salsa::tracked]
@@ -370,7 +392,13 @@ pub fn declaration_context(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq
         if !visited.insert(*context_file.file_id(db)) {
             continue;
         }
-        let declarations = declaration_hir(db, context_file);
+        // Imported headers enter by surface; only this file's own positions
+        // belong to its context identity.
+        let declarations = if context_file == file {
+            declaration_hir(db, context_file)
+        } else {
+            declaration_surface(db, context_file)
+        };
         fingerprint.update(declarations.stable_hash().as_bytes());
         diagnostics.extend(declarations.artifacts.diagnostics.iter().cloned());
         if let (Some(dest), Some(source)) = (&mut hir, &declarations.artifacts.hir) {

@@ -18,6 +18,9 @@ pub(super) fn declaration_hir_from(
     let mut checked = (**declared).clone();
     let mut fingerprint = blake3::Hasher::new();
     fingerprint.update(b"DeclarationHir/v1");
+    // Declaration positions shift with every length change of an earlier body,
+    // so they stay out of the surface that importers observe.
+    let mut positions = blake3::Hasher::new();
     let mut hir = None;
     let mut diagnostics = Vec::new();
     if let Ok(program) = &**parsed {
@@ -80,8 +83,8 @@ pub(super) fn declaration_hir_from(
                     let declaration = declarations.pool.decl(id);
                     let span = declaration.span();
                     fingerprint.update(&span.file_id.to_le_bytes());
-                    fingerprint.update(&span.start.to_le_bytes());
-                    fingerprint.update(&span.end.to_le_bytes());
+                    positions.update(&span.start.to_le_bytes());
+                    positions.update(&span.end.to_le_bytes());
                     if let arandu_middle::hir::HirDecl::Func(function) = declaration {
                         fingerprint
                             .update(&[u8::from(function.is_async), u8::from(function.no_fallback)]);
@@ -104,7 +107,11 @@ pub(super) fn declaration_hir_from(
     fingerprint.update(crate::stable_hash::type_signature_hash(&checked).as_bytes());
     fingerprint.update(diagnostics.stable_hash().as_bytes());
     fingerprint.update(&[u8::from(hir.is_some())]);
-    let fingerprint = fingerprint.finalize();
+    let surface = fingerprint.finalize();
+    let mut with_positions = blake3::Hasher::new();
+    with_positions.update(surface.as_bytes());
+    with_positions.update(positions.finalize().as_bytes());
+    let fingerprint = with_positions.finalize();
     HashEq::new(DeclarationHir {
         artifacts: PreparedHir {
             hir,
@@ -113,5 +120,6 @@ pub(super) fn declaration_hir_from(
             source_fingerprint: fingerprint,
         },
         fingerprint,
+        surface,
     })
 }

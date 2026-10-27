@@ -87,10 +87,12 @@ impl super::SymbolTable {
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &Symbol> {
-        self.symbols
-            .iter()
-            .chain(self.synthetic_symbols.values())
-            .chain(self.imported_symbols.values())
+        self.iter_own().chain(self.imported_symbols.values())
+    }
+
+    /// Symbols of this table's own file, without imported ones.
+    pub fn iter_own(&self) -> impl Iterator<Item = &Symbol> {
+        self.symbols.iter().chain(self.synthetic_symbols.values())
     }
 
     /// Deterministic flat symbol name used by native backends.

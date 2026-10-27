@@ -1,5 +1,5 @@
 use super::capture::import_synthetic_captures;
-use super::{declaration_context, declaration_hir, function_hir, Instance, InstanceHir};
+use super::{declaration_context, declaration_surface, function_hir, Instance, InstanceHir};
 use crate::db::FingerprintEq;
 use crate::passes::{item_source_input, PreparedHir};
 use crate::{ArandCompilerDb, StableHash};
@@ -185,7 +185,7 @@ pub(super) fn build_instance_hir<'db>(
                 }
                 continue;
             }
-            let declarations = declaration_hir(db, context_file);
+            let declarations = declaration_surface(db, context_file);
             fingerprint.update(declarations.stable_hash().as_bytes());
             if let Some(context) = &declarations.artifacts.hir {
                 arandu_semantics::link_hir_module(

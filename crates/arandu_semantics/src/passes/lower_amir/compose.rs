@@ -30,6 +30,28 @@ pub fn compose_function_units(
 ) -> Result<ComposedUnits, Vec<Diagnostic>> {
     let mut canonical = FxHashMap::<FunctionInstance, SymbolId>::default();
     let mut diagnostics = Vec::new();
+    // Positions of a file's symbols are current only in contexts of its own
+    // units; an importer observes imported declarations by surface and may
+    // keep an older copy (parameter and local spans feed debug info).
+    // Registration keeps the first copy, so own-file symbols go first.
+    for input in units {
+        poll();
+        let own = &input.context.symbols;
+        if own.file_id == aggregate.symbols.file_id || own.file_id != input.key.definition.file_id {
+            continue;
+        }
+        for source in own
+            .iter_own()
+            .filter(|symbol| !input.generated_symbols.contains(&symbol.id))
+        {
+            poll();
+            if aggregate.symbols.try_get(source.id).is_none() {
+                aggregate
+                    .symbols_mut()
+                    .register_imported_symbol(source.clone());
+            }
+        }
+    }
     // Register every source symbol before allocating aggregate-local symbols.
     // The entry file's source table must already be complete; importing an ID
     // from that same file cannot extend its dense source table.

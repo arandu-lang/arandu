@@ -34,6 +34,14 @@ impl<T: StableHash> HashEq<T> {
         }
     }
 
+    /// Share `value` under an identity coarser than its content, such as a
+    /// surface digest that deliberately ignores positions. Consumers then
+    /// observe only what `hash` covers.
+    #[must_use]
+    pub(crate) fn with_identity(value: Arc<T>, hash: blake3::Hash) -> Self {
+        Self { value, hash }
+    }
+
     /// Share the same `Arc` and hash without re-hashing or deep-cloning `T`.
     #[must_use]
     pub fn share(other: &Self) -> Self {

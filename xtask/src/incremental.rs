@@ -148,9 +148,6 @@ impl Mutation {
 /// object reuse cannot hide codegen. Edited constants start at `SALT` and stay
 /// above the 8-bit immediate range: a body edit keeps its machine-code size,
 /// while the growth class changes it on purpose.
-///
-/// Function names carry the module index: the native backends do not yet
-/// qualify non-exported host symbols by module, so equal names collide.
 struct Workload {
     corpus: Corpus,
     target: usize,
@@ -199,7 +196,7 @@ impl Workload {
     fn main_source(&self) -> String {
         let last = self.corpus.modules - 1;
         format!(
-            "module workload\nimport workload.m{last} as last\n\nfunc main(): int {{\n    return last.m{last}_api(1)\n}}\n"
+            "module workload\nimport workload.m{last} as last\n\nfunc main(): int {{\n    return last.api(1)\n}}\n"
         )
     }
 
@@ -218,7 +215,7 @@ impl Workload {
             };
             let step = if hot { SALT + self.body_salt } else { function };
             source.push_str(&format!(
-                "/// Helper {function} of module {module}.{revision}\nfunc m{module}_helper_{function}(value: int): int {{\n    let mut acc = value\n    let mut i = 0\n    while i < 3 {{\n        acc = acc + i + {step}\n        i = i + 1\n    }}\n"
+                "/// Helper {function} of module {module}.{revision}\nfunc helper_{function}(value: int): int {{\n    let mut acc = value\n    let mut i = 0\n    while i < 3 {{\n        acc = acc + i + {step}\n        i = i + 1\n    }}\n"
             ));
             if hot {
                 for extra in 1..=self.growth {
@@ -230,7 +227,7 @@ impl Workload {
         if edited {
             for item in 1..=self.added {
                 source.push_str(&format!(
-                    "public func m{module}_added_{item}(): int {{\n    return {item}\n}}\n\n"
+                    "public func added_{item}(): int {{\n    return {item}\n}}\n\n"
                 ));
             }
         }
@@ -241,7 +238,7 @@ impl Workload {
             "value: int"
         };
         let mut terms = (0..self.corpus.functions)
-            .map(|function| format!("m{module}_helper_{function}(value)"))
+            .map(|function| format!("helper_{function}(value)"))
             .collect::<Vec<_>>();
         if module > 0 {
             let previous = module - 1;
@@ -250,17 +247,17 @@ impl Workload {
             } else {
                 "value"
             };
-            terms.push(format!("prev.m{previous}_api({arguments})"));
+            terms.push(format!("prev.api({arguments})"));
         }
         if edited {
-            terms.extend((1..=self.added).map(|item| format!("m{module}_added_{item}()")));
+            terms.extend((1..=self.added).map(|item| format!("added_{item}()")));
             terms.push((SALT + self.api_salt).to_string());
         }
         if wide {
             terms.push("extra".to_owned());
         }
         source.push_str(&format!(
-            "public func m{module}_api({parameters}): int {{\n    return {}\n}}\n",
+            "public func api({parameters}): int {{\n    return {}\n}}\n",
             terms.join(" + ")
         ));
         source
@@ -1124,7 +1121,7 @@ unrelated output\n\
         workload.mutate(Mutation::NewItem, 1);
         let source = workload.module_source(target);
         // One definition plus one call from the module API.
-        assert_eq!(source.matches(&format!("m{target}_added_2()")).count(), 2);
+        assert_eq!(source.matches(&"added_2()").count(), 2);
     }
 
     #[test]
@@ -1137,14 +1134,14 @@ unrelated output\n\
         );
         assert!(workload
             .module_source(target)
-            .contains(&format!("m{target}_api(value: int, extra: int)")));
+            .contains("api(value: int, extra: int)"));
         assert!(workload
             .module_source(target + 1)
-            .contains(&format!("prev.m{target}_api(value, 0)")));
+            .contains("prev.api(value, 0)"));
         workload.mutate(Mutation::PublicSignature, 1);
         assert!(workload
             .module_source(target + 1)
-            .contains(&format!("prev.m{target}_api(value)")));
+            .contains("prev.api(value)"));
     }
 
     #[test]

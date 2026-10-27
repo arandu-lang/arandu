@@ -65,8 +65,14 @@ pub fn runtime_library() -> Result<PathBuf, CliFailure> {
     if let Ok(executable) = std::env::current_exe()
         && let Some(bin) = executable.parent()
     {
-        // Cargo development layout: target/{debug,release}/arandu_cli.
-        if let Some(hashed) = hashed_development_runtime(bin, filename) {
+        // Cargo development layout: target/{debug,release}/arandu_cli, or a
+        // test harness that itself lives in target/{debug,release}/deps.
+        let profile_dir = if bin.file_name().is_some_and(|name| name == "deps") {
+            bin.parent().unwrap_or(bin)
+        } else {
+            bin
+        };
+        if let Some(hashed) = hashed_development_runtime(profile_dir, filename) {
             candidates.push(hashed);
         }
         candidates.push(bin.join(filename));

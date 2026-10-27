@@ -22,9 +22,14 @@ fn lower(source: &str) -> String {
     )
 }
 
+/// A promoted handle stored in memory typed as a reference would be read back
+/// as a raw pointer (AGG.1: every backend returned the handle bits instead of
+/// the value), so the pipeline rejects the escape instead of compiling it.
 #[test]
-fn o004_ide_diagnostic_has_escape_path_and_structured_no_fallback_fix() {
-    let source = r#"
+fn o004_rejects_a_promotable_borrow_stored_in_memory() {
+    for source in [
+        // Stored through a reference parameter.
+        r#"
 struct Holder { value: &int }
 
 func store(holder: mut ref Holder): int {
@@ -38,29 +43,48 @@ func main(): int {
     let mut holder = Holder { value: &value }
     return store(mut ref holder)
 }
-"#;
-    let mut db = DatabaseImpl::new();
-    let file = db.new_file("genref_o004_fix.aru".into(), source.into());
-    let diagnostics = file_ide_diagnostics(&db, file);
-    let diagnostic = diagnostics
-        .iter()
-        .find(|diagnostic| diagnostic.code == "O004")
-        .expect("O004 IDE diagnostic");
-    assert!(diagnostic
-        .notes
-        .iter()
-        .any(|note| note.contains("escape path:")));
-    let replacement = diagnostic
-        .hints
-        .iter()
-        .filter_map(|hint| hint.replacement.as_ref())
-        .find(|replacement| replacement.new_text == "@NoFallback\n")
-        .expect("structured @NoFallback fix");
-    let func_start = source.find("func store").unwrap();
-    assert!(source[replacement.start as usize..func_start]
-        .chars()
-        .all(char::is_whitespace));
-    assert_eq!(replacement.start, replacement.end);
+"#,
+        // Stored in a local aggregate.
+        r#"
+struct Holder { value: &int }
+
+func main(): int {
+    let start = 5
+    let holder = Holder { value: &start }
+    return *holder.value
+}
+"#,
+    ] {
+        let mut db = DatabaseImpl::new();
+        let file = db.new_file("genref_o004_store.aru".into(), source.into());
+        let diagnostics = file_ide_diagnostics(&db, file);
+        let diagnostic = diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code == "O004")
+            .expect("O004 IDE diagnostic");
+        assert_eq!(
+            diagnostic.severity, 0,
+            "O004 must be an error: {diagnostic:?}"
+        );
+        assert!(diagnostic
+            .notes
+            .iter()
+            .any(|note| note.contains("escape path:")));
+        assert!(
+            diagnostic
+                .notes
+                .iter()
+                .any(|note| note.contains("cannot be safely re-read")),
+            "{diagnostic:?}"
+        );
+        assert!(
+            !diagnostic
+                .notes
+                .iter()
+                .any(|note| note.contains("@NoFallback")),
+            "the rejection is about representation, not a fallback scope: {diagnostic:?}"
+        );
+    }
 }
 
 #[test]

@@ -316,7 +316,11 @@ fn validate_borrowed_function(
                     .with_hint("return owned data or forward a borrow derived from a formal `ref` input"),
                 );
     }
-    arandu_mir::gen_promote::apply_gen_promotion_with_type_info(function, &*tc.type_info, options);
+    // No escape is promoted to a GenRef. Every promotable escape stores the
+    // borrow into memory typed as a reference, and runtime references are raw
+    // pointers: a handle written there would be read back as a pointer. Escape
+    // analysis rejects those escapes (O004 error) until references gain a
+    // first-class handle representation (R1, RFC 0001).
 }
 
 pub(crate) fn is_memory_type(ty: &ArType) -> bool {

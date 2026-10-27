@@ -21,7 +21,7 @@
 > **Estado auditado em 2026-10-26 (Campanha 0.2.0 HOT.2):**
 > 1. A implementação da separação de superfície (`declaration_surface`, commit `49678171`) resolveu a contaminação externa: importadores observam declarações sem posições de texto, reduzindo o custo de uma edição de corpo de função de **265 units (2,9s–5,2s)** para **33 units (285ms–561ms)**.
 > 2. No entanto, as **33 units remanescentes** são reexecutadas porque todas as funções vizinhas dentro do *mesmo* arquivo sofrem "span drift" (deslocamento de offsets absolutos de byte no arquivo). O `Span` atual (`Span { file_id, start, end }`) é estritamente absoluto.
-> 3. Adicionalmente, detectou-se um bug estrutural na geração de debug info: funções importadas agregadas retêm o span do arquivo importador (local do `import`), levando a emissão DWARF (`DW_AT_decl_file`/`DW_AT_decl_line`) a apontar arquivos e linhas incorretos no depurador.
+> 3. Adicionalmente, detectou-se um bug estrutural na geração de debug info: funções importadas agregadas retinham o span do arquivo importador (local do `import`), levando a emissão DWARF (`DW_AT_decl_file`/`DW_AT_decl_line`) a apontar arquivos e linhas incorretos no depurador. **Corrigido em `bfd272b3`**: a composição toma a posição de cada símbolo de um unit do arquivo dono. Esta RFC não depende mais desse bug; o `AstIdMap` passa a ser a autoridade de posições nessa mesma borda.
 > 
 > Esta RFC especifica a evolução arquitetural para eliminar o span drift intramódulo, migrando o frontend e middle-end para **identidades estáveis de item (`AstId`)**, **spans relativos ao corpo do item** e **materialização tardia de spans absolutos (`AstIdMap`)**.
 
@@ -84,9 +84,9 @@ Embora `beta()` e `gamma()` não tenham sofrido nenhuma alteração semântica, 
    - Emissão de código de máquina.
 4. Em arquivos médios ou grandes do corpus de referência, isso acarreta a reexecução de **33 units** (285 ms a 561 ms), impedindo que o compilador atinja a meta de `p95 ≤ 100 ms` em edições com expansão de corpo.
 
-### O Bug de Proveniência de Spans no DWARF
+### O Bug de Proveniência de Spans no DWARF (corrigido em `bfd272b3`)
 
-Atualmente, na etapa de união de unidades de compilação, o `Symbol` agregado para funções importadas frequentemente preserva o span correspondente ao ponto de importação (`import foo.bar`) no arquivo cliente. 
+Antes da correção, na etapa de união de unidades de compilação, o `Symbol` agregado para funções importadas frequentemente preserva o span correspondente ao ponto de importação (`import foo.bar`) no arquivo cliente. 
 Ao gerar tabelas de debug DWARF (`.debug_line` e `.debug_info`), o backend emite o `file_id` e linha do arquivo importador em vez do arquivo de origem onde a função foi escrita. Uma abordagem desacoplada via `AstId` e `AstIdMap` vincula indissoluvelmente cada item ao seu `FileId` canônico de definição primária.
 
 ---
@@ -314,7 +314,7 @@ let (decl_file, decl_line, decl_col) = db.lookup_line_col(defining_file_id, abs_
 // O DWARF agora registra com fidelidade absoluta:
 builder.set_subprogram_location(decl_file, decl_line, decl_col);
 ```
-Isso elimina em definitivo a herança do span de `import` pelo arquivo importador.
+A herança do span de `import` já foi eliminada na composição (`bfd272b3`). Com esta RFC, a mesma borda passa a materializar as posições pelo `AstIdMap` do arquivo dono, em vez de copiá-las de contextos de units.
 
 ---
 
@@ -346,18 +346,71 @@ Isso elimina em definitivo a herança do span de `import` pelo arquivo importado
 
 ---
 
-## 8. Plano de Migração e Fases de Implementação
+## 8. Plano de Implementação
 
-A implementação desta RFC está planejada para a transição entre a **HOT.2** e **HOT.3** da Campanha 0.2.0:
+### 8.1. Evidência e causa no código (auditado em 2026-10-27)
 
-| Fase | Escopo | Crates Afetados | Entregáveis |
-| :--- | :--- | :--- | :--- |
-| **Fase 1** | Identidades `AstId` e `AstIdMap` | `arandu_base`, `arandu_parser`, `arandu_query` | Query `file_ast_id_map`, atribuição de `AstId` em `TopLevelDecl`. |
-| **Fase 2** | Spans Relativos no HIR | `arandu_middle`, `arandu_semantics`, `arandu_typeck` | `ItemRelativeSpan` nos nós de expressão e declarações locais; testes unitários de tipagem com offsets relativos. |
-| **Fase 3** | Isolamento Salsa Intramódulo | `arandu_query` | Atualização de `item_source_input` e `item_typing` para depender de `AstId`; prova de early-cutoff em funções vizinhas. |
-| **Fase 4** | Materialização Tardia e Debug Info | `arandu_diagnostics`, `arandu_codegen`, `arandu_lsp` | Conversão final de spans para Miette/LSP; correção da linha de declaração de funções importadas no DWARF. |
+Sessão quente, corpus medium (16 módulos × 32 funções), release, ciclo completo
+de `BuildSession::build`: editar um corpo sem mudar o comprimento custa
+136–146 ms (p50); um corpo que cresce custa 568–613 ms, com 33
+reexecuções de `instance_hir` (o módulo editado inteiro) e `lower-amir` em
+497 ms. As causas estão no código, não na especificação acima:
 
----
+1. A identidade de `item_source_input` inclui `item_start` absoluto
+   (`stable_hash/nodes/facts.rs`), e a saída carrega o `Program` inteiro, com
+   spans absolutos. Todo vizinho deslocado muda de identidade.
+2. As saídas por item (`item_typing`, `function_hir`, `instance_hir`, units)
+   contêm spans absolutos e tabelas indexadas por `NodeKey`, que é um par de
+   offsets absolutos (`arandu_middle::resolved::NodeKey`). Retirar
+   `item_start` da identidade sem mudar o conteúdo deixaria posições stale.
+3. O `DeclarationHir` do próprio arquivo é identificado com as posições das
+   declarações; o `declaration_context` do próprio arquivo muda a cada
+   deslocamento.
+
+Superfície medida: cerca de 2 200 referências a spans do parser ao MIR e 140
+usos de `NodeKey`. Trocar o tipo `Span` globalmente (5.1) tem esse custo; o
+plano abaixo corta pela fronteira de item.
+
+### 8.2. Princípio do corte
+
+- Dentro de um item, spans e `NodeKey` passam a ser **relativos ao início do
+  item**. O tipo `Span` é mantido (offsets mudam de referencial), o que deixa
+  o código de tipagem, HIR e AMIR inalterado.
+- A posição absoluta só existe nas **bordas**: diagnósticos, composição
+  (DWARF, `N021`), LSP. A conversão usa a única query posição-dependente
+  nova, `item_positions(file)` (o `AstIdMap`).
+- Saídas por item atravessam a borda embrulhadas em `ItemLocal<T>`, com o
+  `AstId` do item; nenhuma borda as consome sem converter.
+- Nada de reparse: o AST local do item é baixado do subtree já existente do
+  CST (`syntax_tree`), conforme o `AGENTS.md`.
+
+### 8.3. Fases
+
+| Fase | Entrega | Crates | Gate |
+| --- | --- | --- | --- |
+| 0 — guardas | regressões antes de qualquer mudança: contagem de reexecuções de vizinhos (hoje N, alvo 1), equivalência incremental × frio após deslocamento no mesmo arquivo, golden de diagnóstico de vizinho deslocado (linha/coluna), posição DWARF de função deslocada, goto/hover em vizinho deslocado; inventário das leituras posição-dependentes do caminho por item, inclusive CTFE | `arandu_query`, `arandu_cli`, `arandu_lsp` | testes novos passam no estado atual, exceto a contagem, marcada com o valor atual |
+| 1 — identidade e mapa | `AstId { file_id, index }` em `arandu_base::span`, ordinal dos itens de topo do CST (`item_ranges`); `item_positions(file)` (AstId → span absoluto do item, com atributos, igual a `item_source_span`); mapa `SymbolId` → `AstId` a partir dos headers resolvidos | `arandu_base`, `arandu_parser`, `arandu_query` | sem mudança de comportamento; teste de que o mapa cobre todo item e acompanha edições |
+| 2 — AST local | `item_ast(file, AstId)`: AST do item baixada do subtree do CST, num arena próprio, com spans relativos; identidade = texto do item (o `body_fp` atual), sem `item_start`; teste de propriedade: para todo nó, `relativo + início do item` = span do parse do arquivo | `arandu_parser`, `arandu_query` | sem mudança de comportamento; RSS do AST por item medido |
+| 3 — resolução e tipagem por item | corpo resolvido por item com `resolve_selected_body_with_poll` sobre `item_ast` (chaves `NodeKey` locais); `item_typing` consome AST e resolução locais; fingerprint sem `item_start` | `arandu_resolve`, `arandu_typeck`, `arandu_query` | entra junto com as fases 4 e 5 |
+| 4 — HIR, AMIR e contexto do módulo | `function_hir`, `instance_hir` e units a partir das saídas locais; posições de declaração relativas ao próprio item, de modo que `DeclarationHir` não tenha posições na identidade nem para o próprio arquivo (`declaration_surface` passa a ser o próprio `declaration_hir`); `ItemSourceInput` sem `item_start` | `arandu_semantics`, `arandu_query` | entra junto com as fases 3 e 5 |
+| 5 — bordas | diagnósticos: query fina por item que materializa com `item_positions` (reexecuta em todo deslocamento, mas só converte); composição: spans de símbolos, `debug_blocks` e `debug_bindings` convertidos com o mapa do arquivo dono (a composição já roda a cada build); LSP: hover, goto, semantic tokens e quick fixes convertidos; com `--debug`, o hash de CGU passa a incluir as posições absolutas do unit, para o DWARF de um vizinho deslocado ser reemitido sem relowering | `arandu_query`, `arandu_semantics`, `arandu_backend_*`, `arandu_lsp`, `arandu_ide` | guardas da fase 0 passam com contagem 1 |
+| 6 — prova e promoção | sessão quente: corpo que cresce com p50/p95 no patamar do mesmo comprimento; equivalência byte a byte; determinismo de diagnósticos; `check-project-corpus`; gate completo antes do PR | todos | números registrados na campanha |
+
+As fases 0 a 2 entram separadamente, sem mudança de comportamento. As fases
+3 a 5 são uma troca atômica: mudar a identidade sem as bordas produziria
+posições stale.
+
+### 8.4. Riscos
+
+| Risco | Mitigação |
+| --- | --- |
+| spans relativos e absolutos no mesmo tipo | teste de propriedade da fase 2; `ItemLocal<T>` nas bordas; asserção em debug de que spans de saídas por item caem em `[0, comprimento do item]` |
+| `NodeKey` locais colidindo entre itens | chaves sempre acompanhadas do `AstId` quando atravessam itens |
+| diagnóstico com label em outro item ou arquivo | materializar cada span com o mapa do arquivo dono do span |
+| caminhos CTFE/staged que leem o `Program` inteiro | migrar junto ou manter identidade exata, como `FingerprintEq::exact` já faz para ramos não auditados |
+| goldens de HIR/AMIR que imprimem spans | inspecionar cada mudança antes de `UPDATE_EXPECT=1` |
+| memória duplicada (AST do arquivo + AST por item) | medir RSS na fase 2; se pesar, o AST do arquivo deixa de ser retido pelo caminho por item |
+| reordenação de itens muda ordinais (Q1) | aceitar a invalidação dos itens reordenados na v1 |
 
 ## 9. Questões em Aberto (Unresolved Questions)
 

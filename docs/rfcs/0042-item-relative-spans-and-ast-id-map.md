@@ -412,6 +412,30 @@ posições stale.
 | memória duplicada (AST do arquivo + AST por item) | medir RSS na fase 2; se pesar, o AST do arquivo deixa de ser retido pelo caminho por item |
 | reordenação de itens muda ordinais (Q1) | aceitar a invalidação dos itens reordenados na v1 |
 
+### 8.5. Fase 0: guardas e inventário (feito em 2026-10-27)
+
+Guardas em `arandu_query/tests/item_relative_guards.rs`, sobre um arquivo cujo
+primeiro item cresce e desloca os quatro seguintes:
+
+| Guarda | Afirma |
+| --- | --- |
+| `growing_a_body_relowers_the_siblings_it_moves` | 5 execuções de `instance_hir` (o item editado e os quatro deslocados); o alvo da RFC é 1 |
+| `a_moved_sibling_lowers_to_the_bytes_of_a_cold_build` | o lowering incremental tem o conteúdo de um build frio |
+| `a_moved_sibling_keeps_exact_diagnostic_positions` | o `T004` de um item deslocado aponta para `return true` e rotula `int`, na tipagem e nos diagnósticos IDE |
+| `a_moved_sibling_keeps_its_declaration_and_goto_positions` | o span composto (linha de declaração do DWARF) e `symbol_span` (alvo do goto) cobrem o nome de cada item deslocado |
+
+Inventário das leituras dependentes de posição no caminho por item:
+
+| Onde | O que depende de posição |
+| --- | --- |
+| `passes/typing.rs` (`item_source_input`), hash em `stable_hash/nodes/facts.rs` | a identidade inclui `item_start`; a saída carrega o `Program` do arquivo, com spans absolutos |
+| `item_typing`, `function_hir`, `runtime/build.rs` | consomem o `Program` do arquivo e produzem spans absolutos (símbolos, diagnósticos, HIR, temporários e `debug_blocks`/`debug_bindings` da AMIR) |
+| tabelas de resolução e tipagem (`passes/resolution.rs`, `passes/typing.rs`) | `NodeKey` é um par de offsets absolutos |
+| CTFE (`ctfe/arguments.rs`, `branches.rs`, `loops.rs`, `headers.rs`, `instances.rs`, `roots/lower_staged.rs`) | `NodeKey` e o `Program` do arquivo; `resolve_selected_body_with_poll` sobre o arquivo inteiro |
+| `runtime/decl.rs` (`DeclarationHir`) | posições das declarações na identidade do próprio arquivo |
+| `dataflow/ide.rs` | `item_start` nos quick fixes estruturados |
+| bordas: acumulador de diagnósticos (CLI), `file_ide_diagnostics` (LSP), composição (DWARF, `N021`), `symbol_span` (goto), `docs.rs`, `highlight.rs`, `rename.rs`, `testing.rs` | consomem ou produzem posições absolutas; continuam absolutas e passam a materializar pelo `AstIdMap` |
+
 ## 9. Questões em Aberto (Unresolved Questions)
 
 1. **Reordenação de Funções no Arquivo:** Se o usuário inverter a ordem de duas funções no arquivo (`func A(); func B();` $\to$ `func B(); func A();`), os índices ordinais de seus `AstId`s se invertem, invalidando ambas. Devemos considerar no futuro um fallback baseado no nome do símbolo para manter estabilidade sob reordenação?

@@ -345,7 +345,7 @@ fn export_names_reject_keywords_runtime_prefix_and_cross_module_clashes() {
 
     fs::write(
         project.join("src/other.aru"),
-        "module other\n\n@Export(\"shared\")\npublic func b(x: u32): u32 { return x }\n",
+        "module names.other\n\n@Export(\"shared\")\npublic func b(x: u32): u32 { return x }\n",
     )
     .unwrap();
     // An export of an imported module is published, not silently internal.

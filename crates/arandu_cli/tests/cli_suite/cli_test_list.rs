@@ -141,7 +141,7 @@ fn test_child_reuses_project_database_for_source_imports() {
     );
     fs::write(
         project.join("src/helper.aru"),
-        "module helper\n\npublic func answer(): int { return 42 }\n",
+        "module imported_test.helper\n\npublic func answer(): int { return 42 }\n",
     )
     .unwrap();
     fs::write(

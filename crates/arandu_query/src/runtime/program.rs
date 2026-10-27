@@ -31,6 +31,59 @@ impl StableHash for RuntimeProgram {
     }
 }
 
+/// N021 for every defined function whose native name an earlier one (in
+/// symbol order) already uses. Backends would otherwise fail on the second
+/// definition with an ICE or leave it to the linker.
+fn duplicate_function_symbols(
+    db: &dyn ArandCompilerDb,
+    amir: &AmirProgram,
+    symbols: &arandu_middle::SymbolTable,
+) -> Vec<Diagnostic> {
+    let mut by_name = std::collections::BTreeMap::<&str, Vec<&arandu_middle::Symbol>>::new();
+    for function in &amir.funcs {
+        if let Some(symbol) = symbols.try_get(function.symbol) {
+            by_name
+                .entry(symbols.host_func_name(symbol))
+                .or_default()
+                .push(symbol);
+        }
+    }
+    let mut diagnostics = Vec::new();
+    for (name, mut definitions) in by_name {
+        definitions.sort_by_key(|symbol| (symbol.id.file_id, symbol.id.local_id.0));
+        definitions.dedup_by_key(|symbol| symbol.id);
+        let Some((first, rest)) = definitions.split_first() else {
+            continue;
+        };
+        for other in rest {
+            // Two `@Export`s claiming one name are T049, reported with the
+            // export context by `exported_symbol_collision` consumers.
+            if symbols.is_exported(first.id) && symbols.is_exported(other.id) {
+                continue;
+            }
+            let diagnostic = Diagnostic::error(
+                DiagCode::N021DuplicateFunctionSymbol,
+                format!(
+                    "functions `{}` and `{}` map to the same native symbol `{name}`",
+                    first.name, other.name
+                ),
+                other.span,
+            );
+            // A secondary label renders against the primary file's text.
+            diagnostics.push(if first.span.file_id == other.span.file_id {
+                diagnostic.with_label(first.span, "the other function with this symbol")
+            } else {
+                diagnostic.with_note(format!(
+                    "`{}` is defined in {}",
+                    first.name,
+                    db.file_path(first.span.file_id).display()
+                ))
+            });
+        }
+    }
+    diagnostics
+}
+
 fn empty_program() -> AmirProgram {
     AmirProgram {
         funcs: Vec::new(),
@@ -256,6 +309,7 @@ pub fn runtime_program(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Run
         }
         None => (empty_program(), Vec::new()),
     };
+    diagnostics.extend(duplicate_function_symbols(db, &amir, &aggregate.symbols));
     // The unit composition path above is what the real pipeline uses, so the
     // C status-code rewrite for `@Export` functions returning `Result<T, E>`
     // has to run here as well. The pass itself lives in `arandu_mir` and stays

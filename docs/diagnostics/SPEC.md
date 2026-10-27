@@ -237,6 +237,8 @@ Abaixo estão listados todos os diagnósticos mapeados para o compilador Arandu.
 | **N017** | `cannot implement sealed interface '{name}' outside its package` | Error | `0.1.0` | Implementação de interface selada fora do pacote que a declara. |
 | **N018** | `re-export visibility exceeds source visibility` | Error | `0.1.0` | Re-export tenta ampliar a visibilidade de uma declaração de origem. |
 | **N019** | `cyclic re-export` | Error | `0.1.0` | A superfície exportada depende de um ciclo de re-exports. |
+| **N020** | `module declaration '{declared}' does not match this file's module '{expected}'` | Error | `0.2.0` | Uma fonte do pacote raiz declara um `module` diferente do módulo lógico do seu caminho (`<pacote>.<caminho>`; na entrada, o nome do pacote). O quick fix substitui a declaração. |
+| **N021** | `functions '{a}' and '{b}' map to the same native symbol '{symbol}'` | Error | `0.2.0` | Duas funções distintas do programa produzem o mesmo nome de símbolo nativo. Rejeitado antes do backend, em vez de virar ICE ou erro do linker. Dois `@Export` com o mesmo nome continuam `T049`. |
 
 ---
 

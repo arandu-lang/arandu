@@ -5,34 +5,52 @@ use arandu_resolve::ResolutionResult;
 
 use std::sync::Arc;
 
-/// Logical module of a package source, derived from inputs only, for files
-/// without a `module` declaration. A package source `<src>/a/b.aru` is
-/// `<package>.a.b`, the module an `import <package>.a.b` names; a dependency
-/// file uses its binding key (`<alias>/x.aru` is `<alias>.x`). The entry file
-/// has none: its unqualified names cannot collide with the qualified ones, and
-/// its symbols stay independent of the package name. Sources outside both,
-/// such as single files and the stdlib, have none either.
+/// Module path a source of the root package must have, derived from inputs
+/// only, and whether the source is the entry file. A source `<src>/a/b.aru` is
+/// `<package>.a.b`, the module an `import <package>.a.b` names; the entry file
+/// is the package itself. A package is its manifest, so without one nothing
+/// has a package module. Other sources, such as single files, dependencies,
+/// the stdlib and synthetic sources the driver derives from a file, have none.
 #[salsa::tracked]
-pub(crate) fn implicit_module(db: &dyn ArandCompilerDb, file: SourceFile) -> Option<Arc<str>> {
+pub(crate) fn package_module(
+    db: &dyn ArandCompilerDb,
+    file: SourceFile,
+) -> Option<(Arc<str>, bool)> {
     let database = db.as_db_impl()?;
     database.resolution_epoch();
-    let path = file.path(db);
-    if let Some(roots) = database.module_roots() {
-        if let Ok(relative) = path.strip_prefix(roots.package_src(db).as_ref()) {
-            // The package source root is the directory of the entry file.
-            let entry = database.project_manifest().and_then(|manifest| {
-                std::path::Path::new(manifest.entry(db))
-                    .file_name()
-                    .map(std::path::Path::new)
-            });
-            if entry == Some(relative) {
-                return None;
-            }
-            let mut segments = vec![roots.package_name(db).clone()];
-            segments.extend(module_segments(relative)?);
-            return Some(Arc::from(segments.join(".")));
-        }
+    let roots = database.module_roots()?;
+    let manifest = database.project_manifest()?;
+    let relative = file
+        .path(db)
+        .strip_prefix(roots.package_src(db).as_ref())
+        .ok()?
+        .to_path_buf();
+    if relative.extension()? != "aru" {
+        return None;
     }
+    let package = roots.package_name(db).clone();
+    // The package source root is the directory of the entry file.
+    let entry = std::path::Path::new(manifest.entry(db)).file_name() == Some(relative.as_os_str());
+    if entry {
+        return Some((Arc::from(package), true));
+    }
+    let mut segments = vec![package];
+    segments.extend(module_segments(&relative)?);
+    Some((Arc::from(segments.join(".")), false))
+}
+
+/// Module that qualifies the function host names of a source without a
+/// `module` declaration: its [`package_module`], or for a dependency file its
+/// binding key (`<alias>/x.aru` is `<alias>.x`). The entry file has none: its
+/// unqualified names cannot collide with the qualified ones, and its symbols
+/// stay independent of the package name.
+#[salsa::tracked]
+pub(crate) fn implicit_module(db: &dyn ArandCompilerDb, file: SourceFile) -> Option<Arc<str>> {
+    if let Some((module, entry)) = package_module(db, file).clone() {
+        return (!entry).then_some(module);
+    }
+    let database = db.as_db_impl()?;
+    database.resolution_epoch();
     let map = database.package_module_map()?;
     map.bindings(db)
         .iter()
@@ -43,6 +61,37 @@ pub(crate) fn implicit_module(db: &dyn ArandCompilerDb, file: SourceFile) -> Opt
         })
         .min()
         .map(Arc::from)
+}
+
+/// N020 when a root package source declares a module other than its path's.
+fn module_declaration_mismatch(
+    db: &dyn ArandCompilerDb,
+    file: SourceFile,
+    program: &arandu_parser::Program,
+) -> Option<Diagnostic> {
+    let declaration = program.module.as_ref()?;
+    let (expected, _) = package_module(db, file).clone()?;
+    let declared = declaration.path.join(".");
+    if declared == *expected {
+        return None;
+    }
+    Some(
+        Diagnostic::error(
+            arandu_middle::DiagCode::N020ModuleDeclarationMismatch,
+            format!(
+                "module declaration `{declared}` does not match this file's module `{expected}`"
+            ),
+            declaration.span,
+        )
+        .with_primary_label(format!("this file is module `{expected}`"))
+        .with_hint_replacement(arandu_middle::Hint {
+            message: format!("declare the module of this file's path, `{expected}`"),
+            replacement: Some(arandu_middle::CodeReplacement {
+                span: declaration.span,
+                new_text: format!("module {expected}"),
+            }),
+        }),
+    )
 }
 
 fn module_segments(relative: &std::path::Path) -> Option<Vec<String>> {
@@ -59,12 +108,18 @@ fn module_segments(relative: &std::path::Path) -> Option<Vec<String>> {
 pub fn local_symbols(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<ResolutionResult> {
     let program_res = super::resolution::parse(db, file);
     let mut resolved = match &**program_res {
-        Ok(program) => arandu_resolve::resolve_local_in_module_with_poll(
-            *file.file_id(db),
-            program,
-            implicit_module(db, file).as_deref(),
-            || db.unwind_if_revision_cancelled(),
-        ),
+        Ok(program) => {
+            let mut resolved = arandu_resolve::resolve_local_in_module_with_poll(
+                *file.file_id(db),
+                program,
+                implicit_module(db, file).as_deref(),
+                || db.unwind_if_revision_cancelled(),
+            );
+            resolved
+                .diagnostics
+                .extend(module_declaration_mismatch(db, file, program));
+            resolved
+        }
         Err(_) => ResolutionResult {
             is_cycle_fallback: false,
             symbols: Arc::new(arandu_semantics::SymbolTable::default()),

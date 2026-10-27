@@ -64,6 +64,10 @@ pub enum DiagCode {
     N018ReExportNarrowing,
     /// A cycle in module re-exports prevents a stable public surface.
     N019CyclicReExport,
+    /// A package source declares a module path other than its file's.
+    N020ModuleDeclarationMismatch,
+    /// Two distinct functions of one program map to the same native symbol.
+    N021DuplicateFunctionSymbol,
 
     // ── Type Checker (T) ──
     T001CannotInferType,
@@ -227,6 +231,8 @@ impl DiagCode {
             N017SealedImplOutsidePackage,
             N018ReExportNarrowing,
             N019CyclicReExport,
+            N020ModuleDeclarationMismatch,
+            N021DuplicateFunctionSymbol,
             T001CannotInferType,
             T002IncompatibleAssignment,
             T003IncompatibleCallArg,
@@ -376,6 +382,8 @@ impl DiagCode {
             DiagCode::N017SealedImplOutsidePackage => "N017",
             DiagCode::N018ReExportNarrowing => "N018",
             DiagCode::N019CyclicReExport => "N019",
+            DiagCode::N020ModuleDeclarationMismatch => "N020",
+            DiagCode::N021DuplicateFunctionSymbol => "N021",
             DiagCode::T001CannotInferType => "T001",
             DiagCode::T002IncompatibleAssignment => "T002",
             DiagCode::T003IncompatibleCallArg => "T003",

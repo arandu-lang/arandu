@@ -1010,7 +1010,7 @@ fn package_check_covers_modules_the_entry_never_calls() {
     ] {
         fs::write(
             project.join("src/helper.aru"),
-            format!("module helper\n\n{body}"),
+            format!("module unreached.helper\n\n{body}"),
         )
         .unwrap();
         let check = run_cli_in(&project, &["check"]);

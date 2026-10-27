@@ -301,6 +301,13 @@ identidade exata. Em `cfg(any(test, debug_assertions))`, o oráculo de
 fingerprint. `HashEq` e `ModuleSignatures` expõem o digest guardado (via
 `StableHash` e `identity()`), em vez de deixar o `Deref` re-hashear o valor.
 
+**Superfície de declarações.** Importadores leem `declaration_surface`, o
+`DeclarationHir` identificado sem as posições de declaração. Com isso, um
+corpo que muda de comprimento não reexecuta os units de outros módulos. As
+posições de um arquivo só são autoritativas nas queries do próprio arquivo. A
+composição registra cada símbolo a partir de um unit do arquivo dono, e
+`declaration_surface_cutoff` exige lowering incremental idêntico ao frio.
+
 **Limite:** a entrega final aos backends continua agregada; isso não é um
 produtor global de corpos nem uma dependência global dos objetos CGU. Contextos
 concretos ainda retêm metadata em domínios locais. Cutoff de nova instância e

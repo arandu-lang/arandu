@@ -79,7 +79,7 @@ fn dependency_body_edit_preserves_summary_and_cuts_off_caller_body() {
         "only the edited dependency body may re-execute when its public summary is unchanged:\n{}",
         log.format_chain(true)
     );
-    assert_eq!(execute_count(&events, "item_body_typeck"), 0);
+    assert_eq!(execute_count(&events, "item_local_typing"), 0);
     assert_eq!(execute_count(&events, "lower_amir"), 0);
 }
 
@@ -121,7 +121,7 @@ public func borrowValue(value: ref int, marker: ref int): ref int {
         "dependency and caller typing must re-execute after the imported declaration changes:\n{}",
         log.format_chain(true)
     );
-    assert_eq!(execute_count(&log.snapshot(), "item_body_typeck"), 1);
+    assert_eq!(execute_count(&log.snapshot(), "item_local_typing"), 1);
     assert_eq!(execute_count(&log.snapshot(), "lower_amir"), 0);
 }
 

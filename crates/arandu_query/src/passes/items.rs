@@ -6,7 +6,7 @@ use crate::db::HashEq;
 use crate::{ArandCompilerDb, SourceFile};
 use arandu_base::{AstId, Span};
 use arandu_middle::SymbolId;
-use arandu_parser::Program;
+use arandu_parser::{ItemBases, Program};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -148,11 +148,22 @@ pub fn item_ast(
     }
 }
 
+/// The composed file AST and the [`ItemBases`] of each item in it.
+pub(crate) type ComposedFile = (
+    HashEq<Result<Arc<Program>, arandu_parser::ParseError>>,
+    Arc<[ItemBases]>,
+);
+
 /// The file AST as the concatenation of its item ASTs, so every item keeps a
-/// fixed correspondence with its slice of the file arena (RFC 0042). `None`
-/// when an item does not lower cleanly or text lies outside every item; the
-/// whole-file walk then reports the diagnostics.
-pub(super) fn composed_program(db: &dyn ArandCompilerDb, file: SourceFile) -> Option<Program> {
+/// fixed correspondence with its slice of the file arena (RFC 0042), with the
+/// [`ItemBases`] of each item in it. `None` when an item does not lower
+/// cleanly or text lies outside every item; the whole-file walk then reports
+/// the diagnostics.
+#[salsa::tracked]
+#[tracing::instrument(level = "debug", skip(db), fields(
+    file = ?file.file_id(db),
+))]
+pub(crate) fn composed_file(db: &dyn ArandCompilerDb, file: SourceFile) -> Option<ComposedFile> {
     let file_id = *file.file_id(db);
     let items = item_positions(db, file)
         .ids()
@@ -163,6 +174,6 @@ pub(super) fn composed_program(db: &dyn ArandCompilerDb, file: SourceFile) -> Op
         .collect::<Option<Vec<_>>>()?;
     let items: Vec<&Program> = items.iter().map(|program| &**program).collect();
     let tree = super::resolution::syntax_tree(db, file);
-    tree.compose_program(file_id, &items)
-        .map(|(program, _)| program)
+    let (program, bases) = tree.compose_program(file_id, &items)?;
+    Some((HashEq::new(Ok(Arc::new(program))), bases.into()))
 }

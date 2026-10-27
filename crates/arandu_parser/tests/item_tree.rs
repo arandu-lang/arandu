@@ -214,7 +214,10 @@ fn appending_item_asts_rebuilds_the_file_ast() {
         same("string part ids", a.string_part_ids == b.string_part_ids);
         same("match arm ids", a.match_arm_ids == b.match_arm_ids);
         same("pattern ids", a.pattern_ids == b.pattern_ids);
-        same("field pattern ids", a.field_pattern_ids == b.field_pattern_ids);
+        same(
+            "field pattern ids",
+            a.field_pattern_ids == b.field_pattern_ids,
+        );
         same("program", composed == file);
         composed_files += 1;
     }

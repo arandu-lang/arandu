@@ -295,10 +295,47 @@ pub fn file_typing(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<TypeChe
     compose_file_typing(db, file, true)
 }
 
+/// Source span of the declaration of every body item, by its symbol. Body
+/// typing contributes only what lies inside it.
+#[salsa::tracked]
+#[tracing::instrument(level = "trace", target = "arandu_query", skip(db), fields(
+    query = "item_source_spans", file = ?file.file_id(db),
+))]
+pub(super) fn item_source_spans(
+    db: &dyn ArandCompilerDb,
+    file: SourceFile,
+) -> Arc<rustc_hash::FxHashMap<arandu_middle::SymbolId, arandu_middle::Span>> {
+    let program_res = super::resolution::parse(db, file);
+    let Ok(program) = &**program_res else {
+        return Arc::default();
+    };
+    let signatures = super::signatures::declaration_signatures(db, file);
+    let mut item_spans = rustc_hash::FxHashMap::default();
+    program.for_each_decl_recursive(|_, declaration| {
+        if let Some(&owner) = arandu_semantics::primary_def_key(declaration)
+            .and_then(|key| signatures.resolved.definitions.get(&key))
+        {
+            item_spans.insert(owner, arandu_semantics::item_source_span(declaration));
+        }
+    });
+    Arc::new(item_spans)
+}
+
 fn compose_file_typing(
     db: &dyn ArandCompilerDb,
     file: SourceFile,
     declarations_only: bool,
+) -> HashEq<TypeCheckResult> {
+    compose_items(db, file, declarations_only, true)
+}
+
+/// `local` places items through their local typing where one exists; without
+/// it every item is merged in file coordinates, the oracle of RFC 0042 step B.
+pub(super) fn compose_items(
+    db: &dyn ArandCompilerDb,
+    file: SourceFile,
+    declarations_only: bool,
+    local: bool,
 ) -> HashEq<TypeCheckResult> {
     let program_res = super::resolution::parse(db, file);
     let signatures = if declarations_only {
@@ -318,82 +355,98 @@ fn compose_file_typing(
     let mut merged_resolved = Arc::clone(&signatures.resolved);
     let mut diagnostics = signatures.diagnostics.clone();
 
-    let mut item_spans = rustc_hash::FxHashMap::default();
-    program.for_each_decl_recursive(|_, declaration| {
-        if let Some(&owner) = arandu_semantics::primary_def_key(declaration)
-            .and_then(|key| signatures.resolved.definitions.get(&key))
-        {
-            item_spans.insert(owner, arandu_semantics::item_source_span(declaration));
-        }
-    });
+    let item_spans = item_source_spans(db, file);
+    let mut placed_locally = false;
     for &item_sym in &item_syms {
         db.unwind_if_revision_cancelled();
-        let item = if declarations_only {
-            crate::ctfe::item_staged_typing(db, file, item_sym)
+        let placed = local
+            .then(|| super::local_typing::item_local_typing(db, file, item_sym).as_ref())
+            .flatten();
+        if let Some((local, at)) = placed {
+            placed_locally = true;
+            super::local_typing::place(
+                Arc::make_mut(&mut merged_info),
+                Arc::make_mut(&mut merged_resolved),
+                &mut diagnostics,
+                local,
+                *at,
+            );
         } else {
-            item_body_typeck(db, file, item_sym)
-        };
-        Arc::make_mut(&mut merged_info).merge_from(item.type_info.as_ref());
-        // Body typing can resolve expected-type enum sugar and struct patterns.
-        // Compose only this item's span; a template context from a later item
-        // must not overwrite another body's newly resolved references.
-        if !Arc::ptr_eq(&item.resolved, &signatures.resolved) {
-            if let Some(&span) = item_spans.get(&item_sym) {
-                let contains =
-                    |key: &arandu_middle::NodeKey| span.start <= key.start && key.end <= span.end;
-                let names = Arc::make_mut(&mut merged_resolved);
-                names.value_refs.extend(
-                    item.resolved
-                        .value_refs
-                        .iter()
-                        .filter(|(key, _)| contains(key))
-                        .map(|(&key, &value)| (key, value)),
-                );
-                names.type_refs.extend(
-                    item.resolved
-                        .type_refs
-                        .iter()
-                        .filter(|(key, _)| contains(key))
-                        .map(|(&key, &value)| (key, value)),
-                );
-                for (index, use_span) in program.pool.expr_spans.iter().enumerate() {
-                    if span.start <= use_span.start && use_span.end <= span.end {
-                        if let Some(value) =
-                            item.resolved.expr_symbols.get(index).copied().flatten()
-                        {
-                            if names.expr_symbols.len() <= index {
-                                names.expr_symbols.resize(index + 1, None);
+            let item = if declarations_only {
+                crate::ctfe::item_staged_typing(db, file, item_sym)
+            } else {
+                item_body_typeck(db, file, item_sym)
+            };
+            Arc::make_mut(&mut merged_info).merge_from(item.type_info.as_ref());
+            // Body typing can resolve expected-type enum sugar and struct patterns.
+            // Compose only this item's span; a template context from a later item
+            // must not overwrite another body's newly resolved references.
+            if !Arc::ptr_eq(&item.resolved, &signatures.resolved) {
+                if let Some(&span) = item_spans.get(&item_sym) {
+                    let contains = |key: &arandu_middle::NodeKey| {
+                        span.start <= key.start && key.end <= span.end
+                    };
+                    let names = Arc::make_mut(&mut merged_resolved);
+                    names.value_refs.extend(
+                        item.resolved
+                            .value_refs
+                            .iter()
+                            .filter(|(key, _)| contains(key))
+                            .map(|(&key, &value)| (key, value)),
+                    );
+                    names.type_refs.extend(
+                        item.resolved
+                            .type_refs
+                            .iter()
+                            .filter(|(key, _)| contains(key))
+                            .map(|(&key, &value)| (key, value)),
+                    );
+                    for (index, use_span) in program.pool.expr_spans.iter().enumerate() {
+                        if span.start <= use_span.start && use_span.end <= span.end {
+                            if let Some(value) =
+                                item.resolved.expr_symbols.get(index).copied().flatten()
+                            {
+                                if names.expr_symbols.len() <= index {
+                                    names.expr_symbols.resize(index + 1, None);
+                                }
+                                names.expr_symbols[index] = Some(value);
                             }
-                            names.expr_symbols[index] = Some(value);
                         }
                     }
                 }
             }
-        }
-        Arc::make_mut(&mut merged_resolved)
-            .typed_comptime_arguments
-            .extend(
-                item.resolved
-                    .typed_comptime_arguments
-                    .iter()
-                    .map(|(&key, value)| (key, value.clone())),
-            );
-        if !item.resolved.comptime_arguments.is_empty() {
             Arc::make_mut(&mut merged_resolved)
-                .comptime_arguments
+                .typed_comptime_arguments
                 .extend(
                     item.resolved
-                        .comptime_arguments
+                        .typed_comptime_arguments
                         .iter()
-                        .map(|(&key, &value)| (key, value)),
+                        .map(|(&key, value)| (key, value.clone())),
                 );
+            if !item.resolved.comptime_arguments.is_empty() {
+                Arc::make_mut(&mut merged_resolved)
+                    .comptime_arguments
+                    .extend(
+                        item.resolved
+                            .comptime_arguments
+                            .iter()
+                            .map(|(&key, &value)| (key, value)),
+                    );
+            }
+            diagnostics.extend(item.diagnostics.iter().cloned());
         }
-        diagnostics.extend(item.diagnostics.iter().cloned());
         diagnostics.extend(
             crate::dataflow::item_attribute_validation(db, file, item_sym)
                 .iter()
                 .cloned(),
         );
+    }
+
+    // Local typings are staged against declarations; the body view keeps the
+    // flow-derived borrow contracts of `item_body_typeck`.
+    if placed_locally && !declarations_only {
+        Arc::make_mut(&mut merged_info).return_borrow_summaries =
+            signatures.type_info.return_borrow_summaries.clone();
     }
 
     // Residual for decls without primary keys (normally empty).

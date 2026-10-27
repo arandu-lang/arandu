@@ -43,7 +43,7 @@ fn test_salsa_phases_performance() {
         assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
     }
     let cold_duration = cold.elapsed();
-    assert!(log.count_executions_matching("item_body_typeck") >= 50 * 10);
+    assert!(log.count_executions_matching("item_local_typing") >= 50 * 10);
 
     log.clear();
     let hot = Instant::now();
@@ -67,7 +67,7 @@ fn test_salsa_phases_performance() {
     let checked = type_check(&db, files[0]);
     assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
     assert_eq!(
-        log.count_executions_matching("item_body_typeck"),
+        log.count_executions_matching("item_local_typing"),
         10,
         "the ten edited bodies must actually be checked"
     );
@@ -79,7 +79,7 @@ fn test_salsa_phases_performance() {
     }
     let edit_duration = edit.elapsed();
     assert_eq!(
-        log.count_executions_matching("item_body_typeck"),
+        log.count_executions_matching("item_local_typing"),
         0,
         "a dependency body edit must not recheck importers' bodies"
     );

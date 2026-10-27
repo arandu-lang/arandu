@@ -4,6 +4,7 @@ use smallvec::SmallVec;
 
 use crate::SymbolId;
 use arandu_middle::layout::{StructFieldInfo, StructFields};
+use arandu_parser::ast_pool::ExprId;
 
 use super::super::types;
 use super::translate::{reintern_type, translate_type};
@@ -12,9 +13,54 @@ use super::{
     TypeInfo,
 };
 
+/// Where an item-local typing shard sits in its file (RFC 0042): its
+/// expression IDs start at `exprs` in the file arena and its spans in
+/// `file_id` at `offset`. The default places a shard already in file
+/// coordinates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ItemPlacement {
+    pub file_id: u32,
+    pub exprs: u32,
+    pub offset: u32,
+}
+
+impl ItemPlacement {
+    /// The `Span::new(0, 0, 0)` placeholder of synthetic nodes is not a
+    /// position and is never moved, as in `Program::append_item`.
+    #[must_use]
+    pub fn span(self, span: arandu_middle::Span) -> arandu_middle::Span {
+        if span.file_id != self.file_id || span == arandu_middle::Span::new(0, 0, 0) {
+            return span;
+        }
+        arandu_middle::Span::new(
+            span.file_id,
+            span.start + self.offset,
+            span.end + self.offset,
+        )
+    }
+
+    #[must_use]
+    pub fn expr(self, expr: ExprId) -> ExprId {
+        ExprId::new(expr.as_usize() + self.exprs as usize)
+    }
+}
+
 impl TypeInfo {
     pub fn merge_from(&mut self, other: &TypeInfo) {
-        self.merge_context(other, |symbol| symbol, false, true);
+        self.merge_context(
+            other,
+            |symbol| symbol,
+            false,
+            true,
+            ItemPlacement::default(),
+        );
+    }
+
+    /// Merge an item shard recorded in item-local coordinates, placing its
+    /// expression tables and spans at `at`. Thread captures are never item
+    /// local: their recipes and synthetic names carry file positions.
+    pub fn merge_item_from(&mut self, item: &TypeInfo, at: ItemPlacement) {
+        self.merge_context(item, |symbol| symbol, false, true, at);
     }
     /// Compose units from one revision without cloning their interners or
     /// translating identical source-owned headers for every body. Only
@@ -26,7 +72,13 @@ impl TypeInfo {
         remap: impl Fn(SymbolId) -> SymbolId,
         include_expressions: bool,
     ) {
-        self.merge_context(other, remap, true, include_expressions);
+        self.merge_context(
+            other,
+            remap,
+            true,
+            include_expressions,
+            ItemPlacement::default(),
+        );
     }
 
     fn merge_context(
@@ -35,8 +87,9 @@ impl TypeInfo {
         remap: impl Fn(SymbolId) -> SymbolId,
         shared_headers: bool,
         include_expressions: bool,
+        at: ItemPlacement,
     ) {
-        self.merge_symbol_contracts(other, &remap);
+        self.merge_symbol_contracts(other, &remap, at);
         self.merge_concrete_headers(other, &remap, shared_headers);
         self.merge_thread_captures(other, &remap);
         // Fast path: empty body shards / empty import stubs.
@@ -44,10 +97,10 @@ impl TypeInfo {
             return;
         }
         self.merge_nominal_tables(other, &remap, shared_headers);
-        self.merge_expression_tables(other, include_expressions);
+        self.merge_expression_tables(other, include_expressions, at);
     }
 
-    fn merge_symbol_contracts<F>(&mut self, other: &TypeInfo, remap: &F)
+    fn merge_symbol_contracts<F>(&mut self, other: &TypeInfo, remap: &F, at: ItemPlacement)
     where
         F: Fn(SymbolId) -> SymbolId,
     {
@@ -64,7 +117,7 @@ impl TypeInfo {
             other
                 .header_requests
                 .iter()
-                .map(|(key, &span)| (key.clone(), span)),
+                .map(|(key, &span)| (key.clone(), at.span(span))),
         );
     }
 
@@ -305,10 +358,16 @@ impl TypeInfo {
             .extend(other.interior_mutable_types.iter().copied().map(&remap));
     }
 
-    fn merge_expression_tables(&mut self, other: &TypeInfo, include_expressions: bool) {
+    fn merge_expression_tables(
+        &mut self,
+        other: &TypeInfo,
+        include_expressions: bool,
+        at: ItemPlacement,
+    ) {
         // Expr types (body typeck shards): re-intern TypeIds into `self`.
         if include_expressions {
             for &expr in &other.ctfe_roots {
+                let expr = at.expr(expr);
                 if !self.ctfe_roots.contains(&expr) {
                     self.ctfe_roots.push(expr);
                 }
@@ -317,7 +376,7 @@ impl TypeInfo {
                 other
                     .ctfe_values
                     .iter()
-                    .map(|(&span, value)| (span, value.clone())),
+                    .map(|(&span, value)| (at.span(span), value.clone())),
             );
         }
         self.ctfe_global_values.extend(
@@ -330,13 +389,15 @@ impl TypeInfo {
         if !include_expressions || other.expr_types.iter().all(|s| s.is_none()) {
             return;
         }
-        if other.expr_types.len() > self.expr_types.len() {
-            self.expr_types.resize(other.expr_types.len(), None);
+        let base = at.exprs as usize;
+        if base + other.expr_types.len() > self.expr_types.len() {
+            self.expr_types.resize(base + other.expr_types.len(), None);
         }
         for (idx, slot) in other.expr_types.iter().enumerate() {
             let Some(other_id) = slot else {
                 continue;
             };
+            let idx = base + idx;
             if self.expr_types[idx].is_some() {
                 continue; // keep first writer (signatures / earlier merge)
             }

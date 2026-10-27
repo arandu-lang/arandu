@@ -513,6 +513,9 @@ Além dos spans e do `NodeKey`, a saída por item depende de posição por:
    baixa essa expressão (`lower_hir/expr/aggregate.rs`). No modo local, a
    referência vira `(AstId, ExprId local)` e a identidade do item que usa o
    default inclui o `item_ast` do item que o declara.
+7. **Numeração de símbolos.** `LocalSymbolId` é alocado em sequência no
+   arquivo inteiro; uma ligação nova num corpo desloca os IDs dos locais dos
+   itens seguintes.
 
 Uma troca atômica teria de migrar tudo isso de uma vez. O plano passa a
 **descer a fronteira**: cada passo calcula um nível em coordenadas locais e
@@ -548,6 +551,45 @@ um build frio; o passo seguinte move a conversão para baixo.
   composto com o do walk em todos os arquivos sem erro de `examples/`,
   `stdlib/` e `tests/`, inclusive arenas, listas de IDs, docs e
   `Program.span`.
+
+### 8.10. Passo B: tipagem por item em coordenadas locais (2026-10-27)
+
+- `item_local_typing(file, symbol)` (`arandu_query/src/passes/local_typing.rs`)
+  converte `item_staged_typing` para as coordenadas do item de topo:
+  `expr_types`, `expr_symbols` e `ctfe_roots` indexam o arena do item, e spans,
+  `NodeKey`s e diagnósticos ficam relativos ao início dele. Entradas fora da
+  declaração saem quando repetem as assinaturas, e as tabelas por símbolo
+  guardam só o que difere delas (`TypeId` comparado só quando o interner do
+  item estende o das assinaturas, `TypeInterner::extends`). O valor não carrega tabela de
+  símbolos (acoplamento 5); a identidade (`local_typing_hash`) usa a tabela
+  só para soletrar tipos não canônicos.
+- A conversão recusa (`None`) quando a tipagem tem posição fora do item que
+  as assinaturas não têm, uma thread capture (acoplamento 3) ou
+  `struct_field_defaults` diferente das assinaturas (acoplamento 6). O
+  `TypeInfo` é desestruturado por inteiro: um campo novo não compila sem ser
+  classificado.
+- `compose_file_typing` coloca cada item pela `ItemPlacement`
+  (`TypeInfo::merge_item_from`, deslocando IDs e spans); itens recusados
+  seguem a fusão em coordenadas do arquivo. A view de corpo recebe os
+  contratos de borrow de `module_signatures`, como `item_body_typeck`. As
+  guardas `perf` e `borrow_incremental_aud4` contam `item_local_typing` no
+  lugar de `item_body_typeck`.
+- Prova: `local_placement_rebuilds_the_file_views` compõe as duas views
+  (declarações e corpo) dos dois modos para todo arquivo de `examples/`,
+  `stdlib/` e `tests/` e exige hash igual, a menos de slots vazios depois da
+  última expressão tipada; as 2080 tipagens de item do corpus são locais.
+  `a_moved_item_keeps_its_local_typing`: depois do crescimento de `alpha`, a
+  tipagem local dos vizinhos tem o mesmo hash.
+- Custo (`perf`, 50 módulos, release, mínimo de 7 rodadas intercaladas com o
+  commit anterior): cold 0,86 s → 0,73 s; edição de corpo de dependência
+  5,1 ms → 5,9 ms, dentro do ruído. Sem a poda, cada item hasheava as 1290
+  `decl_types` da cadeia de imports copiadas das assinaturas e o cold subia
+  ~60%.
+- Limite: a tipagem do item ainda roda em coordenadas do arquivo e reexecuta
+  para os vizinhos; o corte acontece na saída local, que o Passo C passa a
+  consumir. `SymbolId` de locais é denso no arquivo (`define_with_visibility`),
+  então um `let` novo num corpo desloca os símbolos dos itens seguintes e
+  muda a tipagem local deles (acoplamento 7, ainda aberto).
 
 ## 9. Questões em Aberto (Unresolved Questions)
 

@@ -2,9 +2,12 @@
 //! RFC 0042 phase 1: `AstId` names a top-level item independently of where it
 //! sits, and `item_positions` is the only map from that identity to bytes.
 //! Phase 2: `item_ast` is the item's AST with positions relative to it.
+//! Step B: `item_local_typing` is the item's typing in the same coordinates.
 
 use arandu_base::AstId;
-use arandu_query::passes::{item_ast, item_ast_ids, item_positions, parse, type_check};
+use arandu_query::passes::{
+    item_ast, item_ast_ids, item_local_typing, item_positions, parse, type_check,
+};
 use arandu_query::{DatabaseImpl, SourceFile, StableHash};
 use salsa::Setter;
 use std::collections::BTreeMap;
@@ -153,5 +156,33 @@ fn local_positions_resolve_to_the_file_ast() {
                 "{absolute:?} of {id:?}"
             );
         }
+    }
+}
+
+fn local_typing_hashes(db: &DatabaseImpl, file: SourceFile) -> BTreeMap<String, blake3::Hash> {
+    let symbols = type_check(db, file).symbols.clone();
+    item_ast_ids(db, file)
+        .keys()
+        .filter_map(|symbol| {
+            let (local, _) = item_local_typing(db, file, *symbol).as_ref()?;
+            Some((symbols.get(*symbol).name.to_string(), local.stable_hash()))
+        })
+        .collect()
+}
+
+#[test]
+fn a_moved_item_keeps_its_local_typing() {
+    let mut db = DatabaseImpl::new();
+    let file = db.new_file("items.aru".into(), program(0));
+    let before = local_typing_hashes(&db, file);
+    for name in ["alpha", "Point.get", "Point.twice", "main"] {
+        assert!(before.contains_key(name), "`{name}` in {before:?}");
+    }
+
+    file.set_text(&mut db).to(Arc::from(program(3)));
+    let after = local_typing_hashes(&db, file);
+    assert_ne!(before["alpha"], after["alpha"], "the edited item changes");
+    for name in ["Point.get", "Point.twice", "main"] {
+        assert_eq!(before[name], after[name], "`{name}` moved without changing");
     }
 }

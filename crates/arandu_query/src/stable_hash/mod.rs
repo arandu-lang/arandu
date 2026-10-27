@@ -10,7 +10,7 @@ mod typeck;
 
 pub use symbols::StableHash;
 pub(crate) use symbols::{hash_literal_entry, hash_return_borrow_summary};
-pub(crate) use typeck::type_signature_hash;
+pub(crate) use typeck::{local_typing_hash, type_signature_hash};
 
 #[cfg(test)]
 mod tests {

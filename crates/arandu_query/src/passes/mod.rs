@@ -54,6 +54,7 @@ pub(crate) fn database_target_info(db: &dyn ArandCompilerDb) -> TargetInfo {
 }
 
 mod items;
+mod local_typing;
 mod lower;
 mod resolution;
 mod signatures;
@@ -61,6 +62,7 @@ mod symbols;
 mod typing;
 
 pub use items::{item_ast, item_ast_ids, item_positions, AstIdMap};
+pub use local_typing::{item_local_typing, LocalTyping};
 pub use lower::{
     borrow_interfaces, lower_amir, module_dependency_graph, prepare_hir, BorrowInterfaces,
     LowerAmirArtifacts, PreparedHir,

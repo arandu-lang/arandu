@@ -50,6 +50,8 @@ pub(super) fn collect_item_ide_diagnostics(
         // escapes when the ordinary escape checker runs. Preserve G5
         // observability from the explicit GenInsert semantic marker instead
         // of parsing presentation text or depending on a monolithic query.
+        // Dormant for implicit promotion until R1: the pipeline no longer
+        // promotes escapes (RFC 0001 amendment), so no GenInsert reaches here.
         for block in &amir.blocks {
             for stmt in amir.block_stmts(block.id) {
                 let AmirStmt::Assign {

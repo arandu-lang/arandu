@@ -83,6 +83,9 @@ pub fn parse(
     file: SourceFile,
 ) -> HashEq<Result<Arc<Program>, arandu_parser::ParseError>> {
     let tree = syntax_tree(db, file);
+    if let Some(program) = super::items::composed_program(db, file) {
+        return HashEq::new(Ok(Arc::new(program)));
+    }
     let output = arandu_parser::syntax::lower_syntax_to_program_recovering(tree, *file.file_id(db));
     let first_error = output.diagnostics.first().cloned();
     for diagnostic in output.diagnostics {

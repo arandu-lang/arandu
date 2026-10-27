@@ -397,8 +397,8 @@ plano abaixo corta pela fronteira de item.
 | 6 — prova e promoção | sessão quente: corpo que cresce com p50/p95 no patamar do mesmo comprimento; equivalência byte a byte; determinismo de diagnósticos; `check-project-corpus`; gate completo antes do PR | todos | números registrados na campanha |
 
 As fases 0 a 2 entram separadamente, sem mudança de comportamento. As fases
-3 a 5 são uma troca atômica: mudar a identidade sem as bordas produziria
-posições stale.
+3 a 5 foram substituídas pelo plano de 8.8, depois da auditoria que mostrou
+acoplamentos além dos spans.
 
 ### 8.4. Riscos
 
@@ -487,6 +487,67 @@ Inventário das leituras dependentes de posição no caminho por item:
   tokens e texto 1,75 MB. Reter os dois dobra a memória de AST; na troca das
   fases 3–5, o caminho por item deixa de reter o `Program` do arquivo
   (risco já listado em 8.4).
+
+### 8.8. Auditoria das fases 3–5 e plano revisado (2026-10-27)
+
+Depois de um crescimento de `alpha` no arquivo das guardas, reexecutam, para
+cada um dos 5 itens: `item_source_input`, `item_typing`, `item_staged_typing`,
+`item_const_arguments`, `item_static_branches`, `function_hir`,
+`instance_hir`, `instance_contracts`, `runtime_raw_unit` e `runtime_unit`.
+Além dos spans e do `NodeKey`, a saída por item depende de posição por:
+
+1. **IDs do arena do arquivo.** `TypeInfo::expr_types`, `ctfe_roots` e
+   `struct_field_defaults` e `ResolvedNames::expr_symbols` são indexados pelo
+   `ExprId` do `Program` do arquivo; crescer um corpo desloca os IDs de todos
+   os itens seguintes, não só os offsets.
+2. **Chaves por span.** `TypeInfo::ctfe_values` e `thread_captures`.
+3. **Nomes sintéticos derivados de posição.**
+   `ThreadCaptureRecipe::struct_symbol_name` (`__ThreadCapture_{start}_{end}`).
+4. **Views de arquivo.** `compose_file_typing` funde os resultados por item no
+   arena do arquivo (`expr_symbols` por índice) e serve `type_check`, hover e
+   diagnósticos.
+5. **Tabela de símbolos.** O `TypeCheckResult` por item carrega os spans de
+   todos os símbolos do arquivo.
+6. **AST de outro item.** `struct_field_defaults` guarda o `ExprId` do default
+   no arena do arquivo, e o lowering HIR de um literal de struct em outro item
+   baixa essa expressão (`lower_hir/expr/aggregate.rs`). No modo local, a
+   referência vira `(AstId, ExprId local)` e a identidade do item que usa o
+   default inclui o `item_ast` do item que o declara.
+
+Uma troca atômica teria de migrar tudo isso de uma vez. O plano passa a
+**descer a fronteira**: cada passo calcula um nível em coordenadas locais e
+converte para as do arquivo logo depois, com equivalência byte a byte contra
+um build frio; o passo seguinte move a conversão para baixo.
+
+| Passo | Entrega | Gate |
+| --- | --- | --- |
+| A | AST do arquivo = concatenação dos `item_ast` (`Program::append_item`), com correspondência local ↔ arquivo exata por construção (`ItemBases`) | AST composto idêntico ao do walk em todo o corpus; suítes de parser, query, semântica, LSP e CLI |
+| B | tipagem por item em coordenadas locais (IDs locais, `NodeKey`/spans relativos, símbolos fora do item sem posição) e conversão para o arquivo pelas `ItemBases` | tipagem local de um vizinho deslocado idêntica antes e depois; views de arquivo iguais às atuais |
+| C | `function_hir`/`instance_hir`/units a partir da tipagem e do AST locais; declarações do próprio arquivo entram no contexto pela superfície | contagem das guardas cai para 1 |
+| D | bordas: diagnósticos, composição (DWARF, `N021`), LSP e hash de CGU com `--debug` convertidos pelo `AstIdMap` | guardas da fase 0 e equivalência byte a byte |
+
+### 8.9. Passo A: AST do arquivo composto pelos itens (feito em 2026-10-27)
+
+- `SyntaxTree::item_extents()`: o item mais os doc comments que o precedem.
+  O walk do arquivo anexa esses docs ao item (`seek_to_item_start`) mesmo
+  quando o CST os deixa na raiz; `item_tree`, `item_positions` e o `AstIdMap`
+  usam a extensão. Um doc comment passa a fazer parte da identidade do item
+  que documenta.
+- `Program::append_item` (`arandu_parser/src/ast/shift.rs`): desloca IDs pelas
+  bases do arena e spans pelo offset; destructuring exaustivo, de modo que um
+  campo novo com ID ou span não compila sem ser deslocado. O placeholder
+  `Span::new(0, 0, 0)` não é deslocado.
+- Ranges vazios são canônicos (`IndexRange::empty()`): os alocadores de lista
+  não devolvem mais `{len, 0}`, e só ranges não vazios são deslocados.
+- `SyntaxTree::compose_program` calcula o `Program.span` como o walk e recusa
+  compor quando há erro léxico ou token fora de qualquer item. `parse(file)`
+  compõe a partir dos `item_ast`; em erro, o walk do arquivo inteiro continua
+  sendo o caminho dos diagnósticos.
+- Prova: `arandu_parser/tests/item_tree.rs`
+  (`appending_item_asts_rebuilds_the_file_ast`) compara, campo a campo, o AST
+  composto com o do walk em todos os arquivos sem erro de `examples/`,
+  `stdlib/` e `tests/`, inclusive arenas, listas de IDs, docs e
+  `Program.span`.
 
 ## 9. Questões em Aberto (Unresolved Questions)
 

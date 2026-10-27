@@ -10,8 +10,8 @@ use arandu_parser::Program;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-/// Absolute byte range of every top-level CST item of one file, in source
-/// order. Changes whenever any item moves; consumers that only need item
+/// Absolute byte extent of every top-level CST item of one file (the item
+/// with the doc comments that precede it), in source order. Changes whenever any item moves; consumers that only need item
 /// identity depend on [`item_ast_ids`] instead.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AstIdMap {
@@ -76,7 +76,7 @@ pub fn item_positions(db: &dyn ArandCompilerDb, file: SourceFile) -> Arc<AstIdMa
     let file_id = *file.file_id(db);
     let tree = super::resolution::syntax_tree(db, file);
     let items = tree
-        .item_ranges()
+        .item_extents()
         .into_iter()
         .map(|(start, end)| Span::new(file_id, start, end))
         .collect();
@@ -146,4 +146,23 @@ pub fn item_ast(
         Some(error) => HashEq::new(Err(error)),
         None => HashEq::new(Ok(Arc::new(output.program))),
     }
+}
+
+/// The file AST as the concatenation of its item ASTs, so every item keeps a
+/// fixed correspondence with its slice of the file arena (RFC 0042). `None`
+/// when an item does not lower cleanly or text lies outside every item; the
+/// whole-file walk then reports the diagnostics.
+pub(super) fn composed_program(db: &dyn ArandCompilerDb, file: SourceFile) -> Option<Program> {
+    let file_id = *file.file_id(db);
+    let items = item_positions(db, file)
+        .ids()
+        .map(|id| match &*item_ast(db, file, id).value {
+            Ok(program) => Some(Arc::clone(program)),
+            Err(_) => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let items: Vec<&Program> = items.iter().map(|program| &**program).collect();
+    let tree = super::resolution::syntax_tree(db, file);
+    tree.compose_program(file_id, &items)
+        .map(|(program, _)| program)
 }

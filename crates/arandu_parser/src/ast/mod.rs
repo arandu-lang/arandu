@@ -3,6 +3,7 @@ mod decl;
 mod dump;
 mod expr;
 mod pattern;
+mod shift;
 mod stmt;
 mod types;
 
@@ -10,6 +11,7 @@ pub use ast_pool::*;
 pub use decl::*;
 pub use expr::*;
 pub use pattern::*;
+pub use shift::ItemBases;
 pub use stmt::*;
 pub use types::*;
 

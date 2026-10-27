@@ -56,7 +56,7 @@ fn every_definition_maps_to_its_enclosing_item() {
 }
 
 #[test]
-fn item_positions_cover_attributes() {
+fn item_positions_cover_doc_comments_and_attributes() {
     let mut db = DatabaseImpl::new();
     let source = program(0);
     let file = db.new_file("items.aru".into(), source.clone());
@@ -73,11 +73,10 @@ fn item_positions_cover_attributes() {
     let first = positions
         .item_span(positions.ids().next().expect("item"))
         .expect("span");
-    // A doc comment that opens the file is root trivia, outside the first
-    // item; the item still covers its attributes.
+    // The extent starts at the doc comment that precedes the item, even
+    // where the CST keeps it outside the item node.
     let text = &source[first.start as usize..first.end as usize];
-    assert!(text.trim_start().starts_with("@Effects(none)"), "{text:?}");
-    assert!(!text.contains("/// Grows."), "{text:?}");
+    assert!(text.starts_with("/// Grows.\n@Effects(none)"), "{text:?}");
 }
 
 #[test]

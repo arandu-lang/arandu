@@ -614,6 +614,50 @@ mod tests {
             let _ = fs::remove_dir_all(cold);
         }
 
+        fn copy_tree(from: &Path, to: &Path) {
+            fs::create_dir_all(to).unwrap();
+            for entry in fs::read_dir(from).unwrap() {
+                let path = entry.unwrap().path();
+                let target = to.join(path.file_name().unwrap());
+                if path.is_dir() {
+                    copy_tree(&path, &target);
+                } else {
+                    fs::copy(&path, &target).unwrap();
+                }
+            }
+        }
+
+        #[test]
+        fn a_stdlib_edit_reaches_a_live_session() {
+            let root = project("stdlib", &library(0));
+            let stdlib = root.join("stdlib-copy");
+            copy_tree(
+                &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../stdlib"),
+                &stdlib,
+            );
+            let target = stdlib.join("std/target.aru");
+            let original = fs::read_to_string(&target).unwrap();
+            let probe = |value: i32| {
+                format!("{original}\npublic func sessionProbe(): int {{\n    return {value}\n}}\n")
+            };
+            fs::write(&target, probe(4)).unwrap();
+            fs::write(
+                root.join("src/main.aru"),
+                "import std.target as target\n\nfunc main(): int {\n    return target.sessionProbe()\n}\n",
+            )
+            .unwrap();
+            let mut request = request();
+            request.flags.stdlib_path = Some(stdlib);
+            let mut session = BuildSession::open(&root, request).unwrap();
+            session.build().unwrap();
+            assert_eq!(exit_code(&root), Some(4));
+
+            fs::write(&target, probe(9)).unwrap();
+            session.build().unwrap();
+            assert_eq!(exit_code(&root), Some(9));
+            let _ = fs::remove_dir_all(root);
+        }
+
         #[test]
         fn a_new_package_file_reopens_the_session() {
             let root = project("reopen", &library(0));

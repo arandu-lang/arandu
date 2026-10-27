@@ -21,12 +21,12 @@ require ABI, CPU, object format, system headers, libraries, and linker choices.
 Arandu v0.1 models only the layout subset below. Consequently, `ptr4` and `ptr8`
 are layout profiles, not target triples and not cross-toolchain configurations.
 
-| Profile | Pointer / `isize` / `usize` | `float` | `i64` / `f64` ABI alignment | Contract |
-|---|---:|---:|---:|---|
-| `host` | host width | IEEE f64 | host profile | Required for C ↔ Cranelift parity. |
-| `ptr4` | 4 bytes | IEEE f64 | 8 bytes | Generic ILP32-style layout model; emit-only and experimental. |
-| `ptr8` | 8 bytes | IEEE f64 | 8 bytes | Generic LP64-style layout model; emit-only unless it equals the host. |
-| `i686` | 4 bytes | IEEE f64 | 4 bytes | i686 SysV data-layout model; emit-only and tested structurally. |
+| Profile | Pointer / `isize` / `usize` |  `float` | `i64` / `f64` ABI alignment | Contract                                                              |
+| ------- | --------------------------: | -------: | --------------------------: | --------------------------------------------------------------------- |
+| `host`  |                  host width | IEEE f64 |                host profile | Required for C ↔ Cranelift parity.                                    |
+| `ptr4`  |                     4 bytes | IEEE f64 |                     8 bytes | Generic ILP32-style layout model; emit-only and experimental.         |
+| `ptr8`  |                     8 bytes | IEEE f64 |                     8 bytes | Generic LP64-style layout model; emit-only unless it equals the host. |
+| `i686`  |                     4 bytes | IEEE f64 |                     4 bytes | i686 SysV data-layout model; emit-only and tested structurally.       |
 
 `int`/`uint` are fixed i32/u32 in every profile; pointer-sized integers are
 `isize`/`usize`. `float` follows TargetInfo/DataLayout; the table describes the
@@ -186,11 +186,11 @@ provide their domain through `run_program_with_types`.
 A Linux SHA-256 smoke corpus emitted at O1 with GCC 16.2.1 and Node 24.20.0
 gave the following local before/after observations against d1f76f20:
 
-| Metric | Before | After |
-| --- | ---: | ---: |
-| C source bytes | 231639 | 225682 |
-| C temporary assignments | 7059 | 4349 |
-| Wasm module bytes | 48331 | 46453 |
+| Metric                            | Before |  After |
+| --------------------------------- | -----: | -----: |
+| C source bytes                    | 231639 | 225682 |
+| C temporary assignments           |   7059 |   4349 |
+| Wasm module bytes                 |  48331 |  46453 |
 | C compilation O0, median of three | 518 ms | 439 ms |
 | C compilation O2, median of three | 823 ms | 803 ms |
 
@@ -201,16 +201,16 @@ or 15–30% runtime speedup is promised.
 
 ### Backend and platform matrix
 
-| Capability | C backend | Cranelift backend | LLVM experimental |
-|---|---|---|---|
-| Product | One GNU C translation unit | JIT module or relocatable native object | LLVM IR text emitted directly from AMIR |
-| Execution model | External compiler and linker | Host JIT; host AOT uses a native linker and packaged static runtime | IR emission; experimental `run -b llvm` and `build -b llvm` via `clang` + packaged runtime (host only) |
-| Target selection | Explicit `DataLayout`; no triple | Explicit Cranelift triple; public build selects a baseline host ISA | Host target/layout only; no target configuration |
-| Cross-target status | Source emission only; caller supplies matching compiler, flags, sysroot, libc/runtime, and linker | Unsupported | Unsupported; only the host target/layout is accepted |
-| C dialect/toolchain | GCC or Clang GNU extensions; MSVC is unsupported | Not applicable | Pure Rust emission; external LLVM tools only to verify/execute |
-| Validated CI hosts | Host parity on the S0 Linux gate; install smoke on Linux and macOS | Object structure/determinism locally; installed native build smoke on release hosts | Local scalar/aggregate/vector/atomic/trap lowering smoke only |
-| Invalid AMIR | Shared validator runs before emission | Shared validator runs before JIT mutation | Shared validator runs before emission |
-| Backend failure | `Err(Diagnostic)`; no successful partial source | `Err(Diagnostic)`; no successful partial module | `Err(Diagnostic)`; no successful partial IR |
+| Capability          | C backend                                                                                         | Cranelift backend                                                                   | LLVM experimental                                                                                      |
+| ------------------- | ------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| Product             | One GNU C translation unit                                                                        | JIT module or relocatable native object                                             | LLVM IR text emitted directly from AMIR                                                                |
+| Execution model     | External compiler and linker                                                                      | Host JIT; host AOT uses a native linker and packaged static runtime                 | IR emission; experimental `run -b llvm` and `build -b llvm` via `clang` + packaged runtime (host only) |
+| Target selection    | Explicit `DataLayout`; no triple                                                                  | Explicit Cranelift triple; public build selects a baseline host ISA                 | Host target/layout only; no target configuration                                                       |
+| Cross-target status | Source emission only; caller supplies matching compiler, flags, sysroot, libc/runtime, and linker | Unsupported                                                                         | Unsupported; only the host target/layout is accepted                                                   |
+| C dialect/toolchain | GCC or Clang GNU extensions; MSVC is unsupported                                                  | Not applicable                                                                      | Pure Rust emission; external LLVM tools only to verify/execute                                         |
+| Validated CI hosts  | Host parity on the S0 Linux gate; install smoke on Linux and macOS                                | Object structure/determinism locally; installed native build smoke on release hosts | Local scalar/aggregate/vector/atomic/trap lowering smoke only                                          |
+| Invalid AMIR        | Shared validator runs before emission                                                             | Shared validator runs before JIT mutation                                           | Shared validator runs before emission                                                                  |
+| Backend failure     | `Err(Diagnostic)`; no successful partial source                                                   | `Err(Diagnostic)`; no successful partial module                                     | `Err(Diagnostic)`; no successful partial IR                                                            |
 
 The initial `arandu_backend_llvm` experiment is a direct AMIR-to-LLVM-IR
 lowering, not a supported production target. It covers scalars, pointers,
@@ -249,6 +249,16 @@ self-contained: host runtime symbols (`ar_rt_*`, `ar_jit_*`, `ar_gen_*`,
 attributed to that function, the call graph is closed transitively, and any
 reachable requirement aborts compilation with `T049` instead of leaving an
 undefined reference for the linker to discover.
+
+Function names are unique per program before any backend sees them.
+`SymbolTable::host_func_name` qualifies a non-exported function with its
+module: the declared `module` path or, for a package source without a
+declaration, the implicit logical module the driver derives from the package
+root (`src/a/b.aru` in package `app` is `app.a.b`, the module
+`import app.a.b` names; a dependency file uses its binding alias). The entry
+file, `main`, `extern` functions and `@Export` names keep their unqualified
+spelling. Cranelift objects, the JIT and LLVM IR therefore never see two
+definitions under one name, whatever linkage they use.
 
 A `@Export` signature is a C ABI contract, so aggregates are marshalled at
 lane granularity rather than passed as Arandu values:
@@ -303,22 +313,22 @@ columns above are not an inventory excluding Wasm.
 
 ### Type and representation matrix
 
-| Family | Representation | C | Cranelift host JIT |
-|---|---|---|---|
-| `bool`, bytes, chars, fixed integers | fixed-width scalar | Supported | Supported |
-| `int`, `uint` | fixed 32-bit scalar | Supported by selected layout | `I32` |
-| `isize`, `usize` | target pointer-width scalar | Supported by selected layout | Supported at host width |
-| `float`, `f32`, `f64` | IEEE scalar; `float` uses TargetInfo.float_size, explicit types retain their widths | Supported | Supported |
-| pointers, references, borrows | pointer plus AMIR ownership rules | Supported after borrow lowering | Supported after borrow lowering |
-| arrays, slices, `str` | inline array or `{ptr,len}` fat pointer; host/`extern "C"` calls flatten fat `str`/slice to separate `ptr`+`len` slots (Cranelift and LLVM) | Supported; target layout applies | Supported on host layout |
-| tuples and structs | ordered fields plus ABI padding | Supported | Supported |
-| enums, `Option`, `Result` | target-derived discriminant/payload or admitted niche representation | Supported | Supported |
-| functions and `extern "C"` | declared ABI boundary | Partial: caller must provide compatible symbols | Partial: only registered host/runtime symbols are linkable |
-| allocation and `free` | libc/runtime calls | Hosted runtime only | Host runtime only |
-| string interpolation / primitive `ToStr` | runtime helpers | Supported for primitives and `str` | Supported for primitives and `str` (LLVM experimental matches host Cranelift on the m09 fixture) |
-| user-defined formatting | no stable ABI yet | Unsupported | Unsupported |
-| async/await | current ready/poll runtime model | Partial/experimental | Partial/experimental host runtime |
-| OS, sockets, supervisor, generational runtime | runtime-specific symbols | Partial; not a freestanding contract | Experimental host implementation |
+| Family                                        | Representation                                                                                                                              | C                                               | Cranelift host JIT                                                                               |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `bool`, bytes, chars, fixed integers          | fixed-width scalar                                                                                                                          | Supported                                       | Supported                                                                                        |
+| `int`, `uint`                                 | fixed 32-bit scalar                                                                                                                         | Supported by selected layout                    | `I32`                                                                                            |
+| `isize`, `usize`                              | target pointer-width scalar                                                                                                                 | Supported by selected layout                    | Supported at host width                                                                          |
+| `float`, `f32`, `f64`                         | IEEE scalar; `float` uses TargetInfo.float_size, explicit types retain their widths                                                         | Supported                                       | Supported                                                                                        |
+| pointers, references, borrows                 | pointer plus AMIR ownership rules                                                                                                           | Supported after borrow lowering                 | Supported after borrow lowering                                                                  |
+| arrays, slices, `str`                         | inline array or `{ptr,len}` fat pointer; host/`extern "C"` calls flatten fat `str`/slice to separate `ptr`+`len` slots (Cranelift and LLVM) | Supported; target layout applies                | Supported on host layout                                                                         |
+| tuples and structs                            | ordered fields plus ABI padding                                                                                                             | Supported                                       | Supported                                                                                        |
+| enums, `Option`, `Result`                     | target-derived discriminant/payload or admitted niche representation                                                                        | Supported                                       | Supported                                                                                        |
+| functions and `extern "C"`                    | declared ABI boundary                                                                                                                       | Partial: caller must provide compatible symbols | Partial: only registered host/runtime symbols are linkable                                       |
+| allocation and `free`                         | libc/runtime calls                                                                                                                          | Hosted runtime only                             | Host runtime only                                                                                |
+| string interpolation / primitive `ToStr`      | runtime helpers                                                                                                                             | Supported for primitives and `str`              | Supported for primitives and `str` (LLVM experimental matches host Cranelift on the m09 fixture) |
+| user-defined formatting                       | no stable ABI yet                                                                                                                           | Unsupported                                     | Unsupported                                                                                      |
+| async/await                                   | current ready/poll runtime model                                                                                                            | Partial/experimental                            | Partial/experimental host runtime                                                                |
+| OS, sockets, supervisor, generational runtime | runtime-specific symbols                                                                                                                    | Partial; not a freestanding contract            | Experimental host implementation                                                                 |
 
 “Supported” here means covered at the backend boundary for well-typed AMIR. It
 does not override language-phase status or promise a stable external ABI.
@@ -397,12 +407,12 @@ Linux measurements with GCC 16.2.1 compare the original unrolled SHA source
 against the same source with the new emitter, then against the array/loop
 algorithm with the same `abc` entrypoint:
 
-| Measurement | Previous emitter | New emitter, same source | Array/loop source |
-| --- | ---: | ---: | ---: |
-| Generated C bytes | 225,682 | 111,818 | 28,493 |
-| Generated C lines | 8,343 | 4,494 | 938 |
-| Compression function machine-code bytes, GCC O2 | 10,745 | 10,519 | 1,150 |
-| GCC O2 compilation median, three runs | 828 ms | 646 ms | 176 ms |
+| Measurement                                     | Previous emitter | New emitter, same source | Array/loop source |
+| ----------------------------------------------- | ---------------: | -----------------------: | ----------------: |
+| Generated C bytes                               |          225,682 |                  111,818 |            28,493 |
+| Generated C lines                               |            8,343 |                    4,494 |               938 |
+| Compression function machine-code bytes, GCC O2 |           10,745 |                   10,519 |             1,150 |
+| GCC O2 compilation median, three runs           |           828 ms |                   646 ms |            176 ms |
 
 These are workload measurements, not general performance guarantees. A separate
 identical streaming entrypoint verified the digest of 1 MiB of zero bytes:

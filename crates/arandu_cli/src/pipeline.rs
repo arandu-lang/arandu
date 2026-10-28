@@ -2,6 +2,7 @@
 //!
 //! Enforces: CST (`syntax_tree`) → AST (`parse`) → `resolve` → `type_check` → `lower_amir` → backend.
 
+use crate::output::errln;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -206,7 +207,7 @@ pub fn render_nonfatal_diagnostics(
         };
         let named_source = miette::NamedSource::new(path_str, text_arc);
         let report = miette::Report::new(diagnostic.clone()).with_source_code(named_source);
-        eprintln!("{:?}", report);
+        errln!("{:?}", report);
     }
 }
 
@@ -404,12 +405,12 @@ pub fn print_genref_report(filepath: &str, artifacts: &arandu_query::LowerAmirAr
         }
     }
     rows.sort_by(|a, b| a.0.cmp(&b.0));
-    eprintln!(
+    errln!(
         "[arandu][genref] module={filepath} promotions={total_promotions} checks={total_checks} functions={}",
         rows.len()
     );
     for (name, promotions, checks) in rows {
-        eprintln!("[arandu][genref] function={name} promotions={promotions} checks={checks}");
+        errln!("[arandu][genref] function={name} promotions={promotions} checks={checks}");
     }
 }
 

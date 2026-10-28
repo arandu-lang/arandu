@@ -1,3 +1,4 @@
+use crate::output::{errln, outln};
 use std::fs;
 use std::path::Path;
 
@@ -94,7 +95,7 @@ pub(super) fn emit_wasm_artifact(
         "wasm-core"
     };
     if !flags.quiet {
-        println!(
+        outln!(
             "built {} v{} (backend={}, entry={}, artifact={})",
             ctx.name,
             ctx.version,
@@ -159,7 +160,7 @@ pub(super) fn emit_llvm_artifact(
             )?;
         }
         if !flags.quiet {
-            println!(
+            outln!(
                 "built {} v{} (backend={}, entry={}, artifact={})",
                 ctx.name,
                 ctx.version,
@@ -275,7 +276,7 @@ pub(super) fn emit_llvm_artifact(
     }
 
     if !flags.quiet {
-        println!(
+        outln!(
             "built {} v{} (backend={}, entry={}, artifact={})",
             ctx.name,
             ctx.version,
@@ -364,7 +365,7 @@ pub(super) fn emit_native_artifact(
             )?
         };
         if flags.verbose {
-            eprintln!(
+            errln!(
                 "[cgu] {} units: {} cached, {} recompiled",
                 result.object_files.len(),
                 result.cached_count,
@@ -411,7 +412,7 @@ pub(super) fn emit_native_artifact(
                 && let Some(existing) = existing_artifact
             {
                 if flags.verbose {
-                    eprintln!(
+                    errln!(
                         "[incremental-artifact] all CGUs are verified cache hits; reusing {}",
                         existing.path.display()
                     );
@@ -451,7 +452,7 @@ pub(super) fn emit_native_artifact(
                         }
                         Ok(None) => {
                             if flags.verbose {
-                                eprintln!(
+                                errln!(
                                     "[in-process-elf] safety/determinism precondition not met; falling back to a full link"
                                 );
                             }
@@ -459,7 +460,7 @@ pub(super) fn emit_native_artifact(
                         }
                         Err(error) => {
                             if flags.verbose {
-                                eprintln!(
+                                errln!(
                                     "[in-process-elf] patch failed safely ({error:?}); falling back to a full link"
                                 );
                             }
@@ -470,7 +471,7 @@ pub(super) fn emit_native_artifact(
 
                 if let Some((exec_path, new_digest)) = in_place_patched {
                     if flags.verbose {
-                        eprintln!(
+                        errln!(
                             "[in-process-elf] patched {} CGU(s) in-place in {}",
                             result.recompiled_count,
                             exec_path.display()
@@ -505,7 +506,7 @@ pub(super) fn emit_native_artifact(
             )?;
         }
         if !flags.quiet {
-            println!(
+            outln!(
                 "built {} v{} (backend={}, entry={}, artifact={})",
                 ctx.name,
                 ctx.version,
@@ -588,7 +589,7 @@ pub(super) fn emit_native_artifact(
                 )?;
             }
             if !flags.quiet {
-                println!(
+                outln!(
                     "built {} v{} (backend={}, entry={}, artifact={})",
                     ctx.name,
                     ctx.version,

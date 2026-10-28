@@ -1,5 +1,6 @@
 //! Project native object build and linking.
 
+use crate::output::{errln, errp, outln};
 use std::path::{Path, PathBuf};
 
 use super::llvm_product::{self, LlvmStop};
@@ -346,7 +347,7 @@ impl BuildSession {
                     backend_label
                 };
                 if !flags.quiet {
-                    println!(
+                    outln!(
                         "built {} v{} (backend={}, entry={}, artifact={}, incremental: up-to-date)",
                         ctx.name,
                         ctx.version,
@@ -363,7 +364,7 @@ impl BuildSession {
                 reusable_input_fingerprints,
             } => {
                 if flags.verbose {
-                    eprintln!("[incremental] rebuild triggered: {reason}");
+                    errln!("[incremental] rebuild triggered: {reason}");
                 }
                 reusable_input_fingerprints
             }
@@ -379,10 +380,10 @@ impl BuildSession {
             && (flags.verbose || explain_rebuild)
             && let Some(log) = &rebuild_log
         {
-            eprintln!("{}", log.status_line());
+            errln!("{}", log.status_line());
         }
         if explain_rebuild && let Some(log) = &rebuild_log {
-            eprint!("{}", log.format_chain(true));
+            errp!("{}", log.format_chain(true));
         }
 
         let compiler_artifact_layout = if is_wasm {

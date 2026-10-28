@@ -24,7 +24,7 @@ fn foreign_sym(local_id: u32) -> SymbolId {
 }
 
 fn register_imported_sym(symbols: &mut SymbolTable, id: SymbolId, name: &str) {
-    symbols.imported_symbols.insert(
+    symbols.imported_symbols_mut().insert(
         id,
         Symbol {
             id,

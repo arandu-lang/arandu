@@ -26,7 +26,7 @@ fn program(funcs: Vec<AmirFunc>) -> AmirProgram {
 
 fn function(symbols: &mut SymbolTable, id: u32, name: &str, ty: TypeId) -> AmirFunc {
     let symbol = SymbolId::new(999, id);
-    symbols.imported_symbols.insert(
+    symbols.imported_symbols_mut().insert(
         symbol,
         Symbol {
             id: symbol,
@@ -188,11 +188,11 @@ fn namespace_alias_keeps_actual_definition_and_its_transitive_dependency() {
     let alias = SymbolId::new(999, 4);
     let declaration_span = Span::new(999, 10, 20);
     symbols
-        .imported_symbols
+        .imported_symbols_mut()
         .get_mut(&helper.symbol)
         .unwrap()
         .span = declaration_span;
-    symbols.imported_symbols.insert(
+    symbols.imported_symbols_mut().insert(
         alias,
         Symbol {
             id: alias,
@@ -231,7 +231,7 @@ fn projected_struct_and_enum_payload_drops_keep_private_destructors() {
     let destructor = function(&mut symbols, 2, "Inner.close", void);
     let dead = function(&mut symbols, 3, "unused", void);
     symbols
-        .imported_symbols
+        .imported_symbols_mut()
         .get_mut(&api.symbol)
         .unwrap()
         .visibility = Visibility::Public;

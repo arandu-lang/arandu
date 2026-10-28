@@ -178,7 +178,7 @@ impl LangItem {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Symbol {
     pub id: SymbolId,
     pub name: SmolStr,
@@ -233,7 +233,11 @@ pub struct SymbolTable {
     /// Span-derived symbols that are not dense source locals. Empty for every
     /// program that does not synthesize a thread capture.
     synthetic_symbols: FxHashMap<u32, Symbol>,
-    pub imported_symbols: FxHashMap<SymbolId, Symbol>,
+    /// Symbols of other files. Shared between the tables cloned from one
+    /// another until one of them registers a symbol, so a consumer can tell
+    /// equal import sets apart by pointer; mutate through
+    /// [`SymbolTable::imported_symbols_mut`].
+    pub imported_symbols: std::sync::Arc<FxHashMap<SymbolId, Symbol>>,
     pub module_members: FxHashMap<(SmolStr, SmolStr), SymbolId>,
     /// Module aliases whose source import failed. Semantic passes use this
     /// error state to avoid diagnosing members of the same failed import.
@@ -279,7 +283,7 @@ impl SymbolTable {
             }],
             symbols: Vec::new(),
             synthetic_symbols: FxHashMap::default(),
-            imported_symbols: FxHashMap::default(),
+            imported_symbols: std::sync::Arc::default(),
             module_members: FxHashMap::default(),
             unresolved_module_aliases: std::collections::BTreeSet::new(),
             associated_members: FxHashMap::default(),

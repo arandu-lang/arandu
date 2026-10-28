@@ -86,8 +86,10 @@ pub fn compose_function_units(
                 aggregate
                     .symbols_mut()
                     .register_imported_symbol(input.placed(source));
-            } else if let Some(imported) =
-                aggregate.symbols_mut().imported_symbols.get_mut(&source.id)
+            } else if let Some(imported) = aggregate
+                .symbols_mut()
+                .imported_symbols_mut()
+                .get_mut(&source.id)
             {
                 imported.span = input.placed_span(source);
             }
@@ -98,17 +100,28 @@ pub fn compose_function_units(
     // The entry file's source table must already be complete; importing an ID
     // from that same file cannot extend its dense source table.
     let entry_file = aggregate.symbols.file_id;
+    // Units of one file share their imported symbols by pointer, so each set
+    // is registered once; a unit that repeats one only adds its own marks.
+    let mut registered_imports = FxHashSet::default();
     for input in units {
         poll();
+        let table = &input.context.symbols;
         let generated = input
             .generated_symbols
             .iter()
             .copied()
             .collect::<FxHashSet<_>>();
-        for source in input.context.symbols.iter().filter(|symbol| {
-            !generated.contains(&symbol.id)
-                && (symbol.id.file_id == entry_file || !owned_files.contains(&symbol.id.file_id))
-        }) {
+        let keep = |id: SymbolId| {
+            !generated.contains(&id)
+                && (id.file_id == entry_file || !owned_files.contains(&id.file_id))
+        };
+        let repeated = !registered_imports.insert(std::sync::Arc::as_ptr(&table.imported_symbols));
+        let imported = (!repeated).then(|| table.imported_symbols.values());
+        for source in table
+            .iter_own()
+            .chain(imported.into_iter().flatten())
+            .filter(|symbol| keep(symbol.id))
+        {
             poll();
             if aggregate.symbols.try_get(source.id).is_none() {
                 if source.id.file_id == aggregate.symbols.file_id {
@@ -128,7 +141,10 @@ pub fn compose_function_units(
                         .register_imported_symbol(input.placed(source));
                 }
             }
-            merge_symbol_marks(aggregate, &input.context.symbols, source.id);
+            merge_symbol_marks(aggregate, table, source.id);
+        }
+        if repeated {
+            merge_imported_marks(aggregate, table, keep);
         }
         aggregate.symbols_mut().module_members.extend(
             input
@@ -363,6 +379,35 @@ pub fn compose_function_units(
         diagnostics,
         instances,
     })
+}
+
+/// [`merge_symbol_marks`] of every imported symbol of `context` that `keep`
+/// selects, read from its mark tables rather than from its symbols.
+fn merge_imported_marks(
+    aggregate: &mut TypeCheckResult,
+    context: &arandu_middle::SymbolTable,
+    keep: impl Fn(SymbolId) -> bool,
+) {
+    let imported =
+        |symbol: SymbolId| context.imported_symbols.contains_key(&symbol) && keep(symbol);
+    for (&symbol, name) in &context.host_function_names {
+        if imported(symbol) {
+            aggregate
+                .symbols_mut()
+                .host_function_names
+                .insert(symbol, name.clone());
+        }
+    }
+    for &symbol in &context.tooling_entrypoints {
+        if imported(symbol) {
+            aggregate.symbols_mut().tooling_entrypoints.insert(symbol);
+        }
+    }
+    for &symbol in &context.exported_functions {
+        if imported(symbol) {
+            aggregate.symbols_mut().exported_functions.insert(symbol);
+        }
+    }
 }
 
 /// Copies `symbol`'s host name, tooling root and `@Export` marks from

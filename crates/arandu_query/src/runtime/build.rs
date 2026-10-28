@@ -111,6 +111,9 @@ pub(super) fn build_instance_hir<'db>(
                 declaration_context(db, *instance.file(db))
             };
             fingerprint.update(headers.stable_hash().as_bytes());
+            if local && headers.hir.is_some() {
+                share_linked_imports(db, *instance.file(db), &mut checked, headers);
+            }
             if let Some(context) = &headers.hir {
                 arandu_semantics::link_hir_module(&mut checked, hir, &headers.type_check, context);
             } else {
@@ -259,6 +262,76 @@ pub(super) fn build_instance_hir<'db>(
     identity.update(b"InstanceHir/fingerprint/v1");
     identity.update(source_fingerprint.as_bytes());
     FingerprintEq::fingerprinted(db, "instance_hir", output, identity.finalize())
+}
+
+/// Starts a local unit from [`linked_imports`] when it holds the very map
+/// that one was built from and links the very headers it linked: linking
+/// then copies nothing, and every such unit of the file shares one map, which
+/// the composition registers once. Imported symbols carry positions that the
+/// identities of the signatures and headers leave out, so only pointer
+/// equality proves the shared map is what linking would build.
+fn share_linked_imports(
+    db: &dyn ArandCompilerDb,
+    file: crate::SourceFile,
+    checked: &mut arandu_semantics::TypeCheckResult,
+    headers: &crate::db::HashEq<crate::passes::PreparedHir>,
+) {
+    let linked = linked_imports(db, file);
+    if std::sync::Arc::ptr_eq(&checked.symbols.imported_symbols, &linked.base)
+        && std::sync::Arc::ptr_eq(&headers.value, &linked.headers)
+    {
+        checked.symbols_mut().imported_symbols = std::sync::Arc::clone(&linked.imported);
+    }
+}
+
+type ImportedSymbols = rustc_hash::FxHashMap<arandu_middle::SymbolId, arandu_middle::Symbol>;
+
+/// The imported symbols of `file`'s signatures (`base`) with those that
+/// linking `headers`, its [`local_declaration_context`], adds, as
+/// `link_hir_module` would add them.
+pub(super) struct LinkedImports {
+    base: std::sync::Arc<ImportedSymbols>,
+    headers: std::sync::Arc<crate::passes::PreparedHir>,
+    imported: std::sync::Arc<ImportedSymbols>,
+}
+
+/// Equal only when built from the same maps: the content of `base` and
+/// `headers` is not covered by the identities of the queries they come from.
+impl PartialEq for LinkedImports {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.base, &other.base)
+            && std::sync::Arc::ptr_eq(&self.headers, &other.headers)
+            && std::sync::Arc::ptr_eq(&self.imported, &other.imported)
+    }
+}
+
+impl Eq for LinkedImports {}
+
+#[salsa::tracked(returns(ref))]
+#[tracing::instrument(level = "trace", target = "arandu_query", skip(db), fields(
+    query = "linked_imports", file = ?file.file_id(db),
+))]
+pub(super) fn linked_imports(db: &dyn ArandCompilerDb, file: crate::SourceFile) -> LinkedImports {
+    let file_id = *file.file_id(db);
+    let base = std::sync::Arc::clone(
+        &crate::passes::declaration_signatures(db, file)
+            .symbols
+            .imported_symbols,
+    );
+    let headers = local_declaration_context(db, file);
+    let mut imported = base.as_ref().clone();
+    if headers.hir.is_some() {
+        for symbol in headers.type_check.symbols.iter() {
+            if symbol.id.file_id != file_id && !imported.contains_key(&symbol.id) {
+                imported.insert(symbol.id, symbol.clone());
+            }
+        }
+    }
+    LinkedImports {
+        base,
+        headers: std::sync::Arc::clone(&headers.value),
+        imported: std::sync::Arc::new(imported),
+    }
 }
 
 /// Whether the item's text may stage (`comptime`), and whether its body holds

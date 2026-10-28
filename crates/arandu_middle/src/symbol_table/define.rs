@@ -215,7 +215,12 @@ impl super::SymbolTable {
             if let Some(s) = self.symbols.get_mut(sym.local_id.0 as usize) {
                 s.lang_item = Some(item);
             }
-        } else if let Some(s) = self.imported_symbols.get_mut(&sym) {
+        } else if let Some(s) = self
+            .imported_symbols
+            .contains_key(&sym)
+            .then(|| self.imported_symbols_mut().get_mut(&sym))
+            .flatten()
+        {
             s.lang_item = Some(item);
         }
         match item {
@@ -363,7 +368,7 @@ impl super::SymbolTable {
                 if let Some(pos) = scope_syms.iter().position(|&x| x == existing) {
                     scope_syms[pos] = symbol.id;
                 }
-                self.imported_symbols.insert(symbol.id, symbol);
+                self.imported_symbols_mut().insert(symbol.id, symbol);
                 return Ok(Some(existing));
             }
             if existing == symbol.id {
@@ -373,7 +378,7 @@ impl super::SymbolTable {
         }
 
         let id = symbol.id;
-        self.imported_symbols.insert(id, symbol);
+        self.imported_symbols_mut().insert(id, symbol);
         self.scope_mut(self.global_scope_id).symbols.push(id);
         Ok(None)
     }
@@ -381,7 +386,12 @@ impl super::SymbolTable {
     /// Registers a symbol from another file so it can be looked up by ID,
     /// but DOES NOT put it into the global scope.
     pub fn register_imported_symbol(&mut self, symbol: Symbol) {
-        self.imported_symbols.insert(symbol.id, symbol);
+        self.imported_symbols_mut().insert(symbol.id, symbol);
+    }
+
+    /// The imported symbols, copied first when another table shares them.
+    pub fn imported_symbols_mut(&mut self) -> &mut rustc_hash::FxHashMap<SymbolId, Symbol> {
+        std::sync::Arc::make_mut(&mut self.imported_symbols)
     }
 
     /// Registers a span-derived symbol. The id must already carry

@@ -27,7 +27,7 @@ fn generates_named_interface_for_public_interface_symbols() {
 
     // 1. Declare public interface "Calculator"
     let iface_sym = foreign_sym(1);
-    symbols.imported_symbols.insert(
+    symbols.imported_symbols_mut().insert(
         iface_sym,
         Symbol {
             id: iface_sym,
@@ -42,7 +42,7 @@ fn generates_named_interface_for_public_interface_symbols() {
 
     // 2. Declare public method "Calculator.add"
     let method_sym = foreign_sym(2);
-    symbols.imported_symbols.insert(
+    symbols.imported_symbols_mut().insert(
         method_sym,
         Symbol {
             id: method_sym,
@@ -57,7 +57,7 @@ fn generates_named_interface_for_public_interface_symbols() {
 
     // 3. Declare standalone public function "ping"
     let ping_sym = foreign_sym(3);
-    symbols.imported_symbols.insert(
+    symbols.imported_symbols_mut().insert(
         ping_sym,
         Symbol {
             id: ping_sym,
@@ -193,7 +193,7 @@ fn wit_multiple_interfaces_with_scoped_types() {
     // 1. Declare struct Pixel
     let pixel_sym = foreign_sym(10);
     let pixel_ty = interner.intern(ArType::named(pixel_sym, &[], &interner));
-    symbols.imported_symbols.insert(
+    symbols.imported_symbols_mut().insert(
         pixel_sym,
         Symbol {
             id: pixel_sym,
@@ -208,7 +208,7 @@ fn wit_multiple_interfaces_with_scoped_types() {
 
     // 2. Declare public interface "Graphics"
     let iface_sym = foreign_sym(1);
-    symbols.imported_symbols.insert(
+    symbols.imported_symbols_mut().insert(
         iface_sym,
         Symbol {
             id: iface_sym,
@@ -223,7 +223,7 @@ fn wit_multiple_interfaces_with_scoped_types() {
 
     // 3. Declare public method "Graphics.draw(p: Pixel) -> i32"
     let draw_sym = foreign_sym(2);
-    symbols.imported_symbols.insert(
+    symbols.imported_symbols_mut().insert(
         draw_sym,
         Symbol {
             id: draw_sym,
@@ -238,7 +238,7 @@ fn wit_multiple_interfaces_with_scoped_types() {
 
     // 4. Declare standalone public function "ping" (takes no records)
     let ping_sym = foreign_sym(3);
-    symbols.imported_symbols.insert(
+    symbols.imported_symbols_mut().insert(
         ping_sym,
         Symbol {
             id: ping_sym,
@@ -369,7 +369,7 @@ fn wit_receiver_is_exposed_once() {
 
     // 1. Declare public interface "Widget"
     let iface_sym = foreign_sym(1);
-    symbols.imported_symbols.insert(
+    symbols.imported_symbols_mut().insert(
         iface_sym,
         Symbol {
             id: iface_sym,
@@ -384,7 +384,7 @@ fn wit_receiver_is_exposed_once() {
 
     // 2. Declare public method "Widget.tag" with a shared receiver.
     let method_sym = foreign_sym(2);
-    symbols.imported_symbols.insert(
+    symbols.imported_symbols_mut().insert(
         method_sym,
         Symbol {
             id: method_sym,

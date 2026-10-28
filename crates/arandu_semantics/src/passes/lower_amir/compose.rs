@@ -146,30 +146,11 @@ pub fn compose_function_units(
         if repeated {
             merge_imported_marks(aggregate, table, keep);
         }
-        aggregate.symbols_mut().module_members.extend(
-            input
-                .context
-                .symbols
-                .module_members
-                .iter()
-                .map(|(key, value)| (key.clone(), *value)),
-        );
-        aggregate.symbols_mut().associated_members.extend(
-            input
-                .context
-                .symbols
-                .associated_members
-                .iter()
-                .map(|(key, value)| (key.clone(), *value)),
-        );
-        aggregate.symbols_mut().type_params.extend(
-            input
-                .context
-                .symbols
-                .type_params
-                .iter()
-                .map(|(key, value)| (*key, value.clone())),
-        );
+        let symbols = aggregate.symbols_mut();
+        let context = &input.context.symbols;
+        insert_changed(&mut symbols.module_members, &context.module_members);
+        insert_changed(&mut symbols.associated_members, &context.associated_members);
+        insert_changed(&mut symbols.type_params, &context.type_params);
     }
     for input in units {
         poll();
@@ -430,6 +411,20 @@ fn merge_symbol_marks(
     // alone would keep it internal and hide name clashes.
     if context.is_exported(symbol) {
         aggregate.symbols_mut().exported_functions.insert(symbol);
+    }
+}
+
+/// `extend` with `source`, cloning only the entries `target` lacks or holds
+/// with another value: units of one file repeat the same maps.
+fn insert_changed<K, V>(target: &mut FxHashMap<K, V>, source: &FxHashMap<K, V>)
+where
+    K: Clone + Eq + std::hash::Hash,
+    V: Clone + PartialEq,
+{
+    for (key, value) in source {
+        if target.get(key) != Some(value) {
+            target.insert(key.clone(), value.clone());
+        }
     }
 }
 

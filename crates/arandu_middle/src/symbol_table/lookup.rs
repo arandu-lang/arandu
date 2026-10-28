@@ -105,6 +105,12 @@ impl super::SymbolTable {
         table
     }
 
+    /// Whether `id` is one of the symbols [`Self::iter_own`] yields.
+    #[must_use]
+    pub fn owns(&self, id: SymbolId) -> bool {
+        id.file_id == self.file_id
+    }
+
     /// Symbols of this table's own file, without imported ones.
     pub fn iter_own(&self) -> impl Iterator<Item = &Symbol> {
         self.symbols.iter().chain(self.synthetic_symbols.values())

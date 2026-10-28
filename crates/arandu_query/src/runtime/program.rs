@@ -149,9 +149,11 @@ pub fn runtime_program(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Run
         db.unwind_if_revision_cancelled();
         let key = instance.key(db).clone();
         let produced = runtime_unit(db, instance);
-        let checked = match super::place_unit(db, &key, produced) {
-            Some(placed) => std::sync::Arc::new(placed),
-            None => std::sync::Arc::clone(&produced.value),
+        // Only the result is placed here; the composition places the
+        // context as it merges it, without copying it per unit.
+        let (checked, placement) = match super::place_unit_body(db, &key, produced) {
+            Some((placed, at, declared)) => (std::sync::Arc::new(placed), Some((at, declared))),
+            None => (std::sync::Arc::clone(&produced.value), None),
         };
         match &checked.result {
             Ok(unit) => {
@@ -256,21 +258,21 @@ pub fn runtime_program(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Run
             }
             Err(errors) => diagnostics.extend(errors.iter().cloned()),
         }
-        units.push((key, produced.clone(), checked));
+        units.push((key, produced.clone(), checked, placement));
     }
     let file_path_key = |file_id: arandu_middle::db::FileId| {
         db.source_file_by_id(file_id)
             .map(|sf| sf.path(db).clone())
             .unwrap_or_else(|| std::sync::Arc::new(std::path::PathBuf::new()))
     };
-    units.sort_by_key(|(key, _, _)| {
+    units.sort_by_key(|(key, _, _, _)| {
         (
             file_path_key(key.definition.file_id),
             key.definition.local_id.0,
             *key.stable_hash().as_bytes(),
         )
     });
-    for (key, produced, _) in &units {
+    for (key, produced, _, _) in &units {
         fingerprint.update(
             file_path_key(key.definition.file_id)
                 .as_os_str()
@@ -288,7 +290,7 @@ pub fn runtime_program(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Run
     } else {
         let inputs = units
             .iter()
-            .filter_map(|(key, _, checked)| {
+            .filter_map(|(key, _, checked, placement)| {
                 let unit = checked.result.as_ref().ok()?;
                 Some(arandu_semantics::ContextualFunctionUnit {
                     key,
@@ -297,6 +299,9 @@ pub fn runtime_program(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Run
                     generated_symbols: &checked.generated_symbols,
                     instances: &checked.instances,
                     borrow_summary: checked.borrow_summary.as_ref()?,
+                    placement: placement
+                        .as_ref()
+                        .map(|(at, declared)| arandu_semantics::UnitPlacement { at, declared }),
                 })
             })
             .collect::<Vec<_>>();

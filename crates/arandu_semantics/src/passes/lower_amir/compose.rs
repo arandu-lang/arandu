@@ -13,6 +13,37 @@ pub struct ContextualFunctionUnit<'a> {
     pub generated_symbols: &'a [SymbolId],
     pub instances: &'a [(SymbolId, FunctionInstance)],
     pub borrow_summary: &'a ReturnBorrowSummary,
+    /// Where a context in item-local coordinates sits in its file (RFC 0042).
+    /// The composition places it as it reads it rather than copying it placed.
+    pub placement: Option<UnitPlacement<'a>>,
+}
+
+/// The placement of an item-local unit context: its expression tables and
+/// spans move by `at`, and its file's symbols take their declared positions.
+#[derive(Clone, Copy)]
+pub struct UnitPlacement<'a> {
+    pub at: &'a arandu_typeck::type_checker::info::ItemPlacement,
+    pub declared: &'a arandu_middle::SymbolTable,
+}
+
+impl ContextualFunctionUnit<'_> {
+    /// Position in its file of `symbol` of this unit's context.
+    fn placed_span(&self, symbol: &arandu_middle::Symbol) -> Span {
+        match self.placement {
+            Some(placement) if self.context.symbols.owns(symbol.id) => placement
+                .declared
+                .try_get(symbol.id)
+                .map_or_else(|| placement.at.span(symbol.span), |declared| declared.span),
+            _ => symbol.span,
+        }
+    }
+
+    /// `symbol` of this unit's context at its position in its file.
+    fn placed(&self, symbol: &arandu_middle::Symbol) -> arandu_middle::Symbol {
+        let mut placed = symbol.clone();
+        placed.span = self.placed_span(symbol);
+        placed
+    }
 }
 
 pub struct ComposedUnits {
@@ -54,11 +85,11 @@ pub fn compose_function_units(
             if aggregate.symbols.try_get(source.id).is_none() {
                 aggregate
                     .symbols_mut()
-                    .register_imported_symbol(source.clone());
+                    .register_imported_symbol(input.placed(source));
             } else if let Some(imported) =
                 aggregate.symbols_mut().imported_symbols.get_mut(&source.id)
             {
-                imported.span = source.span;
+                imported.span = input.placed_span(source);
             }
             merge_symbol_marks(aggregate, own, source.id);
         }
@@ -82,7 +113,9 @@ pub fn compose_function_units(
             if aggregate.symbols.try_get(source.id).is_none() {
                 if source.id.file_id == aggregate.symbols.file_id {
                     if source.id.is_synthetic() {
-                        aggregate.symbols_mut().register_synthetic(source.clone());
+                        aggregate
+                            .symbols_mut()
+                            .register_synthetic(input.placed(source));
                     } else {
                         return Err(vec![ice(
                             "composition is missing an entry-file source symbol",
@@ -92,7 +125,7 @@ pub fn compose_function_units(
                 } else {
                     aggregate
                         .symbols_mut()
-                        .register_imported_symbol(source.clone());
+                        .register_imported_symbol(input.placed(source));
                 }
             }
             merge_symbol_marks(aggregate, &input.context.symbols, source.id);
@@ -154,10 +187,11 @@ pub fn compose_function_units(
                 })?;
                 let global = aggregate.symbols.global_scope();
                 let scope = aggregate.symbols_mut().new_scope(global);
+                let span = input.placed_span(source);
                 let mapped = aggregate
                     .symbols_mut()
-                    .define(scope, &source.name, source.kind, source.span)
-                    .map_err(|_| vec![ice("instance symbol allocation collided", source.span)])?;
+                    .define(scope, &source.name, source.kind, span)
+                    .map_err(|_| vec![ice("instance symbol allocation collided", span)])?;
                 if let Some(name) = input.context.symbols.host_function_names.get(symbol) {
                     aggregate
                         .symbols_mut()
@@ -221,21 +255,30 @@ pub fn compose_function_units(
             let scope = *generated_scopes
                 .entry(source.scope)
                 .or_insert_with(|| aggregate.symbols_mut().new_scope(global));
+            let span = input.placed_span(source);
             let mapped = aggregate
                 .symbols_mut()
-                .define(scope, &source.name, source.kind, source.span)
-                .map_err(|_| vec![ice("generated local allocation collided", source.span)])?;
+                .define(scope, &source.name, source.kind, span)
+                .map_err(|_| vec![ice("generated local allocation collided", span)])?;
             symbols.insert(symbol, mapped);
         }
         let remap_symbol = |symbol: SymbolId| symbols.get(&symbol).copied().unwrap_or(symbol);
         // Nominal metadata is source-owned. Specialization allocates only
         // functions/parameters/locals, so it cannot rebind named type symbols.
         let include_expressions = input.key.definition.file_id == aggregate.symbols.file_id;
-        aggregate.type_info_mut().merge_codegen_context(
-            &input.context.type_info,
-            remap_symbol,
-            include_expressions,
-        );
+        match input.placement {
+            Some(placement) => aggregate.type_info_mut().merge_codegen_context_at(
+                &input.context.type_info,
+                remap_symbol,
+                include_expressions,
+                placement.at,
+            ),
+            None => aggregate.type_info_mut().merge_codegen_context(
+                &input.context.type_info,
+                remap_symbol,
+                include_expressions,
+            ),
+        }
         let mut unit = input.unit.clone();
         let mut types = FxHashMap::<TypeId, TypeId>::default();
         let mut invalid = false;

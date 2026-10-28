@@ -593,61 +593,94 @@ pub(crate) fn place_unit(
     key: &FunctionInstance,
     unit: &RuntimeUnit,
 ) -> Option<RuntimeUnit> {
+    let (mut placed, at, declared) = place_unit_body(db, key, unit)?;
+    // The unit context names this file's symbols without their positions.
+    let mut context = unit.context.as_ref().clone();
+    context.symbols = std::sync::Arc::new(context.symbols.map_spans(|symbol| {
+        declared
+            .try_get(symbol.id)
+            .map_or_else(|| at.span(symbol.span), |declared| declared.span)
+    }));
+    context.diagnostics = place_diagnostics(&at, &context.diagnostics);
+    // The composed file view merges the unit's expression tables.
+    context.type_info_mut().place_at(&at);
+    placed.context = std::sync::Arc::new(context);
+    placed.local = false;
+    placed.analysis_function = unit
+        .analysis_function
+        .as_ref()
+        .map(|function| place_function(&at, function));
+    Some(placed)
+}
+
+fn place_diagnostics(
+    at: &arandu_typeck::type_checker::info::ItemPlacement,
+    diagnostics: &[Diagnostic],
+) -> Vec<Diagnostic> {
+    diagnostics
+        .iter()
+        .map(|diagnostic| {
+            let mut diagnostic = diagnostic.clone();
+            crate::passes::for_each_span(&mut diagnostic, |span| *span = at.span(*span));
+            diagnostic
+        })
+        .collect()
+}
+
+fn place_function(
+    at: &arandu_typeck::type_checker::info::ItemPlacement,
+    function: &std::sync::Arc<arandu_middle::amir::AmirFunc>,
+) -> std::sync::Arc<arandu_middle::amir::AmirFunc> {
+    let mut function = function.as_ref().clone();
+    function.map_spans(&mut |span| at.span(span));
+    std::sync::Arc::new(function)
+}
+
+/// [`place_unit`] of the unit's result only, with its placement and the
+/// declared symbols of its file: its context stays in item coordinates (and
+/// `local`), for a consumer that places it as it reads it (the composition),
+/// and its analysis function as memoized.
+pub(crate) fn place_unit_body<'db>(
+    db: &'db dyn ArandCompilerDb,
+    key: &FunctionInstance,
+    unit: &RuntimeUnit,
+) -> Option<(
+    RuntimeUnit,
+    arandu_typeck::type_checker::info::ItemPlacement,
+    &'db arandu_middle::SymbolTable,
+)> {
     if !unit.local {
         return None;
     }
     let file = db.source_file_by_id(key.definition.file_id)?;
     let (_, at) = crate::passes::item_local_typing(db, file, key.definition).as_ref()?;
     let span = |span| at.span(span);
-    let place_diagnostics = |diagnostics: &[Diagnostic]| {
-        diagnostics
-            .iter()
-            .map(|diagnostic| {
-                let mut diagnostic = diagnostic.clone();
-                crate::passes::for_each_span(&mut diagnostic, |span| *span = at.span(*span));
-                diagnostic
-            })
-            .collect::<Vec<_>>()
-    };
-    let place_function = |function: &std::sync::Arc<arandu_middle::amir::AmirFunc>| {
-        let mut function = function.as_ref().clone();
-        function.map_spans(&mut |span| at.span(span));
-        std::sync::Arc::new(function)
-    };
     let result = match &unit.result {
         Ok(placed) => {
             let mut placed = placed.clone();
-            placed.function = place_function(&placed.function);
+            placed.function = place_function(at, &placed.function);
             for block in &mut placed.debug_blocks {
                 block.span = span(block.span);
             }
-            placed.diagnostics = place_diagnostics(&placed.diagnostics);
+            placed.diagnostics = place_diagnostics(at, &placed.diagnostics);
             Ok(placed)
         }
-        Err(diagnostics) => Err(place_diagnostics(diagnostics)),
+        Err(diagnostics) => Err(place_diagnostics(at, diagnostics)),
     };
-    // The unit context names this file's symbols without their positions.
-    let declared = crate::passes::declaration_signatures(db, file);
-    let mut context = unit.context.as_ref().clone();
-    context.symbols = std::sync::Arc::new(context.symbols.map_spans(|symbol| {
-        declared
-            .symbols
-            .try_get(symbol.id)
-            .map_or_else(|| at.span(symbol.span), |declared| declared.span)
-    }));
-    context.diagnostics = place_diagnostics(&context.diagnostics);
-    // The composed file view merges the unit's expression tables.
-    context.type_info_mut().place_at(at);
-    Some(RuntimeUnit {
-        result,
-        context: std::sync::Arc::new(context),
-        context_identity: unit.context_identity,
-        instances: unit.instances.clone(),
-        generated_symbols: unit.generated_symbols.clone(),
-        borrow_summary: unit.borrow_summary.clone(),
-        analysis_function: unit.analysis_function.as_ref().map(place_function),
-        local: false,
-    })
+    Some((
+        RuntimeUnit {
+            result,
+            context: std::sync::Arc::clone(&unit.context),
+            context_identity: unit.context_identity,
+            instances: unit.instances.clone(),
+            generated_symbols: unit.generated_symbols.clone(),
+            borrow_summary: unit.borrow_summary.clone(),
+            analysis_function: unit.analysis_function.clone(),
+            local: unit.local,
+        },
+        at.clone(),
+        &crate::passes::declaration_signatures(db, file).symbols,
+    ))
 }
 
 /// Whether [`function_hir`] of `symbol` is lowered in its item's coordinates.

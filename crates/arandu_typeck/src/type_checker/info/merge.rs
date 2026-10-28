@@ -158,13 +158,20 @@ impl TypeInfo {
         remap: impl Fn(SymbolId) -> SymbolId,
         include_expressions: bool,
     ) {
-        self.merge_context(
-            other,
-            remap,
-            true,
-            include_expressions,
-            &ItemPlacement::default(),
-        );
+        self.merge_codegen_context_at(other, remap, include_expressions, &ItemPlacement::default());
+    }
+
+    /// [`Self::merge_codegen_context`] of a unit context in item-local
+    /// coordinates, placed at `at` as it is merged: the same result as
+    /// [`Self::place_at`] followed by the merge, without copying the context.
+    pub fn merge_codegen_context_at(
+        &mut self,
+        other: &TypeInfo,
+        remap: impl Fn(SymbolId) -> SymbolId,
+        include_expressions: bool,
+        at: &ItemPlacement,
+    ) {
+        self.merge_context(other, remap, true, include_expressions, at);
     }
 
     fn merge_context(
@@ -182,7 +189,7 @@ impl TypeInfo {
         if context_shard_is_empty(other) {
             return;
         }
-        self.merge_nominal_tables(other, &remap, shared_headers);
+        self.merge_nominal_tables(other, &remap, shared_headers, at);
         self.merge_expression_tables(other, include_expressions, at);
     }
 
@@ -305,8 +312,13 @@ impl TypeInfo {
         }
     }
 
-    fn merge_nominal_tables<F>(&mut self, other: &TypeInfo, remap: &F, shared_headers: bool)
-    where
+    fn merge_nominal_tables<F>(
+        &mut self,
+        other: &TypeInfo,
+        remap: &F,
+        shared_headers: bool,
+        at: &ItemPlacement,
+    ) where
         F: Fn(SymbolId) -> SymbolId,
     {
         for (&symbol, &other_type_id) in &other.decl_types {
@@ -437,8 +449,11 @@ impl TypeInfo {
         }
         self.struct_repr_c.extend(&other.struct_repr_c);
         for ((sym, name), &expr_id) in &other.struct_field_defaults {
-            self.struct_field_defaults
-                .insert((remap(*sym), name.clone()), expr_id);
+            // A default of another file has no slot in this one.
+            if let Some(slot) = at.slot(expr_id.as_usize()) {
+                self.struct_field_defaults
+                    .insert((remap(*sym), name.clone()), ExprId::new(slot));
+            }
         }
         self.interior_mutable_types
             .extend(other.interior_mutable_types.iter().copied().map(&remap));

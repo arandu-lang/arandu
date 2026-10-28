@@ -34,7 +34,7 @@ mod ssa;
 mod static_for;
 mod stmt;
 mod unit;
-pub use compose::{ComposedUnits, ContextualFunctionUnit, compose_function_units};
+pub use compose::{ComposedUnits, ContextualFunctionUnit, UnitPlacement, compose_function_units};
 
 pub use unit::{
     FunctionUnit, append_function_unit, finalize_function_unit, lower_block_unit,

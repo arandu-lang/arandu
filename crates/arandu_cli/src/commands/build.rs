@@ -709,6 +709,89 @@ mod tests {
             let _ = fs::remove_dir_all(root);
         }
 
+        /// Warm-session latency on the `bench-incremental` medium corpus (16
+        /// modules of 32 helpers): a same-length body edit and a growing body in
+        /// `m8`. Run with `--ignored --nocapture` in release.
+        #[test]
+        #[ignore = "informational warm-session measurement"]
+        fn warm_session_medium_corpus_measurement() {
+            const MODULES: usize = 16;
+            const FUNCTIONS: usize = 32;
+            let module = |index: usize, step: usize, growth: usize| {
+                let mut source = String::new();
+                if index > 0 {
+                    source.push_str(&format!("import app.m{} as prev\n\n", index - 1));
+                }
+                for function in 0..FUNCTIONS {
+                    let hot = index == MODULES / 2 && function == 0;
+                    let step = if hot { step } else { function };
+                    source.push_str(&format!(
+                        "func helper_{function}(value: int): int {{\n    let mut acc = value\n    let mut i = 0\n    while i < 3 {{\n        acc = acc + i + {step}\n        i = i + 1\n    }}\n"
+                    ));
+                    if hot {
+                        for extra in 1..=growth {
+                            source.push_str(&format!("    acc = acc + {}\n", 1_000_000 + extra));
+                        }
+                    }
+                    source.push_str("    return acc\n}\n\n");
+                }
+                let mut terms = (0..FUNCTIONS)
+                    .map(|function| format!("helper_{function}(value)"))
+                    .collect::<Vec<_>>();
+                if index > 0 {
+                    terms.push("prev.api(value)".to_owned());
+                }
+                source.push_str(&format!(
+                    "public func api(value: int): int {{\n    return {}\n}}\n",
+                    terms.join(" + ")
+                ));
+                source
+            };
+            let root = project("medium", "");
+            fs::remove_file(root.join("src/lib.aru")).unwrap();
+            fs::remove_file(root.join("src/user.aru")).unwrap();
+            fs::write(
+                root.join("src/main.aru"),
+                format!(
+                    "import app.m{} as last\n\nfunc main(): int {{\n    return last.api(1) % 256\n}}\n",
+                    MODULES - 1
+                ),
+            )
+            .unwrap();
+            for index in 0..MODULES {
+                fs::write(
+                    root.join(format!("src/m{index}.aru")),
+                    module(index, 1_000_000, 0),
+                )
+                .unwrap();
+            }
+            let mut request = request();
+            request.flags.verbose = false;
+            let mut session = BuildSession::open(&root, request).unwrap();
+            session.build().unwrap();
+            let target = root.join(format!("src/m{}.aru", MODULES / 2));
+            for (label, growth) in [("same length", false), ("growing body", true)] {
+                let mut samples = Vec::new();
+                for sample in 0..12 {
+                    let step = 1_000_001 + sample;
+                    let grown = if growth { sample + 1 } else { 0 };
+                    fs::write(&target, module(MODULES / 2, step, grown)).unwrap();
+                    let start = std::time::Instant::now();
+                    session.build().unwrap();
+                    if sample >= 2 {
+                        samples.push(start.elapsed());
+                    }
+                }
+                samples.sort();
+                println!(
+                    "medium {label}: p50={:?} max={:?}",
+                    samples[samples.len() / 2],
+                    samples[samples.len() - 1]
+                );
+            }
+            let _ = fs::remove_dir_all(root);
+        }
+
         fn copy_tree(from: &Path, to: &Path) {
             fs::create_dir_all(to).unwrap();
             for entry in fs::read_dir(from).unwrap() {

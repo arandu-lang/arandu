@@ -703,4 +703,85 @@ mod tests {
         assert_eq!(without_decl[0].range.start, call_pos);
         assert_eq!(without_decl[0].range.end.character, call_pos.character + 6);
     }
+
+    /// A body that grows moves every later item, whose units and typing stay
+    /// item-relative (RFC 0042). Every editor feature over the moved items
+    /// answers as a cold analysis of the same text does.
+    #[test]
+    fn features_over_moved_items_match_a_cold_analysis() {
+        fn program(growth: usize) -> String {
+            let mut grow = String::from("func grow(value: int): int {\n    let mut acc = value\n");
+            for step in 1..=growth {
+                grow.push_str(&format!("    acc = acc + {step}\n"));
+            }
+            format!(
+                "{grow}    return acc\n}}\n\nfunc after(value: int): int {{\n    let doubled = grow(value) * 2\n    return doubled + value\n}}\n\nfunc main(): int {{\n    return after(1)\n}}\n"
+            )
+        }
+        fn answers(
+            snap: &arandu_query::AnalysisSnapshot,
+            file: arandu_query::SourceFile,
+        ) -> Vec<String> {
+            let text = file.text(&snap.db).to_string();
+            let index = LineIndex::new(&text);
+            let uri = crate::uri_util::parse_uri("file:///moved.aru").expect("uri");
+            let docs = vec![DocSnap {
+                source: file,
+                path: std::sync::Arc::new(std::path::PathBuf::from("/moved.aru")),
+                uri: uri.clone(),
+            }];
+            let start = text.find("func after").expect("moved item");
+            let mut out = vec![
+                format!("{:?}", semantic_tokens(snap, file)),
+                format!(
+                    "{:?}",
+                    inlay_hints(
+                        snap,
+                        file,
+                        &text,
+                        lsp_types::Range::new(
+                            Position::new(0, 0),
+                            offset_to_position(&index, text.len() as u32)
+                        )
+                    )
+                ),
+                format!(
+                    "{:?}",
+                    arandu_query::file_ide_diagnostics(&snap.db, file)
+                        .iter()
+                        .collect::<Vec<_>>()
+                ),
+            ];
+            for offset in start..text.len() {
+                let position = offset_to_position(&index, offset as u32);
+                out.push(format!(
+                    "{offset}: {:?} {:?} {:?} {:?} {:?}",
+                    hover(snap, file, &text, position),
+                    references(snap, file, &text, position, &uri, &docs, true),
+                    document_highlights(snap, file, &text, position),
+                    prepare_rename(snap, file, &text, position).ok(),
+                    signature_help(snap, file, &text, position),
+                ));
+            }
+            out
+        }
+
+        let mut host = AnalysisHost::new();
+        let file = host.new_file("moved.aru".into(), program(0));
+        let _ = answers(&host.snapshot(), file);
+        host.set_text(file, program(3));
+        let warm = answers(&host.snapshot(), file);
+
+        let mut cold = AnalysisHost::new();
+        let cold_file = cold.new_file("moved.aru".into(), program(3));
+        let cold = answers(&cold.snapshot(), cold_file);
+        assert_eq!(warm.len(), cold.len());
+        for (warm, cold) in warm.iter().zip(&cold) {
+            assert_eq!(warm, cold);
+        }
+        assert!(
+            warm.iter().any(|answer| answer.contains("doubled")),
+            "hover reaches the moved item"
+        );
+    }
 }

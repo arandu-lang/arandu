@@ -62,6 +62,31 @@ fn growing_a_body_relowers_the_siblings_it_moves() {
     }
 }
 
+/// Editor diagnostics place the flow checks of a moved item; the checks and
+/// the dataflow facts run again only for the edited item.
+#[test]
+fn growing_a_body_rechecks_only_its_own_flow() {
+    let (mut db, log) = DatabaseImpl::with_rebuild_log();
+    let file = db.new_file("guards.aru".into(), program(0));
+    let _ = file_ide_diagnostics(&db, file);
+    log.clear();
+
+    file.set_text(&mut db).to(Arc::from(program(3)));
+    let _ = file_ide_diagnostics(&db, file);
+    for query in [
+        "item_flow_diagnostics",
+        "liveness_facts",
+        "func_borrow_summaries",
+    ] {
+        assert_eq!(
+            log.count_executions_matching(query),
+            1,
+            "{query}: {}",
+            log.format_chain(false)
+        );
+    }
+}
+
 #[test]
 fn a_moved_sibling_lowers_to_the_bytes_of_a_cold_build() {
     let mut db = DatabaseImpl::new();
@@ -134,6 +159,45 @@ fn a_moved_sibling_keeps_its_declaration_and_goto_positions() {
             name,
             "goto `{name}`"
         );
+    }
+}
+
+/// Debug line rows and variable locations read the temp and local spans of
+/// each function. A cold build places units the same way, so the check is
+/// absolute: every position of a moved sibling lies in its own text.
+#[test]
+fn a_moved_sibling_keeps_its_debug_positions_in_its_own_text() {
+    let mut db = DatabaseImpl::new();
+    let file = db.new_file("guards.aru".into(), program(0));
+    let _ = lower_amir(&db, file);
+    file.set_text(&mut db).to(Arc::from(program(3)));
+
+    let text = file.text(&db).to_string();
+    let artifacts = lower_amir(&db, file);
+    for name in ["beta", "gamma", "delta"] {
+        let symbol = function_named(&db, file, name);
+        let function = artifacts
+            .amir
+            .funcs
+            .iter()
+            .find(|function| function.symbol == symbol)
+            .expect("function");
+        let start = text.find(&format!("func {name}(")).expect("item") as u32;
+        let end = start + text[start as usize..].find("\n}\n").expect("item end") as u32 + 2;
+        let spans = function
+            .temps
+            .iter()
+            .map(|temp| temp.span)
+            .chain(function.locals.iter().map(|local| local.span));
+        let mut checked = 0;
+        for span in spans.filter(|span| *span != arandu_middle::Span::new(0, 0, 0)) {
+            checked += 1;
+            assert!(
+                span.file_id == *file.file_id(&db) && start <= span.start && span.end <= end,
+                "`{name}`: {span:?} is outside {start}..{end}"
+            );
+        }
+        assert!(checked > 0, "`{name}` has positioned temps");
     }
 }
 

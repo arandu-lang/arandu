@@ -97,7 +97,38 @@ pub struct IdeDiagnostic {
     pub block: Option<BlockId>,
 }
 
+/// Flow diagnostics of one source function in the coordinates of its
+/// memoized unit: relative to its item when `local` (RFC 0042).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ItemFlow {
+    pub diagnostics: Vec<IdeDiagnostic>,
+    /// Indices of the diagnostics that take the `@NoFallback` fix.
+    pub fallback_fixes: Vec<u32>,
+    pub local: bool,
+}
+
 impl IdeDiagnostic {
+    /// Moves every position from item to file coordinates.
+    pub(crate) fn place(&mut self, at: arandu_typeck::type_checker::info::ItemPlacement) {
+        let place = |file_id: &mut u32, start: &mut u32, end: &mut u32| {
+            let span = at.span(arandu_middle::Span::new(*file_id, *start, *end));
+            (*file_id, *start, *end) = (span.file_id, span.start, span.end);
+        };
+        place(&mut self.file_id, &mut self.start, &mut self.end);
+        for label in &mut self.labels {
+            place(&mut label.file_id, &mut label.start, &mut label.end);
+        }
+        for hint in &mut self.hints {
+            if let Some(replacement) = &mut hint.replacement {
+                place(
+                    &mut replacement.file_id,
+                    &mut replacement.start,
+                    &mut replacement.end,
+                );
+            }
+        }
+    }
+
     pub fn from_diag(d: &Diagnostic, func: Option<SymbolId>, block: Option<BlockId>) -> Self {
         Self {
             code: d.code.to_string(),
@@ -187,6 +218,22 @@ fn source_runtime_unit(
     db: &dyn ArandCompilerDb,
     symbol: SymbolId,
 ) -> Option<std::sync::Arc<crate::runtime::RuntimeUnit>> {
+    let (key, unit) = memoized_source_unit(db, symbol)?;
+    Some(match crate::runtime::place_unit(db, &key, &unit) {
+        Some(placed) => std::sync::Arc::new(placed),
+        None => unit,
+    })
+}
+
+/// The source unit of `symbol` as memoized: when it lowers locally, its
+/// positions are relative to its item (RFC 0042).
+fn memoized_source_unit(
+    db: &dyn ArandCompilerDb,
+    symbol: SymbolId,
+) -> Option<(
+    arandu_middle::types::FunctionInstance,
+    std::sync::Arc<crate::runtime::RuntimeUnit>,
+)> {
     let source = db.source_file_by_id(symbol.file_id)?;
     let declarations = crate::passes::declaration_signatures(db, source);
     if declarations.symbols.try_get(symbol)?.kind != arandu_middle::SymbolKind::Func
@@ -200,10 +247,29 @@ fn source_runtime_unit(
     };
     let unit =
         crate::runtime::runtime_unit(db, crate::runtime::Instance::new(db, source, key.clone()));
-    Some(match crate::runtime::place_unit(db, &key, unit) {
-        Some(placed) => std::sync::Arc::new(placed),
-        None => std::sync::Arc::clone(&unit.value),
-    })
+    Some((key, std::sync::Arc::clone(&unit.value)))
+}
+
+/// The function of [`func_amir`] as its unit memoizes it. Analyses whose
+/// results hold no position read it, so moving the item does not rerun them.
+#[salsa::tracked]
+#[tracing::instrument(level = "trace", target = "arandu_query", skip(db), fields(
+    query = "analysis_amir",
+    file = ?file.file_id(db),
+    func = ?func_sym,
+))]
+fn analysis_amir(
+    db: &dyn ArandCompilerDb,
+    file: SourceFile,
+    func_sym: SymbolId,
+) -> HashEq<AmirFunc> {
+    match memoized_source_unit(db, func_sym) {
+        Some((_, unit)) => unit.analysis_function.as_ref().map_or_else(
+            || HashEq::new(empty_func(func_sym)),
+            |function| HashEq::from_arc(std::sync::Arc::clone(function)),
+        ),
+        None => HashEq::new(empty_func(func_sym)),
+    }
 }
 
 fn empty_func(symbol: SymbolId) -> AmirFunc {
@@ -233,7 +299,7 @@ pub fn liveness_facts(
     file: SourceFile,
     func_sym: SymbolId,
 ) -> HashEq<LivenessMap> {
-    let func = func_amir(db, file, func_sym);
+    let func = analysis_amir(db, file, func_sym);
     if func.blocks.is_empty() {
         return HashEq::new(LivenessMap {
             live_in_counts: vec![],
@@ -268,7 +334,7 @@ pub fn block_dataflow_facts(
     func_sym: SymbolId,
     block: BlockId,
 ) -> HashEq<DataflowFacts> {
-    let func = func_amir(db, file, func_sym);
+    let func = analysis_amir(db, file, func_sym);
     let live = liveness_facts(db, file, func_sym);
     let i = block.as_usize();
     let live_in_count = live.live_in_counts.get(i).copied().unwrap_or(0);
@@ -302,7 +368,7 @@ pub fn func_borrow_summaries(
     file: SourceFile,
     func_sym: SymbolId,
 ) -> HashEq<Vec<arandu_mir::borrow_facts::BlockBorrowSummary>> {
-    let func = func_amir(db, file, func_sym);
+    let func = analysis_amir(db, file, func_sym);
     if func.blocks.is_empty() {
         return HashEq::new(vec![]);
     }
@@ -464,6 +530,22 @@ pub fn item_ide_diagnostics(
     item_sym: SymbolId,
 ) -> HashEq<Vec<IdeDiagnostic>> {
     ide::collect_item_ide_diagnostics(db, file, item_sym)
+}
+
+/// Flow checks of one source function on its memoized unit. A move of the
+/// item leaves the unit, and so this query, unchanged.
+#[salsa::tracked]
+#[tracing::instrument(level = "trace", target = "arandu_query", skip(db), fields(
+    query = "item_flow_diagnostics",
+    file = ?file.file_id(db),
+    item = ?item_sym,
+))]
+fn item_flow_diagnostics(
+    db: &dyn ArandCompilerDb,
+    file: SourceFile,
+    item_sym: SymbolId,
+) -> HashEq<ItemFlow> {
+    ide::collect_item_flow(db, file, item_sym)
 }
 
 /// Alias: analysis diags for a function item (same memo as [`item_ide_diagnostics`]).

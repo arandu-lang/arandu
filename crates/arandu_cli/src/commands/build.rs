@@ -615,6 +615,34 @@ mod tests {
             let _ = fs::remove_dir_all(cold);
         }
 
+        /// The line table of a moved item comes from units placed back in the
+        /// file (RFC 0042). Paths are part of the DWARF, so the cold build
+        /// reuses the same root.
+        #[test]
+        fn a_moved_item_keeps_the_debug_info_of_a_cold_build() {
+            let root = project("debug", &library(0));
+            let debug = || BuildRequest {
+                debug_info: true,
+                ..request()
+            };
+            let mut session = BuildSession::open(&root, debug()).unwrap();
+            session.build().unwrap();
+            fs::write(root.join("src/lib.aru"), library(3)).unwrap();
+            session.build().unwrap();
+            assert_eq!(exit_code(&root), Some(13));
+            let warm = fs::read(artifact(&root)).unwrap();
+            drop(session);
+
+            fs::remove_dir_all(root.join("target")).unwrap();
+            BuildSession::open(&root, debug()).unwrap().build().unwrap();
+            assert_eq!(
+                warm,
+                fs::read(artifact(&root)).unwrap(),
+                "a warm debug session must publish the bytes of a cold build"
+            );
+            let _ = fs::remove_dir_all(root);
+        }
+
         fn copy_tree(from: &Path, to: &Path) {
             fs::create_dir_all(to).unwrap();
             for entry in fs::read_dir(from).unwrap() {

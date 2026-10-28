@@ -111,6 +111,8 @@ pub(crate) struct BuildSession {
     /// input whose file is unchanged since is not read again.
     stamps: std::collections::HashMap<PathBuf, artifact::FileStat>,
     last_scan: Option<std::time::SystemTime>,
+    /// CGU objects this session validated or wrote.
+    cgu_trust: crate::cgu::CguTrust,
 }
 
 impl BuildSession {
@@ -216,6 +218,7 @@ impl BuildSession {
             superseded: false,
             stamps: std::collections::HashMap::new(),
             last_scan: None,
+            cgu_trust: crate::cgu::CguTrust::default(),
         })
     }
 
@@ -302,6 +305,7 @@ impl BuildSession {
             published,
             supersede,
             superseded,
+            cgu_trust,
             ..
         } = self;
         // Checkpoints a build passes before it publishes anything: after the
@@ -528,6 +532,7 @@ impl BuildSession {
             type_check,
             amir,
             published,
+            cgu_trust,
             &mut checkpoint,
         )
     }
@@ -1034,6 +1039,53 @@ mod tests {
             fs::write(&file, "two").unwrap();
             assert!(needs_read(Some(&stamp), FileStat::of(&file), Some(later)));
             let _ = fs::remove_dir_all(dir);
+        }
+
+        /// The session reuses CGU objects it validated without reading them
+        /// only while their files are unchanged; a tampered object is validated
+        /// again, rejected and rebuilt.
+        #[test]
+        fn a_tampered_cgu_object_is_validated_again() {
+            let root = project("tampered-cgu", &library(0));
+            let mut session = BuildSession::open(&root, request()).unwrap();
+            session.build().unwrap();
+            let cache = artifact(&root)
+                .parent()
+                .and_then(Path::parent)
+                .map(|profile| profile.join("incremental/cgu"))
+                .unwrap();
+            let object = fs::read_dir(&cache)
+                .unwrap()
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .find(|path| {
+                    path.extension().is_some_and(|ext| ext == "o")
+                        && path
+                            .file_name()
+                            .is_some_and(|name| name.to_string_lossy().contains("combined"))
+                })
+                .expect("the CGU object of `combined`");
+            let bytes = fs::read(&object).unwrap();
+            fs::write(&object, &bytes[..bytes.len() / 2]).unwrap();
+
+            // Without a published executable the build links every object
+            // again, the tampered one included.
+            fs::remove_file(artifact(&root)).unwrap();
+            let edited = library(1);
+            fs::write(root.join("src/lib.aru"), &edited).unwrap();
+            session.build().unwrap();
+            assert_eq!(exit_code(&root), Some(8));
+            let cold = project("tampered-cgu-cold", &edited);
+            BuildSession::open(&cold, request())
+                .unwrap()
+                .build()
+                .unwrap();
+            assert_eq!(
+                fs::read(artifact(&root)).unwrap(),
+                fs::read(artifact(&cold)).unwrap()
+            );
+            let _ = fs::remove_dir_all(root);
+            let _ = fs::remove_dir_all(cold);
         }
 
         fn copy_tree(from: &Path, to: &Path) {

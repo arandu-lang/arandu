@@ -63,11 +63,7 @@ pub fn partition_program(
     let mut units = Vec::with_capacity(program.funcs.len());
 
     for func in &program.funcs {
-        let name = symbols.try_get(func.symbol).map_or_else(
-            || format!("symbol_{}_{}", func.symbol.file_id, func.symbol.local_id.0),
-            |symbol| symbols.host_func_name(symbol).to_owned(),
-        );
-        let hash = compute_cgu_hash(
+        units.push(codegen_unit(
             func,
             program,
             symbols,
@@ -75,15 +71,40 @@ pub fn partition_program(
             target,
             optimization,
             toolchain_fingerprint,
-        );
-        units.push(CodegenUnit {
-            name,
-            symbol: func.symbol,
-            hash,
-        });
+        ));
     }
 
     units
+}
+
+/// The [`CodegenUnit`] of one function of `program`; [`partition_program`]
+/// maps it over every function, and a caller may map it in parallel.
+pub fn codegen_unit(
+    func: &AmirFunc,
+    program: &AmirProgram,
+    symbols: &SymbolTable,
+    type_info: &dyn CodegenTypeContext,
+    target: &Triple,
+    optimization: AotOptimization,
+    toolchain_fingerprint: &str,
+) -> CodegenUnit {
+    let name = symbols.try_get(func.symbol).map_or_else(
+        || format!("symbol_{}_{}", func.symbol.file_id, func.symbol.local_id.0),
+        |symbol| symbols.host_func_name(symbol).to_owned(),
+    );
+    CodegenUnit {
+        name,
+        symbol: func.symbol,
+        hash: compute_cgu_hash(
+            func,
+            program,
+            symbols,
+            type_info,
+            target,
+            optimization,
+            toolchain_fingerprint,
+        ),
+    }
 }
 
 /// Compute a stable digest for one function's complete machine-code inputs.

@@ -45,8 +45,42 @@ struct OwnedCguCacheMetadata {
     object_hash: String,
 }
 
+/// Cached objects this process validated or wrote, with the stamps of the
+/// object and its sidecar at that moment. While both are unchanged the object
+/// is reused without reading it again. Never persisted: a new process
+/// validates every object it reuses (HOT.5).
+#[derive(Debug, Default)]
+pub struct CguTrust(std::collections::HashMap<PathBuf, (artifact::FileStat, artifact::FileStat)>);
+
+impl CguTrust {
+    fn holds(&self, object: &Path, metadata: &Path) -> bool {
+        self.0
+            .get(object)
+            .is_some_and(|(object_stat, metadata_stat)| {
+                artifact::FileStat::of(object).as_ref() == Some(object_stat)
+                    && artifact::FileStat::of(metadata).as_ref() == Some(metadata_stat)
+            })
+    }
+
+    fn record(&mut self, object: &Path, metadata: &Path) {
+        match (
+            artifact::FileStat::of(object),
+            artifact::FileStat::of(metadata),
+        ) {
+            (Some(object_stat), Some(metadata_stat)) => {
+                self.0
+                    .insert(object.to_path_buf(), (object_stat, metadata_stat));
+            }
+            _ => {
+                self.0.remove(object);
+            }
+        }
+    }
+}
+
 /// Compile `program` partitioned into CGUs, reusing only cryptographically
-/// validated relocatable objects.
+/// validated relocatable objects, or ones `trust` holds unchanged.
+#[allow(clippy::too_many_arguments)]
 pub fn compile_partitioned(
     program: &AmirProgram,
     symbols: &SymbolTable,
@@ -55,6 +89,7 @@ pub fn compile_partitioned(
     optimization: AotOptimization,
     toolchain_fingerprint: &str,
     cgu_cache_dir: &Path,
+    trust: &mut CguTrust,
 ) -> Result<PartitionedBuildResult, CliFailure> {
     fs::create_dir_all(cgu_cache_dir).map_err(|error| {
         failure(
@@ -75,14 +110,26 @@ pub fn compile_partitioned(
         .lock()
         .map_err(|error| failure("lock CGU cache", &lock_path, error.to_string()))?;
 
-    let units = arandu_backend_cranelift::partition_program(
-        program,
-        symbols,
-        type_info,
-        target,
-        optimization,
-        toolchain_fingerprint,
-    );
+    // Each digest is a pure function of the program; computed in parallel and
+    // collected in program order, as `partition_program` would.
+    let units = {
+        use rayon::prelude::*;
+        program
+            .funcs
+            .par_iter()
+            .map(|func| {
+                arandu_backend_cranelift::codegen_unit(
+                    func,
+                    program,
+                    symbols,
+                    type_info,
+                    target,
+                    optimization,
+                    toolchain_fingerprint,
+                )
+            })
+            .collect::<Vec<_>>()
+    };
     let mut object_files = Vec::with_capacity(units.len());
     let mut recompiled_units = Vec::new();
     let mut cached_count = 0;
@@ -92,7 +139,10 @@ pub fn compile_partitioned(
         let cgu_path = object_path(cgu_cache_dir, unit);
         let metadata_path = metadata_path(&cgu_path);
 
-        if cached_object_is_valid(&cgu_path, &metadata_path, &unit.hash, target) {
+        if trust.holds(&cgu_path, &metadata_path)
+            || cached_object_is_valid(&cgu_path, &metadata_path, &unit.hash, target)
+        {
+            trust.record(&cgu_path, &metadata_path);
             cached_count += 1;
             object_files.push(cgu_path);
             continue;
@@ -135,6 +185,7 @@ pub fn compile_partitioned(
         // interrupted build therefore leaves a cache miss, never a false hit.
         artifact::atomic_replace(&cgu_path, &bytes)?;
         artifact::atomic_replace(&metadata_path, &encoded)?;
+        trust.record(&cgu_path, &metadata_path);
 
         recompiled_units.push((unit.clone(), bytes));
         object_files.push(cgu_path);

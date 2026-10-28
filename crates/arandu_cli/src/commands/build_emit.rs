@@ -307,6 +307,7 @@ pub(super) fn emit_native_artifact(
     type_check: &arandu_semantics::TypeCheckResult,
     amir: &arandu_semantics::amir::AmirProgram,
     published: &mut Option<artifact::ArtifactIdentity>,
+    cgu_trust: &mut crate::cgu::CguTrust,
     superseded: &mut dyn FnMut() -> bool,
 ) -> CliResult {
     let toolchain_fingerprint = {
@@ -363,6 +364,7 @@ pub(super) fn emit_native_artifact(
                 optimization,
                 toolchain_fingerprint.as_ref(),
                 &cgu_cache_dir,
+                cgu_trust,
             )?
         };
         // Cached objects are content-addressed; nothing is published yet.

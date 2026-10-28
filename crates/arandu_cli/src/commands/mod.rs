@@ -190,14 +190,21 @@ pub fn run(raw_args: Vec<String>) -> CliResult {
             }
         }
         "build" => {
-            if crate::daemon::eligible(&inv)
-                && let Some(result) = crate::daemon::try_build(
+            if crate::daemon::eligible(&inv) {
+                if let Some(result) = crate::daemon::try_build(
                     &raw_args,
                     inv.project_flags.color.should_color_stderr(),
                     inv.project_flags.verbose,
-                )
-            {
-                return result;
+                ) {
+                    return result;
+                }
+                if crate::daemon::required() {
+                    return Err(crate::cli_error::CliFailure::operational(
+                        "build through the project daemon",
+                        None,
+                        "ARANDU_DAEMON=require and the daemon could not serve this build",
+                    ));
+                }
             }
             let start = if inv.args.len() >= 3 {
                 PathBuf::from(&inv.args[2])

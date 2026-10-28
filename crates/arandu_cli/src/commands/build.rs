@@ -280,6 +280,11 @@ impl BuildSession {
 
     pub(crate) fn build(&mut self) -> CliResult {
         self.refresh()?;
+        // The log reports this build only; a long-lived session must not
+        // accumulate every build's events.
+        if let Some(log) = &self.rebuild_log {
+            log.clear();
+        }
         let Self {
             request,
             db,

@@ -35,7 +35,7 @@ const BUILD_ENVIRONMENT: &[&str] = &[
 /// Whether this invocation may go through the daemon: `arandu build` on Unix,
 /// without process-wide `-Z` switches or `--watch`, unless `--no-daemon`,
 /// `ARANDU_DAEMON=0` or a CI environment (`CI` set) ask for batch. With
-/// `ARANDU_DAEMON=1` CI uses it too.
+/// `ARANDU_DAEMON=1` or `require` CI uses it too.
 pub fn eligible(invocation: &CliInvocation) -> bool {
     let requested = std::env::var("ARANDU_DAEMON").ok();
     let default = std::env::var_os("CI").is_none_or(|value| value.is_empty());
@@ -49,9 +49,15 @@ pub fn eligible(invocation: &CliInvocation) -> bool {
         && !invocation.no_daemon
         && match requested.as_deref() {
             Some("0") => false,
-            Some("1") => true,
+            Some("1" | "require") => true,
             _ => default,
         }
+}
+
+/// `ARANDU_DAEMON=require`: a build the daemon cannot serve fails instead of
+/// running in batch. Measurements use it so they never time a batch build.
+pub fn required() -> bool {
+    std::env::var("ARANDU_DAEMON").is_ok_and(|value| value == "require")
 }
 
 /// The toolchain and environment a daemon shares with its clients: the
@@ -107,11 +113,18 @@ pub fn identity() -> std::io::Result<String> {
 pub fn try_build(raw_args: &[String], color: bool, verbose: bool) -> Option<CliResult> {
     #[cfg(unix)]
     {
-        let result = client::build(raw_args, color)?;
+        let result = client::build(raw_args, color);
         if verbose {
-            eprintln!("[daemon] built by the project daemon");
+            eprintln!(
+                "{}",
+                if result.is_some() {
+                    "[daemon] built by the project daemon"
+                } else {
+                    "[daemon] unavailable for this build; building in this process"
+                }
+            );
         }
-        Some(result)
+        result
     }
     #[cfg(not(unix))]
     {

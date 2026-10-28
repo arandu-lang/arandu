@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 
 use crate::performance::{cpu_name, percentile_index, toolchain_name};
 
-const USAGE: &str = "usage: bench-incremental [--corpus small|medium|large|all] [--samples N] [--warmup N] [--release] [--verify-determinism]";
+const USAGE: &str = "usage: bench-incremental [--corpus small|medium|large|all] [--samples N] [--warmup N] [--release] [--daemon] [--verify-determinism]";
 
 /// Base of the constants that mutations edit; see [`Workload`].
 const SALT: usize = 1_000_000;
@@ -52,6 +52,9 @@ struct Options {
     samples: usize,
     warmup: usize,
     release: bool,
+    /// Measure builds through the project daemon, end to end from the client
+    /// (the HOT.6 gate), instead of a new compiler process per build.
+    daemon: bool,
 }
 
 impl Options {
@@ -61,12 +64,14 @@ impl Options {
             samples: 5,
             warmup: 1,
             release: false,
+            daemon: false,
         };
         while let Some(argument) = args.next() {
             match argument.as_str() {
                 // Determinism is always verified; the flag is accepted for CI.
                 "--verify-determinism" => {}
                 "--release" => options.release = true,
+                "--daemon" => options.daemon = true,
                 "--corpus" => {
                     let value = args.next().ok_or("--corpus requires a value")?;
                     options.corpora = if value == "all" {
@@ -336,6 +341,13 @@ fn execute(root: &Path, options: &Options) -> Result<bool, String> {
     }
 
     let work = unique_work_dir(&root.join("target/bench-incremental"))?;
+    let sockets = work.join("run");
+    let daemon = if options.daemon {
+        private_dir(&sockets)?;
+        Some(sockets.as_path())
+    } else {
+        None
+    };
     let clean_samples = options.samples.min(MAX_CLEAN_SAMPLES);
     let mut results = Vec::new();
     for corpus in &options.corpora {
@@ -357,7 +369,7 @@ fn execute(root: &Path, options: &Options) -> Result<bool, String> {
             };
             let mut workload = Workload::new(*corpus);
             workload.write_all(&project)?;
-            run_cli(&cli, &runtime, &project, &["build", "-v"], None)?;
+            run_cli_in(&cli, &runtime, &project, &["build", "-v"], None, daemon)?;
             let mut samples = Vec::with_capacity(wanted);
             for index in 0..warmup + wanted {
                 if mutation == Mutation::Clean {
@@ -368,7 +380,7 @@ fn execute(root: &Path, options: &Options) -> Result<bool, String> {
                 for module in workload.mutate(mutation, index) {
                     workload.write_module(&project, module)?;
                 }
-                let sample = measure(&cli, &runtime, &project, mutation)?;
+                let sample = measure(&cli, &runtime, &project, mutation, daemon)?;
                 if index >= warmup {
                     samples.push(sample);
                 }
@@ -390,6 +402,9 @@ fn execute(root: &Path, options: &Options) -> Result<bool, String> {
                 "samples": samples.iter().map(Sample::to_json).collect::<Vec<_>>(),
             }));
         }
+        if daemon.is_some() {
+            run_cli_in(&cli, &runtime, &project, &["__daemon-stop"], None, daemon)?;
+        }
     }
 
     let determinism = verify_determinism(&cli, &runtime, &work)?;
@@ -404,7 +419,8 @@ fn execute(root: &Path, options: &Options) -> Result<bool, String> {
             "samples": options.samples,
             "warmup": options.warmup,
             "clean_samples": clean_samples,
-            "time_passes": true,
+            "time_passes": !options.daemon,
+            "daemon": options.daemon,
             "edited_module": "middle of the import chain",
         },
         "host": host(root, &work),
@@ -469,9 +485,17 @@ fn measure(
     runtime: &Path,
     project: &Path,
     mutation: Mutation,
+    daemon: Option<&Path>,
 ) -> Result<Sample, String> {
-    let args = ["build", "-v", "-Ztime-passes"];
-    let measured = run_measured(cli_command(cli, runtime, project, &args, None))
+    // `-Z` switches are process-wide and `-v` records every query event, so
+    // a daemon build is timed as a user runs it; `require` fails rather than
+    // timing a batch build.
+    let args: &[&str] = if daemon.is_some() {
+        &["build"]
+    } else {
+        &["build", "-v", "-Ztime-passes"]
+    };
+    let measured = run_measured(cli_command(cli, runtime, project, args, None, daemon))
         .map_err(|error| format!("cannot run {}: {error}", cli.display()))?;
     ensure_success(
         &format!("{} {}", cli.display(), args.join(" ")),
@@ -481,12 +505,14 @@ fn measure(
     let stderr = String::from_utf8_lossy(&measured.output.stderr);
     let (cgu_cached, cgu_recompiled) = parse_cgu(&stderr).unwrap_or((0, 0));
     let phase_ms = parse_phase_timings(&stderr);
-    for required in ["project-load", "incremental-cutoff"] {
-        if !phase_ms.contains_key(required) {
-            return Err(format!(
-                "{} measurement did not emit required `{required}` phase timing",
-                mutation.name()
-            ));
+    if daemon.is_none() {
+        for required in ["project-load", "incremental-cutoff"] {
+            if !phase_ms.contains_key(required) {
+                return Err(format!(
+                    "{} measurement did not emit required `{required}` phase timing",
+                    mutation.name()
+                ));
+            }
         }
     }
     let artifact = current_artifact(project)?;
@@ -690,25 +716,50 @@ fn verify_determinism(cli: &Path, runtime: &Path, work: &Path) -> Result<Value, 
     }))
 }
 
+/// `daemon` is the private runtime directory of the daemon measurement;
+/// without it every build is a new compiler process.
 fn cli_command(
     cli: &Path,
     runtime: &Path,
     directory: &Path,
     args: &[&str],
     rayon_threads: Option<&str>,
+    daemon: Option<&Path>,
 ) -> Command {
     let mut command = Command::new(cli);
-    // Each sample measures a new compiler process; the daemon has its own
-    // measurement.
     command
         .current_dir(directory)
         .env("ARANDU_RUNTIME_LIB", runtime)
-        .env("ARANDU_DAEMON", "0")
         .args(args);
+    match daemon {
+        Some(sockets) => {
+            command
+                .env("ARANDU_DAEMON", "require")
+                .env("XDG_RUNTIME_DIR", sockets)
+                .env_remove("CI");
+        }
+        None => {
+            command.env("ARANDU_DAEMON", "0");
+        }
+    }
     if let Some(threads) = rayon_threads {
         command.env("RAYON_NUM_THREADS", threads);
     }
     command
+}
+
+/// The build daemon runs on Unix only; its sockets need a directory only
+/// this user can enter.
+#[cfg(unix)]
+fn private_dir(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::create_dir_all(path).map_err(|error| error.to_string())?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(|error| error.to_string())
+}
+
+#[cfg(not(unix))]
+fn private_dir(_path: &Path) -> Result<(), String> {
+    Err("--daemon measures the Unix build daemon".to_owned())
 }
 
 fn run_cli(
@@ -718,7 +769,18 @@ fn run_cli(
     args: &[&str],
     rayon_threads: Option<&str>,
 ) -> Result<Output, String> {
-    let output = cli_command(cli, runtime, directory, args, rayon_threads)
+    run_cli_in(cli, runtime, directory, args, rayon_threads, None)
+}
+
+fn run_cli_in(
+    cli: &Path,
+    runtime: &Path,
+    directory: &Path,
+    args: &[&str],
+    rayon_threads: Option<&str>,
+    daemon: Option<&Path>,
+) -> Result<Output, String> {
+    let output = cli_command(cli, runtime, directory, args, rayon_threads, daemon)
         .output()
         .map_err(|error| format!("cannot run {}: {error}", cli.display()))?;
     ensure_success(&format!("{} {}", cli.display(), args.join(" ")), &output)?;

@@ -21,22 +21,35 @@ fn effective_uid() -> u32 {
     unsafe { libc::geteuid() }
 }
 
-/// A private directory for this user's daemon sockets.
-pub fn socket_dir() -> io::Result<PathBuf> {
-    let base = std::env::var_os("XDG_RUNTIME_DIR")
+/// The private directories for this user's daemon sockets, preferred first:
+/// the runtime directory, then the temporary one.
+fn socket_dirs() -> Vec<PathBuf> {
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
-        .filter(|path| path.is_absolute() && private_dir(path).is_ok());
-    let dir = match base {
-        Some(runtime) => runtime.join("arandu"),
-        None => std::env::temp_dir().join(format!("arandu-{}", effective_uid())),
-    };
-    match fs::DirBuilder::new().mode(0o700).create(&dir) {
+        .filter(|path| path.is_absolute() && private_dir(path).is_ok())
+        .map(|runtime| runtime.join("arandu"));
+    let temporary = std::env::temp_dir().join(format!("arandu-{}", effective_uid()));
+    runtime.into_iter().chain([temporary]).collect()
+}
+
+/// A private directory for this user's daemon sockets.
+#[cfg(test)]
+fn socket_dir() -> io::Result<PathBuf> {
+    let dir = socket_dirs()
+        .into_iter()
+        .next()
+        .ok_or_else(|| io::Error::other("no socket directory"))?;
+    ensure_private(&dir)?;
+    Ok(dir)
+}
+
+fn ensure_private(dir: &Path) -> io::Result<()> {
+    match fs::DirBuilder::new().mode(0o700).create(dir) {
         Ok(()) => {}
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
         Err(error) => return Err(error),
     }
-    private_dir(&dir)?;
-    Ok(dir)
+    private_dir(dir)
 }
 
 /// The directory exists, is not a symlink, belongs to this user and no one
@@ -69,14 +82,18 @@ pub fn socket_path(root: &Path) -> io::Result<PathBuf> {
     key.update(b"arandu-daemon-endpoint/v1\0");
     key.update(root.as_os_str().as_encoded_bytes());
     let name = format!("{}.sock", &key.finalize().to_hex()[..32]);
-    let path = socket_dir()?.join(name);
-    if path.as_os_str().len() > MAX_SOCKET_PATH {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "daemon socket path exceeds sun_path",
-        ));
+    // A runtime directory too deep for `sun_path` gives way to the shorter
+    // temporary one.
+    for dir in socket_dirs() {
+        let path = dir.join(&name);
+        if path.as_os_str().len() <= MAX_SOCKET_PATH && ensure_private(&dir).is_ok() {
+            return Ok(path);
+        }
     }
-    Ok(path)
+    Err(io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "no private socket directory fits sun_path",
+    ))
 }
 
 /// The lock a live daemon of `root` holds for as long as it serves.

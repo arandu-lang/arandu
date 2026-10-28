@@ -439,21 +439,84 @@ pub fn item_attribute_validation(
 ) -> HashEq<Vec<Diagnostic>> {
     #[cfg(any(test, debug_assertions))]
     ITEM_ATTRIBUTE_VALIDATION_EXEC_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let item = crate::passes::item_source_input(db, file, item_sym);
-    let resolved = crate::passes::resolve(db, file);
-    let program = item.program.as_ref();
-    let mut diagnostics: Vec<Diagnostic> = Vec::new();
+    let mut diagnostics = match local_attribute_validation(db, file, item_sym)
+        .as_ref()
+        .zip(crate::passes::item_local_typing(db, file, item_sym).as_ref())
+    {
+        Some((local, (_, at))) => local
+            .iter()
+            .map(|diagnostic| {
+                let mut diagnostic = diagnostic.clone();
+                crate::passes::for_each_span(&mut diagnostic, |span| *span = at.span(*span));
+                diagnostic
+            })
+            .collect(),
+        None => {
+            let item = crate::passes::item_source_input(db, file, item_sym);
+            let resolved = crate::passes::resolve(db, file);
+            validate_attributes(
+                &item.program,
+                &resolved.resolved,
+                item_sym,
+                crate::passes::declaration_signatures(db, file),
+            )
+        }
+    };
+    diagnostics.sort_by(|a, b| {
+        (a.span.start, a.span.end, a.code.as_str(), &a.message).cmp(&(
+            b.span.start,
+            b.span.end,
+            b.code.as_str(),
+            &b.message,
+        ))
+    });
+    diagnostics.dedup();
+    HashEq::new(diagnostics)
+}
 
+/// [`item_attribute_validation`] on the item AST, relative to its item
+/// (RFC 0042), so a move does not validate it again.
+#[salsa::tracked]
+#[tracing::instrument(level = "trace", target = "arandu_query", skip(db), fields(
+    query = "local_attribute_validation",
+    file = ?file.file_id(db),
+    item = ?item_sym,
+))]
+fn local_attribute_validation(
+    db: &dyn ArandCompilerDb,
+    file: SourceFile,
+    item_sym: SymbolId,
+) -> Option<HashEq<Vec<Diagnostic>>> {
+    let input = crate::passes::item_typing_input(db, file, item_sym).as_ref()?;
+    let id = *crate::passes::item_ast_ids(db, file).get(&item_sym)?;
+    let item = crate::passes::item_ast(db, file, id);
+    let Ok(program) = &*item.value else {
+        return None;
+    };
+    Some(HashEq::new(validate_attributes(
+        program,
+        &input.resolved,
+        item_sym,
+        input,
+    )))
+}
+
+fn validate_attributes(
+    program: &arandu_parser::Program,
+    resolved: &arandu_resolve::ResolvedNames,
+    item_sym: SymbolId,
+    signatures: &arandu_semantics::TypeCheckResult,
+) -> Vec<Diagnostic> {
+    let mut diagnostics: Vec<Diagnostic> = Vec::new();
     for decl_id in &program.decls {
         let decl = program.pool.decl(*decl_id);
         let matches = arandu_semantics::primary_def_key(decl)
-            .is_some_and(|key| resolved.resolved.definitions.get(&key) == Some(&item_sym))
+            .is_some_and(|key| resolved.definitions.get(&key) == Some(&item_sym))
             || matches!(
                 decl,
                 arandu_parser::TopLevelDecl::Extern(ext)
                     if ext.members.iter().any(|member| {
                         resolved
-                            .resolved
                             .definitions
                             .get(&arandu_middle::NodeKey::from(member.span))
                             == Some(&item_sym)
@@ -467,7 +530,6 @@ pub fn item_attribute_validation(
         // Attribute/test signatures depend only on declarations. Consulting
         // flow contracts here would reintroduce a borrow-interface edge into
         // declaration-based body staging through file_typing's attribute pass.
-        let signatures = crate::passes::declaration_signatures(db, file);
         let test_validation = arandu_semantics::testing::validate_test_case(
             decl,
             &annotations,
@@ -486,17 +548,7 @@ pub fn item_attribute_validation(
         diagnostics.extend(benchmark_validation.diagnostics);
         break;
     }
-
-    diagnostics.sort_by(|a, b| {
-        (a.span.start, a.span.end, a.code.as_str(), &a.message).cmp(&(
-            b.span.start,
-            b.span.end,
-            b.code.as_str(),
-            &b.message,
-        ))
-    });
-    diagnostics.dedup();
-    HashEq::new(diagnostics)
+    diagnostics
 }
 
 /// IDE projection of [`item_attribute_validation`].

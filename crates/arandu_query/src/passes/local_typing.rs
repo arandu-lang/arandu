@@ -52,17 +52,177 @@ pub fn item_local_typing(
         exprs: bases.exprs,
         offset: bases.offset,
     };
+    if let Some(local) = item_direct_typing(db, file, item_sym) {
+        return Some((local.clone(), at));
+    }
     let signatures = super::signatures::declaration_signatures(db, file);
-    let typed = crate::ctfe::item_staged_typing(db, file, item_sym);
     let frame = Frame {
         at,
         own,
         exprs: at.exprs as usize..at.exprs as usize + item_exprs,
         expr_spans: &program.pool.expr_spans,
     };
-    let local = frame.localize(typed, signatures)?;
+    let local = frame.localize(
+        crate::ctfe::item_staged_typing(db, file, item_sym),
+        signatures,
+    )?;
     let hash = crate::stable_hash::local_typing_hash(&local, &signatures.symbols);
     Some((HashEq::with_identity(Arc::new(local), hash), at))
+}
+
+/// What typing `item_sym` reads, in the coordinates of its top-level item:
+/// [`super::signature_context`] with the signature entries inside the item
+/// made local, and the item's symbols relative to it. Symbols of other items
+/// carry the `Span::new(0, 0, 0)` placeholder, so moving the item leaves it
+/// equal. `None` when the file AST is not composed from its items, or the
+/// signatures hold field defaults or thread captures.
+#[salsa::tracked]
+#[tracing::instrument(level = "trace", target = "arandu_query", skip(db), fields(
+    query = "item_typing_input", file = ?file.file_id(db), item = ?item_sym,
+))]
+pub(crate) fn item_typing_input(
+    db: &dyn ArandCompilerDb,
+    file: SourceFile,
+    item_sym: SymbolId,
+) -> Option<HashEq<TypeCheckResult>> {
+    let (program, bases) = super::items::composed_file(db, file).as_ref()?;
+    let Ok(program) = &**program else {
+        return None;
+    };
+    let id = *super::items::item_ast_ids(db, file).get(&item_sym)?;
+    let bases = bases.get(id.index as usize)?;
+    let extent = super::items::item_positions(db, file).item_span(id)?;
+    let own = *super::typing::item_source_spans(db, file).get(&item_sym)?;
+    let item_exprs = match &*super::items::item_ast(db, file, id).value {
+        Ok(item) => item.pool.exprs.len(),
+        Err(_) => return None,
+    };
+    let signatures = super::signatures::declaration_signatures(db, file);
+    let declared = &signatures.type_info;
+    if !declared.struct_field_defaults.is_empty() || !declared.thread_captures.is_empty() {
+        return None;
+    }
+    let frame = Frame {
+        at: ItemPlacement {
+            file_id: *file.file_id(db),
+            exprs: bases.exprs,
+            offset: bases.offset,
+        },
+        own,
+        exprs: bases.exprs as usize..bases.exprs as usize + item_exprs,
+        expr_spans: &program.pool.expr_spans,
+    };
+    let context = super::local_context::signature_context(db, file);
+    let mut input = (**context).clone();
+    input.resolved = Arc::new(frame.resolved(&signatures.resolved, &signatures.resolved)?);
+    // Most items have no positional signature entry; the context's tables
+    // are then shared rather than copied with their interner.
+    let expr_types = frame.slice(&declared.expr_types, &declared.expr_types)?;
+    let ctfe_roots: Vec<_> = declared
+        .ctfe_roots
+        .iter()
+        .filter_map(|root| frame.expr(root.as_usize()))
+        .map(arandu_parser::ast_pool::ExprId::new)
+        .collect();
+    let ctfe_values = frame.spans(&declared.ctfe_values, &declared.ctfe_values)?;
+    if !expr_types.is_empty() || !ctfe_roots.is_empty() || !ctfe_values.is_empty() {
+        let info = input.type_info_mut();
+        info.expr_types = expr_types;
+        info.ctfe_roots = ctfe_roots;
+        info.ctfe_values = ctfe_values;
+    }
+    let inside = |span: Span| {
+        span.file_id == extent.file_id && extent.start <= span.start && span.end <= extent.end
+    };
+    let mut own = Vec::new();
+    input.symbols = Arc::new(signatures.symbols.map_spans(|symbol| {
+        if inside(symbol.span) {
+            let span = Span::new(
+                symbol.span.file_id,
+                symbol.span.start - bases.offset,
+                symbol.span.end - bases.offset,
+            );
+            own.push((symbol.id, span));
+            span
+        } else {
+            Span::new(0, 0, 0)
+        }
+    }));
+    let hash = crate::stable_hash::typing_input_hash(
+        crate::StableHash::stable_hash(context),
+        &input,
+        &own,
+    );
+    Some(HashEq::with_identity(Arc::new(input), hash))
+}
+
+/// Body typing of `item_sym` run on its item AST with [`item_typing_input`],
+/// so its output is local by construction and a move does not run it again.
+/// `None` sends the item to the file typing: staging, deferred templates and
+/// headers, CTFE globals, and any typing that reports a diagnostic, whose
+/// labels may point into other items.
+/// It reads no position, so it is not run again when the item only moves.
+#[salsa::tracked]
+#[tracing::instrument(level = "trace", target = "arandu_query", skip(db), fields(
+    query = "item_direct_typing", file = ?file.file_id(db), item = ?item_sym,
+))]
+pub(crate) fn item_direct_typing(
+    db: &dyn ArandCompilerDb,
+    file: SourceFile,
+    item_sym: SymbolId,
+) -> Option<HashEq<LocalTyping>> {
+    let signatures = super::local_context::signature_context(db, file);
+    if crate::runtime::item_staging(db, file, item_sym).0
+        || signatures
+            .resolved
+            .deferred_comptime_functions
+            .contains(&item_sym)
+        || signatures.type_info.deferred_headers.contains(&item_sym)
+        || signatures
+            .type_info
+            .ctfe_global_values
+            .contains_key(&item_sym)
+    {
+        return None;
+    }
+    let input = item_typing_input(db, file, item_sym).as_ref()?;
+    let id = *super::items::item_ast_ids(db, file).get(&item_sym)?;
+    let item = super::items::item_ast(db, file, id);
+    let Ok(item) = &*item.value else {
+        return None;
+    };
+    let typed = crate::ctfe::contracts::check_body(
+        db,
+        input,
+        item,
+        item_sym,
+        &arandu_middle::types::GenericSubst::new(),
+        &crate::ctfe::DependencyContext::default(),
+    );
+    if !typed.diagnostics.is_empty()
+        || !typed.type_info.ctfe_roots.is_empty()
+        || !typed.type_info.thread_captures.is_empty()
+    {
+        return None;
+    }
+    let mut resolved = typed.resolved.as_ref().clone();
+    trim(&mut resolved.expr_symbols);
+    let mut type_info = typed.type_info.as_ref().clone();
+    trim(&mut type_info.expr_types);
+    without_signatures(&mut type_info, &signatures.type_info);
+    let local = LocalTyping {
+        resolved,
+        type_info,
+        diagnostics: Vec::new(),
+    };
+    let hash = crate::stable_hash::local_typing_hash(&local, &signatures.symbols);
+    Some(HashEq::with_identity(Arc::new(local), hash))
+}
+
+fn trim<T>(table: &mut Vec<Option<T>>) {
+    while table.last().is_some_and(Option::is_none) {
+        table.pop();
+    }
 }
 
 /// Merge a local typing into a file view at `at`: the inverse of
@@ -464,6 +624,75 @@ mod tests {
             types.pop();
         }
         result.stable_hash()
+    }
+
+    /// The typing run on the item AST equals the file typing made local, for
+    /// every item that takes it.
+    #[test]
+    fn direct_typing_equals_the_file_typing_made_local() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut files = Vec::new();
+        for dir in ["examples", "stdlib", "tests"] {
+            collect(&root.join(dir), &mut files);
+        }
+        files.sort();
+        let (mut items, mut direct) = (0, 0);
+        for path in files {
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let mut db = DatabaseImpl::new();
+            let file = db.new_file(path.display().to_string(), text);
+            let parsed = super::super::parse(&db, file);
+            let Ok(program) = &**parsed else { continue };
+            let signatures = super::super::declaration_signatures(&db, file);
+            for symbol in arandu_semantics::body_item_symbols(program, &signatures.resolved) {
+                items += 1;
+                let Some(local) = super::item_direct_typing(&db, file, symbol) else {
+                    continue;
+                };
+                direct += 1;
+                let (composed, bases) = super::super::items::composed_file(&db, file)
+                    .as_ref()
+                    .expect("composed");
+                let Ok(composed) = &**composed else {
+                    panic!("composed parse")
+                };
+                let id = super::super::items::item_ast_ids(&db, file)[&symbol];
+                let bases = bases[id.index as usize];
+                let item = super::super::items::item_ast(&db, file, id);
+                let Ok(item) = &*item.value else {
+                    panic!("item parse")
+                };
+                let at = super::ItemPlacement {
+                    file_id: *file.file_id(&db),
+                    exprs: bases.exprs,
+                    offset: bases.offset,
+                };
+                let frame = super::Frame {
+                    at,
+                    own: super::super::typing::item_source_spans(&db, file)[&symbol],
+                    exprs: at.exprs as usize..at.exprs as usize + item.pool.exprs.len(),
+                    expr_spans: &composed.pool.expr_spans,
+                };
+                let converted = frame
+                    .localize(
+                        crate::ctfe::item_staged_typing(&db, file, symbol),
+                        signatures,
+                    )
+                    .unwrap_or_else(|| panic!("{} {symbol:?}: not local", path.display()));
+                assert_eq!(
+                    crate::stable_hash::local_typing_hash(local, &signatures.symbols),
+                    crate::stable_hash::local_typing_hash(&converted, &signatures.symbols),
+                    "{} {symbol:?}",
+                    path.display()
+                );
+            }
+        }
+        assert!(
+            items > 500 && direct * 100 >= items * 80,
+            "{direct} of {items} items typed directly"
+        );
     }
 
     /// File views placed from local typings equal the views merged in file

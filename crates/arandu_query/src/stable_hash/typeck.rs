@@ -81,6 +81,53 @@ pub(crate) fn local_typing_hash(
     )
 }
 
+/// Identity of an item typing input (RFC 0042): the position-free context it
+/// extends, plus what it adds. Its type IDs index the context's interner.
+pub(crate) fn typing_input_hash(
+    context: blake3::Hash,
+    input: &TypeCheckResult,
+    own: &[(arandu_middle::SymbolId, arandu_middle::Span)],
+) -> blake3::Hash {
+    let mut h = Hasher::new();
+    h.update(b"ItemTypingInput/v1");
+    h.update(context.as_bytes());
+    hash_resolved_names(&mut h, &input.resolved);
+    let info = &input.type_info;
+    h.update(&u64_le(info.expr_types.len() as u64));
+    for slot in &info.expr_types {
+        match slot {
+            Some(ty) => {
+                h.update(&[1]);
+                hash_id(&mut h, ty.as_usize());
+            }
+            None => {
+                h.update(&[0]);
+            }
+        }
+    }
+    h.update(&u64_le(info.ctfe_roots.len() as u64));
+    for expr in &info.ctfe_roots {
+        hash_id(&mut h, expr.as_usize());
+    }
+    let mut values: Vec<_> = info.ctfe_values.iter().collect();
+    values.sort_unstable_by_key(|(span, _)| (span.file_id, span.start, span.end));
+    h.update(&u64_le(values.len() as u64));
+    for (span, (value, layout)) in values {
+        hash_span(&mut h, *span);
+        h.update(&value.canonical_bytes());
+        for class in [layout.pointer, layout.float, layout.i64, layout.f64] {
+            h.update(&class.size.to_le_bytes());
+            h.update(&class.abi_align.to_le_bytes());
+        }
+    }
+    h.update(&u64_le(own.len() as u64));
+    for &(symbol, span) in own {
+        hash_symbol_id(&mut h, symbol);
+        hash_span(&mut h, span);
+    }
+    finish(h)
+}
+
 fn hash_typing(
     symbols: &SymbolTable,
     hash_table: bool,

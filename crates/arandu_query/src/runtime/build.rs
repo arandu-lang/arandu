@@ -267,7 +267,15 @@ pub(super) fn build_instance_hir<'db>(
 #[tracing::instrument(level = "trace", target = "arandu_query", skip(db), fields(
     query = "item_staging", file = ?file.file_id(db), item = ?symbol,
 ))]
-pub(super) fn item_staging(
+pub(crate) fn item_staging(
+    db: &dyn ArandCompilerDb,
+    file: crate::SourceFile,
+    symbol: arandu_middle::SymbolId,
+) -> (bool, bool) {
+    local_staging(db, file, symbol).unwrap_or_else(|| file_staging(db, file, symbol))
+}
+
+fn file_staging(
     db: &dyn ArandCompilerDb,
     file: crate::SourceFile,
     symbol: arandu_middle::SymbolId,
@@ -297,4 +305,126 @@ pub(super) fn item_staging(
         })
     });
     (true, has_static_loop)
+}
+
+/// [`item_staging`] from the item AST and the item text, without the file
+/// AST, so that it costs the item and not its file (RFC 0042).
+fn local_staging(
+    db: &dyn ArandCompilerDb,
+    file: crate::SourceFile,
+    symbol: arandu_middle::SymbolId,
+) -> Option<(bool, bool)> {
+    let id = *crate::passes::item_ast_ids(db, file).get(&symbol)?;
+    let extent = crate::passes::item_positions(db, file).item_span(id)?;
+    let item = crate::passes::item_ast(db, file, id);
+    let Ok(item) = &*item.value else {
+        return None;
+    };
+    // Header names only: CTFE stages items while the signatures are built.
+    let headers = crate::passes::resolved_headers(db, file);
+    let definitions = &headers.declarations.resolved.definitions;
+    let defines = |span: arandu_middle::Span| {
+        let key = arandu_middle::NodeKey {
+            start: span.start + extent.start,
+            end: span.end + extent.start,
+        };
+        definitions.get(&key) == Some(&symbol)
+    };
+    let mut selected = None;
+    item.for_each_decl_recursive(|_, declaration| {
+        let defines = arandu_semantics::primary_def_key(declaration).is_some_and(|key| {
+            defines(arandu_middle::Span::new(extent.file_id, key.start, key.end))
+        }) || matches!(
+            declaration,
+            arandu_parser::TopLevelDecl::Extern(block)
+                if block.members.iter().any(|member| defines(member.span))
+        );
+        if defines && selected.is_none() {
+            selected = Some(declaration);
+        }
+    });
+    let declaration = selected?;
+    let span = arandu_semantics::item_source_span(declaration);
+    let text = file.text(db);
+    let source = text.get(extent.start as usize..extent.end as usize)?;
+    let source = source.get(span.start as usize..span.end as usize)?;
+    if !source.contains("comptime") {
+        return Some((false, false));
+    }
+    let arandu_parser::TopLevelDecl::Func(function) = declaration else {
+        return Some((true, false));
+    };
+    let body = function.body.span;
+    let has_static_loop = item.pool.stmts.iter().any(|stmt| {
+        matches!(
+            stmt,
+            arandu_parser::Stmt::For {
+                is_comptime: true,
+                ..
+            }
+        ) && body.start <= stmt.span().start
+            && stmt.span().end <= body.end
+    });
+    Some((true, has_static_loop))
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use crate::DatabaseImpl;
+    use std::path::{Path, PathBuf};
+
+    fn collect(dir: &Path, files: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries {
+            let path = entry.expect("directory entry").path();
+            if path.is_dir() {
+                collect(&path, files);
+            } else if path.extension().is_some_and(|ext| ext == "aru") {
+                files.push(path);
+            }
+        }
+    }
+
+    /// The staging facts read from the item AST equal those of the file AST.
+    #[test]
+    fn local_staging_equals_the_file_staging() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut files = Vec::new();
+        for dir in ["examples", "stdlib", "tests"] {
+            collect(&root.join(dir), &mut files);
+        }
+        files.sort();
+        let (mut items, mut local, mut staged) = (0, 0, 0);
+        for path in files {
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let mut db = DatabaseImpl::new();
+            let file = db.new_file(path.display().to_string(), text);
+            let parsed = crate::passes::parse(&db, file);
+            let Ok(program) = &**parsed else { continue };
+            let signatures = crate::passes::declaration_signatures(&db, file);
+            for symbol in arandu_semantics::body_item_symbols(program, &signatures.resolved) {
+                items += 1;
+                let Some(facts) = super::local_staging(&db, file, symbol) else {
+                    continue;
+                };
+                local += 1;
+                staged += usize::from(facts.0);
+                assert_eq!(
+                    facts,
+                    super::file_staging(&db, file, symbol),
+                    "{} {symbol:?}",
+                    path.display()
+                );
+            }
+        }
+        assert!(
+            items > 500 && local * 100 >= items * 80 && staged > 0,
+            "{local} of {items} items staged locally, {staged} may stage"
+        );
+    }
 }

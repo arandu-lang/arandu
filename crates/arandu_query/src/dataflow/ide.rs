@@ -19,11 +19,24 @@ pub(super) fn collect_item_ide_diagnostics(
     #[cfg(any(test, debug_assertions))]
     ITEM_IDE_DIAGS_EXEC_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-    let body_tc = crate::ctfe::item_staged_typing(db, file, item_sym);
+    // A local typing holds the body diagnostics relative to its item.
+    let typing = match crate::passes::item_local_typing(db, file, item_sym) {
+        Some((local, at)) => local
+            .diagnostics
+            .iter()
+            .map(|diagnostic| {
+                let mut diagnostic = diagnostic.clone();
+                crate::passes::for_each_span(&mut diagnostic, |span| *span = at.span(*span));
+                diagnostic
+            })
+            .collect(),
+        None => crate::ctfe::item_staged_typing(db, file, item_sym)
+            .diagnostics
+            .clone(),
+    };
     let runtime = source_runtime_unit(db, item_sym);
     let runtime = runtime.as_deref();
-    let mut out: Vec<IdeDiagnostic> = body_tc
-        .diagnostics
+    let mut out: Vec<IdeDiagnostic> = typing
         .iter()
         .map(|d| IdeDiagnostic::from_diag(d, Some(item_sym), None))
         .collect();

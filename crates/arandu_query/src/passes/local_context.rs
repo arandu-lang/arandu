@@ -137,11 +137,15 @@ pub fn item_context(
     }
     let context = signature_context(db, file);
     let mut checked = (**context).clone();
-    checked.symbols = Arc::new(
-        signatures
-            .symbols
-            .map_spans(|symbol| relative(symbol.span).unwrap_or(Span::new(0, 0, 0))),
-    );
+    // The typing input already holds the same symbol view.
+    checked.symbols = match super::local_typing::item_typing_input(db, file, item_sym) {
+        Some(input) => Arc::clone(&input.symbols),
+        None => Arc::new(
+            signatures
+                .symbols
+                .map_spans(|symbol| relative(symbol.span).unwrap_or(Span::new(0, 0, 0))),
+        ),
+    };
     // The local names are the item's whole resolution: the symbol sets plus
     // every position inside its declaration.
     Arc::make_mut(&mut checked.type_info).merge_item_from(

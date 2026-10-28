@@ -9,6 +9,7 @@ use arandu_middle::types::FunctionInstance;
 use arandu_middle::{Diagnostic, Severity, SymbolId};
 
 mod build;
+pub(crate) use build::item_staging;
 mod capture;
 mod contracts;
 mod decl;

@@ -50,12 +50,31 @@ fn growing_a_body_relowers_the_siblings_it_moves() {
 
     file.set_text(&mut db).to(Arc::from(program(3)));
     let _ = lower_amir(&db, file);
-    // Only the edited item is lowered again; the four items it moves keep
-    // their item-local HIR and units (RFC 0042 step C).
-    for query in ["instance_hir", "runtime_raw_unit", "runtime_unit"] {
+    // Only the edited item is typed and lowered again; the four items it
+    // moves keep their item-local typing, HIR and units (RFC 0042). The file
+    // typing runs for none of them: the edited item is typed on its AST.
+    assert_runs(
+        &log,
+        &[
+            ("item_source_input", 0),
+            ("item_typing", 0),
+            ("item_staged_typing", 0),
+            ("item_const_arguments", 0),
+            ("item_static_branches", 0),
+            ("item_direct_typing", 1),
+            ("instance_hir", 1),
+            ("runtime_raw_unit", 1),
+            ("runtime_unit", 1),
+        ],
+    );
+}
+
+/// Executions of each query by its exact name.
+fn assert_runs(log: &arandu_query::RebuildLog, expected: &[(&str, usize)]) {
+    for &(query, runs) in expected {
         assert_eq!(
-            log.count_executions_matching(query),
-            1,
+            log.count_executions_matching(&format!("{query}(")),
+            runs,
             "{query}: {}",
             log.format_chain(false)
         );
@@ -73,18 +92,18 @@ fn growing_a_body_rechecks_only_its_own_flow() {
 
     file.set_text(&mut db).to(Arc::from(program(3)));
     let _ = file_ide_diagnostics(&db, file);
-    for query in [
-        "item_flow_diagnostics",
-        "liveness_facts",
-        "func_borrow_summaries",
-    ] {
-        assert_eq!(
-            log.count_executions_matching(query),
-            1,
-            "{query}: {}",
-            log.format_chain(false)
-        );
-    }
+    assert_runs(
+        &log,
+        &[
+            ("item_source_input", 0),
+            ("item_typing", 0),
+            ("item_staged_typing", 0),
+            ("local_attribute_validation", 1),
+            ("item_flow_diagnostics", 1),
+            ("liveness_facts", 1),
+            ("func_borrow_summaries", 1),
+        ],
+    );
 }
 
 #[test]

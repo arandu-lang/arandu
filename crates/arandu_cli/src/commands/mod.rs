@@ -55,7 +55,13 @@ pub const COMMAND_NAMES: &[&str] = &[
 ];
 
 pub fn run(raw_args: Vec<String>) -> CliResult {
-    let inv = args::parse_invocation(raw_args);
+    // Internal commands of the build daemon (HOT.3); not part of the CLI.
+    match raw_args.get(1).map(String::as_str) {
+        Some("__daemon") => return crate::daemon::serve(&raw_args),
+        Some("__daemon-stop") => return crate::daemon::stop(&raw_args),
+        _ => {}
+    }
+    let inv = args::parse_invocation(raw_args.clone());
 
     // Initialise global perf flags (written once, read-only afterwards).
     arandu_base::init_z_flags(&inv.z_flags);
@@ -184,6 +190,15 @@ pub fn run(raw_args: Vec<String>) -> CliResult {
             }
         }
         "build" => {
+            if crate::daemon::eligible(&inv)
+                && let Some(result) = crate::daemon::try_build(
+                    &raw_args,
+                    inv.project_flags.color.should_color_stderr(),
+                    inv.project_flags.verbose,
+                )
+            {
+                return result;
+            }
             let start = if inv.args.len() >= 3 {
                 PathBuf::from(&inv.args[2])
             } else {

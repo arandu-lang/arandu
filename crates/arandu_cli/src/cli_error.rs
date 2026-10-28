@@ -23,7 +23,8 @@ pub enum CliFailure {
         message: String,
     },
     Operational {
-        operation: &'static str,
+        /// Owned only when the failure crossed the daemon protocol.
+        operation: std::borrow::Cow<'static, str>,
         context: Option<PathBuf>,
         source: String,
     },
@@ -84,7 +85,7 @@ impl CliFailure {
         source: impl Into<String>,
     ) -> Self {
         Self::Operational {
-            operation,
+            operation: std::borrow::Cow::Borrowed(operation),
             context,
             source: source.into(),
         }

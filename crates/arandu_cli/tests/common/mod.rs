@@ -124,9 +124,12 @@ pub fn c_release_outcome(source_path: &std::path::Path) -> Option<ProgramOutcome
     ))
 }
 
+/// The CLI in batch mode: suites never leave build daemons behind. Daemon
+/// tests turn it back on with `ARANDU_DAEMON=1`.
 pub fn cli_command() -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_arandu_cli"));
     command.env("ARANDU_RUNTIME_LIB", runtime_library());
+    command.env("ARANDU_DAEMON", "0");
     command
 }
 

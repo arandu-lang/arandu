@@ -229,7 +229,11 @@ fn run_case(
         }
 
         let mut build = Command::new(arandu);
-        build.current_dir(&project).args(["build", "--quiet"]);
+        // One-shot evidence builds: never leave a build daemon behind.
+        build
+            .current_dir(&project)
+            .args(["build", "--quiet"])
+            .env("ARANDU_DAEMON", "0");
         if let Some(flag) = flag {
             build.arg(flag);
         }

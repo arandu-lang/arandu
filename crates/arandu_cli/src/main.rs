@@ -8,6 +8,7 @@ mod artifact;
 mod cgu;
 mod cli_error;
 mod commands;
+mod daemon;
 mod incremental;
 mod linker;
 mod linker_elf;

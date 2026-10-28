@@ -102,6 +102,11 @@ pub(crate) struct BuildSession {
     /// The native artifact this session last published, which it may reuse or
     /// patch without hashing while the file is unchanged.
     published: Option<artifact::ArtifactIdentity>,
+    /// Set by a daemon when a newer request for this build arrives. The build
+    /// stops at its next checkpoint before publishing anything (HOT.3).
+    supersede: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Whether the last build stopped at a checkpoint.
+    superseded: bool,
 }
 
 impl BuildSession {
@@ -203,6 +208,8 @@ impl BuildSession {
             package_sources,
             manifest_digest,
             published: None,
+            supersede: None,
+            superseded: false,
         })
     }
 
@@ -234,6 +241,27 @@ impl BuildSession {
         Ok(())
     }
 
+    /// Whether a daemon runs this build: native Cranelift builds, whose tools
+    /// report only through the build's output. LLVM and Wasm builds run
+    /// external tools that write to the process streams.
+    pub(crate) fn serves_in_daemon(&self) -> bool {
+        !self.is_llvm && !self.is_wasm
+    }
+
+    /// The signal a daemon raises when this build is superseded; `None`
+    /// builds to the end.
+    pub(crate) fn set_supersede(
+        &mut self,
+        signal: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    ) {
+        self.supersede = signal;
+    }
+
+    /// Whether the last build stopped at a checkpoint without publishing.
+    pub(crate) fn take_superseded(&mut self) -> bool {
+        std::mem::take(&mut self.superseded)
+    }
+
     pub(crate) fn build(&mut self) -> CliResult {
         self.refresh()?;
         let Self {
@@ -251,8 +279,19 @@ impl BuildSession {
             wasm_triple,
             toolchain_identity,
             published,
+            supersede,
+            superseded,
             ..
         } = self;
+        // Checkpoints a build passes before it publishes anything: after the
+        // analysis and after code generation.
+        let mut checkpoint = || {
+            let hit = supersede
+                .as_ref()
+                .is_some_and(|signal| signal.load(std::sync::atomic::Ordering::Acquire));
+            *superseded |= hit;
+            hit
+        };
         let (plan, is_llvm, is_wasm, backend, backend_label, profile, explain_rebuild) = (
             *plan,
             *is_llvm,
@@ -373,6 +412,9 @@ impl BuildSession {
         let mut registry = arandu_base::SourceRegistry::default();
         let (file, filepath) = try_open_entry_file(db, &mut registry, &ctx.entry_path)?;
         let artifacts = lower(db, file, &filepath)?;
+        if checkpoint() {
+            return Err(superseded_failure());
+        }
         if genref_report {
             print_genref_report(&filepath, &artifacts);
         }
@@ -465,8 +507,18 @@ impl BuildSession {
             type_check,
             amir,
             published,
+            &mut checkpoint,
         )
     }
+}
+
+/// What a superseded build returns; the daemon never sends it to a client.
+pub(crate) fn superseded_failure() -> CliFailure {
+    CliFailure::operational(
+        "build",
+        None,
+        "superseded by a newer request before publication",
+    )
 }
 
 fn package_sources(ctx: &project::ProjectContext) -> Vec<String> {
@@ -890,6 +942,30 @@ mod tests {
             );
             let _ = fs::remove_dir_all(root);
             let _ = fs::remove_dir_all(cold);
+        }
+
+        /// A superseded build stops before publishing anything and says so; the
+        /// next build publishes the newest inputs (HOT.3).
+        #[test]
+        fn a_superseded_build_publishes_nothing() {
+            let root = project("superseded", &library(0));
+            let mut session = BuildSession::open(&root, request()).unwrap();
+            session.build().unwrap();
+            let published = fs::read(artifact(&root)).unwrap();
+
+            fs::write(root.join("src/lib.aru"), library(3)).unwrap();
+            let signal = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+            session.set_supersede(Some(std::sync::Arc::clone(&signal)));
+            assert!(session.build().is_err());
+            assert!(session.take_superseded());
+            assert_eq!(fs::read(artifact(&root)).unwrap(), published);
+            assert_eq!(exit_code(&root), Some(7));
+
+            signal.store(false, std::sync::atomic::Ordering::Release);
+            session.build().unwrap();
+            assert!(!session.take_superseded());
+            assert_eq!(exit_code(&root), Some(13));
+            let _ = fs::remove_dir_all(root);
         }
 
         fn copy_tree(from: &Path, to: &Path) {

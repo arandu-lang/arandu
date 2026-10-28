@@ -307,6 +307,7 @@ pub(super) fn emit_native_artifact(
     type_check: &arandu_semantics::TypeCheckResult,
     amir: &arandu_semantics::amir::AmirProgram,
     published: &mut Option<artifact::ArtifactIdentity>,
+    superseded: &mut dyn FnMut() -> bool,
 ) -> CliResult {
     let toolchain_fingerprint = {
         arandu_base::time_pass!("toolchain-fingerprint");
@@ -364,6 +365,10 @@ pub(super) fn emit_native_artifact(
                 &cgu_cache_dir,
             )?
         };
+        // Cached objects are content-addressed; nothing is published yet.
+        if superseded() {
+            return Err(super::superseded_failure());
+        }
         if flags.verbose {
             errln!(
                 "[cgu] {} units: {} cached, {} recompiled",

@@ -698,9 +698,12 @@ fn cli_command(
     rayon_threads: Option<&str>,
 ) -> Command {
     let mut command = Command::new(cli);
+    // Each sample measures a new compiler process; the daemon has its own
+    // measurement.
     command
         .current_dir(directory)
         .env("ARANDU_RUNTIME_LIB", runtime)
+        .env("ARANDU_DAEMON", "0")
         .args(args);
     if let Some(threads) = rayon_threads {
         command.env("RAYON_NUM_THREADS", threads);

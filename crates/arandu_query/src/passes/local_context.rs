@@ -145,8 +145,9 @@ pub fn item_context(
     }
     let context = signature_context(db, file);
     let mut checked = (**context).clone();
+    let input = super::local_typing::item_typing_input(db, file, item_sym);
     // The typing input already holds the same symbol view.
-    checked.symbols = match super::local_typing::item_typing_input(db, file, item_sym) {
+    checked.symbols = match input {
         Some(input) => Arc::clone(&input.symbols),
         None => Arc::new(
             signatures
@@ -165,14 +166,36 @@ pub fn item_context(
     );
     checked.resolved = Arc::new(local.resolved.clone());
     // Field defaults are expressions of the item program.
+    let mut defaults = false;
     if let Some(program) = super::programs::defaults_program(db, file, item_sym)? {
         if !program.defaults.is_empty() {
             checked.type_info_mut().struct_field_defaults = program.defaults.clone();
+            defaults = true;
         }
     }
     checked
         .diagnostics
         .extend(local.diagnostics.iter().cloned());
+    // Without defaults or declaration diagnostics, the context is a function
+    // of the signature context, the typing input (which covers its symbols)
+    // and the local typing: their digests identify it without hashing the
+    // whole result for every item a body edit moves.
+    let identity = match input {
+        Some(input) if !defaults && diagnostics.is_empty() => {
+            let mut h = blake3::Hasher::new();
+            h.update(b"ItemContext/v1");
+            h.update(crate::StableHash::stable_hash(context).as_bytes());
+            h.update(crate::StableHash::stable_hash(input).as_bytes());
+            h.update(crate::StableHash::stable_hash(local).as_bytes());
+            h.update(&at.file_id.to_le_bytes());
+            Some(h.finalize())
+        }
+        _ => None,
+    };
     checked.diagnostics.extend(diagnostics);
-    Some((HashEq::new(checked), id))
+    let context = match identity {
+        Some(identity) => HashEq::with_identity(Arc::new(checked), identity),
+        None => HashEq::new(checked),
+    };
+    Some((context, id))
 }

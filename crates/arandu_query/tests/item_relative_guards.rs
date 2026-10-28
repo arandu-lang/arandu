@@ -93,6 +93,51 @@ fn a_same_length_edit_retypes_only_its_item() {
     );
 }
 
+/// The item context is identified by the digests it is built from; across a
+/// move and a body edit that identity must agree with its content hash.
+#[test]
+fn an_item_context_identity_agrees_with_its_content() {
+    let mut db = DatabaseImpl::new();
+    let file = db.new_file("guards.aru".into(), program(0));
+    let names = ["alpha", "beta", "gamma", "delta", "main"];
+    let contexts = |db: &DatabaseImpl| {
+        names
+            .iter()
+            .map(|name| {
+                let symbol = type_check(db, file)
+                    .symbols
+                    .iter_own()
+                    .find(|symbol| symbol.name == *name)
+                    .expect("function")
+                    .id;
+                let (context, _) = arandu_query::passes::item_context(db, file, symbol)
+                    .clone()
+                    .expect("local item");
+                (context.stable_hash(), (*context.value).stable_hash())
+            })
+            .collect::<Vec<_>>()
+    };
+    // A move, then a same-length edit that changes only the local typing.
+    let revisions = [
+        program(3),
+        program(3).replace("let mut acc = value", "let mut acc = 12345"),
+        program(3)
+            .replace("let mut acc = value", "let mut acc = 12345")
+            .replace("acc + 1", "acc > 1"),
+    ];
+    let mut before = contexts(&db);
+    for text in revisions {
+        file.set_text(&mut db).to(Arc::from(text));
+        let after = contexts(&db);
+        for ((name, (was, was_content)), (is, is_content)) in names.iter().zip(&before).zip(&after)
+        {
+            assert_eq!(was == is, was_content == is_content, "`{name}`");
+        }
+        assert_ne!(before[0], after[0], "the edited item changes");
+        before = after;
+    }
+}
+
 /// Executions of each query by its exact name.
 fn assert_runs(log: &arandu_query::RebuildLog, expected: &[(&str, usize)]) {
     for &(query, runs) in expected {

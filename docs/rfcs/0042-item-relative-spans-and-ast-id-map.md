@@ -393,7 +393,7 @@ plano abaixo corta pela fronteira de item.
 | 2 — AST local | `item_ast(file, AstId)`: AST do item baixada do subtree do CST, num arena próprio, com spans relativos; identidade = texto do item (o `body_fp` atual), sem `item_start`; teste de propriedade: para todo nó, `relativo + início do item` = span do parse do arquivo | `arandu_parser`, `arandu_query` | sem mudança de comportamento; RSS do AST por item medido |
 | 3 — resolução e tipagem por item | corpo resolvido por item com `resolve_selected_body_with_poll` sobre `item_ast` (chaves `NodeKey` locais); `item_typing` consome AST e resolução locais; fingerprint sem `item_start` | `arandu_resolve`, `arandu_typeck`, `arandu_query` | entra junto com as fases 4 e 5 |
 | 4 — HIR, AMIR e contexto do módulo | `function_hir`, `instance_hir` e units a partir das saídas locais; posições de declaração relativas ao próprio item, de modo que `DeclarationHir` não tenha posições na identidade nem para o próprio arquivo (`declaration_surface` passa a ser o próprio `declaration_hir`); `ItemSourceInput` sem `item_start` | `arandu_semantics`, `arandu_query` | entra junto com as fases 3 e 5 |
-| 5 — bordas | diagnósticos: query fina por item que materializa com `item_positions` (reexecuta em todo deslocamento, mas só converte); composição: spans de símbolos, `debug_blocks` e `debug_bindings` convertidos com o mapa do arquivo dono (a composição já roda a cada build); LSP: hover, goto, semantic tokens e quick fixes convertidos; com `--debug`, o hash de CGU passa a incluir as posições absolutas do unit, para o DWARF de um vizinho deslocado ser reemitido sem relowering | `arandu_query`, `arandu_semantics`, `arandu_backend_*`, `arandu_lsp`, `arandu_ide` | guardas da fase 0 passam com contagem 1 |
+| 5 — bordas | diagnósticos: query fina por item que materializa com `item_positions` (reexecuta em todo deslocamento, mas só converte); composição: spans de símbolos, `debug_blocks` e `debug_bindings` convertidos com o mapa do arquivo dono (a composição já roda a cada build); LSP: hover, goto, semantic tokens e quick fixes convertidos; com `--debug`, o hash de CGU passa a incluir as posições absolutas do unit, para o DWARF de um vizinho deslocado ser reemitido sem relowering (vazio na prática: `--debug` não usa o cache de CGU, ver 8.12) | `arandu_query`, `arandu_semantics`, `arandu_backend_*`, `arandu_lsp`, `arandu_ide` | guardas da fase 0 passam com contagem 1 |
 | 6 — prova e promoção | sessão quente: corpo que cresce com p50/p95 no patamar do mesmo comprimento; equivalência byte a byte; determinismo de diagnósticos; `check-project-corpus`; gate completo antes do PR | todos | números registrados na campanha |
 
 As fases 0 a 2 entram separadamente, sem mudança de comportamento. As fases
@@ -512,7 +512,8 @@ Além dos spans e do `NodeKey`, a saída por item depende de posição por:
    no arena do arquivo, e o lowering HIR de um literal de struct em outro item
    baixa essa expressão (`lower_hir/expr/aggregate.rs`). No modo local, a
    referência vira `(AstId, ExprId local)` e a identidade do item que usa o
-   default inclui o `item_ast` do item que o declara.
+   default inclui o `item_ast` do item que o declara (resolvido no Passo D3,
+   8.12).
 7. **Numeração de símbolos.** `LocalSymbolId` é alocado em sequência no
    arquivo inteiro; uma ligação nova num corpo desloca os IDs dos locais dos
    itens seguintes.
@@ -647,6 +648,100 @@ units guardam é relativo ao próprio item ou é o placeholder
   reexecuta para todos os itens deslocados, e os acoplamentos 6 e 7 seguem
   abertos. O Passo D trata as bordas restantes (DWARF de ponta a ponta, LSP e
   hash de CGU com `--debug`).
+
+### 8.12. Passo D: bordas, tipagem direta e defaults de campo (2026-10-27)
+
+**D1 — bordas.**
+
+- `--debug` não usa o cache de CGU (`build_emit.rs`, ramo
+  `profile == Dev && !debug_info`): o objeto é monolítico, e o requisito da
+  fase 5 sobre o hash de CGU fica vazio. O DWARF lê os spans de temporários,
+  locais e símbolos da AMIR composta.
+- Um build frio também passa por `place_unit`, então igualdade quente × frio
+  não prova a colocação. `a_moved_sibling_keeps_its_debug_positions_in_its_own_text`
+  é absoluta: todo span de temporário e local de um vizinho deslocado cai no
+  texto do próprio item (falha se `AmirFunc::map_spans` não mover os
+  temporários). A sessão `--debug` do CLI publica os bytes de um build frio na
+  mesma raiz, porque o caminho entra no DWARF.
+- LSP: `features_over_moved_items_match_a_cold_analysis` compara hover,
+  references, highlights, prepare rename, signature help, semantic tokens,
+  inlay hints e diagnósticos em todas as posições de um item deslocado com uma
+  análise fria.
+- Fluxo IDE: `analysis_amir` é a função da unit como memoizada;
+  `liveness_facts`, `block_dataflow_facts` e `func_borrow_summaries` (só
+  contagens) a leem. `item_flow_diagnostics` roda definite-init, move, borrow
+  e escape nela, e `item_ide_diagnostics` só coloca os spans. O `@NoFallback`
+  lê `item_start` só quando o hint sai.
+
+**D2 — tipagem direta.**
+
+- `item_typing_input(file, símbolo)`: `signature_context` com as entradas das
+  assinaturas dentro do item localizadas (nomes, `expr_types`, `ctfe_*`) e os
+  símbolos do item relativos a ele. A identidade é composta
+  (`typing_input_hash`: contexto, nomes, tabelas locais e spans dos símbolos do
+  item); re-hashear o `TypeCheckResult` inteiro por item hasheava todas as
+  `decl_types` da cadeia de imports.
+- `item_direct_typing`: `check_body` sobre o AST do item com esse input. Lê só
+  entradas sem posição, então um deslocamento não o reexecuta. Recusa staging,
+  templates comptime adiados, headers adiados, globais CTFE e qualquer tipagem
+  com diagnóstico (labels podem apontar para outros itens); a recusa segue a
+  conversão do Passo B.
+- `item_staging` lê o AST do item e as `resolved_headers` (as assinaturas
+  fechariam um ciclo: CTFE de globais estagia itens enquanto elas são
+  construídas). A validação de atributos roda no AST do item, relativa a ele.
+- Oráculos no corpus: `direct_typing_equals_the_file_typing_made_local`
+  (1737 de 2080 itens tipam direto, hash igual ao da conversão) e
+  `local_staging_equals_the_file_staging` (2080 de 2080).
+
+**D3 — defaults de campo (acoplamento 6).**
+
+- `item_program(file, símbolo)`: o AST do item seguido, por `append_item`, dos
+  itens que declaram os defaults visíveis (`visible_defaults`: deste arquivo e
+  dos arquivos cujos structs ele vê), cada um depois do fim do anterior. Só
+  itens com literal de struct o consultam (`defaults_program`).
+- `ItemPlacement` ganha `segments`: `span()` e `slot()` colocam cada segmento no
+  seu arquivo; `place_at` e `merge_item_from` colocam também
+  `struct_field_defaults`. Um segmento de outro arquivo não tem slot no arena
+  deste.
+- Bug corrigido: um importador herdava `struct_field_defaults` com `ExprId` do
+  arena do arquivo do struct e o lia no próprio pool (`stack overflow` em
+  `lib.Point { x: 1 }`). O caminho de arquivo deixa de herdá-los
+  (`signatures_with_imports`); o caminho local baixa o default do item que o
+  declara (`an_imported_field_default_builds_and_survives_a_move`, saída 8).
+- `struct_field_defaults` entra no hash do `TypeCheckResult` sob
+  `include_spans`, porque é uma tabela de `ExprId`; fora disso duas tipagens que
+  só diferissem nos defaults teriam a mesma identidade.
+- Gates: `a_moved_field_default_is_lowered_from_its_own_item` (nenhum vizinho
+  tipado de novo, bytes do frio, posições dentro do item ou do struct);
+  `field_defaults_place_back_into_the_file_views` (views colocadas iguais às do
+  caminho de arquivo; falha sem o mapeamento de slots dos segmentos). O corpus
+  não tem nenhum default de campo; o programa de prova tem AMIR idêntica ao
+  commit anterior em `Debug` completo.
+
+**Equivalência e custo.**
+
+- Corpus inteiro (`examples/`, `stdlib/`, `tests/`) contra o commit anterior ao
+  D1: diagnósticos de compilação e IDE idênticos (texto de span e labels) e
+  AMIR idêntica em `Debug` completo. Os hashes de tipagem e da AMIR mudam só
+  pelo esquema novo dos defaults.
+- `perf` (50 módulos, release, mínimo de 9 rodadas intercaladas): cold
+  0,66 s → 0,21 s; edição de dependência 6,0 ms → 5,9 ms. Edição que desloca
+  200 funções: `lower_amir` ~205 ms → ~110 ms; `file_ide_diagnostics`
+  ~24 ms → ~11 ms; `item_typing` 201 → 0, `item_direct_typing` 1,
+  `liveness_facts` 201 → 1.
+- Guardas: após o deslocamento, `item_source_input`, `item_typing`,
+  `item_staged_typing`, `item_const_arguments` e `item_static_branches` rodam
+  0 vezes; `item_direct_typing`, `instance_hir`, as units e o fluxo IDE, 1.
+
+**Limites.**
+
+- `item_local_typing`, `item_context`, `item_ide_diagnostics` e as views de
+  arquivo ainda reexecutam por item deslocado: convertem posições, não tipam.
+- Um default que cita um nome não é resolvido no programa do item: a tipagem
+  direta gera diagnóstico e o item segue o caminho de arquivo, como antes.
+- No caminho de arquivo (itens com `comptime`, CTFE), um default importado
+  conta como campo ausente (`missing fields`), em vez do estouro de pilha.
+- Acoplamento 7 (`let` novo desloca `LocalSymbolId`) segue aberto.
 
 ## 9. Questões em Aberto (Unresolved Questions)
 

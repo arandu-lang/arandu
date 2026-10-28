@@ -261,7 +261,10 @@ pub(super) fn build_instance_hir<'db>(
     let mut identity = blake3::Hasher::new();
     identity.update(b"InstanceHir/fingerprint/v1");
     identity.update(source_fingerprint.as_bytes());
-    FingerprintEq::fingerprinted(db, "instance_hir", output, identity.finalize())
+    // Every read the fingerprint covers is linked into the context, so a new
+    // fingerprint is new content; comparing contents would hash the whole
+    // linked context of each re-executed instance.
+    FingerprintEq::by_fingerprint(db, "instance_hir", output, identity.finalize())
 }
 
 /// Starts a local unit from [`linked_imports`] when it holds the very map

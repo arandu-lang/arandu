@@ -68,13 +68,15 @@ impl<T> StableHash for HashEq<T> {
 ///
 /// Equal fingerprints imply equal content. Different fingerprints fall back to
 /// the content hash, computed on first comparison, so the relation is exactly
-/// content equality and early cutoff is unchanged. A fresh database never
-/// compares against an earlier memo and therefore never pays for the content
-/// hash.
+/// content equality and early cutoff is unchanged ([`Self::by_fingerprint`]
+/// opts out). A fresh database never compares against an earlier memo and
+/// therefore never pays for the content hash.
 pub struct FingerprintEq<T> {
     pub value: Arc<T>,
     fingerprint: blake3::Hash,
     content: Arc<OnceLock<blake3::Hash>>,
+    /// Whether different fingerprints fall back to comparing contents.
+    by_content: bool,
 }
 
 impl<T> Clone for FingerprintEq<T> {
@@ -83,6 +85,7 @@ impl<T> Clone for FingerprintEq<T> {
             value: Arc::clone(&self.value),
             fingerprint: self.fingerprint,
             content: Arc::clone(&self.content),
+            by_content: self.by_content,
         }
     }
 }
@@ -110,6 +113,25 @@ impl<T: StableHash> FingerprintEq<T> {
             value,
             fingerprint,
             content: Arc::new(content),
+            by_content: true,
+        }
+    }
+
+    /// [`Self::fingerprinted`] equal only by fingerprint. For an output whose
+    /// content hash spans its whole typing context (O(import closure)) and
+    /// whose fingerprint covers every read that context is linked from: a new
+    /// fingerprint then means new content in practice, and comparing contents
+    /// would hash every re-executed unit's context on each warm build. A
+    /// spurious difference only re-executes dependents, which is sound.
+    pub(crate) fn by_fingerprint(
+        db: &dyn crate::ArandCompilerDb,
+        kind: &'static str,
+        value: impl Into<Arc<T>>,
+        fingerprint: blake3::Hash,
+    ) -> Self {
+        Self {
+            by_content: false,
+            ..Self::fingerprinted(db, kind, value, fingerprint)
         }
     }
 
@@ -121,6 +143,7 @@ impl<T: StableHash> FingerprintEq<T> {
             value,
             fingerprint: hash,
             content: Arc::new(OnceLock::from(hash)),
+            by_content: true,
         }
     }
 
@@ -136,6 +159,7 @@ impl<T> FingerprintEq<T> {
             value: Arc::clone(&value.value),
             fingerprint: value.hash,
             content: Arc::new(OnceLock::from(value.hash)),
+            by_content: true,
         }
     }
 }
@@ -152,7 +176,8 @@ impl<T> StableHash for FingerprintEq<T> {
 
 impl<T: StableHash> PartialEq for FingerprintEq<T> {
     fn eq(&self, other: &Self) -> bool {
-        self.fingerprint == other.fingerprint || self.content_hash() == other.content_hash()
+        self.fingerprint == other.fingerprint
+            || (self.by_content && other.by_content && self.content_hash() == other.content_hash())
     }
 }
 impl<T: StableHash> Eq for FingerprintEq<T> {}

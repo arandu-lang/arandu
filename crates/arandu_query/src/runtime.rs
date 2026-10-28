@@ -137,8 +137,12 @@ impl RuntimeUnit {
         db: &dyn ArandCompilerDb,
         kind: &'static str,
     ) -> FingerprintEq<Self> {
+        // The fingerprint is the unit's own content with its context named by
+        // the instance that built it; when that instance is equal it is
+        // backdated and the unit never re-executes, so a content comparison
+        // could only hash the context of every re-executed unit.
         let fingerprint = self.fingerprint();
-        FingerprintEq::fingerprinted(db, kind, self, fingerprint)
+        FingerprintEq::by_fingerprint(db, kind, self, fingerprint)
     }
 
     /// Input fingerprint: the unit's own content with the context replaced by

@@ -17,19 +17,55 @@ use super::{
 /// expression IDs start at `exprs` in the file arena and its spans in
 /// `file_id` at `offset`. The default places a shard already in file
 /// coordinates.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ItemPlacement {
     pub file_id: u32,
     pub exprs: u32,
     pub offset: u32,
+    /// Other items whose AST the shard's program appends after its own: the
+    /// field defaults it lowers.
+    pub segments: Arc<[PlacedSegment]>,
+}
+
+/// One appended item of a local program and where it sits in its file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlacedSegment {
+    pub file_id: u32,
+    /// Spans of the segment start at `local_offset` in the local program
+    /// and cover `len` bytes.
+    pub local_offset: u32,
+    pub len: u32,
+    /// Its expressions start at `local_exprs` and are `exprs_len` long.
+    pub local_exprs: u32,
+    pub exprs_len: u32,
+    /// Start of the item in its file.
+    pub offset: u32,
+    /// Its first expression in the arena of the placement's file; `None` for
+    /// an item of another file, whose expressions have no slot there.
+    pub exprs: Option<u32>,
 }
 
 impl ItemPlacement {
     /// The `Span::new(0, 0, 0)` placeholder of synthetic nodes is not a
     /// position and is never moved, as in `Program::append_item`.
     #[must_use]
-    pub fn span(self, span: arandu_middle::Span) -> arandu_middle::Span {
-        if span.file_id != self.file_id || span == arandu_middle::Span::new(0, 0, 0) {
+    pub fn span(&self, span: arandu_middle::Span) -> arandu_middle::Span {
+        if span == arandu_middle::Span::new(0, 0, 0) {
+            return span;
+        }
+        for segment in self.segments.iter() {
+            if span.file_id == segment.file_id
+                && segment.local_offset <= span.start
+                && span.end <= segment.local_offset + segment.len
+            {
+                return arandu_middle::Span::new(
+                    span.file_id,
+                    span.start - segment.local_offset + segment.offset,
+                    span.end - segment.local_offset + segment.offset,
+                );
+            }
+        }
+        if span.file_id != self.file_id {
             return span;
         }
         arandu_middle::Span::new(
@@ -40,8 +76,21 @@ impl ItemPlacement {
     }
 
     #[must_use]
-    pub fn expr(self, expr: ExprId) -> ExprId {
+    pub fn expr(&self, expr: ExprId) -> ExprId {
         ExprId::new(expr.as_usize() + self.exprs as usize)
+    }
+
+    /// File arena slot of a local expression; `None` when it belongs to an
+    /// item of another file.
+    #[must_use]
+    pub fn slot(&self, local: usize) -> Option<usize> {
+        for segment in self.segments.iter() {
+            let start = segment.local_exprs as usize;
+            if (start..start + segment.exprs_len as usize).contains(&local) {
+                return segment.exprs.map(|base| base as usize + local - start);
+            }
+        }
+        Some(self.exprs as usize + local)
     }
 }
 
@@ -52,16 +101,30 @@ impl TypeInfo {
             |symbol| symbol,
             false,
             true,
-            ItemPlacement::default(),
+            &ItemPlacement::default(),
         );
     }
 
     /// Moves the expression tables and spans of an item-local shard to `at`,
     /// in place: the inverse of making them local.
-    pub fn place_at(&mut self, at: ItemPlacement) {
-        let mut expr_types = vec![None; at.exprs as usize];
-        expr_types.append(&mut self.expr_types);
-        self.expr_types = expr_types;
+    pub fn place_at(&mut self, at: &ItemPlacement) {
+        if at.segments.is_empty() {
+            let mut expr_types = vec![None; at.exprs as usize];
+            expr_types.append(&mut self.expr_types);
+            self.expr_types = expr_types;
+        } else {
+            let mut expr_types = vec![None; at.exprs as usize];
+            for (local, slot) in std::mem::take(&mut self.expr_types).into_iter().enumerate() {
+                let (Some(ty), Some(index)) = (slot, at.slot(local)) else {
+                    continue;
+                };
+                if expr_types.len() <= index {
+                    expr_types.resize(index + 1, None);
+                }
+                expr_types[index].get_or_insert(ty);
+            }
+            self.expr_types = expr_types;
+        }
         for root in &mut self.ctfe_roots {
             *root = at.expr(*root);
         }
@@ -72,12 +135,17 @@ impl TypeInfo {
         for span in self.header_requests.values_mut() {
             *span = at.span(*span);
         }
+        // A default of another file has no slot in this one.
+        self.struct_field_defaults = std::mem::take(&mut self.struct_field_defaults)
+            .into_iter()
+            .filter_map(|(key, expr)| Some((key, ExprId::new(at.slot(expr.as_usize())?))))
+            .collect();
     }
 
     /// Merge an item shard recorded in item-local coordinates, placing its
     /// expression tables and spans at `at`. Thread captures are never item
     /// local: their recipes and synthetic names carry file positions.
-    pub fn merge_item_from(&mut self, item: &TypeInfo, at: ItemPlacement) {
+    pub fn merge_item_from(&mut self, item: &TypeInfo, at: &ItemPlacement) {
         self.merge_context(item, |symbol| symbol, false, true, at);
     }
     /// Compose units from one revision without cloning their interners or
@@ -95,7 +163,7 @@ impl TypeInfo {
             remap,
             true,
             include_expressions,
-            ItemPlacement::default(),
+            &ItemPlacement::default(),
         );
     }
 
@@ -105,7 +173,7 @@ impl TypeInfo {
         remap: impl Fn(SymbolId) -> SymbolId,
         shared_headers: bool,
         include_expressions: bool,
-        at: ItemPlacement,
+        at: &ItemPlacement,
     ) {
         self.merge_symbol_contracts(other, &remap, at);
         self.merge_concrete_headers(other, &remap, shared_headers);
@@ -118,7 +186,7 @@ impl TypeInfo {
         self.merge_expression_tables(other, include_expressions, at);
     }
 
-    fn merge_symbol_contracts<F>(&mut self, other: &TypeInfo, remap: &F, at: ItemPlacement)
+    fn merge_symbol_contracts<F>(&mut self, other: &TypeInfo, remap: &F, at: &ItemPlacement)
     where
         F: Fn(SymbolId) -> SymbolId,
     {
@@ -380,7 +448,7 @@ impl TypeInfo {
         &mut self,
         other: &TypeInfo,
         include_expressions: bool,
-        at: ItemPlacement,
+        at: &ItemPlacement,
     ) {
         // Expr types (body typeck shards): re-intern TypeIds into `self`.
         if include_expressions {
@@ -407,15 +475,22 @@ impl TypeInfo {
         if !include_expressions || other.expr_types.iter().all(|s| s.is_none()) {
             return;
         }
-        let base = at.exprs as usize;
-        if base + other.expr_types.len() > self.expr_types.len() {
-            self.expr_types.resize(base + other.expr_types.len(), None);
+        if at.segments.is_empty() {
+            let end = at.exprs as usize + other.expr_types.len();
+            if end > self.expr_types.len() {
+                self.expr_types.resize(end, None);
+            }
         }
         for (idx, slot) in other.expr_types.iter().enumerate() {
             let Some(other_id) = slot else {
                 continue;
             };
-            let idx = base + idx;
+            let Some(idx) = at.slot(idx) else {
+                continue;
+            };
+            if self.expr_types.len() <= idx {
+                self.expr_types.resize(idx + 1, None);
+            }
             if self.expr_types[idx].is_some() {
                 continue; // keep first writer (signatures / earlier merge)
             }

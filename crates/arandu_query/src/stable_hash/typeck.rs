@@ -467,6 +467,21 @@ fn hash_typing(
         hash_symbol_id(&mut h, symbol);
     }
 
+    // HIR lowering reads the default expression of each omitted field, by its
+    // arena ID: a position, like the expression tables.
+    if include_spans {
+        let mut defaults: Vec<_> = info.struct_field_defaults.iter().collect();
+        defaults.sort_by(|((a, x), _), ((b, y), _)| {
+            (a.file_id, a.local_id.0, x).cmp(&(b.file_id, b.local_id.0, y))
+        });
+        h.update(&u64_le(defaults.len() as u64));
+        for ((symbol, field), expr) in defaults {
+            hash_symbol_id(&mut h, *symbol);
+            hash_str(&mut h, field);
+            hash_id(&mut h, expr.as_usize());
+        }
+    }
+
     finish(h)
 }
 

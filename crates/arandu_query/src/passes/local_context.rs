@@ -64,8 +64,8 @@ pub(crate) fn without_positions(result: &TypeCheckResult) -> TypeCheckResult {
 /// [`signature_context`] with the local typing of `item_sym` placed at the
 /// start of its item, and the symbols and declaration diagnostics of that item
 /// relative to it. Symbols of other items carry the placeholder. `None` when
-/// the item does not type locally, or lowering it reads another item's AST
-/// (field defaults) or a position outside it (import diagnostics).
+/// the item does not type locally, or lowering it reads a position outside
+/// it (import diagnostics).
 #[salsa::tracked]
 #[tracing::instrument(level = "trace", target = "arandu_query", skip(db), fields(
     query = "item_context", file = ?file.file_id(db), item = ?item_sym,
@@ -77,11 +77,10 @@ pub fn item_context(
 ) -> Option<(HashEq<TypeCheckResult>, AstId)> {
     let (local, at) = super::local_typing::item_local_typing(db, file, item_sym).as_ref()?;
     let signatures = super::signatures::declaration_signatures(db, file);
-    if !signatures.type_info.struct_field_defaults.is_empty()
-        || signatures
-            .resolved
-            .deferred_comptime_functions
-            .contains(&item_sym)
+    if signatures
+        .resolved
+        .deferred_comptime_functions
+        .contains(&item_sym)
     {
         return None;
     }
@@ -150,13 +149,18 @@ pub fn item_context(
     // every position inside its declaration.
     Arc::make_mut(&mut checked.type_info).merge_item_from(
         &local.type_info,
-        ItemPlacement {
+        &ItemPlacement {
             file_id: at.file_id,
-            exprs: 0,
-            offset: 0,
+            ..ItemPlacement::default()
         },
     );
     checked.resolved = Arc::new(local.resolved.clone());
+    // Field defaults are expressions of the item program.
+    if let Some(program) = super::programs::defaults_program(db, file, item_sym)? {
+        if !program.defaults.is_empty() {
+            checked.type_info_mut().struct_field_defaults = program.defaults.clone();
+        }
+    }
     checked
         .diagnostics
         .extend(local.diagnostics.iter().cloned());

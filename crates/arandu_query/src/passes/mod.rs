@@ -57,6 +57,7 @@ mod items;
 mod local_context;
 mod local_typing;
 mod lower;
+mod programs;
 mod resolution;
 mod signatures;
 mod symbols;
@@ -71,6 +72,7 @@ pub use lower::{
     borrow_interfaces, lower_amir, module_dependency_graph, prepare_hir, BorrowInterfaces,
     LowerAmirArtifacts, PreparedHir,
 };
+pub(crate) use programs::defaults_program;
 pub(crate) use resolution::signatures_from_program;
 pub use resolution::{
     cycle_recover, parse, parse_diagnostics, resolve, resolved_headers, symbol_span, syntax_tree,

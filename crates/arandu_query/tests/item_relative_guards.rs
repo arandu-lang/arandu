@@ -310,3 +310,70 @@ fn an_instance_is_positioned_by_its_own_unit_even_after_its_caller() {
         "{instance:?}"
     );
 }
+
+/// `make` builds a `Point` that takes a field default from another item.
+fn defaults_program(growth: usize) -> String {
+    program(growth).replace(
+        "func main(): int {\n    return alpha(1) + beta(2) + gamma(3) + delta()\n}\n",
+        "struct Point {\n    x: int = 5\n    y: int = 7\n}\n\nfunc make(): int {\n    let p = Point { x: 1 }\n    return p.x + p.y\n}\n\nfunc main(): int {\n    return make() + delta()\n}\n",
+    )
+}
+
+/// A field default is lowered from the item that declares it (RFC 0042):
+/// moving both items types and lowers neither again, and no position of the
+/// appended item leaks out of its declaration.
+#[test]
+fn a_moved_field_default_is_lowered_from_its_own_item() {
+    let (mut db, log) = DatabaseImpl::with_rebuild_log();
+    let file = db.new_file("defaults.aru".into(), defaults_program(0));
+    let _ = lower_amir(&db, file);
+    log.clear();
+    file.set_text(&mut db).to(Arc::from(defaults_program(3)));
+    let incremental = lower_amir(&db, file).value.stable_hash();
+    assert_runs(
+        &log,
+        &[
+            ("item_typing", 0),
+            ("item_direct_typing", 1),
+            ("instance_hir", 1),
+        ],
+    );
+
+    let mut cold = DatabaseImpl::new();
+    let cold_file = cold.new_file("defaults.aru".into(), defaults_program(3));
+    assert_eq!(
+        incremental,
+        lower_amir(&cold, cold_file).value.stable_hash()
+    );
+
+    let text = file.text(&db).to_string();
+    let range = |head: &str| {
+        let start = text.find(head).expect("item") as u32;
+        (
+            start,
+            start + text[start as usize..].find("\n}\n").expect("end") as u32 + 2,
+        )
+    };
+    let (own, point) = (range("func make("), range("struct Point"));
+    let symbol = function_named(&db, file, "make");
+    let artifacts = lower_amir(&db, file);
+    let function = artifacts
+        .amir
+        .funcs
+        .iter()
+        .find(|function| function.symbol == symbol)
+        .expect("make");
+    for span in function
+        .temps
+        .iter()
+        .map(|temp| temp.span)
+        .chain(function.locals.iter().map(|local| local.span))
+        .filter(|span| *span != arandu_middle::Span::new(0, 0, 0))
+    {
+        let inside = |(start, end): (u32, u32)| start <= span.start && span.end <= end;
+        assert!(
+            inside(own) || inside(point),
+            "{span:?} outside `make` and `Point`"
+        );
+    }
+}

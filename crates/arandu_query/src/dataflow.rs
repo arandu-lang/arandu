@@ -109,7 +109,7 @@ pub struct ItemFlow {
 
 impl IdeDiagnostic {
     /// Moves every position from item to file coordinates.
-    pub(crate) fn place(&mut self, at: arandu_typeck::type_checker::info::ItemPlacement) {
+    pub(crate) fn place(&mut self, at: &arandu_typeck::type_checker::info::ItemPlacement) {
         let place = |file_id: &mut u32, start: &mut u32, end: &mut u32| {
             let span = at.span(arandu_middle::Span::new(*file_id, *start, *end));
             (*file_id, *start, *end) = (span.file_id, span.start, span.end);

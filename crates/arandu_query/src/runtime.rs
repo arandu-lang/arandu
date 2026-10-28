@@ -598,7 +598,6 @@ pub(crate) fn place_unit(
     }
     let file = db.source_file_by_id(key.definition.file_id)?;
     let (_, at) = crate::passes::item_local_typing(db, file, key.definition).as_ref()?;
-    let at = *at;
     let span = |span| at.span(span);
     let place_diagnostics = |diagnostics: &[Diagnostic]| {
         diagnostics
@@ -671,13 +670,21 @@ fn local_function_hir(
     }
     let (context, id) = crate::passes::item_context(db, file, symbol).as_ref()?;
     let item = crate::passes::item_ast(db, file, *id);
-    let Ok(program) = &*item.value else {
-        return None;
+    let defaults = crate::passes::defaults_program(db, file, symbol)?;
+    let program = match defaults {
+        Some(program) => &program.program,
+        None => match &*item.value {
+            Ok(program) => program,
+            Err(_) => return None,
+        },
     };
     let module = declared_module(db, file);
     let mut fingerprint = blake3::Hasher::new();
     fingerprint.update(b"FunctionHir/local/v1");
     fingerprint.update(item.stable_hash().as_bytes());
+    if let Some(program) = defaults {
+        fingerprint.update(program.stable_hash().as_bytes());
+    }
     fingerprint.update(&symbol.file_id.to_le_bytes());
     fingerprint.update(&symbol.local_id.0.to_le_bytes());
     let source_fingerprint = fingerprint.finalize();

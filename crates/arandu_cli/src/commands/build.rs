@@ -643,6 +643,40 @@ mod tests {
             let _ = fs::remove_dir_all(root);
         }
 
+        /// A field default declared in another module is lowered from the item
+        /// that declares it; the importer's arena never holds it (RFC 0042).
+        #[test]
+        fn an_imported_field_default_builds_and_survives_a_move() {
+            let library = |growth: usize| {
+                format!(
+                    "{}\npublic struct Point {{\n    public x: int = 5\n    public y: int = 7\n}}\n",
+                    library(growth)
+                )
+            };
+            let root = project("defaults", &library(0));
+            fs::write(
+                root.join("src/main.aru"),
+                "import app.lib as lib\n\nfunc main(): int {\n    let p = lib.Point { x: 1 }\n    return p.x + p.y\n}\n",
+            )
+            .unwrap();
+            let mut session = BuildSession::open(&root, request()).unwrap();
+            session.build().unwrap();
+            assert_eq!(exit_code(&root), Some(8));
+
+            fs::write(root.join("src/lib.aru"), library(3)).unwrap();
+            session.build().unwrap();
+            assert_eq!(exit_code(&root), Some(8));
+            let warm = fs::read(artifact(&root)).unwrap();
+            drop(session);
+            fs::remove_dir_all(root.join("target")).unwrap();
+            BuildSession::open(&root, request())
+                .unwrap()
+                .build()
+                .unwrap();
+            assert_eq!(warm, fs::read(artifact(&root)).unwrap());
+            let _ = fs::remove_dir_all(root);
+        }
+
         fn copy_tree(from: &Path, to: &Path) {
             fs::create_dir_all(to).unwrap();
             for entry in fs::read_dir(from).unwrap() {

@@ -389,6 +389,14 @@ pub(super) fn signatures_with_imports(
         checker
             .type_info
             .merge_from(imported_sigs.type_info.as_ref());
+        // A field default is an expression of its own file's arena, which the
+        // file AST of an importer does not hold. Item programs append the
+        // declaring item instead (RFC 0042).
+        let file_id = *file.file_id(db);
+        checker
+            .type_info
+            .struct_field_defaults
+            .retain(|(symbol, _), _| symbol.file_id == file_id);
         // Import aliases carry names/IDs, not the original declaration identity.
         // Retain canonical SIMD/interior-mutability and intrinsic metadata by
         // SymbolId, including re-exports. Path suffixes and imported spellings

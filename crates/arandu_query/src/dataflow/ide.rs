@@ -52,7 +52,7 @@ pub(super) fn collect_item_ide_diagnostics(
     let at = if flow.local {
         crate::passes::item_local_typing(db, file, item_sym)
             .as_ref()
-            .map(|(_, at)| *at)
+            .map(|(_, at)| at)
     } else {
         None
     };

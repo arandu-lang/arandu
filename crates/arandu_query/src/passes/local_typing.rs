@@ -51,13 +51,14 @@ pub fn item_local_typing(
         file_id: *file.file_id(db),
         exprs: bases.exprs,
         offset: bases.offset,
+        segments: Arc::default(),
     };
     if let Some(local) = item_direct_typing(db, file, item_sym) {
-        return Some((local.clone(), at));
+        return Some((local.clone(), placement(db, file, item_sym, at)?));
     }
     let signatures = super::signatures::declaration_signatures(db, file);
     let frame = Frame {
-        at,
+        at: at.clone(),
         own,
         exprs: at.exprs as usize..at.exprs as usize + item_exprs,
         expr_spans: &program.pool.expr_spans,
@@ -70,12 +71,54 @@ pub fn item_local_typing(
     Some((HashEq::with_identity(Arc::new(local), hash), at))
 }
 
+/// `at` with the appended items of the item's program placed in their files.
+fn placement(
+    db: &dyn ArandCompilerDb,
+    file: SourceFile,
+    item_sym: SymbolId,
+    at: ItemPlacement,
+) -> Option<ItemPlacement> {
+    let Some(program) = super::programs::defaults_program(db, file, item_sym)? else {
+        return Some(at);
+    };
+    if program.segments.is_empty() {
+        return Some(at);
+    }
+    let mut segments = Vec::with_capacity(program.segments.len());
+    for segment in &program.segments {
+        let owner = segment.owner;
+        let source = db.source_file_by_id(owner.file_id)?;
+        let offset = super::items::item_positions(db, source)
+            .item_span(owner)?
+            .start;
+        let exprs = if owner.file_id == at.file_id {
+            let (_, bases) = super::items::composed_file(db, file).as_ref()?;
+            Some(bases.get(owner.index as usize)?.exprs)
+        } else {
+            None
+        };
+        segments.push(arandu_typeck::type_checker::info::PlacedSegment {
+            file_id: owner.file_id,
+            local_offset: segment.local_offset,
+            len: segment.len,
+            local_exprs: segment.local_exprs,
+            exprs_len: segment.exprs_len,
+            offset,
+            exprs,
+        });
+    }
+    Some(ItemPlacement {
+        segments: segments.into(),
+        ..at
+    })
+}
+
 /// What typing `item_sym` reads, in the coordinates of its top-level item:
 /// [`super::signature_context`] with the signature entries inside the item
 /// made local, and the item's symbols relative to it. Symbols of other items
 /// carry the `Span::new(0, 0, 0)` placeholder, so moving the item leaves it
 /// equal. `None` when the file AST is not composed from its items, or the
-/// signatures hold field defaults or thread captures.
+/// signatures hold thread captures.
 #[salsa::tracked]
 #[tracing::instrument(level = "trace", target = "arandu_query", skip(db), fields(
     query = "item_typing_input", file = ?file.file_id(db), item = ?item_sym,
@@ -99,14 +142,17 @@ pub(crate) fn item_typing_input(
     };
     let signatures = super::signatures::declaration_signatures(db, file);
     let declared = &signatures.type_info;
-    if !declared.struct_field_defaults.is_empty() || !declared.thread_captures.is_empty() {
+    if !declared.thread_captures.is_empty() {
         return None;
     }
+    let item_program = super::programs::defaults_program(db, file, item_sym)?;
+    let defaults = item_program.map(|program| &program.defaults);
     let frame = Frame {
         at: ItemPlacement {
             file_id: *file.file_id(db),
             exprs: bases.exprs,
             offset: bases.offset,
+            segments: Arc::default(),
         },
         own,
         exprs: bases.exprs as usize..bases.exprs as usize + item_exprs,
@@ -125,11 +171,16 @@ pub(crate) fn item_typing_input(
         .map(arandu_parser::ast_pool::ExprId::new)
         .collect();
     let ctfe_values = frame.spans(&declared.ctfe_values, &declared.ctfe_values)?;
-    if !expr_types.is_empty() || !ctfe_roots.is_empty() || !ctfe_values.is_empty() {
+    if !expr_types.is_empty()
+        || !ctfe_roots.is_empty()
+        || !ctfe_values.is_empty()
+        || defaults.is_some_and(|defaults| !defaults.is_empty())
+    {
         let info = input.type_info_mut();
         info.expr_types = expr_types;
         info.ctfe_roots = ctfe_roots;
         info.ctfe_values = ctfe_values;
+        info.struct_field_defaults = defaults.cloned().unwrap_or_default();
     }
     let inside = |span: Span| {
         span.file_id == extent.file_id && extent.start <= span.start && span.end <= extent.end
@@ -148,12 +199,20 @@ pub(crate) fn item_typing_input(
             Span::new(0, 0, 0)
         }
     }));
-    let hash = crate::stable_hash::typing_input_hash(
-        crate::StableHash::stable_hash(context),
-        &input,
-        &own,
+    let mut hash = blake3::Hasher::new();
+    hash.update(
+        crate::stable_hash::typing_input_hash(
+            crate::StableHash::stable_hash(context),
+            &input,
+            &own,
+        )
+        .as_bytes(),
     );
-    Some(HashEq::with_identity(Arc::new(input), hash))
+    // The defaults the program reads are part of its identity.
+    if let Some(item_program) = item_program {
+        hash.update(crate::StableHash::stable_hash(item_program).as_bytes());
+    }
+    Some(HashEq::with_identity(Arc::new(input), hash.finalize()))
 }
 
 /// Body typing of `item_sym` run on its item AST with [`item_typing_input`],
@@ -188,13 +247,17 @@ pub(crate) fn item_direct_typing(
     let input = item_typing_input(db, file, item_sym).as_ref()?;
     let id = *super::items::item_ast_ids(db, file).get(&item_sym)?;
     let item = super::items::item_ast(db, file, id);
-    let Ok(item) = &*item.value else {
-        return None;
+    let program = match super::programs::defaults_program(db, file, item_sym)? {
+        Some(program) => &program.program,
+        None => match &*item.value {
+            Ok(program) => program,
+            Err(_) => return None,
+        },
     };
     let typed = crate::ctfe::contracts::check_body(
         db,
         input,
-        item,
+        program,
         item_sym,
         &arandu_middle::types::GenericSubst::new(),
         &crate::ctfe::DependencyContext::default(),
@@ -232,7 +295,7 @@ pub(super) fn place(
     names: &mut ResolvedNames,
     diagnostics: &mut Vec<Diagnostic>,
     local: &LocalTyping,
-    at: ItemPlacement,
+    at: &ItemPlacement,
 ) {
     info.merge_item_from(&local.type_info, at);
     let key = |key: &NodeKey| NodeKey {
@@ -668,11 +731,13 @@ mod tests {
                     file_id: *file.file_id(&db),
                     exprs: bases.exprs,
                     offset: bases.offset,
+                    segments: Default::default(),
                 };
+                let exprs = at.exprs as usize..at.exprs as usize + item.pool.exprs.len();
                 let frame = super::Frame {
                     at,
                     own: super::super::typing::item_source_spans(&db, file)[&symbol],
-                    exprs: at.exprs as usize..at.exprs as usize + item.pool.exprs.len(),
+                    exprs,
                     expr_spans: &composed.pool.expr_spans,
                 };
                 let converted = frame
@@ -693,6 +758,35 @@ mod tests {
             items > 500 && direct * 100 >= items * 80,
             "{direct} of {items} items typed directly"
         );
+    }
+
+    /// A struct literal that takes field defaults is typed on its item program,
+    /// and the file views it places equal those of the file typing.
+    #[test]
+    fn field_defaults_place_back_into_the_file_views() {
+        let source = "struct Point {\n    x: int = 5\n    y: int = 7 + 1\n}\n\nfunc make(): int {\n    let p = Point { x: 1 }\n    return p.x + p.y\n}\n\nfunc main(): int {\n    return make()\n}\n";
+        let mut db = DatabaseImpl::new();
+        let file = db.new_file("defaults.aru".into(), source.into());
+        let signatures = super::super::declaration_signatures(&db, file);
+        let make = signatures
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name == "make")
+            .expect("make")
+            .id;
+        let program = super::super::programs::item_program(&db, file, make)
+            .as_ref()
+            .expect("item program");
+        assert_eq!(program.segments.len(), 1);
+        assert_eq!(program.defaults.len(), 2);
+        assert!(super::item_direct_typing(&db, file, make).is_some());
+        for declarations_only in [true, false] {
+            assert_eq!(
+                normalized(&compose_items(&db, file, declarations_only, true)),
+                normalized(&compose_items(&db, file, declarations_only, false)),
+                "declarations only: {declarations_only}"
+            );
+        }
     }
 
     /// File views placed from local typings equal the views merged in file

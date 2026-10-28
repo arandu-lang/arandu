@@ -369,7 +369,7 @@ pub(super) fn compose_items(
                 Arc::make_mut(&mut merged_resolved),
                 &mut diagnostics,
                 local,
-                *at,
+                at,
             );
         } else {
             let item = if declarations_only {

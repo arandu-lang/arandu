@@ -226,7 +226,7 @@ pub fn record_elf_layout(
         )
     })?;
     encoded.push(b'\n');
-    artifact::atomic_replace(layout_file, &encoded)
+    artifact::replace_derived(layout_file, &encoded)
 }
 
 /// Attempt in-place patching of whole function slots through a checked shared
@@ -377,7 +377,7 @@ fn try_patch_linux(
         )
     })?;
     encoded.push(b'\n');
-    artifact::atomic_replace(layout_file, &encoded)?;
+    artifact::replace_derived(layout_file, &encoded)?;
     Ok(Some(new_digest))
 }
 

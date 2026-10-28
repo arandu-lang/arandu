@@ -10,7 +10,7 @@ use crate::cli_error::CliFailure;
 mod atomic;
 mod publish;
 
-pub(crate) use atomic::atomic_replace;
+pub(crate) use atomic::{atomic_replace, replace_derived};
 use atomic::{failure, publish_staging, safe_relative_path};
 pub use publish::{
     publish_benchmark_harness, publish_native_artifact, publish_partitioned_native_artifact,
@@ -311,7 +311,7 @@ pub fn record_patched_native_artifact(
         CliFailure::operational("serialize build provenance", None, error.to_string())
     })?;
     encoded.push(b'\n');
-    atomic_replace(&layout.profile_root.join("build-state.json"), &encoded)?;
+    replace_derived(&layout.profile_root.join("build-state.json"), &encoded)?;
     Ok(PublishedNativeArtifact {
         path: target_path,
         digest: new_digest.to_owned(),

@@ -383,7 +383,7 @@ pub fn record_session(
         CliFailure::operational("serialize session fingerprint", None, error.to_string())
     })?;
     encoded.push(b'\n');
-    artifact::atomic_replace(&layout.incremental.join(FINGERPRINT_FILENAME), &encoded)
+    artifact::replace_derived(&layout.incremental.join(FINGERPRINT_FILENAME), &encoded)
 }
 
 const fn compiler_artifact_kinds() -> [CompilerArtifactKind; 3] {

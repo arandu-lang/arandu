@@ -176,6 +176,6 @@ fn publish_one(
             error.to_string(),
         )
     })?;
-    crate::artifact::atomic_replace(&path, &bytes)?;
+    crate::artifact::replace_derived(&path, &bytes)?;
     Ok(path)
 }

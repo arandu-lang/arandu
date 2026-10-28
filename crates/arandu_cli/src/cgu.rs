@@ -183,8 +183,8 @@ pub fn compile_partitioned(
 
         // Publish the object first and its validating sidecar last. An
         // interrupted build therefore leaves a cache miss, never a false hit.
-        artifact::atomic_replace(&cgu_path, &bytes)?;
-        artifact::atomic_replace(&metadata_path, &encoded)?;
+        artifact::replace_derived(&cgu_path, &bytes)?;
+        artifact::replace_derived(&metadata_path, &encoded)?;
         trust.record(&cgu_path, &metadata_path);
 
         recompiled_units.push((unit.clone(), bytes));

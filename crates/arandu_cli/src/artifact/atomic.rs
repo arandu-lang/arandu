@@ -13,7 +13,7 @@ pub(super) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), CliFailure> 
         }
         return atomic_replace(path, bytes);
     }
-    write_staging(path, bytes).and_then(|staging| {
+    write_staging(path, bytes, true).and_then(|staging| {
         fs::rename(&staging, path).map_err(|error| {
             let _ = fs::remove_file(&staging);
             failure("publish artifact", path, error)
@@ -22,7 +22,17 @@ pub(super) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), CliFailure> 
 }
 
 pub(crate) fn atomic_replace(path: &Path, bytes: &[u8]) -> Result<(), CliFailure> {
-    let staging = write_staging(path, bytes)?;
+    let staging = write_staging(path, bytes, true)?;
+    atomic_platform_replace(path, &staging)
+}
+
+/// [`atomic_replace`] without flushing the bytes to disk, for build outputs
+/// that every reader validates by content (BLAKE3 digests, schema, parse):
+/// a crash may cost a rebuild, never a wrong result. The linked and patched
+/// executables are not flushed either. Sources of truth, such as the
+/// lockfile, keep [`atomic_replace`].
+pub(crate) fn replace_derived(path: &Path, bytes: &[u8]) -> Result<(), CliFailure> {
+    let staging = write_staging(path, bytes, false)?;
     atomic_platform_replace(path, &staging)
 }
 
@@ -84,7 +94,7 @@ pub(super) fn publish_staging(staging: &Path, destination: &Path) -> Result<(), 
         .map_err(|error| failure("publish linked artifact", destination, error))
 }
 
-fn write_staging(path: &Path, bytes: &[u8]) -> Result<PathBuf, CliFailure> {
+fn write_staging(path: &Path, bytes: &[u8], flush: bool) -> Result<PathBuf, CliFailure> {
     let staging = unique_staging_path(path, "write");
     let mut file = OpenOptions::new()
         .write(true)
@@ -92,7 +102,7 @@ fn write_staging(path: &Path, bytes: &[u8]) -> Result<PathBuf, CliFailure> {
         .open(&staging)
         .map_err(|error| failure("create artifact staging file", &staging, error))?;
     file.write_all(bytes)
-        .and_then(|()| file.sync_all())
+        .and_then(|()| if flush { file.sync_all() } else { Ok(()) })
         .map_err(|error| {
             let _ = fs::remove_file(&staging);
             failure("flush artifact staging file", &staging, error)

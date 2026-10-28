@@ -107,6 +107,10 @@ pub(crate) struct BuildSession {
     supersede: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Whether the last build stopped at a checkpoint.
     superseded: bool,
+    /// What the last refresh saw of each input and when that scan began; an
+    /// input whose file is unchanged since is not read again.
+    stamps: std::collections::HashMap<PathBuf, artifact::FileStat>,
+    last_scan: Option<std::time::SystemTime>,
 }
 
 impl BuildSession {
@@ -210,6 +214,8 @@ impl BuildSession {
             published: None,
             supersede: None,
             superseded: false,
+            stamps: std::collections::HashMap::new(),
+            last_scan: None,
         })
     }
 
@@ -224,11 +230,16 @@ impl BuildSession {
             *self = Self::open(&self.start, self.request.clone())?;
             return Ok(());
         }
+        let scan = std::time::SystemTime::now();
         for input in &self.ctx.build_inputs {
             let key = input.path.to_string_lossy();
             let Some(file) = self.db.source_file_by_path(&key) else {
                 continue;
             };
+            let stamp = artifact::FileStat::of(&input.path);
+            if !needs_read(self.stamps.get(&input.path), stamp, self.last_scan) {
+                continue;
+            }
             let Ok(text) = std::fs::read_to_string(&input.path) else {
                 // A vanished source is a changed file set.
                 *self = Self::open(&self.start, self.request.clone())?;
@@ -237,7 +248,12 @@ impl BuildSession {
             if file.text(&self.db).as_ref() != text.as_str() {
                 self.db.update_file_text(file, text);
             }
+            match stamp {
+                Some(stamp) => self.stamps.insert(input.path.clone(), stamp),
+                None => self.stamps.remove(&input.path),
+            };
         }
+        self.last_scan = Some(scan);
         Ok(())
     }
 
@@ -509,6 +525,27 @@ impl BuildSession {
             published,
             &mut checkpoint,
         )
+    }
+}
+
+/// Margin before a scan within which a file timestamp cannot be trusted: the
+/// kernel stamps files from a coarse clock that can lag the scan's clock.
+const STAMP_MARGIN: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Whether a refresh must read an input: always without a stamp, when its
+/// stamp changed, and when it was touched near or after the previous scan
+/// began, which its stamp cannot tell apart from the version that scan read.
+fn needs_read(
+    previous: Option<&artifact::FileStat>,
+    current: Option<artifact::FileStat>,
+    last_scan: Option<std::time::SystemTime>,
+) -> bool {
+    match (previous, current, last_scan) {
+        (Some(previous), Some(current), Some(scan)) => {
+            *previous != current
+                || current.touched_since(scan.checked_sub(STAMP_MARGIN).unwrap_or(scan))
+        }
+        _ => true,
     }
 }
 
@@ -966,6 +1003,32 @@ mod tests {
             assert!(!session.take_superseded());
             assert_eq!(exit_code(&root), Some(13));
             let _ = fs::remove_dir_all(root);
+        }
+
+        /// An input is read again when its stamp changed or it was written
+        /// near the previous scan; an older, unchanged file is not.
+        #[cfg(unix)]
+        #[test]
+        fn refresh_reads_only_inputs_it_cannot_prove_unchanged() {
+            use super::super::needs_read;
+            use crate::artifact::FileStat;
+            let dir = std::env::temp_dir().join(format!("arandu-stamp-{}", std::process::id()));
+            fs::create_dir_all(&dir).unwrap();
+            let file = dir.join("a.aru");
+            fs::write(&file, "one").unwrap();
+            let stamp = FileStat::of(&file).unwrap();
+            let now = std::time::SystemTime::now();
+            assert!(needs_read(None, Some(stamp), Some(now)));
+            assert!(needs_read(Some(&stamp), None, Some(now)));
+            assert!(
+                needs_read(Some(&stamp), Some(stamp), Some(now)),
+                "written just before the scan: the stamp cannot prove it"
+            );
+            let later = now + std::time::Duration::from_secs(10);
+            assert!(!needs_read(Some(&stamp), Some(stamp), Some(later)));
+            fs::write(&file, "two").unwrap();
+            assert!(needs_read(Some(&stamp), FileStat::of(&file), Some(later)));
+            let _ = fs::remove_dir_all(dir);
         }
 
         fn copy_tree(from: &Path, to: &Path) {

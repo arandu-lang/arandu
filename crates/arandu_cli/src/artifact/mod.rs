@@ -137,7 +137,7 @@ pub struct ArtifactIdentity {
 /// Device, inode, size and nanosecond modification and change times. Any
 /// write, rename or truncation of the file changes at least one of them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct FileStat {
+pub(crate) struct FileStat {
     device: u64,
     inode: u64,
     size: u64,
@@ -146,8 +146,22 @@ struct FileStat {
 }
 
 impl FileStat {
+    /// Whether the file was modified or changed at or after `instant`. A
+    /// timestamp equal to the start of a scan cannot prove the file was not
+    /// written after the scan read it ("racy git"), so it counts as changed.
+    pub(crate) fn touched_since(&self, instant: std::time::SystemTime) -> bool {
+        let Ok(since) = instant.duration_since(std::time::UNIX_EPOCH) else {
+            return true;
+        };
+        let since = (
+            i64::try_from(since.as_secs()).unwrap_or(i64::MAX),
+            i64::from(since.subsec_nanos()),
+        );
+        self.modified >= since || self.changed >= since
+    }
+
     #[cfg(unix)]
-    fn of(path: &Path) -> Option<Self> {
+    pub(crate) fn of(path: &Path) -> Option<Self> {
         use std::os::unix::fs::MetadataExt;
 
         let metadata = fs::symlink_metadata(path).ok()?;
@@ -162,7 +176,7 @@ impl FileStat {
 
     /// Without stable inode numbers there is no identity to trust.
     #[cfg(not(unix))]
-    fn of(_path: &Path) -> Option<Self> {
+    pub(crate) fn of(_path: &Path) -> Option<Self> {
         None
     }
 }

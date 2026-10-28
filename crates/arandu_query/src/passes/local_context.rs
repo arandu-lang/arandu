@@ -61,6 +61,19 @@ pub(crate) fn without_positions(result: &TypeCheckResult) -> TypeCheckResult {
     }
 }
 
+/// The spans of the file's imports; `None` when the file does not parse. A
+/// query of its own so that a body edit leaves it equal.
+#[salsa::tracked]
+#[tracing::instrument(level = "trace", target = "arandu_query", skip(db), fields(
+    query = "import_spans", file = ?file.file_id(db),
+))]
+fn import_spans(db: &dyn ArandCompilerDb, file: SourceFile) -> Option<Arc<[Span]>> {
+    match &**super::resolution::parse(db, file) {
+        Ok(program) => Some(program.imports.iter().map(|import| import.span()).collect()),
+        Err(_) => None,
+    }
+}
+
 /// [`signature_context`] with the local typing of `item_sym` placed at the
 /// start of its item, and the symbols and declaration diagnostics of that item
 /// relative to it. Symbols of other items carry the placeholder. `None` when
@@ -99,11 +112,7 @@ pub fn item_context(
     };
     // A function body takes the declaration diagnostics inside its item and
     // those of the imports, which lie outside every body.
-    let parsed = super::resolution::parse(db, file);
-    let imports: Vec<Span> = match &**parsed {
-        Ok(program) => program.imports.iter().map(|import| import.span()).collect(),
-        Err(_) => return None,
-    };
+    let imports = import_spans(db, file).as_ref()?;
     let contains = |outer: Span, span: Span| {
         span.file_id == outer.file_id && outer.start <= span.start && span.end <= outer.end
     };

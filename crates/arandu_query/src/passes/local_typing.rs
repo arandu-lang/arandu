@@ -36,16 +36,12 @@ pub fn item_local_typing(
     file: SourceFile,
     item_sym: SymbolId,
 ) -> Option<(HashEq<LocalTyping>, ItemPlacement)> {
-    let (program, bases) = super::items::composed_file(db, file).as_ref()?;
-    let Ok(program) = &**program else {
-        return None;
-    };
     let id = *super::items::item_ast_ids(db, file).get(&item_sym)?;
-    let bases = bases.get(id.index as usize)?;
+    let bases = (*super::items::item_bases(db, file, id))?;
     let own = *super::typing::item_source_spans(db, file).get(&item_sym)?;
-    let item_exprs = match &*super::items::item_ast(db, file, id).value {
-        Ok(item) => item.pool.exprs.len(),
-        Err(_) => return None,
+    let item = super::items::item_ast(db, file, id);
+    let Ok(item) = &*item.value else {
+        return None;
     };
     let at = ItemPlacement {
         file_id: *file.file_id(db),
@@ -60,8 +56,8 @@ pub fn item_local_typing(
     let frame = Frame {
         at: at.clone(),
         own,
-        exprs: at.exprs as usize..at.exprs as usize + item_exprs,
-        expr_spans: &program.pool.expr_spans,
+        exprs: at.exprs as usize..at.exprs as usize + item.pool.exprs.len(),
+        expr_spans: &item.pool.expr_spans,
     };
     let local = frame.localize(
         crate::ctfe::item_staged_typing(db, file, item_sym),
@@ -92,8 +88,7 @@ fn placement(
             .item_span(owner)?
             .start;
         let exprs = if owner.file_id == at.file_id {
-            let (_, bases) = super::items::composed_file(db, file).as_ref()?;
-            Some(bases.get(owner.index as usize)?.exprs)
+            Some((*super::items::item_bases(db, file, owner))?.exprs)
         } else {
             None
         };
@@ -128,17 +123,13 @@ pub(crate) fn item_typing_input(
     file: SourceFile,
     item_sym: SymbolId,
 ) -> Option<HashEq<TypeCheckResult>> {
-    let (program, bases) = super::items::composed_file(db, file).as_ref()?;
-    let Ok(program) = &**program else {
-        return None;
-    };
     let id = *super::items::item_ast_ids(db, file).get(&item_sym)?;
-    let bases = bases.get(id.index as usize)?;
+    let bases = (*super::items::item_bases(db, file, id))?;
     let extent = super::items::item_positions(db, file).item_span(id)?;
     let own = *super::typing::item_source_spans(db, file).get(&item_sym)?;
-    let item_exprs = match &*super::items::item_ast(db, file, id).value {
-        Ok(item) => item.pool.exprs.len(),
-        Err(_) => return None,
+    let item = super::items::item_ast(db, file, id);
+    let Ok(item) = &*item.value else {
+        return None;
     };
     let signatures = super::signatures::declaration_signatures(db, file);
     let declared = &signatures.type_info;
@@ -155,8 +146,8 @@ pub(crate) fn item_typing_input(
             segments: Arc::default(),
         },
         own,
-        exprs: bases.exprs as usize..bases.exprs as usize + item_exprs,
-        expr_spans: &program.pool.expr_spans,
+        exprs: bases.exprs as usize..bases.exprs as usize + item.pool.exprs.len(),
+        expr_spans: &item.pool.expr_spans,
     };
     let context = super::local_context::signature_context(db, file);
     let mut input = (**context).clone();
@@ -343,6 +334,7 @@ struct Frame<'a> {
     own: Span,
     /// The item's slice of the file expression arena.
     exprs: std::ops::Range<usize>,
+    /// Spans of the item's expressions, relative to the item.
     expr_spans: &'a [Span],
 }
 
@@ -370,9 +362,15 @@ impl Frame<'_> {
 
     /// Local index of a file expression that belongs to the item.
     fn expr(&self, index: usize) -> Option<usize> {
-        let span = self.expr_spans.get(index)?;
-        (self.exprs.contains(&index) && self.inside(span.start, span.end))
-            .then(|| index - self.exprs.start)
+        let local = index.checked_sub(self.exprs.start)?;
+        let span = *self.expr_spans.get(local)?;
+        // The file span of the expression, as composition places it.
+        let (start, end) = if span == Span::new(0, 0, 0) {
+            (0, 0)
+        } else {
+            (span.start + self.at.offset, span.end + self.at.offset)
+        };
+        (self.exprs.contains(&index) && self.inside(start, end)).then_some(local)
     }
 
     fn keys<V: Clone + PartialEq>(
@@ -715,14 +713,8 @@ mod tests {
                     continue;
                 };
                 direct += 1;
-                let (composed, bases) = super::super::items::composed_file(&db, file)
-                    .as_ref()
-                    .expect("composed");
-                let Ok(composed) = &**composed else {
-                    panic!("composed parse")
-                };
                 let id = super::super::items::item_ast_ids(&db, file)[&symbol];
-                let bases = bases[id.index as usize];
+                let bases = super::super::items::item_bases(&db, file, id).expect("composed");
                 let item = super::super::items::item_ast(&db, file, id);
                 let Ok(item) = &*item.value else {
                     panic!("item parse")
@@ -738,7 +730,7 @@ mod tests {
                     at,
                     own: super::super::typing::item_source_spans(&db, file)[&symbol],
                     exprs,
-                    expr_spans: &composed.pool.expr_spans,
+                    expr_spans: &item.pool.expr_spans,
                 };
                 let converted = frame
                     .localize(

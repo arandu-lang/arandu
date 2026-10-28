@@ -63,6 +63,7 @@ mod signatures;
 mod symbols;
 mod typing;
 
+pub(crate) use items::item_text;
 pub use items::{item_ast, item_ast_ids, item_positions, AstIdMap};
 pub(crate) use local_context::without_positions;
 pub use local_context::{item_context, signature_context};

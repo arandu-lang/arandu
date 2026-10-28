@@ -69,6 +69,30 @@ fn growing_a_body_relowers_the_siblings_it_moves() {
     );
 }
 
+/// An edit that moves nothing types only its own item: every per-item query
+/// of a sibling reads item-sized inputs, never the file text or file AST.
+#[test]
+fn a_same_length_edit_retypes_only_its_item() {
+    let (mut db, log) = DatabaseImpl::with_rebuild_log();
+    let file = db.new_file("guards.aru".into(), program(1));
+    let _ = lower_amir(&db, file);
+    log.clear();
+
+    let edited = program(1).replace("acc + 1", "acc + 2");
+    file.set_text(&mut db).to(Arc::from(edited));
+    let _ = lower_amir(&db, file);
+    assert_runs(
+        &log,
+        &[
+            ("item_staging", 1),
+            ("item_typing_input", 1),
+            ("item_local_typing", 1),
+            ("item_context", 1),
+            ("runtime_unit", 1),
+        ],
+    );
+}
+
 /// Executions of each query by its exact name.
 fn assert_runs(log: &arandu_query::RebuildLog, expected: &[(&str, usize)]) {
     for &(query, runs) in expected {

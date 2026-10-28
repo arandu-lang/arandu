@@ -421,9 +421,8 @@ fn local_staging(
     });
     let declaration = selected?;
     let span = arandu_semantics::item_source_span(declaration);
-    let text = file.text(db);
-    let source = text.get(extent.start as usize..extent.end as usize)?;
-    let source = source.get(span.start as usize..span.end as usize)?;
+    let text = crate::passes::item_text(db, file, id).as_ref()?;
+    let source = text.get(span.start as usize..span.end as usize)?;
     if !source.contains("comptime") {
         return Some((false, false));
     }

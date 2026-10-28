@@ -148,6 +148,34 @@ pub fn item_ast(
     }
 }
 
+/// The text of one top-level item. A query of its own so that an edit
+/// elsewhere in the file leaves it equal.
+#[salsa::tracked]
+#[tracing::instrument(level = "trace", skip(db), fields(
+    file = ?file.file_id(db),
+))]
+pub(crate) fn item_text(db: &dyn ArandCompilerDb, file: SourceFile, id: AstId) -> Option<Arc<str>> {
+    let extent = item_positions(db, file).item_span(id)?;
+    file.text(db)
+        .get(extent.start as usize..extent.end as usize)
+        .map(Arc::from)
+}
+
+/// The [`ItemBases`] of one item in [`composed_file`]: they change only when
+/// an item before it changes its arena lengths or its length.
+#[salsa::tracked]
+#[tracing::instrument(level = "trace", skip(db), fields(
+    file = ?file.file_id(db),
+))]
+pub(crate) fn item_bases(
+    db: &dyn ArandCompilerDb,
+    file: SourceFile,
+    id: AstId,
+) -> Option<ItemBases> {
+    let (_, bases) = composed_file(db, file).as_ref()?;
+    bases.get(id.index as usize).copied()
+}
+
 /// The composed file AST and the [`ItemBases`] of each item in it.
 pub(crate) type ComposedFile = (
     HashEq<Result<Arc<Program>, arandu_parser::ParseError>>,

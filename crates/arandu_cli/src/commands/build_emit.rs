@@ -5,7 +5,7 @@ use super::{CliFailure, CliSuccess, llvm_product};
 use crate::artifact;
 use crate::cli_error::CliResult;
 use crate::linker;
-use crate::pipeline::print_diagnostics_and_exit;
+use crate::pipeline::diagnostics_failure;
 use crate::project::{self, ProjectFlags};
 use arandu_middle::layout::DataLayout;
 use arandu_query::ArandCompilerDb;
@@ -44,7 +44,7 @@ pub(super) fn emit_wasm_artifact(
             wasm_layout,
             &pkg_name,
         )
-        .unwrap_or_else(|diag| print_diagnostics_and_exit(std::iter::once(diag), &filepath))
+        .map_err(|diag| diagnostics_failure(std::iter::once(diag), &filepath))?
     } else {
         let emit = if flags.size {
             arandu_backend_wasm::emit_wasm_for_size
@@ -58,7 +58,7 @@ pub(super) fn emit_wasm_artifact(
             type_check.type_info.as_ref(),
             wasm_layout,
         )
-        .unwrap_or_else(|diag| print_diagnostics_and_exit(std::iter::once(diag), &filepath))
+        .map_err(|diag| diagnostics_failure(std::iter::once(diag), &filepath))?
     };
 
     let optimized_wasm = crate::wasm_opt::optimize_wasm_if_available(
@@ -129,14 +129,14 @@ pub(super) fn emit_llvm_artifact(
             type_check.symbols.as_ref(),
             docs,
         )
-        .unwrap_or_else(|diag| print_diagnostics_and_exit(std::iter::once(diag), &filepath))
+        .map_err(|diag| diagnostics_failure(std::iter::once(diag), &filepath))?
     } else {
         arandu_backend_llvm::emit_llvm_ir(
             amir,
             type_check.symbols.as_ref(),
             type_check.type_info.as_ref(),
         )
-        .unwrap_or_else(|diag| print_diagnostics_and_exit(std::iter::once(diag), &filepath))
+        .map_err(|diag| diagnostics_failure(std::iter::once(diag), &filepath))?
     };
 
     let unique = std::time::SystemTime::now()
@@ -506,7 +506,7 @@ pub(super) fn emit_native_artifact(
         );
     let backend_impl = match backend_impl {
         Ok(b) => b,
-        Err(diag) => print_diagnostics_and_exit(std::iter::once(diag), &filepath),
+        Err(diag) => return Err(diagnostics_failure(std::iter::once(diag), &filepath)),
     };
     let debug_sources = debug_info.then(|| {
         amir.funcs
@@ -581,6 +581,6 @@ pub(super) fn emit_native_artifact(
             }
             Ok(CliSuccess::Done)
         }
-        Err(diag) => print_diagnostics_and_exit(std::iter::once(diag), &filepath),
+        Err(diag) => Err(diagnostics_failure(std::iter::once(diag), &filepath)),
     }
 }

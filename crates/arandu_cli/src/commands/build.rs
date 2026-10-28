@@ -7,7 +7,7 @@ use crate::artifact;
 use crate::cli_error::{CliFailure, CliResult, CliSuccess};
 use crate::linker;
 use crate::pipeline::{
-    open_entry_file, pipeline_lower, print_genref_report, product_amir_or_exit, product_opt_level,
+    lower, print_genref_report, product_amir, product_opt_level, try_open_entry_file,
 };
 use crate::project::{self, ProjectFlags};
 use arandu_middle::layout::DataLayout;
@@ -365,8 +365,8 @@ impl BuildSession {
         };
 
         let mut registry = arandu_base::SourceRegistry::default();
-        let (file, filepath) = open_entry_file(db, &mut registry, &ctx.entry_path);
-        let artifacts = pipeline_lower(db, file, &filepath);
+        let (file, filepath) = try_open_entry_file(db, &mut registry, &ctx.entry_path)?;
+        let artifacts = lower(db, file, &filepath)?;
         if genref_report {
             print_genref_report(&filepath, &artifacts);
         }
@@ -407,7 +407,7 @@ impl BuildSession {
         let amir_owned = if native_debug_info {
             None
         } else {
-            product_amir_or_exit(&artifacts.amir, type_check, level, &filepath)
+            product_amir(&artifacts.amir, type_check, level, &filepath)?
         };
         let amir = match &amir_owned {
             Some(a) => a,
@@ -674,6 +674,38 @@ mod tests {
                 .build()
                 .unwrap();
             assert_eq!(warm, fs::read(artifact(&root)).unwrap());
+            let _ = fs::remove_dir_all(root);
+        }
+
+        /// A resident session returns the failure of a broken program instead
+        /// of exiting, and the next build after the fix succeeds.
+        #[test]
+        fn a_live_session_survives_a_broken_program() {
+            let root = project("broken", &library(0));
+            let mut session = BuildSession::open(&root, request()).unwrap();
+            session.build().unwrap();
+
+            fs::write(
+                root.join("src/lib.aru"),
+                library(0).replace("return value + 1", "return true"),
+            )
+            .unwrap();
+            let failure = session.build().expect_err("a type error fails the build");
+            assert_eq!(
+                failure.exit_code(),
+                crate::cli_error::CliFailure::diagnostics(Vec::new(), None).exit_code()
+            );
+
+            fs::remove_file(root.join("src/main.aru")).unwrap();
+            assert!(
+                session.build().is_err(),
+                "an unreadable entry fails the build"
+            );
+
+            fs::write(root.join("src/main.aru"), MAIN).unwrap();
+            fs::write(root.join("src/lib.aru"), library(3)).unwrap();
+            session.build().unwrap();
+            assert_eq!(exit_code(&root), Some(13));
             let _ = fs::remove_dir_all(root);
         }
 

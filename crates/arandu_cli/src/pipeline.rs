@@ -55,12 +55,21 @@ pub fn fail_operational(
     finish(Err(CliFailure::operational(operation, context, source)))
 }
 
+/// The failure that renders `diagnostics` against `filepath`. Paths that keep
+/// the process alive (build sessions) return it instead of exiting.
+pub fn diagnostics_failure(
+    diagnostics: impl IntoIterator<Item = arandu_middle::Diagnostic>,
+    filepath: &str,
+) -> CliFailure {
+    let source_path = (!filepath.is_empty()).then(|| PathBuf::from(filepath));
+    CliFailure::diagnostics(diagnostics, source_path)
+}
+
 pub fn print_diagnostics_and_exit(
     diagnostics: impl IntoIterator<Item = arandu_middle::Diagnostic>,
     filepath: &str,
 ) -> ! {
-    let source_path = (!filepath.is_empty()).then(|| PathBuf::from(filepath));
-    finish(Err(CliFailure::diagnostics(diagnostics, source_path)))
+    finish(Err(diagnostics_failure(diagnostics, filepath)))
 }
 
 pub fn print_parse_error_and_exit(err: &arandu_parser::ParseError, filepath: &str) -> ! {
@@ -104,33 +113,34 @@ pub fn product_opt_level(
 }
 
 /// The AMIR a product consumes: optimized at `level`, or `None` for baseline.
+pub fn product_amir(
+    amir: &arandu_semantics::amir::AmirProgram,
+    type_check: &arandu_semantics::TypeCheckResult,
+    level: Option<arandu_semantics::OptLevel>,
+    filepath: &str,
+) -> Result<Option<arandu_semantics::amir::AmirProgram>, CliFailure> {
+    let Some(level) = level else {
+        return Ok(None);
+    };
+    arandu_base::time_pass!("optimize-amir");
+    let mut amir = amir.clone();
+    arandu_semantics::optimize_amir_checked_with_level(
+        &mut amir,
+        type_check.symbols.as_ref(),
+        &type_check.type_info.type_interner,
+        level,
+    )
+    .map_err(|diag| diagnostics_failure(std::iter::once(diag), filepath))?;
+    Ok(Some(amir))
+}
+
 pub fn product_amir_or_exit(
     amir: &arandu_semantics::amir::AmirProgram,
     type_check: &arandu_semantics::TypeCheckResult,
     level: Option<arandu_semantics::OptLevel>,
     filepath: &str,
 ) -> Option<arandu_semantics::amir::AmirProgram> {
-    let level = level?;
-    arandu_base::time_pass!("optimize-amir");
-    let mut amir = amir.clone();
-    optimize_amir_with_level_or_exit(&mut amir, type_check, level, filepath);
-    Some(amir)
-}
-
-pub fn optimize_amir_with_level_or_exit(
-    amir: &mut arandu_semantics::amir::AmirProgram,
-    type_check: &arandu_semantics::TypeCheckResult,
-    level: arandu_semantics::OptLevel,
-    filepath: &str,
-) {
-    if let Err(diag) = arandu_semantics::optimize_amir_checked_with_level(
-        amir,
-        type_check.symbols.as_ref(),
-        &type_check.type_info.type_interner,
-        level,
-    ) {
-        print_diagnostics_and_exit(std::iter::once(diag), filepath);
-    }
+    product_amir(amir, type_check, level, filepath).unwrap_or_else(|failure| finish(Err(failure)))
 }
 
 pub fn validate_hir_and_monomorphize(
@@ -205,6 +215,16 @@ pub fn render_pipeline_failure(
     diagnostics: Vec<arandu_middle::Diagnostic>,
     filepath: &str,
 ) -> ! {
+    finish(Err(pipeline_failure(db, diagnostics, filepath)))
+}
+
+/// The failure of a pipeline whose diagnostics hold an error, rendered against
+/// the file of the first error.
+pub fn pipeline_failure(
+    db: &dyn arandu_query::db::ArandCompilerDb,
+    diagnostics: Vec<arandu_middle::Diagnostic>,
+    filepath: &str,
+) -> CliFailure {
     let target_path = diagnostics
         .iter()
         .find(|diagnostic| matches!(diagnostic.severity, arandu_middle::Severity::Error))
@@ -216,7 +236,7 @@ pub fn render_pipeline_failure(
             })
         })
         .unwrap_or_else(|| filepath.to_string());
-    print_diagnostics_and_exit(diagnostics, &target_path)
+    diagnostics_failure(diagnostics, &target_path)
 }
 
 /// Render non-fatal Salsa diagnostics or terminate through the typed diagnostic path.
@@ -301,12 +321,21 @@ pub fn pipeline_lower(
     file: arandu_query::db::SourceFile,
     filepath: &str,
 ) -> std::sync::Arc<arandu_query::LowerAmirArtifacts> {
+    lower(db, file, filepath).unwrap_or_else(|failure| finish(Err(failure)))
+}
+
+/// [`pipeline_lower`] that returns the failure instead of exiting.
+pub fn lower(
+    db: &dyn arandu_query::db::ArandCompilerDb,
+    file: arandu_query::db::SourceFile,
+    filepath: &str,
+) -> Result<std::sync::Arc<arandu_query::LowerAmirArtifacts>, CliFailure> {
     match pipeline_lower_checked(db, file) {
         Ok(outcome) => {
             render_nonfatal_diagnostics(db, &outcome.diagnostics, filepath);
-            outcome.artifacts
+            Ok(outcome.artifacts)
         }
-        Err(diagnostics) => render_pipeline_failure(db, diagnostics, filepath),
+        Err(diagnostics) => Err(pipeline_failure(db, diagnostics, filepath)),
     }
 }
 
@@ -427,22 +456,28 @@ pub fn open_entry_file(
     registry: &mut arandu_base::SourceRegistry,
     entry: &Path,
 ) -> (arandu_query::SourceFile, String) {
-    let source = match fs::read_to_string(entry) {
-        Ok(s) => s,
-        Err(err) => {
-            fail_operational("failed to read", Some(entry.to_path_buf()), err.to_string());
-        }
-    };
+    try_open_entry_file(db, registry, entry).unwrap_or_else(|failure| finish(Err(failure)))
+}
+
+/// [`open_entry_file`] that returns the failure instead of exiting.
+pub fn try_open_entry_file(
+    db: &arandu_query::DatabaseImpl,
+    registry: &mut arandu_base::SourceRegistry,
+    entry: &Path,
+) -> Result<(arandu_query::SourceFile, String), CliFailure> {
+    let source = fs::read_to_string(entry).map_err(|err| {
+        CliFailure::operational("failed to read", Some(entry.to_path_buf()), err.to_string())
+    })?;
     let filepath = entry.to_string_lossy().into_owned();
     let file_id = registry.register(&filepath, &source);
     if let Some(existing) = registered_entry_source(db, entry, &source) {
-        return (existing, filepath);
+        return Ok((existing, filepath));
     }
     let code = std::sync::Arc::from(source);
     let source_file =
         arandu_query::SourceFile::new(db, file_id, code, std::sync::Arc::new(entry.to_path_buf()));
     db.register_source_file(filepath.clone(), source_file);
-    (source_file, filepath)
+    Ok((source_file, filepath))
 }
 
 /// Reuse an exact loader input, including through a canonical path alias.

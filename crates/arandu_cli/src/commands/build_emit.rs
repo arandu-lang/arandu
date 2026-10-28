@@ -305,6 +305,7 @@ pub(super) fn emit_native_artifact(
     filepath: String,
     type_check: &arandu_semantics::TypeCheckResult,
     amir: &arandu_semantics::amir::AmirProgram,
+    published: &mut Option<artifact::ArtifactIdentity>,
 ) -> CliResult {
     let toolchain_fingerprint = {
         arandu_base::time_pass!("toolchain-fingerprint");
@@ -373,10 +374,18 @@ pub(super) fn emit_native_artifact(
         let elf_layout_file = layout.incremental.join("elf_layout.json");
         let (artifact, linker_label) = {
             arandu_base::time_pass!("native-artifact");
-            let existing_artifact = if result.recompiled_units.is_empty() {
+            // An artifact this process published and that is unchanged since is
+            // used without hashing it again.
+            let candidate = artifact::current_native_artifact_candidate(&ctx.root, profile);
+            let trusted = candidate.as_ref().is_some_and(|candidate| {
+                published
+                    .as_ref()
+                    .is_some_and(|identity| identity.verifies(candidate))
+            });
+            let existing_artifact = if result.recompiled_units.is_empty() && !trusted {
                 artifact::current_native_artifact(&ctx.root, profile)
             } else {
-                artifact::current_native_artifact_candidate(&ctx.root, profile)
+                candidate
             };
             let full_link = || -> Result<_, CliFailure> {
                 let published = artifact::publish_partitioned_native_artifact(
@@ -417,6 +426,13 @@ pub(super) fn emit_native_artifact(
                 let staging_path = staging_dir.join(format!("patch-{}.tmp", std::process::id()));
                 let mut in_place_patched = None;
                 if fs::copy(&existing.path, &staging_path).is_ok() {
+                    // The copy holds the published bytes only if the source is
+                    // still the same file after the copy.
+                    let trusted_digest = (trusted
+                        && published
+                            .as_ref()
+                            .is_some_and(|identity| identity.verifies(&existing)))
+                    .then_some(existing.digest.as_str());
                     let recompiled_refs: Vec<(&arandu_backend_cranelift::CodegenUnit, &[u8])> =
                         result
                             .recompiled_units
@@ -428,6 +444,7 @@ pub(super) fn emit_native_artifact(
                         &elf_layout_file,
                         &result.units,
                         &recompiled_refs,
+                        trusted_digest,
                     ) {
                         Ok(Some(new_digest)) => {
                             in_place_patched = Some((staging_path, new_digest));
@@ -477,6 +494,7 @@ pub(super) fn emit_native_artifact(
             }
         };
 
+        *published = artifact::ArtifactIdentity::of(&artifact);
         {
             arandu_base::time_pass!("incremental-record");
             crate::incremental::record_session(

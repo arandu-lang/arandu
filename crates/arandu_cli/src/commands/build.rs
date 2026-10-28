@@ -77,8 +77,8 @@ pub(crate) struct BuildRequest {
 /// Opening configures the target inputs and loads the project once; target
 /// setters always invalidate their dependents, so they never run per build.
 /// Each [`Self::build`] first refreshes the sources whose text changed on
-/// disk, then reuses every memo the edit did not invalidate. Program errors
-/// still terminate the process, as in the batch command.
+/// disk, then reuses every memo the edit did not invalidate. A broken program
+/// fails the build and leaves the session usable for the next one.
 pub(crate) struct BuildSession {
     start: PathBuf,
     request: BuildRequest,
@@ -98,6 +98,9 @@ pub(crate) struct BuildSession {
     /// different file set or manifest reopens the session.
     package_sources: Vec<String>,
     manifest_digest: Option<blake3::Hash>,
+    /// The native artifact this session last published, which it may reuse or
+    /// patch without hashing while the file is unchanged.
+    published: Option<artifact::ArtifactIdentity>,
 }
 
 impl BuildSession {
@@ -198,6 +201,7 @@ impl BuildSession {
             toolchain_identity,
             package_sources,
             manifest_digest,
+            published: None,
         })
     }
 
@@ -245,6 +249,7 @@ impl BuildSession {
             profile,
             wasm_triple,
             toolchain_identity,
+            published,
             ..
         } = self;
         let (plan, is_llvm, is_wasm, backend, backend_label, profile, explain_rebuild) = (
@@ -458,6 +463,7 @@ impl BuildSession {
             filepath,
             type_check,
             amir,
+            published,
         )
     }
 }
@@ -790,6 +796,99 @@ mod tests {
                 );
             }
             let _ = fs::remove_dir_all(root);
+        }
+
+        fn linker(root: &Path) -> String {
+            let state = artifact(root)
+                .parent()
+                .and_then(Path::parent)
+                .map(|profile| profile.join("build-state.json"))
+                .unwrap();
+            let state: serde_json::Value =
+                serde_json::from_slice(&fs::read(state).unwrap()).unwrap();
+            state["linker"].as_str().unwrap().to_owned()
+        }
+
+        /// Dev functions are padded to a size class, so a body that grows within
+        /// its class is patched in place; the result is what a clean build of the
+        /// final source links (HOT.4).
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        #[test]
+        fn a_growing_body_is_patched_within_its_slot() {
+            let root = project("slot", &library(0));
+            let mut session = BuildSession::open(&root, request()).unwrap();
+            session.build().unwrap();
+            let layout = artifact(&root)
+                .parent()
+                .and_then(Path::parent)
+                .map(|profile| profile.join("incremental/elf_layout.json"))
+                .unwrap();
+            let layout: serde_json::Value =
+                serde_json::from_slice(&fs::read(layout).unwrap()).unwrap();
+            let slots = layout["function_slots"].as_object().unwrap();
+            assert!(!slots.is_empty());
+            for (name, slot) in slots {
+                let size = slot["code_size"].as_u64().unwrap() as usize;
+                assert_eq!(
+                    size,
+                    arandu_backend_cranelift::cgu::slot_capacity(size),
+                    "`{name}` fills a whole slot class"
+                );
+            }
+            let mut patched = 0;
+            for growth in 1..=4 {
+                fs::write(root.join("src/lib.aru"), library(growth)).unwrap();
+                session.build().unwrap();
+                patched += usize::from(linker(&root) == "in-process-elf");
+            }
+            // after(1) + grow(2) + after(2), grow adding 1 + 2 + 3 + 4.
+            assert_eq!(exit_code(&root), Some(17));
+            assert!(patched > 0, "no growth stayed within its slot class");
+
+            let cold = project("slot-cold", &library(4));
+            BuildSession::open(&cold, request())
+                .unwrap()
+                .build()
+                .unwrap();
+            assert_eq!(
+                fs::read(artifact(&root)).unwrap(),
+                fs::read(artifact(&cold)).unwrap(),
+                "a patched slot must hold what a clean build links"
+            );
+            let _ = fs::remove_dir_all(root);
+            let _ = fs::remove_dir_all(cold);
+        }
+
+        /// The session trusts the artifact it published only while the file is
+        /// the one it left: an external write of the same length is hashed, the
+        /// patch is refused and a full link restores the artifact.
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        #[test]
+        fn a_tampered_artifact_is_never_patched_without_its_digest() {
+            let root = project("tampered", &library(0));
+            let mut session = BuildSession::open(&root, request()).unwrap();
+            session.build().unwrap();
+            let published = artifact(&root);
+            let mut bytes = fs::read(&published).unwrap();
+            let last = bytes.len() - 1;
+            bytes[last] ^= 0xFF;
+            fs::write(&published, &bytes).unwrap();
+
+            fs::write(root.join("src/lib.aru"), library(1)).unwrap();
+            session.build().unwrap();
+            assert_ne!(linker(&root), "in-process-elf");
+            assert_eq!(exit_code(&root), Some(8));
+            let cold = project("tampered-cold", &library(1));
+            BuildSession::open(&cold, request())
+                .unwrap()
+                .build()
+                .unwrap();
+            assert_eq!(
+                fs::read(artifact(&root)).unwrap(),
+                fs::read(artifact(&cold)).unwrap()
+            );
+            let _ = fs::remove_dir_all(root);
+            let _ = fs::remove_dir_all(cold);
         }
 
         fn copy_tree(from: &Path, to: &Path) {

@@ -19,8 +19,26 @@ mod hash_rvalue;
 mod hash_stmt;
 mod hash_type;
 
-const CGU_HASH_SCHEMA: &[u8] = b"arandu-cgu-input-v5\0";
+// v6: functions of x86-64 ELF CGUs are padded to their `slot_capacity`.
+const CGU_HASH_SCHEMA: &[u8] = b"arandu-cgu-input-v6\0";
 const CRANELIFT_IDENTITY: &[u8] = b"cranelift-0.136.1\0";
+
+/// `int3`: a jump into the padding of a slot traps instead of running stale
+/// or partial code.
+const X86_64_TRAP: u8 = 0xCC;
+
+/// Capacity of a function slot holding `code` bytes: the smallest of a fixed
+/// sequence of 16-byte multiples, each about 1.25 times the previous. It
+/// depends only on the code size, so a clean build reproduces the slot a
+/// patched executable keeps for an edited body of the same class.
+#[must_use]
+pub fn slot_capacity(code: usize) -> usize {
+    let mut class = 16;
+    while class < code {
+        class = (class + class / 4).next_multiple_of(16).max(class + 16);
+    }
+    class
+}
 
 /// A discrete compilation unit corresponding to one function or item.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -185,6 +203,13 @@ pub fn compile_cgu(
     let backend =
         CraneliftObjectBackend::for_target_with_optimization(target.clone(), optimization)?;
     let mut compiler = backend.into_compiler();
+    // Only x86-64 ELF executables are patched in place; elsewhere the padding
+    // would only grow the binary.
+    if target.architecture == target_lexicon::Architecture::X86_64
+        && target.binary_format == target_lexicon::BinaryFormat::Elf
+    {
+        compiler.slot_trap = Some(X86_64_TRAP);
+    }
 
     compiler.compile_filtered_module(program, symbols, type_info, Some(&[unit.symbol]))?;
 
@@ -195,4 +220,27 @@ pub fn compile_cgu(
             unit.name
         ))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::slot_capacity;
+
+    /// Classes are 16-byte multiples, grow by about a quarter and always
+    /// hold the code; equal sizes always share a class.
+    #[test]
+    fn slot_classes_hold_the_code_and_grow_by_a_quarter() {
+        let mut previous = 0;
+        for code in 0..20_000 {
+            let class = slot_capacity(code);
+            assert!(
+                class >= code && class.is_multiple_of(16),
+                "{code} -> {class}"
+            );
+            assert!(class >= previous, "classes are monotonic");
+            assert!(code < 64 || class * 4 <= code * 5 + 64, "{code} -> {class}");
+            previous = class;
+        }
+        assert_eq!(slot_capacity(100), slot_capacity(110));
+    }
 }

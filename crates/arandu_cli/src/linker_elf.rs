@@ -9,8 +9,6 @@ use std::collections::BTreeMap;
 use std::fs;
 #[cfg(target_os = "linux")]
 use std::fs::{File, OpenOptions};
-#[cfg(target_os = "linux")]
-use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use arandu_backend_cranelift::CodegenUnit;
@@ -231,24 +229,42 @@ pub fn record_elf_layout(
     artifact::atomic_replace(layout_file, &encoded)
 }
 
-/// Attempt exact-size in-place patching through a checked shared mapping.
+/// Attempt in-place patching of whole function slots through a checked shared
+/// mapping: a recompiled function must fill a slot of the same capacity.
 ///
 /// `Ok(None)` means a safety or determinism precondition was not met.
+///
+/// `trusted_digest` is the digest of the artifact `executable_path` was copied
+/// from, when the caller published it itself and checked it unchanged across
+/// the copy; the executable is then not hashed before patching.
 pub fn try_patch_elf_in_place(
     executable_path: &Path,
     layout_file: &Path,
     current_cgus: &[CodegenUnit],
     recompiled_cgus: &[(&CodegenUnit, &[u8])],
+    trusted_digest: Option<&str>,
 ) -> Result<Option<String>, CliFailure> {
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (executable_path, layout_file, current_cgus, recompiled_cgus);
+        let _ = (
+            executable_path,
+            layout_file,
+            current_cgus,
+            recompiled_cgus,
+            trusted_digest,
+        );
         Ok(None)
     }
 
     #[cfg(target_os = "linux")]
     {
-        try_patch_linux(executable_path, layout_file, current_cgus, recompiled_cgus)
+        try_patch_linux(
+            executable_path,
+            layout_file,
+            current_cgus,
+            recompiled_cgus,
+            trusted_digest,
+        )
     }
 }
 
@@ -258,6 +274,7 @@ fn try_patch_linux(
     layout_file: &Path,
     current_cgus: &[CodegenUnit],
     recompiled_cgus: &[(&CodegenUnit, &[u8])],
+    trusted_digest: Option<&str>,
 ) -> Result<Option<String>, CliFailure> {
     if recompiled_cgus.is_empty() || !layout_file.is_file() {
         return Ok(None);
@@ -285,7 +302,7 @@ fn try_patch_linux(
         return Ok(None);
     }
 
-    let mut file = match OpenOptions::new()
+    let file = match OpenOptions::new()
         .read(true)
         .write(true)
         .open(executable_path)
@@ -300,26 +317,82 @@ fn try_patch_linux(
             error.to_string(),
         )
     })?;
-    let mut executable = Vec::new();
-    file.seek(SeekFrom::Start(0))
-        .and_then(|_| file.read_to_end(&mut executable))
-        .map_err(|error| {
-            failure(
-                "read locked ELF staging artifact",
-                executable_path,
-                error.to_string(),
-            )
-        })?;
+    let Ok(binary_size) = file.metadata().map(|metadata| metadata.len()) else {
+        return Ok(None);
+    };
+    if binary_size != layout.binary_size || binary_size == 0 {
+        trace!("[in-process-elf] executable size changed");
+        return Ok(None);
+    }
+    let file_size = usize::try_from(binary_size).map_err(|_| {
+        failure(
+            "map ELF staging artifact",
+            executable_path,
+            "artifact is too large for this process address space",
+        )
+    })?;
+    // One shared mapping replaces reading the executable: verification,
+    // patching and the new digest all use it. No `msync`: the patched pages
+    // reach the published path through the page cache and the `rename`, and a
+    // later process re-verifies the digest before trusting the file (HOT.5).
+    let mut mapping = SharedMapping::new(&file, file_size, executable_path)?;
+    let prepared = {
+        let executable = mapping.bytes();
+        let trusted = trusted_digest.is_some_and(|digest| digest == layout.binary_hash);
+        if !trusted && blake3::hash(executable).to_hex().as_str() != layout.binary_hash {
+            trace!("[in-process-elf] executable digest changed");
+            return Ok(None);
+        }
+        match prepare_patches(executable, &layout, recompiled_cgus)? {
+            Some(prepared) => prepared,
+            None => return Ok(None),
+        }
+    };
+    for patch in &prepared {
+        let Some(slot) = mapping
+            .bytes_mut()
+            .get_mut(patch.file_offset..patch.file_offset + patch.bytes.len())
+        else {
+            return Ok(None);
+        };
+        slot.copy_from_slice(&patch.bytes);
+    }
+    let new_digest = blake3::hash(mapping.bytes()).to_hex().to_string();
+    drop(mapping);
+
+    for patch in prepared {
+        layout
+            .cgu_hashes
+            .insert(patch.name.clone(), patch.hash.clone());
+        if let Some(slot) = layout.function_slots.get_mut(&patch.name) {
+            slot.cgu_hash = patch.hash;
+        }
+    }
+    layout.binary_hash.clone_from(&new_digest);
+    let mut encoded = serde_json::to_vec_pretty(&layout).map_err(|error| {
+        failure(
+            "serialize patched ELF layout",
+            layout_file,
+            error.to_string(),
+        )
+    })?;
+    encoded.push(b'\n');
+    artifact::atomic_replace(layout_file, &encoded)?;
+    Ok(Some(new_digest))
+}
+
+/// The patches of `recompiled_cgus` against the verified `executable`, or
+/// `None` when one cannot be proven safe.
+#[cfg(target_os = "linux")]
+fn prepare_patches(
+    executable: &[u8],
+    layout: &ElfLayout,
+    recompiled_cgus: &[(&CodegenUnit, &[u8])],
+) -> Result<Option<Vec<PreparedPatch>>, CliFailure> {
     let Ok(binary_size) = u64::try_from(executable.len()) else {
         return Ok(None);
     };
-    if binary_size != layout.binary_size
-        || blake3::hash(&executable).to_hex().as_str() != layout.binary_hash
-    {
-        trace!("[in-process-elf] executable digest or size changed");
-        return Ok(None);
-    }
-    let old_elf = match ObjectFile::parse(executable.as_slice()) {
+    let old_elf = match ObjectFile::parse(executable) {
         Ok(file)
             if file.format() == object::BinaryFormat::Elf
                 && file.architecture() == object::Architecture::X86_64 =>
@@ -490,44 +563,7 @@ fn try_patch_linux(
         });
     }
 
-    let file_size = usize::try_from(binary_size).map_err(|_| {
-        failure(
-            "map ELF staging artifact",
-            executable_path,
-            "artifact is too large for this process address space",
-        )
-    })?;
-    if file_size == 0 {
-        return Ok(None);
-    }
-    let new_digest = map_and_write(&file, file_size, &prepared, executable_path)?;
-    file.sync_all().map_err(|error| {
-        failure(
-            "flush patched ELF staging artifact",
-            executable_path,
-            error.to_string(),
-        )
-    })?;
-
-    for patch in prepared {
-        layout
-            .cgu_hashes
-            .insert(patch.name.clone(), patch.hash.clone());
-        if let Some(slot) = layout.function_slots.get_mut(&patch.name) {
-            slot.cgu_hash = patch.hash;
-        }
-    }
-    layout.binary_hash.clone_from(&new_digest);
-    let mut encoded = serde_json::to_vec_pretty(&layout).map_err(|error| {
-        failure(
-            "serialize patched ELF layout",
-            layout_file,
-            error.to_string(),
-        )
-    })?;
-    encoded.push(b'\n');
-    artifact::atomic_replace(layout_file, &encoded)?;
-    Ok(Some(new_digest))
+    Ok(Some(prepared))
 }
 
 #[cfg(target_os = "linux")]
@@ -601,74 +637,67 @@ fn write_relocation(patch: &mut [u8], offset: usize, value: &[u8]) -> Result<(),
     Ok(())
 }
 
+/// A read-write shared mapping of a whole locked file, unmapped on drop.
 #[cfg(target_os = "linux")]
-fn map_and_write(
-    file: &File,
-    file_size: usize,
-    patches: &[PreparedPatch],
-    path: &Path,
-) -> Result<String, CliFailure> {
-    use std::os::fd::AsRawFd;
+struct SharedMapping {
+    address: std::ptr::NonNull<u8>,
+    len: usize,
+}
 
-    // SAFETY: `file` is held open and exclusively locked; `file_size` exactly
-    // matches the verified file length; every patch range was checked against
-    // that length and `.text`; the mapping remains live for all copies and is
-    // always synchronously flushed and unmapped before returning.
-    unsafe {
-        let mapping = libc::mmap(
-            std::ptr::null_mut(),
-            file_size,
-            libc::PROT_READ | libc::PROT_WRITE,
-            libc::MAP_SHARED,
-            file.as_raw_fd(),
-            0,
-        );
-        if mapping == libc::MAP_FAILED {
+#[cfg(target_os = "linux")]
+impl SharedMapping {
+    fn new(file: &File, len: usize, path: &Path) -> Result<Self, CliFailure> {
+        use std::os::fd::AsRawFd;
+
+        // SAFETY: `file` is open read-write and exclusively locked by the
+        // caller for the mapping's lifetime, and `len` is its verified size.
+        let address = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                file.as_raw_fd(),
+                0,
+            )
+        };
+        if address == libc::MAP_FAILED {
             return Err(failure(
                 "map ELF staging artifact",
                 path,
                 std::io::Error::last_os_error().to_string(),
             ));
         }
-        for patch in patches {
-            std::ptr::copy_nonoverlapping(
-                patch.bytes.as_ptr(),
-                (mapping.cast::<u8>()).add(patch.file_offset),
-                patch.bytes.len(),
-            );
-        }
-        let sync_result = libc::msync(mapping, file_size, libc::MS_SYNC);
-        let sync_error = (sync_result != 0).then(std::io::Error::last_os_error);
-        let digest = if sync_error.is_none() {
-            let mapped_bytes = std::slice::from_raw_parts(mapping.cast::<u8>(), file_size);
-            Some(blake3::hash(mapped_bytes).to_hex().to_string())
-        } else {
-            None
-        };
-        let unmap_result = libc::munmap(mapping, file_size);
-        let unmap_error = (unmap_result != 0).then(std::io::Error::last_os_error);
-        if let Some(error) = sync_error {
+        let Some(address) = std::ptr::NonNull::new(address.cast::<u8>()) else {
             return Err(failure(
-                "flush mapped ELF staging artifact",
+                "map ELF staging artifact",
                 path,
-                error.to_string(),
-            ));
-        }
-        if let Some(error) = unmap_error {
-            return Err(failure(
-                "unmap ELF staging artifact",
-                path,
-                error.to_string(),
-            ));
-        }
-        let Some(digest) = digest else {
-            return Err(failure(
-                "hash mapped ELF staging artifact",
-                path,
-                "mapped artifact was not synchronized",
+                "mmap returned a null mapping",
             ));
         };
-        Ok(digest)
+        Ok(Self { address, len })
+    }
+
+    fn bytes(&self) -> &[u8] {
+        // SAFETY: the mapping covers `len` readable bytes until drop, and
+        // `bytes_mut` cannot alias it while this borrow lives.
+        unsafe { std::slice::from_raw_parts(self.address.as_ptr(), self.len) }
+    }
+
+    fn bytes_mut(&mut self) -> &mut [u8] {
+        // SAFETY: as in `bytes`, with exclusive access through `&mut self`.
+        unsafe { std::slice::from_raw_parts_mut(self.address.as_ptr(), self.len) }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for SharedMapping {
+    fn drop(&mut self) {
+        // SAFETY: unmaps exactly the mapping created in `new`; a failure only
+        // leaks the address range.
+        unsafe {
+            libc::munmap(self.address.as_ptr().cast(), self.len);
+        }
     }
 }
 

@@ -177,6 +177,7 @@ mod tests {
         let compiler = AranduModule {
             module: cranelift_jit::JITModule::new(builder),
             debug: None,
+            slot_trap: None,
         };
         let module = compiler
             .compile_program(&program, &checked.symbols, &*checked.type_info)
@@ -441,6 +442,7 @@ func main(): int {
         let compiler = AranduModule {
             module: cranelift_jit::JITModule::new(create_jit_builder().unwrap()),
             debug: None,
+            slot_trap: None,
         };
         let error = compiler
             .compile_program(&program, &checked.symbols, &*checked.type_info)

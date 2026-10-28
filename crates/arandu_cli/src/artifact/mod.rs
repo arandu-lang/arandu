@@ -122,6 +122,71 @@ pub fn layout_for_target(project_root: &Path, profile: &str, triple: &str) -> Ar
     }
 }
 
+/// What a process that published an artifact knows of it: its path, digest and
+/// file identity right after publication. While the identity holds, that
+/// process may use the bytes without hashing them. It is never persisted: after
+/// a crash the metadata can survive data that never reached the disk, so a new
+/// process always verifies the digest (HOT.5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtifactIdentity {
+    path: PathBuf,
+    digest: String,
+    stat: FileStat,
+}
+
+/// Device, inode, size and nanosecond modification and change times. Any
+/// write, rename or truncation of the file changes at least one of them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileStat {
+    device: u64,
+    inode: u64,
+    size: u64,
+    modified: (i64, i64),
+    changed: (i64, i64),
+}
+
+impl FileStat {
+    #[cfg(unix)]
+    fn of(path: &Path) -> Option<Self> {
+        use std::os::unix::fs::MetadataExt;
+
+        let metadata = fs::symlink_metadata(path).ok()?;
+        metadata.is_file().then(|| Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            size: metadata.size(),
+            modified: (metadata.mtime(), metadata.mtime_nsec()),
+            changed: (metadata.ctime(), metadata.ctime_nsec()),
+        })
+    }
+
+    /// Without stable inode numbers there is no identity to trust.
+    #[cfg(not(unix))]
+    fn of(_path: &Path) -> Option<Self> {
+        None
+    }
+}
+
+impl ArtifactIdentity {
+    /// The identity of `artifact` as it is now, just after its publication.
+    #[must_use]
+    pub fn of(artifact: &PublishedNativeArtifact) -> Option<Self> {
+        Some(Self {
+            path: artifact.path.clone(),
+            digest: artifact.digest.clone(),
+            stat: FileStat::of(&artifact.path)?,
+        })
+    }
+
+    /// Whether `artifact` is still the file this identity was taken from.
+    #[must_use]
+    pub fn verifies(&self, artifact: &PublishedNativeArtifact) -> bool {
+        self.path == artifact.path
+            && self.digest == artifact.digest
+            && FileStat::of(&artifact.path) == Some(self.stat)
+    }
+}
+
 /// Returns a verified current native artifact if one exists in build-state.json.
 pub fn current_native_artifact(
     project_root: &Path,

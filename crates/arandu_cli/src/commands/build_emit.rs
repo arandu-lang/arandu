@@ -433,7 +433,15 @@ pub(super) fn emit_native_artifact(
                 let _ = fs::create_dir_all(&staging_dir);
                 let staging_path = staging_dir.join(format!("patch-{}.tmp", std::process::id()));
                 let mut in_place_patched = None;
-                if fs::copy(&existing.path, &staging_path).is_ok() {
+                // A plain copy with the permissions of the source: `fs::copy`
+                // may reflink, which on btrfs waits for the writeback of the
+                // executable the last build published.
+                let copied = fs::read(&existing.path)
+                    .and_then(|bytes| fs::write(&staging_path, bytes))
+                    .and_then(|()| fs::metadata(&existing.path))
+                    .and_then(|metadata| fs::set_permissions(&staging_path, metadata.permissions()))
+                    .is_ok();
+                if copied {
                     // The copy holds the published bytes only if the source is
                     // still the same file after the copy.
                     let trusted_digest = (trusted

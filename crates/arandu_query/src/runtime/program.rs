@@ -151,8 +151,14 @@ pub fn runtime_program(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Run
         let produced = runtime_unit(db, instance);
         // Only the result is placed here; the composition places the
         // context as it merges it, without copying it per unit.
-        let (checked, placement) = match super::place_unit_body(db, &key, produced) {
-            Some((placed, at, declared)) => (std::sync::Arc::new(placed), Some((at, declared))),
+        let (checked, placement) = match super::placed_unit_body(db, instance) {
+            Some((placed, at)) => (
+                std::sync::Arc::clone(&placed.value),
+                Some((
+                    at.clone(),
+                    &crate::passes::declaration_signatures(db, *instance.file(db)).symbols,
+                )),
+            ),
             None => (std::sync::Arc::clone(&produced.value), None),
         };
         match &checked.result {

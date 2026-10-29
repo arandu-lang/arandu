@@ -687,6 +687,51 @@ pub(crate) fn place_unit_body<'db>(
     ))
 }
 
+/// [`place_unit_body`] of `instance`'s unit, memoized: an executable build
+/// places again only the units whose body or item position changed.
+#[salsa::tracked(returns(ref))]
+#[tracing::instrument(
+    level = "trace",
+    target = "arandu_query",
+    skip(db),
+    fields(query = "placed_unit_body")
+)]
+pub(crate) fn placed_unit_body<'db>(
+    db: &'db dyn ArandCompilerDb,
+    instance: Instance<'db>,
+) -> Option<(
+    FingerprintEq<RuntimeUnit>,
+    arandu_typeck::type_checker::info::ItemPlacement,
+)> {
+    let produced = runtime_unit(db, instance);
+    let (placed, at, _) = place_unit_body(db, instance.key(db), produced)?;
+    // The placed unit is a function of the unit and where its item sits.
+    let mut identity = blake3::Hasher::new();
+    identity.update(b"PlacedUnitBody/v1");
+    identity.update(produced.stable_hash().as_bytes());
+    for value in [at.file_id, at.exprs, at.offset] {
+        identity.update(&value.to_le_bytes());
+    }
+    for segment in at.segments.iter() {
+        for value in [
+            segment.file_id,
+            segment.local_offset,
+            segment.len,
+            segment.local_exprs,
+            segment.exprs_len,
+            segment.offset,
+            segment.exprs.unwrap_or(u32::MAX),
+        ] {
+            identity.update(&value.to_le_bytes());
+        }
+        identity.update(&[u8::from(segment.exprs.is_some())]);
+    }
+    Some((
+        FingerprintEq::by_fingerprint(db, "placed_unit_body", placed, identity.finalize()),
+        at,
+    ))
+}
+
 /// Whether [`function_hir`] of `symbol` is lowered in its item's coordinates.
 pub(crate) fn lowers_locally(db: &dyn ArandCompilerDb, file: SourceFile, symbol: SymbolId) -> bool {
     !symbol.is_synthetic()

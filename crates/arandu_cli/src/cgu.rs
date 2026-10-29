@@ -140,9 +140,13 @@ pub fn compile_partitioned(
         let cgu_path = object_path(cgu_cache_dir, unit);
         let metadata_path = metadata_path(&cgu_path);
 
-        if trust.holds(&cgu_path, &metadata_path)
-            || cached_object_is_valid(&cgu_path, &metadata_path, &unit.hash, target)
-        {
+        // A held object keeps the stamps `trust` recorded for it.
+        if trust.holds(&cgu_path, &metadata_path) {
+            cached_count += 1;
+            object_files.push(cgu_path);
+            continue;
+        }
+        if cached_object_is_valid(&cgu_path, &metadata_path, &unit.hash, target) {
             trust.record(&cgu_path, &metadata_path);
             cached_count += 1;
             object_files.push(cgu_path);

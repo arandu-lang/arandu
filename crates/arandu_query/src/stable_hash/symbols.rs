@@ -382,11 +382,36 @@ fn hash_optional_symbol(hasher: &mut Hasher, symbol: Option<SymbolId>) {
 }
 
 pub(super) fn hash_symbol_table(hasher: &mut Hasher, table: &SymbolTable, include_spans: bool) {
+    hash_symbol_table_until(hasher, table, include_spans, None);
+}
+
+/// Whether `symbol` is one of the dense symbols of `table`'s own file that
+/// come at or after `body_from`: the ones resolution allocates in bodies.
+pub(super) fn is_body_symbol(
+    table: &SymbolTable,
+    symbol: SymbolId,
+    body_from: Option<u32>,
+) -> bool {
+    body_from.is_some_and(|body_from| {
+        table.owns(symbol) && !symbol.is_synthetic() && symbol.local_id.0 >= body_from
+    })
+}
+
+/// [`hash_symbol_table`] without the symbols [`is_body_symbol`] selects.
+pub(super) fn hash_symbol_table_until(
+    hasher: &mut Hasher,
+    table: &SymbolTable,
+    include_spans: bool,
+    body_from: Option<u32>,
+) {
     hasher.update(&u64_le(table.unresolved_module_aliases.len() as u64));
     for alias in &table.unresolved_module_aliases {
         hash_str(hasher, alias);
     }
-    let mut symbols: Vec<_> = table.iter().collect();
+    let mut symbols: Vec<_> = table
+        .iter()
+        .filter(|symbol| !is_body_symbol(table, symbol.id, body_from))
+        .collect();
     symbols.sort_by_key(|symbol| (symbol.id.file_id, symbol.id.local_id.0));
     hasher.update(&u64_le(symbols.len() as u64));
     for symbol in symbols {

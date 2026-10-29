@@ -104,7 +104,21 @@ pub(super) fn declaration_hir_from(
             Err(errors) => diagnostics = errors,
         }
     }
-    fingerprint.update(crate::stable_hash::type_signature_hash(&checked).as_bytes());
+    // Resolution allocates the symbols of bodies after every declaration, so
+    // the dense symbols the headers end with bound what importers observe.
+    let body_from = crate::passes::resolved_headers(db, file)
+        .declarations
+        .symbols
+        .iter_own()
+        .filter(|symbol| !symbol.id.is_synthetic())
+        .count();
+    fingerprint.update(
+        crate::stable_hash::declaration_surface_hash(
+            &checked,
+            u32::try_from(body_from).unwrap_or(u32::MAX),
+        )
+        .as_bytes(),
+    );
     fingerprint.update(diagnostics.stable_hash().as_bytes());
     fingerprint.update(&[u8::from(hir.is_some())]);
     let surface = fingerprint.finalize();

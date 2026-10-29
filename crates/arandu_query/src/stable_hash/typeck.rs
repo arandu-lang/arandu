@@ -8,7 +8,7 @@ use blake3::Hasher;
 use super::nodes::{hash_id, hash_span};
 use super::symbols::{
     finish, hash_diag, hash_resolved_names, hash_return_borrow_summary, hash_str, hash_symbol_id,
-    hash_symbol_table, u32_le, u64_le, StableHash,
+    hash_symbol_table_until, is_body_symbol, u32_le, u64_le, StableHash,
 };
 
 impl StableHash for TypeCheckResult {
@@ -19,6 +19,21 @@ impl StableHash for TypeCheckResult {
 
 pub(crate) fn type_signature_hash(result: &TypeCheckResult) -> blake3::Hash {
     hash_type_check_result(result, false)
+}
+
+/// [`type_signature_hash`] without the symbols resolution allocates in bodies,
+/// whose dense IDs start at `body_from`: what importers of a file observe of
+/// its declarations. A new local in a private body leaves it equal.
+pub(crate) fn declaration_surface_hash(result: &TypeCheckResult, body_from: u32) -> blake3::Hash {
+    hash_typing(
+        &result.symbols,
+        true,
+        &result.resolved,
+        &result.type_info,
+        &result.diagnostics,
+        false,
+        Some(body_from),
+    )
 }
 
 /// Presentation intentionally hides frozen aggregate contents. Memo equality
@@ -62,6 +77,7 @@ fn hash_type_check_result(result: &TypeCheckResult, include_spans: bool) -> blak
         &result.type_info,
         &result.diagnostics,
         include_spans,
+        None,
     )
 }
 
@@ -78,6 +94,7 @@ pub(crate) fn local_typing_hash(
         &local.type_info,
         &local.diagnostics,
         true,
+        None,
     )
 }
 
@@ -135,6 +152,7 @@ fn hash_typing(
     info: &arandu_semantics::TypeInfo,
     diagnostics: &[arandu_middle::Diagnostic],
     include_spans: bool,
+    body_from: Option<u32>,
 ) -> blake3::Hash {
     let mut h = Hasher::new();
     h.update(if hash_table {
@@ -159,7 +177,7 @@ fn hash_typing(
         h.update(&class.abi_align.to_le_bytes());
     }
     if hash_table {
-        hash_symbol_table(&mut h, symbols, include_spans);
+        hash_symbol_table_until(&mut h, symbols, include_spans, body_from);
     }
     // `ModuleSignatures` deliberately excludes body references so a private or
     // implementation-only edit does not invalidate importing files.
@@ -208,8 +226,12 @@ fn hash_typing(
             }
         }
     }
-    h.update(&u64_le(info.decl_types.len() as u64));
-    let mut decls: Vec<_> = info.decl_types.iter().collect();
+    let mut decls: Vec<_> = info
+        .decl_types
+        .iter()
+        .filter(|(symbol, _)| !is_body_symbol(symbols, **symbol, body_from))
+        .collect();
+    h.update(&u64_le(decls.len() as u64));
     decls.sort_by_key(|(id, _)| (id.file_id, id.local_id.0));
     for (sid, tid) in decls {
         hash_symbol_id(&mut h, *sid);

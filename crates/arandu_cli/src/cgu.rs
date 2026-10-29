@@ -90,7 +90,6 @@ pub fn compile_partitioned(
     toolchain_fingerprint: &str,
     cgu_cache_dir: &Path,
     trust: &mut CguTrust,
-    collect: bool,
 ) -> Result<PartitionedBuildResult, CliFailure> {
     fs::create_dir_all(cgu_cache_dir).map_err(|error| {
         failure(
@@ -196,9 +195,8 @@ pub fn compile_partitioned(
         object_files.push(cgu_path);
     }
 
-    if collect {
-        collect_unused(cgu_cache_dir, &object_files)?;
-    }
+    let live: BTreeSet<PathBuf> = object_files.iter().cloned().collect();
+    collect_cache(cgu_cache_dir, &live, DEFAULT_CGU_CACHE_LIMIT)?;
 
     Ok(PartitionedBuildResult {
         units,
@@ -293,13 +291,6 @@ fn validate_object(bytes: &[u8], target: &Triple) -> Result<(), String> {
         ));
     }
     Ok(())
-}
-
-/// Trims the cache to its limit, keeping `live` objects. The caller holds the
-/// cache lock, as a [`PartitionedBuildResult`] does until it is dropped.
-pub fn collect_unused(cache_dir: &Path, live: &[PathBuf]) -> Result<(), CliFailure> {
-    let live: BTreeSet<PathBuf> = live.iter().cloned().collect();
-    collect_cache(cache_dir, &live, DEFAULT_CGU_CACHE_LIMIT)
 }
 
 fn collect_cache(

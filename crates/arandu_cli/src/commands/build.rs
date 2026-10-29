@@ -282,16 +282,6 @@ impl BuildSession {
     }
 
     pub(crate) fn build(&mut self) -> CliResult {
-        self.build_answering(None)
-    }
-
-    /// [`Self::build`] that reports a native dev build to `answer` as soon as
-    /// its artifact is published, before it writes the records only later
-    /// up-to-date checks read. A daemon answers its clients there.
-    pub(crate) fn build_answering(
-        &mut self,
-        mut answer: Option<&mut dyn FnMut(&CliResult)>,
-    ) -> CliResult {
         self.refresh()?;
         // The log reports this build only; a long-lived session must not
         // accumulate every build's events.
@@ -480,24 +470,14 @@ impl BuildSession {
         } else {
             artifact::layout(&ctx.root, profile.directory())
         };
-        let publish_compiler_artifacts = || {
+        {
             arandu_base::time_pass!("compiler-artifacts");
             crate::incremental::publish_compiler_artifacts(
                 db,
                 file,
                 &artifacts,
                 &compiler_artifact_layout.incremental,
-            )
-        };
-        // Only the partitioned native dev build reports before its records.
-        let answers_early = answer.is_some()
-            && !is_wasm
-            && !is_llvm
-            && plan.stop != LlvmStop::Header
-            && profile == artifact::NativeProfile::Dev
-            && !debug_info;
-        if !answers_early {
-            publish_compiler_artifacts()?;
+            )?;
         }
 
         // Dev "build" = typecheck + lower + relocatable native object emission.
@@ -546,12 +526,6 @@ impl BuildSession {
                 &artifacts.docs,
             );
         }
-        let mut published_hook = || {
-            if let Some(answer) = answer.as_mut() {
-                answer(&Ok(CliSuccess::Done));
-            }
-            publish_compiler_artifacts()
-        };
         build_emit::emit_native_artifact(
             flags,
             debug_info,
@@ -570,7 +544,6 @@ impl BuildSession {
             published,
             cgu_trust,
             &mut checkpoint,
-            answers_early.then_some(&mut published_hook),
         )
     }
 }
@@ -1038,40 +1011,6 @@ mod tests {
             );
             let _ = fs::remove_dir_all(root);
             let _ = fs::remove_dir_all(cold);
-        }
-
-        /// A source saved after the build read it, here while the build
-        /// writes its records, is the input of the next build: it is never
-        /// recorded as the input of the artifact just published.
-        #[test]
-        fn a_source_saved_after_publication_is_built_next() {
-            let root = project("saved-late", &library(1));
-            let mut session = BuildSession::open(&root, request()).unwrap();
-            let lib = root.join("src/lib.aru");
-            let mut answered = false;
-            session
-                .build_answering(Some(&mut |result| {
-                    assert!(result.is_ok());
-                    answered = true;
-                    fs::write(&lib, library(3)).unwrap();
-                }))
-                .unwrap();
-            assert!(answered, "a dev build answers once it publishes");
-            assert_eq!(exit_code(&root), Some(8));
-            session.build().unwrap();
-            assert_eq!(exit_code(&root), Some(13));
-
-            // A fresh session sees the same records.
-            fs::write(&lib, library(1)).unwrap();
-            let mut session = BuildSession::open(&root, request()).unwrap();
-            session
-                .build_answering(Some(&mut |_| fs::write(&lib, library(3)).unwrap()))
-                .unwrap();
-            drop(session);
-            let mut session = BuildSession::open(&root, request()).unwrap();
-            session.build().unwrap();
-            assert_eq!(exit_code(&root), Some(13));
-            let _ = fs::remove_dir_all(root);
         }
 
         /// A superseded build stops before publishing anything and says so; the

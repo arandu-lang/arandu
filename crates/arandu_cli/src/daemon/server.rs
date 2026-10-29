@@ -357,26 +357,18 @@ fn build_loop(queue: &mpsc::Receiver<Job>, shared: &Shared) {
             let Some(last) = group.last() else {
                 continue;
             };
-            let deliver = &mut |reply: Reply| {
-                for job in &group {
-                    let _ = job.reply.send(reply.clone());
-                }
-            };
-            if !build(
-                &mut sessions,
-                last,
-                shared,
-                streak < MAX_SUPERSEDED,
-                deliver,
-            ) {
+            let Some(reply) = build(&mut sessions, last, shared, streak < MAX_SUPERSEDED) else {
                 // Superseded before publication: its clients wait for the
                 // build of the newer request, which is already queued.
                 streak += 1;
                 pending.extend(group);
                 pending.extend(groups.flatten());
                 break;
-            }
+            };
             streak = 0;
+            for job in &group {
+                let _ = job.reply.send(reply.clone());
+            }
             if resident_bytes().is_some_and(|bytes| bytes > rss_ceiling()) {
                 shared.stop();
             }
@@ -408,22 +400,19 @@ fn inject_fault(point: &str) {
     }
 }
 
-/// Builds `job` and gives its reply to `deliver`, as soon as the artifact is
-/// published when the build allows it. `false` when a newer request
-/// superseded the build at a checkpoint and `cancellable` allowed it.
+/// The reply to `job`, or `None` when a newer request superseded the build
+/// at a checkpoint and `cancellable` allowed it.
 fn build(
     sessions: &mut VecDeque<(SessionKey, BuildSession)>,
     job: &Job,
     shared: &Shared,
     cancellable: bool,
-    deliver: &mut dyn FnMut(Reply),
-) -> bool {
+) -> Option<Reply> {
     inject_fault("before-build");
     // Relative paths in the arguments are the client's; builds run one at a
     // time on this thread, the only one that reads relative paths.
     if std::env::set_current_dir(&job.cwd).is_err() {
-        deliver(Reply::Unsupported);
-        return true;
+        return Some(Reply::Unsupported);
     }
     let key = (job.cwd.clone(), job.args.clone());
     shared.supersede.store(false, Ordering::Release);
@@ -433,21 +422,12 @@ fn build(
     let signal = cancellable.then(|| Arc::clone(&shared.supersede));
     let output = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let sink = std::rc::Rc::clone(&output);
-    let mut answered = false;
-    let mut answer = |result: &CliResult| {
-        inject_fault("after-build");
-        deliver(Reply::Built {
-            output: std::mem::take(&mut *output.borrow_mut()),
-            outcome: Outcome::of(result),
-        });
-        answered = true;
-    };
     let result = crate::output::capture(
         move |stream, text: &str| sink.borrow_mut().push((stream, text.to_owned())),
         job.style,
         || {
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                run(sessions, key, &job.args, signal, &mut answer)
+                run(sessions, key, &job.args, signal)
             }))
         },
     );
@@ -455,39 +435,29 @@ fn build(
         *running = None;
     }
     let result = match result {
+        Ok(Some(Run::Built(result))) => result,
+        Ok(Some(Run::Superseded)) => return None,
+        Ok(None) => return Some(Reply::Unsupported),
         Err(_) => {
             // A panic may leave a session half-updated: drop them all and let
             // the next build start a fresh daemon.
             sessions.clear();
             shared.stop();
-            if answered {
-                return true;
-            }
             Err(CliFailure::operational(
                 "build in the daemon",
                 None,
                 "the build panicked; the daemon restarts on the next build",
             ))
         }
-        // The clients have their reply; what the build did after it only
-        // records state the next build validates.
-        _ if answered => return true,
-        Ok(Some(Run::Built(result))) => result,
-        Ok(Some(Run::Superseded)) => return false,
-        Ok(None) => {
-            deliver(Reply::Unsupported);
-            return true;
-        }
     };
     inject_fault("after-build");
     let output = std::rc::Rc::try_unwrap(output)
         .map(std::cell::RefCell::into_inner)
         .unwrap_or_default();
-    deliver(Reply::Built {
+    Some(Reply::Built {
         output,
         outcome: Outcome::of(&result),
-    });
-    true
+    })
 }
 
 enum Run {
@@ -503,7 +473,6 @@ fn run(
     key: SessionKey,
     args: &[String],
     supersede: Option<Arc<AtomicBool>>,
-    answer: &mut dyn FnMut(&CliResult),
 ) -> Option<Run> {
     let index = match sessions.iter().position(|(existing, _)| *existing == key) {
         Some(index) => index,
@@ -539,7 +508,7 @@ fn run(
     sessions.push_front(entry);
     let (_, session) = sessions.front_mut()?;
     session.set_supersede(supersede);
-    let result = session.build_answering(Some(answer));
+    let result = session.build();
     Some(if session.take_superseded() {
         Run::Superseded
     } else {

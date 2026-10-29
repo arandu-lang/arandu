@@ -166,6 +166,25 @@ fn a_daemon_serves_warm_builds_with_the_bytes_of_batch_builds() {
     project.stop();
 }
 
+/// The accept loop sleeps in `poll` rather than in a polling interval, so
+/// it must still wake for the idle timeout.
+#[test]
+fn an_idle_daemon_exits_after_its_timeout() {
+    let project = Project::new("idle", &program(1));
+    let built = project
+        .command(&["build"])
+        .env("ARANDU_DAEMON_IDLE_SECS", "1")
+        .output()
+        .unwrap();
+    assert_success(&built);
+    assert!(project.daemon_running());
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while project.daemon_running() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!project.daemon_running(), "the idle daemon exits");
+}
+
 #[test]
 fn a_broken_program_is_reported_by_the_client_and_the_daemon_stays() {
     let project = Project::new("broken", &program(1));

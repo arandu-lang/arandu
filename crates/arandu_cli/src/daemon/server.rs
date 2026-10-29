@@ -9,6 +9,7 @@
 
 use std::collections::VecDeque;
 use std::fs;
+use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -76,6 +77,9 @@ fn resident_bytes() -> Option<u64> {
 struct Shared {
     identity: String,
     stopping: AtomicBool,
+    /// Written once when the daemon stops, so the accept loop that waits on
+    /// its other end wakes without polling.
+    wake: UnixStream,
     connections: AtomicUsize,
     last_activity: Mutex<Instant>,
     /// The build the builder runs now, and the signal that tells it a newer
@@ -85,6 +89,11 @@ struct Shared {
 }
 
 impl Shared {
+    fn stop(&self) {
+        self.stopping.store(true, Ordering::Release);
+        let _ = (&self.wake).write(&[0]);
+    }
+
     fn touch(&self) {
         if let Ok(mut last) = self.last_activity.lock() {
             *last = Instant::now();
@@ -158,10 +167,14 @@ pub fn serve(args: &[String]) -> CliResult {
     listener
         .set_nonblocking(true)
         .map_err(|error| failure("configure daemon socket", error))?;
+    let (wake, woken) = UnixStream::pair().map_err(|error| failure("create daemon wake", error))?;
+    wake.set_nonblocking(true)
+        .map_err(|error| failure("configure daemon wake", error))?;
 
     let shared = Arc::new(Shared {
         identity,
         stopping: AtomicBool::new(false),
+        wake,
         connections: AtomicUsize::new(0),
         last_activity: Mutex::new(Instant::now()),
         running: Mutex::new(None),
@@ -193,10 +206,17 @@ pub fn serve(args: &[String]) -> CliResult {
                 });
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                if shared.connections.load(Ordering::Acquire) == 0 && shared.idle_for() >= idle {
+                let idle_for = shared.idle_for();
+                if shared.connections.load(Ordering::Acquire) == 0 && idle_for >= idle {
                     break;
                 }
-                std::thread::sleep(Duration::from_millis(20));
+                // A connection that ends restarts the idle time, so waking
+                // after the full timeout while one is open only checks again.
+                wait_readable(
+                    &listener,
+                    &woken,
+                    idle.saturating_sub(idle_for).max(HEARTBEAT),
+                );
             }
             Err(_) => std::thread::sleep(Duration::from_millis(20)),
         }
@@ -207,7 +227,7 @@ pub fn serve(args: &[String]) -> CliResult {
         let _ = fs::remove_file(&socket);
     }
     drop(listener);
-    shared.stopping.store(true, Ordering::Release);
+    shared.stop();
     while shared.connections.load(Ordering::Acquire) > 0 {
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -215,6 +235,19 @@ pub fn serve(args: &[String]) -> CliResult {
     let _ = builder.join();
     drop(lock);
     Ok(CliSuccess::Done)
+}
+
+/// Blocks until a client connects, the daemon is stopped or `timeout` passes.
+fn wait_readable(listener: &UnixListener, woken: &UnixStream, timeout: Duration) {
+    use std::os::fd::AsRawFd;
+    let mut fds = [listener.as_raw_fd(), woken.as_raw_fd()].map(|fd| libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    });
+    let timeout = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
+    // SAFETY: `fds` is a valid array of `pollfd` of the length passed.
+    unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, timeout) };
 }
 
 fn socket_inode(path: &Path) -> Option<u64> {
@@ -237,13 +270,13 @@ fn serve_connection(
     match read_frame::<Request>(&mut stream)? {
         Request::Shutdown { identity } => {
             if identity == shared.identity {
-                shared.stopping.store(true, Ordering::Release);
+                shared.stop();
             }
             Ok(())
         }
         Request::Build { identity, .. } if identity != shared.identity => {
             // Another toolchain or environment: step aside for its daemon.
-            shared.stopping.store(true, Ordering::Release);
+            shared.stop();
             write_frame(&mut stream, &Response::Mismatch)
         }
         Request::Build {
@@ -337,7 +370,7 @@ fn build_loop(queue: &mpsc::Receiver<Job>, shared: &Shared) {
                 let _ = job.reply.send(reply.clone());
             }
             if resident_bytes().is_some_and(|bytes| bytes > rss_ceiling()) {
-                shared.stopping.store(true, Ordering::Release);
+                shared.stop();
             }
         }
     }
@@ -409,7 +442,7 @@ fn build(
             // A panic may leave a session half-updated: drop them all and let
             // the next build start a fresh daemon.
             sessions.clear();
-            shared.stopping.store(true, Ordering::Release);
+            shared.stop();
             Err(CliFailure::operational(
                 "build in the daemon",
                 None,

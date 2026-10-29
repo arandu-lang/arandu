@@ -454,7 +454,7 @@ impl<'a> Resolver<'a> {
                             self.resolved.definitions.get(&(*span).into()).copied()
                     {
                         self.symbols
-                            .associated_members
+                            .associated_members_mut()
                             .insert((struct_sym, name.clone()), method_sym);
                     }
                 }

@@ -31,10 +31,10 @@ pub fn import_thread_captures(
             dest.symbols_mut().ensure_visible(symbol.clone());
         }
     }
-    for ((parent, member), method) in &src.symbols.associated_members {
+    for ((parent, member), method) in src.symbols.associated_members.iter() {
         if parent.is_synthetic() || method.is_synthetic() {
             dest.symbols_mut()
-                .associated_members
+                .associated_members_mut()
                 .insert((*parent, member.clone()), *method);
         }
     }

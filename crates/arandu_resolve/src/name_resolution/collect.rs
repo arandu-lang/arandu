@@ -143,7 +143,7 @@ impl<'a> Resolver<'a> {
                             self.resolved.define(*span, symbol);
                             if let Some(type_sym) = self.symbols.lookup_type(scope, &receiver_str) {
                                 self.symbols
-                                    .associated_members
+                                    .associated_members_mut()
                                     .insert((type_sym, name.clone()), symbol);
                             }
                             if let Some(item) =
@@ -387,13 +387,13 @@ impl<'a> Resolver<'a> {
                     let sym = self.symbols.get(sym_id);
                     let member_name = sym.name.clone();
                     self.symbols
-                        .module_members
+                        .module_members_mut()
                         .insert((submod.name.clone(), member_name.clone()), sym_id);
                     if let Some(ref cur_mod) = self.current_module {
                         let qualified: smol_str::SmolStr =
                             format!("{cur_mod}.{}", submod.name).into();
                         self.symbols
-                            .module_members
+                            .module_members_mut()
                             .insert((qualified, member_name), sym_id);
                     }
                 }

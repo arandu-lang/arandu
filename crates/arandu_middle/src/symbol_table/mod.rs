@@ -238,11 +238,15 @@ pub struct SymbolTable {
     /// equal import sets apart by pointer; mutate through
     /// [`SymbolTable::imported_symbols_mut`].
     pub imported_symbols: std::sync::Arc<FxHashMap<SymbolId, Symbol>>,
-    pub module_members: FxHashMap<(SmolStr, SmolStr), SymbolId>,
+    /// Shared like [`Self::imported_symbols`]; mutate through
+    /// [`SymbolTable::module_members_mut`].
+    pub module_members: std::sync::Arc<FxHashMap<(SmolStr, SmolStr), SymbolId>>,
     /// Module aliases whose source import failed. Semantic passes use this
     /// error state to avoid diagnosing members of the same failed import.
     pub unresolved_module_aliases: std::collections::BTreeSet<SmolStr>,
-    pub associated_members: FxHashMap<(SymbolId, SmolStr), SymbolId>,
+    /// Shared like [`Self::imported_symbols`]; mutate through
+    /// [`SymbolTable::associated_members_mut`].
+    pub associated_members: std::sync::Arc<FxHashMap<(SymbolId, SmolStr), SymbolId>>,
     /// Interface symbols declared with the `sealed` modifier.
     pub sealed_interfaces: FxHashSet<SymbolId>,
     /// Explicit type/interface implementation declarations.
@@ -259,7 +263,9 @@ pub struct SymbolTable {
     pub module_scopes: FxHashMap<SymbolId, ScopeId>,
     /// Type-parameter symbols for named types (`struct` / `enum` / …), in declaration order.
     /// Used so methods on `Box<T>` can import `T` into their type scope.
-    pub type_params: FxHashMap<SymbolId, smallvec::SmallVec<[SymbolId; 4]>>,
+    /// Shared like [`Self::imported_symbols`]; mutate through
+    /// [`SymbolTable::type_params_mut`].
+    pub type_params: std::sync::Arc<FxHashMap<SymbolId, smallvec::SmallVec<[SymbolId; 4]>>>,
     global_scope_id: ScopeId,
     pub builtins: BuiltinTypes,
     pub builtin_alloc: Option<SymbolId>,
@@ -284,16 +290,16 @@ impl SymbolTable {
             symbols: Vec::new(),
             synthetic_symbols: FxHashMap::default(),
             imported_symbols: std::sync::Arc::default(),
-            module_members: FxHashMap::default(),
+            module_members: std::sync::Arc::default(),
             unresolved_module_aliases: std::collections::BTreeSet::new(),
-            associated_members: FxHashMap::default(),
+            associated_members: std::sync::Arc::default(),
             sealed_interfaces: FxHashSet::default(),
             interface_implementations: FxHashSet::default(),
             host_function_names: FxHashMap::default(),
             exported_functions: FxHashSet::default(),
             tooling_entrypoints: FxHashSet::default(),
             module_scopes: FxHashMap::default(),
-            type_params: FxHashMap::default(),
+            type_params: std::sync::Arc::default(),
             global_scope_id: ScopeId(0),
             builtins: BuiltinTypes::default(),
             builtin_alloc: None,

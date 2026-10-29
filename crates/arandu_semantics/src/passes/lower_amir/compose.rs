@@ -415,15 +415,15 @@ fn merge_symbol_marks(
 }
 
 /// `extend` with `source`, cloning only the entries `target` lacks or holds
-/// with another value: units of one file repeat the same maps.
-fn insert_changed<K, V>(target: &mut FxHashMap<K, V>, source: &FxHashMap<K, V>)
+/// with another value, and copying a shared `target` only then.
+fn insert_changed<K, V>(target: &mut std::sync::Arc<FxHashMap<K, V>>, source: &FxHashMap<K, V>)
 where
     K: Clone + Eq + std::hash::Hash,
     V: Clone + PartialEq,
 {
     for (key, value) in source {
         if target.get(key) != Some(value) {
-            target.insert(key.clone(), value.clone());
+            std::sync::Arc::make_mut(target).insert(key.clone(), value.clone());
         }
     }
 }

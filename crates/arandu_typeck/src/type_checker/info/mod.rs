@@ -269,7 +269,7 @@ impl TypeInfo {
                 );
             }
             symbols
-                .associated_members
+                .associated_members_mut()
                 .insert((recipe.struct_symbol, "run".into()), recipe.run_symbol);
             symbols
                 .host_function_names

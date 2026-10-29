@@ -454,7 +454,8 @@ pub(super) fn signatures_with_imports(
                 }
             }
         }
-        for ((type_id, member_name), member_sym) in &imported_sigs.symbols.associated_members {
+        for ((type_id, member_name), member_sym) in imported_sigs.symbols.associated_members.iter()
+        {
             if let Some(symbol) = imported_sigs.symbols.try_get(*member_sym) {
                 let is_accessible = match symbol.visibility {
                     arandu_parser::Visibility::Public => true,
@@ -472,7 +473,7 @@ pub(super) fn signatures_with_imports(
                     .contains_key(&(*type_id, member_name.clone()))
                 {
                     Arc::make_mut(&mut checker.symbols)
-                        .associated_members
+                        .associated_members_mut()
                         .insert((*type_id, member_name.clone()), *member_sym);
                 }
                 if checker.symbols.try_get(*member_sym).is_none() {

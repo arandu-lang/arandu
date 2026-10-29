@@ -96,11 +96,11 @@ pub(super) fn merge_import_exports(
                         resolver.symbols.register_imported_symbol(sym);
                         resolver
                             .symbols
-                            .module_members
+                            .module_members_mut()
                             .insert((module_name.clone(), name.clone().into()), id);
                         resolver
                             .symbols
-                            .module_members
+                            .module_members_mut()
                             .insert((path.clone().into(), name.clone().into()), id);
                         // Root of T025 across modules: associated methods are
                         // exported as `"Type.method"` but interface satisfaction
@@ -122,7 +122,7 @@ pub(super) fn merge_import_exports(
                             for type_sym in [local_ty, exported_ty].into_iter().flatten() {
                                 resolver
                                     .symbols
-                                    .associated_members
+                                    .associated_members_mut()
                                     .insert((type_sym, smol_str::SmolStr::new(method)), id);
                                 linked = true;
                             }
@@ -244,7 +244,7 @@ pub(super) fn merge_import_exports(
                                 for type_sym in [local_ty, exported_ty].into_iter().flatten() {
                                     resolver
                                         .symbols
-                                        .associated_members
+                                        .associated_members_mut()
                                         .insert((type_sym, smol_str::SmolStr::new(method)), id);
                                 }
                             } else if matches!(
@@ -287,7 +287,7 @@ pub(super) fn merge_import_exports(
                                         resolver.symbols.register_imported_symbol(assoc_sym);
                                         resolver
                                             .symbols
-                                            .associated_members
+                                            .associated_members_mut()
                                             .insert((id, smol_str::SmolStr::new(method)), assoc_id);
                                     }
                                 }

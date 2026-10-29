@@ -81,15 +81,17 @@ impl super::SymbolTable {
         }
 
         // 3. Merge other module members
-        for ((module, member), old_symbol_id) in other.module_members {
-            self.module_members
-                .insert((module, member), map_symbol(old_symbol_id));
+        for ((module, member), old_symbol_id) in other.module_members.iter() {
+            std::sync::Arc::make_mut(&mut self.module_members)
+                .insert((module.clone(), member.clone()), map_symbol(*old_symbol_id));
         }
 
         // 4. Merge other associated members
-        for ((ty, member), old_symbol_id) in other.associated_members {
-            self.associated_members
-                .insert((map_symbol(ty), member), map_symbol(old_symbol_id));
+        for ((ty, member), old_symbol_id) in other.associated_members.iter() {
+            std::sync::Arc::make_mut(&mut self.associated_members).insert(
+                (map_symbol(*ty), member.clone()),
+                map_symbol(*old_symbol_id),
+            );
         }
         self.sealed_interfaces
             .extend(other.sealed_interfaces.iter().map(|id| map_symbol(*id)));
@@ -115,10 +117,10 @@ impl super::SymbolTable {
         }
 
         // 5. Merge type-parameter tables
-        for (type_id, params) in other.type_params {
+        for (type_id, params) in other.type_params.iter() {
             let mapped: smallvec::SmallVec<[SymbolId; 4]> =
-                params.into_iter().map(map_symbol).collect();
-            self.type_params.insert(map_symbol(type_id), mapped);
+                params.iter().copied().map(map_symbol).collect();
+            std::sync::Arc::make_mut(&mut self.type_params).insert(map_symbol(*type_id), mapped);
         }
 
         // 6. Merge canonical builtins
@@ -291,7 +293,7 @@ impl super::SymbolTable {
         type_id: SymbolId,
         params: impl IntoIterator<Item = SymbolId>,
     ) {
-        self.type_params
+        self.type_params_mut()
             .insert(type_id, params.into_iter().collect());
     }
 
@@ -394,6 +396,27 @@ impl super::SymbolTable {
         std::sync::Arc::make_mut(&mut self.imported_symbols)
     }
 
+    /// The module members, copied first when another table shares them.
+    pub fn module_members_mut(
+        &mut self,
+    ) -> &mut rustc_hash::FxHashMap<(smol_str::SmolStr, smol_str::SmolStr), SymbolId> {
+        std::sync::Arc::make_mut(&mut self.module_members)
+    }
+
+    /// The associated members, copied first when another table shares them.
+    pub fn associated_members_mut(
+        &mut self,
+    ) -> &mut rustc_hash::FxHashMap<(SymbolId, smol_str::SmolStr), SymbolId> {
+        std::sync::Arc::make_mut(&mut self.associated_members)
+    }
+
+    /// The type parameters, copied first when another table shares them.
+    pub fn type_params_mut(
+        &mut self,
+    ) -> &mut rustc_hash::FxHashMap<SymbolId, smallvec::SmallVec<[SymbolId; 4]>> {
+        std::sync::Arc::make_mut(&mut self.type_params)
+    }
+
     /// Registers a span-derived symbol. The id must already carry
     /// [`SymbolId::SYNTHETIC_LOCAL_BIT`] and this table's file id.
     pub fn register_synthetic(&mut self, symbol: Symbol) {
@@ -434,7 +457,7 @@ impl super::SymbolTable {
             span,
             crate::Visibility::Public,
         )?;
-        self.module_members
+        self.module_members_mut()
             .insert((module.into(), member.into()), id);
         Ok(id)
     }
@@ -474,7 +497,7 @@ impl super::SymbolTable {
             span,
             visibility,
         )?;
-        self.associated_members
+        self.associated_members_mut()
             .insert((parent_id, member.into()), id);
         Ok(id)
     }

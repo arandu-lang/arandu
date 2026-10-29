@@ -129,7 +129,7 @@ pub(super) fn member_completions(
         }
     }
 
-    for ((owner, name), &member) in &tc.symbols.associated_members {
+    for ((owner, name), &member) in tc.symbols.associated_members.iter() {
         if *owner != parent || !accepted(prefix, prefix_l, name.as_str()) {
             continue;
         }
@@ -186,7 +186,7 @@ fn module_member_completions(
     prefix_l: &str,
 ) -> Option<Vec<CompletionItem>> {
     let mut items: Vec<(u8, CompletionItem)> = Vec::new();
-    for ((module, name), &member) in &tc.symbols.module_members {
+    for ((module, name), &member) in tc.symbols.module_members.iter() {
         if module.as_str() != alias {
             continue;
         }

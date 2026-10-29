@@ -151,7 +151,7 @@ impl<'a> Resolver<'a> {
         }
         if name.path.len() == 1 {
             let mut matched_variant: Option<crate::SymbolId> = None;
-            for ((parent_id, member_name), &variant_sym) in &self.symbols.associated_members {
+            for ((parent_id, member_name), &variant_sym) in self.symbols.associated_members.iter() {
                 if member_name == root
                     && self
                         .symbols

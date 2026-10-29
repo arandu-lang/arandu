@@ -816,14 +816,15 @@ mod tests {
         }
 
         /// Warm-session latency on the `bench-incremental` medium corpus (16
-        /// modules of 32 helpers): a same-length body edit and a growing body in
-        /// `m8`. Run with `--ignored --nocapture` in release.
+        /// modules of 32 helpers): a same-length body edit, a growing body and
+        /// a body that gains locals in `m8`. Run with `--ignored --nocapture`
+        /// in release.
         #[test]
         #[ignore = "informational warm-session measurement"]
         fn warm_session_medium_corpus_measurement() {
             const MODULES: usize = 16;
             const FUNCTIONS: usize = 32;
-            let module = |index: usize, step: usize, growth: usize| {
+            let module = |index: usize, step: usize, growth: usize, locals: bool| {
                 let mut source = String::new();
                 if index > 0 {
                     source.push_str(&format!("import app.m{} as prev\n\n", index - 1));
@@ -836,7 +837,14 @@ mod tests {
                     ));
                     if hot {
                         for extra in 1..=growth {
-                            source.push_str(&format!("    acc = acc + {}\n", 1_000_000 + extra));
+                            source.push_str(&if locals {
+                                format!(
+                                    "    let extra_{extra} = acc + {}\n    acc = extra_{extra}\n",
+                                    1_000_000 + extra
+                                )
+                            } else {
+                                format!("    acc = acc + {}\n", 1_000_000 + extra)
+                            });
                         }
                     }
                     source.push_str("    return acc\n}\n\n");
@@ -867,7 +875,7 @@ mod tests {
             for index in 0..MODULES {
                 fs::write(
                     root.join(format!("src/m{index}.aru")),
-                    module(index, 1_000_000, 0),
+                    module(index, 1_000_000, 0, false),
                 )
                 .unwrap();
             }
@@ -876,12 +884,16 @@ mod tests {
             let mut session = BuildSession::open(&root, request).unwrap();
             session.build().unwrap();
             let target = root.join(format!("src/m{}.aru", MODULES / 2));
-            for (label, growth) in [("same length", false), ("growing body", true)] {
+            for (label, growth, locals) in [
+                ("same length", false, false),
+                ("growing body", true, false),
+                ("new locals", true, true),
+            ] {
                 let mut samples = Vec::new();
                 for sample in 0..12 {
                     let step = 1_000_001 + sample;
                     let grown = if growth { sample + 1 } else { 0 };
-                    fs::write(&target, module(MODULES / 2, step, grown)).unwrap();
+                    fs::write(&target, module(MODULES / 2, step, grown, locals)).unwrap();
                     let start = std::time::Instant::now();
                     session.build().unwrap();
                     if sample >= 2 {

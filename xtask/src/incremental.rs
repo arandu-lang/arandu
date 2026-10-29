@@ -116,17 +116,19 @@ enum Mutation {
     Documentation,
     PrivateBody,
     PrivateBodyGrowth,
+    PrivateBodyLocals,
     PublicSignature,
     NewItem,
     Clean,
 }
 
 impl Mutation {
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 8] = [
         Self::NoopTouch,
         Self::Documentation,
         Self::PrivateBody,
         Self::PrivateBodyGrowth,
+        Self::PrivateBodyLocals,
         Self::PublicSignature,
         Self::NewItem,
         Self::Clean,
@@ -138,6 +140,7 @@ impl Mutation {
             Self::Documentation => "documentation",
             Self::PrivateBody => "private-body",
             Self::PrivateBodyGrowth => "private-body-growth",
+            Self::PrivateBodyLocals => "private-body-locals",
             Self::PublicSignature => "public-signature",
             Self::NewItem => "new-item",
             Self::Clean => "clean",
@@ -160,6 +163,7 @@ struct Workload {
     body_salt: usize,
     api_salt: usize,
     growth: usize,
+    locals: usize,
     wide_signature: bool,
     added: usize,
 }
@@ -173,6 +177,7 @@ impl Workload {
             body_salt: 0,
             api_salt: 0,
             growth: 0,
+            locals: 0,
             wide_signature: false,
             added: 0,
         }
@@ -187,6 +192,7 @@ impl Workload {
             Mutation::Documentation => self.revision = index + 1,
             Mutation::PrivateBody => self.body_salt = index + 1,
             Mutation::PrivateBodyGrowth => self.growth = index + 1,
+            Mutation::PrivateBodyLocals => self.locals = index + 1,
             Mutation::PublicSignature => {
                 self.wide_signature = !self.wide_signature;
                 self.api_salt = index + 1;
@@ -225,6 +231,12 @@ impl Workload {
             if hot {
                 for extra in 1..=self.growth {
                     source.push_str(&format!("    acc = acc + {}\n", SALT + extra));
+                }
+                for local in 1..=self.locals {
+                    source.push_str(&format!(
+                        "    let local_{local} = acc + {}\n    acc = local_{local}\n",
+                        SALT + local
+                    ));
                 }
             }
             source.push_str("    return acc\n}\n\n");

@@ -31,6 +31,7 @@ As edições atingem o módulo do meio da cadeia de imports. Classes:
 | `documentation`       | muda o doc comment de um helper privado                                                 |
 | `private-body`        | muda uma constante imm32 de um helper privado; o tamanho do código de máquina se mantém |
 | `private-body-growth` | acrescenta uma instrução ao helper a cada amostra; o tamanho cresce                     |
+| `private-body-locals` | acrescenta um `let` ao helper a cada amostra: novos símbolos locais no corpo            |
 | `public-signature`    | alterna a aridade da API pública do módulo e reescreve o único chamador                 |
 | `new-item`            | adiciona uma função pública chamada pela API do módulo                                  |
 | `clean`               | remove `target/` e recompila (no máximo 5 amostras, sem aquecimento)                    |

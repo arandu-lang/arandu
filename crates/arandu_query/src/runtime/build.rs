@@ -280,11 +280,43 @@ fn share_linked_imports(
     headers: &crate::db::HashEq<crate::passes::PreparedHir>,
 ) {
     let linked = linked_imports(db, file);
-    if std::sync::Arc::ptr_eq(&checked.symbols.imported_symbols, &linked.base)
-        && std::sync::Arc::ptr_eq(&headers.value, &linked.headers)
-    {
-        checked.symbols_mut().imported_symbols = std::sync::Arc::clone(&linked.imported);
+    if !std::sync::Arc::ptr_eq(&headers.value, &linked.headers) {
+        return;
     }
+    let symbols = checked.symbols_mut();
+    if std::sync::Arc::ptr_eq(&symbols.imported_symbols, &linked.base) {
+        symbols.imported_symbols = std::sync::Arc::clone(&linked.imported);
+    }
+    // The member maps the same way: equal pointers prove the unit's maps are
+    // the ones linking extends, so the extended ones are what it would build.
+    let members = &linked.members;
+    if std::sync::Arc::ptr_eq(&symbols.module_members, &members.base.0)
+        && std::sync::Arc::ptr_eq(&symbols.associated_members, &members.base.1)
+        && std::sync::Arc::ptr_eq(&symbols.type_params, &members.base.2)
+    {
+        symbols.module_members = std::sync::Arc::clone(&members.linked.0);
+        symbols.associated_members = std::sync::Arc::clone(&members.linked.1);
+        symbols.type_params = std::sync::Arc::clone(&members.linked.2);
+    }
+}
+
+type MemberMaps = (
+    std::sync::Arc<arandu_middle::symbol_table::ModuleMembers>,
+    std::sync::Arc<arandu_middle::symbol_table::AssociatedMembers>,
+    std::sync::Arc<arandu_middle::symbol_table::TypeParams>,
+);
+
+/// The member maps of `file`'s signatures and the ones `link_hir_module`
+/// leaves after linking the file's headers into them.
+pub(super) struct LinkedMembers {
+    base: MemberMaps,
+    linked: MemberMaps,
+}
+
+fn same_maps(left: &MemberMaps, right: &MemberMaps) -> bool {
+    std::sync::Arc::ptr_eq(&left.0, &right.0)
+        && std::sync::Arc::ptr_eq(&left.1, &right.1)
+        && std::sync::Arc::ptr_eq(&left.2, &right.2)
 }
 
 type ImportedSymbols = rustc_hash::FxHashMap<arandu_middle::SymbolId, arandu_middle::Symbol>;
@@ -296,6 +328,7 @@ pub(super) struct LinkedImports {
     base: std::sync::Arc<ImportedSymbols>,
     headers: std::sync::Arc<crate::passes::PreparedHir>,
     imported: std::sync::Arc<ImportedSymbols>,
+    members: LinkedMembers,
 }
 
 /// Equal only when built from the same maps: the content of `base` and
@@ -305,6 +338,8 @@ impl PartialEq for LinkedImports {
         std::sync::Arc::ptr_eq(&self.base, &other.base)
             && std::sync::Arc::ptr_eq(&self.headers, &other.headers)
             && std::sync::Arc::ptr_eq(&self.imported, &other.imported)
+            && same_maps(&self.members.base, &other.members.base)
+            && same_maps(&self.members.linked, &other.members.linked)
     }
 }
 
@@ -316,10 +351,12 @@ impl Eq for LinkedImports {}
 ))]
 pub(super) fn linked_imports(db: &dyn ArandCompilerDb, file: crate::SourceFile) -> LinkedImports {
     let file_id = *file.file_id(db);
-    let base = std::sync::Arc::clone(
-        &crate::passes::declaration_signatures(db, file)
-            .symbols
-            .imported_symbols,
+    let signatures = &crate::passes::declaration_signatures(db, file).symbols;
+    let base = std::sync::Arc::clone(&signatures.imported_symbols);
+    let members = (
+        std::sync::Arc::clone(&signatures.module_members),
+        std::sync::Arc::clone(&signatures.associated_members),
+        std::sync::Arc::clone(&signatures.type_params),
     );
     let headers = local_declaration_context(db, file);
     let mut imported = base.as_ref().clone();
@@ -330,10 +367,35 @@ pub(super) fn linked_imports(db: &dyn ArandCompilerDb, file: crate::SourceFile) 
             }
         }
     }
+    // The rules of `link_hir_module`: a member that differs is replaced,
+    // type parameters only fill what is missing.
+    let mut linked = members.clone();
+    if headers.hir.is_some() {
+        let source = &headers.type_check.symbols;
+        for (key, member) in source.module_members.iter() {
+            if linked.0.get(key) != Some(member) {
+                std::sync::Arc::make_mut(&mut linked.0).insert(key.clone(), *member);
+            }
+        }
+        for (key, member) in source.associated_members.iter() {
+            if linked.1.get(key) != Some(member) {
+                std::sync::Arc::make_mut(&mut linked.1).insert(key.clone(), *member);
+            }
+        }
+        for (symbol, params) in source.type_params.iter() {
+            if !linked.2.contains_key(symbol) {
+                std::sync::Arc::make_mut(&mut linked.2).insert(*symbol, params.clone());
+            }
+        }
+    }
     LinkedImports {
         base,
         headers: std::sync::Arc::clone(&headers.value),
         imported: std::sync::Arc::new(imported),
+        members: LinkedMembers {
+            base: members,
+            linked,
+        },
     }
 }
 

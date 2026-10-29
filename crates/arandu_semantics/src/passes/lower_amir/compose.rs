@@ -103,6 +103,10 @@ pub fn compose_function_units(
     // Units of one file share their imported symbols by pointer, so each set
     // is registered once; a unit that repeats one only adds its own marks.
     let mut registered_imports = FxHashSet::default();
+    // Units of one file share their linked member maps, and merging the map
+    // merged just before changes nothing. Maps of other files may bind the
+    // same key differently, so only the previous merge may be skipped.
+    let mut merged_maps = [std::ptr::null::<()>(); 3];
     for input in units {
         poll();
         let table = &input.context.symbols;
@@ -148,9 +152,21 @@ pub fn compose_function_units(
         }
         let symbols = aggregate.symbols_mut();
         let context = &input.context.symbols;
-        insert_changed(&mut symbols.module_members, &context.module_members);
-        insert_changed(&mut symbols.associated_members, &context.associated_members);
-        insert_changed(&mut symbols.type_params, &context.type_params);
+        let maps = [
+            std::sync::Arc::as_ptr(&context.module_members).cast::<()>(),
+            std::sync::Arc::as_ptr(&context.associated_members).cast::<()>(),
+            std::sync::Arc::as_ptr(&context.type_params).cast::<()>(),
+        ];
+        if maps[0] != merged_maps[0] {
+            insert_changed(&mut symbols.module_members, &context.module_members);
+        }
+        if maps[1] != merged_maps[1] {
+            insert_changed(&mut symbols.associated_members, &context.associated_members);
+        }
+        if maps[2] != merged_maps[2] {
+            insert_changed(&mut symbols.type_params, &context.type_params);
+        }
+        merged_maps = maps;
     }
     for input in units {
         poll();

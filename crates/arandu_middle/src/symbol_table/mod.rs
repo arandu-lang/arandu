@@ -4,6 +4,13 @@ use smol_str::SmolStr;
 
 use crate::Span;
 
+/// `(module, member)` to the member, for namespace lookup.
+pub type ModuleMembers = FxHashMap<(SmolStr, SmolStr), SymbolId>;
+/// `(type, method)` to the associated function.
+pub type AssociatedMembers = FxHashMap<(SymbolId, SmolStr), SymbolId>;
+/// A named type to its type parameters, in declaration order.
+pub type TypeParams = FxHashMap<SymbolId, smallvec::SmallVec<[SymbolId; 4]>>;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct LocalSymbolId(pub u32);
 
@@ -240,13 +247,13 @@ pub struct SymbolTable {
     pub imported_symbols: std::sync::Arc<FxHashMap<SymbolId, Symbol>>,
     /// Shared like [`Self::imported_symbols`]; mutate through
     /// [`SymbolTable::module_members_mut`].
-    pub module_members: std::sync::Arc<FxHashMap<(SmolStr, SmolStr), SymbolId>>,
+    pub module_members: std::sync::Arc<ModuleMembers>,
     /// Module aliases whose source import failed. Semantic passes use this
     /// error state to avoid diagnosing members of the same failed import.
     pub unresolved_module_aliases: std::collections::BTreeSet<SmolStr>,
     /// Shared like [`Self::imported_symbols`]; mutate through
     /// [`SymbolTable::associated_members_mut`].
-    pub associated_members: std::sync::Arc<FxHashMap<(SymbolId, SmolStr), SymbolId>>,
+    pub associated_members: std::sync::Arc<AssociatedMembers>,
     /// Interface symbols declared with the `sealed` modifier.
     pub sealed_interfaces: FxHashSet<SymbolId>,
     /// Explicit type/interface implementation declarations.
@@ -265,7 +272,7 @@ pub struct SymbolTable {
     /// Used so methods on `Box<T>` can import `T` into their type scope.
     /// Shared like [`Self::imported_symbols`]; mutate through
     /// [`SymbolTable::type_params_mut`].
-    pub type_params: std::sync::Arc<FxHashMap<SymbolId, smallvec::SmallVec<[SymbolId; 4]>>>,
+    pub type_params: std::sync::Arc<TypeParams>,
     global_scope_id: ScopeId,
     pub builtins: BuiltinTypes,
     pub builtin_alloc: Option<SymbolId>,

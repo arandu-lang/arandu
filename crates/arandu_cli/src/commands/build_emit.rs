@@ -309,6 +309,7 @@ pub(super) fn emit_native_artifact(
     published: &mut Option<artifact::ArtifactIdentity>,
     cgu_trust: &mut crate::cgu::CguTrust,
     superseded: &mut dyn FnMut() -> bool,
+    mut published_hook: Option<&mut dyn FnMut() -> Result<(), CliFailure>>,
 ) -> CliResult {
     let toolchain_fingerprint = {
         arandu_base::time_pass!("toolchain-fingerprint");
@@ -365,6 +366,7 @@ pub(super) fn emit_native_artifact(
                 toolchain_fingerprint.as_ref(),
                 &cgu_cache_dir,
                 cgu_trust,
+                published_hook.is_none(),
             )?
         };
         // Cached objects are content-addressed; nothing is published yet.
@@ -511,6 +513,26 @@ pub(super) fn emit_native_artifact(
         };
 
         *published = artifact::ArtifactIdentity::of(&artifact);
+        let built = |flags: &ProjectFlags| {
+            if !flags.quiet {
+                outln!(
+                    "built {} v{} (backend={}, entry={}, artifact={})",
+                    ctx.name,
+                    ctx.version,
+                    linker_label,
+                    ctx.entry_rel,
+                    artifact.path.display()
+                );
+            }
+        };
+        // With a hook, the build is reported as soon as its artifact is
+        // published; the records that only decide later up-to-date checks
+        // follow. A crash between them leaves records that no longer match,
+        // which the next build rebuilds instead of trusting.
+        if let Some(hook) = published_hook.as_mut() {
+            built(flags);
+            hook()?;
+        }
         {
             arandu_base::time_pass!("incremental-record");
             crate::incremental::record_session(
@@ -520,15 +542,10 @@ pub(super) fn emit_native_artifact(
                 reusable_input_fingerprints,
             )?;
         }
-        if !flags.quiet {
-            outln!(
-                "built {} v{} (backend={}, entry={}, artifact={})",
-                ctx.name,
-                ctx.version,
-                linker_label,
-                ctx.entry_rel,
-                artifact.path.display()
-            );
+        if published_hook.is_some() {
+            crate::cgu::collect_unused(&cgu_cache_dir, &result.object_files)?;
+        } else {
+            built(flags);
         }
         return Ok(CliSuccess::Done);
     }

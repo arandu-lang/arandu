@@ -223,7 +223,7 @@ pub fn runtime_program(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Run
                         callees.push(key);
                     }
                 }
-                callees.sort_by_key(|key| {
+                callees.sort_by_cached_key(|key| {
                     (
                         db.source_file_by_id(key.definition.file_id)
                             .map(|sf| sf.path(db).clone())
@@ -265,7 +265,7 @@ pub fn runtime_program(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Run
             .map(|sf| sf.path(db).clone())
             .unwrap_or_else(|| std::sync::Arc::new(std::path::PathBuf::new()))
     };
-    units.sort_by_key(|(key, _, _, _)| {
+    units.sort_by_cached_key(|(key, _, _, _)| {
         (
             file_path_key(key.definition.file_id),
             key.definition.local_id.0,

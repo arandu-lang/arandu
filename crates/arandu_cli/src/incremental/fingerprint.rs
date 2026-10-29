@@ -498,6 +498,49 @@ fn collect_project_file_paths(config: &SessionConfig<'_>) -> BTreeMap<String, In
     files
 }
 
+/// The fingerprints a build records for its inputs: the ones its up-to-date
+/// check captured, or the current ones. An input whose file no longer holds
+/// the text `compiled` says the build read is recorded with that text and
+/// without a timestamp, so the next check reads the file and rebuilds rather
+/// than pairing the artifact with content it was not built from.
+pub fn compiled_input_fingerprints(
+    config: &SessionConfig<'_>,
+    captured: Option<BTreeMap<String, FileFingerprint>>,
+    compiled: &dyn Fn(&Path) -> Option<std::sync::Arc<str>>,
+) -> Result<BTreeMap<String, FileFingerprint>, CliFailure> {
+    let inputs = collect_project_file_paths(config);
+    let mut fingerprints = match captured {
+        Some(fingerprints) => fingerprints,
+        None => {
+            capture_input_fingerprints(&inputs, &BTreeMap::new()).map_err(|(path, error)| {
+                CliFailure::operational("fingerprint build input", Some(path), error.to_string())
+            })?
+        }
+    };
+    for (key, input) in &inputs {
+        let Some(text) = compiled(&input.path) else {
+            continue;
+        };
+        let content_hash = blake3::hash(text.as_bytes()).to_hex().to_string();
+        if fingerprints
+            .get(key)
+            .is_some_and(|fingerprint| fingerprint.content_hash == content_hash)
+        {
+            continue;
+        }
+        fingerprints.insert(
+            key.clone(),
+            FileFingerprint {
+                mtime_nanos: None,
+                size: text.len() as u64,
+                content_hash,
+                semantic_hash: semantic_source_hash(text.as_bytes(), input.semantic_source),
+            },
+        );
+    }
+    Ok(fingerprints)
+}
+
 fn capture_input_fingerprints(
     inputs: &BTreeMap<String, IncrementalInput>,
     saved: &BTreeMap<String, FileFingerprint>,
@@ -548,6 +591,70 @@ fn rebuild_with_inputs(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A source that changed on disk after the build read it is recorded with
+    /// the text the build compiled and no timestamp; the others keep theirs.
+    #[test]
+    fn recorded_inputs_are_the_texts_the_build_compiled() {
+        let root = std::env::temp_dir().join(format!(
+            "arandu-compiled-inputs-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let manifest = root.join("Arandu.toml");
+        fs::write(&manifest, "manifest").unwrap();
+        let [edited, kept] = ["edited.aru", "kept.aru"].map(|name| {
+            let path = root.join(name);
+            fs::write(&path, "func main(): int { return 1 }\n").unwrap();
+            path
+        });
+        let inputs = [&edited, &kept].map(|path| IncrementalInput {
+            key: path.file_name().unwrap().to_string_lossy().into_owned(),
+            path: path.clone(),
+            semantic_source: true,
+        });
+        let config = SessionConfig {
+            project_root: &root,
+            package: "app",
+            version: "0.0.1",
+            profile: NativeProfile::Dev,
+            backend: "cranelift",
+            pointer_width: 8,
+            ctfe_limits: arandu_query::ctfe::CtfeLimits::default(),
+            opt: false,
+            debug_info: false,
+            toolchain: "test",
+            manifest_path: &manifest,
+            extra_inputs: &inputs,
+            target_triple: None,
+        };
+        let compiled = "func main(): int { return 2 }\n";
+        let fingerprints = compiled_input_fingerprints(&config, None, &|path| {
+            (path == edited)
+                .then(|| std::sync::Arc::from(compiled))
+                .or_else(|| {
+                    (path == kept).then(|| std::sync::Arc::from(fs::read_to_string(path).unwrap()))
+                })
+        })
+        .unwrap();
+        let edited = &fingerprints["edited.aru"];
+        assert_eq!(
+            edited.content_hash,
+            blake3::hash(compiled.as_bytes()).to_hex().to_string()
+        );
+        assert_eq!(edited.mtime_nanos, None);
+        assert_eq!(
+            edited.semantic_hash,
+            semantic_source_hash(compiled.as_bytes(), true)
+        );
+        assert!(fingerprints["kept.aru"].mtime_nanos.is_some());
+        assert!(fingerprints["manifest"].mtime_nanos.is_some());
+        let _ = fs::remove_dir_all(root);
+    }
 
     #[test]
     fn semantic_hash_ignores_docs_and_trivia_but_not_code() {

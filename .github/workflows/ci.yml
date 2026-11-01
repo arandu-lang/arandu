@@ -115,7 +115,7 @@ jobs:
         run: cargo run --locked -p xtask -- check-project-corpus
       - name: Node for CLI core-Wasm differential checks
         if: matrix.shard == 'tooling'
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
       - name: Build CLI and native runtime for black-box differential checks
@@ -129,7 +129,7 @@ jobs:
         run: python3 -m unittest discover -s scripts -p test_bisect_smith.py
       - name: Preserve CLI differential evidence
         if: matrix.shard == 'tooling' && always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: smith-cli-${{ runner.os }}-${{ github.sha }}
           path: target/smith-cli-${{ github.run_id }}-${{ github.run_attempt }}
@@ -137,7 +137,7 @@ jobs:
           retention-days: 14
       - name: Publish SL_T JUnit evidence
         if: matrix.shard == 'tooling'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sl-t-junit-${{ github.sha }}
           path: target/sl-t/test-results.xml
@@ -185,7 +185,7 @@ jobs:
         run: target/debug/xtask.exe smith-cli --arandu target/debug/arandu_cli.exe --evidence-dir target/smith-cli-${{ github.run_id }}-${{ github.run_attempt }} --seed 256 --iterations 8 --native-only
       - name: Preserve Windows CLI differential evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: smith-cli-${{ runner.os }}-${{ github.sha }}
           path: target/smith-cli-${{ github.run_id }}-${{ github.run_attempt }}
@@ -194,7 +194,7 @@ jobs:
 
       - name: Preserve native differential reproducers
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: smith-reproducers-${{ runner.os }}-${{ github.sha }}
           path: target/smith-failures
@@ -238,7 +238,7 @@ jobs:
         run: target/debug/xtask smith-cli --arandu target/debug/arandu_cli --evidence-dir target/smith-cli-${{ github.run_id }}-${{ github.run_attempt }} --seed 256 --iterations 8 --native-only
       - name: Preserve macOS CLI differential evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: smith-cli-${{ runner.os }}-${{ github.sha }}
           path: target/smith-cli-${{ github.run_id }}-${{ github.run_attempt }}
@@ -247,7 +247,7 @@ jobs:
 
       - name: Preserve native differential reproducers
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: smith-reproducers-${{ runner.os }}-${{ github.sha }}
           path: target/smith-failures
@@ -395,7 +395,7 @@ jobs:
           save-if: "true"
       - name: Build Extension Host server binary
         run: cargo build --locked -p arandu_lsp -p arandu_cli
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
@@ -641,7 +641,7 @@ jobs:
         run: cargo test --locked -p arandu_lsp --test stdio_lifecycle stdio_l3_stress_has_no_crash_deadlock_or_stale_publication -- --ignored --exact --nocapture
       - name: Publish performance and retention report
         if: runner.os == 'Linux'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: s2-performance-report-${{ github.sha }}
           path: |
@@ -664,7 +664,7 @@ jobs:
           persist-credentials: false
       - name: Install latest stable with required components
         run: rustup toolchain install stable --profile minimal --component rustfmt,clippy
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: future-stable
       - run: cargo +stable check --workspace --locked

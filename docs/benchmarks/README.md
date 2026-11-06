@@ -49,7 +49,8 @@ recompiladas, tamanho e SHA-256 do executável, timers por fase
 (patch ELF in-place) ou `full-link`. `patch_fallback` marca as amostras em que
 o patch foi tentado e recusado; `resized_functions` lista, das funções cujo
 código mudou de tamanho, `[bytes antes, bytes depois, slot antes, slot
-depois]`, lidos do `elf_layout.json`. Por classe, o relatório resume p50/p95/máximo
+depois]`, lidos do `elf_layout.json`. O patch in-place não regrava esse
+arquivo, então só os relinks aparecem: a taxa de patch continua em `patch_rate`. Por classe, o relatório resume p50/p95/máximo
 /média por nearest-rank (o mesmo método de `check-project-performance`), CPU
 p50, pico de RSS, distribuição de caminhos, taxa de patch sobre os builds que
 religaram, p50 de cada fase e, em `resized_functions`, a distribuição do

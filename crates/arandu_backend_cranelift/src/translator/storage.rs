@@ -22,6 +22,7 @@ pub(super) fn frame_promotion_safe(
         symbols,
         info.type_interner(),
         arandu_mir::aggregate_storage::ScratchResultAbi::CallerOwnedAggregates,
+        info.return_borrow_summaries().get(&function.symbol),
     )
 }
 impl<M: cranelift_module::Module> super::FunctionTranslator<'_, '_, M> {

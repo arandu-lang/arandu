@@ -45,7 +45,14 @@ Cranelift promotes admitted constructors, value copies and caller result
 buffers to independent frame slots. The pure admission policy belongs to MIR
 and is shared with Wasm: safe borrowed leaves, pointer-returning views,
 suspension, unknown foreign calls and aggregate back-edge phi values fail
-closed. Raw ownership handles inside affine containers are distinct from the
+closed. Since 0.2.0 Cranelift also admits aggregates that carry views
+(`scratch_carrier_safe`: `Option<ref T>`, a struct with a `str`): where a
+carrier's bytes live decides nothing about what its views point to, and the
+function-level gate already rejects every way a view of the frame's backing
+could be retained. A function returning `ref`/`ref mut` qualifies when its
+proven return borrow summary sources only parameter views (a view formal, or
+a borrow inside a by-value formal); slice and `str` results keep the
+descriptor-pointer ABI and stay excluded. Raw ownership handles inside affine containers are distinct from the
 container's backing bytes. Non-Copy moves and user destruction remain governed
 by shared ownership/drop elaboration, not by backend storage reclamation.
 Ready-only coroutine creators with scalar payloads may reclaim their private
@@ -135,10 +142,13 @@ not provide stack or resource unwinding; a trapped guest instance must be
 discarded rather than treated as a normal reusable invocation.
 
 Residual exclusions remain explicit: unknown foreign retention, aggregate
-back-edge phi lifetimes, borrowed carriers, general suspension/aggregate
-coroutine payloads and view-bearing pointer-returning Wasm results still require
-escape/liveness proofs and compatible ownership transfer. Legacy backing in
-those paths may retain the existing cleanup gap. They are not evidence that
+back-edge phi lifetimes, raw-pointer and unproven-reference results (unsafe
+code), Wasm view carriers, general suspension/aggregate coroutine payloads and
+view-bearing pointer-returning Wasm results still require escape/liveness
+proofs and compatible ownership transfer. Legacy backing in those paths may
+retain the existing cleanup gap: an aggregate temporary of such a function is
+allocated per execution and not released, so hot standard-library paths pass
+handles as scalars instead (`GenArena.checkedPointer`). They are not evidence that
 all aggregates are stack allocated or every program is allocation-free.
 
 ### 1. Type Layout Calculation Algorithm

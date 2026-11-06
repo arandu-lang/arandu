@@ -22,24 +22,24 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
     ) -> Value {
         let layout = self.checked_layout(ty);
         let id = self.type_info.type_interner().intern(ty.clone());
-        // A bare slice descriptor is a non-owning `{data, len}` view: its own
-        // bytes carry no lifetime (the pointee stays with its owner), so a
-        // per-site slot replaces a per-execution malloc. Only a bare slice
-        // qualifies; a view hidden inside an aggregate keeps the nested
-        // rejection of `scratch_type_safe`. The promotion gate still applies:
-        // `Free`/back-edge phi/extern rules that disable promotion for the
-        // function must disable it for descriptors too.
+        // A slice descriptor is a non-owning `{data, len}` view, and an
+        // aggregate carrying views (`Option<ref T>`, a struct with a `str`)
+        // holds such pairs and pointers: their bytes carry no lifetime of
+        // their own, so invocation backing replaces a per-execution malloc
+        // that nothing released (AGG.1). See `scratch_carrier_safe`. The
+        // promotion gate still applies: `Free`/back-edge phi/extern rules that
+        // disable promotion for the function disable it for carriers too.
         let slice_descriptor = matches!(
             ty,
             arandu_middle::types::ArType::Slice(_) | arandu_middle::types::ArType::MutSlice(_)
         );
         let eligible = self.frame_promotion_safe
             && (slice_descriptor
-                || (arandu_mir::aggregate_storage::scratch_type_safe(
+                || arandu_mir::aggregate_storage::scratch_carrier_safe(
                     id,
                     self.type_info.type_interner(),
                     self.type_info,
-                ) && self.type_info.is_borrow_free(id)));
+                ));
         // Ownership/drop elaboration already governs non-Copy payloads. This
         // allocation owns only their backing bytes: moving a value transfers
         // its resources, while each invocation retains its private backing.

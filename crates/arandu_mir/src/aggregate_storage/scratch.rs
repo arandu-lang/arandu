@@ -4,7 +4,7 @@ use arandu_middle::amir::{AmirFunc, AmirOperand, AmirRvalue, AmirStmt, AmirTermi
 use arandu_middle::layout::{
     StructLayoutProvider, instantiated_enum_variant_payload_type, instantiated_field_type,
 };
-use arandu_middle::types::{ArType, Primitive, TypeId, TypeInterner};
+use arandu_middle::types::{ArType, Primitive, ReturnBorrowSummary, TypeId, TypeInterner};
 use arandu_middle::{SymbolKind, SymbolTable};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,34 +26,60 @@ pub fn scratch_type_safe(
     interner: &TypeInterner,
     provider: &dyn StructLayoutProvider,
 ) -> bool {
+    backing_type_safe(ty, interner, provider, false)
+}
+
+/// [`scratch_type_safe`] admitting safe views (`str`, slices, references) as
+/// leaves: an aggregate that carries them. Where its backing lives decides
+/// nothing about what its views point to. Their referents are governed by
+/// typeck's borrow rules and by [`function_scratch_safe`], which keeps any
+/// function that could retain a view of this frame's backing (extern calls,
+/// back-edge phis of borrows, borrow-returning results) out of promotion; the
+/// carrier's own backing has the lifetime of any other admitted aggregate.
+#[must_use]
+pub fn scratch_carrier_safe(
+    ty: TypeId,
+    interner: &TypeInterner,
+    provider: &dyn StructLayoutProvider,
+) -> bool {
+    backing_type_safe(ty, interner, provider, true)
+}
+
+fn backing_type_safe(
+    ty: TypeId,
+    interner: &TypeInterner,
+    provider: &dyn StructLayoutProvider,
+    views: bool,
+) -> bool {
     fn visit(
         ty: TypeId,
         interner: &TypeInterner,
         provider: &dyn StructLayoutProvider,
         depth: usize,
+        views: bool,
     ) -> bool {
         if depth > 64 {
             return false;
         }
+        let visit = |inner, depth| visit(inner, interner, provider, depth, views);
         match interner.resolve(ty) {
-            ArType::Primitive(p) => p != Primitive::Str,
+            ArType::Primitive(Primitive::Str) => views,
+            ArType::Slice(_) | ArType::MutSlice(_) | ArType::Ref(_) | ArType::RefMut(_) => views,
+            ArType::Primitive(_) => true,
             ArType::Void | ArType::Ptr(_) | ArType::Vector(_) => true,
             ArType::Array(_, inner) | ArType::Option(inner) | ArType::Poll(inner) => {
-                visit(inner, interner, provider, depth + 1)
+                visit(inner, depth + 1)
             }
-            ArType::Result(ok, err) => {
-                visit(ok, interner, provider, depth + 1)
-                    && visit(err, interner, provider, depth + 1)
-            }
+            ArType::Result(ok, err) => visit(ok, depth + 1) && visit(err, depth + 1),
             ArType::Tuple(args) => interner
                 .type_args(args)
                 .iter()
-                .all(|&inner| visit(inner, interner, provider, depth + 1)),
+                .all(|&inner| visit(inner, depth + 1)),
             owner @ ArType::Named(_, _) => {
                 if let Some(fields) = provider.get_struct_fields_for_type(&owner, interner) {
                     fields.iter().all(|field| {
                         instantiated_field_type(&owner, field.name.as_str(), interner, provider)
-                            .is_some_and(|inner| visit(inner, interner, provider, depth + 1))
+                            .is_some_and(|inner| visit(inner, depth + 1))
                     })
                 } else {
                     provider
@@ -64,18 +90,12 @@ pub fn scratch_type_safe(
                                     || instantiated_enum_variant_payload_type(
                                         &owner, tag, interner, provider,
                                     )
-                                    .is_some_and(|inner| {
-                                        visit(inner, interner, provider, depth + 1)
-                                    })
+                                    .is_some_and(|inner| visit(inner, depth + 1))
                             })
                         })
                 }
             }
-            ArType::Slice(_)
-            | ArType::MutSlice(_)
-            | ArType::Nullable(_)
-            | ArType::Ref(_)
-            | ArType::RefMut(_)
+            ArType::Nullable(_)
             | ArType::Coroutine(_)
             | ArType::Range(_)
             | ArType::Func(..)
@@ -90,7 +110,7 @@ pub fn scratch_type_safe(
             | ArType::Error => false,
         }
     }
-    visit(ty, interner, provider, 0)
+    visit(ty, interner, provider, 0, views)
 }
 
 /// Whether an opaque (extern) callee could observe the address of backing
@@ -140,12 +160,53 @@ fn extern_exposes_backing(
         })
 }
 
+/// Whether the reference `function` returns borrows only what its parameters'
+/// views reach, as its proven `summary` states: then no reference into this
+/// invocation's backing can be returned, and a reference result is a value
+/// like a scalar for promotion. A source path names a borrow inside the
+/// formal, whose value points outside it; a root path borrows the formal
+/// itself, which qualifies only for a view formal, since a by-value one may
+/// live in that backing.
+fn returns_parameter_views(
+    function: &AmirFunc,
+    interner: &TypeInterner,
+    summary: Option<&ReturnBorrowSummary>,
+) -> bool {
+    let Some(summary) = summary else {
+        return false;
+    };
+    !summary.dependencies.is_empty()
+        && summary.dependencies.iter().all(|dependency| {
+            !dependency.sources.is_empty()
+                && dependency.sources.iter().all(|source| {
+                    !source.parameter_path.0.is_empty()
+                        || usize::try_from(source.parameter_index)
+                            .ok()
+                            .and_then(|index| function.params.get(index))
+                            .and_then(|param| function.temps.get(param.as_usize()))
+                            .is_some_and(|param| {
+                                matches!(
+                                    interner.resolve(param.ty),
+                                    ArType::Ref(_)
+                                        | ArType::RefMut(_)
+                                        | ArType::Slice(_)
+                                        | ArType::MutSlice(_)
+                                        | ArType::Primitive(Primitive::Str)
+                                )
+                            })
+                })
+        })
+}
+
+/// `returned_borrows` is the function's proven return borrow summary, which
+/// admits a reference result (see `returns_parameter_views`).
 #[must_use]
 pub fn function_scratch_safe(
     function: &AmirFunc,
     symbols: &SymbolTable,
     interner: &TypeInterner,
     result_abi: ScratchResultAbi,
+    returned_borrows: Option<&ReturnBorrowSummary>,
 ) -> bool {
     // Back-edge aggregate phi values may retain a previous iteration's
     // materialization. Without slot liveness/coloring, a cyclic merge must not
@@ -201,6 +262,8 @@ pub fn function_scratch_safe(
         | ArType::IntLiteral
         | ArType::FloatLiteral => {}
         ArType::Coroutine(_) if scalar_ready_result => {}
+        ArType::Ref(_) | ArType::RefMut(_)
+            if returns_parameter_views(function, interner, returned_borrows) => {}
         ArType::Named(..)
         | ArType::Array(..)
         | ArType::Tuple(..)

@@ -131,13 +131,10 @@ fn every_fallback_shape_is_released_in_c() {
     let _ = fs::remove_dir_all(directory);
 }
 
-/// P0 open (AGG.1): Cranelift stores a Copy aggregate that holds a safe view
-/// (`Option<ref T>`, a struct with a `str`) in `malloc` storage that nothing
-/// releases, because `scratch_type_safe` keeps views out of invocation
-/// scratch. `GenArena.getRef` builds `Option<ref T>` through `slice.get` and
-/// leaks ~225 bytes per call; the C backend keeps such values by value.
+/// The JIT keeps them on the invocation as C keeps them by value: a Copy
+/// aggregate carrying a view (`Option<ref T>`) once fell outside invocation
+/// scratch into `malloc` nothing freed, ~225 bytes per `GenArena.getRef`.
 #[test]
-#[ignore = "P0 AGG.1: view-holding Copy aggregates leak on Cranelift"]
 fn every_fallback_shape_is_released_on_the_jit() {
     let directory = common::temp_dir("arandu-agg1-jit").unwrap();
     let run = |rounds| {

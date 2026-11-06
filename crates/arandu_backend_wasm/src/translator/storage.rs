@@ -19,7 +19,7 @@ impl FuncTranslator<'_> {
         } else {
             ScratchResultAbi::ScalarsOnly
         };
-        if !function_scratch_safe(self.func, self.symbols, self.interner, result_abi) {
+        if !function_scratch_safe(self.func, self.symbols, self.interner, result_abi, None) {
             return;
         }
         // A Wasm move into a whole local copies the backing pointer, so a

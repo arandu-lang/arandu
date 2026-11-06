@@ -15,6 +15,12 @@ compartilham os resultados do compilador. `todo`/`todo("motivo")` como expressã
 tipada, `arandu repl`, `arandu bindgen`, `arandu lint` e seus flags não são
 superfícies públicas implementadas.
 
+Estado auditado em 2026-11-06: a 0.3.0 implementa o recorte de holes de §2
+([campanha 0.3.x](../campaigns/0.3.x-instances-and-closures.md), trilha TYP.NEXT), depois da separação
+`constraint_gen`/solver que dá ao checker variáveis de inferência além das de
+literais. A palavra-chave `todo` e o `DiagCode` do hole ainda precisam de
+decisão; o tooling (`repl`, `bindgen`, `lint`) continua na 0.6.x.
+
 O compilador atual já possui CST com recuperação, nós de erro, `ArType::Error`,
 LSP incremental, formatter e JIT Cranelift. Recuperar sintaxe/tipos incompletos
 não equivale a registrar uma lacuna explícita com tipo esperado, contexto OSSA,

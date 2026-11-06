@@ -24,6 +24,14 @@
 > de primeira classe. Chamadas indiretas gerais na linguagem produzem T033.
 > Tipos de função, `FunctionRef` e callbacks internos existentes não habilitam
 > automaticamente closures executáveis ou funções de primeira classe de uso geral.
+>
+> **Estado auditado em 2026-11-06:** a 0.3.0 exige esta RFC
+> ([campanha 0.3.x](../campaigns/0.3.x-instances-and-closures.md), trilha LAMBDA) em três recortes: L1 callbacks não
+> escapantes por desfuncionalização, sem chamada indireta; L2 valor função
+> `{code, env}` e chamada indireta nos quatro backends; L3 closures
+> escapantes e com dono. Antes da L2 é preciso decidir a gramática (§8), se a
+> chamada indireta é statement ou terminador (§5.2) e o layout do valor função
+> (§5.1). O status continua `Draft` até essas decisões.
 
 ---
 

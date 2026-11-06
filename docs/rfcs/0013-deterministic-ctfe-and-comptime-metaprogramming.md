@@ -15,6 +15,13 @@
 > está implementado no contrato de
 > [comptime core](../arandu-comptime-core-v0.1.md). Exemplos e recursos além desse
 > contrato continuam ilustrativos; isso não aceita nem implementa a RFC inteira.
+>
+> **Estado auditado em 2026-11-06:** a 0.3.0 implementa o recorte C2 de §10.1
+> ([campanha 0.3.x](../campaigns/0.3.x-instances-and-closures.md), trilha CT.NEXT): um descritor de tipo independente
+> do pool (§10.1.1) e `types.info<T>()` imutável com visibilidade e fuel. A API
+> de reflexão C3 (§10.1.2) e atributos executáveis continuam fora; as questões
+> de §9 sobre identidade, visibilidade, efeitos e budgets são decididas antes
+> da C2.
 
 ---
 

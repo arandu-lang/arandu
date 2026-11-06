@@ -104,7 +104,8 @@ WASM.FLOAT saíram na v0.2.0 (2026-11-06).
 
 | Prioridade / ID | Trabalho aberto | Dono e prova de saída |
 | --- | --- | --- |
-| P1 / HOT.1 | publicado na v0.2.0: `bench-incremental` com corpora pequeno/médio/grande, p50/p95, CPU/RSS, caminho de publicação, delta de bytes por função e retenção de slot | falta declarar e medir o host de referência, que transforma o p95 em gate |
+| P0 / AUD.ELF | auditar o patch ELF da 0.2.0: `.eh_frame`/CFI de uma função cujo prólogo muda e relocação `Absolute64` aplicada num executável PIE | CLI/linker; regressões de patch × clean; defeito reproduzido recusa o patch e cai no link completo, em patch 0.2.x se necessário |
+| P1 / BENCH.2 | `bench-incremental` publicado na v0.2.0; falta corpus representativo (structs, genéricos, stdlib, destrutores, fan-out/diamante) e contadores determinísticos de trabalho | xtask/benchmarks; schema 4 com units reexecutadas, memos verificados e arquivos recompostos, base dos gates da 0.3.0 ([campanha 0.3.x](campaigns/0.3.x-instances-and-closures.md)) |
 | P1 / AGG.1 | reproduzir e classificar gaps de lifetime/cleanup dos fallbacks admitidos; correção local de GenArena.get com Copy e novo getRef para impedir duplicação de owners. Corrigido na v0.2.0: o vazamento do Cranelift em agregados com view (`Option<ref T>`; ~225 B por `GenArena.getRef`), por admissão de carriers no scratch da invocação, retornos `ref` com resumo provado e handle por escalares no `GenArena` | MIR/backends; resultados corretos, alloc/free e RSS limitado: `cli_agg_endurance` em C (ASan/LSan e RSS) e na JIT (RSS) passa; resultados `ptr`/`ref` promovidos pela análise de escape de endereço no AMIR (`agg1_pointer_results.aru`); residual documentado em ABI/layout (funções que tomam o endereço do próprio armazenamento, carriers no Wasm), destino dual-locus (RFC 0043) |
 | P2 / CT.4–5 e IDE | campanha de editor/playground e ampliação do corpus real | query/IDE/web/extensão; prova correspondente, sem equiparar smoke instalado ao universo de alvos |
 | P2 / SL_T, SL_P | fechar soak e evidência nativa específica antes de promover `gold` | harness/runtime; artefatos versionados por campanha e matriz descrita nos contratos |
@@ -195,7 +196,7 @@ associada. Cada candidata declara seu recorte e limitações antes da promoção
 | --- | --- | --- | --- |
 | 0.1.x / 0.1.11 | fundação publicada e fechamento autorizado da stdlib | bloqueadores, ST.0–16, regressões e distribuição do pacote exato | 0.1.11 publicada (2026-10-26) |
 | 0.2.x | motor quente e imagem dev recuperável | sessão Salsa viva, protocolo/fallback, equivalência clean e p95 ≤100 ms em edição de corpo no host/corpus de referência | 0.2.0 publicada (2026-11-06); p95 registrado, não imposto |
-| 0.3.x | granularidade por instância e expressividade delimitada | completar produtores/CGUs, retenção e cutoff; p95 ≤10 ms no workload de referência; closures e reflexão inicial têm gates próprios | `partial` na granularidade; expansões `planned` |
+| 0.3.x | granularidade por instância, closures, reflexão, holes e caminho quente nas três plataformas | gates de trabalho determinísticos (corte por símbolo, composição incremental, memos), patch/daemon em ELF, Mach-O e PE, LAMBDA L1–L3, `types.info<T>()` e holes `todo`; p95 registrado, não imposto | `planned`: [campanha 0.3.x](campaigns/0.3.x-instances-and-closures.md) aprovada em 2026-11-06 |
 | 0.4.x | qualidade de código de release mensurada | OPT/AOT oracle, segurança de alias/escape e benchmarks; LLVM opcional só após aceitação da RFC 0031, paridade e distribuição | `experimental` O2; backend novo `planned` |
 | 0.5.x | contratos portáveis de ABI, recursos e interoperabilidade | layout/calling convention por alvo, ownership/FFI e runtime; capabilities/freestanding e WIT/mobile avançam por recortes | base `partial`; expansões `planned` |
 | 0.6.x | ferramentas e armazenamento sustentáveis | CAS/GC/formatos compatíveis quando justificados; documentação/pacotes existentes evoluem, REPL/bindgen/linter por contrato | base `partial`; expansões `planned` |
@@ -268,12 +269,19 @@ promover o serviço quente.
 
 ### 0.3.x — Instâncias, closures e staging delimitado
 
+Por decisão do mantenedor (2026-11-06), a 0.3.0 exige a série inteira e a
+paridade do caminho quente nas três plataformas. Os gates de latência são
+contagens determinísticas de trabalho; o p95 é registrado por classe e
+plataforma e o antigo "p95 ≤10 ms" é meta direcional. Ordem, estado de
+partida e riscos na [campanha 0.3.x](campaigns/0.3.x-instances-and-closures.md).
+
 | ID | Base atual | Trabalho / gate |
 | --- | --- | --- |
-| INC.3 | `function_hir`, `instance_hir`, `runtime_raw_unit`, `instance_contracts`, `runtime_unit`, compositor e closure CGU ativos | completar entrega/metadata/retention; editar corpo privado não rebaixa importadores ou CGUs irmãs; clean/incremental idênticos e p95 ≤10 ms no host/workload declarado |
-| LAMBDA / [RFC 0032](rfcs/0032-closures-ossa-capture-modes-and-first-class-functions.md) | parser/tipos preparam lambdas; closures gerais continuam U001; só `move ||` sem parâmetros e com capturas próprias Send baixa para ThreadJob | contrato de capturas, Copy/Move/borrow, representação ambiente, chamadas indiretas, drops/escape e paridade C/Cranelift/Wasm antes de habilitar o sistema geral |
-| CT.NEXT | valores e layout existentes | refletir tipos/descritores imutáveis apenas após contrato aceito de identidade, visibilidade, efeitos e budgets; atributos executáveis/geração de itens não entram por consequência |
-| TYP.NEXT / [RFC 0034](rfcs/0034-adaptive-hybrid-polymorphism-and-witness-tables.md) / [RFC 0036](rfcs/0036-typed-holes-and-integrated-semantic-tooling.md) | inferência contextual, interfaces estáticas e const generics existentes | separação `constraint_gen`/solver é melhoria arquitetural não bloqueante; tipos de literal tardios, typed holes e ergonomia só com escopo/recovery/determinismo; `dyn`/existenciais e dispatch adaptativo continuam propostas separadas |
+| INC.3a–e | `function_hir`, `instance_hir`, `runtime_raw_unit`, `instance_contracts`, `runtime_unit`, compositor e closure CGU ativos; o fechamento de declarações entra inteiro na identidade de cada instância | dependências por símbolo, contexto reduzido, composição incremental por arquivo, menos memos verificados e entrega não agregada às CGUs; assinatura pública reexecuta só units que a referenciam, corpo privado não recompõe arquivos intocados, clean/incremental idênticos |
+| PLAT.1–3 | daemon só em Unix; patch in-place só em ELF x86-64 | transporte com named pipe no Windows; patch Mach-O arm64 (assinatura ad-hoc, chained fixups, unwind) e PE x64 (`/MAP`, `.pdata`, `.reloc`); equivalência clean em runners nativos |
+| LAMBDA / [RFC 0032](rfcs/0032-closures-ossa-capture-modes-and-first-class-functions.md) | parser/HIR representam lambdas; closures gerais são U001 e chamada indireta T033; só `move ||` sem parâmetros e com capturas próprias Send baixa para ThreadJob | L1 callbacks não escapantes por desfuncionalização; L2 valor função `{code, env}` e chamada indireta nos quatro backends; L3 closures escapantes e com dono; capturas verificadas pelo OSSA e paridade C/Cranelift/Wasm |
+| CT.NEXT / [RFC 0013](rfcs/0013-deterministic-ctfe-and-comptime-metaprogramming.md) §10.1 | valores e layout existentes; `ConstValue` sem valor de tipo | C1 descritor de tipo independente do pool; C2 `types.info<T>()` imutável com visibilidade e fuel; API de reflexão e atributos executáveis ficam na 0.4+ |
+| TYP.NEXT / [RFC 0036](rfcs/0036-typed-holes-and-integrated-semantic-tooling.md) | checker bidirecional com unificação eager; solver só de literais | S1 separação `constraint_gen`/solver com diagnósticos determinísticos; H1 holes `todo` com `DiagCode`, DTO no LSP e bloqueio de build/run/testes/CTFE; `dyn`/existenciais ([RFC 0034](rfcs/0034-adaptive-hybrid-polymorphism-and-witness-tables.md)) continuam propostas separadas |
 
 A meta de instância não exige persistir Salsa. Formatos duráveis, se
 necessários, serializam saídas canônicas versionadas fora do grafo, com
@@ -381,7 +389,7 @@ antes/depois. Contagem de malloc do processo não mede apenas LUT nem prova leak
 | --- | --- | --- |
 | Fundação 0.1 | `done` | fingerprints/closure e artefato verificados, cutoff de trivia, chaves CGU canônicas, sidecars, reuse sem link e patch ELF fail-closed Linux; CLI ainda cria DB nova |
 | Motor quente 0.2 | `done` (v0.2.0) | sessão viva, daemon fail-closed, patch em slots e equivalência clean em Linux x86-64 ELF; endurance de 1000 edições; matriz instalada Linux/macOS/Windows; p95 registrado sem host de referência; macOS/Windows com link completo |
-| Instâncias 0.3 | `partial` | produtores/compositor e closure CGU ativos, regressões de instância nova e objetos clean; faltam gates completos de entrega, retenção, latência e matriz; p95 ≤10 ms delimitado |
+| Instâncias 0.3 | `partial` | produtores/compositor e closure CGU ativos, regressões de instância nova e objetos clean; faltam dependências por símbolo, composição incremental, entrega não agregada, retenção e patch Mach-O/PE (INC.3a–e e PLAT.1–3 na [campanha 0.3.x](campaigns/0.3.x-instances-and-closures.md)) |
 
 CAS remoto/distribuído e persistência de IR são decisões posteriores ao perfil
 do caminho quente; nenhuma delas autoriza serializar o grafo Salsa.

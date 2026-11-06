@@ -338,7 +338,7 @@ func main(): int { return f(3) + g(4) }
 }
 
 #[test]
-fn float_text_matches_between_cranelift_and_c() {
+fn float_text_matches_between_cranelift_c_and_wasm() {
     let source = r#"
 func main(): int {
     let h: f64 = 0.1 + 0.2
@@ -346,16 +346,34 @@ func main(): int {
     let t: f64 = c * 1e18
     let s: f64 = c * 1.5e-12
     let e: f64 = c / 3.0
-    let text = "${h}|${c}|${t}|${s}|${e}"
-    if text == "0.30000000000000004|100|100000000000000000000|0.00000000015|33.333333333333336" {
-        return 1
+    let n: f64 = 0.0 - e
+    let m: f64 = 1e300 * 1e8
+    let d: f64 = 5e-324
+    let text = "${h}|${c}|${t}|${s}|${e}|${n}|${d}"
+    if text != "0.30000000000000004|100|100000000000000000000|0.00000000015|33.333333333333336|-33.333333333333336|0.000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000005" {
+        return 2
     }
-    return 2
+    // 1e308 is 1 and 308 zeros.
+    let big = "${m}"
+    if big.len != 309 {
+        return 3
+    }
+    return 1
 }
 "#;
     for (backend, outcome) in outcomes_on("float_text", source, false) {
         assert_eq!(outcome, ProgramOutcome::Returned(1), "{backend}");
     }
+    let path = std::env::temp_dir().join(format!("arandu_float_text_{}.aru", std::process::id()));
+    fs::write(&path, source).unwrap();
+    let wasm = cli(&["emit-wasm", &path.to_string_lossy()]);
+    assert!(
+        wasm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&wasm.stderr)
+    );
+    crate::wasm_host::run_main(&wasm.stdout).assert_returns(1, "float text in Wasmtime");
+    let _ = fs::remove_file(path);
 }
 
 /// `T?` of a value type is a boxed handle on LLVM as on Cranelift and C. The

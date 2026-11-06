@@ -153,7 +153,7 @@ impl<'a> WasmModuleBuilder<'a> {
         func: &AmirFunc,
         ctx: &crate::translator::TranslationContext<'_>,
         style: ExportStyle<'a>,
-    ) -> Result<(wasm_encoder::Function, bool), Diagnostic> {
+    ) -> Result<(wasm_encoder::Function, HelperUse), Diagnostic> {
         let ops = stackify::stackify(func)?;
         let component_sig = match style {
             ExportStyle::Host => None,
@@ -161,11 +161,16 @@ impl<'a> WasmModuleBuilder<'a> {
         };
         let mut translator = FuncTranslator::new(func, ctx, component_sig);
         let function = translator.translate(ops);
-        let uses_allocator = translator.code.iter().any(|instruction| {
-            matches!(instruction, wasm_encoder::Instruction::Call(index)
-                if *index == ctx.alloc_func_idx || *index == ctx.free_func_idx)
-        });
-        Ok((function, uses_allocator))
+        let calls = |helper: &dyn Fn(u32) -> bool| {
+            translator.code.iter().any(|instruction| {
+                matches!(instruction, wasm_encoder::Instruction::Call(index) if helper(*index))
+            })
+        };
+        let uses = HelperUse {
+            allocator: calls(&|index| index == ctx.alloc_func_idx || index == ctx.free_func_idx),
+            float_text: calls(&|index| index == ctx.float_text_func_idx),
+        };
+        Ok((function, uses))
     }
 
     /// Build the export section, exporting all functions and linear memory.
@@ -206,6 +211,13 @@ impl<'a> WasmModuleBuilder<'a> {
 
         export_section
     }
+}
+
+/// The module helpers a translated function calls.
+#[derive(Clone, Copy, Default)]
+struct HelperUse {
+    allocator: bool,
+    float_text: bool,
 }
 
 /// Compute the wasm parameter types for a function.

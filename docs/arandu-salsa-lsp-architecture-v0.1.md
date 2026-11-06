@@ -319,21 +319,38 @@ validação nativa Windows/macOS continuam gates distintos.
 
 ### Fronteira do motor quente e publicação dev
 
-Estado auditado em 2026-10-15: `commands/build.rs` instancia a DB por build;
-não há daemon de build. O cache CGU local possui lock e GC de 500 MiB, sem CAS
-global. O patch ELF copia o executável inteiro para staging, sincroniza o
-mapeamento e recalcula o digest integral antes da publicação. Isso preserva o
-artefato anterior, mas não prova custo proporcional à edição.
+Estado na 0.2.0: o CLI mantém a DB viva numa sessão de build
+(`commands/build.rs`) e um daemon por projeto serve builds nativos dev
+(`daemon/`). Contrato, publicação, recuperação, durabilidade e limites estão
+na [RFC 0011](rfcs/0011-incremental-partitioned-aot-and-in-process-linker.md)
+§8; o que importa à arquitetura de queries:
+
+- **Identidade dupla** (`db::FingerprintEq`): uma saída é igual a outra quando
+  o fingerprint de suas entradas é igual ou, se não for, quando o conteúdo é.
+  O fingerprint inclui o digest de cada leitura que decide a saída; em
+  `cfg(any(test, debug_assertions))`, `fingerprint::verify` falha se a mesma
+  DB produzir dois conteúdos para um fingerprint.
+- **Superfície de declaração:** `DeclarationHir.surface`, o que importadores
+  observam de um arquivo, para nos símbolos densos que a resolução de
+  cabeçalhos aloca (`resolved_headers`); os símbolos de corpo ficam de fora,
+  então um `let` novo não rebaixa importadores
+  (`declaration_surface_guards.rs`).
+- **Coordenadas do item** ([RFC 0042](rfcs/0042-item-relative-spans-and-ast-id-map.md)):
+  posições e expressões dos itens são relativas ao próprio item e voltam ao
+  arquivo pelo `ItemPlacement`; `placed_unit_body` memoiza o placement de cada
+  unit pela unit e pela posição do item. Os `LocalSymbolId` dos locais ainda
+  são do arquivo (§8.13, adiado).
+- **Composição:** `linked_imports` liga uma vez por arquivo os símbolos
+  importados e os mapas de membros, que as units locais compartilham por
+  ponteiro; a composição registra os símbolos próprios de um arquivo uma vez
+  por sequência de units com a mesma visão de arquivo, com oráculo em debug.
+- **Armazenamento de agregados:** a admissão de scratch por invocação mora no
+  MIR (`aggregate_storage`): carriers de views, resultados `ref` com resumo
+  provado e funções que não tomam o endereço do próprio armazenamento
+  (detalhe em [ABI/layout](arandu-abi-layout-v0.1.md)).
 
 O [roadmap mestre](arandu-compiler-roadmap-v0.1.md) mantém a única fila e os
-gates. O plano `0.2.x` direciona serviço local supervisionado com DB viva,
-protocolo versionado, fila limitada/coalescida, prioridade/cancelamento e
-fallback batch; queries continuam puras e Salsa não é serializada. A imagem
-dev deve ser recuperável, usando ranges/páginas alterados ou CoW disponível,
-com fallback atômico e sem mutar artefatos publicados. Seu gate exige clean
-byte a byte, kill/recovery e p95 ≤100 ms em host/corpus documentados. A trilha
-`0.3.x` completa os gates por instância e p95 ≤10 ms. São marcos de planejamento
-revisável, sem aprovação implícita dos Drafts.
+gates; a trilha `0.3.x` cobre granularidade por instância e p95 ≤10 ms.
 
 `xtask bench-incremental` mede distribuições p50/p95, CPU e pico de RSS por
 classe de edição em corpus gerados de 4 a 64 módulos. Os padrões de CI medem

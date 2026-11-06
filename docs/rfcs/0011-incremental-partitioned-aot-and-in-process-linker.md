@@ -140,42 +140,60 @@ a8f5c3... target/debug/meu_app
 
 ## 8. Estado da Implementação e Evidências
 
+O recorte implementado na 0.2.0 (motor quente) vale para builds nativos de
+desenvolvimento com Cranelift em Linux x86-64 ELF. O restante segue batch.
+
+### 8.1 Cutoff, CGUs e patch (antes da 0.2.0)
+
 - Cutoff integral verifica a closure de inputs e o digest do executável; cache adulterado é miss e é reparado.
-- Em um miss seguro, fingerprints já capturados são transferidos para a nova sessão e o digest calculado pela publicação é reutilizado; compilador, runtime, stdlib e executável não são relidos apenas para duplicar hashes. Um conjunto integral de hits de CGU reutiliza o executável verificado sem relink.
-- O hash CGU v5 não usa `Debug`, spans, offsets de pools ou IDs sintéticos de composição como identidade de máquina. Cobre AMIR exaustivamente, layouts concretos/`repr(C)`, literais por conteúdo, assinaturas de callees, a closure de declarações fornecida ao `ObjectModule`, target, otimização, Cranelift e compilador. Hashing e emissão compartilham a closure por função (referências, callbacks e destruidores implícitos), não a superfície inteira do programa. Adicionar uma instância ou remover declaração não relacionada preserva objetos irmãos, com regressões byte a byte; mudanças de ABI/layout dependido invalidam o caller. A closure final do link continua verificada: remover uma CGU pode reutilizar os objetos restantes, mas não o executável que ainda a continha.
-- O patch ELF valida digest, geometria de `.text`, ranges, tamanho exato e relocações antes do `mmap`; `msync` e `munmap` são verificados. `.rodata` e metadata hostil exercitam fallback em testes.
-- O teste ELF compara o executável incremental byte a byte com clean build para o mesmo source final. Linkers cuja geometria ou metadata não satisfazem a prova exata exercitam o fallback explícito e determinístico em vez de transformar indisponibilidade da otimização em erro de compilação.
-- `cargo run --locked -p xtask -- bench-incremental --verify-determinism` mede sete classes de edição em corpus gerados (4 a 64 módulos), com aquecimento, N amostras, p50/p95, CPU, pico de RSS, caminho de publicação e timings por fase no schema 3, e falha se SHA-256 divergir entre diretórios e `RAYON_NUM_THREADS=1/16`. A metodologia vive em [`docs/benchmarks/`](../benchmarks/README.md).
-- O daemon de build não está implementado: `commands/build.rs` cria uma nova
-  `DatabaseImpl` a cada build. O LSP e os testes de queries quentes não provam
-  persistência de sessão no CLI.
-- O patch atual copia a imagem inteira para staging, sincroniza o mapeamento
-  inteiro e calcula BLAKE3 integral. O artefato publicado é preservado, mas o
-  custo ainda pode escalar com o tamanho do executável.
-- O harness mede processos batch novos; até existir a sessão quente, ele não
-  certifica o gate p95 da 0.2. O corpus gerado é sintético (inteiros, laços e
-  chamadas diretas) e ainda não mede o delta de tamanho por função.
-- Esta RFC permanece `Draft`; a fila permanente e os critérios de saída vivem
-  somente no [roadmap mestre](../arandu-compiler-roadmap-v0.1.md). No plano
-  revisável, `0.2.x` cobre motor quente e imagem dev recuperável, com p95 ≤100 ms
-  no host documentado; `0.3.x` cobre granularidade por instância, com p95 ≤10 ms
-  no workload/host documentados. Closures têm contrato próprio; o recorte AOT
-  não certifica sua semântica. CI compartilhada observa latência e verifica
-  correção, sem impor budgets do host de referência.
-- CAS global, LLVM e o restante do backlog não são requisitos implícitos do
-  motor quente. Dependências de correção demonstradas devem ser tratadas como
-  tais; a aprovação e a implementação de outras RFCs continuam independentes.
+- Em um miss seguro, fingerprints já capturados são transferidos para a nova sessão e o digest calculado pela publicação é reutilizado. Um conjunto integral de hits de CGU reutiliza o executável verificado sem relink.
+- O hash CGU não usa `Debug`, spans, offsets de pools ou IDs sintéticos de composição como identidade de máquina. Cobre AMIR, layouts concretos/`repr(C)`, literais por conteúdo, assinaturas de callees, a closure de declarações da função, target, otimização, Cranelift e compilador. Adicionar uma instância ou remover declaração não relacionada preserva objetos irmãos; mudanças de ABI/layout dependido invalidam o caller.
+- O patch ELF valida digest, geometria de `.text`, ranges, tamanho exato e relocações antes de escrever; o executável incremental é comparado byte a byte com o clean build do mesmo source final.
+
+### 8.2 Sessão viva (HOT.2)
+
+- A sessão (configuração → inputs → análise → codegen → publicação) vive em `arandu_cli` (`commands/build.rs`, `BuildSession`) e mantém a DB entre builds. Queries continuam puras; o grafo Salsa nunca é serializado.
+- Toolchain, target, opções, stdlib, conjunto de fontes ou manifesto diferentes reabrem a sessão. O refresh lê só as entradas cujo stamp (`dev/ino/size/mtime_ns/ctime`) mudou ou caiu na janela de 2 s antes do scan anterior ("racy git").
+- Os fingerprints de entrada que um build registra são capturados antes de compilar e fixados no texto que a sessão compilou: um arquivo salvo depois da leitura nunca é registrado como entrada do artefato publicado (`recorded_inputs_are_the_texts_the_build_compiled`).
+
+### 8.3 Serviço local (HOT.3) e recuperação (HOT.5)
+
+- Um daemon por projeto e toolchain (`daemon/`), com até quatro sessões em LRU chaveadas por diretório e argumentos. Endpoint `$XDG_RUNTIME_DIR/arandu/<hash>.sock` (ou `/tmp/arandu-$UID/`, criado com 0700), modo 0600, credenciais do par verificadas; o lock `.arandu/daemon.lock` prova que não há outro daemon.
+- Identidade: versão, protocolo, executável (`dev/ino/size/mtime/ctime`) e variáveis `ARANDU_*`/de build. Divergência faz o daemon antigo sair e o cliente iniciar um novo.
+- Protocolo: frames `[magic][versão][tamanho][serde_json]`; diagnósticos viajam como DTO estruturado e o cliente os renderiza. Ler a requisição e escrever a resposta custa ≤ 0,15 ms.
+- O accept espera em `poll(2)` no listener e num socket de despertar, sem polling por intervalo; a ociosidade (15 min por padrão) e a parada acordam o mesmo laço.
+- Fila por chave: pedidos que esperam o mesmo build recebem um só build com as entradas mais novas; uma requisição nova interrompe o build em curso num checkpoint antes da publicação (no máximo três vezes seguidas). Publicação e registros não são canceláveis, e o cliente só recebe a resposta depois deles.
+- Reciclagem por RSS (4 GiB por padrão), até 32 conexões, `--no-daemon`, `ARANDU_DAEMON=0` e batch por padrão com `CI` definida.
+- Fail-closed: socket quebrado, identidade divergente, daemon morto ou falha injetada (`ARANDU_DAEMON_FAULT`) levam ao batch; estado publicado só é reutilizado depois de revalidado.
+
+### 8.4 Publicação e imagem dev (HOT.4)
+
+- O executável publicado é mapeado somente leitura; o BLAKE3 de pré-patch é dispensado quando a identidade do arquivo coincide com a que a sessão publicou.
+- Slot padding só no perfil dev x86-64 ELF: cada função ocupa `slot_capacity` (classes de 16 bytes, ~1,25× cada), preenchida com `0xCC`. A capacidade depende só do tamanho do código, então o clean build reproduz o layout de um executável patcheado. O patch exige a mesma classe; mudar de classe (crescer ou encolher) faz o link completo.
+- A base do patch é copiada por leitura e escrita, não por `copy_file_range`, que no btrfs vira reflink e espera o writeback do executável recém-publicado.
+- Durabilidade: saídas derivadas (objetos CGU, sidecars, layout ELF, estado e fingerprint de sessão, compiler-artifacts) são escritas por `replace_derived`, sem `fsync`, porque cada uma é validada por conteúdo na leitura. Um crash custa um rebuild, nunca um resultado errado (`a_torn_build_output_is_rebuilt_instead_of_trusted`). O lockfile, fonte de verdade, continua durável.
+- O sidecar de cada CGU registra os bytes de código antes do padding (`code_bytes`), que o benchmark lê para medir quanto uma edição muda cada função.
+
+### 8.5 Medição
+
+`xtask bench-incremental` mede oito classes de edição (inclusive `let` novo) em corpora gerados, com p50/p95, CPU, RSS, caminho de publicação, taxa de patch, delta de bytes por função e retenção de slot, e verifica determinismo entre caminhos e `RAYON_NUM_THREADS=1/16`. Metodologia e resultados em [`docs/benchmarks/`](../benchmarks/README.md).
+
+Endurance (HOT.6): 1000 edições pelo mesmo daemon no corpus medium, com rajadas de 8 clientes: RSS de 244 MB após o build frio e 397 MB após 1000 edições (~12 KB por edição com o programa crescendo), 18 threads do início ao fim, rajadas coalescidas em 92–190 ms, artefato final igual ao do build frio em batch.
+
+### 8.6 Limites
+
+- macOS e Windows fazem link completo; Windows usa batch (sem named pipes na 0.2.0).
+- O gate de p95 ≤ 100 ms em edição de corpo não foi certificado no host de referência; nesta máquina o p95 oscilou entre 83 e 134 ms entre sessões, com p50 de 64 a 120 ms.
+- Um `let` novo não rebaixa importadores, mas retipa os itens do próprio arquivo (~2,5× uma edição de mesmo tamanho); os locais relativos ao item ficam para a 0.7.x ([RFC 0042](0042-item-relative-spans-and-ast-id-map.md) §8.13).
+- Mudança de assinatura pública reexecuta as units que ligam o fechamento transitivo de declarações (~1,2–1,9 s no medium); cortar no chamador direto exige dependências por símbolo (0.3.x).
+- A composição ainda faz trabalho por unit (merge do contexto de tipos) e a verificação pull do Salsa visita ~7,5 mil memos por edição.
+- CAS global, LLVM e o restante do backlog não são requisitos do motor quente. Esta RFC permanece `Draft`; a fila e os critérios de saída vivem no [roadmap mestre](../arandu-compiler-roadmap-v0.1.md).
 
 ## 9. Questões em Aberto (Unresolved Questions)
 
-1. **Serviço quente proposto:** definir protocolo versionado, identidade da sessão
-   (workspace, alvo, opções e toolchain), supervisão, filas limitadas/coalescidas,
-   cancelamento e fallback batch. O roadmap direciona o motor quente; formatos
-   persistentes por item não substituem esse marco nem serializam Salsa.
-2. **Publicação e latência:** medir inicialização, integridade, análise e publicação
-   em corpus repetido; validar kill/recovery e equivalência byte a byte com clean
-   build. A imagem dev pode sincronizar ranges/páginas alterados ou usar clone
-   CoW quando suportado, preservando o fallback atômico e artefatos imutáveis.
+1. **Gate de latência:** declarar o host de referência e decidir se o p95 da edição de corpo é limite ou registro; o harness já mede o que o gate precisa.
+2. **Outras plataformas:** patch in-place para Mach-O e PE/COFF e endpoint por named pipe no Windows.
+3. **Composição incremental:** reaproveitar a composição por arquivo quando nenhuma unit dele mudou, sem regredir a regra de último escritor do registro de símbolos.
 
 ---
 

@@ -228,6 +228,9 @@ A 0.2.0 exige HOT.1–6 e o fechamento da campanha de stdlib ST.0–16
 autorizada acima. Patches seguintes ampliam o corpus e cobertura e
 corrigem problemas mantendo o contrato. O `p95` é ponta a ponta até o artefato
 publicado; amostras, aquecimento, perfil e exclusões precisam ser explícitos.
+Na 0.2.0 o p95 é registrado, não imposto: o host de referência não foi
+certificado e, por decisão do mantenedor (2026-11-06), o limite passa a gate
+quando houver um host de referência declarado.
 
 | Etapa | Entrega | Aceitação |
 | --- | --- | --- |
@@ -378,7 +381,7 @@ antes/depois. Contagem de malloc do processo não mede apenas LUT nem prova leak
 | Marco | Estado | Limite atual / saída |
 | --- | --- | --- |
 | Fundação 0.1 | `done` | fingerprints/closure e artefato verificados, cutoff de trivia, chaves CGU canônicas, sidecars, reuse sem link e patch ELF fail-closed Linux; CLI ainda cria DB nova |
-| Motor quente 0.2 | `planned` | HOT.1–6; DB viva, protocolo e publicação recuperável; p95 ≤100 ms e equivalência clean |
+| Motor quente 0.2 | `in_progress` | HOT.1–5 feitos e HOT.6 com endurance na `0.2.0-dev`: sessão viva, daemon fail-closed, patch em slots e equivalência clean em Linux x86-64 ELF; p95 registrado sem host de referência; macOS/Windows com link completo |
 | Instâncias 0.3 | `partial` | produtores/compositor e closure CGU ativos, regressões de instância nova e objetos clean; faltam gates completos de entrega, retenção, latência e matriz; p95 ≤10 ms delimitado |
 
 CAS remoto/distribuído e persistência de IR são decisões posteriores ao perfil

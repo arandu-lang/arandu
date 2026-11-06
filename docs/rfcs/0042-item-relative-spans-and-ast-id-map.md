@@ -7,7 +7,6 @@
 - **Status:** `Draft`
 - **Área Principal:** `Frontend` / `Middle-end` / `Tooling` (`arandu_base`, `arandu_parser`, `arandu_middle`, `arandu_query`, `arandu_lsp`, `arandu_codegen`)
 - **Documentos Relacionados:**
-  - `docs/campaigns/0.2.0-hot-engine.md` (Fase 2: HOT.2 — Sessão Persistente)
   - `docs/arandu-salsa-lsp-architecture-v0.1.md`
   - `docs/rfcs/0005-incremental-query-system-salsa.md`
   - `docs/rfcs/0010-cst-resilient-ide-typeck.md`
@@ -745,7 +744,7 @@ units guardam é relativo ao próprio item ou é o placeholder
 
 ### 8.13. Passo E: locais relativos ao item (adiado)
 
-**Decisão (2026-11-07):** adiado até a convergência da linguagem (série
+**Decisão (2026-11-06):** adiado até a convergência da linguagem (série
 0.7.x). A parte segura já está feita: um `let` novo não rebaixa importadores
 (`91bc40fe`). O que sobra fica dentro do arquivo editado e só sai mudando a
 identidade dos símbolos em typeck, composição e IDE, onde um ID relativo que
@@ -757,7 +756,7 @@ feito, os IDs relativos devem ser um tipo distinto no Rust (newtype
 recuse a mistura de coordenadas.
 
 
-Medição (2026-11-07, corpus medium, warm in-process): um `let` novo num corpo
+Medição (2026-11-06, corpus medium, warm in-process): um `let` novo num corpo
 de m8 custa ~250 ms contra ~96 ms de uma edição de mesmo tamanho. A parte que
 cruzava arquivos já foi cortada: a superfície de declarações deixou de
 incluir os símbolos de corpo (`91bc40fe`, guarda em

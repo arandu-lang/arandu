@@ -71,18 +71,38 @@ Saídas:
 - `target/benchmarks/incremental.md` — tabela legível com o resumo, seguida do
   p50 por fase.
 
-Limites: o corpus gerado usa só inteiros, laços e chamadas diretas, sem
-genéricos, stdlib ou async, e o daemon ainda não existe, então todo build é um
-processo novo. O harness não mede o delta de tamanho por função, que define a
-política de slot padding da HOT.4, nem recuperação após interrupção.
+Com `--daemon`, cada build passa pelo daemon do projeto (HOT.3), como um
+usuário o executa; sem ele, cada build é um processo novo com
+`-Ztime-passes`. Limites: o corpus gerado usa só inteiros, laços e chamadas
+diretas, sem genéricos, stdlib ou async; recuperação após interrupção é
+coberta pelos testes do daemon (`cli_daemon.rs`), não por este comando.
 
 Os critérios e a fila de evolução estão no
 [roadmap mestre](../arandu-compiler-roadmap-v0.1.md). Para certificar um marco,
 o relatório deve identificar corpus/host/toolchain/filesystem, intervalo de
 tempo medido, warm-up, repetições e distribuição; comparar sessão quente,
-batch e clean; verificar artefatos equivalentes e recuperação após interrupção.
-Sessão quente, recuperação e retenção de memória em sessão longa ainda não são
-medidas pelo comando atual.
+batch e clean; e verificar artefatos equivalentes.
+
+### Resultados da 0.2.0 (host de desenvolvimento)
+
+Linux x86-64 (CachyOS), projeto em btrfs, `bench-incremental --release
+--daemon --corpus medium --samples 20 --warmup 3`, determinismo `true`. O
+estado térmico e de energia do host variou entre sessões, então só valem
+comparações dentro da mesma sessão; nenhuma linha certifica o host de
+referência.
+
+| Edição              | 2026-10-28 (antes das rodadas) | 2026-11-06, sessão A | 2026-11-06, sessão B |
+| ------------------- | -----------------------------: | -------------------: | -------------------: |
+| noop                | 15,5 / 22,5 ms                 | 6,8 / 7,1 ms         | 3,8 / 6,0 ms         |
+| corpo privado       | 258 / 314 ms                   | 97,3 / 109,3 ms      | 64,4 / 82,8 ms       |
+| corpo cresce        | 398 / 761 ms                   | 115,1 / 193,1 ms     | 70,8 / 136,2 ms      |
+| `let` novo          | —                              | 262,9 / 337,6 ms     | 164,5 / 227,8 ms     |
+| assinatura pública  | 1948 / 2346 ms                 | 1598 / 1898 ms       | 1158 / 1330 ms       |
+
+Valores p50 / p95. Na sessão B, o corpo que cresce adiciona 6 bytes de código
+por amostra e mantém o slot em 80% das edições, que é a taxa de patch medida;
+contrato e limites do motor quente estão na
+[RFC 0011](../rfcs/0011-incremental-partitioned-aot-and-in-process-linker.md) §8.
 
 Ao comparar mudanças, use a mesma máquina, perfil de energia, toolchain, estado
 térmico e filesystem. Faça várias execuções e compare distribuições, não apenas

@@ -33,7 +33,8 @@ fn program(directory: &Path, rounds: u32) -> PathBuf {
 }
 
 /// Exit code and peak resident set of `command`, measured for that child
-/// alone with `wait4`.
+/// alone with `wait4`, which also reaps it.
+#[allow(clippy::zombie_processes)]
 fn measure(mut command: Command) -> (Option<i32>, i64) {
     let child = command.spawn().expect("spawn");
     let mut status = 0;

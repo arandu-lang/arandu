@@ -472,6 +472,22 @@ struct Sample {
     artifact_bytes: u64,
     phase_ms: BTreeMap<String, f64>,
     sha256: String,
+    /// Functions whose machine code changed size.
+    resized: Vec<Resized>,
+}
+
+/// Code bytes and slot capacity of a function before and after a build.
+#[derive(Clone, Copy)]
+struct Resized {
+    before: (u64, u64),
+    after: (u64, u64),
+}
+
+impl Resized {
+    /// `[bytes before, bytes after, capacity before, capacity after]`.
+    const fn to_json(self) -> [u64; 4] {
+        [self.before.0, self.after.0, self.before.1, self.after.1]
+    }
 }
 
 impl Sample {
@@ -488,6 +504,7 @@ impl Sample {
             "artifact_bytes": self.artifact_bytes,
             "phase_ms": self.phase_ms,
             "sha256": self.sha256,
+            "resized_functions": self.resized.iter().map(|resized| resized.to_json()).collect::<Vec<_>>(),
         })
     }
 }
@@ -507,6 +524,7 @@ fn measure(
     } else {
         &["build", "-v", "-Ztime-passes"]
     };
+    let slots_before = function_slots(project)?;
     let measured = run_measured(cli_command(cli, runtime, project, args, None, daemon))
         .map_err(|error| format!("cannot run {}: {error}", cli.display()))?;
     ensure_success(
@@ -542,7 +560,46 @@ fn measure(
         artifact_bytes,
         phase_ms,
         sha256: sha256_file(&artifact)?,
+        resized: resized_functions(&slots_before, &function_slots(project)?),
     })
+}
+
+/// `(code bytes, slot capacity)` of each function of the recorded ELF layout;
+/// empty without one (wasm, LLVM or before the first native link).
+fn function_slots(project: &Path) -> Result<BTreeMap<String, (u64, u64)>, String> {
+    let Some(path) = find_named(&project.join("target/dev"), OsStr::new("elf_layout.json"))? else {
+        return Ok(BTreeMap::new());
+    };
+    let Ok(layout) = serde_json::from_slice::<Value>(
+        &fs::read(&path).map_err(|error| format!("cannot read {}: {error}", path.display()))?,
+    ) else {
+        return Ok(BTreeMap::new());
+    };
+    Ok(layout["function_slots"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(name, slot)| {
+            Some((
+                name.clone(),
+                (slot["code_size"].as_u64()?, slot["capacity"].as_u64()?),
+            ))
+        })
+        .collect())
+}
+
+/// Functions present in both layouts whose code size changed.
+fn resized_functions(
+    before: &BTreeMap<String, (u64, u64)>,
+    after: &BTreeMap<String, (u64, u64)>,
+) -> Vec<Resized> {
+    before
+        .iter()
+        .filter_map(|(name, &before)| {
+            let &after = after.get(name)?;
+            (after.0 != before.0).then_some(Resized { before, after })
+        })
+        .collect()
 }
 
 /// How the build produced its artifact: unchanged inputs, a verified reuse of
@@ -601,7 +658,31 @@ fn summarize(samples: &[Sample]) -> Value {
         "patch_fallbacks": samples.iter().filter(|sample| sample.patch_fallback).count(),
         "cgu_recompiled_max": samples.iter().map(|sample| sample.cgu_recompiled).max(),
         "artifact_bytes_max": samples.iter().map(|sample| sample.artifact_bytes).max(),
+        "resized_functions": resized_summary(samples),
         "phase_ms_p50": phase_p50,
+    })
+}
+
+/// How edits change function sizes and how often the slot policy absorbs
+/// them: a patch needs the same slot capacity before and after.
+fn resized_summary(samples: &[Sample]) -> Value {
+    let resized = samples
+        .iter()
+        .flat_map(|sample| sample.resized.iter().copied())
+        .collect::<Vec<_>>();
+    let deltas = resized
+        .iter()
+        .map(|resized| resized.after.0 as f64 - resized.before.0 as f64)
+        .collect::<Vec<_>>();
+    // A patched function keeps its slot; a relink places it by its new size.
+    let fitting = resized
+        .iter()
+        .filter(|resized| resized.after.1 == resized.before.1)
+        .count();
+    json!({
+        "count": resized.len(),
+        "delta_bytes": (!deltas.is_empty()).then(|| distribution(&deltas)),
+        "same_slot_rate": (!resized.is_empty()).then(|| fitting as f64 / resized.len() as f64),
     })
 }
 

@@ -47,10 +47,14 @@ recompiladas, tamanho e SHA-256 do executável, timers por fase
 (`-Ztime-passes`) e o caminho de publicação: `up-to-date` (cutoff integral),
 `reuse` (todas as CGUs e o executável verificado reaproveitados), `patch`
 (patch ELF in-place) ou `full-link`. `patch_fallback` marca as amostras em que
-o patch foi tentado e recusado. Por classe, o relatório resume p50/p95/máximo
+o patch foi tentado e recusado; `resized_functions` lista, das funções cujo
+código mudou de tamanho, `[bytes antes, bytes depois, slot antes, slot
+depois]`, lidos do `elf_layout.json`. Por classe, o relatório resume p50/p95/máximo
 /média por nearest-rank (o mesmo método de `check-project-performance`), CPU
 p50, pico de RSS, distribuição de caminhos, taxa de patch sobre os builds que
-religaram e p50 de cada fase. O relatório também descreve o host: SO,
+religaram, p50 de cada fase e, em `resized_functions`, a distribuição do
+delta de bytes e a fração das mudanças que mantiveram o slot (a condição do
+patch). O relatório também descreve o host: SO,
 arquitetura, kernel, CPU, CPUs lógicas, filesystem do diretório de trabalho,
 toolchain e commit (com sufixo `-dirty` quando há mudanças rastreadas).
 

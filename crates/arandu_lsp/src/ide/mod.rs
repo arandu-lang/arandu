@@ -85,7 +85,7 @@ mod tests {
             panic!("expected markdown hover");
         };
         assert!(content.value.contains("@NoFallback"));
-        assert!(content.value.contains("deprecated"));
+        assert!(content.value.contains("removed in 0.2.0"));
         assert!(!content.value.contains("AnnotationId"));
         assert!(!content.value.contains("no_fallback`"));
     }

@@ -23,6 +23,8 @@ ganham aliases PascalCase. Consulte a política e os limites no
 
 Fica formalizado o encerramento definitivo da tolerância a aliases legados em `snake_case` (`@no_fallback`, `@nosuspend`, `@specialize`, etc.), consolidando diagnósticos estruturados com sugestões imediatas de substituição.
 
+Na 0.2.0 os aliases deixaram de ser aceitos: a 0.1.x avisou cada um com `W008` (agora reservado), e desde então uma grafia removida é `N012` com nota e replacement estruturado para o nome canônico.
+
 ---
 
 ## 2. Motivação (Motivation)

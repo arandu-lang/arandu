@@ -55,16 +55,20 @@ fn pattern_presentation_uses_names_and_only_explicitly_requested_spans() {
 }
 
 #[test]
-fn canonical_and_legacy_no_fallback_lower_to_the_same_hir_flag() {
-    for annotation in ["NoFallback", "no_fallback", "no_generational_fallback"] {
+fn only_the_canonical_no_fallback_sets_the_hir_flag() {
+    for (annotation, enabled) in [
+        ("NoFallback", true),
+        ("no_fallback", false),
+        ("no_generational_fallback", false),
+    ] {
         let source = format!("@{annotation}\nfunc critical() {{}}\n");
         let (hir, _) = lower(&source);
         let HirDecl::Func(function) = hir.pool.decl(hir.decls[0]) else {
             panic!("expected function HIR");
         };
-        assert!(
-            function.no_fallback,
-            "@{annotation} must enable no_fallback"
+        assert_eq!(
+            function.no_fallback, enabled,
+            "@{annotation} was removed in 0.2.0 unless canonical"
         );
     }
 }

@@ -174,7 +174,7 @@ pub enum DiagCode {
     W005UnnecessaryMutability,
     W006UnhandledResult,
     W007UnusedImport,
-    W008LegacyAnnotationName,
+    W008Reserved,
 
     // ── Unimplemented (U) ──
     U001FeatureNotSupported,
@@ -304,7 +304,7 @@ impl DiagCode {
             W005UnnecessaryMutability,
             W006UnhandledResult,
             W007UnusedImport,
-            W008LegacyAnnotationName,
+            W008Reserved,
             U001FeatureNotSupported,
             ICELX001,
             ICEP001,
@@ -455,7 +455,7 @@ impl DiagCode {
             DiagCode::W005UnnecessaryMutability => "W005",
             DiagCode::W006UnhandledResult => "W006",
             DiagCode::W007UnusedImport => "W007",
-            DiagCode::W008LegacyAnnotationName => "W008",
+            DiagCode::W008Reserved => "W008",
             DiagCode::U001FeatureNotSupported => "U001",
             DiagCode::ICELX001 => "ICE-LX-001",
             DiagCode::ICEP001 => "ICE-P-001",

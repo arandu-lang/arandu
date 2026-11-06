@@ -61,8 +61,7 @@ pub fn validate_benchmark_case(
         .attrs
         .iter()
         .find(|attribute| {
-            annotation_spec(&attribute.name)
-                .is_some_and(|(spec, _)| spec.id == AnnotationId::Benchmark)
+            annotation_spec(&attribute.name).is_some_and(|spec| spec.id == AnnotationId::Benchmark)
         })
         .map_or(function.span, |attribute| attribute.name_span);
 
@@ -168,7 +167,7 @@ pub fn validate_test_case(
         .attrs
         .iter()
         .find(|attribute| {
-            annotation_spec(&attribute.name).is_some_and(|(spec, _)| spec.id == AnnotationId::Test)
+            annotation_spec(&attribute.name).is_some_and(|spec| spec.id == AnnotationId::Test)
         })
         .map_or(function.span, |attribute| attribute.name_span);
 

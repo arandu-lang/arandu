@@ -229,7 +229,7 @@ Abaixo estão listados todos os diagnósticos mapeados para o compilador Arandu.
 | **N009** | *[Movido → M002]* | - | `0.1.0` | *Código de membro de namespace não encontrado movido para categoria de módulos.* |
 | **N010** | `undefined associated function: '{name}' not found on type '{type}'` | Error | `0.1.0` | Chamada de função associada estática que não foi declarada no struct ou tipo correspondente (ex: `User.newFunc()`). **Diferença de T018**: Ocorre na fase de Name Resolution antes da verificação de tipos, quando o receptor ainda é um identificador não resolvido para um tipo concreto. |
 | **N011** | `break/continue statement used outside of a loop` | Error | `0.1.0` | Uso de comandos de controle de fluxo de iteração fora de escopos de laço válidos (`for`/`while`). (Antigo `T022`). |
-| **N012** | `unknown annotation '@{name}'` | Error | `0.1.0` | Nome de anotação não reconhecido ou reservado cuja semântica ainda não está disponível. |
+| **N012** | `unknown annotation '@{name}'` | Error | `0.1.0` | Nome de anotação não reconhecido ou reservado cuja semântica ainda não está disponível. Uma grafia removida na 0.2.0 traz nota e replacement para o nome canônico. |
 | **N013** | `annotation '@{name}' cannot be applied to a {target}` | Error | `0.1.0` | Anotação conhecida aplicada a uma categoria de declaração fora de seus alvos explícitos. |
 | **N014** | `annotation '@{name}' expects {arguments}` | Error | `0.1.0` | Lista ou forma dos argumentos não corresponde ao contrato da anotação. |
 | **N015** | `annotation '@{name}' cannot be repeated` | Error | `0.1.0` | Uma anotação de cardinalidade única aparece mais de uma vez no mesmo alvo. |
@@ -342,7 +342,7 @@ Abaixo estão listados todos os diagnósticos mapeados para o compilador Arandu.
 | **W005** | `unnecessary mutability: variable '{name}' does not need to be mutable` | Warning | `0.1.0` | Variável declarada como `mut` mas que nunca sofreu reatribuições ou modificações mutáveis. |
 | **W006** | `unhandled result: value of type 'Result' must be checked or propagated` | Warning | `0.1.0` | Uma chamada que retorna `Result<T, E>` foi descartada silenciosamente. (Movido do antigo `T019`). |
 | **W007** | `unused import: '{name}'` | Warning | `0.1.0` | Um módulo ou símbolo foi importado no topo do arquivo mas nunca foi referenciado ou consumido no código. |
-| **W008** | `legacy annotation name '@{old}'; use '@{canonical}'` | Warning | `0.1.0` | Grafia temporariamente aceita para migração; inclui replacement estruturado sobre apenas o identificador da anotação. |
+| **W008** | *[Reservado / Obsoleto]* | - | `0.1.0` | *Avisava grafias legadas de anotações até a 0.2.0; desde então elas são `N012` com replacement para o nome canônico.* |
 
 > [!NOTE]
 > **Decisão de Design sobre Shadows (`W004`)**: O shadowing de variáveis é classificado como um `Warning` (e não `Error`) no Arandu para permitir flexibilidade de escrita em escopos muito curtos de closures e lambdas iteradoras. No entanto, é fortemente alertado por padrão para evitar que desenvolvedores ocultem nomes acidentais em escopos maiores do compilador. Pode ser silenciado localmente com `@Suppress("shadowing")`.

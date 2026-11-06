@@ -85,7 +85,14 @@ pub(crate) fn annotation_hover(text: &str, offset: u32, index: &LineIndex) -> Op
     if start == 0 || bytes.get(start - 1) != Some(&b'@') || start == end {
         return None;
     }
-    let (spec, legacy) = arandu_semantics::attributes::annotation_spec(&text[start..end])?;
+    let name = &text[start..end];
+    let (spec, renamed) = match arandu_semantics::attributes::annotation_spec(name) {
+        Some(spec) => (spec, false),
+        None => (
+            arandu_semantics::attributes::renamed_annotation(name)?,
+            true,
+        ),
+    };
     let targets = spec
         .targets
         .iter()
@@ -99,9 +106,9 @@ pub(crate) fn annotation_hover(text: &str, offset: u32, index: &LineIndex) -> Op
         targets,
         spec.arguments.synopsis()
     );
-    if legacy {
+    if renamed {
         value.push_str(&format!(
-            "\n\nThis spelling is deprecated; use `@{}`.",
+            "\n\nThis spelling was removed in 0.2.0; use `@{}`.",
             spec.canonical_name
         ));
     }

@@ -680,7 +680,7 @@ fn stdio_annotation_contract_uses_canonical_names_and_structured_migration() {
                 .is_some_and(|diagnostics| {
                     diagnostics
                         .iter()
-                        .any(|diagnostic| diagnostic.get("code") == Some(&json!("W008")))
+                        .any(|diagnostic| diagnostic.get("code") == Some(&json!("N012")))
                 })
     });
     let diagnostic = published
@@ -689,9 +689,9 @@ fn stdio_annotation_contract_uses_canonical_names_and_structured_migration() {
         .and_then(|diagnostics| {
             diagnostics
                 .iter()
-                .find(|diagnostic| diagnostic.get("code") == Some(&json!("W008")))
+                .find(|diagnostic| diagnostic.get("code") == Some(&json!("N012")))
         })
-        .expect("W008 diagnostic")
+        .expect("N012 diagnostic")
         .clone();
     assert_eq!(diagnostic.pointer("/range/start/line"), Some(&json!(1)));
     assert_eq!(
@@ -733,7 +733,9 @@ fn stdio_annotation_contract_uses_canonical_names_and_structured_migration() {
         hover
             .pointer("/result/contents/value")
             .and_then(Value::as_str)
-            .is_some_and(|value| value.contains("@NoFallback") && value.contains("deprecated")),
+            .is_some_and(
+                |value| value.contains("@NoFallback") && value.contains("removed in 0.2.0")
+            ),
         "annotation hover must present the canonical contract: {hover}"
     );
 

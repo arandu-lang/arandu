@@ -97,7 +97,9 @@ pub enum AnnotationAvailability {
 pub struct AnnotationSpec {
     pub id: AnnotationId,
     pub canonical_name: &'static str,
-    pub legacy_aliases: &'static [&'static str],
+    /// Spellings accepted before 0.2.0 (RFC 0002). They are unknown names
+    /// now and only suggest the canonical one.
+    pub renamed_from: &'static [&'static str],
     pub targets: &'static [AnnotationTarget],
     pub arguments: AnnotationArguments,
     pub repeatable: bool,
@@ -128,7 +130,7 @@ pub static BUILTIN_ANNOTATIONS: &[AnnotationSpec] = &[
     AnnotationSpec {
         id: AnnotationId::Link,
         canonical_name: "Link",
-        legacy_aliases: &["link"],
+        renamed_from: &["link"],
         targets: EXTERN_BLOCK,
         arguments: AnnotationArguments::OneString,
         repeatable: false,
@@ -138,7 +140,7 @@ pub static BUILTIN_ANNOTATIONS: &[AnnotationSpec] = &[
     AnnotationSpec {
         id: AnnotationId::Export,
         canonical_name: "Export",
-        legacy_aliases: &["FfiExport"],
+        renamed_from: &["FfiExport"],
         // Methods reach `lower_export` so the rejection for a non-destructor
         // method names the real rule (`T049`) instead of a generic target
         // error. Silently ignoring the annotation would be the `#[no_mangle]`
@@ -152,7 +154,7 @@ pub static BUILTIN_ANNOTATIONS: &[AnnotationSpec] = &[
     AnnotationSpec {
         id: AnnotationId::Test,
         canonical_name: "Test",
-        legacy_aliases: &[],
+        renamed_from: &[],
         targets: FREE_FUNCTION,
         arguments: AnnotationArguments::None,
         repeatable: false,
@@ -162,7 +164,7 @@ pub static BUILTIN_ANNOTATIONS: &[AnnotationSpec] = &[
     AnnotationSpec {
         id: AnnotationId::Benchmark,
         canonical_name: "Benchmark",
-        legacy_aliases: &[],
+        renamed_from: &[],
         targets: FREE_FUNCTION,
         arguments: AnnotationArguments::None,
         repeatable: false,
@@ -172,7 +174,7 @@ pub static BUILTIN_ANNOTATIONS: &[AnnotationSpec] = &[
     AnnotationSpec {
         id: AnnotationId::Suppress,
         canonical_name: "Suppress",
-        legacy_aliases: &[],
+        renamed_from: &[],
         targets: DECLARATIONS,
         arguments: AnnotationArguments::OneString,
         repeatable: true,
@@ -182,7 +184,7 @@ pub static BUILTIN_ANNOTATIONS: &[AnnotationSpec] = &[
     AnnotationSpec {
         id: AnnotationId::Deny,
         canonical_name: "Deny",
-        legacy_aliases: &[],
+        renamed_from: &[],
         targets: DECLARATIONS,
         arguments: AnnotationArguments::OneString,
         repeatable: true,
@@ -192,7 +194,7 @@ pub static BUILTIN_ANNOTATIONS: &[AnnotationSpec] = &[
     AnnotationSpec {
         id: AnnotationId::Forbid,
         canonical_name: "Forbid",
-        legacy_aliases: &[],
+        renamed_from: &[],
         targets: DECLARATIONS,
         arguments: AnnotationArguments::OneString,
         repeatable: true,
@@ -202,7 +204,7 @@ pub static BUILTIN_ANNOTATIONS: &[AnnotationSpec] = &[
     AnnotationSpec {
         id: AnnotationId::NoFallback,
         canonical_name: "NoFallback",
-        legacy_aliases: &["no_fallback", "no_generational_fallback"],
+        renamed_from: &["no_fallback", "no_generational_fallback"],
         targets: FUNCTION,
         arguments: AnnotationArguments::None,
         repeatable: false,
@@ -212,7 +214,7 @@ pub static BUILTIN_ANNOTATIONS: &[AnnotationSpec] = &[
     AnnotationSpec {
         id: AnnotationId::Destructor,
         canonical_name: "Destructor",
-        legacy_aliases: &[],
+        renamed_from: &[],
         targets: &[AnnotationTarget::Method],
         arguments: AnnotationArguments::None,
         repeatable: false,
@@ -222,7 +224,7 @@ pub static BUILTIN_ANNOTATIONS: &[AnnotationSpec] = &[
     AnnotationSpec {
         id: AnnotationId::Unsafe,
         canonical_name: "Unsafe",
-        legacy_aliases: &["unsafe"],
+        renamed_from: &["unsafe"],
         targets: FUNCTION,
         arguments: AnnotationArguments::None,
         repeatable: false,
@@ -232,7 +234,7 @@ pub static BUILTIN_ANNOTATIONS: &[AnnotationSpec] = &[
     AnnotationSpec {
         id: AnnotationId::Effects,
         canonical_name: "Effects",
-        legacy_aliases: &["effects"],
+        renamed_from: &["effects"],
         targets: FUNCTION,
         arguments: AnnotationArguments::EffectList,
         repeatable: false,
@@ -242,7 +244,7 @@ pub static BUILTIN_ANNOTATIONS: &[AnnotationSpec] = &[
     AnnotationSpec {
         id: AnnotationId::NoSuspend,
         canonical_name: "NoSuspend",
-        legacy_aliases: &["nosuspend"],
+        renamed_from: &["nosuspend"],
         targets: FUNCTION,
         arguments: AnnotationArguments::None,
         repeatable: false,
@@ -252,7 +254,7 @@ pub static BUILTIN_ANNOTATIONS: &[AnnotationSpec] = &[
     AnnotationSpec {
         id: AnnotationId::Specialize,
         canonical_name: "Specialize",
-        legacy_aliases: &["specialize"],
+        renamed_from: &["specialize"],
         targets: FUNCTION,
         arguments: AnnotationArguments::None,
         repeatable: false,
@@ -262,7 +264,7 @@ pub static BUILTIN_ANNOTATIONS: &[AnnotationSpec] = &[
     AnnotationSpec {
         id: AnnotationId::Repr,
         canonical_name: "Repr",
-        legacy_aliases: &["repr"],
+        renamed_from: &["repr"],
         targets: STRUCT_OR_ENUM,
         arguments: AnnotationArguments::OneStringOrIdent,
         repeatable: false,
@@ -291,32 +293,20 @@ impl ValidatedAnnotations {
     }
 }
 
-enum NameResolution {
-    Canonical(&'static AnnotationSpec),
-    Legacy(&'static AnnotationSpec),
-    Unknown,
-}
-
-/// Look up a canonical name or an explicit migration alias.
+/// The built-in annotation spelled `name`.
 #[must_use]
-pub fn annotation_spec(name: &str) -> Option<(&'static AnnotationSpec, bool)> {
-    match resolve_name(name) {
-        NameResolution::Canonical(spec) => Some((spec, false)),
-        NameResolution::Legacy(spec) => Some((spec, true)),
-        NameResolution::Unknown => None,
-    }
+pub fn annotation_spec(name: &str) -> Option<&'static AnnotationSpec> {
+    BUILTIN_ANNOTATIONS
+        .iter()
+        .find(|spec| spec.canonical_name == name)
 }
 
-fn resolve_name(name: &str) -> NameResolution {
-    for spec in BUILTIN_ANNOTATIONS {
-        if name == spec.canonical_name {
-            return NameResolution::Canonical(spec);
-        }
-        if spec.legacy_aliases.contains(&name) {
-            return NameResolution::Legacy(spec);
-        }
-    }
-    NameResolution::Unknown
+/// The annotation a spelling removed in 0.2.0 was renamed to.
+#[must_use]
+pub fn renamed_annotation(name: &str) -> Option<&'static AnnotationSpec> {
+    BUILTIN_ANNOTATIONS
+        .iter()
+        .find(|spec| spec.renamed_from.contains(&name))
 }
 
 fn arguments_match(spec: &AnnotationSpec, attr: &Attribute, pool: &AstPool) -> bool {
@@ -397,17 +387,30 @@ pub fn validate_attributes(
 ) -> ValidatedAnnotations {
     let mut out = ValidatedAnnotations::default();
     for attr in attrs {
-        let (spec, legacy) = match resolve_name(&attr.name) {
-            NameResolution::Canonical(spec) => (spec, false),
-            NameResolution::Legacy(spec) => (spec, true),
-            NameResolution::Unknown => {
-                out.diagnostics.push(Diagnostic::error(
-                    DiagCode::N012UnknownAnnotation,
-                    format!("unknown annotation '@{}'", attr.name),
-                    attr.name_span,
-                ));
-                continue;
+        let Some(spec) = annotation_spec(&attr.name) else {
+            let mut diagnostic = Diagnostic::error(
+                DiagCode::N012UnknownAnnotation,
+                format!("unknown annotation '@{}'", attr.name),
+                attr.name_span,
+            );
+            // A removed spelling names its replacement, exactly where it
+            // stands, so editors apply the rename without parsing text.
+            if let Some(renamed) = renamed_annotation(&attr.name) {
+                diagnostic = diagnostic
+                    .with_note(format!(
+                        "'@{}' was renamed to '@{}' in 0.2.0",
+                        attr.name, renamed.canonical_name
+                    ))
+                    .with_hint_replacement(Hint {
+                        message: format!("replace with '{}'", renamed.canonical_name),
+                        replacement: Some(CodeReplacement {
+                            span: attr.name_span,
+                            new_text: renamed.canonical_name.to_string(),
+                        }),
+                    });
             }
+            out.diagnostics.push(diagnostic);
+            continue;
         };
 
         if spec.availability == AnnotationAvailability::Planned {
@@ -534,25 +537,6 @@ pub fn validate_attributes(
             continue;
         }
 
-        if legacy {
-            out.diagnostics.push(
-                Diagnostic::warning(
-                    DiagCode::W008LegacyAnnotationName,
-                    format!(
-                        "legacy annotation name '@{}'; use '@{}'",
-                        attr.name, spec.canonical_name
-                    ),
-                    attr.name_span,
-                )
-                .with_hint_replacement(Hint {
-                    message: format!("replace with '{}'", spec.canonical_name),
-                    replacement: Some(CodeReplacement {
-                        span: attr.name_span,
-                        new_text: spec.canonical_name.to_string(),
-                    }),
-                }),
-            );
-        }
         out.ids.push(spec.id);
     }
     out
@@ -687,12 +671,18 @@ mod tests {
     }
 
     #[test]
-    fn legacy_name_keeps_semantics_and_has_exact_replacement() {
+    fn removed_name_is_unknown_with_an_exact_replacement() {
         let result = validate("@no_fallback\nfunc main() {}\n");
-        assert!(result.contains(AnnotationId::NoFallback));
+        assert!(!result.contains(AnnotationId::NoFallback));
         assert_eq!(result.diagnostics.len(), 1);
         let diagnostic = &result.diagnostics[0];
-        assert_eq!(diagnostic.code, DiagCode::W008LegacyAnnotationName);
+        assert_eq!(diagnostic.code, DiagCode::N012UnknownAnnotation);
+        assert!(
+            diagnostic
+                .notes
+                .iter()
+                .any(|note| note.contains("renamed to '@NoFallback'"))
+        );
         let replacement = diagnostic.hints[0]
             .replacement
             .as_ref()
@@ -772,12 +762,12 @@ mod tests {
         assert!(result_ident.contains(AnnotationId::Repr));
         assert!(result_ident.diagnostics.is_empty());
 
-        let result_legacy = validate("@repr(\"C\")\nstruct Point { x: i32, y: i32 }\n");
-        assert!(result_legacy.contains(AnnotationId::Repr));
-        assert_eq!(result_legacy.diagnostics.len(), 1);
+        let result_removed = validate("@repr(\"C\")\nstruct Point { x: i32, y: i32 }\n");
+        assert!(!result_removed.contains(AnnotationId::Repr));
+        assert_eq!(result_removed.diagnostics.len(), 1);
         assert_eq!(
-            result_legacy.diagnostics[0].code,
-            DiagCode::W008LegacyAnnotationName
+            result_removed.diagnostics[0].code,
+            DiagCode::N012UnknownAnnotation
         );
 
         let result_invalid_repr = validate("@Repr(\"Rust\")\nstruct Point { x: i32, y: i32 }\n");

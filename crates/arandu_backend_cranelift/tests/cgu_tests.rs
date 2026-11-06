@@ -476,7 +476,11 @@ fn measured_code_bytes_are_the_body_before_its_padding() {
             .find(|symbol| symbol.is_definition() && symbol.name() == Ok(unit.name.as_str()))
             .expect("function symbol")
             .size();
-        assert!(code > 0 && code <= padded, "{}: {code} of {padded}", unit.name);
+        assert!(
+            code > 0 && code <= padded,
+            "{}: {code} of {padded}",
+            unit.name
+        );
         assert_eq!(
             arandu_backend_cranelift::cgu::slot_capacity(usize::try_from(code).unwrap()) as u64,
             padded,

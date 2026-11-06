@@ -27,6 +27,19 @@ pub struct UnitPlacement<'a> {
 }
 
 impl ContextualFunctionUnit<'_> {
+    /// The file view of a local unit: its file's declared table and the
+    /// imported symbols linked into its context. Local units of one file with
+    /// the same view hold the same own symbols, positions and marks, since
+    /// each context is the file's signature table without positions, its
+    /// headers linked into it; only span-derived and generated symbols differ.
+    fn file_view(&self) -> Option<(*const arandu_middle::SymbolTable, *const ())> {
+        let placement = self.placement?;
+        Some((
+            std::ptr::from_ref(placement.declared),
+            std::sync::Arc::as_ptr(&self.context.symbols.imported_symbols).cast(),
+        ))
+    }
+
     /// Position in its file of `symbol` of this unit's context.
     fn placed_span(&self, symbol: &arandu_middle::Symbol) -> Span {
         match self.placement {
@@ -70,17 +83,28 @@ pub fn compose_function_units(
     // marks, so importer copies of these symbols are skipped below: every
     // unit's context repeats its whole import closure.
     let mut owned_files = FxHashSet::default();
+    let mut previous = None;
     for input in units {
         poll();
         let own = &input.context.symbols;
+        let repeats = std::mem::replace(&mut previous, input.file_view()) == input.file_view()
+            && previous.is_some();
         if own.file_id == aggregate.symbols.file_id || own.file_id != input.key.definition.file_id {
             continue;
         }
         owned_files.insert(own.file_id);
-        for source in own
-            .iter_own()
-            .filter(|symbol| !input.generated_symbols.contains(&symbol.id))
-        {
+        #[cfg(debug_assertions)]
+        if repeats {
+            assert_registered_like(aggregate, input);
+        }
+        // A unit of the file view registered just before adds only the
+        // span-derived symbols that may be its own.
+        let symbols: Box<dyn Iterator<Item = &arandu_middle::Symbol>> = if repeats {
+            Box::new(own.iter_synthetic())
+        } else {
+            Box::new(own.iter_own())
+        };
+        for source in symbols.filter(|symbol| !input.generated_symbols.contains(&symbol.id)) {
             poll();
             if aggregate.symbols.try_get(source.id).is_none() {
                 aggregate
@@ -107,9 +131,12 @@ pub fn compose_function_units(
     // merged just before changes nothing. Maps of other files may bind the
     // same key differently, so only the previous merge may be skipped.
     let mut merged_maps = [std::ptr::null::<()>(); 3];
+    let mut previous = None;
     for input in units {
         poll();
         let table = &input.context.symbols;
+        let repeats = std::mem::replace(&mut previous, input.file_view()) == input.file_view()
+            && previous.is_some();
         let generated = input
             .generated_symbols
             .iter()
@@ -121,8 +148,13 @@ pub fn compose_function_units(
         };
         let repeated = !registered_imports.insert(std::sync::Arc::as_ptr(&table.imported_symbols));
         let imported = (!repeated).then(|| table.imported_symbols.values());
-        for source in table
-            .iter_own()
+        // The own symbols of a file another unit owns are that unit's to
+        // register; `keep` would reject every one of them.
+        let own = (table.file_id == entry_file || !owned_files.contains(&table.file_id))
+            .then(|| table.iter_own());
+        for source in own
+            .into_iter()
+            .flatten()
             .chain(imported.into_iter().flatten())
             .filter(|symbol| keep(symbol.id))
         {
@@ -147,8 +179,14 @@ pub fn compose_function_units(
             }
             merge_symbol_marks(aggregate, table, source.id);
         }
-        if repeated {
+        // The marks a unit of the file view merged just before already hold
+        // what this one's imported symbols carry.
+        if repeated && !repeats {
             merge_imported_marks(aggregate, table, keep);
+        }
+        #[cfg(debug_assertions)]
+        if repeated && repeats {
+            assert_imported_marks_held(aggregate, table, &keep);
         }
         let symbols = aggregate.symbols_mut();
         let context = &input.context.symbols;
@@ -376,6 +414,63 @@ pub fn compose_function_units(
         diagnostics,
         instances,
     })
+}
+
+/// Checks that registering the own symbols of `input`, a unit of the file
+/// view registered just before, would change nothing.
+#[cfg(debug_assertions)]
+fn assert_registered_like(aggregate: &TypeCheckResult, input: &ContextualFunctionUnit<'_>) {
+    let own = &input.context.symbols;
+    for source in own
+        .iter_own()
+        .filter(|symbol| !input.generated_symbols.contains(&symbol.id) && !symbol.id.is_synthetic())
+    {
+        assert_eq!(
+            aggregate.symbols.try_get(source.id),
+            Some(&input.placed(source)),
+            "a unit of the same file view holds another symbol"
+        );
+        if let Some(name) = own.host_function_names.get(&source.id) {
+            assert_eq!(
+                aggregate.symbols.host_function_names.get(&source.id),
+                Some(name),
+                "a unit of the same file view holds another host name"
+            );
+        }
+        assert!(
+            !own.tooling_entrypoints.contains(&source.id)
+                || aggregate.symbols.tooling_entrypoints.contains(&source.id)
+        );
+        assert!(
+            !own.is_exported(source.id)
+                || aggregate.symbols.exported_functions.contains(&source.id)
+        );
+    }
+}
+
+/// Checks that [`merge_imported_marks`] of `context` would change nothing.
+#[cfg(debug_assertions)]
+fn assert_imported_marks_held(
+    aggregate: &TypeCheckResult,
+    context: &arandu_middle::SymbolTable,
+    keep: &dyn Fn(SymbolId) -> bool,
+) {
+    let imported =
+        |symbol: SymbolId| context.imported_symbols.contains_key(&symbol) && keep(symbol);
+    for (symbol, name) in &context.host_function_names {
+        if imported(*symbol) {
+            assert_eq!(
+                aggregate.symbols.host_function_names.get(symbol),
+                Some(name)
+            );
+        }
+    }
+    for symbol in &context.tooling_entrypoints {
+        assert!(!imported(*symbol) || aggregate.symbols.tooling_entrypoints.contains(symbol));
+    }
+    for symbol in &context.exported_functions {
+        assert!(!imported(*symbol) || aggregate.symbols.exported_functions.contains(symbol));
+    }
 }
 
 /// [`merge_symbol_marks`] of every imported symbol of `context` that `keep`

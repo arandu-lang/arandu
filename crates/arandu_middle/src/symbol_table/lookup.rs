@@ -116,6 +116,11 @@ impl super::SymbolTable {
         self.symbols.iter().chain(self.synthetic_symbols.values())
     }
 
+    /// The span-derived symbols of [`Self::iter_own`] alone.
+    pub fn iter_synthetic(&self) -> impl Iterator<Item = &Symbol> {
+        self.synthetic_symbols.values()
+    }
+
     /// Deterministic flat symbol name used by native backends.
     ///
     /// The resolver records the defining module once. Import aliases never

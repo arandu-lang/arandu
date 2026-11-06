@@ -1081,7 +1081,8 @@ mod tests {
                 .filter_map(Result::ok)
                 .map(|entry| entry.path())
                 .find(|path| {
-                    path.extension().is_some_and(|ext| ext == "o")
+                    path.extension()
+                        .is_some_and(|ext| ext == "o" || ext == "obj")
                         && path
                             .file_name()
                             .is_some_and(|name| name.to_string_lossy().contains("combined"))

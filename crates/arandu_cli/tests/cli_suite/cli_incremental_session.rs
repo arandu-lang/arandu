@@ -296,12 +296,19 @@ fn a_torn_build_output_is_rebuilt_instead_of_trusted() {
     let main_src = project.join("src/main.aru");
     let mut edits = 0;
 
-    for (name, decides_up_to_date) in [
+    // Only Linux patches ELF executables and records their layout.
+    let outputs = [
         ("session-fingerprint.json", true),
         ("current.amir", true),
         ("build-state.json", false),
         ("elf_layout.json", false),
-    ] {
+    ];
+    let outputs = if cfg!(target_os = "linux") {
+        &outputs[..]
+    } else {
+        &outputs[..3]
+    };
+    for &(name, decides_up_to_date) in outputs {
         for keep in [0, 1, 2] {
             let found = files_named(&project.join("target/dev"), name);
             assert_eq!(found.len(), 1, "expected exactly one {name}");

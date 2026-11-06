@@ -18,6 +18,9 @@ mod cli_archive;
 #[path = "cli_suite/cli_autoref.rs"]
 mod cli_autoref;
 
+#[cfg(unix)]
+#[path = "cli_suite/cli_agg_endurance.rs"]
+mod cli_agg_endurance;
 #[path = "cli_suite/cli_ownership_regressions.rs"]
 mod cli_ownership_regressions;
 

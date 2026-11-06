@@ -1,0 +1,97 @@
+// AGG.1 endurance: every owned value of each fallback shape the AGG.1 probe
+// covered is created and dropped once per iteration. `main` returns 0 when
+// every round computed the expected lengths; a leak shows as RSS that grows
+// with the iteration count, a double free or use after drop under ASan.
+import std.alloc.gen_arena as arena
+import std.alloc.string as strings
+
+struct Inner {
+    label: strings.String,
+    size: int,
+}
+
+struct Outer {
+    name: strings.String,
+    inner: Inner,
+}
+
+func owned(text: str): strings.String {
+    return strings.String.from(text)
+}
+
+// An owned payload that `?` forwards, and the error branch that drops one.
+func checked(round: int): Result<strings.String, strings.String> {
+    if round % 7 == 0 {
+        return Result.Err(owned("rejected round"))
+    }
+    return Result.Ok(owned("accepted round"))
+}
+
+func forwarded(round: int): Result<int, strings.String> {
+    let value = checked(round)?
+    return Result.Ok(value.len() as int)
+}
+
+// One round; the lengths it returns are fixed by `round % 7` and `round % 2`.
+func round(round: int, values: mut ref arena.GenArena<strings.String>): int {
+    // Owned value carried around a loop backedge, replaced each step.
+    let mut carried = owned("start")
+    let mut step = 0
+    while step < 3 {
+        carried = owned("carried value")
+        step = step + 1
+    }
+    let mut total = carried.len() as int
+
+    // The owner chosen by a branch.
+    let chosen = if round % 2 == 0 { owned("even") } else { owned("odd!") }
+    total = total + chosen.len() as int
+
+    // An owned Option payload, kept or dropped by the match.
+    let maybe: Option<strings.String> = if round % 2 == 0 { Option.Some(owned("some")) } else { Option.None }
+    match maybe {
+        Option.Some(text) => { total = total + text.len() as int }
+        Option.None => { total = total + 4 }
+    }
+
+    // `?` with an owned error payload.
+    total = total + (forwarded(round) catch |error| { error.len() as int })
+
+    // Nested aggregate with owned fields, one field replaced.
+    let mut outer = Outer { name: owned("outer"), inner: Inner { label: owned("inner"), size: 5 } }
+    outer.inner.label = owned("relabeled")
+    total = total + outer.name.len() as int + outer.inner.label.len() as int + outer.inner.size
+
+    // The generational arena: insert, borrow, remove.
+    let handle = values.insert(owned("arena value"))
+    total = total + values.getRef(handle).len() as int
+    match values.remove(handle) {
+        Option.Some(value) => { total = total + value.len() as int }
+        Option.None => { return -1 }
+    }
+    return total
+}
+
+func expected(round: int): int {
+    // carried 13, chosen 4, option 4, forwarded 14 (or the error's 14),
+    // outer 5 + 9 + 5, arena 11 + 11.
+    let _ = round
+    return 13 + 4 + 4 + 14 + 19 + 22
+}
+
+func main(): int {
+    let mut values = arena.GenArena<strings.String>.new()
+    let mut index = 0
+    while index < ROUNDS {
+        if round(index, values) != expected(index) {
+            return 1
+        }
+        index = index + 1
+    }
+    if !values.isEmpty() {
+        return 2
+    }
+    return 0
+}
+
+const ROUNDS = 2000

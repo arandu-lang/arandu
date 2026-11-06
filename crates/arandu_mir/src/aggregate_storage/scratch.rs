@@ -1,6 +1,8 @@
 use super::cycles::{block_in_cycle, block_param_safe};
 use super::string_origin::independent_string_result;
-use arandu_middle::amir::{AmirFunc, AmirOperand, AmirRvalue, AmirStmt, AmirTerminator, TempId};
+use arandu_middle::amir::{
+    AmirFunc, AmirOperand, AmirProjection, AmirRvalue, AmirStmt, AmirTerminator, TempId,
+};
 use arandu_middle::layout::{
     StructLayoutProvider, instantiated_enum_variant_payload_type, instantiated_field_type,
 };
@@ -198,8 +200,83 @@ fn returns_parameter_views(
         })
 }
 
+/// Whether `ty` can hold no address: no raw pointer, reference, slice or
+/// `str` anywhere inside it.
+fn pointer_free(ty: TypeId, interner: &TypeInterner, depth: usize) -> bool {
+    if depth > 64 {
+        return false;
+    }
+    match interner.resolve(ty) {
+        ArType::Primitive(p) => p != Primitive::Str,
+        ArType::Void | ArType::Vector(_) | ArType::IntLiteral | ArType::FloatLiteral => true,
+        ArType::Array(_, inner) | ArType::Option(inner) => pointer_free(inner, interner, depth + 1),
+        ArType::Result(ok, err) => {
+            pointer_free(ok, interner, depth + 1) && pointer_free(err, interner, depth + 1)
+        }
+        ArType::Tuple(args) => interner
+            .type_args(args)
+            .iter()
+            .all(|&inner| pointer_free(inner, interner, depth + 1)),
+        // Nominal fields are not visible here; a named result may hold one.
+        _ => false,
+    }
+}
+
+/// Whether `function` never makes an address of storage it owns: every borrow
+/// goes through a pointer it was given or allocated, and no call that is
+/// handed one of its by-address values returns something that may hold an
+/// address (which could be that value's). Then no pointer into this
+/// invocation's backing exists to return or to store, and a pointer or
+/// reference result is a value like a scalar for promotion.
+fn makes_no_own_address(function: &AmirFunc, interner: &TypeInterner) -> bool {
+    let by_address = |operand: &AmirOperand| match operand {
+        AmirOperand::Copy(temp) | AmirOperand::Move(temp) => function
+            .temps
+            .get(temp.as_usize())
+            .is_none_or(|temp| aggregate(temp.ty, interner)),
+        AmirOperand::FunctionRef(_) => true,
+        AmirOperand::Constant(_) | AmirOperand::GlobalRef(_) => false,
+    };
+    function.blocks.iter().all(|block| {
+        function
+            .block_stmts(block.id)
+            .all(|statement| match statement {
+                AmirStmt::Assign {
+                    rhs: AmirRvalue::Borrow(place) | AmirRvalue::BorrowMut(place),
+                    ..
+                } => matches!(place.projections.first(), Some(AmirProjection::Deref)),
+                AmirStmt::Call { lhs, args, .. } => {
+                    lhs.is_none_or(|temp| {
+                        function
+                            .temps
+                            .get(temp.as_usize())
+                            .is_some_and(|temp| pointer_free(temp.ty, interner, 0))
+                    }) || !args.iter().any(by_address)
+                }
+                _ => true,
+            })
+    })
+}
+
+/// Aggregates live in backing this invocation may own.
+fn aggregate(ty: TypeId, interner: &TypeInterner) -> bool {
+    !matches!(
+        interner.resolve(ty),
+        ArType::Primitive(_)
+            | ArType::Vector(_)
+            | ArType::Ptr(_)
+            | ArType::Ref(_)
+            | ArType::RefMut(_)
+            | ArType::Void
+            | ArType::IntLiteral
+            | ArType::FloatLiteral
+    )
+}
+
 /// `returned_borrows` is the function's proven return borrow summary, which
-/// admits a reference result (see `returns_parameter_views`).
+/// admits a reference result (see `returns_parameter_views`); a pointer or
+/// reference result is also admitted when the function makes no address of
+/// its own storage (see `makes_no_own_address`).
 #[must_use]
 pub fn function_scratch_safe(
     function: &AmirFunc,
@@ -263,7 +340,9 @@ pub fn function_scratch_safe(
         | ArType::FloatLiteral => {}
         ArType::Coroutine(_) if scalar_ready_result => {}
         ArType::Ref(_) | ArType::RefMut(_)
-            if returns_parameter_views(function, interner, returned_borrows) => {}
+            if returns_parameter_views(function, interner, returned_borrows)
+                || makes_no_own_address(function, interner) => {}
+        ArType::Ptr(_) if makes_no_own_address(function, interner) => {}
         ArType::Named(..)
         | ArType::Array(..)
         | ArType::Tuple(..)

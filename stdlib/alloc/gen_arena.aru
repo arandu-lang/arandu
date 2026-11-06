@@ -257,18 +257,15 @@ public func GenArena.insert<T>(self: mut ref GenArena<T>, value: T): GenRef {
     return insert<T>(self, value)
 }
 
-// The handle travels as its two scalars: a function returning a raw
-// pointer keeps no invocation backing, so a GenRef copy would be allocated
-// per call by native backends.
-func checkedPointer<T>(a: ref GenArena<T>, index: u32, generation: u32): ptr[T] {
-    let idx = index as usize
+func checkedPointer<T>(a: ref GenArena<T>, r: GenRef): ptr[T] {
+    let idx = r.index as usize
     if idx >= a.slots { unsafe { intrinsics.abort() } }
     unsafe {
-        let usedPtr = mem.ptrOffset<u8>(a.used, index as isize)
+        let usedPtr = mem.ptrOffset<u8>(a.used, r.index as isize)
         if mem.ptrRead<u8>(usedPtr) == (0 as u8) { intrinsics.abort() }
-        let genPtr = mem.ptrOffset<u32>(a.gen, index as isize)
-        if mem.ptrRead<u32>(genPtr) != generation { intrinsics.abort() }
-        return mem.ptrOffset<T>(a.data, index as isize)
+        let genPtr = mem.ptrOffset<u32>(a.gen, r.index as isize)
+        if mem.ptrRead<u32>(genPtr) != r.generation { intrinsics.abort() }
+        return mem.ptrOffset<T>(a.data, r.index as isize)
     }
 }
 
@@ -276,7 +273,7 @@ func checkedPointer<T>(a: ref GenArena<T>, index: u32, generation: u32): ptr[T] 
 /// Out-of-range, removed and stale handles trap. Use getRef for non-Copy values
 /// or remove to transfer ownership out of the arena.
 public func GenArena.get<T: marker.Copy>(self: ref GenArena<T>, r: GenRef): T {
-    unsafe { return mem.ptrRead<T>(checkedPointer<T>(self, r.index, r.generation)) }
+    unsafe { return mem.ptrRead<T>(checkedPointer<T>(self, r)) }
 }
 
 /// Borrows the value at a live handle, retaining the arena as its owner.
@@ -284,7 +281,7 @@ public func GenArena.get<T: marker.Copy>(self: ref GenArena<T>, r: GenRef): T {
 /// Out-of-range, removed and stale handles trap.
 public func GenArena.getRef<T>(self: ref GenArena<T>, r: GenRef): ref T {
     unsafe {
-        let data = checkedPointer<T>(self, r.index, r.generation)
+        let data = checkedPointer<T>(self, r)
         let view = intrinsics.sliceFromRaw<GenArena<T>, T>(self, data, 1 as usize)
         return ref view[0 as usize]
     }

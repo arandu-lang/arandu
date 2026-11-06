@@ -12,6 +12,7 @@ use std::process::Command;
 use crate::common;
 
 const CORPUS: &str = include_str!("../../../../tests/corpus/agg1_endurance.aru");
+const POINTER_RESULTS: &str = include_str!("../../../../tests/corpus/agg1_pointer_results.aru");
 const SMALL: u32 = 20_000;
 const LARGE: u32 = 200_000;
 /// Allocator and page noise between the two runs, far below what a single
@@ -19,12 +20,16 @@ const LARGE: u32 = 200_000;
 const RSS_TOLERANCE_KIB: i64 = 4 * 1024;
 
 fn program(directory: &Path, rounds: u32) -> PathBuf {
+    program_of(CORPUS, directory, rounds)
+}
+
+fn program_of(corpus: &str, directory: &Path, rounds: u32) -> PathBuf {
     let path = directory.join(format!("agg1_endurance_{rounds}.aru"));
     assert!(
-        CORPUS.contains("const ROUNDS = 2000\n"),
+        corpus.contains("const ROUNDS = 2000\n"),
         "the corpus declares its round count"
     );
-    let source = CORPUS.replace(
+    let source = corpus.replace(
         "const ROUNDS = 2000\n",
         &format!("const ROUNDS = {rounds}\n"),
     );
@@ -136,10 +141,24 @@ fn every_fallback_shape_is_released_in_c() {
 /// scratch into `malloc` nothing freed, ~225 bytes per `GenArena.getRef`.
 #[test]
 fn every_fallback_shape_is_released_on_the_jit() {
-    let directory = common::temp_dir("arandu-agg1-jit").unwrap();
+    assert_jit_rss_is_bounded(CORPUS, "arandu-agg1-jit");
+}
+
+/// A function whose result may be an address (`ptr`, an unproven `ref`) was
+/// kept out of invocation scratch, so its aggregate temporaries leaked per
+/// call. It is promoted when it makes no address of its own storage.
+#[test]
+fn pointer_results_release_their_temporaries_on_the_jit() {
+    assert_jit_rss_is_bounded(POINTER_RESULTS, "arandu-agg1-pointer");
+}
+
+fn assert_jit_rss_is_bounded(corpus: &str, label: &str) {
+    let directory = common::temp_dir(label).unwrap();
     let run = |rounds| {
         let mut command = common::cli_command();
-        command.arg("run").arg(program(&directory, rounds));
+        command
+            .arg("run")
+            .arg(program_of(corpus, &directory, rounds));
         measure(command)
     };
     let (small_code, small) = run(SMALL);

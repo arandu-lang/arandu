@@ -9,7 +9,7 @@ Esta pasta tem uma única fila de planejamento: o [roadmap mestre](arandu-compil
 | Saber o que existe e o que falta | [Base entregue e fila atual](arandu-compiler-roadmap-v0.1.md#fila-de-execução) |
 | Planejar 0.2.x, 0.3.x e as séries seguintes até 1.0 | [Plano de longo prazo](arandu-compiler-roadmap-v0.1.md#plano-de-longo-prazo-por-série) |
 | Distinguir proposta, implementação e suporte publicado | [Estados e versões](arandu-compiler-roadmap-v0.1.md#como-ler-estados-e-versões) e [processo de RFCs](rfcs/README.md) |
-| Confirmar uma release específica | [0.1.10](releases/0.1.10.md), [verificação](release-verification.md) e [distribuição](arandu-distribution-contract-v0.1.md) |
+| Confirmar uma release específica | [0.1.11](releases/0.1.11.md), [verificação](release-verification.md) e [distribuição](arandu-distribution-contract-v0.1.md) |
 | Alterar o compilador | [AGENTS.md](../AGENTS.md), contrato do subsistema e regressões do crate proprietário |
 
 Os sufixos `v0.1` nos nomes são históricos, não limites da versão que um

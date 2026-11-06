@@ -98,17 +98,13 @@ mesmo após uma rodada completa verde anterior.
 ## Fila de execução
 
 Ordem imediata para a próxima campanha, mantendo correções independentes na
-0.1.x quando necessário:
+0.1.x quando necessário. DIST.3, GATE.LSP, NUM.C, WASM.CFG e os métodos de
+primitivos saíram na v0.1.11 (2026-10-26) e deixaram a fila.
 
 | Prioridade / ID | Trabalho aberto | Dono e prova de saída |
 | --- | --- | --- |
-| P0 / DIST.3 | correção local implementada: SHA-256 obrigatório, OpenSSL/fallback, archive/BLAKE3 em staging e rollback | 22 testes herméticos passaram com pytest/Ruff; CI; falta promoção com pacote nativo exato |
-| P0 / GATE.LSP | corrigido risco local de deadlock: soltar snapshots antes de backpressure e descartar jobs cancelados antes de writes; investigar variabilidade histórica sem aumentar orçamento | regressões determinísticas e 67 unitários passaram; stdio e gate final ainda exigidos no mesmo snapshot |
-| P0 / NUM.C | guards locais para div/mod C e alinhamento de shifts/narrow nos três backends | corpus de resultado/trap em O0/O1/O2/Os e Wasm executado; revalidar no snapshot final com nextest |
-| P0 / WASM.CFG | corrigidos escopos de salto cruzados, cópias de argumentos na aresta errada e desreferência parcial de agregados | Decimal/hashes em Wasmtime e projeções em C/Cranelift/Wasm passaram; regressão estrutural cobre diamantes, backedges e self-loops; gates finais pendentes |
-| WIP / PRIMITIVES | métodos inerentes/descoberta/completion de primitivos aparecem em alterações locais, fora da base publicada | parser/resolve/query/typeck/IDE/stdlib; provas de cutoff, colisões/identidade, diagnósticos e gates completos antes de atribuir uma release |
-| P1 / HOT.1 | baseline representativo e medição repetida de latência, CPU/RSS, hits e invalidação | xtask/benchmarks; p50/p95 e comparação clean/batch/quente com host/corpus/configuração documentados |
-| P1 / HOT.2–6 | sessão reutilizável, protocolo/supervisor, imagem dev, recuperação e endurance | CLI/query/codegen; gates 0.2 abaixo, sem I/O nas queries |
+| P1 / HOT.1 | feito na 0.2.0: `bench-incremental` com corpora pequeno/médio/grande, p50/p95, CPU/RSS, caminho de publicação, delta de bytes por função e retenção de slot | falta a execução no host de referência |
+| P1 / HOT.2–6 | HOT.2–5 feitos na 0.2.0 (sessão, daemon, imagem dev, recuperação); HOT.6 com endurance de 1000 edições e RSS/filas limitados | matriz nativa instalada pelo workflow de release; gate de p95 por decisão do mantenedor |
 | P1 / AGG.1 | reproduzir e classificar gaps de lifetime/cleanup dos fallbacks admitidos; correção local de GenArena.get com Copy e novo getRef para impedir duplicação de owners. Corrigido localmente na 0.2.0: o vazamento do Cranelift em agregados com view (`Option<ref T>`; ~225 B por `GenArena.getRef`), por admissão de carriers no scratch da invocação, retornos `ref` com resumo provado e handle por escalares no `GenArena` | MIR/backends; resultados corretos, alloc/free e RSS limitado: `cli_agg_endurance` em C (ASan/LSan e RSS) e na JIT (RSS) passa; resultados `ptr`/`ref` promovidos pela análise de escape de endereço no AMIR (`agg1_pointer_results.aru`); residual documentado em ABI/layout (funções que tomam o endereço do próprio armazenamento, carriers no Wasm), destino dual-locus (RFC 0043) |
 | P1 / WASM.FLOAT | implementado localmente na 0.2.0: o `ToStr` de `f64` no Wasm usa o algoritmo exato de referência do `flt2dec` do Rust (Dragon4 em modo shortest, bignum de 40 limbs na shadow stack, sem tabelas) numa função auxiliar emitida só quando o módulo formata float | `float_text` igual a `format!` em 200 mil padrões de bits, 50 mil decimais curtos e todas as potências de 2 e de 10; paridade Cranelift/C/Wasm em `cli_backend_parity`; custo ~1,9 KB por módulo que formata float, ~64 B por chamada (antes ~580 B inline) |
 | P2 / CT.4–5 e IDE | campanha de editor/playground e ampliação do corpus real | query/IDE/web/extensão; prova correspondente, sem equiparar smoke instalado ao universo de alvos |
@@ -119,8 +115,10 @@ Ordem imediata para a próxima campanha, mantendo correções independentes na
 Em 16/10/2026 o escopo foi ampliado explicitamente pelo mantenedor: fechar
 as alterações locais e os bloqueadores, e implementar a fundação abaixo antes
 da 0.2.0. A tabela registra entregas autorizadas, não funcionalidades publicadas.
-A 0.1.11 permanece em desenvolvimento enquanto houver itens não concluídos;
-a extensão do escopo não reduz as provas nem promove suporte por inferência.
+A campanha fechou com a v0.1.11 (2026-10-26). ST.2d (ARM) e ST.12b
+(macOS/BSD) seguem parciais: o que falta é execução nativa, que a matriz do
+workflow de release da 0.2.0 cobre; a extensão do escopo não reduz as provas
+nem promove suporte por inferência.
 Como evidência histórica, o snapshot de 17/10 passou nos gates ordenados, em 3.184 testes nextest
 (sete ignorados), doctests, determinismo e checks documentais/arquiteturais.
 O C SIMD passou também em ASan/UBSan; os checks Rust de Windows/macOS usaram
@@ -140,7 +138,7 @@ e `arandu-ast-v0.1.md`.
 
 | ID | Entrega | Estado / critério de saída |
 | --- | --- | --- |
-| ST.0 | consolidar primitivos, Decimal e alterações locais | `in_progress`; Decimal com overflow checado, comparação exata, HalfEven e conversões validadas no corpus contratual e no oráculo inteiro independente executados nos três backends (C/Cranelift/Wasm); gates locais passaram; manter as provas de métodos/imports/completion e cutoff no SDK instalado |
+| ST.0 | consolidar primitivos, Decimal e alterações locais | `done` (v0.1.11, SDK instalado testado pelo workflow de release); Decimal com overflow checado, comparação exata, HalfEven e conversões validadas no corpus contratual e no oráculo inteiro independente executados nos três backends (C/Cranelift/Wasm); gates locais passaram; manter as provas de métodos/imports/completion e cutoff no SDK instalado |
 | ST.1 | `core.math`: sqrt, sin/cos/tan, pow, log/exp e PI/TAU/E | implementação escalar local; corrigidos trunc acima de 32 bits, round, escala extrema de exp, potências subnormais e overflow intermediário de cbrt; regressões independentes IEEE/f64 nos três backends; oráculos trigonométricos (sin, cos, tan) e logarítmicos (ln) com tolerâncias ULP e bordas fechados e validados em JIT, C (Clang -O0/-O2 UBSan) e Wasm; perfis float32 e matriz instalada pendentes |
 | ST.2 | `core.simd`: seis vetores de 128 bits | implementação local de tipos canônicos, métodos/intrínsecos tipados, layout 16/16, AMIR e Cranelift/C/Wasm; máscaras/comparações/select, wrapping e slices com bounds; escrita segura usa MutableSlice afim, descritores compartilhados exigem unsafe; backing heap do compilador alinhado a 16; CTFE concluído e verificado na VM com suporte a 128-bit hardware vectors, splat, extract/insert, ops, select, shuffle e intrínseco abort; faltam provas do SDK instalado na matriz nativa por alvo (RFC 0038) |
 | ST.3 | Q8.8/Q32.32 e correção de Q16.16 | implementação local; oráculo i128, JIT/C com UBSan/Wasm; 384 pares inteiros e gates locais passaram; conversões float validadas com clamping e oráculo diferencial nos três backends; matriz instalada pendente |
@@ -156,7 +154,7 @@ e `arandu-ast-v0.1.md`.
 | ST.13 | DNS/UDP e reactor multiplataforma | Reactor registra sockets TCP em Linux (epoll/io_uring), macOS/FreeBSD/OpenBSD/NetBSD/DragonFly (kqueue) e Windows (WSAPoll), com contrato único: one-shot por registro, readiness independente de timer, ids de reactor com geração e close com registro ativo seguro; outros hosts falham fechado com `REGISTER_UNSUPPORTED` (-2). Compilado para macOS e Windows; promoção exige os testes `reactor_runtime::tests::readiness` verdes em runners nativos macOS e Windows; as BSDs seguem só com gate por `cfg`, sem CI. DNS/UDP inalterados; registro de UDP no reactor fica fora do escopo |
 | ST.14 | `crypto.hash` SHA-256/BLAKE3 | implementação escalar local; vetores independentes de streaming/padding/chunks/árvore e snapshots passaram em C/Cranelift/Wasm; sem autenticação/keyed/XOF; matriz instalada e promoção pendentes |
 | ST.15 | `math.big.BigInt`/`BigDecimal` (RFC 0037) | `done` localmente; camadas 1–3 ativas com adições de `divRem`, `div`, `rem`, `divAssign`, `remAssign`, `BigDecimal.mul`, operações de bit e representação de limbs; oráculo diferencial independente contra `num-bigint` (dev-dependency) com 59 casos curados cobrindo além de 128/256/512 bits executado e validado em JIT (Cranelift), C (Clang -O0 e -O2 com UBSan) e Wasmtime; a execução no Wasm revelou e corrigiu um double free do backend em locais agregados reatribuídos em loop (BigDecimal.add travava). |
-| ST.16 | promoção da candidata | `in_review`; o código da candidata está na branch `codex/0.1.11-dev` (PR #35) e os gates Rust deste host passaram: fmt, check, clippy `-D warnings`, doc `-D warnings`, `check-diag-docs` (105 códigos), `check-release-contract` (29 manifestos), `check-line-endings` e `check-architecture`. O CI do commit `d99c9e41` já construiu, instalou fora do checkout e testou o SDK candidato em Linux x86-64, macOS ARM64 e Windows x86-64, com integração SL_T nos três alvos. Pendente: `S0 / Gate` verde no head que contém o fechamento da campanha, merge, tag `v0.1.11`, workflow de release, instalação dos archives públicos e evidência de checksums/provenance. Nada disso é coberto pelos gates locais. |
+| ST.16 | promoção da candidata | `done`: v0.1.11 publicada em 2026-10-26 (PR #35 com `S0 / Gate` verde, tag `v0.1.11`, release com archives instalados e testados em Linux x86-64, macOS ARM64 e Windows x86-64). |
 
 A ordem de execução é: bloqueadores e ST.0 → aritmética/ST.3/ST.4 →
 fundação de memória e atomics → coleções/precisão arbitrária → serviços e
@@ -196,8 +194,8 @@ associada. Cada candidata declara seu recorte e limitações antes da promoção
 
 | Série | Resultado principal | Dependências / gate | Estado |
 | --- | --- | --- | --- |
-| 0.1.x / 0.1.11 | fundação publicada e fechamento autorizado da stdlib | bloqueadores, ST.0–16, regressões e distribuição do pacote exato | 0.1.10 publicada; 0.1.11 em revisão no PR #35, tag pendente |
-| 0.2.x | motor quente e imagem dev recuperável | sessão Salsa viva, protocolo/fallback, equivalência clean e p95 ≤100 ms em edição de corpo no host/corpus de referência | `planned`; fundação batch `done` |
+| 0.1.x / 0.1.11 | fundação publicada e fechamento autorizado da stdlib | bloqueadores, ST.0–16, regressões e distribuição do pacote exato | 0.1.11 publicada (2026-10-26) |
+| 0.2.x | motor quente e imagem dev recuperável | sessão Salsa viva, protocolo/fallback, equivalência clean e p95 ≤100 ms em edição de corpo no host/corpus de referência | `in_progress`: HOT.1–5 feitos na `0.2.0-dev`; promoção pendente |
 | 0.3.x | granularidade por instância e expressividade delimitada | completar produtores/CGUs, retenção e cutoff; p95 ≤10 ms no workload de referência; closures e reflexão inicial têm gates próprios | `partial` na granularidade; expansões `planned` |
 | 0.4.x | qualidade de código de release mensurada | OPT/AOT oracle, segurança de alias/escape e benchmarks; LLVM opcional só após aceitação da RFC 0031, paridade e distribuição | `experimental` O2; backend novo `planned` |
 | 0.5.x | contratos portáveis de ABI, recursos e interoperabilidade | layout/calling convention por alvo, ownership/FFI e runtime; capabilities/freestanding e WIT/mobile avançam por recortes | base `partial`; expansões `planned` |

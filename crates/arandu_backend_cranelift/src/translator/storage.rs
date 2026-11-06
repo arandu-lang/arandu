@@ -22,6 +22,7 @@ pub(super) fn frame_promotion_safe(
         symbols,
         info.type_interner(),
         arandu_mir::aggregate_storage::ScratchResultAbi::CallerOwnedAggregates,
+        info.return_borrow_summaries().get(&function.symbol),
     )
 }
 impl<M: cranelift_module::Module> super::FunctionTranslator<'_, '_, M> {
@@ -177,6 +178,8 @@ mod tests {
         let compiler = AranduModule {
             module: cranelift_jit::JITModule::new(builder),
             debug: None,
+            slot_trap: None,
+            code_bytes: 0,
         };
         let module = compiler
             .compile_program(&program, &checked.symbols, &*checked.type_info)
@@ -441,6 +444,8 @@ func main(): int {
         let compiler = AranduModule {
             module: cranelift_jit::JITModule::new(create_jit_builder().unwrap()),
             debug: None,
+            slot_trap: None,
+            code_bytes: 0,
         };
         let error = compiler
             .compile_program(&program, &checked.symbols, &*checked.type_info)

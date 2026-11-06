@@ -32,12 +32,15 @@ impl<'a> Resolver<'a> {
     }
 
     pub(crate) fn resolve_local(self, program: &Program) -> ResolutionResult {
-        self.resolve_local_with_poll(program, || {})
+        self.resolve_local_with_poll(program, None, || {})
     }
 
+    /// `implicit_module` names the logical module of a file without a
+    /// `module` declaration; a declaration always takes precedence.
     pub(crate) fn resolve_local_with_poll(
         mut self,
         program: &Program,
+        implicit_module: Option<&str>,
         mut poll: impl FnMut(),
     ) -> ResolutionResult {
         for doc in &program.docs {
@@ -85,10 +88,10 @@ impl<'a> Resolver<'a> {
         }
 
         {
-            let module_name = program
-                .module
-                .as_ref()
-                .map_or_else(String::new, |module| module.path.join("."));
+            let module_name = program.module.as_ref().map_or_else(
+                || implicit_module.unwrap_or_default().to_owned(),
+                |module| module.path.join("."),
+            );
             let mut pending = program
                 .decls
                 .iter()

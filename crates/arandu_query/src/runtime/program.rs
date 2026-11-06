@@ -31,6 +31,59 @@ impl StableHash for RuntimeProgram {
     }
 }
 
+/// N021 for every defined function whose native name an earlier one (in
+/// symbol order) already uses. Backends would otherwise fail on the second
+/// definition with an ICE or leave it to the linker.
+fn duplicate_function_symbols(
+    db: &dyn ArandCompilerDb,
+    amir: &AmirProgram,
+    symbols: &arandu_middle::SymbolTable,
+) -> Vec<Diagnostic> {
+    let mut by_name = std::collections::BTreeMap::<&str, Vec<&arandu_middle::Symbol>>::new();
+    for function in &amir.funcs {
+        if let Some(symbol) = symbols.try_get(function.symbol) {
+            by_name
+                .entry(symbols.host_func_name(symbol))
+                .or_default()
+                .push(symbol);
+        }
+    }
+    let mut diagnostics = Vec::new();
+    for (name, mut definitions) in by_name {
+        definitions.sort_by_key(|symbol| (symbol.id.file_id, symbol.id.local_id.0));
+        definitions.dedup_by_key(|symbol| symbol.id);
+        let Some((first, rest)) = definitions.split_first() else {
+            continue;
+        };
+        for other in rest {
+            // Two `@Export`s claiming one name are T049, reported with the
+            // export context by `exported_symbol_collision` consumers.
+            if symbols.is_exported(first.id) && symbols.is_exported(other.id) {
+                continue;
+            }
+            let diagnostic = Diagnostic::error(
+                DiagCode::N021DuplicateFunctionSymbol,
+                format!(
+                    "functions `{}` and `{}` map to the same native symbol `{name}`",
+                    first.name, other.name
+                ),
+                other.span,
+            );
+            // A secondary label renders against the primary file's text.
+            diagnostics.push(if first.span.file_id == other.span.file_id {
+                diagnostic.with_label(first.span, "the other function with this symbol")
+            } else {
+                diagnostic.with_note(format!(
+                    "`{}` is defined in {}",
+                    first.name,
+                    db.file_path(first.span.file_id).display()
+                ))
+            });
+        }
+    }
+    diagnostics
+}
+
 fn empty_program() -> AmirProgram {
     AmirProgram {
         funcs: Vec::new(),
@@ -47,6 +100,12 @@ pub fn runtime_program(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Run
     const MAX_INSTANCES: usize = 4096;
     let declarations = declaration_hir(db, file);
     let resolution = crate::passes::resolve(db, file);
+    // The composed program is a deterministic function of these reads, so its
+    // identity folds their digests instead of hashing the whole program.
+    let mut fingerprint = blake3::Hasher::new();
+    fingerprint.update(b"RuntimeProgram/fingerprint/v1");
+    fingerprint.update(declarations.stable_hash().as_bytes());
+    fingerprint.update(resolution.stable_hash().as_bytes());
     let mut aggregate = declarations.artifacts.type_check.clone();
     let mut diagnostics = declarations.artifacts.diagnostics.clone();
     let mut pending = std::collections::VecDeque::new();
@@ -63,12 +122,9 @@ pub fn runtime_program(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Run
             {
                 // Uninstantiated entry templates still receive their ordinary
                 // source/body diagnostics. They are not executable units.
-                diagnostics.extend(
-                    crate::ctfe::item_staged_typing(db, file, function.symbol)
-                        .diagnostics
-                        .iter()
-                        .cloned(),
-                );
+                let staged = crate::ctfe::item_staged_typing(db, file, function.symbol);
+                fingerprint.update(staged.stable_hash().as_bytes());
+                diagnostics.extend(staged.diagnostics.iter().cloned());
                 continue;
             }
             let key = FunctionInstance {
@@ -92,7 +148,19 @@ pub fn runtime_program(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Run
     while let Some(instance) = pending.pop_front() {
         db.unwind_if_revision_cancelled();
         let key = instance.key(db).clone();
-        let checked = runtime_unit(db, instance);
+        let produced = runtime_unit(db, instance);
+        // Only the result is placed here; the composition places the
+        // context as it merges it, without copying it per unit.
+        let (checked, placement) = match super::placed_unit_body(db, instance) {
+            Some((placed, at)) => (
+                std::sync::Arc::clone(&placed.value),
+                Some((
+                    at.clone(),
+                    &crate::passes::declaration_signatures(db, *instance.file(db)).symbols,
+                )),
+            ),
+            None => (std::sync::Arc::clone(&produced.value), None),
+        };
         match &checked.result {
             Ok(unit) => {
                 let mut callees = Vec::new();
@@ -161,7 +229,7 @@ pub fn runtime_program(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Run
                         callees.push(key);
                     }
                 }
-                callees.sort_by_key(|key| {
+                callees.sort_by_cached_key(|key| {
                     (
                         db.source_file_by_id(key.definition.file_id)
                             .map(|sf| sf.path(db).clone())
@@ -196,20 +264,30 @@ pub fn runtime_program(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Run
             }
             Err(errors) => diagnostics.extend(errors.iter().cloned()),
         }
-        units.push((key, HashEq::share(checked)));
+        units.push((key, produced.clone(), checked, placement));
     }
     let file_path_key = |file_id: arandu_middle::db::FileId| {
         db.source_file_by_id(file_id)
             .map(|sf| sf.path(db).clone())
             .unwrap_or_else(|| std::sync::Arc::new(std::path::PathBuf::new()))
     };
-    units.sort_by_key(|(key, _)| {
+    units.sort_by_cached_key(|(key, _, _, _)| {
         (
             file_path_key(key.definition.file_id),
             key.definition.local_id.0,
             *key.stable_hash().as_bytes(),
         )
     });
+    for (key, produced, _, _) in &units {
+        fingerprint.update(
+            file_path_key(key.definition.file_id)
+                .as_os_str()
+                .as_encoded_bytes(),
+        );
+        fingerprint.update(&[0]);
+        fingerprint.update(key.stable_hash().as_bytes());
+        fingerprint.update(produced.stable_hash().as_bytes());
+    }
     let composed = if diagnostics
         .iter()
         .any(|diagnostic| diagnostic.severity == arandu_middle::Severity::Error)
@@ -218,7 +296,7 @@ pub fn runtime_program(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Run
     } else {
         let inputs = units
             .iter()
-            .filter_map(|(key, checked)| {
+            .filter_map(|(key, _, checked, placement)| {
                 let unit = checked.result.as_ref().ok()?;
                 Some(arandu_semantics::ContextualFunctionUnit {
                     key,
@@ -227,6 +305,9 @@ pub fn runtime_program(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Run
                     generated_symbols: &checked.generated_symbols,
                     instances: &checked.instances,
                     borrow_summary: checked.borrow_summary.as_ref()?,
+                    placement: placement
+                        .as_ref()
+                        .map(|(at, declared)| arandu_semantics::UnitPlacement { at, declared }),
                 })
             })
             .collect::<Vec<_>>();
@@ -256,6 +337,7 @@ pub fn runtime_program(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Run
         }
         None => (empty_program(), Vec::new()),
     };
+    diagnostics.extend(duplicate_function_symbols(db, &amir, &aggregate.symbols));
     // The unit composition path above is what the real pipeline uses, so the
     // C status-code rewrite for `@Export` functions returning `Result<T, E>`
     // has to run here as well. The pass itself lives in `arandu_mir` and stays
@@ -265,7 +347,7 @@ pub fn runtime_program(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Run
         &aggregate,
         &mut diagnostics,
     );
-    HashEq::new(RuntimeProgram {
+    let program = RuntimeProgram {
         artifacts: std::sync::Arc::new(crate::passes::LowerAmirArtifacts {
             amir,
             type_check: aggregate,
@@ -273,5 +355,11 @@ pub fn runtime_program(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Run
         }),
         instances,
         diagnostics,
-    })
+    };
+    let fingerprint = fingerprint.finalize();
+    #[cfg(any(test, debug_assertions))]
+    crate::fingerprint::verify(db, "runtime_program", fingerprint, program.stable_hash());
+    // Identity by fingerprint alone: equal fingerprints imply equal content,
+    // and comparing content would hash the program on every warm build.
+    HashEq::with_identity(std::sync::Arc::new(program), fingerprint)
 }

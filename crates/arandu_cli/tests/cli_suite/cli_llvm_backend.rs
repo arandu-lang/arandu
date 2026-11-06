@@ -114,6 +114,13 @@ fn build_b_llvm_interpolation_and_gen_arena_binaries() {
             "new {name}: {}",
             String::from_utf8_lossy(&init.stderr)
         );
+        // Single-file examples declare their repository path; as a package
+        // entry the module is the package itself (N020).
+        let source = source
+            .lines()
+            .filter(|line| !line.starts_with("module "))
+            .collect::<Vec<_>>()
+            .join("\n");
         fs::write(project.join("src/main.aru"), source).expect("write main");
 
         let build = run_cli_in(&project, &["build", "-b", "llvm"]);
@@ -225,7 +232,7 @@ fn export_emits_a_global_c_symbol_in_the_object() {
     fs::write(
         project.join("src/main.aru"),
         r#"
-module hitbox.core.socd
+module export_symbol
 
 @Export
 func apply_socd(raw: u32): u32 { return raw }
@@ -283,7 +290,7 @@ fn freestanding_export_rejects_host_runtime_dependency() {
     fs::write(
         project.join("src/main.aru"),
         r#"
-module hitbox.core.socd
+module freestanding_export
 
 @Export
 func decorate(n: i64): i64 {
@@ -321,7 +328,7 @@ func decorate(n: i64): i64 {
     fs::write(
         project.join("src/main.aru"),
         r#"
-module hitbox.core.socd
+module freestanding_export
 
 @Export
 func apply_socd(raw: u32): u32 { return raw }

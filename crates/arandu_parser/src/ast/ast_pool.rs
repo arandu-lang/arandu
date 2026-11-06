@@ -107,6 +107,7 @@ define_id!(
 
 /// Contiguous range index pointing to a central backing buffer.
 /// Avoids the overhead and cache fragmentation of nested `Vec` allocations.
+/// An empty range is always [`IndexRange::empty`], whatever list it names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct IndexRange {
     pub start: u32,
@@ -463,6 +464,9 @@ impl AstPool {
     // ── IndexRange list allocators ─────────────────────────────────────────
 
     pub fn alloc_expr_list(&mut self, ids: &[ExprId]) -> IndexRange {
+        if ids.is_empty() {
+            return IndexRange::empty();
+        }
         let start = self.expr_ids.len() as u32;
         self.expr_ids.extend_from_slice(ids);
         IndexRange {
@@ -482,6 +486,9 @@ impl AstPool {
     }
 
     pub fn alloc_stmt_list(&mut self, ids: &[StmtId]) -> IndexRange {
+        if ids.is_empty() {
+            return IndexRange::empty();
+        }
         let start = self.stmt_ids.len() as u32;
         self.stmt_ids.extend_from_slice(ids);
         IndexRange {
@@ -491,6 +498,9 @@ impl AstPool {
     }
 
     pub fn alloc_type_expr_list(&mut self, ids: &[TypeExprId]) -> IndexRange {
+        if ids.is_empty() {
+            return IndexRange::empty();
+        }
         let start = self.type_expr_ids.len() as u32;
         self.type_expr_ids.extend_from_slice(ids);
         IndexRange {
@@ -500,6 +510,9 @@ impl AstPool {
     }
 
     pub fn alloc_field_init_list(&mut self, ids: &[FieldInitId]) -> IndexRange {
+        if ids.is_empty() {
+            return IndexRange::empty();
+        }
         let start = self.field_init_ids.len() as u32;
         self.field_init_ids.extend_from_slice(ids);
         IndexRange {
@@ -509,6 +522,9 @@ impl AstPool {
     }
 
     pub fn alloc_lambda_param_list(&mut self, ids: &[LambdaParamId]) -> IndexRange {
+        if ids.is_empty() {
+            return IndexRange::empty();
+        }
         let start = self.lambda_param_ids.len() as u32;
         self.lambda_param_ids.extend_from_slice(ids);
         IndexRange {
@@ -518,6 +534,9 @@ impl AstPool {
     }
 
     pub fn alloc_string_part_list(&mut self, ids: &[StringPartId]) -> IndexRange {
+        if ids.is_empty() {
+            return IndexRange::empty();
+        }
         let start = self.string_part_ids.len() as u32;
         self.string_part_ids.extend_from_slice(ids);
         IndexRange {
@@ -527,6 +546,9 @@ impl AstPool {
     }
 
     pub fn alloc_match_arm_list(&mut self, ids: &[MatchArmId]) -> IndexRange {
+        if ids.is_empty() {
+            return IndexRange::empty();
+        }
         let start = self.match_arm_ids.len() as u32;
         self.match_arm_ids.extend_from_slice(ids);
         IndexRange {
@@ -536,6 +558,9 @@ impl AstPool {
     }
 
     pub fn alloc_pattern_list(&mut self, ids: &[PatternId]) -> IndexRange {
+        if ids.is_empty() {
+            return IndexRange::empty();
+        }
         let start = self.pattern_ids.len() as u32;
         self.pattern_ids.extend_from_slice(ids);
         IndexRange {
@@ -545,6 +570,9 @@ impl AstPool {
     }
 
     pub fn alloc_field_pattern_list(&mut self, ids: &[FieldPatternId]) -> IndexRange {
+        if ids.is_empty() {
+            return IndexRange::empty();
+        }
         let start = self.field_pattern_ids.len() as u32;
         self.field_pattern_ids.extend_from_slice(ids);
         IndexRange {

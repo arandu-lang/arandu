@@ -93,7 +93,7 @@ fn check_escapes_by_block_impl(
                 ));
                 diags.push((
                     ev.block,
-                    o004_diag(&name, ev.span, ev.block, ev.reason, /*as_error*/ no_fb),
+                    o004_diag(&name, ev.span, ev.block, ev.reason, no_fb, no_fb),
                 ));
             }
             EscapeKind::HeapStore => {
@@ -102,6 +102,10 @@ fn check_escapes_by_block_impl(
                 // handle without either snapshot semantics or losing the base
                 // owner/path relation. Reject instead of compiling stale data.
                 let projected = has_projected_borrow(func, ev.place_local);
+                // Runtime references are raw pointers: a promoted handle
+                // stored in memory would be read back as a pointer.
+                let promotable = !projected
+                    && crate::gen_promote::would_promote(func, interner, type_info, ev.place_local);
                 diags.push((
                     ev.block,
                     o004_diag(
@@ -109,12 +113,15 @@ fn check_escapes_by_block_impl(
                         ev.span,
                         ev.block,
                         ev.reason,
-                        /*as_error*/ no_fb || projected,
+                        no_fb || projected || promotable,
+                        no_fb,
                     )
                     .with_note(if projected {
                         "projected escaping borrows require a first-class owner/path handle; snapshot promotion is intentionally forbidden"
+                    } else if promotable {
+                        "the reference is stored into an aggregate or memory location; runtime references are raw pointers while GenRef handles are arena indices, so transparent fallback cannot be safely re-read. Store the owned value or use an explicit container instead"
                     } else {
-                        "compiler-managed owner promotion is available for this root place"
+                        "this payload is not promoted: the stored reference keeps its stack provenance"
                     }),
                 ));
                 if no_fb {
@@ -154,12 +161,26 @@ fn has_projected_borrow(func: &AmirFunc, local: LocalId) -> bool {
         })
 }
 
-fn o004_diag(name: &str, span: Span, block: BlockId, reason: &str, as_error: bool) -> Diagnostic {
+/// `forbidden_by_scope` marks an error caused by `@NoFallback` or
+/// `--no-generational-fallback`, as opposed to an unsupported escape.
+fn o004_diag(
+    name: &str,
+    span: Span,
+    block: BlockId,
+    reason: &str,
+    as_error: bool,
+    forbidden_by_scope: bool,
+) -> Diagnostic {
     let msg = format!("generational fallback: '{name}' escapes stack-limited borrow window");
     let d = if as_error {
-        Diagnostic::error(DiagCode::O004GenerationalFallback, msg, span).with_note(
-            "this scope forbids generational fallback (`@NoFallback` or `--no-generational-fallback`)",
-        )
+        let error = Diagnostic::error(DiagCode::O004GenerationalFallback, msg, span);
+        if forbidden_by_scope {
+            error.with_note(
+                "this scope forbids generational fallback (`@NoFallback` or `--no-generational-fallback`)",
+            )
+        } else {
+            error
+        }
     } else {
         Diagnostic::note(DiagCode::O004GenerationalFallback, msg, span).with_note(
             "not a silent heap promotion: this note records why the static borrow window was insufficient",

@@ -27,6 +27,13 @@ mod compile;
 pub struct AranduModule<M> {
     pub module: M,
     pub(crate) debug: Option<DebugCompilation>,
+    /// Trap byte that pads each defined function to its [`slot_capacity`],
+    /// for dev CGUs whose executable is patched in place.
+    ///
+    /// [`slot_capacity`]: crate::cgu::slot_capacity
+    pub(crate) slot_trap: Option<u8>,
+    /// Code bytes of the functions padded so far, before their padding.
+    pub(crate) code_bytes: u64,
 }
 
 #[derive(Debug, Default)]
@@ -87,6 +94,8 @@ impl AranduModule<JITModule> {
         Ok(Self {
             module,
             debug: None,
+            slot_trap: None,
+            code_bytes: 0,
         })
     }
 
@@ -100,6 +109,8 @@ impl AranduModule<JITModule> {
         Ok(Self {
             module,
             debug: None,
+            slot_trap: None,
+            code_bytes: 0,
         })
     }
 
@@ -117,6 +128,8 @@ impl AranduModule<JITModule> {
         Ok(Self {
             module,
             debug: None,
+            slot_trap: None,
+            code_bytes: 0,
         })
     }
 
@@ -135,6 +148,8 @@ impl AranduModule<JITModule> {
         Ok(Self {
             module,
             debug: None,
+            slot_trap: None,
+            code_bytes: 0,
         })
     }
 
@@ -158,6 +173,8 @@ impl AranduModule<JITModule> {
         Ok(Self {
             module,
             debug: None,
+            slot_trap: None,
+            code_bytes: 0,
         })
     }
 
@@ -181,6 +198,8 @@ impl AranduModule<JITModule> {
         Ok(Self {
             module,
             debug: None,
+            slot_trap: None,
+            code_bytes: 0,
         })
     }
 

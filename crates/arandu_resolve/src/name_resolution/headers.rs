@@ -98,7 +98,7 @@ pub fn resolve_headers_with_poll(
                     resolver.symbols.register_imported_symbol(sym);
                     resolver
                         .symbols
-                        .associated_members
+                        .associated_members_mut()
                         .insert((type_sym, smol_str::SmolStr::new(method)), id);
                 }
             }
@@ -248,7 +248,7 @@ fn short_circuit_prelude_import(
                         for (member, id) in alias_members {
                             resolver
                                 .symbols
-                                .module_members
+                                .module_members_mut()
                                 .insert((alias.clone(), member), id);
                         }
                     }

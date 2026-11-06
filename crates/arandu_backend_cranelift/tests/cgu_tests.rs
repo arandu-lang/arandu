@@ -439,3 +439,53 @@ fn cgu_hash_ignores_source_spans_but_tracks_toolchain_identity() {
     assert_eq!(first[0].hash, shifted[0].hash);
     assert_ne!(first[0].hash, different_toolchain[0].hash);
 }
+
+/// The measured code bytes are the body before its slot padding: the padded
+/// function fills exactly the slot class of that size.
+#[test]
+fn measured_code_bytes_are_the_body_before_its_padding() {
+    let src = "func grow(value: int): int {\n    let mut acc = value\n    acc = acc + 1000001\n    acc = acc * 3\n    return acc\n}\n\nfunc main(): int {\n    return grow(2)\n}\n";
+    let (amir, symbols, type_info) = compile_amir(src);
+    let target = Triple::host();
+    if target.architecture != target_lexicon::Architecture::X86_64
+        || target.binary_format != target_lexicon::BinaryFormat::Elf
+    {
+        return;
+    }
+    let units = partition_program(
+        &amir,
+        &symbols,
+        &type_info,
+        &target,
+        AotOptimization::Baseline,
+        TEST_TOOLCHAIN,
+    );
+    for unit in &units {
+        let (bytes, code) = arandu_backend_cranelift::compile_cgu_measured(
+            unit,
+            &amir,
+            &symbols,
+            &type_info,
+            &target,
+            AotOptimization::Baseline,
+        )
+        .expect("compile");
+        let file = object::File::parse(bytes.as_slice()).expect("object");
+        let padded = file
+            .symbols()
+            .find(|symbol| symbol.is_definition() && symbol.name() == Ok(unit.name.as_str()))
+            .expect("function symbol")
+            .size();
+        assert!(
+            code > 0 && code <= padded,
+            "{}: {code} of {padded}",
+            unit.name
+        );
+        assert_eq!(
+            arandu_backend_cranelift::cgu::slot_capacity(usize::try_from(code).unwrap()) as u64,
+            padded,
+            "{}",
+            unit.name
+        );
+    }
+}

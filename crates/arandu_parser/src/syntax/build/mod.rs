@@ -118,6 +118,151 @@ impl SyntaxTree {
             .collect()
     }
 
+    /// Byte extent of each ITEM with the doc comments that precede it: the
+    /// lowering attaches those to the item (`seek_to_item_start`) even when
+    /// the CST keeps them outside the item node, as root trivia.
+    #[must_use]
+    pub fn item_extents(&self) -> Vec<(u32, u32)> {
+        let ranges = self.item_ranges();
+        let mut previous_end = 0;
+        ranges
+            .into_iter()
+            .map(|(start, end)| {
+                let mut extent = start;
+                let first = self.tokens.partition_point(|token| token.start < start);
+                for token in self.tokens[..first].iter().rev() {
+                    if token.start < previous_end {
+                        break;
+                    }
+                    match token.kind {
+                        TokenKind::DocComment => extent = token.start,
+                        TokenKind::Semicolon => {}
+                        _ => break,
+                    }
+                }
+                previous_end = end;
+                (extent, end)
+            })
+            .collect()
+    }
+
+    /// Tree of one top-level item, positioned at offset 0: the root elements
+    /// of its extent (leading doc comments and the item node) under a fresh
+    /// `SOURCE_FILE`, its slice of the text, and the cached tokens and lex
+    /// errors inside the extent, rebased. Lowering it yields the item's AST
+    /// with spans relative to the extent start, without re-lexing.
+    #[must_use]
+    pub fn item_tree(&self, index: usize) -> Option<SyntaxTree> {
+        let (start, end) = self.item_extents().get(index).copied()?;
+        let text = self.text.get(start as usize..end as usize)?;
+        let children = self
+            .root()
+            .children_with_tokens()
+            .filter(|element| {
+                let range = element.text_range();
+                start <= u32::from(range.start()) && u32::from(range.end()) <= end
+            })
+            .map(|element| match element {
+                rowan::NodeOrToken::Node(node) => rowan::NodeOrToken::Node(node.green().to_owned()),
+                rowan::NodeOrToken::Token(token) => {
+                    rowan::NodeOrToken::Token(token.green().to_owned())
+                }
+            })
+            .collect::<Vec<_>>();
+        let green = GreenNode::new(SyntaxKind::SOURCE_FILE.into(), children);
+        // Tokens are in source order: slice the item's run instead of
+        // scanning the whole file once per item.
+        let first = self.tokens.partition_point(|token| token.start < start);
+        let mut tokens: Vec<Token> = self.tokens[first..]
+            .iter()
+            .take_while(|token| token.start < end)
+            .filter(|token| token.kind != TokenKind::Eof && token.end() <= end)
+            .map(|token| Token {
+                start: token.start - start,
+                ..*token
+            })
+            .collect();
+        tokens.push(Token {
+            start: end - start,
+            len: 0,
+            kind: TokenKind::Eof,
+            inserted: false,
+        });
+        let lex_diagnostics = self
+            .lex_diagnostics
+            .iter()
+            .filter(|err| start <= err.span.start && err.span.end <= end)
+            .map(|err| {
+                let mut err = *err;
+                err.span.start -= start;
+                err.span.end -= start;
+                err
+            })
+            .collect();
+        Some(SyntaxTree {
+            green,
+            text: Arc::from(text),
+            tokens: Arc::new(tokens),
+            lex_diagnostics: Arc::new(lex_diagnostics),
+        })
+    }
+
+    /// File AST composed from the ASTs lowered from [`Self::item_tree`], in
+    /// item order, with the bases that map each item's IDs into it. Equal to
+    /// lowering the whole tree when every item lowers cleanly.
+    #[must_use]
+    pub fn compose_program(
+        &self,
+        file_id: u32,
+        items: &[&crate::Program],
+    ) -> Option<(crate::Program, Vec<crate::ItemBases>)> {
+        let extents = self.item_extents();
+        if items.len() != extents.len() || items.is_empty() || !self.lex_diagnostics.is_empty() {
+            return None;
+        }
+        // Tokens outside every item are lowered by the whole-file walk only.
+        let mut extent = extents.iter().peekable();
+        for token in self.tokens.iter() {
+            while extent.next_if(|&&(_, end)| end <= token.start).is_some() {}
+            let inside = extent
+                .peek()
+                .is_some_and(|&&(start, end)| start <= token.start && token.end() <= end);
+            if !inside && !matches!(token.kind, TokenKind::Eof | TokenKind::Semicolon) {
+                return None;
+            }
+        }
+        let mut program = crate::Program {
+            span: self.program_span(file_id, extents[extents.len() - 1].1),
+            module: None,
+            imports: Vec::new(),
+            interface_impls: Vec::new(),
+            decls: Vec::new(),
+            docs: Vec::new(),
+            pool: crate::ast_pool::AstPool::default(),
+        };
+        let bases = items
+            .iter()
+            .zip(&extents)
+            .map(|(item, &(start, _))| program.append_item(item, start))
+            .collect();
+        Some((program, bases))
+    }
+
+    /// The span the item walk gives the file: from the first token to the
+    /// last token before the end of the last item (`seek_past`).
+    fn program_span(&self, file_id: u32, last_end: u32) -> arandu_lexer::Span {
+        let tokens = &self.tokens;
+        let Some(first) = tokens.first() else {
+            return arandu_lexer::Span::new(file_id, 0, 0);
+        };
+        let pos = tokens
+            .iter()
+            .position(|token| token.kind != TokenKind::Eof && token.start >= last_end)
+            .unwrap_or_else(|| tokens.len().saturating_sub(1));
+        let end = tokens[pos.saturating_sub(1)].end();
+        arandu_lexer::Span::new(file_id, first.start, end)
+    }
+
     /// Index of the ITEM covering `offset` (byte), if any.
     #[must_use]
     pub fn item_index_at(&self, offset: u32) -> Option<usize> {

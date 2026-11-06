@@ -14,41 +14,41 @@ impedem o LSP de publicar resultados de buffers/revisões obsoletos.
 
 ### Salsa toca / não toca
 
-| Crate | Papel | Salsa? |
-|-------|--------|--------|
-| `arandu_query` | `ArandCompilerDb`, `DatabaseImpl`, `SourceFile`, `AnalysisHost`, `#[salsa::tracked]` | **Dono** |
-| `arandu_middle` | `SourceDatabase` trait, tipos, AMIR/HIR, IDs densos | Interface + dados |
-| `arandu_resolve` / `arandu_typeck` / `arandu_mir` | Lógica pura; fronteira só | Fronteira só |
-| `arandu_lexer` / `arandu_parser` / `arandu_base` / backends | Puros | **Nunca** |
-| `arandu_cli` / `arandu_lsp` | Orquestram DB + edits | Cliente do grafo |
+| Crate                                                       | Papel                                                                                | Salsa?            |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------------ | ----------------- |
+| `arandu_query`                                              | `ArandCompilerDb`, `DatabaseImpl`, `SourceFile`, `AnalysisHost`, `#[salsa::tracked]` | **Dono**          |
+| `arandu_middle`                                             | `SourceDatabase` trait, tipos, AMIR/HIR, IDs densos                                  | Interface + dados |
+| `arandu_resolve` / `arandu_typeck` / `arandu_mir`           | Lógica pura; fronteira só                                                            | Fronteira só      |
+| `arandu_lexer` / `arandu_parser` / `arandu_base` / backends | Puros                                                                                | **Nunca**         |
+| `arandu_cli` / `arandu_lsp`                                 | Orquestram DB + edits                                                                | Cliente do grafo  |
 
 ### Queries tracked
 
-| Query | Estado |
-|-------|--------|
-| `parse`, `resolve`, `module_signatures`, `type_check`, `lower_amir` | Reais |
-| `resolved_headers` / `header_signatures` | Resolução declarativa/imports e tipagem inicial sem resolução de corpos de funções; fronteira preparatória de seleção estática |
-| `header_hir` / `ctfe_extern_hir` / `ctfe_header_func_amir` | Headers por módulo, declarações externas referenciadas e helpers isolados antes da resolução completa |
-| `declaration_signatures` | Assinaturas declarativas; imports não solicitam contratos derivados de corpos nem MIR final |
-| `item_typing` / `file_typing` | Checker canônico contra declarações; sem dependência dos contratos de fluxo |
-| `prepare_hir` / `borrow_interfaces` | Produtor global legado para oráculos / contratos por unidades independentes antes da validação final |
-| `local_symbols`, `exported_symbols`, `func_amir` / `instance_amir` | Reais; definições fonte e instâncias concretas têm APIs distintas |
-| `ctfe_func_amir` / `ctfe_eval` | Unidades não genéricas com valores admitidos; chamadas importadas rastreadas por unidade |
-| `ctfe_instance_amir` / `ctfe_eval_instance` | Unidades concretas; monomorphização canônica e identidade estrutural de callees |
-| `ctfe_root_amir` / `ctfe_eval_root` | Tipagem inicial e avaliação de expressão/bloco isolados; seletores estruturais de instância e ocorrência |
-| `item_static_branches` | Seleção pública de `comptime if` por função não genérica antes de resolução de corpos; mapa explícito de decisões, exclusão parent-first e recuperação de ciclos |
-| `item_const_arguments` | Argumentos `comptime (expr)` independentes da instância em corpos ordinários, inclusive templates; congelados via headers/VM antes do checker puro, com chaves congeladas tipadas (`Const(u64)` no caminho compatível não negativo) e falhas explícitas, sem AMIR runtime |
-| `item_staged_typing` | Obrigações públicas após tipagem inicial por item; materialização de valores antes de HIR runtime |
-| `item_static_loops` | Domínios inteiros finitos e arrays Copy fechados via raízes AMIR; expansões não executam um interpretador de AST |
-| `instance_staged_result` | Seleção, argumentos e raízes dependentes antes de resolver/tipar uma instância concreta; corpos residuais por ocorrência |
-| `declaration_hir` / `declaration_context` | Headers por módulo e closure transitiva compartilhada, sem corpos |
-| `function_hir` / `instance_hir` | Corpo isolado e especialização concreta; headers são ligados somente na instância |
-| `runtime_raw_unit` / `instance_contracts` / `runtime_unit` | Lowering, convergência de contratos e validação separados por instância no caminho ativo |
-| `runtime_program` | Descoberta determinística de dependências e composição canônica para `lower_amir`/backends |
-| `liveness_facts` | Real (`arandu_mir::liveness`) |
-| `block_dataflow_facts` | live/init/moved/stmt counts por bloco |
-| `func_analysis_diags` / `block_diagnostics` / `file_ide_diagnostics` | F4 — diags IDE memoizados |
-| DX.5 `RebuildLog` | Opt-in (`-Zexplain-rebuild`) |
+| Query                                                                | Estado                                                                                                                                                                                                                                                                    |
+| -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `parse`, `resolve`, `module_signatures`, `type_check`, `lower_amir`  | Reais                                                                                                                                                                                                                                                                     |
+| `resolved_headers` / `header_signatures`                             | Resolução declarativa/imports e tipagem inicial sem resolução de corpos de funções; fronteira preparatória de seleção estática                                                                                                                                            |
+| `header_hir` / `ctfe_extern_hir` / `ctfe_header_func_amir`           | Headers por módulo, declarações externas referenciadas e helpers isolados antes da resolução completa                                                                                                                                                                     |
+| `declaration_signatures`                                             | Assinaturas declarativas; imports não solicitam contratos derivados de corpos nem MIR final                                                                                                                                                                               |
+| `item_typing` / `file_typing`                                        | Checker canônico contra declarações; sem dependência dos contratos de fluxo                                                                                                                                                                                               |
+| `prepare_hir` / `borrow_interfaces`                                  | Produtor global legado para oráculos / contratos por unidades independentes antes da validação final                                                                                                                                                                      |
+| `local_symbols`, `exported_symbols`, `func_amir` / `instance_amir`   | Reais; definições fonte e instâncias concretas têm APIs distintas                                                                                                                                                                                                         |
+| `ctfe_func_amir` / `ctfe_eval`                                       | Unidades não genéricas com valores admitidos; chamadas importadas rastreadas por unidade                                                                                                                                                                                  |
+| `ctfe_instance_amir` / `ctfe_eval_instance`                          | Unidades concretas; monomorphização canônica e identidade estrutural de callees                                                                                                                                                                                           |
+| `ctfe_root_amir` / `ctfe_eval_root`                                  | Tipagem inicial e avaliação de expressão/bloco isolados; seletores estruturais de instância e ocorrência                                                                                                                                                                  |
+| `item_static_branches`                                               | Seleção pública de `comptime if` por função não genérica antes de resolução de corpos; mapa explícito de decisões, exclusão parent-first e recuperação de ciclos                                                                                                          |
+| `item_const_arguments`                                               | Argumentos `comptime (expr)` independentes da instância em corpos ordinários, inclusive templates; congelados via headers/VM antes do checker puro, com chaves congeladas tipadas (`Const(u64)` no caminho compatível não negativo) e falhas explícitas, sem AMIR runtime |
+| `item_staged_typing`                                                 | Obrigações públicas após tipagem inicial por item; materialização de valores antes de HIR runtime                                                                                                                                                                         |
+| `item_static_loops`                                                  | Domínios inteiros finitos e arrays Copy fechados via raízes AMIR; expansões não executam um interpretador de AST                                                                                                                                                          |
+| `instance_staged_result`                                             | Seleção, argumentos e raízes dependentes antes de resolver/tipar uma instância concreta; corpos residuais por ocorrência                                                                                                                                                  |
+| `declaration_hir` / `declaration_context`                            | Headers por módulo e closure transitiva compartilhada, sem corpos                                                                                                                                                                                                         |
+| `function_hir` / `instance_hir`                                      | Corpo isolado e especialização concreta; headers são ligados somente na instância                                                                                                                                                                                         |
+| `runtime_raw_unit` / `instance_contracts` / `runtime_unit`           | Lowering, convergência de contratos e validação separados por instância no caminho ativo                                                                                                                                                                                  |
+| `runtime_program`                                                    | Descoberta determinística de dependências e composição canônica para `lower_amir`/backends                                                                                                                                                                                |
+| `liveness_facts`                                                     | Real (`arandu_mir::liveness`)                                                                                                                                                                                                                                             |
+| `block_dataflow_facts`                                               | live/init/moved/stmt counts por bloco                                                                                                                                                                                                                                     |
+| `func_analysis_diags` / `block_diagnostics` / `file_ide_diagnostics` | F4 — diags IDE memoizados                                                                                                                                                                                                                                                 |
+| DX.5 `RebuildLog`                                                    | Opt-in (`-Zexplain-rebuild`)                                                                                                                                                                                                                                              |
 
 `func_amir` de uma definição não genérica compartilha a função de `runtime_unit`,
 sem solicitar composição global. A API fonte não aceita IDs sintéticos do
@@ -287,6 +287,29 @@ Análises IDE usam tipos, símbolos e contrato da própria unidade. Uma função
 inválida pode reter AMIR de análise para diagnósticos por bloco, mas nunca é
 publicada para execução. Quick fixes estruturados continuam preservados.
 
+**Identidade das saídas por unit.** `item_typing`, `function_hir`,
+`instance_hir`, `runtime_raw_unit` e `runtime_unit` carregam contextos com o
+fechamento de declarações. Por isso usam `db::FingerprintEq` em vez de
+`HashEq`. A igualdade é "fingerprint das leituras igual, ou hash de conteúdo
+igual", e o conteúdo só é hasheado quando os fingerprints diferem. Ela
+equivale à igualdade por conteúdo, então o cutoff não muda, mas uma DB nova não
+paga hashes O(programa) por item. O fingerprint cobre o digest de igualdade
+Salsa de toda leitura, inclusive das que só escolhem ramo. Ramos com leituras
+não auditadas (staging, CTFE, header adiado, saídas com diagnóstico) usam
+identidade exata. Em `cfg(any(test, debug_assertions))`, o oráculo de
+`crate::fingerprint` falha quando a mesma DB produz dois conteúdos para um
+fingerprint. `HashEq` e `ModuleSignatures` expõem o digest guardado (via
+`StableHash` e `identity()`), em vez de deixar o `Deref` re-hashear o valor.
+
+**Superfície de declarações.** Importadores leem `declaration_surface`, o
+`DeclarationHir` identificado sem as posições de declaração. Com isso, um
+corpo que muda de comprimento não reexecuta os units de outros módulos. As
+posições de um arquivo só são autoritativas nas queries do próprio arquivo.
+Tabelas de importadores registram membros importados no span do `import`. Por
+isso a composição registra ou corrige cada símbolo a partir de um unit do
+arquivo dono, que é a posição que o DWARF e os diagnósticos leem.
+`declaration_surface_cutoff` exige lowering incremental idêntico ao frio.
+
 **Limite:** a entrega final aos backends continua agregada; isso não é um
 produtor global de corpos nem uma dependência global dos objetos CGU. Contextos
 concretos ainda retêm metadata em domínios locais. Cutoff de nova instância e
@@ -296,25 +319,43 @@ validação nativa Windows/macOS continuam gates distintos.
 
 ### Fronteira do motor quente e publicação dev
 
-Estado auditado em 2026-10-15: `commands/build.rs` instancia a DB por build;
-não há daemon de build. O cache CGU local possui lock e GC de 500 MiB, sem CAS
-global. O patch ELF copia o executável inteiro para staging, sincroniza o
-mapeamento e recalcula o digest integral antes da publicação. Isso preserva o
-artefato anterior, mas não prova custo proporcional à edição.
+Estado na 0.2.0: o CLI mantém a DB viva numa sessão de build
+(`commands/build.rs`) e um daemon por projeto serve builds nativos dev
+(`daemon/`). Contrato, publicação, recuperação, durabilidade e limites estão
+na [RFC 0011](rfcs/0011-incremental-partitioned-aot-and-in-process-linker.md)
+§8; o que importa à arquitetura de queries:
+
+- **Identidade dupla** (`db::FingerprintEq`): uma saída é igual a outra quando
+  o fingerprint de suas entradas é igual ou, se não for, quando o conteúdo é.
+  O fingerprint inclui o digest de cada leitura que decide a saída; em
+  `cfg(any(test, debug_assertions))`, `fingerprint::verify` falha se a mesma
+  DB produzir dois conteúdos para um fingerprint.
+- **Superfície de declaração:** `DeclarationHir.surface`, o que importadores
+  observam de um arquivo, para nos símbolos densos que a resolução de
+  cabeçalhos aloca (`resolved_headers`); os símbolos de corpo ficam de fora,
+  então um `let` novo não rebaixa importadores
+  (`declaration_surface_guards.rs`).
+- **Coordenadas do item** ([RFC 0042](rfcs/0042-item-relative-spans-and-ast-id-map.md)):
+  posições e expressões dos itens são relativas ao próprio item e voltam ao
+  arquivo pelo `ItemPlacement`; `placed_unit_body` memoiza o placement de cada
+  unit pela unit e pela posição do item. Os `LocalSymbolId` dos locais ainda
+  são do arquivo (§8.13, adiado).
+- **Composição:** `linked_imports` liga uma vez por arquivo os símbolos
+  importados e os mapas de membros, que as units locais compartilham por
+  ponteiro; a composição registra os símbolos próprios de um arquivo uma vez
+  por sequência de units com a mesma visão de arquivo, com oráculo em debug.
+- **Armazenamento de agregados:** a admissão de scratch por invocação mora no
+  MIR (`aggregate_storage`): carriers de views, resultados `ref` com resumo
+  provado e funções que não tomam o endereço do próprio armazenamento
+  (detalhe em [ABI/layout](arandu-abi-layout-v0.1.md)).
 
 O [roadmap mestre](arandu-compiler-roadmap-v0.1.md) mantém a única fila e os
-gates. O plano `0.2.x` direciona serviço local supervisionado com DB viva,
-protocolo versionado, fila limitada/coalescida, prioridade/cancelamento e
-fallback batch; queries continuam puras e Salsa não é serializada. A imagem
-dev deve ser recuperável, usando ranges/páginas alterados ou CoW disponível,
-com fallback atômico e sem mutar artefatos publicados. Seu gate exige clean
-byte a byte, kill/recovery e p95 ≤100 ms em host/corpus documentados. A trilha
-`0.3.x` completa os gates por instância e p95 ≤10 ms. São marcos de planejamento
-revisável, sem aprovação implícita dos Drafts.
+gates; a trilha `0.3.x` cobre granularidade por instância e p95 ≤10 ms.
 
-`xtask bench-incremental` mede uma amostra por classe num corpus de duas
-funções; seus timers e hashes não constituem distribuição p95. A
-[metodologia](benchmarks/README.md) distingue esse oráculo dos gates futuros.
+`xtask bench-incremental` mede distribuições p50/p95, CPU e pico de RSS por
+classe de edição em corpus gerados de 4 a 64 módulos. Os padrões de CI medem
+pouco e com o CLI debug; só uma execução release no host documentado sustenta
+um gate. A [metodologia](benchmarks/README.md) separa as duas coisas.
 CAS global, LLVM, interop e extensões de pesquisa mantêm contratos próprios.
 
 O workload informativo `runtime_workload` compara o produtor puro global
@@ -340,13 +381,13 @@ Medição informativa de 2026-09-30: Linux x86-64, Xeon E5-2667 v2, perfil debug
 cinco processos isolados por produtor, uma thread de testes, log Salsa opt-in.
 Medianas (sem compilar o teste na janela):
 
-| Medida | Global legado | Unidades |
-| --- | ---: | ---: |
-| Produção fria | 225,7 ms | 702,2 ms |
-| Memo quente | 7 µs | 7 µs |
-| Edição privada | 85,5 ms | 64,8 ms |
-| CPU user + system, sessão cold/warm/edit | 0,317 s | 0,778 s |
-| Pico RSS, sessão cold/warm/edit | 21,7 MiB | 29,4 MiB |
+| Medida                                   | Global legado | Unidades |
+| ---------------------------------------- | ------------: | -------: |
+| Produção fria                            |      225,7 ms | 702,2 ms |
+| Memo quente                              |          7 µs |     7 µs |
+| Edição privada                           |       85,5 ms |  64,8 ms |
+| CPU user + system, sessão cold/warm/edit |       0,317 s |  0,778 s |
+| Pico RSS, sessão cold/warm/edit          |      21,7 MiB | 29,4 MiB |
 
 Não há ganho global de performance demonstrado: o build frio e a retenção
 regrediram neste workload, enquanto a edição privada melhorou. A composição
@@ -360,13 +401,13 @@ em processos isolados antes/depois, sem compilação Rust dentro da janela.
 CPU/RSS medidos por `getrusage(RUSAGE_CHILDREN)` de um supervisor novo por
 amostra (o pico de um filho anterior não contamina o próximo). Medianas:
 
-| Medida | Antes do refinamento | Depois |
-| --- | ---: | ---: |
-| Produção fria | 701,4 ms | 673,0 ms |
-| Memo quente | 8 µs | 8 µs |
-| Edição privada | 65,2 ms | 49,8 ms |
-| CPU user + system, sessão cold/warm/edit | 0,774 s | 0,726 s |
-| Pico RSS, sessão cold/warm/edit | 29,18 MiB | 26,87 MiB |
+| Medida                                   | Antes do refinamento |    Depois |
+| ---------------------------------------- | -------------------: | --------: |
+| Produção fria                            |             701,4 ms |  673,0 ms |
+| Memo quente                              |                 8 µs |      8 µs |
+| Edição privada                           |              65,2 ms |   49,8 ms |
+| CPU user + system, sessão cold/warm/edit |              0,774 s |   0,726 s |
+| Pico RSS, sessão cold/warm/edit          |            29,18 MiB | 26,87 MiB |
 
 A composição isolada caiu de aproximadamente 34 ms na sondagem anterior para
 20,4 ms em uma nova sondagem. São medições informativas, não prova de budget
@@ -383,11 +424,11 @@ O teste mantém exatamente uma HIR e unidade raw/final reexecutadas na edição.
 
 ### Três identidades
 
-| ID | Geracional? | Função |
-|----|-------------|--------|
-| `DocumentId` (`slotmap`) | **Sim** | Buffer LSP; close → stale |
-| `FileId` + densos | **Não** | Análise na revisão atual |
-| `AnalysisRevision` | Sim (host) | Handles IDE não atravessam edit |
+| ID                       | Geracional? | Função                          |
+| ------------------------ | ----------- | ------------------------------- |
+| `DocumentId` (`slotmap`) | **Sim**     | Buffer LSP; close → stale       |
+| `FileId` + densos        | **Não**     | Análise na revisão atual        |
+| `AnalysisRevision`       | Sim (host)  | Handles IDE não atravessam edit |
 
 `LspSymbolId { symbol, revision }` — resolve só se `revision == snap.revision`.
 
@@ -395,18 +436,18 @@ O teste mantém exatamente uma HIR e unidade raw/final reexecutadas na edição.
 
 ### Legado
 
-| Item | Status |
-|------|--------|
-| `CompileSession` | **Removido** |
-| `symbol_span` dummy | **Span real** + `try_get` safe |
-| tower-lsp / tokio no path de query | **Removidos** do `arandu_lsp` |
+| Item                               | Status                         |
+| ---------------------------------- | ------------------------------ |
+| `CompileSession`                   | **Removido**                   |
+| `symbol_span` dummy                | **Span real** + `try_get` safe |
+| tower-lsp / tokio no path de query | **Removidos** do `arandu_lsp`  |
 
 ### LSP gold (implementado)
 
-1. Main síncrona (`lsp-server`) + `Vfs` debounce 100 ms.  
-2. Workers: `AnalysisSnapshot` (clone Storage) → diags/goto; publish só se DocumentId vivo e revision match.  
-3. didChange **não** commita Salsa por tecla; flush no debounce / didSave / goto.  
-4. Diagnostics via `file_ide_diagnostics` (F4); fingerprint blake3 evita republish no-op.  
+1. Main síncrona (`lsp-server`) + `Vfs` debounce 100 ms.
+2. Workers: `AnalysisSnapshot` (clone Storage) → diags/goto; publish só se DocumentId vivo e revision match.
+3. didChange **não** commita Salsa por tecla; flush no debounce / didSave / goto.
+4. Diagnostics via `file_ide_diagnostics` (F4); fingerprint blake3 evita republish no-op.
 5. CST-first Rowan: `syntax_tree` tenta reparse do ITEM tocado e reutiliza os green nodes irmãos; fallback seguro faz parse completo.
 6. `initialize` conclui antes de I/O do workspace; a descoberta determinística e
    limitada ocorre em worker, e cada fonte retorna à main para registro na DB.
@@ -511,21 +552,21 @@ endurance apenas de uma troca de tipo de canal.
 
 ### F4 / P3 — delta on-type
 
-- `block_dataflow_facts`: live/init/moved/stmt por bloco.  
+- `block_dataflow_facts`: live/init/moved/stmt por bloco.
 - **`item_ide_diagnostics`**: typeck **por item** (`item_typing`) + AMIR/contratos no domínio próprio de runtime se func.
-- **`file_ide_diagnostics`**: union barata dos memos de item + signatures.  
-- Early cutoff entre itens (testes `item_body_cutoff`, `ide_diag_delta`).  
+- **`file_ide_diagnostics`**: union barata dos memos de item + signatures.
+- Early cutoff entre itens (testes `item_body_cutoff`, `ide_diag_delta`).
 - Typeck monólito substituído por compose P1/P2; wire LSP ainda manda lista full (protocolo).
 
 ### P5 — CST-first (rowan)
 
-- **Canônico:** `syntax_tree(file)` a partir do texto (ITEM por heurística de keywords).  
-- **`parse(file)`** = `lower_syntax_to_program(syntax_tree)` — AST só como lower do CST.  
-- **`reparse_subtree`**: re-lex só o ITEM tocado + `replace_child` (green dos irmãos reutilizado); fallback full `parse_syntax`.  
-- **`syntax_tree` Salsa**: cache por file + `single_contiguous_edit` → `reparse_subtree`.  
-- **Lower sem re-lex**: tokens no `SyntaxTree`; `parse_token_stream`.  
-- **LSP semantic tokens** via query `file_highlights` (CST + resolve → `HlKind`; `textDocument/semanticTokens/full`).  
-- Fingerprint de item (`item_source_input`) usa texto do ITEM CST.  
+- **Canônico:** `syntax_tree(file)` a partir do texto (ITEM por heurística de keywords).
+- **`parse(file)`** = `lower_syntax_to_program(syntax_tree)` — AST só como lower do CST.
+- **`reparse_subtree`**: re-lex só o ITEM tocado + `replace_child` (green dos irmãos reutilizado); fallback full `parse_syntax`.
+- **`syntax_tree` Salsa**: cache por file + `single_contiguous_edit` → `reparse_subtree`.
+- **Lower sem re-lex**: tokens no `SyntaxTree`; `parse_token_stream`.
+- **LSP semantic tokens** via query `file_highlights` (CST + resolve → `HlKind`; `textDocument/semanticTokens/full`).
+- Fingerprint de item (`item_source_input`) usa texto do ITEM CST.
 - Typeck/resolve consomem AST **somente** via lower do CST (`parse` ← `syntax_tree`).
 
 ### Guardrails / testes

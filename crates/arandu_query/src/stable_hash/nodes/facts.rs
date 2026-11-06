@@ -125,6 +125,20 @@ impl StableHash for crate::dataflow::IdeDiagnostic {
     }
 }
 
+impl StableHash for crate::dataflow::ItemFlow {
+    fn stable_hash(&self) -> blake3::Hash {
+        let mut h = Hasher::new();
+        h.update(b"ItemFlow/v1");
+        h.update(self.diagnostics.stable_hash().as_bytes());
+        h.update(&u64_le(self.fallback_fixes.len() as u64));
+        for &index in &self.fallback_fixes {
+            h.update(&u32_le(index));
+        }
+        h.update(&[u8::from(self.local)]);
+        finish(h)
+    }
+}
+
 impl StableHash for Vec<crate::dataflow::IdeDiagnostic> {
     fn stable_hash(&self) -> blake3::Hash {
         let mut h = Hasher::new();

@@ -45,6 +45,7 @@ pub(super) fn import_synthetic_captures(
     db: &dyn ArandCompilerDb,
     key: &FunctionInstance,
     checked: &mut arandu_semantics::TypeCheckResult,
+    fingerprint: &mut blake3::Hasher,
 ) {
     let mut files = Vec::new();
     for argument in &key.arguments {
@@ -61,6 +62,8 @@ pub(super) fn import_synthetic_captures(
             continue;
         };
         let typed = crate::passes::type_check(db, source);
+        fingerprint.update(&file_id.to_le_bytes());
+        fingerprint.update(crate::StableHash::stable_hash(typed).as_bytes());
         arandu_typeck::type_checker::info::import_thread_captures(checked, typed);
     }
 }

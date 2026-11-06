@@ -1,6 +1,9 @@
 use super::capture::import_synthetic_captures;
-use super::{declaration_context, declaration_hir, function_hir, Instance, InstanceHir};
-use crate::db::HashEq;
+use super::{
+    declaration_context, declaration_surface, function_hir, local_declaration_context, Instance,
+    InstanceHir,
+};
+use crate::db::FingerprintEq;
 use crate::passes::{item_source_input, PreparedHir};
 use crate::{ArandCompilerDb, StableHash};
 use arandu_middle::{Diagnostic, Severity};
@@ -10,47 +13,28 @@ pub(super) fn build_instance_hir<'db>(
     instance: Instance<'db>,
     for_ctfe: bool,
     context: &crate::ctfe::DependencyContext,
-) -> HashEq<InstanceHir> {
+) -> FingerprintEq<InstanceHir> {
     let key = instance.key(db);
-    let source = item_source_input(db, *instance.file(db), key.definition);
-    let has_static_loop = if source.may_have_comptime && key.arguments.is_empty() {
-        let mut body_span = None;
-        source.program.for_each_decl_recursive(|_, declaration| {
-            if arandu_semantics::item_source_span(declaration).start == source.item_start {
-                if let arandu_parser::TopLevelDecl::Func(function) = declaration {
-                    body_span = Some(function.body.span);
-                }
-            }
-        });
-        body_span.is_some_and(|body| {
-            source.program.pool.stmts.iter().any(|stmt| {
-                matches!(
-                    stmt,
-                    arandu_parser::Stmt::For {
-                        is_comptime: true,
-                        ..
-                    }
-                ) && body.start <= stmt.span().start
-                    && stmt.span().end <= body.end
-            })
-        })
-    } else {
-        false
-    };
+    let (may_have_comptime, has_static_loop) =
+        *item_staging(db, *instance.file(db), key.definition);
     let dependent_header = !for_ctfe
         && !key.arguments.is_empty()
         && crate::passes::declaration_signatures(db, *instance.file(db))
             .type_info
             .deferred_headers
             .contains(&key.definition);
-    let staged = dependent_header
-        || (source.may_have_comptime && (!key.arguments.is_empty() || has_static_loop));
+    let staged =
+        dependent_header || (may_have_comptime && (!key.arguments.is_empty() || has_static_loop));
+    let local =
+        !for_ctfe && !staged && super::lowers_locally(db, *instance.file(db), key.definition);
     let template = if for_ctfe {
-        crate::ctfe::instances::instance_ctfe_hir(db, instance, context)
+        FingerprintEq::from_content(&crate::ctfe::instances::instance_ctfe_hir(
+            db, instance, context,
+        ))
     } else if staged {
-        crate::ctfe::instance_staged_hir(db, instance)
+        FingerprintEq::from_content(&crate::ctfe::instance_staged_hir(db, instance))
     } else {
-        HashEq::share(function_hir(db, *instance.file(db), key.definition))
+        function_hir(db, *instance.file(db), key.definition).clone()
     };
     let mut checked = template.type_check.clone();
     let mut hir = template.hir.as_ref().map(|source| {
@@ -70,11 +54,13 @@ pub(super) fn build_instance_hir<'db>(
     let mut fingerprint = blake3::Hasher::new();
     fingerprint.update(template.stable_hash().as_bytes());
     fingerprint.update(key.stable_hash().as_bytes());
+    fingerprint.update(&[u8::from(local)]);
     if let Some(hir) = &mut hir {
         db.unwind_if_revision_cancelled();
         // Header linking is memoized per module closure, not repeated in the
         // retained function HIR and then copied again for every instance.
         if for_ctfe {
+            let source = item_source_input(db, *instance.file(db), key.definition);
             match crate::ctfe::globals::declaration_context(
                 db,
                 *instance.file(db),
@@ -119,8 +105,15 @@ pub(super) fn build_instance_hir<'db>(
                 ),
             }
         } else {
-            let headers = declaration_context(db, *instance.file(db));
+            let headers = if local {
+                local_declaration_context(db, *instance.file(db))
+            } else {
+                declaration_context(db, *instance.file(db))
+            };
             fingerprint.update(headers.stable_hash().as_bytes());
+            if local && headers.hir.is_some() {
+                share_linked_imports(db, *instance.file(db), &mut checked, headers);
+            }
             if let Some(context) = &headers.hir {
                 arandu_semantics::link_hir_module(&mut checked, hir, &headers.type_check, context);
             } else {
@@ -154,7 +147,10 @@ pub(super) fn build_instance_hir<'db>(
             if !visited.insert(file_id) {
                 continue;
             }
-            let Some(context_file) = db.source_file_by_id(file_id) else {
+            let registered = db.source_file_by_id(file_id);
+            fingerprint.update(&file_id.to_le_bytes());
+            fingerprint.update(&[u8::from(registered.is_some())]);
+            let Some(context_file) = registered else {
                 continue;
             };
             if for_ctfe {
@@ -180,7 +176,7 @@ pub(super) fn build_instance_hir<'db>(
                 }
                 continue;
             }
-            let declarations = declaration_hir(db, context_file);
+            let declarations = declaration_surface(db, context_file);
             fingerprint.update(declarations.stable_hash().as_bytes());
             if let Some(context) = &declarations.artifacts.hir {
                 arandu_semantics::link_hir_module(
@@ -192,16 +188,20 @@ pub(super) fn build_instance_hir<'db>(
             } else {
                 diagnostics.extend(declarations.artifacts.diagnostics.iter().cloned());
             }
-            for (_, imported) in crate::passes::module_import_edges(db, context_file)
-                .iter()
-                .rev()
-            {
+            let edges = crate::passes::module_import_edges(db, context_file);
+            fingerprint.update(&(edges.len() as u64).to_le_bytes());
+            for (path, imported) in edges {
+                fingerprint.update(path.as_bytes());
+                fingerprint.update(&[0]);
+                fingerprint.update(&imported.map_or(u64::MAX, u64::from).to_le_bytes());
+            }
+            for (_, imported) in edges.iter().rev() {
                 if let Some(file_id) = imported {
                     pending.push(*file_id);
                 }
             }
         }
-        import_synthetic_captures(db, key, &mut checked);
+        import_synthetic_captures(db, key, &mut checked, &mut fingerprint);
         // Narrow CTFE declaration contexts contain local headers only. Retain
         // demanded imported intrinsic declarations before monomorphization;
         // otherwise a layout query becomes an unavailable external call.
@@ -239,15 +239,329 @@ pub(super) fn build_instance_hir<'db>(
     {
         hir = None;
     }
-    HashEq::new(InstanceHir {
+    let source_fingerprint = fingerprint.finalize();
+    let output = InstanceHir {
         artifacts: PreparedHir {
             hir,
             type_check: checked,
             diagnostics,
-            source_fingerprint: fingerprint.finalize(),
+            source_fingerprint,
         },
         function,
         instances,
         generated_symbols,
-    })
+        local,
+    };
+    if for_ctfe || staged {
+        return FingerprintEq::exact(output);
+    }
+    // Outside staging and CTFE, the output is a deterministic function of the
+    // digests folded into `source_fingerprint`: the template, the instance,
+    // the declaration contexts, import edges and captures.
+    let mut identity = blake3::Hasher::new();
+    identity.update(b"InstanceHir/fingerprint/v1");
+    identity.update(source_fingerprint.as_bytes());
+    // Every read the fingerprint covers is linked into the context, so a new
+    // fingerprint is new content; comparing contents would hash the whole
+    // linked context of each re-executed instance.
+    FingerprintEq::by_fingerprint(db, "instance_hir", output, identity.finalize())
+}
+
+/// Starts a local unit from [`linked_imports`] when it holds the very map
+/// that one was built from and links the very headers it linked: linking
+/// then copies nothing, and every such unit of the file shares one map, which
+/// the composition registers once. Imported symbols carry positions that the
+/// identities of the signatures and headers leave out, so only pointer
+/// equality proves the shared map is what linking would build.
+fn share_linked_imports(
+    db: &dyn ArandCompilerDb,
+    file: crate::SourceFile,
+    checked: &mut arandu_semantics::TypeCheckResult,
+    headers: &crate::db::HashEq<crate::passes::PreparedHir>,
+) {
+    let linked = linked_imports(db, file);
+    if !std::sync::Arc::ptr_eq(&headers.value, &linked.headers) {
+        return;
+    }
+    let symbols = checked.symbols_mut();
+    if std::sync::Arc::ptr_eq(&symbols.imported_symbols, &linked.base) {
+        symbols.imported_symbols = std::sync::Arc::clone(&linked.imported);
+    }
+    // The member maps the same way: equal pointers prove the unit's maps are
+    // the ones linking extends, so the extended ones are what it would build.
+    let members = &linked.members;
+    if std::sync::Arc::ptr_eq(&symbols.module_members, &members.base.0)
+        && std::sync::Arc::ptr_eq(&symbols.associated_members, &members.base.1)
+        && std::sync::Arc::ptr_eq(&symbols.type_params, &members.base.2)
+    {
+        symbols.module_members = std::sync::Arc::clone(&members.linked.0);
+        symbols.associated_members = std::sync::Arc::clone(&members.linked.1);
+        symbols.type_params = std::sync::Arc::clone(&members.linked.2);
+    }
+}
+
+type MemberMaps = (
+    std::sync::Arc<arandu_middle::symbol_table::ModuleMembers>,
+    std::sync::Arc<arandu_middle::symbol_table::AssociatedMembers>,
+    std::sync::Arc<arandu_middle::symbol_table::TypeParams>,
+);
+
+/// The member maps of `file`'s signatures and the ones `link_hir_module`
+/// leaves after linking the file's headers into them.
+pub(super) struct LinkedMembers {
+    base: MemberMaps,
+    linked: MemberMaps,
+}
+
+fn same_maps(left: &MemberMaps, right: &MemberMaps) -> bool {
+    std::sync::Arc::ptr_eq(&left.0, &right.0)
+        && std::sync::Arc::ptr_eq(&left.1, &right.1)
+        && std::sync::Arc::ptr_eq(&left.2, &right.2)
+}
+
+type ImportedSymbols = rustc_hash::FxHashMap<arandu_middle::SymbolId, arandu_middle::Symbol>;
+
+/// The imported symbols of `file`'s signatures (`base`) with those that
+/// linking `headers`, its [`local_declaration_context`], adds, as
+/// `link_hir_module` would add them.
+pub(super) struct LinkedImports {
+    base: std::sync::Arc<ImportedSymbols>,
+    headers: std::sync::Arc<crate::passes::PreparedHir>,
+    imported: std::sync::Arc<ImportedSymbols>,
+    members: LinkedMembers,
+}
+
+/// Equal only when built from the same maps: the content of `base` and
+/// `headers` is not covered by the identities of the queries they come from.
+impl PartialEq for LinkedImports {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.base, &other.base)
+            && std::sync::Arc::ptr_eq(&self.headers, &other.headers)
+            && std::sync::Arc::ptr_eq(&self.imported, &other.imported)
+            && same_maps(&self.members.base, &other.members.base)
+            && same_maps(&self.members.linked, &other.members.linked)
+    }
+}
+
+impl Eq for LinkedImports {}
+
+#[salsa::tracked(returns(ref))]
+#[tracing::instrument(level = "trace", target = "arandu_query", skip(db), fields(
+    query = "linked_imports", file = ?file.file_id(db),
+))]
+pub(super) fn linked_imports(db: &dyn ArandCompilerDb, file: crate::SourceFile) -> LinkedImports {
+    let file_id = *file.file_id(db);
+    let signatures = &crate::passes::declaration_signatures(db, file).symbols;
+    let base = std::sync::Arc::clone(&signatures.imported_symbols);
+    let members = (
+        std::sync::Arc::clone(&signatures.module_members),
+        std::sync::Arc::clone(&signatures.associated_members),
+        std::sync::Arc::clone(&signatures.type_params),
+    );
+    let headers = local_declaration_context(db, file);
+    let mut imported = base.as_ref().clone();
+    if headers.hir.is_some() {
+        for symbol in headers.type_check.symbols.iter() {
+            if symbol.id.file_id != file_id && !imported.contains_key(&symbol.id) {
+                imported.insert(symbol.id, symbol.clone());
+            }
+        }
+    }
+    // The rules of `link_hir_module`: a member that differs is replaced,
+    // type parameters only fill what is missing.
+    let mut linked = members.clone();
+    if headers.hir.is_some() {
+        let source = &headers.type_check.symbols;
+        for (key, member) in source.module_members.iter() {
+            if linked.0.get(key) != Some(member) {
+                std::sync::Arc::make_mut(&mut linked.0).insert(key.clone(), *member);
+            }
+        }
+        for (key, member) in source.associated_members.iter() {
+            if linked.1.get(key) != Some(member) {
+                std::sync::Arc::make_mut(&mut linked.1).insert(key.clone(), *member);
+            }
+        }
+        for (symbol, params) in source.type_params.iter() {
+            if !linked.2.contains_key(symbol) {
+                std::sync::Arc::make_mut(&mut linked.2).insert(*symbol, params.clone());
+            }
+        }
+    }
+    LinkedImports {
+        base,
+        headers: std::sync::Arc::clone(&headers.value),
+        imported: std::sync::Arc::new(imported),
+        members: LinkedMembers {
+            base: members,
+            linked,
+        },
+    }
+}
+
+/// Whether the item's text may stage (`comptime`), and whether its body holds
+/// a static loop: the position-free facts that choose the staged lowering.
+#[salsa::tracked]
+#[tracing::instrument(level = "trace", target = "arandu_query", skip(db), fields(
+    query = "item_staging", file = ?file.file_id(db), item = ?symbol,
+))]
+pub(crate) fn item_staging(
+    db: &dyn ArandCompilerDb,
+    file: crate::SourceFile,
+    symbol: arandu_middle::SymbolId,
+) -> (bool, bool) {
+    local_staging(db, file, symbol).unwrap_or_else(|| file_staging(db, file, symbol))
+}
+
+fn file_staging(
+    db: &dyn ArandCompilerDb,
+    file: crate::SourceFile,
+    symbol: arandu_middle::SymbolId,
+) -> (bool, bool) {
+    let source = item_source_input(db, file, symbol);
+    if !source.may_have_comptime {
+        return (false, false);
+    }
+    let mut body_span = None;
+    source.program.for_each_decl_recursive(|_, declaration| {
+        if arandu_semantics::item_source_span(declaration).start == source.item_start {
+            if let arandu_parser::TopLevelDecl::Func(function) = declaration {
+                body_span = Some(function.body.span);
+            }
+        }
+    });
+    let has_static_loop = body_span.is_some_and(|body| {
+        source.program.pool.stmts.iter().any(|stmt| {
+            matches!(
+                stmt,
+                arandu_parser::Stmt::For {
+                    is_comptime: true,
+                    ..
+                }
+            ) && body.start <= stmt.span().start
+                && stmt.span().end <= body.end
+        })
+    });
+    (true, has_static_loop)
+}
+
+/// [`item_staging`] from the item AST and the item text, without the file
+/// AST, so that it costs the item and not its file (RFC 0042).
+fn local_staging(
+    db: &dyn ArandCompilerDb,
+    file: crate::SourceFile,
+    symbol: arandu_middle::SymbolId,
+) -> Option<(bool, bool)> {
+    let id = *crate::passes::item_ast_ids(db, file).get(&symbol)?;
+    let extent = crate::passes::item_positions(db, file).item_span(id)?;
+    let item = crate::passes::item_ast(db, file, id);
+    let Ok(item) = &*item.value else {
+        return None;
+    };
+    // Header names only: CTFE stages items while the signatures are built.
+    let headers = crate::passes::resolved_headers(db, file);
+    let definitions = &headers.declarations.resolved.definitions;
+    let defines = |span: arandu_middle::Span| {
+        let key = arandu_middle::NodeKey {
+            start: span.start + extent.start,
+            end: span.end + extent.start,
+        };
+        definitions.get(&key) == Some(&symbol)
+    };
+    let mut selected = None;
+    item.for_each_decl_recursive(|_, declaration| {
+        let defines = arandu_semantics::primary_def_key(declaration).is_some_and(|key| {
+            defines(arandu_middle::Span::new(extent.file_id, key.start, key.end))
+        }) || matches!(
+            declaration,
+            arandu_parser::TopLevelDecl::Extern(block)
+                if block.members.iter().any(|member| defines(member.span))
+        );
+        if defines && selected.is_none() {
+            selected = Some(declaration);
+        }
+    });
+    let declaration = selected?;
+    let span = arandu_semantics::item_source_span(declaration);
+    let text = crate::passes::item_text(db, file, id).as_ref()?;
+    let source = text.get(span.start as usize..span.end as usize)?;
+    if !source.contains("comptime") {
+        return Some((false, false));
+    }
+    let arandu_parser::TopLevelDecl::Func(function) = declaration else {
+        return Some((true, false));
+    };
+    let body = function.body.span;
+    let has_static_loop = item.pool.stmts.iter().any(|stmt| {
+        matches!(
+            stmt,
+            arandu_parser::Stmt::For {
+                is_comptime: true,
+                ..
+            }
+        ) && body.start <= stmt.span().start
+            && stmt.span().end <= body.end
+    });
+    Some((true, has_static_loop))
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use crate::DatabaseImpl;
+    use std::path::{Path, PathBuf};
+
+    fn collect(dir: &Path, files: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries {
+            let path = entry.expect("directory entry").path();
+            if path.is_dir() {
+                collect(&path, files);
+            } else if path.extension().is_some_and(|ext| ext == "aru") {
+                files.push(path);
+            }
+        }
+    }
+
+    /// The staging facts read from the item AST equal those of the file AST.
+    #[test]
+    fn local_staging_equals_the_file_staging() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut files = Vec::new();
+        for dir in ["examples", "stdlib", "tests"] {
+            collect(&root.join(dir), &mut files);
+        }
+        files.sort();
+        let (mut items, mut local, mut staged) = (0, 0, 0);
+        for path in files {
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let mut db = DatabaseImpl::new();
+            let file = db.new_file(path.display().to_string(), text);
+            let parsed = crate::passes::parse(&db, file);
+            let Ok(program) = &**parsed else { continue };
+            let signatures = crate::passes::declaration_signatures(&db, file);
+            for symbol in arandu_semantics::body_item_symbols(program, &signatures.resolved) {
+                items += 1;
+                let Some(facts) = super::local_staging(&db, file, symbol) else {
+                    continue;
+                };
+                local += 1;
+                staged += usize::from(facts.0);
+                assert_eq!(
+                    facts,
+                    super::file_staging(&db, file, symbol),
+                    "{} {symbol:?}",
+                    path.display()
+                );
+            }
+        }
+        assert!(
+            items > 500 && local * 100 >= items * 80 && staged > 0,
+            "{local} of {items} items staged locally, {staged} may stage"
+        );
+    }
 }

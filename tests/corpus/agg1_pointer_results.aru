@@ -1,0 +1,49 @@
+// AGG.1 endurance for functions whose result may be an address: `slot`
+// returns a raw pointer and copies a by-value handle. Native backends kept
+// such a function out of invocation scratch and allocated its aggregate
+// temporaries per call without releasing them; `main` returns 0 when every
+// round wrote and read the slot it chose.
+import std.core.mem as mem
+import std.alloc.allocator_api as allocator
+
+struct Handle {
+    index: u32,
+    generation: u32,
+}
+
+struct Table {
+    data: ptr[u8],
+    slots: usize,
+}
+
+// Returns a raw pointer and copies its by-value handle: the shape whose
+// temporaries native backends once allocated per call and never released.
+func slot(table: ref Table, handle: Handle): ptr[u8] {
+    let copied = handle
+    if copied.index as usize >= table.slots {
+        return table.data
+    }
+    unsafe {
+        return mem.ptrOffset<u8>(table.data, copied.index as isize)
+    }
+}
+
+func main(): int {
+    let fallback: ptr[u8] = nil
+    let data = allocator.globalAlloc(4 as usize) catch |error| { fallback }
+    if data == fallback { return 3 }
+    let table = Table { data: data, slots: 4 as usize }
+    let mut index = 0
+    let mut sum = 0
+    while index < ROUNDS {
+        let handle = Handle { index: (index % 4) as u32, generation: 1 as u32 }
+        unsafe { mem.ptrWrite<u8>(slot(table, handle), 1 as u8) }
+        unsafe { sum = sum + mem.ptrRead<u8>(slot(table, handle)) as int }
+        index = index + 1
+    }
+    unsafe { allocator.globalDealloc(data, 4 as usize) }
+    if sum != ROUNDS { return 1 }
+    return 0
+}
+
+const ROUNDS = 2000

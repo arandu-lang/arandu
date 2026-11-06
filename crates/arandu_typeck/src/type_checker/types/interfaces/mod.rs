@@ -125,7 +125,7 @@ mod tests {
 
         let mut associated = rustc_hash::FxHashMap::default();
         associated.insert((struct_sym_id, "read".into()), method_sym_id);
-        symbols.associated_members = associated;
+        symbols.associated_members = std::sync::Arc::new(associated);
 
         let resolved = ResolvedNames::default();
         let mut checker = TypeChecker::new(
@@ -209,7 +209,7 @@ mod tests {
         ));
 
         std::sync::Arc::make_mut(&mut checker.symbols)
-            .associated_members
+            .associated_members_mut()
             .clear();
         assert!(!type_satisfies_interface(
             &mut checker,

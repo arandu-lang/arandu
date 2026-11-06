@@ -1,5 +1,6 @@
 //! WebAssembly Binaryen (`wasm-opt`) optimization runner.
 
+use crate::output::errln;
 use std::fs;
 use std::io;
 use std::path::PathBuf;
@@ -75,7 +76,7 @@ pub fn optimize_wasm_if_available(
 
     if !is_wasm_opt_available() {
         if verbose {
-            eprintln!(
+            errln!(
                 "[wasm-opt] wasm-opt not found in PATH; skipping Binaryen release optimization pass"
             );
         } else {
@@ -129,18 +130,18 @@ pub fn optimize_wasm_if_available(
                 } else {
                     0.0
                 };
-                eprintln!(
+                errln!(
                     "[wasm-opt] optimized wasm bytecode: {original_len} bytes -> {opt_len} bytes ({reduction:.1}% reduction)"
                 );
             }
             Ok(optimized)
         }
         Ok(s) => {
-            eprintln!("[wasm-opt] wasm-opt exited with status {s}; using unoptimized bytecode");
+            errln!("[wasm-opt] wasm-opt exited with status {s}; using unoptimized bytecode");
             Ok(wasm_bytes)
         }
         Err(e) => {
-            eprintln!("[wasm-opt] failed to execute wasm-opt ({e}); using unoptimized bytecode");
+            errln!("[wasm-opt] failed to execute wasm-opt ({e}); using unoptimized bytecode");
             Ok(wasm_bytes)
         }
     }

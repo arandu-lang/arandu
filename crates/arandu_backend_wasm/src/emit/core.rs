@@ -246,18 +246,25 @@ impl<'a> WasmModuleBuilder<'a> {
             func_index_map: &func_index_map,
             alloc_func_idx: cabi_first_func_idx,
             free_func_idx: cabi_first_func_idx + 1,
+            // After the allocator, which every caller also uses for its cell.
+            float_text_func_idx: cabi_first_func_idx + 2,
         };
 
         let mut code_section = CodeSection::new();
         let mut needs_allocator = canonical_abi;
+        let mut needs_float_text = false;
         for func in &self.functions {
-            let (wasm_func, uses_allocator) = self.translate_func(func, &ctx, style)?;
-            needs_allocator |= uses_allocator;
+            let (wasm_func, uses) = self.translate_func(func, &ctx, style)?;
+            needs_allocator |= uses.allocator || uses.float_text;
+            needs_float_text |= uses.float_text;
             code_section.function(&wasm_func);
         }
         let mut cabi = CabiSupport::new();
         if needs_allocator {
             cabi.add_allocator();
+        }
+        if needs_float_text {
+            cabi.add_float_text(ctx.float_text_func_idx);
         }
         if canonical_abi {
             cabi.add_realloc(cabi_first_func_idx, cabi_first_func_idx + 1);

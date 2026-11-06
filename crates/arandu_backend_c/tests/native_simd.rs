@@ -7,7 +7,7 @@ use std::{fs, process::Command};
 
 fn run(mut case: fixture::Fixture, shape: VectorType, expected: f64, label: &str) {
     case.symbols
-        .imported_symbols
+        .imported_symbols_mut()
         .get_mut(&fixture::symbol(0))
         .unwrap()
         .name = "evaluate".into();

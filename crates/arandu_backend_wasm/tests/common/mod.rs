@@ -29,7 +29,7 @@ pub fn foreign_sym(local_id: u32) -> SymbolId {
 }
 
 pub fn register_imported_sym(symbols: &mut SymbolTable, id: SymbolId, name: &str) {
-    symbols.imported_symbols.insert(
+    symbols.imported_symbols_mut().insert(
         id,
         Symbol {
             id,
@@ -270,7 +270,7 @@ pub fn emit_with_imported_intrinsics(
             .declaration_marker()
             .expect("imported intrinsic must declare its ABI marker");
         symbols
-            .imported_symbols
+            .imported_symbols_mut()
             .get_mut(&id)
             .expect("registered imported intrinsic must exist")
             .lang_item = Some(marker);

@@ -1,7 +1,7 @@
 ---
 version: 0.0.1
 last_revised: 2026-06
-compiler_version: arandu 0.1.11
+compiler_version: arandu 0.2.0
 ---
 
 # Especificação e Catálogo de Diagnósticos de Erro do Arandu
@@ -229,7 +229,7 @@ Abaixo estão listados todos os diagnósticos mapeados para o compilador Arandu.
 | **N009** | *[Movido → M002]* | - | `0.1.0` | *Código de membro de namespace não encontrado movido para categoria de módulos.* |
 | **N010** | `undefined associated function: '{name}' not found on type '{type}'` | Error | `0.1.0` | Chamada de função associada estática que não foi declarada no struct ou tipo correspondente (ex: `User.newFunc()`). **Diferença de T018**: Ocorre na fase de Name Resolution antes da verificação de tipos, quando o receptor ainda é um identificador não resolvido para um tipo concreto. |
 | **N011** | `break/continue statement used outside of a loop` | Error | `0.1.0` | Uso de comandos de controle de fluxo de iteração fora de escopos de laço válidos (`for`/`while`). (Antigo `T022`). |
-| **N012** | `unknown annotation '@{name}'` | Error | `0.1.0` | Nome de anotação não reconhecido ou reservado cuja semântica ainda não está disponível. |
+| **N012** | `unknown annotation '@{name}'` | Error | `0.1.0` | Nome de anotação não reconhecido ou reservado cuja semântica ainda não está disponível. Uma grafia removida na 0.2.0 traz nota e replacement para o nome canônico. |
 | **N013** | `annotation '@{name}' cannot be applied to a {target}` | Error | `0.1.0` | Anotação conhecida aplicada a uma categoria de declaração fora de seus alvos explícitos. |
 | **N014** | `annotation '@{name}' expects {arguments}` | Error | `0.1.0` | Lista ou forma dos argumentos não corresponde ao contrato da anotação. |
 | **N015** | `annotation '@{name}' cannot be repeated` | Error | `0.1.0` | Uma anotação de cardinalidade única aparece mais de uma vez no mesmo alvo. |
@@ -237,6 +237,8 @@ Abaixo estão listados todos os diagnósticos mapeados para o compilador Arandu.
 | **N017** | `cannot implement sealed interface '{name}' outside its package` | Error | `0.1.0` | Implementação de interface selada fora do pacote que a declara. |
 | **N018** | `re-export visibility exceeds source visibility` | Error | `0.1.0` | Re-export tenta ampliar a visibilidade de uma declaração de origem. |
 | **N019** | `cyclic re-export` | Error | `0.1.0` | A superfície exportada depende de um ciclo de re-exports. |
+| **N020** | `module declaration '{declared}' does not match this file's module '{expected}'` | Error | `0.2.0` | Uma fonte do pacote raiz declara um `module` diferente do módulo lógico do seu caminho (`<pacote>.<caminho>`; na entrada, o nome do pacote). O quick fix substitui a declaração. |
+| **N021** | `functions '{a}' and '{b}' map to the same native symbol '{symbol}'` | Error | `0.2.0` | Duas funções distintas do programa produzem o mesmo nome de símbolo nativo. Rejeitado antes do backend, em vez de virar ICE ou erro do linker. Dois `@Export` com o mesmo nome continuam `T049`. |
 
 ---
 
@@ -304,7 +306,7 @@ Abaixo estão listados todos os diagnósticos mapeados para o compilador Arandu.
 | **O001** | `use of moved value: '{name}'` | Error | `0.1.0` | Tentativa de ler ou acessar uma variável cujo valor já foi movido (ownership transferida) em uma linha anterior. |
 | **O002** | `cannot move '{name}' while borrowed` | Error | `0.1.0` | Move/consume de valor com empréstimo ativo (M2). |
 | **O003** | `mutable borrow conflict on '{name}'` | Error | `0.1.0` | Empréstimos exclusivos sobrepostos (`mut ref` vs qualquer) ou mutação sob empréstimo compartilhado. Múltiplos `ref` compartilhados são permitidos. |
-| **O004** | `generational fallback: '{name}' escapes stack-limited borrow window` | Info | `0.1.0` | Nota de fallback geracional/escape (G2/F2.3) — **não** conflito shared. |
+| **O004** | `generational fallback: '{name}' escapes stack-limited borrow window` | Info / Error | `0.1.0` | Nota de fallback geracional/escape (G2/F2.3) — **não** conflito shared. Erro com `@NoFallback`/`--no-generational-fallback` e, desde `0.2.0`, quando o borrow seria promovido (payload `Copy` gravado em memória tipada como referência): referências são ponteiros crus em runtime, então o handle seria relido como ponteiro. |
 | **O005** | `double free detected for '{name}'` | Error | `0.1.0` | Análise estática do CFG detectou que o mesmo objeto sob ownership exclusiva seria destruído ou liberado mais de uma vez. |
 | **O006** | `cannot destroy '{name}' while borrowed` | Error | `0.1.0` | Destroy/free/drop com empréstimo ainda ativo (double-free estático; M2). |
 | **O007** | `inconsistent move status for '{name}' between branches` | Error | `0.1.0` | Uma variável é movida em uma ramificação condicional (ex: `if`), mas não na outra, deixando seu estado pós-bloco ambíguo. |
@@ -340,7 +342,7 @@ Abaixo estão listados todos os diagnósticos mapeados para o compilador Arandu.
 | **W005** | `unnecessary mutability: variable '{name}' does not need to be mutable` | Warning | `0.1.0` | Variável declarada como `mut` mas que nunca sofreu reatribuições ou modificações mutáveis. |
 | **W006** | `unhandled result: value of type 'Result' must be checked or propagated` | Warning | `0.1.0` | Uma chamada que retorna `Result<T, E>` foi descartada silenciosamente. (Movido do antigo `T019`). |
 | **W007** | `unused import: '{name}'` | Warning | `0.1.0` | Um módulo ou símbolo foi importado no topo do arquivo mas nunca foi referenciado ou consumido no código. |
-| **W008** | `legacy annotation name '@{old}'; use '@{canonical}'` | Warning | `0.1.0` | Grafia temporariamente aceita para migração; inclui replacement estruturado sobre apenas o identificador da anotação. |
+| **W008** | *[Reservado / Obsoleto]* | - | `0.1.0` | *Avisava grafias legadas de anotações até a 0.2.0; desde então elas são `N012` com replacement para o nome canônico.* |
 
 > [!NOTE]
 > **Decisão de Design sobre Shadows (`W004`)**: O shadowing de variáveis é classificado como um `Warning` (e não `Error`) no Arandu para permitir flexibilidade de escrita em escopos muito curtos de closures e lambdas iteradoras. No entanto, é fortemente alertado por padrão para evitar que desenvolvedores ocultem nomes acidentais em escopos maiores do compilador. Pode ser silenciado localmente com `@Suppress("shadowing")`.

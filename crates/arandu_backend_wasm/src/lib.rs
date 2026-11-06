@@ -27,6 +27,7 @@
 
 pub mod canonical;
 pub mod emit;
+mod float_text;
 pub mod memory;
 mod stack_peephole;
 pub mod stackify;

@@ -117,6 +117,8 @@ pub struct CliInvocation {
     pub z_flags: Vec<String>,
     pub data_layout: DataLayout,
     pub project_flags: ProjectFlags,
+    /// `--no-daemon`: build in this process even when a daemon could.
+    pub no_daemon: bool,
 }
 
 pub fn parse_invocation(raw_args: impl IntoIterator<Item = String>) -> CliInvocation {
@@ -130,6 +132,7 @@ pub fn parse_invocation(raw_args: impl IntoIterator<Item = String>) -> CliInvoca
     let mut ascii = false;
     let mut quiet = false;
     let mut watch = false;
+    let mut no_daemon = false;
     let mut color = ColorChoice::Auto;
     let mut args = Vec::new();
     let mut program_args = Vec::new();
@@ -212,6 +215,7 @@ pub fn parse_invocation(raw_args: impl IntoIterator<Item = String>) -> CliInvoca
             "--ascii" => ascii = true,
             "-q" | "--quiet" => quiet = true,
             "--watch" => watch = true,
+            "--no-daemon" => no_daemon = true,
             "--no-color" => {
                 color = ColorChoice::Never;
                 raw_project_flags.push(arg.clone());
@@ -376,6 +380,7 @@ pub fn parse_invocation(raw_args: impl IntoIterator<Item = String>) -> CliInvoca
         z_flags,
         data_layout,
         project_flags,
+        no_daemon,
     }
 }
 
@@ -533,7 +538,7 @@ pub fn command_help(command: &str) -> Option<&'static str> {
             "Usage: arandu run [path] [-- program-args...]\n\nCompile and execute a package or .aru file. Cranelift JIT is the default; LLVM\nIR execution is experimental and requires `lli` or `clang` on PATH.\n\nOptions:\n  --opt             Optimize AMIR before execution\n  -b, --backend B   Select cranelift (default) or llvm\n  --stdlib-path DIR Override the standard library path\n  -v, --verbose     Show progress and incremental status\n  -q, --quiet       Suppress non-error status output\n\nExamples:\n  arandu run\n  arandu run -b llvm src/main.aru -- hello\n",
         ),
         "build" => Some(
-            "Usage: arandu build [path] [options]\n\nCompile a package to a native executable, or to a freestanding object.\n\nOptions:\n  --release            Build with speed optimizations\n  -b, --backend B      Select cranelift (default) or llvm (release)\n  --size, -Oz          Optimize for size and strip native symbols\n  --target TRIPLE      Host, wasm32, thumbv6m-none-eabi, thumbv7em-none-eabihf, or riscv32imc-unknown-none-elf\n  --emit obj|llvm-ir|header  Write an object, LLVM IR, or a C header instead of linking\n  --crate-type staticlib  Archive a bare-metal object (`llvm-ar` or `ar`)\n  --linker-script FILE Link an ELF only with this user-supplied script\n  -o FILE              Write the selected artifact to FILE\n  --layout LAYOUT      Select host, ptr4, ptr8, or i686 layout\n  --locked             Require the lockfile to be current\n  --offline            Resolve from the local cache only\n  -v, --verbose        Show detailed build progress\n  -q, --quiet          Suppress non-error status output\n\nBare-metal LLVM builds publish a relocatable object. The compiler does not\ninvent Flash, RAM, or a vector table. A final ELF requires --linker-script.\n",
+            "Usage: arandu build [path] [options]\n\nCompile a package to a native executable, or to a freestanding object.\n\nOptions:\n  --release            Build with speed optimizations\n  -b, --backend B      Select cranelift (default) or llvm (release)\n  --size, -Oz          Optimize for size and strip native symbols\n  --target TRIPLE      Host, wasm32, thumbv6m-none-eabi, thumbv7em-none-eabihf, or riscv32imc-unknown-none-elf\n  --emit obj|llvm-ir|header  Write an object, LLVM IR, or a C header instead of linking\n  --crate-type staticlib  Archive a bare-metal object (`llvm-ar` or `ar`)\n  --linker-script FILE Link an ELF only with this user-supplied script\n  -o FILE              Write the selected artifact to FILE\n  --layout LAYOUT      Select host, ptr4, ptr8, or i686 layout\n  --locked             Require the lockfile to be current\n  --offline            Resolve from the local cache only\n  -v, --verbose        Show detailed build progress\n  -q, --quiet          Suppress non-error status output\n  --no-daemon          Build in this process, not in the project's daemon\n\nOn Unix, native builds run in a daemon kept per project so the next build\nstarts warm. It stops after 15 idle minutes (ARANDU_DAEMON_IDLE_SECS) or past\nARANDU_DAEMON_MAX_RSS_MB (4096). ARANDU_DAEMON=0 or a CI environment build\nin batch; ARANDU_DAEMON=1 uses the daemon under CI too.\n\nBare-metal LLVM builds publish a relocatable object. The compiler does not\ninvent Flash, RAM, or a vector table. A final ELF requires --linker-script.\n",
         ),
         "check" => Some(
             "Usage: arandu check [path] [options]\n\nType-check a package or source file without code generation.\n\nOptions:\n  --parallel       Check source files in parallel\n  --target TRIPLE  Select a compilation target\n  --watch          Repeat checks after source changes\n  -v, --verbose    Show progress and incremental status\n  -q, --quiet      Suppress success and status output\n",

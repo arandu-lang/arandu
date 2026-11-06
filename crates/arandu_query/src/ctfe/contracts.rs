@@ -478,6 +478,45 @@ fn install(
     Ok(())
 }
 
+/// Folds into `fingerprint` every concrete header contract that
+/// [`check_body`] installed into `after` beyond those already in `before`,
+/// together with the contract digests. A read that failed installs nothing and
+/// leaves an error diagnostic, so callers must not fingerprint such outputs.
+pub(crate) fn fingerprint_installed_headers(
+    db: &dyn ArandCompilerDb,
+    before: &arandu_typeck::TypeCheckResult,
+    after: &arandu_typeck::TypeCheckResult,
+    fingerprint: &mut blake3::Hasher,
+) {
+    let mut installed = after
+        .type_info
+        .concrete_headers
+        .keys()
+        .filter(|key| !before.type_info.concrete_headers.contains_key(*key))
+        .map(|key| (*key.stable_hash().as_bytes(), key))
+        .collect::<Vec<_>>();
+    installed.sort_unstable_by_key(|(digest, _)| *digest);
+    fingerprint.update(&(installed.len() as u64).to_le_bytes());
+    for (digest, key) in installed {
+        fingerprint.update(&digest);
+        match db.source_file_by_id(key.definition.file_id) {
+            Some(file) => {
+                let contract = concrete_header_contract(
+                    db,
+                    file,
+                    key.clone(),
+                    super::DependencyContext::default(),
+                );
+                fingerprint.update(&[1]);
+                fingerprint.update(contract.stable_hash().as_bytes());
+            }
+            None => {
+                fingerprint.update(&[0]);
+            }
+        }
+    }
+}
+
 pub(crate) fn check_body(
     db: &dyn ArandCompilerDb,
     initial: &arandu_typeck::TypeCheckResult,

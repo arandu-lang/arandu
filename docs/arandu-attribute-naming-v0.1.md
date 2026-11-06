@@ -88,7 +88,7 @@ ou a sintaxe de array `[comptime]u8` à linguagem.
 
 ### Registro canônico
 
-| Anotação | Situação | Grafias não canônicas conhecidas |
+| Anotação | Situação | Grafias removidas na 0.2.0 |
 | --- | --- | --- |
 | `@Link` | implementada | `@link` |
 | `@Test` | implementada para descoberta SL_T.0 | função livre síncrona, não genérica, sem parâmetros; `void` ou `Result<void, E>` |
@@ -96,7 +96,7 @@ ou a sintaxe de array `[comptime]u8` à linguagem.
 | `@Suppress` | contrato de diagnóstico | — |
 | `@Deny` | contrato de diagnóstico | — |
 | `@Forbid` | contrato de diagnóstico | — |
-| `@NoFallback` | implementada sob nome legado | `@no_fallback`, `@no_generational_fallback` |
+| `@NoFallback` | implementada | `@no_fallback`, `@no_generational_fallback` |
 | `@NoSuspend` | planejada | `@nosuspend` |
 | `@Specialize` | planejada | `@specialize` |
 | `@Repr` | planejada | `@repr` |
@@ -113,9 +113,8 @@ roadmap da fase que implementa sua semântica.
    anotações embutidas.
 3. A fase semântica resolve nomes canônicos de forma exata e é a única dona da
    tabela de anotações embutidas e de seus alvos/argumentos válidos.
-4. Uma grafia legada conhecida nunca pode ser silenciosamente interpretada
-   como outra anotação. Durante a migração, ela deve gerar diagnóstico com
-   replacement estruturado para o nome canônico.
+4. Uma grafia removida nunca é interpretada como outra anotação: é `N012`,
+   com nota e replacement estruturado para o nome canônico.
 5. Uma anotação desconhecida ou aplicada ao alvo errado deve recuperar com
    diagnóstico; código de produção não pode fazer `panic`, `unwrap` ou
    `expect` por causa dela.
@@ -134,13 +133,14 @@ A migração ocorre antes de declarar o contrato estável:
 3. Implementado: aceitação temporária dos aliases legados, emitindo aviso com
    replacement estruturado; não alterar texto automaticamente no formatter.
 4. Implementado: exemplos, documentação, snippets, completion e semantic tokens.
-5. Fronteira futura: remover aliases somente em uma fronteira de versão anunciada nas release
-   notes e coberta por teste de migração.
+5. Implementado na 0.2.0: os aliases foram removidos. A linha `0.1.x`
+   avisou cada um com `W008` (agora reservado); na 0.2.0 eles são anotações
+   desconhecidas (`N012`) cujo diagnóstico mantém o replacement, e o hover de
+   uma grafia removida explica a renomeação.
 
 Documentação nova usa apenas a grafia canônica. Documentos históricos e testes
 de migração podem citar a forma antiga quando ela for necessária para explicar
-o estado de uma versão. Os aliases permanecem na linha `0.1.x` e só podem ser
-removidos em `0.2.0`, com release notes e regressão de migração.
+o estado de uma versão.
 
 ### LSP e editor
 
@@ -148,8 +148,8 @@ removidos em `0.2.0`, com release notes e regressão de migração.
   cores e o tema continua responsável pela aparência.
 - Completion após `@` oferece somente nomes aplicáveis ao alvo atual, com
   snippets para argumentos obrigatórios.
-- A grafia legada produz quick fix a partir de replacement estruturado, nunca
-  por parsing da mensagem do diagnóstico.
+- A grafia removida produz quick fix a partir de replacement estruturado,
+  nunca por parsing da mensagem do diagnóstico.
 - Rename de símbolos comuns não renomeia anotações embutidas.
 - Hover não expõe nomes internos como `no_fallback` nem detalhes de HIR.
 

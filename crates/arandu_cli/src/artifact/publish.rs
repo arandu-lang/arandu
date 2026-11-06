@@ -1,7 +1,7 @@
 use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 
-use super::atomic::{atomic_replace, atomic_write, failure, publish_staging};
+use super::atomic::{atomic_replace, atomic_write, failure, publish_staging, replace_derived};
 use super::{
     BuildState, NativeProfile, PublishedNativeArtifact, TARGET_MARKER, layout, layout_for_target,
 };
@@ -70,7 +70,7 @@ pub fn publish_wasm_artifact(
         CliFailure::operational("serialize build provenance", None, error.to_string())
     })?;
     encoded.push(b'\n');
-    atomic_replace(&layout.profile_root.join("build-state.json"), &encoded)?;
+    replace_derived(&layout.profile_root.join("build-state.json"), &encoded)?;
     Ok(PublishedNativeArtifact {
         path: published_path,
         digest,
@@ -173,7 +173,7 @@ pub fn publish_native_artifact(
         CliFailure::operational("serialize build provenance", None, error.to_string())
     })?;
     encoded.push(b'\n');
-    atomic_replace(&layout.profile_root.join("build-state.json"), &encoded)?;
+    replace_derived(&layout.profile_root.join("build-state.json"), &encoded)?;
     Ok(PublishedNativeArtifact {
         path: executable_path,
         digest: executable_digest,
@@ -277,7 +277,7 @@ pub fn publish_partitioned_native_artifact(
         CliFailure::operational("serialize build provenance", None, error.to_string())
     })?;
     encoded.push(b'\n');
-    atomic_replace(&layout.profile_root.join("build-state.json"), &encoded)?;
+    replace_derived(&layout.profile_root.join("build-state.json"), &encoded)?;
     Ok(PublishedNativeArtifact {
         path: executable_path,
         digest: executable_digest,

@@ -45,7 +45,18 @@ Cranelift promotes admitted constructors, value copies and caller result
 buffers to independent frame slots. The pure admission policy belongs to MIR
 and is shared with Wasm: safe borrowed leaves, pointer-returning views,
 suspension, unknown foreign calls and aggregate back-edge phi values fail
-closed. Raw ownership handles inside affine containers are distinct from the
+closed. Since 0.2.0 Cranelift also admits aggregates that carry views
+(`scratch_carrier_safe`: `Option<ref T>`, a struct with a `str`): where a
+carrier's bytes live decides nothing about what its views point to, and the
+function-level gate already rejects every way a view of the frame's backing
+could be retained. A function returning `ref`/`ref mut` qualifies when its
+proven return borrow summary sources only parameter views (a view formal, or
+a borrow inside a by-value formal). A `ptr` or `ref` result also qualifies
+when the function makes no address of its own storage
+(`makes_no_own_address`): every borrow goes through a pointer, and no call
+handed one of its aggregates returns a value that may hold an address. Then no
+pointer into the invocation's backing exists to return or store. Slice and
+`str` results keep the descriptor-pointer ABI and stay excluded. Raw ownership handles inside affine containers are distinct from the
 container's backing bytes. Non-Copy moves and user destruction remain governed
 by shared ownership/drop elaboration, not by backend storage reclamation.
 Ready-only coroutine creators with scalar payloads may reclaim their private
@@ -135,10 +146,13 @@ not provide stack or resource unwinding; a trapped guest instance must be
 discarded rather than treated as a normal reusable invocation.
 
 Residual exclusions remain explicit: unknown foreign retention, aggregate
-back-edge phi lifetimes, borrowed carriers, general suspension/aggregate
-coroutine payloads and view-bearing pointer-returning Wasm results still require
-escape/liveness proofs and compatible ownership transfer. Legacy backing in
-those paths may retain the existing cleanup gap. They are not evidence that
+back-edge phi lifetimes, address results of functions that do take an
+address of their own storage, Wasm view carriers, general suspension/aggregate
+coroutine payloads and view-bearing pointer-returning Wasm results still
+require escape/liveness proofs and compatible ownership transfer. Legacy
+backing in those paths may retain the existing cleanup gap; storage that
+really escapes is the case the dual-locus model (RFC 0043) assigns to a
+region instead. They are not evidence that
 all aggregates are stack allocated or every program is allocation-free.
 
 ### 1. Type Layout Calculation Algorithm

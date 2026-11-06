@@ -1163,3 +1163,45 @@ func main(): int {
     let c_source = emit_c(source, "hash_string_c");
     run_emitted_c_with_asan(&c_source, "hash_string_asan");
 }
+
+/// AGG.1: a promoted handle stored in memory typed as a reference was read
+/// back as a raw pointer, so every backend returned the handle bits. The
+/// escape is rejected instead of compiled.
+#[test]
+fn promotable_borrows_stored_in_memory_are_rejected_not_miscompiled() {
+    for (name, source) in [
+        (
+            "through_reference",
+            r#"
+struct Holder { value: &int }
+func store(holder: mut ref Holder, seed: int): int {
+    let value = seed
+    set holder.value = &value
+    return *holder.value
+}
+func main(): int {
+    let start = 0
+    let mut holder = Holder { value: &start }
+    return store(mut ref holder, 5)
+}
+"#,
+        ),
+        (
+            "local_aggregate",
+            r#"
+struct Holder { value: &int }
+func main(): int {
+    let start = 5
+    let holder = Holder { value: &start }
+    return *holder.value
+}
+"#,
+        ),
+    ] {
+        let stderr = check(source, name);
+        assert!(
+            stderr.contains("O004") && stderr.contains("cannot be safely re-read"),
+            "{name}: expected the O004 rejection, got: {stderr}"
+        );
+    }
+}

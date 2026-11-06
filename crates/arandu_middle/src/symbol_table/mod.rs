@@ -4,6 +4,13 @@ use smol_str::SmolStr;
 
 use crate::Span;
 
+/// `(module, member)` to the member, for namespace lookup.
+pub type ModuleMembers = FxHashMap<(SmolStr, SmolStr), SymbolId>;
+/// `(type, method)` to the associated function.
+pub type AssociatedMembers = FxHashMap<(SymbolId, SmolStr), SymbolId>;
+/// A named type to its type parameters, in declaration order.
+pub type TypeParams = FxHashMap<SymbolId, smallvec::SmallVec<[SymbolId; 4]>>;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct LocalSymbolId(pub u32);
 
@@ -178,7 +185,7 @@ impl LangItem {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Symbol {
     pub id: SymbolId,
     pub name: SmolStr,
@@ -233,12 +240,20 @@ pub struct SymbolTable {
     /// Span-derived symbols that are not dense source locals. Empty for every
     /// program that does not synthesize a thread capture.
     synthetic_symbols: FxHashMap<u32, Symbol>,
-    pub imported_symbols: FxHashMap<SymbolId, Symbol>,
-    pub module_members: FxHashMap<(SmolStr, SmolStr), SymbolId>,
+    /// Symbols of other files. Shared between the tables cloned from one
+    /// another until one of them registers a symbol, so a consumer can tell
+    /// equal import sets apart by pointer; mutate through
+    /// [`SymbolTable::imported_symbols_mut`].
+    pub imported_symbols: std::sync::Arc<FxHashMap<SymbolId, Symbol>>,
+    /// Shared like [`Self::imported_symbols`]; mutate through
+    /// [`SymbolTable::module_members_mut`].
+    pub module_members: std::sync::Arc<ModuleMembers>,
     /// Module aliases whose source import failed. Semantic passes use this
     /// error state to avoid diagnosing members of the same failed import.
     pub unresolved_module_aliases: std::collections::BTreeSet<SmolStr>,
-    pub associated_members: FxHashMap<(SymbolId, SmolStr), SymbolId>,
+    /// Shared like [`Self::imported_symbols`]; mutate through
+    /// [`SymbolTable::associated_members_mut`].
+    pub associated_members: std::sync::Arc<AssociatedMembers>,
     /// Interface symbols declared with the `sealed` modifier.
     pub sealed_interfaces: FxHashSet<SymbolId>,
     /// Explicit type/interface implementation declarations.
@@ -255,7 +270,9 @@ pub struct SymbolTable {
     pub module_scopes: FxHashMap<SymbolId, ScopeId>,
     /// Type-parameter symbols for named types (`struct` / `enum` / …), in declaration order.
     /// Used so methods on `Box<T>` can import `T` into their type scope.
-    pub type_params: FxHashMap<SymbolId, smallvec::SmallVec<[SymbolId; 4]>>,
+    /// Shared like [`Self::imported_symbols`]; mutate through
+    /// [`SymbolTable::type_params_mut`].
+    pub type_params: std::sync::Arc<TypeParams>,
     global_scope_id: ScopeId,
     pub builtins: BuiltinTypes,
     pub builtin_alloc: Option<SymbolId>,
@@ -279,17 +296,17 @@ impl SymbolTable {
             }],
             symbols: Vec::new(),
             synthetic_symbols: FxHashMap::default(),
-            imported_symbols: FxHashMap::default(),
-            module_members: FxHashMap::default(),
+            imported_symbols: std::sync::Arc::default(),
+            module_members: std::sync::Arc::default(),
             unresolved_module_aliases: std::collections::BTreeSet::new(),
-            associated_members: FxHashMap::default(),
+            associated_members: std::sync::Arc::default(),
             sealed_interfaces: FxHashSet::default(),
             interface_implementations: FxHashSet::default(),
             host_function_names: FxHashMap::default(),
             exported_functions: FxHashSet::default(),
             tooling_entrypoints: FxHashSet::default(),
             module_scopes: FxHashMap::default(),
-            type_params: FxHashMap::default(),
+            type_params: std::sync::Arc::default(),
             global_scope_id: ScopeId(0),
             builtins: BuiltinTypes::default(),
             builtin_alloc: None,

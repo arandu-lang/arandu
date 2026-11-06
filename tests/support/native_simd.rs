@@ -79,7 +79,7 @@ fn function(index: u32, result: TypeId, types: &[TypeId], stmts: AmirStmtTable) 
 fn fixture(funcs: Vec<AmirFunc>, pool: AmirLiteralPool, info: TypeInfo) -> Fixture {
     let mut symbols = SymbolTable::new(0);
     for function in &funcs {
-        symbols.imported_symbols.insert(
+        symbols.imported_symbols_mut().insert(
             function.symbol,
             Symbol {
                 id: function.symbol,

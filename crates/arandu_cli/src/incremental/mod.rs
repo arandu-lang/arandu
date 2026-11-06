@@ -6,6 +6,6 @@ pub mod fingerprint;
 pub use compiler_artifacts::publish_compiler_artifacts;
 
 pub use fingerprint::{
-    IncrementalCheck, IncrementalInput, SessionConfig, check_incremental, content_digest,
-    record_session,
+    IncrementalCheck, IncrementalInput, SessionConfig, check_incremental,
+    compiled_input_fingerprints, content_digest, record_session,
 };

@@ -510,6 +510,12 @@ impl CabiSupport {
         });
     }
 
+    /// Add the float text helpers (`crate::float_text`), the first of them
+    /// at Wasm index `first`. They follow the allocator.
+    pub(crate) fn add_float_text(&mut self, first: u32) {
+        self.funcs.extend(crate::float_text::functions(first));
+    }
+
     /// Number of Canonical ABI functions added so far.
     #[must_use]
     pub fn len(&self) -> usize {

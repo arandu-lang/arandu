@@ -97,7 +97,38 @@ pub struct IdeDiagnostic {
     pub block: Option<BlockId>,
 }
 
+/// Flow diagnostics of one source function in the coordinates of its
+/// memoized unit: relative to its item when `local` (RFC 0042).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ItemFlow {
+    pub diagnostics: Vec<IdeDiagnostic>,
+    /// Indices of the diagnostics that take the `@NoFallback` fix.
+    pub fallback_fixes: Vec<u32>,
+    pub local: bool,
+}
+
 impl IdeDiagnostic {
+    /// Moves every position from item to file coordinates.
+    pub(crate) fn place(&mut self, at: &arandu_typeck::type_checker::info::ItemPlacement) {
+        let place = |file_id: &mut u32, start: &mut u32, end: &mut u32| {
+            let span = at.span(arandu_middle::Span::new(*file_id, *start, *end));
+            (*file_id, *start, *end) = (span.file_id, span.start, span.end);
+        };
+        place(&mut self.file_id, &mut self.start, &mut self.end);
+        for label in &mut self.labels {
+            place(&mut label.file_id, &mut label.start, &mut label.end);
+        }
+        for hint in &mut self.hints {
+            if let Some(replacement) = &mut hint.replacement {
+                place(
+                    &mut replacement.file_id,
+                    &mut replacement.start,
+                    &mut replacement.end,
+                );
+            }
+        }
+    }
+
     pub fn from_diag(d: &Diagnostic, func: Option<SymbolId>, block: Option<BlockId>) -> Self {
         Self {
             code: d.code.to_string(),
@@ -182,10 +213,27 @@ pub fn func_amir(
     HashEq::new(empty_func(func_sym))
 }
 
+/// The source unit of `symbol`, with its positions in its file.
 fn source_runtime_unit(
     db: &dyn ArandCompilerDb,
     symbol: SymbolId,
-) -> Option<&HashEq<crate::runtime::RuntimeUnit>> {
+) -> Option<std::sync::Arc<crate::runtime::RuntimeUnit>> {
+    let (key, unit) = memoized_source_unit(db, symbol)?;
+    Some(match crate::runtime::place_unit(db, &key, &unit) {
+        Some(placed) => std::sync::Arc::new(placed),
+        None => unit,
+    })
+}
+
+/// The source unit of `symbol` as memoized: when it lowers locally, its
+/// positions are relative to its item (RFC 0042).
+fn memoized_source_unit(
+    db: &dyn ArandCompilerDb,
+    symbol: SymbolId,
+) -> Option<(
+    arandu_middle::types::FunctionInstance,
+    std::sync::Arc<crate::runtime::RuntimeUnit>,
+)> {
     let source = db.source_file_by_id(symbol.file_id)?;
     let declarations = crate::passes::declaration_signatures(db, source);
     if declarations.symbols.try_get(symbol)?.kind != arandu_middle::SymbolKind::Func
@@ -193,17 +241,35 @@ fn source_runtime_unit(
     {
         return None;
     }
-    Some(crate::runtime::runtime_unit(
-        db,
-        crate::runtime::Instance::new(
-            db,
-            source,
-            arandu_middle::types::FunctionInstance {
-                definition: symbol,
-                arguments: Vec::new(),
-            },
+    let key = arandu_middle::types::FunctionInstance {
+        definition: symbol,
+        arguments: Vec::new(),
+    };
+    let unit =
+        crate::runtime::runtime_unit(db, crate::runtime::Instance::new(db, source, key.clone()));
+    Some((key, std::sync::Arc::clone(&unit.value)))
+}
+
+/// The function of [`func_amir`] as its unit memoizes it. Analyses whose
+/// results hold no position read it, so moving the item does not rerun them.
+#[salsa::tracked]
+#[tracing::instrument(level = "trace", target = "arandu_query", skip(db), fields(
+    query = "analysis_amir",
+    file = ?file.file_id(db),
+    func = ?func_sym,
+))]
+fn analysis_amir(
+    db: &dyn ArandCompilerDb,
+    file: SourceFile,
+    func_sym: SymbolId,
+) -> HashEq<AmirFunc> {
+    match memoized_source_unit(db, func_sym) {
+        Some((_, unit)) => unit.analysis_function.as_ref().map_or_else(
+            || HashEq::new(empty_func(func_sym)),
+            |function| HashEq::from_arc(std::sync::Arc::clone(function)),
         ),
-    ))
+        None => HashEq::new(empty_func(func_sym)),
+    }
 }
 
 fn empty_func(symbol: SymbolId) -> AmirFunc {
@@ -233,7 +299,7 @@ pub fn liveness_facts(
     file: SourceFile,
     func_sym: SymbolId,
 ) -> HashEq<LivenessMap> {
-    let func = func_amir(db, file, func_sym);
+    let func = analysis_amir(db, file, func_sym);
     if func.blocks.is_empty() {
         return HashEq::new(LivenessMap {
             live_in_counts: vec![],
@@ -268,7 +334,7 @@ pub fn block_dataflow_facts(
     func_sym: SymbolId,
     block: BlockId,
 ) -> HashEq<DataflowFacts> {
-    let func = func_amir(db, file, func_sym);
+    let func = analysis_amir(db, file, func_sym);
     let live = liveness_facts(db, file, func_sym);
     let i = block.as_usize();
     let live_in_count = live.live_in_counts.get(i).copied().unwrap_or(0);
@@ -302,7 +368,7 @@ pub fn func_borrow_summaries(
     file: SourceFile,
     func_sym: SymbolId,
 ) -> HashEq<Vec<arandu_mir::borrow_facts::BlockBorrowSummary>> {
-    let func = func_amir(db, file, func_sym);
+    let func = analysis_amir(db, file, func_sym);
     if func.blocks.is_empty() {
         return HashEq::new(vec![]);
     }
@@ -373,21 +439,84 @@ pub fn item_attribute_validation(
 ) -> HashEq<Vec<Diagnostic>> {
     #[cfg(any(test, debug_assertions))]
     ITEM_ATTRIBUTE_VALIDATION_EXEC_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let item = crate::passes::item_source_input(db, file, item_sym);
-    let resolved = crate::passes::resolve(db, file);
-    let program = item.program.as_ref();
-    let mut diagnostics: Vec<Diagnostic> = Vec::new();
+    let mut diagnostics = match local_attribute_validation(db, file, item_sym)
+        .as_ref()
+        .zip(crate::passes::item_local_typing(db, file, item_sym).as_ref())
+    {
+        Some((local, (_, at))) => local
+            .iter()
+            .map(|diagnostic| {
+                let mut diagnostic = diagnostic.clone();
+                crate::passes::for_each_span(&mut diagnostic, |span| *span = at.span(*span));
+                diagnostic
+            })
+            .collect(),
+        None => {
+            let item = crate::passes::item_source_input(db, file, item_sym);
+            let resolved = crate::passes::resolve(db, file);
+            validate_attributes(
+                &item.program,
+                &resolved.resolved,
+                item_sym,
+                crate::passes::declaration_signatures(db, file),
+            )
+        }
+    };
+    diagnostics.sort_by(|a, b| {
+        (a.span.start, a.span.end, a.code.as_str(), &a.message).cmp(&(
+            b.span.start,
+            b.span.end,
+            b.code.as_str(),
+            &b.message,
+        ))
+    });
+    diagnostics.dedup();
+    HashEq::new(diagnostics)
+}
 
+/// [`item_attribute_validation`] on the item AST, relative to its item
+/// (RFC 0042), so a move does not validate it again.
+#[salsa::tracked]
+#[tracing::instrument(level = "trace", target = "arandu_query", skip(db), fields(
+    query = "local_attribute_validation",
+    file = ?file.file_id(db),
+    item = ?item_sym,
+))]
+fn local_attribute_validation(
+    db: &dyn ArandCompilerDb,
+    file: SourceFile,
+    item_sym: SymbolId,
+) -> Option<HashEq<Vec<Diagnostic>>> {
+    let input = crate::passes::item_typing_input(db, file, item_sym).as_ref()?;
+    let id = *crate::passes::item_ast_ids(db, file).get(&item_sym)?;
+    let item = crate::passes::item_ast(db, file, id);
+    let Ok(program) = &*item.value else {
+        return None;
+    };
+    Some(HashEq::new(validate_attributes(
+        program,
+        &input.resolved,
+        item_sym,
+        input,
+    )))
+}
+
+fn validate_attributes(
+    program: &arandu_parser::Program,
+    resolved: &arandu_resolve::ResolvedNames,
+    item_sym: SymbolId,
+    signatures: &arandu_semantics::TypeCheckResult,
+) -> Vec<Diagnostic> {
+    let mut diagnostics: Vec<Diagnostic> = Vec::new();
     for decl_id in &program.decls {
         let decl = program.pool.decl(*decl_id);
         let matches = arandu_semantics::primary_def_key(decl)
-            .is_some_and(|key| resolved.resolved.definitions.get(&key) == Some(&item_sym))
+            .is_some_and(|key| resolved.definitions.get(&key) == Some(&item_sym))
             || matches!(
                 decl,
                 arandu_parser::TopLevelDecl::Extern(ext)
                     if ext.members.iter().any(|member| {
                         resolved
-                            .resolved
                             .definitions
                             .get(&arandu_middle::NodeKey::from(member.span))
                             == Some(&item_sym)
@@ -401,7 +530,6 @@ pub fn item_attribute_validation(
         // Attribute/test signatures depend only on declarations. Consulting
         // flow contracts here would reintroduce a borrow-interface edge into
         // declaration-based body staging through file_typing's attribute pass.
-        let signatures = crate::passes::declaration_signatures(db, file);
         let test_validation = arandu_semantics::testing::validate_test_case(
             decl,
             &annotations,
@@ -420,17 +548,7 @@ pub fn item_attribute_validation(
         diagnostics.extend(benchmark_validation.diagnostics);
         break;
     }
-
-    diagnostics.sort_by(|a, b| {
-        (a.span.start, a.span.end, a.code.as_str(), &a.message).cmp(&(
-            b.span.start,
-            b.span.end,
-            b.code.as_str(),
-            &b.message,
-        ))
-    });
-    diagnostics.dedup();
-    HashEq::new(diagnostics)
+    diagnostics
 }
 
 /// IDE projection of [`item_attribute_validation`].
@@ -466,6 +584,22 @@ pub fn item_ide_diagnostics(
     ide::collect_item_ide_diagnostics(db, file, item_sym)
 }
 
+/// Flow checks of one source function on its memoized unit. A move of the
+/// item leaves the unit, and so this query, unchanged.
+#[salsa::tracked]
+#[tracing::instrument(level = "trace", target = "arandu_query", skip(db), fields(
+    query = "item_flow_diagnostics",
+    file = ?file.file_id(db),
+    item = ?item_sym,
+))]
+fn item_flow_diagnostics(
+    db: &dyn ArandCompilerDb,
+    file: SourceFile,
+    item_sym: SymbolId,
+) -> HashEq<ItemFlow> {
+    ide::collect_item_flow(db, file, item_sym)
+}
+
 /// Alias: analysis diags for a function item (same memo as [`item_ide_diagnostics`]).
 #[inline]
 pub fn func_analysis_diags(
@@ -496,6 +630,7 @@ pub fn block_diagnostics(
     let body_tc = crate::ctfe::item_staged_typing(db, file, func_sym);
     let amir = func_amir(db, file, func_sym);
     let runtime = source_runtime_unit(db, func_sym);
+    let runtime = runtime.as_deref();
     let aggregate;
     let context = if let Some(unit) = runtime {
         &*unit.context

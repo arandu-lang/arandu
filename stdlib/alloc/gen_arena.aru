@@ -283,7 +283,7 @@ public func GenArena.getRef<T>(self: ref GenArena<T>, r: GenRef): ref T {
     unsafe {
         let data = checkedPointer<T>(self, r)
         let view = intrinsics.sliceFromRaw<GenArena<T>, T>(self, data, 1 as usize)
-        return slice.get<T>(view, 0 as usize).expectOrAbort("")
+        return ref view[0 as usize]
     }
 }
 

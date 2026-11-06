@@ -300,6 +300,7 @@ fn invoke_os(
     command
         .args(arguments)
         .current_dir(current_dir)
+        .env("ARANDU_DAEMON", "0")
         .env_remove("ARANDU_STDLIB")
         .env_remove("ARANDU_RUNTIME_LIB")
         .env_remove("ARANDU_LINKER")

@@ -135,6 +135,7 @@ fn prepare_workspace(root: &Path, version: &str) -> Result<usize, String> {
         root.join("docs/diagnostics/SPEC.md"),
         root.join("editors/vscode/CHANGELOG.md"),
         root.join("Cargo.lock"),
+        root.join("arandu_fuzz/Cargo.lock"),
         report.clone(),
     ]);
     let originals: Vec<_> = touched
@@ -302,13 +303,33 @@ fn update_changelog(path: &Path, version: &str) -> Result<(), String> {
     write_text(path, &output)
 }
 
+/// Rewrites the Arandu package versions of the workspace lockfile and of the
+/// fuzz lockfile, which `arandu_fuzz` keeps outside the workspace.
 fn update_workspace_lock(root: &Path, manifests: &[PathBuf], version: &str) -> Result<(), String> {
     let mut names = Vec::with_capacity(manifests.len());
     for manifest in manifests {
         names.push(cargo_package_name(manifest)?);
     }
-    let path = root.join("Cargo.lock");
-    let text = read_text(&path)?;
+    let workspace = update_lock_versions(&root.join("Cargo.lock"), &names, version)?;
+    let expected = names
+        .iter()
+        .filter(|name| name.as_str() != "arandu_fuzz")
+        .count();
+    if workspace != expected {
+        return Err(format!(
+            "Cargo.lock updated {workspace} workspace packages, expected {expected}"
+        ));
+    }
+    if update_lock_versions(&root.join("arandu_fuzz/Cargo.lock"), &names, version)? == 0 {
+        return Err("arandu_fuzz/Cargo.lock lists no Arandu package".to_owned());
+    }
+    Ok(())
+}
+
+/// Sets `version` on every package of the lockfile at `path` named in
+/// `names`, returning how many it updated.
+fn update_lock_versions(path: &Path, names: &[String], version: &str) -> Result<usize, String> {
+    let text = read_text(path)?;
     let mut output = String::with_capacity(text.len());
     let mut current_name: Option<String> = None;
     let mut updated = 0usize;
@@ -340,16 +361,8 @@ fn update_workspace_lock(root: &Path, manifests: &[PathBuf], version: &str) -> R
             output.push_str(line);
         }
     }
-    let expected = names
-        .iter()
-        .filter(|name| name.as_str() != "arandu_fuzz")
-        .count();
-    if updated != expected {
-        return Err(format!(
-            "Cargo.lock updated {updated} workspace packages, expected {expected}"
-        ));
-    }
-    write_text(&path, &output)
+    write_text(path, &output)?;
+    Ok(updated)
 }
 
 fn cargo_package_name(path: &Path) -> Result<String, String> {

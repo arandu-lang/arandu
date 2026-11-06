@@ -116,6 +116,7 @@ fn runtime_producer_workload() {
                 generated_symbols: &unit.generated_symbols,
                 instances: &unit.instances,
                 borrow_summary: unit.borrow_summary.as_ref().expect("validated summary"),
+                placement: None,
             })
             .collect::<Vec<_>>();
         let mut aggregate = runtime::declaration_hir(&db, file)

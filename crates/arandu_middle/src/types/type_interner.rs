@@ -320,6 +320,23 @@ impl TypeInterner {
             .is_empty()
     }
 
+    /// Whether every `TypeId` of `base` names the same type here, as when
+    /// `self` was cloned from `base` and only interned more since.
+    #[must_use]
+    pub fn extends(&self, base: &TypeInterner) -> bool {
+        let types = self.types.read().unwrap_or_else(|e| e.into_inner());
+        let base_types = base.types.read().unwrap_or_else(|e| e.into_inner());
+        let args = self
+            .type_args_pool
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        let base_args = base
+            .type_args_pool
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        types.starts_with(&base_types) && args.args.starts_with(&base_args.args)
+    }
+
     /// Display a `TypeId` using the symbol table for named types.
     #[must_use]
     pub fn display(&self, id: TypeId, symbols: &SymbolTable) -> String {

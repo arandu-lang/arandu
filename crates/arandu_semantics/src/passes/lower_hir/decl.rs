@@ -487,8 +487,8 @@ fn lower_export(
         .iter()
         .filter_map(|attr| {
             crate::attributes::annotation_spec(&attr.name)
-                .filter(|(spec, _)| spec.id == crate::attributes::AnnotationId::Export)
-                .map(|(_, _)| attr)
+                .filter(|spec| spec.id == crate::attributes::AnnotationId::Export)
+                .map(|_| attr)
         })
         .find_map(|attr| crate::attributes::attribute_string_arg(attr, pool))
         .unwrap_or_else(|| type_check.symbols.get(symbol).name.to_string());

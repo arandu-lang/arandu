@@ -66,12 +66,7 @@ fn apply_gen_promotion_impl(
         .into_iter()
         .filter(|e| e.kind == EscapeKind::HeapStore)
         .map(|e| e.place_local)
-        .filter(|local| has_supported_borrow_payload(func, interner, *local, &is_supported_payload))
-        // A projected escaping reference needs a first-class (owner, path)
-        // representation. Promoting a copied field would be a stale snapshot,
-        // while retagging the aggregate handle with the field layout would make
-        // runtime validation ambiguous. Escape analysis rejects this case.
-        .filter(|local| !has_projected_borrow(func, *local))
+        .filter(|local| is_promotable(func, interner, *local, &is_supported_payload))
         .collect();
 
     if promote_locals.is_empty() {
@@ -339,6 +334,37 @@ fn apply_gen_promotion_impl(
         let len = func.stmts.len() - start;
         func.blocks[bi].statements = crate::layout::DenseRange::new(start, len);
     }
+}
+
+/// Whether promotion can represent borrows of `local`: a supported payload,
+/// and no projected borrow. A projected escaping reference needs a
+/// first-class (owner, path) representation; promoting a copied field would
+/// be a stale snapshot. Shared with escape analysis so both agree on which
+/// escapes become handles.
+pub(crate) fn would_promote(
+    func: &AmirFunc,
+    interner: &crate::types::TypeInterner,
+    type_info: Option<&dyn AmirTypeContext>,
+    local: crate::amir::LocalId,
+) -> bool {
+    match type_info {
+        Some(type_info) => is_promotable(func, interner, local, &|ty| {
+            type_info.is_copy_type(ty) == Some(true)
+        }),
+        None => is_promotable(func, interner, local, &|ty| {
+            is_supported_scalar_payload(interner, ty)
+        }),
+    }
+}
+
+fn is_promotable(
+    func: &AmirFunc,
+    interner: &crate::types::TypeInterner,
+    local: crate::amir::LocalId,
+    is_supported_payload: &impl Fn(crate::types::TypeId) -> bool,
+) -> bool {
+    has_supported_borrow_payload(func, interner, local, is_supported_payload)
+        && !has_projected_borrow(func, local)
 }
 
 fn has_projected_borrow(func: &AmirFunc, local: crate::amir::LocalId) -> bool {

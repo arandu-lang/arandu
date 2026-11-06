@@ -19,6 +19,11 @@ impl ModuleSignatures {
         let hash = crate::stable_hash::type_signature_hash(&value);
         Self { value, hash }
     }
+
+    /// The digest Salsa compares this output by, for input fingerprints.
+    pub(crate) fn identity(&self) -> blake3::Hash {
+        self.hash
+    }
 }
 
 impl PartialEq for ModuleSignatures {
@@ -48,16 +53,27 @@ pub(crate) fn database_target_info(db: &dyn ArandCompilerDb) -> TargetInfo {
     }
 }
 
+mod items;
+mod local_context;
+mod local_typing;
 mod lower;
+mod programs;
 mod resolution;
 mod signatures;
 mod symbols;
 mod typing;
 
+pub(crate) use items::item_text;
+pub use items::{item_ast, item_ast_ids, item_positions, AstIdMap};
+pub(crate) use local_context::without_positions;
+pub use local_context::{item_context, signature_context};
+pub(crate) use local_typing::{for_each_span, item_typing_input};
+pub use local_typing::{item_local_typing, LocalTyping};
 pub use lower::{
     borrow_interfaces, lower_amir, module_dependency_graph, prepare_hir, BorrowInterfaces,
     LowerAmirArtifacts, PreparedHir,
 };
+pub(crate) use programs::defaults_program;
 pub(crate) use resolution::signatures_from_program;
 pub use resolution::{
     cycle_recover, parse, parse_diagnostics, resolve, resolved_headers, symbol_span, syntax_tree,

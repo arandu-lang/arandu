@@ -21,6 +21,7 @@ mod merge;
 mod query;
 mod translate;
 
+pub use merge::{ItemPlacement, PlacedSegment};
 pub use translate::{import_thread_captures, translate_type};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -268,7 +269,7 @@ impl TypeInfo {
                 );
             }
             symbols
-                .associated_members
+                .associated_members_mut()
                 .insert((recipe.struct_symbol, "run".into()), recipe.run_symbol);
             symbols
                 .host_function_names

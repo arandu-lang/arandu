@@ -222,6 +222,112 @@ fn every_backend_computes_the_same_result() {
 
 const TRAPS: &[(&str, &str)] = &[
     (
+        // Reduced from fuzz seed rfc22-smith-stdlib: the remainder by the
+        // empty vector's length traps. Before it, LLVM read a scalar enum
+        // payload as the byte union of the payload field, and rejected the
+        // backslash character literal.
+        "enum_scalar_payload_before_a_trap",
+        r#"import std.alloc.vec as vec
+
+enum GeneratedStepError {
+    StepFailed,
+}
+
+func generated_try_step(v: int, fail: bool): Result<int, GeneratedStepError> {
+    if fail {
+        return Result.Err(GeneratedStepError.StepFailed)
+    }
+    return Result.Ok(v + 10)
+}
+
+func generated_try_pipeline(v: int, fail_first: bool, fail_second: bool): Result<int, GeneratedStepError> {
+    let a = generated_try_step(v, fail_first)?
+    let b = generated_try_step(a, fail_second)?
+    return Result.Ok(b + 5)
+}
+
+
+struct Sample {
+    left: int
+    right: int
+    enabled: bool
+    character: char
+}
+
+enum Choice {
+    Left(int),
+    Right(int),
+    Flag(bool),
+    Letter(char),
+}
+
+
+func identity<T>(value: T): T {
+    return value
+}
+
+
+
+
+func transfer<T>(own value: T): T {
+    return value
+}
+
+func relay<T>(own value: T): T {
+    return value
+}
+
+func make_vec<T>(): vec.Vec<T> {
+    return vec.Vec<T>.new()
+}
+
+func read_ref(value: ref int): int {
+    return *value
+}
+
+func read_exclusive(value: mut ref int): int {
+    return *value
+}
+
+func adjust(value: int, enabled: bool): int {
+    if enabled { return value + 2 }
+    return value - 2
+}
+
+
+
+func main(): int {
+    let base: int = 2
+    let uint_base: uint = 2 as uint
+    let values = [identity<int>((21 - ((base + (base - ((24 - base) % 7))) * 2))), identity<int>(base), base]
+    let index: int = base % 3
+    let mut total: int = 0
+    let generated_character: char = '\\'
+    let sample = Sample { left: values[index], right: values[(index + 1) % 3] + total, enabled: identity<bool>(((((uint_base / 2 as uint) * 2 as uint) * 2 as uint) == ((uint_base + (((uint_base + uint_base) % 2 as uint) % 2 as uint)) + (((uint_base * 2 as uint) % 2 as uint) + (26 as uint + ((uint_base / 2 as uint) + (5 as uint * 2 as uint))))))), character: identity<char>(generated_character) }
+    let mut borrow_target: int = sample.left
+    let shared_value = read_ref(ref borrow_target)
+    let exclusive_value = read_exclusive(mut ref borrow_target)
+    let mut dynamic = transfer<vec.Vec<int>>(relay<vec.Vec<int>>(make_vec<int>()))
+    let dynamic_len = dynamic.len() as int
+    let dynamic_index = (base % dynamic_len) as usize
+    let dynamic_element = dynamic.getCopy(dynamic_index)
+    let dynamic_value = match dynamic_element {
+        Some(value) => value
+        None => 0
+    }
+    let adjusted = adjust(shared_value, sample.enabled) + adjust(exclusive_value, !sample.enabled) + dynamic_value
+    let selected = if base % 3 == 0 { Choice.Flag(sample.enabled) } else if base % 3 == 1 { Choice.Left(adjusted) } else { Choice.Right(sample.right) }
+    let result = match selected {
+        Choice.Left(value) => value
+        Choice.Right(value) => value
+        Choice.Flag(enabled) => if enabled { 1 } else { 0 }
+        Choice.Letter(character) => if character == sample.character { 1 } else { -73 }
+    }
+    return result
+}
+"#,
+    ),
+    (
         "unused_division_by_zero",
         r#"func f(z: u32): int {
     let r = 7 / z
@@ -338,7 +444,7 @@ func main(): int { return f(3) + g(4) }
 }
 
 #[test]
-fn float_text_matches_between_cranelift_and_c() {
+fn float_text_matches_between_cranelift_c_and_wasm() {
     let source = r#"
 func main(): int {
     let h: f64 = 0.1 + 0.2
@@ -346,16 +452,34 @@ func main(): int {
     let t: f64 = c * 1e18
     let s: f64 = c * 1.5e-12
     let e: f64 = c / 3.0
-    let text = "${h}|${c}|${t}|${s}|${e}"
-    if text == "0.30000000000000004|100|100000000000000000000|0.00000000015|33.333333333333336" {
-        return 1
+    let n: f64 = 0.0 - e
+    let m: f64 = 1e300 * 1e8
+    let d: f64 = 5e-324
+    let text = "${h}|${c}|${t}|${s}|${e}|${n}|${d}"
+    if text != "0.30000000000000004|100|100000000000000000000|0.00000000015|33.333333333333336|-33.333333333333336|0.000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000005" {
+        return 2
     }
-    return 2
+    // 1e308 is 1 and 308 zeros.
+    let big = "${m}"
+    if big.len != 309 {
+        return 3
+    }
+    return 1
 }
 "#;
     for (backend, outcome) in outcomes_on("float_text", source, false) {
         assert_eq!(outcome, ProgramOutcome::Returned(1), "{backend}");
     }
+    let path = std::env::temp_dir().join(format!("arandu_float_text_{}.aru", std::process::id()));
+    fs::write(&path, source).unwrap();
+    let wasm = cli(&["emit-wasm", &path.to_string_lossy()]);
+    assert!(
+        wasm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&wasm.stderr)
+    );
+    crate::wasm_host::run_main(&wasm.stdout).assert_returns(1, "float text in Wasmtime");
+    let _ = fs::remove_file(path);
 }
 
 /// `T?` of a value type is a boxed handle on LLVM as on Cranelift and C. The

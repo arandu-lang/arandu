@@ -20,7 +20,8 @@ pub use module_loader::{EmptyModuleLoader, ModuleLoader, SourceDbLoader};
 pub use name_resolution::{
     BodySelection, HeaderResolution, resolve_bodies_with_poll, resolve_for_test,
     resolve_headers_with_poll, resolve_imports_and_bodies, resolve_imports_and_bodies_with_poll,
-    resolve_local, resolve_local_with_poll, resolve_selected_body_with_poll,
+    resolve_local, resolve_local_in_module_with_poll, resolve_local_with_poll,
+    resolve_selected_body_with_poll,
 };
 
 pub use resolved::{ResolutionResult, ResolvedNames};

@@ -194,6 +194,20 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                     }
                     return Ok(());
                 }
+                // A scalar payload read through the payload field of an enum
+                // whose storage is a byte union: it starts at that field, so
+                // it is loaded with its own type rather than the union's.
+                let field_ty = if owner_is_enum
+                    && self.module.llvm_ty(&field_ty)?.starts_with('[')
+                    && (self.module.integer_width(lhs_ty).is_some()
+                        || self.module.is_float(lhs_ty)
+                        || self.module.is_pointer(lhs_ty)
+                        || matches!(lhs_ty, ArType::Primitive(Primitive::Bool)))
+                {
+                    lhs_ty.clone()
+                } else {
+                    field_ty
+                };
                 let field_text = self.module.llvm_ty(&field_ty)?;
                 let align = self.module.align_of(&field_ty);
                 let raw = self.new_value();

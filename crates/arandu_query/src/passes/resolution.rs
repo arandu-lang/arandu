@@ -83,6 +83,9 @@ pub fn parse(
     file: SourceFile,
 ) -> HashEq<Result<Arc<Program>, arandu_parser::ParseError>> {
     let tree = syntax_tree(db, file);
+    if let Some((program, _)) = super::items::composed_file(db, file) {
+        return HashEq::share(program);
+    }
     let output = arandu_parser::syntax::lower_syntax_to_program_recovering(tree, *file.file_id(db));
     let first_error = output.diagnostics.first().cloned();
     for diagnostic in output.diagnostics {
@@ -386,6 +389,14 @@ pub(super) fn signatures_with_imports(
         checker
             .type_info
             .merge_from(imported_sigs.type_info.as_ref());
+        // A field default is an expression of its own file's arena, which the
+        // file AST of an importer does not hold. Item programs append the
+        // declaring item instead (RFC 0042).
+        let file_id = *file.file_id(db);
+        checker
+            .type_info
+            .struct_field_defaults
+            .retain(|(symbol, _), _| symbol.file_id == file_id);
         // Import aliases carry names/IDs, not the original declaration identity.
         // Retain canonical SIMD/interior-mutability and intrinsic metadata by
         // SymbolId, including re-exports. Path suffixes and imported spellings
@@ -443,7 +454,8 @@ pub(super) fn signatures_with_imports(
                 }
             }
         }
-        for ((type_id, member_name), member_sym) in &imported_sigs.symbols.associated_members {
+        for ((type_id, member_name), member_sym) in imported_sigs.symbols.associated_members.iter()
+        {
             if let Some(symbol) = imported_sigs.symbols.try_get(*member_sym) {
                 let is_accessible = match symbol.visibility {
                     arandu_parser::Visibility::Public => true,
@@ -461,7 +473,7 @@ pub(super) fn signatures_with_imports(
                     .contains_key(&(*type_id, member_name.clone()))
                 {
                     Arc::make_mut(&mut checker.symbols)
-                        .associated_members
+                        .associated_members_mut()
                         .insert((*type_id, member_name.clone()), *member_sym);
                 }
                 if checker.symbols.try_get(*member_sym).is_none() {

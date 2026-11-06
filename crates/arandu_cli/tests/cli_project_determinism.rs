@@ -47,7 +47,7 @@ filesystem_read = []
 network = []
 
 [toolchain]
-arandu = ">=0.1.0-rc.4, <0.2.0"
+arandu = ">=0.2.0, <0.3.0"
 
 [package]
 edition = "2026"

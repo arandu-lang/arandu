@@ -10,7 +10,7 @@ use crate::cli_error::CliFailure;
 mod atomic;
 mod publish;
 
-pub(crate) use atomic::atomic_replace;
+pub(crate) use atomic::{atomic_replace, replace_derived};
 use atomic::{failure, publish_staging, safe_relative_path};
 pub use publish::{
     publish_benchmark_harness, publish_native_artifact, publish_partitioned_native_artifact,
@@ -119,6 +119,85 @@ pub fn layout_for_target(project_root: &Path, profile: &str, triple: &str) -> Ar
         deps,
         incremental,
         triple: triple.to_string(),
+    }
+}
+
+/// What a process that published an artifact knows of it: its path, digest and
+/// file identity right after publication. While the identity holds, that
+/// process may use the bytes without hashing them. It is never persisted: after
+/// a crash the metadata can survive data that never reached the disk, so a new
+/// process always verifies the digest (HOT.5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtifactIdentity {
+    path: PathBuf,
+    digest: String,
+    stat: FileStat,
+}
+
+/// Device, inode, size and nanosecond modification and change times. Any
+/// write, rename or truncation of the file changes at least one of them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FileStat {
+    device: u64,
+    inode: u64,
+    size: u64,
+    modified: (i64, i64),
+    changed: (i64, i64),
+}
+
+impl FileStat {
+    /// Whether the file was modified or changed at or after `instant`. A
+    /// timestamp equal to the start of a scan cannot prove the file was not
+    /// written after the scan read it ("racy git"), so it counts as changed.
+    pub(crate) fn touched_since(&self, instant: std::time::SystemTime) -> bool {
+        let Ok(since) = instant.duration_since(std::time::UNIX_EPOCH) else {
+            return true;
+        };
+        let since = (
+            i64::try_from(since.as_secs()).unwrap_or(i64::MAX),
+            i64::from(since.subsec_nanos()),
+        );
+        self.modified >= since || self.changed >= since
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn of(path: &Path) -> Option<Self> {
+        use std::os::unix::fs::MetadataExt;
+
+        let metadata = fs::symlink_metadata(path).ok()?;
+        metadata.is_file().then(|| Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            size: metadata.size(),
+            modified: (metadata.mtime(), metadata.mtime_nsec()),
+            changed: (metadata.ctime(), metadata.ctime_nsec()),
+        })
+    }
+
+    /// Without stable inode numbers there is no identity to trust.
+    #[cfg(not(unix))]
+    pub(crate) fn of(_path: &Path) -> Option<Self> {
+        None
+    }
+}
+
+impl ArtifactIdentity {
+    /// The identity of `artifact` as it is now, just after its publication.
+    #[must_use]
+    pub fn of(artifact: &PublishedNativeArtifact) -> Option<Self> {
+        Some(Self {
+            path: artifact.path.clone(),
+            digest: artifact.digest.clone(),
+            stat: FileStat::of(&artifact.path)?,
+        })
+    }
+
+    /// Whether `artifact` is still the file this identity was taken from.
+    #[must_use]
+    pub fn verifies(&self, artifact: &PublishedNativeArtifact) -> bool {
+        self.path == artifact.path
+            && self.digest == artifact.digest
+            && FileStat::of(&artifact.path) == Some(self.stat)
     }
 }
 
@@ -232,7 +311,7 @@ pub fn record_patched_native_artifact(
         CliFailure::operational("serialize build provenance", None, error.to_string())
     })?;
     encoded.push(b'\n');
-    atomic_replace(&layout.profile_root.join("build-state.json"), &encoded)?;
+    replace_derived(&layout.profile_root.join("build-state.json"), &encoded)?;
     Ok(PublishedNativeArtifact {
         path: target_path,
         digest: new_digest.to_owned(),

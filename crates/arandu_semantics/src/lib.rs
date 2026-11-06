@@ -44,7 +44,7 @@ pub use arandu_typeck::{
     type_check,
 };
 pub use passes::lower_amir::{
-    ComposedUnits, ContextualFunctionUnit, FunctionUnit, append_function_unit,
+    ComposedUnits, ContextualFunctionUnit, FunctionUnit, UnitPlacement, append_function_unit,
     compose_function_units, finalize_function_unit, lower_block_unit, lower_borrow_interfaces,
     lower_expression_unit, lower_function_unit, lower_to_amir, lower_to_amir_with_interfaces,
     lower_to_amir_with_layout,

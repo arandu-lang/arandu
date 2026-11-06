@@ -1,5 +1,6 @@
 //! Project graph discovery, manifest validation, and Salsa context initialization.
 
+use crate::output::errln;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -253,7 +254,7 @@ pub fn load_project(
             )
         })?;
     if discovery.spelling == ManifestSpelling::Legacy {
-        eprintln!(
+        errln!(
             "warning: `{}` is deprecated; rename it to `{MANIFEST_FILENAME}`",
             arandu_query::LEGACY_MANIFEST_FILENAME
         );

@@ -140,8 +140,8 @@ public func normalizeSamples(
 
 #### 3.2.1 Estado implementado na 0.1.11 (`@Export`)
 
-A superfície canônica implementada é `@Export` (a forma `@FfiExport` continua
-aceita como alias legado, com aviso `W008`). Ela resolve a intenção inteira em
+A superfície canônica implementada é `@Export` (a forma `@FfiExport` foi
+aceita com aviso `W008` na 0.1.x e é `N012` com replacement desde a 0.2.0). Ela resolve a intenção inteira em
 uma única anotação: símbolo plano sem mangling, ABI C do alvo, linkage externo
 e `nounwind`. O nome pode ser fixado com `@Export("nome_c")`, útil para
 prefixos de SDK e para manter o símbolo estável quando o módulo muda de nome.

@@ -871,7 +871,7 @@ mod tests {
         symbol.name = arandu_middle::SmolStr::new("external");
         symbol.kind = SymbolKind::Func;
         symbol.span = Span::new(7, 95, 105);
-        symbols.imported_symbols.insert(imported, symbol);
+        symbols.imported_symbols_mut().insert(imported, symbol);
 
         let void = info.type_interner.intern(ArType::Void);
         let ty = info

@@ -8,7 +8,7 @@ use blake3::Hasher;
 use super::nodes::{hash_id, hash_span};
 use super::symbols::{
     finish, hash_diag, hash_resolved_names, hash_return_borrow_summary, hash_str, hash_symbol_id,
-    hash_symbol_table, u32_le, u64_le, StableHash,
+    hash_symbol_table_until, is_body_symbol, u32_le, u64_le, StableHash,
 };
 
 impl StableHash for TypeCheckResult {
@@ -19,6 +19,21 @@ impl StableHash for TypeCheckResult {
 
 pub(crate) fn type_signature_hash(result: &TypeCheckResult) -> blake3::Hash {
     hash_type_check_result(result, false)
+}
+
+/// [`type_signature_hash`] without the symbols resolution allocates in bodies,
+/// whose dense IDs start at `body_from`: what importers of a file observe of
+/// its declarations. A new local in a private body leaves it equal.
+pub(crate) fn declaration_surface_hash(result: &TypeCheckResult, body_from: u32) -> blake3::Hash {
+    hash_typing(
+        &result.symbols,
+        true,
+        &result.resolved,
+        &result.type_info,
+        &result.diagnostics,
+        false,
+        Some(body_from),
+    )
 }
 
 /// Presentation intentionally hides frozen aggregate contents. Memo equality
@@ -55,53 +70,138 @@ fn hash_semantic_type(
 }
 
 fn hash_type_check_result(result: &TypeCheckResult, include_spans: bool) -> blake3::Hash {
+    hash_typing(
+        &result.symbols,
+        true,
+        &result.resolved,
+        &result.type_info,
+        &result.diagnostics,
+        include_spans,
+        None,
+    )
+}
+
+/// Identity of an item-local typing (RFC 0042). The value holds no symbol
+/// table; `names` only spells the types whose structure is not canonical.
+pub(crate) fn local_typing_hash(
+    local: &crate::passes::LocalTyping,
+    names: &SymbolTable,
+) -> blake3::Hash {
+    hash_typing(
+        names,
+        false,
+        &local.resolved,
+        &local.type_info,
+        &local.diagnostics,
+        true,
+        None,
+    )
+}
+
+/// Identity of an item typing input (RFC 0042): the position-free context it
+/// extends, plus what it adds. Its type IDs index the context's interner.
+pub(crate) fn typing_input_hash(
+    context: blake3::Hash,
+    input: &TypeCheckResult,
+    own: &[(arandu_middle::SymbolId, arandu_middle::Span)],
+) -> blake3::Hash {
     let mut h = Hasher::new();
-    h.update(b"TypeCheckResult/v5");
-    h.update(result.type_info.target_identity.os.as_bytes());
+    h.update(b"ItemTypingInput/v1");
+    h.update(context.as_bytes());
+    hash_resolved_names(&mut h, &input.resolved);
+    let info = &input.type_info;
+    h.update(&u64_le(info.expr_types.len() as u64));
+    for slot in &info.expr_types {
+        match slot {
+            Some(ty) => {
+                h.update(&[1]);
+                hash_id(&mut h, ty.as_usize());
+            }
+            None => {
+                h.update(&[0]);
+            }
+        }
+    }
+    h.update(&u64_le(info.ctfe_roots.len() as u64));
+    for expr in &info.ctfe_roots {
+        hash_id(&mut h, expr.as_usize());
+    }
+    let mut values: Vec<_> = info.ctfe_values.iter().collect();
+    values.sort_unstable_by_key(|(span, _)| (span.file_id, span.start, span.end));
+    h.update(&u64_le(values.len() as u64));
+    for (span, (value, layout)) in values {
+        hash_span(&mut h, *span);
+        h.update(&value.canonical_bytes());
+        for class in [layout.pointer, layout.float, layout.i64, layout.f64] {
+            h.update(&class.size.to_le_bytes());
+            h.update(&class.abi_align.to_le_bytes());
+        }
+    }
+    h.update(&u64_le(own.len() as u64));
+    for &(symbol, span) in own {
+        hash_symbol_id(&mut h, symbol);
+        hash_span(&mut h, span);
+    }
+    finish(h)
+}
+
+fn hash_typing(
+    symbols: &SymbolTable,
+    hash_table: bool,
+    resolved: &arandu_resolve::ResolvedNames,
+    info: &arandu_semantics::TypeInfo,
+    diagnostics: &[arandu_middle::Diagnostic],
+    include_spans: bool,
+    body_from: Option<u32>,
+) -> blake3::Hash {
+    let mut h = Hasher::new();
+    h.update(if hash_table {
+        b"TypeCheckResult/v5".as_slice()
+    } else {
+        b"LocalTyping/v1".as_slice()
+    });
+    h.update(info.target_identity.os.as_bytes());
     h.update(&[0]);
-    h.update(result.type_info.target_identity.arch.as_bytes());
-    h.update(&[0, result.type_info.target_pointer_width]);
+    h.update(info.target_identity.arch.as_bytes());
+    h.update(&[0, info.target_pointer_width]);
     // Empty host and wasm identities keep the v5 bytes. A supplied triple is
     // hashed only when the driver stored one.
-    let triple = result.type_info.target_identity.triple.as_bytes();
+    let triple = info.target_identity.triple.as_bytes();
     if !triple.is_empty() {
         h.update(b"\0triple:");
         h.update(triple);
     }
-    let layout = result.type_info.target_layout;
+    let layout = info.target_layout;
     for class in [layout.pointer, layout.float, layout.i64, layout.f64] {
         h.update(&class.size.to_le_bytes());
         h.update(&class.abi_align.to_le_bytes());
     }
-    hash_symbol_table(&mut h, &result.symbols, include_spans);
+    if hash_table {
+        hash_symbol_table_until(&mut h, symbols, include_spans, body_from);
+    }
     // `ModuleSignatures` deliberately excludes body references so a private or
     // implementation-only edit does not invalidate importing files.
     if include_spans {
-        hash_resolved_names(&mut h, &result.resolved);
+        hash_resolved_names(&mut h, resolved);
     }
-    h.update(&u64_le(result.diagnostics.len() as u64));
-    for d in &result.diagnostics {
+    h.update(&u64_le(diagnostics.len() as u64));
+    for d in diagnostics {
         hash_diag(&mut h, d);
     }
     if include_spans {
-        h.update(&u64_le(result.type_info.expr_types.len() as u64));
-        for slot in &result.type_info.expr_types {
+        h.update(&u64_le(info.expr_types.len() as u64));
+        for slot in &info.expr_types {
             match slot {
                 Some(tid) => {
                     h.update(&[1]);
-                    hash_semantic_type(
-                        &mut h,
-                        *tid,
-                        &result.type_info.type_interner,
-                        &result.symbols,
-                    );
+                    hash_semantic_type(&mut h, *tid, &info.type_interner, symbols);
                 }
                 None => {
                     h.update(&[0]);
                 }
             }
         }
-        let mut globals: Vec<_> = result.type_info.ctfe_global_values.iter().collect();
+        let mut globals: Vec<_> = info.ctfe_global_values.iter().collect();
         globals.sort_unstable_by_key(|(symbol, _)| (symbol.file_id, symbol.local_id.0));
         h.update(b"CtfeGlobals/v1");
         h.update(&u64_le(globals.len() as u64));
@@ -109,11 +209,11 @@ fn hash_type_check_result(result: &TypeCheckResult, include_spans: bool) -> blak
             hash_symbol_id(&mut h, *symbol);
             h.update(&value.canonical_bytes());
         }
-        let mut values: Vec<_> = result.type_info.ctfe_values.iter().collect();
+        let mut values: Vec<_> = info.ctfe_values.iter().collect();
         values.sort_unstable_by_key(|(span, _)| (span.file_id, span.start, span.end));
         h.update(b"CtfeResidual/v2");
-        h.update(&u64_le(result.type_info.ctfe_roots.len() as u64));
-        for expr in &result.type_info.ctfe_roots {
+        h.update(&u64_le(info.ctfe_roots.len() as u64));
+        for expr in &info.ctfe_roots {
             hash_id(&mut h, expr.as_usize());
         }
         h.update(&u64_le(values.len() as u64));
@@ -126,19 +226,18 @@ fn hash_type_check_result(result: &TypeCheckResult, include_spans: bool) -> blak
             }
         }
     }
-    h.update(&u64_le(result.type_info.decl_types.len() as u64));
-    let mut decls: Vec<_> = result.type_info.decl_types.iter().collect();
+    let mut decls: Vec<_> = info
+        .decl_types
+        .iter()
+        .filter(|(symbol, _)| !is_body_symbol(symbols, **symbol, body_from))
+        .collect();
+    h.update(&u64_le(decls.len() as u64));
     decls.sort_by_key(|(id, _)| (id.file_id, id.local_id.0));
     for (sid, tid) in decls {
         hash_symbol_id(&mut h, *sid);
-        hash_semantic_type(
-            &mut h,
-            *tid,
-            &result.type_info.type_interner,
-            &result.symbols,
-        );
+        hash_semantic_type(&mut h, *tid, &info.type_interner, symbols);
     }
-    let mut borrow_summaries: Vec<_> = result.type_info.return_borrow_summaries.iter().collect();
+    let mut borrow_summaries: Vec<_> = info.return_borrow_summaries.iter().collect();
     borrow_summaries.sort_by_key(|(id, _)| (id.file_id, id.local_id.0));
     h.update(&u64_le(borrow_summaries.len() as u64));
     for (symbol, summary) in borrow_summaries {
@@ -150,8 +249,6 @@ fn hash_type_check_result(result: &TypeCheckResult, include_spans: bool) -> blak
     // ownership checks and codegen. Omitting them lets Salsa treat semantically
     // different type-check results as equal even when names and expression
     // types happen to stay unchanged.
-    let info = &result.type_info;
-    let symbols = &result.symbols;
     let interner = &info.type_interner;
 
     let mut deferred: Vec<_> = info.deferred_headers.iter().copied().collect();
@@ -390,6 +487,21 @@ fn hash_type_check_result(result: &TypeCheckResult, include_spans: bool) -> blak
     h.update(&u64_le(repr_c.len() as u64));
     for symbol in repr_c {
         hash_symbol_id(&mut h, symbol);
+    }
+
+    // HIR lowering reads the default expression of each omitted field, by its
+    // arena ID: a position, like the expression tables.
+    if include_spans {
+        let mut defaults: Vec<_> = info.struct_field_defaults.iter().collect();
+        defaults.sort_by(|((a, x), _), ((b, y), _)| {
+            (a.file_id, a.local_id.0, x).cmp(&(b.file_id, b.local_id.0, y))
+        });
+        h.update(&u64_le(defaults.len() as u64));
+        for ((symbol, field), expr) in defaults {
+            hash_symbol_id(&mut h, *symbol);
+            hash_str(&mut h, field);
+            hash_id(&mut h, expr.as_usize());
+        }
     }
 
     finish(h)

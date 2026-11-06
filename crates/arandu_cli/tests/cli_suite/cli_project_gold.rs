@@ -457,7 +457,9 @@ fn stale_or_corrupt_lock_never_builds_under_locked_policy() {
 
     let manifest_path = project.join("arandu.toml");
     let manifest = fs::read_to_string(&manifest_path).unwrap();
-    fs::write(&manifest_path, manifest.replace("0.1.0", "0.1.1")).unwrap();
+    let edited = manifest.replace(r#"version = "0.0.1""#, r#"version = "0.0.2""#);
+    assert_ne!(edited, manifest);
+    fs::write(&manifest_path, edited).unwrap();
     let stale = run_cli_in(&project, &["check", "--locked"]);
     assert!(!stale.status.success());
     assert_eq!(fs::read(&lock_path).unwrap(), original);
@@ -1010,7 +1012,7 @@ fn package_check_covers_modules_the_entry_never_calls() {
     ] {
         fs::write(
             project.join("src/helper.aru"),
-            format!("module helper\n\n{body}"),
+            format!("module unreached.helper\n\n{body}"),
         )
         .unwrap();
         let check = run_cli_in(&project, &["check"]);

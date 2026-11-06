@@ -707,6 +707,7 @@ fn imported_effect_metadata_survives_expression_shard_removal() {
             generated_symbols: &unit.generated_symbols,
             instances: &unit.instances,
             borrow_summary: unit.borrow_summary.as_ref().expect("summary"),
+            placement: None,
         }],
         || {},
     )

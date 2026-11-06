@@ -108,7 +108,7 @@ fn component_model_rejects_vector_boundary_instead_of_lowering_it_to_u32() {
     let origin = arandu_base::Span::new(999, 11, 39);
     fixture
         .symbols
-        .imported_symbols
+        .imported_symbols_mut()
         .get_mut(&fixture::symbol(0))
         .unwrap()
         .span = origin;

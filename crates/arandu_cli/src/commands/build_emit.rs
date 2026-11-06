@@ -1,3 +1,4 @@
+use crate::output::{errln, outln};
 use std::fs;
 use std::path::Path;
 
@@ -5,7 +6,7 @@ use super::{CliFailure, CliSuccess, llvm_product};
 use crate::artifact;
 use crate::cli_error::CliResult;
 use crate::linker;
-use crate::pipeline::print_diagnostics_and_exit;
+use crate::pipeline::diagnostics_failure;
 use crate::project::{self, ProjectFlags};
 use arandu_middle::layout::DataLayout;
 use arandu_query::ArandCompilerDb;
@@ -44,7 +45,7 @@ pub(super) fn emit_wasm_artifact(
             wasm_layout,
             &pkg_name,
         )
-        .unwrap_or_else(|diag| print_diagnostics_and_exit(std::iter::once(diag), &filepath))
+        .map_err(|diag| diagnostics_failure(std::iter::once(diag), &filepath))?
     } else {
         let emit = if flags.size {
             arandu_backend_wasm::emit_wasm_for_size
@@ -58,7 +59,7 @@ pub(super) fn emit_wasm_artifact(
             type_check.type_info.as_ref(),
             wasm_layout,
         )
-        .unwrap_or_else(|diag| print_diagnostics_and_exit(std::iter::once(diag), &filepath))
+        .map_err(|diag| diagnostics_failure(std::iter::once(diag), &filepath))?
     };
 
     let optimized_wasm = crate::wasm_opt::optimize_wasm_if_available(
@@ -94,7 +95,7 @@ pub(super) fn emit_wasm_artifact(
         "wasm-core"
     };
     if !flags.quiet {
-        println!(
+        outln!(
             "built {} v{} (backend={}, entry={}, artifact={})",
             ctx.name,
             ctx.version,
@@ -129,14 +130,14 @@ pub(super) fn emit_llvm_artifact(
             type_check.symbols.as_ref(),
             docs,
         )
-        .unwrap_or_else(|diag| print_diagnostics_and_exit(std::iter::once(diag), &filepath))
+        .map_err(|diag| diagnostics_failure(std::iter::once(diag), &filepath))?
     } else {
         arandu_backend_llvm::emit_llvm_ir(
             amir,
             type_check.symbols.as_ref(),
             type_check.type_info.as_ref(),
         )
-        .unwrap_or_else(|diag| print_diagnostics_and_exit(std::iter::once(diag), &filepath))
+        .map_err(|diag| diagnostics_failure(std::iter::once(diag), &filepath))?
     };
 
     let unique = std::time::SystemTime::now()
@@ -159,7 +160,7 @@ pub(super) fn emit_llvm_artifact(
             )?;
         }
         if !flags.quiet {
-            println!(
+            outln!(
                 "built {} v{} (backend={}, entry={}, artifact={})",
                 ctx.name,
                 ctx.version,
@@ -275,7 +276,7 @@ pub(super) fn emit_llvm_artifact(
     }
 
     if !flags.quiet {
-        println!(
+        outln!(
             "built {} v{} (backend={}, entry={}, artifact={})",
             ctx.name,
             ctx.version,
@@ -305,6 +306,9 @@ pub(super) fn emit_native_artifact(
     filepath: String,
     type_check: &arandu_semantics::TypeCheckResult,
     amir: &arandu_semantics::amir::AmirProgram,
+    published: &mut Option<artifact::ArtifactIdentity>,
+    cgu_trust: &mut crate::cgu::CguTrust,
+    superseded: &mut dyn FnMut() -> bool,
 ) -> CliResult {
     let toolchain_fingerprint = {
         arandu_base::time_pass!("toolchain-fingerprint");
@@ -360,10 +364,15 @@ pub(super) fn emit_native_artifact(
                 optimization,
                 toolchain_fingerprint.as_ref(),
                 &cgu_cache_dir,
+                cgu_trust,
             )?
         };
+        // Cached objects are content-addressed; nothing is published yet.
+        if superseded() {
+            return Err(super::superseded_failure());
+        }
         if flags.verbose {
-            eprintln!(
+            errln!(
                 "[cgu] {} units: {} cached, {} recompiled",
                 result.object_files.len(),
                 result.cached_count,
@@ -373,10 +382,18 @@ pub(super) fn emit_native_artifact(
         let elf_layout_file = layout.incremental.join("elf_layout.json");
         let (artifact, linker_label) = {
             arandu_base::time_pass!("native-artifact");
-            let existing_artifact = if result.recompiled_units.is_empty() {
+            // An artifact this process published and that is unchanged since is
+            // used without hashing it again.
+            let candidate = artifact::current_native_artifact_candidate(&ctx.root, profile);
+            let trusted = candidate.as_ref().is_some_and(|candidate| {
+                published
+                    .as_ref()
+                    .is_some_and(|identity| identity.verifies(candidate))
+            });
+            let existing_artifact = if result.recompiled_units.is_empty() && !trusted {
                 artifact::current_native_artifact(&ctx.root, profile)
             } else {
-                artifact::current_native_artifact_candidate(&ctx.root, profile)
+                candidate
             };
             let full_link = || -> Result<_, CliFailure> {
                 let published = artifact::publish_partitioned_native_artifact(
@@ -402,7 +419,7 @@ pub(super) fn emit_native_artifact(
                 && let Some(existing) = existing_artifact
             {
                 if flags.verbose {
-                    eprintln!(
+                    errln!(
                         "[incremental-artifact] all CGUs are verified cache hits; reusing {}",
                         existing.path.display()
                     );
@@ -416,7 +433,22 @@ pub(super) fn emit_native_artifact(
                 let _ = fs::create_dir_all(&staging_dir);
                 let staging_path = staging_dir.join(format!("patch-{}.tmp", std::process::id()));
                 let mut in_place_patched = None;
-                if fs::copy(&existing.path, &staging_path).is_ok() {
+                // A plain copy with the permissions of the source: `fs::copy`
+                // may reflink, which on btrfs waits for the writeback of the
+                // executable the last build published.
+                let copied = fs::read(&existing.path)
+                    .and_then(|bytes| fs::write(&staging_path, bytes))
+                    .and_then(|()| fs::metadata(&existing.path))
+                    .and_then(|metadata| fs::set_permissions(&staging_path, metadata.permissions()))
+                    .is_ok();
+                if copied {
+                    // The copy holds the published bytes only if the source is
+                    // still the same file after the copy.
+                    let trusted_digest = (trusted
+                        && published
+                            .as_ref()
+                            .is_some_and(|identity| identity.verifies(&existing)))
+                    .then_some(existing.digest.as_str());
                     let recompiled_refs: Vec<(&arandu_backend_cranelift::CodegenUnit, &[u8])> =
                         result
                             .recompiled_units
@@ -428,13 +460,14 @@ pub(super) fn emit_native_artifact(
                         &elf_layout_file,
                         &result.units,
                         &recompiled_refs,
+                        trusted_digest,
                     ) {
                         Ok(Some(new_digest)) => {
                             in_place_patched = Some((staging_path, new_digest));
                         }
                         Ok(None) => {
                             if flags.verbose {
-                                eprintln!(
+                                errln!(
                                     "[in-process-elf] safety/determinism precondition not met; falling back to a full link"
                                 );
                             }
@@ -442,7 +475,7 @@ pub(super) fn emit_native_artifact(
                         }
                         Err(error) => {
                             if flags.verbose {
-                                eprintln!(
+                                errln!(
                                     "[in-process-elf] patch failed safely ({error:?}); falling back to a full link"
                                 );
                             }
@@ -453,7 +486,7 @@ pub(super) fn emit_native_artifact(
 
                 if let Some((exec_path, new_digest)) = in_place_patched {
                     if flags.verbose {
-                        eprintln!(
+                        errln!(
                             "[in-process-elf] patched {} CGU(s) in-place in {}",
                             result.recompiled_count,
                             exec_path.display()
@@ -477,6 +510,7 @@ pub(super) fn emit_native_artifact(
             }
         };
 
+        *published = artifact::ArtifactIdentity::of(&artifact);
         {
             arandu_base::time_pass!("incremental-record");
             crate::incremental::record_session(
@@ -487,7 +521,7 @@ pub(super) fn emit_native_artifact(
             )?;
         }
         if !flags.quiet {
-            println!(
+            outln!(
                 "built {} v{} (backend={}, entry={}, artifact={})",
                 ctx.name,
                 ctx.version,
@@ -506,7 +540,7 @@ pub(super) fn emit_native_artifact(
         );
     let backend_impl = match backend_impl {
         Ok(b) => b,
-        Err(diag) => print_diagnostics_and_exit(std::iter::once(diag), &filepath),
+        Err(diag) => return Err(diagnostics_failure(std::iter::once(diag), &filepath)),
     };
     let debug_sources = debug_info.then(|| {
         amir.funcs
@@ -570,7 +604,7 @@ pub(super) fn emit_native_artifact(
                 )?;
             }
             if !flags.quiet {
-                println!(
+                outln!(
                     "built {} v{} (backend={}, entry={}, artifact={})",
                     ctx.name,
                     ctx.version,
@@ -581,6 +615,6 @@ pub(super) fn emit_native_artifact(
             }
             Ok(CliSuccess::Done)
         }
-        Err(diag) => print_diagnostics_and_exit(std::iter::once(diag), &filepath),
+        Err(diag) => Err(diagnostics_failure(std::iter::once(diag), &filepath)),
     }
 }

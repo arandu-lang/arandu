@@ -282,6 +282,79 @@ fn touch_without_content_change_skips_rebuild() {
     let _ = fs::remove_dir_all(&tmp);
 }
 
+/// Build outputs are written without flushing, so a crash can leave any of
+/// them torn. A torn input of the up-to-date decision costs a rebuild, and
+/// the next edit builds a correct executable whatever was torn: the patcher
+/// falls back to a full link that rewrites the build state and the layout.
+#[test]
+fn a_torn_build_output_is_rebuilt_instead_of_trusted() {
+    let tmp = common::temp_dir("arandu_inc_torn_test").unwrap();
+    let project = tmp.join("torn_proj");
+    let init = run_cli_in(&tmp, &["new", "torn_proj", "--bin", "--vcs=none"]);
+    assert!(init.status.success());
+    assert!(run_cli_in(&project, &["build"]).status.success());
+    let main_src = project.join("src/main.aru");
+    let mut edits = 0;
+
+    // Only Linux patches ELF executables and records their layout.
+    let outputs = [
+        ("session-fingerprint.json", true),
+        ("current.amir", true),
+        ("build-state.json", false),
+        ("elf_layout.json", false),
+    ];
+    let outputs = if cfg!(target_os = "linux") {
+        &outputs[..]
+    } else {
+        &outputs[..3]
+    };
+    for &(name, decides_up_to_date) in outputs {
+        for keep in [0, 1, 2] {
+            let found = files_named(&project.join("target/dev"), name);
+            assert_eq!(found.len(), 1, "expected exactly one {name}");
+            let bytes = fs::read(&found[0]).unwrap();
+            fs::write(&found[0], &bytes[..bytes.len() * keep / 3]).unwrap();
+            let rebuilt = run_cli_in(&project, &["build"]);
+            assert!(
+                rebuilt.status.success(),
+                "{name} torn at {keep}/3: {}",
+                String::from_utf8_lossy(&rebuilt.stderr)
+            );
+            if decides_up_to_date {
+                assert!(
+                    !String::from_utf8_lossy(&rebuilt.stdout).contains("incremental: up-to-date"),
+                    "{name} torn at {keep}/3 was trusted"
+                );
+            }
+
+            edits += 1;
+            let source = fs::read_to_string(&main_src).unwrap();
+            fs::write(
+                &main_src,
+                format!("{source}\nfunc torn_{edits}(): int {{\n    return {edits}\n}}\n"),
+            )
+            .unwrap();
+            let edited = run_cli_in(&project, &["build"]);
+            assert!(
+                edited.status.success(),
+                "edit after {name} torn at {keep}/3: {}",
+                String::from_utf8_lossy(&edited.stderr)
+            );
+            let state_path =
+                files_named(&project.join("target/dev"), "build-state.json")[0].clone();
+            let state: serde_json::Value =
+                serde_json::from_str(&fs::read_to_string(&state_path).unwrap()).unwrap();
+            let executable = state_path
+                .parent()
+                .unwrap()
+                .join(state["artifact"].as_str().unwrap());
+            assert!(Command::new(&executable).output().unwrap().status.success());
+        }
+    }
+
+    let _ = fs::remove_dir_all(&tmp);
+}
+
 fn files_named(root: &Path, name: &str) -> Vec<std::path::PathBuf> {
     collect_files(root, &|path| {
         path.file_name().and_then(|value| value.to_str()) == Some(name)

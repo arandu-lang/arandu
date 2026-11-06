@@ -18,7 +18,7 @@ fn items(db: &DatabaseImpl, file: SourceFile) -> Vec<arandu_middle::SymbolId> {
 }
 
 #[test]
-fn legacy_alias_reaches_cli_and_ide_diagnostics_with_exact_replacement() {
+fn removed_alias_reaches_cli_and_ide_diagnostics_with_exact_replacement() {
     let _guard = COUNTER_LOCK
         .lock()
         .unwrap_or_else(|error| error.into_inner());
@@ -32,8 +32,8 @@ fn legacy_alias_reaches_cli_and_ide_diagnostics_with_exact_replacement() {
     let diagnostic = checked
         .diagnostics
         .iter()
-        .find(|diagnostic| diagnostic.code == arandu_middle::DiagCode::W008LegacyAnnotationName)
-        .expect("type_check migration warning");
+        .find(|diagnostic| diagnostic.code == arandu_middle::DiagCode::N012UnknownAnnotation)
+        .expect("type_check migration error");
     let replacement = diagnostic.hints[0]
         .replacement
         .as_ref()
@@ -44,8 +44,8 @@ fn legacy_alias_reaches_cli_and_ide_diagnostics_with_exact_replacement() {
     let ide = file_ide_diagnostics(&db, file);
     let diagnostic = ide
         .iter()
-        .find(|diagnostic| diagnostic.code == "W008")
-        .expect("IDE migration warning");
+        .find(|diagnostic| diagnostic.code == "N012")
+        .expect("IDE migration error");
     let replacement = diagnostic.hints[0]
         .replacement
         .as_ref()

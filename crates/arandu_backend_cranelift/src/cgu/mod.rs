@@ -19,8 +19,26 @@ mod hash_rvalue;
 mod hash_stmt;
 mod hash_type;
 
-const CGU_HASH_SCHEMA: &[u8] = b"arandu-cgu-input-v5\0";
+// v6: functions of x86-64 ELF CGUs are padded to their `slot_capacity`.
+const CGU_HASH_SCHEMA: &[u8] = b"arandu-cgu-input-v6\0";
 const CRANELIFT_IDENTITY: &[u8] = b"cranelift-0.136.1\0";
+
+/// `int3`: a jump into the padding of a slot traps instead of running stale
+/// or partial code.
+const X86_64_TRAP: u8 = 0xCC;
+
+/// Capacity of a function slot holding `code` bytes: the smallest of a fixed
+/// sequence of 16-byte multiples, each about 1.25 times the previous. It
+/// depends only on the code size, so a clean build reproduces the slot a
+/// patched executable keeps for an edited body of the same class.
+#[must_use]
+pub fn slot_capacity(code: usize) -> usize {
+    let mut class = 16;
+    while class < code {
+        class = (class + class / 4).next_multiple_of(16).max(class + 16);
+    }
+    class
+}
 
 /// A discrete compilation unit corresponding to one function or item.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,11 +63,7 @@ pub fn partition_program(
     let mut units = Vec::with_capacity(program.funcs.len());
 
     for func in &program.funcs {
-        let name = symbols.try_get(func.symbol).map_or_else(
-            || format!("symbol_{}_{}", func.symbol.file_id, func.symbol.local_id.0),
-            |symbol| symbols.host_func_name(symbol).to_owned(),
-        );
-        let hash = compute_cgu_hash(
+        units.push(codegen_unit(
             func,
             program,
             symbols,
@@ -57,15 +71,40 @@ pub fn partition_program(
             target,
             optimization,
             toolchain_fingerprint,
-        );
-        units.push(CodegenUnit {
-            name,
-            symbol: func.symbol,
-            hash,
-        });
+        ));
     }
 
     units
+}
+
+/// The [`CodegenUnit`] of one function of `program`; [`partition_program`]
+/// maps it over every function, and a caller may map it in parallel.
+pub fn codegen_unit(
+    func: &AmirFunc,
+    program: &AmirProgram,
+    symbols: &SymbolTable,
+    type_info: &dyn CodegenTypeContext,
+    target: &Triple,
+    optimization: AotOptimization,
+    toolchain_fingerprint: &str,
+) -> CodegenUnit {
+    let name = symbols.try_get(func.symbol).map_or_else(
+        || format!("symbol_{}_{}", func.symbol.file_id, func.symbol.local_id.0),
+        |symbol| symbols.host_func_name(symbol).to_owned(),
+    );
+    CodegenUnit {
+        name,
+        symbol: func.symbol,
+        hash: compute_cgu_hash(
+            func,
+            program,
+            symbols,
+            type_info,
+            target,
+            optimization,
+            toolchain_fingerprint,
+        ),
+    }
 }
 
 /// Compute a stable digest for one function's complete machine-code inputs.
@@ -182,17 +221,63 @@ pub fn compile_cgu(
     target: &Triple,
     optimization: AotOptimization,
 ) -> Result<Vec<u8>, Diagnostic> {
+    compile_cgu_measured(unit, program, symbols, type_info, target, optimization)
+        .map(|(object, _)| object)
+}
+
+/// [`compile_cgu`] with the code bytes of its padded functions before their
+/// padding: what an edit grows or shrinks, while the slot shows only its class.
+pub fn compile_cgu_measured(
+    unit: &CodegenUnit,
+    program: &AmirProgram,
+    symbols: &SymbolTable,
+    type_info: &dyn CodegenTypeContext,
+    target: &Triple,
+    optimization: AotOptimization,
+) -> Result<(Vec<u8>, u64), Diagnostic> {
     let backend =
         CraneliftObjectBackend::for_target_with_optimization(target.clone(), optimization)?;
     let mut compiler = backend.into_compiler();
+    // Only x86-64 ELF executables are patched in place; elsewhere the padding
+    // would only grow the binary.
+    if target.architecture == target_lexicon::Architecture::X86_64
+        && target.binary_format == target_lexicon::BinaryFormat::Elf
+    {
+        compiler.slot_trap = Some(X86_64_TRAP);
+    }
 
     compiler.compile_filtered_module(program, symbols, type_info, Some(&[unit.symbol]))?;
 
+    let code_bytes = compiler.code_bytes;
     let product = compiler.module.finish();
-    product.emit().map_err(|error| {
+    let object = product.emit().map_err(|error| {
         codegen_ice(format!(
             "failed to emit CGU object '{}' for target '{target}': {error}",
             unit.name
         ))
-    })
+    })?;
+    Ok((object, code_bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::slot_capacity;
+
+    /// Classes are 16-byte multiples, grow by about a quarter and always
+    /// hold the code; equal sizes always share a class.
+    #[test]
+    fn slot_classes_hold_the_code_and_grow_by_a_quarter() {
+        let mut previous = 0;
+        for code in 0..20_000 {
+            let class = slot_capacity(code);
+            assert!(
+                class >= code && class.is_multiple_of(16),
+                "{code} -> {class}"
+            );
+            assert!(class >= previous, "classes are monotonic");
+            assert!(code < 64 || class * 4 <= code * 5 + 64, "{code} -> {class}");
+            previous = class;
+        }
+        assert_eq!(slot_capacity(100), slot_capacity(110));
+    }
 }

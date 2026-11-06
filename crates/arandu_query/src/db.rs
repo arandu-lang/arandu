@@ -12,7 +12,7 @@ mod hash_eq;
 mod registry;
 
 pub use cancel::{catch_query_cancellation, QueryCancellationToken, QueryCancelled};
-pub use hash_eq::HashEq;
+pub use hash_eq::{FingerprintEq, HashEq};
 use registry::{CstCache, FileRegistry};
 use salsa::{Database as _, Setter, Storage};
 
@@ -91,6 +91,10 @@ pub struct DatabaseImpl {
     /// Stable Salsa input bumped on every resolution-config change so queries
     /// that ran before configuration invalidate. See [`ResolutionEpoch`].
     resolution_epoch: Arc<RwLock<Option<ResolutionEpoch>>>,
+    /// Debug-only identity of this database and its clones for
+    /// [`crate::fingerprint`]'s oracle.
+    #[cfg(any(test, debug_assertions))]
+    fingerprint_scope: u64,
 }
 
 // Manual Clone: Storage is cloneable; share Arc file registry + log + CST cache.
@@ -109,6 +113,8 @@ impl Clone for DatabaseImpl {
             target_config: Arc::clone(&self.target_config),
             ctfe_config: Arc::clone(&self.ctfe_config),
             resolution_epoch: Arc::clone(&self.resolution_epoch),
+            #[cfg(any(test, debug_assertions))]
+            fingerprint_scope: self.fingerprint_scope,
         }
     }
 }
@@ -123,6 +129,11 @@ impl Default for DatabaseImpl {
 impl salsa::Database for DatabaseImpl {}
 
 impl DatabaseImpl {
+    #[cfg(any(test, debug_assertions))]
+    pub(crate) fn fingerprint_scope(&self) -> u64 {
+        self.fingerprint_scope
+    }
+
     /// Cancellation handle scoped to this database clone. Long-running tracked
     /// queries periodically observe it and unwind with Salsa's typed payload.
     #[must_use]
@@ -149,6 +160,8 @@ impl DatabaseImpl {
             target_config: Arc::new(RwLock::new(None)),
             ctfe_config: Arc::new(RwLock::new(None)),
             resolution_epoch: Arc::new(RwLock::new(None)),
+            #[cfg(any(test, debug_assertions))]
+            fingerprint_scope: crate::fingerprint::oracle::next_scope(),
         };
         db.set_target_config(DataLayout::host());
         db.set_ctfe_limits(crate::ctfe::CtfeLimits::default());
@@ -174,6 +187,8 @@ impl DatabaseImpl {
             target_config: Arc::new(RwLock::new(None)),
             ctfe_config: Arc::new(RwLock::new(None)),
             resolution_epoch: Arc::new(RwLock::new(None)),
+            #[cfg(any(test, debug_assertions))]
+            fingerprint_scope: crate::fingerprint::oracle::next_scope(),
         };
         db.set_target_config(DataLayout::host());
         db.set_ctfe_limits(crate::ctfe::CtfeLimits::default());

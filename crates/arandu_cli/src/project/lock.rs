@@ -1,5 +1,6 @@
 //! Atomic lockfile synchronization and review policies.
 
+use crate::output::errln;
 use std::fs::{self, OpenOptions};
 use std::io::ErrorKind;
 use std::path::Path;
@@ -65,7 +66,7 @@ pub fn synchronize_lockfile(
                             return Err(format!("cannot read {}: {error}", backup.display()));
                         }
                     }
-                    eprintln!(
+                    errln!(
                         "recovering invalid local lockfile; original retained at {}",
                         backup.display()
                     );
@@ -117,7 +118,7 @@ pub fn synchronize_lockfile(
                 "remote dependency graph requires explicit review:\n{diff}\nreview the complete diff, then run 'arandu update --accept'"
             ));
         }
-        eprintln!("accepting reviewed remote dependency graph:\n{diff}");
+        errln!("accepting reviewed remote dependency graph:\n{diff}");
     }
     crate::artifact::atomic_replace(&path, &expected_bytes).map_err(|error| match error {
         CliFailure::Operational {

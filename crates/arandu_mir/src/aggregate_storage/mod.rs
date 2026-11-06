@@ -6,7 +6,9 @@ mod scratch;
 mod string_origin;
 
 pub use cycles::cyclic_aggregate_local_store;
-pub use scratch::{ScratchResultAbi, function_scratch_safe, scratch_type_safe};
+pub use scratch::{
+    ScratchResultAbi, function_scratch_safe, scratch_carrier_safe, scratch_type_safe,
+};
 
 #[cfg(test)]
 use arandu_middle::amir::{AmirFunc, AmirOperand, AmirRvalue, AmirStmt, AmirTerminator, TempId};
@@ -113,6 +115,7 @@ mod tests {
             symbols,
             interner,
             ScratchResultAbi::CallerOwnedAggregates,
+            None,
         )
     }
 
@@ -268,18 +271,187 @@ mod tests {
             ScratchResultAbi::CallerOwnedAggregates,
             ScratchResultAbi::TransferredAggregates,
         ] {
-            assert!(function_scratch_safe(&function, &symbols, &interner, abi));
-            for ty in [
-                ArType::Primitive(Primitive::Str),
-                ArType::Slice(byte),
-                ArType::Ref(byte),
-                ArType::RefMut(byte),
-                ArType::Ptr(byte),
-            ] {
+            assert!(function_scratch_safe(
+                &function, &symbols, &interner, abi, None
+            ));
+            // Descriptor results keep their backing-pointer ABI.
+            for ty in [ArType::Primitive(Primitive::Str), ArType::Slice(byte)] {
                 function.return_type = interner.intern(ty);
-                assert!(!function_scratch_safe(&function, &symbols, &interner, abi));
+                assert!(!function_scratch_safe(
+                    &function, &symbols, &interner, abi, None
+                ));
+            }
+            // An address result of a function that makes no address of its
+            // own storage cannot point into it.
+            for ty in [ArType::Ref(byte), ArType::RefMut(byte), ArType::Ptr(byte)] {
+                function.return_type = interner.intern(ty);
+                assert!(function_scratch_safe(
+                    &function, &symbols, &interner, abi, None
+                ));
             }
             function.return_type = byte;
+        }
+    }
+
+    /// A reference result keeps scratch only when its proven summary shows
+    /// it borrows what the parameters' views reach: through a view formal,
+    /// or through a borrow inside a by-value formal, never the by-value
+    /// formal itself, which may live in the function's own backing.
+    #[test]
+    fn reference_results_need_a_summary_of_parameter_views() {
+        use arandu_middle::types::{
+            BorrowKind, BorrowPath, BorrowPathSegment, BorrowSource, ReturnBorrowDependency,
+            ReturnBorrowSummary,
+        };
+        let interner = TypeInterner::new();
+        let byte = interner.intern(ArType::Primitive(Primitive::U8));
+        let reference = interner.intern(ArType::Ref(byte));
+        let option = interner.intern(ArType::Option(reference));
+        // It borrows its own storage, so only the summary can admit it.
+        let (mut function, symbols) = shape_with_callee_kind(
+            reference,
+            "helper",
+            SymbolKind::Func,
+            vec![temp(0, reference), temp(1, option), temp(2, reference)],
+            |_| {
+                vec![AmirStmt::Assign {
+                    lhs: TempId::from_usize(2),
+                    rhs: AmirRvalue::Borrow(arandu_middle::amir::AmirPlace {
+                        local: arandu_middle::amir::LocalId::from_usize(1),
+                        projections: smallvec::SmallVec::new(),
+                    }),
+                }]
+            },
+        );
+        function.params = vec![TempId::from_usize(0), TempId::from_usize(1)];
+        let from = |parameter_index, parameter_path: Vec<BorrowPathSegment>| ReturnBorrowSummary {
+            dependencies: vec![ReturnBorrowDependency {
+                result_path: BorrowPath::root(),
+                sources: vec![BorrowSource {
+                    parameter_index,
+                    parameter_path: parameter_path.into(),
+                }],
+                kind: BorrowKind::Shared,
+            }],
+        };
+        let admitted = |summary: Option<&ReturnBorrowSummary>| {
+            function_scratch_safe(
+                &function,
+                &symbols,
+                &interner,
+                ScratchResultAbi::CallerOwnedAggregates,
+                summary,
+            )
+        };
+        assert!(!admitted(None), "an unproven reference result");
+        assert!(
+            !admitted(Some(&ReturnBorrowSummary {
+                dependencies: Vec::new()
+            })),
+            "a reference that borrows no parameter"
+        );
+        assert!(
+            admitted(Some(&from(0, Vec::new()))),
+            "through a view formal"
+        );
+        assert!(
+            admitted(Some(&from(1, vec![BorrowPathSegment::OptionSome]))),
+            "through the borrow a by-value formal carries"
+        );
+        assert!(
+            !admitted(Some(&from(1, Vec::new()))),
+            "the by-value formal itself"
+        );
+        assert!(!admitted(Some(&from(7, Vec::new()))), "a missing formal");
+    }
+
+    /// A pointer result keeps scratch while the function makes no address of
+    /// its own storage: borrows go through a pointer, and calls handed one of
+    /// its aggregates return nothing that may hold an address.
+    #[test]
+    fn pointer_results_need_no_address_of_own_storage() {
+        use arandu_middle::amir::{AmirPlace, AmirProjection, LocalId};
+        let interner = TypeInterner::new();
+        let byte = interner.intern(ArType::Primitive(Primitive::U8));
+        let pointer = interner.intern(ArType::Ptr(byte));
+        let reference = interner.intern(ArType::Ref(byte));
+        let array = interner.intern(ArType::Array(4, byte));
+        let place = |projections: Vec<AmirProjection>| AmirPlace {
+            local: LocalId::from_usize(1),
+            projections: projections.into(),
+        };
+        let borrowing = |place: AmirPlace| {
+            shape_with_callee_kind(
+                pointer,
+                "helper",
+                SymbolKind::Func,
+                vec![temp(0, pointer), temp(1, array), temp(2, reference)],
+                move |_| {
+                    vec![AmirStmt::Assign {
+                        lhs: TempId::from_usize(2),
+                        rhs: AmirRvalue::Borrow(place.clone()),
+                    }]
+                },
+            )
+        };
+        let (own, symbols) = borrowing(place(Vec::new()));
+        assert!(
+            !safe(&own, &symbols, &interner),
+            "an address of own storage"
+        );
+        let (through, symbols) = borrowing(place(vec![AmirProjection::Deref]));
+        assert!(
+            safe(&through, &symbols, &interner),
+            "a borrow through a pointer"
+        );
+
+        let calling = |argument: usize| {
+            shape_with_callee_kind(
+                pointer,
+                "helper",
+                SymbolKind::Func,
+                vec![temp(0, pointer), temp(1, array), temp(2, pointer)],
+                move |callee| {
+                    vec![AmirStmt::Call {
+                        lhs: Some(TempId::from_usize(0)),
+                        callee: AmirOperand::FunctionRef(callee),
+                        args: smallvec![AmirOperand::Copy(TempId::from_usize(argument))],
+                        return_borrow: None,
+                    }]
+                },
+            )
+        };
+        let (aggregate, symbols) = calling(1);
+        assert!(
+            !safe(&aggregate, &symbols, &interner),
+            "a call may return the address of the aggregate it is handed"
+        );
+        let (scalar, symbols) = calling(2);
+        assert!(
+            safe(&scalar, &symbols, &interner),
+            "a call handed a pointer"
+        );
+    }
+
+    /// Views are leaves a carrier may hold; states and nullable boxes are not.
+    #[test]
+    fn view_carriers_are_admitted_only_by_the_carrier_policy() {
+        let interner = TypeInterner::new();
+        let info = TypeInfo::default();
+        let byte = interner.intern(ArType::Primitive(Primitive::U8));
+        for view in [
+            ArType::Primitive(Primitive::Str),
+            ArType::Slice(byte),
+            ArType::Ref(byte),
+            ArType::RefMut(byte),
+        ] {
+            let carrier = interner.intern(ArType::Option(interner.intern(view)));
+            assert!(scratch_carrier_safe(carrier, &interner, &info));
+            assert!(!scratch_type_safe(carrier, &interner, &info));
+        }
+        for opaque in [ArType::Coroutine(byte), ArType::Nullable(byte)] {
+            let carrier = interner.intern(ArType::Option(interner.intern(opaque)));
+            assert!(!scratch_carrier_safe(carrier, &interner, &info));
         }
     }
 
@@ -313,7 +485,7 @@ mod tests {
                 ScratchResultAbi::TransferredAggregates,
             ] {
                 assert_eq!(
-                    function_scratch_safe(&function, &symbols, &interner, abi),
+                    function_scratch_safe(&function, &symbols, &interner, abi, None),
                     payload == byte && abi == ScratchResultAbi::CallerOwnedAggregates,
                     "only scalar caller-owned coroutine results qualify for scratch"
                 );

@@ -98,6 +98,8 @@ pub(super) struct FuncTranslator<'a> {
     pub alloc_func_idx: u32,
     /// Wasm function index of the internal `__arandu_free(ptr)`.
     pub free_func_idx: u32,
+    /// Wasm function index of the float text helper (`crate::float_text`).
+    pub float_text_func_idx: u32,
     pub frame_homes: FxHashMap<arandu_middle::amir::InstrId, u32>,
     pub heap_homes: FxHashMap<arandu_middle::amir::InstrId, u32>,
     pub returned_homes: FxHashMap<arandu_middle::amir::InstrId, u32>,
@@ -141,6 +143,9 @@ pub struct TranslationContext<'a> {
     pub alloc_func_idx: u32,
     /// Wasm function index of the internal `__arandu_free(ptr)`.
     pub free_func_idx: u32,
+    /// Wasm function index of the float text helper, present only in a
+    /// module whose code calls it.
+    pub float_text_func_idx: u32,
 }
 
 impl<'a> FuncTranslator<'a> {
@@ -177,6 +182,7 @@ impl<'a> FuncTranslator<'a> {
             code: Vec::new(),
             alloc_func_idx: ctx.alloc_func_idx,
             free_func_idx: ctx.free_func_idx,
+            float_text_func_idx: ctx.float_text_func_idx,
             frame_homes: FxHashMap::default(),
             heap_homes: FxHashMap::default(),
             returned_homes: FxHashMap::default(),

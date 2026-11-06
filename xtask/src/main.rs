@@ -96,7 +96,7 @@ Commands:
   check-architecture  Enforce compiler crate and effect boundaries
   check-agents        Validate AGENTS.md size, headings, and local links
   check-line-endings  Reject CRLF or mixed text stored in the Git index
-  bench-incremental  Measure five edit classes and prove native binary determinism
+  bench-incremental  Measure edit-class latency distributions and prove native binary determinism
   check-release-contract  Validate component versions and an optional v* tag
   prepare-release    Update every Arandu component to one version atomically
   check-slt6-sdk     Exercise an installed SDK outside the repository
@@ -121,7 +121,7 @@ Examples:
   cargo run -p xtask -- check-architecture
   cargo run -p xtask -- check-agents
   cargo run -p xtask -- check-line-endings
-  cargo run -p xtask -- bench-incremental
+  cargo run -p xtask -- bench-incremental [--corpus small|medium|large|all] [--samples N] [--warmup N] [--release]
   cargo run -p xtask -- check-release-contract [vX.Y.Z[-rc.N]]
   cargo run -p xtask -- prepare-release X.Y.Z[-rc.N]
   cargo run -p xtask -- check-slt6-sdk --arandu PATH --work-dir DIR --evidence-dir DIR

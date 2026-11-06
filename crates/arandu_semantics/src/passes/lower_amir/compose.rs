@@ -13,6 +13,50 @@ pub struct ContextualFunctionUnit<'a> {
     pub generated_symbols: &'a [SymbolId],
     pub instances: &'a [(SymbolId, FunctionInstance)],
     pub borrow_summary: &'a ReturnBorrowSummary,
+    /// Where a context in item-local coordinates sits in its file (RFC 0042).
+    /// The composition places it as it reads it rather than copying it placed.
+    pub placement: Option<UnitPlacement<'a>>,
+}
+
+/// The placement of an item-local unit context: its expression tables and
+/// spans move by `at`, and its file's symbols take their declared positions.
+#[derive(Clone, Copy)]
+pub struct UnitPlacement<'a> {
+    pub at: &'a arandu_typeck::type_checker::info::ItemPlacement,
+    pub declared: &'a arandu_middle::SymbolTable,
+}
+
+impl ContextualFunctionUnit<'_> {
+    /// The file view of a local unit: its file's declared table and the
+    /// imported symbols linked into its context. Local units of one file with
+    /// the same view hold the same own symbols, positions and marks, since
+    /// each context is the file's signature table without positions, its
+    /// headers linked into it; only span-derived and generated symbols differ.
+    fn file_view(&self) -> Option<(*const arandu_middle::SymbolTable, *const ())> {
+        let placement = self.placement?;
+        Some((
+            std::ptr::from_ref(placement.declared),
+            std::sync::Arc::as_ptr(&self.context.symbols.imported_symbols).cast(),
+        ))
+    }
+
+    /// Position in its file of `symbol` of this unit's context.
+    fn placed_span(&self, symbol: &arandu_middle::Symbol) -> Span {
+        match self.placement {
+            Some(placement) if self.context.symbols.owns(symbol.id) => placement
+                .declared
+                .try_get(symbol.id)
+                .map_or_else(|| placement.at.span(symbol.span), |declared| declared.span),
+            _ => symbol.span,
+        }
+    }
+
+    /// `symbol` of this unit's context at its position in its file.
+    fn placed(&self, symbol: &arandu_middle::Symbol) -> arandu_middle::Symbol {
+        let mut placed = symbol.clone();
+        placed.span = self.placed_span(symbol);
+        placed
+    }
 }
 
 pub struct ComposedUnits {
@@ -30,27 +74,97 @@ pub fn compose_function_units(
 ) -> Result<ComposedUnits, Vec<Diagnostic>> {
     let mut canonical = FxHashMap::<FunctionInstance, SymbolId>::default();
     let mut diagnostics = Vec::new();
+    // Positions of a file's symbols are current only in contexts of its own
+    // units. An importer records an imported symbol at its `import` and
+    // observes imported declarations by surface, so it may also keep older
+    // positions. Debug info and diagnostics read these spans, so a symbol of
+    // another file takes its position from a unit of that file. The owner's
+    // context also carries the symbol's host name, tooling root and `@Export`
+    // marks, so importer copies of these symbols are skipped below: every
+    // unit's context repeats its whole import closure.
+    let mut owned_files = FxHashSet::default();
+    let mut previous = None;
+    for input in units {
+        poll();
+        let own = &input.context.symbols;
+        let repeats = std::mem::replace(&mut previous, input.file_view()) == input.file_view()
+            && previous.is_some();
+        if own.file_id == aggregate.symbols.file_id || own.file_id != input.key.definition.file_id {
+            continue;
+        }
+        owned_files.insert(own.file_id);
+        #[cfg(debug_assertions)]
+        if repeats {
+            assert_registered_like(aggregate, input);
+        }
+        // A unit of the file view registered just before adds only the
+        // span-derived symbols that may be its own.
+        let symbols: Box<dyn Iterator<Item = &arandu_middle::Symbol>> = if repeats {
+            Box::new(own.iter_synthetic())
+        } else {
+            Box::new(own.iter_own())
+        };
+        for source in symbols.filter(|symbol| !input.generated_symbols.contains(&symbol.id)) {
+            poll();
+            if aggregate.symbols.try_get(source.id).is_none() {
+                aggregate
+                    .symbols_mut()
+                    .register_imported_symbol(input.placed(source));
+            } else if let Some(imported) = aggregate
+                .symbols_mut()
+                .imported_symbols_mut()
+                .get_mut(&source.id)
+            {
+                imported.span = input.placed_span(source);
+            }
+            merge_symbol_marks(aggregate, own, source.id);
+        }
+    }
     // Register every source symbol before allocating aggregate-local symbols.
     // The entry file's source table must already be complete; importing an ID
     // from that same file cannot extend its dense source table.
+    let entry_file = aggregate.symbols.file_id;
+    // Units of one file share their imported symbols by pointer, so each set
+    // is registered once; a unit that repeats one only adds its own marks.
+    let mut registered_imports = FxHashSet::default();
+    // Units of one file share their linked member maps, and merging the map
+    // merged just before changes nothing. Maps of other files may bind the
+    // same key differently, so only the previous merge may be skipped.
+    let mut merged_maps = [std::ptr::null::<()>(); 3];
+    let mut previous = None;
     for input in units {
         poll();
+        let table = &input.context.symbols;
+        let repeats = std::mem::replace(&mut previous, input.file_view()) == input.file_view()
+            && previous.is_some();
         let generated = input
             .generated_symbols
             .iter()
             .copied()
             .collect::<FxHashSet<_>>();
-        for source in input
-            .context
-            .symbols
-            .iter()
-            .filter(|symbol| !generated.contains(&symbol.id))
+        let keep = |id: SymbolId| {
+            !generated.contains(&id)
+                && (id.file_id == entry_file || !owned_files.contains(&id.file_id))
+        };
+        let repeated = !registered_imports.insert(std::sync::Arc::as_ptr(&table.imported_symbols));
+        let imported = (!repeated).then(|| table.imported_symbols.values());
+        // The own symbols of a file another unit owns are that unit's to
+        // register; `keep` would reject every one of them.
+        let own = (table.file_id == entry_file || !owned_files.contains(&table.file_id))
+            .then(|| table.iter_own());
+        for source in own
+            .into_iter()
+            .flatten()
+            .chain(imported.into_iter().flatten())
+            .filter(|symbol| keep(symbol.id))
         {
             poll();
             if aggregate.symbols.try_get(source.id).is_none() {
                 if source.id.file_id == aggregate.symbols.file_id {
                     if source.id.is_synthetic() {
-                        aggregate.symbols_mut().register_synthetic(source.clone());
+                        aggregate
+                            .symbols_mut()
+                            .register_synthetic(input.placed(source));
                     } else {
                         return Err(vec![ice(
                             "composition is missing an entry-file source symbol",
@@ -60,56 +174,37 @@ pub fn compose_function_units(
                 } else {
                     aggregate
                         .symbols_mut()
-                        .register_imported_symbol(source.clone());
+                        .register_imported_symbol(input.placed(source));
                 }
             }
-            if let Some(name) = input.context.symbols.host_function_names.get(&source.id) {
-                aggregate
-                    .symbols_mut()
-                    .host_function_names
-                    .insert(source.id, name.clone());
-            }
-            if input
-                .context
-                .symbols
-                .tooling_entrypoints
-                .contains(&source.id)
-            {
-                aggregate
-                    .symbols_mut()
-                    .tooling_entrypoints
-                    .insert(source.id);
-            }
-            // An `@Export` of an imported module is a linker root too; the
-            // flat name alone would keep it internal and hide name clashes.
-            if input.context.symbols.is_exported(source.id) {
-                aggregate.symbols_mut().exported_functions.insert(source.id);
-            }
+            merge_symbol_marks(aggregate, table, source.id);
         }
-        aggregate.symbols_mut().module_members.extend(
-            input
-                .context
-                .symbols
-                .module_members
-                .iter()
-                .map(|(key, value)| (key.clone(), *value)),
-        );
-        aggregate.symbols_mut().associated_members.extend(
-            input
-                .context
-                .symbols
-                .associated_members
-                .iter()
-                .map(|(key, value)| (key.clone(), *value)),
-        );
-        aggregate.symbols_mut().type_params.extend(
-            input
-                .context
-                .symbols
-                .type_params
-                .iter()
-                .map(|(key, value)| (*key, value.clone())),
-        );
+        // The marks a unit of the file view merged just before already hold
+        // what this one's imported symbols carry.
+        if repeated && !repeats {
+            merge_imported_marks(aggregate, table, keep);
+        }
+        #[cfg(debug_assertions)]
+        if repeated && repeats {
+            assert_imported_marks_held(aggregate, table, &keep);
+        }
+        let symbols = aggregate.symbols_mut();
+        let context = &input.context.symbols;
+        let maps = [
+            std::sync::Arc::as_ptr(&context.module_members).cast::<()>(),
+            std::sync::Arc::as_ptr(&context.associated_members).cast::<()>(),
+            std::sync::Arc::as_ptr(&context.type_params).cast::<()>(),
+        ];
+        if maps[0] != merged_maps[0] {
+            insert_changed(&mut symbols.module_members, &context.module_members);
+        }
+        if maps[1] != merged_maps[1] {
+            insert_changed(&mut symbols.associated_members, &context.associated_members);
+        }
+        if maps[2] != merged_maps[2] {
+            insert_changed(&mut symbols.type_params, &context.type_params);
+        }
+        merged_maps = maps;
     }
     for input in units {
         poll();
@@ -119,38 +214,45 @@ pub fn compose_function_units(
     }
     // Allocations are scoped and structural-key deduplicated. An incidental
     // symbol number from one unit never aliases another unit's definition.
-    for input in units {
-        poll();
-        for (symbol, key) in input.instances {
-            if canonical.contains_key(key) {
-                continue;
-            }
-            let source = input.context.symbols.try_get(*symbol).ok_or_else(|| {
-                vec![ice(
-                    "instance header has no symbol",
-                    input
-                        .unit
-                        .function
-                        .temps
-                        .first()
-                        .map_or(Span::new(0, 0, 0), |temp| temp.span),
-                )]
-            })?;
-            let global = aggregate.symbols.global_scope();
-            let scope = aggregate.symbols_mut().new_scope(global);
-            let mapped = aggregate
-                .symbols_mut()
-                .define(scope, &source.name, source.kind, source.span)
-                .map_err(|_| vec![ice("instance symbol allocation collided", source.span)])?;
-            if let Some(name) = input.context.symbols.host_function_names.get(symbol) {
-                aggregate
+    // An instance takes its symbol from the unit that defines it, whose
+    // context positions it; a caller's context names the callee header
+    // without positions (RFC 0042). The second pass covers instances that
+    // no unit defines.
+    for defining in [true, false] {
+        for input in units {
+            poll();
+            for (symbol, key) in input.instances {
+                if canonical.contains_key(key) || (defining && input.key != key) {
+                    continue;
+                }
+                let source = input.context.symbols.try_get(*symbol).ok_or_else(|| {
+                    vec![ice(
+                        "instance header has no symbol",
+                        input
+                            .unit
+                            .function
+                            .temps
+                            .first()
+                            .map_or(Span::new(0, 0, 0), |temp| temp.span),
+                    )]
+                })?;
+                let global = aggregate.symbols.global_scope();
+                let scope = aggregate.symbols_mut().new_scope(global);
+                let span = input.placed_span(source);
+                let mapped = aggregate
                     .symbols_mut()
-                    .host_function_names
-                    .insert(mapped, name.clone());
-            }
-            canonical.insert(key.clone(), mapped);
-            if input.context.symbols.tooling_entrypoints.contains(symbol) {
-                aggregate.symbols_mut().tooling_entrypoints.insert(mapped);
+                    .define(scope, &source.name, source.kind, span)
+                    .map_err(|_| vec![ice("instance symbol allocation collided", span)])?;
+                if let Some(name) = input.context.symbols.host_function_names.get(symbol) {
+                    aggregate
+                        .symbols_mut()
+                        .host_function_names
+                        .insert(mapped, name.clone());
+                }
+                canonical.insert(key.clone(), mapped);
+                if input.context.symbols.tooling_entrypoints.contains(symbol) {
+                    aggregate.symbols_mut().tooling_entrypoints.insert(mapped);
+                }
             }
         }
     }
@@ -204,21 +306,30 @@ pub fn compose_function_units(
             let scope = *generated_scopes
                 .entry(source.scope)
                 .or_insert_with(|| aggregate.symbols_mut().new_scope(global));
+            let span = input.placed_span(source);
             let mapped = aggregate
                 .symbols_mut()
-                .define(scope, &source.name, source.kind, source.span)
-                .map_err(|_| vec![ice("generated local allocation collided", source.span)])?;
+                .define(scope, &source.name, source.kind, span)
+                .map_err(|_| vec![ice("generated local allocation collided", span)])?;
             symbols.insert(symbol, mapped);
         }
         let remap_symbol = |symbol: SymbolId| symbols.get(&symbol).copied().unwrap_or(symbol);
         // Nominal metadata is source-owned. Specialization allocates only
         // functions/parameters/locals, so it cannot rebind named type symbols.
         let include_expressions = input.key.definition.file_id == aggregate.symbols.file_id;
-        aggregate.type_info_mut().merge_codegen_context(
-            &input.context.type_info,
-            remap_symbol,
-            include_expressions,
-        );
+        match input.placement {
+            Some(placement) => aggregate.type_info_mut().merge_codegen_context_at(
+                &input.context.type_info,
+                remap_symbol,
+                include_expressions,
+                placement.at,
+            ),
+            None => aggregate.type_info_mut().merge_codegen_context(
+                &input.context.type_info,
+                remap_symbol,
+                include_expressions,
+            ),
+        }
         let mut unit = input.unit.clone();
         let mut types = FxHashMap::<TypeId, TypeId>::default();
         let mut invalid = false;
@@ -303,6 +414,129 @@ pub fn compose_function_units(
         diagnostics,
         instances,
     })
+}
+
+/// Checks that registering the own symbols of `input`, a unit of the file
+/// view registered just before, would change nothing.
+#[cfg(debug_assertions)]
+fn assert_registered_like(aggregate: &TypeCheckResult, input: &ContextualFunctionUnit<'_>) {
+    let own = &input.context.symbols;
+    for source in own
+        .iter_own()
+        .filter(|symbol| !input.generated_symbols.contains(&symbol.id) && !symbol.id.is_synthetic())
+    {
+        assert_eq!(
+            aggregate.symbols.try_get(source.id),
+            Some(&input.placed(source)),
+            "a unit of the same file view holds another symbol"
+        );
+        if let Some(name) = own.host_function_names.get(&source.id) {
+            assert_eq!(
+                aggregate.symbols.host_function_names.get(&source.id),
+                Some(name),
+                "a unit of the same file view holds another host name"
+            );
+        }
+        assert!(
+            !own.tooling_entrypoints.contains(&source.id)
+                || aggregate.symbols.tooling_entrypoints.contains(&source.id)
+        );
+        assert!(
+            !own.is_exported(source.id)
+                || aggregate.symbols.exported_functions.contains(&source.id)
+        );
+    }
+}
+
+/// Checks that [`merge_imported_marks`] of `context` would change nothing.
+#[cfg(debug_assertions)]
+fn assert_imported_marks_held(
+    aggregate: &TypeCheckResult,
+    context: &arandu_middle::SymbolTable,
+    keep: &dyn Fn(SymbolId) -> bool,
+) {
+    let imported =
+        |symbol: SymbolId| context.imported_symbols.contains_key(&symbol) && keep(symbol);
+    for (symbol, name) in &context.host_function_names {
+        if imported(*symbol) {
+            assert_eq!(
+                aggregate.symbols.host_function_names.get(symbol),
+                Some(name)
+            );
+        }
+    }
+    for symbol in &context.tooling_entrypoints {
+        assert!(!imported(*symbol) || aggregate.symbols.tooling_entrypoints.contains(symbol));
+    }
+    for symbol in &context.exported_functions {
+        assert!(!imported(*symbol) || aggregate.symbols.exported_functions.contains(symbol));
+    }
+}
+
+/// [`merge_symbol_marks`] of every imported symbol of `context` that `keep`
+/// selects, read from its mark tables rather than from its symbols.
+fn merge_imported_marks(
+    aggregate: &mut TypeCheckResult,
+    context: &arandu_middle::SymbolTable,
+    keep: impl Fn(SymbolId) -> bool,
+) {
+    let imported =
+        |symbol: SymbolId| context.imported_symbols.contains_key(&symbol) && keep(symbol);
+    for (&symbol, name) in &context.host_function_names {
+        if imported(symbol) {
+            aggregate
+                .symbols_mut()
+                .host_function_names
+                .insert(symbol, name.clone());
+        }
+    }
+    for &symbol in &context.tooling_entrypoints {
+        if imported(symbol) {
+            aggregate.symbols_mut().tooling_entrypoints.insert(symbol);
+        }
+    }
+    for &symbol in &context.exported_functions {
+        if imported(symbol) {
+            aggregate.symbols_mut().exported_functions.insert(symbol);
+        }
+    }
+}
+
+/// Copies `symbol`'s host name, tooling root and `@Export` marks from
+/// `context` into the aggregate.
+fn merge_symbol_marks(
+    aggregate: &mut TypeCheckResult,
+    context: &arandu_middle::SymbolTable,
+    symbol: SymbolId,
+) {
+    if let Some(name) = context.host_function_names.get(&symbol) {
+        aggregate
+            .symbols_mut()
+            .host_function_names
+            .insert(symbol, name.clone());
+    }
+    if context.tooling_entrypoints.contains(&symbol) {
+        aggregate.symbols_mut().tooling_entrypoints.insert(symbol);
+    }
+    // An `@Export` of an imported module is a linker root too; the flat name
+    // alone would keep it internal and hide name clashes.
+    if context.is_exported(symbol) {
+        aggregate.symbols_mut().exported_functions.insert(symbol);
+    }
+}
+
+/// `extend` with `source`, cloning only the entries `target` lacks or holds
+/// with another value, and copying a shared `target` only then.
+fn insert_changed<K, V>(target: &mut std::sync::Arc<FxHashMap<K, V>>, source: &FxHashMap<K, V>)
+where
+    K: Clone + Eq + std::hash::Hash,
+    V: Clone + PartialEq,
+{
+    for (key, value) in source {
+        if target.get(key) != Some(value) {
+            std::sync::Arc::make_mut(target).insert(key.clone(), value.clone());
+        }
+    }
 }
 
 fn ice(message: &str, span: Span) -> Diagnostic {

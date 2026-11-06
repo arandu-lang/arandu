@@ -126,7 +126,7 @@ pub(super) fn install_thread_capture(
         );
     }
     symbols
-        .associated_members
+        .associated_members_mut()
         .insert((struct_symbol, "run".into()), run_symbol);
     symbols
         .host_function_names

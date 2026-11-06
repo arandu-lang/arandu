@@ -18,6 +18,9 @@ mod cli_archive;
 #[path = "cli_suite/cli_autoref.rs"]
 mod cli_autoref;
 
+#[cfg(unix)]
+#[path = "cli_suite/cli_agg_endurance.rs"]
+mod cli_agg_endurance;
 #[path = "cli_suite/cli_ownership_regressions.rs"]
 mod cli_ownership_regressions;
 
@@ -32,6 +35,9 @@ mod cli_borrowed_views;
 
 #[path = "cli_suite/cli_cgu_incremental.rs"]
 mod cli_cgu_incremental;
+
+#[path = "cli_suite/cli_daemon.rs"]
+mod cli_daemon;
 
 #[path = "cli_suite/cli_color_handling.rs"]
 mod cli_color_handling;
@@ -59,6 +65,9 @@ mod cli_incremental_session;
 
 #[path = "cli_suite/cli_minimal_gold.rs"]
 mod cli_minimal_gold;
+
+#[path = "cli_suite/cli_module_symbols.rs"]
+mod cli_module_symbols;
 
 #[path = "cli_suite/cli_opt_await_suspend.rs"]
 mod cli_opt_await_suspend;

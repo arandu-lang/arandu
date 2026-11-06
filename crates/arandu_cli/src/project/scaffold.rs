@@ -305,6 +305,7 @@ fn scaffold_into(root: &Path, name: &str, options: ScaffoldOptions, vcs_probe: &
         )
     })?;
 
+    let toolchain = toolchain_requirement(super::load::ARANDU_VERSION);
     let toml = format!(
         r#"# Arandu package manifest
 schema = 1
@@ -315,7 +316,7 @@ version = "0.0.1"
 edition = "2026"
 
 [toolchain]
-arandu = ">=0.1.0-rc.4, <0.2.0"
+arandu = "{toolchain}"
 
 [targets.bin]
 name = "{name}"
@@ -392,6 +393,18 @@ deny = ["UnknownCapability"]
     Ok(CliSuccess::Done)
 }
 
+/// The toolchain range a new manifest declares: this toolchain up to the next
+/// release that may break it (the next minor below 1.0, the next major after).
+fn toolchain_requirement(version: &str) -> String {
+    let core = version.split(['-', '+']).next().unwrap_or(version);
+    let mut parts = core.split('.').map(str::parse::<u64>);
+    match (parts.next(), parts.next()) {
+        (Some(Ok(0)), Some(Ok(minor))) => format!(">={version}, <0.{}.0", minor + 1),
+        (Some(Ok(major)), Some(Ok(_))) => format!(">={version}, <{}.0.0", major + 1),
+        _ => format!(">={version}"),
+    }
+}
+
 fn print_created(name: &str, kind: ScaffoldKind, quiet: bool) {
     if quiet {
         return;
@@ -407,5 +420,17 @@ fn print_created(name: &str, kind: ScaffoldKind, quiet: bool) {
     println!("next:\n  cd {name}\n  arandu check");
     if kind == ScaffoldKind::Binary {
         println!("  arandu run");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::toolchain_requirement;
+
+    #[test]
+    fn new_manifests_accept_this_toolchain_until_the_next_breaking_release() {
+        assert_eq!(toolchain_requirement("0.2.0"), ">=0.2.0, <0.3.0");
+        assert_eq!(toolchain_requirement("0.2.1-rc.3"), ">=0.2.1-rc.3, <0.3.0");
+        assert_eq!(toolchain_requirement("1.4.2"), ">=1.4.2, <2.0.0");
     }
 }

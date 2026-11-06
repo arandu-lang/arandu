@@ -6,6 +6,7 @@ pub mod pretty;
 pub mod program;
 pub mod reachability;
 pub mod rpo;
+mod spans;
 pub mod stmt;
 pub mod value;
 pub mod visit;

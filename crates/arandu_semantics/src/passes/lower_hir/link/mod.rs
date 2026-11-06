@@ -295,21 +295,26 @@ pub fn link_hir_module(
     // Module membership remains available after whole-program linking for
     // namespace lookup and diagnostics. Keys retain the source SymbolId,
     // matching the imported symbols registered above.
-    for ((module, member), member_id) in &src_tc.symbols.module_members {
-        dest_tc
-            .symbols_mut()
-            .module_members
-            .insert((module.clone(), member.clone()), *member_id);
+    // Writes only what differs, so tables that share the maps keep them.
+    for (key, member_id) in src_tc.symbols.module_members.iter() {
+        if dest_tc.symbols.module_members.get(key) != Some(member_id) {
+            dest_tc
+                .symbols_mut()
+                .module_members_mut()
+                .insert(key.clone(), *member_id);
+        }
     }
     // Associated methods (type symbol → member) so method dispatch can resolve
     // statically across modules (`self.total.add(...)` → `Stats.add`). Without
     // this map the merged table degrades an `obj.field.method(...)` call to an
     // indirect function call, which neither backend implements.
-    for ((ty, member), member_id) in &src_tc.symbols.associated_members {
-        dest_tc
-            .symbols_mut()
-            .associated_members
-            .insert((*ty, member.clone()), *member_id);
+    for (key, member_id) in src_tc.symbols.associated_members.iter() {
+        if dest_tc.symbols.associated_members.get(key) != Some(member_id) {
+            dest_tc
+                .symbols_mut()
+                .associated_members_mut()
+                .insert(key.clone(), *member_id);
+        }
     }
     for (symbol, name) in &src_tc.symbols.host_function_names {
         dest_tc
@@ -321,12 +326,13 @@ pub fn link_hir_module(
         .symbols_mut()
         .tooling_entrypoints
         .extend(src_tc.symbols.tooling_entrypoints.iter().copied());
-    for (type_id, params) in &src_tc.symbols.type_params {
-        dest_tc
-            .symbols_mut()
-            .type_params
-            .entry(*type_id)
-            .or_insert_with(|| params.clone());
+    for (type_id, params) in src_tc.symbols.type_params.iter() {
+        if !dest_tc.symbols.type_params.contains_key(type_id) {
+            dest_tc
+                .symbols_mut()
+                .type_params_mut()
+                .insert(*type_id, params.clone());
+        }
     }
 }
 

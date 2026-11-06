@@ -364,11 +364,19 @@ impl<M: Module> AranduModule<M> {
                 translator.translate()?;
             }
 
-            self.module
-                .define_function(func_id, &mut context)
-                .map_err(|err| {
-                    codegen_ice(format!("failed to define function '{}': {err:?}", sym.name))
-                })?;
+            match self.slot_trap {
+                Some(trap) => define_padded_function(&mut self.module, func_id, &mut context, trap)
+                    .map(|code| {
+                        self.code_bytes += code;
+                    }),
+                None => self
+                    .module
+                    .define_function(func_id, &mut context)
+                    .map_err(Box::new),
+            }
+            .map_err(|err| {
+                codegen_ice(format!("failed to define function '{}': {err:?}", sym.name))
+            })?;
             if let Some(debug) = &mut self.debug
                 && let Some(code) = context.compiled_code()
             {
@@ -517,4 +525,39 @@ impl<M: Module> AranduModule<M> {
 
         Ok(func_ids)
     }
+}
+
+/// `Module::define_function` with the code padded to its slot capacity by
+/// `trap` bytes: a body whose size stays in its class keeps the same slot, so a
+/// clean build of the edited body lays the executable out as the patched one.
+/// Returns the code bytes before the padding.
+fn define_padded_function<M: Module>(
+    module: &mut M,
+    func_id: FuncId,
+    context: &mut cranelift_codegen::Context,
+    trap: u8,
+) -> Result<u64, Box<cranelift_module::ModuleError>> {
+    let (alignment, mut bytes, relocs) = {
+        let compiled = context
+            .compile(
+                module.isa(),
+                &mut cranelift_codegen::control::ControlPlane::default(),
+            )
+            .map_err(|error| Box::new(error.into()))?;
+        (
+            compiled.buffer.alignment,
+            compiled.buffer.data().to_vec(),
+            compiled.buffer.relocs().to_vec(),
+        )
+    };
+    let relocs = relocs
+        .iter()
+        .map(|reloc| cranelift_module::ModuleReloc::from_mach_reloc(reloc, &context.func, func_id))
+        .collect::<Vec<_>>();
+    let code = bytes.len() as u64;
+    bytes.resize(crate::cgu::slot_capacity(bytes.len()), trap);
+    module
+        .define_function_bytes(func_id, u64::from(alignment), &bytes, &relocs)
+        .map_err(Box::new)?;
+    Ok(code)
 }

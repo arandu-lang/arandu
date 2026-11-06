@@ -274,7 +274,17 @@ pub fn lower_amir(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<LowerAmi
     for diagnostic in &composed.diagnostics {
         arandu_middle::db::DiagnosticsAccumulator(diagnostic.clone()).accumulate(db);
     }
-    HashEq::from_arc(std::sync::Arc::clone(&composed.artifacts))
+    // The artifacts are part of the composed program, whose identity already
+    // determines them.
+    let identity = crate::StableHash::stable_hash(composed);
+    #[cfg(any(test, debug_assertions))]
+    crate::fingerprint::verify(
+        db,
+        "lower_amir",
+        identity,
+        crate::StableHash::stable_hash(&*composed.artifacts),
+    );
+    HashEq::with_identity(std::sync::Arc::clone(&composed.artifacts), identity)
 }
 
 #[salsa::tracked]

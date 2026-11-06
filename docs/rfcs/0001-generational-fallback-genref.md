@@ -48,6 +48,33 @@ O GenRef garante segurança de memória sem recorrer a um *Tracing Garbage Colle
 
 ---
 
+### Emenda de soundness do R0 (0.2.0, AGG.1)
+
+A auditoria AGG.1 reproduziu uma miscompilação na promoção implícita
+gerenciada pelo compilador. Um borrow de payload `Copy` gravado em memória
+(campo de agregado, ou através de outra referência) era promovido: o local
+passava a ser um `GenRef` e o handle era gravado num slot tipado como `&T`.
+Referências são ponteiros crus em runtime, então toda releitura por essa
+memória, na mesma função ou em outra, interpretava o handle como ponteiro.
+Cranelift JIT, Cranelift AOT e LLVM devolviam os bits do handle em vez do
+valor (por exemplo, `*holder.value` dava `2` para um valor `5`), e o backend C
+emitia C inválido. Só um deref pelo próprio temporário SSA lia o valor certo.
+
+Decisão (soundness first): esses escapes passam a ser `O004` com severidade
+de erro, como já ocorria com borrows projetados, e o pipeline não executa mais
+a promoção implícita (`arandu_mir::gen_promote` permanece, sem chamadores de
+produção). O congelamento do R0 continua valendo para handles explícitos
+(`GenArena`/`GenRef`), erros tipados, `@NoFallback`, `O010`, confinamento e
+métricas. O que muda é que a promoção implícita de referências guardadas em
+memória deixa de existir no R0, em vez de produzir resultados errados. Borrows
+cujo payload não é promovido continuam como nota.
+
+Reabilitar a promoção exige uma representação de primeira classe para
+referências que podem carregar handle (R1). Regressão:
+`arandu_query/tests/genref_gold_pipeline.rs::o004_rejects_a_promotable_borrow_stored_in_memory`.
+
+---
+
 ## 3. Motivação (Motivation)
 
 Sistemas contemporâneos enfrentam um dilema histórico no gerenciamento de memória:

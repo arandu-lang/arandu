@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.0
+
+- Legacy annotation spellings (`@no_fallback`, `@repr`, ...) are unknown annotations (N012); the quick fix replaces them with the canonical name and hover names it.
+- Diagnostics and go-to for imported functions point at their own declaration instead of the `import`.
+
 ## 0.1.11
 
 - Keep `move || ...` thread closures on the explicit ThreadJob path: the typechecker validates Send captures and rejects the closure with U001.

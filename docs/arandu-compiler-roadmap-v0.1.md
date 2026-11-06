@@ -1,7 +1,7 @@
 # Arandu — Roadmap mestre
 
-**Revisão:** 2026-10-18. **Base publicada:** 0.1.10.
-**Próximo marco de produto:** 0.2.0 — compilador quente e imagem dev recuperável.
+**Revisão:** 2026-11-06. **Base publicada:** 0.2.0.
+**Próximo marco de produto:** 0.3.x — granularidade por instância.
 
 Esta é a única fila permanente do projeto. Contratos descrevem comportamento
 implementado; RFCs descrevem propostas e seus recortes; relatórios de release
@@ -99,14 +99,13 @@ mesmo após uma rodada completa verde anterior.
 
 Ordem imediata para a próxima campanha, mantendo correções independentes na
 0.1.x quando necessário. DIST.3, GATE.LSP, NUM.C, WASM.CFG e os métodos de
-primitivos saíram na v0.1.11 (2026-10-26) e deixaram a fila.
+primitivos saíram na v0.1.11 (2026-10-26) e deixaram a fila; HOT.2–6 e
+WASM.FLOAT saíram na v0.2.0 (2026-11-06).
 
 | Prioridade / ID | Trabalho aberto | Dono e prova de saída |
 | --- | --- | --- |
-| P1 / HOT.1 | feito na 0.2.0: `bench-incremental` com corpora pequeno/médio/grande, p50/p95, CPU/RSS, caminho de publicação, delta de bytes por função e retenção de slot | falta a execução no host de referência |
-| P1 / HOT.2–6 | HOT.2–5 feitos na 0.2.0 (sessão, daemon, imagem dev, recuperação); HOT.6 com endurance de 1000 edições e RSS/filas limitados | matriz nativa instalada pelo workflow de release; gate de p95 por decisão do mantenedor |
-| P1 / AGG.1 | reproduzir e classificar gaps de lifetime/cleanup dos fallbacks admitidos; correção local de GenArena.get com Copy e novo getRef para impedir duplicação de owners. Corrigido localmente na 0.2.0: o vazamento do Cranelift em agregados com view (`Option<ref T>`; ~225 B por `GenArena.getRef`), por admissão de carriers no scratch da invocação, retornos `ref` com resumo provado e handle por escalares no `GenArena` | MIR/backends; resultados corretos, alloc/free e RSS limitado: `cli_agg_endurance` em C (ASan/LSan e RSS) e na JIT (RSS) passa; resultados `ptr`/`ref` promovidos pela análise de escape de endereço no AMIR (`agg1_pointer_results.aru`); residual documentado em ABI/layout (funções que tomam o endereço do próprio armazenamento, carriers no Wasm), destino dual-locus (RFC 0043) |
-| P1 / WASM.FLOAT | implementado localmente na 0.2.0: o `ToStr` de `f64` no Wasm usa o algoritmo exato de referência do `flt2dec` do Rust (Dragon4 em modo shortest, bignum de 40 limbs na shadow stack, sem tabelas) numa função auxiliar emitida só quando o módulo formata float | `float_text` igual a `format!` em 200 mil padrões de bits, 50 mil decimais curtos e todas as potências de 2 e de 10; paridade Cranelift/C/Wasm em `cli_backend_parity`; custo ~1,9 KB por módulo que formata float, ~64 B por chamada (antes ~580 B inline) |
+| P1 / HOT.1 | publicado na v0.2.0: `bench-incremental` com corpora pequeno/médio/grande, p50/p95, CPU/RSS, caminho de publicação, delta de bytes por função e retenção de slot | falta declarar e medir o host de referência, que transforma o p95 em gate |
+| P1 / AGG.1 | reproduzir e classificar gaps de lifetime/cleanup dos fallbacks admitidos; correção local de GenArena.get com Copy e novo getRef para impedir duplicação de owners. Corrigido na v0.2.0: o vazamento do Cranelift em agregados com view (`Option<ref T>`; ~225 B por `GenArena.getRef`), por admissão de carriers no scratch da invocação, retornos `ref` com resumo provado e handle por escalares no `GenArena` | MIR/backends; resultados corretos, alloc/free e RSS limitado: `cli_agg_endurance` em C (ASan/LSan e RSS) e na JIT (RSS) passa; resultados `ptr`/`ref` promovidos pela análise de escape de endereço no AMIR (`agg1_pointer_results.aru`); residual documentado em ABI/layout (funções que tomam o endereço do próprio armazenamento, carriers no Wasm), destino dual-locus (RFC 0043) |
 | P2 / CT.4–5 e IDE | campanha de editor/playground e ampliação do corpus real | query/IDE/web/extensão; prova correspondente, sem equiparar smoke instalado ao universo de alvos |
 | P2 / SL_T, SL_P | fechar soak e evidência nativa específica antes de promover `gold` | harness/runtime; artefatos versionados por campanha e matriz descrita nos contratos |
 
@@ -195,7 +194,7 @@ associada. Cada candidata declara seu recorte e limitações antes da promoção
 | Série | Resultado principal | Dependências / gate | Estado |
 | --- | --- | --- | --- |
 | 0.1.x / 0.1.11 | fundação publicada e fechamento autorizado da stdlib | bloqueadores, ST.0–16, regressões e distribuição do pacote exato | 0.1.11 publicada (2026-10-26) |
-| 0.2.x | motor quente e imagem dev recuperável | sessão Salsa viva, protocolo/fallback, equivalência clean e p95 ≤100 ms em edição de corpo no host/corpus de referência | `in_progress`: HOT.1–5 feitos na `0.2.0-dev`; promoção pendente |
+| 0.2.x | motor quente e imagem dev recuperável | sessão Salsa viva, protocolo/fallback, equivalência clean e p95 ≤100 ms em edição de corpo no host/corpus de referência | 0.2.0 publicada (2026-11-06); p95 registrado, não imposto |
 | 0.3.x | granularidade por instância e expressividade delimitada | completar produtores/CGUs, retenção e cutoff; p95 ≤10 ms no workload de referência; closures e reflexão inicial têm gates próprios | `partial` na granularidade; expansões `planned` |
 | 0.4.x | qualidade de código de release mensurada | OPT/AOT oracle, segurança de alias/escape e benchmarks; LLVM opcional só após aceitação da RFC 0031, paridade e distribuição | `experimental` O2; backend novo `planned` |
 | 0.5.x | contratos portáveis de ABI, recursos e interoperabilidade | layout/calling convention por alvo, ownership/FFI e runtime; capabilities/freestanding e WIT/mobile avançam por recortes | base `partial`; expansões `planned` |
@@ -210,7 +209,7 @@ associada. Cada candidata declara seu recorte e limitações antes da promoção
 
 ```mermaid
 flowchart LR
-    V01["0.1.x • fundação publicada"] --> V02["0.2.x • motor quente"]
+    V01["0.1.x • fundação publicada"] --> V02["0.2.x • motor quente publicado"]
     V02 --> V03["0.3.x • instâncias"]
     V03 --> V04["0.4.x • otimização medida"]
     V04 --> V05["0.5.x • ABI e recursos"]
@@ -381,7 +380,7 @@ antes/depois. Contagem de malloc do processo não mede apenas LUT nem prova leak
 | Marco | Estado | Limite atual / saída |
 | --- | --- | --- |
 | Fundação 0.1 | `done` | fingerprints/closure e artefato verificados, cutoff de trivia, chaves CGU canônicas, sidecars, reuse sem link e patch ELF fail-closed Linux; CLI ainda cria DB nova |
-| Motor quente 0.2 | `in_progress` | HOT.1–5 feitos e HOT.6 com endurance na `0.2.0-dev`: sessão viva, daemon fail-closed, patch em slots e equivalência clean em Linux x86-64 ELF; p95 registrado sem host de referência; macOS/Windows com link completo |
+| Motor quente 0.2 | `done` (v0.2.0) | sessão viva, daemon fail-closed, patch em slots e equivalência clean em Linux x86-64 ELF; endurance de 1000 edições; matriz instalada Linux/macOS/Windows; p95 registrado sem host de referência; macOS/Windows com link completo |
 | Instâncias 0.3 | `partial` | produtores/compositor e closure CGU ativos, regressões de instância nova e objetos clean; faltam gates completos de entrega, retenção, latência e matriz; p95 ≤10 ms delimitado |
 
 CAS remoto/distribuído e persistência de IR são decisões posteriores ao perfil

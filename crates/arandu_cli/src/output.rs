@@ -69,7 +69,7 @@ pub fn capture<R>(
     body()
 }
 
-/// `println!` through [`write`].
+/// `println!` through [`write()`].
 macro_rules! outln {
     ($($arg:tt)*) => {
         $crate::output::write(
@@ -79,7 +79,7 @@ macro_rules! outln {
     };
 }
 
-/// `eprintln!` through [`write`].
+/// `eprintln!` through [`write()`].
 macro_rules! errln {
     ($($arg:tt)*) => {
         $crate::output::write(
@@ -89,7 +89,7 @@ macro_rules! errln {
     };
 }
 
-/// `eprint!` through [`write`].
+/// `eprint!` through [`write()`].
 macro_rules! errp {
     ($($arg:tt)*) => {
         $crate::output::write($crate::output::Stream::Stderr, &format!($($arg)*))

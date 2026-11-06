@@ -64,11 +64,11 @@ impl<T> StableHash for HashEq<T> {
 }
 
 /// A query output identified by an input fingerprint (see
-/// [`crate::fingerprint`]) instead of an eager content hash.
+/// `crate::fingerprint`) instead of an eager content hash.
 ///
 /// Equal fingerprints imply equal content. Different fingerprints fall back to
 /// the content hash, computed on first comparison, so the relation is exactly
-/// content equality and early cutoff is unchanged ([`Self::by_fingerprint`]
+/// content equality and early cutoff is unchanged (`Self::by_fingerprint`
 /// opts out). A fresh database never compares against an earlier memo and
 /// therefore never pays for the content hash.
 pub struct FingerprintEq<T> {

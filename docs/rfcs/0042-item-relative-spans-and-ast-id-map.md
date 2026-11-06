@@ -743,6 +743,48 @@ units guardam é relativo ao próprio item ou é o placeholder
   conta como campo ausente (`missing fields`), em vez do estouro de pilha.
 - Acoplamento 7 (`let` novo desloca `LocalSymbolId`) segue aberto.
 
+### 8.13. Passo E: locais relativos ao item (planejado)
+
+Medição (2026-11-07, corpus medium, warm in-process): um `let` novo num corpo
+de m8 custa ~250 ms contra ~96 ms de uma edição de mesmo tamanho. A parte que
+cruzava arquivos já foi cortada: a superfície de declarações deixou de
+incluir os símbolos de corpo (`91bc40fe`, guarda em
+`declaration_surface_guards.rs`), e os importadores não rebaixam nada. O que
+sobra é dentro do arquivo: a resolução aloca os locais de todos os corpos
+numa única sequência densa depois das declarações, então um local novo em
+`helper_0` desloca o `LocalSymbolId` de cada local dos itens seguintes. Os 33
+itens de m8 são retipados e rebaixados porque `item_typing_input` herda a
+tabela do arquivo inteiro (`declaration_signatures.symbols` com spans
+relativizados) e `frame.resolved` mantém os IDs de arquivo.
+
+Desenho, na mesma linha do `Frame` para expressões:
+
+1. `item_typing_input` monta uma tabela densa com as declarações do arquivo
+   (`0..body_from`, a fronteira que `declaration_surface_hash` já usa) seguidas
+   só dos locais do item, renumerados a partir de `body_from` na ordem do
+   arquivo. Locais de outros itens não entram. `frame.resolved` e as tabelas
+   de tipos (`decl_types` dos locais) são remapeados pelo mesmo mapa.
+2. `ItemPlacement` ganha o mapa inverso (local relativo → `LocalSymbolId` de
+   arquivo), derivado de `item_bases`/`item_positions` sem ler o texto: base
+   do primeiro local do item na sequência do arquivo. A identidade do mapa
+   entra na placement, não na tipagem.
+3. Toda saída que deixa as coordenadas do item aplica o mapa junto com os
+   spans: `place_unit_body`/`place_function` (operandos e debug bindings),
+   `merge_item_from`/`place_at` no `TypeInfo`, `ContextualFunctionUnit::placed`
+   na composição, a view de arquivo (`item_local_typing`) e o fluxo IDE
+   (`item_flow_diagnostics`). Símbolos sintéticos e gerados seguem como hoje.
+4. Oráculo: para todo item do corpus (`examples/`, `stdlib/`, `tests/`), a
+   tipagem relativa colocada é igual, por hash, à do caminho de arquivo; o
+   padrão do oráculo D2 (`local_typing.rs`). Guarda: um `let` novo em
+   `helper` executa `runtime_unit` uma vez (hoje 3 em
+   `a_new_local_in_a_private_body_relowers_no_importer`), e o teste de
+   sessão `new locals` cai para perto do de mesmo tamanho.
+
+Risco: um local referenciado fora do próprio item (captura de closure
+sintética, `@Test` gerado) faria o mapa perder um símbolo; esses itens já
+caem no caminho de arquivo (`item_context` devolve `None` para sintéticos), e
+o oráculo acusa qualquer outro caso.
+
 ## 9. Questões em Aberto (Unresolved Questions)
 
 1. **Reordenação de Funções no Arquivo:** Se o usuário inverter a ordem de duas funções no arquivo (`func A(); func B();` $\to$ `func B(); func A();`), os índices ordinais de seus `AstId`s se invertem, invalidando ambas. Devemos considerar no futuro um fallback baseado no nome do símbolo para manter estabilidade sob reordenação?

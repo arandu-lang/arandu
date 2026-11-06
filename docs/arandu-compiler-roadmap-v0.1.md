@@ -202,7 +202,7 @@ associada. Cada candidata declara seu recorte e limitações antes da promoção
 | 0.4.x | qualidade de código de release mensurada | OPT/AOT oracle, segurança de alias/escape e benchmarks; LLVM opcional só após aceitação da RFC 0031, paridade e distribuição | `experimental` O2; backend novo `planned` |
 | 0.5.x | contratos portáveis de ABI, recursos e interoperabilidade | layout/calling convention por alvo, ownership/FFI e runtime; capabilities/freestanding e WIT/mobile avançam por recortes | base `partial`; expansões `planned` |
 | 0.6.x | ferramentas e armazenamento sustentáveis | CAS/GC/formatos compatíveis quando justificados; documentação/pacotes existentes evoluem, REPL/bindgen/linter por contrato | base `partial`; expansões `planned` |
-| 0.7.x | convergência dos contratos candidatos à estabilidade | fechar inventário público, deprecações, ambiguidades de linguagem e incompatibilidades entre alvos suportados | `planned` |
+| 0.7.x | convergência dos contratos candidatos à estabilidade | fechar inventário público, deprecações, ambiguidades de linguagem e incompatibilidades entre alvos suportados; com a linguagem estável, locais relativos ao item (RFC 0042 §8.13, custo do `let` novo dentro do arquivo) | `planned` |
 | 0.8.x | endurance e distribuição de candidata a 1.0 | soak, fuzz/sanitizers, consumo prolongado, upgrades e recuperação com SDK público | `planned` |
 | 0.9.x | congelamento de contrato e RCs de 1.0 | migração publicada, corpus de consumidores, nenhuma falha bloqueante nos gates definidos | `planned` |
 | 1.0 | linguagem/stdlib/CLI e matriz de suporte explicitamente estáveis | política de compatibilidade, documentação, diagnóstico e distribuição consistentes; zero bloqueadores conhecidos no escopo | `planned` |

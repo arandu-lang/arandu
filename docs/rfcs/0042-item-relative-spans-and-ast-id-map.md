@@ -743,7 +743,19 @@ units guardam é relativo ao próprio item ou é o placeholder
   conta como campo ausente (`missing fields`), em vez do estouro de pilha.
 - Acoplamento 7 (`let` novo desloca `LocalSymbolId`) segue aberto.
 
-### 8.13. Passo E: locais relativos ao item (planejado)
+### 8.13. Passo E: locais relativos ao item (adiado)
+
+**Decisão (2026-11-07):** adiado até a convergência da linguagem (série
+0.7.x). A parte segura já está feita: um `let` novo não rebaixa importadores
+(`91bc40fe`). O que sobra fica dentro do arquivo editado e só sai mudando a
+identidade dos símbolos em typeck, composição e IDE, onde um ID relativo que
+escape sem conversão aponta para o local de outro item sem falhar. Enquanto a
+linguagem ainda muda, esse custo de manutenção e esse risco não compensam um
+ganho de recompilação de um arquivo; o resultado atual é correto. Quando for
+feito, os IDs relativos devem ser um tipo distinto no Rust (newtype
+`BodyLocalId`, convertido só pelo `ItemPlacement`), para que o compilador
+recuse a mistura de coordenadas.
+
 
 Medição (2026-11-07, corpus medium, warm in-process): um `let` novo num corpo
 de m8 custa ~250 ms contra ~96 ms de uma edição de mesmo tamanho. A parte que

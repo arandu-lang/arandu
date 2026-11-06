@@ -197,6 +197,12 @@ pub(super) fn parse_char_literal(text: &str) -> Option<char> {
         .strip_prefix('\'')
         .and_then(|rest| rest.strip_suffix('\''))
         .unwrap_or(text);
+    // A single character is the decoded scalar the pool usually stores; it
+    // may be a backslash, which is not an escape on its own.
+    let mut chars = content.chars();
+    if let (Some(value), None) = (chars.next(), chars.next()) {
+        return Some(value);
+    }
     if let Some(escaped) = content.strip_prefix('\\') {
         return match escaped {
             "n" => Some('\n'),
@@ -222,9 +228,7 @@ pub(super) fn parse_char_literal(text: &str) -> Option<char> {
             _ => None,
         };
     }
-    let mut chars = content.chars();
-    let value = chars.next()?;
-    chars.next().is_none().then_some(value)
+    None
 }
 
 pub(super) fn escape_c_string(bytes: &[u8]) -> String {
@@ -275,8 +279,22 @@ impl IntegerWidthFromLlvm for ModuleEmitter<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use arandu_middle::SymbolId;
     use arandu_semantics::TypeInfo;
+
+    /// The pool stores a char as its decoded scalar, which may itself be a
+    /// backslash; the escape forms of source lexemes still decode.
+    #[test]
+    fn char_literals_decode_scalars_and_escapes() {
+        assert_eq!(parse_char_literal("\\"), Some('\\'));
+        assert_eq!(parse_char_literal("'"), Some('\''));
+        assert_eq!(parse_char_literal("x"), Some('x'));
+        assert_eq!(parse_char_literal("'\\n'"), Some('\n'));
+        assert_eq!(parse_char_literal("\\\\"), Some('\\'));
+        assert_eq!(parse_char_literal("\\u{41}"), Some('A'));
+        assert_eq!(parse_char_literal("ab"), None);
+    }
 
     #[test]
     fn int_literal_coercion_uses_its_llvm_integer_width() {

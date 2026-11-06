@@ -36,6 +36,9 @@ struct CguCacheMetadata<'a> {
     schema: u32,
     input_hash: &'a str,
     object_hash: &'a str,
+    /// Code bytes of the CGU's functions before slot padding; only
+    /// measurement reads it (`bench-incremental`).
+    code_bytes: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -153,7 +156,7 @@ pub fn compile_partitioned(
         }
 
         recompiled_count += 1;
-        let bytes = arandu_backend_cranelift::compile_cgu(
+        let (bytes, code_bytes) = arandu_backend_cranelift::compile_cgu_measured(
             unit,
             program,
             symbols,
@@ -175,6 +178,7 @@ pub fn compile_partitioned(
             schema: CGU_METADATA_SCHEMA,
             input_hash: &unit.hash,
             object_hash: &object_hash,
+            code_bytes,
         };
         let mut encoded = serde_json::to_vec_pretty(&metadata).map_err(|error| {
             failure(

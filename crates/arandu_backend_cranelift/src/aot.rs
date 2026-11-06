@@ -167,6 +167,7 @@ impl CraneliftObjectBackend {
                 module: ObjectModule::new(builder),
                 debug: None,
                 slot_trap: None,
+                code_bytes: 0,
             },
         })
     }

@@ -179,6 +179,7 @@ mod tests {
             module: cranelift_jit::JITModule::new(builder),
             debug: None,
             slot_trap: None,
+            code_bytes: 0,
         };
         let module = compiler
             .compile_program(&program, &checked.symbols, &*checked.type_info)
@@ -444,6 +445,7 @@ func main(): int {
             module: cranelift_jit::JITModule::new(create_jit_builder().unwrap()),
             debug: None,
             slot_trap: None,
+            code_bytes: 0,
         };
         let error = compiler
             .compile_program(&program, &checked.symbols, &*checked.type_info)

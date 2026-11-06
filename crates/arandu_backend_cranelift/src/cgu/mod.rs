@@ -221,6 +221,20 @@ pub fn compile_cgu(
     target: &Triple,
     optimization: AotOptimization,
 ) -> Result<Vec<u8>, Diagnostic> {
+    compile_cgu_measured(unit, program, symbols, type_info, target, optimization)
+        .map(|(object, _)| object)
+}
+
+/// [`compile_cgu`] with the code bytes of its padded functions before their
+/// padding: what an edit grows or shrinks, while the slot shows only its class.
+pub fn compile_cgu_measured(
+    unit: &CodegenUnit,
+    program: &AmirProgram,
+    symbols: &SymbolTable,
+    type_info: &dyn CodegenTypeContext,
+    target: &Triple,
+    optimization: AotOptimization,
+) -> Result<(Vec<u8>, u64), Diagnostic> {
     let backend =
         CraneliftObjectBackend::for_target_with_optimization(target.clone(), optimization)?;
     let mut compiler = backend.into_compiler();
@@ -234,13 +248,15 @@ pub fn compile_cgu(
 
     compiler.compile_filtered_module(program, symbols, type_info, Some(&[unit.symbol]))?;
 
+    let code_bytes = compiler.code_bytes;
     let product = compiler.module.finish();
-    product.emit().map_err(|error| {
+    let object = product.emit().map_err(|error| {
         codegen_ice(format!(
             "failed to emit CGU object '{}' for target '{target}': {error}",
             unit.name
         ))
-    })
+    })?;
+    Ok((object, code_bytes))
 }
 
 #[cfg(test)]

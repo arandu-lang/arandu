@@ -32,6 +32,8 @@ pub struct AranduModule<M> {
     ///
     /// [`slot_capacity`]: crate::cgu::slot_capacity
     pub(crate) slot_trap: Option<u8>,
+    /// Code bytes of the functions padded so far, before their padding.
+    pub(crate) code_bytes: u64,
 }
 
 #[derive(Debug, Default)]
@@ -93,6 +95,7 @@ impl AranduModule<JITModule> {
             module,
             debug: None,
             slot_trap: None,
+            code_bytes: 0,
         })
     }
 
@@ -107,6 +110,7 @@ impl AranduModule<JITModule> {
             module,
             debug: None,
             slot_trap: None,
+            code_bytes: 0,
         })
     }
 
@@ -125,6 +129,7 @@ impl AranduModule<JITModule> {
             module,
             debug: None,
             slot_trap: None,
+            code_bytes: 0,
         })
     }
 
@@ -144,6 +149,7 @@ impl AranduModule<JITModule> {
             module,
             debug: None,
             slot_trap: None,
+            code_bytes: 0,
         })
     }
 
@@ -168,6 +174,7 @@ impl AranduModule<JITModule> {
             module,
             debug: None,
             slot_trap: None,
+            code_bytes: 0,
         })
     }
 
@@ -192,6 +199,7 @@ impl AranduModule<JITModule> {
             module,
             debug: None,
             slot_trap: None,
+            code_bytes: 0,
         })
     }
 

@@ -575,15 +575,42 @@ fn function_slots(project: &Path) -> Result<BTreeMap<String, (u64, u64)>, String
     ) else {
         return Ok(BTreeMap::new());
     };
+    // The slot holds the padded size, which changes only with the class; the
+    // CGU sidecar named by the slot's hash holds the code bytes before it.
+    let mut code_bytes = BTreeMap::new();
+    let entries = path
+        .parent()
+        .and_then(|incremental| fs::read_dir(incremental.join("cgu")).ok());
+    for entry in entries.into_iter().flatten().filter_map(Result::ok) {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        // `{name}-{hash}.{extension}.meta.json`
+        let Some(hash) = name
+            .strip_suffix(".meta.json")
+            .and_then(|object| object.rsplit_once('.'))
+            .and_then(|(stem, _)| stem.rsplit_once('-'))
+            .map(|(_, hash)| hash.to_owned())
+        else {
+            continue;
+        };
+        let code = fs::read(entry.path())
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .and_then(|metadata| metadata["code_bytes"].as_u64());
+        if let Some(code) = code {
+            code_bytes.insert(hash, code);
+        }
+    }
     Ok(layout["function_slots"]
         .as_object()
         .into_iter()
         .flatten()
         .filter_map(|(name, slot)| {
-            Some((
-                name.clone(),
-                (slot["code_size"].as_u64()?, slot["capacity"].as_u64()?),
-            ))
+            let capacity = slot["capacity"].as_u64()?;
+            let code = slot["cgu_hash"]
+                .as_str()
+                .and_then(|hash| code_bytes.get(hash).copied())
+                .unwrap_or(slot["code_size"].as_u64()?);
+            Some((name.clone(), (code, capacity)))
         })
         .collect())
 }

@@ -126,6 +126,13 @@ fn a_signature_the_middle_surface_never_mentions_stops_at_its_importer() {
         2,
         "{chain}"
     );
+    // Each item's typing context holds only what it reaches (INC.3a), so of
+    // every function only `unused` lowers its HIR again.
+    assert_eq!(
+        package.log.count_executions_matching("function_hir"),
+        1,
+        "{chain}"
+    );
     // base: used, unused; mid: relay, make; top: run.
     assert_eq!(
         package.log.count_executions_matching("instance_hir"),

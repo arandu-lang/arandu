@@ -24,6 +24,36 @@ pub fn signature_context(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<T
     ))
 }
 
+/// The symbols an item's local typing names: its definitions and references,
+/// the symbols of its expression types, and its own declaration. `None` when
+/// a type cannot be walked.
+fn item_roots(
+    item_sym: SymbolId,
+    local: &super::local_typing::LocalTyping,
+) -> Option<Vec<SymbolId>> {
+    let resolved = &local.resolved;
+    let mut roots = vec![item_sym];
+    roots.extend(resolved.definitions.values().copied());
+    roots.extend(resolved.value_refs.values().copied());
+    roots.extend(resolved.type_refs.values().copied());
+    roots.extend(resolved.expr_symbols.iter().flatten().copied());
+    let interner = &local.type_info.type_interner;
+    let types = local
+        .type_info
+        .expr_types
+        .iter()
+        .flatten()
+        .chain(local.type_info.decl_types.values());
+    for &ty in types {
+        arandu_middle::types::TypeShape::from_id(ty, interner)
+            .ok()?
+            .for_each_symbol(|symbol| roots.push(symbol))
+            .ok()?;
+    }
+    roots.extend(local.type_info.decl_types.keys().copied());
+    Some(roots)
+}
+
 /// `result` without the positions of its file: the tables keyed by source
 /// position are empty, the file's symbols carry the `Span::new(0, 0, 0)`
 /// placeholder and there are no diagnostics.
@@ -146,6 +176,11 @@ pub fn item_context(
     let context = signature_context(db, file);
     let mut checked = (**context).clone();
     let input = super::local_typing::item_typing_input(db, file, item_sym);
+    // The item reads only what its own typing names and what that reaches
+    // (INC.3a): a signature of the file or its imports that the item never
+    // reaches leaves its context equal.
+    let reached = item_roots(item_sym, local)
+        .and_then(|roots| context.type_info.reachable_from(&context.symbols, roots));
     // The typing input already holds the same symbol view.
     checked.symbols = match input {
         Some(input) => Arc::clone(&input.symbols),
@@ -155,6 +190,11 @@ pub fn item_context(
                 .map_spans(|symbol| relative(symbol.span).unwrap_or(Span::new(0, 0, 0))),
         ),
     };
+    if let Some(reached) = &reached {
+        checked.type_info = Arc::new(context.type_info.view_of(reached));
+        let symbols = Arc::make_mut(&mut checked.symbols);
+        Arc::make_mut(&mut symbols.imported_symbols).retain(|symbol, _| reached.contains(symbol));
+    }
     // The local names are the item's whole resolution: the symbol sets plus
     // every position inside its declaration.
     Arc::make_mut(&mut checked.type_info).merge_item_from(
@@ -181,7 +221,7 @@ pub fn item_context(
     // and the local typing: their digests identify it without hashing the
     // whole result for every item a body edit moves.
     let identity = match input {
-        Some(input) if !defaults && diagnostics.is_empty() => {
+        Some(input) if reached.is_none() && !defaults && diagnostics.is_empty() => {
             let mut h = blake3::Hasher::new();
             h.update(b"ItemContext/v1");
             h.update(crate::StableHash::stable_hash(context).as_bytes());

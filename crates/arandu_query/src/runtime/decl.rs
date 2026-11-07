@@ -120,18 +120,24 @@ pub(super) fn declaration_hir_from(
         view.type_info = std::sync::Arc::new(info);
         view
     });
+    let body_from = u32::try_from(body_from).unwrap_or(u32::MAX);
+    let mut full = fingerprint.clone();
     fingerprint.update(
         crate::stable_hash::declaration_surface_hash(
             importable.as_ref().unwrap_or(&checked),
-            u32::try_from(body_from).unwrap_or(u32::MAX),
+            body_from,
         )
         .as_bytes(),
     );
     fingerprint.update(diagnostics.stable_hash().as_bytes());
     fingerprint.update(&[u8::from(hir.is_some())]);
     let surface = fingerprint.finalize();
+    // The file's own consumers read the whole tables, imported facts
+    // included: its identity covers them (`runtime_program` composes on them).
+    full.update(crate::stable_hash::declaration_surface_hash(&checked, body_from).as_bytes());
     let mut with_positions = blake3::Hasher::new();
     with_positions.update(surface.as_bytes());
+    with_positions.update(full.finalize().as_bytes());
     with_positions.update(positions.finalize().as_bytes());
     let fingerprint = with_positions.finalize();
     HashEq::new(DeclarationHir {

@@ -26,6 +26,12 @@ impl TypeInfo {
         roots: impl IntoIterator<Item = SymbolId>,
     ) -> Option<Self> {
         let keep = self.reachable(symbols, file_id, roots)?;
+        Some(self.view_of(&keep))
+    }
+
+    /// These tables with only the entries of `keep`.
+    #[must_use]
+    pub fn view_of(&self, keep: &FxHashSet<SymbolId>) -> Self {
         let kept = |symbol: &SymbolId| keep.contains(symbol);
         let mut view = self.clone();
         view.ctfe_global_values.retain(|symbol, _| kept(symbol));
@@ -52,7 +58,7 @@ impl TypeInfo {
         view.function_effects.retain(|symbol, _| kept(symbol));
         view.unsafe_functions.retain(kept);
         view.struct_repr_c.retain(kept);
-        Some(view)
+        view
     }
 
     /// The symbols an importer reaches: `roots`, the symbols of `file_id`
@@ -64,6 +70,26 @@ impl TypeInfo {
         &self,
         symbols: &SymbolTable,
         file_id: u32,
+        roots: impl IntoIterator<Item = SymbolId>,
+    ) -> Option<FxHashSet<SymbolId>> {
+        self.close_over(symbols, Some(file_id), roots)
+    }
+
+    /// [`Self::reachable`] from `roots` and the lang items only: what one
+    /// item reads, without the rest of its file.
+    #[must_use]
+    pub fn reachable_from(
+        &self,
+        symbols: &SymbolTable,
+        roots: impl IntoIterator<Item = SymbolId>,
+    ) -> Option<FxHashSet<SymbolId>> {
+        self.close_over(symbols, None, roots)
+    }
+
+    fn close_over(
+        &self,
+        symbols: &SymbolTable,
+        file_id: Option<u32>,
         roots: impl IntoIterator<Item = SymbolId>,
     ) -> Option<FxHashSet<SymbolId>> {
         let mut variants = rustc_hash::FxHashMap::<SymbolId, Vec<SymbolId>>::default();
@@ -92,7 +118,7 @@ impl TypeInfo {
         pending.extend(
             symbols
                 .iter()
-                .filter(|symbol| symbol.id.file_id == file_id || symbol.lang_item.is_some())
+                .filter(|symbol| Some(symbol.id.file_id) == file_id || symbol.lang_item.is_some())
                 .map(|symbol| symbol.id),
         );
         // Entries keyed by the module's own symbols, even those its table
@@ -105,7 +131,7 @@ impl TypeInfo {
                 .chain(self.interfaces.keys())
                 .chain(self.generic_params.keys())
                 .copied()
-                .filter(|symbol| symbol.file_id == file_id),
+                .filter(|symbol| Some(symbol.file_id) == file_id),
         );
         let mut keep = FxHashSet::default();
         while let Some(symbol) = pending.pop() {

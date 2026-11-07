@@ -168,19 +168,19 @@ pub fn any_execute(log: &RebuildLog) -> bool {
 impl RebuildLog {
     /// One-line status for `arandu run` / `build` (DX.5 surface).
     ///
-    /// - `[cached]` — no query bodies ran (full memo hit window)
-    /// - `[rebuilt: N queries]` — N `WillExecute` events in this window
+    /// - `[cached] (V verified)` — no query bodies ran; V memos were validated
+    /// - `[rebuilt: N queries, V verified]` — N `WillExecute` and V
+    ///   `DidValidateMemoizedValue` events in this window
     #[must_use]
     pub fn status_line(&self) -> String {
-        let events = self.snapshot();
-        let n_exec = events
-            .iter()
-            .filter(|e| matches!(e, RebuildEvent::Execute { .. }))
-            .count();
-        if n_exec == 0 {
-            "[cached]".to_string()
+        let counts = self.counts();
+        if counts.executed == 0 {
+            format!("[cached] ({} verified)", counts.validated)
         } else {
-            format!("[rebuilt: {n_exec} queries]")
+            format!(
+                "[rebuilt: {} queries, {} verified]",
+                counts.executed, counts.validated
+            )
         }
     }
 }

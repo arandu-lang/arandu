@@ -458,6 +458,23 @@ impl BuildSession {
             && let Some(log) = &rebuild_log
         {
             errln!("{}", log.status_line());
+            // The program is composed as a whole (INC.3c not yet incremental),
+            // so a composition recomposes every file that contributes code.
+            let files = if log.count_executions_matching("runtime_program") > 0 {
+                artifacts
+                    .amir
+                    .funcs
+                    .iter()
+                    .map(|func| func.symbol.file_id)
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len()
+            } else {
+                0
+            };
+            errln!(
+                "[work] {} units reexecuted, {files} files recomposed",
+                log.count_executions_matching("instance_hir")
+            );
         }
         if explain_rebuild && let Some(log) = &rebuild_log {
             errp!("{}", log.format_chain(true));

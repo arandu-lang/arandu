@@ -15,26 +15,36 @@ cargo run --locked -p xtask -- bench-incremental --release --corpus all --sample
 
 O primeiro comando é o padrão de CI: corpus `small`, 5 amostras por classe,
 1 build de aquecimento e CLI debug. O segundo é a forma de medição de marco.
-Opções: `--corpus small|medium|large|all`, `--samples N` (≥1), `--warmup N` e
+Opções: `--corpus small|medium|large|representative|all`, `--samples N` (≥1), `--warmup N` e
 `--release` (compila CLI e runtime em release). A verificação de determinismo
 roda sempre; `--verify-determinism` é aceito por compatibilidade.
 
 O harness compila o CLI e a runtime uma vez e gera, sob
 `target/bench-incremental/`, um projeto por corpus: `small` (4 módulos × 8
-funções), `medium` (16 × 32) e `large` (64 × 64). O módulo `k` importa o
-módulo `k - 1` e a entrada chama o último, então todos os módulos são linkados.
-As edições atingem o módulo do meio da cadeia de imports. Classes:
+funções), `medium` (16 × 32), `large` (64 × 64) e `representative` (8 × 8).
+O módulo `k` importa o módulo `k - 1` e a entrada chama o último, então todos
+os módulos são linkados. As edições atingem o módulo do meio da cadeia de
+imports.
 
-| Classe                | Edição                                                                                  |
-| --------------------- | --------------------------------------------------------------------------------------- |
-| `noop-touch`          | reescreve os mesmos bytes                                                               |
-| `documentation`       | muda o doc comment de um helper privado                                                 |
-| `private-body`        | muda uma constante imm32 de um helper privado; o tamanho do código de máquina se mantém |
-| `private-body-growth` | acrescenta uma instrução ao helper a cada amostra; o tamanho cresce                     |
-| `private-body-locals` | acrescenta um `let` ao helper a cada amostra: novos símbolos locais no corpo            |
-| `public-signature`    | alterna a aridade da API pública do módulo e reescreve o único chamador                 |
-| `new-item`            | adiciona uma função pública chamada pela API do módulo                                  |
-| `clean`               | remove `target/` e recompila (no máximo 5 amostras, sem aquecimento)                    |
+O corpus `representative` (BENCH.2) troca a base da cadeia por um diamante:
+`m1` e `m2` importam `m0` (fan-out) e `m3` importa os dois. Cada módulo declara
+uma struct com `@Destructor` que um helper guarda num `std.alloc.vec.Vec`; `m0`
+declara o genérico `weigh<T>(Pair<T>, int)`, instanciado por `m1`; e o módulo
+editado exporta `direct`, chamada só por uma função do módulo acima. Classes:
+
+| Classe                  | Edição                                                                                  |
+| ----------------------- | --------------------------------------------------------------------------------------- |
+| `noop-touch`            | reescreve os mesmos bytes                                                               |
+| `documentation`         | muda o doc comment de um helper privado                                                 |
+| `private-body`          | muda uma constante imm32 de um helper privado; o tamanho do código de máquina se mantém |
+| `private-body-growth`   | acrescenta uma instrução ao helper a cada amostra; o tamanho cresce                     |
+| `private-body-locals`   | acrescenta um `let` ao helper a cada amostra: novos símbolos locais no corpo            |
+| `public-signature`      | alterna a aridade da API pública do módulo e reescreve o único chamador                 |
+| `new-item`              | adiciona uma função pública chamada pela API do módulo                                  |
+| `generic-body`          | só `representative`: muda uma constante no corpo de `weigh<T>`, em `m0`                 |
+| `new-instance`          | só `representative`: `m1` instancia `weigh` num tipo novo a cada amostra                |
+| `direct-call-signature` | só `representative`: alterna a aridade de `direct` e reescreve seu único chamador       |
+| `clean`                 | remove `target/` e recompila (no máximo 5 amostras, sem aquecimento)                    |
 
 Cada classe parte do estado base já compilado. Toda amostra produz um texto
 que nenhuma amostra anterior produziu, para que o reuso de objetos por conteúdo
@@ -66,15 +76,24 @@ servem de limite rígido em runners compartilhados.
 
 Saídas:
 
-- `target/benchmarks/incremental.json` — dados estruturados, schema 3, com
+- `target/benchmarks/incremental.json` — dados estruturados, schema 4, com
   configuração, host, resumo e amostras por corpus/classe;
-- `target/benchmarks/incremental.md` — tabela legível com o resumo, seguida do
-  p50 por fase.
+- `target/benchmarks/incremental.md` — tabela legível com o resumo e o p50 por
+  fase.
+
+O schema 4 acrescenta a cada amostra contadores determinísticos de trabalho,
+lidos de `build -v`, e o máximo de cada um ao resumo: `units_reexecuted`
+(execuções de `instance_hir`), `memos_verified` (memos que o Salsa validou sem
+executar) e `files_recomposed` (arquivos com funções no programa, quando a
+composição reexecuta; ela ainda é do programa inteiro, INC.3c). Sem
+`--daemon`, cada build abre uma DB nova e os contadores medem uma análise fria;
+os gates de trabalho da 0.3.0 são lidos com `--daemon`.
 
 Com `--daemon`, cada build passa pelo daemon do projeto (HOT.3), como um
 usuário o executa; sem ele, cada build é um processo novo com
-`-Ztime-passes`. Limites: o corpus gerado usa só inteiros, laços e chamadas
-diretas, sem genéricos, stdlib ou async; recuperação após interrupção é
+`-Ztime-passes`. Limites: os corpora em cadeia usam só inteiros, laços e
+chamadas diretas; o `representative` acrescenta genéricos, stdlib e
+destrutores, mas não async; recuperação após interrupção é
 coberta pelos testes do daemon (`cli_daemon.rs`), não por este comando.
 
 Os critérios e a fila de evolução estão no

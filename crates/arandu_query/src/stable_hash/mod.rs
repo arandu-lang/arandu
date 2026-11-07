@@ -11,7 +11,8 @@ mod typeck;
 pub use symbols::StableHash;
 pub(crate) use symbols::{hash_literal_entry, hash_return_borrow_summary};
 pub(crate) use typeck::{
-    declaration_surface_hash, local_typing_hash, type_signature_hash, typing_input_hash,
+    declaration_surface_hash, local_typing_hash, semantic_type_bytes, type_signature_hash,
+    typing_input_hash,
 };
 
 #[cfg(test)]

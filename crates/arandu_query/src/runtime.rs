@@ -15,8 +15,10 @@ mod contracts;
 mod decl;
 mod program;
 mod shape;
+mod sym_surface;
 pub use contracts::{instance_contracts, runtime_unit, InstanceContracts};
 pub use program::{runtime_program, RuntimeProgram};
+pub use sym_surface::{symbol_surface, SymbolSurface};
 
 #[derive(Debug)]
 pub struct DeclarationHir {

@@ -38,7 +38,7 @@ pub(crate) fn declaration_surface_hash(result: &TypeCheckResult, body_from: u32)
 
 /// Presentation intentionally hides frozen aggregate contents. Memo equality
 /// must instead retain the full structural type and canonical constant values.
-fn semantic_type_bytes(
+pub(crate) fn semantic_type_bytes(
     ty: arandu_middle::types::TypeId,
     interner: &arandu_middle::types::TypeInterner,
     symbols: &SymbolTable,

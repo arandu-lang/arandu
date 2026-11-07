@@ -112,9 +112,17 @@ pub(super) fn declaration_hir_from(
         .iter_own()
         .filter(|symbol| !symbol.id.is_synthetic())
         .count();
+    // Importers merge only the importable view of the tables (INC.3a): a
+    // fact this file merged from its own imports and never names in its
+    // surface stays out of what they observe.
+    let importable = crate::passes::importable_type_info(db, file, &checked).map(|info| {
+        let mut view = checked.clone();
+        view.type_info = std::sync::Arc::new(info);
+        view
+    });
     fingerprint.update(
         crate::stable_hash::declaration_surface_hash(
-            &checked,
+            importable.as_ref().unwrap_or(&checked),
             u32::try_from(body_from).unwrap_or(u32::MAX),
         )
         .as_bytes(),

@@ -463,6 +463,7 @@ fn declaration_context_from(
     let mut diagnostics = Vec::new();
     let mut visited = rustc_hash::FxHashSet::default();
     let mut pending = vec![file];
+    let narrowed = !trusted_stdlib(db, file);
     while let Some(context_file) = pending.pop() {
         db.unwind_if_revision_cancelled();
         if !visited.insert(*context_file.file_id(db)) {
@@ -485,11 +486,23 @@ fn declaration_context_from(
                 source,
             );
         }
+        // A unit names the declarations of its file's direct imports and the
+        // types their surfaces mention. The stdlib enters with its whole
+        // closure: lowering also reaches its lang items unnamed.
+        let follow_all = !narrowed || context_file == file || trusted_stdlib(db, context_file);
+        let surface = if follow_all {
+            None
+        } else {
+            surface_files(db, context_file).as_ref()
+        };
         for (_, imported) in crate::passes::module_import_edges(db, context_file)
             .iter()
             .rev()
         {
-            if let Some(imported) = imported.and_then(|id| db.source_file_by_id(id)) {
+            if let Some(imported) = imported
+                .filter(|id| surface.is_none_or(|files| files.contains(id)))
+                .and_then(|id| db.source_file_by_id(id))
+            {
                 pending.push(imported);
             }
         }
@@ -506,6 +519,33 @@ fn declaration_context_from(
         diagnostics,
         source_fingerprint: fingerprint.finalize(),
     })
+}
+
+fn trusted_stdlib(db: &dyn ArandCompilerDb, file: SourceFile) -> bool {
+    db.as_db_impl()
+        .is_some_and(|db| db.is_trusted_stdlib_source(file))
+}
+
+/// The files an importer of `file` reaches through its surface, besides it;
+/// `None` when they cannot be bounded and every import must be followed.
+#[salsa::tracked(returns(ref))]
+#[tracing::instrument(level = "trace", target = "arandu_query", skip(db), fields(
+    query = "surface_files", file = ?file.file_id(db),
+))]
+pub(crate) fn surface_files(
+    db: &dyn ArandCompilerDb,
+    file: SourceFile,
+) -> Option<std::collections::BTreeSet<crate::db::FileId>> {
+    let own = *file.file_id(db);
+    let signatures = declaration_signatures(db, file);
+    let reachable = crate::passes::importable_symbols(db, file, signatures)?;
+    Some(
+        reachable
+            .into_iter()
+            .map(|symbol| symbol.file_id)
+            .filter(|&id| id != own)
+            .collect(),
+    )
 }
 
 #[salsa::tracked]

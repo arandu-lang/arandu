@@ -17,6 +17,7 @@ use arandu_middle::layout::StructFieldInfo;
 #[cfg(test)]
 use arandu_middle::types::BorrowKind;
 
+mod importable;
 mod merge;
 mod query;
 mod translate;

@@ -326,6 +326,45 @@ pub fn resolved_headers(
     HashEq::new(resolved)
 }
 
+/// What importers of `file` read of its `signatures`: the entries reachable
+/// from the symbols it declares and exports (INC.3a). `None` merges all.
+pub(crate) fn importable_type_info(
+    db: &dyn ArandCompilerDb,
+    file: SourceFile,
+    signatures: &TypeCheckResult,
+) -> Option<arandu_typeck::TypeInfo> {
+    signatures.type_info.importable_view(
+        &signatures.symbols,
+        *file.file_id(db),
+        importable_roots(db, file),
+    )
+}
+
+/// The symbols an importer of `file` reaches through its surface; `None`
+/// when they cannot be bounded.
+pub(crate) fn importable_symbols(
+    db: &dyn ArandCompilerDb,
+    file: SourceFile,
+    signatures: &TypeCheckResult,
+) -> Option<rustc_hash::FxHashSet<arandu_middle::SymbolId>> {
+    signatures.type_info.reachable(
+        &signatures.symbols,
+        *file.file_id(db),
+        importable_roots(db, file),
+    )
+}
+
+fn importable_roots(db: &dyn ArandCompilerDb, file: SourceFile) -> Vec<arandu_middle::SymbolId> {
+    let exported = super::symbols::exported_symbols(db, file);
+    exported
+        .symbols
+        .values()
+        .chain(exported.internal_symbols.values())
+        .map(|(symbol, _)| *symbol)
+        .chain(exported.lang_items.keys().copied())
+        .collect()
+}
+
 /// Signature-level type-check over an explicit program + resolution result.
 ///
 /// Shared by [`declaration_signatures`] and [`ide_type_check`]. Only declaration
@@ -386,9 +425,11 @@ pub(super) fn signatures_with_imports(
             diags = ?imported_sigs.diagnostics,
             "merged imported module signatures"
         );
-        checker
-            .type_info
-            .merge_from(imported_sigs.type_info.as_ref());
+        // Only the closure of what the module exports reaches the importer
+        // (INC.3a); a type the view cannot walk merges everything.
+        let view = importable_type_info(db, imported_file, imported_sigs);
+        let imported_info = view.as_ref().unwrap_or(imported_sigs.type_info.as_ref());
+        checker.type_info.merge_from(imported_info);
         // A field default is an expression of its own file's arena, which the
         // file AST of an importer does not hold. Item programs append the
         // declaring item instead (RFC 0042).
@@ -417,7 +458,7 @@ pub(super) fn signatures_with_imports(
         // their defining module (for example `T: marker.Sync`).
         // Preserve those contract identities by SymbolId without
         // adding their names to this module's visible scope.
-        for constraints in imported_sigs.type_info.param_constraints.values() {
+        for constraints in imported_info.param_constraints.values() {
             for constraint in constraints.iter() {
                 if checker.symbols.try_get(constraint.iface_sym).is_none() {
                     if let Some(symbol) =
@@ -428,7 +469,7 @@ pub(super) fn signatures_with_imports(
                 }
             }
         }
-        for (&var_id, &(parent_id, _)) in &imported_sigs.type_info.enum_variants {
+        for (&var_id, &(parent_id, _)) in &imported_info.enum_variants {
             if checker.symbols.try_get(var_id).is_none() {
                 if let Some(symbol) = imported_sigs.symbols.try_get(var_id).cloned() {
                     Arc::make_mut(&mut checker.symbols).register_imported_symbol(symbol);
@@ -440,14 +481,14 @@ pub(super) fn signatures_with_imports(
                 }
             }
         }
-        for &struct_id in imported_sigs.type_info.struct_fields.keys() {
+        for &struct_id in imported_info.struct_fields.keys() {
             if checker.symbols.try_get(struct_id).is_none() {
                 if let Some(symbol) = imported_sigs.symbols.try_get(struct_id).cloned() {
                     Arc::make_mut(&mut checker.symbols).register_imported_symbol(symbol);
                 }
             }
         }
-        for &destructor_id in imported_sigs.type_info.destructors.values() {
+        for &destructor_id in imported_info.destructors.values() {
             if checker.symbols.try_get(destructor_id).is_none() {
                 if let Some(symbol) = imported_sigs.symbols.try_get(destructor_id).cloned() {
                     Arc::make_mut(&mut checker.symbols).register_imported_symbol(symbol);

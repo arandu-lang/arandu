@@ -74,10 +74,10 @@ pub use lower::{
     LowerAmirArtifacts, PreparedHir,
 };
 pub(crate) use programs::defaults_program;
-pub(crate) use resolution::signatures_from_program;
 pub use resolution::{
     cycle_recover, parse, parse_diagnostics, resolve, resolved_headers, symbol_span, syntax_tree,
 };
+pub(crate) use resolution::{importable_symbols, importable_type_info, signatures_from_program};
 pub(crate) use signatures::module_import_edges;
 pub use signatures::{
     cycle_recover_module_signatures, declaration_signatures, header_signatures, module_signatures,

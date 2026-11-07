@@ -363,3 +363,49 @@ fn modified_source_never_patches_an_unverified_artifact_candidate() {
 
     let _ = fs::remove_dir_all(tmp);
 }
+
+#[test]
+fn eh_frame_mismatch_falls_back_to_full_link() {
+    let tmp = common::temp_dir("arandu_elf_eh_frame_test").unwrap();
+    let project = tmp.join("elf_eh_frame");
+    assert!(
+        run_cli_in(&tmp, &["new", "elf_eh_frame", "--bin", "--vcs=none"])
+            .status
+            .success()
+    );
+    let source = project.join("src/main.aru");
+    fs::write(&source, "func main(): int { return 10 }\n").unwrap();
+    assert!(run_cli_in(&project, &["build", "-v"]).status.success());
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    {
+        let layout_path = files_named(&project.join("target/dev"), "elf_layout.json")[0].clone();
+        let mut layout: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&layout_path).unwrap()).unwrap();
+        let slots = layout["function_slots"].as_object_mut().unwrap();
+        let slot = slots.values_mut().next().unwrap();
+        // Mutate eh_frame_hash to simulate changed unwind info (e.g. prologue changed)
+        slot["eh_frame_hash"] = serde_json::Value::from("mismatched_unwind_hash_0123456789abcdef");
+        fs::write(&layout_path, serde_json::to_vec_pretty(&layout).unwrap()).unwrap();
+
+        fs::write(&source, "func main(): int { return 20 }\n").unwrap();
+        let rebuilt = run_cli_in(&project, &["build", "-v"]);
+        assert!(
+            rebuilt.status.success(),
+            "unwind fallback rebuild failed: {}",
+            String::from_utf8_lossy(&rebuilt.stderr)
+        );
+        // It must detect the unwind metadata mismatch and safely fall back to full link
+        assert!(String::from_utf8_lossy(&rebuilt.stdout).contains("backend=cranelift-dev"));
+        let state_path = files_named(&project.join("target/dev"), "build-state.json")[0].clone();
+        let state: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&state_path).unwrap()).unwrap();
+        let executable = state_path
+            .parent()
+            .unwrap()
+            .join(state["artifact"].as_str().unwrap());
+        assert_eq!(Command::new(executable).status().unwrap().code(), Some(20));
+    }
+
+    let _ = fs::remove_dir_all(tmp);
+}

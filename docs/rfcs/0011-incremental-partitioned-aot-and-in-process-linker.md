@@ -187,7 +187,7 @@ Endurance (HOT.6): 1000 edições pelo mesmo daemon no corpus medium, com rajada
 - macOS e Windows fazem link completo. Na 0.2.0 o Windows usa batch; o daemon por named pipe da 0.3.0-dev ainda não rodou em runner nativo.
 - O gate de p95 ≤ 100 ms em edição de corpo não foi certificado no host de referência; nesta máquina o p95 oscilou entre 83 e 134 ms entre sessões, com p50 de 64 a 120 ms.
 - Um `let` novo não rebaixa importadores, mas retipa os itens do próprio arquivo (~2,5× uma edição de mesmo tamanho); os locais relativos ao item ficam para a 0.7.x ([RFC 0042](0042-item-relative-spans-and-ast-id-map.md) §8.13).
-- Mudança de assinatura pública reexecuta as units que ligam o fechamento transitivo de declarações (~1,2–1,9 s no medium); cortar no chamador direto exige dependências por símbolo (0.3.x).
+- Mudança de assinatura pública reexecuta as units do próprio arquivo, dos importadores diretos e dos arquivos que alcançam o tipo mudado pela view importável (0.3.0-dev, INC.3a: 265 → 66 units no medium, p50 1123 → 262 ms); cortar só nas units que referenciam o símbolo exige dependências por símbolo (INC.3b).
 - A composição ainda faz trabalho por unit (merge do contexto de tipos) e a verificação pull do Salsa visita ~7,5 mil memos por edição.
 - CAS global, LLVM e o restante do backlog não são requisitos do motor quente. Esta RFC permanece `Draft`; a fila e os critérios de saída vivem no [roadmap mestre](../arandu-compiler-roadmap-v0.1.md).
 

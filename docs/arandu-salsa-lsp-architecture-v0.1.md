@@ -41,7 +41,7 @@ impedem o LSP de publicar resultados de buffers/revisões obsoletos.
 | `item_staged_typing`                                                 | Obrigações públicas após tipagem inicial por item; materialização de valores antes de HIR runtime                                                                                                                                                                         |
 | `item_static_loops`                                                  | Domínios inteiros finitos e arrays Copy fechados via raízes AMIR; expansões não executam um interpretador de AST                                                                                                                                                          |
 | `instance_staged_result`                                             | Seleção, argumentos e raízes dependentes antes de resolver/tipar uma instância concreta; corpos residuais por ocorrência                                                                                                                                                  |
-| `declaration_hir` / `declaration_context`                            | Headers por módulo e closure transitiva compartilhada, sem corpos                                                                                                                                                                                                         |
+| `declaration_hir` / `declaration_context`                            | Headers por módulo e o contexto que os importadores alcançam pela view importável, sem corpos                                                                                                                                                                             |
 | `function_hir` / `instance_hir`                                      | Corpo isolado e especialização concreta; headers são ligados somente na instância                                                                                                                                                                                         |
 | `runtime_raw_unit` / `instance_contracts` / `runtime_unit`           | Lowering, convergência de contratos e validação separados por instância no caminho ativo                                                                                                                                                                                  |
 | `runtime_program`                                                    | Descoberta determinística de dependências e composição canônica para `lower_amir`/backends                                                                                                                                                                                |
@@ -204,12 +204,21 @@ recursão, imports transitivos e rejeição final de um sibling inseguro.
 ### Runtime por instância e composição ativa
 
 `function_hir` retém somente o corpo selecionado. `declaration_context` liga
-uma vez os headers transitivos de um módulo, usando a mesma rotina canônica de
+uma vez os headers de um módulo, de seus imports diretos e dos arquivos que a
+view importável deles alcança (a stdlib confiável entra com o fechamento
+inteiro), usando a mesma rotina canônica de
 declarações para assinaturas, constantes, modos de parâmetros/receptor e
 metadata nominal. `instance_hir` combina essa closure compartilhada com o corpo;
 o memo de função não duplica headers nem os copia novamente para especialização.
 Não há outro parser ou checker. Cada contexto concreto continua com seu domínio
 de interner, necessário às mutações de especialização/lowering.
+
+Um importador observa as assinaturas de um módulo pela view importável
+(`TypeInfo::importable_view`): as entradas dos símbolos que o módulo declara e
+exporta e das lang items, fechadas sobre os símbolos que seus tipos nomeiam. A
+superfície de `declaration_hir` é o hash dessa view. Assim, um fato que o
+módulo juntou dos próprios imports e nunca expõe não chega aos importadores
+dele, e uma mudança de assinatura para no importador direto (INC.3a).
 
 `FunctionInstance` preserva o `SymbolId` composto da definição e argumentos
 `TypeShape` estruturais. `TypeId` e ranges de argumentos são locais ao interner,

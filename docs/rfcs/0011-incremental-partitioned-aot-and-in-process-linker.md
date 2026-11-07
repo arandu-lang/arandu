@@ -149,6 +149,7 @@ desenvolvimento com Cranelift em Linux x86-64 ELF. O restante segue batch.
 - Em um miss seguro, fingerprints já capturados são transferidos para a nova sessão e o digest calculado pela publicação é reutilizado. Um conjunto integral de hits de CGU reutiliza o executável verificado sem relink.
 - O hash CGU não usa `Debug`, spans, offsets de pools ou IDs sintéticos de composição como identidade de máquina. Cobre AMIR, layouts concretos/`repr(C)`, literais por conteúdo, assinaturas de callees, a closure de declarações da função, target, otimização, Cranelift e compilador. Adicionar uma instância ou remover declaração não relacionada preserva objetos irmãos; mudanças de ABI/layout dependido invalidam o caller.
 - O patch ELF valida digest, geometria de `.text`, ranges, tamanho exato e relocações antes de escrever; o executável incremental é comparado byte a byte com o clean build do mesmo source final.
+- Guardas do patch (0.3.0-dev, AUD.ELF): o layout ELF (schema 4) grava o hash do `.eh_frame` de cada CGU e recusa o patch quando ele muda; uma relocação absoluta num executável PIE é recusada; relocação fora de alcance ou de tipo não suportado cai no link completo em vez de falhar o build. Hoje o Cranelift AOT compila com `unwind_info=false` e `is_pic=true`, então as CGUs não têm FDE nem `Absolute64`: as guardas cobrem uma mudança dessas opções.
 
 ### 8.2 Sessão viva (HOT.2)
 
@@ -159,6 +160,7 @@ desenvolvimento com Cranelift em Linux x86-64 ELF. O restante segue batch.
 ### 8.3 Serviço local (HOT.3) e recuperação (HOT.5)
 
 - Um daemon por projeto e toolchain (`daemon/`), com até quatro sessões em LRU chaveadas por diretório e argumentos. Endpoint `$XDG_RUNTIME_DIR/arandu/<hash>.sock` (ou `/tmp/arandu-$UID/`, criado com 0700), modo 0600, credenciais do par verificadas; o lock `.arandu/daemon.lock` prova que não há outro daemon.
+- No Windows (0.3.0-dev, PLAT.1; validado só por compilação cruzada até rodar em runner nativo), o endpoint é o named pipe `\\.\pipe\arandu-<hash>`, nomeado pelo SID do usuário e pela raiz, com DACL só para esse SID, clientes remotos rejeitados, primeira instância exclusiva e cliente em nível de identificação; os dois lados comparam o SID do processo do par com o próprio. `daemon/endpoint.rs` e `daemon/endpoint_windows.rs` têm a mesma interface.
 - Identidade: versão, protocolo, executável (`dev/ino/size/mtime/ctime`) e variáveis `ARANDU_*`/de build. Divergência faz o daemon antigo sair e o cliente iniciar um novo.
 - Protocolo: frames `[magic][versão][tamanho][serde_json]`; diagnósticos viajam como DTO estruturado e o cliente os renderiza. Ler a requisição e escrever a resposta custa ≤ 0,15 ms.
 - O accept espera em `poll(2)` no listener e num socket de despertar, sem polling por intervalo; a ociosidade (15 min por padrão) e a parada acordam o mesmo laço.
@@ -182,7 +184,7 @@ Endurance (HOT.6): 1000 edições pelo mesmo daemon no corpus medium, com rajada
 
 ### 8.6 Limites
 
-- macOS e Windows fazem link completo; Windows usa batch (sem named pipes na 0.2.0).
+- macOS e Windows fazem link completo. Na 0.2.0 o Windows usa batch; o daemon por named pipe da 0.3.0-dev ainda não rodou em runner nativo.
 - O gate de p95 ≤ 100 ms em edição de corpo não foi certificado no host de referência; nesta máquina o p95 oscilou entre 83 e 134 ms entre sessões, com p50 de 64 a 120 ms.
 - Um `let` novo não rebaixa importadores, mas retipa os itens do próprio arquivo (~2,5× uma edição de mesmo tamanho); os locais relativos ao item ficam para a 0.7.x ([RFC 0042](0042-item-relative-spans-and-ast-id-map.md) §8.13).
 - Mudança de assinatura pública reexecuta as units que ligam o fechamento transitivo de declarações (~1,2–1,9 s no medium); cortar no chamador direto exige dependências por símbolo (0.3.x).
@@ -192,7 +194,7 @@ Endurance (HOT.6): 1000 edições pelo mesmo daemon no corpus medium, com rajada
 ## 9. Questões em Aberto (Unresolved Questions)
 
 1. **Gate de latência:** declarar o host de referência e decidir se o p95 da edição de corpo é limite ou registro; o harness já mede o que o gate precisa.
-2. **Outras plataformas:** patch in-place para Mach-O e PE/COFF e endpoint por named pipe no Windows.
+2. **Outras plataformas:** patch in-place para Mach-O e PE/COFF (PLAT.2/3); prova nativa do daemon no Windows (PLAT.1).
 3. **Composição incremental:** reaproveitar a composição por arquivo quando nenhuma unit dele mudou, sem regredir a regra de último escritor do registro de símbolos.
 
 ---

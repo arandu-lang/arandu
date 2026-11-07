@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 
 use crate::performance::{cpu_name, percentile_index, toolchain_name};
 
-const USAGE: &str = "usage: bench-incremental [--corpus small|medium|large|representative|all] [--samples N] [--warmup N] [--release] [--daemon] [--verify-determinism]";
+const USAGE: &str = "usage: bench-incremental [--corpus small|medium|large|representative|all] [--samples N] [--warmup N] [--release] [--daemon] [--count-work] [--verify-determinism]";
 
 /// Base of the constants that mutations edit; see [`Workload`].
 const SALT: usize = 1_000_000;
@@ -67,6 +67,9 @@ struct Options {
     /// Measure builds through the project daemon, end to end from the client
     /// (the HOT.6 gate), instead of a new compiler process per build.
     daemon: bool,
+    /// With `--daemon`, build with `-v` so samples carry the work counters;
+    /// the query event log then adds to the timed build.
+    count_work: bool,
 }
 
 impl Options {
@@ -77,6 +80,7 @@ impl Options {
             warmup: 1,
             release: false,
             daemon: false,
+            count_work: false,
         };
         while let Some(argument) = args.next() {
             match argument.as_str() {
@@ -84,6 +88,7 @@ impl Options {
                 "--verify-determinism" => {}
                 "--release" => options.release = true,
                 "--daemon" => options.daemon = true,
+                "--count-work" => options.count_work = true,
                 "--corpus" => {
                     let value = args.next().ok_or("--corpus requires a value")?;
                     options.corpora = if value == "all" {
@@ -187,7 +192,8 @@ impl Mutation {
 /// The representative corpus replaces the bottom of the chain with a diamond:
 /// `m1` and `m2` import `m0` (fan-out) and `m3` imports both. Each module
 /// declares a struct with a destructor that a helper stores in a `Vec`; `m0`
-/// declares a generic `weigh<T>` that `m1` instantiates; `target` exports a
+/// declares a generic `weigh<T>` that `m1` instantiates at `Pair<int>` and,
+/// for `new-instance`, at a new struct per sample; `target` exports a
 /// `direct` function that only one function of `target + 1` calls.
 ///
 /// Every sample yields source never compiled before, so content-addressed
@@ -386,7 +392,7 @@ impl Workload {
         if module == 0 {
             source.push_str(&format!(
                 "public struct Pair<T> {{ first: T, second: T }}\n\n\
-                 public func weigh<T>(pair: Pair<T>, factor: int): int {{\n    \
+                 public func weigh<T>(value: T, factor: int): int {{\n    \
                  let mut acc = factor\n    acc = acc + {}\n    return acc\n}}\n\n",
                 SALT + self.generic_salt
             ));
@@ -398,7 +404,7 @@ impl Workload {
             for instance in 1..=self.instances {
                 source.push_str(&format!("struct Fresh{instance} {{ tag: int }}\n\n"));
                 calls.push(format!(
-                    "prev.weigh(prev.Pair {{ first: Fresh{instance} {{ tag: {instance} }}, second: Fresh{instance} {{ tag: 0 }} }}, {instance})"
+                    "prev.weigh(Fresh{instance} {{ tag: {instance} }}, {instance})"
                 ));
             }
             source.push_str(&format!(
@@ -545,7 +551,14 @@ fn execute(root: &Path, options: &Options) -> Result<bool, String> {
                 for module in workload.mutate(mutation, index) {
                     workload.write_module(&project, module)?;
                 }
-                let sample = measure(&cli, &runtime, &project, mutation, daemon)?;
+                let sample = measure(
+                    &cli,
+                    &runtime,
+                    &project,
+                    mutation,
+                    daemon,
+                    options.count_work,
+                )?;
                 if index >= warmup {
                     samples.push(sample);
                 }
@@ -586,6 +599,7 @@ fn execute(root: &Path, options: &Options) -> Result<bool, String> {
             "clean_samples": clean_samples,
             "time_passes": !options.daemon,
             "daemon": options.daemon,
+            "count_work": options.daemon && options.count_work,
             "edited_module": "middle of the import chain",
         },
         "host": host(root, &work),
@@ -672,12 +686,17 @@ fn measure(
     project: &Path,
     mutation: Mutation,
     daemon: Option<&Path>,
+    count_work: bool,
 ) -> Result<Sample, String> {
     // `-Z` switches are process-wide and `-v` records every query event, so
-    // a daemon build is timed as a user runs it; `require` fails rather than
-    // timing a batch build.
+    // a daemon build is timed as a user runs it unless the work counters are
+    // asked for; `require` fails rather than timing a batch build.
     let args: &[&str] = if daemon.is_some() {
-        &["build"]
+        if count_work {
+            &["build", "-v"]
+        } else {
+            &["build"]
+        }
     } else {
         &["build", "-v", "-Ztime-passes"]
     };

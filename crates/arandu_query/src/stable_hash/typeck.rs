@@ -397,6 +397,14 @@ fn hash_typing(
         hash_semantic_type(&mut h, *ty, interner, symbols);
     }
 
+    let mut callback_bounds: Vec<_> = info.callback_bounds.iter().collect();
+    callback_bounds.sort_by_key(|(symbol, _)| (symbol.file_id, symbol.local_id.0));
+    h.update(&u64_le(callback_bounds.len() as u64));
+    for (symbol, ty) in callback_bounds {
+        hash_symbol_id(&mut h, *symbol);
+        hash_semantic_type(&mut h, *ty, interner, symbols);
+    }
+
     let mut constraints: Vec<_> = info.param_constraints.iter().collect();
     constraints.sort_by_key(|(symbol, _)| (symbol.file_id, symbol.local_id.0));
     h.update(&u64_le(constraints.len() as u64));

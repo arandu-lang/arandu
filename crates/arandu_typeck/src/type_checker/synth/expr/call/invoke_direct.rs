@@ -23,15 +23,21 @@ pub(super) fn synth_direct_symbol_call(
     let callee_ty_id = synth_expr(checker, callee_id);
     let arg_ids = checker.pool.expr_list(args_range).to_vec();
     let callee_ty = checker.resolve(callee_ty_id);
-    let func_info = if let ArType::Func(ref params, ret) = callee_ty {
-        Some((checker.type_info.type_interner.type_args(*params), ret))
-    } else {
-        None
+    // `f(args)` on a callback parameter calls its closure's `call` directly.
+    let callback_bound = match callee_ty {
+        ArType::Named(symbol, _) => checker.type_info.callback_bounds.get(&symbol).copied(),
+        _ => None,
+    };
+    let func_info = match callback_bound
+        .map_or_else(|| callee_ty.clone(), |bound| checker.resolve(bound))
+    {
+        ArType::Func(params, ret) => Some((checker.type_info.type_interner.type_args(params), ret)),
+        _ => None,
     };
     let is_error = matches!(callee_ty, ArType::Error);
 
     Some(if let Some((mut params, mut ret)) = func_info {
-        let mut is_direct = false;
+        let mut is_direct = callback_bound.is_some();
         let mut current_callee = callee_id;
         let had_explicit_generic = matches!(checker.pool.expr(callee_id), ExprKind::Generic { .. });
         if let ExprKind::Generic { callee: inner, .. } = checker.pool.expr(current_callee) {
@@ -138,11 +144,9 @@ pub(super) fn synth_direct_symbol_call(
             && let Some(gp) = checker.type_info.generic_params.get(&sym_id).cloned()
             && !gp.is_empty()
         {
-            let arg_tys: Vec<TypeId> = arg_ids
-                .iter()
-                .copied()
-                .map(|aid| synth_expr(checker, aid))
-                .collect();
+            let arg_tys =
+                super::closure::synth_args_with_callbacks(checker, &gp, &params, &arg_ids);
+            super::closure::check_callback_args(checker, &params, &arg_ids, &arg_tys);
             if let Some((ip, ir)) = infer_and_instantiate_func(
                 checker,
                 (Some(sym_id), &gp),

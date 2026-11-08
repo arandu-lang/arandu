@@ -50,6 +50,7 @@ impl TypeInfo {
             .retain(|_, destructor| kept(destructor));
         view.generic_params.retain(|symbol, _| kept(symbol));
         view.generic_defaults.retain(|symbol, _| kept(symbol));
+        view.callback_bounds.retain(|symbol, _| kept(symbol));
         view.param_constraints.retain(|symbol, _| kept(symbol));
         view.interfaces.retain(|symbol, _| kept(symbol));
         view.variant_instantiations
@@ -167,6 +168,7 @@ impl TypeInfo {
                 }
             }
             types.extend(self.generic_defaults.get(&symbol).copied());
+            types.extend(self.callback_bounds.get(&symbol).copied());
             if let Some(interface) = self.interfaces.get(&symbol) {
                 pending.extend(interface.self_param);
                 for method in &interface.methods {

@@ -550,3 +550,36 @@ const RUNS_NULLABLE: &[(&str, &str, i32)] = &[
         16,
     ),
 ];
+
+/// Non-escaping callbacks (RFC 0032, L1) are closure structs called directly:
+/// every backend, Wasm included, computes the same results.
+#[test]
+fn closure_callbacks_agree_on_every_backend() {
+    let source = include_str!("../../../../tests/corpus/closure_callbacks.aru");
+    for (backend, outcome) in outcomes("closure_callbacks", source) {
+        assert_eq!(outcome, ProgramOutcome::Returned(0), "{backend}");
+    }
+    let path = std::env::temp_dir().join(format!(
+        "arandu_closure_callbacks_{}.aru",
+        std::process::id()
+    ));
+    fs::write(&path, source).unwrap();
+    let wasm = cli(&["emit-wasm", &path.to_string_lossy()]);
+    assert!(
+        wasm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&wasm.stderr)
+    );
+    crate::wasm_host::run_main(&wasm.stdout).assert_returns(0, "closure callbacks in Wasmtime");
+    let _ = fs::remove_file(path);
+}
+
+/// `move` captures own runtime values, so LLVM, which links no runtime, is
+/// left out.
+#[test]
+fn closure_move_captures_agree_on_native_backends() {
+    let source = include_str!("../../../../tests/corpus/closure_move_capture.aru");
+    for (backend, outcome) in outcomes_on("closure_move_capture", source, false) {
+        assert_eq!(outcome, ProgramOutcome::Returned(0), "{backend}");
+    }
+}

@@ -403,6 +403,15 @@ impl TypeInfo {
             self.generic_defaults
                 .insert(*symbol, self.type_interner.intern(translated));
         }
+        for (symbol, &bound) in &other.callback_bounds {
+            if shared_headers && self.callback_bounds.contains_key(symbol) {
+                continue;
+            }
+            let ty = other.type_interner.resolve(bound);
+            let translated = translate_type(&ty, &other.type_interner, &mut self.type_interner);
+            self.callback_bounds
+                .insert(*symbol, self.type_interner.intern(translated));
+        }
         for (symbol, constraints) in &other.param_constraints {
             if shared_headers && self.param_constraints.contains_key(symbol) {
                 continue;
@@ -531,6 +540,7 @@ fn context_shard_is_empty(other: &TypeInfo) -> bool {
         && other.generic_params.is_empty()
         && other.unsafe_functions.is_empty()
         && other.generic_defaults.is_empty()
+        && other.callback_bounds.is_empty()
         && other.param_constraints.is_empty()
         && other.interfaces.is_empty()
         && other.struct_repr_c.is_empty()

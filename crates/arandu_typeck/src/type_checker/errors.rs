@@ -19,6 +19,9 @@ pub fn constraint_to_diagnostic(
     symbols: &SymbolTable,
     type_info: &TypeInfo,
 ) -> Diagnostic {
+    if let Some(diagnostic) = escaping_callback(constraint, symbols, type_info) {
+        return diagnostic;
+    }
     let expected_str = constraint
         .expected
         .display(symbols, &type_info.type_interner);
@@ -481,6 +484,57 @@ pub fn constraint_to_diagnostic(
 // ── Active hints ────────────────────────────────────────────────────
 
 /// Add operator-specific hints (e.g., suggest interpolation for str+int).
+/// A borrowed callback parameter reaching a function-typed sink would outlive
+/// the call that lent it (RFC 0032, L1).
+fn escaping_callback(
+    constraint: &Constraint,
+    symbols: &SymbolTable,
+    type_info: &TypeInfo,
+) -> Option<Diagnostic> {
+    let ArType::Named(implicit, _) = &constraint.found else {
+        return None;
+    };
+    let bound = *type_info.callback_bounds.get(implicit)?;
+    let (value_span, sink_span) = match &constraint.origin {
+        ConstraintOrigin::Assignment { lhs_span, rhs_span } => (*rhs_span, *lhs_span),
+        ConstraintOrigin::CallArg {
+            param_span,
+            arg_span,
+            ..
+        } => (*arg_span, *param_span),
+        ConstraintOrigin::ReturnType {
+            return_span,
+            declared_span,
+        } => (*return_span, *declared_span),
+        ConstraintOrigin::FieldInit {
+            field_span,
+            value_span,
+            ..
+        } => (*value_span, *field_span),
+        ConstraintOrigin::SetTarget {
+            place_span,
+            value_span,
+        } => (*value_span, *place_span),
+        _ => return None,
+    };
+    let bound = type_info
+        .type_interner
+        .resolve(bound)
+        .display(symbols, &type_info.type_interner);
+    Some(
+        Diagnostic::error(
+            DiagCode::T100BorrowedCallbackEscapes,
+            format!("borrowed callback of type '{bound}' cannot escape the call that received it"),
+            value_span,
+        )
+        .with_label(value_span, "this callback is only borrowed for the duration of the call")
+        .with_label(sink_span, "it would outlive the call here")
+        .with_hint(
+            "call it here or pass it on to another callback parameter; owned `own (A) -> R` closures are planned (v0.3 LAMBDA L3)",
+        ),
+    )
+}
+
 fn add_operator_hint(
     diag: Diagnostic,
     left: &ArType,

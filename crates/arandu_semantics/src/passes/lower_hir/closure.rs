@@ -79,11 +79,21 @@ pub fn lower_closure_hir(
             let value = super::expr::lower_expr(type_check, &program.pool, &mut pool, *expr)
                 .map_err(|diagnostic| vec![diagnostic])?;
             let span = program.pool.expr_span(*expr);
-            let values = pool.alloc_expr_list(&[value]);
-            let ret = pool.alloc_stmt(HirStmt {
-                kind: HirStmtKind::Return { values },
-                span,
-            });
+            let returns_void = matches!(
+                type_check
+                    .type_info
+                    .type_interner
+                    .resolve(recipe.return_type),
+                arandu_middle::types::ArType::Void
+            );
+            let kind = if returns_void {
+                HirStmtKind::Expr(value)
+            } else {
+                HirStmtKind::Return {
+                    values: pool.alloc_expr_list(&[value]),
+                }
+            };
+            let ret = pool.alloc_stmt(HirStmt { kind, span });
             let statements = pool.alloc_stmt_list(&[ret]);
             pool.alloc_block(HirBlock { statements, span })
         }

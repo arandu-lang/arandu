@@ -1,0 +1,98 @@
+module closureCallbacks
+
+// Non-escaping callbacks (RFC 0032, L1): each `(A) -> R` parameter is an
+// implicit type parameter, and each closure argument a struct whose `call`
+// the callee invokes directly.
+
+struct Point {
+    x: int,
+    y: int,
+}
+
+func apply(x: int, f: (int) -> int): int {
+    return f(x)
+}
+
+func applyTwice(x: int, f: (int) -> int): int {
+    return f(f(x))
+}
+
+func fold(n: int, initial: int, f: (int, int) -> int): int {
+    let mut acc = initial
+    let mut i = 0
+    while i < n {
+        acc = f(acc, i)
+        i = i + 1
+    }
+    return acc
+}
+
+func each(n: int, f: (int) -> void): void {
+    let mut i = 0
+    while i < n {
+        f(i)
+        i = i + 1
+    }
+}
+
+func pick(flag: bool, f: () -> int): int {
+    if flag { return f() }
+    return 0
+}
+
+// The callback is passed on to another callback parameter.
+func forward(x: int, f: (int) -> int): int {
+    return applyTwice(x, f) + apply(x, f)
+}
+
+func ignore(value: int): void {
+}
+
+func copyCaptures(): int {
+    let k: int = 10
+    let origin = Point { x: 3, y: 4 }
+    if applyTwice(1, (x: int) => x + k) != 21 { return 1 }
+    if apply(2, (x) => x * origin.x + origin.y) != 10 { return 2 }
+    // The caller keeps its own copy.
+    if k != 10 { return 3 }
+    return 0
+}
+
+func blockBodies(): int {
+    let scale: int = 3
+    let total = fold(4, 0, (acc, i) => {
+        if i == 0 { return acc + 100 }
+        let step = i * scale
+        acc + step
+    })
+    if total != 118 { return 1 }
+    if pick(true, () => { return scale * 14 }) != 42 { return 2 }
+    if pick(false, () => scale) != 0 { return 3 }
+    return 0
+}
+
+func voidAndForwarded(): int {
+    each(3, (i) => ignore(i))
+    let base: int = 5
+    if forward(2, (x) => x * base) != 60 { return 1 }
+    return 0
+}
+
+func nestedClosures(): int {
+    let k: int = 7
+    let r = apply(1, (x) => apply(x + 1, (y) => y * k + x))
+    if r != 15 { return 1 }
+    return 0
+}
+
+func main(): int {
+    let copied = copyCaptures()
+    if copied != 0 { return 10 + copied }
+    let blocks = blockBodies()
+    if blocks != 0 { return 20 + blocks }
+    let forwarded = voidAndForwarded()
+    if forwarded != 0 { return 30 + forwarded }
+    let nested = nestedClosures()
+    if nested != 0 { return 40 + nested }
+    return 0
+}

@@ -101,6 +101,14 @@ pub(crate) fn collect_signature_types(checker: &mut TypeChecker<'_>, program: &P
                             all_params.push(p);
                         }
                     }
+                    if matches!(func_decl.name, arandu_parser::FuncName::Free { .. }) {
+                        all_params.extend(super::callback::implicit_callback_params(
+                            checker,
+                            symbol_id,
+                            &func_decl.params,
+                            &mut param_types,
+                        ));
+                    }
                     if !all_params.is_empty() {
                         checker
                             .type_info

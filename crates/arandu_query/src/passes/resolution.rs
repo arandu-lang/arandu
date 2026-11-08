@@ -469,6 +469,13 @@ pub(super) fn signatures_with_imports(
                 }
             }
         }
+        for &implicit in imported_info.callback_bounds.keys() {
+            if checker.symbols.try_get(implicit).is_none() {
+                if let Some(symbol) = imported_sigs.symbols.try_get(implicit).cloned() {
+                    Arc::make_mut(&mut checker.symbols).register_imported_symbol(symbol);
+                }
+            }
+        }
         for (&var_id, &(parent_id, _)) in &imported_info.enum_variants {
             if checker.symbols.try_get(var_id).is_none() {
                 if let Some(symbol) = imported_sigs.symbols.try_get(var_id).cloned() {

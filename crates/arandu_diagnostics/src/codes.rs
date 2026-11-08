@@ -133,8 +133,11 @@ pub enum DiagCode {
     /// representation (or would need an ABI transformation).
     T049InvalidFfiExport,
     /// `std.thread` or `std.fs` was used on a freestanding target.
-    /// T049–T098 stay unused; T099 is the 0.2.0 bare-metal contract.
+    /// T050–T098 stay unused; T099 is the 0.2.0 bare-metal contract.
     T099RequiresOperatingSystem,
+    /// A borrowed `(A) -> R` callback parameter is returned, stored or
+    /// assigned where it would outlive the call that received it.
+    T100BorrowedCallbackEscapes,
 
     // ── Lowering (L) ──
     L001LoweringUnresolvedSymbol,
@@ -279,6 +282,7 @@ impl DiagCode {
             T048InvalidArrayRepeat,
             T049InvalidFfiExport,
             T099RequiresOperatingSystem,
+            T100BorrowedCallbackEscapes,
             L001LoweringUnresolvedSymbol,
             G001GenericInstantiationCycle,
             G002GenericInstantiationLimit,
@@ -430,6 +434,7 @@ impl DiagCode {
             DiagCode::T048InvalidArrayRepeat => "T048",
             DiagCode::T049InvalidFfiExport => "T049",
             DiagCode::T099RequiresOperatingSystem => "T099",
+            DiagCode::T100BorrowedCallbackEscapes => "T100",
             DiagCode::L001LoweringUnresolvedSymbol => "L001",
             DiagCode::G001GenericInstantiationCycle => "G001",
             DiagCode::G002GenericInstantiationLimit => "G002",

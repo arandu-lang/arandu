@@ -141,6 +141,9 @@ pub struct TypeInfo {
     pub generic_params: FxHashMap<SymbolId, Arc<Vec<SymbolId>>>,
     /// T2.1: type-parameter symbol → default type (`A = GlobalAllocator`).
     pub generic_defaults: FxHashMap<SymbolId, TypeId>,
+    /// Implicit type parameter of a `(A) -> R` parameter → that function type.
+    /// The argument is a closure struct whose `call` has this signature.
+    pub callback_bounds: FxHashMap<SymbolId, TypeId>,
     /// Type-parameter symbol → interface constraints required (`T: Display`, `I: Iterator<Item>`).
     pub param_constraints: FxHashMap<SymbolId, Arc<Vec<InterfaceConstraint>>>,
     /// Interface symbol → method signatures (nominal, Go-style structural check).
@@ -201,6 +204,7 @@ impl TypeInfo {
             destructor_instances: FxHashMap::default(),
             generic_params: FxHashMap::default(),
             generic_defaults: FxHashMap::default(),
+            callback_bounds: FxHashMap::default(),
             param_constraints: FxHashMap::default(),
             interfaces: FxHashMap::default(),
             variant_instantiations: FxHashMap::default(),

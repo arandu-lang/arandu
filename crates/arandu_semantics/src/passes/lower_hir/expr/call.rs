@@ -2,7 +2,7 @@ use crate::TypeCheckResult;
 use crate::diagnostics::Diagnostic;
 use crate::hir::{HirExpr, HirExprKind};
 use crate::passes::type_checker::types::Primitive;
-use arandu_middle::types::TypeInterner;
+use arandu_middle::types::{ArType, TypeInterner};
 use arandu_parser::ast_pool::{AstPool, ExprId, ExprKind};
 
 pub(super) fn lower_call(
@@ -80,6 +80,13 @@ pub(super) fn lower_call(
                 let ty = super::expr_type_for_kind(type_check, hir_pool, &kind, fallback_ty);
                 return Ok(HirExpr { kind, ty, span });
             }
+            if trailing_block.is_none()
+                && let Some(kind) =
+                    lower_callback_call(type_check, pool, hir_pool, callee_id, arg_ids)?
+            {
+                let ty = super::expr_type_for_kind(type_check, hir_pool, &kind, fallback_ty);
+                return Ok(HirExpr { kind, ty, span });
+            }
             // Method receiver is not in the AST arg list. Prepend it for
             // `obj.m(...)` and generic `obj.m<T>(...)` so AMIR/mono see
             // (self, …) matching the method Func type.
@@ -128,4 +135,54 @@ pub(super) fn lower_call(
     };
     let ty = super::expr_type_for_kind(type_check, hir_pool, &kind, fallback_ty);
     Ok(HirExpr { kind, ty, span })
+}
+
+/// `f(args)` on an implicit callback parameter `f: F` is `F.call(f, args)`.
+/// Monomorphization replaces `F` with the closure struct, so the call is direct.
+fn lower_callback_call(
+    type_check: &mut TypeCheckResult,
+    pool: &AstPool,
+    hir_pool: &mut crate::hir::HirPool,
+    callee_id: ExprId,
+    arg_ids: &[ExprId],
+) -> Result<Option<HirExprKind>, Diagnostic> {
+    let Some(callee_ty) = type_check.type_info.expr_type_id(callee_id) else {
+        return Ok(None);
+    };
+    let interner = &type_check.type_info.type_interner;
+    let ArType::Named(implicit, _) = interner.resolve(callee_ty) else {
+        return Ok(None);
+    };
+    let Some(&bound) = type_check.type_info.callback_bounds.get(&implicit) else {
+        return Ok(None);
+    };
+    let ArType::Func(params, ret) = interner.resolve(bound) else {
+        return Err(Diagnostic::ice(
+            crate::DiagCode::ICEL001,
+            "callback bound is not a function type",
+            pool.expr_span(callee_id),
+        ));
+    };
+    let mut method_params = vec![callee_ty];
+    method_params.extend(interner.type_args(params));
+    let method = ArType::func(&method_params, ret, interner);
+    let method_ty = type_check.type_info_mut().type_interner.intern(method);
+    let base = super::lower_expr(type_check, pool, hir_pool, callee_id)?;
+    let callee = hir_pool.alloc_expr(HirExpr {
+        kind: HirExprKind::Field {
+            base,
+            field: "call".into(),
+        },
+        ty: method_ty,
+        span: pool.expr_span(callee_id),
+    });
+    let mut args = vec![super::lower_expr(type_check, pool, hir_pool, callee_id)?];
+    for &arg in arg_ids {
+        args.push(super::lower_expr(type_check, pool, hir_pool, arg)?);
+    }
+    Ok(Some(HirExprKind::Call {
+        callee,
+        args: hir_pool.alloc_expr_list(&args),
+        trailing_block: None,
+    }))
 }

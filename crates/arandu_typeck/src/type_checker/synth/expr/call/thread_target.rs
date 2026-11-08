@@ -83,7 +83,7 @@ pub(crate) fn check_target_thread_capabilities(
     false
 }
 
-fn span_contains(outer: Span, inner: Span) -> bool {
+pub(super) fn span_contains(outer: Span, inner: Span) -> bool {
     outer.file_id == inner.file_id && outer.start <= inner.start && outer.end >= inner.end
 }
 
@@ -95,7 +95,7 @@ fn span_contains(outer: Span, inner: Span) -> bool {
 /// and a dropped capture leaves the `run` body naming a local of another
 /// function. Expression uses come from `expr_symbols`; assignment roots,
 /// which are places rather than expressions, come from `value_refs`.
-fn value_uses_within(
+pub(super) fn value_uses_within(
     checker: &TypeChecker<'_>,
     lambda: Span,
 ) -> Vec<(Span, arandu_middle::SymbolId)> {
@@ -246,7 +246,7 @@ pub(crate) fn synth_thread_spawn_closure(
             expr: inner_expr, ..
         } => super::synth_expr(checker, *inner_expr),
         arandu_parser::LambdaBody::Block { block, .. } => {
-            crate::type_checker::check::check_thread_closure_block(checker, block)
+            crate::type_checker::check::check_closure_block(checker, block, None)
         }
     };
     let ret_ty = checker.resolve(ret_ty_id);

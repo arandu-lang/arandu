@@ -38,11 +38,28 @@ pub(super) fn synth_control_flow_expr(
 ) -> Option<TypeId> {
     match kind {
         ExprKind::Lambda { .. } => {
-            checker.diagnostics.push(crate::Diagnostic::error(
-                crate::DiagCode::U001FeatureNotSupported,
-                "AMIR v0.1: lambda/closure is not supported yet (v0.3 LAMBDA: closure type checking and lowering)",
-                span,
-            ));
+            // A callback argument was already typed (or rejected) against its bound.
+            if let Some(recipe) = checker.type_info.closure_at(span) {
+                let struct_symbol = recipe.struct_symbol;
+                return checker.decl_type_id(struct_symbol);
+            }
+            if let Some(checked) = checker.type_info.expr_type_id(_expr)
+                && checker.resolve(checked).is_error()
+            {
+                return Some(checked);
+            }
+            checker.diagnostics.push(
+                crate::Diagnostic::error(
+                    crate::DiagCode::U001FeatureNotSupported,
+                    "an escaping closure is not supported yet (v0.3 LAMBDA L3)",
+                    span,
+                )
+                .with_label(
+                    span,
+                    "a closure is only accepted as an argument of a callback parameter",
+                )
+                .with_hint("pass the closure directly to a parameter of type `(A) -> R`"),
+            );
             Some(checker.intern(ArType::Error))
         }
         ExprKind::Alloc { expr: inner_expr } => {

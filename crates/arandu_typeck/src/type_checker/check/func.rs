@@ -205,7 +205,27 @@ pub fn check_func_body(checker: &mut TypeChecker<'_>, decl: &FuncDecl) {
         (ArType::Void, decl.span)
     };
 
-    for param in &decl.params {
+    let func_key = func_name_key(decl);
+    let func_symbol = checker.resolved.definitions.get(&func_key).copied();
+    let declared_params = func_symbol
+        .and_then(|symbol| checker.decl_type(symbol))
+        .and_then(|declared| match declared {
+            ArType::Func(params, _) => Some(checker.type_info.type_interner.type_args(params)),
+            _ => None,
+        })
+        .unwrap_or_default();
+    for (index, param) in decl.params.iter().enumerate() {
+        if let Some(&callback) = declared_params.get(index)
+            && let ArType::Named(implicit, _) = checker.resolve(callback)
+            && checker.type_info.callback_bounds.contains_key(&implicit)
+        {
+            let param_key = crate::NodeKey::from(param.span);
+            if let Some(&symbol_id) = checker.resolved.definitions.get(&param_key) {
+                checker.ctx.bind(symbol_id, callback);
+                checker.record_decl_type(symbol_id, callback);
+            }
+            continue;
+        }
         let mut param_ty = checker.lower_type_expr(param.ty, type_scope);
 
         if param.is_receiver
@@ -241,8 +261,6 @@ pub fn check_func_body(checker: &mut TypeChecker<'_>, decl: &FuncDecl) {
 
     let ret_id = checker.intern(ret_ty);
     checker.ctx.push_return(ret_id, return_decl_span);
-    let func_key = func_name_key(decl);
-    let func_symbol = checker.resolved.definitions.get(&func_key).copied();
     let old_effects = checker.current_observed_effects;
     checker.current_observed_effects = arandu_middle::EffectFlags::NONE;
 

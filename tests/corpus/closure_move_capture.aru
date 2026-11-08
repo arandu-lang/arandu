@@ -1,0 +1,43 @@
+module closureMoveCapture
+
+import std.alloc.string as strings
+
+// `move` closures own their captures: the struct is not `Copy`, so a callee
+// may call such a callback once.
+
+func callOnce(f: () -> int): int {
+    return f()
+}
+
+func withSuffix(n: int, f: (int) -> int): int {
+    return f(n)
+}
+
+// Consuming one capture leaves the other captures usable.
+func consumesOneCapture(): int {
+    let text = strings.String.from("owned")
+    let extra: int = 36
+    let len = callOnce(move || {
+        let mut local = text
+        local.pushStr("!")
+        return local.asStr().len() as int + extra
+    })
+    if len != 42 { return 1 }
+    return 0
+}
+
+// The closure takes a parameter and drops its owned capture after use.
+func movedCaptureWithParameter(): int {
+    let label = strings.String.from("abc")
+    let r = withSuffix(39, move |n| n + label.asStr().len() as int)
+    if r != 42 { return 1 }
+    return 0
+}
+
+func main(): int {
+    let consumed = consumesOneCapture()
+    if consumed != 0 { return 10 + consumed }
+    let moved = movedCaptureWithParameter()
+    if moved != 0 { return 20 + moved }
+    return 0
+}

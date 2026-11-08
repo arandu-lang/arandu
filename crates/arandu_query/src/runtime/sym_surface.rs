@@ -190,6 +190,18 @@ pub fn symbol_surface(
                 } else {
                     hasher.update(&[0]);
                 }
+                if let Some(&bound) = signatures.type_info.callback_bounds.get(&param) {
+                    hasher.update(&[1]);
+                    let bytes = crate::stable_hash::semantic_type_bytes(
+                        bound,
+                        &signatures.type_info.type_interner,
+                        &signatures.symbols,
+                    );
+                    hasher.update(&(bytes.len() as u64).to_le_bytes());
+                    hasher.update(&bytes);
+                } else {
+                    hasher.update(&[0]);
+                }
             }
         } else {
             hasher.update(&[0]);

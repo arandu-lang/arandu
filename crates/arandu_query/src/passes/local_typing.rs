@@ -527,6 +527,7 @@ impl Frame<'_> {
             destructor_instances: _,
             generic_params: _,
             generic_defaults: _,
+            callback_bounds: _,
             param_constraints: _,
             interfaces: _,
             variant_instantiations: _,
@@ -606,6 +607,7 @@ fn without_signatures(local: &mut TypeInfo, signatures: &TypeInfo) {
     if local.type_interner.extends(&signatures.type_interner) {
         same_map(&mut local.decl_types, &signatures.decl_types);
         same_map(&mut local.generic_defaults, &signatures.generic_defaults);
+        same_map(&mut local.callback_bounds, &signatures.callback_bounds);
     }
     same_map(
         &mut local.ctfe_global_values,

@@ -182,7 +182,7 @@ fn lambda_selection_is_lexical_but_closure_execution_remains_explicitly_unsuppor
         let diagnostics = errors(&db, file);
         assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
         assert_eq!(diagnostics[0].code, DiagCode::U001FeatureNotSupported);
-        assert!(diagnostics[0].message.contains("lambda/closure"));
+        assert!(diagnostics[0].message.contains("escaping closure"));
         assert!(passes::lower_amir(&db, file).amir.funcs.is_empty());
     }
 }

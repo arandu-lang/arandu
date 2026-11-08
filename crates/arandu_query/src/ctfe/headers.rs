@@ -432,6 +432,9 @@ pub(crate) fn install_referenced_headers_in_context(
                 if let Some(&ty) = owner.type_info.generic_defaults.get(parameter) {
                     shard.generic_defaults.insert(*parameter, ty);
                 }
+                if let Some(&ty) = owner.type_info.callback_bounds.get(parameter) {
+                    shard.callback_bounds.insert(*parameter, ty);
+                }
             }
         }
         for (&variant, (parent, shape)) in &owner.type_info.enum_variants {

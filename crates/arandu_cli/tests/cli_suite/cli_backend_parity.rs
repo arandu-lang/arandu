@@ -75,6 +75,19 @@ fn outcomes(name: &str, source: &str) -> Vec<(&'static str, super::common::Progr
 
 const RESULTS: &[(&str, &str, i32)] = &[
     (
+        // `*holder.field` loads the pointee, not the reference bits.
+        "deref_of_reference_field",
+        r#"struct Env { n: mut ref int, k: ref int }
+func read(e: Env): int { return *e.n + *e.k }
+func main(): int {
+    let mut n = 5
+    let k = 2
+    return read(Env { n: mut ref n, k: ref k })
+}
+"#,
+        7,
+    ),
+    (
         "narrow_shifts",
         r#"func shl(a: u8, b: u8): u8 { return a << b }
 func shr(a: i16, b: i16): i16 { return a >> b }

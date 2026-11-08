@@ -190,7 +190,11 @@ impl LowerCtx<'_> {
                             },
                         );
                     } else {
-                        self.emit_assign_temp(dest, AmirRvalue::Load(place));
+                        // The projected place holds the reference itself
+                        // (`*holder.field`); the pointee is one Deref further.
+                        let mut pointee = place;
+                        pointee.projections.push(crate::amir::AmirProjection::Deref);
+                        self.emit_assign_temp(dest, AmirRvalue::Load(pointee));
                     }
                     Ok(AmirOperand::Copy(dest))
                 } else {

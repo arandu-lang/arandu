@@ -22,6 +22,22 @@
 > de reflexão C3 (§10.1.2) e atributos executáveis continuam fora; as questões
 > de §9 sobre identidade, visibilidade, efeitos e budgets são decididas antes
 > da C2.
+>
+> **Decisões do mantenedor em 2026-11-07** (recorte C1/C2):
+>
+> - **Identidade do `TypeDesc`:** o caminho canônico de definição
+>   (`módulo.Tipo`, o mesmo dos nomes de backend), os argumentos canônicos e um
+>   fingerprint da forma pública. Não é `SymbolId`: ele é denso por arquivo
+>   (muda quando um símbolo é declarado antes dele) e o `FileId` difere entre
+>   builds quentes e frios. Uma edição de corpo de método não muda a
+>   identidade.
+> - **Visibilidade:** a do ponto de chamada, nos níveis da linguagem: no
+>   módulo do tipo, tudo; no mesmo pacote, `internal` e `public`; fora,
+>   `public`. Membros invisíveis são omitidos e o descritor diz se está
+>   completo (`isComplete`).
+> - **Custo:** 10 de fuel por consulta e mais 2 por membro refletido; o valor
+>   é `ConstValue::TypeDesc` imutável. No binário, só como tabela em `.rodata`
+>   quando promovido a constante de runtime; sem alocação dinâmica.
 
 ---
 

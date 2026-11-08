@@ -32,6 +32,29 @@
 > escapantes e com dono. Antes da L2 é preciso decidir a gramática (§8), se a
 > chamada indireta é statement ou terminador (§5.2) e o layout do valor função
 > (§5.1). O status continua `Draft` até essas decisões.
+>
+> **Decisões do mantenedor em 2026-11-07** (fecham as questões acima; o
+> status continua `Draft` até a L3):
+>
+> - **Tipo de função:** a sintaxe que o parser já tem, `(A, B) -> R`, com os
+>   modos nos parâmetros (`(ref T, mut ref T) -> R`); não há palavra `fn`. Sem
+>   prefixo é callback emprestado e não escapante: o callee só o chama ou o
+>   repassa a outro parâmetro de função. `own (A) -> R` é a closure com dono e
+>   escapante (L3). `func(A) R` fica como alias legado.
+> - **Literal:** `(x: T) => expr` e `(x) => { ... }` são canônicos, com
+>   dois-pontos como em toda declaração; `(x T)` continua aceito. `|x| expr`
+>   continua aceito e o formatter normaliza para a seta. `own () => ...` força
+>   todas as capturas por movimento; `move` é alias de `own`.
+> - **Capturas:** deduzidas por caminho de projeção: leitura de tipo `Copy`
+>   copia, leitura de outro tipo empresta, mutação empresta mutável, consumo
+>   move; `own` força movimento. O OSSA as verifica como campos de struct.
+> - **Chamada indireta:** statement, o `AmirStmt::Call` com callee operando;
+>   os modos dos argumentos vêm do tipo `Func`.
+> - **Valor função:** `{code, env}`, duas palavras. Uma função livre usa um
+>   thunk adaptador com `env = null`; o ambiente de uma closure escapante, no
+>   heap, começa por `{drop, size, align}`. C: `struct { code, env }`; Wasm:
+>   índice de tabela e offset na memória linear; LLVM: `{ ptr, ptr }`, com a
+>   convenção padrão nas fronteiras `@Export`.
 
 ---
 

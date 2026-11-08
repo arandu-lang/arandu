@@ -539,7 +539,7 @@ fn borrowed_capture(checker: &mut TypeChecker<'_>, span: Span, name: &str, captu
             span,
         )
         .with_label(span, format!("'{name}' is captured here"))
-        .with_hint("prefix the closure with `own` or `move` to move the captured values into it"),
+        .with_hint("prefix the closure with `move` to move the captured values into it"),
     );
 }
 

@@ -1,4 +1,4 @@
-//! Lower one synthesized thread-capture `run` body.
+//! Lower one synthesized closure method body (`run` or `call`).
 //!
 //! The call site lowers the lambda to a struct literal. This pass lowers only
 //! the closure body and wraps it in one irrefutable struct pattern,
@@ -22,12 +22,12 @@ use arandu_middle::hir::{HirBlockId, HirFieldPattern, HirMatchArm, HirMatchArmBo
 use arandu_middle::types::TypeId;
 use arandu_parser::Program;
 use arandu_parser::ast_pool::{ExprId, ExprKind};
-use arandu_typeck::type_checker::info::ThreadCaptureRecipe;
+use arandu_typeck::type_checker::info::ClosureRecipe;
 
-pub fn lower_thread_capture_hir(
+pub fn lower_closure_hir(
     type_check: &mut TypeCheckResult,
     program: &Program,
-    run_symbol: SymbolId,
+    method_symbol: SymbolId,
 ) -> Result<HirProgram, Vec<Diagnostic>> {
     if type_check
         .diagnostics
@@ -38,19 +38,19 @@ pub fn lower_thread_capture_hir(
     }
     let Some(recipe) = type_check
         .type_info
-        .thread_capture_for_run(run_symbol)
+        .closure_for_method(method_symbol)
         .cloned()
     else {
         return Err(vec![Diagnostic::ice(
             DiagCode::ICEL001,
-            "thread capture recipe is missing for the synthesized run method",
-            arandu_lexer::Span::new(run_symbol.file_id, 0, 0),
+            "closure recipe is missing for the synthesized method",
+            arandu_lexer::Span::new(method_symbol.file_id, 0, 0),
         )]);
     };
     let Some(lambda) = find_lambda(program, recipe.lambda_span) else {
         return Err(vec![Diagnostic::ice(
             DiagCode::ICEL001,
-            "thread capture lambda is missing from the source file",
+            "closure lambda is missing from the source file",
             recipe.lambda_span,
         )]);
     };
@@ -59,7 +59,7 @@ pub fn lower_thread_capture_hir(
         _ => {
             return Err(vec![Diagnostic::ice(
                 DiagCode::ICEL001,
-                "thread capture span is not a lambda",
+                "closure span is not a lambda",
                 recipe.lambda_span,
             )]);
         }
@@ -96,27 +96,24 @@ pub fn lower_thread_capture_hir(
     };
     let body_block = destructure_captures(&mut pool, &recipe, struct_ty, body_block, type_check);
 
-    let params = pool.alloc_param_list(&[
-        HirParam {
-            symbol: recipe.self_param,
-            ty: struct_ty,
-            span: recipe.lambda_span,
-            is_receiver: true,
-            receiver_kind: Some(ReceiverKind::Own),
-        },
-        HirParam {
-            symbol: recipe.arg_param,
-            ty: type_check
-                .type_info
-                .type_interner
-                .intern(arandu_middle::types::ArType::Void),
-            span: recipe.lambda_span,
-            is_receiver: false,
-            receiver_kind: None,
-        },
-    ]);
+    let mut params = Vec::with_capacity(recipe.params.len() + 1);
+    params.push(HirParam {
+        symbol: recipe.self_param,
+        ty: struct_ty,
+        span: recipe.lambda_span,
+        is_receiver: true,
+        receiver_kind: Some(ReceiverKind::Own),
+    });
+    params.extend(recipe.params.iter().map(|param| HirParam {
+        symbol: param.symbol,
+        ty: param.ty,
+        span: recipe.lambda_span,
+        is_receiver: false,
+        receiver_kind: None,
+    }));
+    let params = pool.alloc_param_list(&params);
     let func = pool.alloc_decl(HirDecl::Func(HirFunc {
-        symbol: recipe.run_symbol,
+        symbol: recipe.method_symbol,
         params,
         return_type: recipe.return_type,
         body: Some(body_block),
@@ -167,7 +164,7 @@ fn find_lambda(program: &Program, span: arandu_lexer::Span) -> Option<ExprId> {
 /// The call site moves each capture once. The closure body is not lowered here.
 pub(crate) fn capture_struct_literal(
     hir_pool: &mut crate::hir::HirPool,
-    recipe: &ThreadCaptureRecipe,
+    recipe: &ClosureRecipe,
 ) -> HirExprKind {
     let inits = recipe
         .fields
@@ -235,7 +232,7 @@ fn return_value_tail(
 /// the symbol the closure body already uses.
 fn destructure_captures(
     pool: &mut crate::hir::HirPool,
-    recipe: &ThreadCaptureRecipe,
+    recipe: &ClosureRecipe,
     struct_ty: TypeId,
     body: HirBlockId,
     type_check: &TypeCheckResult,

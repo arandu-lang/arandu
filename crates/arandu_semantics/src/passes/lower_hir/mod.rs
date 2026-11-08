@@ -8,6 +8,7 @@ use crate::diagnostics::{Diagnostic, Severity};
 use crate::hir::HirProgram;
 use arandu_parser::Program;
 
+mod closure;
 mod decl;
 mod expr;
 mod link;
@@ -16,11 +17,10 @@ mod ops;
 mod pattern;
 mod place;
 mod stmt;
-mod thread_capture;
 
+pub use closure::lower_closure_hir;
 pub use link::link_hir_module;
 pub use materialize::{MaterializationError, materialize_ctfe_scalar, materialize_ctfe_value};
-pub use thread_capture::lower_thread_capture_hir;
 
 /// Lower only an initially typed expression into the caller's HIR context.
 /// The canonical AST/pool and declaration headers remain shared by the caller;

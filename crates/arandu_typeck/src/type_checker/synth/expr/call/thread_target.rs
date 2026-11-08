@@ -1,7 +1,7 @@
 use arandu_lexer::Span;
 use arandu_parser::ast_pool::{ExprId, ExprKind};
 
-use super::thread_capture;
+use super::closure;
 use crate::type_checker::TypeChecker;
 use crate::type_checker::types::ArType;
 
@@ -228,11 +228,12 @@ pub(crate) fn synth_thread_spawn_closure(
                 } else if cap_ty.is_error() {
                     rejected = true;
                 } else {
-                    captures.push(thread_capture::OwnedCapture {
+                    captures.push(closure::Capture {
                         symbol: sym_id,
                         name: sym_name,
                         ty: cap_ty_id,
                         span: expr_span,
+                        mode: crate::type_checker::info::CaptureMode::Move,
                     });
                 }
             }
@@ -295,16 +296,23 @@ pub(crate) fn synth_thread_spawn_closure(
         checker.record_expr_type(call_expr, err);
         return Some(err);
     }
-    Some(thread_capture::install_thread_capture(
+    let void_ty = checker.intern(ArType::Void);
+    let struct_ty = closure::install_closure(
         checker,
-        thread_capture::CaptureInstall {
-            call_expr,
-            callee_id,
-            arg_id,
-            arg_span,
-            captures: &captures,
-            ret_ty: ret_ty_id,
-            res_ty,
+        arg_span,
+        &closure::ClosureShape {
+            method: "run",
+            struct_prefix: "__ThreadCapture",
+            host_prefix: "ar_thread_capture",
+            params: &[(None, void_ty)],
+            return_type: ret_ty_id,
         },
-    ))
+        &captures,
+    );
+    checker.record_expr_type(arg_id, struct_ty);
+    let call_func_ty = ArType::func(&[struct_ty], res_ty, &checker.type_info.type_interner);
+    let call_func_ty_id = checker.intern(call_func_ty);
+    checker.record_expr_type(callee_id, call_func_ty_id);
+    checker.record_expr_type(call_expr, res_ty);
+    Some(res_ty)
 }

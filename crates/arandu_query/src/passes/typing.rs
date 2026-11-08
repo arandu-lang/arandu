@@ -464,8 +464,8 @@ pub(super) fn compose_items(
     }
 
     let mut symbols = Arc::clone(&signatures.symbols);
-    if !merged_info.thread_captures.is_empty() {
-        Arc::make_mut(&mut merged_info).materialize_thread_captures(Arc::make_mut(&mut symbols));
+    if !merged_info.closures.is_empty() {
+        Arc::make_mut(&mut merged_info).materialize_closures(Arc::make_mut(&mut symbols));
     }
 
     let res = TypeCheckResult {

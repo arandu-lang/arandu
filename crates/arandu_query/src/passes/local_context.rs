@@ -107,7 +107,7 @@ pub(crate) fn without_positions(result: &TypeCheckResult) -> TypeCheckResult {
     type_info.ctfe_values = Default::default();
     type_info.header_requests = Default::default();
     type_info.struct_field_defaults = Default::default();
-    type_info.thread_captures = Default::default();
+    type_info.closures = Default::default();
     TypeCheckResult {
         symbols: Arc::new(result.symbols.map_spans(|_| Span::new(0, 0, 0))),
         resolved: Arc::new(resolved),

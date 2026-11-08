@@ -23,7 +23,7 @@ mod query;
 mod translate;
 
 pub use merge::{ItemPlacement, PlacedSegment};
-pub use translate::{import_thread_captures, translate_type};
+pub use translate::{import_closures, translate_type};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum EnumPayloadShape {
@@ -38,38 +38,48 @@ pub struct InterfaceConstraint {
     pub type_args: SmallVec<[TypeId; 2]>,
 }
 
-/// One owned local moved into a synthesized `ThreadJob`.
+/// How a closure holds one captured local.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CaptureMode {
+    /// A `Copy` value read by the closure; the caller keeps its own copy.
+    Copy,
+    /// The value moves into the closure (`own`/`move`, or consumed).
+    Move,
+}
+
+/// One local held by a synthesized closure struct.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ThreadCaptureField {
+pub struct ClosureCaptureField {
     pub name: smol_str::SmolStr,
     pub symbol: SymbolId,
     pub source: SymbolId,
     pub ty: TypeId,
     pub span: arandu_middle::Span,
+    pub mode: CaptureMode,
 }
 
-/// `move ||` with no parameters, lowered as a capture struct plus `run`.
+/// One real parameter of the synthesized closure method.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ThreadCaptureRecipe {
+pub struct ClosureParam {
+    pub symbol: SymbolId,
+    pub ty: TypeId,
+}
+
+/// A lambda lowered as a capture struct plus one method: `run` for a
+/// `ThreadJob`, `call` for a non-escaping callback.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClosureRecipe {
     pub lambda_span: arandu_middle::Span,
     pub struct_symbol: SymbolId,
-    pub run_symbol: SymbolId,
+    pub struct_name: smol_str::SmolStr,
+    pub method_symbol: SymbolId,
+    pub method_name: smol_str::SmolStr,
     pub self_param: SymbolId,
-    pub arg_param: SymbolId,
-    pub fields: Vec<ThreadCaptureField>,
+    pub params: Vec<ClosureParam>,
+    pub fields: Vec<ClosureCaptureField>,
     pub return_type: TypeId,
-    /// Backend name. The source method is `run`; this spelling has no dots.
+    /// Backend name. This spelling has no dots.
     pub host_name: smol_str::SmolStr,
-}
-
-impl ThreadCaptureRecipe {
-    #[must_use]
-    pub fn struct_symbol_name(&self) -> String {
-        format!(
-            "__ThreadCapture_{}_{}",
-            self.lambda_span.start, self.lambda_span.end
-        )
-    }
 }
 
 /// One concrete declaration contract in this interner's domain. Templates
@@ -146,9 +156,9 @@ pub struct TypeInfo {
     pub struct_repr_c: rustc_hash::FxHashSet<SymbolId>,
     /// Struct field default value expressions (`(struct_symbol, field_name) -> default_expr`).
     pub struct_field_defaults: FxHashMap<(SymbolId, smol_str::SmolStr), ExprId>,
-    /// Thread-closure capture jobs keyed by the lambda span. Empty unless a
-    /// `move ||` was accepted as a `ThreadJob`.
-    pub thread_captures: FxHashMap<arandu_middle::Span, ThreadCaptureRecipe>,
+    /// Lambdas lowered as capture structs, keyed by the lambda span. Empty
+    /// unless a `move ||` job or a callback argument was accepted.
+    pub closures: FxHashMap<arandu_middle::Span, ClosureRecipe>,
 }
 
 impl Default for TypeInfo {
@@ -198,47 +208,47 @@ impl TypeInfo {
             unsafe_functions: FxHashSet::default(),
             struct_repr_c: rustc_hash::FxHashSet::default(),
             struct_field_defaults: FxHashMap::default(),
-            thread_captures: FxHashMap::default(),
+            closures: FxHashMap::default(),
         }
     }
 
     #[must_use]
-    pub fn thread_capture_at(&self, span: arandu_middle::Span) -> Option<&ThreadCaptureRecipe> {
-        self.thread_captures.get(&span)
+    pub fn closure_at(&self, span: arandu_middle::Span) -> Option<&ClosureRecipe> {
+        self.closures.get(&span)
     }
 
     #[must_use]
-    pub fn thread_capture_for_run(&self, symbol: SymbolId) -> Option<&ThreadCaptureRecipe> {
-        self.thread_captures
+    pub fn closure_for_method(&self, symbol: SymbolId) -> Option<&ClosureRecipe> {
+        self.closures
             .values()
-            .find(|recipe| recipe.run_symbol == symbol)
+            .find(|recipe| recipe.method_symbol == symbol)
     }
 
     /// Re-register span-derived capture symbols on a signature table.
     ///
     /// Item body checks already hold them. File composition keeps the
     /// signature table, so this runs only when a recipe was recorded.
-    pub fn materialize_thread_captures(&self, symbols: &mut crate::SymbolTable) {
-        if self.thread_captures.is_empty() {
+    pub fn materialize_closures(&self, symbols: &mut crate::SymbolTable) {
+        if self.closures.is_empty() {
             return;
         }
         let scope = symbols.global_scope();
-        for recipe in self.thread_captures.values() {
+        for recipe in self.closures.values() {
             if recipe.struct_symbol.file_id != symbols.file_id {
                 continue;
             }
             Self::ensure_capture_symbol(
                 symbols,
                 recipe.struct_symbol,
-                &recipe.struct_symbol_name(),
+                &recipe.struct_name,
                 arandu_middle::SymbolKind::Struct,
                 recipe.lambda_span,
                 scope,
             );
             Self::ensure_capture_symbol(
                 symbols,
-                recipe.run_symbol,
-                &format!("{}.run", recipe.struct_symbol_name()),
+                recipe.method_symbol,
+                &format!("{}.{}", recipe.struct_name, recipe.method_name),
                 arandu_middle::SymbolKind::AssociatedFunc,
                 recipe.lambda_span,
                 scope,
@@ -251,14 +261,16 @@ impl TypeInfo {
                 recipe.lambda_span,
                 scope,
             );
-            Self::ensure_capture_symbol(
-                symbols,
-                recipe.arg_param,
-                "argument",
-                arandu_middle::SymbolKind::Param,
-                recipe.lambda_span,
-                scope,
-            );
+            for param in &recipe.params {
+                Self::ensure_capture_symbol(
+                    symbols,
+                    param.symbol,
+                    "argument",
+                    arandu_middle::SymbolKind::Param,
+                    recipe.lambda_span,
+                    scope,
+                );
+            }
             for field in &recipe.fields {
                 Self::ensure_capture_symbol(
                     symbols,
@@ -269,12 +281,13 @@ impl TypeInfo {
                     scope,
                 );
             }
-            symbols
-                .associated_members_mut()
-                .insert((recipe.struct_symbol, "run".into()), recipe.run_symbol);
+            symbols.associated_members_mut().insert(
+                (recipe.struct_symbol, recipe.method_name.clone()),
+                recipe.method_symbol,
+            );
             symbols
                 .host_function_names
-                .insert(recipe.run_symbol, recipe.host_name.clone());
+                .insert(recipe.method_symbol, recipe.host_name.clone());
         }
     }
 

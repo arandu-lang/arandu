@@ -133,7 +133,7 @@ pub(crate) fn item_typing_input(
     };
     let signatures = super::signatures::declaration_signatures(db, file);
     let declared = &signatures.type_info;
-    if !declared.thread_captures.is_empty() {
+    if !declared.closures.is_empty() {
         return None;
     }
     let item_program = super::programs::defaults_program(db, file, item_sym)?;
@@ -255,7 +255,7 @@ pub(crate) fn item_direct_typing(
     );
     if !typed.diagnostics.is_empty()
         || !typed.type_info.ctfe_roots.is_empty()
-        || !typed.type_info.thread_captures.is_empty()
+        || !typed.type_info.closures.is_empty()
     {
         return None;
     }
@@ -534,10 +534,9 @@ impl Frame<'_> {
             unsafe_functions: _,
             struct_repr_c: _,
             struct_field_defaults,
-            thread_captures,
+            closures,
         } = typed;
-        if !thread_captures.is_empty() || *struct_field_defaults != signatures.struct_field_defaults
-        {
+        if !closures.is_empty() || *struct_field_defaults != signatures.struct_field_defaults {
             return None;
         }
         let mut local = typed.clone();

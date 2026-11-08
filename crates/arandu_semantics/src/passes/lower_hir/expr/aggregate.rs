@@ -166,8 +166,8 @@ pub(super) fn lower_lambda(
     };
     Ok({
         {
-            if let Some(recipe) = type_check.type_info.thread_capture_at(span).cloned() {
-                super::super::thread_capture::capture_struct_literal(hir_pool, &recipe)
+            if let Some(recipe) = type_check.type_info.closure_at(span).cloned() {
+                super::super::closure::capture_struct_literal(hir_pool, &recipe)
             } else {
                 let mut hir_params = Vec::new();
                 let param_ids = pool.lambda_param_list(*params);

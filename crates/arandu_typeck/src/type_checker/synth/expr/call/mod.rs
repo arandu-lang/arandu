@@ -1,10 +1,10 @@
 //! Call expression synthesis (callee resolution, free/method/generic calls).
 
 mod arg;
+mod closure;
 mod instantiate;
 mod invoke;
 mod invoke_direct;
-mod thread_capture;
 mod thread_target;
 
 pub(crate) use arg::check_call_arg;

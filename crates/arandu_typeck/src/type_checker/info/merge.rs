@@ -9,8 +9,8 @@ use arandu_parser::ast_pool::ExprId;
 use super::super::types;
 use super::translate::{reintern_type, translate_type};
 use super::{
-    ConcreteHeader, EnumPayloadShape, InterfaceConstraint, ThreadCaptureField, ThreadCaptureRecipe,
-    TypeInfo,
+    ClosureCaptureField, ClosureParam, ClosureRecipe, ConcreteHeader, EnumPayloadShape,
+    InterfaceConstraint, TypeInfo,
 };
 
 /// Where an item-local typing shard sits in its file (RFC 0042): its
@@ -184,7 +184,7 @@ impl TypeInfo {
     ) {
         self.merge_symbol_contracts(other, &remap, at);
         self.merge_concrete_headers(other, &remap, shared_headers);
-        self.merge_thread_captures(other, &remap);
+        self.merge_closures(other, &remap);
         // Fast path: empty body shards / empty import stubs.
         if context_shard_is_empty(other) {
             return;
@@ -268,47 +268,47 @@ impl TypeInfo {
         }
     }
 
-    fn merge_thread_captures<F>(&mut self, other: &TypeInfo, remap: &F)
+    fn merge_closures<F>(&mut self, other: &TypeInfo, remap: &F)
     where
         F: Fn(SymbolId) -> SymbolId,
     {
-        if !other.thread_captures.is_empty() {
-            for (span, recipe) in &other.thread_captures {
-                let fields = recipe
-                    .fields
-                    .iter()
-                    .map(|field| {
-                        let ty = reintern_type(self, other, field.ty);
-                        ThreadCaptureField {
-                            name: field.name.clone(),
-                            symbol: remap(field.symbol),
-                            source: remap(field.source),
-                            ty,
-                            span: field.span,
-                        }
-                    })
-                    .collect();
-                let return_type = reintern_type(self, other, recipe.return_type);
-                let struct_symbol = remap(recipe.struct_symbol);
-                let run_symbol = remap(recipe.run_symbol);
-                let self_param = remap(recipe.self_param);
-                let arg_param = remap(recipe.arg_param);
-                let host_name = recipe.host_name.clone();
-                let lambda_span = recipe.lambda_span;
-                self.thread_captures.insert(
-                    *span,
-                    ThreadCaptureRecipe {
-                        lambda_span,
-                        struct_symbol,
-                        run_symbol,
-                        self_param,
-                        arg_param,
-                        fields,
-                        return_type,
-                        host_name,
-                    },
-                );
-            }
+        for (span, recipe) in &other.closures {
+            let fields = recipe
+                .fields
+                .iter()
+                .map(|field| ClosureCaptureField {
+                    name: field.name.clone(),
+                    symbol: remap(field.symbol),
+                    source: remap(field.source),
+                    ty: reintern_type(self, other, field.ty),
+                    span: field.span,
+                    mode: field.mode,
+                })
+                .collect();
+            let params = recipe
+                .params
+                .iter()
+                .map(|param| ClosureParam {
+                    symbol: remap(param.symbol),
+                    ty: reintern_type(self, other, param.ty),
+                })
+                .collect();
+            let return_type = reintern_type(self, other, recipe.return_type);
+            self.closures.insert(
+                *span,
+                ClosureRecipe {
+                    lambda_span: recipe.lambda_span,
+                    struct_symbol: remap(recipe.struct_symbol),
+                    struct_name: recipe.struct_name.clone(),
+                    method_symbol: remap(recipe.method_symbol),
+                    method_name: recipe.method_name.clone(),
+                    self_param: remap(recipe.self_param),
+                    params,
+                    fields,
+                    return_type,
+                    host_name: recipe.host_name.clone(),
+                },
+            );
         }
     }
 

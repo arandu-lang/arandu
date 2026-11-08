@@ -19,11 +19,11 @@ pub(super) fn reintern_type(dest: &mut TypeInfo, source: &TypeInfo, id: TypeId) 
 /// Generic instances such as `std.thread.spawn` live in another file. Their
 /// monomorphization needs the capture struct, `run`, and the field types, and
 /// must not merge the caller's expression-type vector.
-pub fn import_thread_captures(
+pub fn import_closures(
     dest: &mut super::super::TypeCheckResult,
     src: &super::super::TypeCheckResult,
 ) {
-    if src.type_info.thread_captures.is_empty() {
+    if src.type_info.closures.is_empty() {
         return;
     }
     for symbol in src.symbols.iter() {

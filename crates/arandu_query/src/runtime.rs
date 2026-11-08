@@ -599,9 +599,7 @@ pub fn function_hir(
     symbol: SymbolId,
 ) -> FingerprintEq<PreparedHir> {
     if symbol.is_synthetic() {
-        return FingerprintEq::from_content(&capture::thread_capture_function_hir(
-            db, file, symbol,
-        ));
+        return FingerprintEq::from_content(&capture::closure_function_hir(db, file, symbol));
     }
     if let Some(local) = local_function_hir(db, file, symbol) {
         return local;

@@ -26,13 +26,12 @@ impl TypeInfo {
         roots: impl IntoIterator<Item = SymbolId>,
     ) -> Option<Self> {
         let keep = self.reachable(symbols, file_id, roots)?;
-        Some(self.view_of(&keep))
+        Some(self.view_of(|symbol| keep.contains(symbol)))
     }
 
-    /// These tables with only the entries of `keep`.
+    /// These tables with only the entries of the symbols `kept` accepts.
     #[must_use]
-    pub fn view_of(&self, keep: &FxHashSet<SymbolId>) -> Self {
-        let kept = |symbol: &SymbolId| keep.contains(symbol);
+    pub fn view_of(&self, kept: impl Fn(&SymbolId) -> bool + Copy) -> Self {
         let mut view = self.clone();
         view.ctfe_global_values.retain(|symbol, _| kept(symbol));
         view.decl_types.retain(|symbol, _| kept(symbol));

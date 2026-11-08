@@ -66,7 +66,7 @@ mod typing;
 pub(crate) use items::item_text;
 pub use items::{item_ast, item_ast_ids, item_positions, AstIdMap};
 pub(crate) use local_context::without_positions;
-pub use local_context::{item_context, signature_context};
+pub use local_context::{item_context, item_reach, signature_context};
 pub(crate) use local_typing::{for_each_span, item_typing_input};
 pub use local_typing::{item_local_typing, LocalTyping};
 pub use lower::{

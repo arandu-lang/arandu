@@ -15,6 +15,7 @@ mod contracts;
 mod decl;
 mod program;
 mod shape;
+mod slice;
 mod sym_surface;
 pub use contracts::{instance_contracts, runtime_unit, InstanceContracts};
 pub use program::{runtime_program, RuntimeProgram};
@@ -368,8 +369,40 @@ pub fn declaration_hir(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Dec
 ))]
 pub fn declaration_surface(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<DeclarationHir> {
     let declarations = declaration_hir(db, file);
+    // The surface identity covers the importable view only (INC.3a), so the
+    // content importers link is that view: a fact this file merged from its
+    // own imports and does not expose must not reach them unidentified.
+    let checked = &declarations.artifacts.type_check;
+    let Some(reached) = crate::passes::importable_symbols(db, file, checked) else {
+        return HashEq::with_identity(
+            std::sync::Arc::clone(&declarations.value),
+            declarations.surface,
+        );
+    };
+    let mut type_check = checked.clone();
+    type_check.type_info =
+        std::sync::Arc::new(checked.type_info.view_of(|symbol| reached.contains(symbol)));
+    let symbols = std::sync::Arc::make_mut(&mut type_check.symbols);
+    std::sync::Arc::make_mut(&mut symbols.imported_symbols)
+        .retain(|symbol, _| reached.contains(symbol));
     HashEq::with_identity(
-        std::sync::Arc::clone(&declarations.value),
+        std::sync::Arc::new(DeclarationHir {
+            artifacts: PreparedHir {
+                hir: declarations.artifacts.hir.as_ref().map(|source| {
+                    arandu_middle::hir::HirProgram {
+                        span: source.span,
+                        module: source.module.clone(),
+                        decls: source.decls.clone(),
+                        pool: source.pool.clone(),
+                    }
+                }),
+                type_check,
+                diagnostics: declarations.artifacts.diagnostics.clone(),
+                source_fingerprint: declarations.artifacts.source_fingerprint,
+            },
+            fingerprint: declarations.fingerprint,
+            surface: declarations.surface,
+        }),
         declarations.surface,
     )
 }
@@ -775,10 +808,32 @@ pub(crate) fn placed_unit_body<'db>(
 }
 
 /// Whether [`function_hir`] of `symbol` is lowered in its item's coordinates.
+/// A query of its own: the file-wide reads behind it change with any
+/// signature of the file, the answer almost never does.
+#[salsa::tracked]
+#[tracing::instrument(level = "trace", target = "arandu_query", skip(db), fields(
+    query = "lowers_locally", file = ?file.file_id(db), item = ?symbol,
+))]
 pub(crate) fn lowers_locally(db: &dyn ArandCompilerDb, file: SourceFile, symbol: SymbolId) -> bool {
     !symbol.is_synthetic()
         && crate::passes::item_context(db, file, symbol).is_some()
         && declaration_shape(db, file).artifacts.hir.is_some()
+}
+
+/// Whether the header of `symbol` waits for its instance arguments.
+#[salsa::tracked]
+#[tracing::instrument(level = "trace", target = "arandu_query", skip(db), fields(
+    query = "deferred_header", file = ?file.file_id(db), item = ?symbol,
+))]
+pub(crate) fn deferred_header(
+    db: &dyn ArandCompilerDb,
+    file: SourceFile,
+    symbol: SymbolId,
+) -> bool {
+    declaration_signatures(db, file)
+        .type_info
+        .deferred_headers
+        .contains(&symbol)
 }
 
 /// [`function_hir`] lowered from the item AST against its
@@ -789,7 +844,7 @@ fn local_function_hir(
     file: SourceFile,
     symbol: SymbolId,
 ) -> Option<FingerprintEq<PreparedHir>> {
-    if !lowers_locally(db, file, symbol) {
+    if !*lowers_locally(db, file, symbol) {
         return None;
     }
     let (context, id) = crate::passes::item_context(db, file, symbol).as_ref()?;

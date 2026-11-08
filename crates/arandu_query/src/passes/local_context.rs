@@ -24,6 +24,31 @@ pub fn signature_context(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<T
     ))
 }
 
+/// The symbols the typing of `item_sym` reaches in its file's signature
+/// context: what it names, closed over what their entries name, plus the
+/// lang items. `None` when a type cannot be walked or the item does not type
+/// locally; consumers then read the whole file.
+#[salsa::tracked(returns(ref))]
+#[tracing::instrument(level = "trace", target = "arandu_query", skip(db), fields(
+    query = "item_reach", file = ?file.file_id(db), item = ?item_sym,
+))]
+pub fn item_reach(
+    db: &dyn ArandCompilerDb,
+    file: SourceFile,
+    item_sym: SymbolId,
+) -> Option<std::collections::BTreeSet<SymbolId>> {
+    let (local, _) = super::local_typing::item_local_typing(db, file, item_sym).as_ref()?;
+    let context = signature_context(db, file);
+    let roots = item_roots(item_sym, local)?;
+    Some(
+        context
+            .type_info
+            .reachable_from(&context.symbols, roots)?
+            .into_iter()
+            .collect(),
+    )
+}
+
 /// The symbols an item's local typing names: its definitions and references,
 /// the symbols of its expression types, and its own declaration. `None` when
 /// a type cannot be walked.
@@ -179,8 +204,7 @@ pub fn item_context(
     // The item reads only what its own typing names and what that reaches
     // (INC.3a): a signature of the file or its imports that the item never
     // reaches leaves its context equal.
-    let reached = item_roots(item_sym, local)
-        .and_then(|roots| context.type_info.reachable_from(&context.symbols, roots));
+    let reached = item_reach(db, file, item_sym);
     // The typing input already holds the same symbol view.
     checked.symbols = match input {
         Some(input) => Arc::clone(&input.symbols),
@@ -191,7 +215,7 @@ pub fn item_context(
         ),
     };
     if let Some(reached) = &reached {
-        checked.type_info = Arc::new(context.type_info.view_of(reached));
+        checked.type_info = Arc::new(context.type_info.view_of(|symbol| reached.contains(symbol)));
         let symbols = Arc::make_mut(&mut checked.symbols);
         Arc::make_mut(&mut symbols.imported_symbols).retain(|symbol, _| reached.contains(symbol));
     }

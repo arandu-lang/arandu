@@ -326,12 +326,7 @@ fn a_generic_instance_lowers_only_its_body_with_concrete_callee_headers() {
         ),
         Ok(TypeShape::Primitive(Primitive::Int))
     );
-    assert_eq!(
-        log.count_executions_matching("item_typing"),
-        1,
-        "{}",
-        log.format_chain(true)
-    );
+    assert_eq!(body_typings(&log), 1, "{}", log.format_chain(true));
     for forbidden in [
         "prepare_hir",
         "lower_amir",
@@ -811,7 +806,7 @@ fn composition_links_only_reachable_imported_bodies() {
         composed.diagnostics
     );
     assert_eq!(composed.artifacts.amir.funcs.len(), 2);
-    assert_eq!(log.count_executions_matching("item_typing"), 2);
+    assert_eq!(body_typings(&log), 2);
 }
 
 #[test]
@@ -843,7 +838,7 @@ fn a_concrete_type_from_the_caller_brings_declarations_not_sibling_bodies() {
         composed.diagnostics
     );
     assert_eq!(composed.artifacts.amir.funcs.len(), 2);
-    assert_eq!(log.count_executions_matching("item_typing"), 2);
+    assert_eq!(body_typings(&log), 2);
 }
 
 #[test]
@@ -937,7 +932,7 @@ fn function_hir_retains_only_its_body_and_headers_are_shared_separately() {
     let headers = arandu_query::runtime::declaration_context(&db, entry);
     let headers_hir = headers.hir.as_ref().expect("declaration closure");
     assert!(headers_hir.decls.iter().any(|&id| matches!(headers_hir.pool.decl(id), HirDecl::Func(function) if function.symbol == helper && function.body.is_none())));
-    assert_eq!(log.count_executions_matching("item_typing"), 1);
+    assert_eq!(body_typings(&log), 1);
     for forbidden in [
         "prepare_hir",
         "file_typing",
@@ -973,7 +968,7 @@ fn a_selected_function_with_own_error_does_not_get_a_dummy_hir() {
 #[test]
 fn declaration_context_preserves_constants_and_consuming_receiver_modes() {
     let mut db = DatabaseImpl::new();
-    let file = db.new_file("main.aru".into(), "const ANSWER = 42\nstruct Owner { value: int }\nfunc Owner.consume(self: own Owner): int { return self.value }\nfunc selected(): int { return ANSWER }".into());
+    let file = db.new_file("main.aru".into(), "const ANSWER = 42\nstruct Owner { value: int }\nfunc Owner.consume(self: own Owner): int { return self.value }\nfunc selected(): int { let owner = Owner { value: ANSWER } return owner.consume() }".into());
     let selected = symbol(&db, file, "selected");
     let lowered = instance_hir(&db, instance(&db, file, "selected", Vec::new()));
     let lowered = &lowered.artifacts;
@@ -1082,7 +1077,10 @@ fn concrete_analysis_uses_structural_identity_and_shares_the_unit() {
             arandu_middle::types::ArType::Primitive(primitive)
         );
     }
-    assert_eq!(log.count_executions_matching("declaration_context"), 1);
+    // Both instances link the headers of the one template, built once
+    // (INC.3b); no file-wide header context is linked.
+    assert_eq!(log.count_executions_matching("unit_headers("), 1);
+    assert_eq!(log.count_executions_matching("declaration_context("), 0);
     for forbidden in ["runtime_program", "lower_amir", "prepare_hir"] {
         assert_eq!(
             log.count_executions_matching(forbidden),
@@ -1091,4 +1089,11 @@ fn concrete_analysis_uses_structural_identity_and_shares_the_unit() {
             log.format_chain(true)
         );
     }
+}
+
+/// Bodies type-checked: the direct item typing or its staged fallback. The
+/// item-local resolution a header reads (`item_typing_input`) checks none.
+fn body_typings(log: &arandu_query::RebuildLog) -> usize {
+    log.count_executions_matching("item_direct_typing(")
+        + log.count_executions_matching("item_typing(")
 }

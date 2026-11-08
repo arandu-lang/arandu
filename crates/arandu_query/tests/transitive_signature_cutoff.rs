@@ -39,6 +39,18 @@ struct Package {
 
 impl Package {
     fn new(label: &str, base_source: &str) -> Self {
+        Self::with_files(
+            label,
+            &[
+                ("main.aru", MAIN.to_owned()),
+                ("top.aru", TOP.to_owned()),
+                ("mid.aru", MID.to_owned()),
+                ("base.aru", base_source.to_owned()),
+            ],
+        )
+    }
+
+    fn with_files(label: &str, sources: &[(&str, String)]) -> Self {
         let root = std::env::temp_dir().join(format!(
             "arandu-transitive-{label}-{}-{}",
             std::process::id(),
@@ -49,12 +61,7 @@ impl Package {
         ));
         let src = root.join("src");
         fs::create_dir_all(&src).unwrap();
-        for (name, text) in [
-            ("main.aru", MAIN),
-            ("top.aru", TOP),
-            ("mid.aru", MID),
-            ("base.aru", base_source),
-        ] {
+        for (name, text) in sources {
             fs::write(src.join(name), text).unwrap();
         }
         let (mut db, log) = DatabaseImpl::with_rebuild_log();
@@ -90,7 +97,7 @@ impl Package {
 
     fn lowered(&self) -> blake3::Hash {
         let lowered = lower_amir(&self.db, self.files["main.aru"]);
-        assert!(lowered.value.amir.funcs.len() >= 6, "the program lowers");
+        assert!(lowered.value.amir.funcs.len() >= 4, "the program lowers");
         lowered.value.stable_hash()
     }
 
@@ -117,26 +124,25 @@ fn a_signature_the_middle_surface_never_mentions_stops_at_its_importer() {
     let incremental = package.lowered();
 
     // `base` and its direct importer `mid` retype; `top` and `main` only see
-    // `mid`, whose surface names `Point` but not `unused`. `top` still links
-    // the surface of `base` for `Point`, so the unit that reads it relowers:
-    // the cut is per file, not yet per symbol.
+    // `mid`, whose surface names `Point` but not `unused`.
     let chain = package.log.format_chain(false);
     assert_eq!(
         package.log.count_executions_matching("signature_context"),
         2,
         "{chain}"
     );
-    // Each item's typing context holds only what it reaches (INC.3a), so of
-    // every function only `unused` lowers its HIR again.
+    // Each item's typing context and headers hold only what it reaches
+    // (INC.3a/b), so nothing of `mid`, `top` or `main` lowers again. The one
+    // unit of `base` does: the new parameter is a symbol of its file (see
+    // `an_arity_change_reexecutes_its_file_and_its_callers_only`).
     assert_eq!(
         package.log.count_executions_matching("function_hir"),
         1,
         "{chain}"
     );
-    // base: used, unused; mid: relay, make; top: run.
     assert_eq!(
         package.log.count_executions_matching("instance_hir"),
-        5,
+        1,
         "{chain}"
     );
 
@@ -161,4 +167,99 @@ fn a_type_the_middle_surface_mentions_still_reaches_the_modules_above() {
 
     let cold = Package::new("reached-cold", &edited);
     assert_eq!(incremental, cold.lowered());
+}
+
+const GATE_MAIN: &str = "import app.top as top\n\nfunc main(): int {\n    return top.run(1)\n}\n";
+const GATE_TOP: &str =
+    "import app.mid as mid\n\npublic func run(value: int): int {\n    return mid.api(value)\n}\n";
+
+/// How the gate edits a signature: its arity, which declares a parameter
+/// symbol, or a parameter type, which declares none.
+#[derive(Clone, Copy, PartialEq)]
+enum Edit {
+    None,
+    Arity,
+    Type,
+}
+
+fn gate_lib(direct: Edit, api: Edit) -> String {
+    let signature = |edit| match edit {
+        Edit::None => "value: int",
+        Edit::Arity => "value: int, extra: int",
+        Edit::Type => "value: bool",
+    };
+    let body = |edit| if edit == Edit::Type { "1" } else { "value + 1" };
+    format!(
+        "public struct Point {{ public x: int }}\n\nfunc helper(value: int): int {{\n    return value * 2\n}}\n\npublic func weigh<T>(value: T, factor: int): int {{\n    return factor\n}}\n\npublic func api({}): int {{\n    return {}\n}}\n\npublic func direct({}): int {{\n    return {}\n}}\n",
+        signature(api),
+        if api == Edit::Type { "helper(1)" } else { "helper(value)" },
+        signature(direct),
+        body(direct),
+    )
+}
+
+fn gate_mid(direct: Edit, api: Edit) -> String {
+    let argument = |edit| match edit {
+        Edit::None => "value",
+        Edit::Arity => "value, 0",
+        Edit::Type => "value == 0",
+    };
+    format!(
+        "import app.lib as lib\n\nfunc call_direct(value: int): int {{\n    return lib.direct({})\n}}\n\nfunc call_api(value: int): int {{\n    return lib.api({})\n}}\n\nfunc local(value: int): int {{\n    return value + 1\n}}\n\nfunc generic(value: int): int {{\n    return lib.weigh(value, 3)\n}}\n\nfunc point(value: int): int {{\n    return lib.Point {{ x: value }}.x\n}}\n\npublic func api(value: int): int {{\n    return call_direct(value) + call_api(value) + local(value) + generic(value) + point(value)\n}}\n",
+        argument(direct),
+        argument(api),
+    )
+}
+
+fn gate_package(label: &str, direct: Edit, api: Edit) -> Package {
+    Package::with_files(
+        label,
+        &[
+            ("main.aru", GATE_MAIN.to_owned()),
+            ("top.aru", GATE_TOP.to_owned()),
+            ("mid.aru", gate_mid(direct, api)),
+            ("lib.aru", gate_lib(direct, api)),
+        ],
+    )
+}
+
+fn gate_edit(direct: Edit, api: Edit, label: &str) -> (usize, String) {
+    let mut package = gate_package(label, Edit::None, Edit::None);
+    let _ = package.lowered();
+    package.log.clear();
+    for (name, text) in [
+        ("lib.aru", gate_lib(direct, api)),
+        ("mid.aru", gate_mid(direct, api)),
+    ] {
+        let file = package.files[name];
+        file.set_text(&mut package.db).to(Arc::from(text));
+    }
+    let incremental = package.lowered();
+    let cold = gate_package(&format!("{label}-cold"), direct, api);
+    assert_eq!(incremental, cold.lowered(), "{label}: warm equals cold");
+    (
+        package.log.count_executions_matching("instance_hir"),
+        package.log.format_chain(false),
+    )
+}
+
+/// The 0.3.0 gate (INC.3a/b): a signature change reexecutes exactly the units
+/// that reference the changed symbol, its own and its callers'.
+#[test]
+fn a_signature_change_reexecutes_only_the_units_that_reference_it() {
+    let (units, chain) = gate_edit(Edit::Type, Edit::None, "gate-direct");
+    assert_eq!(units, 2, "lib.direct and mid.call_direct: {chain}");
+    let (units, chain) = gate_edit(Edit::None, Edit::Type, "gate-api");
+    assert_eq!(units, 2, "lib.api and mid.call_api: {chain}");
+}
+
+/// A new parameter is a new symbol of its file, whose dense symbol table
+/// every unit of that file carries for the composition: those units and the
+/// callers reexecute, no other importer does.
+#[test]
+fn an_arity_change_reexecutes_its_file_and_its_callers_only() {
+    let (units, chain) = gate_edit(Edit::Arity, Edit::None, "arity-direct");
+    // The units of `lib` and `mid.call_direct`; the other units of `mid`
+    // and those of `top` and `main` stay.
+    assert_eq!(units, 5, "{chain}");
 }

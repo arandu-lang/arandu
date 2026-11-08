@@ -126,7 +126,9 @@ fn a_new_local_in_a_private_body_relowers_no_importer() {
     // again because their item contexts read the file's symbol table.
     assert_eq!(runs(&log, "runtime_unit"), 3, "{}", log.format_chain(false));
     assert_eq!(runs(&log, "local_declaration_context"), 0);
-    assert_eq!(runs(&log, "linked_imports"), 1);
+    // Units link the headers they reach (INC.3b), not the file's shared
+    // import map.
+    assert_eq!(runs(&log, "linked_imports"), 0);
 
     let cold = Package::new("local-cold", DatabaseImpl::new(), &library(2, false));
     assert_eq!(

@@ -16,6 +16,100 @@ pub struct RuntimeProgram {
     pub diagnostics: Vec<Diagnostic>,
 }
 
+#[derive(Debug)]
+pub struct ComposedUnitRecord {
+    pub key: FunctionInstance,
+    pub unit: std::sync::Arc<crate::runtime::RuntimeUnit>,
+    pub placement: Option<(
+        arandu_typeck::type_checker::info::ItemPlacement,
+        arandu_middle::SymbolTable,
+    )>,
+}
+
+#[derive(Debug)]
+pub struct FileComposedArtifacts {
+    pub unit_records: Vec<ComposedUnitRecord>,
+    pub diagnostics: Vec<Diagnostic>,
+    pub fingerprint: blake3::Hash,
+}
+
+impl StableHash for FileComposedArtifacts {
+    fn stable_hash(&self) -> blake3::Hash {
+        self.fingerprint
+    }
+}
+
+#[salsa::tracked]
+#[tracing::instrument(
+    level = "trace",
+    target = "arandu_query",
+    skip(db),
+    fields(query = "file_composed_units", file = ?file_units.file(db).file_id(db))
+)]
+pub fn file_composed_units<'db>(
+    db: &'db dyn ArandCompilerDb,
+    file_units: super::FileUnits<'db>,
+) -> HashEq<FileComposedArtifacts> {
+    let file = file_units.file(db);
+    let keys = file_units.instances(db);
+    let mut diagnostics = Vec::new();
+    let mut unit_records = Vec::with_capacity(keys.len());
+
+    for key in keys {
+        db.unwind_if_revision_cancelled();
+        let instance = Instance::new(db, file, key.clone());
+        let produced = runtime_unit(db, instance);
+        let (checked, placement) = match super::placed_unit_body(db, instance) {
+            Some((placed, at)) => (
+                std::sync::Arc::clone(&placed.value),
+                Some((
+                    at.clone(),
+                    crate::passes::declaration_signatures(db, *instance.file(db))
+                        .symbols
+                        .as_ref()
+                        .clone(),
+                )),
+            ),
+            None => (std::sync::Arc::clone(&produced.value), None),
+        };
+        if let Err(errors) = &checked.result {
+            diagnostics.extend(errors.iter().cloned());
+        }
+        unit_records.push(ComposedUnitRecord {
+            key: key.clone(),
+            unit: checked,
+            placement,
+        });
+    }
+
+    unit_records.sort_by_cached_key(|record| {
+        (
+            record.key.definition.local_id.0,
+            *record.key.stable_hash().as_bytes(),
+        )
+    });
+
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"FileComposedArtifacts/v1");
+    for record in &unit_records {
+        hash.update(record.key.stable_hash().as_bytes());
+        hash.update(record.unit.stable_hash().as_bytes());
+        if let Some((at, _)) = &record.placement {
+            hash.update(&at.file_id.to_le_bytes());
+            hash.update(&at.offset.to_le_bytes());
+        }
+    }
+    hash.update(diagnostics.stable_hash().as_bytes());
+    let fingerprint = hash.finalize();
+
+    let artifacts = FileComposedArtifacts {
+        unit_records,
+        diagnostics,
+        fingerprint,
+    };
+    HashEq::with_identity(std::sync::Arc::new(artifacts), fingerprint)
+}
+
 impl StableHash for RuntimeProgram {
     fn stable_hash(&self) -> blake3::Hash {
         let mut hash = blake3::Hasher::new();
@@ -149,18 +243,7 @@ pub fn runtime_program(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Run
         db.unwind_if_revision_cancelled();
         let key = instance.key(db).clone();
         let produced = runtime_unit(db, instance);
-        // Only the result is placed here; the composition places the
-        // context as it merges it, without copying it per unit.
-        let (checked, placement) = match super::placed_unit_body(db, instance) {
-            Some((placed, at)) => (
-                std::sync::Arc::clone(&placed.value),
-                Some((
-                    at.clone(),
-                    &crate::passes::declaration_signatures(db, *instance.file(db)).symbols,
-                )),
-            ),
-            None => (std::sync::Arc::clone(&produced.value), None),
-        };
+        let checked = &produced.value;
         match &checked.result {
             Ok(unit) => {
                 let mut callees = Vec::new();
@@ -264,29 +347,47 @@ pub fn runtime_program(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Run
             }
             Err(errors) => diagnostics.extend(errors.iter().cloned()),
         }
-        units.push((key, produced.clone(), checked, placement));
+        units.push(key);
     }
     let file_path_key = |file_id: arandu_middle::db::FileId| {
         db.source_file_by_id(file_id)
             .map(|sf| sf.path(db).clone())
             .unwrap_or_else(|| std::sync::Arc::new(std::path::PathBuf::new()))
     };
-    units.sort_by_cached_key(|(key, _, _, _)| {
-        (
-            file_path_key(key.definition.file_id),
-            key.definition.local_id.0,
-            *key.stable_hash().as_bytes(),
-        )
-    });
-    for (key, produced, _, _) in &units {
-        fingerprint.update(
-            file_path_key(key.definition.file_id)
-                .as_os_str()
-                .as_encoded_bytes(),
-        );
+
+    let mut by_file =
+        rustc_hash::FxHashMap::<arandu_middle::db::FileId, Vec<FunctionInstance>>::default();
+    for key in &units {
+        by_file
+            .entry(key.definition.file_id)
+            .or_default()
+            .push(key.clone());
+    }
+    let mut sorted_files = by_file.into_iter().collect::<Vec<_>>();
+    sorted_files.sort_by_cached_key(|(file_id, _)| file_path_key(*file_id));
+
+    let mut composed_artifacts = Vec::with_capacity(sorted_files.len());
+    for (file_id, instances) in sorted_files {
+        let Some(source) = db.source_file_by_id(file_id) else {
+            continue;
+        };
+        let file_units = super::FileUnits::new(db, source, instances);
+        let composed_file = file_composed_units(db, file_units);
+        fingerprint.update(file_path_key(file_id).as_os_str().as_encoded_bytes());
         fingerprint.update(&[0]);
-        fingerprint.update(key.stable_hash().as_bytes());
-        fingerprint.update(produced.stable_hash().as_bytes());
+        fingerprint.update(composed_file.fingerprint.as_bytes());
+        composed_artifacts.push(composed_file);
+    }
+    let mut composed_units = Vec::new();
+    for file_artifact in &composed_artifacts {
+        diagnostics.extend(file_artifact.diagnostics.iter().cloned());
+        for record in &file_artifact.unit_records {
+            composed_units.push((
+                &record.key,
+                &record.unit,
+                record.placement.as_ref().map(|(at, syms)| (at, syms)),
+            ));
+        }
     }
     let composed = if diagnostics
         .iter()
@@ -294,9 +395,9 @@ pub fn runtime_program(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Run
     {
         None
     } else {
-        let inputs = units
+        let inputs = composed_units
             .iter()
-            .filter_map(|(key, _, checked, placement)| {
+            .filter_map(|(key, checked, placement)| {
                 let unit = checked.result.as_ref().ok()?;
                 Some(arandu_semantics::ContextualFunctionUnit {
                     key,
@@ -311,7 +412,7 @@ pub fn runtime_program(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Run
                 })
             })
             .collect::<Vec<_>>();
-        if inputs.len() != units.len() {
+        if inputs.len() != composed_units.len() {
             diagnostics.push(Diagnostic::ice(
                 DiagCode::ICEL001,
                 "validated runtime unit has no borrow summary",

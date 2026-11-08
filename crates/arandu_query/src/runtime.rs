@@ -18,7 +18,7 @@ mod shape;
 mod slice;
 mod sym_surface;
 pub use contracts::{instance_contracts, runtime_unit, InstanceContracts};
-pub use program::{runtime_program, RuntimeProgram};
+pub use program::{file_composed_units, runtime_program, FileComposedArtifacts, RuntimeProgram};
 pub use sym_surface::{symbol_surface, SymbolSurface};
 
 #[derive(Debug)]
@@ -36,6 +36,14 @@ pub struct Instance<'db> {
     pub file: SourceFile,
     #[returns(ref)]
     pub key: FunctionInstance,
+}
+
+#[salsa::interned]
+#[derive(Debug)]
+pub struct FileUnits<'db> {
+    pub file: SourceFile,
+    #[returns(ref)]
+    pub instances: Vec<FunctionInstance>,
 }
 
 #[derive(Debug)]

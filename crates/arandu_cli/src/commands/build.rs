@@ -458,9 +458,9 @@ impl BuildSession {
             && let Some(log) = &rebuild_log
         {
             errln!("{}", log.status_line());
-            // The program is composed as a whole (INC.3c not yet incremental),
-            // so a composition recomposes every file that contributes code.
-            let files = if log.count_executions_matching("runtime_program") > 0 {
+            let files = if log.count_executions_matching("file_composed_units") > 0 {
+                log.count_executions_matching("file_composed_units")
+            } else if log.count_executions_matching("runtime_program") > 0 {
                 artifacts
                     .amir
                     .funcs

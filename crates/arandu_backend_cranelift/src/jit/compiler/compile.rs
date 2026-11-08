@@ -27,11 +27,18 @@ impl<M: Module> AranduModule<M> {
         unit_func_symbols: Option<&[SymbolId]>,
         block_coverage: Option<&BlockCoverageSession>,
     ) -> Result<FxHashMap<String, FuncId>, Diagnostic> {
-        if let Some(issue) =
+        let validation_errors = if let Some(unit_syms) = unit_func_symbols {
+            unit_syms
+                .iter()
+                .filter_map(|&sym| program.funcs.iter().find(|f| f.symbol == sym))
+                .flat_map(|f| {
+                    arandu_middle::validate_amir_func(f, symbols, type_info.type_interner())
+                })
+                .collect::<Vec<_>>()
+        } else {
             arandu_middle::validate_amir_program(program, symbols, type_info.type_interner())
-                .into_iter()
-                .next()
-        {
+        };
+        if let Some(issue) = validation_errors.into_iter().next() {
             return Err(issue);
         }
         let is_unit_func = |sym: SymbolId| unit_func_symbols.is_none_or(|set| set.contains(&sym));

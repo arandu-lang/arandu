@@ -55,7 +55,7 @@ pub use target::{
     EmbeddedProfile, LinkerFlavor, LinkerPlan, TargetEnv, TargetOs, TargetSpec, embedded_profile,
 };
 
-pub use amir_validate::validate_amir_program;
+pub use amir_validate::{validate_amir_func, validate_amir_program};
 pub use diagnostics::{CodeReplacement, DiagCode, Diagnostic, Hint, Label, Severity};
 pub use effects::EffectFlags;
 pub use intrinsics::IntrinsicKind;

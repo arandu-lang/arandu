@@ -30,6 +30,8 @@ pub const BACKEND_IO_URING: i64 = 2;
 pub const BACKEND_KQUEUE: i64 = 3;
 /// Windows WSAPoll readiness with one-shot registrations kept by the runtime.
 pub const BACKEND_WSAPOLL: i64 = 4;
+/// Windows modern ProcessSocketNotifications readiness (Win 11 / Server 2022+).
+pub const BACKEND_WINDOWS_NOTIFY: i64 = 5;
 
 /// [`ar_rt_reactor_register_socket`] result on a host without a readiness
 /// backend. Distinct from `-1` (invalid handle / OS failure) so callers can
@@ -49,7 +51,7 @@ mod wsapoll;
 
 /// Default capacity for the reactor's io_uring ring buffer.
 #[cfg(target_os = "linux")]
-const IO_URING_DEFAULT_ENTRIES: u32 = 8;
+const IO_URING_DEFAULT_ENTRIES: u32 = 64;
 /// User data tag for timeout completions in io_uring.
 #[cfg(target_os = "linux")]
 const IO_URING_USER_DATA_TIMEOUT: u64 = 1;
@@ -247,7 +249,11 @@ fn probe_backend() -> i64 {
     }
     #[cfg(windows)]
     {
-        BACKEND_WSAPOLL
+        if wsapoll::has_process_socket_notifications() {
+            BACKEND_WINDOWS_NOTIFY
+        } else {
+            BACKEND_WSAPOLL
+        }
     }
     #[cfg(not(any(
         target_os = "linux",
@@ -614,6 +620,29 @@ pub unsafe extern "C" fn ar_rt_reactor_poll_ms(id: ReactorId, timeout_ms: i64) -
             slot.deadline = None;
             return 1;
         }
+
+        if let Some(ring) = &mut slot.ring {
+            let mut completed_fds = Vec::new();
+            {
+                let cq = ring.completion();
+                for cqe in cq {
+                    let user_data = cqe.user_data();
+                    if user_data != IO_URING_USER_DATA_TIMEOUT {
+                        completed_fds.push(user_data as i32);
+                    }
+                }
+            }
+            for fd_val in completed_fds {
+                let waker_to_wake = slot.sockets.get(&(fd_val as i64)).map(|rs| rs.waker_id);
+                if let Some(waker_id) = waker_to_wake
+                    && waker_id >= 0
+                {
+                    unsafe {
+                        crate::waker_runtime::ar_rt_waker_wake(waker_id);
+                    }
+                }
+            }
+        }
         0
     }
 
@@ -738,6 +767,23 @@ pub unsafe extern "C" fn ar_rt_reactor_register_socket(
                 } else {
                     return -1;
                 }
+            }
+        }
+
+        if let Some(ring) = &mut slot.ring {
+            let mut poll_mask = 0u32;
+            if events & crate::socket_runtime::WAIT_READ != 0 {
+                poll_mask |= libc::POLLIN as u32;
+            }
+            if events & crate::socket_runtime::WAIT_WRITE != 0 {
+                poll_mask |= libc::POLLOUT as u32;
+            }
+            let entry = io_uring::opcode::PollAdd::new(io_uring::types::Fd(fd), poll_mask)
+                .build()
+                .user_data(fd as u64);
+            unsafe {
+                let _ = ring.submission().push(&entry);
+                let _ = ring.submit();
             }
         }
         0
@@ -1050,7 +1096,10 @@ mod tests {
             ))]
             assert_eq!(b, BACKEND_KQUEUE);
             #[cfg(windows)]
-            assert_eq!(b, BACKEND_WSAPOLL);
+            assert!(
+                b == BACKEND_WSAPOLL || b == BACKEND_WINDOWS_NOTIFY,
+                "backend={b}"
+            );
             #[cfg(not(any(
                 target_os = "linux",
                 target_os = "macos",

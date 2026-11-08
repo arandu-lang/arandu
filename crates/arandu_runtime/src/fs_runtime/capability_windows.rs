@@ -163,11 +163,6 @@ mod nt {
         Some(fd)
     }
 
-    fn wide(text: &str) -> Option<Vec<u16>> {
-        let units: Vec<u16> = text.encode_utf16().collect();
-        (units.len() <= 32_767).then_some(units)
-    }
-
     /// One `NtCreateFile` relative to `root`; `"."` (when allowed) reopens it.
     fn nt_open(
         root: HANDLE,
@@ -181,18 +176,22 @@ mod nt {
             return None;
         }
         let units = if name == b"." {
-            Vec::new()
+            None
         } else {
-            wide(std::str::from_utf8(name).ok()?)?
+            Some(
+                crate::fs_runtime::stack_wide::StackWideBuffer::<260>::from_str(
+                    std::str::from_utf8(name).ok()?,
+                )?,
+            )
         };
-        let byte_len = u16::try_from(units.len().checked_mul(2)?).ok()?;
+        let units_len = units.as_ref().map_or(0, |u| u.len());
+        let byte_len = u16::try_from(units_len.checked_mul(2)?).ok()?;
         let object_name = UNICODE_STRING {
             Length: byte_len,
             MaximumLength: byte_len,
-            Buffer: if units.is_empty() {
-                std::ptr::null_mut()
-            } else {
-                units.as_ptr().cast_mut()
+            Buffer: match &units {
+                Some(u) => u.as_ptr().cast_mut(),
+                None => std::ptr::null_mut(),
             },
         };
         let mut attributes = OBJECT_ATTRIBUTES {
@@ -245,8 +244,7 @@ mod nt {
         if path.is_empty() || path.len() >= 4096 || path.contains('\0') {
             return None;
         }
-        let mut units = wide(path)?;
-        units.push(0);
+        let units = crate::fs_runtime::stack_wide::StackWideBuffer::<260>::from_str_nul(path)?;
         // SAFETY: the path is NUL-terminated and lives across the call. This
         // is the explicit ambient-authority entry point, like POSIX `open`.
         let handle = unsafe {

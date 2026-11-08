@@ -198,9 +198,54 @@ pub unsafe extern "C" fn ar_env_var_is_set(ptr: *const u8, len: i64) -> i64 {
     i64::from(std::env::var_os(name).is_some())
 }
 
+/// Canonical host virtual memory page size in bytes.
+///
+/// - macOS Apple Silicon (ARM64): 16,384 bytes (16 KB)
+/// - Linux / Windows / x86_64: 4,096 bytes (4 KB)
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub const HOST_PAGE_SIZE: usize = 16_384;
+
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+pub const HOST_PAGE_SIZE: usize = 4_096;
+
+/// Minimum virtual memory allocation granularity in bytes.
+///
+/// On Windows, `VirtualAlloc` reserves memory with 64 KB alignment (`dwAllocationGranularity`).
+/// On Unix hosts, allocation granularity matches the virtual page size.
+#[cfg(windows)]
+pub const HOST_ALLOCATION_GRANULARITY: usize = 65_536;
+
+#[cfg(not(windows))]
+pub const HOST_ALLOCATION_GRANULARITY: usize = HOST_PAGE_SIZE;
+
+/// Returns the host virtual page size in bytes for language runtime memory calibration.
+#[unsafe(no_mangle)]
+pub extern "C" fn ar_rt_host_page_size() -> usize {
+    HOST_PAGE_SIZE
+}
+
+/// Returns the host virtual memory allocation granularity in bytes.
+#[unsafe(no_mangle)]
+pub extern "C" fn ar_rt_host_allocation_granularity() -> usize {
+    HOST_ALLOCATION_GRANULARITY
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_page_size_and_granularity_are_valid_powers_of_two() {
+        assert!(HOST_PAGE_SIZE >= 4096);
+        assert!(HOST_PAGE_SIZE.is_power_of_two());
+        assert!(HOST_ALLOCATION_GRANULARITY >= HOST_PAGE_SIZE);
+        assert!(HOST_ALLOCATION_GRANULARITY.is_power_of_two());
+        assert_eq!(ar_rt_host_page_size(), HOST_PAGE_SIZE);
+        assert_eq!(
+            ar_rt_host_allocation_granularity(),
+            HOST_ALLOCATION_GRANULARITY
+        );
+    }
 
     #[test]
     fn monotonic_non_decreasing() {

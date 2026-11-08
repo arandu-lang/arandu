@@ -212,9 +212,12 @@ impl AranduModule<JITModule> {
     ) -> Result<CompiledModule, Diagnostic> {
         let mut func_ids = self.compile_module(program, symbols, type_info)?;
         self.adapt_host_results(program, symbols, type_info, &mut func_ids)?;
-        self.module
-            .finalize_definitions()
-            .map_err(|err| codegen_ice(format!("failed to finalize JIT definitions: {err:?}")))?;
+        {
+            let _write_scope = crate::jit::wx::JitWriteScope::enter();
+            self.module.finalize_definitions().map_err(|err| {
+                codegen_ice(format!("failed to finalize JIT definitions: {err:?}"))
+            })?;
+        }
         Ok(CompiledModule::new(self.module, func_ids, None))
     }
 
@@ -230,9 +233,12 @@ impl AranduModule<JITModule> {
         let mut func_ids =
             self.compile_module_with_block_coverage(program, symbols, type_info, &coverage)?;
         self.adapt_host_results(program, symbols, type_info, &mut func_ids)?;
-        self.module
-            .finalize_definitions()
-            .map_err(|err| codegen_ice(format!("failed to finalize JIT definitions: {err:?}")))?;
+        {
+            let _write_scope = crate::jit::wx::JitWriteScope::enter();
+            self.module.finalize_definitions().map_err(|err| {
+                codegen_ice(format!("failed to finalize JIT definitions: {err:?}"))
+            })?;
+        }
         Ok(CompiledModule::new(self.module, func_ids, Some(coverage)))
     }
 }

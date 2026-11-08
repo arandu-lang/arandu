@@ -76,7 +76,7 @@ timing assumptions, and verify slot reuse before/during/after join.
 
 - `EpollReactor` + sleep/arm/poll
 - `reactor_backend()`: **0** portable, **1** epoll, **2** io_uring (runtime
-  detect), **3** kqueue, **4** WSAPoll
+  detect), **3** kqueue, **4** WSAPoll, **5** ProcessSocketNotifications (Windows 11+ runtime detect)
 - Sleep prefers io_uring timeout when backend is 2, else the backend timer
 - Code: `crates/arandu_runtime/src/reactor_runtime/{mod,kqueue,wsapoll}.rs`
 

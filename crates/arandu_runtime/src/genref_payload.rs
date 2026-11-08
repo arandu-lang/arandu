@@ -41,6 +41,19 @@ impl PayloadLayout {
         self.align
     }
 
+    /// Returns the allocation size rounded up to the host page boundary when
+    /// the requested size exceeds a page, optimizing large arena slabs on
+    /// targets with 16 KB pages (e.g. macOS Apple Silicon).
+    #[must_use]
+    pub fn page_aligned_size(self) -> usize {
+        let page = crate::os_runtime::HOST_PAGE_SIZE;
+        if self.size >= page {
+            (self.size + page - 1) & !(page - 1)
+        } else {
+            self.size
+        }
+    }
+
     fn allocation_layout(self) -> Result<Layout, GenError> {
         Layout::from_size_align(self.size, self.align).map_err(|_| GenError::InvalidLayout)
     }
@@ -476,5 +489,18 @@ mod tests {
             )
         };
         assert_eq!(result.unwrap_err(), GenError::InvalidPayloadPointer);
+    }
+
+    #[test]
+    fn page_aligned_size_calibrates_to_host_page() {
+        let page = crate::os_runtime::HOST_PAGE_SIZE;
+        let small = PayloadLayout::new(128, 8).unwrap();
+        assert_eq!(small.page_aligned_size(), 128);
+
+        let exact = PayloadLayout::new(page, 8).unwrap();
+        assert_eq!(exact.page_aligned_size(), page);
+
+        let large = PayloadLayout::new(page + 1, 8).unwrap();
+        assert_eq!(large.page_aligned_size(), page * 2);
     }
 }

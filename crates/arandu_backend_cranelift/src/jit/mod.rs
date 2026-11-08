@@ -10,6 +10,7 @@ pub mod compiler;
 pub mod execution;
 pub mod isa;
 pub mod symbols;
+pub(crate) mod wx;
 
 pub use block_coverage::{BlockCoverage, BlockCoverageHit, BlockSourceMapping};
 pub use compiler::{AranduJit, AranduModule};

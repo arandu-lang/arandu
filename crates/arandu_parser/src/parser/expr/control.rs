@@ -83,7 +83,9 @@ impl<'a> Parser<'a> {
             loop {
                 let param_start = self.mark();
                 let name = self.expect_ident_value()?;
-                let ty = if self.can_start_type() {
+                // `(x: T)` like every declaration; `(x T)` stays accepted.
+                let annotated = self.eat_name("COLON");
+                let ty = if annotated || self.can_start_type() {
                     Some(self.parse_type()?)
                 } else {
                     None

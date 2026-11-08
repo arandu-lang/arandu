@@ -275,7 +275,8 @@ impl<'a> Parser<'a> {
                             break;
                         }
                         self.advance();
-                        if self.can_start_type() && self.parse_type().is_err() {
+                        let annotated = self.eat_name("COLON");
+                        if (annotated || self.can_start_type()) && self.parse_type().is_err() {
                             params_ok = false;
                             break;
                         }

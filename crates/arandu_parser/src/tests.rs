@@ -936,6 +936,37 @@ fn move_lambda_parses_with_is_move_flag() {
 }
 
 #[test]
+fn lambda_parameters_take_a_colon_like_every_declaration() {
+    for (source, typed) in [
+        ("func main(): void { let f = (x: int) => x + 1; }", 1),
+        (
+            "func main(): void { let f = (x: int, y: int) => { return x + y; }; }",
+            2,
+        ),
+        ("func main(): void { let f = (x int) => x; }", 1),
+        ("func main(): void { let f = (x) => x; }", 0),
+    ] {
+        let program = parse(source).expect("lambda parse");
+        let params = program
+            .pool
+            .exprs
+            .iter()
+            .find_map(|e| match e {
+                crate::ExprKind::Lambda { params, .. } => Some(*params),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no lambda in {source}"));
+        let annotated = program
+            .pool
+            .lambda_param_list(params)
+            .iter()
+            .filter(|param| program.pool.lambda_param(**param).ty.is_some())
+            .count();
+        assert_eq!(annotated, typed, "{source}");
+    }
+}
+
+#[test]
 fn call_label_shorthand_parses() {
     let source =
         "func main(): void { let port = 8080; let host = \"0.0.0.0\"; connect(port:, host:); }";

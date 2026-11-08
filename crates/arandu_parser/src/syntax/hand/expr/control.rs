@@ -171,7 +171,9 @@ pub(super) fn parse_lambda(
             let name_tok = cur.expect(TokenKind::IdentValue)?;
             let name = SmolStr::new(ctx.text(name_tok)?);
             let p_start = name_tok.start;
-            let ty = if cur.peek_kind().is_some_and(can_start_type_kind) {
+            // `(x: T)` like every declaration; `(x T)` stays accepted.
+            let annotated = cur.eat(TokenKind::Colon);
+            let ty = if annotated || cur.peek_kind().is_some_and(can_start_type_kind) {
                 Some(parse_type(ctx, cur)?)
             } else {
                 None

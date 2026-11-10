@@ -156,6 +156,9 @@ pub struct TypeChecker<'a> {
     /// Scope for lowering type expressions inside the current function body.
     type_scope_id: Option<ScopeId>,
     current_owner_type: Option<SymbolId>,
+    /// The item whose body is being checked: its closures are named after it
+    /// and their offset in it, so editing another item never renames them.
+    pub(crate) closure_owner: Option<ClosureOwner>,
     pub pool: &'a AstPool,
     pub target_info: TargetInfo,
     pub current_observed_effects: arandu_middle::EffectFlags,
@@ -163,6 +166,15 @@ pub struct TypeChecker<'a> {
     /// Concrete owner arguments during isolated instance checking. Source
     /// templates keep this empty; it never becomes exported declaration data.
     pub(crate) generic_substitution: arandu_middle::types::GenericSubst,
+}
+
+/// Identity of the item that encloses a closure.
+#[derive(Debug, Clone)]
+pub(crate) struct ClosureOwner {
+    /// Owner name escaped to `[A-Za-z0-9_]` injectively.
+    pub name: smol_str::SmolStr,
+    /// Byte offset where the owner item starts.
+    pub start: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -267,6 +279,7 @@ impl<'a> TypeChecker<'a> {
             solved_constraints: Vec::new(),
             type_scope_id: None,
             current_owner_type: None,
+            closure_owner: None,
             pool,
             target_info,
             current_observed_effects: arandu_middle::EffectFlags::NONE,

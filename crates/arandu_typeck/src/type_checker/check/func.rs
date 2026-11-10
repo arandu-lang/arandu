@@ -207,6 +207,28 @@ pub fn check_func_body(checker: &mut TypeChecker<'_>, decl: &FuncDecl) {
 
     let func_key = func_name_key(decl);
     let func_symbol = checker.resolved.definitions.get(&func_key).copied();
+    let old_closure_owner = checker.closure_owner.take();
+    checker.closure_owner = func_symbol.map(|symbol| {
+        let name = checker
+            .symbols
+            .host_func_name(checker.symbols.get(symbol))
+            .chars()
+            .fold(String::new(), |mut escaped, c| {
+                match c {
+                    '_' => escaped.push_str("__"),
+                    c if c.is_ascii_alphanumeric() => escaped.push(c),
+                    c => {
+                        use std::fmt::Write as _;
+                        let _ = write!(escaped, "_{:x}_", u32::from(c));
+                    }
+                }
+                escaped
+            });
+        super::super::ClosureOwner {
+            name: name.into(),
+            start: decl.span.start,
+        }
+    });
     let declared_params = func_symbol
         .and_then(|symbol| checker.decl_type(symbol))
         .and_then(|declared| match declared {
@@ -318,4 +340,5 @@ pub fn check_func_body(checker: &mut TypeChecker<'_>, decl: &FuncDecl) {
     }
     checker.current_observed_effects = old_effects.union(checker.current_observed_effects);
     checker.current_owner_type = old_owner;
+    checker.closure_owner = old_closure_owner;
 }

@@ -198,3 +198,41 @@ fn a_callback_fixes_the_parameters_it_mentions() {
         assert_eq!(errors(body), vec![*code], "{name}");
     }
 }
+
+#[test]
+fn an_edit_in_another_item_keeps_closure_identities() {
+    use salsa::Setter;
+    fn source(alpha_body: &str) -> String {
+        format!(
+            "func apply(x: int, f: (int) -> int): int {{ return f(x) }}\nfunc double(x: int): int {{ return x * 2 }}\nfunc alpha(): int {{\n{alpha_body}\n}}\nfunc beta(): int {{\n    let k: int = 3\n    return apply(1, (x) => x + k) + apply(2, double)\n}}\n"
+        )
+    }
+    fn identities(db: &DatabaseImpl, file: arandu_query::SourceFile) -> Vec<String> {
+        let checked = type_check(db, file);
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+        let mut identities = checked
+            .type_info
+            .closures
+            .values()
+            .map(|recipe| {
+                format!(
+                    "{} {:?} {:?} {}",
+                    recipe.struct_name,
+                    recipe.struct_symbol,
+                    recipe.method_symbol,
+                    recipe.host_name
+                )
+            })
+            .collect::<Vec<_>>();
+        identities.sort();
+        identities
+    }
+    let mut db = DatabaseImpl::default();
+    let file = db.new_file("identity.aru".into(), source("    return 1"));
+    let before = identities(&db, file);
+    assert_eq!(before.len(), 2, "{before:?}");
+    file.set_text(&mut db).to(std::sync::Arc::from(source(
+        "    let unrelated = 40 + 2\n    return unrelated - 41",
+    )));
+    assert_eq!(identities(&db, file), before);
+}

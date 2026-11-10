@@ -48,10 +48,11 @@ pub(super) fn install_closure(
     captures: &[Capture],
 ) -> TypeId {
     let file_id = checker.symbols.file_id;
+    let identity = ClosureIdentity::of(checker, lambda_span);
     let mut reserved = FxHashSet::default();
-    let struct_symbol = mint(checker, file_id, lambda_span, 0, &mut reserved);
-    let method_symbol = mint(checker, file_id, lambda_span, 1, &mut reserved);
-    let self_param = mint(checker, file_id, lambda_span, 2, &mut reserved);
+    let struct_symbol = mint(checker, file_id, &identity, 0, &mut reserved);
+    let method_symbol = mint(checker, file_id, &identity, 1, &mut reserved);
+    let self_param = mint(checker, file_id, &identity, 2, &mut reserved);
     let mut minted_params = Vec::new();
     let params = shape
         .params
@@ -60,7 +61,7 @@ pub(super) fn install_closure(
         .map(|(index, &(symbol, ty))| {
             let symbol = symbol.unwrap_or_else(|| {
                 let role = 3u32.wrapping_add(u32::try_from(index).unwrap_or(u32::MAX) << 8);
-                let minted = mint(checker, file_id, lambda_span, role, &mut reserved);
+                let minted = mint(checker, file_id, &identity, role, &mut reserved);
                 minted_params.push(minted);
                 minted
             });
@@ -78,7 +79,7 @@ pub(super) fn install_closure(
         let symbol = mint(
             checker,
             file_id,
-            lambda_span,
+            &identity,
             4 + u32::try_from(index).unwrap_or(u32::MAX),
             &mut reserved,
         );
@@ -98,14 +99,11 @@ pub(super) fn install_closure(
         });
     }
 
-    let struct_name = SmolStr::new(format!(
-        "{}_{}_{}",
-        shape.struct_prefix, lambda_span.start, lambda_span.end
-    ));
+    let struct_name = SmolStr::new(format!("{}{}", shape.struct_prefix, identity.suffix));
     let method_name = SmolStr::new(shape.method);
     let host_name = SmolStr::new(format!(
-        "{}_{}_{}_{}_{}",
-        shape.host_prefix, file_id, lambda_span.start, lambda_span.end, shape.method
+        "{}_{}{}_{}",
+        shape.host_prefix, file_id, identity.suffix, shape.method
     ));
     let scope = checker.symbols.global_scope();
     let symbols = Arc::make_mut(&mut checker.symbols);
@@ -865,16 +863,53 @@ fn register(
     });
 }
 
+/// A closure is identified by the item that encloses it and its offset in
+/// that item, never by its absolute position: an edit elsewhere in the file
+/// keeps its symbols and names, and so the early cutoff of what uses them.
+struct ClosureIdentity {
+    owner_hash: u32,
+    start: u32,
+    end: u32,
+    /// `_<owner>_<start>_<end>`, or `_<start>_<end>` outside any item.
+    suffix: String,
+}
+
+impl ClosureIdentity {
+    fn of(checker: &TypeChecker<'_>, span: Span) -> Self {
+        let Some(owner) = &checker.closure_owner else {
+            return Self {
+                owner_hash: 0,
+                start: span.start,
+                end: span.end,
+                suffix: format!("_{}_{}", span.start, span.end),
+            };
+        };
+        let start = span.start.saturating_sub(owner.start);
+        let end = span.end.saturating_sub(owner.start);
+        // FNV-1a: stable across runs and platforms.
+        let owner_hash = owner.name.bytes().fold(0x811C_9DC5_u32, |hash, byte| {
+            (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
+        });
+        Self {
+            owner_hash,
+            start,
+            end,
+            suffix: format!("_{}_{start}_{end}", owner.name),
+        }
+    }
+}
+
 fn mint(
     checker: &TypeChecker<'_>,
     file_id: arandu_middle::db::FileId,
-    span: Span,
+    identity: &ClosureIdentity,
     mut role: u32,
     reserved: &mut FxHashSet<u32>,
 ) -> SymbolId {
     loop {
-        let mixed = span.start.wrapping_mul(0x9E37_79B1)
-            ^ span.end.wrapping_mul(0x85EB_CA6B)
+        let mixed = identity.start.wrapping_mul(0x9E37_79B1)
+            ^ identity.end.wrapping_mul(0x85EB_CA6B)
+            ^ identity.owner_hash.wrapping_mul(0x27D4_EB2F)
             ^ role.wrapping_mul(0xC2B2_AE35);
         let local = SymbolId::SYNTHETIC_LOCAL_BIT | (mixed & 0x7FFF_FFFF);
         let id = SymbolId::new(file_id, local);

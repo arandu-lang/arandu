@@ -244,6 +244,58 @@ pub(super) fn lower_type_path(
     Ok(HirExpr { kind, ty, span })
 }
 
+/// `f<int>(xs, lambda)` names only the declared parameters; the implicit
+/// callback parameters typeck inferred are read back from the instantiated
+/// callee so the instance key is complete.
+fn complete_callback_type_args(
+    type_check: &TypeCheckResult,
+    hir_pool: &crate::hir::HirPool,
+    expr: ExprId,
+    callee: crate::hir::HirExprId,
+    args: &mut Vec<arandu_middle::types::TypeId>,
+) {
+    let symbol = match &hir_pool.expr(callee).kind {
+        HirExprKind::Path { symbol } => *symbol,
+        HirExprKind::TypePath { member_symbol, .. } => *member_symbol,
+        _ => return,
+    };
+    let info = &type_check.type_info;
+    let Some(params) = info.generic_params.get(&symbol) else {
+        return;
+    };
+    let declared = params
+        .iter()
+        .filter(|param| !info.callback_bounds.contains_key(param))
+        .count();
+    if declared == params.len() || args.len() < declared {
+        return;
+    }
+    args.truncate(declared);
+    let interner = &info.type_interner;
+    for &param in &params[declared..] {
+        args.push(interner.intern(ArType::named(param, &[], interner)));
+    }
+    let (Some(ArType::Func(template, _)), Some(ArType::Func(instance, _))) =
+        (info.decl_type(symbol), info.expr_type(expr))
+    else {
+        return;
+    };
+    let template = interner.type_args(template);
+    let instance = interner.type_args(instance);
+    for (&formal, &actual) in template.iter().zip(&instance) {
+        let (ArType::RefMut(formal), ArType::RefMut(actual)) =
+            (interner.resolve(formal), interner.resolve(actual))
+        else {
+            continue;
+        };
+        if let ArType::Named(implicit, _) = interner.resolve(formal)
+            && let Some(index) = params[declared..].iter().position(|&p| p == implicit)
+        {
+            args[declared + index] = actual;
+        }
+    }
+}
+
 pub(super) fn lower_generic(
     type_check: &mut TypeCheckResult,
     pool: &AstPool,
@@ -270,6 +322,7 @@ pub(super) fn lower_generic(
                 );
                 hir_args.push(interner.intern(ar));
             }
+            complete_callback_type_args(type_check, hir_pool, expr, callee_id, &mut hir_args);
             HirExprKind::Generic {
                 callee: callee_id,
                 args: hir_args,

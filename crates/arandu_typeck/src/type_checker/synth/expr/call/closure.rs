@@ -249,8 +249,10 @@ pub(crate) fn synth_args_with_callbacks(
     arg_ids: &[ExprId],
     receiver: &[(SymbolId, TypeId)],
 ) -> Vec<TypeId> {
+    // A generic function waits like a lambda: the bound instantiates it.
     let deferred = |checker: &TypeChecker<'_>, index: usize, arg: ExprId| {
-        matches!(checker.pool.expr(arg), ExprKind::Lambda { .. })
+        (matches!(checker.pool.expr(arg), ExprKind::Lambda { .. })
+            || is_generic_function(checker, arg))
             && formals
                 .get(index)
                 .is_some_and(|&formal| callback_bound_of(checker, formal).is_some())
@@ -273,6 +275,11 @@ pub(crate) fn synth_args_with_callbacks(
             .and_then(|&formal| callback_bound_of(checker, formal))
             && matches!(checker.resolve(ty), ArType::Func(..))
         {
+            // A plain function fixes the parameters its callback leaves open
+            // (`apply(negate, x)` makes `T` = bool), as its signature is known.
+            let open = checker.resolve(bound);
+            super::instantiate::bind_type_params(checker, type_params, &open, ty, &mut bindings);
+            let bound = substitute_bindings(checker, bound, &bindings);
             ty = adapt_named_function(checker, arg, ty, bound);
         }
         if let Some(&formal) = formals.get(index) {
@@ -281,12 +288,6 @@ pub(crate) fn synth_args_with_callbacks(
         }
         arg_tys.push(Some(ty));
     }
-    let (params, args): (Vec<_>, Vec<_>) = bindings.into_iter().unzip();
-    let concrete = args
-        .iter()
-        .map(|&ty| checker.resolve(ty))
-        .collect::<Vec<_>>();
-    let subst = arandu_middle::types::build_subst(&params, &concrete);
     arg_tys
         .into_iter()
         .zip(arg_ids)
@@ -299,16 +300,42 @@ pub(crate) fn synth_args_with_callbacks(
                 else {
                     return checker.intern(ArType::Error);
                 };
-                let bound = arandu_middle::types::substitute_type(
-                    &checker.resolve(bound),
-                    &subst,
-                    &checker.type_info.type_interner,
-                );
-                let bound = checker.intern(bound);
-                check_callback_lambda(checker, arg, bound)
+                let bound = substitute_bindings(checker, bound, &bindings);
+                if matches!(checker.pool.expr(arg), ExprKind::Lambda { .. }) {
+                    return check_callback_lambda(checker, arg, bound);
+                }
+                let function_ty = super::synth_expr(checker, arg);
+                adapt_named_function(checker, arg, function_ty, bound)
             })
         })
         .collect()
+}
+
+fn is_generic_function(checker: &TypeChecker<'_>, arg: ExprId) -> bool {
+    matches!(checker.pool.expr(arg), ExprKind::Path { .. })
+        && checker.resolved.expr_symbol(arg).is_some_and(|symbol| {
+            checker.symbols.try_get(symbol).is_some_and(|entry| {
+                matches!(entry.kind, SymbolKind::Func | SymbolKind::AssociatedFunc)
+            }) && checker
+                .type_info
+                .generic_params
+                .get(&symbol)
+                .is_some_and(|params| !params.is_empty())
+        })
+}
+
+fn substitute_bindings(
+    checker: &mut TypeChecker<'_>,
+    ty: TypeId,
+    bindings: &rustc_hash::FxHashMap<SymbolId, TypeId>,
+) -> TypeId {
+    if bindings.is_empty() {
+        return ty;
+    }
+    let (params, args): (Vec<_>, Vec<_>) = bindings.iter().map(|(&p, &a)| (p, a)).unzip();
+    let subst =
+        arandu_middle::types::build_subst_ids(&params, &args, &checker.type_info.type_interner);
+    arandu_middle::types::substitute_type_id(ty, &subst, &checker.type_info.type_interner)
 }
 
 /// The type of a call argument after inference. A closure or adapter
@@ -360,11 +387,7 @@ fn adapt_named_function(
                 entry.kind,
                 SymbolKind::Func | SymbolKind::AssociatedFunc | SymbolKind::ExternFunc
             )
-        }) && checker
-            .type_info
-            .generic_params
-            .get(&symbol)
-            .is_none_or(|params| params.is_empty())
+        })
     }) else {
         return function_ty;
     };
@@ -372,6 +395,77 @@ fn adapt_named_function(
         (checker.resolve(function_ty), checker.resolve(bound))
     else {
         return function_ty;
+    };
+    // A generic function is instantiated by the callback it becomes, as Rust
+    // infers `identity::<i32>` from the `FnMut(i32) -> i32` it must satisfy.
+    let (params, ret) = match checker.type_info.generic_params.get(&function).cloned() {
+        Some(generics) if !generics.is_empty() => {
+            let mut bindings = rustc_hash::FxHashMap::default();
+            let formals = checker.type_info.type_interner.type_args(params);
+            let expected = checker.type_info.type_interner.type_args(bound_params);
+            for (&formal, &actual) in formals.iter().zip(&expected) {
+                let formal = checker.resolve(formal);
+                super::instantiate::bind_type_params(
+                    checker,
+                    &generics,
+                    &formal,
+                    actual,
+                    &mut bindings,
+                );
+            }
+            let formal = checker.resolve(ret);
+            super::instantiate::bind_type_params(
+                checker,
+                &generics,
+                &formal,
+                bound_ret,
+                &mut bindings,
+            );
+            let inferred = generics.iter().all(|param| {
+                bindings
+                    .get(param)
+                    .is_some_and(|&ty| !mentions_type_parameter(checker, ty))
+            });
+            if !inferred {
+                let interner = &checker.type_info.type_interner;
+                let expected = checker.resolve(bound).display(&checker.symbols, interner);
+                let name = checker.symbols.get(function).name.clone();
+                checker.diagnostics.push(
+                    crate::Diagnostic::error(
+                        crate::DiagCode::T001CannotInferType,
+                        format!(
+                            "cannot infer the type arguments of `{name}` from the callback '{expected}'"
+                        ),
+                        span,
+                    )
+                    .with_label(
+                        span,
+                        "each of its type parameters must appear in the callback's signature",
+                    ),
+                );
+                let error = checker.intern(ArType::Error);
+                checker.record_expr_type(arg, error);
+                return error;
+            }
+            let concrete = generics
+                .iter()
+                .map(|param| checker.resolve(bindings[param]))
+                .collect::<Vec<_>>();
+            crate::type_checker::types::interfaces::check_instantiation_constraints(
+                checker, &generics, &concrete, span,
+            );
+            let subst = arandu_middle::types::build_subst(&generics, &concrete);
+            let instance = arandu_middle::types::substitute_type(
+                &checker.resolve(function_ty),
+                &subst,
+                &checker.type_info.type_interner,
+            );
+            match instance {
+                ArType::Func(params, ret) => (params, ret),
+                _ => (params, ret),
+            }
+        }
+        _ => (params, ret),
     };
     let params = checker.type_info.type_interner.type_args(params);
     let bound_params = checker.type_info.type_interner.type_args(bound_params);

@@ -8,6 +8,14 @@ struct Handle { raw: ptr[u8] }
 func apply(x: int, f: (int) -> int): int { return f(x) }
 func double(x: int): int { return x * 2 }
 func isPositive(x: int): bool { return x > 0 }
+func applyT<T>(f: (T) -> T, x: T): T { return f(x) }
+func mapOne<T, R>(x: T, f: (T) -> R): R { return f(x) }
+func ident<T>(x: T): T { return x }
+func loose<T, U>(x: T): T { return x }
+func negate(b: bool): bool { return !b }
+func keep<T>(a: T, b: T): T { return a }
+struct Pair<T> { first: T, second: T }
+func Pair.combine(self: ref Pair<T>, f: (T, T) -> T): T { return f(self.first, self.second) }
 "#;
 
 fn errors(body: &str) -> Vec<DiagCode> {
@@ -151,4 +159,42 @@ fn a_capture_of_generic_type_is_rejected() {
         .map(|diagnostic| diagnostic.code)
         .collect::<Vec<_>>();
     assert_eq!(codes, vec![DiagCode::U001FeatureNotSupported]);
+}
+
+#[test]
+fn generic_callees_take_callbacks_with_explicit_or_inferred_arguments() {
+    for body in [
+        "    return mapOne<int, int>(4, (x) => x * 10)",
+        "    let b: bool = mapOne<int, bool>(4, (x) => x > 3)\n    return 0",
+        "    return applyT(ident, 9)",
+        "    return applyT<int>(double, 9)",
+        "    let p = Pair<int> { first: 2, second: 3 }\n    return p.combine((a, b) => a * b)",
+        "    let p = Pair<int> { first: 2, second: 3 }\n    return p.combine(keep)",
+    ] {
+        assert!(errors(body).is_empty(), "{body}: {:?}", errors(body));
+    }
+}
+
+#[test]
+fn a_callback_fixes_the_parameters_it_mentions() {
+    let cases: &[(&str, &str, DiagCode)] = &[
+        (
+            "generic function with a parameter outside the callback",
+            "    return applyT(loose, 1)",
+            DiagCode::T001CannotInferType,
+        ),
+        (
+            "plain function binds T before the value argument",
+            "    let b = applyT(negate, 5)\n    return 0",
+            DiagCode::T003IncompatibleCallArg,
+        ),
+        (
+            "explicit arguments name only the declared parameters",
+            "    return mapOne<int, int, int>(4, (x) => x)",
+            DiagCode::T012WrongArgCount,
+        ),
+    ];
+    for (name, body, code) in cases {
+        assert_eq!(errors(body), vec![*code], "{name}");
+    }
 }

@@ -360,10 +360,31 @@ fn adapter_body(
     function: SymbolId,
 ) -> HirBlockId {
     let span = recipe.lambda_span;
-    let function_ty = type_check
+    // A generic function is called at the callback's signature, which fixes
+    // its instance; a plain one keeps its declared type.
+    let function_ty = if type_check
         .type_info
-        .decl_type_id(function)
-        .unwrap_or_else(TypeInterner::preinterned_error_id);
+        .generic_params
+        .get(&function)
+        .is_some_and(|params| !params.is_empty())
+    {
+        let interner = &type_check.type_info.type_interner;
+        let params = recipe
+            .params
+            .iter()
+            .map(|param| param.ty)
+            .collect::<Vec<_>>();
+        interner.intern(arandu_middle::types::ArType::func(
+            &params,
+            recipe.return_type,
+            interner,
+        ))
+    } else {
+        type_check
+            .type_info
+            .decl_type_id(function)
+            .unwrap_or_else(TypeInterner::preinterned_error_id)
+    };
     let callee = pool.alloc_expr(HirExpr {
         kind: HirExprKind::Path { symbol: function },
         ty: function_ty,

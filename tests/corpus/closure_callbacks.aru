@@ -188,6 +188,32 @@ func methodCallbacks(): int {
     return 0
 }
 
+func mapOne<T, R>(x: T, f: (T) -> R): R {
+    return f(x)
+}
+
+func applyTo<T>(f: (T) -> T, x: T): T {
+    return f(x)
+}
+
+func identity<T>(x: T): T { return x }
+
+func keepFirst<T>(a: T, b: T): T { return a }
+
+// Explicit type arguments name only the declared parameters; a generic
+// function becomes a callback at the instance its bound fixes.
+func genericCallbacks(): int {
+    if mapOne<int, int>(4, (x) => x * 10) != 40 { return 1 }
+    if !mapOne<int, bool>(4, (x) => x > 3) { return 2 }
+    if applyTo(identity, 9) != 9 { return 3 }
+    if applyTo<int>(tripleIt, 2) != 6 { return 4 }
+    let p = Pair<int> { first: 5, second: 8 }
+    if p.combine(keepFirst) != 5 { return 5 }
+    let flags = Pair<bool> { first: false, second: true }
+    if flags.combine(keepFirst) { return 6 }
+    return 0
+}
+
 func main(): int {
     let copied = copyCaptures()
     if copied != 0 { return 10 + copied }
@@ -203,5 +229,7 @@ func main(): int {
     if named != 0 { return 60 + named }
     let methods = methodCallbacks()
     if methods != 0 { return 70 + methods }
+    let generic = genericCallbacks()
+    if generic != 0 { return 80 + generic }
     return 0
 }

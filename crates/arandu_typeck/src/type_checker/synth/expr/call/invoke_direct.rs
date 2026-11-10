@@ -158,6 +158,76 @@ pub(super) fn synth_direct_symbol_call(
                 let func_ty = ArType::func(&params, ret, &checker.type_info.type_interner);
                 let inst_func = checker.intern(func_ty);
                 checker.record_expr_type(callee_id, inst_func);
+            } else if arg_tys.iter().any(|&ty| checker.resolve(ty).is_error()) {
+                // An argument already reported its error; checking the others
+                // against the uninstantiated formals would only cascade.
+                let err = checker.intern(ArType::Error);
+                checker.record_expr_type(expr, err);
+                return Some(err);
+            }
+        }
+
+        // `f<int>(xs, (x) => ...)`: the explicit arguments fixed the declared
+        // parameters; the callback parameters are inferred here.
+        if had_explicit_generic
+            && let Some(sym_id) = callee_func_sym
+            && let Some(gp) = checker.type_info.generic_params.get(&sym_id).cloned()
+        {
+            let implicit: Vec<_> = gp
+                .iter()
+                .copied()
+                .filter(|param| checker.type_info.callback_bounds.contains_key(param))
+                .collect();
+            if !implicit.is_empty() {
+                // The callback bounds mention the declared parameters too, so
+                // recover their explicit arguments from the instantiated formals.
+                let declared: Vec<_> = gp
+                    .iter()
+                    .copied()
+                    .filter(|param| !implicit.contains(param))
+                    .collect();
+                let mut explicit = rustc_hash::FxHashMap::default();
+                if let Some(ArType::Func(template, template_ret)) = checker.decl_type(sym_id) {
+                    let template = checker.type_info.type_interner.type_args(template);
+                    for (&formal, &actual) in template.iter().zip(&params) {
+                        let formal = checker.resolve(formal);
+                        super::instantiate::bind_type_params(
+                            checker,
+                            &declared,
+                            &formal,
+                            actual,
+                            &mut explicit,
+                        );
+                    }
+                    let formal = checker.resolve(template_ret);
+                    super::instantiate::bind_type_params(
+                        checker,
+                        &declared,
+                        &formal,
+                        ret,
+                        &mut explicit,
+                    );
+                }
+                let explicit: Vec<_> = explicit.into_iter().collect();
+                let arg_tys = super::closure::synth_args_with_callbacks(
+                    checker, &implicit, &params, &arg_ids, &explicit,
+                );
+                super::closure::check_callback_args(checker, &params, &arg_ids, &arg_tys);
+                if let Some((ip, ir)) = infer_and_instantiate_func(
+                    checker,
+                    (None, &implicit),
+                    &params,
+                    ret,
+                    &arg_tys,
+                    expected,
+                    span,
+                ) {
+                    params = ip;
+                    ret = ir;
+                    let func_ty = ArType::func(&params, ret, &checker.type_info.type_interner);
+                    let inst_func = checker.intern(func_ty);
+                    checker.record_expr_type(callee_id, inst_func);
+                }
             }
         }
 

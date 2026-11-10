@@ -17,6 +17,14 @@ pub(crate) fn infer_and_instantiate_func(
     }
     let mut bindings: rustc_hash::FxHashMap<arandu_middle::SymbolId, TypeId> =
         rustc_hash::FxHashMap::default();
+    // A closure's signature is its callback bound instantiated, so it binds
+    // the bound's parameters before plain arguments can disagree with it.
+    for (&formal_id, &arg_id) in formals.iter().zip(arg_tys.iter()) {
+        if let Some(signature) = callback_signature(checker, formal_id, arg_id) {
+            let (bound, signature) = signature;
+            bind_type_params(checker, type_params, &bound, signature, &mut bindings);
+        }
+    }
     for (&formal_id, &arg_id) in formals.iter().zip(arg_tys.iter()) {
         let formal = checker.resolve(formal_id);
         bind_type_params(checker, type_params, &formal, arg_id, &mut bindings);
@@ -74,6 +82,42 @@ pub(crate) fn infer_and_instantiate_func(
     let ret_ty = checker.resolve(ret);
     let ret_inst = types::substitute_type(&ret_ty, &subst, &checker.type_info.type_interner);
     Some((new_params, checker.intern(ret_inst)))
+}
+
+/// The bound of a callback formal and the `call` signature of the closure
+/// passed for it.
+fn callback_signature(
+    checker: &mut TypeChecker<'_>,
+    formal: TypeId,
+    arg: TypeId,
+) -> Option<(ArType, TypeId)> {
+    let ArType::RefMut(implicit) = checker.resolve(formal) else {
+        return None;
+    };
+    let ArType::Named(implicit, _) = checker.resolve(implicit) else {
+        return None;
+    };
+    let bound = *checker.type_info.callback_bounds.get(&implicit)?;
+    let ArType::Named(closure, _) = checker.resolve(arg) else {
+        return None;
+    };
+    let recipe = checker
+        .type_info
+        .closures
+        .values()
+        .find(|recipe| recipe.struct_symbol == closure && recipe.is_callback())?;
+    let params = recipe
+        .params
+        .iter()
+        .map(|param| param.ty)
+        .collect::<Vec<_>>();
+    let signature = ArType::func(
+        &params,
+        recipe.return_type,
+        &checker.type_info.type_interner,
+    );
+    let signature = checker.intern(signature);
+    Some((checker.resolve(bound), signature))
 }
 
 fn deduce_unbound_from_constraints(
@@ -297,6 +341,32 @@ pub(crate) fn bind_type_params(
                     actual_inner,
                     bindings,
                 );
+            }
+        }
+        ArType::Func(params, ret) => {
+            if let ArType::Func(actual_params, actual_ret) = interner.resolve(actual_id)
+                && params.len == actual_params.len
+            {
+                let formals = interner.type_args(*params);
+                let actuals = interner.type_args(actual_params);
+                for (&formal, &actual) in formals.iter().zip(&actuals) {
+                    let formal = interner.resolve(formal);
+                    bind_type_params(checker, type_params, &formal, actual, bindings);
+                }
+                let formal = interner.resolve(*ret);
+                bind_type_params(checker, type_params, &formal, actual_ret, bindings);
+            }
+        }
+        ArType::Tuple(elements) => {
+            if let ArType::Tuple(actual_elements) = interner.resolve(actual_id)
+                && elements.len == actual_elements.len
+            {
+                let formals = interner.type_args(*elements);
+                let actuals = interner.type_args(actual_elements);
+                for (&formal, &actual) in formals.iter().zip(&actuals) {
+                    let formal = interner.resolve(formal);
+                    bind_type_params(checker, type_params, &formal, actual, bindings);
+                }
             }
         }
         ArType::Result(ok, err) => {

@@ -105,6 +105,34 @@ func borrowedCaptures(): int {
     return 0
 }
 
+func double(x: int): int {
+    return x * 2
+}
+
+func add(a: int, b: int): int {
+    return a + b
+}
+
+// A named function is passed as a callback through an adapter; `own` and
+// `move` arrow lambdas move their captures; a `mut ref` is captured uniquely.
+func namedAndOwning(): int {
+    if apply(21, double) != 42 { return 1 }
+    if fold(4, 0, add) != 6 { return 2 }
+    let k: int = 3
+    if apply(1, own (x: int) => x + k) != 4 { return 3 }
+    if apply(1, move (x) => x * k) != 3 { return 4 }
+    let mut c = 1
+    bumpTwice(mut ref c, 5)
+    if c != 11 { return 5 }
+    return 0
+}
+
+func bumpTwice(counter: mut ref int, by: int): void {
+    each(2, (i) => {
+        *counter = *counter + by
+    })
+}
+
 func main(): int {
     let copied = copyCaptures()
     if copied != 0 { return 10 + copied }
@@ -116,5 +144,7 @@ func main(): int {
     if nested != 0 { return 40 + nested }
     let borrowed = borrowedCaptures()
     if borrowed != 0 { return 50 + borrowed }
+    let named = namedAndOwning()
+    if named != 0 { return 60 + named }
     return 0
 }

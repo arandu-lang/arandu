@@ -308,6 +308,7 @@ impl TypeInfo {
                     fields,
                     return_type,
                     host_name: recipe.host_name.clone(),
+                    adapts: recipe.adapts.map(remap),
                 },
             );
         }

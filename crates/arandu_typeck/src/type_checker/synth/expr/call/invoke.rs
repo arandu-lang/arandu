@@ -336,7 +336,7 @@ fn synth_namespace_field_call(
                 }
                 for (i, arg_id) in arg_ids.iter().copied().enumerate() {
                     let param_id = params.get(i).copied();
-                    let arg_ty_id = synth_expr_expected(checker, arg_id, param_id);
+                    let arg_ty_id = super::closure::synth_call_arg(checker, arg_id, param_id);
                     if let Some(param_id) = param_id {
                         check_call_arg(
                             checker,

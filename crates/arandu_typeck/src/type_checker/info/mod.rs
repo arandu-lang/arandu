@@ -88,6 +88,9 @@ pub struct ClosureRecipe {
     pub return_type: TypeId,
     /// Backend name. This spelling has no dots.
     pub host_name: smol_str::SmolStr,
+    /// A named function passed as a callback: `call` forwards its
+    /// parameters to it, and there is no lambda in the source.
+    pub adapts: Option<SymbolId>,
 }
 
 impl ClosureRecipe {

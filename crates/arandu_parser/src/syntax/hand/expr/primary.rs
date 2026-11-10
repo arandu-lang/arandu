@@ -80,6 +80,24 @@ fn parse_primary_dispatch(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option
                 ctx.token_span(t),
             ))
         }
+        // `own (x) => …` / `move (x) => …` (see the RD parser).
+        TokenKind::IdentValue | TokenKind::KwOwn
+            if (t.kind == TokenKind::KwOwn || ctx.text(t) == Some("move"))
+                && cur.peek_at(1).is_some_and(|t| t.kind == TokenKind::LParen)
+                && {
+                    let mut probe = *cur;
+                    probe.bump();
+                    probe.bump();
+                    looks_like_lambda(&probe)
+                } =>
+        {
+            cur.bump();
+            let id = parse_group_or_lambda(ctx, cur)?;
+            if let ExprKind::Lambda { is_move, .. } = &mut ctx.pool.exprs[id.as_usize()] {
+                *is_move = true;
+            }
+            Some(id)
+        }
         TokenKind::IdentValue
             if ctx.text(t) == Some("move")
                 && cur

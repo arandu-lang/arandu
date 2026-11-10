@@ -7,6 +7,7 @@ const PRELUDE: &str = r#"
 struct Handle { raw: ptr[u8] }
 func apply(x: int, f: (int) -> int): int { return f(x) }
 func double(x: int): int { return x * 2 }
+func isPositive(x: int): bool { return x > 0 }
 "#;
 
 fn errors(body: &str) -> Vec<DiagCode> {
@@ -40,9 +41,9 @@ fn each_rejected_closure_reports_one_diagnostic() {
             DiagCode::U001FeatureNotSupported,
         ),
         (
-            "named function",
-            "    return apply(1, double)",
-            DiagCode::U001FeatureNotSupported,
+            "named function with another signature",
+            "    return apply(1, isPositive)",
+            DiagCode::T003IncompatibleCallArg,
         ),
         (
             "not callable",
@@ -123,4 +124,31 @@ fn a_borrowed_callback_cannot_escape_the_call() {
             .collect::<Vec<_>>();
         assert_eq!(codes, vec![DiagCode::T100BorrowedCallbackEscapes], "{name}");
     }
+}
+
+#[test]
+fn named_functions_and_owning_lambdas_are_callbacks() {
+    for body in [
+        "    return apply(1, double)",
+        "    let k: int = 2\n    return apply(1, own (x: int) => x + k)",
+        "    let k: int = 2\n    return apply(1, move (x) => x + k)",
+    ] {
+        assert!(errors(body).is_empty(), "{body}: {:?}", errors(body));
+    }
+}
+
+#[test]
+fn a_capture_of_generic_type_is_rejected() {
+    let mut db = DatabaseImpl::default();
+    let file = db.new_file(
+        "generic.aru".into(),
+        "func twice(f: () -> void): void { f() }\nfunc forward(f: (int) -> void): void {\n    twice(() => f(1))\n}\nfunc main(): int { return 0 }\n".into(),
+    );
+    let codes = type_check(&db, file)
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == Severity::Error)
+        .map(|diagnostic| diagnostic.code)
+        .collect::<Vec<_>>();
+    assert_eq!(codes, vec![DiagCode::U001FeatureNotSupported]);
 }

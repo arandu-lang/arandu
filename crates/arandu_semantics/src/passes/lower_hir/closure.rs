@@ -50,24 +50,6 @@ pub fn lower_closure_hir(
             arandu_lexer::Span::new(method_symbol.file_id, 0, 0),
         )]);
     };
-    let Some(lambda) = find_lambda(program, recipe.lambda_span) else {
-        return Err(vec![Diagnostic::ice(
-            DiagCode::ICEL001,
-            "closure lambda is missing from the source file",
-            recipe.lambda_span,
-        )]);
-    };
-    let body = match program.pool.expr(lambda) {
-        ExprKind::Lambda { body, .. } => body.clone(),
-        _ => {
-            return Err(vec![Diagnostic::ice(
-                DiagCode::ICEL001,
-                "closure span is not a lambda",
-                recipe.lambda_span,
-            )]);
-        }
-    };
-
     let mut pool = crate::hir::HirPool::new();
     // A callback body reaches its captures through `mut self`; a job
     // destructures its owned `self` once instead.
@@ -105,34 +87,55 @@ pub fn lower_closure_hir(
             let named = arandu_middle::types::ArType::named(recipe.struct_symbol, &[], interner);
             type_check.type_info_mut().type_interner.intern(named)
         });
-    let body_block = match &body {
-        arandu_parser::LambdaBody::Expr { expr, .. } => {
-            let value = super::expr::lower_expr(type_check, &program.pool, &mut pool, *expr)
-                .map_err(|diagnostic| vec![diagnostic])?;
-            let span = program.pool.expr_span(*expr);
-            let returns_void = matches!(
-                type_check
-                    .type_info
-                    .type_interner
-                    .resolve(recipe.return_type),
-                arandu_middle::types::ArType::Void
-            );
-            let kind = if returns_void {
-                HirStmtKind::Expr(value)
-            } else {
-                HirStmtKind::Return {
-                    values: pool.alloc_expr_list(&[value]),
-                }
-            };
-            let ret = pool.alloc_stmt(HirStmt { kind, span });
-            let statements = pool.alloc_stmt_list(&[ret]);
-            pool.alloc_block(HirBlock { statements, span })
-        }
-        arandu_parser::LambdaBody::Block { block, .. } => {
-            let lowered = super::stmt::lower_block(type_check, &program.pool, &mut pool, block)
-                .map_err(|diagnostic| vec![diagnostic])?;
-            return_value_tail(&mut pool, lowered, &program.pool, block);
-            lowered
+    let body_block = if let Some(function) = recipe.adapts {
+        adapter_body(&mut pool, type_check, &recipe, function)
+    } else {
+        let Some(lambda) = find_lambda(program, recipe.lambda_span) else {
+            return Err(vec![Diagnostic::ice(
+                DiagCode::ICEL001,
+                "closure lambda is missing from the source file",
+                recipe.lambda_span,
+            )]);
+        };
+        let body = match program.pool.expr(lambda) {
+            ExprKind::Lambda { body, .. } => body.clone(),
+            _ => {
+                return Err(vec![Diagnostic::ice(
+                    DiagCode::ICEL001,
+                    "closure span is not a lambda",
+                    recipe.lambda_span,
+                )]);
+            }
+        };
+        match &body {
+            arandu_parser::LambdaBody::Expr { expr, .. } => {
+                let value = super::expr::lower_expr(type_check, &program.pool, &mut pool, *expr)
+                    .map_err(|diagnostic| vec![diagnostic])?;
+                let span = program.pool.expr_span(*expr);
+                let returns_void = matches!(
+                    type_check
+                        .type_info
+                        .type_interner
+                        .resolve(recipe.return_type),
+                    arandu_middle::types::ArType::Void
+                );
+                let kind = if returns_void {
+                    HirStmtKind::Expr(value)
+                } else {
+                    HirStmtKind::Return {
+                        values: pool.alloc_expr_list(&[value]),
+                    }
+                };
+                let ret = pool.alloc_stmt(HirStmt { kind, span });
+                let statements = pool.alloc_stmt_list(&[ret]);
+                pool.alloc_block(HirBlock { statements, span })
+            }
+            arandu_parser::LambdaBody::Block { block, .. } => {
+                let lowered = super::stmt::lower_block(type_check, &program.pool, &mut pool, block)
+                    .map_err(|diagnostic| vec![diagnostic])?;
+                return_value_tail(&mut pool, lowered, &program.pool, block);
+                lowered
+            }
         }
     };
     let body_block = if recipe.is_callback() {
@@ -345,5 +348,65 @@ fn destructure_captures(
         span,
     });
     let statements = pool.alloc_stmt_list(&[destructure]);
+    pool.alloc_block(HirBlock { statements, span })
+}
+
+/// `call` of a named-function adapter: forward every parameter to the
+/// function and return its result.
+fn adapter_body(
+    pool: &mut crate::hir::HirPool,
+    type_check: &TypeCheckResult,
+    recipe: &ClosureRecipe,
+    function: SymbolId,
+) -> HirBlockId {
+    let span = recipe.lambda_span;
+    let function_ty = type_check
+        .type_info
+        .decl_type_id(function)
+        .unwrap_or_else(TypeInterner::preinterned_error_id);
+    let callee = pool.alloc_expr(HirExpr {
+        kind: HirExprKind::Path { symbol: function },
+        ty: function_ty,
+        span,
+    });
+    let args = recipe
+        .params
+        .iter()
+        .map(|param| {
+            pool.alloc_expr(HirExpr {
+                kind: HirExprKind::Path {
+                    symbol: param.symbol,
+                },
+                ty: param.ty,
+                span,
+            })
+        })
+        .collect::<Vec<_>>();
+    let args = pool.alloc_expr_list(&args);
+    let call = pool.alloc_expr(HirExpr {
+        kind: HirExprKind::Call {
+            callee,
+            args,
+            trailing_block: None,
+        },
+        ty: recipe.return_type,
+        span,
+    });
+    let returns_void = matches!(
+        type_check
+            .type_info
+            .type_interner
+            .resolve(recipe.return_type),
+        arandu_middle::types::ArType::Void
+    );
+    let kind = if returns_void {
+        HirStmtKind::Expr(call)
+    } else {
+        HirStmtKind::Return {
+            values: pool.alloc_expr_list(&[call]),
+        }
+    };
+    let statement = pool.alloc_stmt(HirStmt { kind, span });
+    let statements = pool.alloc_stmt_list(&[statement]);
     pool.alloc_block(HirBlock { statements, span })
 }

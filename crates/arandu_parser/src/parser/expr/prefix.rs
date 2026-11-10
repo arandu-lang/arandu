@@ -34,7 +34,38 @@ impl<'a> Parser<'a> {
         if self.current().kind == TokenKind::LParen {
             return self.parse_group_or_lambda(start);
         }
+        if let Some(lambda) = self.try_parse_owning_arrow_lambda() {
+            return lambda;
+        }
         self.parse_prefix_dispatch(start)
+    }
+
+    /// `own (x) => …` / `move (x) => …`: an arrow lambda that moves its
+    /// captures. Anything else (a call of a function named `move`) is left
+    /// to the ordinary parse.
+    fn try_parse_owning_arrow_lambda(&mut self) -> Option<Result<ExprId, ParseError>> {
+        let owning = matches!(self.current().kind, TokenKind::KwOwn)
+            || (self.current().kind == TokenKind::IdentValue && self.current_text() == "move");
+        if !owning || self.tokens.get(self.pos + 1).map(|t| t.kind) != Some(TokenKind::LParen) {
+            return None;
+        }
+        let checkpoint = self.checkpoint();
+        self.advance();
+        let start = self.mark();
+        match self.parse_group_or_lambda(start) {
+            Ok(id) => {
+                if let ExprKind::Lambda { is_move, .. } = &mut self.pool.exprs[id.as_usize()] {
+                    *is_move = true;
+                    return Some(Ok(id));
+                }
+                checkpoint.rollback(self);
+                None
+            }
+            Err(_) => {
+                checkpoint.rollback(self);
+                None
+            }
+        }
     }
 
     fn parse_prefix_dispatch(&mut self, start: usize) -> Result<ExprId, ParseError> {

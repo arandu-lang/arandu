@@ -204,6 +204,20 @@ pub(crate) fn lower_expr_raw(
             )
         });
     }
+    // A named function passed as a callback is its adapter's environment.
+    if let Some(recipe) = type_check
+        .type_info
+        .closure_at(span)
+        .filter(|recipe| recipe.adapts.is_some())
+        .cloned()
+    {
+        let kind = super::closure::capture_struct_literal(hir_pool, &recipe);
+        let ty = type_check
+            .type_info
+            .decl_type_id(recipe.struct_symbol)
+            .unwrap_or(fallback_ty);
+        return Ok(HirExpr { kind, ty, span });
+    }
     // Recursive binary/unary/group lowering uses a small coordinator frame;
     // Keep the other forms' diagnostic locals off those ancestor frames.
     let kind = match pool.expr(expr) {

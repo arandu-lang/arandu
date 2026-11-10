@@ -6,7 +6,6 @@ use arandu_parser::ast_pool::{ExprId, ExprKind, IndexRange};
 use super::thread_target::synth_thread_spawn_closure;
 use super::{
     check_call_arg, check_target_thread_capabilities, infer_and_instantiate_func, synth_expr,
-    synth_expr_expected,
 };
 use crate::type_checker::TypeChecker;
 use crate::type_checker::types::ArType;
@@ -191,7 +190,7 @@ pub(super) fn synth_direct_symbol_call(
         }
         for (i, arg_id) in arg_ids.iter().copied().enumerate() {
             let formal = params.get(i).copied();
-            let arg_ty_id = synth_expr_expected(checker, arg_id, formal);
+            let arg_ty_id = super::closure::synth_call_arg(checker, arg_id, formal);
             if let Some(param_id) = formal {
                 check_call_arg(
                     checker,

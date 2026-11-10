@@ -27,6 +27,10 @@ impl EffectFlags {
     pub const NO_THROW: Self = Self(1 << 13);
     pub const NO_SUSPEND: Self = Self(1 << 14);
 
+    /// Every authority and resource effect: what a call through a function
+    /// value may perform, since its target is not known statically.
+    pub const ANY_CALL: Self = Self((1 << 10) - 1);
+
     #[must_use]
     pub const fn contains(self, other: Self) -> bool {
         (self.0 & other.0) == other.0

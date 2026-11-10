@@ -49,6 +49,7 @@ pub(super) struct FuncTranslator<'a> {
     pub literal_pool: &'a AmirLiteralPool,
     pub rodata_offsets: &'a FxHashMap<arandu_middle::literal_pool::LiteralId, u32>,
     pub func_index_map: &'a FxHashMap<SymbolId, u32>,
+    pub indirect_type_indices: &'a FxHashMap<arandu_middle::types::TypeId, u32>,
     pub functions: &'a [AmirFunc],
     pub extern_functions: &'a FxHashMap<SymbolId, (Vec<ArType>, ArType)>,
 
@@ -146,6 +147,8 @@ pub struct TranslationContext<'a> {
     pub literal_pool: &'a AmirLiteralPool,
     pub rodata_offsets: &'a FxHashMap<arandu_middle::literal_pool::LiteralId, u32>,
     pub func_index_map: &'a FxHashMap<SymbolId, u32>,
+    /// Type index of each `Func` type called through a function value.
+    pub indirect_type_indices: &'a FxHashMap<arandu_middle::types::TypeId, u32>,
     /// Wasm function index of the internal `__arandu_alloc(size) -> i32`.
     pub alloc_func_idx: u32,
     /// Wasm function index of the internal `__arandu_free(ptr)`.
@@ -171,6 +174,7 @@ impl<'a> FuncTranslator<'a> {
             literal_pool: ctx.literal_pool,
             rodata_offsets: ctx.rodata_offsets,
             func_index_map: ctx.func_index_map,
+            indirect_type_indices: ctx.indirect_type_indices,
             functions: ctx.functions,
             extern_functions: ctx.extern_functions,
             temp_local: FxHashMap::default(),

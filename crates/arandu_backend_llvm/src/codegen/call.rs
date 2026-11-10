@@ -8,6 +8,67 @@ use super::export::lanes_ty;
 use super::{FuncEmitter, TypedValue, ice, quote_name};
 
 impl<'a, 'm> FuncEmitter<'a, 'm> {
+    /// A call through a function value: a code pointer to an Arandu function,
+    /// called with the internal convention its `Func` type describes.
+    fn emit_indirect_call(
+        &mut self,
+        lhs: Option<TempId>,
+        result: Option<&str>,
+        callee: &AmirOperand,
+        args: &[AmirOperand],
+    ) -> Result<(), Diagnostic> {
+        let function_ty = self.module.operand_type(callee, self.func);
+        let ArType::Func(params, ret) = function_ty else {
+            return Err(ice("call through a value that is not a function"));
+        };
+        let interner = self.module.interner;
+        let param_types = interner
+            .type_args(params)
+            .iter()
+            .map(|&id| interner.resolve(id))
+            .collect::<Vec<_>>();
+        let return_ty = interner.resolve(ret);
+        if param_types.len() != args.len() {
+            return Err(ice(format!(
+                "call through a function value expects {} arguments, got {}",
+                param_types.len(),
+                args.len()
+            )));
+        }
+        let code = self.operand(callee, &function_ty)?;
+        let mut rendered = Vec::with_capacity(args.len());
+        for (argument, expected) in args.iter().zip(&param_types) {
+            if self.module.is_void(expected) {
+                continue;
+            }
+            rendered.push(self.operand(argument, expected)?.render());
+        }
+        let return_text = self.module.llvm_ty(&return_ty)?;
+        let call = format!("call {return_text} {}({})", code.value, rendered.join(", "));
+        match lhs {
+            Some(lhs) if !self.module.is_void(&return_ty) => {
+                let Some(result) = result else {
+                    return Err(ice("call destination has no LLVM name"));
+                };
+                let expected = self.temp_type(lhs);
+                if self.module.llvm_ty(&expected)? == return_text {
+                    self.writer.line(format!("{result} = {call}"));
+                    return Ok(());
+                }
+                let raw = self.new_value();
+                self.writer.line(format!("{raw} = {call}"));
+                self.assign_coerced(result, TypedValue::new(return_text, raw), &expected)
+            }
+            Some(_) => Err(ice(
+                "a void call through a function value has a destination",
+            )),
+            None => {
+                self.writer.line(call);
+                Ok(())
+            }
+        }
+    }
+
     pub(super) fn emit_call(
         &mut self,
         lhs: Option<TempId>,
@@ -17,11 +78,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
     ) -> Result<(), Diagnostic> {
         let symbol = match callee {
             AmirOperand::FunctionRef(symbol) | AmirOperand::GlobalRef(symbol) => *symbol,
-            other => {
-                return Err(ice(format!(
-                    "LLVM backend only lowers direct calls, got {other:?}"
-                )));
-            }
+            other => return self.emit_indirect_call(lhs, result, other, args),
         };
         if let Some(kind) = self.module.intrinsic_kind(symbol) {
             return self.emit_intrinsic(lhs, result, kind, args);

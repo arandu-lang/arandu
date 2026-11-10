@@ -82,7 +82,54 @@ impl<'a> WasmModuleBuilder<'a> {
             func_index_map.insert(func.symbol, num_imported_funcs + i as u32);
         }
 
-        // ── 4. Table section (empty for MVP) ──────────────────────────────
+        // ── 4. Table section ──────────────────────────────────────────────
+        // A function value is its function index, so a call through it uses a
+        // table that holds every function at its own index (RFC 0032, L2).
+        let mut indirect_type_indices: FxHashMap<arandu_middle::types::TypeId, u32> =
+            FxHashMap::default();
+        for func in &self.functions {
+            for block in &func.blocks {
+                for stmt in func.block_stmts(block.id) {
+                    let arandu_middle::amir::AmirStmt::Call { callee, .. } = stmt else {
+                        continue;
+                    };
+                    let (AmirOperand::Copy(temp) | AmirOperand::Move(temp)) = callee else {
+                        continue;
+                    };
+                    let func_ty = func.temps[temp.as_usize()].ty;
+                    if indirect_type_indices.contains_key(&func_ty) {
+                        continue;
+                    }
+                    let Some((params, results)) =
+                        super::func_type_wasm_signature(func_ty, self.interner, self.layout)
+                    else {
+                        continue;
+                    };
+                    type_section.ty().function(params, results);
+                    indirect_type_indices.insert(func_ty, next_type_idx);
+                    next_type_idx += 1;
+                }
+            }
+        }
+        let table_size = num_imported_funcs + self.functions.len() as u32;
+        let indirect_table = (!indirect_type_indices.is_empty()).then(|| {
+            let mut tables = wasm_encoder::TableSection::new();
+            tables.table(wasm_encoder::TableType {
+                element_type: wasm_encoder::RefType::FUNCREF,
+                table64: false,
+                minimum: u64::from(table_size),
+                maximum: Some(u64::from(table_size)),
+                shared: false,
+            });
+            let indices = (0..table_size).collect::<Vec<_>>();
+            let mut elements = wasm_encoder::ElementSection::new();
+            elements.active(
+                None,
+                &wasm_encoder::ConstExpr::i32_const(0),
+                wasm_encoder::Elements::Functions(std::borrow::Cow::Owned(indices)),
+            );
+            (tables, elements)
+        });
 
         // ── 5. Memory section ─────────────────────────────────────────────
         let mut used_literals = FxHashSet::default();
@@ -286,6 +333,7 @@ impl<'a> WasmModuleBuilder<'a> {
             static_offsets: &static_offsets,
             static_addresses: &static_addresses,
             func_index_map: &func_index_map,
+            indirect_type_indices: &indirect_type_indices,
             alloc_func_idx: cabi_first_func_idx,
             free_func_idx: cabi_first_func_idx + 1,
             // After the allocator, which every caller also uses for its cell.
@@ -336,9 +384,15 @@ impl<'a> WasmModuleBuilder<'a> {
             module.section(&import_section);
         }
         module.section(&func_section);
+        if let Some((tables, _)) = &indirect_table {
+            module.section(tables);
+        }
         module.section(&mem_section);
         module.section(&global_section);
         module.section(&export_section);
+        if let Some((_, elements)) = &indirect_table {
+            module.section(elements);
+        }
         module.section(&code_section);
 
         // ── 10. Data section ──────────────────────────────────────────────

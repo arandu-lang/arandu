@@ -73,11 +73,6 @@ fn each_rejected_closure_reports_one_diagnostic() {
             "    return apply(1, (x) => true)",
             DiagCode::T004IncompatibleReturnType,
         ),
-        (
-            "indirect call",
-            "    let g: (int) -> int = double\n    return g(1)",
-            DiagCode::T033IndirectCallNotSupported,
-        ),
     ];
     for (name, body, code) in cases {
         assert_eq!(errors(body), vec![*code], "{name}");
@@ -138,6 +133,7 @@ fn a_borrowed_callback_cannot_escape_the_call() {
 fn named_functions_and_owning_lambdas_are_callbacks() {
     for body in [
         "    return apply(1, double)",
+        "    let g: (int) -> int = double\n    return g(1)",
         "    let k: int = 2\n    return apply(1, own (x: int) => x + k)",
         "    let k: int = 2\n    return apply(1, move (x) => x + k)",
     ] {

@@ -19,7 +19,13 @@ pub(super) fn synth_direct_symbol_call(
     args_range: IndexRange,
     expected: Option<TypeId>,
 ) -> Option<TypeId> {
+    let callee_path = match checker.pool.expr(callee_id) {
+        ExprKind::Generic { callee, .. } => *callee,
+        _ => callee_id,
+    };
+    let outer_callee = checker.direct_callee.replace(callee_path);
     let callee_ty_id = synth_expr(checker, callee_id);
+    checker.direct_callee = outer_callee;
     let arg_ids = checker.pool.expr_list(args_range).to_vec();
     let callee_ty = checker.resolve(callee_ty_id);
     // `f(args)` on a callback parameter calls its closure's `call` directly.
@@ -231,17 +237,11 @@ pub(super) fn synth_direct_symbol_call(
             }
         }
 
+        // A call through a function value may reach any function of its type.
         if !is_direct {
-            let diag = crate::Diagnostic::error(
-                crate::DiagCode::T033IndirectCallNotSupported,
-                "indirect function calls are not supported",
-                span,
-            )
-            .with_label(
-                checker.pool.expr_span(callee_id),
-                "this expression evaluates to a function, but Arandu only supports direct calls",
-            );
-            checker.diagnostics.push(diag);
+            checker.current_observed_effects = checker
+                .current_observed_effects
+                .union(arandu_middle::EffectFlags::ANY_CALL);
         }
 
         if params.len() != arg_ids.len() {
@@ -275,11 +275,7 @@ pub(super) fn synth_direct_symbol_call(
             }
         }
 
-        if !is_direct {
-            checker.intern(ArType::Error)
-        } else {
-            ret
-        }
+        ret
     } else if is_error {
         checker.intern(ArType::Error)
     } else {

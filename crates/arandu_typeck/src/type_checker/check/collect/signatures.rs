@@ -184,6 +184,9 @@ pub(crate) fn collect_signature_types(checker: &mut TypeChecker<'_>, program: &P
                     {
                         checker.type_info.unsafe_functions.insert(symbol_id);
                     }
+                    if func_decl.attrs.iter().any(|attr| attr.name == "Export") {
+                        checker.type_info.exported_functions.insert(symbol_id);
+                    }
 
 
                     // Drop Elaboration: Check for @Destructor attribute

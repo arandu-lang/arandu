@@ -1,0 +1,101 @@
+// Function values (RFC 0032, L2): a `(A) -> R` value is a code pointer that
+// can be stored, passed, returned and called; its target is only known at
+// run time here, so every backend performs a real indirect call.
+
+struct Point {
+    x: int,
+    y: int,
+}
+
+struct Op {
+    apply: (int) -> int,
+    bias: int,
+}
+
+func double(x: int): int { return x * 2 }
+func triple(x: int): int { return x * 3 }
+func negate(x: int): int { return 0 - x }
+
+func pick(n: int): (int) -> int {
+    if n % 3 == 0 { return double }
+    if n % 3 == 1 { return triple }
+    return negate
+}
+
+func runOp(op: Op, x: int): int {
+    return (op.apply)(x) + op.bias
+}
+
+func shift(p: Point, by: int): Point {
+    return Point { x: p.x + by, y: p.y - by }
+}
+
+func mirror(p: Point, by: int): Point {
+    return Point { x: p.y + by, y: p.x + by }
+}
+
+func chooseMove(flag: bool): (Point, int) -> Point {
+    if flag { return shift }
+    return mirror
+}
+
+func greet(name: str): int { return name.len() as int }
+
+func shout(name: str): int { return name.len() as int * 10 }
+
+func countDown(n: int, step: (int) -> int): int {
+    if n <= 0 { return 0 }
+    return 1 + countDown(step(n), step)
+}
+
+func minusOne(n: int): int { return n - 1 }
+
+func scalarCalls(): int {
+    let mut total = 0
+    let mut i = 0
+    while i < 6 {
+        let f = pick(i)
+        total = total + f(i + 1)
+        i = i + 1
+    }
+    // 2 + 6 - 3 + 8 + 15 - 6
+    if total != 22 { return 1 }
+    let op = Op { apply: pick(1), bias: 1 }
+    if runOp(op, 5) != 16 { return 2 }
+    return 0
+}
+
+func aggregateCalls(): int {
+    let start = Point { x: 1, y: 10 }
+    let mut flag = false
+    let mut i = 0
+    while i < 3 {
+        flag = !flag
+        i = i + 1
+    }
+    let move = chooseMove(flag)
+    let moved = move(start, 2)
+    if moved.x != 3 || moved.y != 8 { return 1 }
+    let other = chooseMove(!flag)(start, 2)
+    if other.x != 12 || other.y != 3 { return 2 }
+    return 0
+}
+
+func stringCalls(): int {
+    let mut speak = greet
+    if scalarCalls() == 0 { speak = shout }
+    if speak("arandu") != 60 { return 1 }
+    return 0
+}
+
+func main(): int {
+    let scalar = scalarCalls()
+    if scalar != 0 { return 10 + scalar }
+    let aggregate = aggregateCalls()
+    if aggregate != 0 { return 20 + aggregate }
+    let text = stringCalls()
+    if text != 0 { return 30 + text }
+    // A function value passed to a function value parameter is a callback.
+    if countDown(5, minusOne) != 5 { return 40 }
+    return 0
+}

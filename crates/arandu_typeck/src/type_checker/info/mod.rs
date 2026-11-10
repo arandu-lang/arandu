@@ -174,6 +174,8 @@ pub struct TypeInfo {
     /// Functions whose API contract requires callers to establish unsafe
     /// preconditions in an explicit `unsafe` block (`@Unsafe`).
     pub unsafe_functions: FxHashSet<SymbolId>,
+    /// Functions with `@Export`: their entry point uses the C convention.
+    pub exported_functions: FxHashSet<SymbolId>,
     /// Struct symbols that explicitly declare `@Repr("C")` / `#[repr(C)]`.
     pub struct_repr_c: rustc_hash::FxHashSet<SymbolId>,
     /// Nominal aggregates declared with `union` / `@Union` (overlapping fields at offset 0).
@@ -231,6 +233,7 @@ impl TypeInfo {
             variant_instantiations: FxHashMap::default(),
             function_effects: FxHashMap::default(),
             unsafe_functions: FxHashSet::default(),
+            exported_functions: FxHashSet::default(),
             struct_repr_c: rustc_hash::FxHashSet::default(),
             struct_unions: rustc_hash::FxHashSet::default(),
             struct_field_defaults: FxHashMap::default(),

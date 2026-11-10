@@ -159,6 +159,9 @@ pub struct TypeChecker<'a> {
     /// The item whose body is being checked: its closures are named after it
     /// and their offset in it, so editing another item never renames them.
     pub(crate) closure_owner: Option<ClosureOwner>,
+    /// The path being called directly; any other path naming a function
+    /// makes a function value.
+    pub(crate) direct_callee: Option<ExprId>,
     pub pool: &'a AstPool,
     pub target_info: TargetInfo,
     pub current_observed_effects: arandu_middle::EffectFlags,
@@ -280,6 +283,7 @@ impl<'a> TypeChecker<'a> {
             type_scope_id: None,
             current_owner_type: None,
             closure_owner: None,
+            direct_callee: None,
             pool,
             target_info,
             current_observed_effects: arandu_middle::EffectFlags::NONE,

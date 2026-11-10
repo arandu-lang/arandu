@@ -629,6 +629,27 @@ fn generic_receivers_agree_on_every_backend() {
     let _ = fs::remove_file(path);
 }
 
+/// Calls through function values (RFC 0032, L2) agree on every backend,
+/// including Wasm's function table.
+#[test]
+fn function_values_agree_on_every_backend() {
+    let source = include_str!("../../../../tests/corpus/function_values.aru");
+    for (backend, outcome) in outcomes("function_values", source) {
+        assert_eq!(outcome, ProgramOutcome::Returned(0), "{backend}");
+    }
+    let path =
+        std::env::temp_dir().join(format!("arandu_function_values_{}.aru", std::process::id()));
+    fs::write(&path, source).unwrap();
+    let wasm = cli(&["emit-wasm", &path.to_string_lossy()]);
+    assert!(
+        wasm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&wasm.stderr)
+    );
+    crate::wasm_host::run_main(&wasm.stdout).assert_returns(0, "function values in Wasmtime");
+    let _ = fs::remove_file(path);
+}
+
 /// `*place = value` writes through `mut ref`, through a reference to a
 /// reference and into `static mut` storage, on every backend.
 #[test]

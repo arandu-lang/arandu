@@ -1458,12 +1458,12 @@ fn jit_enum_cross_variant_name_no_collision() {
 }
 
 #[test]
-fn jit_ice_indirect_call() {
+fn jit_ice_call_through_a_value_that_is_not_a_function() {
     use arandu_semantics::amir::{AmirConstant, AmirOperand, AmirStmt, InstrId};
     let src = "func main(): int { return 0; }";
     let (mut amir, symbols, type_info) = compile_src(src);
 
-    // Convert the first statement to an indirect call.
+    // Convert the first statement to a call through a non-function value.
     let id = amir.funcs[0].blocks[0]
         .statements
         .iter_ids::<InstrId>()
@@ -1485,7 +1485,7 @@ fn jit_ice_indirect_call() {
 
     assert!(
         err.message
-            .contains("indirect function calls are not implemented"),
+            .contains("call through a value that is not a function"),
         "msg: {}",
         err.message
     );

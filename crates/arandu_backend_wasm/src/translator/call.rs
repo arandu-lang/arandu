@@ -95,32 +95,61 @@ impl<'a> FuncTranslator<'a> {
                     self.emit_operand(arg, arg_ty);
                 }
                 self.code.push(Instruction::Call(func_idx));
-                // Store return value if needed.
-                if let Some(temp) = lhs {
-                    let local = self.temp_local.get(&temp).copied().unwrap_or(0);
-                    let shape = types::shape(
-                        self.func.temps[temp.as_usize()].ty,
-                        self.interner,
-                        self.layout_engine.data_layout,
-                    );
-                    match shape {
-                        Shape::Scalar => {
-                            self.code.push(Instruction::LocalSet(local));
-                            if let Some(slot) = self.current_returned_home {
-                                self.adopt_returned_home(slot, local);
-                            }
-                        }
-                        Shape::Fat => {
-                            self.code.push(Instruction::LocalSet(local + 1));
-                            self.code.push(Instruction::LocalSet(local));
-                        }
-                        Shape::Empty => {}
+                self.store_call_result(lhs);
+                return;
+            }
+        }
+        if let AmirOperand::Copy(temp) | AmirOperand::Move(temp) = callee {
+            let func_ty = self.func.temps[temp.as_usize()].ty;
+            if let (ArType::Func(params, _), Some(&type_index)) = (
+                self.interner.resolve(func_ty),
+                self.indirect_type_indices.get(&func_ty),
+            ) {
+                let params = self.interner.type_args(params);
+                for (arg, &arg_ty) in args.iter().zip(&params) {
+                    if types::shape(arg_ty, self.interner, self.layout_engine.data_layout)
+                        == Shape::Empty
+                    {
+                        continue;
                     }
+                    self.emit_operand(arg, arg_ty);
                 }
+                // The value is the target's index in the function table.
+                self.emit_operand(callee, func_ty);
+                self.code.push(Instruction::CallIndirect {
+                    type_index,
+                    table_index: 0,
+                });
+                self.store_call_result(lhs);
                 return;
             }
         }
         self.code.push(Instruction::Unreachable);
+    }
+
+    fn store_call_result(&mut self, lhs: Option<TempId>) {
+        let Some(temp) = lhs else {
+            return;
+        };
+        let local = self.temp_local.get(&temp).copied().unwrap_or(0);
+        let shape = types::shape(
+            self.func.temps[temp.as_usize()].ty,
+            self.interner,
+            self.layout_engine.data_layout,
+        );
+        match shape {
+            Shape::Scalar => {
+                self.code.push(Instruction::LocalSet(local));
+                if let Some(slot) = self.current_returned_home {
+                    self.adopt_returned_home(slot, local);
+                }
+            }
+            Shape::Fat => {
+                self.code.push(Instruction::LocalSet(local + 1));
+                self.code.push(Instruction::LocalSet(local));
+            }
+            Shape::Empty => {}
+        }
     }
 
     /// Emit an intrinsic function call inline.

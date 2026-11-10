@@ -483,6 +483,13 @@ fn hash_typing(
         hash_symbol_id(&mut h, symbol);
     }
 
+    let mut exported_functions: Vec<_> = info.exported_functions.iter().copied().collect();
+    exported_functions.sort_by_key(|symbol| (symbol.file_id, symbol.local_id.0));
+    h.update(&u64_le(exported_functions.len() as u64));
+    for symbol in exported_functions {
+        hash_symbol_id(&mut h, symbol);
+    }
+
     let mut interior_mutable: Vec<_> = info.interior_mutable_types.iter().copied().collect();
     interior_mutable.sort_by_key(|symbol| (symbol.file_id, symbol.local_id.0));
     h.update(&u64_le(interior_mutable.len() as u64));

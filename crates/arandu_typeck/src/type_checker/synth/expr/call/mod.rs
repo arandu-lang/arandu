@@ -26,6 +26,60 @@ use crate::type_checker::types::{self, ArType};
 
 use arandu_middle::types::type_interner::TypeId;
 
+/// A function used as a value is a plain code pointer called with the
+/// internal convention, by code that cannot see its obligations. An
+/// `@Unsafe` or `extern` function would lose its `unsafe` requirement, an
+/// `@Export` function has a C entry point, and a thread-restricted function
+/// its capability check (RFC 0032, L2).
+fn check_function_value(
+    checker: &mut TypeChecker<'_>,
+    symbol: arandu_middle::SymbolId,
+    span: Span,
+) {
+    let Some(entry) = checker.symbols.try_get(symbol) else {
+        return;
+    };
+    let kind = entry.kind;
+    if !matches!(
+        kind,
+        arandu_middle::SymbolKind::Func
+            | arandu_middle::SymbolKind::ExternFunc
+            | arandu_middle::SymbolKind::AssociatedFunc
+    ) {
+        return;
+    }
+    if kind == arandu_middle::SymbolKind::ExternFunc
+        || checker.type_info.unsafe_functions.contains(&symbol)
+    {
+        checker.diagnostics.push(
+            crate::Diagnostic::error(
+                crate::DiagCode::O013ExternRequiresUnsafe,
+                "an `@Unsafe` or `extern` function cannot be used as a function value",
+                span,
+            )
+            .with_label(span, "a call through the value would not require `unsafe`")
+            .with_note("call it directly inside an `unsafe` block"),
+        );
+        return;
+    }
+    if checker.type_info.exported_functions.contains(&symbol) {
+        checker.diagnostics.push(
+            crate::Diagnostic::error(
+                crate::DiagCode::U001FeatureNotSupported,
+                "an `@Export` function cannot be used as a function value yet",
+                span,
+            )
+            .with_label(
+                span,
+                "its exported entry point uses the C calling convention",
+            )
+            .with_note("wrap it in a plain function and use that as the value"),
+        );
+        return;
+    }
+    let _ = check_target_thread_capabilities(checker, symbol, span);
+}
+
 pub(super) fn synth_call_expr(
     checker: &mut TypeChecker<'_>,
     expr: ExprId,
@@ -50,6 +104,9 @@ pub(super) fn synth_call_expr(
                 }
                 if let Some(var_id) = checker.literal_table.var_for_symbol(symbol_id) {
                     checker.literal_table.bind_expr(expr, var_id);
+                }
+                if checker.direct_callee != Some(expr) {
+                    check_function_value(checker, symbol_id, span);
                 }
                 if !checker
                     .type_info

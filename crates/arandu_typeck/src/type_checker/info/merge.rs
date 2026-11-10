@@ -200,6 +200,8 @@ impl TypeInfo {
         // Symbol safety contracts are independent of expression-type shards.
         self.unsafe_functions
             .extend(other.unsafe_functions.iter().copied().map(&remap));
+        self.exported_functions
+            .extend(other.exported_functions.iter().copied().map(&remap));
         for (&symbol, &effects) in &other.function_effects {
             self.function_effects.insert(remap(symbol), effects);
         }
@@ -542,6 +544,7 @@ fn context_shard_is_empty(other: &TypeInfo) -> bool {
         && other.destructor_instances.is_empty()
         && other.generic_params.is_empty()
         && other.unsafe_functions.is_empty()
+        && other.exported_functions.is_empty()
         && other.generic_defaults.is_empty()
         && other.callback_bounds.is_empty()
         && other.param_constraints.is_empty()

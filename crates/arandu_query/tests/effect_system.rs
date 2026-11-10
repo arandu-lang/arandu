@@ -393,3 +393,35 @@ func compute(): int {
         checked.diagnostics
     );
 }
+
+/// A call through a function value may reach any function of its type, so a
+/// function that declares a restricted effect set cannot make one.
+#[test]
+fn pure_function_calling_through_a_function_value_fails_with_t039() {
+    let mut db = DatabaseImpl::new();
+    let file = db.new_file(
+        "effects_indirect.aru".into(),
+        r#"
+func helper(x: int): int {
+    return x + 1
+}
+
+@Effects(Pure)
+func compute(x: int): int {
+    let f = helper
+    return f(x)
+}
+"#
+        .into(),
+    );
+
+    let checked = type_check(&db, file);
+    assert!(
+        checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code == DiagCode::T039UnsatisfiedEffect),
+        "{:?}",
+        checked.diagnostics
+    );
+}

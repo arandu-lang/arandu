@@ -25,7 +25,7 @@ use wit_parser::abi::{WasmSignature, WasmType};
 use arandu_middle::SymbolTable;
 use arandu_middle::amir::{AmirFunc, AmirProgram};
 use arandu_middle::layout::{DataLayout, StructLayoutProvider};
-use arandu_middle::types::TypeInterner;
+use arandu_middle::types::{TypeId, TypeInterner};
 use arandu_middle::{Diagnostic, SymbolId};
 
 use crate::canonical::CabiSupport;
@@ -257,6 +257,36 @@ fn func_wasm_params(func: &AmirFunc, interner: &TypeInterner, layout: DataLayout
         }
     }
     params
+}
+
+/// Wasm value types of one Arandu value, in the order the internal ABI
+/// passes it (`Fat` is pointer then length).
+fn value_valtypes(ty: TypeId, interner: &TypeInterner, layout: DataLayout) -> Vec<ValType> {
+    match types::shape(ty, interner, layout) {
+        Shape::Empty => Vec::new(),
+        Shape::Scalar => {
+            vec![types::scalar_valtype_for(ty, interner, layout).unwrap_or(ValType::I32)]
+        }
+        Shape::Fat => vec![ValType::I32, ValType::I32],
+    }
+}
+
+/// Wasm signature of a `Func` value's target, matching what
+/// [`func_wasm_params`] and [`func_wasm_results`] give a defined function.
+pub(crate) fn func_type_wasm_signature(
+    func_ty: TypeId,
+    interner: &TypeInterner,
+    layout: DataLayout,
+) -> Option<(Vec<ValType>, Vec<ValType>)> {
+    let arandu_middle::types::ArType::Func(params, ret) = interner.resolve(func_ty) else {
+        return None;
+    };
+    let params = interner
+        .type_args(params)
+        .iter()
+        .flat_map(|&param| value_valtypes(param, interner, layout))
+        .collect();
+    Some((params, value_valtypes(ret, interner, layout)))
 }
 
 /// Convert a WIT ABI wasm type to a `wasm_encoder::ValType`.

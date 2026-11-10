@@ -5,6 +5,11 @@ use cranelift_codegen::ir::{InstBuilder, Type, Value};
 use super::FunctionTranslator;
 use super::operand::FatOperandKind;
 
+enum CallTarget {
+    Direct(cranelift_codegen::ir::FuncRef),
+    Indirect(Value),
+}
+
 impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
     pub(super) fn translate_call(
         &mut self,
@@ -25,139 +30,163 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         }
 
         let mut indirect_result = None;
-        let call_inst = match callee {
+        // A direct call takes its signature from the callee's declaration; a
+        // call through a function value takes it from the value's `Func`
+        // type, built with the same internal ABI (sret, aggregate slots).
+        let target = match callee {
             AmirOperand::FunctionRef(sym_id) => {
                 let sym = self.symbol_table.get(*sym_id);
                 let host_name = self.symbol_table.host_func_name(sym);
-                let func_id = match self.resolve_function(host_name) {
-                    Some(func_id) => func_id,
-                    None => {
-                        self.record_ice(
-                            format!("function '{}' was not declared in the JIT module", sym.name),
-                            sym.span,
-                        );
-                        return;
-                    }
+                let Some(func_id) = self.resolve_function(host_name) else {
+                    self.record_ice(
+                        format!("function '{}' was not declared in the JIT module", sym.name),
+                        sym.span,
+                    );
+                    return;
                 };
                 let local_ref = self.module.declare_func_in_func(func_id, self.builder.func);
-
                 let sig_id = self.builder.func.dfg.ext_funcs[local_ref].signature;
-                let expected_tys: Vec<Type> = self.builder.func.dfg.signatures[sig_id]
-                    .params
-                    .iter()
-                    .map(|param| param.value_type)
-                    .collect();
-
-                let callee_param_types: Option<Vec<ArType>> = match callee {
-                    AmirOperand::FunctionRef(sym_id) => {
-                        self.type_info.decl_type_id(*sym_id).and_then(|decl_ty_id| {
-                            let decl_ty = self.type_info.type_interner().resolve(decl_ty_id);
-                            if let ArType::Func(param_range, _) = decl_ty {
-                                let pids = self.type_info.type_interner().type_args(param_range);
-                                Some(
-                                    pids.iter()
-                                        .map(|&pid| self.type_info.type_interner().resolve(pid))
-                                        .collect(),
-                                )
-                            } else {
-                                None
-                            }
-                        })
-                    }
-                    _ => None,
+                let function_ty = self
+                    .type_info
+                    .decl_type_id(*sym_id)
+                    .map(|id| self.resolve_ty(id));
+                (CallTarget::Direct(local_ref), sig_id, function_ty)
+            }
+            _ => {
+                let function_ty = self.get_operand_ar_type(callee);
+                let ArType::Func(params, ret) = &function_ty else {
+                    self.record_ice(
+                        "call through a value that is not a function",
+                        self.func_span(),
+                    );
+                    return;
                 };
+                let interner = self.type_info.type_interner();
+                let params = interner
+                    .type_args(*params)
+                    .iter()
+                    .map(|&id| interner.resolve(id))
+                    .collect::<Vec<_>>();
+                let ret = interner.resolve(*ret);
+                let triple = self.module.isa().triple();
+                let classifier = arandu_middle::layout::TargetAbiClassifier::new(
+                    crate::abi::target_abi_for_triple(triple),
+                    u64::from(self.ptr_type.bytes()),
+                );
+                let signature = crate::abi::build_internal_signature(
+                    &params,
+                    &ret,
+                    self.module.isa().default_call_conv(),
+                    self.ptr_type,
+                    &classifier,
+                    interner,
+                    self.type_info,
+                );
+                let sig_id = self.builder.import_signature(signature);
+                let code = self.translate_operand(callee, Some(self.ptr_type));
+                (CallTarget::Indirect(code), sig_id, Some(function_ty))
+            }
+        };
+        let (target, sig_id, function_ty) = target;
+        let (callee_param_types, result_ty) = match function_ty {
+            Some(ArType::Func(param_range, result)) => {
+                let interner = self.type_info.type_interner();
+                let params = interner
+                    .type_args(param_range)
+                    .iter()
+                    .map(|&pid| interner.resolve(pid))
+                    .collect::<Vec<_>>();
+                (Some(params), Some(interner.resolve(result)))
+            }
+            _ => (None, None),
+        };
+        let expected_tys: Vec<Type> = self.builder.func.dfg.signatures[sig_id]
+            .params
+            .iter()
+            .map(|param| param.value_type)
+            .collect();
 
-                let mut clif_args = Vec::new();
-                let mut clif_param_idx = 0;
-                if self.builder.func.dfg.signatures[sig_id]
-                    .params
-                    .first()
-                    .is_some_and(|param| {
-                        param.purpose == cranelift_codegen::ir::ArgumentPurpose::StructReturn
-                    })
-                {
-                    let result_ty = self
-                        .type_info
-                        .decl_type_id(*sym_id)
-                        .and_then(|id| match self.resolve_ty(id) {
-                            ArType::Func(_, result) => Some(self.resolve_ty(result)),
-                            _ => None,
-                        });
-                    let Some(result_ty) = result_ty else {
-                        self.record_ice("missing type for indirect aggregate result", sym.span);
-                        return;
-                    };
-                    let destination = self.allocate_independent_aggregate(&result_ty);
-                    indirect_result = Some(destination);
-                    clif_args.push(destination);
-                    clif_param_idx = 1;
+        let mut clif_args = Vec::new();
+        let mut clif_param_idx = 0;
+        if self.builder.func.dfg.signatures[sig_id]
+            .params
+            .first()
+            .is_some_and(|param| {
+                param.purpose == cranelift_codegen::ir::ArgumentPurpose::StructReturn
+            })
+        {
+            let Some(result_ty) = result_ty else {
+                self.record_ice(
+                    "missing type for indirect aggregate result",
+                    self.func_span(),
+                );
+                return;
+            };
+            let destination = self.allocate_independent_aggregate(&result_ty);
+            indirect_result = Some(destination);
+            clif_args.push(destination);
+            clif_param_idx = 1;
+        }
+        for (arg_idx, arg) in args.iter().enumerate() {
+            let arg_ty = callee_param_types
+                .as_ref()
+                .and_then(|tys| tys.get(arg_idx))
+                .cloned()
+                .unwrap_or_else(|| self.get_operand_ar_type(arg));
+            if matches!(arg_ty, ArType::Void) {
+                continue;
+            }
+            match self.fat_operand_kind(&arg_ty) {
+                FatOperandKind::Str => {
+                    let (ptr_val, len_val) = self.translate_str_operand(arg);
+                    clif_args.push(ptr_val);
+                    clif_args.push(len_val);
+                    clif_param_idx += 2;
                 }
-                for (arg_idx, arg) in args.iter().enumerate() {
-                    let arg_ty = callee_param_types
-                        .as_ref()
-                        .and_then(|tys| tys.get(arg_idx))
-                        .cloned()
-                        .unwrap_or_else(|| self.get_operand_ar_type(arg));
-                    if matches!(arg_ty, ArType::Void) {
-                        continue;
-                    }
-                    match self.fat_operand_kind(&arg_ty) {
-                        FatOperandKind::Str => {
-                            let (ptr_val, len_val) = self.translate_str_operand(arg);
-                            clif_args.push(ptr_val);
-                            clif_args.push(len_val);
-                            clif_param_idx += 2;
-                        }
-                        FatOperandKind::Slice => {
-                            let (data, len) = self.translate_slice_operand(arg);
-                            clif_args.push(data);
-                            clif_args.push(len);
-                            clif_param_idx += 2;
-                        }
-                        FatOperandKind::None => {
-                            if matches!(
-                                arg_ty,
-                                ArType::Named(_, _) | ArType::Tuple(_) | ArType::Array(_, _)
-                            ) {
-                                let arg_abi = self.classify_arg_abi(&arg_ty);
-                                match arg_abi {
-                                    arandu_middle::layout::ArgAbi::ZeroSized => {}
-                                    arandu_middle::layout::ArgAbi::Direct(direct) => {
-                                        let base_ptr =
-                                            self.translate_operand(arg, Some(self.ptr_type));
-                                        let layout = self.checked_layout(&arg_ty);
-                                        for abi_slot in &direct.slots {
-                                            let chunk_val =
-                                                self.load_abi_slot(base_ptr, abi_slot, layout.size);
-                                            clif_args.push(chunk_val);
-                                            clif_param_idx += 1;
-                                        }
-                                    }
-                                    arandu_middle::layout::ArgAbi::Indirect => {
-                                        let val = self.translate_operand(arg, Some(self.ptr_type));
-                                        clif_args.push(val);
-                                        clif_param_idx += 1;
-                                    }
+                FatOperandKind::Slice => {
+                    let (data, len) = self.translate_slice_operand(arg);
+                    clif_args.push(data);
+                    clif_args.push(len);
+                    clif_param_idx += 2;
+                }
+                FatOperandKind::None => {
+                    if matches!(
+                        arg_ty,
+                        ArType::Named(_, _) | ArType::Tuple(_) | ArType::Array(_, _)
+                    ) {
+                        let arg_abi = self.classify_arg_abi(&arg_ty);
+                        match arg_abi {
+                            arandu_middle::layout::ArgAbi::ZeroSized => {}
+                            arandu_middle::layout::ArgAbi::Direct(direct) => {
+                                let base_ptr = self.translate_operand(arg, Some(self.ptr_type));
+                                let layout = self.checked_layout(&arg_ty);
+                                for abi_slot in &direct.slots {
+                                    let chunk_val =
+                                        self.load_abi_slot(base_ptr, abi_slot, layout.size);
+                                    clif_args.push(chunk_val);
+                                    clif_param_idx += 1;
                                 }
-                            } else {
-                                let expected = expected_tys.get(clif_param_idx).copied();
-                                let val =
-                                    self.translate_typed_operand(arg, expected, Some(&arg_ty));
+                            }
+                            arandu_middle::layout::ArgAbi::Indirect => {
+                                let val = self.translate_operand(arg, Some(self.ptr_type));
                                 clif_args.push(val);
                                 clif_param_idx += 1;
                             }
                         }
+                    } else {
+                        let expected = expected_tys.get(clif_param_idx).copied();
+                        let val = self.translate_typed_operand(arg, expected, Some(&arg_ty));
+                        clif_args.push(val);
+                        clif_param_idx += 1;
                     }
                 }
-
-                self.builder.ins().call(local_ref, &clif_args)
             }
-            _ => {
-                self.record_ice(
-                    "indirect function calls are not implemented (and should have been rejected by the type checker)",
-                    self.func_span(),
-                );
-                return;
+        }
+
+        let call_inst = match target {
+            CallTarget::Direct(local_ref) => self.builder.ins().call(local_ref, &clif_args),
+            CallTarget::Indirect(code) => {
+                self.builder.ins().call_indirect(sig_id, code, &clif_args)
             }
         };
         if let Some(lhs_temp) = lhs {

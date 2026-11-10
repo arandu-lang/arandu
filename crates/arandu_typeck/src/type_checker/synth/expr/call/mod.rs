@@ -9,7 +9,7 @@ mod thread_target;
 
 pub(crate) use arg::check_call_arg;
 pub(crate) use closure::{check_callback_args, synth_args_with_callbacks, synth_call_arg};
-pub(crate) use instantiate::infer_and_instantiate_func;
+pub(crate) use instantiate::{bind_type_params, infer_and_instantiate_func};
 pub(crate) use thread_target::check_target_thread_capabilities;
 
 use arandu_lexer::Span;

@@ -10,40 +10,35 @@ use arandu_middle::types::type_interner::TypeId;
 
 /// Infer `struct` type arguments from field initializers.
 ///
-/// For each type parameter `P`, finds a field whose template type is exactly
-/// `Named(P, [])` and uses the field value's type. Returns `None` if any
-/// parameter cannot be resolved to a non-error concrete type.
+/// Each field's template type is matched structurally against the peeked
+/// type of its value, so `Pair { first: Fresh {..} }` binds `T` = `Fresh` and
+/// `Wrap { items: vec }` binds `T` from `Vec<T>`. Returns `None` if any
+/// parameter stays unbound.
 fn infer_struct_type_args(
     checker: &mut TypeChecker<'_>,
     params: &[arandu_middle::SymbolId],
     template_fields: &arandu_middle::layout::StructFields,
     field_ids: &[arandu_parser::ast_pool::FieldInitId],
 ) -> Option<Vec<TypeId>> {
-    let mut out = Vec::with_capacity(params.len());
-    for &param in params {
-        let mut found: Option<TypeId> = None;
-        for &fid in field_ids {
-            let field = checker.pool.field_init(fid);
-            let Some(tmpl_tid) = template_fields.get(field.name.as_str()).map(|f| f.ty) else {
-                continue;
-            };
-            let tmpl = checker.resolve(tmpl_tid);
-            let matches_param = matches!(
-                tmpl,
-                ArType::Named(id, ref args) if id == param && args.is_empty()
-            );
-            if !matches_param {
-                continue;
-            }
-            let Some(val_tid) = peek_value_type(checker, field.value) else {
-                continue;
-            };
-            found = Some(val_tid);
-            break;
+    let mut bindings = rustc_hash::FxHashMap::default();
+    for &fid in field_ids {
+        let field = checker.pool.field_init(fid);
+        let Some(template) = template_fields.get(field.name.as_str()).map(|f| f.ty) else {
+            continue;
+        };
+        let Some(value) = peek_value_type(checker, field.value) else {
+            continue;
+        };
+        if checker.resolve(value).is_error() {
+            continue;
         }
-        out.push(found?);
+        let template = checker.resolve(template);
+        super::call::bind_type_params(checker, params, &template, value, &mut bindings);
     }
-    Some(out)
+    params
+        .iter()
+        .map(|param| bindings.get(param).copied())
+        .collect()
 }
 
 /// Side-effect-free type peek for a struct-literal field value, used only to
@@ -90,6 +85,53 @@ fn peek_value_type(checker: &mut TypeChecker<'_>, value: ExprId) -> Option<TypeI
                 .ctx
                 .lookup(symbol_id)
                 .or_else(|| checker.decl_type_id(symbol_id))
+        }
+        // A nested literal names its type, or infers it the same way.
+        ExprKind::StructLiteral { ty, fields } => {
+            let (ty, fields) = (*ty, *fields);
+            // Lowering a type may report; the real synthesis reports once.
+            let mark = checker.diagnostics.len();
+            let lowered = checker.lower_type_expr(ty, checker.type_scope());
+            checker.diagnostics.truncate(mark);
+            let ArType::Named(symbol, args) = lowered else {
+                return None;
+            };
+            if checker.type_info.enum_variants.contains_key(&symbol) {
+                return None;
+            }
+            if !checker.type_info.type_interner.type_args(args).is_empty() {
+                return Some(checker.intern(ArType::Named(symbol, args)));
+            }
+            let Some(params) = checker
+                .type_info
+                .generic_params
+                .get(&symbol)
+                .cloned()
+                .filter(|params| !params.is_empty())
+            else {
+                return Some(checker.intern(ArType::Named(symbol, args)));
+            };
+            let template = checker.type_info.struct_fields.get(&symbol).cloned()?;
+            let field_ids = checker.pool.field_init_list(fields).to_vec();
+            let inferred = infer_struct_type_args(checker, &params, &template, &field_ids)?;
+            let named = ArType::named(symbol, &inferred, &checker.type_info.type_interner);
+            Some(checker.intern(named))
+        }
+        // A call to a plain function has its declared result.
+        ExprKind::Call { callee, .. } => {
+            let symbol = checker.resolved.expr_symbol(*callee)?;
+            if checker
+                .type_info
+                .generic_params
+                .get(&symbol)
+                .is_some_and(|params| !params.is_empty())
+            {
+                return None;
+            }
+            match checker.decl_type(symbol)? {
+                ArType::Func(_, ret) => Some(ret),
+                _ => None,
+            }
         }
         _ => None,
     }

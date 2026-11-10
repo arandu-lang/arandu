@@ -75,6 +75,25 @@ fn outcomes(name: &str, source: &str) -> Vec<(&'static str, super::common::Progr
 
 const RESULTS: &[(&str, &str, i32)] = &[
     (
+        // A generic literal infers its parameters through nested literals,
+        // nominal values, generic fields and plain calls.
+        "generic_literal_inference",
+        r#"struct Fresh { tag: int }
+struct One<T> { value: T }
+struct Pair<T> { first: T, second: T }
+struct Holder<T> { inner: One<T>, count: int }
+func makeFresh(tag: int): Fresh { return Fresh { tag: tag } }
+func main(): int {
+    let p = Pair { first: Fresh { tag: 1 }, second: Fresh { tag: 0 } }
+    let h = Holder { inner: One { value: Fresh { tag: 5 } }, count: 2 }
+    let o = One { value: makeFresh(9) }
+    let n = One { value: One { value: p } }
+    return p.first.tag + h.inner.value.tag + o.value.tag + n.value.value.second.tag
+}
+"#,
+        15,
+    ),
+    (
         // `*holder.field` loads the pointee, not the reference bits.
         "deref_of_reference_field",
         r#"struct Env { n: mut ref int, k: ref int }

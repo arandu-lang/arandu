@@ -1,0 +1,44 @@
+// Every spelling of a generic struct's receiver names the struct's own
+// parameters, which are in scope for all of its methods, and methods may add
+// parameters of their own.
+
+struct Pair<T> {
+    first: T,
+    second: T,
+}
+
+func Pair.bare(self: Pair): T { return self.first }
+
+func Pair.shared(self: ref Pair): T { return self.second }
+
+func Pair.spelled(self: ref Pair<T>): T { return self.first }
+
+func Pair.restated<T>(self: ref Pair<T>): T { return self.second }
+
+func Pair.swapIn(self: mut ref Pair, value: T): T {
+    let old = self.first
+    self.first = value
+    return old
+}
+
+func Pair.pickWith<U>(self: ref Pair<T>, flag: U, other: U): T {
+    return self.first
+}
+
+func Pair.sum(self: ref Pair<int>): int { return self.first + self.second }
+
+func main(): int {
+    let mut p = Pair<int> { first: 20, second: 22 }
+    if p.bare() != 20 { return 1 }
+    if p.shared() != 22 { return 2 }
+    if p.spelled() != 20 { return 3 }
+    if p.restated() != 22 { return 4 }
+    if p.swapIn(7) != 20 { return 5 }
+    if p.first != 7 { return 6 }
+    if p.pickWith(true, false) != 7 { return 7 }
+    if p.sum() != 29 { return 8 }
+    let flags = Pair<bool> { first: false, second: true }
+    if !flags.shared() { return 9 }
+    if flags.spelled() { return 10 }
+    return 0
+}

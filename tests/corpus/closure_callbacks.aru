@@ -133,6 +133,61 @@ func bumpTwice(counter: mut ref int, by: int): void {
     })
 }
 
+struct Bag {
+    a: int,
+    b: int,
+    c: int,
+}
+
+func Bag.forEach(self: ref Bag, f: (int) -> void): void {
+    f(self.a)
+    f(self.b)
+    f(self.c)
+}
+
+func Bag.fold(self: ref Bag, init: int, f: (int, int) -> int): int {
+    return f(f(f(init, self.a), self.b), self.c)
+}
+
+func Bag.mapSum(self: ref Bag, f: (int) -> int): int {
+    return f(self.a) + f(self.b) + f(self.c)
+}
+
+struct Pair<T> {
+    first: T,
+    second: T,
+}
+
+func Pair.each<T>(self: ref Pair<T>, f: (T) -> void): void {
+    f(self.first)
+    f(self.second)
+}
+
+func Pair.combine<T>(self: ref Pair<T>, f: (T, T) -> T): T {
+    return f(self.first, self.second)
+}
+
+func tripleIt(x: int): int { return x * 3 }
+
+// Methods take callbacks too, including on a generic receiver whose type
+// arguments flow into the callback's parameters.
+func methodCallbacks(): int {
+    let bag = Bag { a: 1, b: 2, c: 3 }
+    let mut total = 0
+    bag.forEach((x) => { total = total + x })
+    if total != 6 { return 1 }
+    if bag.fold(10, (acc, x) => acc + x) != 16 { return 2 }
+    if bag.mapSum(tripleIt) != 18 { return 3 }
+    let p = Pair<int> { first: 20, second: 22 }
+    let mut seen = 0
+    p.each((x) => { seen = seen + x })
+    if seen != 42 { return 4 }
+    if p.combine((a, b) => a * b) != 440 { return 5 }
+    let q = Pair<bool> { first: true, second: false }
+    if q.combine((a, b) => a && b) { return 6 }
+    return 0
+}
+
 func main(): int {
     let copied = copyCaptures()
     if copied != 0 { return 10 + copied }
@@ -146,5 +201,7 @@ func main(): int {
     if borrowed != 0 { return 50 + borrowed }
     let named = namedAndOwning()
     if named != 0 { return 60 + named }
+    let methods = methodCallbacks()
+    if methods != 0 { return 70 + methods }
     return 0
 }

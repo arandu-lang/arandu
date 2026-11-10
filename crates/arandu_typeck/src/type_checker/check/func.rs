@@ -1,4 +1,4 @@
-use arandu_parser::FuncDecl;
+use arandu_parser::{FuncDecl, Ownership};
 
 use super::super::TypeChecker;
 use super::super::constraints::ConstraintOrigin;
@@ -229,6 +229,18 @@ pub fn check_func_body(checker: &mut TypeChecker<'_>, decl: &FuncDecl) {
         }
         let mut param_ty = checker.lower_type_expr(param.ty, type_scope);
 
+        // `self: ref Pair` names the generic struct bare, like `self: Pair`.
+        let receiver_borrow = match param_ty {
+            ArType::Ref(inner) if param.is_receiver => {
+                param_ty = checker.resolve(inner);
+                Some(Ownership::Shared)
+            }
+            ArType::RefMut(inner) if param.is_receiver => {
+                param_ty = checker.resolve(inner);
+                Some(Ownership::Mut)
+            }
+            _ => None,
+        };
         if param.is_receiver
             && let ArType::Named(struct_id, ref args) = param_ty
             && args.is_empty()
@@ -252,7 +264,8 @@ pub fn check_func_body(checker: &mut TypeChecker<'_>, decl: &FuncDecl) {
         let mut param_ty_id = checker.intern(param_ty);
         // `shared`/`mut` formals (receivers and free-function params) bind as
         // `&T` / `&mut T` so body field access and call-site auto-ref match.
-        param_ty_id = apply_receiver_ownership(checker, param_ty_id, param.ownership);
+        param_ty_id =
+            apply_receiver_ownership(checker, param_ty_id, receiver_borrow.or(param.ownership));
         let param_key = crate::NodeKey::from(param.span);
         if let Some(&symbol_id) = checker.resolved.definitions.get(&param_key) {
             checker.ctx.bind(symbol_id, param_ty_id);

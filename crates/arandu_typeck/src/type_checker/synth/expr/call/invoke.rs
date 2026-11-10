@@ -303,8 +303,13 @@ fn synth_namespace_field_call(
                 ) && let Some(gp) = checker.type_info.generic_params.get(&sym_id).cloned()
                     && !gp.is_empty()
                 {
-                    let arg_tys =
-                        super::closure::synth_args_with_callbacks(checker, &gp, &params, &arg_ids);
+                    let arg_tys = super::closure::synth_args_with_callbacks(
+                        checker,
+                        &gp,
+                        &params,
+                        &arg_ids,
+                        &[],
+                    );
                     super::closure::check_callback_args(checker, &params, &arg_ids, &arg_tys);
                     if let Some((ip, ir)) = infer_and_instantiate_func(
                         checker,

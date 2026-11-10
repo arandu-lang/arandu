@@ -312,11 +312,29 @@ pub(crate) fn synth_method_call(
     }
 
     if !method_generic_params.is_empty() && explicit_params.len() == arg_ids.len() {
-        let arg_tys: Vec<TypeId> = arg_ids
-            .iter()
-            .copied()
-            .map(|aid| super::super::expr::synth_expr(checker, aid))
-            .collect();
+        let receiver_bindings = struct_id
+            .and_then(|struct_symbol| {
+                let params = checker
+                    .type_info
+                    .generic_params
+                    .get(&struct_symbol)?
+                    .clone();
+                let ArType::Named(_, args) = checker.resolve(actual_base_ty_id) else {
+                    return None;
+                };
+                let args = checker.type_info.type_interner.type_args(args);
+                (args.len() == params.len())
+                    .then(|| params.iter().copied().zip(args).collect::<Vec<_>>())
+            })
+            .unwrap_or_default();
+        let arg_tys = super::super::expr::synth_args_with_callbacks(
+            checker,
+            &method_generic_params,
+            &explicit_params,
+            &arg_ids,
+            &receiver_bindings,
+        );
+        super::super::expr::check_callback_args(checker, &explicit_params, &arg_ids, &arg_tys);
         if let Some((ip, ir)) = super::super::expr::infer_and_instantiate_func(
             checker,
             (method_sym_recorded, &method_generic_params),
@@ -337,7 +355,7 @@ pub(crate) fn synth_method_call(
 
     for (i, arg_id) in arg_ids.iter().copied().enumerate() {
         let expected_id = explicit_params.get(i).copied();
-        let arg_ty_id = super::super::expr::synth_expr_expected(checker, arg_id, expected_id);
+        let arg_ty_id = super::super::expr::synth_call_arg(checker, arg_id, expected_id);
         if let Some(expected_id) = expected_id {
             super::super::expr::check_call_arg(
                 checker,

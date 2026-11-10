@@ -242,11 +242,12 @@ pub(crate) fn callback_param_of(checker: &TypeChecker<'_>, ty: TypeId) -> Option
 /// Argument types for generic inference. A lambda in a callback position is
 /// typed after the other arguments, against its bound with the type
 /// parameters those arguments already fix; it is never typed without one.
-pub(super) fn synth_args_with_callbacks(
+pub(crate) fn synth_args_with_callbacks(
     checker: &mut TypeChecker<'_>,
     type_params: &[SymbolId],
     formals: &[TypeId],
     arg_ids: &[ExprId],
+    receiver: &[(SymbolId, TypeId)],
 ) -> Vec<TypeId> {
     let deferred = |checker: &TypeChecker<'_>, index: usize, arg: ExprId| {
         matches!(checker.pool.expr(arg), ExprKind::Lambda { .. })
@@ -255,7 +256,12 @@ pub(super) fn synth_args_with_callbacks(
                 .is_some_and(|&formal| callback_bound_of(checker, formal).is_some())
     };
     let mut arg_tys = Vec::with_capacity(arg_ids.len());
-    let mut bindings = rustc_hash::FxHashMap::default();
+    // A method's receiver fixes its type's parameters (`Pair<int>` binds `T`)
+    // before any argument, so a callback bound sees them too.
+    let mut bindings = receiver
+        .iter()
+        .copied()
+        .collect::<rustc_hash::FxHashMap<_, _>>();
     for (index, &arg) in arg_ids.iter().enumerate() {
         if deferred(checker, index, arg) {
             arg_tys.push(None);
@@ -307,7 +313,7 @@ pub(super) fn synth_args_with_callbacks(
 
 /// The type of a call argument after inference. A closure or adapter
 /// installed for it keeps its struct type instead of being typed again.
-pub(super) fn synth_call_arg(
+pub(crate) fn synth_call_arg(
     checker: &mut TypeChecker<'_>,
     arg: ExprId,
     formal: Option<TypeId>,
@@ -417,7 +423,7 @@ fn adapt_named_function(
 
 /// Every argument bound to a callback parameter must be a closure, or a
 /// callback parameter of the caller being passed on.
-pub(super) fn check_callback_args(
+pub(crate) fn check_callback_args(
     checker: &mut TypeChecker<'_>,
     formals: &[TypeId],
     arg_ids: &[ExprId],

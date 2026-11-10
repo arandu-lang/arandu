@@ -587,6 +587,29 @@ fn closure_callbacks_agree_on_every_backend() {
     let _ = fs::remove_file(path);
 }
 
+/// Every spelling of a generic receiver (`Pair`, `ref Pair`, `ref Pair<T>`,
+/// restated `<T>`) and method-only parameters agree on every backend.
+#[test]
+fn generic_receivers_agree_on_every_backend() {
+    let source = include_str!("../../../../tests/corpus/generic_receivers.aru");
+    for (backend, outcome) in outcomes("generic_receivers", source) {
+        assert_eq!(outcome, ProgramOutcome::Returned(0), "{backend}");
+    }
+    let path = std::env::temp_dir().join(format!(
+        "arandu_generic_receivers_{}.aru",
+        std::process::id()
+    ));
+    fs::write(&path, source).unwrap();
+    let wasm = cli(&["emit-wasm", &path.to_string_lossy()]);
+    assert!(
+        wasm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&wasm.stderr)
+    );
+    crate::wasm_host::run_main(&wasm.stdout).assert_returns(0, "generic receivers in Wasmtime");
+    let _ = fs::remove_file(path);
+}
+
 /// `*place = value` writes through `mut ref`, through a reference to a
 /// reference and into `static mut` storage, on every backend.
 #[test]

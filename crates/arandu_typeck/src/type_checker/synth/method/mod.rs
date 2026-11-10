@@ -221,7 +221,7 @@ fn is_receiver_type_formal(checker: &TypeChecker<'_>, tid: TypeId, base_id: Type
     }
 }
 
-pub(super) fn contains_generic_params(
+pub(crate) fn contains_generic_params(
     ty: &arandu_middle::types::ArType,
     gp: &[arandu_middle::SymbolId],
     interner: &arandu_middle::types::TypeInterner,

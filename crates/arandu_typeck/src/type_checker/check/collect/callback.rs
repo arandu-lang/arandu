@@ -1,6 +1,6 @@
 //! Implicit type parameters of callback parameters (RFC 0032, L1).
 //!
-//! A `(A) -> R` parameter of a free function is a borrowed, non-escaping
+//! A `(A) -> R` parameter of a function or method is a borrowed, non-escaping
 //! callback. Its argument is a closure struct, so the parameter becomes
 //! `mut ref F` for an implicit type parameter `F` bounded by the function
 //! type, and the callee is monomorphized per closure; `f(args)` then calls

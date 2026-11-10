@@ -86,6 +86,27 @@ pub(crate) fn collect_signature_types(checker: &mut TypeChecker<'_>, program: &P
                             *first_ty_id =
                                 apply_receiver_ownership(checker, bare_inst, effective_ownership);
                             struct_params_for_mono = Some(struct_params);
+                        } else if let ArType::Named(struct_id, _) = lowered_first_ty
+                            && let Some(struct_params) =
+                                checker.type_info.generic_params.get(&struct_id).cloned()
+                        {
+                            // `self: ref Pair<T>` names the struct's own `T`, which
+                            // is in scope for every method of `Pair` (as in a Swift
+                            // extension) whether or not the method restates it.
+                            let mentioned: Vec<_> = struct_params
+                                .iter()
+                                .copied()
+                                .filter(|&param| {
+                                    crate::type_checker::synth::method::contains_generic_params(
+                                        &lowered_first_ty,
+                                        &[param],
+                                        &checker.type_info.type_interner,
+                                    )
+                                })
+                                .collect();
+                            if !mentioned.is_empty() {
+                                struct_params_for_mono = Some(std::sync::Arc::new(mentioned));
+                            }
                         }
                     }
                     // Mono key params = struct type params (if method) ++ method-only
@@ -101,14 +122,12 @@ pub(crate) fn collect_signature_types(checker: &mut TypeChecker<'_>, program: &P
                             all_params.push(p);
                         }
                     }
-                    if matches!(func_decl.name, arandu_parser::FuncName::Free { .. }) {
-                        all_params.extend(super::callback::implicit_callback_params(
-                            checker,
-                            symbol_id,
-                            &func_decl.params,
-                            &mut param_types,
-                        ));
-                    }
+                    all_params.extend(super::callback::implicit_callback_params(
+                        checker,
+                        symbol_id,
+                        &func_decl.params,
+                        &mut param_types,
+                    ));
                     if !all_params.is_empty() {
                         checker
                             .type_info

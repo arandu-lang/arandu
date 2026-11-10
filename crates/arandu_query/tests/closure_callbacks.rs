@@ -142,7 +142,7 @@ fn named_functions_and_owning_lambdas_are_callbacks() {
 }
 
 #[test]
-fn a_capture_of_generic_type_is_rejected() {
+fn a_capture_of_generic_type_inherits_the_item_parameters() {
     let mut db = DatabaseImpl::default();
     let file = db.new_file(
         "generic.aru".into(),
@@ -154,7 +154,7 @@ fn a_capture_of_generic_type_is_rejected() {
         .filter(|diagnostic| diagnostic.severity == Severity::Error)
         .map(|diagnostic| diagnostic.code)
         .collect::<Vec<_>>();
-    assert_eq!(codes, vec![DiagCode::U001FeatureNotSupported]);
+    assert!(codes.is_empty(), "{codes:?}");
 }
 
 #[test]

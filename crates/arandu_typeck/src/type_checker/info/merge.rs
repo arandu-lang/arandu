@@ -283,7 +283,7 @@ impl TypeInfo {
         }
     }
 
-    fn merge_closures<F>(&mut self, other: &TypeInfo, remap: &F)
+    pub(super) fn merge_closures<F>(&mut self, other: &TypeInfo, remap: &F)
     where
         F: Fn(SymbolId) -> SymbolId,
     {

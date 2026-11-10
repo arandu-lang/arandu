@@ -161,6 +161,7 @@ pub(super) fn install_closure(
         .host_function_names
         .insert(method_symbol, host_name.clone());
 
+    let generics = closure_generics(checker, captures, &params, shape.return_type);
     let owning = shape.owning.map(|closure_ty| {
         install_owning_code(
             checker,
@@ -172,7 +173,18 @@ pub(super) fn install_closure(
             closure_ty,
         )
     });
-    let struct_named = ArType::named(struct_symbol, &[], &checker.type_info.type_interner);
+    let generic_args = generics
+        .iter()
+        .map(|&param| {
+            let named = ArType::named(param, &[], &checker.type_info.type_interner);
+            checker.intern(named)
+        })
+        .collect::<Vec<_>>();
+    let struct_named = ArType::named(
+        struct_symbol,
+        &generic_args,
+        &checker.type_info.type_interner,
+    );
     let struct_ty = checker.intern(struct_named);
     let self_ty = if shape.self_by_mut_ref {
         checker.intern(ArType::RefMut(struct_ty))
@@ -211,6 +223,17 @@ pub(super) fn install_closure(
         .type_info
         .struct_fields
         .insert(struct_symbol, Arc::new(table));
+    if !generics.is_empty() {
+        let generics = Arc::new(generics.clone());
+        let mut generic_symbols = vec![struct_symbol, method_symbol];
+        generic_symbols.extend(owning.as_ref().map(|code| code.symbol));
+        for symbol in generic_symbols {
+            checker
+                .type_info
+                .generic_params
+                .insert(symbol, generics.clone());
+        }
+    }
     checker.type_info.closures.insert(
         lambda_span,
         ClosureRecipe {
@@ -1210,15 +1233,15 @@ fn callback_captures(
             rejected = true;
             continue;
         }
-        // The environment is not generic: a value whose type names a type
-        // parameter of the enclosing function cannot be held in it yet.
-        if mentions_type_parameter(checker, ty) {
+        // The environment inherits the enclosing item's type parameters; a
+        // parameter from anywhere else has no instance to bind it.
+        if mentions_foreign_type_parameter(checker, ty) {
             rejected = true;
             checker.diagnostics.push(
                 crate::Diagnostic::error(
                     crate::DiagCode::U001FeatureNotSupported,
                     format!(
-                        "capturing '{name}', whose type is generic, in a closure is not supported yet (v0.3 LAMBDA L3)"
+                        "capturing '{name}', whose type names a type parameter outside the enclosing function, is not supported"
                     ),
                     use_span,
                 )
@@ -1390,6 +1413,54 @@ fn mint(
             return SymbolId::new(file_id, SymbolId::SYNTHETIC_LOCAL_BIT | 1);
         }
     }
+}
+
+/// A type parameter that is not one of the enclosing item's, which a
+/// closure environment could not inherit.
+fn mentions_foreign_type_parameter(checker: &TypeChecker<'_>, ty: TypeId) -> bool {
+    let owned = checker
+        .closure_owner
+        .as_ref()
+        .map(|owner| owner.generics.as_slice())
+        .unwrap_or_default();
+    let Ok(shape) = arandu_middle::types::TypeShape::from_id(ty, &checker.type_info.type_interner)
+    else {
+        return false;
+    };
+    let mut found = false;
+    let _ = shape.for_each_symbol(|symbol| {
+        found |= !owned.contains(&symbol)
+            && checker
+                .symbols
+                .try_get(symbol)
+                .is_some_and(|entry| entry.kind == SymbolKind::TypeParam);
+    });
+    found
+}
+
+/// The enclosing item's type parameters when the closure's captures or
+/// signature mention any: its environment, method and code are generic over
+/// them, and each use instantiates them with the item's own (RFC 0032, L3).
+fn closure_generics(
+    checker: &TypeChecker<'_>,
+    captures: &[Capture],
+    params: &[ClosureParam],
+    return_type: TypeId,
+) -> Vec<SymbolId> {
+    let generic = captures
+        .iter()
+        .map(|capture| capture.ty)
+        .chain(params.iter().map(|param| param.ty))
+        .chain(std::iter::once(return_type))
+        .any(|ty| mentions_type_parameter(checker, ty));
+    if !generic {
+        return Vec::new();
+    }
+    checker
+        .closure_owner
+        .as_ref()
+        .map(|owner| owner.generics.clone())
+        .unwrap_or_default()
 }
 
 pub(super) fn mentions_type_parameter(checker: &TypeChecker<'_>, ty: TypeId) -> bool {

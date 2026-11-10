@@ -540,13 +540,13 @@ fn owning_code_hir(
             span,
         }));
     }
+    let method_ty = info
+        .decl_type_id(recipe.method_symbol)
+        .unwrap_or_else(error);
+    let kind = synthetic_function(type_check, &mut pool, recipe.method_symbol, method_ty, span);
     let callee = pool.alloc_expr(HirExpr {
-        kind: HirExprKind::Path {
-            symbol: recipe.method_symbol,
-        },
-        ty: info
-            .decl_type_id(recipe.method_symbol)
-            .unwrap_or_else(error),
+        kind,
+        ty: method_ty,
         span,
     });
     let args = pool.alloc_expr_list(&args);
@@ -606,5 +606,132 @@ fn owning_code_hir(
         module: program.module.as_ref().map(|module| module.path.join(".")),
         decls: vec![func],
         pool,
+    }
+}
+
+/// A use of a synthesized closure function. A closure over a value of
+/// generic type is generic over its item's parameters; inside that item
+/// they instantiate it with themselves, which monomorphization substitutes
+/// (RFC 0032, L3).
+pub(crate) fn synthetic_function(
+    type_check: &TypeCheckResult,
+    pool: &mut crate::hir::HirPool,
+    symbol: SymbolId,
+    ty: TypeId,
+    span: arandu_middle::Span,
+) -> HirExprKind {
+    let Some(params) = type_check
+        .type_info
+        .generic_params
+        .get(&symbol)
+        .filter(|params| !params.is_empty())
+    else {
+        return HirExprKind::Path { symbol };
+    };
+    let interner = &type_check.type_info.type_interner;
+    let args = params
+        .iter()
+        .map(|&param| interner.intern(arandu_middle::types::ArType::named(param, &[], interner)))
+        .collect();
+    let callee = pool.alloc_expr(HirExpr {
+        kind: HirExprKind::Path { symbol },
+        ty,
+        span,
+    });
+    HirExprKind::Generic { callee, args }
+}
+
+/// Bodyless declarations of the generic functions synthesized for closures
+/// over values of generic type, so a body that uses one can instantiate it
+/// like any other generic callee; each body lives in its own unit.
+pub fn link_generic_closure_headers(type_check: &TypeCheckResult, hir: &mut HirProgram) {
+    let declared = hir
+        .decls
+        .iter()
+        .filter_map(|&id| match hir.pool.decl(id) {
+            HirDecl::Func(function) => Some(function.symbol),
+            _ => None,
+        })
+        .collect::<rustc_hash::FxHashSet<_>>();
+    let info = &type_check.type_info;
+    let mut recipes = info
+        .closures
+        .values()
+        .filter(|recipe| info.generic_params.contains_key(&recipe.method_symbol))
+        .collect::<Vec<_>>();
+    recipes.sort_by_key(|recipe| {
+        (
+            recipe.method_symbol.file_id,
+            recipe.method_symbol.local_id.0,
+        )
+    });
+    let error = TypeInterner::preinterned_error_id;
+    for recipe in recipes {
+        let span = recipe.lambda_span;
+        let forwarded = |symbols: &mut dyn Iterator<Item = SymbolId>| {
+            symbols
+                .zip(&recipe.params)
+                .map(|(symbol, param)| HirParam {
+                    symbol,
+                    ty: param.ty,
+                    span,
+                    is_receiver: false,
+                    receiver_kind: None,
+                })
+                .collect::<Vec<_>>()
+        };
+        if !declared.contains(&recipe.method_symbol) {
+            let mut params = Vec::with_capacity(recipe.params.len() + 1);
+            if !recipe.is_function() {
+                params.push(HirParam {
+                    symbol: recipe.self_param,
+                    ty: info.decl_type_id(recipe.self_param).unwrap_or_else(error),
+                    span,
+                    is_receiver: true,
+                    receiver_kind: Some(if recipe.is_callback() {
+                        ReceiverKind::Mut
+                    } else {
+                        ReceiverKind::Own
+                    }),
+                });
+            }
+            params.extend(forwarded(
+                &mut recipe.params.iter().map(|param| param.symbol),
+            ));
+            let params = hir.pool.alloc_param_list(&params);
+            let decl = hir.pool.alloc_decl(HirDecl::Func(HirFunc {
+                symbol: recipe.method_symbol,
+                params,
+                return_type: recipe.return_type,
+                body: None,
+                span,
+                is_async: false,
+                no_fallback: false,
+            }));
+            hir.decls.push(decl);
+        }
+        if let Some(code) = &recipe.owning
+            && !declared.contains(&code.symbol)
+        {
+            let mut params = vec![HirParam {
+                symbol: code.env_param,
+                ty: info.decl_type_id(code.env_param).unwrap_or_else(error),
+                span,
+                is_receiver: false,
+                receiver_kind: None,
+            }];
+            params.extend(forwarded(&mut code.params.iter().copied()));
+            let params = hir.pool.alloc_param_list(&params);
+            let decl = hir.pool.alloc_decl(HirDecl::Func(HirFunc {
+                symbol: code.symbol,
+                params,
+                return_type: recipe.return_type,
+                body: None,
+                span,
+                is_async: false,
+                no_fallback: false,
+            }));
+            hir.decls.push(decl);
+        }
     }
 }

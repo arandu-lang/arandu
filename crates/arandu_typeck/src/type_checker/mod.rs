@@ -178,6 +178,9 @@ pub(crate) struct ClosureOwner {
     pub name: smol_str::SmolStr,
     /// Byte offset where the owner item starts.
     pub start: u32,
+    /// The owner's type parameters, which a closure capturing a value of
+    /// generic type inherits (RFC 0032, L3).
+    pub generics: Vec<crate::SymbolId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -171,9 +171,17 @@ pub(super) fn lower_lambda(
                     owning_closure(type_check, hir_pool, &recipe, span)?
                 } else if recipe.is_function() {
                     // The value is a pointer to the lambda's own function.
-                    HirExprKind::Path {
-                        symbol: recipe.method_symbol,
-                    }
+                    let ty = type_check
+                        .type_info
+                        .decl_type_id(recipe.method_symbol)
+                        .unwrap_or_else(super::error_ty);
+                    super::super::closure::synthetic_function(
+                        type_check,
+                        hir_pool,
+                        recipe.method_symbol,
+                        ty,
+                        span,
+                    )
                 } else {
                     super::super::closure::capture_struct_literal(hir_pool, &recipe)
                 }
@@ -310,10 +318,10 @@ pub(super) fn owning_closure(
         }));
     }
     type_args.push(code_ty);
+    let code_kind =
+        super::super::closure::synthetic_function(type_check, hir_pool, code.symbol, code_ty, span);
     args.push(hir_pool.alloc_expr(HirExpr {
-        kind: HirExprKind::Path {
-            symbol: code.symbol,
-        },
+        kind: code_kind,
         ty: code_ty,
         span,
     }));

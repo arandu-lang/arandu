@@ -227,6 +227,12 @@ pub fn check_func_body(checker: &mut TypeChecker<'_>, decl: &FuncDecl) {
         super::super::ClosureOwner {
             name: name.into(),
             start: decl.span.start,
+            generics: checker
+                .type_info
+                .generic_params
+                .get(&symbol)
+                .map(|params| params.as_ref().clone())
+                .unwrap_or_default(),
         }
     });
     let declared_params = func_symbol

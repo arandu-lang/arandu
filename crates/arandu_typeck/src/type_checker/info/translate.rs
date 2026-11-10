@@ -56,6 +56,24 @@ pub fn import_closures(
         let translated = reintern_type(dest.type_info_mut(), &src.type_info, ty);
         dest.type_info_mut().record_decl_type(symbol, translated);
     }
+    // The recipes let a unit declare the synthesized functions it calls.
+    dest.type_info_mut()
+        .merge_closures(&src.type_info, &|symbol| symbol);
+    // A closure over a value of generic type is generic over its item's
+    // parameters; instances built elsewhere substitute them by these lists.
+    let generics = src
+        .type_info
+        .generic_params
+        .iter()
+        .filter(|(symbol, _)| symbol.is_synthetic())
+        .map(|(symbol, params)| (*symbol, params.clone()))
+        .collect::<Vec<_>>();
+    for (symbol, params) in generics {
+        dest.type_info_mut()
+            .generic_params
+            .entry(symbol)
+            .or_insert(params);
+    }
     let owners = src
         .type_info
         .struct_fields

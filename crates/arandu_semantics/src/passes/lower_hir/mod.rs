@@ -18,7 +18,7 @@ mod pattern;
 mod place;
 mod stmt;
 
-pub use closure::lower_closure_hir;
+pub use closure::{link_generic_closure_headers, lower_closure_hir};
 pub use link::link_hir_module;
 pub use materialize::{MaterializationError, materialize_ctfe_scalar, materialize_ctfe_value};
 

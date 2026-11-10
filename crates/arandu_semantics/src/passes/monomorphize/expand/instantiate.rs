@@ -51,6 +51,7 @@ pub fn instantiate_function(
             "function instance retains unresolved type arguments",
         ));
     }
+    crate::passes::lower_hir::link_generic_closure_headers(tc, hir);
     let bump = bumpalo::Bump::new();
     let root = hir
         .decls

@@ -695,6 +695,29 @@ fn own_closures_agree_on_every_backend() {
     let _ = fs::remove_file(path);
 }
 
+/// Closures over values of generic type, borrowed and owning, instantiated
+/// once per instance of the enclosing item, on every backend.
+#[test]
+fn generic_closures_agree_on_every_backend() {
+    let source = include_str!("../../../../tests/corpus/generic_closures.aru");
+    for (backend, outcome) in outcomes_on("generic_closures", source, false) {
+        assert_eq!(outcome, ProgramOutcome::Returned(0), "{backend}");
+    }
+    let path = std::env::temp_dir().join(format!(
+        "arandu_generic_closures_{}.aru",
+        std::process::id()
+    ));
+    fs::write(&path, source).unwrap();
+    let wasm = cli(&["emit-wasm", &path.to_string_lossy()]);
+    assert!(
+        wasm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&wasm.stderr)
+    );
+    crate::wasm_host::run_main(&wasm.stdout).assert_returns(0, "generic closures in Wasmtime");
+    let _ = fs::remove_file(path);
+}
+
 /// `own () -> R + Send` closures spawned directly and from a queue. Native
 /// backends with the thread runtime only.
 #[test]

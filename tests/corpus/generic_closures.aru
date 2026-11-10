@@ -1,0 +1,59 @@
+module genericClosures
+
+// Closures over values of generic type (RFC 0032, L3): the environment, its
+// method and an owning closure's code are generic over the enclosing item's
+// type parameters, and every instance of the item instantiates them.
+
+struct Pair<T> {
+    first: T,
+    second: T,
+}
+
+func twice(f: () -> int): int {
+    return f() + f()
+}
+
+// A callback parameter, itself of an implicit generic type, is captured.
+func forward(f: (int) -> int): int {
+    return twice(() => f(1))
+}
+
+func sumWith<T>(value: T, measure: (T) -> int): int {
+    return twice(() => measure(value))
+}
+
+func holder<T>(value: T): own () -> T {
+    return () => value
+}
+
+func pairOf<T>(first: T, second: T): own (bool) -> T {
+    let pair = Pair { first: first, second: second }
+    return (left) => if left { pair.first } else { pair.second }
+}
+
+func counterFrom<T>(start: T, step: (T) -> int): own () -> int {
+    let mut total = step(start)
+    return () => {
+        total += 1
+        return total
+    }
+}
+
+func size(x: int): int {
+    return x * 10
+}
+
+func main(): int {
+    if forward((x) => x + 1) != 4 { return 1 }
+    if sumWith(3, (x: int) => x * 2) != 12 { return 2 }
+    if sumWith(true, (x: bool) => if x { 5 } else { 0 }) != 10 { return 3 }
+    let number = holder(7)
+    if number() != 7 { return 4 }
+    let flag = holder(true)
+    if !flag() { return 5 }
+    let pick = pairOf(10, 20)
+    if pick(true) != 10 || pick(false) != 20 { return 6 }
+    let next = counterFrom(4, size)
+    if next() != 41 || next() != 42 { return 7 }
+    return 0
+}

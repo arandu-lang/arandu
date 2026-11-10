@@ -284,15 +284,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                     info.index
                 ))
             })?;
-        // Generic owners (`Pair<int>`) declare their fields over parameters.
-        let field_ty = arandu_middle::layout::instantiated_field_type(
-            base,
-            info.name.as_str(),
-            self.module.interner,
-            self.module.info,
-        )
-        .unwrap_or(info.ty);
-        Ok((offset, self.module.interner.resolve(field_ty)))
+        Ok((offset, self.module.interner.resolve(info.ty)))
     }
 
     pub(in crate::codegen) fn aggregate_address(

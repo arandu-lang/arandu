@@ -338,6 +338,7 @@ pub(super) fn dump_place(pool: &AstPool, place: &Place) -> String {
                 out.push_str(&dump_expr(pool, *expr));
                 out.push(']');
             }
+            PlaceSuffix::Deref { .. } => out = format!("(*{out})"),
         }
     }
     out

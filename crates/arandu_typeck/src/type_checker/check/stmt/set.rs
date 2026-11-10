@@ -299,9 +299,38 @@ fn validate_mutability(checker: &mut TypeChecker<'_>, place: &arandu_parser::Pla
         symbol_id_opt.is_some_and(|sym_id| checker.resolved.mutable_symbols.contains(&sym_id));
     let mut is_mutable = is_root_mutable;
 
-    for suffix in &place.suffixes {
+    let last = place.suffixes.len().saturating_sub(1);
+    for (index, suffix) in place.suffixes.iter().enumerate() {
         if checker.resolve(current_ty_id).is_error() {
             return;
+        }
+
+        // An explicit `*` grants exactly what the reference grants: writing
+        // through `mut ref` needs no `mut` binding, and `ref` never allows it.
+        if let arandu_parser::PlaceSuffix::Deref { span } = suffix {
+            match checker.resolve(current_ty_id) {
+                ArType::RefMut(inner) | ArType::Ptr(inner) => {
+                    is_mutable = true;
+                    current_ty_id = inner;
+                }
+                ArType::Ref(inner) => {
+                    is_mutable = false;
+                    current_ty_id = inner;
+                }
+                _ => return,
+            }
+            if index == last && !is_mutable {
+                checker.diagnostics.push(
+                    crate::Diagnostic::error(
+                        crate::DiagCode::T026CannotAssignImmutable,
+                        "cannot assign through a shared reference",
+                        *span,
+                    )
+                    .with_label(*span, "this place is behind a `ref`")
+                    .with_hint("take it as `mut ref` to write through it"),
+                );
+            }
+            continue;
         }
 
         let (peeled_id, was_nullable) =
@@ -464,6 +493,7 @@ fn validate_mutability(checker: &mut TypeChecker<'_>, place: &arandu_parser::Pla
                     return;
                 }
             }
+            arandu_parser::PlaceSuffix::Deref { .. } => {}
         }
     }
 }

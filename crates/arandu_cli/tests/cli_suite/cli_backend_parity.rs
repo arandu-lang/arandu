@@ -587,6 +587,26 @@ fn closure_callbacks_agree_on_every_backend() {
     let _ = fs::remove_file(path);
 }
 
+/// `*place = value` writes through `mut ref`, through a reference to a
+/// reference and into `static mut` storage, on every backend.
+#[test]
+fn deref_assignment_agrees_on_every_backend() {
+    let source = include_str!("../../../../tests/corpus/deref_assign.aru");
+    for (backend, outcome) in outcomes("deref_assign", source) {
+        assert_eq!(outcome, ProgramOutcome::Returned(0), "{backend}");
+    }
+    let path = std::env::temp_dir().join(format!("arandu_deref_assign_{}.aru", std::process::id()));
+    fs::write(&path, source).unwrap();
+    let wasm = cli(&["emit-wasm", &path.to_string_lossy()]);
+    assert!(
+        wasm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&wasm.stderr)
+    );
+    crate::wasm_host::run_main(&wasm.stdout).assert_returns(0, "deref assignment in Wasmtime");
+    let _ = fs::remove_file(path);
+}
+
 /// `static mut` storage starts from its constant image and is shared by every
 /// function, on every backend, Wasm included.
 #[test]

@@ -186,17 +186,7 @@ impl<'a> FuncTranslator<'a> {
 
         if lhs.projections.is_empty() {
             let local = &self.func.locals[lhs.local.as_usize()];
-            let ty = self.interner.resolve(local.ty);
-            let pointer_like = matches!(
-                ty,
-                ArType::Ptr(_)
-                    | ArType::Ref(_)
-                    | ArType::RefMut(_)
-                    | ArType::Nullable(_)
-                    | ArType::Slice(_)
-                    | ArType::MutSlice(_)
-            );
-            if local.is_memory && !pointer_like && !self.is_owned_aggregate(local_ty) {
+            if self.is_cell_local(local) {
                 let slot = self.local_slot(local.id).unwrap_or(0);
                 self.code.push(Instruction::LocalGet(slot));
                 self.emit_operand(rhs, local_ty);

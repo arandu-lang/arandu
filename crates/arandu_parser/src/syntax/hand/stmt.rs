@@ -231,7 +231,7 @@ pub fn parse_stmt_tokens(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<
                 expr,
             }))
         }
-        TokenKind::IdentValue | TokenKind::IdentType | TokenKind::KwSelf => {
+        TokenKind::IdentValue | TokenKind::IdentType | TokenKind::KwSelf | TokenKind::Star => {
             lower_ident_stmt(ctx, cur, start)
         }
         _ => {
@@ -405,6 +405,13 @@ fn lower_set(
 }
 
 fn parse_place(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<Place> {
+    // `*place` writes through the reference the place holds (see the RD
+    // parser); each `*` applies after the place's own suffixes.
+    let mut derefs = Vec::new();
+    while let Some(star) = cur.peek().filter(|token| token.kind == TokenKind::Star) {
+        derefs.push(ctx.token_span(star));
+        cur.bump();
+    }
     let root_tok = cur.peek()?;
     let root = match root_tok.kind {
         TokenKind::KwSelf => {
@@ -446,6 +453,7 @@ fn parse_place(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<Place> {
             break;
         }
     }
+    suffixes.extend(derefs.into_iter().map(|span| PlaceSuffix::Deref { span }));
     Some(Place {
         span: ctx.span(start, end),
         root,

@@ -315,7 +315,9 @@ impl Shift {
             self.span(span);
             for suffix in suffixes {
                 match suffix {
-                    PlaceSuffix::Field { span, name: _ } => self.span(span),
+                    PlaceSuffix::Field { span, name: _ } | PlaceSuffix::Deref { span } => {
+                        self.span(span)
+                    }
                     PlaceSuffix::Index { span, expr } => {
                         self.span(span);
                         self.expr_id(expr);

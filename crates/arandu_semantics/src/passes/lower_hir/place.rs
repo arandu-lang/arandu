@@ -70,12 +70,28 @@ pub(crate) fn lower_place(
                         ty: error_id,
                     });
                 }
+                PlaceSuffix::Deref { span } => {
+                    suffixes.push(HirPlaceSuffix::Deref {
+                        span: *span,
+                        ty: error_id,
+                    });
+                }
             }
             continue;
         }
 
         let interner = &type_check.type_info.type_interner;
         match suffix {
+            PlaceSuffix::Deref { span } => {
+                current_ty = match interner.resolve(current_ty) {
+                    ArType::Ref(inner) | ArType::RefMut(inner) | ArType::Ptr(inner) => inner,
+                    _ => error_id,
+                };
+                suffixes.push(HirPlaceSuffix::Deref {
+                    span: *span,
+                    ty: current_ty,
+                });
+            }
             PlaceSuffix::Field { span, name } => {
                 let base = interner.resolve(current_ty);
                 // Auto-deref: Nullable / & / &mut / ptr (shared|mut self places).

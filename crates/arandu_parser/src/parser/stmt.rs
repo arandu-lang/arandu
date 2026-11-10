@@ -471,6 +471,13 @@ impl<'a> Parser<'a> {
     }
 
     pub(super) fn parse_place(&mut self) -> Result<Place, ParseError> {
+        // `*place` writes through the reference the place holds; each `*`
+        // applies after the place's own suffixes.
+        let mut derefs = Vec::new();
+        while self.current().kind == TokenKind::Star {
+            derefs.push(self.current().span(self.file_id));
+            self.advance();
+        }
         let start = self.mark();
         let root = match &self.current().kind {
             TokenKind::KwSelf => {
@@ -515,6 +522,7 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
+        suffixes.extend(derefs.into_iter().map(|span| PlaceSuffix::Deref { span }));
         Ok(Place {
             span: self.span_from_mark(start),
             root,

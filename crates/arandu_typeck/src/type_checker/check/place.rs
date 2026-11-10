@@ -57,6 +57,35 @@ pub(crate) fn synth_place(checker: &mut TypeChecker<'_>, place: &arandu_parser::
             break;
         }
         match suffix {
+            arandu_parser::PlaceSuffix::Deref { span } => match checker.resolve(current_ty_id) {
+                ArType::Ref(inner) | ArType::RefMut(inner) => current_ty_id = inner,
+                ArType::Ptr(inner) => {
+                    if !checker.ctx.is_in_unsafe() {
+                        checker.diagnostics.push(
+                            crate::Diagnostic::error(
+                                crate::DiagCode::O012AllocRequiresUnsafe,
+                                "writing through a raw pointer requires an `unsafe` block",
+                                *span,
+                            )
+                            .with_label(*span, "raw `ptr[T]` deref is unsafe"),
+                        );
+                    }
+                    current_ty_id = inner;
+                }
+                _ => {
+                    checker.add_constraint(
+                        ArType::Error,
+                        current_ty_id,
+                        ConstraintOrigin::UnaryOp {
+                            op: arandu_parser::UnaryOp::Deref,
+                            op_span: *span,
+                            operand_span: place.span,
+                        },
+                    );
+                    current_ty_id = checker.intern(ArType::Error);
+                    break;
+                }
+            },
             arandu_parser::PlaceSuffix::Field { span, name } => {
                 let interner = &checker.type_info.type_interner;
                 let (actual_base_ty_id, was_nullable) =

@@ -286,12 +286,14 @@ impl<'a> Lexer<'a> {
             return;
         }
 
-        if self.peek_next_significant_kind().is_some_and(|kind| {
-            kind.prevents_semicolon_before()
+        if !self.next_line_starts_with_prefix_star()
+            && self.peek_next_significant_kind().is_some_and(|kind| {
+                kind.prevents_semicolon_before()
                     // At depth zero this closes an expression interpolation,
                     // rather than a statement block. Nested blocks retain ASI.
                     || (interpolation_boundary && kind == TokenKind::RBrace)
-        }) {
+            })
+        {
             return;
         }
 
@@ -390,6 +392,30 @@ impl<'a> Lexer<'a> {
     }
 
     fn peek_next_significant_kind(&self) -> Option<TokenKind> {
+        let index = self.next_significant_index();
+        if index >= self.source.len() {
+            return Some(TokenKind::Eof);
+        }
+        // Ensure the index is on a UTF-8 char boundary before slicing into &str
+        let valid_i = (index..=self.source.len())
+            .find(|&pos| self.source.is_char_boundary(pos))
+            .unwrap_or(self.source.len());
+        Some(peek_kind_from(&self.source[valid_i..]))
+    }
+
+    /// A line starting with `*` glued to its operand (`*target = v`) starts a
+    /// statement that writes through a reference, as Swift reads a prefix
+    /// operator; `* b` with a space still continues a multiplication.
+    fn next_line_starts_with_prefix_star(&self) -> bool {
+        let bytes = self.source.as_bytes();
+        let index = self.next_significant_index();
+        bytes.get(index) == Some(&b'*')
+            && bytes.get(index + 1).is_some_and(|next| {
+                next.is_ascii_alphabetic() || matches!(next, b'_' | b'*' | b'(')
+            })
+    }
+
+    fn next_significant_index(&self) -> usize {
         let bytes = self.source.as_bytes();
         let mut i = self.pos;
         while i < bytes.len() {
@@ -422,13 +448,9 @@ impl<'a> Lexer<'a> {
                     continue;
                 }
             }
-            // Ensure i is on a UTF-8 char boundary before slicing into &str
-            let valid_i = (i..=bytes.len())
-                .find(|&pos| self.source.is_char_boundary(pos))
-                .unwrap_or(bytes.len());
-            return Some(peek_kind_from(&self.source[valid_i..]));
+            return i;
         }
-        Some(TokenKind::Eof)
+        bytes.len()
     }
 
     fn push_token(&mut self, kind: TokenKind, span: Span, inserted: bool) {

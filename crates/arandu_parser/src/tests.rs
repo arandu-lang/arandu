@@ -1110,3 +1110,29 @@ fn an_uppercase_static_mut_is_an_assignment_target() {
         .collect::<Vec<_>>();
     assert_eq!(roots, ["COUNTER", "COUNTER"]);
 }
+
+#[test]
+fn a_leading_star_writes_through_the_place() {
+    let program = parse(
+        "func f(r: mut ref mut ref int, n: int): void {\n    let a = n\n    *r.x = a\n    **r = 1\n    let b = a\n        * 2\n}\n",
+    )
+    .expect("deref assignment parses");
+    let derefs = program
+        .pool
+        .stmts
+        .iter()
+        .filter_map(|stmt| match stmt {
+            crate::Stmt::Set { places, .. } => places.first().map(|place| {
+                place
+                    .suffixes
+                    .iter()
+                    .filter(|suffix| matches!(suffix, crate::PlaceSuffix::Deref { .. }))
+                    .count()
+            }),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    // `*r.x` derefs after the field; `**r` derefs twice; `* 2` with a space
+    // continues the multiplication on the previous line.
+    assert_eq!(derefs, [1, 2]);
+}

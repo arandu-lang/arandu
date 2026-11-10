@@ -1136,3 +1136,18 @@ fn a_leading_star_writes_through_the_place() {
     // continues the multiplication on the previous line.
     assert_eq!(derefs, [1, 2]);
 }
+
+#[test]
+fn a_function_type_is_a_result_type_in_both_parser_paths() {
+    for source in [
+        "func pick(flag: bool): (int) -> int { return double }",
+        "func pair(): (int, bool) { return 1, true }",
+        "func nested(): ((int) -> int, bool) { return double, true }",
+        "func none(): () -> void { return idle }",
+    ] {
+        let direct = parse(source).expect("direct parse");
+        let canonical =
+            crate::lower_syntax_to_program(&crate::parse_syntax(source), 0).expect("CST parse");
+        assert_eq!(direct, canonical, "{source}");
+    }
+}

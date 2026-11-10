@@ -31,7 +31,8 @@ fn result_type_must_use_result_generic(
 impl<'a> Parser<'a> {
     pub(in crate::parser) fn parse_result_type(&mut self) -> Result<ResultType, ParseError> {
         let start = self.mark();
-        let result = if self.eat_name("LPAREN") {
+        // `(A, B) -> R` is a function type, not two results.
+        let result = if !self.paren_group_is_function_type() && self.eat_name("LPAREN") {
             let types =
                 self.parse_comma_separated_list("RPAREN", 2, super::super::Parser::parse_type)?;
             self.expect_name("RPAREN")?;
@@ -58,6 +59,31 @@ impl<'a> Parser<'a> {
             ));
         }
         Ok(result)
+    }
+
+    /// Whether the `(` at the cursor closes into `) ->`.
+    fn paren_group_is_function_type(&self) -> bool {
+        if !self.at_kind_name("LPAREN") {
+            return false;
+        }
+        let mut depth = 0usize;
+        for (offset, token) in self.tokens[self.pos..].iter().enumerate() {
+            match token.kind.name() {
+                "LPAREN" => depth += 1,
+                "RPAREN" => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return self
+                            .tokens
+                            .get(self.pos + offset + 1)
+                            .is_some_and(|next| next.kind.name() == "ARROW");
+                    }
+                }
+                "EOF" => return false,
+                _ => {}
+            }
+        }
+        false
     }
 
     pub(in crate::parser) fn parse_type(&mut self) -> Result<TypeExprId, ParseError> {

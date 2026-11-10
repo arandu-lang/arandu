@@ -4,7 +4,7 @@
 - **Título:** Closures, Modos de Captura sob OSSA e Funções de Primeira Classe (`LAMBDA`)
 - **Autor(es):** Bruno e Equipe do Compilador Arandu
 - **Data de Início:** 2026-10-15
-- **Status:** `Draft`
+- **Status:** `Implemented` (L1–L3 na 0.3.0; §1–§9 abaixo são o desenho original)
 - **Área Principal:** `Frontend` / `Middle-end` / `OSSA` / `Backend`
 - **Documentos Relacionados:**
   - [Roadmap mestre](../arandu-compiler-roadmap-v0.1.md)
@@ -74,6 +74,46 @@
 > - a chamada indireta observa todos os efeitos e não é admitida em CTFE.
 >
 > O T033 foi retirado. Corpus: `tests/corpus/function_values.aru`.
+>
+> **Estado em 2026-11-10 (L3, encerra a RFC):** `own (A) -> R` é uma closure
+> com dono e escapante; `own (A) -> R + Send` pode cruzar threads.
+>
+> - **Representação:** os lang items `Closure<F>` e `SendClosure<F>` de
+>   `std.alloc.closure`, três palavras: código, ambiente e drop do ambiente.
+>   `F` é a assinatura do código, `(ptr[u8], A) -> R`, então chamar é a
+>   chamada indireta da L2 (`c.code(c.env, args)`). O drop fica na struct, não
+>   num cabeçalho do ambiente, como a decisão de 2026-11-07 previa: não
+>   depende da ordem dos campos nem lê o heap para destruir.
+> - **Módulo ambiente:** `std.alloc.closure` é ligado a todo módulo fora da
+>   stdlib como os módulos ambientes de primitivos, sem nome no escopo; o
+>   compilador acha os tipos pelo lang item. `Send` sem qualificação, não
+>   sombreado, dispensa import na posição de bound.
+> - **Criação:** a lambda (com ou sem `own`) onde o tipo esperado é `own`
+>   vira recipe + função de código sintetizada; as capturas movem ou copiam
+>   para `Closure.make<Env, F>`, que aloca. Sem captura, ou de uma função
+>   nomeada, `Closure.fromFunction<F>` não aloca. Um valor `(A) -> R` local
+>   copia o ponteiro para o ambiente.
+> - **Chamada:** o dono ou um `mut ref` chamam; `ref` compartilhado não
+>   (T026), o que exclui duas chamadas mudando as capturas ao mesmo tempo.
+>   Um temporário precisa ser vinculado antes (T026). Efeitos: `ANY_CALL`.
+> - **Capturas:** nenhuma referência ou view (`ref`, `[]T`, `str`) — O010,
+>   fail-closed como o modelo de memória exige; `+ Send` prova cada captura
+>   (T025). `SendClosure` é `Send` e nunca `Sync`/`Copy`; `Closure` não é
+>   nenhum.
+> - **Ajustes do typeck** (como os do rustc): `+ Send` vira `own` sem `Send`
+>   onde esperado (`SendClosure.local`), e `thread.spawn(c)` roda uma closure
+>   `Send` sem parâmetros como `ClosureJob<R>`. Um local `own` é emprestado a
+>   um parâmetro de callback por um adaptador que o toma por `mut` borrow.
+> - **Recusas:** assinatura `extern` (T049); `@Export` pela regra de ABI C;
+>   closure com captura em bare-metal (T099), enquanto a sem captura segue
+>   disponível; CTFE pela chamada indireta.
+> - **Capturas genéricas:** ambiente, método e código herdam os parâmetros de
+>   tipo do item pai quando uma captura ou a assinatura os menciona; cada
+>   instância do item os instancia. Fecha o U001 que a L1 deixou.
+>
+> Corpus `own_closures.aru`, `generic_closures.aru` (todos os backends,
+> Wasmtime incluído, IR LLVM compilado) e `own_closures_threads.aru`
+> (backends nativos); testes em `query_suite/owning_closures.rs`.
 
 ---
 

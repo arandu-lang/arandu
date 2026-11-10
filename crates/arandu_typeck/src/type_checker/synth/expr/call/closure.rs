@@ -166,7 +166,9 @@ pub(super) fn install_closure(
         struct_ty
     };
     let mut method_params = Vec::with_capacity(params.len() + 1);
-    method_params.push(self_ty);
+    if shape.method != "fn" {
+        method_params.push(self_ty);
+    }
     method_params.extend(params.iter().map(|param| param.ty));
     let method_named = ArType::func(
         &method_params,
@@ -279,6 +281,26 @@ pub(crate) fn synth_args_with_callbacks(
             super::instantiate::bind_type_params(checker, type_params, &open, ty, &mut bindings);
             let bound = substitute_bindings(checker, bound, &bindings);
             ty = adapt_named_function(checker, arg, ty, bound);
+            // A function value is itself the callback, called indirectly, as
+            // a Rust `fn` pointer implements `FnMut`.
+            if matches!(checker.resolve(ty), ArType::Func(..)) && !checker.unify_ids(bound, ty) {
+                let interner = &checker.type_info.type_interner;
+                let found = checker.resolve(ty).display(&checker.symbols, interner);
+                let expected = checker.resolve(bound).display(&checker.symbols, interner);
+                let span = checker.pool.expr_span(arg);
+                checker.diagnostics.push(
+                    crate::Diagnostic::error(
+                        crate::DiagCode::T003IncompatibleCallArg,
+                        format!(
+                            "function value of type '{found}' cannot be the callback '{expected}'"
+                        ),
+                        span,
+                    )
+                    .with_label(span, format!("expected a callback of type '{expected}'")),
+                );
+                ty = checker.intern(ArType::Error);
+                checker.record_expr_type(arg, ty);
+            }
         }
         if let Some(&formal) = formals.get(index) {
             let formal = checker.resolve(formal);
@@ -302,7 +324,7 @@ pub(crate) fn synth_args_with_callbacks(
                 if matches!(checker.pool.expr(arg), ExprKind::Lambda { .. }) {
                     return check_callback_lambda(checker, arg, bound);
                 }
-                let function_ty = super::synth_expr(checker, arg);
+                let function_ty = super::synth_expr_expected(checker, arg, Some(bound));
                 adapt_named_function(checker, arg, function_ty, bound)
             })
         })
@@ -398,6 +420,12 @@ fn adapt_named_function(
     // infers `identity::<i32>` from the `FnMut(i32) -> i32` it must satisfy.
     let (params, ret) = match checker.type_info.generic_params.get(&function).cloned() {
         Some(generics) if !generics.is_empty() => {
+            // Bind against the declaration: the value may arrive instantiated.
+            let template = checker.decl_type(function).unwrap_or(ArType::Error);
+            let (params, ret) = match template {
+                ArType::Func(params, ret) => (params, ret),
+                _ => (params, ret),
+            };
             let mut bindings = rustc_hash::FxHashMap::default();
             let formals = checker.type_info.type_interner.type_args(params);
             let expected = checker.type_info.type_interner.type_args(bound_params);
@@ -454,7 +482,7 @@ fn adapt_named_function(
             );
             let subst = arandu_middle::types::build_subst(&generics, &concrete);
             let instance = arandu_middle::types::substitute_type(
-                &checker.resolve(function_ty),
+                &template,
                 &subst,
                 &checker.type_info.type_interner,
             );
@@ -527,7 +555,8 @@ pub(crate) fn check_callback_args(
         };
         let actual = checker.resolve(arg_ty);
         let accepted = match actual {
-            ArType::Error => true,
+            // Checked against the bound where its type was synthesized.
+            ArType::Error | ArType::Func(..) => true,
             _ if callback_param_of(checker, arg_ty).is_some() => true,
             ArType::Named(symbol, _) => checker
                 .type_info
@@ -542,15 +571,7 @@ pub(crate) fn check_callback_args(
         let span = checker.pool.expr_span(arg);
         let interner = &checker.type_info.type_interner;
         let bound_text = checker.resolve(bound).display(&checker.symbols, interner);
-        let diagnostic = if matches!(actual, ArType::Func(..)) {
-            crate::Diagnostic::error(
-                crate::DiagCode::U001FeatureNotSupported,
-                "a generic function or a function value as a callback argument is not supported yet (v0.3 LAMBDA L2)",
-                span,
-            )
-            .with_label(span, format!("expected a closure of type '{bound_text}'"))
-            .with_hint("wrap the function in a closure, such as `(x) => f(x)`")
-        } else {
+        checker.diagnostics.push(
             crate::Diagnostic::error(
                 crate::DiagCode::T003IncompatibleCallArg,
                 format!(
@@ -559,9 +580,8 @@ pub(crate) fn check_callback_args(
                 ),
                 span,
             )
-            .with_label(span, "this value is not callable")
-        };
-        checker.diagnostics.push(diagnostic);
+            .with_label(span, "this value is not callable"),
+        );
     }
 }
 
@@ -571,6 +591,27 @@ pub(super) fn check_callback_lambda(
     checker: &mut TypeChecker<'_>,
     arg_id: ExprId,
     bound: TypeId,
+) -> TypeId {
+    check_lambda(checker, arg_id, bound, false)
+}
+
+/// A lambda whose expected type is `(A) -> R` outside a callback position
+/// is a function value. Without captures it becomes a function of its own;
+/// a function value holds no environment, so a capture is rejected until
+/// `own (A) -> R` (L3).
+pub(crate) fn check_lambda_value(
+    checker: &mut TypeChecker<'_>,
+    expr: ExprId,
+    func_ty: TypeId,
+) -> TypeId {
+    check_lambda(checker, expr, func_ty, true)
+}
+
+fn check_lambda(
+    checker: &mut TypeChecker<'_>,
+    arg_id: ExprId,
+    bound: TypeId,
+    as_value: bool,
 ) -> TypeId {
     let lambda_span = checker.pool.expr_span(arg_id);
     if let Some(recipe) = checker.type_info.closure_at(lambda_span) {
@@ -682,6 +723,40 @@ pub(super) fn check_callback_lambda(
     if rejected {
         checker.record_expr_type(arg_id, error);
         return error;
+    }
+    if as_value {
+        if let Some(capture) = captures.first() {
+            checker.diagnostics.push(
+                crate::Diagnostic::error(
+                    crate::DiagCode::U001FeatureNotSupported,
+                    format!(
+                        "a closure that captures '{}' cannot be a function value yet (v0.3 LAMBDA L3)",
+                        capture.name
+                    ),
+                    capture.span,
+                )
+                .with_label(lambda_span, "a function value holds no environment")
+                .with_hint("pass the closure directly to a callback parameter, or capture nothing"),
+            );
+            checker.record_expr_type(arg_id, error);
+            return error;
+        }
+        let _ = install_closure(
+            checker,
+            lambda_span,
+            &ClosureShape {
+                method: "fn",
+                struct_prefix: "__Lambda",
+                host_prefix: "ar_lambda",
+                params: &method_params,
+                return_type,
+                self_by_mut_ref: false,
+                adapts: None,
+            },
+            &[],
+        );
+        checker.record_expr_type(arg_id, bound);
+        return bound;
     }
     let struct_ty = install_closure(
         checker,
@@ -923,7 +998,7 @@ fn mint(
     }
 }
 
-fn mentions_type_parameter(checker: &TypeChecker<'_>, ty: TypeId) -> bool {
+pub(super) fn mentions_type_parameter(checker: &TypeChecker<'_>, ty: TypeId) -> bool {
     let Ok(shape) = arandu_middle::types::TypeShape::from_id(ty, &checker.type_info.type_interner)
     else {
         return false;

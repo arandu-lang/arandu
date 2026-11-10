@@ -138,7 +138,7 @@ pub fn lower_closure_hir(
             }
         }
     };
-    let body_block = if recipe.is_callback() {
+    let body_block = if recipe.is_callback() || recipe.is_function() {
         pool.capture_aliases.clear();
         body_block
     } else {
@@ -146,17 +146,20 @@ pub fn lower_closure_hir(
     };
 
     let mut params = Vec::with_capacity(recipe.params.len() + 1);
-    params.push(HirParam {
-        symbol: recipe.self_param,
-        ty: self_ty,
-        span: recipe.lambda_span,
-        is_receiver: true,
-        receiver_kind: Some(if recipe.is_callback() {
-            ReceiverKind::Mut
-        } else {
-            ReceiverKind::Own
-        }),
-    });
+    // A function value's lambda is a plain function, without an environment.
+    if !recipe.is_function() {
+        params.push(HirParam {
+            symbol: recipe.self_param,
+            ty: self_ty,
+            span: recipe.lambda_span,
+            is_receiver: true,
+            receiver_kind: Some(if recipe.is_callback() {
+                ReceiverKind::Mut
+            } else {
+                ReceiverKind::Own
+            }),
+        });
+    }
     params.extend(recipe.params.iter().map(|param| HirParam {
         symbol: param.symbol,
         ty: param.ty,

@@ -77,3 +77,54 @@ fn unsafe_extern_and_exported_functions_are_not_values() {
         assert_eq!(errors(source), vec![*code], "{name}");
     }
 }
+
+const FORMS: &str = r#"
+func identity<T>(x: T): T { return x }
+func double(x: int): int { return x * 2 }
+func negate(b: bool): bool { return !b }
+func apply(x: int, f: (int) -> int): int { return f(x) }
+"#;
+
+fn body_errors(body: &str) -> Vec<DiagCode> {
+    errors(&format!("{FORMS}\nfunc main(): int {{\n{body}\n}}\n"))
+}
+
+#[test]
+fn generic_functions_lambdas_and_values_are_function_values() {
+    for body in [
+        "    let f: (int) -> int = identity\n    return f(1)",
+        "    let f: (int) -> int = (x) => x + 1\n    return f(1)",
+        "    let f = double\n    return apply(1, f)",
+        "    return apply(1, identity)",
+    ] {
+        assert!(
+            body_errors(body).is_empty(),
+            "{body}: {:?}",
+            body_errors(body)
+        );
+    }
+}
+
+#[test]
+fn each_rejected_function_value_reports_one_diagnostic() {
+    let cases: &[(&str, &str, DiagCode)] = &[
+        (
+            "generic value without a type to fix it",
+            "    let f = identity\n    return 0",
+            DiagCode::T001CannotInferType,
+        ),
+        (
+            "capturing lambda as a value",
+            "    let k = 2\n    let f: (int) -> int = (x) => x + k\n    return f(1)",
+            DiagCode::U001FeatureNotSupported,
+        ),
+        (
+            "function value of another signature as a callback",
+            "    let f = negate\n    return apply(1, f)",
+            DiagCode::T003IncompatibleCallArg,
+        ),
+    ];
+    for (name, body, code) in cases {
+        assert_eq!(body_errors(body), vec![*code], "{name}");
+    }
+}

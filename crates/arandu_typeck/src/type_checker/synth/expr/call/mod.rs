@@ -8,7 +8,9 @@ mod invoke_direct;
 mod thread_target;
 
 pub(crate) use arg::check_call_arg;
-pub(crate) use closure::{check_callback_args, synth_args_with_callbacks, synth_call_arg};
+pub(crate) use closure::{
+    check_callback_args, check_lambda_value, synth_args_with_callbacks, synth_call_arg,
+};
 pub(crate) use instantiate::{bind_type_params, infer_and_instantiate_func};
 pub(crate) use thread_target::check_target_thread_capabilities;
 
@@ -25,6 +27,74 @@ use crate::type_checker::synth::{
 use crate::type_checker::types::{self, ArType};
 
 use arandu_middle::types::type_interner::TypeId;
+
+/// A generic function used as a value is one instance, fixed by the type the
+/// value must have (`let f: (int) -> int = identity`), as Rust infers the
+/// arguments of a `fn` item it coerces to a `fn` pointer.
+fn instantiate_function_value(
+    checker: &mut TypeChecker<'_>,
+    expr: ExprId,
+    symbol: arandu_middle::SymbolId,
+    span: Span,
+    expected: Option<TypeId>,
+) -> Option<TypeId> {
+    if !checker.symbols.try_get(symbol).is_some_and(|entry| {
+        matches!(
+            entry.kind,
+            arandu_middle::SymbolKind::Func | arandu_middle::SymbolKind::AssociatedFunc
+        )
+    }) {
+        return None;
+    }
+    let generics = checker
+        .type_info
+        .generic_params
+        .get(&symbol)
+        .filter(|params| !params.is_empty())?
+        .clone();
+    let template = checker.decl_type(symbol)?;
+    let mut bindings = rustc_hash::FxHashMap::default();
+    if let Some(expected) = expected
+        && matches!(checker.resolve(expected), ArType::Func(..))
+    {
+        bind_type_params(checker, &generics, &template, expected, &mut bindings);
+    }
+    let concrete = generics
+        .iter()
+        .map(|param| {
+            bindings
+                .get(param)
+                .copied()
+                .filter(|&ty| !closure::mentions_type_parameter(checker, ty))
+        })
+        .collect::<Option<Vec<_>>>();
+    let Some(concrete) = concrete else {
+        let name = checker.symbols.get(symbol).name.clone();
+        checker.diagnostics.push(
+            crate::Diagnostic::error(
+                crate::DiagCode::T001CannotInferType,
+                format!("cannot infer the type arguments of `{name}` used as a function value"),
+                span,
+            )
+            .with_label(span, "this value's type must be known here")
+            .with_note("annotate it, as in `let f: (int) -> int = identity`"),
+        );
+        let error = checker.intern(ArType::Error);
+        checker.record_expr_type(expr, error);
+        return Some(error);
+    };
+    let concrete = concrete
+        .into_iter()
+        .map(|ty| checker.resolve(ty))
+        .collect::<Vec<_>>();
+    types::interfaces::check_instantiation_constraints(checker, &generics, &concrete, span);
+    let subst = arandu_middle::types::build_subst(&generics, &concrete);
+    let instance =
+        arandu_middle::types::substitute_type(&template, &subst, &checker.type_info.type_interner);
+    let instance = checker.intern(instance);
+    checker.record_expr_type(expr, instance);
+    Some(instance)
+}
 
 /// A function used as a value is a plain code pointer called with the
 /// internal convention, by code that cannot see its obligations. An
@@ -107,6 +177,11 @@ pub(super) fn synth_call_expr(
                 }
                 if checker.direct_callee != Some(expr) {
                     check_function_value(checker, symbol_id, span);
+                    if let Some(instance) =
+                        instantiate_function_value(checker, expr, symbol_id, span, expected)
+                    {
+                        return Some(instance);
+                    }
                 }
                 if !checker
                     .type_info

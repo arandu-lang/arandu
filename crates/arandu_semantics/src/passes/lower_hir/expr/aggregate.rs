@@ -167,7 +167,14 @@ pub(super) fn lower_lambda(
     Ok({
         {
             if let Some(recipe) = type_check.type_info.closure_at(span).cloned() {
-                super::super::closure::capture_struct_literal(hir_pool, &recipe)
+                if recipe.is_function() {
+                    // The value is a pointer to the lambda's own function.
+                    HirExprKind::Path {
+                        symbol: recipe.method_symbol,
+                    }
+                } else {
+                    super::super::closure::capture_struct_literal(hir_pool, &recipe)
+                }
             } else {
                 let mut hir_params = Vec::new();
                 let param_ids = pool.lambda_param_list(*params);

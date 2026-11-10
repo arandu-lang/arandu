@@ -233,6 +233,24 @@ fn deduce_mono_iface_param(
     None
 }
 
+/// Type arguments of the instance a generic function value names: its
+/// declared type matched against the instantiated type typeck recorded.
+pub(crate) fn function_value_type_args(
+    tc: &TypeCheckResult,
+    symbol: SymbolId,
+    instance: TypeId,
+) -> Option<Vec<TypeId>> {
+    let params = tc.type_info.generic_params.get(&symbol)?;
+    let template = tc.type_info.decl_type(symbol)?;
+    let interner = &tc.type_info.type_interner;
+    let mut bindings = rustc_hash::FxHashMap::default();
+    collect_param_bindings(interner, params, &template, instance, &mut bindings);
+    params
+        .iter()
+        .map(|param| bindings.get(param).copied())
+        .collect()
+}
+
 fn collect_param_bindings(
     interner: &arandu_middle::types::TypeInterner,
     type_params: &[SymbolId],

@@ -3,6 +3,7 @@ mod infer;
 
 pub(crate) use callee::generic_callee_symbol;
 pub(in crate::passes::monomorphize) use callee::instantiation_key_for_call;
+pub(crate) use infer::function_value_type_args;
 
 use arandu_diagnostics::{DiagCode, Diagnostic};
 use arandu_lexer::Span;

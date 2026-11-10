@@ -99,6 +99,13 @@ impl ClosureRecipe {
     pub fn is_callback(&self) -> bool {
         self.method_name == "call"
     }
+
+    /// A capture-free lambda used as a function value: its method has no
+    /// receiver and the value is a pointer to it (RFC 0032, L2).
+    #[must_use]
+    pub fn is_function(&self) -> bool {
+        self.method_name == "fn"
+    }
 }
 
 /// One concrete declaration contract in this interner's domain. Templates

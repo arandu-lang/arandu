@@ -3,6 +3,7 @@ mod expand;
 mod graph;
 
 pub use arandu_middle::symbol_mangling::{demangle_symbol, mangle_symbol};
+pub(crate) use collect::function_value_type_args;
 pub use collect::{InstantiationRoot, analyze_instantiations};
 pub use expand::{
     InstantiatedFunction, expand_specializations, instantiate_function, specialize_root_block,

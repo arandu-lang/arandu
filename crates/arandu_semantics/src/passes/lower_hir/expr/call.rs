@@ -111,7 +111,13 @@ pub(super) fn lower_call(
                     _ => None,
                 })
             };
-            let callee_vid = super::lower_expr(type_check, pool, hir_pool, callee_id)?;
+            let mut callee_vid = super::lower_expr(type_check, pool, hir_pool, callee_id)?;
+            // A called generic path stays a path: the call instantiates it.
+            if matches!(pool.expr(callee_id), ExprKind::Path { .. })
+                && let HirExprKind::Generic { callee: path, .. } = hir_pool.expr(callee_vid).kind
+            {
+                callee_vid = path;
+            }
             let mut hir_args = Vec::new();
             if let Some(base_id) = method_base {
                 hir_args.push(super::lower_expr(type_check, pool, hir_pool, base_id)?);

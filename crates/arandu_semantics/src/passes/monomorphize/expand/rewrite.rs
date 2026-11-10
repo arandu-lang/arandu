@@ -256,6 +256,7 @@ pub(super) fn rewrite_expr_calls<'bump>(
             }
             // Rewrite Call(Generic(...), …) or Call(Field/Path template, …) → Path(spec).
             try_rewrite_generic_call(hir, expr_id, *callee, *args, specialized, tc, bump);
+            rewrite_function_value_callback(hir, expr_id, tc);
         }
         HirExprKind::StructLiteral { fields, .. } => {
             let vals: Vec<_> = hir
@@ -325,6 +326,52 @@ pub(super) fn rewrite_expr_calls<'bump>(
             }
         }
         _ => {}
+    }
+}
+
+/// A callback instantiated with a function value (`F` = `(A) -> R`) has no
+/// `call` method: `F.call(f, args)` calls through the pointer `f` refers to,
+/// as a Rust `fn` pointer implements `FnMut` (RFC 0032, L2).
+fn rewrite_function_value_callback(hir: &mut HirProgram, expr_id: HirExprId, tc: &TypeCheckResult) {
+    let HirExprKind::Call { callee, args, .. } = hir.pool.expr(expr_id).kind.clone() else {
+        return;
+    };
+    let HirExprKind::Field { base, field } = &hir.pool.expr(callee).kind else {
+        return;
+    };
+    if field.as_str() != "call" {
+        return;
+    }
+    let base = *base;
+    let interner = &tc.type_info.type_interner;
+    let ArType::RefMut(function) = interner.resolve(hir.pool.expr(base).ty) else {
+        return;
+    };
+    if !matches!(interner.resolve(function), ArType::Func(..)) {
+        return;
+    }
+    let span = hir.pool.expr(callee).span;
+    *hir.pool.expr_mut(callee) = HirExpr {
+        kind: HirExprKind::Unary {
+            op: arandu_middle::ops::UnaryOp::Deref,
+            expr: base,
+        },
+        ty: function,
+        span,
+    };
+    // The receiver argument was the environment; a function value has none.
+    let rest = hir
+        .pool
+        .expr_list(args)
+        .get(1..)
+        .unwrap_or_default()
+        .to_vec();
+    let args = hir.pool.alloc_expr_list(&rest);
+    if let HirExprKind::Call {
+        args: call_args, ..
+    } = &mut hir.pool.expr_mut(expr_id).kind
+    {
+        *call_args = args;
     }
 }
 

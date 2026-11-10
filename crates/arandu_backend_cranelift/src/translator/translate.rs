@@ -95,8 +95,9 @@ impl<'a, 'b, M: Module> FunctionTranslator<'a, 'b, M> {
         self.builder
             .append_block_params_for_function_params(entry_clif);
 
-        // A reference held in a local whose own address is taken (`ref r` with
-        // `r: mut ref T`) needs a home; other references stay in registers.
+        // A pointer-sized value held in a local whose own address is taken
+        // (`ref r` with `r: mut ref T`, `ref f` with `f: (A) -> R`) needs a
+        // home; otherwise it stays in a register.
         let mut address_taken = rustc_hash::FxHashSet::default();
         for statement in self.current_func.stmts.payloads.iter() {
             if let arandu_middle::amir::AmirStmt::Assign {
@@ -137,7 +138,13 @@ impl<'a, 'b, M: Module> FunctionTranslator<'a, 'b, M> {
                 if local.is_memory
                     && (Self::needs_scalar_stack_home(&lty)
                         || (address_taken.contains(&local.id)
-                            && matches!(lty, ArType::Ref(_) | ArType::RefMut(_))))
+                            && matches!(
+                                lty,
+                                ArType::Ref(_)
+                                    | ArType::RefMut(_)
+                                    | ArType::Ptr(_)
+                                    | ArType::Func(..)
+                            )))
                 {
                     let layout = self.checked_layout(&lty);
                     let size = u32::try_from(layout.size.max(1)).unwrap_or_else(|_| {

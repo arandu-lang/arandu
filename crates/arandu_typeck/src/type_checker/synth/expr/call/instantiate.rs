@@ -98,8 +98,11 @@ fn callback_signature(
         return None;
     };
     let bound = *checker.type_info.callback_bounds.get(&implicit)?;
-    let ArType::Named(closure, _) = checker.resolve(arg) else {
-        return None;
+    let closure = match checker.resolve(arg) {
+        // A function value's own type is its signature.
+        ArType::Func(..) => return Some((checker.resolve(bound), arg)),
+        ArType::Named(closure, _) => closure,
+        _ => return None,
     };
     let recipe = checker
         .type_info

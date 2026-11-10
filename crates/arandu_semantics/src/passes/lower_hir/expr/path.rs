@@ -17,7 +17,39 @@ pub(super) fn lower_path(
         unreachable!();
     };
     let symbol = require_value_symbol(&type_check.resolved, expr, span)?;
+    if let Some(kind) = generic_function_value(type_check, hir_pool, expr, symbol, span) {
+        return Ok(kind);
+    }
     Ok(captured_value(hir_pool, symbol, span))
+}
+
+/// A generic function used as a value names one instance: typeck recorded
+/// its instantiated type, and monomorphization rewrites the `Generic` node to
+/// that instance's path. A direct callee keeps its plain path (see `call.rs`).
+fn generic_function_value(
+    type_check: &TypeCheckResult,
+    hir_pool: &mut crate::hir::HirPool,
+    expr: ExprId,
+    symbol: crate::SymbolId,
+    span: arandu_middle::Span,
+) -> Option<HirExprKind> {
+    let info = &type_check.type_info;
+    info.generic_params
+        .get(&symbol)
+        .filter(|params| !params.is_empty())?;
+    let instance = info.expr_type_id(expr)?;
+    if Some(instance) == info.decl_type_id(symbol)
+        || !matches!(info.type_interner.resolve(instance), ArType::Func(..))
+    {
+        return None;
+    }
+    let args = crate::passes::monomorphize::function_value_type_args(type_check, symbol, instance)?;
+    let callee = hir_pool.alloc_expr(HirExpr {
+        kind: HirExprKind::Path { symbol },
+        ty: instance,
+        span,
+    });
+    Some(HirExprKind::Generic { callee, args })
 }
 
 /// A use of `symbol`. Inside a closure body a captured local is its
@@ -307,7 +339,11 @@ pub(super) fn lower_generic(
     };
     Ok({
         {
-            let callee_id = super::lower_expr(type_check, pool, hir_pool, *callee)?;
+            let mut callee_id = super::lower_expr(type_check, pool, hir_pool, *callee)?;
+            // The explicit arguments name the instance; keep the plain path.
+            if let HirExprKind::Generic { callee: path, .. } = hir_pool.expr(callee_id).kind {
+                callee_id = path;
+            }
             let mut hir_args = Vec::new();
             let arg_ids = pool.type_expr_list(*args);
             let interner = &mut std::sync::Arc::make_mut(&mut type_check.type_info).type_interner;

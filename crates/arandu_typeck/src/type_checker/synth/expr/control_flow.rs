@@ -40,6 +40,9 @@ pub(super) fn synth_control_flow_expr(
         ExprKind::Lambda { .. } => {
             // A callback argument was already typed (or rejected) against its bound.
             if let Some(recipe) = checker.type_info.closure_at(span) {
+                if recipe.is_function() {
+                    return checker.type_info.expr_type_id(_expr);
+                }
                 let struct_symbol = recipe.struct_symbol;
                 return checker.decl_type_id(struct_symbol);
             }
@@ -47,6 +50,11 @@ pub(super) fn synth_control_flow_expr(
                 && checker.resolve(checked).is_error()
             {
                 return Some(checked);
+            }
+            if let Some(expected) = expected
+                && matches!(checker.resolve(expected), ArType::Func(..))
+            {
+                return Some(super::call::check_lambda_value(checker, _expr, expected));
             }
             checker.diagnostics.push(
                 crate::Diagnostic::error(

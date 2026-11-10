@@ -345,6 +345,7 @@ impl LowerCtx<'_> {
                 {
                     self.mark_local_materialized(place.local);
                     let dest = target.unwrap_or_else(|| self.new_temp_id(expr_ty));
+                    self.mark_view_reborrow(dest, &place, expr_ty);
                     self.emit_assign_temp(dest, AmirRvalue::Load(place));
                     return Ok(AmirOperand::Copy(dest));
                 }

@@ -134,6 +134,49 @@ func main(): int {
     );
 }
 
+/// A `mut []T` field read through a reference is reborrowed, as Rust
+/// reborrows `&mut *self.buf`, instead of being moved out of it (O016).
+#[test]
+fn mut_slice_field_is_reborrowed_through_a_reference() {
+    let output = invoke(
+        "run",
+        r#"module tests.views.reborrow
+import std.alloc.vec as vec
+
+struct Buf { data: mut []int, len: int }
+
+func total(view: []int): int {
+    let mut sum = 0
+    let mut i: usize = 0
+    while i < view.len() {
+        sum = sum + view[i]
+        i = i + 1
+    }
+    return sum
+}
+
+func Buf.sum(self: ref Buf): int { return total(self.data) + total(self.data) }
+
+func Buf.bump(self: mut ref Buf): void { self.data[0] = self.data[0] + 1 }
+
+func main(): int {
+    let mut storage = vec.Vec<int>.new()
+    storage.push(1)
+    storage.push(2)
+    let mut b = Buf { data: storage.asMutSlice(), len: 2 }
+    b.bump()
+    return b.sum() - 8
+}
+"#,
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 #[test]
 fn jit_formatter_writes_string_bytes_and_rejects_partial_write() {
     let output = invoke(

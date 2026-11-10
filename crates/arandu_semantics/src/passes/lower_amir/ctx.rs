@@ -602,6 +602,27 @@ impl LowerCtx<'_> {
         }
     }
 
+    /// A `mut []T` read through a reference is reborrowed, as Rust reborrows
+    /// `&mut *self.buf`: the view owns nothing, so the field stays in place
+    /// instead of being moved out of the reference.
+    pub(crate) fn mark_view_reborrow(
+        &mut self,
+        temp: TempId,
+        place: &AmirPlace,
+        ty: crate::types::TypeId,
+    ) {
+        let through_reference = place
+            .projections
+            .iter()
+            .any(|projection| matches!(projection, crate::amir::AmirProjection::Deref));
+        if through_reference
+            && matches!(self.resolve_ty(ty), ArType::MutSlice(_))
+            && let Some(temp) = self.temps.get_mut(temp.as_usize())
+        {
+            temp.is_copy = true;
+        }
+    }
+
     pub(crate) fn load_place(
         &mut self,
         place: &AmirPlace,
@@ -609,6 +630,7 @@ impl LowerCtx<'_> {
     ) -> Result<AmirOperand, Diagnostic> {
         self.note_local_use(place.local, self.current_span);
         let temp = self.new_temp_id(ty);
+        self.mark_view_reborrow(temp, place, ty);
         self.emit_assign_temp(temp, AmirRvalue::Load(place.clone()));
         // Preserve the root for lowering-time diagnostics. The MIR move checker
         // derives the full projection path from the emitted `Load(place)`.

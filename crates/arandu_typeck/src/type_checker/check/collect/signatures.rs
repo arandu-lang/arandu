@@ -93,9 +93,11 @@ pub(crate) fn collect_signature_types(checker: &mut TypeChecker<'_>, program: &P
                             // `self: ref Pair<T>` names the struct's own `T`, which
                             // is in scope for every method of `Pair` (as in a Swift
                             // extension) whether or not the method restates it.
+                            // Parameters the method restates keep its declared order.
                             let mentioned: Vec<_> = struct_params
                                 .iter()
                                 .copied()
+                                .filter(|param| !method_params.contains(param))
                                 .filter(|&param| {
                                     crate::type_checker::synth::method::contains_generic_params(
                                         &lowered_first_ty,

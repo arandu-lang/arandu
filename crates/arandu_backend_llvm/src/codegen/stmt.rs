@@ -175,21 +175,19 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                         .map_or_else(|| self.module.llvm_ty(&ty), Ok)?;
                     let align = self.module.align_of(&ty);
                     let value = self.slot_value.take().unwrap_or(result);
-                    self.writer.line(format!(
-                        "store {ty_text} {value}, ptr {slot}, align {align}"
-                    ));
+                    // A `void` value has no bytes; LLVM rejects storing it.
+                    if ty_text != "void" {
+                        self.writer.line(format!(
+                            "store {ty_text} {value}, ptr {slot}, align {align}"
+                        ));
+                    }
                 }
                 Ok(())
             }
             AmirStmt::Store { lhs, rhs } => {
                 let (address, ty) = self.place(lhs)?;
                 let value = self.operand(rhs, &ty)?;
-                let align = self.module.align_of(&ty);
-                self.writer.line(format!(
-                    "store {}, ptr {address}, align {align}",
-                    value.render()
-                ));
-                Ok(())
+                self.store_value(&address, &value, &ty)
             }
             AmirStmt::Call {
                 lhs, callee, args, ..
@@ -203,9 +201,11 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                     let ty_text = self.module.llvm_ty(&ty)?;
                     let align = self.module.align_of(&ty);
                     let value = self.slot_value.take().unwrap_or(value);
-                    self.writer.line(format!(
-                        "store {ty_text} {value}, ptr {slot}, align {align}"
-                    ));
+                    if ty_text != "void" {
+                        self.writer.line(format!(
+                            "store {ty_text} {value}, ptr {slot}, align {align}"
+                        ));
+                    }
                 }
                 Ok(())
             }

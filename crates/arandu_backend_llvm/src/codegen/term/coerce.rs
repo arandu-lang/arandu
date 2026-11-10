@@ -380,6 +380,10 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
         value: &TypedValue,
         ty: &ArType,
     ) -> Result<(), Diagnostic> {
+        // A `void` value has no bytes; LLVM rejects storing it.
+        if value.ty == "void" {
+            return Ok(());
+        }
         let align = self.module.align_of(ty);
         self.writer.line(format!(
             "store {}, ptr {address}, align {align}",

@@ -1,0 +1,49 @@
+module staticMut
+
+// `static mut` (C globals brought over by c2arandu): writable storage that
+// starts as a constant image in the data section and is reached in `unsafe`.
+
+struct Point {
+    x: int,
+    y: int,
+}
+
+static mut COUNTER: int = 40
+static mut SCALE: f64 = 1.5
+static mut FLAGS: [4]u8 = [1, 2, 3, 4]
+static mut ORIGIN: Point = Point { x: 7, y: 9 }
+static mut ENABLED: bool = true
+static mut CURSOR: ptr[Point] = nil
+
+func bump(by: int): void {
+    unsafe {
+        COUNTER += by
+    }
+}
+
+func readCounter(): int {
+    return unsafe { COUNTER }
+}
+
+func readThrough(target: ref int): int {
+    return *target
+}
+
+func main(): int {
+    bump(1)
+    bump(1)
+    if readCounter() != 42 { return 1 }
+    unsafe {
+        SCALE = SCALE * 2.0
+        if SCALE != 3.0 { return 2 }
+        FLAGS[2] = FLAGS[2] + 10
+        if FLAGS[2] != 13 || FLAGS[3] != 4 { return 3 }
+        ORIGIN.y = ORIGIN.x + ORIGIN.y
+        if ORIGIN.y != 16 { return 4 }
+        ENABLED = !ENABLED
+        if ENABLED { return 5 }
+        if readThrough(ref COUNTER) != 42 { return 6 }
+        if CURSOR != nil { return 7 }
+    }
+    return 0
+}

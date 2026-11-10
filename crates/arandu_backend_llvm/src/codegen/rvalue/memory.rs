@@ -1,4 +1,6 @@
-use super::super::{FuncEmitter, TypedValue, ice, local_name, parse_byte_aggregate_size};
+use super::super::{
+    FuncEmitter, TypedValue, ice, local_name, parse_byte_aggregate_size, quote_name,
+};
 use arandu_middle::Diagnostic;
 use arandu_middle::amir::AmirRvalue;
 use arandu_middle::types::ArType;
@@ -63,6 +65,19 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                     align.max(&1)
                 ));
                 Ok(())
+            }
+            AmirRvalue::StaticAddr(symbol) => {
+                let Some(item) = self
+                    .module
+                    .program
+                    .statics
+                    .iter()
+                    .find(|item| item.symbol == *symbol)
+                else {
+                    return Err(ice("`static mut` storage is not in the program"));
+                };
+                let address = TypedValue::new("ptr", format!("@{}", quote_name(&item.name)));
+                self.assign_coerced(result, address, lhs_ty)
             }
             AmirRvalue::ArenaCheckpoint => {
                 self.module.require_task_arena_checkpoint();

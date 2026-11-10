@@ -262,6 +262,7 @@ pub fn compose_function_units(
         extern_funcs: FxHashMap::default(),
         debug_bindings: Vec::new(),
         debug_blocks: Vec::new(),
+        statics: Vec::new(),
     };
     let mut proven_summaries = Vec::with_capacity(units.len());
     for input in units {

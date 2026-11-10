@@ -40,6 +40,10 @@ pub fn slot_capacity(code: usize) -> usize {
     class
 }
 
+/// Key of the unit that defines every `static mut` of the program. It is no
+/// source symbol, so no function unit can collide with it.
+pub const STATICS_UNIT: SymbolId = SymbolId::new(u32::MAX, u32::MAX - 1);
+
 /// A discrete compilation unit corresponding to one function or item.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodegenUnit {
@@ -73,8 +77,60 @@ pub fn partition_program(
             toolchain_fingerprint,
         ));
     }
+    if !program.statics.is_empty() {
+        units.push(statics_unit(
+            program,
+            type_info,
+            target,
+            toolchain_fingerprint,
+        ));
+    }
 
     units
+}
+
+/// The unit holding the data of every `static mut`: an edit of an initial
+/// value changes only this unit; function units name the storage only.
+pub fn statics_unit(
+    program: &AmirProgram,
+    type_info: &dyn CodegenTypeContext,
+    target: &Triple,
+    toolchain_fingerprint: &str,
+) -> CodegenUnit {
+    let mut hash = StableHash::new();
+    hash.bytes(CGU_HASH_SCHEMA);
+    hash.bytes(CRANELIFT_IDENTITY);
+    hash.str(toolchain_fingerprint);
+    hash.str(&target.to_string());
+    hash.str("statics");
+    let little = target
+        .endianness()
+        .is_ok_and(|endianness| endianness == target_lexicon::Endianness::Little);
+    let pointer = target
+        .pointer_width()
+        .map_or(8, |width| u64::from(width.bytes()));
+    for item in &program.statics {
+        hash.str(&item.name);
+        match arandu_middle::ctfe::const_value_bytes(
+            &item.init,
+            item.ty,
+            type_info.type_interner(),
+            type_info,
+            arandu_middle::layout::DataLayout::ptr_width(pointer),
+            little,
+        ) {
+            Some(image) => {
+                hash.u64(image.alignment);
+                hash.bytes(&image.bytes);
+            }
+            None => hash.tag(255),
+        }
+    }
+    CodegenUnit {
+        name: "__arandu_statics".to_owned(),
+        symbol: STATICS_UNIT,
+        hash: hash.finish(),
+    }
 }
 
 /// The [`CodegenUnit`] of one function of `program`; [`partition_program`]

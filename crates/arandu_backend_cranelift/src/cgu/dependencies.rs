@@ -42,7 +42,11 @@ pub(crate) fn declaration_closure(
     definitions: &[SymbolId],
 ) -> Result<FxHashSet<SymbolId>, Diagnostic> {
     let mut declarations = definitions.iter().copied().collect::<FxHashSet<_>>();
-    for symbol in definitions {
+    // The statics unit defines data only; it calls nothing.
+    for symbol in definitions
+        .iter()
+        .filter(|symbol| **symbol != super::STATICS_UNIT)
+    {
         let function = program
             .funcs
             .iter()

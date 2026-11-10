@@ -86,6 +86,10 @@ impl<M: Module> AranduModule<M> {
             func_ids.insert("arandu_smith_record_block_hit".to_owned(), id);
         }
 
+        if unit_func_symbols.is_none_or(|set| set.contains(&crate::cgu::STATICS_UNIT)) {
+            self.define_statics(program, type_info, ptr_type)?;
+        }
+
         // 1. Declare all functions first to support cross-calls
         for func in &program.funcs {
             if !needs_declaration(func.symbol) {
@@ -567,4 +571,56 @@ fn define_padded_function<M: Module>(
         .define_function_bytes(func_id, u64::from(alignment), &bytes, &relocs)
         .map_err(Box::new)?;
     Ok(code)
+}
+
+impl<M: Module> AranduModule<M> {
+    /// Writable `static mut` storage with its initial image, in the target's
+    /// byte order and the layout the translator addresses.
+    fn define_statics(
+        &mut self,
+        program: &AmirProgram,
+        type_info: &dyn arandu_middle::type_context::CodegenTypeContext,
+        ptr_type: cranelift_codegen::ir::Type,
+    ) -> Result<(), Diagnostic> {
+        let little = self.module.isa().endianness() == cranelift_codegen::ir::Endianness::Little;
+        for item in &program.statics {
+            let image = arandu_middle::ctfe::const_value_bytes(
+                &item.init,
+                item.ty,
+                type_info.type_interner(),
+                type_info,
+                arandu_middle::layout::DataLayout::ptr_width(u64::from(ptr_type.bytes())),
+                little,
+            )
+            .ok_or_else(|| {
+                codegen_ice(format!(
+                    "`static mut` storage '{}' has no data image",
+                    item.name
+                ))
+            })?;
+            let id = self
+                .module
+                .declare_data(&item.name, Linkage::Export, true, false)
+                .map_err(|error| {
+                    codegen_ice(format!(
+                        "failed to declare `static mut` storage '{}': {error}",
+                        item.name
+                    ))
+                })?;
+            let mut data = cranelift_module::DataDescription::new();
+            let mut bytes = image.bytes;
+            if bytes.is_empty() {
+                bytes.push(0);
+            }
+            data.define(bytes.into_boxed_slice());
+            data.set_align(image.alignment.max(1));
+            self.module.define_data(id, &data).map_err(|error| {
+                codegen_ice(format!(
+                    "failed to define `static mut` storage '{}': {error}",
+                    item.name
+                ))
+            })?;
+        }
+        Ok(())
+    }
 }

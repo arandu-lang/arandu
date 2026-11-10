@@ -277,6 +277,7 @@ fn static_array_passed_as_a_block_argument_keeps_its_materialization() {
         extern_funcs: Default::default(),
         debug_bindings: vec![],
         debug_blocks: vec![],
+        statics: Vec::new(),
     };
     let mut symbols = arandu_semantics::SymbolTable::new(0);
     common::register_imported_sym(&mut symbols, common::foreign_sym(1), "main");

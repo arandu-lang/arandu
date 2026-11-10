@@ -305,6 +305,7 @@ mod tests {
             extern_funcs: Default::default(),
             debug_bindings: Vec::new(),
             debug_blocks: Vec::new(),
+            statics: Vec::new(),
         };
         let symbols = SymbolTable::new(0);
         let info = TypeInfo::default();

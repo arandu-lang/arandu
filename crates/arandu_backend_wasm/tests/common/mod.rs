@@ -243,6 +243,7 @@ pub fn emit_one(func: AmirFunc, interner: &TypeInterner, pool: &mut AmirLiteralP
         extern_funcs: Default::default(),
         debug_bindings: Vec::new(),
         debug_blocks: Vec::new(),
+        statics: Vec::new(),
     };
     emit_wasm(
         &program,
@@ -281,6 +282,7 @@ pub fn emit_with_imported_intrinsics(
         extern_funcs: Default::default(),
         debug_bindings: Vec::new(),
         debug_blocks: Vec::new(),
+        statics: Vec::new(),
     };
     emit_wasm(
         &program,

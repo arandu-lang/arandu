@@ -33,6 +33,32 @@ impl<'a> ModuleEmitter<'a> {
             ));
             string_globals.insert(index as u32, (name, length));
         }
+        // `static mut` storage: its initial image as bytes. Code reaches it
+        // through an opaque pointer, so the global's own type is a byte array.
+        let little = info.target_identity().is_little_endian();
+        for item in &program.statics {
+            let Some(image) = arandu_middle::ctfe::const_value_bytes(
+                &item.init,
+                item.ty,
+                info.type_interner(),
+                info,
+                info.target_layout(),
+                little,
+            ) else {
+                continue;
+            };
+            let mut bytes = image.bytes;
+            if bytes.is_empty() {
+                bytes.push(0);
+            }
+            globals.push(format!(
+                "@{} = internal global [{} x i8] c\"{}\", align {}",
+                quote_name(&item.name),
+                bytes.len(),
+                escape_c_string(&bytes),
+                image.alignment.max(1)
+            ));
+        }
 
         Self {
             program,
@@ -686,6 +712,7 @@ mod tests {
             extern_funcs: Default::default(),
             debug_bindings: Vec::new(),
             debug_blocks: Vec::new(),
+            statics: Vec::new(),
         };
         let symbols = arandu_middle::SymbolTable::default();
         let mut info = arandu_semantics::TypeInfo::new();

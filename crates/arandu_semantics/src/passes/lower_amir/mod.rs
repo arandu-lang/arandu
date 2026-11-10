@@ -179,6 +179,7 @@ fn lower_program(
         extern_funcs: FxHashMap::default(),
         debug_bindings: Vec::new(),
         debug_blocks: Vec::new(),
+        statics: Vec::new(),
     };
     let mut no_fallback = FxHashMap::default();
     let const_values: FxHashMap<SymbolId, crate::hir::HirExprId> = hir

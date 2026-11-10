@@ -166,6 +166,47 @@ impl<'a> WasmModuleBuilder<'a> {
                 static_offsets.insert((func.symbol, id), (offset, size));
             }
         }
+        // `static mut` storage: writable bytes of its own, never shared with
+        // an equal read-only blob.
+        let mut static_addresses = FxHashMap::default();
+        for item in &self.program.statics {
+            let image = arandu_middle::ctfe::const_value_bytes(
+                &item.init,
+                item.ty,
+                self.interner,
+                self.layout_provider,
+                self.layout,
+                true,
+            );
+            let base_align = 1u64 << crate::memory::RODATA_BASE.trailing_zeros();
+            let placed = image.and_then(|image| {
+                if !image.alignment.is_power_of_two() || image.alignment > base_align {
+                    return None;
+                }
+                let mask = usize::try_from(image.alignment.max(16)).ok()? - 1;
+                let aligned = rodata.bytes.len().checked_add(mask)? & !mask;
+                let address = u32::try_from(
+                    usize::try_from(crate::memory::RODATA_BASE)
+                        .ok()?
+                        .checked_add(aligned)?,
+                )
+                .ok()?;
+                rodata.bytes.resize(aligned, 0);
+                rodata.bytes.extend_from_slice(&image.bytes);
+                if image.bytes.is_empty() {
+                    rodata.bytes.push(0);
+                }
+                Some(address)
+            });
+            let Some(address) = placed else {
+                return Err(Diagnostic::ice(
+                    arandu_middle::diagnostics::DiagCode::ICEGEN002,
+                    format!("Wasm cannot place `static mut` storage '{}'", item.name),
+                    arandu_middle::Span::new(0, 0, 0),
+                ));
+            };
+            static_addresses.insert(item.symbol, address);
+        }
         let (heap_base, initial_pages) = rodata.memory_regions().ok_or_else(|| {
             Diagnostic::ice(
                 arandu_middle::diagnostics::DiagCode::ICEGEN002,
@@ -243,6 +284,7 @@ impl<'a> WasmModuleBuilder<'a> {
             literal_pool: &self.program.literal_pool,
             rodata_offsets: &rodata.offsets,
             static_offsets: &static_offsets,
+            static_addresses: &static_addresses,
             func_index_map: &func_index_map,
             alloc_func_idx: cabi_first_func_idx,
             free_func_idx: cabi_first_func_idx + 1,

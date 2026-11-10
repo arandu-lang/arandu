@@ -587,6 +587,26 @@ fn closure_callbacks_agree_on_every_backend() {
     let _ = fs::remove_file(path);
 }
 
+/// `static mut` storage starts from its constant image and is shared by every
+/// function, on every backend, Wasm included.
+#[test]
+fn static_mut_storage_agrees_on_every_backend() {
+    let source = include_str!("../../../../tests/corpus/static_mut.aru");
+    for (backend, outcome) in outcomes("static_mut", source) {
+        assert_eq!(outcome, ProgramOutcome::Returned(0), "{backend}");
+    }
+    let path = std::env::temp_dir().join(format!("arandu_static_mut_{}.aru", std::process::id()));
+    fs::write(&path, source).unwrap();
+    let wasm = cli(&["emit-wasm", &path.to_string_lossy()]);
+    assert!(
+        wasm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&wasm.stderr)
+    );
+    crate::wasm_host::run_main(&wasm.stdout).assert_returns(0, "static mut in Wasmtime");
+    let _ = fs::remove_file(path);
+}
+
 /// Moved and borrowed captures of owned runtime values. LLVM, which links no
 /// runtime, is left out.
 #[test]

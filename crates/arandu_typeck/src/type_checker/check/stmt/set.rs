@@ -210,6 +210,25 @@ fn validate_mutability(checker: &mut TypeChecker<'_>, place: &arandu_parser::Pla
     let root_key = crate::NodeKey::from(place.span);
     let symbol_id_opt = checker.resolved.value_refs.get(&root_key).copied();
 
+    // A `static mut` is writable storage at any projection; only the
+    // `unsafe` requirement applies.
+    if !place.suffixes.is_empty()
+        && let Some(symbol_id) = symbol_id_opt
+        && checker.symbols.get(symbol_id).kind == crate::SymbolKind::StaticMut
+    {
+        if !checker.ctx.is_in_unsafe() {
+            checker.diagnostics.push(
+                crate::Diagnostic::error(
+                    crate::DiagCode::O017StaticMutRequiresUnsafe,
+                    "access to `static mut` requires an `unsafe` block",
+                    place.span,
+                )
+                .with_label(place.span, "modifying `static mut` is unsafe"),
+            );
+        }
+        return;
+    }
+
     if place.suffixes.is_empty() {
         if let Some(symbol_id) = symbol_id_opt {
             let symbol = checker.symbols.get(symbol_id);

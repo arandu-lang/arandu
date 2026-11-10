@@ -96,6 +96,7 @@ mod tests {
             extern_funcs: rustc_hash::FxHashMap::default(),
             debug_bindings: Vec::new(),
             debug_blocks: Vec::new(),
+            statics: Vec::new(),
         };
         let mut p2 = arandu_middle::amir::AmirProgram {
             funcs: Vec::new(),
@@ -103,6 +104,7 @@ mod tests {
             extern_funcs: rustc_hash::FxHashMap::default(),
             debug_bindings: Vec::new(),
             debug_blocks: Vec::new(),
+            statics: Vec::new(),
         };
         p1.literal_pool.intern_int("42");
         p2.literal_pool.intern_int("43");
@@ -150,6 +152,7 @@ mod tests {
                 local: LocalId::from_usize(local),
             }],
             debug_blocks: Vec::new(),
+            statics: Vec::new(),
         };
         assert_ne!(make_program(3).stable_hash(), make_program(4).stable_hash());
     }
@@ -185,6 +188,7 @@ mod tests {
                 extern_funcs,
                 debug_bindings: Vec::new(),
                 debug_blocks: Vec::new(),
+                statics: Vec::new(),
             }
         };
 

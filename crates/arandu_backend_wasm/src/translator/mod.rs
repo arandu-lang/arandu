@@ -115,6 +115,8 @@ pub(super) struct FuncTranslator<'a> {
     /// or is already covered by a serialized enclosing initializer.
     pub static_initializer_temps: rustc_hash::FxHashSet<arandu_middle::amir::InstrId>,
     pub static_offsets: &'a FxHashMap<(SymbolId, arandu_middle::amir::InstrId), (u32, u32)>,
+    /// Linear-memory address of each `static mut`'s writable storage.
+    pub static_addresses: &'a FxHashMap<SymbolId, u32>,
 }
 
 /// Number of wasm locals a shape occupies.
@@ -132,6 +134,8 @@ pub struct TranslationContext<'a> {
     pub functions: &'a [AmirFunc],
     pub extern_functions: &'a FxHashMap<SymbolId, (Vec<ArType>, ArType)>,
     pub static_offsets: &'a FxHashMap<(SymbolId, arandu_middle::amir::InstrId), (u32, u32)>,
+    /// Linear-memory address of each `static mut`'s writable storage.
+    pub static_addresses: &'a FxHashMap<SymbolId, u32>,
     pub symbols: &'a SymbolTable,
     pub interner: &'a TypeInterner,
     pub layout_provider: &'a dyn StructLayoutProvider,
@@ -196,6 +200,7 @@ impl<'a> FuncTranslator<'a> {
             current_initializer: None,
             static_initializer_temps: rustc_hash::FxHashSet::default(),
             static_offsets: ctx.static_offsets,
+            static_addresses: ctx.static_addresses,
         }
     }
 

@@ -258,6 +258,9 @@ pub enum AmirRvalue {
     },
     /// Capture the current `TaskArena` bump cursor as a 64-bit mark (`i64`) for loop rewind.
     ArenaCheckpoint,
+    /// Address of a `static mut`'s storage (`ptr[T]`), listed in
+    /// [`super::AmirProgram::statics`].
+    StaticAddr(SymbolId),
 }
 
 /// Logical arena selected by a Gen operation.

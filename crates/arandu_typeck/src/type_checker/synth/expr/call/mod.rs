@@ -73,11 +73,22 @@ pub(super) fn synth_call_expr(
                 && checker.symbols.try_get(symbol).is_some_and(|entry| {
                     matches!(
                         entry.kind,
-                        arandu_middle::SymbolKind::ConstParam | arandu_middle::SymbolKind::Const
+                        arandu_middle::SymbolKind::ConstParam
+                            | arandu_middle::SymbolKind::Const
+                            | arandu_middle::SymbolKind::StaticMut
                     )
                 })
                 && let Some(base_ty) = checker.decl_type_id(symbol)
             {
+                if checker.symbols.get(symbol).kind == arandu_middle::SymbolKind::StaticMut
+                    && !checker.ctx.is_in_unsafe()
+                {
+                    checker.diagnostics.push(crate::Diagnostic::error(
+                        crate::DiagCode::O017StaticMutRequiresUnsafe,
+                        "access to `static mut` requires an `unsafe` block",
+                        span,
+                    ));
+                }
                 return Some(crate::type_checker::synth::resolve_field_type(
                     checker,
                     base_ty,

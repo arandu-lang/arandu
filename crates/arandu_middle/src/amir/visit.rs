@@ -95,7 +95,8 @@ pub fn for_each_function_context_mut(
                 | AmirRvalue::Alloc(_)
                 | AmirRvalue::RelativeBorrow { .. }
                 | AmirRvalue::StringInterp { .. }
-                | AmirRvalue::ArenaCheckpoint => {}
+                | AmirRvalue::ArenaCheckpoint
+                | AmirRvalue::StaticAddr(_) => {}
             },
             super::AmirStmt::Store { lhs, .. } | super::AmirStmt::Destroy(lhs) => {
                 place_context_mut(lhs, &mut ty, &mut symbol)
@@ -273,7 +274,8 @@ pub fn for_each_rvalue_operand_mut(value: &mut AmirRvalue, mut f: impl FnMut(&mu
         }
         AmirRvalue::RelativeBorrow { .. }
         | AmirRvalue::ArenaAlloc { .. }
-        | AmirRvalue::ArenaCheckpoint => {}
+        | AmirRvalue::ArenaCheckpoint
+        | AmirRvalue::StaticAddr(_) => {}
     }
 }
 
@@ -475,7 +477,8 @@ pub fn for_each_rvalue_operand(rvalue: &AmirRvalue, mut f: impl FnMut(&AmirOpera
         // A3.4 / RFC 0043: index/metadata only — no nested operands.
         AmirRvalue::RelativeBorrow { .. }
         | AmirRvalue::ArenaAlloc { .. }
-        | AmirRvalue::ArenaCheckpoint => {}
+        | AmirRvalue::ArenaCheckpoint
+        | AmirRvalue::StaticAddr(_) => {}
     }
 }
 
@@ -521,7 +524,8 @@ pub fn for_each_rvalue_place(rvalue: &AmirRvalue, mut f: impl FnMut(&AmirPlace))
         | AmirRvalue::GenUpsert { .. }
         | AmirRvalue::GenRemove { .. }
         | AmirRvalue::ArenaAlloc { .. }
-        | AmirRvalue::ArenaCheckpoint => {}
+        | AmirRvalue::ArenaCheckpoint
+        | AmirRvalue::StaticAddr(_) => {}
     }
 }
 

@@ -518,6 +518,7 @@ fn invalid_projected_nonmemory_store_is_icegen002() {
         extern_funcs: Default::default(),
         debug_bindings: Vec::new(),
         debug_blocks: Vec::new(),
+        statics: Vec::new(),
     };
     let result = emit_wasm(
         &program,

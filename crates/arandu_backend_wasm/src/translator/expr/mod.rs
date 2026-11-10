@@ -88,6 +88,7 @@ impl<'a> FuncTranslator<'a> {
             | AmirRvalue::Alloc(_)
             | AmirRvalue::ArenaAlloc { .. }
             | AmirRvalue::ArenaCheckpoint
+            | AmirRvalue::StaticAddr(_)
             | AmirRvalue::StrView { .. }
             | AmirRvalue::StrBytes { .. }
             | AmirRvalue::SliceSubslice { .. }

@@ -83,4 +83,56 @@ impl CEmitter<'_> {
         }
         let _ = writeln!(self.output, "}};");
     }
+
+    /// Writable `static mut` storage: a union of its initial bytes and its
+    /// typed value, so the bytes initialize the object and code reads and
+    /// writes the typed member (union punning is defined in C11).
+    pub(super) fn emit_mutable_statics(&mut self) {
+        let statics = self.program.statics.clone();
+        for item in &statics {
+            let ty = self.interner.resolve(item.ty);
+            self.ensure_type_emitted(&ty);
+            let c_type = self.format_type(&ty).into_owned();
+            let encode = |little| {
+                arandu_middle::ctfe::const_value_bytes(
+                    &item.init,
+                    item.ty,
+                    self.interner,
+                    self.provider,
+                    self.layout.data_layout,
+                    little,
+                )
+            };
+            let (Some(little), Some(big)) = (encode(true), encode(false)) else {
+                continue;
+            };
+            if little.bytes != big.bytes {
+                let _ = writeln!(
+                    self.output,
+                    "#if defined(__BYTE_ORDER__) && defined(__ORDER_BIG_ENDIAN__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__"
+                );
+                self.emit_mutable_static(&item.name, &c_type, &big.bytes);
+                let _ = writeln!(self.output, "#else");
+            }
+            self.emit_mutable_static(&item.name, &c_type, &little.bytes);
+            if little.bytes != big.bytes {
+                let _ = writeln!(self.output, "#endif");
+            }
+        }
+    }
+
+    fn emit_mutable_static(&mut self, name: &str, c_type: &str, bytes: &[u8]) {
+        let _ = write!(
+            self.output,
+            "static union {{ uint8_t bytes[{}]; {c_type} value; }} {name} = {{ {{",
+            bytes.len().max(1)
+        );
+        for byte in bytes {
+            let _ = write!(self.output, "{byte},");
+        }
+        if bytes.is_empty() {
+            let _ = write!(self.output, "0");
+        }
+        let _ = writeln!(self.output, "}} }};");
+    }
 }

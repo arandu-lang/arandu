@@ -384,6 +384,7 @@ fn rvalue_holder_paths(rhs: &AmirRvalue, loan: &Loan) -> BTreeSet<HolderPath> {
         | AmirRvalue::GenRemove { .. }
         | AmirRvalue::ArenaAlloc { .. }
         | AmirRvalue::ArenaCheckpoint
+        | AmirRvalue::StaticAddr(_)
         | AmirRvalue::StringInterp { .. }
         | AmirRvalue::ToStr { .. } => BTreeSet::new(),
     }

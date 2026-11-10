@@ -31,7 +31,7 @@ impl SymbolId {
         local_id: LocalSymbolId(u32::MAX),
     };
 
-    pub fn new(file_id: crate::db::FileId, local_id: u32) -> Self {
+    pub const fn new(file_id: crate::db::FileId, local_id: u32) -> Self {
         Self {
             file_id,
             local_id: LocalSymbolId(local_id),

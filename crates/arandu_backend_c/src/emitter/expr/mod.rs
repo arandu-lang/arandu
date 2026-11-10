@@ -159,6 +159,21 @@ impl<'a> CEmitter<'a> {
             AmirRvalue::ArenaCheckpoint => {
                 self.emit_arena_checkpoint();
             }
+            AmirRvalue::StaticAddr(symbol) => {
+                match self
+                    .program
+                    .statics
+                    .iter()
+                    .find(|item| item.symbol == *symbol)
+                {
+                    Some(item) => {
+                        let _ = write!(&mut self.output, "(&{}.value)", item.name);
+                    }
+                    None => {
+                        let _ = write!(&mut self.output, "((void*)0)");
+                    }
+                }
+            }
             // Heap CoroutineReady (stack:true is multi-stmt in emit_stmt).
             // A3.6 layout: disc@0 (u32 Ready=0), payload@8.
             AmirRvalue::CoroutineReady {

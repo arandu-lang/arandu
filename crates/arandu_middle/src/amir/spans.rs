@@ -102,6 +102,7 @@ fn rvalue_spans(rvalue: &mut AmirRvalue, f: &mut impl FnMut(Span) -> Span) {
         | AmirRvalue::ToStr { .. }
         | AmirRvalue::BlackBox { .. }
         | AmirRvalue::ArenaAlloc { .. }
-        | AmirRvalue::ArenaCheckpoint => {}
+        | AmirRvalue::ArenaCheckpoint
+        | AmirRvalue::StaticAddr(_) => {}
     }
 }

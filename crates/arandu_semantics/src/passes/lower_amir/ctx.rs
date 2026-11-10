@@ -35,14 +35,24 @@ impl LowerCtx<'_> {
         // it in a typed temp keeps comparisons (e.g. `uint > CONST`) well typed.
         let value = match &hir_expr.kind {
             crate::hir::HirExprKind::Int(value) => value.clone(),
-            crate::hir::HirExprKind::Cast { expr, .. } => {
-                let inner = self.hir.pool.expr(*expr);
-                let crate::hir::HirExprKind::Int(value) = &inner.kind else {
+            crate::hir::HirExprKind::Cast { expr: inner, .. }
+                if matches!(
+                    self.hir.pool.expr(*inner).kind,
+                    crate::hir::HirExprKind::Int(_)
+                ) =>
+            {
+                let crate::hir::HirExprKind::Int(value) = &self.hir.pool.expr(*inner).kind else {
                     return Ok(None);
                 };
                 value.clone()
             }
-            _ => return Ok(None),
+            // Any other constant is inlined at its use, as Rust does: a
+            // `const` names a value, not storage, so no global symbol exists
+            // for it to load from.
+            _ => {
+                let symbols = std::sync::Arc::clone(&self.tc.symbols);
+                return self.lower_expr(expr, None, &symbols).map(Some);
+            }
         };
         let ty = self
             .tc

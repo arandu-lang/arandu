@@ -104,6 +104,7 @@ mod tests {
             extern_funcs: Default::default(),
             debug_bindings: Vec::new(),
             debug_blocks: Vec::new(),
+            statics: Vec::new(),
         };
         let symbols = arandu_middle::SymbolTable::default();
         let mut info = arandu_semantics::TypeInfo::new();
@@ -127,6 +128,7 @@ mod tests {
             extern_funcs: Default::default(),
             debug_bindings: Vec::new(),
             debug_blocks: Vec::new(),
+            statics: Vec::new(),
         };
         let symbols = arandu_middle::SymbolTable::default();
         let mut info = arandu_semantics::TypeInfo::new();
@@ -148,6 +150,7 @@ mod tests {
             extern_funcs: Default::default(),
             debug_bindings: Vec::new(),
             debug_blocks: Vec::new(),
+            statics: Vec::new(),
         };
         let symbols = arandu_middle::SymbolTable::default();
         let info = arandu_semantics::TypeInfo::new();

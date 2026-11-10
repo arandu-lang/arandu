@@ -141,7 +141,8 @@ pub fn function_dependencies(
                     | AmirRvalue::StringInterp { .. }
                     | AmirRvalue::ToStr { .. }
                     | AmirRvalue::BlackBox { .. }
-                    | AmirRvalue::ArenaCheckpoint => {}
+                    | AmirRvalue::ArenaCheckpoint
+                    | AmirRvalue::StaticAddr(_) => {}
                 }
             }
         }

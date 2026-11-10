@@ -116,6 +116,10 @@ impl<'a> FuncTranslator<'a> {
                     .push(Instruction::GlobalGet(crate::memory::GLOBAL_HEAP_PTR));
                 self.code.push(Instruction::I64ExtendI32U);
             }
+            AmirRvalue::StaticAddr(symbol) => {
+                let address = self.static_addresses.get(symbol).copied().unwrap_or(0);
+                self.code.push(Instruction::I32Const(address as i32));
+            }
             AmirRvalue::StrView { owner } => {
                 // Pass through the owner fat pointer (data, len).
                 self.emit_operand(owner, result_ty);

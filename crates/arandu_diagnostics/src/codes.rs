@@ -138,6 +138,9 @@ pub enum DiagCode {
     /// A borrowed `(A) -> R` callback parameter is returned, stored or
     /// assigned where it would outlive the call that received it.
     T100BorrowedCallbackEscapes,
+    /// A `static mut` initial value has no plain-bytes image for the data
+    /// section (for example a string or a niche-encoded enum).
+    T101StaticWithoutDataImage,
 
     // ── Lowering (L) ──
     L001LoweringUnresolvedSymbol,
@@ -287,6 +290,7 @@ impl DiagCode {
             T049InvalidFfiExport,
             T099RequiresOperatingSystem,
             T100BorrowedCallbackEscapes,
+            T101StaticWithoutDataImage,
             L001LoweringUnresolvedSymbol,
             G001GenericInstantiationCycle,
             G002GenericInstantiationLimit,
@@ -441,6 +445,7 @@ impl DiagCode {
             DiagCode::T049InvalidFfiExport => "T049",
             DiagCode::T099RequiresOperatingSystem => "T099",
             DiagCode::T100BorrowedCallbackEscapes => "T100",
+            DiagCode::T101StaticWithoutDataImage => "T101",
             DiagCode::L001LoweringUnresolvedSymbol => "L001",
             DiagCode::G001GenericInstantiationCycle => "G001",
             DiagCode::G002GenericInstantiationLimit => "G002",

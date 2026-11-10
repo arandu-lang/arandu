@@ -188,7 +188,9 @@ pub(super) fn lower_type_path(
                 && type_check.symbols.try_get(symbol).is_some_and(|entry| {
                     matches!(
                         entry.kind,
-                        arandu_middle::SymbolKind::ConstParam | arandu_middle::SymbolKind::Const
+                        arandu_middle::SymbolKind::ConstParam
+                            | arandu_middle::SymbolKind::Const
+                            | arandu_middle::SymbolKind::StaticMut
                     )
                 })
             {

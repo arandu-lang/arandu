@@ -76,6 +76,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
             | AmirRvalue::Alloc(_)
             | AmirRvalue::ArenaAlloc { .. }
             | AmirRvalue::ArenaCheckpoint
+            | AmirRvalue::StaticAddr(_)
             | AmirRvalue::Len(_)
             | AmirRvalue::StrView { .. }
             | AmirRvalue::SliceView { .. }

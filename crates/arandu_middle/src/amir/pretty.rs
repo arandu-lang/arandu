@@ -525,6 +525,9 @@ impl AmirRvalue {
             AmirRvalue::ArenaCheckpoint => {
                 out.push_str("arena_checkpoint()");
             }
+            AmirRvalue::StaticAddr(symbol) => {
+                out.push_str(&format!("static_addr(@{})", symbols.get(*symbol).name));
+            }
         }
     }
 }

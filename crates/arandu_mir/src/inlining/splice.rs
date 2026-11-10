@@ -586,6 +586,7 @@ fn remap_rvalue(rv: &AmirRvalue, temp_map: &[TempId], local_map: &[LocalId]) -> 
             payload_ty: *payload_ty,
         },
         AmirRvalue::ArenaCheckpoint => AmirRvalue::ArenaCheckpoint,
+        AmirRvalue::StaticAddr(symbol) => AmirRvalue::StaticAddr(*symbol),
     }
 }
 

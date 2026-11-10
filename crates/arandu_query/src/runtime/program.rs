@@ -185,7 +185,140 @@ fn empty_program() -> AmirProgram {
         extern_funcs: Default::default(),
         debug_bindings: Vec::new(),
         debug_blocks: Vec::new(),
+        statics: Vec::new(),
     }
+}
+
+/// The `static mut` storage the functions reach, with initial values frozen at
+/// compile time: a constant image in the data section, as C and Rust require,
+/// never an initializer run before `main`. Each frozen value enters the
+/// program fingerprint.
+fn collect_statics(
+    db: &dyn ArandCompilerDb,
+    program: &AmirProgram,
+    checked: &arandu_semantics::TypeCheckResult,
+    diagnostics: &mut Vec<Diagnostic>,
+    fingerprint: &mut blake3::Hasher,
+) -> Vec<arandu_middle::amir::AmirStatic> {
+    let mut used = std::collections::BTreeSet::new();
+    for function in &program.funcs {
+        for statement in function.stmts.payloads.iter() {
+            if let arandu_middle::amir::AmirStmt::Assign {
+                rhs: arandu_middle::amir::AmirRvalue::StaticAddr(symbol),
+                ..
+            } = statement
+            {
+                used.insert((
+                    db.file_path(symbol.file_id).to_path_buf(),
+                    symbol.local_id.0,
+                    *symbol,
+                ));
+            }
+        }
+    }
+    let mut statics = Vec::with_capacity(used.len());
+    for (path, _, symbol) in used {
+        let Some(source) = db.source_file_by_id(symbol.file_id) else {
+            continue;
+        };
+        let Some(declaration) = checked.symbols.try_get(symbol) else {
+            continue;
+        };
+        let span = declaration.span;
+        // `nil` is the all-zero image of a pointer, as `NULL` in C's `.bss`;
+        // compile-time evaluation admits no pointer values.
+        let init = if static_initializer_is_nil(db, source, symbol) {
+            fingerprint.update(b"static-nil");
+            arandu_middle::ctfe::ConstValue::Void
+        } else {
+            let frozen = crate::ctfe::global_const_value(db, source, symbol);
+            fingerprint.update(frozen.stable_hash().as_bytes());
+            match &frozen.result {
+                Ok(constant) => constant.value.clone(),
+                Err(errors) => {
+                    diagnostics.extend(errors.iter().cloned());
+                    continue;
+                }
+            }
+        };
+        let Some(ty) = checked.type_info.decl_type_id(symbol) else {
+            continue;
+        };
+        if arandu_middle::ctfe::const_value_bytes(
+            &init,
+            ty,
+            &checked.type_info.type_interner,
+            &*checked.type_info,
+            checked.type_info.target_layout,
+            true,
+        )
+        .is_none()
+        {
+            diagnostics.push(
+                Diagnostic::error(
+                    DiagCode::T101StaticWithoutDataImage,
+                    format!(
+                        "the initial value of `static mut {}` has no static data image",
+                        declaration.name
+                    ),
+                    span,
+                )
+                .with_label(span, "this initial value cannot be stored as plain bytes")
+                .with_note(
+                    "a `static mut` starts as constant bytes in the data section: scalars, arrays, tuples, structs and enums with a tag are supported",
+                ),
+            );
+            continue;
+        }
+        let module = match &**crate::passes::parse(db, source) {
+            Ok(parsed) => parsed.module.as_ref().map(|module| module.path.join("_")),
+            Err(_) => None,
+        }
+        .unwrap_or_else(|| {
+            path.file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        });
+        let mut name = String::from("ar_static_");
+        for character in module.chars().chain(['_']).chain(declaration.name.chars()) {
+            name.push(if character.is_ascii_alphanumeric() {
+                character
+            } else {
+                '_'
+            });
+        }
+        statics.push(arandu_middle::amir::AmirStatic {
+            symbol,
+            name: name.into(),
+            ty,
+            init,
+        });
+    }
+    statics
+}
+
+fn static_initializer_is_nil(
+    db: &dyn ArandCompilerDb,
+    source: SourceFile,
+    symbol: SymbolId,
+) -> bool {
+    let parsed = crate::passes::parse(db, source);
+    let Ok(program) = &**parsed else {
+        return false;
+    };
+    let resolution = crate::passes::resolve(db, source);
+    let mut nil = false;
+    program.for_each_decl_recursive(|_, declaration| {
+        if let arandu_parser::TopLevelDecl::Const(constant) = declaration {
+            nil |= constant.is_static_mut
+                && resolution.resolved.definitions.get(&constant.span.into()) == Some(&symbol)
+                && matches!(
+                    program.pool.expr(constant.value),
+                    arandu_parser::ExprKind::Nil
+                );
+        }
+    });
+    nil
 }
 
 #[salsa::tracked]
@@ -447,6 +580,14 @@ pub fn runtime_program(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Run
         &aggregate,
         &mut diagnostics,
     );
+    amir.statics = collect_statics(db, &amir, &aggregate, &mut diagnostics, &mut fingerprint);
+    // Backends name storage as they name functions: by the host name.
+    for item in &amir.statics {
+        aggregate
+            .symbols_mut()
+            .host_function_names
+            .insert(item.symbol, item.name.clone());
+    }
     let program = RuntimeProgram {
         artifacts: std::sync::Arc::new(crate::passes::LowerAmirArtifacts {
             amir,

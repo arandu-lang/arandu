@@ -523,6 +523,7 @@ fn admitted_rvalue(rhs: &AmirRvalue) -> Result<(), EvalErrorKind> {
         | AmirRvalue::BlackBox { .. }
         | AmirRvalue::ArenaAlloc { .. }
         | AmirRvalue::ArenaCheckpoint
+        | AmirRvalue::StaticAddr(_)
         | AmirRvalue::Binary { .. }
         | AmirRvalue::Unary { .. } => Err(EvalErrorKind::UnsupportedOperation),
     }

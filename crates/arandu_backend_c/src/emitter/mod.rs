@@ -328,6 +328,7 @@ impl<'a> CEmitter<'a> {
         let needs_str = needs_str || needs_println || needs_print || needs_eprint;
         self.emit_headers(needs_str);
         self.emit_static_sources();
+        self.emit_mutable_statics();
         if needs_str {
             self.emit_str_literals();
         }

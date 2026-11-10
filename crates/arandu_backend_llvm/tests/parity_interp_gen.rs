@@ -330,6 +330,7 @@ fn gen_insert_get_matches_cranelift_exit_code() {
         extern_funcs: Default::default(),
         debug_bindings: Vec::new(),
         debug_blocks: Vec::new(),
+        statics: Vec::new(),
     };
     let type_info = TypeInfo {
         type_interner: interner,

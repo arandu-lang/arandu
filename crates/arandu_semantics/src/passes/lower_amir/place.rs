@@ -27,6 +27,35 @@ impl LowerCtx<'_> {
 
     /// Lower an expression to an [`AmirPlace`] for Borrow/Load (F2.0 + BC.4a).
     ///
+    /// A `static mut` as a place: a compiler local holding the storage
+    /// address, read and written through `Deref` like any pointer.
+    pub(crate) fn static_place(
+        &mut self,
+        symbol: crate::SymbolId,
+        span: arandu_middle::Span,
+    ) -> Result<(AmirPlace, crate::types::TypeId), Diagnostic> {
+        let Some(ty) = self.tc.type_info.decl_type_id(symbol) else {
+            return Err(Diagnostic::ice(
+                crate::DiagCode::ICEL001,
+                "`static mut` has no checked type",
+                span,
+            ));
+        };
+        let pointer = self.intern_ty(ArType::Ptr(ty));
+        let address = self.new_temp_id(pointer);
+        self.emit_assign_temp(address, AmirRvalue::StaticAddr(symbol));
+        let local = self.new_compiler_local_id(pointer, span);
+        self.write_variable_source(local, AmirOperand::Copy(address))?;
+        self.mark_local_materialized(local);
+        Ok((
+            AmirPlace {
+                local,
+                projections: smallvec::smallvec![AmirProjection::Deref],
+            },
+            ty,
+        ))
+    }
+
     /// Gold path: locals, `*p` through ptr/ref, and field chains.
     pub(crate) fn lower_expr_to_place(
         &mut self,
@@ -47,6 +76,9 @@ impl LowerCtx<'_> {
                         local: local_id,
                         projections: smallvec::smallvec![],
                     });
+                }
+                if symbols.get(*symbol).kind == crate::SymbolKind::StaticMut {
+                    return self.static_place(*symbol, expr.span).map(|(place, _)| place);
                 }
                 Err(self.move_diag(format!(
                     "cannot take address of non-local `{}`",

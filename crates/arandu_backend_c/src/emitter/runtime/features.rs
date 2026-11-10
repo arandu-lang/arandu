@@ -65,6 +65,7 @@ impl CEmitter<'_> {
                         AmirRvalue::ArenaAlloc { .. } | AmirRvalue::ArenaCheckpoint => {
                             features.task_arena = true;
                         }
+                        AmirRvalue::StaticAddr(_) => {}
                         AmirRvalue::CoroutineReady { .. } => features.coroutine = true,
                         AmirRvalue::Unary {
                             op: UnaryOp::Await, ..

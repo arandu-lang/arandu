@@ -335,6 +335,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             AmirRvalue::Alloc(op) => self.translate_alloc(op),
             AmirRvalue::ArenaAlloc { size, align, .. } => self.translate_arena_alloc(*size, *align),
             AmirRvalue::ArenaCheckpoint => self.translate_arena_checkpoint(),
+            AmirRvalue::StaticAddr(symbol) => self.translate_static_addr(*symbol),
             AmirRvalue::CoroutineReady {
                 value,
                 payload_ty,

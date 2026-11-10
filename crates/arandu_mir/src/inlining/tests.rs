@@ -63,6 +63,7 @@ fn inlining_respects_remaining_budget_and_structural_ceiling() {
         extern_funcs: FxHashMap::default(),
         debug_bindings: vec![],
         debug_blocks: vec![],
+        statics: Vec::new(),
     };
     assert_eq!(inline_leaf_functions(&mut program), 2);
     assert_eq!(
@@ -178,6 +179,7 @@ fn wrappers_become_inlinable_without_resetting_the_call_site_budget() {
             extern_funcs: FxHashMap::default(),
             debug_bindings: Vec::new(),
             debug_blocks: Vec::new(),
+            statics: Vec::new(),
         };
         // The exact count depends on how deep each round splices: a wrapper is now
         // eligible as a non-leaf, so a chain may resolve in a different order
@@ -269,6 +271,7 @@ fn large_caller_inlines_more_than_the_floor_budget() {
         extern_funcs: FxHashMap::default(),
         debug_bindings: Vec::new(),
         debug_blocks: Vec::new(),
+        statics: Vec::new(),
     };
 
     let inlined = inline_leaf_functions(&mut program);
@@ -399,6 +402,7 @@ fn cheapest_callee_is_inlined_before_a_costlier_one() {
         extern_funcs: FxHashMap::default(),
         debug_bindings: Vec::new(),
         debug_blocks: Vec::new(),
+        statics: Vec::new(),
     };
 
     assert_eq!(inline_leaf_functions(&mut program), 2);
@@ -903,6 +907,7 @@ fn nonleaf_wrapper_is_inlinable_when_small() {
         extern_funcs: FxHashMap::default(),
         debug_bindings: Vec::new(),
         debug_blocks: Vec::new(),
+        statics: Vec::new(),
     };
 
     assert!(inline_leaf_functions(&mut program) > 0);
@@ -1115,6 +1120,7 @@ fn test_leaf_inlining_and_sccp_folding() {
         extern_funcs: rustc_hash::FxHashMap::default(),
         debug_bindings: Vec::new(),
         debug_blocks: Vec::new(),
+        statics: Vec::new(),
     };
 
     // Run leaf inlining

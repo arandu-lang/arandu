@@ -321,6 +321,7 @@ mod tests {
             extern_funcs: rustc_hash::FxHashMap::default(),
             debug_bindings: Vec::new(),
             debug_blocks: Vec::new(),
+            statics: Vec::new(),
         };
 
         let dot = program.render_cfg_dot(&symbols, &interner);

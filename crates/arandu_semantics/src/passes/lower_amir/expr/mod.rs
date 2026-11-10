@@ -373,18 +373,20 @@ impl LowerCtx<'_> {
                 } else {
                     let sym = symbols.get(*symbol);
                     if sym.kind == SymbolKind::StaticMut {
-                        return Err(self.static_mut_unsupported(expr.span));
+                        let (place, ty) = self.static_place(*symbol, expr.span)?;
+                        self.load_place(&place, ty)
+                    } else {
+                        Ok(match sym.kind {
+                            SymbolKind::Func
+                            | SymbolKind::ExternFunc
+                            | SymbolKind::AssociatedFunc
+                            | SymbolKind::NamespaceMember => AmirOperand::FunctionRef(*symbol),
+                            SymbolKind::Const => self
+                                .lower_const_operand(*symbol)?
+                                .unwrap_or(AmirOperand::GlobalRef(*symbol)),
+                            _ => AmirOperand::GlobalRef(*symbol),
+                        })
                     }
-                    Ok(match sym.kind {
-                        SymbolKind::Func
-                        | SymbolKind::ExternFunc
-                        | SymbolKind::AssociatedFunc
-                        | SymbolKind::NamespaceMember => AmirOperand::FunctionRef(*symbol),
-                        SymbolKind::Const => self
-                            .lower_const_operand(*symbol)?
-                            .unwrap_or(AmirOperand::GlobalRef(*symbol)),
-                        _ => AmirOperand::GlobalRef(*symbol),
-                    })
                 }?;
                 if let Some(dest) = target {
                     let already_assigned = self.tc.type_info.enum_variant_tags.contains_key(symbol)

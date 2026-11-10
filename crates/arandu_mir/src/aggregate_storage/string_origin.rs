@@ -134,7 +134,8 @@ pub(super) fn independent_string_result(function: &AmirFunc, interner: &TypeInte
                         | AmirRvalue::GenUpsert { .. }
                         | AmirRvalue::GenRemove { .. }
                         | AmirRvalue::ArenaAlloc { .. }
-                        | AmirRvalue::ArenaCheckpoint => false,
+                        | AmirRvalue::ArenaCheckpoint
+                        | AmirRvalue::StaticAddr(_) => false,
                     };
                     if !proven {
                         return false;

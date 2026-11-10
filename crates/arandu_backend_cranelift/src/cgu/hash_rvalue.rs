@@ -186,6 +186,20 @@ impl HashContext<'_> {
             AmirRvalue::ArenaCheckpoint => {
                 self.hash.tag(37);
             }
+            // The code only names the storage; its layout and initial bytes
+            // belong to the statics unit.
+            AmirRvalue::StaticAddr(symbol) => {
+                self.hash.tag(38);
+                match self
+                    .program
+                    .statics
+                    .iter()
+                    .find(|item| item.symbol == *symbol)
+                {
+                    Some(item) => self.hash.str(&item.name),
+                    None => self.hash.tag(255),
+                }
+            }
             AmirRvalue::Load(place) => {
                 self.hash.tag(16);
                 self.place(place);

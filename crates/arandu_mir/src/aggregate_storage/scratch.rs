@@ -420,7 +420,8 @@ pub fn function_scratch_safe(
                     | AmirRvalue::BlackBox { .. }
                     | AmirRvalue::StringInterp { .. }
                     | AmirRvalue::ArenaAlloc { .. }
-                    | AmirRvalue::ArenaCheckpoint => true,
+                    | AmirRvalue::ArenaCheckpoint
+                    | AmirRvalue::StaticAddr(_) => true,
                 },
                 AmirStmt::Call {
                     lhs,

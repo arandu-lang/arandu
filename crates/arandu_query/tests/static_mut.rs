@@ -30,22 +30,35 @@ fn access_outside_unsafe_is_o017() {
 }
 
 #[test]
-fn lowering_rejects_reads_and_writes_until_storage_exists() {
-    for body in [
-        "    unsafe {\n        COUNTER = 1\n    }\n    return 0",
-        "    return unsafe { COUNTER }",
-    ] {
-        let mut db = DatabaseImpl::new();
-        let file = db.new_file(
-            "static_mut.aru".into(),
-            format!("static mut COUNTER: int = 0\nfunc main(): int {{\n{body}\n}}\n"),
-        );
-        assert!(codes(&passes::type_check(&db, file).diagnostics).is_empty());
-        let program = arandu_query::runtime::runtime_program(&db, file);
-        assert!(
-            codes(&program.diagnostics).contains(&DiagCode::U001FeatureNotSupported),
-            "{body}: {:?}",
-            program.diagnostics
-        );
-    }
+fn reads_and_writes_lower_to_static_storage() {
+    let mut db = DatabaseImpl::new();
+    let file = db.new_file(
+        "static_mut.aru".into(),
+        "static mut COUNTER: int = 0\nfunc main(): int {\n    unsafe {\n        COUNTER = COUNTER + 1\n    }\n    return unsafe { COUNTER }\n}\n"
+            .into(),
+    );
+    let program = arandu_query::runtime::runtime_program(&db, file);
+    assert!(
+        codes(&program.diagnostics).is_empty(),
+        "{:?}",
+        program.diagnostics
+    );
+    let statics = &program.artifacts.amir.statics;
+    assert_eq!(statics.len(), 1);
+    assert_eq!(statics[0].name.as_str(), "ar_static_static_mut_COUNTER");
+}
+
+#[test]
+fn an_initial_value_without_a_data_image_is_t101() {
+    let mut db = DatabaseImpl::new();
+    let file = db.new_file(
+        "static_mut.aru".into(),
+        "static mut NAME: str = \"x\"\nfunc main(): int {\n    return unsafe { NAME.len } as int\n}\n".into(),
+    );
+    let program = arandu_query::runtime::runtime_program(&db, file);
+    assert!(
+        codes(&program.diagnostics).contains(&DiagCode::T101StaticWithoutDataImage),
+        "{:?}",
+        program.diagnostics
+    );
 }

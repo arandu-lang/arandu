@@ -28,8 +28,8 @@ pub use crate::aot::{
     AotOptimization, CraneliftObjectBackend, ObjectArtifact, aot_triple_for_pointer_width,
 };
 pub use crate::cgu::{
-    CodegenUnit, codegen_unit, compile_cgu, compile_cgu_measured, compute_cgu_hash,
-    partition_program,
+    CodegenUnit, STATICS_UNIT, codegen_unit, compile_cgu, compile_cgu_measured, compute_cgu_hash,
+    partition_program, statics_unit,
 };
 pub use crate::debug::DebugSource;
 pub use crate::jit::CompiledModule;

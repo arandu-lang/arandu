@@ -282,5 +282,9 @@ pub(in crate::stable_hash) fn hash_rvalue(
         R::ArenaCheckpoint => {
             hasher.update(&[32]);
         }
+        R::StaticAddr(symbol) => {
+            hasher.update(&[37]);
+            hash_symbol_id(hasher, *symbol);
+        }
     }
 }

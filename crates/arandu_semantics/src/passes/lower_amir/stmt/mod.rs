@@ -203,18 +203,6 @@ impl LowerCtx<'_> {
         }
     }
 
-    /// `static mut` is checked by the front end, but no backend emits its
-    /// storage yet: fail closed instead of dropping writes or linking a
-    /// missing symbol.
-    pub(crate) fn static_mut_unsupported(&self, span: arandu_middle::Span) -> Diagnostic {
-        Diagnostic::error(
-            crate::DiagCode::U001FeatureNotSupported,
-            "`static mut` cannot be compiled yet: no backend emits module-level mutable storage",
-            span,
-        )
-        .with_label(span, "reads and writes of `static mut` are not lowered yet")
-    }
-
     pub(crate) fn lower_set_places(
         &mut self,
         places: &[HirPlace],
@@ -231,9 +219,17 @@ impl LowerCtx<'_> {
         // Multi-place destructure: `a, b = pair` → field i of val_op into each place.
         for (i, place) in places.iter().enumerate() {
             self.with_span(place.span, |this| -> Result<(), Diagnostic> {
-                let Some(&local_id) = this.symbol_map.get(&place.root_symbol) else {
-                    return Ok(());
-                };
+                let (local_id, prefix) =
+                    if let Some(&local_id) = this.symbol_map.get(&place.root_symbol) {
+                        (local_id, Vec::new())
+                    } else if symbols.try_get(place.root_symbol).map(|symbol| symbol.kind)
+                        == Some(arandu_middle::SymbolKind::StaticMut)
+                    {
+                        let (place, _) = this.static_place(place.root_symbol, place.span)?;
+                        (place.local, place.projections.into_vec())
+                    } else {
+                        return Ok(());
+                    };
                 let projections: Result<Vec<_>, Diagnostic> = place
                     .suffixes
                     .iter()
@@ -253,7 +249,7 @@ impl LowerCtx<'_> {
                         HirPlaceSuffix::Deref { .. } => Ok(AmirProjection::Deref),
                     })
                     .collect();
-                let projections = projections?;
+                let projections = [prefix, projections?].concat();
                 if !projections.is_empty() {
                     this.mark_local_materialized(local_id);
                 }
@@ -290,16 +286,24 @@ impl LowerCtx<'_> {
         val_op: &AmirOperand,
         symbols: &SymbolTable,
     ) -> Result<(), Diagnostic> {
-        let Some(&local_id) = self.symbol_map.get(&place.root_symbol) else {
-            if symbols.try_get(place.root_symbol).map(|symbol| symbol.kind)
+        // A `static mut` root is its storage: written through the address its
+        // compiler local holds, then projected like a local of its type.
+        let (local_id, root_ty, mut projections) =
+            if let Some(&local_id) = self.symbol_map.get(&place.root_symbol) {
+                let root_ty = self.resolve_ty(self.locals[local_id.as_usize()].ty);
+                (local_id, root_ty, Vec::new())
+            } else if symbols.try_get(place.root_symbol).map(|symbol| symbol.kind)
                 == Some(arandu_middle::SymbolKind::StaticMut)
             {
-                return Err(self.static_mut_unsupported(place.span));
-            }
-            return Ok(());
-        };
-        let root_ty = self.resolve_ty(self.locals[local_id.as_usize()].ty);
-        let mut projections = Vec::new();
+                let (place, ty) = self.static_place(place.root_symbol, place.span)?;
+                (
+                    place.local,
+                    self.resolve_ty(ty),
+                    place.projections.into_vec(),
+                )
+            } else {
+                return Ok(());
+            };
         let starts_with_named_field =
             matches!(place.suffixes.first(), Some(HirPlaceSuffix::Field { .. }));
         let starts_with_index =

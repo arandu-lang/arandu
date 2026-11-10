@@ -24,6 +24,21 @@ pub struct AmirProgram {
     /// tooling. Optimized programs may invalidate this table; consumers must
     /// only use it while block IDs still refer to the lowered O0 program.
     pub debug_blocks: Vec<AmirDebugBlock>,
+    /// Module-level mutable storage (`static mut`) reached by the functions,
+    /// in a deterministic order.
+    pub statics: Vec<AmirStatic>,
+}
+
+/// A `static mut`: writable storage with a compile-time initial value. Code
+/// reaches it only through [`super::AmirRvalue::StaticAddr`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct AmirStatic {
+    pub symbol: SymbolId,
+    /// Linker name from the module path and source name, independent of
+    /// dense symbol and file ids.
+    pub name: smol_str::SmolStr,
+    pub ty: TypeId,
+    pub init: crate::ctfe::ConstValue,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

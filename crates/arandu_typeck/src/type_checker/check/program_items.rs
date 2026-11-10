@@ -2,7 +2,6 @@
 
 use super::super::TypeCheckResult;
 use super::super::TypeChecker;
-use super::super::synth::synth_expr;
 use super::func::check_func_body;
 use super::validate::validate_top_level_any;
 use crate::type_checker::TargetInfo;
@@ -251,15 +250,7 @@ fn check_one_item_body(checker: &mut TypeChecker<'_>, program: &Program, decl: &
                 checker.type_info.record_expr_type(const_decl.value, ty);
                 return;
             }
-            let val_ty = synth_expr(checker, const_decl.value);
-            let const_key = NodeKey::from(const_decl.span);
-            if let Some(&symbol_id) = checker.resolved.definitions.get(&const_key) {
-                checker.record_decl_type(symbol_id, val_ty);
-                if let Some(var_id) = checker.literal_table.var_for_expr(const_decl.value) {
-                    checker.literal_table.bind_symbol(symbol_id, var_id);
-                }
-            }
-            checker.finalize_literal_vars();
+            check_const_value(checker, const_decl);
         }
         TopLevelDecl::Extern(extern_decl) => {
             validate_top_level_any(checker, decl);
@@ -313,4 +304,61 @@ pub fn check_non_func_bodies_only(
     // Residuals without a primary symbol are already covered by items; keep empty shell.
     let _ = program;
     checker.finish()
+}
+
+/// Type a `const` or `static mut` initializer. An annotation is the declared
+/// type: the value is checked against it, as an assignment would be, and the
+/// declaration keeps it (`static mut HEAD: ptr[Node] = nil` stays a pointer).
+pub(crate) fn check_const_value(
+    checker: &mut TypeChecker<'_>,
+    const_decl: &arandu_parser::ConstDecl,
+) {
+    let declared = const_decl.ty.map(|ty| {
+        let lowered = checker.lower_type_expr(ty, checker.symbols.global_scope());
+        checker.intern(lowered)
+    });
+    let val_ty = super::super::synth::synth_expr_expected(checker, const_decl.value, declared);
+    let const_key = NodeKey::from(const_decl.span);
+    let value_span = checker.pool.expr_span(const_decl.value);
+    let mut decl_ty = val_ty;
+    if let Some(declared) = declared {
+        decl_ty = declared;
+        if let Some(var_id) = checker.literal_table.var_for_expr(const_decl.value) {
+            checker.constrain_literal_var(
+                var_id,
+                declared,
+                crate::type_checker::constraints::ConstraintOrigin::Assignment {
+                    lhs_span: const_decl.span,
+                    rhs_span: value_span,
+                },
+            );
+        } else if !checker.is_assignable(val_ty, declared)
+            && !(matches!(
+                checker.pool.expr(const_decl.value),
+                arandu_parser::ExprKind::Nil
+            ) && matches!(
+                checker.resolve(declared),
+                crate::type_checker::types::ArType::Ptr(_)
+                    | crate::type_checker::types::ArType::Nullable(_)
+            ))
+        {
+            checker.add_constraint(
+                checker.resolve(declared),
+                val_ty,
+                crate::type_checker::constraints::ConstraintOrigin::Assignment {
+                    lhs_span: const_decl.span,
+                    rhs_span: value_span,
+                },
+            );
+        }
+    }
+    if let Some(&symbol_id) = checker.resolved.definitions.get(&const_key) {
+        checker.record_decl_type(symbol_id, decl_ty);
+        if declared.is_none()
+            && let Some(var_id) = checker.literal_table.var_for_expr(const_decl.value)
+        {
+            checker.literal_table.bind_symbol(symbol_id, var_id);
+        }
+    }
+    checker.finalize_literal_vars();
 }

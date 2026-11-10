@@ -104,6 +104,29 @@ public func SendClosure.fromFunction<F>(code: F): SendClosure<F> {
     return SendClosure<F> { code: code, env: nil, drop: keepEnvironment<F> }
 }
 
+/// The three words of a closure, handed from one closure type to the other.
+struct Parts<F> {
+    code: F,
+    env: ptr[u8],
+    drop: (ptr[u8]) -> void,
+}
+
+/// A closure over an environment it now owns.
+func Closure.adopt<F>(parts: Parts<F>): Closure<F> {
+    return Closure<F> { code: parts.code, env: parts.env, drop: parts.drop }
+}
+
+/// The same closure without the `Send` guarantee; `own (A) -> R + Send`
+/// converts to `own (A) -> R` through this wherever one is expected.
+public func SendClosure.local<F>(self: own SendClosure<F>): Closure<F> {
+    let mut sent = self
+    let local = Closure.adopt<F>(Parts<F> { code: sent.code, env: sent.env, drop: sent.drop })
+    // The environment now belongs to `local`; `sent` is destroyed empty.
+    sent.env = nil
+    sent.drop = keepEnvironment<F>;
+    return local
+}
+
 @Destructor
 func Closure.destroy<F>(self: own Closure<F>): void {
     (self.drop)(self.env)
@@ -112,4 +135,20 @@ func Closure.destroy<F>(self: own Closure<F>): void {
 @Destructor
 func SendClosure.destroy<F>(self: own SendClosure<F>): void {
     (self.drop)(self.env)
+}
+
+/// A `Send` closure without parameters as a `std.thread.ThreadJob<void, R>`:
+/// `thread.spawn(job)` runs it once on the new thread.
+public struct ClosureJob<R> {
+    private closure: own () -> R + Send
+}
+
+/// Wraps `closure` as a thread job.
+public func ClosureJob.new<R>(closure: own () -> R + Send): ClosureJob<R> {
+    return ClosureJob<R> { closure: closure }
+}
+
+/// Runs the closure, consuming the job.
+public func ClosureJob.run<R>(self: own ClosureJob<R>, argument: void): R {
+    return (self.closure)()
 }

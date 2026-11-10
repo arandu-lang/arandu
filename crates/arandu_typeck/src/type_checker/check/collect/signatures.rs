@@ -264,8 +264,11 @@ pub(crate) fn collect_signature_types(checker: &mut TypeChecker<'_>, program: &P
                         // auto-ref lower (Borrow/BorrowMut) also applies to
                         // calls through extern declarations.
                         let bare = checker.intern(bare_ty);
+                        reject_foreign_owning_closure(checker, bare, param.span);
                         param_types.push(apply_receiver_ownership(checker, bare, param.ownership));
                     }
+                    let ret_id = checker.intern(ret_ty.clone());
+                    reject_foreign_owning_closure(checker, ret_id, member.span);
 
                     let name_key = crate::NodeKey::from(member.span);
                     if let Some(symbol_id) = checker.resolved.definitions.get(&name_key).copied() {
@@ -452,4 +455,41 @@ pub(crate) fn collect_signature_types(checker: &mut TypeChecker<'_>, program: &P
             _ => {}
         }
     });
+}
+
+/// An owning closure carries code with the internal calling convention and
+/// an environment only Arandu can destroy, so it never crosses a foreign
+/// boundary (RFC 0032, L3).
+fn reject_foreign_owning_closure(
+    checker: &mut TypeChecker<'_>,
+    ty: crate::type_checker::types::TypeId,
+    span: arandu_lexer::Span,
+) {
+    let mut found = false;
+    if let Ok(shape) =
+        arandu_middle::types::TypeShape::from_id(ty, &checker.type_info.type_interner)
+    {
+        let _ = shape.for_each_symbol(|symbol| {
+            found |= checker.symbols.try_get(symbol).is_some_and(|entry| {
+                matches!(
+                    entry.lang_item,
+                    Some(
+                        arandu_middle::symbol_table::LangItem::Closure
+                            | arandu_middle::symbol_table::LangItem::SendClosure
+                    )
+                )
+            });
+        });
+    }
+    if found {
+        checker.diagnostics.push(
+            arandu_middle::Diagnostic::error(
+                arandu_middle::DiagCode::T049InvalidFfiExport,
+                "an owning closure cannot cross a foreign function boundary",
+                span,
+            )
+            .with_primary_label("`own (A) -> R` uses Arandu's internal calling convention")
+            .with_hint("pass a plain function value `(A) -> R` and a context pointer instead"),
+        );
+    }
 }

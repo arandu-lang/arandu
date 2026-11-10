@@ -339,6 +339,43 @@ pub(crate) fn lower_expr(
     hir_pool: &mut crate::hir::HirPool,
     expr: ExprId,
 ) -> Result<crate::hir::HirExprId, Diagnostic> {
-    let hir = lower_expr_raw(type_check, pool, hir_pool, expr)?;
-    Ok(hir_pool.alloc_expr(hir))
+    let mut hir = lower_expr_raw(type_check, pool, hir_pool, expr)?;
+    let Some(adjustment) = type_check.type_info.adjustments.get(&hir.span).cloned() else {
+        return Ok(hir_pool.alloc_expr(hir));
+    };
+    // The value keeps its own type and becomes `function<type_args>(value)`.
+    let span = hir.span;
+    hir.ty = adjustment.from;
+    let value = hir_pool.alloc_expr(hir);
+    let instance = arandu_middle::types::ArType::func(
+        &[adjustment.from],
+        adjustment.to,
+        &type_check.type_info.type_interner,
+    );
+    let instance = type_check.type_info_mut().type_interner.intern(instance);
+    let path = hir_pool.alloc_expr(HirExpr {
+        kind: HirExprKind::Path {
+            symbol: adjustment.function,
+        },
+        ty: instance,
+        span,
+    });
+    let callee = hir_pool.alloc_expr(HirExpr {
+        kind: HirExprKind::Generic {
+            callee: path,
+            args: adjustment.type_args,
+        },
+        ty: instance,
+        span,
+    });
+    let args = hir_pool.alloc_expr_list(&[value]);
+    Ok(hir_pool.alloc_expr(HirExpr {
+        kind: HirExprKind::Call {
+            callee,
+            args,
+            trailing_block: None,
+        },
+        ty: adjustment.to,
+        span,
+    }))
 }

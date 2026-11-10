@@ -14,7 +14,7 @@ pub(crate) use closure::{
     synth_call_arg,
 };
 pub(crate) use instantiate::{bind_type_params, infer_and_instantiate_func};
-pub(crate) use owning::owning_closure_signature;
+pub(crate) use owning::{adjust_to_expected, owning_closure_signature};
 pub(crate) use thread_target::check_target_thread_capabilities;
 
 use arandu_lexer::Span;
@@ -206,6 +206,23 @@ pub(super) fn synth_call_expr(
                             function_ty,
                             closure_ty,
                             signature,
+                        ));
+                    }
+                    if let Some((closure_ty, signature)) = owning
+                        && checker.symbols.try_get(symbol_id).is_some_and(|entry| {
+                            matches!(
+                                entry.kind,
+                                arandu_middle::SymbolKind::Local | arandu_middle::SymbolKind::Param
+                            )
+                        })
+                        && let Some(value_ty) = checker
+                            .ctx
+                            .lookup(symbol_id)
+                            .or_else(|| checker.decl_type_id(symbol_id))
+                        && matches!(checker.resolve(value_ty), ArType::Func(..))
+                    {
+                        return Some(closure::adapt_value_owning(
+                            checker, expr, symbol_id, value_ty, closure_ty, signature,
                         ));
                     }
                     if let Some(instance) = instance {

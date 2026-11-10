@@ -1,0 +1,59 @@
+module ownClosuresThreads
+
+import std.alloc.string as strings
+import std.alloc.vec as vec
+import std.thread as thread
+
+// `own () -> R + Send` closures run on other threads: `thread.spawn` takes
+// them directly, and they can be queued and spawned later.
+
+func job(base: int): own () -> int + Send {
+    let label = strings.String.from("four")
+    return () => base + label.asStr().len() as int
+}
+
+func joined(handle: thread.JoinHandle<int>): int {
+    match handle.join() {
+        Result.Ok(value) => { return value }
+        Result.Err(_) => { return -1 }
+    }
+}
+
+func spawnOne(): int {
+    match thread.spawn(job(38)) {
+        Result.Ok(handle) => {
+            if joined(handle) != 42 { return 1 }
+        }
+        Result.Err(_) => { return 2 }
+    }
+    return 0
+}
+
+func spawnQueued(): int {
+    let mut queue: vec.Vec<own () -> int + Send> = vec.Vec.new()
+    queue.push(job(0))
+    queue.push(job(10))
+    let mut total = 0
+    let mut remaining = true
+    while remaining {
+        match queue.pop() {
+            Option.Some(next) => {
+                match thread.spawn(next) {
+                    Result.Ok(handle) => { total += joined(handle) }
+                    Result.Err(_) => { return 1 }
+                }
+            }
+            Option.None => { remaining = false }
+        }
+    }
+    if total != 18 { return 2 }
+    return 0
+}
+
+func main(): int {
+    let one = spawnOne()
+    if one != 0 { return 10 + one }
+    let queued = spawnQueued()
+    if queued != 0 { return 20 + queued }
+    return 0
+}

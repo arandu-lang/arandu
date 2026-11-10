@@ -29,7 +29,17 @@ fn register_stdlib(db: &mut DatabaseImpl, directory: &Path, root: &Path) {
 }
 
 fn database(source: &str) -> (DatabaseImpl, arandu_query::SourceFile) {
+    database_for(source, None)
+}
+
+fn database_for(source: &str, triple: Option<&str>) -> (DatabaseImpl, arandu_query::SourceFile) {
     let mut db = DatabaseImpl::default();
+    if let Some(triple) = triple {
+        db.set_target(
+            arandu_middle::DataLayout::ptr_width(4),
+            arandu_middle::db::TargetIdentity::from_triple(triple).expect("canonical triple"),
+        );
+    }
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../stdlib")
         .canonicalize()
@@ -157,4 +167,60 @@ fn an_owning_closure_moves_and_is_not_copy() {
         "#,
     );
     assert_eq!(codes, vec!["O001".to_string()]);
+}
+
+#[test]
+fn closures_lend_to_callbacks_and_take_function_values() {
+    let codes = errors(
+        r#"
+            func apply(x: int, f: (int) -> int): int { return f(x) }
+            func double(x: int): int { return x * 2 }
+            func main(): int {
+                let k = 3
+                let c: own (int) -> int = (x) => x + k
+                let thin: (int) -> int = double
+                let owned: own (int) -> int = thin
+                return apply(1, c) + owned(1)
+            }
+        "#,
+    );
+    assert!(codes.is_empty(), "{codes:?}");
+}
+
+#[test]
+fn a_temporary_closure_is_not_lent_to_a_callback() {
+    let codes = errors(
+        r#"
+            func apply(x: int, f: (int) -> int): int { return f(x) }
+            func make(): own (int) -> int { return (x) => x }
+            func main(): int { return apply(1, make()) }
+        "#,
+    );
+    assert_eq!(codes, vec![DiagCode::T003IncompatibleCallArg]);
+}
+
+#[test]
+fn an_owning_closure_never_crosses_a_foreign_boundary() {
+    let codes = errors(
+        "extern \"C\" {\n    func keep(f: own () -> int): int\n}\nfunc main(): int { return 0 }\n",
+    );
+    assert_eq!(codes, vec![DiagCode::T049InvalidFfiExport]);
+}
+
+#[test]
+fn bare_metal_rejects_only_closures_that_allocate() {
+    let source = r#"
+        func triple(x: int): int { return x * 3 }
+        func plain(): own (int) -> int { return triple }
+        func capturing(k: int): own (int) -> int { return (x) => x + k }
+        func main(): int { return 0 }
+    "#;
+    let (db, file) = database_for(source, Some("thumbv7em-none-eabihf"));
+    let codes: Vec<_> = type_check(&db, file)
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == Severity::Error)
+        .map(|diagnostic| diagnostic.code)
+        .collect();
+    assert_eq!(codes, vec![DiagCode::T099RequiresOperatingSystem]);
 }

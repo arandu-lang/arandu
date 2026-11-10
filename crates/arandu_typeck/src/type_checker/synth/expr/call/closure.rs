@@ -403,6 +403,22 @@ pub(crate) fn synth_args_with_callbacks(
                 checker.record_expr_type(arg, ty);
             }
         }
+        if let Some(bound) = formals
+            .get(index)
+            .and_then(|&formal| callback_bound_of(checker, formal))
+            && let Some(signature) = super::owning::owning_closure_signature(checker, ty)
+        {
+            let open = checker.resolve(bound);
+            super::instantiate::bind_type_params(
+                checker,
+                type_params,
+                &open,
+                signature,
+                &mut bindings,
+            );
+            let bound = substitute_bindings(checker, bound, &bindings);
+            ty = adapt_owning_closure(checker, arg, ty, signature, bound);
+        }
         if let Some(&formal) = formals.get(index) {
             let formal = checker.resolve(formal);
             super::instantiate::bind_type_params(checker, type_params, &formal, ty, &mut bindings);
@@ -680,6 +696,180 @@ fn adapt_function(
     let ty = owning.unwrap_or(struct_ty);
     checker.record_expr_type(arg, ty);
     ty
+}
+
+/// A function value where `own (A) -> R` is expected: its closure keeps a
+/// copy of the code pointer and calls through it (RFC 0032, L3).
+pub(crate) fn adapt_value_owning(
+    checker: &mut TypeChecker<'_>,
+    arg: ExprId,
+    local: SymbolId,
+    value_ty: TypeId,
+    closure_ty: TypeId,
+    signature: TypeId,
+) -> TypeId {
+    let span = checker.pool.expr_span(arg);
+    if let Some(code) = checker
+        .type_info
+        .closure_at(span)
+        .and_then(|recipe| recipe.owning.as_ref())
+    {
+        return code.closure_ty;
+    }
+    if !checker.unify_ids(signature, value_ty) {
+        let interner = &checker.type_info.type_interner;
+        let found = checker
+            .resolve(value_ty)
+            .display(&checker.symbols, interner);
+        let expected = checker
+            .resolve(signature)
+            .display(&checker.symbols, interner);
+        checker.diagnostics.push(
+            crate::Diagnostic::error(
+                crate::DiagCode::T002IncompatibleAssignment,
+                format!("function value of type '{found}' cannot be the closure 'own {expected}'"),
+                span,
+            )
+            .with_label(span, format!("expected a closure of type 'own {expected}'")),
+        );
+        let error = checker.intern(ArType::Error);
+        checker.record_expr_type(arg, error);
+        return error;
+    }
+    if super::owning::reject_bare_metal_environment(checker, span) {
+        let error = checker.intern(ArType::Error);
+        checker.record_expr_type(arg, error);
+        return error;
+    }
+    let ArType::Func(params, ret) = checker.resolve(signature) else {
+        return checker.intern(ArType::Error);
+    };
+    let method_params = checker
+        .type_info
+        .type_interner
+        .type_args(params)
+        .iter()
+        .map(|&ty| (None, ty))
+        .collect::<Vec<_>>();
+    let name = checker.symbols.get(local).name.clone();
+    let _ = install_closure(
+        checker,
+        span,
+        &ClosureShape {
+            method: "call",
+            struct_prefix: "__Adapter",
+            host_prefix: "ar_adapter",
+            params: &method_params,
+            return_type: ret,
+            self_by_mut_ref: true,
+            adapts: Some(local),
+            owning: Some(closure_ty),
+        },
+        &[Capture {
+            symbol: local,
+            name,
+            ty: value_ty,
+            span,
+            mode: CaptureMode::Copy,
+        }],
+    );
+    checker.record_expr_type(arg, closure_ty);
+    closure_ty
+}
+
+/// An owning closure passed where a callback is expected is lent for the
+/// call: an adapter borrows the local exclusively and forwards each call to
+/// it, as `(x) => c(x)` would (RFC 0032, L3).
+fn adapt_owning_closure(
+    checker: &mut TypeChecker<'_>,
+    arg: ExprId,
+    closure_ty: TypeId,
+    signature: TypeId,
+    bound: TypeId,
+) -> TypeId {
+    let span = checker.pool.expr_span(arg);
+    if let Some(recipe) = checker.type_info.closure_at(span) {
+        let struct_symbol = recipe.struct_symbol;
+        return checker
+            .decl_type_id(struct_symbol)
+            .unwrap_or_else(|| checker.intern(ArType::Error));
+    }
+    let error = checker.intern(ArType::Error);
+    let interner = &checker.type_info.type_interner;
+    let expected = checker.resolve(bound).display(&checker.symbols, interner);
+    if !checker.unify_ids(bound, signature) {
+        let found = checker
+            .resolve(closure_ty)
+            .display(&checker.symbols, &checker.type_info.type_interner);
+        checker.diagnostics.push(
+            crate::Diagnostic::error(
+                crate::DiagCode::T003IncompatibleCallArg,
+                format!("closure of type '{found}' cannot be the callback '{expected}'"),
+                span,
+            )
+            .with_label(span, format!("expected a callback of type '{expected}'")),
+        );
+        checker.record_expr_type(arg, error);
+        return error;
+    }
+    let local = matches!(checker.pool.expr(arg), ExprKind::Path { .. })
+        .then(|| checker.resolved.expr_symbol(arg))
+        .flatten()
+        .filter(|&symbol| {
+            checker
+                .symbols
+                .try_get(symbol)
+                .is_some_and(|entry| matches!(entry.kind, SymbolKind::Local | SymbolKind::Param))
+        });
+    let Some(local) = local else {
+        checker.diagnostics.push(
+            crate::Diagnostic::error(
+                crate::DiagCode::T003IncompatibleCallArg,
+                format!(
+                    "this closure must be stored before it is lent as the callback '{expected}'"
+                ),
+                span,
+            )
+            .with_label(span, "a callback borrows the closure for the call")
+            .with_hint("bind it first: `let f = ...`, then pass `f`"),
+        );
+        checker.record_expr_type(arg, error);
+        return error;
+    };
+    let ArType::Func(params, ret) = checker.resolve(bound) else {
+        return error;
+    };
+    let method_params = checker
+        .type_info
+        .type_interner
+        .type_args(params)
+        .iter()
+        .map(|&ty| (None, ty))
+        .collect::<Vec<_>>();
+    let name = checker.symbols.get(local).name.clone();
+    let struct_ty = install_closure(
+        checker,
+        span,
+        &ClosureShape {
+            method: "call",
+            struct_prefix: "__Adapter",
+            host_prefix: "ar_adapter",
+            params: &method_params,
+            return_type: ret,
+            self_by_mut_ref: true,
+            adapts: Some(local),
+            owning: None,
+        },
+        &[Capture {
+            symbol: local,
+            name,
+            ty: closure_ty,
+            span,
+            mode: CaptureMode::BorrowMut,
+        }],
+    );
+    checker.record_expr_type(arg, struct_ty);
+    struct_ty
 }
 
 /// Every argument bound to a callback parameter must be a closure, or a

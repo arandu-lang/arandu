@@ -110,6 +110,9 @@ pub(super) fn admit_owning_captures(
             if checker.symbols.try_get(symbol).and_then(|symbol| symbol.lang_item)
                 == Some(LangItem::SendClosure)
     );
+    if !captures.is_empty() && reject_bare_metal_environment(checker, captures[0].span) {
+        return false;
+    }
     let mut admitted = true;
     for capture in captures {
         let shown = checker
@@ -149,4 +152,143 @@ pub(super) fn admit_owning_captures(
         }
     }
     admitted
+}
+
+/// Records that the expression's value is passed to `function<type_args>` to
+/// become `to`, and returns `to`.
+fn record_adjustment(
+    checker: &mut TypeChecker<'_>,
+    expr: ExprId,
+    function: arandu_middle::SymbolId,
+    type_args: Vec<TypeId>,
+    from: TypeId,
+    to: TypeId,
+) -> TypeId {
+    let span = checker.pool.expr_span(expr);
+    checker.type_info.adjustments.insert(
+        span,
+        crate::type_checker::info::Adjustment {
+            function,
+            type_args,
+            from,
+            to,
+        },
+    );
+    to
+}
+
+/// The coercion of an owning closure to the type expected where it is used:
+/// `own (A) -> R + Send` forgets `Send` and becomes `own (A) -> R`.
+pub(crate) fn adjust_to_expected(
+    checker: &mut TypeChecker<'_>,
+    expr: ExprId,
+    actual: TypeId,
+    expected: Option<TypeId>,
+) -> TypeId {
+    let span = checker.pool.expr_span(expr);
+    if let Some(adjustment) = checker.type_info.adjustments.get(&span) {
+        return adjustment.to;
+    }
+    let Some(expected) = expected else {
+        return actual;
+    };
+    let (ArType::Named(sent, _), ArType::Named(local, _)) =
+        (checker.resolve(actual), checker.resolve(expected))
+    else {
+        return actual;
+    };
+    let item = |symbol| {
+        checker
+            .symbols
+            .try_get(symbol)
+            .and_then(|symbol| symbol.lang_item)
+    };
+    if item(sent) != Some(LangItem::SendClosure) || item(local) != Some(LangItem::Closure) {
+        return actual;
+    }
+    let (Some(from_code), Some(to_code)) = (
+        owning_closure_code(checker, actual),
+        owning_closure_code(checker, expected),
+    ) else {
+        return actual;
+    };
+    let Some(&function) = checker
+        .symbols
+        .associated_members
+        .get(&(sent, "local".into()))
+    else {
+        return actual;
+    };
+    if !checker.unify_ids(from_code, to_code) {
+        return actual;
+    }
+    record_adjustment(checker, expr, function, vec![to_code], actual, expected)
+}
+
+/// `thread.spawn(job)` with an owning `Send` closure `job` without
+/// parameters runs it as a `ClosureJob<R>`, the thread job for closures.
+pub(super) fn adjust_thread_job(checker: &mut TypeChecker<'_>, arg: ExprId) {
+    if matches!(checker.pool.expr(arg), ExprKind::Lambda { .. }) {
+        return;
+    }
+    let actual = super::synth_expr(checker, arg);
+    let ArType::Named(symbol, _) = checker.resolve(actual) else {
+        return;
+    };
+    if checker
+        .symbols
+        .try_get(symbol)
+        .and_then(|symbol| symbol.lang_item)
+        != Some(LangItem::SendClosure)
+    {
+        return;
+    }
+    let Some(code) = owning_closure_code(checker, actual) else {
+        return;
+    };
+    let ArType::Func(params, ret) = checker.resolve(code) else {
+        return;
+    };
+    if checker.type_info.type_interner.type_args(params).len() != 1 {
+        return;
+    }
+    let Some(job) = checker.symbols.lang_item_symbol(LangItem::ClosureJob) else {
+        return;
+    };
+    let Some(&function) = checker.symbols.associated_members.get(&(job, "new".into())) else {
+        return;
+    };
+    let job_ty = ArType::named(job, &[ret], &checker.type_info.type_interner);
+    let job_ty = checker.intern(job_ty);
+    let _ = record_adjustment(checker, arg, function, vec![ret], actual, job_ty);
+}
+
+/// A closure with captures allocates its environment through the host
+/// allocator, which a bare-metal target does not have. Reports and returns
+/// true there.
+pub(super) fn reject_bare_metal_environment(
+    checker: &mut TypeChecker<'_>,
+    span: arandu_lexer::Span,
+) -> bool {
+    let identity = &checker.type_info.target_identity;
+    if !identity.is_bare_metal() {
+        return false;
+    }
+    let target = if identity.triple.is_empty() {
+        format!("{}-{}", identity.arch, identity.os)
+    } else {
+        identity.triple.clone()
+    };
+    checker.diagnostics.push(
+        crate::Diagnostic::error(
+            crate::DiagCode::T099RequiresOperatingSystem,
+            format!(
+                "an owning closure with captures allocates its environment, but target '{target}' is bare-metal and has no host allocator"
+            ),
+            span,
+        )
+        .with_primary_label("this capture needs a heap environment")
+        .with_hint("capture nothing: a closure without captures allocates nothing"),
+    );
+    true
 }

@@ -695,6 +695,16 @@ fn own_closures_agree_on_every_backend() {
     let _ = fs::remove_file(path);
 }
 
+/// `own () -> R + Send` closures spawned directly and from a queue. Native
+/// backends with the thread runtime only.
+#[test]
+fn send_closures_run_on_threads_on_native_backends() {
+    let source = include_str!("../../../../tests/corpus/own_closures_threads.aru");
+    for (backend, outcome) in outcomes_on("own_closures_threads", source, false) {
+        assert_eq!(outcome, ProgramOutcome::Returned(0), "{backend}");
+    }
+}
+
 /// `*place = value` writes through `mut ref`, through a reference to a
 /// reference and into `static mut` storage, on every backend.
 #[test]

@@ -173,6 +173,9 @@ pub enum LangItem {
     Closure,
     /// Owning closure that may cross threads: `own (A) -> R + Send`.
     SendClosure,
+    /// The `ThreadJob` that runs an owning `Send` closure without parameters;
+    /// `thread.spawn(c)` wraps such a closure `c` in it.
+    ClosureJob,
 }
 
 impl LangItem {

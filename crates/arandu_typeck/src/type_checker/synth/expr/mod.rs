@@ -33,6 +33,7 @@ pub fn synth_expr_expected(
     expected: Option<TypeId>,
 ) -> TypeId {
     let id = synth_expr_inner(checker, expr, expected);
+    let id = call::adjust_to_expected(checker, expr, id, expected);
     checker.record_expr_type(expr, id);
     id
 }

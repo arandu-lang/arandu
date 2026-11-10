@@ -215,6 +215,20 @@ pub struct TypeInfo {
     /// Lambdas lowered as capture structs, keyed by the lambda span. Empty
     /// unless a `move ||` job or a callback argument was accepted.
     pub closures: FxHashMap<arandu_middle::Span, ClosureRecipe>,
+    /// Conversions the type checker applied, keyed by the converted
+    /// expression's span (RFC 0032, L3).
+    pub adjustments: FxHashMap<arandu_middle::Span, Adjustment>,
+}
+
+/// An expression converted where its value is used: lowering passes it to
+/// `function<type_args>`, which returns the checked type `to`. Like rustc's
+/// adjustments, the expression itself keeps its own type, `from`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Adjustment {
+    pub function: SymbolId,
+    pub type_args: Vec<TypeId>,
+    pub from: TypeId,
+    pub to: TypeId,
 }
 
 impl Default for TypeInfo {
@@ -268,6 +282,7 @@ impl TypeInfo {
             struct_unions: rustc_hash::FxHashSet::default(),
             struct_field_defaults: FxHashMap::default(),
             closures: FxHashMap::default(),
+            adjustments: FxHashMap::default(),
         }
     }
 

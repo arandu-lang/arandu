@@ -9,7 +9,7 @@ use arandu_parser::ast_pool::ExprId;
 use super::super::types;
 use super::translate::{reintern_type, translate_type};
 use super::{
-    ClosureCaptureField, ClosureParam, ClosureRecipe, ConcreteHeader, EnumPayloadShape,
+    Adjustment, ClosureCaptureField, ClosureParam, ClosureRecipe, ConcreteHeader, EnumPayloadShape,
     InterfaceConstraint, OwningCode, TypeInfo,
 };
 
@@ -185,6 +185,19 @@ impl TypeInfo {
         self.merge_symbol_contracts(other, &remap, at);
         self.merge_concrete_headers(other, &remap, shared_headers);
         self.merge_closures(other, &remap);
+        for (span, adjustment) in &other.adjustments {
+            let adjusted = Adjustment {
+                function: remap(adjustment.function),
+                type_args: adjustment
+                    .type_args
+                    .iter()
+                    .map(|&ty| reintern_type(self, other, ty))
+                    .collect(),
+                from: reintern_type(self, other, adjustment.from),
+                to: reintern_type(self, other, adjustment.to),
+            };
+            self.adjustments.insert(*span, adjusted);
+        }
         // Fast path: empty body shards / empty import stubs.
         if context_shard_is_empty(other) {
             return;

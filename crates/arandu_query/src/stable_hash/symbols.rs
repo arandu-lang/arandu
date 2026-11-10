@@ -347,6 +347,7 @@ fn lang_item_discriminant(item: arandu_middle::symbol_table::LangItem) -> u8 {
         LangItem::Usize => 53,
         LangItem::Closure => 54,
         LangItem::SendClosure => 55,
+        LangItem::ClosureJob => 56,
     }
 }
 

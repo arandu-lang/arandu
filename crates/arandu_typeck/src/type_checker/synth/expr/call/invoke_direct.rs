@@ -137,6 +137,13 @@ pub(super) fn synth_direct_symbol_call(
         if let Some(sym_id) = callee_func_sym
             && checker.symbols.get(sym_id).lang_item
                 == Some(arandu_middle::symbol_table::LangItem::ThreadSpawn)
+            && let &[job] = arg_ids.as_slice()
+        {
+            super::owning::adjust_thread_job(checker, job);
+        }
+        if let Some(sym_id) = callee_func_sym
+            && checker.symbols.get(sym_id).lang_item
+                == Some(arandu_middle::symbol_table::LangItem::ThreadSpawn)
             && arg_ids.len() == 1
             && matches!(checker.pool.expr(arg_ids[0]), ExprKind::Lambda { .. })
         {

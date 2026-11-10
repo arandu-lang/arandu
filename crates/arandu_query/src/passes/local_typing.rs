@@ -256,6 +256,7 @@ pub(crate) fn item_direct_typing(
     if !typed.diagnostics.is_empty()
         || !typed.type_info.ctfe_roots.is_empty()
         || !typed.type_info.closures.is_empty()
+        || !typed.type_info.adjustments.is_empty()
     {
         return None;
     }
@@ -538,8 +539,12 @@ impl Frame<'_> {
             struct_unions: _,
             struct_field_defaults,
             closures,
+            adjustments,
         } = typed;
-        if !closures.is_empty() || *struct_field_defaults != signatures.struct_field_defaults {
+        if !closures.is_empty()
+            || !adjustments.is_empty()
+            || *struct_field_defaults != signatures.struct_field_defaults
+        {
             return None;
         }
         let mut local = typed.clone();

@@ -372,6 +372,7 @@ static TOKEN_FLAGS_TABLE: [TokenFlags; TokenKind::COUNT] = {
             kind,
             TokenKind::IdentValue
                 | TokenKind::IdentType
+                | TokenKind::KwSelf
                 | TokenKind::TypeInt
                 | TokenKind::TypeUint
                 | TokenKind::TypeIsize

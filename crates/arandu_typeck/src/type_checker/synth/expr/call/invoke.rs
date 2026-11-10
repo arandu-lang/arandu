@@ -200,6 +200,9 @@ pub(super) fn synth_invoked_call(
         {
             check_target_thread_capabilities(checker, callee_sym, span);
             let arg_ids = checker.pool.expr_list(args_range).to_vec();
+            if let &[job] = arg_ids.as_slice() {
+                super::owning::adjust_thread_job(checker, job);
+            }
             if arg_ids.len() == 1
                 && matches!(checker.pool.expr(arg_ids[0]), ExprKind::Lambda { .. })
             {
@@ -277,6 +280,13 @@ fn synth_namespace_field_call(
                 }
             }
             let arg_ids = checker.pool.expr_list(args_range).to_vec();
+            if let Some(sym_id) = member_sym
+                && checker.symbols.get(sym_id).lang_item
+                    == Some(arandu_middle::symbol_table::LangItem::ThreadSpawn)
+                && let &[job] = arg_ids.as_slice()
+            {
+                super::owning::adjust_thread_job(checker, job);
+            }
             if let Some(sym_id) = member_sym
                 && checker.symbols.get(sym_id).lang_item
                     == Some(arandu_middle::symbol_table::LangItem::ThreadSpawn)

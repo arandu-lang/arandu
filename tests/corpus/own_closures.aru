@@ -157,6 +157,48 @@ func collecting(): int {
     return 0
 }
 
+func sendable(by: int): own (int) -> int + Send {
+    return (x) => x + by
+}
+
+func widen(f: own (int) -> int + Send): own (int) -> int {
+    return f
+}
+
+// A `Send` closure is a closure wherever one is expected.
+func forgetting(): int {
+    let local: own (int) -> int = sendable(1)
+    if local(1) != 2 { return 1 }
+    if consume(sendable(2)) != 6 { return 2 }
+    let mut widened = widen(sendable(3))
+    if widened(3) != 6 { return 3 }
+    let label = strings.String.from("abc")
+    let kept: own () -> int + Send = () => label.asStr().len() as int
+    let plain: own () -> int = kept
+    if plain() != 3 { return 4 }
+    return 0
+}
+
+func applyTwice(x: int, f: (int) -> int): int {
+    return f(x) + f(x)
+}
+
+// An owning closure is lent to a callback parameter and keeps its state;
+// a function value converts to an owning closure.
+func interop(): int {
+    let mut n = 0
+    let running: own (int) -> int = (x) => {
+        n += x
+        return n
+    }
+    if applyTwice(1, running) != 3 { return 1 }
+    if running(10) != 12 { return 2 }
+    let thin: (int) -> int = triple
+    let owned: own (int) -> int = thin
+    if owned(5) != 15 { return 3 }
+    return 0
+}
+
 func main(): int {
     let c = counting()
     if c != 0 { return 10 + c }
@@ -172,5 +214,9 @@ func main(): int {
     if v != 0 { return 60 + v }
     // Both tokens left with the vector.
     if drops() != 4 { return 70 }
+    let g = forgetting()
+    if g != 0 { return 80 + g }
+    let i = interop()
+    if i != 0 { return 90 + i }
     return 0
 }

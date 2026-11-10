@@ -1189,3 +1189,12 @@ fn a_generic_function_value_ends_at_an_expression_boundary_in_both_paths() {
     let dump = crate::parse_to_string("func f() { keep(release<int>) }").expect("parse");
     assert!(dump.contains("Generic"), "{dump}");
 }
+
+#[test]
+fn a_statement_may_end_with_self() {
+    let source = "func Box.take(self: own Box): Box {\n    let moved = self\n    let again = moved\n    return again\n}\n";
+    let direct = parse(source).expect("direct parse");
+    let canonical =
+        crate::lower_syntax_to_program(&crate::parse_syntax(source), 0).expect("CST parse");
+    assert_eq!(direct, canonical);
+}

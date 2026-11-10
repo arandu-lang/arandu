@@ -395,24 +395,82 @@ fn adapter_body(
             .decl_type_id(function)
             .unwrap_or_else(TypeInterner::preinterned_error_id)
     };
-    let callee = pool.alloc_expr(HirExpr {
-        kind: HirExprKind::Path { symbol: function },
-        ty: function_ty,
-        span,
-    });
-    let args = recipe
-        .params
-        .iter()
-        .map(|param| {
+    let mut args = Vec::with_capacity(recipe.params.len() + 1);
+    // A lent owning closure is reached through its borrowed capture and
+    // called as `c.code(c.env, ...)` (RFC 0032, L3).
+    let callee = if let Some(field) = recipe.fields.iter().find(|field| field.source == function) {
+        let closure = |pool: &mut crate::hir::HirPool| {
+            let kind = super::expr::captured_value(pool, function, span);
             pool.alloc_expr(HirExpr {
-                kind: HirExprKind::Path {
-                    symbol: param.symbol,
-                },
-                ty: param.ty,
+                kind,
+                ty: field.ty,
                 span,
             })
+        };
+        let interner = &type_check.type_info.type_interner;
+        // A copied function value is itself the callee.
+        if matches!(
+            interner.resolve(field.ty),
+            arandu_middle::types::ArType::Func(..)
+        ) {
+            closure(pool)
+        } else {
+            let (code_ty, env_ty) = match interner.resolve(field.ty) {
+                arandu_middle::types::ArType::Named(_, type_args) => {
+                    let code = interner
+                        .type_args(type_args)
+                        .first()
+                        .copied()
+                        .unwrap_or_else(TypeInterner::preinterned_error_id);
+                    let byte = interner.intern(arandu_middle::types::ArType::Primitive(
+                        arandu_middle::types::Primitive::U8,
+                    ));
+                    (
+                        code,
+                        interner.intern(arandu_middle::types::ArType::Ptr(byte)),
+                    )
+                }
+                _ => (
+                    TypeInterner::preinterned_error_id(),
+                    TypeInterner::preinterned_error_id(),
+                ),
+            };
+            let base = closure(pool);
+            let env = pool.alloc_expr(HirExpr {
+                kind: HirExprKind::Field {
+                    base,
+                    field: "env".into(),
+                },
+                ty: env_ty,
+                span,
+            });
+            args.push(env);
+            let base = closure(pool);
+            pool.alloc_expr(HirExpr {
+                kind: HirExprKind::Field {
+                    base,
+                    field: "code".into(),
+                },
+                ty: code_ty,
+                span,
+            })
+        }
+    } else {
+        pool.alloc_expr(HirExpr {
+            kind: HirExprKind::Path { symbol: function },
+            ty: function_ty,
+            span,
         })
-        .collect::<Vec<_>>();
+    };
+    args.extend(recipe.params.iter().map(|param| {
+        pool.alloc_expr(HirExpr {
+            kind: HirExprKind::Path {
+                symbol: param.symbol,
+            },
+            ty: param.ty,
+            span,
+        })
+    }));
     let args = pool.alloc_expr_list(&args);
     let call = pool.alloc_expr(HirExpr {
         kind: HirExprKind::Call {

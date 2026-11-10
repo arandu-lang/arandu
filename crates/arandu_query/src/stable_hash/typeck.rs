@@ -209,6 +209,20 @@ fn hash_typing(
             hash_symbol_id(&mut h, *symbol);
             h.update(&value.canonical_bytes());
         }
+        let mut adjustments: Vec<_> = info.adjustments.iter().collect();
+        adjustments.sort_unstable_by_key(|(span, _)| (span.file_id, span.start, span.end));
+        h.update(b"Adjustments/v1");
+        h.update(&u64_le(adjustments.len() as u64));
+        for (span, adjustment) in adjustments {
+            hash_span(&mut h, *span);
+            hash_symbol_id(&mut h, adjustment.function);
+            h.update(&u64_le(adjustment.type_args.len() as u64));
+            for &ty in &adjustment.type_args {
+                hash_semantic_type(&mut h, ty, &info.type_interner, symbols);
+            }
+            hash_semantic_type(&mut h, adjustment.from, &info.type_interner, symbols);
+            hash_semantic_type(&mut h, adjustment.to, &info.type_interner, symbols);
+        }
         let mut values: Vec<_> = info.ctfe_values.iter().collect();
         values.sort_unstable_by_key(|(span, _)| (span.file_id, span.start, span.end));
         h.update(b"CtfeResidual/v2");

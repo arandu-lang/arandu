@@ -534,7 +534,7 @@ fn escaping_callback(
         .with_label(value_span, "this callback is only borrowed for the duration of the call")
         .with_label(sink_span, "it would outlive the call here")
         .with_hint(
-            "call it here or pass it on to another callback parameter; owned `own (A) -> R` closures are planned (v0.3 LAMBDA L3)",
+            "call it here or pass it on to another callback parameter; a closure that must outlive the call needs the owning type `own (A) -> R`",
         ),
     )
 }

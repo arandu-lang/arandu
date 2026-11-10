@@ -525,8 +525,8 @@ fn lambda_arguments_are_frozen_without_claiming_closure_execution_support() {
     assert!(staged.diagnostics.is_empty(), "{:?}", staged.diagnostics);
     let diagnostics = errors(&db, file);
     assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
-    assert_eq!(diagnostics[0].code, DiagCode::U001FeatureNotSupported);
-    assert!(diagnostics[0].message.contains("escaping closure"));
+    assert_eq!(diagnostics[0].code, DiagCode::T001CannotInferType);
+    assert!(diagnostics[0].message.contains("type of this closure"));
     assert!(!runtime::runtime_program(&db, file).diagnostics.is_empty());
 }
 

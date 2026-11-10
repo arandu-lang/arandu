@@ -1,4 +1,4 @@
-module tests.invalidGenericCallWithoutParens
+module tests.genericFunctionValue
 
 func main() {
     let value = identity<int>

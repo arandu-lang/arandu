@@ -36,7 +36,8 @@ pub(crate) fn contains_any(pool: &AstPool, ty: TypeExprId) -> Option<Span> {
         | TypeExpr::Slice { inner, .. }
         | TypeExpr::MutSlice { inner, .. }
         | TypeExpr::Array { elem: inner, .. }
-        | TypeExpr::Group { inner, .. } => contains_any(pool, *inner),
+        | TypeExpr::Group { inner, .. }
+        | TypeExpr::OwnFunc { func: inner, .. } => contains_any(pool, *inner),
         TypeExpr::Func { params, result, .. } => {
             for param in pool.type_expr_list(*params) {
                 if let Some(span) = contains_any(pool, *param) {
@@ -117,7 +118,8 @@ pub(crate) fn validate_const_arguments(checker: &mut TypeChecker<'_>, ty: TypeEx
         | TypeExpr::RefMut { inner, .. }
         | TypeExpr::Slice { inner, .. }
         | TypeExpr::MutSlice { inner, .. }
-        | TypeExpr::Group { inner, .. } => validate_const_arguments(checker, *inner),
+        | TypeExpr::Group { inner, .. }
+        | TypeExpr::OwnFunc { func: inner, .. } => validate_const_arguments(checker, *inner),
         TypeExpr::Array {
             size_expression,
             elem,
@@ -635,6 +637,10 @@ fn validate_type_expr_constraints(
         | TypeExpr::Group { inner, .. } => {
             validate_type_expr_constraints(checker, *inner, scope);
         }
+        TypeExpr::OwnFunc { span, func, bound } => {
+            validate_type_expr_constraints(checker, *func, scope);
+            validate_owning_closure_type(checker, *span, *bound, scope);
+        }
         TypeExpr::Func { params, result, .. } => {
             for &param in checker.pool.type_expr_list(*params) {
                 validate_type_expr_constraints(checker, param, scope);
@@ -720,5 +726,59 @@ fn type_contains_named_without_indirection(
             )
         }
         _ => false,
+    }
+}
+
+/// Explains why `own (A) -> R [+ bound]` could not be lowered: a bound other
+/// than `Send`, or a program without `std.alloc.closure` (RFC 0032, L3).
+fn validate_owning_closure_type(
+    checker: &mut TypeChecker<'_>,
+    span: Span,
+    bound: Option<TypeExprId>,
+    scope: crate::ScopeId,
+) {
+    use arandu_middle::symbol_table::LangItem;
+    let ctx = crate::type_checker::types::LowerCtx {
+        pool: checker.pool,
+        symbols: &checker.symbols,
+        scope,
+        resolved: &checker.resolved,
+    };
+    let send = match bound {
+        None => false,
+        Some(bound)
+            if crate::type_checker::types::lower::owning_closure_bound_is_send(bound, &ctx) =>
+        {
+            true
+        }
+        Some(bound) => {
+            let bound_span = checker.pool.type_expr_span(bound);
+            checker.diagnostics.push(
+                crate::Diagnostic::error(
+                    crate::DiagCode::T011GenericConstraintNotSatisfied,
+                    "an owning closure type accepts only the `Send` bound",
+                    bound_span,
+                )
+                .with_primary_label("not `Send`")
+                .with_hint("write `own (A) -> R + Send`, or drop the bound"),
+            );
+            return;
+        }
+    };
+    let item = if send {
+        LangItem::SendClosure
+    } else {
+        LangItem::Closure
+    };
+    if checker.symbols.lang_item_symbol(item).is_none() {
+        checker.diagnostics.push(
+            crate::Diagnostic::error(
+                crate::DiagCode::M001UnresolvedImport,
+                "owning closures need the standard library module `std.alloc.closure`",
+                span,
+            )
+            .with_primary_label("this type is defined by `std.alloc.closure`")
+            .with_hint("make the standard library available to the compiler"),
+        );
     }
 }

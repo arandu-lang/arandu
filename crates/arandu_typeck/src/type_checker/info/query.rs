@@ -228,80 +228,111 @@ impl TypeInfo {
     /// about their owner lifetime use the borrow-path contract instead.
     #[must_use]
     pub fn contains_explicit_reference(&self, id: TypeId) -> bool {
-        fn visit(info: &TypeInfo, id: TypeId, visiting: &mut Vec<TypeId>) -> bool {
+        self.contains_leaf(id, |ty| matches!(ty, ArType::Ref(_) | ArType::RefMut(_)))
+    }
+
+    /// Whether a type structurally contains anything borrowed: a reference or
+    /// a view (`[]T`, `mut []T`, `str`). Owning closures must not hold one,
+    /// since nothing ties their lifetime to the owner (RFC 0032, L3).
+    #[must_use]
+    pub fn contains_borrow(&self, id: TypeId) -> bool {
+        self.contains_leaf(id, |ty| {
+            matches!(
+                ty,
+                ArType::Ref(_)
+                    | ArType::RefMut(_)
+                    | ArType::Slice(_)
+                    | ArType::MutSlice(_)
+                    | ArType::Primitive(arandu_middle::types::Primitive::Str)
+            )
+        })
+    }
+
+    fn contains_leaf(&self, id: TypeId, leaf: impl Fn(&ArType) -> bool + Copy) -> bool {
+        fn visit(
+            info: &TypeInfo,
+            id: TypeId,
+            visiting: &mut Vec<TypeId>,
+            leaf: impl Fn(&ArType) -> bool + Copy,
+        ) -> bool {
             if visiting.contains(&id) {
                 return false;
             }
             visiting.push(id);
-            let found = match info.type_interner.resolve(id) {
-                ArType::Ref(_) | ArType::RefMut(_) => true,
-                ArType::Tuple(items) => info
-                    .type_interner
-                    .type_args(items)
-                    .into_iter()
-                    .any(|item| visit(info, item, visiting)),
-                ArType::Option(inner)
-                | ArType::Nullable(inner)
-                | ArType::Array(_, inner)
-                | ArType::ConstArray(_, inner)
-                | ArType::Poll(inner)
-                | ArType::Coroutine(inner)
-                | ArType::Range(inner) => visit(info, inner, visiting),
-                ArType::Result(ok, err) => visit(info, ok, visiting) || visit(info, err, visiting),
-                ArType::Named(symbol, arguments) => {
-                    let args = info.type_interner.type_args(arguments);
-                    let substitution = info.generic_params.get(&symbol).and_then(|parameters| {
-                        (parameters.len() == args.len() && !parameters.is_empty())
-                            .then(|| build_subst_ids(parameters, &args, &info.type_interner))
-                    });
-                    let fields_contain_ref = info.fields_for(symbol, &args).is_some_and(|fields| {
-                        fields.fields.iter().any(|field| {
-                            let field_ty = substitution.as_ref().map_or(field.ty, |substitution| {
-                                let field = info.type_interner.resolve(field.ty);
-                                info.type_interner.intern(substitute_type(
-                                    &field,
-                                    substitution,
-                                    &info.type_interner,
-                                ))
+            let ty = info.type_interner.resolve(id);
+            let found = leaf(&ty)
+                || match ty {
+                    ArType::Tuple(items) => info
+                        .type_interner
+                        .type_args(items)
+                        .into_iter()
+                        .any(|item| visit(info, item, visiting, leaf)),
+                    ArType::Option(inner)
+                    | ArType::Nullable(inner)
+                    | ArType::Array(_, inner)
+                    | ArType::ConstArray(_, inner)
+                    | ArType::Poll(inner)
+                    | ArType::Coroutine(inner)
+                    | ArType::Range(inner) => visit(info, inner, visiting, leaf),
+                    ArType::Result(ok, err) => {
+                        visit(info, ok, visiting, leaf) || visit(info, err, visiting, leaf)
+                    }
+                    ArType::Named(symbol, arguments) => {
+                        let args = info.type_interner.type_args(arguments);
+                        let substitution =
+                            info.generic_params.get(&symbol).and_then(|parameters| {
+                                (parameters.len() == args.len() && !parameters.is_empty()).then(
+                                    || build_subst_ids(parameters, &args, &info.type_interner),
+                                )
                             });
-                            visit(info, field_ty, visiting)
-                        })
-                    });
-                    fields_contain_ref
-                        || info.enum_variants.iter().any(|(variant, (owner, _))| {
-                            if *owner != symbol {
-                                return false;
-                            }
-                            let Some(payload) = info.variant_payload_for(*variant, &args) else {
-                                return false;
-                            };
-                            let substitution = substitution.as_ref();
-                            match payload {
-                                EnumPayloadShape::Tuple(items) => items.iter().any(|item| {
-                                    let item_ty = substitution.map_or(*item, |substitution| {
-                                        let item = info.type_interner.resolve(*item);
-                                        info.type_interner.intern(substitute_type(
-                                            &item,
-                                            substitution,
-                                            &info.type_interner,
-                                        ))
-                                    });
-                                    visit(info, item_ty, visiting)
-                                }),
-                                EnumPayloadShape::Unit => false,
-                            }
-                        })
-                }
-                // `[]T` and `mut []T` are views with a separate owner-lifetime contract,
-                // not an embedded explicit reference for this diagnostic.
-                ArType::Slice(_) | ArType::MutSlice(_) => false,
-                _ => false,
-            };
+                        let fields_contain_ref =
+                            info.fields_for(symbol, &args).is_some_and(|fields| {
+                                fields.fields.iter().any(|field| {
+                                    let field_ty =
+                                        substitution.as_ref().map_or(field.ty, |substitution| {
+                                            let field = info.type_interner.resolve(field.ty);
+                                            info.type_interner.intern(substitute_type(
+                                                &field,
+                                                substitution,
+                                                &info.type_interner,
+                                            ))
+                                        });
+                                    visit(info, field_ty, visiting, leaf)
+                                })
+                            });
+                        fields_contain_ref
+                            || info.enum_variants.iter().any(|(variant, (owner, _))| {
+                                if *owner != symbol {
+                                    return false;
+                                }
+                                let Some(payload) = info.variant_payload_for(*variant, &args)
+                                else {
+                                    return false;
+                                };
+                                let substitution = substitution.as_ref();
+                                match payload {
+                                    EnumPayloadShape::Tuple(items) => items.iter().any(|item| {
+                                        let item_ty = substitution.map_or(*item, |substitution| {
+                                            let item = info.type_interner.resolve(*item);
+                                            info.type_interner.intern(substitute_type(
+                                                &item,
+                                                substitution,
+                                                &info.type_interner,
+                                            ))
+                                        });
+                                        visit(info, item_ty, visiting, leaf)
+                                    }),
+                                    EnumPayloadShape::Unit => false,
+                                }
+                            })
+                    }
+                    _ => false,
+                };
             visiting.pop();
             found
         }
 
-        visit(self, id, &mut Vec::new())
+        visit(self, id, &mut Vec::new(), leaf)
     }
 
     fn collect_borrow_paths(

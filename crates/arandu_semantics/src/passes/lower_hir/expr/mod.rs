@@ -211,6 +211,11 @@ pub(crate) fn lower_expr_raw(
         .filter(|recipe| recipe.adapts.is_some())
         .cloned()
     {
+        if let Some(code) = &recipe.owning {
+            let ty = code.closure_ty;
+            let kind = aggregate::owning_closure(type_check, hir_pool, &recipe, span)?;
+            return Ok(HirExpr { kind, ty, span });
+        }
         let kind = super::closure::capture_struct_literal(hir_pool, &recipe);
         let ty = type_check
             .type_info

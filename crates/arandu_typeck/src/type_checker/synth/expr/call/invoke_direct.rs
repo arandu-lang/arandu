@@ -31,9 +31,12 @@ pub(super) fn synth_direct_symbol_call(
     // `f(args)` on a callback parameter calls its closure's `call` directly.
     let callback_bound = super::closure::callback_param_of(checker, callee_ty_id)
         .and_then(|implicit| checker.type_info.callback_bounds.get(&implicit).copied());
+    // `f(args)` on an owning closure calls its code with its environment.
+    let owning = super::owning::closure_call_signature(checker, callee_id, callee_ty_id);
     let func_info = match callback_bound
         .map_or_else(|| callee_ty.clone(), |bound| checker.resolve(bound))
     {
+        _ if owning.is_some() => owning,
         ArType::Func(params, ret) => Some((checker.type_info.type_interner.type_args(params), ret)),
         _ => None,
     };

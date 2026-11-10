@@ -38,6 +38,9 @@ pub(super) struct ClosureShape<'a> {
     pub self_by_mut_ref: bool,
     /// The named function an adapter forwards to.
     pub adapts: Option<SymbolId>,
+    /// `Closure<F>` or `SendClosure<F>` for an owning closure, whose code
+    /// function `F` is synthesized too (RFC 0032, L3).
+    pub owning: Option<TypeId>,
 }
 
 /// Registers the struct, its fields and the method; returns the struct type.
@@ -158,6 +161,17 @@ pub(super) fn install_closure(
         .host_function_names
         .insert(method_symbol, host_name.clone());
 
+    let owning = shape.owning.map(|closure_ty| {
+        install_owning_code(
+            checker,
+            &identity,
+            &mut reserved,
+            &struct_name,
+            lambda_span,
+            &params,
+            closure_ty,
+        )
+    });
     let struct_named = ArType::named(struct_symbol, &[], &checker.type_info.type_interner);
     let struct_ty = checker.intern(struct_named);
     let self_ty = if shape.self_by_mut_ref {
@@ -211,9 +225,96 @@ pub(super) fn install_closure(
             return_type: shape.return_type,
             host_name,
             adapts: shape.adapts,
+            owning,
         },
     );
     struct_ty
+}
+
+/// The code function `(env: ptr[u8], A) -> R` stored in an owning closure,
+/// typed as the closure's `F`; `lower_closure_hir` gives it a body.
+fn install_owning_code(
+    checker: &mut TypeChecker<'_>,
+    identity: &ClosureIdentity,
+    reserved: &mut FxHashSet<u32>,
+    struct_name: &str,
+    lambda_span: Span,
+    params: &[ClosureParam],
+    closure_ty: TypeId,
+) -> crate::type_checker::info::OwningCode {
+    let file_id = checker.symbols.file_id;
+    const CODE_ROLE: u32 = 0x4000_0000;
+    let symbol = mint(checker, file_id, identity, CODE_ROLE, reserved);
+    let env_param = mint(checker, file_id, identity, CODE_ROLE + 1, reserved);
+    let forwarded = (0..params.len())
+        .map(|index| {
+            let role = CODE_ROLE + 2 + (u32::try_from(index).unwrap_or(u32::MAX) << 8);
+            mint(checker, file_id, identity, role, reserved)
+        })
+        .collect::<Vec<_>>();
+    let host_name = SmolStr::new(format!("ar_closure_code_{file_id}{}", identity.suffix));
+    let byte = checker.intern(ArType::Primitive(arandu_middle::types::Primitive::U8));
+    let env_ty = checker.intern(ArType::Ptr(byte));
+    let mut code_params = vec![env_ty];
+    code_params.extend(params.iter().map(|param| param.ty));
+    let return_type = match checker.resolve(closure_ty) {
+        ArType::Named(_, args) => checker
+            .type_info
+            .type_interner
+            .type_args(args)
+            .first()
+            .and_then(|&code| match checker.resolve(code) {
+                ArType::Func(_, ret) => Some(ret),
+                _ => None,
+            }),
+        _ => None,
+    }
+    .unwrap_or_else(|| checker.intern(ArType::Error));
+    let code_ty = ArType::func(&code_params, return_type, &checker.type_info.type_interner);
+    let code_ty = checker.intern(code_ty);
+    let scope = checker.symbols.global_scope();
+    let symbols = Arc::make_mut(&mut checker.symbols);
+    register(
+        symbols,
+        symbol,
+        &format!("{struct_name}.code"),
+        SymbolKind::AssociatedFunc,
+        lambda_span,
+        scope,
+    );
+    register(
+        symbols,
+        env_param,
+        "env",
+        SymbolKind::Param,
+        lambda_span,
+        scope,
+    );
+    for &param in &forwarded {
+        register(
+            symbols,
+            param,
+            "argument",
+            SymbolKind::Param,
+            lambda_span,
+            scope,
+        );
+    }
+    symbols
+        .host_function_names
+        .insert(symbol, host_name.clone());
+    checker.record_decl_type(symbol, code_ty);
+    checker.record_decl_type(env_param, env_ty);
+    for (&param, original) in forwarded.iter().zip(params) {
+        checker.record_decl_type(param, original.ty);
+    }
+    crate::type_checker::info::OwningCode {
+        symbol,
+        env_param,
+        params: forwarded,
+        host_name,
+        closure_ty,
+    }
 }
 
 /// The callback bound of a formal parameter, if it is an implicit callback
@@ -366,13 +467,18 @@ pub(crate) fn synth_call_arg(
     formal: Option<TypeId>,
 ) -> TypeId {
     let span = checker.pool.expr_span(arg);
-    if let Some(recipe) = checker.type_info.closure_at(span)
-        && recipe.is_callback()
-    {
-        let struct_symbol = recipe.struct_symbol;
-        if let Some(ty) = checker.decl_type_id(struct_symbol) {
+    if let Some(recipe) = checker.type_info.closure_at(span) {
+        if let Some(code) = &recipe.owning {
+            let ty = code.closure_ty;
             checker.record_expr_type(arg, ty);
             return ty;
+        }
+        if recipe.is_callback() {
+            let struct_symbol = recipe.struct_symbol;
+            if let Some(ty) = checker.decl_type_id(struct_symbol) {
+                checker.record_expr_type(arg, ty);
+                return ty;
+            }
         }
     }
     // A callback argument already rejected keeps its error, no cascade.
@@ -394,8 +500,33 @@ fn adapt_named_function(
     function_ty: TypeId,
     bound: TypeId,
 ) -> TypeId {
+    adapt_function(checker, arg, function_ty, bound, None)
+}
+
+/// A named function where `own (A) -> R` is expected: its closure has no
+/// environment and its code calls the function (RFC 0032, L3).
+pub(crate) fn adapt_function_owning(
+    checker: &mut TypeChecker<'_>,
+    arg: ExprId,
+    function_ty: TypeId,
+    closure_ty: TypeId,
+    signature: TypeId,
+) -> TypeId {
+    adapt_function(checker, arg, function_ty, signature, Some(closure_ty))
+}
+
+fn adapt_function(
+    checker: &mut TypeChecker<'_>,
+    arg: ExprId,
+    function_ty: TypeId,
+    bound: TypeId,
+    owning: Option<TypeId>,
+) -> TypeId {
     let span = checker.pool.expr_span(arg);
     if let Some(recipe) = checker.type_info.closure_at(span) {
+        if let Some(code) = &recipe.owning {
+            return code.closure_ty;
+        }
         let struct_symbol = recipe.struct_symbol;
         return checker
             .decl_type_id(struct_symbol)
@@ -507,14 +638,21 @@ fn adapt_named_function(
             .resolve(function_ty)
             .display(&checker.symbols, interner);
         let expected = checker.resolve(bound).display(&checker.symbols, interner);
-        checker.diagnostics.push(
+        checker.diagnostics.push(if owning.is_some() {
+            crate::Diagnostic::error(
+                crate::DiagCode::T002IncompatibleAssignment,
+                format!("function of type '{found}' cannot be the closure 'own {expected}'"),
+                span,
+            )
+            .with_label(span, format!("expected a closure of type 'own {expected}'"))
+        } else {
             crate::Diagnostic::error(
                 crate::DiagCode::T003IncompatibleCallArg,
                 format!("function of type '{found}' cannot be the callback '{expected}'"),
                 span,
             )
-            .with_label(span, format!("expected a callback of type '{expected}'")),
-        );
+            .with_label(span, format!("expected a callback of type '{expected}'"))
+        });
         let error = checker.intern(ArType::Error);
         checker.record_expr_type(arg, error);
         return error;
@@ -527,18 +665,21 @@ fn adapt_named_function(
         checker,
         span,
         &ClosureShape {
-            method: "call",
+            // An owning adapter is a plain function: it has no environment.
+            method: if owning.is_some() { "fn" } else { "call" },
             struct_prefix: "__Adapter",
             host_prefix: "ar_adapter",
             params: &method_params,
             return_type: bound_ret,
-            self_by_mut_ref: true,
+            self_by_mut_ref: owning.is_none(),
             adapts: Some(function),
+            owning,
         },
         &[],
     );
-    checker.record_expr_type(arg, struct_ty);
-    struct_ty
+    let ty = owning.unwrap_or(struct_ty);
+    checker.record_expr_type(arg, ty);
+    ty
 }
 
 /// Every argument bound to a callback parameter must be a closure, or a
@@ -587,12 +728,22 @@ pub(crate) fn check_callback_args(
 
 /// Type a lambda passed where a callback `bound` is expected and install its
 /// closure struct. Returns the struct type, the argument's type.
+/// What a lambda becomes: a borrowed callback environment (L1), a function
+/// value without captures (L2), or an owning closure (L3).
+#[derive(Clone, Copy)]
+enum LambdaUse {
+    Callback,
+    Value,
+    /// `Closure<F>` or `SendClosure<F>`.
+    Owning(TypeId),
+}
+
 pub(super) fn check_callback_lambda(
     checker: &mut TypeChecker<'_>,
     arg_id: ExprId,
     bound: TypeId,
 ) -> TypeId {
-    check_lambda(checker, arg_id, bound, false)
+    check_lambda(checker, arg_id, bound, LambdaUse::Callback)
 }
 
 /// A lambda whose expected type is `(A) -> R` outside a callback position
@@ -604,17 +755,31 @@ pub(crate) fn check_lambda_value(
     expr: ExprId,
     func_ty: TypeId,
 ) -> TypeId {
-    check_lambda(checker, expr, func_ty, true)
+    check_lambda(checker, expr, func_ty, LambdaUse::Value)
+}
+
+/// A lambda whose expected type is `own (A) -> R [+ Send]`: its captures
+/// move into a heap environment the closure owns (RFC 0032, L3).
+pub(crate) fn check_lambda_owning(
+    checker: &mut TypeChecker<'_>,
+    expr: ExprId,
+    closure_ty: TypeId,
+    signature: TypeId,
+) -> TypeId {
+    check_lambda(checker, expr, signature, LambdaUse::Owning(closure_ty))
 }
 
 fn check_lambda(
     checker: &mut TypeChecker<'_>,
     arg_id: ExprId,
     bound: TypeId,
-    as_value: bool,
+    usage: LambdaUse,
 ) -> TypeId {
     let lambda_span = checker.pool.expr_span(arg_id);
     if let Some(recipe) = checker.type_info.closure_at(lambda_span) {
+        if let Some(code) = &recipe.owning {
+            return code.closure_ty;
+        }
         let struct_symbol = recipe.struct_symbol;
         return checker
             .decl_type_id(struct_symbol)
@@ -716,27 +881,64 @@ fn check_lambda(
         }
     }
     // Modes need the typed body: a call through a `mut` receiver mutates.
-    let Some(captures) = callback_captures(checker, lambda_span, is_move) else {
+    let owning = match usage {
+        LambdaUse::Owning(closure_ty) => Some(closure_ty),
+        LambdaUse::Callback | LambdaUse::Value => None,
+    };
+    let Some(captures) = callback_captures(checker, lambda_span, is_move || owning.is_some())
+    else {
         checker.record_expr_type(arg_id, error);
         return error;
     };
-    if rejected {
+    if rejected
+        || owning.is_some_and(|closure_ty| {
+            !super::owning::admit_owning_captures(checker, closure_ty, &captures)
+        })
+    {
         checker.record_expr_type(arg_id, error);
         return error;
     }
-    if as_value {
+    if let Some(closure_ty) = owning {
+        // Without captures the closure's code calls the lambda's own function
+        // and needs no environment.
+        let (method, struct_prefix, host_prefix, self_by_mut_ref) = if captures.is_empty() {
+            ("fn", "__Lambda", "ar_lambda", false)
+        } else {
+            ("call", "__Closure", "ar_closure", true)
+        };
+        let _ = install_closure(
+            checker,
+            lambda_span,
+            &ClosureShape {
+                method,
+                struct_prefix,
+                host_prefix,
+                params: &method_params,
+                return_type,
+                self_by_mut_ref,
+                adapts: None,
+                owning: Some(closure_ty),
+            },
+            &captures,
+        );
+        checker.record_expr_type(arg_id, closure_ty);
+        return closure_ty;
+    }
+    if matches!(usage, LambdaUse::Value) {
         if let Some(capture) = captures.first() {
             checker.diagnostics.push(
                 crate::Diagnostic::error(
-                    crate::DiagCode::U001FeatureNotSupported,
+                    crate::DiagCode::T002IncompatibleAssignment,
                     format!(
-                        "a closure that captures '{}' cannot be a function value yet (v0.3 LAMBDA L3)",
+                        "a closure that captures '{}' is not a function value of type '{bound_text}'",
                         capture.name
                     ),
                     capture.span,
                 )
                 .with_label(lambda_span, "a function value holds no environment")
-                .with_hint("pass the closure directly to a callback parameter, or capture nothing"),
+                .with_hint(format!(
+                    "use the owning closure type `own {bound_text}` to keep the captures"
+                )),
             );
             checker.record_expr_type(arg_id, error);
             return error;
@@ -752,6 +954,7 @@ fn check_lambda(
                 return_type,
                 self_by_mut_ref: false,
                 adapts: None,
+                owning: None,
             },
             &[],
         );
@@ -769,6 +972,7 @@ fn check_lambda(
             return_type,
             self_by_mut_ref: true,
             adapts: None,
+            owning: None,
         },
         &captures,
     );

@@ -228,17 +228,9 @@ fn parse_postfix_tail(
                     ExprKind::Generic { callee: left, args },
                     ctx.span(left_span.start, end),
                 );
-                // generic must be followed by call, trailing block, or `as` cast
-                if cur.peek_kind() == Some(TokenKind::LParen) {
-                    continue; // loop will handle call
-                }
-                if cur.peek_kind() == Some(TokenKind::LBrace) {
-                    continue;
-                }
-                if cur.peek_kind() == Some(TokenKind::KwAs) {
-                    continue;
-                }
-                return None;
+                // A call, trailing block or `as` cast follows; otherwise the
+                // expression ends here and this is a generic function value.
+                continue;
             }
             Some(TokenKind::Dot) => {
                 cur.bump();
@@ -308,6 +300,24 @@ fn allows_trailing_block(ctx: &HandCtx<'_>, left: ExprId) -> bool {
     )
 }
 
+/// What may follow a generic argument list in an expression: a call, a
+/// trailing block, an `as` cast, or the end of the expression, where the list
+/// names a generic function value (RFC 0032, L2).
+fn ends_generic_arguments(kind: TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::LParen
+            | TokenKind::LBrace
+            | TokenKind::KwAs
+            | TokenKind::Semicolon
+            | TokenKind::Comma
+            | TokenKind::RParen
+            | TokenKind::RBracket
+            | TokenKind::RBrace
+            | TokenKind::Eof
+    )
+}
+
 fn looks_like_generic_args(cur: &Cursor<'_>) -> bool {
     // scan for matching `>` then `( ` or `{`
     let mut openers = smallvec::SmallVec::<[usize; 8]>::new();
@@ -321,12 +331,9 @@ fn looks_like_generic_args(cur: &Cursor<'_>) -> bool {
                     openers.pop();
                 }
                 if openers.is_empty() {
-                    return cur.peek_at(i + 1).is_some_and(|n| {
-                        matches!(
-                            n.kind,
-                            TokenKind::LParen | TokenKind::LBrace | TokenKind::KwAs
-                        )
-                    });
+                    return cur
+                        .peek_at(i + 1)
+                        .is_none_or(|n| ends_generic_arguments(n.kind));
                 }
             }
             TokenKind::ShiftRight => {
@@ -336,12 +343,9 @@ fn looks_like_generic_args(cur: &Cursor<'_>) -> bool {
                     }
                 }
                 if openers.is_empty() {
-                    return cur.peek_at(i + 1).is_some_and(|n| {
-                        matches!(
-                            n.kind,
-                            TokenKind::LParen | TokenKind::LBrace | TokenKind::KwAs
-                        )
-                    });
+                    return cur
+                        .peek_at(i + 1)
+                        .is_none_or(|n| ends_generic_arguments(n.kind));
                 }
             }
             TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace => delimiters += 1,

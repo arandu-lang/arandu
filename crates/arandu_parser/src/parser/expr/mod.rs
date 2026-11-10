@@ -94,16 +94,22 @@ impl<'a> Parser<'a> {
                         }
                         continue;
                     }
+                    // A generic function value: `make<int>` ending the expression
+                    // (RFC 0032, L2). A comparison never closes at a boundary.
                     if self.looks_like_bare_generic_args()
                         && self.looks_like_generic_args_boundary()
                     {
-                        return Err(ParseError::new(
-                            ParseErrorCode::ExpectedToken,
-                            "generic arguments in expressions must be followed by call arguments or block",
-                            self.current(),
-                            self.file_id,
-                            self.source,
-                        ));
+                        let generic_start = self.pool.expr_span(left);
+                        let type_range = self.parse_generic_args()?;
+                        let span = span_between(generic_start, self.previous().span(self.file_id));
+                        left = self.pool.alloc_expr(
+                            ExprKind::Generic {
+                                callee: left,
+                                args: type_range,
+                            },
+                            span,
+                        );
+                        continue;
                     }
                 }
                 TokenKind::LParen => {

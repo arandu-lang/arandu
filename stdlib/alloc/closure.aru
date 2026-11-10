@@ -1,0 +1,115 @@
+//! Owning, escaping closures: the values of `own (A) -> R` types.
+//!
+//! ## Overview
+//!
+//! `own (A) -> R` is a closure that owns its captures and may outlive the
+//! scope that created it. `own (A) -> R + Send` may also move to another
+//! thread; every capture of such a closure is proven `Send` when it is
+//! created. The compiler spells these types as `Closure<F>` and
+//! `SendClosure<F>`, where `F` is the code's own signature `(ptr[u8], A) -> R`
+//! taking the environment first.
+//!
+//! A closure value is three words: its code, its environment and the function
+//! that destroys the environment. Captures live in one heap allocation that the
+//! closure destroys exactly once. A named function converted to a closure has no
+//! environment and allocates nothing.
+//!
+//! A call may change the captures, so the owner of a closure and a `mut ref`
+//! to it can call it, and a shared `ref` cannot. Closures are neither `Copy`
+//! nor `Sync`; share one across threads behind a `Mutex`.
+//!
+//! The associated functions below are the compiler's entry points for lambdas
+//! and function values; code does not call them directly.
+//!
+//! ## Allocations
+//! Creating a closure with captures allocates its environment and aborts when
+//! the allocation fails.
+//!
+//! ## Platform
+//! Native targets with the aligned allocator host, and wasm32.
+module std.alloc.closure
+
+import std.core.intrinsics as intrinsics
+import std.core.marker as marker
+import std.core.mem as mem
+
+extern "C" {
+    /// Allocates a buffer with the selected target's size and alignment.
+    func ar_rt_alloc_aligned(size: usize, align: usize): ptr[u8]
+    /// Frees a buffer using the same layout with which it was allocated.
+    func ar_rt_free_aligned(data: ptr[u8], size: usize, align: usize): void
+}
+
+/// An owning closure, spelled `own (A) -> R`.
+public struct Closure<F> {
+    private code: F
+    private env: ptr[u8]
+    private drop: (ptr[u8]) -> void
+}
+
+/// An owning closure whose captures are all `Send`, spelled
+/// `own (A) -> R + Send`.
+public struct SendClosure<F> {
+    private code: F
+    private env: ptr[u8]
+    private drop: (ptr[u8]) -> void
+}
+
+func storageSize<E>(): usize {
+    let size = mem.sizeOf<E>()
+    if size == (0 as usize) { return 1 as usize }
+    return size
+}
+
+/// Moves `env` into its own aligned allocation, aborting on failure.
+func boxEnvironment<E>(env: E): ptr[u8] {
+    unsafe {
+        let data = ar_rt_alloc_aligned(storageSize<E>(), mem.alignOf<E>())
+        let nullp: ptr[u8] = nil
+        if data == nullp { intrinsics.abort() }
+        mem.ptrWrite<E>(data as ptr[E], env)
+        return data
+    }
+}
+
+/// Destroys the captures and frees the environment allocation.
+func dropEnvironment<E>(env: ptr[u8]): void {
+    unsafe {
+        mem.dropInPlace<E>(env as ptr[E])
+        ar_rt_free_aligned(env, storageSize<E>(), mem.alignOf<E>())
+    }
+}
+
+/// The environment destructor of a closure without captures.
+func keepEnvironment<F>(env: ptr[u8]): void {
+}
+
+/// A closure over the captures `env`, run by `code`.
+public func Closure.make<E, F>(env: E, code: F): Closure<F> {
+    return Closure<F> { code: code, env: boxEnvironment<E>(env), drop: dropEnvironment<E> }
+}
+
+/// A `Send` closure over the captures `env`, run by `code`.
+public func SendClosure.make<E: marker.Send, F>(env: E, code: F): SendClosure<F> {
+    return SendClosure<F> { code: code, env: boxEnvironment<E>(env), drop: dropEnvironment<E> }
+}
+
+/// A closure without captures; `code` ignores its environment argument.
+public func Closure.fromFunction<F>(code: F): Closure<F> {
+    return Closure<F> { code: code, env: nil, drop: keepEnvironment<F> }
+}
+
+/// A `Send` closure without captures.
+public func SendClosure.fromFunction<F>(code: F): SendClosure<F> {
+    return SendClosure<F> { code: code, env: nil, drop: keepEnvironment<F> }
+}
+
+@Destructor
+func Closure.destroy<F>(self: own Closure<F>): void {
+    (self.drop)(self.env)
+}
+
+@Destructor
+func SendClosure.destroy<F>(self: own SendClosure<F>): void {
+    (self.drop)(self.env)
+}

@@ -543,7 +543,7 @@ func main(): int {
         result_with_params.diagnostics
     );
 
-    // 3. Closure outside thread.spawn
+    // 3. Closure outside thread.spawn, without a type to fix its kind
     let outside = db.new_file(
         "outside.aru".into(),
         r#"
@@ -559,8 +559,8 @@ func main(): int {
         result_outside
             .diagnostics
             .iter()
-            .any(|d| d.code == DiagCode::U001FeatureNotSupported),
-        "general closure outside thread spawn must report U001: {:?}",
+            .any(|d| d.code == DiagCode::T001CannotInferType),
+        "an untyped closure outside thread spawn must report T001: {:?}",
         result_outside.diagnostics
     );
 }

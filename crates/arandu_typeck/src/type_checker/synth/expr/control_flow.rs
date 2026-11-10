@@ -40,6 +40,9 @@ pub(super) fn synth_control_flow_expr(
         ExprKind::Lambda { .. } => {
             // A callback argument was already typed (or rejected) against its bound.
             if let Some(recipe) = checker.type_info.closure_at(span) {
+                if let Some(code) = &recipe.owning {
+                    return Some(code.closure_ty);
+                }
                 if recipe.is_function() {
                     return checker.type_info.expr_type_id(_expr);
                 }
@@ -56,17 +59,23 @@ pub(super) fn synth_control_flow_expr(
             {
                 return Some(super::call::check_lambda_value(checker, _expr, expected));
             }
+            if let Some(expected) = expected
+                && let Some(signature) = super::call::owning_closure_signature(checker, expected)
+            {
+                return Some(super::call::check_lambda_owning(
+                    checker, _expr, expected, signature,
+                ));
+            }
             checker.diagnostics.push(
                 crate::Diagnostic::error(
-                    crate::DiagCode::U001FeatureNotSupported,
-                    "an escaping closure is not supported yet (v0.3 LAMBDA L3)",
+                    crate::DiagCode::T001CannotInferType,
+                    "cannot infer the type of this closure",
                     span,
                 )
-                .with_label(
-                    span,
-                    "a closure is only accepted as an argument of a callback parameter",
-                )
-                .with_hint("pass the closure directly to a parameter of type `(A) -> R`"),
+                .with_primary_label("nothing here says what kind of closure this is")
+                .with_hint(
+                    "pass it to a parameter of type `(A) -> R`, or give the binding a type: `own (A) -> R` keeps captures, `(A) -> R` is a function without them",
+                ),
             );
             Some(checker.intern(ArType::Error))
         }

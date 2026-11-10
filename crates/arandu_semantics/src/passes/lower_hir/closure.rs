@@ -50,6 +50,13 @@ pub fn lower_closure_hir(
             arandu_lexer::Span::new(method_symbol.file_id, 0, 0),
         )]);
     };
+    if let Some(code) = recipe
+        .owning
+        .as_ref()
+        .filter(|code| code.symbol == method_symbol)
+    {
+        return Ok(owning_code_hir(type_check, program, &recipe, code));
+    }
     let mut pool = crate::hir::HirPool::new();
     // A callback body reaches its captures through `mut self`; a job
     // destructures its owned `self` once instead.
@@ -433,4 +440,113 @@ fn adapter_body(
     let statement = pool.alloc_stmt(HirStmt { kind, span });
     let statements = pool.alloc_stmt_list(&[statement]);
     pool.alloc_block(HirBlock { statements, span })
+}
+
+/// The code an owning closure stores, `(env: ptr[u8], A) -> R`: it calls the
+/// closure method on the environment, or, without captures, the lambda's own
+/// function, which needs none (RFC 0032, L3).
+fn owning_code_hir(
+    type_check: &TypeCheckResult,
+    program: &Program,
+    recipe: &ClosureRecipe,
+    code: &arandu_typeck::type_checker::info::OwningCode,
+) -> HirProgram {
+    let span = recipe.lambda_span;
+    let mut pool = crate::hir::HirPool::new();
+    let info = &type_check.type_info;
+    let error = TypeInterner::preinterned_error_id;
+    let env_ty = info.decl_type_id(code.env_param).unwrap_or_else(error);
+    let mut args = Vec::with_capacity(code.params.len() + 1);
+    if recipe.is_callback() {
+        let self_ty = info.decl_type_id(recipe.self_param).unwrap_or_else(error);
+        let env = pool.alloc_expr(HirExpr {
+            kind: HirExprKind::Path {
+                symbol: code.env_param,
+            },
+            ty: env_ty,
+            span,
+        });
+        args.push(pool.alloc_expr(HirExpr {
+            kind: HirExprKind::Cast {
+                expr: env,
+                target_ty: self_ty,
+            },
+            ty: self_ty,
+            span,
+        }));
+    }
+    for (&symbol, param) in code.params.iter().zip(&recipe.params) {
+        args.push(pool.alloc_expr(HirExpr {
+            kind: HirExprKind::Path { symbol },
+            ty: param.ty,
+            span,
+        }));
+    }
+    let callee = pool.alloc_expr(HirExpr {
+        kind: HirExprKind::Path {
+            symbol: recipe.method_symbol,
+        },
+        ty: info
+            .decl_type_id(recipe.method_symbol)
+            .unwrap_or_else(error),
+        span,
+    });
+    let args = pool.alloc_expr_list(&args);
+    let call = pool.alloc_expr(HirExpr {
+        kind: HirExprKind::Call {
+            callee,
+            args,
+            trailing_block: None,
+        },
+        ty: recipe.return_type,
+        span,
+    });
+    let kind = if matches!(
+        info.type_interner.resolve(recipe.return_type),
+        arandu_middle::types::ArType::Void
+    ) {
+        HirStmtKind::Expr(call)
+    } else {
+        HirStmtKind::Return {
+            values: pool.alloc_expr_list(&[call]),
+        }
+    };
+    let statement = pool.alloc_stmt(HirStmt { kind, span });
+    let statements = pool.alloc_stmt_list(&[statement]);
+    let body = pool.alloc_block(HirBlock { statements, span });
+    let mut params = vec![HirParam {
+        symbol: code.env_param,
+        ty: env_ty,
+        span,
+        is_receiver: false,
+        receiver_kind: None,
+    }];
+    params.extend(
+        code.params
+            .iter()
+            .zip(&recipe.params)
+            .map(|(&symbol, param)| HirParam {
+                symbol,
+                ty: param.ty,
+                span,
+                is_receiver: false,
+                receiver_kind: None,
+            }),
+    );
+    let params = pool.alloc_param_list(&params);
+    let func = pool.alloc_decl(HirDecl::Func(HirFunc {
+        symbol: code.symbol,
+        params,
+        return_type: recipe.return_type,
+        body: Some(body),
+        span,
+        is_async: false,
+        no_fallback: false,
+    }));
+    HirProgram {
+        span,
+        module: program.module.as_ref().map(|module| module.path.join(".")),
+        decls: vec![func],
+        pool,
+    }
 }

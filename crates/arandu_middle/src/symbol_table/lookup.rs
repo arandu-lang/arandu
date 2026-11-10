@@ -90,6 +90,16 @@ impl super::SymbolTable {
         self.iter_own().chain(self.imported_symbols.values())
     }
 
+    /// The symbol carrying `item`, own or imported. Several import aliases can
+    /// reach it; select a stable ID rather than hash-table order.
+    #[must_use]
+    pub fn lang_item_symbol(&self, item: LangItem) -> Option<SymbolId> {
+        self.iter()
+            .filter(|symbol| symbol.lang_item == Some(item))
+            .map(|symbol| symbol.id)
+            .min_by_key(|id| (id.file_id, id.local_id.0))
+    }
+
     /// A copy in which `f` gives the span of every symbol of this table's own
     /// file; imported symbols keep theirs.
     #[must_use]

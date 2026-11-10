@@ -24,6 +24,9 @@ mod generic_cross_module;
 #[path = "query_suite/indirect_call.rs"]
 mod indirect_call;
 
+#[path = "query_suite/owning_closures.rs"]
+mod owning_closures;
+
 #[path = "query_suite/missing_import_cascade.rs"]
 mod missing_import_cascade;
 

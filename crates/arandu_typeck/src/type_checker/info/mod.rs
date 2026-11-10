@@ -91,13 +91,36 @@ pub struct ClosureRecipe {
     /// A named function passed as a callback: `call` forwards its
     /// parameters to it, and there is no lambda in the source.
     pub adapts: Option<SymbolId>,
+    /// The code an owning closure stores (RFC 0032, L3).
+    pub owning: Option<OwningCode>,
+}
+
+/// The code function of an owning closure, `(env: ptr[u8], A) -> R`. With
+/// captures it forwards to the closure method through the environment;
+/// without, it calls the lambda's function or the adapted function.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwningCode {
+    pub symbol: SymbolId,
+    pub env_param: SymbolId,
+    /// The forwarded parameters, typed as the recipe's `params`.
+    pub params: Vec<SymbolId>,
+    pub host_name: smol_str::SmolStr,
+    /// `Closure<F>` or `SendClosure<F>`, the type of the closure value.
+    pub closure_ty: TypeId,
 }
 
 impl ClosureRecipe {
     /// A non-escaping callback environment, as opposed to a `ThreadJob`.
+    /// An owning closure's environment is reached the same way.
     #[must_use]
     pub fn is_callback(&self) -> bool {
         self.method_name == "call"
+    }
+
+    /// The recipe of an owning closure (RFC 0032, L3) or of its code.
+    #[must_use]
+    pub fn is_owning(&self) -> bool {
+        self.owning.is_some()
     }
 
     /// A capture-free lambda used as a function value: its method has no
@@ -255,9 +278,13 @@ impl TypeInfo {
 
     #[must_use]
     pub fn closure_for_method(&self, symbol: SymbolId) -> Option<&ClosureRecipe> {
-        self.closures
-            .values()
-            .find(|recipe| recipe.method_symbol == symbol)
+        self.closures.values().find(|recipe| {
+            recipe.method_symbol == symbol
+                || recipe
+                    .owning
+                    .as_ref()
+                    .is_some_and(|code| code.symbol == symbol)
+        })
     }
 
     /// Re-register span-derived capture symbols on a signature table.
@@ -324,6 +351,40 @@ impl TypeInfo {
             symbols
                 .host_function_names
                 .insert(recipe.method_symbol, recipe.host_name.clone());
+            if let Some(code) = &recipe.owning {
+                Self::ensure_capture_symbol(
+                    symbols,
+                    code.symbol,
+                    &format!("{}.code", recipe.struct_name),
+                    arandu_middle::SymbolKind::AssociatedFunc,
+                    recipe.lambda_span,
+                    scope,
+                );
+                Self::ensure_capture_symbol(
+                    symbols,
+                    code.env_param,
+                    "env",
+                    arandu_middle::SymbolKind::Param,
+                    recipe.lambda_span,
+                    scope,
+                );
+                for &param in &code.params {
+                    Self::ensure_capture_symbol(
+                        symbols,
+                        param,
+                        "argument",
+                        arandu_middle::SymbolKind::Param,
+                        recipe.lambda_span,
+                        scope,
+                    );
+                }
+                symbols
+                    .associated_members_mut()
+                    .insert((recipe.struct_symbol, "code".into()), code.symbol);
+                symbols
+                    .host_function_names
+                    .insert(code.symbol, code.host_name.clone());
+            }
         }
     }
 

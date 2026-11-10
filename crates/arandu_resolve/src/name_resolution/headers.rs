@@ -56,16 +56,10 @@ pub fn resolve_headers_with_poll(
     // Ambient linkage for inherent methods of primitive types (str, char, int, float, ptr).
     // Allows methods like `s.len()` or `x.abs()` without requiring an explicit import.
     // Core library modules (`std.core.*`) are excluded to avoid circular dependency cycles.
-    if !resolver
-        .current_module
-        .as_deref()
-        .is_some_and(|m| m.starts_with("std.core."))
     {
-        for &(path, mod_name) in crate::AMBIENT_PRIMITIVE_MODULES {
+        let current = resolver.current_module.clone();
+        for (path, mod_name) in crate::ambient_modules(current.as_deref()) {
             poll();
-            if resolver.current_module.as_deref() == Some(mod_name) {
-                continue;
-            }
             let Some(imported_file) = db.resolve_module_path(path) else {
                 continue;
             };
@@ -73,6 +67,10 @@ pub fn resolve_headers_with_poll(
                 continue;
             }
             let exports = db.exported_symbols(imported_file);
+            if mod_name == crate::AMBIENT_CLOSURE_MODULE.1 {
+                link_unnamed_exports(&mut resolver, &exports, global);
+                continue;
+            }
             for (name, &(id, kind)) in &exports.symbols {
                 if matches!(kind, arandu_middle::SymbolKind::AssociatedFunc)
                     && let Some((ty, method)) = name.rsplit_once('.')
@@ -337,5 +335,39 @@ fn explicit_self_import(import: &arandu_parser::ImportDecl) -> Option<String> {
             Some(format!("from self.{} import {{ {items} }}", path[0]))
         }
         _ => None,
+    }
+}
+
+/// Registers every export of an ambient module without naming it in any scope:
+/// the symbols and their lang items reach the compiler, never source code.
+fn link_unnamed_exports(
+    resolver: &mut Resolver<'_>,
+    exports: &arandu_middle::ExportedSymbolTable,
+    global: arandu_middle::ScopeId,
+) {
+    for (name, &(id, kind)) in &exports.symbols {
+        if exports.sealed_symbols.contains(name) {
+            continue;
+        }
+        resolver
+            .symbols
+            .register_imported_symbol(arandu_middle::Symbol {
+                id,
+                name: name.clone().into(),
+                kind,
+                span: arandu_lexer::Span::new(id.file_id, 0, 0),
+                scope: global,
+                visibility: arandu_parser::Visibility::Public,
+                lang_item: exports.lang_items.get(&id).copied(),
+            });
+        if kind == arandu_middle::SymbolKind::AssociatedFunc
+            && let Some((ty, method)) = name.rsplit_once('.')
+            && let Some(&(type_sym, _)) = exports.symbols.get(ty)
+        {
+            resolver
+                .symbols
+                .associated_members_mut()
+                .insert((type_sym, SmolStr::new(method)), id);
+        }
     }
 }

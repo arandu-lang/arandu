@@ -134,9 +134,24 @@ impl<'a> Parser<'a> {
     fn parse_type_primary_inner(&mut self) -> Result<TypeExprId, ParseError> {
         let start = self.mark();
         // Canonical ownership spelling: `own T`, `ref T`, `mut ref T`.
-        // `own` is the default and lowers directly to its operand.
+        // `own` is the default and lowers directly to its operand, except on
+        // a function type: `own (A) -> R [+ Send]` is an owning closure.
         if self.eat_name("KW_OWN") {
-            return self.parse_type();
+            let inner = self.parse_type()?;
+            if !matches!(self.pool.type_expr(inner), TypeExpr::Func { .. }) {
+                return Ok(inner);
+            }
+            let bound = if self.eat_name("PLUS") {
+                Some(self.parse_type()?)
+            } else {
+                None
+            };
+            let span = self.span_from_mark(start);
+            return Ok(self.pool.alloc_type_expr(TypeExpr::OwnFunc {
+                span,
+                func: inner,
+                bound,
+            }));
         }
         if self.eat_name("KW_REF") {
             return self.parse_reference_type(start, false, false);

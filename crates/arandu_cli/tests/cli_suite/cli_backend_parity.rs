@@ -650,6 +650,51 @@ fn function_values_agree_on_every_backend() {
     let _ = fs::remove_file(path);
 }
 
+/// Owning closures (RFC 0032, L3): returned, stored in fields, passed by
+/// `mut ref` and by value, with their environments destroyed exactly once.
+/// LLVM links no runtime, so its IR is only compiled to an object there.
+#[test]
+fn own_closures_agree_on_every_backend() {
+    let source = include_str!("../../../../tests/corpus/own_closures.aru");
+    for (backend, outcome) in outcomes_on("own_closures", source, false) {
+        assert_eq!(outcome, ProgramOutcome::Returned(0), "{backend}");
+    }
+    let path = std::env::temp_dir().join(format!("arandu_own_closures_{}.aru", std::process::id()));
+    fs::write(&path, source).unwrap();
+    let wasm = cli(&["emit-wasm", &path.to_string_lossy()]);
+    assert!(
+        wasm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&wasm.stderr)
+    );
+    crate::wasm_host::run_main(&wasm.stdout).assert_returns(0, "own closures in Wasmtime");
+    let ir = cli(&["emit-llvm", &path.to_string_lossy()]);
+    assert!(
+        ir.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ir.stderr)
+    );
+    if Command::new("clang").arg("--version").output().is_ok() {
+        let ll = path.with_extension("ll");
+        fs::write(&ll, &ir.stdout).unwrap();
+        let object = Command::new("clang")
+            .args(["-c", "-O2", "-w"])
+            .arg(&ll)
+            .arg("-o")
+            .arg(path.with_extension("o"))
+            .output()
+            .expect("clang");
+        assert!(
+            object.status.success(),
+            "{}",
+            String::from_utf8_lossy(&object.stderr)
+        );
+        let _ = fs::remove_file(ll);
+        let _ = fs::remove_file(path.with_extension("o"));
+    }
+    let _ = fs::remove_file(path);
+}
+
 /// `*place = value` writes through `mut ref`, through a reference to a
 /// reference and into `static mut` storage, on every backend.
 #[test]

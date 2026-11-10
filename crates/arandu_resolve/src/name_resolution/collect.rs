@@ -199,6 +199,8 @@ impl<'a> Resolver<'a> {
                         (Some("std.alloc.vec"), "Vec") => Some(LangItem::Vec),
                         (Some("std.alloc.arc"), "Arc") => Some(LangItem::Arc),
                         (Some("std.alloc.arc"), "ArcWeak") => Some(LangItem::ArcWeak),
+                        (Some("std.alloc.closure"), "Closure") => Some(LangItem::Closure),
+                        (Some("std.alloc.closure"), "SendClosure") => Some(LangItem::SendClosure),
                         (Some("std.core.simd"), "F32x4") => Some(LangItem::VectorF32x4),
                         (Some("std.core.simd"), "F64x2") => Some(LangItem::VectorF64x2),
                         (Some("std.core.simd"), "I32x4") => Some(LangItem::VectorI32x4),

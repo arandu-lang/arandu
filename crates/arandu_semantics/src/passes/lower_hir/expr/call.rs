@@ -82,6 +82,13 @@ pub(super) fn lower_call(
             }
             if trailing_block.is_none()
                 && let Some(kind) =
+                    lower_owning_closure_call(type_check, pool, hir_pool, callee_id, arg_ids)?
+            {
+                let ty = super::expr_type_for_kind(type_check, hir_pool, &kind, fallback_ty);
+                return Ok(HirExpr { kind, ty, span });
+            }
+            if trailing_block.is_none()
+                && let Some(kind) =
                     lower_callback_call(type_check, pool, hir_pool, callee_id, arg_ids)?
             {
                 let ty = super::expr_type_for_kind(type_check, hir_pool, &kind, fallback_ty);
@@ -187,6 +194,70 @@ fn lower_callback_call(
         span: pool.expr_span(callee_id),
     });
     let mut args = vec![super::lower_expr(type_check, pool, hir_pool, callee_id)?];
+    for &arg in arg_ids {
+        args.push(super::lower_expr(type_check, pool, hir_pool, arg)?);
+    }
+    Ok(Some(HirExprKind::Call {
+        callee,
+        args: hir_pool.alloc_expr_list(&args),
+        trailing_block: None,
+    }))
+}
+
+/// `c(args)` on an owning closure `c` is `c.code(c.env, args)`: its code takes
+/// the environment first (RFC 0032, L3). The type checker only admits a place
+/// as `c`, so reading it twice evaluates nothing twice.
+fn lower_owning_closure_call(
+    type_check: &mut TypeCheckResult,
+    pool: &AstPool,
+    hir_pool: &mut crate::hir::HirPool,
+    callee_id: ExprId,
+    arg_ids: &[ExprId],
+) -> Result<Option<HirExprKind>, Diagnostic> {
+    use arandu_middle::symbol_table::LangItem;
+    let Some(callee_ty) = type_check.type_info.expr_type_id(callee_id) else {
+        return Ok(None);
+    };
+    let interner = &type_check.type_info.type_interner;
+    let closure = match interner.resolve(callee_ty) {
+        ArType::Ref(inner) | ArType::RefMut(inner) => interner.resolve(inner),
+        other => other,
+    };
+    let ArType::Named(symbol, type_args) = closure else {
+        return Ok(None);
+    };
+    if !type_check
+        .symbols
+        .try_get(symbol)
+        .and_then(|symbol| symbol.lang_item)
+        .is_some_and(|item| matches!(item, LangItem::Closure | LangItem::SendClosure))
+    {
+        return Ok(None);
+    }
+    let &[code_ty] = interner.type_args(type_args).as_slice() else {
+        return Err(Diagnostic::ice(
+            crate::DiagCode::ICEL001,
+            "owning closure type has no code signature",
+            pool.expr_span(callee_id),
+        ));
+    };
+    let byte = interner.intern(ArType::Primitive(Primitive::U8));
+    let env_ty = interner.intern(ArType::Ptr(byte));
+    let span = pool.expr_span(callee_id);
+    let mut field = |hir_pool: &mut crate::hir::HirPool, name: &str, ty| {
+        super::lower_expr(type_check, pool, hir_pool, callee_id).map(|base| {
+            hir_pool.alloc_expr(HirExpr {
+                kind: HirExprKind::Field {
+                    base,
+                    field: name.into(),
+                },
+                ty,
+                span,
+            })
+        })
+    };
+    let callee = field(hir_pool, "code", code_ty)?;
+    let mut args = vec![field(hir_pool, "env", env_ty)?];
     for &arg in arg_ids {
         args.push(super::lower_expr(type_check, pool, hir_pool, arg)?);
     }

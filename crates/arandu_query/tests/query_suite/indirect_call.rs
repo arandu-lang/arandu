@@ -116,7 +116,7 @@ fn each_rejected_function_value_reports_one_diagnostic() {
         (
             "capturing lambda as a value",
             "    let k = 2\n    let f: (int) -> int = (x) => x + k\n    return f(1)",
-            DiagCode::U001FeatureNotSupported,
+            DiagCode::T002IncompatibleAssignment,
         ),
         (
             "function value of another signature as a callback",

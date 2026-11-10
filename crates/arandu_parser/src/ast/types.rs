@@ -82,6 +82,14 @@ pub enum TypeExpr {
         span: Span,
         inner: TypeExprId,
     },
+    /// Owning, escaping closure type `own (A) -> R`, with an optional
+    /// capability bound: `own (A) -> R + Send` (RFC 0032, L3). `func` is
+    /// always a [`TypeExpr::Func`].
+    OwnFunc {
+        span: Span,
+        func: TypeExprId,
+        bound: Option<TypeExprId>,
+    },
 }
 
 impl TypeExpr {
@@ -100,7 +108,8 @@ impl TypeExpr {
             | TypeExpr::MutSlice { span, .. }
             | TypeExpr::Array { span, .. }
             | TypeExpr::Func { span, .. }
-            | TypeExpr::Group { span, .. } => *span,
+            | TypeExpr::Group { span, .. }
+            | TypeExpr::OwnFunc { span, .. } => *span,
         }
     }
 }

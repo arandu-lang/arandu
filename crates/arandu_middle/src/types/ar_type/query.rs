@@ -192,6 +192,9 @@ impl ArType {
             ArType::Primitive(p) => p.to_string(),
             ArType::Vector(vector) => vector.name().to_string(),
             ArType::Named(id, args) => {
+                if let Some(owning) = display_owning_closure(*id, *args, symbols, interner) {
+                    return owning;
+                }
                 let name = symbols.try_get(*id).map(|s| s.name.as_str()).unwrap_or("?");
                 let arg_tys = interner.type_args(*args);
                 if arg_tys.is_empty() {
@@ -378,4 +381,31 @@ impl ArType {
             | ArType::RefMut(_) => false,
         }
     }
+}
+
+/// `Closure<func(ptr[u8], A) R>` reads as the type the user wrote:
+/// `own func(A) R`, with `+ Send` for a `SendClosure` (RFC 0032, L3).
+fn display_owning_closure(
+    id: crate::SymbolId,
+    args: crate::hir::pool::IndexRange,
+    symbols: &SymbolTable,
+    interner: &TypeInterner,
+) -> Option<String> {
+    use crate::symbol_table::LangItem;
+    let bound = match symbols.try_get(id)?.lang_item? {
+        LangItem::Closure => "",
+        LangItem::SendClosure => " + Send",
+        _ => return None,
+    };
+    let &[code] = interner.type_args(args).as_slice() else {
+        return None;
+    };
+    let ArType::Func(params, ret) = interner.resolve(code) else {
+        return None;
+    };
+    let params = interner.type_args(params);
+    let (_, params) = params.split_first()?;
+    let params = interner.intern(ArType::func(params, ret, interner));
+    let func = interner.resolve(params).display(symbols, interner);
+    Some(format!("own {func}{bound}"))
 }

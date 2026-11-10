@@ -169,6 +169,10 @@ pub enum LangItem {
     StdThread,
     /// Any `std.fs` operation. Bare-metal targets reject the module.
     StdFs,
+    /// Owning closure `own (A) -> R` (RFC 0032, L3).
+    Closure,
+    /// Owning closure that may cross threads: `own (A) -> R + Send`.
+    SendClosure,
 }
 
 impl LangItem {

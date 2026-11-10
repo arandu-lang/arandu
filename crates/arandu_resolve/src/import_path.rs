@@ -111,6 +111,28 @@ pub const AMBIENT_PRIMITIVE_MODULES: &[(&str, &str)] = &[
     ("stdlib/core/pointer.aru", "std.core.pointer"),
 ];
 
+/// The module defining the owning closure types behind `own (A) -> R`
+/// (RFC 0032, L3). Its symbols are linked into every module outside the
+/// standard library, like a prelude, but no name enters the scope: only the
+/// compiler reaches them, through their lang items.
+pub const AMBIENT_CLOSURE_MODULE: (&str, &str) = ("stdlib/alloc/closure.aru", "std.alloc.closure");
+
+/// The modules linked into `current` without an import, in a fixed order.
+/// Core modules see no primitive modules and the standard library sees no
+/// closure module, which keeps both free of import cycles.
+pub fn ambient_modules(
+    current: Option<&str>,
+) -> impl Iterator<Item = (&'static str, &'static str)> + '_ {
+    let core = current.is_some_and(|module| module.starts_with("std.core."));
+    let standard = current.is_some_and(|module| module.starts_with("std."));
+    AMBIENT_PRIMITIVE_MODULES
+        .iter()
+        .copied()
+        .filter(move |_| !core)
+        .chain(std::iter::once(AMBIENT_CLOSURE_MODULE).filter(move |_| !standard))
+        .filter(move |&(_, name)| current != Some(name))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

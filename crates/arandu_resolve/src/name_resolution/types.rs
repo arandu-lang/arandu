@@ -16,6 +16,17 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    fn is_ambient_send_bound(&self, scope: ScopeId, bound: TypeExprId) -> bool {
+        matches!(
+            self.pool.type_expr(bound),
+            TypeExpr::Named { name, args, .. }
+                if args.is_empty()
+                    && name.path.len() == 1
+                    && name.path[0] == "Send"
+                    && self.symbols.lookup_type(scope, "Send").is_none()
+        )
+    }
+
     pub(crate) fn resolve_type_expr(&mut self, scope: ScopeId, ty: TypeExprId) {
         match self.pool.type_expr(ty) {
             TypeExpr::Const { .. } | TypeExpr::Primitive { .. } => {}
@@ -57,6 +68,16 @@ impl<'a> Resolver<'a> {
                 }
                 if let Some(result) = result {
                     self.resolve_result_type(scope, result);
+                }
+            }
+            TypeExpr::OwnFunc { func, bound, .. } => {
+                self.resolve_type_expr(scope, *func);
+                // The only bound is `Send`; unqualified and not shadowed, it
+                // needs no import and the type checker reads it as the marker.
+                if let Some(bound) = *bound
+                    && !self.is_ambient_send_bound(scope, bound)
+                {
+                    self.resolve_type_expr(scope, bound);
                 }
             }
         }

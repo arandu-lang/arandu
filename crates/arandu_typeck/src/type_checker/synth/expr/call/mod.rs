@@ -5,13 +5,16 @@ mod closure;
 mod instantiate;
 mod invoke;
 mod invoke_direct;
+mod owning;
 mod thread_target;
 
 pub(crate) use arg::check_call_arg;
 pub(crate) use closure::{
-    check_callback_args, check_lambda_value, synth_args_with_callbacks, synth_call_arg,
+    check_callback_args, check_lambda_owning, check_lambda_value, synth_args_with_callbacks,
+    synth_call_arg,
 };
 pub(crate) use instantiate::{bind_type_params, infer_and_instantiate_func};
+pub(crate) use owning::owning_closure_signature;
 pub(crate) use thread_target::check_target_thread_capabilities;
 
 use arandu_lexer::Span;
@@ -177,9 +180,35 @@ pub(super) fn synth_call_expr(
                 }
                 if checker.direct_callee != Some(expr) {
                     check_function_value(checker, symbol_id, span);
-                    if let Some(instance) =
-                        instantiate_function_value(checker, expr, symbol_id, span, expected)
+                    // `own (A) -> R` expected: the function is instantiated at
+                    // `(A) -> R` and wrapped in a closure without environment.
+                    let owning = expected.and_then(|expected| {
+                        owning_closure_signature(checker, expected)
+                            .map(|signature| (expected, signature))
+                    });
+                    let value_expected = owning.map(|(_, signature)| signature).or(expected);
+                    let instance =
+                        instantiate_function_value(checker, expr, symbol_id, span, value_expected);
+                    if let Some((closure_ty, signature)) = owning
+                        && checker.symbols.try_get(symbol_id).is_some_and(|entry| {
+                            matches!(
+                                entry.kind,
+                                arandu_middle::SymbolKind::Func
+                                    | arandu_middle::SymbolKind::AssociatedFunc
+                            )
+                        })
+                        && let Some(function_ty) =
+                            instance.or_else(|| checker.decl_type_id(symbol_id))
                     {
+                        return Some(closure::adapt_function_owning(
+                            checker,
+                            expr,
+                            function_ty,
+                            closure_ty,
+                            signature,
+                        ));
+                    }
+                    if let Some(instance) = instance {
                         return Some(instance);
                     }
                 }

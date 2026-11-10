@@ -1151,3 +1151,41 @@ fn a_function_type_is_a_result_type_in_both_parser_paths() {
         assert_eq!(direct, canonical, "{source}");
     }
 }
+
+#[test]
+fn an_owning_closure_type_parses_the_same_in_both_parser_paths() {
+    for source in [
+        "func make(): own () -> int { return counter }",
+        "func keep(job: own (int) -> void + Send) { }",
+        "func many(jobs: Vec<own () -> void + marker.Send>) { }",
+        "func legacy(job: own func(int) int) { }",
+        "func plain(value: own Vec<int>) { }",
+    ] {
+        let direct = parse(source).expect("direct parse");
+        let canonical =
+            crate::lower_syntax_to_program(&crate::parse_syntax(source), 0).expect("CST parse");
+        assert_eq!(direct, canonical, "{source}");
+    }
+    let owned =
+        crate::parse_to_string("func keep(job: own (int) -> void + Send) { }").expect("parse");
+    assert!(owned.contains("OwnFuncType"), "{owned}");
+    let plain = crate::parse_to_string("func plain(value: own Vec<int>) { }").expect("parse");
+    assert!(!plain.contains("OwnFuncType"), "{plain}");
+}
+
+#[test]
+fn a_generic_function_value_ends_at_an_expression_boundary_in_both_paths() {
+    for source in [
+        "func f() { let d = Pair { drop: release<int>, size: 1 } }",
+        "func f() { keep(release<int>) }",
+        "func f() { let d: (int) -> int = id<int>; }",
+        "func f() { let c = a < b }",
+    ] {
+        let direct = parse(source).expect("direct parse");
+        let canonical =
+            crate::lower_syntax_to_program(&crate::parse_syntax(source), 0).expect("CST parse");
+        assert_eq!(direct, canonical, "{source}");
+    }
+    let dump = crate::parse_to_string("func f() { keep(release<int>) }").expect("parse");
+    assert!(dump.contains("Generic"), "{dump}");
+}

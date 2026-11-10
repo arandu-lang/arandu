@@ -10,7 +10,7 @@ use super::super::types;
 use super::translate::{reintern_type, translate_type};
 use super::{
     ClosureCaptureField, ClosureParam, ClosureRecipe, ConcreteHeader, EnumPayloadShape,
-    InterfaceConstraint, TypeInfo,
+    InterfaceConstraint, OwningCode, TypeInfo,
 };
 
 /// Where an item-local typing shard sits in its file (RFC 0042): its
@@ -297,6 +297,13 @@ impl TypeInfo {
                 })
                 .collect();
             let return_type = reintern_type(self, other, recipe.return_type);
+            let owning = recipe.owning.as_ref().map(|code| OwningCode {
+                symbol: remap(code.symbol),
+                env_param: remap(code.env_param),
+                params: code.params.iter().copied().map(remap).collect(),
+                host_name: code.host_name.clone(),
+                closure_ty: reintern_type(self, other, code.closure_ty),
+            });
             self.closures.insert(
                 *span,
                 ClosureRecipe {
@@ -311,6 +318,7 @@ impl TypeInfo {
                     return_type,
                     host_name: recipe.host_name.clone(),
                     adapts: recipe.adapts.map(remap),
+                    owning,
                 },
             );
         }

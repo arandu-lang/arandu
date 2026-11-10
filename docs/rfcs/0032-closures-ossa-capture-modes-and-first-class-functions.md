@@ -50,11 +50,30 @@
 >   move; `own` força movimento. O OSSA as verifica como campos de struct.
 > - **Chamada indireta:** statement, o `AmirStmt::Call` com callee operando;
 >   os modos dos argumentos vêm do tipo `Func`.
-> - **Valor função:** `{code, env}`, duas palavras. Uma função livre usa um
->   thunk adaptador com `env = null`; o ambiente de uma closure escapante, no
->   heap, começa por `{drop, size, align}`. C: `struct { code, env }`; Wasm:
->   índice de tabela e offset na memória linear; LLVM: `{ ptr, ptr }`, com a
->   convenção padrão nas fronteiras `@Export`.
+> - **Valor função** (revisto em 2026-11-10): `(A) -> R` é um ponteiro de
+>   código fino, de uma palavra, como `fn` no Rust e o ponteiro de função do C
+>   e do Zig. Assim, ele cruza a fronteira C sem conversão, como o c2arandu
+>   precisa ao traduzir ponteiros de função para `func(...)`. O par
+>   `{code, env}` fica para `own (A) -> R` (L3), cujo ambiente no heap começa
+>   por `{drop, size, align}`. C: typedef de ponteiro de função; Wasm: índice
+>   na tabela de funções; LLVM: `ptr`.
+>
+> **Estado em 2026-11-10 (L2):** chamada indireta nos quatro backends
+> (`call_indirect` no Cranelift e no Wasm, sobre uma tabela `funcref` com
+> cada função no próprio índice; chamada por ponteiro no LLVM e no C). São
+> valores função:
+> - funções livres e associadas;
+> - instâncias de funções genéricas fixadas pelo tipo esperado;
+> - lambdas sem captura, que viram funções próprias.
+>
+> Um valor passado a um parâmetro de callback é o próprio callback: o callee
+> é instanciado com `F = (A) -> R`, como um `fn` do Rust implementa `FnMut`.
+> Restrições:
+> - `@Unsafe` e `extern` não viram valor (O013);
+> - `@Export` e lambdas com captura ainda não viram (U001);
+> - a chamada indireta observa todos os efeitos e não é admitida em CTFE.
+>
+> O T033 foi retirado. Corpus: `tests/corpus/function_values.aru`.
 
 ---
 

@@ -256,6 +256,7 @@ pub extern "C" fn ar_gen_shutdown_raw() {
     crate::ffi::guard(|| {
         let payloads = REGISTRY.with_borrow_mut(|registry| std::mem::take(&mut registry.payloads));
         drop(payloads);
+        crate::task_arena::ar_task_arena_reset();
     });
 }
 

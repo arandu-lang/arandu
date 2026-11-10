@@ -1,0 +1,46 @@
+module closureBorrowCapture
+
+import std.alloc.string as strings
+
+// Borrowed captures of owned values (RFC 0032, L1): the environment holds a
+// reference to the caller's local, so writes are seen at once and nothing is
+// copied back after the call.
+
+func each(n: int, f: (int) -> void): void {
+    let mut i = 0
+    while i < n {
+        f(i)
+        i = i + 1
+    }
+}
+
+func twice(f: () -> void): void {
+    f()
+    f()
+}
+
+// A `mut self` method call mutably borrows the capture.
+func mutatesThroughMethod(): int {
+    let mut s = strings.String.from("a")
+    twice(() => s.pushStr("b"))
+    if s.asStr() != "abb" { return 1 }
+    return 0
+}
+
+// A non-Copy value only read is a shared borrow; the caller keeps it.
+func readsAnOwnedValue(): int {
+    let label = strings.String.from("xyz")
+    let mut seen = 0
+    each(2, (x) => { seen = seen + label.asStr().len() as int })
+    if seen != 6 { return 1 }
+    if label.asStr() != "xyz" { return 2 }
+    return 0
+}
+
+func main(): int {
+    let mutated = mutatesThroughMethod()
+    if mutated != 0 { return 10 + mutated }
+    let read = readsAnOwnedValue()
+    if read != 0 { return 20 + read }
+    return 0
+}

@@ -491,10 +491,14 @@ fn escaping_callback(
     symbols: &SymbolTable,
     type_info: &TypeInfo,
 ) -> Option<Diagnostic> {
-    let ArType::Named(implicit, _) = &constraint.found else {
+    let found = match &constraint.found {
+        ArType::Ref(inner) | ArType::RefMut(inner) => type_info.type_interner.resolve(*inner),
+        other => other.clone(),
+    };
+    let ArType::Named(implicit, _) = found else {
         return None;
     };
-    let bound = *type_info.callback_bounds.get(implicit)?;
+    let bound = *type_info.callback_bounds.get(&implicit)?;
     let (value_span, sink_span) = match &constraint.origin {
         ConstraintOrigin::Assignment { lhs_span, rhs_span } => (*rhs_span, *lhs_span),
         ConstraintOrigin::CallArg {

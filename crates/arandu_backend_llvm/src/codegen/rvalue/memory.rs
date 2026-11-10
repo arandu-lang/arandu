@@ -54,6 +54,22 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                 ));
                 Ok(())
             }
+            AmirRvalue::ArenaAlloc { size, align, .. } => {
+                self.module.require_task_arena_alloc();
+                let len_ty = self.module.ptr_int_ty();
+                self.writer.line(format!(
+                    "{result} = call ptr @ar_task_arena_alloc({len_ty} {}, {len_ty} {})",
+                    size.max(&1),
+                    align.max(&1)
+                ));
+                Ok(())
+            }
+            AmirRvalue::ArenaCheckpoint => {
+                self.module.require_task_arena_checkpoint();
+                self.writer
+                    .line(format!("{result} = call i64 @ar_task_arena_checkpoint()"));
+                Ok(())
+            }
             AmirRvalue::Len(value) => {
                 let ty = self.module.operand_type(value, self.func);
                 if let ArType::Array(length, _) = &ty {
@@ -106,8 +122,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                     // By-value descriptor / opaque String: spill and return its address.
                     let slot = self.new_value();
                     let align = self.module.pointer_align();
-                    self.writer
-                        .line(format!("{slot} = alloca {}, align {align}", value.ty));
+                    self.emit_entry_alloca(&slot, &value.ty, align);
                     self.writer.line(format!(
                         "store {} {}, ptr {slot}, align {align}",
                         value.ty, value.value

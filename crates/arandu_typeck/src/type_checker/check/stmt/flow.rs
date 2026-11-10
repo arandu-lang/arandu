@@ -26,9 +26,10 @@ pub(super) fn check_while_stmt(
     pool: &AstPool,
     condition: &arandu_parser::Condition,
     body: &arandu_parser::Block,
+    label: Option<smol_str::SmolStr>,
 ) {
     check_condition(checker, condition);
-    checker.ctx.enter_loop();
+    checker.ctx.enter_loop_with_label(label);
     check_block(checker, pool, body);
     checker.ctx.exit_loop();
 }
@@ -38,6 +39,7 @@ pub(super) fn check_for_stmt(
     pool: &AstPool,
     clause: &arandu_parser::ForClause,
     body: &arandu_parser::Block,
+    label: Option<smol_str::SmolStr>,
 ) {
     match clause {
         arandu_parser::ForClause::In {
@@ -108,7 +110,7 @@ pub(super) fn check_for_stmt(
             }
         }
     }
-    checker.ctx.enter_loop();
+    checker.ctx.enter_loop_with_label(label);
     check_block(checker, pool, body);
     checker.ctx.exit_loop();
 }
@@ -241,6 +243,21 @@ pub(super) fn check_loop_control_stmt(
         checker.diagnostics.push(crate::Diagnostic::error(
             crate::DiagCode::N011BreakContinueOutsideLoop,
             msg,
+            span,
+        ));
+        return;
+    }
+
+    let target_label = match stmt {
+        Stmt::Break { label, .. } | Stmt::Continue { label, .. } => label.as_deref(),
+        _ => None,
+    };
+    if let Some(lbl) = target_label
+        && !checker.ctx.has_loop_label(lbl)
+    {
+        checker.diagnostics.push(crate::Diagnostic::error(
+            crate::DiagCode::N011BreakContinueOutsideLoop,
+            format!("use of undeclared label '{lbl}'"),
             span,
         ));
     }

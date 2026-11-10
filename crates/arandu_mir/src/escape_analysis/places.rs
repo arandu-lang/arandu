@@ -77,7 +77,7 @@ fn holds_only_static_strings(
 /// are intentionally excluded: their fat-view ABI is Copy and their owner
 /// lifetime is checked at use sites, while aggregates containing explicit
 /// references still require the generational-fallback diagnostic.
-pub(super) fn type_is_borrow_carrier(
+pub(crate) fn type_is_borrow_carrier(
     ty: crate::types::TypeId,
     interner: &crate::types::TypeInterner,
     type_info: Option<&dyn AmirTypeContext>,
@@ -160,15 +160,27 @@ pub(super) fn is_return_temp(t: TempId, func: &AmirFunc) -> bool {
     t.as_usize() == 0 || func.params.first().is_some_and(|p| *p == t)
 }
 
-pub(super) fn operand_stack_place(
+pub(super) fn operand_stack_places<'a>(
     op: &AmirOperand,
-    temp_to_place: &[Option<LocalId>],
-) -> Option<LocalId> {
+    temp_to_place: &'a [smallvec::SmallVec<[LocalId; 2]>],
+) -> &'a [LocalId] {
     match op {
-        AmirOperand::Copy(t) | AmirOperand::Move(t) => {
-            temp_to_place.get(t.as_usize()).copied().flatten()
-        }
-        _ => None,
+        AmirOperand::Copy(t) | AmirOperand::Move(t) => temp_to_place
+            .get(t.as_usize())
+            .map_or(&[], smallvec::SmallVec::as_slice),
+        _ => &[],
+    }
+}
+
+pub(super) fn push_unique_place(
+    places: &mut smallvec::SmallVec<[LocalId; 2]>,
+    place: LocalId,
+) -> bool {
+    if places.contains(&place) {
+        false
+    } else {
+        places.push(place);
+        true
     }
 }
 

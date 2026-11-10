@@ -173,6 +173,7 @@ impl Shift {
             | ExprKind::Char { value: _ }
             | ExprKind::Byte { value: _ }
             | ExprKind::ByteString { bytes: _ }
+            | ExprKind::CString { bytes: _ }
             | ExprKind::Nil => {}
             ExprKind::TypePath {
                 type_name,
@@ -392,7 +393,9 @@ impl Shift {
                     self.expr_id(value);
                 }
             }
-            Stmt::Break { span } | Stmt::Continue { span } | Stmt::Error(span) => self.span(span),
+            Stmt::Break { span, label: _ }
+            | Stmt::Continue { span, label: _ }
+            | Stmt::Error(span) => self.span(span),
             Stmt::Free { span, expr }
             | Stmt::Match { span, expr }
             | Stmt::Expr {
@@ -419,6 +422,7 @@ impl Shift {
             }
             Stmt::For {
                 span,
+                label: _,
                 is_comptime: _,
                 clause,
                 body,
@@ -461,6 +465,7 @@ impl Shift {
             }
             Stmt::While {
                 span,
+                label: _,
                 condition,
                 body,
             } => {
@@ -709,6 +714,7 @@ impl Shift {
                 name: _,
                 ty,
                 value,
+                is_static_mut: _,
             }) => {
                 self.span(span);
                 self.attributes(attrs);

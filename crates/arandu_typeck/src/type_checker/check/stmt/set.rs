@@ -6,6 +6,7 @@ use super::super::place::synth_place;
 pub(super) fn check_set_stmt(
     checker: &mut TypeChecker<'_>,
     places: &[arandu_parser::Place],
+    op: arandu_parser::SetOp,
     value: arandu_parser::ast_pool::ExprId,
 ) {
     for place in places {
@@ -16,7 +17,17 @@ pub(super) fn check_set_stmt(
     } else {
         None
     };
-    let val_ty_id = super::super::super::synth::synth_expr_expected(checker, value, expected);
+    let is_ptr_offset_assign = matches!(
+        op,
+        arandu_parser::SetOp::AddAssign | arandu_parser::SetOp::SubAssign
+    ) && expected
+        .is_some_and(|id| matches!(checker.resolve(id), ArType::Ptr(_)));
+    let synth_expected = if is_ptr_offset_assign {
+        Some(checker.intern(ArType::Primitive(arandu_middle::types::Primitive::USize)))
+    } else {
+        expected
+    };
+    let val_ty_id = super::super::super::synth::synth_expr_expected(checker, value, synth_expected);
 
     if places.len() > 1 {
         let val_tys: Vec<TypeId> =
@@ -72,6 +83,32 @@ pub(super) fn check_set_stmt(
                 "Result value must be handled with `?` or `value, err = f()`",
                 checker.pool.expr_span(value),
             ));
+        }
+
+        if is_ptr_offset_assign && checker.resolve(final_val_ty_id).is_integer() {
+            if !checker.ctx.is_in_unsafe() {
+                checker.diagnostics.push(
+                    crate::Diagnostic::error(
+                        crate::DiagCode::O012AllocRequiresUnsafe,
+                        "pointer arithmetic requires an `unsafe` block",
+                        place.span,
+                    )
+                    .with_label(place.span, "raw pointer offset assignment is unsafe"),
+                );
+            }
+            if let Some(var_id) = checker.literal_table.var_for_expr(value) {
+                let usize_id =
+                    checker.intern(ArType::Primitive(arandu_middle::types::Primitive::USize));
+                checker.constrain_literal_var(
+                    var_id,
+                    usize_id,
+                    ConstraintOrigin::SetTarget {
+                        place_span: place.span,
+                        value_span: checker.pool.expr_span(value),
+                    },
+                );
+            }
+            return;
         }
 
         if let Some(var_id) = checker.literal_table.var_for_expr(value) {
@@ -176,6 +213,29 @@ fn validate_mutability(checker: &mut TypeChecker<'_>, place: &arandu_parser::Pla
     if place.suffixes.is_empty() {
         if let Some(symbol_id) = symbol_id_opt {
             let symbol = checker.symbols.get(symbol_id);
+            if symbol.kind == crate::SymbolKind::StaticMut {
+                if !checker.ctx.is_in_unsafe() {
+                    let diag = crate::Diagnostic::error(
+                        crate::DiagCode::O017StaticMutRequiresUnsafe,
+                        "access to `static mut` requires an `unsafe` block",
+                        place.span,
+                    )
+                    .with_label(place.span, "modifying `static mut` is unsafe");
+                    checker.diagnostics.push(diag);
+                }
+                return;
+            }
+            if symbol.kind == crate::SymbolKind::Const {
+                let name = &symbol.name;
+                let diag = crate::Diagnostic::error(
+                    crate::DiagCode::T026CannotAssignImmutable,
+                    format!("cannot assign to constant '{name}'"),
+                    place.span,
+                )
+                .with_label(place.span, "cannot assign to constant");
+                checker.diagnostics.push(diag);
+                return;
+            }
             if (symbol.kind == crate::SymbolKind::Local || symbol.kind == crate::SymbolKind::Param)
                 && !checker.resolved.mutable_symbols.contains(&symbol_id)
             {
@@ -268,7 +328,7 @@ fn validate_mutability(checker: &mut TypeChecker<'_>, place: &arandu_parser::Pla
                         checker.diagnostics.push(diag);
                         return;
                     }
-                    ArType::MutSlice(inner) => {
+                    ArType::MutSlice(inner) | ArType::Ptr(inner) => {
                         is_mutable = true;
                         current_ty_id = *inner;
                     }
@@ -327,6 +387,13 @@ fn validate_mutability(checker: &mut TypeChecker<'_>, place: &arandu_parser::Pla
                 let interner = &checker.type_info.type_interner;
                 let struct_info_opt = match actual_base_ty {
                     ArType::Named(id, args) => Some((id, interner.type_args(args))),
+                    ArType::Ptr(inner) => {
+                        is_mutable = true;
+                        match interner.resolve(inner) {
+                            ArType::Named(id, args) => Some((id, interner.type_args(args))),
+                            _ => None,
+                        }
+                    }
                     _ => None,
                 };
                 if let Some((struct_id, args)) = struct_info_opt {

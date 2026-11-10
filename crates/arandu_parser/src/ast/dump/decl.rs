@@ -43,8 +43,13 @@ fn dump_const(pool: &AstPool, decl: &ConstDecl, out: &mut Vec<String>) {
         .ty
         .map(|ty| format!(" {}", dump_type(pool.type_expr(ty), pool)))
         .unwrap_or_default();
+    let kind = if decl.is_static_mut {
+        "StaticMut"
+    } else {
+        "Const"
+    };
     out.push(format!(
-        "  Const {} {}{}{ty} = {}",
+        "  {kind} {} {}{}{ty} = {}",
         dump_span(decl.span),
         dump_visibility(decl.visibility),
         decl.name,

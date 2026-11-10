@@ -107,6 +107,15 @@ impl<'a> FuncTranslator<'a> {
             AmirRvalue::Alloc(size_op) => {
                 self.emit_bump_alloc(size_op);
             }
+            AmirRvalue::ArenaAlloc { size, .. } => {
+                self.code.push(Instruction::I32Const((*size).max(1) as i32));
+                self.code.push(Instruction::Call(self.alloc_func_idx));
+            }
+            AmirRvalue::ArenaCheckpoint => {
+                self.code
+                    .push(Instruction::GlobalGet(crate::memory::GLOBAL_HEAP_PTR));
+                self.code.push(Instruction::I64ExtendI32U);
+            }
             AmirRvalue::StrView { owner } => {
                 // Pass through the owner fat pointer (data, len).
                 self.emit_operand(owner, result_ty);

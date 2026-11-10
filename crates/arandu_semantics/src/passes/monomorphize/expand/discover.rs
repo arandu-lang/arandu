@@ -65,7 +65,9 @@ pub(super) fn discover_nested_keys<'bump>(
                     visit_block(hir, *b, tc, bump, template_funcs, enqueue);
                 }
             }
-            HirStmtKind::While { condition, body } => {
+            HirStmtKind::While {
+                condition, body, ..
+            } => {
                 visit_condition(hir, condition, tc, bump, template_funcs, enqueue);
                 visit_block(hir, *body, tc, bump, template_funcs, enqueue);
             }
@@ -104,7 +106,7 @@ pub(super) fn discover_nested_keys<'bump>(
             | HirStmtKind::Scope(b) => {
                 visit_block(hir, *b, tc, bump, template_funcs, enqueue);
             }
-            HirStmtKind::Break | HirStmtKind::Continue | HirStmtKind::Error => {}
+            HirStmtKind::Break { .. } | HirStmtKind::Continue { .. } | HirStmtKind::Error => {}
         }
     }
 

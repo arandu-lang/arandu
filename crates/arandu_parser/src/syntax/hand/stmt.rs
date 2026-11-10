@@ -81,23 +81,31 @@ pub fn try_hand_lower_block(
 
 /// Parse `{ ... }` from the cursor (token-first).
 pub fn parse_block_tokens(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<Block> {
+    if ctx.depth >= 64 {
+        return None;
+    }
+    ctx.depth += 1;
     let open = cur.expect(TokenKind::LBrace)?;
     let start = open.start;
     let mut statements = Vec::new();
-    loop {
-        cur.skip_semis();
-        if cur.peek_kind() == Some(TokenKind::RBrace) {
-            let close = cur.bump()?;
-            return Some(Block {
-                span: ctx.span(start, close.start + close.len),
-                statements: ctx.pool.alloc_stmt_list(&statements),
-            });
+    let res = (|| {
+        loop {
+            cur.skip_semis();
+            if cur.peek_kind() == Some(TokenKind::RBrace) {
+                let close = cur.bump()?;
+                return Some(Block {
+                    span: ctx.span(start, close.start + close.len),
+                    statements: ctx.pool.alloc_stmt_list(&statements),
+                });
+            }
+            if cur.at_end() {
+                return None;
+            }
+            statements.push(parse_stmt_tokens(ctx, cur)?);
         }
-        if cur.at_end() {
-            return None;
-        }
-        statements.push(parse_stmt_tokens(ctx, cur)?);
-    }
+    })();
+    ctx.depth -= 1;
+    res
 }
 
 /// Parse one statement from the cursor (does not require trailing `;`).
@@ -106,17 +114,80 @@ pub fn parse_stmt_tokens(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<
     match cur.peek_kind()? {
         TokenKind::KwBreak => {
             let t = cur.bump()?;
+            let label = if cur.peek_kind() == Some(TokenKind::Label) {
+                let lbl = cur.bump()?;
+                let raw = ctx.text(lbl)?;
+                Some((SmolStr::new(raw.trim_start_matches('\'')), lbl))
+            } else if cur.peek_kind() == Some(TokenKind::IdentValue) {
+                let lbl = cur.bump()?;
+                Some((SmolStr::new(ctx.text(lbl)?), lbl))
+            } else {
+                None
+            };
+            let end_tok = label.as_ref().map(|(_, l)| *l).unwrap_or(t);
             let _ = cur.eat(TokenKind::Semicolon);
             Some(ctx.pool.alloc_stmt(Stmt::Break {
-                span: ctx.token_span(t),
+                span: ctx.span(start, ctx.token_span(end_tok).end),
+                label: label.map(|(name, _)| name),
             }))
         }
         TokenKind::KwContinue => {
             let t = cur.bump()?;
+            let label = if cur.peek_kind() == Some(TokenKind::Label) {
+                let lbl = cur.bump()?;
+                let raw = ctx.text(lbl)?;
+                Some((SmolStr::new(raw.trim_start_matches('\'')), lbl))
+            } else if cur.peek_kind() == Some(TokenKind::IdentValue) {
+                let lbl = cur.bump()?;
+                Some((SmolStr::new(ctx.text(lbl)?), lbl))
+            } else {
+                None
+            };
+            let end_tok = label.as_ref().map(|(_, l)| *l).unwrap_or(t);
             let _ = cur.eat(TokenKind::Semicolon);
             Some(ctx.pool.alloc_stmt(Stmt::Continue {
-                span: ctx.token_span(t),
+                span: ctx.span(start, ctx.token_span(end_tok).end),
+                label: label.map(|(name, _)| name),
             }))
+        }
+        TokenKind::Label if cur.peek_at(1).is_some_and(|t| t.kind == TokenKind::Colon) => {
+            let lbl = cur.bump()?;
+            let _colon = cur.bump()?;
+            let raw = ctx.text(lbl)?;
+            let label = Some(SmolStr::new(raw.trim_start_matches('\'')));
+            match cur.peek_kind()? {
+                TokenKind::KwWhile => lower_while(ctx, cur, start, label),
+                TokenKind::KwFor => lower_for(ctx, cur, start, label),
+                TokenKind::KwComptime
+                    if cur.peek_at(1).is_some_and(|t| t.kind == TokenKind::KwFor) =>
+                {
+                    lower_for(ctx, cur, start, label)
+                }
+                _ => None,
+            }
+        }
+        TokenKind::IdentValue
+            if cur.peek_at(1).is_some_and(|t| t.kind == TokenKind::Colon)
+                && cur.peek_at(2).is_some_and(|t| {
+                    matches!(
+                        t.kind,
+                        TokenKind::KwWhile | TokenKind::KwFor | TokenKind::KwComptime
+                    )
+                }) =>
+        {
+            let lbl = cur.bump()?;
+            let _colon = cur.bump()?;
+            let label = Some(SmolStr::new(ctx.text(lbl)?));
+            match cur.peek_kind()? {
+                TokenKind::KwWhile => lower_while(ctx, cur, start, label),
+                TokenKind::KwFor => lower_for(ctx, cur, start, label),
+                TokenKind::KwComptime
+                    if cur.peek_at(1).is_some_and(|t| t.kind == TokenKind::KwFor) =>
+                {
+                    lower_for(ctx, cur, start, label)
+                }
+                _ => None,
+            }
         }
         TokenKind::KwReturn => lower_return(ctx, cur, start),
         TokenKind::KwFree => {
@@ -134,11 +205,11 @@ pub fn parse_stmt_tokens(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<
         TokenKind::KwComptime if cur.peek_at(1).is_some_and(|t| t.kind == TokenKind::KwIf) => {
             lower_if(ctx, cur, start)
         }
-        TokenKind::KwWhile => lower_while(ctx, cur, start),
+        TokenKind::KwWhile => lower_while(ctx, cur, start, None),
         TokenKind::KwComptime if cur.peek_at(1).is_some_and(|t| t.kind == TokenKind::KwFor) => {
-            lower_for(ctx, cur, start)
+            lower_for(ctx, cur, start, None)
         }
-        TokenKind::KwFor => lower_for(ctx, cur, start),
+        TokenKind::KwFor => lower_for(ctx, cur, start, None),
         TokenKind::KwDefer => lower_defer(ctx, cur, start, false),
         TokenKind::KwErrdefer => lower_defer(ctx, cur, start, true),
         TokenKind::KwUnsafe => {
@@ -160,7 +231,9 @@ pub fn parse_stmt_tokens(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<
                 expr,
             }))
         }
-        TokenKind::IdentValue | TokenKind::KwSelf => lower_ident_stmt(ctx, cur, start),
+        TokenKind::IdentValue | TokenKind::IdentType | TokenKind::KwSelf => {
+            lower_ident_stmt(ctx, cur, start)
+        }
         _ => {
             // expr stmt
             let expr = try_hand_lower_expr(ctx, cur, 0)?;
@@ -338,7 +411,9 @@ fn parse_place(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<Place> {
             cur.bump();
             SmolStr::new_static("self")
         }
-        TokenKind::IdentValue => {
+        // An uppercase root names a module-level `static mut` (see the RD
+        // parser); resolution rejects any other type name.
+        TokenKind::IdentValue | TokenKind::IdentType => {
             let n = SmolStr::new(ctx.text(root_tok)?);
             cur.bump();
             n
@@ -550,19 +625,30 @@ fn lower_if(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>, start: u32) -> Option<S
     }))
 }
 
-fn lower_while(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>, start: u32) -> Option<StmtId> {
+fn lower_while(
+    ctx: &mut HandCtx<'_>,
+    cur: &mut Cursor<'_>,
+    start: u32,
+    label: Option<SmolStr>,
+) -> Option<StmtId> {
     cur.expect(TokenKind::KwWhile)?;
     let condition = parse_condition(ctx, cur)?;
     let body = parse_block_tokens(ctx, cur)?;
     let end = body.span.end;
     Some(ctx.pool.alloc_stmt(Stmt::While {
         span: ctx.span(start, end),
+        label,
         condition,
         body,
     }))
 }
 
-fn lower_for(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>, start: u32) -> Option<StmtId> {
+fn lower_for(
+    ctx: &mut HandCtx<'_>,
+    cur: &mut Cursor<'_>,
+    start: u32,
+    label: Option<SmolStr>,
+) -> Option<StmtId> {
     let is_comptime = cur.eat(TokenKind::KwComptime);
     cur.expect(TokenKind::KwFor)?;
     let toks = cur.remaining();
@@ -647,6 +733,7 @@ fn lower_for(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>, start: u32) -> Option<
     let end = body.span.end;
     Some(ctx.pool.alloc_stmt(Stmt::For {
         span: ctx.span(start, end),
+        label,
         is_comptime,
         clause,
         body,

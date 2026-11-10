@@ -35,6 +35,18 @@ pub(super) fn synth_call_expr(
     match kind {
         ExprKind::Path { path: _ } => {
             if let Some(symbol_id) = checker.resolved.expr_symbol(expr) {
+                if checker
+                    .symbols
+                    .try_get(symbol_id)
+                    .is_some_and(|s| s.kind == arandu_middle::SymbolKind::StaticMut)
+                    && !checker.ctx.is_in_unsafe()
+                {
+                    checker.diagnostics.push(crate::Diagnostic::error(
+                        crate::DiagCode::O017StaticMutRequiresUnsafe,
+                        "access to `static mut` requires an `unsafe` block",
+                        span,
+                    ));
+                }
                 if let Some(var_id) = checker.literal_table.var_for_symbol(symbol_id) {
                     checker.literal_table.bind_expr(expr, var_id);
                 }

@@ -109,8 +109,12 @@ pub(in crate::passes::monomorphize::expand) fn clone_stmt_kind(
                 values: hir.pool.alloc_expr_list(&new_v),
             }
         }
-        HirStmtKind::Break => HirStmtKind::Break,
-        HirStmtKind::Continue => HirStmtKind::Continue,
+        HirStmtKind::Break { label } => HirStmtKind::Break {
+            label: label.clone(),
+        },
+        HirStmtKind::Continue { label } => HirStmtKind::Continue {
+            label: label.clone(),
+        },
         HirStmtKind::Free(e) => HirStmtKind::Free(super::clone_expr(
             hir,
             *e,
@@ -139,11 +143,13 @@ pub(in crate::passes::monomorphize::expand) fn clone_stmt_kind(
                 .transpose()?,
         },
         HirStmtKind::For {
+            label,
             clause,
             body,
             comptime_bounds,
             comptime_bodies,
         } => HirStmtKind::For {
+            label: label.clone(),
             comptime_bounds: *comptime_bounds,
             comptime_bodies: comptime_bodies
                 .as_ref()
@@ -157,7 +163,12 @@ pub(in crate::passes::monomorphize::expand) fn clone_stmt_kind(
             clause: clone_for_clause(hir, clause, subst, symbol_map, tc, name_prefix)?,
             body: clone_block(hir, *body, subst, symbol_map, tc, name_prefix)?,
         },
-        HirStmtKind::While { condition, body } => HirStmtKind::While {
+        HirStmtKind::While {
+            label,
+            condition,
+            body,
+        } => HirStmtKind::While {
+            label: label.clone(),
             condition: super::clone_condition(hir, condition, subst, symbol_map, tc, name_prefix)?,
             body: clone_block(hir, *body, subst, symbol_map, tc, name_prefix)?,
         },

@@ -20,8 +20,8 @@ pub use expr::{
 };
 pub use pattern::{HirFieldPattern, HirPattern};
 pub use pool::{
-    HirBlockId, HirDeclId, HirEnumVariantId, HirExprId, HirFieldPatternId, HirFuncSignatureId,
-    HirParamId, HirPatternId, HirPool, HirStmtId, HirStructFieldId, IndexRange,
+    HirBlockId, HirCaptureAlias, HirDeclId, HirEnumVariantId, HirExprId, HirFieldPatternId,
+    HirFuncSignatureId, HirParamId, HirPatternId, HirPool, HirStmtId, HirStructFieldId, IndexRange,
 };
 pub use pretty::HirPrettyCtx;
 pub use stmt::{

@@ -227,6 +227,19 @@ fn fallback_fix(db: &dyn ArandCompilerDb, file: SourceFile, item_start: u32) -> 
     }
 }
 
+fn item_forbids_fallback(db: &dyn ArandCompilerDb, file: SourceFile, item_sym: SymbolId) -> bool {
+    let prepared = crate::runtime::function_hir(db, file, item_sym);
+    prepared.hir.as_ref().is_some_and(|hir| {
+        hir.decls.iter().any(|&decl| {
+            matches!(
+                hir.pool.decl(decl),
+                arandu_middle::hir::HirDecl::Func(function)
+                    if function.symbol == item_sym && function.no_fallback
+            )
+        })
+    })
+}
+
 /// Definite-init, move, borrow and escape checks of one source function, in
 /// the coordinates of its memoized unit.
 pub(super) fn collect_item_flow(
@@ -304,10 +317,11 @@ pub(super) fn collect_item_flow(
     ) {
         out.push(IdeDiagnostic::from_diag(&d, Some(item_sym), Some(bid)));
     }
-    // Escape / O004: global `--no-generational-fallback` applies; per-func
-    // `@NoFallback` is applied in `lower_to_amir` (HIR flag).
-    let no_fallback =
-        arandu_base::NO_GENERATIONAL_FALLBACK.load(std::sync::atomic::Ordering::Relaxed);
+    // Escape / O004: the global `--no-generational-fallback` and the
+    // function's own `@NoFallback`, read from the same HIR lowering uses.
+    let no_fallback = arandu_base::NO_GENERATIONAL_FALLBACK
+        .load(std::sync::atomic::Ordering::Relaxed)
+        || item_forbids_fallback(db, file, item_sym);
     for (bid, d) in arandu_mir::escape_analysis::check_escapes_by_block(
         amir,
         context.symbols.as_ref(),

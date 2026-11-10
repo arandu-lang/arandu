@@ -28,7 +28,7 @@ fn peel_auto_deref_base(checker: &TypeChecker<'_>, base_ty_id: TypeId) -> (TypeI
                 was_nullable = true;
                 id = inner;
             }
-            ArType::Ref(inner) | ArType::RefMut(inner) | ArType::Ptr(inner) => {
+            ArType::Ref(inner) | ArType::RefMut(inner) => {
                 id = inner;
             }
             _ => break,
@@ -148,90 +148,89 @@ pub(crate) fn resolve_field_type(
         _ => None,
     };
 
-    let field_ty =
-        if let Some((struct_id, args)) = struct_info_opt {
-            let arg_ids: Vec<TypeId> = checker.type_info.type_interner.type_args(args);
-            let resolved_args: Vec<ArType> = arg_ids.iter().map(|&a| checker.resolve(a)).collect();
-            let field_from_struct = if let Some(field_ty) =
-                super::super::types::struct_field_instantiated(
-                    checker,
-                    struct_id,
-                    &resolved_args,
-                    field,
-                ) {
-                Some(field_ty)
-            } else {
-                checker
-                    .type_info
-                    .struct_fields
-                    .get(&struct_id)
-                    .and_then(|fields| fields.get(field))
-                    .map(|f| checker.resolve(f.ty))
-            };
+    let field_ty = if let Some((struct_id, args)) = struct_info_opt {
+        let arg_ids: Vec<TypeId> = checker.type_info.type_interner.type_args(args);
+        let resolved_args: Vec<ArType> = arg_ids.iter().map(|&a| checker.resolve(a)).collect();
+        let field_from_struct = if let Some(field_ty) =
+            super::super::types::struct_field_instantiated(
+                checker,
+                struct_id,
+                &resolved_args,
+                field,
+            ) {
+            Some(field_ty)
+        } else {
+            checker
+                .type_info
+                .struct_fields
+                .get(&struct_id)
+                .and_then(|fields| fields.get(field))
+                .map(|f| checker.resolve(f.ty))
+        };
 
-            if let Some(field_ty) = field_from_struct {
-                checker.check_field_visibility(struct_id, field, field_span);
-                field_ty
-            } else {
-                if let Some(method_sym) = checker.symbols.lookup_associated_member(struct_id, field)
-                    && let Some(ArType::Func(params, ret)) = checker.decl_type(method_sym)
-                {
-                    let interner = &checker.type_info.type_interner;
-                    ArType::func(&interner.type_args(params), ret, interner)
-                } else if let Some(constraints) =
-                    checker.type_info.param_constraints.get(&struct_id)
-                {
-                    let mut found_method_ty = None;
-                    for bound in constraints.iter() {
-                        if let Some(iface_info) = checker.type_info.interfaces.get(&bound.iface_sym)
-                            && let Some(m) = iface_info.methods.iter().find(|m| m.name == field)
-                        {
-                            let raw_sig = checker.resolve(m.sig_id);
-                            let base_ty = checker.resolve(actual_base_ty_id);
-                            let inst_sig =
+        if let Some(field_ty) = field_from_struct {
+            checker.check_field_visibility(struct_id, field, field_span);
+            if checker.type_info.struct_unions.contains(&struct_id) && !checker.ctx.is_in_unsafe() {
+                checker.diagnostics.push(
+                    crate::Diagnostic::error(
+                        crate::DiagCode::O012AllocRequiresUnsafe,
+                        "reading a field of a `union` requires an `unsafe` block",
+                        field_span,
+                    )
+                    .with_label(field_span, "union field access is unsafe"),
+                );
+            }
+            field_ty
+        } else {
+            if let Some(method_sym) = checker.symbols.lookup_associated_member(struct_id, field)
+                && let Some(ArType::Func(params, ret)) = checker.decl_type(method_sym)
+            {
+                let interner = &checker.type_info.type_interner;
+                ArType::func(&interner.type_args(params), ret, interner)
+            } else if let Some(constraints) = checker.type_info.param_constraints.get(&struct_id) {
+                let mut found_method_ty = None;
+                for bound in constraints.iter() {
+                    if let Some(iface_info) = checker.type_info.interfaces.get(&bound.iface_sym)
+                        && let Some(m) = iface_info.methods.iter().find(|m| m.name == field)
+                    {
+                        let raw_sig = checker.resolve(m.sig_id);
+                        let base_ty = checker.resolve(actual_base_ty_id);
+                        let inst_sig =
                             crate::type_checker::types::interfaces::instantiate_interface_method(
-                                checker, bound.iface_sym, &bound.type_args, &base_ty, &raw_sig,
+                                checker,
+                                bound.iface_sym,
+                                &bound.type_args,
+                                &base_ty,
+                                &raw_sig,
                             );
-                            found_method_ty = Some(inst_sig);
-                            break;
-                        }
+                        found_method_ty = Some(inst_sig);
+                        break;
                     }
-                    if let Some(method_ty) = found_method_ty {
-                        if let ArType::Func(params, ret) = method_ty {
-                            let interner = &checker.type_info.type_interner;
-                            let params_vec = interner.type_args(params);
-                            let payload = if params_vec.first().is_some_and(|&p| {
-                                checker.unify_ids(p, actual_base_ty_id)
-                                    || match checker.resolve(p) {
-                                        ArType::Ref(inner)
-                                        | ArType::RefMut(inner)
-                                        | ArType::Ptr(inner) => {
-                                            checker.unify_ids(inner, actual_base_ty_id)
-                                        }
-                                        _ => false,
+                }
+                if let Some(method_ty) = found_method_ty {
+                    if let ArType::Func(params, ret) = method_ty {
+                        let interner = &checker.type_info.type_interner;
+                        let params_vec = interner.type_args(params);
+                        let payload = if params_vec.first().is_some_and(|&p| {
+                            checker.unify_ids(p, actual_base_ty_id)
+                                || match checker.resolve(p) {
+                                    ArType::Ref(inner)
+                                    | ArType::RefMut(inner)
+                                    | ArType::Ptr(inner) => {
+                                        checker.unify_ids(inner, actual_base_ty_id)
                                     }
-                            }) {
-                                &params_vec[1..]
-                            } else {
-                                &params_vec[..]
-                            };
-                            let mut new_params = vec![actual_base_ty_id];
-                            new_params.extend_from_slice(payload);
-                            ArType::func(&new_params, ret, interner)
+                                    _ => false,
+                                }
+                        }) {
+                            &params_vec[1..]
                         } else {
-                            method_ty
-                        }
+                            &params_vec[..]
+                        };
+                        let mut new_params = vec![actual_base_ty_id];
+                        new_params.extend_from_slice(payload);
+                        ArType::func(&new_params, ret, interner)
                     } else {
-                        checker.add_constraint(
-                            actual_base_ty_id,
-                            ArType::Error,
-                            ConstraintOrigin::UndefinedField {
-                                base_span,
-                                field_span,
-                                field_name: field.to_string(),
-                            },
-                        );
-                        return checker.intern(ArType::Error);
+                        method_ty
                     }
                 } else {
                     checker.add_constraint(
@@ -245,30 +244,42 @@ pub(crate) fn resolve_field_type(
                     );
                     return checker.intern(ArType::Error);
                 }
+            } else {
+                checker.add_constraint(
+                    actual_base_ty_id,
+                    ArType::Error,
+                    ConstraintOrigin::UndefinedField {
+                        base_span,
+                        field_span,
+                        field_name: field.to_string(),
+                    },
+                );
+                return checker.intern(ArType::Error);
             }
-        } else if field == "len"
-            && matches!(
-                actual_base_ty,
-                ArType::Primitive(Primitive::Str)
-                    | ArType::Slice(_)
-                    | ArType::MutSlice(_)
-                    | ArType::Array(_, _)
-                    | ArType::ConstArray(_, _)
-            )
-        {
-            ArType::Primitive(Primitive::USize)
-        } else {
-            checker.add_constraint(
-                actual_base_ty_id,
-                ArType::Error,
-                ConstraintOrigin::UndefinedField {
-                    base_span,
-                    field_span,
-                    field_name: field.to_string(),
-                },
-            );
-            return checker.intern(ArType::Error);
-        };
+        }
+    } else if field == "len"
+        && matches!(
+            actual_base_ty,
+            ArType::Primitive(Primitive::Str)
+                | ArType::Slice(_)
+                | ArType::MutSlice(_)
+                | ArType::Array(_, _)
+                | ArType::ConstArray(_, _)
+        )
+    {
+        ArType::Primitive(Primitive::USize)
+    } else {
+        checker.add_constraint(
+            actual_base_ty_id,
+            ArType::Error,
+            ConstraintOrigin::UndefinedField {
+                base_span,
+                field_span,
+                field_name: field.to_string(),
+            },
+        );
+        return checker.intern(ArType::Error);
+    };
 
     let field_already_nullable = matches!(field_ty, ArType::Nullable(_));
     let field_id = checker.intern(field_ty);
@@ -326,6 +337,20 @@ pub(crate) fn resolve_index(
         | ArType::ConstArray(_, inner)
         | ArType::Slice(inner)
         | ArType::MutSlice(inner) => *inner,
+        ArType::Ptr(inner) => {
+            if !checker.ctx.is_in_unsafe() {
+                let idx_span = checker.pool.expr_span(index);
+                checker.diagnostics.push(
+                    crate::Diagnostic::error(
+                        crate::DiagCode::O012AllocRequiresUnsafe,
+                        "indexing a raw pointer requires an `unsafe` block",
+                        idx_span,
+                    )
+                    .with_label(idx_span, "raw `ptr[T]` indexing is unsafe"),
+                );
+            }
+            *inner
+        }
         ArType::Named(_, args)
             if arandu_middle::types::is_vec_type(&actual_base_ty, &checker.symbols) =>
         {

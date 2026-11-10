@@ -103,6 +103,9 @@ pub fn symbol_surface(
                 signatures.type_info.struct_repr_c.contains(&symbol),
             )]);
             hasher.update(&[u8::from(
+                signatures.type_info.struct_unions.contains(&symbol),
+            )]);
+            hasher.update(&[u8::from(
                 signatures
                     .type_info
                     .interior_mutable_types

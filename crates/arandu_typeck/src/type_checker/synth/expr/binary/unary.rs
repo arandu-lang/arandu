@@ -39,7 +39,16 @@ fn cast_types_compatible(
     {
         return true;
     }
-    if matches!(found, ArType::Ptr(_)) && matches!(target, ArType::Ptr(_)) {
+    if matches!(
+        found,
+        ArType::Ptr(_) | ArType::Nullable(_) | ArType::Ref(_) | ArType::RefMut(_)
+    ) && matches!(target, ArType::Ptr(_) | ArType::Nullable(_))
+    {
+        return true;
+    }
+    if (matches!(found, ArType::Ptr(_)) && target.is_integer())
+        || (found.is_integer() && matches!(target, ArType::Ptr(_)))
+    {
         return true;
     }
     // WorkThunk / function-to-pointer cast: allow `func as ptr[T]`.

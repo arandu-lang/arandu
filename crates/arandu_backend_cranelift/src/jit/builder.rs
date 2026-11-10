@@ -132,6 +132,24 @@ pub(crate) fn create_jit_builder_with_io_and_process_args(
         arandu_runtime::gen_runtime_gold::ar_gen_shutdown_raw as *const u8,
     );
 
+    // RFC 0043 Dual-Locus linear TaskArena ABI.
+    builder.symbol(
+        "ar_task_arena_alloc",
+        arandu_runtime::task_arena::ar_task_arena_alloc as *const u8,
+    );
+    builder.symbol(
+        "ar_task_arena_checkpoint",
+        arandu_runtime::task_arena::ar_task_arena_checkpoint as *const u8,
+    );
+    builder.symbol(
+        "ar_task_arena_rewind",
+        arandu_runtime::task_arena::ar_task_arena_rewind as *const u8,
+    );
+    builder.symbol(
+        "ar_task_arena_reset",
+        arandu_runtime::task_arena::ar_task_arena_reset as *const u8,
+    );
+
     // A3.6: coroutine poll / block_on (i64 payload MVP).
     builder.symbol(
         "ar_co_block_on_i64",

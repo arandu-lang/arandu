@@ -166,6 +166,7 @@ impl Admission {
                             AmirStmt::Store { .. }
                             | AmirStmt::Call { .. }
                             | AmirStmt::Free(_)
+                            | AmirStmt::ArenaRewind(_)
                             | AmirStmt::Destroy(_) => {
                                 return Err(site.error(EvalErrorKind::UnsupportedOperation));
                             }

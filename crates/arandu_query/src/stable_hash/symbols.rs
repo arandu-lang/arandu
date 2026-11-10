@@ -284,6 +284,7 @@ fn symbol_kind_discriminant(kind: SymbolKind) -> u8 {
         SymbolKind::NamespaceMember => 15,
         SymbolKind::AssociatedFunc => 16,
         SymbolKind::ConstParam => 17,
+        SymbolKind::StaticMut => 18,
     }
 }
 

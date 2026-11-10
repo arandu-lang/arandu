@@ -150,7 +150,11 @@ fn lower_callback_call(
         return Ok(None);
     };
     let interner = &type_check.type_info.type_interner;
-    let ArType::Named(implicit, _) = interner.resolve(callee_ty) else {
+    let callee = match interner.resolve(callee_ty) {
+        ArType::Ref(inner) | ArType::RefMut(inner) => interner.resolve(inner),
+        other => other,
+    };
+    let ArType::Named(implicit, _) = callee else {
         return Ok(None);
     };
     let Some(&bound) = type_check.type_info.callback_bounds.get(&implicit) else {

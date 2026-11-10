@@ -21,9 +21,24 @@ pub(super) fn try_hand_lower_struct(
     let mut ctx = HandCtx::new(pool, source, file_id);
     let mut cur = Cursor::new(&toks);
     skip_leading_doc_comments(&mut cur);
-    let attrs = parse_attributes(&mut ctx, &mut cur)?;
+    let mut attrs = parse_attributes(&mut ctx, &mut cur)?;
     let visibility = parse_visibility(&mut cur);
-    cur.expect(TokenKind::KwStruct)?;
+    let kw_tok = if let Some(tok) = cur.expect(TokenKind::KwStruct) {
+        tok
+    } else {
+        let tok = cur
+            .peek()
+            .filter(|t| t.kind == TokenKind::IdentValue && ctx.text(t) == Some("union"))?;
+        cur.bump();
+        let kw_span = Span::new(file_id, tok.start, tok.end());
+        attrs.push(crate::Attribute {
+            span: kw_span,
+            name_span: kw_span,
+            name: SmolStr::new("Union"),
+            args: Vec::new(),
+        });
+        tok
+    };
     let name_tok = cur
         .peek()
         .filter(|t| matches!(t.kind, TokenKind::IdentType | TokenKind::IdentValue))?;
@@ -45,12 +60,8 @@ pub(super) fn try_hand_lower_struct(
     if !cur.at_end() {
         return None;
     }
-    // Span: RD marks at `struct` after attrs+visibility.
-    let start = toks
-        .iter()
-        .find(|t| matches!(t.kind, TokenKind::KwStruct))
-        .map(|t| t.start)
-        .or_else(|| toks.first().map(|t| t.start))?;
+    // Span: RD marks at `struct` / `union` after attrs+visibility.
+    let start = kw_tok.start;
     let end = toks.last().map(|t| t.end())?;
     Some(StructDecl {
         span: Span::new(file_id, start, end),

@@ -369,6 +369,7 @@ fn collect_top_level_const() {
         name: "MAX".into(),
         ty: None,
         value: dummy_expr(),
+        is_static_mut: false,
     });
     r.collect_top_level(ScopeId(0), &decl);
     let sym = r.symbols.lookup_value(ScopeId(0), "MAX");

@@ -39,6 +39,10 @@ pub(in crate::passes::monomorphize::expand) fn clone_place(
                 expr: clone_expr(hir, *expr, subst, symbol_map, tc, name_prefix)?,
                 ty: substitute_type_id(*ty, subst, &tc.type_info.type_interner),
             },
+            HirPlaceSuffix::Deref { span, ty } => HirPlaceSuffix::Deref {
+                span: *span,
+                ty: substitute_type_id(*ty, subst, &tc.type_info.type_interner),
+            },
         });
     }
     Ok(HirPlace {

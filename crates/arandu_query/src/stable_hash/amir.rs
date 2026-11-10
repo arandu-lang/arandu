@@ -342,6 +342,7 @@ impl StableHash for arandu_middle::amir::AmirFunc {
                 arandu_middle::amir::AmirStmtKind::StorageDead => 5,
                 arandu_middle::amir::AmirStmtKind::Destroy => 6,
                 arandu_middle::amir::AmirStmtKind::Nop => 7,
+                arandu_middle::amir::AmirStmtKind::ArenaRewind => 8,
             }]);
         }
         h.update(&u64_le(self.stmts.payloads.len() as u64));

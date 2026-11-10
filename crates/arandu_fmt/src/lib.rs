@@ -310,6 +310,9 @@ fn reindent_item(item_src: &str) -> String {
                         in_string = !in_string;
                     }
                 }
+                '\'' if !in_string && !in_char && starts_label(chars.clone()) => {
+                    skip_label(&mut chars);
+                }
                 '\'' => {
                     if !in_string {
                         in_char = !in_char;
@@ -383,6 +386,16 @@ fn format_colons(line: &str, block_comment: &mut bool) -> String {
                 in_string = true;
                 out.push(ch);
             }
+            '\'' if starts_label(chars.clone()) => {
+                out.push(ch);
+                while let Some(&next) = chars.peek() {
+                    if !(next.is_ascii_alphanumeric() || next == '_') {
+                        break;
+                    }
+                    out.push(next);
+                    chars.next();
+                }
+            }
             '\'' => {
                 in_char = true;
                 out.push(ch);
@@ -423,6 +436,26 @@ fn format_colons(line: &str, block_comment: &mut bool) -> String {
 
     *block_comment = in_block;
     out
+}
+
+/// After a `'`: a loop label (`'outer`) rather than a char literal, by the
+/// lexer's rule: an identifier start not followed by the closing `'`.
+fn starts_label(mut rest: impl Iterator<Item = char>) -> bool {
+    match (rest.next(), rest.next()) {
+        (Some(first), second) => {
+            (first.is_ascii_alphabetic() || first == '_') && second != Some('\'')
+        }
+        (None, _) => false,
+    }
+}
+
+fn skip_label(chars: &mut std::iter::Peekable<impl Iterator<Item = char>>) {
+    while chars
+        .peek()
+        .is_some_and(|next| next.is_ascii_alphanumeric() || *next == '_')
+    {
+        chars.next();
+    }
 }
 
 fn trim_trailing_horizontal_ws(out: &mut String) {
@@ -647,6 +680,17 @@ mod tests {
         assert_eq!(format_source(&source), source);
         assert!(format_edits(&source).is_empty());
         assert!(format_edits_in_range(&source, 0, 1).is_empty());
+    }
+
+    #[test]
+    fn labeled_loops_keep_their_block_depth() {
+        let source = "func main(): int {\n'outer: while true {\nlet c = 'x'\nif c == 'y' {\ncontinue 'outer\n}\nbreak 'outer\n}\nreturn 0\n}\n";
+        let out = format_source(source);
+        assert_eq!(
+            out,
+            "func main(): int {\n    'outer: while true {\n        let c = 'x'\n        if c == 'y' {\n            continue 'outer\n        }\n        break 'outer\n    }\n    return 0\n}\n"
+        );
+        assert_eq!(format_source(&out), out);
     }
 
     #[test]

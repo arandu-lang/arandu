@@ -534,6 +534,7 @@ impl Frame<'_> {
             function_effects: _,
             unsafe_functions: _,
             struct_repr_c: _,
+            struct_unions: _,
             struct_field_defaults,
             closures,
         } = typed;
@@ -632,6 +633,7 @@ fn without_signatures(local: &mut TypeInfo, signatures: &TypeInfo) {
     );
     same_set(&mut local.unsafe_functions, &signatures.unsafe_functions);
     same_set(&mut local.struct_repr_c, &signatures.struct_repr_c);
+    same_set(&mut local.struct_unions, &signatures.struct_unions);
 }
 
 /// Every position a diagnostic carries.

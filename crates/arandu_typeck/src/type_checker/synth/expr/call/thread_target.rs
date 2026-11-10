@@ -306,6 +306,7 @@ pub(crate) fn synth_thread_spawn_closure(
             host_prefix: "ar_thread_capture",
             params: &[(None, void_ty)],
             return_type: ret_ty_id,
+            self_by_mut_ref: false,
         },
         &captures,
     );

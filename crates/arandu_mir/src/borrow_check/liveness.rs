@@ -73,7 +73,7 @@ fn reverse_transfer_stmt(stmt: &AmirStmt, live: &mut BitSet<TempId>, _num_temps:
                 mark_use(a, live);
             }
         }
-        AmirStmt::Free(op) => mark_use(op, live),
+        AmirStmt::Free(op) | AmirStmt::ArenaRewind(op) => mark_use(op, live),
         AmirStmt::Destroy(place) => mark_place_index_uses(place, live),
         AmirStmt::StorageLive(_) | AmirStmt::StorageDead(_) | AmirStmt::Nop => {}
     }

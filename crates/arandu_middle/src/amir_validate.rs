@@ -118,7 +118,8 @@ pub fn validate_amir_func(
                     diags.push(Diagnostic::ice(
                         DiagCode::ICEGEN002,
                         format!(
-                            "bb{i} argument {arg_index} to bb{} has type {}, but block parameter expects {} (SSA-TYPE)",
+                            "in func '{}': bb{i} argument {arg_index} to bb{} has type {}, but block parameter expects {} (SSA-TYPE)",
+                            symbols.get(func.symbol).name,
                             target.as_usize(),
                             type_name(interner, arg_ty),
                             type_name(interner, param.ty)
@@ -212,7 +213,11 @@ pub fn validate_amir_func(
         if interner.is_error(temp.ty) {
             diags.push(Diagnostic::ice(
                 DiagCode::ICEGEN002,
-                format!("temp _{} has poison type Error (TYP-1)", temp.id.as_usize()),
+                format!(
+                    "in func '{}': temp _{} has poison type Error (TYP-1)",
+                    symbols.get(func.symbol).name,
+                    temp.id.as_usize()
+                ),
                 span,
             ));
         }
@@ -386,7 +391,9 @@ fn validate_borrowed_gen_result(
     for stmt in func.stmts.payloads.iter() {
         let AmirStmt::Assign { lhs, rhs } = stmt else {
             let used = match stmt {
-                AmirStmt::Store { rhs, .. } | AmirStmt::Free(rhs) => references(rhs),
+                AmirStmt::Store { rhs, .. } | AmirStmt::Free(rhs) | AmirStmt::ArenaRewind(rhs) => {
+                    references(rhs)
+                }
                 AmirStmt::Call { callee, args, .. } => {
                     references(callee) || args.iter().any(references)
                 }

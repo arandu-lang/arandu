@@ -244,108 +244,107 @@ pub fn runtime_program(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Run
         let key = instance.key(db).clone();
         let produced = runtime_unit(db, instance);
         let checked = &produced.value;
-        match &checked.result {
-            Ok(unit) => {
-                let mut callees = Vec::new();
-                let mut references = FxHashSet::default();
-                let mut visit = |operand: &AmirOperand| {
-                    if let AmirOperand::FunctionRef(symbol) = operand {
-                        references.insert(*symbol);
-                    }
-                };
-                for id in unit.function.stmts.iter_ids() {
-                    if let Some(statement) = unit.function.stmts.get(id) {
-                        arandu_middle::amir::visit::for_each_stmt_operand(statement, &mut visit);
-                    }
+        // A unit's own errors are reported once by its file composition,
+        // placed back in the file; `checked` is still relative to its item.
+        if let Ok(unit) = &checked.result {
+            let mut callees = Vec::new();
+            let mut references = FxHashSet::default();
+            let mut visit = |operand: &AmirOperand| {
+                if let AmirOperand::FunctionRef(symbol) = operand {
+                    references.insert(*symbol);
                 }
-                for block in &unit.function.blocks {
-                    arandu_middle::amir::visit::for_each_terminator_operand(
-                        &block.terminator,
-                        &mut visit,
-                    );
+            };
+            for id in unit.function.stmts.iter_ids() {
+                if let Some(statement) = unit.function.stmts.get(id) {
+                    arandu_middle::amir::visit::for_each_stmt_operand(statement, &mut visit);
                 }
-                for symbol in references {
-                    if checked
-                        .context
-                        .symbols
-                        .try_get(symbol)
-                        .is_some_and(|symbol| {
-                            matches!(
-                                symbol.kind,
-                                arandu_middle::SymbolKind::ExternFunc
-                                    | arandu_middle::SymbolKind::NamespaceMember
-                            )
-                        })
-                    {
-                        continue;
-                    }
-                    callees.push(
-                        checked
-                            .instances
-                            .iter()
-                            .find(|(id, _)| *id == symbol)
-                            .map_or_else(
-                                || FunctionInstance {
-                                    definition: symbol,
-                                    arguments: Vec::new(),
-                                },
-                                |(_, key)| key.clone(),
-                            ),
-                    );
+            }
+            for block in &unit.function.blocks {
+                arandu_middle::amir::visit::for_each_terminator_operand(
+                    &block.terminator,
+                    &mut visit,
+                );
+            }
+            for symbol in references {
+                if checked
+                    .context
+                    .symbols
+                    .try_get(symbol)
+                    .is_some_and(|symbol| {
+                        matches!(
+                            symbol.kind,
+                            arandu_middle::SymbolKind::ExternFunc
+                                | arandu_middle::SymbolKind::NamespaceMember
+                        )
+                    })
+                {
+                    continue;
                 }
-                // Gen payload drop thunks can reference a destructor without
-                // a source/AMIR call. Its concrete signature is still a real
-                // executable dependency, not a guessed backend-only recipe.
-                for destructor in checked.context.type_info.destructor_instances.values() {
-                    let key = checked
+                callees.push(
+                    checked
                         .instances
                         .iter()
-                        .find(|(id, _)| id == destructor)
+                        .find(|(id, _)| *id == symbol)
                         .map_or_else(
                             || FunctionInstance {
-                                definition: *destructor,
+                                definition: symbol,
                                 arguments: Vec::new(),
                             },
                             |(_, key)| key.clone(),
-                        );
-                    if !callees.contains(&key) {
-                        callees.push(key);
-                    }
-                }
-                callees.sort_by_cached_key(|key| {
-                    (
-                        db.source_file_by_id(key.definition.file_id)
-                            .map(|sf| sf.path(db).clone())
-                            .unwrap_or_else(|| std::sync::Arc::new(std::path::PathBuf::new())),
-                        key.definition.local_id.0,
-                        *key.stable_hash().as_bytes(),
-                    )
-                });
-                for called in callees {
-                    if queued.contains(&called) {
-                        continue;
-                    }
-                    if queued.len() >= MAX_INSTANCES {
-                        diagnostics.push(Diagnostic::error(
-                            DiagCode::G002GenericInstantiationLimit,
-                            "runtime instance graph exceeds its unit limit",
-                            Span::new(called.definition.file_id, 0, 0),
-                        ));
-                        break;
-                    }
-                    let Some(source) = db.source_file_by_id(called.definition.file_id) else {
-                        diagnostics.push(Diagnostic::ice(
-                            DiagCode::ICEL001,
-                            "called function definition is not registered",
-                            Span::new(called.definition.file_id, 0, 0),
-                        ));
-                        continue;
-                    };
-                    queued.insert(called.clone());
-                    pending.push_back(Instance::new(db, source, called));
+                        ),
+                );
+            }
+            // Gen payload drop thunks can reference a destructor without
+            // a source/AMIR call. Its concrete signature is still a real
+            // executable dependency, not a guessed backend-only recipe.
+            for destructor in checked.context.type_info.destructor_instances.values() {
+                let key = checked
+                    .instances
+                    .iter()
+                    .find(|(id, _)| id == destructor)
+                    .map_or_else(
+                        || FunctionInstance {
+                            definition: *destructor,
+                            arguments: Vec::new(),
+                        },
+                        |(_, key)| key.clone(),
+                    );
+                if !callees.contains(&key) {
+                    callees.push(key);
                 }
             }
-            Err(errors) => diagnostics.extend(errors.iter().cloned()),
+            callees.sort_by_cached_key(|key| {
+                (
+                    db.source_file_by_id(key.definition.file_id)
+                        .map(|sf| sf.path(db).clone())
+                        .unwrap_or_else(|| std::sync::Arc::new(std::path::PathBuf::new())),
+                    key.definition.local_id.0,
+                    *key.stable_hash().as_bytes(),
+                )
+            });
+            for called in callees {
+                if queued.contains(&called) {
+                    continue;
+                }
+                if queued.len() >= MAX_INSTANCES {
+                    diagnostics.push(Diagnostic::error(
+                        DiagCode::G002GenericInstantiationLimit,
+                        "runtime instance graph exceeds its unit limit",
+                        Span::new(called.definition.file_id, 0, 0),
+                    ));
+                    break;
+                }
+                let Some(source) = db.source_file_by_id(called.definition.file_id) else {
+                    diagnostics.push(Diagnostic::ice(
+                        DiagCode::ICEL001,
+                        "called function definition is not registered",
+                        Span::new(called.definition.file_id, 0, 0),
+                    ));
+                    continue;
+                };
+                queued.insert(called.clone());
+                pending.push_back(Instance::new(db, source, called));
+            }
         }
         units.push(key);
     }

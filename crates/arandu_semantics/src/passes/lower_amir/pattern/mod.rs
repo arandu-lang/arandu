@@ -52,6 +52,28 @@ impl LowerCtx<'_> {
             HirCondition::Is { expr, pattern } => {
                 let scrutinee = self.lower_expr(*expr, None, symbols)?;
                 let pat = self.hir.pool.pattern(*pattern);
+                if let crate::hir::HirPattern::Bind { symbol, span, .. } = pat
+                    && let crate::passes::type_checker::types::ArType::Nullable(inner) =
+                        self.resolve_ty(self.hir.pool.expr(*expr).ty)
+                {
+                    let is_non_null =
+                        self.new_temp(crate::passes::type_checker::types::ArType::Primitive(
+                            crate::passes::type_checker::types::Primitive::Bool,
+                        ));
+                    self.emit_assign_temp(
+                        is_non_null,
+                        crate::amir::AmirRvalue::Binary {
+                            op: crate::ops::BinaryOp::NotEqual,
+                            left: scrutinee,
+                            right: AmirOperand::Constant(crate::amir::AmirConstant::Nil),
+                        },
+                    );
+                    let local_id = self.new_local_id(inner, *symbol, *span);
+                    let unwrapped = self.new_temp_id(inner);
+                    self.emit_assign_temp(unwrapped, crate::amir::AmirRvalue::Use(scrutinee));
+                    self.write_variable_source(local_id, AmirOperand::Copy(unwrapped))?;
+                    return Ok(AmirOperand::Copy(is_non_null));
+                }
                 self.lower_pattern_match(scrutinee, pat, symbols)
             }
             HirCondition::And(_) => Err(Diagnostic::ice(

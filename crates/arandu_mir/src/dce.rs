@@ -251,6 +251,7 @@ fn has_side_effect(stmt: &AmirStmt) -> bool {
         AmirStmt::Call { .. }
         | AmirStmt::Store { .. }
         | AmirStmt::Free(_)
+        | AmirStmt::ArenaRewind(_)
         | AmirStmt::Destroy(_)
         | AmirStmt::StorageLive(_)
         | AmirStmt::StorageDead(_) => true,
@@ -320,7 +321,7 @@ fn collect_stmt_temps(stmt: &AmirStmt) -> SmallVec<[TempId; 4]> {
             }
             temps
         }
-        AmirStmt::Free(op) => collect_operand_temps(op),
+        AmirStmt::Free(op) | AmirStmt::ArenaRewind(op) => collect_operand_temps(op),
         AmirStmt::Destroy(place) => {
             let mut temps = SmallVec::new();
             for proj in &place.projections {

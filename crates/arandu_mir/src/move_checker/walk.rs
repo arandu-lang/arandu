@@ -1,4 +1,5 @@
 use super::{LocalMoveState, MoveState};
+use crate::BitSet;
 use crate::Span;
 use crate::SymbolTable;
 use crate::amir::{
@@ -30,10 +31,12 @@ pub(super) fn compute_move_in<'bump>(
         block_in.push(MoveState::new(num_locals));
     }
     let mut worklist = VecDeque::new();
+    let mut in_worklist = BitSet::<BlockId>::with_capacity(num_blocks);
 
     for block in &func.blocks {
         if func.predecessors(block.id).is_empty() {
             worklist.push_back(block.id);
+            in_worklist.insert(block.id);
         }
     }
 
@@ -42,6 +45,7 @@ pub(super) fn compute_move_in<'bump>(
         num_blocks * num_locals * 2 + crate::analysis_limits::DATAFLOW_FIXPOINT_HEADROOM;
 
     while let Some(bid) = worklist.pop_front() {
+        in_worklist.remove(bid);
         iterations += 1;
         assert!(
             iterations <= sanity_limit,
@@ -70,8 +74,9 @@ pub(super) fn compute_move_in<'bump>(
             block_in[bi] = new_in;
             edge_out[bi] = new_edges;
             for succ in successors(&block.terminator) {
-                if succ.as_usize() < num_blocks {
+                if succ.as_usize() < num_blocks && !in_worklist.contains(succ) {
                     worklist.push_back(succ);
+                    in_worklist.insert(succ);
                 }
             }
         }
@@ -345,7 +350,50 @@ pub(super) fn apply_block(
                 consume_operand(arg, func, temp_origins, state, &mut diagnostics, false);
             }
         }
-        AmirTerminator::Return | AmirTerminator::Unreachable => {}
+        AmirTerminator::Return => {
+            report_unrestored_reference_moves(func, temp_origins, state, &mut diagnostics);
+        }
+        AmirTerminator::Unreachable => {}
+    }
+}
+
+/// A field moved out through a reference (`self.field` with `self: mut ref`)
+/// must be put back before returning: the caller still owns and destroys it.
+fn report_unrestored_reference_moves(
+    func: &AmirFunc,
+    temp_origins: &[Option<AmirPlace>],
+    state: &MoveState,
+    diagnostics: &mut MoveDiagSink<'_>,
+) {
+    let Some((symbols, block, diagnostics)) = diagnostics.as_mut() else {
+        return;
+    };
+    let reference_roots = temp_origins
+        .iter()
+        .flatten()
+        .filter(|place| {
+            place
+                .projections
+                .iter()
+                .any(|projection| matches!(projection, AmirProjection::Deref))
+        })
+        .map(|place| place.local)
+        .collect::<rustc_hash::FxHashSet<_>>();
+    let mut reported = rustc_hash::FxHashSet::default();
+    for place in state.moved_fields.iter().chain(&state.maybe_moved_fields) {
+        if reference_roots.contains(&place.local) && reported.insert(place.local) {
+            diagnostics.push((
+                *block,
+                move_diag(
+                    DiagCode::O016MoveOutOfReference,
+                    place.local,
+                    func,
+                    symbols,
+                    "a value moved out of the reference is not restored before returning:",
+                    "assign a new value to the field before the function returns, or use `mem.replace`",
+                ),
+            ));
+        }
     }
 }
 
@@ -374,7 +422,9 @@ pub(super) fn apply_stmt(
                 consume_operand(arg, func, temp_origins, state, diagnostics, false);
             }
         }
-        AmirStmt::Free(op) => consume_operand(op, func, temp_origins, state, diagnostics, true),
+        AmirStmt::Free(op) | AmirStmt::ArenaRewind(op) => {
+            consume_operand(op, func, temp_origins, state, diagnostics, true)
+        }
         AmirStmt::Destroy(place) => {
             let recursive_root_cleanup = place.projections.is_empty()
                 && state.root_state(place.local) == LocalMoveState::Available
@@ -454,6 +504,31 @@ fn consume_operand(
     let Some(place) = origin_for(*temp, temp_origins) else {
         return;
     };
+    // Moving a whole referent (`*r`) leaves its owner nothing to restore from
+    // here: its owner still uses and destroys it (Rust's E0507). A field moved
+    // through a reference is tracked like any field and must be restored
+    // before the function returns (checked at `Return`).
+    if place
+        .projections
+        .iter()
+        .any(|projection| matches!(projection, AmirProjection::Deref))
+        && super::tracked_move_place(place).projections.is_empty()
+    {
+        if let Some((symbols, block, diagnostics)) = diagnostics.as_mut() {
+            diagnostics.push((
+                *block,
+                move_diag(
+                    DiagCode::O016MoveOutOfReference,
+                    place.local,
+                    func,
+                    symbols,
+                    "cannot move a value out of the reference",
+                    "use it through the reference (a method, a field or `ref`); a closure that consumes a captured value must capture it with `move`",
+                ),
+            ));
+        }
+        return;
+    }
     check_consume_place(place, func, state, diagnostics, double_free);
     state.move_place(place);
 }

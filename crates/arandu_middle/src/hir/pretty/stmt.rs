@@ -68,11 +68,19 @@ impl HirStmt {
                     }
                 }
             }
-            HirStmtKind::Break => {
-                out.push_str(&format!("{ind}Break\n"));
+            HirStmtKind::Break { label } => {
+                let lbl = label
+                    .as_deref()
+                    .map(|l| format!(" {l}"))
+                    .unwrap_or_default();
+                out.push_str(&format!("{ind}Break{lbl}\n"));
             }
-            HirStmtKind::Continue => {
-                out.push_str(&format!("{ind}Continue\n"));
+            HirStmtKind::Continue { label } => {
+                let lbl = label
+                    .as_deref()
+                    .map(|l| format!(" {l}"))
+                    .unwrap_or_default();
+                out.push_str(&format!("{ind}Continue{lbl}\n"));
             }
             HirStmtKind::Free(expr) => {
                 out.push_str(&format!("{ind}Free\n"));
@@ -101,12 +109,21 @@ impl HirStmt {
                         .pretty_print_to(out, indent + 2, ctx);
                 }
             }
-            HirStmtKind::While { condition, body } => {
-                out.push_str(&format!("{ind}While\n"));
+            HirStmtKind::While {
+                label,
+                condition,
+                body,
+            } => {
+                let lbl = label
+                    .as_deref()
+                    .map(|l| format!("{l}: "))
+                    .unwrap_or_default();
+                out.push_str(&format!("{ind}{lbl}While\n"));
                 condition.pretty_print_to(out, indent + 1, ctx);
                 ctx.pool.block(*body).pretty_print_to(out, indent + 1, ctx);
             }
             HirStmtKind::For {
+                label,
                 clause,
                 body,
                 comptime_bounds,
@@ -119,7 +136,11 @@ impl HirStmt {
                         upper.value()
                     ));
                 }
-                out.push_str(&format!("{ind}For\n"));
+                let lbl = label
+                    .as_deref()
+                    .map(|l| format!("{l}: "))
+                    .unwrap_or_default();
+                out.push_str(&format!("{ind}{lbl}For\n"));
                 clause.pretty_print_to(out, indent + 1, ctx);
                 if let Some(bodies) = comptime_bodies {
                     for (index, body) in bodies.iter().enumerate() {
@@ -310,6 +331,7 @@ impl HirPlace {
                 HirPlaceSuffix::Index { expr, .. } => {
                     out.push_str(&format!("[{}]", expr.pretty_print_inline(ctx)));
                 }
+                HirPlaceSuffix::Deref { .. } => out = format!("(*{out})"),
             }
         }
         out

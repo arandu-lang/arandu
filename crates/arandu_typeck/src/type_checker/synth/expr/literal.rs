@@ -67,6 +67,10 @@ fn peek_value_type(checker: &mut TypeChecker<'_>, value: ExprId) -> Option<TypeI
             let u8_id = checker.intern(ArType::Primitive(Primitive::U8));
             Some(checker.intern(ArType::Slice(u8_id)))
         }
+        ExprKind::CString { .. } => {
+            let u8_id = checker.intern(ArType::Primitive(Primitive::U8));
+            Some(checker.intern(ArType::Ptr(u8_id)))
+        }
         ExprKind::InterpolatedString { .. } => {
             Some(checker.intern(ArType::Primitive(Primitive::Str)))
         }
@@ -212,6 +216,10 @@ pub(super) fn synth_literal_expr(
         ExprKind::ByteString { .. } => {
             let u8_id = checker.intern(ArType::Primitive(Primitive::U8));
             Some(checker.intern(ArType::Slice(u8_id)))
+        }
+        ExprKind::CString { .. } => {
+            let u8_id = checker.intern(ArType::Primitive(Primitive::U8));
+            Some(checker.intern(ArType::Ptr(u8_id)))
         }
         ExprKind::InterpolatedString { parts } => {
             // ToStr v0.1: formatable primitives are accepted; lower inserts
@@ -472,7 +480,7 @@ pub(super) fn synth_literal_expr(
                         }
                     }
 
-                    if !has_update_base {
+                    if !has_update_base && !checker.type_info.struct_unions.contains(&symbol_id) {
                         let mut missing_fields = Vec::new();
                         for def_name in fields_def.keys() {
                             if !seen_fields.iter().any(|(name, _)| name == def_name) {

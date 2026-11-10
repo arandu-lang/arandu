@@ -49,7 +49,7 @@ impl<'a, 'b, M: Module> FunctionTranslator<'a, 'b, M> {
             AmirStmt::Call { lhs, callee, .. } => lhs
                 .map(|temp| self.temp_span(temp))
                 .unwrap_or_else(|| self.operand_span(callee)),
-            AmirStmt::Free(operand) => self.operand_span(operand),
+            AmirStmt::Free(operand) | AmirStmt::ArenaRewind(operand) => self.operand_span(operand),
             AmirStmt::StorageLive(local)
             | AmirStmt::StorageDead(local)
             | AmirStmt::Destroy(arandu_middle::amir::AmirPlace { local, .. }) => {

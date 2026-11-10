@@ -260,6 +260,13 @@ pub(super) fn dump_expr(pool: &AstPool, expr: ExprId) -> String {
                 String::from_utf8_lossy(bytes)
             )
         }
+        ExprKind::CString { bytes } => {
+            format!(
+                "CString {}(c\"{}\")",
+                dump_span(span),
+                String::from_utf8_lossy(bytes)
+            )
+        }
         ExprKind::InterpolatedString { parts } => {
             let part_ids = pool.string_part_list(*parts);
             let parts_resolved: Vec<StringPart> = part_ids

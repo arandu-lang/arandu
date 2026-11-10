@@ -371,6 +371,11 @@ pub trait StructLayoutProvider {
     fn is_repr_c(&self, _struct_id: SymbolId) -> bool {
         false
     }
+
+    /// Whether the nominal aggregate is an untagged `union` (all fields at offset 0).
+    fn is_union(&self, _struct_id: SymbolId) -> bool {
+        false
+    }
 }
 
 /// The physical memory layout engine.

@@ -141,7 +141,21 @@ impl LowerCtx<'_> {
                 Ok(op)
             }
             HirExprKind::FrozenBytes(value) => {
+                let resolved_expr_ty = self.tc.type_info.type_interner.resolve(expr.ty);
                 let source = AmirOperand::Constant(self.intern_frozen_bytes(value));
+                if matches!(resolved_expr_ty, ArType::Ptr(_)) {
+                    let u8_ty = self
+                        .tc
+                        .type_info
+                        .type_interner
+                        .intern(ArType::Primitive(Primitive::U8));
+                    let slice_ty = self.tc.type_info.type_interner.intern(ArType::Slice(u8_ty));
+                    let bytes = self.new_temp_id(slice_ty);
+                    self.emit_assign_temp(bytes, AmirRvalue::StrBytes { source });
+                    let dest = target.unwrap_or_else(|| self.new_temp_id(expr.ty));
+                    self.emit_assign_temp(dest, AmirRvalue::SliceData(AmirOperand::Copy(bytes)));
+                    return Ok(AmirOperand::Copy(dest));
+                }
                 let bytes = self.new_temp_id(expr.ty);
                 self.emit_assign_temp(bytes, AmirRvalue::StrBytes { source });
                 let start = u64::try_from(value.start()).map_err(|_| {
@@ -358,6 +372,9 @@ impl LowerCtx<'_> {
                     Ok(AmirOperand::Copy(dest))
                 } else {
                     let sym = symbols.get(*symbol);
+                    if sym.kind == SymbolKind::StaticMut {
+                        return Err(self.static_mut_unsupported(expr.span));
+                    }
                     Ok(match sym.kind {
                         SymbolKind::Func
                         | SymbolKind::ExternFunc

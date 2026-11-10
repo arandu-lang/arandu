@@ -40,8 +40,12 @@ pub(super) fn remap_stmt(
         HirStmtKind::Return { values } => HirStmtKind::Return {
             values: offs.range(*values, offs.expr_ids),
         },
-        HirStmtKind::Break => HirStmtKind::Break,
-        HirStmtKind::Continue => HirStmtKind::Continue,
+        HirStmtKind::Break { label } => HirStmtKind::Break {
+            label: label.clone(),
+        },
+        HirStmtKind::Continue { label } => HirStmtKind::Continue {
+            label: label.clone(),
+        },
         HirStmtKind::Free(e) => HirStmtKind::Free(offs.expr_id(*e)),
         HirStmtKind::Expr(e) => HirStmtKind::Expr(offs.expr_id(*e)),
         HirStmtKind::If {
@@ -54,11 +58,13 @@ pub(super) fn remap_stmt(
             else_block: else_block.map(|b| offs.block_id(b)),
         },
         HirStmtKind::For {
+            label,
             clause,
             body,
             comptime_bounds,
             comptime_bodies,
         } => HirStmtKind::For {
+            label: label.clone(),
             comptime_bounds: *comptime_bounds,
             comptime_bodies: comptime_bodies
                 .as_ref()
@@ -87,7 +93,12 @@ pub(super) fn remap_stmt(
             },
             body: offs.block_id(*body),
         },
-        HirStmtKind::While { condition, body } => HirStmtKind::While {
+        HirStmtKind::While {
+            label,
+            condition,
+            body,
+        } => HirStmtKind::While {
+            label: label.clone(),
             condition: remap_condition(condition, offs),
             body: offs.block_id(*body),
         },

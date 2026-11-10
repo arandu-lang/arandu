@@ -76,12 +76,25 @@ pub(crate) fn move_states_before_statements(func: &AmirFunc) -> Vec<Vec<MoveStat
         .collect()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Eq, Default)]
 pub(crate) struct MoveState {
     moved: BitSet<LocalId>,
     maybe_moved: BitSet<LocalId>,
     moved_fields: SmallVec<[AmirPlace; 4]>,
     maybe_moved_fields: SmallVec<[AmirPlace; 4]>,
+}
+
+impl PartialEq for MoveState {
+    fn eq(&self, other: &Self) -> bool {
+        self.moved == other.moved
+            && self.maybe_moved == other.maybe_moved
+            && same_places(&self.moved_fields, &other.moved_fields)
+            && same_places(&self.maybe_moved_fields, &other.maybe_moved_fields)
+    }
+}
+
+fn same_places(a: &[AmirPlace], b: &[AmirPlace]) -> bool {
+    a.len() == b.len() && a.iter().all(|item| b.contains(item))
 }
 
 impl MoveState {

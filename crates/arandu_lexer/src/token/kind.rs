@@ -12,7 +12,7 @@ impl fmt::Display for TokenKind {
 }
 
 impl TokenKind {
-    pub const COUNT: usize = 141;
+    pub const COUNT: usize = 143;
 
     /// Returns `true` if this token kind represents a language keyword.
     #[must_use]
@@ -126,6 +126,12 @@ impl TokenKind {
             TokenKind::ByteString => {
                 format!("BYTE_STRING({})", token.byte_string_content(source))
             }
+            TokenKind::CString => {
+                format!("C_STRING({})", token.c_string_content(source))
+            }
+            TokenKind::Label => {
+                format!("LABEL({})", token.lexeme(source))
+            }
             TokenKind::Error(code) => format!("ERROR({code:?})"),
             other => other.name().to_string(),
         }
@@ -142,6 +148,7 @@ impl TokenKind {
         match self {
             TokenKind::IdentValue
             | TokenKind::IdentType
+            | TokenKind::Label
             | TokenKind::IntDec
             | TokenKind::IntHex
             | TokenKind::IntBin
@@ -153,6 +160,7 @@ impl TokenKind {
             TokenKind::StringEnd | TokenKind::MultilineStringEnd => "end of string".to_string(),
             TokenKind::RawString
             | TokenKind::ByteString
+            | TokenKind::CString
             | TokenKind::StringStart
             | TokenKind::MultilineStringStart => "string literal".to_string(),
             TokenKind::Char => {
@@ -209,6 +217,8 @@ impl TokenKind {
             TokenKind::Char => "CHAR",
             TokenKind::ByteChar => "BYTE_CHAR",
             TokenKind::ByteString => "BYTE_STRING",
+            TokenKind::CString => "C_STRING",
+            TokenKind::Label => "LABEL",
             TokenKind::KwIf => "KW_IF",
             TokenKind::KwElse => "KW_ELSE",
             TokenKind::KwFor => "KW_FOR",
@@ -394,6 +404,7 @@ static TOKEN_FLAGS_TABLE: [TokenFlags; TokenKind::COUNT] = {
                 | TokenKind::Char
                 | TokenKind::ByteChar
                 | TokenKind::ByteString
+                | TokenKind::CString
                 | TokenKind::StringEnd
                 | TokenKind::RawString
                 | TokenKind::MultilineStringEnd

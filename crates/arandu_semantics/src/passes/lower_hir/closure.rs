@@ -18,11 +18,14 @@ use crate::hir::{
     HirStmtKind, HirStruct, HirStructField, ReceiverKind,
 };
 use arandu_middle::SymbolId;
+use arandu_middle::hir::HirCaptureAlias;
 use arandu_middle::hir::{HirBlockId, HirFieldPattern, HirMatchArm, HirMatchArmBody, HirPattern};
+use arandu_middle::ops::UnaryOp;
 use arandu_middle::types::TypeId;
+use arandu_middle::types::TypeInterner;
 use arandu_parser::Program;
 use arandu_parser::ast_pool::{ExprId, ExprKind};
-use arandu_typeck::type_checker::info::ClosureRecipe;
+use arandu_typeck::type_checker::info::{CaptureMode, ClosureRecipe};
 
 pub fn lower_closure_hir(
     type_check: &mut TypeCheckResult,
@@ -66,6 +69,34 @@ pub fn lower_closure_hir(
     };
 
     let mut pool = crate::hir::HirPool::new();
+    // A callback body reaches its captures through `mut self`; a job
+    // destructures its owned `self` once instead.
+    let self_ty = type_check
+        .type_info
+        .decl_type_id(recipe.self_param)
+        .unwrap_or_else(TypeInterner::preinterned_error_id);
+    if recipe.is_callback() {
+        pool.capture_aliases = recipe
+            .fields
+            .iter()
+            .map(|field| {
+                (
+                    field.source,
+                    HirCaptureAlias {
+                        env: recipe.self_param,
+                        env_ty: self_ty,
+                        field: field.name.clone(),
+                        field_symbol: field.symbol,
+                        field_ty: field.field_ty,
+                        through_ref: matches!(
+                            field.mode,
+                            CaptureMode::Borrow | CaptureMode::BorrowMut
+                        ),
+                    },
+                )
+            })
+            .collect();
+    }
     let struct_ty = type_check
         .type_info
         .decl_type_id(recipe.struct_symbol)
@@ -104,15 +135,24 @@ pub fn lower_closure_hir(
             lowered
         }
     };
-    let body_block = destructure_captures(&mut pool, &recipe, struct_ty, body_block, type_check);
+    let body_block = if recipe.is_callback() {
+        pool.capture_aliases.clear();
+        body_block
+    } else {
+        destructure_captures(&mut pool, &recipe, struct_ty, body_block, type_check)
+    };
 
     let mut params = Vec::with_capacity(recipe.params.len() + 1);
     params.push(HirParam {
         symbol: recipe.self_param,
-        ty: struct_ty,
+        ty: self_ty,
         span: recipe.lambda_span,
         is_receiver: true,
-        receiver_kind: Some(ReceiverKind::Own),
+        receiver_kind: Some(if recipe.is_callback() {
+            ReceiverKind::Mut
+        } else {
+            ReceiverKind::Own
+        }),
     });
     params.extend(recipe.params.iter().map(|param| HirParam {
         symbol: param.symbol,
@@ -137,7 +177,7 @@ pub fn lower_closure_hir(
             .iter()
             .map(|field| HirStructField {
                 symbol: field.symbol,
-                ty: field.ty,
+                ty: field.field_ty,
                 span: field.span,
             })
             .collect::<Vec<_>>(),
@@ -171,7 +211,9 @@ fn find_lambda(program: &Program, span: arandu_lexer::Span) -> Option<ExprId> {
         })
 }
 
-/// The call site moves each capture once. The closure body is not lowered here.
+/// The environment at the call site: each capture by value, or a `ref`/
+/// `mut ref` to the caller's local for a borrow. Inside another closure body
+/// the caller's local is itself a capture, reached through that alias.
 pub(crate) fn capture_struct_literal(
     hir_pool: &mut crate::hir::HirPool,
     recipe: &ClosureRecipe,
@@ -180,13 +222,24 @@ pub(crate) fn capture_struct_literal(
         .fields
         .iter()
         .map(|field| {
-            let value = hir_pool.alloc_expr(HirExpr {
-                kind: HirExprKind::Path {
-                    symbol: field.source,
-                },
+            let kind = super::expr::captured_value(hir_pool, field.source, field.span);
+            let mut value = hir_pool.alloc_expr(HirExpr {
+                kind,
                 ty: field.ty,
                 span: field.span,
             });
+            let borrow = match field.mode {
+                CaptureMode::Borrow => Some(UnaryOp::Ref),
+                CaptureMode::BorrowMut => Some(UnaryOp::RefMut),
+                CaptureMode::Copy | CaptureMode::Move => None,
+            };
+            if let Some(op) = borrow {
+                value = hir_pool.alloc_expr(HirExpr {
+                    kind: HirExprKind::Unary { op, expr: value },
+                    ty: field.field_ty,
+                    span: field.span,
+                });
+            }
             HirFieldInit {
                 span: field.span,
                 name: field.name.clone(),

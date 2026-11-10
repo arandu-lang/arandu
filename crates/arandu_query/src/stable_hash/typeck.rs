@@ -497,6 +497,13 @@ fn hash_typing(
         hash_symbol_id(&mut h, symbol);
     }
 
+    let mut unions: Vec<_> = info.struct_unions.iter().copied().collect();
+    unions.sort_by_key(|symbol| (symbol.file_id, symbol.local_id.0));
+    h.update(&u64_le(unions.len() as u64));
+    for symbol in unions {
+        hash_symbol_id(&mut h, symbol);
+    }
+
     // HIR lowering reads the default expression of each omitted field, by its
     // arena ID: a position, like the expression tables.
     if include_spans {

@@ -162,6 +162,7 @@ fn transfer_local_holders(
         AmirStmt::Assign { .. }
         | AmirStmt::Call { .. }
         | AmirStmt::Free(_)
+        | AmirStmt::ArenaRewind(_)
         | AmirStmt::StorageLive(_)
         | AmirStmt::Destroy(_)
         | AmirStmt::Nop => {}

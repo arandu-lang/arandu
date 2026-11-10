@@ -269,5 +269,18 @@ pub(in crate::stable_hash) fn hash_rvalue(
             hash_amir_operand(hasher, value);
             hash_id(hasher, value_ty.as_usize());
         }
+        R::ArenaAlloc {
+            size,
+            align,
+            payload_ty,
+        } => {
+            hasher.update(&[31]);
+            hasher.update(&size.to_le_bytes());
+            hasher.update(&align.to_le_bytes());
+            hash_id(hasher, payload_ty.as_usize());
+        }
+        R::ArenaCheckpoint => {
+            hasher.update(&[32]);
+        }
     }
 }

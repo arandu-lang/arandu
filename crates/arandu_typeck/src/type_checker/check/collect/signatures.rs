@@ -164,6 +164,7 @@ pub(crate) fn collect_signature_types(checker: &mut TypeChecker<'_>, program: &P
                         checker.type_info.unsafe_functions.insert(symbol_id);
                     }
 
+
                     // Drop Elaboration: Check for @Destructor attribute
                     let has_destructor_attr = func_decl
                         .attrs

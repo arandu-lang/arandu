@@ -53,6 +53,7 @@ suportada é definida pelos contratos e pela evidência de release.
 | 0032–0036 | propostas arquiteturais das trilhas `LAMBDA`, `OPT.1–7`, `TYP.NEXT`/`GEN`, `A2` (efeitos/capacidades) e `IDE.5`/`E1, E3, E5` |
 | 0037 | Decimal em validação; BigInt/BigDecimal com protótipos locais e provas pendentes no fechamento da stdlib; ainda não publicados |
 | 0038 / 0039 | SIMD possui API fonte canônica, máscaras e stores com vista exclusiva; locks nativos têm guardas compartilhadas, fases FIFO e Condvar com guarda; spawn usa ThreadJob/JoinHandle possuídos; prova multiplataforma instalada pendente em ST.2/ST.10/ST.11 |
+| 0043 | Modelo Dual-Locus formaliza a desvinculação locus de referência vs armazenamento, unificando `&T` nativo com arenas task-local e resolvendo o hazard de colisão de ABI |
 
 ## Índice Oficial de RFCs
 
@@ -101,6 +102,7 @@ suportada é definida pelos contratos e pela evidência de release.
 | [0040](0040-algebraic-formatter-ir-and-cst-resilience.md) | Arquitetura de Formatação Algébrica, Formatter IR (Wadler-Leijen) e Resiliência CST (`arandu_fmt v2`) | Tooling / Frontend | `Draft` | 2026-10-18 |
 | [0041](0041-advanced-test-harness-cross-target-and-sarif.md) | Harness de Testes Avançado, Execução Cross-Target (WASI/Wasmtime), Snapshot Testing e Diagnósticos SARIF (`arandu_testing_contract v2`) | Tooling / Testing / CLI | `Draft` | 2026-10-18 |
 | [0042](0042-item-relative-spans-and-ast-id-map.md) | Identidade Estável de Item (`AstId`), Spans Relativos e Isolamento de Invalidação Intramódulo | Frontend / Middle-end / Tooling | `Draft` | 2026-10-26 |
+| [0043](0043-dual-locus-semantic-memory-model.md) | Modelo Semântico de Memória Dual-Locus e Promoção de Armazenamento de Custo Zero | Middle-end / Backend / Memória / Type System | `Draft` | 2026-10-27 |
 
 
 ---

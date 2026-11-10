@@ -490,14 +490,26 @@ fn try_hand_lower_const(
     skip_leading_doc_comments(&mut cur);
     let attrs = parse_attributes(&mut ctx, &mut cur)?;
     let visibility = parse_visibility(&mut cur);
-    cur.expect(TokenKind::KwConst)?;
+    let is_static_mut = if cur.peek_kind() == Some(TokenKind::IdentValue)
+        && cur.peek().and_then(|t| ctx.text(t)) == Some("static")
+    {
+        cur.bump();
+        cur.expect(TokenKind::KwMut)?;
+        true
+    } else {
+        cur.expect(TokenKind::KwConst)?;
+        false
+    };
     let name_tok = cur.peek()?;
     if !matches!(name_tok.kind, TokenKind::IdentValue | TokenKind::IdentType) {
         return None;
     }
     let name = SmolStr::new(ctx.text(name_tok)?);
     cur.bump();
-    let ty = if cur.peek_kind().is_some_and(|k| k != TokenKind::Equal) {
+    let ty = if cur.peek_kind() == Some(TokenKind::Colon) {
+        cur.bump();
+        Some(parse_type(&mut ctx, &mut cur)?)
+    } else if cur.peek_kind().is_some_and(|k| k != TokenKind::Equal) {
         Some(parse_type(&mut ctx, &mut cur)?)
     } else {
         None
@@ -514,6 +526,7 @@ fn try_hand_lower_const(
         name,
         ty,
         value,
+        is_static_mut,
     })
 }
 

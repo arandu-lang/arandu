@@ -447,7 +447,7 @@ fn collect_stmt_temp_uses(
                 mark_temp_use(arg, defined, uses, block);
             }
         }
-        AmirStmt::Free(op) => mark_temp_use(op, defined, uses, block),
+        AmirStmt::Free(op) | AmirStmt::ArenaRewind(op) => mark_temp_use(op, defined, uses, block),
         AmirStmt::Destroy(place) => {
             for proj in &place.projections {
                 if let AmirProjection::Index(op) = proj {
@@ -523,7 +523,9 @@ fn collect_stmt_uses(
                 collect_operand_uses(arg, defined, uses, block);
             }
         }
-        AmirStmt::Free(op) => collect_operand_uses(op, defined, uses, block),
+        AmirStmt::Free(op) | AmirStmt::ArenaRewind(op) => {
+            collect_operand_uses(op, defined, uses, block)
+        }
         AmirStmt::Destroy(place) => collect_place_use(place, defined, uses, block),
         AmirStmt::StorageLive(_) | AmirStmt::StorageDead(_) | AmirStmt::Nop => {}
     }

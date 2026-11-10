@@ -68,7 +68,8 @@ pub fn for_each_function_context_mut(
                 | AmirRvalue::GenGet { payload_ty, .. }
                 | AmirRvalue::GenSet { payload_ty, .. }
                 | AmirRvalue::GenUpsert { payload_ty, .. }
-                | AmirRvalue::GenRemove { payload_ty, .. } => ty(payload_ty),
+                | AmirRvalue::GenRemove { payload_ty, .. }
+                | AmirRvalue::ArenaAlloc { payload_ty, .. } => ty(payload_ty),
                 AmirRvalue::Use(_)
                 | AmirRvalue::VectorOp { .. }
                 | AmirRvalue::VectorCompare { .. }
@@ -93,13 +94,15 @@ pub fn for_each_function_context_mut(
                 | AmirRvalue::StrView { .. }
                 | AmirRvalue::Alloc(_)
                 | AmirRvalue::RelativeBorrow { .. }
-                | AmirRvalue::StringInterp { .. } => {}
+                | AmirRvalue::StringInterp { .. }
+                | AmirRvalue::ArenaCheckpoint => {}
             },
             super::AmirStmt::Store { lhs, .. } | super::AmirStmt::Destroy(lhs) => {
                 place_context_mut(lhs, &mut ty, &mut symbol)
             }
             super::AmirStmt::Call { .. }
             | super::AmirStmt::Free(_)
+            | super::AmirStmt::ArenaRewind(_)
             | super::AmirStmt::StorageLive(_)
             | super::AmirStmt::StorageDead(_)
             | super::AmirStmt::Nop => {}
@@ -268,7 +271,9 @@ pub fn for_each_rvalue_operand_mut(value: &mut AmirRvalue, mut f: impl FnMut(&mu
         AmirRvalue::Load(place) | AmirRvalue::Borrow(place) | AmirRvalue::BorrowMut(place) => {
             for_each_place_operand_mut(place, f);
         }
-        AmirRvalue::RelativeBorrow { .. } => {}
+        AmirRvalue::RelativeBorrow { .. }
+        | AmirRvalue::ArenaAlloc { .. }
+        | AmirRvalue::ArenaCheckpoint => {}
     }
 }
 
@@ -286,7 +291,7 @@ pub fn for_each_stmt_operand_mut(
             f(callee);
             args.iter_mut().for_each(f);
         }
-        super::AmirStmt::Free(op) => f(op),
+        super::AmirStmt::Free(op) | super::AmirStmt::ArenaRewind(op) => f(op),
         super::AmirStmt::Destroy(place) => for_each_place_operand_mut(place, f),
         super::AmirStmt::StorageLive(_)
         | super::AmirStmt::StorageDead(_)
@@ -306,7 +311,7 @@ pub fn for_each_stmt_operand(statement: &super::AmirStmt, mut f: impl FnMut(&Ami
             f(callee);
             args.iter().for_each(f);
         }
-        super::AmirStmt::Free(op) => f(op),
+        super::AmirStmt::Free(op) | super::AmirStmt::ArenaRewind(op) => f(op),
         super::AmirStmt::Destroy(place) => for_each_place_operand(place, f),
         super::AmirStmt::StorageLive(_)
         | super::AmirStmt::StorageDead(_)
@@ -467,8 +472,10 @@ pub fn for_each_rvalue_operand(rvalue: &AmirRvalue, mut f: impl FnMut(&AmirOpera
             for_each_place_operand(place, &mut f);
         }
 
-        // A3.4: index only — no nested operands.
-        AmirRvalue::RelativeBorrow { .. } => {}
+        // A3.4 / RFC 0043: index/metadata only — no nested operands.
+        AmirRvalue::RelativeBorrow { .. }
+        | AmirRvalue::ArenaAlloc { .. }
+        | AmirRvalue::ArenaCheckpoint => {}
     }
 }
 
@@ -512,7 +519,9 @@ pub fn for_each_rvalue_place(rvalue: &AmirRvalue, mut f: impl FnMut(&AmirPlace))
         | AmirRvalue::GenGet { .. }
         | AmirRvalue::GenSet { .. }
         | AmirRvalue::GenUpsert { .. }
-        | AmirRvalue::GenRemove { .. } => {}
+        | AmirRvalue::GenRemove { .. }
+        | AmirRvalue::ArenaAlloc { .. }
+        | AmirRvalue::ArenaCheckpoint => {}
     }
 }
 

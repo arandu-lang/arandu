@@ -370,15 +370,29 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 self.builder.ins().func_addr(self.ptr_type, local_ref)
             }
             AmirOperand::GlobalRef(symbol) => {
-                let symbol = self.symbol_table.get(*symbol);
-                self.record_ice(
-                    format!(
-                        "global reference '{}' reached Cranelift value translation; global operands are unsupported",
-                        symbol.name
-                    ),
-                    symbol.span,
-                );
-                self.poison_i32()
+                let sym = self.symbol_table.get(*symbol);
+                let data_id = match self.module.declare_data(
+                    &sym.name,
+                    cranelift_module::Linkage::Import,
+                    false,
+                    false,
+                ) {
+                    Ok(data_id) => data_id,
+                    Err(err) => {
+                        self.record_ice(
+                            format!(
+                                "failed to declare global data '{}' in module: {err:?}",
+                                sym.name
+                            ),
+                            sym.span,
+                        );
+                        return self.poison_i32();
+                    }
+                };
+                let local_data_ref = self.module.declare_data_in_func(data_id, self.builder.func);
+                self.builder
+                    .ins()
+                    .symbol_value(self.ptr_type, local_data_ref)
             }
         };
 

@@ -45,6 +45,50 @@ pub(super) fn synth_binary_result(
         BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => {
             let left_ty = checker.resolve(left_ty_id);
             let right_ty = checker.resolve(right_ty_id);
+            if matches!(op, BinaryOp::Add | BinaryOp::Sub) {
+                if matches!(left_ty, ArType::Ptr(_)) && right_ty.is_integer() {
+                    if !checker.ctx.is_in_unsafe() {
+                        checker.diagnostics.push(
+                            crate::Diagnostic::error(
+                                crate::DiagCode::O012AllocRequiresUnsafe,
+                                "pointer arithmetic requires an `unsafe` block",
+                                span,
+                            )
+                            .with_label(span, "raw pointer arithmetic is unsafe"),
+                        );
+                    }
+                    if let Some(var_id) = checker.literal_table.var_for_expr(right_id) {
+                        let usize_id = checker.intern(ArType::Primitive(Primitive::USize));
+                        checker.constrain_literal_var(
+                            var_id,
+                            usize_id,
+                            ConstraintOrigin::BinaryOp {
+                                op_span: span,
+                                left_span: checker.pool.expr_span(left_id),
+                                right_span: checker.pool.expr_span(right_id),
+                            },
+                        );
+                    }
+                    return Some(left_ty_id);
+                }
+                if matches!(op, BinaryOp::Sub)
+                    && matches!(left_ty, ArType::Ptr(_))
+                    && matches!(right_ty, ArType::Ptr(_))
+                    && checker.unify_ids(left_ty_id, right_ty_id)
+                {
+                    if !checker.ctx.is_in_unsafe() {
+                        checker.diagnostics.push(
+                            crate::Diagnostic::error(
+                                crate::DiagCode::O012AllocRequiresUnsafe,
+                                "pointer arithmetic requires an `unsafe` block",
+                                span,
+                            )
+                            .with_label(span, "raw pointer arithmetic is unsafe"),
+                        );
+                    }
+                    return Some(checker.intern(ArType::Primitive(Primitive::ISize)));
+                }
+            }
             if !checker.unify_ids(left_ty_id, right_ty_id)
                 || (!left_ty.is_numeric() && !right_ty.is_numeric())
             {

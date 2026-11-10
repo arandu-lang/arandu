@@ -50,8 +50,8 @@ fn stmt_span(pool: &AstPool, stmt: StmtId) -> Span {
         Stmt::VarDecl { span, .. }
         | Stmt::Set { span, .. }
         | Stmt::Return { span, .. }
-        | Stmt::Break { span }
-        | Stmt::Continue { span }
+        | Stmt::Break { span, .. }
+        | Stmt::Continue { span, .. }
         | Stmt::Free { span, .. }
         | Stmt::Expr { span, .. }
         | Stmt::If { span, .. }
@@ -137,8 +137,12 @@ fn lower_stmt_raw(
                 values: values_range,
             }
         }
-        Stmt::Break { .. } => HirStmtKind::Break,
-        Stmt::Continue { .. } => HirStmtKind::Continue,
+        Stmt::Break { label, .. } => HirStmtKind::Break {
+            label: label.clone(),
+        },
+        Stmt::Continue { label, .. } => HirStmtKind::Continue {
+            label: label.clone(),
+        },
         Stmt::Free { expr, .. } => {
             let eid = super::expr::lower_expr(type_check, pool, hir_pool, *expr)?;
             HirStmtKind::Free(eid)
@@ -209,10 +213,12 @@ fn lower_stmt_raw(
         },
         Stmt::For {
             span,
+            label,
             is_comptime,
             clause,
             body,
         } => HirStmtKind::For {
+            label: label.clone(),
             comptime_bodies: None,
             comptime_bounds: if *is_comptime {
                 Some(
@@ -246,8 +252,12 @@ fn lower_stmt_raw(
             },
         },
         Stmt::While {
-            condition, body, ..
+            label,
+            condition,
+            body,
+            ..
         } => HirStmtKind::While {
+            label: label.clone(),
             condition: lower_condition(type_check, pool, hir_pool, condition)?,
             body: super::stmt::lower_block(type_check, pool, hir_pool, body)?,
         },

@@ -153,6 +153,11 @@ impl<'a> Lexer<'a> {
                     return self.lex_byte_string();
                 }
             }
+            b'c' => {
+                if remaining >= 2 && bytes[self.pos + 1] == b'"' {
+                    return self.lex_c_string();
+                }
+            }
             b'r' => {
                 if remaining >= 4 && &bytes[self.pos..self.pos + 4] == b"r\"\"\"" {
                     return self.lex_raw_multiline_string();

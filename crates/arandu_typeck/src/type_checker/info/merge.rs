@@ -281,6 +281,7 @@ impl TypeInfo {
                     symbol: remap(field.symbol),
                     source: remap(field.source),
                     ty: reintern_type(self, other, field.ty),
+                    field_ty: reintern_type(self, other, field.field_ty),
                     span: field.span,
                     mode: field.mode,
                 })
@@ -457,6 +458,7 @@ impl TypeInfo {
             );
         }
         self.struct_repr_c.extend(&other.struct_repr_c);
+        self.struct_unions.extend(&other.struct_unions);
         for ((sym, name), &expr_id) in &other.struct_field_defaults {
             // A default of another file has no slot in this one.
             if let Some(slot) = at.slot(expr_id.as_usize()) {
@@ -544,5 +546,6 @@ fn context_shard_is_empty(other: &TypeInfo) -> bool {
         && other.param_constraints.is_empty()
         && other.interfaces.is_empty()
         && other.struct_repr_c.is_empty()
+        && other.struct_unions.is_empty()
         && other.expr_types.iter().all(|s| s.is_none())
 }

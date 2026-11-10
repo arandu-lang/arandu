@@ -75,6 +75,13 @@ impl<'a> Parser<'a> {
         }
     }
 
+    pub(super) fn at_name_like(&self) -> bool {
+        matches!(
+            &self.current().kind,
+            TokenKind::TypeErr | TokenKind::IdentValue | TokenKind::IdentType
+        ) || is_contextual_module_segment(&self.current().kind)
+    }
+
     pub(super) fn expect_name_like(&mut self) -> Result<SmolStr, ParseError> {
         match &self.current().kind {
             TokenKind::TypeErr | TokenKind::IdentValue | TokenKind::IdentType => {

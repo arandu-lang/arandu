@@ -132,6 +132,21 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 self.emit_free_ptr(ptr_val);
             }
             AmirStmt::StorageLive(_) | AmirStmt::StorageDead(_) => {}
+            AmirStmt::ArenaRewind(op) => {
+                let checkpoint =
+                    self.translate_operand(op, Some(cranelift_codegen::ir::types::I64));
+                let Some(rewind_id) = self.resolve_function("ar_task_arena_rewind") else {
+                    self.record_ice(
+                        "missing ar_task_arena_rewind runtime import",
+                        self.func_span(),
+                    );
+                    return;
+                };
+                let rewind_ref = self
+                    .module
+                    .declare_func_in_func(rewind_id, self.builder.func);
+                self.builder.ins().call(rewind_ref, &[checkpoint]);
+            }
             AmirStmt::Destroy(place) => {
                 let ty = self.place_ar_ty(place);
                 if matches!(ty, ArType::Primitive(Primitive::Str)) {

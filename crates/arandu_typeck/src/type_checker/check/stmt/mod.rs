@@ -31,10 +31,10 @@ pub fn check_stmt(checker: &mut TypeChecker<'_>, pool: &AstPool, stmt: &Stmt) {
         Stmt::Set {
             span: _,
             places,
-            op: _,
+            op,
             value,
         } => {
-            check_set_stmt(checker, places, *value);
+            check_set_stmt(checker, places, op.clone(), *value);
         }
         Stmt::Return { span, values } => {
             check_return_stmt(checker, *span, values);
@@ -63,13 +63,15 @@ pub fn check_stmt(checker: &mut TypeChecker<'_>, pool: &AstPool, stmt: &Stmt) {
         }
         Stmt::While {
             span: _,
+            label,
             condition,
             body,
         } => {
-            check_while_stmt(checker, pool, condition, body);
+            check_while_stmt(checker, pool, condition, body, label.clone());
         }
         Stmt::For {
             span,
+            label,
             is_comptime,
             clause,
             body,
@@ -91,9 +93,9 @@ pub fn check_stmt(checker: &mut TypeChecker<'_>, pool: &AstPool, stmt: &Stmt) {
                     span: body.span,
                     statements: arandu_parser::ast_pool::IndexRange::empty(),
                 };
-                check_for_stmt(checker, pool, clause, &empty);
+                check_for_stmt(checker, pool, clause, &empty, label.clone());
             } else {
-                check_for_stmt(checker, pool, clause, body);
+                check_for_stmt(checker, pool, clause, body, label.clone());
             }
         }
         Stmt::Match { span: _, expr } => {
@@ -105,7 +107,7 @@ pub fn check_stmt(checker: &mut TypeChecker<'_>, pool: &AstPool, stmt: &Stmt) {
         Stmt::Defer { span: _, body } | Stmt::ErrDefer { span: _, body } => {
             check_defer_stmt(checker, pool, body);
         }
-        Stmt::Break { span } | Stmt::Continue { span } => {
+        Stmt::Break { span, .. } | Stmt::Continue { span, .. } => {
             check_loop_control_stmt(checker, stmt, *span);
         }
         Stmt::Unsafe { span: _, block } => {

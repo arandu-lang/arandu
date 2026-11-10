@@ -33,6 +33,9 @@ pub(super) struct ClosureShape<'a> {
     pub host_prefix: &'static str,
     pub params: &'a [(Option<SymbolId>, TypeId)],
     pub return_type: TypeId,
+    /// `mut self` for a callback, which may be called many times; a
+    /// `ThreadJob` takes `own self` and runs once.
+    pub self_by_mut_ref: bool,
 }
 
 /// Registers the struct, its fields and the method; returns the struct type.
@@ -77,11 +80,17 @@ pub(super) fn install_closure(
             4 + u32::try_from(index).unwrap_or(u32::MAX),
             &mut reserved,
         );
+        let field_ty = match capture.mode {
+            CaptureMode::Borrow => checker.intern(ArType::Ref(capture.ty)),
+            CaptureMode::BorrowMut => checker.intern(ArType::RefMut(capture.ty)),
+            CaptureMode::Copy | CaptureMode::Move => capture.ty,
+        };
         fields.push(ClosureCaptureField {
             name,
             symbol,
             source: capture.symbol,
             ty: capture.ty,
+            field_ty,
             span: capture.span,
             mode: capture.mode,
         });
@@ -151,8 +160,13 @@ pub(super) fn install_closure(
 
     let struct_named = ArType::named(struct_symbol, &[], &checker.type_info.type_interner);
     let struct_ty = checker.intern(struct_named);
+    let self_ty = if shape.self_by_mut_ref {
+        checker.intern(ArType::RefMut(struct_ty))
+    } else {
+        struct_ty
+    };
     let mut method_params = Vec::with_capacity(params.len() + 1);
-    method_params.push(struct_ty);
+    method_params.push(self_ty);
     method_params.extend(params.iter().map(|param| param.ty));
     let method_named = ArType::func(
         &method_params,
@@ -162,18 +176,18 @@ pub(super) fn install_closure(
     let method_ty = checker.intern(method_named);
     checker.record_decl_type(struct_symbol, struct_ty);
     checker.record_decl_type(method_symbol, method_ty);
-    checker.record_decl_type(self_param, struct_ty);
+    checker.record_decl_type(self_param, self_ty);
     for param in &params {
         checker.record_decl_type(param.symbol, param.ty);
     }
     for field in &fields {
-        checker.record_decl_type(field.symbol, field.ty);
+        checker.record_decl_type(field.symbol, field.field_ty);
     }
     let table = StructFields::from_entries(fields.iter().enumerate().map(|(index, field)| {
         StructFieldInfo {
             name: field.name.clone(),
             symbol: Some(field.symbol),
-            ty: field.ty,
+            ty: field.field_ty,
             index,
         }
     }));
@@ -202,9 +216,21 @@ pub(super) fn install_closure(
 /// The callback bound of a formal parameter, if it is an implicit callback
 /// type parameter of the callee.
 pub(super) fn callback_bound_of(checker: &TypeChecker<'_>, formal: TypeId) -> Option<TypeId> {
-    match checker.resolve(formal) {
-        ArType::Named(symbol, args) if args.is_empty() => {
-            checker.type_info.callback_bounds.get(&symbol).copied()
+    let implicit = callback_param_of(checker, formal)?;
+    checker.type_info.callback_bounds.get(&implicit).copied()
+}
+
+/// The implicit callback type parameter `F` of a `mut ref F` (or bare `F`).
+pub(crate) fn callback_param_of(checker: &TypeChecker<'_>, ty: TypeId) -> Option<SymbolId> {
+    let ty = match checker.resolve(ty) {
+        ArType::Ref(inner) | ArType::RefMut(inner) => checker.resolve(inner),
+        other => other,
+    };
+    match ty {
+        ArType::Named(symbol, args)
+            if args.is_empty() && checker.type_info.callback_bounds.contains_key(&symbol) =>
+        {
+            Some(symbol)
         }
         _ => None,
     }
@@ -284,14 +310,12 @@ pub(super) fn check_callback_args(
         let actual = checker.resolve(arg_ty);
         let accepted = match actual {
             ArType::Error => true,
-            ArType::Named(symbol, _) => {
-                checker.type_info.callback_bounds.contains_key(&symbol)
-                    || checker
-                        .type_info
-                        .closures
-                        .values()
-                        .any(|recipe| recipe.struct_symbol == symbol)
-            }
+            _ if callback_param_of(checker, arg_ty).is_some() => true,
+            ArType::Named(symbol, _) => checker
+                .type_info
+                .closures
+                .values()
+                .any(|recipe| recipe.struct_symbol == symbol),
             _ => false,
         };
         if accepted {
@@ -410,7 +434,6 @@ pub(super) fn check_callback_lambda(
         method_params.push((Some(symbol), expected));
     }
 
-    let captures = callback_captures(checker, lambda_span, is_move);
     let return_type = expected_ret;
     match &body {
         arandu_parser::LambdaBody::Expr { expr, .. } => {
@@ -433,7 +456,8 @@ pub(super) fn check_callback_lambda(
             crate::type_checker::check::check_closure_block(checker, block, Some(return_type));
         }
     }
-    let Some(captures) = captures else {
+    // Modes need the typed body: a call through a `mut` receiver mutates.
+    let Some(captures) = callback_captures(checker, lambda_span, is_move) else {
         checker.record_expr_type(arg_id, error);
         return error;
     };
@@ -450,6 +474,7 @@ pub(super) fn check_callback_lambda(
             host_prefix: "ar_closure",
             params: &method_params,
             return_type,
+            self_by_mut_ref: true,
         },
         &captures,
     );
@@ -457,26 +482,18 @@ pub(super) fn check_callback_lambda(
     struct_ty
 }
 
-/// Deduce how a callback holds each captured local. `own`/`move` moves all;
-/// otherwise an unmodified `Copy` value is copied. Borrowed captures are not
-/// lowered yet and are rejected here with the reason.
+/// Deduce how a callback holds each captured local (RFC 0032, L1):
+/// `move` moves every capture; otherwise a local that is assigned, mutably
+/// borrowed or used as a `mut` receiver is a `BorrowMut`, a `Copy` value of
+/// an immutable binding is copied, and anything else is a `Borrow`. The
+/// borrows are real: the environment holds references to the caller's
+/// locals, and the borrow checker sees them live for the whole call.
 fn callback_captures(
     checker: &mut TypeChecker<'_>,
     lambda_span: Span,
     is_move: bool,
 ) -> Option<Vec<Capture>> {
-    let assigned = checker
-        .resolved
-        .value_refs
-        .iter()
-        .filter(|(key, _)| {
-            super::thread_target::span_contains(
-                lambda_span,
-                Span::new(lambda_span.file_id, key.start, key.end),
-            )
-        })
-        .map(|(_, symbol)| *symbol)
-        .collect::<FxHashSet<_>>();
+    let mutated = mutated_within(checker, lambda_span);
     let mut seen = FxHashSet::default();
     let mut captures = Vec::new();
     let mut rejected = false;
@@ -505,20 +522,25 @@ fn callback_captures(
             rejected = true;
             continue;
         }
+        if callback_param_of(checker, ty).is_some() {
+            rejected = true;
+            unsupported_capture(checker, use_span, &name, "a callback parameter");
+            continue;
+        }
         let mode = if is_move {
             CaptureMode::Move
-        } else if assigned.contains(&symbol) {
+        } else if matches!(checker.resolve(ty), ArType::RefMut(_)) {
             rejected = true;
-            borrowed_capture(checker, use_span, &name, "mutable borrow");
+            unsupported_capture(checker, use_span, &name, "a `mut ref` value");
             continue;
-        } else if !matches!(checker.resolve(ty), ArType::Ref(_) | ArType::RefMut(_))
-            && checker.type_info.is_copy(ty)
+        } else if mutated.contains(&symbol) {
+            CaptureMode::BorrowMut
+        } else if checker.type_info.is_copy(ty)
+            && !checker.resolved.mutable_symbols.contains(&symbol)
         {
             CaptureMode::Copy
         } else {
-            rejected = true;
-            borrowed_capture(checker, use_span, &name, "shared borrow");
-            continue;
+            CaptureMode::Borrow
         };
         captures.push(Capture {
             symbol,
@@ -531,15 +553,76 @@ fn callback_captures(
     (!rejected).then_some(captures)
 }
 
-fn borrowed_capture(checker: &mut TypeChecker<'_>, span: Span, name: &str, capture: &str) {
+/// Locals written inside the lambda: assignment roots, `mut ref` borrows
+/// and receivers of methods that take `mut self`, by the root of the place.
+fn mutated_within(checker: &TypeChecker<'_>, lambda_span: Span) -> FxHashSet<SymbolId> {
+    let inside = |span: Span| super::thread_target::span_contains(lambda_span, span);
+    let mut mutated = checker
+        .resolved
+        .value_refs
+        .iter()
+        .filter(|(key, _)| inside(Span::new(lambda_span.file_id, key.start, key.end)))
+        .map(|(_, symbol)| *symbol)
+        .collect::<FxHashSet<_>>();
+    for (index, &span) in checker.pool.expr_spans.iter().enumerate() {
+        if span == lambda_span || !inside(span) {
+            continue;
+        }
+        let place = match checker.pool.expr(ExprId::new(index)) {
+            ExprKind::Unary {
+                op: arandu_parser::UnaryOp::RefMut,
+                expr,
+            } => Some(*expr),
+            ExprKind::Call { callee, .. } => match checker.pool.expr(*callee) {
+                ExprKind::Field { base, .. }
+                    if checker
+                        .type_info
+                        .expr_type(*callee)
+                        .and_then(|method| match method {
+                            ArType::Func(params, _) => checker
+                                .type_info
+                                .type_interner
+                                .type_args(params)
+                                .first()
+                                .copied(),
+                            _ => None,
+                        })
+                        .is_some_and(|receiver| {
+                            matches!(checker.resolve(receiver), ArType::RefMut(_))
+                        }) =>
+                {
+                    Some(*base)
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(root) = place.and_then(|place| place_root(checker, place)) {
+            mutated.insert(root);
+        }
+    }
+    mutated
+}
+
+fn place_root(checker: &TypeChecker<'_>, expr: ExprId) -> Option<SymbolId> {
+    match checker.pool.expr(expr) {
+        ExprKind::Path { .. } => checker.resolved.expr_symbol(expr),
+        ExprKind::Field { base, .. } | ExprKind::Index { base, .. } => place_root(checker, *base),
+        ExprKind::Group { expr, .. } => place_root(checker, *expr),
+        _ => None,
+    }
+}
+
+fn unsupported_capture(checker: &mut TypeChecker<'_>, span: Span, name: &str, what: &str) {
     checker.diagnostics.push(
         crate::Diagnostic::error(
             crate::DiagCode::U001FeatureNotSupported,
-            format!("capturing '{name}' by {capture} is not supported yet (v0.3 LAMBDA L1)"),
+            format!(
+                "capturing '{name}', {what}, in a closure is not supported yet (v0.3 LAMBDA L1)"
+            ),
             span,
         )
-        .with_label(span, format!("'{name}' is captured here"))
-        .with_hint("prefix the closure with `move` to move the captured values into it"),
+        .with_label(span, format!("'{name}' is captured here")),
     );
 }
 

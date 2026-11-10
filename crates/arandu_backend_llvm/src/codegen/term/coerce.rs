@@ -43,8 +43,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                 // Named struct): materialize by copying `bytes` from the
                 // pointee into a first-class opaque value.
                 let slot = self.new_value();
-                self.writer
-                    .line(format!("{slot} = alloca {expected_text}, align 1"));
+                self.emit_entry_alloca(&slot, &expected_text, 1);
                 self.module.require_memcpy();
                 let memcpy = self.module.memcpy_intrinsic();
                 let n = self.module.ptr_int_ty();
@@ -65,8 +64,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                 Some(format!("inttoptr {} {} to ptr", value.ty, value.value))
             } else if let Some(bytes) = parse_byte_aggregate_size(&value.ty) {
                 let slot = self.new_value();
-                self.writer
-                    .line(format!("{slot} = alloca {}, align 1", value.ty));
+                self.emit_entry_alloca(&slot, &value.ty, 1);
                 self.writer.line(format!(
                     "store {} {}, ptr {slot}, align 1",
                     value.ty, value.value
@@ -86,8 +84,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
             } else if value.ty.starts_with('[') {
                 // Non-byte array → pointer: spill and decay to the alloca.
                 let slot = self.new_value();
-                self.writer
-                    .line(format!("{slot} = alloca {}, align 1", value.ty));
+                self.emit_entry_alloca(&slot, &value.ty, 1);
                 self.writer.line(format!(
                     "store {} {}, ptr {slot}, align 1",
                     value.ty, value.value
@@ -103,15 +100,13 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
             // Opaque layout aggregates (`[N x i8]`) of different sizes are
             // rewritten through memory: zero the destination, copy the overlap.
             let src = self.new_value();
-            self.writer
-                .line(format!("{src} = alloca {}, align 1", value.ty));
+            self.emit_entry_alloca(&src, &value.ty, 1);
             self.writer.line(format!(
                 "store {} {}, ptr {src}, align 1",
                 value.ty, value.value
             ));
             let dst = self.new_value();
-            self.writer
-                .line(format!("{dst} = alloca {expected_text}, align 1"));
+            self.emit_entry_alloca(&dst, &expected_text, 1);
             self.writer.line(format!(
                 "store {expected_text} zeroinitializer, ptr {dst}, align 1"
             ));
@@ -364,8 +359,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
     pub(in crate::codegen) fn scratch_alloca(&mut self, ty: &ArType) -> Result<String, Diagnostic> {
         let (text, align) = self.module.alloca_type(ty)?;
         let slot = self.new_value();
-        self.writer
-            .line(format!("{slot} = alloca {text}, align {align}"));
+        self.emit_entry_alloca(&slot, &text, align);
         Ok(slot)
     }
 

@@ -491,6 +491,20 @@ fn parse_generic_func() {
 }
 
 #[test]
+fn parse_const_with_colon_type() {
+    let source = "module test\npublic const MAX: int = 100\nconst MIN = 0\n";
+    let result = parse_to_string(source).unwrap();
+    assert!(result.contains("MAX") && result.contains("MIN"));
+}
+
+#[test]
+fn parse_static_mut_global() {
+    let source = "module test\npublic static mut COUNTER: int = 0\nstatic mut FLAG = false\n";
+    let result = parse_to_string(source).unwrap();
+    assert!(result.contains("StaticMut") && result.contains("COUNTER") && result.contains("FLAG"));
+}
+
+#[test]
 fn parse_multi_module_func() {
     let source = "module test\nfunc foo() { }\nfunc bar() { }\n";
     let result = parse_to_string(source).unwrap();
@@ -664,13 +678,13 @@ fn ast_pool_alloc_stmt_increments_id_and_vectors() {
     };
 
     // First allocation: id index == 0
-    let id0 = pool.alloc_stmt(Stmt::Break { span });
+    let id0 = pool.alloc_stmt(Stmt::Break { span, label: None });
     assert_eq!(id0.as_usize(), 0);
     assert_eq!(pool.stmts.len(), 1);
     assert_eq!(pool.stmt_spans.len(), 1);
 
     // Second allocation: id index == 1
-    let id1 = pool.alloc_stmt(Stmt::Continue { span });
+    let id1 = pool.alloc_stmt(Stmt::Continue { span, label: None });
     assert_eq!(id1.as_usize(), 1);
     assert_eq!(pool.stmts.len(), 2);
     assert_eq!(pool.stmt_spans.len(), 2);
@@ -1034,4 +1048,65 @@ fn guard_statement_parses() {
             .any(|s| matches!(s, crate::Stmt::If { .. })),
         "expected guard to lower into Stmt::If"
     );
+}
+
+#[test]
+fn labeled_loops_and_breaks_parse() {
+    let source = r#"
+    func test_loops(): void {
+        'outer: while true {
+            'inner: for let mut i = 0; i < 10; i = i + 1 {
+                if i == 5 {
+                    break 'outer;
+                }
+                if i == 2 {
+                    continue 'inner;
+                }
+            }
+        }
+    }
+    "#;
+    let program = parse(source).expect("labeled loop should parse");
+    let has_outer_while = program
+        .pool
+        .stmts
+        .iter()
+        .any(|s| matches!(s, crate::Stmt::While { label: Some(l), .. } if l == "outer"));
+    let has_inner_for = program
+        .pool
+        .stmts
+        .iter()
+        .any(|s| matches!(s, crate::Stmt::For { label: Some(l), .. } if l == "inner"));
+    let has_break_outer = program
+        .pool
+        .stmts
+        .iter()
+        .any(|s| matches!(s, crate::Stmt::Break { label: Some(l), .. } if l == "outer"));
+    let has_continue_inner = program
+        .pool
+        .stmts
+        .iter()
+        .any(|s| matches!(s, crate::Stmt::Continue { label: Some(l), .. } if l == "inner"));
+    assert!(has_outer_while, "expected while with label 'outer'");
+    assert!(has_inner_for, "expected for with label 'inner'");
+    assert!(has_break_outer, "expected break with label 'outer'");
+    assert!(has_continue_inner, "expected continue with label 'inner'");
+}
+
+#[test]
+fn an_uppercase_static_mut_is_an_assignment_target() {
+    let program = parse(
+        "static mut COUNTER: int = 0\nfunc bump(): void {\n    unsafe {\n        COUNTER = COUNTER + 1\n        COUNTER += 2\n    }\n}\n",
+    )
+    .expect("static mut assignment parses");
+    let roots = program
+        .pool
+        .stmts
+        .iter()
+        .filter_map(|stmt| match stmt {
+            crate::Stmt::Set { places, .. } => places.first().map(|place| place.root.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(roots, ["COUNTER", "COUNTER"]);
 }

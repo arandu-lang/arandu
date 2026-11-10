@@ -33,7 +33,24 @@ pub(crate) fn lower_place(
         .decl_type_id(root_symbol)
         .unwrap_or(error_id);
 
+    // A captured local is written through its closure environment field.
     let mut suffixes = Vec::new();
+    let mut root_symbol = root_symbol;
+    if let Some(alias) = hir_pool.capture_aliases.get(&root_symbol).cloned() {
+        root_symbol = alias.env;
+        suffixes.push(HirPlaceSuffix::Field {
+            span: place.span,
+            name: alias.field,
+            field_symbol: Some(alias.field_symbol),
+            ty: alias.field_ty,
+        });
+        if alias.through_ref {
+            suffixes.push(HirPlaceSuffix::Deref {
+                span: place.span,
+                ty: current_ty,
+            });
+        }
+    }
     for suffix in &place.suffixes {
         if current_ty == error_id {
             match suffix {
@@ -114,7 +131,8 @@ pub(crate) fn lower_place(
                 let elem_ty = match &actual_base_ty {
                     ArType::Array(_, inner)
                     | ArType::ConstArray(_, inner)
-                    | ArType::Slice(inner) => *inner,
+                    | ArType::Slice(inner)
+                    | ArType::Ptr(inner) => *inner,
                     _ => error_id,
                 };
                 current_ty = elem_ty;

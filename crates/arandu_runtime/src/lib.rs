@@ -30,6 +30,7 @@ pub mod reactor_runtime;
 pub mod rt_runtime;
 pub mod socket_runtime;
 pub mod supervisor_runtime;
+pub mod task_arena;
 pub mod testing_runtime;
 pub mod to_str_runtime;
 pub mod vec_runtime;

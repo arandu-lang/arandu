@@ -247,6 +247,17 @@ pub enum AmirRvalue {
         value: AmirOperand,
         value_ty: TypeId,
     },
+    /// Allocate `size` bytes with `align` alignment in the linear `TaskArena` (RFC 0043).
+    ///
+    /// Returns a direct native pointer (`ArType::Ptr(payload_ty)`) to the bump-allocated
+    /// storage slot (`\lambda_store = TaskArena`, `\lambda_ref = DirectPtr`).
+    ArenaAlloc {
+        size: u32,
+        align: u32,
+        payload_ty: TypeId,
+    },
+    /// Capture the current `TaskArena` bump cursor as a 64-bit mark (`i64`) for loop rewind.
+    ArenaCheckpoint,
 }
 
 /// Logical arena selected by a Gen operation.

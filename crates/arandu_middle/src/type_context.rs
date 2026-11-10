@@ -50,6 +50,15 @@ pub trait AmirTypeContext: StructLayoutProvider {
     /// Whether `function` is the `@Destructor` instance of some type.
     fn is_destructor_instance(&self, function: SymbolId) -> bool;
 
+    /// Whether `symbol` is the compiler-generated environment of a
+    /// non-escaping closure. The type checker proves it never escapes the
+    /// call that receives it, so holding its borrows in a frame local is not
+    /// a frame escape.
+    fn is_closure_env(&self, symbol: SymbolId) -> bool {
+        let _ = symbol;
+        false
+    }
+
     fn resolve_type_id(&self, id: TypeId) -> ArType {
         self.type_interner().resolve(id)
     }

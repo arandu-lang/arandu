@@ -587,12 +587,22 @@ fn closure_callbacks_agree_on_every_backend() {
     let _ = fs::remove_file(path);
 }
 
-/// `move` captures own runtime values, so LLVM, which links no runtime, is
-/// left out.
+/// Moved and borrowed captures of owned runtime values. LLVM, which links no
+/// runtime, is left out.
 #[test]
-fn closure_move_captures_agree_on_native_backends() {
-    let source = include_str!("../../../../tests/corpus/closure_move_capture.aru");
-    for (backend, outcome) in outcomes_on("closure_move_capture", source, false) {
-        assert_eq!(outcome, ProgramOutcome::Returned(0), "{backend}");
+fn closure_owned_value_captures_agree_on_native_backends() {
+    for (name, source) in [
+        (
+            "closure_move_capture",
+            include_str!("../../../../tests/corpus/closure_move_capture.aru"),
+        ),
+        (
+            "closure_borrow_capture",
+            include_str!("../../../../tests/corpus/closure_borrow_capture.aru"),
+        ),
+    ] {
+        for (backend, outcome) in outcomes_on(name, source, false) {
+            assert_eq!(outcome, ProgramOutcome::Returned(0), "{name} on {backend}");
+        }
     }
 }

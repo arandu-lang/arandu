@@ -97,6 +97,23 @@ impl Token {
     }
 
     #[must_use]
+    pub fn c_string_content<'a>(&self, source: &'a str) -> &'a str {
+        let lexeme = self.lexeme(source);
+        lexeme
+            .strip_prefix("c\"")
+            .and_then(|text| text.strip_suffix('"'))
+            .unwrap_or("")
+    }
+
+    /// Decode a lexed C string literal (`c"..."`) into raw bytes with trailing zero byte `\0`.
+    #[must_use]
+    pub fn c_string_bytes(&self, source: &str) -> Option<Vec<u8>> {
+        let mut bytes = decode_byte_string_content(self.c_string_content(source))?;
+        bytes.push(0);
+        Some(bytes)
+    }
+
+    #[must_use]
     pub fn dump(&self, source: &str) -> String {
         if self.kind == TokenKind::Semicolon && self.inserted {
             "SEMICOLON(inserted)".to_string()
@@ -241,6 +258,8 @@ pub enum TokenKind {
     Char,
     ByteChar,
     ByteString,
+    CString,
+    Label,
     KwIf,
     KwElse,
     KwFor,

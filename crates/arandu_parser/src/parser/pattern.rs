@@ -265,7 +265,8 @@ impl<'a> Parser<'a> {
 
     pub(super) fn parse_literal_pattern_expr(&mut self) -> Result<Expr, ParseError> {
         match &self.current().kind {
-            TokenKind::IntDec
+            TokenKind::Minus
+            | TokenKind::IntDec
             | TokenKind::IntHex
             | TokenKind::IntBin
             | TokenKind::IntOct

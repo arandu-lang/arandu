@@ -23,6 +23,7 @@ pub enum AnnotationId {
     NoSuspend,
     Specialize,
     Repr,
+    Union,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -270,6 +271,16 @@ pub static BUILTIN_ANNOTATIONS: &[AnnotationSpec] = &[
         repeatable: false,
         availability: AnnotationAvailability::Implemented,
         summary: "Selects a representation contract for a data type.",
+    },
+    AnnotationSpec {
+        id: AnnotationId::Union,
+        canonical_name: "Union",
+        renamed_from: &["union"],
+        targets: &[AnnotationTarget::Struct],
+        arguments: AnnotationArguments::None,
+        repeatable: false,
+        availability: AnnotationAvailability::Implemented,
+        summary: "Marks a nominal aggregate as an untagged union with overlapping fields.",
     },
 ];
 

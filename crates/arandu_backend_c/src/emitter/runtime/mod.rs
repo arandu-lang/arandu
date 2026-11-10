@@ -31,6 +31,7 @@ impl<'a> CEmitter<'a> {
     fn emit_runtime_prelude(&mut self, needs_str: bool) {
         let features = self.runtime_features();
         self.arena_runtime = features.arena;
+        self.task_arena_runtime = features.task_arena;
         let mut rotate_widths = [false; 2];
         for function in &self.program.funcs {
             if !self.live_functions.contains(&function.symbol) {
@@ -209,6 +210,9 @@ impl<'a> CEmitter<'a> {
         // F2.3.runtime: process-lifetime gen arena (i64 payload MVP; mirrors JIT host).
         if features.arena {
             self.emit_gen_arena_runtime();
+        }
+        if features.task_arena {
+            self.emit_task_arena_runtime();
         }
         // Pure-buffer host used by std.alloc.vec / gen_arena product surface.
         let uint_c_ty = if self.layout.pointer_width() == 4 {

@@ -319,6 +319,8 @@ Abaixo estão listados todos os diagnósticos mapeados para o compilador Arandu.
 | **O013** | `` call to extern function requires an `unsafe` block `` | Error | `0.1.0` | Chamadas para funções `extern` e funções anotadas com `@Unsafe` exigem bloco `unsafe`. |
 | **O014** | `` `free` requires an `unsafe` block `` | Error | `0.1.0` | Desalocação manual de memória via `free` é operação insegura e exige bloco `unsafe`. |
 | **O015** | `cannot move a value with a destructor out of an indexed place` | Error | `0.1.11` | Mover um elemento com destrutor para fora de `arr[i]`, `slice[i]` ou `vec[i]` deixaria o dono destruindo o mesmo valor de novo. Empreste o elemento ou use uma operação que retire o valor (`pop`, `swap`). |
+| **O016** | `cannot move a value out of the reference '{name}'` | Error | `0.3.0` | Consumir um valor não-`Copy` alcançado por `ref`/`mut ref` (`*r`, `r.campo`, captura emprestada de closure) criaria um segundo dono: o original ainda o usa e destrói. Use o valor pela referência (método, campo `Copy`, `ref`) ou capture-o com `move`. |
+| **O017** | `` access to `static mut` requires an `unsafe` block `` | Error | `0.3.0` | Acesso ou mutação de variável global mutável (`static mut`) exige bloco `unsafe`. |
 
 
 ---

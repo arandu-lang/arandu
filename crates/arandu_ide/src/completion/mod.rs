@@ -236,7 +236,7 @@ fn value_kind(kind: SymbolKind) -> CompletionKind {
         SymbolKind::Func | SymbolKind::ExternFunc => CompletionKind::Function,
         SymbolKind::AssociatedFunc => CompletionKind::Method,
         SymbolKind::Const | SymbolKind::ConstParam => CompletionKind::Constant,
-        SymbolKind::Local | SymbolKind::Param => CompletionKind::Variable,
+        SymbolKind::Local | SymbolKind::Param | SymbolKind::StaticMut => CompletionKind::Variable,
         SymbolKind::EnumVariant => CompletionKind::EnumMember,
         SymbolKind::Field => CompletionKind::Field,
         SymbolKind::Module => CompletionKind::Module,

@@ -95,15 +95,17 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 AmirProjection::Index(op) => {
                     let idx_val = self.translate_operand(op, Some(self.ptr_type));
                     if let ArType::Array(len, _) = &current_ty {
-                        let len_val = self.builder.ins().iconst(self.ptr_type, *len as i64);
-                        let is_oob = self.builder.ins().icmp(
-                            cranelift_codegen::ir::condcodes::IntCC::UnsignedGreaterThanOrEqual,
-                            idx_val,
-                            len_val,
-                        );
-                        self.builder
-                            .ins()
-                            .trapnz(is_oob, cranelift_codegen::ir::TrapCode::unwrap_user(1));
+                        if *len > 1 {
+                            let len_val = self.builder.ins().iconst(self.ptr_type, *len as i64);
+                            let is_oob = self.builder.ins().icmp(
+                                cranelift_codegen::ir::condcodes::IntCC::UnsignedGreaterThanOrEqual,
+                                idx_val,
+                                len_val,
+                            );
+                            self.builder
+                                .ins()
+                                .trapnz(is_oob, cranelift_codegen::ir::TrapCode::unwrap_user(1));
+                        }
                     } else if matches!(current_ty, ArType::Slice(_) | ArType::MutSlice(_)) {
                         let len_val = self.builder.ins().load(
                             self.ptr_type,
@@ -119,6 +121,13 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                         self.builder
                             .ins()
                             .trapnz(is_oob, cranelift_codegen::ir::TrapCode::unwrap_user(1));
+                        ptr_val = self.builder.ins().load(
+                            self.ptr_type,
+                            cranelift_codegen::ir::MemFlagsData::new(),
+                            ptr_val,
+                            0,
+                        );
+                    } else if matches!(current_ty, ArType::Ptr(_)) && i > 0 {
                         ptr_val = self.builder.ins().load(
                             self.ptr_type,
                             cranelift_codegen::ir::MemFlagsData::new(),
@@ -210,22 +219,28 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             AmirProjection::Index(op) => {
                 if matches!(
                     current_ty,
-                    ArType::Ptr(_) | ArType::Ref(_) | ArType::RefMut(_) | ArType::Nullable(_)
-                ) {
+                    ArType::Ref(_) | ArType::RefMut(_) | ArType::Nullable(_)
+                ) || matches!(&current_ty, ArType::Ptr(inner) if {
+                    let inner_ty = self.type_info.resolve_type_id(*inner);
+                    matches!(inner_ty, ArType::Array(_, _) | ArType::ConstArray(_, _) | ArType::Slice(_) | ArType::MutSlice(_))
+                        || is_vec_type(&inner_ty, self.symbol_table)
+                }) {
                     current_ty = unwrap_ptr_like(&current_ty, self);
                 }
                 let is_vec = is_vec_type(&current_ty, self.symbol_table);
                 let idx_val = self.translate_operand(op, Some(self.ptr_type));
                 if let ArType::Array(len, _) = &current_ty {
-                    let len_val = self.builder.ins().iconst(self.ptr_type, *len as i64);
-                    let is_oob = self.builder.ins().icmp(
-                        cranelift_codegen::ir::condcodes::IntCC::UnsignedGreaterThanOrEqual,
-                        idx_val,
-                        len_val,
-                    );
-                    self.builder
-                        .ins()
-                        .trapnz(is_oob, cranelift_codegen::ir::TrapCode::unwrap_user(1));
+                    if *len > 1 {
+                        let len_val = self.builder.ins().iconst(self.ptr_type, *len as i64);
+                        let is_oob = self.builder.ins().icmp(
+                            cranelift_codegen::ir::condcodes::IntCC::UnsignedGreaterThanOrEqual,
+                            idx_val,
+                            len_val,
+                        );
+                        self.builder
+                            .ins()
+                            .trapnz(is_oob, cranelift_codegen::ir::TrapCode::unwrap_user(1));
+                    }
                 } else if matches!(current_ty, ArType::Slice(_) | ArType::MutSlice(_)) {
                     let len_val = self.builder.ins().load(
                         self.ptr_type,
@@ -247,7 +262,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                         ptr_val,
                         0,
                     );
-                } else if is_vec {
+                } else if is_vec || (matches!(current_ty, ArType::Ptr(_)) && projs.len() > 1) {
                     ptr_val = self.builder.ins().load(
                         self.ptr_type,
                         cranelift_codegen::ir::MemFlagsData::new(),
@@ -512,8 +527,12 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 AmirProjection::Index(_) | AmirProjection::IndexConstant(_) => {
                     if matches!(
                         current_ty,
-                        ArType::Ptr(_) | ArType::Ref(_) | ArType::RefMut(_) | ArType::Nullable(_)
-                    ) {
+                        ArType::Ref(_) | ArType::RefMut(_) | ArType::Nullable(_)
+                    ) || matches!(&current_ty, ArType::Ptr(inner) if {
+                        let inner_ty = self.type_info.resolve_type_id(*inner);
+                        matches!(inner_ty, ArType::Array(_, _) | ArType::ConstArray(_, _) | ArType::Slice(_) | ArType::MutSlice(_))
+                            || is_vec_type(&inner_ty, self.symbol_table)
+                    }) {
                         current_ty = unwrap_ptr_like(&current_ty, self);
                     }
                     let is_vec = is_vec_type(&current_ty, self.symbol_table);

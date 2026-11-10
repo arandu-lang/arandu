@@ -67,6 +67,7 @@ pub fn uninitialized_return_exits(func: &AmirFunc) -> Vec<BlockId> {
                 AmirStmt::Call { lhs, .. } => *lhs == Some(TempId(0)),
                 AmirStmt::Store { .. }
                 | AmirStmt::Free(_)
+                | AmirStmt::ArenaRewind(_)
                 | AmirStmt::Destroy(_)
                 | AmirStmt::StorageLive(_)
                 | AmirStmt::StorageDead(_)
@@ -317,7 +318,7 @@ fn check_stmt_loads(
             // (operands are TempId-based, so they are always SSA-valid)
             let _ = rhs;
         }
-        AmirStmt::Call { .. } | AmirStmt::Free(_) => {}
+        AmirStmt::Call { .. } | AmirStmt::Free(_) | AmirStmt::ArenaRewind(_) => {}
         AmirStmt::Destroy(place) => {
             if !current.contains(place.local) {
                 emit_uninit_diag(place.local, func, symbols, block, diagnostics);

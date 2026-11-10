@@ -76,6 +76,28 @@ impl<'a> ModuleEmitter<'a> {
         self.require_declaration("ar_rt_raw_free", "declare void @ar_rt_raw_free(ptr)");
     }
 
+    pub(super) fn require_task_arena_alloc(&self) {
+        let len = ptr_int(self.layout.pointer_width());
+        self.require_declaration(
+            "ar_task_arena_alloc",
+            format!("declare ptr @ar_task_arena_alloc({len}, {len})"),
+        );
+    }
+
+    pub(super) fn require_task_arena_checkpoint(&self) {
+        self.require_declaration(
+            "ar_task_arena_checkpoint",
+            "declare i64 @ar_task_arena_checkpoint()",
+        );
+    }
+
+    pub(super) fn require_task_arena_rewind(&self) {
+        self.require_declaration(
+            "ar_task_arena_rewind",
+            "declare void @ar_task_arena_rewind(i64)",
+        );
+    }
+
     pub(super) fn require_memcmp(&self) {
         let len = ptr_int(self.layout.pointer_width());
         self.require_declaration("memcmp", format!("declare i32 @memcmp(ptr, ptr, {len})"));
@@ -633,6 +655,7 @@ fn is_host_runtime_symbol(name: &str) -> bool {
         || name.starts_with("ar_jit_")
         || name.starts_with("ar_gen_")
         || name.starts_with("ar_co_")
+        || name.starts_with("ar_task_arena_")
         || name == "ar_str_concat"
         || name == "memcmp"
 }

@@ -511,6 +511,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     .map(|tid| self.type_info.resolve_type_id(tid))
                     .unwrap_or(ArType::Error)
             }
+            _ if matches!(base_ty, ArType::Ptr(_)) => deref_ty.clone(),
             _ => ArType::Error,
         };
 

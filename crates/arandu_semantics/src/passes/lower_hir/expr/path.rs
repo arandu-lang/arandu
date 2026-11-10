@@ -9,18 +9,48 @@ use arandu_parser::ast_pool::{AstPool, ExprId, ExprKind};
 pub(super) fn lower_path(
     type_check: &mut TypeCheckResult,
     pool: &AstPool,
+    hir_pool: &mut crate::hir::HirPool,
     expr: ExprId,
     span: arandu_middle::Span,
 ) -> Result<HirExprKind, Diagnostic> {
     let ExprKind::Path { .. } = pool.expr(expr) else {
         unreachable!();
     };
-    Ok({
-        {
-            let symbol = require_value_symbol(&type_check.resolved, expr, span)?;
-            HirExprKind::Path { symbol }
-        }
-    })
+    let symbol = require_value_symbol(&type_check.resolved, expr, span)?;
+    Ok(captured_value(hir_pool, symbol, span))
+}
+
+/// A use of `symbol`. Inside a closure body a captured local is its
+/// environment field, read through the stored reference for a borrow.
+pub(crate) fn captured_value(
+    hir_pool: &mut crate::hir::HirPool,
+    symbol: crate::SymbolId,
+    span: arandu_middle::Span,
+) -> HirExprKind {
+    let Some(alias) = hir_pool.capture_aliases.get(&symbol).cloned() else {
+        return HirExprKind::Path { symbol };
+    };
+    let env = hir_pool.alloc_expr(HirExpr {
+        kind: HirExprKind::Path { symbol: alias.env },
+        ty: alias.env_ty,
+        span,
+    });
+    let field = HirExprKind::Field {
+        base: env,
+        field: alias.field,
+    };
+    if !alias.through_ref {
+        return field;
+    }
+    let reference = hir_pool.alloc_expr(HirExpr {
+        kind: field,
+        ty: alias.field_ty,
+        span,
+    });
+    HirExprKind::Unary {
+        op: arandu_middle::ops::UnaryOp::Deref,
+        expr: reference,
+    }
 }
 
 pub(super) fn lower_variant_sugar(

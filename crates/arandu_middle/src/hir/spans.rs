@@ -30,6 +30,7 @@ impl HirPool {
     pub fn map_spans(&mut self, f: &mut impl FnMut(Span) -> Span) {
         let HirPool {
             ctfe_lowering: _,
+            capture_aliases: _,
             exprs,
             stmts,
             blocks,
@@ -163,7 +164,9 @@ impl HirPool {
             *span = f(*span);
             for suffix in suffixes.iter_mut() {
                 match suffix {
-                    HirPlaceSuffix::Field { span, .. } | HirPlaceSuffix::Index { span, .. } => {
+                    HirPlaceSuffix::Field { span, .. }
+                    | HirPlaceSuffix::Index { span, .. }
+                    | HirPlaceSuffix::Deref { span, .. } => {
                         *span = f(*span);
                     }
                 }

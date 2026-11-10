@@ -24,10 +24,8 @@ pub(super) fn synth_direct_symbol_call(
     let arg_ids = checker.pool.expr_list(args_range).to_vec();
     let callee_ty = checker.resolve(callee_ty_id);
     // `f(args)` on a callback parameter calls its closure's `call` directly.
-    let callback_bound = match callee_ty {
-        ArType::Named(symbol, _) => checker.type_info.callback_bounds.get(&symbol).copied(),
-        _ => None,
-    };
+    let callback_bound = super::closure::callback_param_of(checker, callee_ty_id)
+        .and_then(|implicit| checker.type_info.callback_bounds.get(&implicit).copied());
     let func_info = match callback_bound
         .map_or_else(|| callee_ty.clone(), |bound| checker.resolve(bound))
     {

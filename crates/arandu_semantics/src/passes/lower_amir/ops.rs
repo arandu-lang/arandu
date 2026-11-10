@@ -83,6 +83,67 @@ impl LowerCtx<'_> {
             self.emit_assign_temp(dest, value);
             return Ok(AmirOperand::Copy(dest));
         }
+        if matches!(op, BinaryOp::Add | BinaryOp::Sub)
+            && let ArType::Ptr(pointee_id) = self.resolve_ty(self.hir.pool.expr(left).ty)
+        {
+            if matches!(op, BinaryOp::Sub)
+                && matches!(
+                    self.resolve_ty(self.hir.pool.expr(right).ty),
+                    ArType::Ptr(_)
+                )
+            {
+                let isize_ty = self
+                    .tc
+                    .type_info
+                    .type_interner
+                    .intern(ArType::Primitive(Primitive::ISize));
+                let l_int = self.new_temp_id(isize_ty);
+                self.emit_assign_temp(l_int, AmirRvalue::Use(l_op));
+                let r_int = self.new_temp_id(isize_ty);
+                self.emit_assign_temp(r_int, AmirRvalue::Use(r_op));
+                let diff = self.new_temp_id(isize_ty);
+                self.emit_assign_temp(
+                    diff,
+                    AmirRvalue::Binary {
+                        op: BinaryOp::Sub,
+                        left: AmirOperand::Copy(l_int),
+                        right: AmirOperand::Copy(r_int),
+                    },
+                );
+                let pointee_ty = self.resolve_ty(pointee_id);
+                let stride = arandu_middle::layout::LayoutEngine::from_data_layout(
+                    self.tc.type_info.target_layout,
+                )
+                .layout_of_type(
+                    &pointee_ty,
+                    &self.tc.type_info.type_interner,
+                    &*self.tc.type_info,
+                )
+                .map(|l| l.size)
+                .unwrap_or(1)
+                .max(1);
+                if stride > 1 {
+                    let stride_lit = self.intern_literal_int(stride.to_string());
+                    let stride_temp = self.new_temp_id(isize_ty);
+                    self.emit_assign_temp(
+                        stride_temp,
+                        AmirRvalue::Use(AmirOperand::Constant(stride_lit)),
+                    );
+                    self.emit_assign_temp(
+                        dest,
+                        AmirRvalue::Binary {
+                            op: BinaryOp::Div,
+                            left: AmirOperand::Copy(diff),
+                            right: AmirOperand::Copy(stride_temp),
+                        },
+                    );
+                } else {
+                    self.emit_assign_temp(dest, AmirRvalue::Use(AmirOperand::Copy(diff)));
+                }
+                return Ok(AmirOperand::Copy(dest));
+            }
+            return self.lower_ptr_arith_offset(op, l_op, r_op, pointee_id, expr_ty, Some(dest));
+        }
         self.emit_assign_temp(
             dest,
             AmirRvalue::Binary {
@@ -91,6 +152,69 @@ impl LowerCtx<'_> {
                 right: r_op,
             },
         );
+        Ok(AmirOperand::Copy(dest))
+    }
+
+    pub(crate) fn lower_ptr_arith_offset(
+        &mut self,
+        op: BinaryOp,
+        ptr_op: AmirOperand,
+        offset_op: AmirOperand,
+        pointee_id: crate::types::TypeId,
+        ptr_ty_id: crate::types::TypeId,
+        target: Option<TempId>,
+    ) -> Result<AmirOperand, Diagnostic> {
+        let usize_ty = self
+            .tc
+            .type_info
+            .type_interner
+            .intern(ArType::Primitive(Primitive::USize));
+        let ptr_int = self.new_temp_id(usize_ty);
+        self.emit_assign_temp(ptr_int, AmirRvalue::Use(ptr_op));
+        let off_int = self.new_temp_id(usize_ty);
+        self.emit_assign_temp(off_int, AmirRvalue::Use(offset_op));
+        let pointee_ty = self.resolve_ty(pointee_id);
+        let stride =
+            arandu_middle::layout::LayoutEngine::from_data_layout(self.tc.type_info.target_layout)
+                .layout_of_type(
+                    &pointee_ty,
+                    &self.tc.type_info.type_interner,
+                    &*self.tc.type_info,
+                )
+                .map(|l| l.size)
+                .unwrap_or(1)
+                .max(1);
+        let scaled_off = if stride > 1 {
+            let stride_lit = self.intern_literal_int(stride.to_string());
+            let stride_temp = self.new_temp_id(usize_ty);
+            self.emit_assign_temp(
+                stride_temp,
+                AmirRvalue::Use(AmirOperand::Constant(stride_lit)),
+            );
+            let scaled = self.new_temp_id(usize_ty);
+            self.emit_assign_temp(
+                scaled,
+                AmirRvalue::Binary {
+                    op: BinaryOp::Mul,
+                    left: AmirOperand::Copy(off_int),
+                    right: AmirOperand::Copy(stride_temp),
+                },
+            );
+            AmirOperand::Copy(scaled)
+        } else {
+            AmirOperand::Copy(off_int)
+        };
+        let sum_int = self.new_temp_id(usize_ty);
+        self.emit_assign_temp(
+            sum_int,
+            AmirRvalue::Binary {
+                op,
+                left: AmirOperand::Copy(ptr_int),
+                right: scaled_off,
+            },
+        );
+        let dest = target.unwrap_or_else(|| self.new_temp_id(ptr_ty_id));
+        self.emit_assign_temp(dest, AmirRvalue::Use(AmirOperand::Copy(sum_int)));
         Ok(AmirOperand::Copy(dest))
     }
 
@@ -148,13 +272,11 @@ impl LowerCtx<'_> {
                     .projections
                     .iter()
                     .any(|p| matches!(p, crate::amir::AmirProjection::Deref));
-                if place.projections.is_empty() && !through_ptr {
+                if !through_ptr {
                     let idx = place.local.as_usize();
                     if idx < self.locals.len() {
                         self.locals[idx].is_memory = true;
                     }
-                }
-                if !through_ptr {
                     self.borrowed_locals.insert(place.local);
                 }
                 let dest = target.unwrap_or_else(|| self.new_temp_id(expr_ty));
@@ -181,7 +303,14 @@ impl LowerCtx<'_> {
                     // Use Unary Deref for pointer-valued operands so backends can load.
                     let sub_op = self.read_variable_source(place.local)?;
                     let dest = target.unwrap_or_else(|| self.new_temp_id(expr_ty));
-                    if place.projections.is_empty() {
+                    // A pointee with a destructor is read as a place so the move
+                    // checker sees a consumption through the reference (O016).
+                    if place.projections.is_empty()
+                        && !arandu_mir::drop_elaborate::type_needs_drop(
+                            expr_ty,
+                            &*self.tc.type_info,
+                        )
+                    {
                         self.emit_assign_temp(
                             dest,
                             AmirRvalue::Unary {
@@ -190,6 +319,7 @@ impl LowerCtx<'_> {
                             },
                         );
                     } else {
+                        self.mark_local_materialized(place.local);
                         // The projected place holds the reference itself
                         // (`*holder.field`); the pointee is one Deref further.
                         let mut pointee = place;
@@ -315,7 +445,11 @@ impl LowerCtx<'_> {
                     }
                 }
             };
-            if place.projections.is_empty() {
+            let through_ptr = place
+                .projections
+                .iter()
+                .any(|p| matches!(p, crate::amir::AmirProjection::Deref));
+            if !through_ptr {
                 let idx = place.local.as_usize();
                 if idx < self.locals.len() {
                     self.locals[idx].is_memory = true;

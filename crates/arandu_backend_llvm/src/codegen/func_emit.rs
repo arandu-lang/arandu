@@ -21,6 +21,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
             module,
             func,
             writer: IrWriter::default(),
+            entry_allocas: Vec::new(),
             defined: vec![None; func.temps.len()],
             temp_slots: vec![None; func.temps.len()],
             temp_values: vec![None; func.temps.len()],
@@ -324,6 +325,10 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
             if block.id != entry_id {
                 self.writer.blank();
                 self.writer.line(format!("{}:", block_label(block.id)));
+            } else {
+                for alloca_line in &self.entry_allocas {
+                    self.writer.line(alloca_line);
+                }
             }
             self.emit_block_phis(block)?;
             self.writer.append_raw(&body);
@@ -333,5 +338,10 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
         self.module
             .record_function_declarations(self.func.symbol, declarations_before);
         Ok(self.writer.finish())
+    }
+
+    pub(in crate::codegen) fn emit_entry_alloca(&mut self, slot: &str, ty: &str, align: u64) {
+        self.entry_allocas
+            .push(format!("{slot} = alloca {ty}, align {align}"));
     }
 }

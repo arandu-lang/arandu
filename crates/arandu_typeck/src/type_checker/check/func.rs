@@ -216,7 +216,8 @@ pub fn check_func_body(checker: &mut TypeChecker<'_>, decl: &FuncDecl) {
         .unwrap_or_default();
     for (index, param) in decl.params.iter().enumerate() {
         if let Some(&callback) = declared_params.get(index)
-            && let ArType::Named(implicit, _) = checker.resolve(callback)
+            && let ArType::RefMut(implicit) = checker.resolve(callback)
+            && let ArType::Named(implicit, _) = checker.resolve(implicit)
             && checker.type_info.callback_bounds.contains_key(&implicit)
         {
             let param_key = crate::NodeKey::from(param.span);

@@ -153,6 +153,12 @@ impl<'a> CEmitter<'a> {
             AmirRvalue::Alloc(op) => {
                 self.emit_alloc(op, func);
             }
+            AmirRvalue::ArenaAlloc { size, align, .. } => {
+                self.emit_arena_alloc(*size, *align, expected_c_type);
+            }
+            AmirRvalue::ArenaCheckpoint => {
+                self.emit_arena_checkpoint();
+            }
             // Heap CoroutineReady (stack:true is multi-stmt in emit_stmt).
             // A3.6 layout: disc@0 (u32 Ready=0), payload@8.
             AmirRvalue::CoroutineReady {

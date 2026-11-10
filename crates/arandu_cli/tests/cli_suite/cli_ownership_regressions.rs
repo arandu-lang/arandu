@@ -1164,16 +1164,33 @@ func main(): int {
     run_emitted_c_with_asan(&c_source, "hash_string_asan");
 }
 
-/// AGG.1: a promoted handle stored in memory typed as a reference was read
-/// back as a raw pointer, so every backend returned the handle bits. The
-/// escape is rejected instead of compiled.
+/// RFC 0043 Dual-Locus: a borrow stored in memory typed as a reference promotes
+/// the borrowed local's Storage Locus (`lambda_store`) to `TaskArena` while
+/// keeping its Reference Locus (`lambda_ref`) as a native pointer (`DirectPtr`),
+/// unless `@NoFallback` rejects it.
 #[test]
 fn promotable_borrows_stored_in_memory_are_rejected_not_miscompiled() {
-    for (name, source) in [
+    for (name, source, no_fallback_source) in [
         (
             "through_reference",
             r#"
 struct Holder { value: &int }
+func store(holder: mut ref Holder, seed: int): int {
+    let value = seed
+    set holder.value = &value
+    return *holder.value
+}
+func main(): int {
+    let start = 0
+    let mut holder = Holder { value: &start }
+    if store(mut ref holder, 5) != 5 { return 1 }
+    if *holder.value != 5 { return 2 }
+    return 0
+}
+"#,
+            r#"
+struct Holder { value: &int }
+@NoFallback
 func store(holder: mut ref Holder, seed: int): int {
     let value = seed
     set holder.value = &value
@@ -1193,15 +1210,189 @@ struct Holder { value: &int }
 func main(): int {
     let start = 5
     let holder = Holder { value: &start }
+    if *holder.value != 5 { return 1 }
+    return 0
+}
+"#,
+            r#"
+struct Holder { value: &int }
+@NoFallback
+func main(): int {
+    let start = 5
+    let holder = Holder { value: &start }
     return *holder.value
 }
 "#,
         ),
     ] {
-        let stderr = check(source, name);
+        let stdout = run(source, name);
+        assert!(stdout.is_empty());
+        let c_source = emit_c(source, &format!("{name}_c"));
+        run_emitted_c_with_asan(&c_source, &format!("{name}_asan"));
+
+        let stderr = check(no_fallback_source, &format!("{name}_no_fallback"));
         assert!(
-            stderr.contains("O004") && stderr.contains("cannot be safely re-read"),
-            "{name}: expected the O004 rejection, got: {stderr}"
+            stderr.contains("O004"),
+            "{name}: expected O004 rejection under @NoFallback, got: {stderr}"
         );
     }
+}
+
+#[test]
+fn dual_locus_returned_aggregate_carrier_and_projected_field_borrow_work_end_to_end() {
+    let source = r#"
+struct Par {
+    x: &int
+    y: &int
+}
+
+struct Holder {
+    value: &int
+}
+
+struct Pair {
+    left: int
+    right: int
+}
+
+func criar_par(base: int): Par {
+    let a = base + 10
+    let b = base + 20
+    return Par { x: &a, y: &b }
+}
+
+func store_projected(holder: mut ref Holder, base: int): int {
+    let pair = Pair { left: base + 40, right: base + 7 }
+    set holder.value = &pair.left
+    return *holder.value
+}
+
+func loop_arena_rewind(): int {
+    let mut acc = 0
+    let mut i = 0
+    while i < 5000 {
+        let val = i + 1
+        let holder = Holder { value: &val }
+        set acc = acc + *holder.value
+        set i = i + 1
+    }
+    return acc
+}
+
+func main(): int {
+    let p = criar_par(5)
+    if *p.x != 15 { return 1 }
+    if *p.y != 25 { return 2 }
+
+    let seed = 0
+    let mut holder = Holder { value: &seed }
+    if store_projected(mut ref holder, 2) != 42 { return 3 }
+    if *holder.value != 42 { return 4 }
+
+    if loop_arena_rewind() != 12502500 { return 5 }
+    return 0
+}
+"#;
+    let stdout = run(source, "dual_locus_e2e");
+    assert!(stdout.is_empty());
+    let c_source = emit_c(source, "dual_locus_e2e_c");
+    run_emitted_c_with_asan(&c_source, "dual_locus_e2e_asan");
+}
+
+#[test]
+fn untagged_union_pointer_indexing_and_null_optimization_work_end_to_end() {
+    let source = r#"
+@Repr("C")
+public union Value {
+    public i: i64
+    public f: f64
+    public p: ptr[u8]?
+}
+
+@Export
+public func maybe_offset(p: ptr[i64]?, idx: usize): ptr[i64]? {
+    if let raw = p {
+        unsafe {
+            let mut cursor: ptr[i64] = raw
+            cursor += 1
+            cursor[idx] = 42
+            let read_back: i64 = cursor[idx]
+            let next: ptr[i64] = cursor + 2
+            let diff: isize = next - cursor
+            if diff == 2 && read_back == 42 {
+                return next
+            }
+        }
+    }
+    return nil
+}
+
+public func test_union(): i64 {
+    let mut v = Value { i: 0 }
+    unsafe {
+        v.f = 1.0
+        return v.i
+    }
+}
+
+public func main(): int {
+    let mut arr: [4]i64 = [10, 20, 30, 40]
+    unsafe {
+        let base: ptr[i64] = (&mut arr[0]) as ptr[i64]
+        let res = maybe_offset(base, 1)
+        let bits = test_union()
+        if res != nil && arr[2] == 42 && bits == 4607182418800017408 {
+            return 0
+        }
+    }
+    return 1
+}
+"#;
+    let stdout = run(source, "union_pointer_npo_e2e");
+    assert!(stdout.is_empty());
+    let c_source = emit_c(source, "union_pointer_npo_e2e_c");
+    run_emitted_c_with_asan(&c_source, "union_pointer_npo_e2e_asan");
+}
+
+#[test]
+fn indexed_array_in_struct_reference_does_not_copy_container() {
+    let source = r#"
+public struct BtreePage {
+    keys: [256]i64,
+}
+
+public func binsearch(page: ref BtreePage, target: i64): int {
+    let mut low = 0
+    let mut high = 255
+    while low <= high {
+        let mid = (low + high) >> 1
+        let k = page.keys[mid]
+        if k == target { return mid }
+        if k < target { low = mid + 1 } else { high = mid - 1 }
+    }
+    return -1
+}
+
+public func main(): int {
+    let mut page = BtreePage { keys: [0; 256] }
+    let mut i = 0
+    while i < 256 {
+        page.keys[i] = (i as i64) * 10
+        i = i + 1
+    }
+    let idx = binsearch(&page, 420)
+    if idx == 42 {
+        return 0
+    }
+    return 1
+}
+"#;
+    let stdout = run(source, "indexed_array_in_struct_no_copy");
+    assert!(stdout.is_empty());
+    let c_source = emit_c(source, "indexed_array_in_struct_no_copy_c");
+    assert!(
+        !c_source.contains("= *((ArType_Array_256_int64_t*)"),
+        "AMIR não deve gerar rvalue copy do array de 2KB!"
+    );
+    run_emitted_c_with_asan(&c_source, "indexed_array_in_struct_no_copy_asan");
 }

@@ -85,6 +85,26 @@ func nestedClosures(): int {
     return 0
 }
 
+// Assigned captures are real mutable borrows of the caller's locals; a
+// `let mut` local that is only read is a shared borrow and sees every write.
+func borrowedCaptures(): int {
+    let mut total = 0
+    each(4, (x) => { total = total + x })
+    if total != 6 { return 1 }
+    let mut live = 1
+    each(3, (x) => { live = live * 2 })
+    let mut reads = 0
+    each(3, (x) => { reads = reads + live })
+    if reads != 24 { return 2 }
+    let mut count = 0
+    let r = fold(3, 0, (acc, i) => {
+        count = count + 1
+        acc + i
+    })
+    if r != 3 || count != 3 { return 3 }
+    return 0
+}
+
 func main(): int {
     let copied = copyCaptures()
     if copied != 0 { return 10 + copied }
@@ -94,5 +114,7 @@ func main(): int {
     if forwarded != 0 { return 30 + forwarded }
     let nested = nestedClosures()
     if nested != 0 { return 40 + nested }
+    let borrowed = borrowedCaptures()
+    if borrowed != 0 { return 50 + borrowed }
     return 0
 }

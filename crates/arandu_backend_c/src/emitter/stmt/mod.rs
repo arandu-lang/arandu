@@ -339,6 +339,13 @@ impl<'a> CEmitter<'a> {
                 }
             }
             AmirStmt::StorageLive(_) | AmirStmt::StorageDead(_) => {}
+            AmirStmt::ArenaRewind(op) => {
+                let checkpoint = self.format_operand(op, func);
+                let _ = writeln!(
+                    &mut self.output,
+                    "    ar_task_arena_rewind((uint64_t)({checkpoint}));"
+                );
+            }
             AmirStmt::Destroy(place) => {
                 let local_ty = self.local_ty(func, place.local);
                 let mut current_ty = local_ty;
@@ -425,6 +432,9 @@ impl<'a> CEmitter<'a> {
                 if name == "main" {
                     if self.arena_runtime {
                         let _ = writeln!(&mut self.output, "    ar_gen_shutdown_raw();");
+                    }
+                    if self.task_arena_runtime {
+                        let _ = writeln!(&mut self.output, "    ar_task_arena_shutdown();");
                     }
                     // ISO C requires `int main`; void Arandu main becomes `return 0`.
                     if matches!(ret, ArType::Void) {

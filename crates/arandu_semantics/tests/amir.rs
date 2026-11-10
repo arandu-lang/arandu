@@ -1377,3 +1377,68 @@ func bad(m: Msg): int {
         bad_tc.diagnostics
     );
 }
+
+#[test]
+fn labeled_break_and_continue_lower_to_valid_amir() {
+    let src = r#"
+func nested_loops(): int {
+    let mut sum = 0;
+    'outer: while true {
+        'inner: for let mut i = 0; i < 10; i = i + 1 {
+            if i == 5 {
+                break 'outer;
+            }
+            if i == 2 {
+                continue 'inner;
+            }
+            sum = sum + i;
+        }
+    }
+    return sum;
+}
+"#;
+    let program = arandu_parser::parse(src).expect("parse labeled loops");
+    let res = resolve_for_test(0, &program);
+    let mut tc = type_check(
+        res,
+        &program,
+        arandu_semantics::TargetInfo { pointer_width: 64 },
+    );
+    assert!(
+        tc.diagnostics.is_empty(),
+        "type check failed: {:?}",
+        tc.diagnostics
+    );
+    let hir = lower_to_hir(&mut tc, &program).expect("HIR lowering for labeled loops");
+    let amir = lower_to_amir(&tc, &hir, 8).expect("AMIR lowering for labeled loops");
+    let issues = validate_amir_program(&amir, &tc.symbols, &tc.type_info.type_interner);
+    assert!(
+        issues.is_empty(),
+        "expected valid AMIR for labeled loops, got: {issues:?}"
+    );
+}
+
+#[test]
+fn undeclared_loop_label_reports_diagnostic() {
+    let src = r#"
+func bad_label(): void {
+    while true {
+        break 'nonexistent;
+    }
+}
+"#;
+    let program = arandu_parser::parse(src).expect("parse bad label");
+    let res = resolve_for_test(0, &program);
+    let tc = type_check(
+        res,
+        &program,
+        arandu_semantics::TargetInfo { pointer_width: 64 },
+    );
+    assert!(
+        tc.diagnostics
+            .iter()
+            .any(|d| d.code == DiagCode::N011BreakContinueOutsideLoop),
+        "expected N011BreakContinueOutsideLoop, got: {:?}",
+        tc.diagnostics
+    );
+}

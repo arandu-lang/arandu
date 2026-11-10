@@ -41,9 +41,14 @@ pub struct InterfaceConstraint {
 /// How a closure holds one captured local.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CaptureMode {
-    /// A `Copy` value read by the closure; the caller keeps its own copy.
+    /// A `Copy` value of an immutable binding: a copy is indistinguishable
+    /// from a shared borrow, because nothing can write the binding.
     Copy,
-    /// The value moves into the closure (`own`/`move`, or consumed).
+    /// A value only read: the field is a `ref` to the caller's local.
+    Borrow,
+    /// A value written or mutably borrowed: the field is a `mut ref`.
+    BorrowMut,
+    /// The value moves into the closure (`move`).
     Move,
 }
 
@@ -53,7 +58,10 @@ pub struct ClosureCaptureField {
     pub name: smol_str::SmolStr,
     pub symbol: SymbolId,
     pub source: SymbolId,
+    /// The captured local's type.
     pub ty: TypeId,
+    /// The environment field's type: `ty`, or a reference to it for a borrow.
+    pub field_ty: TypeId,
     pub span: arandu_middle::Span,
     pub mode: CaptureMode,
 }
@@ -80,6 +88,14 @@ pub struct ClosureRecipe {
     pub return_type: TypeId,
     /// Backend name. This spelling has no dots.
     pub host_name: smol_str::SmolStr,
+}
+
+impl ClosureRecipe {
+    /// A non-escaping callback environment, as opposed to a `ThreadJob`.
+    #[must_use]
+    pub fn is_callback(&self) -> bool {
+        self.method_name == "call"
+    }
 }
 
 /// One concrete declaration contract in this interner's domain. Templates
@@ -157,6 +173,8 @@ pub struct TypeInfo {
     pub unsafe_functions: FxHashSet<SymbolId>,
     /// Struct symbols that explicitly declare `@Repr("C")` / `#[repr(C)]`.
     pub struct_repr_c: rustc_hash::FxHashSet<SymbolId>,
+    /// Nominal aggregates declared with `union` / `@Union` (overlapping fields at offset 0).
+    pub struct_unions: rustc_hash::FxHashSet<SymbolId>,
     /// Struct field default value expressions (`(struct_symbol, field_name) -> default_expr`).
     pub struct_field_defaults: FxHashMap<(SymbolId, smol_str::SmolStr), ExprId>,
     /// Lambdas lowered as capture structs, keyed by the lambda span. Empty
@@ -211,6 +229,7 @@ impl TypeInfo {
             function_effects: FxHashMap::default(),
             unsafe_functions: FxHashSet::default(),
             struct_repr_c: rustc_hash::FxHashSet::default(),
+            struct_unions: rustc_hash::FxHashSet::default(),
             struct_field_defaults: FxHashMap::default(),
             closures: FxHashMap::default(),
         }
@@ -549,6 +568,10 @@ impl arandu_middle::layout::StructLayoutProvider for TypeInfo {
     fn is_repr_c(&self, struct_id: SymbolId) -> bool {
         self.struct_repr_c.contains(&struct_id)
     }
+
+    fn is_union(&self, struct_id: SymbolId) -> bool {
+        self.struct_unions.contains(&struct_id)
+    }
 }
 
 impl arandu_middle::type_context::AmirTypeContext for TypeInfo {
@@ -607,6 +630,12 @@ impl arandu_middle::type_context::AmirTypeContext for TypeInfo {
         self.destructor_instances
             .values()
             .any(|symbol| *symbol == function)
+    }
+
+    fn is_closure_env(&self, symbol: SymbolId) -> bool {
+        self.closures
+            .values()
+            .any(|recipe| recipe.struct_symbol == symbol && recipe.is_callback())
     }
 }
 

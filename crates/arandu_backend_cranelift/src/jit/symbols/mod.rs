@@ -175,6 +175,7 @@ pub(crate) fn gen_shutdown_required(
                 | AmirStmt::StorageLive(_)
                 | AmirStmt::StorageDead(_)
                 | AmirStmt::Destroy(_)
+                | AmirStmt::ArenaRewind(_)
                 | AmirStmt::Nop => false,
             })
         })

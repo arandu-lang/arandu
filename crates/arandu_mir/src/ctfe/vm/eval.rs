@@ -203,7 +203,10 @@ pub(super) fn evaluate_root<P: FunctionProvider, C: FnMut() -> bool>(
                                 });
                             }
                         }
-                        AmirStmt::Call { .. } | AmirStmt::Free(_) | AmirStmt::Destroy(_) => {
+                        AmirStmt::Call { .. }
+                        | AmirStmt::Free(_)
+                        | AmirStmt::ArenaRewind(_)
+                        | AmirStmt::Destroy(_) => {
                             return Err(EvalErrorKind::UnsupportedOperation);
                         }
                     }

@@ -58,6 +58,7 @@ impl TypeInfo {
         view.function_effects.retain(|symbol, _| kept(symbol));
         view.unsafe_functions.retain(kept);
         view.struct_repr_c.retain(kept);
+        view.struct_unions.retain(kept);
         view
     }
 

@@ -50,16 +50,6 @@ fn each_rejected_closure_reports_one_diagnostic() {
             DiagCode::T003IncompatibleCallArg,
         ),
         (
-            "shared borrow",
-            "    let raw: ptr[u8] = nil\n    let n = Handle { raw: raw }\n    return apply(1, (x) => { let m = n\n        return x })",
-            DiagCode::U001FeatureNotSupported,
-        ),
-        (
-            "mutable borrow",
-            "    let mut n = 0\n    return apply(1, (x) => { n = n + 1\n        return x })",
-            DiagCode::U001FeatureNotSupported,
-        ),
-        (
             "arity",
             "    return apply(1, (x, y) => x)",
             DiagCode::T003IncompatibleCallArg,
@@ -82,6 +72,17 @@ fn each_rejected_closure_reports_one_diagnostic() {
     ];
     for (name, body, code) in cases {
         assert_eq!(errors(body), vec![*code], "{name}");
+    }
+}
+
+#[test]
+fn borrowed_captures_are_accepted() {
+    for body in [
+        "    let raw: ptr[u8] = nil\n    let n = Handle { raw: raw }\n    return apply(1, (x) => { let m = n.raw\n        return x })",
+        "    let mut n = 0\n    let r = apply(1, (x) => { n = n + 1\n        return x })\n    return r + n",
+    ] {
+        let accepted = errors(body);
+        assert!(accepted.is_empty(), "{body}: {accepted:?}");
     }
 }
 

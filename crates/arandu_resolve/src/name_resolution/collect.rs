@@ -77,13 +77,12 @@ impl<'a> Resolver<'a> {
     pub(crate) fn collect_top_level(&mut self, scope: ScopeId, decl: &TopLevelDecl) {
         match decl {
             TopLevelDecl::Const(decl) => {
-                self.define_with_visibility(
-                    scope,
-                    &decl.name,
-                    SymbolKind::Const,
-                    decl.span,
-                    decl.visibility,
-                );
+                let kind = if decl.is_static_mut {
+                    SymbolKind::StaticMut
+                } else {
+                    SymbolKind::Const
+                };
+                self.define_with_visibility(scope, &decl.name, kind, decl.span, decl.visibility);
             }
             TopLevelDecl::TypeAlias(decl) => {
                 self.define_with_visibility(

@@ -51,6 +51,7 @@ impl AmirFunc {
                 AmirStmt::Store { .. }
                 | AmirStmt::Call { .. }
                 | AmirStmt::Free(_)
+                | AmirStmt::ArenaRewind(_)
                 | AmirStmt::StorageLive(_)
                 | AmirStmt::StorageDead(_)
                 | AmirStmt::Destroy(_)
@@ -99,6 +100,8 @@ fn rvalue_spans(rvalue: &mut AmirRvalue, f: &mut impl FnMut(Span) -> Span) {
         | AmirRvalue::CoroutineReady { .. }
         | AmirRvalue::StringInterp { .. }
         | AmirRvalue::ToStr { .. }
-        | AmirRvalue::BlackBox { .. } => {}
+        | AmirRvalue::BlackBox { .. }
+        | AmirRvalue::ArenaAlloc { .. }
+        | AmirRvalue::ArenaCheckpoint => {}
     }
 }

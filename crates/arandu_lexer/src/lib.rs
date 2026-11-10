@@ -277,6 +277,24 @@ mod tests {
     }
 
     #[test]
+    fn c_string_lexing_adds_trailing_null_and_preserves_escapes() {
+        for (source, expected) in [
+            ("c\"\"", &b"\0"[..]),
+            ("c\"hello\"", b"hello\0"),
+            ("c\"a\\n\\t\\r\\\\\\\"\\'\"", b"a\n\t\r\\\"'\0"),
+            ("c\"\\x7f\"", &[0x7f, 0x00]),
+        ] {
+            let result = lex(source).expect("c string must lex");
+            assert_eq!(result.tokens[0].kind, TokenKind::CString, "{source:?}");
+            assert_eq!(
+                result.tokens[0].c_string_bytes(source).as_deref(),
+                Some(expected),
+                "{source:?}"
+            );
+        }
+    }
+
+    #[test]
     fn byte_string_rejects_non_ascii_unterminated_and_control_characters() {
         assert_eq!(lex("b\"é\"").unwrap_err().code, LexErrorCode::InvalidChar);
         assert_eq!(
@@ -295,5 +313,20 @@ mod tests {
             lex("b\"\\q\"").unwrap_err().code,
             LexErrorCode::InvalidEscape
         );
+    }
+
+    #[test]
+    fn label_lexing_distinguishes_char_and_labels() {
+        let res1 = lex("'outer").unwrap();
+        assert_eq!(res1.tokens[0].kind, TokenKind::Label);
+        assert_eq!(res1.tokens[0].lexeme("'outer"), "'outer");
+
+        let res2 = lex("'a'").unwrap();
+        assert_eq!(res2.tokens[0].kind, TokenKind::Char);
+
+        let res3 = lex("'outer: while true { break 'outer; }").unwrap();
+        assert_eq!(res3.tokens[0].kind, TokenKind::Label);
+        assert_eq!(res3.tokens[1].kind, TokenKind::Colon);
+        assert_eq!(res3.tokens[2].kind, TokenKind::KwWhile);
     }
 }

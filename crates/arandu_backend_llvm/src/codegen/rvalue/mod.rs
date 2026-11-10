@@ -74,6 +74,8 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
             | AmirRvalue::BorrowMut(_)
             | AmirRvalue::RelativeBorrow { .. }
             | AmirRvalue::Alloc(_)
+            | AmirRvalue::ArenaAlloc { .. }
+            | AmirRvalue::ArenaCheckpoint
             | AmirRvalue::Len(_)
             | AmirRvalue::StrView { .. }
             | AmirRvalue::SliceView { .. }

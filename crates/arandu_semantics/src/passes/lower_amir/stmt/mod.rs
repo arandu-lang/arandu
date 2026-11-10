@@ -203,6 +203,18 @@ impl LowerCtx<'_> {
         }
     }
 
+    /// `static mut` is checked by the front end, but no backend emits its
+    /// storage yet: fail closed instead of dropping writes or linking a
+    /// missing symbol.
+    pub(crate) fn static_mut_unsupported(&self, span: arandu_middle::Span) -> Diagnostic {
+        Diagnostic::error(
+            crate::DiagCode::U001FeatureNotSupported,
+            "`static mut` cannot be compiled yet: no backend emits module-level mutable storage",
+            span,
+        )
+        .with_label(span, "reads and writes of `static mut` are not lowered yet")
+    }
+
     pub(crate) fn lower_set_places(
         &mut self,
         places: &[HirPlace],
@@ -238,6 +250,7 @@ impl LowerCtx<'_> {
                         HirPlaceSuffix::Index { expr, .. } => Ok(AmirProjection::Index(
                             this.lower_expr(*expr, None, symbols)?,
                         )),
+                        HirPlaceSuffix::Deref { .. } => Ok(AmirProjection::Deref),
                     })
                     .collect();
                 let projections = projections?;
@@ -278,6 +291,11 @@ impl LowerCtx<'_> {
         symbols: &SymbolTable,
     ) -> Result<(), Diagnostic> {
         let Some(&local_id) = self.symbol_map.get(&place.root_symbol) else {
+            if symbols.try_get(place.root_symbol).map(|symbol| symbol.kind)
+                == Some(arandu_middle::SymbolKind::StaticMut)
+            {
+                return Err(self.static_mut_unsupported(place.span));
+            }
             return Ok(());
         };
         let root_ty = self.resolve_ty(self.locals[local_id.as_usize()].ty);
@@ -303,7 +321,33 @@ impl LowerCtx<'_> {
             projections.push(AmirProjection::Deref);
             container_ty = self.resolve_ty(inner);
         }
-        for suffix in &place.suffixes {
+        for (idx, suffix) in place.suffixes.iter().enumerate() {
+            if idx > 0 && !matches!(suffix, HirPlaceSuffix::Deref { .. }) {
+                let needs_deref = match (&container_ty, suffix) {
+                    (ArType::Ref(_) | ArType::RefMut(_), _) => true,
+                    (ArType::Ptr(_), HirPlaceSuffix::Field { .. }) => true,
+                    (ArType::Ptr(inner), HirPlaceSuffix::Index { .. }) => {
+                        let inner_ty = self.resolve_ty(*inner);
+                        matches!(
+                            inner_ty,
+                            ArType::Array(_, _)
+                                | ArType::ConstArray(_, _)
+                                | ArType::Slice(_)
+                                | ArType::MutSlice(_)
+                        )
+                    }
+                    _ => false,
+                };
+                if needs_deref {
+                    projections.push(AmirProjection::Deref);
+                    container_ty = match &container_ty {
+                        ArType::Ref(inner) | ArType::RefMut(inner) | ArType::Ptr(inner) => {
+                            self.resolve_ty(*inner)
+                        }
+                        _ => container_ty,
+                    };
+                }
+            }
             let projection = match suffix {
                 HirPlaceSuffix::Field {
                     field_symbol: Some(symbol),
@@ -326,12 +370,13 @@ impl LowerCtx<'_> {
                     self.check_vec_index(&container, &container_ty, index, index_ty, symbols)?;
                     AmirProjection::Index(index)
                 }
+                HirPlaceSuffix::Deref { .. } => AmirProjection::Deref,
             };
             projections.push(projection);
             container_ty = match suffix {
-                HirPlaceSuffix::Field { ty, .. } | HirPlaceSuffix::Index { ty, .. } => {
-                    self.resolve_ty(*ty)
-                }
+                HirPlaceSuffix::Field { ty, .. }
+                | HirPlaceSuffix::Index { ty, .. }
+                | HirPlaceSuffix::Deref { ty, .. } => self.resolve_ty(*ty),
             };
         }
         let amir_place = AmirPlace {
@@ -365,16 +410,24 @@ impl LowerCtx<'_> {
                     _ => BinaryOp::Add,
                 };
                 let old_val = self.read_variable_source(local_id)?;
-                let temp = self.new_temp_id(place.ty);
-                self.emit_assign_temp(
-                    temp,
-                    AmirRvalue::Binary {
-                        op: bin_op,
-                        left: old_val,
-                        right: *val_op,
-                    },
-                );
-                AmirOperand::Copy(temp)
+                if matches!(bin_op, BinaryOp::Add | BinaryOp::Sub)
+                    && let ArType::Ptr(pointee_id) = root_ty
+                {
+                    self.lower_ptr_arith_offset(
+                        bin_op, old_val, *val_op, pointee_id, place.ty, None,
+                    )?
+                } else {
+                    let temp = self.new_temp_id(place.ty);
+                    self.emit_assign_temp(
+                        temp,
+                        AmirRvalue::Binary {
+                            op: bin_op,
+                            left: old_val,
+                            right: *val_op,
+                        },
+                    );
+                    AmirOperand::Copy(temp)
+                }
             };
             let consumed = self.consume_operand(final_val)?;
             self.write_variable_source(local_id, consumed)?;

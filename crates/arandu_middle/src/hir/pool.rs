@@ -33,12 +33,12 @@ mod tests {
     fn alloc_and_get_stmt() {
         let mut pool = HirPool::new();
         let stmt = HirStmt {
-            kind: HirStmtKind::Break,
+            kind: HirStmtKind::Break { label: None },
             span: S,
         };
         let id = pool.alloc_stmt(stmt);
         assert_eq!(id, HirStmtId::from_usize(0));
-        assert!(matches!(pool.stmt(id).kind, HirStmtKind::Break));
+        assert!(matches!(pool.stmt(id).kind, HirStmtKind::Break { .. }));
     }
 
     #[test]
@@ -173,11 +173,27 @@ impl IndexRange {
     }
 }
 
+/// How a closure method body reaches one captured local: through the field
+/// `field` of its environment `env`, and through the reference stored there
+/// when the capture is a borrow.
+#[derive(Debug, Clone)]
+pub struct HirCaptureAlias {
+    pub env: crate::SymbolId,
+    pub env_ty: crate::types::TypeId,
+    pub field: smol_str::SmolStr,
+    pub field_symbol: crate::SymbolId,
+    pub field_ty: crate::types::TypeId,
+    pub through_ref: bool,
+}
+
 /// A compact, index-backed storage for HIR nodes.
 #[derive(Debug, Clone, Default)]
 pub struct HirPool {
     /// Lowering context only; runtime producers must materialize explicit roots.
     pub ctfe_lowering: bool,
+    /// Lowering context only: captured locals of the closure body being
+    /// lowered, keyed by the local's symbol.
+    pub capture_aliases: rustc_hash::FxHashMap<crate::SymbolId, HirCaptureAlias>,
     pub exprs: IndexVec<HirExprId, super::HirExpr>,
     pub stmts: IndexVec<HirStmtId, super::HirStmt>,
     pub blocks: IndexVec<HirBlockId, super::HirBlock>,

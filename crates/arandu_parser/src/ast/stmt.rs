@@ -27,9 +27,11 @@ pub enum Stmt {
     },
     Break {
         span: Span,
+        label: Option<SmolStr>,
     },
     Continue {
         span: Span,
+        label: Option<SmolStr>,
     },
     Free {
         span: Span,
@@ -49,12 +51,14 @@ pub enum Stmt {
     },
     For {
         span: Span,
+        label: Option<SmolStr>,
         is_comptime: bool,
         clause: ForClause,
         body: Block,
     },
     While {
         span: Span,
+        label: Option<SmolStr>,
         condition: Condition,
         body: Block,
     },
@@ -84,8 +88,8 @@ impl Stmt {
             Stmt::VarDecl { span, .. }
             | Stmt::Set { span, .. }
             | Stmt::Return { span, .. }
-            | Stmt::Break { span }
-            | Stmt::Continue { span }
+            | Stmt::Break { span, .. }
+            | Stmt::Continue { span, .. }
             | Stmt::Free { span, .. }
             | Stmt::Expr { span, .. }
             | Stmt::If { span, .. }

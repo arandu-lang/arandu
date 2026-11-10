@@ -104,7 +104,8 @@ pub fn function_dependencies(
                 match rhs {
                     AmirRvalue::GenInsert { payload_ty, .. }
                     | AmirRvalue::GenSet { payload_ty, .. }
-                    | AmirRvalue::GenUpsert { payload_ty, .. } => types.push(*payload_ty),
+                    | AmirRvalue::GenUpsert { payload_ty, .. }
+                    | AmirRvalue::ArenaAlloc { payload_ty, .. } => types.push(*payload_ty),
                     AmirRvalue::VectorSelect { .. }
                     | AmirRvalue::VectorCompare { .. }
                     | AmirRvalue::VectorOp { .. }
@@ -139,7 +140,8 @@ pub fn function_dependencies(
                     | AmirRvalue::GenRemove { .. }
                     | AmirRvalue::StringInterp { .. }
                     | AmirRvalue::ToStr { .. }
-                    | AmirRvalue::BlackBox { .. } => {}
+                    | AmirRvalue::BlackBox { .. }
+                    | AmirRvalue::ArenaCheckpoint => {}
                 }
             }
         }

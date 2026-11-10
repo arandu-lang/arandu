@@ -247,6 +247,10 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                     self.module.symbols,
                     self.module.interner,
                 )
+                .or(match &base_ty {
+                    ArType::Ptr(inner) => Some(*inner),
+                    _ => None,
+                })
                 .ok_or_else(|| {
                     ice(format!(
                         "index access requires an indexable type, got {deref_ty:?}"

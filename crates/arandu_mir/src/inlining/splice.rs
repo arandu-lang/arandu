@@ -576,6 +576,16 @@ fn remap_rvalue(rv: &AmirRvalue, temp_map: &[TempId], local_map: &[LocalId]) -> 
             value: remap_op(value, temp_map),
             value_ty: *value_ty,
         },
+        AmirRvalue::ArenaAlloc {
+            size,
+            align,
+            payload_ty,
+        } => AmirRvalue::ArenaAlloc {
+            size: *size,
+            align: *align,
+            payload_ty: *payload_ty,
+        },
+        AmirRvalue::ArenaCheckpoint => AmirRvalue::ArenaCheckpoint,
     }
 }
 
@@ -601,6 +611,7 @@ fn remap_stmt(stmt: &AmirStmt, temp_map: &[TempId], local_map: &[LocalId]) -> Am
             return_borrow: return_borrow.clone(),
         },
         AmirStmt::Free(op) => AmirStmt::Free(remap_op(op, temp_map)),
+        AmirStmt::ArenaRewind(op) => AmirStmt::ArenaRewind(remap_op(op, temp_map)),
         AmirStmt::StorageLive(l) => AmirStmt::StorageLive(local_map[l.as_usize()]),
         AmirStmt::StorageDead(l) => AmirStmt::StorageDead(local_map[l.as_usize()]),
         AmirStmt::Destroy(p) => AmirStmt::Destroy(remap_place(p, temp_map, local_map)),

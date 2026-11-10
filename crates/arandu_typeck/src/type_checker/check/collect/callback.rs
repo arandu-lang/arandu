@@ -1,9 +1,11 @@
 //! Implicit type parameters of callback parameters (RFC 0032, L1).
 //!
 //! A `(A) -> R` parameter of a free function is a borrowed, non-escaping
-//! callback. Its argument is a closure struct, so the parameter becomes an
-//! implicit type parameter `F` bounded by the function type and the callee is
-//! monomorphized per closure; `f(args)` then calls `F.call` directly.
+//! callback. Its argument is a closure struct, so the parameter becomes
+//! `mut ref F` for an implicit type parameter `F` bounded by the function
+//! type, and the callee is monomorphized per closure; `f(args)` then calls
+//! `F.call` directly. The reference lets the callee call it many times and
+//! pass it on without moving the environment.
 
 use arandu_middle::{Symbol, SymbolId, SymbolKind, Visibility};
 use arandu_parser::Param;
@@ -40,7 +42,8 @@ pub(super) fn implicit_callback_params(
         });
         checker.type_info.callback_bounds.insert(symbol, *ty);
         let named = ArType::named(symbol, &[], &checker.type_info.type_interner);
-        *ty = checker.intern(named);
+        let named = checker.intern(named);
+        *ty = checker.intern(ArType::RefMut(named));
         implicit.push(symbol);
     }
     implicit

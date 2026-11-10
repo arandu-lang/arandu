@@ -125,7 +125,9 @@ fn evaluate_inlining(func: &AmirFunc, budget: usize, allow_calls: bool) -> Optio
                 }
                 AmirStmt::Assign { .. } => total_cost += 1,
                 AmirStmt::Store { .. } => total_cost += 1,
-                AmirStmt::Free(_) | AmirStmt::Destroy(_) => total_cost += 1,
+                AmirStmt::Free(_) | AmirStmt::ArenaRewind(_) | AmirStmt::Destroy(_) => {
+                    total_cost += 1
+                }
                 AmirStmt::StorageLive(_) | AmirStmt::StorageDead(_) | AmirStmt::Nop => {}
             }
         }

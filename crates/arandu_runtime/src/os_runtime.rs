@@ -236,9 +236,9 @@ mod tests {
 
     #[test]
     fn host_page_size_and_granularity_are_valid_powers_of_two() {
-        assert!(HOST_PAGE_SIZE >= 4096);
+        const { assert!(HOST_PAGE_SIZE >= 4096) };
         assert!(HOST_PAGE_SIZE.is_power_of_two());
-        assert!(HOST_ALLOCATION_GRANULARITY >= HOST_PAGE_SIZE);
+        const { assert!(HOST_ALLOCATION_GRANULARITY >= HOST_PAGE_SIZE) };
         assert!(HOST_ALLOCATION_GRANULARITY.is_power_of_two());
         assert_eq!(ar_rt_host_page_size(), HOST_PAGE_SIZE);
         assert_eq!(

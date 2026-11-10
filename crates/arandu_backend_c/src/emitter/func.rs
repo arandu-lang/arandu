@@ -66,6 +66,7 @@ impl<'a> CEmitter<'a> {
                 AmirStmt::StorageLive(_)
                 | AmirStmt::StorageDead(_)
                 | AmirStmt::Free(_)
+                | AmirStmt::ArenaRewind(_)
                 | AmirStmt::Nop => {}
             }
         }

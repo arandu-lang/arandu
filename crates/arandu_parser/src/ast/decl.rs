@@ -185,6 +185,7 @@ pub struct ConstDecl {
     pub name: SmolStr,
     pub ty: Option<TypeExprId>,
     pub value: Expr,
+    pub is_static_mut: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]

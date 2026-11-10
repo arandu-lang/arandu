@@ -79,7 +79,9 @@ pub(super) fn rewrite_stmt_calls<'bump>(
                 rewrite_block_calls(hir, eb, specialized, tc, bump);
             }
         }
-        HirStmtKind::While { condition, body } => {
+        HirStmtKind::While {
+            condition, body, ..
+        } => {
             rewrite_condition_calls(hir, &condition, specialized, tc, bump);
             rewrite_block_calls(hir, body, specialized, tc, bump);
         }
@@ -137,7 +139,7 @@ pub(super) fn rewrite_stmt_calls<'bump>(
         | HirStmtKind::Scope(b) => {
             rewrite_block_calls(hir, b, specialized, tc, bump);
         }
-        HirStmtKind::Break | HirStmtKind::Continue | HirStmtKind::Error => {}
+        HirStmtKind::Break { .. } | HirStmtKind::Continue { .. } | HirStmtKind::Error => {}
     }
 }
 

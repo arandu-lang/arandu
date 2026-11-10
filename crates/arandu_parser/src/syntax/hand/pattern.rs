@@ -247,7 +247,8 @@ fn parse_literal_expr(
     cur: &mut Cursor<'_>,
 ) -> Option<crate::ast::ast_pool::ExprId> {
     match cur.peek_kind()? {
-        TokenKind::IntDec
+        TokenKind::Minus
+        | TokenKind::IntDec
         | TokenKind::IntHex
         | TokenKind::IntBin
         | TokenKind::IntOct

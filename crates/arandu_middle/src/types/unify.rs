@@ -14,6 +14,12 @@ pub fn unify_return_type(expected: &ArType, actual: &ArType, interner: &TypeInte
     if unify(expected, actual, interner) {
         return true;
     }
+    if let ArType::Nullable(inner_exp_id) = expected {
+        let inner_exp = interner.resolve(*inner_exp_id);
+        if unify(&inner_exp, actual, interner) || is_assignable(actual, &inner_exp, interner) {
+            return true;
+        }
+    }
     if let Some((ok_exp, err_exp)) = result_ok_err(expected, interner) {
         if let Some((ok_act, err_act)) = result_ok_err(actual, interner) {
             return unify(&ok_exp, &ok_act, interner) && unify(&err_exp, &err_act, interner);
@@ -422,6 +428,17 @@ pub fn is_assignable(actual: &ArType, expected: &ArType, interner: &TypeInterner
                     &interner.resolve(*inner_b),
                     interner,
                 )
+                || {
+                    let a = interner.resolve(*inner_a);
+                    let b = interner.resolve(*inner_b);
+                    matches!(
+                        (&a, &b),
+                        (
+                            ArType::Primitive(Primitive::U8 | Primitive::I8 | Primitive::Byte),
+                            ArType::Primitive(Primitive::U8 | Primitive::I8 | Primitive::Byte)
+                        )
+                    )
+                }
         }
         (ArType::Ref(inner_a), ArType::Ref(inner_b)) => {
             *inner_a == *inner_b

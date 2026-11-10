@@ -418,7 +418,9 @@ pub fn function_scratch_safe(
                     | AmirRvalue::BorrowMut(_)
                     | AmirRvalue::ToStr { .. }
                     | AmirRvalue::BlackBox { .. }
-                    | AmirRvalue::StringInterp { .. } => true,
+                    | AmirRvalue::StringInterp { .. }
+                    | AmirRvalue::ArenaAlloc { .. }
+                    | AmirRvalue::ArenaCheckpoint => true,
                 },
                 AmirStmt::Call {
                     lhs,
@@ -472,6 +474,7 @@ pub fn function_scratch_safe(
                     _ => false,
                 },
                 AmirStmt::Store { .. }
+                | AmirStmt::ArenaRewind(_)
                 | AmirStmt::Destroy(_)
                 | AmirStmt::StorageLive(_)
                 | AmirStmt::StorageDead(_)

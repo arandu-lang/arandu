@@ -21,6 +21,14 @@ use arandu_middle::type_context::AmirTypeContext;
 
 type Origins = BTreeMap<BorrowPath, BTreeSet<BorrowSource>>;
 
+/// Sentinel `parameter_index` representing a local variable whose storage
+/// locus (`\lambda_store`) is promoted to `TaskArena` under Dual-Locus
+/// semantics (RFC 0043). This allows the return-interface solver to recognize
+/// that an aggregate return path is backed by valid arena storage (so it is
+/// not rejected as an unproven stack borrow), while filtering it out of the
+/// caller-visible formal parameter dependencies.
+const DUAL_LOCUS_LOCAL_SOURCE: u32 = u32::MAX;
+
 /// A borrow-bearing result path for which no formal origin was demonstrated.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnprovenBorrowReturn {
@@ -202,13 +210,16 @@ pub fn infer_function_interface(
     let mut summary = ReturnBorrowSummary::default();
     let mut missing = Vec::new();
     for (result_path, kind) in expected {
-        let sources = returned
-            .get(&result_path)
-            .map(|sources| sources.iter().cloned().collect::<Vec<_>>())
-            .unwrap_or_default();
-        if sources.is_empty() {
+        let Some(raw_sources) = returned.get(&result_path).filter(|s| !s.is_empty()) else {
             missing.push(result_path);
-        } else {
+            continue;
+        };
+        let sources = raw_sources
+            .iter()
+            .filter(|source| source.parameter_index != DUAL_LOCUS_LOCAL_SOURCE)
+            .cloned()
+            .collect::<Vec<_>>();
+        if !sources.is_empty() {
             summary.dependencies.push(ReturnBorrowDependency {
                 result_path,
                 sources,
@@ -643,6 +654,27 @@ fn borrowed_place_origins(
         if let Some(segment) = segment {
             origins = strip_prefix(&origins, &segment);
         }
+    }
+    if origins.is_empty()
+        && crate::dual_locus::return_is_dual_locus_carrier(
+            function,
+            type_info.type_interner(),
+            Some(type_info),
+        )
+        && crate::dual_locus::is_dual_locus_promotable(
+            function,
+            place.local,
+            type_info.type_interner(),
+            Some(type_info),
+        )
+    {
+        origins
+            .entry(BorrowPath::root())
+            .or_default()
+            .insert(BorrowSource {
+                parameter_index: DUAL_LOCUS_LOCAL_SOURCE,
+                parameter_path: BorrowPath::root(),
+            });
     }
     origins
 }

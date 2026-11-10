@@ -64,5 +64,9 @@ pub(in crate::stable_hash) fn hash_stmt(hasher: &mut Hasher, stmt: &arandu_middl
         AmirStmt::Nop => {
             hasher.update(&[7]);
         }
+        AmirStmt::ArenaRewind(checkpoint) => {
+            hasher.update(&[8]);
+            hash_amir_operand(hasher, checkpoint);
+        }
     }
 }

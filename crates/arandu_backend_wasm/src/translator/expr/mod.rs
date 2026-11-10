@@ -86,6 +86,8 @@ impl<'a> FuncTranslator<'a> {
             | AmirRvalue::BorrowMut(_)
             | AmirRvalue::Load(_)
             | AmirRvalue::Alloc(_)
+            | AmirRvalue::ArenaAlloc { .. }
+            | AmirRvalue::ArenaCheckpoint
             | AmirRvalue::StrView { .. }
             | AmirRvalue::StrBytes { .. }
             | AmirRvalue::SliceSubslice { .. }

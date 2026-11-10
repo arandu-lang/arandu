@@ -132,7 +132,9 @@ pub(super) fn independent_string_result(function: &AmirFunc, interner: &TypeInte
                         | AmirRvalue::GenGet { .. }
                         | AmirRvalue::GenSet { .. }
                         | AmirRvalue::GenUpsert { .. }
-                        | AmirRvalue::GenRemove { .. } => false,
+                        | AmirRvalue::GenRemove { .. }
+                        | AmirRvalue::ArenaAlloc { .. }
+                        | AmirRvalue::ArenaCheckpoint => false,
                     };
                     if !proven {
                         return false;
@@ -160,6 +162,7 @@ pub(super) fn independent_string_result(function: &AmirFunc, interner: &TypeInte
                 }
                 Some(
                     AmirStmt::Free(_)
+                    | AmirStmt::ArenaRewind(_)
                     | AmirStmt::StorageLive(_)
                     | AmirStmt::StorageDead(_)
                     | AmirStmt::Nop,

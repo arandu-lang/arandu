@@ -333,6 +333,8 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 .iconst(self.ptr_type, local.as_usize() as i64),
             AmirRvalue::Len(op) => self.translate_len(op, expected_ty),
             AmirRvalue::Alloc(op) => self.translate_alloc(op),
+            AmirRvalue::ArenaAlloc { size, align, .. } => self.translate_arena_alloc(*size, *align),
+            AmirRvalue::ArenaCheckpoint => self.translate_arena_checkpoint(),
             AmirRvalue::CoroutineReady {
                 value,
                 payload_ty,

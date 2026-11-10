@@ -5,6 +5,8 @@ mod control;
 mod literal;
 mod path;
 
+pub(crate) use path::captured_value;
+
 use crate::diagnostics::Diagnostic;
 use crate::hir::{HirExpr, HirExprKind};
 use crate::passes::type_checker::types::{ArType, Primitive};
@@ -253,7 +255,7 @@ fn lower_expr_dispatch(
         ExprKind::Comptime { .. } => {
             return control::lower_comptime(type_check, hir_pool, span, fallback_ty);
         }
-        ExprKind::Path { .. } => path::lower_path(type_check, pool, expr, span)?,
+        ExprKind::Path { .. } => path::lower_path(type_check, pool, hir_pool, expr, span)?,
         ExprKind::VariantSugar { .. } => {
             path::lower_variant_sugar(type_check, pool, hir_pool, expr, span, fallback_ty)?
         }
@@ -300,6 +302,7 @@ fn lower_expr_dispatch(
         ExprKind::Char { .. } => literal::lower_char(pool, expr)?,
         ExprKind::Byte { .. } => literal::lower_byte(pool, expr)?,
         ExprKind::ByteString { .. } => literal::lower_byte_string(pool, expr)?,
+        ExprKind::CString { .. } => literal::lower_c_string(pool, expr)?,
         ExprKind::InterpolatedString { .. } => {
             literal::lower_interpolated_string(type_check, pool, hir_pool, expr)?
         }

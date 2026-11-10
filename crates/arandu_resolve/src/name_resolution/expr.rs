@@ -37,7 +37,9 @@ impl<'a> Resolver<'a> {
                     && let Some(symbol) = self.symbols.lookup_value(scope, &type_name.path[0])
                     && matches!(
                         self.symbols.get(symbol).kind,
-                        crate::SymbolKind::ConstParam | crate::SymbolKind::Const
+                        crate::SymbolKind::ConstParam
+                            | crate::SymbolKind::Const
+                            | crate::SymbolKind::StaticMut
                     )
                 {
                     self.record_expr_ref(expr, symbol);
@@ -230,6 +232,7 @@ impl<'a> Resolver<'a> {
             | ExprKind::Char { .. }
             | ExprKind::Byte { .. }
             | ExprKind::ByteString { .. }
+            | ExprKind::CString { .. }
             | ExprKind::Nil
             | ExprKind::Error => {}
         }

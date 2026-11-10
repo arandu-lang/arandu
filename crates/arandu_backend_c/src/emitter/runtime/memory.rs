@@ -9,6 +9,116 @@ impl<'a> CEmitter<'a> {
         self.output.push_str(include_str!("gen_arena.c"));
     }
 
+    pub(super) fn emit_task_arena_runtime(&mut self) {
+        let _ = writeln!(
+            &mut self.output,
+            r#"/* RFC 0043: Dual-Locus linear TaskArena runtime */
+#define AR_TASK_ARENA_DEFAULT_SLAB_CAP (64u * 1024u)
+typedef struct {{
+    uint8_t *raw;
+    uint8_t *base;
+    size_t capacity;
+}} ArTaskArenaSlab;
+static struct {{
+    ArTaskArenaSlab *slabs;
+    size_t count;
+    size_t cap;
+    size_t slab_idx;
+    size_t offset;
+}} ar_task_arena = {{ NULL, 0u, 0u, 0u, 0u }};
+
+static bool ar_task_arena_push_slab(size_t min_cap, size_t min_align) {{
+    size_t cap = min_cap > AR_TASK_ARENA_DEFAULT_SLAB_CAP ? min_cap : AR_TASK_ARENA_DEFAULT_SLAB_CAP;
+    size_t align = min_align > 64u ? min_align : 64u;
+    if ((align & (align - 1u)) != 0u) return false;
+    if (ar_task_arena.count == ar_task_arena.cap) {{
+        size_t new_cap = ar_task_arena.cap == 0u ? 8u : ar_task_arena.cap * 2u;
+        ArTaskArenaSlab *next = (ArTaskArenaSlab *)realloc(
+            ar_task_arena.slabs, new_cap * sizeof(ArTaskArenaSlab));
+        if (!next) return false;
+        ar_task_arena.slabs = next;
+        ar_task_arena.cap = new_cap;
+    }}
+    size_t extra = align - 1u;
+    if (cap > SIZE_MAX - extra) return false;
+    uint8_t *raw = (uint8_t *)calloc(1u, cap + extra);
+    if (!raw) return false;
+    uintptr_t aligned = ((uintptr_t)raw + extra) & ~(uintptr_t)extra;
+    ar_task_arena.slabs[ar_task_arena.count].raw = raw;
+    ar_task_arena.slabs[ar_task_arena.count].base = (uint8_t *)aligned;
+    ar_task_arena.slabs[ar_task_arena.count].capacity = cap;
+    ar_task_arena.count += 1u;
+    return true;
+}}
+
+static void *ar_task_arena_alloc(size_t size, size_t align) {{
+    size_t actual_size = size == 0u ? 1u : size;
+    size_t actual_align = align == 0u ? 1u : align;
+    if ((actual_align & (actual_align - 1u)) != 0u) {{
+        AR_ABORT();
+    }}
+    if (ar_task_arena.count == 0u) {{
+        if (!ar_task_arena_push_slab(actual_size, actual_align)) AR_ABORT();
+        ar_task_arena.slab_idx = 0u;
+        ar_task_arena.offset = 0u;
+    }}
+    for (;;) {{
+        ArTaskArenaSlab *slab = &ar_task_arena.slabs[ar_task_arena.slab_idx];
+        uintptr_t base_addr = (uintptr_t)slab->base;
+        uintptr_t cur_addr = base_addr + ar_task_arena.offset;
+        uintptr_t mask = (uintptr_t)(actual_align - 1u);
+        uintptr_t aligned_addr = (cur_addr + mask) & ~mask;
+        size_t new_offset = (size_t)(aligned_addr - base_addr) + actual_size;
+        if (new_offset <= slab->capacity) {{
+            ar_task_arena.offset = new_offset;
+            return (void *)aligned_addr;
+        }}
+        if (ar_task_arena.slab_idx + 1u < ar_task_arena.count) {{
+            ar_task_arena.slab_idx += 1u;
+            ar_task_arena.offset = 0u;
+            continue;
+        }}
+        if (!ar_task_arena_push_slab(actual_size, actual_align)) AR_ABORT();
+        ar_task_arena.slab_idx = ar_task_arena.count - 1u;
+        ar_task_arena.offset = 0u;
+    }}
+}}
+
+static uint64_t ar_task_arena_checkpoint(void) {{
+    return ((uint64_t)(uint32_t)ar_task_arena.slab_idx << 32)
+        | (uint64_t)(uint32_t)ar_task_arena.offset;
+}}
+
+static void ar_task_arena_rewind(uint64_t checkpoint) {{
+    size_t target_slab = (size_t)(checkpoint >> 32);
+    size_t target_offset = (size_t)(uint32_t)checkpoint;
+    if (ar_task_arena.count == 0u) return;
+    if (target_slab < ar_task_arena.count) {{
+        size_t cap = ar_task_arena.slabs[target_slab].capacity;
+        ar_task_arena.slab_idx = target_slab;
+        ar_task_arena.offset = target_offset <= cap ? target_offset : cap;
+    }}
+}}
+
+static void ar_task_arena_reset(void) {{
+    ar_task_arena.slab_idx = 0u;
+    ar_task_arena.offset = 0u;
+}}
+
+static void ar_task_arena_shutdown(void) {{
+    for (size_t i = 0u; i < ar_task_arena.count; ++i) {{
+        free(ar_task_arena.slabs[i].raw);
+    }}
+    free(ar_task_arena.slabs);
+    ar_task_arena.slabs = NULL;
+    ar_task_arena.count = 0u;
+    ar_task_arena.cap = 0u;
+    ar_task_arena.slab_idx = 0u;
+    ar_task_arena.offset = 0u;
+}}"#
+        );
+    }
+
     /// Raw buffer hosts for `std.alloc.vec` / `std.alloc.gen_arena` pure-buffer path.
     pub(super) fn emit_vec_buf_runtime(&mut self, uint_c_ty: &str) {
         let _ = writeln!(

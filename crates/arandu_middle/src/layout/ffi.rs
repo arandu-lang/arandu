@@ -114,6 +114,13 @@ pub fn ffi_type_of(
             let pointee = pointer_target(*inner, interner, provider, depth)?;
             Ok(FfiType::Ptr(Box::new(pointee)))
         }
+        ArType::Nullable(inner) => match interner.resolve(*inner) {
+            ArType::Ptr(pointee_id) => {
+                let pointee = pointer_target(pointee_id, interner, provider, depth)?;
+                Ok(FfiType::Ptr(Box::new(pointee)))
+            }
+            _ => Err(format!("{ty:?} has no C representation")),
+        },
         ArType::Ref(inner) | ArType::RefMut(inner) => {
             let pointee = pointer_target(*inner, interner, provider, depth)?;
             Ok(FfiType::Ref {
@@ -240,6 +247,19 @@ fn pointer_target(
     match &inner_ty {
         ArType::Void => Ok(FfiType::Void),
         ArType::Named(symbol, _) => Ok(FfiType::Struct(*symbol)),
+        ArType::Ptr(sub_inner) => {
+            let sub = pointer_target(*sub_inner, interner, provider, depth + 1)?;
+            Ok(FfiType::Ptr(Box::new(sub)))
+        }
+        ArType::Nullable(sub_inner) => match interner.resolve(*sub_inner) {
+            ArType::Ptr(pointee_id) => {
+                let sub = pointer_target(pointee_id, interner, provider, depth + 1)?;
+                Ok(FfiType::Ptr(Box::new(sub)))
+            }
+            other => Err(format!(
+                "pointer to {other:?} has no stable C representation; point at a scalar or a nominal type"
+            )),
+        },
         ArType::Primitive(Primitive::Char) => {
             Err("`char` is a Unicode scalar value, not a C character; use `u32` or `u8`".to_owned())
         }

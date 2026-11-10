@@ -250,4 +250,46 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         self.trap_if_null_for_nonzero_size(ptr, size_val);
         ptr
     }
+
+    /// Dual-Locus linear TaskArena allocation (`ar_task_arena_alloc`, RFC 0043).
+    pub(super) fn translate_arena_alloc(&mut self, size: u32, align: u32) -> Value {
+        let Some(alloc_id) = self.resolve_function("ar_task_arena_alloc") else {
+            self.record_ice(
+                "missing ar_task_arena_alloc runtime import",
+                self.func_span(),
+            );
+            return self.poison_i32();
+        };
+        let alloc_ref = self
+            .module
+            .declare_func_in_func(alloc_id, self.builder.func);
+        let size_val = self
+            .builder
+            .ins()
+            .iconst(self.ptr_type, i64::from(size.max(1)));
+        let align_val = self
+            .builder
+            .ins()
+            .iconst(self.ptr_type, i64::from(align.max(1)));
+        let call = self.builder.ins().call(alloc_ref, &[size_val, align_val]);
+        let ptr = self.builder.inst_results(call)[0];
+        self.trap_if_null(ptr);
+        ptr
+    }
+
+    /// Capture the current linear TaskArena checkpoint (`ar_task_arena_checkpoint`, RFC 0043).
+    pub(super) fn translate_arena_checkpoint(&mut self) -> Value {
+        let Some(checkpoint_id) = self.resolve_function("ar_task_arena_checkpoint") else {
+            self.record_ice(
+                "missing ar_task_arena_checkpoint runtime import",
+                self.func_span(),
+            );
+            return self.poison_i32();
+        };
+        let checkpoint_ref = self
+            .module
+            .declare_func_in_func(checkpoint_id, self.builder.func);
+        let call = self.builder.ins().call(checkpoint_ref, &[]);
+        self.builder.inst_results(call)[0]
+    }
 }

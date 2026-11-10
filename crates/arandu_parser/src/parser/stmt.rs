@@ -196,25 +196,114 @@ impl<'a> Parser<'a> {
         result
     }
 
+    #[inline(never)]
+    fn parse_labeled_loop(&mut self) -> Result<crate::ast_pool::StmtId, ParseError> {
+        let label_start = self.mark();
+        let raw_name = self.current().lexeme(self.source);
+        let label_name = SmolStr::new(raw_name.trim_start_matches('\''));
+        self.advance(); // consume label
+        self.advance(); // consume colon ':'
+        if self.at_kind_name("KW_WHILE") {
+            return self.parse_while_with_label(label_start, Some(label_name));
+        }
+        if self.at_kind_name("KW_FOR") || self.at_kind_name("KW_COMPTIME") {
+            return self.parse_for_with_label(label_start, Some(label_name));
+        }
+        Err(ParseError::expected(
+            ParseErrorCode::ExpectedToken,
+            "expected loop after label",
+            self.current(),
+            self.file_id,
+            self.source,
+            &["while", "for"],
+        ))
+    }
+
+    #[inline(never)]
+    fn parse_break(&mut self) -> Result<crate::ast_pool::StmtId, ParseError> {
+        let start = self.mark();
+        self.advance();
+        let label = if self.current().kind == TokenKind::Label {
+            let name = self
+                .current()
+                .lexeme(self.source)
+                .trim_start_matches('\'')
+                .to_string();
+            self.advance();
+            Some(SmolStr::new(name))
+        } else if !self.at_kind_name("SEMICOLON")
+            && !self.at_kind_name("RBRACE")
+            && !self.at_kind_name("EOF")
+            && self.at_name_like()
+        {
+            Some(self.expect_name_like()?)
+        } else {
+            None
+        };
+        self.expect_semicolon()?;
+        Ok(self.pool.alloc_stmt(Stmt::Break {
+            span: self.span_from_mark(start),
+            label,
+        }))
+    }
+
+    #[inline(never)]
+    fn parse_continue(&mut self) -> Result<crate::ast_pool::StmtId, ParseError> {
+        let start = self.mark();
+        self.advance();
+        let label = if self.current().kind == TokenKind::Label {
+            let name = self
+                .current()
+                .lexeme(self.source)
+                .trim_start_matches('\'')
+                .to_string();
+            self.advance();
+            Some(SmolStr::new(name))
+        } else if !self.at_kind_name("SEMICOLON")
+            && !self.at_kind_name("RBRACE")
+            && !self.at_kind_name("EOF")
+            && self.at_name_like()
+        {
+            Some(self.expect_name_like()?)
+        } else {
+            None
+        };
+        self.expect_semicolon()?;
+        Ok(self.pool.alloc_stmt(Stmt::Continue {
+            span: self.span_from_mark(start),
+            label,
+        }))
+    }
+
     pub(super) fn try_parse_stmt(&mut self) -> Result<crate::ast_pool::StmtId, ParseError> {
+        // Labeled loop: `'label: while` or `'label: for` or `label: while` or `label: for`
+        if (self.current().kind == TokenKind::Label
+            && self
+                .tokens
+                .get(self.pos + 1)
+                .is_some_and(|t| t.kind == TokenKind::Colon))
+            || (self.at_name_like()
+                && self
+                    .tokens
+                    .get(self.pos + 1)
+                    .is_some_and(|t| t.kind == TokenKind::Colon)
+                && self.tokens.get(self.pos + 2).is_some_and(|t| {
+                    matches!(
+                        t.kind,
+                        TokenKind::KwWhile | TokenKind::KwFor | TokenKind::KwComptime
+                    )
+                }))
+        {
+            return self.parse_labeled_loop();
+        }
         if self.at_kind_name("KW_RETURN") {
             return self.parse_return();
         }
         if self.at_kind_name("KW_BREAK") {
-            let start = self.mark();
-            self.advance();
-            self.expect_semicolon()?;
-            return Ok(self.pool.alloc_stmt(Stmt::Break {
-                span: self.span_from_mark(start),
-            }));
+            return self.parse_break();
         }
         if self.at_kind_name("KW_CONTINUE") {
-            let start = self.mark();
-            self.advance();
-            self.expect_semicolon()?;
-            return Ok(self.pool.alloc_stmt(Stmt::Continue {
-                span: self.span_from_mark(start),
-            }));
+            return self.parse_continue();
         }
         if self.at_kind_name("KW_IF")
             || (self.at_kind_name("KW_COMPTIME")
@@ -388,7 +477,9 @@ impl<'a> Parser<'a> {
                 self.advance();
                 SmolStr::new("self")
             }
-            TokenKind::IdentValue => {
+            // An uppercase root names a module-level `static mut`, such as a
+            // C global brought over by c2arandu; resolution rejects others.
+            TokenKind::IdentValue | TokenKind::IdentType => {
                 let name = SmolStr::new(self.current_text());
                 self.advance();
                 name
@@ -618,11 +709,20 @@ impl<'a> Parser<'a> {
 
     pub(super) fn parse_while(&mut self) -> Result<crate::ast_pool::StmtId, ParseError> {
         let start = self.mark();
+        self.parse_while_with_label(start, None)
+    }
+
+    pub(super) fn parse_while_with_label(
+        &mut self,
+        start: usize,
+        label: Option<SmolStr>,
+    ) -> Result<crate::ast_pool::StmtId, ParseError> {
         self.expect_name("KW_WHILE")?;
         let condition = self.parse_condition()?;
         let body = self.parse_block()?;
         Ok(self.pool.alloc_stmt(Stmt::While {
             span: self.span_from_mark(start),
+            label,
             condition,
             body,
         }))
@@ -630,6 +730,14 @@ impl<'a> Parser<'a> {
 
     pub(super) fn parse_for(&mut self) -> Result<crate::ast_pool::StmtId, ParseError> {
         let start = self.mark();
+        self.parse_for_with_label(start, None)
+    }
+
+    pub(super) fn parse_for_with_label(
+        &mut self,
+        start: usize,
+        label: Option<SmolStr>,
+    ) -> Result<crate::ast_pool::StmtId, ParseError> {
         let is_comptime = self.eat_name("KW_COMPTIME");
         self.expect_name("KW_FOR")?;
         let clause = if self.looks_like_for_in_clause() {
@@ -674,6 +782,7 @@ impl<'a> Parser<'a> {
         let body = self.parse_block()?;
         Ok(self.pool.alloc_stmt(Stmt::For {
             span: self.span_from_mark(start),
+            label,
             is_comptime,
             clause,
             body,

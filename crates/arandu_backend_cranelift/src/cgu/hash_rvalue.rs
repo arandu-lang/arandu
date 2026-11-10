@@ -173,6 +173,19 @@ impl HashContext<'_> {
                 self.hash.tag(15);
                 self.operand(operand);
             }
+            AmirRvalue::ArenaAlloc {
+                size,
+                align,
+                payload_ty,
+            } => {
+                self.hash.tag(36);
+                self.hash.u32(*size);
+                self.hash.u32(*align);
+                self.type_id(*payload_ty);
+            }
+            AmirRvalue::ArenaCheckpoint => {
+                self.hash.tag(37);
+            }
             AmirRvalue::Load(place) => {
                 self.hash.tag(16);
                 self.place(place);

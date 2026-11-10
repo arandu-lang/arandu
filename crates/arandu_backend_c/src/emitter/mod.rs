@@ -116,6 +116,7 @@ pub struct CEmitter<'a> {
     pub(super) rotations: Vec<Option<rotations::Rotation>>,
     pub(super) rotation_elided: Vec<bool>,
     pub(super) arena_runtime: bool,
+    pub(super) task_arena_runtime: bool,
     pub(super) expression_candidates: Vec<bool>,
     pub(super) temp_expressions: Vec<Option<String>>,
     pub(super) static_sources:
@@ -151,6 +152,7 @@ impl<'a> CEmitter<'a> {
             rotations: Vec::new(),
             rotation_elided: Vec::new(),
             arena_runtime: false,
+            task_arena_runtime: false,
             expression_candidates: Vec::new(),
             temp_expressions: Vec::new(),
             static_sources: rustc_hash::FxHashMap::default(),

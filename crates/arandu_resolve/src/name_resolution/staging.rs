@@ -241,6 +241,7 @@ impl Resolver<'_> {
             | ExprKind::Char { .. }
             | ExprKind::Byte { .. }
             | ExprKind::ByteString { .. }
+            | ExprKind::CString { .. }
             | ExprKind::Nil => {}
         }
         for child in children {

@@ -168,6 +168,10 @@ pub enum DiagCode {
     O013ExternRequiresUnsafe,
     O014FreeRequiresUnsafe,
     O015MoveOutOfIndex,
+    /// A value with a destructor is moved out of `*r`, where `r` is a
+    /// reference: its owner would destroy it again.
+    O016MoveOutOfReference,
+    O017StaticMutRequiresUnsafe,
 
     // ── Warnings & Linting (W) ──
     W001VariableAssignedNotUsed,
@@ -301,6 +305,8 @@ impl DiagCode {
             O013ExternRequiresUnsafe,
             O014FreeRequiresUnsafe,
             O015MoveOutOfIndex,
+            O016MoveOutOfReference,
+            O017StaticMutRequiresUnsafe,
             W001VariableAssignedNotUsed,
             W002DeadCode,
             W003UnreachableCode,
@@ -453,6 +459,8 @@ impl DiagCode {
             DiagCode::O013ExternRequiresUnsafe => "O013",
             DiagCode::O014FreeRequiresUnsafe => "O014",
             DiagCode::O015MoveOutOfIndex => "O015",
+            DiagCode::O016MoveOutOfReference => "O016",
+            DiagCode::O017StaticMutRequiresUnsafe => "O017",
             DiagCode::W001VariableAssignedNotUsed => "W001",
             DiagCode::W002DeadCode => "W002",
             DiagCode::W003UnreachableCode => "W003",

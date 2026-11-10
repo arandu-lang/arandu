@@ -54,6 +54,7 @@ pub enum SymbolKind {
     ImportType,
     Func,
     Const,
+    StaticMut,
     TypeAlias,
     Struct,
     Enum,
@@ -77,6 +78,7 @@ impl SymbolKind {
             SymbolKind::ImportValue
                 | SymbolKind::Func
                 | SymbolKind::Const
+                | SymbolKind::StaticMut
                 | SymbolKind::ExternFunc
                 | SymbolKind::Param
                 | SymbolKind::Local

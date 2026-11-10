@@ -216,7 +216,9 @@ impl<'a, 'bump> InstantiationAnalyzer<'a, 'bump> {
                     self.visit_block(*body, current);
                 }
             }
-            HirStmtKind::While { condition, body } => {
+            HirStmtKind::While {
+                condition, body, ..
+            } => {
                 self.visit_condition(condition, current);
                 self.visit_block(*body, current);
             }
@@ -238,7 +240,7 @@ impl<'a, 'bump> InstantiationAnalyzer<'a, 'bump> {
             | HirStmtKind::Scope(block) => {
                 self.visit_block(*block, current);
             }
-            HirStmtKind::Break | HirStmtKind::Continue | HirStmtKind::Error => {}
+            HirStmtKind::Break { .. } | HirStmtKind::Continue { .. } | HirStmtKind::Error => {}
         }
     }
 

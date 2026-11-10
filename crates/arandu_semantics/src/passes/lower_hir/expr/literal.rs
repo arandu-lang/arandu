@@ -120,6 +120,20 @@ pub(super) fn lower_byte_string(pool: &AstPool, expr: ExprId) -> Result<HirExprK
     ))
 }
 
+pub(super) fn lower_c_string(pool: &AstPool, expr: ExprId) -> Result<HirExprKind, Diagnostic> {
+    let ExprKind::CString { bytes } = pool.expr(expr) else {
+        unreachable!();
+    };
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        return Ok(HirExprKind::FrozenBytes(
+            arandu_middle::ctfe::ConstString::new(text).bytes(),
+        ));
+    }
+    Ok(HirExprKind::FrozenBytes(
+        arandu_middle::ctfe::ConstBytes::from_raw(bytes.clone()),
+    ))
+}
+
 pub(super) fn lower_interpolated_string(
     type_check: &mut TypeCheckResult,
     pool: &AstPool,

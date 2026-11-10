@@ -18,6 +18,7 @@ pub enum AmirStmtKind {
     Store,
     Call,
     Free,
+    ArenaRewind,
     StorageLive,
     StorageDead,
     Destroy,
@@ -43,6 +44,8 @@ pub enum AmirStmt {
         return_borrow: Option<CallBorrowDependency>,
     },
     Free(AmirOperand),
+    /// Rewinds the current thread's `TaskArena` cursor to a checkpoint mark (RFC 0043).
+    ArenaRewind(AmirOperand),
     /// Declares that a stack slot's lifetime is active.
     StorageLive(super::local::LocalId),
     /// Declares that a stack slot's lifetime has ended.
@@ -60,6 +63,7 @@ impl AmirStmt {
             Self::Store { .. } => AmirStmtKind::Store,
             Self::Call { .. } => AmirStmtKind::Call,
             Self::Free(_) => AmirStmtKind::Free,
+            Self::ArenaRewind(_) => AmirStmtKind::ArenaRewind,
             Self::StorageLive(_) => AmirStmtKind::StorageLive,
             Self::StorageDead(_) => AmirStmtKind::StorageDead,
             Self::Destroy(_) => AmirStmtKind::Destroy,

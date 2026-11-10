@@ -56,8 +56,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                 ReturnAbi::Void => return_text = "void".to_owned(),
                 ReturnAbi::Sret => {
                     let buffer = self.new_value();
-                    self.writer
-                        .line(format!("{buffer} = alloca {aggregate}, align {align}"));
+                    self.emit_entry_alloca(&buffer, &aggregate, align);
                     rendered.push(format!("ptr sret({aggregate}) align {align} {buffer}"));
                     sret_return = Some((buffer, aggregate, align));
                     return_text = "void".to_owned();
@@ -140,8 +139,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
             let returned = self.new_value();
             self.writer.line(format!("{returned} = {call}"));
             let buffer = self.new_value();
-            self.writer
-                .line(format!("{buffer} = alloca {aggregate}, align {align}"));
+            self.emit_entry_alloca(&buffer, &aggregate, align);
             if let [lane] = lanes.as_slice() {
                 let value = TypedValue::new(return_text.clone(), returned);
                 self.store_lane(&buffer, lane, &value);

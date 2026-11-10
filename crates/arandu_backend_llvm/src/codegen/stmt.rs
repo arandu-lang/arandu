@@ -231,6 +231,15 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                 Ok(())
             }
             AmirStmt::Destroy(place) => self.emit_destroy(place),
+            AmirStmt::ArenaRewind(operand) => {
+                let checkpoint = self.operand(operand, &self.module.i64_ty())?;
+                self.module.require_task_arena_rewind();
+                self.writer.line(format!(
+                    "call void @ar_task_arena_rewind({})",
+                    checkpoint.render()
+                ));
+                Ok(())
+            }
             AmirStmt::StorageLive(_) | AmirStmt::StorageDead(_) | AmirStmt::Nop => Ok(()),
         }
     }

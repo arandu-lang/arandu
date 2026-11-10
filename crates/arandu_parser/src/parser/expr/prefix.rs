@@ -229,6 +229,16 @@ impl<'a> Parser<'a> {
                 let span = self.span_from_mark(start);
                 Ok(self.pool.alloc_expr(ExprKind::ByteString { bytes }, span))
             }
+            TokenKind::CString => {
+                let bytes: std::sync::Arc<[u8]> = self
+                    .current()
+                    .c_string_bytes(self.source)
+                    .unwrap_or_default()
+                    .into();
+                self.advance();
+                let span = self.span_from_mark(start);
+                Ok(self.pool.alloc_expr(ExprKind::CString { bytes }, span))
+            }
             TokenKind::Nil => {
                 self.advance();
                 let span = self.span_from_mark(start);

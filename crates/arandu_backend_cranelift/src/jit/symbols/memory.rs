@@ -31,6 +31,44 @@ pub(super) fn declare_memory_imports(
         .map_err(|err| codegen_ice(format!("failed to declare free: {err:?}")))?;
     insert_sym(func_ids, "free", free_id);
 
+    // RFC 0043: Dual-Locus linear TaskArena runtime imports
+    let mut arena_alloc_sig = Signature::new(default_call_conv);
+    arena_alloc_sig.params.push(AbiParam::new(ptr_type));
+    arena_alloc_sig.params.push(AbiParam::new(ptr_type));
+    arena_alloc_sig.returns.push(AbiParam::new(ptr_type));
+    let arena_alloc_id = module
+        .declare_function("ar_task_arena_alloc", Linkage::Import, &arena_alloc_sig)
+        .map_err(|err| codegen_ice(format!("failed to declare ar_task_arena_alloc: {err:?}")))?;
+    insert_sym(func_ids, "ar_task_arena_alloc", arena_alloc_id);
+
+    let mut arena_checkpoint_sig = Signature::new(default_call_conv);
+    arena_checkpoint_sig.returns.push(AbiParam::new(I64));
+    let arena_checkpoint_id = module
+        .declare_function(
+            "ar_task_arena_checkpoint",
+            Linkage::Import,
+            &arena_checkpoint_sig,
+        )
+        .map_err(|err| {
+            codegen_ice(format!(
+                "failed to declare ar_task_arena_checkpoint: {err:?}"
+            ))
+        })?;
+    insert_sym(func_ids, "ar_task_arena_checkpoint", arena_checkpoint_id);
+
+    let mut arena_rewind_sig = Signature::new(default_call_conv);
+    arena_rewind_sig.params.push(AbiParam::new(I64));
+    let arena_rewind_id = module
+        .declare_function("ar_task_arena_rewind", Linkage::Import, &arena_rewind_sig)
+        .map_err(|err| codegen_ice(format!("failed to declare ar_task_arena_rewind: {err:?}")))?;
+    insert_sym(func_ids, "ar_task_arena_rewind", arena_rewind_id);
+
+    let arena_reset_sig = Signature::new(default_call_conv);
+    let arena_reset_id = module
+        .declare_function("ar_task_arena_reset", Linkage::Import, &arena_reset_sig)
+        .map_err(|err| codegen_ice(format!("failed to declare ar_task_arena_reset: {err:?}")))?;
+    insert_sym(func_ids, "ar_task_arena_reset", arena_reset_id);
+
     // PAN / Invariant 5: `abort` and `abortGenerationalMismatch` are compiler intrinsics.
     // Unix lowers them to a hardware trap (UD2 / BRK) with no libc `abort` import.
     // Windows JIT frames have no unwind info for that trap and report a stack

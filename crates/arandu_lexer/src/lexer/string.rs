@@ -289,6 +289,25 @@ impl<'a> Lexer<'a> {
         if self.peek() == Some('\'') {
             return Err(self.error_from(start, LexErrorCode::EmptyChar, "empty char literal"));
         }
+        if let Some(ch) = self.peek()
+            && (ch.is_ascii_alphabetic() || ch == '_')
+        {
+            let next_pos = self.pos + ch.len_utf8();
+            let is_char_lit = self.source.as_bytes().get(next_pos) == Some(&b'\'');
+            if !is_char_lit {
+                // It is a labeled loop token: `'ident`
+                self.bump();
+                while let Some(c) = self.peek() {
+                    if c.is_ascii_alphanumeric() || c == '_' {
+                        self.bump();
+                    } else {
+                        break;
+                    }
+                }
+                self.push_token(TokenKind::Label, self.span_from(start), false);
+                return Ok(());
+            }
+        }
         let mut count = 0;
         if self.peek() == Some('\\') {
             let escape_start = self.mark();
@@ -453,6 +472,59 @@ impl<'a> Lexer<'a> {
         }
         self.bump();
         self.push_token(TokenKind::ByteString, self.span_from(start), false);
+        Ok(())
+    }
+
+    pub(super) fn lex_c_string(&mut self) -> Result<(), LexError> {
+        let start = self.mark();
+        self.bump(); // 'c'
+        self.bump(); // '"'
+        while !self.is_at_end() && self.peek() != Some('"') {
+            if matches!(self.peek(), Some('\n' | '\r')) {
+                return Err(self.error_from(
+                    start,
+                    LexErrorCode::UnterminatedString,
+                    "unterminated C string literal",
+                ));
+            }
+            if let Some(ch) = self.peek()
+                && is_bidi_control(ch)
+            {
+                let err_start = self.mark();
+                self.bump();
+                return Err(self.error_from(
+                    err_start,
+                    LexErrorCode::BidiTrojanSource,
+                    "unescaped bidirectional Unicode control character (Trojan Source, CWE-1307)",
+                ));
+            }
+            if self.peek() == Some('\\') {
+                let escape_start = self.mark();
+                self.consume_byte_escape_sequence(escape_start)?;
+                continue;
+            }
+            if let Some(ch) = self.peek()
+                && !ch.is_ascii()
+            {
+                let err_start = self.mark();
+                self.bump();
+                return Err(self.error_from(
+                    err_start,
+                    LexErrorCode::InvalidChar,
+                    "C string literal must be ASCII",
+                ));
+            }
+            self.bump();
+        }
+        if self.is_at_end() || self.peek() != Some('"') {
+            return Err(self.error_from(
+                start,
+                LexErrorCode::UnterminatedString,
+                "unterminated C string literal",
+            ));
+        }
+        self.bump();
+        self.push_token(TokenKind::CString, self.span_from(start), false);
         Ok(())
     }
 

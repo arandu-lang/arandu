@@ -240,7 +240,10 @@ impl CtfeFunction {
                 .locals
                 .get(id.as_usize())
                 .map(|local| local.span),
-            AmirStmt::Call { lhs: None, .. } | AmirStmt::Free(_) | AmirStmt::Nop => None,
+            AmirStmt::Call { lhs: None, .. }
+            | AmirStmt::Free(_)
+            | AmirStmt::ArenaRewind(_)
+            | AmirStmt::Nop => None,
         };
         if let Some(span) = span {
             origin.span = span;
@@ -518,6 +521,8 @@ fn admitted_rvalue(rhs: &AmirRvalue) -> Result<(), EvalErrorKind> {
         | AmirRvalue::StringInterp { .. }
         | AmirRvalue::ToStr { .. }
         | AmirRvalue::BlackBox { .. }
+        | AmirRvalue::ArenaAlloc { .. }
+        | AmirRvalue::ArenaCheckpoint
         | AmirRvalue::Binary { .. }
         | AmirRvalue::Unary { .. } => Err(EvalErrorKind::UnsupportedOperation),
     }

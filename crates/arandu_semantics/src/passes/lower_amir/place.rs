@@ -96,14 +96,20 @@ impl LowerCtx<'_> {
             HirExprKind::Index { base, index } => {
                 let mut place = self.lower_expr_to_place(*base, symbols)?;
                 let base_ty = self.resolve_ty(self.hir.pool.expr(*base).ty);
+                if matches!(base_ty, ArType::Ptr(_)) {
+                    let index = self.lower_expr(*index, None, symbols)?;
+                    place.projections.push(AmirProjection::Index(index));
+                    self.mark_local_materialized(place.local);
+                    return Ok(place);
+                }
                 let container_ty = match &base_ty {
-                    ArType::Ref(inner) | ArType::RefMut(inner) | ArType::Ptr(inner) => {
+                    ArType::Ref(inner) | ArType::RefMut(inner) => {
                         self.tc.type_info.type_interner.resolve(*inner)
                     }
                     _ => base_ty.clone(),
                 };
                 let is_vec = arandu_middle::types::is_vec_type(&container_ty, symbols);
-                if matches!(base_ty, ArType::Ref(_) | ArType::RefMut(_) | ArType::Ptr(_)) {
+                if matches!(base_ty, ArType::Ref(_) | ArType::RefMut(_)) {
                     place.projections.push(AmirProjection::Deref);
                 }
                 if !matches!(
@@ -291,10 +297,15 @@ impl LowerCtx<'_> {
             }
             if let Some(field_sym) = self.resolve_field_symbol(&base_ty, field) {
                 place.projections.push(AmirProjection::Field(field_sym));
-                // A field of an indexed element is read in place: copying the
-                // whole element out first would move an owning element.
+                let is_union_base = self
+                    .struct_id_of_base(&base_ty)
+                    .is_some_and(|sid| self.tc.type_info.struct_unions.contains(&sid));
+                // A field of an indexed element or a union is read in place:
+                // copying the whole element out first would move an owning
+                // element, and unions require offset-0 memory reinterpretation.
                 if !self.tc.type_info.is_copy(expr_ty)
-                    || matches!(base_ty, ArType::Ref(_) | ArType::RefMut(_))
+                    || matches!(base_ty, ArType::Ref(_) | ArType::RefMut(_) | ArType::Ptr(_))
+                    || is_union_base
                     || place
                         .projections
                         .iter()
@@ -354,7 +365,6 @@ impl LowerCtx<'_> {
         }
         if let Ok(mut place) = self.lower_expr_to_place(base, symbols) {
             let base_ty = self.resolve_ty(self.hir.pool.expr(base).ty);
-            let through_reference = matches!(base_ty, ArType::Ref(_) | ArType::RefMut(_));
             if matches!(base_ty, ArType::Ref(_) | ArType::RefMut(_) | ArType::Ptr(_)) {
                 place.projections.push(AmirProjection::Deref);
             }
@@ -366,12 +376,16 @@ impl LowerCtx<'_> {
             };
             let is_vec = arandu_middle::types::is_vec_type(&container_ty, symbols);
             // A `Vec` element is always read through its place, where its
-            // length is checked.
+            // length is checked. An element reached through a reference or a
+            // field is read in place, without copying its container; a `Copy`
+            // element of a plain local array or slice stays an SSA read, so a
+            // view held there remains visible to the reborrow and liveness
+            // checks.
             if is_vec
                 || matches!(
                     container_ty,
                     ArType::Array(_, _) | ArType::Slice(_) | ArType::MutSlice(_)
-                ) && (!self.tc.type_info.is_copy(expr_ty) || through_reference)
+                ) && (!self.tc.type_info.is_copy(expr_ty) || !place.projections.is_empty())
             {
                 let index_ty = self.hir.pool.expr(index).ty;
                 let idx = self.lower_expr(index, None, symbols)?;

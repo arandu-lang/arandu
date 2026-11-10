@@ -75,23 +75,37 @@ impl LowerCtx<'_> {
             }
             HirStmtKind::Return { values } => self.lower_return_stmt(values, symbols)?,
 
-            HirStmtKind::Break => {
-                if let Some((_, exit_block, defer_depth, scope_depth)) =
-                    self.loop_stack.last().copied()
-                {
-                    self.exit_defer_frames_from(defer_depth, false, symbols)?;
-                    self.emit_local_scope_exit_from(scope_depth);
-                    self.emit_goto(exit_block);
+            HirStmtKind::Break { label } => {
+                let target = match label {
+                    Some(lbl) => self
+                        .loop_stack
+                        .iter()
+                        .rev()
+                        .find(|f| f.label.as_deref() == Some(lbl.as_str()))
+                        .cloned(),
+                    None => self.loop_stack.last().cloned(),
+                };
+                if let Some(frame) = target {
+                    self.exit_defer_frames_from(frame.defer_depth, false, symbols)?;
+                    self.emit_local_scope_exit_from(frame.scope_depth);
+                    self.emit_goto(frame.exit_block);
                     self.builder.current_block = None;
                 }
             }
-            HirStmtKind::Continue => {
-                if let Some((cont_block, _, defer_depth, scope_depth)) =
-                    self.loop_stack.last().copied()
-                {
-                    self.exit_defer_frames_from(defer_depth, false, symbols)?;
-                    self.emit_local_scope_exit_from(scope_depth);
-                    self.emit_goto(cont_block);
+            HirStmtKind::Continue { label } => {
+                let target = match label {
+                    Some(lbl) => self
+                        .loop_stack
+                        .iter()
+                        .rev()
+                        .find(|f| f.label.as_deref() == Some(lbl.as_str()))
+                        .cloned(),
+                    None => self.loop_stack.last().cloned(),
+                };
+                if let Some(frame) = target {
+                    self.exit_defer_frames_from(frame.defer_depth, false, symbols)?;
+                    self.emit_local_scope_exit_from(frame.scope_depth);
+                    self.emit_goto(frame.cont_block);
                     self.builder.current_block = None;
                 }
             }
@@ -133,7 +147,11 @@ impl LowerCtx<'_> {
 
                 self.finish_join(bb_join);
             }
-            HirStmtKind::While { condition, body } => {
+            HirStmtKind::While {
+                label,
+                condition,
+                body,
+            } => {
                 let bb_cond = self.new_block();
                 let bb_body = self.new_block_at(self.hir.pool.block(*body).span);
                 let bb_exit = self.new_block();
@@ -156,8 +174,13 @@ impl LowerCtx<'_> {
 
                 let defer_depth = self.defer_frames.len();
                 let scope_depth = self.local_scopes.len();
-                self.loop_stack
-                    .push((bb_cond, bb_exit, defer_depth, scope_depth));
+                self.loop_stack.push(crate::passes::lower_amir::LoopFrame {
+                    label: label.clone(),
+                    cont_block: bb_cond,
+                    exit_block: bb_exit,
+                    defer_depth,
+                    scope_depth,
+                });
                 self.builder.current_block = Some(bb_body);
                 self.lower_block(*body, symbols)?;
                 if self.builder.current_block.is_some() {
@@ -174,6 +197,7 @@ impl LowerCtx<'_> {
                 clause,
                 body,
                 comptime_bodies,
+                ..
             } => {
                 self.lower_static_for(
                     *bounds,
@@ -186,10 +210,11 @@ impl LowerCtx<'_> {
             }
             HirStmtKind::For {
                 comptime_bounds: None,
+                label,
                 clause,
                 body,
                 ..
-            } => self.lower_runtime_for(clause, body, stmt.span, symbols)?,
+            } => self.lower_runtime_for(clause, body, label.clone(), stmt.span, symbols)?,
             HirStmtKind::Match { value, arms } => {
                 let bb_end = self.new_block();
                 self.lower_match_stmt(*value, arms, bb_end, symbols)?;
@@ -364,6 +389,7 @@ impl LowerCtx<'_> {
         &mut self,
         clause: &HirForClause,
         body: &crate::hir::HirBlockId,
+        label: Option<smol_str::SmolStr>,
         span: arandu_middle::Span,
         symbols: &SymbolTable,
     ) -> Result<(), Diagnostic> {
@@ -462,8 +488,13 @@ impl LowerCtx<'_> {
                 let defer_depth = self.defer_frames.len();
                 let scope_depth = self.local_scopes.len();
                 self.begin_local_scope();
-                self.loop_stack
-                    .push((bb_step, bb_exit, defer_depth, scope_depth));
+                self.loop_stack.push(crate::passes::lower_amir::LoopFrame {
+                    label: label.clone(),
+                    cont_block: bb_step,
+                    exit_block: bb_exit,
+                    defer_depth,
+                    scope_depth,
+                });
                 self.builder.current_block = Some(bb_body);
 
                 let bindings_slice = self.hir.pool.for_bindings_list(*bindings);
@@ -576,8 +607,13 @@ impl LowerCtx<'_> {
 
                 let defer_depth = self.defer_frames.len();
                 let scope_depth = self.local_scopes.len();
-                self.loop_stack
-                    .push((bb_step, bb_exit, defer_depth, scope_depth));
+                self.loop_stack.push(crate::passes::lower_amir::LoopFrame {
+                    label: label.clone(),
+                    cont_block: bb_step,
+                    exit_block: bb_exit,
+                    defer_depth,
+                    scope_depth,
+                });
                 self.builder.current_block = Some(bb_body);
                 self.lower_block(*body, symbols)?;
                 if self.builder.current_block.is_some() {

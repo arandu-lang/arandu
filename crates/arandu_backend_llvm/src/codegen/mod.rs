@@ -87,6 +87,7 @@ pub(super) struct FuncEmitter<'a, 'm> {
     module: &'m ModuleEmitter<'a>,
     func: &'a AmirFunc,
     writer: IrWriter,
+    entry_allocas: Vec<String>,
     defined: Vec<Option<&'static str>>,
     temp_slots: Vec<Option<String>>,
     /// SSA value bound to a temp that was assigned by aliasing an existing

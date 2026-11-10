@@ -44,6 +44,7 @@ pub fn block_local_temp_slots(func: &AmirFunc, eligible: impl Fn(TempId) -> bool
                 | AmirStmt::Destroy(_)
                 | AmirStmt::StorageLive(_)
                 | AmirStmt::StorageDead(_)
+                | AmirStmt::ArenaRewind(_)
                 | AmirStmt::Nop => None,
             };
             if let Some(temp) = def

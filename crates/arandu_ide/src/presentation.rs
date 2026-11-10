@@ -86,6 +86,7 @@ pub fn symbol_presentation(
                 SymbolKind::Field => "field",
                 SymbolKind::Param => "param",
                 SymbolKind::Local => "let",
+                SymbolKind::StaticMut => "static mut",
                 _ => "type",
             };
             (
@@ -121,6 +122,7 @@ pub fn symbol_kind_name(kind: SymbolKind) -> &'static str {
         SymbolKind::Field => "field",
         SymbolKind::Param => "param",
         SymbolKind::Local => "let",
+        SymbolKind::StaticMut => "static mut",
     }
 }
 

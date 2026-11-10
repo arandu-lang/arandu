@@ -15,8 +15,21 @@ pub(super) fn peel_auto_deref_place(
                 was_nullable = true;
                 id = inner;
             }
-            ArType::Ref(inner) | ArType::RefMut(inner) | ArType::Ptr(inner) => {
+            ArType::Ref(inner) | ArType::RefMut(inner) => {
                 id = inner;
+            }
+            ArType::Ptr(inner) => {
+                if matches!(
+                    checker.resolve(inner),
+                    ArType::Array(_, _)
+                        | ArType::ConstArray(_, _)
+                        | ArType::Slice(_)
+                        | ArType::MutSlice(_)
+                ) {
+                    id = inner;
+                } else {
+                    break;
+                }
             }
             _ => break,
         }
@@ -163,6 +176,19 @@ pub(crate) fn synth_place(checker: &mut TypeChecker<'_>, place: &arandu_parser::
                     | ArType::ConstArray(_, inner)
                     | ArType::Slice(inner)
                     | ArType::MutSlice(inner) => {
+                        current_ty_id = *inner;
+                    }
+                    ArType::Ptr(inner) => {
+                        if !checker.ctx.is_in_unsafe() {
+                            checker.diagnostics.push(
+                                crate::Diagnostic::error(
+                                    crate::DiagCode::O012AllocRequiresUnsafe,
+                                    "indexing a raw pointer requires an `unsafe` block",
+                                    *span,
+                                )
+                                .with_label(*span, "raw `ptr[T]` indexing is unsafe"),
+                            );
+                        }
                         current_ty_id = *inner;
                     }
                     ArType::Named(_, args)

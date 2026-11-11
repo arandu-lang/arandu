@@ -460,12 +460,11 @@ fn match_arms_may_be_separated_by_commas_on_one_line() {
         "func f(x: int): int {\n    return match x {\n        1 => { 10 },\n        _ => 0,\n    }\n}\n",
     ] {
         let rd = parse_to_string(source).expect("recursive descent");
-        assert_eq!(
+        assert!(
             rd.matches("MatchArm")
                 .count()
                 .max(rd.matches("Arm").count())
                 >= 2,
-            true,
             "{rd}"
         );
         let program = crate::parse(source).expect("canonical parse");

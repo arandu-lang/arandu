@@ -302,7 +302,6 @@ impl LowerCtx<'_> {
                     // Gold path: `*p` with p: &T → emit Load after reinterpreting.
                     // Use Unary Deref for pointer-valued operands so backends can load.
                     let sub_op = self.read_variable_source(place.local)?;
-                    let dest = target.unwrap_or_else(|| self.new_temp_id(expr_ty));
                     // A pointee with a destructor is read as a place so the move
                     // checker sees a consumption through the reference (O016).
                     if place.projections.is_empty()
@@ -311,6 +310,7 @@ impl LowerCtx<'_> {
                             &*self.tc.type_info,
                         )
                     {
+                        let dest = target.unwrap_or_else(|| self.new_temp_id(expr_ty));
                         self.emit_assign_temp(
                             dest,
                             AmirRvalue::Unary {
@@ -318,15 +318,15 @@ impl LowerCtx<'_> {
                                 operand: sub_op,
                             },
                         );
+                        Ok(AmirOperand::Copy(dest))
                     } else {
                         self.mark_local_materialized(place.local);
                         // The projected place holds the reference itself
                         // (`*holder.field`); the pointee is one Deref further.
                         let mut pointee = place;
                         pointee.projections.push(crate::amir::AmirProjection::Deref);
-                        self.emit_assign_temp(dest, AmirRvalue::Load(pointee));
+                        Ok(self.load_into_target(target, pointee, expr_ty))
                     }
-                    Ok(AmirOperand::Copy(dest))
                 } else {
                     let sub_op = self.lower_expr(sub_expr, None, symbols)?;
                     let dest = target.unwrap_or_else(|| self.new_temp_id(expr_ty));

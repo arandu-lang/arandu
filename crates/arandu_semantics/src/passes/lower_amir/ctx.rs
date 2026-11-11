@@ -623,6 +623,47 @@ impl LowerCtx<'_> {
         }
     }
 
+    /// Reads `place` into `target`, or into a fresh temp. A non-Copy value
+    /// read straight into a destination defined elsewhere (a block's value,
+    /// the return register) is moved there: it is loaded into its own temp
+    /// and moved, so the move checker sees the move out of `place` (and O016
+    /// when `place` is behind a reference). A `mut []T` view keeps being
+    /// reborrowed in place.
+    pub(crate) fn load_into_target(
+        &mut self,
+        target: Option<TempId>,
+        place: AmirPlace,
+        ty: crate::types::TypeId,
+    ) -> AmirOperand {
+        if let Some(dest) = target
+            && !self.tc.type_info.is_copy(ty)
+            && !matches!(self.resolve_ty(ty), ArType::MutSlice(_))
+        {
+            let temp = self.new_temp_id(ty);
+            self.emit_assign_temp(temp, AmirRvalue::Load(place));
+            self.temp_states[temp.as_usize()] = MoveState::Moved;
+            self.emit_assign_temp(dest, AmirRvalue::Use(AmirOperand::Move(temp)));
+            return AmirOperand::Copy(dest);
+        }
+        let Some(dest) = target else {
+            // A fresh temp names the place it was read from, as `load_place`
+            // does, so a binding that takes it owns the value from then on.
+            return self.load_place_fresh(place, ty);
+        };
+        self.mark_view_reborrow(dest, &place, ty);
+        self.emit_assign_temp(dest, AmirRvalue::Load(place));
+        AmirOperand::Copy(dest)
+    }
+
+    fn load_place_fresh(&mut self, place: AmirPlace, ty: crate::types::TypeId) -> AmirOperand {
+        let temp = self.new_temp_id(ty);
+        self.mark_view_reborrow(temp, &place, ty);
+        self.emit_assign_temp(temp, AmirRvalue::Load(place.clone()));
+        self.temp_origins[temp.as_usize()] = Some(place.local);
+        self.temp_place_origins[temp.as_usize()] = Some(place);
+        AmirOperand::Copy(temp)
+    }
+
     pub(crate) fn load_place(
         &mut self,
         place: &AmirPlace,

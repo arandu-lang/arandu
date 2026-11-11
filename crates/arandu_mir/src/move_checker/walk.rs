@@ -405,9 +405,21 @@ pub(super) fn apply_stmt(
     diagnostics: &mut MoveDiagSink<'_>,
 ) {
     match stmt {
-        AmirStmt::Assign { rhs, .. } => {
+        AmirStmt::Assign { lhs, rhs } => {
             check_rvalue_reads(rhs, func, state, diagnostics);
             consume_rvalue(rhs, func, temp_origins, state, diagnostics);
+            // A value loaded into the return register is never consumed
+            // later by an operand: the load itself moves it out of its place,
+            // and out of a reference that is O016 (`return p.field`).
+            if let AmirRvalue::Load(place) = rhs
+                && lhs.as_usize() == 0
+                && func
+                    .temps
+                    .first()
+                    .is_some_and(|ret| !ret.is_copy && ret.ty == func.return_type)
+            {
+                consume_place(place, func, state, diagnostics, false);
+            }
         }
         AmirStmt::Store { lhs, rhs } => {
             if !lhs.projections.is_empty() {
@@ -504,6 +516,18 @@ fn consume_operand(
     let Some(place) = origin_for(*temp, temp_origins) else {
         return;
     };
+    consume_place(place, func, state, diagnostics, double_free);
+}
+
+/// Moves `place` out, checking it is still available. Moving through a
+/// reference is O016.
+fn consume_place(
+    place: &AmirPlace,
+    func: &AmirFunc,
+    state: &mut MoveState,
+    diagnostics: &mut MoveDiagSink<'_>,
+    double_free: bool,
+) {
     // Moving a whole referent (`*r`) leaves its owner nothing to restore from
     // here: its owner still uses and destroys it (Rust's E0507). A field moved
     // through a reference is tracked like any field and must be restored

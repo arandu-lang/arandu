@@ -344,10 +344,7 @@ impl LowerCtx<'_> {
                         .any(|projection| matches!(projection, AmirProjection::Index(_)))
                 {
                     self.mark_local_materialized(place.local);
-                    let dest = target.unwrap_or_else(|| self.new_temp_id(expr_ty));
-                    self.mark_view_reborrow(dest, &place, expr_ty);
-                    self.emit_assign_temp(dest, AmirRvalue::Load(place));
-                    return Ok(AmirOperand::Copy(dest));
+                    return Ok(self.load_into_target(target, place, expr_ty));
                 }
             }
         }

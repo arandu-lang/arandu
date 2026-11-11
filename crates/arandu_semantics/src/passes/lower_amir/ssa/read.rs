@@ -80,15 +80,41 @@ impl LowerCtx<'_> {
     ) -> Result<(), Diagnostic> {
         let block = self.require_block()?;
         let value = self.materialize_nullable_const(local, value);
-        self.write_variable(block, local, value);
+        // A non-Copy value read from another place (`let owned = name`) is
+        // owned by the binding from here on, as `emit_store_place` does for
+        // `set`: its SSA definition is a reload of the binding, since the
+        // read temp's provenance still names the moved source, and later
+        // uses of the binding would look like repeated moves from it.
+        let moved_from_place = match value {
+            AmirOperand::Copy(temp) | AmirOperand::Move(temp) => {
+                self.temp_place_origins
+                    .get(temp.as_usize())
+                    .is_some_and(|origin| origin.as_ref().is_some_and(|place| place.local != local))
+                    && !self.tc.type_info.is_copy(self.locals[local.as_usize()].ty)
+            }
+            AmirOperand::Constant(_) | AmirOperand::FunctionRef(_) | AmirOperand::GlobalRef(_) => {
+                false
+            }
+        };
+        let place = AmirPlace {
+            local,
+            projections: smallvec::smallvec![],
+        };
         // Emit a dummy Store statement
         self.push_stmt(AmirStmt::Store {
-            lhs: AmirPlace {
-                local,
-                projections: smallvec::smallvec![],
-            },
+            lhs: place.clone(),
             rhs: value,
         });
+        let definition = if moved_from_place {
+            let temp = self.new_temp_id(self.locals[local.as_usize()].ty);
+            self.emit_assign_temp(temp, AmirRvalue::Load(place.clone()));
+            self.temp_origins[temp.as_usize()] = Some(local);
+            self.temp_place_origins[temp.as_usize()] = Some(place);
+            AmirOperand::Copy(temp)
+        } else {
+            value
+        };
+        self.write_variable(block, local, definition);
         Ok(())
     }
 

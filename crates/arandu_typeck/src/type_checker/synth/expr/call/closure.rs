@@ -1001,6 +1001,51 @@ pub(crate) fn check_lambda_value(
     check_lambda(checker, expr, func_ty, LambdaUse::Value)
 }
 
+/// A lambda with nothing expected for it, whose parameters are all
+/// annotated: `let double = (x: int) => x * 2`. Its result comes from the
+/// body (an inference variable the body binds). Without captures it is a
+/// function value `(A) -> R`; with captures it owns them, `own (A) -> R`,
+/// as Swift and Kotlin infer closure types from the literal. `None` when a
+/// parameter has no annotation.
+pub(crate) fn check_lambda_inferred(checker: &mut TypeChecker<'_>, expr: ExprId) -> Option<TypeId> {
+    let span = checker.pool.expr_span(expr);
+    let ExprKind::Lambda { params, .. } = checker.pool.expr(expr).clone() else {
+        return None;
+    };
+    let mut param_types = Vec::new();
+    for &param in checker.pool.lambda_param_list(params).to_vec().iter() {
+        let annotation = checker.pool.lambda_param(param).ty?;
+        let scope = checker.type_scope();
+        let ty = checker.lower_type_expr(annotation, scope);
+        param_types.push(checker.intern(ty));
+    }
+    let result = checker.fresh_result_var(span);
+    let signature = ArType::func(&param_types, result, &checker.type_info.type_interner);
+    let signature = checker.intern(signature);
+    let captures = super::thread_target::value_uses_within(checker, span)
+        .into_iter()
+        .any(|(_, symbol)| {
+            checker.symbols.try_get(symbol).is_some_and(|declaration| {
+                matches!(declaration.kind, SymbolKind::Local | SymbolKind::Param)
+                    && !super::thread_target::span_contains(span, declaration.span)
+            })
+        });
+    if !captures {
+        return Some(check_lambda_value(checker, expr, signature));
+    }
+    let closure = checker
+        .symbols
+        .lang_item_symbol(arandu_middle::symbol_table::LangItem::Closure)?;
+    let byte = checker.intern(ArType::Primitive(arandu_middle::types::Primitive::U8));
+    let mut code_params = vec![checker.intern(ArType::Ptr(byte))];
+    code_params.extend(param_types);
+    let code = ArType::func(&code_params, result, &checker.type_info.type_interner);
+    let code = checker.intern(code);
+    let closure_ty = ArType::named(closure, &[code], &checker.type_info.type_interner);
+    let closure_ty = checker.intern(closure_ty);
+    Some(check_lambda_owning(checker, expr, closure_ty, signature))
+}
+
 /// A lambda whose expected type is `own (A) -> R [+ Send]`: its captures
 /// move into a heap environment the closure owns (RFC 0032, L3).
 pub(crate) fn check_lambda_owning(

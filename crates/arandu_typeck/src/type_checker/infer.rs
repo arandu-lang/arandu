@@ -27,8 +27,8 @@ use crate::SymbolId;
 pub(crate) struct InferOrigin {
     /// The expression that needed it, such as the call `Vec.new()`.
     pub span: Span,
-    /// The generic parameter it stands for.
-    pub param: SymbolId,
+    /// The generic parameter it stands for; `None` for a closure's result.
+    pub param: Option<SymbolId>,
     /// The generic item, when known.
     pub item: Option<SymbolId>,
 }
@@ -72,7 +72,23 @@ impl TypeChecker<'_> {
         span: Span,
     ) -> TypeId {
         let id = self.type_info.type_interner.fresh_infer(InferKind::General);
-        self.infer.origins.push(InferOrigin { span, param, item });
+        self.infer.origins.push(InferOrigin {
+            span,
+            param: Some(param),
+            item,
+        });
+        id
+    }
+
+    /// A new variable for the result of the closure at `span`, which its
+    /// body binds.
+    pub(crate) fn fresh_result_var(&mut self, span: Span) -> TypeId {
+        let id = self.type_info.type_interner.fresh_infer(InferKind::General);
+        self.infer.origins.push(InferOrigin {
+            span,
+            param: None,
+            item: None,
+        });
         id
     }
 
@@ -270,15 +286,27 @@ impl TypeChecker<'_> {
         let Some(origin) = self.infer.origins.get(var as usize).cloned() else {
             return;
         };
+        let Some(param_symbol) = origin.param else {
+            self.diagnostics.push(
+                crate::Diagnostic::error(
+                    crate::DiagCode::T001CannotInferType,
+                    "cannot infer type: the result of this closure is never fixed",
+                    origin.span,
+                )
+                .with_primary_label("nothing in the body fixes what it returns")
+                .with_hint("give the binding a type, as in `let f: (int) -> int = ...`"),
+            );
+            return;
+        };
         // A hole's own goal is part of its T102.
-        if self.symbols.try_get(origin.param).is_some_and(|param| {
+        if self.symbols.try_get(param_symbol).is_some_and(|param| {
             param.lang_item == Some(arandu_middle::symbol_table::LangItem::Hole)
         }) {
             return;
         }
         let param = self
             .symbols
-            .try_get(origin.param)
+            .try_get(param_symbol)
             .map_or_else(|| smol_str::SmolStr::new("T"), |param| param.name.clone());
         let item = origin
             .item
@@ -341,6 +369,21 @@ impl TypeChecker<'_> {
             }
             if let Some(code) = &mut recipe.owning {
                 code.closure_ty = self.resolve_recorded(code.closure_ty, reported);
+            }
+            // The environment's field table carries the capture types too.
+            if let Some(fields) = self
+                .type_info
+                .struct_fields
+                .get(&recipe.struct_symbol)
+                .cloned()
+            {
+                let mut fields = (*fields).clone();
+                for field in &mut fields.fields {
+                    field.ty = self.resolve_recorded(field.ty, reported);
+                }
+                self.type_info
+                    .struct_fields
+                    .insert(recipe.struct_symbol, std::sync::Arc::new(fields));
             }
             self.type_info.closures.insert(span, recipe);
         }

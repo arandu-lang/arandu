@@ -10,8 +10,8 @@ mod thread_target;
 
 pub(crate) use arg::check_call_arg;
 pub(crate) use closure::{
-    check_callback_args, check_lambda_owning, check_lambda_value, synth_args_with_callbacks,
-    synth_call_arg,
+    check_callback_args, check_lambda_inferred, check_lambda_owning, check_lambda_value,
+    synth_args_with_callbacks, synth_call_arg,
 };
 pub(crate) use instantiate::{bind_type_params, infer_and_instantiate_func};
 pub(crate) use owning::{adjust_to_expected, owning_closure_signature};

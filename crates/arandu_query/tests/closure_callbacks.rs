@@ -45,7 +45,7 @@ fn each_rejected_closure_reports_one_diagnostic() {
     let cases: &[(&str, &str, DiagCode)] = &[
         (
             "without a type",
-            "    let g = (x: int) => x + 1\n    return 0",
+            "    let g = (x) => x + 1\n    return 0",
             DiagCode::T001CannotInferType,
         ),
         (

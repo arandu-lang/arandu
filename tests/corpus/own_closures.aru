@@ -238,6 +238,24 @@ func temporaries(): int {
     return 0
 }
 
+// A lambda with annotated parameters needs no expected type: without
+// captures it is a function value, with captures an owning closure.
+func inferred(): int {
+    let double = (x: int) => x * 2
+    let k = 10
+    let add = (x: int) => x + k
+    let larger = (a: int, b: int) => {
+        if a > b { return a }
+        return b
+    }
+    if double(21) != 42 { return 1 }
+    if add(1) != 11 { return 2 }
+    if larger(3, 9) != 9 { return 3 }
+    if applyTwice(4, double) != 16 { return 4 }
+    if applyTwice(1, add) != 22 { return 5 }
+    return 0
+}
+
 func main(): int {
     let c = counting()
     if c != 0 { return 10 + c }
@@ -259,5 +277,7 @@ func main(): int {
     if i != 0 { return 90 + i }
     let t = temporaries()
     if t != 0 { return 100 + t }
+    let n = inferred()
+    if n != 0 { return 110 + n }
     return 0
 }

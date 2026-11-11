@@ -66,15 +66,20 @@ pub(super) fn synth_control_flow_expr(
                     checker, _expr, expected, signature,
                 ));
             }
+            if expected.is_none()
+                && let Some(ty) = super::call::check_lambda_inferred(checker, _expr)
+            {
+                return Some(ty);
+            }
             checker.diagnostics.push(
                 crate::Diagnostic::error(
                     crate::DiagCode::T001CannotInferType,
                     "cannot infer the type of this closure",
                     span,
                 )
-                .with_primary_label("nothing here says what kind of closure this is")
+                .with_primary_label("a parameter has no type and nothing here expects one")
                 .with_hint(
-                    "pass it to a parameter of type `(A) -> R`, or give the binding a type: `own (A) -> R` keeps captures, `(A) -> R` is a function without them",
+                    "annotate the parameters, as in `(x: int) => x * 2`, or pass the closure where a function type is expected",
                 ),
             );
             Some(checker.intern(ArType::Error))

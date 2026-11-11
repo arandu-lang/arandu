@@ -543,7 +543,7 @@ func main(): int {
         result_with_params.diagnostics
     );
 
-    // 3. Closure outside thread.spawn, without a type to fix its kind
+    // 3. Closure outside thread.spawn: typed from its body
     let outside = db.new_file(
         "outside.aru".into(),
         r#"
@@ -555,12 +555,10 @@ func main(): int {
         .into(),
     );
     let result_outside = type_check(&db, outside);
+    // Without parameters to annotate, the closure needs no expected type.
     assert!(
-        result_outside
-            .diagnostics
-            .iter()
-            .any(|d| d.code == DiagCode::T001CannotInferType),
-        "an untyped closure outside thread spawn must report T001: {:?}",
+        result_outside.diagnostics.is_empty(),
+        "a closure without parameters is typed by its body: {:?}",
         result_outside.diagnostics
     );
 }

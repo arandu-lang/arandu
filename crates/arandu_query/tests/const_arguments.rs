@@ -516,18 +516,17 @@ fn computed_arguments_in_match_arms_keep_their_lexical_scope() {
 }
 
 #[test]
-fn lambda_arguments_are_frozen_without_claiming_closure_execution_support() {
+fn lambda_arguments_are_frozen_and_the_closure_runs() {
     let body = "func main(): uint { let f = |x uint| { return count<comptime (20 + 22)>() + x }\nreturn f(0) }";
     let mut db = DatabaseImpl::new();
     let file = db.new_file("lambda-arguments.aru".into(), format!("{COUNT}{body}"));
     assert_eq!(values(&db, file), [Some(42)]);
     let staged = item_const_arguments(&db, file, symbol(&db, file, "main"));
     assert!(staged.diagnostics.is_empty(), "{:?}", staged.diagnostics);
+    // Annotated parameters type the closure without an expected type.
     let diagnostics = errors(&db, file);
-    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
-    assert_eq!(diagnostics[0].code, DiagCode::T001CannotInferType);
-    assert!(diagnostics[0].message.contains("type of this closure"));
-    assert!(!runtime::runtime_program(&db, file).diagnostics.is_empty());
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    assert!(runtime::runtime_program(&db, file).diagnostics.is_empty());
 }
 
 #[test]

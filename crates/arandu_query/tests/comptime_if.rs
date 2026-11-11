@@ -167,7 +167,7 @@ fn static_selection_in_match_arms_preserves_runtime_bindings() {
 }
 
 #[test]
-fn lambda_selection_is_lexical_but_closure_execution_remains_explicitly_unsupported() {
+fn lambda_selection_is_lexical_and_the_closure_runs() {
     for (source, selected) in [
         ("func main(): int { let f = |x int| { comptime if true { return x } else { return unavailable() } }\nreturn f(42) }", true),
         ("func main(): int { let f = |x int| { let g = |y int| { comptime if false { return unavailable() } else { return y } }\nreturn g(x) }\nreturn f(42) }", false),
@@ -179,11 +179,10 @@ fn lambda_selection_is_lexical_but_closure_execution_remains_explicitly_unsuppor
         let branches = arandu_query::ctfe::item_static_branches(&db, file, owner);
         assert!(branches.diagnostics.is_empty(), "{:?}", branches.diagnostics);
         assert_eq!(branches.decisions.values().copied().collect::<Vec<_>>(), [selected]);
+        // Annotated parameters type the closure without an expected type.
         let diagnostics = errors(&db, file);
-        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
-        assert_eq!(diagnostics[0].code, DiagCode::T001CannotInferType);
-        assert!(diagnostics[0].message.contains("type of this closure"));
-        assert!(passes::lower_amir(&db, file).amir.funcs.is_empty());
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert!(!passes::lower_amir(&db, file).amir.funcs.is_empty());
     }
 }
 

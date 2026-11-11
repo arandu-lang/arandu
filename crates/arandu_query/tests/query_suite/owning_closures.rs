@@ -268,3 +268,20 @@ fn closures_become_once_but_never_the_reverse() {
     );
     assert!(!rejected.is_empty());
 }
+
+#[test]
+fn a_lambda_with_annotated_parameters_needs_no_expected_type() {
+    let accepted = errors(
+        r#"
+            func main(): int {
+                let double = (x: int) => x * 2
+                let k = 1
+                let add = (x: int) => x + k
+                return double(add(1)) - 4
+            }
+        "#,
+    );
+    assert!(accepted.is_empty(), "{accepted:?}");
+    let untyped = errors("func main(): int {\n    let f = (x) => x\n    return 0\n}\n");
+    assert_eq!(untyped, vec![DiagCode::T001CannotInferType]);
+}

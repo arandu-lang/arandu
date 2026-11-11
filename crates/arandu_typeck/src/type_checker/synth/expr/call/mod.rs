@@ -548,7 +548,13 @@ pub(super) fn synth_call_expr(
                 Some(checker.intern(ArType::Error))
             }
         }
-        ExprKind::Call { .. } => invoke::synth_invoked_call(checker, expr, kind, span, expected),
+        ExprKind::Call { args, .. } => {
+            // An argument lives until the call ends, so a `String` passed
+            // where a `str` is expected can be viewed in place.
+            let arg_ids = checker.pool.expr_list(*args).to_vec();
+            checker.text_view_sites.extend(arg_ids);
+            invoke::synth_invoked_call(checker, expr, kind, span, expected)
+        }
         ExprKind::Catch {
             expr: inner_expr,
             handler,

@@ -14,19 +14,52 @@ não têm o mesmo contrato.
 
 ### String storage and release
 
-| Source | Allocator | Lifetime / release |
-|--------|-----------|--------------------|
-| String literals | module data | until `CompiledModule` drop; never `free` |
-| Allocating `ToStr` and `StringInterp` | `malloc` | caller-owned; AMIR emits `Free(str)` for admitted owned temporaries |
-| `err.new` | `malloc` | separate error-handle contract; `ToStr(Err)` borrows the same message |
-| `fat_str_from_string` | Rust `Box<str>` via `Box::into_raw` | legacy process lifetime; no matching release ABI |
-| `ar_str_concat` host | Rust boxed byte slice | legacy process lifetime; distinct from AMIR `StringInterp` |
-| `ar_path_join_owned` | vector buffer allocator | owned `String`; `ar_vec_buf_free(ptr, capacity)` |
+| Source                                | Allocator                           | Lifetime / release                                                    |
+| ------------------------------------- | ----------------------------------- | --------------------------------------------------------------------- |
+| String literals                       | module data                         | until `CompiledModule` drop; never `free`                             |
+| Allocating `ToStr` and `StringInterp` | `malloc`                            | caller-owned; AMIR emits `Free(str)` for admitted owned temporaries   |
+| `err.new`                             | `malloc`                            | separate error-handle contract; `ToStr(Err)` borrows the same message |
+| `fat_str_from_string`                 | Rust `Box<str>` via `Box::into_raw` | legacy process lifetime; no matching release ABI                      |
+| `ar_str_concat` host                  | Rust boxed byte slice               | legacy process lifetime; distinct from AMIR `StringInterp`            |
+| `ar_path_join_owned`                  | vector buffer allocator             | owned `String`; `ar_vec_buf_free(ptr, capacity)`                      |
 
 Drop elaboration deliberately requires unambiguous provenance for string locals
 (one root store receiving a fresh owned string). Reassignment, escaping values
 and borrowed host results must not be freed merely because they have type `str`.
 This table does not claim complete reclamation of every string path.
+
+### Text built at run time is an owned `String`
+
+When `std.alloc.string` is available (it is linked as an ambient module for
+user code, like `std.alloc.closure`), the language follows Rust's split
+between owned text and views, without the `&`/`.to_string()` ceremony:
+
+- interpolation with expressions and `a + b` on text produce a `String`;
+  literal-only text stays a `str` in module data, except where a `String` is
+  expected (an annotated binding, parameter, return or match arm): there the
+  literal is copied into one, as Swift types string literals by context;
+- `s += t` on a `String` appends in place (`pushStr`); `+=` on a `str` is T002,
+  since a view has no buffer to grow;
+- a `String` lends itself as a `str` or `ref str` at call arguments, `let`
+  initializers annotated `str` and comparison operands (`s == "x"`, Rust's
+  `String == &str`) through the typeck adjustment `TextView`, lowered as
+  `String.asStr(ref v)` (dereferenced for `str`) over a temporary that lives
+  to the end of the block;
+- returning a `String` from a function declared `: str` is T004: the view
+  would outlive its owner;
+- the `String` destructor frees the buffer, so reassigned, escaping and
+  returned text no longer leaks. Interpolation buffers handed to `String.from`
+  are freed after the copy.
+
+Without `std.alloc.string` (core-only and single-file test units) text
+operations keep producing `str`.
+
+The right operand of `&&` and `||` is its own temporary scope, as in Rust:
+it runs on one edge only, so what it creates is destroyed before the join.
+The runtime instance graph takes as implicit dependencies only the
+destructors of the types a body holds (`reachability::implicit_destructors`),
+so linking `std.alloc.string` into every module adds no code to programs that
+do not use it.
 
 ### Allocation-free formatting and integer concat
 
@@ -62,11 +95,11 @@ baseline, using the same corpus, libc malloc/free interposition, and
 byte-for-byte stdout comparison. Package copies were used for both builds.
 
 | Corpus | Matches | Baseline malloc / free | Fused malloc / free | Live balance (both) |
-|--------|---------|------------------------|---------------------|---------------------|
-| hit | 50 | 148 / 136 | 98 / 86 | 12 |
-| m10 | 10 | 66 / 54 | 56 / 44 | 12 |
-| m100 | 100 | 249 / 237 | 149 / 137 | 12 |
-| nom | 0 | 43 / 32 | 43 / 32 | 11 |
+| ------ | ------- | ---------------------- | ------------------- | ------------------- |
+| hit    | 50      | 148 / 136              | 98 / 86             | 12                  |
+| m10    | 10      | 66 / 54                | 56 / 44             | 12                  |
+| m100   | 100     | 249 / 237              | 149 / 137           | 12                  |
+| nom    | 0       | 43 / 32                | 43 / 32             | 11                  |
 
 All four stdout streams were identical. Each numeric match line loses one
 allocation/free pair: two allocations become one final concat allocation.

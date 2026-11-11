@@ -220,7 +220,7 @@ pub(super) fn synth_control_flow_expr(
                 let arm_ty_id = match &arm.body {
                     arandu_parser::MatchArmBody::Expr {
                         expr: inner_expr, ..
-                    } => synth_expr(checker, *inner_expr),
+                    } => super::super::synth_expr_expected(checker, *inner_expr, expected),
                     arandu_parser::MatchArmBody::Block { block, .. } => {
                         let block_ty =
                             crate::type_checker::check::check_block(checker, checker.pool, block);

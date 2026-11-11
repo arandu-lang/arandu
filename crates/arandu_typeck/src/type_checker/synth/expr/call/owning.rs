@@ -247,6 +247,9 @@ pub(crate) fn adjust_to_expected(
     if let Some(slice) = adjust_unsize(checker, expr, actual, expected) {
         return slice;
     }
+    if let Some(view) = super::super::text::adjust_text_view(checker, expr, actual, expected) {
+        return view;
+    }
     let (Some((from, from_code)), Some((to, to_code))) = (
         owning_closure_parts(checker, actual),
         owning_closure_parts(checker, expected),

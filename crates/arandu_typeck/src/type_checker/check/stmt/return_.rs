@@ -70,6 +70,25 @@ pub(super) fn check_return_stmt(
         );
     }
 
+    // A `str` view of a `String` built in the function would outlive it.
+    if matches!(
+        current_ret,
+        ArType::Primitive(arandu_middle::types::Primitive::Str)
+    ) && crate::type_checker::synth::expr_text::is_string(checker, &val_ty)
+    {
+        let declared = checker.ctx.current_return_decl_span().unwrap_or(span);
+        checker.diagnostics.push(
+            crate::Diagnostic::error(
+                crate::DiagCode::T004IncompatibleReturnType,
+                "cannot return a `str` view of a `String` owned by this function",
+                span,
+            )
+            .with_primary_label("the `String` is freed when the function returns")
+            .with_label(declared, "the function returns a `str` view")
+            .with_hint("return the owned text: declare the result as `String`"),
+        );
+        return;
+    }
     if !checker.is_assignable_return_type(&current_ret, &val_ty) {
         checker.add_subtype_constraint(
             current_ret,

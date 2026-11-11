@@ -67,7 +67,9 @@ pub fn resolve_headers_with_poll(
                 continue;
             }
             let exports = db.exported_symbols(imported_file);
-            if mod_name == crate::AMBIENT_CLOSURE_MODULE.1 {
+            if mod_name == crate::AMBIENT_CLOSURE_MODULE.1
+                || mod_name == crate::AMBIENT_STRING_MODULE.1
+            {
                 link_unnamed_exports(&mut resolver, &exports, global);
                 continue;
             }

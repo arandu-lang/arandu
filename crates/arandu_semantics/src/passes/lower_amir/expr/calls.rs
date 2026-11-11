@@ -99,6 +99,22 @@ impl LowerCtx<'_> {
         result_ty: crate::types::TypeId,
     ) -> bool {
         let interner = &self.tc.type_info.type_interner;
+        // `String.from(text)` copies its argument into a buffer it owns, as an
+        // interpolation built as a `String` relies on.
+        if let HirExprKind::Path { symbol } = self.hir.pool.expr(callee).kind
+            && let Some(string) = self
+                .tc
+                .symbols
+                .lang_item_symbol(arandu_middle::symbol_table::LangItem::String)
+            && self
+                .tc
+                .symbols
+                .associated_members
+                .get(&(string, "from".into()))
+                == Some(&symbol)
+        {
+            return true;
+        }
         if result_may_hold_view(result_ty, interner) {
             return false;
         }

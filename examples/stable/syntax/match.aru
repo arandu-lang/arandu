@@ -1,12 +1,14 @@
 module examples.stable.syntax.match
 
+from std.alloc.string import { String }
+
 enum Token {
     Number(int),
     Word(str),
     End,
 }
 
-func describe(token: Token) : str {
+func describe(token: Token) : String {
     return match token {
         Token.Number(value) if value > 0 => "positive number"
         Token.Number(_) => "number"

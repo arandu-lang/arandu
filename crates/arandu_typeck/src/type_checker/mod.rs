@@ -172,6 +172,9 @@ pub struct TypeChecker<'a> {
     pub(crate) generic_substitution: arandu_middle::types::GenericSubst,
     /// Inference variables of the body being checked (S1).
     pub(crate) infer: infer::InferState,
+    /// Expressions whose `String` value may be viewed as a `str`: call
+    /// arguments and `let` initializers, where the value outlives the view.
+    pub(crate) text_view_sites: rustc_hash::FxHashSet<ExprId>,
 }
 
 /// Identity of the item that encloses a closure.
@@ -296,6 +299,7 @@ impl<'a> TypeChecker<'a> {
             literal_table: solver::LiteralTable::new(),
             generic_substitution: arandu_middle::types::GenericSubst::new(),
             infer: infer::InferState::default(),
+            text_view_sites: rustc_hash::FxHashSet::default(),
         }
     }
 

@@ -760,12 +760,20 @@ func main(): int { return slice.len<u8>(lineSlice(strings.asBytes("abc"), 1, 1))
 
 #[test]
 fn byte_views_of_owned_strings_still_cannot_escape() {
-    for source in [
-        "import std.core.str as strings\nfunc f(n: int): []u8 {\n    let s = \"v=${n}\"\n    return strings.asBytes(s)\n}\nfunc main(): int { return 0 }\n",
-        "import std.core.str as strings\nfunc f(flag: bool, n: int): []u8 {\n    let mut s = \"static\"\n    if flag { s = \"v=${n}\" }\n    return strings.asBytes(s)\n}\nfunc main(): int { return 0 }\n",
+    // Built text is an owned `String`: its view cannot outlive the function
+    // (O010), and it cannot be stored where a `str` view lives (T002).
+    for (source, code) in [
+        (
+            "import std.core.str as strings\nfunc f(n: int): []u8 {\n    let s = \"v=${n}\"\n    return strings.asBytes(s)\n}\nfunc main(): int { return 0 }\n",
+            "O010",
+        ),
+        (
+            "import std.core.str as strings\nfunc f(flag: bool, n: int): []u8 {\n    let mut s = \"static\"\n    if flag { s = \"v=${n}\" }\n    return strings.asBytes(s)\n}\nfunc main(): int { return 0 }\n",
+            "T002",
+        ),
     ] {
         let output = check(source);
         assert!(!output.status.success(), "owned view escaped:\n{source}");
-        assert!(String::from_utf8_lossy(&output.stderr).contains("O010"));
+        assert!(String::from_utf8_lossy(&output.stderr).contains(code));
     }
 }

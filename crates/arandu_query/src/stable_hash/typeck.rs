@@ -230,6 +230,9 @@ fn hash_typing(
                 arandu_typeck::type_checker::info::AdjustmentKind::Unsize => {
                     h.update(&[1]);
                 }
+                arandu_typeck::type_checker::info::AdjustmentKind::TextView => {
+                    h.update(&[2]);
+                }
             }
             hash_semantic_type(&mut h, adjustment.from, &info.type_interner, symbols);
             hash_semantic_type(&mut h, adjustment.to, &info.type_interner, symbols);

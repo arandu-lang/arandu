@@ -163,7 +163,15 @@ pub(super) fn lower_interpolated_string(
                     }
                 }
             }
-            if has_expr {
+            let owned = super::text::own_type(type_check, pool, expr)
+                .is_some_and(|ty| super::text::is_string(type_check, ty));
+            if has_expr && owned {
+                // Text built at run time is an owned `String`.
+                let span = pool.expr_span(expr);
+                super::text::owned_interpolation(type_check, hir_pool, hir_parts, span).ok_or_else(
+                    || Diagnostic::ice(crate::DiagCode::ICEL001, "`String.from` is missing", span),
+                )?
+            } else if has_expr {
                 HirExprKind::StringInterp { parts: hir_parts }
             } else {
                 // Pure text — collapse segments into a single Str literal.
@@ -183,7 +191,20 @@ pub(super) fn lower_interpolated_string(
                         crate::SmolStr::new(buf)
                     }
                 };
-                HirExprKind::Str(combined)
+                if owned {
+                    let span = pool.expr_span(expr);
+                    super::text::owned_literal(type_check, hir_pool, combined, span).ok_or_else(
+                        || {
+                            Diagnostic::ice(
+                                crate::DiagCode::ICEL001,
+                                "`String.from` is missing",
+                                span,
+                            )
+                        },
+                    )?
+                } else {
+                    HirExprKind::Str(combined)
+                }
             }
         }
     })

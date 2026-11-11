@@ -30,6 +30,9 @@ mod holes;
 #[path = "query_suite/indirect_call.rs"]
 mod indirect_call;
 
+#[path = "query_suite/owned_text.rs"]
+mod owned_text;
+
 #[path = "query_suite/owning_closures.rs"]
 mod owning_closures;
 

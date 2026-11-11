@@ -14,8 +14,8 @@ pub mod name_resolution;
 pub mod resolved;
 
 pub use import_path::{
-    AMBIENT_CLOSURE_MODULE, AMBIENT_PRIMITIVE_MODULES, LogicalImport, ambient_modules,
-    canonicalize_import_path, logical_import,
+    AMBIENT_CLOSURE_MODULE, AMBIENT_PRIMITIVE_MODULES, AMBIENT_STRING_MODULE, LogicalImport,
+    ambient_modules, canonicalize_import_path, logical_import,
 };
 pub use module_loader::{EmptyModuleLoader, ModuleLoader, SourceDbLoader};
 pub use name_resolution::{

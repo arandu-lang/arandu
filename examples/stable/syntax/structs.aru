@@ -1,13 +1,14 @@
 module examples.stable.syntax.structs
 
 import io
+from std.alloc.string import { String }
 
 public struct User {
     public name: str
     age: int
 }
 
-func User.greet(shared self) : str {
+func User.greet(shared self) : String {
     return "Ola, ${self.name}"
 }
 

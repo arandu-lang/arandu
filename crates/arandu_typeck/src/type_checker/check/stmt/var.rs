@@ -24,6 +24,8 @@ pub(super) fn check_var_decl_stmt(
     } else {
         None
     };
+    // The binding keeps the value alive while a `str` view of it is used.
+    checker.text_view_sites.insert(value);
     let val_ty_id = super::super::super::synth::synth_expr_expected(checker, value, expected);
 
     if bindings.len() > 1 {

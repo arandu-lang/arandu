@@ -17,6 +17,52 @@ pub(super) fn check_set_stmt(
     } else {
         None
     };
+    // `s += t` appends text to a `String` in place (`s.pushStr(t)`); a `str`
+    // is a view and has nothing to append to.
+    if op == arandu_parser::SetOp::AddAssign
+        && let Some(target) = expected
+    {
+        let target_ty = checker.resolve(target);
+        let text = crate::type_checker::synth::expr_text::is_string(checker, &target_ty);
+        let view = matches!(
+            target_ty,
+            ArType::Primitive(arandu_middle::types::Primitive::Str)
+        );
+        if text || view {
+            let str_ty = checker.intern(ArType::Primitive(arandu_middle::types::Primitive::Str));
+            checker.text_view_sites.insert(value);
+            let value_ty =
+                super::super::super::synth::synth_expr_expected(checker, value, Some(str_ty));
+            let value_ty = checker.resolve(value_ty);
+            let span = places
+                .first()
+                .map_or(checker.pool.expr_span(value), |place| place.span);
+            if view {
+                checker.diagnostics.push(
+                    crate::Diagnostic::error(
+                        crate::DiagCode::T002IncompatibleAssignment,
+                        "cannot append to a `str`: it is a view of text owned elsewhere",
+                        span,
+                    )
+                    .with_primary_label("this binding is a `str`")
+                    .with_hint("build the text in a `String`: `let mut s = String.from(\"...\")`, then `s += ...`"),
+                );
+            } else if !value_ty.is_error()
+                && !crate::type_checker::synth::expr_text::is_text(checker, &value_ty)
+            {
+                let value_id = checker.intern(value_ty);
+                checker.add_constraint(
+                    str_ty,
+                    value_id,
+                    ConstraintOrigin::Assignment {
+                        lhs_span: span,
+                        rhs_span: checker.pool.expr_span(value),
+                    },
+                );
+            }
+            return;
+        }
+    }
     let is_ptr_offset_assign = matches!(
         op,
         arandu_parser::SetOp::AddAssign | arandu_parser::SetOp::SubAssign

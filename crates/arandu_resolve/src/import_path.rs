@@ -117,6 +117,12 @@ pub const AMBIENT_PRIMITIVE_MODULES: &[(&str, &str)] = &[
 /// compiler reaches them, through their lang items.
 pub const AMBIENT_CLOSURE_MODULE: (&str, &str) = ("stdlib/alloc/closure.aru", "std.alloc.closure");
 
+/// The module defining the owned `String`, the type of an interpolation with
+/// expressions and of `a + b` on text. Linked like the closure module: only
+/// the compiler reaches it, through the `String` lang item; naming the type
+/// still takes an import.
+pub const AMBIENT_STRING_MODULE: (&str, &str) = ("stdlib/alloc/string.aru", "std.alloc.string");
+
 /// The modules linked into `current` without an import, in a fixed order.
 /// Core modules see no primitive modules and the standard library sees no
 /// closure module, which keeps both free of import cycles.
@@ -130,6 +136,7 @@ pub fn ambient_modules(
         .copied()
         .filter(move |_| !core)
         .chain(std::iter::once(AMBIENT_CLOSURE_MODULE).filter(move |_| !standard))
+        .chain(std::iter::once(AMBIENT_STRING_MODULE).filter(move |_| !standard))
         .filter(move |&(_, name)| current != Some(name))
 }
 

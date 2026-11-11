@@ -122,6 +122,27 @@ fn lower_stmt_raw(
             let hir_places = hir_places?;
             let mut value_vid = super::expr::lower_expr(type_check, pool, hir_pool, *value)?;
             let mut set_op = super::ops::lower_set_op(op.clone());
+            // `s += t` on a `String` appends in place: `s.pushStr(t)`.
+            if set_op == arandu_middle::ops::SetOp::AddAssign
+                && let [place] = hir_places.as_slice()
+                && super::expr::text::is_string(type_check, place.ty)
+                && let Some(target) = super::expr::text::place_expr(type_check, hir_pool, place)
+            {
+                let span = place.span;
+                let call =
+                    super::expr::text::push_str(type_check, hir_pool, target, value_vid, span)
+                        .ok_or_else(|| {
+                            Diagnostic::ice(
+                                crate::DiagCode::ICEL001,
+                                "`String.pushStr` is missing",
+                                span,
+                            )
+                        })?;
+                return Ok(HirStmt {
+                    kind: HirStmtKind::Expr(call),
+                    span: stmt_span(pool, stmt),
+                });
+            }
             // `s += t` on a `str` binding is `s = "${s}${t}"`, as `s = s + t`.
             if set_op == arandu_middle::ops::SetOp::AddAssign
                 && let [place] = hir_places.as_slice()

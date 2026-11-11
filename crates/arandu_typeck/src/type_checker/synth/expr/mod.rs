@@ -3,6 +3,7 @@ mod call;
 mod control_flow;
 mod hole;
 mod literal;
+pub(crate) mod text;
 
 use arandu_parser::ast_pool::{ExprId, ExprKind};
 

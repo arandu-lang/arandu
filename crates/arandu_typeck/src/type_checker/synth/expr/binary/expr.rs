@@ -181,7 +181,7 @@ pub(in crate::type_checker::synth::expr) fn synth_binary_expr(
                 (None, None) => {}
             }
 
-            (l_id, r_id)
+            view_compared_text(checker, (left_id, right_id), (l_id, r_id))
         }
         BinaryOp::RangeExclusive | BinaryOp::RangeInclusive => {
             let range_elem_expected = expected.and_then(|exp_id| match checker.resolve(exp_id) {
@@ -258,4 +258,28 @@ pub(in crate::type_checker::synth::expr) fn synth_binary_expr(
     let left_ty_id = checker.settle_operand(left_ty_id, Some(right_ty_id));
     let right_ty_id = checker.settle_operand(right_ty_id, Some(left_ty_id));
     super::result::synth_binary_result(checker, op, operands, (left_ty_id, right_ty_id), span)
+}
+
+/// A `String` compared with text is compared as its `str` view, as Rust's
+/// `String == &str`; the value outlives the comparison.
+fn view_compared_text(
+    checker: &mut TypeChecker<'_>,
+    operands: (ExprId, ExprId),
+    types: (TypeId, TypeId),
+) -> (TypeId, TypeId) {
+    use super::super::text::{adjust_text_view, is_text};
+    let left = checker.resolve(types.0);
+    let right = checker.resolve(types.1);
+    if !is_text(checker, &left) || !is_text(checker, &right) {
+        return types;
+    }
+    let str_id = checker.intern(ArType::Primitive(Primitive::Str));
+    let view = |checker: &mut TypeChecker<'_>, expr: ExprId, ty: TypeId| {
+        checker.text_view_sites.insert(expr);
+        adjust_text_view(checker, expr, ty, str_id).unwrap_or(ty)
+    };
+    (
+        view(checker, operands.0, types.0),
+        view(checker, operands.1, types.1),
+    )
 }

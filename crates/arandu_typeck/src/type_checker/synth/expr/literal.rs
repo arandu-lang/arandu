@@ -268,11 +268,13 @@ pub(super) fn synth_literal_expr(
             // AmirRvalue::ToStr. Non-formatable types get T034 (not silent Any).
             let part_ids = checker.pool.string_part_list(*parts).to_vec();
             let str_ty = checker.intern(ArType::Primitive(Primitive::Str));
+            let mut built = false;
             for part_id in part_ids {
                 if let arandu_parser::StringPart::Expr {
                     expr: inner_expr, ..
                 } = checker.pool.string_part(part_id)
                 {
+                    built = true;
                     let part_ty_id = synth_expr(checker, *inner_expr);
                     let part_ty = checker.resolve(part_ty_id);
                     let is_ref_str = match &part_ty {
@@ -281,7 +283,11 @@ pub(super) fn synth_literal_expr(
                         }
                         _ => false,
                     };
-                    if part_ty.is_error() || part_ty.is_to_str_v01() || is_ref_str {
+                    if part_ty.is_error()
+                        || part_ty.is_to_str_v01()
+                        || is_ref_str
+                        || super::text::is_string(checker, &part_ty)
+                    {
                         continue;
                     }
                     let interner = &checker.type_info.type_interner;
@@ -298,6 +304,19 @@ pub(super) fn synth_literal_expr(
                         ),
                     );
                 }
+            }
+            // Text built at run time is owned: `String`, freed once (as Rust's
+            // `format!`). A literal with no expression stays a `str`.
+            if built && let Some(string) = super::text::string_type(checker) {
+                return Some(string);
+            }
+            // A literal takes its type from context, as Swift's string
+            // literals do: where a `String` is expected it is one, copied
+            // from module data, without `String.from(..)` at every use.
+            if let Some(expected) = expected
+                && super::text::is_owned_string(checker, &checker.resolve(expected))
+            {
+                return Some(expected);
             }
             Some(str_ty)
         }

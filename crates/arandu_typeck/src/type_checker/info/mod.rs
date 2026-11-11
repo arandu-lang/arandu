@@ -253,6 +253,8 @@ pub enum AdjustmentKind {
     },
     /// A `[N]T` array viewed as the `[]T` slice of all its elements.
     Unsize,
+    /// A `String` (or a reference to one) viewed as `str`.
+    TextView,
 }
 
 impl Default for TypeInfo {

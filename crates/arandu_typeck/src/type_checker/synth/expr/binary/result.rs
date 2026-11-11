@@ -45,16 +45,15 @@ pub(super) fn synth_binary_result(
         BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => {
             let left_ty = checker.resolve(left_ty_id);
             let right_ty = checker.resolve(right_ty_id);
-            // `a + b` on text concatenates into a new `str`, as interpolation
+            // `a + b` on text builds a new owned `String`, as interpolation
             // `"${a}${b}"` does.
             if matches!(op, BinaryOp::Add)
-                && left_ty
-                    .str_reference_depth(&checker.type_info.type_interner)
-                    .is_some()
-                && right_ty
-                    .str_reference_depth(&checker.type_info.type_interner)
-                    .is_some()
+                && super::super::text::is_text(checker, &left_ty)
+                && super::super::text::is_text(checker, &right_ty)
             {
+                if let Some(string) = super::super::text::string_type(checker) {
+                    return Some(string);
+                }
                 return Some(checker.intern(ArType::Primitive(Primitive::Str)));
             }
             if matches!(op, BinaryOp::Add | BinaryOp::Sub) {

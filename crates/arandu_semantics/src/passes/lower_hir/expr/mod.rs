@@ -5,6 +5,7 @@ mod control;
 mod literal;
 mod path;
 mod temporary;
+pub(crate) mod text;
 
 pub(crate) use path::captured_value;
 
@@ -244,32 +245,30 @@ pub(crate) fn lower_expr_raw(
             return lower_expr_raw(type_check, pool, hir_pool, *inner);
         }
         ExprKind::Binary { op, left, right } => {
-            let concatenates = matches!(op, arandu_parser::BinaryOp::Add)
-                && matches!(
-                    type_check.type_info.expr_type(expr),
-                    Some(crate::types::ArType::Primitive(
-                        crate::types::Primitive::Str
-                    ))
-                );
-            let left = lower_expr(type_check, pool, hir_pool, *left)?;
-            let right = lower_expr(type_check, pool, hir_pool, *right)?;
-            if concatenates {
+            if text::is_concatenation(type_check, pool, expr) {
                 // `a + b` on text is `"${a}${b}"`; a chain `a + b + c` and
-                // literal operands flatten into one interpolation.
+                // literal operands flatten into one interpolation, owned as a
+                // `String` when the type checker made it one.
                 let mut parts = Vec::new();
-                for operand in [left, right] {
-                    match &hir_pool.expr(operand).kind {
-                        HirExprKind::StringInterp { parts: inner } => {
-                            parts.extend(inner.iter().cloned());
-                        }
-                        HirExprKind::Str(text) => {
-                            parts.push(crate::hir::HirStringPart::Text(text.clone()));
-                        }
-                        _ => parts.push(crate::hir::HirStringPart::Expr(operand)),
-                    }
+                text::concatenation_parts(type_check, pool, hir_pool, expr, &mut parts)?;
+                let owned = text::own_type(type_check, pool, expr)
+                    .is_some_and(|ty| text::is_string(type_check, ty));
+                if owned {
+                    text::owned_interpolation(type_check, hir_pool, parts, span).ok_or_else(
+                        || {
+                            Diagnostic::ice(
+                                crate::DiagCode::ICEL001,
+                                "`String.from` is missing",
+                                span,
+                            )
+                        },
+                    )?
+                } else {
+                    HirExprKind::StringInterp { parts }
                 }
-                HirExprKind::StringInterp { parts }
             } else {
+                let left = lower_expr(type_check, pool, hir_pool, *left)?;
+                let right = lower_expr(type_check, pool, hir_pool, *right)?;
                 HirExprKind::Binary {
                     op: super::ops::lower_binary_op(*op),
                     left,
@@ -397,6 +396,25 @@ pub(crate) fn lower_expr(
         // `[N]T` as `[]T` is the range of all its elements, `value[0..N]`.
         arandu_typeck::type_checker::info::AdjustmentKind::Unsize => {
             return Ok(unsize_array(type_check, hir_pool, value, &adjustment, span));
+        }
+        // A `String` where a `str` is expected is read through its view.
+        arandu_typeck::type_checker::info::AdjustmentKind::TextView => {
+            let borrowed = matches!(
+                type_check.type_info.type_interner.resolve(adjustment.to),
+                arandu_middle::types::ArType::Ref(_)
+            );
+            let view = if borrowed {
+                text::string_ref_view(type_check, hir_pool, value, span)
+            } else {
+                text::string_view(type_check, hir_pool, value, span)
+            };
+            return view.ok_or_else(|| {
+                Diagnostic::ice(
+                    crate::DiagCode::ICEL001,
+                    "`String` has no `asStr` view",
+                    span,
+                )
+            });
         }
     };
     // The value keeps its own type and becomes `function<type_args>(value)`.

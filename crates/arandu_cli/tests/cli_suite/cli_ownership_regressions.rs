@@ -1473,6 +1473,15 @@ fn local_string_concatenation_frees_each_string_once() {
     run_emitted_c_with_asan(&c_source, "string_concat_local");
 }
 
+/// Owned text that is appended in a loop, reassigned, returned or viewed as a
+/// `str` is freed exactly once, with nothing left behind.
+#[test]
+fn owned_text_is_freed_on_every_path() {
+    let source = include_str!("../../../../tests/corpus/string_concat.aru");
+    let c_source = emit_c(source, "string_concat_owned");
+    run_emitted_c_with_asan(&c_source, "string_concat_owned");
+}
+
 /// A borrowed temporary (`ref String.from(..)`) is destroyed exactly once.
 #[test]
 fn borrowed_temporaries_are_destroyed_once() {

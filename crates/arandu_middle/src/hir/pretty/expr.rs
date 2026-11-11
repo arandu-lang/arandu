@@ -122,20 +122,11 @@ impl HirExpr {
                 out.push_str(&format!("{}Try: {}\n", ind, display_type(self.ty, ctx)));
                 expr.pretty_print_to(out, indent + 1, ctx);
             }
-            HirExprKind::Call {
-                callee,
-                args,
-                trailing_block,
-            } => {
+            HirExprKind::Call { callee, args } => {
                 out.push_str(&format!("{}Call: {}\n", ind, display_type(self.ty, ctx)));
                 callee.pretty_print_to(out, indent + 1, ctx);
                 for &a in ctx.pool.expr_list(*args) {
                     a.pretty_print_to(out, indent + 1, ctx);
-                }
-                if let Some(block) = trailing_block {
-                    let sub_ind = "  ".repeat(indent + 1);
-                    out.push_str(&format!("{sub_ind}TrailingBlock\n"));
-                    ctx.pool.block(*block).pretty_print_to(out, indent + 2, ctx);
                 }
             }
             HirExprKind::ResultCtor { variant, value } => {

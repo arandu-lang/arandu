@@ -27,13 +27,7 @@ pub(super) fn lower_call_with_temporaries(
     if type_check.type_info.closure_temporaries.is_empty() {
         return Ok(None);
     }
-    let ExprKind::Call {
-        callee,
-        args,
-        trailing_block: None,
-        ..
-    } = pool.expr(expr)
-    else {
+    let ExprKind::Call { callee, args, .. } = pool.expr(expr) else {
         return Ok(None);
     };
     let callee = *callee;

@@ -266,6 +266,7 @@ pub(super) fn synth_direct_symbol_call(
             )
             .with_label(checker.pool.expr_span(callee_id), "call target is here")
             .with_label(span, format!("{} arguments provided", arg_ids.len()));
+            let diag = super::note_trailing_block(checker, diag, &arg_ids, params.len());
             checker.diagnostics.push(diag);
         }
         for (i, arg_id) in arg_ids.iter().copied().enumerate() {

@@ -170,26 +170,21 @@ fn parse_postfix_tail(
                     }
                 }
                 let close = cur.expect(TokenKind::RParen)?;
-                let args_range = ctx.pool.alloc_expr_list(&args);
                 let left_span = ctx.pool.expr_span(left);
                 let mut end = close.start + close.len;
                 // Trailing-block call `f(args) { ... }` only via allows_trailing_block.
                 // Match scrutinees are sliced to exclude `{`, so this is mainly for
                 // full-expression hand lower; keep consistent with RD allow_block_calls.
-                let trailing = if cur.peek_kind() == Some(TokenKind::LBrace)
-                    && allows_trailing_block(ctx, left)
-                {
+                if cur.peek_kind() == Some(TokenKind::LBrace) && allows_trailing_block(ctx, left) {
                     let block = parse_block_tokens(ctx, cur)?;
                     end = block.span.end;
-                    Some(ctx.pool.alloc_block(block))
-                } else {
-                    None
-                };
+                    args.push(ctx.pool.alloc_trailing_lambda(block));
+                }
+                let args_range = ctx.pool.alloc_expr_list(&args);
                 left = ctx.pool.alloc_expr(
                     ExprKind::Call {
                         callee: left,
                         args: args_range,
-                        trailing_block: trailing,
                     },
                     ctx.span(left_span.start, end),
                 );
@@ -210,14 +205,10 @@ fn parse_postfix_tail(
                 let left_span = ctx.pool.expr_span(left);
                 let block = parse_block_tokens(ctx, cur)?;
                 let end = block.span.end;
-                let block_id = ctx.pool.alloc_block(block);
-                let empty = ctx.pool.alloc_expr_list(&[]);
+                let lambda = ctx.pool.alloc_trailing_lambda(block);
+                let args = ctx.pool.alloc_expr_list(&[lambda]);
                 left = ctx.pool.alloc_expr(
-                    ExprKind::Call {
-                        callee: left,
-                        args: empty,
-                        trailing_block: Some(block_id),
-                    },
+                    ExprKind::Call { callee: left, args },
                     ctx.span(left_span.start, end),
                 );
             }

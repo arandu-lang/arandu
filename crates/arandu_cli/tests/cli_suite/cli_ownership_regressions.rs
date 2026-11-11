@@ -1482,6 +1482,14 @@ fn owned_text_is_freed_on_every_path() {
     run_emitted_c_with_asan(&c_source, "string_concat_owned");
 }
 
+/// An owned closure passed as a trailing block is freed exactly once.
+#[test]
+fn trailing_block_closures_are_freed_once() {
+    let source = include_str!("../../../../tests/corpus/trailing_blocks.aru");
+    let c_source = emit_c(source, "trailing_blocks");
+    run_emitted_c_with_asan(&c_source, "trailing_blocks");
+}
+
 /// A borrowed temporary (`ref String.from(..)`) is destroyed exactly once.
 #[test]
 fn borrowed_temporaries_are_destroyed_once() {

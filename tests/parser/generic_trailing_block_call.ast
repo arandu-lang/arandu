@@ -1,4 +1,4 @@
 Program @1:1-7:2
   Module @1:1-1:39 parser.genericTrailingBlockCall
   Func @3:1-7:2 main() -> void
-    Expr @4:5-6:6 Call @4:5-6:6(Generic @4:5-4:24(Field @4:5-4:18(Path @4:5-4:13(pipeline), step), <Type @4:19-4:23 @4:19-4:23 User>), [String @4:25-4:33("/users")], Block @4:35-6:6[Expr @5:9-5:27 Call @5:9-5:27(Field @5:9-5:19(Path @5:9-5:11(io), println), [String @5:20-5:26("user")])])
+    Expr @4:5-6:6 Call @4:5-6:6(Generic @4:5-4:24(Field @4:5-4:18(Path @4:5-4:13(pipeline), step), <Type @4:19-4:23 @4:19-4:23 User>), [String @4:25-4:33("/users"), Lambda @4:35-6:6([], Block @4:35-6:6[Expr @5:9-5:27 Call @5:9-5:27(Field @5:9-5:19(Path @5:9-5:11(io), println), [String @5:20-5:26("user")])])])

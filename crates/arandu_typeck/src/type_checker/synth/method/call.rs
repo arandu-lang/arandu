@@ -330,6 +330,12 @@ pub(crate) fn synth_method_call(
         )
         .with_label(field_span, "call target is here")
         .with_label(call_span, format!("{} arguments provided", arg_ids.len()));
+        let diag = crate::type_checker::synth::expr::note_trailing_block(
+            checker,
+            diag,
+            &arg_ids,
+            explicit_params.len(),
+        );
         checker.diagnostics.push(diag);
     }
 

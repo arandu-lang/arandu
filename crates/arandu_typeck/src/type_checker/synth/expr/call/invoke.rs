@@ -24,18 +24,9 @@ pub(super) fn synth_invoked_call(
     span: Span,
     expected: Option<TypeId>,
 ) -> Option<TypeId> {
-    let ExprKind::Call {
-        callee,
-        args,
-        trailing_block,
-    } = kind
-    else {
+    let ExprKind::Call { callee, args } = kind else {
         return None;
     };
-    if let Some(block_id) = trailing_block {
-        let block = checker.pool.block(*block_id);
-        let _ = crate::type_checker::check::check_block(checker, checker.pool, block);
-    }
     let callee_id = *callee;
     let args_range = *args;
     // Canonical enum families have dedicated IR types. Select them by
@@ -335,19 +326,19 @@ fn synth_namespace_field_call(
                     }
                 }
                 if params.len() != arg_ids.len() {
-                    checker.diagnostics.push(
-                        crate::Diagnostic::error(
-                            crate::DiagCode::T012WrongArgCount,
-                            format!(
-                                "expected {} arguments, found {}",
-                                params.len(),
-                                arg_ids.len()
-                            ),
-                            span,
-                        )
-                        .with_label(field_span, "call target is here")
-                        .with_label(span, format!("{} arguments provided", arg_ids.len())),
-                    );
+                    let diag = crate::Diagnostic::error(
+                        crate::DiagCode::T012WrongArgCount,
+                        format!(
+                            "expected {} arguments, found {}",
+                            params.len(),
+                            arg_ids.len()
+                        ),
+                        span,
+                    )
+                    .with_label(field_span, "call target is here")
+                    .with_label(span, format!("{} arguments provided", arg_ids.len()));
+                    let diag = super::note_trailing_block(checker, diag, &arg_ids, params.len());
+                    checker.diagnostics.push(diag);
                 }
                 for (i, arg_id) in arg_ids.iter().copied().enumerate() {
                     let param_id = params.get(i).copied();
@@ -475,6 +466,12 @@ fn synth_generic_callee_call(
                         )
                         .with_label(field_span, "call target is here")
                         .with_label(span, format!("{} arguments provided", arg_ids.len()));
+                        let diag = super::note_trailing_block(
+                            checker,
+                            diag,
+                            &arg_ids,
+                            explicit_params.len(),
+                        );
                         checker.diagnostics.push(diag);
                     }
                     for (i, arg_id) in arg_ids.iter().copied().enumerate() {

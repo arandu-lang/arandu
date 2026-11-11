@@ -793,8 +793,12 @@ AST sketch:
 
 - `callee`: `Expr`
 - `args`: list of `Argument`
-- `trailing_block`: optional `Block`
 - `span`
+
+A trailing block is not a field: `f(a) { body }` lowers to the call
+`f(a, () => { body })` and `f { body }` to `f(() => { body })`, a lambda
+without parameters whose span is the block's (Kotlin and Swift trailing
+closures). Later phases see an ordinary argument.
 
 `GenericCallExpr` adds:
 

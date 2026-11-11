@@ -1,4 +1,4 @@
 Program @1:1-7:2
   Module @1:1-1:32 parser.trailingBlockCall
   Func @3:1-7:2 main() -> void
-    Expr @4:5-6:6 Call @4:5-6:6(Field @4:5-4:14(Path @4:5-4:8(app), route), [String @4:15-4:23("/users")], Block @4:25-6:6[Expr @5:9-5:28 Call @5:9-5:28(Field @5:9-5:19(Path @5:9-5:11(io), println), [String @5:20-5:27("users")])])
+    Expr @4:5-6:6 Call @4:5-6:6(Field @4:5-4:14(Path @4:5-4:8(app), route), [String @4:15-4:23("/users"), Lambda @4:25-6:6([], Block @4:25-6:6[Expr @5:9-5:28 Call @5:9-5:28(Field @5:9-5:19(Path @5:9-5:11(io), println), [String @5:20-5:27("users")])])])

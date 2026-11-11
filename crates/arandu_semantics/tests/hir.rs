@@ -398,9 +398,10 @@ fn lowers_call_expression() {
 
 #[test]
 fn lowers_call_with_trailing_block() {
+    // `foo(1) { 2 }` is `foo(1, () => { 2 })`: the block is the last argument.
     let (hir, _symbols) = lower(
-        "func foo(a: int): int {
-            return a
+        "func foo(a: int, f: () -> int): int {
+            return a + f()
         }
         func main() {
             let result: int = foo(1) {
@@ -408,7 +409,6 @@ fn lowers_call_with_trailing_block() {
             }
         }",
     );
-    // find the `main` function decl
     let main_func = hir
         .decls
         .iter()
@@ -421,12 +421,8 @@ fn lowers_call_with_trailing_block() {
     let statements = hir.pool.stmt_list(body.statements);
     match &hir.pool.stmt(statements[0]).kind {
         HirStmtKind::VarDecl { value, .. } => match &hir.pool.expr(*value).kind {
-            HirExprKind::Call { trailing_block, .. } => {
-                assert!(trailing_block.is_some());
-                let bid = trailing_block.unwrap();
-                let blk = hir.pool.block(bid);
-                let block_stmts = hir.pool.stmt_list(blk.statements);
-                assert!(!block_stmts.is_empty());
+            HirExprKind::Call { args, .. } => {
+                assert_eq!(hir.pool.expr_list(*args).len(), 2);
             }
             other => panic!("expected Call, got {other:?}"),
         },

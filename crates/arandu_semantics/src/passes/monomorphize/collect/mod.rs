@@ -293,17 +293,10 @@ impl<'a, 'bump> InstantiationAnalyzer<'a, 'bump> {
                 self.visit_expr(*base, current);
                 self.visit_expr(*index, current);
             }
-            HirExprKind::Call {
-                callee,
-                args,
-                trailing_block,
-            } => {
+            HirExprKind::Call { callee, args } => {
                 self.visit_expr(*callee, current);
                 for &arg in self.hir.pool.expr_list(*args) {
                     self.visit_expr(arg, current);
-                }
-                if let Some(block) = trailing_block {
-                    self.visit_block(*block, current);
                 }
                 // Methods/funcs whose type args come only from the receiver or
                 // argument types (no `Generic` node): still need mono keys.

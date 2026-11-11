@@ -241,18 +241,11 @@ pub(super) fn rewrite_expr_calls<'bump>(
             rewrite_expr_calls(hir, *base, specialized, tc, bump);
             rewrite_expr_calls(hir, *index, specialized, tc, bump);
         }
-        HirExprKind::Call {
-            callee,
-            args,
-            trailing_block,
-        } => {
+        HirExprKind::Call { callee, args } => {
             rewrite_expr_calls(hir, *callee, specialized, tc, bump);
             let args_snap: Vec<_> = hir.pool.expr_list(*args).to_vec();
             for a in args_snap {
                 rewrite_expr_calls(hir, a, specialized, tc, bump);
-            }
-            if let Some(b) = trailing_block {
-                rewrite_block_calls(hir, *b, specialized, tc, bump);
             }
             // Rewrite Call(Generic(...), …) or Call(Field/Path template, …) → Path(spec).
             try_rewrite_generic_call(hir, expr_id, *callee, *args, specialized, tc, bump);

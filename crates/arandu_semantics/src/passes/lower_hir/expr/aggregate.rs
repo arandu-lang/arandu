@@ -345,6 +345,5 @@ pub(super) fn owning_closure(
     Ok(HirExprKind::Call {
         callee,
         args: hir_pool.alloc_expr_list(&args),
-        trailing_block: None,
     })
 }

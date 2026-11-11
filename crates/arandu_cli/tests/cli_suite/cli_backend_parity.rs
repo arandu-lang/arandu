@@ -767,6 +767,27 @@ fn string_concatenation_agrees_on_every_backend() {
     let _ = fs::remove_file(path);
 }
 
+/// A block after a call is its last argument, `() => { ... }`: borrowed
+/// callbacks, mutation of a local through one and an owned closure.
+#[test]
+fn trailing_blocks_agree_on_every_backend() {
+    let source = include_str!("../../../../tests/corpus/trailing_blocks.aru");
+    for (backend, outcome) in outcomes_on("trailing_blocks", source, false) {
+        assert_eq!(outcome, ProgramOutcome::Returned(0), "{backend}");
+    }
+    let path =
+        std::env::temp_dir().join(format!("arandu_trailing_blocks_{}.aru", std::process::id()));
+    fs::write(&path, source).unwrap();
+    let wasm = cli(&["emit-wasm", &path.to_string_lossy()]);
+    assert!(
+        wasm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&wasm.stderr)
+    );
+    crate::wasm_host::run_main(&wasm.stdout).assert_returns(0, "trailing blocks in Wasmtime");
+    let _ = fs::remove_file(path);
+}
+
 /// `own once (A) -> R` closures consume their captures, convert from
 /// `own (A) -> R`, run as temporaries and destroy captures never called.
 #[test]

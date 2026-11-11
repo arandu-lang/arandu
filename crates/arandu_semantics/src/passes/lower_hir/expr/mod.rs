@@ -439,11 +439,7 @@ pub(crate) fn lower_expr(
     });
     let args = hir_pool.alloc_expr_list(&[value]);
     Ok(hir_pool.alloc_expr(HirExpr {
-        kind: HirExprKind::Call {
-            callee,
-            args,
-            trailing_block: None,
-        },
+        kind: HirExprKind::Call { callee, args },
         ty: adjustment.to,
         span,
     }))

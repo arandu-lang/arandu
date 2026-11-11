@@ -473,11 +473,7 @@ fn adapter_body(
     }));
     let args = pool.alloc_expr_list(&args);
     let call = pool.alloc_expr(HirExpr {
-        kind: HirExprKind::Call {
-            callee,
-            args,
-            trailing_block: None,
-        },
+        kind: HirExprKind::Call { callee, args },
         ty: recipe.return_type,
         span,
     });
@@ -563,11 +559,7 @@ fn owning_code_hir(
                     span,
                 });
                 let args = pool.alloc_expr_list(&[env]);
-                HirExprKind::Call {
-                    callee,
-                    args,
-                    trailing_block: None,
-                }
+                HirExprKind::Call { callee, args }
             }
             None => HirExprKind::Cast {
                 expr: env,
@@ -598,11 +590,7 @@ fn owning_code_hir(
     });
     let args = pool.alloc_expr_list(&args);
     let call = pool.alloc_expr(HirExpr {
-        kind: HirExprKind::Call {
-            callee,
-            args,
-            trailing_block: None,
-        },
+        kind: HirExprKind::Call { callee, args },
         ty: recipe.return_type,
         span,
     });

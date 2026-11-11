@@ -249,11 +249,7 @@ pub fn materialize_ctfe_value(
                     }
                     None => pool.alloc_expr_list(&[]),
                 };
-                HirExprKind::Call {
-                    callee,
-                    args,
-                    trailing_block: None,
-                }
+                HirExprKind::Call { callee, args }
             };
             return Ok(HirExpr {
                 kind,

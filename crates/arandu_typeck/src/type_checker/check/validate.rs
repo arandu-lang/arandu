@@ -207,19 +207,11 @@ fn validate_expr(checker: &mut TypeChecker<'_>, expr: ExprId) {
             validate_expr(checker, *base);
             validate_expr(checker, *index);
         }
-        ExprKind::Call {
-            callee,
-            args,
-            trailing_block,
-            ..
-        } => {
+        ExprKind::Call { callee, args, .. } => {
             validate_expr(checker, *callee);
             let arg_ids = checker.pool.expr_list(*args).to_vec();
             for arg_id in arg_ids {
                 validate_expr(checker, arg_id);
-            }
-            if let Some(block_id) = trailing_block {
-                validate_block(checker, checker.pool, checker.pool.block(*block_id));
             }
         }
         ExprKind::StructLiteral { ty, fields, .. } => {

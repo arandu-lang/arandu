@@ -5,28 +5,23 @@ impl<'a> Parser<'a> {
     pub(super) fn finish_call(&mut self, callee: ExprId) -> Result<ExprId, ParseError> {
         let span_start = self.pool.expr_span(callee);
         self.expect_name("LPAREN")?;
-        let args = self.parse_arguments()?;
+        let mut args = self.parse_arguments()?;
         self.expect_name("RPAREN")?;
+        let mut end = self.previous().span(self.file_id);
         // Trailing-block call `f(args) { ... }` only when allowed.
         // Critical: `match f() { arms }` uses parse_expr_without_block_calls so the
         // match's `{` must not be swallowed as a trailing block (else arms parse as
         // statements → "expected type-qualified..." on `Some(x)` / `Ok(x)`).
-        let trailing_block = if self.allow_block_calls && self.at_kind_name("LBRACE") {
+        if self.allow_block_calls && self.at_kind_name("LBRACE") {
             let block = self.parse_block()?;
-            Some(self.pool.alloc_block(block))
-        } else {
-            None
-        };
-        let end = trailing_block.as_ref().map_or_else(
-            || self.previous().span(self.file_id),
-            |block_id| self.pool.block(*block_id).span,
-        );
+            end = block.span;
+            args.push(self.pool.alloc_trailing_lambda(block));
+        }
         let range = self.pool.alloc_expr_list(&args);
         Ok(self.pool.alloc_expr(
             ExprKind::Call {
                 callee,
                 args: range,
-                trailing_block,
             },
             span_between(span_start, end),
         ))
@@ -37,15 +32,14 @@ impl<'a> Parser<'a> {
         callee: ExprId,
     ) -> Result<ExprId, ParseError> {
         let span_start = self.pool.expr_span(callee);
-        let trailing_block = self.parse_block()?;
-        let block_span = trailing_block.span;
-        let block_id = self.pool.alloc_block(trailing_block);
-        let range = self.pool.alloc_expr_list(&[]);
+        let block = self.parse_block()?;
+        let block_span = block.span;
+        let lambda = self.pool.alloc_trailing_lambda(block);
+        let range = self.pool.alloc_expr_list(&[lambda]);
         Ok(self.pool.alloc_expr(
             ExprKind::Call {
                 callee,
                 args: range,
-                trailing_block: Some(block_id),
             },
             span_between(span_start, block_span),
         ))

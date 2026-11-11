@@ -160,17 +160,10 @@ pub(super) fn discover_nested_keys<'bump>(
     ) {
         let expr = hir.pool.expr(expr_id);
         match &expr.kind {
-            HirExprKind::Call {
-                callee,
-                args,
-                trailing_block,
-            } => {
+            HirExprKind::Call { callee, args } => {
                 visit_expr(hir, *callee, tc, bump, template_funcs, enqueue);
                 for &a in hir.pool.expr_list(*args) {
                     visit_expr(hir, a, tc, bump, template_funcs, enqueue);
-                }
-                if let Some(b) = trailing_block {
-                    visit_block(hir, *b, tc, bump, template_funcs, enqueue);
                 }
                 // Explicit Generic type args on the callee.
                 if let HirExprKind::Generic {

@@ -232,11 +232,7 @@ impl<'a> Parser<'a> {
                     let right = self.parse_expr(right_bp)?;
                     let span = span_between(span_start, self.pool.expr_span(right));
                     left = match self.pool.expr(right).clone() {
-                        ExprKind::Call {
-                            callee,
-                            args,
-                            trailing_block,
-                        } => {
+                        ExprKind::Call { callee, args } => {
                             let existing = self.pool.expr_list(args).to_vec();
                             let placeholder_pos = existing.iter().position(|&arg_id| {
                                 if let ExprKind::Path { path } = self.pool.expr(arg_id) {
@@ -261,7 +257,6 @@ impl<'a> Parser<'a> {
                                 ExprKind::Call {
                                     callee,
                                     args: new_range,
-                                    trailing_block,
                                 },
                                 span,
                             )
@@ -275,7 +270,6 @@ impl<'a> Parser<'a> {
                                 ExprKind::Call {
                                     callee: right,
                                     args: new_range,
-                                    trailing_block: None,
                                 },
                                 span,
                             )
@@ -286,7 +280,6 @@ impl<'a> Parser<'a> {
                                 ExprKind::Call {
                                     callee: right,
                                     args: new_range,
-                                    trailing_block: None,
                                 },
                                 span,
                             )

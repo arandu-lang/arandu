@@ -45,6 +45,12 @@
 >   dois-pontos como em toda declaração; `(x T)` continua aceito. `|x| expr`
 >   continua aceito e o formatter normaliza para a seta. `own () => ...` força
 >   todas as capturas por movimento; `move` é alias de `own`.
+> - **Bloco final** (2026-11-11): `f(a) { corpo }` é `f(a, () => { corpo })` e
+>   `f { corpo }` é `f(() => { corpo })`, como no Kotlin e no Swift. O parser
+>   baixa o bloco para uma lambda sem parâmetros no último argumento, então
+>   typeck e lowering não têm caminho próprio; o T012 de uma função sem esse
+>   parâmetro explica o bloco. Na condição de `if`/`while`/`match` o `{` é da
+>   instrução.
 > - **Capturas:** deduzidas por caminho de projeção: leitura de tipo `Copy`
 >   copia, leitura de outro tipo empresta, mutação empresta mutável, consumo
 >   move; `own` força movimento. O OSSA as verifica como campos de struct.

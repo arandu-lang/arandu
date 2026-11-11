@@ -126,11 +126,7 @@ fn parse_binary_tail(
                 let span_end = ctx.pool.expr_span(right).end;
                 let span = ctx.span(span_start, span_end);
                 left = match ctx.pool.expr(right).clone() {
-                    ExprKind::Call {
-                        callee,
-                        args,
-                        trailing_block,
-                    } => {
+                    ExprKind::Call { callee, args } => {
                         let existing = ctx.pool.expr_list(args).to_vec();
                         let placeholder_pos = existing.iter().position(|&arg_id| {
                             if let ExprKind::Path { path } = ctx.pool.expr(arg_id) {
@@ -155,7 +151,6 @@ fn parse_binary_tail(
                             ExprKind::Call {
                                 callee,
                                 args: new_range,
-                                trailing_block,
                             },
                             span,
                         )
@@ -166,7 +161,6 @@ fn parse_binary_tail(
                             ExprKind::Call {
                                 callee: right,
                                 args: new_range,
-                                trailing_block: None,
                             },
                             span,
                         )

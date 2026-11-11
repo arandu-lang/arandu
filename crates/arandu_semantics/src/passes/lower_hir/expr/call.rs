@@ -13,13 +13,7 @@ pub(super) fn lower_call(
     span: arandu_middle::Span,
     fallback_ty: crate::types::TypeId,
 ) -> Result<HirExpr, Diagnostic> {
-    let ExprKind::Call {
-        callee,
-        args,
-        trailing_block,
-        ..
-    } = pool.expr(expr)
-    else {
+    let ExprKind::Call { callee, args, .. } = pool.expr(expr) else {
         unreachable!();
     };
     if let Some(scope) =
@@ -40,9 +34,7 @@ pub(super) fn lower_call(
                 let ty = super::expr_type_for_kind(type_check, hir_pool, &kind, fallback_ty);
                 return Ok(HirExpr { kind, ty, span });
             }
-            if trailing_block.is_none()
-                && let Some(variant) = super::builtin_ctor_variant(type_check, pool, callee_id)
-            {
+            if let Some(variant) = super::builtin_ctor_variant(type_check, pool, callee_id) {
                 if arg_ids.len() == 1 {
                     let value_id = super::lower_expr(type_check, pool, hir_pool, arg_ids[0])?;
                     let kind = HirExprKind::ResultCtor {
@@ -74,8 +66,7 @@ pub(super) fn lower_call(
                 }
             }
             // ToStr v0.1: `receiver.to_str()` → HirExprKind::ToStr (not a real method call).
-            if trailing_block.is_none()
-                && arg_ids.is_empty()
+            if arg_ids.is_empty()
                 && let ExprKind::Field { base, field, .. } | ExprKind::SafeField { base, field, .. } =
                     pool.expr(callee_id)
                 && field == "to_str"
@@ -85,16 +76,13 @@ pub(super) fn lower_call(
                 let ty = super::expr_type_for_kind(type_check, hir_pool, &kind, fallback_ty);
                 return Ok(HirExpr { kind, ty, span });
             }
-            if trailing_block.is_none()
-                && let Some(kind) =
-                    lower_owning_closure_call(type_check, pool, hir_pool, callee_id, arg_ids)?
+            if let Some(kind) =
+                lower_owning_closure_call(type_check, pool, hir_pool, callee_id, arg_ids)?
             {
                 let ty = super::expr_type_for_kind(type_check, hir_pool, &kind, fallback_ty);
                 return Ok(HirExpr { kind, ty, span });
             }
-            if trailing_block.is_none()
-                && let Some(kind) =
-                    lower_callback_call(type_check, pool, hir_pool, callee_id, arg_ids)?
+            if let Some(kind) = lower_callback_call(type_check, pool, hir_pool, callee_id, arg_ids)?
             {
                 let ty = super::expr_type_for_kind(type_check, hir_pool, &kind, fallback_ty);
                 return Ok(HirExpr { kind, ty, span });
@@ -147,17 +135,10 @@ pub(super) fn lower_call(
             for &arg_id in arg_ids {
                 hir_args.push(super::lower_expr(type_check, pool, hir_pool, arg_id)?);
             }
-            let hir_trailing = trailing_block
-                .as_ref()
-                .map(|b| {
-                    super::super::stmt::lower_block(type_check, pool, hir_pool, pool.block(*b))
-                })
-                .transpose()?;
             let args_range = hir_pool.alloc_expr_list(&hir_args);
             HirExprKind::Call {
                 callee: callee_vid,
                 args: args_range,
-                trailing_block: hir_trailing,
             }
         }
     };
@@ -215,7 +196,6 @@ fn lower_callback_call(
     Ok(Some(HirExprKind::Call {
         callee,
         args: hir_pool.alloc_expr_list(&args),
-        trailing_block: None,
     }))
 }
 
@@ -289,7 +269,6 @@ fn lower_owning_closure_call(
     Ok(Some(HirExprKind::Call {
         callee,
         args: hir_pool.alloc_expr_list(&args),
-        trailing_block: None,
     }))
 }
 
@@ -357,7 +336,6 @@ fn lower_once_closure_call(
         kind: HirExprKind::Call {
             callee: release_callee,
             args: release_args,
-            trailing_block: None,
         },
         ty: call_ty,
         span,
@@ -399,11 +377,7 @@ fn lower_once_closure_call(
     }
     let args = hir_pool.alloc_expr_list(&args);
     let invoked = hir_pool.alloc_expr(HirExpr {
-        kind: HirExprKind::Call {
-            callee: code,
-            args,
-            trailing_block: None,
-        },
+        kind: HirExprKind::Call { callee: code, args },
         ty: result_ty,
         span,
     });

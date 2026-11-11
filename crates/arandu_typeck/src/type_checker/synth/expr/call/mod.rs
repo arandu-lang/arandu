@@ -19,6 +19,33 @@ pub(crate) use owning::{
 };
 pub(crate) use thread_target::check_target_thread_capabilities;
 
+/// A call given more arguments than it takes, the last being a trailing
+/// block, explains that the block is that argument.
+pub(crate) fn note_trailing_block(
+    checker: &TypeChecker<'_>,
+    diagnostic: crate::Diagnostic,
+    arg_ids: &[ExprId],
+    expected: usize,
+) -> crate::Diagnostic {
+    let Some(&last) = arg_ids.last() else {
+        return diagnostic;
+    };
+    let is_trailing_block = arg_ids.len() > expected
+        && matches!(
+            checker.pool.expr(last),
+            ExprKind::Lambda {
+                body: arandu_parser::LambdaBody::Block { span, .. },
+                ..
+            } if *span == checker.pool.expr_span(last)
+        );
+    if !is_trailing_block {
+        return diagnostic;
+    }
+    diagnostic.with_note(
+        "a block after a call is its last argument, the closure `() => { ... }`; this function takes no such parameter",
+    )
+}
+
 use arandu_lexer::Span;
 use arandu_parser::CatchHandler;
 use arandu_parser::ast_pool::{ExprId, ExprKind};

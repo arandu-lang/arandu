@@ -466,19 +466,7 @@ impl LowerCtx<'_> {
                 self.emit_assign_temp(dest, AmirRvalue::Tuple { items: item_ops });
                 Ok(AmirOperand::Copy(dest))
             }
-            HirExprKind::Call {
-                callee,
-                args,
-                trailing_block,
-            } => {
-                if let Some(block_id) = trailing_block {
-                    let blk_span = self.hir.pool.block(*block_id).span;
-                    return Err(amir_unsupported(
-                        blk_span,
-                        "trailing block call",
-                        "v0.3 LAMBDA: trailing block closure lowering",
-                    ));
-                }
+            HirExprKind::Call { callee, args } => {
                 self.lower_call(*callee, *args, expr, target, symbols)
             }
             HirExprKind::StructLiteral {

@@ -195,16 +195,9 @@ impl Shift {
             | ExprKind::Alloc { expr }
             | ExprKind::Group { expr }
             | ExprKind::Unary { op: _, expr } => self.expr_id(expr),
-            ExprKind::Call {
-                callee,
-                args,
-                trailing_block,
-            } => {
+            ExprKind::Call { callee, args } => {
                 self.expr_id(callee);
                 self.expr_range(args);
-                if let Some(block) = trailing_block {
-                    self.block_id(block);
-                }
             }
             ExprKind::StructLiteral { ty, fields } => {
                 self.type_expr_id(ty);

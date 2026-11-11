@@ -51,11 +51,7 @@ fn call(
     });
     let args = hir_pool.alloc_expr_list(args);
     hir_pool.alloc_expr(HirExpr {
-        kind: HirExprKind::Call {
-            callee,
-            args,
-            trailing_block: None,
-        },
+        kind: HirExprKind::Call { callee, args },
         ty,
         span,
     })
@@ -186,11 +182,7 @@ fn string_from(
         span,
     });
     let args = hir_pool.alloc_expr_list(&[text]);
-    Some(HirExprKind::Call {
-        callee,
-        args,
-        trailing_block: None,
-    })
+    Some(HirExprKind::Call { callee, args })
 }
 
 /// `String.pushStr(mut ref target, value)` for `target += value`.

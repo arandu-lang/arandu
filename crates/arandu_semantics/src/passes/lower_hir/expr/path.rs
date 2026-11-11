@@ -186,7 +186,6 @@ pub(super) fn lower_variant_sugar(
                     HirExprKind::Call {
                         callee,
                         args: args_range,
-                        trailing_block: None,
                     }
                 }
             } else {

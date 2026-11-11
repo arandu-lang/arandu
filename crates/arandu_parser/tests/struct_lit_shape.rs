@@ -28,16 +28,13 @@ fn fmt_expr(prog: &arandu_parser::Program, e: arandu_parser::ast_pool::ExprId) -
                 prog.pool.field_init_list(*fields).len()
             )
         }
-        ExprKind::Call {
-            callee,
-            trailing_block,
-            ..
-        } => {
-            format!(
-                "Call(trailing={}, cal={})",
-                trailing_block.is_some(),
-                fmt_expr(prog, *callee)
-            )
+        ExprKind::Call { callee, args } => {
+            let trailing = prog
+                .pool
+                .expr_list(*args)
+                .last()
+                .is_some_and(|&arg| matches!(prog.pool.expr(arg), ExprKind::Lambda { .. }));
+            format!("Call(trailing={trailing}, cal={})", fmt_expr(prog, *callee))
         }
         ExprKind::Field { base, field } => {
             format!("Field({}, .{})", fmt_expr(prog, *base), field)

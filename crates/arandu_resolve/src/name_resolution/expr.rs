@@ -126,19 +126,11 @@ impl<'a> Resolver<'a> {
                 self.resolve_expr(scope, *base);
                 self.resolve_expr(scope, *index);
             }
-            ExprKind::Call {
-                callee,
-                args,
-                trailing_block,
-                ..
-            } => {
+            ExprKind::Call { callee, args, .. } => {
                 self.resolve_expr(scope, *callee);
                 let arg_ids = self.pool.expr_list(*args);
                 for arg in arg_ids {
                     self.resolve_expr(scope, *arg);
-                }
-                if let Some(block_id) = trailing_block {
-                    self.resolve_block_child(scope, self.pool, self.pool.block(*block_id));
                 }
             }
             ExprKind::StructLiteral { ty, fields, .. } => {

@@ -30,12 +30,7 @@ pub(super) fn hole_parts(
     };
     match checker.pool.expr(expr) {
         ExprKind::Path { .. } if is_hole(expr) => Some((expr, None)),
-        ExprKind::Call {
-            callee,
-            args,
-            trailing_block: None,
-            ..
-        } if is_hole(*callee) => Some((*callee, Some(*args))),
+        ExprKind::Call { callee, args, .. } if is_hole(*callee) => Some((*callee, Some(*args))),
         _ => None,
     }
 }

@@ -285,3 +285,36 @@ fn a_lambda_with_annotated_parameters_needs_no_expected_type() {
     let untyped = errors("func main(): int {\n    let f = (x) => x\n    return 0\n}\n");
     assert_eq!(untyped, vec![DiagCode::T001CannotInferType]);
 }
+
+/// The editor reports what the build reports for a closure body: its
+/// synthesized method is checked with the function that creates it.
+#[test]
+fn a_consumed_capture_is_reported_in_the_editor() {
+    for body in [
+        "func make(text: strings.String): own () -> strings.String { return () => text }\n",
+        "func apply(f: () -> strings.String): strings.String { return f() }\nfunc cb(text: strings.String): strings.String { return apply(() => text) }\n",
+    ] {
+        let source = format!(
+            "import std.alloc.string as strings\n{body}func main(): int {{ return 0 }}\n"
+        );
+        assert_eq!(all_errors(&source), ["O016"], "{body}");
+    }
+}
+
+/// An owning closure that only assigns to its copy of a captured `Copy`
+/// local is warned (W009); one that reads its own state is not.
+#[test]
+fn a_captured_copy_that_is_only_assigned_warns() {
+    let warnings = |source: &str| -> Vec<String> {
+        let (db, file) = database(source);
+        arandu_query::file_ide_diagnostics(&db, file)
+            .iter()
+            .filter(|diagnostic| diagnostic.code.starts_with('W'))
+            .map(|diagnostic| diagnostic.code.clone())
+            .collect()
+    };
+    let lost = "func later(job: own () -> void) {\n    let mut j = job\n    j()\n}\nfunc main(): int {\n    let mut count = 0\n    later {\n        count += 1\n    }\n    return count\n}\n";
+    assert_eq!(warnings(lost), ["W009"]);
+    let stateful = "func counter(): own () -> int {\n    let mut n = 0\n    return () => {\n        n += 1\n        n\n    }\n}\nfunc main(): int {\n    let mut next = counter()\n    return next() - 1\n}\n";
+    assert!(warnings(stateful).is_empty(), "{:?}", warnings(stateful));
+}

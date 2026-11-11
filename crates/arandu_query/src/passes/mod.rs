@@ -87,6 +87,7 @@ pub use symbols::{
     cycle_recover_exported_symbols, cycle_recover_internal_symbols, exported_symbols,
     internal_symbols, local_symbols,
 };
+pub(crate) use typing::item_source_spans;
 pub use typing::{
     file_typeck_view, file_typing, ide_type_check, item_body_typeck, item_source_input,
     item_typing, type_check, FuncBodyInput, ItemSourceInput,

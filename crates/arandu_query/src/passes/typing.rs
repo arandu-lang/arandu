@@ -301,7 +301,7 @@ pub fn file_typing(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<TypeChe
 #[tracing::instrument(level = "trace", target = "arandu_query", skip(db), fields(
     query = "item_source_spans", file = ?file.file_id(db),
 ))]
-pub(super) fn item_source_spans(
+pub(crate) fn item_source_spans(
     db: &dyn ArandCompilerDb,
     file: SourceFile,
 ) -> Arc<rustc_hash::FxHashMap<arandu_middle::SymbolId, arandu_middle::Span>> {

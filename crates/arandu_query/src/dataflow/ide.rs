@@ -103,11 +103,83 @@ pub(super) fn collect_item_ide_diagnostics(
         }
     }
 
+    if let Some(runtime) = runtime {
+        for diagnostic in closure_diagnostics(db, file, item_sym, runtime) {
+            let converted = IdeDiagnostic::from_diag(&diagnostic, Some(item_sym), None);
+            if !out.contains(&converted) {
+                out.push(converted);
+            }
+        }
+    }
+
     out.sort_by(|a, b| {
         (a.start, a.end, &a.code, &a.message).cmp(&(b.start, b.end, &b.code, &b.message))
     });
     out.dedup();
     HashEq::new(out)
+}
+
+/// Diagnostics of the closure bodies `item` creates. A lambda's method and
+/// code are synthesized functions with no item of their own; the build
+/// checks them as units, and the editor reports the same at the lambda.
+fn closure_diagnostics(
+    db: &dyn ArandCompilerDb,
+    file: SourceFile,
+    item_sym: SymbolId,
+    item: &crate::runtime::RuntimeUnit,
+) -> Vec<Diagnostic> {
+    let closures = &item.context.type_info.closures;
+    if closures.is_empty() {
+        return Vec::new();
+    }
+    // A unit typed with its file sees every closure of the file; the item's
+    // are those written inside it.
+    let own = if item.local {
+        None
+    } else {
+        crate::passes::item_source_spans(db, file)
+            .get(&item_sym)
+            .copied()
+    };
+    let mut recipes: Vec<_> = closures
+        .values()
+        .filter(|recipe| {
+            own.is_none_or(|own| {
+                recipe.lambda_span.file_id == own.file_id
+                    && own.start <= recipe.lambda_span.start
+                    && recipe.lambda_span.end <= own.end
+            })
+        })
+        .collect();
+    recipes.sort_by_key(|recipe| (recipe.lambda_span.start, recipe.lambda_span.end));
+    let mut diagnostics = Vec::new();
+    for recipe in recipes {
+        let code = recipe.owning.as_ref().map(|code| code.symbol);
+        for symbol in std::iter::once(recipe.method_symbol).chain(code) {
+            let key = item
+                .instances
+                .iter()
+                .find(|(id, _)| *id == symbol)
+                .map_or_else(
+                    || arandu_middle::types::FunctionInstance {
+                        definition: symbol,
+                        arguments: Vec::new(),
+                    },
+                    |(_, key)| key.clone(),
+                );
+            let unit = crate::runtime::runtime_unit(
+                db,
+                crate::runtime::Instance::new(db, file, key.clone()),
+            );
+            let placed = crate::runtime::place_unit(db, &key, &unit.value);
+            let unit = placed.as_ref().unwrap_or(&unit.value);
+            diagnostics.extend(match &unit.result {
+                Ok(function) => function.diagnostics.iter().cloned(),
+                Err(errors) => errors.iter().cloned(),
+            });
+        }
+    }
+    diagnostics
 }
 
 pub(super) fn collect_file_ide_diagnostics(
@@ -307,7 +379,11 @@ pub(super) fn collect_item_flow(
     {
         out.push(IdeDiagnostic::from_diag(&d, Some(item_sym), Some(bid)));
     }
-    for (bid, d) in arandu_mir::move_checker::check_moves_by_block(amir, context.symbols.as_ref()) {
+    for (bid, d) in arandu_mir::move_checker::check_moves_by_block(
+        amir,
+        context.symbols.as_ref(),
+        &*context.type_info,
+    ) {
         out.push(IdeDiagnostic::from_diag(&d, Some(item_sym), Some(bid)));
     }
     for (bid, d) in arandu_mir::borrow_check::check_borrows_by_block_with_types(

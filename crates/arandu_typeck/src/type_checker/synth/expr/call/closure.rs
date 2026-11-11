@@ -1284,6 +1284,7 @@ fn callback_captures(
     is_move: bool,
 ) -> Option<Vec<Capture>> {
     let mutated = mutated_within(checker, lambda_span);
+    let read = read_within(checker, lambda_span);
     let mut seen = FxHashSet::default();
     let mut captures = Vec::new();
     let mut rejected = false;
@@ -1344,6 +1345,22 @@ fn callback_captures(
         } else {
             CaptureMode::Borrow
         };
+        // An owning closure holds its own copy of a `Copy` local. Assigning
+        // to it without ever reading it changes nothing anyone can see, as
+        // Rust warns for a `move` closure ("value captured is never read").
+        if mode == CaptureMode::Move && checker.type_info.is_copy(ty) && !read.contains(&symbol) {
+            checker.diagnostics.push(
+                crate::Diagnostic::warning(
+                    crate::DiagCode::W009CapturedCopyNeverRead,
+                    format!("the closure assigns to its own copy of '{name}' and never reads it"),
+                    use_span,
+                )
+                .with_label(use_span, format!("'{name}' outside the closure is unchanged"))
+                .with_hint(
+                    "an owning closure copies the `Copy` values it captures; to change the original, pass the block where a callback `() -> R` is expected, or return the new value",
+                ),
+            );
+        }
         captures.push(Capture {
             symbol,
             name,
@@ -1404,6 +1421,22 @@ fn mutated_within(checker: &TypeChecker<'_>, lambda_span: Span) -> FxHashSet<Sym
         }
     }
     mutated
+}
+
+/// Symbols read by an expression inside the lambda, as opposed to only
+/// being the target of an assignment.
+fn read_within(checker: &TypeChecker<'_>, lambda_span: Span) -> FxHashSet<SymbolId> {
+    checker
+        .resolved
+        .expr_symbols
+        .iter()
+        .zip(&checker.pool.expr_spans)
+        .filter_map(|(symbol, span)| {
+            symbol.filter(|_| {
+                *span != lambda_span && super::thread_target::span_contains(lambda_span, *span)
+            })
+        })
+        .collect()
 }
 
 fn place_root(checker: &TypeChecker<'_>, expr: ExprId) -> Option<SymbolId> {

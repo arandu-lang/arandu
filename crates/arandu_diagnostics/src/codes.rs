@@ -178,6 +178,9 @@ pub enum DiagCode {
     /// reference: its owner would destroy it again.
     O016MoveOutOfReference,
     O017StaticMutRequiresUnsafe,
+    /// A part of a value is moved out of a type with a `@Destructor`, which
+    /// would then run on an incomplete value.
+    O018MoveOutOfDestructor,
 
     // ── Warnings & Linting (W) ──
     W001VariableAssignedNotUsed,
@@ -188,6 +191,9 @@ pub enum DiagCode {
     W006UnhandledResult,
     W007UnusedImport,
     W008Reserved,
+    /// An owning closure assigns to its copy of a captured `Copy` local and
+    /// never reads it: the original is unchanged.
+    W009CapturedCopyNeverRead,
 
     // ── Unimplemented (U) ──
     U001FeatureNotSupported,
@@ -315,6 +321,7 @@ impl DiagCode {
             O015MoveOutOfIndex,
             O016MoveOutOfReference,
             O017StaticMutRequiresUnsafe,
+            O018MoveOutOfDestructor,
             W001VariableAssignedNotUsed,
             W002DeadCode,
             W003UnreachableCode,
@@ -323,6 +330,7 @@ impl DiagCode {
             W006UnhandledResult,
             W007UnusedImport,
             W008Reserved,
+            W009CapturedCopyNeverRead,
             U001FeatureNotSupported,
             ICELX001,
             ICEP001,
@@ -471,6 +479,7 @@ impl DiagCode {
             DiagCode::O015MoveOutOfIndex => "O015",
             DiagCode::O016MoveOutOfReference => "O016",
             DiagCode::O017StaticMutRequiresUnsafe => "O017",
+            DiagCode::O018MoveOutOfDestructor => "O018",
             DiagCode::W001VariableAssignedNotUsed => "W001",
             DiagCode::W002DeadCode => "W002",
             DiagCode::W003UnreachableCode => "W003",
@@ -479,6 +488,7 @@ impl DiagCode {
             DiagCode::W006UnhandledResult => "W006",
             DiagCode::W007UnusedImport => "W007",
             DiagCode::W008Reserved => "W008",
+            DiagCode::W009CapturedCopyNeverRead => "W009",
             DiagCode::U001FeatureNotSupported => "U001",
             DiagCode::ICELX001 => "ICE-LX-001",
             DiagCode::ICEP001 => "ICE-P-001",

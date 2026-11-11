@@ -410,8 +410,12 @@ pub fn moved_in_counts(func: &AmirFunc) -> Vec<u32> {
         .collect()
 }
 
-pub fn check_moves(func: &AmirFunc, symbols: &SymbolTable) -> Vec<Diagnostic> {
-    check_moves_by_block(func, symbols)
+pub fn check_moves(
+    func: &AmirFunc,
+    symbols: &SymbolTable,
+    types: &dyn arandu_middle::type_context::AmirTypeContext,
+) -> Vec<Diagnostic> {
+    check_moves_by_block(func, symbols, types)
         .into_iter()
         .map(|(_, d)| d)
         .collect()
@@ -422,6 +426,7 @@ pub fn check_moves(func: &AmirFunc, symbols: &SymbolTable) -> Vec<Diagnostic> {
 pub fn check_moves_by_block(
     func: &AmirFunc,
     symbols: &SymbolTable,
+    types: &dyn arandu_middle::type_context::AmirTypeContext,
 ) -> Vec<(crate::amir::BlockId, Diagnostic)> {
     let bump = bumpalo::Bump::new();
     let Some(block_in) = compute_move_in(func, &bump) else {
@@ -439,7 +444,12 @@ pub fn check_moves_by_block(
             func,
             &temp_origins,
             &mut state,
-            Some((symbols, block.id, &mut diagnostics)),
+            Some(walk::MoveDiagnostics {
+                symbols,
+                types,
+                block: block.id,
+                out: &mut diagnostics,
+            }),
         );
     }
 

@@ -1,0 +1,40 @@
+module memReplaceOwned
+
+// `mem.replace`, `mem.swap` and `mem.take` move values with destructors
+// through a reference, each read out and written back exactly once. They
+// are how a part of a value with a `@Destructor` is taken (O018 otherwise).
+
+import std.alloc.string as strings
+import std.core.mem as mem
+from std.core.option import { Option }
+
+struct Guard { name: strings.String, id: int }
+
+@Destructor
+func Guard.destroy(self: own Guard) { }
+
+func rename(g: mut ref Guard, name: strings.String): strings.String {
+    return mem.replace<strings.String>(mut ref g.name, name)
+}
+
+func main(): int {
+    let mut g = Guard { name: strings.String.from("old"), id: 1 }
+    let old = rename(mut ref g, strings.String.from("newer"))
+    if old.len() != 3 { return 1 }
+    if g.name.len() != 5 { return 2 }
+    let mut a = strings.String.from("a")
+    let mut b = strings.String.from("bbb")
+    mem.swap<strings.String>(mut ref a, mut ref b)
+    if a.len() != 3 || b.len() != 1 { return 3 }
+    let mut slot = Option.Some(strings.String.from("xy"))
+    let taken = mem.take<strings.String>(mut ref slot)
+    match taken {
+        Option.Some(text) => { if text.len() != 2 { return 4 } }
+        Option.None => { return 5 }
+    }
+    match slot {
+        Option.Some(_) => { return 6 }
+        Option.None => {}
+    }
+    return 0
+}

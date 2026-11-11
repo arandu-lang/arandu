@@ -90,9 +90,14 @@ extern "arandu-intrinsic" {
 /// assert(b == 100)
 /// ```
 public func swap<T>(x: mut ref T, y: mut ref T): void {
-    let tmp = *x
-    refWrite<T>(x, *y)
-    refWrite<T>(y, tmp)
+    // Each value is read out exactly once and written back exactly once, so
+    // neither place is left moved-from or destroyed twice.
+    unsafe {
+        let first = ptrRead<T>(x as ptr[T])
+        let second = ptrRead<T>(y as ptr[T])
+        ptrWrite<T>(x as ptr[T], second)
+        ptrWrite<T>(y as ptr[T], first)
+    }
 }
 
 /// Replaces the value at `dest` with `src`, returning the old value.
@@ -105,9 +110,13 @@ public func swap<T>(x: mut ref T, y: mut ref T): void {
 /// assert(buffer == 100)
 /// ```
 public func replace<T>(dest: mut ref T, src: T): T {
-    let old = *dest
-    refWrite<T>(dest, src)
-    return old
+    // The old value is read out and `src` written over it without running a
+    // destructor: ownership of the old value passes to the caller.
+    unsafe {
+        let old = ptrRead<T>(dest as ptr[T])
+        ptrWrite<T>(dest as ptr[T], src)
+        return old
+    }
 }
 
 /// Replaces the value at `dest` with `Option.None`, returning the previous value.

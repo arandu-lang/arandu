@@ -1473,6 +1473,50 @@ fn local_string_concatenation_frees_each_string_once() {
     run_emitted_c_with_asan(&c_source, "string_concat_local");
 }
 
+/// A part moved out of a value with a `@Destructor` is O018 wherever it
+/// goes; reading, borrowing, moving the whole value and `mem.replace` pass.
+#[test]
+fn moving_a_part_out_of_a_destructor_type_is_rejected_in_every_position() {
+    let guard = "import std.alloc.string as strings\nstruct Guard { name: strings.String, id: int }\n@Destructor\nfunc Guard.destroy(self: own Guard) { }\nstruct Outer { g: Guard, n: int }\nfunc eat(s: strings.String) { }\n";
+    for (name, body) in [
+        (
+            "return_field",
+            "func take(g: Guard): strings.String { return g.name }\n",
+        ),
+        ("let_field", "func take(g: Guard) { let n = g.name }\n"),
+        ("argument", "func take(g: Guard) { eat(g.name) }\n"),
+        (
+            "pattern",
+            "func take(g: Guard): int { return match g { Guard { name, id } => id } }\n",
+        ),
+        (
+            "nested",
+            "func take(o: Outer): strings.String { return o.g.name }\n",
+        ),
+    ] {
+        let stderr = check(
+            &format!("{guard}{body}func main(): int {{ return 0 }}\n"),
+            name,
+        );
+        assert!(stderr.contains("O018"), "{name}: {stderr}");
+    }
+    check_passes(
+        &format!(
+            "{guard}func read(g: Guard): int {{ return g.id + g.name.len() as int }}\nfunc whole(o: Outer): Guard {{ return o.g }}\nfunc main(): int {{ return 0 }}\n"
+        ),
+        "destructor_parts_read",
+    );
+}
+
+/// `mem.replace`, `mem.swap` and `mem.take` move values with destructors
+/// through references without destroying any of them twice.
+#[test]
+fn mem_replace_moves_owned_values_once() {
+    let source = include_str!("../../../../tests/corpus/mem_replace_owned.aru");
+    let c_source = emit_c(source, "mem_replace_owned");
+    run_emitted_c_with_asan(&c_source, "mem_replace_owned");
+}
+
 /// Owned text that is appended in a loop, reassigned, returned or viewed as a
 /// `str` is freed exactly once, with nothing left behind.
 #[test]

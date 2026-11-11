@@ -767,6 +767,15 @@ fn string_concatenation_agrees_on_every_backend() {
     let _ = fs::remove_file(path);
 }
 
+/// `mem.replace`, `mem.swap` and `mem.take` on values with destructors.
+#[test]
+fn mem_replace_of_owned_values_agrees_on_every_backend() {
+    let source = include_str!("../../../../tests/corpus/mem_replace_owned.aru");
+    for (backend, outcome) in outcomes_on("mem_replace_owned", source, false) {
+        assert_eq!(outcome, ProgramOutcome::Returned(0), "{backend}");
+    }
+}
+
 /// A block after a call is its last argument, `() => { ... }`: borrowed
 /// callbacks, mutation of a local through one and an owned closure.
 #[test]

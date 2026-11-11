@@ -323,6 +323,7 @@ Abaixo estão listados todos os diagnósticos mapeados para o compilador Arandu.
 | **O015** | `cannot move a value with a destructor out of an indexed place` | Error | `0.1.11` | Mover um elemento com destrutor para fora de `arr[i]`, `slice[i]` ou `vec[i]` deixaria o dono destruindo o mesmo valor de novo. Empreste o elemento ou use uma operação que retire o valor (`pop`, `swap`). |
 | **O016** | `cannot move a value out of the reference '{name}'` | Error | `0.3.0` | Consumir um valor não-`Copy` alcançado por `ref`/`mut ref` (`*r`, `r.campo`, captura emprestada de closure) criaria um segundo dono: o original ainda o usa e destrói. Use o valor pela referência (método, campo `Copy`, `ref`) ou capture-o com `move`. |
 | **O017** | `` access to `static mut` requires an `unsafe` block `` | Error | `0.3.0` | Acesso ou mutação de variável global mutável (`static mut`) exige bloco `unsafe`. |
+| **O018** | `cannot move a part out of a value with a destructor: '{name}'` | Error | `0.3.0` | Mover um campo (ou payload ligado por padrão) de um valor cujo tipo tem `@Destructor` deixaria o destrutor rodar sobre um valor incompleto e destruiria a parte duas vezes (E0509 do Rust). Vale em `return`, `let`, argumento e `match`. Leia campos `Copy`, empreste a parte ou troque-a com `mem.replace`. |
 
 
 ---
@@ -348,6 +349,7 @@ Abaixo estão listados todos os diagnósticos mapeados para o compilador Arandu.
 | **W006** | `unhandled result: value of type 'Result' must be checked or propagated` | Warning | `0.1.0` | Uma chamada que retorna `Result<T, E>` foi descartada silenciosamente. (Movido do antigo `T019`). |
 | **W007** | `unused import: '{name}'` | Warning | `0.1.0` | Um módulo ou símbolo foi importado no topo do arquivo mas nunca foi referenciado ou consumido no código. |
 | **W008** | *[Reservado / Obsoleto]* | - | `0.1.0` | *Avisava grafias legadas de anotações até a 0.2.0; desde então elas são `N012` com replacement para o nome canônico.* |
+| **W009** | `the closure assigns to its own copy of '{name}' and never reads it` | Warning | `0.3.0` | Uma closure com dono (`own`) copia os locais `Copy` que captura; atribuir à cópia sem lê-la não altera o local de fora nem é observado pela closure. Passe o bloco onde um callback emprestado `() -> R` é esperado, ou devolva o valor. |
 
 > [!NOTE]
 > **Decisão de Design sobre Shadows (`W004`)**: O shadowing de variáveis é classificado como um `Warning` (e não `Error`) no Arandu para permitir flexibilidade de escrita em escopos muito curtos de closures e lambdas iteradoras. No entanto, é fortemente alertado por padrão para evitar que desenvolvedores ocultem nomes acidentais em escopos maiores do compilador. Pode ser silenciado localmente com `@Suppress("shadowing")`.

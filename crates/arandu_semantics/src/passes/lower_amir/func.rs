@@ -240,6 +240,7 @@ pub(crate) fn lower_func(
     func_diagnostics.extend(arandu_mir::move_checker::check_moves(
         &raw_func,
         &tc.symbols,
+        &*tc.type_info,
     ));
 
     // Restore into ctx for phi elimination / rewrite.

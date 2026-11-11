@@ -313,8 +313,8 @@ func main() {
     assert!(
         diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.code == DiagCode::U001FeatureNotSupported),
-        "expected U001 for a partial move from a destructor type: {diagnostics:?}"
+            .any(|diagnostic| diagnostic.code == DiagCode::O018MoveOutOfDestructor),
+        "expected O018 for a partial move from a destructor type: {diagnostics:?}"
     );
 }
 

@@ -7,11 +7,21 @@ use crate::amir::{
     BlockId, LocalId, TempId, for_each_rvalue_operand, for_each_rvalue_place,
 };
 use crate::diagnostics::{DiagCode, Diagnostic};
+use crate::types::ArType;
 use smallvec::SmallVec;
 use std::collections::VecDeque;
 
 /// Sink for block-tagged move diagnostics during CFG walk.
-type MoveDiagSink<'a> = Option<(&'a SymbolTable, BlockId, &'a mut Vec<(BlockId, Diagnostic)>)>;
+/// Where diagnostics go during the reporting walk; `None` while the dataflow
+/// iterates to its fixpoint.
+pub(super) struct MoveDiagnostics<'a> {
+    pub(super) symbols: &'a SymbolTable,
+    pub(super) types: &'a dyn arandu_middle::type_context::AmirTypeContext,
+    pub(super) block: BlockId,
+    pub(super) out: &'a mut Vec<(BlockId, Diagnostic)>,
+}
+
+type MoveDiagSink<'a> = Option<MoveDiagnostics<'a>>;
 
 pub(super) fn compute_move_in<'bump>(
     func: &AmirFunc,
@@ -365,7 +375,13 @@ fn report_unrestored_reference_moves(
     state: &MoveState,
     diagnostics: &mut MoveDiagSink<'_>,
 ) {
-    let Some((symbols, block, diagnostics)) = diagnostics.as_mut() else {
+    let Some(MoveDiagnostics {
+        symbols,
+        block,
+        out: diagnostics,
+        ..
+    }) = diagnostics.as_mut()
+    else {
         return;
     };
     let reference_roots = temp_origins
@@ -538,7 +554,13 @@ fn consume_place(
         .any(|projection| matches!(projection, AmirProjection::Deref))
         && super::tracked_move_place(place).projections.is_empty()
     {
-        if let Some((symbols, block, diagnostics)) = diagnostics.as_mut() {
+        if let Some(MoveDiagnostics {
+            symbols,
+            block,
+            out: diagnostics,
+            ..
+        }) = diagnostics.as_mut()
+        {
             diagnostics.push((
                 *block,
                 move_diag(
@@ -553,8 +575,80 @@ fn consume_place(
         }
         return;
     }
+    if let Some(sink) = diagnostics.as_mut()
+        && moves_out_of_destructor(place, func, sink.symbols, sink.types)
+    {
+        sink.out.push((
+            sink.block,
+            move_diag(
+                DiagCode::O018MoveOutOfDestructor,
+                place.local,
+                func,
+                sink.symbols,
+                "cannot move a part out of a value with a destructor:",
+                "the destructor runs on the complete value; move the whole value, borrow the part, or replace it with `mem.replace`",
+            ),
+        ));
+    }
     check_consume_place(place, func, state, diagnostics, double_free);
     state.move_place(place);
+}
+
+/// Whether `place` is a part of a value whose type has a `@Destructor`
+/// (Rust's E0509). Parts reached through a reference are restored before
+/// the function returns, which O016 checks.
+fn moves_out_of_destructor(
+    place: &AmirPlace,
+    func: &AmirFunc,
+    symbols: &SymbolTable,
+    types: &dyn arandu_middle::type_context::AmirTypeContext,
+) -> bool {
+    let Some(local) = func.locals.get(place.local.as_usize()) else {
+        return false;
+    };
+    let interner = types.type_interner();
+    let mut current = local.ty;
+    for projection in &place.projections {
+        if matches!(projection, AmirProjection::Variant(_)) {
+            continue;
+        }
+        if matches!(projection, AmirProjection::Deref) {
+            return false;
+        }
+        if types.destructor_for_type(current).is_some() {
+            return true;
+        }
+        let next = match projection {
+            AmirProjection::Field(field) => symbols.try_get(*field).and_then(|field| {
+                arandu_middle::layout::instantiated_field_type(
+                    &interner.resolve(current),
+                    &field.name,
+                    interner,
+                    types,
+                )
+            }),
+            AmirProjection::Payload { field_ty, .. } => Some(*field_ty),
+            AmirProjection::TupleField(index) => match interner.resolve(current) {
+                ArType::Tuple(items) => interner.type_args(items).get(*index).copied(),
+                _ => None,
+            },
+            AmirProjection::Index(_) | AmirProjection::IndexConstant(_) => {
+                match interner.resolve(current) {
+                    ArType::Array(_, item)
+                    | ArType::ConstArray(_, item)
+                    | ArType::Slice(item)
+                    | ArType::MutSlice(item) => Some(item),
+                    _ => None,
+                }
+            }
+            AmirProjection::Variant(_) | AmirProjection::Deref => None,
+        };
+        let Some(next) = next else {
+            return false;
+        };
+        current = next;
+    }
+    false
 }
 
 fn check_place_read(
@@ -572,7 +666,13 @@ fn check_place_state(
     func: &AmirFunc,
     diagnostics: &mut MoveDiagSink<'_>,
 ) {
-    let Some((symbols, block, diagnostics)) = diagnostics.as_mut() else {
+    let Some(MoveDiagnostics {
+        symbols,
+        block,
+        out: diagnostics,
+        ..
+    }) = diagnostics.as_mut()
+    else {
         return;
     };
     let block = *block;
@@ -610,7 +710,13 @@ fn check_consume_place(
     diagnostics: &mut MoveDiagSink<'_>,
     double_free: bool,
 ) {
-    let Some((symbols, block, diagnostics)) = diagnostics.as_mut() else {
+    let Some(MoveDiagnostics {
+        symbols,
+        block,
+        out: diagnostics,
+        ..
+    }) = diagnostics.as_mut()
+    else {
         return;
     };
     let block = *block;

@@ -662,9 +662,11 @@ pub fn block_diagnostics(
                 out.push(IdeDiagnostic::from_diag(&d, Some(func_sym), Some(bid)));
             }
         }
-        for (bid, d) in
-            arandu_mir::move_checker::check_moves_by_block(amir, context.symbols.as_ref())
-        {
+        for (bid, d) in arandu_mir::move_checker::check_moves_by_block(
+            amir,
+            context.symbols.as_ref(),
+            &*context.type_info,
+        ) {
             if bid == block {
                 out.push(IdeDiagnostic::from_diag(&d, Some(func_sym), Some(bid)));
             }

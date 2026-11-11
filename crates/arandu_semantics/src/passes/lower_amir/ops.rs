@@ -45,9 +45,13 @@ impl LowerCtx<'_> {
 
             self.builder.current_block = Some(bb_right);
             let start_owned = self.owned_string_temps.clone();
-            let right_op = self.lower_expr(right, None, symbols)?;
-            // Temporaries of the right operand exist only on this edge; free
-            // them here rather than at the join, where they are undefined.
+            // The right operand is its own temporary scope, as in Rust: what
+            // it creates exists only on this edge, so it is freed here rather
+            // than at the join, where it is undefined.
+            self.begin_local_scope();
+            let right_op = self.lower_expr(right, None, symbols);
+            self.end_local_scope();
+            let right_op = right_op?;
             self.free_new_owned_string_temps(&start_owned, None);
             if self.builder.current_block.is_some() {
                 let right_block = self.require_block()?;

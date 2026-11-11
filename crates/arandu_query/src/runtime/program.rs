@@ -427,24 +427,36 @@ pub fn runtime_program(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Run
                         ),
                 );
             }
-            // Gen payload drop thunks can reference a destructor without
-            // a source/AMIR call. Its concrete signature is still a real
-            // executable dependency, not a guessed backend-only recipe.
-            for destructor in checked.context.type_info.destructor_instances.values() {
-                let key = checked
-                    .instances
-                    .iter()
-                    .find(|(id, _)| id == destructor)
-                    .map_or_else(
-                        || FunctionInstance {
-                            definition: *destructor,
-                            arguments: Vec::new(),
-                        },
-                        |(_, key)| key.clone(),
-                    );
-                if !callees.contains(&key) {
-                    callees.push(key);
+            // Cleanup runs the destructors of the types the body holds, Gen
+            // payload drop thunks included, with no source/AMIR call; only
+            // those are executable dependencies, not every destructor the
+            // context can see.
+            let type_info = &checked.context.type_info;
+            let destructors = arandu_mir::reachability::implicit_destructors(
+                &unit.function,
+                &type_info.type_interner,
+                type_info.as_ref(),
+            );
+            match destructors {
+                Ok(destructors) => {
+                    for destructor in destructors {
+                        let key = checked
+                            .instances
+                            .iter()
+                            .find(|(id, _)| *id == destructor)
+                            .map_or_else(
+                                || FunctionInstance {
+                                    definition: destructor,
+                                    arguments: Vec::new(),
+                                },
+                                |(_, key)| key.clone(),
+                            );
+                        if !callees.contains(&key) {
+                            callees.push(key);
+                        }
+                    }
                 }
+                Err(error) => diagnostics.push(error),
             }
             callees.sort_by_cached_key(|key| {
                 (

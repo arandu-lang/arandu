@@ -121,6 +121,7 @@ pub fn clif_type_with_float(ty: &ArType, ptr_type: Type, float_type: Type) -> Cl
         ArType::Err => ClifType::Concrete(ptr_type),
         ArType::Void
         | ArType::Error
+        | ArType::Infer(_)
         | ArType::FrozenConst(_)
         | ArType::Const(_)
         | ArType::ConstParam(_) => ClifType::Void,

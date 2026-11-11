@@ -109,7 +109,8 @@ fn backing_type_safe(
             | ArType::IntLiteral
             | ArType::FloatLiteral
             | ArType::Err
-            | ArType::Error => false,
+            | ArType::Error
+            | ArType::Infer(_) => false,
         }
     }
     visit(ty, interner, provider, 0, views)
@@ -368,7 +369,8 @@ pub fn function_scratch_safe(
         | ArType::Const(_)
         | ArType::ConstParam(_)
         | ArType::Err
-        | ArType::Error => return false,
+        | ArType::Error
+        | ArType::Infer(_) => return false,
     }
     for block in &function.blocks {
         if matches!(block.terminator, AmirTerminator::Suspend { .. }) {

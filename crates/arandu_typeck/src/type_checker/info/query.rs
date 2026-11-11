@@ -77,6 +77,7 @@ impl TypeInfo {
                 | ArType::Err
                 | ArType::Void
                 | ArType::Error
+                | ArType::Infer(_)
                 | ArType::IntLiteral
                 | ArType::FloatLiteral => {}
             }
@@ -492,7 +493,8 @@ impl TypeInfo {
             | ArType::Void
             | ArType::IntLiteral
             | ArType::FloatLiteral
-            | ArType::Error => {}
+            | ArType::Error
+            | ArType::Infer(_) => {}
         }
         visiting.pop();
         Ok(())
@@ -580,7 +582,8 @@ impl TypeInfo {
             | ArType::Range(_)
             | ArType::Err
             | ArType::Void
-            | ArType::Error => false,
+            | ArType::Error
+            | ArType::Infer(_) => false,
         }
     }
 

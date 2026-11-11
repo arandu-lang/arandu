@@ -1,5 +1,6 @@
 mod ar_type;
 mod borrow;
+pub mod infer;
 mod primitive;
 mod result_option;
 mod shape;
@@ -26,7 +27,7 @@ pub use result_option::{
 };
 pub use shape::{FunctionInstance, TypeShape, TypeShapeError};
 pub use subst::{GenericSubst, build_subst, build_subst_ids, substitute_type, substitute_type_id};
-pub use type_interner::{TypeId, TypeInterner};
+pub use type_interner::{InferKind, TypeId, TypeInterner};
 pub use unify::{
     is_assignable, is_assignable_return_type, resolve_literal_pair, unify, unify_return_type,
 };

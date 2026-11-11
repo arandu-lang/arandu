@@ -255,5 +255,7 @@ pub(in crate::type_checker::synth::expr) fn synth_binary_expr(
         }
     };
 
+    let left_ty_id = checker.settle_operand(left_ty_id, Some(right_ty_id));
+    let right_ty_id = checker.settle_operand(right_ty_id, Some(left_ty_id));
     super::result::synth_binary_result(checker, op, operands, (left_ty_id, right_ty_id), span)
 }

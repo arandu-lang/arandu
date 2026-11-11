@@ -204,6 +204,7 @@ pub(in crate::type_checker::synth::expr) fn synth_binary_unary_expr(
                     }
 
                     let expr_ty_id = synth_expr_expected(checker, inner_id, expected);
+                    let expr_ty_id = checker.settle_operand(expr_ty_id, expected);
                     // Bind the negation to the operand's literal group (peeling
                     // groups like `-(128)`) so late constraints see it, and
                     // mark the occurrence as negated so the retroactive T038
@@ -263,6 +264,7 @@ pub(in crate::type_checker::synth::expr) fn synth_binary_unary_expr(
                     let int_expected =
                         expected.filter(|&exp_id| checker.resolve(exp_id).is_integer());
                     let expr_ty_id = synth_expr_expected(checker, inner_id, int_expected);
+                    let expr_ty_id = checker.settle_operand(expr_ty_id, int_expected);
                     let expr_ty = checker.resolve(expr_ty_id);
                     if expr_ty.is_error() {
                         return Some(checker.intern(ArType::Error));

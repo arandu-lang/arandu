@@ -255,6 +255,7 @@ pub(crate) fn satisfies(
             | ArType::ConstParam(_)
             | ArType::Err
             | ArType::Error
+            | ArType::Infer(_)
             | ArType::IntLiteral
             | ArType::FloatLiteral => return false,
             ArType::Vector(_)

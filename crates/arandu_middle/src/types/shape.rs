@@ -460,6 +460,8 @@ impl TypeShape {
                 ArType::IntLiteral => Self::IntLiteral,
                 ArType::FloatLiteral => Self::FloatLiteral,
                 ArType::Error => Self::Error,
+                // Inference variables are local to one type check.
+                ArType::Infer(_) => return Err(TypeShapeError::InvalidType),
             },
         )
     }

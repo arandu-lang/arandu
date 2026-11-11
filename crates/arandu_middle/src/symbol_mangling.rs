@@ -162,7 +162,7 @@ fn mangle_type_into(out: &mut String, ty: &ArType, symbols: &SymbolTable, intern
         ArType::Err => out.push_str("err"),
         ArType::IntLiteral => out.push_str("int"),
         ArType::FloatLiteral => out.push_str("float"),
-        ArType::Error => out.push_str("error"),
+        ArType::Error | ArType::Infer(_) => out.push_str("error"),
     }
 }
 

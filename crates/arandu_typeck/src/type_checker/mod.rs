@@ -8,6 +8,7 @@ pub mod check;
 pub mod constraints;
 pub mod context;
 pub mod errors;
+mod infer;
 pub mod info;
 pub mod provenance;
 pub mod solver;
@@ -169,6 +170,8 @@ pub struct TypeChecker<'a> {
     /// Concrete owner arguments during isolated instance checking. Source
     /// templates keep this empty; it never becomes exported declaration data.
     pub(crate) generic_substitution: arandu_middle::types::GenericSubst,
+    /// Inference variables of the body being checked (S1).
+    pub(crate) infer: infer::InferState,
 }
 
 /// Identity of the item that encloses a closure.
@@ -292,6 +295,7 @@ impl<'a> TypeChecker<'a> {
             current_observed_effects: arandu_middle::EffectFlags::NONE,
             literal_table: solver::LiteralTable::new(),
             generic_substitution: arandu_middle::types::GenericSubst::new(),
+            infer: infer::InferState::default(),
         }
     }
 
@@ -714,7 +718,12 @@ impl TypeChecker<'_> {
     }
 
     #[must_use]
-    pub fn finish(self) -> TypeCheckResult {
+    pub fn finish(mut self) -> TypeCheckResult {
+        // Every body writes its variables back when it ends; a path that
+        // created one outside a body must not let it reach a later phase.
+        if self.type_info.type_interner.has_infer_vars() {
+            self.write_back_inference();
+        }
         TypeCheckResult {
             symbols: self.symbols,
             resolved: self.resolved,

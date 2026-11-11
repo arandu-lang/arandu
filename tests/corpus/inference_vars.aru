@@ -1,0 +1,81 @@
+module inferenceVars
+
+import std.alloc.vec as vec
+
+// Inference variables (TYP.NEXT S1): a generic parameter nothing fixes at its
+// call is a variable that later uses of the value bind.
+
+func identity<T>(value: T): T {
+    return value
+}
+
+func nothing<T>(): Option<T> {
+    return Option.None
+}
+
+func sumWide(items: ref vec.Vec<i64>): i64 {
+    let mut total: i64 = 0
+    let mut index: usize = 0
+    while index < items.len() {
+        match items.getCopy(index) {
+            Option.Some(value) => { total += value }
+            Option.None => {}
+        }
+        index += 1
+    }
+    return total
+}
+
+// The element type comes from the first push.
+func pushed(): int {
+    let mut items = vec.Vec.new()
+    items.push(40)
+    items.push(2)
+    let mut total = 0
+    match items.pop() {
+        Option.Some(value) => { total += value }
+        Option.None => { return 1 }
+    }
+    match items.pop() {
+        Option.Some(value) => { total += value }
+        Option.None => { return 2 }
+    }
+    if total != 42 { return 3 }
+    return 0
+}
+
+// A literal pushed before the width is known takes the width of a later use.
+func widened(): int {
+    let mut items = vec.Vec.new()
+    items.push(5000000000)
+    items.push(7)
+    if sumWide(ref items) != 5000000007 { return 1 }
+    return 0
+}
+
+// An assignment fixes a generic result.
+func assigned(): int {
+    let mut value = nothing()
+    match value {
+        Option.Some(_) => { return 1 }
+        Option.None => {}
+    }
+    value = Option.Some(identity(9))
+    match value {
+        Option.Some(nine) => {
+            if nine != 9 { return 2 }
+        }
+        Option.None => { return 3 }
+    }
+    return 0
+}
+
+func main(): int {
+    let p = pushed()
+    if p != 0 { return 10 + p }
+    let w = widened()
+    if w != 0 { return 20 + w }
+    let a = assigned()
+    if a != 0 { return 30 + a }
+    return 0
+}

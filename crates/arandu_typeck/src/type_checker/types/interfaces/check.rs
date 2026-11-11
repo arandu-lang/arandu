@@ -13,6 +13,20 @@ pub(crate) fn check_instantiation_constraints(
     arg_types: &[ArType],
     span: Span,
 ) {
+    // Bounds over an argument still being inferred wait for the body to
+    // bind it (S1); the write-back checks them with the solved arguments.
+    if checker.type_info.type_interner.has_infer_vars() {
+        let ids = arg_types
+            .iter()
+            .map(|arg| checker.intern(arg.clone()))
+            .collect::<Vec<_>>();
+        if ids.iter().any(|&id| {
+            arandu_middle::types::infer::contains_infer(id, &checker.type_info.type_interner)
+        }) {
+            checker.defer_instantiation(param_symbols, &ids, span);
+            return;
+        }
+    }
     for (&param_sym, arg_ty) in param_symbols.iter().zip(arg_types) {
         if matches!(arg_ty, ArType::Error) {
             continue;

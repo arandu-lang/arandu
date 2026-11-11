@@ -242,7 +242,8 @@ pub fn instantiate_function(
             | ArType::Void
             | ArType::IntLiteral
             | ArType::FloatLiteral
-            | ArType::Error => {}
+            | ArType::Error
+            | ArType::Infer(_) => {}
         }
         let ArType::Named(nominal, arguments) = resolved else {
             continue;

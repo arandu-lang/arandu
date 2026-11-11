@@ -49,6 +49,9 @@ impl super::LayoutEngine {
             },
             ArType::Vector(_) => TypeLayout::simple(16, 16),
             ArType::IntLiteral => TypeLayout::simple(4, 4),
+            // An unresolved inference variable has no layout; type checking
+            // resolves every one before layout is asked for.
+            ArType::Infer(_) => return Err(LayoutError::UnknownType),
             ArType::FloatLiteral => {
                 let f = self.data_layout.float;
                 TypeLayout::simple(f.size, f.abi_align)

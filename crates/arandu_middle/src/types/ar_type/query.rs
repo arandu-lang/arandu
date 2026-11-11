@@ -144,6 +144,7 @@ impl ArType {
             | ArType::Void
             | ArType::IntLiteral
             | ArType::FloatLiteral
+            | ArType::Infer(_)
             | ArType::Error
             | ArType::FrozenConst(_)
             | ArType::Const(_)
@@ -308,6 +309,8 @@ impl ArType {
             ArType::Void => "void".to_string(),
             ArType::IntLiteral => "int".to_string(),
             ArType::FloatLiteral => "float".to_string(),
+            // Like rustc, a type not inferred yet is shown as `_`.
+            ArType::Infer(_) => "_".to_string(),
             ArType::Error => "<error>".to_string(),
         }
     }
@@ -365,6 +368,7 @@ impl ArType {
             | ArType::Slice(_)
             | ArType::GenRef => true,
             ArType::Error | ArType::Void | ArType::Err => true,
+            ArType::Infer(_) => false,
             // Named / aggregates: structural decision needs `TypeInfo::is_copy`.
             ArType::Named(_, _)
             | ArType::Func(_, _)

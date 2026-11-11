@@ -137,7 +137,7 @@ pub(in crate::stable_hash) fn hash_ar_type(hasher: &mut Hasher, ty: &arandu_midd
         ArType::FloatLiteral => {
             hasher.update(&[22]);
         }
-        ArType::Error => {
+        ArType::Error | ArType::Infer(_) => {
             hasher.update(&[23]);
         }
     }

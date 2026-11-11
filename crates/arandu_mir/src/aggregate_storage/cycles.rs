@@ -72,7 +72,8 @@ pub(super) fn block_param_safe(
         | ArType::Const(_)
         | ArType::ConstParam(_)
         | ArType::Err
-        | ArType::Error => false,
+        | ArType::Error
+        | ArType::Infer(_) => false,
     }
 }
 

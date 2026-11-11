@@ -21,6 +21,9 @@ mod file_highlights;
 #[path = "query_suite/generic_cross_module.rs"]
 mod generic_cross_module;
 
+#[path = "query_suite/inference_vars.rs"]
+mod inference_vars;
+
 #[path = "query_suite/indirect_call.rs"]
 mod indirect_call;
 

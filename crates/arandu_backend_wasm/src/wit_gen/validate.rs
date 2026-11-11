@@ -159,7 +159,8 @@ pub(crate) fn validate_vector_boundaries(
             | ArType::Void
             | ArType::IntLiteral
             | ArType::FloatLiteral
-            | ArType::Error => {}
+            | ArType::Error
+            | ArType::Infer(_) => {}
         }
     }
     Ok(())

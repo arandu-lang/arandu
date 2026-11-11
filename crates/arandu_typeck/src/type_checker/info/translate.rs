@@ -241,7 +241,9 @@ pub fn translate_type(ty: &ArType, from: &TypeInterner, to: &mut TypeInterner) -
         }
         ArType::Err => ArType::Err,
         ArType::Void => ArType::Void,
-        ArType::Error => ArType::Error,
+        // A variable is local to one interner's body check; one crossing to
+        // another interner was never resolved and stays poison.
+        ArType::Error | ArType::Infer(_) => ArType::Error,
         ArType::IntLiteral => ArType::IntLiteral,
         ArType::Vector(vector) => ArType::Vector(*vector),
         ArType::FloatLiteral => ArType::FloatLiteral,

@@ -126,7 +126,7 @@ impl HashContext<'_> {
             ArType::Void => self.hash.tag(17),
             ArType::IntLiteral => self.hash.tag(18),
             ArType::FloatLiteral => self.hash.tag(19),
-            ArType::Error => self.hash.tag(20),
+            ArType::Error | ArType::Infer(_) => self.hash.tag(20),
             ArType::ConstArray(param, inner) => {
                 self.hash.tag(21);
                 self.symbol(*param);

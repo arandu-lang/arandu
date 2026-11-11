@@ -95,6 +95,11 @@ pub enum ArType {
     /// Absorbs any float context (f32, f64, float).
     FloatLiteral,
 
+    /// An inference variable of the type checker (TYP.NEXT S1). The interner
+    /// resolves a bound variable to its binding; an unbound one never
+    /// survives type checking, so phases after it never observe this variant.
+    Infer(u32),
+
     /// Poison type — operations on Error never produce new errors.
     /// This is the key to preventing cascading error messages.
     Error,

@@ -83,6 +83,27 @@ pub struct TypeInterner {
     types: RwLock<Vec<ArType>>,
     /// Arena-backed type argument storage.
     type_args_pool: RwLock<TypeArgsPool>,
+    /// Inference variables of the body being type checked (S1), indexed by
+    /// the `u32` of [`ArType::Infer`]. Resolution follows a bound variable to
+    /// its binding, so every reader of the interner sees the solved type.
+    infer: RwLock<Vec<InferSlot>>,
+}
+
+/// What an inference variable may still become.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InferKind {
+    /// Any type.
+    General,
+    /// An integer type: the variable met an integer literal.
+    Int,
+    /// A float type: the variable met a float literal.
+    Float,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct InferSlot {
+    binding: Option<TypeId>,
+    kind: InferKind,
 }
 
 impl TypeInterner {
@@ -92,6 +113,7 @@ impl TypeInterner {
             map: RwLock::new(FxHashMap::default()),
             types: RwLock::new(Vec::new()),
             type_args_pool: RwLock::new(TypeArgsPool::default()),
+            infer: RwLock::new(Vec::new()),
         };
         // Pre-intern all Primitive variants
         let primitives = [
@@ -219,14 +241,133 @@ impl TypeInterner {
     /// Panics if `id` was not produced by this interner.
     #[must_use]
     pub fn resolve(&self, id: TypeId) -> ArType {
-        self.types.read().unwrap_or_else(|e| e.into_inner())[id.as_usize()].clone()
+        let ty = self.types.read().unwrap_or_else(|e| e.into_inner())[id.as_usize()].clone();
+        match ty {
+            ArType::Infer(_) => {
+                let end = self.follow(id);
+                if end == id { ty } else { self.resolve(end) }
+            }
+            ty => ty,
+        }
     }
 
     /// Borrow the interned type for the duration of `f` (no `ArType` clone).
     #[inline]
     pub fn with_type<R>(&self, id: TypeId, f: impl FnOnce(&ArType) -> R) -> R {
         let types = self.types.read().unwrap_or_else(|e| e.into_inner());
+        if matches!(types[id.as_usize()], ArType::Infer(_)) {
+            drop(types);
+            let id = self.follow(id);
+            let types = self.types.read().unwrap_or_else(|e| e.into_inner());
+            return f(&types[id.as_usize()]);
+        }
         f(&types[id.as_usize()])
+    }
+
+    /// The end of a chain of bound inference variables; `id` itself when it
+    /// is not a bound variable.
+    #[inline]
+    fn follow(&self, mut id: TypeId) -> TypeId {
+        loop {
+            let var = match self
+                .types
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(id.as_usize())
+            {
+                Some(ArType::Infer(var)) => *var,
+                _ => return id,
+            };
+            match self.infer_binding(var) {
+                Some(binding) if binding != id => id = binding,
+                _ => return id,
+            }
+        }
+    }
+
+    /// A new unbound inference variable.
+    pub fn fresh_infer(&self, kind: InferKind) -> TypeId {
+        let var = {
+            let mut infer = self.infer.write().unwrap_or_else(|e| e.into_inner());
+            let var = u32::try_from(infer.len()).unwrap_or(u32::MAX);
+            infer.push(InferSlot {
+                binding: None,
+                kind,
+            });
+            var
+        };
+        self.intern(ArType::Infer(var))
+    }
+
+    /// Whether the body being checked has created any inference variable.
+    #[must_use]
+    pub fn has_infer_vars(&self) -> bool {
+        !self
+            .infer
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty()
+    }
+
+    /// Number of inference variables created so far.
+    #[must_use]
+    pub fn infer_var_count(&self) -> u32 {
+        u32::try_from(self.infer.read().unwrap_or_else(|e| e.into_inner()).len())
+            .unwrap_or(u32::MAX)
+    }
+
+    #[must_use]
+    pub fn infer_binding(&self, var: u32) -> Option<TypeId> {
+        self.infer
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(var as usize)
+            .and_then(|slot| slot.binding)
+    }
+
+    #[must_use]
+    pub fn infer_kind(&self, var: u32) -> InferKind {
+        self.infer
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(var as usize)
+            .map_or(InferKind::General, |slot| slot.kind)
+    }
+
+    /// Narrows an unbound variable to integers or floats.
+    pub fn set_infer_kind(&self, var: u32, kind: InferKind) {
+        if let Some(slot) = self
+            .infer
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_mut(var as usize)
+            && slot.binding.is_none()
+        {
+            slot.kind = kind;
+        }
+    }
+
+    /// Binds an unbound variable. The caller has checked compatibility and
+    /// that `var` does not occur in `ty`.
+    pub fn bind_infer(&self, var: u32, ty: TypeId) {
+        if let Some(slot) = self
+            .infer
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_mut(var as usize)
+            && slot.binding.is_none()
+        {
+            slot.binding = Some(ty);
+        }
+    }
+
+    /// Forgets the variables of the body just checked; its recorded types
+    /// were written back without them.
+    pub fn reset_infer(&self) {
+        self.infer
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
     }
 
     /// Whether the interned type is copy under v0.1 rules (no clone of `ArType`).
@@ -287,6 +428,7 @@ impl TypeInterner {
     /// Try to resolve a `TypeId`, returning `None` if out of range.
     #[must_use]
     pub fn try_resolve(&self, id: TypeId) -> Option<ArType> {
+        let id = self.follow(id);
         self.types
             .read()
             .unwrap_or_else(|e| e.into_inner())
@@ -362,6 +504,9 @@ impl Clone for TypeInterner {
                     .read()
                     .unwrap_or_else(|e| e.into_inner())
                     .clone(),
+            ),
+            infer: std::sync::RwLock::new(
+                self.infer.read().unwrap_or_else(|e| e.into_inner()).clone(),
             ),
         }
     }

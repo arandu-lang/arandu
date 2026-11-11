@@ -39,7 +39,22 @@ pub(crate) fn infer_and_instantiate_func(
 
     let mut concrete = Vec::with_capacity(type_params.len());
     for &p in type_params {
-        let tid = bindings.get(&p).copied()?;
+        let tid = match bindings.get(&p).copied() {
+            Some(tid) => tid,
+            // Nothing here fixes this type parameter (`Vec.new()`): a
+            // variable stands for it until the body binds it (S1). Callback
+            // parameters are fixed by their closures, and const parameters
+            // by their values, never by later uses.
+            None if !checker
+                .symbols
+                .try_get(p)
+                .is_some_and(|symbol| symbol.kind == arandu_middle::SymbolKind::ConstParam)
+                && !checker.type_info.callback_bounds.contains_key(&p) =>
+            {
+                checker.fresh_type_var(p, owner, call_span)
+            }
+            None => return None,
+        };
         if checker.resolve(tid).is_error() {
             return None;
         }

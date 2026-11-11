@@ -213,7 +213,8 @@ pub fn function_dependencies(
             | ArType::Void
             | ArType::IntLiteral
             | ArType::FloatLiteral
-            | ArType::Error => {}
+            | ArType::Error
+            | ArType::Infer(_) => {}
         }
     }
     // Resolve the same alias identities accepted by native call lowering.

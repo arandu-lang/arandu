@@ -351,7 +351,8 @@ pub(crate) fn is_memory_type(ty: &ArType) -> bool {
         | ArType::ConstParam(_)
         | ArType::Void
         | ArType::Err
-        | ArType::Error => false,
+        | ArType::Error
+        | ArType::Infer(_) => false,
         // Pointers and safe refs are scalar values (fat/thin pointers), not memory objects.
         ArType::Ptr(_)
         | ArType::Ref(_)

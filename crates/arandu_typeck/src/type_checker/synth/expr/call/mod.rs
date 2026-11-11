@@ -14,7 +14,7 @@ pub(crate) use closure::{
     synth_args_with_callbacks, synth_call_arg,
 };
 pub(crate) use instantiate::{bind_type_params, infer_and_instantiate_func};
-pub(crate) use owning::{adjust_to_expected, owning_closure_signature};
+pub(crate) use owning::{adjust_to_expected, owning_closure_code, owning_closure_signature};
 pub(crate) use thread_target::check_target_thread_capabilities;
 
 use arandu_lexer::Span;

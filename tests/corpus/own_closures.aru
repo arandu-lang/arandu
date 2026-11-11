@@ -66,8 +66,17 @@ struct Job {
     base: int,
 }
 
+// A field holding a closure is called like a method.
 func runJob(job: Job): int {
-    return (job.run)(job.base)
+    return job.run(job.base)
+}
+
+struct Op {
+    apply: (int) -> int,
+}
+
+func Op.twice(self: ref Op, x: int): int {
+    return self.apply(self.apply(x))
 }
 
 func counting(): int {
@@ -253,6 +262,9 @@ func inferred(): int {
     if larger(3, 9) != 9 { return 3 }
     if applyTwice(4, double) != 16 { return 4 }
     if applyTwice(1, add) != 22 { return 5 }
+    let op = Op { apply: double }
+    if op.apply(3) != 6 { return 6 }
+    if op.twice(3) != 12 { return 7 }
     return 0
 }
 

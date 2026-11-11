@@ -111,17 +111,27 @@ pub(super) fn lower_call(
                     },
                     _ => None,
                 };
-                field_callee.and_then(|fc| match pool.expr(fc) {
-                    ExprKind::Field { base, field, .. }
-                    | ExprKind::SafeField { base, field, .. } => {
-                        if super::lookup_namespace_field(pool, *base, field, type_check).is_some() {
-                            None
-                        } else {
-                            Some(*base)
+                // `job.run(x)` calling a field holds no receiver.
+                let calls_field = type_check
+                    .resolved
+                    .expr_symbol(callee_id)
+                    .and_then(|symbol| type_check.symbols.try_get(symbol))
+                    .is_some_and(|symbol| symbol.kind == arandu_middle::SymbolKind::Field);
+                field_callee
+                    .filter(|_| !calls_field)
+                    .and_then(|fc| match pool.expr(fc) {
+                        ExprKind::Field { base, field, .. }
+                        | ExprKind::SafeField { base, field, .. } => {
+                            if super::lookup_namespace_field(pool, *base, field, type_check)
+                                .is_some()
+                            {
+                                None
+                            } else {
+                                Some(*base)
+                            }
                         }
-                    }
-                    _ => None,
-                })
+                        _ => None,
+                    })
             };
             let mut callee_vid = super::lower_expr(type_check, pool, hir_pool, callee_id)?;
             // A called generic path stays a path: the call instantiates it.

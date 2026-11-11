@@ -213,6 +213,12 @@ pub(crate) fn synth_method_call(
             }
         }
         (params, ret, Some(sym))
+    } else if let Some(field) = callable_field(checker, actual_base_ty_id, method) {
+        // `job.run(x)` with no method `run` calls the field `run` when it
+        // holds a function or a closure, as Swift and Kotlin do. Naming the
+        // field on the callee tells lowering this is not a method call.
+        Arc::make_mut(&mut checker.resolved).expr_ref(callee, field);
+        return None;
     } else {
         // Root fix: missing method (including private methods not present in
         // the import export table) must diagnose here. Returning `None` let the
@@ -399,4 +405,19 @@ pub(crate) fn synth_method_call(
     checker.record_expr_type(callee, func_id);
 
     Some(ret)
+}
+
+/// The symbol of the field `name` of the struct `owner_ty` when the field is
+/// callable: a function value or an owning closure.
+fn callable_field(checker: &TypeChecker<'_>, owner_ty: TypeId, name: &str) -> Option<SymbolId> {
+    let ArType::Named(owner, args) = checker.resolve(owner_ty) else {
+        return None;
+    };
+    let args = checker.type_info.type_interner.type_args(args);
+    let field = checker.type_info.fields_for(owner, &args)?.get(name)?;
+    let symbol = field.symbol?;
+    let ty = checker.type_info.field_type_for(owner, &args, name)?;
+    let callable = matches!(checker.resolve(ty), ArType::Func(..))
+        || super::super::expr::owning_closure_code(checker, ty).is_some();
+    callable.then_some(symbol)
 }

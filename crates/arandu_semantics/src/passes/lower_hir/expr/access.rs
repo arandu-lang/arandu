@@ -15,8 +15,16 @@ pub(super) fn lower_field(
     Ok({
         {
             let base_id = *base;
-            if let Some(symbol) = super::lookup_namespace_field(pool, base_id, field, type_check)
-                .or_else(|| super::get_resolved_value_ref(type_check, expr))
+            // A struct field named on a callee (`job.run(x)`) is read from
+            // its base, never a path of its own.
+            let value_ref = super::get_resolved_value_ref(type_check, expr).filter(|&symbol| {
+                type_check
+                    .symbols
+                    .try_get(symbol)
+                    .is_none_or(|symbol| symbol.kind != arandu_middle::SymbolKind::Field)
+            });
+            if let Some(symbol) =
+                super::lookup_namespace_field(pool, base_id, field, type_check).or(value_ref)
             {
                 HirExprKind::Path { symbol }
             } else {

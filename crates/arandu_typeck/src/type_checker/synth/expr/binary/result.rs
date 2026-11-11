@@ -45,6 +45,18 @@ pub(super) fn synth_binary_result(
         BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => {
             let left_ty = checker.resolve(left_ty_id);
             let right_ty = checker.resolve(right_ty_id);
+            // `a + b` on text concatenates into a new `str`, as interpolation
+            // `"${a}${b}"` does.
+            if matches!(op, BinaryOp::Add)
+                && left_ty
+                    .str_reference_depth(&checker.type_info.type_interner)
+                    .is_some()
+                && right_ty
+                    .str_reference_depth(&checker.type_info.type_interner)
+                    .is_some()
+            {
+                return Some(checker.intern(ArType::Primitive(Primitive::Str)));
+            }
             if matches!(op, BinaryOp::Add | BinaryOp::Sub) {
                 if matches!(left_ty, ArType::Ptr(_)) && right_ty.is_integer() {
                     if !checker.ctx.is_in_unsafe() {

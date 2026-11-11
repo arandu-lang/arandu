@@ -119,11 +119,44 @@ fn lower_stmt_raw(
                 .iter()
                 .map(|p| super::place::lower_place(type_check, pool, hir_pool, p))
                 .collect();
-            let value_vid = super::expr::lower_expr(type_check, pool, hir_pool, *value)?;
-            let places_range = hir_pool.alloc_place_list(&hir_places?);
+            let hir_places = hir_places?;
+            let mut value_vid = super::expr::lower_expr(type_check, pool, hir_pool, *value)?;
+            let mut set_op = super::ops::lower_set_op(op.clone());
+            // `s += t` on a `str` binding is `s = "${s}${t}"`, as `s = s + t`.
+            if set_op == arandu_middle::ops::SetOp::AddAssign
+                && let [place] = hir_places.as_slice()
+                && place.suffixes.is_empty()
+                && matches!(
+                    type_check.type_info.type_interner.resolve(place.ty),
+                    crate::types::ArType::Primitive(crate::types::Primitive::Str)
+                )
+            {
+                let current = hir_pool.alloc_expr(crate::hir::HirExpr {
+                    kind: crate::hir::HirExprKind::Path {
+                        symbol: place.root_symbol,
+                    },
+                    ty: place.ty,
+                    span: place.span,
+                });
+                let added = match &hir_pool.expr(value_vid).kind {
+                    crate::hir::HirExprKind::Str(text) => {
+                        crate::hir::HirStringPart::Text(text.clone())
+                    }
+                    _ => crate::hir::HirStringPart::Expr(value_vid),
+                };
+                value_vid = hir_pool.alloc_expr(crate::hir::HirExpr {
+                    kind: crate::hir::HirExprKind::StringInterp {
+                        parts: vec![crate::hir::HirStringPart::Expr(current), added],
+                    },
+                    ty: place.ty,
+                    span: place.span,
+                });
+                set_op = arandu_middle::ops::SetOp::Assign;
+            }
+            let places_range = hir_pool.alloc_place_list(&hir_places);
             HirStmtKind::Set {
                 places: places_range,
-                op: super::ops::lower_set_op(op.clone()),
+                op: set_op,
                 value: value_vid,
             }
         }

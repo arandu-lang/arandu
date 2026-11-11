@@ -244,12 +244,37 @@ pub(crate) fn lower_expr_raw(
             return lower_expr_raw(type_check, pool, hir_pool, *inner);
         }
         ExprKind::Binary { op, left, right } => {
+            let concatenates = matches!(op, arandu_parser::BinaryOp::Add)
+                && matches!(
+                    type_check.type_info.expr_type(expr),
+                    Some(crate::types::ArType::Primitive(
+                        crate::types::Primitive::Str
+                    ))
+                );
             let left = lower_expr(type_check, pool, hir_pool, *left)?;
             let right = lower_expr(type_check, pool, hir_pool, *right)?;
-            HirExprKind::Binary {
-                op: super::ops::lower_binary_op(*op),
-                left,
-                right,
+            if concatenates {
+                // `a + b` on text is `"${a}${b}"`; a chain `a + b + c` and
+                // literal operands flatten into one interpolation.
+                let mut parts = Vec::new();
+                for operand in [left, right] {
+                    match &hir_pool.expr(operand).kind {
+                        HirExprKind::StringInterp { parts: inner } => {
+                            parts.extend(inner.iter().cloned());
+                        }
+                        HirExprKind::Str(text) => {
+                            parts.push(crate::hir::HirStringPart::Text(text.clone()));
+                        }
+                        _ => parts.push(crate::hir::HirStringPart::Expr(operand)),
+                    }
+                }
+                HirExprKind::StringInterp { parts }
+            } else {
+                HirExprKind::Binary {
+                    op: super::ops::lower_binary_op(*op),
+                    left,
+                    right,
+                }
             }
         }
         ExprKind::Unary { op, expr: inner } => {

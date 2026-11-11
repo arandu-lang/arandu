@@ -1,0 +1,33 @@
+module stringConcat
+
+// `a + b` and `s += t` on `str` concatenate into a new string, as
+// interpolation `"${a}${b}"` does; chains and literals flatten into one.
+
+func greet(name: str): str {
+    return "hello, " + name + "!"
+}
+
+func joined(count: int): str {
+    let mut out = ""
+    let mut i = 0
+    while i < count {
+        out += "ab"
+        i += 1
+    }
+    return out
+}
+
+func main(): int {
+    let a = "ab" + "cd"
+    if a.len() != 4 { return 1 }
+    let mut s = "x"
+    s += "y"
+    s = s + a
+    if s.len() != 6 { return 2 }
+    if greet("arandu").len() != 14 { return 3 }
+    if joined(50).len() != 100 { return 4 }
+    let n = 7
+    let mixed = "n=" + "${n}"
+    if mixed.len() != 3 { return 5 }
+    return 0
+}

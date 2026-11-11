@@ -1461,3 +1461,14 @@ fn moving_out_of_a_reference_is_rejected_in_every_position() {
         "once_closure_consumes",
     );
 }
+
+/// `+` on local `str` values frees every intermediate string exactly once.
+/// A concatenation that is reassigned or escapes its function leaks like
+/// the same interpolation does: `str` is a view without a destructor
+/// (recorded in the campaign as an open memory-model decision).
+#[test]
+fn local_string_concatenation_frees_each_string_once() {
+    let source = "func main(): int {\n    let n = 7\n    let a = \"n=\" + \"${n}\" + \"!\"\n    let b = a + \"y\"\n    return b.len() as int - 5\n}\n";
+    let c_source = emit_c(source, "string_concat_local");
+    run_emitted_c_with_asan(&c_source, "string_concat_local");
+}

@@ -453,15 +453,25 @@ pub(super) fn dump_type(ty: &TypeExpr, pool: &AstPool) -> String {
                 dump_type(pool.type_expr(*inner), pool)
             )
         }
-        TypeExpr::OwnFunc { span, func, bound } => {
+        TypeExpr::OwnFunc {
+            span,
+            func,
+            bound,
+            once,
+        } => {
             let func = dump_type(pool.type_expr(*func), pool);
+            let kind = if *once {
+                "OwnOnceFuncType"
+            } else {
+                "OwnFuncType"
+            };
             match bound {
                 Some(bound) => format!(
-                    "OwnFuncType {} ({func}) + ({})",
+                    "{kind} {} ({func}) + ({})",
                     dump_span(*span),
                     dump_type(pool.type_expr(*bound), pool)
                 ),
-                None => format!("OwnFuncType {} ({func})", dump_span(*span)),
+                None => format!("{kind} {} ({func})", dump_span(*span)),
             }
         }
     }

@@ -50,10 +50,30 @@ func spawnQueued(): int {
     return 0
 }
 
+// A `once` job consumes its capture on the other thread.
+func consumer(text: strings.String): own once () -> int + Send {
+    return () => {
+        let owned = text
+        return owned.len() as int
+    }
+}
+
+func spawnOnce(): int {
+    match thread.spawn(consumer(strings.String.from("hello"))) {
+        Result.Ok(handle) => {
+            if joined(handle) != 5 { return 1 }
+        }
+        Result.Err(_) => { return 2 }
+    }
+    return 0
+}
+
 func main(): int {
     let one = spawnOne()
     if one != 0 { return 10 + one }
     let queued = spawnQueued()
     if queued != 0 { return 20 + queued }
+    let once = spawnOnce()
+    if once != 0 { return 30 + once }
     return 0
 }

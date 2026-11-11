@@ -90,7 +90,7 @@ pub(super) fn lower_call_with_temporaries(
                 (temporary.local, temporary.ty)
             }
             None => (
-                hoisted_local(type_check, value_span),
+                synthetic_local(type_check, value_span, "value"),
                 hir_pool.expr(value).ty,
             ),
         };
@@ -157,12 +157,20 @@ fn is_pure(pool: &AstPool, expr: ExprId) -> bool {
     }
 }
 
-/// A local for an argument hoisted with a temporary. Its id derives from the
-/// argument's span, like the type checker's temporaries, so lowering the
-/// same item twice yields the same HIR.
-fn hoisted_local(type_check: &mut TypeCheckResult, span: Span) -> SymbolId {
+/// A local lowering introduces at `span`, named `name` (a hoisted argument,
+/// the parts of a `once` call). Its id derives from the span and the name,
+/// like the type checker's temporaries, so lowering the same item twice
+/// yields the same HIR.
+pub(super) fn synthetic_local(
+    type_check: &mut TypeCheckResult,
+    span: Span,
+    name: &str,
+) -> SymbolId {
     let file_id = type_check.symbols.file_id;
-    let mut role = 0x5EED_u32;
+    // FNV-1a of the name keeps distinct locals of one span apart.
+    let mut role = name.bytes().fold(0x811C_9DC5_u32, |hash, byte| {
+        (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
+    });
     loop {
         let mixed = span.start.wrapping_mul(0x9E37_79B1)
             ^ span.end.wrapping_mul(0x85EB_CA6B)
@@ -176,7 +184,7 @@ fn hoisted_local(type_check: &mut TypeCheckResult, span: Span) -> SymbolId {
                 let scope = type_check.symbols.global_scope();
                 type_check.symbols_mut().register_synthetic(Symbol {
                     id,
-                    name: "value".into(),
+                    name: name.into(),
                     kind: SymbolKind::Local,
                     span,
                     scope,
@@ -185,7 +193,11 @@ fn hoisted_local(type_check: &mut TypeCheckResult, span: Span) -> SymbolId {
                 });
                 return id;
             }
-            Some(existing) if existing.span == span && existing.kind == SymbolKind::Local => {
+            Some(existing)
+                if existing.span == span
+                    && existing.kind == SymbolKind::Local
+                    && existing.name == name =>
+            {
                 return id;
             }
             Some(_) => {}

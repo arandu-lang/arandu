@@ -137,6 +137,15 @@ impl<'a> Parser<'a> {
         // `own` is the default and lowers directly to its operand, except on
         // a function type: `own (A) -> R [+ Send]` is an owning closure.
         if self.eat_name("KW_OWN") {
+            // `once` is a soft keyword here, and only before a function type.
+            let once = self.at_soft_keyword("once")
+                && self
+                    .tokens
+                    .get(self.pos + 1)
+                    .is_some_and(|token| token.kind == TokenKind::LParen);
+            if once {
+                self.advance();
+            }
             let inner = self.parse_type()?;
             if !matches!(self.pool.type_expr(inner), TypeExpr::Func { .. }) {
                 return Ok(inner);
@@ -151,6 +160,7 @@ impl<'a> Parser<'a> {
                 span,
                 func: inner,
                 bound,
+                once,
             }));
         }
         if self.eat_name("KW_REF") {

@@ -524,11 +524,58 @@ fn owning_code_hir(
             ty: env_ty,
             span,
         });
-        args.push(pool.alloc_expr(HirExpr {
-            kind: HirExprKind::Cast {
+        let borrowed = matches!(
+            info.type_interner.resolve(self_ty),
+            arandu_middle::types::ArType::Ref(_) | arandu_middle::types::ArType::RefMut(_)
+        );
+        // A `once` closure's method owns the environment: the code moves
+        // the captures out with `OnceClosure.take<Env>`; others borrow it.
+        let take = (!borrowed)
+            .then(|| {
+                type_check
+                    .symbols
+                    .lang_item_symbol(arandu_middle::symbol_table::LangItem::OnceClosure)
+            })
+            .flatten()
+            .and_then(|once| {
+                type_check
+                    .symbols
+                    .associated_members
+                    .get(&(once, "take".into()))
+                    .copied()
+            });
+        let kind = match take {
+            Some(take) => {
+                let take_ty =
+                    arandu_middle::types::ArType::func(&[env_ty], self_ty, &info.type_interner);
+                let take_ty = info.type_interner.intern(take_ty);
+                let path = pool.alloc_expr(HirExpr {
+                    kind: HirExprKind::Path { symbol: take },
+                    ty: take_ty,
+                    span,
+                });
+                let callee = pool.alloc_expr(HirExpr {
+                    kind: HirExprKind::Generic {
+                        callee: path,
+                        args: vec![self_ty],
+                    },
+                    ty: take_ty,
+                    span,
+                });
+                let args = pool.alloc_expr_list(&[env]);
+                HirExprKind::Call {
+                    callee,
+                    args,
+                    trailing_block: None,
+                }
+            }
+            None => HirExprKind::Cast {
                 expr: env,
                 target_ty: self_ty,
             },
+        };
+        args.push(pool.alloc_expr(HirExpr {
+            kind,
             ty: self_ty,
             span,
         }));

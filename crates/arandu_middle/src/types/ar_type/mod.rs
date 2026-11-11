@@ -361,11 +361,12 @@ mod tests {
     }
 
     #[test]
-    fn named_func_slice_array_tuple_are_not_copy() {
+    fn named_slice_array_tuple_are_not_copy_but_function_values_are() {
         assert!(!ArType::Named(SymbolId::new(0, 1), IndexRange::empty()).is_copy_v01());
         let i = new_interner();
         let int = i.intern(ArType::Primitive(Primitive::Int));
-        assert!(!ArType::func(&[int], int, &i).is_copy_v01());
+        // A function value is a code pointer without an environment.
+        assert!(ArType::func(&[int], int, &i).is_copy_v01());
         assert!(ArType::Slice(int).is_copy_v01());
         assert!(!ArType::MutSlice(int).is_copy_v01());
         assert!(!ArType::Array(3, int).is_copy_v01());

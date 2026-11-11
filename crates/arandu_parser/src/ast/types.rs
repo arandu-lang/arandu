@@ -89,6 +89,9 @@ pub enum TypeExpr {
         span: Span,
         func: TypeExprId,
         bound: Option<TypeExprId>,
+        /// `own once (A) -> R`: the call consumes the closure, and its body
+        /// may consume the captures.
+        once: bool,
     },
 }
 

@@ -571,12 +571,14 @@ impl TypeInfo {
             // exclusive borrow is move-only, and raw pointers nested in an
             // owner aggregate remain non-POD to avoid accidental double free.
             ArType::Ref(_) | ArType::Slice(_) => true,
+            // A function value is a code pointer without an environment
+            // (RFC 0032, L2): copying it duplicates nothing, as Rust's `fn`.
+            ArType::Func(_, _) => true,
             ArType::Ptr(_)
             | ArType::ConstParam(_)
             | ArType::RefMut(_)
             | ArType::MutSlice(_)
             | ArType::Nullable(_)
-            | ArType::Func(_, _)
             | ArType::Coroutine(_)
             | ArType::Poll(_)
             | ArType::Range(_)

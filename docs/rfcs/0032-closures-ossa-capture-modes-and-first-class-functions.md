@@ -95,7 +95,9 @@
 >   copia o ponteiro para o ambiente.
 > - **Chamada:** o dono ou um `mut ref` chamam; `ref` compartilhado não
 >   (T026), o que exclui duas chamadas mudando as capturas ao mesmo tempo.
->   Um temporário precisa ser vinculado antes (T026). Efeitos: `ANY_CALL`.
+>   Um temporário é avaliado uma vez num local sintético que vive até o fim
+>   da chamada (`TypeInfo::closure_temporaries`, bloco `Scope` no HIR), e os
+>   argumentos antes dele mantêm a ordem do fonte. Efeitos: `ANY_CALL`.
 > - **Capturas:** nenhuma referência ou view (`ref`, `[]T`, `str`) — O010,
 >   fail-closed como o modelo de memória exige; `+ Send` prova cada captura
 >   (T025). `SendClosure` é `Send` e nunca `Sync`/`Copy`; `Closure` não é
@@ -111,9 +113,30 @@
 >   tipo do item pai quando uma captura ou a assinatura os menciona; cada
 >   instância do item os instancia. Fecha o U001 que a L1 deixou.
 >
-> Corpus `own_closures.aru`, `generic_closures.aru` (todos os backends,
-> Wasmtime incluído, IR LLVM compilado) e `own_closures_threads.aru`
-> (backends nativos); testes em `query_suite/owning_closures.rs`.
+> - **`own once (A) -> R [+ Send]`** (o `FnOnce` do Rust): lang items
+>   `OnceClosure<F>`/`SendOnceClosure<F>`, quatro palavras (código, ambiente,
+>   `drop` se nunca chamada, `finish` depois da chamada). O método recebe
+>   `own Env` e o código começa com `OnceClosure.take<Env>(env)`, então o
+>   corpo consome as capturas. A chamada é
+>   `{ let call = release(c); call.code(call.env, args) }`; destruir o
+>   `OnceCall` roda o `finish`. Só o dono chama (por referência é T026) e o
+>   move checker recusa a segunda chamada. Toda closure vira `once` onde é
+>   esperada (`Closure.once`, `SendClosure.once`/`localOnce`), nunca o
+>   inverso; `thread.spawn` roda jobs `once`.
+> - **Soundness do consumo:** consumir uma captura numa closure que pode
+>   rodar de novo é O016. A L3 fechou o buraco que deixava `return p.campo`,
+>   o valor de um bloco ou o corpo de uma closure mover para fora de uma
+>   referência sem diagnóstico, e o falso positivo de `let owned = name`
+>   seguido de um `if`. Valores de função `(A) -> R` são `Copy`.
+>
+> Corpus `own_closures.aru`, `once_closures.aru`, `generic_closures.aru`
+> (todos os backends, Wasmtime incluído, IR LLVM compilado) e
+> `own_closures_threads.aru` (backends nativos); testes em
+> `query_suite/owning_closures.rs` e `cli_ownership_regressions.rs`.
+>
+> Pontos de melhoria: os diagnósticos de IDE por função
+> (`file_ide_diagnostics`) não analisam os métodos sintetizados de closures,
+> então o O016 de uma captura consumida aparece na build e não no editor.
 
 ---
 

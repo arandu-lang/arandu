@@ -168,7 +168,9 @@ pub fn lower_type_expr_ctx(
             ArType::func(&param_types, ret_id, interner)
         }
         TypeExpr::Group { inner, .. } => lower_type_expr_ctx(*inner, ctx, interner),
-        TypeExpr::OwnFunc { func, bound, .. } => lower_owning_closure(*func, *bound, ctx, interner),
+        TypeExpr::OwnFunc {
+            func, bound, once, ..
+        } => lower_owning_closure(*func, *bound, *once, ctx, interner),
     }
 }
 
@@ -196,15 +198,17 @@ pub(crate) fn owning_closure_bound_is_send(bound: TypeExprId, ctx: &LowerCtx<'_>
 fn lower_owning_closure(
     func: TypeExprId,
     bound: Option<TypeExprId>,
+    once: bool,
     ctx: &LowerCtx<'_>,
     interner: &mut TypeInterner,
 ) -> ArType {
-    use arandu_middle::symbol_table::LangItem;
-    let item = match bound {
-        None => LangItem::Closure,
-        Some(bound) if owning_closure_bound_is_send(bound, ctx) => LangItem::SendClosure,
+    use arandu_middle::symbol_table::{LangItem, OwningClosureKind};
+    let send = match bound {
+        None => false,
+        Some(bound) if owning_closure_bound_is_send(bound, ctx) => true,
         Some(_) => return ArType::Error,
     };
+    let item = LangItem::for_owning_closure(OwningClosureKind { send, once });
     let Some(symbol) = ctx.symbols.lang_item_symbol(item) else {
         return ArType::Error;
     };

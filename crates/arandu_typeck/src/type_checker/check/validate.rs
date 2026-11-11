@@ -637,9 +637,14 @@ fn validate_type_expr_constraints(
         | TypeExpr::Group { inner, .. } => {
             validate_type_expr_constraints(checker, *inner, scope);
         }
-        TypeExpr::OwnFunc { span, func, bound } => {
+        TypeExpr::OwnFunc {
+            span,
+            func,
+            bound,
+            once,
+        } => {
             validate_type_expr_constraints(checker, *func, scope);
-            validate_owning_closure_type(checker, *span, *bound, scope);
+            validate_owning_closure_type(checker, *span, *bound, *once, scope);
         }
         TypeExpr::Func { params, result, .. } => {
             for &param in checker.pool.type_expr_list(*params) {
@@ -735,6 +740,7 @@ fn validate_owning_closure_type(
     checker: &mut TypeChecker<'_>,
     span: Span,
     bound: Option<TypeExprId>,
+    once: bool,
     scope: crate::ScopeId,
 ) {
     use arandu_middle::symbol_table::LangItem;
@@ -765,11 +771,8 @@ fn validate_owning_closure_type(
             return;
         }
     };
-    let item = if send {
-        LangItem::SendClosure
-    } else {
-        LangItem::Closure
-    };
+    let item =
+        LangItem::for_owning_closure(arandu_middle::symbol_table::OwningClosureKind { send, once });
     if checker.symbols.lang_item_symbol(item).is_none() {
         checker.diagnostics.push(
             crate::Diagnostic::error(

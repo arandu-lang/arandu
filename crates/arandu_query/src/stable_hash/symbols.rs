@@ -357,6 +357,8 @@ fn lang_item_discriminant(item: arandu_middle::symbol_table::LangItem) -> u8 {
         LangItem::SendClosure => 55,
         LangItem::ClosureJob => 56,
         LangItem::Hole => 57,
+        LangItem::OnceClosure => 58,
+        LangItem::SendOnceClosure => 59,
     }
 }
 

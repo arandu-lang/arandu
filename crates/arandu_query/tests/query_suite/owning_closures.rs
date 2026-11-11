@@ -219,3 +219,52 @@ fn bare_metal_rejects_only_closures_that_allocate() {
         .collect();
     assert_eq!(codes, vec![DiagCode::T099RequiresOperatingSystem]);
 }
+
+#[test]
+fn a_once_closure_is_consumed_by_its_call() {
+    let twice = all_errors(
+        r#"
+            import std.alloc.string as strings
+            func make(text: strings.String): own once () -> strings.String {
+                return () => text
+            }
+            func main(): int {
+                let f = make(strings.String.from("a"))
+                let first = f()
+                let second = f()
+                return 0
+            }
+        "#,
+    );
+    assert!(twice.iter().any(|code| code == "O001"), "{twice:?}");
+
+    let through_reference = errors(
+        r#"
+            func call(f: mut ref own once () -> int): int { return f() }
+            func main(): int { return 0 }
+        "#,
+    );
+    assert_eq!(through_reference, vec![DiagCode::T026CannotAssignImmutable]);
+}
+
+#[test]
+fn closures_become_once_but_never_the_reverse() {
+    let accepted = errors(
+        r#"
+            func run(f: own once () -> int): int { return f() }
+            func sendable(f: own () -> int + Send): own once () -> int { return f }
+            func main(): int {
+                let counter: own () -> int = () => 1
+                return run(counter)
+            }
+        "#,
+    );
+    assert!(accepted.is_empty(), "{accepted:?}");
+    let rejected = errors(
+        r#"
+            func again(f: own once () -> int): own () -> int { return f }
+            func main(): int { return 0 }
+        "#,
+    );
+    assert!(!rejected.is_empty());
+}

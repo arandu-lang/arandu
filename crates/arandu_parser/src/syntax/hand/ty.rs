@@ -88,6 +88,13 @@ fn parse_type_inner(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<TypeE
 
     // Canonical ownership spelling: `own T`, `ref T`, `mut ref T`.
     if cur.eat(TokenKind::KwOwn) {
+        let once = cur
+            .peek()
+            .is_some_and(|t| t.kind == TokenKind::IdentValue && ctx.text(t) == Some("once"))
+            && cur.peek_at(1).is_some_and(|t| t.kind == TokenKind::LParen);
+        if once {
+            cur.bump();
+        }
         let inner = parse_type(ctx, cur)?;
         if !matches!(ctx.pool.type_expr(inner), TypeExpr::Func { .. }) {
             return Some(inner);
@@ -102,6 +109,7 @@ fn parse_type_inner(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<TypeE
             span: ctx.span(start, end),
             func: inner,
             bound,
+            once,
         }));
     }
     if cur.eat(TokenKind::KwRef) {

@@ -1396,3 +1396,68 @@ public func main(): int {
     );
     run_emitted_c_with_asan(&c_source, "indexed_array_in_struct_no_copy_asan");
 }
+
+/// Moving a value into a `let` and then using the binding across a branch is
+/// one move: the binding's value reaches the join as the binding's own, not
+/// as a second move of where it came from. Using the source after the move is
+/// still rejected.
+#[test]
+fn a_value_moved_into_a_let_crosses_branches_as_that_binding() {
+    let prelude = "struct Res { v: int }\n@Destructor\nfunc Res.destroy(self: own Res): void {}\nfunc look(r: ref Res): int { return r.v }\n";
+    check_passes(
+        &format!(
+            "{prelude}func f(name: Res, c: bool): Res {{\n    let mut owned = name\n    if c {{ let k = look(ref owned) }} else {{ owned.v = 2 }}\n    return owned\n}}\nfunc g(c: bool): Res {{\n    let first = Res {{ v: 1 }}\n    let second = first\n    while c {{ let k = look(ref second) }}\n    return second\n}}\nfunc main(): int {{ return f(Res {{ v: 1 }}, true).v + g(false).v }}\n"
+        ),
+        "let_across_branch",
+    );
+    let stderr = check(
+        &format!(
+            "{prelude}func f(name: Res, c: bool): Res {{\n    let mut owned = name\n    if c {{ let k = look(ref owned) }}\n    let again = name\n    return owned\n}}\nfunc main(): int {{ return 0 }}\n"
+        ),
+        "let_then_source_reuse",
+    );
+    assert!(stderr.contains("use of moved value `name`"), "{stderr}");
+}
+
+/// Moving a non-Copy value out of a reference is O016 wherever the value
+/// goes: the return register, a block's value, or a closure body that
+/// consumes a capture it only borrows or that may run again. Only an
+/// `own once` closure owns its captures for its single call.
+#[test]
+fn moving_out_of_a_reference_is_rejected_in_every_position() {
+    let pair = "import std.alloc.string as strings\nstruct Pair { a: strings.String, b: strings.String }\n";
+    for (name, body) in [
+        (
+            "return_field",
+            "func take(p: mut ref Pair): strings.String { return p.a }\n",
+        ),
+        (
+            "return_deref",
+            "func take(p: ref strings.String): strings.String { return *p }\n",
+        ),
+        (
+            "block_value",
+            "func pick(p: mut ref Pair, c: bool): strings.String {\n    let x = if c { p.a } else { p.b }\n    return x\n}\n",
+        ),
+        (
+            "owning_closure",
+            "func make(text: strings.String): own () -> strings.String { return () => text }\n",
+        ),
+        (
+            "callback",
+            "func apply(f: () -> strings.String): strings.String { return f() }\nfunc cb(text: strings.String): strings.String { return apply(() => text) }\n",
+        ),
+    ] {
+        let stderr = check(
+            &format!("{pair}{body}func main(): int {{ return 0 }}\n"),
+            name,
+        );
+        assert!(stderr.contains("O016"), "{name}: {stderr}");
+    }
+    check_passes(
+        &format!(
+            "{pair}func make(text: strings.String): own once () -> strings.String {{ return () => text }}\nfunc main(): int {{ return 0 }}\n"
+        ),
+        "once_closure_consumes",
+    );
+}

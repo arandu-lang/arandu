@@ -202,6 +202,10 @@ impl<'a> Resolver<'a> {
                         (Some("std.alloc.closure"), "Closure") => Some(LangItem::Closure),
                         (Some("std.alloc.closure"), "SendClosure") => Some(LangItem::SendClosure),
                         (Some("std.alloc.closure"), "ClosureJob") => Some(LangItem::ClosureJob),
+                        (Some("std.alloc.closure"), "OnceClosure") => Some(LangItem::OnceClosure),
+                        (Some("std.alloc.closure"), "SendOnceClosure") => {
+                            Some(LangItem::SendOnceClosure)
+                        }
                         (Some("std.core.simd"), "F32x4") => Some(LangItem::VectorF32x4),
                         (Some("std.core.simd"), "F64x2") => Some(LangItem::VectorF64x2),
                         (Some("std.core.simd"), "I32x4") => Some(LangItem::VectorI32x4),

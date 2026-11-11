@@ -231,14 +231,14 @@ fn lower_owning_closure_call(
     let ArType::Named(symbol, type_args) = closure else {
         return Ok(None);
     };
-    if !type_check
+    let Some(kind) = type_check
         .symbols
         .try_get(symbol)
         .and_then(|symbol| symbol.lang_item)
-        .is_some_and(|item| matches!(item, LangItem::Closure | LangItem::SendClosure))
-    {
+        .and_then(LangItem::owning_closure)
+    else {
         return Ok(None);
-    }
+    };
     let &[code_ty] = interner.type_args(type_args).as_slice() else {
         return Err(Diagnostic::ice(
             crate::DiagCode::ICEL001,
@@ -246,6 +246,16 @@ fn lower_owning_closure_call(
             pool.expr_span(callee_id),
         ));
     };
+    if kind.once {
+        return lower_once_closure_call(
+            type_check,
+            pool,
+            hir_pool,
+            (callee_id, symbol, code_ty),
+            arg_ids,
+        )
+        .map(Some);
+    }
     let byte = interner.intern(ArType::Primitive(Primitive::U8));
     let env_ty = interner.intern(ArType::Ptr(byte));
     let span = pool.expr_span(callee_id);
@@ -271,4 +281,127 @@ fn lower_owning_closure_call(
         args: hir_pool.alloc_expr_list(&args),
         trailing_block: None,
     }))
+}
+
+/// `c(args)` on an `own once` closure consumes `c` (RFC 0032, L3):
+///
+/// ```text
+/// { let call = OnceClosure.release(c); call.code(call.env, args) }
+/// ```
+///
+/// `release` takes the environment from `c`, which is then destroyed empty;
+/// the code moves the captures out or borrows them, and destroying `call`
+/// at the end of the scope frees what remains of the environment.
+fn lower_once_closure_call(
+    type_check: &mut TypeCheckResult,
+    pool: &AstPool,
+    hir_pool: &mut crate::hir::HirPool,
+    (callee_id, closure_symbol, code_ty): (ExprId, arandu_middle::SymbolId, crate::types::TypeId),
+    arg_ids: &[ExprId],
+) -> Result<HirExprKind, Diagnostic> {
+    use crate::hir::{HirBindingItem, HirBlock, HirStmt, HirStmtKind};
+    let span = pool.expr_span(callee_id);
+    let ice = |message: &str| Diagnostic::ice(crate::DiagCode::ICEL001, message.to_string(), span);
+    let release = type_check
+        .symbols
+        .associated_members
+        .get(&(closure_symbol, "release".into()))
+        .copied()
+        .ok_or_else(|| ice("`once` closure has no release"))?;
+    let interner = &type_check.type_info.type_interner;
+    let Some(ArType::Func(_, release_ret)) = type_check.type_info.decl_type(release) else {
+        return Err(ice("`once` closure release has no signature"));
+    };
+    let ArType::Named(call_symbol, _) = interner.resolve(release_ret) else {
+        return Err(ice("`once` closure release does not return its call"));
+    };
+    let ArType::Func(_, result_ty) = interner.resolve(code_ty) else {
+        return Err(ice("`once` closure code is not a function"));
+    };
+    let call_ty = interner.intern(ArType::named(call_symbol, &[code_ty], interner));
+    let closure_ty = type_check
+        .type_info
+        .expr_type_id(callee_id)
+        .ok_or_else(|| ice("`once` closure has no type"))?;
+    let byte = interner.intern(ArType::Primitive(Primitive::U8));
+    let env_ty = interner.intern(ArType::Ptr(byte));
+    let release_ty = interner.intern(ArType::func(&[closure_ty], call_ty, interner));
+
+    // let call = release<F>(c)
+    let closure = super::lower_expr(type_check, pool, hir_pool, callee_id)?;
+    let release_path = hir_pool.alloc_expr(HirExpr {
+        kind: HirExprKind::Path { symbol: release },
+        ty: release_ty,
+        span,
+    });
+    let release_callee = hir_pool.alloc_expr(HirExpr {
+        kind: HirExprKind::Generic {
+            callee: release_path,
+            args: vec![code_ty],
+        },
+        ty: release_ty,
+        span,
+    });
+    let release_args = hir_pool.alloc_expr_list(&[closure]);
+    let released = hir_pool.alloc_expr(HirExpr {
+        kind: HirExprKind::Call {
+            callee: release_callee,
+            args: release_args,
+            trailing_block: None,
+        },
+        ty: call_ty,
+        span,
+    });
+    let call_local = super::temporary::synthetic_local(type_check, span, "call");
+    let bindings = hir_pool.alloc_binding_list(&[HirBindingItem {
+        symbol: call_local,
+        ty: call_ty,
+        span,
+    }]);
+    let declared = hir_pool.alloc_stmt(HirStmt {
+        kind: HirStmtKind::VarDecl {
+            bindings,
+            value: released,
+        },
+        span,
+    });
+    let part = |hir_pool: &mut crate::hir::HirPool, name: &str, ty| {
+        let base = hir_pool.alloc_expr(HirExpr {
+            kind: HirExprKind::Path { symbol: call_local },
+            ty: call_ty,
+            span,
+        });
+        hir_pool.alloc_expr(HirExpr {
+            kind: HirExprKind::Field {
+                base,
+                field: name.into(),
+            },
+            ty,
+            span,
+        })
+    };
+
+    // call.code(call.env, args)
+    let code = part(hir_pool, "code", code_ty);
+    let mut args = vec![part(hir_pool, "env", env_ty)];
+    for &arg in arg_ids {
+        args.push(super::lower_expr(type_check, pool, hir_pool, arg)?);
+    }
+    let args = hir_pool.alloc_expr_list(&args);
+    let invoked = hir_pool.alloc_expr(HirExpr {
+        kind: HirExprKind::Call {
+            callee: code,
+            args,
+            trailing_block: None,
+        },
+        ty: result_ty,
+        span,
+    });
+    let value = hir_pool.alloc_stmt(HirStmt {
+        kind: HirStmtKind::Expr(invoked),
+        span,
+    });
+    let statements = hir_pool.alloc_stmt_list(&[declared, value]);
+    let block = hir_pool.alloc_block(HirBlock { statements, span });
+    Ok(HirExprKind::Scope { block })
 }

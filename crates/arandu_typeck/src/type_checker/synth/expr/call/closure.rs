@@ -1144,10 +1144,14 @@ fn check_lambda(
     if let Some(closure_ty) = owning {
         // Without captures the closure's code calls the lambda's own function
         // and needs no environment.
+        // A `once` closure's body owns its environment and may consume the
+        // captures; any other call borrows it, so each call keeps them.
+        let once = super::owning::owning_closure_parts(checker, closure_ty)
+            .is_some_and(|(kind, _)| kind.once);
         let (method, struct_prefix, host_prefix, self_by_mut_ref) = if captures.is_empty() {
             ("fn", "__Lambda", "ar_lambda", false)
         } else {
-            ("call", "__Closure", "ar_closure", true)
+            ("call", "__Closure", "ar_closure", !once)
         };
         let _ = install_closure(
             checker,

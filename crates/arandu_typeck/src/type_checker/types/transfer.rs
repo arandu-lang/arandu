@@ -143,13 +143,13 @@ pub(crate) fn satisfies(
                     // The closure types erase their captures: a `SendClosure`
                     // proved each one `Send` when it was made, and a call needs
                     // exclusive access, so neither is ever `Sync` or `Copy`.
-                    Some(LangItem::SendClosure) => {
+                    Some(LangItem::SendClosure | LangItem::SendOnceClosure) => {
                         if capability != LangItem::Send {
                             return false;
                         }
                         continue;
                     }
-                    Some(LangItem::Closure) => return false,
+                    Some(LangItem::Closure | LangItem::OnceClosure) => return false,
                     Some(LangItem::String) => {
                         if capability == LangItem::Copy || !arguments.is_empty() {
                             return false;

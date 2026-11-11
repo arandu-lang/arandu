@@ -6,24 +6,37 @@
 //! captures behind `env`. Only the owner or a `mut ref` reaches them, so
 //! either may call; a shared `ref` may not, which rules out a second call
 //! running while the first one changes the captures.
+//!
+//! `own once (A) -> R` (`OnceClosure<F>`, `SendOnceClosure<F>`) is consumed
+//! by its call, like Rust's `FnOnce`: only the owner calls it, the move
+//! checker rejects a second call, and its body may consume the captures.
 
-use arandu_middle::symbol_table::LangItem;
+use arandu_middle::symbol_table::{LangItem, OwningClosureKind};
 use arandu_parser::ast_pool::{ExprId, ExprKind};
 
 use crate::type_checker::TypeChecker;
 use crate::type_checker::types::{ArType, TypeId};
 
-/// `Closure` or `SendClosure`, with the code signature it stores.
+/// An owning closure type, with the code signature it stores.
 pub(crate) fn owning_closure_code(checker: &TypeChecker<'_>, ty: TypeId) -> Option<TypeId> {
+    owning_closure_parts(checker, ty).map(|(_, code)| code)
+}
+
+/// What an owning closure type allows, with the code signature it stores.
+pub(crate) fn owning_closure_parts(
+    checker: &TypeChecker<'_>,
+    ty: TypeId,
+) -> Option<(OwningClosureKind, TypeId)> {
     let ArType::Named(symbol, args) = checker.resolve(ty) else {
         return None;
     };
-    let item = checker.symbols.try_get(symbol)?.lang_item?;
-    if !matches!(item, LangItem::Closure | LangItem::SendClosure) {
-        return None;
-    }
+    let kind = checker
+        .symbols
+        .try_get(symbol)?
+        .lang_item?
+        .owning_closure()?;
     match checker.type_info.type_interner.type_args(args).as_slice() {
-        &[code] => Some(code),
+        &[code] => Some((kind, code)),
         _ => None,
     }
 }
@@ -40,13 +53,30 @@ pub(super) fn closure_call_signature(
         ArType::RefMut(inner) => (inner, Some(true)),
         _ => (callee_ty, None),
     };
-    let code = owning_closure_code(checker, closure_ty)?;
+    let (kind, code) = owning_closure_parts(checker, closure_ty)?;
     let ArType::Func(params, ret) = checker.resolve(code) else {
         return None;
     };
     let params = checker.type_info.type_interner.type_args(params);
     let params = params.get(1..).unwrap_or_default().to_vec();
     let span = checker.pool.expr_span(callee);
+    if kind.once {
+        // The call consumes the closure: a reference cannot give it up.
+        if through.is_some() {
+            checker.diagnostics.push(
+                crate::Diagnostic::error(
+                    crate::DiagCode::T026CannotAssignImmutable,
+                    "an `own once` closure is consumed by its call and cannot be called through a reference",
+                    span,
+                )
+                .with_primary_label("calling moves the closure out of the reference")
+                .with_hint("pass the closure by value, or use `own (A) -> R` to call it through `mut ref`"),
+            );
+        } else if !is_place(checker, callee) {
+            super::closure::bind_closure_temporary(checker, callee, callee_ty);
+        }
+        return Some((params, ret));
+    }
     match through {
         Some(true) => {}
         Some(false) => checker.diagnostics.push(
@@ -100,12 +130,7 @@ pub(super) fn admit_owning_captures(
     closure_ty: TypeId,
     captures: &[super::closure::Capture],
 ) -> bool {
-    let send = matches!(
-        checker.resolve(closure_ty),
-        ArType::Named(symbol, _)
-            if checker.symbols.try_get(symbol).and_then(|symbol| symbol.lang_item)
-                == Some(LangItem::SendClosure)
-    );
+    let send = owning_closure_parts(checker, closure_ty).is_some_and(|(kind, _)| kind.send);
     if !captures.is_empty() && reject_bare_metal_environment(checker, captures[0].span) {
         return false;
     }
@@ -174,7 +199,8 @@ fn record_adjustment(
 }
 
 /// The coercion of an owning closure to the type expected where it is used:
-/// `own (A) -> R + Send` forgets `Send` and becomes `own (A) -> R`.
+/// `+ Send` may be forgotten and any closure may become `once`, as a Rust
+/// `FnMut` is also an `FnOnce`.
 pub(crate) fn adjust_to_expected(
     checker: &mut TypeChecker<'_>,
     expr: ExprId,
@@ -188,30 +214,27 @@ pub(crate) fn adjust_to_expected(
     let Some(expected) = expected else {
         return actual;
     };
-    let (ArType::Named(sent, _), ArType::Named(local, _)) =
-        (checker.resolve(actual), checker.resolve(expected))
-    else {
-        return actual;
-    };
-    let item = |symbol| {
-        checker
-            .symbols
-            .try_get(symbol)
-            .and_then(|symbol| symbol.lang_item)
-    };
-    if item(sent) != Some(LangItem::SendClosure) || item(local) != Some(LangItem::Closure) {
-        return actual;
-    }
-    let (Some(from_code), Some(to_code)) = (
-        owning_closure_code(checker, actual),
-        owning_closure_code(checker, expected),
+    let (Some((from, from_code)), Some((to, to_code))) = (
+        owning_closure_parts(checker, actual),
+        owning_closure_parts(checker, expected),
     ) else {
+        return actual;
+    };
+    // A closure forgets `Send` and becomes `once`; never the reverse.
+    let conversion = match (from.send, from.once, to.send, to.once) {
+        (true, false, false, false) => "local",
+        (false, false, false, true) | (true, false, true, true) => "once",
+        (true, false, false, true) => "localOnce",
+        (true, true, false, true) => "local",
+        _ => return actual,
+    };
+    let ArType::Named(source, _) = checker.resolve(actual) else {
         return actual;
     };
     let Some(&function) = checker
         .symbols
         .associated_members
-        .get(&(sent, "local".into()))
+        .get(&(source, conversion.into()))
     else {
         return actual;
     };
@@ -228,20 +251,12 @@ pub(super) fn adjust_thread_job(checker: &mut TypeChecker<'_>, arg: ExprId) {
         return;
     }
     let actual = super::synth_expr(checker, arg);
-    let ArType::Named(symbol, _) = checker.resolve(actual) else {
+    let Some((kind, code)) = owning_closure_parts(checker, actual) else {
         return;
     };
-    if checker
-        .symbols
-        .try_get(symbol)
-        .and_then(|symbol| symbol.lang_item)
-        != Some(LangItem::SendClosure)
-    {
+    if !kind.send {
         return;
     }
-    let Some(code) = owning_closure_code(checker, actual) else {
-        return;
-    };
     let ArType::Func(params, ret) = checker.resolve(code) else {
         return;
     };
@@ -251,7 +266,13 @@ pub(super) fn adjust_thread_job(checker: &mut TypeChecker<'_>, arg: ExprId) {
     let Some(job) = checker.symbols.lang_item_symbol(LangItem::ClosureJob) else {
         return;
     };
-    let Some(&function) = checker.symbols.associated_members.get(&(job, "new".into())) else {
+    // The job runs its closure once; an `own` closure becomes `once` inside.
+    let constructor = if kind.once { "new" } else { "fromClosure" };
+    let Some(&function) = checker
+        .symbols
+        .associated_members
+        .get(&(job, constructor.into()))
+    else {
         return;
     };
     let job_ty = ArType::named(job, &[ret], &checker.type_info.type_interner);

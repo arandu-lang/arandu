@@ -367,11 +367,12 @@ impl ArType {
             | ArType::Ref(_)
             | ArType::Slice(_)
             | ArType::GenRef => true,
+            // A function value is a code pointer without an environment.
+            ArType::Func(_, _) => true,
             ArType::Error | ArType::Void | ArType::Err => true,
             ArType::Infer(_) => false,
             // Named / aggregates: structural decision needs `TypeInfo::is_copy`.
             ArType::Named(_, _)
-            | ArType::Func(_, _)
             | ArType::Array(_, _)
             | ArType::ConstArray(_, _)
             | ArType::ConstParam(_)
@@ -388,19 +389,16 @@ impl ArType {
 }
 
 /// `Closure<func(ptr[u8], A) R>` reads as the type the user wrote:
-/// `own func(A) R`, with `+ Send` for a `SendClosure` (RFC 0032, L3).
+/// `own func(A) R`, with `once` and `+ Send` as declared (RFC 0032, L3).
 fn display_owning_closure(
     id: crate::SymbolId,
     args: crate::hir::pool::IndexRange,
     symbols: &SymbolTable,
     interner: &TypeInterner,
 ) -> Option<String> {
-    use crate::symbol_table::LangItem;
-    let bound = match symbols.try_get(id)?.lang_item? {
-        LangItem::Closure => "",
-        LangItem::SendClosure => " + Send",
-        _ => return None,
-    };
+    let kind = symbols.try_get(id)?.lang_item?.owning_closure()?;
+    let bound = if kind.send { " + Send" } else { "" };
+    let once = if kind.once { "once " } else { "" };
     let &[code] = interner.type_args(args).as_slice() else {
         return None;
     };
@@ -411,5 +409,5 @@ fn display_owning_closure(
     let (_, params) = params.split_first()?;
     let params = interner.intern(ArType::func(params, ret, interner));
     let func = interner.resolve(params).display(symbols, interner);
-    Some(format!("own {func}{bound}"))
+    Some(format!("own {once}{func}{bound}"))
 }

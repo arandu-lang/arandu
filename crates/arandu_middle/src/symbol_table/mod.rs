@@ -176,12 +176,60 @@ pub enum LangItem {
     /// The `ThreadJob` that runs an owning `Send` closure without parameters;
     /// `thread.spawn(c)` wraps such a closure `c` in it.
     ClosureJob,
+    /// Owning closure consumed by its call: `own once (A) -> R`.
+    OnceClosure,
+    /// `own once (A) -> R + Send`.
+    SendOnceClosure,
     /// `todo`: a typed hole, the expression the programmer has not written
     /// yet (RFC 0036, H1). Shadowed by any declaration named `todo`.
     Hole,
 }
 
+/// What an owning closure type allows (RFC 0032, L3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OwningClosureKind {
+    /// `+ Send`: the closure may move to another thread.
+    pub send: bool,
+    /// `once`: the call consumes the closure.
+    pub once: bool,
+}
+
 impl LangItem {
+    /// The owning closure type this lang item spells, if any.
+    #[must_use]
+    pub const fn owning_closure(self) -> Option<OwningClosureKind> {
+        match self {
+            Self::Closure => Some(OwningClosureKind {
+                send: false,
+                once: false,
+            }),
+            Self::SendClosure => Some(OwningClosureKind {
+                send: true,
+                once: false,
+            }),
+            Self::OnceClosure => Some(OwningClosureKind {
+                send: false,
+                once: true,
+            }),
+            Self::SendOnceClosure => Some(OwningClosureKind {
+                send: true,
+                once: true,
+            }),
+            _ => None,
+        }
+    }
+
+    /// The lang item of an owning closure type.
+    #[must_use]
+    pub const fn for_owning_closure(kind: OwningClosureKind) -> Self {
+        match (kind.send, kind.once) {
+            (false, false) => Self::Closure,
+            (true, false) => Self::SendClosure,
+            (false, true) => Self::OnceClosure,
+            (true, true) => Self::SendOnceClosure,
+        }
+    }
+
     #[must_use]
     pub const fn vector_shape(self) -> Option<crate::types::VectorType> {
         use crate::types::VectorType;

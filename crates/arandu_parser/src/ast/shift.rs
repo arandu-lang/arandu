@@ -546,7 +546,9 @@ impl Shift {
                     self.result_type(result);
                 }
             }
-            TypeExpr::OwnFunc { span, func, bound } => {
+            TypeExpr::OwnFunc {
+                span, func, bound, ..
+            } => {
                 self.span(span);
                 self.type_expr_id(func);
                 self.opt_type_expr(bound);

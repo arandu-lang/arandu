@@ -471,13 +471,9 @@ fn reject_foreign_owning_closure(
     {
         let _ = shape.for_each_symbol(|symbol| {
             found |= checker.symbols.try_get(symbol).is_some_and(|entry| {
-                matches!(
-                    entry.lang_item,
-                    Some(
-                        arandu_middle::symbol_table::LangItem::Closure
-                            | arandu_middle::symbol_table::LangItem::SendClosure
-                    )
-                )
+                entry
+                    .lang_item
+                    .is_some_and(|item| item.owning_closure().is_some())
             });
         });
     }

@@ -121,7 +121,17 @@ pub(crate) fn lower_place(
                     },
                     _ => None,
                 };
-                let (field_ty, field_symbol) = if let Some(struct_id) = struct_id_opt
+                // `t.0`: an element of a tuple has a position, not a symbol.
+                let tuple_element = match &actual_base_ty {
+                    ArType::Tuple(items) => name
+                        .parse::<usize>()
+                        .ok()
+                        .and_then(|index| interner.type_args(*items).get(index).copied()),
+                    _ => None,
+                };
+                let (field_ty, field_symbol) = if let Some(element) = tuple_element {
+                    (element, None)
+                } else if let Some(struct_id) = struct_id_opt
                     && let Some(fields) = type_check.type_info.struct_fields.get(&struct_id)
                     && let Some(f) = fields.get(name.as_str())
                 {

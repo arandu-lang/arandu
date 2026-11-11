@@ -341,6 +341,20 @@ impl<'a> Parser<'a> {
         } else {
             self.advance();
             let expr = self.parse_expr(0)?;
+            if self.at_kind_name("COMMA") {
+                // `(a, b)`: a tuple; a trailing comma is allowed.
+                let mut items = vec![expr];
+                while self.eat_name("COMMA") {
+                    if self.at_kind_name("RPAREN") {
+                        break;
+                    }
+                    items.push(self.parse_expr(0)?);
+                }
+                self.expect_name("RPAREN")?;
+                let span = self.span_from_mark(start);
+                let items = self.pool.alloc_expr_list(&items);
+                return Ok(self.pool.alloc_expr(ExprKind::Tuple { items }, span));
+            }
             self.expect_name("RPAREN")?;
             let span = self.span_from_mark(start);
             Ok(self.pool.alloc_expr(ExprKind::Group { expr }, span))

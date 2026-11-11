@@ -431,10 +431,10 @@ fn disambiguates_grouped_and_function_types() {
     assert!(stripped.contains("GroupType"), "{stripped}");
     assert!(stripped.contains("FuncType"), "{stripped}");
 
-    assert!(
-        parse_to_string("module test\ntype NotATuple = (int, str)\n").is_err(),
-        "comma-separated parenthesized types require a function arrow"
-    );
+    // Two or more types without an arrow are a tuple; `()` is not a type.
+    let tuple = parse_to_string("module test\ntype Pair = (int, str)\n").unwrap();
+    assert!(strip_spans(&tuple).contains("TupleType"), "{tuple}");
+    assert!(parse_to_string("module test\ntype Unit = ()\n").is_err());
 }
 
 #[test]

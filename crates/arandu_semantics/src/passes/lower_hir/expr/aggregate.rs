@@ -138,6 +138,24 @@ pub(super) fn lower_array(
     })
 }
 
+pub(super) fn lower_tuple(
+    type_check: &mut TypeCheckResult,
+    pool: &AstPool,
+    hir_pool: &mut crate::hir::HirPool,
+    expr: ExprId,
+) -> Result<HirExprKind, Diagnostic> {
+    let ExprKind::Tuple { items } = pool.expr(expr) else {
+        unreachable!();
+    };
+    let mut hir_items = Vec::new();
+    for &item in pool.expr_list(*items) {
+        hir_items.push(super::lower_expr(type_check, pool, hir_pool, item)?);
+    }
+    Ok(HirExprKind::Tuple {
+        items: hir_pool.alloc_expr_list(&hir_items),
+    })
+}
+
 pub(super) fn lower_array_repeat(
     type_check: &mut TypeCheckResult,
     pool: &AstPool,

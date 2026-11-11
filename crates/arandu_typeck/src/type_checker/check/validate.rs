@@ -38,6 +38,10 @@ pub(crate) fn contains_any(pool: &AstPool, ty: TypeExprId) -> Option<Span> {
         | TypeExpr::Array { elem: inner, .. }
         | TypeExpr::Group { inner, .. }
         | TypeExpr::OwnFunc { func: inner, .. } => contains_any(pool, *inner),
+        TypeExpr::Tuple { items, .. } => pool
+            .type_expr_list(*items)
+            .iter()
+            .find_map(|item| contains_any(pool, *item)),
         TypeExpr::Func { params, result, .. } => {
             for param in pool.type_expr_list(*params) {
                 if let Some(span) = contains_any(pool, *param) {
@@ -130,6 +134,11 @@ pub(crate) fn validate_const_arguments(checker: &mut TypeChecker<'_>, ty: TypeEx
             }
             validate_const_arguments(checker, *elem);
         }
+        TypeExpr::Tuple { items, .. } => {
+            for &item in checker.pool.type_expr_list(*items) {
+                validate_const_arguments(checker, item);
+            }
+        }
         TypeExpr::Func { params, result, .. } => {
             for &param in checker.pool.type_expr_list(*params) {
                 validate_const_arguments(checker, param);
@@ -221,7 +230,7 @@ fn validate_expr(checker: &mut TypeChecker<'_>, expr: ExprId) {
                 validate_expr(checker, checker.pool.field_init(field_id).value);
             }
         }
-        ExprKind::Array { items, .. } => {
+        ExprKind::Array { items, .. } | ExprKind::Tuple { items } => {
             let item_ids = checker.pool.expr_list(*items).to_vec();
             for item_id in item_ids {
                 validate_expr(checker, item_id);
@@ -637,6 +646,11 @@ fn validate_type_expr_constraints(
         } => {
             validate_type_expr_constraints(checker, *func, scope);
             validate_owning_closure_type(checker, *span, *bound, *once, scope);
+        }
+        TypeExpr::Tuple { items, .. } => {
+            for &item in checker.pool.type_expr_list(*items) {
+                validate_type_expr_constraints(checker, item, scope);
+            }
         }
         TypeExpr::Func { params, result, .. } => {
             for &param in checker.pool.type_expr_list(*params) {

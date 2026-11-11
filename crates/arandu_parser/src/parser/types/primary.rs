@@ -341,6 +341,11 @@ impl<'a> Parser<'a> {
                 result: Some(result),
             }));
         }
+        if params.len() >= 2 {
+            let span = self.span_from_mark(start);
+            let items = self.pool.alloc_type_expr_list(&params);
+            return Ok(self.pool.alloc_type_expr(TypeExpr::Tuple { span, items }));
+        }
         if saw_comma || params.len() != 1 {
             return Err(ParseError::new(
                 ParseErrorCode::ExpectedToken,

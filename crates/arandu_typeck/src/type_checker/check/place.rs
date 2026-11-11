@@ -129,7 +129,18 @@ pub(crate) fn synth_place(checker: &mut TypeChecker<'_>, place: &arandu_parser::
                     _ => None,
                 };
                 let struct_owner = struct_info_opt.as_ref().map(|(id, _)| *id);
-                let field_from_struct = if let Some((struct_id, args)) = struct_info_opt {
+                // `t.0`: an element of a tuple, by position.
+                let tuple_element = match &actual_base_ty {
+                    ArType::Tuple(items) if arandu_parser::is_tuple_index(name) => name
+                        .parse::<usize>()
+                        .ok()
+                        .and_then(|index| interner.type_args(*items).get(index).copied())
+                        .map(|element| interner.resolve(element)),
+                    _ => None,
+                };
+                let field_from_struct = if tuple_element.is_some() {
+                    tuple_element
+                } else if let Some((struct_id, args)) = struct_info_opt {
                     let resolved_args: Vec<ArType> =
                         args.iter().map(|&a| interner.resolve(a)).collect();
                     if let Some(field_ty) = super::super::types::struct_field_instantiated(

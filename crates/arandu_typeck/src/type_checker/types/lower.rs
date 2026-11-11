@@ -168,6 +168,18 @@ pub fn lower_type_expr_ctx(
             ArType::func(&param_types, ret_id, interner)
         }
         TypeExpr::Group { inner, .. } => lower_type_expr_ctx(*inner, ctx, interner),
+        TypeExpr::Tuple { items, .. } => {
+            let items: Vec<super::type_interner::TypeId> = ctx
+                .pool
+                .type_expr_list(*items)
+                .iter()
+                .map(|&item| {
+                    let ty = lower_type_expr_ctx(item, ctx, interner);
+                    interner.intern(ty)
+                })
+                .collect();
+            ArType::tuple(&items, interner)
+        }
         TypeExpr::OwnFunc {
             func, bound, once, ..
         } => lower_owning_closure(*func, *bound, *once, ctx, interner),

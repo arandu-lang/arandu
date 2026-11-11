@@ -666,6 +666,48 @@ pub(super) fn synth_literal_expr(
             }
             Some(checker.intern(array))
         }
+        ExprKind::Tuple { items } => {
+            let item_ids = checker.pool.expr_list(*items).to_vec();
+            let expected_items = expected.and_then(|expected| match checker.resolve(expected) {
+                ArType::Tuple(items) => Some(checker.type_info.type_interner.type_args(items)),
+                _ => None,
+            });
+            let mut types = Vec::with_capacity(item_ids.len());
+            for (index, &item) in item_ids.iter().enumerate() {
+                let expected_item = expected_items
+                    .as_ref()
+                    .and_then(|items| items.get(index).copied());
+                let mut ty = super::synth_expr_expected(checker, item, expected_item);
+                // An element is a value of its own: a literal no context
+                // types takes its default now (`int`, `float`), since the
+                // tuple's type is fixed here and not by a later use.
+                let default = match checker.resolve(ty) {
+                    ArType::IntLiteral => Some(Primitive::Int),
+                    ArType::FloatLiteral => Some(Primitive::Float),
+                    _ => None,
+                };
+                if let Some(default) = default {
+                    let concrete = expected_item
+                        .filter(|&expected| checker.resolve(expected).is_numeric())
+                        .unwrap_or_else(|| checker.intern(ArType::Primitive(default)));
+                    if let Some(var) = checker.literal_table.var_for_expr(item) {
+                        checker.constrain_literal_var(
+                            var,
+                            concrete,
+                            ConstraintOrigin::ArrayLiteral {
+                                array_span: span,
+                                item_span: checker.pool.expr_span(item),
+                                item_index: index,
+                            },
+                        );
+                    }
+                    checker.record_expr_type(item, concrete);
+                    ty = concrete;
+                }
+                types.push(ty);
+            }
+            Some(checker.intern(ArType::tuple(&types, &checker.type_info.type_interner)))
+        }
         ExprKind::Array { items } => {
             let items_range = *items;
             let expected_elem_id = expected.and_then(|exp_id| match checker.resolve(exp_id) {

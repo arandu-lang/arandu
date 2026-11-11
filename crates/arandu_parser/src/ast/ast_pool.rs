@@ -195,6 +195,10 @@ pub enum ExprKind {
         ty: TypeExprId,
         fields: IndexRange,
     }, // field_init_ids range
+    /// `(a, b)`: two or more values.
+    Tuple {
+        items: IndexRange,
+    },
     Array {
         items: IndexRange,
     }, // expr_ids range

@@ -62,6 +62,11 @@ impl<'a> Resolver<'a> {
                 }
                 self.resolve_type_expr(scope, *elem);
             }
+            TypeExpr::Tuple { items, .. } => {
+                for item in self.pool.type_expr_list(*items) {
+                    self.resolve_type_expr(scope, *item);
+                }
+            }
             TypeExpr::Func { params, result, .. } => {
                 for param in self.pool.type_expr_list(*params) {
                     self.resolve_type_expr(scope, *param);

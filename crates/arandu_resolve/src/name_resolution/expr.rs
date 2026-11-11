@@ -140,7 +140,7 @@ impl<'a> Resolver<'a> {
                     self.resolve_field_init(scope, self.pool.field_init(*field_id));
                 }
             }
-            ExprKind::Array { items, .. } => {
+            ExprKind::Array { items, .. } | ExprKind::Tuple { items } => {
                 let item_ids = self.pool.expr_list(*items);
                 for item in item_ids {
                     self.resolve_expr(scope, *item);

@@ -400,6 +400,22 @@ fn parse_group_or_lambda(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<
         return parse_lambda(ctx, cur, start);
     }
     let inner = try_hand_lower_expr(ctx, cur, 0)?;
+    if cur.peek_kind() == Some(TokenKind::Comma) {
+        // `(a, b)`: a tuple; a trailing comma is allowed.
+        let mut items = vec![inner];
+        while cur.eat(TokenKind::Comma) {
+            if cur.peek_kind() == Some(TokenKind::RParen) {
+                break;
+            }
+            items.push(try_hand_lower_expr(ctx, cur, 0)?);
+        }
+        let close = cur.expect(TokenKind::RParen)?;
+        let items = ctx.pool.alloc_expr_list(&items);
+        return Some(ctx.pool.alloc_expr(
+            ExprKind::Tuple { items },
+            ctx.span(start, close.start + close.len),
+        ));
+    }
     let close = cur.expect(TokenKind::RParen)?;
     Some(ctx.pool.alloc_expr(
         ExprKind::Group { expr: inner },

@@ -215,9 +215,7 @@ fn parse_type_dispatch(
         }));
     }
 
-    // `(T)` grouped type or `(T, U) -> R` function type. A comma without an
-    // arrow is not silently accepted as a tuple because tuple types do not yet
-    // have an AST representation.
+    // `(T)` grouped type, `(T, U) -> R` function type, or `(T, U)` tuple.
     if cur.eat(TokenKind::LParen) {
         let mut params = Vec::new();
         let mut saw_comma = false;
@@ -247,6 +245,13 @@ fn parse_type_dispatch(
                 span: ctx.span(start, end),
                 params,
                 result: Some(result),
+            }));
+        }
+        if params.len() >= 2 {
+            let items = ctx.pool.alloc_type_expr_list(&params);
+            return Some(ctx.pool.alloc_type_expr(TypeExpr::Tuple {
+                span: ctx.span(start, close.start + close.len),
+                items,
             }));
         }
         if saw_comma || params.len() != 1 {

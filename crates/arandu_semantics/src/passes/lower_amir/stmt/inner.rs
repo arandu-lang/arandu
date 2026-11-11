@@ -498,7 +498,38 @@ impl LowerCtx<'_> {
                 self.builder.current_block = Some(bb_body);
 
                 let bindings_slice = self.hir.pool.for_bindings_list(*bindings);
-                if let Some(binding) = bindings_slice.first() {
+                // `for i, x in xs`: the position, counted from zero.
+                if let [position, _, ..] = bindings_slice {
+                    let local_id = self
+                        .symbol_map
+                        .get(&position.symbol)
+                        .copied()
+                        .unwrap_or_else(|| {
+                            self.new_local_id(position.ty, position.symbol, position.span)
+                        });
+                    let mut current = self.read_variable_source(idx_local)?;
+                    if iter_op.is_none() {
+                        let offset = self.new_temp_id(index_ty);
+                        self.emit_assign_temp(
+                            offset,
+                            AmirRvalue::Binary {
+                                op: BinaryOp::Sub,
+                                left: current,
+                                right: start,
+                            },
+                        );
+                        current = AmirOperand::Copy(offset);
+                    }
+                    let position_temp = self.new_temp_id(position.ty);
+                    self.emit_assign_temp(position_temp, AmirRvalue::Use(current));
+                    self.write_variable_source(local_id, AmirOperand::Copy(position_temp))?;
+                }
+                let element = if bindings_slice.len() >= 2 {
+                    bindings_slice.get(1)
+                } else {
+                    bindings_slice.first()
+                };
+                if let Some(binding) = element {
                     let local_id = self
                         .symbol_map
                         .get(&binding.symbol)

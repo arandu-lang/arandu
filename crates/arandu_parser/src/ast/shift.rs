@@ -203,7 +203,7 @@ impl Shift {
                 self.type_expr_id(ty);
                 self.field_init_range(fields);
             }
-            ExprKind::Array { items } => self.expr_range(items),
+            ExprKind::Array { items } | ExprKind::Tuple { items } => self.expr_range(items),
             ExprKind::ArrayRepeat { value, count } => {
                 self.expr_id(value);
                 self.type_expr_id(count);
@@ -527,6 +527,10 @@ impl Shift {
                 self.span(size_span);
                 self.opt_type_expr(size_expression);
                 self.type_expr_id(elem);
+            }
+            TypeExpr::Tuple { span, items } => {
+                self.span(span);
+                self.type_expr_range(items);
             }
             TypeExpr::Func {
                 span,

@@ -226,6 +226,28 @@ fn parse_postfix_tail(
             Some(TokenKind::Dot) => {
                 cur.bump();
                 let field_tok = cur.peek()?;
+                // `t.0`, and `t.0.1`, which the lexer reads as a float.
+                if matches!(field_tok.kind, TokenKind::IntDec | TokenKind::Float) {
+                    let text = SmolStr::new(ctx.text(field_tok)?);
+                    if !text.split('.').all(crate::ast::is_tuple_index) {
+                        return None;
+                    }
+                    cur.bump();
+                    let mut end = field_tok.start;
+                    for index in text.split('.') {
+                        end += index.len() as u32;
+                        let left_span = ctx.pool.expr_span(left);
+                        left = ctx.pool.alloc_expr(
+                            ExprKind::Field {
+                                base: left,
+                                field: SmolStr::new(index),
+                            },
+                            ctx.span(left_span.start, end),
+                        );
+                        end += 1;
+                    }
+                    continue;
+                }
                 if !field_tok.kind.is_contextual_member_name() {
                     return None;
                 }

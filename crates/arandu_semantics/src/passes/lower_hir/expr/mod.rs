@@ -331,6 +331,7 @@ fn lower_expr_dispatch(
         ExprKind::StructLiteral { .. } => {
             aggregate::lower_struct_literal(type_check, pool, hir_pool, expr, span, fallback_ty)?
         }
+        ExprKind::Tuple { .. } => aggregate::lower_tuple(type_check, pool, hir_pool, expr)?,
         ExprKind::Array { .. } => aggregate::lower_array(type_check, pool, hir_pool, expr)?,
         ExprKind::ArrayRepeat { .. } => {
             aggregate::lower_array_repeat(type_check, pool, hir_pool, expr)?

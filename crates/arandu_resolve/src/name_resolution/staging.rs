@@ -176,7 +176,9 @@ impl Resolver<'_> {
                 children.push(*callee);
                 children.extend_from_slice(pool.expr_list(*args));
             }
-            ExprKind::VariantSugar { args, .. } | ExprKind::Array { items: args } => {
+            ExprKind::VariantSugar { args, .. }
+            | ExprKind::Array { items: args }
+            | ExprKind::Tuple { items: args } => {
                 children.extend_from_slice(pool.expr_list(*args));
             }
             ExprKind::ArrayRepeat { value, count } => {

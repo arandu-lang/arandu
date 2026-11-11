@@ -1526,6 +1526,15 @@ fn owned_text_is_freed_on_every_path() {
     run_emitted_c_with_asan(&c_source, "string_concat_owned");
 }
 
+/// A tuple owns its elements: each is destroyed once, whether the tuple is
+/// read in place, destructured or returned.
+#[test]
+fn tuple_elements_are_destroyed_once() {
+    let source = include_str!("../../../../tests/corpus/tuples.aru");
+    let c_source = emit_c(source, "tuples");
+    run_emitted_c_with_asan(&c_source, "tuples");
+}
+
 /// An owned closure passed as a trailing block is freed exactly once.
 #[test]
 fn trailing_block_closures_are_freed_once() {

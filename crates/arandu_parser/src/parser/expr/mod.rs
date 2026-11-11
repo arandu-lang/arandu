@@ -145,6 +145,27 @@ impl<'a> Parser<'a> {
                 TokenKind::Dot => {
                     self.advance();
                     let span_start = self.pool.expr_span(left);
+                    // `t.0`, and `t.0.1`, which the lexer reads as a float.
+                    if matches!(self.current().kind, TokenKind::IntDec | TokenKind::Float)
+                        && self
+                            .current_text()
+                            .split('.')
+                            .all(crate::ast::is_tuple_index)
+                    {
+                        let text = smol_str::SmolStr::new(self.current_text());
+                        self.advance();
+                        let span = span_between(span_start, self.previous().span(self.file_id));
+                        for index in text.split('.') {
+                            left = self.pool.alloc_expr(
+                                ExprKind::Field {
+                                    base: left,
+                                    field: smol_str::SmolStr::new(index),
+                                },
+                                span,
+                            );
+                        }
+                        continue;
+                    }
                     let field = self.expect_member_name()?;
                     let span = span_between(span_start, self.previous().span(self.file_id));
                     left = self

@@ -505,6 +505,23 @@ impl<'a> Parser<'a> {
         loop {
             if self.eat_name("DOT") {
                 let suffix_start = self.pos.saturating_sub(1);
+                // `t.0 = v`, and `t.0.1 = v`, which the lexer reads as a float.
+                if matches!(self.current().kind, TokenKind::IntDec | TokenKind::Float)
+                    && self
+                        .current_text()
+                        .split('.')
+                        .all(crate::ast::is_tuple_index)
+                {
+                    let text = SmolStr::new(self.current_text());
+                    self.advance();
+                    for index in text.split('.') {
+                        suffixes.push(PlaceSuffix::Field {
+                            span: self.span_from_mark(suffix_start),
+                            name: SmolStr::new(index),
+                        });
+                    }
+                    continue;
+                }
                 let name = self.expect_ident_value()?;
                 suffixes.push(PlaceSuffix::Field {
                     span: self.span_from_mark(suffix_start),
@@ -750,9 +767,14 @@ impl<'a> Parser<'a> {
         self.expect_name("KW_FOR")?;
         let clause = if self.looks_like_for_in_clause() {
             let clause_start = self.mark();
+            // `for (i, x) in xs` is `for i, x in xs`.
+            let has_paren = self.eat_name("LPAREN");
             let mut bindings = vec![self.parse_for_binding()?];
             while self.eat_name("COMMA") {
                 bindings.push(self.parse_for_binding()?);
+            }
+            if has_paren {
+                self.expect_name("RPAREN")?;
             }
             self.expect_name("KW_IN")?;
             let iterable = self.parse_expr_without_block_calls(0)?;
@@ -954,6 +976,11 @@ impl<'a> Parser<'a> {
 
     pub(super) fn looks_like_for_in_clause(&self) -> bool {
         let mut index = self.pos;
+        let kind = |index: usize| self.tokens.get(index).map(|token| &token.kind);
+        let has_paren = matches!(kind(index), Some(TokenKind::LParen));
+        if has_paren {
+            index += 1;
+        }
         loop {
             if self
                 .tokens
@@ -970,8 +997,11 @@ impl<'a> Parser<'a> {
                 return false;
             }
             index += 1;
-            match self.tokens.get(index).map(|token| &token.kind) {
-                Some(TokenKind::KwIn) => return true,
+            match kind(index) {
+                Some(TokenKind::KwIn) => return !has_paren,
+                Some(TokenKind::RParen) if has_paren => {
+                    return matches!(kind(index + 1), Some(TokenKind::KwIn));
+                }
                 Some(TokenKind::Comma) => index += 1,
                 _ => return false,
             }

@@ -139,6 +139,37 @@ pub(crate) fn resolve_field_type(
         return checker.intern(ArType::Error);
     }
 
+    // `t.0`: an element of a tuple, by position.
+    if let ArType::Tuple(items) = actual_base_ty {
+        let items = checker.type_info.type_interner.type_args(items);
+        let element = arandu_parser::is_tuple_index(field)
+            .then(|| field.parse::<usize>().ok())
+            .flatten()
+            .and_then(|index| items.get(index).copied());
+        return element.unwrap_or_else(|| {
+            let base_ty = checker.resolve(base_ty_id);
+            checker.diagnostics.push(
+                crate::Diagnostic::error(
+                    crate::DiagCode::T018UndefinedField,
+                    format!(
+                        "no element '{field}' on the tuple '{}'",
+                        base_ty.display(&checker.symbols, &checker.type_info.type_interner)
+                    ),
+                    field_span,
+                )
+                .with_label(
+                    base_span,
+                    format!("this tuple has {} elements", items.len()),
+                )
+                .with_hint(format!(
+                    "tuple elements are read by position, from `.0` to `.{}`",
+                    items.len().saturating_sub(1)
+                )),
+            );
+            checker.intern(ArType::Error)
+        });
+    }
+
     let struct_info_opt = match actual_base_ty {
         ArType::Named(id, args) => Some((id, args)),
         ArType::Ptr(inner) => match checker.resolve(inner) {

@@ -82,3 +82,12 @@ pub enum StringPart {
     Text { span: Span, text: SmolStr },
     Expr { span: Span, expr: ExprId },
 }
+
+/// Whether `text` is a tuple element index as written after a dot (`t.0`):
+/// decimal digits with no leading zero.
+#[must_use]
+pub fn is_tuple_index(text: &str) -> bool {
+    !text.is_empty()
+        && text.bytes().all(|byte| byte.is_ascii_digit())
+        && (text == "0" || !text.starts_with('0'))
+}

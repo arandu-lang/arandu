@@ -432,7 +432,29 @@ fn parse_place(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<Place> {
     let mut suffixes = Vec::new();
     loop {
         if cur.eat(TokenKind::Dot) {
-            let field_tok = cur.peek().filter(|t| t.kind.is_contextual_member_name())?;
+            let field_tok = cur.peek()?;
+            // `t.0 = v`, and `t.0.1 = v`, which the lexer reads as a float.
+            if matches!(field_tok.kind, TokenKind::IntDec | TokenKind::Float) {
+                let text = SmolStr::new(ctx.text(field_tok)?);
+                if !text.split('.').all(crate::ast::is_tuple_index) {
+                    return None;
+                }
+                cur.bump();
+                let mut at = field_tok.start;
+                for index in text.split('.') {
+                    let len = index.len() as u32;
+                    suffixes.push(PlaceSuffix::Field {
+                        span: ctx.span(at, at + len),
+                        name: SmolStr::new(index),
+                    });
+                    at += len + 1;
+                }
+                end = field_tok.start + field_tok.len;
+                continue;
+            }
+            if !field_tok.kind.is_contextual_member_name() {
+                return None;
+            }
             cur.bump();
             let name = SmolStr::new(ctx.text(field_tok)?);
             end = field_tok.start + field_tok.len;
@@ -666,6 +688,8 @@ fn lower_for(
     let clause = if has_in {
         let mut h = Cursor::new(head);
         let mut bindings = Vec::new();
+        // `for (i, x) in xs` is `for i, x in xs`.
+        let has_paren = h.eat(TokenKind::LParen);
         loop {
             let mutable = h.eat(TokenKind::KwMut);
             let name_tok = h.expect(TokenKind::IdentValue)?;
@@ -679,6 +703,9 @@ fn lower_for(
                 continue;
             }
             break;
+        }
+        if has_paren {
+            h.expect(TokenKind::RParen)?;
         }
         h.expect(TokenKind::KwIn)?;
         let iterable = try_hand_lower_expr(ctx, &mut h, 0)?;

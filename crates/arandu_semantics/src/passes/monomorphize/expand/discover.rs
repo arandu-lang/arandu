@@ -275,7 +275,7 @@ pub(super) fn discover_nested_keys<'bump>(
             HirExprKind::ArrayRepeat { value } => {
                 visit_expr(hir, *value, tc, bump, template_funcs, enqueue);
             }
-            HirExprKind::Array { items } => {
+            HirExprKind::Array { items } | HirExprKind::Tuple { items } => {
                 for &e in hir.pool.expr_list(*items) {
                     visit_expr(hir, e, tc, bump, template_funcs, enqueue);
                 }

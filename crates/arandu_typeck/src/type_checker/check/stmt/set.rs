@@ -490,7 +490,16 @@ fn validate_mutability(checker: &mut TypeChecker<'_>, place: &arandu_parser::Pla
                     }
                     _ => None,
                 };
-                if let Some((struct_id, args)) = struct_info_opt {
+                let tuple_element = match &actual_base_ty {
+                    ArType::Tuple(items) if arandu_parser::is_tuple_index(name) => name
+                        .parse::<usize>()
+                        .ok()
+                        .and_then(|index| interner.type_args(*items).get(index).copied()),
+                    _ => None,
+                };
+                if let Some(element) = tuple_element {
+                    current_ty_id = element;
+                } else if let Some((struct_id, args)) = struct_info_opt {
                     let resolved_args: Vec<ArType> =
                         args.iter().map(|&a| interner.resolve(a)).collect();
                     if let Some(field_ty) = super::super::super::types::struct_field_instantiated(

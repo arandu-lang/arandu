@@ -51,7 +51,12 @@ impl<'a> Lexer<'a> {
 
         self.bump_digits_or_underscores();
         let mut is_float = false;
-        if self.peek() == Some('.') && self.peek_next() != Some('.') {
+        // `1.len()` and `t.1.len()`: a dot followed by a name is a member
+        // access on the integer, not a decimal point.
+        if self.peek() == Some('.')
+            && self.peek_next() != Some('.')
+            && !self.peek_next().is_some_and(is_ident_start)
+        {
             is_float = true;
             self.bump();
             if !self.peek().is_some_and(is_digit) {

@@ -99,6 +99,15 @@ pub(super) fn dump_expr(pool: &AstPool, expr: ExprId) -> String {
                 dump_type(pool.type_expr(*ty), pool)
             )
         }
+        ExprKind::Tuple { items } => {
+            let items_str = pool
+                .expr_list(*items)
+                .iter()
+                .map(|item| dump_expr(pool, *item))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("Tuple {}([{items_str}])", dump_span(span))
+        }
         ExprKind::Array { items } => {
             let item_ids = pool.expr_list(*items);
             let items_str = item_ids

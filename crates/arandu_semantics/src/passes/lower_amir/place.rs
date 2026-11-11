@@ -113,6 +113,11 @@ impl LowerCtx<'_> {
                 if matches!(base_ty, ArType::Ref(_) | ArType::RefMut(_) | ArType::Ptr(_)) {
                     place.projections.push(AmirProjection::Deref);
                 }
+                if let Some(index) = self.tuple_element(&base_ty, field) {
+                    place.projections.push(AmirProjection::TupleField(index));
+                    self.mark_local_materialized(place.local);
+                    return Ok(place);
+                }
                 let field_sym = self
                     .resolve_field_symbol(&base_ty, field.as_str())
                     .ok_or_else(|| {
@@ -230,6 +235,20 @@ impl LowerCtx<'_> {
             .unwrap_or(0)
     }
 
+    /// The position `field` names when `base` is a tuple or a reference to
+    /// one (`t.0`).
+    fn tuple_element(&self, base: &ArType, field: &str) -> Option<usize> {
+        let tuple = match base {
+            ArType::Ref(inner) | ArType::RefMut(inner) | ArType::Ptr(inner) => {
+                self.resolve_ty(*inner)
+            }
+            other => other.clone(),
+        };
+        matches!(tuple, ArType::Tuple(_))
+            .then(|| field.parse::<usize>().ok())
+            .flatten()
+    }
+
     pub(crate) fn lower_field(
         &mut self,
         base: HirExprId,
@@ -308,6 +327,32 @@ impl LowerCtx<'_> {
                 }
                 _ => {}
             }
+        }
+
+        // `t.0`: an element is read in place. A tuple with no place (a call
+        // result, a literal) is given one first.
+        let base_ty = self.resolve_ty(self.hir.pool.expr(base).ty);
+        if let Some(index) = self.tuple_element(&base_ty, field) {
+            let mut place = match self.lower_expr_to_place(base, symbols) {
+                Ok(place) => place,
+                Err(_) => {
+                    let base_expr = self.hir.pool.expr(base);
+                    let (ty, span) = (base_expr.ty, base_expr.span);
+                    let value = self.lower_expr(base, None, symbols)?;
+                    let local = self.new_compiler_local_id(ty, span);
+                    self.write_variable_source(local, value)?;
+                    AmirPlace {
+                        local,
+                        projections: smallvec::SmallVec::new(),
+                    }
+                }
+            };
+            if matches!(base_ty, ArType::Ref(_) | ArType::RefMut(_) | ArType::Ptr(_)) {
+                place.projections.push(AmirProjection::Deref);
+            }
+            place.projections.push(AmirProjection::TupleField(index));
+            self.mark_local_materialized(place.local);
+            return Ok(self.load_into_target(target, place, expr_ty));
         }
 
         if let Ok(mut place) = self.lower_expr_to_place(base, symbols) {

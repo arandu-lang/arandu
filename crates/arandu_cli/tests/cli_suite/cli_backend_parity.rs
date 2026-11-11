@@ -767,6 +767,26 @@ fn string_concatenation_agrees_on_every_backend() {
     let _ = fs::remove_file(path);
 }
 
+/// Tuple values: construction, `t.0`, element assignment, destructuring in
+/// `let` and `match`, tuples in parameters and results, and `for i, x`.
+#[test]
+fn tuples_agree_on_every_backend() {
+    let source = include_str!("../../../../tests/corpus/tuples.aru");
+    for (backend, outcome) in outcomes_on("tuples", source, false) {
+        assert_eq!(outcome, ProgramOutcome::Returned(0), "{backend}");
+    }
+    let path = std::env::temp_dir().join(format!("arandu_tuples_{}.aru", std::process::id()));
+    fs::write(&path, source).unwrap();
+    let wasm = cli(&["emit-wasm", &path.to_string_lossy()]);
+    assert!(
+        wasm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&wasm.stderr)
+    );
+    crate::wasm_host::run_main(&wasm.stdout).assert_returns(0, "tuples in Wasmtime");
+    let _ = fs::remove_file(path);
+}
+
 /// `mem.replace`, `mem.swap` and `mem.take` on values with destructors.
 #[test]
 fn mem_replace_of_owned_values_agrees_on_every_backend() {

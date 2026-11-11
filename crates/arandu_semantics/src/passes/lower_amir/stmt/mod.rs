@@ -238,6 +238,11 @@ impl LowerCtx<'_> {
                             field_symbol: Some(symbol),
                             ..
                         } => Ok(AmirProjection::Field(*symbol)),
+                        HirPlaceSuffix::Field { name, .. }
+                            if arandu_parser::is_tuple_index(name) =>
+                        {
+                            Ok(AmirProjection::TupleField(name.parse().unwrap_or(0)))
+                        }
                         HirPlaceSuffix::Field { span, name, .. } => Err(crate::Diagnostic::error(
                             crate::DiagCode::L001LoweringUnresolvedSymbol,
                             format!("cannot lower field projection `{name}`: symbol not resolved"),
@@ -357,6 +362,9 @@ impl LowerCtx<'_> {
                     field_symbol: Some(symbol),
                     ..
                 } => AmirProjection::Field(*symbol),
+                HirPlaceSuffix::Field { name, .. } if arandu_parser::is_tuple_index(name) => {
+                    AmirProjection::TupleField(name.parse().unwrap_or(0))
+                }
                 HirPlaceSuffix::Field { span, name, .. } => {
                     return Err(crate::Diagnostic::error(
                         crate::DiagCode::L001LoweringUnresolvedSymbol,

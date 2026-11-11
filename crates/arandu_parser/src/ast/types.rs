@@ -82,6 +82,11 @@ pub enum TypeExpr {
         span: Span,
         inner: TypeExprId,
     },
+    /// `(A, B)`: two or more types without `->`.
+    Tuple {
+        span: Span,
+        items: IndexRange,
+    },
     /// Owning, escaping closure type `own (A) -> R`, with an optional
     /// capability bound: `own (A) -> R + Send` (RFC 0032, L3). `func` is
     /// always a [`TypeExpr::Func`].
@@ -112,6 +117,7 @@ impl TypeExpr {
             | TypeExpr::Array { span, .. }
             | TypeExpr::Func { span, .. }
             | TypeExpr::Group { span, .. }
+            | TypeExpr::Tuple { span, .. }
             | TypeExpr::OwnFunc { span, .. } => *span,
         }
     }

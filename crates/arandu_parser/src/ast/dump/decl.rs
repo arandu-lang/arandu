@@ -446,6 +446,15 @@ pub(super) fn dump_type(ty: &TypeExpr, pool: &AstPool) -> String {
                 None => format!("FuncType {} ({params_str})", dump_span(*span)),
             }
         }
+        TypeExpr::Tuple { span, items } => {
+            let items = pool
+                .type_expr_list(*items)
+                .iter()
+                .map(|item| dump_type(pool.type_expr(*item), pool))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("TupleType {} ({items})", dump_span(*span))
+        }
         TypeExpr::Group { span, inner } => {
             format!(
                 "GroupType {} ({})",

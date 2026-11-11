@@ -436,6 +436,25 @@ Fields:
 - `params`: list of `TypeExpr`
 - `result`: optional `ResultType`
 
+### TupleType and TupleExpr
+
+`(A, B)`, two or more types without `->`, is a `TupleType` with `items`;
+`(A)` stays a `GroupType` and `(A, B) -> R` a `FuncType`. `(a, b)`, two or
+more values, is a `TupleExpr` with `items`; `(a)` stays a group. A trailing
+comma is allowed in both.
+
+An element is read and assigned by position with the field syntax, `t.0`,
+which is a `FieldExpr` (or a `PlaceExpr` field suffix) whose name is the
+decimal index. `t.0.1` reaches the lexer as `t`, `.`, the float `0.1`; the
+parser splits it into two accesses. A decimal point followed by a name is a
+member access on the integer (`t.1.len()`), never the start of a fraction.
+
+Tuples are the type a function with several results already returned:
+`return a, b` and `return (a, b)` build the same value, and
+`let a, b = f()`, `let (a, b) = f()` and a `match` tuple pattern destructure
+it. An element of a literal that no context types takes its default at once
+(`int`, `float`): the tuple's type is fixed where it is written.
+
 ### NullableType
 
 Fields:
@@ -597,6 +616,11 @@ Variants:
 
 - `ForIn(bindings, iterable, body)`
 - `ForCStyle(init, condition, step, body)`
+
+`ForIn` takes one or two bindings: `for x in xs` binds each element, and
+`for i, x in xs` (or `for (i, x) in xs`) also binds its position, a `usize`
+counted from zero, as Go's `range` does. Over a range the position is still
+zero-based while the element is the value. Three or more names are T012.
 
 ### MatchStmt
 

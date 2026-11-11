@@ -68,12 +68,35 @@ pub(super) fn check_for_stmt(
                     ArType::Error
                 }
             };
-            if let Some(binding) = bindings.first() {
+            // `for x in xs` binds each element; `for i, x in xs` also binds
+            // its position, a `usize` counted from zero (Go's `range`).
+            if let Some(extra) = bindings.get(2) {
+                checker.diagnostics.push(
+                    crate::Diagnostic::error(
+                        crate::DiagCode::T012WrongArgCount,
+                        format!(
+                            "a `for` loop binds an element, or a position and an element; found {} names",
+                            bindings.len()
+                        ),
+                        extra.span,
+                    )
+                    .with_hint("write `for x in xs` or `for i, x in xs`"),
+                );
+            }
+            let elem_ty_id = checker.intern(elem_ty);
+            let position_ty_id = checker.intern(ArType::Primitive(Primitive::USize));
+            let types: &[arandu_middle::types::type_interner::TypeId] = if bindings.len() >= 2 {
+                &[position_ty_id, elem_ty_id]
+            } else {
+                &[elem_ty_id]
+            };
+            let error_id = checker.intern(ArType::Error);
+            for (index, binding) in bindings.iter().enumerate() {
                 let binding_key = crate::NodeKey::from(binding.span);
                 if let Some(symbol_id) = checker.resolved.definitions.get(&binding_key).copied() {
-                    let elem_ty_id = checker.intern(elem_ty);
-                    checker.ctx.bind(symbol_id, elem_ty_id);
-                    checker.record_decl_type(symbol_id, elem_ty_id);
+                    let ty = types.get(index).copied().unwrap_or(error_id);
+                    checker.ctx.bind(symbol_id, ty);
+                    checker.record_decl_type(symbol_id, ty);
                 }
             }
         }

@@ -482,7 +482,13 @@ impl Frame<'_> {
             value_refs,
             type_refs,
             mutable_symbols,
+            hole_scopes,
         } = typed;
+        // A hole's scope belongs to the whole-file resolution; an item with
+        // one is checked on the full path.
+        if !hole_scopes.is_empty() {
+            return None;
+        }
         Some(ResolvedNames {
             deferred_comptime_functions: deferred_comptime_functions.clone(),
             deferred_loop_bodies: self
@@ -499,6 +505,7 @@ impl Frame<'_> {
             value_refs: self.keys(value_refs, &signatures.value_refs)?,
             type_refs: self.keys(type_refs, &signatures.type_refs)?,
             mutable_symbols: mutable_symbols.clone(),
+            hole_scopes: rustc_hash::FxHashMap::default(),
         })
     }
 

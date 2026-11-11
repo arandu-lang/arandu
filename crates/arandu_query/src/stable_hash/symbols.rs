@@ -261,6 +261,14 @@ pub(super) fn hash_resolved_names(hasher: &mut Hasher, resolved: &arandu_resolve
     for symbol in mutable {
         hash_symbol_id(hasher, symbol);
     }
+    let mut holes: Vec<_> = resolved.hole_scopes.iter().collect();
+    holes.sort_unstable_by_key(|(key, _)| (key.start, key.end));
+    hasher.update(&u64_le(holes.len() as u64));
+    for (key, scope) in holes {
+        hasher.update(&u64_le(u64::from(key.start)));
+        hasher.update(&u64_le(u64::from(key.end)));
+        hasher.update(&u64_le(u64::from(scope.0)));
+    }
 }
 
 /// Stable, allocation-free discriminant for [`SymbolKind`].
@@ -348,6 +356,7 @@ fn lang_item_discriminant(item: arandu_middle::symbol_table::LangItem) -> u8 {
         LangItem::Closure => 54,
         LangItem::SendClosure => 55,
         LangItem::ClosureJob => 56,
+        LangItem::Hole => 57,
     }
 }
 

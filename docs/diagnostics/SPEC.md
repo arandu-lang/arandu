@@ -298,6 +298,7 @@ Abaixo estão listados todos os diagnósticos mapeados para o compilador Arandu.
 | **T099** | `The module '{module}' requires an underlying operating system, but target '{target}' is bare-metal.` | Error | `0.2.0` | `std.thread` e `std.fs` exigem SO; desde a 0.3, também uma closure `own (A) -> R` com capturas, cujo ambiente usa o alocador do host. T050–T098 permanecem sem uso; o contrato freestanding fixou T099. |
 | **T100** | `borrowed callback of type '{type}' cannot escape the call that received it` | Error | `0.3.0` | Parâmetro `(A) -> R` é emprestado e não escapante: só pode ser chamado ou repassado a outro parâmetro de callback; retorno, campo, atribuição tipada ou argumento não-callback são rejeitados (RFC 0032, L1). |
 | **T101** | `the initial value of 'static mut {name}' has no static data image` | Error | `0.3.0` | O valor inicial de `static mut` vira bytes na seção de dados; `str`, fatias e enums com nicho não têm imagem plana. Escalares, arrays, tuplas, structs, enums com tag e `nil` são aceitos. |
+| **T102** | `typed hole: expected '{type}'` | Error | `0.3.0` | Um `todo`, `todo()` ou `todo("motivo")` continua no programa. O diagnóstico traz o tipo esperado, o motivo e até cinco locais que o preencheriam, como quick fix não preferido. Bloqueia build, run, testes e CTFE; no editor aparece como informação, com dica inline do tipo. |
 
 ---
 

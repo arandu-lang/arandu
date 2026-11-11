@@ -1,6 +1,7 @@
 mod binary;
 mod call;
 mod control_flow;
+mod hole;
 mod literal;
 
 use arandu_parser::ast_pool::{ExprId, ExprKind};
@@ -48,6 +49,10 @@ fn synth_expr_inner(
     // lifetime is independent of the mutable checker borrow used below.
     let pool = checker.pool;
     let kind = pool.expr(expr);
+
+    if let Some(parts) = hole::hole_parts(checker, expr) {
+        return hole::synth_hole(checker, expr, parts, expected);
+    }
 
     if let ExprKind::Layout { query, ty } = kind {
         let result = match query {

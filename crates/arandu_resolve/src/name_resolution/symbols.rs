@@ -20,6 +20,11 @@ impl<'a> Resolver<'a> {
             return;
         }
         if let Some(symbol) = self.symbols.lookup_value(scope, name) {
+            if self.symbols.try_get(symbol).is_some_and(|entry| {
+                entry.lang_item == Some(arandu_middle::symbol_table::LangItem::Hole)
+            }) {
+                self.resolved.hole_scopes.insert(span.into(), scope);
+            }
             self.record_expr_ref(expr, symbol);
             return;
         }

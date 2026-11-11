@@ -95,6 +95,7 @@ pub(crate) fn without_positions(result: &TypeCheckResult) -> TypeCheckResult {
         value_refs: _,
         type_refs: _,
         mutable_symbols,
+        hole_scopes: _,
     } = result.resolved.as_ref();
     let resolved = ResolvedNames {
         deferred_comptime_functions: deferred_comptime_functions.clone(),

@@ -176,6 +176,9 @@ pub enum LangItem {
     /// The `ThreadJob` that runs an owning `Send` closure without parameters;
     /// `thread.spawn(c)` wraps such a closure `c` in it.
     ClosureJob,
+    /// `todo`: a typed hole, the expression the programmer has not written
+    /// yet (RFC 0036, H1). Shadowed by any declaration named `todo`.
+    Hole,
 }
 
 impl LangItem {

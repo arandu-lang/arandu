@@ -130,6 +130,9 @@ pub(crate) fn compute_diagnostics(
                 .as_ref()
                 .map_or_else(lsp_types::Range::default, |location| location.range);
             let severity = match d.severity {
+                // A hole is the expected state of code being written: the
+                // build refuses it, the editor informs (RFC 0036, H1).
+                0 if d.code == "T102" => DiagnosticSeverity::INFORMATION,
                 0 => DiagnosticSeverity::ERROR,
                 1 => DiagnosticSeverity::WARNING,
                 2 => DiagnosticSeverity::INFORMATION,

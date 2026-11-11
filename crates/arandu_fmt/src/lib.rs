@@ -621,6 +621,17 @@ mod tests {
     }
 
     #[test]
+    fn typed_holes_keep_their_reason_and_format_idempotently() {
+        let source = "func area(w:int):int{let unknown=todo\nreturn todo(\"multiply ✓\")+todo()}\n";
+        let formatted = format_source(source);
+        assert!(parses_clean(&formatted), "{formatted}");
+        assert_eq!(format_source(&formatted), formatted);
+        for hole in ["unknown", "todo(\"multiply ✓\")", "todo()"] {
+            assert!(formatted.contains(hole), "{hole} in {formatted}");
+        }
+    }
+
+    #[test]
     fn computed_generic_arguments_format_without_changing_the_ast() {
         let source = "func count<comptime N:uint>():uint{return N}\nfunc main():uint{return count<comptime(20+22)>()}\n";
         let formatted = format_source(source);

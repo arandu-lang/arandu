@@ -141,6 +141,9 @@ pub enum DiagCode {
     /// A `static mut` initial value has no plain-bytes image for the data
     /// section (for example a string or a niche-encoded enum).
     T101StaticWithoutDataImage,
+    /// A `todo` hole is still in the program: it is reported with its
+    /// expected type and stops build, run, tests and compile-time evaluation.
+    T102TypedHole,
 
     // ── Lowering (L) ──
     L001LoweringUnresolvedSymbol,
@@ -291,6 +294,7 @@ impl DiagCode {
             T099RequiresOperatingSystem,
             T100BorrowedCallbackEscapes,
             T101StaticWithoutDataImage,
+            T102TypedHole,
             L001LoweringUnresolvedSymbol,
             G001GenericInstantiationCycle,
             G002GenericInstantiationLimit,
@@ -446,6 +450,7 @@ impl DiagCode {
             DiagCode::T099RequiresOperatingSystem => "T099",
             DiagCode::T100BorrowedCallbackEscapes => "T100",
             DiagCode::T101StaticWithoutDataImage => "T101",
+            DiagCode::T102TypedHole => "T102",
             DiagCode::L001LoweringUnresolvedSymbol => "L001",
             DiagCode::G001GenericInstantiationCycle => "G001",
             DiagCode::G002GenericInstantiationLimit => "G002",

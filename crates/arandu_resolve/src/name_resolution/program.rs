@@ -197,6 +197,20 @@ impl<'a> Resolver<'a> {
                 .set_lang_item(sym, arandu_middle::symbol_table::LangItem::Free);
         }
 
+        // `todo` lives in the prelude scope, above the file's own: a
+        // declaration, import or local named `todo` shadows it, so existing
+        // code keeps its meaning (RFC 0036, H1).
+        if let Ok(hole) = self.symbols.define_with_visibility(
+            global_scope,
+            "todo",
+            SymbolKind::Func,
+            span,
+            arandu_parser::Visibility::Public,
+        ) {
+            self.symbols
+                .set_lang_item(hole, arandu_middle::symbol_table::LangItem::Hole);
+        }
+
         let res_sym = self
             .symbols
             .define_with_visibility(

@@ -131,6 +131,7 @@ export async function run(): Promise<void> {
         assert.ok(completions.items.some(item => completionItemLabel(item) === 'func'));
 
         await verifyNavigationAndRename(workspace);
+        await verifyTypedHoleQuickFix(workspace);
 
         const formatUri = vscode.Uri.joinPath(workspace.uri, 'format.aru');
         const formatDocument = await vscode.workspace.openTextDocument(formatUri);
@@ -219,6 +220,48 @@ export async function run(): Promise<void> {
         await configuration.update('server.path', undefined, vscode.ConfigurationTarget.Global);
         await configuration.update('cli.path', undefined, vscode.ConfigurationTarget.Global);
         await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+    }
+}
+
+/**
+ * A `todo` hole (RFC 0036, H1) is information in the editor, offers its
+ * fills as quick fixes that are never preferred, and disappears once a fill
+ * is applied through the real code action and workspace edit APIs.
+ */
+async function verifyTypedHoleQuickFix(workspace: vscode.WorkspaceFolder): Promise<void> {
+    const holeUri = vscode.Uri.joinPath(workspace.uri, 'typed_hole.aru');
+    fs.writeFileSync(
+        holeUri.fsPath,
+        'func area(width: int): int {\n    let base = width\n    return todo("multiply")\n}\n'
+    );
+    try {
+        const holeDocument = await vscode.workspace.openTextDocument(holeUri);
+        await vscode.window.showTextDocument(holeDocument);
+        const hole = await poll(() => vscode.languages.getDiagnostics(holeUri)
+            .find(diagnostic => diagnosticCode(diagnostic) === 'T102'));
+        assert.equal(hole.severity, vscode.DiagnosticSeverity.Information, 'a hole informs, it is not an editor error');
+        const actions = await poll(async () => {
+            const result = await vscode.commands.executeCommand<vscode.CodeAction[]>(
+                'vscode.executeCodeActionProvider',
+                holeUri,
+                hole.range,
+                vscode.CodeActionKind.QuickFix.value
+            );
+            return result?.some(action => action.title === 'fill with `base`') ? result : undefined;
+        });
+        const fill = actions.find(action => action.title === 'fill with `base`');
+        assert.ok(fill?.edit, 'the fill must carry a structured edit');
+        assert.notEqual(fill.isPreferred, true, 'no fill is applied automatically');
+        assert.equal(await vscode.workspace.applyEdit(fill.edit), true);
+        assert.equal(
+            holeDocument.getText(),
+            'func area(width: int): int {\n    let base = width\n    return base\n}\n'
+        );
+        await poll(() => vscode.languages.getDiagnostics(holeUri)
+            .every(diagnostic => diagnosticCode(diagnostic) !== 'T102') ? true : undefined);
+    } finally {
+        await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+        fs.rmSync(holeUri.fsPath, { force: true });
     }
 }
 

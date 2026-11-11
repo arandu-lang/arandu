@@ -3488,3 +3488,142 @@ fn stdio_initialize_rejects_invalid_ctfe_limits_with_invalid_params() {
         }
     }
 }
+
+/// `todo` holes (RFC 0036, H1): the editor sees information, not an error,
+/// with UTF-16 ranges, structured fills as quick fixes and an inline goal;
+/// filling the hole clears it on the next revision.
+#[test]
+fn stdio_typed_holes_inform_fill_and_clear() {
+    let fixture = FixtureDir::new();
+    let document = fixture.path().join("holes.aru");
+    let uri = file_uri(&document);
+    let mut lsp = LspProcess::spawn();
+    lsp.initialize(fixture.path(), 1);
+    let text = "// área ✓\nfunc area(width: int): int {\n    let base = width\n    return todo(\"multiplicar\")\n}\n";
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": {
+            "textDocument": { "uri": uri, "languageId": "arandu", "version": 1, "text": text }
+        }
+    }));
+    let published = lsp.wait_for(|message| {
+        message.get("method").and_then(Value::as_str) == Some("textDocument/publishDiagnostics")
+            && message.pointer("/params/uri").and_then(Value::as_str) == Some(uri.as_str())
+            && message
+                .pointer("/params/diagnostics")
+                .and_then(Value::as_array)
+                .is_some_and(|diagnostics| {
+                    diagnostics
+                        .iter()
+                        .any(|diagnostic| diagnostic.get("code") == Some(&json!("T102")))
+                })
+    });
+    let diagnostic = published
+        .pointer("/params/diagnostics")
+        .and_then(Value::as_array)
+        .and_then(|diagnostics| {
+            diagnostics
+                .iter()
+                .find(|diagnostic| diagnostic.get("code") == Some(&json!("T102")))
+        })
+        .expect("T102 diagnostic")
+        .clone();
+    // Information, not error: an unfinished program is the expected state.
+    assert_eq!(diagnostic.get("severity"), Some(&json!(3)), "{diagnostic}");
+    assert_eq!(
+        diagnostic.pointer("/range/start"),
+        Some(&json!({ "line": 3, "character": 11 })),
+        "{diagnostic}"
+    );
+    let fills: Vec<&str> = diagnostic
+        .pointer("/data/fixes")
+        .and_then(Value::as_array)
+        .map(|fixes| {
+            fixes
+                .iter()
+                .filter_map(|fix| fix.get("newText").and_then(Value::as_str))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert_eq!(fills, vec!["base", "width"], "{diagnostic}");
+
+    let range = diagnostic["range"].clone();
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "textDocument/codeAction",
+        "params": {
+            "textDocument": { "uri": uri },
+            "range": range,
+            "context": { "diagnostics": [diagnostic], "only": ["quickfix"] }
+        }
+    }));
+    let actions = lsp.wait_for_response(2);
+    let first = actions.pointer("/result/0").expect("quick fix").clone();
+    assert_eq!(
+        first.get("isPreferred"),
+        None,
+        "a fill is never preferred: {first}"
+    );
+    assert_eq!(
+        first
+            .pointer("/edit/changes")
+            .and_then(Value::as_object)
+            .and_then(|changes| changes.values().next())
+            .and_then(|edits| edits.pointer("/0/newText"))
+            .and_then(Value::as_str),
+        Some("base"),
+        "{actions}"
+    );
+
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "textDocument/inlayHint",
+        "params": {
+            "textDocument": { "uri": uri },
+            "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 5, "character": 0 } }
+        }
+    }));
+    let inlays = lsp.wait_for_response(3);
+    assert!(
+        inlays
+            .pointer("/result")
+            .and_then(Value::as_array)
+            .is_some_and(|hints| hints.iter().any(|hint| {
+                hint.get("label") == Some(&json!(": int"))
+                    && hint.pointer("/position/line") == Some(&json!(3))
+            })),
+        "the hole shows its goal inline: {inlays}"
+    );
+
+    // Filling the hole is an ordinary incremental edit; the next revision
+    // publishes no T102.
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didChange",
+        "params": {
+            "textDocument": { "uri": uri, "version": 2 },
+            "contentChanges": [{
+                "range": range,
+                "text": "base"
+            }]
+        }
+    }));
+    let cleared = lsp.wait_for(|message| {
+        message.get("method").and_then(Value::as_str) == Some("textDocument/publishDiagnostics")
+            && message.pointer("/params/uri").and_then(Value::as_str) == Some(uri.as_str())
+            && message.pointer("/params/version") == Some(&json!(2))
+    });
+    assert!(
+        cleared
+            .pointer("/params/diagnostics")
+            .and_then(Value::as_array)
+            .is_some_and(|diagnostics| diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.get("code") != Some(&json!("T102")))),
+        "{cleared}"
+    );
+    lsp.shutdown(4);
+}

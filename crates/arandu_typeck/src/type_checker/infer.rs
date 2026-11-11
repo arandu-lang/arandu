@@ -41,6 +41,16 @@ pub(crate) struct DeferredInstantiation {
     pub span: Span,
 }
 
+/// A `todo` hole waiting for its goal to be solved (RFC 0036, H1).
+#[derive(Debug, Clone)]
+pub(crate) struct PendingHole {
+    pub span: Span,
+    pub goal: TypeId,
+    pub reason: Option<smol_str::SmolStr>,
+    /// The scope the hole was written in; its locals are candidate fills.
+    pub scope: Option<crate::ScopeId>,
+}
+
 /// Inference state of the body being checked.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct InferState {
@@ -49,6 +59,7 @@ pub(crate) struct InferState {
     /// the two is fixed first fixes the other.
     pub literal_links: Vec<(u32, TypeVarId)>,
     pub deferred: Vec<DeferredInstantiation>,
+    pub holes: Vec<PendingHole>,
 }
 
 impl TypeChecker<'_> {
@@ -160,10 +171,14 @@ impl TypeChecker<'_> {
     /// Makes the body's recorded types concrete; see the module docs.
     pub(crate) fn write_back_inference(&mut self) {
         if !self.type_info.type_interner.has_infer_vars() {
+            self.report_holes();
             self.infer = InferState::default();
             return;
         }
         self.default_numeric_vars();
+        // Before the recorded types settle: a goal still unknown is shown
+        // as `_`, not reported again as T001.
+        self.report_holes();
         let mut reported = Vec::new();
         // Recorded expression types, then declarations, then the tables
         // lowering reads.
@@ -255,6 +270,12 @@ impl TypeChecker<'_> {
         let Some(origin) = self.infer.origins.get(var as usize).cloned() else {
             return;
         };
+        // A hole's own goal is part of its T102.
+        if self.symbols.try_get(origin.param).is_some_and(|param| {
+            param.lang_item == Some(arandu_middle::symbol_table::LangItem::Hole)
+        }) {
+            return;
+        }
         let param = self
             .symbols
             .try_get(origin.param)
@@ -323,5 +344,106 @@ impl TypeChecker<'_> {
             }
             self.type_info.closures.insert(span, recipe);
         }
+    }
+
+    /// One `T102` per hole, in source order: its goal, its reason, and up to
+    /// five locals in scope whose type fits, each a quick fix. A fill that is
+    /// not `Copy` says it moves the local; none is applied automatically.
+    fn report_holes(&mut self) {
+        let mut holes = std::mem::take(&mut self.infer.holes);
+        holes.sort_by_key(|hole| (hole.span.start, hole.span.end));
+        for hole in holes {
+            let interner = &self.type_info.type_interner;
+            let goal = resolve_deep(hole.goal, interner);
+            let goal_ty = self.resolve(goal);
+            let known = !matches!(goal_ty, ArType::Infer(_) | ArType::Error)
+                && unbound_vars(goal, interner).is_empty();
+            let shown = goal_ty.display(&self.symbols, interner);
+            let mut diagnostic = crate::Diagnostic::error(
+                crate::DiagCode::T102TypedHole,
+                format!("typed hole: expected '{shown}'"),
+                hole.span,
+            )
+            .with_primary_label(if known {
+                format!("a value of type '{shown}' goes here")
+            } else {
+                "nothing here fixes this value's type yet".to_owned()
+            });
+            if let Some(reason) = &hole.reason {
+                diagnostic = diagnostic.with_note(format!("todo: {reason}"));
+            }
+            if known && !self.type_info.is_copy(goal) {
+                diagnostic = diagnostic.with_note(format!(
+                    "'{shown}' is not Copy: the value is moved into this place"
+                ));
+            }
+            diagnostic = diagnostic.with_note(
+                "a program with a hole is checked, but it does not build, run, test or evaluate at compile time",
+            );
+            if known {
+                for (name, moves) in self.hole_fills(&hole, goal) {
+                    let message = if moves {
+                        format!("fill with `{name}` (moves `{name}`)")
+                    } else {
+                        format!("fill with `{name}`")
+                    };
+                    diagnostic = diagnostic.with_hint_replacement(arandu_middle::Hint {
+                        message,
+                        replacement: Some(arandu_middle::CodeReplacement {
+                            span: hole.span,
+                            new_text: name.to_string(),
+                        }),
+                    });
+                }
+            }
+            self.diagnostics.push(diagnostic);
+        }
+    }
+
+    /// Locals and parameters declared before the hole in the scopes around
+    /// it, innermost first and most recent first, whose type is the goal.
+    fn hole_fills(&self, hole: &PendingHole, goal: TypeId) -> Vec<(smol_str::SmolStr, bool)> {
+        const LIMIT: usize = 5;
+        let mut fills = Vec::new();
+        let mut scope = hole.scope;
+        let global = self.symbols.global_scope();
+        let interner = &self.type_info.type_interner;
+        while let Some(current) = scope {
+            if current == global {
+                break;
+            }
+            let entry = self.symbols.scope(current);
+            for &symbol in entry.symbols().iter().rev() {
+                let Some(local) = self.symbols.try_get(symbol) else {
+                    continue;
+                };
+                if !matches!(
+                    local.kind,
+                    crate::SymbolKind::Local | crate::SymbolKind::Param
+                ) || local.span.start >= hole.span.start
+                    || fills.iter().any(|(name, _)| *name == local.name)
+                {
+                    continue;
+                }
+                let Some(ty) = self.type_info.decl_type_id(symbol) else {
+                    continue;
+                };
+                let ty = resolve_deep(ty, interner);
+                if !unbound_vars(ty, interner).is_empty() {
+                    continue;
+                }
+                if ty == goal
+                    || super::types::unify(&interner.resolve(ty), &interner.resolve(goal), interner)
+                        && !matches!(interner.resolve(ty), ArType::Error)
+                {
+                    fills.push((local.name.clone(), !self.type_info.is_copy(goal)));
+                    if fills.len() == LIMIT {
+                        return fills;
+                    }
+                }
+            }
+            scope = entry.parent;
+        }
+        fills
     }
 }

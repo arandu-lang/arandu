@@ -718,6 +718,15 @@ fn generic_closures_agree_on_every_backend() {
     let _ = fs::remove_file(path);
 }
 
+/// Borrowing a value with no place borrows a temporary on every backend.
+#[test]
+fn rvalue_borrows_agree_on_every_backend() {
+    let source = include_str!("../../../../tests/corpus/rvalue_borrows.aru");
+    for (backend, outcome) in outcomes_on("rvalue_borrows", source, false) {
+        assert_eq!(outcome, ProgramOutcome::Returned(0), "{backend}");
+    }
+}
+
 /// Arrays become slices where one is expected and answer slice methods.
 #[test]
 fn array_slices_agree_on_every_backend() {

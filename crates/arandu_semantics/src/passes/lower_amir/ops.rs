@@ -263,7 +263,27 @@ impl LowerCtx<'_> {
         // F2.0: `&`/`&mut` lower to place borrows; `*` on a ref loads through the pointer.
         match op {
             UnaryOp::Ref | UnaryOp::RefMut => {
-                let place = self.lower_expr_to_place(sub_expr, symbols)?;
+                // Borrowing a value with no place (`ref Point { .. }`,
+                // `ref f()`) borrows a temporary local, as Rust does for
+                // `&Point { .. }`; the scope destroys it.
+                let place = match self.lower_expr_to_place(sub_expr, symbols) {
+                    Ok(place) => place,
+                    Err(_) => {
+                        let sub = self.hir.pool.expr(sub_expr);
+                        let (sub_ty, sub_span) = (sub.ty, sub.span);
+                        let value = self.lower_expr(sub_expr, None, symbols)?;
+                        let temporary = self.new_compiler_local_id(sub_ty, sub_span);
+                        self.locals[temporary.as_usize()].is_memory = true;
+                        if let AmirOperand::Copy(t) | AmirOperand::Move(t) = value {
+                            self.owned_string_temps.remove(&t);
+                        }
+                        self.write_variable_source(temporary, value)?;
+                        crate::amir::AmirPlace {
+                            local: temporary,
+                            projections: smallvec::SmallVec::new(),
+                        }
+                    }
+                };
                 // F2.0: address-taken *stack* scalars need a stack home (`is_memory`).
                 // BC.4a: a place that goes through `Deref` already has a materialised
                 // pointer in the local's SSA value — do NOT force a stack slot for it

@@ -1472,3 +1472,11 @@ fn local_string_concatenation_frees_each_string_once() {
     let c_source = emit_c(source, "string_concat_local");
     run_emitted_c_with_asan(&c_source, "string_concat_local");
 }
+
+/// A borrowed temporary (`ref String.from(..)`) is destroyed exactly once.
+#[test]
+fn borrowed_temporaries_are_destroyed_once() {
+    let source = include_str!("../../../../tests/corpus/rvalue_borrows.aru");
+    let c_source = emit_c(source, "rvalue_borrows");
+    run_emitted_c_with_asan(&c_source, "rvalue_borrows");
+}

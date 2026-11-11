@@ -199,6 +199,45 @@ func interop(): int {
     return 0
 }
 
+static mut ORDER: int = 0
+
+func mark(tag: int): int {
+    unsafe {
+        ORDER = ORDER * 10 + tag
+    }
+    return tag
+}
+
+func tokenAdder(id: int): own (int) -> int {
+    let token = Token { id: id }
+    return (x) => token.id + x
+}
+
+func markedAdder(id: int): own (int) -> int {
+    mark(2)
+    return tokenAdder(id)
+}
+
+func taking(first: int, f: (int) -> int, last: int): int {
+    return f(first) + last
+}
+
+// A temporary closure lives until its call ends: it is called directly or
+// lent to a callback, then destroyed, and the arguments around it are still
+// evaluated left to right.
+func temporaries(): int {
+    let before = drops()
+    if tokenAdder(5)(1) != 6 { return 1 }
+    if drops() != before + 1 { return 2 }
+    if applyTwice(1, tokenAdder(10)) != 22 { return 3 }
+    if drops() != before + 2 { return 4 }
+    if taking(mark(1), markedAdder(0), mark(3)) != 4 { return 5 }
+    let order = unsafe { ORDER }
+    if order != 123 { return 6 }
+    if drops() != before + 3 { return 7 }
+    return 0
+}
+
 func main(): int {
     let c = counting()
     if c != 0 { return 10 + c }
@@ -218,5 +257,7 @@ func main(): int {
     if g != 0 { return 80 + g }
     let i = interop()
     if i != 0 { return 90 + i }
+    let t = temporaries()
+    if t != 0 { return 100 + t }
     return 0
 }

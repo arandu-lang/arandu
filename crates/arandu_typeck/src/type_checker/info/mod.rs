@@ -218,6 +218,19 @@ pub struct TypeInfo {
     /// Conversions the type checker applied, keyed by the converted
     /// expression's span (RFC 0032, L3).
     pub adjustments: FxHashMap<arandu_middle::Span, Adjustment>,
+    /// Owning closures used as temporaries (`make()(x)`, or lent to a
+    /// callback), keyed by the temporary's span: lowering binds the value to
+    /// this synthetic local for the rest of the statement, like Rust's
+    /// temporary scope, so its code and environment are read from one value.
+    pub closure_temporaries: FxHashMap<arandu_middle::Span, ClosureTemporary>,
+}
+
+/// The local an owning closure temporary is bound to, and the closure's type
+/// (the expression itself may be checked as the adapter that borrows it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClosureTemporary {
+    pub local: SymbolId,
+    pub ty: TypeId,
 }
 
 /// An expression converted where its value is used: lowering passes it to
@@ -283,6 +296,7 @@ impl TypeInfo {
             struct_field_defaults: FxHashMap::default(),
             closures: FxHashMap::default(),
             adjustments: FxHashMap::default(),
+            closure_temporaries: FxHashMap::default(),
         }
     }
 
@@ -307,10 +321,19 @@ impl TypeInfo {
     /// Item body checks already hold them. File composition keeps the
     /// signature table, so this runs only when a recipe was recorded.
     pub fn materialize_closures(&self, symbols: &mut crate::SymbolTable) {
-        if self.closures.is_empty() {
-            return;
-        }
         let scope = symbols.global_scope();
+        for (span, temporary) in &self.closure_temporaries {
+            if temporary.local.file_id == symbols.file_id {
+                Self::ensure_capture_symbol(
+                    symbols,
+                    temporary.local,
+                    "closure",
+                    arandu_middle::SymbolKind::Local,
+                    *span,
+                    scope,
+                );
+            }
+        }
         for recipe in self.closures.values() {
             if recipe.struct_symbol.file_id != symbols.file_id {
                 continue;

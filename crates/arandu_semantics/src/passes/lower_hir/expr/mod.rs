@@ -4,6 +4,7 @@ mod call;
 mod control;
 mod literal;
 mod path;
+mod temporary;
 
 pub(crate) use path::captured_value;
 
@@ -184,6 +185,19 @@ pub(crate) fn lower_expr_raw(
         .type_info
         .expr_type_id(expr)
         .unwrap_or_else(error_ty);
+    // A temporary lent to a callback is read through its adapter instead.
+    if let Some(&(symbol, ty)) = hir_pool.hoisted_values.get(&span)
+        && !type_check
+            .type_info
+            .closure_at(span)
+            .is_some_and(|recipe| recipe.adapts.is_some())
+    {
+        return Ok(HirExpr {
+            kind: HirExprKind::Path { symbol },
+            ty,
+            span,
+        });
+    }
 
     if !hir_pool.ctfe_lowering
         && let Some((value, layout)) = type_check.type_info.ctfe_values.get(&span)
@@ -208,7 +222,7 @@ pub(crate) fn lower_expr_raw(
     if let Some(recipe) = type_check
         .type_info
         .closure_at(span)
-        .filter(|recipe| recipe.adapts.is_some())
+        .filter(|recipe| recipe.adapts.is_some() && hir_pool.lowering_temporary != Some(span))
         .cloned()
     {
         if let Some(code) = &recipe.owning {
@@ -340,7 +354,11 @@ pub(crate) fn lower_expr(
     expr: ExprId,
 ) -> Result<crate::hir::HirExprId, Diagnostic> {
     let mut hir = lower_expr_raw(type_check, pool, hir_pool, expr)?;
-    let Some(adjustment) = type_check.type_info.adjustments.get(&hir.span).cloned() else {
+    // A hoisted value was adjusted when its local was initialized.
+    let adjustment = (!hir_pool.hoisted_values.contains_key(&hir.span))
+        .then(|| type_check.type_info.adjustments.get(&hir.span).cloned())
+        .flatten();
+    let Some(adjustment) = adjustment else {
         return Ok(hir_pool.alloc_expr(hir));
     };
     // The value keeps its own type and becomes `function<type_args>(value)`.

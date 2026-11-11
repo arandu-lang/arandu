@@ -283,6 +283,9 @@ pub(in crate::passes::monomorphize::expand) fn clone_expr_kind(
         UnsafeBlock { block } => UnsafeBlock {
             block: super::clone_block(hir, *block, subst, symbol_map, tc, name_prefix)?,
         },
+        Scope { block } => Scope {
+            block: super::clone_block(hir, *block, subst, symbol_map, tc, name_prefix)?,
+        },
         If {
             condition,
             then_block,

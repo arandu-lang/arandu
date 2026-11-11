@@ -464,7 +464,7 @@ pub(super) fn compose_items(
     }
 
     let mut symbols = Arc::clone(&signatures.symbols);
-    if !merged_info.closures.is_empty() {
+    if !merged_info.closures.is_empty() || !merged_info.closure_temporaries.is_empty() {
         Arc::make_mut(&mut merged_info).materialize_closures(Arc::make_mut(&mut symbols));
     }
 

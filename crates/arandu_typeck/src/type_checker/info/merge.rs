@@ -198,6 +198,13 @@ impl TypeInfo {
             };
             self.adjustments.insert(*span, adjusted);
         }
+        for (span, temporary) in &other.closure_temporaries {
+            let temporary = super::ClosureTemporary {
+                local: remap(temporary.local),
+                ty: reintern_type(self, other, temporary.ty),
+            };
+            self.closure_temporaries.insert(*span, temporary);
+        }
         // Fast path: empty body shards / empty import stubs.
         if context_shard_is_empty(other) {
             return;

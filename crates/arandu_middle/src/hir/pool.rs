@@ -194,6 +194,13 @@ pub struct HirPool {
     /// Lowering context only: captured locals of the closure body being
     /// lowered, keyed by the local's symbol.
     pub capture_aliases: rustc_hash::FxHashMap<crate::SymbolId, HirCaptureAlias>,
+    /// Lowering context only: expressions already evaluated into a local
+    /// declared before the call that reads them, keyed by the expression's
+    /// span; lowering reads the local instead.
+    pub hoisted_values: rustc_hash::FxHashMap<crate::Span, (crate::SymbolId, crate::types::TypeId)>,
+    /// Lowering context only: the span whose own value is being lowered into
+    /// its temporary, so its use as a callback adapter does not apply yet.
+    pub lowering_temporary: Option<crate::Span>,
     pub exprs: IndexVec<HirExprId, super::HirExpr>,
     pub stmts: IndexVec<HirStmtId, super::HirStmt>,
     pub blocks: IndexVec<HirBlockId, super::HirBlock>,

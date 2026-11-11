@@ -232,6 +232,10 @@ impl HirExpr {
                 ));
                 ctx.pool.block(*block).pretty_print_to(out, indent + 1, ctx);
             }
+            HirExprKind::Scope { block } => {
+                out.push_str(&format!("{}Scope: {}\n", ind, display_type(self.ty, ctx)));
+                ctx.pool.block(*block).pretty_print_to(out, indent + 1, ctx);
+            }
             HirExprKind::ValueBlock { block } | HirExprKind::UnsafeBlock { block } => {
                 out.push_str(&format!(
                     "{}UnsafeBlock: {}\n",

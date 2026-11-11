@@ -58,15 +58,11 @@ pub(super) fn closure_call_signature(
             .with_primary_label("calling may change the closure's captures")
             .with_hint("pass the closure as `mut ref`"),
         ),
-        None if !is_place(checker, callee) => checker.diagnostics.push(
-            crate::Diagnostic::error(
-                crate::DiagCode::T026CannotAssignImmutable,
-                "an owning closure must be stored before it is called",
-                span,
-            )
-            .with_primary_label("this closure is a temporary value")
-            .with_hint("bind it first: `let f = ...; f(...)`"),
-        ),
+        // The call reads `code` and `env`: a temporary is evaluated once into
+        // a local that lives until the end of the statement.
+        None if !is_place(checker, callee) => {
+            super::closure::bind_closure_temporary(checker, callee, callee_ty);
+        }
         None => {}
     }
     Some((params, ret))

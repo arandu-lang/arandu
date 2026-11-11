@@ -22,6 +22,11 @@ pub(super) fn lower_call(
     else {
         unreachable!();
     };
+    if let Some(scope) =
+        super::temporary::lower_call_with_temporaries(type_check, pool, hir_pool, expr, span)?
+    {
+        return Ok(scope);
+    }
     let kind = {
         {
             let callee_id = *callee;

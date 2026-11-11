@@ -125,6 +125,9 @@ pub(super) fn remap_expr(
         HirExprKind::UnsafeBlock { block } => HirExprKind::UnsafeBlock {
             block: offs.block_id(*block),
         },
+        HirExprKind::Scope { block } => HirExprKind::Scope {
+            block: offs.block_id(*block),
+        },
         HirExprKind::If {
             condition,
             then_block,

@@ -270,6 +270,7 @@ pub(super) fn discover_nested_keys<'bump>(
             },
             HirExprKind::AsyncBlock { block }
             | HirExprKind::UnsafeBlock { block }
+            | HirExprKind::Scope { block }
             | HirExprKind::ValueBlock { block } => {
                 visit_block(hir, *block, tc, bump, template_funcs, enqueue);
             }

@@ -340,6 +340,7 @@ impl<'a, 'bump> InstantiationAnalyzer<'a, 'bump> {
             },
             HirExprKind::AsyncBlock { block }
             | HirExprKind::UnsafeBlock { block }
+            | HirExprKind::Scope { block }
             | HirExprKind::ValueBlock { block } => {
                 self.visit_block(*block, current);
             }

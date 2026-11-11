@@ -223,6 +223,15 @@ fn hash_typing(
             hash_semantic_type(&mut h, adjustment.from, &info.type_interner, symbols);
             hash_semantic_type(&mut h, adjustment.to, &info.type_interner, symbols);
         }
+        let mut temporaries: Vec<_> = info.closure_temporaries.iter().collect();
+        temporaries.sort_unstable_by_key(|(span, _)| (span.file_id, span.start, span.end));
+        h.update(b"ClosureTemporaries/v1");
+        h.update(&u64_le(temporaries.len() as u64));
+        for (span, temporary) in temporaries {
+            hash_span(&mut h, *span);
+            hash_symbol_id(&mut h, temporary.local);
+            hash_semantic_type(&mut h, temporary.ty, &info.type_interner, symbols);
+        }
         let mut values: Vec<_> = info.ctfe_values.iter().collect();
         values.sort_unstable_by_key(|(span, _)| (span.file_id, span.start, span.end));
         h.update(b"CtfeResidual/v2");

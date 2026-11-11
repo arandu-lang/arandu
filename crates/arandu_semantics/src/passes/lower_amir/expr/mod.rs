@@ -552,7 +552,7 @@ impl LowerCtx<'_> {
                 self.builder.current_block = Some(exit);
                 Ok(AmirOperand::Copy(dest))
             }
-            HirExprKind::UnsafeBlock { block } => {
+            HirExprKind::UnsafeBlock { block } | HirExprKind::Scope { block } => {
                 let dest = match target {
                     Some(t) => t,
                     None => self.new_temp_id(expr.ty),

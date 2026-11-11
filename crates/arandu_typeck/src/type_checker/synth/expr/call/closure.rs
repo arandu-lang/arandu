@@ -43,6 +43,48 @@ pub(super) struct ClosureShape<'a> {
     pub owning: Option<TypeId>,
 }
 
+/// Role of a closure temporary's local, apart from the roles of the
+/// recipe's own symbols (struct, method, `self`, parameters, fields).
+const TEMPORARY_ROLE: u32 = 0x7FFF_0000;
+
+/// Binds an owning closure that is used as a temporary to a synthetic local,
+/// which lowering declares for the rest of the statement (Rust's temporary
+/// scope): the call reads `code` and `env` from one value, and a callback
+/// borrows it for the call.
+pub(super) fn bind_closure_temporary(
+    checker: &mut TypeChecker<'_>,
+    expr: ExprId,
+    ty: TypeId,
+) -> SymbolId {
+    let span = checker.pool.expr_span(expr);
+    if let Some(temporary) = checker.type_info.closure_temporaries.get(&span) {
+        return temporary.local;
+    }
+    let file_id = checker.symbols.file_id;
+    let identity = ClosureIdentity::of(checker, span);
+    let local = mint(
+        checker,
+        file_id,
+        &identity,
+        TEMPORARY_ROLE,
+        &mut FxHashSet::default(),
+    );
+    let scope = checker.symbols.global_scope();
+    register(
+        Arc::make_mut(&mut checker.symbols),
+        local,
+        "closure",
+        SymbolKind::Local,
+        span,
+        scope,
+    );
+    checker.type_info.closure_temporaries.insert(
+        span,
+        crate::type_checker::info::ClosureTemporary { local, ty },
+    );
+    local
+}
+
 /// Registers the struct, its fields and the method; returns the struct type.
 pub(super) fn install_closure(
     checker: &mut TypeChecker<'_>,
@@ -844,21 +886,9 @@ fn adapt_owning_closure(
                 .try_get(symbol)
                 .is_some_and(|entry| matches!(entry.kind, SymbolKind::Local | SymbolKind::Param))
         });
-    let Some(local) = local else {
-        checker.diagnostics.push(
-            crate::Diagnostic::error(
-                crate::DiagCode::T003IncompatibleCallArg,
-                format!(
-                    "this closure must be stored before it is lent as the callback '{expected}'"
-                ),
-                span,
-            )
-            .with_label(span, "a callback borrows the closure for the call")
-            .with_hint("bind it first: `let f = ...`, then pass `f`"),
-        );
-        checker.record_expr_type(arg, error);
-        return error;
-    };
+    // A temporary is bound to a local that outlives the call, which the
+    // adapter borrows like a named closure.
+    let local = local.unwrap_or_else(|| bind_closure_temporary(checker, arg, closure_ty));
     let ArType::Func(params, ret) = checker.resolve(bound) else {
         return error;
     };

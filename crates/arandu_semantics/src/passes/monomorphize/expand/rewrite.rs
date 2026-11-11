@@ -315,6 +315,7 @@ pub(super) fn rewrite_expr_calls<'bump>(
         },
         HirExprKind::AsyncBlock { block }
         | HirExprKind::UnsafeBlock { block }
+        | HirExprKind::Scope { block }
         | HirExprKind::ValueBlock { block } => {
             rewrite_block_calls(hir, *block, specialized, tc, bump);
         }

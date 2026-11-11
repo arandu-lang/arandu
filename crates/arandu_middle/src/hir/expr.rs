@@ -131,6 +131,12 @@ pub enum HirExprKind {
     UnsafeBlock {
         block: HirBlockId,
     },
+    /// A block that lowering introduces around an expression to declare the
+    /// temporaries it reads (`{ let t = make(); t.code(t.env, x) }`). Locals
+    /// drop at its end; `return` inside it still leaves the function.
+    Scope {
+        block: HirBlockId,
+    },
     If {
         condition: HirCondition,
         then_block: HirBlockId,
@@ -326,6 +332,7 @@ impl HirExpr {
             }
             HirExprKind::AsyncBlock { block }
             | HirExprKind::UnsafeBlock { block }
+            | HirExprKind::Scope { block }
             | HirExprKind::ValueBlock { block } => {
                 pool.block(*block).validate_invariants(pool, symbols)?;
             }

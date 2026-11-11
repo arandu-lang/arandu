@@ -108,11 +108,6 @@ fn each_rejected_owning_closure_reports_one_diagnostic() {
             DiagCode::T026CannotAssignImmutable,
         ),
         (
-            "a call on a temporary",
-            "func make(): own () -> int { return () => 1 }\nfunc f(): int { return make()() }",
-            DiagCode::T026CannotAssignImmutable,
-        ),
-        (
             "a borrowed view captured",
             "func f(name: str): own () -> int { return () => name.len() as int }",
             DiagCode::O010EscapeOfBorrowedValue,
@@ -188,15 +183,15 @@ fn closures_lend_to_callbacks_and_take_function_values() {
 }
 
 #[test]
-fn a_temporary_closure_is_not_lent_to_a_callback() {
+fn a_temporary_closure_is_called_or_lent_to_a_callback() {
     let codes = errors(
         r#"
             func apply(x: int, f: (int) -> int): int { return f(x) }
             func make(): own (int) -> int { return (x) => x }
-            func main(): int { return apply(1, make()) }
+            func main(): int { return apply(1, make()) + make()(2) }
         "#,
     );
-    assert_eq!(codes, vec![DiagCode::T003IncompatibleCallArg]);
+    assert!(codes.is_empty(), "{codes:?}");
 }
 
 #[test]

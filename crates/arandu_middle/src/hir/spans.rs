@@ -31,6 +31,8 @@ impl HirPool {
         let HirPool {
             ctfe_lowering: _,
             capture_aliases: _,
+            hoisted_values: _,
+            lowering_temporary: _,
             exprs,
             stmts,
             blocks,

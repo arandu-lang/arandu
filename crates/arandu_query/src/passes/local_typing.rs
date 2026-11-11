@@ -257,6 +257,7 @@ pub(crate) fn item_direct_typing(
         || !typed.type_info.ctfe_roots.is_empty()
         || !typed.type_info.closures.is_empty()
         || !typed.type_info.adjustments.is_empty()
+        || !typed.type_info.closure_temporaries.is_empty()
     {
         return None;
     }
@@ -540,9 +541,11 @@ impl Frame<'_> {
             struct_field_defaults,
             closures,
             adjustments,
+            closure_temporaries,
         } = typed;
         if !closures.is_empty()
             || !adjustments.is_empty()
+            || !closure_temporaries.is_empty()
             || *struct_field_defaults != signatures.struct_field_defaults
         {
             return None;

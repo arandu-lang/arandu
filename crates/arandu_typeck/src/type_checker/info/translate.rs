@@ -23,7 +23,7 @@ pub fn import_closures(
     dest: &mut super::super::TypeCheckResult,
     src: &super::super::TypeCheckResult,
 ) {
-    if src.type_info.closures.is_empty() {
+    if src.type_info.closures.is_empty() && src.type_info.closure_temporaries.is_empty() {
         return;
     }
     for symbol in src.symbols.iter() {
@@ -59,6 +59,16 @@ pub fn import_closures(
     // The recipes let a unit declare the synthesized functions it calls.
     dest.type_info_mut()
         .merge_closures(&src.type_info, &|symbol| symbol);
+    for (span, temporary) in &src.type_info.closure_temporaries {
+        let ty = reintern_type(dest.type_info_mut(), &src.type_info, temporary.ty);
+        dest.type_info_mut().closure_temporaries.insert(
+            *span,
+            super::ClosureTemporary {
+                local: temporary.local,
+                ty,
+            },
+        );
+    }
     // A closure over a value of generic type is generic over its item's
     // parameters; instances built elsewhere substitute them by these lists.
     let generics = src

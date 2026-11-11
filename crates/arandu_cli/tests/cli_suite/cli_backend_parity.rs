@@ -718,6 +718,25 @@ fn generic_closures_agree_on_every_backend() {
     let _ = fs::remove_file(path);
 }
 
+/// Arrays become slices where one is expected and answer slice methods.
+#[test]
+fn array_slices_agree_on_every_backend() {
+    let source = include_str!("../../../../tests/corpus/array_slices.aru");
+    for (backend, outcome) in outcomes_on("array_slices", source, false) {
+        assert_eq!(outcome, ProgramOutcome::Returned(0), "{backend}");
+    }
+    let path = std::env::temp_dir().join(format!("arandu_array_slices_{}.aru", std::process::id()));
+    fs::write(&path, source).unwrap();
+    let wasm = cli(&["emit-wasm", &path.to_string_lossy()]);
+    assert!(
+        wasm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&wasm.stderr)
+    );
+    crate::wasm_host::run_main(&wasm.stdout).assert_returns(0, "array slices in Wasmtime");
+    let _ = fs::remove_file(path);
+}
+
 /// `+` and `+=` on `str` concatenate on every backend, in chains, loops and
 /// with interpolated operands.
 #[test]

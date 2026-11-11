@@ -15,7 +15,7 @@ use control_flow::synth_control_flow_expr;
 use literal::synth_literal_expr;
 
 pub(crate) use call::{
-    check_call_arg, check_callback_args, check_target_thread_capabilities,
+    adjust_unsize, check_call_arg, check_callback_args, check_target_thread_capabilities,
     infer_and_instantiate_func, owning_closure_code, synth_args_with_callbacks, synth_call_arg,
 };
 

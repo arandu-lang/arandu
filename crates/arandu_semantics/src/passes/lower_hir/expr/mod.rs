@@ -386,10 +386,20 @@ pub(crate) fn lower_expr(
     let Some(adjustment) = adjustment else {
         return Ok(hir_pool.alloc_expr(hir));
     };
-    // The value keeps its own type and becomes `function<type_args>(value)`.
     let span = hir.span;
     hir.ty = adjustment.from;
     let value = hir_pool.alloc_expr(hir);
+    let (function, type_args) = match adjustment.kind {
+        arandu_typeck::type_checker::info::AdjustmentKind::Call {
+            function,
+            type_args,
+        } => (function, type_args),
+        // `[N]T` as `[]T` is the range of all its elements, `value[0..N]`.
+        arandu_typeck::type_checker::info::AdjustmentKind::Unsize => {
+            return Ok(unsize_array(type_check, hir_pool, value, &adjustment, span));
+        }
+    };
+    // The value keeps its own type and becomes `function<type_args>(value)`.
     let instance = arandu_middle::types::ArType::func(
         &[adjustment.from],
         adjustment.to,
@@ -397,16 +407,14 @@ pub(crate) fn lower_expr(
     );
     let instance = type_check.type_info_mut().type_interner.intern(instance);
     let path = hir_pool.alloc_expr(HirExpr {
-        kind: HirExprKind::Path {
-            symbol: adjustment.function,
-        },
+        kind: HirExprKind::Path { symbol: function },
         ty: instance,
         span,
     });
     let callee = hir_pool.alloc_expr(HirExpr {
         kind: HirExprKind::Generic {
             callee: path,
-            args: adjustment.type_args,
+            args: type_args,
         },
         ty: instance,
         span,
@@ -421,4 +429,46 @@ pub(crate) fn lower_expr(
         ty: adjustment.to,
         span,
     }))
+}
+
+/// `value[0..N]` for an array of `N` elements viewed as a slice.
+fn unsize_array(
+    type_check: &mut TypeCheckResult,
+    hir_pool: &mut crate::hir::HirPool,
+    value: crate::hir::HirExprId,
+    adjustment: &arandu_typeck::type_checker::info::Adjustment,
+    span: arandu_middle::Span,
+) -> crate::hir::HirExprId {
+    use arandu_middle::types::{ArType, Primitive};
+    let interner = &type_check.type_info.type_interner;
+    let count = match interner.resolve(adjustment.from) {
+        ArType::Array(count, _) => count,
+        _ => 0,
+    };
+    let usize_ty = interner.intern(ArType::Primitive(Primitive::USize));
+    let range_ty = interner.intern(ArType::Range(usize_ty));
+    let start = hir_pool.alloc_expr(HirExpr {
+        kind: HirExprKind::Int("0".into()),
+        ty: usize_ty,
+        span,
+    });
+    let end = hir_pool.alloc_expr(HirExpr {
+        kind: HirExprKind::Int(count.to_string().into()),
+        ty: usize_ty,
+        span,
+    });
+    let index = hir_pool.alloc_expr(HirExpr {
+        kind: HirExprKind::Binary {
+            op: arandu_middle::ops::BinaryOp::RangeExclusive,
+            left: start,
+            right: end,
+        },
+        ty: range_ty,
+        span,
+    });
+    hir_pool.alloc_expr(HirExpr {
+        kind: HirExprKind::Index { base: value, index },
+        ty: adjustment.to,
+        span,
+    })
 }

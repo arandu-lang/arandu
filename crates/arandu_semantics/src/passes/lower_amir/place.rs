@@ -494,7 +494,26 @@ impl LowerCtx<'_> {
                 (slice, AmirOperand::Copy(len))
             }
             ArType::Array(count, _) => {
-                let place = self.lower_expr_to_place(base, symbols)?;
+                // An array value with no place (`[1, 2]`, a call result) is
+                // given one, like Rust's temporary for `&[1, 2][..]`.
+                let place = if matches!(
+                    self.hir.pool.expr(base).kind,
+                    HirExprKind::Path { .. }
+                        | HirExprKind::Field { .. }
+                        | HirExprKind::SafeField { .. }
+                        | HirExprKind::Index { .. }
+                        | HirExprKind::Unary { .. }
+                ) {
+                    self.lower_expr_to_place(base, symbols)?
+                } else {
+                    let value = self.lower_expr(base, None, symbols)?;
+                    let local = self.new_compiler_local_id(base_ty_id, self.current_span);
+                    self.write_variable_source(local, value)?;
+                    AmirPlace {
+                        local,
+                        projections: smallvec::SmallVec::new(),
+                    }
+                };
                 self.mark_local_materialized(place.local);
                 let owner = self.new_temp(ArType::Ref(base_ty_id));
                 self.emit_assign_temp(owner, AmirRvalue::Borrow(place));

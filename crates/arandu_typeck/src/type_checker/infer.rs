@@ -340,8 +340,10 @@ impl TypeChecker<'_> {
             };
             adjustment.from = self.resolve_recorded(adjustment.from, reported);
             adjustment.to = self.resolve_recorded(adjustment.to, reported);
-            for arg in &mut adjustment.type_args {
-                *arg = self.resolve_recorded(*arg, reported);
+            if let super::info::AdjustmentKind::Call { type_args, .. } = &mut adjustment.kind {
+                for arg in type_args {
+                    *arg = self.resolve_recorded(*arg, reported);
+                }
             }
             self.type_info.adjustments.insert(span, adjustment);
         }

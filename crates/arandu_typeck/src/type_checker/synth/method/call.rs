@@ -36,10 +36,26 @@ pub(crate) fn synth_method_call(
         return None;
     }
 
-    let base_ty_id = synth_expr(checker, base);
+    let mut base_ty_id = synth_expr(checker, base);
     if checker.resolve(base_ty_id).is_error() {
         // Receiver already failed to type; avoid cascading "no method" noise.
         return Some(checker.intern(ArType::Error));
+    }
+    // An array receiver has the methods of its slice (`arr.len()`), viewed
+    // as `[]T` the way Rust auto-unsizes a method receiver.
+    if let ArType::Array(_, element) = checker.resolve(base_ty_id)
+        && checker.symbols.builtins.slice_type.is_some_and(|slice| {
+            checker
+                .symbols
+                .lookup_associated_member(slice, method)
+                .is_some()
+        })
+    {
+        let slice = checker.intern(ArType::Slice(element));
+        if let Some(adjusted) = super::super::expr::adjust_unsize(checker, base, base_ty_id, slice)
+        {
+            base_ty_id = adjusted;
+        }
     }
 
     // Peel Nullable / & / &mut / ptr so `shared value: T` (typed as `&T`) still

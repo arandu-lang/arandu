@@ -186,13 +186,21 @@ impl TypeInfo {
         self.merge_concrete_headers(other, &remap, shared_headers);
         self.merge_closures(other, &remap);
         for (span, adjustment) in &other.adjustments {
+            let kind = match &adjustment.kind {
+                super::AdjustmentKind::Call {
+                    function,
+                    type_args,
+                } => super::AdjustmentKind::Call {
+                    function: remap(*function),
+                    type_args: type_args
+                        .iter()
+                        .map(|&ty| reintern_type(self, other, ty))
+                        .collect(),
+                },
+                super::AdjustmentKind::Unsize => super::AdjustmentKind::Unsize,
+            };
             let adjusted = Adjustment {
-                function: remap(adjustment.function),
-                type_args: adjustment
-                    .type_args
-                    .iter()
-                    .map(|&ty| reintern_type(self, other, ty))
-                    .collect(),
+                kind,
                 from: reintern_type(self, other, adjustment.from),
                 to: reintern_type(self, other, adjustment.to),
             };

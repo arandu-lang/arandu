@@ -215,10 +215,21 @@ fn hash_typing(
         h.update(&u64_le(adjustments.len() as u64));
         for (span, adjustment) in adjustments {
             hash_span(&mut h, *span);
-            hash_symbol_id(&mut h, adjustment.function);
-            h.update(&u64_le(adjustment.type_args.len() as u64));
-            for &ty in &adjustment.type_args {
-                hash_semantic_type(&mut h, ty, &info.type_interner, symbols);
+            match &adjustment.kind {
+                arandu_typeck::type_checker::info::AdjustmentKind::Call {
+                    function,
+                    type_args,
+                } => {
+                    h.update(&[0]);
+                    hash_symbol_id(&mut h, *function);
+                    h.update(&u64_le(type_args.len() as u64));
+                    for &ty in type_args {
+                        hash_semantic_type(&mut h, ty, &info.type_interner, symbols);
+                    }
+                }
+                arandu_typeck::type_checker::info::AdjustmentKind::Unsize => {
+                    h.update(&[1]);
+                }
             }
             hash_semantic_type(&mut h, adjustment.from, &info.type_interner, symbols);
             hash_semantic_type(&mut h, adjustment.to, &info.type_interner, symbols);

@@ -233,15 +233,26 @@ pub struct ClosureTemporary {
     pub ty: TypeId,
 }
 
-/// An expression converted where its value is used: lowering passes it to
-/// `function<type_args>`, which returns the checked type `to`. Like rustc's
-/// adjustments, the expression itself keeps its own type, `from`.
+/// An expression converted where its value is used into the checked type
+/// `to`. Like rustc's adjustments, the expression itself keeps its own
+/// type, `from`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Adjustment {
-    pub function: SymbolId,
-    pub type_args: Vec<TypeId>,
+    pub kind: AdjustmentKind,
     pub from: TypeId,
     pub to: TypeId,
+}
+
+/// How lowering converts an adjusted value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AdjustmentKind {
+    /// Passed to `function<type_args>`, which returns `to`.
+    Call {
+        function: SymbolId,
+        type_args: Vec<TypeId>,
+    },
+    /// A `[N]T` array viewed as the `[]T` slice of all its elements.
+    Unsize,
 }
 
 impl Default for TypeInfo {

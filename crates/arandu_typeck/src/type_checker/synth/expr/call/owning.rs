@@ -189,13 +189,43 @@ fn record_adjustment(
     checker.type_info.adjustments.insert(
         span,
         crate::type_checker::info::Adjustment {
-            function,
-            type_args,
+            kind: crate::type_checker::info::AdjustmentKind::Call {
+                function,
+                type_args,
+            },
             from,
             to,
         },
     );
     to
+}
+
+/// `[N]T` where `[]T` is expected: the value is viewed as the slice of all
+/// its elements, as Rust coerces `&[T; N]` to `&[T]`.
+pub(crate) fn adjust_unsize(
+    checker: &mut TypeChecker<'_>,
+    expr: ExprId,
+    actual: TypeId,
+    expected: TypeId,
+) -> Option<TypeId> {
+    let (ArType::Array(_, element), ArType::Slice(slice_element)) =
+        (checker.resolve(actual), checker.resolve(expected))
+    else {
+        return None;
+    };
+    if element != slice_element && !checker.unify_ids(slice_element, element) {
+        return None;
+    }
+    let span = checker.pool.expr_span(expr);
+    checker.type_info.adjustments.insert(
+        span,
+        crate::type_checker::info::Adjustment {
+            kind: crate::type_checker::info::AdjustmentKind::Unsize,
+            from: actual,
+            to: expected,
+        },
+    );
+    Some(expected)
 }
 
 /// The coercion of an owning closure to the type expected where it is used:
@@ -214,6 +244,9 @@ pub(crate) fn adjust_to_expected(
     let Some(expected) = expected else {
         return actual;
     };
+    if let Some(slice) = adjust_unsize(checker, expr, actual, expected) {
+        return slice;
+    }
     let (Some((from, from_code)), Some((to, to_code))) = (
         owning_closure_parts(checker, actual),
         owning_closure_parts(checker, expected),

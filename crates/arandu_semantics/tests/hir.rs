@@ -799,6 +799,43 @@ fn export_rejects_types_without_a_stable_c_representation() {
 }
 
 #[test]
+fn extern_c_rejects_types_without_a_stable_c_representation() {
+    for signature in [
+        "func f(value: char): u32",
+        "func f(value: [4]u32): u32",
+        "func f(value: Option<u32>): u32",
+        "func f(value: (u32) -> u32): u32",
+        "func f(value: u32): Result<u32, u32>",
+    ] {
+        let errors = lower_export_result(&format!("extern \"C\" {{\n    {signature}\n}}\n"))
+            .expect_err("must reject non-C signature");
+        assert_eq!(
+            errors[0].code,
+            arandu_semantics::DiagCode::T049InvalidFfiExport,
+            "{signature}"
+        );
+        assert!(errors[0].message.contains("to C"), "{}", errors[0].message);
+    }
+}
+
+#[test]
+fn extern_c_accepts_scalars_pointers_str_and_varargs() {
+    lower_export_result(
+        r#"
+struct Opaque { value: int }
+
+extern "C" {
+    func scalar(a: i32, b: f64, c: bool, d: usize): u64
+    func pointers(p: ptr[u8], o: mut ref Opaque, r: ref u32): void
+    func text(s: str, bytes: []u8): str
+    func printf(format: ptr[u8], args: i32...): i32
+}
+"#,
+    )
+    .expect("scalars, pointers, str, slices and varargs cross the C boundary");
+}
+
+#[test]
 fn export_accepts_fixed_width_aliases_str_and_array_fields() {
     let tc = lower_export_result(
         r#"

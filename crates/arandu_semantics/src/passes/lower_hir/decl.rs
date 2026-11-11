@@ -387,8 +387,11 @@ fn validate_c_import(
     for (index, ty) in formal_types.iter().enumerate() {
         let param = member.params.get(index);
         // C varargs promote each argument at the call; the declaration only
-        // marks where they start.
-        if param.is_some_and(|param| param.is_variadic) {
+        // marks where they start. A `void` parameter is erased from the C
+        // declaration and from every call.
+        if param.is_some_and(|param| param.is_variadic)
+            || matches!(interner.resolve(*ty), ArType::Void)
+        {
             continue;
         }
         let span = param.map_or(member.span, |param| param.span);

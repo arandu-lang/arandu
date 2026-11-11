@@ -829,6 +829,7 @@ extern "C" {
     func pointers(p: ptr[u8], o: mut ref Opaque, r: ref u32): void
     func text(s: str, bytes: []u8): str
     func printf(format: ptr[u8], args: i32...): i32
+    func erased(unit: void, value: ptr[int]?): i32
 }
 "#,
     )

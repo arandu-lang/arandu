@@ -30,6 +30,9 @@ impl<'a> Parser<'a> {
                 expr,
             }
         };
+        // Arms may be separated by `,`, with a trailing comma, so a whole
+        // `match` fits on one line: `match x { 0 => a, _ => b }`.
+        self.eat_name("COMMA");
         Ok(MatchArm {
             span: self.span_from_mark(start),
             pattern,

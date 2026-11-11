@@ -453,6 +453,36 @@ fn parse_match_int() {
 }
 
 #[test]
+fn match_arms_may_be_separated_by_commas_on_one_line() {
+    for source in [
+        "func f(x: int): int { return match x { 1 => 10, 2 => 20, _ => 0 } }\n",
+        "func f(x: int): int { return match x { 1 => 10, _ => 0, } }\n",
+        "func f(x: int): int {\n    return match x {\n        1 => { 10 },\n        _ => 0,\n    }\n}\n",
+    ] {
+        let rd = parse_to_string(source).expect("recursive descent");
+        assert_eq!(
+            rd.matches("MatchArm")
+                .count()
+                .max(rd.matches("Arm").count())
+                >= 2,
+            true,
+            "{rd}"
+        );
+        let program = crate::parse(source).expect("canonical parse");
+        let arms = program
+            .pool
+            .exprs
+            .iter()
+            .find_map(|kind| match kind {
+                crate::ExprKind::Match { arms, .. } => Some(arms.len),
+                _ => None,
+            })
+            .expect("match");
+        assert!(arms >= 2, "{source}");
+    }
+}
+
+#[test]
 fn parse_import() {
     let source = "module test\nimport io\nfunc main() { }\n";
     let result = parse_to_string(source).unwrap();

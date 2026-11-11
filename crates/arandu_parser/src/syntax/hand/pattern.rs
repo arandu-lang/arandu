@@ -287,6 +287,8 @@ pub fn parse_match_arm(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<Ma
             expr,
         }
     };
+    // Arms may be separated by `,`, with a trailing comma.
+    let _ = cur.eat(TokenKind::Comma);
     let end = match &body {
         MatchArmBody::Block { span, .. } | MatchArmBody::Expr { span, .. } => span.end,
     };

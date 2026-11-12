@@ -12,6 +12,7 @@ pub(crate) use field::{
 };
 pub(crate) use method::synth_method_call;
 
+pub(crate) use expr::range as expr_range;
 pub(crate) use expr::text as expr_text;
 pub use expr::{synth_expr, synth_expr_expected};
 pub use pattern::check_pattern;

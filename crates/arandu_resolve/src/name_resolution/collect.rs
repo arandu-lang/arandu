@@ -196,6 +196,10 @@ impl<'a> Resolver<'a> {
                     let item = match (self.current_module.as_deref(), decl.name.as_str()) {
                         (Some("std.runtime.executor"), "TaskHandle") => Some(LangItem::TaskHandle),
                         (Some("std.alloc.string"), "String") => Some(LangItem::String),
+                        (Some("std.core.range"), "Range") => Some(LangItem::Range),
+                        (Some("std.core.range"), "RangeInclusive") => {
+                            Some(LangItem::RangeInclusive)
+                        }
                         (Some("std.alloc.vec"), "Vec") => Some(LangItem::Vec),
                         (Some("std.alloc.arc"), "Arc") => Some(LangItem::Arc),
                         (Some("std.alloc.arc"), "ArcWeak") => Some(LangItem::ArcWeak),

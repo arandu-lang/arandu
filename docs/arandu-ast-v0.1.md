@@ -455,6 +455,22 @@ Tuples are the type a function with several results already returned:
 it. An element of a literal that no context types takes its default at once
 (`int`, `float`): the tuple's type is fixed where it is written.
 
+### Range values
+
+`a..b` and `a..=b` are binary expressions. Used directly as the domain of a
+`for` loop or as a slice index they are consumed without being materialized.
+Anywhere else they are values of `std.core.range.Range<T>` and
+`RangeInclusive<T>`: plain structs with `start` and `end`, as Rust's
+`core::ops` ranges, found by lang item (the module is linked into every
+other module; naming the types takes an import). HIR lowering turns the
+literal into a struct literal, and a loop or an index over a range value
+reads its two fields; a value that is not a plain name is bound to a local
+first, so it is evaluated once. No backend has a range representation of its
+own on this path.
+
+A unit compiled without `std.core.range` keeps the built-in
+`ArType::Range`, which only the literal forms can consume.
+
 ### NullableType
 
 Fields:

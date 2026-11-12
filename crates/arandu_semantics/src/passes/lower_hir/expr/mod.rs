@@ -4,7 +4,8 @@ mod call;
 mod control;
 mod literal;
 mod path;
-mod temporary;
+pub(crate) mod range;
+pub(crate) mod temporary;
 pub(crate) mod text;
 
 pub(crate) use path::captured_value;
@@ -269,10 +270,18 @@ pub(crate) fn lower_expr_raw(
             } else {
                 let left = lower_expr(type_check, pool, hir_pool, *left)?;
                 let right = lower_expr(type_check, pool, hir_pool, *right)?;
-                HirExprKind::Binary {
-                    op: super::ops::lower_binary_op(*op),
-                    left,
-                    right,
+                // `a..b` reaching here is a value; a loop or an index reads
+                // a literal's bounds without lowering it as an expression.
+                let range = text::own_type(type_check, pool, expr).and_then(|ty| {
+                    range::literal_value(type_check, hir_pool, ty, left, right, span)
+                });
+                match range {
+                    Some(value) => value,
+                    None => HirExprKind::Binary {
+                        op: super::ops::lower_binary_op(*op),
+                        left,
+                        right,
+                    },
                 }
             }
         }

@@ -402,7 +402,7 @@ pub(crate) fn resolve_index(
     };
 
     let index_ty = checker.resolve(index_ty_id);
-    let is_range_index = matches!(index_ty, ArType::Range(_));
+    let is_range_index = super::expr_range::range_parts(checker, &index_ty).is_some();
 
     if !index_ty.is_error() && !index_ty.is_integer() && !is_range_index {
         checker.add_constraint(

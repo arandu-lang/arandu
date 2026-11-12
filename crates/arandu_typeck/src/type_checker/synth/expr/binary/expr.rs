@@ -184,9 +184,9 @@ pub(in crate::type_checker::synth::expr) fn synth_binary_expr(
             view_compared_text(checker, (left_id, right_id), (l_id, r_id))
         }
         BinaryOp::RangeExclusive | BinaryOp::RangeInclusive => {
-            let range_elem_expected = expected.and_then(|exp_id| match checker.resolve(exp_id) {
-                ArType::Range(inner) => Some(inner),
-                _ => None,
+            let range_elem_expected = expected.and_then(|exp_id| {
+                super::super::range::range_parts(checker, &checker.resolve(exp_id))
+                    .map(|(element, _)| element)
             });
             let mut l_id = synth_expr_expected(checker, left_id, range_elem_expected);
             let l_ty = checker.resolve(l_id);

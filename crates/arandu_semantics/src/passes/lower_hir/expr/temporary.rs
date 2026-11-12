@@ -155,7 +155,7 @@ fn is_pure(pool: &AstPool, expr: ExprId) -> bool {
 /// the parts of a `once` call). Its id derives from the span and the name,
 /// like the type checker's temporaries, so lowering the same item twice
 /// yields the same HIR.
-pub(super) fn synthetic_local(
+pub(crate) fn synthetic_local(
     type_check: &mut TypeCheckResult,
     span: Span,
     name: &str,

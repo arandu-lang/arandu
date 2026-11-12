@@ -312,7 +312,11 @@ pub(super) fn synth_binary_result(
             }
             let inner_ty = types::resolve_literal_pair(&left_ty, &right_ty).default_literal();
             let inner_id = checker.intern(inner_ty);
-            Some(checker.intern(ArType::Range(inner_id)))
+            Some(super::super::range::range_type(
+                checker,
+                inner_id,
+                matches!(op, BinaryOp::RangeInclusive),
+            ))
         }
         BinaryOp::And | BinaryOp::Or => {
             let bool_id = checker.intern(ArType::Primitive(Primitive::Bool));

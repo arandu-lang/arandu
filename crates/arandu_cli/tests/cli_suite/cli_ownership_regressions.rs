@@ -1526,6 +1526,14 @@ fn owned_text_is_freed_on_every_path() {
     run_emitted_c_with_asan(&c_source, "string_concat_owned");
 }
 
+/// A range value is a plain struct: storing one allocates nothing.
+#[test]
+fn range_values_allocate_nothing() {
+    let source = include_str!("../../../../tests/corpus/range_values.aru");
+    let c_source = emit_c(source, "range_values");
+    run_emitted_c_with_asan(&c_source, "range_values");
+}
+
 /// A tuple owns its elements: each is destroyed once, whether the tuple is
 /// read in place, destructured or returned.
 #[test]

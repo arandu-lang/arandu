@@ -123,6 +123,11 @@ pub const AMBIENT_CLOSURE_MODULE: (&str, &str) = ("stdlib/alloc/closure.aru", "s
 /// still takes an import.
 pub const AMBIENT_STRING_MODULE: (&str, &str) = ("stdlib/alloc/string.aru", "std.alloc.string");
 
+/// The module defining `Range<T>` and `RangeInclusive<T>`, the types of
+/// `a..b` and `a..=b` as values. It imports nothing, so every other module
+/// links it; only the compiler reaches it, through the lang items.
+pub const AMBIENT_RANGE_MODULE: (&str, &str) = ("stdlib/core/range.aru", "std.core.range");
+
 /// The modules linked into `current` without an import, in a fixed order.
 /// Core modules see no primitive modules and the standard library sees no
 /// closure module, which keeps both free of import cycles.
@@ -137,6 +142,7 @@ pub fn ambient_modules(
         .filter(move |_| !core)
         .chain(std::iter::once(AMBIENT_CLOSURE_MODULE).filter(move |_| !standard))
         .chain(std::iter::once(AMBIENT_STRING_MODULE).filter(move |_| !standard))
+        .chain(std::iter::once(AMBIENT_RANGE_MODULE))
         .filter(move |&(_, name)| current != Some(name))
 }
 

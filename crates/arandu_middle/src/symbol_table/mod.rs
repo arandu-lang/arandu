@@ -180,6 +180,10 @@ pub enum LangItem {
     OnceClosure,
     /// `own once (A) -> R + Send`.
     SendOnceClosure,
+    /// `a..b` as a value: `std.core.range.Range<T>`.
+    Range,
+    /// `a..=b` as a value: `std.core.range.RangeInclusive<T>`.
+    RangeInclusive,
     /// `todo`: a typed hole, the expression the programmer has not written
     /// yet (RFC 0036, H1). Shadowed by any declaration named `todo`.
     Hole,

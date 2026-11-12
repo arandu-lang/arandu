@@ -18,6 +18,7 @@ pub fn resolve_headers_with_poll(
     // exactly once when the seed is still shared with a memoized query.
     let mut resolver = Resolver {
         reusable_definitions: rustc_hash::FxHashSet::default(),
+        or_patterns: Vec::new(),
         symbols: std::sync::Arc::unwrap_or_clone(result.symbols),
         resolved: std::sync::Arc::unwrap_or_clone(result.resolved),
         docs: result.docs,
@@ -69,6 +70,7 @@ pub fn resolve_headers_with_poll(
             let exports = db.exported_symbols(imported_file);
             if mod_name == crate::AMBIENT_CLOSURE_MODULE.1
                 || mod_name == crate::AMBIENT_STRING_MODULE.1
+                || mod_name == crate::AMBIENT_RANGE_MODULE.1
             {
                 link_unnamed_exports(&mut resolver, &exports, global);
                 continue;

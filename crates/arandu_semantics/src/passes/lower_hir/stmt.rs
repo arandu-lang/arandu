@@ -391,6 +391,40 @@ pub(crate) fn lower_stmt(
     hir_pool: &mut crate::hir::HirPool,
     stmt: StmtId,
 ) -> Result<HirStmtId, Diagnostic> {
+    // A loop over a range value that is not a plain name reads it twice, so
+    // it is bound to a local in a scope around the loop.
+    if let Stmt::For {
+        span,
+        clause: ForClause::In { iterable, .. },
+        ..
+    } = pool.stmt(stmt)
+        && super::expr::range::needs_local(type_check, pool, *iterable)
+    {
+        let (span, iterable) = (*span, *iterable);
+        let value_span = pool.expr_span(iterable);
+        let value = super::expr::lower_expr(type_check, pool, hir_pool, iterable)?;
+        let ty = hir_pool.expr(value).ty;
+        let local = super::expr::temporary::synthetic_local(type_check, value_span, "range");
+        let bindings = hir_pool.alloc_binding_list(&[HirBindingItem {
+            symbol: local,
+            ty,
+            span: value_span,
+        }]);
+        let bind = hir_pool.alloc_stmt(HirStmt {
+            kind: HirStmtKind::VarDecl { bindings, value },
+            span: value_span,
+        });
+        hir_pool.hoisted_values.insert(value_span, (local, ty));
+        let looped = lower_stmt_raw(type_check, pool, hir_pool, stmt);
+        hir_pool.hoisted_values.remove(&value_span);
+        let looped = hir_pool.alloc_stmt(looped?);
+        let statements = hir_pool.alloc_stmt_list(&[bind, looped]);
+        let block = hir_pool.alloc_block(HirBlock { statements, span });
+        return Ok(hir_pool.alloc_stmt(HirStmt {
+            kind: HirStmtKind::Scope(block),
+            span,
+        }));
+    }
     let hir = lower_stmt_raw(type_check, pool, hir_pool, stmt)?;
     Ok(hir_pool.alloc_stmt(hir))
 }
@@ -451,7 +485,10 @@ pub(crate) fn lower_for_clause(
                 });
             }
             let bindings_range = hir_pool.alloc_for_binding_list(&hir_bindings);
-            let eid = super::expr::lower_expr(type_check, pool, hir_pool, *iterable)?;
+            let eid = match super::expr::range::bounds(type_check, pool, hir_pool, *iterable)? {
+                Some(bounds) => bounds,
+                None => super::expr::lower_expr(type_check, pool, hir_pool, *iterable)?,
+            };
             Ok(HirForClause::In {
                 span: *span,
                 bindings: bindings_range,

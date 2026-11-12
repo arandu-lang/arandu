@@ -416,6 +416,18 @@ impl LowerCtx<'_> {
                         let bound = self.lower_expr(right, None, symbols)?;
                         (None, start, Some(bound), ty, inclusive)
                     } else {
+                        // Only a unit compiled without `std.core.range` has
+                        // a built-in range type; its values have no fields.
+                        if matches!(
+                            self.resolve_ty(self.hir.pool.expr(*iterable).ty),
+                            ArType::Range(_)
+                        ) {
+                            return Err(crate::passes::lower_amir::amir_unsupported(
+                                span,
+                                "looping over a range value without `std.core.range`",
+                                "write the range in the loop: `for i in start..end`",
+                            ));
+                        }
                         let iter_op = self.lower_expr(*iterable, None, symbols)?;
                         let zero = self.intern_literal_int("0");
                         (

@@ -30,6 +30,9 @@ mod holes;
 #[path = "query_suite/indirect_call.rs"]
 mod indirect_call;
 
+#[path = "query_suite/or_patterns.rs"]
+mod or_patterns;
+
 #[path = "query_suite/tuples.rs"]
 mod tuples;
 

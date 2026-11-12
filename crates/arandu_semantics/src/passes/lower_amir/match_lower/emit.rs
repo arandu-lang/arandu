@@ -2,7 +2,7 @@ use super::{LowerCtx, MatchSwitchContext, MatchSwitchPlan, OtherwisePlan};
 use crate::SymbolTable;
 use crate::amir::{AmirOperand, AmirRvalue, AmirTerminator, BlockId, TempId};
 use crate::diagnostics::{DiagCode, Diagnostic};
-use crate::hir::{HirMatchArm, HirMatchArmBody, HirPattern};
+use crate::hir::{HirExprId, HirMatchArm, HirMatchArmBody, HirPattern, HirPatternId};
 use crate::passes::type_checker::types::ArType;
 use arandu_middle::Span;
 
@@ -145,6 +145,28 @@ impl LowerCtx<'_> {
             let bb_match = self.new_block_at(arm.span);
             let bb_next = self.new_block();
             let pattern = self.hir.pool.pattern(arm.pattern);
+            if let Some(alternatives) = self.binding_alternatives(pattern) {
+                let guard = arm.guard;
+                let arm_scope = self.begin_local_scope();
+                self.lower_guarded_alternatives(
+                    scrutinee,
+                    &alternatives,
+                    guard,
+                    bb_match,
+                    bb_next,
+                    symbols,
+                )?;
+                self.seal_block(bb_match);
+                self.builder.current_block = Some(bb_match);
+                self.lower_match_arm_stmt(arm, bb_end, symbols, Some(arm_scope))?;
+                self.end_local_scope();
+                self.builder.current_block = Some(bb_next);
+                self.seal_block(bb_next);
+                if i + 1 == indices.len() {
+                    self.set_terminator(AmirTerminator::Unreachable);
+                }
+                continue;
+            }
             if let Some(guard) = arm.guard {
                 let bb_guard = self.new_block();
                 self.lower_pattern_test_branch(scrutinee, pattern, bb_guard, bb_next, symbols)?;
@@ -196,6 +218,78 @@ impl LowerCtx<'_> {
         Ok(())
     }
 
+    /// The alternatives of a `p1 | p2` that binds names, each of which is
+    /// tested, borrowed for the guard and committed on its own.
+    fn binding_alternatives(&self, pattern: &HirPattern) -> Option<Vec<HirPatternId>> {
+        let HirPattern::Or { alts, .. } = pattern else {
+            return None;
+        };
+        self.pattern_has_bindings(pattern)
+            .then(|| self.hir.pool.pattern_list(*alts).to_vec())
+    }
+
+    /// Tries each alternative in order: its test, then the guard (if any)
+    /// reading that alternative's bindings through borrows, then its
+    /// bindings committed before entering `bb_match`. Only the alternative
+    /// that matched reads the scrutinee's payload. A failed test or guard
+    /// moves on to the next alternative, and past the last one to `bb_next`,
+    /// as the guard of a Rust or-pattern runs once per alternative.
+    fn lower_guarded_alternatives(
+        &mut self,
+        scrutinee: AmirOperand,
+        alternatives: &[HirPatternId],
+        guard: Option<HirExprId>,
+        bb_match: BlockId,
+        bb_next: BlockId,
+        symbols: &SymbolTable,
+    ) -> Result<(), Diagnostic> {
+        for &alternative in alternatives {
+            let pattern = self.hir.pool.pattern(alternative);
+            let bb_commit = self.new_block();
+            let bb_other = self.new_block();
+            if let Some(guard) = guard {
+                let bb_guard = self.new_block();
+                self.lower_pattern_test_branch(scrutinee, pattern, bb_guard, bb_other, symbols)?;
+                self.seal_block(bb_guard);
+                self.builder.current_block = Some(bb_guard);
+                let guard_scope = self.begin_local_scope();
+                self.guard_borrows.clear();
+                if self.pattern_has_bindings(pattern) {
+                    let root = self.scrutinee_source_place(scrutinee).ok_or_else(|| {
+                        Diagnostic::ice(
+                            DiagCode::ICEGEN001,
+                            "guarded match scrutinee was not materialized as a place",
+                            self.diag_span(pattern.span()),
+                        )
+                    })?;
+                    self.lower_guard_pattern_borrows(
+                        root,
+                        pattern,
+                        self.operand_type(&scrutinee),
+                        symbols,
+                    )?;
+                }
+                let guard_res = self.lower_expr(guard, None, symbols)?;
+                self.guard_borrows.clear();
+                self.emit_local_scope_exit_from(guard_scope);
+                self.set_bool_branch(guard_res, bb_commit, bb_other);
+                self.end_local_scope();
+            } else {
+                self.lower_pattern_test_branch(scrutinee, pattern, bb_commit, bb_other, symbols)?;
+            }
+            self.seal_block(bb_commit);
+            self.builder.current_block = Some(bb_commit);
+            if self.pattern_has_bindings(pattern) {
+                self.commit_match_bindings(scrutinee, pattern, symbols)?;
+            }
+            self.emit_goto(bb_match);
+            self.seal_block(bb_other);
+            self.builder.current_block = Some(bb_other);
+        }
+        self.emit_goto(bb_next);
+        Ok(())
+    }
+
     fn lower_match_arm_stmt(
         &mut self,
         arm: &HirMatchArm,
@@ -236,6 +330,28 @@ impl LowerCtx<'_> {
 
             let pattern = self.hir.pool.pattern(arm.pattern);
 
+            if let Some(alternatives) = self.binding_alternatives(pattern) {
+                let guard = arm.guard;
+                let arm_scope = self.begin_local_scope();
+                self.lower_guarded_alternatives(
+                    scrutinee,
+                    &alternatives,
+                    guard,
+                    bb_match,
+                    bb_next,
+                    symbols,
+                )?;
+                self.seal_block(bb_match);
+                self.builder.current_block = Some(bb_match);
+                self.lower_match_arm_body(arm, dest, bb_end, symbols, Some(arm_scope))?;
+                self.end_local_scope();
+                self.builder.current_block = Some(bb_next);
+                self.seal_block(bb_next);
+                if i + 1 == indices.len() {
+                    self.set_terminator(AmirTerminator::Unreachable);
+                }
+                continue;
+            }
             if let Some(guard) = arm.guard {
                 let bb_guard = self.new_block();
                 self.lower_pattern_test_branch(scrutinee, pattern, bb_guard, bb_next, symbols)?;

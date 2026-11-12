@@ -15,6 +15,7 @@ impl<'a> Resolver<'a> {
         let current_module = program.and_then(|p| p.module.as_ref().map(|m| m.path.join(".")));
         let mut resolver = Self {
             reusable_definitions: rustc_hash::FxHashSet::default(),
+            or_patterns: Vec::new(),
             symbols: SymbolTable::new(file_id),
             resolved: ResolvedNames::default(),
             docs: DocCommentMap::default(),

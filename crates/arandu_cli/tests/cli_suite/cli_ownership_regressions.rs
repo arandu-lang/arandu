@@ -1526,6 +1526,24 @@ fn owned_text_is_freed_on_every_path() {
     run_emitted_c_with_asan(&c_source, "string_concat_owned");
 }
 
+/// A value moved on one path and not on another is destroyed exactly once
+/// on every path: `if c { consume(s) }` used to leak `s` when `c` was false.
+#[test]
+fn conditionally_moved_values_are_destroyed_once() {
+    let source = include_str!("../../../../tests/corpus/conditional_moves.aru");
+    let c_source = emit_c(source, "conditional_moves");
+    run_emitted_c_with_asan(&c_source, "conditional_moves");
+}
+
+/// The alternatives of `p1 | p2` bind one variable; only the alternative
+/// that matched reads its payload, and an owned payload is destroyed once.
+#[test]
+fn or_pattern_bindings_are_destroyed_once() {
+    let source = include_str!("../../../../tests/corpus/guarded_or_patterns.aru");
+    let c_source = emit_c(source, "guarded_or_patterns");
+    run_emitted_c_with_asan(&c_source, "guarded_or_patterns");
+}
+
 /// A range value is a plain struct: storing one allocates nothing.
 #[test]
 fn range_values_allocate_nothing() {

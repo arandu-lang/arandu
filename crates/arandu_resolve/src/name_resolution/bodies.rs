@@ -66,6 +66,7 @@ pub fn resolve_selected_body_with_poll(
         .collect();
     let mut resolver = Resolver {
         reusable_definitions: declarations.resolved.definitions.keys().copied().collect(),
+        or_patterns: Vec::new(),
         symbols: std::sync::Arc::unwrap_or_clone(declarations.symbols),
         resolved: std::sync::Arc::unwrap_or_clone(declarations.resolved),
         docs: declarations.docs,

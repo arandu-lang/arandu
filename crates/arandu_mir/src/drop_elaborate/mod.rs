@@ -8,6 +8,7 @@
 mod dynamic;
 mod elaborate;
 mod needs_drop;
+mod settle;
 
 pub use elaborate::elaborate_drops;
 pub use needs_drop::type_needs_drop;

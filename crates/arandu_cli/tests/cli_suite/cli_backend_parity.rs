@@ -767,6 +767,35 @@ fn string_concatenation_agrees_on_every_backend() {
     let _ = fs::remove_file(path);
 }
 
+/// Values moved on some paths only, and or-patterns that bind names.
+#[test]
+fn conditional_moves_and_or_patterns_agree_on_every_backend() {
+    for (name, source) in [
+        (
+            "conditional_moves",
+            include_str!("../../../../tests/corpus/conditional_moves.aru"),
+        ),
+        (
+            "guarded_or_patterns",
+            include_str!("../../../../tests/corpus/guarded_or_patterns.aru"),
+        ),
+    ] {
+        for (backend, outcome) in outcomes_on(name, source, false) {
+            assert_eq!(outcome, ProgramOutcome::Returned(0), "{name} on {backend}");
+        }
+        let path = std::env::temp_dir().join(format!("arandu_{name}_{}.aru", std::process::id()));
+        fs::write(&path, source).unwrap();
+        let wasm = cli(&["emit-wasm", &path.to_string_lossy()]);
+        assert!(
+            wasm.status.success(),
+            "{}",
+            String::from_utf8_lossy(&wasm.stderr)
+        );
+        crate::wasm_host::run_main(&wasm.stdout).assert_returns(0, name);
+        let _ = fs::remove_file(path);
+    }
+}
+
 /// Range values: `Range<T>` and `RangeInclusive<T>` stored, passed,
 /// returned, looped over and used as slice indexes.
 #[test]

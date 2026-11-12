@@ -286,7 +286,7 @@ impl<'a> Resolver<'a> {
                 name,
                 mutable,
             } => {
-                self.define(scope, name, SymbolKind::Local, *span);
+                self.bind_pattern_name(scope, name, *span);
                 if *mutable
                     && let Some(symbol) = self.resolved.definitions.get(&(*span).into()).copied()
                 {
@@ -326,10 +326,106 @@ impl<'a> Resolver<'a> {
                 self.resolve_expr(scope, *end);
             }
             Pattern::Or { alts, .. } => {
-                for &item in self.pool.pattern_list(*alts) {
+                self.or_patterns.push(super::OrPatternNames::default());
+                for (index, &item) in self.pool.pattern_list(*alts).iter().enumerate() {
+                    if let Some(names) = self.or_patterns.last_mut() {
+                        names.later = index > 0;
+                        names.seen.clear();
+                    }
                     self.resolve_pattern(scope, item);
+                    if index == 0 {
+                        continue;
+                    }
+                    // A later alternative binds every name the first did.
+                    let missing: Vec<smol_str::SmolStr> =
+                        self.or_patterns.last().map_or_else(Vec::new, |names| {
+                            names
+                                .shared
+                                .iter()
+                                .filter(|(name, _)| !names.seen.contains(name))
+                                .map(|(name, _)| name.clone())
+                                .collect()
+                        });
+                    let alternative = self.pool.pattern(item).span();
+                    for name in missing {
+                        self.diagnostics.push(
+                            Diagnostic::error(
+                                DiagCode::N022OrPatternBinding,
+                                format!(
+                                    "'{name}' is not bound in every alternative of the pattern"
+                                ),
+                                alternative,
+                            )
+                            .with_label(
+                                alternative,
+                                format!("this alternative does not bind '{name}'"),
+                            )
+                            .with_hint("every alternative of `p1 | p2` must bind the same names"),
+                        );
+                    }
+                }
+                // The names belong to the enclosing or-pattern too.
+                if let Some(finished) = self.or_patterns.pop()
+                    && let Some(outer) = self.or_patterns.last_mut()
+                {
+                    for (name, symbol) in finished.shared {
+                        if outer.later {
+                            if !outer.seen.contains(&name) {
+                                outer.seen.push(name);
+                            }
+                        } else if !outer.shared.iter().any(|(known, _)| *known == name) {
+                            outer.shared.push((name, symbol));
+                        }
+                    }
                 }
             }
+        }
+    }
+
+    /// Defines the name a pattern binds. In an alternative after the first
+    /// of an or-pattern it is the variable the first alternative defined.
+    fn bind_pattern_name(
+        &mut self,
+        scope: ScopeId,
+        name: &smol_str::SmolStr,
+        span: arandu_lexer::Span,
+    ) {
+        let shared = self.or_patterns.iter().rev().find_map(|names| {
+            names
+                .later
+                .then(|| names.shared.iter().find(|(known, _)| known == name))
+                .flatten()
+                .map(|(_, symbol)| *symbol)
+        });
+        if let Some(symbol) = shared {
+            self.resolved.definitions.insert(span.into(), symbol);
+            if let Some(names) = self.or_patterns.last_mut()
+                && !names.seen.contains(name)
+            {
+                names.seen.push(name.clone());
+            }
+            return;
+        }
+        let in_later = self.or_patterns.last().is_some_and(|names| names.later);
+        if in_later {
+            self.diagnostics.push(
+                Diagnostic::error(
+                    DiagCode::N022OrPatternBinding,
+                    format!("'{name}' is not bound in every alternative of the pattern"),
+                    span,
+                )
+                .with_label(
+                    span,
+                    format!("the first alternative does not bind '{name}'"),
+                )
+                .with_hint("every alternative of `p1 | p2` must bind the same names"),
+            );
+        }
+        let symbol = self.define(scope, name, SymbolKind::Local, span);
+        if let (Some(symbol), Some(names)) = (symbol, self.or_patterns.last_mut())
+            && !names.later
+        {
+            names.shared.push((name.clone(), symbol));
         }
     }
 
@@ -337,7 +433,7 @@ impl<'a> Resolver<'a> {
         if let Some(pattern) = field.pattern {
             self.resolve_pattern(scope, pattern);
         } else {
-            self.define(scope, &field.name, SymbolKind::Local, field.span);
+            self.bind_pattern_name(scope, &field.name, field.span);
         }
     }
 

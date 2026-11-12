@@ -6,7 +6,7 @@ use crate::hir::HirPattern;
 use crate::passes::type_checker::types::{ArType, Primitive};
 
 impl LowerCtx<'_> {
-    pub(super) fn pattern_has_bindings(&self, pattern: &HirPattern) -> bool {
+    pub(crate) fn pattern_has_bindings(&self, pattern: &HirPattern) -> bool {
         match pattern {
             HirPattern::Bind { .. } => true,
             HirPattern::Enum { payload, .. } | HirPattern::TypeTuple { payload, .. } => self
@@ -154,7 +154,11 @@ impl LowerCtx<'_> {
                     .decl_type_id(*symbol)
                     .unwrap_or_else(|| self.intern_ty_ref(&value_ty));
                 if commit {
-                    let local = self.new_local_id(bound_ty, *symbol, *span);
+                    // One variable for a name bound by several alternatives.
+                    let local = match self.symbol_map.get(symbol) {
+                        Some(&local) => local,
+                        None => self.new_local_id(bound_ty, *symbol, *span),
+                    };
                     let bound_type = self.tc.type_info.resolve_type_id(bound_ty);
                     let source_ty_id = self.tc.type_info.type_interner.intern(value_ty.clone());
                     let source_is_already_reference = bound_ty == source_ty_id;

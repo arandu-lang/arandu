@@ -713,6 +713,14 @@ Example:
 Token.Number(value) if value > 0 => "positive number"
 ```
 
+An or-pattern `p1 | p2` binds the same names in every alternative (N022
+otherwise), each with one type (T002), and a name is one variable whichever
+alternative matched. Alternatives that bind are tried in order and only the
+one that matched reads the scrutinee; a guard runs once per alternative, and
+a failed guard moves on to the next. Nested alternatives that bind are
+distributed to the top of the arm's pattern during HIR lowering
+(`Some(A(x) | B(x))` is `Some(A(x)) | Some(B(x))`).
+
 ### Expressions
 
 `Expr` variants:

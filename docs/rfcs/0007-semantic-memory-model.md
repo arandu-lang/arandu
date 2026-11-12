@@ -57,6 +57,23 @@ A AMIR modela formalmente o ciclo de vida através de fatos operacionais:
 * `Destroy`: Materializa a destruição consumidora de uma variável no final de seu escopo.
 * `StorageLive` e `StorageDead`: Delimitam o espaço físico da variável na pilha.
 
+### Movimentos condicionais (2026-11-11)
+
+Um valor movido num caminho e não em outro (`if c { consume(s) }`, um braço
+de `match` que liga um payload ao lado de outro que o ignora) chega à junção
+nem possuído nem movido, e a limpeza depois dela não pode destruí-lo. A
+elaboração de drops resolve isso antes de tudo (`drop_elaborate::settle`):
+em cada aresta que entra numa junção onde o valor ainda é possuído, ele é
+destruído ali, num bloco próprio da aresta, e a junção passa a vê-lo movido
+em todos os caminhos. É a forma estática dos drop flags do rustc, e é sound
+porque um valor possivelmente movido não pode ser usado depois da junção
+(`O007`). Um payload alcançado por uma variante de enum só existe quando
+ela é a ativa, então sua destruição na aresta é guardada pelo discriminante.
+Antes disso esses valores vazavam.
+
+Mover uma parte de um valor cujo tipo tem `@Destructor` é `O018`: o
+destrutor roda sobre o valor completo.
+
 ### Conflitos de Empréstimo Reportados
 
 O passador `arandu_mir::borrow_check` percorre a AMIR pós-otimização e emite diagnósticos estritos caso invariantes sejam violados:

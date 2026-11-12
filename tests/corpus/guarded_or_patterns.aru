@@ -1,0 +1,80 @@
+module guardedOrPatterns
+
+import std.alloc.string as strings
+from std.core.option import { Option }
+
+// The alternatives of `p1 | p2` bind the same names, and a name is one
+// variable whichever alternative matched. A guard runs once per alternative,
+// with the names it binds; a failed guard moves on to the next alternative.
+
+enum Shape {
+    Circle(int),
+    Square(int),
+    Label(strings.String),
+    Empty,
+}
+
+func big(shape: Shape): int {
+    return match shape {
+        Shape.Circle(size) | Shape.Square(size) if size > 10 => size,
+        Shape.Circle(_) | Shape.Square(_) => 1,
+        Shape.Label(text) if text.len() > 3 => 2,
+        Shape.Label(_) => 3,
+        Shape.Empty => 0,
+    }
+}
+
+func nested(value: Option<Shape>): int {
+    match value {
+        Option.Some(Shape.Circle(n) | Shape.Square(n)) if n % 2 == 0 => { return n }
+        Option.Some(_) => { return -1 }
+        Option.None => { return -2 }
+    }
+}
+
+func pair(a: int, b: int): int {
+    return match (a, b) {
+        (x, 0) | (0, x) if x > 5 => x,
+        (_, _) => 0,
+    }
+}
+
+// The payloads have different layouts: only the alternative that matched
+// may read its own.
+enum Mixed {
+    Wide(i64, int),
+    Narrow(u8, int),
+    Text(strings.String),
+    Name(strings.String),
+    Nothing,
+}
+
+func second(value: Mixed): int {
+    return match value {
+        Mixed.Wide(_, n) | Mixed.Narrow(_, n) => n,
+        Mixed.Text(text) | Mixed.Name(text) => text.len() as int,
+        Mixed.Nothing => -1,
+    }
+}
+
+func main(): int {
+    if big(Shape.Circle(20)) != 20 { return 1 }
+    if big(Shape.Square(30)) != 30 { return 2 }
+    if big(Shape.Square(3)) != 1 { return 3 }
+    if big(Shape.Label(strings.String.from("long name"))) != 2 { return 4 }
+    if big(Shape.Label(strings.String.from("ab"))) != 3 { return 5 }
+    if big(Shape.Empty) != 0 { return 6 }
+    if nested(Option.Some(Shape.Square(8))) != 8 { return 7 }
+    if nested(Option.Some(Shape.Circle(7))) != -1 { return 8 }
+    if nested(Option.None) != -2 { return 9 }
+    // The first alternative matches but its guard fails; the second passes.
+    if pair(0, 9) != 9 { return 10 }
+    if pair(9, 0) != 9 { return 11 }
+    if pair(2, 0) != 0 { return 12 }
+    if second(Mixed.Wide(1, 40)) != 40 { return 13 }
+    if second(Mixed.Narrow(1, 41)) != 41 { return 14 }
+    if second(Mixed.Text(strings.String.from("abc"))) != 3 { return 15 }
+    if second(Mixed.Name(strings.String.from("abcde"))) != 5 { return 16 }
+    if second(Mixed.Nothing) != -1 { return 17 }
+    return 0
+}

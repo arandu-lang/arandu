@@ -68,6 +68,8 @@ pub enum DiagCode {
     N020ModuleDeclarationMismatch,
     /// Two distinct functions of one program map to the same native symbol.
     N021DuplicateFunctionSymbol,
+    /// A name is bound by some alternatives of `p1 | p2` and not by others.
+    N022OrPatternBinding,
 
     // ── Type Checker (T) ──
     T001CannotInferType,
@@ -252,6 +254,7 @@ impl DiagCode {
             N019CyclicReExport,
             N020ModuleDeclarationMismatch,
             N021DuplicateFunctionSymbol,
+            N022OrPatternBinding,
             T001CannotInferType,
             T002IncompatibleAssignment,
             T003IncompatibleCallArg,
@@ -410,6 +413,7 @@ impl DiagCode {
             DiagCode::N019CyclicReExport => "N019",
             DiagCode::N020ModuleDeclarationMismatch => "N020",
             DiagCode::N021DuplicateFunctionSymbol => "N021",
+            DiagCode::N022OrPatternBinding => "N022",
             DiagCode::T001CannotInferType => "T001",
             DiagCode::T002IncompatibleAssignment => "T002",
             DiagCode::T003IncompatibleCallArg => "T003",

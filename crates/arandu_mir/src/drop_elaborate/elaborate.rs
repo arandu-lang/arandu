@@ -12,6 +12,7 @@ use smallvec::SmallVec;
 
 /// Insert exactly-once root-local and nested cascade destruction before normal function returns.
 pub fn elaborate_drops(func: &mut AmirFunc, type_info: &dyn AmirTypeContext) {
+    super::settle::settle_conditional_moves(func, type_info);
     let owned_string_locals = find_owned_string_locals(func);
     let is_destructor_func = type_info.is_destructor_instance(func.symbol);
 

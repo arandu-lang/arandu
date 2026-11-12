@@ -50,6 +50,16 @@ pub(crate) fn move_states_at_block_exit(func: &AmirFunc) -> Vec<MoveState> {
         .collect()
 }
 
+/// Ownership paths on entry to each block: the join of its predecessors.
+#[must_use]
+pub(crate) fn move_states_at_block_entry(func: &AmirFunc) -> Vec<MoveState> {
+    let bump = bumpalo::Bump::new();
+    match compute_move_in(func, &bump) {
+        Some(block_in) => block_in.iter().cloned().collect(),
+        None => vec![MoveState::new(func.locals.len()); func.blocks.len()],
+    }
+}
+
 /// Move-state snapshot immediately before every statement, used by cleanup
 /// elaboration so replacement drops agree with the ownership checker.
 pub(crate) fn move_states_before_statements(func: &AmirFunc) -> Vec<Vec<MoveState>> {
@@ -174,6 +184,21 @@ impl MoveState {
                 self.maybe_moved.insert(local);
             }
         }
+    }
+
+    /// Every place moved on some path into this point and not on others:
+    /// whole locals first, then projected places, in a fixed order.
+    pub(crate) fn maybe_moved_places(&self) -> Vec<AmirPlace> {
+        let mut places: Vec<AmirPlace> = self
+            .maybe_moved
+            .iter()
+            .map(|local| AmirPlace {
+                local,
+                projections: SmallVec::new(),
+            })
+            .collect();
+        places.extend(self.maybe_moved_fields.iter().cloned());
+        places
     }
 
     pub(crate) fn place_itself_is_available(&self, place: &AmirPlace) -> bool {

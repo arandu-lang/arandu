@@ -373,12 +373,13 @@ pub(crate) fn append_failure(output: &mut Vec<Diagnostic>, error: RootEvalError,
             "compile-time evaluation requires concrete generic arguments",
             root,
         )),
-        RootEvalError::Build(BuildFailure::MissingFunction | BuildFailure::InvalidRoot) => output
-            .push(Diagnostic::ice(
-                DiagCode::ICET001,
-                "public comptime root is missing from its canonical source item",
-                root,
-            )),
+        RootEvalError::Build(
+            BuildFailure::MissingFunction | BuildFailure::InvalidRoot | BuildFailure::CallsGeneric,
+        ) => output.push(Diagnostic::ice(
+            DiagCode::ICET001,
+            "public comptime root is missing from its canonical source item",
+            root,
+        )),
     }
 }
 

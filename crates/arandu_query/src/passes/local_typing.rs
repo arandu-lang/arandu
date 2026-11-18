@@ -542,7 +542,9 @@ impl Frame<'_> {
             variant_instantiations: _,
             function_effects: _,
             unsafe_functions: _,
+            variadic_functions: _,
             exported_functions: _,
+            cold_functions: _,
             struct_repr_c: _,
             struct_unions: _,
             struct_field_defaults,
@@ -651,6 +653,11 @@ fn without_signatures(local: &mut TypeInfo, signatures: &TypeInfo) {
     same_set(
         &mut local.exported_functions,
         &signatures.exported_functions,
+    );
+    same_set(&mut local.cold_functions, &signatures.cold_functions);
+    same_set(
+        &mut local.variadic_functions,
+        &signatures.variadic_functions,
     );
     same_set(&mut local.struct_repr_c, &signatures.struct_repr_c);
     same_set(&mut local.struct_unions, &signatures.struct_unions);

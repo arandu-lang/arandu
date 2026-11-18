@@ -147,9 +147,7 @@ impl Admission {
                                     }
                                 }
                                 if let Some(intrinsic) = provider.intrinsic(*callee) {
-                                    if intrinsic.is_pure_bit_operation()
-                                        || intrinsic == IntrinsicKind::Abort
-                                    {
+                                    if intrinsic.is_pure_ctfe_intrinsic() {
                                         admitted.intrinsics.insert(*callee, intrinsic);
                                         None
                                     } else {
@@ -160,6 +158,7 @@ impl Admission {
                                 }
                             }
                             AmirStmt::Store { rhs, .. } if scalar_operand(*rhs) => None,
+                            AmirStmt::ArenaRewind(operand) if scalar_operand(*operand) => None,
                             AmirStmt::StorageLive(_) | AmirStmt::StorageDead(_) | AmirStmt::Nop => {
                                 None
                             }

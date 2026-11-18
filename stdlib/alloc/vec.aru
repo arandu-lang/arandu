@@ -116,6 +116,13 @@ public func Vec.extend<Element: marker.Copy>(self: mut ref Vec<Element>, items: 
     }
 }
 
+/// Creates a new `Vec<Element>` populated with copies of the elements in `items`.
+public func Vec.from<Element: marker.Copy>(items: []Element): Vec<Element> {
+    let mut v = Vec.withCapacity<Element>(items.len)
+    v.extend(items)
+    return v
+}
+
 /// Creates a new empty `Vec<T>` without heap allocation.
 ///
 /// # Examples
@@ -487,6 +494,92 @@ public func Vec.tryPush<T>(self: mut ref Vec<T>, value: T): bool {
 /// This drops initialized elements in place while retaining the buffer.
 public func Vec.clear<T>(self: mut ref Vec<T>): void {
     Vec.clearImpl(self)
+}
+
+/// Calls `f` on each element in order.
+public func Vec.forEach<T>(self: ref Vec<T>, f: (ref T) -> void): void {
+    let mut i: usize = 0
+    let len = self.len()
+    while i < len {
+        if let Some(item) = self.get(i) {
+            f(item)
+        }
+        i += 1
+    }
+}
+
+/// Accumulates values by calling `f` on each element and the running accumulator.
+public func Vec.fold<T, R>(self: ref Vec<T>, initial: R, f: (R, ref T) -> R): R {
+    let mut acc = initial
+    let len = self.len()
+    let mut i: usize = 0
+    while i < len {
+        if let Some(item) = self.get(i) {
+            acc = f(acc, item)
+        }
+        i += 1
+    }
+    return acc
+}
+
+/// Returns `true` if any element satisfies `f`.
+public func Vec.anyMatch<T>(self: ref Vec<T>, f: (ref T) -> bool): bool {
+    let len = self.len()
+    let mut i: usize = 0
+    while i < len {
+        if let Some(item) = self.get(i) {
+            if f(item) {
+                return true
+            }
+        }
+        i += 1
+    }
+    return false
+}
+
+/// Returns `true` if all elements satisfy `f`.
+public func Vec.allMatch<T>(self: ref Vec<T>, f: (ref T) -> bool): bool {
+    let len = self.len()
+    let mut i: usize = 0
+    while i < len {
+        if let Some(item) = self.get(i) {
+            if !f(item) {
+                return false
+            }
+        }
+        i += 1
+    }
+    return true
+}
+
+/// Transforms elements by applying `f` to each element, collecting the results in a new `Vec<R>`.
+public func Vec.map<T, R>(self: ref Vec<T>, f: (ref T) -> R): Vec<R> {
+    let len = self.len()
+    let mut out = Vec.withCapacity<R>(len)
+    let mut i: usize = 0
+    while i < len {
+        if let Some(item) = self.get(i) {
+            out.push(f(item))
+        }
+        i += 1
+    }
+    return out
+}
+
+/// Returns a new `Vec<T>` containing copies of all elements that satisfy `f`.
+public func Vec.filter<T>(self: ref Vec<T>, f: (ref T) -> bool): Vec<T> where T: marker.Copy {
+    let mut out = Vec.new<T>()
+    let len = self.len()
+    let mut i: usize = 0
+    while i < len {
+        if let Some(item) = self.get(i) {
+            if f(item) {
+                out.push(*item)
+            }
+        }
+        i += 1
+    }
+    return out
 }
 
 /// Releases the owned buffer and resets the vector to empty.

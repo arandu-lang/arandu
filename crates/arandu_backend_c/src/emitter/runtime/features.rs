@@ -132,11 +132,14 @@ impl CEmitter<'_> {
                         | AmirRvalue::BorrowMut(_)
                         | AmirRvalue::VectorCompare { .. }
                         | AmirRvalue::VectorSelect { .. }
+                        | AmirRvalue::Select { .. }
                         | AmirRvalue::VectorOp { .. }
                         | AmirRvalue::VectorSplat { .. }
                         | AmirRvalue::VectorShuffle { .. }
                         | AmirRvalue::VectorExtractLane { .. }
                         | AmirRvalue::VectorInsertLane { .. }
+                        | AmirRvalue::VectorBitmask { .. }
+                        | AmirRvalue::VectorLoadUnaligned { .. }
                         | AmirRvalue::RelativeBorrow { .. } => {}
                     }
                 }

@@ -41,6 +41,26 @@ impl<'a> FuncTranslator<'a> {
             } => {
                 self.emit_vector_insert(vector, *lane, value, result_ty);
             }
+            AmirRvalue::VectorBitmask { vector } => {
+                let vec_ty = self
+                    .interner
+                    .intern(ArType::Vector(arandu_middle::types::VectorType::U8x16));
+                self.emit_operand(vector, vec_ty);
+                self.code.push(Instruction::I8x16Bitmask);
+            }
+            AmirRvalue::VectorLoadUnaligned { source } => {
+                let u8_ty = self
+                    .interner
+                    .intern(ArType::Primitive(arandu_middle::types::Primitive::U8));
+                let slice_ty = self.interner.intern(ArType::Slice(u8_ty));
+                self.emit_operand(source, slice_ty);
+                self.code.push(Instruction::Drop);
+                self.code.push(Instruction::V128Load(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 0,
+                    memory_index: 0,
+                }));
+            }
             _ => unreachable!(),
         }
     }

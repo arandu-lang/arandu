@@ -133,6 +133,8 @@ pub enum LangItem {
     U32,
     U64,
     Usize,
+    I32,
+    I64,
     /// Bit intrinsic explicitly declared with the compiler intrinsic ABI.
     /// Spelling alone must not replace an ordinary or foreign function call.
     BitIntrinsic,
@@ -187,6 +189,10 @@ pub enum LangItem {
     /// `todo`: a typed hole, the expression the programmer has not written
     /// yet (RFC 0036, H1). Shadowed by any declaration named `todo`.
     Hole,
+    /// Total ordering interface: `std.core.cmp.Ord`.
+    Ord,
+    /// Three-way comparison result enum: `std.core.cmp.Ordering`.
+    Ordering,
 }
 
 /// What an owning closure type allows (RFC 0032, L3).
@@ -294,6 +300,8 @@ pub struct BuiltinTypes {
     pub u32_type: Option<SymbolId>,
     pub u64_type: Option<SymbolId>,
     pub usize_type: Option<SymbolId>,
+    pub i32_type: Option<SymbolId>,
+    pub i64_type: Option<SymbolId>,
 }
 
 #[derive(Debug, Clone)]
@@ -329,6 +337,8 @@ pub struct SymbolTable {
     /// keeps internal linkage, so a module never leaks symbols it did not
     /// explicitly export.
     pub exported_functions: FxHashSet<SymbolId>,
+    /// Functions marked `@Cold` to suppress inlining and emit cold-path hints.
+    pub cold_functions: FxHashSet<SymbolId>,
     /// Functions invoked by tooling rather than source calls (`@Test`, `@Benchmark`).
     pub tooling_entrypoints: FxHashSet<SymbolId>,
     pub module_scopes: FxHashMap<SymbolId, ScopeId>,
@@ -368,6 +378,7 @@ impl SymbolTable {
             interface_implementations: FxHashSet::default(),
             host_function_names: FxHashMap::default(),
             exported_functions: FxHashSet::default(),
+            cold_functions: FxHashSet::default(),
             tooling_entrypoints: FxHashSet::default(),
             module_scopes: FxHashMap::default(),
             type_params: std::sync::Arc::default(),

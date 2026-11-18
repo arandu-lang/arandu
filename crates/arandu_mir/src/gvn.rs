@@ -15,6 +15,7 @@ use rustc_hash::FxHashMap;
 enum ValueExpr {
     Unary(UnaryOp, TempId, TypeId),
     Binary(BinaryOp, TempId, TempId, TypeId),
+    Select(TempId, TempId, TempId, TypeId),
     FieldAccess(TempId, usize, TypeId),
 }
 
@@ -176,6 +177,16 @@ fn to_value_expr(
         AmirRvalue::FieldAccess { base, field } => {
             let t = canonicalize_temp(base, temp_leader)?;
             Some(ValueExpr::FieldAccess(t, *field, result_ty))
+        }
+        AmirRvalue::Select {
+            condition,
+            if_true,
+            if_false,
+        } => {
+            let cond_t = canonicalize_temp(condition, temp_leader)?;
+            let true_t = canonicalize_temp(if_true, temp_leader)?;
+            let false_t = canonicalize_temp(if_false, temp_leader)?;
+            Some(ValueExpr::Select(cond_t, true_t, false_t, result_ty))
         }
         _ => None,
     }

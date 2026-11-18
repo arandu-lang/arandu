@@ -267,6 +267,26 @@ impl LowerCtx<'_> {
         // F2.0: `&`/`&mut` lower to place borrows; `*` on a ref loads through the pointer.
         match op {
             UnaryOp::Ref | UnaryOp::RefMut => {
+                // `ref f` of a function item (C's `&f`) is its code pointer:
+                // the item has no storage to borrow. A local or field that
+                // holds a function value is a place and is borrowed below,
+                // so `mut ref held` lets the callee read and write `held`.
+                let sub = self.hir.pool.expr(sub_expr);
+                let function_item = matches!(sub.kind, HirExprKind::Path { symbol }
+                if matches!(
+                    symbols.try_get(symbol).map(|symbol| symbol.kind),
+                    Some(
+                            arandu_middle::SymbolKind::Func
+                                | arandu_middle::SymbolKind::ExternFunc
+                                | arandu_middle::SymbolKind::AssociatedFunc
+                        )
+                ));
+                if function_item && matches!(self.resolve_ty(sub.ty), ArType::Func(_, _)) {
+                    let value = self.lower_expr(sub_expr, None, symbols)?;
+                    let dest = target.unwrap_or_else(|| self.new_temp_id(expr_ty));
+                    self.emit_assign_temp(dest, AmirRvalue::Use(value));
+                    return Ok(AmirOperand::Copy(dest));
+                }
                 // Borrowing a value with no place (`ref Point { .. }`,
                 // `ref f()`) borrows a temporary local, as Rust does for
                 // `&Point { .. }`; the scope destroys it.

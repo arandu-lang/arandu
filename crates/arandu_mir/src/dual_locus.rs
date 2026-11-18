@@ -422,7 +422,11 @@ fn find_rewindable_block(
     let mut defining_block: Option<BlockId> = None;
     for block in &func.blocks {
         for stmt in func.block_stmts(block.id) {
-            if stmt_mentions_local(stmt, local) {
+            let is_storage_boundary = matches!(
+                stmt,
+                AmirStmt::StorageLive(l) | AmirStmt::StorageDead(l) if *l == local
+            );
+            if stmt_mentions_local(stmt, local) && !is_storage_boundary {
                 match defining_block {
                     None => defining_block = Some(block.id),
                     Some(prev) if prev == block.id => {}
@@ -630,5 +634,141 @@ mod tests {
         assert!(promoted.contains(&LocalId::from_usize(1)));
         assert!(is_dual_locus_promoted(&func, LocalId::from_usize(0)));
         assert!(is_dual_locus_promoted(&func, LocalId::from_usize(1)));
+    }
+
+    #[test]
+    fn dual_locus_rewinds_loop_scoped_local_with_storage_dead() {
+        let interner = TypeInterner::new();
+        let int_ty = interner.intern(ArType::Primitive(Primitive::Int));
+        let ref_int_ty = interner.intern(ArType::Ref(int_ty));
+        let par_sym = SymbolId::new(0, 1);
+        let par_ty = interner.intern(ArType::named(par_sym, &[], &interner));
+
+        let mut stmts = AmirStmtTable::new();
+        // bb0: goto bb1
+        // bb1:
+        // StorageLive(s0)
+        // _1 = &s0
+        // _0 = Par { x: _1, y: _1 }
+        // s1 = _0
+        // StorageDead(s0)
+        // goto bb1
+        stmts.push(AmirStmt::StorageLive(LocalId::from_usize(0)));
+        stmts.push(AmirStmt::Assign {
+            lhs: TempId::from_usize(1),
+            rhs: AmirRvalue::Borrow(AmirPlace {
+                local: LocalId::from_usize(0),
+                projections: smallvec![],
+            }),
+        });
+        stmts.push(AmirStmt::Assign {
+            lhs: TempId::from_usize(0),
+            rhs: AmirRvalue::StructLiteral {
+                struct_symbol: par_sym,
+                fields: vec![
+                    ("x".into(), AmirOperand::Copy(TempId::from_usize(1))),
+                    ("y".into(), AmirOperand::Copy(TempId::from_usize(1))),
+                ],
+            },
+        });
+        stmts.push(AmirStmt::Store {
+            lhs: AmirPlace {
+                local: LocalId::from_usize(1),
+                projections: smallvec![],
+            },
+            rhs: AmirOperand::Copy(TempId::from_usize(0)),
+        });
+        stmts.push(AmirStmt::StorageDead(LocalId::from_usize(0)));
+
+        let blocks = vec![
+            AmirBasicBlock {
+                id: BlockId::from_usize(0),
+                statements: DenseRange::empty(),
+                params: DenseRange::empty(),
+                terminator: AmirTerminator::Goto {
+                    target: BlockId::from_usize(1),
+                    args: Vec::new(),
+                },
+            },
+            AmirBasicBlock {
+                id: BlockId::from_usize(1),
+                statements: DenseRange::new(0, 5),
+                params: DenseRange::empty(),
+                terminator: AmirTerminator::Goto {
+                    target: BlockId::from_usize(1),
+                    args: Vec::new(),
+                },
+            },
+        ];
+        let cfg = compute_cfg_edges(&blocks);
+        let mut func = AmirFunc {
+            symbol: SymbolId::new(0, 0),
+            return_type: int_ty,
+            receiver: None,
+            params: vec![],
+            locals: vec![
+                AmirLocal {
+                    id: LocalId::from_usize(0),
+                    ty: int_ty,
+                    is_memory: true,
+                    symbol: None,
+                    span: Span::new(0, 0, 1),
+                    use_span: None,
+                },
+                AmirLocal {
+                    id: LocalId::from_usize(1),
+                    ty: par_ty,
+                    is_memory: true,
+                    symbol: None,
+                    span: Span::new(0, 2, 3),
+                    use_span: None,
+                },
+            ],
+            temps: vec![
+                AmirTemp {
+                    id: TempId::from_usize(0),
+                    ty: par_ty,
+                    is_copy: false,
+                    is_nullable: false,
+                    span: Span::new(0, 0, 1),
+                },
+                AmirTemp {
+                    id: TempId::from_usize(1),
+                    ty: ref_int_ty,
+                    is_copy: true,
+                    is_nullable: false,
+                    span: Span::new(0, 0, 1),
+                },
+            ],
+            blocks,
+            block_params: Vec::new(),
+            stmts,
+            cfg,
+        };
+
+        let promoted = apply_dual_locus_promotion_with_interner(
+            &mut func,
+            &interner,
+            DataLayout::ptr_width(8),
+            &EscapeCheckOptions::default(),
+        );
+        assert!(promoted.contains(&LocalId::from_usize(0)));
+        assert!(is_dual_locus_promoted(&func, LocalId::from_usize(0)));
+
+        // Verify that block 1 contains ArenaCheckpoint and ArenaRewind
+        let has_checkpoint = func.block_stmts(BlockId::from_usize(1)).any(|s| {
+            matches!(
+                s,
+                AmirStmt::Assign {
+                    rhs: AmirRvalue::ArenaCheckpoint,
+                    ..
+                }
+            )
+        });
+        let has_rewind = func
+            .block_stmts(BlockId::from_usize(1))
+            .any(|s| matches!(s, AmirStmt::ArenaRewind(_)));
+        assert!(has_checkpoint, "Block 1 must contain ArenaCheckpoint");
+        assert!(has_rewind, "Block 1 must contain ArenaRewind");
     }
 }

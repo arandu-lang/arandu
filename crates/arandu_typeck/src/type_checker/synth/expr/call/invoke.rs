@@ -112,19 +112,38 @@ pub(super) fn synth_invoked_call(
                     == Some(&arandu_middle::EffectFlags::NONE);
             let pure_simd = sym.lang_item
                 == Some(arandu_middle::symbol_table::LangItem::SimdIntrinsic)
-                && arandu_middle::intrinsics::SimdIntrinsic::from_name(&sym.name).is_some()
+                && arandu_middle::intrinsics::SimdIntrinsic::from_name(&sym.name)
+                    .is_some_and(arandu_middle::intrinsics::SimdIntrinsic::is_pure)
                 && checker.type_info.function_effects.get(&callee_sym)
                     == Some(&arandu_middle::EffectFlags::NONE);
-            if !pure_bits && !pure_simd {
+            let pure_math_or_hint = declared_intrinsic.is_some_and(|kind| {
+                matches!(
+                    kind,
+                    arandu_middle::IntrinsicKind::Fma
+                        | arandu_middle::IntrinsicKind::SpinLoopHint
+                        | arandu_middle::IntrinsicKind::Likely
+                        | arandu_middle::IntrinsicKind::Unlikely
+                        | arandu_middle::intrinsics::IntrinsicKind::OverflowArithmetic(..)
+                        | arandu_middle::intrinsics::IntrinsicKind::SaturatingArithmetic(..)
+                )
+            }) && checker.type_info.function_effects.get(&callee_sym)
+                == Some(&arandu_middle::EffectFlags::NONE);
+            if !pure_bits && !pure_simd && !pure_math_or_hint {
                 checker.current_observed_effects = checker
                     .current_observed_effects
                     .union(arandu_middle::EffectFlags::FOREIGN);
             }
             // Intrinsics that only inspect already-valid fat-pointer descriptors
             // or produce compile-time constants are safe without `unsafe {}`.
-            let is_safe_intrinsic = declared_intrinsic
-                .is_some_and(|k| k.is_safe() && (!k.is_pure_bit_operation() || pure_bits))
-                || pure_simd;
+            let is_safe_intrinsic = declared_intrinsic.is_some_and(|k| {
+                k.is_safe()
+                    && (!k.is_pure_bit_operation() || pure_bits)
+                    && (!matches!(
+                        k,
+                        arandu_middle::intrinsics::IntrinsicKind::OverflowArithmetic(..)
+                            | arandu_middle::intrinsics::IntrinsicKind::SaturatingArithmetic(..)
+                    ) || pure_math_or_hint)
+            }) || pure_simd;
             if !is_safe_intrinsic && !checker.ctx.is_in_unsafe() {
                 checker.diagnostics.push(
                     crate::Diagnostic::error(
@@ -325,7 +344,26 @@ fn synth_namespace_field_call(
                         ret = ir;
                     }
                 }
-                if params.len() != arg_ids.len() {
+                let is_variadic = member_sym
+                    .is_some_and(|sym| checker.type_info.variadic_functions.contains(&sym));
+
+                if is_variadic {
+                    let min_params = params.len().saturating_sub(1);
+                    if arg_ids.len() < min_params {
+                        let diag = crate::Diagnostic::error(
+                            crate::DiagCode::T012WrongArgCount,
+                            format!(
+                                "expected at least {} arguments, found {}",
+                                min_params,
+                                arg_ids.len()
+                            ),
+                            span,
+                        )
+                        .with_label(field_span, "call target is here")
+                        .with_label(span, format!("{} arguments provided", arg_ids.len()));
+                        checker.diagnostics.push(diag);
+                    }
+                } else if params.len() != arg_ids.len() {
                     let diag = crate::Diagnostic::error(
                         crate::DiagCode::T012WrongArgCount,
                         format!(
@@ -341,7 +379,11 @@ fn synth_namespace_field_call(
                     checker.diagnostics.push(diag);
                 }
                 for (i, arg_id) in arg_ids.iter().copied().enumerate() {
-                    let param_id = params.get(i).copied();
+                    let param_id = if is_variadic && i >= params.len().saturating_sub(1) {
+                        params.last().copied()
+                    } else {
+                        params.get(i).copied()
+                    };
                     let arg_ty_id = super::closure::synth_call_arg(checker, arg_id, param_id);
                     if let Some(param_id) = param_id {
                         check_call_arg(

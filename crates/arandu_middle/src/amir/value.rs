@@ -52,6 +52,13 @@ pub enum AmirRvalue {
         if_true: AmirOperand,
         if_false: AmirOperand,
     },
+    /// Scalar conditional select (`condition ? if_true : if_false`); `condition`
+    /// is `Bool` and both arms match the pure scalar result type.
+    Select {
+        condition: AmirOperand,
+        if_true: AmirOperand,
+        if_false: AmirOperand,
+    },
     /// Ordered lane comparisons (except Ne, which is unordered for NaN).
     /// Produces U8x16 with every byte of a true lane set to 0xff.
     VectorCompare {
@@ -76,6 +83,12 @@ pub enum AmirRvalue {
         vector: AmirOperand,
         lane: u8,
         value: AmirOperand,
+    },
+    VectorBitmask {
+        vector: AmirOperand,
+    },
+    VectorLoadUnaligned {
+        source: AmirOperand,
     },
     Binary {
         op: BinaryOp,

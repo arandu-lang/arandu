@@ -176,7 +176,21 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             | AmirRvalue::VectorSplat { .. }
             | AmirRvalue::VectorShuffle { .. }
             | AmirRvalue::VectorExtractLane { .. }
-            | AmirRvalue::VectorInsertLane { .. } => self.translate_vector(rvalue, expected_ty),
+            | AmirRvalue::VectorInsertLane { .. }
+            | AmirRvalue::VectorBitmask { .. }
+            | AmirRvalue::VectorLoadUnaligned { .. } => self.translate_vector(rvalue, expected_ty),
+            AmirRvalue::Select {
+                condition,
+                if_true,
+                if_false,
+            } => {
+                let cond =
+                    self.translate_operand(condition, Some(cranelift_codegen::ir::types::I8));
+                let arm_true = self.translate_typed_operand(if_true, expected_ty, expected_ar_type);
+                let arm_false =
+                    self.translate_typed_operand(if_false, expected_ty, expected_ar_type);
+                self.builder.ins().select(cond, arm_true, arm_false)
+            }
             AmirRvalue::Use(op) => {
                 let val = self.translate_typed_operand(op, expected_ty, expected_ar_type);
                 let op_ty = self.get_operand_ar_type(op);

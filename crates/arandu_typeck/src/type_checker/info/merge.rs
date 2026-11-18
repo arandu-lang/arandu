@@ -231,6 +231,10 @@ impl TypeInfo {
             .extend(other.unsafe_functions.iter().copied().map(&remap));
         self.exported_functions
             .extend(other.exported_functions.iter().copied().map(&remap));
+        self.cold_functions
+            .extend(other.cold_functions.iter().copied().map(&remap));
+        self.variadic_functions
+            .extend(other.variadic_functions.iter().copied().map(&remap));
         for (&symbol, &effects) in &other.function_effects {
             self.function_effects.insert(remap(symbol), effects);
         }
@@ -582,6 +586,8 @@ fn context_shard_is_empty(other: &TypeInfo) -> bool {
         && other.generic_params.is_empty()
         && other.unsafe_functions.is_empty()
         && other.exported_functions.is_empty()
+        && other.cold_functions.is_empty()
+        && other.variadic_functions.is_empty()
         && other.generic_defaults.is_empty()
         && other.callback_bounds.is_empty()
         && other.param_constraints.is_empty()

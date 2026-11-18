@@ -146,6 +146,7 @@ pub(super) fn build_instance_hir<'db>(
                     symbols
                         .exported_functions
                         .clone_from(&marks.exported_functions);
+                    symbols.cold_functions.clone_from(&marks.cold_functions);
                     symbols
                         .tooling_entrypoints
                         .clone_from(&marks.tooling_entrypoints);

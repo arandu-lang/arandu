@@ -297,6 +297,43 @@ func main(): int {
 }
 
 #[test]
+fn emits_atomic_intrinsics_with_explicit_orderings() {
+    let ir = emit(
+        r#"
+module std.core.atomicOrderingTest
+
+extern "arandu-intrinsic" {
+    func atomicLoadRelaxed32(value: ref u32): u32
+    func atomicStoreRelease32(value: ref u32, replacement: u32): void
+    func atomicFetchAddAcqRel32(value: mut ref u32, operand: u32): u32
+    func atomicFenceAcquire(): void
+}
+
+public func test_orders(p: ptr[u32]): u32 {
+    unsafe {
+        let v = atomicLoadRelaxed32(ref *p)
+        atomicStoreRelease32(ref *p, v + 1 as u32)
+        atomicFenceAcquire()
+        return atomicFetchAddAcqRel32(mut ref *p, 2 as u32)
+    }
+}
+
+func main(): int {
+    return 0
+}
+"#,
+    );
+    assert!(
+        ir.contains("monotonic, align 4"),
+        "expected monotonic: {ir}"
+    );
+    assert!(ir.contains("release, align 4"), "expected release: {ir}");
+    assert!(ir.contains("fence acquire"), "expected fence acquire: {ir}");
+    assert!(ir.contains("acq_rel"), "expected acq_rel: {ir}");
+    verify(&ir);
+}
+
+#[test]
 fn emits_vector_arithmetic_ir() {
     let case = fixture::arithmetic(VectorType::F32x4, VectorOp::Add);
     let ir = emit_llvm_ir(&case.program, &case.symbols, &case.info).expect("LLVM emission failed");
@@ -811,4 +848,347 @@ func main(): int {
         assert_eq!(code, 42, "lli must agree with Cranelift");
     }
     verify(&ir);
+}
+
+#[test]
+fn rotate_and_swap_intrinsics_lower_to_funnel_shifts_and_bswap() {
+    let src = include_str!("../../arandu_backend_c/tests/rotate_swap_intrinsics.aru");
+    let ir = emit(src);
+    for intrinsic in [
+        "@llvm.fshl.i32",
+        "@llvm.fshr.i32",
+        "@llvm.fshl.i64",
+        "@llvm.fshr.i64",
+        "@llvm.bswap.i32",
+        "@llvm.bswap.i64",
+    ] {
+        assert!(ir.contains(intrinsic), "missing {intrinsic}:\n{ir}");
+    }
+    assert_no_orphan_declarations(&ir);
+    verify(&ir);
+    if let Some(code) = run(&ir) {
+        assert_eq!(code, 0, "lli result:\n{ir}");
+    }
+    assert_eq!(run_cranelift(src), 0);
+}
+
+#[test]
+fn count_and_reverse_bit_intrinsics_emit_typed_calls() {
+    let src = include_str!("../../arandu_backend_c/tests/bit_intrinsics.aru");
+    let ir = emit(src);
+    assert!(ir.contains("@llvm.ctpop.i32(i32 "), "typed operand:\n{ir}");
+    verify(&ir);
+    if let Some(code) = run(&ir) {
+        assert_eq!(code, 0, "lli result:\n{ir}");
+    }
+}
+
+#[test]
+fn fma_and_spin_intrinsics_lower_to_llvm_fma_and_pause() {
+    let src = r#"
+module std.core.fma_test
+
+extern "arandu-intrinsic" {
+    func fma32(a: f32, b: f32, c: f32): f32
+    func fma64(a: f64, b: f64, c: f64): f64
+    func spinLoopHint(): void
+}
+
+func test_math(a: f32, b: f32, c: f32): f32 {
+    spinLoopHint()
+    return fma32(a, b, c)
+}
+
+func test_math64(a: f64, b: f64, c: f64): f64 {
+    return fma64(a, b, c)
+}
+
+func main(): int {
+    let r32 = test_math(2.0, 3.0, 4.0)
+    if r32 != 10.0 { return 1 }
+    let r64 = test_math64(2.0, 3.0, 4.0)
+    if r64 != 10.0 { return 2 }
+    return 0
+}
+"#;
+    let ir = emit(src);
+    assert!(ir.contains("@llvm.fma.f32"), "missing fma32:\n{ir}");
+    assert!(ir.contains("@llvm.fma.f64"), "missing fma64:\n{ir}");
+    assert!(
+        ir.contains("call void asm sideeffect"),
+        "missing pause:\n{ir}"
+    );
+    assert_no_orphan_declarations(&ir);
+    verify(&ir);
+    if let Some(code) = run(&ir) {
+        assert_eq!(code, 0, "lli result:\n{ir}");
+    }
+    assert_eq!(run_cranelift(src), 0);
+}
+
+#[test]
+fn extern_c_variadic_emits_ellipsis_and_executes_cleanly() {
+    let src = r#"
+module std.core.variadic_test
+
+extern "C" {
+    func snprintf(buf: ptr[u8], size: usize, fmt: ptr[u8], args: any...): i32
+    func malloc(size: usize): ptr[u8]
+    func free(p: ptr[u8]): void
+}
+
+func main(): int {
+    unsafe {
+        let buf = malloc(64 as usize)
+        let n1 = snprintf(buf, 64 as usize, c"ok")
+        let n2 = snprintf(buf, 64 as usize, c"%d:%d", 10 as i32, 25 as i8)
+        let b0 = *(buf as ptr[u8])
+        free(buf)
+        if n1 != (2 as i32) { return 1 }
+        if n2 != (5 as i32) { return 2 }
+        if b0 != b'1' { return 3 }
+    }
+    return 0
+}
+"#;
+    let ir = emit(src);
+    assert!(
+        ir.contains("declare i32 @snprintf(ptr, i64, ptr, ...)"),
+        "expected variadic LLVM decl:\n{ir}"
+    );
+    assert!(
+        ir.contains("call i32 (ptr, i64, ptr, ...) @snprintf("),
+        "expected variadic LLVM call:\n{ir}"
+    );
+    assert!(
+        ir.contains("i32 25") || ir.contains("sext i8"),
+        "expected C default promotion of i8 to i32 in variadic call:\n{ir}"
+    );
+    verify(&ir);
+    if let Some(code) = run(&ir) {
+        assert_eq!(code, 0, "lli result:\n{ir}");
+    }
+    assert_eq!(run_cranelift(src), 0);
+}
+
+#[test]
+fn overflow_saturating_intrinsics_lower_to_llvm_ops_and_execute() {
+    let src = include_str!("../../arandu_backend_c/tests/overflow_saturating_intrinsics.aru");
+    let ir = emit(src);
+    for intrinsic in [
+        "@llvm.sadd.with.overflow.i32",
+        "@llvm.uadd.with.overflow.i64",
+        "@llvm.smul.with.overflow.i64",
+        "@llvm.sadd.sat.i32",
+        "@llvm.usub.sat.i64",
+    ] {
+        assert!(ir.contains(intrinsic), "missing {intrinsic}:\n{ir}");
+    }
+    assert_no_orphan_declarations(&ir);
+    verify(&ir);
+    if let Some(code) = run(&ir) {
+        assert_eq!(code, 0, "lli result:\n{ir}");
+    }
+    assert_eq!(run_cranelift(src), 0);
+}
+
+#[test]
+fn diamond_if_lowers_to_select_and_matches_cranelift() {
+    let src = r#"
+func pickInt(cond: bool, a: int, b: int): int {
+    let r = if cond { a } else { b }
+    return r
+}
+
+func pickEarly(cond: bool, a: int, b: int): int {
+    if cond {
+        return a + 1
+    } else {
+        return b + 2
+    }
+}
+
+func pickFloat(cond: bool, a: f64, b: f64): f64 {
+    return if cond { a } else { b }
+}
+
+func main(): int {
+    if pickInt(true, 10, 20) != 10 { return 1 }
+    if pickInt(false, 10, 20) != 20 { return 2 }
+    if pickEarly(true, 10, 20) != 11 { return 3 }
+    if pickEarly(false, 10, 20) != 22 { return 4 }
+    if pickFloat(true, 1.5, 2.5) != 1.5 { return 5 }
+    if pickFloat(false, 1.5, 2.5) != 2.5 { return 6 }
+    return 0
+}
+"#;
+    let (mut amir, tc) = compile_src(src);
+    arandu_semantics::optimize_amir_checked_with_level(
+        &mut amir,
+        &tc.symbols,
+        &tc.type_info.type_interner,
+        arandu_semantics::OptLevel::O1,
+    )
+    .expect("O1 optimization failed");
+    let ir = emit_llvm_ir(&amir, &tc.symbols, &*tc.type_info).expect("LLVM emission failed");
+    assert!(
+        ir.contains("select i1 "),
+        "expected select i1 in LLVM IR:\n{ir}"
+    );
+    assert_no_orphan_declarations(&ir);
+    verify(&ir);
+    if let Some(code) = run(&ir) {
+        assert_eq!(code, 0, "lli result:\n{ir}");
+    }
+    let module = CraneliftBackend::try_new()
+        .expect("Cranelift backend")
+        .compile(&amir, &tc.symbols, &*tc.type_info)
+        .expect("Cranelift compile");
+    let main = unsafe { module.get_fn::<unsafe fn() -> i32>("main") }.expect("main export");
+    assert_eq!(unsafe { main() }, 0);
+}
+
+#[test]
+fn cold_likely_unlikely_and_tail_call_ir() {
+    let source = r#"
+module std.core.branch_hint_test
+
+extern "arandu-intrinsic" {
+    func likely(cond: bool): bool
+    func unlikely(cond: bool): bool
+}
+
+@Cold
+func slow_path(x: int): int {
+    return x + 100
+}
+
+func step_b(n: int, acc: int): int {
+    if n <= 0 {
+        return acc
+    }
+    return step_a(n - 1, acc + 2)
+}
+
+func step_a(n: int, acc: int): int {
+    if n <= 0 {
+        return acc
+    }
+    return step_b(n - 1, acc + 1)
+}
+
+func classify(x: int): int {
+    if unlikely(x < 0) {
+        return slow_path(x)
+    }
+    if likely(x >= 0) {
+        return step_a(x, 0)
+    }
+    return -1
+}
+
+func main(): int {
+    if classify(-5) != 95 { return 1 }
+    if classify(4) != 6 { return 2 }
+    return 0
+}
+"#;
+    let (mut amir, tc) = compile_src(source);
+    arandu_semantics::optimize_amir_checked_with_level(
+        &mut amir,
+        &tc.symbols,
+        &tc.type_info.type_interner,
+        arandu_semantics::OptLevel::O1,
+    )
+    .expect("O1 optimization failed");
+    let ir = emit_llvm_ir(&amir, &tc.symbols, &*tc.type_info).expect("LLVM emission failed");
+    assert!(
+        ir.contains("@llvm.expect.i1"),
+        "expected @llvm.expect.i1 in LLVM IR:\n{ir}"
+    );
+    assert!(
+        ir.contains("cold nounwind"),
+        "expected cold function attribute on @Cold function in LLVM IR:\n{ir}"
+    );
+    assert!(
+        ir.contains("tail call "),
+        "expected tail call on mutual tail-recursive calls in LLVM IR:\n{ir}"
+    );
+    assert_no_orphan_declarations(&ir);
+    verify(&ir);
+    if let Some(code) = run(&ir) {
+        assert_eq!(code, 0, "lli result:\n{ir}");
+    }
+    let module = CraneliftBackend::try_new()
+        .expect("Cranelift backend")
+        .compile(&amir, &tc.symbols, &*tc.type_info)
+        .expect("Cranelift compile");
+    let main = unsafe { module.get_fn::<unsafe fn() -> i32>("main") }.expect("main export");
+    assert_eq!(unsafe { main() }, 0);
+}
+
+#[test]
+fn simd_bitmask_and_load_unaligned_ir_and_execute() {
+    let source = r#"
+module std.core.simd
+
+extern "arandu-intrinsic" {
+    func addressOfShared<T>(value: ref T): ptr[T]
+    func sliceFromRaw<Owner, T>(owner: ref Owner, data: ptr[T], len: usize): []T
+    func simdU8x16Bitmask(vector: U8x16): u32
+    func simdU8x16LoadUnaligned(source: []u8): U8x16
+}
+
+public struct U8x16 {}
+
+func main(): int {
+    let buf: [17]u8 = [
+        0 as u8,
+        0x80 as u8, 0x01 as u8, 0xFF as u8, 0x7F as u8,
+        0x00 as u8, 0x85 as u8, 0x10 as u8, 0x90 as u8,
+        0x00 as u8, 0x00 as u8, 0x00 as u8, 0x00 as u8,
+        0x00 as u8, 0x00 as u8, 0x00 as u8, 0x81 as u8,
+    ]
+    let unaligned = unsafe {
+        let p = addressOfShared<u8>(ref buf[1])
+        sliceFromRaw<[17]u8, u8>(ref buf, p, 16 as usize)
+    }
+    let loaded = unsafe { simdU8x16LoadUnaligned(unaligned) }
+    let mask = simdU8x16Bitmask(loaded)
+    if mask != (32933 as u32) { return 1 }
+    return 0
+}
+"#;
+    let (mut amir, tc) = compile_src(source);
+    arandu_semantics::optimize_amir_checked_with_level(
+        &mut amir,
+        &tc.symbols,
+        &tc.type_info.type_interner,
+        arandu_semantics::OptLevel::O1,
+    )
+    .expect("O1 optimization failed");
+    let ir = emit_llvm_ir(&amir, &tc.symbols, &*tc.type_info).expect("LLVM emission failed");
+    assert!(
+        ir.contains("load <16 x i8>, ptr ") && ir.contains(", align 1"),
+        "expected unaligned align 1 vector load in LLVM IR:\n{ir}"
+    );
+    assert!(
+        !ir.contains("load <16 x i8>, ptr ") || !ir.contains(", align 16"),
+        "must not emit align 16 on unaligned vector load:\n{ir}"
+    );
+    assert!(
+        ir.contains("icmp slt <16 x i8>") && ir.contains("bitcast <16 x i1>"),
+        "expected vector bitmask lowering in LLVM IR:\n{ir}"
+    );
+    assert_no_orphan_declarations(&ir);
+    verify(&ir);
+    if let Some(code) = run(&ir) {
+        assert_eq!(code, 0, "lli result:\n{ir}");
+    }
+    let module = CraneliftBackend::try_new()
+        .expect("Cranelift backend")
+        .compile(&amir, &tc.symbols, &*tc.type_info)
+        .expect("Cranelift compile");
+    let main = unsafe { module.get_fn::<unsafe fn() -> i32>("main") }.expect("main export");
+    assert_eq!(unsafe { main() }, 0);
 }

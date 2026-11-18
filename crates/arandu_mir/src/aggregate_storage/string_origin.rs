@@ -98,12 +98,15 @@ pub(super) fn independent_string_result(function: &AmirFunc, interner: &TypeInte
                                 )
                         }
                         AmirRvalue::VectorSelect { .. }
+                        | AmirRvalue::Select { .. }
                         | AmirRvalue::VectorCompare { .. }
                         | AmirRvalue::VectorOp { .. }
                         | AmirRvalue::VectorSplat { .. }
                         | AmirRvalue::VectorShuffle { .. }
                         | AmirRvalue::VectorExtractLane { .. }
                         | AmirRvalue::VectorInsertLane { .. }
+                        | AmirRvalue::VectorBitmask { .. }
+                        | AmirRvalue::VectorLoadUnaligned { .. }
                         | AmirRvalue::Binary { .. }
                         | AmirRvalue::Unary { .. }
                         | AmirRvalue::FieldAccess { .. }

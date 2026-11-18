@@ -225,6 +225,11 @@ impl Context<'_> {
             Some(AmirRvalue::Binary { op, left, right }) => {
                 is_pure_binary(*op) && recurse(left) && recurse(right)
             }
+            Some(AmirRvalue::Select {
+                condition,
+                if_true,
+                if_false,
+            }) => recurse(condition) && recurse(if_true) && recurse(if_false),
             _ => false,
         }
     }
@@ -266,7 +271,7 @@ impl Context<'_> {
                 ..
             } => self.removable_callees.contains(symbol),
             AmirStmt::Assign { rhs, .. } => match rhs {
-                AmirRvalue::Use(_) | AmirRvalue::Len(_) => true,
+                AmirRvalue::Use(_) | AmirRvalue::Len(_) | AmirRvalue::Select { .. } => true,
                 AmirRvalue::Binary { op, .. } => is_pure_binary(*op),
                 AmirRvalue::Unary { op, .. } => {
                     matches!(op, UnaryOp::Not | UnaryOp::BitNot | UnaryOp::Neg)

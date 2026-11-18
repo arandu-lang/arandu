@@ -119,8 +119,8 @@ impl<'a> CEmitter<'a> {
         matches!(
             kind,
             arandu_middle::IntrinsicKind::Atomic(..)
-                | arandu_middle::IntrinsicKind::AtomicFence
-                | arandu_middle::IntrinsicKind::AtomicCompilerFence
+                | arandu_middle::IntrinsicKind::AtomicFence(..)
+                | arandu_middle::IntrinsicKind::AtomicCompilerFence(..)
                 | arandu_middle::IntrinsicKind::Abort
                 | arandu_middle::IntrinsicKind::PtrRead
                 | arandu_middle::IntrinsicKind::PtrWrite
@@ -131,6 +131,15 @@ impl<'a> CEmitter<'a> {
                 | arandu_middle::IntrinsicKind::LeadingZeros
                 | arandu_middle::IntrinsicKind::TrailingZeros
                 | arandu_middle::IntrinsicKind::ReverseBits
+                | arandu_middle::IntrinsicKind::RotateLeft
+                | arandu_middle::IntrinsicKind::RotateRight
+                | arandu_middle::IntrinsicKind::SwapBytes
+                | arandu_middle::IntrinsicKind::Fma
+                | arandu_middle::IntrinsicKind::SpinLoopHint
+                | arandu_middle::IntrinsicKind::Likely
+                | arandu_middle::IntrinsicKind::Unlikely
+                | arandu_middle::intrinsics::IntrinsicKind::OverflowArithmetic(..)
+                | arandu_middle::intrinsics::IntrinsicKind::SaturatingArithmetic(..)
         )
         .then_some(kind)
     }
@@ -165,7 +174,10 @@ impl<'a> CEmitter<'a> {
                 arandu_middle::IntrinsicKind::CountOnes
                 | arandu_middle::IntrinsicKind::LeadingZeros
                 | arandu_middle::IntrinsicKind::TrailingZeros
-                | arandu_middle::IntrinsicKind::ReverseBits,
+                | arandu_middle::IntrinsicKind::ReverseBits
+                | arandu_middle::IntrinsicKind::RotateLeft
+                | arandu_middle::IntrinsicKind::RotateRight
+                | arandu_middle::IntrinsicKind::SwapBytes,
             ) => {
                 if let Some(argument) = args.first()
                     && let Some(destination) = lhs
@@ -179,7 +191,32 @@ impl<'a> CEmitter<'a> {
                     };
                     let value = self.format_operand(argument, func);
                     let slot = self.temp_slots[destination.as_usize()];
-                    if kind == Some(arandu_middle::IntrinsicKind::ReverseBits) {
+                    let mask = bits - 1;
+                    if let Some(
+                        rotation @ (arandu_middle::IntrinsicKind::RotateLeft
+                        | arandu_middle::IntrinsicKind::RotateRight),
+                    ) = kind
+                    {
+                        // UB-free rotate idiom; GCC and Clang lower it to ROL/ROR.
+                        let amount = args
+                            .get(1)
+                            .map_or_else(|| "0".to_string(), |a| self.format_operand(a, func));
+                        let (toward, away) = if rotation == arandu_middle::IntrinsicKind::RotateLeft
+                        {
+                            ("<<", ">>")
+                        } else {
+                            (">>", "<<")
+                        };
+                        let _ = writeln!(
+                            self.output,
+                            "    {{ uint{bits}_t ar_value = ({value}); uint32_t ar_amount = (uint32_t)({amount}); t{slot} = (uint{bits}_t)((ar_value {toward} (ar_amount & {mask}u)) | (ar_value {away} ((0u - ar_amount) & {mask}u))); }}"
+                        );
+                    } else if kind == Some(arandu_middle::IntrinsicKind::SwapBytes) {
+                        let _ = writeln!(
+                            self.output,
+                            "    t{slot} = __builtin_bswap{bits}((uint{bits}_t)({value}));"
+                        );
+                    } else if kind == Some(arandu_middle::IntrinsicKind::ReverseBits) {
                         let _ = writeln!(
                             self.output,
                             "    {{ uint{bits}_t ar_value = ({value}); uint{bits}_t ar_reversed = 0; for (unsigned ar_bit = 0; ar_bit < {bits}; ++ar_bit) {{ ar_reversed = (ar_reversed << 1) | (ar_value & 1); ar_value >>= 1; }} t{slot} = ar_reversed; }}"
@@ -195,6 +232,131 @@ impl<'a> CEmitter<'a> {
                             self.output,
                             "    {{ uint{bits}_t ar_value = ({value}); t{slot} = ar_value == 0 ? {} : __builtin_{operation}{suffix}(ar_value); }}",
                             if operation == "popcount" { 0 } else { bits }
+                        );
+                    }
+                }
+                true
+            }
+            Some(arandu_middle::IntrinsicKind::Fma) => {
+                if args.len() == 3
+                    && let Some(destination) = lhs
+                {
+                    let is_64 = if let AmirOperand::FunctionRef(symbol) = callee {
+                        let name = &self.symbols.get(*symbol).name;
+                        name == "fma" || name.ends_with("64")
+                    } else {
+                        false
+                    };
+                    let a = self.format_operand(&args[0], func);
+                    let b = self.format_operand(&args[1], func);
+                    let c = self.format_operand(&args[2], func);
+                    let slot = self.temp_slots[destination.as_usize()];
+                    let fn_name = if is_64 {
+                        "__builtin_fma"
+                    } else {
+                        "__builtin_fmaf"
+                    };
+                    let _ = writeln!(self.output, "    t{slot} = {fn_name}({a}, {b}, {c});");
+                }
+                true
+            }
+            Some(arandu_middle::IntrinsicKind::SpinLoopHint) => {
+                let _ = writeln!(
+                    self.output,
+                    "    #if defined(__x86_64__) || defined(_M_X64)\n    __builtin_ia32_pause();\n    #elif defined(__aarch64__)\n    __asm__ __volatile__(\"yield\");\n    #endif"
+                );
+                true
+            }
+            Some(
+                branch_kind @ (arandu_middle::IntrinsicKind::Likely
+                | arandu_middle::IntrinsicKind::Unlikely),
+            ) => {
+                if let Some(argument) = args.first()
+                    && let Some(destination) = lhs
+                {
+                    let cond = self.format_operand(argument, func);
+                    let slot = self.temp_slots[destination.as_usize()];
+                    let macro_name = if branch_kind == arandu_middle::IntrinsicKind::Likely {
+                        "AR_LIKELY"
+                    } else {
+                        "AR_UNLIKELY"
+                    };
+                    let _ = writeln!(self.output, "    t{slot} = {macro_name}({cond});");
+                }
+                true
+            }
+            Some(arandu_middle::intrinsics::IntrinsicKind::OverflowArithmetic(op, arith_int)) => {
+                use arandu_middle::intrinsics::OverflowOp;
+                if args.len() == 2
+                    && let Some(destination) = lhs
+                {
+                    let c_ty = match (arith_int.is_signed(), arith_int.bit_width()) {
+                        (true, 32) => "int32_t",
+                        (false, 32) => "uint32_t",
+                        (true, 64) => "int64_t",
+                        _ => "uint64_t",
+                    };
+                    let builtin = match op {
+                        OverflowOp::Add => "__builtin_add_overflow",
+                        OverflowOp::Sub => "__builtin_sub_overflow",
+                        OverflowOp::Mul => "__builtin_mul_overflow",
+                    };
+                    let a = self.format_operand(&args[0], func);
+                    let b = self.format_operand(&args[1], func);
+                    let lhs_ty = self.temp_ty(func, *destination);
+                    let lhs_c_ty = self.format_type(&lhs_ty);
+                    let layout = self.checked_layout(&lhs_ty);
+                    let off0 = layout.field_offsets.first().copied().unwrap_or(0);
+                    let off1 = layout.field_offsets.get(1).copied().unwrap_or(0);
+                    let slot = self.temp_slots[destination.as_usize()];
+                    let _ = writeln!(
+                        self.output,
+                        "    {{ {c_ty} ar_a = ({c_ty})({a}); {c_ty} ar_b = ({c_ty})({b}); {c_ty} ar_val = 0; bool ar_ov = {builtin}(ar_a, ar_b, &ar_val); {lhs_c_ty} ar_tup = {{0}}; memcpy(ar_tup.memory + {off0}, &ar_val, sizeof(ar_val)); memcpy(ar_tup.memory + {off1}, &ar_ov, sizeof(ar_ov)); t{slot} = ar_tup; }}"
+                    );
+                }
+                true
+            }
+            Some(arandu_middle::intrinsics::IntrinsicKind::SaturatingArithmetic(op, arith_int)) => {
+                use arandu_middle::intrinsics::SaturatingOp;
+                if args.len() == 2
+                    && let Some(destination) = lhs
+                {
+                    let bits = arith_int.bit_width();
+                    let signed = arith_int.is_signed();
+                    let c_ty = match (signed, bits) {
+                        (true, 32) => "int32_t",
+                        (false, 32) => "uint32_t",
+                        (true, 64) => "int64_t",
+                        _ => "uint64_t",
+                    };
+                    let builtin = match op {
+                        SaturatingOp::Add => "__builtin_add_overflow",
+                        SaturatingOp::Sub => "__builtin_sub_overflow",
+                    };
+                    let a = self.format_operand(&args[0], func);
+                    let b = self.format_operand(&args[1], func);
+                    let slot = self.temp_slots[destination.as_usize()];
+                    if signed {
+                        let min_lit = if bits == 64 { "INT64_MIN" } else { "INT32_MIN" };
+                        let max_lit = if bits == 64 { "INT64_MAX" } else { "INT32_MAX" };
+                        let _ = writeln!(
+                            self.output,
+                            "    {{ {c_ty} ar_a = ({c_ty})({a}); {c_ty} ar_b = ({c_ty})({b}); {c_ty} ar_val = 0; t{slot} = {builtin}(ar_a, ar_b, &ar_val) ? (ar_a < 0 ? {min_lit} : {max_lit}) : ar_val; }}"
+                        );
+                    } else {
+                        let sat_expr = match op {
+                            SaturatingOp::Add => {
+                                if bits == 64 {
+                                    "UINT64_MAX"
+                                } else {
+                                    "UINT32_MAX"
+                                }
+                            }
+                            SaturatingOp::Sub => "0",
+                        };
+                        let _ = writeln!(
+                            self.output,
+                            "    {{ {c_ty} ar_a = ({c_ty})({a}); {c_ty} ar_b = ({c_ty})({b}); {c_ty} ar_val = 0; t{slot} = {builtin}(ar_a, ar_b, &ar_val) ? ({c_ty}){sat_expr} : ar_val; }}"
                         );
                     }
                 }

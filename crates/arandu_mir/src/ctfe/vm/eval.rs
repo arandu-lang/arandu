@@ -2,11 +2,11 @@ use std::sync::Arc;
 
 use super::{
     Admission, Budget, CtfeFunction, EvalError, EvalErrorKind, Frame, FunctionProvider, MAX_TRACE,
-    Meter, ValueType, slice_range,
+    Meter, ValueType, slice_range, types::AggregateKind,
 };
 use arandu_middle::amir::*;
-use arandu_middle::ctfe::{ConstInt, ConstValue};
-use arandu_middle::intrinsics::IntrinsicKind;
+use arandu_middle::ctfe::{ConstAggregate, ConstInt, ConstValue, IntegerType};
+use arandu_middle::intrinsics::{ArithmeticInt, IntrinsicKind, OverflowOp, SaturatingOp};
 
 enum Action {
     Continue,
@@ -37,6 +37,7 @@ pub(super) fn evaluate_root<P: FunctionProvider, C: FnMut() -> bool>(
             .map_err(|_| location(EvalErrorKind::FrameLimit))?,
         aggregate_nodes: 0,
         aggregate_bytes: 0,
+        arena: Vec::new(),
         cancelled: &mut cancelled,
     };
     meter.step().map_err(location)?;
@@ -92,7 +93,7 @@ pub(super) fn evaluate_root<P: FunctionProvider, C: FnMut() -> bool>(
                             frame.assign(*lhs, value)?;
                         }
                         AmirStmt::Store { lhs, rhs } => {
-                            let (ty, _) = frame.place_path(lhs, &mut meter)?;
+                            let (ty, _, _) = frame.place_path(lhs, &mut meter)?;
                             let value = frame.operand(*rhs, Some(ty), &mut meter)?;
                             frame.store_place(lhs, value, &mut meter)?;
                         }
@@ -113,13 +114,181 @@ pub(super) fn evaluate_root<P: FunctionProvider, C: FnMut() -> bool>(
                                 if intrinsic == IntrinsicKind::Abort {
                                     return Err(EvalErrorKind::UnsupportedOperation);
                                 }
-                                if args.len() != 1 {
+                                if intrinsic == IntrinsicKind::SpinLoopHint {
+                                    meter.step()?;
+                                    return Ok(Action::Continue);
+                                }
+                                if matches!(
+                                    intrinsic,
+                                    IntrinsicKind::Likely | IntrinsicKind::Unlikely
+                                ) {
+                                    if args.len() != 1 {
+                                        return Err(EvalErrorKind::InvalidIr);
+                                    }
+                                    meter.step()?;
+                                    let cond = frame.operand(
+                                        args[0],
+                                        Some(ValueType::Bool),
+                                        &mut meter,
+                                    )?;
+                                    if !matches!(cond, ConstValue::Bool(_)) {
+                                        return Err(EvalErrorKind::TypeMismatch);
+                                    }
+                                    if let Some(lhs) = lhs {
+                                        frame.assign(*lhs, cond)?;
+                                    }
+                                    return Ok(Action::Continue);
+                                }
+                                if intrinsic == IntrinsicKind::Fma {
+                                    if args.len() != 3 {
+                                        return Err(EvalErrorKind::InvalidIr);
+                                    }
+                                    meter.step()?;
+                                    let a_val = frame.operand(args[0], None, &mut meter)?;
+                                    let b_val = frame.operand(args[1], None, &mut meter)?;
+                                    let c_val = frame.operand(args[2], None, &mut meter)?;
+                                    let (
+                                        ConstValue::Float(a),
+                                        ConstValue::Float(b),
+                                        ConstValue::Float(c),
+                                    ) = (a_val, b_val, c_val)
+                                    else {
+                                        return Err(EvalErrorKind::TypeMismatch);
+                                    };
+                                    let is_64 = a.ty().bit_width() == 64;
+                                    let res_bits = if is_64 {
+                                        let fa = f64::from_bits(a.bits());
+                                        let fb = f64::from_bits(b.bits());
+                                        let fc = f64::from_bits(c.bits());
+                                        fa.mul_add(fb, fc).to_bits()
+                                    } else {
+                                        let fa = f32::from_bits(a.bits() as u32);
+                                        let fb = f32::from_bits(b.bits() as u32);
+                                        let fc = f32::from_bits(c.bits() as u32);
+                                        u64::from(fa.mul_add(fb, fc).to_bits())
+                                    };
+                                    let result_float =
+                                        arandu_middle::ctfe::ConstFloat::new(a.ty(), res_bits)
+                                            .map_err(|_| EvalErrorKind::InvalidIr)?;
+                                    if let Some(lhs) = lhs {
+                                        frame.assign(*lhs, ConstValue::Float(result_float))?;
+                                    }
+                                    return Ok(Action::Continue);
+                                }
+                                if let IntrinsicKind::OverflowArithmetic(op, arith_int) = intrinsic
+                                {
+                                    if args.len() != 2 {
+                                        return Err(EvalErrorKind::InvalidIr);
+                                    }
+                                    meter.step()?;
+                                    let input_int_ty =
+                                        IntegerType::new(arith_int.primitive(), layout)
+                                            .map_err(EvalErrorKind::Value)?;
+                                    let hint = Some(ValueType::Integer(input_int_ty));
+                                    let ConstValue::Integer(a) =
+                                        frame.operand(args[0], hint.clone(), &mut meter)?
+                                    else {
+                                        return Err(EvalErrorKind::TypeMismatch);
+                                    };
+                                    let ConstValue::Integer(b) =
+                                        frame.operand(args[1], hint, &mut meter)?
+                                    else {
+                                        return Err(EvalErrorKind::TypeMismatch);
+                                    };
+                                    let (res, ov) =
+                                        eval_overflow_arith(op, arith_int, a.value(), b.value());
+                                    if let Some(lhs) = lhs {
+                                        let dest_ty = frame
+                                            .unit
+                                            .temp_types
+                                            .get(lhs.as_usize())
+                                            .ok_or(EvalErrorKind::InvalidIr)?
+                                            .clone();
+                                        let ValueType::Aggregate(descriptor) = dest_ty else {
+                                            return Err(EvalErrorKind::TypeMismatch);
+                                        };
+                                        if descriptor.kind != AggregateKind::Tuple
+                                            || descriptor.fields.len() != 2
+                                        {
+                                            return Err(EvalErrorKind::TypeMismatch);
+                                        }
+                                        let ValueType::Integer(dest_int_ty) = descriptor.fields[0]
+                                        else {
+                                            return Err(EvalErrorKind::TypeMismatch);
+                                        };
+                                        meter.aggregate(&descriptor.shape, 2)?;
+                                        let val = ConstValue::Integer(
+                                            ConstInt::new(dest_int_ty, res)
+                                                .map_err(EvalErrorKind::Value)?,
+                                        );
+                                        let agg = ConstAggregate::new(
+                                            descriptor.shape.clone(),
+                                            vec![val, ConstValue::Bool(ov)],
+                                        )
+                                        .map_err(EvalErrorKind::Value)?;
+                                        frame.assign(*lhs, ConstValue::Aggregate(agg))?;
+                                    }
+                                    return Ok(Action::Continue);
+                                }
+                                if let IntrinsicKind::SaturatingArithmetic(op, arith_int) =
+                                    intrinsic
+                                {
+                                    if args.len() != 2 {
+                                        return Err(EvalErrorKind::InvalidIr);
+                                    }
+                                    meter.step()?;
+                                    let input_int_ty =
+                                        IntegerType::new(arith_int.primitive(), layout)
+                                            .map_err(EvalErrorKind::Value)?;
+                                    let hint = Some(ValueType::Integer(input_int_ty));
+                                    let ConstValue::Integer(a) =
+                                        frame.operand(args[0], hint.clone(), &mut meter)?
+                                    else {
+                                        return Err(EvalErrorKind::TypeMismatch);
+                                    };
+                                    let ConstValue::Integer(b) =
+                                        frame.operand(args[1], hint, &mut meter)?
+                                    else {
+                                        return Err(EvalErrorKind::TypeMismatch);
+                                    };
+                                    let res =
+                                        eval_saturating_arith(op, arith_int, a.value(), b.value());
+                                    if let Some(lhs) = lhs {
+                                        let dest_ty = frame
+                                            .unit
+                                            .temp_types
+                                            .get(lhs.as_usize())
+                                            .ok_or(EvalErrorKind::InvalidIr)?
+                                            .clone();
+                                        let ValueType::Integer(dest_int_ty) = dest_ty else {
+                                            return Err(EvalErrorKind::TypeMismatch);
+                                        };
+                                        let val = ConstValue::Integer(
+                                            ConstInt::new(dest_int_ty, res)
+                                                .map_err(EvalErrorKind::Value)?,
+                                        );
+                                        frame.assign(*lhs, val)?;
+                                    }
+                                    return Ok(Action::Continue);
+                                }
+                                if Some(args.len()) != intrinsic.bit_operand_count() {
                                     return Err(EvalErrorKind::InvalidIr);
                                 }
                                 meter.step()?;
                                 let arg_val = frame.operand(args[0], None, &mut meter)?;
                                 let ConstValue::Integer(input_int) = arg_val else {
                                     return Err(EvalErrorKind::TypeMismatch);
+                                };
+                                // Rotation amounts are `u32` and reduced modulo the
+                                // width by `rotate_*`, matching every backend.
+                                let amount = if args.len() == 2 {
+                                    let amount_val = frame.operand(args[1], None, &mut meter)?;
+                                    let ConstValue::Integer(amount_int) = amount_val else {
+                                        return Err(EvalErrorKind::TypeMismatch);
+                                    };
+                                    amount_int.value() as u32
+                                } else {
+                                    0
                                 };
                                 let is_64 = input_int.ty().bit_width() == 64;
                                 let res_i128 = if is_64 {
@@ -133,6 +302,13 @@ pub(super) fn evaluate_root<P: FunctionProvider, C: FnMut() -> bool>(
                                             i128::from(u.trailing_zeros())
                                         }
                                         IntrinsicKind::ReverseBits => i128::from(u.reverse_bits()),
+                                        IntrinsicKind::RotateLeft => {
+                                            i128::from(u.rotate_left(amount))
+                                        }
+                                        IntrinsicKind::RotateRight => {
+                                            i128::from(u.rotate_right(amount))
+                                        }
+                                        IntrinsicKind::SwapBytes => i128::from(u.swap_bytes()),
                                         _ => return Err(EvalErrorKind::UnsupportedOperation),
                                     }
                                 } else {
@@ -146,6 +322,13 @@ pub(super) fn evaluate_root<P: FunctionProvider, C: FnMut() -> bool>(
                                             i128::from(u.trailing_zeros())
                                         }
                                         IntrinsicKind::ReverseBits => i128::from(u.reverse_bits()),
+                                        IntrinsicKind::RotateLeft => {
+                                            i128::from(u.rotate_left(amount))
+                                        }
+                                        IntrinsicKind::RotateRight => {
+                                            i128::from(u.rotate_right(amount))
+                                        }
+                                        IntrinsicKind::SwapBytes => i128::from(u.swap_bytes()),
                                         _ => return Err(EvalErrorKind::UnsupportedOperation),
                                     }
                                 };
@@ -203,10 +386,11 @@ pub(super) fn evaluate_root<P: FunctionProvider, C: FnMut() -> bool>(
                                 });
                             }
                         }
-                        AmirStmt::Call { .. }
-                        | AmirStmt::Free(_)
-                        | AmirStmt::ArenaRewind(_)
-                        | AmirStmt::Destroy(_) => {
+                        AmirStmt::ArenaRewind(operand) => {
+                            let mark = frame.index_operand(*operand, &mut meter)?;
+                            meter.arena_rewind(mark)?;
+                        }
+                        AmirStmt::Call { .. } | AmirStmt::Free(_) | AmirStmt::Destroy(_) => {
                             return Err(EvalErrorKind::UnsupportedOperation);
                         }
                     }
@@ -327,4 +511,82 @@ pub(super) fn evaluate_root<P: FunctionProvider, C: FnMut() -> bool>(
         }
         error
     })
+}
+
+fn eval_overflow_arith(op: OverflowOp, int_ty: ArithmeticInt, a: i128, b: i128) -> (i128, bool) {
+    match int_ty {
+        ArithmeticInt::I32 => {
+            let (a, b) = (a as i32, b as i32);
+            let (res, ov) = match op {
+                OverflowOp::Add => a.overflowing_add(b),
+                OverflowOp::Sub => a.overflowing_sub(b),
+                OverflowOp::Mul => a.overflowing_mul(b),
+            };
+            (i128::from(res), ov)
+        }
+        ArithmeticInt::U32 => {
+            let (a, b) = (a as u32, b as u32);
+            let (res, ov) = match op {
+                OverflowOp::Add => a.overflowing_add(b),
+                OverflowOp::Sub => a.overflowing_sub(b),
+                OverflowOp::Mul => a.overflowing_mul(b),
+            };
+            (i128::from(res), ov)
+        }
+        ArithmeticInt::I64 => {
+            let (a, b) = (a as i64, b as i64);
+            let (res, ov) = match op {
+                OverflowOp::Add => a.overflowing_add(b),
+                OverflowOp::Sub => a.overflowing_sub(b),
+                OverflowOp::Mul => a.overflowing_mul(b),
+            };
+            (i128::from(res), ov)
+        }
+        ArithmeticInt::U64 => {
+            let (a, b) = (a as u64, b as u64);
+            let (res, ov) = match op {
+                OverflowOp::Add => a.overflowing_add(b),
+                OverflowOp::Sub => a.overflowing_sub(b),
+                OverflowOp::Mul => a.overflowing_mul(b),
+            };
+            (i128::from(res), ov)
+        }
+    }
+}
+
+fn eval_saturating_arith(op: SaturatingOp, int_ty: ArithmeticInt, a: i128, b: i128) -> i128 {
+    match int_ty {
+        ArithmeticInt::I32 => {
+            let (a, b) = (a as i32, b as i32);
+            let res = match op {
+                SaturatingOp::Add => a.saturating_add(b),
+                SaturatingOp::Sub => a.saturating_sub(b),
+            };
+            i128::from(res)
+        }
+        ArithmeticInt::U32 => {
+            let (a, b) = (a as u32, b as u32);
+            let res = match op {
+                SaturatingOp::Add => a.saturating_add(b),
+                SaturatingOp::Sub => a.saturating_sub(b),
+            };
+            i128::from(res)
+        }
+        ArithmeticInt::I64 => {
+            let (a, b) = (a as i64, b as i64);
+            let res = match op {
+                SaturatingOp::Add => a.saturating_add(b),
+                SaturatingOp::Sub => a.saturating_sub(b),
+            };
+            i128::from(res)
+        }
+        ArithmeticInt::U64 => {
+            let (a, b) = (a as u64, b as u64);
+            let res = match op {
+                SaturatingOp::Add => a.saturating_add(b),
+                SaturatingOp::Sub => a.saturating_sub(b),
+            };
+            i128::from(res)
+        }
+    }
 }

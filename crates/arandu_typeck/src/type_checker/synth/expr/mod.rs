@@ -1,5 +1,5 @@
 mod binary;
-mod call;
+pub(crate) mod call;
 mod control_flow;
 mod hole;
 mod literal;

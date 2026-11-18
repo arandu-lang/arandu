@@ -124,8 +124,9 @@ pub const AMBIENT_CLOSURE_MODULE: (&str, &str) = ("stdlib/alloc/closure.aru", "s
 pub const AMBIENT_STRING_MODULE: (&str, &str) = ("stdlib/alloc/string.aru", "std.alloc.string");
 
 /// The module defining `Range<T>` and `RangeInclusive<T>`, the types of
-/// `a..b` and `a..=b` as values. It imports nothing, so every other module
-/// links it; only the compiler reaches it, through the lang items.
+/// `a..b` and `a..=b` as values, linked into every other module; only the
+/// compiler reaches it, through the lang items. It imports `std.core.cmp`
+/// for the `Ord` bound of `contains`, a cycle import resolution converges.
 pub const AMBIENT_RANGE_MODULE: (&str, &str) = ("stdlib/core/range.aru", "std.core.range");
 
 /// The modules linked into `current` without an import, in a fixed order.
@@ -142,7 +143,10 @@ pub fn ambient_modules(
         .filter(move |_| !core)
         .chain(std::iter::once(AMBIENT_CLOSURE_MODULE).filter(move |_| !standard))
         .chain(std::iter::once(AMBIENT_STRING_MODULE).filter(move |_| !standard))
-        .chain(std::iter::once(AMBIENT_RANGE_MODULE))
+        // `std.core.range` imports `std.core.cmp.Ord`; keep `cmp` free of an ambient cycle.
+        .chain(
+            std::iter::once(AMBIENT_RANGE_MODULE).filter(move |_| current != Some("std.core.cmp")),
+        )
         .filter(move |&(_, name)| current != Some(name))
 }
 

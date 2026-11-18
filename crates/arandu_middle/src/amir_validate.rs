@@ -253,8 +253,68 @@ pub fn validate_amir_func(
 
     validate_gen_operations(func, interner, &mut diags);
     validate_vector_operations(func, interner, span, &mut diags);
+    validate_scalar_selects(func, interner, span, &mut diags);
 
     diags
+}
+
+fn is_scalar_select_type(ty: &ArType) -> bool {
+    matches!(
+        ty,
+        ArType::Primitive(Primitive::Bool | Primitive::Char) | ArType::Ptr(_)
+    ) || matches!(ty, ArType::Primitive(primitive) if primitive.is_numeric())
+}
+
+fn validate_scalar_selects(
+    func: &AmirFunc,
+    interner: &TypeInterner,
+    span: crate::Span,
+    diags: &mut Vec<Diagnostic>,
+) {
+    for stmt in func.stmts.payloads.iter() {
+        let AmirStmt::Assign {
+            lhs,
+            rhs:
+                AmirRvalue::Select {
+                    condition,
+                    if_true,
+                    if_false,
+                },
+        } = stmt
+        else {
+            continue;
+        };
+        let Some(result_ty_id) = func.temps.get(lhs.as_usize()).map(|temp| temp.ty) else {
+            continue;
+        };
+        let result = interner.resolve(result_ty_id);
+        let arm_valid = |op: &AmirOperand| match operand_type(func, op, interner) {
+            Some(op_ty) => edge_types_compatible(interner, op_ty, result_ty_id),
+            None => match op {
+                AmirOperand::Constant(AmirConstant::Pool(_)) => {
+                    matches!(result, ArType::Primitive(_))
+                }
+                AmirOperand::Constant(AmirConstant::Nil) => matches!(result, ArType::Ptr(_)),
+                _ => false,
+            },
+        };
+        let cond_ok = operand_type(func, condition, interner)
+            .is_some_and(|ty| interner.resolve(ty) == ArType::Primitive(Primitive::Bool));
+        if !is_scalar_select_type(&result)
+            || !cond_ok
+            || !arm_valid(if_true)
+            || !arm_valid(if_false)
+        {
+            diags.push(Diagnostic::ice(
+                DiagCode::ICEGEN002,
+                format!(
+                    "invalid scalar select operand or result type for temp _{} (SELECT-TYPE)",
+                    lhs.as_usize()
+                ),
+                span,
+            ));
+        }
+    }
 }
 
 fn validate_gen_operations(func: &AmirFunc, interner: &TypeInterner, diags: &mut Vec<Diagnostic>) {
@@ -683,6 +743,17 @@ fn validate_vector_operations(
             } => {
                 matches!(result, ArType::Vector(shape) if *lane < shape.lanes() && operand(value) == Some(ArType::Primitive(shape.lane())))
                     && same(vector)
+            }
+            AmirRvalue::VectorBitmask { vector } => {
+                operand(vector) == Some(ArType::Vector(crate::types::VectorType::U8x16))
+                    && result == ArType::Primitive(crate::types::Primitive::U32)
+            }
+            AmirRvalue::VectorLoadUnaligned { source } => {
+                matches!(
+                    operand(source),
+                    Some(ArType::Slice(elem))
+                        if matches!(interner.resolve(elem), ArType::Primitive(crate::types::Primitive::U8))
+                ) && result == ArType::Vector(crate::types::VectorType::U8x16)
             }
             _ => continue,
         };

@@ -310,6 +310,8 @@ pub(crate) fn collect_type_shapes(checker: &mut TypeChecker<'_>, program: &Progr
                 // type. Publish it with signatures so sibling function bodies
                 // can type-check references before the constant's body shard is
                 // merged (e.g. a `uint` capacity bound used in a condition).
+                let const_key = crate::NodeKey::from(const_decl.span);
+                let symbol_opt = checker.resolved.definitions.get(&const_key).copied();
                 let declared_ty =
                     const_decl
                         .ty
@@ -319,11 +321,27 @@ pub(crate) fn collect_type_shapes(checker: &mut TypeChecker<'_>, program: &Progr
                         });
                 if let Some(ty_expr) = declared_ty {
                     let const_ty = checker.lower_type_expr(ty_expr, checker.symbols.global_scope());
-                    let const_key = crate::NodeKey::from(const_decl.span);
-                    if let Some(symbol_id) = checker.resolved.definitions.get(&const_key).copied() {
+                    if let Some(symbol_id) = symbol_opt {
                         let const_id = checker.intern(const_ty);
                         checker.record_decl_type(symbol_id, const_id);
                     }
+                } else if let Some(symbol_id) = symbol_opt
+                    && checker.symbols.get(symbol_id).kind == crate::SymbolKind::StaticMut
+                {
+                    let diag_len = checker.diagnostics.len();
+                    let val_ty = super::super::super::synth::synth_expr_expected(
+                        checker,
+                        const_decl.value,
+                        None,
+                    );
+                    if !checker.resolve(val_ty).is_error() {
+                        checker.record_decl_type(symbol_id, val_ty);
+                        if let Some(var_id) = checker.literal_table.var_for_expr(const_decl.value) {
+                            checker.literal_table.bind_symbol(symbol_id, var_id);
+                        }
+                    }
+                    checker.finalize_literal_vars();
+                    checker.diagnostics.truncate(diag_len);
                 }
             }
             TopLevelDecl::TypeAlias(alias_decl) => {

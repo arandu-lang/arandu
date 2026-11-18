@@ -131,6 +131,10 @@ pub const STDLIB_MODULES: &[(&str, &str)] = &[
         include_str!("../../../../stdlib/core/pointer.aru"),
     ),
     (
+        "stdlib/core/range.aru",
+        include_str!("../../../../stdlib/core/range.aru"),
+    ),
+    (
         "stdlib/core/prelude.aru",
         include_str!("../../../../stdlib/core/prelude.aru"),
     ),

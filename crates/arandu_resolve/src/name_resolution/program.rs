@@ -344,6 +344,8 @@ impl<'a> Resolver<'a> {
             ("u32", arandu_middle::symbol_table::LangItem::U32),
             ("u64", arandu_middle::symbol_table::LangItem::U64),
             ("usize", arandu_middle::symbol_table::LangItem::Usize),
+            ("i32", arandu_middle::symbol_table::LangItem::I32),
+            ("i64", arandu_middle::symbol_table::LangItem::I64),
         ] {
             let symbol = self
                 .symbols

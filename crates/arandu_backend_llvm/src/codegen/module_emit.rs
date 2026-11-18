@@ -175,7 +175,10 @@ impl<'a> ModuleEmitter<'a> {
             .parse()
             .map_err(|_| ice(format!("bit intrinsic {name} has an invalid width")))?;
         let text = match intrinsic {
-            "llvm.ctpop" | "llvm.bitreverse" => {
+            "llvm.fshl" | "llvm.fshr" => {
+                format!("declare i{width} @{name}(i{width}, i{width}, i{width})")
+            }
+            "llvm.ctpop" | "llvm.bitreverse" | "llvm.bswap" => {
                 format!("declare i{width} @{name}(i{width})")
             }
             "llvm.ctlz" | "llvm.cttz" => format!("declare i{width} @{name}(i{width}, i1)"),
@@ -194,10 +197,14 @@ impl<'a> ModuleEmitter<'a> {
         name: &str,
         args: &[ArType],
         ret: &ArType,
+        is_variadic: bool,
     ) -> Result<(), Diagnostic> {
         let mut flattened = Vec::new();
         for arg in args {
             flattened.extend(self.host_abi_param_llvm_tys(arg)?);
+        }
+        if is_variadic {
+            flattened.push("...".to_owned());
         }
         let ret = self.llvm_ty(ret)?;
         let params = flattened.join(", ");
@@ -640,7 +647,7 @@ impl<'a> ModuleEmitter<'a> {
     /// matching Cranelift and runtime helpers such as `ar_fs_read_all`.
     /// Void parameters contribute no slots. Internal Arandu→Arandu calls keep
     /// the first-class fat value ABI from [`Self::fat_ptr_llvm_ty`].
-    fn host_abi_param_llvm_tys(&self, ty: &ArType) -> Result<Vec<String>, Diagnostic> {
+    pub(super) fn host_abi_param_llvm_tys(&self, ty: &ArType) -> Result<Vec<String>, Diagnostic> {
         if self.is_void(ty) {
             return Ok(Vec::new());
         }
@@ -735,6 +742,7 @@ mod tests {
                     arandu_middle::types::ArType::Primitive(arandu_middle::types::Primitive::Str),
                 ],
                 &arandu_middle::types::ArType::Primitive(arandu_middle::types::Primitive::Str),
+                false,
             )
             .expect("ar_str_concat declaration");
         let ir = module.emit().expect("empty Windows module");

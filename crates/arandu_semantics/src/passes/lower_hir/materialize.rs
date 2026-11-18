@@ -88,7 +88,8 @@ pub fn materialize_ctfe_scalar(
         | ConstValue::Aggregate(_)
         | ConstValue::Float(_)
         | ConstValue::String(_)
-        | ConstValue::Bytes(_) => {
+        | ConstValue::Bytes(_)
+        | ConstValue::TypeDesc(_) => {
             return Err(MaterializationError::TypeMismatch);
         }
     };

@@ -14,7 +14,13 @@
 //! and `std.core.str`.
 //!
 //! The following intrinsics are **safe** (no `unsafe {}` required):
-//! - `bitCountOnes*`, `bitLeadingZeros*`, `bitTrailingZeros*`, `bitReverse*` — pure integer operations.
+//! - `bitCountOnes*`, `bitLeadingZeros*`, `bitTrailingZeros*`, `bitReverse*`,
+//!   `bitRotateLeft*`, `bitRotateRight*`, `bitSwapBytes*` — pure integer operations.
+//! - `addWithOverflow*`, `subWithOverflow*`, `mulWithOverflow*`,
+//!   `saturatingAdd*`, `saturatingSub*` — pure checked/saturating arithmetic.
+//! - `fma32`, `fma64` — pure IEEE fused multiply-add.
+//! - `spinLoopHint` — processor execution hint.
+//! - `likely`, `unlikely` — branch-prediction hints for hot/cold paths.
 //! - `sliceLen` — reads the `len` field of an already-validated fat-pointer.
 //! - `strBytes` — reinterprets a `str` fat-pointer as `[]u8`; no deref occurs.
 //! - `sizeOf` — compile-time constant; no runtime memory access.
@@ -46,11 +52,59 @@ extern "arandu-intrinsic" {
     /// Reverses every bit, including leading zeros.
     func bitReverse32(value: u32): u32
     func bitReverse64(value: u64): u64
+    /// Rotates left (ROL/ROR on x86-64, ROR on aarch64); `amount` is taken
+    /// modulo the bit width, so every amount is defined.
+    func bitRotateLeft32(value: u32, amount: u32): u32
+    func bitRotateLeft64(value: u64, amount: u32): u64
+    /// Rotates right; `amount` is taken modulo the bit width.
+    func bitRotateRight32(value: u32, amount: u32): u32
+    func bitRotateRight64(value: u64, amount: u32): u64
+    /// Reverses byte order (BSWAP on x86-64, REV on aarch64).
+    func bitSwapBytes32(value: u32): u32
+    func bitSwapBytes64(value: u64): u64
+
+    /// Processor spin-loop pause / yield hint.
+    func spinLoopHint(): void
+
+    /// Branch-prediction hints returning `cond` unchanged at runtime.
+    func likely(cond: bool): bool
+    func unlikely(cond: bool): bool
+
+    /// Fused multiply-add `(a * b) + c` with a single rounding step.
+    func fma(a: float, b: float, c: float): float
+    func fma32(a: f32, b: f32, c: f32): f32
+    func fma64(a: f64, b: f64, c: f64): f64
+
+    /// Overflow-checked and saturating integer arithmetic (SADD/UADD/SSAT/USAT).
+    func addWithOverflowI32(a: i32, b: i32): (i32, bool)
+    func addWithOverflowU32(a: u32, b: u32): (u32, bool)
+    func addWithOverflowI64(a: i64, b: i64): (i64, bool)
+    func addWithOverflowU64(a: u64, b: u64): (u64, bool)
+    func subWithOverflowI32(a: i32, b: i32): (i32, bool)
+    func subWithOverflowU32(a: u32, b: u32): (u32, bool)
+    func subWithOverflowI64(a: i64, b: i64): (i64, bool)
+    func subWithOverflowU64(a: u64, b: u64): (u64, bool)
+    func mulWithOverflowI32(a: i32, b: i32): (i32, bool)
+    func mulWithOverflowU32(a: u32, b: u32): (u32, bool)
+    func mulWithOverflowI64(a: i64, b: i64): (i64, bool)
+    func mulWithOverflowU64(a: u64, b: u64): (u64, bool)
+    func saturatingAddI32(a: i32, b: i32): i32
+    func saturatingAddU32(a: u32, b: u32): u32
+    func saturatingAddI64(a: i64, b: i64): i64
+    func saturatingAddU64(a: u64, b: u64): u64
+    func saturatingSubI32(a: i32, b: i32): i32
+    func saturatingSubU32(a: u32, b: u32): u32
+    func saturatingSubI64(a: i64, b: i64): i64
+    func saturatingSubU64(a: u64, b: u64): u64
 
     /// Unsafe scalar atomics. Storage must be live, naturally aligned and
-    /// accessed only atomically during concurrent use. Lowering uses SeqCst.
+    /// accessed only atomically during concurrent use.
     func atomicLoad8(value: ref u8): u8
+    func atomicLoadRelaxed8(value: ref u8): u8
+    func atomicLoadAcquire8(value: ref u8): u8
     func atomicStore8(value: ref u8, replacement: u8): void
+    func atomicStoreRelaxed8(value: ref u8, replacement: u8): void
+    func atomicStoreRelease8(value: ref u8, replacement: u8): void
     func atomicSwap8(value: mut ref u8, replacement: u8): u8
     func atomicFetchAdd8(value: mut ref u8, operand: u8): u8
     func atomicFetchSub8(value: mut ref u8, operand: u8): u8
@@ -58,8 +112,13 @@ extern "arandu-intrinsic" {
     func atomicFetchOr8(value: mut ref u8, operand: u8): u8
     func atomicFetchXor8(value: mut ref u8, operand: u8): u8
     func atomicCompareExchange8(value: mut ref u8, expected: u8, desired: u8): u8
+
     func atomicLoad32(value: ref u32): u32
+    func atomicLoadRelaxed32(value: ref u32): u32
+    func atomicLoadAcquire32(value: ref u32): u32
     func atomicStore32(value: ref u32, replacement: u32): void
+    func atomicStoreRelaxed32(value: ref u32, replacement: u32): void
+    func atomicStoreRelease32(value: ref u32, replacement: u32): void
     func atomicSwap32(value: mut ref u32, replacement: u32): u32
     func atomicFetchAdd32(value: mut ref u32, operand: u32): u32
     func atomicFetchSub32(value: mut ref u32, operand: u32): u32
@@ -67,8 +126,13 @@ extern "arandu-intrinsic" {
     func atomicFetchOr32(value: mut ref u32, operand: u32): u32
     func atomicFetchXor32(value: mut ref u32, operand: u32): u32
     func atomicCompareExchange32(value: mut ref u32, expected: u32, desired: u32): u32
+
     func atomicLoad64(value: ref u64): u64
+    func atomicLoadRelaxed64(value: ref u64): u64
+    func atomicLoadAcquire64(value: ref u64): u64
     func atomicStore64(value: ref u64, replacement: u64): void
+    func atomicStoreRelaxed64(value: ref u64, replacement: u64): void
+    func atomicStoreRelease64(value: ref u64, replacement: u64): void
     func atomicSwap64(value: mut ref u64, replacement: u64): u64
     func atomicFetchAdd64(value: mut ref u64, operand: u64): u64
     func atomicFetchSub64(value: mut ref u64, operand: u64): u64
@@ -76,8 +140,13 @@ extern "arandu-intrinsic" {
     func atomicFetchOr64(value: mut ref u64, operand: u64): u64
     func atomicFetchXor64(value: mut ref u64, operand: u64): u64
     func atomicCompareExchange64(value: mut ref u64, expected: u64, desired: u64): u64
+
     func atomicLoadUsize(value: ref usize): usize
+    func atomicLoadRelaxedUsize(value: ref usize): usize
+    func atomicLoadAcquireUsize(value: ref usize): usize
     func atomicStoreUsize(value: ref usize, replacement: usize): void
+    func atomicStoreRelaxedUsize(value: ref usize, replacement: usize): void
+    func atomicStoreReleaseUsize(value: ref usize, replacement: usize): void
     func atomicSwapUsize(value: mut ref usize, replacement: usize): usize
     func atomicFetchAddUsize(value: mut ref usize, operand: usize): usize
     func atomicFetchSubUsize(value: mut ref usize, operand: usize): usize
@@ -85,11 +154,20 @@ extern "arandu-intrinsic" {
     func atomicFetchOrUsize(value: mut ref usize, operand: usize): usize
     func atomicFetchXorUsize(value: mut ref usize, operand: usize): usize
     func atomicCompareExchangeUsize(value: mut ref usize, expected: usize, desired: usize): usize
+
     func atomicLoadPtr(value: ref ptr[u8]): ptr[u8]
+    func atomicLoadRelaxedPtr(value: ref ptr[u8]): ptr[u8]
+    func atomicLoadAcquirePtr(value: ref ptr[u8]): ptr[u8]
     func atomicStorePtr(value: ref ptr[u8], replacement: ptr[u8]): void
+    func atomicStoreRelaxedPtr(value: ref ptr[u8], replacement: ptr[u8]): void
+    func atomicStoreReleasePtr(value: ref ptr[u8], replacement: ptr[u8]): void
     func atomicSwapPtr(value: mut ref ptr[u8], replacement: ptr[u8]): ptr[u8]
     func atomicCompareExchangePtr(value: mut ref ptr[u8], expected: ptr[u8], desired: ptr[u8]): ptr[u8]
+
     func atomicFence(): void
+    func atomicFenceAcquire(): void
+    func atomicFenceRelease(): void
+    func atomicFenceAcqRel(): void
     func atomicCompilerFence(): void
 
     /// Unconditional fatal trap (out-of-bounds, failed assertions, etc.).

@@ -126,6 +126,8 @@ pub struct CEmitter<'a> {
     /// Private definitions of an executable program. They get a reserved
     /// `ar__` prefix and internal linkage; see [`internal_functions`].
     pub(super) defined_functions: rustc_hash::FxHashSet<arandu_middle::SymbolId>,
+    /// Optional rich type context for properties beyond struct layout (e.g. variadics, cold).
+    pub(super) type_context: Option<&'a dyn arandu_middle::type_context::CodegenTypeContext>,
 }
 
 impl<'a> CEmitter<'a> {
@@ -159,7 +161,19 @@ impl<'a> CEmitter<'a> {
             current_initializer: None,
             error: None,
             defined_functions: internal_functions(program, symbols),
+            type_context: None,
         }
+    }
+
+    /// Attaches a full [`CodegenTypeContext`] so C emission can inspect contract flags
+    /// such as variadic `extern "C"` declarations and `@Cold` annotations.
+    #[must_use]
+    pub fn with_type_context(
+        mut self,
+        type_context: &'a dyn arandu_middle::type_context::CodegenTypeContext,
+    ) -> Self {
+        self.type_context = Some(type_context);
+        self
     }
 
     /// Whether a defined function is private to this translation unit.
@@ -481,7 +495,15 @@ impl<'a> CEmitter<'a> {
                 continue;
             }
             self.ensure_type_emitted(ret);
-            for param in params {
+            let is_variadic = self
+                .type_context
+                .is_some_and(|ctx| ctx.is_variadic_function(*symbol));
+            let fixed_params = if is_variadic && !params.is_empty() {
+                &params[..params.len() - 1]
+            } else {
+                params.as_slice()
+            };
+            for param in fixed_params {
                 self.ensure_type_emitted(param);
             }
             if let Some(error) = self.error.take() {
@@ -492,7 +514,7 @@ impl<'a> CEmitter<'a> {
             let ret_str = self.format_type(ret);
             let _ = write!(&mut self.output, "{} {}(", ret_str, name);
             let mut emitted = false;
-            for param in params
+            for param in fixed_params
                 .iter()
                 .filter(|param| !matches!(param, arandu_middle::types::ArType::Void))
             {
@@ -503,7 +525,13 @@ impl<'a> CEmitter<'a> {
                 let _ = write!(&mut self.output, "{}", ty_str);
                 emitted = true;
             }
-            if !emitted {
+            if is_variadic {
+                if emitted {
+                    let _ = write!(&mut self.output, ", ...");
+                } else {
+                    let _ = write!(&mut self.output, "...");
+                }
+            } else if !emitted {
                 let _ = write!(&mut self.output, "void");
             }
             let _ = writeln!(&mut self.output, ");");

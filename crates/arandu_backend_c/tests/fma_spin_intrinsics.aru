@@ -1,0 +1,25 @@
+module std.core.fma_spin_intrinsics_test
+
+extern "arandu-intrinsic" {
+    func fma32(a: f32, b: f32, c: f32): f32
+    func fma64(a: f64, b: f64, c: f64): f64
+    func spinLoopHint(): void
+}
+
+func test_fma32(a: f32, b: f32, c: f32): f32 {
+    spinLoopHint()
+    return fma32(a, b, c)
+}
+
+func test_fma64(a: f64, b: f64, c: f64): f64 {
+    spinLoopHint()
+    return fma64(a, b, c)
+}
+
+func main(): int {
+    let r32 = test_fma32(2.5, 4.0, 1.25)
+    if r32 != 11.25 { return 1 }
+    let r64 = test_fma64(3.0, 7.0, 0.5)
+    if r64 != 21.5 { return 2 }
+    return 0
+}

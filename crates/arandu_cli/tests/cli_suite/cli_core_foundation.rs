@@ -385,9 +385,48 @@ func main(): int {
     if high.leadingZeros() != 0 { return 5 }
     if high.trailingZeros() != 63 { return 6 }
     if high.reverseBits() != (1 as u64) { return 7 }
+    let word: u32 = 305419896
+    if word.rotateLeft(36) != (591751041 as u32) { return 10 }
+    if word.rotateRight(8) != (2014458966 as u32) { return 11 }
+    if word.swapBytes() != (2018915346 as u32) { return 12 }
+    if high.rotateLeft(1) != (1 as u64) { return 13 }
+    if high.rotateRight(63) != (1 as u64) { return 14 }
+    if high.swapBytes() != (128 as u64) { return 15 }
+    if word.toBigEndian() != (2018915346 as u32) { return 16 }
+    if word.toLittleEndian() != word { return 17 }
+    if (2018915346 as u32).fromBigEndian() != word { return 18 }
+    if high.toBigEndian() != (128 as u64) { return 19 }
+    if high.toLittleEndian() != high { return 20 }
     let min: int = -2147483647 - 1
     match min.checkedAbs() { Option.Some(_) => { return 8 } Option.None => {} }
     if (-123).abs() != 123 { return 9 }
+    return 0
+}
+"#,
+    );
+    assert!(
+        output.status.success(),
+        "{:?} {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn math_fma_and_spin_loop_are_available() {
+    let output = run_source(
+        "math_fma.aru",
+        r#"module math_fma
+import std.core.math as math
+import std.core.atomic as atomic
+
+func main(): int {
+    atomic.spinLoop()
+    let a: float = 2.5
+    let r = a.mulAdd(4.0, 1.25)
+    if r != 11.25 { return 1 }
+    let r_direct = math.mulAdd(3.0, 7.0, 0.5)
+    if r_direct != 21.5 { return 2 }
     return 0
 }
 "#,

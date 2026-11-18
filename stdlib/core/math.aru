@@ -33,6 +33,8 @@
 //! - `std.core.decimal` — fixed-point decimal arithmetic for monetary computation
 module std.core.math
 
+import std.core.intrinsics as intrinsics
+
 // ── Mathematical Constants ──────────────────────────────────────────────────
 
 /// Archimedes' constant (π), the ratio of a circle's circumference to its diameter.
@@ -726,4 +728,14 @@ public func float.acos(self: float): float {
 /// Cube root.
 public func float.cbrt(self: float): float {
     return cbrt(self)
+}
+
+/// Fused multiply-add: `(a * b) + c` computed as a single operation with a single rounding step.
+public func mulAdd(a: float, b: float, c: float): float {
+    unsafe { return intrinsics.fma(a, b, c) }
+}
+
+/// Fused multiply-add: `(self * b) + c` with a single rounding step.
+public func float.mulAdd(self: float, b: float, c: float): float {
+    return mulAdd(self, b, c)
 }

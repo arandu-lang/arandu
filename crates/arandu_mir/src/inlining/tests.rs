@@ -1170,3 +1170,96 @@ fn test_leaf_inlining_and_sccp_folding() {
         "Expected caller to fold add_ten(5) directly into 15"
     );
 }
+
+#[test]
+fn cold_callee_is_not_inlined() {
+    use rustc_hash::FxHashSet;
+
+    let interner = TypeInterner::new();
+    let int_ty = interner.intern(ArType::Primitive(Primitive::Int));
+    let pool = AmirLiteralPool::default();
+
+    let callee_sym = SymbolId::new(0, 10);
+    let callee_temps = vec![
+        AmirTemp {
+            id: TempId(0),
+            ty: int_ty,
+            is_copy: true,
+            is_nullable: false,
+            span: crate::Span::new(0, 0, 0),
+        },
+        AmirTemp {
+            id: TempId(1),
+            ty: int_ty,
+            is_copy: true,
+            is_nullable: false,
+            span: crate::Span::new(0, 0, 0),
+        },
+    ];
+    let mut callee = make_func(
+        10,
+        vec![(
+            vec![AmirStmt::Assign {
+                lhs: TempId(0),
+                rhs: AmirRvalue::Use(AmirOperand::Copy(TempId(1))),
+            }],
+            AmirTerminator::Return,
+        )],
+        callee_temps,
+        vec![TempId(1)],
+    );
+    callee.symbol = callee_sym;
+
+    let caller_sym = SymbolId::new(0, 20);
+    let caller_temps = vec![
+        AmirTemp {
+            id: TempId(0),
+            ty: int_ty,
+            is_copy: true,
+            is_nullable: false,
+            span: crate::Span::new(0, 0, 0),
+        },
+        AmirTemp {
+            id: TempId(1),
+            ty: int_ty,
+            is_copy: true,
+            is_nullable: false,
+            span: crate::Span::new(0, 0, 0),
+        },
+    ];
+    let mut caller = make_func(
+        20,
+        vec![(
+            vec![AmirStmt::Call {
+                lhs: Some(TempId(0)),
+                callee: AmirOperand::FunctionRef(callee_sym),
+                args: smallvec::smallvec![AmirOperand::Copy(TempId(1))],
+                return_borrow: None,
+            }],
+            AmirTerminator::Return,
+        )],
+        caller_temps,
+        vec![TempId(1)],
+    );
+    caller.symbol = caller_sym;
+
+    let mut program = AmirProgram {
+        funcs: vec![caller, callee],
+        literal_pool: pool,
+        extern_funcs: rustc_hash::FxHashMap::default(),
+        debug_bindings: Vec::new(),
+        debug_blocks: Vec::new(),
+        statics: Vec::new(),
+    };
+    let mut cold = FxHashSet::default();
+    cold.insert(callee_sym);
+    let inlined = inline_leaf_functions_with_cold(&mut program, &cold);
+    assert_eq!(inlined, 0, "@Cold callees must not be inlined");
+    assert!(
+        program.funcs[0].blocks[0]
+            .statements
+            .iter_ids::<InstrId>()
+            .any(|id| matches!(program.funcs[0].try_stmt(id), Some(AmirStmt::Call { .. }))),
+        "call to @Cold callee must remain present"
+    );
+}

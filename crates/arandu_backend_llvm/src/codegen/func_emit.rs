@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 
 use arandu_middle::Diagnostic;
-use arandu_middle::amir::{AmirFunc, AmirStmt, BlockId, TempId, reverse_post_order};
+use arandu_middle::amir::{
+    AmirBasicBlock, AmirFunc, AmirOperand, AmirRvalue, AmirStmt, AmirTerminator, BlockId, TempId,
+    reverse_post_order,
+};
 use arandu_middle::types::ArType;
 
 use super::export::lanes_ty;
@@ -36,6 +39,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
             terminator_labels: HashMap::new(),
             edge_args: HashMap::new(),
             export_return: None,
+            emit_as_tail_call: false,
         };
         for temp in &func.params {
             this.define(*temp, "function parameter")?;
@@ -225,8 +229,15 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
         let linkage = self
             .module
             .definition_linkage(self.func.symbol, &function_name);
+        let cold_attr = if self.module.info.is_cold_function(self.func.symbol)
+            || self.module.symbols.is_cold(self.func.symbol)
+        {
+            "cold "
+        } else {
+            ""
+        };
         self.writer.line(format!(
-            "define {linkage}{return_text} @{}({}) nounwind {{",
+            "define {linkage}{return_text} @{}({}) {cold_attr}nounwind {{",
             quote_name(&function_name),
             params.join(", ")
         ));
@@ -309,8 +320,11 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
             let mut body = IrWriter::default();
             std::mem::swap(&mut self.writer, &mut body);
             let statements = self.func.block_stmts(block.id).cloned().collect::<Vec<_>>();
-            for statement in &statements {
-                self.emit_statement(statement)?;
+            for (stmt_idx, statement) in statements.iter().enumerate() {
+                self.emit_as_tail_call = self.can_emit_tail_call(block, &statements, stmt_idx);
+                let res = self.emit_statement(statement);
+                self.emit_as_tail_call = false;
+                res?;
             }
             let terminator = block.terminator.clone();
             self.terminator_labels
@@ -343,5 +357,98 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
     pub(in crate::codegen) fn emit_entry_alloca(&mut self, slot: &str, ty: &str, align: u64) {
         self.entry_allocas
             .push(format!("{slot} = alloca {ty}, align {align}"));
+    }
+
+    fn is_scalar_non_str(ty: &arandu_middle::types::ArType) -> bool {
+        matches!(
+            ty,
+            arandu_middle::types::ArType::Primitive(p)
+                if !matches!(p, arandu_middle::types::Primitive::Str)
+        )
+    }
+
+    fn function_has_stack_escapes(&self) -> bool {
+        if self.func.locals.iter().any(|local| local.is_memory)
+            || self.module.info.is_variadic_function(self.func.symbol)
+        {
+            return true;
+        }
+        if self.temp_slots.iter().enumerate().any(|(idx, slot)| {
+            slot.is_some()
+                && !Self::is_scalar_non_str(&self.module.interner.resolve(self.func.temps[idx].ty))
+        }) {
+            return true;
+        }
+        self.func.stmts.payloads.iter().any(|stmt| {
+            matches!(
+                stmt,
+                AmirStmt::Destroy(_) | AmirStmt::Free(_) | AmirStmt::ArenaRewind(_)
+            ) || matches!(
+                stmt,
+                AmirStmt::Assign {
+                    rhs: AmirRvalue::Borrow(_)
+                        | AmirRvalue::BorrowMut(_)
+                        | AmirRvalue::RelativeBorrow { .. },
+                    ..
+                }
+            )
+        })
+    }
+
+    fn can_emit_tail_call(
+        &self,
+        block: &AmirBasicBlock,
+        statements: &[AmirStmt],
+        idx: usize,
+    ) -> bool {
+        if !matches!(block.terminator, AmirTerminator::Return) || self.function_has_stack_escapes()
+        {
+            return false;
+        }
+        let AmirStmt::Call {
+            lhs,
+            callee: AmirOperand::FunctionRef(callee),
+            args,
+            ..
+        } = &statements[idx]
+        else {
+            return false;
+        };
+        if !args
+            .iter()
+            .all(|arg| Self::is_scalar_non_str(&self.module.operand_type(arg, self.func)))
+        {
+            return false;
+        }
+        if self.module.intrinsic_kind(*callee).is_some()
+            || self.module.info.is_variadic_function(*callee)
+            || !self.module.is_internal(*callee)
+        {
+            return false;
+        }
+        let trailing: Vec<&AmirStmt> = statements[idx + 1..]
+            .iter()
+            .filter(|stmt| !matches!(stmt, AmirStmt::Nop | AmirStmt::StorageDead(_)))
+            .collect();
+        let ret_ty = self.module.interner.resolve(self.func.return_type);
+        match (lhs, trailing.as_slice()) {
+            (None, []) => self.module.is_void(&ret_ty),
+            (Some(dest), []) => *dest == TempId::from_usize(0),
+            (
+                Some(dest),
+                [
+                    AmirStmt::Assign {
+                        lhs: ret_lhs,
+                        rhs: AmirRvalue::Use(AmirOperand::Copy(src)),
+                    },
+                ],
+            ) => {
+                *ret_lhs == TempId::from_usize(0)
+                    && src == dest
+                    && self.module.llvm_ty(&self.temp_type(*ret_lhs)).ok()
+                        == self.module.llvm_ty(&self.temp_type(*src)).ok()
+            }
+            _ => false,
+        }
     }
 }

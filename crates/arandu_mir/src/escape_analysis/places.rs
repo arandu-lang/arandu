@@ -17,13 +17,13 @@ pub(super) fn borrows_through_external_storage(
             (projections.first(), interner.try_resolve(local.ty)),
             (
                 Some(crate::amir::AmirProjection::Deref),
-                Some(ArType::Ref(_) | ArType::RefMut(_))
+                Some(ArType::Ref(_) | ArType::RefMut(_) | ArType::Ptr(_) | ArType::Nullable(_))
             ) | (
                 Some(
                     crate::amir::AmirProjection::Index(_)
                         | crate::amir::AmirProjection::IndexConstant(_)
                 ),
-                Some(ArType::Slice(_) | ArType::MutSlice(_))
+                Some(ArType::Slice(_) | ArType::MutSlice(_) | ArType::Ptr(_) | ArType::Nullable(_))
             )
         )
     })

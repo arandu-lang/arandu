@@ -527,6 +527,22 @@ fn hash_typing(
         hash_symbol_id(&mut h, symbol);
     }
 
+    let mut cold_functions: Vec<_> = info.cold_functions.iter().copied().collect();
+    cold_functions.sort_by_key(|symbol| (symbol.file_id, symbol.local_id.0));
+    h.update(b"ColdFunctions/v1");
+    h.update(&u64_le(cold_functions.len() as u64));
+    for symbol in cold_functions {
+        hash_symbol_id(&mut h, symbol);
+    }
+
+    let mut variadic_functions: Vec<_> = info.variadic_functions.iter().copied().collect();
+    variadic_functions.sort_by_key(|symbol| (symbol.file_id, symbol.local_id.0));
+    h.update(b"VariadicFunctions/v1");
+    h.update(&u64_le(variadic_functions.len() as u64));
+    for symbol in variadic_functions {
+        hash_symbol_id(&mut h, symbol);
+    }
+
     let mut interior_mutable: Vec<_> = info.interior_mutable_types.iter().copied().collect();
     interior_mutable.sort_by_key(|symbol| (symbol.file_id, symbol.local_id.0));
     h.update(&u64_le(interior_mutable.len() as u64));

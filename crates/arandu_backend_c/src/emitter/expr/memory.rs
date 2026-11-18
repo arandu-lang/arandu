@@ -133,7 +133,7 @@ impl<'a> CEmitter<'a> {
         );
     }
 
-    pub(super) fn emit_slice_data(
+    pub(in crate::emitter) fn emit_slice_data(
         &mut self,
         slice: &AmirOperand,
         func: &AmirFunc,

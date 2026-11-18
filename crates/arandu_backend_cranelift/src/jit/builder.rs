@@ -261,6 +261,52 @@ pub(crate) fn create_jit_builder_with_io_and_process_args(
         "ar_process_exit",
         crate::os_runtime::ar_process_exit as *const u8,
     );
+    // C stdio/varargs compatibility shims (for c2arandu / libc FFI)
+    builder.symbol("ar_rt_c_stdin", crate::c_compat::ar_rt_c_stdin as *const u8);
+    builder.symbol(
+        "ar_rt_c_stdout",
+        crate::c_compat::ar_rt_c_stdout as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_c_stderr",
+        crate::c_compat::ar_rt_c_stderr as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_snprintf_0",
+        crate::c_compat::ar_rt_snprintf_0 as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_snprintf_i32",
+        crate::c_compat::ar_rt_snprintf_i32 as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_snprintf_i64",
+        crate::c_compat::ar_rt_snprintf_i64 as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_snprintf_f64",
+        crate::c_compat::ar_rt_snprintf_f64 as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_snprintf_ptr",
+        crate::c_compat::ar_rt_snprintf_ptr as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_fprintf_0",
+        crate::c_compat::ar_rt_fprintf_0 as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_fprintf_i64",
+        crate::c_compat::ar_rt_fprintf_i64 as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_fprintf_f64",
+        crate::c_compat::ar_rt_fprintf_f64 as *const u8,
+    );
+    builder.symbol(
+        "ar_rt_fprintf_ptr",
+        crate::c_compat::ar_rt_fprintf_ptr as *const u8,
+    );
     // Windows abort. Unix keeps the inline trap and must not look this up.
     #[cfg(windows)]
     builder.symbol("ar_rt_trap", crate::os_runtime::ar_rt_trap as *const u8);
@@ -615,7 +661,19 @@ pub(crate) fn create_jit_builder_with_io_and_process_args(
         crate::socket_runtime::ar_net_dns_resolve as *const u8,
     );
 
+    // libcall math fallback symbols
+    builder.symbol("fma", cranelift_fma as *const u8);
+    builder.symbol("fmaf", cranelift_fmaf as *const u8);
+
     Ok(builder)
+}
+
+extern "C" fn cranelift_fma(a: f64, b: f64, c: f64) -> f64 {
+    a.mul_add(b, c)
+}
+
+extern "C" fn cranelift_fmaf(a: f32, b: f32, c: f32) -> f32 {
+    a.mul_add(b, c)
 }
 
 pub(crate) fn register_block_coverage_symbol(builder: &mut JITBuilder) {

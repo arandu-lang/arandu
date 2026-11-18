@@ -74,10 +74,13 @@ pub fn for_each_function_context_mut(
                 | AmirRvalue::VectorOp { .. }
                 | AmirRvalue::VectorCompare { .. }
                 | AmirRvalue::VectorSelect { .. }
+                | AmirRvalue::Select { .. }
                 | AmirRvalue::VectorSplat { .. }
                 | AmirRvalue::VectorShuffle { .. }
                 | AmirRvalue::VectorExtractLane { .. }
                 | AmirRvalue::VectorInsertLane { .. }
+                | AmirRvalue::VectorBitmask { .. }
+                | AmirRvalue::VectorLoadUnaligned { .. }
                 | AmirRvalue::Binary { .. }
                 | AmirRvalue::Unary { .. }
                 | AmirRvalue::FieldAccess { .. }
@@ -199,6 +202,8 @@ pub fn for_each_rvalue_operand_mut(value: &mut AmirRvalue, mut f: impl FnMut(&mu
     match value {
         AmirRvalue::VectorSplat { value: op }
         | AmirRvalue::VectorExtractLane { vector: op, .. }
+        | AmirRvalue::VectorBitmask { vector: op }
+        | AmirRvalue::VectorLoadUnaligned { source: op }
         | AmirRvalue::Use(op)
         | AmirRvalue::Unary { operand: op, .. }
         | AmirRvalue::Len(op)
@@ -243,6 +248,15 @@ pub fn for_each_rvalue_operand_mut(value: &mut AmirRvalue, mut f: impl FnMut(&mu
             if_false,
         } => {
             f(mask);
+            f(if_true);
+            f(if_false);
+        }
+        AmirRvalue::Select {
+            condition,
+            if_true,
+            if_false,
+        } => {
+            f(condition);
             f(if_true);
             f(if_false);
         }
@@ -390,6 +404,8 @@ pub fn for_each_rvalue_operand(rvalue: &AmirRvalue, mut f: impl FnMut(&AmirOpera
     match rvalue {
         AmirRvalue::VectorSplat { value: op }
         | AmirRvalue::VectorExtractLane { vector: op, .. }
+        | AmirRvalue::VectorBitmask { vector: op }
+        | AmirRvalue::VectorLoadUnaligned { source: op }
         | AmirRvalue::Use(op)
         | AmirRvalue::Unary { operand: op, .. }
         | AmirRvalue::Len(op)
@@ -436,6 +452,15 @@ pub fn for_each_rvalue_operand(rvalue: &AmirRvalue, mut f: impl FnMut(&AmirOpera
             if_false,
         } => {
             f(mask);
+            f(if_true);
+            f(if_false);
+        }
+        AmirRvalue::Select {
+            condition,
+            if_true,
+            if_false,
+        } => {
+            f(condition);
             f(if_true);
             f(if_false);
         }
@@ -492,10 +517,13 @@ pub fn for_each_rvalue_place(rvalue: &AmirRvalue, mut f: impl FnMut(&AmirPlace))
         | AmirRvalue::VectorOp { .. }
         | AmirRvalue::VectorCompare { .. }
         | AmirRvalue::VectorSelect { .. }
+        | AmirRvalue::Select { .. }
         | AmirRvalue::VectorSplat { .. }
         | AmirRvalue::VectorShuffle { .. }
         | AmirRvalue::VectorExtractLane { .. }
         | AmirRvalue::VectorInsertLane { .. }
+        | AmirRvalue::VectorBitmask { .. }
+        | AmirRvalue::VectorLoadUnaligned { .. }
         | AmirRvalue::Binary { .. }
         | AmirRvalue::Unary { .. }
         | AmirRvalue::FieldAccess { .. }

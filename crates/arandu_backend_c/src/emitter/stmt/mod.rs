@@ -268,10 +268,16 @@ impl<'a> CEmitter<'a> {
                     None
                 };
                 let external_params = if let AmirOperand::FunctionRef(symbol) = callee {
-                    self.program
-                        .extern_funcs
-                        .get(symbol)
-                        .map(|(params, _)| params)
+                    let is_variadic = self
+                        .type_context
+                        .is_some_and(|ctx| ctx.is_variadic_function(*symbol));
+                    self.program.extern_funcs.get(symbol).map(|(params, _)| {
+                        if is_variadic && !params.is_empty() {
+                            &params[..params.len() - 1]
+                        } else {
+                            params.as_slice()
+                        }
+                    })
                 } else {
                     None
                 };

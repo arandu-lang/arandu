@@ -159,7 +159,8 @@ pub(super) fn lower_interpolated_string(
                     } => {
                         has_expr = true;
                         let lowered = super::lower_expr(type_check, pool, hir_pool, *inner_expr)?;
-                        hir_parts.push(HirStringPart::Expr(lowered));
+                        let wrapped = super::text::wrap_user_to_str(type_check, hir_pool, lowered);
+                        hir_parts.push(HirStringPart::Expr(wrapped));
                     }
                 }
             }

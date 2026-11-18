@@ -1,13 +1,14 @@
 //! Postfix and unary expression parsing in hand-lower.
 
 use super::super::cursor::{Cursor, HandCtx};
-use super::super::stmt::parse_block_tokens;
-use super::super::ty::parse_generic_type_args;
+use super::super::stmt::parse_stmt_tokens;
+use super::super::ty::{can_start_type_kind, parse_generic_type_args, parse_type};
 use super::primary::parse_primary;
 use super::struct_lit::{looks_like_struct_lit_after_type_path, try_struct_lit_from_type_path};
 use super::try_hand_lower_expr;
 use crate::UnaryOp;
 use crate::ast::ast_pool::{ExprId, ExprKind};
+use crate::ast::{Block, LambdaBody, LambdaParam};
 use arandu_lexer::TokenKind;
 use smol_str::SmolStr;
 
@@ -176,9 +177,9 @@ fn parse_postfix_tail(
                 // Match scrutinees are sliced to exclude `{`, so this is mainly for
                 // full-expression hand lower; keep consistent with RD allow_block_calls.
                 if cur.peek_kind() == Some(TokenKind::LBrace) && allows_trailing_block(ctx, left) {
-                    let block = parse_block_tokens(ctx, cur)?;
-                    end = block.span.end;
-                    args.push(ctx.pool.alloc_trailing_lambda(block));
+                    let lambda = parse_trailing_lambda(ctx, cur)?;
+                    end = ctx.pool.expr_span(lambda).end;
+                    args.push(lambda);
                 }
                 let args_range = ctx.pool.alloc_expr_list(&args);
                 left = ctx.pool.alloc_expr(
@@ -203,9 +204,8 @@ fn parse_postfix_tail(
                 }
                 // bare trailing block call: f { ... }
                 let left_span = ctx.pool.expr_span(left);
-                let block = parse_block_tokens(ctx, cur)?;
-                let end = block.span.end;
-                let lambda = ctx.pool.alloc_trailing_lambda(block);
+                let lambda = parse_trailing_lambda(ctx, cur)?;
+                let end = ctx.pool.expr_span(lambda).end;
                 let args = ctx.pool.alloc_expr_list(&[lambda]);
                 left = ctx.pool.alloc_expr(
                     ExprKind::Call { callee: left, args },
@@ -380,4 +380,133 @@ fn looks_like_generic_args(cur: &Cursor<'_>) -> bool {
         }
     }
     false
+}
+
+fn parse_trailing_lambda(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<ExprId> {
+    if ctx.depth >= 64 {
+        return None;
+    }
+    ctx.depth += 1;
+    let res = (|| {
+        let open = cur.expect(TokenKind::LBrace)?;
+        let start = open.start;
+
+        let mut lambda_params = None;
+        let checkpoint = *cur;
+
+        if cur.peek_kind() == Some(TokenKind::LParen) {
+            cur.bump(); // consume `(`
+            let mut params = Vec::new();
+            let mut valid = true;
+            if cur.peek_kind() != Some(TokenKind::RParen) {
+                loop {
+                    let Some(name_tok) = cur.expect(TokenKind::IdentValue) else {
+                        valid = false;
+                        break;
+                    };
+                    let Some(name_str) = ctx.text(name_tok) else {
+                        valid = false;
+                        break;
+                    };
+                    let name = SmolStr::new(name_str);
+                    let p_start = name_tok.start;
+                    let annotated = cur.eat(TokenKind::Colon);
+                    let ty = if annotated || cur.peek_kind().is_some_and(can_start_type_kind) {
+                        parse_type(ctx, cur)
+                    } else {
+                        None
+                    };
+                    let p_end = ty
+                        .map(|id| ctx.pool.type_expr_span(id).end)
+                        .unwrap_or(name_tok.start + name_tok.len);
+                    params.push(LambdaParam {
+                        span: ctx.span(p_start, p_end),
+                        name,
+                        ty,
+                    });
+                    if cur.eat(TokenKind::Comma) {
+                        continue;
+                    }
+                    break;
+                }
+            }
+            if valid && cur.eat(TokenKind::RParen) && cur.eat(TokenKind::FatArrow) {
+                lambda_params = Some(params);
+            } else {
+                *cur = checkpoint;
+            }
+        } else if cur.peek_kind() == Some(TokenKind::IdentValue) {
+            let mut params = Vec::new();
+            let mut valid = true;
+            loop {
+                let Some(name_tok) = cur.expect(TokenKind::IdentValue) else {
+                    valid = false;
+                    break;
+                };
+                let Some(name_str) = ctx.text(name_tok) else {
+                    valid = false;
+                    break;
+                };
+                let name = SmolStr::new(name_str);
+                let p_start = name_tok.start;
+                let annotated = cur.eat(TokenKind::Colon);
+                let ty = if annotated || cur.peek_kind().is_some_and(can_start_type_kind) {
+                    parse_type(ctx, cur)
+                } else {
+                    None
+                };
+                let p_end = ty
+                    .map(|id| ctx.pool.type_expr_span(id).end)
+                    .unwrap_or(name_tok.start + name_tok.len);
+                params.push(LambdaParam {
+                    span: ctx.span(p_start, p_end),
+                    name,
+                    ty,
+                });
+                if cur.eat(TokenKind::Comma) {
+                    continue;
+                }
+                break;
+            }
+            if valid && !params.is_empty() && cur.eat(TokenKind::FatArrow) {
+                lambda_params = Some(params);
+            } else {
+                *cur = checkpoint;
+            }
+        }
+
+        let mut statements = Vec::new();
+        loop {
+            cur.skip_semis();
+            if cur.peek_kind() == Some(TokenKind::RBrace) {
+                let close = cur.bump()?;
+                let end = close.start + close.len;
+                let block = Block {
+                    span: ctx.span(start, end),
+                    statements: ctx.pool.alloc_stmt_list(&statements),
+                };
+                let span = block.span;
+                let param_ids: Vec<_> = lambda_params
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|p| ctx.pool.alloc_lambda_param(p))
+                    .collect();
+                let params_range = ctx.pool.alloc_lambda_param_list(&param_ids);
+                return Some(ctx.pool.alloc_expr(
+                    ExprKind::Lambda {
+                        params: params_range,
+                        body: LambdaBody::Block { span, block },
+                        is_move: false,
+                    },
+                    span,
+                ));
+            }
+            if cur.at_end() {
+                return None;
+            }
+            statements.push(parse_stmt_tokens(ctx, cur)?);
+        }
+    })();
+    ctx.depth -= 1;
+    res
 }

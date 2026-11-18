@@ -1,0 +1,37 @@
+module std.core.rotate_swap_intrinsics_test
+
+extern "arandu-intrinsic" {
+    func bitRotateLeft32(value: u32, amount: u32): u32
+    func bitRotateLeft64(value: u64, amount: u32): u64
+    func bitRotateRight32(value: u32, amount: u32): u32
+    func bitRotateRight64(value: u64, amount: u32): u64
+    func bitSwapBytes32(value: u32): u32
+    func bitSwapBytes64(value: u64): u64
+}
+
+// Parameters keep the operands runtime values on every backend.
+func rotl32(value: u32, amount: u32): u32 { return bitRotateLeft32(value, amount) }
+func rotr32(value: u32, amount: u32): u32 { return bitRotateRight32(value, amount) }
+func rotl64(value: u64, amount: u32): u64 { return bitRotateLeft64(value, amount) }
+func rotr64(value: u64, amount: u32): u64 { return bitRotateRight64(value, amount) }
+func swap32(value: u32): u32 { return bitSwapBytes32(value) }
+func swap64(value: u64): u64 { return bitSwapBytes64(value) }
+
+func main(): int {
+    if rotl32(2147483649 as u32, 1 as u32) != (3 as u32) { return 1 }
+    if rotl32(305419896 as u32, 0 as u32) != (305419896 as u32) { return 2 }
+    if rotl32(305419896 as u32, 32 as u32) != (305419896 as u32) { return 3 }
+    if rotl32(305419896 as u32, 36 as u32) != (591751041 as u32) { return 4 }
+    if rotr32(305419896 as u32, 8 as u32) != (2014458966 as u32) { return 5 }
+    if rotr32(3 as u32, 1 as u32) != (2147483649 as u32) { return 6 }
+    if rotl64(81985529216486895 as u64, 13 as u32) != (7542668687916785700 as u64) { return 7 }
+    if rotr64(81985529216486895 as u64, 13 as u32) != (8032179943414451550 as u64) { return 8 }
+    if rotr64(81985529216486895 as u64, 77 as u32) != (8032179943414451550 as u64) { return 9 }
+    if rotl64(81985529216486895 as u64, 64 as u32) != (81985529216486895 as u64) { return 10 }
+    if swap32(305419896 as u32) != (2018915346 as u32) { return 11 }
+    if swap32(0 as u32) != (0 as u32) { return 12 }
+    if swap32(swap32(4278190335 as u32)) != (4278190335 as u32) { return 13 }
+    if swap64(81985529216486895 as u64) != (17279655951921914625 as u64) { return 14 }
+    if swap64(255 as u64) != (18374686479671623680 as u64) { return 15 }
+    return 0
+}

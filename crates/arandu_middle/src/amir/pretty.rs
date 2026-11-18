@@ -253,6 +253,19 @@ impl AmirRvalue {
             } => {
                 let _ = write!(out, "vector.select {mask:?}, {if_true:?}, {if_false:?}");
             }
+            AmirRvalue::Select {
+                condition,
+                if_true,
+                if_false,
+            } => {
+                let _ = write!(
+                    out,
+                    "select({}, {}, {})",
+                    condition.to_pretty_string(symbols, pool),
+                    if_true.to_pretty_string(symbols, pool),
+                    if_false.to_pretty_string(symbols, pool)
+                );
+            }
             AmirRvalue::VectorSplat { value } => {
                 let _ = write!(out, "vector.splat {value:?}");
             }
@@ -261,6 +274,12 @@ impl AmirRvalue {
             }
             AmirRvalue::VectorExtractLane { vector, lane } => {
                 let _ = write!(out, "vector.extract {vector:?}, {lane}");
+            }
+            AmirRvalue::VectorBitmask { vector } => {
+                let _ = write!(out, "vector.bitmask {vector:?}");
+            }
+            AmirRvalue::VectorLoadUnaligned { source } => {
+                let _ = write!(out, "vector.load_unaligned {source:?}");
             }
             AmirRvalue::VectorInsertLane {
                 vector,

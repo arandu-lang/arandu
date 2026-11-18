@@ -254,4 +254,41 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
         ));
         Ok(())
     }
+
+    pub(super) fn emit_vector_bitmask(
+        &mut self,
+        result: &str,
+        vector: &AmirOperand,
+    ) -> Result<(), Diagnostic> {
+        let vec_ty = ArType::Vector(VectorType::U8x16);
+        let vec = self.operand(vector, &vec_ty)?;
+        let cmp = self.new_value();
+        self.writer.line(format!(
+            "{cmp} = icmp slt <16 x i8> {}, zeroinitializer",
+            vec.value
+        ));
+        let bits = self.new_value();
+        self.writer
+            .line(format!("{bits} = bitcast <16 x i1> {cmp} to i16"));
+        self.writer
+            .line(format!("{result} = zext i16 {bits} to i32"));
+        Ok(())
+    }
+
+    pub(super) fn emit_vector_load_unaligned(
+        &mut self,
+        result: &str,
+        source: &AmirOperand,
+    ) -> Result<(), Diagnostic> {
+        let slice_ty = self.module.operand_type(source, self.func);
+        let slice = self.operand(source, &slice_ty)?;
+        let ptr = self.new_value();
+        self.writer.line(format!(
+            "{ptr} = extractvalue {} {}, 0",
+            slice.ty, slice.value
+        ));
+        self.writer
+            .line(format!("{result} = load <16 x i8>, ptr {ptr}, align 1"));
+        Ok(())
+    }
 }

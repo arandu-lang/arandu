@@ -7,7 +7,7 @@ use super::{FunctionPass, OptLevel, PassResources};
 use crate::amir::AmirFunc;
 use crate::{
     Diagnostic, dce::mark_sweep_dce_with_removable_calls, gvn::gvn, licm::licm, sccp::sccp,
-    simplify_cfg::simplify_cfg, sroa::sroa,
+    simplify_cfg::simplify_cfg_with_interner, sroa::sroa,
 };
 
 /// Sparse conditional constant propagation + branch folding.
@@ -177,7 +177,7 @@ impl FunctionPass for SimplifyCfgPass {
         func: &mut AmirFunc,
         resources: &mut PassResources<'_>,
     ) -> Result<bool, Diagnostic> {
-        simplify_cfg(func, resources.bump)
+        simplify_cfg_with_interner(func, resources.bump, resources.interner)
     }
 }
 

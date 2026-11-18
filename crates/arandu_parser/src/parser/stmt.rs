@@ -33,6 +33,13 @@ impl<'a> Parser<'a> {
     fn parse_block_inner(&mut self) -> Result<Block, ParseError> {
         let start = self.mark();
         self.expect_name("LBRACE")?;
+        self.parse_block_statements_until_rbrace(start)
+    }
+
+    pub(super) fn parse_block_statements_until_rbrace(
+        &mut self,
+        start: usize,
+    ) -> Result<Block, ParseError> {
         let mut statements = Vec::new();
         while !self.at_kind_name("RBRACE") {
             self.skip_semicolons();

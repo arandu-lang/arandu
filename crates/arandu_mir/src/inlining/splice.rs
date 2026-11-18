@@ -393,12 +393,15 @@ fn remap_place(place: &AmirPlace, temp_map: &[TempId], local_map: &[LocalId]) ->
 fn remap_rvalue(rv: &AmirRvalue, temp_map: &[TempId], local_map: &[LocalId]) -> AmirRvalue {
     match rv {
         AmirRvalue::VectorSelect { .. }
+        | AmirRvalue::Select { .. }
         | AmirRvalue::VectorCompare { .. }
         | AmirRvalue::VectorOp { .. }
         | AmirRvalue::VectorSplat { .. }
         | AmirRvalue::VectorShuffle { .. }
         | AmirRvalue::VectorExtractLane { .. }
-        | AmirRvalue::VectorInsertLane { .. } => {
+        | AmirRvalue::VectorInsertLane { .. }
+        | AmirRvalue::VectorBitmask { .. }
+        | AmirRvalue::VectorLoadUnaligned { .. } => {
             let mut mapped = rv.clone();
             crate::amir::visit::for_each_rvalue_operand_mut(&mut mapped, |operand| {
                 *operand = remap_op(operand, temp_map);

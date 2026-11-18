@@ -86,6 +86,16 @@ pub trait CodegenTypeContext: AmirTypeContext {
     /// Field table of `owner`, preferring the concrete header for `args`.
     fn fields_for(&self, owner: SymbolId, args: &[TypeId]) -> Option<&StructFields>;
 
+    /// Whether `symbol` is a variadic `extern "C"` function declaration.
+    fn is_variadic_function(&self, _symbol: SymbolId) -> bool {
+        false
+    }
+
+    /// Whether `symbol` is marked `@Cold`.
+    fn is_cold_function(&self, _symbol: SymbolId) -> bool {
+        false
+    }
+
     fn decl_type(&self, symbol: SymbolId) -> Option<ArType> {
         self.decl_type_id(symbol).map(|id| self.resolve_type_id(id))
     }

@@ -268,6 +268,12 @@ impl<'a> Resolver<'a> {
                                 arandu_middle::symbol_table::LangItem::Coroutine,
                             );
                         }
+                        (Some("std.core.cmp"), "Ordering") => {
+                            self.symbols.set_lang_item(
+                                enum_sym,
+                                arandu_middle::symbol_table::LangItem::Ordering,
+                            );
+                        }
                         _ => {}
                     }
                     // Variants inherit the enum's export visibility (public enum → public ctors).
@@ -343,6 +349,7 @@ impl<'a> Resolver<'a> {
                         (Some("std.core.marker"), "Copy") => Some(LangItem::Copy),
                         (Some("std.core.marker"), "Send") => Some(LangItem::Send),
                         (Some("std.core.marker"), "Sync") => Some(LangItem::Sync),
+                        (Some("std.core.cmp"), "Ord") => Some(LangItem::Ord),
                         (Some("std.thread"), "ThreadJob") => Some(LangItem::ThreadJob),
                         _ => None,
                     };

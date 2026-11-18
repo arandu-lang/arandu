@@ -254,7 +254,26 @@ pub(super) fn synth_direct_symbol_call(
                 .union(arandu_middle::EffectFlags::ANY_CALL);
         }
 
-        if params.len() != arg_ids.len() {
+        let is_variadic =
+            callee_func_sym.is_some_and(|sym| checker.type_info.variadic_functions.contains(&sym));
+
+        if is_variadic {
+            let min_params = params.len().saturating_sub(1);
+            if arg_ids.len() < min_params {
+                let diag = crate::Diagnostic::error(
+                    crate::DiagCode::T012WrongArgCount,
+                    format!(
+                        "expected at least {} arguments, found {}",
+                        min_params,
+                        arg_ids.len()
+                    ),
+                    span,
+                )
+                .with_label(checker.pool.expr_span(callee_id), "call target is here")
+                .with_label(span, format!("{} arguments provided", arg_ids.len()));
+                checker.diagnostics.push(diag);
+            }
+        } else if params.len() != arg_ids.len() {
             let diag = crate::Diagnostic::error(
                 crate::DiagCode::T012WrongArgCount,
                 format!(
@@ -270,7 +289,11 @@ pub(super) fn synth_direct_symbol_call(
             checker.diagnostics.push(diag);
         }
         for (i, arg_id) in arg_ids.iter().copied().enumerate() {
-            let formal = params.get(i).copied();
+            let formal = if is_variadic && i >= params.len().saturating_sub(1) {
+                params.last().copied()
+            } else {
+                params.get(i).copied()
+            };
             let arg_ty_id = super::closure::synth_call_arg(checker, arg_id, formal);
             if let Some(param_id) = formal {
                 check_call_arg(

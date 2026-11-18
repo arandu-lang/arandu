@@ -364,12 +364,15 @@ fn rvalue_holder_paths(rhs: &AmirRvalue, loan: &Loan) -> BTreeSet<HolderPath> {
             &HolderPath(vec![HolderProjection::CoroutinePayload]),
         ),
         AmirRvalue::VectorSelect { .. }
+        | AmirRvalue::Select { .. }
         | AmirRvalue::VectorCompare { .. }
         | AmirRvalue::VectorOp { .. }
         | AmirRvalue::VectorSplat { .. }
         | AmirRvalue::VectorShuffle { .. }
         | AmirRvalue::VectorExtractLane { .. }
         | AmirRvalue::VectorInsertLane { .. }
+        | AmirRvalue::VectorBitmask { .. }
+        | AmirRvalue::VectorLoadUnaligned { .. }
         | AmirRvalue::RelativeBorrow { .. }
         | AmirRvalue::Binary { .. }
         | AmirRvalue::Unary { .. }

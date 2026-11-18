@@ -391,12 +391,15 @@ pub fn function_scratch_safe(
                     | AmirRvalue::GenUpsert { .. }
                     | AmirRvalue::GenRemove { .. } => false,
                     AmirRvalue::VectorSelect { .. }
+                    | AmirRvalue::Select { .. }
                     | AmirRvalue::VectorCompare { .. }
                     | AmirRvalue::VectorOp { .. }
                     | AmirRvalue::VectorSplat { .. }
                     | AmirRvalue::VectorShuffle { .. }
                     | AmirRvalue::VectorExtractLane { .. }
                     | AmirRvalue::VectorInsertLane { .. }
+                    | AmirRvalue::VectorBitmask { .. }
+                    | AmirRvalue::VectorLoadUnaligned { .. }
                     | AmirRvalue::Use(_)
                     | AmirRvalue::Binary { .. }
                     | AmirRvalue::Unary { .. }

@@ -42,6 +42,7 @@ fn resolve_method_target(
                 | ArType::Primitive(_)
                 | ArType::Slice(_)
                 | ArType::MutSlice(_)
+                | ArType::Array(_, _)
         ) {
             break;
         }
@@ -58,8 +59,10 @@ fn resolve_method_target(
         ArType::Primitive(Primitive::Int) | ArType::IntLiteral => symbols.builtins.int_type,
         ArType::Primitive(Primitive::U32) => symbols.builtins.u32_type,
         ArType::Primitive(Primitive::U64) => symbols.builtins.u64_type,
+        ArType::Primitive(Primitive::I32) => symbols.builtins.i32_type,
+        ArType::Primitive(Primitive::I64) => symbols.builtins.i64_type,
         ArType::Primitive(Primitive::Float) | ArType::FloatLiteral => symbols.builtins.float_type,
-        ArType::Slice(_) | ArType::MutSlice(_) => symbols.builtins.slice_type,
+        ArType::Slice(_) | ArType::MutSlice(_) | ArType::Array(_, _) => symbols.builtins.slice_type,
         ArType::Ptr(_) => symbols.builtins.ptr_type,
         _ => None,
     }?;
@@ -447,6 +450,10 @@ impl LowerCtx<'_> {
                     if_true: *if_true,
                     if_false: *if_false,
                 },
+                (SimdOperation::Bitmask, [vector]) => AmirRvalue::VectorBitmask { vector: *vector },
+                (SimdOperation::LoadUnaligned, [source]) => {
+                    AmirRvalue::VectorLoadUnaligned { source: *source }
+                }
                 _ => {
                     return Err(Diagnostic::ice(
                         DiagCode::ICEGEN001,

@@ -28,6 +28,9 @@ impl HashContext<'_> {
         }
         self.hash
             .u32(self.type_info.function_effects(func.symbol).0);
+        self.hash.bool(
+            self.type_info.is_cold_function(func.symbol) || self.symbols.is_cold(func.symbol),
+        );
     }
 
     pub(super) fn func(&mut self, func: &AmirFunc) {
@@ -101,6 +104,7 @@ impl HashContext<'_> {
                 self.func_signature(callee);
             } else if let Some((params, result)) = self.program.extern_funcs.get(&symbol) {
                 self.hash.tag(1);
+                self.hash.bool(self.type_info.is_variadic_function(symbol));
                 self.hash.usize(params.len());
                 for param in params {
                     self.ar_type(param);

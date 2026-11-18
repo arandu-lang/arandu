@@ -65,6 +65,20 @@ impl<'a> FuncTranslator<'a> {
             AmirRvalue::Use(op) => {
                 self.emit_operand(op, result_ty);
             }
+            AmirRvalue::Select {
+                condition,
+                if_true,
+                if_false,
+            } => {
+                // Wasm `select` pops [val2, val1, cond] and pushes val1 when cond != 0.
+                self.emit_operand(if_true, result_ty);
+                self.emit_operand(if_false, result_ty);
+                let bool_ty = self
+                    .interner
+                    .intern(ArType::Primitive(arandu_middle::types::Primitive::Bool));
+                self.emit_operand(condition, bool_ty);
+                self.code.push(Instruction::Select);
+            }
             AmirRvalue::Binary { op, left, right } => {
                 self.emit_binary(*op, left, right, result_ty);
             }
@@ -77,7 +91,9 @@ impl<'a> FuncTranslator<'a> {
             | AmirRvalue::VectorSplat { .. }
             | AmirRvalue::VectorShuffle { .. }
             | AmirRvalue::VectorExtractLane { .. }
-            | AmirRvalue::VectorInsertLane { .. } => self.emit_vector_rvalue(rvalue, result_ty),
+            | AmirRvalue::VectorInsertLane { .. }
+            | AmirRvalue::VectorBitmask { .. }
+            | AmirRvalue::VectorLoadUnaligned { .. } => self.emit_vector_rvalue(rvalue, result_ty),
             AmirRvalue::Discriminant { .. }
             | AmirRvalue::Len(_)
             | AmirRvalue::SliceData(_)

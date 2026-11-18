@@ -33,7 +33,7 @@ pub fn optimize_amir_checked_with_level(
         return Err(issue);
     }
     if matches!(level, OptLevel::O1 | OptLevel::O2) {
-        crate::inlining::inline_leaf_functions(program);
+        crate::inlining::inline_leaf_functions_with_cold(program, &symbols.cold_functions);
         if let Some(issue) = crate::amir_validate::validate_amir_program(program, symbols, interner)
             .into_iter()
             .next()

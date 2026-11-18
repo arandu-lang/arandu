@@ -271,11 +271,24 @@ impl<'a> CEmitter<'a> {
         }
     }
 
+    pub(super) fn c_function_cold_prefix(&self, symbol: arandu_middle::SymbolId) -> &'static str {
+        if self.symbols.is_cold(symbol)
+            || self
+                .type_context
+                .is_some_and(|ctx| ctx.is_cold_function(symbol))
+        {
+            "AR_COLD "
+        } else {
+            ""
+        }
+    }
+
     pub(super) fn emit_func_decl(&mut self, func: &AmirFunc) {
         let name = self.c_function_name(func.symbol);
         let linkage = self.c_function_linkage(func.symbol);
+        let cold = self.c_function_cold_prefix(func.symbol);
         let ret_ty = self.c_func_return_type(func);
-        let _ = write!(&mut self.output, "{linkage}{} {}(", ret_ty, name);
+        let _ = write!(&mut self.output, "{linkage}{cold}{} {}(", ret_ty, name);
         self.emit_func_parameters(func);
         let _ = writeln!(&mut self.output, ");");
     }

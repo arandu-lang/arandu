@@ -142,6 +142,12 @@ fn restricted_symbols(
         .copied()
         .filter(kept)
         .collect();
+    table.cold_functions = symbols
+        .cold_functions
+        .iter()
+        .copied()
+        .filter(kept)
+        .collect();
     table.tooling_entrypoints = symbols
         .tooling_entrypoints
         .iter()
@@ -304,6 +310,10 @@ pub(crate) fn unit_headers(
             .symbols_mut()
             .exported_functions
             .extend(slice.type_check.symbols.exported_functions.iter().copied());
+        checked
+            .symbols_mut()
+            .cold_functions
+            .extend(slice.type_check.symbols.cold_functions.iter().copied());
     }
 
     // The typing context holds the signature-level host names of every
@@ -318,6 +328,9 @@ pub(crate) fn unit_headers(
         .retain(|symbol, _| !functions.contains(symbol) || reach.contains(symbol));
     symbols
         .exported_functions
+        .retain(|symbol| reach.contains(symbol));
+    symbols
+        .cold_functions
         .retain(|symbol| reach.contains(symbol));
     symbols
         .tooling_entrypoints

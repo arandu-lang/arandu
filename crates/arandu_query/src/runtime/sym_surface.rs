@@ -226,6 +226,9 @@ pub fn symbol_surface(
         hasher.update(&[u8::from(
             signatures.type_info.unsafe_functions.contains(&symbol),
         )]);
+        hasher.update(&[u8::from(
+            signatures.type_info.cold_functions.contains(&symbol),
+        )]);
 
         // Const values
         if let Some(val) = signatures.type_info.ctfe_global_values.get(&symbol) {

@@ -377,6 +377,33 @@ impl DiagCode {
     }
 
     #[must_use]
+    /// The `snake_case` name `@Suppress`, `@Deny` and `@Forbid` use for a
+    /// warning; `None` for every other code.
+    pub fn lint_name(self) -> Option<&'static str> {
+        match self {
+            DiagCode::W001VariableAssignedNotUsed => Some("unused_variable"),
+            DiagCode::W002DeadCode => Some("dead_code"),
+            DiagCode::W003UnreachableCode => Some("unreachable_code"),
+            DiagCode::W004VariableShadowing => Some("shadowing"),
+            DiagCode::W005UnnecessaryMutability => Some("unnecessary_mut"),
+            DiagCode::W006UnhandledResult => Some("unhandled_result"),
+            DiagCode::W007UnusedImport => Some("unused_import"),
+            DiagCode::W009CapturedCopyNeverRead => Some("captured_copy_never_read"),
+            _ => None,
+        }
+    }
+
+    /// Resolves a warning by its `snake_case` lint name or by its diagnostic code (e.g. `"W006"`).
+    ///
+    /// Returns `Some(code)` if the name or code matches a known warning, or `None` otherwise.
+    #[must_use]
+    pub fn from_lint_name_or_code(name: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|code| {
+            code.lint_name()
+                .is_some_and(|lint| lint == name || code.as_str() == name)
+        })
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             DiagCode::LX001UnterminatedString => "LX001",

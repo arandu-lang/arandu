@@ -28,6 +28,24 @@ fn bit_intrinsics_cover_every_bit_position_and_zero() {
 }
 
 #[test]
+fn rotate_and_swap_intrinsics_wrap_amounts_and_reverse_bytes() {
+    let source = include_str!("../../arandu_backend_c/tests/rotate_swap_intrinsics.aru");
+    assert_eq!(run_main_i32(&compile_trusted_core_fixture(source)), 0);
+}
+
+#[test]
+fn fma_and_spin_intrinsics_evaluate_accurately() {
+    let source = include_str!("../../arandu_backend_c/tests/fma_spin_intrinsics.aru");
+    assert_eq!(run_main_i32(&compile_trusted_core_fixture(source)), 0);
+}
+
+#[test]
+fn overflow_saturating_intrinsics() {
+    let source = include_str!("../../arandu_backend_c/tests/overflow_saturating_intrinsics.aru");
+    assert_eq!(run_main_i32(&compile_trusted_core_fixture(source)), 0);
+}
+
+#[test]
 fn ordinary_bit_names_are_not_intrinsics() {
     let bytes = compile_source(
         "func bitCountOnes32(value: u32): u32 { return value + 7 } func main(): int { if bitCountOnes32(5) != 12 { return 1 }; return 0 }",
@@ -1713,4 +1731,232 @@ func main(): int {
 "#,
     );
     assert_eq!(run_main_i32(&bytes), 7);
+}
+
+#[test]
+fn scalar_select_if_conversion_executes_under_opt() {
+    let source = r#"
+func pickInt(cond: bool, a: int, b: int): int {
+    return if cond { a } else { b }
+}
+
+func pickEarly(cond: bool, a: int, b: int): int {
+    if cond {
+        return a + 3
+    } else {
+        return b + 5
+    }
+}
+
+func pickFloat(cond: bool, a: f64, b: f64): f64 {
+    return if cond { a } else { b }
+}
+
+func pickBool(cond: bool, a: bool, b: bool): bool {
+    let mut r = b
+    if cond { r = a }
+    return r
+}
+
+func main(): int {
+    if pickInt(true, 11, 22) != 11 { return 1 }
+    if pickInt(false, 11, 22) != 22 { return 2 }
+    if pickEarly(true, 10, 20) != 13 { return 3 }
+    if pickEarly(false, 10, 20) != 25 { return 4 }
+    if pickFloat(true, 4.5, 8.25) != 4.5 { return 5 }
+    if pickFloat(false, 4.5, 8.25) != 8.25 { return 6 }
+    if !pickBool(true, true, false) { return 7 }
+    if pickBool(false, true, false) { return 8 }
+    return 0
+}
+"#;
+    let mut db = arandu_query::db::DatabaseImpl::new();
+    db.set_target_config(common::wasm32());
+    let file = db.new_file("e2e_select.aru".into(), source.into());
+    let lowered = arandu_query::passes::lower_amir(&db, file);
+    assert!(
+        lowered.type_check.diagnostics.is_empty(),
+        "{:?}",
+        lowered.type_check.diagnostics
+    );
+    let mut amir = lowered.amir.clone();
+    arandu_semantics::optimize_amir_checked_with_level(
+        &mut amir,
+        lowered.type_check.symbols.as_ref(),
+        &lowered.type_check.type_info.type_interner,
+        arandu_semantics::OptLevel::O1,
+    )
+    .expect("O1 optimize failed");
+    assert!(
+        amir.funcs.iter().any(|func| {
+            func.stmts.payloads.iter().any(|stmt| {
+                matches!(
+                    stmt,
+                    AmirStmt::Assign {
+                        rhs: AmirRvalue::Select { .. },
+                        ..
+                    }
+                )
+            })
+        }),
+        "expected AmirRvalue::Select after O1"
+    );
+    let bytes = arandu_backend_wasm::emit_wasm(
+        &amir,
+        lowered.type_check.symbols.as_ref(),
+        &lowered.type_check.type_info.type_interner,
+        lowered.type_check.type_info.as_ref(),
+        common::wasm32(),
+    )
+    .expect("wasm emission failed");
+    assert_eq!(run_main_i32(&bytes), 0);
+}
+
+#[test]
+fn cold_and_branch_hints_execute() {
+    let source = r#"
+import std.core.intrinsics as intrinsics
+
+@Cold
+func slow_path(x: int): int {
+    return x + 100
+}
+
+func eval(x: int): int {
+    if intrinsics.unlikely(x < 0) {
+        return slow_path(x)
+    }
+    if intrinsics.likely(x >= 0) {
+        return x * 2
+    }
+    return -1
+}
+
+func main(): int {
+    if eval(-5) != 95 { return 1 }
+    if eval(7) != 14 { return 2 }
+    return 0
+}
+"#;
+    let mut db = arandu_query::db::DatabaseImpl::new();
+    db.set_target_config(common::wasm32());
+    db.new_stdlib_file(
+        "stdlib/core/intrinsics.aru".into(),
+        include_str!("../../../stdlib/core/intrinsics.aru").into(),
+    );
+    let file = db.new_file("e2e_hints.aru".into(), source.into());
+    let lowered = arandu_query::passes::lower_amir(&db, file);
+    assert!(
+        lowered.type_check.diagnostics.is_empty(),
+        "{:?}",
+        lowered.type_check.diagnostics
+    );
+    let mut amir = lowered.amir.clone();
+    arandu_semantics::optimize_amir_checked_with_level(
+        &mut amir,
+        lowered.type_check.symbols.as_ref(),
+        &lowered.type_check.type_info.type_interner,
+        arandu_semantics::OptLevel::O1,
+    )
+    .expect("O1 optimize failed");
+    let bytes = arandu_backend_wasm::emit_wasm(
+        &amir,
+        lowered.type_check.symbols.as_ref(),
+        &lowered.type_check.type_info.type_interner,
+        lowered.type_check.type_info.as_ref(),
+        common::wasm32(),
+    )
+    .expect("wasm emission failed");
+    assert_eq!(run_main_i32(&bytes), 0);
+}
+
+#[test]
+fn u8x16_bitmask_unaligned_and_str_utf8_execute() {
+    let source = r#"
+import std.core.simd as simd
+import std.core.str as text
+
+func main(): int {
+    let v = simd.U8x16.new(
+        0x80 as u8, 0x01 as u8, 0xFF as u8, 0x7F as u8,
+        0x00 as u8, 0x80 as u8, 0x10 as u8, 0x90 as u8,
+        0x00 as u8, 0x00 as u8, 0x00 as u8, 0x00 as u8,
+        0x00 as u8, 0x00 as u8, 0x00 as u8, 0x81 as u8
+    )
+    if v.highBitmask() != (32933 as u32) { return 1 }
+    if !text.isAscii("0123456789abcdef0123456789abcdefX") { return 2 }
+    if text.isAscii("0123456789abcdefá") { return 3 }
+    if !text.eq("0123456789abcdef0123456789abcdefX", "0123456789abcdef0123456789abcdefX") { return 4 }
+    if text.eq("0123456789abcdef0123456789abcdefX", "0123456789abcdef0123456789abcdefY") { return 5 }
+    if !text.isValidUtf8(text.asBytes(ref "0123456789abcdefolá🚀")) { return 6 }
+    if text.isValidUtf8(b"0123456789abcdef\x80") { return 7 }
+    if text.isValidUtf8(b"\xC0\xAF") { return 8 }
+    if text.isValidUtf8(b"\xE0\x80\xAF") { return 9 }
+    if text.isValidUtf8(b"\xED\xA0\x80") { return 10 }
+    if text.isValidUtf8(b"\xF4\x90\x80\x80") { return 11 }
+    return 0
+}
+"#;
+    let mut db = arandu_query::db::DatabaseImpl::new();
+    db.set_target_config(common::wasm32());
+    for (path, text) in [
+        (
+            "stdlib/core/intrinsics.aru",
+            include_str!("../../../stdlib/core/intrinsics.aru"),
+        ),
+        (
+            "stdlib/core/marker.aru",
+            include_str!("../../../stdlib/core/marker.aru"),
+        ),
+        (
+            "stdlib/core/mem.aru",
+            include_str!("../../../stdlib/core/mem.aru"),
+        ),
+        (
+            "stdlib/core/option.aru",
+            include_str!("../../../stdlib/core/option.aru"),
+        ),
+        (
+            "stdlib/core/result.aru",
+            include_str!("../../../stdlib/core/result.aru"),
+        ),
+        (
+            "stdlib/core/slice.aru",
+            include_str!("../../../stdlib/core/slice.aru"),
+        ),
+        (
+            "stdlib/core/simd.aru",
+            include_str!("../../../stdlib/core/simd.aru"),
+        ),
+        (
+            "stdlib/core/str.aru",
+            include_str!("../../../stdlib/core/str.aru"),
+        ),
+    ] {
+        db.new_stdlib_file(path.into(), text.into());
+    }
+    let file = db.new_file("e2e_simd_str.aru".into(), source.into());
+    let lowered = arandu_query::passes::lower_amir(&db, file);
+    assert!(
+        lowered.type_check.diagnostics.is_empty(),
+        "{:?}",
+        lowered.type_check.diagnostics
+    );
+    let mut amir = lowered.amir.clone();
+    arandu_semantics::optimize_amir_checked_with_level(
+        &mut amir,
+        lowered.type_check.symbols.as_ref(),
+        &lowered.type_check.type_info.type_interner,
+        arandu_semantics::OptLevel::O1,
+    )
+    .expect("O1 optimize failed");
+    let bytes = arandu_backend_wasm::emit_wasm(
+        &amir,
+        lowered.type_check.symbols.as_ref(),
+        &lowered.type_check.type_info.type_interner,
+        lowered.type_check.type_info.as_ref(),
+        common::wasm32(),
+    )
+    .expect("wasm emission failed");
+    assert_eq!(run_main_i32(&bytes), 0);
 }

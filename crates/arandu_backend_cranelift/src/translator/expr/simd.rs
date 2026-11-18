@@ -122,6 +122,18 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 let shuffled = self.builder.ins().shuffle(left, right, mask);
                 self.builder.ins().bitcast(ty, flags, shuffled)
             }
+            AmirRvalue::VectorBitmask { vector } => {
+                let v = self.translate_operand(vector, Some(I8X16));
+                self.builder
+                    .ins()
+                    .vhigh_bits(cranelift_codegen::ir::types::I32, v)
+            }
+            AmirRvalue::VectorLoadUnaligned { source } => {
+                let ptr = self.translate_slice_data(source);
+                self.builder
+                    .ins()
+                    .load(I8X16, cranelift_codegen::ir::MemFlagsData::new(), ptr, 0)
+            }
             _ => {
                 self.record_ice("expected a vector operation", self.func_span());
                 self.poison_i32()

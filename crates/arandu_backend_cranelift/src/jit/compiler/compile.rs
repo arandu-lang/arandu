@@ -208,10 +208,16 @@ impl<M: Module> AranduModule<M> {
             {
                 continue;
             }
+            let fixed_param_types: &[ArType] =
+                if type_info.is_variadic_function(symbol_id) && !param_types.is_empty() {
+                    &param_types[..param_types.len() - 1]
+                } else {
+                    param_types.as_slice()
+                };
             if !eager_runtime {
                 if !runtime_imports.alias(&sym.name, c_name) {
                     let sig = build_signature_with_classifier(
-                        param_types,
+                        fixed_param_types,
                         return_type,
                         default_call_conv,
                         ptr_type,
@@ -228,7 +234,7 @@ impl<M: Module> AranduModule<M> {
                 existing_id
             } else {
                 let sig = build_signature_with_classifier(
-                    param_types,
+                    fixed_param_types,
                     return_type,
                     default_call_conv,
                     ptr_type,

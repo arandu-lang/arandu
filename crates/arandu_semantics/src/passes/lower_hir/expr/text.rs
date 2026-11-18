@@ -9,6 +9,177 @@ use arandu_middle::symbol_table::LangItem;
 use arandu_middle::types::{ArType, Primitive, TypeId};
 use arandu_parser::ast_pool::{AstPool, ExprId, ExprKind};
 
+/// Peel up to 4 layers of `Ref`/`RefMut`/`Ptr` (plus an optional outer `Nullable`
+/// when `include_nullable` is set) and return the underlying nominal struct/enum `SymbolId`
+/// and its type argument list, if any.
+pub(super) fn peel_named_struct(
+    type_check: &TypeCheckResult,
+    mut ty: TypeId,
+    include_nullable: bool,
+) -> Option<(arandu_middle::SymbolId, Vec<TypeId>)> {
+    let interner = &type_check.type_info.type_interner;
+    if include_nullable && let ArType::Nullable(inner) = interner.resolve(ty) {
+        ty = inner;
+    }
+    for _ in 0..4 {
+        match interner.resolve(ty) {
+            ArType::Ref(inner) | ArType::RefMut(inner) | ArType::Ptr(inner) => ty = inner,
+            _ => break,
+        }
+    }
+    match interner.resolve(ty) {
+        ArType::Named(sym, args) => Some((sym, interner.type_args(args))),
+        _ => None,
+    }
+}
+
+/// True when the receiver (after peeling `Nullable`/`Ref`/`RefMut`/`Ptr`) defines
+/// its own associated `to_str` or `toStr` method on the nominal type.
+pub(super) fn has_user_to_str_method(
+    type_check: &TypeCheckResult,
+    base_ty: TypeId,
+    method: &str,
+) -> bool {
+    let Some((struct_id, _)) = peel_named_struct(type_check, base_ty, true) else {
+        return false;
+    };
+    type_check
+        .symbols
+        .lookup_associated_member(struct_id, method)
+        .is_some()
+}
+
+/// When `lowered` is a nominal value/reference whose type defines an associated
+/// `toStr(self): str` (or `to_str(self): str`) method, wrap it in a direct call to
+/// that method so string interpolation invokes user-defined formatting.
+pub(super) fn wrap_user_to_str(
+    type_check: &mut TypeCheckResult,
+    hir_pool: &mut crate::hir::HirPool,
+    lowered: HirExprId,
+) -> HirExprId {
+    let lowered_expr = hir_pool.expr(lowered);
+    let lowered_ty = lowered_expr.ty;
+    let span = lowered_expr.span;
+    if is_string(type_check, lowered_ty) {
+        return lowered;
+    }
+    let Some((struct_id, struct_type_args)) = peel_named_struct(type_check, lowered_ty, false)
+    else {
+        return lowered;
+    };
+    let is_owned_string_struct = type_check.symbols.lang_item_symbol(LangItem::String)
+        == Some(struct_id)
+        || type_check
+            .symbols
+            .try_get(struct_id)
+            .and_then(|s| s.lang_item)
+            == Some(LangItem::String);
+    if is_owned_string_struct {
+        return lowered;
+    }
+    let Some(method_sym) = type_check
+        .symbols
+        .lookup_associated_member(struct_id, "toStr")
+        .or_else(|| {
+            type_check
+                .symbols
+                .lookup_associated_member(struct_id, "to_str")
+        })
+    else {
+        return lowered;
+    };
+    let Some(decl_ty_id) = type_check.type_info.decl_type_id(method_sym) else {
+        return lowered;
+    };
+    let method_gps = type_check
+        .type_info
+        .generic_params
+        .get(&method_sym)
+        .cloned()
+        .unwrap_or_default();
+    let (func_ty_id, inst_type_args) = if !method_gps.is_empty()
+        && !struct_type_args.is_empty()
+        && method_gps.len() == struct_type_args.len()
+    {
+        let mut subst = arandu_middle::types::GenericSubst::default();
+        for (&gp, &arg) in method_gps.iter().zip(&struct_type_args) {
+            subst.push((gp, type_check.type_info.type_interner.resolve(arg)));
+        }
+        let inst_id = arandu_middle::types::substitute_type_id(
+            decl_ty_id,
+            &subst,
+            &type_check.type_info.type_interner,
+        );
+        (inst_id, struct_type_args)
+    } else if method_gps.is_empty() {
+        (decl_ty_id, Vec::new())
+    } else {
+        return lowered;
+    };
+    let (formal0, ret_id) = {
+        let interner = &type_check.type_info.type_interner;
+        let ArType::Func(params_id, ret_id) = interner.resolve(func_ty_id) else {
+            return lowered;
+        };
+        let params = interner.type_args(params_id);
+        if params.len() != 1 {
+            return lowered;
+        }
+        let ret_ok = matches!(interner.resolve(ret_id), ArType::Primitive(Primitive::Str))
+            || is_string(type_check, ret_id);
+        if !ret_ok {
+            return lowered;
+        }
+        (params[0], ret_id)
+    };
+    let arg_expr = {
+        let interner = &type_check.type_info.type_interner;
+        let formal_is_ref = matches!(
+            interner.resolve(formal0),
+            ArType::Ref(_) | ArType::RefMut(_)
+        );
+        let deref_inner = match interner.resolve(lowered_ty) {
+            ArType::Ref(inner) | ArType::RefMut(inner) if !formal_is_ref => Some(inner),
+            _ => None,
+        };
+        if let Some(inner_ty) = deref_inner {
+            hir_pool.alloc_expr(HirExpr {
+                kind: HirExprKind::Unary {
+                    op: arandu_middle::ops::UnaryOp::Deref,
+                    expr: lowered,
+                },
+                ty: inner_ty,
+                span,
+            })
+        } else {
+            lowered
+        }
+    };
+    let path_expr = hir_pool.alloc_expr(HirExpr {
+        kind: HirExprKind::Path { symbol: method_sym },
+        ty: func_ty_id,
+        span,
+    });
+    let callee = if inst_type_args.is_empty() {
+        path_expr
+    } else {
+        hir_pool.alloc_expr(HirExpr {
+            kind: HirExprKind::Generic {
+                callee: path_expr,
+                args: inst_type_args,
+            },
+            ty: func_ty_id,
+            span,
+        })
+    };
+    let args = hir_pool.alloc_expr_list(&[arg_expr]);
+    hir_pool.alloc_expr(HirExpr {
+        kind: HirExprKind::Call { callee, args },
+        ty: ret_id,
+        span,
+    })
+}
+
 /// The `String` type and one of its associated functions.
 fn string_member(
     type_check: &TypeCheckResult,
@@ -278,7 +449,8 @@ pub(super) fn concatenation_parts(
                     }
                     arandu_parser::StringPart::Expr { expr: inner, .. } => {
                         let lowered = super::lower_expr(type_check, pool, hir_pool, *inner)?;
-                        parts.push(HirStringPart::Expr(lowered));
+                        let wrapped = wrap_user_to_str(type_check, hir_pool, lowered);
+                        parts.push(HirStringPart::Expr(wrapped));
                     }
                 }
             }

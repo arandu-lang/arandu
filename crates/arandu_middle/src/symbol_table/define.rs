@@ -108,6 +108,8 @@ impl super::SymbolTable {
         }
         self.exported_functions
             .extend(other.exported_functions.into_iter().map(map_symbol));
+        self.cold_functions
+            .extend(other.cold_functions.into_iter().map(map_symbol));
         self.tooling_entrypoints
             .extend(other.tooling_entrypoints.into_iter().map(map_symbol));
 
@@ -172,6 +174,12 @@ impl super::SymbolTable {
         if self.builtins.usize_type.is_none() {
             self.builtins.usize_type = other.builtins.usize_type.map(map_symbol);
         }
+        if self.builtins.i32_type.is_none() {
+            self.builtins.i32_type = other.builtins.i32_type.map(map_symbol);
+        }
+        if self.builtins.i64_type.is_none() {
+            self.builtins.i64_type = other.builtins.i64_type.map(map_symbol);
+        }
         if self.builtins.ptr_type.is_none() {
             self.builtins.ptr_type = other.builtins.ptr_type.map(map_symbol);
         }
@@ -208,6 +216,8 @@ impl super::SymbolTable {
         self.builtins.u32_type = valid(self.builtins.u32_type);
         self.builtins.u64_type = valid(self.builtins.u64_type);
         self.builtins.usize_type = valid(self.builtins.usize_type);
+        self.builtins.i32_type = valid(self.builtins.i32_type);
+        self.builtins.i64_type = valid(self.builtins.i64_type);
         self.builtin_alloc = valid(self.builtin_alloc);
         self.builtin_free = valid(self.builtin_free);
     }
@@ -241,6 +251,8 @@ impl super::SymbolTable {
             LangItem::U32 => self.builtins.u32_type = Some(sym),
             LangItem::U64 => self.builtins.u64_type = Some(sym),
             LangItem::Usize => self.builtins.usize_type = Some(sym),
+            LangItem::I32 => self.builtins.i32_type = Some(sym),
+            LangItem::I64 => self.builtins.i64_type = Some(sym),
             LangItem::Alloc => self.builtin_alloc = Some(sym),
             LangItem::Free => self.builtin_free = Some(sym),
             _ => {}

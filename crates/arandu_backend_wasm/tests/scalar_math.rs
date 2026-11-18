@@ -6,7 +6,15 @@ mod math_oracle;
 
 #[test]
 fn scalar_math_matches_f64_oracle_on_wasm32() {
-    let math = include_str!("../../../stdlib/core/math.aru").replace("module std.core.math", "");
+    // The fused multiply-add helpers need the compiler ABI module, which a
+    // user file cannot import; the oracle covers the scalar functions only.
+    let math = include_str!("../../../stdlib/core/math.aru");
+    let math = math
+        .split("/// Fused multiply-add: `(a * b) + c`")
+        .next()
+        .unwrap_or(math)
+        .replace("module std.core.math", "")
+        .replace("import std.core.intrinsics as intrinsics", "");
     let oracle = math_oracle::source()
         .replace("module mathOracle", "")
         .replace("import std.core.math as math", "")

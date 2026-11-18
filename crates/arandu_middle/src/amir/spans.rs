@@ -71,11 +71,14 @@ fn rvalue_spans(rvalue: &mut AmirRvalue, f: &mut impl FnMut(Span) -> Span) {
         AmirRvalue::Use(_)
         | AmirRvalue::VectorOp { .. }
         | AmirRvalue::VectorSelect { .. }
+        | AmirRvalue::Select { .. }
         | AmirRvalue::VectorCompare { .. }
         | AmirRvalue::VectorSplat { .. }
         | AmirRvalue::VectorShuffle { .. }
         | AmirRvalue::VectorExtractLane { .. }
         | AmirRvalue::VectorInsertLane { .. }
+        | AmirRvalue::VectorBitmask { .. }
+        | AmirRvalue::VectorLoadUnaligned { .. }
         | AmirRvalue::Binary { .. }
         | AmirRvalue::Unary { .. }
         | AmirRvalue::FieldAccess { .. }

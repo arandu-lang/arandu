@@ -50,6 +50,11 @@ module std.core.atomic
 
 import std.core.intrinsics as intrinsics
 
+/// Emits a processor spin-loop pause / yield hint. Safe and allocation-free.
+public func spinLoop(): void {
+    intrinsics.spinLoopHint()
+}
+
 /// Memory synchronization ordering for atomic operations.
 public enum MemoryOrder {
     /// Relaxed ordering: guarantees atomicity, but no memory barriers.
@@ -113,7 +118,14 @@ func requireCompareExchange(success: MemoryOrder, failure: MemoryOrder): void {
 /// Hardware fence. Relaxed is invalid and traps.
 public func fence(order: MemoryOrder): void {
     requireFence(order)
-    unsafe { intrinsics.atomicFence() }
+    unsafe {
+        match order {
+            MemoryOrder.Acquire => { intrinsics.atomicFenceAcquire() }
+            MemoryOrder.Release => { intrinsics.atomicFenceRelease() }
+            MemoryOrder.AcqRel => { intrinsics.atomicFenceAcqRel() }
+            _ => { intrinsics.atomicFence() }
+        }
+    }
 }
 
 /// Compiler fence; Cranelift/Wasm conservatively strengthen it to hardware.
@@ -135,13 +147,25 @@ public func AtomicBool.new(val: bool): AtomicBool {
 /// Loads atomically. Release and AcqRel are invalid.
 public func AtomicBool.load(self: ref AtomicBool, order: MemoryOrder): bool {
     requireLoad(order)
-    unsafe { return (intrinsics.atomicLoad8(ref self.val) != (0 as u8)) }
+    unsafe {
+        match order {
+            MemoryOrder.Relaxed => { return (intrinsics.atomicLoadRelaxed8(ref self.val) != (0 as u8)) }
+            MemoryOrder.Acquire => { return (intrinsics.atomicLoadAcquire8(ref self.val) != (0 as u8)) }
+            _ => { return (intrinsics.atomicLoad8(ref self.val) != (0 as u8)) }
+        }
+    }
 }
 
 /// Stores atomically through shared access. Acquire and AcqRel are invalid.
 public func AtomicBool.store(self: ref AtomicBool, val: bool, order: MemoryOrder): void {
     requireStore(order)
-    unsafe { intrinsics.atomicStore8(ref self.val, encodeBool(val)) }
+    unsafe {
+        match order {
+            MemoryOrder.Relaxed => { intrinsics.atomicStoreRelaxed8(ref self.val, encodeBool(val)) }
+            MemoryOrder.Release => { intrinsics.atomicStoreRelease8(ref self.val, encodeBool(val)) }
+            _ => { intrinsics.atomicStore8(ref self.val, encodeBool(val)) }
+        }
+    }
 }
 
 /// Atomically updates storage and returns its previous value.
@@ -190,13 +214,25 @@ public func AtomicInt.new(val: int): AtomicInt {
 /// Loads atomically. Release and AcqRel are invalid.
 public func AtomicInt.load(self: ref AtomicInt, order: MemoryOrder): int {
     requireLoad(order)
-    unsafe { return (intrinsics.atomicLoad32(ref self.val) as int) }
+    unsafe {
+        match order {
+            MemoryOrder.Relaxed => { return (intrinsics.atomicLoadRelaxed32(ref self.val) as int) }
+            MemoryOrder.Acquire => { return (intrinsics.atomicLoadAcquire32(ref self.val) as int) }
+            _ => { return (intrinsics.atomicLoad32(ref self.val) as int) }
+        }
+    }
 }
 
 /// Stores atomically. Acquire and AcqRel are invalid.
 public func AtomicInt.store(self: ref AtomicInt, val: int, order: MemoryOrder): void {
     requireStore(order)
-    unsafe { intrinsics.atomicStore32(ref self.val, (val as u32)) }
+    unsafe {
+        match order {
+            MemoryOrder.Relaxed => { intrinsics.atomicStoreRelaxed32(ref self.val, (val as u32)) }
+            MemoryOrder.Release => { intrinsics.atomicStoreRelease32(ref self.val, (val as u32)) }
+            _ => { intrinsics.atomicStore32(ref self.val, (val as u32)) }
+        }
+    }
 }
 
 /// Atomically updates storage and returns its previous value.
@@ -255,13 +291,25 @@ public func AtomicUint.new(val: uint): AtomicUint {
 /// Loads atomically. Release and AcqRel are invalid.
 public func AtomicUint.load(self: ref AtomicUint, order: MemoryOrder): uint {
     requireLoad(order)
-    unsafe { return (intrinsics.atomicLoad32(ref self.val) as uint) }
+    unsafe {
+        match order {
+            MemoryOrder.Relaxed => { return (intrinsics.atomicLoadRelaxed32(ref self.val) as uint) }
+            MemoryOrder.Acquire => { return (intrinsics.atomicLoadAcquire32(ref self.val) as uint) }
+            _ => { return (intrinsics.atomicLoad32(ref self.val) as uint) }
+        }
+    }
 }
 
 /// Stores atomically. Acquire and AcqRel are invalid.
 public func AtomicUint.store(self: ref AtomicUint, val: uint, order: MemoryOrder): void {
     requireStore(order)
-    unsafe { intrinsics.atomicStore32(ref self.val, (val as u32)) }
+    unsafe {
+        match order {
+            MemoryOrder.Relaxed => { intrinsics.atomicStoreRelaxed32(ref self.val, (val as u32)) }
+            MemoryOrder.Release => { intrinsics.atomicStoreRelease32(ref self.val, (val as u32)) }
+            _ => { intrinsics.atomicStore32(ref self.val, (val as u32)) }
+        }
+    }
 }
 
 /// Atomically updates storage and returns its previous value.
@@ -320,13 +368,25 @@ public func AtomicUsize.new(val: usize): AtomicUsize {
 /// Loads atomically. Release and AcqRel are invalid.
 public func AtomicUsize.load(self: ref AtomicUsize, order: MemoryOrder): usize {
     requireLoad(order)
-    unsafe { return (intrinsics.atomicLoadUsize(ref self.val) as usize) }
+    unsafe {
+        match order {
+            MemoryOrder.Relaxed => { return (intrinsics.atomicLoadRelaxedUsize(ref self.val) as usize) }
+            MemoryOrder.Acquire => { return (intrinsics.atomicLoadAcquireUsize(ref self.val) as usize) }
+            _ => { return (intrinsics.atomicLoadUsize(ref self.val) as usize) }
+        }
+    }
 }
 
 /// Stores atomically. Acquire and AcqRel are invalid.
 public func AtomicUsize.store(self: ref AtomicUsize, val: usize, order: MemoryOrder): void {
     requireStore(order)
-    unsafe { intrinsics.atomicStoreUsize(ref self.val, (val as usize)) }
+    unsafe {
+        match order {
+            MemoryOrder.Relaxed => { intrinsics.atomicStoreRelaxedUsize(ref self.val, (val as usize)) }
+            MemoryOrder.Release => { intrinsics.atomicStoreReleaseUsize(ref self.val, (val as usize)) }
+            _ => { intrinsics.atomicStoreUsize(ref self.val, (val as usize)) }
+        }
+    }
 }
 
 /// Atomically updates storage and returns its previous value.
@@ -385,13 +445,25 @@ public func AtomicI64.new(val: i64): AtomicI64 {
 /// Loads atomically. Release and AcqRel are invalid.
 public func AtomicI64.load(self: ref AtomicI64, order: MemoryOrder): i64 {
     requireLoad(order)
-    unsafe { return (intrinsics.atomicLoad64(ref self.val) as i64) }
+    unsafe {
+        match order {
+            MemoryOrder.Relaxed => { return (intrinsics.atomicLoadRelaxed64(ref self.val) as i64) }
+            MemoryOrder.Acquire => { return (intrinsics.atomicLoadAcquire64(ref self.val) as i64) }
+            _ => { return (intrinsics.atomicLoad64(ref self.val) as i64) }
+        }
+    }
 }
 
 /// Stores atomically. Acquire and AcqRel are invalid.
 public func AtomicI64.store(self: ref AtomicI64, val: i64, order: MemoryOrder): void {
     requireStore(order)
-    unsafe { intrinsics.atomicStore64(ref self.val, (val as u64)) }
+    unsafe {
+        match order {
+            MemoryOrder.Relaxed => { intrinsics.atomicStoreRelaxed64(ref self.val, (val as u64)) }
+            MemoryOrder.Release => { intrinsics.atomicStoreRelease64(ref self.val, (val as u64)) }
+            _ => { intrinsics.atomicStore64(ref self.val, (val as u64)) }
+        }
+    }
 }
 
 /// Atomically updates storage and returns its previous value.
@@ -450,13 +522,25 @@ public func AtomicU64.new(val: u64): AtomicU64 {
 /// Loads atomically. Release and AcqRel are invalid.
 public func AtomicU64.load(self: ref AtomicU64, order: MemoryOrder): u64 {
     requireLoad(order)
-    unsafe { return (intrinsics.atomicLoad64(ref self.val) as u64) }
+    unsafe {
+        match order {
+            MemoryOrder.Relaxed => { return (intrinsics.atomicLoadRelaxed64(ref self.val) as u64) }
+            MemoryOrder.Acquire => { return (intrinsics.atomicLoadAcquire64(ref self.val) as u64) }
+            _ => { return (intrinsics.atomicLoad64(ref self.val) as u64) }
+        }
+    }
 }
 
 /// Stores atomically. Acquire and AcqRel are invalid.
 public func AtomicU64.store(self: ref AtomicU64, val: u64, order: MemoryOrder): void {
     requireStore(order)
-    unsafe { intrinsics.atomicStore64(ref self.val, (val as u64)) }
+    unsafe {
+        match order {
+            MemoryOrder.Relaxed => { intrinsics.atomicStoreRelaxed64(ref self.val, (val as u64)) }
+            MemoryOrder.Release => { intrinsics.atomicStoreRelease64(ref self.val, (val as u64)) }
+            _ => { intrinsics.atomicStore64(ref self.val, (val as u64)) }
+        }
+    }
 }
 
 /// Atomically updates storage and returns its previous value.
@@ -515,13 +599,25 @@ public func AtomicPtr.new<T>(val: ptr[T]): AtomicPtr<T> {
 /// Loads atomically. Release and AcqRel are invalid.
 public func AtomicPtr.load<T>(self: ref AtomicPtr<T>, order: MemoryOrder): ptr[T] {
     requireLoad(order)
-    unsafe { return (intrinsics.atomicLoadPtr(ref self.val) as ptr[T]) }
+    unsafe {
+        match order {
+            MemoryOrder.Relaxed => { return (intrinsics.atomicLoadRelaxedPtr(ref self.val) as ptr[T]) }
+            MemoryOrder.Acquire => { return (intrinsics.atomicLoadAcquirePtr(ref self.val) as ptr[T]) }
+            _ => { return (intrinsics.atomicLoadPtr(ref self.val) as ptr[T]) }
+        }
+    }
 }
 
 /// Stores atomically. Acquire and AcqRel are invalid.
 public func AtomicPtr.store<T>(self: ref AtomicPtr<T>, val: ptr[T], order: MemoryOrder): void {
     requireStore(order)
-    unsafe { intrinsics.atomicStorePtr(ref self.val, (val as ptr[u8])) }
+    unsafe {
+        match order {
+            MemoryOrder.Relaxed => { intrinsics.atomicStoreRelaxedPtr(ref self.val, (val as ptr[u8])) }
+            MemoryOrder.Release => { intrinsics.atomicStoreReleasePtr(ref self.val, (val as ptr[u8])) }
+            _ => { intrinsics.atomicStorePtr(ref self.val, (val as ptr[u8])) }
+        }
+    }
 }
 
 /// Atomically updates storage and returns its previous value.

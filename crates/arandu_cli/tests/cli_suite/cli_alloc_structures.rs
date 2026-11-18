@@ -405,3 +405,72 @@ fn box_rc_arc_report_or_abort_on_allocation_failure_in_generated_c() {
     }
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn user_defined_to_str_interpolation_and_vec_filter_runtime() {
+    let source = r#"
+from std.alloc.vec import { Vec }
+import std.core.io as io
+
+struct User {
+    id: int,
+}
+
+func User.toStr(self: ref User): str {
+    return "User#42"
+}
+
+struct Legacy {
+    code: int,
+}
+
+func Legacy.to_str(self: ref Legacy): str {
+    return "Legacy#7"
+}
+
+struct Box<T> {
+    value: T,
+}
+
+func Box.toStr<T>(self: ref Box<T>): str {
+    return "Boxed"
+}
+
+func main(): int {
+    let u = User { id: 42 }
+    let l = Legacy { code: 7 }
+    let b = Box { value: 9 }
+    let n = 15
+    io.println(u.toStr())
+    io.println(l.to_str())
+    io.println("A:${u}|B:${l}|C:${b}|D:${n.toStr()}")
+
+    let mut v = Vec.new<int>()
+    v.push(1)
+    v.push(2)
+    v.push(3)
+    v.push(4)
+    let evens = v.filter((x) => *x % 2 == 0)
+    io.println("len=${evens.len()}")
+    return 0
+}
+"#;
+    let root = common::temp_dir("arandu-tostr-filter-rt").expect("temporary directory");
+    let path = root.join("main.aru");
+    fs::write(&path, source).expect("write source");
+    let run = common::cli_command()
+        .args(["run", &path.to_string_lossy()])
+        .output()
+        .expect("run CLI");
+    assert!(
+        run.status.success(),
+        "run failed: {:?}\n{}",
+        run.status.code(),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout).replace("\r\n", "\n"),
+        "User#42\nLegacy#7\nA:User#42|B:Legacy#7|C:Boxed|D:15\nlen=2\n"
+    );
+    let _ = fs::remove_dir_all(root);
+}

@@ -65,11 +65,16 @@ pub(super) fn lower_call(
                     return Ok(HirExpr { kind, ty, span });
                 }
             }
-            // ToStr v0.1: `receiver.to_str()` → HirExprKind::ToStr (not a real method call).
+            // ToStr intrinsic: `receiver.to_str()` or `receiver.toStr()` → HirExprKind::ToStr
+            // unless the receiver struct defines its own associated method.
             if arg_ids.is_empty()
                 && let ExprKind::Field { base, field, .. } | ExprKind::SafeField { base, field, .. } =
                     pool.expr(callee_id)
-                && field == "to_str"
+                && (field == "to_str" || field == "toStr")
+                && !type_check
+                    .type_info
+                    .expr_type_id(*base)
+                    .is_some_and(|ty| super::text::has_user_to_str_method(type_check, ty, field))
             {
                 let value_id = super::lower_expr(type_check, pool, hir_pool, *base)?;
                 let kind = HirExprKind::ToStr { value: value_id };

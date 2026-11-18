@@ -53,6 +53,10 @@ pub(super) fn annotation_completions(text: &str, offset: u32, prefix: &str) -> V
                     Some(format!("{}(\"${{1:library}}\")", spec.canonical_name)),
                     true,
                 ),
+                attrs::AnnotationArguments::OneOrMoreStrings => (
+                    Some(format!("{}(\"${{1:warning}}\")", spec.canonical_name)),
+                    true,
+                ),
                 attrs::AnnotationArguments::OneStringOrIdent => {
                     (Some(format!("{}(\"${{1:C}}\")", spec.canonical_name)), true)
                 }

@@ -331,6 +331,23 @@ mod tests {
     }
 
     #[test]
+    fn diag_code_lint_name_and_from_lint_name() {
+        assert_eq!(
+            DiagCode::from_lint_name_or_code("unused_variable"),
+            Some(DiagCode::W001VariableAssignedNotUsed)
+        );
+        assert_eq!(
+            DiagCode::from_lint_name_or_code("W006"),
+            Some(DiagCode::W006UnhandledResult)
+        );
+        assert_eq!(
+            DiagCode::W006UnhandledResult.lint_name(),
+            Some("unhandled_result")
+        );
+        assert_eq!(DiagCode::from_lint_name_or_code("unknown"), None);
+    }
+
+    #[test]
     fn diag_code_display_matches_as_str() {
         let codes = [
             DiagCode::T002IncompatibleAssignment,

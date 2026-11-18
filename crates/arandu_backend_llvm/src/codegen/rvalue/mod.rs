@@ -114,6 +114,23 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                 if_true,
                 if_false,
             } => self.emit_vector_select(result, lhs_ty, mask, if_true, if_false),
+            AmirRvalue::Select {
+                condition,
+                if_true,
+                if_false,
+            } => {
+                let bool_ty = ArType::Primitive(arandu_middle::types::Primitive::Bool);
+                let cond = self.operand(condition, &bool_ty)?;
+                let arm_true = self.operand(if_true, lhs_ty)?;
+                let arm_false = self.operand(if_false, lhs_ty)?;
+                self.writer.line(format!(
+                    "{result} = select {}, {}, {}",
+                    cond.render(),
+                    arm_true.render(),
+                    arm_false.render()
+                ));
+                Ok(())
+            }
             AmirRvalue::VectorSplat { value } => self.emit_vector_splat(result, lhs_ty, value),
             AmirRvalue::VectorShuffle { left, right, mask } => {
                 self.emit_vector_shuffle(result, lhs_ty, left, right, mask)
@@ -152,6 +169,10 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                     result, vector.ty, vector.value, value.ty, value.value
                 ));
                 Ok(())
+            }
+            AmirRvalue::VectorBitmask { vector } => self.emit_vector_bitmask(result, vector),
+            AmirRvalue::VectorLoadUnaligned { source } => {
+                self.emit_vector_load_unaligned(result, source)
             }
             AmirRvalue::BlackBox { value, .. } => {
                 let value = self.operand(value, lhs_ty)?;

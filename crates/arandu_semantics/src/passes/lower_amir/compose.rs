@@ -501,9 +501,14 @@ fn merge_imported_marks(
             aggregate.symbols_mut().exported_functions.insert(symbol);
         }
     }
+    for &symbol in &context.cold_functions {
+        if imported(symbol) {
+            aggregate.symbols_mut().cold_functions.insert(symbol);
+        }
+    }
 }
 
-/// Copies `symbol`'s host name, tooling root and `@Export` marks from
+/// Copies `symbol`'s host name, tooling root, `@Cold`, and `@Export` marks from
 /// `context` into the aggregate.
 fn merge_symbol_marks(
     aggregate: &mut TypeCheckResult,
@@ -523,6 +528,9 @@ fn merge_symbol_marks(
     // alone would keep it internal and hide name clashes.
     if context.is_exported(symbol) {
         aggregate.symbols_mut().exported_functions.insert(symbol);
+    }
+    if context.is_cold(symbol) {
+        aggregate.symbols_mut().cold_functions.insert(symbol);
     }
 }
 

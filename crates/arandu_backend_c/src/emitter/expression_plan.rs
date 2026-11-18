@@ -37,7 +37,8 @@ pub(super) fn candidates(func: &AmirFunc, scalar: impl Fn(usize) -> bool) -> Vec
             };
             let index = lhs.as_usize();
             let pure = match rhs {
-                AmirRvalue::Use(AmirOperand::Copy(_) | AmirOperand::Constant(_)) => true,
+                AmirRvalue::Use(AmirOperand::Copy(_) | AmirOperand::Constant(_))
+                | AmirRvalue::Select { .. } => true,
                 AmirRvalue::Unary { op, .. } => matches!(op, UnaryOp::Not | UnaryOp::BitNot),
                 AmirRvalue::Binary { op, .. } => matches!(
                     op,

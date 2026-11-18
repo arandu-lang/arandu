@@ -18,6 +18,7 @@
 
 mod ffi;
 
+pub mod c_compat;
 pub mod fs_runtime;
 pub mod gen_runtime;
 pub mod gen_runtime_gold;

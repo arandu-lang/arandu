@@ -101,6 +101,16 @@ pub(crate) fn type_satisfies_interface(
         return bound_type_args.is_empty()
             && super::super::transfer::satisfies(checker, concrete, capability);
     }
+    if checker
+        .symbols
+        .try_get(iface_sym)
+        .and_then(|symbol| symbol.lang_item)
+        == Some(arandu_middle::symbol_table::LangItem::Ord)
+        && bound_type_args.is_empty()
+        && concrete.is_orderable()
+    {
+        return true;
+    }
     let Some(type_id) = concrete_type_id(concrete) else {
         return false;
     };

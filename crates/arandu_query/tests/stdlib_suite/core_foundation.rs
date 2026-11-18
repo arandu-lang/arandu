@@ -123,6 +123,10 @@ fn foundation_modules_are_freestanding_and_type_check_together() {
         ("stdlib/core/option.aru", OPTION_ARU),
         ("stdlib/core/result.aru", RESULT_ARU),
         ("stdlib/core/slice.aru", SLICE_ARU),
+        (
+            "stdlib/core/simd.aru",
+            include_str!("../../../../stdlib/core/simd.aru"),
+        ),
         ("stdlib/core/decimal.aru", DECIMAL_ARU),
         ("stdlib/core/fixed.aru", FIXED_ARU),
         ("stdlib/core/io.aru", IO_ARU),

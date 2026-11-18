@@ -119,6 +119,8 @@ pub(super) struct FuncEmitter<'a, 'm> {
     /// C ABI shape of an `@Export` aggregate return, consumed by the return
     /// terminator. `None` for ordinary Arandu functions.
     pub(super) export_return: Option<ExportReturn>,
+    /// Set immediately before lowering a tail-position direct `Call` statement.
+    pub(super) emit_as_tail_call: bool,
 }
 
 /// Boundary return shape of an exported function.

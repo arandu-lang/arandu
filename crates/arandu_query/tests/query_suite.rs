@@ -30,6 +30,12 @@ mod holes;
 #[path = "query_suite/indirect_call.rs"]
 mod indirect_call;
 
+#[path = "query_suite/comptime_generic_calls.rs"]
+mod comptime_generic_calls;
+
+#[path = "query_suite/lint_levels.rs"]
+mod lint_levels;
+
 #[path = "query_suite/or_patterns.rs"]
 mod or_patterns;
 
@@ -59,6 +65,9 @@ mod salsa_cutoff;
 
 #[path = "query_suite/syntax_tree.rs"]
 mod syntax_tree;
+
+#[path = "query_suite/stdlib_functional.rs"]
+mod stdlib_functional;
 
 #[path = "query_suite/variant_sugar.rs"]
 mod variant_sugar;

@@ -400,6 +400,16 @@ mod vector_hash_tests {
                 if_true: a,
                 if_false: b,
             },
+            AmirRvalue::Select {
+                condition: a,
+                if_true: a,
+                if_false: b,
+            },
+            AmirRvalue::Select {
+                condition: b,
+                if_true: a,
+                if_false: b,
+            },
             AmirRvalue::VectorSplat { value: a },
             AmirRvalue::VectorShuffle {
                 left: a,
@@ -418,6 +428,10 @@ mod vector_hash_tests {
                 lane: 0,
                 value: b,
             },
+            AmirRvalue::VectorBitmask { vector: a },
+            AmirRvalue::VectorBitmask { vector: b },
+            AmirRvalue::VectorLoadUnaligned { source: a },
+            AmirRvalue::VectorLoadUnaligned { source: b },
         ];
         let mut hashes = std::collections::HashSet::new();
         for value in cases {

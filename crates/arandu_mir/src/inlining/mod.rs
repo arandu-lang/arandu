@@ -108,6 +108,15 @@ fn inlining_growth(callee: &crate::amir::AmirFunc, has_lhs: bool) -> usize {
 ///
 /// Returns the total number of call sites inlined across the program.
 pub fn inline_leaf_functions(program: &mut AmirProgram) -> usize {
+    inline_leaf_functions_with_cold(program, &rustc_hash::FxHashSet::default())
+}
+
+/// Optimizes `program` by inlining eligible small functions, skipping any
+/// callee marked `@Cold` so slow-path error handlers never bloat hot callers.
+pub fn inline_leaf_functions_with_cold(
+    program: &mut AmirProgram,
+    cold_functions: &rustc_hash::FxHashSet<crate::SymbolId>,
+) -> usize {
     let mut total_inlined = 0usize;
     let mut spent_per_caller = vec![0usize; program.funcs.len()];
     // Pinned from the pristine program: every inline grows the caller, so a
@@ -127,6 +136,9 @@ pub fn inline_leaf_functions(program: &mut AmirProgram) -> usize {
         // cheaper option is unavailable.
         let mut eligible = FxHashMap::default();
         for (idx, func) in program.funcs.iter().enumerate() {
+            if cold_functions.contains(&func.symbol) {
+                continue;
+            }
             if let Some(cost) = evaluate_leaf_inlining(func, INLINE_LEAF_BUDGET) {
                 eligible.insert(func.symbol, (idx, cost));
             }
@@ -141,7 +153,7 @@ pub fn inline_leaf_functions(program: &mut AmirProgram) -> usize {
         while changed {
             changed = false;
             for (idx, func) in program.funcs.iter().enumerate() {
-                if eligible.contains_key(&func.symbol) {
+                if cold_functions.contains(&func.symbol) || eligible.contains_key(&func.symbol) {
                     continue;
                 }
                 let Some(cost) = evaluate_nonleaf_inlining(func, INLINE_LEAF_BUDGET) else {

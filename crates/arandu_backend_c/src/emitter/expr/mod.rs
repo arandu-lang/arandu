@@ -50,11 +50,25 @@ impl<'a> CEmitter<'a> {
             | AmirRvalue::VectorSplat { .. }
             | AmirRvalue::VectorShuffle { .. }
             | AmirRvalue::VectorExtractLane { .. }
-            | AmirRvalue::VectorInsertLane { .. } => {
+            | AmirRvalue::VectorInsertLane { .. }
+            | AmirRvalue::VectorBitmask { .. }
+            | AmirRvalue::VectorLoadUnaligned { .. } => {
                 self.emit_vector_rvalue(rvalue, func, expected_ar_type)
             }
             AmirRvalue::Use(op) => {
                 self.emit_use_rvalue(op, func, expected_ar_type, expected_c_type);
+            }
+            AmirRvalue::Select {
+                condition,
+                if_true,
+                if_false,
+            } => {
+                let cond_str = self.format_operand(condition, func);
+                let _ = write!(&mut self.output, "(({cond_str}) ? ({expected_c_type})(");
+                self.emit_use_rvalue(if_true, func, expected_ar_type, expected_c_type);
+                let _ = write!(&mut self.output, ") : ({expected_c_type})(");
+                self.emit_use_rvalue(if_false, func, expected_ar_type, expected_c_type);
+                let _ = write!(&mut self.output, "))");
             }
             AmirRvalue::BlackBox { value, .. } => {
                 self.emit_black_box(value, func, expected_ar_type, expected_c_type);

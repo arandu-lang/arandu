@@ -14,11 +14,11 @@
 //! ## Example
 //!
 //! ```arandu
-//! import std.core.slice as slice
+//! import std.core.slice
 //!
 //! let arr = [10, 20, 30, 40, 50]
-//! let n = slice.len<i32>(arr)               // 5
-//! let sub = slice.subslice<i32>(arr, 1, 2)  // Some([20, 30])
+//! let n = arr.len()               // 5
+//! let sub = arr.subslice(1, 2)    // Some([20, 30])
 //! ```
 //!
 //! ## Platform
@@ -352,4 +352,80 @@ public func slice.readU32Le(self: []u8, offset: usize): Option<u32> {
 /// Reads a little-endian `u64` at byte offset `offset` (`bytes.readU64Le(offset)`).
 public func slice.readU64Le(self: []u8, offset: usize): Option<u64> {
     return readU64Le(self, offset)
+}
+
+/// Calls `f` on each element in order.
+public func forEach<T>(s: []T, f: (ref T) -> void): void {
+    let mut i: usize = 0
+    let len = intrinsics.sliceLen<T>(s)
+    while i < len {
+        if let Some(item) = get<T>(s, i) {
+            f(item)
+        }
+        i += 1
+    }
+}
+
+/// Accumulates values by calling `f` on each element and the running accumulator.
+public func fold<T, R>(s: []T, initial: R, f: (R, ref T) -> R): R {
+    let mut acc = initial
+    let len = intrinsics.sliceLen<T>(s)
+    let mut i: usize = 0
+    while i < len {
+        if let Some(item) = get<T>(s, i) {
+            acc = f(acc, item)
+        }
+        i += 1
+    }
+    return acc
+}
+
+/// Returns `true` if any element in the slice satisfies `f`.
+public func anyMatch<T>(s: []T, f: (ref T) -> bool): bool {
+    let len = intrinsics.sliceLen<T>(s)
+    let mut i: usize = 0
+    while i < len {
+        if let Some(item) = get<T>(s, i) {
+            if f(item) {
+                return true
+            }
+        }
+        i += 1
+    }
+    return false
+}
+
+/// Returns `true` if all elements in the slice satisfy `f`.
+public func allMatch<T>(s: []T, f: (ref T) -> bool): bool {
+    let len = intrinsics.sliceLen<T>(s)
+    let mut i: usize = 0
+    while i < len {
+        if let Some(item) = get<T>(s, i) {
+            if !f(item) {
+                return false
+            }
+        }
+        i += 1
+    }
+    return true
+}
+
+/// Calls `f` on each element in order.
+public func slice.forEach<T>(self: []T, f: (ref T) -> void): void {
+    forEach<T>(self, f)
+}
+
+/// Accumulates values by calling `f` on each element and the running accumulator.
+public func slice.fold<T, R>(self: []T, initial: R, f: (R, ref T) -> R): R {
+    return fold<T, R>(self, initial, f)
+}
+
+/// Returns `true` if any element in the slice satisfies `f`.
+public func slice.anyMatch<T>(self: []T, f: (ref T) -> bool): bool {
+    return anyMatch<T>(self, f)
+}
+
+/// Returns `true` if all elements in the slice satisfy `f`.
+public func slice.allMatch<T>(self: []T, f: (ref T) -> bool): bool {
+    return allMatch<T>(self, f)
 }

@@ -441,13 +441,28 @@ pub(super) fn lower_staged_root<'db, 'prog>(
         ),
     }
     .map_err(BuildFailure::Diagnostics)?;
-    CtfeFunction::new_with_provider(
-        Arc::unwrap_or_clone(unit.function),
-        unit.literals,
-        &checked.type_info.type_interner,
-        layout,
-        checked.type_info.as_ref(),
-    )
+    let allow_null_pointers = matches!(selector, RootSelector::GlobalInitializer)
+        && checked
+            .symbols
+            .try_get(owner)
+            .is_some_and(|symbol| symbol.kind == arandu_middle::SymbolKind::StaticMut);
+    if allow_null_pointers {
+        CtfeFunction::new_static_initializer(
+            Arc::unwrap_or_clone(unit.function),
+            unit.literals,
+            &checked.type_info.type_interner,
+            layout,
+            checked.type_info.as_ref(),
+        )
+    } else {
+        CtfeFunction::new_with_provider(
+            Arc::unwrap_or_clone(unit.function),
+            unit.literals,
+            &checked.type_info.type_interner,
+            layout,
+            checked.type_info.as_ref(),
+        )
+    }
     .and_then(|unit| {
         unit.bind_instance(
             instance

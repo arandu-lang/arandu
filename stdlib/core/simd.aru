@@ -167,6 +167,8 @@ extern "arandu-intrinsic" {
     func simdU8x16Insert14(vector: U8x16, value: u8): U8x16
     func simdU8x16Extract15(vector: U8x16): u8
     func simdU8x16Insert15(vector: U8x16, value: u8): U8x16
+    func simdU8x16Bitmask(vector: U8x16): u32
+    func simdU8x16LoadUnaligned(source: []u8): U8x16
     func simdI64x2Splat(value: i64): I64x2
     func simdI64x2Add(left: I64x2, right: I64x2): I64x2
     func simdI64x2Sub(left: I64x2, right: I64x2): I64x2
@@ -776,11 +778,15 @@ public func U8x16.replaceLane(self: U8x16, index: int, value: u8): U8x16 {
     }
     return self
 }
+/// Extracts the high bit (bit 7) of each of the 16 `u8` lanes into bits `0..=15` of a `u32`.
+public func U8x16.highBitmask(self: U8x16): u32 {
+    unsafe { return simdU8x16Bitmask(self) }
+}
 /// Reads the first 16 lanes; a short slice returns None without reading data.
-/// Only `u8` alignment is required. Scalar accesses avoid aligned vector UB.
+/// Only `u8` alignment is required.
 public func U8x16.loadUnaligned(source: []u8): Option<U8x16> {
     if intrinsics.sliceLen<u8>(source) < (16 as usize) { return Option.None }
-    return Option.Some(U8x16.new(source[0], source[1], source[2], source[3], source[4], source[5], source[6], source[7], source[8], source[9], source[10], source[11], source[12], source[13], source[14], source[15]))
+    unsafe { return Option.Some(simdU8x16LoadUnaligned(source)) }
 }
 /// Writes the first 16 lanes through an exclusive borrowed view.
 /// A short destination returns false without writes; scalar alignment suffices.
@@ -1025,13 +1031,17 @@ public func Mask8x16.testLane(self: Mask8x16, index: int): bool {
     if index < 0 || index >= 16 { unsafe { intrinsics.abort() } return false }
     return self.bits.extractLane(index * 1) != (0 as u8)
 }
+/// Packs all 16 boolean lanes into bits `0..=15` of a `u32`.
+public func Mask8x16.bitmask(self: Mask8x16): u32 {
+    return self.bits.highBitmask()
+}
 /// True if every lane is true.
 public func Mask8x16.allTrue(self: Mask8x16): bool {
-    return self.testLane(0) && self.testLane(1) && self.testLane(2) && self.testLane(3) && self.testLane(4) && self.testLane(5) && self.testLane(6) && self.testLane(7) && self.testLane(8) && self.testLane(9) && self.testLane(10) && self.testLane(11) && self.testLane(12) && self.testLane(13) && self.testLane(14) && self.testLane(15)
+    return self.bitmask() == (65535 as u32)
 }
 /// True if at least one lane is true.
 public func Mask8x16.anyTrue(self: Mask8x16): bool {
-    return self.testLane(0) || self.testLane(1) || self.testLane(2) || self.testLane(3) || self.testLane(4) || self.testLane(5) || self.testLane(6) || self.testLane(7) || self.testLane(8) || self.testLane(9) || self.testLane(10) || self.testLane(11) || self.testLane(12) || self.testLane(13) || self.testLane(14) || self.testLane(15)
+    return self.bitmask() != (0 as u32)
 }
 
 /// Canonical mask of 8 lanes. True occupies every bit of its lane.

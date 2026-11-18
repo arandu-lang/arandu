@@ -28,8 +28,9 @@ impl<'a> CEmitter<'a> {
             super::rotations::plan(func, &self.program.literal_pool, self.interner);
         let name = self.c_function_name(func.symbol);
         let linkage = self.c_function_linkage(func.symbol);
+        let cold = self.c_function_cold_prefix(func.symbol);
         let ret_ty = self.c_func_return_type(func);
-        let _ = write!(&mut self.output, "{linkage}{} {}(", ret_ty, name);
+        let _ = write!(&mut self.output, "{linkage}{cold}{} {}(", ret_ty, name);
         self.emit_func_parameters(func);
         let _ = writeln!(&mut self.output, ") {{");
 

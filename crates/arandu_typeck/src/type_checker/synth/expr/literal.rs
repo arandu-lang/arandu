@@ -283,10 +283,35 @@ pub(super) fn synth_literal_expr(
                         }
                         _ => false,
                     };
+                    let has_to_str = {
+                        let mut base = part_ty_id;
+                        for _ in 0..4 {
+                            match checker.resolve(base) {
+                                ArType::Ref(inner) | ArType::RefMut(inner) | ArType::Ptr(inner) => {
+                                    base = inner;
+                                }
+                                _ => break,
+                            }
+                        }
+                        match checker.resolve(base) {
+                            ArType::Named(id, _) => {
+                                checker
+                                    .symbols
+                                    .lookup_associated_member(id, "to_str")
+                                    .is_some()
+                                    || checker
+                                        .symbols
+                                        .lookup_associated_member(id, "toStr")
+                                        .is_some()
+                            }
+                            _ => false,
+                        }
+                    };
                     if part_ty.is_error()
                         || part_ty.is_to_str_v01()
                         || is_ref_str
                         || super::text::is_string(checker, &part_ty)
+                        || has_to_str
                     {
                         continue;
                     }
@@ -331,7 +356,10 @@ pub(super) fn synth_literal_expr(
                     let err_id = checker.intern(ArType::Error);
                     Some(checker.intern(ArType::Nullable(err_id)))
                 } else if types::is_tryable_type(&ctx, &checker.type_info.type_interner)
-                    || matches!(ctx, ArType::Option(_) | ArType::Nullable(_))
+                    || matches!(
+                        ctx,
+                        ArType::Option(_) | ArType::Nullable(_) | ArType::Ptr(_)
+                    )
                 {
                     // Option / Result / Nullable / tryable → nil fills the context type
                     // (AMIR lowers Option-typed nil to EnumConstruct None).
@@ -512,11 +540,19 @@ pub(super) fn synth_literal_expr(
                                 );
                             }
                             let field_val_ty = checker.resolve(field_val_ty_id);
-                            if !types::unify(
+                            let unifies = types::unify(
                                 &defined_field_ty,
                                 &field_val_ty,
                                 &checker.type_info.type_interner,
-                            ) {
+                            ) || match &defined_field_ty {
+                                ArType::Nullable(inner) | ArType::Option(inner) => types::unify(
+                                    &checker.type_info.type_interner.resolve(*inner),
+                                    &field_val_ty,
+                                    &checker.type_info.type_interner,
+                                ),
+                                _ => false,
+                            };
+                            if !unifies {
                                 checker.add_constraint(
                                     defined_field_ty,
                                     field_val_ty_id,

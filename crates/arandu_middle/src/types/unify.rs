@@ -388,6 +388,26 @@ fn is_assignable_inner(actual: &ArType, expected: &ArType, interner: &TypeIntern
         }
     }
 
+    // nil -> ptr[T] coercion
+    if matches!(expected, ArType::Ptr(_))
+        && matches!(actual, ArType::Nullable(inner) if interner.resolve(*inner).is_error())
+    {
+        return true;
+    }
+
+    // ref func(...) -> ptr[func(...)] coercion for C-ABI function pointers
+    if let ArType::Ptr(inner_expected_id) = expected {
+        let inner_expected = interner.resolve(*inner_expected_id);
+        if matches!(inner_expected, ArType::Func(..))
+            && let ArType::Ref(inner_actual_id) = actual
+        {
+            let inner_actual = interner.resolve(*inner_actual_id);
+            if unify_inner(&inner_actual, &inner_expected, interner) {
+                return true;
+            }
+        }
+    }
+
     // &mut T -> &T coercion
     if let ArType::Ref(inner_expected_id) = expected {
         let inner_expected = interner.resolve(*inner_expected_id);

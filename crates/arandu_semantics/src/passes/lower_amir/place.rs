@@ -168,7 +168,19 @@ impl LowerCtx<'_> {
             // the projected payload instead would duplicate owned fields when
             // auto-borrowing `owner.get().field.method()`.
             HirExprKind::Call { .. }
-                if matches!(self.resolve_ty(expr.ty), ArType::Ref(_) | ArType::RefMut(_)) =>
+            | HirExprKind::Cast { .. }
+            | HirExprKind::Binary { .. }
+            | HirExprKind::If { .. }
+            | HirExprKind::ValueBlock { .. }
+            | HirExprKind::UnsafeBlock { .. }
+            | HirExprKind::Scope { .. }
+            | HirExprKind::Unary {
+                op: UnaryOp::Ref | UnaryOp::RefMut,
+                ..
+            } if matches!(
+                self.resolve_ty(expr.ty),
+                ArType::Ptr(_) | ArType::Ref(_) | ArType::RefMut(_)
+            ) =>
             {
                 let value = self.lower_expr(expr_id, None, symbols)?;
                 let local = self.new_compiler_local_id(expr.ty, expr.span);

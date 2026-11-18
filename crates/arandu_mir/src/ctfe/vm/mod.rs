@@ -50,6 +50,7 @@ pub struct CtfeFunction {
     return_type: ValueType,
     identity: FunctionInstance,
     calls: Vec<(SymbolId, FunctionInstance)>,
+    allow_null_pointers: bool,
 }
 
 impl CtfeFunction {
@@ -114,7 +115,7 @@ impl CtfeFunction {
         types: &TypeInterner,
         layout: DataLayout,
     ) -> Result<Self, EvalErrorKind> {
-        Self::build(function, literals, types, layout, None)
+        Self::build(function, literals, types, layout, None, false)
     }
 
     /// Admit nominal aggregates through the shared canonical metadata/Copy
@@ -126,7 +127,19 @@ impl CtfeFunction {
         layout: DataLayout,
         provider: &dyn arandu_middle::layout::StructLayoutProvider,
     ) -> Result<Self, EvalErrorKind> {
-        Self::build(function, literals, types, layout, Some(provider))
+        Self::build(function, literals, types, layout, Some(provider), false)
+    }
+
+    /// Admit static storage initializers (`static mut`), allowing null-only
+    /// pointer fields inside aggregates without relaxing Copy/CTFE purity.
+    pub fn new_static_initializer(
+        function: AmirFunc,
+        literals: AmirLiteralPool,
+        types: &TypeInterner,
+        layout: DataLayout,
+        provider: &dyn arandu_middle::layout::StructLayoutProvider,
+    ) -> Result<Self, EvalErrorKind> {
+        Self::build(function, literals, types, layout, Some(provider), true)
     }
 
     fn build(
@@ -135,6 +148,7 @@ impl CtfeFunction {
         types: &TypeInterner,
         layout: DataLayout,
         provider: Option<&dyn arandu_middle::layout::StructLayoutProvider>,
+        allow_null_pointers: bool,
     ) -> Result<Self, EvalErrorKind> {
         layout.validate().map_err(EvalErrorKind::InvalidLayout)?;
         IntegerType::new(Primitive::USize, layout).map_err(EvalErrorKind::Value)?;
@@ -144,7 +158,15 @@ impl CtfeFunction {
             if let Some(value) = descriptors.get(&id) {
                 return Ok(value.clone());
             }
-            let value = ValueType::resolve(id, types, layout, provider, 0, &mut remaining)?;
+            let value = ValueType::resolve(
+                id,
+                types,
+                layout,
+                provider,
+                allow_null_pointers,
+                0,
+                &mut remaining,
+            )?;
             descriptors.insert(id, value.clone());
             Ok::<_, EvalErrorKind>(value)
         };
@@ -189,6 +211,7 @@ impl CtfeFunction {
             local_types,
             projection_types,
             return_type,
+            allow_null_pointers,
         })
     }
 
@@ -342,6 +365,7 @@ struct Meter<'a, C> {
     max_frames: usize,
     aggregate_nodes: usize,
     aggregate_bytes: usize,
+    arena: Vec<Option<ConstValue>>,
     cancelled: &'a mut C,
 }
 
@@ -366,6 +390,29 @@ impl<C: FnMut() -> bool> Meter<'_, C> {
             return Err(EvalErrorKind::ValueLimit);
         }
         Ok(())
+    }
+    fn arena_alloc(&mut self) -> Result<usize, EvalErrorKind> {
+        self.step()?;
+        let handle = self.arena.len();
+        self.arena.push(None);
+        self.values = self.values.saturating_add(1);
+        if self.values > self.max_values {
+            return Err(EvalErrorKind::ValueLimit);
+        }
+        Ok(handle)
+    }
+    fn arena_checkpoint(&mut self) -> Result<usize, EvalErrorKind> {
+        self.step()?;
+        Ok(self.arena.len())
+    }
+    fn arena_rewind(&mut self, mark: usize) -> Result<(), EvalErrorKind> {
+        self.step()?;
+        if mark <= self.arena.len() {
+            self.arena.truncate(mark);
+            Ok(())
+        } else {
+            Err(EvalErrorKind::InvalidIr)
+        }
     }
     fn bytes(&mut self, count: usize) -> Result<(), EvalErrorKind> {
         self.aggregate_bytes = self
@@ -445,7 +492,8 @@ impl<C: FnMut() -> bool> Meter<'_, C> {
             ConstValue::Void
             | ConstValue::Bool(_)
             | ConstValue::Integer(_)
-            | ConstValue::Float(_) => {}
+            | ConstValue::Float(_)
+            | ConstValue::TypeDesc(_) => {}
         }
         Ok(())
     }
@@ -499,18 +547,23 @@ fn admitted_rvalue(rhs: &AmirRvalue) -> Result<(), EvalErrorKind> {
         | AmirRvalue::EnumPayload { .. }
         | AmirRvalue::EnumConstruct { .. }
         | AmirRvalue::VectorSelect { .. }
+        | AmirRvalue::Select { .. }
         | AmirRvalue::VectorCompare { .. }
         | AmirRvalue::VectorOp { .. }
         | AmirRvalue::VectorSplat { .. }
         | AmirRvalue::VectorShuffle { .. }
         | AmirRvalue::VectorExtractLane { .. }
-        | AmirRvalue::VectorInsertLane { .. } => Ok(()),
+        | AmirRvalue::VectorInsertLane { .. }
+        | AmirRvalue::VectorBitmask { .. }
+        | AmirRvalue::VectorLoadUnaligned { .. }
+        | AmirRvalue::ArenaAlloc { .. }
+        | AmirRvalue::ArenaCheckpoint
+        | AmirRvalue::Borrow(_)
+        | AmirRvalue::BorrowMut(_) => Ok(()),
         AmirRvalue::SliceData(_)
         | AmirRvalue::SliceView { .. }
         | AmirRvalue::StrView { .. }
         | AmirRvalue::Alloc(_)
-        | AmirRvalue::Borrow(_)
-        | AmirRvalue::BorrowMut(_)
         | AmirRvalue::RelativeBorrow { .. }
         | AmirRvalue::CoroutineReady { .. }
         | AmirRvalue::GenInsert { .. }
@@ -521,8 +574,6 @@ fn admitted_rvalue(rhs: &AmirRvalue) -> Result<(), EvalErrorKind> {
         | AmirRvalue::StringInterp { .. }
         | AmirRvalue::ToStr { .. }
         | AmirRvalue::BlackBox { .. }
-        | AmirRvalue::ArenaAlloc { .. }
-        | AmirRvalue::ArenaCheckpoint
         | AmirRvalue::StaticAddr(_)
         | AmirRvalue::Binary { .. }
         | AmirRvalue::Unary { .. } => Err(EvalErrorKind::UnsupportedOperation),

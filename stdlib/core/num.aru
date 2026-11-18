@@ -211,6 +211,76 @@ public func reverseBits64(value: u64): u64 {
     unsafe { return intrinsics.bitReverse64(value) }
 }
 
+/// Rotates 32 bits left; `amount` is taken modulo 32. Pure and allocation-free.
+public func rotateLeft(value: u32, amount: u32): u32 {
+    unsafe { return intrinsics.bitRotateLeft32(value, amount) }
+}
+
+/// Rotates 64 bits left; `amount` is taken modulo 64. Pure and allocation-free.
+public func rotateLeft64(value: u64, amount: u32): u64 {
+    unsafe { return intrinsics.bitRotateLeft64(value, amount) }
+}
+
+/// Rotates 32 bits right; `amount` is taken modulo 32. Pure and allocation-free.
+public func rotateRight(value: u32, amount: u32): u32 {
+    unsafe { return intrinsics.bitRotateRight32(value, amount) }
+}
+
+/// Rotates 64 bits right; `amount` is taken modulo 64. Pure and allocation-free.
+public func rotateRight64(value: u64, amount: u32): u64 {
+    unsafe { return intrinsics.bitRotateRight64(value, amount) }
+}
+
+/// Reverses the 4 bytes of `value`. Pure and allocation-free.
+public func swapBytes(value: u32): u32 {
+    unsafe { return intrinsics.bitSwapBytes32(value) }
+}
+
+/// Reverses the 8 bytes of `value`. Pure and allocation-free.
+public func swapBytes64(value: u64): u64 {
+    unsafe { return intrinsics.bitSwapBytes64(value) }
+}
+
+/// Converts `value` to big-endian byte order (network byte order).
+public func toBigEndian(value: u32): u32 {
+    return swapBytes(value)
+}
+
+/// Converts `value` from big-endian byte order (network byte order).
+public func fromBigEndian(value: u32): u32 {
+    return swapBytes(value)
+}
+
+/// Converts `value` to little-endian byte order.
+public func toLittleEndian(value: u32): u32 {
+    return value
+}
+
+/// Converts `value` from little-endian byte order.
+public func fromLittleEndian(value: u32): u32 {
+    return value
+}
+
+/// Converts `value` to big-endian byte order (network byte order).
+public func toBigEndian64(value: u64): u64 {
+    return swapBytes64(value)
+}
+
+/// Converts `value` from big-endian byte order (network byte order).
+public func fromBigEndian64(value: u64): u64 {
+    return swapBytes64(value)
+}
+
+/// Converts `value` to little-endian byte order.
+public func toLittleEndian64(value: u64): u64 {
+    return value
+}
+
+/// Converts `value` from little-endian byte order.
+public func fromLittleEndian64(value: u64): u64 {
+    return value
+}
+
 /// Returns None when the magnitude cannot be represented in int.
 public func checkedAbs(value: int): Option<int> {
     if value == intMin() { return Option.None }
@@ -238,6 +308,24 @@ public func int.checkedSub(self: int, other: int): Option<int> {
 /// Checked integer multiplication.
 public func int.checkedMul(self: int, other: int): Option<int> {
     return checkedMul(self, other)
+}
+
+/// Wrapping integer addition and overflow flag.
+public func int.overflowingAdd(self: int, other: int): (int, bool) {
+    let pair = intrinsics.addWithOverflowI32(self as i32, other as i32)
+    return (pair.0 as int, pair.1)
+}
+
+/// Wrapping integer subtraction and overflow flag.
+public func int.overflowingSub(self: int, other: int): (int, bool) {
+    let pair = intrinsics.subWithOverflowI32(self as i32, other as i32)
+    return (pair.0 as int, pair.1)
+}
+
+/// Wrapping integer multiplication and overflow flag.
+public func int.overflowingMul(self: int, other: int): (int, bool) {
+    let pair = intrinsics.mulWithOverflowI32(self as i32, other as i32)
+    return (pair.0 as int, pair.1)
 }
 
 /// Saturating integer addition.
@@ -288,6 +376,76 @@ public func u32.reverseBits(self: u32): u32 {
 /// Reverses all 64 bits.
 public func u64.reverseBits(self: u64): u64 {
     return reverseBits64(self)
+}
+
+/// Rotates left; `amount` is taken modulo 32.
+public func u32.rotateLeft(self: u32, amount: u32): u32 {
+    return rotateLeft(self, amount)
+}
+
+/// Rotates left; `amount` is taken modulo 64.
+public func u64.rotateLeft(self: u64, amount: u32): u64 {
+    return rotateLeft64(self, amount)
+}
+
+/// Rotates right; `amount` is taken modulo 32.
+public func u32.rotateRight(self: u32, amount: u32): u32 {
+    return rotateRight(self, amount)
+}
+
+/// Rotates right; `amount` is taken modulo 64.
+public func u64.rotateRight(self: u64, amount: u32): u64 {
+    return rotateRight64(self, amount)
+}
+
+/// Reverses the byte order.
+public func u32.swapBytes(self: u32): u32 {
+    return swapBytes(self)
+}
+
+/// Converts to big-endian byte order.
+public func u32.toBigEndian(self: u32): u32 {
+    return toBigEndian(self)
+}
+
+/// Converts from big-endian byte order.
+public func u32.fromBigEndian(self: u32): u32 {
+    return fromBigEndian(self)
+}
+
+/// Converts to little-endian byte order.
+public func u32.toLittleEndian(self: u32): u32 {
+    return toLittleEndian(self)
+}
+
+/// Converts from little-endian byte order.
+public func u32.fromLittleEndian(self: u32): u32 {
+    return fromLittleEndian(self)
+}
+
+/// Reverses the byte order.
+public func u64.swapBytes(self: u64): u64 {
+    return swapBytes64(self)
+}
+
+/// Converts to big-endian byte order.
+public func u64.toBigEndian(self: u64): u64 {
+    return toBigEndian64(self)
+}
+
+/// Converts from big-endian byte order.
+public func u64.fromBigEndian(self: u64): u64 {
+    return fromBigEndian64(self)
+}
+
+/// Converts to little-endian byte order.
+public func u64.toLittleEndian(self: u64): u64 {
+    return toLittleEndian64(self)
+}
+
+/// Converts from little-endian byte order.
+public func u64.fromLittleEndian(self: u64): u64 {
+    return fromLittleEndian64(self)
 }
 
 /// Returns None for intMin(); otherwise returns the magnitude.
@@ -343,6 +501,190 @@ public func parse(s: str): Option<int> {
 /// Parses a signed 32-bit decimal integer (`int.parse(s)`).
 public func int.parse(s: str): Option<int> {
     return parse(s)
+}
+
+/// Checked integer addition.
+public func i32.checkedAdd(self: i32, other: i32): Option<i32> {
+    let pair = intrinsics.addWithOverflowI32(self, other)
+    if pair.1 { return Option.None }
+    return Option.Some(pair.0)
+}
+
+/// Checked integer subtraction.
+public func i32.checkedSub(self: i32, other: i32): Option<i32> {
+    let pair = intrinsics.subWithOverflowI32(self, other)
+    if pair.1 { return Option.None }
+    return Option.Some(pair.0)
+}
+
+/// Checked integer multiplication.
+public func i32.checkedMul(self: i32, other: i32): Option<i32> {
+    let pair = intrinsics.mulWithOverflowI32(self, other)
+    if pair.1 { return Option.None }
+    return Option.Some(pair.0)
+}
+
+/// Wrapping sum and overflow flag.
+public func i32.overflowingAdd(self: i32, other: i32): (i32, bool) {
+    return intrinsics.addWithOverflowI32(self, other)
+}
+
+/// Wrapping difference and overflow flag.
+public func i32.overflowingSub(self: i32, other: i32): (i32, bool) {
+    return intrinsics.subWithOverflowI32(self, other)
+}
+
+/// Wrapping product and overflow flag.
+public func i32.overflowingMul(self: i32, other: i32): (i32, bool) {
+    return intrinsics.mulWithOverflowI32(self, other)
+}
+
+/// Saturating signed 32-bit addition.
+public func i32.saturatingAdd(self: i32, other: i32): i32 {
+    return intrinsics.saturatingAddI32(self, other)
+}
+
+/// Saturating signed 32-bit subtraction.
+public func i32.saturatingSub(self: i32, other: i32): i32 {
+    return intrinsics.saturatingSubI32(self, other)
+}
+
+/// Checked unsigned 32-bit addition.
+public func u32.checkedAdd(self: u32, other: u32): Option<u32> {
+    let pair = intrinsics.addWithOverflowU32(self, other)
+    if pair.1 { return Option.None }
+    return Option.Some(pair.0)
+}
+
+/// Checked unsigned 32-bit subtraction.
+public func u32.checkedSub(self: u32, other: u32): Option<u32> {
+    let pair = intrinsics.subWithOverflowU32(self, other)
+    if pair.1 { return Option.None }
+    return Option.Some(pair.0)
+}
+
+/// Checked unsigned 32-bit multiplication.
+public func u32.checkedMul(self: u32, other: u32): Option<u32> {
+    let pair = intrinsics.mulWithOverflowU32(self, other)
+    if pair.1 { return Option.None }
+    return Option.Some(pair.0)
+}
+
+/// Wrapping unsigned 32-bit sum and overflow flag.
+public func u32.overflowingAdd(self: u32, other: u32): (u32, bool) {
+    return intrinsics.addWithOverflowU32(self, other)
+}
+
+/// Wrapping unsigned 32-bit difference and borrow flag.
+public func u32.overflowingSub(self: u32, other: u32): (u32, bool) {
+    return intrinsics.subWithOverflowU32(self, other)
+}
+
+/// Wrapping unsigned 32-bit product and overflow flag.
+public func u32.overflowingMul(self: u32, other: u32): (u32, bool) {
+    return intrinsics.mulWithOverflowU32(self, other)
+}
+
+/// Saturating unsigned 32-bit addition.
+public func u32.saturatingAdd(self: u32, other: u32): u32 {
+    return intrinsics.saturatingAddU32(self, other)
+}
+
+/// Saturating unsigned 32-bit subtraction.
+public func u32.saturatingSub(self: u32, other: u32): u32 {
+    return intrinsics.saturatingSubU32(self, other)
+}
+
+/// Checked signed 64-bit addition.
+public func i64.checkedAdd(self: i64, other: i64): Option<i64> {
+    let pair = intrinsics.addWithOverflowI64(self, other)
+    if pair.1 { return Option.None }
+    return Option.Some(pair.0)
+}
+
+/// Checked signed 64-bit subtraction.
+public func i64.checkedSub(self: i64, other: i64): Option<i64> {
+    let pair = intrinsics.subWithOverflowI64(self, other)
+    if pair.1 { return Option.None }
+    return Option.Some(pair.0)
+}
+
+/// Checked signed 64-bit multiplication.
+public func i64.checkedMul(self: i64, other: i64): Option<i64> {
+    let pair = intrinsics.mulWithOverflowI64(self, other)
+    if pair.1 { return Option.None }
+    return Option.Some(pair.0)
+}
+
+/// Wrapping signed 64-bit sum and overflow flag.
+public func i64.overflowingAdd(self: i64, other: i64): (i64, bool) {
+    return intrinsics.addWithOverflowI64(self, other)
+}
+
+/// Wrapping signed 64-bit difference and overflow flag.
+public func i64.overflowingSub(self: i64, other: i64): (i64, bool) {
+    return intrinsics.subWithOverflowI64(self, other)
+}
+
+/// Wrapping signed 64-bit product and overflow flag.
+public func i64.overflowingMul(self: i64, other: i64): (i64, bool) {
+    return intrinsics.mulWithOverflowI64(self, other)
+}
+
+/// Saturating signed 64-bit addition.
+public func i64.saturatingAdd(self: i64, other: i64): i64 {
+    return intrinsics.saturatingAddI64(self, other)
+}
+
+/// Saturating signed 64-bit subtraction.
+public func i64.saturatingSub(self: i64, other: i64): i64 {
+    return intrinsics.saturatingSubI64(self, other)
+}
+
+/// Checked unsigned 64-bit addition.
+public func u64.checkedAdd(self: u64, other: u64): Option<u64> {
+    let pair = intrinsics.addWithOverflowU64(self, other)
+    if pair.1 { return Option.None }
+    return Option.Some(pair.0)
+}
+
+/// Checked unsigned 64-bit subtraction.
+public func u64.checkedSub(self: u64, other: u64): Option<u64> {
+    let pair = intrinsics.subWithOverflowU64(self, other)
+    if pair.1 { return Option.None }
+    return Option.Some(pair.0)
+}
+
+/// Checked unsigned 64-bit multiplication.
+public func u64.checkedMul(self: u64, other: u64): Option<u64> {
+    let pair = intrinsics.mulWithOverflowU64(self, other)
+    if pair.1 { return Option.None }
+    return Option.Some(pair.0)
+}
+
+/// Wrapping unsigned 64-bit sum and overflow flag.
+public func u64.overflowingAdd(self: u64, other: u64): (u64, bool) {
+    return intrinsics.addWithOverflowU64(self, other)
+}
+
+/// Wrapping unsigned 64-bit difference and borrow flag.
+public func u64.overflowingSub(self: u64, other: u64): (u64, bool) {
+    return intrinsics.subWithOverflowU64(self, other)
+}
+
+/// Wrapping unsigned 64-bit product and overflow flag.
+public func u64.overflowingMul(self: u64, other: u64): (u64, bool) {
+    return intrinsics.mulWithOverflowU64(self, other)
+}
+
+/// Saturating unsigned 64-bit addition.
+public func u64.saturatingAdd(self: u64, other: u64): u64 {
+    return intrinsics.saturatingAddU64(self, other)
+}
+
+/// Saturating unsigned 64-bit subtraction.
+public func u64.saturatingSub(self: u64, other: u64): u64 {
+    return intrinsics.saturatingSubU64(self, other)
 }
 
 /// Parses an unsigned 64-bit decimal integer from a UTF-8 string view.

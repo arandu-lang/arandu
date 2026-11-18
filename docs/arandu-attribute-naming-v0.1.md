@@ -93,14 +93,15 @@ ou a sintaxe de array `[comptime]u8` à linguagem.
 | `@Link` | implementada | `@link` |
 | `@Test` | implementada para descoberta SL_T.0 | função livre síncrona, não genérica, sem parâmetros; `void` ou `Result<void, E>` |
 | `@Benchmark` | implementada em SL_T.4 | função livre síncrona, não genérica, `func name(mut bench: testing.Benchmark): void` |
-| `@Suppress` | contrato de diagnóstico | — |
-| `@Deny` | contrato de diagnóstico | — |
-| `@Forbid` | contrato de diagnóstico | — |
+| `@Suppress` | implementada em funções e métodos (níveis de lint, `docs/diagnostics/SPEC.md`) | — |
+| `@Deny` | implementada em funções e métodos | — |
+| `@Forbid` | implementada em funções e métodos | — |
 | `@NoFallback` | implementada | `@no_fallback`, `@no_generational_fallback` |
-| `@NoSuspend` | planejada | `@nosuspend` |
+| `@NoSuspend` | implementada: equivale a `@Effects(NoSuspend)` | `@nosuspend` |
 | `@Specialize` | planejada | `@specialize` |
 | `@Repr` | planejada | `@repr` |
 | `@Destructor` | implementada para métodos consumidores | — |
+| `@Cold` | implementada para funções e métodos | — |
 
 Esta tabela registra nomes, não promove itens planejados a funcionalidades
 implementadas. A disponibilidade de cada anotação continua pertencendo ao

@@ -36,6 +36,26 @@ pub(super) fn eval_rvalue(
                 _ => LatticeVal::Undefined,
             }
         }
+        AmirRvalue::Select {
+            condition,
+            if_true,
+            if_false,
+        } => match operand_lattice(condition, lattice) {
+            LatticeVal::Constant(AmirConstant::Bool(true)) => operand_lattice(if_true, lattice),
+            LatticeVal::Constant(AmirConstant::Bool(false)) => operand_lattice(if_false, lattice),
+            LatticeVal::Constant(_) | LatticeVal::Overdefined => {
+                match (
+                    operand_lattice(if_true, lattice),
+                    operand_lattice(if_false, lattice),
+                ) {
+                    (LatticeVal::Constant(a), LatticeVal::Constant(b)) if a == b => {
+                        LatticeVal::Constant(a)
+                    }
+                    _ => LatticeVal::Overdefined,
+                }
+            }
+            LatticeVal::Undefined => LatticeVal::Undefined,
+        },
         // Everything else (Load, Borrow, FieldAccess, Alloc, Call, etc.)
         // is treated as non-foldable.
         _ => LatticeVal::Overdefined,

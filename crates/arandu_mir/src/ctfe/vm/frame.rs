@@ -34,18 +34,27 @@ impl Frame {
         &self,
         place: &AmirPlace,
         meter: &mut Meter<'_, C>,
-    ) -> Result<(ValueType, Vec<usize>), EvalErrorKind> {
-        let mut ty = self
+    ) -> Result<(ValueType, bool, Vec<usize>), EvalErrorKind> {
+        let base_ty = self
             .unit
             .local_types
             .get(place.local.as_usize())
             .cloned()
             .ok_or(EvalErrorKind::InvalidIr)?;
+        let (mut ty, projections, is_deref) =
+            if place.projections.first() == Some(&AmirProjection::Deref) {
+                let ValueType::Pointer(inner) = base_ty else {
+                    return Err(EvalErrorKind::TypeMismatch);
+                };
+                (*inner, &place.projections[1..], true)
+            } else {
+                (base_ty, &place.projections[..], false)
+            };
         let mut path = Vec::new();
-        if place.projections.len() > arandu_middle::types::TypeShape::MAX_DEPTH {
+        if projections.len() > arandu_middle::types::TypeShape::MAX_DEPTH {
             return Err(EvalErrorKind::ValueLimit);
         }
-        for projection in &place.projections {
+        for projection in projections {
             meter.step()?;
             let ValueType::Aggregate(descriptor) = &ty else {
                 return Err(EvalErrorKind::TypeMismatch);
@@ -71,7 +80,7 @@ impl Frame {
                 .ok_or(EvalErrorKind::InvalidIr)?;
             path.push(index);
         }
-        Ok((ty, path))
+        Ok((ty, is_deref, path))
     }
 
     pub(super) fn load_place<C: FnMut() -> bool>(
@@ -79,13 +88,33 @@ impl Frame {
         place: &AmirPlace,
         meter: &mut Meter<'_, C>,
     ) -> Result<(ValueType, ConstValue), EvalErrorKind> {
-        let (ty, path) = self.place_path(place, meter)?;
-        let mut value = self
-            .locals
-            .get(place.local.as_usize())
-            .ok_or(EvalErrorKind::InvalidIr)?
-            .as_ref()
-            .ok_or(EvalErrorKind::Uninitialized)?;
+        let (ty, is_deref, path) = self.place_path(place, meter)?;
+        let mut value = if is_deref {
+            let handle_val = self
+                .locals
+                .get(place.local.as_usize())
+                .ok_or(EvalErrorKind::InvalidIr)?
+                .as_ref()
+                .ok_or(EvalErrorKind::Uninitialized)?;
+            let ConstValue::Integer(handle_int) = handle_val else {
+                return Err(EvalErrorKind::TypeMismatch);
+            };
+            let handle =
+                usize::try_from(handle_int.value()).map_err(|_| EvalErrorKind::InvalidIr)?;
+            meter
+                .arena
+                .get(handle)
+                .and_then(|s| s.as_ref())
+                .cloned()
+                .ok_or(EvalErrorKind::Uninitialized)?
+        } else {
+            self.locals
+                .get(place.local.as_usize())
+                .ok_or(EvalErrorKind::InvalidIr)?
+                .as_ref()
+                .ok_or(EvalErrorKind::Uninitialized)?
+                .clone()
+        };
         for index in path {
             meter.step()?;
             let ConstValue::Aggregate(aggregate) = value else {
@@ -94,9 +123,10 @@ impl Frame {
             value = aggregate
                 .values()
                 .get(index)
-                .ok_or(EvalErrorKind::InvalidIr)?;
+                .ok_or(EvalErrorKind::InvalidIr)?
+                .clone();
         }
-        Ok((ty, value.clone()))
+        Ok((ty, value))
     }
 
     pub(super) fn store_place<C: FnMut() -> bool>(
@@ -105,15 +135,7 @@ impl Frame {
         value: ConstValue,
         meter: &mut Meter<'_, C>,
     ) -> Result<(), EvalErrorKind> {
-        let (_, path) = self.place_path(place, meter)?;
-        let slot = self
-            .locals
-            .get_mut(place.local.as_usize())
-            .ok_or(EvalErrorKind::InvalidIr)?;
-        if path.is_empty() {
-            *slot = Some(value);
-            return Ok(());
-        }
+        let (_, is_deref, path) = self.place_path(place, meter)?;
         fn update<C: FnMut() -> bool>(
             node: &mut ConstValue,
             path: &[usize],
@@ -144,6 +166,45 @@ impl Frame {
                     .map_err(EvalErrorKind::Value)?,
             );
             Ok(())
+        }
+        if is_deref {
+            let handle_val = self
+                .locals
+                .get(place.local.as_usize())
+                .ok_or(EvalErrorKind::InvalidIr)?
+                .as_ref()
+                .ok_or(EvalErrorKind::Uninitialized)?;
+            let ConstValue::Integer(handle_int) = handle_val else {
+                return Err(EvalErrorKind::TypeMismatch);
+            };
+            let handle =
+                usize::try_from(handle_int.value()).map_err(|_| EvalErrorKind::InvalidIr)?;
+            if path.is_empty() {
+                let slot = meter
+                    .arena
+                    .get_mut(handle)
+                    .ok_or(EvalErrorKind::InvalidIr)?;
+                *slot = Some(value);
+                return Ok(());
+            }
+            let mut node = meter
+                .arena
+                .get_mut(handle)
+                .and_then(|s| s.take())
+                .ok_or(EvalErrorKind::Uninitialized)?;
+            let res = update(&mut node, &path, value, meter);
+            if let Some(slot) = meter.arena.get_mut(handle) {
+                *slot = Some(node);
+            }
+            return res;
+        }
+        let slot = self
+            .locals
+            .get_mut(place.local.as_usize())
+            .ok_or(EvalErrorKind::InvalidIr)?;
+        if path.is_empty() {
+            *slot = Some(value);
+            return Ok(());
         }
         update(
             slot.as_mut().ok_or(EvalErrorKind::Uninitialized)?,
@@ -226,7 +287,7 @@ impl Frame {
             if temp.id.as_usize() != index {
                 return Err(EvalErrorKind::InvalidIr);
             }
-            if !temp.is_copy {
+            if !temp.is_copy && !unit.allow_null_pointers {
                 return Err(EvalErrorKind::UnsupportedType(temp.ty));
             }
         }
@@ -409,6 +470,13 @@ impl Frame {
                 }
                 let ty = match hint {
                     Some(ValueType::Integer(ty)) => ty,
+                    Some(ValueType::NullPointer(_)) => {
+                        return if value == 0 {
+                            Ok(ConstValue::Void)
+                        } else {
+                            Err(EvalErrorKind::UnsupportedOperation)
+                        };
+                    }
                     None => IntegerType::new(Primitive::Int, self.unit.layout)
                         .map_err(EvalErrorKind::Value)?,
                     _ => return Err(EvalErrorKind::TypeMismatch),

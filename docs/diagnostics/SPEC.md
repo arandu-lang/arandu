@@ -83,10 +83,23 @@ O Arandu define formalmente quatro níveis de severidade para os diagnósticos d
 > **Comportamento de `-Werror`**: Todos os diagnósticos de severidade `Warning` podem ser promovidos a `Error` via flag `-Werror` (ou configuração equivalente em nível de projeto). As severidades `Note` e `Hint` nunca são promovíveis.
 
 #### Diretivas de Controle Estilo Java/Kotlin:
-As configurações de severidade de lints locais seguem anotações no estilo Java/Kotlin, aplicáveis a funções, structs, módulos ou blocos de código:
-*   `@Suppress("nome_lint")` / `@Suppress("warnings")`: Ignora avisos específicos ou todos os warnings naquele escopo.
-*   `@Deny("nome_lint")`: Promove um aviso específico para `Error` fatal naquele escopo.
-*   `@Forbid("nome_lint")`: Proíbe qualquer sub-escopo de anular a restrição (impede `@Suppress` aninhado).
+As severidades locais seguem anotações no estilo Java/Kotlin, aplicadas a uma função ou método e válidas para os warnings do seu corpo:
+*   `@Suppress("nome_lint", ...)` / `@Suppress("warnings")`: remove warnings específicos (aceita múltiplos argumentos ou repetição) ou todos.
+*   `@Deny("nome_lint", ...)`: torna warnings específicos em `Error`.
+*   `@Forbid("nome_lint", ...)`: como `@Deny`, e um `@Suppress` do mesmo lint na mesma declaração é `N014`.
+
+O lint é nomeado pelo nome `snake_case` ou pelo código (`"W006"`); a precedência é `Forbid` > `Deny` > `Suppress`, como no Rust. Um nome que não é de warning é `N014`. Warnings fora de um corpo (como `unused_import`) não têm declaração que carregue um nível.
+
+| Código | Nome do lint |
+| --- | --- |
+| `W001` | `unused_variable` |
+| `W002` | `dead_code` |
+| `W003` | `unreachable_code` |
+| `W004` | `shadowing` |
+| `W005` | `unnecessary_mut` |
+| `W006` | `unhandled_result` |
+| `W007` | `unused_import` |
+| `W009` | `captured_copy_never_read` |
 
 ```arandu
 @Suppress("shadowing")

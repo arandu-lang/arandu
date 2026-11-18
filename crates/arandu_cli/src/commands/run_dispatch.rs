@@ -216,11 +216,10 @@ pub(super) fn process_file(
             let amir = amir_owned.as_ref().unwrap_or(&artifacts.amir);
 
             arandu_base::time_pass!("emit-c");
-            let c_src = arandu_backend_c::emit_c(
+            let c_src = arandu_backend_c::emit_c_with_context(
                 amir,
                 type_check.symbols.as_ref(),
                 type_check.type_info.as_ref(),
-                &type_check.type_info.type_interner,
                 data_layout,
             )
             .unwrap_or_else(|diag| print_diagnostics_and_exit(std::iter::once(diag), &filepath));

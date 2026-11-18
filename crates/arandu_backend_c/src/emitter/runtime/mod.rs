@@ -152,7 +152,7 @@ impl<'a> CEmitter<'a> {
         );
         let _ = writeln!(
             &mut self.output,
-            "#if defined(__GNUC__) || defined(__clang__)\n#define AR_BENCH_NOINLINE __attribute__((noinline))\n#elif defined(_MSC_VER)\n#define AR_BENCH_NOINLINE __declspec(noinline)\n#else\n#define AR_BENCH_NOINLINE\n#endif"
+            "#if defined(__GNUC__) || defined(__clang__)\n#define AR_BENCH_NOINLINE __attribute__((noinline))\n#define AR_COLD __attribute__((cold, noinline))\n#define AR_LIKELY(x) (__builtin_expect(!!(x), 1) != 0)\n#define AR_UNLIKELY(x) (__builtin_expect(!!(x), 0) != 0)\n#elif defined(_MSC_VER)\n#define AR_BENCH_NOINLINE __declspec(noinline)\n#define AR_COLD __declspec(noinline)\n#define AR_LIKELY(x) (!!(x))\n#define AR_UNLIKELY(x) (!!(x))\n#else\n#define AR_BENCH_NOINLINE\n#define AR_COLD\n#define AR_LIKELY(x) (!!(x))\n#define AR_UNLIKELY(x) (!!(x))\n#endif"
         );
         if features.black_box[0] {
             let _ = writeln!(

@@ -154,12 +154,15 @@ pub fn implicit_destructors(
                 | AmirRvalue::GenUpsert { payload_ty, .. }
                 | AmirRvalue::ArenaAlloc { payload_ty, .. } => types.push(*payload_ty),
                 AmirRvalue::VectorSelect { .. }
+                | AmirRvalue::Select { .. }
                 | AmirRvalue::VectorCompare { .. }
                 | AmirRvalue::VectorOp { .. }
                 | AmirRvalue::VectorSplat { .. }
                 | AmirRvalue::VectorShuffle { .. }
                 | AmirRvalue::VectorExtractLane { .. }
                 | AmirRvalue::VectorInsertLane { .. }
+                | AmirRvalue::VectorBitmask { .. }
+                | AmirRvalue::VectorLoadUnaligned { .. }
                 | AmirRvalue::Use(_)
                 | AmirRvalue::Binary { .. }
                 | AmirRvalue::Unary { .. }

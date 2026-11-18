@@ -2,7 +2,8 @@ use super::{
     AggregateKind, EvalErrorKind, Frame, Meter, ScalarEvalError, ValueType, eval_binary, eval_unary,
 };
 use arandu_middle::amir::*;
-use arandu_middle::ctfe::{ConstAggregate, ConstFloat, ConstInt, ConstValue};
+use arandu_middle::ctfe::{ConstAggregate, ConstFloat, ConstInt, ConstValue, IntegerType};
+use arandu_middle::types::Primitive;
 
 impl Frame {
     pub(super) fn rvalue<C: FnMut() -> bool>(
@@ -16,6 +17,16 @@ impl Frame {
                 if matches!(operand, AmirOperand::Copy(_) | AmirOperand::Move(_)) {
                     let value = self.operand(*operand, None, meter)?;
                     match (&ty, &value) {
+                        (ValueType::NullPointer(_), ConstValue::Void) => {
+                            return Ok(ConstValue::Void);
+                        }
+                        (ValueType::NullPointer(_), ConstValue::Integer(value)) => {
+                            return if value.value() == 0 {
+                                Ok(ConstValue::Void)
+                            } else {
+                                Err(EvalErrorKind::UnsupportedOperation)
+                            };
+                        }
                         (ValueType::Float(destination), ConstValue::Float(value)) => {
                             return value
                                 .cast(*destination)
@@ -225,24 +236,39 @@ impl Frame {
                 let ValueType::Aggregate(descriptor) = &ty else {
                     return Err(EvalErrorKind::TypeMismatch);
                 };
-                if descriptor.kind != AggregateKind::Struct(*struct_symbol)
-                    || fields.len() != descriptor.fields.len()
-                {
+                if descriptor.kind != AggregateKind::Struct(*struct_symbol) {
                     return Err(EvalErrorKind::TypeMismatch);
                 }
-                meter.reserve(fields.len())?;
+                if descriptor.is_union {
+                    if fields.len() > 1 {
+                        return Err(EvalErrorKind::TypeMismatch);
+                    }
+                    if let Some((provided, _)) = fields.first()
+                        && !descriptor.names.iter().any(|name| name == provided)
+                    {
+                        return Err(EvalErrorKind::InvalidIr);
+                    }
+                } else if fields.len() != descriptor.fields.len() {
+                    return Err(EvalErrorKind::TypeMismatch);
+                }
+                meter.reserve(descriptor.fields.len())?;
                 let mut values = Vec::new();
                 values
-                    .try_reserve_exact(fields.len())
+                    .try_reserve_exact(descriptor.fields.len())
                     .map_err(|_| EvalErrorKind::AllocationFailed)?;
                 for (name, field_ty) in descriptor.names.iter().zip(&descriptor.fields) {
                     meter.step()?;
                     let mut matches = fields.iter().filter(|(field, _)| field == name);
-                    let (_, operand) = matches.next().ok_or(EvalErrorKind::Uninitialized)?;
+                    let operand = matches.next().map(|(_, operand)| *operand);
                     if matches.next().is_some() {
                         return Err(EvalErrorKind::InvalidIr);
                     }
-                    values.push(self.operand(*operand, Some(field_ty.clone()), meter)?);
+                    let value = match operand {
+                        Some(operand) => self.operand(operand, Some(field_ty.clone()), meter)?,
+                        None if descriptor.is_union => ConstValue::Void,
+                        None => return Err(EvalErrorKind::Uninitialized),
+                    };
+                    values.push(value);
                 }
                 meter.aggregate(&descriptor.shape, values.len())?;
                 for value in &values {
@@ -419,8 +445,56 @@ impl Frame {
                 if_true,
                 if_false,
             } => self.rvalue_vector_select(mask, if_true, if_false, ty, meter),
+            AmirRvalue::Select {
+                condition,
+                if_true,
+                if_false,
+            } => {
+                let ConstValue::Bool(taken) =
+                    self.operand(*condition, Some(ValueType::Bool), meter)?
+                else {
+                    return Err(EvalErrorKind::TypeMismatch);
+                };
+                meter.step()?;
+                let chosen = if taken { *if_true } else { *if_false };
+                self.operand(chosen, Some(ty), meter)
+            }
             AmirRvalue::VectorShuffle { left, right, mask } => {
                 self.rvalue_vector_shuffle(left, right, mask, ty, meter)
+            }
+            AmirRvalue::VectorBitmask { vector } => self.rvalue_vector_bitmask(vector, ty, meter),
+            AmirRvalue::VectorLoadUnaligned { source } => {
+                self.rvalue_vector_load_unaligned(source, ty, meter)
+            }
+            AmirRvalue::ArenaAlloc { .. } => {
+                let handle = meter.arena_alloc()?;
+                let layout = self.unit.layout;
+                let usize_ty =
+                    IntegerType::new(Primitive::USize, layout).map_err(EvalErrorKind::Value)?;
+                Ok(ConstValue::Integer(
+                    ConstInt::new(usize_ty, handle as i128).map_err(EvalErrorKind::Value)?,
+                ))
+            }
+            AmirRvalue::ArenaCheckpoint => {
+                let mark = meter.arena_checkpoint()?;
+                let layout = self.unit.layout;
+                let usize_ty =
+                    IntegerType::new(Primitive::USize, layout).map_err(EvalErrorKind::Value)?;
+                Ok(ConstValue::Integer(
+                    ConstInt::new(usize_ty, mark as i128).map_err(EvalErrorKind::Value)?,
+                ))
+            }
+            AmirRvalue::Borrow(place) | AmirRvalue::BorrowMut(place) => {
+                if place.projections.first() == Some(&AmirProjection::Deref) {
+                    let val = self
+                        .locals
+                        .get(place.local.as_usize())
+                        .and_then(|v| v.clone())
+                        .ok_or(EvalErrorKind::Uninitialized)?;
+                    Ok(val)
+                } else {
+                    Err(EvalErrorKind::UnsupportedOperation)
+                }
             }
             _ => Err(EvalErrorKind::UnsupportedOperation),
         }

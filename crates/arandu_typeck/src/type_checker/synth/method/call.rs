@@ -76,15 +76,34 @@ pub(crate) fn synth_method_call(
         id
     };
 
-    // ToStr v0.1 intrinsic: `receiver.to_str()` with zero args → `str`.
-    if method == "to_str" {
+    let has_user_to_str = {
+        let base_resolved = checker.resolve(actual_base_ty_id);
+        let struct_id = match &base_resolved {
+            ArType::Named(id, _) => Some(*id),
+            ArType::Ptr(inner) => match checker.resolve(*inner) {
+                ArType::Named(id, _) => Some(id),
+                _ => None,
+            },
+            _ => None,
+        };
+        struct_id.is_some_and(|id| {
+            checker
+                .symbols
+                .lookup_associated_member(id, method)
+                .is_some()
+        })
+    };
+
+    // ToStr intrinsic: `receiver.to_str()` or `receiver.toStr()` with zero args → `str`.
+    // Only intercepts when the receiver does not define its own associated method.
+    if (method == "to_str" || method == "toStr") && !has_user_to_str {
         let arg_ids = checker.pool.expr_list(args).to_vec();
         if !arg_ids.is_empty() {
             checker.diagnostics.push(
                 crate::Diagnostic::error(
                     crate::DiagCode::T012WrongArgCount,
                     format!(
-                        "method 'to_str' expects 0 argument(s), found {}",
+                        "method '{method}' expects 0 argument(s), found {}",
                         arg_ids.len()
                     ),
                     call_span,
@@ -135,6 +154,8 @@ pub(crate) fn synth_method_call(
         ArType::Primitive(Primitive::Char) => checker.symbols.builtins.char_type,
         ArType::Primitive(Primitive::U32) => checker.symbols.builtins.u32_type,
         ArType::Primitive(Primitive::U64) => checker.symbols.builtins.u64_type,
+        ArType::Primitive(Primitive::I32) => checker.symbols.builtins.i32_type,
+        ArType::Primitive(Primitive::I64) => checker.symbols.builtins.i64_type,
         ArType::Primitive(Primitive::Int) | ArType::IntLiteral => checker.symbols.builtins.int_type,
         ArType::Primitive(Primitive::Float) | ArType::FloatLiteral => {
             checker.symbols.builtins.float_type
@@ -157,11 +178,10 @@ pub(crate) fn synth_method_call(
     };
 
     // Effective parent SymbolId for the method lookup.
-    let effective_id = struct_id.or(builtin_id)?;
+    let effective_id = struct_id.or(builtin_id);
 
-    let method_sym = checker
-        .symbols
-        .lookup_associated_member(effective_id, method);
+    let method_sym =
+        effective_id.and_then(|id| checker.symbols.lookup_associated_member(id, method));
 
     let mut resolved_method = None;
     let mut method_generic_params = Vec::new();
@@ -186,6 +206,30 @@ pub(crate) fn synth_method_call(
                 break;
             }
         }
+    }
+    if resolved_method.is_none()
+        && method_sym.is_none()
+        && method == "cmp"
+        && base_resolved.is_orderable()
+        && let Some(ord_enum) = checker
+            .symbols
+            .lang_item_symbol(arandu_middle::symbol_table::LangItem::Ordering)
+    {
+        let base_id = checker.intern(base_resolved.clone());
+        let ref_base = checker.intern(ArType::Ref(base_id));
+        let ord_ret = checker.intern(ArType::named(
+            ord_enum,
+            &[],
+            &checker.type_info.type_interner,
+        ));
+        resolved_method = Some(ArType::func(
+            &[ref_base, ref_base],
+            ord_ret,
+            &checker.type_info.type_interner,
+        ));
+    }
+    if resolved_method.is_none() && effective_id.is_none() {
+        return None;
     }
 
     let (params, ret, method_sym_recorded) = if let Some(method_sig) = resolved_method {
@@ -259,6 +303,11 @@ pub(crate) fn synth_method_call(
         return Some(checker.intern(ArType::Error));
     };
 
+    // Preserve the uninstantiated receiver formal so methods that redeclare receiver
+    // type parameters (`func Vec.filter<T>(...) where T: Copy`) can bind their own
+    // `SymbolId` for `T` (distinct from the struct's `T`) when typing callbacks.
+    let orig_receiver_formal = params.first().copied();
+
     // Instantiate template method type with the receiver's concrete type args
     // so `BoxG<int>.get` sees `Func([BoxG<int>], int)` not `Func([BoxG<T>], T)`.
     // For Result/Option, substitute T/E from the builtin type shape.
@@ -318,7 +367,13 @@ pub(crate) fn synth_method_call(
     let mut explicit_params = params[1..].to_vec();
     let arg_ids = checker.pool.expr_list(args).to_vec();
     if explicit_params.len() != arg_ids.len() {
-        let struct_name = checker.symbols.get(effective_id).name.clone();
+        let struct_name = effective_id
+            .map(|id| checker.symbols.get(id).name.clone())
+            .unwrap_or_else(|| {
+                base_resolved
+                    .display(&checker.symbols, &checker.type_info.type_interner)
+                    .into()
+            });
         let diag = crate::Diagnostic::error(
             crate::DiagCode::T012WrongArgCount,
             format!(
@@ -340,21 +395,102 @@ pub(crate) fn synth_method_call(
     }
 
     if !method_generic_params.is_empty() && explicit_params.len() == arg_ids.len() {
-        let receiver_bindings = struct_id
-            .and_then(|struct_symbol| {
-                let params = checker
-                    .type_info
-                    .generic_params
-                    .get(&struct_symbol)?
-                    .clone();
-                let ArType::Named(_, args) = checker.resolve(actual_base_ty_id) else {
-                    return None;
-                };
-                let args = checker.type_info.type_interner.type_args(args);
-                (args.len() == params.len())
-                    .then(|| params.iter().copied().zip(args).collect::<Vec<_>>())
-            })
-            .unwrap_or_default();
+        let mut receiver_bindings = (|| {
+            let params = checker
+                .type_info
+                .generic_params
+                .get(&effective_id?)?
+                .clone();
+            let actual = checker.resolve(actual_base_ty_id);
+            let args: Vec<crate::type_checker::types::TypeId> = match actual {
+                ArType::Named(_, args) => checker.type_info.type_interner.type_args(args).to_vec(),
+                ArType::Option(inner) => vec![inner],
+                ArType::Result(ok, err) => vec![ok, err],
+                ArType::Range(inner) => vec![inner],
+                ArType::Slice(inner) | ArType::MutSlice(inner) => vec![inner],
+                _ => return None,
+            };
+            (args.len() == params.len())
+                .then(|| params.iter().copied().zip(args).collect::<Vec<_>>())
+        })()
+        .unwrap_or_default();
+
+        if let Some(orig_recv) = orig_receiver_formal {
+            let mut peeled_formal = orig_recv;
+            let mut peeled_actual = actual_base_ty_id;
+            for _ in 0..4 {
+                match checker.resolve(peeled_formal) {
+                    ArType::Ptr(inner) | ArType::Ref(inner) | ArType::RefMut(inner) => {
+                        peeled_formal = inner;
+                    }
+                    _ => break,
+                }
+            }
+            for _ in 0..4 {
+                match checker.resolve(peeled_actual) {
+                    ArType::Ptr(inner) | ArType::Ref(inner) | ArType::RefMut(inner) => {
+                        peeled_actual = inner;
+                    }
+                    _ => break,
+                }
+            }
+            let mut candidate_gp = Vec::new();
+            if let Some(sym) = method_sym_recorded
+                && let Some(gp) = checker.type_info.generic_params.get(&sym)
+            {
+                candidate_gp.extend(gp.iter().copied());
+            }
+            if let Some(gp) = effective_id.and_then(|id| checker.type_info.generic_params.get(&id))
+            {
+                for &p in gp.iter() {
+                    if !candidate_gp.contains(&p) {
+                        candidate_gp.push(p);
+                    }
+                }
+            }
+            let mut bound_syms = Vec::new();
+            let mut bound_tys = Vec::new();
+            super::bind_receiver_type_arg(
+                checker,
+                peeled_formal,
+                peeled_actual,
+                &candidate_gp,
+                &mut bound_syms,
+                &mut bound_tys,
+            );
+            for (sym, ty) in bound_syms.into_iter().zip(bound_tys) {
+                if !receiver_bindings
+                    .iter()
+                    .any(|(existing, _)| *existing == sym)
+                {
+                    let tid = checker.intern(ty);
+                    receiver_bindings.push((sym, tid));
+                }
+            }
+        }
+
+        let concrete_args: Vec<crate::type_checker::types::TypeId> =
+            match checker.resolve(actual_base_ty_id) {
+                ArType::Result(ok, err) => vec![ok, err],
+                ArType::Option(inner) => vec![inner],
+                ArType::Slice(elem) | ArType::MutSlice(elem) | ArType::Array(_, elem) => vec![elem],
+                ArType::Ptr(inner) => vec![inner],
+                ArType::Nullable(inner) => match checker.resolve(inner) {
+                    ArType::Ptr(elem) => vec![elem],
+                    _ => Vec::new(),
+                },
+                _ => Vec::new(),
+            };
+        if let Some(sym) = method_sym_recorded
+            && let Some(gp) = checker.type_info.generic_params.get(&sym)
+        {
+            let n = gp.len().min(concrete_args.len());
+            for i in 0..n {
+                if !receiver_bindings.iter().any(|(s, _)| *s == gp[i]) {
+                    receiver_bindings.push((gp[i], concrete_args[i]));
+                }
+            }
+        }
         let arg_tys = super::super::expr::synth_args_with_callbacks(
             checker,
             &method_generic_params,

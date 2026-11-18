@@ -1576,3 +1576,86 @@ fn borrowed_temporaries_are_destroyed_once() {
     let c_source = emit_c(source, "rvalue_borrows");
     run_emitted_c_with_asan(&c_source, "rvalue_borrows");
 }
+
+#[test]
+fn swisstable_tombstone_churn_utf8_and_checked_i32_i64() {
+    let source = r#"
+module tests.cli.ownership.swisstable_churn
+import std.alloc.hash_map as maps
+import std.core.hash as hash
+import std.core.simd as simd
+import std.core.str as text
+
+struct ChurnKey {
+    id: int
+}
+
+public func ChurnKey.eq(self: ref ChurnKey, other: ref ChurnKey): bool {
+    return self.id == other.id
+}
+
+public func ChurnKey.hash<H: hash.Hasher>(self: ref ChurnKey, state: mut ref H): void {
+    state.writeInt(self.id)
+}
+
+func main(): int {
+    // 1) SwissTable tombstone churn at capacity == 16 must clean tombstones in-place without doubling.
+    let mut map = maps.HashMap<ChurnKey, int>.withCapacity(16 as usize)
+    if map.capacity() != (16 as usize) { return 1 }
+    let mut i: int = 0
+    while i < 80 {
+        let k = ChurnKey { id: i }
+        let _old = map.put(k, i * 10)
+        if i >= 10 {
+            let dead = ChurnKey { id: i - 10 }
+            let _rem = map.remove(ref dead)
+        }
+        i = i + 1
+    }
+    if map.capacity() != (16 as usize) || map.len() != (10 as usize) { return 2 }
+    let mut j: int = 70
+    while j < 80 {
+        let query = ChurnKey { id: j }
+        match map.get(ref query) {
+            Some(v) => { if v != j * 10 { return 3 } }
+            None => { return 4 }
+        }
+        j = j + 1
+    }
+
+    // 2) str SIMD + isValidUtf8 RFC 3629 matrix.
+    if !text.isAscii("0123456789abcdef_0123456789abcdef") { return 5 }
+    if text.isAscii("0123456789abcdefá") { return 6 }
+    if !text.eq("0123456789abcdef_0123456789abcdef", "0123456789abcdef_0123456789abcdef") { return 7 }
+    if text.eq("0123456789abcdef_0123456789abcdef", "0123456789abcdef_0123456789abcdeX") { return 8 }
+    if !text.isValidUtf8(text.asBytes(ref "0123456789abcdef_olá_€_🚀")) { return 9 }
+    if text.isValidUtf8(b"0123456789abcdef\x80") { return 10 }
+    if text.isValidUtf8(b"\xC0\xAF") { return 11 }
+    if text.isValidUtf8(b"\xE0\x80\xAF") { return 12 }
+    if text.isValidUtf8(b"\xED\xA0\x80") { return 13 }
+    if text.isValidUtf8(b"\xF4\x90\x80\x80") { return 14 }
+
+    // 3) Inherent i32 / i64 checked arithmetic smoke test.
+    let s32: i32 = (10 as i32)
+    match s32.checkedAdd(20 as i32) {
+        Some(v) => { if v != (30 as i32) { return 15 } }
+        None => { return 16 }
+    }
+    let s64: i64 = (9223372036854775807 as i64)
+    match s64.checkedAdd(1 as i64) {
+        Some(_) => { return 17 }
+        None => {}
+    }
+
+    // 4) Mask8x16 bitmask methods.
+    let a = simd.U8x16.splat(42 as u8)
+    let m = a.eq(simd.U8x16.splat(42 as u8))
+    if m.bitmask() != (65535 as u32) || !m.allTrue() { return 18 }
+    return 0
+}
+"#;
+    let stdout = run(source, "swisstable_churn_utf8_checked");
+    assert!(stdout.is_empty());
+    let c_source = emit_c(source, "swisstable_churn_utf8_checked_c");
+    run_emitted_c_with_asan(&c_source, "swisstable_churn_utf8_checked_asan");
+}

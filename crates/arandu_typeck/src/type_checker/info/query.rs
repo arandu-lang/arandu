@@ -600,6 +600,9 @@ impl TypeInfo {
         if self.destructors.contains_key(&sym) || self.interior_mutable_types.contains(&sym) {
             return false;
         }
+        if self.struct_repr_c.contains(&sym) || self.struct_unions.contains(&sym) {
+            return true;
+        }
         let mut variants: Vec<_> = self
             .enum_variants
             .iter()

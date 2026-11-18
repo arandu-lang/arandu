@@ -361,6 +361,10 @@ fn lang_item_discriminant(item: arandu_middle::symbol_table::LangItem) -> u8 {
         LangItem::SendOnceClosure => 59,
         LangItem::Range => 60,
         LangItem::RangeInclusive => 61,
+        LangItem::I32 => 62,
+        LangItem::I64 => 63,
+        LangItem::Ord => 64,
+        LangItem::Ordering => 65,
     }
 }
 
@@ -455,6 +459,14 @@ pub(super) fn hash_symbol_table_until(
     hasher.update(b"ExportedFunctions/v1");
     hasher.update(&u64_le(exported.len() as u64));
     for symbol in exported {
+        hash_symbol_id(hasher, symbol);
+    }
+
+    let mut cold: Vec<_> = table.cold_functions.iter().copied().collect();
+    cold.sort_by_key(|symbol| (symbol.file_id, symbol.local_id.0));
+    hasher.update(b"ColdFunctions/v1");
+    hasher.update(&u64_le(cold.len() as u64));
+    for symbol in cold {
         hash_symbol_id(hasher, symbol);
     }
 
@@ -558,6 +570,9 @@ pub(super) fn hash_symbol_table_until(
             table.builtins.ptr_type,
             table.builtins.u32_type,
             table.builtins.u64_type,
+            table.builtins.usize_type,
+            table.builtins.i32_type,
+            table.builtins.i64_type,
             table.builtin_alloc,
             table.builtin_free,
         ] {

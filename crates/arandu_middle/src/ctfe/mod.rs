@@ -16,6 +16,8 @@ mod float;
 pub use float::{ConstFloat, FloatArithmetic, FloatError, FloatType};
 mod string;
 pub use string::{ConstBytes, ConstString, StringError};
+mod type_desc;
+pub use type_desc::{TypeDesc, TypeMemberDesc, TypeMemberKind};
 
 /// An admitted integer type with a resolved, target-dependent bit width.
 ///
@@ -161,6 +163,7 @@ pub enum ConstValue {
     Float(ConstFloat),
     String(ConstString),
     Bytes(ConstBytes),
+    TypeDesc(TypeDesc),
 }
 
 impl ConstValue {
@@ -176,6 +179,7 @@ impl ConstValue {
             Self::String(_) => TypeShape::Primitive(Primitive::Str),
             Self::Bytes(_) => TypeShape::Slice(Box::new(TypeShape::Primitive(Primitive::U8))),
             Self::Aggregate(value) => value.shape().clone(),
+            Self::TypeDesc(desc) => desc.shape.clone(),
         }
     }
 
@@ -205,6 +209,7 @@ impl ConstValue {
             Self::Float(value) => return value.canonical_bytes().to_vec(),
             Self::String(value) => return value.canonical_bytes(),
             Self::Bytes(value) => return value.canonical_bytes(),
+            Self::TypeDesc(desc) => return desc.canonical_bytes(),
         }
         bytes.to_vec()
     }

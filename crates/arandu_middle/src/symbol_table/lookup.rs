@@ -149,6 +149,12 @@ impl super::SymbolTable {
         self.exported_functions.contains(&symbol)
     }
 
+    /// Whether `@Cold` marked this function as infrequently executed.
+    #[must_use]
+    pub fn is_cold(&self, symbol: SymbolId) -> bool {
+        self.cold_functions.contains(&symbol)
+    }
+
     /// First pair of distinct `@Export`s that claim the same linker symbol,
     /// in deterministic order: `(first, second, name)`.
     ///

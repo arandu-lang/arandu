@@ -1227,3 +1227,18 @@ fn a_statement_may_end_with_self() {
         crate::lower_syntax_to_program(&crate::parse_syntax(source), 0).expect("CST parse");
     assert_eq!(direct, canonical);
 }
+
+#[test]
+fn parameterized_trailing_lambdas_parse_the_same_in_both_paths() {
+    for source in [
+        "func f() { let a = v.map { x => *x * 3 } }",
+        "func f() { let b = v.filter { (x) => *x > 1 } }",
+        "func f() { let c = v.fold(0) { (acc, x) => acc + *x } }",
+        "func f() { let d = v.map { x: int => *x + 1 } }",
+    ] {
+        let direct = parse(source).expect("direct parse");
+        let canonical =
+            crate::lower_syntax_to_program(&crate::parse_syntax(source), 0).expect("CST parse");
+        assert_eq!(direct, canonical, "{source}");
+    }
+}

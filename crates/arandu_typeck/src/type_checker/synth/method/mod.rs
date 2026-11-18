@@ -145,7 +145,7 @@ fn instantiate_method_sig_for_result_option(
     (new_params, new_ret)
 }
 
-fn bind_receiver_type_arg(
+pub(super) fn bind_receiver_type_arg(
     checker: &TypeChecker<'_>,
     formal_id: TypeId,
     actual_id: TypeId,

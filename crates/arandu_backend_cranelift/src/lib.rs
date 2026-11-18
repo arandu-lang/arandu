@@ -20,8 +20,9 @@ pub mod types;
 // Host runtime routines moved to `arandu_runtime`; re-exported so the JIT
 // symbol table (`crate::<module>_runtime::*`) and external paths keep working.
 pub use arandu_runtime::{
-    fs_runtime, gen_runtime, os_runtime, poll_runtime, reactor_runtime, rt_runtime, socket_runtime,
-    supervisor_runtime, testing_runtime, to_str_runtime, vec_runtime, waker_runtime,
+    c_compat, fs_runtime, gen_runtime, os_runtime, poll_runtime, reactor_runtime, rt_runtime,
+    socket_runtime, supervisor_runtime, testing_runtime, to_str_runtime, vec_runtime,
+    waker_runtime,
 };
 
 pub use crate::aot::{

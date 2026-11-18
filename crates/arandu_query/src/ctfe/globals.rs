@@ -96,7 +96,7 @@ pub(crate) fn global_const_value_in_context(
         Err(diagnostic) => {
             return HashEq::new(GlobalConstant {
                 result: Err(vec![diagnostic]),
-            })
+            });
         }
     };
     let build = || {

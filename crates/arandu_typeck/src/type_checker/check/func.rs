@@ -93,6 +93,16 @@ fn validate_method_receiver(checker: &mut TypeChecker<'_>, decl: &FuncDecl) {
             {
                 Some(self_ty.clone())
             }
+            ArType::Primitive(arandu_middle::types::Primitive::I32)
+                if checker.symbols.builtins.i32_type == Some(owner) =>
+            {
+                Some(self_ty.clone())
+            }
+            ArType::Primitive(arandu_middle::types::Primitive::I64)
+                if checker.symbols.builtins.i64_type == Some(owner) =>
+            {
+                Some(self_ty.clone())
+            }
             ArType::Primitive(arandu_middle::types::Primitive::Float)
                 if checker.symbols.builtins.float_type == Some(owner) =>
             {
@@ -174,6 +184,12 @@ pub(super) fn func_type_scope(checker: &TypeChecker<'_>, decl: &FuncDecl) -> cra
 
 #[tracing::instrument(level = "trace", target = "arandu_typeck", skip(checker, decl))]
 pub fn check_func_body(checker: &mut TypeChecker<'_>, decl: &FuncDecl) {
+    let reported = checker.diagnostics.len();
+    check_func_body_inner(checker, decl);
+    super::lint_levels::apply(checker, &decl.attrs, reported);
+}
+
+fn check_func_body_inner(checker: &mut TypeChecker<'_>, decl: &FuncDecl) {
     let old_owner = checker.current_owner_type;
     checker.current_owner_type = match &decl.name {
         arandu_parser::FuncName::Method { receiver, .. } => {

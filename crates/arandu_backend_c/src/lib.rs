@@ -41,6 +41,26 @@ pub fn emit_c(
     CEmitter::new(program, symbols, &engine, provider, interner).emit()
 }
 
+/// Emit a full C translation unit with access to the full [`CodegenTypeContext`].
+pub fn emit_c_with_context(
+    program: &AmirProgram,
+    symbols: &SymbolTable,
+    types: &dyn CodegenTypeContext,
+    data_layout: DataLayout,
+) -> Result<String, Diagnostic> {
+    let interner = types.type_interner();
+    if let Some(issue) = arandu_middle::validate_amir_program(program, symbols, interner)
+        .into_iter()
+        .next()
+    {
+        return Err(issue);
+    }
+    let engine = LayoutEngine::from_data_layout(data_layout);
+    CEmitter::new(program, symbols, &engine, types, interner)
+        .with_type_context(types)
+        .emit()
+}
+
 /// [`CodegenBackend`] adapter around [`emit_c`].
 ///
 /// Holds the explicit target [`DataLayout`]; the [`CodegenTypeContext`]
@@ -78,13 +98,6 @@ impl CodegenBackend for CEmitBackend {
         symbols: &SymbolTable,
         types: &dyn CodegenTypeContext,
     ) -> Result<Self::CompilationOutput, Diagnostic> {
-        emit_c(
-            program,
-            symbols,
-            types,
-            types.type_interner(),
-            self.data_layout,
-        )
-        .map(CTranslationUnit)
+        emit_c_with_context(program, symbols, types, self.data_layout).map(CTranslationUnit)
     }
 }

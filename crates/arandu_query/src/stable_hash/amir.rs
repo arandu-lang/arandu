@@ -137,6 +137,9 @@ impl StableHash for crate::ctfe::CtfeLowering {
             Err(BuildFailure::GenericFunction) => {
                 hash.update(&[2]);
             }
+            Err(BuildFailure::CallsGeneric) => {
+                hash.update(&[7]);
+            }
             Err(BuildFailure::Diagnostics(diagnostics)) => {
                 hash.update(&[3]);
                 hash.update(diagnostics.stable_hash().as_bytes());

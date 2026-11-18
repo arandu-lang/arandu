@@ -277,9 +277,24 @@ pub(super) fn synth_binary_result(
         BinaryOp::Lt | BinaryOp::Gt | BinaryOp::LtEqual | BinaryOp::GtEqual => {
             let left_ty = checker.resolve(left_ty_id);
             let right_ty = checker.resolve(right_ty_id);
+            let is_orderable = |checker: &mut TypeChecker<'_>, ty: &ArType| {
+                ty.is_orderable()
+                    || checker
+                        .symbols
+                        .lang_item_symbol(arandu_middle::symbol_table::LangItem::Ord)
+                        .is_some_and(|ord_sym| {
+                            crate::type_checker::types::interfaces::type_satisfies_interface(
+                                checker,
+                                ty,
+                                ord_sym,
+                                &[],
+                                span,
+                            )
+                        })
+            };
             if !checker.unify_ids(left_ty_id, right_ty_id)
-                || !left_ty.is_orderable()
-                || !right_ty.is_orderable()
+                || !is_orderable(checker, &left_ty)
+                || !is_orderable(checker, &right_ty)
             {
                 checker.add_constraint(
                     left_ty_id,

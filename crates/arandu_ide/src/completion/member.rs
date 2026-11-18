@@ -248,6 +248,8 @@ fn named_symbol_of(tc: &TypeCheckResult, ty: &ArType) -> Option<SymbolId> {
         ArType::Primitive(Primitive::Char) => tc.symbols.builtins.char_type,
         ArType::Primitive(Primitive::U32) => tc.symbols.builtins.u32_type,
         ArType::Primitive(Primitive::U64) => tc.symbols.builtins.u64_type,
+        ArType::Primitive(Primitive::I32) => tc.symbols.builtins.i32_type,
+        ArType::Primitive(Primitive::I64) => tc.symbols.builtins.i64_type,
         ArType::Primitive(Primitive::Int) | ArType::IntLiteral => tc.symbols.builtins.int_type,
         ArType::Primitive(Primitive::Float) | ArType::FloatLiteral => {
             tc.symbols.builtins.float_type

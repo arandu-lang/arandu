@@ -185,6 +185,9 @@ fn lower_decl_with_body(
             if annotations.contains(crate::attributes::AnnotationId::Export) {
                 lower_export(type_check, pool, d, symbol, &formal_types, return_type)?;
             }
+            if annotations.contains(crate::attributes::AnnotationId::Cold) {
+                type_check.symbols_mut().cold_functions.insert(symbol);
+            }
             Ok(Some(HirDecl::Func(HirFunc {
                 symbol,
                 params,

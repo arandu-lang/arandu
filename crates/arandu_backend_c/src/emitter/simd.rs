@@ -81,6 +81,16 @@ impl CEmitter<'_> {
             self.output,
             "static inline {name} {name}_shuffle({name} a, {name} b, const uint8_t mask[16]) {{ {name} r; uint8_t x[16],y[16],z[16]; memcpy(x,&a,16); memcpy(y,&b,16);\nfor (unsigned i=0; i<16; ++i) {{ unsigned j=mask[i]; const uint16_t endian=1; unsigned dst=i,src=j%16; if (((const uint8_t *)&endian)[0]==0) {{ dst=(i/{width})*{width}+({width}-1-i%{width}); src=((j%16)/{width})*{width}+({width}-1-j%{width}); }}\nz[dst]=j<16?x[src]:y[src]; }} memcpy(&r,z,16); return r; }}"
         );
+        if vector == VectorType::U8x16 {
+            let _ = writeln!(
+                self.output,
+                "static inline uint32_t ArVector_U8x16_bitmask(ArVector_U8x16 a) {{ uint32_t m = 0; for (unsigned i = 0; i < 16; ++i) m |= ((uint32_t)(a.lane[i] >> 7)) << i; return m; }}"
+            );
+            let _ = writeln!(
+                self.output,
+                "static inline ArVector_U8x16 ArVector_U8x16_load_unaligned(const void *p) {{ ArVector_U8x16 r; memcpy(&r, p, 16); return r; }}"
+            );
+        }
         self.emitted_types.insert(name);
     }
 
@@ -90,6 +100,12 @@ impl CEmitter<'_> {
         func: &AmirFunc,
         result: &ArType,
     ) {
+        if matches!(
+            rhs,
+            AmirRvalue::VectorBitmask { .. } | AmirRvalue::VectorLoadUnaligned { .. }
+        ) {
+            self.ensure_type_emitted(&ArType::Vector(VectorType::U8x16));
+        }
         let name = self.format_type(result).into_owned();
         match rhs {
             AmirRvalue::VectorSelect {
@@ -159,6 +175,15 @@ impl CEmitter<'_> {
                     self.output,
                     "{name}_shuffle({left}, {right}, (const uint8_t[16]){{{mask}}})"
                 );
+            }
+            AmirRvalue::VectorBitmask { vector } => {
+                let vector = self.format_operand(vector, func);
+                let _ = write!(self.output, "ArVector_U8x16_bitmask({vector})");
+            }
+            AmirRvalue::VectorLoadUnaligned { source } => {
+                let _ = write!(self.output, "ArVector_U8x16_load_unaligned(");
+                self.emit_slice_data(source, func, "const void*");
+                let _ = write!(self.output, ")");
             }
             _ => self.record_codegen_ice(func, "expected a vector operation"),
         }

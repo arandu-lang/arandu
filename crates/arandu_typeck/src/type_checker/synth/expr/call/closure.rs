@@ -1057,6 +1057,41 @@ pub(crate) fn check_lambda_owning(
     check_lambda(checker, expr, signature, LambdaUse::Owning(closure_ty))
 }
 
+fn open_type_params_to_invars(
+    checker: &mut TypeChecker<'_>,
+    ty_id: TypeId,
+    span: arandu_lexer::Span,
+) -> TypeId {
+    match checker.resolve(ty_id) {
+        ArType::Named(p, _) => {
+            let is_type_param = checker
+                .symbols
+                .try_get(p)
+                .is_some_and(|s| s.kind == arandu_middle::SymbolKind::TypeParam)
+                || checker
+                    .type_info
+                    .generic_params
+                    .values()
+                    .any(|gps| gps.contains(&p));
+            if is_type_param {
+                checker.fresh_type_var(p, None, span)
+            } else {
+                ty_id
+            }
+        }
+        ArType::Option(inner) => {
+            let replaced = open_type_params_to_invars(checker, inner, span);
+            checker.intern(ArType::Option(replaced))
+        }
+        ArType::Result(ok, err) => {
+            let replaced_ok = open_type_params_to_invars(checker, ok, span);
+            let replaced_err = open_type_params_to_invars(checker, err, span);
+            checker.intern(ArType::Result(replaced_ok, replaced_err))
+        }
+        _ => ty_id,
+    }
+}
+
 fn check_lambda(
     checker: &mut TypeChecker<'_>,
     arg_id: ExprId,
@@ -1146,16 +1181,16 @@ fn check_lambda(
         method_params.push((Some(symbol), expected));
     }
 
-    let return_type = expected_ret;
+    let return_type_var = open_type_params_to_invars(checker, expected_ret, lambda_span);
     match &body {
         arandu_parser::LambdaBody::Expr { expr, .. } => {
-            let value = super::synth_expr_expected(checker, *expr, Some(return_type));
-            if !matches!(checker.resolve(return_type), ArType::Void)
-                && !checker.unify_ids(return_type, value)
+            let value = super::synth_expr_expected(checker, *expr, Some(return_type_var));
+            if !matches!(checker.resolve(return_type_var), ArType::Void)
+                && !checker.unify_ids(return_type_var, value)
             {
                 let value_span = checker.pool.expr_span(*expr);
                 checker.add_constraint(
-                    return_type,
+                    return_type_var,
                     value,
                     crate::type_checker::constraints::ConstraintOrigin::ClosureResult {
                         value_span,
@@ -1165,9 +1200,10 @@ fn check_lambda(
             }
         }
         arandu_parser::LambdaBody::Block { block, .. } => {
-            crate::type_checker::check::check_closure_block(checker, block, Some(return_type));
+            crate::type_checker::check::check_closure_block(checker, block, Some(return_type_var));
         }
     }
+    let return_type = checker.intern(checker.resolve(return_type_var));
     // Modes need the typed body: a call through a `mut` receiver mutates.
     let owning = match usage {
         LambdaUse::Owning(closure_ty) => Some(closure_ty),

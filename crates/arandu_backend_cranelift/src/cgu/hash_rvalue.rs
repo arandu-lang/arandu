@@ -14,6 +14,16 @@ impl HashContext<'_> {
                 self.operand(if_true);
                 self.operand(if_false);
             }
+            AmirRvalue::Select {
+                condition,
+                if_true,
+                if_false,
+            } => {
+                self.hash.tag(39);
+                self.operand(condition);
+                self.operand(if_true);
+                self.operand(if_false);
+            }
             AmirRvalue::VectorCompare { op, left, right } => {
                 self.hash.tag(35);
                 self.hash.tag(op.stable_tag());
@@ -52,6 +62,14 @@ impl HashContext<'_> {
                 self.operand(vector);
                 self.hash.tag(*lane);
                 self.operand(value);
+            }
+            AmirRvalue::VectorBitmask { vector } => {
+                self.hash.tag(40);
+                self.operand(vector);
+            }
+            AmirRvalue::VectorLoadUnaligned { source } => {
+                self.hash.tag(41);
+                self.operand(source);
             }
             AmirRvalue::Use(operand) => {
                 self.hash.tag(0);

@@ -44,7 +44,9 @@ pub fn type_may_carry_borrow(
             | ArType::Void
             | ArType::Vector(_)
             | ArType::IntLiteral
-            | ArType::FloatLiteral,
+            | ArType::FloatLiteral
+            | ArType::Ptr(_)
+            | ArType::Func(_, _),
         ) => false,
         // Unresolved IDE and aggregate shapes remain conservative.
         _ => true,

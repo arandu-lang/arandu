@@ -122,6 +122,24 @@ pub fn statics_unit(
             Some(image) => {
                 hash.u64(image.alignment);
                 hash.bytes(&image.bytes);
+                let objects = std::iter::once((&image.relocations, &[][..])).chain(
+                    image
+                        .objects
+                        .iter()
+                        .map(|object| (&object.relocations, &object.bytes[..])),
+                );
+                for (relocations, bytes) in objects {
+                    hash.u64(bytes.len() as u64);
+                    hash.bytes(bytes);
+                    hash.u64(relocations.len() as u64);
+                    for relocation in relocations {
+                        hash.u64(relocation.offset);
+                        hash.u64(relocation.target as u64);
+                    }
+                }
+                for object in &image.objects {
+                    hash.u64(object.alignment);
+                }
             }
             None => hash.tag(255),
         }

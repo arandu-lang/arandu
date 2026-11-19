@@ -106,6 +106,45 @@ impl CEmitter<'_> {
             let (Some(little), Some(big)) = (encode(true), encode(false)) else {
                 continue;
             };
+            // The objects its pointers reach (string bytes, slice elements).
+            let object_names: Vec<String> = (0..little.objects.len())
+                .map(|index| format!("{}__{index}", item.name))
+                .collect();
+            for (index, name) in object_names.iter().enumerate() {
+                let (Some(little_object), Some(big_object)) =
+                    (little.objects.get(index), big.objects.get(index))
+                else {
+                    continue;
+                };
+                if little_object.bytes != big_object.bytes {
+                    let _ = writeln!(
+                        self.output,
+                        "#if defined(__BYTE_ORDER__) && defined(__ORDER_BIG_ENDIAN__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__"
+                    );
+                    self.emit_static_object(name, big_object.alignment, &big_object.bytes);
+                    let _ = writeln!(self.output, "#else");
+                }
+                self.emit_static_object(name, little_object.alignment, &little_object.bytes);
+                if little_object.bytes != big_object.bytes {
+                    let _ = writeln!(self.output, "#endif");
+                }
+                for relocation in &little_object.relocations {
+                    if let Some(target) = object_names.get(relocation.target) {
+                        self.static_relocations.push(format!(
+                            "{{ const void *p = {target}; memcpy(&{name}[{}], &p, sizeof p); }}",
+                            relocation.offset
+                        ));
+                    }
+                }
+            }
+            for relocation in &little.relocations {
+                if let Some(target) = object_names.get(relocation.target) {
+                    self.static_relocations.push(format!(
+                        "{{ const void *p = {target}; memcpy(&{}.bytes[{}], &p, sizeof p); }}",
+                        item.name, relocation.offset
+                    ));
+                }
+            }
             if little.bytes != big.bytes {
                 let _ = writeln!(
                     self.output,
@@ -119,6 +158,31 @@ impl CEmitter<'_> {
                 let _ = writeln!(self.output, "#endif");
             }
         }
+        // A C initializer cannot hold an address in a byte image: the
+        // pointer words are written once, before any code reads them.
+        if !self.static_relocations.is_empty() {
+            let _ = writeln!(self.output, "static void ar_static_relocate(void) {{");
+            for write in &self.static_relocations {
+                let _ = writeln!(self.output, "    {write}");
+            }
+            let _ = writeln!(self.output, "}}");
+        }
+    }
+
+    fn emit_static_object(&mut self, name: &str, alignment: u64, bytes: &[u8]) {
+        let _ = write!(
+            self.output,
+            "_Alignas({}) static uint8_t {name}[{}] = {{",
+            alignment.max(1),
+            bytes.len().max(1)
+        );
+        for byte in bytes {
+            let _ = write!(self.output, "{byte},");
+        }
+        if bytes.is_empty() {
+            let _ = write!(self.output, "0");
+        }
+        let _ = writeln!(self.output, "}};");
     }
 
     fn emit_mutable_static(&mut self, name: &str, c_type: &str, bytes: &[u8]) {

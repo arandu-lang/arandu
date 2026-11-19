@@ -9,7 +9,7 @@ use arandu_parser::ast_pool::{ExprId, ExprKind};
 use super::super::TypeChecker;
 use super::super::types::{ArType, TypeId};
 
-pub(crate) use call::synth_method_call;
+pub(crate) use call::{Receiver, synth_method_call};
 
 /// Reject an implicit exclusive borrow of an immutable value receiver.
 ///

@@ -10,7 +10,7 @@ pub(crate) use field::{
     resolve_field, resolve_field_type, resolve_index, resolve_namespace_field,
     resolve_namespace_member_type,
 };
-pub(crate) use method::synth_method_call;
+pub(crate) use method::{Receiver, synth_method_call};
 
 pub(crate) use expr::range as expr_range;
 pub(crate) use expr::text as expr_text;

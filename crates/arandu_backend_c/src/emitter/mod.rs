@@ -115,6 +115,9 @@ pub struct CEmitter<'a> {
     pub(super) live_functions: rustc_hash::FxHashSet<arandu_middle::SymbolId>,
     pub(super) rotations: Vec<Option<rotations::Rotation>>,
     pub(super) rotation_elided: Vec<bool>,
+    /// Statements that write the address of each static data object into
+    /// the pointer words of the objects that reach it, run first in `main`.
+    pub(super) static_relocations: Vec<String>,
     pub(super) arena_runtime: bool,
     pub(super) task_arena_runtime: bool,
     pub(super) expression_candidates: Vec<bool>,
@@ -153,6 +156,7 @@ impl<'a> CEmitter<'a> {
             live_functions: reachability::live_functions(program, symbols, interner, provider),
             rotations: Vec::new(),
             rotation_elided: Vec::new(),
+            static_relocations: Vec::new(),
             arena_runtime: false,
             task_arena_runtime: false,
             expression_candidates: Vec::new(),

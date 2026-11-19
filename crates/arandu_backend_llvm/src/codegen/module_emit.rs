@@ -47,16 +47,31 @@ impl<'a> ModuleEmitter<'a> {
             ) else {
                 continue;
             };
-            let mut bytes = image.bytes;
-            if bytes.is_empty() {
-                bytes.push(0);
+            let pointer = info.target_layout().pointer.size;
+            let object_names: Vec<String> = (0..image.objects.len())
+                .map(|index| quote_name(&format!("{}__{index}", item.name)))
+                .collect();
+            // The objects its pointers reach (string bytes, slice elements)
+            // are read-only globals of their own.
+            for (object, name) in image.objects.iter().zip(&object_names) {
+                globals.push(static_global(
+                    name,
+                    "internal constant",
+                    &object.bytes,
+                    object.alignment,
+                    &object.relocations,
+                    &object_names,
+                    pointer,
+                ));
             }
-            globals.push(format!(
-                "@{} = internal global [{} x i8] c\"{}\", align {}",
-                quote_name(&item.name),
-                bytes.len(),
-                escape_c_string(&bytes),
-                image.alignment.max(1)
+            globals.push(static_global(
+                &quote_name(&item.name),
+                "internal global",
+                &image.bytes,
+                image.alignment,
+                &image.relocations,
+                &object_names,
+                pointer,
             ));
         }
 
@@ -704,6 +719,67 @@ fn entry_string_bytes(entry: &arandu_middle::literal_pool::AmirLiteralEntry) -> 
         arandu_middle::literal_pool::AmirLiteralEntry::Bytes(value) => Some(value.as_ref()),
         _ => None,
     }
+}
+
+/// A global holding `bytes`. With relocations it is a packed struct whose
+/// pointer-sized words at those offsets hold the addresses of `objects`;
+/// code reaches it through an opaque pointer, so its own type is free.
+fn static_global(
+    name: &str,
+    kind: &str,
+    bytes: &[u8],
+    alignment: u64,
+    relocations: &[arandu_middle::ctfe::StaticRelocation],
+    objects: &[String],
+    pointer: u64,
+) -> String {
+    let align = alignment.max(1);
+    if relocations.is_empty() {
+        let mut bytes = bytes.to_vec();
+        if bytes.is_empty() {
+            bytes.push(0);
+        }
+        return format!(
+            "@{name} = {kind} [{} x i8] c\"{}\", align {align}",
+            bytes.len(),
+            escape_c_string(&bytes)
+        );
+    }
+    let mut sorted = relocations.to_vec();
+    sorted.sort_by_key(|relocation| relocation.offset);
+    let mut types = Vec::new();
+    let mut values = Vec::new();
+    let mut cursor = 0usize;
+    let pointer = usize::try_from(pointer).unwrap_or(8);
+    let push_bytes = |types: &mut Vec<String>, values: &mut Vec<String>, chunk: &[u8]| {
+        if !chunk.is_empty() {
+            types.push(format!("[{} x i8]", chunk.len()));
+            values.push(format!(
+                "[{} x i8] c\"{}\"",
+                chunk.len(),
+                escape_c_string(chunk)
+            ));
+        }
+    };
+    for relocation in &sorted {
+        let offset = usize::try_from(relocation.offset).unwrap_or(usize::MAX);
+        let Some(target) = objects.get(relocation.target) else {
+            continue;
+        };
+        if offset < cursor || offset.saturating_add(pointer) > bytes.len() {
+            continue;
+        }
+        push_bytes(&mut types, &mut values, &bytes[cursor..offset]);
+        types.push("ptr".to_owned());
+        values.push(format!("ptr @{target}"));
+        cursor = offset + pointer;
+    }
+    push_bytes(&mut types, &mut values, &bytes[cursor..]);
+    format!(
+        "@{name} = {kind} <{{ {} }}> <{{ {} }}>, align {align}",
+        types.join(", "),
+        values.join(", ")
+    )
 }
 
 #[cfg(test)]

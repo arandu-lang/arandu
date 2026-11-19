@@ -226,24 +226,57 @@ impl<'a> WasmModuleBuilder<'a> {
                 true,
             );
             let base_align = 1u64 << crate::memory::RODATA_BASE.trailing_zeros();
+            // Places `bytes` and returns its index in rodata and its address.
+            let place =
+                |rodata: &mut Vec<u8>, bytes: &[u8], alignment: u64| -> Option<(usize, u32)> {
+                    if !alignment.is_power_of_two() || alignment > base_align {
+                        return None;
+                    }
+                    let mask = usize::try_from(alignment.max(16)).ok()? - 1;
+                    let aligned = rodata.len().checked_add(mask)? & !mask;
+                    let address = u32::try_from(
+                        usize::try_from(crate::memory::RODATA_BASE)
+                            .ok()?
+                            .checked_add(aligned)?,
+                    )
+                    .ok()?;
+                    rodata.resize(aligned, 0);
+                    rodata.extend_from_slice(bytes);
+                    if bytes.is_empty() {
+                        rodata.push(0);
+                    }
+                    Some((aligned, address))
+                };
+            // The objects its pointers reach go first; every pointer word is
+            // then the absolute address of its target.
             let placed = image.and_then(|image| {
-                if !image.alignment.is_power_of_two() || image.alignment > base_align {
-                    return None;
+                let mut objects = Vec::with_capacity(image.objects.len());
+                for object in &image.objects {
+                    objects.push(place(&mut rodata.bytes, &object.bytes, object.alignment)?);
                 }
-                let mask = usize::try_from(image.alignment.max(16)).ok()? - 1;
-                let aligned = rodata.bytes.len().checked_add(mask)? & !mask;
-                let address = u32::try_from(
-                    usize::try_from(crate::memory::RODATA_BASE)
-                        .ok()?
-                        .checked_add(aligned)?,
-                )
-                .ok()?;
-                rodata.bytes.resize(aligned, 0);
-                rodata.bytes.extend_from_slice(&image.bytes);
-                if image.bytes.is_empty() {
-                    rodata.bytes.push(0);
+                let root = place(&mut rodata.bytes, &image.bytes, image.alignment)?;
+                let patches = std::iter::once((root.0, &image.relocations)).chain(
+                    image
+                        .objects
+                        .iter()
+                        .zip(&objects)
+                        .map(|(object, &(start, _))| (start, &object.relocations)),
+                );
+                let mut writes = Vec::new();
+                for (start, relocations) in patches {
+                    for relocation in relocations {
+                        let (_, target) = *objects.get(relocation.target)?;
+                        let at = start.checked_add(usize::try_from(relocation.offset).ok()?)?;
+                        writes.push((at, target));
+                    }
                 }
-                Some(address)
+                for (at, target) in writes {
+                    rodata
+                        .bytes
+                        .get_mut(at..at.checked_add(4)?)?
+                        .copy_from_slice(&target.to_le_bytes());
+                }
+                Some(root.1)
             });
             let Some(address) = placed else {
                 return Err(Diagnostic::ice(

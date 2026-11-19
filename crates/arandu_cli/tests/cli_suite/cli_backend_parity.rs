@@ -767,6 +767,26 @@ fn string_concatenation_agrees_on_every_backend() {
     let _ = fs::remove_file(path);
 }
 
+/// `static mut` storage holding text, byte views and arrays of text: the
+/// data image points at objects of its own on every backend.
+#[test]
+fn static_text_agrees_on_every_backend() {
+    let source = include_str!("../../../../tests/corpus/static_text.aru");
+    for (backend, outcome) in outcomes_on("static_text", source, false) {
+        assert_eq!(outcome, ProgramOutcome::Returned(0), "{backend}");
+    }
+    let path = std::env::temp_dir().join(format!("arandu_static_text_{}.aru", std::process::id()));
+    fs::write(&path, source).unwrap();
+    let wasm = cli(&["emit-wasm", &path.to_string_lossy()]);
+    assert!(
+        wasm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&wasm.stderr)
+    );
+    crate::wasm_host::run_main(&wasm.stdout).assert_returns(0, "static text in Wasmtime");
+    let _ = fs::remove_file(path);
+}
+
 /// Values moved on some paths only, and or-patterns that bind names.
 #[test]
 fn conditional_moves_and_or_patterns_agree_on_every_backend() {

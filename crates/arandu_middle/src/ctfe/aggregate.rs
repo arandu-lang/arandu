@@ -77,6 +77,12 @@ impl ConstAggregate {
                     return Err(ConstValueError::InvalidAggregateShape);
                 }
             }
+            // A frozen slice owns its elements as a read-only array.
+            TypeShape::Slice(element) => {
+                if !values.iter().all(|value| shape_accepts(element, value)) {
+                    return Err(ConstValueError::InvalidAggregateShape);
+                }
+            }
             TypeShape::Tuple(elements) if elements.len() == values.len() => {
                 if !elements
                     .iter()
@@ -228,10 +234,7 @@ pub fn validate_ctfe_type_shape(shape: &TypeShape) -> Result<(), ConstValueError
             TypeShape::Const(_) | TypeShape::FrozenConst(_) => argument,
             TypeShape::Option(inner) => visit(inner, false),
             TypeShape::Result(ok, error) => visit(ok, false) && visit(error, false),
-            TypeShape::Slice(inner) => matches!(
-                inner.as_ref(),
-                TypeShape::Primitive(super::Primitive::Byte | super::Primitive::U8)
-            ),
+            TypeShape::Slice(inner) => visit(inner, false),
             TypeShape::Vector(_) => true,
             TypeShape::Func(..)
             | TypeShape::Nullable(_)
@@ -276,7 +279,8 @@ fn shape_accepts(shape: &TypeShape, value: &ConstValue) -> bool {
             | TypeShape::Tuple(_)
             | TypeShape::Named(..)
             | TypeShape::Option(_)
-            | TypeShape::Result(..),
+            | TypeShape::Result(..)
+            | TypeShape::Slice(_),
             ConstValue::Aggregate(value),
         ) => shape == value.shape(),
         _ => false,

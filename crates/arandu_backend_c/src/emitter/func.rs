@@ -33,6 +33,11 @@ impl<'a> CEmitter<'a> {
         let _ = write!(&mut self.output, "{linkage}{cold}{} {}(", ret_ty, name);
         self.emit_func_parameters(func);
         let _ = writeln!(&mut self.output, ") {{");
+        if !self.static_relocations.is_empty()
+            && self.symbols.host_func_name(self.symbols.get(func.symbol)) == "main"
+        {
+            let _ = writeln!(&mut self.output, "    ar_static_relocate();");
+        }
 
         // Declare locals and temps strictly at the top
         let mut used_locals = rustc_hash::FxHashSet::default();

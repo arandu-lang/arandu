@@ -11,7 +11,7 @@ use std::sync::Arc;
 mod aggregate;
 mod image;
 pub use aggregate::{ConstAggregate, ConstVariant, canonical_type_bytes, validate_ctfe_type_shape};
-pub use image::{StaticImage, const_value_bytes};
+pub use image::{StaticImage, StaticObject, StaticRelocation, const_value_bytes};
 mod float;
 pub use float::{ConstFloat, FloatArithmetic, FloatError, FloatType};
 mod string;

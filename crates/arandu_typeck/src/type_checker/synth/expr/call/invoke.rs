@@ -227,6 +227,31 @@ pub(super) fn synth_invoked_call(
     {
         return result;
     }
+    // `GREETING.len()`: a `static` or `const` named like a type is a value,
+    // and the call is a method call on it.
+    if let ExprKind::TypePath { type_name, member } = checker.pool.expr(callee_id)
+        && let Some(symbol) = checker.resolved.expr_symbol(callee_id)
+        && checker.symbols.try_get(symbol).is_some_and(|entry| {
+            matches!(
+                entry.kind,
+                arandu_middle::SymbolKind::ConstParam
+                    | arandu_middle::SymbolKind::Const
+                    | arandu_middle::SymbolKind::StaticMut
+            )
+        })
+    {
+        let receiver = crate::type_checker::synth::Receiver::Value {
+            symbol,
+            span: type_name.span,
+        };
+        let member = member.clone();
+        let field_span = checker.pool.expr_span(callee_id);
+        if let Some(result) = synth_method_call(
+            checker, receiver, callee_id, &member, field_span, args_range, span,
+        ) {
+            return Some(result);
+        }
+    }
     if let std::ops::ControlFlow::Break(result) =
         synth_generic_callee_call(checker, expr, span, callee_id, args_range, expected)
     {
@@ -407,7 +432,13 @@ fn synth_namespace_field_call(
         }
 
         if let Some(ret_id) = synth_method_call(
-            checker, base_id, callee_id, &field_str, field_span, args_range, span,
+            checker,
+            crate::type_checker::synth::Receiver::Expr(base_id),
+            callee_id,
+            &field_str,
+            field_span,
+            args_range,
+            span,
         ) {
             return std::ops::ControlFlow::Break(Some(ret_id));
         }

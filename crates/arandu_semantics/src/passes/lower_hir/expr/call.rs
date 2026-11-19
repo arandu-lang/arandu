@@ -92,6 +92,16 @@ pub(super) fn lower_call(
                 let ty = super::expr_type_for_kind(type_check, hir_pool, &kind, fallback_ty);
                 return Ok(HirExpr { kind, ty, span });
             }
+            // `GREETING.len()`: a `static` or `const` named like a type is
+            // the receiver of the method the type checker resolved.
+            if let Some(kind) = value_receiver_call(type_check, pool, hir_pool, callee_id, arg_ids)?
+            {
+                return Ok(HirExpr {
+                    ty: super::expr_type_for_kind(type_check, hir_pool, &kind, fallback_ty),
+                    kind,
+                    span,
+                });
+            }
             // Method receiver is not in the AST arg list. Prepend it for
             // `obj.m(...)` and generic `obj.m<T>(...)` so AMIR/mono see
             // (self, …) matching the method Func type.
@@ -393,4 +403,66 @@ fn lower_once_closure_call(
     let statements = hir_pool.alloc_stmt_list(&[declared, value]);
     let block = hir_pool.alloc_block(HirBlock { statements, span });
     Ok(HirExprKind::Scope { block })
+}
+
+/// `NAME.method(args)` where `NAME` is a `static` or `const`: the type
+/// checker resolved `method` on the value, so the call is
+/// `method(NAME, args)`. `None` for any other callee.
+fn value_receiver_call(
+    type_check: &mut TypeCheckResult,
+    pool: &AstPool,
+    hir_pool: &mut crate::hir::HirPool,
+    callee_id: ExprId,
+    arg_ids: &[ExprId],
+) -> Result<Option<HirExprKind>, Diagnostic> {
+    let ExprKind::TypePath { type_name, .. } = pool.expr(callee_id) else {
+        return Ok(None);
+    };
+    let Some(receiver) = type_check
+        .resolved
+        .expr_symbol(callee_id)
+        .filter(|&symbol| {
+            type_check.symbols.try_get(symbol).is_some_and(|entry| {
+                matches!(
+                    entry.kind,
+                    arandu_middle::SymbolKind::ConstParam
+                        | arandu_middle::SymbolKind::Const
+                        | arandu_middle::SymbolKind::StaticMut
+                )
+            })
+        })
+    else {
+        return Ok(None);
+    };
+    let callee_span = pool.expr_span(callee_id);
+    let Some(method) = type_check
+        .resolved
+        .value_refs
+        .get(&callee_span.into())
+        .copied()
+        .filter(|&method| method != receiver)
+    else {
+        return Ok(None);
+    };
+    let error = arandu_middle::types::TypeInterner::preinterned_error_id();
+    let method_ty = type_check
+        .type_info
+        .expr_type_id(callee_id)
+        .unwrap_or(error);
+    let receiver_ty = type_check.type_info.decl_type_id(receiver).unwrap_or(error);
+    let callee = hir_pool.alloc_expr(HirExpr {
+        kind: HirExprKind::Path { symbol: method },
+        ty: method_ty,
+        span: callee_span,
+    });
+    let mut args = vec![hir_pool.alloc_expr(HirExpr {
+        kind: HirExprKind::Path { symbol: receiver },
+        ty: receiver_ty,
+        span: type_name.span,
+    })];
+    for &arg in arg_ids {
+        args.push(super::lower_expr(type_check, pool, hir_pool, arg)?);
+    }
+    let args = hir_pool.alloc_expr_list(&args);
+    Ok(Some(HirExprKind::Call { callee, args }))
 }

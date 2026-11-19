@@ -1526,6 +1526,15 @@ fn owned_text_is_freed_on_every_path() {
     run_emitted_c_with_asan(&c_source, "string_concat_owned");
 }
 
+/// A static data image with pointers reads in bounds: every pointer word
+/// holds the address of its object.
+#[test]
+fn static_text_images_read_in_bounds() {
+    let source = include_str!("../../../../tests/corpus/static_text.aru");
+    let c_source = emit_c(source, "static_text");
+    run_emitted_c_with_asan(&c_source, "static_text");
+}
+
 /// A value moved on one path and not on another is destroyed exactly once
 /// on every path: `if c { consume(s) }` used to leak `s` when `c` was false.
 #[test]

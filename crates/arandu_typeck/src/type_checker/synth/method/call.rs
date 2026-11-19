@@ -13,10 +13,31 @@ use super::{
     validate_exclusive_receiver_autoref,
 };
 
+/// The receiver of a method call: an expression (`x.len()`), or a named
+/// value written where a type could stand (`GREETING.len()` on a `static`
+/// or `const`), which has no expression of its own.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Receiver {
+    Expr(ExprId),
+    Value {
+        symbol: arandu_middle::SymbolId,
+        span: arandu_lexer::Span,
+    },
+}
+
+impl Receiver {
+    fn span(self, checker: &TypeChecker<'_>) -> arandu_lexer::Span {
+        match self {
+            Self::Expr(expr) => checker.pool.expr_span(expr),
+            Self::Value { span, .. } => span,
+        }
+    }
+}
+
 #[tracing::instrument(level = "trace", target = "arandu_typeck", skip(checker))]
 pub(crate) fn synth_method_call(
     checker: &mut TypeChecker<'_>,
-    base: ExprId,
+    receiver: Receiver,
     callee: ExprId,
     method: &str,
     field_span: arandu_lexer::Span,
@@ -26,7 +47,8 @@ pub(crate) fn synth_method_call(
     // If `base` is a namespace module path (`io.foo`), this is not a method
     // call — let the Call path handle namespace members. Returning `Some(Error)`
     // here previously poisoned `io.println(...)` and skipped argument typing.
-    if let ExprKind::Path { path } = checker.pool.expr(base)
+    if let Receiver::Expr(base) = receiver
+        && let ExprKind::Path { path } = checker.pool.expr(base)
         && path.len() == 1
         && checker
             .symbols
@@ -36,7 +58,23 @@ pub(crate) fn synth_method_call(
         return None;
     }
 
-    let mut base_ty_id = synth_expr(checker, base);
+    let mut base_ty_id = match receiver {
+        Receiver::Expr(base) => synth_expr(checker, base),
+        Receiver::Value { symbol, span } => {
+            if checker.symbols.get(symbol).kind == arandu_middle::SymbolKind::StaticMut
+                && !checker.ctx.is_in_unsafe()
+            {
+                checker.diagnostics.push(crate::Diagnostic::error(
+                    crate::DiagCode::O017StaticMutRequiresUnsafe,
+                    "access to `static mut` requires an `unsafe` block",
+                    span,
+                ));
+            }
+            checker
+                .decl_type_id(symbol)
+                .unwrap_or_else(|| checker.intern(ArType::Error))
+        }
+    };
     if checker.resolve(base_ty_id).is_error() {
         // Receiver already failed to type; avoid cascading "no method" noise.
         return Some(checker.intern(ArType::Error));
@@ -52,7 +90,9 @@ pub(crate) fn synth_method_call(
         })
     {
         let slice = checker.intern(ArType::Slice(element));
-        if let Some(adjusted) = super::super::expr::adjust_unsize(checker, base, base_ty_id, slice)
+        if let Receiver::Expr(base) = receiver
+            && let Some(adjusted) =
+                super::super::expr::adjust_unsize(checker, base, base_ty_id, slice)
         {
             base_ty_id = adjusted;
         }
@@ -132,7 +172,7 @@ pub(crate) fn synth_method_call(
             crate::Diagnostic::error(
                 crate::DiagCode::T034CannotFormat,
                 format!("cannot format value of type `{found}` as `str`"),
-                checker.pool.expr_span(base),
+                receiver.span(checker),
             )
             .with_note(
                 "only bool, integers, floats, char, and str are supported in v0.1".to_string(),
@@ -292,7 +332,7 @@ pub(crate) fn synth_method_call(
                 field_span,
             )
             .with_label(
-                checker.pool.expr_span(base),
+                receiver.span(checker),
                 format!("receiver has type `{ty_disp}`"),
             )
             .with_note(
@@ -356,12 +396,14 @@ pub(crate) fn synth_method_call(
             ConstraintOrigin::CallArg {
                 call_span,
                 param_span: field_span,
-                arg_span: checker.pool.expr_span(base),
+                arg_span: receiver.span(checker),
                 arg_index: 0,
             },
         );
     } else {
-        validate_exclusive_receiver_autoref(checker, base, receiver_ty_id, base_ty_id);
+        if let Receiver::Expr(base) = receiver {
+            validate_exclusive_receiver_autoref(checker, base, receiver_ty_id, base_ty_id);
+        }
     }
 
     let mut explicit_params = params[1..].to_vec();

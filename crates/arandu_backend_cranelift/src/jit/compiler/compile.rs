@@ -613,13 +613,41 @@ impl<M: Module> AranduModule<M> {
                         item.name
                     ))
                 })?;
-            let mut data = cranelift_module::DataDescription::new();
-            let mut bytes = image.bytes;
-            if bytes.is_empty() {
-                bytes.push(0);
+            // The objects its pointers reach (string bytes, slice elements)
+            // are read-only data of their own.
+            let mut object_ids = Vec::with_capacity(image.objects.len());
+            for index in 0..image.objects.len() {
+                let name = format!("{}__{index}", item.name);
+                object_ids.push(
+                    self.module
+                        .declare_data(&name, Linkage::Local, false, false)
+                        .map_err(|error| {
+                            codegen_ice(format!("failed to declare static data '{name}': {error}"))
+                        })?,
+                );
             }
-            data.define(bytes.into_boxed_slice());
-            data.set_align(image.alignment.max(1));
+            for (object, &object_id) in image.objects.iter().zip(&object_ids) {
+                let data = static_data_description(
+                    &mut self.module,
+                    object.bytes.clone(),
+                    object.alignment,
+                    &object.relocations,
+                    &object_ids,
+                )?;
+                self.module.define_data(object_id, &data).map_err(|error| {
+                    codegen_ice(format!(
+                        "failed to define static data of '{}': {error}",
+                        item.name
+                    ))
+                })?;
+            }
+            let data = static_data_description(
+                &mut self.module,
+                image.bytes,
+                image.alignment,
+                &image.relocations,
+                &object_ids,
+            )?;
             self.module.define_data(id, &data).map_err(|error| {
                 codegen_ice(format!(
                     "failed to define `static mut` storage '{}': {error}",
@@ -629,4 +657,31 @@ impl<M: Module> AranduModule<M> {
         }
         Ok(())
     }
+}
+
+/// A data object of `bytes` whose relocations hold the addresses of
+/// `objects`.
+fn static_data_description<M: Module>(
+    module: &mut M,
+    mut bytes: Vec<u8>,
+    alignment: u64,
+    relocations: &[arandu_middle::ctfe::StaticRelocation],
+    objects: &[cranelift_module::DataId],
+) -> Result<cranelift_module::DataDescription, Diagnostic> {
+    let mut data = cranelift_module::DataDescription::new();
+    if bytes.is_empty() {
+        bytes.push(0);
+    }
+    data.define(bytes.into_boxed_slice());
+    data.set_align(alignment.max(1));
+    for relocation in relocations {
+        let target = objects
+            .get(relocation.target)
+            .ok_or_else(|| codegen_ice("static data relocation has no target object"))?;
+        let value = module.declare_data_in_data(*target, &mut data);
+        let offset = u32::try_from(relocation.offset)
+            .map_err(|_| codegen_ice("static data relocation offset exceeds u32"))?;
+        data.write_data_addr(offset, value, 0);
+    }
+    Ok(data)
 }

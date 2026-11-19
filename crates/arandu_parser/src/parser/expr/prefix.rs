@@ -367,7 +367,12 @@ impl<'a> Parser<'a> {
     /// parsing the identifier as a type.
     fn ident_type_starts_type_led_expr(&self) -> bool {
         match self.tokens.get(self.pos + 1).map(|token| token.kind) {
-            Some(TokenKind::Dot) => true,
+            // `PAIR.0` reads an element of a value (a `static mut`); a type
+            // has no member named by a number.
+            Some(TokenKind::Dot) => !self
+                .tokens
+                .get(self.pos + 2)
+                .is_some_and(|token| matches!(token.kind, TokenKind::IntDec | TokenKind::Float)),
             Some(TokenKind::LBrace) => {
                 match self.tokens.get(self.pos + 2).map(|token| token.kind) {
                     Some(TokenKind::RBrace) => true,

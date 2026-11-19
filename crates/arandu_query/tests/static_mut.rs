@@ -49,7 +49,7 @@ fn reads_and_writes_lower_to_static_storage() {
 }
 
 #[test]
-fn an_initial_value_without_a_data_image_is_t101() {
+fn text_and_views_have_data_images_with_relocations() {
     let mut db = DatabaseImpl::new();
     let file = db.new_file(
         "static_mut.aru".into(),
@@ -57,10 +57,27 @@ fn an_initial_value_without_a_data_image_is_t101() {
     );
     let program = arandu_query::runtime::runtime_program(&db, file);
     assert!(
-        codes(&program.diagnostics).contains(&DiagCode::T101StaticWithoutDataImage),
+        !codes(&program.diagnostics).contains(&DiagCode::T101StaticWithoutDataImage),
         "{:?}",
         program.diagnostics
     );
+    let statics = &program.artifacts.amir.statics;
+    assert_eq!(statics.len(), 1);
+    let image = arandu_middle::ctfe::const_value_bytes(
+        &statics[0].init,
+        statics[0].ty,
+        &program.artifacts.type_check.type_info.type_interner,
+        &*program.artifacts.type_check.type_info,
+        arandu_middle::DataLayout::ptr_width(8),
+        true,
+    )
+    .expect("a `str` has a data image");
+    // `{data, len}`: the data word points at the bytes, the length is 1.
+    assert_eq!(image.objects.len(), 1);
+    assert_eq!(image.objects[0].bytes, b"x");
+    assert_eq!(image.relocations.len(), 1);
+    assert_eq!(image.relocations[0].offset, 0);
+    assert_eq!(&image.bytes[8..], &1u64.to_le_bytes());
 }
 
 #[test]

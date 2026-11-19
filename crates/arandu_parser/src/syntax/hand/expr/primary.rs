@@ -296,7 +296,11 @@ fn parse_layout_expression(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Optio
 
 fn ident_type_starts_type_led_expr(cur: &Cursor<'_>) -> bool {
     match cur.peek_at(1).map(|token| token.kind) {
-        Some(TokenKind::Dot) => true,
+        // `PAIR.0` reads an element of a value (a `static mut`); a type has
+        // no member named by a number.
+        Some(TokenKind::Dot) => !cur
+            .peek_at(2)
+            .is_some_and(|token| matches!(token.kind, TokenKind::IntDec | TokenKind::Float)),
         Some(TokenKind::LBrace) => match cur.peek_at(2).map(|token| token.kind) {
             Some(TokenKind::RBrace) => true,
             Some(TokenKind::IdentValue | TokenKind::IdentType) => {

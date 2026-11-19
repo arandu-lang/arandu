@@ -220,6 +220,9 @@ fn looks_like_field_pattern_brace(cur: &Cursor<'_>) -> bool {
                 TokenKind::Colon | TokenKind::Comma | TokenKind::RBrace
             )
         }),
+        Some(TokenKind::RangeExclusive) => cur
+            .peek_at(2)
+            .is_some_and(|after| after.kind == TokenKind::RBrace),
         _ => false,
     }
 }
@@ -231,6 +234,10 @@ fn parse_field_pattern_list(
     let mut fields = Vec::new();
     if cur.peek_kind() != Some(TokenKind::RBrace) {
         loop {
+            // `..` names the fields left out, as in Rust; it closes the list.
+            if cur.eat(TokenKind::RangeExclusive) {
+                break;
+            }
             let fname_tok = cur.expect(TokenKind::IdentValue)?;
             let fname = SmolStr::new(ctx.text(fname_tok)?);
             let fstart = fname_tok.start;

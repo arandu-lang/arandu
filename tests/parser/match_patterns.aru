@@ -13,7 +13,8 @@ func kindName(kind: types.TypeKind): str {
     return match kind {
         types.TypeKind.Struct => "struct"
         std.core.types.TypeKind.Enum => "enum"
-        types.FieldInfo { name } => name
+        types.FieldInfo { name, .. } => name
+        Point { .. } => "point"
         _ => "other"
     }
 }

@@ -262,6 +262,10 @@ impl<'a> Parser<'a> {
                     TokenKind::Colon | TokenKind::Comma | TokenKind::RBrace
                 )
             }),
+            TokenKind::RangeExclusive => self
+                .tokens
+                .get(self.pos + 2)
+                .is_some_and(|after| after.kind == TokenKind::RBrace),
             _ => false,
         }
     }
@@ -270,6 +274,10 @@ impl<'a> Parser<'a> {
         let mut fields = Vec::new();
         if !self.at_kind_name("RBRACE") {
             loop {
+                // `..` names the fields left out, as in Rust; it closes the list.
+                if self.eat_name("RANGE_EXCLUSIVE") {
+                    break;
+                }
                 let field_start = self.mark();
                 let name = self.expect_ident_value()?;
                 let pattern = if self.eat_name("COLON") {

@@ -98,11 +98,15 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                 let value = self.operand(value, &ty)?;
                 let aggregate = self.module.llvm_ty(&ty)?;
                 if aggregate == fat {
+                    // The length is pointer-sized; the destination may be a
+                    // narrower integer (`for` counts with `int`).
+                    let length = self.new_value();
                     self.writer.line(format!(
-                        "{} = extractvalue {aggregate} {}, 1",
-                        result, value.value
+                        "{length} = extractvalue {aggregate} {}, 1",
+                        value.value
                     ));
-                    Ok(())
+                    let len_ty = self.module.ptr_int_ty();
+                    self.assign_coerced(result, TypedValue::new(len_ty.to_owned(), length), lhs_ty)
                 } else if value.ty == "ptr" {
                     // `ref String` / `ref str` / `ref []T`: length sits at
                     // pointer-width offset in the shared fat-descriptor layout.

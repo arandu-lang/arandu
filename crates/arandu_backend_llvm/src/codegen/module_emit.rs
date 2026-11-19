@@ -105,6 +105,27 @@ impl<'a> ModuleEmitter<'a> {
         self.require_declaration("llvm.trap", "declare void @llvm.trap()");
     }
 
+    /// The constant holding `panic: <message>\n` for `kind`, its length, and
+    /// the POSIX `write` that prints it on the standard error stream.
+    pub(super) fn require_trap_message(
+        &self,
+        kind: arandu_middle::amir::TrapKind,
+    ) -> (String, usize, &'static str) {
+        let report = kind.report();
+        let name = format!("@ar.trap.{kind:?}");
+        self.require_declaration(
+            &name,
+            format!(
+                "{name} = private unnamed_addr constant [{} x i8] c\"{}\", align 1",
+                report.len(),
+                super::escape_c_string(report.as_bytes())
+            ),
+        );
+        let len = ptr_int(self.layout.pointer_width());
+        self.require_declaration("write", format!("declare {len} @write(i32, ptr, {len})"));
+        (name, report.len(), len)
+    }
+
     pub(super) fn require_raw_malloc(&self) {
         let len = ptr_int(self.layout.pointer_width());
         self.require_declaration(

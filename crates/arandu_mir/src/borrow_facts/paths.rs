@@ -232,7 +232,7 @@ pub(crate) fn collect_loans(
                     &mut changed,
                 );
             }
-            AmirTerminator::Return | AmirTerminator::Unreachable => {}
+            AmirTerminator::Return | AmirTerminator::Unreachable | AmirTerminator::Trap(_) => {}
         }
 
         if changed {

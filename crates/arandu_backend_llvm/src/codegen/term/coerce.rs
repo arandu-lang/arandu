@@ -166,7 +166,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
             let out_of_range = self.new_value();
             self.writer
                 .line(format!("{out_of_range} = xor i1 {in_range}, true"));
-            self.trap_if(&out_of_range);
+            self.trap_if(&out_of_range, arandu_middle::amir::TrapKind::InvalidCast);
             let op = if signed { "fptosi" } else { "fptoui" };
             if bits == width {
                 Some(format!("{op} double {wide} to {expected_text}"))
@@ -292,7 +292,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
         let failed = self.new_value();
         self.writer
             .line(format!("{failed} = icmp eq ptr {handle}, null"));
-        self.trap_if(&failed);
+        self.trap_if(&failed, arandu_middle::amir::TrapKind::OutOfMemory);
         let align = self.module.align_of(inner);
         self.writer.line(format!(
             "store {} {}, ptr {handle}, align {align}",

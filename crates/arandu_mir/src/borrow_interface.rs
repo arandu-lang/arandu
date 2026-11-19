@@ -477,7 +477,7 @@ fn transfer_terminator(
             }
             transfer(otherwise.0, &otherwise.1);
         }
-        AmirTerminator::Return | AmirTerminator::Unreachable => {}
+        AmirTerminator::Return | AmirTerminator::Unreachable | AmirTerminator::Trap(_) => {}
     }
 }
 

@@ -165,8 +165,12 @@ pub fn validate_amir_func(
         if i == 0 {
             continue;
         }
+        // A check proved to pass leaves its trap block behind, harmless.
         if !reachable.contains(BlockId::from_usize(i))
-            && !matches!(block.terminator, AmirTerminator::Unreachable)
+            && !matches!(
+                block.terminator,
+                AmirTerminator::Unreachable | AmirTerminator::Trap(_)
+            )
         {
             diags.push(Diagnostic::ice(
                 DiagCode::ICEGEN002,
@@ -492,7 +496,7 @@ fn validate_borrowed_gen_result(
 
     for block in &func.blocks {
         let used = match &block.terminator {
-            AmirTerminator::Return | AmirTerminator::Unreachable => false,
+            AmirTerminator::Return | AmirTerminator::Unreachable | AmirTerminator::Trap(_) => false,
             AmirTerminator::Goto { args, .. } => args.iter().any(references),
             AmirTerminator::Branch {
                 condition,
@@ -606,12 +610,15 @@ fn is_valid_terminator(term: &AmirTerminator) -> bool {
             | AmirTerminator::SwitchInt { .. }
             | AmirTerminator::Suspend { .. }
             | AmirTerminator::Unreachable
+            | AmirTerminator::Trap(_)
     )
 }
 
 fn terminator_targets(term: &AmirTerminator) -> Vec<BlockId> {
     match term {
-        AmirTerminator::Return | AmirTerminator::Unreachable => Vec::new(),
+        AmirTerminator::Return | AmirTerminator::Unreachable | AmirTerminator::Trap(_) => {
+            Vec::new()
+        }
         AmirTerminator::Goto { target, .. } => vec![*target],
         AmirTerminator::Branch {
             if_true, if_false, ..
@@ -629,7 +636,7 @@ fn terminator_targets(term: &AmirTerminator) -> Vec<BlockId> {
 
 fn for_each_terminator_edge(term: &AmirTerminator, mut f: impl FnMut(BlockId, &[AmirOperand])) {
     match term {
-        AmirTerminator::Return | AmirTerminator::Unreachable => {}
+        AmirTerminator::Return | AmirTerminator::Unreachable | AmirTerminator::Trap(_) => {}
         AmirTerminator::Goto { target, args } => f(*target, args),
         AmirTerminator::Branch {
             if_true,

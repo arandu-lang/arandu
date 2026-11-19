@@ -227,9 +227,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             self.builder
                 .ins()
                 .icmp_imm_u(cranelift_codegen::ir::condcodes::IntCC::Equal, ptr, 0);
-        self.builder
-            .ins()
-            .trapnz(is_null, cranelift_codegen::ir::TrapCode::unwrap_user(1));
+        self.trap_if(is_null, arandu_middle::amir::TrapKind::OutOfMemory);
     }
 
     /// Preserve `malloc(0)` behavior while trapping failed positive-size allocations.
@@ -244,9 +242,9 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             0,
         );
         let allocation_failed = self.builder.ins().band(is_null, requested_bytes);
-        self.builder.ins().trapnz(
+        self.trap_if(
             allocation_failed,
-            cranelift_codegen::ir::TrapCode::unwrap_user(1),
+            arandu_middle::amir::TrapKind::OutOfMemory,
         );
     }
 

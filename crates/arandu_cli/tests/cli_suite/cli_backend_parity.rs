@@ -444,6 +444,86 @@ fn every_backend_traps() {
     }
 }
 
+/// The standard error stream of a native binary built by `compiler` from
+/// the source `emit` prints, when that compiler is installed.
+fn native_stderr(source: &Path, emit: &str, compiler: &str, extension: &str) -> Option<String> {
+    Command::new(compiler).arg("--version").output().ok()?;
+    let emitted = cli(&[emit, &source.to_string_lossy()]);
+    assert!(
+        emitted.status.success(),
+        "{emit}: {}",
+        String::from_utf8_lossy(&emitted.stderr)
+    );
+    let text = source.with_extension(extension);
+    let binary = source.with_extension(format!("{extension}.bin"));
+    fs::write(&text, &emitted.stdout).expect("write emitted source");
+    let built = Command::new(compiler)
+        .args(["-O2", "-w"])
+        .arg(&text)
+        .arg("-o")
+        .arg(&binary)
+        .arg("-lm")
+        .output()
+        .expect("compile emitted source");
+    assert!(
+        built.status.success(),
+        "{compiler}: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary).output().expect("run binary");
+    assert_eq!(super::common::outcome(&run.status), ProgramOutcome::Trapped);
+    Some(String::from_utf8_lossy(&run.stderr).into_owned())
+}
+
+/// A failed run-time check says which check failed before it traps, on
+/// every native backend, like Rust's panics; the exit status stays the
+/// platform's trap.
+#[test]
+fn every_backend_reports_the_failed_check() {
+    let cases = [
+        (
+            "trap_division",
+            "func div(a: int, b: int): int { return a / b }\nfunc main(): int { return div(7, 0) }\n",
+            "panic: attempt to divide by zero",
+        ),
+        (
+            "trap_division_overflow",
+            "func div(a: i32, b: i32): i32 { return a / b }\nfunc main(): int { return div(-2147483647 - 1, -1) as int }\n",
+            "panic: attempt to divide with overflow",
+        ),
+        (
+            "trap_index",
+            "func at(xs: []int, i: usize): int { return xs[i] }\nfunc main(): int {\n    let xs = [1, 2]\n    return at(xs, 5)\n}\n",
+            "panic: index out of bounds",
+        ),
+        (
+            "trap_range",
+            "func part(xs: []int, a: usize, b: usize): usize { return xs[a..b].len() }\nfunc main(): int {\n    let xs = [1, 2]\n    return part(xs, 1, 9) as int\n}\n",
+            "panic: range out of bounds",
+        ),
+    ];
+    for (name, source, message) in cases {
+        let file = std::env::temp_dir().join(format!("arandu_cli_parity_{name}.aru"));
+        fs::write(&file, source).expect("write");
+        let path = file.to_string_lossy().into_owned();
+        for mode in [&["run"][..], &["run", "--opt"][..]] {
+            let output = cli(&[mode, &[path.as_str()][..]].concat());
+            assert_eq!(
+                super::common::outcome(&output.status),
+                ProgramOutcome::Trapped,
+                "{name} {mode:?}"
+            );
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(stderr.contains(message), "{name} {mode:?}: {stderr}");
+        }
+        for (emit, compiler, extension) in [("emit-c", "cc", "c"), ("emit-llvm", "clang", "ll")] {
+            if let Some(stderr) = native_stderr(&file, emit, compiler, extension) {
+                assert!(stderr.contains(message), "{name} {emit}: {stderr}");
+            }
+        }
+    }
+}
+
 #[test]
 fn value_functions_must_return_on_every_path() {
     let rejected = "func f(n: u32): int {\n    if n > 2 {\n        return 5\n    }\n}\nfunc main(): int { return f(1) }\n";

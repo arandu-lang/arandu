@@ -72,9 +72,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             sum,
             lhs,
         );
-        self.builder
-            .ins()
-            .trapnz(overflow, cranelift_codegen::ir::TrapCode::unwrap_user(1));
+        self.trap_if(overflow, arandu_middle::amir::TrapKind::LengthOverflow);
         sum
     }
 

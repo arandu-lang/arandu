@@ -405,6 +405,11 @@ fn evaluation_diagnostic(kind: EvalErrorKind, root: Span) -> Diagnostic {
             "compile-time arithmetic overflows or uses an invalid shift",
             "result cannot be represented",
         ),
+        EvalErrorKind::Trapped(_) => (
+            DiagCode::T044ComptimeEvaluationFailed,
+            "a run-time check failed during compile-time evaluation",
+            "the check fails for this value",
+        ),
         EvalErrorKind::UnsupportedType(_) | EvalErrorKind::UnsupportedOperation => (
             DiagCode::T042UnsupportedComptime,
             "this operation or intermediate type is not supported during compile-time evaluation",
@@ -437,6 +442,9 @@ fn evaluation_diagnostic(kind: EvalErrorKind, root: Span) -> Diagnostic {
             diagnostic = diagnostic.with_hint(
                 "reduce the amount of intermediate data held during compile-time evaluation",
             );
+        }
+        EvalErrorKind::Trapped(trap) => {
+            diagnostic = diagnostic.with_note(format!("panic: {}", trap.message()));
         }
         _ => {}
     }

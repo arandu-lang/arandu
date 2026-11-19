@@ -511,6 +511,9 @@ impl<'a> CEmitter<'a> {
             AmirTerminator::Unreachable => {
                 let _ = writeln!(&mut self.output, "    AR_UNREACHABLE();");
             }
+            AmirTerminator::Trap(kind) => {
+                let _ = writeln!(&mut self.output, "    {};", super::trap_call(*kind));
+            }
         }
     }
 

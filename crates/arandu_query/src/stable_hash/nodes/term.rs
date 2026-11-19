@@ -14,6 +14,10 @@ pub(in crate::stable_hash) fn hash_terminator(
         AmirTerminator::Unreachable => {
             hasher.update(&[1]);
         }
+        AmirTerminator::Trap(kind) => {
+            hasher.update(&[7]);
+            hasher.update(kind.message().as_bytes());
+        }
         AmirTerminator::Goto { target, args } => {
             hasher.update(&[2]);
             hash_id(hasher, target.as_usize());

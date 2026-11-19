@@ -451,6 +451,6 @@ fn retarget(
             redirect(&mut otherwise.0, &mut otherwise.1);
         }
         AmirTerminator::Suspend { resume, args, .. } => redirect(resume, args),
-        AmirTerminator::Return | AmirTerminator::Unreachable => {}
+        AmirTerminator::Return | AmirTerminator::Unreachable | AmirTerminator::Trap(_) => {}
     }
 }

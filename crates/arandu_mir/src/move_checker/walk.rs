@@ -202,7 +202,7 @@ fn block_edge_states(
 
     let mut edges = Vec::new();
     match &block.terminator {
-        AmirTerminator::Return | AmirTerminator::Unreachable => {}
+        AmirTerminator::Return | AmirTerminator::Unreachable | AmirTerminator::Trap(_) => {}
         AmirTerminator::Goto { target, args } => {
             let mut edge = state;
             for arg in args {
@@ -363,7 +363,7 @@ pub(super) fn apply_block(
         AmirTerminator::Return => {
             report_unrestored_reference_moves(func, temp_origins, state, &mut diagnostics);
         }
-        AmirTerminator::Unreachable => {}
+        AmirTerminator::Unreachable | AmirTerminator::Trap(_) => {}
     }
 }
 
@@ -811,7 +811,9 @@ fn local_name(local: LocalId, func: &AmirFunc, symbols: &SymbolTable) -> String 
 
 fn successors(term: &AmirTerminator) -> Vec<crate::amir::BlockId> {
     match term {
-        AmirTerminator::Return | AmirTerminator::Unreachable => Vec::new(),
+        AmirTerminator::Return | AmirTerminator::Unreachable | AmirTerminator::Trap(_) => {
+            Vec::new()
+        }
         AmirTerminator::Goto { target, .. } => vec![*target],
         AmirTerminator::Suspend { resume, .. } => vec![*resume],
         AmirTerminator::Branch {

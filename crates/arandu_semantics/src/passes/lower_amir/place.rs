@@ -531,9 +531,9 @@ impl LowerCtx<'_> {
     }
 
     /// Lowers `base[start..end]` (or `..=`) on an array or slice to a checked
-    /// [`AmirRvalue::SliceSubslice`]. Out-of-range bounds reach an
-    /// `Unreachable` block, which every backend lowers to a trap, like an
-    /// out-of-bounds element index.
+    /// [`AmirRvalue::SliceSubslice`]. Out-of-range bounds reach a
+    /// [`AmirTerminator::Trap`] block, which reports the failed check and
+    /// traps, like an out-of-bounds element index.
     #[allow(clippy::too_many_arguments)]
     fn lower_range_index(
         &mut self,
@@ -608,7 +608,7 @@ impl LowerCtx<'_> {
         let bound_ty = self.resolve_ty(self.hir.pool.expr(start).ty);
         let start = self.lower_expr(start, None, symbols)?;
         let end = self.lower_expr(end, None, symbols)?;
-        let trap = self.new_block();
+        let trap = self.new_trap_block(arandu_middle::amir::TrapKind::RangeOutOfBounds);
         if bound_ty.is_signed() {
             let zero = AmirOperand::Constant(self.intern_literal_int("0"));
             let nonnegative = self.range_binary(BinaryOp::GtEqual, start, zero, Primitive::Bool);
@@ -677,7 +677,7 @@ impl LowerCtx<'_> {
         self.mark_local_materialized(len_place.local);
         let len = self.new_temp(ArType::Primitive(Primitive::USize));
         self.emit_assign_temp(len, AmirRvalue::Load(len_place));
-        let trap = self.new_block();
+        let trap = self.new_trap_block(arandu_middle::amir::TrapKind::IndexOutOfBounds);
         if self.resolve_ty(index_ty).is_signed() {
             let zero = AmirOperand::Constant(self.intern_literal_int("0"));
             let nonnegative = self.range_binary(BinaryOp::GtEqual, index, zero, Primitive::Bool);

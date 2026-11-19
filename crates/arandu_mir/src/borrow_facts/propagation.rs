@@ -223,7 +223,9 @@ fn terminator_edges(terminator: &AmirTerminator) -> Vec<(BlockId, &[AmirOperand]
             edges.push((otherwise.0, otherwise.1.as_slice()));
             edges
         }
-        AmirTerminator::Return | AmirTerminator::Unreachable => Vec::new(),
+        AmirTerminator::Return | AmirTerminator::Unreachable | AmirTerminator::Trap(_) => {
+            Vec::new()
+        }
     }
 }
 

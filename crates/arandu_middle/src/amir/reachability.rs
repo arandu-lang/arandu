@@ -26,7 +26,9 @@ pub fn reachable_blocks_dense(func: &AmirFunc) -> BitSet<BlockId> {
 
 pub fn terminator_targets(term: &AmirTerminator) -> SmallVec<[BlockId; 2]> {
     match term {
-        AmirTerminator::Return | AmirTerminator::Unreachable => SmallVec::new(),
+        AmirTerminator::Return | AmirTerminator::Unreachable | AmirTerminator::Trap(_) => {
+            SmallVec::new()
+        }
         AmirTerminator::Goto { target, .. } => smallvec![*target],
         AmirTerminator::Branch {
             if_true, if_false, ..

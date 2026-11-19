@@ -100,7 +100,7 @@ impl AmirFunc {
         for block in &self.blocks {
             let bid = block.id;
             match &block.terminator {
-                AmirTerminator::Return | AmirTerminator::Unreachable => {}
+                AmirTerminator::Return | AmirTerminator::Unreachable | AmirTerminator::Trap(_) => {}
                 AmirTerminator::Goto { target, .. } => {
                     out.push_str(&format!("    bb{} -> bb{};\n", bid.0, target.0));
                 }
@@ -220,6 +220,9 @@ impl AmirFunc {
                 }
                 AmirTerminator::Unreachable => {
                     out.push_str("  └── (unreachable)\n");
+                }
+                AmirTerminator::Trap(kind) => {
+                    out.push_str(&format!("  └── (trap: {})\n", kind.message()));
                 }
                 AmirTerminator::Goto { target, .. } => {
                     out.push_str(&format!("  │\n  └──▶ bb{}\n", target.0));

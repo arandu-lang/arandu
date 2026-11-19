@@ -119,7 +119,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         gen_ref: &AmirOperand,
         payload_ty: arandu_middle::types::TypeId,
     ) -> Value {
-        use cranelift_codegen::ir::{TrapCode, types::I64};
+        use cranelift_codegen::ir::types::I64;
         let Some((slot, clif_ty, size, align, indirect)) = self.gen_payload_slot(payload_ty) else {
             return self.poison_i32();
         };
@@ -136,9 +136,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             .ins()
             .call(function, &[handle, address, size, align]);
         let succeeded = self.builder.inst_results(call)[0];
-        self.builder
-            .ins()
-            .trapz(succeeded, TrapCode::unwrap_user(2));
+        self.trap_unless(succeeded, arandu_middle::amir::TrapKind::OutOfMemory);
         if indirect {
             address
         } else {
@@ -156,7 +154,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         payload_ty: arandu_middle::types::TypeId,
         returns_handle: bool,
     ) -> Value {
-        use cranelift_codegen::ir::{TrapCode, types::I64};
+        use cranelift_codegen::ir::types::I64;
         let Some((slot, clif_ty, size, align, indirect)) = self.gen_payload_slot(payload_ty) else {
             return self.poison_i32();
         };
@@ -181,7 +179,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             .ins()
             .call(function, &[handle, address, size, align, drop_glue]);
         let result = self.builder.inst_results(call)[0];
-        self.builder.ins().trapz(result, TrapCode::unwrap_user(2));
+        self.trap_unless(result, arandu_middle::amir::TrapKind::OutOfMemory);
         if returns_handle { result } else { handle }
     }
 }

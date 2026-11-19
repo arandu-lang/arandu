@@ -89,7 +89,8 @@ impl<'a> CEmitter<'a> {
                     expected_ar_type.is_signed() || matches!(expected_ar_type, ArType::IntLiteral);
                 let _ = write!(
                     self.output,
-                    "({{ {expected_c_type} ar_lhs = ({left_str}); {expected_c_type} ar_rhs = ({right_str}); if (ar_rhs == 0) {{ AR_ABORT(); }} "
+                    "({{ {expected_c_type} ar_lhs = ({left_str}); {expected_c_type} ar_rhs = ({right_str}); if (ar_rhs == 0) {{ {}; }} ",
+                    super::super::trap_call(arandu_middle::amir::TrapKind::DivisionByZero)
                 );
                 let operator = if *op == BinaryOp::Div { "/" } else { "%" };
                 if signed {
@@ -97,7 +98,10 @@ impl<'a> CEmitter<'a> {
                         let bits = self.checked_layout(expected_ar_type).size * 8;
                         let _ = write!(
                             self.output,
-                            "if (ar_lhs == INT{bits}_MIN && ar_rhs == -1) {{ AR_ABORT(); }} "
+                            "if (ar_lhs == INT{bits}_MIN && ar_rhs == -1) {{ {}; }} ",
+                            super::super::trap_call(
+                                arandu_middle::amir::TrapKind::DivisionOverflow
+                            )
                         );
                     }
                     if *op == BinaryOp::Mod {

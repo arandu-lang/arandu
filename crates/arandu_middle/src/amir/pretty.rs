@@ -695,6 +695,9 @@ impl AmirTerminator {
             AmirTerminator::Unreachable => {
                 out.push_str("unreachable");
             }
+            AmirTerminator::Trap(kind) => {
+                out.push_str(&format!("trap \"{}\"", kind.message()));
+            }
         }
     }
 }

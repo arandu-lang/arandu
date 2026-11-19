@@ -567,7 +567,10 @@ fn collect_terminator_uses(
                 collect_operand_uses(a, defined, uses, block);
             }
         }
-        AmirTerminator::Return | AmirTerminator::Goto { .. } | AmirTerminator::Unreachable => {}
+        AmirTerminator::Return
+        | AmirTerminator::Goto { .. }
+        | AmirTerminator::Unreachable
+        | AmirTerminator::Trap(_) => {}
     }
 }
 

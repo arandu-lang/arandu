@@ -58,7 +58,8 @@ impl<'a> CEmitter<'a> {
             let wide = format!("{}int{bits}_t", if unsigned { "u" } else { "" });
             let _ = write!(
                 &mut self.output,
-                "({{ double ar_f = (double)({op_str}); if (!(ar_f > {low} && ar_f < {high})) {{ AR_ABORT(); }} ({expected_c_type})({wide})ar_f; }})"
+                "({{ double ar_f = (double)({op_str}); if (!(ar_f > {low} && ar_f < {high})) {{ {}; }} ({expected_c_type})({wide})ar_f; }})",
+                super::super::trap_call(arandu_middle::amir::TrapKind::InvalidCast)
             );
             return;
         }

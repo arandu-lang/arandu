@@ -158,7 +158,7 @@ pub fn for_each_terminator_operand_mut(
     mut f: impl FnMut(&mut AmirOperand),
 ) {
     match term {
-        AmirTerminator::Return | AmirTerminator::Unreachable => {}
+        AmirTerminator::Return | AmirTerminator::Unreachable | AmirTerminator::Trap(_) => {}
         AmirTerminator::Goto { args, .. } => args.iter_mut().for_each(f),
         AmirTerminator::Branch {
             condition,
@@ -355,7 +355,7 @@ pub fn for_each_place_operand(place: &AmirPlace, mut f: impl FnMut(&AmirOperand)
 /// live uses even when no statement in the block references them.
 pub fn for_each_terminator_operand(term: &AmirTerminator, mut f: impl FnMut(&AmirOperand)) {
     match term {
-        AmirTerminator::Return | AmirTerminator::Unreachable => {}
+        AmirTerminator::Return | AmirTerminator::Unreachable | AmirTerminator::Trap(_) => {}
         AmirTerminator::Goto { args, .. } => {
             for a in args {
                 f(a);

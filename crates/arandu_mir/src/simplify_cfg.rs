@@ -979,6 +979,7 @@ fn remap_terminator(term: AmirTerminator, map: &[Option<BlockId>]) -> AmirTermin
         // explicitly account for block renumbering.
         AmirTerminator::Return => AmirTerminator::Return,
         AmirTerminator::Unreachable => AmirTerminator::Unreachable,
+        AmirTerminator::Trap(kind) => AmirTerminator::Trap(kind),
     }
 }
 

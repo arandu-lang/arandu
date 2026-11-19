@@ -55,10 +55,10 @@ static void *ar_task_arena_alloc(size_t size, size_t align) {{
     size_t actual_size = size == 0u ? 1u : size;
     size_t actual_align = align == 0u ? 1u : align;
     if ((actual_align & (actual_align - 1u)) != 0u) {{
-        AR_ABORT();
+        ar_trap("panic: out of memory\n");
     }}
     if (ar_task_arena.count == 0u) {{
-        if (!ar_task_arena_push_slab(actual_size, actual_align)) AR_ABORT();
+        if (!ar_task_arena_push_slab(actual_size, actual_align)) ar_trap("panic: out of memory\n");
         ar_task_arena.slab_idx = 0u;
         ar_task_arena.offset = 0u;
     }}
@@ -78,7 +78,7 @@ static void *ar_task_arena_alloc(size_t size, size_t align) {{
             ar_task_arena.offset = 0u;
             continue;
         }}
-        if (!ar_task_arena_push_slab(actual_size, actual_align)) AR_ABORT();
+        if (!ar_task_arena_push_slab(actual_size, actual_align)) ar_trap("panic: out of memory\n");
         ar_task_arena.slab_idx = ar_task_arena.count - 1u;
         ar_task_arena.offset = 0u;
     }}

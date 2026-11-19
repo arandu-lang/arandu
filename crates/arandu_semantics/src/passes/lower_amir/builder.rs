@@ -162,6 +162,14 @@ impl LowerCtx<'_> {
         self.builder.new_block(span)
     }
 
+    /// A block where a run-time check fails: it stops the program with the
+    /// message of `kind`, and no pass may treat it as dead.
+    pub(crate) fn new_trap_block(&mut self, kind: arandu_middle::amir::TrapKind) -> BlockId {
+        let block = self.new_block();
+        self.builder.blocks[block.as_usize()].terminator = AmirTerminator::Trap(kind);
+        block
+    }
+
     /// Seal a join/exit block and resume after it **only if** some arm fell
     /// through. With no predecessors the join stays `Unreachable` (CFG-5
     /// exempt) and no block is opened.

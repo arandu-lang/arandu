@@ -553,3 +553,8 @@ impl<'a> CEmitter<'a> {
         }
     }
 }
+
+/// `ar_trap("panic: <message>\n")`: prints the failed check, then traps.
+pub(crate) fn trap_call(kind: arandu_middle::amir::TrapKind) -> String {
+    format!("ar_trap({:?})", kind.report())
+}

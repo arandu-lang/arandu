@@ -350,6 +350,7 @@ fn remap_terminator(
             otherwise: (block(otherwise.0), args(&otherwise.1)),
         },
         AmirTerminator::Suspend { .. } | AmirTerminator::Unreachable => AmirTerminator::Unreachable,
+        AmirTerminator::Trap(kind) => AmirTerminator::Trap(*kind),
     }
 }
 

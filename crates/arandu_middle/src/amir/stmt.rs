@@ -256,5 +256,60 @@ pub enum AmirTerminator {
         /// Live state carried across the suspension (→ resume block params).
         args: Vec<AmirOperand>,
     },
+    /// Control never reaches this block: dead code, or a case the program
+    /// proved impossible. Passes may assume it does not execute.
     Unreachable,
+    /// A failed run-time check: the program stops with the message of the
+    /// kind, then a trap, like Rust's panics. Never assumed dead.
+    Trap(TrapKind),
+}
+
+/// Why a run-time check stopped the program. Backends print
+/// `panic: <message>` on the standard error stream before trapping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TrapKind {
+    /// `xs[i]` with `i >= xs.len()`.
+    IndexOutOfBounds,
+    /// `xs[a..b]` with `a > b` or `b > xs.len()`.
+    RangeOutOfBounds,
+    /// Integer `/` or `%` by zero.
+    DivisionByZero,
+    /// Signed `MIN / -1` or `MIN % -1`.
+    DivisionOverflow,
+    /// A null pointer where a valid one is required.
+    NullPointer,
+    /// An allocation the platform could not satisfy.
+    OutOfMemory,
+    /// A size or length computation that does not fit the address space.
+    LengthOverflow,
+    /// A float converted to an integer type that cannot hold it.
+    InvalidCast,
+    /// A generational reference to a value already freed.
+    GenerationalMismatch,
+    /// An explicit `abort`.
+    Abort,
+}
+
+impl TrapKind {
+    #[must_use]
+    pub const fn message(self) -> &'static str {
+        match self {
+            Self::IndexOutOfBounds => "index out of bounds",
+            Self::RangeOutOfBounds => "range out of bounds",
+            Self::DivisionByZero => "attempt to divide by zero",
+            Self::DivisionOverflow => "attempt to divide with overflow",
+            Self::NullPointer => "null pointer dereference",
+            Self::OutOfMemory => "out of memory",
+            Self::LengthOverflow => "length overflow",
+            Self::InvalidCast => "float value out of range of the integer type",
+            Self::GenerationalMismatch => "use of a freed generational reference",
+            Self::Abort => "abort",
+        }
+    }
+
+    /// The line printed on the standard error stream, with its newline.
+    #[must_use]
+    pub fn report(self) -> String {
+        format!("panic: {}\n", self.message())
+    }
 }

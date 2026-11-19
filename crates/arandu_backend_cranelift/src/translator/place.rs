@@ -102,9 +102,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                                 idx_val,
                                 len_val,
                             );
-                            self.builder
-                                .ins()
-                                .trapnz(is_oob, cranelift_codegen::ir::TrapCode::unwrap_user(1));
+                            self.trap_if(is_oob, arandu_middle::amir::TrapKind::IndexOutOfBounds);
                         }
                     } else if matches!(current_ty, ArType::Slice(_) | ArType::MutSlice(_)) {
                         let len_val = self.builder.ins().load(
@@ -118,9 +116,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                             idx_val,
                             len_val,
                         );
-                        self.builder
-                            .ins()
-                            .trapnz(is_oob, cranelift_codegen::ir::TrapCode::unwrap_user(1));
+                        self.trap_if(is_oob, arandu_middle::amir::TrapKind::IndexOutOfBounds);
                         ptr_val = self.builder.ins().load(
                             self.ptr_type,
                             cranelift_codegen::ir::MemFlagsData::new(),
@@ -237,9 +233,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                             idx_val,
                             len_val,
                         );
-                        self.builder
-                            .ins()
-                            .trapnz(is_oob, cranelift_codegen::ir::TrapCode::unwrap_user(1));
+                        self.trap_if(is_oob, arandu_middle::amir::TrapKind::IndexOutOfBounds);
                     }
                 } else if matches!(current_ty, ArType::Slice(_) | ArType::MutSlice(_)) {
                     let len_val = self.builder.ins().load(
@@ -253,9 +247,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                         idx_val,
                         len_val,
                     );
-                    self.builder
-                        .ins()
-                        .trapnz(is_oob, cranelift_codegen::ir::TrapCode::unwrap_user(1));
+                    self.trap_if(is_oob, arandu_middle::amir::TrapKind::IndexOutOfBounds);
                     ptr_val = self.builder.ins().load(
                         self.ptr_type,
                         cranelift_codegen::ir::MemFlagsData::new(),

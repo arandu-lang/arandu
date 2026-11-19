@@ -424,9 +424,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             index,
             len,
         );
-        self.builder
-            .ins()
-            .trapnz(is_oob, cranelift_codegen::ir::TrapCode::unwrap_user(1));
+        self.trap_if(is_oob, arandu_middle::amir::TrapKind::IndexOutOfBounds);
     }
 
     /// Shared bounds-checked address calculation for scalar, aggregate and

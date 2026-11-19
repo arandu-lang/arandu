@@ -108,7 +108,7 @@ fn evaluate_inlining(func: &AmirFunc, budget: usize, allow_calls: bool) -> Optio
             AmirTerminator::Goto { .. } => total_cost += 1,
             AmirTerminator::Branch { .. } => total_cost += 2,
             AmirTerminator::SwitchInt { targets, .. } => total_cost += 2 + targets.len(),
-            AmirTerminator::Unreachable => {}
+            AmirTerminator::Unreachable | AmirTerminator::Trap(_) => {}
             AmirTerminator::Suspend { .. } => return None,
         }
 

@@ -55,8 +55,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
             "br i1 {ok}, label %{continue_block}, label %{trap}"
         ));
         self.enter_llvm_label(&trap);
-        self.module.require_llvm_trap();
-        self.writer.line("call void @llvm.trap()");
+        self.emit_trap(arandu_middle::amir::TrapKind::OutOfMemory);
         self.writer.line("unreachable");
         self.enter_llvm_label(&continue_block);
         self.writer
@@ -155,8 +154,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                 self.writer
                     .line(format!("br i1 {ok}, label %{cont}, label %{fail}"));
                 self.enter_llvm_label(&fail);
-                self.module.require_llvm_trap();
-                self.writer.line("call void @llvm.trap()");
+                self.emit_trap(arandu_middle::amir::TrapKind::OutOfMemory);
                 self.writer.line("unreachable");
                 self.enter_llvm_label(&cont);
                 let payload_text = self.module.llvm_ty(&payload_ar)?;
@@ -212,8 +210,7 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                     self.writer
                         .line(format!("br i1 {ok}, label %{cont}, label %{fail}"));
                     self.enter_llvm_label(&fail);
-                    self.module.require_llvm_trap();
-                    self.writer.line("call void @llvm.trap()");
+                    self.emit_trap(arandu_middle::amir::TrapKind::OutOfMemory);
                     self.writer.line("unreachable");
                     self.enter_llvm_label(&cont);
                     self.assign_coerced(result, handle, lhs_ty)

@@ -18,6 +18,7 @@ mod storage;
 mod string;
 mod terminator;
 mod translate;
+mod trap;
 
 use arandu_base::span::Span;
 use arandu_middle::amir::{

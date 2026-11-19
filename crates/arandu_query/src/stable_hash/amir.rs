@@ -187,9 +187,13 @@ fn hash_ctfe_error(hash: &mut Hasher, error: &arandu_mir::ctfe::EvalErrorKind) {
         E::Arithmetic(_) => 14,
         E::Value(_) => 15,
         E::InvalidLayout(_) => 16,
+        E::Trapped(_) => 17,
     };
     hash.update(&[tag]);
     match error {
+        E::Trapped(trap) => {
+            hash.update(trap.message().as_bytes());
+        }
         E::InvalidLayout(error) => {
             use arandu_middle::layout::DataLayoutError;
             hash.update(&[match error {

@@ -244,6 +244,10 @@ impl HashContext<'_> {
                 self.operands(args);
             }
             AmirTerminator::Unreachable => self.hash.tag(5),
+            AmirTerminator::Trap(kind) => {
+                self.hash.tag(6);
+                self.hash.str(kind.message());
+            }
         }
     }
 

@@ -254,7 +254,7 @@ fn compute_init_in(func: &AmirFunc) -> Option<Vec<BitSet<LocalId>>> {
             block_out[bi] = new_out;
 
             match &block.terminator {
-                AmirTerminator::Return | AmirTerminator::Unreachable => {}
+                AmirTerminator::Return | AmirTerminator::Unreachable | AmirTerminator::Trap(_) => {}
                 AmirTerminator::Goto { target, .. } => {
                     worklist.push_back(*target);
                 }

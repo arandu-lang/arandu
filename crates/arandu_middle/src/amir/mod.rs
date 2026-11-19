@@ -18,7 +18,7 @@ pub use program::{AmirDebugBinding, AmirDebugBlock, AmirFunc, AmirProgram, AmirS
 pub use reachability::reachable_blocks_dense;
 pub use rpo::{reverse_post_order, reverse_post_order_body_first};
 pub use stmt::{
-    AmirStmt, AmirStmtKind, AmirStmtTable, AmirTerminator, CallBorrowDependency, InstrId,
+    AmirStmt, AmirStmtKind, AmirStmtTable, AmirTerminator, CallBorrowDependency, InstrId, TrapKind,
 };
 pub use value::{
     AmirConstant, AmirOperand, AmirPlace, AmirProjection, AmirRvalue, GenArenaDomain,

@@ -733,6 +733,9 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     let trap_ref = self.module.declare_func_in_func(trap_id, self.builder.func);
                     self.builder.ins().call(trap_ref, &[]);
                 }
+                if code == cranelift_codegen::ir::TrapCode::unwrap_user(2) {
+                    self.print_trap_message(arandu_middle::amir::TrapKind::GenerationalMismatch);
+                }
                 self.builder.ins().trap(code);
                 true
             }

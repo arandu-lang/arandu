@@ -249,7 +249,7 @@ impl Frame {
             // One terminator can hold many cases/arguments; charging only the
             // block would permit unbounded work even with a tiny fuel budget.
             match &block.terminator {
-                AmirTerminator::Return | AmirTerminator::Unreachable => {}
+                AmirTerminator::Return | AmirTerminator::Unreachable | AmirTerminator::Trap(_) => {}
                 AmirTerminator::Goto { args, .. } => {
                     for _ in args {
                         meter.step()?;

@@ -396,7 +396,7 @@ fn hoist_unreachable_blocks_before_joins(func: &AmirFunc, rpo: &mut Vec<BlockId>
         let unreachable = rpo[cursor];
         if !matches!(
             func.blocks[unreachable.as_usize()].terminator,
-            AmirTerminator::Unreachable
+            AmirTerminator::Unreachable | AmirTerminator::Trap(_)
         ) {
             cursor += 1;
             continue;
@@ -466,7 +466,9 @@ fn emit_terminator(
                 ops.push(Op::Return);
             }
         }
-        AmirTerminator::Unreachable => ops.push(Op::Trap),
+        // Wasm has no standard error stream of its own: the host reports
+        // the trap.
+        AmirTerminator::Unreachable | AmirTerminator::Trap(_) => ops.push(Op::Trap),
         AmirTerminator::Goto { target, args } => {
             let next = next_rpo(*target, block.id, rpo, rank);
             if next {

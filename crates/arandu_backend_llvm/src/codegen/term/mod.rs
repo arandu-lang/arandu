@@ -9,6 +9,17 @@ mod operand;
 mod place;
 
 impl<'a, 'm> FuncEmitter<'a, 'm> {
+    /// Prints `panic: <message>` on the standard error stream, then traps.
+    pub(in crate::codegen) fn emit_trap(&mut self, kind: arandu_middle::amir::TrapKind) {
+        let (message, length, len_ty) = self.module.require_trap_message(kind);
+        let written = self.new_value();
+        self.writer.line(format!(
+            "{written} = call {len_ty} @write(i32 2, ptr {message}, {len_ty} {length})"
+        ));
+        self.module.require_llvm_trap();
+        self.writer.line("call void @llvm.trap()");
+    }
+
     pub(super) fn emit_terminator(
         &mut self,
         terminator: &AmirTerminator,
@@ -148,6 +159,11 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
             AmirTerminator::Unreachable => {
                 self.module.require_llvm_trap();
                 self.writer.line("call void @llvm.trap()");
+                self.writer.line("unreachable");
+                Ok(())
+            }
+            AmirTerminator::Trap(kind) => {
+                self.emit_trap(*kind);
                 self.writer.line("unreachable");
                 Ok(())
             }

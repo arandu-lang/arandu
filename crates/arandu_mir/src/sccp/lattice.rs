@@ -412,7 +412,7 @@ fn propagate_branches(
                 changed |= set_reachable(otherwise.0, reachable);
             }
         },
-        AmirTerminator::Return | AmirTerminator::Unreachable => {}
+        AmirTerminator::Return | AmirTerminator::Unreachable | AmirTerminator::Trap(_) => {}
     }
     changed
 }

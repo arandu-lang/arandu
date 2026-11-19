@@ -358,7 +358,7 @@ fn check_terminator_moves(
                 check_operand_move(a, point, live, facts, temp_origins, func, symbols, diags);
             }
         }
-        AmirTerminator::Return | AmirTerminator::Unreachable => {}
+        AmirTerminator::Return | AmirTerminator::Unreachable | AmirTerminator::Trap(_) => {}
     }
 }
 

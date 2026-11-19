@@ -310,6 +310,8 @@ pub enum EvalErrorKind {
     Arithmetic(ScalarEvalError),
     Value(ConstValueError),
     InvalidLayout(DataLayoutError),
+    /// A run-time check failed during evaluation.
+    Trapped(arandu_middle::amir::TrapKind),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

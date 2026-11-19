@@ -453,6 +453,7 @@ pub(super) fn evaluate_root<P: FunctionProvider, C: FnMut() -> bool>(
                             return Ok(Action::Return(value));
                         }
                         AmirTerminator::Unreachable => return Err(EvalErrorKind::InvalidIr),
+                        AmirTerminator::Trap(kind) => return Err(EvalErrorKind::Trapped(*kind)),
                         AmirTerminator::Suspend { .. } => {
                             return Err(EvalErrorKind::UnsupportedOperation);
                         }

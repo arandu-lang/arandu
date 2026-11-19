@@ -188,7 +188,8 @@ fn retarget(
         AmirTerminator::Goto { .. }
         | AmirTerminator::Return
         | AmirTerminator::Suspend { .. }
-        | AmirTerminator::Unreachable => None,
+        | AmirTerminator::Unreachable
+        | AmirTerminator::Trap(_) => None,
     }
 }
 

@@ -144,7 +144,12 @@ impl<'a> CEmitter<'a> {
         );
         let _ = writeln!(
             &mut self.output,
-            "static inline uint64_t ar_index_check(uint64_t index, uint64_t len) {{ if (index >= len) AR_ABORT(); return index; }}"
+            "#if defined(__GNUC__) || defined(__clang__)\n__attribute__((cold, noinline, noreturn))\n#endif\nstatic void ar_trap(const char *report) {{ fputs(report, stderr); fflush(stderr); AR_ABORT(); }}"
+        );
+        let _ = writeln!(
+            &mut self.output,
+            "static inline uint64_t ar_index_check(uint64_t index, uint64_t len) {{ if (index >= len) {}; return index; }}",
+            super::trap_call(arandu_middle::amir::TrapKind::IndexOutOfBounds)
         );
         let _ = writeln!(
             &mut self.output,

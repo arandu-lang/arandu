@@ -144,11 +144,20 @@ Every non-unit exit must have a result.
 
 The admitted result types are `bool`, `int`, `uint`, `isize`, `usize`, `i8`,
 `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `byte`, `float`, `f32`, `f64`,
-`str`, immutable literal-backed byte views, and `void`. Tuples, fixed arrays
-and closed Copy structs/enums may contain admitted values when their types have
-no runtime destructor or unsupported resource. This includes `Option<T>` and
-`Result<T, E>` with admitted payloads. Arbitrary references and mutable/owned
-heap resources remain outside the value model. Contextual
+`str`, immutable byte views, views (`[]T`) of admitted elements, and `void`.
+Tuples, fixed arrays and closed Copy structs/enums may contain admitted values
+when their types have no runtime destructor or unsupported resource. This
+includes `Option<T>` and `Result<T, E>` with admitted payloads. A frozen view
+holds a copy of the elements it covers: inside an evaluation, `arr[a..b]` and
+an array adjusted to `[]T` produce it. A `const` whose value holds a view of
+elements other than bytes lives in static storage at run time, as Rust
+promotes `&[..]` in a constant: every use reads the same elements, a function
+may return it, and its borrow origin is the program's static storage.
+
+As in Rust's `const fn`, a shared borrow (`ref x`) is evaluated: it reads a
+copy of its owner, which cannot change while it is borrowed, and only a local
+holds one, never a frozen result. Mutable borrows (`mut ref`) and owned heap
+resources remain outside the value model (T044). Contextual
 typing chooses the numeric type before evaluation. Without a contextual type,
 an integer result defaults to `int` and cannot silently narrow at a later use.
 Pointer-sized types use the selected target layout; ordinary `int`/`uint` remain
@@ -508,7 +517,8 @@ Target identity is an explicit `TargetConfig` input alongside `DataLayout`.
 `@targetOS()`, `@targetArch()` and `@targetPointerWidth()`; semantic queries do
 not inspect the host. Native and Wasm CLI drivers select identity before typing.
 
-Arbitrary references and unsupported heap resources remain outside CTFE. Supported
+Mutable references, references inside frozen results and unsupported heap
+resources remain outside CTFE. Supported
 aggregate/string/float values and concrete staging do not authorize general
 metaprogramming, heap allocation, reflection or generated declarations.
 Finite static expansion accepts integer half-open ranges and fixed Copy arrays.

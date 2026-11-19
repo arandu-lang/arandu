@@ -37,7 +37,7 @@ impl LowerCtx<'_> {
         let Some(ty) = self.tc.type_info.decl_type_id(symbol) else {
             return Err(Diagnostic::ice(
                 crate::DiagCode::ICEL001,
-                "`static mut` has no checked type",
+                "static storage has no checked type",
                 span,
             ));
         };
@@ -77,7 +77,10 @@ impl LowerCtx<'_> {
                         projections: smallvec::smallvec![],
                     });
                 }
-                if symbols.get(*symbol).kind == crate::SymbolKind::StaticMut {
+                let kind = symbols.get(*symbol).kind;
+                if kind == crate::SymbolKind::StaticMut
+                    || (kind == crate::SymbolKind::Const && self.const_in_static(*symbol))
+                {
                     return self.static_place(*symbol, expr.span).map(|(place, _)| place);
                 }
                 Err(self.move_diag(format!(
@@ -551,16 +554,24 @@ impl LowerCtx<'_> {
                 (slice, AmirOperand::Copy(len))
             }
             ArType::Array(count, _) => {
-                // An array value with no place (`[1, 2]`, a call result) is
-                // given one, like Rust's temporary for `&[1, 2][..]`.
-                let place = if matches!(
+                // An array value with no place (`[1, 2]`, a call result, a
+                // `const`) is given one, like Rust's temporary for
+                // `&[1, 2][..]`.
+                let const_value = matches!(
                     self.hir.pool.expr(base).kind,
-                    HirExprKind::Path { .. }
-                        | HirExprKind::Field { .. }
-                        | HirExprKind::SafeField { .. }
-                        | HirExprKind::Index { .. }
-                        | HirExprKind::Unary { .. }
-                ) {
+                    HirExprKind::Path { symbol }
+                        if symbols.get(symbol).kind == crate::SymbolKind::Const
+                            && !self.const_in_static(symbol)
+                );
+                let place = if !const_value
+                    && matches!(
+                        self.hir.pool.expr(base).kind,
+                        HirExprKind::Path { .. }
+                            | HirExprKind::Field { .. }
+                            | HirExprKind::SafeField { .. }
+                            | HirExprKind::Index { .. }
+                            | HirExprKind::Unary { .. }
+                    ) {
                     self.lower_expr_to_place(base, symbols)?
                 } else {
                     let value = self.lower_expr(base, None, symbols)?;

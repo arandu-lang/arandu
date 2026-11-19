@@ -509,7 +509,7 @@ fn admitted_rvalue(rhs: &AmirRvalue) -> Result<(), EvalErrorKind> {
     match rhs {
         AmirRvalue::Use(_) => Ok(()),
         AmirRvalue::Unary {
-            op: UnaryOp::Neg | UnaryOp::Not | UnaryOp::BitNot,
+            op: UnaryOp::Neg | UnaryOp::Not | UnaryOp::BitNot | UnaryOp::Deref,
             ..
         } => Ok(()),
         AmirRvalue::Binary {
@@ -543,6 +543,7 @@ fn admitted_rvalue(rhs: &AmirRvalue) -> Result<(), EvalErrorKind> {
         | AmirRvalue::Len(_)
         | AmirRvalue::StrBytes { .. }
         | AmirRvalue::SliceSubslice { .. }
+        | AmirRvalue::SliceView { .. }
         | AmirRvalue::Discriminant { .. }
         | AmirRvalue::EnumPayload { .. }
         | AmirRvalue::EnumConstruct { .. }
@@ -561,7 +562,6 @@ fn admitted_rvalue(rhs: &AmirRvalue) -> Result<(), EvalErrorKind> {
         | AmirRvalue::Borrow(_)
         | AmirRvalue::BorrowMut(_) => Ok(()),
         AmirRvalue::SliceData(_)
-        | AmirRvalue::SliceView { .. }
         | AmirRvalue::StrView { .. }
         | AmirRvalue::Alloc(_)
         | AmirRvalue::RelativeBorrow { .. }

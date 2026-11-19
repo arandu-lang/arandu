@@ -13,6 +13,9 @@ pub(super) enum ValueType {
     Float(FloatType),
     String,
     Bytes(Primitive),
+    /// A view of elements other than bytes: a frozen aggregate whose shape
+    /// is the slice, with any number of elements of this type.
+    Slice(Box<ValueType>),
     Aggregate(Arc<AggregateType>),
     Enum(Arc<EnumType>),
     Pointer(Box<ValueType>),
@@ -52,6 +55,7 @@ impl ValueType {
             Self::Float(ty) => TypeShape::Primitive(ty.primitive()),
             Self::String => TypeShape::Primitive(Primitive::Str),
             Self::Bytes(ty) => TypeShape::Slice(Box::new(TypeShape::Primitive(*ty))),
+            Self::Slice(element) => TypeShape::Slice(Box::new(element.shape())),
             Self::Aggregate(ty) => ty.shape.clone(),
             Self::Enum(ty) => ty.shape.clone(),
             Self::Pointer(inner) => TypeShape::Ptr(Box::new(inner.shape())),
@@ -132,8 +136,14 @@ impl ValueType {
                 Some(ArType::Primitive(primitive @ (Primitive::Byte | Primitive::U8))) => {
                     Ok(Self::Bytes(primitive))
                 }
-                _ => Err(EvalErrorKind::UnsupportedType(id)),
+                Some(_) => Ok(Self::Slice(Box::new(recurse(element, remaining)?))),
+                None => Err(EvalErrorKind::InvalidIr),
             },
+            // A shared reference is a handle to a frozen copy: the owner
+            // cannot change while it is borrowed. Only a local holds one.
+            ArType::Ref(inner) if depth == 0 => {
+                Ok(Self::Pointer(Box::new(recurse(inner, remaining)?)))
+            }
             ArType::Ptr(inner) => {
                 if allow_null_pointers {
                     return Ok(Self::NullPointer(shape));
@@ -305,6 +315,11 @@ impl ValueType {
             (Self::Integer(ty), ConstValue::Integer(value)) => *ty == value.ty(),
             (Self::Float(ty), ConstValue::Float(value)) => *ty == value.ty(),
             (Self::String, ConstValue::String(_)) | (Self::Bytes(_), ConstValue::Bytes(_)) => true,
+            (Self::Slice(element), ConstValue::Aggregate(value)) => {
+                value.variant().is_none()
+                    && *value.shape() == TypeShape::Slice(Box::new(element.shape()))
+                    && value.values().iter().all(|item| element.accepts(item))
+            }
             (Self::Aggregate(ty), ConstValue::Aggregate(value)) => {
                 value.variant().is_none()
                     && ty.shape == *value.shape()
@@ -360,6 +375,13 @@ impl ValueType {
             Self::Float(float) => float.canonical_bytes().to_vec(),
             Self::String => vec![2, 4],
             Self::Bytes(primitive) => vec![2, 5, u8::from(*primitive == Primitive::U8)],
+            Self::Slice(element) => {
+                let mut bytes = vec![2, 9];
+                let child = element.canonical_bytes();
+                bytes.extend_from_slice(&(child.len() as u64).to_le_bytes());
+                bytes.extend(child);
+                bytes
+            }
             Self::Pointer(target) => {
                 let mut bytes = vec![2, 7];
                 let child = target.canonical_bytes();

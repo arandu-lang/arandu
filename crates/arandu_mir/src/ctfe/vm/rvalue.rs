@@ -3,7 +3,7 @@ use super::{
 };
 use arandu_middle::amir::*;
 use arandu_middle::ctfe::{ConstAggregate, ConstFloat, ConstInt, ConstValue, IntegerType};
-use arandu_middle::types::Primitive;
+use arandu_middle::types::{Primitive, TypeShape};
 
 impl Frame {
     pub(super) fn rvalue<C: FnMut() -> bool>(
@@ -69,6 +69,28 @@ impl Frame {
                 } else {
                     self.operand(*operand, Some(ty), meter)
                 }
+            }
+            AmirRvalue::Unary {
+                op: arandu_middle::ops::UnaryOp::Deref,
+                operand,
+            } => {
+                // A shared borrow is a handle to the frozen copy it reads.
+                let ConstValue::Integer(handle) = self.operand(*operand, None, meter)? else {
+                    return Err(EvalErrorKind::TypeMismatch);
+                };
+                let handle =
+                    usize::try_from(handle.value()).map_err(|_| EvalErrorKind::InvalidIr)?;
+                meter.step()?;
+                let value = meter
+                    .arena
+                    .get(handle)
+                    .and_then(Option::as_ref)
+                    .cloned()
+                    .ok_or(EvalErrorKind::Uninitialized)?;
+                if !ty.accepts(&value) {
+                    return Err(EvalErrorKind::TypeMismatch);
+                }
+                Ok(value)
             }
             AmirRvalue::Unary { op, operand } => {
                 eval_unary(*op, self.operand(*operand, Some(ty), meter)?)
@@ -351,15 +373,47 @@ impl Frame {
                 Ok(ConstValue::Bytes(value.bytes()))
             }
             AmirRvalue::SliceSubslice { slice, start, len } => {
-                let ConstValue::Bytes(value) = self.operand(*slice, None, meter)? else {
-                    return Err(EvalErrorKind::TypeMismatch);
-                };
+                let value = self.operand(*slice, None, meter)?;
                 let start = self.index_operand(*start, meter)?;
                 let len = self.index_operand(*len, meter)?;
-                value
-                    .view(start, len)
-                    .map(ConstValue::Bytes)
-                    .map_err(|_| EvalErrorKind::InvalidIr)
+                match value {
+                    ConstValue::Bytes(value) => value
+                        .view(start, len)
+                        .map(ConstValue::Bytes)
+                        .map_err(|_| EvalErrorKind::InvalidIr),
+                    ConstValue::Aggregate(value)
+                        if matches!(value.shape(), TypeShape::Slice(_)) =>
+                    {
+                        let end = start.checked_add(len).ok_or(EvalErrorKind::InvalidIr)?;
+                        let items = value
+                            .values()
+                            .get(start..end)
+                            .ok_or(EvalErrorKind::InvalidIr)?;
+                        frozen_slice(value.shape().clone(), items.to_vec(), meter)
+                    }
+                    _ => Err(EvalErrorKind::TypeMismatch),
+                }
+            }
+            AmirRvalue::SliceView { data, len, .. } => {
+                // `data` is a handle to the frozen array the view starts at.
+                let ValueType::Slice(element) = &ty else {
+                    return Err(EvalErrorKind::TypeMismatch);
+                };
+                let ConstValue::Integer(handle) = self.operand(*data, None, meter)? else {
+                    return Err(EvalErrorKind::TypeMismatch);
+                };
+                let handle =
+                    usize::try_from(handle.value()).map_err(|_| EvalErrorKind::InvalidIr)?;
+                let len = self.index_operand(*len, meter)?;
+                let Some(Some(ConstValue::Aggregate(array))) = meter.arena.get(handle) else {
+                    return Err(EvalErrorKind::TypeMismatch);
+                };
+                let items = array
+                    .values()
+                    .get(..len)
+                    .ok_or(EvalErrorKind::InvalidIr)?
+                    .to_vec();
+                frozen_slice(TypeShape::Slice(Box::new(element.shape())), items, meter)
             }
             AmirRvalue::VectorSplat { value } => {
                 let ValueType::Aggregate(descriptor) = &ty else {
@@ -492,6 +546,21 @@ impl Frame {
                         .and_then(|v| v.clone())
                         .ok_or(EvalErrorKind::Uninitialized)?;
                     Ok(val)
+                } else if matches!(rhs, AmirRvalue::Borrow(_)) {
+                    // A shared borrow freezes its owner for as long as it
+                    // lives, so a copy reads exactly what the owner holds.
+                    let (_, value) = self.load_place(place, meter)?;
+                    meter.frozen(&value)?;
+                    let handle = meter.arena_alloc()?;
+                    *meter
+                        .arena
+                        .get_mut(handle)
+                        .ok_or(EvalErrorKind::InvalidIr)? = Some(value);
+                    let usize_ty = IntegerType::new(Primitive::USize, self.unit.layout)
+                        .map_err(EvalErrorKind::Value)?;
+                    Ok(ConstValue::Integer(
+                        ConstInt::new(usize_ty, handle as i128).map_err(EvalErrorKind::Value)?,
+                    ))
                 } else {
                     Err(EvalErrorKind::UnsupportedOperation)
                 }
@@ -499,4 +568,17 @@ impl Frame {
             _ => Err(EvalErrorKind::UnsupportedOperation),
         }
     }
+}
+
+/// A frozen view: the elements it covers, copied, under the slice shape.
+fn frozen_slice<C: FnMut() -> bool>(
+    shape: TypeShape,
+    items: Vec<ConstValue>,
+    meter: &mut Meter<'_, C>,
+) -> Result<ConstValue, EvalErrorKind> {
+    meter.reserve(items.len())?;
+    meter.aggregate(&shape, items.len())?;
+    ConstAggregate::new(shape, items)
+        .map(ConstValue::Aggregate)
+        .map_err(EvalErrorKind::Value)
 }

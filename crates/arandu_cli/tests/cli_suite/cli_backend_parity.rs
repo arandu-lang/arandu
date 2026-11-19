@@ -767,6 +767,26 @@ fn string_concatenation_agrees_on_every_backend() {
     let _ = fs::remove_file(path);
 }
 
+/// A `const` holding views of elements lives in static storage: functions
+/// return it and every backend reads the same elements.
+#[test]
+fn const_views_agree_on_every_backend() {
+    let source = include_str!("../../../../tests/corpus/const_views.aru");
+    for (backend, outcome) in outcomes_on("const_views", source, false) {
+        assert_eq!(outcome, ProgramOutcome::Returned(0), "{backend}");
+    }
+    let path = std::env::temp_dir().join(format!("arandu_const_views_{}.aru", std::process::id()));
+    fs::write(&path, source).unwrap();
+    let wasm = cli(&["emit-wasm", &path.to_string_lossy()]);
+    assert!(
+        wasm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&wasm.stderr)
+    );
+    crate::wasm_host::run_main(&wasm.stdout).assert_returns(0, "const views in Wasmtime");
+    let _ = fs::remove_file(path);
+}
+
 /// `static mut` storage holding text, byte views and arrays of text: the
 /// data image points at objects of its own on every backend.
 #[test]

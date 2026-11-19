@@ -158,6 +158,7 @@ fn needs_staging(
             | arandu_parser::ExprKind::Group { .. }
             | arandu_parser::ExprKind::Cast { .. }
             | arandu_parser::ExprKind::Array { .. }
+            | arandu_parser::ExprKind::Index { .. }
             | arandu_parser::ExprKind::InterpolatedString { .. }
     ) {
         return true;

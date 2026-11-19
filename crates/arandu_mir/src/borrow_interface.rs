@@ -29,6 +29,11 @@ type Origins = BTreeMap<BorrowPath, BTreeSet<BorrowSource>>;
 /// caller-visible formal parameter dependencies.
 const DUAL_LOCUS_LOCAL_SOURCE: u32 = u32::MAX;
 
+/// Sentinel `parameter_index` for storage that lives as long as the program:
+/// a `static` or a `const` kept in static storage. A borrow of it is valid
+/// for any caller, like Rust's `'static`, and is no caller dependency.
+const STATIC_SOURCE: u32 = u32::MAX - 1;
+
 /// A borrow-bearing result path for which no formal origin was demonstrated.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnprovenBorrowReturn {
@@ -216,7 +221,10 @@ pub fn infer_function_interface(
         };
         let sources = raw_sources
             .iter()
-            .filter(|source| source.parameter_index != DUAL_LOCUS_LOCAL_SOURCE)
+            .filter(|source| {
+                source.parameter_index != DUAL_LOCUS_LOCAL_SOURCE
+                    && source.parameter_index != STATIC_SOURCE
+            })
             .cloned()
             .collect::<Vec<_>>();
         if !sources.is_empty() {
@@ -272,6 +280,7 @@ fn transfer_statement(
                 AmirRvalue::RelativeBorrow { local, .. } => {
                     locals.get(local.as_usize()).cloned().unwrap_or_default()
                 }
+                AmirRvalue::StaticAddr(_) => static_origins(function, *lhs, type_info),
                 AmirRvalue::Load(place) if place.projections.is_empty() => locals
                     .get(place.local.as_usize())
                     .cloned()
@@ -551,6 +560,34 @@ fn merge_origins(target: &mut Origins, source: &mut Origins) -> bool {
 /// returning `ref option_payload` could not be related to the caller's
 /// `ref Option<T>` input (and nested borrowed payloads were misclassified as
 /// ownerless).
+/// Every borrow path of the storage a static address points at comes from
+/// the program's static storage.
+fn static_origins(
+    function: &AmirFunc,
+    address: arandu_middle::amir::TempId,
+    type_info: &dyn AmirTypeContext,
+) -> Origins {
+    let Some(temp) = function.temps.get(address.as_usize()) else {
+        return Origins::new();
+    };
+    let ArType::Ptr(pointee) = type_info.resolve_type_id(temp.ty) else {
+        return Origins::new();
+    };
+    let Ok(paths) = type_info.borrow_paths(pointee) else {
+        return Origins::new();
+    };
+    paths
+        .into_iter()
+        .map(|(path, _)| {
+            let source = BorrowSource {
+                parameter_index: STATIC_SOURCE,
+                parameter_path: path.clone(),
+            };
+            (path, BTreeSet::from([source]))
+        })
+        .collect()
+}
+
 fn borrowed_place_origins(
     function: &AmirFunc,
     place: &AmirPlace,

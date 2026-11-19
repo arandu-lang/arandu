@@ -167,6 +167,20 @@ pub enum ConstValue {
 }
 
 impl ConstValue {
+    /// Whether this value holds a view of elements other than bytes. Such a
+    /// view points at its elements, so at run time a `const` holding one
+    /// lives in static storage, as Rust promotes `&[..]` in a constant.
+    #[must_use]
+    pub fn holds_view(&self) -> bool {
+        match self {
+            Self::Aggregate(aggregate) => {
+                matches!(aggregate.shape(), crate::types::TypeShape::Slice(_))
+                    || aggregate.values().iter().any(Self::holds_view)
+            }
+            _ => false,
+        }
+    }
+
     /// Structural type of a frozen value, independent of any interner.
     #[must_use]
     pub fn type_shape(&self) -> crate::types::TypeShape {

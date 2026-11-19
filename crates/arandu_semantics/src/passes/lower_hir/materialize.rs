@@ -264,6 +264,50 @@ pub fn materialize_ctfe_value(
             .type_interner
             .try_resolve(expected)
             .ok_or(MaterializationError::InvalidType(expected))?;
+        // A view is its elements as an array, viewed whole: `[..][0..N]`,
+        // the form the checker gives an array adjusted to a slice.
+        if let ArType::Slice(element) = expected_type {
+            let count = aggregate.values().len();
+            let array_ty = info
+                .type_interner
+                .intern(ArType::Array(count as u64, element));
+            let mut items = Vec::with_capacity(count);
+            for value in aggregate.values() {
+                let item = materialize(value, element, destination, pool, depth + 1, remaining)?;
+                items.push(pool.alloc_expr(item));
+            }
+            let items = pool.alloc_expr_list(&items);
+            let array = pool.alloc_expr(HirExpr {
+                kind: HirExprKind::Array { items },
+                ty: array_ty,
+                span,
+            });
+            let usize_ty = info
+                .type_interner
+                .intern(ArType::Primitive(Primitive::USize));
+            let bound = |pool: &mut arandu_middle::hir::HirPool, value: usize| {
+                pool.alloc_expr(HirExpr {
+                    kind: HirExprKind::Int(value.to_string().into()),
+                    ty: usize_ty,
+                    span,
+                })
+            };
+            let (left, right) = (bound(pool, 0), bound(pool, count));
+            let index = pool.alloc_expr(HirExpr {
+                kind: HirExprKind::Binary {
+                    op: arandu_middle::ops::BinaryOp::RangeExclusive,
+                    left,
+                    right,
+                },
+                ty: info.type_interner.intern(ArType::Range(usize_ty)),
+                span,
+            });
+            return Ok(HirExpr {
+                kind: HirExprKind::Index { base: array, index },
+                ty: expected,
+                span,
+            });
+        }
         match expected_type {
             ArType::Array(count, element) => {
                 if usize::try_from(count).ok() != Some(aggregate.values().len()) {

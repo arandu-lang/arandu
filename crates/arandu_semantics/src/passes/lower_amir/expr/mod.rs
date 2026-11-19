@@ -372,7 +372,9 @@ impl LowerCtx<'_> {
                     Ok(AmirOperand::Copy(dest))
                 } else {
                     let sym = symbols.get(*symbol);
-                    if sym.kind == SymbolKind::StaticMut {
+                    if sym.kind == SymbolKind::StaticMut
+                        || (sym.kind == SymbolKind::Const && self.const_in_static(*symbol))
+                    {
                         let (place, ty) = self.static_place(*symbol, expr.span)?;
                         self.load_place(&place, ty)
                     } else {

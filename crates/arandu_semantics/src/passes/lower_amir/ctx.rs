@@ -10,6 +10,19 @@ use crate::{SymbolId, SymbolTable};
 use arandu_middle::Span;
 
 impl LowerCtx<'_> {
+    /// A `const` whose value holds a view of elements lives in static
+    /// storage at run time, so every use reads the same elements and none
+    /// points at a temporary. Compile-time evaluation reads the value itself.
+    pub(crate) fn const_in_static(&self, symbol: SymbolId) -> bool {
+        !self.hir.pool.ctfe_lowering
+            && self
+                .tc
+                .type_info
+                .ctfe_global_values
+                .get(&symbol)
+                .is_some_and(arandu_middle::ctfe::ConstValue::holds_view)
+    }
+
     pub(crate) fn lower_const_operand(
         &mut self,
         symbol: SymbolId,

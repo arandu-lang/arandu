@@ -1526,6 +1526,15 @@ fn owned_text_is_freed_on_every_path() {
     run_emitted_c_with_asan(&c_source, "string_concat_owned");
 }
 
+/// A `const` view read from static storage and returned from a function
+/// stays in bounds: its elements outlive every frame.
+#[test]
+fn const_views_read_in_bounds() {
+    let source = include_str!("../../../../tests/corpus/const_views.aru");
+    let c_source = emit_c(source, "const_views");
+    run_emitted_c_with_asan(&c_source, "const_views");
+}
+
 /// A static data image with pointers reads in bounds: every pointer word
 /// holds the address of its object.
 #[test]

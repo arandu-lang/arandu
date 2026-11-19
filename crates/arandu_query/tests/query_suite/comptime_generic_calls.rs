@@ -55,9 +55,14 @@ fn a_helper_calling_a_generic_of_another_module_evaluates() {
 }
 
 #[test]
-fn references_stay_outside_compile_time_evaluation() {
-    // RFC 0013 admits values only: a borrow is not evaluated.
-    let source = "func f(): int {\n    let x = 5\n    let r = ref x\n    return *r\n}\n\
+fn shared_references_evaluate_and_mutable_ones_stay_outside() {
+    // As Rust's `const fn`: a shared borrow reads its frozen owner, which
+    // cannot change while it is borrowed; a mutable borrow is not evaluated.
+    let shared = "func f(): int {\n    let x = 5\n    let r = ref x\n    return *r\n}\n\
         func main(): int {\n    let r = comptime f()\n    return r\n}\n";
-    assert_eq!(errors(source), ["T044"]);
+    assert!(errors(shared).is_empty(), "{:?}", errors(shared));
+    let mutable =
+        "func f(): int {\n    let mut x = 5\n    let r = mut ref x\n    *r = 6\n    return x\n}\n\
+        func main(): int {\n    let r = comptime f()\n    return r\n}\n";
+    assert_eq!(errors(mutable), ["T044"]);
 }

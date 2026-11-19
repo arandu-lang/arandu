@@ -59,9 +59,26 @@ fn parse_pattern_atom(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<Pat
         }));
     }
 
+    // `module.Type...`: a module path before a type-led pattern.
+    let mut prefix: smallvec::SmallVec<[SmolStr; 2]> = smallvec![];
+    if module_qualified_type_ahead(cur) {
+        while cur
+            .peek()
+            .is_some_and(|t| matches!(t.kind, TokenKind::IdentValue))
+        {
+            let segment = cur.bump()?;
+            prefix.push(SmolStr::new(ctx.text(segment)?));
+            cur.expect(TokenKind::Dot)?;
+        }
+    }
+    let start_tok = cur.peek()?;
+    let qualified = |last: &[SmolStr]| -> smallvec::SmallVec<[SmolStr; 3]> {
+        prefix.iter().chain(last).cloned().collect()
+    };
+
     // Type-led patterns: Enum / Struct / TypeTuple
     if matches!(start_tok.kind, TokenKind::IdentType) {
-        let type_span = ctx.token_span(start_tok);
+        let type_span = ctx.span(start, start_tok.start + start_tok.len);
         let name = SmolStr::new(ctx.text(start_tok)?);
         cur.bump();
         if cur.eat(TokenKind::Dot) {
@@ -75,7 +92,7 @@ fn parse_pattern_atom(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<Pat
                     span: ctx.span(start, close_end),
                     type_name: TypeName {
                         span: ctx.span(start, variant_end),
-                        path: smallvec![name, variant],
+                        path: qualified(&[name, variant]),
                     },
                     fields: range,
                 }));
@@ -91,7 +108,7 @@ fn parse_pattern_atom(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<Pat
                 span: ctx.span(start, end),
                 type_name: TypeName {
                     span: type_span,
-                    path: smallvec![name],
+                    path: qualified(&[name]),
                 },
                 variant,
                 payload,
@@ -103,10 +120,14 @@ fn parse_pattern_atom(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<Pat
                 span: ctx.span(start, close_end),
                 type_name: TypeName {
                     span: type_span,
-                    path: smallvec![name],
+                    path: qualified(&[name]),
                 },
                 fields: range,
             }));
+        }
+        // A tuple struct pattern names its type alone.
+        if !prefix.is_empty() {
+            return None;
         }
         if cur.eat(TokenKind::LParen) {
             let list = parse_pattern_list(ctx, cur, TokenKind::RParen)?;
@@ -162,6 +183,24 @@ fn parse_pattern_atom(ctx: &mut HandCtx<'_>, cur: &mut Cursor<'_>) -> Option<Pat
         span: ctx.pool.expr_span(lit),
         expr: lit,
     }))
+}
+
+/// `a.b.Type`: value names joined by dots up to a type name.
+fn module_qualified_type_ahead(cur: &Cursor<'_>) -> bool {
+    let mut offset = 0;
+    while cur
+        .peek_at(offset)
+        .is_some_and(|t| matches!(t.kind, TokenKind::IdentValue))
+        && cur
+            .peek_at(offset + 1)
+            .is_some_and(|t| t.kind == TokenKind::Dot)
+    {
+        offset += 2;
+    }
+    offset > 0
+        && cur
+            .peek_at(offset)
+            .is_some_and(|t| matches!(t.kind, TokenKind::IdentType))
 }
 
 fn looks_like_field_pattern_brace(cur: &Cursor<'_>) -> bool {

@@ -106,8 +106,26 @@ impl<'a> Parser<'a> {
                 payload,
             }));
         }
+        // `module.Type...`: a module path before a type-led pattern.
+        let mut prefix: smallvec::SmallVec<[smol_str::SmolStr; 3]> = smallvec::SmallVec::new();
+        if self.module_qualified_type_ahead() {
+            while matches!(self.current().kind, TokenKind::IdentValue) {
+                prefix.push(self.expect_ident_value()?);
+                self.expect_name("DOT")?;
+            }
+        }
+        let qualified = |last: &[smol_str::SmolStr]| -> smallvec::SmallVec<[smol_str::SmolStr; 3]> {
+            prefix.iter().chain(last).cloned().collect()
+        };
         if matches!(self.current().kind, TokenKind::IdentType) {
-            let type_start_span = self.current().span(self.file_id);
+            let type_start_span = if prefix.is_empty() {
+                self.current().span(self.file_id)
+            } else {
+                let end = self.current().span(self.file_id).end;
+                let mut span = self.span_from_mark(start);
+                span.end = end;
+                span
+            };
             let name = self.expect_ident_type()?;
             if self.eat_name("DOT") {
                 let variant = self.expect_member_name()?;
@@ -118,7 +136,7 @@ impl<'a> Parser<'a> {
                         span: self.span_from_mark(start),
                         type_name: TypeName {
                             span: variant_span,
-                            path: vec![name, variant].into(),
+                            path: qualified(&[name, variant]),
                         },
                         fields: range,
                     }));
@@ -134,7 +152,7 @@ impl<'a> Parser<'a> {
                     span: self.span_from_mark(start),
                     type_name: TypeName {
                         span: type_start_span,
-                        path: vec![name].into(),
+                        path: qualified(&[name]),
                     },
                     variant,
                     payload,
@@ -146,10 +164,20 @@ impl<'a> Parser<'a> {
                     span: self.span_from_mark(start),
                     type_name: TypeName {
                         span: type_start_span,
-                        path: vec![name].into(),
+                        path: qualified(&[name]),
                     },
                     fields: range,
                 }));
+            }
+            // A tuple struct pattern names its type alone.
+            if !prefix.is_empty() {
+                return Err(ParseError::new(
+                    ParseErrorCode::ExpectedToken,
+                    "a tuple struct pattern names its type without a module",
+                    self.current(),
+                    self.file_id,
+                    self.source,
+                ));
             }
             if self.eat_name("LPAREN") {
                 let payload = self.parse_pattern_list_until("RPAREN")?;
@@ -191,6 +219,27 @@ impl<'a> Parser<'a> {
             span: self.span_from_mark(start),
             expr: literal,
         }))
+    }
+
+    /// `a.b.Type`: value names joined by dots up to a type name.
+    fn module_qualified_type_ahead(&self) -> bool {
+        let mut offset = 0;
+        while self
+            .tokens
+            .get(self.pos + offset)
+            .is_some_and(|t| matches!(t.kind, TokenKind::IdentValue))
+            && self
+                .tokens
+                .get(self.pos + offset + 1)
+                .is_some_and(|t| t.kind == TokenKind::Dot)
+        {
+            offset += 2;
+        }
+        offset > 0
+            && self
+                .tokens
+                .get(self.pos + offset)
+                .is_some_and(|t| matches!(t.kind, TokenKind::IdentType))
     }
 
     fn looks_like_field_pattern_brace(&self) -> bool {

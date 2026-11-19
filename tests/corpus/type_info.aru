@@ -35,8 +35,12 @@ func main(): int {
     if POINT.fields.len() != 2 || POINT.fields[1].name != "y" { return 3 }
     if POINT.fields[1].offset != 4 || POINT.fields[1].typeName != "int" { return 4 }
     match POINT.kind {
-        TypeKind.Struct => {}
+        types.TypeKind.Struct => {}
         _ => { return 5 }
+    }
+    match SHAPE.kind {
+        TypeKind.Enum => {}
+        _ => { return 14 }
     }
     if SHAPE.variants.len() != 3 || SHAPE.variants[1].name != "Circle" { return 6 }
     if !SHAPE.variants[2].hasPayload || SHAPE.variants[0].hasPayload { return 7 }

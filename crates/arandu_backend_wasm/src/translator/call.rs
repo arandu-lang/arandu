@@ -691,7 +691,8 @@ impl<'a> FuncTranslator<'a> {
                 }
                 true
             }
-            IntrinsicKind::DropInPlace => false,
+            // Built as a value when AMIR is lowered; no call remains.
+            IntrinsicKind::DropInPlace | IntrinsicKind::TypeInfo => false,
         }
     }
 

@@ -94,6 +94,10 @@ pub(super) fn merge_import_exports(
                             lang_item,
                         };
                         resolver.symbols.register_imported_symbol(sym);
+                        exports.record_type_path(id, &mut resolver.symbols);
+                        if let Some(table) = &internal {
+                            table.record_type_path(id, &mut resolver.symbols);
+                        }
                         resolver
                             .symbols
                             .module_members_mut()
@@ -199,6 +203,10 @@ pub(super) fn merge_import_exports(
                                 visibility: sym_visibility,
                                 lang_item,
                             };
+                            exports.record_type_path(id, &mut resolver.symbols);
+                            if let Some(table) = &internal {
+                                table.record_type_path(id, &mut resolver.symbols);
+                            }
                             match resolver.symbols.insert_imported(sym) {
                                 Ok(Some(placeholder_id)) => {
                                     if let Some(entry) =

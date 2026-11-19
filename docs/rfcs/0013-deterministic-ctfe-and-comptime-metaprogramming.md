@@ -38,6 +38,14 @@
 > - **Custo:** 10 de fuel por consulta e mais 2 por membro refletido; o valor
 >   é `ConstValue::TypeDesc` imutável. No binário, só como tabela em `.rodata`
 >   quando promovido a constante de runtime; sem alocação dinâmica.
+>
+> **Implementação em 2026-11-19:** `types.info<T>()` devolve um `TypeInfo`
+> comum da stdlib (`std.core.types`), não um `ConstValue::TypeDesc` opaco: o
+> valor é imutável e o código Arandu lê seus membros diretamente. O custo é o
+> do avaliador ao construir o agregado, crescente com o número de membros, e
+> não uma tabela fixa de fuel. Num `const`, o valor vive em armazenamento
+> estático somente leitura; fora dele, é valor do quadro, sem alocação
+> dinâmica. Detalhes em [comptime core](../arandu-comptime-core-v0.1.md#type-descriptions).
 
 ---
 

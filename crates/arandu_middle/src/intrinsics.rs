@@ -172,6 +172,8 @@ pub enum IntrinsicKind {
     SizeOf,
     /// Alignment of type in bytes (`alignOf` / `align_of`).
     AlignOf,
+    /// Compile-time description of a type (`info`, `std.core.types`).
+    TypeInfo,
     /// Abort execution (`abort`).
     Abort,
     /// Compiler barrier preventing optimization (`blackBox`).
@@ -277,6 +279,7 @@ impl IntrinsicKind {
                 | Self::PtrOffset
                 | Self::SizeOf
                 | Self::AlignOf
+                | Self::TypeInfo
                 | Self::SliceLen
                 | Self::SliceData
                 | Self::StrBytes
@@ -306,6 +309,7 @@ impl IntrinsicKind {
             Self::SliceLen
                 | Self::SizeOf
                 | Self::AlignOf
+                | Self::TypeInfo
                 | Self::StrBytes
                 | Self::CountOnes
                 | Self::LeadingZeros
@@ -439,6 +443,7 @@ impl IntrinsicKind {
             "ptrOffset" | "ptr_offset" => Some(Self::PtrOffset),
             "sizeOf" | "size_of" => Some(Self::SizeOf),
             "alignOf" | "align_of" => Some(Self::AlignOf),
+            "info" => Some(Self::TypeInfo),
             "abort" | "abort_generational_mismatch" | "abortGenerationalMismatch" => {
                 Some(Self::Abort)
             }

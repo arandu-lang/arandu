@@ -4,6 +4,7 @@ pub(super) mod calls;
 mod constant_strings;
 pub(super) mod constructors;
 pub(super) mod control;
+mod type_info;
 
 use super::{LowerCtx, amir_unsupported};
 use crate::amir::{AmirConstant, AmirOperand, AmirRvalue, AmirStmt, TempId};

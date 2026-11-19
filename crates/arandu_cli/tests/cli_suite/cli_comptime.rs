@@ -761,3 +761,54 @@ func main(): int {
     }
     fs::remove_dir_all(root).expect("remove fixture");
 }
+
+/// `types.info<T>()` from another module: private fields are left out and
+/// the description says so, and the canonical name is the declaring
+/// module's, alike at compile time and at run time.
+#[test]
+fn type_descriptions_follow_the_visibility_of_the_call() {
+    let root = common::temp_dir("arandu-cli-type-info").expect("reserve fixture");
+    let created = common::cli_command()
+        .args(["new", "visproj", "--vcs=none"])
+        .current_dir(&root)
+        .output()
+        .expect("create project");
+    assert!(
+        created.status.success(),
+        "{}",
+        String::from_utf8_lossy(&created.stderr)
+    );
+    let project = root.join("visproj");
+    fs::write(
+        project.join("src/bank.aru"),
+        "module visproj.bank\n\npublic struct Account {\n    public owner: str,\n    private balance: i64,\n}\n",
+    )
+    .expect("write bank");
+    fs::write(
+        project.join("src/main.aru"),
+        "module visproj\n\nimport std.core.types as types\nimport self.bank as bank\n\n\
+         const ACCOUNT: types.TypeInfo = types.info<bank.Account>()\n\n\
+         func main(): int {\n\
+         \x20   if ACCOUNT.isComplete { return 1 }\n\
+         \x20   if ACCOUNT.fields.len() != 1 || ACCOUNT.fields[0].name != \"owner\" { return 2 }\n\
+         \x20   if ACCOUNT.name != \"visproj.bank.Account\" { return 3 }\n\
+         \x20   if types.info<bank.Account>().name != ACCOUNT.name { return 4 }\n\
+         \x20   // The layout still counts the hidden field.\n\
+         \x20   if ACCOUNT.size != 24 { return 5 }\n\
+         \x20   return 0\n\
+         }\n",
+    )
+    .expect("write main");
+    let output = common::cli_command()
+        .arg("run")
+        .arg(&project)
+        .output()
+        .expect("run project");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let _ = fs::remove_dir_all(root);
+}

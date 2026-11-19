@@ -767,12 +767,32 @@ fn string_concatenation_agrees_on_every_backend() {
     let _ = fs::remove_file(path);
 }
 
+/// `types.info<T>()`: descriptions of structs, enums, tuples and builtin
+/// types, in a `const` and in a generic function, agree on every backend.
+#[test]
+fn type_descriptions_agree_on_every_backend() {
+    let source = include_str!("../../../../tests/corpus/type_info.aru");
+    for (backend, outcome) in outcomes("type_info", source) {
+        assert_eq!(outcome, ProgramOutcome::Returned(0), "{backend}");
+    }
+    let path = std::env::temp_dir().join(format!("arandu_type_info_{}.aru", std::process::id()));
+    fs::write(&path, source).unwrap();
+    let wasm = cli(&["emit-wasm", &path.to_string_lossy()]);
+    assert!(
+        wasm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&wasm.stderr)
+    );
+    crate::wasm_host::run_main(&wasm.stdout).assert_returns(0, "type descriptions in Wasmtime");
+    let _ = fs::remove_file(path);
+}
+
 /// A `const` holding views of elements lives in static storage: functions
 /// return it and every backend reads the same elements.
 #[test]
 fn const_views_agree_on_every_backend() {
     let source = include_str!("../../../../tests/corpus/const_views.aru");
-    for (backend, outcome) in outcomes_on("const_views", source, false) {
+    for (backend, outcome) in outcomes("const_views", source) {
         assert_eq!(outcome, ProgramOutcome::Returned(0), "{backend}");
     }
     let path = std::env::temp_dir().join(format!("arandu_const_views_{}.aru", std::process::id()));
@@ -792,7 +812,7 @@ fn const_views_agree_on_every_backend() {
 #[test]
 fn static_text_agrees_on_every_backend() {
     let source = include_str!("../../../../tests/corpus/static_text.aru");
-    for (backend, outcome) in outcomes_on("static_text", source, false) {
+    for (backend, outcome) in outcomes("static_text", source) {
         assert_eq!(outcome, ProgramOutcome::Returned(0), "{backend}");
     }
     let path = std::env::temp_dir().join(format!("arandu_static_text_{}.aru", std::process::id()));

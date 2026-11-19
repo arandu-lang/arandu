@@ -1,0 +1,94 @@
+//! Compile-time descriptions of types (RFC 0013 §10.1).
+//!
+//! `types.info<T>()` describes a type as the compiler sees it on the selected
+//! target: its canonical name, kind, layout, fields and variants. The value is
+//! computed at compile time; nothing is inspected at run time.
+//!
+//! ```arandu
+//! import std.core.types as types
+//!
+//! struct Point {
+//!     x: int,
+//!     y: int,
+//! }
+//!
+//! const POINT: types.TypeInfo = types.info<Point>()
+//! // POINT.fields[1].name == "y", POINT.fields[1].offset == 4
+//! ```
+//!
+//! Members follow the visibility of the call: private fields appear only when
+//! `types.info<T>()` is written in the module that declares `T`. When a member
+//! is left out, `isComplete` is `false`.
+//!
+//! A description holds views of its members. Keep one in a `const` to store
+//! or return it: a `const` lives in read-only static storage.
+//!
+//! ## Platform
+//! `native` · `wasm32` · `bare-metal`
+
+module std.core.types
+
+/// What kind of type a `TypeInfo` describes.
+public enum TypeKind {
+    Primitive,
+    Struct,
+    Union,
+    Enum,
+    Tuple,
+    Array,
+    Slice,
+    Pointer,
+    Reference,
+    Function,
+    Vector,
+    Other,
+}
+
+/// A field of a struct or union, or an element of a tuple.
+public struct FieldInfo {
+    /// Source name; a tuple element is named by its position (`"0"`).
+    public name: str,
+    /// Canonical name of the field's type.
+    public typeName: str,
+    /// Offset in bytes from the start of the value on the selected target.
+    public offset: usize,
+    /// Size in bytes of the field's type.
+    public size: usize,
+}
+
+/// A variant of an enum.
+public struct VariantInfo {
+    public name: str,
+    /// Position of the variant in its declaration, from zero.
+    public tag: usize,
+    public hasPayload: bool,
+}
+
+/// Description of one type on the selected target.
+public struct TypeInfo {
+    /// Canonical name: `module.Type<Args>` for a declared type, the spelling
+    /// of the language for the others (`int`, `[]u8`, `(int, str)`).
+    public name: str,
+    public kind: TypeKind,
+    /// Size in bytes on the selected target.
+    public size: usize,
+    /// Alignment in bytes on the selected target.
+    public align: usize,
+    /// `false` when a member is not visible where the description was asked.
+    public isComplete: bool,
+    /// Fields of a struct or union, elements of a tuple; empty otherwise.
+    public fields: []FieldInfo,
+    /// Variants of an enum; empty otherwise.
+    public variants: []VariantInfo,
+}
+
+extern "arandu-intrinsic" {
+    /// Describes `T`, evaluated at compile time.
+    ///
+    /// # Examples
+    /// ```arandu
+    /// types.info<int>().size // 4 on all targets
+    /// types.info<Option<int>>().kind // TypeKind.Enum
+    /// ```
+    func info<T>() : TypeInfo
+}

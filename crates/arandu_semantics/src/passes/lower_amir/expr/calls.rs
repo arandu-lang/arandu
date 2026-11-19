@@ -622,6 +622,11 @@ impl LowerCtx<'_> {
         let bare = match kind {
             Some(arandu_middle::IntrinsicKind::SizeOf) => "sizeOf",
             Some(arandu_middle::IntrinsicKind::AlignOf) => "alignOf",
+            Some(arandu_middle::IntrinsicKind::TypeInfo) => {
+                return self
+                    .lower_type_info(type_args[0], result_ty, target, callee_expr.span)
+                    .map(Some);
+            }
             _ => return Ok(None),
         };
 

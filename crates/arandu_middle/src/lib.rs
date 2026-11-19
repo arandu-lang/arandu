@@ -71,7 +71,20 @@ pub struct ExportedSymbolTable {
     pub sealed_symbols: std::collections::BTreeSet<String>,
     /// Explicit implementation edges for sealed interfaces, kept as stable IDs.
     pub sealed_implementations: Vec<(SymbolId, SymbolId)>,
+    /// Canonical `module.Type` path of each exported struct or enum, from
+    /// the module that declares it, so an importer names it the same way.
+    pub type_paths: std::collections::BTreeMap<SymbolId, smol_str::SmolStr>,
     pub is_cycle: bool,
+}
+
+impl ExportedSymbolTable {
+    /// Records the canonical path of `symbol` in `symbols`, when it is a
+    /// nominal type this table names.
+    pub fn record_type_path(&self, symbol: SymbolId, symbols: &mut SymbolTable) {
+        if let Some(path) = self.type_paths.get(&symbol) {
+            symbols.host_function_names.insert(symbol, path.clone());
+        }
+    }
 }
 
 impl ExportedSymbolTable {

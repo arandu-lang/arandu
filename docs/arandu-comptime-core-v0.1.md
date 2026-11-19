@@ -289,20 +289,35 @@ supported declaration headers. Concrete generic instances can use layout
 queries in dimensions and dependent pre-body selection without requesting
 final runtime AMIR.
 
-### Proposed expression APIs
+### Type descriptions
 
-`embed.bytes(path)`, `embed.str(path)` and `types.info<T>()` are design directions,
-not implemented standard-library APIs. They do not introduce `std.embed`,
-`std.types`, expression forms `@EmbedBytes`/`@TypeInfo`, or an array type
-`[comptime]u8`. Fixed arrays still require a concrete, checked length.
+`types.info<T>()` (`std.core.types`, RFC 0013 §10.1, C2) describes a concrete
+type on the selected target as an ordinary `TypeInfo` value: canonical name,
+`TypeKind`, size, alignment, `isComplete`, `fields: []FieldInfo` (name, type
+name, offset, size) and `variants: []VariantInfo` (name, tag, payload).
 
-Asset inclusion needs explicit path/root, result ownership/type, UTF-8, size
-budget and error contracts. Files must be registered as compiler inputs by the
-input-owning layer; neither tracked queries nor the CTFE VM may read them.
-Dependency changes, missing files and equal-content edits need incremental
-invalidation/cutoff tests. Reflection needs bounded frozen descriptors with
-defined type identity, visibility and target dependence before it can be
-exposed through a module API. See the
+- **Identity.** The name is the declaring module's canonical path with
+  canonical arguments (`app.shapes.Point`, `[]app.shapes.Point`,
+  `Option<int>`), never a `SymbolId` or file offset. The export table carries
+  each exported type's path (`ExportedSymbolTable::type_paths`), so an
+  importer, compile-time evaluation and the composed program spell it alike.
+- **Visibility.** The one of the call: private fields appear only when the
+  call is written in the module that declares the type. A left-out field
+  sets `isComplete` to `false`; the layout still counts it.
+- **Evaluation.** The intrinsic is lowered after monomorphization, so a
+  generic `T` is described per instance. The same AMIR builds the value in
+  compile-time evaluation and at run time; each member is an aggregate the
+  evaluator charges for, so the cost grows with the number of members.
+- **Storage.** A description holds views of its members. In a `const` it lives
+  in read-only static storage (constant views); at run time outside a `const`
+  it is a value of the enclosing frame, like any array viewed as a slice.
+
+`embed.bytes(path)` and `embed.str(path)` remain design directions, not
+implemented APIs. Asset inclusion needs explicit path/root, result
+ownership/type, UTF-8, size budget and error contracts. Files must be
+registered as compiler inputs by the input-owning layer; neither tracked
+queries nor the CTFE VM may read them. Dependency changes, missing files and
+equal-content edits need incremental invalidation/cutoff tests. See the
 [naming contract](arandu-attribute-naming-v0.1.md#operações-em-expressões).
 
 ## Architecture

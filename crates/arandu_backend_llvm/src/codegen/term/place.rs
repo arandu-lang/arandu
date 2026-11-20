@@ -134,6 +134,34 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                     ty = self.module.interner.resolve(*field_ty);
                 }
                 AmirProjection::IndexConstant(index) => {
+                    // `p[k]` on a raw pointer: unchecked, as in C. The place
+                    // holds the pointer; the element is where it points.
+                    if let ArType::Ptr(element) = &ty {
+                        let element = self.module.interner.resolve(*element);
+                        let data = self.new_value();
+                        let align = self.module.pointer_align();
+                        self.writer
+                            .line(format!("{data} = load ptr, ptr {address}, align {align}"));
+                        let stride = self
+                            .module
+                            .layout
+                            .layout_of_type(&element, self.module.interner, self.module.info)
+                            .map_err(|error| {
+                                ice(format!("LLVM layout failed for {element:?}: {error}"))
+                            })?
+                            .size;
+                        address = data;
+                        let offset = stride * *index as u64;
+                        if offset != 0 {
+                            let next = self.new_value();
+                            self.writer.line(format!(
+                                "{next} = getelementptr inbounds i8, ptr {address}, i64 {offset}"
+                            ));
+                            address = next;
+                        }
+                        ty = element;
+                        continue;
+                    }
                     let element = match &ty {
                         ArType::Array(_, element) => self.module.interner.resolve(*element),
                         ArType::Tuple(args) => self
@@ -204,6 +232,14 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                             self.writer
                                 .line(format!("{data} = load ptr, ptr {address}, align {align}"));
                             (data, ArType::Primitive(Primitive::U8), None)
+                        }
+                        // `p[i]` on a raw pointer: unchecked, as in C.
+                        ArType::Ptr(element) => {
+                            let data = self.new_value();
+                            let align = self.module.pointer_align();
+                            self.writer
+                                .line(format!("{data} = load ptr, ptr {address}, align {align}"));
+                            (data, self.module.interner.resolve(*element), None)
                         }
                         other => {
                             return Err(ice(format!(

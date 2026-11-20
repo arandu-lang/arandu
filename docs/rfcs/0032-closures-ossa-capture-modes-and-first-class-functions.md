@@ -76,7 +76,11 @@
 > é instanciado com `F = (A) -> R`, como um `fn` do Rust implementa `FnMut`.
 > Restrições:
 > - `@Unsafe` e `extern` não viram valor (O013);
-> - `@Export` e lambdas com captura ainda não viram (U001);
+> - `@Export` com parâmetros ou retorno agregados (structs, tuplas, `str`,
+>   fatias) ainda não vira valor (U001). Com escalares e ponteiros finos, a
+>   entrada C é também a interna, então vira valor (2026-11-20), como pede
+>   uma tabela de callbacks C como o `lua_CFunction` do Lua; lambdas com
+>   captura ainda não viram;
 > - a chamada indireta observa todos os efeitos e não é admitida em CTFE.
 >
 > O T033 foi retirado. Corpus: `tests/corpus/function_values.aru`.

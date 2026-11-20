@@ -847,6 +847,30 @@ fn string_concatenation_agrees_on_every_backend() {
     let _ = fs::remove_file(path);
 }
 
+/// An `@Export` function with a scalar signature used as a function value,
+/// and a raw pointer indexed in a place, agree on every backend.
+#[test]
+fn exported_function_values_agree_on_every_backend() {
+    let source = include_str!("../../../../tests/corpus/exported_function_values.aru");
+    for (backend, outcome) in outcomes("exported_function_values", source) {
+        assert_eq!(outcome, ProgramOutcome::Returned(0), "{backend}");
+    }
+    let path = std::env::temp_dir().join(format!(
+        "arandu_exported_function_values_{}.aru",
+        std::process::id()
+    ));
+    fs::write(&path, source).unwrap();
+    let wasm = cli(&["emit-wasm", &path.to_string_lossy()]);
+    assert!(
+        wasm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&wasm.stderr)
+    );
+    crate::wasm_host::run_main(&wasm.stdout)
+        .assert_returns(0, "exported function values in Wasmtime");
+    let _ = fs::remove_file(path);
+}
+
 /// `types.info<T>()`: descriptions of structs, enums, tuples and builtin
 /// types, in a `const` and in a generic function, agree on every backend.
 #[test]

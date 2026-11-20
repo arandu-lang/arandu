@@ -60,7 +60,7 @@ fn a_function_value_keeps_its_parameter_types() {
 }
 
 #[test]
-fn unsafe_extern_and_exported_functions_are_not_values() {
+fn unsafe_extern_and_aggregate_exported_functions_are_not_values() {
     let cases: &[(&str, &str, DiagCode)] = &[
         (
             "@Unsafe",
@@ -68,14 +68,22 @@ fn unsafe_extern_and_exported_functions_are_not_values() {
             DiagCode::O013ExternRequiresUnsafe,
         ),
         (
-            "@Export",
-            "@Export(\"api_value\")\npublic func api(): int { return 1 }\nfunc main(): int {\n    let f = api\n    return 0\n}\n",
+            "@Export with an aggregate",
+            "struct Pair { a: int, b: int }\n@Export(\"api_pair\")\npublic func api(): Pair { return Pair { a: 1, b: 2 } }\nfunc main(): int {\n    let f = api\n    return 0\n}\n",
             DiagCode::U001FeatureNotSupported,
         ),
     ];
     for (name, source, code) in cases {
         assert_eq!(errors(source), vec![*code], "{name}");
     }
+}
+
+/// With scalars and thin pointers alone, the C entry point of an `@Export`
+/// function is also its internal one, so it is a function value.
+#[test]
+fn exported_functions_with_scalar_signatures_are_values() {
+    let source = "@Export(\"api_value\")\npublic func api(x: int, p: ptr[u8]): f64 { return 1.0 }\nfunc main(): int {\n    let f = api\n    return 0\n}\n";
+    assert!(errors(source).is_empty(), "{:?}", errors(source));
 }
 
 const FORMS: &str = r#"

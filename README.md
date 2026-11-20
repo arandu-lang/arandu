@@ -1,4 +1,9 @@
-# Arandu
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset=".github/assets/arandu-lockup-escuro.svg">
+    <img src=".github/assets/arandu-lockup-claro.svg" alt="Arandu" width="360">
+  </picture>
+</h1>
 
 <p align="center">
   <strong>A safe, fast, and ergonomic systems programming language.</strong>

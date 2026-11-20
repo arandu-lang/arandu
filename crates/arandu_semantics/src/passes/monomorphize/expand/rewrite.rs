@@ -431,10 +431,18 @@ pub(super) fn try_rewrite_generic_call<'bump>(
                         ArType::Slice(_) => tc.symbols.builtins.slice_type,
                         _ => None,
                     };
-                    let Some(type_id) = type_id else {
-                        return;
+                    let pointer = || {
+                        tc.symbols.pointer_method(
+                            &tc.type_info.type_interner.resolve(hir.pool.expr(*base).ty),
+                            &tc.type_info.type_interner,
+                            field.as_str(),
+                        )
                     };
-                    let Some(sym) = tc.symbols.lookup_associated_member(type_id, field.as_str())
+                    let Some(sym) = type_id
+                        .and_then(|owner| {
+                            tc.symbols.lookup_associated_member(owner, field.as_str())
+                        })
+                        .or_else(pointer)
                     else {
                         return;
                     };

@@ -218,10 +218,27 @@ pub(crate) fn synth_method_call(
     };
 
     // Effective parent SymbolId for the method lookup.
-    let effective_id = struct_id.or(builtin_id);
+    // A pointer reaches the methods of what it points at first, and then
+    // the inherent methods of `ptr` itself (`p.offsetFrom(q)`).
+    let lookup = |id: arandu_middle::SymbolId| checker.symbols.lookup_associated_member(id, method);
+    let pointer_method = struct_id
+        .or(builtin_id)
+        .is_none_or(|owner| lookup(owner).is_none())
+        && checker
+            .symbols
+            .pointer_method(
+                &checker.resolve(base_ty_id),
+                &checker.type_info.type_interner,
+                method,
+            )
+            .is_some();
+    let (struct_id, effective_id) = if pointer_method {
+        (None, checker.symbols.builtins.ptr_type)
+    } else {
+        (struct_id, struct_id.or(builtin_id))
+    };
 
-    let method_sym =
-        effective_id.and_then(|id| checker.symbols.lookup_associated_member(id, method));
+    let method_sym = effective_id.and_then(lookup);
 
     let mut resolved_method = None;
     let mut method_generic_params = Vec::new();
@@ -364,7 +381,11 @@ pub(crate) fn synth_method_call(
     } else {
         instantiate_method_sig_for_result_option(
             checker,
-            actual_base_ty_id,
+            if pointer_method {
+                base_ty_id
+            } else {
+                actual_base_ty_id
+            },
             params,
             ret,
             method_sym_recorded,

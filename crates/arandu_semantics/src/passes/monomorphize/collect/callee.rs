@@ -47,7 +47,7 @@ fn method_symbol_from_field(
     field: &str,
 ) -> Option<SymbolId> {
     let base_ty = tc.type_info.type_interner.resolve(pool.expr(base).ty);
-    let actual = peel_recv_base_ty(tc, base_ty);
+    let actual = peel_recv_base_ty(tc, base_ty.clone());
     let type_id = match actual {
         ArType::Vector(shape) => tc.symbols.vector_type_symbol(shape),
         ArType::Named(id, _) => Some(id),
@@ -67,8 +67,13 @@ fn method_symbol_from_field(
         }
         ArType::Slice(_) => tc.symbols.builtins.slice_type,
         _ => None,
-    }?;
-    tc.symbols.lookup_associated_member(type_id, field)
+    };
+    type_id
+        .and_then(|owner| tc.symbols.lookup_associated_member(owner, field))
+        .or_else(|| {
+            tc.symbols
+                .pointer_method(&base_ty, &tc.type_info.type_interner, field)
+        })
 }
 
 /// Build an instantiation key for a call that is not wrapped in `Generic`.

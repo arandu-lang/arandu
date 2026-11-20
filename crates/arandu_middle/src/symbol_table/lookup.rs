@@ -230,6 +230,28 @@ impl super::SymbolTable {
             .copied()
     }
 
+    /// The inherent `ptr` method `member` when `receiver` is a pointer (or
+    /// a nullable one). A pointer reaches the methods of what it points at
+    /// first; callers use this when that type has no such member.
+    #[must_use]
+    pub fn pointer_method(
+        &self,
+        receiver: &crate::types::ArType,
+        interner: &crate::types::TypeInterner,
+        member: &str,
+    ) -> Option<SymbolId> {
+        use crate::types::ArType;
+        let pointer = match receiver {
+            ArType::Ptr(_) => true,
+            ArType::Nullable(inner) => matches!(interner.resolve(*inner), ArType::Ptr(_)),
+            _ => false,
+        };
+        pointer
+            .then_some(self.builtins.ptr_type)
+            .flatten()
+            .and_then(|owner| self.lookup_associated_member(owner, member))
+    }
+
     fn lookup_with(
         &self,
         scope: ScopeId,

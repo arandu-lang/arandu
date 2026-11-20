@@ -871,6 +871,27 @@ fn exported_function_values_agree_on_every_backend() {
     let _ = fs::remove_file(path);
 }
 
+/// `p.offsetFrom(q)` on pointers to structs and bytes, beside a method of
+/// the pointee called through the pointer, agrees on every backend.
+#[test]
+fn pointer_offsets_agree_on_every_backend() {
+    let source = include_str!("../../../../tests/corpus/pointer_offsets.aru");
+    for (backend, outcome) in outcomes("pointer_offsets", source) {
+        assert_eq!(outcome, ProgramOutcome::Returned(0), "{backend}");
+    }
+    let path =
+        std::env::temp_dir().join(format!("arandu_pointer_offsets_{}.aru", std::process::id()));
+    fs::write(&path, source).unwrap();
+    let wasm = cli(&["emit-wasm", &path.to_string_lossy()]);
+    assert!(
+        wasm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&wasm.stderr)
+    );
+    crate::wasm_host::run_main(&wasm.stdout).assert_returns(0, "pointer offsets in Wasmtime");
+    let _ = fs::remove_file(path);
+}
+
 /// `types.info<T>()`: descriptions of structs, enums, tuples and builtin
 /// types, in a `const` and in a generic function, agree on every backend.
 #[test]

@@ -65,9 +65,10 @@ fn resolve_method_target(
         ArType::Slice(_) | ArType::MutSlice(_) | ArType::Array(_, _) => symbols.builtins.slice_type,
         ArType::Ptr(_) => symbols.builtins.ptr_type,
         _ => None,
-    }?;
-
-    symbols.lookup_associated_member(type_id, field)
+    };
+    type_id
+        .and_then(|owner| symbols.lookup_associated_member(owner, field))
+        .or_else(|| symbols.pointer_method(&interner.resolve(base_expr.ty), interner, field))
 }
 
 impl LowerCtx<'_> {

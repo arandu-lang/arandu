@@ -45,6 +45,8 @@
 
 module std.core.pointer
 
+import std.core.mem as mem
+
 /// Returns a null pointer (`nil`) typed as `ptr[T]`.
 ///
 /// # Examples
@@ -83,4 +85,21 @@ public func isNull<T>(p: ptr[T]?): bool {
 /// Returns `true` if the pointer is null (`nil`).
 public func ptr.isNull<T>(self: ptr[T]?): bool {
     return isNull<T>(self)
+}
+
+/// Distance from `origin` to this pointer, in elements of `T`: `p - q` in
+/// C, `offset_from` in Rust. Only the addresses take part; nothing is read.
+/// Both pointers should point into the same object for the distance to
+/// mean anything, and `T` must have a size.
+///
+/// # Examples
+/// ```arandu
+/// let end = unsafe { mem.ptrOffset(start, 3) }
+/// end.offsetFrom(start) // 3
+/// ```
+///
+/// # Complexity
+/// Time: O(1) | Space: O(1)
+public func ptr.offsetFrom<T>(self: ptr[T], origin: ptr[T]): isize {
+    return ((self as isize) - (origin as isize)) / (mem.sizeOf<T>() as isize)
 }

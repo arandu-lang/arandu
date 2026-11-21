@@ -315,6 +315,10 @@ pub(crate) fn create_jit_builder_with_io_and_process_args(
         crate::os_runtime::ar_time_monotonic_ns as *const u8,
     );
     builder.symbol("ar_env_args_len", args_len);
+    builder.symbol(
+        "ar_env_c_argv",
+        crate::os_runtime::ar_env_c_argv as *const u8,
+    );
     builder.symbol("ar_env_arg", args_arg);
     builder.symbol(
         "ar_env_var_is_set",

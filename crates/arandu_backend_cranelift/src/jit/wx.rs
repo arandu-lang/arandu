@@ -13,7 +13,7 @@ impl JitWriteScope {
     #[inline(always)]
     pub(crate) fn enter() -> Self {
         unsafe {
-            extern "C" {
+            unsafe extern "C" {
                 fn pthread_jit_write_protect_np(enabled: i32);
             }
             pthread_jit_write_protect_np(0); // 0 = write enabled
@@ -27,7 +27,7 @@ impl Drop for JitWriteScope {
     #[inline(always)]
     fn drop(&mut self) {
         unsafe {
-            extern "C" {
+            unsafe extern "C" {
                 fn pthread_jit_write_protect_np(enabled: i32);
             }
             pthread_jit_write_protect_np(1); // 1 = write disabled, execute enabled

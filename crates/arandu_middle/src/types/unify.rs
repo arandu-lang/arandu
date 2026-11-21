@@ -17,7 +17,8 @@ pub fn unify_return_type(expected: &ArType, actual: &ArType, interner: &TypeInte
     ok
 }
 
-/// See [`unify_inner`].
+/// Structural type equality; on success, binds the inference variables
+/// the two types share.
 #[must_use]
 pub fn unify(a: &ArType, b: &ArType, interner: &TypeInterner) -> bool {
     let ok = unify_inner(a, b, interner);
@@ -27,7 +28,8 @@ pub fn unify(a: &ArType, b: &ArType, interner: &TypeInterner) -> bool {
     ok
 }
 
-/// See [`is_assignable_inner`].
+/// Whether `actual` can be assigned to `expected` (directional); on
+/// success, binds the inference variables they share.
 #[must_use]
 pub fn is_assignable(actual: &ArType, expected: &ArType, interner: &TypeInterner) -> bool {
     let ok = is_assignable_inner(actual, expected, interner);
@@ -37,7 +39,9 @@ pub fn is_assignable(actual: &ArType, expected: &ArType, interner: &TypeInterner
     ok
 }
 
-/// See [`is_assignable_return_type_inner`].
+/// Whether a returned `actual` fits the declared `expected`, including the
+/// `Result` wrapping of a fallible return; on success, binds the inference
+/// variables they share.
 #[must_use]
 pub fn is_assignable_return_type(
     expected: &ArType,

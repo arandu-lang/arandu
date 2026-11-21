@@ -1748,8 +1748,11 @@ fn parity_index_addressing_combined_with_shift() {
 fn generated_integer_programs_match_independent_oracle() {
     // Keep the original left-associated 64-call expression and exercise all
     // compiler phases with a bounded stack on every host, including macOS.
+    // Linux debug builds need between 384 and 512 KiB (measured 2026-11-21);
+    // MSVC debug frames are larger, so Windows gets twice the bound.
+    let kib = if cfg!(windows) { 1024 } else { 512 };
     std::thread::Builder::new()
-        .stack_size(512 * 1024)
+        .stack_size(kib * 1024)
         .spawn(|| {
             let (source, expected) = generated_integer_fixture();
             let (jit, c) = test_execution_result("generated_integer_oracle", &source);

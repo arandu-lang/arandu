@@ -296,6 +296,9 @@ impl TargetSpec {
             "bcrypt.lib",
             "dbghelp.lib",
             "msvcrt.lib",
+            // The UCRT inlines `printf`-family functions; the runtime's C
+            // compatibility shims call `snprintf`/`fprintf` as imports.
+            "legacy_stdio_definitions.lib",
         ]
     }
 

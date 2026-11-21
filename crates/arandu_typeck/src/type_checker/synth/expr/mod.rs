@@ -36,7 +36,8 @@ pub fn synth_expr_expected(
     expr: ExprId,
     expected: Option<TypeId>,
 ) -> TypeId {
-    let id = synth_expr_inner(checker, expr, expected);
+    // Expressions nest as deeply as a program writes them.
+    let id = arandu_base::ensure_sufficient_stack(|| synth_expr_inner(checker, expr, expected));
     let id = call::adjust_to_expected(checker, expr, id, expected);
     checker.record_expr_type(expr, id);
     id

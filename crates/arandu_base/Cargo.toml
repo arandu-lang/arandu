@@ -11,5 +11,7 @@ self-profile = []
 
 [dependencies]
 rustc-hash = { workspace = true }
+# Stack growth for deep recursive descents (rustc's `ensure_sufficient_stack`).
+stacker = "0.1.25"
 tracing.workspace = true
 tracing-subscriber.workspace = true

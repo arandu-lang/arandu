@@ -1748,12 +1748,10 @@ fn parity_index_addressing_combined_with_shift() {
 fn generated_integer_programs_match_independent_oracle() {
     // Keep the original left-associated 64-call expression and exercise all
     // compiler phases with a bounded stack on every host, including macOS.
-    // Linux debug builds need between 384 and 512 KiB (measured 2026-11-21);
-    // macOS arm64 and MSVC debug frames are larger, so they get twice the
-    // bound.
-    let kib = if cfg!(target_os = "linux") { 512 } else { 1024 };
+    // The recursive phases grow their stack on demand, so the bound holds on
+    // every host whatever its frame sizes.
     std::thread::Builder::new()
-        .stack_size(kib * 1024)
+        .stack_size(512 * 1024)
         .spawn(|| {
             let (source, expected) = generated_integer_fixture();
             let (jit, c) = test_execution_result("generated_integer_oracle", &source);
@@ -1762,6 +1760,25 @@ fn generated_integer_programs_match_independent_oracle() {
                 "Cranelift disagreed with the independent oracle"
             );
             assert_eq!(c, expected, "C disagreed with the independent oracle");
+        })
+        .expect("spawn bounded compiler worker")
+        .join()
+        .expect("bounded compiler worker failed");
+}
+
+/// A chain of 500 operands, near the parser's limit of 512, nests 500 levels
+/// deep in every phase. The
+/// recursive phases grow their stack on demand, so a 512 KiB thread compiles
+/// it on every host, as a Windows main thread of 1 MiB must.
+#[test]
+fn deeply_chained_expressions_compile_on_a_bounded_stack() {
+    std::thread::Builder::new()
+        .stack_size(512 * 1024)
+        .spawn(|| {
+            let terms = vec!["1"; 500].join(" + ");
+            let source = format!("func main(): int {{\n    return {terms} - 458\n}}\n");
+            let (jit, c) = test_execution_result("deeply_chained_expression", &source);
+            assert_eq!((jit, c), (42, 42));
         })
         .expect("spawn bounded compiler worker")
         .join()

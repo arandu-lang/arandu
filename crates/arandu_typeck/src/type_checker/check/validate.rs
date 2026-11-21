@@ -179,6 +179,11 @@ fn validate_result_type_no_any(checker: &mut TypeChecker<'_>, result: &ResultTyp
 }
 
 fn validate_expr(checker: &mut TypeChecker<'_>, expr: ExprId) {
+    // Expressions nest as deeply as a program writes them.
+    arandu_base::ensure_sufficient_stack(|| validate_expr_here(checker, expr));
+}
+
+fn validate_expr_here(checker: &mut TypeChecker<'_>, expr: ExprId) {
     match checker.pool.expr(expr) {
         ExprKind::Layout { ty: Some(ty), .. } => validate_type_no_any(checker, *ty),
         ExprKind::Layout { ty: None, .. } => {}

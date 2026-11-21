@@ -387,6 +387,16 @@ pub(crate) fn lower_expr(
     hir_pool: &mut crate::hir::HirPool,
     expr: ExprId,
 ) -> Result<crate::hir::HirExprId, Diagnostic> {
+    // Expressions nest as deeply as a program writes them.
+    arandu_base::ensure_sufficient_stack(|| lower_expr_here(type_check, pool, hir_pool, expr))
+}
+
+fn lower_expr_here(
+    type_check: &mut TypeCheckResult,
+    pool: &AstPool,
+    hir_pool: &mut crate::hir::HirPool,
+    expr: ExprId,
+) -> Result<crate::hir::HirExprId, Diagnostic> {
     let mut hir = lower_expr_raw(type_check, pool, hir_pool, expr)?;
     // A hoisted value was adjusted when its local was initialized.
     let adjustment = (!hir_pool.hoisted_values.contains_key(&hir.span))

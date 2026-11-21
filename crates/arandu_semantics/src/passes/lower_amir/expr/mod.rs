@@ -62,6 +62,16 @@ impl LowerCtx<'_> {
         target: Option<TempId>,
         symbols: &SymbolTable,
     ) -> Result<AmirOperand, Diagnostic> {
+        // Expressions nest as deeply as a program writes them.
+        arandu_base::ensure_sufficient_stack(|| self.lower_expr_here(expr_id, target, symbols))
+    }
+
+    fn lower_expr_here(
+        &mut self,
+        expr_id: HirExprId,
+        target: Option<TempId>,
+        symbols: &SymbolTable,
+    ) -> Result<AmirOperand, Diagnostic> {
         self.charge_static_expansion(self.hir.pool.expr(expr_id).span)?;
         let hir = self.hir;
         let expr = hir.pool.expr(expr_id);

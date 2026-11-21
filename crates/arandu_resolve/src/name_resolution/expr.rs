@@ -9,6 +9,11 @@ use super::Resolver;
 
 impl<'a> Resolver<'a> {
     pub(crate) fn resolve_expr(&mut self, scope: ScopeId, expr: ExprId) {
+        // Expressions nest as deeply as a program writes them.
+        arandu_base::ensure_sufficient_stack(|| self.resolve_expr_here(scope, expr));
+    }
+
+    fn resolve_expr_here(&mut self, scope: ScopeId, expr: ExprId) {
         let span = self.pool.expr_span(expr);
         match self.pool.expr(expr) {
             ExprKind::Layout { ty, .. } => {

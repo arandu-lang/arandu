@@ -264,6 +264,9 @@ impl TargetSpec {
                 "-lws2_32",
                 "-lbcrypt",
                 "-ldbghelp",
+                // The UCRT inlines `snprintf`/`fprintf`; the runtime's C
+                // shims import them from here.
+                "-llegacy_stdio_definitions",
             ],
             TargetOs::Macos => &["-lpthread"],
             TargetOs::Linux => &["-lpthread", "-ldl"],

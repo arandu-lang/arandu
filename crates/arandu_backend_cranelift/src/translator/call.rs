@@ -30,6 +30,9 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         }
 
         let mut indirect_result = None;
+        // Apple arm64 passes variadic arguments on the stack: register
+        // padding inserted after this many fixed arguments.
+        let mut apple_variadic_padding: Option<(usize, Vec<Type>)> = None;
         // A direct call takes its signature from the callee's declaration; a
         // call through a function value takes it from the value's `Func`
         // type, built with the same internal ABI (sret, aggregate slots).
@@ -65,16 +68,24 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                         .iter()
                         .map(|&id| interner.resolve(id))
                         .collect();
+                    let triple = self.module.isa().triple();
+                    let apple_arm64 = self.module.isa().default_call_conv()
+                        == cranelift_codegen::isa::CallConv::AppleAarch64;
                     for arg in args.iter().skip(fixed_len) {
-                        full_params.push(promote_c_vararg_type(self.get_operand_ar_type(arg)));
+                        let promoted = promote_c_vararg_type(self.get_operand_ar_type(arg));
+                        // Each Apple arm64 variadic argument fills an 8-byte slot.
+                        full_params.push(if apple_arm64 {
+                            widen_apple_vararg_type(promoted)
+                        } else {
+                            promoted
+                        });
                     }
                     let ret_ty = interner.resolve(*result);
-                    let triple = self.module.isa().triple();
                     let classifier = arandu_middle::layout::TargetAbiClassifier::new(
                         crate::abi::target_abi_for_triple(triple),
                         u64::from(self.ptr_type.bytes()),
                     );
-                    let call_sig = crate::abi::build_signature_with_classifier(
+                    let mut call_sig = crate::abi::build_signature_with_classifier(
                         &full_params,
                         &ret_ty,
                         self.module.isa().default_call_conv(),
@@ -83,6 +94,48 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                         interner,
                         self.type_info,
                     );
+                    if apple_arm64 && args.len() > fixed_len {
+                        // As rustc's Cranelift backend does: exhaust the
+                        // argument registers with padding so every variadic
+                        // argument goes on the stack, where the callee's
+                        // `va_arg` reads it.
+                        let fixed_sig = crate::abi::build_signature_with_classifier(
+                            &full_params[..fixed_len],
+                            &ret_ty,
+                            self.module.isa().default_call_conv(),
+                            self.ptr_type,
+                            &classifier,
+                            interner,
+                            self.type_info,
+                        );
+                        let fixed_values = fixed_sig.params.len();
+                        let used_float = fixed_sig
+                            .params
+                            .iter()
+                            .filter(|param| param.value_type.is_float())
+                            .count();
+                        let used_int = fixed_values - used_float;
+                        let variadic_float = call_sig.params[fixed_values..]
+                            .iter()
+                            .any(|param| param.value_type.is_float());
+                        let mut padding = vec![
+                            cranelift_codegen::ir::types::I64;
+                            8usize.saturating_sub(used_int)
+                        ];
+                        if variadic_float {
+                            padding.extend(std::iter::repeat_n(
+                                cranelift_codegen::ir::types::F64,
+                                8usize.saturating_sub(used_float),
+                            ));
+                        }
+                        for (offset, &ty) in padding.iter().enumerate() {
+                            call_sig.params.insert(
+                                fixed_values + offset,
+                                cranelift_codegen::ir::AbiParam::new(ty),
+                            );
+                        }
+                        apple_variadic_padding = Some((fixed_len, padding));
+                    }
                     let call_sig_id = self.builder.import_signature(call_sig);
                     let code = self.builder.ins().func_addr(self.ptr_type, local_ref);
                     let promoted_param_ids: Vec<_> = full_params
@@ -175,6 +228,19 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             clif_param_idx = 1;
         }
         for (arg_idx, arg) in args.iter().enumerate() {
+            if let Some((fixed, padding)) = &apple_variadic_padding
+                && arg_idx == *fixed
+            {
+                for &ty in padding {
+                    let zero = if ty.is_float() {
+                        self.builder.ins().f64const(0.0)
+                    } else {
+                        self.builder.ins().iconst(ty, 0)
+                    };
+                    clif_args.push(zero);
+                    clif_param_idx += 1;
+                }
+            }
             let arg_ty = callee_param_types
                 .as_ref()
                 .and_then(|tys| tys.get(arg_idx))
@@ -800,6 +866,15 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         let dest = self.allocate_aggregate(ty);
         self.copy_aggregate_bytes(dest, src, layout.size);
         Some(dest)
+    }
+}
+
+/// Apple arm64 gives every variadic argument an 8-byte stack slot.
+fn widen_apple_vararg_type(ty: ArType) -> ArType {
+    match ty {
+        ArType::Primitive(Primitive::I32 | Primitive::Int) => ArType::Primitive(Primitive::I64),
+        ArType::Primitive(Primitive::U32 | Primitive::Uint) => ArType::Primitive(Primitive::U64),
+        other => other,
     }
 }
 

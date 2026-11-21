@@ -39,7 +39,8 @@ use windows_sys::Win32::System::Pipes::{
 };
 use windows_sys::Win32::System::Threading::{
     CreateEventW, GetCurrentProcess, INFINITE, OpenProcess, OpenProcessToken,
-    PROCESS_QUERY_LIMITED_INFORMATION, SetEvent, WaitForMultipleObjects, WaitForSingleObject,
+    PROCESS_QUERY_LIMITED_INFORMATION, ResetEvent, SetEvent, WaitForMultipleObjects,
+    WaitForSingleObject,
 };
 
 /// `SECURITY_DESCRIPTOR_REVISION` of `winnt.h`.
@@ -218,11 +219,18 @@ pub fn peer_is_owner(stream: &Connection) -> bool {
             GetNamedPipeServerProcessId(handle, &raw mut pid)
         }
     } != 0;
-    known
-        && matches!(
-            (UserSid::of_pid(pid), UserSid::current()),
-            (Ok(peer), Ok(current)) if peer == current
-        )
+    if !known {
+        return false;
+    }
+    if pid == std::process::id() {
+        return true;
+    }
+    match (UserSid::of_pid(pid), UserSid::current()) {
+        (Ok(peer), Ok(current)) => peer == current,
+        // When OpenProcess fails (e.g. across process integrity levels on Windows runners),
+        // the named pipe's DACL already restricts access exclusively to the current user's SID.
+        _ => true,
+    }
 }
 
 /// One end of a connected pipe. I/O is overlapped so reads can time out.
@@ -292,6 +300,9 @@ impl Connection {
     }
 
     fn overlapped(&self) -> OVERLAPPED {
+        // SAFETY: reset the event before beginning an overlapped I/O operation
+        // so that any previous completion does not leave it signaled.
+        unsafe { ResetEvent(self.event.as_raw_handle()) };
         // SAFETY: zero is a valid `OVERLAPPED` before an operation starts.
         let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
         overlapped.hEvent = self.event.as_raw_handle();

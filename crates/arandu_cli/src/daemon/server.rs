@@ -165,7 +165,13 @@ pub fn serve(args: &[String]) -> CliResult {
         std::thread::sleep(Duration::from_millis(10));
     }
     let identity = super::identity().map_err(|error| failure("identify toolchain", error))?;
-    if endpoint::socket_path(&root).ok().as_deref() != Some(socket.as_path()) {
+    let socket_matches = endpoint::socket_path(&root).ok().as_deref() == Some(socket.as_path())
+        || fs::canonicalize(&root)
+            .ok()
+            .and_then(|canon| endpoint::socket_path(&canon).ok())
+            .as_deref()
+            == Some(socket.as_path());
+    if !socket_matches {
         return Err(CliFailure::usage(
             "the daemon socket does not belong to this project",
         ));

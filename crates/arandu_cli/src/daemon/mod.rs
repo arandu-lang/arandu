@@ -303,12 +303,12 @@ mod client {
         // the daemon other builds share.
         #[cfg(unix)]
         std::os::unix::process::CommandExt::process_group(&mut command, 0);
-        // Without a console, in its own group: closing the terminal or Ctrl-C
+        // Without a visible window, in its own group: closing the terminal or Ctrl-C
         // reaches neither.
         #[cfg(windows)]
         std::os::windows::process::CommandExt::creation_flags(
             &mut command,
-            windows_sys::Win32::System::Threading::DETACHED_PROCESS
+            windows_sys::Win32::System::Threading::CREATE_NO_WINDOW
                 | windows_sys::Win32::System::Threading::CREATE_NEW_PROCESS_GROUP,
         );
         let mut child = command.spawn().ok()?;

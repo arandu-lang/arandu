@@ -85,10 +85,16 @@ impl Project {
     /// Whether a daemon holds the project's lock.
     fn daemon_running(&self) -> bool {
         let lock = self.root.join(".arandu").join("daemon.lock");
-        let Ok(file) = fs::OpenOptions::new().write(true).open(lock) else {
-            return false;
-        };
-        file.try_lock().is_err()
+        if let Ok(file) = fs::OpenOptions::new().write(true).open(&lock) {
+            return file.try_lock().is_err();
+        }
+        if let Ok(canonical) = self.root.canonicalize() {
+            let lock = canonical.join(".arandu").join("daemon.lock");
+            if let Ok(file) = fs::OpenOptions::new().write(true).open(lock) {
+                return file.try_lock().is_err();
+            }
+        }
+        false
     }
 
     fn stop(&self) {

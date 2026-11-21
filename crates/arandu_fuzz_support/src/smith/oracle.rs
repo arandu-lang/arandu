@@ -343,7 +343,14 @@ fn check_source_internal(
     }
 
     if compare_c || compare_wasm || compare_llvm {
+        // By default, differential execution against external process backends (C, Wasm, LLVM)
+        // runs on the canonical optimized level (O2) to avoid 4x redundant process spawns
+        // (clang/wasmtime) per seed, while Cranelift continues to verify O0==O1==O2==Os in memory.
+        let exhaustive_levels = std::env::var_os("ARANDU_FUZZ_ALL_LEVELS").is_some();
         for ((level, program), output) in optimized_programs.iter().zip(cranelift_outputs.iter()) {
+            if !exhaustive_levels && *level != arandu_mir::OptLevel::O2 {
+                continue;
+            }
             if compare_c {
                 let c_output = catch_backend_panic("C", *level, || {
                     execute_c(
@@ -1491,6 +1498,10 @@ pub(super) fn execute_c(
     compile_command
         .arg("-fwrapv")
         .arg("-O0")
+        // Stack canaries on fuzz-generated binaries: catches stack smashing in
+        // transpiled / synthesized programs before the differential oracle
+        // reports a mismatch. Only applied when the host cc supports it.
+        .arg("-fstack-protector-strong")
         .arg(&source_path)
         .arg("-o")
         .arg(&executable_path)

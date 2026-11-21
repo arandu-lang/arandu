@@ -176,7 +176,10 @@ pub(crate) fn seed_timeout(target: Target) -> Duration {
         | Target::Structured
         | Target::GenRef
         | Target::Fmt
-        | Target::RuntimeAbi => SIMPLE_SEED_TIMEOUT,
+        | Target::RuntimeAbi
+        | Target::ParserStress
+        | Target::SemanticNegative
+        | Target::CtfeStress => SIMPLE_SEED_TIMEOUT,
         Target::Incremental | Target::ModuleGraph | Target::IncrementalCutoff => {
             INCREMENTAL_SEED_TIMEOUT
         }

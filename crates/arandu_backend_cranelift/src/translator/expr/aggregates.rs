@@ -407,7 +407,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         expected_ty: Option<Type>,
     ) -> Value {
         let (target_ptr, elem_ty) = self.translate_index_address(base, index, in_bounds);
-        if self.is_inline_aggregate_ty(&elem_ty) {
+        if self.is_inline_aggregate_ty(&elem_ty) || matches!(elem_ty, ArType::Func(..)) {
             return target_ptr;
         }
         self.builder.ins().load(
@@ -445,18 +445,27 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             idx_val = self.cast_int_width_signed(idx_val, self.ptr_type, is_signed);
         }
 
-        let base_ty = self.get_operand_ar_type(base);
-        let deref_ty = match &base_ty {
-            ArType::Ptr(inner) => self.type_info.resolve_type_id(*inner),
-            ArType::Ref(inner) | ArType::RefMut(inner)
-                if base_ty
-                    .slice_abi_element(self.type_info.type_interner())
-                    .is_some() =>
-            {
+        let mut base_ty = self.get_operand_ar_type(base);
+        while let ArType::Named(sym, _) = &base_ty {
+            if let Some(underlying) = self.type_info.decl_type(*sym) {
+                base_ty = underlying;
+            } else {
+                break;
+            }
+        }
+        let mut deref_ty = match &base_ty {
+            ArType::Ptr(inner) | ArType::Ref(inner) | ArType::RefMut(inner) => {
                 self.type_info.resolve_type_id(*inner)
             }
             other => other.clone(),
         };
+        while let ArType::Named(sym, _) = &deref_ty {
+            if let Some(underlying) = self.type_info.decl_type(*sym) {
+                deref_ty = underlying;
+            } else {
+                break;
+            }
+        }
         let elem_ty = match &deref_ty {
             ArType::Array(len, elem) => {
                 if !in_bounds {
@@ -509,7 +518,9 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     .map(|tid| self.type_info.resolve_type_id(tid))
                     .unwrap_or(ArType::Error)
             }
-            _ if matches!(base_ty, ArType::Ptr(_)) => deref_ty.clone(),
+            _ if matches!(base_ty, ArType::Ptr(_) | ArType::Ref(_) | ArType::RefMut(_)) => {
+                deref_ty.clone()
+            }
             _ => ArType::Error,
         };
 

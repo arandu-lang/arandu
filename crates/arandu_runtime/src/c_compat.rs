@@ -88,6 +88,52 @@ pub unsafe extern "C" fn ar_rt_c_stderr() -> *mut u8 {
     unsafe { host_std_stream(2).cast::<u8>() }
 }
 
+/// Returns the address of thread-local `errno` (or `__errno_location` on Linux).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn errnoLocation() -> *mut libc::c_int {
+    #[cfg(target_os = "linux")]
+    unsafe extern "C" {
+        fn __errno_location() -> *mut libc::c_int;
+    }
+    #[cfg(target_os = "linux")]
+    unsafe {
+        __errno_location()
+    }
+    #[cfg(target_os = "macos")]
+    unsafe extern "C" {
+        fn __error() -> *mut libc::c_int;
+    }
+    #[cfg(target_os = "macos")]
+    unsafe {
+        __error()
+    }
+    #[cfg(windows)]
+    unsafe extern "C" {
+        fn _errno() -> *mut libc::c_int;
+    }
+    #[cfg(windows)]
+    unsafe {
+        _errno()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    std::ptr::null_mut()
+}
+
+/// Returns the pointer to the ctype lookup table array (`__ctype_b_loc` on Linux).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ctypeBLoc() -> *const *const u16 {
+    #[cfg(target_os = "linux")]
+    unsafe extern "C" {
+        fn __ctype_b_loc() -> *const *const u16;
+    }
+    #[cfg(target_os = "linux")]
+    unsafe {
+        __ctype_b_loc()
+    }
+    #[cfg(not(target_os = "linux"))]
+    std::ptr::null()
+}
+
 /// Zero-argument wrapper around C `snprintf(buf, size, fmt)`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ar_rt_snprintf_0(buf: *mut u8, size: usize, fmt: *const u8) -> i32 {

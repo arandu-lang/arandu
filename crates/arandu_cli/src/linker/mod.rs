@@ -374,6 +374,9 @@ fn build_system_linker_command(
                 .arg("/INCREMENTAL:NO")
                 .arg("/Brepro")
                 .arg("/SUBSYSTEM:CONSOLE")
+                .arg("/NXCOMPAT")
+                .arg("/DYNAMICBASE")
+                .arg("/HIGHENTROPYVA")
                 .arg(format!("/OUT:{}", output_arg.display()));
             if size {
                 command.args(["/OPT:REF", "/OPT:ICF"]);
@@ -408,6 +411,10 @@ fn build_system_linker_command(
                 } else {
                     "-Wl,--build-id=sha1"
                 });
+                command.args(["-Wl,-z,relro", "-Wl,-z,now", "-Wl,-z,noexecstack"]);
+                // Stack canaries: protect functions with buffers/arrays by default.
+                // `--param ssp-buffer-size=4` matches GCC/Clang default for strong.
+                command.args(["-fstack-protector-strong", "--param=ssp-buffer-size=4"]);
                 if size {
                     command.arg("-Wl,--strip-all");
                 }

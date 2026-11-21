@@ -169,7 +169,7 @@ impl<'a> CEmitter<'a> {
         }
     }
 
-    /// Attaches a full [`CodegenTypeContext`] so C emission can inspect contract flags
+    /// Attaches a full [`CodegenTypeContext`](arandu_middle::type_context::CodegenTypeContext) so C emission can inspect contract flags
     /// such as variadic `extern "C"` declarations and `@Cold` annotations.
     #[must_use]
     pub fn with_type_context(

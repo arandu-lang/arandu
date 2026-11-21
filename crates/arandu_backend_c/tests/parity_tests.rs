@@ -1749,8 +1749,9 @@ fn generated_integer_programs_match_independent_oracle() {
     // Keep the original left-associated 64-call expression and exercise all
     // compiler phases with a bounded stack on every host, including macOS.
     // Linux debug builds need between 384 and 512 KiB (measured 2026-11-21);
-    // MSVC debug frames are larger, so Windows gets twice the bound.
-    let kib = if cfg!(windows) { 1024 } else { 512 };
+    // macOS arm64 and MSVC debug frames are larger, so they get twice the
+    // bound.
+    let kib = if cfg!(target_os = "linux") { 512 } else { 1024 };
     std::thread::Builder::new()
         .stack_size(kib * 1024)
         .spawn(|| {

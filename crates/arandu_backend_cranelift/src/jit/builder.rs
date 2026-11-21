@@ -262,6 +262,12 @@ pub(crate) fn create_jit_builder_with_io_and_process_args(
         crate::os_runtime::ar_process_exit as *const u8,
     );
     // C stdio/varargs compatibility shims (for c2arandu / libc FFI)
+    // The UCRT inlines the `printf` family, so no DLL exports them for the
+    // JIT's symbol lookup; bind the definitions linked into this binary.
+    #[cfg(windows)]
+    for (name, address) in crate::c_compat::stdio_symbols() {
+        builder.symbol(name, address);
+    }
     builder.symbol("ar_rt_c_stdin", crate::c_compat::ar_rt_c_stdin as *const u8);
     builder.symbol(
         "ar_rt_c_stdout",

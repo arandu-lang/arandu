@@ -342,3 +342,17 @@ mod tests {
         }
     }
 }
+
+/// The `printf` family as linked into this binary. The Windows UCRT inlines
+/// these functions, so no DLL exports them and a JIT must be handed their
+/// addresses.
+#[cfg(windows)]
+#[must_use]
+pub fn stdio_symbols() -> [(&'static str, *const u8); 4] {
+    [
+        ("snprintf", libc::snprintf as *const u8),
+        ("sprintf", libc::sprintf as *const u8),
+        ("printf", libc::printf as *const u8),
+        ("fprintf", libc::fprintf as *const u8),
+    ]
+}

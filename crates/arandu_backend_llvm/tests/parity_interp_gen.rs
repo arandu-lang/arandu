@@ -130,6 +130,11 @@ fn run_linked(ir: &str) -> Option<i32> {
         .arg("-o")
         .arg(&bin_path);
     compile.args(arandu_middle::TargetSpec::for_host().cc_link_args());
+    // The runtime here was built by MSVC Rust: its C shims import the
+    // `printf` family, which the UCRT only provides inline.
+    if cfg!(target_env = "msvc") {
+        compile.arg("-llegacy_stdio_definitions");
+    }
     let status = compile.status().expect("start clang");
     let _ = fs::remove_file(&ir_path);
     if !status.success() {

@@ -257,18 +257,6 @@ impl TargetSpec {
     #[must_use]
     pub const fn runtime_system_libs(self) -> &'static [&'static str] {
         match (self.os, self.env) {
-            // MSVC's UCRT inlines `snprintf`/`fprintf`; the runtime's C shims
-            // import them from `legacy_stdio_definitions`, which MinGW lacks
-            // and does not need.
-            (TargetOs::Windows, TargetEnv::Msvc) => &[
-                "-lkernel32",
-                "-lntdll",
-                "-luserenv",
-                "-lws2_32",
-                "-lbcrypt",
-                "-ldbghelp",
-                "-llegacy_stdio_definitions",
-            ],
             (TargetOs::Windows, _) => &[
                 "-lkernel32",
                 "-lntdll",
@@ -400,28 +388,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_msvc_links_legacy_stdio_definitions() {
+    fn legacy_stdio_definitions_is_named_only_for_link_exe() {
         let msvc = TargetSpec {
             os: TargetOs::Windows,
             env: TargetEnv::Msvc,
         };
-        let gnu = TargetSpec {
-            os: TargetOs::Windows,
-            env: TargetEnv::Gnu,
-        };
-        assert!(
-            msvc.runtime_system_libs()
-                .contains(&"-llegacy_stdio_definitions")
-        );
+        // `link.exe` links the MSVC-built runtime, whose C shims import
+        // `snprintf`; a GNU-style driver links C alone and MinGW lacks it.
         assert!(
             msvc.msvc_runtime_libs()
                 .contains(&"legacy_stdio_definitions.lib")
         );
         assert!(
-            !gnu.runtime_system_libs()
+            !msvc
+                .runtime_system_libs()
                 .contains(&"-llegacy_stdio_definitions")
         );
-        assert!(gnu.runtime_system_libs().contains(&"-lkernel32"));
     }
 
     #[test]

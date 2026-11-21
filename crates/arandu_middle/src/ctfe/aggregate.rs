@@ -236,11 +236,14 @@ pub fn validate_ctfe_type_shape(shape: &TypeShape) -> Result<(), ConstValueError
             TypeShape::Result(ok, error) => visit(ok, false) && visit(error, false),
             TypeShape::Slice(inner) => visit(inner, false),
             TypeShape::Vector(_) => true,
+            // A value is only `nil` or the address of frozen bytes
+            // (`c"..."`), admitted only in static data images; a pointer
+            // type argument stays outside frozen identity.
+            TypeShape::Ptr(_) => !argument,
             TypeShape::Func(..)
             | TypeShape::Nullable(_)
             | TypeShape::ConstArray(..)
             | TypeShape::ConstParam(_)
-            | TypeShape::Ptr(_)
             | TypeShape::Ref(_)
             | TypeShape::RefMut(_)
             | TypeShape::MutSlice(_)
@@ -273,6 +276,13 @@ fn shape_accepts(shape: &TypeShape, value: &ConstValue) -> bool {
         }
         (TypeShape::Primitive(super::Primitive::Str), ConstValue::String(_)) => true,
         (TypeShape::Slice(_), ConstValue::Bytes(_)) => true,
+        (TypeShape::Ptr(_), ConstValue::Void) => true,
+        (TypeShape::Ptr(inner), ConstValue::Bytes(_)) => matches!(
+            **inner,
+            TypeShape::Primitive(
+                super::Primitive::U8 | super::Primitive::I8 | super::Primitive::Byte
+            )
+        ),
         (
             TypeShape::Array(..)
             | TypeShape::Vector(_)

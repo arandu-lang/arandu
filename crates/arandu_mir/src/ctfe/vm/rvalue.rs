@@ -394,6 +394,11 @@ impl Frame {
                     _ => Err(EvalErrorKind::TypeMismatch),
                 }
             }
+            // The data pointer of frozen bytes is their address: `c"..."`.
+            AmirRvalue::SliceData(slice) => match self.operand(*slice, None, meter)? {
+                ConstValue::Bytes(bytes) => Ok(ConstValue::Bytes(bytes)),
+                _ => Err(EvalErrorKind::UnsupportedOperation),
+            },
             AmirRvalue::SliceView { data, len, .. } => {
                 // `data` is a handle to the frozen array the view starts at.
                 let ValueType::Slice(element) = &ty else {

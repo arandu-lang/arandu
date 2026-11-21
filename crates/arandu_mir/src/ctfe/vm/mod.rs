@@ -546,6 +546,7 @@ fn admitted_rvalue(rhs: &AmirRvalue) -> Result<(), EvalErrorKind> {
         | AmirRvalue::StrBytes { .. }
         | AmirRvalue::SliceSubslice { .. }
         | AmirRvalue::SliceView { .. }
+        | AmirRvalue::SliceData(_)
         | AmirRvalue::Discriminant { .. }
         | AmirRvalue::EnumPayload { .. }
         | AmirRvalue::EnumConstruct { .. }
@@ -563,8 +564,7 @@ fn admitted_rvalue(rhs: &AmirRvalue) -> Result<(), EvalErrorKind> {
         | AmirRvalue::ArenaCheckpoint
         | AmirRvalue::Borrow(_)
         | AmirRvalue::BorrowMut(_) => Ok(()),
-        AmirRvalue::SliceData(_)
-        | AmirRvalue::StrView { .. }
+        AmirRvalue::StrView { .. }
         | AmirRvalue::Alloc(_)
         | AmirRvalue::RelativeBorrow { .. }
         | AmirRvalue::CoroutineReady { .. }

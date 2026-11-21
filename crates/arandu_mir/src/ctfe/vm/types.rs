@@ -363,6 +363,14 @@ impl ValueType {
                         })
             }
             (Self::Pointer(_), ConstValue::Integer(_)) => true,
+            // The address of frozen bytes (`c"..."`): a pointer to bytes.
+            (Self::Pointer(target), ConstValue::Bytes(_)) => {
+                matches!(**target, Self::Integer(ty) if matches!(ty.primitive(), Primitive::U8 | Primitive::I8 | Primitive::Byte))
+            }
+            (Self::NullPointer(TypeShape::Ptr(target)), ConstValue::Bytes(_)) => matches!(
+                **target,
+                TypeShape::Primitive(Primitive::U8 | Primitive::I8 | Primitive::Byte)
+            ),
             _ => false,
         }
     }

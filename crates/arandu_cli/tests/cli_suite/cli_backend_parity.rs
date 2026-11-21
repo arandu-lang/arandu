@@ -892,6 +892,19 @@ fn pointer_offsets_agree_on_every_backend() {
     let _ = fs::remove_file(path);
 }
 
+/// C strings as the initial values of `static mut` pointers agree on every
+/// backend: the data image points at their NUL-terminated bytes.
+#[test]
+fn static_c_strings_agree_on_every_backend() {
+    // Wasm is left out: reading a `ptr[u8]` stored in a `static mut` and
+    // indexing it fails there even when assigned at run time, a defect of
+    // the Wasm backend recorded in the roadmap, not of the data image.
+    let source = include_str!("../../../../tests/corpus/static_c_strings.aru");
+    for (backend, outcome) in outcomes("static_c_strings", source) {
+        assert_eq!(outcome, ProgramOutcome::Returned(0), "{backend}");
+    }
+}
+
 /// `types.info<T>()`: descriptions of structs, enums, tuples and builtin
 /// types, in a `const` and in a generic function, agree on every backend.
 #[test]

@@ -1,0 +1,36 @@
+// `static mut p: ptr[u8] = c"..."`, as C's `static char *p = "...";`: the
+// pointer word of the data image holds the address of the bytes.
+static mut PROGNAME: ptr[u8] = c"lua"
+static mut NAMES: [2]ptr[u8] = [c"ab", c"cde"]
+static mut EMPTY: [2]ptr[u8] = [nil, nil]
+
+// A registration table, as Lua's `luaL_Reg[]`: names and a `nil` end.
+@Repr("C")
+struct Reg {
+    name: ptr[u8],
+    next: ptr[u8],
+}
+
+static mut REGS: [2]Reg = [Reg { name: c"print", next: nil }, Reg { name: nil, next: nil }]
+
+func length(text: ptr[u8]): int {
+    let mut n = 0
+    unsafe {
+        while text[n] != 0 {
+            n = n + 1
+        }
+    }
+    return n
+}
+
+func main(): int {
+    unsafe {
+        if length(PROGNAME) != 3 || PROGNAME[0] != 108 { return 1 }
+        if length(NAMES[0]) != 2 || length(NAMES[1]) != 3 { return 2 }
+        if EMPTY[0] != nil || EMPTY[1] != nil { return 4 }
+        if length(REGS[0].name) != 5 || REGS[0].next != nil || REGS[1].name != nil { return 5 }
+        PROGNAME = NAMES[1]
+        if length(PROGNAME) != 3 || PROGNAME[2] != 101 { return 3 }
+    }
+    return 0
+}

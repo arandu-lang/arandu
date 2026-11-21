@@ -216,6 +216,30 @@ impl ConstEncoder<'_> {
                 };
                 self.fat_pointer(object, len, output, objects)
             }
+            // `c"..."` as a `ptr[u8]`: the pointer word holds the address of
+            // its bytes, NUL included, as C's `static char *p = "...";`.
+            (ConstValue::Bytes(view), ArType::Ptr(inner))
+                if matches!(
+                    self.interner.resolve(*inner),
+                    ArType::Primitive(Primitive::U8 | Primitive::I8 | Primitive::Byte)
+                ) =>
+            {
+                if objects.len() >= MAX_OBJECTS
+                    || output.bytes.len() != usize::try_from(self.pointer).ok()?
+                {
+                    return None;
+                }
+                output.relocations.push(StaticRelocation {
+                    offset: output.base,
+                    target: objects.len(),
+                });
+                objects.push(StaticObject {
+                    bytes: view.as_bytes().to_vec(),
+                    alignment: 1,
+                    relocations: Vec::new(),
+                });
+                Some(())
+            }
             // A slice of other values points at an object holding them laid
             // out as an array.
             (ConstValue::Aggregate(aggregate), ArType::Slice(inner))

@@ -3,12 +3,20 @@
 
 use std::fs;
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+fn temp_path(name: &str, ext: &str) -> std::path::PathBuf {
+    let id = FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!(
+        "arandu_ownership_{name}_{}_{id}.{ext}",
+        std::process::id()
+    ))
+}
 
 fn check(source: &str, name: &str) -> String {
-    let file = std::env::temp_dir().join(format!(
-        "arandu_ownership_{name}_{}.aru",
-        std::process::id()
-    ));
+    let file = temp_path(name, "aru");
     fs::write(&file, source).expect("write regression source");
     let output = Command::new(env!("CARGO_BIN_EXE_arandu_cli"))
         .args(["check", file.to_str().expect("UTF-8 temp path")])
@@ -23,10 +31,7 @@ fn check(source: &str, name: &str) -> String {
 }
 
 fn check_passes(source: &str, name: &str) {
-    let file = std::env::temp_dir().join(format!(
-        "arandu_ownership_{name}_{}.aru",
-        std::process::id()
-    ));
+    let file = temp_path(name, "aru");
     fs::write(&file, source).expect("write regression source");
     let output = Command::new(env!("CARGO_BIN_EXE_arandu_cli"))
         .args(["check", file.to_str().expect("UTF-8 temp path")])
@@ -41,10 +46,7 @@ fn check_passes(source: &str, name: &str) {
 }
 
 fn run(source: &str, name: &str) -> String {
-    let file = std::env::temp_dir().join(format!(
-        "arandu_ownership_{name}_{}.aru",
-        std::process::id()
-    ));
+    let file = temp_path(name, "aru");
     fs::write(&file, source).expect("write regression source");
     let output = Command::new(env!("CARGO_BIN_EXE_arandu_cli"))
         .args(["run", file.to_str().expect("UTF-8 temp path")])
@@ -62,10 +64,7 @@ fn run(source: &str, name: &str) -> String {
 }
 
 fn emit_c(source: &str, name: &str) -> String {
-    let file = std::env::temp_dir().join(format!(
-        "arandu_ownership_{name}_{}.aru",
-        std::process::id()
-    ));
+    let file = temp_path(name, "aru");
     fs::write(&file, source).expect("write regression source");
     let output = Command::new(env!("CARGO_BIN_EXE_arandu_cli"))
         .args(["emit-c", file.to_str().expect("UTF-8 temp path")])
@@ -88,10 +87,11 @@ fn run_emitted_c_with_asan(c_source: &str, name: &str) {
     {
         return;
     }
-    let c_file =
-        std::env::temp_dir().join(format!("arandu_ownership_{name}_{}.c", std::process::id()));
-    let binary =
-        std::env::temp_dir().join(format!("arandu_ownership_{name}_{}", std::process::id()));
+    let c_file = temp_path(name, "c");
+    let binary = temp_path(
+        &format!("{name}_bin"),
+        if cfg!(windows) { "exe" } else { "out" },
+    );
     fs::write(&c_file, c_source).expect("write emitted C");
     let output = Command::new("clang")
         .args(["-fsanitize=address", "-fno-omit-frame-pointer"])

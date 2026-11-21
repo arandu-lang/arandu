@@ -25,7 +25,8 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::Security::{
     ACCESS_ALLOWED_ACE, ACL, ACL_REVISION, AddAccessAllowedAce, EqualSid, GetLengthSid,
     GetTokenInformation, InitializeAcl, InitializeSecurityDescriptor, SECURITY_ATTRIBUTES,
-    SECURITY_DESCRIPTOR, SetSecurityDescriptorDacl, TOKEN_QUERY, TOKEN_USER, TokenUser,
+    SECURITY_DESCRIPTOR, SetSecurityDescriptorDacl, SetSecurityDescriptorGroup,
+    SetSecurityDescriptorOwner, TOKEN_QUERY, TOKEN_USER, TokenUser,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, OPEN_EXISTING,
@@ -413,6 +414,8 @@ impl Security {
                     (&raw mut *descriptor).cast(),
                     SECURITY_DESCRIPTOR_REVISION,
                 ) != 0
+                && SetSecurityDescriptorOwner((&raw mut *descriptor).cast(), user.as_psid(), 0) != 0
+                && SetSecurityDescriptorGroup((&raw mut *descriptor).cast(), user.as_psid(), 0) != 0
                 && SetSecurityDescriptorDacl((&raw mut *descriptor).cast(), 1, acl_ptr, 0) != 0
         };
         if !ok {

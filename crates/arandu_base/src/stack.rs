@@ -15,7 +15,7 @@ const RED_ZONE: usize = 128 * 1024;
 const SEGMENT: usize = 2 * 1024 * 1024;
 
 /// Runs `f`, first moving to a fresh stack segment if the current one has
-/// less than [`RED_ZONE`] bytes left. On targets where the stack cannot be
+/// less than `RED_ZONE` bytes left. On targets where the stack cannot be
 /// inspected, `f` runs where it is.
 #[inline]
 pub fn ensure_sufficient_stack<R>(f: impl FnOnce() -> R) -> R {

@@ -29,7 +29,22 @@ pub enum LinkerKind {
 
 /// Host libraries needed when invoking Clang for LLVM-generated programs.
 pub(crate) const fn host_runtime_link_args() -> &'static [&'static str] {
-    TargetSpec::for_host().cc_link_args()
+    #[cfg(all(windows, target_env = "msvc"))]
+    {
+        &[
+            "-lkernel32",
+            "-lntdll",
+            "-luserenv",
+            "-lws2_32",
+            "-lbcrypt",
+            "-ldbghelp",
+            "-llegacy_stdio_definitions",
+        ]
+    }
+    #[cfg(not(all(windows, target_env = "msvc")))]
+    {
+        TargetSpec::for_host().cc_link_args()
+    }
 }
 
 impl LinkerKind {
@@ -472,6 +487,8 @@ mod tests {
             assert!(args.contains(&"-luserenv"));
             assert!(args.contains(&"-lkernel32"));
             assert!(args.contains(&"-ldbghelp"));
+            #[cfg(target_env = "msvc")]
+            assert!(args.contains(&"-llegacy_stdio_definitions"));
         }
         #[cfg(not(windows))]
         {

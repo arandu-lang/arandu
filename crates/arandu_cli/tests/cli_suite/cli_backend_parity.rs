@@ -457,14 +457,16 @@ fn native_stderr(source: &Path, emit: &str, compiler: &str, extension: &str) -> 
     let text = source.with_extension(extension);
     let binary = source.with_extension(format!("{extension}.bin"));
     fs::write(&text, &emitted.stdout).expect("write emitted source");
-    let built = Command::new(compiler)
+    let mut command = Command::new(compiler);
+    command
         .args(["-O2", "-w"])
         .arg(&text)
         .arg("-o")
-        .arg(&binary)
-        .arg("-lm")
-        .output()
-        .expect("compile emitted source");
+        .arg(&binary);
+    if !cfg!(windows) {
+        command.arg("-lm");
+    }
+    let built = command.output().expect("compile emitted source");
     assert!(
         built.status.success(),
         "{compiler}: {}",

@@ -84,7 +84,7 @@ impl Project {
 
     /// Whether a daemon holds the project's lock.
     fn daemon_running(&self) -> bool {
-        let lock = self.root.join(".arandu/daemon.lock");
+        let lock = self.root.join(".arandu").join("daemon.lock");
         let Ok(file) = fs::OpenOptions::new().write(true).open(lock) else {
             return false;
         };

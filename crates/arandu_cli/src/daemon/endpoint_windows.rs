@@ -66,8 +66,11 @@ fn event() -> io::Result<OwnedHandle> {
     owned(unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) })
 }
 
-/// The user SID of a process token, as the bytes `TOKEN_USER` points to.
-struct UserSid(Vec<u8>);
+/// The user SID of a process token, as aligned storage for `TOKEN_USER`.
+struct UserSid {
+    storage: Vec<u64>,
+    len: usize,
+}
 
 impl UserSid {
     fn of_process(process: HANDLE) -> io::Result<Self> {
@@ -108,9 +111,17 @@ impl UserSid {
         let sid = unsafe { (*buffer.as_ptr().cast::<TOKEN_USER>()).User.Sid };
         // SAFETY: `sid` is a valid SID for as long as `buffer` lives.
         let size = unsafe { GetLengthSid(sid) } as usize;
-        // SAFETY: the SID occupies `size` readable bytes.
-        let bytes = unsafe { std::slice::from_raw_parts(sid.cast::<u8>(), size) }.to_vec();
-        Ok(Self(bytes))
+        let words = size.div_ceil(8).max(1);
+        let mut storage = vec![0u64; words];
+        // SAFETY: `sid` occupies `size` readable bytes and `storage` has capacity.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                sid.cast::<u8>(),
+                storage.as_mut_ptr().cast::<u8>(),
+                size,
+            );
+        }
+        Ok(Self { storage, len: size })
     }
 
     fn current() -> io::Result<Self> {
@@ -125,7 +136,12 @@ impl UserSid {
     }
 
     fn as_psid(&self) -> *mut core::ffi::c_void {
-        self.0.as_ptr().cast_mut().cast()
+        self.storage.as_ptr().cast_mut().cast()
+    }
+
+    fn as_bytes(&self) -> &[u8] {
+        // SAFETY: `storage` contains `len` initialized bytes of the SID.
+        unsafe { std::slice::from_raw_parts(self.storage.as_ptr().cast::<u8>(), self.len) }
     }
 }
 
@@ -141,7 +157,7 @@ pub fn socket_path(root: &Path) -> io::Result<PathBuf> {
     let user = UserSid::current()?;
     let mut key = blake3::Hasher::new();
     key.update(b"arandu-daemon-endpoint/v1\0");
-    key.update(&user.0);
+    key.update(user.as_bytes());
     key.update(b"\0");
     key.update(root.as_os_str().as_encoded_bytes());
     Ok(PathBuf::from(format!(
@@ -370,7 +386,7 @@ impl Security {
     fn current_user() -> io::Result<Self> {
         let user = UserSid::current()?;
         let size =
-            std::mem::size_of::<ACL>() + std::mem::size_of::<ACCESS_ALLOWED_ACE>() + user.0.len();
+            std::mem::size_of::<ACL>() + std::mem::size_of::<ACCESS_ALLOWED_ACE>() + user.len;
         let mut acl = vec![0u64; size.div_ceil(8)];
         // SAFETY: zero is a valid descriptor before initialization.
         let mut descriptor: Box<SECURITY_DESCRIPTOR> = Box::new(unsafe { std::mem::zeroed() });

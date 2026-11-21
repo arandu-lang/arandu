@@ -256,21 +256,30 @@ impl TargetSpec {
     /// System libraries for generated C / LLVM IR linked with `clang`/`gcc`.
     #[must_use]
     pub const fn runtime_system_libs(self) -> &'static [&'static str] {
-        match self.os {
-            TargetOs::Windows => &[
+        match (self.os, self.env) {
+            // MSVC's UCRT inlines `snprintf`/`fprintf`; the runtime's C shims
+            // import them from `legacy_stdio_definitions`, which MinGW lacks
+            // and does not need.
+            (TargetOs::Windows, TargetEnv::Msvc) => &[
                 "-lkernel32",
                 "-lntdll",
                 "-luserenv",
                 "-lws2_32",
                 "-lbcrypt",
                 "-ldbghelp",
-                // The UCRT inlines `snprintf`/`fprintf`; the runtime's C
-                // shims import them from here.
                 "-llegacy_stdio_definitions",
             ],
-            TargetOs::Macos => &["-lpthread"],
-            TargetOs::Linux => &["-lpthread", "-ldl"],
-            TargetOs::Unknown => &["-lpthread"],
+            (TargetOs::Windows, _) => &[
+                "-lkernel32",
+                "-lntdll",
+                "-luserenv",
+                "-lws2_32",
+                "-lbcrypt",
+                "-ldbghelp",
+            ],
+            (TargetOs::Macos, _) => &["-lpthread"],
+            (TargetOs::Linux, _) => &["-lpthread", "-ldl"],
+            (TargetOs::Unknown, _) => &["-lpthread"],
         }
     }
 
@@ -389,6 +398,31 @@ impl LinkerPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_msvc_links_legacy_stdio_definitions() {
+        let msvc = TargetSpec {
+            os: TargetOs::Windows,
+            env: TargetEnv::Msvc,
+        };
+        let gnu = TargetSpec {
+            os: TargetOs::Windows,
+            env: TargetEnv::Gnu,
+        };
+        assert!(
+            msvc.runtime_system_libs()
+                .contains(&"-llegacy_stdio_definitions")
+        );
+        assert!(
+            msvc.msvc_runtime_libs()
+                .contains(&"legacy_stdio_definitions.lib")
+        );
+        assert!(
+            !gnu.runtime_system_libs()
+                .contains(&"-llegacy_stdio_definitions")
+        );
+        assert!(gnu.runtime_system_libs().contains(&"-lkernel32"));
+    }
 
     #[test]
     fn host_spec_omits_libm_on_windows_and_libdl_on_macos() {

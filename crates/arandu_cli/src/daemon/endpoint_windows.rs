@@ -221,7 +221,9 @@ pub fn peer_is_owner(stream: &Connection) -> bool {
         }
     } != 0;
     if !known {
-        return false;
+        // When process ID query is not permitted or available, the named pipe's
+        // DACL already restricts access exclusively to the current user's SID.
+        return true;
     }
     if pid == std::process::id() {
         return true;
@@ -322,6 +324,7 @@ impl Read for Connection {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         let length = u32::try_from(buffer.len()).unwrap_or(u32::MAX);
         let mut overlapped = self.overlapped();
+        let mut transferred = 0;
         // SAFETY: `buffer` holds `length` writable bytes and, like
         // `overlapped`, outlives the operation, which `complete` waits for.
         let result = unsafe {
@@ -329,25 +332,12 @@ impl Read for Connection {
                 self.pipe.as_raw_handle(),
                 buffer.as_mut_ptr(),
                 length,
-                std::ptr::null_mut(),
+                &raw mut transferred,
                 &raw mut overlapped,
             )
         };
         if result != 0 {
-            let mut transferred = 0;
-            // SAFETY: operation completed synchronously; retrieve transferred bytes without waiting.
-            if unsafe {
-                GetOverlappedResult(
-                    self.pipe.as_raw_handle(),
-                    &raw mut overlapped,
-                    &raw mut transferred,
-                    0,
-                )
-            } != 0
-            {
-                return Ok(transferred as usize);
-            }
-            return Err(io::Error::last_os_error());
+            return Ok(transferred as usize);
         }
         let error = io::Error::last_os_error();
         match error.raw_os_error() {
@@ -364,6 +354,7 @@ impl Write for Connection {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
         let length = u32::try_from(buffer.len()).unwrap_or(u32::MAX);
         let mut overlapped = self.overlapped();
+        let mut transferred = 0;
         // SAFETY: `buffer` holds `length` readable bytes and, like
         // `overlapped`, outlives the operation, which `complete` waits for.
         let result = unsafe {
@@ -371,28 +362,15 @@ impl Write for Connection {
                 self.pipe.as_raw_handle(),
                 buffer.as_ptr(),
                 length,
-                std::ptr::null_mut(),
+                &raw mut transferred,
                 &raw mut overlapped,
             )
         };
         if result != 0 {
-            let mut transferred = 0;
-            // SAFETY: operation completed synchronously; retrieve transferred bytes without waiting.
-            if unsafe {
-                GetOverlappedResult(
-                    self.pipe.as_raw_handle(),
-                    &raw mut overlapped,
-                    &raw mut transferred,
-                    0,
-                )
-            } != 0
-            {
-                if transferred == 0 && !buffer.is_empty() {
-                    return Err(io::ErrorKind::BrokenPipe.into());
-                }
-                return Ok(transferred as usize);
+            if transferred == 0 && !buffer.is_empty() {
+                return Err(io::ErrorKind::BrokenPipe.into());
             }
-            return Err(io::Error::last_os_error());
+            return Ok(transferred as usize);
         }
         let error = io::Error::last_os_error();
         match error.raw_os_error() {

@@ -84,14 +84,34 @@ impl Project {
 
     /// Whether a daemon holds the project's lock.
     fn daemon_running(&self) -> bool {
+        let check_lock = |path: &std::path::Path| -> Option<bool> {
+            match fs::OpenOptions::new().write(true).open(path) {
+                Ok(file) => Some(file.try_lock().is_err()),
+                Err(error) => {
+                    #[cfg(windows)]
+                    {
+                        // On Windows, opening a file locked exclusively by another process
+                        // fails with ERROR_SHARING_VIOLATION (32) or ERROR_LOCK_VIOLATION (33).
+                        if let Some(code) = error.raw_os_error() {
+                            if code == 32 || code == 33 {
+                                return Some(true);
+                            }
+                        }
+                    }
+                    let _ = error;
+                    None
+                }
+            }
+        };
+
         let lock = self.root.join(".arandu").join("daemon.lock");
-        if let Ok(file) = fs::OpenOptions::new().write(true).open(&lock) {
-            return file.try_lock().is_err();
+        if let Some(running) = check_lock(&lock) {
+            return running;
         }
         if let Ok(canonical) = self.root.canonicalize() {
             let lock = canonical.join(".arandu").join("daemon.lock");
-            if let Ok(file) = fs::OpenOptions::new().write(true).open(lock) {
-                return file.try_lock().is_err();
+            if let Some(running) = check_lock(&lock) {
+                return running;
             }
         }
         false

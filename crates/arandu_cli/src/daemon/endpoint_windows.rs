@@ -309,17 +309,6 @@ impl Connection {
         overlapped.hEvent = self.event.as_raw_handle();
         overlapped
     }
-
-    fn started(result: i32) -> io::Result<()> {
-        if result != 0 {
-            return Ok(());
-        }
-        let error = io::Error::last_os_error();
-        match error.raw_os_error() {
-            Some(code) if code == ERROR_IO_PENDING as i32 => Ok(()),
-            _ => Err(error),
-        }
-    }
 }
 
 fn end_of_stream(error: &io::Error) -> bool {
@@ -344,10 +333,29 @@ impl Read for Connection {
                 &raw mut overlapped,
             )
         };
-        match Self::started(result) {
-            Ok(()) => self.complete(&mut overlapped, self.timeout_ms.load(Ordering::Relaxed)),
-            Err(error) if end_of_stream(&error) => Ok(0),
-            Err(error) => Err(error),
+        if result != 0 {
+            let mut transferred = 0;
+            // SAFETY: operation completed synchronously; retrieve transferred bytes without waiting.
+            if unsafe {
+                GetOverlappedResult(
+                    self.pipe.as_raw_handle(),
+                    &raw mut overlapped,
+                    &raw mut transferred,
+                    0,
+                )
+            } != 0
+            {
+                return Ok(transferred as usize);
+            }
+            return Err(io::Error::last_os_error());
+        }
+        let error = io::Error::last_os_error();
+        match error.raw_os_error() {
+            Some(code) if code == ERROR_IO_PENDING as i32 => {
+                self.complete(&mut overlapped, self.timeout_ms.load(Ordering::Relaxed))
+            }
+            _ if end_of_stream(&error) => Ok(0),
+            _ => Err(error),
         }
     }
 }
@@ -367,17 +375,37 @@ impl Write for Connection {
                 &raw mut overlapped,
             )
         };
-        match Self::started(result) {
-            Ok(()) => match self.complete(&mut overlapped, 0)? {
-                0 if !buffer.is_empty() => Err(io::ErrorKind::BrokenPipe.into()),
-                written => Ok(written),
-            },
-            Err(error)
-                if end_of_stream(&error) || error.raw_os_error() == Some(ERROR_NO_DATA as i32) =>
+        if result != 0 {
+            let mut transferred = 0;
+            // SAFETY: operation completed synchronously; retrieve transferred bytes without waiting.
+            if unsafe {
+                GetOverlappedResult(
+                    self.pipe.as_raw_handle(),
+                    &raw mut overlapped,
+                    &raw mut transferred,
+                    0,
+                )
+            } != 0
             {
+                if transferred == 0 && !buffer.is_empty() {
+                    return Err(io::ErrorKind::BrokenPipe.into());
+                }
+                return Ok(transferred as usize);
+            }
+            return Err(io::Error::last_os_error());
+        }
+        let error = io::Error::last_os_error();
+        match error.raw_os_error() {
+            Some(code) if code == ERROR_IO_PENDING as i32 => {
+                match self.complete(&mut overlapped, 0)? {
+                    0 if !buffer.is_empty() => Err(io::ErrorKind::BrokenPipe.into()),
+                    written => Ok(written),
+                }
+            }
+            _ if end_of_stream(&error) || error.raw_os_error() == Some(ERROR_NO_DATA as i32) => {
                 Err(io::ErrorKind::BrokenPipe.into())
             }
-            Err(error) => Err(error),
+            _ => Err(error),
         }
     }
 
@@ -538,6 +566,12 @@ impl Listener {
                 }
                 _ => return Err(error),
             }
+        } else {
+            // A client connected immediately: no operation is pending, so
+            // mark connected and signal the event for `wait`.
+            pending.connected = true;
+            // SAFETY: the event belongs to `pending`.
+            unsafe { SetEvent(pending.event.as_raw_handle()) };
         }
         Ok(pending)
     }

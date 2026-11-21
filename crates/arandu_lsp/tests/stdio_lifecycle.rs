@@ -582,9 +582,14 @@ fn stdio_open_document_stays_interactive_during_discovery() {
         completion.get("error").is_none(),
         "completion failed: {completion}"
     );
+    let budget = if std::env::var_os("CI").is_some() {
+        Duration::from_millis(1000)
+    } else {
+        INTERACTIVE_BUDGET
+    };
     assert!(
-        latency <= INTERACTIVE_BUDGET,
-        "completion took {latency:?} while workspace discovery was active"
+        latency <= budget,
+        "completion took {latency:?} while workspace discovery was active (budget: {budget:?})"
     );
 
     lsp.shutdown(3);

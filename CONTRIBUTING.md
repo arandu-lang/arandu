@@ -35,6 +35,12 @@ verified toolchain in `rust-toolchain.toml`:
    cargo test --workspace --locked
    ```
 
+4. *(Optional)* Enable repository Git hooks and `git blame` ignore list:
+   ```bash
+   git config core.hooksPath .githooks
+   git config blame.ignoreRevsFile .git-blame-ignore-revs
+   ```
+
 ---
 
 ## Coding Standards & Guidelines

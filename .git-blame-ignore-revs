@@ -1,0 +1,7 @@
+# Commits to ignore in `git blame` (bulk formatting, line-ending renormalization,
+# or purely mechanical refactors).
+#
+# GitHub honors this file automatically. To enable it locally:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# Add full 40-character commit hashes below, each preceded by a brief comment.

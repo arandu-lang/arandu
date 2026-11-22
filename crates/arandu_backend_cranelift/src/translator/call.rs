@@ -40,6 +40,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             AmirOperand::FunctionRef(sym_id) => {
                 if (self.type_info.is_cold_function(*sym_id) || self.symbol_table.is_cold(*sym_id))
                     && let Some(clif_block) = self.builder.current_block()
+                    && self.builder.func.layout.entry_block() != Some(clif_block)
                 {
                     self.builder.func.layout.set_cold(clif_block);
                 }

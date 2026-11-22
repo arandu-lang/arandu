@@ -182,16 +182,26 @@ impl<'a, 'm> FuncEmitter<'a, 'm> {
                     .ok()
                     .and_then(|l| l.tag_encoding)
                     .is_some();
+                let has_temp_slot = lhs.is_some_and(|temp| self.temp_slot(temp).is_some());
                 if owner_is_enum
-                    && !self.module.is_pointer(&field_ty)
                     && !self.module.is_pointer(lhs_ty)
-                    && self.module.integer_width(&field_ty).is_none()
                     && self.module.integer_width(lhs_ty).is_none()
-                    && !self.module.is_float(&field_ty)
                     && !self.module.is_float(lhs_ty)
-                    && !matches!(field_ty, ArType::Primitive(Primitive::Bool))
                     && !matches!(lhs_ty, ArType::Primitive(Primitive::Bool))
                 {
+                    if has_temp_slot {
+                        let value_text = self.module.llvm_ty(lhs_ty)?;
+                        let align = self.module.align_of(lhs_ty);
+                        let raw = self.new_value();
+                        self.writer.line(format!(
+                            "{raw} = load {value_text}, ptr {address}, align {align}"
+                        ));
+                        return self.assign_coerced(
+                            result,
+                            super::super::TypedValue::new(value_text, raw),
+                            lhs_ty,
+                        );
+                    }
                     self.writer.line("; enum_field_ptr_repr");
                     self.writer
                         .line(format!("{result} = getelementptr i8, ptr {address}, i64 0"));

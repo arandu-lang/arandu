@@ -630,6 +630,7 @@ impl<'a> ModuleEmitter<'a> {
 
     pub(super) fn is_signed(&self, ty: &ArType) -> bool {
         match ty {
+            ArType::IntLiteral => true,
             ArType::Primitive(primitive) => primitive.is_signed(),
             ArType::Vector(vector) => vector.lane().is_signed(),
             _ => false,
@@ -694,7 +695,7 @@ impl<'a> ModuleEmitter<'a> {
     }
 
     pub(super) fn is_float(&self, ty: &ArType) -> bool {
-        matches!(ty, ArType::Primitive(p) if p.is_float())
+        matches!(ty, ArType::FloatLiteral) || matches!(ty, ArType::Primitive(p) if p.is_float())
     }
 
     pub(super) fn is_void(&self, ty: &ArType) -> bool {

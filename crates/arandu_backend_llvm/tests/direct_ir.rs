@@ -269,6 +269,81 @@ func main(): int {
 }
 
 #[test]
+fn lowers_float_literal_division_as_fdiv() {
+    let ir = emit(
+        r#"
+func nan_value(): f64 {
+    return 0.0 / 0.0
+}
+
+func main(): int {
+    let v = nan_value()
+    if v != v {
+        return 0
+    }
+    return 1
+}
+"#,
+    );
+    assert!(ir.contains("fdiv double"));
+    assert!(!ir.contains("udiv double"));
+    assert!(!ir.contains("icmp eq double"));
+    verify(&ir);
+    if let Some(code) = run(&ir) {
+        assert_eq!(code, 0);
+    }
+}
+
+#[test]
+fn temp_slot_join_between_call_and_enum_payload_preserves_aggregate_value() {
+    let ir = emit(
+        r#"
+struct Payload {
+    a: i64
+    b: i64
+    c: i64
+}
+
+func make_payload(v: i64): Payload {
+    return Payload { a: v, b: v + 1, c: v + 2 }
+}
+
+func wrap_payload(v: i64): Result<Payload, i64> {
+    return Result.Ok(make_payload(v))
+}
+
+func pick(flag: bool): Result<Payload, i64> {
+    let p = if flag {
+        make_payload(10)
+    } else {
+        wrap_payload(20)?
+    }
+    return Result.Ok(p)
+}
+
+func main(): int {
+    let ok1 = match pick(true) {
+        Ok(p) => p.a == 10 && p.c == 12,
+        Err(_) => false,
+    }
+    let ok2 = match pick(false) {
+        Ok(p) => p.a == 20 && p.c == 22,
+        Err(_) => false,
+    }
+    if ok1 && ok2 {
+        return 0
+    }
+    return 1
+}
+"#,
+    );
+    verify(&ir);
+    if let Some(code) = run(&ir) {
+        assert_eq!(code, 0);
+    }
+}
+
+#[test]
 fn emits_atomic_intrinsics() {
     let ir = emit(
         r#"

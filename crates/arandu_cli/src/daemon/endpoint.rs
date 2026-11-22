@@ -227,6 +227,42 @@ fn peer_uid(stream: &UnixStream) -> Option<u32> {
     (result == 0).then_some(uid)
 }
 
+/// A spawned daemon process handle.
+pub struct SpawnedDaemon {
+    child: std::process::Child,
+}
+
+impl SpawnedDaemon {
+    pub fn has_exited(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(Some(_)))
+    }
+
+    pub fn detach(mut self) {
+        // Reap the daemon if it exits later; it is not our child to wait for
+        // in the meantime.
+        std::thread::spawn(move || self.child.wait());
+    }
+}
+
+/// Spawns `executable __daemon <root> <socket>` detached from the terminal's
+/// process group with stdio redirected to `/dev/null`.
+pub fn spawn_daemon(executable: &Path, root: &Path, socket: &Path) -> io::Result<SpawnedDaemon> {
+    let mut command = std::process::Command::new(executable);
+    command
+        .arg("__daemon")
+        .arg(root)
+        .arg(socket)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    // Out of the terminal's process group: Ctrl-C on a build does not end
+    // the daemon other builds share.
+    std::os::unix::process::CommandExt::process_group(&mut command, 0);
+    Ok(SpawnedDaemon {
+        child: command.spawn()?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -20,7 +20,7 @@ use std::time::Duration;
 use windows_sys::Win32::Foundation::{
     ERROR_BROKEN_PIPE, ERROR_FILE_NOT_FOUND, ERROR_IO_INCOMPLETE, ERROR_IO_PENDING, ERROR_NO_DATA,
     ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, ERROR_PIPE_NOT_CONNECTED, GENERIC_ALL, GENERIC_READ,
-    GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE, WAIT_TIMEOUT,
+    GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::{
     ACCESS_ALLOWED_ACE, ACL, ACL_REVISION, AddAccessAllowedAce, EqualSid, GetLengthSid,
@@ -39,8 +39,9 @@ use windows_sys::Win32::System::Pipes::{
     PIPE_WAIT, WaitNamedPipeW,
 };
 use windows_sys::Win32::System::Threading::{
-    CreateEventW, GetCurrentProcess, INFINITE, OpenProcess, OpenProcessToken,
-    PROCESS_QUERY_LIMITED_INFORMATION, ResetEvent, SetEvent, WaitForMultipleObjects,
+    CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CreateEventW, CreateProcessW, GetCurrentProcess,
+    INFINITE, OpenProcess, OpenProcessToken, PROCESS_INFORMATION,
+    PROCESS_QUERY_LIMITED_INFORMATION, ResetEvent, STARTUPINFOW, SetEvent, WaitForMultipleObjects,
     WaitForSingleObject,
 };
 
@@ -613,4 +614,88 @@ impl Wake {
 pub fn waker() -> io::Result<(Wake, Woken)> {
     let event = Arc::new(event()?);
     Ok((Wake(Arc::clone(&event)), Woken(event)))
+}
+
+/// A spawned daemon process handle, detached with zero inherited handles so
+/// parent stdout/stderr pipes never block waiting for the daemon to exit.
+pub struct SpawnedDaemon {
+    process: OwnedHandle,
+}
+
+impl SpawnedDaemon {
+    pub fn has_exited(&mut self) -> bool {
+        // SAFETY: `self.process` is a valid process handle.
+        unsafe { WaitForSingleObject(self.process.as_raw_handle(), 0) == WAIT_OBJECT_0 }
+    }
+
+    pub fn detach(self) {
+        // Dropping `self.process` closes the handle without terminating the
+        // daemon; Windows leaves no zombie processes.
+    }
+}
+
+fn push_quoted_arg(cmd: &mut Vec<u16>, arg: &OsStr) {
+    if !cmd.is_empty() {
+        cmd.push(u16::from(b' '));
+    }
+    cmd.push(u16::from(b'"'));
+    let mut backslashes = 0usize;
+    for unit in arg.encode_wide() {
+        if unit == u16::from(b'\\') {
+            backslashes += 1;
+        } else if unit == u16::from(b'"') {
+            cmd.extend(std::iter::repeat_n(u16::from(b'\\'), backslashes * 2 + 1));
+            cmd.push(u16::from(b'"'));
+            backslashes = 0;
+        } else {
+            cmd.extend(std::iter::repeat_n(u16::from(b'\\'), backslashes));
+            cmd.push(unit);
+            backslashes = 0;
+        }
+    }
+    cmd.extend(std::iter::repeat_n(u16::from(b'\\'), backslashes * 2));
+    cmd.push(u16::from(b'"'));
+}
+
+/// Spawns `executable __daemon <root> <socket>` with `bInheritHandles = FALSE`
+/// so the daemon never inherits the client's stdout/stderr pipes (which would
+/// otherwise make `Command::output()` and piped callers hang until the daemon
+/// exits).
+pub fn spawn_daemon(executable: &Path, root: &Path, socket: &Path) -> io::Result<SpawnedDaemon> {
+    let application = wide(executable.as_os_str());
+    let mut command_line = Vec::new();
+    push_quoted_arg(&mut command_line, executable.as_os_str());
+    push_quoted_arg(&mut command_line, OsStr::new("__daemon"));
+    push_quoted_arg(&mut command_line, root.as_os_str());
+    push_quoted_arg(&mut command_line, socket.as_os_str());
+    command_line.push(0);
+
+    let mut startup = STARTUPINFOW::default();
+    startup.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
+    let mut info = PROCESS_INFORMATION::default();
+
+    // SAFETY: `application` is NUL-terminated, `command_line` is a mutable
+    // NUL-terminated UTF-16 buffer, and `bInheritHandles = 0` prevents any
+    // handle inheritance.
+    let ok = unsafe {
+        CreateProcessW(
+            application.as_ptr(),
+            command_line.as_mut_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            0,
+            CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP,
+            std::ptr::null(),
+            std::ptr::null(),
+            &raw const startup,
+            &raw mut info,
+        )
+    };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // Close the primary thread handle immediately; only the process handle is needed.
+    let _ = owned(info.hThread);
+    let process = owned(info.hProcess)?;
+    Ok(SpawnedDaemon { process })
 }

@@ -291,36 +291,14 @@ mod client {
             return Some(stream);
         }
         let executable = std::env::current_exe().ok()?;
-        let mut command = std::process::Command::new(executable);
-        command
-            .arg("__daemon")
-            .arg(root)
-            .arg(socket)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-        // Out of the terminal's process group: Ctrl-C on a build does not end
-        // the daemon other builds share.
-        #[cfg(unix)]
-        std::os::unix::process::CommandExt::process_group(&mut command, 0);
-        // Without a visible window, in its own group: closing the terminal or Ctrl-C
-        // reaches neither.
-        #[cfg(windows)]
-        std::os::windows::process::CommandExt::creation_flags(
-            &mut command,
-            windows_sys::Win32::System::Threading::CREATE_NO_WINDOW
-                | windows_sys::Win32::System::Threading::CREATE_NEW_PROCESS_GROUP,
-        );
-        let mut child = command.spawn().ok()?;
+        let mut child = endpoint::spawn_daemon(&executable, root, socket).ok()?;
         let deadline = Instant::now() + SPAWN_WAIT;
         while Instant::now() < deadline {
             if let Ok(stream) = endpoint::connect(socket) {
-                // Reap the daemon if it exits later; it is not our child to
-                // wait for in the meantime.
-                std::thread::spawn(move || child.wait());
+                child.detach();
                 return Some(stream);
             }
-            if let Ok(Some(_)) = child.try_wait() {
+            if child.has_exited() {
                 // Another daemon took the lock first; it is about to listen.
                 if let Ok(stream) = endpoint::connect(socket) {
                     return Some(stream);

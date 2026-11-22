@@ -1263,3 +1263,120 @@ fn cold_callee_is_not_inlined() {
         "call to @Cold callee must remain present"
     );
 }
+
+#[test]
+fn wrappers_around_inline_intrinsics_inline_while_opaque_extern_calls_stay_out() {
+    let int_ty = intern_int();
+    let pool = AmirLiteralPool::default();
+    let intrinsic_sym = SymbolId::new(0, 99);
+    let inner_sym = SymbolId::new(0, 10);
+    let outer_sym = SymbolId::new(0, 11);
+    let caller_sym = SymbolId::new(0, 20);
+
+    let mk_temps = || {
+        vec![
+            AmirTemp {
+                id: TempId(0),
+                ty: int_ty,
+                is_copy: true,
+                is_nullable: false,
+                span: crate::Span::new(0, 0, 0),
+            },
+            AmirTemp {
+                id: TempId(1),
+                ty: int_ty,
+                is_copy: true,
+                is_nullable: false,
+                span: crate::Span::new(0, 0, 0),
+            },
+        ]
+    };
+
+    let mut inner = make_func(
+        10,
+        vec![(
+            vec![AmirStmt::Call {
+                lhs: Some(TempId(0)),
+                callee: AmirOperand::FunctionRef(intrinsic_sym),
+                args: smallvec::smallvec![AmirOperand::Copy(TempId(1))],
+                return_borrow: None,
+            }],
+            AmirTerminator::Return,
+        )],
+        mk_temps(),
+        vec![TempId(1)],
+    );
+    inner.symbol = inner_sym;
+
+    let mut outer = make_func(
+        11,
+        vec![(
+            vec![AmirStmt::Call {
+                lhs: Some(TempId(0)),
+                callee: AmirOperand::FunctionRef(inner_sym),
+                args: smallvec::smallvec![AmirOperand::Copy(TempId(1))],
+                return_borrow: None,
+            }],
+            AmirTerminator::Return,
+        )],
+        mk_temps(),
+        vec![TempId(1)],
+    );
+    outer.symbol = outer_sym;
+
+    let mut caller = make_func(
+        20,
+        vec![(
+            vec![AmirStmt::Call {
+                lhs: Some(TempId(0)),
+                callee: AmirOperand::FunctionRef(outer_sym),
+                args: smallvec::smallvec![AmirOperand::Copy(TempId(1))],
+                return_borrow: None,
+            }],
+            AmirTerminator::Return,
+        )],
+        mk_temps(),
+        vec![TempId(1)],
+    );
+    caller.symbol = caller_sym;
+
+    let program_template = AmirProgram {
+        funcs: vec![caller, outer, inner],
+        literal_pool: pool,
+        extern_funcs: FxHashMap::default(),
+        debug_bindings: Vec::new(),
+        debug_blocks: Vec::new(),
+        statics: Vec::new(),
+    };
+
+    let mut without_intrinsics = program_template.clone();
+    assert_eq!(
+        inline_leaf_functions(&mut without_intrinsics),
+        0,
+        "opaque extern calls must still block inlining when not marked inline"
+    );
+
+    let mut with_intrinsics = program_template;
+    let empty_cold = FxHashSet::default();
+    let mut inline_intrinsics = FxHashSet::default();
+    inline_intrinsics.insert(intrinsic_sym);
+    let inlined =
+        inline_leaf_functions_with_options(&mut with_intrinsics, &empty_cold, &inline_intrinsics);
+    assert!(
+        inlined >= 2,
+        "expected outer and inner intrinsic wrappers to inline: {inlined}"
+    );
+    let remaining_callees: Vec<SymbolId> = with_intrinsics.funcs[0]
+        .stmts
+        .payloads
+        .iter()
+        .filter_map(|stmt| match stmt {
+            AmirStmt::Call {
+                callee: AmirOperand::FunctionRef(sym),
+                ..
+            } => Some(*sym),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(remaining_callees, vec![intrinsic_sym]);
+}

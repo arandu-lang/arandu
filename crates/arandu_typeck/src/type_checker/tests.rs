@@ -1894,3 +1894,50 @@ fn test_can_call_ref_methods_on_borrowed_receiver() {
         check_res.diagnostics
     );
 }
+
+#[test]
+fn test_void_tail_discards_non_result_and_rejects_unhandled_result() {
+    let ok_source = r#"
+    module test;
+    public func mutate(flag: bool): bool { return flag }
+    public func voidTail(): void {
+        mutate(true)
+    }
+    public func voidIfStmt(flag: bool): void {
+        if flag {
+            mutate(true)
+        } else {
+            let x = 1
+        }
+    }
+    public func voidMatchStmt(opt: Option<int>): void {
+        match opt {
+            Some(v) => { mutate(v > 0) }
+            None => {}
+        }
+    }
+    "#;
+    let program = arandu_parser::parse(ok_source).unwrap();
+    let res = arandu_resolve::resolve_for_test(0, &program);
+    let check_res = crate::type_check(res, &program, TargetInfo { pointer_width: 64 });
+    assert!(
+        check_res.diagnostics.is_empty(),
+        "Non-Result trailing expressions in void functions and void if/match must succeed: {:?}",
+        check_res.diagnostics
+    );
+
+    let result_tail_source = r#"
+    module test;
+    public func fallible(): Result<int, int> { return Result.Ok(1) }
+    public func badVoid(): void {
+        fallible()
+    }
+    "#;
+    let bad_program = arandu_parser::parse(result_tail_source).unwrap();
+    let bad_res = arandu_resolve::resolve_for_test(0, &bad_program);
+    let bad_check = crate::type_check(bad_res, &bad_program, TargetInfo { pointer_width: 64 });
+    assert!(
+        !bad_check.diagnostics.is_empty(),
+        "Unhandled Result tail in void function must still fail typechecking"
+    );
+}

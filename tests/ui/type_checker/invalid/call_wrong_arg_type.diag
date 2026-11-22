@@ -3,8 +3,3 @@ T003: incompatible type in argument 2: expected 'int', found 'str'
   label: 6:5-6:8 parameter 2 expects 'int'
   label: 6:12-6:19 argument has type 'str'
   note: flow: argument 2 (str) → parameter (int expected)
-T004: incompatible return type: expected 'void', found 'int'
-  --> tests/ui/type_checker/invalid/call_wrong_arg_type.aru:6:5
-  label: 5:1-7:2 return type 'void' declared here
-  label: 6:5-6:20 returns 'int'
-  hint: convert the return value with 'as void' or change the function's return type

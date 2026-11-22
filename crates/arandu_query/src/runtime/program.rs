@@ -16,14 +16,23 @@ pub struct RuntimeProgram {
     pub diagnostics: Vec<Diagnostic>,
 }
 
-#[derive(Debug)]
 pub struct ComposedUnitRecord {
     pub key: FunctionInstance,
-    pub unit: std::sync::Arc<crate::runtime::RuntimeUnit>,
+    pub unit: crate::db::FingerprintEq<crate::runtime::RuntimeUnit>,
     pub placement: Option<(
         arandu_typeck::type_checker::info::ItemPlacement,
-        arandu_middle::SymbolTable,
+        std::sync::Arc<arandu_middle::SymbolTable>,
     )>,
+}
+
+impl std::fmt::Debug for ComposedUnitRecord {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ComposedUnitRecord")
+            .field("key", &self.key)
+            .field("unit", &self.unit.value)
+            .field("placement", &self.placement)
+            .finish()
+    }
 }
 
 #[derive(Debug)]
@@ -51,6 +60,8 @@ pub fn file_composed_units<'db>(
     file_units: super::FileUnits<'db>,
 ) -> HashEq<FileComposedArtifacts> {
     let file = file_units.file(db);
+    let file_symbols =
+        std::sync::Arc::clone(&crate::passes::declaration_signatures(db, *file).symbols);
     let keys = file_units.instances(db);
     let mut diagnostics = Vec::new();
     let mut unit_records = Vec::with_capacity(keys.len());
@@ -61,16 +72,10 @@ pub fn file_composed_units<'db>(
         let produced = runtime_unit(db, instance);
         let (checked, placement) = match super::placed_unit_body(db, instance) {
             Some((placed, at)) => (
-                std::sync::Arc::clone(&placed.value),
-                Some((
-                    at.clone(),
-                    crate::passes::declaration_signatures(db, *instance.file(db))
-                        .symbols
-                        .as_ref()
-                        .clone(),
-                )),
+                placed.clone(),
+                Some((at.clone(), std::sync::Arc::clone(&file_symbols))),
             ),
-            None => (std::sync::Arc::clone(&produced.value), None),
+            None => (produced.clone(), None),
         };
         if let Err(errors) = &checked.result {
             diagnostics.extend(errors.iter().cloned());
@@ -528,8 +533,11 @@ pub fn runtime_program(db: &dyn ArandCompilerDb, file: SourceFile) -> HashEq<Run
         for record in &file_artifact.unit_records {
             composed_units.push((
                 &record.key,
-                &record.unit,
-                record.placement.as_ref().map(|(at, syms)| (at, syms)),
+                &record.unit.value,
+                record
+                    .placement
+                    .as_ref()
+                    .map(|(at, syms)| (at, syms.as_ref())),
             ));
         }
     }

@@ -257,6 +257,13 @@ impl IntrinsicKind {
             )
     }
 
+    /// Intrinsics lowered inline by codegen rather than emitted as calls.
+    /// Excludes `Abort` so cold trap wrappers do not bloat hot callers.
+    #[must_use]
+    pub const fn is_inline_codegen_intrinsic(self) -> bool {
+        !matches!(self, Self::Abort)
+    }
+
     /// Calls whose result may be dropped when unused: they read no memory,
     /// write nothing, cannot trap and always return (LLVM's `memory(none)`,
     /// `nounwind` and `willreturn` together).

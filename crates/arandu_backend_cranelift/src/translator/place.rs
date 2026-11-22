@@ -345,16 +345,7 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                     self.builder.ins().iadd_imm_s(base_ptr, i64::from(offset))
                 };
                 let layout = self.checked_layout(&place_ty);
-                if layout.size > 0 {
-                    let Some(memmove_id) = self.memmove_func_id() else {
-                        return;
-                    };
-                    let memmove_ref = self
-                        .module
-                        .declare_func_in_func(memmove_id, self.builder.func);
-                    let size = self.builder.ins().iconst(self.ptr_type, layout.size as i64);
-                    self.builder.ins().call(memmove_ref, &[dest, val, size]);
-                }
+                self.copy_aggregate_bytes(dest, val, layout.size);
                 return;
             }
             self.builder.ins().store(

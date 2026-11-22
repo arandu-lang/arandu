@@ -51,6 +51,23 @@ impl LowerCtx<'_> {
         expr_ty: crate::types::TypeId,
         symbols: &SymbolTable,
     ) -> Result<AmirOperand, Diagnostic> {
+        if matches!(self.resolve_ty(expr_ty), crate::types::ArType::Void) {
+            let bb_end = self.new_block();
+            self.lower_match_stmt(value_id, arms_range, bb_end, symbols)?;
+            return if let Some(dest) = target {
+                if self.builder.current_block.is_some() {
+                    self.emit_assign_temp(
+                        dest,
+                        crate::amir::AmirRvalue::Use(AmirOperand::Constant(
+                            crate::amir::AmirConstant::Nil,
+                        )),
+                    );
+                }
+                Ok(AmirOperand::Copy(dest))
+            } else {
+                Ok(AmirOperand::Constant(crate::amir::AmirConstant::Nil))
+            };
+        }
         let value_expr = self.hir.pool.expr(value_id);
         let value_ty = self.resolve_ty(value_expr.ty);
         let value_ty_id = value_expr.ty;

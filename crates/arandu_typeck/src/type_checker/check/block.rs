@@ -61,9 +61,13 @@ fn check_tail_expr(
     expr: ExprId,
     span: Span,
     tail_expected: Option<TypeId>,
+    allow_void_statement: bool,
 ) -> ArType {
     let last_ty_id = super::super::synth::synth_expr_expected(checker, expr, tail_expected);
     let last_ty = checker.resolve(last_ty_id);
+    if allow_void_statement && matches!(last_ty, ArType::Void) {
+        return ArType::Void;
+    }
     if let Some(expected_id) = tail_expected {
         let expected = checker.resolve(expected_id);
         if let Some(var_id) = checker.literal_table.var_for_expr(expr)
@@ -110,6 +114,8 @@ pub fn check_block_tail(
     let mut last_ty = ArType::Void;
     let statements = pool.stmt_list(block.statements);
     let len = statements.len();
+    let tail_is_void =
+        tail_expected.is_some_and(|exp| matches!(checker.resolve(exp), ArType::Void));
     let tail_non_void =
         tail_expected.is_some_and(|exp| !matches!(checker.resolve(exp), ArType::Void));
     for (i, &stmt) in statements.iter().enumerate() {
@@ -124,12 +130,38 @@ pub fn check_block_tail(
                     if *has_semi && !tail_non_void {
                         let _ = super::super::synth::synth_expr(checker, *expr);
                         last_ty = ArType::Void;
+                    } else if tail_is_void {
+                        let expr_expected = if matches!(
+                            pool.expr(*expr),
+                            ExprKind::If { .. } | ExprKind::Match { .. }
+                        ) {
+                            tail_expected
+                        } else {
+                            None
+                        };
+                        let last_ty_id =
+                            super::super::synth::synth_expr_expected(checker, *expr, expr_expected);
+                        let ty = checker.resolve(last_ty_id);
+                        if checker.result_ok_err(&ty).is_some() {
+                            checker.add_constraint(
+                                ArType::Void,
+                                ty,
+                                ConstraintOrigin::ReturnType {
+                                    return_span: *span,
+                                    declared_span: checker
+                                        .ctx
+                                        .current_return_decl_span()
+                                        .unwrap_or(*span),
+                                },
+                            );
+                        }
+                        last_ty = ArType::Void;
                     } else {
-                        last_ty = check_tail_expr(checker, *expr, *span, tail_expected);
+                        last_ty = check_tail_expr(checker, *expr, *span, tail_expected, false);
                     }
                 }
                 Stmt::Match { expr, span } if tail_non_void => {
-                    last_ty = check_tail_expr(checker, *expr, *span, tail_expected);
+                    last_ty = check_tail_expr(checker, *expr, *span, tail_expected, true);
                 }
                 _ => {
                     check_stmt(checker, pool, stmt);

@@ -777,3 +777,94 @@ fn byte_views_of_owned_strings_still_cannot_escape() {
         assert!(String::from_utf8_lossy(&output.stderr).contains(code));
     }
 }
+
+#[test]
+fn vec_as_mut_slice_indexed_write_persists_under_release_optimization() {
+    let source = r#"module tests.borrowed_views.mut_slice_release
+import std.alloc.vec as vec
+
+func writeAt(v: mut ref vec.Vec<int>, idx: usize, val: int): void {
+    let mut sl = v.asMutSlice()
+    sl[idx] = val
+    sl[0 as usize] = val + 5
+}
+
+func main(): int {
+    let mut v = vec.Vec<int>.new()
+    v.push(1)
+    v.push(2)
+    v.push(3)
+    writeAt(mut ref v, 2 as usize, 37)
+    let a = v.getCopy(0 as usize) ?? -1
+    let b = v.getCopy(2 as usize) ?? -1
+    if a == 42 && b == 37 { return 0 }
+    return 1
+}
+"#;
+    let output = invoke_with_args("run", source, &["--opt"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "asMutSlice write in --opt JIT must persist: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let proj =
+        std::env::temp_dir().join(format!("arandu_cli_mut_slice_rel_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&proj);
+    fs::create_dir_all(proj.join("src")).expect("create temp pkg");
+    fs::write(
+        proj.join("arandu.toml"),
+        "name = \"mut_slice_rel\"\nversion = \"0.1.0\"\nentry = \"src/main.aru\"\n",
+    )
+    .expect("write manifest");
+    fs::write(
+        proj.join("src/main.aru"),
+        source.replacen("tests.borrowed_views.mut_slice_release", "mut_slice_rel", 1),
+    )
+    .expect("write main.aru");
+    let build = Command::new(env!("CARGO_BIN_EXE_arandu_cli"))
+        .current_dir(&proj)
+        .env("ARANDU_STDLIB", workspace_root().join("stdlib"))
+        .args(["build", "--release", "--no-daemon"])
+        .output()
+        .expect("run release build");
+    assert!(
+        build.status.success(),
+        "release build failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let mut stack = vec![proj.join("target/release")];
+    let mut state_file = None;
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.file_name().and_then(|n| n.to_str()) == Some("build-state.json") {
+                state_file = Some(p);
+                break;
+            }
+        }
+        if state_file.is_some() {
+            break;
+        }
+    }
+    let state_path = state_file.expect("locate release build-state.json");
+    let state: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(&state_path).expect("read release build-state.json"),
+    )
+    .expect("parse release build-state.json");
+    let bin = state_path
+        .parent()
+        .expect("state dir")
+        .join(state["artifact"].as_str().expect("artifact path"));
+    let run_bin = Command::new(&bin).output().expect("execute release binary");
+    let _ = fs::remove_dir_all(&proj);
+    assert_eq!(
+        run_bin.status.code(),
+        Some(0),
+        "asMutSlice write in AOT --release must persist"
+    );
+}

@@ -561,6 +561,12 @@ impl LowerCtx<'_> {
             self.end_local_scope();
             return Ok(());
         }
+        let dest_is_void = target.is_some_and(|dest| {
+            matches!(
+                self.resolve_ty(self.temps[dest.as_usize()].ty),
+                ArType::Void
+            )
+        }) && async_payload_ty.is_none();
         let last_idx = statements_slice.len() - 1;
         for (i, &stmt_id) in statements_slice.iter().enumerate() {
             if self.builder.current_block.is_none() {
@@ -579,7 +585,9 @@ impl LowerCtx<'_> {
                         continue;
                     }
                 }
-                if let HirStmtKind::Expr(expr) = stmt.kind {
+                if let HirStmtKind::Expr(expr) = stmt.kind
+                    && !dest_is_void
+                {
                     let start_owned = self.owned_string_temps.clone();
                     let res_op = if let (Some(dest), Some(payload_ty)) = (target, async_payload_ty)
                     {

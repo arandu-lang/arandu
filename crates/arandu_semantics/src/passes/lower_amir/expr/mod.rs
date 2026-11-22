@@ -554,6 +554,20 @@ impl LowerCtx<'_> {
                 Ok(AmirOperand::Copy(dest))
             }
             HirExprKind::UnsafeBlock { block } | HirExprKind::Scope { block } => {
+                if matches!(self.resolve_ty(expr.ty), ArType::Void) {
+                    self.lower_block(*block, symbols)?;
+                    return if let Some(dest) = target {
+                        if self.builder.current_block.is_some() {
+                            self.emit_assign_temp(
+                                dest,
+                                AmirRvalue::Use(AmirOperand::Constant(AmirConstant::Nil)),
+                            );
+                        }
+                        Ok(AmirOperand::Copy(dest))
+                    } else {
+                        Ok(AmirOperand::Constant(AmirConstant::Nil))
+                    };
+                }
                 let dest = match target {
                     Some(t) => t,
                     None => self.new_temp_id(expr.ty),

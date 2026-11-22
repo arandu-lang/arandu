@@ -5,9 +5,10 @@ pub mod splice;
 
 use crate::amir::{AmirOperand, AmirProgram, AmirStmt, BlockId, InstrId, TempId};
 use cost::{
-    INLINE_LEAF_BUDGET, evaluate_leaf_inlining, evaluate_nonleaf_inlining, nested_call_targets,
+    INLINE_LEAF_BUDGET, evaluate_leaf_inlining_with_intrinsics,
+    evaluate_nonleaf_inlining_with_intrinsics, nested_call_targets,
 };
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 use splice::splice_calls;
 
@@ -108,14 +109,26 @@ fn inlining_growth(callee: &crate::amir::AmirFunc, has_lhs: bool) -> usize {
 ///
 /// Returns the total number of call sites inlined across the program.
 pub fn inline_leaf_functions(program: &mut AmirProgram) -> usize {
-    inline_leaf_functions_with_cold(program, &rustc_hash::FxHashSet::default())
+    let empty = FxHashSet::default();
+    inline_leaf_functions_with_options(program, &empty, &empty)
 }
 
 /// Optimizes `program` by inlining eligible small functions, skipping any
 /// callee marked `@Cold` so slow-path error handlers never bloat hot callers.
 pub fn inline_leaf_functions_with_cold(
     program: &mut AmirProgram,
-    cold_functions: &rustc_hash::FxHashSet<crate::SymbolId>,
+    cold_functions: &FxHashSet<crate::SymbolId>,
+) -> usize {
+    inline_leaf_functions_with_options(program, cold_functions, &FxHashSet::default())
+}
+
+/// Optimizes `program` by inlining eligible small functions, skipping
+/// `cold_functions` and treating calls to `inline_intrinsics` as non-blocking
+/// codegen operations so stdlib intrinsic wrappers inline cleanly.
+pub fn inline_leaf_functions_with_options(
+    program: &mut AmirProgram,
+    cold_functions: &FxHashSet<crate::SymbolId>,
+    inline_intrinsics: &FxHashSet<crate::SymbolId>,
 ) -> usize {
     let mut total_inlined = 0usize;
     let mut spent_per_caller = vec![0usize; program.funcs.len()];
@@ -139,7 +152,9 @@ pub fn inline_leaf_functions_with_cold(
             if cold_functions.contains(&func.symbol) {
                 continue;
             }
-            if let Some(cost) = evaluate_leaf_inlining(func, INLINE_LEAF_BUDGET) {
+            if let Some(cost) =
+                evaluate_leaf_inlining_with_intrinsics(func, INLINE_LEAF_BUDGET, inline_intrinsics)
+            {
                 eligible.insert(func.symbol, (idx, cost));
             }
         }
@@ -147,8 +162,8 @@ pub fn inline_leaf_functions_with_cold(
         // removed too. Splicing `beU32Buf` — which still calls `bufGet` — into
         // sixteen sites would replicate its four inner calls and leave 64 calls
         // where there were 16. Only accept a callee whose every nested target is
-        // itself inlinable; recompute to a fixpoint so a wrapper around a
-        // wrapper is admitted once the inner one qualifies.
+        // itself inlinable or lowered inline by codegen; recompute to a fixpoint
+        // so a wrapper around a wrapper is admitted once the inner one qualifies.
         let mut changed = true;
         while changed {
             changed = false;
@@ -156,12 +171,16 @@ pub fn inline_leaf_functions_with_cold(
                 if cold_functions.contains(&func.symbol) || eligible.contains_key(&func.symbol) {
                     continue;
                 }
-                let Some(cost) = evaluate_nonleaf_inlining(func, INLINE_LEAF_BUDGET) else {
+                let Some(cost) = evaluate_nonleaf_inlining_with_intrinsics(
+                    func,
+                    INLINE_LEAF_BUDGET,
+                    inline_intrinsics,
+                ) else {
                     continue;
                 };
                 let all_nested_inlinable = nested_call_targets(func)
                     .iter()
-                    .all(|sym| eligible.contains_key(sym));
+                    .all(|sym| eligible.contains_key(sym) || inline_intrinsics.contains(sym));
                 if all_nested_inlinable {
                     eligible.insert(func.symbol, (idx, cost));
                     changed = true;

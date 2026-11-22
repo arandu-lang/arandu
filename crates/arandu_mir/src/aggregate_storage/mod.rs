@@ -968,4 +968,273 @@ mod tests {
             &interner
         ));
     }
+
+    #[test]
+    fn acyclic_aggregate_diamond_inside_loop_stays_admitted() {
+        use arandu_middle::amir::{AmirConstant, BlockId, BlockParam, LocalId};
+
+        let interner = TypeInterner::new();
+        let int = interner.intern(ArType::Primitive(Primitive::Int));
+        let byte = interner.intern(ArType::Primitive(Primitive::U8));
+        let array = interner.intern(ArType::Array(4, byte));
+        let symbols = SymbolTable::new(0);
+
+        // 0 -> 1 (loop header, no params) -> {2 (diamond entry), 6 (exit)}
+        // 2 -> {3, 4}; 3 -> 5(array); 4 -> 5(array); 5(param: array) -> 1
+        let blocks = vec![
+            AmirBasicBlock {
+                id: BlockId::from_usize(0),
+                params: DenseRange::empty(),
+                statements: DenseRange::empty(),
+                terminator: AmirTerminator::Goto {
+                    target: BlockId::from_usize(1),
+                    args: Vec::new(),
+                },
+            },
+            AmirBasicBlock {
+                id: BlockId::from_usize(1),
+                params: DenseRange::empty(),
+                statements: DenseRange::empty(),
+                terminator: AmirTerminator::Branch {
+                    condition: AmirOperand::Constant(AmirConstant::Bool(true)),
+                    if_true: BlockId::from_usize(2),
+                    true_args: Vec::new(),
+                    if_false: BlockId::from_usize(6),
+                    false_args: Vec::new(),
+                },
+            },
+            AmirBasicBlock {
+                id: BlockId::from_usize(2),
+                params: DenseRange::empty(),
+                statements: DenseRange::empty(),
+                terminator: AmirTerminator::Branch {
+                    condition: AmirOperand::Constant(AmirConstant::Bool(true)),
+                    if_true: BlockId::from_usize(3),
+                    true_args: Vec::new(),
+                    if_false: BlockId::from_usize(4),
+                    false_args: Vec::new(),
+                },
+            },
+            AmirBasicBlock {
+                id: BlockId::from_usize(3),
+                params: DenseRange::empty(),
+                statements: DenseRange::empty(),
+                terminator: AmirTerminator::Goto {
+                    target: BlockId::from_usize(5),
+                    args: vec![AmirOperand::Copy(TempId::from_usize(0))],
+                },
+            },
+            AmirBasicBlock {
+                id: BlockId::from_usize(4),
+                params: DenseRange::empty(),
+                statements: DenseRange::empty(),
+                terminator: AmirTerminator::Goto {
+                    target: BlockId::from_usize(5),
+                    args: vec![AmirOperand::Copy(TempId::from_usize(1))],
+                },
+            },
+            AmirBasicBlock {
+                id: BlockId::from_usize(5),
+                params: DenseRange::new(0, 1),
+                statements: DenseRange::empty(),
+                terminator: AmirTerminator::Goto {
+                    target: BlockId::from_usize(1),
+                    args: Vec::new(),
+                },
+            },
+            AmirBasicBlock {
+                id: BlockId::from_usize(6),
+                params: DenseRange::empty(),
+                statements: DenseRange::empty(),
+                terminator: AmirTerminator::Return,
+            },
+        ];
+        let cfg = compute_cfg_edges(&blocks);
+        let func = AmirFunc {
+            symbol: SymbolId::new(0, 0),
+            return_type: int,
+            receiver: None,
+            params: Vec::new(),
+            locals: Vec::new(),
+            temps: vec![temp(0, array), temp(1, array), temp(2, array)],
+            blocks,
+            block_params: vec![BlockParam {
+                id: TempId::from_usize(2),
+                local: LocalId::from_usize(0),
+                ty: array,
+                from: None,
+                moved: false,
+            }],
+            stmts: Default::default(),
+            cfg,
+        };
+        assert!(
+            safe(&func, &symbols, &interner),
+            "acyclic diamond join inside an outer loop must stay admitted"
+        );
+    }
+
+    #[test]
+    fn irreducible_two_entry_loop_with_aggregate_param_stays_rejected() {
+        use arandu_middle::amir::{AmirConstant, BlockId, BlockParam, LocalId};
+
+        let interner = TypeInterner::new();
+        let int = interner.intern(ArType::Primitive(Primitive::Int));
+        let byte = interner.intern(ArType::Primitive(Primitive::U8));
+        let array = interner.intern(ArType::Array(4, byte));
+        let symbols = SymbolTable::new(0);
+
+        // 0 -> {1, 2(array)}; 1 -> 2(array); 2(param: array) -> {1, 3 (exit)}
+        let blocks = vec![
+            AmirBasicBlock {
+                id: BlockId::from_usize(0),
+                params: DenseRange::empty(),
+                statements: DenseRange::empty(),
+                terminator: AmirTerminator::Branch {
+                    condition: AmirOperand::Constant(AmirConstant::Bool(true)),
+                    if_true: BlockId::from_usize(1),
+                    true_args: Vec::new(),
+                    if_false: BlockId::from_usize(2),
+                    false_args: vec![AmirOperand::Copy(TempId::from_usize(0))],
+                },
+            },
+            AmirBasicBlock {
+                id: BlockId::from_usize(1),
+                params: DenseRange::empty(),
+                statements: DenseRange::empty(),
+                terminator: AmirTerminator::Goto {
+                    target: BlockId::from_usize(2),
+                    args: vec![AmirOperand::Copy(TempId::from_usize(1))],
+                },
+            },
+            AmirBasicBlock {
+                id: BlockId::from_usize(2),
+                params: DenseRange::new(0, 1),
+                statements: DenseRange::empty(),
+                terminator: AmirTerminator::Branch {
+                    condition: AmirOperand::Constant(AmirConstant::Bool(true)),
+                    if_true: BlockId::from_usize(1),
+                    true_args: Vec::new(),
+                    if_false: BlockId::from_usize(3),
+                    false_args: Vec::new(),
+                },
+            },
+            AmirBasicBlock {
+                id: BlockId::from_usize(3),
+                params: DenseRange::empty(),
+                statements: DenseRange::empty(),
+                terminator: AmirTerminator::Return,
+            },
+        ];
+        let cfg = compute_cfg_edges(&blocks);
+        let func = AmirFunc {
+            symbol: SymbolId::new(0, 0),
+            return_type: int,
+            receiver: None,
+            params: Vec::new(),
+            locals: Vec::new(),
+            temps: vec![temp(0, array), temp(1, array), temp(2, array)],
+            blocks,
+            block_params: vec![BlockParam {
+                id: TempId::from_usize(2),
+                local: LocalId::from_usize(0),
+                ty: array,
+                from: None,
+                moved: false,
+            }],
+            stmts: Default::default(),
+            cfg,
+        };
+        assert!(
+            !safe(&func, &symbols, &interner),
+            "irreducible two-entry loop with aggregate param must remain rejected"
+        );
+    }
+
+    #[test]
+    fn nested_inner_loop_header_aggregate_param_stays_rejected() {
+        use arandu_middle::amir::{AmirConstant, BlockId, BlockParam, LocalId};
+
+        let interner = TypeInterner::new();
+        let int = interner.intern(ArType::Primitive(Primitive::Int));
+        let byte = interner.intern(ArType::Primitive(Primitive::U8));
+        let array = interner.intern(ArType::Array(4, byte));
+        let symbols = SymbolTable::new(0);
+
+        // 0 -> 1 (outer header, no params) -> {2(array), 4 (exit)};
+        // 2(param: array) -> {3, 1}; 3 -> 2(array)
+        let blocks = vec![
+            AmirBasicBlock {
+                id: BlockId::from_usize(0),
+                params: DenseRange::empty(),
+                statements: DenseRange::empty(),
+                terminator: AmirTerminator::Goto {
+                    target: BlockId::from_usize(1),
+                    args: Vec::new(),
+                },
+            },
+            AmirBasicBlock {
+                id: BlockId::from_usize(1),
+                params: DenseRange::empty(),
+                statements: DenseRange::empty(),
+                terminator: AmirTerminator::Branch {
+                    condition: AmirOperand::Constant(AmirConstant::Bool(true)),
+                    if_true: BlockId::from_usize(2),
+                    true_args: vec![AmirOperand::Copy(TempId::from_usize(0))],
+                    if_false: BlockId::from_usize(4),
+                    false_args: Vec::new(),
+                },
+            },
+            AmirBasicBlock {
+                id: BlockId::from_usize(2),
+                params: DenseRange::new(0, 1),
+                statements: DenseRange::empty(),
+                terminator: AmirTerminator::Branch {
+                    condition: AmirOperand::Constant(AmirConstant::Bool(true)),
+                    if_true: BlockId::from_usize(3),
+                    true_args: Vec::new(),
+                    if_false: BlockId::from_usize(1),
+                    false_args: Vec::new(),
+                },
+            },
+            AmirBasicBlock {
+                id: BlockId::from_usize(3),
+                params: DenseRange::empty(),
+                statements: DenseRange::empty(),
+                terminator: AmirTerminator::Goto {
+                    target: BlockId::from_usize(2),
+                    args: vec![AmirOperand::Copy(TempId::from_usize(1))],
+                },
+            },
+            AmirBasicBlock {
+                id: BlockId::from_usize(4),
+                params: DenseRange::empty(),
+                statements: DenseRange::empty(),
+                terminator: AmirTerminator::Return,
+            },
+        ];
+        let cfg = compute_cfg_edges(&blocks);
+        let func = AmirFunc {
+            symbol: SymbolId::new(0, 0),
+            return_type: int,
+            receiver: None,
+            params: Vec::new(),
+            locals: Vec::new(),
+            temps: vec![temp(0, array), temp(1, array), temp(2, array)],
+            blocks,
+            block_params: vec![BlockParam {
+                id: TempId::from_usize(2),
+                local: LocalId::from_usize(0),
+                ty: array,
+                from: None,
+                moved: false,
+            }],
+            stmts: Default::default(),
+            cfg,
+        };
+        assert!(
+            !safe(&func, &symbols, &interner),
+            "nested inner loop header with aggregate param must remain rejected"
+        );
+    }
 }

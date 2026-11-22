@@ -40,7 +40,16 @@ pub fn check_stmt(checker: &mut TypeChecker<'_>, pool: &AstPool, stmt: &Stmt) {
             check_return_stmt(checker, *span, values);
         }
         Stmt::Expr { expr, .. } => {
-            super::super::synth::synth_expr(checker, *expr);
+            if matches!(
+                pool.expr(*expr),
+                arandu_parser::ast_pool::ExprKind::If { .. }
+                    | arandu_parser::ast_pool::ExprKind::Match { .. }
+            ) {
+                let void_id = checker.intern(crate::type_checker::types::ArType::Void);
+                super::super::synth::synth_expr_expected(checker, *expr, Some(void_id));
+            } else {
+                super::super::synth::synth_expr(checker, *expr);
+            }
         }
         Stmt::If {
             span,

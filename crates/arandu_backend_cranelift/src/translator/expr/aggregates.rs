@@ -89,23 +89,14 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                         | ArType::ConstArray(..)
                         | ArType::Tuple(..)
                 );
-                if is_aggregate && let Some(memcpy_id) = self.memcpy_func_id() {
+                if is_aggregate {
                     let val = self.translate_operand(op, Some(self.ptr_type));
-                    let memcpy_ref = self
-                        .module
-                        .declare_func_in_func(memcpy_id, self.builder.func);
-                    let size_val = self
-                        .builder
-                        .ins()
-                        .iconst(self.ptr_type, field_layout.size as i64);
                     let field_dest = if offset != 0 {
                         self.builder.ins().iadd_imm_s(ptr_val, i64::from(offset))
                     } else {
                         ptr_val
                     };
-                    self.builder
-                        .ins()
-                        .call(memcpy_ref, &[field_dest, val, size_val]);
+                    self.copy_aggregate_bytes(field_dest, val, field_layout.size);
                     continue;
                 }
                 let expected_field_ty = match crate::types::clif_type(&field_ty, self.ptr_type) {
@@ -177,26 +168,14 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 if elem_layout.size == 0 {
                     continue;
                 }
-                if is_aggregate
-                    && elem_layout.size > 0
-                    && let Some(memcpy_id) = self.memcpy_func_id()
-                {
+                if is_aggregate && elem_layout.size > 0 {
                     let val = self.translate_operand(op, Some(self.ptr_type));
-                    let memcpy_ref = self
-                        .module
-                        .declare_func_in_func(memcpy_id, self.builder.func);
-                    let size_val = self
-                        .builder
-                        .ins()
-                        .iconst(self.ptr_type, elem_layout.size as i64);
                     let elem_dest = if offset != 0 {
                         self.builder.ins().iadd_imm_s(ptr_val, i64::from(offset))
                     } else {
                         ptr_val
                     };
-                    self.builder
-                        .ins()
-                        .call(memcpy_ref, &[elem_dest, val, size_val]);
+                    self.copy_aggregate_bytes(elem_dest, val, elem_layout.size);
                     continue;
                 }
                 let expected_elem_ty = match crate::types::clif_type(&elem_ty, self.ptr_type) {
@@ -284,26 +263,14 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 // target layout reserves the full tagged payload. The later
                 // drop glue then reads that pointer as a discriminant and
                 // follows an invalid payload address.
-                if self.is_inline_aggregate_ty(&item_ar_ty)
-                    && item_layout.size > 0
-                    && let Some(memcpy_id) = self.memcpy_func_id()
-                {
+                if self.is_inline_aggregate_ty(&item_ar_ty) && item_layout.size > 0 {
                     let val = self.translate_operand(op, Some(self.ptr_type));
-                    let memcpy_ref = self
-                        .module
-                        .declare_func_in_func(memcpy_id, self.builder.func);
-                    let size_val = self
-                        .builder
-                        .ins()
-                        .iconst(self.ptr_type, item_layout.size as i64);
                     let elem_dest = if offset != 0 {
                         self.builder.ins().iadd_imm_s(ptr_val, i64::from(offset))
                     } else {
                         ptr_val
                     };
-                    self.builder
-                        .ins()
-                        .call(memcpy_ref, &[elem_dest, val, size_val]);
+                    self.copy_aggregate_bytes(elem_dest, val, item_layout.size);
                     continue;
                 }
                 let expected_item_ty = match crate::types::clif_type(&item_ar_ty, self.ptr_type) {

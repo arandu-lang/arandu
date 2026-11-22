@@ -68,7 +68,7 @@ pub(crate) fn move_states_exit_and_before_statements(
     };
     let mut exit = Vec::with_capacity(func.blocks.len());
     let mut before = Vec::with_capacity(func.blocks.len());
-    for (block, incoming) in func.blocks.iter().zip(block_in.into_iter()) {
+    for (block, incoming) in func.blocks.iter().zip(block_in) {
         let mut state = incoming;
         let mut snapshots = Vec::with_capacity(block.statements.len_usize());
         for stmt in func.block_stmts(block.id) {

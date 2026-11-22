@@ -62,7 +62,8 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         if eligible
             && alignment <= 16
             && alignment.is_power_of_two()
-            && reserved.is_some_and(|size| size <= super::storage::FRAME_PROMOTION_BUDGET)
+            && size <= super::storage::SINGLE_SLOT_PROMOTION_LIMIT
+            && reserved.is_some_and(|total| total <= super::storage::FRAME_PROMOTION_BUDGET)
         {
             let slot = self
                 .builder
@@ -85,14 +86,52 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
         }
         self.call_malloc(size)
     }
-    /// Copy object bytes into independent destination storage. Use memmove:
-    /// returning a parameter can make source and destination overlap.
+    /// Copy object bytes into independent destination storage with overlap-safe
+    /// (`memmove`) semantics. Small aggregates up to 64 bytes load all chunks
+    /// into virtual registers before storing so overlapping buffers avoid a
+    /// `memmove` libcall cleanly.
     pub(super) fn copy_aggregate_bytes(&mut self, destination: Value, source: Value, size: u64) {
+        const INLINE_COPY_MAX_BYTES: u64 = 64;
+        const MAX_INLINE_CHUNKS: usize = 12;
+
         if size == 0 {
             return;
         }
         if i64::try_from(size).is_err() {
             self.record_ice("aggregate copy exceeds instruction range", self.func_span());
+            return;
+        }
+        if size <= INLINE_COPY_MAX_BYTES {
+            let flags = cranelift_codegen::ir::MemFlagsData::new();
+            let mut loads: [Option<(i32, Value)>; MAX_INLINE_CHUNKS] = [None; MAX_INLINE_CHUNKS];
+            let mut count = 0usize;
+            let mut offset = 0u64;
+            let mut remaining = size;
+            while remaining > 0 {
+                let (chunk_size, chunk_ty) = if remaining >= 8 {
+                    (8u64, cranelift_codegen::ir::types::I64)
+                } else if remaining >= 4 {
+                    (4u64, cranelift_codegen::ir::types::I32)
+                } else if remaining >= 2 {
+                    (2u64, cranelift_codegen::ir::types::I16)
+                } else {
+                    (1u64, cranelift_codegen::ir::types::I8)
+                };
+                let byte_offset = i32::try_from(offset).unwrap_or(0);
+                let val = self
+                    .builder
+                    .ins()
+                    .load(chunk_ty, flags, source, byte_offset);
+                loads[count] = Some((byte_offset, val));
+                count += 1;
+                offset += chunk_size;
+                remaining -= chunk_size;
+            }
+            for (byte_offset, val) in loads.into_iter().take(count).flatten() {
+                self.builder
+                    .ins()
+                    .store(flags, val, destination, byte_offset);
+            }
             return;
         }
         self.builder.emit_small_memory_copy(
@@ -264,19 +303,6 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
             None => {
                 self.record_ice(
                     "memcpy was not declared in the JIT module",
-                    self.func_span(),
-                );
-                None
-            }
-        }
-    }
-
-    pub(super) fn memmove_func_id(&mut self) -> Option<FuncId> {
-        match self.resolve_function("memmove") {
-            Some(func_id) => Some(func_id),
-            None => {
-                self.record_ice(
-                    "memmove was not declared in the JIT module",
                     self.func_span(),
                 );
                 None

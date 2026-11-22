@@ -709,17 +709,9 @@ impl<M: cranelift_module::Module> FunctionTranslator<'_, '_, M> {
                 // Match `PtrRead`: writing a named struct by value copies the
                 // object bytes from the value's blob into `*p` instead of
                 // storing the 8-byte object pointer.
-                if self.is_inline_aggregate_ty(&val_ty)
-                    && let Some(memmove_id) = self.memmove_func_id()
-                {
+                if self.is_inline_aggregate_ty(&val_ty) {
                     let layout = self.checked_layout(&val_ty);
-                    let memmove_ref = self
-                        .module
-                        .declare_func_in_func(memmove_id, self.builder.func);
-                    let size_val = self.builder.ins().iconst(self.ptr_type, layout.size as i64);
-                    self.builder
-                        .ins()
-                        .call(memmove_ref, &[ptr_val, val_to_store, size_val]);
+                    self.copy_aggregate_bytes(ptr_val, val_to_store, layout.size);
                     return true;
                 }
                 self.builder.ins().store(

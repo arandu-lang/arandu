@@ -123,13 +123,20 @@ pub(super) fn synth_control_flow_expr(
         ExprKind::UnsafeBlock { block } => {
             checker.ctx.enter_unsafe();
             let block_id = *block;
-            let block_ty = crate::type_checker::check::check_block(
+            let is_void_context =
+                expected.is_some_and(|exp| matches!(checker.resolve(exp), ArType::Void));
+            let block_ty = crate::type_checker::check::check_block_tail(
                 checker,
                 checker.pool,
                 checker.pool.block(block_id),
+                if is_void_context { expected } else { None },
             );
             checker.ctx.exit_unsafe();
-            Some(checker.intern(block_ty))
+            Some(checker.intern(if is_void_context {
+                ArType::Void
+            } else {
+                block_ty
+            }))
         }
         ExprKind::If {
             condition,
@@ -139,17 +146,25 @@ pub(super) fn synth_control_flow_expr(
             let cond = condition.clone();
             let then_id = *then_block;
             let else_id = *else_block;
+            let is_void_context =
+                expected.is_some_and(|exp| matches!(checker.resolve(exp), ArType::Void));
+            let branch_expected = if is_void_context { expected } else { None };
             crate::type_checker::check::check_condition(checker, &cond);
-            let then_ty = crate::type_checker::check::check_block(
+            let then_ty = crate::type_checker::check::check_block_tail(
                 checker,
                 checker.pool,
                 checker.pool.block(then_id),
+                branch_expected,
             );
-            let else_ty = crate::type_checker::check::check_block(
+            let else_ty = crate::type_checker::check::check_block_tail(
                 checker,
                 checker.pool,
                 checker.pool.block(else_id),
+                branch_expected,
             );
+            if is_void_context {
+                return Some(checker.intern(ArType::Void));
+            }
             let then_diverges = crate::type_checker::check::block_diverges(
                 checker.pool,
                 checker.pool.block(then_id),
@@ -240,13 +255,32 @@ pub(super) fn synth_control_flow_expr(
                         crate::type_checker::check::block_diverges(checker.pool, block)
                     }
                 };
+                let arm_expected = match &arm.body {
+                    arandu_parser::MatchArmBody::Expr {
+                        expr: inner_expr, ..
+                    } if is_void_context
+                        && !matches!(
+                            checker.pool.expr(*inner_expr),
+                            ExprKind::If { .. }
+                                | ExprKind::Match { .. }
+                                | ExprKind::UnsafeBlock { .. }
+                        ) =>
+                    {
+                        None
+                    }
+                    _ => expected,
+                };
                 let arm_ty_id = match &arm.body {
                     arandu_parser::MatchArmBody::Expr {
                         expr: inner_expr, ..
-                    } => super::super::synth_expr_expected(checker, *inner_expr, expected),
+                    } => super::super::synth_expr_expected(checker, *inner_expr, arm_expected),
                     arandu_parser::MatchArmBody::Block { block, .. } => {
-                        let block_ty =
-                            crate::type_checker::check::check_block(checker, checker.pool, block);
+                        let block_ty = crate::type_checker::check::check_block_tail(
+                            checker,
+                            checker.pool,
+                            block,
+                            if is_void_context { expected } else { None },
+                        );
                         checker.intern(block_ty)
                     }
                 };

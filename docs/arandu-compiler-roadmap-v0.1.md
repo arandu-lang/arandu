@@ -313,6 +313,7 @@ validade; não marcar todas as operações de um bloco por existir um BorrowMut.
 | IDs | Entrega planejada | Gate |
 | --- | --- | --- |
 | AGG.1–3 / ABI | lifetime dos fallbacks, retornos/views/agregados e calling conventions documentadas | phis em backedges, views cruzando branches, retorno Wasm, FFI e suspensão com ownership/drop; alloc/free/RSS e resultados nos três backends |
+| UNION / ABI | consolidação de `union` / `@Union` (campos `Copy` sobrepostos em offset 0, leitura em `unsafe`) para FFI C e representações compactas/VM (`partial`: palavra-chave suave `union`, `@Union`, layout, leitura `unsafe` com `O012`, CTFE e `types.info<T>()` já implementados localmente) | rejeição explícita de campos não-`Copy` com diagnóstico dedicado, paridade de exportação/header C-ABI (`@Export`) e regressões diferenciais em Cranelift/C/Wasm/LLVM |
 | SL_S-Core.1–4 | promoção freestanding delimitada, TrapCode e formatos fixos adicionais | núcleo sem host/heap implícito no alvo declarado; teste de objeto/opcode e tamanho; Q8.8/Q32.32 e intrínsecos de bits por recorte |
 | A2 / effects / [RFC 0035](rfcs/0035-effect-system-polymorphism-and-capability-authority.md) | inferência/summaries e autoridade por contrato, separados da base de flags/anotações | [contrato de efeitos](arandu-effects-v0.1.md), propagação determinística, unknown conservador e enforcement independente |
 | SL_S-Host.2–5 / RFC 0016 | Dir por capacidades, resolução segura, efeitos e VFS | testes adversariais de traversal/symlink/TOCTOU nos sistemas admitidos; canonicalização/ciclo não provam sandbox |

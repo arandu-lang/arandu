@@ -8,9 +8,14 @@ use arandu_middle::SymbolTable;
 use arandu_middle::amir::AmirFunc;
 use arandu_middle::type_context::CodegenTypeContext;
 
-/// Bound promoted scratch storage, including existing explicit slots. This
-/// does not include register-allocation spills or claim to implement coloring.
-pub(super) const FRAME_PROMOTION_BUDGET: u32 = 1024;
+/// Bound any single promoted scratch slot so oversized aggregates (`[2048]u8`)
+/// stay on lazy heap scratch rather than inflating stack frames.
+pub(super) const SINGLE_SLOT_PROMOTION_LIMIT: u32 = 1024;
+
+/// Bound cumulative promoted scratch storage per function, including existing
+/// explicit slots, so large functions with many small aggregate temporaries keep
+/// stack slots instead of spilling to heap scratch.
+pub(super) const FRAME_PROMOTION_BUDGET: u32 = 32 * 1024;
 
 pub(super) fn frame_promotion_safe(
     function: &AmirFunc,
@@ -133,6 +138,28 @@ mod tests {
 
     thread_local! { static ALLOCATIONS: Cell<usize> = const { Cell::new(0) }; }
     thread_local! { static FREES: Cell<usize> = const { Cell::new(0) }; }
+    thread_local! { static MEMMOVES: Cell<usize> = const { Cell::new(0) }; }
+    thread_local! { static MEMCPYS: Cell<usize> = const { Cell::new(0) }; }
+
+    unsafe extern "C" fn counted_memmove(dest: *mut u8, src: *const u8, len: usize) -> *mut u8 {
+        MEMMOVES.with(|count| count.set(count.get() + 1));
+        // SAFETY: Preserve libc memmove overlap-safe copy semantics for larger
+        // aggregates when falling back to emit_small_memory_copy.
+        unsafe {
+            std::ptr::copy(src, dest, len);
+        }
+        dest
+    }
+
+    unsafe extern "C" fn counted_memcpy(dest: *mut u8, src: *const u8, len: usize) -> *mut u8 {
+        MEMCPYS.with(|count| count.set(count.get() + 1));
+        // SAFETY: Preserve libc memcpy copy semantics for larger aggregates
+        // when callers fall back to memcpy.
+        unsafe {
+            std::ptr::copy(src, dest, len);
+        }
+        dest
+    }
 
     unsafe extern "C" fn counted_malloc(size: usize) -> *mut u8 {
         ALLOCATIONS.with(|count| count.set(count.get() + 1));
@@ -175,6 +202,8 @@ mod tests {
         let mut builder = create_jit_builder().unwrap();
         builder.symbol("ar_rt_raw_malloc", counted_malloc as *const u8);
         builder.symbol("ar_rt_raw_free", counted_free as *const u8);
+        builder.symbol("memmove", counted_memmove as *const u8);
+        builder.symbol("memcpy", counted_memcpy as *const u8);
         let compiler = AranduModule {
             module: cranelift_jit::JITModule::new(builder),
             debug: None,
@@ -186,6 +215,8 @@ mod tests {
             .unwrap();
         ALLOCATIONS.with(|count| count.set(0));
         FREES.with(|count| count.set(0));
+        MEMMOVES.with(|count| count.set(0));
+        MEMCPYS.with(|count| count.set(0));
         // SAFETY: The fixture declares exactly main(): int (i32). The module
         // stays alive throughout invocation; the callback matches malloc(size).
         let result = unsafe {
@@ -763,6 +794,242 @@ func main(): int {
 "#;
         for level in [OptLevel::O0, OptLevel::O1, OptLevel::O2] {
             assert_eq!(run_counted(source, level), (0, 0), "{level:?}");
+        }
+    }
+
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn small_aggregate_copies_inline_without_memmove_and_keep_stack_promotion_above_1kb() {
+        let source = r#"
+module std.core.fixture_small_copy
+
+struct SmallValue { a: u64, b: u64, c: u64, d: u64, e: u64 }
+func bump(x: u64): SmallValue {
+    return SmallValue { a: x, b: x + 1, c: x + 2, d: x + 3, e: x + 4 }
+}
+func copyStep(src: ptr[SmallValue], dst: ptr[SmallValue]): void {
+    unsafe {
+        let v = ptrRead<SmallValue>(src)
+        ptrWrite<SmallValue>(dst, v)
+    }
+}
+extern "arandu-intrinsic" {
+    func ptrRead<T>(pointer: ptr[T]): T
+    func ptrWrite<T>(pointer: ptr[T], value: T): void
+    func addressOf<T>(value: mut ref T): ptr[T]
+}
+func manyTemporaries(seed: u64): u64 {
+    let mut i: u64 = 0
+    let mut acc: u64 = 0
+    while i < 40 {
+        let mut s = bump(seed + i)
+        let p = unsafe { addressOf<SmallValue>(mut ref s) }
+        let mut out = SmallValue { a: 0, b: 0, c: 0, d: 0, e: 0 }
+        let q = unsafe { addressOf<SmallValue>(mut ref out) }
+        copyStep(p, q)
+        acc = acc + out.e
+        let b0 = [seed + i; 8]
+        let b1 = [seed + i + 1; 8]
+        let b2 = [seed + i + 2; 8]
+        let b3 = [seed + i + 3; 8]
+        let b4 = [seed + i + 4; 8]
+        let b5 = [seed + i + 5; 8]
+        let b6 = [seed + i + 6; 8]
+        let b7 = [seed + i + 7; 8]
+        let b8 = [seed + i + 8; 8]
+        let b9 = [seed + i + 9; 8]
+        let b10 = [seed + i + 10; 8]
+        let b11 = [seed + i + 11; 8]
+        let b12 = [seed + i + 12; 8]
+        let b13 = [seed + i + 13; 8]
+        let b14 = [seed + i + 14; 8]
+        let b15 = [seed + i + 15; 8]
+        let b16 = [seed + i + 16; 8]
+        let b17 = [seed + i + 17; 8]
+        let b18 = [seed + i + 18; 8]
+        let b19 = [seed + i + 19; 8]
+        acc = acc + b0[0] + b1[1] + b2[2] + b3[3] + b4[4] + b5[5] + b6[6] + b7[7] + b8[0] + b9[1] + b10[2] + b11[3] + b12[4] + b13[5] + b14[6] + b15[7] + b16[0] + b17[1] + b18[2] + b19[3]
+        i += 1
+    }
+    return acc
+}
+func main(): int {
+    let sum = manyTemporaries(1)
+    if sum == 0 { return 1 }
+    return 0
+}
+"#;
+        for level in [OptLevel::O0, OptLevel::O1, OptLevel::O2] {
+            let (result, allocs, frees) = run_counted_lifetimes(source, level);
+            assert_eq!(result, 0, "{level:?}");
+            assert_eq!((allocs, frees), (0, 0), "{level:?}");
+            assert_eq!(MEMMOVES.with(Cell::get), 0, "{level:?}");
+        }
+    }
+
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn mut_slice_indexed_stores_survive_o2_dce_when_slice_is_not_read_afterward() {
+        let source = r#"
+module std.core.fixture_mut_slice_dce
+
+extern "arandu-intrinsic" {
+    func mutSliceFromRaw<Owner, Element>(owner: mut ref Owner, data: ptr[Element], len: usize): mut []Element
+    func addressOf<T>(value: mut ref T): ptr[T]
+}
+struct FixedBuf { a: int, b: int, c: int, d: int }
+func FixedBuf.asMutSlice(self: mut ref FixedBuf): mut []int {
+    unsafe {
+        let base = addressOf<int>(mut ref self.a)
+        return mutSliceFromRaw<FixedBuf, int>(self, base, 4 as usize)
+    }
+}
+func overwriteThroughUnreadSlice(buf: mut ref FixedBuf, idx: usize, val: int): void {
+    let mut sl = buf.asMutSlice()
+    sl[idx] = val
+    sl[0] = val + 10
+}
+func main(): int {
+    let mut buf = FixedBuf { a: 1, b: 2, c: 3, d: 4 }
+    overwriteThroughUnreadSlice(mut ref buf, 2 as usize, 77)
+    if buf.a != 87 || buf.c != 77 { return 1 }
+    return 0
+}
+"#;
+        for level in [OptLevel::O0, OptLevel::O1, OptLevel::O2] {
+            assert_eq!(run_counted(source, level), (0, 0), "{level:?}");
+        }
+    }
+
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn acyclic_aggregate_join_inside_loop_promotes_without_heap_traffic() {
+        let source = r#"
+module std.core.fixture_loop_join
+
+extern "arandu-intrinsic" {
+    func sliceFromRaw<Owner, Element>(owner: ref Owner, data: ptr[Element], len: usize): []Element
+    func mutSliceFromRaw<Owner, Element>(owner: mut ref Owner, data: ptr[Element], len: usize): mut []Element
+    func addressOf<T>(value: mut ref T): ptr[T]
+    func addressOfShared<T>(value: ref T): ptr[T]
+}
+
+enum Tag { Empty, Num, Obj }
+struct Handle { gen: u32, idx: u32 }
+struct Val { tag: Tag, i: i64, f: f64, h: Handle }
+struct Buf { a: Val, b: Val }
+
+func makeNum(n: i64): Val {
+    return Val {
+        tag: Tag.Num,
+        i: n,
+        f: 0.0,
+        h: Handle { gen: 0 as u32, idx: 0 as u32 },
+    }
+}
+
+func makeObj(gen: u32, idx: u32): Val {
+    return Val {
+        tag: Tag.Obj,
+        i: 0,
+        f: 1.5,
+        h: Handle { gen: gen, idx: idx },
+    }
+}
+
+func Buf.asSlice(self: ref Buf): []Val {
+    unsafe {
+        let base = addressOfShared<Val>(ref self.a)
+        return sliceFromRaw<Buf, Val>(self, base, 2 as usize)
+    }
+}
+
+func Buf.asMutSlice(self: mut ref Buf): mut []Val {
+    unsafe {
+        let base = addressOf<Val>(mut ref self.a)
+        return mutSliceFromRaw<Buf, Val>(self, base, 2 as usize)
+    }
+}
+
+func runLoopShape(buf: mut ref Buf, limit: int): i64 {
+    let mut sum: i64 = 0
+    let mut step: int = 0
+    while step < limit {
+        let produced = if (step % 2) == 0 {
+            makeNum(step as i64)
+        } else {
+            makeObj(1 as u32, step as u32)
+        }
+        let mut chosen = makeNum(10)
+        if step > 2 {
+            chosen = produced
+        }
+        let mut msl = buf.asMutSlice()
+        msl[(step as usize) % 2] = chosen
+        let sl = buf.asSlice()
+        let readBack = sl[(step as usize) % 2]
+        sum = sum + readBack.i + (readBack.h.idx as i64)
+        step += 1
+    }
+    return sum
+}
+
+func main(): int {
+    let empty = Val {
+        tag: Tag.Empty,
+        i: 0,
+        f: 0.0,
+        h: Handle { gen: 0 as u32, idx: 0 as u32 },
+    }
+    let mut buf = Buf { a: empty, b: empty }
+    // steps 0..2 contribute 10 each (30); step 3: 3, step 4: 4, step 5: 5 -> total 42
+    let total = runLoopShape(mut ref buf, 6)
+    if total != 42 { return 1 }
+    if buf.b.h.idx != (5 as u32) { return 2 }
+    return 0
+}
+"#;
+        for level in [OptLevel::O0, OptLevel::O1, OptLevel::O2] {
+            let (result, allocs, frees) = run_counted_lifetimes(source, level);
+            assert_eq!(result, 0, "{level:?}");
+            assert_eq!((allocs, frees), (0, 0), "{level:?}");
+            assert_eq!(MEMMOVES.with(Cell::get), 0, "{level:?}");
+            assert_eq!(MEMCPYS.with(Cell::get), 0, "{level:?}");
+        }
+    }
+
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn loop_carried_aggregate_preserves_previous_iteration_value() {
+        let source = r#"
+enum Tag { Num, Obj }
+struct Handle { gen: u32, idx: u32 }
+struct Val { tag: Tag, n: int, h: Handle }
+
+func makeVal(n: int): Val {
+    return Val {
+        tag: Tag.Num,
+        n: n,
+        h: Handle { gen: 1 as u32, idx: n as u32 },
+    }
+}
+
+func main(): int {
+    let mut prev = makeVal(0)
+    let mut i: int = 1
+    while i < 10 {
+        let cur = makeVal(i)
+        if prev.n != i - 1 || prev.h.idx != ((i - 1) as u32) { return 1 }
+        prev = cur
+        i += 1
+    }
+    if prev.n != 9 { return 2 }
+    return 0
+}
+"#;
+        for level in [OptLevel::O0, OptLevel::O1, OptLevel::O2] {
+            let (result, _, _) = run_counted_lifetimes(source, level);
+            assert_eq!(result, 0, "{level:?}");
         }
     }
 }

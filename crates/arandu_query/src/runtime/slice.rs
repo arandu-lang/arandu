@@ -99,7 +99,8 @@ pub(crate) fn declaration_slice(
         diagnostics: Vec::new(),
         source_fingerprint: identity.finalize(),
     };
-    Some(HashEq::new(output))
+    let hash = output.source_fingerprint;
+    Some(HashEq::with_identity(std::sync::Arc::new(output), hash))
 }
 
 /// The function symbols of `symbols` that carry a host name.
@@ -208,6 +209,70 @@ fn trusted_stdlib(db: &dyn ArandCompilerDb, file: SourceFile) -> bool {
         .is_some_and(|db| db.is_trusted_stdlib_source(file))
 }
 
+/// Memoized stdlib declaration headers for `file`'s transitive import closure.
+/// Shared across every unit of `file` so stdlib surfaces are linked once per
+/// file rather than once per function instance.
+#[salsa::tracked]
+#[tracing::instrument(level = "trace", target = "arandu_query", skip(db), fields(
+    query = "file_stdlib_headers", file = ?file.file_id(db),
+))]
+fn file_stdlib_headers(db: &dyn ArandCompilerDb, file: SourceFile) -> Option<HashEq<PreparedHir>> {
+    // The stdlib closure of the file's imports, by path for a stable order.
+    let mut stdlib = BTreeMap::new();
+    let mut visited = BTreeSet::new();
+    let mut pending = vec![file];
+    while let Some(current) = pending.pop() {
+        if !visited.insert(*current.file_id(db)) {
+            continue;
+        }
+        if trusted_stdlib(db, current) {
+            stdlib.insert(current.path(db).clone(), current);
+        }
+        for (_, imported) in crate::passes::module_import_edges(db, current) {
+            if let Some(imported) = imported.and_then(|id| db.source_file_by_id(id)) {
+                pending.push(imported);
+            }
+        }
+    }
+    let mut checked = arandu_semantics::TypeCheckResult::empty();
+    checked.symbols = std::sync::Arc::new(arandu_middle::SymbolTable::new(
+        arandu_middle::db::FileId::MAX,
+    ));
+    let mut hir = arandu_middle::hir::HirProgram {
+        span: Span::new(0, 0, 0),
+        module: None,
+        decls: Vec::new(),
+        pool: arandu_middle::hir::HirPool::new(),
+    };
+    let mut diagnostics = Vec::new();
+    let mut identity = blake3::Hasher::new();
+    identity.update(b"FileStdlibHeaders/v1");
+    for (path, source) in stdlib {
+        let surface = declaration_surface(db, source);
+        identity.update(path.as_os_str().as_encoded_bytes());
+        identity.update(&[0]);
+        identity.update(surface.stable_hash().as_bytes());
+        diagnostics.extend(surface.artifacts.diagnostics.iter().cloned());
+        let linked = surface.artifacts.hir.as_ref()?;
+        arandu_semantics::link_hir_module(
+            &mut checked,
+            &mut hir,
+            &surface.artifacts.type_check,
+            linked,
+        );
+    }
+    let hash = identity.finalize();
+    Some(HashEq::with_identity(
+        std::sync::Arc::new(PreparedHir {
+            hir: Some(hir),
+            type_check: checked,
+            diagnostics,
+            source_fingerprint: hash,
+        }),
+        hash,
+    ))
+}
+
 /// The header context of the local unit of `item`: its own typing context,
 /// the stdlib files its file imports, and the header of every user
 /// declaration its typing reaches. `None` falls back to the file context:
@@ -228,6 +293,7 @@ pub(crate) fn unit_headers(
     let reach = crate::passes::item_reach(db, file, item).as_ref()?;
     let (context, _) = crate::passes::item_context(db, file, item).as_ref()?;
     let mut checked = crate::passes::without_positions(context);
+    let base_checked_hash = checked.stable_hash();
     let mut hir = arandu_middle::hir::HirProgram {
         span: Span::new(0, 0, 0),
         module: None,
@@ -235,33 +301,14 @@ pub(crate) fn unit_headers(
         pool: arandu_middle::hir::HirPool::new(),
     };
 
-    // The stdlib closure of the file's imports, by path for a stable order.
-    let mut stdlib = BTreeMap::new();
-    let mut visited = BTreeSet::new();
-    let mut pending = vec![file];
-    while let Some(current) = pending.pop() {
-        if !visited.insert(*current.file_id(db)) {
-            continue;
-        }
-        if trusted_stdlib(db, current) {
-            stdlib.insert(current.path(db).clone(), current);
-        }
-        for (_, imported) in crate::passes::module_import_edges(db, current) {
-            if let Some(imported) = imported.and_then(|id| db.source_file_by_id(id)) {
-                pending.push(imported);
-            }
-        }
-    }
-    let mut diagnostics = Vec::new();
-    for source in stdlib.values() {
-        let surface = declaration_surface(db, *source);
-        diagnostics.extend(surface.artifacts.diagnostics.iter().cloned());
-        let linked = surface.artifacts.hir.as_ref()?;
+    let stdlib_headers = file_stdlib_headers(db, file).as_ref()?;
+    let diagnostics = stdlib_headers.diagnostics.clone();
+    if let Some(stdlib_hir) = &stdlib_headers.hir {
         arandu_semantics::link_hir_module(
             &mut checked,
             &mut hir,
-            &surface.artifacts.type_check,
-            linked,
+            &stdlib_headers.type_check,
+            stdlib_hir,
         );
     }
 
@@ -301,9 +348,16 @@ pub(crate) fn unit_headers(
         let owner = owner_item(db, source, symbol)?;
         headers.insert((source.path(db).clone(), owner.local_id.0), (source, owner));
     }
-    for &(source, owner) in headers.values() {
-        let slice = declaration_slice(db, source, owner).as_ref()?;
+    let mut identity = blake3::Hasher::new();
+    identity.update(b"UnitHeaders/v1");
+    identity.update(base_checked_hash.as_bytes());
+    identity.update(stdlib_headers.stable_hash().as_bytes());
+    for ((path, owner_local), (source, owner)) in &headers {
+        let slice = declaration_slice(db, *source, *owner).as_ref()?;
         let linked = slice.hir.as_ref()?;
+        identity.update(path.as_os_str().as_encoded_bytes());
+        identity.update(&owner_local.to_le_bytes());
+        identity.update(slice.stable_hash().as_bytes());
         arandu_semantics::link_hir_module(&mut checked, &mut hir, &slice.type_check, linked);
         // Linking carries host names but not the `@Export` set.
         checked
@@ -314,6 +368,10 @@ pub(crate) fn unit_headers(
             .symbols_mut()
             .cold_functions
             .extend(slice.type_check.symbols.cold_functions.iter().copied());
+    }
+    for &symbol in reach {
+        identity.update(&symbol.file_id.to_le_bytes());
+        identity.update(&symbol.local_id.0.to_le_bytes());
     }
 
     // The typing context holds the signature-level host names of every
@@ -376,10 +434,14 @@ pub(crate) fn unit_headers(
             return None;
         }
     }
-    Some(HashEq::new(PreparedHir {
-        hir: Some(hir),
-        type_check: checked,
-        diagnostics,
-        source_fingerprint: blake3::Hash::from([0; 32]),
-    }))
+    let hash = identity.finalize();
+    Some(HashEq::with_identity(
+        std::sync::Arc::new(PreparedHir {
+            hir: Some(hir),
+            type_check: checked,
+            diagnostics,
+            source_fingerprint: hash,
+        }),
+        hash,
+    ))
 }

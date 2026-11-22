@@ -22,11 +22,38 @@ impl LowerCtx<'_> {
         let bb_else = self.new_block_at(self.hir.pool.block(else_block).span);
         let bb_join = self.new_block();
 
-        let dest = target.unwrap_or_else(|| self.new_temp_id(expr.ty));
-
         self.lower_condition_branch(condition, bb_then, bb_else, symbols)?;
         self.seal_block(bb_then);
         self.seal_block(bb_else);
+
+        if matches!(self.resolve_ty(expr.ty), ArType::Void) {
+            self.builder.current_block = Some(bb_then);
+            self.lower_block(then_block, symbols)?;
+            if self.builder.current_block.is_some() {
+                self.emit_goto(bb_join);
+            }
+
+            self.builder.current_block = Some(bb_else);
+            self.lower_block(else_block, symbols)?;
+            if self.builder.current_block.is_some() {
+                self.emit_goto(bb_join);
+            }
+
+            self.finish_join(bb_join);
+            return if let Some(dest) = target {
+                if self.builder.current_block.is_some() {
+                    self.emit_assign_temp(
+                        dest,
+                        AmirRvalue::Use(AmirOperand::Constant(AmirConstant::Nil)),
+                    );
+                }
+                Ok(AmirOperand::Copy(dest))
+            } else {
+                Ok(AmirOperand::Constant(AmirConstant::Nil))
+            };
+        }
+
+        let dest = target.unwrap_or_else(|| self.new_temp_id(expr.ty));
 
         // Then branch
         self.builder.current_block = Some(bb_then);

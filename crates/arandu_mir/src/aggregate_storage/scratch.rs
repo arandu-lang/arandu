@@ -1,4 +1,4 @@
-use super::cycles::{block_in_cycle, block_param_safe};
+use super::cycles::{block_is_cyclic_merge, block_param_safe};
 use super::string_origin::independent_string_result;
 use arandu_middle::amir::{
     AmirFunc, AmirOperand, AmirProjection, AmirRvalue, AmirStmt, AmirTerminator, TempId,
@@ -291,11 +291,13 @@ pub fn function_scratch_safe(
     // overwrite or reclaim that backing while the phi still references it;
     // value-passed handles and acyclic joins cannot re-enter a predecessor site.
     let mut covered_block_params = 0usize;
+    let mut doms: Option<arandu_middle::amir::Dominators> = None;
     for block in &function.blocks {
         let params = function.block_params(block.params);
         covered_block_params = covered_block_params.saturating_add(params.len());
         if !params.is_empty() {
-            let in_cycle = block_in_cycle(function, block.id);
+            let doms = doms.get_or_insert_with(|| arandu_middle::amir::Dominators::new(function));
+            let in_cycle = block_is_cyclic_merge(function, doms, block.id);
             if params
                 .iter()
                 .any(|parameter| !block_param_safe(parameter.ty, interner, in_cycle, 0))

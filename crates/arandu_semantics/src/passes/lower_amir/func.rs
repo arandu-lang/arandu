@@ -136,7 +136,7 @@ pub(crate) fn lower_func(
                 stmts
                     .last()
                     .is_some_and(|&sid| match hir.pool.stmt(sid).kind {
-                        crate::hir::HirStmtKind::Expr(_) => true,
+                        crate::hir::HirStmtKind::Expr(_) => returns_value,
                         // A trailing `match` is the value of a function that has one.
                         crate::hir::HirStmtKind::Match { .. } => returns_value && !f.is_async,
                         _ => false,

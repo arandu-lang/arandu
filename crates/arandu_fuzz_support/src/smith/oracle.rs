@@ -1616,13 +1616,25 @@ pub(super) fn execute_llvm(
         .arg("-o")
         .arg(&executable_path);
     compile_command.args(arandu_middle::TargetSpec::for_host().cc_link_args());
+    // The runtime here was built by MSVC Rust: its C shims import the
+    // `printf` family, which the UCRT only provides inline.
+    if cfg!(target_env = "msvc") {
+        compile_command.arg("-llegacy_stdio_definitions");
+    }
     let compile = run_with_timeout(&mut compile_command, BACKEND_PROCESS_TIMEOUT)
         .map_err(|error| format!("clang: {error}"))?;
     if !compile.status.success() {
+        let stdout = String::from_utf8_lossy(&compile.stdout);
+        let stderr = captured_stderr(&compile);
         return Err(format!(
-            "clang exited with {}: {}",
+            "clang exited with {}: {}{}",
             compile.status,
-            captured_stderr(&compile)
+            stderr,
+            if stdout.trim().is_empty() {
+                String::new()
+            } else {
+                format!("\nstdout:\n{stdout}")
+            }
         ));
     }
 

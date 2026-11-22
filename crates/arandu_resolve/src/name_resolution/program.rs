@@ -244,6 +244,23 @@ impl<'a> Resolver<'a> {
                 .set_lang_item(sym, arandu_middle::symbol_table::LangItem::Option);
         }
 
+        for (name, lang_item) in [
+            ("Ok", arandu_middle::symbol_table::LangItem::ResultOk),
+            ("Err", arandu_middle::symbol_table::LangItem::ResultErr),
+            ("Some", arandu_middle::symbol_table::LangItem::OptionSome),
+            ("None", arandu_middle::symbol_table::LangItem::OptionNone),
+        ] {
+            if let Ok(sym) = self.symbols.define_with_visibility(
+                global_scope,
+                name,
+                SymbolKind::EnumVariant,
+                span,
+                arandu_parser::Visibility::Public,
+            ) {
+                self.symbols.set_lang_item(sym, lang_item);
+            }
+        }
+
         let coro_sym = self
             .symbols
             .define_with_visibility(

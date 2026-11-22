@@ -21,7 +21,7 @@ use crate::diagnostics::DiagCode;
 
 mod walk;
 
-use walk::{apply_block, apply_stmt, compute_move_in, temp_origins};
+use walk::{apply_block, apply_stmt, apply_terminator, compute_move_in};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LocalMoveState {
@@ -30,60 +30,62 @@ enum LocalMoveState {
     MaybeMoved,
 }
 
-/// Ownership paths after each block, computed by the same transfer function as
-/// diagnostics so cleanup cannot diverge from the move checker.
+/// Ownership paths on entry and after each block, computed from a single
+/// dataflow pass so cleanup cannot diverge from the move checker.
 #[must_use]
-pub(crate) fn move_states_at_block_exit(func: &AmirFunc) -> Vec<MoveState> {
+pub(crate) fn move_states_entry_and_exit(func: &AmirFunc) -> (Vec<MoveState>, Vec<MoveState>) {
     let bump = bumpalo::Bump::new();
-    let Some(block_in) = compute_move_in(func, &bump) else {
-        return vec![MoveState::new(func.locals.len()); func.blocks.len()];
+    let Some((block_in, origins)) = compute_move_in(func, &bump) else {
+        let empty = vec![MoveState::new(func.locals.len()); func.blocks.len()];
+        return (empty.clone(), empty);
     };
-    let origins = temp_origins(func, &bump);
-    block_in
-        .iter()
-        .enumerate()
-        .map(|(index, incoming)| {
-            let mut state = incoming.clone();
-            apply_block(BlockId::from_usize(index), func, &origins, &mut state, None);
-            state
-        })
-        .collect()
-}
-
-/// Ownership paths on entry to each block: the join of its predecessors.
-#[must_use]
-pub(crate) fn move_states_at_block_entry(func: &AmirFunc) -> Vec<MoveState> {
-    let bump = bumpalo::Bump::new();
-    match compute_move_in(func, &bump) {
-        Some(block_in) => block_in.iter().cloned().collect(),
-        None => vec![MoveState::new(func.locals.len()); func.blocks.len()],
+    let mut entry = Vec::with_capacity(func.blocks.len());
+    let mut exit = Vec::with_capacity(func.blocks.len());
+    for (index, incoming) in block_in.into_iter().enumerate() {
+        let mut state = incoming.clone();
+        apply_block(BlockId::from_usize(index), func, &origins, &mut state, None);
+        entry.push(incoming);
+        exit.push(state);
     }
+    (entry, exit)
 }
 
-/// Move-state snapshot immediately before every statement, used by cleanup
-/// elaboration so replacement drops agree with the ownership checker.
-pub(crate) fn move_states_before_statements(func: &AmirFunc) -> Vec<Vec<MoveState>> {
+/// Ownership paths after each block and immediately before every statement,
+/// computed from a single dataflow pass for drop elaboration.
+#[must_use]
+pub(crate) fn move_states_exit_and_before_statements(
+    func: &AmirFunc,
+) -> (Vec<MoveState>, Vec<Vec<MoveState>>) {
     let bump = bumpalo::Bump::new();
-    let Some(block_in) = compute_move_in(func, &bump) else {
-        return func
+    let Some((block_in, origins)) = compute_move_in(func, &bump) else {
+        let exit = vec![MoveState::new(func.locals.len()); func.blocks.len()];
+        let before = func
             .blocks
             .iter()
             .map(|block| vec![MoveState::new(func.locals.len()); block.statements.len_usize()])
             .collect();
+        return (exit, before);
     };
-    let origins = temp_origins(func, &bump);
-    func.blocks
-        .iter()
-        .map(|block| {
-            let mut state = block_in[block.id.as_usize()].clone();
-            let mut snapshots = Vec::with_capacity(block.statements.len_usize());
-            for stmt in func.block_stmts(block.id) {
-                snapshots.push(state.clone());
-                apply_stmt(stmt, func, &origins, &mut state, &mut None);
-            }
-            snapshots
-        })
-        .collect()
+    let mut exit = Vec::with_capacity(func.blocks.len());
+    let mut before = Vec::with_capacity(func.blocks.len());
+    for (block, incoming) in func.blocks.iter().zip(block_in.into_iter()) {
+        let mut state = incoming;
+        let mut snapshots = Vec::with_capacity(block.statements.len_usize());
+        for stmt in func.block_stmts(block.id) {
+            snapshots.push(state.clone());
+            apply_stmt(stmt, func, &origins, &mut state, &mut None);
+        }
+        apply_terminator(block.id, func, &origins, &mut state, &mut None);
+        before.push(snapshots);
+        exit.push(state);
+    }
+    (exit, before)
+}
+
+/// Move-state snapshot immediately before every statement, used by cleanup
+/// elaboration passes that only fire when indirect/dynamic drops exist.
+pub(crate) fn move_states_before_statements(func: &AmirFunc) -> Vec<Vec<MoveState>> {
+    move_states_exit_and_before_statements(func).1
 }
 
 #[derive(Debug, Clone, Eq, Default)]
@@ -131,28 +133,53 @@ impl MoveState {
     }
 
     fn join(&self, other: &Self, num_locals: usize) -> Self {
-        let mut joined = Self::new(num_locals);
-        for index in 0..num_locals {
-            let local = LocalId::from_usize(index);
-            joined.set(
-                local,
-                join_move_state(self.root_state(local), other.root_state(local)),
-            );
+        let num_words = num_locals.div_ceil(64);
+        let self_moved = self.moved.words();
+        let other_moved = other.moved.words();
+        let self_maybe = self.maybe_moved.words();
+        let other_maybe = other.maybe_moved.words();
+
+        let mut moved_words = Vec::with_capacity(num_words);
+        let mut maybe_words = Vec::with_capacity(num_words);
+        for i in 0..num_words {
+            let sm = self_moved.get(i).copied().unwrap_or(0);
+            let om = other_moved.get(i).copied().unwrap_or(0);
+            let sy = self_maybe.get(i).copied().unwrap_or(0);
+            let oy = other_maybe.get(i).copied().unwrap_or(0);
+            // Truth table for join_move_state(a, b) with mutually exclusive (moved, maybe):
+            //   Moved + Moved           -> Moved        (sm & om)
+            //   Any mismatch or Maybe   -> MaybeMoved   (sy | oy | (sm ^ om))
+            //   Available + Available   -> Available    (0, 0)
+            moved_words.push(sm & om);
+            maybe_words.push(sy | oy | (sm ^ om));
         }
 
-        let field_places = self
-            .moved_fields
-            .iter()
-            .chain(&self.maybe_moved_fields)
-            .chain(&other.moved_fields)
-            .chain(&other.maybe_moved_fields);
-        for place in field_places {
-            if joined.has_exact_field(place) {
-                continue;
+        let mut joined = Self {
+            moved: BitSet::from_words(moved_words),
+            maybe_moved: BitSet::from_words(maybe_words),
+            moved_fields: SmallVec::new(),
+            maybe_moved_fields: SmallVec::new(),
+        };
+
+        if !self.moved_fields.is_empty()
+            || !self.maybe_moved_fields.is_empty()
+            || !other.moved_fields.is_empty()
+            || !other.maybe_moved_fields.is_empty()
+        {
+            let field_places = self
+                .moved_fields
+                .iter()
+                .chain(&self.maybe_moved_fields)
+                .chain(&other.moved_fields)
+                .chain(&other.maybe_moved_fields);
+            for place in field_places {
+                if joined.has_exact_field(place) {
+                    continue;
+                }
+                let state =
+                    join_move_state(self.field_fact_state(place), other.field_fact_state(place));
+                joined.push_field_state(place.clone(), state);
             }
-            let state =
-                join_move_state(self.field_fact_state(place), other.field_fact_state(place));
-            joined.push_field_state(place.clone(), state);
         }
         joined
     }
@@ -419,7 +446,7 @@ fn places_overlap(left: &AmirPlace, right: &AmirPlace) -> bool {
 #[must_use]
 pub fn moved_in_counts(func: &AmirFunc) -> Vec<u32> {
     let bump = bumpalo::Bump::new();
-    let Some(block_in) = compute_move_in(func, &bump) else {
+    let Some((block_in, _)) = compute_move_in(func, &bump) else {
         return vec![0; func.blocks.len()];
     };
     block_in
@@ -454,13 +481,11 @@ pub fn check_moves_by_block(
     types: &dyn arandu_middle::type_context::AmirTypeContext,
 ) -> Vec<(crate::amir::BlockId, Diagnostic)> {
     let bump = bumpalo::Bump::new();
-    let Some(block_in) = compute_move_in(func, &bump) else {
+    let Some((mut block_in, temp_origins)) = compute_move_in(func, &bump) else {
         return Vec::new();
     };
 
-    let temp_origins = temp_origins(func, &bump);
     let mut diagnostics = Vec::new();
-    let mut block_in = block_in;
     for block in &func.blocks {
         // Take ownership of each IN set — only used once during the check walk.
         let mut state = std::mem::take(&mut block_in[block.id.as_usize()]);

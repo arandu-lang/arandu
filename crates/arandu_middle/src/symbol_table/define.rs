@@ -345,7 +345,9 @@ impl super::SymbolTable {
         span: Span,
         visibility: crate::Visibility,
     ) -> Result<SymbolId, SymbolId> {
-        if let Some(existing) = self.find_in_scope(scope, name) {
+        if name != "_"
+            && let Some(existing) = self.find_in_scope(scope, name)
+        {
             return Err(existing);
         }
 
@@ -365,7 +367,9 @@ impl super::SymbolTable {
             visibility,
             lang_item: None,
         });
-        self.scope_mut(scope).symbols.push(id);
+        if name != "_" {
+            self.scope_mut(scope).symbols.push(id);
+        }
         Ok(id)
     }
 

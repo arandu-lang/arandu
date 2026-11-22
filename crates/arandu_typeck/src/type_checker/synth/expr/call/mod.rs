@@ -210,6 +210,62 @@ fn exported_entry_is_internal(checker: &TypeChecker<'_>, symbol: arandu_middle::
         && scalar(ret, true)
 }
 
+fn synth_result_ctor_value_type(
+    checker: &mut TypeChecker<'_>,
+    member: &str,
+    expected: Option<TypeId>,
+) -> TypeId {
+    match member {
+        "Ok" => {
+            let (ok_id, err_id) = match expected.map(|e| checker.resolve(e)) {
+                Some(ArType::Result(ok, err)) => (ok, err),
+                _ => {
+                    let hole = checker.intern(ArType::Error);
+                    let err_lit = checker.intern(ArType::Err);
+                    (hole, err_lit)
+                }
+            };
+            let res_id = checker.intern(ArType::Result(ok_id, err_id));
+            let func_ty = ArType::func(&[ok_id], res_id, &checker.type_info.type_interner);
+            checker.intern(func_ty)
+        }
+        "Err" => {
+            let (ok_id, err_id) = match expected.map(|e| checker.resolve(e)) {
+                Some(ArType::Result(ok, err)) => (ok, err),
+                _ => {
+                    let hole = checker.intern(ArType::Error);
+                    let err_lit = checker.intern(ArType::Err);
+                    (hole, err_lit)
+                }
+            };
+            let res_id = checker.intern(ArType::Result(ok_id, err_id));
+            let func_ty = ArType::func(&[err_id], res_id, &checker.type_info.type_interner);
+            checker.intern(func_ty)
+        }
+        _ => checker.intern(ArType::Error),
+    }
+}
+
+fn synth_option_ctor_value_type(
+    checker: &mut TypeChecker<'_>,
+    member: &str,
+    expected: Option<TypeId>,
+) -> TypeId {
+    let inner_id = match expected.map(|e| checker.resolve(e)) {
+        Some(ArType::Option(inner)) => inner,
+        _ => checker.intern(ArType::Error),
+    };
+    match member {
+        "Some" => {
+            let opt_id = checker.intern(ArType::Option(inner_id));
+            let func_ty = ArType::func(&[inner_id], opt_id, &checker.type_info.type_interner);
+            checker.intern(func_ty)
+        }
+        "None" => checker.intern(ArType::Option(inner_id)),
+        _ => checker.intern(ArType::Error),
+    }
+}
+
 pub(super) fn synth_call_expr(
     checker: &mut TypeChecker<'_>,
     expr: ExprId,
@@ -220,6 +276,27 @@ pub(super) fn synth_call_expr(
     match kind {
         ExprKind::Path { path: _ } => {
             if let Some(symbol_id) = checker.resolved.expr_symbol(expr) {
+                match checker.symbols.try_get(symbol_id).and_then(|s| s.lang_item) {
+                    Some(arandu_middle::symbol_table::LangItem::OptionNone) => {
+                        return Some(synth_option_ctor_value_type(checker, "None", expected));
+                    }
+                    Some(arandu_middle::symbol_table::LangItem::OptionSome)
+                        if checker.direct_callee != Some(expr) =>
+                    {
+                        return Some(synth_option_ctor_value_type(checker, "Some", expected));
+                    }
+                    Some(arandu_middle::symbol_table::LangItem::ResultOk)
+                        if checker.direct_callee != Some(expr) =>
+                    {
+                        return Some(synth_result_ctor_value_type(checker, "Ok", expected));
+                    }
+                    Some(arandu_middle::symbol_table::LangItem::ResultErr)
+                        if checker.direct_callee != Some(expr) =>
+                    {
+                        return Some(synth_result_ctor_value_type(checker, "Err", expected));
+                    }
+                    _ => {}
+                }
                 if checker
                     .symbols
                     .try_get(symbol_id)
@@ -343,54 +420,18 @@ pub(super) fn synth_call_expr(
                 .get(&type_name.span.into())
                 .copied();
             if type_symbol.is_some_and(|symbol| checker.symbols.is_result_type(symbol)) {
-                return Some(match member.as_str() {
-                    "Ok" => {
-                        let (ok_id, err_id) = match expected.map(|e| checker.resolve(e)) {
-                            Some(ArType::Result(ok, err)) => (ok, err),
-                            _ => {
-                                let hole = checker.intern(ArType::Error);
-                                let err_lit = checker.intern(ArType::Err);
-                                (hole, err_lit)
-                            }
-                        };
-                        let res_id = checker.intern(ArType::Result(ok_id, err_id));
-                        let func_ty =
-                            ArType::func(&[ok_id], res_id, &checker.type_info.type_interner);
-                        checker.intern(func_ty)
-                    }
-                    "Err" => {
-                        let (ok_id, err_id) = match expected.map(|e| checker.resolve(e)) {
-                            Some(ArType::Result(ok, err)) => (ok, err),
-                            _ => {
-                                let hole = checker.intern(ArType::Error);
-                                let err_lit = checker.intern(ArType::Err);
-                                (hole, err_lit)
-                            }
-                        };
-                        let res_id = checker.intern(ArType::Result(ok_id, err_id));
-                        let func_ty =
-                            ArType::func(&[err_id], res_id, &checker.type_info.type_interner);
-                        checker.intern(func_ty)
-                    }
-                    _ => checker.intern(ArType::Error),
-                });
+                return Some(synth_result_ctor_value_type(
+                    checker,
+                    member.as_str(),
+                    expected,
+                ));
             }
             if type_symbol.is_some_and(|symbol| checker.symbols.is_option_type(symbol)) {
-                let inner_id = match expected.map(|e| checker.resolve(e)) {
-                    Some(ArType::Option(inner)) => inner,
-                    _ => checker.intern(ArType::Error),
-                };
-                return Some(match member.as_str() {
-                    "Some" => {
-                        let opt_ty = ArType::Option(inner_id);
-                        let opt_id = checker.intern(opt_ty);
-                        let func_ty =
-                            ArType::func(&[inner_id], opt_id, &checker.type_info.type_interner);
-                        checker.intern(func_ty)
-                    }
-                    "None" => checker.intern(ArType::Option(inner_id)),
-                    _ => checker.intern(ArType::Error),
-                });
+                return Some(synth_option_ctor_value_type(
+                    checker,
+                    member.as_str(),
+                    expected,
+                ));
             }
             if type_symbol.is_some_and(|symbol| checker.symbols.is_poll_type(symbol)) {
                 let inner = match expected.map(|e| checker.resolve(e)) {

@@ -7,8 +7,8 @@ use crate::type_checker::constraints::ConstraintOrigin;
 use crate::type_checker::types::{self, ArType, Primitive};
 use arandu_middle::types::type_interner::TypeId;
 
-fn is_equality_comparable(ty: &ArType) -> bool {
-    matches!(
+fn is_equality_comparable(checker: &TypeChecker<'_>, ty: &ArType) -> bool {
+    if matches!(
         ty,
         ArType::Primitive(_)
             | ArType::Ptr(_)
@@ -21,7 +21,28 @@ fn is_equality_comparable(ty: &ArType) -> bool {
             | ArType::IntLiteral
             | ArType::FloatLiteral
             | ArType::GenRef
-    )
+    ) {
+        return true;
+    }
+    if let ArType::Named(sym, _) = ty
+        && !checker.type_info.struct_fields.contains_key(sym)
+        && checker
+            .symbols
+            .try_get(*sym)
+            .is_some_and(|s| matches!(s.kind, arandu_middle::SymbolKind::Enum))
+    {
+        let mut has_variant = false;
+        for (owner, shape) in checker.type_info.enum_variants.values() {
+            if owner == sym {
+                has_variant = true;
+                if !matches!(shape, crate::type_checker::EnumPayloadShape::Unit) {
+                    return false;
+                }
+            }
+        }
+        return has_variant;
+    }
+    false
 }
 
 pub(super) fn synth_binary_result(
@@ -259,8 +280,8 @@ pub(super) fn synth_binary_result(
             let left_ty = checker.resolve(left_ty_id);
             let right_ty = checker.resolve(right_ty_id);
             if !checker.unify_ids(left_ty_id, right_ty_id)
-                || !is_equality_comparable(&left_ty)
-                || !is_equality_comparable(&right_ty)
+                || !is_equality_comparable(checker, &left_ty)
+                || !is_equality_comparable(checker, &right_ty)
             {
                 checker.add_constraint(
                     left_ty_id,

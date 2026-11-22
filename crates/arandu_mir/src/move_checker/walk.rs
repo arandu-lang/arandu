@@ -26,7 +26,10 @@ type MoveDiagSink<'a> = Option<MoveDiagnostics<'a>>;
 pub(super) fn compute_move_in<'bump>(
     func: &AmirFunc,
     bump: &'bump bumpalo::Bump,
-) -> Option<bumpalo::collections::Vec<'bump, MoveState>> {
+) -> Option<(
+    bumpalo::collections::Vec<'bump, MoveState>,
+    bumpalo::collections::Vec<'bump, Option<AmirPlace>>,
+)> {
     let num_locals = func.locals.len();
     let num_blocks = func.blocks.len();
 
@@ -92,7 +95,7 @@ pub(super) fn compute_move_in<'bump>(
         }
     }
 
-    Some(block_in)
+    Some((block_in, temp_origins))
 }
 
 pub(super) fn temp_origins<'bump>(
@@ -168,7 +171,12 @@ pub(super) fn temp_origins<'bump>(
                                 found_origin = Some(place);
                             }
                         }
-                        AmirRvalue::Use(AmirOperand::Copy(t) | AmirOperand::Move(t)) => {
+                        AmirRvalue::Use(AmirOperand::Copy(t)) => {
+                            found_origin = origins[t.as_usize()].clone();
+                        }
+                        AmirRvalue::Use(AmirOperand::Move(t))
+                            if func.temps[t.as_usize()].is_copy =>
+                        {
                             found_origin = origins[t.as_usize()].clone();
                         }
                         _ => {}
@@ -274,7 +282,16 @@ pub(super) fn apply_block(
     for stmt in func.block_stmts(block) {
         apply_stmt(stmt, func, temp_origins, state, &mut diagnostics);
     }
+    apply_terminator(block, func, temp_origins, state, &mut diagnostics);
+}
 
+pub(super) fn apply_terminator(
+    block: crate::amir::BlockId,
+    func: &AmirFunc,
+    temp_origins: &[Option<AmirPlace>],
+    state: &mut MoveState,
+    diagnostics: &mut MoveDiagSink<'_>,
+) {
     match &func.block(block).terminator {
         AmirTerminator::Branch {
             condition,
@@ -282,19 +299,12 @@ pub(super) fn apply_block(
             false_args,
             ..
         } => {
-            check_operand_read(condition, func, temp_origins, state, &mut diagnostics);
+            check_operand_read(condition, func, temp_origins, state, diagnostics);
             let mut true_state = state.clone();
             let mut false_state = state.clone();
 
             for arg in true_args {
-                consume_operand(
-                    arg,
-                    func,
-                    temp_origins,
-                    &mut true_state,
-                    &mut diagnostics,
-                    false,
-                );
+                consume_operand(arg, func, temp_origins, &mut true_state, diagnostics, false);
             }
             for arg in false_args {
                 consume_operand(
@@ -302,7 +312,7 @@ pub(super) fn apply_block(
                     func,
                     temp_origins,
                     &mut false_state,
-                    &mut diagnostics,
+                    diagnostics,
                     false,
                 );
             }
@@ -317,20 +327,13 @@ pub(super) fn apply_block(
             otherwise,
             ..
         } => {
-            check_operand_read(discriminant, func, temp_origins, state, &mut diagnostics);
+            check_operand_read(discriminant, func, temp_origins, state, diagnostics);
             let mut arm_states = Vec::with_capacity(targets.len() + 1);
 
             for (_, _, args) in targets {
                 let mut arm_state = state.clone();
                 for arg in args {
-                    consume_operand(
-                        arg,
-                        func,
-                        temp_origins,
-                        &mut arm_state,
-                        &mut diagnostics,
-                        false,
-                    );
+                    consume_operand(arg, func, temp_origins, &mut arm_state, diagnostics, false);
                 }
                 arm_states.push(arm_state);
             }
@@ -341,7 +344,7 @@ pub(super) fn apply_block(
                     func,
                     temp_origins,
                     &mut otherwise_state,
-                    &mut diagnostics,
+                    diagnostics,
                     false,
                 );
             }
@@ -351,17 +354,17 @@ pub(super) fn apply_block(
         }
         AmirTerminator::Goto { args, .. } => {
             for arg in args {
-                consume_operand(arg, func, temp_origins, state, &mut diagnostics, false);
+                consume_operand(arg, func, temp_origins, state, diagnostics, false);
             }
         }
         AmirTerminator::Suspend { future, args, .. } => {
-            check_operand_read(future, func, temp_origins, state, &mut diagnostics);
+            check_operand_read(future, func, temp_origins, state, diagnostics);
             for arg in args {
-                consume_operand(arg, func, temp_origins, state, &mut diagnostics, false);
+                consume_operand(arg, func, temp_origins, state, diagnostics, false);
             }
         }
         AmirTerminator::Return => {
-            report_unrestored_reference_moves(func, temp_origins, state, &mut diagnostics);
+            report_unrestored_reference_moves(func, temp_origins, state, diagnostics);
         }
         AmirTerminator::Unreachable | AmirTerminator::Trap(_) => {}
     }

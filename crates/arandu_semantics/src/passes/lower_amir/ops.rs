@@ -69,13 +69,14 @@ impl LowerCtx<'_> {
         let l_op = self.typed_integer_constant(left, l_op);
         let r_op = self.typed_integer_constant(right, r_op);
         let dest = target.unwrap_or_else(|| self.new_temp_id(expr_ty));
-        if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual)
-            && matches!(
-                self.resolve_ty(self.hir.pool.expr(left).ty),
-                ArType::Option(_) | ArType::Result(_, _)
-            )
-        {
-            let equal = self.lower_value_equality(l_op, r_op, self.hir.pool.expr(left).ty)?;
+        let left_ty_id = self.hir.pool.expr(left).ty;
+        let is_enum_eq = match self.resolve_ty(left_ty_id) {
+            ArType::Option(_) | ArType::Result(_, _) => true,
+            ArType::Named(sym, _) => !self.tc.type_info.struct_fields.contains_key(&sym),
+            _ => false,
+        };
+        if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) && is_enum_eq {
+            let equal = self.lower_value_equality(l_op, r_op, left_ty_id)?;
             let value = if op == BinaryOp::NotEqual {
                 AmirRvalue::Unary {
                     op: UnaryOp::Not,

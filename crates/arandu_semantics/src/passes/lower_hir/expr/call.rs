@@ -2,7 +2,7 @@ use crate::TypeCheckResult;
 use crate::diagnostics::Diagnostic;
 use crate::hir::{HirExpr, HirExprKind};
 use crate::passes::type_checker::types::Primitive;
-use arandu_middle::types::{ArType, TypeInterner};
+use arandu_middle::types::ArType;
 use arandu_parser::ast_pool::{AstPool, ExprId, ExprKind};
 
 pub(super) fn lower_call(
@@ -52,15 +52,7 @@ pub(super) fn lower_call(
                             | crate::hir::ResultCtorVariant::None
                     )
                 {
-                    let dummy = hir_pool.alloc_expr(HirExpr {
-                        kind: HirExprKind::Bool(false),
-                        ty: TypeInterner::preinterned_primitive(Primitive::Bool),
-                        span,
-                    });
-                    let kind = HirExprKind::ResultCtor {
-                        variant,
-                        value: dummy,
-                    };
+                    let kind = super::dummy_unit_ctor_kind(hir_pool, variant, span);
                     let ty = super::expr_type_for_kind(type_check, hir_pool, &kind, fallback_ty);
                     return Ok(HirExpr { kind, ty, span });
                 }

@@ -161,6 +161,15 @@ impl<'a> Resolver<'a> {
             self.record_type_ref(name.span, symbol);
             return true;
         }
+        if name.path.len() == 1
+            && matches!(root.as_str(), "void" | "Err")
+            && self
+                .symbols
+                .lookup_any(scope, root)
+                .is_none_or(|sym| self.symbols.get(sym).scope == crate::ScopeId(0))
+        {
+            return true;
+        }
         if let Some(symbol) = self.symbols.lookup_any(scope, root)
             && self.symbols.get(symbol).kind.is_value()
         {

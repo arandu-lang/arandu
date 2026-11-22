@@ -17,6 +17,18 @@ pub(super) fn lower_path(
         unreachable!();
     };
     let symbol = require_value_symbol(&type_check.resolved, expr, span)?;
+    if type_check
+        .symbols
+        .try_get(symbol)
+        .and_then(|entry| entry.lang_item)
+        == Some(arandu_middle::symbol_table::LangItem::OptionNone)
+    {
+        return Ok(super::dummy_unit_ctor_kind(
+            hir_pool,
+            crate::hir::ResultCtorVariant::None,
+            span,
+        ));
+    }
     if let Some(kind) = generic_function_value(type_check, hir_pool, expr, symbol, span) {
         return Ok(kind);
     }
@@ -252,15 +264,7 @@ pub(super) fn lower_type_path(
                         | crate::hir::ResultCtorVariant::PollPending
                 )
             }) {
-                let dummy = hir_pool.alloc_expr(HirExpr {
-                    kind: HirExprKind::Bool(false),
-                    ty: TypeInterner::preinterned_primitive(Primitive::Bool),
-                    span,
-                });
-                HirExprKind::ResultCtor {
-                    variant,
-                    value: dummy,
-                }
+                super::dummy_unit_ctor_kind(hir_pool, variant, span)
             } else {
                 let type_symbol = require_type_symbol(&type_check.resolved, type_name.span)?;
                 let member_symbol = require_value_symbol(&type_check.resolved, expr, span)?;

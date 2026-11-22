@@ -99,7 +99,8 @@ pub fn check_stmt(checker: &mut TypeChecker<'_>, pool: &AstPool, stmt: &Stmt) {
             }
         }
         Stmt::Match { span: _, expr } => {
-            super::super::synth::synth_expr(checker, *expr);
+            let void_id = checker.intern(crate::type_checker::types::ArType::Void);
+            super::super::synth::synth_expr_expected(checker, *expr, Some(void_id));
         }
         Stmt::Free { span, expr } => {
             check_free_stmt(checker, *span, *expr);

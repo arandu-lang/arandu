@@ -123,32 +123,38 @@ pub fn initialized_at_block_exit(func: &AmirFunc) -> Vec<BitSet<LocalId>> {
         .collect()
 }
 
-/// Definitely initialized locals immediately before each statement.
-pub(crate) fn initialized_before_statements(func: &AmirFunc) -> Vec<Vec<BitSet<LocalId>>> {
+/// Definitely initialized locals after each block and immediately before each statement,
+/// computed from a single dataflow pass for drop elaboration.
+#[must_use]
+pub(crate) fn initialized_exit_and_before_statements(
+    func: &AmirFunc,
+) -> (Vec<BitSet<LocalId>>, Vec<Vec<BitSet<LocalId>>>) {
     let Some(block_in) = compute_init_in(func) else {
-        return func
+        let exit = vec![BitSet::with_capacity(func.locals.len()); func.blocks.len()];
+        let before = func
             .blocks
             .iter()
             .map(|block| {
                 vec![BitSet::with_capacity(func.locals.len()); block.statements.len_usize()]
             })
             .collect();
+        return (exit, before);
     };
-    func.blocks
-        .iter()
-        .map(|block| {
-            let mut initialized = block_in[block.id.as_usize()].clone();
-            for param in func.block_params(block.params) {
-                initialized.insert(param.local);
-            }
-            let mut snapshots = Vec::with_capacity(block.statements.len_usize());
-            for stmt in func.block_stmts(block.id) {
-                snapshots.push(initialized.clone());
-                transfer_init_stmt(stmt, &mut initialized);
-            }
-            snapshots
-        })
-        .collect()
+    let mut exit = Vec::with_capacity(func.blocks.len());
+    let mut before = Vec::with_capacity(func.blocks.len());
+    for (block, mut initialized) in func.blocks.iter().zip(block_in) {
+        for param in func.block_params(block.params) {
+            initialized.insert(param.local);
+        }
+        let mut snapshots = Vec::with_capacity(block.statements.len_usize());
+        for stmt in func.block_stmts(block.id) {
+            snapshots.push(initialized.clone());
+            transfer_init_stmt(stmt, &mut initialized);
+        }
+        before.push(snapshots);
+        exit.push(initialized);
+    }
+    (exit, before)
 }
 
 /// Run definite-initialization analysis over a single AMIR function.

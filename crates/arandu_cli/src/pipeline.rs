@@ -219,25 +219,24 @@ pub fn render_pipeline_failure(
     finish(Err(pipeline_failure(db, diagnostics, filepath)))
 }
 
-/// The failure of a pipeline whose diagnostics hold an error, rendered against
-/// the file of the first error.
+/// The failure of a pipeline whose diagnostics hold an error, rendered with
+/// each diagnostic mapped to its own `Span::file_id` source path.
 pub fn pipeline_failure(
     db: &dyn arandu_query::db::ArandCompilerDb,
     diagnostics: Vec<arandu_middle::Diagnostic>,
     filepath: &str,
 ) -> CliFailure {
-    let target_path = diagnostics
-        .iter()
-        .find(|diagnostic| matches!(diagnostic.severity, arandu_middle::Severity::Error))
-        .and_then(|diagnostic| {
-            (diagnostic.span.file_id != 0).then(|| {
-                db.file_path(diagnostic.span.file_id)
-                    .to_string_lossy()
-                    .to_string()
-            })
-        })
-        .unwrap_or_else(|| filepath.to_string());
-    diagnostics_failure(diagnostics, &target_path)
+    let mut file_paths = std::collections::BTreeMap::new();
+    for diagnostic in &diagnostics {
+        let fid = diagnostic.span.file_id;
+        if fid != 0 {
+            file_paths
+                .entry(fid)
+                .or_insert_with(|| db.file_path(fid).to_path_buf());
+        }
+    }
+    let fallback = (!filepath.is_empty()).then(|| PathBuf::from(filepath));
+    CliFailure::diagnostics_with_files(diagnostics, fallback, file_paths)
 }
 
 /// Render non-fatal Salsa diagnostics or terminate through the typed diagnostic path.

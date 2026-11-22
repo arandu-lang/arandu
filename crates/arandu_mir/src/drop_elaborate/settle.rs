@@ -32,8 +32,15 @@ struct Block {
 
 /// Destroys, on each edge into a join, the values other edges moved.
 pub(super) fn settle_conditional_moves(func: &mut AmirFunc, type_info: &dyn AmirTypeContext) {
-    let entry = crate::move_checker::move_states_at_block_entry(func);
-    let exit = crate::move_checker::move_states_at_block_exit(func);
+    let has_join_block = func
+        .blocks
+        .iter()
+        .any(|b| func.predecessors(b.id).len() >= 2);
+    if !has_join_block || !func.locals.iter().any(|l| type_needs_drop(l.ty, type_info)) {
+        return;
+    }
+
+    let (entry, exit) = crate::move_checker::move_states_entry_and_exit(func);
     let initialized = crate::definite_init::initialized_at_block_exit(func);
     let is_destructor = type_info.is_destructor_instance(func.symbol);
 

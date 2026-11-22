@@ -2,17 +2,67 @@ use std::sync::Arc;
 
 use super::method::contains_generic_params;
 use arandu_lexer::Span;
-use arandu_parser::TypeName;
-use arandu_parser::ast_pool::{AstPool, ExprId, ExprKind, IndexRange};
+use arandu_parser::ast_pool::{ExprId, ExprKind, IndexRange};
 
 use super::super::TypeChecker;
 use super::super::constraints::ConstraintOrigin;
 use super::super::types::{ArType, TypeId};
 use super::expr::{synth_expr, synth_expr_expected};
 
-fn type_path_member(pool: &AstPool, callee: ExprId) -> Option<(&TypeName, &str)> {
-    match pool.expr(callee) {
-        ExprKind::TypePath { type_name, member } => Some((type_name, member.as_str())),
+fn result_ctor_member(checker: &TypeChecker<'_>, callee: ExprId) -> Option<&'static str> {
+    match checker.pool.expr(callee) {
+        ExprKind::TypePath { type_name, member } => {
+            let is_result = checker
+                .resolved
+                .type_refs
+                .get(&type_name.span.into())
+                .is_some_and(|symbol| checker.symbols.is_result_type(*symbol));
+            if !is_result {
+                return None;
+            }
+            match member.as_str() {
+                "Ok" => Some("Ok"),
+                "Err" => Some("Err"),
+                _ => None,
+            }
+        }
+        ExprKind::Path { .. } => {
+            let symbol = checker.resolved.expr_symbol(callee)?;
+            match checker.symbols.try_get(symbol)?.lang_item? {
+                arandu_middle::symbol_table::LangItem::ResultOk => Some("Ok"),
+                arandu_middle::symbol_table::LangItem::ResultErr => Some("Err"),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn option_ctor_member(checker: &TypeChecker<'_>, callee: ExprId) -> Option<&'static str> {
+    match checker.pool.expr(callee) {
+        ExprKind::TypePath { type_name, member } => {
+            let is_option = checker
+                .resolved
+                .type_refs
+                .get(&type_name.span.into())
+                .is_some_and(|symbol| checker.symbols.is_option_type(*symbol));
+            if !is_option {
+                return None;
+            }
+            match member.as_str() {
+                "Some" => Some("Some"),
+                "None" => Some("None"),
+                _ => None,
+            }
+        }
+        ExprKind::Path { .. } => {
+            let symbol = checker.resolved.expr_symbol(callee)?;
+            match checker.symbols.try_get(symbol)?.lang_item? {
+                arandu_middle::symbol_table::LangItem::OptionSome => Some("Some"),
+                arandu_middle::symbol_table::LangItem::OptionNone => Some("None"),
+                _ => None,
+            }
+        }
         _ => None,
     }
 }
@@ -24,15 +74,7 @@ pub(crate) fn synth_result_ctor(
     span: Span,
     expected: Option<TypeId>,
 ) -> Option<ArType> {
-    let (type_name, member) = type_path_member(checker.pool, callee)?;
-    let is_result = checker
-        .resolved
-        .type_refs
-        .get(&type_name.span.into())
-        .is_some_and(|symbol| checker.symbols.is_result_type(*symbol));
-    if !is_result {
-        return None;
-    }
+    let member = result_ctor_member(checker, callee)?;
     let arg_ids = checker.pool.expr_list(args).to_vec();
 
     // Bidirectional: when the expected type is `Result<T, E>`, pin both sides
@@ -122,15 +164,7 @@ pub(crate) fn synth_option_ctor(
     span: Span,
     expected: Option<TypeId>,
 ) -> Option<ArType> {
-    let (type_name, member) = type_path_member(checker.pool, callee)?;
-    let is_option = checker
-        .resolved
-        .type_refs
-        .get(&type_name.span.into())
-        .is_some_and(|symbol| checker.symbols.is_option_type(*symbol));
-    if !is_option {
-        return None;
-    }
+    let member = option_ctor_member(checker, callee)?;
     let arg_ids = checker.pool.expr_list(args).to_vec();
     let expected_inner = expected.and_then(|id| match checker.resolve(id) {
         ArType::Option(inner) => Some(inner),
@@ -519,7 +553,10 @@ pub(crate) fn synth_poll_ctor(
     span: Span,
     expected: Option<TypeId>,
 ) -> Option<ArType> {
-    let (type_name, member) = type_path_member(checker.pool, callee)?;
+    let ExprKind::TypePath { type_name, member } = checker.pool.expr(callee) else {
+        return None;
+    };
+    let member = member.as_str();
     let resolved_sym = checker
         .resolved
         .type_refs

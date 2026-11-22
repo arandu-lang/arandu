@@ -20,18 +20,44 @@ struct DropBlockWork {
     terminator: AmirTerminator,
 }
 
+fn needs_dynamic_enum_drop(
+    stmt: &AmirStmt,
+    func: &AmirFunc,
+    type_info: &dyn AmirTypeContext,
+) -> bool {
+    let AmirStmt::Destroy(place) = stmt else {
+        return false;
+    };
+    let Some(ty) = projected_place_type(place, func, type_info) else {
+        return false;
+    };
+    enum_variant_payload_types(&type_info.resolve_type_id(ty), type_info).is_some_and(|variants| {
+        variants.iter().any(|(_, fields)| {
+            fields
+                .iter()
+                .any(|field| type_needs_drop(*field, type_info))
+        })
+    })
+}
+
 /// Turn dynamic enum cleanup into ordinary discriminant branches plus atomic
 /// `Destroy` places. Backends only read the discriminant and run named
 /// destructors; they do not recurse through sum-type payloads.
 pub(super) fn expand_dynamic_enum_drops(func: &mut AmirFunc, type_info: &dyn AmirTypeContext) {
+    if func.blocks.is_empty()
+        || !func
+            .stmts
+            .payloads
+            .raw
+            .iter()
+            .any(|stmt| needs_dynamic_enum_drop(stmt, func, type_info))
+    {
+        return;
+    }
+
     let moved_before = crate::move_checker::move_states_before_statements(func);
     let old_blocks = std::mem::take(&mut func.blocks);
     let old_stmts = std::mem::replace(&mut func.stmts, AmirStmtTable::new());
-    if old_blocks.is_empty() {
-        func.blocks = old_blocks;
-        func.stmts = old_stmts;
-        return;
-    }
 
     let mut pending = std::collections::VecDeque::new();
     for block in &old_blocks {
@@ -58,23 +84,9 @@ pub(super) fn expand_dynamic_enum_drops(func: &mut AmirFunc, type_info: &dyn Ami
         let mut remaining_move_states = work.move_states;
         let current_term = work.terminator;
         loop {
-            let split_at = remaining.iter().position(|stmt| {
-                let AmirStmt::Destroy(place) = stmt else {
-                    return false;
-                };
-                let Some(ty) = projected_place_type(place, func, type_info) else {
-                    return false;
-                };
-                enum_variant_payload_types(&type_info.resolve_type_id(ty), type_info).is_some_and(
-                    |variants| {
-                        variants.iter().any(|(_, fields)| {
-                            fields
-                                .iter()
-                                .any(|field| type_needs_drop(*field, type_info))
-                        })
-                    },
-                )
-            });
+            let split_at = remaining
+                .iter()
+                .position(|stmt| needs_dynamic_enum_drop(stmt, func, type_info));
             let Some(split_at) = split_at else {
                 let start = statements.len();
                 for stmt in remaining {

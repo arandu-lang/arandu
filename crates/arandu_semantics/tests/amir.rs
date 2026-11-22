@@ -1445,3 +1445,143 @@ func bad_label(): void {
         tc.diagnostics
     );
 }
+
+fn lower_valid_amir_for_test(src: &str) -> arandu_semantics::amir::AmirProgram {
+    let program = arandu_parser::parse(src).expect("parse");
+    let res = resolve_for_test(0, &program);
+    let mut tc = type_check(
+        res,
+        &program,
+        arandu_semantics::TargetInfo { pointer_width: 64 },
+    );
+    assert!(
+        tc.diagnostics
+            .iter()
+            .all(|d| d.severity != arandu_semantics::Severity::Error),
+        "unexpected typecheck errors: {:?}",
+        tc.diagnostics
+    );
+    let hir = lower_to_hir(&mut tc, &program).expect("HIR lowering");
+    let amir = lower_to_amir(&tc, &hir, 8).expect("AMIR lowering");
+    let issues = validate_amir_program(&amir, &tc.symbols, &tc.type_info.type_interner);
+    assert!(
+        issues.is_empty(),
+        "expected valid AMIR, got issues: {issues:?}"
+    );
+    amir
+}
+
+#[test]
+fn ergonomics_unqualified_option_result_ctors_lower_to_valid_amir() {
+    lower_valid_amir_for_test(
+        r#"
+func maybe(flag: bool): Option<int> {
+    if flag {
+        return Some(7)
+    }
+    return None
+}
+
+func fallible(flag: bool): Result<int, str> {
+    if flag {
+        return Ok(42)
+    }
+    return Err("failed")
+}
+
+func check(): bool {
+    let a = maybe(false)
+    let is_none = a == None
+    let _ = match fallible(true) {
+        Ok(v) => v,
+        Err(_) => 0,
+    }
+    return is_none
+}
+"#,
+    );
+}
+
+#[test]
+fn ergonomics_unit_enum_equality_and_wildcard_let_lower_to_valid_amir() {
+    let amir = lower_valid_amir_for_test(
+        r#"
+enum Color {
+    Red,
+    Green,
+    Blue,
+}
+
+func compare(a: Color, b: Color): bool {
+    let _ = 1
+    let _ = 2
+    if a == b {
+        return true
+    }
+    return a != Color.Blue
+}
+"#,
+    );
+    let has_discriminant = amir.funcs.iter().any(|f| {
+        f.stmts.payloads.raw.iter().any(|s| {
+            matches!(
+                s,
+                AmirStmt::Assign {
+                    rhs: AmirRvalue::Discriminant { .. },
+                    ..
+                }
+            )
+        })
+    });
+    assert!(
+        has_discriminant,
+        "unit enum equality must lower to Discriminant tag comparison in AMIR"
+    );
+}
+
+#[test]
+fn ergonomics_diverging_arms_and_statement_match_lower_to_valid_amir() {
+    lower_valid_amir_for_test(
+        r#"
+func extract_or_default(opt: Option<int>, flag: bool): int {
+    let val = match opt {
+        Some(v) => v,
+        None => { return -1 }
+    }
+    let adjusted = if flag { val + 1 } else { return 0 }
+    match opt {
+        Some(v) => v + 1,
+        None => {},
+    }
+    return adjusted
+}
+"#,
+    );
+}
+
+#[test]
+fn ergonomics_diverging_match_non_copy_binding_does_not_double_move() {
+    lower_valid_amir_for_test(
+        r#"
+struct Boxed {
+    handle: ptr[u8]
+}
+
+func make_boxed(ok: bool): Result<Boxed, int> {
+    if ok {
+        return Ok(Boxed { handle: nil })
+    }
+    return Err(1)
+}
+
+func unwrap_or_abort(ok: bool): Result<Boxed, int> {
+    let val = match make_boxed(ok) {
+        Ok(b) => b,
+        Err(e) => { return Err(e) }
+    }
+    let val2 = if ok { val } else { return Err(2) }
+    return Ok(val2)
+}
+"#,
+    );
+}

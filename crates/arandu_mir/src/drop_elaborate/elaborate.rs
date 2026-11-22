@@ -5,7 +5,7 @@ use super::needs_drop::{
 use crate::amir::{
     AmirFunc, AmirPlace, AmirProjection, AmirStmt, AmirStmtTable, AmirTerminator, BlockId, LocalId,
 };
-use crate::move_checker::move_states_at_block_exit;
+use crate::move_checker::move_states_exit_and_before_statements;
 use arandu_middle::layout::DenseRange;
 use arandu_middle::type_context::AmirTypeContext;
 use smallvec::SmallVec;
@@ -16,10 +16,9 @@ pub fn elaborate_drops(func: &mut AmirFunc, type_info: &dyn AmirTypeContext) {
     let owned_string_locals = find_owned_string_locals(func);
     let is_destructor_func = type_info.is_destructor_instance(func.symbol);
 
-    let initialized = crate::definite_init::initialized_at_block_exit(func);
-    let initialized_before = crate::definite_init::initialized_before_statements(func);
-    let moved = move_states_at_block_exit(func);
-    let moved_before = crate::move_checker::move_states_before_statements(func);
+    let (initialized, initialized_before) =
+        crate::definite_init::initialized_exit_and_before_statements(func);
+    let (moved, moved_before) = move_states_exit_and_before_statements(func);
     // A merge can make a payload move look conditional even when the incoming
     // paths are disjoint enum variants (for example `Ok(value)` vs `Err(_)`).
     // A root `Destroy` after that merge would recursively drop the already-moved
@@ -197,6 +196,20 @@ pub fn elaborate_drops(func: &mut AmirFunc, type_info: &dyn AmirTypeContext) {
 /// decomposes that place just like lexical cleanup, so emitters only need to
 /// implement atomic leaf destruction and nominal destructor calls.
 fn expand_indirect_drops(func: &mut AmirFunc, type_info: &dyn AmirTypeContext) {
+    let has_indirect_destroy = func.stmts.payloads.raw.iter().any(|stmt| {
+        matches!(
+            stmt,
+            AmirStmt::Destroy(place)
+                if place
+                    .projections
+                    .iter()
+                    .any(|projection| matches!(projection, AmirProjection::Deref))
+        )
+    });
+    if !has_indirect_destroy {
+        return;
+    }
+
     let moved_before = crate::move_checker::move_states_before_statements(func);
     let old = std::mem::replace(&mut func.stmts, AmirStmtTable::new());
     let mut rebuilt = AmirStmtTable::new();

@@ -150,6 +150,20 @@ pub(super) fn synth_control_flow_expr(
                 checker.pool,
                 checker.pool.block(else_id),
             );
+            let then_diverges = crate::type_checker::check::block_diverges(
+                checker.pool,
+                checker.pool.block(then_id),
+            );
+            let else_diverges = crate::type_checker::check::block_diverges(
+                checker.pool,
+                checker.pool.block(else_id),
+            );
+            if then_diverges && !else_diverges {
+                return Some(checker.intern(else_ty));
+            }
+            if else_diverges && !then_diverges {
+                return Some(checker.intern(then_ty));
+            }
             if !types::unify(&then_ty, &else_ty, &checker.type_info.type_interner) {
                 checker.add_constraint(
                     then_ty.clone(),
@@ -179,8 +193,9 @@ pub(super) fn synth_control_flow_expr(
                 span,
             );
 
-            let mut expected_arm_ty_id = checker.intern(ArType::Error);
-            let mut first_arm_span = span;
+            let is_void_context =
+                expected.is_some_and(|exp| matches!(checker.resolve(exp), ArType::Void));
+            let mut first_non_diverging: Option<(crate::type_checker::types::TypeId, Span)> = None;
 
             for (i, arm_id) in arm_ids.iter().copied().enumerate() {
                 let arm = checker.pool.match_arm(arm_id);
@@ -217,6 +232,14 @@ pub(super) fn synth_control_flow_expr(
                     }
                 }
 
+                let arm_diverges = match &arm.body {
+                    arandu_parser::MatchArmBody::Expr {
+                        expr: inner_expr, ..
+                    } => crate::type_checker::check::expr_diverges(checker.pool, *inner_expr),
+                    arandu_parser::MatchArmBody::Block { block, .. } => {
+                        crate::type_checker::check::block_diverges(checker.pool, block)
+                    }
+                };
                 let arm_ty_id = match &arm.body {
                     arandu_parser::MatchArmBody::Expr {
                         expr: inner_expr, ..
@@ -228,24 +251,38 @@ pub(super) fn synth_control_flow_expr(
                     }
                 };
 
-                if i == 0 {
-                    expected_arm_ty_id = arm_ty_id;
-                    first_arm_span = arm.span;
-                } else if !checker.unify_ids(expected_arm_ty_id, arm_ty_id) {
-                    let expected_arm_ty = checker.resolve(expected_arm_ty_id);
-                    let arm_ty = checker.resolve(arm_ty_id);
-                    checker.add_constraint(
-                        expected_arm_ty,
-                        arm_ty,
-                        ConstraintOrigin::MatchArms {
-                            first_span: first_arm_span,
-                            mismatch_span: arm.span,
-                            arm_index: i,
-                        },
-                    );
+                if is_void_context || arm_diverges {
+                    continue;
+                }
+                match first_non_diverging {
+                    None => {
+                        first_non_diverging = Some((arm_ty_id, arm.span));
+                    }
+                    Some((expected_arm_ty_id, first_arm_span))
+                        if !checker.unify_ids(expected_arm_ty_id, arm_ty_id) =>
+                    {
+                        let expected_arm_ty = checker.resolve(expected_arm_ty_id);
+                        let arm_ty = checker.resolve(arm_ty_id);
+                        checker.add_constraint(
+                            expected_arm_ty,
+                            arm_ty,
+                            ConstraintOrigin::MatchArms {
+                                first_span: first_arm_span,
+                                mismatch_span: arm.span,
+                                arm_index: i,
+                            },
+                        );
+                    }
+                    Some(_) => {}
                 }
             }
-            Some(expected_arm_ty_id)
+            if is_void_context {
+                Some(checker.intern(ArType::Void))
+            } else if let Some((ty_id, _)) = first_non_diverging {
+                Some(ty_id)
+            } else {
+                Some(expected.unwrap_or_else(|| checker.intern(ArType::Void)))
+            }
         }
         _ => None,
     }

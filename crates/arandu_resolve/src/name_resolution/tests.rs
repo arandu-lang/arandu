@@ -92,6 +92,51 @@ fn define_duplicate_in_same_scope_returns_none() {
     assert_eq!(r.diagnostics[0].code, DiagCode::N003RedefinedName);
 }
 
+#[test]
+fn multiple_wildcard_let_bindings_in_same_scope_succeed() {
+    let source = r#"
+module t
+func f(): int {
+    let _ = 1
+    let _ = 2
+    return 0
+}
+"#;
+    let program = arandu_parser::parse(source).expect("parse");
+    let r = crate::resolve_for_test(0, &program);
+    assert!(
+        r.diagnostics.is_empty(),
+        "multiple `let _ = ...` must not emit diagnostics: {:?}",
+        r.diagnostics
+    );
+}
+
+#[test]
+fn prelude_err_ctor_does_not_block_builtin_err_type() {
+    let source = r#"
+module t
+func f(flag: bool): Result<int, Err> {
+    if flag {
+        return Ok(1)
+    }
+    return Err("boom")
+}
+func g() {
+    let local_val = 1
+    let x: local_val = 2
+}
+"#;
+    let program = arandu_parser::parse(source).expect("parse");
+    let r = crate::resolve_for_test(0, &program);
+    assert_eq!(
+        r.diagnostics.len(),
+        1,
+        "expected only one N005: {:?}",
+        r.diagnostics
+    );
+    assert_eq!(r.diagnostics[0].code, DiagCode::N005ValueUsedAsType);
+}
+
 /// Methods restate receiver type params (`func Vec.push<T, A>(…)` after
 /// `import_receiver_type_params`). Must reuse SymbolIds, not emit N003.
 #[test]

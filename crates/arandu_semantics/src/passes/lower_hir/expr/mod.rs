@@ -44,13 +44,40 @@ fn builtin_ctor_variant(
     pool: &AstPool,
     callee: ExprId,
 ) -> Option<crate::hir::ResultCtorVariant> {
-    let ExprKind::TypePath {
-        type_name, member, ..
-    } = pool.expr(callee)
-    else {
-        return None;
-    };
-    builtin_ctor_variant_for_type_path(type_check, type_name, member)
+    match pool.expr(callee) {
+        ExprKind::TypePath {
+            type_name, member, ..
+        } => builtin_ctor_variant_for_type_path(type_check, type_name, member),
+        ExprKind::Path { .. } => {
+            let symbol = type_check.resolved.expr_symbol(callee)?;
+            let item = type_check.symbols.try_get(symbol)?.lang_item?;
+            use arandu_middle::symbol_table::LangItem;
+            match item {
+                LangItem::ResultOk => Some(crate::hir::ResultCtorVariant::Ok),
+                LangItem::ResultErr => Some(crate::hir::ResultCtorVariant::Err),
+                LangItem::OptionSome => Some(crate::hir::ResultCtorVariant::Some),
+                LangItem::OptionNone => Some(crate::hir::ResultCtorVariant::None),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+pub(super) fn dummy_unit_ctor_kind(
+    hir_pool: &mut crate::hir::HirPool,
+    variant: crate::hir::ResultCtorVariant,
+    span: arandu_middle::Span,
+) -> HirExprKind {
+    let dummy = hir_pool.alloc_expr(HirExpr {
+        kind: HirExprKind::Bool(false),
+        ty: TypeInterner::preinterned_primitive(Primitive::Bool),
+        span,
+    });
+    HirExprKind::ResultCtor {
+        variant,
+        value: dummy,
+    }
 }
 
 fn builtin_ctor_variant_for_type_path(
